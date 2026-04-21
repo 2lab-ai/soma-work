@@ -213,7 +213,7 @@ export class ActionHandlers {
     });
 
     // Usage card carousel tab click — Trace: docs/usage-card-dark/trace.md, Scenario 8
-    app.action('usage_card_tab', async ({ ack, body, client, respond }) => {
+    app.action(/^usage_card_tab:/, async ({ ack, body, client, respond }) => {
       await ack();
       await this.usageCardHandler.handleTabClick(body, client, respond);
     });
