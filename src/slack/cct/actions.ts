@@ -625,15 +625,29 @@ async function respondWithCard(opts: {
   await postEphemeralCard(tokenManager, client, body);
 }
 
-async function postEphemeralCard(tokenManager: TokenManager, client: WebClient, body: unknown): Promise<void> {
+/**
+ * Shared destination resolver for ephemeral helpers below. Bolt's action
+ * body carries the invoking user + channel in two slightly different
+ * shapes (`container.channel_id` for block_actions, `channel.id` for
+ * view_submission callbacks) — derive both here so postEphemeral* helpers
+ * don't duplicate the narrowing + `as any` dance. Returns `null` when the
+ * body lacks either field (unit-test fakes, non-interactive events).
+ */
+function resolveEphemeralTarget(body: unknown): { userId: string; channel: string } | null {
   const userId = (body as any)?.user?.id as string | undefined;
-  const channel = (body as any)?.container?.channel_id ?? (body as any)?.channel?.id;
-  if (!userId || !channel) return;
+  const channel = ((body as any)?.container?.channel_id ?? (body as any)?.channel?.id) as string | undefined;
+  if (!userId || !channel) return null;
+  return { userId, channel };
+}
+
+async function postEphemeralCard(tokenManager: TokenManager, client: WebClient, body: unknown): Promise<void> {
+  const target = resolveEphemeralTarget(body);
+  if (!target) return;
   const blocks = await buildCardFromManager(tokenManager);
   try {
     await client.chat.postEphemeral({
-      channel,
-      user: userId,
+      channel: target.channel,
+      user: target.userId,
       text: ':key: CCT status',
       blocks: blocks as any,
     });
@@ -649,13 +663,12 @@ async function postEphemeralCard(tokenManager: TokenManager, client: WebClient, 
  * of the previous card.
  */
 async function postEphemeralFailure(client: WebClient, body: unknown, message: string): Promise<void> {
-  const userId = (body as any)?.user?.id as string | undefined;
-  const channel = (body as any)?.container?.channel_id ?? (body as any)?.channel?.id;
-  if (!userId || !channel) return;
+  const target = resolveEphemeralTarget(body);
+  if (!target) return;
   try {
     await client.chat.postEphemeral({
-      channel,
-      user: userId,
+      channel: target.channel,
+      user: target.userId,
       text: message,
     });
   } catch (err) {
@@ -698,8 +711,8 @@ export async function buildCardFromManager(tokenManager: TokenManager): Promise<
     return blocks;
   } catch (err) {
     logger.warn('buildCardFromManager: getSnapshot failed, falling back to listTokens()', { err });
-    // Fallback path runs only when getSnapshot fails (disk corruption /
-    // unreadable file). We still apply the api_key fence here.
+    // Carry the api_key fence into the degraded path — cached summaries
+    // include both kinds, and the card must never show api_key rows.
     const summaries = tokenManager.listTokens();
     const active = tokenManager.getActiveToken();
     const slots: AuthKey[] = summaries.map((s) =>
