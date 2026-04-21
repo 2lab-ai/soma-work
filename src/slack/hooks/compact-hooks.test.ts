@@ -134,11 +134,9 @@ describe('buildCompactHooks — PreCompact (#617 AC4, live ticker v2)', () => {
     expect(res.continue).toBe(true);
     expect(session.compactEpoch).toBe(1);
     expect(session.preCompactUsagePct).toBe(82);
-    expect(slackApi.postSystemMessage).toHaveBeenCalledWith(
-      'C1',
-      '⏳ 🗜️ Compaction starting · trigger=manual',
-      { threadTs: 'T1' },
-    );
+    expect(slackApi.postSystemMessage).toHaveBeenCalledWith('C1', '⏳ 🗜️ Compaction starting · trigger=manual', {
+      threadTs: 'T1',
+    });
     expect(session.compactPostedByEpoch?.[1]?.pre).toBe(true);
     // Runtime handles captured for the ticker path.
     expect(session.compactStartingMessageTs).toBe('1700000000.000100');
@@ -154,11 +152,9 @@ describe('buildCompactHooks — PreCompact (#617 AC4, live ticker v2)', () => {
       slackApi: slackApi as unknown as SlackApiHelper,
     });
     await hooks.PreCompact(payloadOf('auto') as any);
-    expect(slackApi.postSystemMessage).toHaveBeenCalledWith(
-      'C1',
-      '⏳ 🗜️ Compaction starting · trigger=auto',
-      { threadTs: 'T1' },
-    );
+    expect(slackApi.postSystemMessage).toHaveBeenCalledWith('C1', '⏳ 🗜️ Compaction starting · trigger=auto', {
+      threadTs: 'T1',
+    });
   });
 
   it('AC4 v2: second PreCompact call inside same cycle does NOT re-post (pre=true dedupe)', async () => {
