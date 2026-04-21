@@ -1356,10 +1356,17 @@ export class TokenManager {
     const results: Record<string, UsageSnapshot | null> = {};
     const promises = keyIds.map(async (keyId) => {
       try {
-        // PR#1 M1-S4: forward `force` so admin-triggered refreshes fan
-        // out with throttle-bypass. The periodic scheduler MUST NOT set
-        // this flag (invariant guarded by `usage-scheduler.test.ts`).
-        results[keyId] = await this.fetchAndStoreUsage(keyId, { force: opts?.force });
+        // #644 review #5 — do NOT forward `force` to per-slot calls. The
+        // per-keyId in-flight dedupe (`usageFetchInFlight`) means an
+        // admin-triggered `refresh-all` that overlaps a scheduler tick
+        // shares the scheduler's in-flight Promise for cheap re-entry,
+        // so forcing every slot here would needlessly bypass every
+        // slot's `nextUsageFetchAllowedAt` gate — the same gate that
+        // protects Anthropic from our refresh storms. The per-slot
+        // Refresh button (`actions.ts` `cct_refresh_usage_slot`) still
+        // force-bypasses locally when a human explicitly asks for ONE
+        // slot to refresh NOW.
+        results[keyId] = await this.fetchAndStoreUsage(keyId, {});
       } catch {
         results[keyId] = null;
       }

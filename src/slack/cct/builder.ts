@@ -85,14 +85,23 @@ function utilToPctInt(util: number | undefined): number {
   return Math.max(0, Math.min(100, Math.round(scaled)));
 }
 
-/** "Xh Ym" / "Ym" / "<1m" from a positive delta in ms. */
+/**
+ * "Xd Yh" / "Xh Ym" / "Ym" / "<1m" from a positive delta in ms. Switches to
+ * day-granularity at the 24h boundary so a 7-day 7d-sonnet reset renders as
+ * `7d 0h` instead of `168h 0m` (see #644 review).
+ */
 function formatUsageResetDelta(deltaMs: number): string {
   if (!Number.isFinite(deltaMs) || deltaMs <= 0) return '<1m';
   const totalMin = Math.floor(deltaMs / 60_000);
   if (totalMin < 1) return '<1m';
-  const hours = Math.floor(totalMin / 60);
+  const totalHours = Math.floor(totalMin / 60);
   const mins = totalMin % 60;
-  if (hours > 0) return `${hours}h ${mins}m`;
+  if (totalHours >= 24) {
+    const days = Math.floor(totalHours / 24);
+    const remainingHours = totalHours % 24;
+    return `${days}d ${remainingHours}h`;
+  }
+  if (totalHours > 0) return `${totalHours}h ${mins}m`;
   return `${mins}m`;
 }
 
@@ -208,12 +217,17 @@ export function buildSlotRow(
   userTz: string = 'Asia/Seoul',
 ): ZBlock[] {
   const blocks: ZBlock[] = [];
+  // #641 M1 block-overflow fix: inline-badges (subscription tier + active
+  // marker) are emitted only for the active slot so the "focused" row carries
+  // the full signal while inactive rows stay compact. tosBadge is kept for
+  // every slot because it surfaces a risk label (users need that visible even
+  // when the slot is not active).
   const headLine = [
     ':key:',
     `*${escapeMrkdwn(slot.name)}*`,
     isActive ? '· active' : '',
     displayKindTag(slot),
-    subscriptionBadge(slot),
+    isActive ? subscriptionBadge(slot) : '',
     tosBadge(slot),
   ]
     .filter(Boolean)
@@ -224,47 +238,57 @@ export function buildSlotRow(
     text: { type: 'mrkdwn', text: headLine },
   });
 
-  // Context line — only when we have something meaningful.
-  const segments: string[] = [];
-  if (state) {
-    segments.push(authStateBadge(state.authState));
-    if (state.rateLimitedAt) {
-      const ts = formatRateLimitedAt(state.rateLimitedAt, userTz, nowMs);
-      const source = state.rateLimitSource ? ` via ${state.rateLimitSource}` : '';
-      segments.push(`rate-limited ${ts}${source}`);
-    }
-    // M1-S2 — usage is no longer shown as a compact `usage 5h X% 7d Y%`
-    // segment here; the three-line progress-bar panel is emitted as a
-    // separate context block below (see `buildUsagePanelBlock`).
-    if (state.cooldownUntil) {
-      const untilMs = new Date(state.cooldownUntil).getTime();
-      if (Number.isFinite(untilMs) && untilMs > nowMs) {
-        segments.push(`cooldown until ${formatRateLimitedAt(state.cooldownUntil, userTz, nowMs).split(' / ')[0]}`);
+  // #641 M1 block-overflow fix — the per-slot detail stack (authState /
+  // rate-limit context + three-line usage panel) is emitted ONLY for the
+  // active slot. Inactive rows collapse to:
+  //   [ header ] · [ action row ] · [ divider ]
+  // which brings a 15-attached-slot card back under Slack's 50-block
+  // hard cap (section+actions+divider per slot = 3). Users click the
+  // inactive slot's action row to inspect its usage details — follow-up
+  // M2 will turn this into an inline "expand" affordance per #641 §3.1.2.
+  if (isActive) {
+    // Context line — only when we have something meaningful.
+    const segments: string[] = [];
+    if (state) {
+      segments.push(authStateBadge(state.authState));
+      if (state.rateLimitedAt) {
+        const ts = formatRateLimitedAt(state.rateLimitedAt, userTz, nowMs);
+        const source = state.rateLimitSource ? ` via ${state.rateLimitSource}` : '';
+        segments.push(`rate-limited ${ts}${source}`);
       }
+      // M1-S2 — usage is no longer shown as a compact `usage 5h X% 7d Y%`
+      // segment here; the three-line progress-bar panel is emitted as a
+      // separate context block below (see `buildUsagePanelBlock`).
+      if (state.cooldownUntil) {
+        const untilMs = new Date(state.cooldownUntil).getTime();
+        if (Number.isFinite(untilMs) && untilMs > nowMs) {
+          segments.push(`cooldown until ${formatRateLimitedAt(state.cooldownUntil, userTz, nowMs).split(' / ')[0]}`);
+        }
+      }
+      if (state.tombstoned) {
+        segments.push(':wastebasket: tombstoned (drain in progress)');
+      }
+      if (state.activeLeases.length > 0) {
+        segments.push(`leases: ${state.activeLeases.length}`);
+      }
+    } else {
+      segments.push(authStateBadge('healthy'));
     }
-    if (state.tombstoned) {
-      segments.push(':wastebasket: tombstoned (drain in progress)');
+    if (segments.length > 0) {
+      blocks.push({
+        type: 'context',
+        elements: [{ type: 'mrkdwn', text: segments.join(' · ') }],
+      });
     }
-    if (state.activeLeases.length > 0) {
-      segments.push(`leases: ${state.activeLeases.length}`);
-    }
-  } else {
-    segments.push(authStateBadge('healthy'));
-  }
-  if (segments.length > 0) {
-    blocks.push({
-      type: 'context',
-      elements: [{ type: 'mrkdwn', text: segments.join(' · ') }],
-    });
-  }
 
-  // M1-S2 — three-line progress-bar usage panel. Rendered AFTER the
-  // rate-limit/authState context so the visual order is:
-  //   [ head ] · [ authState/rate-limit/cooldown ] · [ 5h/7d/7d-sonnet bars ]
-  // The panel is skipped entirely when `state.usage` is undefined.
-  if (state?.usage) {
-    const panel = buildUsagePanelBlock(state.usage, nowMs);
-    if (panel) blocks.push(panel);
+    // M1-S2 — three-line progress-bar usage panel. Rendered AFTER the
+    // rate-limit/authState context so the visual order is:
+    //   [ head ] · [ authState/rate-limit/cooldown ] · [ 5h/7d/7d-sonnet bars ]
+    // The panel is skipped entirely when `state.usage` is undefined.
+    if (state?.usage) {
+      const panel = buildUsagePanelBlock(state.usage, nowMs);
+      if (panel) blocks.push(panel);
+    }
   }
 
   // Per-slot action row: Remove / Rename + Z2 Attach-or-Detach for

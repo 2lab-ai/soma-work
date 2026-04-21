@@ -1664,7 +1664,14 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       expect(fetchUsageMock).not.toHaveBeenCalled();
     });
 
-    it('fetchUsageForAllAttached({ force: true }) forwards force to each fetchAndStoreUsage', async () => {
+    it('fetchUsageForAllAttached does NOT forward force to per-slot calls (#644 review #5 — dedupe-over-force)', async () => {
+      // Contract change (#644 review #5): `fetchUsageForAllAttached` no longer
+      // threads `force` through to per-slot `fetchAndStoreUsage`. The per-keyId
+      // in-flight dedupe (`usageFetchInFlight`) already handles cheap re-entry
+      // when an admin-triggered refresh-all overlaps a scheduler tick. Keeping
+      // `force` out of the fan-out also prevents an operator from accidentally
+      // bypassing every slot's local throttle gate in one click — the card-open
+      // and admin refresh-all paths MUST respect `nextUsageFetchAllowedAt`.
       const { mod, storeMod } = await importSut();
       const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
       const tm = new mod.TokenManager(store);
@@ -1681,7 +1688,9 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
         credentials: makeOAuthCreds({ accessToken: 'a2' }),
         acknowledgedConsumerTosRisk: true,
       });
-      // Gate BOTH into the future; only a force-forwarded fan-out can clear them.
+      // Gate BOTH into the future. If force were forwarded, fetchUsageMock
+      // would still be called twice; because it is NOT forwarded, the gate
+      // holds and neither slot reaches the transport.
       await store.mutate((snap) => {
         snap.state[s1.keyId].nextUsageFetchAllowedAt = new Date(Date.now() + 60_000).toISOString();
         snap.state[s2.keyId].nextUsageFetchAllowedAt = new Date(Date.now() + 60_000).toISOString();
@@ -1694,10 +1703,10 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
         nextFetchAllowedAtMs: Date.now() + 2 * 60 * 1000,
       });
       const results = await tm.fetchUsageForAllAttached({ timeoutMs: 5000, force: true });
-      // Both slots must have fetched — proof that force propagated.
-      expect(fetchUsageMock).toHaveBeenCalledTimes(2);
-      expect(results[s1.keyId]).not.toBeNull();
-      expect(results[s2.keyId]).not.toBeNull();
+      // Force was NOT forwarded — both per-slot calls hit the gate and returned null.
+      expect(fetchUsageMock).not.toHaveBeenCalled();
+      expect(results[s1.keyId]).toBeNull();
+      expect(results[s2.keyId]).toBeNull();
     });
 
     it('force:true + server 429 still bumps consecutiveUsageFailures and backoff (server-side 429 not bypassed)', async () => {
@@ -1760,6 +1769,72 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       await usagePromise;
       const final = await store.load();
       // Generation guard must reject the stale write even though force was set.
+      expect(final.state[slot.keyId]?.usage).toBeUndefined();
+    });
+
+    // #644 review #9 — attachedAt fingerprint guard regression.
+    // The reviewer flagged that the attachedAt write-time check lacks a
+    // dedicated, named regression test. The generation-guard test above uses
+    // force-through-the-public-API and the dedupe map as side effects. This
+    // test isolates the invariant: the write-time comparison
+    // `slotNow.oauthAttachment.attachedAt !== preAttachedAt` MUST drop the
+    // stale usage payload even when the keyId and the credentials are
+    // otherwise unchanged — what matters is only the attachedAt stamp.
+    it('attachedAt fingerprint guard drops stale usage write across detach+re-attach (#644 review #9)', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const slot = await tm.addSlot({ name: 'cct-fp', kind: 'setup_token', value: 'sk-ant-oat01-bbb' });
+      const creds = makeOAuthCreds({ accessToken: 'oat-FP' });
+      await tm.attachOAuth(slot.keyId, creds, true);
+      const before = await store.load();
+      const slotV1 = before.registry.slots.find((s) => s.keyId === slot.keyId) as any;
+      const attachedAtV1: number | undefined = slotV1?.oauthAttachment?.attachedAt;
+      expect(attachedAtV1).toBeGreaterThan(0);
+
+      // Suspend the fetch so we can flip attachedAt between dispatch and commit.
+      let releaseFetch!: () => void;
+      const fetchGate = new Promise<void>((r) => {
+        releaseFetch = r;
+      });
+      let signalStarted!: () => void;
+      const started = new Promise<void>((r) => {
+        signalStarted = r;
+      });
+      fetchUsageMock.mockImplementationOnce(async () => {
+        signalStarted();
+        await fetchGate;
+        return {
+          snapshot: {
+            fetchedAt: '2026-04-20T00:00:00Z',
+            fiveHour: { utilization: 0.77, resetsAt: '2026-04-20T05:00:00Z' },
+          },
+          nextFetchAllowedAtMs: Date.now() + 60_000,
+        };
+      });
+
+      const fetchPromise = tm.fetchAndStoreUsage(slot.keyId, { force: true });
+      await started;
+      // Give the fetch pre-capture a microtask window to snapshot attachedAt.
+      await new Promise((r) => setTimeout(r, 5));
+
+      // Detach + re-attach deliberately to bump the attachedAt stamp. Same
+      // credentials on purpose — the guard is keyed on attachedAt, not creds.
+      await tm.detachOAuth(slot.keyId);
+      await tm.attachOAuth(slot.keyId, creds, true);
+      const after = await store.load();
+      const slotV2 = after.registry.slots.find((s) => s.keyId === slot.keyId) as any;
+      const attachedAtV2: number | undefined = slotV2?.oauthAttachment?.attachedAt;
+      expect(attachedAtV2).toBeDefined();
+      expect(attachedAtV2).not.toBe(attachedAtV1);
+
+      releaseFetch();
+      await fetchPromise;
+
+      // The write MUST have been dropped: the pre-captured attachedAt (v1) no
+      // longer matches the current attachedAt (v2). No usage must be stored.
+      const final = await store.load();
       expect(final.state[slot.keyId]?.usage).toBeUndefined();
     });
   });

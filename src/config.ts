@@ -35,15 +35,20 @@ export function parseFiveBlockPhase(raw: string | undefined): number {
  * Defensive parser for positive-integer ENV knobs (#641 M1-S1). Keeps the
  * per-field inline pattern that the rest of this file uses but avoids
  * duplicating the validate-then-warn boilerplate for every usage-scheduler
- * tunable. Not exported outside this module — callers read the already-
- * parsed value via `config.usage.*`.
+ * tunable. Runtime consumers should read the already-parsed value via
+ * `config.usage.*`; this is exported so `src/config.test.ts` can lock the
+ * clamp + fallback semantics — the function is the only barrier against an
+ * operator setting `USAGE_REFRESH_INTERVAL_MS=1` (sub-second tick DDoS).
  *
  * `minimum` (default 0) clamps parsed values that are positive but too small
  * to a safe floor. Catches `USAGE_REFRESH_INTERVAL_MS=1` style foot-guns that
  * would otherwise hammer Anthropic (the tick fires below the 2-minute per-slot
  * backoff so it just bounces, but still burns event-loop time every ms).
+ *
+ * @internal exported for unit tests; runtime consumers should read
+ *           `config.usage.*` / `config.ui.fiveBlockPhase` instead.
  */
-function parsePositiveIntEnv(name: string, fallback: number, minimum: number = 0): number {
+export function parsePositiveIntEnv(name: string, fallback: number, minimum: number = 0): number {
   const raw = process.env[name];
   if (raw === undefined || raw === '') return fallback;
   const n = Number(raw);
@@ -141,6 +146,14 @@ export const config = {
     refreshIntervalMs: parsePositiveIntEnv('USAGE_REFRESH_INTERVAL_MS', 5 * 60_000, 30_000),
     /** ms deadline for each fan-out; default 2s. */
     fetchTimeoutMs: parsePositiveIntEnv('USAGE_FETCH_TIMEOUT_MS', 2_000),
+    /**
+     * ms deadline for the Z1 /cct card-open usage fan-out. Default 1500ms —
+     * short enough to fit under Slack's 3s ephemeral-post budget even after
+     * card-rendering overhead, long enough that a healthy pair of OAuth
+     * endpoints return fresh usage in time. Floor 500ms prevents an operator
+     * setting this to a value that effectively disables the fan-out.
+     */
+    cardOpenTimeoutMs: parsePositiveIntEnv('USAGE_ON_OPEN_TIMEOUT_MS', 1_500, 500),
   },
 };
 

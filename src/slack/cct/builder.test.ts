@@ -75,7 +75,10 @@ describe('buildSlotRow', () => {
       },
     };
     const now = Date.parse('2026-04-18T03:42:00Z');
-    const blocks = buildSlotRow(slot, state, false, now, 'Asia/Seoul');
+    // isActive=true so the context + usage-panel stack is emitted (#644
+    // review — inactive slots are compacted to 2 blocks to fit Slack's
+    // 50-block cap).
+    const blocks = buildSlotRow(slot, state, true, now, 'Asia/Seoul');
     const context = blocks[1] as any;
     expect(context.type).toBe('context');
     const text = context.elements[0].text as string;
@@ -99,7 +102,8 @@ describe('buildSlotRow', () => {
         fiveHour: { utilization: 77, resetsAt: '2026-04-18T05:00:00Z' },
       },
     };
-    const blocks = buildSlotRow(slot, state, false, Date.parse('2026-04-18T00:01:00Z'));
+    // isActive=true so the usage panel is emitted.
+    const blocks = buildSlotRow(slot, state, true, Date.parse('2026-04-18T00:01:00Z'));
     const flat = JSON.stringify(blocks);
     // Pass-through path: 77 > 1 → rendered as 77%.
     expect(flat).toMatch(/77%/);
@@ -113,9 +117,36 @@ describe('buildSlotRow', () => {
       activeLeases: [],
       cooldownUntil: '2026-04-18T04:42:00Z',
     };
-    const blocks = buildSlotRow(slot, state, false, now, 'Asia/Seoul');
+    // isActive=true so the context row is emitted (#644 review fix).
+    const blocks = buildSlotRow(slot, state, true, now, 'Asia/Seoul');
     const text = (blocks[1] as any).elements[0].text as string;
     expect(text).toMatch(/cooldown until/);
+  });
+
+  // #644 review P1 — inactive slots must collapse to section + actions + divider
+  // so a 15-slot card stays under Slack's 50-block cap.
+  it('inactive slot collapses to section + actions only (no context, no usage panel)', () => {
+    const slot = setupSlot();
+    const state: SlotState = {
+      authState: 'refresh_failed',
+      activeLeases: [],
+      rateLimitedAt: '2026-04-18T03:37:00Z',
+      usage: {
+        fetchedAt: '2026-04-18T03:42:00Z',
+        fiveHour: { utilization: 0.9, resetsAt: '2026-04-18T08:37:00Z' },
+      },
+    };
+    const now = Date.parse('2026-04-18T03:42:00Z');
+    const blocks = buildSlotRow(slot, state, false, now, 'Asia/Seoul');
+    const types = blocks.map((b: any) => b.type);
+    // Exactly two blocks: a section (headline) + an actions row.
+    expect(types).toEqual(['section', 'actions']);
+    const flat = JSON.stringify(blocks);
+    // No usage progress bars, no rate-limit banner — the context stack is
+    // suppressed for inactive rows.
+    expect(flat).not.toMatch(/█/);
+    expect(flat).not.toMatch(/rate-limited/);
+    expect(flat).not.toMatch(/refresh_failed/);
   });
 
   it('emits per-slot Remove/Rename buttons with value = keyId', () => {
@@ -395,7 +426,9 @@ describe('buildSlotRow — usage panel (M1-S2)', () => {
         sevenDaySonnet: { utilization: 0.18, resetsAt: new Date(now + 3 * 86_400_000).toISOString() },
       },
     };
-    const blocks = buildSlotRow(slot, state, false, now);
+    // isActive=true — #644 review compacts inactive slots, so the usage
+    // panel is emitted only on the active row.
+    const blocks = buildSlotRow(slot, state, true, now);
     const flat = JSON.stringify(blocks);
     // Three independent progress rows — label starts-of-line in the rendered text.
     expect(flat).toMatch(/5h[^"]*█/);
@@ -406,7 +439,7 @@ describe('buildSlotRow — usage panel (M1-S2)', () => {
   it('omits the usage panel entirely when state.usage is undefined', () => {
     const slot = slotWithAttachment();
     const state: SlotState = { authState: 'healthy', activeLeases: [] };
-    const blocks = buildSlotRow(slot, state, false, now);
+    const blocks = buildSlotRow(slot, state, true, now);
     const flat = JSON.stringify(blocks);
     // No progress-bar glyphs if usage is absent.
     expect(flat).not.toMatch(/█/);
@@ -424,10 +457,62 @@ describe('buildSlotRow — usage panel (M1-S2)', () => {
         sevenDay: { utilization: 0.2, resetsAt: new Date(now + 86_400_000).toISOString() },
       },
     };
-    const blocks = buildSlotRow(slot, state, false, now);
+    const blocks = buildSlotRow(slot, state, true, now);
     const flat = JSON.stringify(blocks);
     // The spec explicitly deletes the compact `usage 5h X% 7d Y%` line.
     expect(flat).not.toMatch(/usage 5h \d+% 7d \d+%/);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
+// #644 review P1 — block-overflow regression guard (≤ 50 blocks / card)
+// ────────────────────────────────────────────────────────────────────
+
+describe('buildCctCardBlocks — Slack 50-block hard cap (#644 review P1)', () => {
+  const now = Date.parse('2026-04-21T00:00:00Z');
+  // Build `n` oauth-attached cct slots, each with full usage state, and
+  // render with `slot-0` as the active one. The cap was introduced in
+  // the M1 fix that compacts inactive slots; this guard catches a future
+  // refactor that re-enables the per-row detail stack for inactive slots.
+  function buildNSlotCard(n: number) {
+    const slots: AuthKey[] = [];
+    const states: Record<string, SlotState> = {};
+    for (let i = 0; i < n; i += 1) {
+      const keyId = `slot-${i}`;
+      slots.push({
+        kind: 'cct',
+        source: 'setup',
+        keyId,
+        name: `cct${i}`,
+        setupToken: 'sk-ant-oat01-xxxxxxxx',
+        oauthAttachment: {
+          accessToken: 't',
+          refreshToken: 'r',
+          expiresAtMs: now + 86_400_000,
+          scopes: ['user:profile'],
+          acknowledgedConsumerTosRisk: true,
+          subscriptionType: 'max_5x',
+        },
+        createdAt: '',
+      });
+      states[keyId] = {
+        authState: 'healthy',
+        activeLeases: [],
+        rateLimitedAt: new Date(now - 60_000).toISOString(),
+        usage: {
+          fetchedAt: new Date(now).toISOString(),
+          fiveHour: { utilization: 0.45, resetsAt: new Date(now + 3 * 3_600_000).toISOString() },
+          sevenDay: { utilization: 0.2, resetsAt: new Date(now + 6 * 86_400_000).toISOString() },
+          sevenDaySonnet: { utilization: 0.1, resetsAt: new Date(now + 6 * 86_400_000).toISOString() },
+        },
+      };
+    }
+    return buildCctCardBlocks({ slots, states, activeKeyId: 'slot-0', nowMs: now });
+  }
+
+  it.each([1, 7, 10, 15])('N=%d attached slots → block count ≤ 50 (with slot-0 active)', (n) => {
+    const blocks = buildNSlotCard(n);
+    expect(blocks.length).toBeLessThanOrEqual(50);
   });
 });
 
@@ -585,6 +670,66 @@ describe('buildSlotRow — Refresh button (M1-S4)', () => {
     const actions = blocks.find((b: any) => b.type === 'actions') as any;
     const ids = actions.elements.map((e: any) => e.action_id);
     expect(ids).not.toContain(CCT_ACTION_IDS.refresh_usage_slot);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
+// #644 review — CCT_ACTION_IDS / CCT_BLOCK_IDS literal-string contract lock
+// ────────────────────────────────────────────────────────────────────
+//
+// These IDs are the wire contract between the Slack view-state snapshot and
+// the Bolt block_actions router. A silent rename breaks every deployed
+// tenant's in-flight modal state (`views.update` loses typed values) and
+// mis-routes refresh clicks to unhandled handlers. Every new ID (including
+// M1-S4 `cct_refresh_usage_all` / `cct_refresh_usage_slot`) is locked here
+// so a future append-only change is intentional, not silent.
+describe('CCT_ACTION_IDS / CCT_BLOCK_IDS literal lock (#644 review)', () => {
+  it('CCT_ACTION_IDS maps each key to its exact wire string', () => {
+    expect(CCT_ACTION_IDS).toEqual({
+      next: 'cct_next',
+      add: 'cct_open_add',
+      remove: 'cct_open_remove',
+      rename: 'cct_open_rename',
+      set_active: 'cct_set_active',
+      tos_ack: 'cct_tos_ack',
+      kind_radio: 'cct_kind_radio',
+      name_input: 'cct_name_value',
+      setup_token_input: 'cct_setup_token_value',
+      oauth_blob_input: 'cct_oauth_blob_value',
+      api_key_input: 'cct_api_key_value',
+      rename_input: 'cct_rename_value',
+      remove_private_metadata: 'cct_remove_slot_id',
+      attach: 'cct_open_attach',
+      detach: 'cct_detach',
+      attach_oauth_input: 'cct_attach_oauth_blob_value',
+      attach_tos_ack: 'cct_attach_tos_ack_value',
+      refresh_usage_all: 'cct_refresh_usage_all',
+      refresh_usage_slot: 'cct_refresh_usage_slot',
+    });
+  });
+
+  it('CCT_BLOCK_IDS maps each key to its exact wire string', () => {
+    expect(CCT_BLOCK_IDS).toEqual({
+      add_name: 'cct_add_name',
+      add_kind: 'cct_add_kind',
+      add_setup_token_value: 'cct_add_value',
+      add_oauth_credentials_blob: 'cct_add_oauth_blob',
+      add_tos_ack: 'cct_add_tos_ack',
+      add_api_key_value: 'cct_add_api_key_value',
+      remove_confirm: 'cct_remove_confirm',
+      rename_name: 'cct_rename_name',
+      attach_oauth_blob: 'cct_attach_oauth_blob',
+      attach_tos_ack: 'cct_attach_tos_ack',
+    });
+  });
+
+  it('CCT_VIEW_IDS maps each key to its exact wire string', () => {
+    expect(CCT_VIEW_IDS).toEqual({
+      add: 'cct_add_slot',
+      remove: 'cct_remove_slot',
+      rename: 'cct_rename_slot',
+      attach: 'cct_attach_oauth',
+    });
   });
 });
 

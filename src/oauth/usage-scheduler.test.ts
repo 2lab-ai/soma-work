@@ -74,7 +74,13 @@ describe('UsageRefreshScheduler (M1-S1)', () => {
     await Promise.resolve();
     expect(tm.fetchUsageForAllAttached).toHaveBeenCalledTimes(1);
     const args = tm.fetchUsageForAllAttached.mock.calls[0][0];
-    expect(args).toEqual(expect.objectContaining({ timeoutMs: 2_000 }));
+    // #644 review #6 — don't rely on a permissive `objectContaining` here:
+    // assert the positive contract (timeoutMs is forwarded) AND the negative
+    // contract (force is absent) at the first-tick boundary. The INVARIANT
+    // test below re-asserts `not.toHaveProperty('force')` for documentation
+    // weight; this one catches a regression at the most-run path.
+    expect(args.timeoutMs).toBe(2_000);
+    expect(args).not.toHaveProperty('force');
   });
 
   it('enabled:false → startUsageRefreshScheduler returns null, NEVER arms the interval, and no tick happens', () => {
