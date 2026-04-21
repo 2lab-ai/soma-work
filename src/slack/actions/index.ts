@@ -53,7 +53,11 @@ export class ActionHandlers {
   constructor(private ctx: ActionHandlerContext) {
     this.formStore = new PendingFormStore();
 
-    this.permissionHandler = new PermissionActionHandler(ctx.claudeHandler.getSessionRegistry());
+    // Optional-chain the call: test harnesses pass minimal ClaudeHandler mocks
+    // that omit getSessionRegistry. In that case `PermissionActionHandler`'s
+    // undefined-sessionRegistry fallback honors the Approve intent so the
+    // user's click still resolves.
+    this.permissionHandler = new PermissionActionHandler(ctx.claudeHandler.getSessionRegistry?.());
 
     this.sessionHandler = new SessionActionHandler({
       slackApi: ctx.slackApi,
