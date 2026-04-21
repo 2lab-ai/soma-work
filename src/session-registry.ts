@@ -1034,13 +1034,27 @@ export class SessionRegistry {
   }
 
   /**
-   * Batch variant — disable multiple rule ids atomically. Preserves insertion
-   * order for deterministic logging.
+   * Batch variant — disable multiple rule ids atomically with a single session
+   * lookup and a single summary log line.
    */
   disableDangerousRules(sessionKey: string, ruleIds: ReadonlyArray<string>): void {
-    for (const ruleId of ruleIds) {
-      this.disableDangerousRule(sessionKey, ruleId);
+    if (ruleIds.length === 0) return;
+    const session = this.sessions.get(sessionKey);
+    if (!session) {
+      this.logger.debug('disableDangerousRules: session not found', { sessionKey, ruleIds });
+      return;
     }
+    if (!session.disabledDangerousRules) {
+      session.disabledDangerousRules = new Set<string>();
+    }
+    for (const ruleId of ruleIds) {
+      session.disabledDangerousRules.add(ruleId);
+    }
+    this.logger.info('Dangerous rules disabled for session', {
+      sessionKey,
+      ruleIds,
+      activeDisabled: Array.from(session.disabledDangerousRules),
+    });
   }
 
   /**

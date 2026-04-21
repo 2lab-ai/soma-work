@@ -53,7 +53,7 @@ export class ActionHandlers {
   constructor(private ctx: ActionHandlerContext) {
     this.formStore = new PendingFormStore();
 
-    this.permissionHandler = new PermissionActionHandler(ctx.claudeHandler);
+    this.permissionHandler = new PermissionActionHandler(ctx.claudeHandler.getSessionRegistry());
 
     this.sessionHandler = new SessionActionHandler({
       slackApi: ctx.slackApi,

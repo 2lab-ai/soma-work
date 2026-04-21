@@ -7,7 +7,7 @@ vi.mock('../../shared-store', () => ({
   },
 }));
 
-import type { ClaudeHandler } from '../../claude-handler';
+import type { SessionRegistry } from '../../session-registry';
 import { sharedStore } from '../../shared-store';
 import { PermissionActionHandler } from './permission-action-handler';
 import type { RespondFn } from './types';
@@ -22,22 +22,20 @@ function makeBody(actionId: string, value: string, userId = 'U_USER') {
 describe('PermissionActionHandler.handleApproveDisableRule', () => {
   let respond: RespondFn;
   let respondMock: ReturnType<typeof vi.fn>;
-  let sessionRegistry: {
+  let sessionRegistryMock: {
     getSessionKey: ReturnType<typeof vi.fn>;
     disableDangerousRules: ReturnType<typeof vi.fn>;
   };
-  let claudeHandler: Pick<ClaudeHandler, 'getSessionRegistry'>;
+  let sessionRegistry: SessionRegistry;
 
   beforeEach(() => {
     respondMock = vi.fn().mockResolvedValue(undefined);
     respond = respondMock as unknown as RespondFn;
-    sessionRegistry = {
+    sessionRegistryMock = {
       getSessionKey: vi.fn((channel: string, threadTs?: string) => `${channel}-${threadTs ?? ''}`),
       disableDangerousRules: vi.fn(),
     };
-    claudeHandler = {
-      getSessionRegistry: vi.fn(() => sessionRegistry as unknown as ReturnType<ClaudeHandler['getSessionRegistry']>),
-    };
+    sessionRegistry = sessionRegistryMock as unknown as SessionRegistry;
   });
 
   afterEach(() => {
@@ -56,11 +54,11 @@ describe('PermissionActionHandler.handleApproveDisableRule', () => {
       rule_ids: ['kill'],
     });
 
-    const handler = new PermissionActionHandler(claudeHandler as unknown as ClaudeHandler);
+    const handler = new PermissionActionHandler(sessionRegistry);
     await handler.handleApproveDisableRule(makeBody('approve_disable_rule_session', 'approval_abc'), respond);
 
-    expect(sessionRegistry.getSessionKey).toHaveBeenCalledWith('C123', '171.001');
-    expect(sessionRegistry.disableDangerousRules).toHaveBeenCalledWith('C123-171.001', ['kill']);
+    expect(sessionRegistryMock.getSessionKey).toHaveBeenCalledWith('C123', '171.001');
+    expect(sessionRegistryMock.disableDangerousRules).toHaveBeenCalledWith('C123-171.001', ['kill']);
     expect(sharedStore.storePermissionResponse).toHaveBeenCalledWith(
       'approval_abc',
       expect.objectContaining({ behavior: 'allow' }),
@@ -78,10 +76,10 @@ describe('PermissionActionHandler.handleApproveDisableRule', () => {
       expires_at: Date.now() + 60_000,
     });
 
-    const handler = new PermissionActionHandler(claudeHandler as unknown as ClaudeHandler);
+    const handler = new PermissionActionHandler(sessionRegistry);
     await handler.handleApproveDisableRule(makeBody('approve_disable_rule_session', 'approval_no_rules'), respond);
 
-    expect(sessionRegistry.disableDangerousRules).not.toHaveBeenCalled();
+    expect(sessionRegistryMock.disableDangerousRules).not.toHaveBeenCalled();
     expect(sharedStore.storePermissionResponse).toHaveBeenCalledWith(
       'approval_no_rules',
       expect.objectContaining({ behavior: 'allow' }),
@@ -91,17 +89,17 @@ describe('PermissionActionHandler.handleApproveDisableRule', () => {
   it('warns the user ephemerally when the pending approval is missing/expired', async () => {
     vi.mocked(sharedStore.getPendingApproval).mockResolvedValue(null);
 
-    const handler = new PermissionActionHandler(claudeHandler as unknown as ClaudeHandler);
+    const handler = new PermissionActionHandler(sessionRegistry);
     await handler.handleApproveDisableRule(makeBody('approve_disable_rule_session', 'approval_missing'), respond);
 
-    expect(sessionRegistry.disableDangerousRules).not.toHaveBeenCalled();
+    expect(sessionRegistryMock.disableDangerousRules).not.toHaveBeenCalled();
     expect(sharedStore.storePermissionResponse).not.toHaveBeenCalled();
     expect(respondMock).toHaveBeenCalledWith(
       expect.objectContaining({ response_type: 'ephemeral', replace_original: false }),
     );
   });
 
-  it('falls back to plain approve when constructed without a ClaudeHandler', async () => {
+  it('falls back to plain approve when constructed without a SessionRegistry', async () => {
     const handler = new PermissionActionHandler();
     await handler.handleApproveDisableRule(makeBody('approve_disable_rule_session', 'approval_no_handler'), respond);
 
@@ -113,7 +111,7 @@ describe('PermissionActionHandler.handleApproveDisableRule', () => {
   });
 
   it('rejects with ephemeral warning when approvalId is missing', async () => {
-    const handler = new PermissionActionHandler(claudeHandler as unknown as ClaudeHandler);
+    const handler = new PermissionActionHandler(sessionRegistry);
     const body = { user: { id: 'U_USER' }, actions: [{}] };
     await handler.handleApproveDisableRule(body, respond);
 
