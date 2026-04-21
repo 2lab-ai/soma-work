@@ -494,10 +494,23 @@ export class CommandParser {
   }
 
   /**
-   * Check if text is a /compact command (force context compaction)
+   * Check if text is a /compact command (force context compaction).
+   * Also accepts `--yes` as the explicit confirmation variant re-dispatched
+   * by the compact_confirm action handler. Anything else after `compact`
+   * (e.g. extraneous args) does not match.
    */
   static isCompactCommand(text: string): boolean {
-    return /^\/?compact$/i.test(text.trim());
+    return /^\/?compact(?:\s+--yes)?$/i.test(text.trim());
+  }
+
+  /**
+   * Parse `/compact` variants. `confirmed === true` iff the text carries
+   * the `--yes` flag (explicit confirmation re-dispatch from the button
+   * handler). Used by `CompactHandler.execute` to decide whether to show
+   * the yes/no prompt or run the compaction immediately.
+   */
+  static parseCompactCommand(text: string): { confirmed: boolean } {
+    return { confirmed: /^\/?compact\s+--yes$/i.test(text.trim()) };
   }
 
   /**
