@@ -48,6 +48,7 @@ const API_KEY_REGEX = /^sk-ant-api03-[A-Za-z0-9_-]{8,}$/;
 export const REFRESH_BANNERS = {
   allNull:
     ':warning: *Refresh All OAuth Tokens — nothing refreshed* — every attached slot failed to refresh. Check the TokenManager logs for `refreshAllAttachedOAuthTokens` errors or the auth-state of each slot.',
+  cardNull: ':warning: *Refresh — all usage fetches were throttled or failed.* Try again in a moment.',
   outerCatch: ':warning: Refresh failed. Please try again.',
 } as const;
 
@@ -260,6 +261,41 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
     } catch (err) {
       logger.error('cct_refresh_usage_all failed', err);
       await postEphemeralFailure(client, body, REFRESH_BANNERS.outerCatch);
+    }
+  });
+
+  // Card-level "Refresh" — pure usage re-fetch fan-out. Siblings:
+  //   - [Refresh All OAuth Tokens] above refreshes OAuth tokens.
+  //   - This handler force-refreshes the usage snapshot on every attached
+  //     CCT slot (via `fetchAndStoreUsage(keyId, { force: true })`) so the
+  //     per-row usage bars reflect the latest Anthropic data on the same
+  //     click.
+  //
+  // When every attached slot fetch returns null (throttled or failed),
+  // post an ephemeral banner instead of silently re-rendering the same
+  // stale card.
+  app.action(CCT_ACTION_IDS.refresh_card, async ({ ack, body, client }) => {
+    await ack();
+    try {
+      if (!requireAdmin(body)) return;
+      const snap = await tokenManager.getSnapshot();
+      const keyIds = snap.registry.slots
+        .filter((s) => s.kind === 'cct' && s.oauthAttachment !== undefined)
+        .map((s) => s.keyId);
+      const results = await Promise.allSettled(
+        keyIds.map((keyId) => tokenManager.fetchAndStoreUsage(keyId, { force: true })),
+      );
+      const freshCount = results.filter((r) => r.status === 'fulfilled' && r.value !== null).length;
+      if (freshCount === 0 && keyIds.length > 0) {
+        await postEphemeralFailure(client, body, REFRESH_BANNERS.cardNull);
+        return;
+      }
+      await postEphemeralCard(tokenManager, client, body);
+    } catch (err) {
+      logger.error('cct_refresh_card failed', err);
+      await postEphemeralFailure(client, body, REFRESH_BANNERS.outerCatch).catch(() => {
+        /* ignore double-failure */
+      });
     }
   });
 

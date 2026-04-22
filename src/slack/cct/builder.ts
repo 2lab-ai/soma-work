@@ -716,6 +716,12 @@ export function buildCctCardBlocks(input: CctCardInput): ZBlock[] {
       text: { type: 'plain_text', text: ':arrows_counterclockwise: Refresh All OAuth Tokens', emoji: true },
       value: 'refresh_all',
     },
+    {
+      type: 'button',
+      action_id: CCT_ACTION_IDS.refresh_card,
+      text: { type: 'plain_text', text: ':arrows_counterclockwise: Refresh', emoji: true },
+      value: 'refresh_card',
+    },
   ];
   blocks.push({ type: 'actions', elements: actionElements });
 

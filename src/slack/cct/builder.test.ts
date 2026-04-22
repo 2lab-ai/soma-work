@@ -737,6 +737,7 @@ describe('CCT_ACTION_IDS / CCT_BLOCK_IDS literal lock (#644 review)', () => {
       attach_oauth_input: 'cct_attach_oauth_blob_value',
       attach_tos_ack: 'cct_attach_tos_ack_value',
       refresh_usage_all: 'cct_refresh_usage_all',
+      refresh_card: 'cct_refresh_card',
       activate_slot: 'cct_activate_slot',
     });
   });
@@ -764,8 +765,8 @@ describe('CCT_ACTION_IDS / CCT_BLOCK_IDS literal lock (#644 review)', () => {
   });
 });
 
-describe('buildCctCardBlocks — Refresh all (M1-S4)', () => {
-  it('card-level action row includes the new Refresh-all button alongside existing actions', () => {
+describe('buildCctCardBlocks — card-level action row', () => {
+  it('card-level action row contains Next/Add/Refresh-All-OAuth/Refresh in order (4 buttons)', () => {
     const slot: AuthKey = {
       kind: 'cct',
       source: 'setup',
@@ -781,13 +782,31 @@ describe('buildCctCardBlocks — Refresh all (M1-S4)', () => {
     ) as any;
     expect(cardRow).toBeDefined();
     const ids = cardRow.elements.map((e: any) => e.action_id);
-    expect(ids).toContain(CCT_ACTION_IDS.refresh_usage_all);
-    // Existing actions still present — contract guarantees no existing ID
-    // changes or removals in this PR.
-    expect(ids).toContain(CCT_ACTION_IDS.next);
-    expect(ids).toContain(CCT_ACTION_IDS.add);
-    // Length assertion: exactly three buttons in the card-level row.
-    expect(cardRow.elements).toHaveLength(3);
+    expect(ids).toEqual([
+      CCT_ACTION_IDS.next,
+      CCT_ACTION_IDS.add,
+      CCT_ACTION_IDS.refresh_usage_all,
+      CCT_ACTION_IDS.refresh_card,
+    ]);
+    // Length assertion: exactly four buttons in the card-level row.
+    expect(cardRow.elements).toHaveLength(4);
+  });
+
+  it('the Refresh All OAuth Tokens button carries the updated label', () => {
+    const slot: AuthKey = {
+      kind: 'cct',
+      source: 'setup',
+      keyId: 'slot-1',
+      name: 'cct1',
+      setupToken: 'sk-ant-oat01-xxxx',
+      createdAt: '',
+    };
+    const blocks = buildCctCardBlocks({ slots: [slot], states: {} });
+    const cardRow = blocks.find(
+      (b: any) => b.type === 'actions' && b.elements.some((e: any) => e.action_id === 'cct_refresh_usage_all'),
+    ) as any;
+    const btn = cardRow.elements.find((e: any) => e.action_id === 'cct_refresh_usage_all');
+    expect(btn.text.text).toBe(':arrows_counterclockwise: Refresh All OAuth Tokens');
   });
 });
 

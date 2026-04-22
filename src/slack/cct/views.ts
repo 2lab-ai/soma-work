@@ -75,6 +75,9 @@ export const CCT_ACTION_IDS = {
   // #641 M1-S4 — Refresh buttons (card-level fan-out). Append-only;
   // existing IDs above are unchanged.
   refresh_usage_all: 'cct_refresh_usage_all',
+  // Card v2 follow-up — pure usage re-fetch fan-out (sibling of
+  // `refresh_usage_all` which refreshes OAuth tokens).
+  refresh_card: 'cct_refresh_card',
   // per-slot Activate button. Non-active rows emit this button; the
   // active row omits it.
   activate_slot: 'cct_activate_slot',
