@@ -1541,7 +1541,7 @@ describe('Ghost session filtering (#438)', () => {
   });
 });
 
-// ── PR #632 TO-BE v2 helpers ──
+// ── Short-ref extractors (used by the Kanban card meta / refs rows) ──
 describe('extractIssueShortRef / extractPrShortRef', () => {
   let extractIssueShortRef: (url?: string) => string | undefined;
   let extractPrShortRef: (url?: string) => string | undefined;

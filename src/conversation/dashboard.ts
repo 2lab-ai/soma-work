@@ -86,7 +86,7 @@ export interface KanbanSession {
   threadTotalActiveMs?: number;
   threadSessionCount?: number;
   threadCompactionCount?: number;
-  /** PR #632 TO-BE v2 — effort level (normalised) + derived short refs */
+  /** Per-session effort level, normalised via coerceEffort. */
   effort?: EffortLevel;
   /** Jira short key like "PTN-123" derived from issueUrl */
   issueShortRef?: string;
@@ -303,6 +303,29 @@ export function extractPrShortRef(url?: string): string | undefined {
   return m ? `PR-${m[1]}` : undefined;
 }
 
+/**
+ * Card-derived UI fields shared between live (sessionToKanban) and archived
+ * (archivedToKanban) kanban builders. Archived sessions don't persist effort,
+ * so their branch always falls back to the owner's default; live sessions
+ * use the persisted value when present.
+ */
+function cardDerivedFields(src: {
+  effort?: unknown;
+  ownerId?: string;
+  links?: { issue?: { url?: string }; pr?: { url?: string } };
+  persistedEffort: boolean;
+}): Pick<KanbanSession, 'effort' | 'issueShortRef' | 'prShortRef'> {
+  const effort =
+    src.persistedEffort && src.effort
+      ? coerceEffort(src.effort)
+      : userSettingsStore.getUserDefaultEffort(src.ownerId || '');
+  return {
+    effort,
+    issueShortRef: extractIssueShortRef(src.links?.issue?.url),
+    prShortRef: extractPrShortRef(src.links?.pr?.url),
+  };
+}
+
 function sessionToKanban(key: string, s: any): KanbanSession {
   const tasks = _getTasksFn ? _getTasksFn(key) : undefined;
   const aggregate = computeThreadAggregate(s.channelId, s.threadTs, getAllSessions(), Date.now());
@@ -359,10 +382,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     threadTotalActiveMs: aggregate.totalActiveMs,
     threadSessionCount: aggregate.sessionCount,
     threadCompactionCount: aggregate.compactionCount,
-    // PR #632 TO-BE v2 — effort + short refs for card UI
-    effort: s.effort ? coerceEffort(s.effort) : userSettingsStore.getUserDefaultEffort(s.ownerId || ''),
-    issueShortRef: extractIssueShortRef(s.links?.issue?.url),
-    prShortRef: extractPrShortRef(s.links?.pr?.url),
+    ...cardDerivedFields({ effort: s.effort, ownerId: s.ownerId, links: s.links, persistedEffort: true }),
     pendingQuestion: s.actionPanel?.pendingQuestion
       ? s.actionPanel.pendingQuestion.type === 'user_choice'
         ? {
@@ -455,11 +475,7 @@ export function archivedToKanban(archived: ArchivedSession): KanbanSession {
     threadTotalActiveMs: archived.busyMs || 0,
     threadSessionCount: 1,
     threadCompactionCount: archived.compactionCount || 0,
-    // PR #632 TO-BE v2 — effort (archived sessions don't persist it; fall back to per-user default)
-    //  + short refs derived from archived links
-    effort: userSettingsStore.getUserDefaultEffort(archived.ownerId || ''),
-    issueShortRef: extractIssueShortRef(archived.links?.issue?.url),
-    prShortRef: extractPrShortRef(archived.links?.pr?.url),
+    ...cardDerivedFields({ ownerId: archived.ownerId, links: archived.links, persistedEffort: false }),
   };
 }
 
@@ -1724,7 +1740,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .card .card-timer-row .card-timer-compactions,
 .card .card-timer-row .card-timer-sessions { color: var(--text-tertiary); }
 
-/* ── HERO TIMER (PR #632 TO-BE v2) — big timer above title ── */
+/* ── HERO TIMER — big live timer above card title ── */
 .card .card-timer-hero {
   display: flex;
   align-items: baseline;
@@ -1739,7 +1755,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .card .card-timer-hero .hero-icon { font-size: 18px; }
 .card .card-timer-hero .card-timer-live { color: var(--text); }
 
-/* ── SHORT REFS ROW (PR #632 TO-BE v2) — PTN-123 · PR-123 ── */
+/* ── SHORT REFS ROW — PTN-123 · PR-123 ── */
 .card .card-refs {
   display: flex;
   gap: 6px;
@@ -1759,7 +1775,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .card .card-refs a:hover { text-decoration: underline; }
 .card .card-refs .ref-sep { color: var(--text-tertiary); opacity: 0.6; }
 
-/* ── META EFFORT (PR #632 TO-BE v2) — power level in meta row ── */
+/* ── META EFFORT — power level token in meta row ── */
 .card .card-meta .meta-effort {
   color: var(--accent);
   font-weight: 700;
@@ -2931,6 +2947,9 @@ function formatNmSSs(ms) {
 }
 // 1-Hz tick: update every .card-timer-live element from its data-* attrs.
 // Runs unconditionally of WS state — WS feeds new data-* values, tick reads them.
+// The producer of .card-timer-live is the heroTimerHtml builder in renderCard()
+// (server side). Keep the class name + data-leg-started / data-accumulated attr
+// contract in sync with that emitter.
 function updateTimers() {
   var now = Date.now();
   var els = document.querySelectorAll('.card-timer-live');
@@ -3076,7 +3095,7 @@ function renderCard(s, col) {
       + (ctxPct > 0 ? '<div class="context-bar"><div class="context-bar-fill ' + ctxCls + '" style="width:' + Math.min(ctxPct, 100).toFixed(0) + '%"></div></div>' : '');
   }
 
-  // Tasks — PR #632 TO-BE v2: sort in_progress → pending → completed, stable within buckets
+  // Tasks — sort in_progress → pending → completed; completed items sink below the 5-item slice.
   let tasksHtml = '';
   if (s.tasks && s.tasks.length > 0) {
     function taskRank(status) {
@@ -3150,25 +3169,24 @@ function renderCard(s, col) {
 
   const modelShort = esc(s.model).replace(/^claude-/, '').replace(/-\\d{8}$/, '');
 
-  // PR #632 TO-BE v2 — timer values (shared by hero + stats rows).
   const legStarted = s.activeLegStartedAtMs || 0;
   const accumulated = s.activeAccumulatedMs || 0;
   const compactions = s.compactionCount || 0;
   const threadTotal = s.threadTotalActiveMs || 0;
   const threadSessions = s.threadSessionCount || 0;
 
-  // PR #632 TO-BE v2 — HERO timer (22px bold, above title). data-* attrs MUST
-  // stay on the .card-timer-live span so the 1-Hz polling loop
-  // (document.querySelectorAll('.card-timer-live')) can update it. Even in the
-  // zero state (legStarted===0 && accumulated===0) we still emit the live span
-  // so polling can pick it up the moment the leg starts.
+  // data-leg-started / data-accumulated live on the .card-timer-live span itself
+  // — the 1-Hz updater at updateTimers() (see ~line 2880) reads them via
+  // querySelectorAll('.card-timer-live'). We always emit the live span, even in
+  // the zero state, so polling picks it up the instant the leg starts.
   const heroTimerHtml =
     '<div class="card-timer-hero">'
     + '<span class="hero-icon">&#x23F1;&#xFE0F;</span>'
     + '<span class="card-timer-live" data-leg-started="' + legStarted + '" data-accumulated="' + accumulated + '" title="Current leg active time">' + formatNmSSs(accumulated + (legStarted ? Date.now() - legStarted : 0)) + '</span>'
     + '</div>';
 
-  // PR #632 TO-BE v2 — STATS row (no live timer; that now lives in the hero).
+  // Stats row: thread total (Σ) · compactions · session count. No live span here —
+  // the live leg moved to the hero above.
   const timerRowHtml =
     '<div class="card-timer-row">'
     + '<span class="card-timer-total" title="Thread total active time">&Sigma; ' + formatNmSSs(threadTotal) + '</span>'
@@ -3176,7 +3194,7 @@ function renderCard(s, col) {
     + '<span class="card-timer-sessions" title="Thread session count"># ' + threadSessions + '</span>'
     + '</div>';
 
-  // PR #632 TO-BE v2 — short refs row (PTN-123 · PR-123). escAttr for title/href.
+  // Short refs (PTN-123 · PR-123). escAttr for href/title because they're attribute values.
   const refParts = [];
   if (s.issueShortRef && s.issueUrl) {
     refParts.push('<a href="' + escAttr(s.issueUrl) + '" target="_blank" onclick="event.stopPropagation()" title="' + escAttr(s.issueLabel || s.issueShortRef) + '">' + esc(s.issueShortRef) + '</a>');
@@ -3188,19 +3206,18 @@ function renderCard(s, col) {
     ? '<div class="card-refs">' + refParts.join('<span class="ref-sep">&middot;</span>') + '</div>'
     : '';
 
-  // PR #632 TO-BE v2 — meta row with effort (power level) between model and owner.
   const effortHtml = s.effort
     ? '<span class="meta-effort" title="Power level">' + esc(s.effort) + '</span>'
     : '';
   const metaHtml = '<div class="card-meta">'
     + '<span>' + esc(s.workflow) + '</span>'
     + '<span>' + modelShort + '</span>'
-    + (effortHtml ? effortHtml : '')
+    + effortHtml
     + '<span class="meta-owner">' + esc(s.ownerName) + '</span>'
     + '<span>' + timeAgo(s.lastActivity) + '</span>'
     + '</div>';
 
-  // PR #632 TO-BE v2 — card order: hero → stats → title → refs → meta → links → subtitles → tokens → merge → question → tasks → actions.
+  // Card order: hero → stats → title → refs → meta → links → subtitles → tokens → merge → question → tasks → actions.
   return '<div class="' + cls + '" draggable="true" data-session-key="' + escJs(s.key) + '" data-source-col="' + col + '" onclick="openPanel(\\'' + escJs(s.key) + '\\')">'
     + heroTimerHtml
     + timerRowHtml
