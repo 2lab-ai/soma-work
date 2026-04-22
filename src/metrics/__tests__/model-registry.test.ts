@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   calculateTokenCost,
+  classifyOneMUnavailable,
   FALLBACK_CONTEXT_WINDOW,
   getMaxOutput,
   getModelPricing,
@@ -221,6 +222,39 @@ describe('model-registry', () => {
 
     it('does NOT match empty string', () => {
       expect(isOneMContextUnavailableSignal('')).toBe(false);
+    });
+  });
+
+  // --- Issue #661 follow-up: kind classifier for accurate user remediation ---
+
+  describe('classifyOneMUnavailable', () => {
+    it('classifies 429 Extra Usage as entitlement', () => {
+      const text = 'API Error: Extra usage is required for 1M context · run /extra-usage to enable';
+      expect(classifyOneMUnavailable(text)).toBe('entitlement');
+    });
+
+    it('classifies 400 "not yet available for this subscription" as entitlement', () => {
+      const text =
+        'API Error: 400 {"error":{"message":"The long context beta is not yet available for this subscription."}}';
+      expect(classifyOneMUnavailable(text)).toBe('entitlement');
+    });
+
+    it('classifies 400 "incompatible with the long context beta header" as auth', () => {
+      const text =
+        'API Error: 400 {"error":{"message":"This authentication style is incompatible with the long context beta header."}}';
+      expect(classifyOneMUnavailable(text)).toBe('auth');
+    });
+
+    it('classifies bare "long context beta" mention as auth (safer default)', () => {
+      // Residual phrase without a more specific match — steer to operator,
+      // not billing.
+      const text = 'API Error: 400 long context beta header rejected';
+      expect(classifyOneMUnavailable(text)).toBe('auth');
+    });
+
+    it('returns none for unrelated errors', () => {
+      expect(classifyOneMUnavailable('API Error: 500 internal server error')).toBe('none');
+      expect(classifyOneMUnavailable('')).toBe('none');
     });
   });
 });

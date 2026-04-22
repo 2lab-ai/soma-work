@@ -1950,17 +1950,20 @@ describe('File access blocked error recovery', () => {
     expect((error as any).oneMFallbackInfo.defaultChanged).toBeUndefined();
   });
 
-  it('1M fallback case 3: session.model undefined → defensive no-strip (never touches user default)', async () => {
-    // When session.model is undefined there is nothing to strip and we fall
-    // through to the defensive path. User default is irrelevant under the
-    // session-only policy.
+  it('1M fallback case 3: session.model undefined → pin to bare from error.attemptedModel + retry', async () => {
+    // Legacy-restored sessions can have `session.model === undefined` (the
+    // session registry preserves that shape deliberately). In that case the
+    // next turn would rehydrate `[1m]` from the user default and loop
+    // forever, so the fallback MUST pin `session.model` to the bare variant
+    // of `error.attemptedModel` even though `session.model` itself has
+    // nothing to strip.
     const deps = createExecutorDeps();
     const executor = new StreamExecutor(deps);
     const say = vi.fn().mockResolvedValue(undefined);
 
     (userSettingsStore.getUserDefaultModel as any).mockReturnValueOnce('claude-opus-4-7[1m]');
     const session = { ownerId: 'U1' } as any;
-    const error = buildOneMUnavailableError();
+    const error = buildOneMUnavailableError('claude-opus-4-7[1m]');
 
     const retryAfterMs = await (executor as any).handleError(
       error,
@@ -1972,12 +1975,16 @@ describe('File access blocked error recovery', () => {
       say,
     );
 
-    // Nothing to strip → no retry, no persisted write, defensive wording.
-    expect(retryAfterMs).toBeUndefined();
+    // Session model pinned to bare(attemptedModel); retry scheduled.
+    expect(retryAfterMs).toBe(500);
+    expect(session.model).toBe('claude-opus-4-7');
     expect(userSettingsStore.setUserDefaultModel).not.toHaveBeenCalled();
-    expect(error.oneMFallbackInfo.sessionChanged).toBe(false);
+    expect(error.oneMFallbackInfo.sessionChanged).toBe(true);
+    expect(error.oneMFallbackInfo.bareTarget).toBe('claude-opus-4-7');
     const payload = say.mock.calls[0][0];
-    expect(payload.text).toContain('추가 변경 없음');
+    // Active-pin wording — NOT the defensive "추가 변경 없음".
+    expect(payload.text).toContain('이번 세션 모델');
+    expect(payload.text).not.toContain('추가 변경 없음');
   });
 
   it('1M fallback case 4: turnNotifier is NOT invoked on 1M fallback', async () => {
@@ -2063,9 +2070,12 @@ describe('File access blocked error recovery', () => {
     expect(payload.text).toContain('이번 세션 모델');
     expect(payload.text).toContain('기본값 설정은 변경되지 않습니다');
     expect(payload.text).toContain('claude-opus-4-7');
-    // Extra Usage + `/z model opus` recovery hint (permanent change is user-driven)
+    // Entitlement kind → Extra Usage recovery hint.
     expect(payload.text).toMatch(/extra.usage/i);
-    expect(payload.text).toContain('/z model opus');
+    // Permanent-change hint must use the ACTUAL bare model, not a hardcoded
+    // alias — attemptedModel was claude-opus-4-7[1m] → bare claude-opus-4-7.
+    expect(payload.text).toContain('/z model claude-opus-4-7');
+    expect(payload.text).not.toContain('/z model opus');
     // SDK Details section preserved via shared appendSdkDetails helper
     expect(payload.text).toContain('SDK Details:');
     expect(payload.text).toContain('1m context');
@@ -2097,6 +2107,63 @@ describe('File access blocked error recovery', () => {
     expect(error.oneMFallbackInfo.sessionChanged).toBe(false);
     const payload = say.mock.calls[0][0];
     expect(payload.text).toContain('추가 변경 없음');
+    // Defensive no-op branch must NOT promise a retry that will never happen.
+    expect(payload.text).toContain('자동 재시도 없음');
+    expect(payload.text).not.toContain('bare 모델로 자동 재시도');
+  });
+
+  it('1M fallback case 10: permanent-change hint uses ACTUAL bareTarget (opus-4-6, not opus-4-7)', async () => {
+    // Regression guard: `/z model opus` used to be hardcoded, which resolves
+    // to `claude-opus-4-7`. If the user was on `claude-opus-4-6[1m]`, the
+    // session pin is `claude-opus-4-6` — the permanent-change hint must
+    // match that, otherwise following it swaps to a different model family.
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+
+    (userSettingsStore.getUserDefaultModel as any).mockReturnValueOnce('claude-opus-4-6[1m]');
+    const session = { model: 'claude-opus-4-6[1m]', ownerId: 'U1' } as any;
+    const error = buildOneMUnavailableError('claude-opus-4-6[1m]');
+
+    await (executor as any).handleError(error, session, 'C123:thread123', 'C123', 'thread123', [], say);
+
+    expect(session.model).toBe('claude-opus-4-6');
+    expect(error.oneMFallbackInfo.bareTarget).toBe('claude-opus-4-6');
+    const payload = say.mock.calls[0][0];
+    expect(payload.text).toContain('/z model claude-opus-4-6');
+    expect(payload.text).not.toContain('/z model opus');
+    expect(payload.text).not.toContain('/z model claude-opus-4-7');
+  });
+
+  it('1M fallback case 11: auth-mode 1M error uses auth-kind wording (no Extra Usage suggestion)', async () => {
+    // The matcher also catches 400 "incompatible with the long context beta
+    // header" — that's an auth-style mismatch, not a billing problem. The
+    // formatter must point the user at the operator / auth config, NOT at
+    // Claude Extra Usage.
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+
+    (userSettingsStore.getUserDefaultModel as any).mockReturnValueOnce('claude-opus-4-7[1m]');
+    const session = { model: 'claude-opus-4-7[1m]', ownerId: 'U1' } as any;
+    const err: any = new Error(
+      'API Error: 400 {"type":"error","error":{"type":"invalid_request_error","message":"This authentication style is incompatible with the long context beta header."}}',
+    );
+    err.code = 'ONE_M_CONTEXT_UNAVAILABLE';
+    err.attemptedModel = 'claude-opus-4-7[1m]';
+
+    await (executor as any).handleError(err, session, 'C123:thread123', 'C123', 'thread123', [], say);
+
+    expect(err.oneMFallbackInfo.sessionChanged).toBe(true);
+    expect(err.oneMFallbackInfo.kind).toBe('auth');
+    const payload = say.mock.calls[0][0];
+    // Auth-kind wording — points to operator, not billing.
+    expect(payload.text).toContain('인증 구성');
+    expect(payload.text).toContain('long-context 베타 헤더');
+    expect(payload.text).not.toMatch(/extra.usage/i);
+    // Session still got pinned → retry still scheduled. Auth-kind only
+    // changes the remediation copy, not the fallback mechanics.
+    expect(session.model).toBe('claude-opus-4-7');
   });
 });
 

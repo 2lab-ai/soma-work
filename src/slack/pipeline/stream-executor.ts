@@ -18,10 +18,12 @@ import { Logger, redactAnthropicSecrets } from '../../logger';
 import { isMidThreadMention } from '../../mcp-config-builder';
 import { getMetricsEmitter } from '../../metrics/event-emitter';
 import {
+  classifyOneMUnavailable,
   FALLBACK_CONTEXT_WINDOW,
   hasOneMSuffix,
   isOneMContextUnavailableSignal,
   ONE_M_CONTEXT_UNAVAILABLE_CODE,
+  type OneMUnavailableKind,
   PRICING_VERSION,
   resolveContextWindow,
   stripOneMSuffix,
@@ -1373,63 +1375,80 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           });
         }
       } else if (this.isOneMContextUnavailableError(error)) {
-        // Issue #661 — session-scoped fallback when the account lacks 1M entitlement.
+        // Issue #661 — session-scoped fallback when the 1M variant is unusable.
         //
-        // Policy: strip `[1m]` from `session.model` ONLY for the current session.
-        // The user's persisted default is intentionally NOT touched — if they
-        // want to permanently switch, they run `/z model opus` themselves.
+        // Policy: pin `session.model` to the bare model for THIS session only.
+        // The user's persisted default is intentionally NOT touched; if they
+        // want a permanent switch, they run `/z model <bareTarget>` themselves
+        // (the formatter surfaces the exact command).
         //
-        // Self-idempotent flag-free design:
-        //  - Capture previousSessionModel BEFORE mutation; post-mutation state
-        //    would wrongly report `sessionChanged=false` and the formatter
-        //    would print the defensive branch on the very first fallback.
-        //  - If session.model has no `[1m]` (bare/undefined), no-op. We still
-        //    record `oneMFallbackInfo` and fall through without scheduling a
-        //    retry — this is the defensive-no-strip path (matcher fired via
-        //    `error.attemptedModel` but session already bare).
-        //  - When the strip fires, clear stale file-access retry state so a
-        //    recurring 1M error doesn't inherit an unrelated retry budget.
+        // Source of truth: `error.attemptedModel` — the model the SDK actually
+        // tried on this turn. `session.model` is NOT authoritative because
+        //   (a) legacy-restored sessions can have `session.model === undefined`
+        //       (see session-registry hydration), and the next turn would then
+        //       rehydrate `[1m]` from the user default and loop forever.
+        //   (b) a concurrent `/z model` change could have mutated `session.model`
+        //       between the SDK call and the error surfacing, so stripping the
+        //       post-mutation value strips the wrong model.
+        //
+        // Behavior matrix (attempted has `[1m]`):
+        //   session.model === undefined      → pin to bare, retry
+        //   session.model has `[1m]`         → pin to bare, retry
+        //   session.model already bare       → leave alone, NO retry (defensive)
+        // If `attemptedModel` is missing or already bare, `sessionChanged`
+        // stays false and we fall through without scheduling a retry — the
+        // matcher gate upstream should already have rejected this, but the
+        // invariant is belt-and-suspenders.
         const userId = session.ownerId || '';
         const previousSessionModel = session.model;
+        const attemptedModelRaw = String((error as any).attemptedModel ?? '');
+        const attemptedHasOneM = attemptedModelRaw !== '' && hasOneMSuffix(attemptedModelRaw);
+        const bareFromAttempted = attemptedHasOneM ? stripOneMSuffix(attemptedModelRaw) : '';
 
-        const strippedSession =
-          previousSessionModel && hasOneMSuffix(previousSessionModel)
-            ? stripOneMSuffix(previousSessionModel)
-            : previousSessionModel;
+        const shouldPinSessionModel =
+          attemptedHasOneM && (previousSessionModel === undefined || hasOneMSuffix(String(previousSessionModel)));
 
-        const sessionStripped = previousSessionModel !== undefined && strippedSession !== previousSessionModel;
-
-        if (sessionStripped && strippedSession) {
-          session.model = coerceToAvailableModel(strippedSession) as typeof session.model;
+        if (shouldPinSessionModel && bareFromAttempted) {
+          session.model = coerceToAvailableModel(bareFromAttempted) as typeof session.model;
         }
 
-        const bareTargetInput = strippedSession ?? stripOneMSuffix(String((error as any).attemptedModel ?? ''));
+        const sessionChanged = shouldPinSessionModel;
+        // Formatter needs a concrete model name even on the no-op branch; if
+        // attemptedModel is missing, fall back to whatever the (already-bare)
+        // session.model is.
+        const bareTargetInput = bareFromAttempted || stripOneMSuffix(String(previousSessionModel ?? ''));
+        const kind = classifyOneMUnavailable(
+          `${String((error as any).message ?? '')} ${String((error as any).stderrContent ?? '')}`,
+        );
         (error as any).oneMFallbackInfo = {
-          sessionChanged: sessionStripped,
+          sessionChanged,
           bareTarget: coerceToAvailableModel(bareTargetInput),
+          kind,
         };
 
-        if (sessionStripped) {
-          // Clear stale state so next turn starts clean on the bare model.
+        if (sessionChanged) {
+          // Clear stale state so the next turn starts clean on the bare model.
           session.lastErrorContext = undefined;
           session.fileAccessRetryCount = 0;
           retryAfterMs = StreamExecutor.ONE_M_FALLBACK_RETRY_DELAY_MS;
           this.logger.info('1M fallback triggered (session-only)', {
             sessionKey,
             userId,
-            from: (error as any).attemptedModel,
+            from: attemptedModelRaw,
             sessionFrom: previousSessionModel,
-            sessionTo: strippedSession,
+            sessionTo: bareFromAttempted,
+            kind,
           });
         } else {
-          // Defensive no-strip: matcher fired but session.model is already
-          // bare (or undefined). No retry — the formatter surfaces
-          // "추가 변경 없음" so the user knows why.
-          this.logger.warn('1M fallback matcher fired but session.model already bare', {
+          // Defensive no-strip: matcher fired but nothing actionable (attempted
+          // missing/bare, or session already bare). No retry — the formatter
+          // surfaces "추가 변경 없음" so the user knows why.
+          this.logger.warn('1M fallback matcher fired but no session change applied', {
             sessionKey,
             userId,
-            from: (error as any).attemptedModel,
+            from: attemptedModelRaw,
             sessionModel: previousSessionModel,
+            kind,
           });
         }
       } else if (this.isFileAccessBlockedError(error)) {
@@ -1985,37 +2004,52 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     retryAttempt?: number,
   ): string {
     // Issue #661 — top-priority branch for 1M-context auto-fallback.
-    // Short-circuits the generic formatter because the narrative is entirely
-    // different: nothing went "wrong" from the user's perspective — the bot
-    // automatically corrected a model-selection mismatch for THIS session and
-    // is retrying. The user's persisted default is intentionally left alone.
-    // Reads `oneMFallbackInfo` set by the handleError branch to emit the
-    // session-scoped wording (sessionChanged / defensive-none).
+    // Reads `oneMFallbackInfo` (set by the handleError 1M branch) so the
+    // wording matches what actually happened on this turn:
+    //   - `sessionChanged=true`  → pinned bare for THIS session, retry scheduled
+    //   - `sessionChanged=false` → no retry (already bare / nothing to strip)
+    //   - `kind='auth'`          → auth-mode incompatibility; bill fix is wrong
+    //   - `kind='entitlement'`   → account lacks 1M; Extra Usage/upgrade is right
     if (this.isOneMContextUnavailableError(error)) {
-      const info = (error as any).oneMFallbackInfo as { sessionChanged: boolean; bareTarget: string } | undefined;
+      const info = (error as any).oneMFallbackInfo as
+        | { sessionChanged: boolean; bareTarget: string; kind?: OneMUnavailableKind }
+        | undefined;
       const bareTarget = info?.bareTarget || 'bare model';
+      const kind: OneMUnavailableKind = info?.kind ?? 'entitlement';
       const lines: string[] = [`ℹ️ *[1M context 미지원]* 자동 폴백을 수행했습니다.`, ''];
 
       lines.push(`> *Type:* Claude SDK (OneMContextUnavailable)`);
-      lines.push(`> *Session:* ✅ 유지됨 - bare 모델로 자동 재시도합니다.`);
-
       if (info?.sessionChanged) {
-        lines.push(`> *원인:* 현재 계정은 1M context 확장을 사용할 수 없습니다.`);
+        // Retry WILL happen — say so, and explain the pin.
+        lines.push(`> *Session:* ✅ 유지됨 - bare 모델로 자동 재시도합니다.`);
+        if (kind === 'auth') {
+          lines.push(`> *원인:* 현재 인증 방식은 long-context 베타 헤더와 호환되지 않습니다.`);
+        } else {
+          lines.push(`> *원인:* 현재 계정은 1M context 확장을 사용할 수 없습니다.`);
+        }
         lines.push(
           `> *조치:* 이번 세션 모델을 \`${bareTarget}\`로 자동 전환했습니다. (기본값 설정은 변경되지 않습니다)`,
         );
       } else {
-        // Defensive branch — matcher fired but session.model already bare.
+        // No retry scheduled — do NOT promise one. Tell the user the session
+        // is still on its current model and explain why nothing changed.
+        lines.push(`> *Session:* ✅ 유지됨 - 자동 재시도 없음 (이미 bare 모델).`);
         lines.push(`> *원인:* 이미 bare 모델 사용 중 — 추가 변경 없음.`);
-        lines.push(`> _계속 \`[1m]\` 사용을 원한다면 Claude Extra Usage를 활성화하세요._`);
       }
 
-      lines.push(
-        `> _계속 \`[1m]\`을 쓰려면 Claude Extra Usage를 활성화하세요. 기본값을 영구 변경하려면 \`/z model opus\`를 실행하세요._`,
-      );
+      // Remediation hint — match the error class so we don't send
+      // auth-mode failures to billing.
+      if (kind === 'auth') {
+        lines.push(`> _\`[1m]\` 변형을 계속 쓰려면 운영자에게 인증 구성(토큰 종류/CCT 슬롯) 점검을 요청하세요._`);
+      } else {
+        lines.push(`> _\`[1m]\` 변형을 계속 쓰려면 Claude Extra Usage를 활성화하거나 요금제를 업그레이드하세요._`);
+      }
+      // Permanent-change hint always targets the actual bare model — not a
+      // hardcoded alias that could resolve to a different model family.
+      lines.push(`> _기본값을 영구 변경하려면 \`/z model ${bareTarget}\`를 실행하세요._`);
 
       // Share the same SDK Details block so the raw signal is visible for
-      // debugging even in the fallback path.
+      // debugging even on the fallback path.
       this.appendSdkDetails(lines, error);
 
       // Preserve service-status parity with the other branches.
