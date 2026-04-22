@@ -73,11 +73,22 @@ const PROGRESS_BAR_CELLS = 10;
  */
 const USAGE_LABEL_WIDTH = 9;
 
-/** Pad a short label to the fixed column width (right-pad with spaces). */
-function padUsageLabel(label: string): string {
-  if (label.length >= USAGE_LABEL_WIDTH) return label;
-  return label + ' '.repeat(USAGE_LABEL_WIDTH - label.length);
-}
+/** Narrow alphabet for the usage-bar label. */
+export type UsageWindowLabel = '5h' | '7d' | '7d-sonnet';
+
+/** Full window duration per label (ms). Used to scale the remaining-bar. */
+const WINDOW_DURATION_MS: Record<UsageWindowLabel, number> = {
+  '5h': 5 * 3_600_000,
+  '7d': 7 * 86_400_000,
+  '7d-sonnet': 7 * 86_400_000,
+};
+
+/** Right-padded label per type — mirrors the earlier `padUsageLabel(label)`. */
+const LABEL_PADDED: Record<UsageWindowLabel, string> = {
+  '5h': '5h' + ' '.repeat(USAGE_LABEL_WIDTH - 2),
+  '7d': '7d' + ' '.repeat(USAGE_LABEL_WIDTH - 2),
+  '7d-sonnet': '7d-sonnet',
+};
 
 /** Integer percent (0..100) from a 0..1 or 0..100 utilization number. */
 function utilToPctInt(util: number | undefined): number {
@@ -109,36 +120,52 @@ export function formatUsageResetDelta(deltaMs: number): string {
 /**
  * Shared progress-bar formatter — used by the CCT card usage panel and the
  * `/cct usage` text output. Keeping the format centralised guarantees both
- * surfaces evolve together (bar width, glyphs, "resets in" hint).
+ * surfaces evolve together.
  *
- * Layout:
- *   `<padded_label> <bar> <pct>% · resets in Xh Ym`
- *   `<padded_label> (no data)` — sentinel form when `util` is undefined or
- *   the reset timestamp is missing.
+ * Layout (card v2 follow-up — dual bar):
+ *   `<padded_label> <utilization-bar> <pct>% · <remaining-bar> resets in Xh Ym`
+ *   `<padded_label> (no data)` — sentinel form when `util` is undefined.
+ *
+ * The remaining-bar is scaled against the window duration (`WINDOW_DURATION_MS`)
+ * so a 7d window with 3d left is a 3/7 ≈ 43% bar, and a 5h window with 30m
+ * left is a 30/300 = 10% bar. This gives operators a visual hint of how
+ * much of the window has elapsed alongside the raw duration.
+ *
+ * The legacy `· expires in X` suffix was removed in this commit — the new
+ * remaining-bar conveys the same information more compactly.
  */
 export function formatUsageBar(
   util: number | undefined,
   resetsAtIso: string | undefined,
   nowMs: number,
-  label: string,
+  label: UsageWindowLabel,
 ): string {
-  const padded = padUsageLabel(label);
+  const padded = LABEL_PADDED[label];
   if (util === undefined || !Number.isFinite(util) || !resetsAtIso) {
     return `${padded} (no data)`;
   }
   const pct = utilToPctInt(util);
   const filled = Math.max(0, Math.min(PROGRESS_BAR_CELLS, Math.round((pct / 100) * PROGRESS_BAR_CELLS)));
-  const empty = PROGRESS_BAR_CELLS - filled;
-  const bar = '█'.repeat(filled) + '░'.repeat(empty);
+  const utilBar = '█'.repeat(filled) + '░'.repeat(PROGRESS_BAR_CELLS - filled);
   const resetMs = new Date(resetsAtIso).getTime();
-  const delta = Number.isFinite(resetMs) ? resetMs - nowMs : NaN;
-  const hint = Number.isFinite(delta) ? formatUsageResetDelta(delta) : '<1m';
-  // Card v2 (#668 follow-up): the bar now carries a trailing `expires in …`
-  // suffix in addition to the historical `resets in …` hint. "resets" reads
-  // as when the counter zeros; "expires" reads as when THIS window closes.
-  // Both derive from `resetsAt - now` — the duplication makes the intent
-  // unambiguous for operators scanning the panel at a glance.
-  return `${padded} ${bar} ${pct}% · resets in ${hint} · expires in ${hint}`;
+  const windowMs = WINDOW_DURATION_MS[label];
+  let remainingBar: string;
+  let hint: string;
+  if (!Number.isFinite(resetMs)) {
+    // Unparseable reset timestamp — show a dotted placeholder so the column
+    // layout is preserved and hint to "<1m".
+    remainingBar = '·'.repeat(PROGRESS_BAR_CELLS);
+    hint = '<1m';
+  } else {
+    const remainingMs = Math.max(0, resetMs - nowMs);
+    const rFilled = Math.max(
+      0,
+      Math.min(PROGRESS_BAR_CELLS, Math.round((remainingMs / windowMs) * PROGRESS_BAR_CELLS)),
+    );
+    remainingBar = '█'.repeat(rFilled) + '░'.repeat(PROGRESS_BAR_CELLS - rFilled);
+    hint = formatUsageResetDelta(remainingMs);
+  }
+  return `${padded} ${utilBar} ${pct}% · ${remainingBar} resets in ${hint}`;
 }
 
 /**

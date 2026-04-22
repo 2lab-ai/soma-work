@@ -446,18 +446,16 @@ describe('buildRemoveSlotModal', () => {
 describe('formatUsageBar (M1-S2)', () => {
   const now = Date.parse('2026-04-21T00:00:00Z');
 
-  it('renders a left-padded label + progress bar + percent + "resets in" hint', () => {
+  it('renders a left-padded label + utilization bar + percent + remaining bar + "resets in" hint', () => {
     const iso = new Date(now + 2 * 3_600_000 + 15 * 60_000).toISOString();
     const out = formatUsageBar(0.82, iso, now, '5h');
-    // Padded label, filled blocks, unfilled blocks, percent, `resets in` hint.
-    expect(out).toMatch(/^5h\s+█+░+\s+82% · resets in /);
+    // Padded label, filled util blocks, percent, remaining bar, `resets in` hint.
+    // Structure: `5h {utilBar} 82% · {remainingBar} resets in 2h 15m`
+    expect(out).toMatch(/^5h\s+[█░]+\s+82% · [█░]+ resets in 2h 15m$/);
   });
 
   it('renders a stable "(no data)" form when util is undefined', () => {
     const out = formatUsageBar(undefined, undefined, now, '7d');
-    // Label is left-padded to the same fixed width used by the populated
-    // row so columns align visually. Exact width may be tweaked later, but
-    // the output MUST start with the label and contain the sentinel literal.
     expect(out.startsWith('7d')).toBe(true);
     expect(out).toContain('(no data)');
   });
@@ -1145,12 +1143,58 @@ describe('buildSlotRow — 7d-sonnet 0% hide (#668 follow-up)', () => {
   });
 });
 
-describe('formatUsageBar — expires-in suffix (#668 follow-up)', () => {
+describe('formatUsageBar — second gauge bar (card v2 follow-up)', () => {
   const now = Date.parse('2026-04-22T00:00:00Z');
-  it('appends ` · expires in <dur>` after the existing resets-in hint', () => {
+
+  it('drops the legacy ` · expires in <dur>` suffix from the output', () => {
+    // The duplicated `expires in` hint was replaced by a second
+    // progress bar that visualises the remaining portion of the window.
     const iso = new Date(now + 3 * 3_600_000).toISOString();
     const out = formatUsageBar(0.5, iso, now, '5h');
-    expect(out).toMatch(/resets in 3h 0m · expires in 3h 0m$/);
+    expect(out).not.toMatch(/expires in/);
+    expect(out).toMatch(/resets in 3h 0m$/);
+  });
+
+  it('mid-window 5h with 2.5h remaining → remaining bar roughly half-filled (5/10 cells)', () => {
+    const iso = new Date(now + 2.5 * 3_600_000).toISOString();
+    const out = formatUsageBar(0.5, iso, now, '5h');
+    // Format: `5h <utilBar> 50% · <remainingBar> resets in 2h 30m`.
+    const m = out.match(/· ([█░]+) resets in/);
+    expect(m).not.toBeNull();
+    const rBar = m![1];
+    expect(rBar.length).toBe(10);
+    // 2.5/5 = 50% → 5 filled cells.
+    expect(rBar).toBe('█████░░░░░');
+  });
+
+  it('window-just-started 7d with ~7d remaining → remaining bar near full (9-10 filled)', () => {
+    // 2.5 minutes into a 7d window → ~7d remaining.
+    const iso = new Date(now + 7 * 86_400_000 - 150_000).toISOString();
+    const out = formatUsageBar(0.1, iso, now, '7d');
+    const m = out.match(/· ([█░]+) resets in/);
+    expect(m).not.toBeNull();
+    const rBar = m![1];
+    const filled = (rBar.match(/█/g) ?? []).length;
+    expect(filled).toBeGreaterThanOrEqual(9);
+    expect(filled).toBeLessThanOrEqual(10);
+  });
+
+  it('window-expired-past 7d → remaining bar all empty, hint "<1m"', () => {
+    const iso = new Date(now - 3_600_000).toISOString(); // 1h ago
+    const out = formatUsageBar(0.95, iso, now, '7d');
+    const m = out.match(/· ([█░]+) resets in/);
+    expect(m).not.toBeNull();
+    const rBar = m![1];
+    expect(rBar).toBe('░'.repeat(10));
+    expect(out).toMatch(/resets in <1m$/);
+  });
+
+  it('invalid resetsAt → dotted-placeholder remaining bar + "<1m" hint', () => {
+    const out = formatUsageBar(0.3, 'not-a-valid-iso', now, '5h');
+    // Dotted placeholder signals the column can't be computed without
+    // dropping the row entirely.
+    expect(out).toContain('··········');
+    expect(out).toMatch(/resets in <1m$/);
   });
 });
 
