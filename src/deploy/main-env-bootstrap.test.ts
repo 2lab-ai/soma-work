@@ -4,7 +4,12 @@ import path from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { AVAILABLE_MODELS, DEFAULT_MODEL as STORE_DEFAULT_MODEL } from '../user-settings-store';
-import { bootstrapMainEnvironment, normalizeMainTargetData } from './main-env-bootstrap';
+import {
+  __TEST_ONLY_coerceModel,
+  __TEST_ONLY_VALID_MODELS,
+  bootstrapMainEnvironment,
+  normalizeMainTargetData,
+} from './main-env-bootstrap';
 
 function writeJson(filePath: string, value: unknown): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -147,6 +152,9 @@ describe('main-env-bootstrap', () => {
   });
 
   it('normalizes legacy user settings and sessions after copy', async () => {
+    // Unknown model → DEFAULT_MODEL. opus-4-5-20251101 is still in VALID_MODELS
+    // per Issue #656 (KEEP), so use a genuinely-unknown id here to validate the
+    // fallback path.
     const targetDir = makeTempDir('bootstrap-target-');
 
     fs.mkdirSync(path.join(targetDir, 'data'), { recursive: true });
@@ -156,7 +164,7 @@ describe('main-env-bootstrap', () => {
         defaultDirectory: '',
         bypassPermission: false,
         persona: 'default',
-        defaultModel: 'claude-opus-4-5-20251101',
+        defaultModel: 'claude-obsolete-model-v0',
         lastUpdated: '2026-03-12T00:00:00.000Z',
       },
     });
@@ -181,6 +189,25 @@ describe('main-env-bootstrap', () => {
     expect(sessions[0].ownerId).toBe('U1');
     expect(sessions[0].state).toBe('MAIN');
     expect(sessions[0].workflow).toBe('default');
+  });
+
+  it('preserves opus-4-5-20251101 through normalize (Issue #656: KEEP, not retired)', async () => {
+    const targetDir = makeTempDir('bootstrap-target-');
+
+    fs.mkdirSync(path.join(targetDir, 'data'), { recursive: true });
+    writeJson(path.join(targetDir, 'data', 'user-settings.json'), {
+      U1: {
+        userId: 'U1',
+        defaultModel: 'claude-opus-4-5-20251101',
+        lastUpdated: '2026-03-12T00:00:00.000Z',
+        accepted: true,
+      },
+    });
+
+    await normalizeMainTargetData(targetDir);
+
+    const settings = JSON.parse(fs.readFileSync(path.join(targetDir, 'data', 'user-settings.json'), 'utf8'));
+    expect(settings.U1.defaultModel).toBe('claude-opus-4-5-20251101');
   });
 
   it('preserves stored claude-opus-4-7 setting through normalize', async () => {
@@ -237,8 +264,6 @@ describe('main-env-bootstrap', () => {
     fs.mkdirSync(path.join(targetDir, 'data'), { recursive: true });
     const settings: Record<string, Record<string, unknown>> = {};
     for (const model of AVAILABLE_MODELS) {
-      // claude-opus-4-5-20251101 is intentionally still migrated (retired model).
-      if (model === 'claude-opus-4-5-20251101') continue;
       const userId = `U-${model}`;
       settings[userId] = {
         userId,
@@ -256,7 +281,8 @@ describe('main-env-bootstrap', () => {
 
     const after = JSON.parse(fs.readFileSync(path.join(targetDir, 'data', 'user-settings.json'), 'utf8'));
     for (const model of AVAILABLE_MODELS) {
-      if (model === 'claude-opus-4-5-20251101') continue;
+      // Every AVAILABLE_MODELS entry round-trips — including [1m] variants
+      // and claude-opus-4-5-20251101 (kept, not retired, per Issue #656).
       expect(after[`U-${model}`].defaultModel).toBe(model);
     }
     // And the store's canonical default is one of the accepted models.
@@ -285,5 +311,165 @@ describe('main-env-bootstrap', () => {
 
     const settings = JSON.parse(fs.readFileSync(path.join(targetDir, 'data', 'user-settings.json'), 'utf8'));
     expect(settings.U1.defaultModel).toBe('claude-sonnet-4-6');
+  });
+
+  // --- Issue #656: exact-set equality + coerce + 1M round-trip + sessions normalize ---
+
+  describe('VALID_MODELS exact-set equality', () => {
+    it('bootstrap VALID_MODELS is identical to AVAILABLE_MODELS (as a set)', () => {
+      // Drift guard: this is the single killshot that caught PR #652's silent
+      // shrinkage of AVAILABLE_MODELS. Exact-set equality (not just length).
+      const canonical = new Set<string>(AVAILABLE_MODELS as readonly string[]);
+      const bootstrap = __TEST_ONLY_VALID_MODELS;
+      expect(bootstrap.size).toBe(canonical.size);
+      for (const m of canonical) {
+        expect(bootstrap.has(m)).toBe(true);
+      }
+      for (const m of bootstrap) {
+        expect(canonical.has(m)).toBe(true);
+      }
+    });
+
+    it('includes both [1m] variants explicitly', () => {
+      expect(__TEST_ONLY_VALID_MODELS.has('claude-opus-4-7[1m]')).toBe(true);
+      expect(__TEST_ONLY_VALID_MODELS.has('claude-opus-4-6[1m]')).toBe(true);
+    });
+
+    it('includes all pre-existing models (no silent drops)', () => {
+      for (const model of [
+        'claude-opus-4-7',
+        'claude-opus-4-6',
+        'claude-sonnet-4-6',
+        'claude-sonnet-4-5-20250929',
+        'claude-opus-4-5-20251101',
+        'claude-haiku-4-5-20251001',
+      ]) {
+        expect(__TEST_ONLY_VALID_MODELS.has(model)).toBe(true);
+      }
+    });
+  });
+
+  describe('coerceModel', () => {
+    it('accepts every AVAILABLE_MODELS entry verbatim', () => {
+      for (const model of AVAILABLE_MODELS) {
+        expect(__TEST_ONLY_coerceModel(model)).toBe(model);
+      }
+    });
+
+    it('lowercases uppercase [1M] to the canonical [1m] variant', () => {
+      expect(__TEST_ONLY_coerceModel('claude-opus-4-7[1M]')).toBe('claude-opus-4-7[1m]');
+      expect(__TEST_ONLY_coerceModel('claude-opus-4-6[1M]')).toBe('claude-opus-4-6[1m]');
+    });
+
+    it('trims surrounding whitespace', () => {
+      expect(__TEST_ONLY_coerceModel('  claude-opus-4-7  ')).toBe('claude-opus-4-7');
+      expect(__TEST_ONLY_coerceModel('\tclaude-opus-4-6[1m]\n')).toBe('claude-opus-4-6[1m]');
+    });
+
+    it('falls back to DEFAULT_MODEL for unknown / empty / non-string', () => {
+      expect(__TEST_ONLY_coerceModel('gpt-99-turbo')).toBe('claude-opus-4-7');
+      expect(__TEST_ONLY_coerceModel('')).toBe('claude-opus-4-7');
+      expect(__TEST_ONLY_coerceModel('   ')).toBe('claude-opus-4-7');
+      expect(__TEST_ONLY_coerceModel(undefined)).toBe('claude-opus-4-7');
+      expect(__TEST_ONLY_coerceModel(null)).toBe('claude-opus-4-7');
+      expect(__TEST_ONLY_coerceModel(42)).toBe('claude-opus-4-7');
+    });
+  });
+
+  describe('normalizeMainTargetData — [1M] round-trip + trim + sessions', () => {
+    it('round-trips claude-opus-4-7[1m] through settings normalize', async () => {
+      const targetDir = makeTempDir('bootstrap-target-');
+      fs.mkdirSync(path.join(targetDir, 'data'), { recursive: true });
+      writeJson(path.join(targetDir, 'data', 'user-settings.json'), {
+        U1: {
+          userId: 'U1',
+          defaultModel: 'claude-opus-4-7[1m]',
+          lastUpdated: '2026-03-12T00:00:00.000Z',
+          accepted: true,
+        },
+      });
+
+      await normalizeMainTargetData(targetDir);
+
+      const settings = JSON.parse(fs.readFileSync(path.join(targetDir, 'data', 'user-settings.json'), 'utf8'));
+      expect(settings.U1.defaultModel).toBe('claude-opus-4-7[1m]');
+    });
+
+    it('canonicalizes uppercase [1M] through settings normalize', async () => {
+      const targetDir = makeTempDir('bootstrap-target-');
+      fs.mkdirSync(path.join(targetDir, 'data'), { recursive: true });
+      writeJson(path.join(targetDir, 'data', 'user-settings.json'), {
+        U1: {
+          userId: 'U1',
+          defaultModel: 'claude-opus-4-6[1M]',
+          lastUpdated: '2026-03-12T00:00:00.000Z',
+          accepted: true,
+        },
+      });
+
+      await normalizeMainTargetData(targetDir);
+
+      const settings = JSON.parse(fs.readFileSync(path.join(targetDir, 'data', 'user-settings.json'), 'utf8'));
+      expect(settings.U1.defaultModel).toBe('claude-opus-4-6[1m]');
+    });
+
+    it('trims whitespace in settings defaultModel', async () => {
+      const targetDir = makeTempDir('bootstrap-target-');
+      fs.mkdirSync(path.join(targetDir, 'data'), { recursive: true });
+      writeJson(path.join(targetDir, 'data', 'user-settings.json'), {
+        U1: {
+          userId: 'U1',
+          defaultModel: '  claude-sonnet-4-6  ',
+          lastUpdated: '2026-03-12T00:00:00.000Z',
+          accepted: true,
+        },
+      });
+
+      await normalizeMainTargetData(targetDir);
+
+      const settings = JSON.parse(fs.readFileSync(path.join(targetDir, 'data', 'user-settings.json'), 'utf8'));
+      expect(settings.U1.defaultModel).toBe('claude-sonnet-4-6');
+    });
+
+    it('normalizes session.model in sessions.json', async () => {
+      const targetDir = makeTempDir('bootstrap-target-');
+      fs.mkdirSync(path.join(targetDir, 'data'), { recursive: true });
+      writeJson(path.join(targetDir, 'data', 'sessions.json'), [
+        {
+          key: 'C1-t1',
+          userId: 'U1',
+          channelId: 'C1',
+          threadTs: 't1',
+          isActive: true,
+          lastActivity: new Date().toISOString(),
+          model: 'claude-opus-4-7[1M]',
+        },
+        {
+          key: 'C2-t2',
+          userId: 'U2',
+          channelId: 'C2',
+          threadTs: 't2',
+          isActive: true,
+          lastActivity: new Date().toISOString(),
+          model: '  claude-sonnet-4-6  ',
+        },
+        {
+          key: 'C3-t3',
+          userId: 'U3',
+          channelId: 'C3',
+          threadTs: 't3',
+          isActive: true,
+          lastActivity: new Date().toISOString(),
+          // No model field — must be left untouched.
+        },
+      ]);
+
+      await normalizeMainTargetData(targetDir);
+
+      const sessions = JSON.parse(fs.readFileSync(path.join(targetDir, 'data', 'sessions.json'), 'utf8'));
+      expect(sessions[0].model).toBe('claude-opus-4-7[1m]');
+      expect(sessions[1].model).toBe('claude-sonnet-4-6');
+      expect(sessions[2].model).toBeUndefined();
+    });
   });
 });

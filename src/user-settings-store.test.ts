@@ -5,9 +5,13 @@ import os from 'os';
 import path from 'path';
 import { describe, expect, it } from 'vitest';
 import {
+  AVAILABLE_MODELS,
   COMPACT_THRESHOLD_MAX,
   COMPACT_THRESHOLD_MIN,
+  coerceToAvailableModel,
   DEFAULT_COMPACT_THRESHOLD,
+  DEFAULT_MODEL,
+  MODEL_ALIASES,
   migrateLegacyTheme,
   UserSettingsStore,
   validateCompactThreshold,
@@ -17,6 +21,106 @@ function makeStore(): UserSettingsStore {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'uss-test-'));
   return new UserSettingsStore(dir);
 }
+
+// Issue #656 — 1M context variants + allow-list regression guards.
+//
+// The killshot that felled PR #652 was a silent shrinking of the user-facing
+// allow-list: 6 → 4 entries, deleting `claude-sonnet-4-6`,
+// `claude-sonnet-4-5-*`, `claude-opus-4-5-*`, and `claude-haiku-4-5-*`. These
+// tests assert the **exact** expected arrays/records, not just the length,
+// so any future silent removal is caught immediately.
+describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', () => {
+  it('AVAILABLE_MODELS is exactly 8 entries in the expected order', () => {
+    expect([...AVAILABLE_MODELS]).toEqual([
+      'claude-opus-4-7',
+      'claude-opus-4-6',
+      'claude-sonnet-4-6',
+      'claude-sonnet-4-5-20250929',
+      'claude-opus-4-5-20251101',
+      'claude-haiku-4-5-20251001',
+      'claude-opus-4-7[1m]',
+      'claude-opus-4-6[1m]',
+    ]);
+  });
+
+  it('MODEL_ALIASES has exactly the 12 expected key→value mappings', () => {
+    expect(MODEL_ALIASES).toEqual({
+      sonnet: 'claude-sonnet-4-6',
+      'sonnet-4.6': 'claude-sonnet-4-6',
+      'sonnet-4.5': 'claude-sonnet-4-5-20250929',
+      opus: 'claude-opus-4-7',
+      'opus-4.7': 'claude-opus-4-7',
+      'opus-4.6': 'claude-opus-4-6',
+      'opus-4.5': 'claude-opus-4-5-20251101',
+      haiku: 'claude-haiku-4-5-20251001',
+      'haiku-4.5': 'claude-haiku-4-5-20251001',
+      'opus[1m]': 'claude-opus-4-7[1m]',
+      'opus-4.7[1m]': 'claude-opus-4-7[1m]',
+      'opus-4.6[1m]': 'claude-opus-4-6[1m]',
+    });
+  });
+
+  it('DEFAULT_MODEL is a member of AVAILABLE_MODELS', () => {
+    expect(AVAILABLE_MODELS as readonly string[]).toContain(DEFAULT_MODEL);
+  });
+});
+
+describe('Issue #656 — getModelDisplayName covers every AVAILABLE_MODELS entry', () => {
+  const store = makeStore();
+  for (const model of AVAILABLE_MODELS) {
+    it(`returns a non-empty label for '${model}' (not the raw id)`, () => {
+      const label = store.getModelDisplayName(model);
+      expect(label).toBeTruthy();
+      expect(label.length).toBeGreaterThan(0);
+      // Display labels are curated (e.g. "Opus 4.7"); they must not equal
+      // the raw model id string itself. A `default` branch leaking the raw
+      // id back means we forgot to add a case.
+      expect(label).not.toBe(model);
+    });
+  }
+
+  it("appends ' (1M)' to [1m] variant labels", () => {
+    const store = makeStore();
+    expect(store.getModelDisplayName('claude-opus-4-7[1m]')).toBe('Opus 4.7 (1M)');
+    expect(store.getModelDisplayName('claude-opus-4-6[1m]')).toBe('Opus 4.6 (1M)');
+  });
+});
+
+describe('Issue #656 — coerceToAvailableModel', () => {
+  it('passes through every known AVAILABLE_MODELS entry unchanged', () => {
+    for (const model of AVAILABLE_MODELS) {
+      expect(coerceToAvailableModel(model)).toBe(model);
+    }
+  });
+
+  it('lowercases uppercase [1M] typo → [1m] (case-insensitive round-trip)', () => {
+    expect(coerceToAvailableModel('claude-opus-4-7[1M]')).toBe('claude-opus-4-7[1m]');
+    expect(coerceToAvailableModel('claude-opus-4-6[1M]')).toBe('claude-opus-4-6[1m]');
+  });
+
+  it('trims surrounding whitespace then passes through', () => {
+    expect(coerceToAvailableModel('  claude-sonnet-4-6  ')).toBe('claude-sonnet-4-6');
+    expect(coerceToAvailableModel('\tclaude-opus-4-7[1m]\n')).toBe('claude-opus-4-7[1m]');
+  });
+
+  it('preserves legacy-but-still-valid opus-4-5 (NOT forced to DEFAULT)', () => {
+    // Regression guard: previous code in loadSettings force-reset opus-4-5 to
+    // DEFAULT. #656 keeps it as a valid allow-list member.
+    expect(coerceToAvailableModel('claude-opus-4-5-20251101')).toBe('claude-opus-4-5-20251101');
+  });
+
+  it('coerces unknown / garbage values to DEFAULT_MODEL', () => {
+    expect(coerceToAvailableModel('bogus-model')).toBe(DEFAULT_MODEL);
+    expect(coerceToAvailableModel('claude-sonnet-3-5')).toBe(DEFAULT_MODEL);
+  });
+
+  it('handles null / undefined / empty / non-string inputs safely', () => {
+    expect(coerceToAvailableModel(null)).toBe(DEFAULT_MODEL);
+    expect(coerceToAvailableModel(undefined)).toBe(DEFAULT_MODEL);
+    expect(coerceToAvailableModel('')).toBe(DEFAULT_MODEL);
+    expect(coerceToAvailableModel('   ')).toBe(DEFAULT_MODEL);
+  });
+});
 
 describe('migrateLegacyTheme', () => {
   it('maps legacy A to minimal', () => {

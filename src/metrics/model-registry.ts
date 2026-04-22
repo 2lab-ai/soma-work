@@ -176,23 +176,42 @@ export function getModelPricing(modelName?: string): ModelPricingSpec {
   return getModelSpec(modelName).pricing;
 }
 
-/**
- * Get context window size for a model.
- */
-export function getContextWindow(modelName?: string): number {
-  return getModelSpec(modelName).contextWindow;
-}
-
 /** Fallback context window size when SDK/registry haven't reported one yet. */
 export const FALLBACK_CONTEXT_WINDOW = 200_000;
 
 /**
- * Resolve context window for a model by name with fallback. Used by
- * stream-executor hot paths and threshold checks that need a non-zero
+ * Suffix marker for the 1M-context variant of a model id.
+ * Convention: `{baseModelId}[1m]` enables the 1M beta context window.
+ * The Claude Agent SDK (≥ 0.2.111) detects this suffix, strips it before the
+ * API call, and injects the `context-1m-2025-08-07` beta header uniformly
+ * across API-key and OAuth auth — so no runtime beta-header injection is needed.
+ */
+export const ONE_M_SUFFIX_RE = /\[1m\]$/i;
+
+/** Returns true when `model` ends with the 1M suffix (case-insensitive). */
+export function hasOneMSuffix(model: string): boolean {
+  return ONE_M_SUFFIX_RE.test(model);
+}
+
+/** Strips the `[1m]` suffix from `model` if present. Case-insensitive. */
+export function stripOneMSuffix(model: string): string {
+  return model.replace(ONE_M_SUFFIX_RE, '');
+}
+
+/**
+ * Resolve context window for a model by name.
+ *
+ * Single source of truth: the `[1m]` suffix is the only signal for a 1M window.
+ * Bare model ids (without the suffix) resolve to `FALLBACK_CONTEXT_WINDOW` (200k),
+ * even for models whose base spec used to be 1M. This matches the
+ * user-facing contract where 1M context is an opt-in via the `[1m]` variant.
+ *
+ * Used by stream-executor hot paths and threshold checks that need a non-zero
  * denominator before the SDK reports `contextWindow`.
  */
 export function resolveContextWindow(modelName?: string): number {
-  return getContextWindow(modelName) || FALLBACK_CONTEXT_WINDOW;
+  if (!modelName) return FALLBACK_CONTEXT_WINDOW;
+  return hasOneMSuffix(modelName) ? 1_000_000 : FALLBACK_CONTEXT_WINDOW;
 }
 
 /**

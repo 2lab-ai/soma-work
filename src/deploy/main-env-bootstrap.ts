@@ -5,6 +5,11 @@ const DEFAULT_DEV_SOURCE_DIR = '/opt/soma-work/dev';
 const DEFAULT_LEGACY_ROOT_DIR = '/Users/dd/app.claude-code-slack-bot';
 const MARKER_FILE_NAME = '.main-bootstrap.json';
 const DEFAULT_MODEL = 'claude-opus-4-7';
+
+// Duplicated from user-settings-store.AVAILABLE_MODELS because bootstrap is
+// import-lean (it runs before the main process and must not pull in the
+// settings store). Drift is guarded by an exact-set equality test in
+// main-env-bootstrap.test.ts — that test imports AVAILABLE_MODELS directly.
 const VALID_MODELS = new Set([
   'claude-opus-4-7',
   'claude-opus-4-6',
@@ -12,7 +17,27 @@ const VALID_MODELS = new Set([
   'claude-sonnet-4-5-20250929',
   'claude-opus-4-5-20251101',
   'claude-haiku-4-5-20251001',
+  'claude-opus-4-7[1m]',
+  'claude-opus-4-6[1m]',
 ]);
+
+/** Exposed for drift tests only — asserts exact-set equality with AVAILABLE_MODELS. */
+export const __TEST_ONLY_VALID_MODELS: ReadonlySet<string> = VALID_MODELS;
+
+/**
+ * Coerce persisted model strings to a VALID_MODELS entry, falling back to
+ * DEFAULT_MODEL. Trims + lowercases so hand-edited JSON with stray whitespace
+ * or `[1M]` uppercase round-trips cleanly.
+ */
+function coerceModel(raw: unknown): string {
+  if (typeof raw !== 'string') return DEFAULT_MODEL;
+  const normalized = raw.trim().toLowerCase();
+  if (normalized.length === 0) return DEFAULT_MODEL;
+  return VALID_MODELS.has(normalized) ? normalized : DEFAULT_MODEL;
+}
+
+/** Exposed for tests. */
+export const __TEST_ONLY_coerceModel = coerceModel;
 
 export interface BootstrapResult {
   bootstrapped: boolean;
@@ -107,10 +132,9 @@ export async function normalizeMainTargetData(targetDir: string): Promise<void> 
     const settings = JSON.parse(fs.readFileSync(settingsFile, 'utf8')) as Record<string, Record<string, unknown>>;
 
     for (const userSettings of Object.values(settings)) {
-      const model = typeof userSettings.defaultModel === 'string' ? userSettings.defaultModel : '';
-      if (!model || !VALID_MODELS.has(model) || model === 'claude-opus-4-5-20251101') {
-        userSettings.defaultModel = DEFAULT_MODEL;
-      }
+      // Coerce to VALID_MODELS. Known-legacy ids (sonnet-4-6, opus-4-5-20251101, etc.)
+      // pass through; only unknown/missing values fall back to DEFAULT_MODEL.
+      userSettings.defaultModel = coerceModel(userSettings.defaultModel);
       if (userSettings.accepted === undefined) {
         userSettings.accepted = true;
       }
@@ -131,6 +155,12 @@ export async function normalizeMainTargetData(targetDir: string): Promise<void> 
       }
       if (session.workflow === undefined) {
         session.workflow = 'default';
+      }
+      // Normalize session.model too — picks up `[1M]` uppercase typos and any
+      // stale model id that was valid at some point but is no longer in
+      // VALID_MODELS. Missing/non-string fields are left untouched.
+      if (typeof session.model === 'string') {
+        session.model = coerceModel(session.model);
       }
     }
 
