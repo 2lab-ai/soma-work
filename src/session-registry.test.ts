@@ -539,3 +539,238 @@ describe('SessionRegistry persistence', () => {
     expect(recovered[0].sessionKey).toBe('C391-171.391d');
   });
 });
+
+describe('SessionRegistry session-scoped dangerous-rule overrides', () => {
+  beforeEach(() => {
+    if (fs.existsSync(TEST_DATA_DIR)) {
+      fs.rmSync(TEST_DATA_DIR, { recursive: true });
+    }
+    fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
+  });
+
+  afterEach(() => {
+    if (fs.existsSync(TEST_DATA_DIR)) {
+      fs.rmSync(TEST_DATA_DIR, { recursive: true });
+    }
+  });
+
+  it('records a single disabled rule per session', () => {
+    const reg = new SessionRegistry();
+    reg.createSession('U1', 'Tester', 'C1', '171.100');
+    const key = reg.getSessionKey('C1', '171.100');
+
+    expect(reg.isDangerousRuleDisabled(key, 'kill')).toBe(false);
+    reg.disableDangerousRule(key, 'kill');
+    expect(reg.isDangerousRuleDisabled(key, 'kill')).toBe(true);
+    expect(reg.isDangerousRuleDisabled(key, 'reboot')).toBe(false);
+    expect(reg.listDisabledDangerousRules(key)).toEqual(['kill']);
+  });
+
+  it('batch-disables multiple rules atomically', () => {
+    const reg = new SessionRegistry();
+    reg.createSession('U1', 'Tester', 'C2', '171.101');
+    const key = reg.getSessionKey('C2', '171.101');
+
+    reg.disableDangerousRules(key, ['kill', 'rm-recursive', 'rm-force']);
+    expect(reg.isDangerousRuleDisabled(key, 'kill')).toBe(true);
+    expect(reg.isDangerousRuleDisabled(key, 'rm-recursive')).toBe(true);
+    expect(reg.isDangerousRuleDisabled(key, 'rm-force')).toBe(true);
+    expect(reg.listDisabledDangerousRules(key).sort()).toEqual(['kill', 'rm-force', 'rm-recursive']);
+  });
+
+  it('disable is idempotent (same rule twice = one entry)', () => {
+    const reg = new SessionRegistry();
+    reg.createSession('U1', 'Tester', 'C3', '171.102');
+    const key = reg.getSessionKey('C3', '171.102');
+
+    reg.disableDangerousRule(key, 'kill');
+    reg.disableDangerousRule(key, 'kill');
+    expect(reg.listDisabledDangerousRules(key)).toEqual(['kill']);
+  });
+
+  it('disables are isolated between sessions', () => {
+    const reg = new SessionRegistry();
+    reg.createSession('U1', 'Tester', 'C4', '171.103');
+    reg.createSession('U1', 'Tester', 'C4', '171.104');
+    const keyA = reg.getSessionKey('C4', '171.103');
+    const keyB = reg.getSessionKey('C4', '171.104');
+
+    reg.disableDangerousRule(keyA, 'kill');
+    expect(reg.isDangerousRuleDisabled(keyA, 'kill')).toBe(true);
+    expect(reg.isDangerousRuleDisabled(keyB, 'kill')).toBe(false);
+  });
+
+  it('no-op on unknown session key (safe side — still returns false)', () => {
+    const reg = new SessionRegistry();
+    reg.disableDangerousRule('C-unknown-171.999', 'kill');
+    expect(reg.isDangerousRuleDisabled('C-unknown-171.999', 'kill')).toBe(false);
+    expect(reg.listDisabledDangerousRules('C-unknown-171.999')).toEqual([]);
+  });
+
+  it('disabledDangerousRules is NOT persisted across save/load (in-memory only)', () => {
+    const writer = new SessionRegistry();
+    const session = writer.createSession('U1', 'Tester', 'C5', '171.105');
+    // saveSessions() only serialises sessions with a sessionId — set one so the
+    // persistence path actually runs (otherwise we'd be testing nothing).
+    session.sessionId = 'session-rule-disable-roundtrip';
+    const key = writer.getSessionKey('C5', '171.105');
+    writer.disableDangerousRule(key, 'kill');
+    writer.disableDangerousRule(key, 'reboot');
+
+    writer.saveSessions();
+
+    const reader = new SessionRegistry();
+    reader.loadSessions();
+    expect(reader.isDangerousRuleDisabled(key, 'kill')).toBe(false);
+    expect(reader.isDangerousRuleDisabled(key, 'reboot')).toBe(false);
+    expect(reader.listDisabledDangerousRules(key)).toEqual([]);
+  });
+});
+
+// --- Issue #656: coerceToAvailableModel on deserialize ---
+
+describe('SessionRegistry deserialize — model coerce', () => {
+  const SESSIONS_FILE = `${TEST_DATA_DIR}/sessions.json`;
+
+  beforeEach(() => {
+    if (fs.existsSync(TEST_DATA_DIR)) {
+      fs.rmSync(TEST_DATA_DIR, { recursive: true });
+    }
+    fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
+  });
+
+  afterEach(() => {
+    if (fs.existsSync(TEST_DATA_DIR)) {
+      fs.rmSync(TEST_DATA_DIR, { recursive: true });
+    }
+  });
+
+  function writeSessionsFile(sessions: Array<Record<string, unknown>>): void {
+    fs.writeFileSync(SESSIONS_FILE, JSON.stringify(sessions, null, 2), 'utf8');
+  }
+
+  it('passes known [1m] model id through unchanged', () => {
+    const now = new Date().toISOString();
+    writeSessionsFile([
+      {
+        key: 'C1-t1',
+        ownerId: 'U1',
+        userId: 'U1',
+        channelId: 'C1',
+        threadTs: 't1',
+        sessionId: 's1',
+        isActive: true,
+        lastActivity: now,
+        model: 'claude-opus-4-7[1m]',
+        state: 'MAIN',
+        workflow: 'default',
+      },
+    ]);
+
+    const reader = new SessionRegistry();
+    reader.loadSessions();
+    const restored = reader.getSession('C1', 't1');
+    expect(restored?.model).toBe('claude-opus-4-7[1m]');
+  });
+
+  it('lowercases uppercase [1M] on restore', () => {
+    const now = new Date().toISOString();
+    writeSessionsFile([
+      {
+        key: 'C1-t2',
+        ownerId: 'U1',
+        userId: 'U1',
+        channelId: 'C1',
+        threadTs: 't2',
+        sessionId: 's2',
+        isActive: true,
+        lastActivity: now,
+        model: 'claude-opus-4-7[1M]',
+        state: 'MAIN',
+        workflow: 'default',
+      },
+    ]);
+
+    const reader = new SessionRegistry();
+    reader.loadSessions();
+    const restored = reader.getSession('C1', 't2');
+    expect(restored?.model).toBe('claude-opus-4-7[1m]');
+  });
+
+  it('preserves legacy sonnet-4-6 (not force-migrated to DEFAULT)', () => {
+    // Regression guard for PR #652-style silent drop: sonnet users stay on sonnet.
+    const now = new Date().toISOString();
+    writeSessionsFile([
+      {
+        key: 'C1-t3',
+        ownerId: 'U1',
+        userId: 'U1',
+        channelId: 'C1',
+        threadTs: 't3',
+        sessionId: 's3',
+        isActive: true,
+        lastActivity: now,
+        model: 'claude-sonnet-4-6',
+        state: 'MAIN',
+        workflow: 'default',
+      },
+    ]);
+
+    const reader = new SessionRegistry();
+    reader.loadSessions();
+    const restored = reader.getSession('C1', 't3');
+    expect(restored?.model).toBe('claude-sonnet-4-6');
+  });
+
+  it('coerces unknown model ids to DEFAULT_MODEL', () => {
+    const now = new Date().toISOString();
+    writeSessionsFile([
+      {
+        key: 'C1-t4',
+        ownerId: 'U1',
+        userId: 'U1',
+        channelId: 'C1',
+        threadTs: 't4',
+        sessionId: 's4',
+        isActive: true,
+        lastActivity: now,
+        model: 'gpt-99-turbo',
+        state: 'MAIN',
+        workflow: 'default',
+      },
+    ]);
+
+    const reader = new SessionRegistry();
+    reader.loadSessions();
+    const restored = reader.getSession('C1', 't4');
+    expect(restored?.model).toBe('claude-opus-4-7'); // DEFAULT_MODEL
+  });
+
+  it('preserves undefined when session was saved without a model', () => {
+    // Behavior parity guard: before coerce was added, undefined model stayed
+    // undefined. We explicitly preserve that so the downstream "no model yet"
+    // code paths are unchanged.
+    const now = new Date().toISOString();
+    writeSessionsFile([
+      {
+        key: 'C1-t5',
+        ownerId: 'U1',
+        userId: 'U1',
+        channelId: 'C1',
+        threadTs: 't5',
+        sessionId: 's5',
+        isActive: true,
+        lastActivity: now,
+        state: 'MAIN',
+        workflow: 'default',
+        // No model field.
+      },
+    ]);
+
+    const reader = new SessionRegistry();
+    reader.loadSessions();
+    const restored = reader.getSession('C1', 't5');
+    expect(restored).toBeDefined();
+    expect(restored?.model).toBeUndefined();
+  });
+});

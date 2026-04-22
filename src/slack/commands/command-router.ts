@@ -17,7 +17,6 @@ import { EmailHandler } from './email-handler';
 import { HelpHandler } from './help-handler';
 import { InstructionsHandler } from './instructions-handler';
 import { LinkHandler } from './link-handler';
-import { LlmChatHandler } from './llm-chat-handler';
 import { MarketplaceHandler } from './marketplace-handler';
 import { McpHandler } from './mcp-handler';
 import { MemoryHandler } from './memory-handler';
@@ -49,12 +48,22 @@ import { WebhookHandler } from './webhook-handler';
 export class CommandRouter {
   private logger = new Logger('CommandRouter');
   private handlers: CommandHandler[] = [];
+  /**
+   * Cached references used by the `new`/`/new` preprocessor (see route()).
+   * These are ALSO registered in `this.handlers` below so existing behaviors
+   * — bare `/new` routed via the main loop for callers that bypass the
+   * preprocessor (e.g. `isCommand(text)` probe at the bottom of this file)
+   * — remain unchanged.
+   */
+  private newHandler: NewHandler;
+  private skillForceHandler: SkillForceHandler;
 
   constructor(deps: CommandDependencies) {
     // Register all command handlers in priority order
     // Order matters - more specific handlers should come first
+    this.newHandler = new NewHandler(deps);
+    this.skillForceHandler = new SkillForceHandler();
     this.handlers = [
-      new LlmChatHandler(),
       new AdminHandler(),
       new PromptHandler(deps),
       new InstructionsHandler(deps),
@@ -63,7 +72,7 @@ export class CommandRouter {
       new McpHandler(deps),
       new MarketplaceHandler(deps),
       new PluginsHandler(deps),
-      new SkillForceHandler(), // $local:skillname — must come before SessionCommandHandler
+      this.skillForceHandler, // $local:skillname — must come before SessionCommandHandler
       new SessionCommandHandler(deps), // $ prefix — must come before Model/Verbosity
       new BypassHandler(),
       new SandboxHandler(),
@@ -79,7 +88,7 @@ export class CommandRouter {
       new NotifyHandler(),
       new WebhookHandler(),
       new RestoreHandler(),
-      new NewHandler(deps),
+      this.newHandler,
       new OnboardingHandler(deps),
       new ContextHandler(deps),
       new RenewHandler(deps),
@@ -141,6 +150,52 @@ export class CommandRouter {
     }
 
     const routedText = ctx.text ?? originalText;
+
+    // `new`/`/new` preprocessor — mirrors the `/z` prefix pattern above.
+    //
+    // Bug (pre-fix): when a message contained both `new` at the start AND a
+    // `$skill` force trigger (e.g. `new <URL>\n$z proceed`), the
+    // first-match-wins handler loop let `SkillForceHandler` match the bare
+    // `$z` anywhere in the text and return `handled:true`, so `NewHandler`
+    // never ran and the session was silently NOT reset. Reordering the
+    // handlers would not help either: `continueWithPrompt` is NOT
+    // re-dispatched by the router — it is delivered to Claude verbatim (see
+    // slack-handler.ts: `effectiveText`), so `$z` in the remainder would
+    // never get resolved into an `<invoked_skills>` block.
+    //
+    // Fix: run `NewHandler` FIRST for session reset side effects, then —
+    // and only then — if the `new` remainder contains a `$skill` force
+    // trigger, hand the remainder to `SkillForceHandler` so the final
+    // `continueWithPrompt` carries the `<invoked_skills>` block.
+    //
+    // Narrow scope: ONLY `SkillForceHandler` is consulted on the remainder.
+    // All other command-shaped remainders (`new help`, `new sessions`,
+    // `new compact`, …) keep their existing semantic — delivered to Claude
+    // as plain prompts. A general re-dispatch loop here would silently
+    // change behavior for every `new <cmd>` combination; do NOT add one.
+    if (CommandParser.isNewCommand(routedText)) {
+      const newResult = await this.newHandler.execute(ctx);
+      if (newResult.continueWithPrompt === undefined) {
+        // Pure `new` OR race-guard rejection (see NewHandler.execute). Done.
+        return newResult;
+      }
+      const remainder = newResult.continueWithPrompt;
+      if (this.skillForceHandler.canHandle(remainder)) {
+        // IMPORTANT: skillResult INTENTIONALLY supersedes newResult.
+        // NewHandler's session-reset side effects (postSystemMessage, emoji
+        // cleanup, state reset) already ran above. We now replace the
+        // plain-prompt continuation with the SkillForce-enriched prompt
+        // that contains the `<invoked_skills>` block. Do NOT re-dispatch
+        // the whole router here — that would change semantics of
+        // `new help`, `new sessions`, etc.
+        const skillResult = await this.skillForceHandler.execute({ ...ctx, text: remainder });
+        if (skillResult.handled) {
+          return skillResult;
+        }
+      }
+      return newResult;
+    }
+
     for (const handler of this.handlers) {
       if (handler.canHandle(routedText)) {
         this.logger.debug('Routing to handler', {

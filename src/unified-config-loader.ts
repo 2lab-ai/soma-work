@@ -18,16 +18,16 @@ import type { AgentConfig } from './types';
 
 const logger = new Logger('UnifiedConfigLoader');
 
-export interface LlmBackendConfigJson {
-  backend: string;
-  model: string;
-  configOverride?: Record<string, string>;
-}
+/**
+ * Process-scoped guard so the legacy `llmChat` warning fires at most once.
+ * `loadUnifiedConfig` is called on boot *and* every plugin-manager save, which
+ * would otherwise double-log the same deprecation message within seconds.
+ */
+let warnedLegacyLlmChat = false;
 
 export interface UnifiedConfig {
   mcpServers?: Record<string, McpServerConfig>;
   plugin?: PluginConfig;
-  llmChat?: Record<string, LlmBackendConfigJson>;
   agents?: Record<string, AgentConfig>;
   a2t?: A2tConfig;
 }
@@ -113,10 +113,6 @@ export function loadUnifiedConfig(configFile: string, mcpFallback: string): Unif
         result.plugin = validatePluginConfig(raw.plugin);
       }
 
-      if (raw.llmChat && typeof raw.llmChat === 'object') {
-        result.llmChat = raw.llmChat;
-      }
-
       // Parse agents section (Trace: docs/multi-agent/trace.md, S1)
       const agents = parseAgentsConfig(raw);
       if (Object.keys(agents).length > 0) {
@@ -128,11 +124,26 @@ export function loadUnifiedConfig(configFile: string, mcpFallback: string): Unif
         result.a2t = raw.a2t as A2tConfig;
       }
 
+      // PR #639 removed the `llmChat` subsystem (prompt-builder snippet,
+      // llmChatConfigStore, Slack LlmChatHandler). Legacy configs still
+      // carrying `llmChat` keep working but the key is silently dropped on
+      // the next saveUnifiedConfig round-trip; warn so upgraded users see a
+      // trace rather than discovering the drop via vanished data. The flag
+      // is process-scoped because this loader runs at boot *and* on every
+      // plugin-manager save.
+      if (raw.llmChat !== undefined && !warnedLegacyLlmChat) {
+        warnedLegacyLlmChat = true;
+        logger.warn(
+          'Ignoring legacy `llmChat` config key — subsystem removed in PR #639. ' +
+            'The key will be dropped on the next config save.',
+          { path: configFile },
+        );
+      }
+
       logger.info('Loaded unified config', {
         path: configFile,
         mcpServers: result.mcpServers ? Object.keys(result.mcpServers).length : 0,
         hasPluginConfig: !!result.plugin,
-        hasLlmChat: !!result.llmChat,
         agents: result.agents ? Object.keys(result.agents).length : 0,
         hasA2t: !!result.a2t,
       });

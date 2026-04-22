@@ -21,12 +21,14 @@ import type { App } from '@slack/bolt';
 import type { WebClient } from '@slack/web-api';
 import { isAdminUser } from '../../admin-utils';
 import type { AuthKey } from '../../auth/auth-key';
+import { config } from '../../config';
 import { Logger } from '../../logger';
 import type { OAuthCredentials } from '../../oauth/refresher';
 import { hasRequiredScopes } from '../../oauth/scope-check';
 import type { TokenManager } from '../../token-manager';
 import {
   type AddSlotFormKind,
+  appendStoreReadFailureBanner,
   buildAddSlotModal,
   buildAttachOAuthModal,
   buildCctCardBlocks,
@@ -42,6 +44,16 @@ const SETUP_TOKEN_REGEX = /^sk-ant-oat01-[A-Za-z0-9_-]{8,}$/;
 // validation synchronous (no await on the TM export). A drift guard is
 // unnecessary because the TM throws on a shape mismatch too.
 const API_KEY_REGEX = /^sk-ant-api03-[A-Za-z0-9_-]{8,}$/;
+
+// Refresh-handler banner strings. Shared across handlers + tests to keep
+// wording in one place.
+export const REFRESH_BANNERS = {
+  allNull:
+    ':warning: *Refresh all — no fresh data* — every attached slot returned no usage (throttled or failed). Check the TokenManager logs for `fetchAndStoreUsage` errors or the usage-store health.',
+  slotNull:
+    ':warning: *Refresh slot — no fresh data* — this slot returned no usage (throttled or failed). Check the TokenManager logs for `fetchAndStoreUsage` errors or the usage-store health.',
+  outerCatch: ':warning: Refresh failed. Please try again.',
+} as const;
 
 /**
  * Register all CCT block actions + view submissions on the Bolt app.
@@ -235,6 +247,67 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
       await respondWithCard({ tokenManager, respond, body, client });
     } catch (err) {
       logger.error('cct_set_active failed', err);
+    }
+  });
+
+  // Card-level "Refresh all" (admin-only fan-out).
+  //
+  // Ack first (Slack 3s contract), then admin gate, then fetch. Does NOT
+  // forward `force` to per-slot calls — the per-keyId in-flight dedupe
+  // lets this share the scheduler's tick when they overlap, and forcing
+  // every slot would defeat the local `nextUsageFetchAllowedAt` throttle
+  // that protects Anthropic from refresh storms. See
+  // `token-manager.ts fetchUsageForAllAttached` and the test contract at
+  // `token-manager.test.ts` ("does NOT forward force").
+  //
+  // When every attached slot returns `null` (all fetches throttled or
+  // failed), post an ephemeral banner instead of silently re-rendering
+  // the same stale card. Partial failures still re-post so successful
+  // rows update. Empty input map (no attached slots) is not "all failed".
+  app.action(CCT_ACTION_IDS.refresh_usage_all, async ({ ack, body, client }) => {
+    await ack();
+    try {
+      if (!requireAdmin(body)) return;
+      const results = await tokenManager.fetchUsageForAllAttached({
+        timeoutMs: config.usage.fetchTimeoutMs,
+      });
+      const entries = Object.values(results);
+      const allFailed = entries.length > 0 && entries.every((r) => r === null);
+      if (allFailed) {
+        await postEphemeralFailure(client, body, REFRESH_BANNERS.allNull);
+        return;
+      }
+      await postEphemeralCard(tokenManager, client, body);
+    } catch (err) {
+      logger.error('cct_refresh_usage_all failed', err);
+      await postEphemeralFailure(client, body, REFRESH_BANNERS.outerCatch);
+    }
+  });
+
+  // Per-slot "Refresh" — admin gate + `{ force: true }` bypasses the
+  // local throttle for this single slot. When `fetchAndStoreUsage`
+  // returns `null` (throttled or failed), post the same ephemeral banner
+  // the Refresh-all handler uses for its all-null branch so the admin
+  // sees actionable feedback instead of an unchanged re-render.
+  app.action(CCT_ACTION_IDS.refresh_usage_slot, async ({ ack, body, client }) => {
+    await ack();
+    try {
+      if (!requireAdmin(body)) return;
+      const bodyAction = (body as any).actions?.[0];
+      const targetKeyId = typeof bodyAction?.value === 'string' ? bodyAction.value : undefined;
+      if (!targetKeyId) {
+        logger.warn('cct_refresh_usage_slot: missing keyId on action value');
+        return;
+      }
+      const result = await tokenManager.fetchAndStoreUsage(targetKeyId, { force: true });
+      if (result === null) {
+        await postEphemeralFailure(client, body, REFRESH_BANNERS.slotNull);
+        return;
+      }
+      await postEphemeralCard(tokenManager, client, body);
+    } catch (err) {
+      logger.error('cct_refresh_usage_slot failed', err);
+      await postEphemeralFailure(client, body, REFRESH_BANNERS.outerCatch);
     }
   });
 
@@ -557,20 +630,62 @@ async function respondWithCard(opts: {
   await postEphemeralCard(tokenManager, client, body);
 }
 
+/**
+ * Shared destination resolver for ephemeral helpers below. Bolt carries
+ * the invoking user + channel in two shapes (`container.channel_id` for
+ * block_actions, `channel.id` for view_submission). Returns `null` when
+ * either field is absent (unit-test fakes, non-interactive events).
+ */
+interface EphemeralActionBody {
+  user?: { id?: string };
+  container?: { channel_id?: string };
+  channel?: { id?: string };
+}
+
+function resolveEphemeralTarget(body: unknown): { userId: string; channel: string } | null {
+  const typed = body as EphemeralActionBody;
+  const userId = typed?.user?.id;
+  const channel = typed?.container?.channel_id ?? typed?.channel?.id;
+  if (!userId || !channel) return null;
+  return { userId, channel };
+}
+
 async function postEphemeralCard(tokenManager: TokenManager, client: WebClient, body: unknown): Promise<void> {
-  const userId = (body as any)?.user?.id as string | undefined;
-  const channel = (body as any)?.container?.channel_id ?? (body as any)?.channel?.id;
-  if (!userId || !channel) return;
+  const target = resolveEphemeralTarget(body);
+  if (!target) return;
   const blocks = await buildCardFromManager(tokenManager);
   try {
     await client.chat.postEphemeral({
-      channel,
-      user: userId,
+      channel: target.channel,
+      user: target.userId,
       text: ':key: CCT status',
       blocks: blocks as any,
     });
   } catch (err) {
     logger.debug('postEphemeralCard failed', { err });
+  }
+}
+
+/**
+ * Ephemeral failure banner used by the refresh handlers when an
+ * all-null / null result would otherwise re-render an identical card.
+ */
+async function postEphemeralFailure(client: WebClient, body: unknown, message: string): Promise<void> {
+  const target = resolveEphemeralTarget(body);
+  if (!target) {
+    // Silent-drop hazard: the Option A banner would vanish with no signal.
+    // Log at WARN so operators notice the missing user/channel shape.
+    logger.warn('postEphemeralFailure: missing user/channel on action body; banner dropped', { message });
+    return;
+  }
+  try {
+    await client.chat.postEphemeral({
+      channel: target.channel,
+      user: target.userId,
+      text: message,
+    });
+  } catch (err) {
+    logger.debug('postEphemeralFailure failed', { err });
   }
 }
 
@@ -609,8 +724,8 @@ export async function buildCardFromManager(tokenManager: TokenManager): Promise<
     return blocks;
   } catch (err) {
     logger.warn('buildCardFromManager: getSnapshot failed, falling back to listTokens()', { err });
-    // Fallback path runs only when getSnapshot fails (disk corruption /
-    // unreadable file). We still apply the api_key fence here.
+    // Carry the api_key fence into the degraded path — cached summaries
+    // include both kinds, and the card must never show api_key rows.
     const summaries = tokenManager.listTokens();
     const active = tokenManager.getActiveToken();
     const slots: AuthKey[] = summaries.map((s) =>
@@ -625,6 +740,8 @@ export async function buildCardFromManager(tokenManager: TokenManager): Promise<
       states: {},
       activeKeyId: active?.keyId,
     });
+    // Surface the store-read failure with the shared banner wording.
+    appendStoreReadFailureBanner(blocks);
     if (hiddenApiKeyCount > 0) {
       blocks.push({
         type: 'context',

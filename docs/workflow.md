@@ -99,8 +99,8 @@ Slack 채널에서 @제갈량(봇)을 통해 실행하는 주요 워크플로우
 │  │   │    └─ <persona>...</persona> 태그로 래핑         │     │  │
 │  │   │                                                  │     │  │
 │  │   │ 4. processVariables()                            │     │  │
-│  │   │    └─ {{llm_chat_config}} → MCP 모델 설정        │     │  │
 │  │   │    └─ {{user.email}}, {{user.displayName}} 등    │     │  │
+│  │   │    (REMOVED #639: {{llm_chat_config}} snippet)   │     │  │
 │  │   └──────────────────────────────────────────────────┘     │  │
 │  │                                                            │  │
 │  │ + getChannelDescription(channel)                           │  │

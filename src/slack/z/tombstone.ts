@@ -40,24 +40,6 @@ export const TOMBSTONE_HINTS: readonly TombstoneHint[] = [
   { match: /^\/?show\s+email\b/i, title: 'email', oldForm: 'show email', newForm: '/z email' },
   { match: /^\/?set\s+email\b/i, title: 'email', oldForm: 'set email <x>', newForm: '/z email set <x>' },
   {
-    match: /^\/?set\s+llm_chat\b/i,
-    title: 'admin llmchat',
-    oldForm: 'set llm_chat <p> <k> <v>',
-    newForm: '/z admin llmchat set <p> <k> <v>',
-  },
-  {
-    match: /^\/?show\s+llm_chat\b/i,
-    title: 'admin llmchat',
-    oldForm: 'show llm_chat',
-    newForm: '/z admin llmchat',
-  },
-  {
-    match: /^\/?reset\s+llm_chat\b/i,
-    title: 'admin llmchat',
-    oldForm: 'reset llm_chat',
-    newForm: '/z admin llmchat reset',
-  },
-  {
     match: /^\/?config\b/i,
     title: 'admin config',
     oldForm: 'config KEY=VAL',
