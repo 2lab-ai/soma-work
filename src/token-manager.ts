@@ -1103,6 +1103,73 @@ export class TokenManager {
   }
 
   /**
+   * #653 M2 — Force-refresh the OAuth access_token for a single slot
+   * regardless of its current TTL. Used by the per-slot Refresh button
+   * (so the "OAuth refreshes in X" hint resets immediately on click)
+   * and by the hourly `OAuthRefreshScheduler`.
+   *
+   * No-op for slots without an OAuth attachment (api_key or bare setup
+   * tokens). Reuses `refreshAccessToken`'s in-process dedupe + attachment-
+   * generation fingerprint guard, so concurrent force-refreshes for the
+   * same slot share a single HTTP round-trip and a detach/re-attach race
+   * can't resurrect stale credentials.
+   *
+   * Throws `OAuthRefreshError` on 401/403. The authState has already
+   * been marked `refresh_failed` / `revoked` before the throw, so callers
+   * can surface the error (or swallow it if the cached authState alone
+   * is enough signal).
+   */
+  async forceRefreshOAuth(keyId: string): Promise<void> {
+    const snap = await this.store.load();
+    const slot = snap.registry.slots.find((s) => s.keyId === keyId);
+    if (!slot || !hasOAuthAttachment(slot)) return;
+    await this.refreshAccessToken(slot);
+  }
+
+  /**
+   * #653 M2 — Fan-out force-refresh of every OAuth-attached CCT slot.
+   * Returns a `Record<keyId, 'ok' | 'error'>` so the scheduler (and
+   * future card-level "Refresh OAuth all" button) can report per-slot
+   * outcomes.
+   *
+   * Parallel execution under a single deadline (default 10s — the
+   * `refreshClaudeCredentials` HTTP call has its own 10s timeout, so 10s
+   * overall is tight but realistic for a 1-2 slot fleet. Scheduler wires
+   * a longer deadline for larger fleets).
+   *
+   * Contract mirrors `fetchUsageForAllAttached`: timeouts return whatever
+   * has landed so far; per-slot errors are caught and surfaced in the
+   * returned map (not thrown) so a single bad slot doesn't poison the
+   * whole tick.
+   */
+  async refreshAllAttachedOAuthTokens(opts?: { timeoutMs?: number }): Promise<Record<string, 'ok' | 'error'>> {
+    const snap = await this.store.load();
+    const keyIds = snap.registry.slots
+      .filter((s) => s.kind === 'cct' && s.oauthAttachment !== undefined)
+      .map((s) => s.keyId);
+    const results: Record<string, 'ok' | 'error'> = {};
+    const promises = keyIds.map(async (keyId) => {
+      try {
+        await this.forceRefreshOAuth(keyId);
+        results[keyId] = 'ok';
+      } catch (err) {
+        results[keyId] = 'error';
+        logger.warn('refreshAllAttachedOAuthTokens: per-slot refresh failed', {
+          keyId,
+          err,
+        });
+      }
+    });
+    const timeoutMs = opts?.timeoutMs ?? 30_000;
+    const timeout = new Promise<void>((resolve) => {
+      const t = setTimeout(resolve, timeoutMs);
+      if (typeof t.unref === 'function') t.unref();
+    });
+    await Promise.race([Promise.allSettled(promises), timeout]);
+    return results;
+  }
+
+  /**
    * In-process dedupe: callers racing to refresh the same slot share a
    * single Promise. The actual HTTP call happens OUTSIDE any cct-store
    * lock; we acquire the lock only to persist the result.

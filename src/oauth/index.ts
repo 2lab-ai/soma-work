@@ -11,6 +11,13 @@ export {
   parseRateLimitHeaders,
   type RateLimitHint,
 } from './header-parser';
+export {
+  DEFAULT_OAUTH_REFRESH_INTERVAL_MS,
+  DEFAULT_OAUTH_REFRESH_TIMEOUT_MS,
+  OAuthRefreshScheduler,
+  type OAuthRefreshSchedulerOpts,
+  startOAuthRefreshScheduler,
+} from './oauth-refresh-scheduler';
 export type { OAuthCredentials } from './refresher';
 export {
   CLAUDE_OAUTH_CLIENT_ID,

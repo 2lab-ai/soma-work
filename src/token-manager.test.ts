@@ -1839,6 +1839,177 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
     });
   });
 
+  // ── #653 M2 — forceRefreshOAuth + refreshAllAttachedOAuthTokens ──
+
+  describe('forceRefreshOAuth (#653 M2)', () => {
+    it('force-refreshes a single attached slot regardless of TTL (no 7h-buffer short-circuit)', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const slot = await tm.addSlot({
+        name: 'o',
+        kind: 'oauth_credentials',
+        // fresh token, expires 10h out — well outside the 7h refresh buffer
+        credentials: makeOAuthCreds({
+          accessToken: 'old-access',
+          refreshToken: 'ref-1',
+          expiresAtMs: Date.now() + 10 * 60 * 60 * 1000,
+        }),
+        acknowledgedConsumerTosRisk: true,
+      });
+      refreshClaudeCredentialsMock.mockReset();
+      refreshClaudeCredentialsMock.mockResolvedValue({
+        accessToken: 'new-access',
+        refreshToken: 'ref-2',
+        expiresAtMs: Date.now() + 8 * 60 * 60 * 1000,
+        scopes: [...VALID_OAUTH_SCOPES],
+      });
+      // The legacy `refreshCredentialsIfNeeded` would SKIP this call because
+      // expiresAtMs is 10h out (> 7h REFRESH_BUFFER_MS). The new public
+      // method must bypass that short-circuit.
+      await tm.refreshCredentialsIfNeeded(slot.keyId);
+      expect(refreshClaudeCredentialsMock).not.toHaveBeenCalled();
+      // forceRefreshOAuth fires the HTTP call.
+      await tm.forceRefreshOAuth(slot.keyId);
+      expect(refreshClaudeCredentialsMock).toHaveBeenCalledTimes(1);
+      // Persisted — the active access token is the new one.
+      const accessToken = await activeAccessToken(tm);
+      expect(accessToken).toBe('new-access');
+    });
+
+    it('no-op when slot has no oauthAttachment (bare setup-token / api_key / unknown keyId)', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const api = await tm.addSlot({ name: 'a', kind: 'api_key', value: 'sk-ant-api03-abcdefgh' });
+      const bare = await tm.addSlot({ name: 'b', kind: 'setup_token', value: 'sk-ant-oat01-xyz' });
+      refreshClaudeCredentialsMock.mockReset();
+      await tm.forceRefreshOAuth(api.keyId);
+      await tm.forceRefreshOAuth(bare.keyId);
+      await tm.forceRefreshOAuth('unknown-keyid');
+      expect(refreshClaudeCredentialsMock).not.toHaveBeenCalled();
+    });
+
+    it('propagates OAuthRefreshError (401→refresh_failed / 403→revoked) for caller awareness', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const slot = await tm.addSlot({
+        name: 'o',
+        kind: 'oauth_credentials',
+        credentials: makeOAuthCreds(),
+        acknowledgedConsumerTosRisk: true,
+      });
+      const { OAuthRefreshError } = await import('./oauth/refresher');
+      refreshClaudeCredentialsMock.mockReset();
+      refreshClaudeCredentialsMock.mockRejectedValue(
+        new OAuthRefreshError(401, '{"error":"invalid_grant"}', 'invalid_grant'),
+      );
+      await expect(tm.forceRefreshOAuth(slot.keyId)).rejects.toThrow(/invalid_grant/);
+      // Side-effect — authState transitions to refresh_failed on 401.
+      const snap = await tm.getSnapshot();
+      expect(snap.state[slot.keyId]?.authState).toBe('refresh_failed');
+    });
+  });
+
+  describe('refreshAllAttachedOAuthTokens (#653 M2)', () => {
+    it('fans out force-refresh to every attached slot, skipping api_key + bare setup', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      await tm.addSlot({ name: 'api', kind: 'api_key', value: 'sk-ant-api03-abcdefgh' });
+      await tm.addSlot({ name: 'bare', kind: 'setup_token', value: 'sk-ant-oat01-bare' });
+      const a = await tm.addSlot({
+        name: 'oa',
+        kind: 'oauth_credentials',
+        credentials: makeOAuthCreds({ accessToken: 'a1', refreshToken: 'r1' }),
+        acknowledgedConsumerTosRisk: true,
+      });
+      const b = await tm.addSlot({
+        name: 'ob',
+        kind: 'oauth_credentials',
+        credentials: makeOAuthCreds({ accessToken: 'a2', refreshToken: 'r2' }),
+        acknowledgedConsumerTosRisk: true,
+      });
+      refreshClaudeCredentialsMock.mockReset();
+      refreshClaudeCredentialsMock.mockImplementation(async (current: any) => ({
+        accessToken: current.accessToken + '-refreshed',
+        refreshToken: current.refreshToken,
+        expiresAtMs: Date.now() + 8 * 60 * 60 * 1000,
+        scopes: [...VALID_OAUTH_SCOPES],
+      }));
+      const results = await tm.refreshAllAttachedOAuthTokens({ timeoutMs: 5_000 });
+      expect(Object.keys(results).sort()).toEqual([a.keyId, b.keyId].sort());
+      expect(results[a.keyId]).toBe('ok');
+      expect(results[b.keyId]).toBe('ok');
+      expect(refreshClaudeCredentialsMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('per-slot error surfaces as "error" in the result map without poisoning the tick', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const ok = await tm.addSlot({
+        name: 'ok',
+        kind: 'oauth_credentials',
+        credentials: makeOAuthCreds({ refreshToken: 'good' }),
+        acknowledgedConsumerTosRisk: true,
+      });
+      const bad = await tm.addSlot({
+        name: 'bad',
+        kind: 'oauth_credentials',
+        credentials: makeOAuthCreds({ refreshToken: 'stale' }),
+        acknowledgedConsumerTosRisk: true,
+      });
+      const { OAuthRefreshError } = await import('./oauth/refresher');
+      refreshClaudeCredentialsMock.mockReset();
+      refreshClaudeCredentialsMock.mockImplementation(async (current: any) => {
+        if (current.refreshToken === 'stale')
+          throw new OAuthRefreshError(401, '{"error":"invalid_grant"}', 'invalid_grant');
+        return {
+          accessToken: 'new-good',
+          refreshToken: 'good',
+          expiresAtMs: Date.now() + 8 * 60 * 60 * 1000,
+          scopes: [...VALID_OAUTH_SCOPES],
+        };
+      });
+      const results = await tm.refreshAllAttachedOAuthTokens({ timeoutMs: 5_000 });
+      expect(results[ok.keyId]).toBe('ok');
+      expect(results[bad.keyId]).toBe('error');
+      // The healthy slot completed despite the bad one throwing.
+      expect(refreshClaudeCredentialsMock).toHaveBeenCalledTimes(2);
+      // Bad slot's authState transitioned to refresh_failed.
+      const snap = await tm.getSnapshot();
+      expect(snap.state[bad.keyId]?.authState).toBe('refresh_failed');
+    });
+
+    it('returns partial results within timeoutMs when upstream hangs', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      await tm.addSlot({
+        name: 'hang',
+        kind: 'oauth_credentials',
+        credentials: makeOAuthCreds(),
+        acknowledgedConsumerTosRisk: true,
+      });
+      refreshClaudeCredentialsMock.mockReset();
+      refreshClaudeCredentialsMock.mockImplementation(async () => new Promise(() => {}));
+      const t0 = Date.now();
+      const results = await tm.refreshAllAttachedOAuthTokens({ timeoutMs: 60 });
+      const elapsed = Date.now() - t0;
+      expect(elapsed).toBeLessThan(500);
+      // No keys land because the deadline fires first.
+      expect(Object.keys(results).length).toBe(0);
+    });
+  });
+
   // ── Reaper timer ──────────────────────────────────────────
 
   describe('reaper timer', () => {
