@@ -65,6 +65,10 @@ export const CCT_ACTION_IDS = {
   detach: 'cct_detach',
   attach_oauth_input: 'cct_attach_oauth_blob_value',
   attach_tos_ack: 'cct_attach_tos_ack_value',
+  // #641 M1-S4 — Refresh buttons (card-level + per-slot). Append-only;
+  // existing IDs above are unchanged.
+  refresh_usage_all: 'cct_refresh_usage_all',
+  refresh_usage_slot: 'cct_refresh_usage_slot',
 } as const;
 
 export type CctViewId = (typeof CCT_VIEW_IDS)[keyof typeof CCT_VIEW_IDS];

@@ -26,3 +26,8 @@ export {
   UsageFetchError,
   type UsageFetchResult,
 } from './usage';
+export {
+  startUsageRefreshScheduler,
+  UsageRefreshScheduler,
+  type UsageSchedulerOpts,
+} from './usage-scheduler';
