@@ -2041,7 +2041,11 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
         kind: 'setup_token',
         value: 'sk-ant-oat01-zzz',
       });
-      // First generation: attach.
+      // First generation: attach (also triggers a fire-and-forget profile
+      // sync that we let complete under the default mock so it doesn't mix
+      // with the explicit in-flight call below).
+      fetchOAuthProfileMock.mockReset();
+      fetchOAuthProfileMock.mockResolvedValue({ fetchedAt: 1, email: 'bootstrap@example.com' });
       await tm.attachOAuth(
         slot.keyId,
         {
@@ -2052,15 +2056,29 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
         },
         true,
       );
+      await new Promise((r) => setTimeout(r, 10));
+      // Clear profile the attach-triggered fetch wrote so we can observe the
+      // guard rejecting the stale generation's write cleanly.
+      await store.mutate((snap: any) => {
+        const target = snap.registry.slots.find((s: any) => s.keyId === slot.keyId);
+        if (target?.oauthAttachment) delete target.oauthAttachment.profile;
+      });
+      // Now set up the gated mock for the explicit in-flight call.
       fetchOAuthProfileMock.mockReset();
-      let resolve: (v: any) => void = () => {};
+      let resolveGated: (v: any) => void = () => {};
       const gate = new Promise<any>((r) => {
-        resolve = r;
+        resolveGated = r;
       });
       fetchOAuthProfileMock.mockImplementation(async () => gate);
       const inFlight = tm.refreshOAuthProfile(slot.keyId);
-      // Simulate a detach + re-attach before the fetch resolves.
+      // Detach, then re-attach under a new generation. We swap the mock to a
+      // no-network resolver for the attach-triggered sync so it doesn't
+      // deadlock on the gate.
       await tm.detachOAuth(slot.keyId);
+      fetchOAuthProfileMock.mockImplementation(async () => ({
+        fetchedAt: 99,
+        email: 'new@gen.com',
+      }));
       await tm.attachOAuth(
         slot.keyId,
         {
@@ -2071,12 +2089,15 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
         },
         true,
       );
-      resolve({ fetchedAt: 42, email: 'old@gen.com' });
+      await new Promise((r) => setTimeout(r, 10));
+      // Now release the stale generation's fetch. Its write must be rejected
+      // because the current attachedAt belongs to the new generation.
+      resolveGated({ fetchedAt: 42, email: 'stale@gen.com' });
       await inFlight;
       const snap = await tm.getSnapshot();
       const after = snap.registry.slots.find((s: any) => s.keyId === slot.keyId) as any;
-      // New generation's profile stays unset — stale write was rejected.
-      expect(after.oauthAttachment.profile).toBeUndefined();
+      // The new generation's profile persisted; the stale write was dropped.
+      expect(after.oauthAttachment.profile?.email).toBe('new@gen.com');
     });
 
     it('401 triggers one token refresh + one retry; success persists the fresh profile', async () => {
@@ -2127,7 +2148,9 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
         credentials: makeOAuthCreds(),
         acknowledgedConsumerTosRisk: true,
       });
-      // Seed an existing profile.
+      // Drain the fire-and-forget profile sync triggered by addSlot.
+      await new Promise((r) => setTimeout(r, 10));
+      // Seed a known profile so we can assert it stays put after the failure.
       await store.mutate((snap: any) => {
         const target = snap.registry.slots.find((s: any) => s.keyId === slot.keyId);
         target.oauthAttachment.profile = { fetchedAt: 100, email: 'prior@example.com' };
@@ -2139,6 +2162,74 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       const snap = await tm.getSnapshot();
       const after = snap.registry.slots.find((s: any) => s.keyId === slot.keyId) as any;
       expect(after.oauthAttachment.profile?.email).toBe('prior@example.com');
+    });
+
+    it('addSlot(oauth_credentials) fires a one-shot profile sync (fire-and-forget)', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      fetchOAuthProfileMock.mockReset();
+      fetchOAuthProfileMock.mockResolvedValue({ fetchedAt: 1, email: 'created@example.com' });
+      const slot = await tm.addSlot({
+        name: 'legacy-att',
+        kind: 'oauth_credentials',
+        credentials: makeOAuthCreds(),
+        acknowledgedConsumerTosRisk: true,
+      });
+      // Allow the fire-and-forget chain to land.
+      await new Promise((r) => setTimeout(r, 10));
+      expect(fetchOAuthProfileMock).toHaveBeenCalledTimes(1);
+      const snap = await tm.getSnapshot();
+      const after = snap.registry.slots.find((s: any) => s.keyId === slot.keyId) as any;
+      expect(after.oauthAttachment.profile?.email).toBe('created@example.com');
+    });
+
+    it('attachOAuth on a setup-source slot fires a one-shot profile sync', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const slot = await tm.addSlot({ name: 's', kind: 'setup_token', value: 'sk-ant-oat01-zz' });
+      fetchOAuthProfileMock.mockReset();
+      fetchOAuthProfileMock.mockResolvedValue({ fetchedAt: 2, email: 'attach@example.com' });
+      await tm.attachOAuth(
+        slot.keyId,
+        {
+          accessToken: 'a',
+          refreshToken: 'r',
+          expiresAtMs: Date.now() + 10 * 3_600_000,
+          scopes: [...VALID_OAUTH_SCOPES],
+        },
+        true,
+      );
+      await new Promise((r) => setTimeout(r, 10));
+      expect(fetchOAuthProfileMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('forceRefreshOAuth chains the profile sync by default; syncProfile=false isolates the token leg', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const slot = await tm.addSlot({
+        name: 'f1',
+        kind: 'oauth_credentials',
+        credentials: makeOAuthCreds(),
+        acknowledgedConsumerTosRisk: true,
+      });
+      // Clear the mock after the addSlot-driven profile call.
+      await new Promise((r) => setTimeout(r, 5));
+      fetchOAuthProfileMock.mockReset();
+      fetchOAuthProfileMock.mockResolvedValue({ fetchedAt: 3, email: 'chained@example.com' });
+      await tm.forceRefreshOAuth(slot.keyId);
+      await new Promise((r) => setTimeout(r, 10));
+      expect(fetchOAuthProfileMock).toHaveBeenCalledTimes(1);
+
+      fetchOAuthProfileMock.mockReset();
+      await tm.forceRefreshOAuth(slot.keyId, { syncProfile: false });
+      await new Promise((r) => setTimeout(r, 10));
+      expect(fetchOAuthProfileMock).not.toHaveBeenCalled();
     });
 
     it('returns null for slots without an OAuth attachment (bare setup / api_key / unknown)', async () => {

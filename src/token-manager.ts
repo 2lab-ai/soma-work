@@ -876,6 +876,16 @@ export class TokenManager {
       `addSlot: ${newSlot.name} kind=${newSlot.kind} keyId=${newSlot.keyId}`,
       redactAnthropicSecrets({ keyId: newSlot.keyId, name: newSlot.name }) as Record<string, unknown>,
     );
+    // Card v2 (#668 follow-up): legacy-attachment slots carry an OAuth
+    // attachment from creation; kick off an initial profile fetch so the
+    // email / rate-limit-tier badge is populated before the first render.
+    // Setup-token and api_key slots have no attachment surface yet; their
+    // profile sync fires in `attachOAuth`.
+    if (newSlot.kind === 'cct' && newSlot.source === 'legacy-attachment') {
+      this.refreshOAuthProfile(newSlot.keyId).catch((err) => {
+        logger.warn('addSlot: profile sync failed', { keyId: newSlot.keyId, err });
+      });
+    }
     return newSlot;
   }
 
@@ -1039,6 +1049,12 @@ export class TokenManager {
     // this up via fetchUsageForAllAttached on next open. Swallow errors so
     // attach response is not blocked.
     void this.fetchAndStoreUsage(keyId).catch(() => {});
+    // Card v2 (#668 follow-up): pull the account/organization profile on
+    // first attach so the email / rate-limit-tier badge appears without
+    // waiting for the hourly scheduler tick.
+    this.refreshOAuthProfile(keyId).catch((err) => {
+      logger.warn('attachOAuth: profile sync failed', { keyId, err });
+    });
   }
 
   /**
