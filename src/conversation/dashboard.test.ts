@@ -532,6 +532,174 @@ describe('Dashboard API', () => {
     expect(body.turns[0].summaryBody).toBeUndefined();
   });
 
+  // ── Session detail pagination (limit + before cursor) ──
+
+  // Helper: build a conversation with N sequential user turns (t1..tN).
+  const makePaginatedConv = (id: string, n: number) => ({
+    id,
+    title: `Paginated ${id}`,
+    ownerName: 'Alice',
+    workflow: 'default',
+    createdAt: 1000,
+    updatedAt: 2000,
+    turns: Array.from({ length: n }, (_, i) => ({
+      id: `t${i + 1}`,
+      role: 'user' as const,
+      timestamp: 1000 + i,
+      userName: 'Alice',
+      rawContent: `msg ${i + 1}`,
+    })),
+  });
+
+  it('pagination: backward compatible — no params returns latest 30 by default with hasMore', async () => {
+    const { getConversation } = await import('./recorder');
+    (getConversation as any).mockResolvedValueOnce(makePaginatedConv('conv-pg-default', 50));
+
+    const res = await injectWebServer({
+      method: 'GET',
+      url: '/api/dashboard/session/conv-pg-default',
+      headers: AUTH_HEADER,
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.turnCount).toBe(50);
+    expect(body.turns).toHaveLength(30);
+    // Latest window: last 30 (t21..t50)
+    expect(body.turns[0].id).toBe('t21');
+    expect(body.turns[body.turns.length - 1].id).toBe('t50');
+    expect(body.hasMore).toBe(true);
+  });
+
+  it('pagination: returns latest N turns with hasMore:true when explicit limit smaller than total', async () => {
+    const { getConversation } = await import('./recorder');
+    (getConversation as any).mockResolvedValueOnce(makePaginatedConv('conv-pg-limit', 20));
+
+    const res = await injectWebServer({
+      method: 'GET',
+      url: '/api/dashboard/session/conv-pg-limit?limit=5',
+      headers: AUTH_HEADER,
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.turns).toHaveLength(5);
+    expect(body.turns[0].id).toBe('t16');
+    expect(body.turns[4].id).toBe('t20');
+    expect(body.hasMore).toBe(true);
+  });
+
+  it('pagination: hasMore:false when all turns fit within limit', async () => {
+    const { getConversation } = await import('./recorder');
+    (getConversation as any).mockResolvedValueOnce(makePaginatedConv('conv-pg-all', 10));
+
+    const res = await injectWebServer({
+      method: 'GET',
+      url: '/api/dashboard/session/conv-pg-all?limit=30',
+      headers: AUTH_HEADER,
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.turns).toHaveLength(10);
+    expect(body.turns[0].id).toBe('t1');
+    expect(body.turns[9].id).toBe('t10');
+    expect(body.hasMore).toBe(false);
+  });
+
+  it('pagination: before cursor returns older turns strictly before the given id', async () => {
+    const { getConversation } = await import('./recorder');
+    (getConversation as any).mockResolvedValueOnce(makePaginatedConv('conv-pg-before', 20));
+
+    // Ask for 5 turns before t10 → expect t5..t9
+    const res = await injectWebServer({
+      method: 'GET',
+      url: '/api/dashboard/session/conv-pg-before?limit=5&before=t10',
+      headers: AUTH_HEADER,
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.turns).toHaveLength(5);
+    expect(body.turns[0].id).toBe('t5');
+    expect(body.turns[4].id).toBe('t9');
+    expect(body.hasMore).toBe(true); // t1..t4 remain
+
+    // Second page: before t5 → t1..t4, hasMore:false
+    (getConversation as any).mockResolvedValueOnce(makePaginatedConv('conv-pg-before', 20));
+    const res2 = await injectWebServer({
+      method: 'GET',
+      url: '/api/dashboard/session/conv-pg-before?limit=5&before=t5',
+      headers: AUTH_HEADER,
+    });
+    expect(res2.statusCode).toBe(200);
+    const body2 = JSON.parse(res2.body);
+    expect(body2.turns).toHaveLength(4);
+    expect(body2.turns[0].id).toBe('t1');
+    expect(body2.turns[3].id).toBe('t4');
+    expect(body2.hasMore).toBe(false);
+  });
+
+  it('pagination: unknown before cursor returns empty turns with hasMore:false', async () => {
+    const { getConversation } = await import('./recorder');
+    (getConversation as any).mockResolvedValueOnce(makePaginatedConv('conv-pg-unknown', 20));
+
+    const res = await injectWebServer({
+      method: 'GET',
+      url: '/api/dashboard/session/conv-pg-unknown?limit=5&before=t999',
+      headers: AUTH_HEADER,
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.turns).toHaveLength(0);
+    expect(body.hasMore).toBe(false);
+    // turnCount still reflects full conversation
+    expect(body.turnCount).toBe(20);
+  });
+
+  it('pagination: clamps limit to [1, 200]', async () => {
+    const { getConversation } = await import('./recorder');
+
+    // limit=0 → clamped to 1
+    (getConversation as any).mockResolvedValueOnce(makePaginatedConv('conv-pg-clamp-lo', 10));
+    const resLo = await injectWebServer({
+      method: 'GET',
+      url: '/api/dashboard/session/conv-pg-clamp-lo?limit=0',
+      headers: AUTH_HEADER,
+    });
+    expect(resLo.statusCode).toBe(200);
+    const bodyLo = JSON.parse(resLo.body);
+    expect(bodyLo.turns).toHaveLength(1);
+    expect(bodyLo.turns[0].id).toBe('t10'); // latest single
+    expect(bodyLo.hasMore).toBe(true);
+
+    // limit=9999 → clamped to 200 (but only 250 turns so returns last 200)
+    (getConversation as any).mockResolvedValueOnce(makePaginatedConv('conv-pg-clamp-hi', 250));
+    const resHi = await injectWebServer({
+      method: 'GET',
+      url: '/api/dashboard/session/conv-pg-clamp-hi?limit=9999',
+      headers: AUTH_HEADER,
+    });
+    expect(resHi.statusCode).toBe(200);
+    const bodyHi = JSON.parse(resHi.body);
+    expect(bodyHi.turns).toHaveLength(200);
+    expect(bodyHi.turns[0].id).toBe('t51');
+    expect(bodyHi.turns[199].id).toBe('t250');
+    expect(bodyHi.hasMore).toBe(true);
+
+    // limit=NaN (non-numeric) → falls back to default 30
+    (getConversation as any).mockResolvedValueOnce(makePaginatedConv('conv-pg-clamp-nan', 50));
+    const resNaN = await injectWebServer({
+      method: 'GET',
+      url: '/api/dashboard/session/conv-pg-clamp-nan?limit=abc',
+      headers: AUTH_HEADER,
+    });
+    expect(resNaN.statusCode).toBe(200);
+    const bodyNaN = JSON.parse(resNaN.body);
+    expect(bodyNaN.turns).toHaveLength(30);
+  });
+
   // ── Inline JS escaping regression (PR #280) ──
 
   it('should render syntactically valid inline JavaScript', async () => {
