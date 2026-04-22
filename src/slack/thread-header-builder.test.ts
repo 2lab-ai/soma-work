@@ -158,6 +158,32 @@ describe('ThreadHeaderBuilder.formatModelName', () => {
   it('handles unrecognized format gracefully', () => {
     expect(ThreadHeaderBuilder.formatModelName('custom-model')).toBe('custom-model');
   });
+
+  // --- Issue #656: [1m] variants render with " (1M)" suffix ---
+
+  it('formats claude-opus-4-7[1m] with (1M) suffix', () => {
+    expect(ThreadHeaderBuilder.formatModelName('claude-opus-4-7[1m]')).toBe('opus-4.7 (1M)');
+  });
+
+  it('formats claude-opus-4-6[1m] with (1M) suffix', () => {
+    expect(ThreadHeaderBuilder.formatModelName('claude-opus-4-6[1m]')).toBe('opus-4.6 (1M)');
+  });
+
+  it('formats claude-opus-4-7[1M] (uppercase) with (1M) suffix', () => {
+    expect(ThreadHeaderBuilder.formatModelName('claude-opus-4-7[1M]')).toBe('opus-4.7 (1M)');
+  });
+
+  it('formats claude-opus-4-7 (bare) without any suffix', () => {
+    expect(ThreadHeaderBuilder.formatModelName('claude-opus-4-7')).toBe('opus-4.7');
+  });
+
+  it('formats claude-sonnet-4-6 (bare) without any suffix', () => {
+    expect(ThreadHeaderBuilder.formatModelName('claude-sonnet-4-6')).toBe('sonnet-4.6');
+  });
+
+  it('strips date suffix from dated bare ids', () => {
+    expect(ThreadHeaderBuilder.formatModelName('claude-haiku-4-5-20251001')).toBe('haiku-4.5');
+  });
 });
 
 describe('ThreadHeaderBuilder.formatTokenCount', () => {
