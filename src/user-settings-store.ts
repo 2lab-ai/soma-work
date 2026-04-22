@@ -7,7 +7,18 @@ import { maskUrl } from './turn-notifier.js';
 
 const logger = new Logger('UserSettingsStore');
 
-// Available models
+// Available models — the 8-entry user-facing allow-list.
+//
+// Contract:
+//   - The 6 bare entries are the historical lineup and MUST NOT be removed.
+//   - The 2 `[1m]` entries are additive: they enable the 1M beta context window
+//     on opus-4-7 / opus-4-6 via the shared suffix convention. The Claude Agent
+//     SDK (≥ 0.2.111) detects `[1m]`, strips it before the API call, and
+//     injects the `context-1m-2025-08-07` beta header.
+//
+// Issue #656 regression guard: any shrinking of this list (as attempted in
+// abandoned PR #652) silently deletes user-selectable models. Tests assert
+// exact array equality — NOT just length — to catch that class of mistake.
 export const AVAILABLE_MODELS = [
   'claude-opus-4-7',
   'claude-opus-4-6',
@@ -15,11 +26,16 @@ export const AVAILABLE_MODELS = [
   'claude-sonnet-4-5-20250929',
   'claude-opus-4-5-20251101',
   'claude-haiku-4-5-20251001',
+  'claude-opus-4-7[1m]',
+  'claude-opus-4-6[1m]',
 ] as const;
 
 export type ModelId = (typeof AVAILABLE_MODELS)[number];
 
-// Model aliases for user-friendly input
+// Model aliases for user-friendly input.
+//
+// Contract mirrors AVAILABLE_MODELS: the 9 pre-existing keys MUST be retained;
+// the 3 `[1m]` keys are additive (they resolve to the suffix-bearing ids).
 export const MODEL_ALIASES: Record<string, ModelId> = {
   sonnet: 'claude-sonnet-4-6',
   'sonnet-4.6': 'claude-sonnet-4-6',
@@ -30,9 +46,36 @@ export const MODEL_ALIASES: Record<string, ModelId> = {
   'opus-4.5': 'claude-opus-4-5-20251101',
   haiku: 'claude-haiku-4-5-20251001',
   'haiku-4.5': 'claude-haiku-4-5-20251001',
+  // 1M-context variants
+  'opus[1m]': 'claude-opus-4-7[1m]',
+  'opus-4.7[1m]': 'claude-opus-4-7[1m]',
+  'opus-4.6[1m]': 'claude-opus-4-6[1m]',
 };
 
 export const DEFAULT_MODEL: ModelId = 'claude-opus-4-7';
+
+/**
+ * Coerce arbitrary stored input to a known ModelId, falling back to DEFAULT_MODEL.
+ *
+ * - Accepts null/undefined/non-string → DEFAULT_MODEL.
+ * - Trims + lowercases (handles hand-edited JSON with whitespace or uppercase
+ *   `[1M]` typos).
+ * - Known entries pass through unchanged (including legacy but-still-valid
+ *   `claude-sonnet-4-6`, `claude-opus-4-5-20251101`, etc.).
+ * - Unknown entries fall back to DEFAULT_MODEL.
+ *
+ * Used by: loadSettings, session-registry deserialize path, and
+ * deploy/main-env-bootstrap normalization.
+ */
+export function coerceToAvailableModel(raw: string | null | undefined): ModelId {
+  if (typeof raw !== 'string') return DEFAULT_MODEL;
+  const normalized = raw.trim().toLowerCase();
+  if (normalized.length === 0) return DEFAULT_MODEL;
+  if ((AVAILABLE_MODELS as readonly string[]).includes(normalized)) {
+    return normalized as ModelId;
+  }
+  return DEFAULT_MODEL;
+}
 
 // Effort levels
 export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
@@ -214,14 +257,13 @@ export class UserSettingsStore {
         const data = fs.readFileSync(this.settingsFile, 'utf8');
         this.settings = JSON.parse(data);
         let didUpdate = false;
-        const validModels = new Set(AVAILABLE_MODELS as readonly string[]);
         for (const userSettings of Object.values(this.settings)) {
-          if (
-            !userSettings.defaultModel ||
-            !validModels.has(userSettings.defaultModel) ||
-            userSettings.defaultModel === 'claude-opus-4-5-20251101'
-          ) {
-            userSettings.defaultModel = DEFAULT_MODEL;
+          // Coerce to the 8-entry allow-list. Known-legacy ids (e.g. sonnet-4-6,
+          // opus-4-5-20251101) pass through; only unknown/missing values fall
+          // back to DEFAULT_MODEL.
+          const coerced = coerceToAvailableModel(userSettings.defaultModel);
+          if (coerced !== userSettings.defaultModel) {
+            userSettings.defaultModel = coerced;
             didUpdate = true;
           }
           // Migration: grandfathering — existing users without accepted field get accepted=true
@@ -708,18 +750,25 @@ export class UserSettingsStore {
   }
 
   /**
-   * Get display name for a model
+   * Get display name for a model.
+   *
+   * Covers all 8 entries in AVAILABLE_MODELS. The `[1m]` variants append
+   * `" (1M)"` so users can tell them apart in the Slack UI.
    */
   getModelDisplayName(model: ModelId): string {
     switch (model) {
       case 'claude-opus-4-7':
         return 'Opus 4.7';
+      case 'claude-opus-4-7[1m]':
+        return 'Opus 4.7 (1M)';
+      case 'claude-opus-4-6':
+        return 'Opus 4.6';
+      case 'claude-opus-4-6[1m]':
+        return 'Opus 4.6 (1M)';
       case 'claude-sonnet-4-6':
         return 'Sonnet 4.6';
       case 'claude-sonnet-4-5-20250929':
         return 'Sonnet 4.5';
-      case 'claude-opus-4-6':
-        return 'Opus 4.6';
       case 'claude-opus-4-5-20251101':
         return 'Opus 4.5';
       case 'claude-haiku-4-5-20251001':

@@ -23,26 +23,17 @@
 import { describe, expect, it } from 'vitest';
 import type { SessionUsage } from '../../types';
 
-// Matches the renamed constant in stream-executor.ts
+// Matches the renamed constant in metrics/model-registry.ts
 const FALLBACK_CONTEXT_WINDOW = 200_000;
 
-// Mirrors MODEL_CONTEXT_WINDOWS from stream-executor.ts
-const MODEL_CONTEXT_WINDOWS: [string, number][] = [
-  ['opus-4-6', 1_000_000],
-  ['sonnet-4-6', 1_000_000],
-  ['opus-4-5', 1_000_000],
-  ['sonnet-4-5', 1_000_000],
-  ['haiku-4-5', 200_000],
-  ['sonnet-4-', 200_000],
-  ['haiku-4-', 200_000],
-];
+// Mirrors resolveContextWindow from metrics/model-registry.ts (Issue #656).
+// Suffix-is-SSOT: bare ids resolve to 200k; only the explicit `[1m]` suffix
+// opts into the 1M beta window. Case-insensitive.
+const ONE_M_SUFFIX_RE = /\[1m\]$/i;
 
 function resolveContextWindow(modelName?: string): number {
   if (!modelName) return FALLBACK_CONTEXT_WINDOW;
-  for (const [pattern, size] of MODEL_CONTEXT_WINDOWS) {
-    if (modelName.includes(pattern)) return size;
-  }
-  return FALLBACK_CONTEXT_WINDOW;
+  return ONE_M_SUFFIX_RE.test(modelName) ? 1_000_000 : FALLBACK_CONTEXT_WINDOW;
 }
 
 /**
@@ -82,9 +73,11 @@ function updateSessionUsage(
     };
   }
 
-  // Dynamically update context window: max(SDK, model lookup)
+  // Dynamically update context window: max(SDK, model lookup).
+  // Precedence: session.model first (keeps `[1m]` suffix), then usage.modelName
+  // as fallback. Mirrors stream-executor.ts after Issue #656.
   const sdkWindow = usageData.contextWindow && usageData.contextWindow > 0 ? usageData.contextWindow : 0;
-  const lookupWindow = resolveContextWindow(usageData.modelName || session.model);
+  const lookupWindow = resolveContextWindow(session.model ?? usageData.modelName);
   const resolvedWindow = Math.max(sdkWindow, lookupWindow);
   if (resolvedWindow > 0) {
     session.usage.contextWindow = resolvedWindow;
@@ -240,7 +233,7 @@ describe('Dynamic Context Window from SDK', () => {
   it('should update contextWindow from SDK ModelUsage.contextWindow', () => {
     const session: { usage?: SessionUsage; model?: string } = {};
 
-    // Opus 4.6 = 1M context window
+    // SDK reports a 1M window for this turn — takes precedence over lookup.
     updateSessionUsage(session, {
       inputTokens: 5000,
       outputTokens: 2000,
@@ -277,9 +270,9 @@ describe('Dynamic Context Window from SDK', () => {
   });
 
   it('should preserve 1M contextWindow across turns via model lookup', () => {
-    const session: { usage?: SessionUsage; model?: string } = {};
+    const session: { usage?: SessionUsage; model?: string } = { model: 'claude-opus-4-7[1m]' };
 
-    // Turn 1: SDK reports 1M, model name captured
+    // Turn 1: SDK reports 1M. session.model is the [1m] variant.
     updateSessionUsage(session, {
       inputTokens: 5000,
       outputTokens: 2000,
@@ -287,13 +280,14 @@ describe('Dynamic Context Window from SDK', () => {
       cacheCreationInputTokens: 0,
       totalCostUsd: 0.05,
       contextWindow: 1_000_000,
-      modelName: 'claude-opus-4-6-20250414',
+      // SDK strips the [1m] suffix before reporting modelName.
+      modelName: 'claude-opus-4-7',
     });
 
     expect(session.usage!.contextWindow).toBe(1_000_000);
-    expect(session.model).toBe('claude-opus-4-6-20250414');
+    expect(session.model).toBe('claude-opus-4-7[1m]');
 
-    // Turn 2: SDK does NOT report contextWindow, but session.model is set
+    // Turn 2: SDK does NOT report contextWindow. session.model still has [1m].
     updateSessionUsage(session, {
       inputTokens: 10000,
       outputTokens: 3000,
@@ -302,7 +296,7 @@ describe('Dynamic Context Window from SDK', () => {
       totalCostUsd: 0.08,
     });
 
-    // max(0 SDK, 1M lookup via session.model) = 1M
+    // max(0 SDK, 1M lookup via session.model [1m] suffix) = 1M
     expect(session.usage!.contextWindow).toBe(1_000_000);
   });
 
@@ -321,10 +315,12 @@ describe('Dynamic Context Window from SDK', () => {
     expect(session.model).toBe('claude-sonnet-4-5-20250414');
   });
 
-  it('should use model lookup (1M) when SDK reports base window (200k)', () => {
-    const session: { usage?: SessionUsage; model?: string } = {};
+  it('should use model lookup (1M) when SDK reports base window (200k) for [1m] variant', () => {
+    // Issue #656: session.model carries the [1m] suffix; the SDK strips it
+    // before reporting usage.modelName, so the lookup fallback must read
+    // session.model — NOT usage.modelName — to see the suffix.
+    const session: { usage?: SessionUsage; model?: string } = { model: 'claude-opus-4-7[1m]' };
 
-    // SDK reports 200k but model is opus-4-6 which supports 1M with beta
     updateSessionUsage(session, {
       inputTokens: 5000,
       outputTokens: 2000,
@@ -332,10 +328,45 @@ describe('Dynamic Context Window from SDK', () => {
       cacheCreationInputTokens: 0,
       totalCostUsd: 0.05,
       contextWindow: 200_000,
-      modelName: 'claude-opus-4-6-20250414',
+      modelName: 'claude-opus-4-7', // SDK strips [1m]
     });
 
-    // max(200k SDK, 1M lookup) = 1M
+    // max(200k SDK, 1M lookup via session.model [1m]) = 1M
+    expect(session.usage!.contextWindow).toBe(1_000_000);
+  });
+
+  it('bare model id (without [1m] suffix) resolves to 200k via lookup', () => {
+    // Under the suffix-is-SSOT rule, even `claude-opus-4-6` bare resolves to 200k.
+    const session: { usage?: SessionUsage; model?: string } = { model: 'claude-opus-4-6' };
+
+    updateSessionUsage(session, {
+      inputTokens: 5000,
+      outputTokens: 2000,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      totalCostUsd: 0.05,
+      // No SDK window.
+    });
+
+    // max(0 SDK, 200k lookup) = 200k
+    expect(session.usage!.contextWindow).toBe(200_000);
+  });
+
+  it('session.model [1m] wins over usage.modelName (bare) for window resolution', () => {
+    // Regression guard for the precedence flip in stream-executor.ts.
+    // Previously the mock used `usageData.modelName || session.model` which
+    // would read the SDK-stripped `claude-opus-4-7` first and miss the 1M window.
+    const session: { usage?: SessionUsage; model?: string } = { model: 'claude-opus-4-7[1m]' };
+
+    updateSessionUsage(session, {
+      inputTokens: 5000,
+      outputTokens: 2000,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      totalCostUsd: 0.05,
+      modelName: 'claude-opus-4-7', // SDK-stripped bare id
+    });
+
     expect(session.usage!.contextWindow).toBe(1_000_000);
   });
 

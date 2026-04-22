@@ -35,9 +35,12 @@ vi.mock('../../user-settings-store', () => ({
   AVAILABLE_MODELS: [
     'claude-opus-4-7',
     'claude-opus-4-6',
+    'claude-sonnet-4-6',
     'claude-sonnet-4-5-20250929',
     'claude-opus-4-5-20251101',
     'claude-haiku-4-5-20251001',
+    'claude-opus-4-7[1m]',
+    'claude-opus-4-6[1m]',
   ],
   DEFAULT_MODEL: 'claude-opus-4-7',
 }));
