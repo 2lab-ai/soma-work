@@ -231,18 +231,18 @@ describe('buildSlotRow', () => {
     expect(text).not.toMatch(/OAuth refreshes in -/); // no negative duration
   });
 
-  it('emits per-slot Remove/Rename buttons with value = keyId', () => {
+  it('emits per-slot Remove button with value = keyId', () => {
     const slot = setupSlot();
     const blocks = buildSlotRow(slot, undefined, false, Date.parse('2026-04-18T00:00:00Z'));
-    // Last block should be the actions row with Remove + Rename.
+    // Last block should be the actions row with Remove. The per-slot
+    // Rename button was removed in the card v2 follow-up.
     const actions = blocks.find((b: any) => b.type === 'actions') as any;
     expect(actions).toBeDefined();
     const removeBtn = actions.elements.find((e: any) => e.action_id === 'cct_open_remove');
-    const renameBtn = actions.elements.find((e: any) => e.action_id === 'cct_open_rename');
     expect(removeBtn).toBeDefined();
-    expect(renameBtn).toBeDefined();
     expect(removeBtn.value).toBe(slot.keyId);
-    expect(renameBtn.value).toBe(slot.keyId);
+    // Per-slot Rename no longer exists on the row.
+    expect(actions.elements.find((e: any) => e.action_id === 'cct_open_rename')).toBeUndefined();
   });
 });
 
@@ -251,8 +251,9 @@ describe('buildCctCardBlocks', () => {
     const blocks = buildCctCardBlocks({ slots: [], states: {} });
     const anyBlock = blocks.find((b: any) => b.type === 'section') as any;
     expect(anyBlock.text.text).toMatch(/No CCT slots/);
-    // Card-level action row (Next + Add) is always present. Remove/Rename
-    // live on each slot row now, so they are absent when no slots exist.
+    // Card-level action row (Next + Add) is always present. Remove lives on
+    // each slot row now, so it is absent when no slots exist. Per-slot
+    // Rename was removed entirely in the card v2 follow-up.
     const cardActions = blocks.find((b: any) => b.type === 'actions') as any;
     const actionIds = cardActions.elements.map((e: any) => e.action_id);
     expect(actionIds).toContain('cct_next');
@@ -261,17 +262,17 @@ describe('buildCctCardBlocks', () => {
     expect(actionIds).not.toContain('cct_open_rename');
   });
 
-  it('renders set-active selector only when >1 slot', () => {
+  it('no set-active fallback dropdown is rendered regardless of slot count (card v2 follow-up)', () => {
     const slot = setupSlot();
     const slot2 = { ...setupSlot('cct2', 'slot-2') };
     const blocks = buildCctCardBlocks({ slots: [slot, slot2], states: {}, activeKeyId: 'slot-1' });
     const selectors = blocks.filter(
       (b: any) => b.type === 'actions' && b.elements.some((e: any) => e.type === 'static_select'),
     );
-    expect(selectors.length).toBe(1);
+    expect(selectors.length).toBe(0);
   });
 
-  it('each slot row carries per-slot Remove/Rename buttons whose value is that keyId', () => {
+  it('each slot row carries a per-slot Remove button whose value is that keyId (no Rename; removed in card v2 follow-up)', () => {
     const slot1 = setupSlot('cct1', 'slot-1');
     const slot2 = setupSlot('cct2', 'slot-2');
     const blocks = buildCctCardBlocks({ slots: [slot1, slot2], states: {}, activeKeyId: 'slot-1' });
@@ -285,14 +286,11 @@ describe('buildCctCardBlocks', () => {
       return btn.value as string;
     });
     expect(removeValues).toEqual(expect.arrayContaining(['slot-1', 'slot-2']));
-    // Same for rename.
-    const renameValues = blocks
-      .filter((b: any) => b.type === 'actions' && b.elements.some((e: any) => e.action_id === 'cct_open_rename'))
-      .map((r: any) => {
-        const btn = r.elements.find((e: any) => e.action_id === 'cct_open_rename');
-        return btn.value as string;
-      });
-    expect(renameValues).toEqual(expect.arrayContaining(['slot-1', 'slot-2']));
+    // No rename buttons anywhere on the card.
+    const renameRows = blocks.filter(
+      (b: any) => b.type === 'actions' && b.elements.some((e: any) => e.action_id === 'cct_open_rename'),
+    );
+    expect(renameRows).toHaveLength(0);
   });
 });
 
@@ -711,72 +709,6 @@ describe('subscriptionBadge (M1-S3)', () => {
 // M1-S4 · per-slot + card-level Refresh buttons
 // ────────────────────────────────────────────────────────────────────
 
-describe('buildSlotRow — Refresh button (M1-S4)', () => {
-  const now = Date.parse('2026-04-21T00:00:00Z');
-  function attachedSetupSlot(): AuthKey {
-    return {
-      kind: 'cct',
-      source: 'setup',
-      keyId: 'slot-r',
-      name: 'cct-r',
-      setupToken: 'sk-ant-oat01-xxxxxxxx',
-      oauthAttachment: {
-        accessToken: 't',
-        refreshToken: 'r',
-        expiresAtMs: now + 3_600_000,
-        scopes: ['user:profile'],
-        acknowledgedConsumerTosRisk: true,
-      },
-      createdAt: '',
-    };
-  }
-
-  it('attached cct slot action row has a Refresh button carrying keyId', () => {
-    const slot = attachedSetupSlot();
-    const blocks = buildSlotRow(slot, undefined, false, now);
-    const actions = blocks.find((b: any) => b.type === 'actions') as any;
-    const ids = actions.elements.map((e: any) => e.action_id);
-    expect(ids).toContain(CCT_ACTION_IDS.refresh_usage_slot);
-    const refresh = actions.elements.find((e: any) => e.action_id === CCT_ACTION_IDS.refresh_usage_slot);
-    expect(refresh.value).toBe('slot-r');
-  });
-
-  // Negative cases — the Refresh button must NOT appear on slots that have no
-  // usage-API surface. If it did, a click would 500 on the handler side when
-  // `fetchAndStoreUsage` refuses a non-attached slot. Two distinct shapes are
-  // checked: a bare setup-source cct slot (setupToken but no oauthAttachment)
-  // and an api_key slot (entirely separate kind, no attachment concept).
-  it('bare setup-source cct slot (no oauthAttachment) has NO Refresh button', () => {
-    const slot: AuthKey = {
-      kind: 'cct',
-      source: 'setup',
-      keyId: 'slot-bare',
-      name: 'cct-bare',
-      setupToken: 'sk-ant-oat01-xxxxxxxx',
-      // oauthAttachment intentionally absent — usage API cannot reach Anthropic.
-      createdAt: '',
-    };
-    const blocks = buildSlotRow(slot, undefined, false, now);
-    const actions = blocks.find((b: any) => b.type === 'actions') as any;
-    const ids = actions.elements.map((e: any) => e.action_id);
-    expect(ids).not.toContain(CCT_ACTION_IDS.refresh_usage_slot);
-  });
-
-  it('api_key slot has NO Refresh button (no attachment surface)', () => {
-    const slot: AuthKey = {
-      kind: 'api_key',
-      keyId: 'slot-api',
-      name: 'ops-api',
-      value: 'sk-ant-api03-xxxxxxxx',
-      createdAt: '',
-    };
-    const blocks = buildSlotRow(slot, undefined, false, now);
-    const actions = blocks.find((b: any) => b.type === 'actions') as any;
-    const ids = actions.elements.map((e: any) => e.action_id);
-    expect(ids).not.toContain(CCT_ACTION_IDS.refresh_usage_slot);
-  });
-});
-
 // ────────────────────────────────────────────────────────────────────
 // #644 review — CCT_ACTION_IDS / CCT_BLOCK_IDS literal-string contract lock
 // ────────────────────────────────────────────────────────────────────
@@ -793,22 +725,18 @@ describe('CCT_ACTION_IDS / CCT_BLOCK_IDS literal lock (#644 review)', () => {
       next: 'cct_next',
       add: 'cct_open_add',
       remove: 'cct_open_remove',
-      rename: 'cct_open_rename',
-      set_active: 'cct_set_active',
       tos_ack: 'cct_tos_ack',
       kind_radio: 'cct_kind_radio',
       name_input: 'cct_name_value',
       setup_token_input: 'cct_setup_token_value',
       oauth_blob_input: 'cct_oauth_blob_value',
       api_key_input: 'cct_api_key_value',
-      rename_input: 'cct_rename_value',
       remove_private_metadata: 'cct_remove_slot_id',
       attach: 'cct_open_attach',
       detach: 'cct_detach',
       attach_oauth_input: 'cct_attach_oauth_blob_value',
       attach_tos_ack: 'cct_attach_tos_ack_value',
       refresh_usage_all: 'cct_refresh_usage_all',
-      refresh_usage_slot: 'cct_refresh_usage_slot',
       activate_slot: 'cct_activate_slot',
     });
   });
@@ -822,7 +750,6 @@ describe('CCT_ACTION_IDS / CCT_BLOCK_IDS literal lock (#644 review)', () => {
       add_tos_ack: 'cct_add_tos_ack',
       add_api_key_value: 'cct_add_api_key_value',
       remove_confirm: 'cct_remove_confirm',
-      rename_name: 'cct_rename_name',
       attach_oauth_blob: 'cct_attach_oauth_blob',
       attach_tos_ack: 'cct_attach_tos_ack',
     });
@@ -832,7 +759,6 @@ describe('CCT_ACTION_IDS / CCT_BLOCK_IDS literal lock (#644 review)', () => {
     expect(CCT_VIEW_IDS).toEqual({
       add: 'cct_add_slot',
       remove: 'cct_remove_slot',
-      rename: 'cct_rename_slot',
       attach: 'cct_attach_oauth',
     });
   });

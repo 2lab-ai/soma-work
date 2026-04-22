@@ -464,15 +464,12 @@ export function buildSlotRow(
   // Per-slot action row. Ordering by intent:
   //   1. Activate (primary, first) — only when slot is NOT active and
   //      NOT an api_key (api_key is store-only in phase 1).
-  //   2. Refresh — only when the slot carries an OAuth attachment (the
-  //      precondition for `/api/oauth/usage` AND the OAuth-token refresh
-  //      endpoint). Force-refreshes BOTH the OAuth access_token AND the
-  //      usage snapshot — the `Refresh` handler orchestrates both calls
-  //      so the card reflects new expiresAtMs + new usage on the same
-  //      click (see actions.ts cct_refresh_usage_slot).
-  //   3. Attach or Detach OAuth — only for setup-source cct slots.
-  //   4. Rename — always.
-  //   5. Remove — always, last (danger).
+  //   2. Attach or Detach OAuth — only for setup-source cct slots.
+  //   3. Remove — always, last (danger).
+  //
+  // Per-slot Refresh / Rename buttons were removed in the card v2
+  // follow-up: Refresh is now a card-level fan-out
+  // (`CCT_ACTION_IDS.refresh_card`), and Rename was unused in practice.
   const actionElements: ZBlock[] = [];
   if (!isActive && slot.kind !== 'api_key') {
     actionElements.push({
@@ -480,14 +477,6 @@ export function buildSlotRow(
       action_id: CCT_ACTION_IDS.activate_slot,
       style: 'primary',
       text: { type: 'plain_text', text: ':arrow_forward: Activate', emoji: true },
-      value: slot.keyId,
-    });
-  }
-  if (isCctSlot(slot) && slot.oauthAttachment !== undefined) {
-    actionElements.push({
-      type: 'button',
-      action_id: CCT_ACTION_IDS.refresh_usage_slot,
-      text: { type: 'plain_text', text: ':arrows_counterclockwise: Refresh', emoji: true },
       value: slot.keyId,
     });
   }
@@ -508,12 +497,6 @@ export function buildSlotRow(
       });
     }
   }
-  actionElements.push({
-    type: 'button',
-    action_id: CCT_ACTION_IDS.rename,
-    text: { type: 'plain_text', text: ':pencil2: Rename', emoji: true },
-    value: slot.keyId,
-  });
   actionElements.push({
     type: 'button',
     action_id: CCT_ACTION_IDS.remove,
@@ -709,11 +692,10 @@ export function buildCctCardBlocks(input: CctCardInput): ZBlock[] {
   }
 
   // Card-level action row: Next rotate / Add / Refresh all. Per-slot
-  // [Activate] / [Refresh] / [Rename] / [Remove] / [Attach|Detach] live on
-  // each slot row (see `buildSlotRow`). `set_active` is retained as a
-  // fallback dropdown only when there are >1 slots, for screen-reader
-  // accessibility and bulk-navigation (#653 M2: inline [Activate] button
-  // is the primary affordance; dropdown is backup).
+  // [Activate] / [Remove] / [Attach|Detach] live on each slot row (see
+  // `buildSlotRow`). The per-slot inline [Activate] button is the only
+  // activation affordance; the legacy `set_active` fallback dropdown was
+  // dropped in the card v2 follow-up.
   const actionElements: ZBlock[] = [
     {
       type: 'button',
@@ -736,28 +718,6 @@ export function buildCctCardBlocks(input: CctCardInput): ZBlock[] {
     },
   ];
   blocks.push({ type: 'actions', elements: actionElements });
-
-  // Set-active selector (only when >1 slot). Kept as a fallback for large
-  // fleets where the overflow guard may have dropped inline [Activate]
-  // affordances along with their actions rows (defensive — today the
-  // guard only strips dividers and usage-context blocks).
-  if (input.slots.length > 1) {
-    const options = input.slots.map((s) => ({
-      text: { type: 'plain_text', text: s.name, emoji: false },
-      value: s.keyId,
-    }));
-    blocks.push({
-      type: 'actions',
-      elements: [
-        {
-          type: 'static_select',
-          action_id: CCT_ACTION_IDS.set_active,
-          placeholder: { type: 'plain_text', text: 'Set active slot', emoji: true },
-          options,
-        },
-      ],
-    });
-  }
 
   // Apply the overflow guard AFTER chrome is added so dividers inside
   // slot rows (not chrome) are the first casualty.
@@ -975,32 +935,6 @@ export function buildAttachOAuthModal(slot: AuthKey): Record<string, unknown> {
     callback_id: CCT_VIEW_IDS.attach,
     title: { type: 'plain_text', text: 'Attach OAuth', emoji: true },
     submit: { type: 'plain_text', text: 'Attach', emoji: true },
-    close: { type: 'plain_text', text: 'Cancel', emoji: true },
-    private_metadata: slot.keyId,
-    blocks,
-  };
-}
-
-/** Modal: Rename slot. */
-export function buildRenameSlotModal(slot: AuthKey): Record<string, unknown> {
-  const blocks: ZBlock[] = [
-    {
-      type: 'input',
-      block_id: CCT_BLOCK_IDS.rename_name,
-      label: { type: 'plain_text', text: 'New name', emoji: true },
-      element: {
-        type: 'plain_text_input',
-        action_id: CCT_ACTION_IDS.rename_input,
-        max_length: 64,
-        initial_value: slot.name,
-      },
-    },
-  ];
-  return {
-    type: 'modal',
-    callback_id: CCT_VIEW_IDS.rename,
-    title: { type: 'plain_text', text: 'Rename CCT slot', emoji: true },
-    submit: { type: 'plain_text', text: 'Rename', emoji: true },
     close: { type: 'plain_text', text: 'Cancel', emoji: true },
     private_metadata: slot.keyId,
     blocks,

@@ -33,7 +33,6 @@ import {
   buildAttachOAuthModal,
   buildCctCardBlocks,
   buildRemoveSlotModal,
-  buildRenameSlotModal,
 } from './builder';
 import { CCT_ACTION_IDS, CCT_BLOCK_IDS, CCT_VIEW_IDS } from './views';
 
@@ -50,8 +49,6 @@ const API_KEY_REGEX = /^sk-ant-api03-[A-Za-z0-9_-]{8,}$/;
 export const REFRESH_BANNERS = {
   allNull:
     ':warning: *Refresh all — no fresh data* — every attached slot returned no usage (throttled or failed). Check the TokenManager logs for `fetchAndStoreUsage` errors or the usage-store health.',
-  slotNull:
-    ':warning: *Refresh slot — no fresh data* — this slot returned no usage (throttled or failed). Check the TokenManager logs for `fetchAndStoreUsage` errors or the usage-store health.',
   outerCatch: ':warning: Refresh failed. Please try again.',
 } as const;
 
@@ -62,12 +59,9 @@ export const REFRESH_BANNERS = {
  *   action  cct_open_add       → open Add modal
  *   action  cct_kind_radio     → update Add modal (conditional blocks)
  *   action  cct_open_remove    → open Remove modal (resolves keyId from value)
- *   action  cct_open_rename    → open Rename modal (ditto)
  *   action  cct_next           → rotateToNext + re-post card
- *   action  cct_set_active     → applyToken + re-post card
  *   view    cct_add_slot       → validate + addSlot + close
  *   view    cct_remove_slot    → removeSlot (handles pending-drain) + close
- *   view    cct_rename_slot    → renameSlot + close
  */
 export function registerCctActions(app: App, tokenManager: TokenManager): void {
   // Open Add modal.
@@ -195,35 +189,6 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
     }
   });
 
-  // Open Rename modal.
-  app.action(CCT_ACTION_IDS.rename, async ({ ack, body, client }) => {
-    await ack();
-    try {
-      if (!requireAdmin(body)) return;
-      const triggerId: string | undefined = (body as any)?.trigger_id;
-      if (!triggerId) return;
-      // Per-slot Rename button: `value` carries the target keyId.
-      const bodyAction = (body as any).actions?.[0];
-      const targetKeyId = typeof bodyAction?.value === 'string' ? bodyAction.value : undefined;
-      if (!targetKeyId) {
-        logger.warn('cct_open_rename: missing keyId on action value');
-        return;
-      }
-      const snap = await tokenManager.getSnapshot();
-      const target = snap.registry.slots.find((s) => s.keyId === targetKeyId);
-      if (!target) {
-        logger.warn('cct_open_rename: target slot not found', { targetKeyId });
-        return;
-      }
-      await client.views.open({
-        trigger_id: triggerId,
-        view: buildRenameSlotModal(target) as any,
-      });
-    } catch (err) {
-      logger.error('cct_open_rename failed', err);
-    }
-  });
-
   // Rotate to next.
   app.action(CCT_ACTION_IDS.next, async ({ ack, body, client, respond }) => {
     await ack();
@@ -233,22 +198,6 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
       await respondWithCard({ tokenManager, respond, body, client });
     } catch (err) {
       logger.error('cct_next failed', err);
-    }
-  });
-
-  // Set active via fallback dropdown (kept for accessibility + bulk
-  // navigation on wide fleets). The per-slot inline [Activate] button
-  // registered below is the primary affordance for single-slot activation.
-  app.action(CCT_ACTION_IDS.set_active, async ({ ack, body, client, respond }) => {
-    await ack();
-    try {
-      if (!requireAdmin(body)) return;
-      const keyId = (body as any)?.actions?.[0]?.selected_option?.value as string | undefined;
-      if (!keyId) return;
-      await tokenManager.applyToken(keyId);
-      await respondWithCard({ tokenManager, respond, body, client });
-    } catch (err) {
-      logger.error('cct_set_active failed', err);
     }
   });
 
@@ -314,55 +263,6 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
       await postEphemeralCard(tokenManager, client, body);
     } catch (err) {
       logger.error('cct_refresh_usage_all failed', err);
-      await postEphemeralFailure(client, body, REFRESH_BANNERS.outerCatch);
-    }
-  });
-
-  // Per-slot "Refresh" — force-refresh BOTH the OAuth access_token AND
-  // the usage snapshot. Rationale (#653 M2): operators clicking Refresh
-  // expect the "OAuth refreshes in X" hint on the card to reset, not
-  // just the usage percentages. Previously the button refreshed only
-  // usage (which internally only triggered a token refresh if the
-  // access_token was within the 7h REFRESH_BUFFER_MS window), so a fresh
-  // token with 6h left would show the same expiry before and after
-  // click. Now we call `forceRefreshOAuth` first (ignoring "still fresh"
-  // short-circuit) then `fetchAndStoreUsage({force:true})`.
-  //
-  // Admin gate + `{ force: true }` on usage fetch bypasses the local
-  // throttle for this single slot. OAuth refresh failures are logged
-  // but don't abort the usage fetch — a `revoked` token will surface
-  // via `authState` on the re-posted card, so the user sees the failure
-  // mode.
-  app.action(CCT_ACTION_IDS.refresh_usage_slot, async ({ ack, body, client }) => {
-    await ack();
-    try {
-      if (!requireAdmin(body)) return;
-      const bodyAction = (body as any).actions?.[0];
-      const targetKeyId = typeof bodyAction?.value === 'string' ? bodyAction.value : undefined;
-      if (!targetKeyId) {
-        logger.warn('cct_refresh_usage_slot: missing keyId on action value');
-        return;
-      }
-      // Force-refresh OAuth first. `forceRefreshOAuth` is a no-op when
-      // the slot has no attachment. Failures (401/403) mark the slot's
-      // authState but don't throw past here — we still want the usage
-      // fetch to run so the card shows the latest state + the error.
-      try {
-        await tokenManager.forceRefreshOAuth(targetKeyId);
-      } catch (err) {
-        logger.warn('cct_refresh_usage_slot: OAuth force-refresh failed (continuing with usage fetch)', {
-          targetKeyId,
-          err,
-        });
-      }
-      const result = await tokenManager.fetchAndStoreUsage(targetKeyId, { force: true });
-      if (result === null) {
-        await postEphemeralFailure(client, body, REFRESH_BANNERS.slotNull);
-        return;
-      }
-      await postEphemeralCard(tokenManager, client, body);
-    } catch (err) {
-      logger.error('cct_refresh_usage_slot failed', err);
       await postEphemeralFailure(client, body, REFRESH_BANNERS.outerCatch);
     }
   });
@@ -439,49 +339,6 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
       await postEphemeralCard(tokenManager, client, body);
     } catch (err) {
       logger.error('cct view_submission remove failed', err);
-    }
-  });
-
-  // View submission: Rename slot.
-  app.view(CCT_VIEW_IDS.rename, async ({ ack, body, client }) => {
-    const values: Record<string, Record<string, any>> = (body as any)?.view?.state?.values ?? {};
-    const newName = readPlainText(values, CCT_BLOCK_IDS.rename_name, CCT_ACTION_IDS.rename_input);
-    if (!newName || newName.length > 64) {
-      await ack({
-        response_action: 'errors',
-        errors: { [CCT_BLOCK_IDS.rename_name]: 'Name must be 1-64 characters.' },
-      });
-      return;
-    }
-    const clash = tokenManager.listTokens().some((t) => t.name === newName);
-    if (clash) {
-      await ack({
-        response_action: 'errors',
-        errors: { [CCT_BLOCK_IDS.rename_name]: `Name \`${newName}\` is already in use.` },
-      });
-      return;
-    }
-    try {
-      const keyId = ((body as any)?.view?.private_metadata ?? '') as string;
-      if (!keyId) {
-        await ack();
-        return;
-      }
-      await tokenManager.renameSlot(keyId, newName);
-      await ack();
-      await postEphemeralCard(tokenManager, client, body);
-    } catch (err) {
-      // Race-lost path: parallel rename landed the same name first.
-      const msg = (err as Error)?.message ?? '';
-      if (msg.startsWith('NAME_IN_USE:')) {
-        await ack({
-          response_action: 'errors',
-          errors: { [CCT_BLOCK_IDS.rename_name]: `Name \`${newName}\` is already in use.` },
-        });
-        return;
-      }
-      await ack();
-      logger.error('cct view_submission rename failed', err);
     }
   });
 

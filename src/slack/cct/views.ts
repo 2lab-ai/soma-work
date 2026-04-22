@@ -17,7 +17,6 @@
 export const CCT_VIEW_IDS = {
   add: 'cct_add_slot',
   remove: 'cct_remove_slot',
-  rename: 'cct_rename_slot',
   // Z2 — Attach OAuth credentials modal. Opened from the per-slot "Attach"
   // button emitted by `buildSlotRow` for setup-source cct slots.
   attach: 'cct_attach_oauth',
@@ -37,7 +36,6 @@ export const CCT_BLOCK_IDS = {
   // block renders).
   add_api_key_value: 'cct_add_api_key_value',
   remove_confirm: 'cct_remove_confirm',
-  rename_name: 'cct_rename_name',
   // Z2 — Attach OAuth modal inputs.
   attach_oauth_blob: 'cct_attach_oauth_blob',
   attach_tos_ack: 'cct_attach_tos_ack',
@@ -60,8 +58,6 @@ export const CCT_ACTION_IDS = {
   next: 'cct_next',
   add: 'cct_open_add',
   remove: 'cct_open_remove',
-  rename: 'cct_open_rename',
-  set_active: 'cct_set_active',
   tos_ack: 'cct_tos_ack',
   kind_radio: 'cct_kind_radio',
   // Inner element action_ids for input blocks. Must also stay stable.
@@ -70,20 +66,17 @@ export const CCT_ACTION_IDS = {
   oauth_blob_input: 'cct_oauth_blob_value',
   // Z3 — api_key input (sk-ant-api03-<chars>).
   api_key_input: 'cct_api_key_value',
-  rename_input: 'cct_rename_value',
   remove_private_metadata: 'cct_remove_slot_id',
   // Z2 — Attach/Detach row buttons + modal inputs.
   attach: 'cct_open_attach',
   detach: 'cct_detach',
   attach_oauth_input: 'cct_attach_oauth_blob_value',
   attach_tos_ack: 'cct_attach_tos_ack_value',
-  // #641 M1-S4 — Refresh buttons (card-level + per-slot). Append-only;
+  // #641 M1-S4 — Refresh buttons (card-level fan-out). Append-only;
   // existing IDs above are unchanged.
   refresh_usage_all: 'cct_refresh_usage_all',
-  refresh_usage_slot: 'cct_refresh_usage_slot',
-  // per-slot Activate button. Replaces the card-level
-  // `set_active` dropdown for direct single-click activation. Non-
-  // active rows emit this button; the active row omits it.
+  // per-slot Activate button. Non-active rows emit this button; the
+  // active row omits it.
   activate_slot: 'cct_activate_slot',
 } as const;
 
