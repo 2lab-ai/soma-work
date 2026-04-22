@@ -149,18 +149,17 @@ describe('cct-topic.renderCctCard', () => {
     expect(ids).toContain('z_setting_cct_cancel');
   });
 
-  it('admin card lists <name> + next (no `set_` prefix — avoids greedy action-id parser collision)', async () => {
+  it('admin card does NOT emit legacy z_setting_cct_set_<name> buttons (card v2 follow-up)', async () => {
     resetMockStore();
     vi.mocked(isAdminUser).mockReturnValue(true);
     const { blocks } = await renderCctCard({ userId: 'U1', issuedAt: 2 });
     const ids = actionIds(blocks);
-    expect(ids).toContain('z_setting_cct_set_cct1');
-    expect(ids).toContain('z_setting_cct_set_cct2');
-    expect(ids).toContain('z_setting_cct_set_next');
-    // Regression guard: the legacy double-`set_` form is gone so the
-    // `/^z_setting_(.+)_set_(.+)$/` greedy parser can no longer split topic
-    // as `cct_set`.
-    expect(ids).not.toContain('z_setting_cct_set_set_cct1');
+    // Legacy back-compat buttons removed in the card v2 follow-up — the
+    // text `/z cct set <name>` grammar still routes via `applyCct`.
+    expect(ids).not.toContain('z_setting_cct_set_cct1');
+    expect(ids).not.toContain('z_setting_cct_set_cct2');
+    expect(ids).not.toContain('z_setting_cct_set_next');
+    expect(ids).toContain('z_setting_cct_cancel');
   });
 
   // ── T9: Z1 — renderCctCard awaits fetchUsageForAllAttached before snapshot ──
@@ -184,8 +183,11 @@ describe('cct-topic.renderCctCard', () => {
     expect(args).not.toHaveProperty('force');
   });
 
-  // ── T9b: Z3 — api_key slots excluded from set-active (legacy) button set ──
-  it('T9b: api_key slots do NOT appear as z_setting_cct_set_<name> buttons', async () => {
+  // ── T9b: Z3 — no `z_setting_cct_set_<name>` buttons are ever emitted ──
+  // (Card v2 follow-up dropped the legacy buttons; api_key exclusion is
+  //  now enforced by the render-side `visibleSlots` filter + applyCct
+  //  runtime fence instead of the button set.)
+  it('T9b: no z_setting_cct_set_<name> buttons exist even with api_key slots present', async () => {
     resetMockStore();
     mockStore.slots.push({
       kind: 'api_key',
@@ -197,7 +199,7 @@ describe('cct-topic.renderCctCard', () => {
     vi.mocked(isAdminUser).mockReturnValue(true);
     const { blocks } = await renderCctCard({ userId: 'U1', issuedAt: 4 });
     const ids = actionIds(blocks);
-    expect(ids).toContain('z_setting_cct_set_cct1');
+    expect(ids).not.toContain('z_setting_cct_set_cct1');
     expect(ids).not.toContain('z_setting_cct_set_ops-api');
   });
 
