@@ -917,15 +917,38 @@ export async function registerDashboardRoutes(
         return;
       }
 
-      // Pagination parameters
       const DEFAULT_LIMIT = 30;
       const MAX_LIMIT = 200;
       const limitRaw = request.query.limit ? Number.parseInt(request.query.limit, 10) : DEFAULT_LIMIT;
       const limit = Number.isNaN(limitRaw) ? DEFAULT_LIMIT : Math.max(1, Math.min(MAX_LIMIT, limitRaw));
       const before = request.query.before;
 
-      // Return lightweight turn summaries (no rawContent for assistant turns)
-      const allTurns = record.turns.map((t) => ({
+      // Compute the window on the source array BEFORE allocating projected copies —
+      // on a 10k-turn conversation this avoids allocating 10k throwaway objects per request.
+      const source = record.turns;
+      let startIdx: number;
+      let endIdx: number;
+      let hasMore: boolean;
+      if (before) {
+        const beforeIdx = source.findIndex((t) => t.id === before);
+        if (beforeIdx < 0) {
+          // Unknown cursor → return empty, no more
+          startIdx = 0;
+          endIdx = 0;
+          hasMore = false;
+        } else {
+          startIdx = Math.max(0, beforeIdx - limit);
+          endIdx = beforeIdx;
+          hasMore = startIdx > 0;
+        }
+      } else {
+        startIdx = Math.max(0, source.length - limit);
+        endIdx = source.length;
+        hasMore = startIdx > 0;
+      }
+
+      // Lightweight turn summaries (no rawContent for assistant turns).
+      const turns = source.slice(startIdx, endIdx).map((t) => ({
         id: t.id,
         role: t.role,
         timestamp: t.timestamp,
@@ -935,25 +958,6 @@ export async function registerDashboardRoutes(
         summarized: t.summarized,
         rawContent: t.role === 'user' ? t.rawContent : undefined,
       }));
-
-      let turns: typeof allTurns;
-      let hasMore: boolean;
-      if (before) {
-        const beforeIdx = allTurns.findIndex((t) => t.id === before);
-        if (beforeIdx < 0) {
-          // Unknown cursor → return empty, no more
-          turns = [];
-          hasMore = false;
-        } else {
-          const start = Math.max(0, beforeIdx - limit);
-          turns = allTurns.slice(start, beforeIdx);
-          hasMore = start > 0;
-        }
-      } else {
-        const start = Math.max(0, allTurns.length - limit);
-        turns = allTurns.slice(start);
-        hasMore = start > 0;
-      }
 
       reply.send({
         id: record.id,
@@ -3870,7 +3874,9 @@ async function loadMorePanelTurns() {
     var data = await r.json();
 
     // Discard stale response if card was switched mid-flight.
-    if (panelSessionKey !== requestSessionKey || panelConvId !== requestConvId) {
+    // panelSessionKey and panelConvId are always updated/cleared together (openPanel, closePanel),
+    // so sessionKey equality implies convId equality — single check is sufficient.
+    if (panelSessionKey !== requestSessionKey) {
       if (spinner.parentNode) spinner.remove();
       return;
     }
