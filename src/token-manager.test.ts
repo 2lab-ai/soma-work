@@ -1913,6 +1913,49 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       const snap = await tm.getSnapshot();
       expect(snap.state[slot.keyId]?.authState).toBe('refresh_failed');
     });
+
+    it('preserves oauthAttachment.profile across a successful refresh (v2 card)', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const slot = await tm.addSlot({
+        name: 'o',
+        kind: 'oauth_credentials',
+        credentials: makeOAuthCreds(),
+        acknowledgedConsumerTosRisk: true,
+      });
+      // Seed a profile directly on the persisted attachment (mimics what
+      // `refreshOAuthProfile` writes after the first fetch).
+      const fetchedAt = 1_700_000_000_000;
+      await store.mutate((snap) => {
+        const target = snap.registry.slots.find((s: any) => s.keyId === slot.keyId);
+        if (!target || target.kind !== 'cct' || !target.oauthAttachment) throw new Error('seed failed');
+        target.oauthAttachment.profile = {
+          email: 'alice@example.com',
+          accountUuid: 'acc-1',
+          rateLimitTier: 'default_claude_max_20x',
+          fetchedAt,
+        };
+      });
+      refreshClaudeCredentialsMock.mockReset();
+      refreshClaudeCredentialsMock.mockResolvedValue({
+        accessToken: 'new-access',
+        refreshToken: 'new-refresh',
+        expiresAtMs: Date.now() + 8 * 60 * 60 * 1000,
+        scopes: [...VALID_OAUTH_SCOPES],
+      });
+      await tm.forceRefreshOAuth(slot.keyId);
+      const snap = await tm.getSnapshot();
+      const after = snap.registry.slots.find((s: any) => s.keyId === slot.keyId) as any;
+      expect(after.oauthAttachment.accessToken).toBe('new-access');
+      expect(after.oauthAttachment.profile).toEqual({
+        email: 'alice@example.com',
+        accountUuid: 'acc-1',
+        rateLimitTier: 'default_claude_max_20x',
+        fetchedAt,
+      });
+    });
   });
 
   describe('refreshAllAttachedOAuthTokens (#653 M2)', () => {

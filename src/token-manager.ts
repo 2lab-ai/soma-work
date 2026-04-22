@@ -1236,6 +1236,11 @@ export class TokenManager {
           // to strictly equal the one we captured at refresh start.
           if (target.oauthAttachment === undefined) return;
           if (target.oauthAttachment.attachedAt !== preAttachedAt) return;
+          // Carry the account/organization profile across the refresh so
+          // the card's email / rate-limit-tier badge doesn't blank out every
+          // hour when the scheduler force-refreshes. The attachment identity
+          // is unchanged; only the tokens rotate.
+          const preservedProfile = target.oauthAttachment.profile;
           const updated: OAuthAttachment = {
             accessToken: next.accessToken,
             refreshToken: next.refreshToken,
@@ -1248,6 +1253,7 @@ export class TokenManager {
           };
           if (next.subscriptionType !== undefined) updated.subscriptionType = next.subscriptionType;
           if (next.rateLimitTier !== undefined) updated.rateLimitTier = next.rateLimitTier;
+          if (preservedProfile !== undefined) updated.profile = preservedProfile;
           target.oauthAttachment = updated;
           const st = snap.state[slot.keyId] ?? { authState: 'healthy' as AuthState, activeLeases: [] };
           st.authState = 'healthy';
