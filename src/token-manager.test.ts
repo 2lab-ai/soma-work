@@ -115,6 +115,22 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
 
   afterEach(async () => {
     process.env = originalEnv;
+    // Card v2 fire-and-forget profile syncs (attachOAuth / addSlot /
+    // forceRefreshOAuth) can still be in flight when the test body returns,
+    // plus the (pre-existing) fetchAndStoreUsage fire-and-forget on attach.
+    // Drain a few macrotask ticks before nuking the tmpdir; retry the rm
+    // loop so a stray `fs.writeFile` landing mid-cleanup doesn't surface as
+    // a flaky ENOTEMPTY.
+    await new Promise((r) => setTimeout(r, 50));
+    for (let i = 0; i < 5; i++) {
+      try {
+        await fs.rm(tmp, { recursive: true, force: true });
+        return;
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOTEMPTY') throw err;
+        await new Promise((r) => setTimeout(r, 40));
+      }
+    }
     await fs.rm(tmp, { recursive: true, force: true });
   });
 
