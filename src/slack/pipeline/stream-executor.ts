@@ -1370,73 +1370,63 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           });
         }
       } else if (this.isOneMContextUnavailableError(error)) {
-        // Issue #661 — auto-fallback when the account lacks 1M entitlement.
+        // Issue #661 — session-scoped fallback when the account lacks 1M entitlement.
+        //
+        // Policy: strip `[1m]` from `session.model` ONLY for the current session.
+        // The user's persisted default is intentionally NOT touched — if they
+        // want to permanently switch, they run `/z model opus` themselves.
         //
         // Self-idempotent flag-free design:
-        //  - Capture previousSessionModel / previousUserDefault BEFORE any
-        //    mutation. Computing strip state post-mutation would wrongly
-        //    report `false` for both flags and the formatter would print the
-        //    defensive "추가 변경 없음" branch even on the very first fallback.
-        //  - If neither model has the `[1m]` suffix (a true no-op), we still
-        //    record `oneMFallbackInfo` on the error and fall through without
-        //    scheduling a retry — this is the defensive-no-strip path.
-        //  - If either strip fires, we clear the stale file-access retry
-        //    state so a recurring 1M error doesn't inherit a partially
-        //    consumed retry budget from a prior unrelated error.
+        //  - Capture previousSessionModel BEFORE mutation; post-mutation state
+        //    would wrongly report `sessionChanged=false` and the formatter
+        //    would print the defensive branch on the very first fallback.
+        //  - If session.model has no `[1m]` (bare/undefined), no-op. We still
+        //    record `oneMFallbackInfo` and fall through without scheduling a
+        //    retry — this is the defensive-no-strip path (matcher fired via
+        //    `error.attemptedModel` but session already bare).
+        //  - When the strip fires, clear stale file-access retry state so a
+        //    recurring 1M error doesn't inherit an unrelated retry budget.
         const userId = session.ownerId || '';
-        const previousUserDefault = userId ? userSettingsStore.getUserDefaultModel(userId) : undefined;
         const previousSessionModel = session.model;
 
         const strippedSession =
           previousSessionModel && hasOneMSuffix(previousSessionModel)
             ? stripOneMSuffix(previousSessionModel)
             : previousSessionModel;
-        const strippedDefault =
-          previousUserDefault && hasOneMSuffix(previousUserDefault)
-            ? stripOneMSuffix(previousUserDefault)
-            : previousUserDefault;
 
         const sessionStripped = previousSessionModel !== undefined && strippedSession !== previousSessionModel;
-        const defaultStripped = previousUserDefault !== undefined && strippedDefault !== previousUserDefault;
 
         if (sessionStripped && strippedSession) {
           session.model = coerceToAvailableModel(strippedSession) as typeof session.model;
         }
-        if (userId && defaultStripped && strippedDefault) {
-          userSettingsStore.setUserDefaultModel(userId, coerceToAvailableModel(strippedDefault));
-        }
 
-        const bareTargetInput = strippedSession ?? strippedDefault ?? '';
+        const bareTargetInput = strippedSession ?? stripOneMSuffix(String((error as any).attemptedModel ?? ''));
         (error as any).oneMFallbackInfo = {
           sessionChanged: sessionStripped,
-          defaultChanged: defaultStripped,
           bareTarget: coerceToAvailableModel(bareTargetInput),
         };
 
-        if (sessionStripped || defaultStripped) {
+        if (sessionStripped) {
           // Clear stale state so next turn starts clean on the bare model.
           session.lastErrorContext = undefined;
           session.fileAccessRetryCount = 0;
           retryAfterMs = StreamExecutor.ONE_M_FALLBACK_RETRY_DELAY_MS;
-          this.logger.info('1M fallback triggered', {
+          this.logger.info('1M fallback triggered (session-only)', {
             sessionKey,
             userId,
             from: (error as any).attemptedModel,
             sessionFrom: previousSessionModel,
-            sessionTo: sessionStripped ? strippedSession : undefined,
-            defaultFrom: previousUserDefault,
-            defaultTo: defaultStripped ? strippedDefault : undefined,
+            sessionTo: strippedSession,
           });
         } else {
-          // Defensive no-strip: matcher fired but both models are already
-          // bare (race, retry, or mis-propagated error). No retry — the
-          // formatter surfaces "추가 변경 없음" so the user knows why.
-          this.logger.warn('1M fallback matcher fired but nothing to strip', {
+          // Defensive no-strip: matcher fired but session.model is already
+          // bare (or undefined). No retry — the formatter surfaces
+          // "추가 변경 없음" so the user knows why.
+          this.logger.warn('1M fallback matcher fired but session.model already bare', {
             sessionKey,
             userId,
             from: (error as any).attemptedModel,
             sessionModel: previousSessionModel,
-            userDefault: previousUserDefault,
           });
         }
       } else if (this.isFileAccessBlockedError(error)) {
@@ -1993,38 +1983,32 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // Issue #661 — top-priority branch for 1M-context auto-fallback.
     // Short-circuits the generic formatter because the narrative is entirely
     // different: nothing went "wrong" from the user's perspective — the bot
-    // automatically corrected a model-selection mismatch and is retrying.
-    // Reads `oneMFallbackInfo` set by the handleError branch to emit
-    // condition-specific wording (both-changed / session-only / default-only /
-    // defensive-none).
+    // automatically corrected a model-selection mismatch for THIS session and
+    // is retrying. The user's persisted default is intentionally left alone.
+    // Reads `oneMFallbackInfo` set by the handleError branch to emit the
+    // session-scoped wording (sessionChanged / defensive-none).
     if (this.isOneMContextUnavailableError(error)) {
-      const info = (error as any).oneMFallbackInfo as
-        | { sessionChanged: boolean; defaultChanged: boolean; bareTarget: string }
-        | undefined;
+      const info = (error as any).oneMFallbackInfo as { sessionChanged: boolean; bareTarget: string } | undefined;
       const bareTarget = info?.bareTarget || 'bare model';
       const lines: string[] = [`ℹ️ *[1M context 미지원]* 자동 폴백을 수행했습니다.`, ''];
 
       lines.push(`> *Type:* Claude SDK (OneMContextUnavailable)`);
       lines.push(`> *Session:* ✅ 유지됨 - bare 모델로 자동 재시도합니다.`);
 
-      if (info?.sessionChanged && info.defaultChanged) {
-        lines.push(`> *원인:* 현재 계정은 1M context 확장을 사용할 수 없습니다.`);
-        lines.push(`> *조치:* 세션/기본 모델을 \`${bareTarget}\`로 자동 전환하고 영구 저장했습니다.`);
-      } else if (info?.sessionChanged && !info.defaultChanged) {
+      if (info?.sessionChanged) {
         lines.push(`> *원인:* 현재 계정은 1M context 확장을 사용할 수 없습니다.`);
         lines.push(
-          `> *조치:* 이번 세션 모델을 \`${bareTarget}\`로 자동 전환했습니다. (기본값은 이미 \`${bareTarget}\` 상태)`,
+          `> *조치:* 이번 세션 모델을 \`${bareTarget}\`로 자동 전환했습니다. (기본값 설정은 변경되지 않습니다)`,
         );
-      } else if (!info?.sessionChanged && info?.defaultChanged) {
-        lines.push(`> *원인:* 현재 계정은 1M context 확장을 사용할 수 없습니다.`);
-        lines.push(`> *조치:* 기본 모델을 \`${bareTarget}\`로 영구 변경했습니다.`);
       } else {
-        // Defensive branch — matcher fired but nothing stripped.
+        // Defensive branch — matcher fired but session.model already bare.
         lines.push(`> *원인:* 이미 bare 모델 사용 중 — 추가 변경 없음.`);
         lines.push(`> _계속 \`[1m]\` 사용을 원한다면 Claude Extra Usage를 활성화하세요._`);
       }
 
-      lines.push(`> _다시 \`[1m]\`을 쓰려면 Claude Extra Usage를 활성화한 뒤 \`/z model opus[1m]\`로 전환하세요._`);
+      lines.push(
+        `> _계속 \`[1m]\`을 쓰려면 Claude Extra Usage를 활성화하세요. 기본값을 영구 변경하려면 \`/z model opus\`를 실행하세요._`,
+      );
 
       // Share the same SDK Details block so the raw signal is visible for
       // debugging even in the fallback path.

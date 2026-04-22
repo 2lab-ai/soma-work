@@ -1893,11 +1893,12 @@ describe('File access blocked error recovery', () => {
     return err;
   }
 
-  it('1M fallback case 1: both session and user-default stripped', async () => {
+  it('1M fallback case 1: session.model [1m] stripped (user default NEVER persisted)', async () => {
     const deps = createExecutorDeps();
     const executor = new StreamExecutor(deps);
     const say = vi.fn().mockResolvedValue(undefined);
 
+    // Even if user default is [1m], policy is session-only — never persist.
     (userSettingsStore.getUserDefaultModel as any).mockReturnValueOnce('claude-opus-4-7[1m]');
     const session = { model: 'claude-opus-4-7[1m]', ownerId: 'U1' } as any;
     const error = buildOneMUnavailableError();
@@ -1914,55 +1915,50 @@ describe('File access blocked error recovery', () => {
 
     expect(retryAfterMs).toBe(500);
     expect(session.model).toBe('claude-opus-4-7');
-    expect(userSettingsStore.setUserDefaultModel).toHaveBeenCalledWith('U1', 'claude-opus-4-7');
+    // CRITICAL: user's persisted default is NEVER written. Session-only policy.
+    expect(userSettingsStore.setUserDefaultModel).not.toHaveBeenCalled();
     expect(error.oneMFallbackInfo).toBeDefined();
     expect(error.oneMFallbackInfo.sessionChanged).toBe(true);
-    expect(error.oneMFallbackInfo.defaultChanged).toBe(true);
+    expect(error.oneMFallbackInfo.bareTarget).toBe('claude-opus-4-7');
     // Session preserved (no clearSessionId)
     expect(deps.claudeHandler.clearSessionId).not.toHaveBeenCalled();
-    // User notice wording
+    // User notice wording — session-scoped with "기본값 설정은 변경되지 않습니다"
     expect(say).toHaveBeenCalledTimes(1);
     const payload = say.mock.calls[0][0];
-    expect(payload.text).toContain('세션/기본 모델');
+    expect(payload.text).toContain('이번 세션 모델');
+    expect(payload.text).toContain('기본값 설정은 변경되지 않습니다');
     expect(payload.text).toContain('claude-opus-4-7');
   });
 
-  it('1M fallback case 2: session-only strip (user default already bare)', async () => {
-    const deps = createExecutorDeps();
-    const executor = new StreamExecutor(deps);
-    const say = vi.fn().mockResolvedValue(undefined);
-
-    (userSettingsStore.getUserDefaultModel as any).mockReturnValueOnce('claude-opus-4-7');
-    const session = { model: 'claude-opus-4-7[1m]', ownerId: 'U1' } as any;
-    const error = buildOneMUnavailableError();
-
-    const retryAfterMs = await (executor as any).handleError(
-      error,
-      session,
-      'C123:thread123',
-      'C123',
-      'thread123',
-      [],
-      say,
-    );
-
-    expect(retryAfterMs).toBe(500);
-    expect(session.model).toBe('claude-opus-4-7');
-    expect(userSettingsStore.setUserDefaultModel).not.toHaveBeenCalled();
-    expect(error.oneMFallbackInfo.sessionChanged).toBe(true);
-    expect(error.oneMFallbackInfo.defaultChanged).toBe(false);
-    const payload = say.mock.calls[0][0];
-    expect(payload.text).toContain('이번 세션 모델');
-    expect(payload.text).toContain('기본값은 이미');
-  });
-
-  it('1M fallback case 3: user-default-only strip (session has no [1m])', async () => {
+  it('1M fallback case 2: never persists even when user default has [1m]', async () => {
+    // Regression guard for the session-only policy: no matter what the user
+    // default is, `setUserDefaultModel` must not fire. This is the invariant
+    // Z asked us to enforce — session-scoped fallback only.
     const deps = createExecutorDeps();
     const executor = new StreamExecutor(deps);
     const say = vi.fn().mockResolvedValue(undefined);
 
     (userSettingsStore.getUserDefaultModel as any).mockReturnValueOnce('claude-opus-4-7[1m]');
-    // Session model is undefined (e.g., new session or user switched mid-stream)
+    const session = { model: 'claude-opus-4-7[1m]', ownerId: 'U1' } as any;
+    const error = buildOneMUnavailableError();
+
+    await (executor as any).handleError(error, session, 'C123:thread123', 'C123', 'thread123', [], say);
+
+    expect(userSettingsStore.setUserDefaultModel).not.toHaveBeenCalled();
+    expect((error as any).oneMFallbackInfo.sessionChanged).toBe(true);
+    // No `defaultChanged` field at all — session-only policy has no such concept.
+    expect((error as any).oneMFallbackInfo.defaultChanged).toBeUndefined();
+  });
+
+  it('1M fallback case 3: session.model undefined → defensive no-strip (never touches user default)', async () => {
+    // When session.model is undefined there is nothing to strip and we fall
+    // through to the defensive path. User default is irrelevant under the
+    // session-only policy.
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+
+    (userSettingsStore.getUserDefaultModel as any).mockReturnValueOnce('claude-opus-4-7[1m]');
     const session = { ownerId: 'U1' } as any;
     const error = buildOneMUnavailableError();
 
@@ -1976,13 +1972,12 @@ describe('File access blocked error recovery', () => {
       say,
     );
 
-    expect(retryAfterMs).toBe(500);
-    expect(userSettingsStore.setUserDefaultModel).toHaveBeenCalledWith('U1', 'claude-opus-4-7');
+    // Nothing to strip → no retry, no persisted write, defensive wording.
+    expect(retryAfterMs).toBeUndefined();
+    expect(userSettingsStore.setUserDefaultModel).not.toHaveBeenCalled();
     expect(error.oneMFallbackInfo.sessionChanged).toBe(false);
-    expect(error.oneMFallbackInfo.defaultChanged).toBe(true);
     const payload = say.mock.calls[0][0];
-    expect(payload.text).toContain('기본 모델');
-    expect(payload.text).toContain('영구 변경');
+    expect(payload.text).toContain('추가 변경 없음');
   });
 
   it('1M fallback case 4: turnNotifier is NOT invoked on 1M fallback', async () => {
@@ -2051,7 +2046,7 @@ describe('File access blocked error recovery', () => {
     expect(session.model).toBe('claude-opus-4-7'); // untouched
   });
 
-  it('1M fallback case 8: formatErrorForUser emits SDK Details and condition-specific wording', async () => {
+  it('1M fallback case 8: formatErrorForUser emits SDK Details and session-scoped wording', async () => {
     const deps = createExecutorDeps();
     const executor = new StreamExecutor(deps);
     const say = vi.fn().mockResolvedValue(undefined);
@@ -2064,11 +2059,13 @@ describe('File access blocked error recovery', () => {
     await (executor as any).handleError(error, session, 'C123:thread123', 'C123', 'thread123', [], say);
 
     const payload = say.mock.calls[0][0];
-    // Condition-specific (both changed) wording
-    expect(payload.text).toContain('세션/기본 모델');
+    // Session-scoped wording — no "기본 설정 변경" claim
+    expect(payload.text).toContain('이번 세션 모델');
+    expect(payload.text).toContain('기본값 설정은 변경되지 않습니다');
     expect(payload.text).toContain('claude-opus-4-7');
-    // Extra Usage + `/z model opus[1m]` recovery hint (from issue spec)
+    // Extra Usage + `/z model opus` recovery hint (permanent change is user-driven)
     expect(payload.text).toMatch(/extra.usage/i);
+    expect(payload.text).toContain('/z model opus');
     // SDK Details section preserved via shared appendSdkDetails helper
     expect(payload.text).toContain('SDK Details:');
     expect(payload.text).toContain('1m context');
@@ -2098,7 +2095,6 @@ describe('File access blocked error recovery', () => {
     expect(retryAfterMs).toBeUndefined();
     expect(userSettingsStore.setUserDefaultModel).not.toHaveBeenCalled();
     expect(error.oneMFallbackInfo.sessionChanged).toBe(false);
-    expect(error.oneMFallbackInfo.defaultChanged).toBe(false);
     const payload = say.mock.calls[0][0];
     expect(payload.text).toContain('추가 변경 없음');
   });
