@@ -1259,44 +1259,76 @@ export class TokenManager {
 
   /**
    * #653 M2 — Fan-out force-refresh of every OAuth-attached CCT slot.
-   * Returns a `Record<keyId, 'ok' | 'error'>` so the scheduler (and
-   * future card-level "Refresh OAuth all" button) can report per-slot
+   * Returns a `Record<keyId, 'ok' | 'error'>` so the scheduler (and the
+   * card-level "Refresh All OAuth Tokens" button) can report per-slot
    * outcomes.
    *
-   * Parallel execution under a single deadline (default 10s — the
-   * `refreshClaudeCredentials` HTTP call has its own 10s timeout, so 10s
-   * overall is tight but realistic for a 1-2 slot fleet. Scheduler wires
-   * a longer deadline for larger fleets).
+   * Parallel execution under a single shared deadline (default 30s). Token
+   * refreshes run first; when `awaitProfile: true` the profile fetches that
+   * normally run fire-and-forget are awaited on a second leg under the
+   * REMAINING portion of the same deadline — a hanging profile fetch on one
+   * slot cannot push the whole call past `timeoutMs`. The token results
+   * are returned regardless (profile latency never blocks token outcomes).
    *
    * Contract mirrors `fetchUsageForAllAttached`: timeouts return whatever
    * has landed so far; per-slot errors are caught and surfaced in the
    * returned map (not thrown) so a single bad slot doesn't poison the
    * whole tick.
+   *
+   * The scheduler calls this WITHOUT `awaitProfile` so the fire-and-forget
+   * profile leg stays hot for periodic ticks — the next tick sees fresh
+   * data even when the profile fetch lands asynchronously.
    */
-  async refreshAllAttachedOAuthTokens(opts?: { timeoutMs?: number }): Promise<Record<string, 'ok' | 'error'>> {
+  async refreshAllAttachedOAuthTokens(opts?: {
+    timeoutMs?: number;
+    awaitProfile?: boolean;
+  }): Promise<Record<string, 'ok' | 'error'>> {
+    const totalDeadline = opts?.timeoutMs ?? 30_000;
+    const startedAt = Date.now();
+    const remaining = (): number => Math.max(0, totalDeadline - (Date.now() - startedAt));
     const snap = await this.store.load();
     const keyIds = snap.registry.slots
       .filter((s) => s.kind === 'cct' && s.oauthAttachment !== undefined)
       .map((s) => s.keyId);
     const results: Record<string, 'ok' | 'error'> = {};
-    const promises = keyIds.map(async (keyId) => {
-      try {
-        await this.forceRefreshOAuth(keyId);
-        results[keyId] = 'ok';
-      } catch (err) {
-        results[keyId] = 'error';
-        logger.warn('refreshAllAttachedOAuthTokens: per-slot refresh failed', {
-          keyId,
-          err,
-        });
-      }
-    });
-    const timeoutMs = opts?.timeoutMs ?? 30_000;
-    const timeout = new Promise<void>((resolve) => {
-      const t = setTimeout(resolve, timeoutMs);
+    // When `awaitProfile: true`, suppress `forceRefreshOAuth`'s fire-and-forget
+    // profile sync so the profile fetch runs on the awaited leg below (one
+    // profile call per slot, not two).
+    const tokenTasks = keyIds.map((keyId) =>
+      this.forceRefreshOAuth(keyId, { syncProfile: opts?.awaitProfile !== true })
+        .then(() => {
+          results[keyId] = 'ok';
+        })
+        .catch((err) => {
+          results[keyId] = 'error';
+          logger.warn('refreshAllAttachedOAuthTokens: per-slot refresh failed', {
+            keyId,
+            err,
+          });
+        }),
+    );
+    const tokenDeadline = new Promise<void>((resolve) => {
+      const t = setTimeout(resolve, remaining());
       if (typeof t.unref === 'function') t.unref();
     });
-    await Promise.race([Promise.allSettled(promises), timeout]);
+    await Promise.race([Promise.allSettled(tokenTasks), tokenDeadline]);
+    if (opts?.awaitProfile) {
+      const timeLeft = remaining();
+      if (timeLeft > 0) {
+        const profileAwaits = Object.entries(results)
+          .filter(([, outcome]) => outcome === 'ok')
+          .map(([keyId]) =>
+            this.refreshOAuthProfile(keyId, { timeoutMs: timeLeft }).catch(() => null),
+          );
+        if (profileAwaits.length > 0) {
+          const profileDeadline = new Promise<void>((resolve) => {
+            const t = setTimeout(resolve, timeLeft);
+            if (typeof t.unref === 'function') t.unref();
+          });
+          await Promise.race([Promise.allSettled(profileAwaits), profileDeadline]);
+        }
+      }
+    }
     return results;
   }
 

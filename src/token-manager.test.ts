@@ -2426,6 +2426,77 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       // No keys land because the deadline fires first.
       expect(Object.keys(results).length).toBe(0);
     });
+
+    it('awaitProfile: true returns within total deadline when profile fetch hangs', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      await tm.addSlot({
+        name: 'ok',
+        kind: 'oauth_credentials',
+        credentials: makeOAuthCreds(),
+        acknowledgedConsumerTosRisk: true,
+      });
+      // Token refresh resolves fast; profile fetch hangs forever. Under
+      // awaitProfile: true the second leg must also be bounded by the
+      // shared deadline — otherwise the call never returns.
+      refreshClaudeCredentialsMock.mockReset();
+      refreshClaudeCredentialsMock.mockImplementation(async (current: any) => ({
+        ...current,
+        accessToken: `${current.accessToken}-refreshed`,
+        expiresAtMs: Date.now() + 8 * 60 * 60 * 1000,
+      }));
+      fetchOAuthProfileMock.mockReset();
+      fetchOAuthProfileMock.mockImplementation(async () => new Promise(() => {}));
+      const t0 = Date.now();
+      const results = await tm.refreshAllAttachedOAuthTokens({ timeoutMs: 200, awaitProfile: true });
+      const elapsed = Date.now() - t0;
+      // Bounded by the shared deadline (200ms + a little scheduler slack).
+      expect(elapsed).toBeLessThan(1500);
+      // Token result landed even though the profile leg hung.
+      const outcomes = Object.values(results);
+      expect(outcomes.length).toBe(1);
+      expect(outcomes[0]).toBe('ok');
+    });
+
+    it('awaitProfile: true suppresses the fire-and-forget profile leg (one profile fetch per slot, not two)', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      await tm.addSlot({
+        name: 'one',
+        kind: 'oauth_credentials',
+        credentials: makeOAuthCreds({ accessToken: 'a1', refreshToken: 'r1' }),
+        acknowledgedConsumerTosRisk: true,
+      });
+      await tm.addSlot({
+        name: 'two',
+        kind: 'oauth_credentials',
+        credentials: makeOAuthCreds({ accessToken: 'a2', refreshToken: 'r2' }),
+        acknowledgedConsumerTosRisk: true,
+      });
+      refreshClaudeCredentialsMock.mockReset();
+      refreshClaudeCredentialsMock.mockImplementation(async (current: any) => ({
+        ...current,
+        accessToken: `${current.accessToken}-refreshed`,
+        expiresAtMs: Date.now() + 8 * 60 * 60 * 1000,
+      }));
+      // Drain the fire-and-forget profile sync that `addSlot` fires, then
+      // reset the mock so the assertion below counts only the fan-out leg.
+      await new Promise((r) => setTimeout(r, 20));
+      fetchOAuthProfileMock.mockReset();
+      fetchOAuthProfileMock.mockImplementation(async () => ({
+        fetchedAt: Date.now(),
+        email: 'test@example.com',
+        rateLimitTier: 'default_claude_max_20x',
+      }));
+      await tm.refreshAllAttachedOAuthTokens({ timeoutMs: 5_000, awaitProfile: true });
+      // Exactly one profile fetch per slot (awaited leg). The fire-and-forget
+      // leg inside forceRefreshOAuth is suppressed by syncProfile:false.
+      expect(fetchOAuthProfileMock).toHaveBeenCalledTimes(2);
+    });
   });
 
   // ── Reaper timer ──────────────────────────────────────────
