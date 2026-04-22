@@ -1345,9 +1345,7 @@ export class TokenManager {
    * backend refresh). Slots without an oauthAttachment (bare setup
    * tokens, api_key slots, fresh slots) are skipped.
    */
-  async fetchUsageForAllAttached(opts?: {
-    timeoutMs?: number;
-  }): Promise<Record<string, UsageSnapshot | null>> {
+  async fetchUsageForAllAttached(opts?: { timeoutMs?: number }): Promise<Record<string, UsageSnapshot | null>> {
     const snap = await this.store.load();
     const keyIds = snap.registry.slots
       .filter((s) => s.kind === 'cct' && s.oauthAttachment !== undefined)
