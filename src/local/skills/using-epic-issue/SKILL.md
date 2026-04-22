@@ -1,163 +1,85 @@
 ---
 name: using-epic-issue
-description: "여러 phase/sub-task로 쪼개지는 큰 피처 작업 시 트리거. 에픽 이슈 본문에 작업 로그 누적 금지 — 체크리스트와 서브이슈 링크만 유지. 기존 #525처럼 댓글 축적되어 추적 불가해지는 실패를 방지."
+description: "복수 phase/서브태스크로 분해되는 피처를 에픽+서브이슈로 추적. 에픽 body = 체크리스트 + 서브이슈 링크. 설계·리뷰·로그는 서브이슈와 PR에만. 복수 PR / 복수 세션 / 복수 실행자(사람·AI) 환경에서 에픽 body 부패와 재진입 불가를 방지. 플랫폼 문법: `reference/github.md`, `reference/jira.md`."
 ---
 
 # using-epic-issue
 
-## Core Principle (비타협)
+## Core Principle
 
-**에픽 이슈 본문 = 체크리스트 + 서브이슈 링크만.**
+**에픽은 상태. 서브이슈는 실행. 섞지 마라.**
 
-작업 상세/설계/리뷰 로그는 **서브이슈와 PR에만** 축적. 에픽 본문·댓글에 축적 금지.
+에픽 body = 체크리스트 + 서브이슈 링크만. 설계 논의, 구현 상세, 리뷰 응답, 진행 로그는 **서브이슈와 PR에만** 축적. AI 에이전트는 세션이 끊기므로 상태의 single source가 이슈에 없으면 재진입이 성립하지 않음.
 
-왜: 에픽 본문에 댓글이 쌓이면 다음 작업 시작 시 "어디까지 했고 뭐가 남았는지" 판독 불가 → 에픽이 쓰레기통이 됨. 본 스킬은 그 실패 사례(#525 9-comment epic rot)에 대한 직접 대응.
+## When
 
-## When to Use
+- 피처가 ≥2개 독립 PR로 분해 가능 (서로 block하지 않음)
+- 작업이 단일 세션을 넘어 재진입 필요
+- 복수 실행자(사람·AI 에이전트) 교대 투입
 
-- 피처가 ≥2개 phase/sub-task로 분해됨
-- 각 sub-task가 독립 PR로 나올 수 있음 (서로 block하지 않음)
-- 전체 진행률을 한 곳에서 추적해야 함
-
-**Skip if:** 단일 PR로 끝나는 작업. 이 경우 바로 `z`로 간다.
+**Skip:** 단일 PR로 끝나는 작업 — `z` 바로 호출.
 
 ## Process
 
-### Phase 1 — 에픽 이슈 생성
+### P1 — Create epic
 
-1. 제목 포맷: `[scope] <한 줄 목표> — epic` (예: `[slack-ui] Agents UI 5-block migration — epic`)
-2. 본문 섹션 (이 순서 고정):
-   1. **Goal** — 1~2 문단. WHY 중심, HOW는 서브이슈에.
-   2. **Design Reference** — 상세 설계 문서/이슈 링크 (있으면). 없으면 생략.
-   3. **Checklist** — 체크박스 + 서브이슈 링크 (각 phase 1줄).
-   4. **Done-Done 기준** — 무엇이 만족되면 에픽 close인지.
-   5. **Out of Scope** — 명시적으로 제외된 것.
-3. 라벨: `epic` (없으면 신규 생성).
-4. **금지:** 구현 상세, 파일 경로, 리뷰 답변, 진행 로그를 본문에 넣는 것.
+플랫폼 native epic/parent 타입으로 생성 (GitHub: `reference/github.md` §1; Jira: `reference/jira.md` §2). 제목: `[scope] <한 줄 목표> — epic`. Body 섹션 (순서 고정, 다른 섹션 추가 금지):
 
-### Phase 2 — 서브이슈 생성 (체크리스트 = 서브이슈)
+1. **Goal** — 1~2문단. WHY. HOW는 쓰지 않음.
+2. **Design Reference** — 설계 문서 링크. 없으면 섹션 생략.
+3. **Checklist** — 체크박스 + 서브이슈 링크. 1 체크 = 1 서브이슈.
+4. **Done-Done** — 검증 가능한 완료 조건.
+5. **Out of Scope** — 명시적 제외.
 
-각 체크리스트 아이템마다 1개 서브이슈를 **즉시** 만든다.
+본문에 **금지**: 구현 상세 / 파일 경로 / 코드 스니펫 / 리뷰 답변 / 설계 논의 / "진행 상황" 섹션.
 
-1. 제목 포맷: `[epic #<N>] <phase 이름>` (예: `[epic #660] P2 B2 plan 블록 배선`)
-2. 본문 섹션:
-   1. **Parent** — `부분: #<에픽번호>` (GitHub sub-issue 기능 활용)
-   2. **Goal** — 이 phase만의 목표
-   3. **In Scope / Out of Scope** — 명확한 경계
-   4. **File Map** — 수정/신규 파일 경로 표
-   5. **Test Plan** — unit/integration/regression
-   6. **Risks & Mitigations**
-   7. **PR 요건** — verify 기준
-3. 에픽 체크리스트 아이템에 서브이슈 URL 백링크 추가.
-4. **금지:** 서브이슈 본문에 phase N+1의 내용 포함.
+템플릿: `reference/templates.md` §epic.
 
-### Phase 3 — 작업 선택 & 진행
+### P2 — Create sub-issues
 
-1. 에픽 열고 **미완 체크박스 중 dependency 해결된 것** 하나 고른다.
-2. 해당 서브이슈 URL을 `$z <URL>` 로 입력해 `z` 스킬에 위임한다.
-3. `z`가 phase1~5를 돌며 PR까지 내준다.
-4. **금지:** 작업 진행 중 에픽 본문 수정 (rename 제외). 모든 로그는 서브이슈/PR에.
+체크리스트 아이템마다 서브이슈 1개 **즉시** 생성. 나중은 오지 않음. Body 섹션 (순서 고정):
 
-### Phase 4 — 머지 & 에픽 체크
+1. **Parent** — 에픽 링크
+2. **Goal** — 이 phase만의 목표. 1문단.
+3. **In Scope / Out of Scope**
+4. **File Map** — 수정/신규 파일 표
+5. **Test Plan** — Unit / Integration / Regression
+6. **PR 요건** — CI, 독립 리뷰, phase 특정 검증
 
-1. PR 머지 → PR의 `Closes #<sub>`로 서브이슈 자동 close.
-2. 에픽 체크리스트 `[ ]` → `[x]` 1줄만 edit. 다른 본문 건드리지 말 것.
-3. 머지 summary 코멘트는 **서브이슈**에 남기고 에픽에는 남기지 않는다.
-4. 모든 체크박스 `[x]`가 되면 Done-Done 기준 검증 후 에픽 close.
+서브이슈 크기는 sprint 이내. 초과 시 즉시 재분해. phase N+1 내용 섞지 않음.
 
-## Anti-patterns (절대 금지)
+템플릿: `reference/templates.md` §sub-issue.
 
-| ❌ 금지 | ✅ 대신 |
-|---|---|
-| 에픽 본문에 "진행 상황" 섹션 추가 | 서브이슈 상태(open/closed) + 체크박스로 표현 |
-| 에픽에 codex/gemini 리뷰 결과 붙임 | 해당 PR 코멘트에 남김 |
-| 에픽에 구현 계획 v1/v2/v3 누적 | 설계 이슈 별도 생성, 에픽에선 링크만 |
-| 한 서브이슈가 2+개 phase 처리 | 1 phase = 1 서브이슈 = 1 PR |
-| 서브이슈 없이 에픽에서 바로 PR | 반드시 서브이슈 통해서만 |
-| 에픽 본문을 구현 중 계속 수정 | 체크박스 전환만 허용 |
+### P3 — Execute
 
-## Templates
+1. 에픽 열고 미완 체크박스 중 dependency 해결된 1개 선택.
+2. 그 서브이슈 URL로 `$z <sub-URL>` — 유일한 진입점.
+3. 설계 논의·리뷰·진행 로그는 **서브이슈 댓글과 PR 리뷰**에만.
+4. 에픽 body 편집 금지.
 
-### 에픽 이슈 템플릿
+AI 에이전트 위임 시 **서브이슈 body만** 컨텍스트로 전달. 에픽 전체 위임 금지.
 
-```markdown
-## Goal
+### P4 — Merge & tick
 
-<1~2 문단. WHY. 사용자 가치. HOW는 서브이슈에.>
+1. PR에 `Closes <서브이슈>` — 머지 시 서브이슈 자동 close (GitHub: `reference/github.md` §3; Jira 수동 전이: `reference/jira.md` §5).
+2. 에픽 체크박스 `[ ]` → `[x]` — **해당 1줄만** edit.
+3. 머지 요약은 **서브이슈/PR**에만. 에픽 댓글 금지.
+4. 전 체크박스 `[x]` → Done-Done 검증 → open 서브이슈 0 확인 → 에픽 수동 close.
 
-## Design Reference
+## Invariants (위반 = rollback)
 
-- <optional: 설계 문서/이슈 링크>
-
-## Checklist
-
-- [x] <phase 1 이름> — #<sub-issue-1>
-- [ ] <phase 2 이름> — #<sub-issue-2>
-- [ ] <phase 3 이름> — #<sub-issue-3>
-
-## Done-Done 기준
-
-- <검증 가능한 기준 1>
-- <검증 가능한 기준 2>
-
-## Out of Scope
-
-- <명시적 제외 항목>
-```
-
-### 서브이슈 템플릿
-
-```markdown
-## Parent
-
-부분: #<epic-number>
-
-## Goal
-
-<이 phase 하나의 목표. 1 문단.>
-
-## In Scope
-
-- <구체 항목>
-
-## Out of Scope
-
-- <명시적 제외>
-
-## File Map
-
-| 파일 | 역할 | 변경 유형 |
-|---|---|---|
-| `path/to/x.ts` | ... | new/modify |
-
-## Test Plan
-
-- Unit: <목록>
-- Integration: <목록>
-- Regression: <목록>
-
-## Risks & Mitigations
-
-| Risk | Impact | Mitigation |
-|---|---|---|
-| ... | ... | ... |
-
-## PR 요건 (verify)
-
-- [ ] CI green
-- [ ] codex ≥95, 0 P0/P1
-- [ ] <phase 특정 verify 항목>
-```
-
-## Invariants (위반 시 롤백)
-
-1. **에픽 본문의 "Checklist" 섹션 외 영역**은 에픽 생성 후 수정 금지 (제목/라벨 rename 예외).
-2. **하나의 체크리스트 아이템 = 하나의 서브이슈 = 하나의 PR.**
-3. **서브이슈 close 전 에픽 체크 `[x]` 금지.**
-4. **에픽 close 전 모든 서브이슈 close 필수.**
-5. **에픽 댓글은 "서브이슈 분할 핸드오프" 같은 메타 전환 1회만 허용.** 진행 보고 댓글 금지.
+1. 에픽 body 편집은 **Checklist 체크박스 `[ ]↔[x]` 토글 + 제목·라벨 rename**으로 한정.
+2. 1 체크박스 = 1 서브이슈 = 1 PR.
+3. 서브이슈 close 전 체크박스 `[x]` 금지.
+4. 에픽 close 전 전체 서브이슈 close.
+5. 에픽 댓글 = "서브이슈 분할 완료" 같은 메타 전환 1회만. 진행 보고 금지.
+6. **라벨 규율**: phase별 라벨 금지. 상태 라벨(`blocked`/`ready`/`in-progress`)은 서브이슈에만 — 에픽에 붙이면 Invariant 1을 우회하는 암묵적 상태가 생김.
+7. AI 에이전트에 에픽 전체 위임 금지. 서브이슈 body 단위로 컨텍스트 격리. 쓰기 권한도 해당 서브이슈·PR 범위로 한정 (Invariants 1, 5 자동 보호).
 
 ## Integration
 
-- **입력 트리거:** 유저가 복수 phase 피처를 요청하거나, `z` 스킬이 phase1에서 "multi-PR이 필요함"을 판정했을 때.
-- **후속 스킬:** 서브이슈 작업 진행은 `z` 스킬에 위임. 체크리스트 업데이트 후 `es`로 완료 공지.
+- **진입 트리거**: 유저가 복수 phase 피처 요청, 또는 `z` phase1이 multi-PR 판정.
+- **후속 스킬**: 서브이슈 작업 → `z`; 완료 공지 → `es`.
+- **플랫폼 문법**: `reference/github.md` · `reference/jira.md`.
+- **병렬성**: 독립 서브이슈는 별도 worktree/branch. 동일 파일을 건드리는 서브이슈는 직렬 (서브이슈 body의 dependency 표기 또는 에픽 Checklist 순서).
+- **트래커가 parent-child 미지원**: 체크리스트 링크 + 제목 프리픽스 + 본문 `Parent:` 한 줄로 동일 효과.
