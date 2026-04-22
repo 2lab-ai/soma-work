@@ -896,50 +896,82 @@ export async function registerDashboardRoutes(
   });
 
   // Session detail (conversation turns for slide panel)
-  server.get<{ Params: { conversationId: string } }>(
-    '/api/dashboard/session/:conversationId',
-    { preHandler: [authMiddleware] },
-    async (request, reply) => {
-      try {
-        const record = await getConversation(request.params.conversationId);
-        if (!record) {
-          reply.status(404).send({ error: 'Conversation not found' });
-          return;
-        }
-        // RBAC: OAuth users can only view their own session details
-        const authContext = (request as any).authContext;
-        if (authContext && !authContext.isAdmin && authContext.userId && record.ownerId !== authContext.userId) {
-          reply.status(403).send({ error: 'You can only view your own sessions' });
-          return;
-        }
-        // Return lightweight turn summaries (no rawContent for assistant turns)
-        const turns = record.turns.map((t) => ({
-          id: t.id,
-          role: t.role,
-          timestamp: t.timestamp,
-          userName: t.userName,
-          summaryTitle: t.summaryTitle,
-          summaryBody: t.summaryBody,
-          summarized: t.summarized,
-          rawContent: t.role === 'user' ? t.rawContent : undefined,
-        }));
-        reply.send({
-          id: record.id,
-          title: record.title,
-          titleSub: record.titleSub,
-          ownerName: record.ownerName,
-          workflow: record.workflow,
-          createdAt: record.createdAt,
-          updatedAt: record.updatedAt,
-          turnCount: record.turns.length,
-          turns,
-        });
-      } catch (error) {
-        logger.error('Error fetching session detail', error);
-        reply.status(500).send({ error: 'Internal Server Error' });
+  // Supports pagination via ?limit=N&before=<turnId>. Default limit=30, max=200.
+  // - No `before`: returns the latest N turns (chronological order preserved).
+  // - With `before`: returns up to N turns strictly BEFORE the turn with that id.
+  // Response includes `hasMore: true` when older turns exist beyond the returned window.
+  server.get<{
+    Params: { conversationId: string };
+    Querystring: { limit?: string; before?: string };
+  }>('/api/dashboard/session/:conversationId', { preHandler: [authMiddleware] }, async (request, reply) => {
+    try {
+      const record = await getConversation(request.params.conversationId);
+      if (!record) {
+        reply.status(404).send({ error: 'Conversation not found' });
+        return;
       }
-    },
-  );
+      // RBAC: OAuth users can only view their own session details
+      const authContext = (request as any).authContext;
+      if (authContext && !authContext.isAdmin && authContext.userId && record.ownerId !== authContext.userId) {
+        reply.status(403).send({ error: 'You can only view your own sessions' });
+        return;
+      }
+
+      // Pagination parameters
+      const DEFAULT_LIMIT = 30;
+      const MAX_LIMIT = 200;
+      const limitRaw = request.query.limit ? Number.parseInt(request.query.limit, 10) : DEFAULT_LIMIT;
+      const limit = Number.isNaN(limitRaw) ? DEFAULT_LIMIT : Math.max(1, Math.min(MAX_LIMIT, limitRaw));
+      const before = request.query.before;
+
+      // Return lightweight turn summaries (no rawContent for assistant turns)
+      const allTurns = record.turns.map((t) => ({
+        id: t.id,
+        role: t.role,
+        timestamp: t.timestamp,
+        userName: t.userName,
+        summaryTitle: t.summaryTitle,
+        summaryBody: t.summaryBody,
+        summarized: t.summarized,
+        rawContent: t.role === 'user' ? t.rawContent : undefined,
+      }));
+
+      let turns: typeof allTurns;
+      let hasMore: boolean;
+      if (before) {
+        const beforeIdx = allTurns.findIndex((t) => t.id === before);
+        if (beforeIdx < 0) {
+          // Unknown cursor → return empty, no more
+          turns = [];
+          hasMore = false;
+        } else {
+          const start = Math.max(0, beforeIdx - limit);
+          turns = allTurns.slice(start, beforeIdx);
+          hasMore = start > 0;
+        }
+      } else {
+        const start = Math.max(0, allTurns.length - limit);
+        turns = allTurns.slice(start);
+        hasMore = start > 0;
+      }
+
+      reply.send({
+        id: record.id,
+        title: record.title,
+        titleSub: record.titleSub,
+        ownerName: record.ownerName,
+        workflow: record.workflow,
+        createdAt: record.createdAt,
+        updatedAt: record.updatedAt,
+        turnCount: record.turns.length,
+        turns,
+        hasMore,
+      });
+    } catch (error) {
+      logger.error('Error fetching session detail', error);
+      reply.status(500).send({ error: 'Internal Server Error' });
+    }
+  });
 
   // Resummarize a specific assistant turn
   server.post<{ Params: { conversationId: string; turnId: string } }>(
@@ -2231,7 +2263,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .token-badge .tok-label { color: var(--text-tertiary); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
 .token-badge .tok-value { color: var(--accent); font-variant-numeric: tabular-nums; }
 .token-badge .tok-cost { color: var(--green); }
-.panel-turns { flex: 1; overflow-y: auto; padding: 10px 16px; scroll-behavior: smooth; }
+/* Unified scroll container: wraps panel-question + panel-tasks + panel-turns
+   so large UIAskQ choices or long task lists naturally scroll together with the
+   chat content. .panel-command stays pinned below as a non-scrolling sibling. */
+.panel-scroll { flex: 1; overflow-y: auto; scroll-behavior: smooth; min-height: 0; }
+.panel-turns { padding: 10px 16px; }
+.panel-turns-loading { text-align: center; font-size: 11px; color: var(--text-tertiary); padding: 8px 0; font-style: italic; }
 /* Slack-style turns */
 .turn { margin-bottom: 8px; padding: 8px 10px; border-radius: var(--radius); display: flex; gap: 10px; align-items: flex-start; }
 .turn.user { background: var(--surface-raised); border-left: 3px solid var(--accent); }
@@ -2275,9 +2312,19 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .panel-command {
   padding: 10px 16px;
   border-top: 1px solid var(--border);
+  background: var(--surface);
+  flex-shrink: 0;
+}
+.panel-command-row {
   display: flex;
   gap: 8px;
-  background: var(--surface);
+}
+.cmd-hint {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  padding: 0 0 6px 0;
+  text-align: center;
+  font-style: italic;
 }
 .panel-command input {
   flex: 1;
@@ -2293,6 +2340,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 }
 .panel-command input:focus { border-color: var(--accent); }
 .panel-command input::placeholder { color: var(--text-tertiary); }
+.panel-command input:disabled { opacity: 0.6; cursor: not-allowed; }
 .btn-send {
   background: var(--accent);
   border: none;
@@ -2453,14 +2501,21 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
     <div class="panel-meta" id="panel-meta"></div>
     <div class="panel-links" id="panel-links"></div>
     <div class="panel-tokens" id="panel-tokens"></div>
-    <div class="panel-question" id="panel-question" style="display:none"></div>
-    <div class="panel-tasks" id="panel-tasks" style="display:none"></div>
-    <div class="panel-turns" id="panel-turns">
-      <p style="color:var(--text-secondary);text-align:center;margin-top:40px">Click a session card to view details</p>
+    <!-- Unified scroll area: question + tasks + turns scroll together as one. -->
+    <div class="panel-scroll" id="panel-scroll">
+      <div class="panel-question" id="panel-question" style="display:none"></div>
+      <div class="panel-tasks" id="panel-tasks" style="display:none"></div>
+      <div class="panel-turns" id="panel-turns">
+        <p style="color:var(--text-secondary);text-align:center;margin-top:40px">Click a session card to view details</p>
+      </div>
     </div>
-    <div class="panel-command" id="panel-command" style="display:none">
-      <input type="text" id="cmd-input" placeholder="Send message to session..." onkeydown="if(event.key==='Enter')sendCommand()">
-      <button class="btn-send" id="cmd-send" onclick="sendCommand()">Send</button>
+    <!-- Command row is always visible; disabled + hint for terminated sessions. -->
+    <div class="panel-command" id="panel-command">
+      <div class="cmd-hint" id="cmd-hint" style="display:none">&#xC774; &#xC138;&#xC158;&#xC740; &#xC885;&#xB8CC;&#xB418;&#xC5C8;&#xC2B5;&#xB2C8;&#xB2E4; &mdash; &#xBA54;&#xC2DC;&#xC9C0;&#xB97C; &#xBCF4;&#xB0BC; &#xC218; &#xC5C6;&#xC2B5;&#xB2C8;&#xB2E4;</div>
+      <div class="panel-command-row">
+        <input type="text" id="cmd-input" placeholder="Send message to session..." onkeydown="if(event.key==='Enter')sendCommand()">
+        <button class="btn-send" id="cmd-send" onclick="sendCommand()">Send</button>
+      </div>
     </div>
   </div>
 </div>
@@ -3079,8 +3134,22 @@ async function answerChoice(key, choiceId, label, question, btnEl) {
         btnEl.textContent = choiceId + '. ' + label;
         btnEl.style.color = '';
       }, 2500);
+    } else {
+      // On success, the WebSocket session_update SHOULD re-render the board and
+      // replace these buttons. But if the WS message is delayed/dropped, the
+      // user is stuck with permanently disabled buttons. Fallback: re-enable
+      // after 5s if the card is still in the DOM (i.e. not re-rendered).
+      setTimeout(function() {
+        if (card && card.isConnected) {
+          card.querySelectorAll('.btn-choice').forEach(function(b) {
+            if (b.disabled) b.disabled = false;
+          });
+          if (btnEl.isConnected && btnEl.textContent === '...') {
+            btnEl.textContent = choiceId + '. ' + label;
+          }
+        }
+      }, 5000);
     }
-    // On success, the WebSocket session_update will re-render the board
   } catch (e) {
     console.error('Answer choice error', e);
     // Re-enable buttons on network error so user can retry
@@ -3630,6 +3699,21 @@ function openPanel(sessionKey) {
   const s = _sessionCache[sessionKey];
   if (!s) return;
 
+  // Unconditional UI reset on card switch — an in-flight send from a previous
+  // card must never leak "Sending..." / disabled state into this card. The
+  // in-flight request still completes in the background; only the UI is reset.
+  (function resetCmdUi() {
+    var cmdInputEl = document.getElementById('cmd-input');
+    var cmdBtnEl = document.getElementById('cmd-send');
+    if (cmdInputEl) { cmdInputEl.value = ''; cmdInputEl.disabled = false; }
+    if (cmdBtnEl) { cmdBtnEl.disabled = false; cmdBtnEl.textContent = 'Send'; }
+  })();
+
+  // Reset pagination state before loading this session's turns.
+  _panelTurnsHasMore = false;
+  _panelTurnsLoading = false;
+  _panelTurnsOldestId = null;
+
   panelSessionKey = sessionKey;
   panelConvId = s.conversationId || null;
 
@@ -3684,46 +3768,134 @@ function openPanel(sessionKey) {
   _panelTasksExpanded = false;
   renderPanelTasks(s.tasks);
 
-  // Conversation turns
+  // Conversation turns — paginated (infinite scroll: latest 30, load older on scroll-up)
   const turnsEl = document.getElementById('panel-turns');
   if (s.conversationId) {
     turnsEl.innerHTML = '<p style="color:var(--text-secondary);text-align:center;margin-top:40px">Loading...</p>';
-    fetch('/api/dashboard/session/' + s.conversationId)
+    _panelTurnsLoading = true;
+    var loadingConvId = s.conversationId;
+    var loadingSessionKey = sessionKey;
+    fetch('/api/dashboard/session/' + encodeURIComponent(loadingConvId) + '?limit=30')
       .then(function(r) { return r.json(); })
       .then(function(data) {
+        // If the user switched cards while loading, discard this result.
+        if (panelSessionKey !== loadingSessionKey) return;
+
         // Handle titleSub
         var tSubText = document.getElementById('panel-title-sub-text');
         var tSubBtn = document.getElementById('panel-title-sub-regen');
         if (data.titleSub) {
           tSubText.textContent = data.titleSub;
           tSubBtn.style.display = 'inline-block';
-        } else if (s.conversationId) {
-          generateTitleSub(s.conversationId);
+        } else if (loadingConvId) {
+          generateTitleSub(loadingConvId);
         }
 
         if (!data.turns || data.turns.length === 0) {
           turnsEl.innerHTML = '<p style="color:var(--text-secondary);text-align:center;margin-top:40px">No conversation turns</p>';
+          _panelTurnsLoading = false;
           return;
         }
         var cid = data.id;
+        _panelTurnsHasMore = !!data.hasMore;
+        _panelTurnsOldestId = data.turns[0] && data.turns[0].id;
         turnsEl.innerHTML = data.turns.map(function(t, i, arr) { return renderTurn(t, i, arr, cid); }).join('');
-        turnsEl.scrollTop = turnsEl.scrollHeight;
         attachRawToggleHandlers();
+        // Jump to bottom on fresh load.
+        var scrollEl = document.getElementById('panel-scroll');
+        if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
+        _panelTurnsLoading = false;
       })
       .catch(function() {
+        if (panelSessionKey !== loadingSessionKey) return;
         turnsEl.innerHTML = '<p style="color:var(--text-secondary);text-align:center;margin-top:40px">Failed to load conversation</p>';
+        _panelTurnsLoading = false;
       });
   } else {
     turnsEl.innerHTML = '<p style="color:var(--text-secondary);text-align:center;margin-top:40px">No conversation recorded</p>';
   }
 
-  // Command input — show for non-closed sessions
+  // Command input — always visible; disabled + hint for terminated / sleeping sessions.
   const cmdEl = document.getElementById('panel-command');
-  cmdEl.style.display = (s.terminated || s.sessionState === 'SLEEPING') ? 'none' : '';
+  cmdEl.style.display = '';
+  const cmdInput = document.getElementById('cmd-input');
+  const cmdBtn = document.getElementById('cmd-send');
+  const cmdHint = document.getElementById('cmd-hint');
+  const isClosed = s.terminated || s.sessionState === 'SLEEPING';
+  if (isClosed) {
+    if (cmdInput) { cmdInput.disabled = true; cmdInput.placeholder = '\uC774 \uC138\uC158\uC740 \uC885\uB8CC\uB418\uC5C8\uC2B5\uB2C8\uB2E4'; }
+    if (cmdBtn) { cmdBtn.disabled = true; }
+    if (cmdHint) { cmdHint.style.display = ''; }
+  } else {
+    if (cmdInput) { cmdInput.disabled = false; cmdInput.placeholder = 'Send message to session...'; }
+    if (cmdBtn) { cmdBtn.disabled = false; }
+    if (cmdHint) { cmdHint.style.display = 'none'; }
+  }
 
   document.getElementById('slide-panel').classList.add('open');
   document.getElementById('panel-overlay').classList.add('open');
   panelOpen = true;
+}
+
+// ── Pagination state for panel chat (infinite scroll) ──
+var _panelTurnsHasMore = false;
+var _panelTurnsLoading = false;
+var _panelTurnsOldestId = null;
+
+async function loadMorePanelTurns() {
+  if (_panelTurnsLoading || !_panelTurnsHasMore || !panelConvId || !_panelTurnsOldestId) return;
+  var turnsEl = document.getElementById('panel-turns');
+  var scrollEl = document.getElementById('panel-scroll');
+  if (!turnsEl || !scrollEl) return;
+
+  _panelTurnsLoading = true;
+  var requestConvId = panelConvId;
+  var requestSessionKey = panelSessionKey;
+  var requestOldestId = _panelTurnsOldestId;
+
+  // Preserve scroll position relative to the current oldest item.
+  var prevScrollHeight = scrollEl.scrollHeight;
+  var prevScrollTop = scrollEl.scrollTop;
+
+  // Loading spinner at top of turns list.
+  var spinner = document.createElement('div');
+  spinner.className = 'panel-turns-loading';
+  spinner.textContent = '\uC774\uC804 \uBA54\uC2DC\uC9C0 \uB85C\uB529...';
+  turnsEl.insertBefore(spinner, turnsEl.firstChild);
+
+  try {
+    var url = '/api/dashboard/session/' + encodeURIComponent(requestConvId)
+      + '?limit=30&before=' + encodeURIComponent(requestOldestId);
+    var r = await fetch(url);
+    var data = await r.json();
+
+    // Discard stale response if card was switched mid-flight.
+    if (panelSessionKey !== requestSessionKey || panelConvId !== requestConvId) {
+      if (spinner.parentNode) spinner.remove();
+      return;
+    }
+
+    if (spinner.parentNode) spinner.remove();
+
+    if (data.turns && data.turns.length > 0) {
+      _panelTurnsOldestId = data.turns[0].id;
+      _panelTurnsHasMore = !!data.hasMore;
+      var cid = data.id;
+      var html = data.turns.map(function(t, i, arr) { return renderTurn(t, i, arr, cid); }).join('');
+      turnsEl.insertAdjacentHTML('afterbegin', html);
+      attachRawToggleHandlers();
+      // Restore scroll position so the user stays anchored on the turn they were reading.
+      var newScrollHeight = scrollEl.scrollHeight;
+      scrollEl.scrollTop = prevScrollTop + (newScrollHeight - prevScrollHeight);
+    } else {
+      _panelTurnsHasMore = false;
+    }
+  } catch (err) {
+    if (spinner.parentNode) spinner.remove();
+    console.error('loadMorePanelTurns failed', err);
+  } finally {
+    _panelTurnsLoading = false;
+  }
 }
 
 function renderTurn(t, _idx, _arr, convId) {
@@ -3766,9 +3938,12 @@ function renderTurn(t, _idx, _arr, convId) {
 
 function appendTurnToPanel(turn) {
   const turnsEl = document.getElementById('panel-turns');
-  const wasAtBottom = turnsEl.scrollHeight - turnsEl.scrollTop <= turnsEl.clientHeight + 40;
+  // Scroll container is now .panel-scroll (parent of .panel-turns). Bottom-stick
+  // logic must read from the scroll parent, not from panel-turns itself.
+  const scrollEl = document.getElementById('panel-scroll') || turnsEl;
+  const wasAtBottom = scrollEl.scrollHeight - scrollEl.scrollTop <= scrollEl.clientHeight + 40;
   turnsEl.insertAdjacentHTML('beforeend', renderTurn(turn));
-  if (wasAtBottom) turnsEl.scrollTop = turnsEl.scrollHeight;
+  if (wasAtBottom) scrollEl.scrollTop = scrollEl.scrollHeight;
   attachRawToggleHandlers();
 }
 
@@ -3840,11 +4015,25 @@ function closePanel() {
   panelSessionKey = null;
   panelConvId = null;
   _rawLoadedCache = {};
+  _panelTurnsHasMore = false;
+  _panelTurnsLoading = false;
+  _panelTurnsOldestId = null;
 }
 
 document.addEventListener('keydown', function(e) {
   if (e.key === 'Escape' && panelOpen) closePanel();
 });
+
+// Scroll-up-to-load-more handler (bound once on panel-scroll).
+(function initPanelScrollHandler() {
+  var scrollEl = document.getElementById('panel-scroll');
+  if (!scrollEl) return;
+  scrollEl.addEventListener('scroll', function() {
+    if (scrollEl.scrollTop < 100 && _panelTurnsHasMore && !_panelTurnsLoading && panelConvId && _panelTurnsOldestId) {
+      loadMorePanelTurns();
+    }
+  }, { passive: true });
+})();
 
 // ── Send command (optimistic UI) ──
 let _lastSentContent = '';
@@ -3855,6 +4044,13 @@ async function sendCommand() {
   const btn = document.getElementById('cmd-send');
   const msg = input.value.trim();
   if (!msg || !panelSessionKey) return;
+  // Guard: do not send while the input is disabled (e.g., terminated session).
+  if (input.disabled) return;
+
+  // Capture the session this send belongs to. We must never mutate shared UI
+  // (cmd-input/cmd-send) after the user has already switched to a different card,
+  // otherwise the new card inherits stale "Sending..." / disabled state.
+  const sendingSessionKey = panelSessionKey;
 
   // Optimistic: immediately show user turn in panel
   _lastSentContent = msg;
@@ -3877,7 +4073,7 @@ async function sendCommand() {
   try {
     const cmdHeaders = { 'Content-Type': 'application/json' };
     if (_csrfToken) cmdHeaders['X-CSRF-Token'] = _csrfToken;
-    const cmdUrl = '/api/dashboard/session/' + encodeURIComponent(panelSessionKey) + '/command';
+    const cmdUrl = '/api/dashboard/session/' + encodeURIComponent(sendingSessionKey) + '/command';
     const cmdBody = JSON.stringify({ message: msg });
     let res = await fetch(cmdUrl, { method: 'POST', headers: cmdHeaders, body: cmdBody });
     if (res.status === 403) {
@@ -3887,21 +4083,29 @@ async function sendCommand() {
       res = await fetch(cmdUrl, { method: 'POST', headers: retryHeaders, body: cmdBody });
     }
     if (!res.ok) {
-      // Mark optimistic turn as failed
-      var lastTurn = document.querySelector('.turn.user:last-child');
-      if (lastTurn) {
-        lastTurn.style.borderColor = '#e74c3c';
-        lastTurn.style.opacity = '0.7';
-        lastTurn.insertAdjacentHTML('beforeend', '<div style="color:#e74c3c;font-size:0.75em;margin-top:4px">Failed to send. <a href="#" onclick="event.preventDefault();sendRetry(\\'' + escJs(msg) + '\\')">Retry</a></div>');
+      // Only mark the optimistic turn as failed if the user is still on the same
+      // card; otherwise the "last user turn" in the DOM belongs to a different session.
+      if (panelSessionKey === sendingSessionKey) {
+        var lastTurn = document.querySelector('.turn.user:last-child');
+        if (lastTurn) {
+          lastTurn.style.borderColor = '#e74c3c';
+          lastTurn.style.opacity = '0.7';
+          lastTurn.insertAdjacentHTML('beforeend', '<div style="color:#e74c3c;font-size:0.75em;margin-top:4px">Failed to send. <a href="#" onclick="event.preventDefault();sendRetry(\\'' + escJs(msg) + '\\')">Retry</a></div>');
+        }
       }
     }
   } catch (e) {
     console.error('Command error', e);
   } finally {
-    btn.disabled = false;
-    btn.textContent = 'Send';
-    input.disabled = false;
-    input.focus();
+    // Only reset the input/button if we are still on the originating card.
+    // openPanel already resets UI on card switch, so skipping here prevents
+    // the late-completing fetch from clobbering the new card's clean state.
+    if (panelSessionKey === sendingSessionKey) {
+      btn.disabled = false;
+      btn.textContent = 'Send';
+      input.disabled = false;
+      input.focus();
+    }
   }
 }
 
