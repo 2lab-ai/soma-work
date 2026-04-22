@@ -50,7 +50,12 @@ import { discoverInstallations, getGitHubAppAuth, isGitHubAppConfigured } from '
 import { Logger } from './logger';
 import { McpManager } from './mcp-manager';
 import { startReportScheduler, stopReportScheduler } from './metrics';
-import { startUsageRefreshScheduler, type UsageRefreshScheduler } from './oauth';
+import {
+  type OAuthRefreshScheduler,
+  startOAuthRefreshScheduler,
+  startUsageRefreshScheduler,
+  type UsageRefreshScheduler,
+} from './oauth';
 import { acquirePidLock, releasePidLock } from './pid-lock';
 import { PluginManager } from './plugin/plugin-manager';
 import { getVersionInfo, notifyRelease } from './release-notifier';
@@ -109,6 +114,19 @@ async function start() {
       enabled: config.usage.refreshEnabled,
     });
     timing('Usage refresh scheduler wired');
+
+    // #653 M2 — Start CCT OAuth-token refresh scheduler. Hourly fan-out
+    // force-refreshes every attached slot's access_token via
+    // `TokenManager.refreshAllAttachedOAuthTokens`. Surfaces stale
+    // refreshTokens as `refresh_failed` within 1h (rather than waiting
+    // for a dispatch to touch the slot) and keeps the card's "OAuth
+    // refreshes in X" hint honest. Null when OAUTH_REFRESH_ENABLED=0.
+    const oauthRefreshScheduler: OAuthRefreshScheduler | null = startOAuthRefreshScheduler(tokenManager, {
+      intervalMs: config.oauthRefresh.intervalMs,
+      timeoutMs: config.oauthRefresh.fanOutTimeoutMs,
+      enabled: config.oauthRefresh.enabled,
+    });
+    timing('OAuth refresh scheduler wired');
 
     logger.info('Starting Claude Code Slack bot', {
       debug: config.debug,
@@ -710,6 +728,15 @@ async function start() {
         // Stop CCT usage refresh scheduler before TM so no pump fires mid-teardown
         if (usageRefreshScheduler) {
           usageRefreshScheduler.stop();
+        }
+
+        // Stop CCT OAuth refresh scheduler before TM for the same reason —
+        // a tick firing mid-teardown could end up refreshing into a store
+        // whose handles have already been released. Must come before the
+        // token-manager teardown call immediately below (invariant locked
+        // by `oauth-refresh-scheduler.test.ts`).
+        if (oauthRefreshScheduler) {
+          oauthRefreshScheduler.stop();
         }
 
         // Stop TokenManager lease reaper
