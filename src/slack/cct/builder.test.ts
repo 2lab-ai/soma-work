@@ -7,6 +7,7 @@ import {
   buildCctCardBlocks,
   buildRemoveSlotModal,
   buildSlotRow,
+  formatRateLimitTier,
   formatUsageBar,
   subscriptionBadge,
 } from './builder';
@@ -623,7 +624,7 @@ describe('buildCctCardBlocks — Slack 50-block hard cap (#644 review P1)', () =
 // ────────────────────────────────────────────────────────────────────
 
 describe('subscriptionBadge (M1-S3)', () => {
-  it('formats max_5x → " · Max 5x"', () => {
+  it('formats max_5x → " · Max 5×"', () => {
     const slot: AuthKey = {
       kind: 'cct',
       source: 'setup',
@@ -640,10 +641,10 @@ describe('subscriptionBadge (M1-S3)', () => {
       },
       createdAt: '',
     };
-    expect(subscriptionBadge(slot)).toBe(' · Max 5x');
+    expect(subscriptionBadge(slot)).toBe(' · Max 5×');
   });
 
-  it('formats max_20x → " · Max 20x"', () => {
+  it('formats max_20x → " · Max 20×"', () => {
     const slot: AuthKey = {
       kind: 'cct',
       source: 'legacy-attachment',
@@ -659,7 +660,7 @@ describe('subscriptionBadge (M1-S3)', () => {
       },
       createdAt: '',
     };
-    expect(subscriptionBadge(slot)).toBe(' · Max 20x');
+    expect(subscriptionBadge(slot)).toBe(' · Max 20×');
   });
 
   it('formats pro → " · Pro"', () => {
@@ -997,6 +998,213 @@ describe('computeCooldown + cooldown badge (#668 follow-up)', () => {
     const text = (blocks[0] as any).text.text as string;
     expect(text).toContain(':large_green_circle: healthy');
     expect(text).not.toMatch(/:large_orange_circle:/);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
+// #668 follow-up · email / rate-limit tier / rotation-off segment /
+// 7d-sonnet 0% hide / expires suffix
+// ────────────────────────────────────────────────────────────────────
+
+describe('formatRateLimitTier (#668 follow-up)', () => {
+  it('maps each known default_claude_* tier to its label', () => {
+    expect(formatRateLimitTier('default_claude_max_20x', 'cct')).toBe('Max 20×');
+    expect(formatRateLimitTier('default_claude_max_5x', 'cct')).toBe('Max 5×');
+    expect(formatRateLimitTier('default_claude_pro', 'cct')).toBe('Pro');
+    expect(formatRateLimitTier('default_claude_max', 'cct')).toBe('Max');
+  });
+  it('api_key kind always returns API regardless of raw', () => {
+    expect(formatRateLimitTier(undefined, 'api_key')).toBe('API');
+    expect(formatRateLimitTier('default_claude_max_20x', 'api_key')).toBe('API');
+  });
+  it('unknown tier passes through as the raw string', () => {
+    expect(formatRateLimitTier('default_claude_enterprise', 'cct')).toBe('default_claude_enterprise');
+  });
+  it('undefined raw on a cct slot → null (no badge)', () => {
+    expect(formatRateLimitTier(undefined, 'cct')).toBeNull();
+  });
+});
+
+describe('subscriptionBadge — profile.rateLimitTier priority (#668 follow-up)', () => {
+  const base = {
+    kind: 'cct' as const,
+    source: 'setup' as const,
+    keyId: 'k',
+    name: 'n',
+    setupToken: 'sk-ant-oat01-xxxx',
+    createdAt: '',
+  };
+  it('prefers profile.rateLimitTier over attachment.rateLimitTier and subscriptionType', () => {
+    const slot: AuthKey = {
+      ...base,
+      oauthAttachment: {
+        accessToken: 't',
+        refreshToken: 'r',
+        expiresAtMs: 0,
+        scopes: ['user:profile'],
+        acknowledgedConsumerTosRisk: true,
+        subscriptionType: 'pro',
+        rateLimitTier: 'default_claude_pro',
+        profile: { fetchedAt: 1, rateLimitTier: 'default_claude_max_20x' },
+      },
+    };
+    expect(subscriptionBadge(slot)).toBe(' · Max 20×');
+  });
+  it('falls back to attachment.rateLimitTier when profile missing', () => {
+    const slot: AuthKey = {
+      ...base,
+      oauthAttachment: {
+        accessToken: 't',
+        refreshToken: 'r',
+        expiresAtMs: 0,
+        scopes: ['user:profile'],
+        acknowledgedConsumerTosRisk: true,
+        rateLimitTier: 'default_claude_max_5x',
+      },
+    };
+    expect(subscriptionBadge(slot)).toBe(' · Max 5×');
+  });
+});
+
+describe('buildSlotRow — email suffix (#668 follow-up)', () => {
+  const now = Date.parse('2026-04-22T00:00:00Z');
+  function slotWithEmail(email: string): AuthKey {
+    return {
+      kind: 'cct',
+      source: 'setup',
+      keyId: 'slot-e',
+      name: 'cct-e',
+      setupToken: 'sk-ant-oat01-xxxx',
+      oauthAttachment: {
+        accessToken: 't',
+        refreshToken: 'r',
+        expiresAtMs: now + 86_400_000,
+        scopes: ['user:profile'],
+        acknowledgedConsumerTosRisk: true,
+        profile: { fetchedAt: 1, email, rateLimitTier: 'default_claude_max_20x' },
+      },
+      createdAt: '',
+    };
+  }
+
+  it('renders email as a " · " segment on the head line', () => {
+    const blocks = buildSlotRow(slotWithEmail('alice@example.com'), undefined, false, now);
+    const text = (blocks[0] as any).text.text as string;
+    expect(text).toContain('· alice@example.com');
+  });
+
+  it('middle-truncates emails longer than 40 chars', () => {
+    const long = 'very.long.local.part.name@very-long-corp-domain.example.com';
+    const blocks = buildSlotRow(slotWithEmail(long), undefined, false, now);
+    const text = (blocks[0] as any).text.text as string;
+    // Should contain ellipsis marker and not the full string.
+    expect(text).toMatch(/\.\.\./);
+    expect(text).not.toContain(long);
+  });
+
+  it('no email → no email segment', () => {
+    const noProfileSlot: AuthKey = {
+      kind: 'cct',
+      source: 'setup',
+      keyId: 'slot-ne',
+      name: 'cct-ne',
+      setupToken: 'sk-ant-oat01-xxxx',
+      createdAt: '',
+    };
+    const blocks = buildSlotRow(noProfileSlot, undefined, false, now);
+    const text = (blocks[0] as any).text.text as string;
+    expect(text).not.toMatch(/@/);
+  });
+});
+
+describe('buildSlotRow — rotation-off segment (#668 follow-up)', () => {
+  const now = Date.parse('2026-04-22T00:00:00Z');
+  it('renders `:lock: rotation-off` when slot.disableRotation=true', () => {
+    const slot: AuthKey = {
+      kind: 'cct',
+      source: 'setup',
+      keyId: 'slot-d',
+      name: 'cct-d',
+      setupToken: 'sk-ant-oat01-xxxx',
+      createdAt: '',
+      disableRotation: true,
+    };
+    const blocks = buildSlotRow(slot, undefined, false, now);
+    const text = (blocks[0] as any).text.text as string;
+    expect(text).toContain(':lock: rotation-off');
+  });
+  it('absent flag → no rotation-off segment', () => {
+    const slot: AuthKey = {
+      kind: 'cct',
+      source: 'setup',
+      keyId: 'slot-d',
+      name: 'cct-d',
+      setupToken: 'sk-ant-oat01-xxxx',
+      createdAt: '',
+    };
+    const blocks = buildSlotRow(slot, undefined, false, now);
+    const text = (blocks[0] as any).text.text as string;
+    expect(text).not.toContain('rotation-off');
+  });
+});
+
+describe('buildSlotRow — 7d-sonnet 0% hide (#668 follow-up)', () => {
+  const now = Date.parse('2026-04-22T00:00:00Z');
+  function slotWithAttachment(): AuthKey {
+    return {
+      kind: 'cct',
+      source: 'setup',
+      keyId: 'slot-s',
+      name: 'cct-s',
+      setupToken: 'sk-ant-oat01-xxxx',
+      oauthAttachment: {
+        accessToken: 't',
+        refreshToken: 'r',
+        expiresAtMs: now + 86_400_000,
+        scopes: ['user:profile'],
+        acknowledgedConsumerTosRisk: true,
+      },
+      createdAt: '',
+    };
+  }
+  it('hides 7d-sonnet row when utilization is exactly 0', () => {
+    const slot = slotWithAttachment();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      usage: {
+        fetchedAt: new Date(now).toISOString(),
+        fiveHour: { utilization: 0.1, resetsAt: new Date(now + 3_600_000).toISOString() },
+        sevenDaySonnet: { utilization: 0, resetsAt: new Date(now + 6 * 86_400_000).toISOString() },
+      },
+    };
+    const blocks = buildSlotRow(slot, state, true, now);
+    const flat = JSON.stringify(blocks);
+    expect(flat).not.toMatch(/7d-sonnet/);
+  });
+  it('shows 7d-sonnet row when utilization > 0', () => {
+    const slot = slotWithAttachment();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      usage: {
+        fetchedAt: new Date(now).toISOString(),
+        fiveHour: { utilization: 0.1, resetsAt: new Date(now + 3_600_000).toISOString() },
+        sevenDaySonnet: { utilization: 0.01, resetsAt: new Date(now + 6 * 86_400_000).toISOString() },
+      },
+    };
+    const blocks = buildSlotRow(slot, state, true, now);
+    const flat = JSON.stringify(blocks);
+    expect(flat).toMatch(/7d-sonnet/);
+  });
+});
+
+describe('formatUsageBar — expires-in suffix (#668 follow-up)', () => {
+  const now = Date.parse('2026-04-22T00:00:00Z');
+  it('appends ` · expires in <dur>` after the existing resets-in hint', () => {
+    const iso = new Date(now + 3 * 3_600_000).toISOString();
+    const out = formatUsageBar(0.5, iso, now, '5h');
+    expect(out).toMatch(/resets in 3h 0m · expires in 3h 0m$/);
   });
 });
 

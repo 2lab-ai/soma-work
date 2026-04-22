@@ -133,37 +133,98 @@ export function formatUsageBar(
   const resetMs = new Date(resetsAtIso).getTime();
   const delta = Number.isFinite(resetMs) ? resetMs - nowMs : NaN;
   const hint = Number.isFinite(delta) ? formatUsageResetDelta(delta) : '<1m';
-  return `${padded} ${bar} ${pct}% · resets in ${hint}`;
+  // Card v2 (#668 follow-up): the bar now carries a trailing `expires in …`
+  // suffix in addition to the historical `resets in …` hint. "resets" reads
+  // as when the counter zeros; "expires" reads as when THIS window closes.
+  // Both derive from `resetsAt - now` — the duplication makes the intent
+  // unambiguous for operators scanning the panel at a glance.
+  return `${padded} ${bar} ${pct}% · resets in ${hint} · expires in ${hint}`;
 }
 
 /**
- * Subscription-tier badge appended to the head line of a CCT slot row.
- * Returns ` · Max 5x` / ` · Max 20x` / ` · Pro` / `` — the leading ` · `
- * is always included when there is a badge so the head line reads as a
- * dot-separated list without the caller having to concatenate separators.
+ * Format a raw `rate_limit_tier` string for display. Card v2 (#668
+ * follow-up): the profile endpoint gives us `default_claude_max_20x` etc;
+ * the card shows a human-friendly label and falls through to the raw
+ * string for unknown values so ops can still diagnose.
  *
- * `api_key` slots and CCT slots without an attachment (or without a
- * `subscriptionType`) produce the empty-string sentinel so the badge is
- * simply absent.
+ * `api_key` slots always surface as `API` (no subscription concept).
  */
-export function subscriptionBadge(slot: AuthKey): string {
-  if (!isCctSlot(slot)) return '';
-  const attachment = slot.oauthAttachment;
-  if (!attachment || !attachment.subscriptionType) return '';
-  return ` · ${formatSubscriptionType(attachment.subscriptionType)}`;
-}
-
-function formatSubscriptionType(raw: string): string {
+export function formatRateLimitTier(raw: string | undefined, kind: 'cct' | 'api_key'): string | null {
+  if (kind === 'api_key') return 'API';
+  if (!raw) return null;
   switch (raw) {
+    case 'default_claude_max_20x':
+      return 'Max 20×';
+    case 'default_claude_max_5x':
+      return 'Max 5×';
+    case 'default_claude_pro':
+      return 'Pro';
+    case 'default_claude_max':
+      return 'Max';
+    // Retain compatibility with the earlier `subscriptionType` vocabulary
+    // (max_5x / max_20x / pro) — those were already surfaced in the head
+    // line before the profile endpoint landed.
     case 'max_5x':
-      return 'Max 5x';
+      return 'Max 5×';
     case 'max_20x':
-      return 'Max 20x';
+      return 'Max 20×';
     case 'pro':
       return 'Pro';
     default:
       return raw;
   }
+}
+
+/**
+ * Subscription-tier badge appended to the head line of a CCT slot row.
+ * Returns ` · Max 5×` / ` · Max 20×` / ` · Pro` / `` — the leading ` · `
+ * is always included when there is a badge so the head line reads as a
+ * dot-separated list without the caller having to concatenate separators.
+ *
+ * Source priority (card v2):
+ *   1. oauthAttachment.profile.rateLimitTier (from /api/oauth/profile)
+ *   2. oauthAttachment.rateLimitTier         (from the refresh response)
+ *   3. oauthAttachment.subscriptionType      (legacy, pre-profile field)
+ *
+ * `api_key` slots and CCT slots without any of the three fields produce
+ * the empty-string sentinel so the badge is simply absent.
+ */
+export function subscriptionBadge(slot: AuthKey): string {
+  if (!isCctSlot(slot)) return '';
+  const attachment = slot.oauthAttachment;
+  if (!attachment) return '';
+  const raw =
+    attachment.profile?.rateLimitTier ?? attachment.rateLimitTier ?? attachment.subscriptionType ?? undefined;
+  const formatted = formatRateLimitTier(raw, 'cct');
+  return formatted ? ` · ${formatted}` : '';
+}
+
+/**
+ * Truncate a string to `max` chars. When longer, keeps the head/tail and
+ * drops an ellipsis in the middle so the local-part and domain stay
+ * readable (e.g. `alice.long...@example.com`).
+ */
+function truncateMiddle(text: string, max: number): string {
+  if (text.length <= max) return text;
+  // Reserve 3 chars for the ellipsis; split remaining budget 60/40 so the
+  // local-part (left) keeps more characters than the domain.
+  const head = Math.max(1, Math.floor((max - 3) * 0.6));
+  const tail = Math.max(1, max - 3 - head);
+  return `${text.slice(0, head)}...${text.slice(text.length - tail)}`;
+}
+
+/**
+ * Format the profile email for the head-line suffix. Returns `` when
+ * the attachment has no profile or the profile has no email.
+ *
+ * Truncates at 40 chars (middle-ellipsis) so the head line stays within
+ * Slack's sensible mrkdwn width on narrow clients.
+ */
+function emailSuffix(slot: AuthKey): string {
+  if (!isCctSlot(slot)) return '';
+  const email = slot.oauthAttachment?.profile?.email;
+  if (!email) return '';
+  return ` · ${truncateMiddle(email, 40)}`;
 }
 
 /**
@@ -179,7 +240,10 @@ function buildUsagePanelBlock(usage: UsageSnapshot, nowMs: number, keyId: string
   if (usage.sevenDay) {
     rows.push(formatUsageBar(usage.sevenDay.utilization, usage.sevenDay.resetsAt, nowMs, '7d'));
   }
-  if (usage.sevenDaySonnet) {
+  // Card v2 (#668 follow-up): hide the 7d-sonnet row when utilization is 0
+  // (or absent). Most slots never touch Sonnet, so a flat `░░░░░░░░░░ 0%`
+  // row is line noise — drop it rather than pad the panel with it.
+  if (usage.sevenDaySonnet && usage.sevenDaySonnet.utilization > 0) {
     rows.push(formatUsageBar(usage.sevenDaySonnet.utilization, usage.sevenDaySonnet.resetsAt, nowMs, '7d-sonnet'));
   }
   if (rows.length === 0) return null;
@@ -378,7 +442,14 @@ export function buildSlotRow(
   // are now emitted for EVERY slot — #653 M2 removes the prior isActive
   // gating so inactive rows carry the full signal (user specifically wants
   // tier + 5h + 7d always visible, not just on the currently-selected row).
-  const line1 = [':key:', `*${escapeMrkdwn(slot.name)}*`, displayKindTag(slot), subscriptionBadge(slot), tosBadge(slot)]
+  const line1 = [
+    ':key:',
+    `*${escapeMrkdwn(slot.name)}*`,
+    displayKindTag(slot),
+    subscriptionBadge(slot),
+    emailSuffix(slot),
+    tosBadge(slot),
+  ]
     .filter(Boolean)
     .join(' ');
   // Line 2: live status (auth state + active flag + OAuth expiry +
