@@ -691,7 +691,7 @@ export function buildCctCardBlocks(input: CctCardInput): ZBlock[] {
     if (footer) blocks.push(footer);
   }
 
-  // Card-level action row: Next rotate / Add / Refresh all. Per-slot
+  // Card-level action row: Next rotate / Add / Refresh All OAuth Tokens. Per-slot
   // [Activate] / [Remove] / [Attach|Detach] live on each slot row (see
   // `buildSlotRow`). The per-slot inline [Activate] button is the only
   // activation affordance; the legacy `set_active` fallback dropdown was
@@ -713,7 +713,7 @@ export function buildCctCardBlocks(input: CctCardInput): ZBlock[] {
     {
       type: 'button',
       action_id: CCT_ACTION_IDS.refresh_usage_all,
-      text: { type: 'plain_text', text: ':arrows_counterclockwise: Refresh all', emoji: true },
+      text: { type: 'plain_text', text: ':arrows_counterclockwise: Refresh All OAuth Tokens', emoji: true },
       value: 'refresh_all',
     },
   ];

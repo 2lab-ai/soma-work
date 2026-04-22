@@ -21,7 +21,6 @@ import type { App } from '@slack/bolt';
 import type { WebClient } from '@slack/web-api';
 import { isAdminUser } from '../../admin-utils';
 import type { AuthKey } from '../../auth/auth-key';
-import { config } from '../../config';
 import { Logger } from '../../logger';
 import type { OAuthCredentials } from '../../oauth/refresher';
 import { hasRequiredScopes } from '../../oauth/scope-check';
@@ -48,7 +47,7 @@ const API_KEY_REGEX = /^sk-ant-api03-[A-Za-z0-9_-]{8,}$/;
 // wording in one place.
 export const REFRESH_BANNERS = {
   allNull:
-    ':warning: *Refresh all — no fresh data* — every attached slot returned no usage (throttled or failed). Check the TokenManager logs for `fetchAndStoreUsage` errors or the usage-store health.',
+    ':warning: *Refresh All OAuth Tokens — nothing refreshed* — every attached slot failed to refresh. Check the TokenManager logs for `refreshAllAttachedOAuthTokens` errors or the auth-state of each slot.',
   outerCatch: ':warning: Refresh failed. Please try again.',
 } as const;
 
@@ -233,29 +232,26 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
     }
   });
 
-  // Card-level "Refresh all" (admin-only fan-out).
+  // Card-level "Refresh All OAuth Tokens" (admin-only fan-out).
   //
-  // Ack first (Slack 3s contract), then admin gate, then fetch. Does NOT
-  // forward `force` to per-slot calls — the per-keyId in-flight dedupe
-  // lets this share the scheduler's tick when they overlap, and forcing
-  // every slot would defeat the local `nextUsageFetchAllowedAt` throttle
-  // that protects Anthropic from refresh storms. See
-  // `token-manager.ts fetchUsageForAllAttached` and the test contract at
-  // `token-manager.test.ts` ("does NOT forward force").
+  // Ack first (Slack 3s contract), then admin gate, then the token-refresh
+  // fan-out. This button force-refreshes the OAuth access_token for every
+  // attached CCT slot AND awaits the profile sync under a shared deadline
+  // so the card's email / rate-limit-tier badges reflect fresh data on the
+  // same click. It does NOT re-fetch usage; usage re-fetches happen on the
+  // separate card-level [Refresh] button.
   //
-  // When every attached slot returns `null` (all fetches throttled or
-  // failed), post an ephemeral banner instead of silently re-rendering
-  // the same stale card. Partial failures still re-post so successful
-  // rows update. Empty input map (no attached slots) is not "all failed".
+  // When every attached slot reports `error` (all refreshes failed), post
+  // an ephemeral banner instead of silently re-rendering the same stale
+  // card. Partial failures still re-post so successful rows update. Empty
+  // result map (no attached slots) is not "all failed".
   app.action(CCT_ACTION_IDS.refresh_usage_all, async ({ ack, body, client }) => {
     await ack();
     try {
       if (!requireAdmin(body)) return;
-      const results = await tokenManager.fetchUsageForAllAttached({
-        timeoutMs: config.usage.fetchTimeoutMs,
-      });
-      const entries = Object.values(results);
-      const allFailed = entries.length > 0 && entries.every((r) => r === null);
+      const results = await tokenManager.refreshAllAttachedOAuthTokens({ awaitProfile: true });
+      const outcomes = Object.values(results);
+      const allFailed = outcomes.length > 0 && outcomes.every((o) => o === 'error');
       if (allFailed) {
         await postEphemeralFailure(client, body, REFRESH_BANNERS.allNull);
         return;

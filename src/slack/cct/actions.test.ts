@@ -745,28 +745,24 @@ describe('refresh_usage action handlers (M1-S4)', () => {
     return { app, actionHandlers };
   }
 
-  it('refresh_usage_all → tm.fetchUsageForAllAttached({ timeoutMs }) called once WITHOUT force; ack runs BEFORE TM (3s budget)', async () => {
-    // Ordering contract mirrors T8f on view_submission: ack MUST land before
-    // the TM call starts, not merely before it settles. Regressing to
-    // `const p = tm.fetch(...); await ack(); await p;` would still satisfy
-    // "ack called" but blow Slack's 3s action-ack budget whenever the
-    // Anthropic fan-out stalls. The inner `expect` inside the ack mock fires
-    // at the exact crossing.
-    //
-    // Force contract (#644 review 4146267530 Finding #2 + autonomous fix):
-    // `fetchUsageForAllAttached` does NOT forward `force` to per-slot calls
-    // (see `token-manager.ts:1359-1369` and `token-manager.test.ts:1667`).
-    // Passing `{ force: true }` here was dead weight — the call-site now
-    // omits `force` entirely and this test locks the omission so a future
-    // plumbing refactor can't silently reintroduce force for the fan-out.
+  it('refresh_usage_all → tm.refreshAllAttachedOAuthTokens({ awaitProfile: true }) called once; ack runs BEFORE TM (3s budget); no usage fetch', async () => {
+    // Card v2 follow-up: [Refresh All OAuth Tokens] is a pure token-refresh
+    // fan-out. It MUST NOT call fetchUsageForAllAttached / fetchAndStoreUsage
+    // — usage re-fetches live on the separate card-level [Refresh] button.
+    // `awaitProfile: true` makes the email / rate-limit-tier badges reflect
+    // fresh data on the same click.
     const { app, actionHandlers } = makeApp();
     const callOrder: string[] = [];
-    const fetchUsageForAllAttached = vi.fn(async (_opts?: { force?: boolean; timeoutMs?: number }) => {
-      callOrder.push('tm.fetchUsageForAllAttached');
-      return {} as Record<string, unknown>;
+    const refreshAllAttachedOAuthTokens = vi.fn(async (_opts?: { awaitProfile?: boolean; timeoutMs?: number }) => {
+      callOrder.push('tm.refreshAllAttachedOAuthTokens');
+      return { 'slot-A': 'ok' } as Record<string, 'ok' | 'error'>;
     });
+    const fetchUsageForAllAttached = vi.fn(async () => ({}));
+    const fetchAndStoreUsage = vi.fn(async () => null);
     const tm = {
+      refreshAllAttachedOAuthTokens,
       fetchUsageForAllAttached,
+      fetchAndStoreUsage,
       getSnapshot: async () => ({
         version: 2 as const,
         revision: 1,
@@ -783,8 +779,7 @@ describe('refresh_usage action handlers (M1-S4)', () => {
       const h = actionHandlers.get(CCT_ACTION_IDS.refresh_usage_all);
       expect(h).toBeDefined();
       const ack = vi.fn(async () => {
-        // At the moment ack is invoked, the TM fan-out MUST NOT have started.
-        expect(fetchUsageForAllAttached).not.toHaveBeenCalled();
+        expect(refreshAllAttachedOAuthTokens).not.toHaveBeenCalled();
         callOrder.push('ack');
       });
       await h?.({
@@ -797,28 +792,26 @@ describe('refresh_usage action handlers (M1-S4)', () => {
         client: { chat: { postEphemeral: vi.fn(async () => undefined) } },
       });
       expect(ack).toHaveBeenCalled();
-      expect(fetchUsageForAllAttached).toHaveBeenCalledTimes(1);
-      const args = fetchUsageForAllAttached.mock.calls[0][0];
-      // `force` must NOT be passed at all — stricter than `force !== true`
-      // so a regression adding `{ force: false }` also fires.
-      expect(args).not.toHaveProperty('force');
-      expect(typeof args?.timeoutMs).toBe('number');
-      // Strict ordering — ack first, TM second.
-      expect(callOrder.slice(0, 2)).toEqual(['ack', 'tm.fetchUsageForAllAttached']);
+      expect(refreshAllAttachedOAuthTokens).toHaveBeenCalledTimes(1);
+      const args = refreshAllAttachedOAuthTokens.mock.calls[0][0];
+      expect(args?.awaitProfile).toBe(true);
+      // No usage fetch was issued — this handler now only refreshes tokens.
+      expect(fetchUsageForAllAttached).not.toHaveBeenCalled();
+      expect(fetchAndStoreUsage).not.toHaveBeenCalled();
+      expect(callOrder.slice(0, 2)).toEqual(['ack', 'tm.refreshAllAttachedOAuthTokens']);
     } finally {
       spy.mockRestore();
     }
   });
 
-  it('refresh_usage_all → when every attached slot returns null, post ephemeral banner instead of re-posting the card', async () => {
-    // #644 review 4146267530 Finding #2 Option A — all-null result map
-    // surfaces an ephemeral banner so the admin doesn't see a silent
-    // no-op. Empty result map (no attached slots) falls through to the
-    // normal card-repost path — see the next test.
+  it('refresh_usage_all → when every attached slot reports "error", post ephemeral banner instead of re-posting the card', async () => {
+    // All-error outcome map surfaces an ephemeral banner so the admin
+    // doesn't see a silent no-op. Empty result map (no attached slots)
+    // falls through to the normal card-repost path — see the next test.
     const { app, actionHandlers } = makeApp();
-    const fetchUsageForAllAttached = vi.fn(async () => ({ 'slot-A': null, 'slot-B': null }));
+    const refreshAllAttachedOAuthTokens = vi.fn(async () => ({ 'slot-A': 'error', 'slot-B': 'error' }) as Record<string, 'ok' | 'error'>);
     const tm = {
-      fetchUsageForAllAttached,
+      refreshAllAttachedOAuthTokens,
       getSnapshot: async () => ({
         version: 2 as const,
         revision: 1,
@@ -844,10 +837,9 @@ describe('refresh_usage action handlers (M1-S4)', () => {
         },
         client: { chat: { postEphemeral } },
       });
-      expect(fetchUsageForAllAttached).toHaveBeenCalledTimes(1);
+      expect(refreshAllAttachedOAuthTokens).toHaveBeenCalledTimes(1);
       expect(postEphemeral).toHaveBeenCalledTimes(1);
       const call = postEphemeral.mock.calls[0]?.[0] as any;
-      // Banner path: top-level `text` equals the shared constant, no `blocks`.
       expect(call.channel).toBe('C1');
       expect(call.user).toBe('admin');
       expect(call.text).toBe(REFRESH_BANNERS.allNull);
@@ -858,13 +850,10 @@ describe('refresh_usage action handlers (M1-S4)', () => {
   });
 
   it('refresh_usage_all → when zero slots are attached, re-post the card normally (empty map is not "all failed")', async () => {
-    // Empty input map is NOT "all failed" — it just means no attached
-    // slots exist to fetch. The handler should re-post the normal card
-    // (which renders the "No CCT slots configured" section).
     const { app, actionHandlers } = makeApp();
-    const fetchUsageForAllAttached = vi.fn(async () => ({}) as Record<string, null>);
+    const refreshAllAttachedOAuthTokens = vi.fn(async () => ({}) as Record<string, 'ok' | 'error'>);
     const tm = {
-      fetchUsageForAllAttached,
+      refreshAllAttachedOAuthTokens,
       getSnapshot: async () => ({
         version: 2 as const,
         revision: 1,
@@ -891,7 +880,6 @@ describe('refresh_usage action handlers (M1-S4)', () => {
       });
       expect(postEphemeral).toHaveBeenCalledTimes(1);
       const call = postEphemeral.mock.calls[0]?.[0] as any;
-      // Card repost path carries a `blocks` array (Block Kit).
       expect(Array.isArray(call.blocks)).toBe(true);
     } finally {
       spy.mockRestore();
@@ -899,14 +887,11 @@ describe('refresh_usage action handlers (M1-S4)', () => {
   });
 
   it('refresh_usage_all → when tm throws, outer catch posts ephemeral Refresh-failed toast', async () => {
-    // #644 round 4 Option A — the outer try/catch previously only logged;
-    // the admin saw a dead button on a genuinely broken TM. Lock the
-    // toast-on-throw branch so a future refactor can't drop the feedback.
     const { app, actionHandlers } = makeApp();
-    const fetchUsageForAllAttached = vi.fn(async () => {
+    const refreshAllAttachedOAuthTokens = vi.fn(async () => {
       throw new Error('tm blew up');
     });
-    const tm = { fetchUsageForAllAttached } as any;
+    const tm = { refreshAllAttachedOAuthTokens } as any;
     const adminUtils = await import('../../admin-utils');
     const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(true);
     const postEphemeral = vi.fn(async (_arg: any) => undefined);
@@ -922,7 +907,7 @@ describe('refresh_usage action handlers (M1-S4)', () => {
         },
         client: { chat: { postEphemeral } },
       });
-      expect(fetchUsageForAllAttached).toHaveBeenCalledTimes(1);
+      expect(refreshAllAttachedOAuthTokens).toHaveBeenCalledTimes(1);
       expect(postEphemeral).toHaveBeenCalledTimes(1);
       const call = postEphemeral.mock.calls[0]?.[0] as any;
       expect(call.text).toBe(REFRESH_BANNERS.outerCatch);
@@ -935,8 +920,8 @@ describe('refresh_usage action handlers (M1-S4)', () => {
 
   it('refresh_usage_all by non-admin → ack only, no TM call', async () => {
     const { app, actionHandlers } = makeApp();
-    const fetchUsageForAllAttached = vi.fn(async () => ({}));
-    const tm = { fetchUsageForAllAttached } as any;
+    const refreshAllAttachedOAuthTokens = vi.fn(async () => ({}));
+    const tm = { refreshAllAttachedOAuthTokens } as any;
     const adminUtils = await import('../../admin-utils');
     const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(false);
     try {
@@ -953,7 +938,7 @@ describe('refresh_usage action handlers (M1-S4)', () => {
         client: { chat: { postEphemeral: vi.fn(async () => undefined) } },
       });
       expect(ack).toHaveBeenCalled();
-      expect(fetchUsageForAllAttached).not.toHaveBeenCalled();
+      expect(refreshAllAttachedOAuthTokens).not.toHaveBeenCalled();
     } finally {
       spy.mockRestore();
     }
@@ -967,7 +952,7 @@ describe('REFRESH_BANNERS literal-lock (regression guard)', () => {
   // edits land as an explicit diff in this test.
   it('allNull banner text is locked', () => {
     expect(REFRESH_BANNERS.allNull).toBe(
-      ':warning: *Refresh all — no fresh data* — every attached slot returned no usage (throttled or failed). Check the TokenManager logs for `fetchAndStoreUsage` errors or the usage-store health.',
+      ':warning: *Refresh All OAuth Tokens — nothing refreshed* — every attached slot failed to refresh. Check the TokenManager logs for `refreshAllAttachedOAuthTokens` errors or the auth-state of each slot.',
     );
   });
   it('outerCatch banner text is locked', () => {
