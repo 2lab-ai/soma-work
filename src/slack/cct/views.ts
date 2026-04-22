@@ -51,6 +51,8 @@ export const CCT_BLOCK_IDS = {
 export const CCT_CARD_BLOCK_ID_PREFIX = {
   /** Per-slot usage-context block (stripped first under overflow). */
   usagePanel: 'cct_usage_panel:',
+  /** Card-level "Soonest expiring 7d budget" footer (#668 follow-up). */
+  budgetFooter: 'cct_budget_footer',
 } as const;
 
 /** Action_ids stable across `views.update`. Preserves typed values. */

@@ -558,10 +558,13 @@ export function appendStoreReadFailureBanner(blocks: ZBlock[]): void {
 
 /**
  * Safety margin under Slack's 50-block hard cap per message / ephemeral.
- * Stops the card assembly well short of the cap so adjacent banners
- * (store-read failure, api_key hidden context) still fit.
+ * Card v2 (#668 follow-up): lowered from 48 → 47 to reserve one extra
+ * slot for the cct-topic.ts trailer chrome (legacy set-active action row
+ * + cancel button + store-read banner) that lands AFTER this helper
+ * returns. Without the reservation a 15-slot fleet can tip over the
+ * hard cap when the budget footer and trailers all land together.
  */
-const SLACK_BLOCK_SOFT_CAP = 48;
+const SLACK_BLOCK_SOFT_CAP = 47;
 
 /**
  * Post-assembly overflow guard. Invoked only when the rich layout
@@ -594,7 +597,82 @@ function trimBlocksToSlackCap(blocks: ZBlock[]): ZBlock[] {
       blocks.splice(i, 1);
     }
   }
+  if (blocks.length <= SLACK_BLOCK_SOFT_CAP) return blocks;
+  // Phase 3 (card v2): strip the budget footer. It is a convenience
+  // summary — if the card is already pressed against the cap, the
+  // per-slot rows carry the raw percentages.
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    if (blocks.length <= SLACK_BLOCK_SOFT_CAP) break;
+    const b = blocks[i] as { type?: string; block_id?: string };
+    if (b.block_id === CCT_CARD_BLOCK_ID_PREFIX.budgetFooter) {
+      blocks.splice(i, 1);
+    }
+  }
   return blocks;
+}
+
+/**
+ * Card v2 (#668 follow-up) — "Soonest expiring 7d budget" footer.
+ *
+ * Scans every eligible CCT slot's 7d usage window and surfaces the three
+ * whose `resetsAt` is closest to `now`. Each entry shows the slot name,
+ * remaining percentage, and TTL until the window resets. The intent is
+ * to let operators see at a glance which budgets are about to roll over
+ * so they can pace dispatches accordingly.
+ *
+ * Eligibility:
+ *   - kind === 'cct' (api_key has no usage surface)
+ *   - oauthAttachment present
+ *   - state.usage.sevenDay.resetsAt parseable
+ *   - NOT tombstoned / revoked (both of these slots are going away;
+ *     their remaining budget is not useful to surface)
+ *
+ * Returns `null` when fewer than 2 eligible slots exist — a single-slot
+ * fleet doesn't benefit from a "soonest" ranking.
+ */
+export function buildBudgetFooterBlock(
+  slots: AuthKey[],
+  states: Record<string, SlotState>,
+  nowMs: number,
+): ZBlock | null {
+  interface Entry {
+    name: string;
+    remainingPct: number;
+    ttlMs: number;
+  }
+  const entries: Entry[] = [];
+  for (const slot of slots) {
+    if (slot.kind !== 'cct') continue;
+    if (slot.oauthAttachment === undefined) continue;
+    const state = states[slot.keyId];
+    if (!state) continue;
+    if (state.tombstoned) continue;
+    if (state.authState === 'revoked') continue;
+    const sevenDay = state.usage?.sevenDay;
+    if (!sevenDay) continue;
+    const resetsMs = new Date(sevenDay.resetsAt).getTime();
+    if (!Number.isFinite(resetsMs)) continue;
+    const util = Math.min(1, Math.max(0, sevenDay.utilization));
+    entries.push({
+      name: slot.name,
+      remainingPct: Math.round((1 - util) * 100),
+      ttlMs: Math.max(0, resetsMs - nowMs),
+    });
+  }
+  if (entries.length < 2) return null;
+  entries.sort((a, b) => a.ttlMs - b.ttlMs);
+  const topThree = entries.slice(0, 3);
+  const parts = topThree.map(
+    (e) => `\`${escapeMrkdwn(e.name)}\` ${e.remainingPct}% · ${formatUsageResetDelta(e.ttlMs)}`,
+  );
+  return {
+    type: 'section',
+    block_id: CCT_CARD_BLOCK_ID_PREFIX.budgetFooter,
+    text: {
+      type: 'mrkdwn',
+      text: `:hourglass_flowing_sand: *Soonest expiring 7d budget:* ${parts.join(' · ')}`,
+    },
+  };
 }
 
 /**
@@ -624,6 +702,10 @@ export function buildCctCardBlocks(input: CctCardInput): ZBlock[] {
       for (const b of rowBlocks) blocks.push(b);
       blocks.push({ type: 'divider' });
     }
+    // Card v2 (#668 follow-up): budget footer between the per-slot rows
+    // and the card-level action row. Returns null for single-slot fleets.
+    const footer = buildBudgetFooterBlock(input.slots, input.states, nowMs);
+    if (footer) blocks.push(footer);
   }
 
   // Card-level action row: Next rotate / Add / Refresh all. Per-slot

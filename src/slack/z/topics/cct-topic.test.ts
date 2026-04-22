@@ -355,3 +355,74 @@ describe('createCctTopicBinding', () => {
     expect(typeof b.renderCard).toBe('function');
   });
 });
+
+// ────────────────────────────────────────────────────────────────────
+// #668 follow-up — block-cap stress with budget footer + cct-topic trailers
+// ────────────────────────────────────────────────────────────────────
+//
+// The /z cct card stacks four tiers of blocks on top of `buildCctCardBlocks`:
+//   1. buildCctCardBlocks output (header + per-slot rows + card actions +
+//      optional set-active selector + budget footer, under the 47-block
+//      soft cap).
+//   2. optional store-read-failure banner (one context block, never in
+//      the happy path).
+//   3. legacy action row with per-name set buttons + next (one actions
+//      block).
+//   4. cancel action row (one actions block).
+//
+// Slack's hard cap is 50 blocks per message/ephemeral. If steps 3-4 plus
+// the footer ever push a 15-slot fleet over the cap, the whole payload
+// is rejected and the card fails to render. This test locks the end-to-end
+// budget so a future refactor of either builder.ts or cct-topic.ts trips
+// the assertion instead of tripping Slack at runtime.
+describe('cct-topic block-cap stress (#668 follow-up)', () => {
+  it('N=15 oauth-attached slots + budget footer + cct-topic trailers → ≤ 50 blocks', async () => {
+    const now = Date.now();
+    mockStore.slots = [];
+    mockStore.state = {};
+    mockStore.activeKeyId = 'slot-0';
+    mockStore.fetchUsageForAllAttachedCalls = 0;
+    mockStore.fetchUsageForAllAttachedArgs = [];
+    for (let i = 0; i < 15; i++) {
+      const keyId = `slot-${i}`;
+      mockStore.slots.push({
+        kind: 'cct',
+        source: 'setup',
+        keyId,
+        name: `cct${i}`,
+        setupToken: 'sk-ant-oat01-x',
+        createdAt: '',
+        oauthAttachment: {
+          accessToken: 't',
+          refreshToken: 'r',
+          expiresAtMs: now + 86_400_000,
+          scopes: ['user:profile', 'user:inference'],
+          acknowledgedConsumerTosRisk: true,
+        },
+      });
+      mockStore.state[keyId] = {
+        authState: 'healthy',
+        activeLeases: [],
+        usage: {
+          fetchedAt: new Date(now).toISOString(),
+          fiveHour: { utilization: 0.3, resetsAt: new Date(now + 3 * 3_600_000).toISOString() },
+          sevenDay: {
+            utilization: i * 0.05,
+            resetsAt: new Date(now + (i + 1) * 86_400_000).toISOString(),
+          },
+          sevenDaySonnet: {
+            utilization: i * 0.02,
+            resetsAt: new Date(now + (i + 1) * 86_400_000).toISOString(),
+          },
+        },
+      } as any;
+    }
+    vi.mocked(isAdminUser).mockReturnValue(true);
+    const { blocks } = await renderCctCard({ userId: 'U1', issuedAt: 1 });
+    // Logged in CI output so the final PR summary can cite the measured
+    // N=15 block count without rerunning the instrumentation manually.
+    // biome-ignore lint/suspicious/noConsole: intentional CI telemetry
+    console.log(`[stress N=15] block count = ${blocks.length}`);
+    expect(blocks.length).toBeLessThanOrEqual(50);
+  });
+});

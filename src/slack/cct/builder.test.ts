@@ -4,6 +4,7 @@ import {
   appendStoreReadFailureBanner,
   buildAddSlotModal,
   buildAttachOAuthModal,
+  buildBudgetFooterBlock,
   buildCctCardBlocks,
   buildRemoveSlotModal,
   buildSlotRow,
@@ -1205,6 +1206,122 @@ describe('formatUsageBar — expires-in suffix (#668 follow-up)', () => {
     const iso = new Date(now + 3 * 3_600_000).toISOString();
     const out = formatUsageBar(0.5, iso, now, '5h');
     expect(out).toMatch(/resets in 3h 0m · expires in 3h 0m$/);
+  });
+});
+
+describe('buildBudgetFooterBlock (#668 follow-up)', () => {
+  const now = Date.parse('2026-04-22T00:00:00Z');
+
+  function makeSlotWithUsage(
+    name: string,
+    keyId: string,
+    util: number,
+    resetsAt: string,
+  ): { slot: AuthKey; state: SlotState } {
+    return {
+      slot: {
+        kind: 'cct',
+        source: 'setup',
+        keyId,
+        name,
+        setupToken: 'sk-ant-oat01-x',
+        oauthAttachment: {
+          accessToken: 't',
+          refreshToken: 'r',
+          expiresAtMs: now + 86_400_000,
+          scopes: ['user:profile'],
+          acknowledgedConsumerTosRisk: true,
+        },
+        createdAt: '',
+      },
+      state: {
+        authState: 'healthy',
+        activeLeases: [],
+        usage: {
+          fetchedAt: new Date(now).toISOString(),
+          sevenDay: { utilization: util, resetsAt },
+        },
+      },
+    };
+  }
+
+  it('returns null when fewer than 2 eligible slots', () => {
+    const a = makeSlotWithUsage('a', 's1', 0.1, new Date(now + 86_400_000).toISOString());
+    const states: Record<string, SlotState> = { s1: a.state };
+    expect(buildBudgetFooterBlock([a.slot], states, now)).toBeNull();
+  });
+
+  it('surfaces the top-3 soonest-expiring 7d budgets in order', () => {
+    const a = makeSlotWithUsage('a', 's1', 0.4, new Date(now + 4 * 86_400_000).toISOString());
+    const b = makeSlotWithUsage('b', 's2', 0.6, new Date(now + 1 * 86_400_000).toISOString());
+    const c = makeSlotWithUsage('c', 's3', 0.2, new Date(now + 2 * 86_400_000).toISOString());
+    const d = makeSlotWithUsage('d', 's4', 0.8, new Date(now + 3 * 86_400_000).toISOString());
+    const states: Record<string, SlotState> = {
+      s1: a.state,
+      s2: b.state,
+      s3: c.state,
+      s4: d.state,
+    };
+    const block = buildBudgetFooterBlock([a.slot, b.slot, c.slot, d.slot], states, now) as any;
+    expect(block).not.toBeNull();
+    const text: string = block.text.text;
+    // b (1d) → c (2d) → d (3d); a (4d) drops off.
+    expect(text.indexOf('`b`')).toBeLessThan(text.indexOf('`c`'));
+    expect(text.indexOf('`c`')).toBeLessThan(text.indexOf('`d`'));
+    expect(text).not.toContain('`a`');
+    // Remaining pct is (1 - util) * 100 rounded.
+    expect(text).toContain('`b` 40%');
+    expect(text).toContain('`c` 80%');
+  });
+
+  it('skips tombstoned / revoked slots', () => {
+    const healthy = makeSlotWithUsage('h', 's1', 0.5, new Date(now + 86_400_000).toISOString());
+    const tomb = makeSlotWithUsage('t', 's2', 0.5, new Date(now + 2 * 86_400_000).toISOString());
+    tomb.state.tombstoned = true;
+    const rev = makeSlotWithUsage('r', 's3', 0.5, new Date(now + 3 * 86_400_000).toISOString());
+    rev.state.authState = 'revoked';
+    const states: Record<string, SlotState> = { s1: healthy.state, s2: tomb.state, s3: rev.state };
+    // Only one eligible → returns null.
+    expect(buildBudgetFooterBlock([healthy.slot, tomb.slot, rev.slot], states, now)).toBeNull();
+  });
+
+  it('budget footer is wired into buildCctCardBlocks and participates in trim under cap pressure', () => {
+    const slots: AuthKey[] = [];
+    const states: Record<string, SlotState> = {};
+    // 15 slots — footer + trailers should still fit under the 50-block cap.
+    for (let i = 0; i < 15; i++) {
+      const keyId = `slot-${i}`;
+      slots.push({
+        kind: 'cct',
+        source: 'setup',
+        keyId,
+        name: `cct${i}`,
+        setupToken: 'sk-ant-oat01-x',
+        oauthAttachment: {
+          accessToken: 't',
+          refreshToken: 'r',
+          expiresAtMs: now + 86_400_000,
+          scopes: ['user:profile'],
+          acknowledgedConsumerTosRisk: true,
+          subscriptionType: 'max_5x',
+        },
+        createdAt: '',
+      });
+      states[keyId] = {
+        authState: 'healthy',
+        activeLeases: [],
+        usage: {
+          fetchedAt: new Date(now).toISOString(),
+          fiveHour: { utilization: 0.3, resetsAt: new Date(now + 3 * 3_600_000).toISOString() },
+          sevenDay: {
+            utilization: i * 0.05,
+            resetsAt: new Date(now + (i + 1) * 86_400_000).toISOString(),
+          },
+        },
+      };
+    }
+    const blocks = buildCctCardBlocks({ slots, states, activeKeyId: 'slot-0', nowMs: now });
+    expect(blocks.length).toBeLessThanOrEqual(47);
   });
 });
 
