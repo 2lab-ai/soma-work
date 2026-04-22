@@ -1,4 +1,5 @@
 import { getStatusEmoji } from '../link-metadata-fetcher';
+import { hasOneMSuffix, stripOneMSuffix } from '../metrics/model-registry';
 import type {
   ConversationSession,
   SessionLink,
@@ -309,14 +310,23 @@ export class ThreadHeaderBuilder {
 
   /**
    * Format model name for display.
-   * "claude-opus-4-6-20250414" → "opus-4.6"
+   *
+   * Examples:
+   *   "claude-opus-4-6-20250414"  → "opus-4.6"
+   *   "claude-opus-4-7[1m]"       → "opus-4.7 (1M)"
+   *   "claude-sonnet-4-6"         → "sonnet-4.6"
+   *
+   * The `[1m]` suffix signals the 1M beta context variant; strip it before
+   * base formatting and append " (1M)" to the result.
    */
   static formatModelName(model: string): string {
-    const match = model.match(/claude-(\w+)-(\d+)-(\d+)/);
-    if (match) {
-      return `${match[1]}-${match[2]}.${match[3]}`;
-    }
-    return model.replace(/^claude-/, '').replace(/-\d{8}$/, '');
+    const has1m = hasOneMSuffix(model);
+    const base = has1m ? stripOneMSuffix(model) : model;
+    const match = base.match(/claude-(\w+)-(\d+)-(\d+)/);
+    const formatted = match
+      ? `${match[1]}-${match[2]}.${match[3]}`
+      : base.replace(/^claude-/, '').replace(/-\d{8}$/, '');
+    return has1m ? `${formatted} (1M)` : formatted;
   }
 
   /**

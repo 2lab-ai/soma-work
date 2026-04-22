@@ -84,12 +84,12 @@ CodexRuntime.initialize()
 
 CodexRuntime.startSession(prompt, options)
   → this.ensureClient()                          // lazy init if needed
-  → expandConfigForCodex(configOverride)         // L56-77 moved here
-  → merge config: expandedDefaults + options.config
   → client.callTool('codex', backendArgs, 600_000)  // L255-256
   → extractSessionId(result)                     // 'threadId' key, L149-162
   → store session locally
   → return SessionResult
+  // (REMOVED in #639: expandConfigForCodex + per-call config merge; the
+  //  llmChatConfigStore subsystem that fed `configOverride` was deleted.)
 
 CodexRuntime.resumeSession(sessionId, prompt)
   → this.ensureClient()

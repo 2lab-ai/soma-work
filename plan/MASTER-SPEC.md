@@ -181,7 +181,6 @@ if (isDm && !isCleanup) {
 | `cct` / `set_cct <n>` / `nextcct` | `/z cct` / `/z cct set <n>` / `/z cct next` | ❌ 절단 |
 | `accept @U` / `deny @U` / `users` | `/z admin accept <@U>` / `/z admin deny <@U>` / `/z admin users` | ❌ 절단 |
 | `config show` / `config KEY=VAL` | `/z admin config` / `/z admin config set <KEY> <VAL>` | ❌ 절단 |
-| `show llm_chat` / `set llm_chat <p> <k> <v>` / `reset llm_chat` | `/z admin llmchat` / `/z admin llmchat set <p> <k> <v>` / `/z admin llmchat reset` | ❌ 절단 |
 | `onboarding [prompt]` | `/z onboarding [prompt]` | ❌ 절단 |
 | `context` | `/z context` | ❌ 절단 |
 | `compact` | `/z compact` | ❌ 절단 |

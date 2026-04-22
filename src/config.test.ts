@@ -1,5 +1,5 @@
-import { describe, expect, it, vi } from 'vitest';
-import { parseFiveBlockPhase } from './config';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { parseFiveBlockPhase, parsePositiveIntEnv } from './config';
 
 // Silence the warn path; we're testing the fallback value, not the log side-effect.
 vi.mock('./logger', () => ({
@@ -59,5 +59,73 @@ describe('parseFiveBlockPhase', () => {
     it('" 1" parses as 1', () => {
       expect(parseFiveBlockPhase(' 1')).toBe(1);
     });
+  });
+});
+
+// #641 M1-S1 — `parsePositiveIntEnv` is the only barrier against an operator
+// setting `USAGE_REFRESH_INTERVAL_MS=1` (sub-second tick storm). The function
+// also gates `USAGE_ON_OPEN_TIMEOUT_MS` (card-open fan-out) and
+// `USAGE_FETCH_TIMEOUT_MS`. Regressions in any of these three behaviours
+// (fallback, clamp, passthrough) should fire a failing test, not ship.
+describe('parsePositiveIntEnv (#641 M1-S1)', () => {
+  const ENV_NAME = 'TEST_POSITIVE_INT_ENV';
+  beforeEach(() => {
+    delete process.env[ENV_NAME];
+  });
+  afterEach(() => {
+    delete process.env[ENV_NAME];
+  });
+
+  it('undefined env → fallback', () => {
+    expect(parsePositiveIntEnv(ENV_NAME, 5 * 60_000, 30_000)).toBe(5 * 60_000);
+  });
+
+  it('empty-string env → fallback', () => {
+    process.env[ENV_NAME] = '';
+    expect(parsePositiveIntEnv(ENV_NAME, 2_000, 0)).toBe(2_000);
+  });
+
+  it('negative value → fallback (warn-and-fallback)', () => {
+    process.env[ENV_NAME] = '-1';
+    expect(parsePositiveIntEnv(ENV_NAME, 2_000, 0)).toBe(2_000);
+  });
+
+  it('zero → fallback (positive-only)', () => {
+    process.env[ENV_NAME] = '0';
+    expect(parsePositiveIntEnv(ENV_NAME, 1_500, 500)).toBe(1_500);
+  });
+
+  it('NaN-ish string → fallback', () => {
+    process.env[ENV_NAME] = 'abc';
+    expect(parsePositiveIntEnv(ENV_NAME, 2_000, 0)).toBe(2_000);
+  });
+
+  it('non-integer ("1.5") → fallback', () => {
+    process.env[ENV_NAME] = '1.5';
+    expect(parsePositiveIntEnv(ENV_NAME, 2_000, 0)).toBe(2_000);
+  });
+
+  it('value below minimum → clamped to minimum (NOT fallback)', () => {
+    // Classic foot-gun: operator sets USAGE_REFRESH_INTERVAL_MS=1 to "refresh
+    // more often". The clamp pins it at the 30s floor instead of reverting to
+    // the 5-minute default, so the operator still gets aggressive-but-safe
+    // refreshes and a warn log signals the misconfiguration.
+    process.env[ENV_NAME] = '1';
+    expect(parsePositiveIntEnv(ENV_NAME, 5 * 60_000, 30_000)).toBe(30_000);
+  });
+
+  it('value at minimum boundary → passthrough (not clamped)', () => {
+    process.env[ENV_NAME] = '30000';
+    expect(parsePositiveIntEnv(ENV_NAME, 5 * 60_000, 30_000)).toBe(30_000);
+  });
+
+  it('value above minimum → passthrough', () => {
+    process.env[ENV_NAME] = '120000';
+    expect(parsePositiveIntEnv(ENV_NAME, 5 * 60_000, 30_000)).toBe(120_000);
+  });
+
+  it('no minimum set (default 0) → any positive integer passes through', () => {
+    process.env[ENV_NAME] = '42';
+    expect(parsePositiveIntEnv(ENV_NAME, 2_000)).toBe(42);
   });
 });

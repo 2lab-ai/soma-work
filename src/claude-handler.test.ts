@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildBetaHeaders, buildThinkingOption, resolveShowSummary } from './claude-handler';
+import { buildThinkingOption, resolveShowSummary } from './claude-handler';
 import { DEFAULT_SHOW_THINKING, DEFAULT_THINKING_ENABLED } from './user-settings-store';
 
 describe('buildThinkingOption', () => {
@@ -29,43 +29,9 @@ describe('buildThinkingOption', () => {
   });
 });
 
-describe('buildBetaHeaders', () => {
-  it('returns undefined when no API key', () => {
-    expect(buildBetaHeaders('claude-sonnet-4-5-20250929', false)).toBeUndefined();
-  });
-
-  it('omits 1M beta for Opus 4.7 (1M GA)', () => {
-    const betas = buildBetaHeaders('claude-opus-4-7', true);
-    expect(betas).toBeUndefined();
-  });
-
-  it('omits 1M beta for Opus 4.6 (1M GA)', () => {
-    const betas = buildBetaHeaders('claude-opus-4-6', true);
-    expect(betas).toBeUndefined();
-  });
-
-  it('omits 1M beta for Sonnet 4.6 (1M GA)', () => {
-    const betas = buildBetaHeaders('claude-sonnet-4-6', true);
-    expect(betas).toBeUndefined();
-  });
-
-  it('includes 1M beta for Sonnet 4.5 (still needs header)', () => {
-    const betas = buildBetaHeaders('claude-sonnet-4-5-20250929', true);
-    expect(betas).toBeDefined();
-    expect(betas).toContain('context-1m-2025-08-07');
-  });
-
-  it('includes 1M beta for Haiku 4.5 (still needs header)', () => {
-    const betas = buildBetaHeaders('claude-haiku-4-5-20251001', true);
-    expect(betas).toBeDefined();
-    expect(betas).toContain('context-1m-2025-08-07');
-  });
-
-  it('includes 1M beta for unknown / empty model name (conservative default)', () => {
-    expect(buildBetaHeaders(undefined, true)).toContain('context-1m-2025-08-07');
-    expect(buildBetaHeaders('', true)).toContain('context-1m-2025-08-07');
-  });
-});
+// `buildBetaHeaders` was removed in #656. The 1M-context beta header is now
+// injected by the Claude Agent SDK itself (≥ 0.2.111) when the model id ends
+// with `[1m]` — no runtime wrapper needed on our side.
 
 describe('resolveShowSummary', () => {
   it('session override wins over user default (session=true, user=false)', () => {

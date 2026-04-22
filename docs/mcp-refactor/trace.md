@@ -103,7 +103,9 @@ class ConfigCache<T> {
   - Section-specific parsing (llm: `raw.llmChat`, server-tools: `raw['server-tools']`) → `options.loader` callback
 
 #### 3b. Consumer migration
-- llm: `const llmConfigCache = new ConfigCache(HARDCODED_DEFAULTS, { section: 'llmChat', loader: parseLlmConfig })`
+- _(REMOVED in #639: the llm ConfigCache consumer is gone — `llmChat` section,
+  `HARDCODED_DEFAULTS`, and `parseLlmConfig` were all deleted together with the
+  llmChatConfigStore subsystem.)_
 - server-tools: `const serverToolsConfigCache = new ConfigCache({}, { section: 'server-tools', loader: parseServerToolsConfig })`
 
 ### 4. Side Effects

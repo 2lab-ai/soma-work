@@ -77,22 +77,13 @@ describe('UsageHandler — privacy gate', () => {
 describe('UsageHandler — Asia/Seoul date range', () => {
   // Access private method via cast — narrow scope to keep the test surgical.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const getRange = (h: UsageHandler, now: Date, period: 'today' | 'week' | 'month') =>
+  const getRange = (h: UsageHandler, now: Date, period: 'week' | 'month') =>
     (h as any).getDateRange(now, period) as { startDate: string; endDate: string };
 
   let handler: UsageHandler;
   beforeEach(() => {
     const { deps } = makeDeps();
     handler = new UsageHandler(deps);
-  });
-
-  it('uses Asia/Seoul date at 00:30 KST (15:30 UTC prev day) — prevents UTC/KST off-by-one', () => {
-    // 2026-04-16 00:30 KST === 2026-04-15 15:30 UTC.
-    // Naïve UTC slice would report 2026-04-15; correct KST formatting → 2026-04-16.
-    const now = new Date('2026-04-15T15:30:00Z');
-    const { startDate, endDate } = getRange(handler, now, 'today');
-    expect(endDate).toBe('2026-04-16');
-    expect(startDate).toBe('2026-04-16');
   });
 
   it('week period = today − 6 days (rolling 7-day window) in KST', () => {
@@ -109,12 +100,33 @@ describe('UsageHandler — Asia/Seoul date range', () => {
     expect(startDate).toBe('2026-03-18');
   });
 
-  it('day transition at midnight KST: 14:59 UTC vs 15:00 UTC on the same calendar UTC day', () => {
+  it('endDate crosses KST midnight: 14:59 UTC → 2026-04-15, 15:00 UTC → 2026-04-16', () => {
     // 2026-04-15 14:59 UTC === 2026-04-15 23:59 KST → endDate 2026-04-15
     const before = new Date('2026-04-15T14:59:00Z');
-    expect(getRange(handler, before, 'today').endDate).toBe('2026-04-15');
+    expect(getRange(handler, before, 'week').endDate).toBe('2026-04-15');
     // 2026-04-15 15:00 UTC === 2026-04-16 00:00 KST → endDate 2026-04-16
     const after = new Date('2026-04-15T15:00:00Z');
-    expect(getRange(handler, after, 'today').endDate).toBe('2026-04-16');
+    expect(getRange(handler, after, 'week').endDate).toBe('2026-04-16');
+  });
+});
+
+describe('UsageHandler.execute — rolling 24h window for /usage', () => {
+  // Issue: https://github.com/2lab-ai/soma-work/issues/650
+  it('formats default /usage output with `최근 24시간` label', async () => {
+    const { deps, postSystemMessage } = makeDeps();
+    const handler = new UsageHandler(deps);
+    // `execute()` constructs its own MetricsEventStore; with no JSONL files
+    // on disk `readRange` returns [] gracefully (ENOENT handled). That is
+    // sufficient to drive `formatReport` and inspect the label.
+    await handler.execute(makeCtx({ user: 'U_ALICE', text: 'usage' }));
+
+    // First call is the report (privacy gate would short-circuit earlier).
+    const calls = postSystemMessage.mock.calls;
+    expect(calls.length).toBeGreaterThanOrEqual(1);
+    const [, message] = calls[0];
+    // Label proves the 'today' branch now uses the rolling 24h path.
+    expect(message).toMatch(/📊 \*토큰 사용량\* — 최근 24시간/);
+    // Must NOT contain the legacy '— 오늘' label.
+    expect(message).not.toMatch(/— 오늘/);
   });
 });
