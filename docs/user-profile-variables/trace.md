@@ -96,9 +96,10 @@
 - File: `src/prompt-builder.ts:160-174`
 - Pattern: `VARIABLE_PATTERN = /(?<!\\)\{\{([\w.]+)\}\}/g` (line 25) — `\{{` escaped vars skipped
 - For each match:
-  - `varName === 'llm_chat_config'` → `llmChatConfigStore.toPromptSnippet()`
   - `varName.startsWith('user.') && userId` → `resolveUserVariable(varName, userId)`
   - else → `match` (leave as-is)
+  - _(Removed in #639: the `llm_chat_config` branch was deleted together with the
+    `llmChatConfigStore` subsystem.)_
 
 #### 3c. resolveUserVariable (Value Resolver)
 - File: `src/prompt-builder.ts:179-195`

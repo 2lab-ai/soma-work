@@ -7,7 +7,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { SYSTEM_PROMPT_FILE } from './env-paths';
-import { llmChatConfigStore } from './llm-chat-config-store';
 import { Logger } from './logger';
 import type { WorkflowType } from './types';
 import { formatMemoryForPrompt } from './user-memory-store';
@@ -237,10 +236,6 @@ export class PromptBuilder {
    */
   private processVariables(content: string, userId?: string): string {
     const result = content.replace(VARIABLE_PATTERN, (match, varName) => {
-      if (varName === 'llm_chat_config') {
-        return llmChatConfigStore.toPromptSnippet();
-      }
-
       // user.* variable substitution
       if (varName.startsWith('user.') && userId) {
         return this.resolveUserVariable(varName, userId) ?? match;
@@ -420,8 +415,8 @@ export class PromptBuilder {
       }
     }
 
-    // Process runtime variables (e.g., {{llm_chat_config}}, {{user.email}})
-    // Done last so dynamic config values are always current
+    // Process runtime variables (e.g., {{user.email}})
+    // Done last so dynamic values are always current
     if (systemPrompt) {
       systemPrompt = this.processVariables(systemPrompt, userId);
     }

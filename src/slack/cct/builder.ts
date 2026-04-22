@@ -6,7 +6,7 @@
  * intact — Slack preserves `state.values` only when keys are stable.
  */
 
-import type { AuthKey, AuthState, SlotState } from '../../cct-store';
+import type { AuthKey, AuthState, SlotState, UsageSnapshot } from '../../cct-store';
 import { isCctSlot } from '../../cct-store';
 import { formatRateLimitedAt } from '../../util/format-rate-limited-at';
 import type { ZBlock } from '../z/types';
@@ -58,11 +58,134 @@ function tosBadge(slot: AuthKey): string {
   return slot.oauthAttachment ? ' :warning: ToS-risk' : '';
 }
 
-/** Utility: format 0..1 or 0..100 utilization as a percent integer string. */
-function toPct(utilization: number | undefined): string {
-  if (utilization === undefined || !Number.isFinite(utilization)) return '0%';
-  const scaled = utilization <= 1 ? utilization * 100 : utilization;
-  return `${Math.round(scaled)}%`;
+/**
+ * Width of the Unicode progress bar used by `formatUsageBar`. Ten cells
+ * gives 10-pp resolution, fits well within Slack mrkdwn width, and avoids
+ * wrapping on narrow clients.
+ */
+const PROGRESS_BAR_CELLS = 10;
+
+/**
+ * Label column width — right-padded so three stacked rows (`5h`, `7d`,
+ * `7d-sonnet`) line up under one another. Matches the longest supported
+ * label (`7d-sonnet` = 9 chars).
+ */
+const USAGE_LABEL_WIDTH = 9;
+
+/** Pad a short label to the fixed column width (right-pad with spaces). */
+function padUsageLabel(label: string): string {
+  if (label.length >= USAGE_LABEL_WIDTH) return label;
+  return label + ' '.repeat(USAGE_LABEL_WIDTH - label.length);
+}
+
+/** Integer percent (0..100) from a 0..1 or 0..100 utilization number. */
+function utilToPctInt(util: number | undefined): number {
+  if (util === undefined || !Number.isFinite(util)) return 0;
+  const scaled = util <= 1 ? util * 100 : util;
+  return Math.max(0, Math.min(100, Math.round(scaled)));
+}
+
+/**
+ * "Xd Yh" / "Xh Ym" / "Ym" / "<1m" from a positive delta in ms. Switches to
+ * day-granularity at the 24h boundary so a 7-day 7d-sonnet reset renders as
+ * `7d 0h` instead of `168h 0m` (see #644 review).
+ */
+export function formatUsageResetDelta(deltaMs: number): string {
+  if (!Number.isFinite(deltaMs) || deltaMs <= 0) return '<1m';
+  const totalMin = Math.floor(deltaMs / 60_000);
+  if (totalMin < 1) return '<1m';
+  const totalHours = Math.floor(totalMin / 60);
+  const mins = totalMin % 60;
+  if (totalHours >= 24) {
+    const days = Math.floor(totalHours / 24);
+    const remainingHours = totalHours % 24;
+    return `${days}d ${remainingHours}h`;
+  }
+  if (totalHours > 0) return `${totalHours}h ${mins}m`;
+  return `${mins}m`;
+}
+
+/**
+ * Shared progress-bar formatter — used by the CCT card usage panel and the
+ * `/cct usage` text output. Keeping the format centralised guarantees both
+ * surfaces evolve together (bar width, glyphs, "resets in" hint).
+ *
+ * Layout:
+ *   `<padded_label> <bar> <pct>% · resets in Xh Ym`
+ *   `<padded_label> (no data)` — sentinel form when `util` is undefined or
+ *   the reset timestamp is missing.
+ */
+export function formatUsageBar(
+  util: number | undefined,
+  resetsAtIso: string | undefined,
+  nowMs: number,
+  label: string,
+): string {
+  const padded = padUsageLabel(label);
+  if (util === undefined || !Number.isFinite(util) || !resetsAtIso) {
+    return `${padded} (no data)`;
+  }
+  const pct = utilToPctInt(util);
+  const filled = Math.max(0, Math.min(PROGRESS_BAR_CELLS, Math.round((pct / 100) * PROGRESS_BAR_CELLS)));
+  const empty = PROGRESS_BAR_CELLS - filled;
+  const bar = '█'.repeat(filled) + '░'.repeat(empty);
+  const resetMs = new Date(resetsAtIso).getTime();
+  const delta = Number.isFinite(resetMs) ? resetMs - nowMs : NaN;
+  const hint = Number.isFinite(delta) ? formatUsageResetDelta(delta) : '<1m';
+  return `${padded} ${bar} ${pct}% · resets in ${hint}`;
+}
+
+/**
+ * Subscription-tier badge appended to the head line of a CCT slot row.
+ * Returns ` · Max 5x` / ` · Max 20x` / ` · Pro` / `` — the leading ` · `
+ * is always included when there is a badge so the head line reads as a
+ * dot-separated list without the caller having to concatenate separators.
+ *
+ * `api_key` slots and CCT slots without an attachment (or without a
+ * `subscriptionType`) produce the empty-string sentinel so the badge is
+ * simply absent.
+ */
+export function subscriptionBadge(slot: AuthKey): string {
+  if (!isCctSlot(slot)) return '';
+  const attachment = slot.oauthAttachment;
+  if (!attachment || !attachment.subscriptionType) return '';
+  return ` · ${formatSubscriptionType(attachment.subscriptionType)}`;
+}
+
+function formatSubscriptionType(raw: string): string {
+  switch (raw) {
+    case 'max_5x':
+      return 'Max 5x';
+    case 'max_20x':
+      return 'Max 20x';
+    case 'pro':
+      return 'Pro';
+    default:
+      return raw;
+  }
+}
+
+/**
+ * Build the three usage-panel rows (5h / 7d / 7d-sonnet) as a single
+ * context block. Returns `null` when the slot has no usage data — callers
+ * simply skip the panel in that case (no placeholder rendered).
+ */
+function buildUsagePanelBlock(usage: UsageSnapshot, nowMs: number): ZBlock | null {
+  const rows: string[] = [];
+  if (usage.fiveHour) {
+    rows.push(formatUsageBar(usage.fiveHour.utilization, usage.fiveHour.resetsAt, nowMs, '5h'));
+  }
+  if (usage.sevenDay) {
+    rows.push(formatUsageBar(usage.sevenDay.utilization, usage.sevenDay.resetsAt, nowMs, '7d'));
+  }
+  if (usage.sevenDaySonnet) {
+    rows.push(formatUsageBar(usage.sevenDaySonnet.utilization, usage.sevenDaySonnet.resetsAt, nowMs, '7d-sonnet'));
+  }
+  if (rows.length === 0) return null;
+  // Wrap in a code fence so Slack preserves the monospace alignment that
+  // the padded labels rely on.
+  const text = '```\n' + rows.join('\n') + '\n```';
+  return { type: 'context', elements: [{ type: 'mrkdwn', text }] };
 }
 
 function authStateBadge(state: AuthState): string {
@@ -94,11 +217,17 @@ export function buildSlotRow(
   userTz: string = 'Asia/Seoul',
 ): ZBlock[] {
   const blocks: ZBlock[] = [];
+  // #641 M1 block-overflow fix: inline-badges (subscription tier + active
+  // marker) are emitted only for the active slot so the "focused" row carries
+  // the full signal while inactive rows stay compact. tosBadge is kept for
+  // every slot because it surfaces a risk label (users need that visible even
+  // when the slot is not active).
   const headLine = [
     ':key:',
     `*${escapeMrkdwn(slot.name)}*`,
     isActive ? '· active' : '',
     displayKindTag(slot),
+    isActive ? subscriptionBadge(slot) : '',
     tosBadge(slot),
   ]
     .filter(Boolean)
@@ -109,42 +238,52 @@ export function buildSlotRow(
     text: { type: 'mrkdwn', text: headLine },
   });
 
-  // Context line — only when we have something meaningful.
-  const segments: string[] = [];
-  if (state) {
-    segments.push(authStateBadge(state.authState));
-    if (state.rateLimitedAt) {
-      const ts = formatRateLimitedAt(state.rateLimitedAt, userTz, nowMs);
-      const source = state.rateLimitSource ? ` via ${state.rateLimitSource}` : '';
-      segments.push(`rate-limited ${ts}${source}`);
-    }
-    if (state.usage) {
-      const u = state.usage;
-      const parts: string[] = [];
-      if (u.fiveHour) parts.push(`5h ${toPct(u.fiveHour.utilization)}`);
-      if (u.sevenDay) parts.push(`7d ${toPct(u.sevenDay.utilization)}`);
-      if (parts.length > 0) segments.push(`usage ${parts.join(' ')}`);
-    }
-    if (state.cooldownUntil) {
-      const untilMs = new Date(state.cooldownUntil).getTime();
-      if (Number.isFinite(untilMs) && untilMs > nowMs) {
-        segments.push(`cooldown until ${formatRateLimitedAt(state.cooldownUntil, userTz, nowMs).split(' / ')[0]}`);
+  // Block-budget invariant (Slack's 50-block hard cap):
+  //   active slot   = section + authState-context + usage-context + actions + divider = 5
+  //   inactive slot = section + actions + divider                                     = 3
+  //   card chrome   = header + card-actions + set-active-actions                      = 3
+  //   N=15 worst case: 3 + 5 + 14*3 = 50  (right at the cap)
+  //
+  // Inactive-row one-line usage summary + inline Activate affordance is
+  // M2 scope (issue #653) because adding any per-inactive-slot block
+  // overflows the cap at N≥16.
+  if (isActive) {
+    // Context line — only when we have something meaningful.
+    const segments: string[] = [];
+    if (state) {
+      segments.push(authStateBadge(state.authState));
+      if (state.rateLimitedAt) {
+        const ts = formatRateLimitedAt(state.rateLimitedAt, userTz, nowMs);
+        const source = state.rateLimitSource ? ` via ${state.rateLimitSource}` : '';
+        segments.push(`rate-limited ${ts}${source}`);
       }
+      if (state.cooldownUntil) {
+        const untilMs = new Date(state.cooldownUntil).getTime();
+        if (Number.isFinite(untilMs) && untilMs > nowMs) {
+          segments.push(`cooldown until ${formatRateLimitedAt(state.cooldownUntil, userTz, nowMs).split(' / ')[0]}`);
+        }
+      }
+      if (state.tombstoned) {
+        segments.push(':wastebasket: tombstoned (drain in progress)');
+      }
+      if (state.activeLeases.length > 0) {
+        segments.push(`leases: ${state.activeLeases.length}`);
+      }
+    } else {
+      segments.push(authStateBadge('healthy'));
     }
-    if (state.tombstoned) {
-      segments.push(':wastebasket: tombstoned (drain in progress)');
+    if (segments.length > 0) {
+      blocks.push({
+        type: 'context',
+        elements: [{ type: 'mrkdwn', text: segments.join(' · ') }],
+      });
     }
-    if (state.activeLeases.length > 0) {
-      segments.push(`leases: ${state.activeLeases.length}`);
+
+    // Three-line progress-bar panel rendered after the authState context.
+    if (state?.usage) {
+      const panel = buildUsagePanelBlock(state.usage, nowMs);
+      if (panel) blocks.push(panel);
     }
-  } else {
-    segments.push(authStateBadge('healthy'));
-  }
-  if (segments.length > 0) {
-    blocks.push({
-      type: 'context',
-      elements: [{ type: 'mrkdwn', text: segments.join(' · ') }],
-    });
   }
 
   // Per-slot action row: Remove / Rename + Z2 Attach-or-Detach for
@@ -185,12 +324,42 @@ export function buildSlotRow(
       });
     }
   }
+  // M1-S4 — per-slot Refresh. Only emitted for CCT slots that carry an
+  // OAuth attachment (that is the precondition for `/api/oauth/usage`).
+  // api_key slots and bare setup-source slots without an attachment have
+  // no usage endpoint to refresh against.
+  if (isCctSlot(slot) && slot.oauthAttachment !== undefined) {
+    actionElements.push({
+      type: 'button',
+      action_id: CCT_ACTION_IDS.refresh_usage_slot,
+      text: { type: 'plain_text', text: ':arrows_counterclockwise: Refresh', emoji: true },
+      value: slot.keyId,
+    });
+  }
   blocks.push({
     type: 'actions',
     elements: actionElements,
   });
 
   return blocks;
+}
+
+/**
+ * Shared store-read failure banner. Pushed onto a card so operators
+ * distinguish a failed `getSnapshot()` fallback from an empty-slot card.
+ * Both entry points (actions.ts fallback + cct-topic.ts loader) call
+ * this helper to keep the wording identical across surfaces.
+ */
+export function appendStoreReadFailureBanner(blocks: ZBlock[]): void {
+  blocks.push({
+    type: 'context',
+    elements: [
+      {
+        type: 'mrkdwn',
+        text: ':warning: *Store read failed* — card rendered empty as a fallback. Check the CctTopic logs for `loadSnapshotOrEmpty: getSnapshot failed` or `buildCardFromManager: getSnapshot failed`.',
+      },
+    ],
+  });
 }
 
 /**
@@ -222,9 +391,11 @@ export function buildCctCardBlocks(input: CctCardInput): ZBlock[] {
     }
   }
 
-  // Card-level action row: Next / Add. Per-slot Remove/Rename buttons live
-  // on each slot row (emitted by `buildSlotRow`) so they carry the correct
-  // slotId via the button's `value`.
+  // Card-level action row: Next / Add / Refresh-all. Per-slot
+  // Remove/Rename buttons live on each slot row (emitted by
+  // `buildSlotRow`) so they carry the correct slotId via the button's
+  // `value`. M1-S4 appends the Refresh-all button last so the existing
+  // action positions stay stable for muscle-memory.
   const actionElements: ZBlock[] = [
     {
       type: 'button',
@@ -238,6 +409,12 @@ export function buildCctCardBlocks(input: CctCardInput): ZBlock[] {
       style: 'primary',
       text: { type: 'plain_text', text: ':heavy_plus_sign: Add', emoji: true },
       value: 'add',
+    },
+    {
+      type: 'button',
+      action_id: CCT_ACTION_IDS.refresh_usage_all,
+      text: { type: 'plain_text', text: ':arrows_counterclockwise: Refresh all', emoji: true },
+      value: 'refresh_all',
     },
   ];
   blocks.push({ type: 'actions', elements: actionElements });

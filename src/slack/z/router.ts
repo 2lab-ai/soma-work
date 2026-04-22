@@ -249,11 +249,6 @@ export function translateToLegacy(remainder: string): string {
   if (/^admin\s+config$/i.test(trimmed)) return 'config show';
   const adminConfigSet = trimmed.match(/^admin\s+config\s+set\s+(\S+)\s+(.+)$/i);
   if (adminConfigSet) return `config ${adminConfigSet[1]}=${adminConfigSet[2]}`;
-  // admin llmchat → show llm_chat / admin llmchat set <p> <k> <v> / admin llmchat reset
-  if (/^admin\s+llmchat$/i.test(trimmed)) return 'show llm_chat';
-  const llmChatSet = trimmed.match(/^admin\s+llmchat\s+set\s+(\S+)\s+(\S+)\s+(.+)$/i);
-  if (llmChatSet) return `set llm_chat ${llmChatSet[1]} ${llmChatSet[2]} ${llmChatSet[3]}`;
-  if (/^admin\s+llmchat\s+reset$/i.test(trimmed)) return 'reset llm_chat';
 
   // session set <attr> <v> → $<attr> <v>
   const sessionSet = trimmed.match(/^session\s+set\s+(\S+)\s+(.+)$/i);

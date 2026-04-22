@@ -60,8 +60,11 @@ export function __setSleepImplForTests(fn: ((ms: number) => Promise<void>) | nul
  * Subcommand `/usage card` renders a personal PNG card (last 30d). Privacy gate
  * applies equally — only the caller's own userId is ever used.
  *
- * Timezone: all date ranges are computed in Asia/Seoul to match
- * ReportAggregator's REPORT_TIMEZONE partitioning.
+ * Timezone: `week` and `month` date ranges are computed in Asia/Seoul to match
+ * ReportAggregator's REPORT_TIMEZONE partitioning. The default path
+ * (`period === 'today'`) is a rolling 24h window `[now - 24h, now]` in
+ * absolute ms — the KST day-files are still the read unit, but the filter
+ * is timestamp-based. See issue #650.
  */
 export class UsageHandler implements CommandHandler {
   private logger = new Logger('UsageHandler');
@@ -99,11 +102,18 @@ export class UsageHandler implements CommandHandler {
     }
 
     const now = new Date();
-    const { startDate, endDate } = this.getDateRange(now, parsed.period);
-
     const store = new MetricsEventStore();
     const aggregator = new ReportAggregator(store);
-    const report = await aggregator.aggregateTokenUsage(startDate, endDate, parsed.userId || undefined);
+
+    let report: UsageReport;
+    if (parsed.period === 'today') {
+      const nowMs = now.getTime();
+      const startMs = nowMs - 24 * 60 * 60 * 1000;
+      report = await aggregator.aggregateTokenUsageMs(startMs, nowMs, parsed.userId || undefined);
+    } else {
+      const { startDate, endDate } = this.getDateRange(now, parsed.period);
+      report = await aggregator.aggregateTokenUsage(startDate, endDate, parsed.userId || undefined);
+    }
 
     const message = this.formatReport(report, parsed.period, parsed.userId);
     await this.deps.slackApi.postSystemMessage(channel, message, { threadTs });
@@ -297,9 +307,11 @@ export class UsageHandler implements CommandHandler {
   }
 
   /**
-   * Compute [startDate, endDate] date strings in Asia/Seoul timezone.
+   * Compute [startDate, endDate] date strings in Asia/Seoul timezone for
+   * calendar-range periods. The `today` path uses a ms-level rolling window
+   * instead (see `execute`) so it is not handled here.
    */
-  private getDateRange(now: Date, period: 'today' | 'week' | 'month'): { startDate: string; endDate: string } {
+  private getDateRange(now: Date, period: 'week' | 'month'): { startDate: string; endDate: string } {
     const fmtKst = new Intl.DateTimeFormat('en-CA', {
       timeZone: 'Asia/Seoul',
       year: 'numeric',
@@ -307,10 +319,7 @@ export class UsageHandler implements CommandHandler {
       day: '2-digit',
     });
     const endDate = fmtKst.format(now);
-    const daysBack = period === 'week' ? 6 : period === 'month' ? 29 : 0;
-    if (daysBack === 0) {
-      return { startDate: endDate, endDate };
-    }
+    const daysBack = period === 'week' ? 6 : 29;
     const [y, m, d] = endDate.split('-').map(Number);
     const startMs = Date.UTC(y, m - 1, d) - daysBack * 86_400_000;
     const start = new Date(startMs);
@@ -320,7 +329,7 @@ export class UsageHandler implements CommandHandler {
   }
 
   private formatReport(report: UsageReport, period: string, userId?: string): string {
-    const periodLabel = period === 'today' ? '오늘' : period === 'week' ? '최근 7일' : '최근 30일';
+    const periodLabel = period === 'today' ? '최근 24시간' : period === 'week' ? '최근 7일' : '최근 30일';
     const lines: string[] = [`📊 *토큰 사용량* — ${periodLabel}`, ''];
 
     const t = report.totals;

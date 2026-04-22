@@ -6,8 +6,14 @@ import { AVAILABLE_MODELS, MODEL_ALIASES, userSettingsStore } from '../../../use
 import type { ApplyResult, RenderResult, ZTopicBinding } from '../../actions/z-settings-actions';
 import { buildSettingCard } from '../ui-builder';
 
-/** Short aliases featured as primary buttons (resolved to real model ids by the store). */
-const FEATURED_ALIASES = ['sonnet', 'opus', 'haiku'] as const;
+/**
+ * Short aliases featured as primary buttons (resolved to real model ids by the store).
+ *
+ * Order matters: this is the exact visual order in the Slack `/z model` card.
+ * `opus[1m]` sits between `opus` and `haiku` so users can jump to the 1M
+ * variant without scrolling through the full allow-list.
+ */
+export const FEATURED_ALIASES = ['sonnet', 'opus', 'opus[1m]', 'haiku'] as const;
 
 export async function renderModelCard(args: { userId: string; issuedAt: number }): Promise<RenderResult> {
   const { userId, issuedAt } = args;
