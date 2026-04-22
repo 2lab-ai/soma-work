@@ -1540,3 +1540,56 @@ describe('Ghost session filtering (#438)', () => {
     expect(titles).toContain('Session B');
   });
 });
+
+// ── PR #632 TO-BE v2 helpers ──
+describe('extractIssueShortRef / extractPrShortRef', () => {
+  let extractIssueShortRef: (url?: string) => string | undefined;
+  let extractPrShortRef: (url?: string) => string | undefined;
+
+  beforeEach(async () => {
+    vi.resetModules();
+    const mod = await import('./dashboard');
+    extractIssueShortRef = mod.extractIssueShortRef;
+    extractPrShortRef = mod.extractPrShortRef;
+  });
+
+  it('extracts PTN-123 from /browse/PTN-123', () => {
+    expect(extractIssueShortRef('https://x.atlassian.net/browse/PTN-123')).toBe('PTN-123');
+  });
+
+  it('extracts key followed by trailing path', () => {
+    expect(extractIssueShortRef('https://x/browse/ABC-42/detail')).toBe('ABC-42');
+  });
+
+  it('returns undefined for no URL', () => {
+    expect(extractIssueShortRef(undefined)).toBeUndefined();
+  });
+
+  it('returns undefined for non-browse URL', () => {
+    expect(extractIssueShortRef('https://github.com/org/repo')).toBeUndefined();
+  });
+
+  it('rejects single-letter project key (A-123)', () => {
+    expect(extractIssueShortRef('https://x/browse/A-123')).toBeUndefined();
+  });
+
+  it('extracts PR-123 from /pull/123', () => {
+    expect(extractPrShortRef('https://github.com/org/repo/pull/123')).toBe('PR-123');
+  });
+
+  it('extracts PR-123 from /pull/123/files', () => {
+    expect(extractPrShortRef('https://github.com/org/repo/pull/123/files')).toBe('PR-123');
+  });
+
+  it('extracts PR-123 from /pull/123#issuecomment-999', () => {
+    expect(extractPrShortRef('https://github.com/org/repo/pull/123#issuecomment-999')).toBe('PR-123');
+  });
+
+  it('returns undefined for issues URL (not a PR)', () => {
+    expect(extractPrShortRef('https://github.com/org/repo/issues/123')).toBeUndefined();
+  });
+
+  it('returns undefined for no URL (PR)', () => {
+    expect(extractPrShortRef(undefined)).toBeUndefined();
+  });
+});

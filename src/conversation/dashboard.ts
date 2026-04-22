@@ -26,6 +26,7 @@ import { ReportAggregator } from '../metrics/report-aggregator';
 import { AggregatedMetrics, type MetricsEvent } from '../metrics/types';
 import { type ArchivedSession, getArchiveStore } from '../session-archive';
 import { buildThreadPermalink } from '../turn-notifier';
+import { coerceEffort, type EffortLevel, userSettingsStore } from '../user-settings-store';
 import { getConversation, resummarizeTurn, updateConversationTitleSub } from './recorder';
 import { generateTitle } from './title-generator';
 
@@ -85,6 +86,12 @@ export interface KanbanSession {
   threadTotalActiveMs?: number;
   threadSessionCount?: number;
   threadCompactionCount?: number;
+  /** PR #632 TO-BE v2 — effort level (normalised) + derived short refs */
+  effort?: EffortLevel;
+  /** Jira short key like "PTN-123" derived from issueUrl */
+  issueShortRef?: string;
+  /** GitHub PR short ref like "PR-123" derived from prUrl */
+  prShortRef?: string;
   /** Pending user choice question (present when activityState === 'waiting' and a question was asked) */
   pendingQuestion?: {
     type: 'user_choice' | 'user_choices';
@@ -275,6 +282,27 @@ function computeThreadAggregate(
   return { totalActiveMs, sessionCount, compactionCount };
 }
 
+/**
+ * Extract Jira-style short key from a "/browse/KEY-123" issue URL.
+ * URL-only (no label fallback) to avoid false positives like "HTTP-200".
+ * Key must be 2+ uppercase letters followed by "-<digits>" (Jira project-key convention).
+ */
+export function extractIssueShortRef(url?: string): string | undefined {
+  if (!url) return undefined;
+  const m = url.match(/\/browse\/([A-Z]{2,}-\d+)/);
+  return m ? m[1] : undefined;
+}
+
+/**
+ * Extract "PR-<number>" from a GitHub PR URL. URL-only.
+ * Trailing boundary: "/", "?", "#", or end of string (so .../pull/123#comment-... also matches).
+ */
+export function extractPrShortRef(url?: string): string | undefined {
+  if (!url) return undefined;
+  const m = url.match(/\/pull\/(\d+)(?:[/?#]|$)/);
+  return m ? `PR-${m[1]}` : undefined;
+}
+
 function sessionToKanban(key: string, s: any): KanbanSession {
   const tasks = _getTasksFn ? _getTasksFn(key) : undefined;
   const aggregate = computeThreadAggregate(s.channelId, s.threadTs, getAllSessions(), Date.now());
@@ -331,6 +359,10 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     threadTotalActiveMs: aggregate.totalActiveMs,
     threadSessionCount: aggregate.sessionCount,
     threadCompactionCount: aggregate.compactionCount,
+    // PR #632 TO-BE v2 — effort + short refs for card UI
+    effort: s.effort ? coerceEffort(s.effort) : userSettingsStore.getUserDefaultEffort(s.ownerId || ''),
+    issueShortRef: extractIssueShortRef(s.links?.issue?.url),
+    prShortRef: extractPrShortRef(s.links?.pr?.url),
     pendingQuestion: s.actionPanel?.pendingQuestion
       ? s.actionPanel.pendingQuestion.type === 'user_choice'
         ? {
@@ -423,6 +455,11 @@ export function archivedToKanban(archived: ArchivedSession): KanbanSession {
     threadTotalActiveMs: archived.busyMs || 0,
     threadSessionCount: 1,
     threadCompactionCount: archived.compactionCount || 0,
+    // PR #632 TO-BE v2 — effort (archived sessions don't persist it; fall back to per-user default)
+    //  + short refs derived from archived links
+    effort: userSettingsStore.getUserDefaultEffort(archived.ownerId || ''),
+    issueShortRef: extractIssueShortRef(archived.links?.issue?.url),
+    prShortRef: extractPrShortRef(archived.links?.pr?.url),
   };
 }
 
@@ -1683,10 +1720,51 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   flex-wrap: wrap;
 }
 .card .card-timer-row > span { white-space: nowrap; }
-.card .card-timer-row .card-timer-live { color: var(--text); }
 .card .card-timer-row .card-timer-total { color: var(--text-tertiary); }
 .card .card-timer-row .card-timer-compactions,
 .card .card-timer-row .card-timer-sessions { color: var(--text-tertiary); }
+
+/* ── HERO TIMER (PR #632 TO-BE v2) — big timer above title ── */
+.card .card-timer-hero {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+  margin-bottom: 6px;
+}
+.card .card-timer-hero .hero-icon { font-size: 18px; }
+.card .card-timer-hero .card-timer-live { color: var(--text); }
+
+/* ── SHORT REFS ROW (PR #632 TO-BE v2) — PTN-123 · PR-123 ── */
+.card .card-refs {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  margin-bottom: 4px;
+  flex-wrap: wrap;
+}
+.card .card-refs a {
+  color: var(--accent);
+  text-decoration: none;
+  font-weight: 700;
+}
+.card .card-refs a:hover { text-decoration: underline; }
+.card .card-refs .ref-sep { color: var(--text-tertiary); opacity: 0.6; }
+
+/* ── META EFFORT (PR #632 TO-BE v2) — power level in meta row ── */
+.card .card-meta .meta-effort {
+  color: var(--accent);
+  font-weight: 700;
+  text-transform: lowercase;
+}
 
 /* ── CONTEXT USAGE BAR ── */
 .card .context-bar { margin-top: 4px; margin-bottom: 2px; height: 4px; background: rgba(255,255,255,0.06); border-radius: 2px; overflow: hidden; }
@@ -2998,11 +3076,19 @@ function renderCard(s, col) {
       + (ctxPct > 0 ? '<div class="context-bar"><div class="context-bar-fill ' + ctxCls + '" style="width:' + Math.min(ctxPct, 100).toFixed(0) + '%"></div></div>' : '');
   }
 
-  // Tasks
+  // Tasks — PR #632 TO-BE v2: sort in_progress → pending → completed, stable within buckets
   let tasksHtml = '';
   if (s.tasks && s.tasks.length > 0) {
-    const shown = s.tasks.slice(0, 5);
-    const extra = s.tasks.length - shown.length;
+    function taskRank(status) {
+      if (status === 'in_progress') return 0;
+      if (status === 'completed') return 2;
+      return 1; // pending (and any unknown status)
+    }
+    const sortedTasks = s.tasks.slice().sort(function(a, b) {
+      return taskRank(a.status) - taskRank(b.status);
+    });
+    const shown = sortedTasks.slice(0, 5);
+    const extra = sortedTasks.length - shown.length;
     const taskItems = shown.map(function(t) {
       let icon, cls2;
       if (t.status === 'completed') { icon = '&#x2705;'; cls2 = 'completed'; }
@@ -3064,24 +3150,63 @@ function renderCard(s, col) {
 
   const modelShort = esc(s.model).replace(/^claude-/, '').replace(/-\\d{8}$/, '');
 
-  // Dashboard v2.1 — timer + counter row (live 1s tick updates .card-timer-live).
+  // PR #632 TO-BE v2 — timer values (shared by hero + stats rows).
   const legStarted = s.activeLegStartedAtMs || 0;
   const accumulated = s.activeAccumulatedMs || 0;
   const compactions = s.compactionCount || 0;
   const threadTotal = s.threadTotalActiveMs || 0;
   const threadSessions = s.threadSessionCount || 0;
+
+  // PR #632 TO-BE v2 — HERO timer (22px bold, above title). data-* attrs MUST
+  // stay on the .card-timer-live span so the 1-Hz polling loop
+  // (document.querySelectorAll('.card-timer-live')) can update it. Even in the
+  // zero state (legStarted===0 && accumulated===0) we still emit the live span
+  // so polling can pick it up the moment the leg starts.
+  const heroTimerHtml =
+    '<div class="card-timer-hero">'
+    + '<span class="hero-icon">&#x23F1;&#xFE0F;</span>'
+    + '<span class="card-timer-live" data-leg-started="' + legStarted + '" data-accumulated="' + accumulated + '" title="Current leg active time">' + formatNmSSs(accumulated + (legStarted ? Date.now() - legStarted : 0)) + '</span>'
+    + '</div>';
+
+  // PR #632 TO-BE v2 — STATS row (no live timer; that now lives in the hero).
   const timerRowHtml =
     '<div class="card-timer-row">'
-    + '<span class="card-timer-live" data-leg-started="' + legStarted + '" data-accumulated="' + accumulated + '" title="Current leg active time">&#x23F1;&#xFE0F; ' + formatNmSSs(accumulated + (legStarted ? Date.now() - legStarted : 0)) + '</span>'
     + '<span class="card-timer-total" title="Thread total active time">&Sigma; ' + formatNmSSs(threadTotal) + '</span>'
     + '<span class="card-timer-compactions" title="Compactions">&#x1F5DC;&#xFE0F; ' + compactions + '</span>'
     + '<span class="card-timer-sessions" title="Thread session count"># ' + threadSessions + '</span>'
     + '</div>';
 
+  // PR #632 TO-BE v2 — short refs row (PTN-123 · PR-123). escAttr for title/href.
+  const refParts = [];
+  if (s.issueShortRef && s.issueUrl) {
+    refParts.push('<a href="' + escAttr(s.issueUrl) + '" target="_blank" onclick="event.stopPropagation()" title="' + escAttr(s.issueLabel || s.issueShortRef) + '">' + esc(s.issueShortRef) + '</a>');
+  }
+  if (s.prShortRef && s.prUrl) {
+    refParts.push('<a href="' + escAttr(s.prUrl) + '" target="_blank" onclick="event.stopPropagation()" title="' + escAttr(s.prLabel || s.prShortRef) + '">' + esc(s.prShortRef) + '</a>');
+  }
+  const refsHtml = refParts.length
+    ? '<div class="card-refs">' + refParts.join('<span class="ref-sep">&middot;</span>') + '</div>'
+    : '';
+
+  // PR #632 TO-BE v2 — meta row with effort (power level) between model and owner.
+  const effortHtml = s.effort
+    ? '<span class="meta-effort" title="Power level">' + esc(s.effort) + '</span>'
+    : '';
+  const metaHtml = '<div class="card-meta">'
+    + '<span>' + esc(s.workflow) + '</span>'
+    + '<span>' + modelShort + '</span>'
+    + (effortHtml ? effortHtml : '')
+    + '<span class="meta-owner">' + esc(s.ownerName) + '</span>'
+    + '<span>' + timeAgo(s.lastActivity) + '</span>'
+    + '</div>';
+
+  // PR #632 TO-BE v2 — card order: hero → stats → title → refs → meta → links → subtitles → tokens → merge → question → tasks → actions.
   return '<div class="' + cls + '" draggable="true" data-session-key="' + escJs(s.key) + '" data-source-col="' + col + '" onclick="openPanel(\\'' + escJs(s.key) + '\\')">'
-    + '<div class="card-title"><span class="card-title-text">' + esc(s.title) + '</span>' + slackLink + convLink + '</div>'
+    + heroTimerHtml
     + timerRowHtml
-    + '<div class="card-meta"><span>' + esc(s.workflow) + '</span><span>' + modelShort + '</span><span class="meta-owner">' + esc(s.ownerName) + '</span><span>' + timeAgo(s.lastActivity) + '</span></div>'
+    + '<div class="card-title"><span class="card-title-text">' + esc(s.title) + '</span>' + slackLink + convLink + '</div>'
+    + refsHtml
+    + metaHtml
     + linksHtml
     + (s.issueTitle ? '<div style="font-size:0.7em;color:var(--text-secondary);margin-top:3px">' + esc(s.issueTitle).slice(0, 60) + '</div>' : '')
     + (s.prTitle ? '<div style="font-size:0.7em;color:var(--text-secondary);margin-top:2px">' + esc(s.prTitle).slice(0, 60) + '</div>' : '')
