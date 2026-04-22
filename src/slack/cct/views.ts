@@ -43,6 +43,16 @@ export const CCT_BLOCK_IDS = {
   attach_tos_ack: 'cct_attach_tos_ack',
 } as const;
 
+/**
+ * Stable block_id prefix for per-slot card blocks emitted by
+ * `buildSlotRow`. The overflow guard (`trimBlocksToSlackCap`) matches
+ * these by prefix so fragile text-content heuristics are avoided.
+ */
+export const CCT_CARD_BLOCK_ID_PREFIX = {
+  /** Per-slot usage-context block (stripped first under overflow). */
+  usagePanel: 'cct_usage_panel:',
+} as const;
+
 /** Action_ids stable across `views.update`. Preserves typed values. */
 export const CCT_ACTION_IDS = {
   next: 'cct_next',
@@ -69,7 +79,7 @@ export const CCT_ACTION_IDS = {
   // existing IDs above are unchanged.
   refresh_usage_all: 'cct_refresh_usage_all',
   refresh_usage_slot: 'cct_refresh_usage_slot',
-  // #653 M2 — per-slot Activate button. Replaces the card-level
+  // per-slot Activate button. Replaces the card-level
   // `set_active` dropdown for direct single-click activation. Non-
   // active rows emit this button; the active row omits it.
   activate_slot: 'cct_activate_slot',

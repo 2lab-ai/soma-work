@@ -252,7 +252,7 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
     }
   });
 
-  // #653 M2 — Per-slot [Activate] button. Admin gate + `applyToken(keyId)`
+  // Per-slot [Activate] button. Admin gate + `applyToken(keyId)`
   // + re-post card. Button is only emitted for non-active, non-api_key
   // slots (see `buildSlotRow`); the handler re-validates server-side so
   // a stale card (where the user already rotated elsewhere) can't force

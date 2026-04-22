@@ -13,6 +13,7 @@ import type { ZBlock } from '../z/types';
 import {
   CCT_ACTION_IDS,
   CCT_BLOCK_IDS,
+  CCT_CARD_BLOCK_ID_PREFIX,
   CCT_VIEW_IDS,
   OAUTH_BLOB_HELP,
   OAUTH_BLOB_WARN_THRESHOLD,
@@ -170,7 +171,7 @@ function formatSubscriptionType(raw: string): string {
  * context block. Returns `null` when the slot has no usage data — callers
  * simply skip the panel in that case (no placeholder rendered).
  */
-function buildUsagePanelBlock(usage: UsageSnapshot, nowMs: number): ZBlock | null {
+function buildUsagePanelBlock(usage: UsageSnapshot, nowMs: number, keyId: string): ZBlock | null {
   const rows: string[] = [];
   if (usage.fiveHour) {
     rows.push(formatUsageBar(usage.fiveHour.utilization, usage.fiveHour.resetsAt, nowMs, '5h'));
@@ -183,9 +184,14 @@ function buildUsagePanelBlock(usage: UsageSnapshot, nowMs: number): ZBlock | nul
   }
   if (rows.length === 0) return null;
   // Wrap in a code fence so Slack preserves the monospace alignment that
-  // the padded labels rely on.
+  // the padded labels rely on. `block_id` is prefixed so the overflow
+  // guard can identify usage panels by id rather than by text content.
   const text = '```\n' + rows.join('\n') + '\n```';
-  return { type: 'context', elements: [{ type: 'mrkdwn', text }] };
+  return {
+    type: 'context',
+    block_id: `${CCT_CARD_BLOCK_ID_PREFIX.usagePanel}${keyId}`,
+    elements: [{ type: 'mrkdwn', text }],
+  };
 }
 
 function authStateBadge(state: AuthState): string {
@@ -264,7 +270,7 @@ function buildSlotStatusLine(
 /**
  * Render a single slot row.
  *
- * Layout (#653 M2 — subscription tier + 5h/7d/OAuth expiry for EVERY slot):
+ * Layout (subscription tier + 5h/7d/OAuth expiry for EVERY slot):
  *   1. section  — multi-line header: name+kind+tier+ToS-risk on line 1,
  *                  healthy/rate-limited/OAuth-expiry segments on line 2.
  *   2. actions  — per-slot buttons: Activate (if not active & not api_key),
@@ -378,7 +384,7 @@ export function buildSlotRow(
   // the block-budget overflow guard in `buildCctCardBlocks` collapses
   // these first if the card would exceed Slack's 50-block cap.
   if (state?.usage && isCctSlot(slot) && slot.oauthAttachment !== undefined) {
-    const panel = buildUsagePanelBlock(state.usage, nowMs);
+    const panel = buildUsagePanelBlock(state.usage, nowMs, slot.keyId);
     if (panel) blocks.push(panel);
   }
 
@@ -426,18 +432,20 @@ function trimBlocksToSlackCap(blocks: ZBlock[]): ZBlock[] {
   // Phase 1: strip dividers.
   for (let i = blocks.length - 1; i >= 0; i--) {
     if (blocks.length <= SLACK_BLOCK_SOFT_CAP) break;
-    if ((blocks[i] as any).type === 'divider') blocks.splice(i, 1);
+    if ((blocks[i] as { type?: string }).type === 'divider') blocks.splice(i, 1);
   }
   if (blocks.length <= SLACK_BLOCK_SOFT_CAP) return blocks;
-  // Phase 2: strip usage-context blocks. Heuristic — a `context` block
-  // whose mrkdwn element starts with a code fence is the usage panel
-  // emitted by `buildUsagePanelBlock`.
+  // Phase 2: strip usage-context blocks. Matches on the stable
+  // `CCT_CARD_BLOCK_ID_PREFIX.usagePanel` prefix stamped by
+  // `buildUsagePanelBlock` — resilient to future formatting changes in
+  // the panel body (e.g. dropping the code fence).
   for (let i = blocks.length - 1; i >= 0; i--) {
     if (blocks.length <= SLACK_BLOCK_SOFT_CAP) break;
-    const b = blocks[i] as any;
+    const b = blocks[i] as { type?: string; block_id?: string };
     if (b.type !== 'context') continue;
-    const text = b.elements?.[0]?.text as string | undefined;
-    if (typeof text === 'string' && text.startsWith('```')) blocks.splice(i, 1);
+    if (typeof b.block_id === 'string' && b.block_id.startsWith(CCT_CARD_BLOCK_ID_PREFIX.usagePanel)) {
+      blocks.splice(i, 1);
+    }
   }
   return blocks;
 }

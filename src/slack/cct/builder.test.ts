@@ -62,7 +62,7 @@ describe('buildSlotRow', () => {
     expect(section.text.text).toContain('ToS-risk');
   });
 
-  it('#653 M2 — rate-limit timestamp + source render in the section multi-line body (always, not gated on isActive)', () => {
+  it('rate-limit timestamp + source render in the section multi-line body (always, not gated on isActive)', () => {
     const slot = setupSlot();
     const state: SlotState = {
       authState: 'healthy',
@@ -92,7 +92,7 @@ describe('buildSlotRow', () => {
   });
 
   it('honours 0..100 utilization values in the progress bar panel', () => {
-    // #653 M2 — usage panel only renders for slots with an oauthAttachment
+    // usage panel only renders for slots with an oauthAttachment
     // (the only ones with live usage data). Use an attached slot so the
     // panel surfaces.
     const slot = oauthSlot();
@@ -123,13 +123,13 @@ describe('buildSlotRow', () => {
     expect(text).toMatch(/cooldown until/);
   });
 
-  // #653 M2 — the OLD "inactive collapses to section + actions only" rule is
+  // the OLD "inactive collapses to section + actions only" rule is
   // explicitly reversed: the user wants tier/5h/7d/rate-limited visible on
   // EVERY slot, not just the active one. This test locks the new contract:
   // inactive slots still carry the authState+rate-limited segments on their
   // section multi-line body. (Block budget is preserved via trimBlocksToSlackCap
   // in `buildCctCardBlocks`; the N=15 cap tests below still pass.)
-  it('#653 M2 — inactive slot DOES render rate-limited + authState on its section body', () => {
+  it('inactive slot DOES render rate-limited + authState on its section body', () => {
     const slot = setupSlot();
     const state: SlotState = {
       authState: 'refresh_failed',
@@ -155,10 +155,10 @@ describe('buildSlotRow', () => {
     expect(flat).not.toMatch(/█/);
   });
 
-  // #653 M2 — the [Activate] button appears on every non-active slot that
+  // the [Activate] button appears on every non-active slot that
   // can be activated (i.e. cct slots, not api_key). Lock the button shape
   // + styling + value so the actions.ts router keeps routing correctly.
-  it('#653 M2 — non-active cct slot gets [Activate] button with style=primary and value=keyId', () => {
+  it('non-active cct slot gets [Activate] button with style=primary and value=keyId', () => {
     const slot = setupSlot('cct-foo', 'slot-foo');
     const blocks = buildSlotRow(slot, undefined, false, Date.parse('2026-04-21T00:00:00Z'));
     const actions = blocks.find((b: any) => b.type === 'actions') as any;
@@ -168,7 +168,7 @@ describe('buildSlotRow', () => {
     expect(activateBtn.value).toBe('slot-foo');
   });
 
-  it('#653 M2 — active cct slot does NOT get [Activate] button (already active)', () => {
+  it('active cct slot does NOT get [Activate] button (already active)', () => {
     const slot = setupSlot();
     const blocks = buildSlotRow(slot, undefined, true, Date.parse('2026-04-21T00:00:00Z'));
     const actions = blocks.find((b: any) => b.type === 'actions') as any;
@@ -176,7 +176,7 @@ describe('buildSlotRow', () => {
     expect(activateBtn).toBeUndefined();
   });
 
-  it('#653 M2 — OAuth expiry hint appears on attached slots and updates with time', () => {
+  it('OAuth expiry hint appears on attached slots and updates with time', () => {
     const nowMs = Date.parse('2026-04-21T00:00:00Z');
     const slot: AuthKey = {
       kind: 'cct',
@@ -203,7 +203,7 @@ describe('buildSlotRow', () => {
     expect(bareSection.text.text as string).not.toMatch(/OAuth refreshes in/);
   });
 
-  it('#653 M2 — expired OAuth attachment surfaces :warning: expired (no negative durations)', () => {
+  it('expired OAuth attachment surfaces :warning: expired (no negative durations)', () => {
     const nowMs = Date.parse('2026-04-21T00:00:00Z');
     const slot: AuthKey = {
       kind: 'cct',
@@ -594,6 +594,24 @@ describe('buildCctCardBlocks — Slack 50-block hard cap (#644 review P1)', () =
   it.each([1, 7, 10, 15])('N=%d attached slots → block count ≤ 50 (with slot-0 active)', (n) => {
     const blocks = buildNSlotCard(n);
     expect(blocks.length).toBeLessThanOrEqual(50);
+  });
+
+  // Overflow guard identifies usage panels by stable `block_id` prefix,
+  // not by text content. Lock the contract so a future card-format
+  // tweak (e.g. dropping the code fence) doesn't silently break the
+  // overflow guard.
+  it('usage panels carry the stable `cct_usage_panel:` block_id prefix', () => {
+    const blocks = buildNSlotCard(3);
+    const usagePanels = blocks.filter(
+      (b) =>
+        (b as { type?: string }).type === 'context' &&
+        typeof (b as { block_id?: string }).block_id === 'string' &&
+        ((b as { block_id: string }).block_id as string).startsWith('cct_usage_panel:'),
+    );
+    expect(usagePanels.length).toBe(3);
+    // Each panel's block_id ends with the slot keyId — proves uniqueness.
+    const suffixes = usagePanels.map((b) => (b as { block_id: string }).block_id.split(':')[1]);
+    expect(new Set(suffixes).size).toBe(3);
   });
 });
 
