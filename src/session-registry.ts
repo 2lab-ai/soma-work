@@ -28,7 +28,7 @@ import type {
   SessionState,
   WorkflowType,
 } from './types';
-import { type EffortLevel, userSettingsStore } from './user-settings-store';
+import { coerceToAvailableModel, type EffortLevel, userSettingsStore } from './user-settings-store';
 
 const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
 
@@ -1582,7 +1582,11 @@ export class SessionRegistry {
         isActive: false,
         lastActivity,
         title: serialized.title,
-        model: serialized.model,
+        // Coerce serialized model string against AVAILABLE_MODELS. Known-legacy
+        // ids pass through unchanged; unknown or case-drifted values normalize
+        // to DEFAULT_MODEL. Preserves undefined when the session was saved
+        // without a model (unchanged behavior from verbatim passthrough).
+        model: serialized.model === undefined ? undefined : coerceToAvailableModel(serialized.model),
         state: serialized.state || 'MAIN',
         workflow: serialized.workflow || 'default',
         links: serialized.links,
@@ -1652,7 +1656,11 @@ export class SessionRegistry {
           lastActivity,
           workingDirectory: serialized.workingDirectory,
           title: serialized.title,
-          model: serialized.model,
+          // Coerce serialized model string against AVAILABLE_MODELS. Known-legacy
+          // ids pass through unchanged; unknown or case-drifted values normalize
+          // to DEFAULT_MODEL. Preserves undefined when the session was saved
+          // without a model (unchanged behavior from verbatim passthrough).
+          model: serialized.model === undefined ? undefined : coerceToAvailableModel(serialized.model),
           state: serialized.state || 'MAIN', // Default to MAIN for legacy sessions
           workflow: serialized.workflow || 'default', // Default to 'default' for legacy sessions
           links: serialized.links,

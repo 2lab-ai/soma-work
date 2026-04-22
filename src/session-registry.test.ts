@@ -626,3 +626,151 @@ describe('SessionRegistry session-scoped dangerous-rule overrides', () => {
     expect(reader.listDisabledDangerousRules(key)).toEqual([]);
   });
 });
+
+// --- Issue #656: coerceToAvailableModel on deserialize ---
+
+describe('SessionRegistry deserialize — model coerce', () => {
+  const SESSIONS_FILE = `${TEST_DATA_DIR}/sessions.json`;
+
+  beforeEach(() => {
+    if (fs.existsSync(TEST_DATA_DIR)) {
+      fs.rmSync(TEST_DATA_DIR, { recursive: true });
+    }
+    fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
+  });
+
+  afterEach(() => {
+    if (fs.existsSync(TEST_DATA_DIR)) {
+      fs.rmSync(TEST_DATA_DIR, { recursive: true });
+    }
+  });
+
+  function writeSessionsFile(sessions: Array<Record<string, unknown>>): void {
+    fs.writeFileSync(SESSIONS_FILE, JSON.stringify(sessions, null, 2), 'utf8');
+  }
+
+  it('passes known [1m] model id through unchanged', () => {
+    const now = new Date().toISOString();
+    writeSessionsFile([
+      {
+        key: 'C1-t1',
+        ownerId: 'U1',
+        userId: 'U1',
+        channelId: 'C1',
+        threadTs: 't1',
+        sessionId: 's1',
+        isActive: true,
+        lastActivity: now,
+        model: 'claude-opus-4-7[1m]',
+        state: 'MAIN',
+        workflow: 'default',
+      },
+    ]);
+
+    const reader = new SessionRegistry();
+    reader.loadSessions();
+    const restored = reader.getSession('C1', 't1');
+    expect(restored?.model).toBe('claude-opus-4-7[1m]');
+  });
+
+  it('lowercases uppercase [1M] on restore', () => {
+    const now = new Date().toISOString();
+    writeSessionsFile([
+      {
+        key: 'C1-t2',
+        ownerId: 'U1',
+        userId: 'U1',
+        channelId: 'C1',
+        threadTs: 't2',
+        sessionId: 's2',
+        isActive: true,
+        lastActivity: now,
+        model: 'claude-opus-4-7[1M]',
+        state: 'MAIN',
+        workflow: 'default',
+      },
+    ]);
+
+    const reader = new SessionRegistry();
+    reader.loadSessions();
+    const restored = reader.getSession('C1', 't2');
+    expect(restored?.model).toBe('claude-opus-4-7[1m]');
+  });
+
+  it('preserves legacy sonnet-4-6 (not force-migrated to DEFAULT)', () => {
+    // Regression guard for PR #652-style silent drop: sonnet users stay on sonnet.
+    const now = new Date().toISOString();
+    writeSessionsFile([
+      {
+        key: 'C1-t3',
+        ownerId: 'U1',
+        userId: 'U1',
+        channelId: 'C1',
+        threadTs: 't3',
+        sessionId: 's3',
+        isActive: true,
+        lastActivity: now,
+        model: 'claude-sonnet-4-6',
+        state: 'MAIN',
+        workflow: 'default',
+      },
+    ]);
+
+    const reader = new SessionRegistry();
+    reader.loadSessions();
+    const restored = reader.getSession('C1', 't3');
+    expect(restored?.model).toBe('claude-sonnet-4-6');
+  });
+
+  it('coerces unknown model ids to DEFAULT_MODEL', () => {
+    const now = new Date().toISOString();
+    writeSessionsFile([
+      {
+        key: 'C1-t4',
+        ownerId: 'U1',
+        userId: 'U1',
+        channelId: 'C1',
+        threadTs: 't4',
+        sessionId: 's4',
+        isActive: true,
+        lastActivity: now,
+        model: 'gpt-99-turbo',
+        state: 'MAIN',
+        workflow: 'default',
+      },
+    ]);
+
+    const reader = new SessionRegistry();
+    reader.loadSessions();
+    const restored = reader.getSession('C1', 't4');
+    expect(restored?.model).toBe('claude-opus-4-7'); // DEFAULT_MODEL
+  });
+
+  it('preserves undefined when session was saved without a model', () => {
+    // Behavior parity guard: before coerce was added, undefined model stayed
+    // undefined. We explicitly preserve that so the downstream "no model yet"
+    // code paths are unchanged.
+    const now = new Date().toISOString();
+    writeSessionsFile([
+      {
+        key: 'C1-t5',
+        ownerId: 'U1',
+        userId: 'U1',
+        channelId: 'C1',
+        threadTs: 't5',
+        sessionId: 's5',
+        isActive: true,
+        lastActivity: now,
+        state: 'MAIN',
+        workflow: 'default',
+        // No model field.
+      },
+    ]);
+
+    const reader = new SessionRegistry();
+    reader.loadSessions();
+    const restored = reader.getSession('C1', 't5');
+    expect(restored).toBeDefined();
+    expect(restored?.model).toBeUndefined();
+  });
+});
