@@ -85,9 +85,9 @@ const WINDOW_DURATION_MS: Record<UsageWindowLabel, number> = {
 
 /** Right-padded label per type — mirrors the earlier `padUsageLabel(label)`. */
 const LABEL_PADDED: Record<UsageWindowLabel, string> = {
-  '5h': '5h' + ' '.repeat(USAGE_LABEL_WIDTH - 2),
-  '7d': '7d' + ' '.repeat(USAGE_LABEL_WIDTH - 2),
-  '7d-sonnet': '7d-sonnet',
+  '5h': '5h'.padEnd(USAGE_LABEL_WIDTH),
+  '7d': '7d'.padEnd(USAGE_LABEL_WIDTH),
+  '7d-sonnet': '7d-sonnet'.padEnd(USAGE_LABEL_WIDTH),
 };
 
 /** Integer percent (0..100) from a 0..1 or 0..100 utilization number. */

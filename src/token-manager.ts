@@ -1589,9 +1589,9 @@ export class TokenManager {
         // `force` is deliberately dropped — per-keyId in-flight dedupe
         // shares any overlapping tick, and bypassing every slot's
         // `nextUsageFetchAllowedAt` gate would defeat the local throttle
-        // that protects Anthropic from refresh storms. The per-slot
-        // Refresh button (actions.ts `cct_refresh_usage_slot`) still
-        // force-bypasses locally for human single-slot refreshes.
+        // that protects Anthropic from refresh storms. The card-level
+        // [Refresh] button (actions.ts `cct_refresh_card`) fans out with
+        // `{ force: true }` per-slot for human-initiated refreshes.
         results[keyId] = await this.fetchAndStoreUsage(keyId, {});
       } catch {
         results[keyId] = null;

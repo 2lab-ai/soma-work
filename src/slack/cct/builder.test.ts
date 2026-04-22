@@ -715,8 +715,8 @@ describe('subscriptionBadge (M1-S3)', () => {
 // the Bolt block_actions router. A silent rename breaks every deployed
 // tenant's in-flight modal state (`views.update` loses typed values) and
 // mis-routes refresh clicks to unhandled handlers. Every new ID (including
-// M1-S4 `cct_refresh_usage_all` / `cct_refresh_usage_slot`) is locked here
-// so a future append-only change is intentional, not silent.
+// M1-S4 `cct_refresh_usage_all` + card-v2 follow-up `cct_refresh_card`) is
+// locked here so a future append-only change is intentional, not silent.
 describe('CCT_ACTION_IDS / CCT_BLOCK_IDS literal lock (#644 review)', () => {
   it('CCT_ACTION_IDS maps each key to its exact wire string', () => {
     expect(CCT_ACTION_IDS).toEqual({
