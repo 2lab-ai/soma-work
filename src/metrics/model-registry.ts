@@ -199,6 +199,37 @@ export function stripOneMSuffix(model: string): string {
 }
 
 /**
+ * Detect whether `text` matches any of the three stable SDK signals that
+ * indicate the account cannot use the 1M-context beta for the attempted model.
+ *
+ * Issue #661 — Claude Agent SDK ≥ 0.2.111 surfaces these via
+ * `isApiErrorMessage: true` assistant messages (not via throw). stream-executor
+ * uses this matcher downstream to decide whether to strip `[1m]` and retry.
+ *
+ * Signal sources (observed in `@anthropic-ai/claude-agent-sdk@0.2.111`
+ * `cli.js` bundle):
+ *   1. "Extra usage is required for 1M context" (HTTP 429 rewrite)
+ *   2. "long context beta" — covers both the 400 "not yet available for this
+ *      subscription" and the 400 "incompatible with the long context beta
+ *      header" variants.
+ *   3. "not yet available for this subscription" — defensive redundancy for
+ *      the 400 subscription variant in case the "long context beta" phrasing
+ *      changes.
+ *
+ * Keeping the matcher narrow is the whole point: a broad substring like
+ * "context" would misfire on `prompt is too long` errors (Issue #661 spec
+ * test case 4) and downgrade the user's model without their consent.
+ */
+export function isOneMContextUnavailableSignal(text: string): boolean {
+  const s = text.toLowerCase();
+  return (
+    s.includes('extra usage is required for 1m context') ||
+    s.includes('long context beta') ||
+    s.includes('not yet available for this subscription')
+  );
+}
+
+/**
  * Resolve context window for a model by name.
  *
  * Single source of truth: the `[1m]` suffix is the only signal for a 1M window.

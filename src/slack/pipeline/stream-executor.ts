@@ -17,7 +17,14 @@ import type { FileHandler, ProcessedFile } from '../../file-handler';
 import { Logger, redactAnthropicSecrets } from '../../logger';
 import { isMidThreadMention } from '../../mcp-config-builder';
 import { getMetricsEmitter } from '../../metrics/event-emitter';
-import { FALLBACK_CONTEXT_WINDOW, PRICING_VERSION, resolveContextWindow } from '../../metrics/model-registry';
+import {
+  FALLBACK_CONTEXT_WINDOW,
+  hasOneMSuffix,
+  isOneMContextUnavailableSignal,
+  PRICING_VERSION,
+  resolveContextWindow,
+  stripOneMSuffix,
+} from '../../metrics/model-registry';
 import { interceptToolResults } from '../../metrics/tool-result-interceptor';
 import { checkAndSchedulePendingCompact } from '../../session/compact-threshold-checker';
 import { buildCompactionContext, snapshotFromSession } from '../../session/compaction-context-builder';
@@ -32,7 +39,7 @@ import type {
   UserChoice,
   UserChoices,
 } from '../../types';
-import { userSettingsStore } from '../../user-settings-store';
+import { coerceToAvailableModel, userSettingsStore } from '../../user-settings-store';
 import type { ActionHandlers } from '../actions';
 import type { CompletionMessageTracker } from '../completion-message-tracker.js';
 import { postCompactCompleteIfNeeded, postCompactStartingIfNeeded } from '../hooks/compact-hooks';
@@ -1279,6 +1286,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
   private static readonly MAX_ERROR_RETRIES = 3;
   /** Delay in ms before auto-retry on recoverable errors */
   private static readonly ERROR_RETRY_DELAY_MS = 30_000;
+  /**
+   * Delay in ms before auto-retry after a 1M→bare fallback (Issue #661).
+   * Short — the retry is the fallback for a cold-start mistake, not a backoff.
+   */
+  private static readonly ONE_M_FALLBACK_RETRY_DELAY_MS = 500;
 
   /**
    * Handle execution errors. Returns retryAfterMs if the error is recoverable
@@ -1306,9 +1318,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
 
     const isAbort = requestAborted || this.isAbortLikeError(error);
 
-    // Fire Exception notification only for real errors, not abort/cancel
+    // Fire Exception notification only for real errors, not abort/cancel.
+    // Issue #661 — suppress on 1M-unavailable fallback: the turn is auto-
+    // recoverable, not a user-facing exception.
     // Trace: docs/turn-notification/trace.md, Scenario 1, Section 3a — Exception path
-    if (this.deps.turnNotifier && !isAbort) {
+    if (this.deps.turnNotifier && !isAbort && !this.isOneMContextUnavailableError(error)) {
       this.deps.turnNotifier
         .notify({
           category: 'Exception',
@@ -1353,6 +1367,76 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           this.logger.info('Session cleared due to non-recoverable error', {
             sessionKey,
             errorType: error.name || 'unknown',
+          });
+        }
+      } else if (this.isOneMContextUnavailableError(error)) {
+        // Issue #661 — auto-fallback when the account lacks 1M entitlement.
+        //
+        // Self-idempotent flag-free design:
+        //  - Capture previousSessionModel / previousUserDefault BEFORE any
+        //    mutation. Computing strip state post-mutation would wrongly
+        //    report `false` for both flags and the formatter would print the
+        //    defensive "추가 변경 없음" branch even on the very first fallback.
+        //  - If neither model has the `[1m]` suffix (a true no-op), we still
+        //    record `oneMFallbackInfo` on the error and fall through without
+        //    scheduling a retry — this is the defensive-no-strip path.
+        //  - If either strip fires, we clear the stale file-access retry
+        //    state so a recurring 1M error doesn't inherit a partially
+        //    consumed retry budget from a prior unrelated error.
+        const userId = session.ownerId || '';
+        const previousUserDefault = userId ? userSettingsStore.getUserDefaultModel(userId) : undefined;
+        const previousSessionModel = session.model;
+
+        const strippedSession =
+          previousSessionModel && hasOneMSuffix(previousSessionModel)
+            ? stripOneMSuffix(previousSessionModel)
+            : previousSessionModel;
+        const strippedDefault =
+          previousUserDefault && hasOneMSuffix(previousUserDefault)
+            ? stripOneMSuffix(previousUserDefault)
+            : previousUserDefault;
+
+        const sessionStripped = previousSessionModel !== undefined && strippedSession !== previousSessionModel;
+        const defaultStripped = previousUserDefault !== undefined && strippedDefault !== previousUserDefault;
+
+        if (sessionStripped && strippedSession) {
+          session.model = coerceToAvailableModel(strippedSession) as typeof session.model;
+        }
+        if (userId && defaultStripped && strippedDefault) {
+          userSettingsStore.setUserDefaultModel(userId, coerceToAvailableModel(strippedDefault));
+        }
+
+        const bareTargetInput = strippedSession ?? strippedDefault ?? '';
+        (error as any).oneMFallbackInfo = {
+          sessionChanged: sessionStripped,
+          defaultChanged: defaultStripped,
+          bareTarget: coerceToAvailableModel(bareTargetInput),
+        };
+
+        if (sessionStripped || defaultStripped) {
+          // Clear stale state so next turn starts clean on the bare model.
+          session.lastErrorContext = undefined;
+          session.fileAccessRetryCount = 0;
+          retryAfterMs = StreamExecutor.ONE_M_FALLBACK_RETRY_DELAY_MS;
+          this.logger.info('1M fallback triggered', {
+            sessionKey,
+            userId,
+            from: (error as any).attemptedModel,
+            sessionFrom: previousSessionModel,
+            sessionTo: sessionStripped ? strippedSession : undefined,
+            defaultFrom: previousUserDefault,
+            defaultTo: defaultStripped ? strippedDefault : undefined,
+          });
+        } else {
+          // Defensive no-strip: matcher fired but both models are already
+          // bare (race, retry, or mis-propagated error). No retry — the
+          // formatter surfaces "추가 변경 없음" so the user knows why.
+          this.logger.warn('1M fallback matcher fired but nothing to strip', {
+            sessionKey,
+            userId,
+            from: (error as any).attemptedModel,
+            sessionModel: previousSessionModel,
+            userDefault: previousUserDefault,
           });
         }
       } else if (this.isFileAccessBlockedError(error)) {
@@ -1505,6 +1589,15 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       return false;
     }
 
+    // Issue #661 — 1M context unavailable: the session's prior history is
+    // still valid on the bare model, so keep it. Checked early so a message
+    // containing both "1m" markers and e.g. "could not process image" can't
+    // misroute into the image branch. (In practice the signals are disjoint,
+    // but the precedence here encodes intent.)
+    if (this.isOneMContextUnavailableError(error)) {
+      return false;
+    }
+
     // Image processing errors MUST be checked before recoverability.
     // A poisoned image in session history makes every retry fail identically,
     // so even if the error message also matches a "recoverable" pattern
@@ -1568,6 +1661,33 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       combined.includes('image too large') ||
       combined.includes('unsupported image format')
     );
+  }
+
+  /**
+   * Issue #661 — Detect "1M context unavailable for this account" errors.
+   *
+   * Matcher gate (both branches must individually qualify; no broad string
+   * match — see `isOneMContextUnavailableSignal` for the narrow signal check):
+   *   1. `error.code === 'ONE_M_CONTEXT_UNAVAILABLE'` — the claude-handler
+   *      `maybeThrowOneMUnavailable` helper set this when it converted the
+   *      SDK's assistant message into a throw. Fast path.
+   *   2. OR `hasOneMSuffix(error.attemptedModel)` — defensive path for
+   *      third-party call sites that may surface the same error without the
+   *      code set (e.g., a future SDK change that throws directly). Requires
+   *      `attemptedModel` to end with `[1m]` so we never downgrade a bare
+   *      model's generic failure.
+   *
+   * The signal text is only examined for branch 2 (message + stderr combined).
+   * Branch 1 trusts the code — if the code is set, the producer already did
+   * the text matching.
+   */
+  private isOneMContextUnavailableError(error: any): boolean {
+    if (!error) return false;
+    if (error.code === 'ONE_M_CONTEXT_UNAVAILABLE') return true;
+    const attempted = String(error.attemptedModel ?? '');
+    if (!attempted || !hasOneMSuffix(attempted)) return false;
+    const combined = `${String(error.message ?? '')} ${String(error.stderrContent ?? '')}`;
+    return isOneMContextUnavailableSignal(combined);
   }
 
   private isRecoverableClaudeSdkError(error: any): boolean {
@@ -1831,6 +1951,36 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
   }
 
   /**
+   * Sanitize + truncate `error.stderrContent` and push a `> *SDK Details:*`
+   * block onto `lines`. No-op when stderrContent is missing/empty.
+   *
+   * Factored out of `formatErrorForUser` (Issue #661) so both the normal
+   * formatter branches and the new 1M-fallback branch share the exact same
+   * redaction/truncation logic — avoids drift if the sanitizer changes.
+   * Trace: Issue #122 original sanitization rules are preserved byte-for-byte.
+   */
+  private appendSdkDetails(lines: string[], error: any): void {
+    if (!error?.stderrContent) return;
+    const raw = String(error.stderrContent);
+    // Strip ANSI escape codes and mask non-Anthropic credentials locally;
+    // Anthropic tokens (sk-ant-{oat01,ort01,api03,admin01}-...) are handled
+    // by the shared `redactAnthropicSecrets` helper from logger.ts so every
+    // log path masks them the same way (W3-B consolidation).
+    const nonAnthropicSanitized = raw
+      .replace(/[\x1B\x9B](?:\[[0-9;]*[a-zA-Z]|\].*?(?:\x07|\x1B\\)|\([A-Z])/g, '') // strip ANSI
+      .replace(/(?:authorization|bearer)[=:\s]+\S+(?:\s+\S+)?/gi, '[REDACTED]') // auth headers ("Bearer <token>")
+      .replace(/(?:oauth|token|key|secret|password|credential)[=:\s]+\S+/gi, '[REDACTED]')
+      .replace(/\bxox[bpras]-[a-zA-Z0-9-]+/g, '[REDACTED]') // Slack tokens
+      .replace(/\bgh[pus]_[a-zA-Z0-9]+/g, '[REDACTED]') // GitHub PATs
+      .replace(/\bgithub_pat_[a-zA-Z0-9_]+/g, '[REDACTED]'); // GitHub fine-grained PATs
+    const sanitized = redactAnthropicSecrets(nonAnthropicSanitized) as string;
+    // Take last 500 chars to keep message manageable
+    const truncated = sanitized.length > 500 ? `…${sanitized.slice(-500)}` : sanitized;
+    lines.push(`> *SDK Details:*`);
+    lines.push(`> \`\`\`${truncated.trim()}\`\`\``);
+  }
+
+  /**
    * Format error message for user with detailed info
    * Distinguishes between bot system errors and model errors
    */
@@ -1840,6 +1990,55 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     statusInfo?: import('../../claude-status-fetcher').ClaudeStatusInfo | null,
     retryAttempt?: number,
   ): string {
+    // Issue #661 — top-priority branch for 1M-context auto-fallback.
+    // Short-circuits the generic formatter because the narrative is entirely
+    // different: nothing went "wrong" from the user's perspective — the bot
+    // automatically corrected a model-selection mismatch and is retrying.
+    // Reads `oneMFallbackInfo` set by the handleError branch to emit
+    // condition-specific wording (both-changed / session-only / default-only /
+    // defensive-none).
+    if (this.isOneMContextUnavailableError(error)) {
+      const info = (error as any).oneMFallbackInfo as
+        | { sessionChanged: boolean; defaultChanged: boolean; bareTarget: string }
+        | undefined;
+      const bareTarget = info?.bareTarget || 'bare model';
+      const lines: string[] = [`ℹ️ *[1M context 미지원]* 자동 폴백을 수행했습니다.`, ''];
+
+      lines.push(`> *Type:* Claude SDK (OneMContextUnavailable)`);
+      lines.push(`> *Session:* ✅ 유지됨 - bare 모델로 자동 재시도합니다.`);
+
+      if (info?.sessionChanged && info.defaultChanged) {
+        lines.push(`> *원인:* 현재 계정은 1M context 확장을 사용할 수 없습니다.`);
+        lines.push(`> *조치:* 세션/기본 모델을 \`${bareTarget}\`로 자동 전환하고 영구 저장했습니다.`);
+      } else if (info?.sessionChanged && !info.defaultChanged) {
+        lines.push(`> *원인:* 현재 계정은 1M context 확장을 사용할 수 없습니다.`);
+        lines.push(
+          `> *조치:* 이번 세션 모델을 \`${bareTarget}\`로 자동 전환했습니다. (기본값은 이미 \`${bareTarget}\` 상태)`,
+        );
+      } else if (!info?.sessionChanged && info?.defaultChanged) {
+        lines.push(`> *원인:* 현재 계정은 1M context 확장을 사용할 수 없습니다.`);
+        lines.push(`> *조치:* 기본 모델을 \`${bareTarget}\`로 영구 변경했습니다.`);
+      } else {
+        // Defensive branch — matcher fired but nothing stripped.
+        lines.push(`> *원인:* 이미 bare 모델 사용 중 — 추가 변경 없음.`);
+        lines.push(`> _계속 \`[1m]\` 사용을 원한다면 Claude Extra Usage를 활성화하세요._`);
+      }
+
+      lines.push(`> _다시 \`[1m]\`을 쓰려면 Claude Extra Usage를 활성화한 뒤 \`/z model opus[1m]\`로 전환하세요._`);
+
+      // Share the same SDK Details block so the raw signal is visible for
+      // debugging even in the fallback path.
+      this.appendSdkDetails(lines, error);
+
+      // Preserve service-status parity with the other branches.
+      if (shouldShowStatusBlock(statusInfo ?? null)) {
+        lines.push('');
+        lines.push(formatStatusForSlack(statusInfo ?? null));
+      }
+
+      return lines.join('\n');
+    }
+
     const errorType = this.isSlackApiError(error) ? 'Slack API' : 'Claude SDK';
     const errorName = error.name || 'Error';
     const errorMessage = error.message || 'Something went wrong';
@@ -1885,25 +2084,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     }
 
     // Issue #122: Append SDK stderr details so users can see the actual error cause
-    if (error.stderrContent) {
-      const raw = String(error.stderrContent);
-      // Strip ANSI escape codes and mask non-Anthropic credentials locally;
-      // Anthropic tokens (sk-ant-{oat01,ort01,api03,admin01}-...) are handled
-      // by the shared `redactAnthropicSecrets` helper from logger.ts so every
-      // log path masks them the same way (W3-B consolidation).
-      const nonAnthropicSanitized = raw
-        .replace(/[\x1B\x9B](?:\[[0-9;]*[a-zA-Z]|\].*?(?:\x07|\x1B\\)|\([A-Z])/g, '') // strip ANSI
-        .replace(/(?:authorization|bearer)[=:\s]+\S+(?:\s+\S+)?/gi, '[REDACTED]') // auth headers ("Bearer <token>")
-        .replace(/(?:oauth|token|key|secret|password|credential)[=:\s]+\S+/gi, '[REDACTED]')
-        .replace(/\bxox[bpras]-[a-zA-Z0-9-]+/g, '[REDACTED]') // Slack tokens
-        .replace(/\bgh[pus]_[a-zA-Z0-9]+/g, '[REDACTED]') // GitHub PATs
-        .replace(/\bgithub_pat_[a-zA-Z0-9_]+/g, '[REDACTED]'); // GitHub fine-grained PATs
-      const sanitized = redactAnthropicSecrets(nonAnthropicSanitized) as string;
-      // Take last 500 chars to keep message manageable
-      const truncated = sanitized.length > 500 ? `…${sanitized.slice(-500)}` : sanitized;
-      lines.push(`> *SDK Details:*`);
-      lines.push(`> \`\`\`${truncated.trim()}\`\`\``);
-    }
+    this.appendSdkDetails(lines, error);
 
     // Append slot rotation info if rate limit triggered rotation
     if (this.isRateLimitError(error) && getTokenManager().listTokens().length > 1) {

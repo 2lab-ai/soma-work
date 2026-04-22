@@ -31,6 +31,7 @@ import {
   loadMcpToolPermissions,
   resolveGatedTool,
 } from './mcp-tool-permission-config';
+import { hasOneMSuffix, isOneMContextUnavailableSignal } from './metrics/model-registry';
 import { isSafePathSegment, normalizeTmpPath } from './path-utils';
 import type { SdkPluginPath } from './plugin/types';
 import { DEV_DOMAIN_ALLOWLIST } from './sandbox/dev-domain-allowlist';
@@ -105,6 +106,59 @@ export function resolveShowSummary(
   userShowThinking: boolean | undefined,
 ): boolean {
   return sessionShowThinking ?? userShowThinking ?? DEFAULT_SHOW_THINKING;
+}
+
+/**
+ * Issue #661 — Convert SDK "1M context unavailable" error MESSAGES into a throw.
+ *
+ * The Claude Agent SDK (≥ 0.2.111) does NOT throw when the account lacks 1M
+ * entitlement; it emits a regular `assistant` message with
+ * `isApiErrorMessage: true` and a text block carrying one of three stable
+ * signals (see `isOneMContextUnavailableSignal`). Downstream
+ * `stream-executor.handleError` already knows how to auto-fallback in its
+ * error path, so the simplest flow is: detect the message in the
+ * `for-await` loop, convert it to a thrown Error with
+ * `code = 'ONE_M_CONTEXT_UNAVAILABLE'` + `attemptedModel`, and let the
+ * existing catch block re-throw it upward.
+ *
+ * Gate conditions (all must hold to throw):
+ *   - `model` is defined AND has the `[1m]` suffix
+ *   - message is an assistant message with `isApiErrorMessage: true`
+ *   - extracted text matches `isOneMContextUnavailableSignal`
+ *
+ * Without the `[1m]` suffix gate, a bare-model API error containing the same
+ * text (extremely rare, but possible if the user manually passes a 1m header)
+ * would be misrouted into the fallback branch — see test case 2 below.
+ *
+ * Exported for direct unit testing (streamQuery's credential/MCP setup makes
+ * end-to-end mocking impractical). streamQuery's hot path is:
+ *   ```
+ *   for await (const message of query(...)) {
+ *     maybeThrowOneMUnavailable(message, options.model);
+ *     // ... normal handling ...
+ *     yield message;
+ *   }
+ *   ```
+ */
+export function maybeThrowOneMUnavailable(message: SDKMessage, model: string | undefined): void {
+  if (!model || !hasOneMSuffix(model)) return;
+  if (message.type !== 'assistant') return;
+  // `isApiErrorMessage` is an optional runtime flag on the SDK assistant
+  // message — not in the SDKMessage TS type. Cast once.
+  const msg = message as unknown as { isApiErrorMessage?: boolean; message?: { content?: unknown[] } };
+  if (msg.isApiErrorMessage !== true) return;
+
+  const content = Array.isArray(msg.message?.content) ? msg.message!.content : [];
+  const text = content
+    .filter((c): c is { type: string; text?: unknown } => !!c && typeof c === 'object' && (c as any).type === 'text')
+    .map((c) => String(c.text ?? ''))
+    .join('\n');
+  if (!isOneMContextUnavailableSignal(text)) return;
+
+  const err = new Error(text || 'Claude 1M context unavailable for this account.');
+  (err as any).code = 'ONE_M_CONTEXT_UNAVAILABLE';
+  (err as any).attemptedModel = model;
+  throw err;
 }
 
 /**
@@ -1087,6 +1141,12 @@ export class ClaudeHandler {
 
       try {
         for await (const message of query({ prompt, options })) {
+          // Issue #661 — convert SDK's "1M context unavailable" assistant
+          // message into a throw so the existing error path can auto-fallback.
+          // No-op unless options.model ends with `[1m]` AND the message
+          // carries one of the stable 1M-unavailable signals.
+          maybeThrowOneMUnavailable(message, options.model);
+
           // Update session ID on init
           if (message.type === 'system' && message.subtype === 'init') {
             if (session) {
