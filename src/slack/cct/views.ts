@@ -69,6 +69,10 @@ export const CCT_ACTION_IDS = {
   // existing IDs above are unchanged.
   refresh_usage_all: 'cct_refresh_usage_all',
   refresh_usage_slot: 'cct_refresh_usage_slot',
+  // #653 M2 — per-slot Activate button. Replaces the card-level
+  // `set_active` dropdown for direct single-click activation. Non-
+  // active rows emit this button; the active row omits it.
+  activate_slot: 'cct_activate_slot',
 } as const;
 
 export type CctViewId = (typeof CCT_VIEW_IDS)[keyof typeof CCT_VIEW_IDS];

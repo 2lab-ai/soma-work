@@ -62,7 +62,7 @@ describe('buildSlotRow', () => {
     expect(section.text.text).toContain('ToS-risk');
   });
 
-  it('includes rate-limit timestamp + source in the context row (M1-S2 moves usage out of context)', () => {
+  it('#653 M2 — rate-limit timestamp + source render in the section multi-line body (always, not gated on isActive)', () => {
     const slot = setupSlot();
     const state: SlotState = {
       authState: 'healthy',
@@ -76,25 +76,26 @@ describe('buildSlotRow', () => {
       },
     };
     const now = Date.parse('2026-04-18T03:42:00Z');
-    // isActive=true so the context + usage-panel stack is emitted (#644
-    // review — inactive slots are compacted to 2 blocks to fit Slack's
-    // 50-block cap).
+    // #653 M2 collapses the former separate context block into a
+    // multi-line `section` body so the line-1 identity and line-2 live
+    // status fit in one Slack block. isActive is irrelevant — the
+    // status line is emitted for every row now.
     const blocks = buildSlotRow(slot, state, true, now, 'Asia/Seoul');
-    const context = blocks[1] as any;
-    expect(context.type).toBe('context');
-    const text = context.elements[0].text as string;
+    const section = blocks[0] as any;
+    expect(section.type).toBe('section');
+    const text = section.text.text as string;
     expect(text).toContain('rate-limited');
     expect(text).toContain('12:37 KST');
     expect(text).toContain('via response_header');
-    // M1-S2 — old one-line `usage 5h X% 7d Y%` is removed; the usage panel
-    // now lives in a dedicated section/context block rendered after this
-    // one. The context row MUST NOT contain the legacy single-line string.
-    expect(text).not.toMatch(/5h\s+72%/);
-    expect(text).not.toMatch(/7d\s+33%/);
+    // Old one-line `usage 5h X% 7d Y%` literal must never re-appear.
+    expect(text).not.toMatch(/usage 5h \d+% 7d \d+%/);
   });
 
   it('honours 0..100 utilization values in the progress bar panel', () => {
-    const slot = setupSlot();
+    // #653 M2 — usage panel only renders for slots with an oauthAttachment
+    // (the only ones with live usage data). Use an attached slot so the
+    // panel surfaces.
+    const slot = oauthSlot();
     const state: SlotState = {
       authState: 'healthy',
       activeLeases: [],
@@ -103,14 +104,13 @@ describe('buildSlotRow', () => {
         fiveHour: { utilization: 77, resetsAt: '2026-04-18T05:00:00Z' },
       },
     };
-    // isActive=true so the usage panel is emitted.
     const blocks = buildSlotRow(slot, state, true, Date.parse('2026-04-18T00:01:00Z'));
     const flat = JSON.stringify(blocks);
     // Pass-through path: 77 > 1 → rendered as 77%.
     expect(flat).toMatch(/77%/);
   });
 
-  it('shows cooldown suffix when still in future', () => {
+  it('shows cooldown suffix when still in future (#653 M2: suffix lives on the section multi-line body)', () => {
     const slot = setupSlot();
     const now = Date.parse('2026-04-18T03:42:00Z');
     const state: SlotState = {
@@ -118,15 +118,18 @@ describe('buildSlotRow', () => {
       activeLeases: [],
       cooldownUntil: '2026-04-18T04:42:00Z',
     };
-    // isActive=true so the context row is emitted (#644 review fix).
     const blocks = buildSlotRow(slot, state, true, now, 'Asia/Seoul');
-    const text = (blocks[1] as any).elements[0].text as string;
+    const text = (blocks[0] as any).text.text as string;
     expect(text).toMatch(/cooldown until/);
   });
 
-  // #644 review P1 — inactive slots must collapse to section + actions + divider
-  // so a 15-slot card stays under Slack's 50-block cap.
-  it('inactive slot collapses to section + actions only (no context, no usage panel)', () => {
+  // #653 M2 — the OLD "inactive collapses to section + actions only" rule is
+  // explicitly reversed: the user wants tier/5h/7d/rate-limited visible on
+  // EVERY slot, not just the active one. This test locks the new contract:
+  // inactive slots still carry the authState+rate-limited segments on their
+  // section multi-line body. (Block budget is preserved via trimBlocksToSlackCap
+  // in `buildCctCardBlocks`; the N=15 cap tests below still pass.)
+  it('#653 M2 — inactive slot DOES render rate-limited + authState on its section body', () => {
     const slot = setupSlot();
     const state: SlotState = {
       authState: 'refresh_failed',
@@ -139,15 +142,88 @@ describe('buildSlotRow', () => {
     };
     const now = Date.parse('2026-04-18T03:42:00Z');
     const blocks = buildSlotRow(slot, state, false, now, 'Asia/Seoul');
-    const types = blocks.map((b: any) => b.type);
-    // Exactly two blocks: a section (headline) + an actions row.
-    expect(types).toEqual(['section', 'actions']);
+    const section = blocks[0] as any;
+    expect(section.type).toBe('section');
+    const text = section.text.text as string;
+    // The rate-limited timestamp + refresh_failed badge are now visible for
+    // inactive slots (inverts the M1 review-P1 behaviour which hid them).
+    expect(text).toMatch(/rate-limited/);
+    expect(text).toMatch(/refresh_failed/);
+    // The inactive row still skips the usage panel when there's no
+    // oauthAttachment, so no progress-bar glyphs leak in.
     const flat = JSON.stringify(blocks);
-    // No usage progress bars, no rate-limit banner — the context stack is
-    // suppressed for inactive rows.
     expect(flat).not.toMatch(/█/);
-    expect(flat).not.toMatch(/rate-limited/);
-    expect(flat).not.toMatch(/refresh_failed/);
+  });
+
+  // #653 M2 — the [Activate] button appears on every non-active slot that
+  // can be activated (i.e. cct slots, not api_key). Lock the button shape
+  // + styling + value so the actions.ts router keeps routing correctly.
+  it('#653 M2 — non-active cct slot gets [Activate] button with style=primary and value=keyId', () => {
+    const slot = setupSlot('cct-foo', 'slot-foo');
+    const blocks = buildSlotRow(slot, undefined, false, Date.parse('2026-04-21T00:00:00Z'));
+    const actions = blocks.find((b: any) => b.type === 'actions') as any;
+    const activateBtn = actions.elements.find((e: any) => e.action_id === CCT_ACTION_IDS.activate_slot);
+    expect(activateBtn).toBeDefined();
+    expect(activateBtn.style).toBe('primary');
+    expect(activateBtn.value).toBe('slot-foo');
+  });
+
+  it('#653 M2 — active cct slot does NOT get [Activate] button (already active)', () => {
+    const slot = setupSlot();
+    const blocks = buildSlotRow(slot, undefined, true, Date.parse('2026-04-21T00:00:00Z'));
+    const actions = blocks.find((b: any) => b.type === 'actions') as any;
+    const activateBtn = actions.elements.find((e: any) => e.action_id === CCT_ACTION_IDS.activate_slot);
+    expect(activateBtn).toBeUndefined();
+  });
+
+  it('#653 M2 — OAuth expiry hint appears on attached slots and updates with time', () => {
+    const nowMs = Date.parse('2026-04-21T00:00:00Z');
+    const slot: AuthKey = {
+      kind: 'cct',
+      source: 'setup',
+      keyId: 'slot-oauth',
+      name: 'oauth-s',
+      setupToken: 'sk-ant-oat01-x',
+      oauthAttachment: {
+        accessToken: 't',
+        refreshToken: 'r',
+        expiresAtMs: nowMs + 2 * 3_600_000 + 15 * 60_000, // 2h 15m ahead
+        scopes: ['user:profile'],
+        acknowledgedConsumerTosRisk: true,
+      },
+      createdAt: '',
+    };
+    const blocks = buildSlotRow(slot, undefined, false, nowMs);
+    const section = blocks[0] as any;
+    expect(section.text.text as string).toMatch(/OAuth refreshes in 2h 15m/);
+    // Bare setup-token slots (no attachment) do NOT display an expiry hint.
+    const bareSlot = setupSlot();
+    const bareBlocks = buildSlotRow(bareSlot, undefined, false, nowMs);
+    const bareSection = bareBlocks[0] as any;
+    expect(bareSection.text.text as string).not.toMatch(/OAuth refreshes in/);
+  });
+
+  it('#653 M2 — expired OAuth attachment surfaces :warning: expired (no negative durations)', () => {
+    const nowMs = Date.parse('2026-04-21T00:00:00Z');
+    const slot: AuthKey = {
+      kind: 'cct',
+      source: 'legacy-attachment',
+      keyId: 'slot-exp',
+      name: 'expired',
+      oauthAttachment: {
+        accessToken: 't',
+        refreshToken: 'r',
+        expiresAtMs: nowMs - 3_600_000, // 1h ago
+        scopes: ['user:profile'],
+        acknowledgedConsumerTosRisk: true,
+      },
+      createdAt: '',
+    };
+    const blocks = buildSlotRow(slot, undefined, false, nowMs);
+    const section = blocks[0] as any;
+    const text = section.text.text as string;
+    expect(text).toContain(':warning: OAuth expired');
+    expect(text).not.toMatch(/OAuth refreshes in -/); // no negative duration
   });
 
   it('emits per-slot Remove/Rename buttons with value = keyId', () => {
@@ -710,6 +786,7 @@ describe('CCT_ACTION_IDS / CCT_BLOCK_IDS literal lock (#644 review)', () => {
       attach_tos_ack: 'cct_attach_tos_ack_value',
       refresh_usage_all: 'cct_refresh_usage_all',
       refresh_usage_slot: 'cct_refresh_usage_slot',
+      activate_slot: 'cct_activate_slot',
     });
   });
 

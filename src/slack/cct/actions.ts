@@ -236,7 +236,9 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
     }
   });
 
-  // Set active.
+  // Set active via fallback dropdown (kept for accessibility + bulk
+  // navigation on wide fleets). The per-slot inline [Activate] button
+  // registered below is the primary affordance for single-slot activation.
   app.action(CCT_ACTION_IDS.set_active, async ({ ack, body, client, respond }) => {
     await ack();
     try {
@@ -247,6 +249,38 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
       await respondWithCard({ tokenManager, respond, body, client });
     } catch (err) {
       logger.error('cct_set_active failed', err);
+    }
+  });
+
+  // #653 M2 — Per-slot [Activate] button. Admin gate + `applyToken(keyId)`
+  // + re-post card. Button is only emitted for non-active, non-api_key
+  // slots (see `buildSlotRow`); the handler re-validates server-side so
+  // a stale card (where the user already rotated elsewhere) can't force
+  // a runtime exception into `applyToken`'s api_key reject path.
+  app.action(CCT_ACTION_IDS.activate_slot, async ({ ack, body, client, respond }) => {
+    await ack();
+    try {
+      if (!requireAdmin(body)) return;
+      const bodyAction = (body as any).actions?.[0];
+      const targetKeyId = typeof bodyAction?.value === 'string' ? bodyAction.value : undefined;
+      if (!targetKeyId) {
+        logger.warn('cct_activate_slot: missing keyId on action value');
+        return;
+      }
+      const snap = await tokenManager.getSnapshot();
+      const target = snap.registry.slots.find((s) => s.keyId === targetKeyId);
+      if (!target) {
+        logger.warn('cct_activate_slot: target slot not found', { targetKeyId });
+        return;
+      }
+      if (target.kind === 'api_key') {
+        logger.warn('cct_activate_slot: target is api_key (not runtime-selectable)', { targetKeyId });
+        return;
+      }
+      await tokenManager.applyToken(targetKeyId);
+      await respondWithCard({ tokenManager, respond, body, client });
+    } catch (err) {
+      logger.error('cct_activate_slot failed', err);
     }
   });
 
@@ -284,11 +318,21 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
     }
   });
 
-  // Per-slot "Refresh" — admin gate + `{ force: true }` bypasses the
-  // local throttle for this single slot. When `fetchAndStoreUsage`
-  // returns `null` (throttled or failed), post the same ephemeral banner
-  // the Refresh-all handler uses for its all-null branch so the admin
-  // sees actionable feedback instead of an unchanged re-render.
+  // Per-slot "Refresh" — force-refresh BOTH the OAuth access_token AND
+  // the usage snapshot. Rationale (#653 M2): operators clicking Refresh
+  // expect the "OAuth refreshes in X" hint on the card to reset, not
+  // just the usage percentages. Previously the button refreshed only
+  // usage (which internally only triggered a token refresh if the
+  // access_token was within the 7h REFRESH_BUFFER_MS window), so a fresh
+  // token with 6h left would show the same expiry before and after
+  // click. Now we call `forceRefreshOAuth` first (ignoring "still fresh"
+  // short-circuit) then `fetchAndStoreUsage({force:true})`.
+  //
+  // Admin gate + `{ force: true }` on usage fetch bypasses the local
+  // throttle for this single slot. OAuth refresh failures are logged
+  // but don't abort the usage fetch — a `revoked` token will surface
+  // via `authState` on the re-posted card, so the user sees the failure
+  // mode.
   app.action(CCT_ACTION_IDS.refresh_usage_slot, async ({ ack, body, client }) => {
     await ack();
     try {
@@ -298,6 +342,18 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
       if (!targetKeyId) {
         logger.warn('cct_refresh_usage_slot: missing keyId on action value');
         return;
+      }
+      // Force-refresh OAuth first. `forceRefreshOAuth` is a no-op when
+      // the slot has no attachment. Failures (401/403) mark the slot's
+      // authState but don't throw past here — we still want the usage
+      // fetch to run so the card shows the latest state + the error.
+      try {
+        await tokenManager.forceRefreshOAuth(targetKeyId);
+      } catch (err) {
+        logger.warn('cct_refresh_usage_slot: OAuth force-refresh failed (continuing with usage fetch)', {
+          targetKeyId,
+          err,
+        });
       }
       const result = await tokenManager.fetchAndStoreUsage(targetKeyId, { force: true });
       if (result === null) {
