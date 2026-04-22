@@ -1,6 +1,6 @@
 ---
 name: using-z
-description: "z / zcheck / ztrace / using-epic-issue 라우팅 결정표 및 최소 워크플로우. 복수 phase vs 단일 PR 진입점 선택."
+description: "z / zcheck / ztrace / using-epic-issue 라우팅 결정표. 복수 phase vs 단일 PR 진입점 선택."
 ---
 
 # using-z
@@ -29,48 +29,6 @@ z 컨트롤러 계열 스킬의 **진입점 선택 가이드**. 내부 로직은
 | "이 PR 어떻게 작동?" | `ztrace` | 콜스택 단독 |
 | 버그 리포트 | `z` (phase0.1 `stv:debug`) | debug 분기 |
 
-## Workflows
-
-### Case A — 멀티 phase 피처
-
-```
-유저 요청
-  ▼
-[using-epic-issue P1] 에픽 생성 (body = index)
-[using-epic-issue P2] 서브이슈 N개
-  ▼
-[반복] P3: 체크박스 1개 → $z <sub-URL>
-         ▼
-       [z phase 0~5] 단일 PR 완결
-         ▼
-       P4: 체크박스 [x]
-  ▼
-전 [x] → Done-Done 검증 → 에픽 close
-```
-
-### Case B — 단일 PR
-
-```
-$z <URL> → z phase 0~5 → merge → es 공지
-```
-
 ## Invariants
 
-1. 복수 phase ⇒ 에픽 필수. `using-epic-issue` 우회 multi-PR 금지.
-2. **1 서브이슈 = 1 PR.** 에픽은 여러 서브이슈/PR의 인덱스이며 직접 구현 단위가 아님.
-3. 진입 스킬 선택은 Decision Table을 따름. approve/CI 게이트 규칙은 각 스킬이 소유 (여기서 복제 금지).
-
-## Anti-patterns
-
-| ❌ | ✅ |
-|---|---|
-| 에픽 URL에 바로 `z` | `using-epic-issue`로 서브이슈 분해 후 서브이슈 URL에 `z` |
-| 여러 서브이슈를 1 PR에 묶기 | 서브이슈마다 PR 분리 (롤백 단위) |
-| 라우팅 결정 없이 임의 진입 | Decision Table 확인 후 진입 |
-
-## References
-
-- `using-epic-issue/SKILL.md` — 에픽 규율
-- `using-epic-issue/reference/github.md` — GitHub 문법
-- `using-epic-issue/reference/jira.md` — Jira 문법
-- `z/SKILL.md` · `zcheck/SKILL.md` · `ztrace/SKILL.md` · `es/SKILL.md`
+진입 스킬 선택은 Decision Table을 따른다. approve/CI 게이트 규칙과 "1 서브이슈 = 1 PR" 같은 작업 단위 규율은 각 스킬이 소유 (여기서 복제 금지).
