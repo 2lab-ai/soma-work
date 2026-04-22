@@ -21,8 +21,8 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import type { SessionUsage } from '../../types';
 import { FALLBACK_CONTEXT_WINDOW, resolveContextWindow } from '../../metrics/model-registry';
+import type { SessionUsage } from '../../types';
 
 /**
  * Simulates the updateSessionUsage logic from stream-executor.ts
