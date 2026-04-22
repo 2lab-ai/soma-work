@@ -43,7 +43,9 @@ import { ulid } from 'ulid';
 import type { ApiKeySlot, AuthKey, CctSlot, CctSlotWithSetup, OAuthAttachment } from './auth/auth-key';
 import type { AuthState, CctStoreSnapshot, Lease, RateLimitSource, SlotState, UsageSnapshot } from './cct-store';
 import { CctStore, defaultCctStorePath } from './cct-store';
+import { config } from './config';
 import { Logger, redactAnthropicSecrets } from './logger';
+import { fetchOAuthProfile, type OAuthProfile, OAuthProfileUnauthorizedError } from './oauth/profile';
 import type { OAuthCredentials } from './oauth/refresher';
 import { OAuthRefreshError, refreshClaudeCredentials } from './oauth/refresher';
 import { hasRequiredScopes, missingScopes } from './oauth/scope-check';
@@ -1118,12 +1120,120 @@ export class TokenManager {
    * been marked `refresh_failed` / `revoked` before the throw, so callers
    * can surface the error (or swallow it if the cached authState alone
    * is enough signal).
+   *
+   * Card v2 (#668 follow-up): by default this also chains a fire-and-forget
+   * `refreshOAuthProfile` so the email / rate-limit-tier badge tracks the
+   * same cadence as the token refresh. Set `opts.syncProfile = false` to
+   * skip (used by test paths that isolate the token-only leg).
    */
-  async forceRefreshOAuth(keyId: string): Promise<void> {
+  async forceRefreshOAuth(keyId: string, opts?: { syncProfile?: boolean }): Promise<void> {
+    await this.#refreshTokenOnly(keyId);
+    if (opts?.syncProfile !== false) {
+      // Fire-and-forget: a failed profile sync must not surface as a refresh
+      // failure — the token leg already succeeded. The scheduler and Refresh
+      // button both care about the token, not the profile.
+      this.refreshOAuthProfile(keyId).catch((err) => {
+        logger.warn('forceRefreshOAuth: profile sync failed', { keyId, err });
+      });
+    }
+  }
+
+  async #refreshTokenOnly(keyId: string): Promise<void> {
     const snap = await this.store.load();
     const slot = snap.registry.slots.find((s) => s.keyId === keyId);
     if (!slot || !hasOAuthAttachment(slot)) return;
     await this.refreshAccessToken(slot);
+  }
+
+  // ── OAuth profile fetch (card v2) ──────────────────────────
+  //
+  // Dedupe is keyed by `${keyId}:${attachedAt ?? 'legacy'}` so two generations
+  // of the same slot (detach → re-attach mid-flight) cannot evict each other's
+  // promise — the persist-side attachedAt guard in `#writeProfile` still
+  // rejects a stale result, but the dedupe key prevents the newer caller from
+  // silently sharing the older promise.
+  private readonly profileInflight: Map<string, Promise<OAuthProfile | null>> = new Map();
+
+  /**
+   * Fetch the OAuth profile for a CCT slot and persist it on the slot's
+   * attachment. Non-reentrant: a single 401 triggers one token refresh and
+   * one retry; subsequent 401s from the retry flow surface to the caller.
+   *
+   * Returns:
+   *   - the fetched profile on success,
+   *   - `null` when the slot has no OAuth attachment, the knob is disabled,
+   *     or a non-401 error occurred (logged at warn level).
+   */
+  async refreshOAuthProfile(
+    keyId: string,
+    opts?: { timeoutMs?: number },
+  ): Promise<OAuthProfile | null> {
+    if (!config.oauthProfile.enabled) return null;
+    const snap = await this.store.load();
+    const slot = snap.registry.slots.find((s) => s.keyId === keyId);
+    if (!slot || !hasOAuthAttachment(slot)) return null;
+    const attachedAt = slot.oauthAttachment.attachedAt;
+    const dedupeKey = `${keyId}:${attachedAt ?? 'legacy'}`;
+    const existing = this.profileInflight.get(dedupeKey);
+    if (existing) return existing;
+    const p = this.#doRefreshProfile(keyId, attachedAt, opts).finally(() => {
+      const current = this.profileInflight.get(dedupeKey);
+      if (current === p) this.profileInflight.delete(dedupeKey);
+    });
+    this.profileInflight.set(dedupeKey, p);
+    return p;
+  }
+
+  async #doRefreshProfile(
+    keyId: string,
+    attachedAt: number | undefined,
+    opts?: { timeoutMs?: number },
+  ): Promise<OAuthProfile | null> {
+    const timeoutMs = opts?.timeoutMs ?? config.oauthProfile.timeoutMs;
+    let token: string;
+    try {
+      token = await this.getValidAccessToken(keyId);
+    } catch (err) {
+      logger.warn('refreshOAuthProfile: pre-fetch token resolution failed', { keyId, err });
+      return null;
+    }
+    try {
+      const profile = await fetchOAuthProfile(token, { timeoutMs });
+      await this.#writeProfile(keyId, attachedAt, profile);
+      return profile;
+    } catch (err) {
+      if (err instanceof OAuthProfileUnauthorizedError) {
+        // Non-reentrant 401 retry: refresh the token (the call path below
+        // goes through `#refreshTokenOnly`, NOT through `forceRefreshOAuth`,
+        // so we don't recursively chain another `refreshOAuthProfile`), then
+        // re-fetch once. A second 401 propagates — that's a real auth
+        // failure, not a transient TTL boundary.
+        try {
+          await this.#refreshTokenOnly(keyId);
+          const freshToken = await this.getValidAccessToken(keyId);
+          const profile = await fetchOAuthProfile(freshToken, { timeoutMs });
+          await this.#writeProfile(keyId, attachedAt, profile);
+          return profile;
+        } catch (retryErr) {
+          logger.warn('refreshOAuthProfile: 401 retry failed', { keyId, err: retryErr });
+          return null;
+        }
+      }
+      logger.warn('refreshOAuthProfile: fetch failed', { keyId, err });
+      return null;
+    }
+  }
+
+  async #writeProfile(keyId: string, attachedAt: number | undefined, profile: OAuthProfile): Promise<void> {
+    await this.store.mutate((snap) => {
+      const target = snap.registry.slots.find((s) => s.keyId === keyId);
+      if (!target || target.kind !== 'cct' || target.oauthAttachment === undefined) return;
+      // attachedAt guard (mirrors the refresh/usage persist guards): reject
+      // the write when the attachment generation has changed since fetch
+      // start. `undefined` is a distinct generation and compares strictly.
+      if (target.oauthAttachment.attachedAt !== attachedAt) return;
+      target.oauthAttachment.profile = profile;
+    });
   }
 
   /**
