@@ -258,10 +258,17 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
   // responsive but doesn't touch the TM.
   //
   // #644 review 4146267530 Finding #2 Option A — when every attached slot
-  // returns `null` (all fetches failed — usually a store/network outage),
-  // post an ephemeral failure banner to the invoking admin instead of
-  // silently re-posting the same stale card. Empty input map (no attached
+  // returns `null` (all fetches returned no usage — usually throttled or
+  // a store/network failure), post an ephemeral banner to the invoking
+  // admin instead of silently re-posting the same stale card. A partial
+  // throttle/partial failure (some slots succeeded) still re-posts the
+  // card so the successful rows update. Empty input map (no attached
   // slots at all) is NOT "all failed" and still re-posts the card normally.
+  //
+  // #644 round 4 — banner wording relaxed from "Refresh all failed" to
+  // "no fresh data (throttled or failed)" because `null` covers both the
+  // throttle branch and the fetch-failure branch; claiming "failed" when
+  // the cause is a scheduler-cooldown throttle mis-informs the admin.
   app.action(CCT_ACTION_IDS.refresh_usage_all, async ({ ack, body, client }) => {
     await ack();
     try {
@@ -275,13 +282,20 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
         await postEphemeralFailure(
           client,
           body,
-          ':warning: *Refresh all failed* — every attached slot returned no usage data. Check the TokenManager logs for `fetchAndStoreUsage` errors or the usage-store health.',
+          ':warning: *Refresh all — no fresh data* — every attached slot returned no usage (throttled or failed). Check the TokenManager logs for `fetchAndStoreUsage` errors or the usage-store health.',
         );
         return;
       }
       await postEphemeralCard(tokenManager, client, body);
     } catch (err) {
       logger.error('cct_refresh_usage_all failed', err);
+      // #644 round 4 Option A — the outer catch fires when the TM throws
+      // (fetchUsageForAllAttached itself rejected) or when snapshot/render
+      // throws during the card repost. Without user-facing feedback the
+      // Refresh button looks dead on a genuinely broken path. Toast is
+      // best-effort — a rejected postEphemeral here is already logged
+      // inside postEphemeralFailure; we don't double-log or re-throw.
+      await postEphemeralFailure(client, body, ':warning: Refresh failed. Please try again.');
     }
   });
 
@@ -289,6 +303,12 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
   // Admin gate + `{ force: true }` bypasses the local throttle for that
   // single slot. Silently no-ops when the keyId is missing from the
   // action body (stale card click) or the slot no longer exists.
+  //
+  // #644 round 4 Option A — when `fetchAndStoreUsage` returns `null` the
+  // single-slot refresh did nothing visible (throttled or failed). Mirror
+  // the all-null branch in refresh_usage_all: post an ephemeral banner so
+  // the admin sees actionable feedback instead of a silently re-rendered
+  // card that looks identical to the pre-click state.
   app.action(CCT_ACTION_IDS.refresh_usage_slot, async ({ ack, body, client }) => {
     await ack();
     try {
@@ -299,10 +319,20 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
         logger.warn('cct_refresh_usage_slot: missing keyId on action value');
         return;
       }
-      await tokenManager.fetchAndStoreUsage(targetKeyId, { force: true });
+      const result = await tokenManager.fetchAndStoreUsage(targetKeyId, { force: true });
+      if (result === null) {
+        await postEphemeralFailure(
+          client,
+          body,
+          ':warning: *Refresh slot — no fresh data* — this slot returned no usage (throttled or failed). Check the TokenManager logs for `fetchAndStoreUsage` errors or the usage-store health.',
+        );
+        return;
+      }
       await postEphemeralCard(tokenManager, client, body);
     } catch (err) {
       logger.error('cct_refresh_usage_slot failed', err);
+      // #644 round 4 Option A — mirror the Refresh-all outer-catch toast.
+      await postEphemeralFailure(client, body, ':warning: Refresh failed. Please try again.');
     }
   });
 
@@ -632,10 +662,24 @@ async function respondWithCard(opts: {
  * view_submission callbacks) — derive both here so postEphemeral* helpers
  * don't duplicate the narrowing + `as any` dance. Returns `null` when the
  * body lacks either field (unit-test fakes, non-interactive events).
+ *
+ * #644 round 4 (autonomous) — structural narrow replaces the prior
+ * `(body as any)` scattershot. The Bolt unions (`BlockAction`,
+ * `SlackViewAction`) are a much wider type than what this resolver
+ * actually reads; a local shape pinned to the three fields we touch
+ * makes the call site type-safe without dragging Bolt internals into
+ * this module and without weakening the `unknown` public signature.
  */
+interface EphemeralActionBody {
+  user?: { id?: string };
+  container?: { channel_id?: string };
+  channel?: { id?: string };
+}
+
 function resolveEphemeralTarget(body: unknown): { userId: string; channel: string } | null {
-  const userId = (body as any)?.user?.id as string | undefined;
-  const channel = ((body as any)?.container?.channel_id ?? (body as any)?.channel?.id) as string | undefined;
+  const typed = body as EphemeralActionBody;
+  const userId = typed?.user?.id;
+  const channel = typed?.container?.channel_id ?? typed?.channel?.id;
   if (!userId || !channel) return null;
   return { userId, channel };
 }

@@ -510,6 +510,15 @@ describe('buildCctCardBlocks — Slack 50-block hard cap (#644 review P1)', () =
     return buildCctCardBlocks({ slots, states, activeKeyId: 'slot-0', nowMs: now });
   }
 
+  // #644 round 4 (autonomous) — N=15 is the design ceiling for this card.
+  // With the inactive-slot compact rendering landed in M1, 15 attached cct
+  // slots (14 inactive-compact + 1 active-expanded) + header/context/
+  // card-level action row sit JUST under the Slack 50-block hard cap. A
+  // refactor that re-expands the inactive-slot detail stack would push
+  // this case over 50 and cause `views.open` / `chat.postEphemeral` to
+  // reject the blocks array entirely. Keep the N=15 row in this matrix as
+  // the regression tripwire; do not relax `toBeLessThanOrEqual(50)` —
+  // anything above 50 is a hard Slack rejection, not a soft warning.
   it.each([1, 7, 10, 15])('N=%d attached slots → block count ≤ 50 (with slot-0 active)', (n) => {
     const blocks = buildNSlotCard(n);
     expect(blocks.length).toBeLessThanOrEqual(50);
