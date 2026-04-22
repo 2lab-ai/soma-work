@@ -110,7 +110,7 @@ describe('buildSlotRow', () => {
     expect(flat).toMatch(/77%/);
   });
 
-  it('shows cooldown suffix when still in future (#653 M2: suffix lives on the section multi-line body)', () => {
+  it('shows cooldown badge when still in future (#668 follow-up: subsumed into badge, orange dot + remaining time)', () => {
     const slot = setupSlot();
     const now = Date.parse('2026-04-18T03:42:00Z');
     const state: SlotState = {
@@ -120,7 +120,10 @@ describe('buildSlotRow', () => {
     };
     const blocks = buildSlotRow(slot, state, true, now, 'Asia/Seoul');
     const text = (blocks[0] as any).text.text as string;
-    expect(text).toMatch(/cooldown until/);
+    // New contract: the trailing `cooldown until <ts>` segment is gone; the
+    // badge itself surfaces the state + remaining-time + source in one glance.
+    expect(text).toMatch(/:large_orange_circle: cooldown .* via manual limit/);
+    expect(text).not.toMatch(/cooldown until/);
   });
 
   // the OLD "inactive collapses to section + actions only" rule is
@@ -857,6 +860,143 @@ describe('buildCctCardBlocks — Refresh all (M1-S4)', () => {
     expect(ids).toContain(CCT_ACTION_IDS.add);
     // Length assertion: exactly three buttons in the card-level row.
     expect(cardRow.elements).toHaveLength(3);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
+// #668 follow-up · cooldown helper + orange badge
+// ────────────────────────────────────────────────────────────────────
+
+describe('computeCooldown + cooldown badge (#668 follow-up)', () => {
+  const now = Date.parse('2026-04-22T00:00:00Z');
+
+  function slotWithAttachment(): AuthKey {
+    return {
+      kind: 'cct',
+      source: 'setup',
+      keyId: 'slot-cd',
+      name: 'cd',
+      setupToken: 'sk-ant-oat01-xxxx',
+      oauthAttachment: {
+        accessToken: 't',
+        refreshToken: 'r',
+        expiresAtMs: now + 86_400_000,
+        scopes: ['user:profile'],
+        acknowledgedConsumerTosRisk: true,
+      },
+      createdAt: '',
+    };
+  }
+
+  it('7d utilization=1 with future resetsAt → orange cooldown badge via 7d limit', () => {
+    const slot = slotWithAttachment();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      usage: {
+        fetchedAt: new Date(now).toISOString(),
+        sevenDay: { utilization: 1, resetsAt: new Date(now + 2 * 86_400_000).toISOString() },
+      },
+    };
+    const blocks = buildSlotRow(slot, state, true, now);
+    const text = (blocks[0] as any).text.text as string;
+    expect(text).toMatch(/:large_orange_circle: cooldown 2d 0h via 7d limit/);
+  });
+
+  it('7d utilization=1 with PAST resetsAt still flags cooldown (remaining clamped to 0)', () => {
+    const slot = slotWithAttachment();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      usage: {
+        fetchedAt: new Date(now).toISOString(),
+        sevenDay: { utilization: 1, resetsAt: new Date(now - 3_600_000).toISOString() },
+      },
+    };
+    const blocks = buildSlotRow(slot, state, true, now);
+    const text = (blocks[0] as any).text.text as string;
+    // Remaining is clamped to 0 → renders as `<1m` via formatUsageResetDelta.
+    expect(text).toMatch(/:large_orange_circle: cooldown [^·]* via 7d limit/);
+  });
+
+  it('5h utilization=1 (no 7d trigger) → cooldown via 5h limit', () => {
+    const slot = slotWithAttachment();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      usage: {
+        fetchedAt: new Date(now).toISOString(),
+        fiveHour: { utilization: 1, resetsAt: new Date(now + 3_600_000).toISOString() },
+        sevenDay: { utilization: 0.3, resetsAt: new Date(now + 6 * 86_400_000).toISOString() },
+      },
+    };
+    const blocks = buildSlotRow(slot, state, true, now);
+    const text = (blocks[0] as any).text.text as string;
+    expect(text).toMatch(/:large_orange_circle: cooldown 1h 0m via 5h limit/);
+  });
+
+  it('manual cooldownUntil only → cooldown via manual limit', () => {
+    const slot = slotWithAttachment();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      cooldownUntil: new Date(now + 30 * 60_000).toISOString(),
+    };
+    const blocks = buildSlotRow(slot, state, true, now);
+    const text = (blocks[0] as any).text.text as string;
+    expect(text).toMatch(/:large_orange_circle: cooldown 30m via manual limit/);
+  });
+
+  it('priority: 7d > 5h > manual when multiple triggers fire simultaneously', () => {
+    const slot = slotWithAttachment();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      cooldownUntil: new Date(now + 10 * 60_000).toISOString(),
+      usage: {
+        fetchedAt: new Date(now).toISOString(),
+        fiveHour: { utilization: 1, resetsAt: new Date(now + 3_600_000).toISOString() },
+        sevenDay: { utilization: 1, resetsAt: new Date(now + 2 * 86_400_000).toISOString() },
+      },
+    };
+    const blocks = buildSlotRow(slot, state, true, now);
+    const text = (blocks[0] as any).text.text as string;
+    // 7d wins.
+    expect(text).toMatch(/via 7d limit/);
+    expect(text).not.toMatch(/via 5h limit/);
+    expect(text).not.toMatch(/via manual limit/);
+  });
+
+  it('historical `rate-limited via …` segment is preserved alongside the cooldown badge', () => {
+    const slot = slotWithAttachment();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      rateLimitedAt: new Date(now - 60_000).toISOString(),
+      rateLimitSource: 'response_header',
+      cooldownUntil: new Date(now + 30 * 60_000).toISOString(),
+    };
+    const blocks = buildSlotRow(slot, state, true, now, 'Asia/Seoul');
+    const text = (blocks[0] as any).text.text as string;
+    expect(text).toMatch(/:large_orange_circle: cooldown/);
+    expect(text).toMatch(/rate-limited .* via response_header/);
+  });
+
+  it('healthy slot without any trigger → green badge, no cooldown', () => {
+    const slot = slotWithAttachment();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      usage: {
+        fetchedAt: new Date(now).toISOString(),
+        fiveHour: { utilization: 0.2, resetsAt: new Date(now + 3_600_000).toISOString() },
+        sevenDay: { utilization: 0.3, resetsAt: new Date(now + 6 * 86_400_000).toISOString() },
+      },
+    };
+    const blocks = buildSlotRow(slot, state, true, now);
+    const text = (blocks[0] as any).text.text as string;
+    expect(text).toContain(':large_green_circle: healthy');
+    expect(text).not.toMatch(/:large_orange_circle:/);
   });
 });
 

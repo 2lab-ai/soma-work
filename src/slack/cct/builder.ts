@@ -194,7 +194,81 @@ function buildUsagePanelBlock(usage: UsageSnapshot, nowMs: number, keyId: string
   };
 }
 
-function authStateBadge(state: AuthState): string {
+/**
+ * Cooldown trigger — the reason a slot is currently parked. Priority order
+ * `7d > 5h > manual` is the user-facing intent: "biggest bucket first".
+ * Callers surface only the highest-priority trigger on the badge; the
+ * `rate-limited via <source>` segment still carries the source separately.
+ */
+export type CooldownSource = 'seven_day' | 'five_hour' | 'manual';
+
+export interface CooldownInfo {
+  /** True when any trigger fires. False ⇒ healthy cooldown-free slot. */
+  inCooldown: boolean;
+  /**
+   * ms until the cooldown expires. Clamped at ≥0 — a past `resetsAt` renders
+   * as "0s" rather than negative-duration garbage. Only meaningful when
+   * `inCooldown` is true.
+   */
+  remainingMs: number;
+  source: CooldownSource | null;
+}
+
+/**
+ * Compute the highest-priority cooldown trigger for a slot. Priority is
+ * 7d util≥1 > 5h util≥1 > manual (state.cooldownUntil in the future).
+ *
+ * Deliberate choices:
+ *   - util≥1 without a `resetsAt > now` constraint. A 7d bucket that has
+ *     exhausted still blocks the slot; whether its `resetsAt` has passed
+ *     is an upstream-timing artifact we don't second-guess here (the user
+ *     wants to see the bucket as "at-limit" regardless).
+ *   - remaining time is cap-at-zero so a stale resetsAt renders cleanly.
+ */
+export function computeCooldown(state: SlotState | undefined, nowMs: number): CooldownInfo {
+  if (!state) return { inCooldown: false, remainingMs: 0, source: null };
+  const sevenDay = state.usage?.sevenDay;
+  if (sevenDay && sevenDay.utilization >= 1) {
+    const resets = new Date(sevenDay.resetsAt).getTime();
+    const remaining = Number.isFinite(resets) ? Math.max(0, resets - nowMs) : 0;
+    return { inCooldown: true, remainingMs: remaining, source: 'seven_day' };
+  }
+  const fiveHour = state.usage?.fiveHour;
+  if (fiveHour && fiveHour.utilization >= 1) {
+    const resets = new Date(fiveHour.resetsAt).getTime();
+    const remaining = Number.isFinite(resets) ? Math.max(0, resets - nowMs) : 0;
+    return { inCooldown: true, remainingMs: remaining, source: 'five_hour' };
+  }
+  if (state.cooldownUntil) {
+    const until = new Date(state.cooldownUntil).getTime();
+    if (Number.isFinite(until) && until > nowMs) {
+      return { inCooldown: true, remainingMs: until - nowMs, source: 'manual' };
+    }
+  }
+  return { inCooldown: false, remainingMs: 0, source: null };
+}
+
+/** Human label for a {@link CooldownSource} — kept colocated with the helper. */
+function cooldownSourceLabel(source: CooldownSource): string {
+  switch (source) {
+    case 'seven_day':
+      return '7d';
+    case 'five_hour':
+      return '5h';
+    case 'manual':
+      return 'manual';
+  }
+}
+
+function authStateBadge(state: AuthState, cooldown?: CooldownInfo): string {
+  // Card v2 (#668 follow-up): when a cooldown fires, it supersedes the
+  // healthy badge — the operator cares about the remaining wait, not the
+  // underlying auth state (which is still `healthy`). `refresh_failed` and
+  // `revoked` still win over cooldown because they indicate a broken slot
+  // that won't self-recover.
+  if (cooldown?.inCooldown && state === 'healthy' && cooldown.source) {
+    return `:large_orange_circle: cooldown ${formatUsageResetDelta(cooldown.remainingMs)} via ${cooldownSourceLabel(cooldown.source)} limit`;
+  }
   switch (state) {
     case 'healthy':
       return ':large_green_circle: healthy';
@@ -243,8 +317,16 @@ function buildSlotStatusLine(
   userTz: string,
 ): string {
   const segments: string[] = [];
-  segments.push(authStateBadge(state?.authState ?? 'healthy'));
+  // Card v2 (#668 follow-up): the cooldown badge subsumes the separate
+  // "cooldown until <ts>" suffix. `rate-limited via <source>` stays distinct
+  // because it is a historical timestamp, not a live countdown.
+  const cooldown = computeCooldown(state, nowMs);
+  segments.push(authStateBadge(state?.authState ?? 'healthy', cooldown));
   if (isActive) segments.push('active');
+  // `:lock: rotation-off` — operator-opt-out flag (#668 follow-up). Always
+  // surfaces, even on healthy slots, so the parked status is obvious at
+  // a glance.
+  if (slot.disableRotation) segments.push(':lock: rotation-off');
   // OAuth expiry — only for CCT slots that carry an attachment. `api_key`
   // and bare setup slots have no OAuth to refresh so they're omitted.
   if (isCctSlot(slot) && slot.oauthAttachment !== undefined) {
@@ -255,12 +337,6 @@ function buildSlotStatusLine(
     const ts = formatRateLimitedAt(state.rateLimitedAt, userTz, nowMs);
     const source = state.rateLimitSource ? ` via ${state.rateLimitSource}` : '';
     segments.push(`rate-limited ${ts}${source}`);
-  }
-  if (state?.cooldownUntil) {
-    const untilMs = new Date(state.cooldownUntil).getTime();
-    if (Number.isFinite(untilMs) && untilMs > nowMs) {
-      segments.push(`cooldown until ${formatRateLimitedAt(state.cooldownUntil, userTz, nowMs).split(' / ')[0]}`);
-    }
   }
   if (state?.tombstoned) segments.push(':wastebasket: tombstoned (drain in progress)');
   if (state && state.activeLeases.length > 0) segments.push(`leases: ${state.activeLeases.length}`);
