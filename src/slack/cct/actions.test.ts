@@ -6,7 +6,13 @@
  */
 
 import { describe, expect, it, vi } from 'vitest';
-import { buildCardFromManager, parseOAuthBlob, registerCctActions, validateAddSubmission } from './actions';
+import {
+  buildCardFromManager,
+  parseOAuthBlob,
+  REFRESH_BANNERS,
+  registerCctActions,
+  validateAddSubmission,
+} from './actions';
 import { buildAddSlotModal } from './builder';
 import { CCT_ACTION_IDS, CCT_BLOCK_IDS } from './views';
 
@@ -854,16 +860,9 @@ describe('refresh_usage action handlers (M1-S4)', () => {
 
   it('refresh_usage_all → when every attached slot returns null, post ephemeral banner instead of re-posting the card', async () => {
     // #644 review 4146267530 Finding #2 Option A — all-null result map
-    // means the fan-out attempted but every slot returned no usage
-    // (throttled or failed). Silently re-posting the same stale card
-    // would look like "button does nothing" to the admin. Post an
-    // ephemeral banner instead. An EMPTY result map (no attached slots
-    // at all) is NOT "all failed" and falls through to the normal
-    // card-repost path.
-    //
-    // #644 round 4 — banner wording relaxed from "Refresh all failed"
-    // to "no fresh data (throttled or failed)" because `null` covers the
-    // throttle branch too; the assertion below locks the new wording.
+    // surfaces an ephemeral banner so the admin doesn't see a silent
+    // no-op. Empty result map (no attached slots) falls through to the
+    // normal card-repost path — see the next test.
     const { app, actionHandlers } = makeApp();
     const fetchUsageForAllAttached = vi.fn(async () => ({ 'slot-A': null, 'slot-B': null }));
     const tm = {
@@ -896,17 +895,10 @@ describe('refresh_usage action handlers (M1-S4)', () => {
       expect(fetchUsageForAllAttached).toHaveBeenCalledTimes(1);
       expect(postEphemeral).toHaveBeenCalledTimes(1);
       const call = postEphemeral.mock.calls[0]?.[0] as any;
-      // Banner MUST carry a top-level `text` — no `blocks` array (that's
-      // the card repost path). This locks the branch.
+      // Banner path: top-level `text` equals the shared constant, no `blocks`.
       expect(call.channel).toBe('C1');
       expect(call.user).toBe('admin');
-      expect(typeof call.text).toBe('string');
-      expect(call.text).toMatch(/no fresh data/i);
-      expect(call.text).toMatch(/throttled or failed/i);
-      // Regression guard — the old "all failed" wording was too strong
-      // because `null` also covers the throttle branch. If a future
-      // refactor reintroduces "failed" as the sole framing, this fires.
-      expect(call.text).not.toMatch(/^.*Refresh all failed.*$/);
+      expect(call.text).toBe(REFRESH_BANNERS.allNull);
       expect(call.blocks).toBeUndefined();
     } finally {
       spy.mockRestore();
@@ -1044,13 +1036,10 @@ describe('refresh_usage action handlers (M1-S4)', () => {
       expect(fetchAndStoreUsage).toHaveBeenCalledTimes(1);
       expect(postEphemeral).toHaveBeenCalledTimes(1);
       const call = postEphemeral.mock.calls[0]?.[0] as any;
-      // Banner branch: top-level `text`, no `blocks` array (card path
-      // carries blocks, banner path does not).
+      // Banner path: top-level `text` equals the shared constant, no `blocks`.
       expect(call.channel).toBe('C1');
       expect(call.user).toBe('admin');
-      expect(typeof call.text).toBe('string');
-      expect(call.text).toMatch(/no fresh data/i);
-      expect(call.text).toMatch(/throttled or failed/i);
+      expect(call.text).toBe(REFRESH_BANNERS.slotNull);
       expect(call.blocks).toBeUndefined();
     } finally {
       spy.mockRestore();
@@ -1084,7 +1073,7 @@ describe('refresh_usage action handlers (M1-S4)', () => {
       expect(fetchUsageForAllAttached).toHaveBeenCalledTimes(1);
       expect(postEphemeral).toHaveBeenCalledTimes(1);
       const call = postEphemeral.mock.calls[0]?.[0] as any;
-      expect(call.text).toMatch(/Refresh failed/i);
+      expect(call.text).toBe(REFRESH_BANNERS.outerCatch);
       expect(call.channel).toBe('C1');
       expect(call.user).toBe('admin');
     } finally {
@@ -1117,7 +1106,7 @@ describe('refresh_usage action handlers (M1-S4)', () => {
       expect(fetchAndStoreUsage).toHaveBeenCalledTimes(1);
       expect(postEphemeral).toHaveBeenCalledTimes(1);
       const call = postEphemeral.mock.calls[0]?.[0] as any;
-      expect(call.text).toMatch(/Refresh failed/i);
+      expect(call.text).toBe(REFRESH_BANNERS.outerCatch);
       expect(call.channel).toBe('C1');
       expect(call.user).toBe('admin');
     } finally {

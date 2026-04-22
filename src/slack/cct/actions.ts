@@ -45,6 +45,17 @@ const SETUP_TOKEN_REGEX = /^sk-ant-oat01-[A-Za-z0-9_-]{8,}$/;
 // unnecessary because the TM throws on a shape mismatch too.
 const API_KEY_REGEX = /^sk-ant-api03-[A-Za-z0-9_-]{8,}$/;
 
+// #644 round 4 — refresh-handler banner strings. Centralized so the two
+// handlers + their tests share a single source of truth; tightening wording
+// in one place no longer risks drift with the assertion regexes.
+export const REFRESH_BANNERS = {
+  allNull:
+    ':warning: *Refresh all — no fresh data* — every attached slot returned no usage (throttled or failed). Check the TokenManager logs for `fetchAndStoreUsage` errors or the usage-store health.',
+  slotNull:
+    ':warning: *Refresh slot — no fresh data* — this slot returned no usage (throttled or failed). Check the TokenManager logs for `fetchAndStoreUsage` errors or the usage-store health.',
+  outerCatch: ':warning: Refresh failed. Please try again.',
+} as const;
+
 /**
  * Register all CCT block actions + view submissions on the Bolt app.
  *
@@ -279,23 +290,16 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
       const entries = Object.values(results);
       const allFailed = entries.length > 0 && entries.every((r) => r === null);
       if (allFailed) {
-        await postEphemeralFailure(
-          client,
-          body,
-          ':warning: *Refresh all — no fresh data* — every attached slot returned no usage (throttled or failed). Check the TokenManager logs for `fetchAndStoreUsage` errors or the usage-store health.',
-        );
+        await postEphemeralFailure(client, body, REFRESH_BANNERS.allNull);
         return;
       }
       await postEphemeralCard(tokenManager, client, body);
     } catch (err) {
       logger.error('cct_refresh_usage_all failed', err);
-      // #644 round 4 Option A — the outer catch fires when the TM throws
-      // (fetchUsageForAllAttached itself rejected) or when snapshot/render
-      // throws during the card repost. Without user-facing feedback the
-      // Refresh button looks dead on a genuinely broken path. Toast is
-      // best-effort — a rejected postEphemeral here is already logged
-      // inside postEphemeralFailure; we don't double-log or re-throw.
-      await postEphemeralFailure(client, body, ':warning: Refresh failed. Please try again.');
+      // #644 round 4 Option A — the outer catch fires when the TM or
+      // snapshot/render throws. Toast is best-effort; a rejected
+      // postEphemeral is logged inside postEphemeralFailure.
+      await postEphemeralFailure(client, body, REFRESH_BANNERS.outerCatch);
     }
   });
 
@@ -321,18 +325,14 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
       }
       const result = await tokenManager.fetchAndStoreUsage(targetKeyId, { force: true });
       if (result === null) {
-        await postEphemeralFailure(
-          client,
-          body,
-          ':warning: *Refresh slot — no fresh data* — this slot returned no usage (throttled or failed). Check the TokenManager logs for `fetchAndStoreUsage` errors or the usage-store health.',
-        );
+        await postEphemeralFailure(client, body, REFRESH_BANNERS.slotNull);
         return;
       }
       await postEphemeralCard(tokenManager, client, body);
     } catch (err) {
       logger.error('cct_refresh_usage_slot failed', err);
       // #644 round 4 Option A — mirror the Refresh-all outer-catch toast.
-      await postEphemeralFailure(client, body, ':warning: Refresh failed. Please try again.');
+      await postEphemeralFailure(client, body, REFRESH_BANNERS.outerCatch);
     }
   });
 

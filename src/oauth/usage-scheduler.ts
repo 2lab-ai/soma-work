@@ -84,17 +84,11 @@ export class UsageRefreshScheduler {
   /**
    * Stop pumping. Safe to call multiple times.
    *
-   * #644 round 4 (autonomous) — KNOWN LIMITATION: stop() does NOT await
-   * an in-flight tickNow() promise. A tick fired just before stop() can
-   * still settle after the scheduler is considered "stopped", because
-   * `setInterval` callbacks are detached from the handle we just cleared.
-   * Production is fine — `fetchUsageForAllAttached` uses a per-fan-out
-   * timeout and has no side effects after resolve, so a late settle is a
-   * harmless no-op. Tests asserting "no TM call after stop()" MUST await
-   * the in-flight tick promise explicitly (capture the tickNow() return
-   * from the interval callback) rather than relying on stop() to drain.
-   * TODO(#644 M2): add an optional drain() that returns the in-flight
-   * promise so shutdown paths can opt into bounded graceful wait.
+   * KNOWN LIMITATION: does NOT await an in-flight tickNow() — a tick fired
+   * just before stop() may settle after. Production is safe (fan-out has
+   * its own timeout and no post-resolve side effects); tests needing that
+   * guarantee must await the in-flight promise directly.
+   * TODO(#644 M2): optional drain() for bounded graceful shutdown.
    */
   stop(): void {
     if (!this.#handle) return;
@@ -111,12 +105,8 @@ export class UsageRefreshScheduler {
    * INVARIANT: never pass `force: true` — see module header.
    */
   async tickNow(): Promise<void> {
-    // #644 round 4 (autonomous) — capture timing so the warn carries
-    // operational signal (was this a fast reject or a timeout stall?).
-    // The fan-out itself is a per-keyId fan-out inside the TM; we don't
-    // have a single keyId here, but durationMs + the configured timeout
-    // is enough to distinguish "transient blip" from "fan-out wedged near
-    // the deadline". Kept outside the try so the catch can reach it.
+    // Capture start time so the failure log distinguishes a fast reject
+    // from a timeout stall (durationMs vs configured timeoutMs).
     const startedAt = Date.now();
     try {
       await this.#tm.fetchUsageForAllAttached({ timeoutMs: this.#timeoutMs });
