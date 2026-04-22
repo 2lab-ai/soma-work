@@ -26,6 +26,7 @@ import { ReportAggregator } from '../metrics/report-aggregator';
 import { AggregatedMetrics, type MetricsEvent } from '../metrics/types';
 import { type ArchivedSession, getArchiveStore } from '../session-archive';
 import { buildThreadPermalink } from '../turn-notifier';
+import { coerceEffort, type EffortLevel, userSettingsStore } from '../user-settings-store';
 import { getConversation, resummarizeTurn, updateConversationTitleSub } from './recorder';
 import { generateTitle } from './title-generator';
 
@@ -85,6 +86,12 @@ export interface KanbanSession {
   threadTotalActiveMs?: number;
   threadSessionCount?: number;
   threadCompactionCount?: number;
+  /** Per-session effort level, normalised via coerceEffort. */
+  effort?: EffortLevel;
+  /** Jira short key like "PTN-123" derived from issueUrl */
+  issueShortRef?: string;
+  /** GitHub PR short ref like "PR-123" derived from prUrl */
+  prShortRef?: string;
   /** Pending user choice question (present when activityState === 'waiting' and a question was asked) */
   pendingQuestion?: {
     type: 'user_choice' | 'user_choices';
@@ -275,6 +282,50 @@ function computeThreadAggregate(
   return { totalActiveMs, sessionCount, compactionCount };
 }
 
+/**
+ * Extract Jira-style short key from a "/browse/KEY-123" issue URL.
+ * URL-only (no label fallback) to avoid false positives like "HTTP-200".
+ * Key must be 2+ uppercase letters followed by "-<digits>" (Jira project-key convention).
+ */
+export function extractIssueShortRef(url?: string): string | undefined {
+  if (!url) return undefined;
+  const m = url.match(/\/browse\/([A-Z]{2,}-\d+)/);
+  return m ? m[1] : undefined;
+}
+
+/**
+ * Extract "PR-<number>" from a GitHub PR URL. URL-only.
+ * Trailing boundary: "/", "?", "#", or end of string (so .../pull/123#comment-... also matches).
+ */
+export function extractPrShortRef(url?: string): string | undefined {
+  if (!url) return undefined;
+  const m = url.match(/\/pull\/(\d+)(?:[/?#]|$)/);
+  return m ? `PR-${m[1]}` : undefined;
+}
+
+/**
+ * Card-derived UI fields shared between live (sessionToKanban) and archived
+ * (archivedToKanban) kanban builders. Archived sessions don't persist effort,
+ * so their branch always falls back to the owner's default; live sessions
+ * use the persisted value when present.
+ */
+function cardDerivedFields(src: {
+  effort?: unknown;
+  ownerId?: string;
+  links?: { issue?: { url?: string }; pr?: { url?: string } };
+  persistedEffort: boolean;
+}): Pick<KanbanSession, 'effort' | 'issueShortRef' | 'prShortRef'> {
+  const effort =
+    src.persistedEffort && src.effort
+      ? coerceEffort(src.effort)
+      : userSettingsStore.getUserDefaultEffort(src.ownerId || '');
+  return {
+    effort,
+    issueShortRef: extractIssueShortRef(src.links?.issue?.url),
+    prShortRef: extractPrShortRef(src.links?.pr?.url),
+  };
+}
+
 function sessionToKanban(key: string, s: any): KanbanSession {
   const tasks = _getTasksFn ? _getTasksFn(key) : undefined;
   const aggregate = computeThreadAggregate(s.channelId, s.threadTs, getAllSessions(), Date.now());
@@ -331,6 +382,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     threadTotalActiveMs: aggregate.totalActiveMs,
     threadSessionCount: aggregate.sessionCount,
     threadCompactionCount: aggregate.compactionCount,
+    ...cardDerivedFields({ effort: s.effort, ownerId: s.ownerId, links: s.links, persistedEffort: true }),
     pendingQuestion: s.actionPanel?.pendingQuestion
       ? s.actionPanel.pendingQuestion.type === 'user_choice'
         ? {
@@ -423,6 +475,7 @@ export function archivedToKanban(archived: ArchivedSession): KanbanSession {
     threadTotalActiveMs: archived.busyMs || 0,
     threadSessionCount: 1,
     threadCompactionCount: archived.compactionCount || 0,
+    ...cardDerivedFields({ ownerId: archived.ownerId, links: archived.links, persistedEffort: false }),
   };
 }
 
@@ -1654,19 +1707,80 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   font-size: 11px;
   color: var(--text-tertiary);
   display: flex;
-  gap: 8px;
+  gap: 6px;
   margin-bottom: 4px;
   font-weight: 600;
   flex-wrap: wrap;
+  align-items: center;
 }
 .card .card-meta span { white-space: nowrap; }
+.card .card-meta span + span::before { content: "·"; color: var(--text-tertiary); opacity: 0.5; margin-right: 6px; }
+.card .card-meta .meta-owner { color: var(--purple); }
 .card .card-links { font-size: 12px; margin-top: 4px; display: flex; gap: 6px; flex-wrap: wrap; }
 .card .card-links a { color: var(--accent); text-decoration: none; font-weight: 600; }
 .card .card-links a:hover { text-decoration: underline; }
-.card .card-owner { font-size: 12px; color: var(--purple); margin-top: 2px; font-weight: 600; }
 .card .card-merge { font-size: 12px; color: var(--green); margin-top: 2px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .card .card-tokens { font-size: 12px; color: var(--text-tertiary); margin-top: 2px; font-variant-numeric: tabular-nums; }
 .card .card-tokens .cost { color: var(--green); font-weight: 700; }
+
+/* ── TIMER + COUNTER ROW — icon · value · separator ── */
+.card .card-timer-row {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  margin-bottom: 4px;
+  flex-wrap: wrap;
+}
+.card .card-timer-row > span { white-space: nowrap; }
+.card .card-timer-row .card-timer-total { color: var(--text-tertiary); }
+.card .card-timer-row .card-timer-compactions,
+.card .card-timer-row .card-timer-sessions { color: var(--text-tertiary); }
+
+/* ── HERO TIMER — big live timer above card title ── */
+.card .card-timer-hero {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+  margin-bottom: 6px;
+}
+.card .card-timer-hero .hero-icon { font-size: 18px; }
+.card .card-timer-hero .card-timer-live { color: var(--text); }
+
+/* ── SHORT REFS ROW — PTN-123 · PR-123 ── */
+.card .card-refs {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  margin-bottom: 4px;
+  flex-wrap: wrap;
+}
+.card .card-refs a {
+  color: var(--accent);
+  text-decoration: none;
+  font-weight: 700;
+}
+.card .card-refs a:hover { text-decoration: underline; }
+.card .card-refs .ref-sep { color: var(--text-tertiary); opacity: 0.6; }
+
+/* ── META EFFORT — power level token in meta row ── */
+.card .card-meta .meta-effort {
+  color: var(--accent);
+  font-weight: 700;
+  text-transform: lowercase;
+}
 
 /* ── CONTEXT USAGE BAR ── */
 .card .context-bar { margin-top: 4px; margin-bottom: 2px; height: 4px; background: rgba(255,255,255,0.06); border-radius: 2px; overflow: hidden; }
@@ -1687,7 +1801,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 /* ── TASK LIST — compact rows ── */
 .card-tasks { margin-top: 6px; border-top: 1px solid var(--border); padding-top: 4px; }
 .card-task { font-size: 12px; color: var(--text-secondary); display: flex; align-items: center; gap: 4px; padding: 2px 0; line-height: 1.3; }
-.card-task.completed { color: var(--text-tertiary); text-decoration: line-through; opacity: 0.5; }
+.card-task.completed { color: var(--text-tertiary); opacity: 0.55; }
 .card-task.in_progress { color: var(--text); font-weight: 600; }
 .card-task .task-icon { flex-shrink: 0; }
 .spin { display: inline-block; animation: spin 1.5s linear infinite; }
@@ -1708,7 +1822,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   min-height: 26px;
   transition: all var(--speed) var(--ease);
   letter-spacing: 0.02em;
-  text-transform: uppercase;
 }
 .btn-action:hover { border-color: var(--accent); color: var(--text); background: rgba(96,165,250,0.08); }
 .btn-action.btn-stop { border-color: rgba(239,68,68,0.3); color: var(--text-secondary); }
@@ -2152,7 +2265,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 }
 .panel-task-item .task-icon { flex-shrink: 0; font-size: 12px; }
 .panel-task-item .task-text { flex: 1; min-width: 0; }
-.panel-task-item.completed .task-text { color: var(--text-tertiary); text-decoration: line-through; opacity: 0.6; }
+.panel-task-item.completed .task-text { color: var(--text-tertiary); opacity: 0.6; }
 .panel-task-item.in_progress .task-text { color: var(--text); font-weight: 600; }
 .panel-task-item.pending .task-text { color: var(--text-secondary); }
 .panel-task-item .task-time {
@@ -2735,7 +2848,7 @@ function renderPanelTaskItem(t) {
   var icon, cls;
   if (t.status === 'completed') { icon = '&#x2705;'; cls = 'completed'; }
   else if (t.status === 'in_progress') { icon = '<span class="spin">&#x1F504;</span>'; cls = 'in_progress'; }
-  else { icon = '&#x25FB;'; cls = 'pending'; }
+  else { icon = '&#x25CB;'; cls = 'pending'; }
 
   var timeInfo = '';
   if (t.status === 'completed' && t.startedAt && t.completedAt) {
@@ -2834,6 +2947,9 @@ function formatNmSSs(ms) {
 }
 // 1-Hz tick: update every .card-timer-live element from its data-* attrs.
 // Runs unconditionally of WS state — WS feeds new data-* values, tick reads them.
+// The producer of .card-timer-live is the heroTimerHtml builder in renderCard()
+// (server side). Keep the class name + data-leg-started / data-accumulated attr
+// contract in sync with that emitter.
 function updateTimers() {
   var now = Date.now();
   var els = document.querySelectorAll('.card-timer-live');
@@ -2979,16 +3095,24 @@ function renderCard(s, col) {
       + (ctxPct > 0 ? '<div class="context-bar"><div class="context-bar-fill ' + ctxCls + '" style="width:' + Math.min(ctxPct, 100).toFixed(0) + '%"></div></div>' : '');
   }
 
-  // Tasks
+  // Tasks — sort in_progress → pending → completed; completed items sink below the 5-item slice.
   let tasksHtml = '';
   if (s.tasks && s.tasks.length > 0) {
-    const shown = s.tasks.slice(0, 5);
-    const extra = s.tasks.length - shown.length;
+    function taskRank(status) {
+      if (status === 'in_progress') return 0;
+      if (status === 'completed') return 2;
+      return 1; // pending (and any unknown status)
+    }
+    const sortedTasks = s.tasks.slice().sort(function(a, b) {
+      return taskRank(a.status) - taskRank(b.status);
+    });
+    const shown = sortedTasks.slice(0, 5);
+    const extra = sortedTasks.length - shown.length;
     const taskItems = shown.map(function(t) {
       let icon, cls2;
       if (t.status === 'completed') { icon = '&#x2705;'; cls2 = 'completed'; }
       else if (t.status === 'in_progress') { icon = '<span class="spin">&#x1F504;</span>'; cls2 = 'in_progress'; }
-      else { icon = '&#x25FB;'; cls2 = 'pending'; }
+      else { icon = '&#x25CB;'; cls2 = 'pending'; }
       var durStr = '';
       if (t.status === 'completed' && t.startedAt && t.completedAt) {
         durStr = ' <span style="font-size:10px;color:var(--text-tertiary);margin-left:auto;flex-shrink:0">' + formatDuration(t.completedAt - t.startedAt) + '</span>';
@@ -3032,41 +3156,77 @@ function renderCard(s, col) {
   // Action buttons
   let actionBtn = '';
   if (col === 'working') {
-    actionBtn = '<button class="btn-action btn-stop" onclick="event.stopPropagation();doAction(\\'' + escJs(s.key) + '\\',\\'stop\\')">&#x23F9; Stop</button>';
+    actionBtn = '<button class="btn-action btn-stop" onclick="event.stopPropagation();doAction(\\'' + escJs(s.key) + '\\',\\'stop\\')">Stop</button>';
   } else if (col === 'waiting' || col === 'idle') {
-    actionBtn = '<button class="btn-action btn-close" onclick="event.stopPropagation();doAction(\\'' + escJs(s.key) + '\\',\\'close\\')">&#x274C; Close</button>';
+    actionBtn = '<button class="btn-action btn-close" onclick="event.stopPropagation();doAction(\\'' + escJs(s.key) + '\\',\\'close\\')">Close</button>';
   } else if (col === 'closed') {
     // SLEEPING (live) sessions → Close (terminate); archived sessions → Trash (hide)
     actionBtn = s.terminated
-      ? '<button class="btn-action btn-trash" onclick="event.stopPropagation();doAction(\\'' + escJs(s.key) + '\\',\\'trash\\')">&#x1F5D1; Trash</button>'
-      : '<button class="btn-action btn-close" onclick="event.stopPropagation();doAction(\\'' + escJs(s.key) + '\\',\\'close\\')">&#x274C; Close</button>';
+      ? '<button class="btn-action btn-trash" onclick="event.stopPropagation();doAction(\\'' + escJs(s.key) + '\\',\\'trash\\')">Trash</button>'
+      : '<button class="btn-action btn-close" onclick="event.stopPropagation();doAction(\\'' + escJs(s.key) + '\\',\\'close\\')">Close</button>';
   }
   const actionsHtml = '<div class="card-actions">' + actionBtn + '</div>';
 
   const modelShort = esc(s.model).replace(/^claude-/, '').replace(/-\\d{8}$/, '');
 
-  // Dashboard v2.1 — timer + counter row (live 1s tick updates .card-timer-live).
   const legStarted = s.activeLegStartedAtMs || 0;
   const accumulated = s.activeAccumulatedMs || 0;
   const compactions = s.compactionCount || 0;
   const threadTotal = s.threadTotalActiveMs || 0;
   const threadSessions = s.threadSessionCount || 0;
-  const timerRowHtml =
-    '<div class="card-timer-row">'
-    + '<span class="card-timer-live" data-leg-started="' + legStarted + '" data-accumulated="' + accumulated + '">' + formatNmSSs(accumulated + (legStarted ? Date.now() - legStarted : 0)) + '</span>'
-    + '<span class="card-timer-total" title="Thread total active time">&Sigma; ' + formatNmSSs(threadTotal) + '</span>'
-    + '<span class="card-timer-compactions">&#x1F5DC;&#xFE0F; ' + compactions + '</span>'
-    + '<span class="card-timer-sessions">#' + threadSessions + '</span>'
+
+  // data-leg-started / data-accumulated live on the .card-timer-live span itself
+  // — the 1-Hz updater at updateTimers() (see ~line 2880) reads them via
+  // querySelectorAll('.card-timer-live'). We always emit the live span, even in
+  // the zero state, so polling picks it up the instant the leg starts.
+  const heroTimerHtml =
+    '<div class="card-timer-hero">'
+    + '<span class="hero-icon">&#x23F1;&#xFE0F;</span>'
+    + '<span class="card-timer-live" data-leg-started="' + legStarted + '" data-accumulated="' + accumulated + '" title="Current leg active time">' + formatNmSSs(accumulated + (legStarted ? Date.now() - legStarted : 0)) + '</span>'
     + '</div>';
 
+  // Stats row: thread total (Σ) · compactions · session count. No live span here —
+  // the live leg moved to the hero above.
+  const timerRowHtml =
+    '<div class="card-timer-row">'
+    + '<span class="card-timer-total" title="Thread total active time">&Sigma; ' + formatNmSSs(threadTotal) + '</span>'
+    + '<span class="card-timer-compactions" title="Compactions">&#x1F5DC;&#xFE0F; ' + compactions + '</span>'
+    + '<span class="card-timer-sessions" title="Thread session count"># ' + threadSessions + '</span>'
+    + '</div>';
+
+  // Short refs (PTN-123 · PR-123). escAttr for href/title because they're attribute values.
+  const refParts = [];
+  if (s.issueShortRef && s.issueUrl) {
+    refParts.push('<a href="' + escAttr(s.issueUrl) + '" target="_blank" onclick="event.stopPropagation()" title="' + escAttr(s.issueLabel || s.issueShortRef) + '">' + esc(s.issueShortRef) + '</a>');
+  }
+  if (s.prShortRef && s.prUrl) {
+    refParts.push('<a href="' + escAttr(s.prUrl) + '" target="_blank" onclick="event.stopPropagation()" title="' + escAttr(s.prLabel || s.prShortRef) + '">' + esc(s.prShortRef) + '</a>');
+  }
+  const refsHtml = refParts.length
+    ? '<div class="card-refs">' + refParts.join('<span class="ref-sep">&middot;</span>') + '</div>'
+    : '';
+
+  const effortHtml = s.effort
+    ? '<span class="meta-effort" title="Power level">' + esc(s.effort) + '</span>'
+    : '';
+  const metaHtml = '<div class="card-meta">'
+    + '<span>' + esc(s.workflow) + '</span>'
+    + '<span>' + modelShort + '</span>'
+    + effortHtml
+    + '<span class="meta-owner">' + esc(s.ownerName) + '</span>'
+    + '<span>' + timeAgo(s.lastActivity) + '</span>'
+    + '</div>';
+
+  // Card order: hero → stats → title → refs → meta → links → subtitles → tokens → merge → question → tasks → actions.
   return '<div class="' + cls + '" draggable="true" data-session-key="' + escJs(s.key) + '" data-source-col="' + col + '" onclick="openPanel(\\'' + escJs(s.key) + '\\')">'
-    + '<div class="card-title"><span class="card-title-text">' + esc(s.title) + '</span>' + slackLink + convLink + '</div>'
+    + heroTimerHtml
     + timerRowHtml
-    + '<div class="card-meta"><span>' + esc(s.workflow) + '</span><span>' + modelShort + '</span><span>' + timeAgo(s.lastActivity) + '</span></div>'
+    + '<div class="card-title"><span class="card-title-text">' + esc(s.title) + '</span>' + slackLink + convLink + '</div>'
+    + refsHtml
+    + metaHtml
     + linksHtml
     + (s.issueTitle ? '<div style="font-size:0.7em;color:var(--text-secondary);margin-top:3px">' + esc(s.issueTitle).slice(0, 60) + '</div>' : '')
     + (s.prTitle ? '<div style="font-size:0.7em;color:var(--text-secondary);margin-top:2px">' + esc(s.prTitle).slice(0, 60) + '</div>' : '')
-    + '<div class="card-owner">' + esc(s.ownerName) + '</div>'
     + tokenHtml
     + mergeHtml
     + questionHtml
