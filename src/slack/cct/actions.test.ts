@@ -412,7 +412,6 @@ describe('cct_open_remove routing', () => {
       spy.mockRestore();
     }
   });
-
 });
 
 // ── T8: api_key validation + attach/detach routing (Z2 + Z3) ──
@@ -809,7 +808,9 @@ describe('refresh_usage action handlers (M1-S4)', () => {
     // doesn't see a silent no-op. Empty result map (no attached slots)
     // falls through to the normal card-repost path — see the next test.
     const { app, actionHandlers } = makeApp();
-    const refreshAllAttachedOAuthTokens = vi.fn(async () => ({ 'slot-A': 'error', 'slot-B': 'error' }) as Record<string, 'ok' | 'error'>);
+    const refreshAllAttachedOAuthTokens = vi.fn(
+      async () => ({ 'slot-A': 'error', 'slot-B': 'error' }) as Record<string, 'ok' | 'error'>,
+    );
     const tm = {
       refreshAllAttachedOAuthTokens,
       getSnapshot: async () => ({
@@ -943,7 +944,6 @@ describe('refresh_usage action handlers (M1-S4)', () => {
       spy.mockRestore();
     }
   });
-
 });
 
 describe('REFRESH_BANNERS literal-lock (regression guard)', () => {

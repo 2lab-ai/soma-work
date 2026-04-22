@@ -220,8 +220,7 @@ export function subscriptionBadge(slot: AuthKey): string {
   if (!isCctSlot(slot)) return '';
   const attachment = slot.oauthAttachment;
   if (!attachment) return '';
-  const raw =
-    attachment.profile?.rateLimitTier ?? attachment.rateLimitTier ?? attachment.subscriptionType ?? undefined;
+  const raw = attachment.profile?.rateLimitTier ?? attachment.rateLimitTier ?? attachment.subscriptionType ?? undefined;
   const formatted = formatRateLimitTier(raw, 'cct');
   return formatted ? ` · ${formatted}` : '';
 }

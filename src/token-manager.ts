@@ -698,7 +698,9 @@ export class TokenManager {
       if (activeSlot && activeSlot.kind !== 'api_key' && isEligible(activeSlot, snap.state[activeSlot.keyId], now)) {
         picked = activeSlot.keyId;
       } else {
-        const candidate = snap.registry.slots.find((s) => s.kind !== 'api_key' && isEligible(s, snap.state[s.keyId], now));
+        const candidate = snap.registry.slots.find(
+          (s) => s.kind !== 'api_key' && isEligible(s, snap.state[s.keyId], now),
+        );
         if (!candidate) {
           throw new Error('acquireLease: no healthy slot available');
         }
@@ -1185,10 +1187,7 @@ export class TokenManager {
    *   - `null` when the slot has no OAuth attachment, the knob is disabled,
    *     or a non-401 error occurred (logged at warn level).
    */
-  async refreshOAuthProfile(
-    keyId: string,
-    opts?: { timeoutMs?: number },
-  ): Promise<OAuthProfile | null> {
+  async refreshOAuthProfile(keyId: string, opts?: { timeoutMs?: number }): Promise<OAuthProfile | null> {
     if (!config.oauthProfile.enabled) return null;
     const snap = await this.store.load();
     const slot = snap.registry.slots.find((s) => s.keyId === keyId);
@@ -1317,9 +1316,7 @@ export class TokenManager {
       if (timeLeft > 0) {
         const profileAwaits = Object.entries(results)
           .filter(([, outcome]) => outcome === 'ok')
-          .map(([keyId]) =>
-            this.refreshOAuthProfile(keyId, { timeoutMs: timeLeft }).catch(() => null),
-          );
+          .map(([keyId]) => this.refreshOAuthProfile(keyId, { timeoutMs: timeLeft }).catch(() => null));
         if (profileAwaits.length > 0) {
           const profileDeadline = new Promise<void>((resolve) => {
             const t = setTimeout(resolve, timeLeft);
