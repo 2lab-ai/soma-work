@@ -1856,6 +1856,76 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
     });
   });
 
+  // ── #668 follow-up — disableRotation filter (isEligible) ─
+  describe('disableRotation filter (card v2)', () => {
+    async function setDisable(store: any, keyId: string, flag: boolean) {
+      await store.mutate((snap: any) => {
+        const target = snap.registry.slots.find((s: any) => s.keyId === keyId);
+        if (!target) throw new Error('not found');
+        if (flag) target.disableRotation = true;
+        else delete target.disableRotation;
+      });
+    }
+
+    it('acquireLease skips a slot flagged with disableRotation=true', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const parked = await tm.addSlot({ name: 'parked', kind: 'setup_token', value: 'sk-ant-oat01-p' });
+      const live = await tm.addSlot({ name: 'live', kind: 'setup_token', value: 'sk-ant-oat01-l' });
+      await setDisable(store, parked.keyId, true);
+      // Force active to the parked slot, then acquire — must rotate to `live`.
+      await store.mutate((snap: any) => {
+        snap.registry.activeKeyId = parked.keyId;
+      });
+      const lease = await tm.acquireLease('test');
+      const snap = await tm.getSnapshot();
+      expect(snap.registry.activeKeyId).toBe(live.keyId);
+      expect(lease.leaseId).toBeDefined();
+    });
+
+    it('rotateToNext skips a disableRotation=true slot in the cycle', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const a = await tm.addSlot({ name: 'a', kind: 'setup_token', value: 'sk-ant-oat01-a' });
+      const parked = await tm.addSlot({ name: 'b', kind: 'setup_token', value: 'sk-ant-oat01-b' });
+      const c = await tm.addSlot({ name: 'c', kind: 'setup_token', value: 'sk-ant-oat01-c' });
+      await setDisable(store, parked.keyId, true);
+      await tm.applyToken(a.keyId);
+      const rotated = await tm.rotateToNext();
+      expect(rotated?.keyId).toBe(c.keyId);
+    });
+
+    it('rotateOnRateLimit skips a disableRotation=true candidate', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const a = await tm.addSlot({ name: 'a', kind: 'setup_token', value: 'sk-ant-oat01-a' });
+      const parked = await tm.addSlot({ name: 'b', kind: 'setup_token', value: 'sk-ant-oat01-b' });
+      const c = await tm.addSlot({ name: 'c', kind: 'setup_token', value: 'sk-ant-oat01-c' });
+      await setDisable(store, parked.keyId, true);
+      await tm.applyToken(a.keyId);
+      const rotated = await tm.rotateOnRateLimit('test', { source: 'manual' });
+      expect(rotated?.keyId).toBe(c.keyId);
+    });
+
+    it('disableRotation=false (or absent) does not affect eligibility', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const a = await tm.addSlot({ name: 'a', kind: 'setup_token', value: 'sk-ant-oat01-a' });
+      const b = await tm.addSlot({ name: 'b', kind: 'setup_token', value: 'sk-ant-oat01-b' });
+      await tm.applyToken(a.keyId);
+      const rotated = await tm.rotateToNext();
+      expect(rotated?.keyId).toBe(b.keyId);
+    });
+  });
+
   // ── #653 M2 — forceRefreshOAuth + refreshAllAttachedOAuthTokens ──
 
   describe('forceRefreshOAuth (#653 M2)', () => {

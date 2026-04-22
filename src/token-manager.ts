@@ -199,7 +199,12 @@ function resolveEnvRef(value: string): string {
 
 // ── Slot helpers ───────────────────────────────────────────────
 
-function isEligible(state: SlotState | undefined, nowMs: number): boolean {
+function isEligible(slot: AuthKey | undefined, state: SlotState | undefined, nowMs: number): boolean {
+  // Operator-opt-out: `disableRotation` is an explicit keep-off-the-roster
+  // flag that complements the health-based gates (tombstoned / revoked /
+  // refresh_failed / cooldown). Applied first so an operator can park a slot
+  // even when it's otherwise eligible (e.g. reserving a backup credential).
+  if (slot?.disableRotation) return false;
   if (!state) return true;
   if (state.tombstoned) return false;
   if (state.authState === 'revoked' || state.authState === 'refresh_failed') return false;
@@ -453,10 +458,10 @@ export class TokenManager {
       // first cct slot if every cct is in cooldown / tombstoned. Only if
       // there is no cct slot at all do we unset activeKeyId entirely.
       const currentIneligible =
-        !currentSlot || currentSlot.kind === 'api_key' || !isEligible(snap.state[currentSlot.keyId], now);
+        !currentSlot || currentSlot.kind === 'api_key' || !isEligible(currentSlot, snap.state[currentSlot.keyId], now);
       if (currentIneligible) {
         const preferred =
-          snap.registry.slots.find((s) => s.kind !== 'api_key' && isEligible(snap.state[s.keyId], now)) ??
+          snap.registry.slots.find((s) => s.kind !== 'api_key' && isEligible(s, snap.state[s.keyId], now)) ??
           snap.registry.slots.find((s) => s.kind !== 'api_key');
         if (preferred) {
           snap.registry.activeKeyId = preferred.keyId;
@@ -567,7 +572,7 @@ export class TokenManager {
         const candidate = snap.registry.slots[idx];
         // Z3 — api_key is not runtime-selectable in phase 1; skip in rotation.
         if (candidate.kind === 'api_key') continue;
-        if (isEligible(snap.state[candidate.keyId], now)) {
+        if (isEligible(candidate, snap.state[candidate.keyId], now)) {
           snap.registry.activeKeyId = candidate.keyId;
           return { keyId: candidate.keyId, name: candidate.name };
         }
@@ -623,7 +628,7 @@ export class TokenManager {
           const candidate = snap.registry.slots[idx];
           // Z3 — api_key is not runtime-selectable in phase 1; skip in rotation.
           if (candidate.kind === 'api_key') continue;
-          if (isEligible(snap.state[candidate.keyId], nowMs)) {
+          if (isEligible(candidate, snap.state[candidate.keyId], nowMs)) {
             snap.registry.activeKeyId = candidate.keyId;
             return { keyId: candidate.keyId, name: candidate.name };
           }
@@ -690,10 +695,10 @@ export class TokenManager {
       const activeId = snap.registry.activeKeyId;
       const activeSlot = activeId ? snap.registry.slots.find((s) => s.keyId === activeId) : undefined;
       let picked: string;
-      if (activeSlot && activeSlot.kind !== 'api_key' && isEligible(snap.state[activeSlot.keyId], now)) {
+      if (activeSlot && activeSlot.kind !== 'api_key' && isEligible(activeSlot, snap.state[activeSlot.keyId], now)) {
         picked = activeSlot.keyId;
       } else {
-        const candidate = snap.registry.slots.find((s) => s.kind !== 'api_key' && isEligible(snap.state[s.keyId], now));
+        const candidate = snap.registry.slots.find((s) => s.kind !== 'api_key' && isEligible(s, snap.state[s.keyId], now));
         if (!candidate) {
           throw new Error('acquireLease: no healthy slot available');
         }
@@ -924,7 +929,7 @@ export class TokenManager {
         if (snap.registry.activeKeyId === keyId) {
           const now = Date.now();
           const replacement = snap.registry.slots.find(
-            (s) => s.keyId !== keyId && isEligible(snap.state[s.keyId], now),
+            (s) => s.keyId !== keyId && isEligible(s, snap.state[s.keyId], now),
           );
           if (replacement) snap.registry.activeKeyId = replacement.keyId;
         }
@@ -937,7 +942,7 @@ export class TokenManager {
       delete snap.state[keyId];
       if (snap.registry.activeKeyId === keyId) {
         const now = Date.now();
-        const replacement = snap.registry.slots.find((s) => isEligible(snap.state[s.keyId], now));
+        const replacement = snap.registry.slots.find((s) => isEligible(s, snap.state[s.keyId], now));
         snap.registry.activeKeyId = replacement?.keyId;
       }
       removed = true;
