@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import {
   calculateTokenCost,
   FALLBACK_CONTEXT_WINDOW,
-  getContextWindow,
   getMaxOutput,
   getModelPricing,
   getModelSpec,
@@ -67,16 +66,6 @@ describe('model-registry', () => {
     it('returns fallback for undefined', () => {
       const spec = getModelSpec(undefined);
       expect(spec.pricing.inputPerMTok).toBe(3);
-    });
-  });
-
-  describe('getContextWindow', () => {
-    it('returns 1M for opus-4-6', () => {
-      expect(getContextWindow('claude-opus-4-6-20250414')).toBe(1_000_000);
-    });
-
-    it('returns 200k for haiku-4-5', () => {
-      expect(getContextWindow('claude-haiku-4-5-20250414')).toBe(200_000);
     });
   });
 

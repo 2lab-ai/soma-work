@@ -176,13 +176,6 @@ export function getModelPricing(modelName?: string): ModelPricingSpec {
   return getModelSpec(modelName).pricing;
 }
 
-/**
- * Get context window size for a model.
- */
-export function getContextWindow(modelName?: string): number {
-  return getModelSpec(modelName).contextWindow;
-}
-
 /** Fallback context window size when SDK/registry haven't reported one yet. */
 export const FALLBACK_CONTEXT_WINDOW = 200_000;
 

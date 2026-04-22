@@ -22,19 +22,7 @@
 
 import { describe, expect, it } from 'vitest';
 import type { SessionUsage } from '../../types';
-
-// Matches the renamed constant in metrics/model-registry.ts
-const FALLBACK_CONTEXT_WINDOW = 200_000;
-
-// Mirrors resolveContextWindow from metrics/model-registry.ts (Issue #656).
-// Suffix-is-SSOT: bare ids resolve to 200k; only the explicit `[1m]` suffix
-// opts into the 1M beta window. Case-insensitive.
-const ONE_M_SUFFIX_RE = /\[1m\]$/i;
-
-function resolveContextWindow(modelName?: string): number {
-  if (!modelName) return FALLBACK_CONTEXT_WINDOW;
-  return ONE_M_SUFFIX_RE.test(modelName) ? 1_000_000 : FALLBACK_CONTEXT_WINDOW;
-}
+import { FALLBACK_CONTEXT_WINDOW, resolveContextWindow } from '../../metrics/model-registry';
 
 /**
  * Simulates the updateSessionUsage logic from stream-executor.ts
