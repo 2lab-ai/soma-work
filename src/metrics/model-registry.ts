@@ -199,6 +199,14 @@ export function stripOneMSuffix(model: string): string {
 }
 
 /**
+ * Error code surfaced on thrown errors when the account lacks 1M-context
+ * entitlement. Set by `claude-handler.maybeThrowOneMUnavailable` and checked
+ * by `stream-executor.isOneMContextUnavailableError` — keeping the literal in
+ * one place prevents drift between producer and matcher.
+ */
+export const ONE_M_CONTEXT_UNAVAILABLE_CODE = 'ONE_M_CONTEXT_UNAVAILABLE';
+
+/**
  * Detect whether `text` matches any of the three stable SDK signals that
  * indicate the account cannot use the 1M-context beta for the attempted model.
  *

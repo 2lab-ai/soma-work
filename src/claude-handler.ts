@@ -31,7 +31,11 @@ import {
   loadMcpToolPermissions,
   resolveGatedTool,
 } from './mcp-tool-permission-config';
-import { hasOneMSuffix, isOneMContextUnavailableSignal } from './metrics/model-registry';
+import {
+  hasOneMSuffix,
+  isOneMContextUnavailableSignal,
+  ONE_M_CONTEXT_UNAVAILABLE_CODE,
+} from './metrics/model-registry';
 import { isSafePathSegment, normalizeTmpPath } from './path-utils';
 import type { SdkPluginPath } from './plugin/types';
 import { DEV_DOMAIN_ALLOWLIST } from './sandbox/dev-domain-allowlist';
@@ -156,7 +160,7 @@ export function maybeThrowOneMUnavailable(message: SDKMessage, model: string | u
   if (!isOneMContextUnavailableSignal(text)) return;
 
   const err = new Error(text || 'Claude 1M context unavailable for this account.');
-  (err as any).code = 'ONE_M_CONTEXT_UNAVAILABLE';
+  (err as any).code = ONE_M_CONTEXT_UNAVAILABLE_CODE;
   (err as any).attemptedModel = model;
   throw err;
 }

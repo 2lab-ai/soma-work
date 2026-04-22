@@ -21,6 +21,7 @@ import {
   FALLBACK_CONTEXT_WINDOW,
   hasOneMSuffix,
   isOneMContextUnavailableSignal,
+  ONE_M_CONTEXT_UNAVAILABLE_CODE,
   PRICING_VERSION,
   resolveContextWindow,
   stripOneMSuffix,
@@ -1291,6 +1292,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
    * Short — the retry is the fallback for a cold-start mistake, not a backoff.
    */
   private static readonly ONE_M_FALLBACK_RETRY_DELAY_MS = 500;
+  /** Max SDK-details tail length (chars) surfaced in formatted error messages. */
+  private static readonly SDK_DETAILS_MAX_CHARS = 500;
 
   /**
    * Handle execution errors. Returns retryAfterMs if the error is recoverable
@@ -1673,7 +1676,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
    */
   private isOneMContextUnavailableError(error: any): boolean {
     if (!error) return false;
-    if (error.code === 'ONE_M_CONTEXT_UNAVAILABLE') return true;
+    if (error.code === ONE_M_CONTEXT_UNAVAILABLE_CODE) return true;
     const attempted = String(error.attemptedModel ?? '');
     if (!attempted || !hasOneMSuffix(attempted)) return false;
     const combined = `${String(error.message ?? '')} ${String(error.stderrContent ?? '')}`;
@@ -1964,8 +1967,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       .replace(/\bgh[pus]_[a-zA-Z0-9]+/g, '[REDACTED]') // GitHub PATs
       .replace(/\bgithub_pat_[a-zA-Z0-9_]+/g, '[REDACTED]'); // GitHub fine-grained PATs
     const sanitized = redactAnthropicSecrets(nonAnthropicSanitized) as string;
-    // Take last 500 chars to keep message manageable
-    const truncated = sanitized.length > 500 ? `…${sanitized.slice(-500)}` : sanitized;
+    // Take last SDK_DETAILS_MAX_CHARS chars to keep message manageable
+    const max = StreamExecutor.SDK_DETAILS_MAX_CHARS;
+    const truncated = sanitized.length > max ? `…${sanitized.slice(-max)}` : sanitized;
     lines.push(`> *SDK Details:*`);
     lines.push(`> \`\`\`${truncated.trim()}\`\`\``);
   }
