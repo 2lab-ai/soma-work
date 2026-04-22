@@ -1664,14 +1664,12 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       expect(fetchUsageMock).not.toHaveBeenCalled();
     });
 
-    it('fetchUsageForAllAttached does NOT forward force to per-slot calls (#644 review #5 — dedupe-over-force)', async () => {
-      // Contract change (#644 review #5): `fetchUsageForAllAttached` no longer
-      // threads `force` through to per-slot `fetchAndStoreUsage`. The per-keyId
-      // in-flight dedupe (`usageFetchInFlight`) already handles cheap re-entry
-      // when an admin-triggered refresh-all overlaps a scheduler tick. Keeping
-      // `force` out of the fan-out also prevents an operator from accidentally
-      // bypassing every slot's local throttle gate in one click — the card-open
-      // and admin refresh-all paths MUST respect `nextUsageFetchAllowedAt`.
+    it('fetchUsageForAllAttached does NOT accept or forward force to per-slot calls (dedupe-over-force)', async () => {
+      // `fetchUsageForAllAttached`'s opts type no longer carries `force` —
+      // even if a caller tries to pass it via `as any`, the per-slot fan-out
+      // still calls `fetchAndStoreUsage(keyId, {})`, so the local
+      // `nextUsageFetchAllowedAt` gate blocks the transport hit. Card-open
+      // and admin refresh-all paths always respect the throttle.
       const { mod, storeMod } = await importSut();
       const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
       const tm = new mod.TokenManager(store);
@@ -1702,8 +1700,10 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
         },
         nextFetchAllowedAtMs: Date.now() + 2 * 60 * 1000,
       });
-      const results = await tm.fetchUsageForAllAttached({ timeoutMs: 5000, force: true });
-      // Force was NOT forwarded — both per-slot calls hit the gate and returned null.
+      // Caller tries to force — opts type rejects it, so we smuggle through
+      // `as any` to simulate a future regression where someone re-adds `force`.
+      // Both per-slot calls must still hit the gate and return null.
+      const results = await tm.fetchUsageForAllAttached({ timeoutMs: 5000, force: true } as any);
       expect(fetchUsageMock).not.toHaveBeenCalled();
       expect(results[s1.keyId]).toBeNull();
       expect(results[s2.keyId]).toBeNull();

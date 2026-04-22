@@ -160,6 +160,45 @@ describe('UsageRefreshScheduler (M1-S1)', () => {
     expect(schedIdx).toBeLessThan(tmIdx);
   });
 
+  it('re-entrancy: overlapping ticks while a previous tick is pending still call tm.* (dedupe lives inside TM)', async () => {
+    // Scheduler contract (see UsageRefreshScheduler docstring):
+    //   "if a previous tick's async work has not yet resolved when the
+    //    next interval fires, the scheduler simply kicks off another one
+    //    — the TM already de-dupes per-keyId in-flight fetches via
+    //    `usageFetchInFlight`."
+    // Lock that behavior: the scheduler does NOT guard re-entry itself;
+    // it pumps the TM on every tick and relies on the TM dedupe.
+    const { clock, fireTick } = makeFakeClock();
+    // Block the first fetch until we release it, so subsequent ticks
+    // overlap in time.
+    let release!: () => void;
+    const pending = new Promise<Record<string, unknown>>((resolve) => {
+      release = () => resolve({});
+    });
+    const tm = makeTm({
+      fetchUsageForAllAttached: vi
+        .fn()
+        .mockImplementationOnce(() => pending)
+        .mockResolvedValue({}),
+    });
+    const s = new UsageRefreshScheduler(tm, {
+      intervalMs: 5 * 60_000,
+      timeoutMs: 2_000,
+      enabled: true,
+      clock,
+    });
+    s.start();
+    fireTick(); // tick 1 — will hang on `pending`
+    fireTick(); // tick 2 — must not be suppressed
+    fireTick(); // tick 3 — must not be suppressed
+    await Promise.resolve();
+    await Promise.resolve();
+    // All three ticks reached the TM; dedupe is the TM's job, not the scheduler's.
+    expect(tm.fetchUsageForAllAttached).toHaveBeenCalledTimes(3);
+    release();
+    await pending;
+  });
+
   it('INVARIANT: scheduler tick never forwards force:true (Anthropic DDoS guard)', async () => {
     const { clock, fireTick } = makeFakeClock();
     const tm = makeTm();

@@ -672,7 +672,12 @@ async function postEphemeralCard(tokenManager: TokenManager, client: WebClient, 
  */
 async function postEphemeralFailure(client: WebClient, body: unknown, message: string): Promise<void> {
   const target = resolveEphemeralTarget(body);
-  if (!target) return;
+  if (!target) {
+    // Silent-drop hazard: the Option A banner would vanish with no signal.
+    // Log at WARN so operators notice the missing user/channel shape.
+    logger.warn('postEphemeralFailure: missing user/channel on action body; banner dropped', { message });
+    return;
+  }
   try {
     await client.chat.postEphemeral({
       channel: target.channel,

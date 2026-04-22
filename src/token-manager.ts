@@ -1347,7 +1347,6 @@ export class TokenManager {
    */
   async fetchUsageForAllAttached(opts?: {
     timeoutMs?: number;
-    force?: boolean;
   }): Promise<Record<string, UsageSnapshot | null>> {
     const snap = await this.store.load();
     const keyIds = snap.registry.slots

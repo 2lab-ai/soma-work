@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { AuthKey, SlotState } from '../../cct-store';
 import {
+  appendStoreReadFailureBanner,
   buildAddSlotModal,
   buildAttachOAuthModal,
   buildCctCardBlocks,
@@ -761,5 +762,32 @@ describe('buildCctCardBlocks — Refresh all (M1-S4)', () => {
     expect(ids).toContain(CCT_ACTION_IDS.add);
     // Length assertion: exactly three buttons in the card-level row.
     expect(cardRow.elements).toHaveLength(3);
+  });
+});
+
+describe('appendStoreReadFailureBanner', () => {
+  // Both entry points (`actions.ts buildCardFromManager` catch-path and
+  // `cct-topic.ts loadSnapshotOrEmpty`) call the shared helper so operators
+  // see the same wording — lock the rendered shape here.
+  it('appends one :warning: context block with the store-read failure wording', () => {
+    const blocks: any[] = [];
+    appendStoreReadFailureBanner(blocks);
+    expect(blocks).toHaveLength(1);
+    const [b] = blocks;
+    expect(b.type).toBe('context');
+    expect(b.elements).toHaveLength(1);
+    expect(b.elements[0].type).toBe('mrkdwn');
+    expect(b.elements[0].text).toBe(
+      ':warning: *Store read failed* — card rendered empty as a fallback. Check the CctTopic logs for `loadSnapshotOrEmpty: getSnapshot failed` or `buildCardFromManager: getSnapshot failed`.',
+    );
+  });
+
+  it('mutates the passed array (no return value needed)', () => {
+    const blocks: any[] = [{ type: 'header', text: { type: 'plain_text', text: 'X' } }];
+    const before = blocks.length;
+    const ret = appendStoreReadFailureBanner(blocks);
+    expect(ret).toBeUndefined();
+    expect(blocks.length).toBe(before + 1);
+    expect(blocks[before].type).toBe('context');
   });
 });

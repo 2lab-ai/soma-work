@@ -992,7 +992,7 @@ describe('refresh_usage action handlers (M1-S4)', () => {
       });
       expect(ack).toHaveBeenCalled();
       expect(fetchAndStoreUsage).toHaveBeenCalledTimes(1);
-      expect(fetchAndStoreUsage).toHaveBeenCalledWith('cct1', expect.objectContaining({ force: true }));
+      expect(fetchAndStoreUsage).toHaveBeenCalledWith('cct1', { force: true });
       expect(callOrder.slice(0, 2)).toEqual(['ack', 'tm.fetchAndStoreUsage']);
     } finally {
       spy.mockRestore();
@@ -1164,6 +1164,25 @@ describe('refresh_usage action handlers (M1-S4)', () => {
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+describe('REFRESH_BANNERS literal-lock (regression guard)', () => {
+  // Tests elsewhere reference `REFRESH_BANNERS.*` by identity — a silent
+  // wording change would not fail them. Lock the literals here so copy
+  // edits land as an explicit diff in this test.
+  it('allNull banner text is locked', () => {
+    expect(REFRESH_BANNERS.allNull).toBe(
+      ':warning: *Refresh all — no fresh data* — every attached slot returned no usage (throttled or failed). Check the TokenManager logs for `fetchAndStoreUsage` errors or the usage-store health.',
+    );
+  });
+  it('slotNull banner text is locked', () => {
+    expect(REFRESH_BANNERS.slotNull).toBe(
+      ':warning: *Refresh slot — no fresh data* — this slot returned no usage (throttled or failed). Check the TokenManager logs for `fetchAndStoreUsage` errors or the usage-store health.',
+    );
+  });
+  it('outerCatch banner text is locked', () => {
+    expect(REFRESH_BANNERS.outerCatch).toBe(':warning: Refresh failed. Please try again.');
   });
 });
 
