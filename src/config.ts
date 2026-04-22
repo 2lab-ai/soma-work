@@ -155,6 +155,33 @@ export const config = {
      */
     cardOpenTimeoutMs: parsePositiveIntEnv('USAGE_ON_OPEN_TIMEOUT_MS', 1_500, 500),
   },
+  /**
+   * CCT OAuth-token refresh scheduler knobs (#653 M2). Default 1-hour
+   * cadence surfaces stale refreshTokens within an hour rather than
+   * waiting for a dispatch to touch the slot, and keeps the "OAuth
+   * refreshes in X" hint on the card honest.
+   */
+  oauthRefresh: {
+    /**
+     * Emergency-off: set OAUTH_REFRESH_ENABLED=0 to disable the hourly pump.
+     * Default-on: any other value (or unset) leaves the scheduler active,
+     * which is the intended behaviour — operators must explicitly opt out.
+     */
+    enabled: process.env.OAUTH_REFRESH_ENABLED !== '0',
+    /**
+     * ms between ticks; default 1 hour. Floor is 5 minutes — below that,
+     * the scheduler churns refresh endpoints faster than the 8-hour token
+     * TTL warrants, which burns Anthropic-side rate limit for no gain.
+     */
+    intervalMs: parsePositiveIntEnv('OAUTH_REFRESH_INTERVAL_MS', 60 * 60_000, 5 * 60_000),
+    /**
+     * ms deadline for each fan-out; default 30s. Per-slot HTTP call has
+     * its own 10s timeout inside `refreshClaudeCredentials`, so 30s is
+     * enough headroom for a ~3-slot fleet. Floor 5s prevents ops setting
+     * this to a value that cancels every refresh before it completes.
+     */
+    fanOutTimeoutMs: parsePositiveIntEnv('OAUTH_REFRESH_TIMEOUT_MS', 30_000, 5_000),
+  },
 };
 
 export function validateConfig() {

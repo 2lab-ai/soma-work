@@ -13,6 +13,7 @@ import type { ZBlock } from '../z/types';
 import {
   CCT_ACTION_IDS,
   CCT_BLOCK_IDS,
+  CCT_CARD_BLOCK_ID_PREFIX,
   CCT_VIEW_IDS,
   OAUTH_BLOB_HELP,
   OAUTH_BLOB_WARN_THRESHOLD,
@@ -170,7 +171,7 @@ function formatSubscriptionType(raw: string): string {
  * context block. Returns `null` when the slot has no usage data — callers
  * simply skip the panel in that case (no placeholder rendered).
  */
-function buildUsagePanelBlock(usage: UsageSnapshot, nowMs: number): ZBlock | null {
+function buildUsagePanelBlock(usage: UsageSnapshot, nowMs: number, keyId: string): ZBlock | null {
   const rows: string[] = [];
   if (usage.fiveHour) {
     rows.push(formatUsageBar(usage.fiveHour.utilization, usage.fiveHour.resetsAt, nowMs, '5h'));
@@ -183,9 +184,14 @@ function buildUsagePanelBlock(usage: UsageSnapshot, nowMs: number): ZBlock | nul
   }
   if (rows.length === 0) return null;
   // Wrap in a code fence so Slack preserves the monospace alignment that
-  // the padded labels rely on.
+  // the padded labels rely on. `block_id` is prefixed so the overflow
+  // guard can identify usage panels by id rather than by text content.
   const text = '```\n' + rows.join('\n') + '\n```';
-  return { type: 'context', elements: [{ type: 'mrkdwn', text }] };
+  return {
+    type: 'context',
+    block_id: `${CCT_CARD_BLOCK_ID_PREFIX.usagePanel}${keyId}`,
+    elements: [{ type: 'mrkdwn', text }],
+  };
 }
 
 function authStateBadge(state: AuthState): string {
@@ -205,9 +211,84 @@ function authStateBadge(state: AuthState): string {
 }
 
 /**
- * Render a single slot row — one section block plus (when meta is
- * present) a context block with the rate-limit timestamp, usage, and
- * cooldown.
+ * Format an absolute epoch-ms expiry delta as "OAuth refreshes in Xh Ym".
+ * Delegates to `formatUsageResetDelta` for consistent formatting with the
+ * usage-panel "resets in" hint. Negative delta (already expired) returns
+ * the `:warning: expired` sentinel — we don't dress it up because the
+ * operator needs to notice.
+ */
+function formatOAuthExpiryHint(expiresAtMs: number, nowMs: number): string {
+  if (!Number.isFinite(expiresAtMs)) return '';
+  const delta = expiresAtMs - nowMs;
+  if (delta <= 0) return ':warning: OAuth expired';
+  return `OAuth refreshes in ${formatUsageResetDelta(delta)}`;
+}
+
+/**
+ * Build the status/meta line rendered directly under the name. Always
+ * includes the authState badge (defaults to `healthy` when state is
+ * absent). Optionally appends `active`, OAuth expiry hint, rate-limited
+ * timestamp + source, cooldown-until, tombstoned flag, and live lease
+ * count — only when the underlying field is truthy.
+ *
+ * The line is always emitted for every slot (even bare setup-only slots)
+ * so every row carries the `healthy` / `refresh_failed` / `revoked`
+ * badge per #653 M2 — no more active-only gating.
+ */
+function buildSlotStatusLine(
+  slot: AuthKey,
+  state: SlotState | undefined,
+  isActive: boolean,
+  nowMs: number,
+  userTz: string,
+): string {
+  const segments: string[] = [];
+  segments.push(authStateBadge(state?.authState ?? 'healthy'));
+  if (isActive) segments.push('active');
+  // OAuth expiry — only for CCT slots that carry an attachment. `api_key`
+  // and bare setup slots have no OAuth to refresh so they're omitted.
+  if (isCctSlot(slot) && slot.oauthAttachment !== undefined) {
+    const hint = formatOAuthExpiryHint(slot.oauthAttachment.expiresAtMs, nowMs);
+    if (hint) segments.push(hint);
+  }
+  if (state?.rateLimitedAt) {
+    const ts = formatRateLimitedAt(state.rateLimitedAt, userTz, nowMs);
+    const source = state.rateLimitSource ? ` via ${state.rateLimitSource}` : '';
+    segments.push(`rate-limited ${ts}${source}`);
+  }
+  if (state?.cooldownUntil) {
+    const untilMs = new Date(state.cooldownUntil).getTime();
+    if (Number.isFinite(untilMs) && untilMs > nowMs) {
+      segments.push(`cooldown until ${formatRateLimitedAt(state.cooldownUntil, userTz, nowMs).split(' / ')[0]}`);
+    }
+  }
+  if (state?.tombstoned) segments.push(':wastebasket: tombstoned (drain in progress)');
+  if (state && state.activeLeases.length > 0) segments.push(`leases: ${state.activeLeases.length}`);
+  return segments.join(' · ');
+}
+
+/**
+ * Render a single slot row.
+ *
+ * Layout (subscription tier + 5h/7d/OAuth expiry for EVERY slot):
+ *   1. section  — multi-line header: name+kind+tier+ToS-risk on line 1,
+ *                  healthy/rate-limited/OAuth-expiry segments on line 2.
+ *   2. actions  — per-slot buttons: Activate (if not active & not api_key),
+ *                  Refresh (if attached), Attach|Detach OAuth (setup source),
+ *                  Rename, Remove.
+ *   3. context  — usage panel (5h/7d/7d-sonnet progress bars), only when
+ *                  the slot is attached and has a persisted usage snapshot.
+ *   4. divider  — stripped by `buildCctCardBlocks` when the total block
+ *                  count would exceed Slack's 50-block hard cap.
+ *
+ * Block budget (Slack hard cap: 50 blocks total):
+ *   rich attached slot   = section + actions + usage-context + divider = 4
+ *   bare/api_key slot    = section + actions + divider                 = 3
+ *   card chrome          = header + card-actions + set-active-actions  = 3
+ *   typical fleet (≤11)  = 3 + 11*4 = 47  (under cap)
+ *   worst case (15 rich) = 3 + 15*4 = 63  (`buildCctCardBlocks`
+ *                          strips dividers, then drops usage-context if
+ *                          still over)
  */
 export function buildSlotRow(
   slot: AuthKey,
@@ -217,101 +298,57 @@ export function buildSlotRow(
   userTz: string = 'Asia/Seoul',
 ): ZBlock[] {
   const blocks: ZBlock[] = [];
-  // #641 M1 block-overflow fix: inline-badges (subscription tier + active
-  // marker) are emitted only for the active slot so the "focused" row carries
-  // the full signal while inactive rows stay compact. tosBadge is kept for
-  // every slot because it surfaces a risk label (users need that visible even
-  // when the slot is not active).
-  const headLine = [
-    ':key:',
-    `*${escapeMrkdwn(slot.name)}*`,
-    isActive ? '· active' : '',
-    displayKindTag(slot),
-    isActive ? subscriptionBadge(slot) : '',
-    tosBadge(slot),
-  ]
+  // Line 1: identity (name · kind · tier · ToS-risk). Tier + active marker
+  // are now emitted for EVERY slot — #653 M2 removes the prior isActive
+  // gating so inactive rows carry the full signal (user specifically wants
+  // tier + 5h + 7d always visible, not just on the currently-selected row).
+  const line1 = [':key:', `*${escapeMrkdwn(slot.name)}*`, displayKindTag(slot), subscriptionBadge(slot), tosBadge(slot)]
     .filter(Boolean)
     .join(' ');
-
+  // Line 2: live status (auth state + active flag + OAuth expiry +
+  // rate-limited / cooldown). Always non-empty because `authStateBadge`
+  // returns a badge even for an absent state.
+  const line2 = buildSlotStatusLine(slot, state, isActive, nowMs, userTz);
   blocks.push({
     type: 'section',
-    text: { type: 'mrkdwn', text: headLine },
+    text: { type: 'mrkdwn', text: `${line1}\n${line2}` },
   });
 
-  // Block-budget invariant (Slack's 50-block hard cap):
-  //   active slot   = section + authState-context + usage-context + actions + divider = 5
-  //   inactive slot = section + actions + divider                                     = 3
-  //   card chrome   = header + card-actions + set-active-actions                      = 3
-  //   N=15 worst case: 3 + 5 + 14*3 = 50  (right at the cap)
-  //
-  // Inactive-row one-line usage summary + inline Activate affordance is
-  // M2 scope (issue #653) because adding any per-inactive-slot block
-  // overflows the cap at N≥16.
-  if (isActive) {
-    // Context line — only when we have something meaningful.
-    const segments: string[] = [];
-    if (state) {
-      segments.push(authStateBadge(state.authState));
-      if (state.rateLimitedAt) {
-        const ts = formatRateLimitedAt(state.rateLimitedAt, userTz, nowMs);
-        const source = state.rateLimitSource ? ` via ${state.rateLimitSource}` : '';
-        segments.push(`rate-limited ${ts}${source}`);
-      }
-      if (state.cooldownUntil) {
-        const untilMs = new Date(state.cooldownUntil).getTime();
-        if (Number.isFinite(untilMs) && untilMs > nowMs) {
-          segments.push(`cooldown until ${formatRateLimitedAt(state.cooldownUntil, userTz, nowMs).split(' / ')[0]}`);
-        }
-      }
-      if (state.tombstoned) {
-        segments.push(':wastebasket: tombstoned (drain in progress)');
-      }
-      if (state.activeLeases.length > 0) {
-        segments.push(`leases: ${state.activeLeases.length}`);
-      }
-    } else {
-      segments.push(authStateBadge('healthy'));
-    }
-    if (segments.length > 0) {
-      blocks.push({
-        type: 'context',
-        elements: [{ type: 'mrkdwn', text: segments.join(' · ') }],
-      });
-    }
-
-    // Three-line progress-bar panel rendered after the authState context.
-    if (state?.usage) {
-      const panel = buildUsagePanelBlock(state.usage, nowMs);
-      if (panel) blocks.push(panel);
-    }
+  // Per-slot action row. Ordering by intent:
+  //   1. Activate (primary, first) — only when slot is NOT active and
+  //      NOT an api_key (api_key is store-only in phase 1).
+  //   2. Refresh — only when the slot carries an OAuth attachment (the
+  //      precondition for `/api/oauth/usage` AND the OAuth-token refresh
+  //      endpoint). Force-refreshes BOTH the OAuth access_token AND the
+  //      usage snapshot — the `Refresh` handler orchestrates both calls
+  //      so the card reflects new expiresAtMs + new usage on the same
+  //      click (see actions.ts cct_refresh_usage_slot).
+  //   3. Attach or Detach OAuth — only for setup-source cct slots.
+  //   4. Rename — always.
+  //   5. Remove — always, last (danger).
+  const actionElements: ZBlock[] = [];
+  if (!isActive && slot.kind !== 'api_key') {
+    actionElements.push({
+      type: 'button',
+      action_id: CCT_ACTION_IDS.activate_slot,
+      style: 'primary',
+      text: { type: 'plain_text', text: ':arrow_forward: Activate', emoji: true },
+      value: slot.keyId,
+    });
   }
-
-  // Per-slot action row: Remove / Rename + Z2 Attach-or-Detach for
-  // setup-source cct slots (only that arm of the union can toggle an
-  // oauthAttachment — legacy-attachment slots carry a mandatory one,
-  // api_key has no attachment surface at all). The button `value` carries
-  // the keyId so the open handler routes to the clicked slot.
-  const actionElements: ZBlock[] = [
-    {
+  if (isCctSlot(slot) && slot.oauthAttachment !== undefined) {
+    actionElements.push({
       type: 'button',
-      action_id: CCT_ACTION_IDS.remove,
-      style: 'danger',
-      text: { type: 'plain_text', text: ':wastebasket: Remove', emoji: true },
+      action_id: CCT_ACTION_IDS.refresh_usage_slot,
+      text: { type: 'plain_text', text: ':arrows_counterclockwise: Refresh', emoji: true },
       value: slot.keyId,
-    },
-    {
-      type: 'button',
-      action_id: CCT_ACTION_IDS.rename,
-      text: { type: 'plain_text', text: ':pencil2: Rename', emoji: true },
-      value: slot.keyId,
-    },
-  ];
+    });
+  }
   if (isCctSlot(slot) && slot.source === 'setup') {
     if (slot.oauthAttachment === undefined) {
       actionElements.push({
         type: 'button',
         action_id: CCT_ACTION_IDS.attach,
-        style: 'primary',
         text: { type: 'plain_text', text: ':link: Attach OAuth', emoji: true },
         value: slot.keyId,
       });
@@ -324,22 +361,32 @@ export function buildSlotRow(
       });
     }
   }
-  // M1-S4 — per-slot Refresh. Only emitted for CCT slots that carry an
-  // OAuth attachment (that is the precondition for `/api/oauth/usage`).
-  // api_key slots and bare setup-source slots without an attachment have
-  // no usage endpoint to refresh against.
-  if (isCctSlot(slot) && slot.oauthAttachment !== undefined) {
-    actionElements.push({
-      type: 'button',
-      action_id: CCT_ACTION_IDS.refresh_usage_slot,
-      text: { type: 'plain_text', text: ':arrows_counterclockwise: Refresh', emoji: true },
-      value: slot.keyId,
-    });
-  }
+  actionElements.push({
+    type: 'button',
+    action_id: CCT_ACTION_IDS.rename,
+    text: { type: 'plain_text', text: ':pencil2: Rename', emoji: true },
+    value: slot.keyId,
+  });
+  actionElements.push({
+    type: 'button',
+    action_id: CCT_ACTION_IDS.remove,
+    style: 'danger',
+    text: { type: 'plain_text', text: ':wastebasket: Remove', emoji: true },
+    value: slot.keyId,
+  });
   blocks.push({
     type: 'actions',
     elements: actionElements,
   });
+
+  // Usage panel — only when the slot has a persisted usage snapshot. The
+  // panel is emitted for EVERY attached slot (no longer isActive-gated);
+  // the block-budget overflow guard in `buildCctCardBlocks` collapses
+  // these first if the card would exceed Slack's 50-block cap.
+  if (state?.usage && isCctSlot(slot) && slot.oauthAttachment !== undefined) {
+    const panel = buildUsagePanelBlock(state.usage, nowMs, slot.keyId);
+    if (panel) blocks.push(panel);
+  }
 
   return blocks;
 }
@@ -360,6 +407,47 @@ export function appendStoreReadFailureBanner(blocks: ZBlock[]): void {
       },
     ],
   });
+}
+
+/**
+ * Safety margin under Slack's 50-block hard cap per message / ephemeral.
+ * Stops the card assembly well short of the cap so adjacent banners
+ * (store-read failure, api_key hidden context) still fit.
+ */
+const SLACK_BLOCK_SOFT_CAP = 48;
+
+/**
+ * Post-assembly overflow guard. Invoked only when the rich layout
+ * (section + actions + usage-context + divider per slot) would push the
+ * card over Slack's 50-block hard cap.
+ *
+ * Collapse order (least-to-most information-loss):
+ *   1. strip all dividers  — visual-only, no signal lost
+ *   2. drop usage-context  — usage panel still reachable via /cct usage
+ *
+ * Walks `blocks` in-place and returns the mutated reference for clarity.
+ */
+function trimBlocksToSlackCap(blocks: ZBlock[]): ZBlock[] {
+  if (blocks.length <= SLACK_BLOCK_SOFT_CAP) return blocks;
+  // Phase 1: strip dividers.
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    if (blocks.length <= SLACK_BLOCK_SOFT_CAP) break;
+    if ((blocks[i] as { type?: string }).type === 'divider') blocks.splice(i, 1);
+  }
+  if (blocks.length <= SLACK_BLOCK_SOFT_CAP) return blocks;
+  // Phase 2: strip usage-context blocks. Matches on the stable
+  // `CCT_CARD_BLOCK_ID_PREFIX.usagePanel` prefix stamped by
+  // `buildUsagePanelBlock` — resilient to future formatting changes in
+  // the panel body (e.g. dropping the code fence).
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    if (blocks.length <= SLACK_BLOCK_SOFT_CAP) break;
+    const b = blocks[i] as { type?: string; block_id?: string };
+    if (b.type !== 'context') continue;
+    if (typeof b.block_id === 'string' && b.block_id.startsWith(CCT_CARD_BLOCK_ID_PREFIX.usagePanel)) {
+      blocks.splice(i, 1);
+    }
+  }
+  return blocks;
 }
 
 /**
@@ -391,11 +479,12 @@ export function buildCctCardBlocks(input: CctCardInput): ZBlock[] {
     }
   }
 
-  // Card-level action row: Next / Add / Refresh-all. Per-slot
-  // Remove/Rename buttons live on each slot row (emitted by
-  // `buildSlotRow`) so they carry the correct slotId via the button's
-  // `value`. M1-S4 appends the Refresh-all button last so the existing
-  // action positions stay stable for muscle-memory.
+  // Card-level action row: Next rotate / Add / Refresh all. Per-slot
+  // [Activate] / [Refresh] / [Rename] / [Remove] / [Attach|Detach] live on
+  // each slot row (see `buildSlotRow`). `set_active` is retained as a
+  // fallback dropdown only when there are >1 slots, for screen-reader
+  // accessibility and bulk-navigation (#653 M2: inline [Activate] button
+  // is the primary affordance; dropdown is backup).
   const actionElements: ZBlock[] = [
     {
       type: 'button',
@@ -419,7 +508,10 @@ export function buildCctCardBlocks(input: CctCardInput): ZBlock[] {
   ];
   blocks.push({ type: 'actions', elements: actionElements });
 
-  // Set-active selector (only when >1 slot).
+  // Set-active selector (only when >1 slot). Kept as a fallback for large
+  // fleets where the overflow guard may have dropped inline [Activate]
+  // affordances along with their actions rows (defensive — today the
+  // guard only strips dividers and usage-context blocks).
   if (input.slots.length > 1) {
     const options = input.slots.map((s) => ({
       text: { type: 'plain_text', text: s.name, emoji: false },
@@ -437,7 +529,10 @@ export function buildCctCardBlocks(input: CctCardInput): ZBlock[] {
       ],
     });
   }
-  return blocks;
+
+  // Apply the overflow guard AFTER chrome is added so dividers inside
+  // slot rows (not chrome) are the first casualty.
+  return trimBlocksToSlackCap(blocks);
 }
 
 /* ------------------------------------------------------------------ *
