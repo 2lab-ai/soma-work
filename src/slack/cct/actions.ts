@@ -45,9 +45,8 @@ const SETUP_TOKEN_REGEX = /^sk-ant-oat01-[A-Za-z0-9_-]{8,}$/;
 // unnecessary because the TM throws on a shape mismatch too.
 const API_KEY_REGEX = /^sk-ant-api03-[A-Za-z0-9_-]{8,}$/;
 
-// #644 round 4 — refresh-handler banner strings. Centralized so the two
-// handlers + their tests share a single source of truth; tightening wording
-// in one place no longer risks drift with the assertion regexes.
+// Refresh-handler banner strings. Shared across handlers + tests to keep
+// wording in one place.
 export const REFRESH_BANNERS = {
   allNull:
     ':warning: *Refresh all — no fresh data* — every attached slot returned no usage (throttled or failed). Check the TokenManager logs for `fetchAndStoreUsage` errors or the usage-store health.',
@@ -251,35 +250,20 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
     }
   });
 
-  // #641 M1-S4 — card-level "Refresh all" button. Admin-only fan-out.
+  // Card-level "Refresh all" (admin-only fan-out).
   //
-  // Per-slot force contract: `fetchUsageForAllAttached` DOES NOT forward
-  // the `force` option to its per-slot `fetchAndStoreUsage` calls — see
-  // `token-manager.ts:1359-1369` and the test contract at
-  // `token-manager.test.ts:1667`. The fan-out relies on the per-keyId
-  // in-flight dedupe (`usageFetchInFlight`) so an admin-triggered refresh
-  // that overlaps a scheduler tick shares the in-flight Promise. Bypassing
-  // every slot's `nextUsageFetchAllowedAt` gate here would defeat the same
-  // local throttle that protects Anthropic from refresh storms. The
-  // per-slot Refresh button below still force-bypasses locally when a
-  // human explicitly asks for ONE slot to refresh NOW.
+  // Ack first (Slack 3s contract), then admin gate, then fetch. Does NOT
+  // forward `force` to per-slot calls — the per-keyId in-flight dedupe
+  // lets this share the scheduler's tick when they overlap, and forcing
+  // every slot would defeat the local `nextUsageFetchAllowedAt` throttle
+  // that protects Anthropic from refresh storms. See
+  // `token-manager.ts fetchUsageForAllAttached` and the test contract at
+  // `token-manager.test.ts` ("does NOT forward force").
   //
-  // Ordering: ack FIRST (Slack 3s contract), then admin gate, then the
-  // fetch. Non-admin short-circuits after ack so the button appears
-  // responsive but doesn't touch the TM.
-  //
-  // #644 review 4146267530 Finding #2 Option A — when every attached slot
-  // returns `null` (all fetches returned no usage — usually throttled or
-  // a store/network failure), post an ephemeral banner to the invoking
-  // admin instead of silently re-posting the same stale card. A partial
-  // throttle/partial failure (some slots succeeded) still re-posts the
-  // card so the successful rows update. Empty input map (no attached
-  // slots at all) is NOT "all failed" and still re-posts the card normally.
-  //
-  // #644 round 4 — banner wording relaxed from "Refresh all failed" to
-  // "no fresh data (throttled or failed)" because `null` covers both the
-  // throttle branch and the fetch-failure branch; claiming "failed" when
-  // the cause is a scheduler-cooldown throttle mis-informs the admin.
+  // When every attached slot returns `null` (all fetches throttled or
+  // failed), post an ephemeral banner instead of silently re-rendering
+  // the same stale card. Partial failures still re-post so successful
+  // rows update. Empty input map (no attached slots) is not "all failed".
   app.action(CCT_ACTION_IDS.refresh_usage_all, async ({ ack, body, client }) => {
     await ack();
     try {
@@ -296,23 +280,15 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
       await postEphemeralCard(tokenManager, client, body);
     } catch (err) {
       logger.error('cct_refresh_usage_all failed', err);
-      // #644 round 4 Option A — the outer catch fires when the TM or
-      // snapshot/render throws. Toast is best-effort; a rejected
-      // postEphemeral is logged inside postEphemeralFailure.
       await postEphemeralFailure(client, body, REFRESH_BANNERS.outerCatch);
     }
   });
 
-  // #641 M1-S4 — per-slot "Refresh" button. `value` is the target keyId.
-  // Admin gate + `{ force: true }` bypasses the local throttle for that
-  // single slot. Silently no-ops when the keyId is missing from the
-  // action body (stale card click) or the slot no longer exists.
-  //
-  // #644 round 4 Option A — when `fetchAndStoreUsage` returns `null` the
-  // single-slot refresh did nothing visible (throttled or failed). Mirror
-  // the all-null branch in refresh_usage_all: post an ephemeral banner so
-  // the admin sees actionable feedback instead of a silently re-rendered
-  // card that looks identical to the pre-click state.
+  // Per-slot "Refresh" — admin gate + `{ force: true }` bypasses the
+  // local throttle for this single slot. When `fetchAndStoreUsage`
+  // returns `null` (throttled or failed), post the same ephemeral banner
+  // the Refresh-all handler uses for its all-null branch so the admin
+  // sees actionable feedback instead of an unchanged re-render.
   app.action(CCT_ACTION_IDS.refresh_usage_slot, async ({ ack, body, client }) => {
     await ack();
     try {
@@ -331,7 +307,6 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
       await postEphemeralCard(tokenManager, client, body);
     } catch (err) {
       logger.error('cct_refresh_usage_slot failed', err);
-      // #644 round 4 Option A — mirror the Refresh-all outer-catch toast.
       await postEphemeralFailure(client, body, REFRESH_BANNERS.outerCatch);
     }
   });
@@ -656,19 +631,10 @@ async function respondWithCard(opts: {
 }
 
 /**
- * Shared destination resolver for ephemeral helpers below. Bolt's action
- * body carries the invoking user + channel in two slightly different
- * shapes (`container.channel_id` for block_actions, `channel.id` for
- * view_submission callbacks) — derive both here so postEphemeral* helpers
- * don't duplicate the narrowing + `as any` dance. Returns `null` when the
- * body lacks either field (unit-test fakes, non-interactive events).
- *
- * #644 round 4 (autonomous) — structural narrow replaces the prior
- * `(body as any)` scattershot. The Bolt unions (`BlockAction`,
- * `SlackViewAction`) are a much wider type than what this resolver
- * actually reads; a local shape pinned to the three fields we touch
- * makes the call site type-safe without dragging Bolt internals into
- * this module and without weakening the `unknown` public signature.
+ * Shared destination resolver for ephemeral helpers below. Bolt carries
+ * the invoking user + channel in two shapes (`container.channel_id` for
+ * block_actions, `channel.id` for view_submission). Returns `null` when
+ * either field is absent (unit-test fakes, non-interactive events).
  */
 interface EphemeralActionBody {
   user?: { id?: string };
@@ -701,10 +667,8 @@ async function postEphemeralCard(tokenManager: TokenManager, client: WebClient, 
 }
 
 /**
- * #644 review 4146267530 Finding #2 — ephemeral failure banner. Used by
- * the Refresh-all handler when every attached slot returned `null` so the
- * admin sees an actionable error instead of an identical-looking re-render
- * of the previous card.
+ * Ephemeral failure banner used by the refresh handlers when an
+ * all-null / null result would otherwise re-render an identical card.
  */
 async function postEphemeralFailure(client: WebClient, body: unknown, message: string): Promise<void> {
   const target = resolveEphemeralTarget(body);
@@ -771,8 +735,7 @@ export async function buildCardFromManager(tokenManager: TokenManager): Promise<
       states: {},
       activeKeyId: active?.keyId,
     });
-    // #644 review 4146267530 Finding #6 — surface the store-read failure
-    // with the same wording the Z-topic uses so operators can't miss it.
+    // Surface the store-read failure with the shared banner wording.
     appendStoreReadFailureBanner(blocks);
     if (hiddenApiKeyCount > 0) {
       blocks.push({

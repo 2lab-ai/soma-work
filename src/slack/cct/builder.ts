@@ -90,7 +90,7 @@ function utilToPctInt(util: number | undefined): number {
  * day-granularity at the 24h boundary so a 7-day 7d-sonnet reset renders as
  * `7d 0h` instead of `168h 0m` (see #644 review).
  */
-function formatUsageResetDelta(deltaMs: number): string {
+export function formatUsageResetDelta(deltaMs: number): string {
   if (!Number.isFinite(deltaMs) || deltaMs <= 0) return '<1m';
   const totalMin = Math.floor(deltaMs / 60_000);
   if (totalMin < 1) return '<1m';
@@ -238,26 +238,15 @@ export function buildSlotRow(
     text: { type: 'mrkdwn', text: headLine },
   });
 
-  // #641 M1 block-overflow fix — the per-slot detail stack (authState /
-  // rate-limit context + three-line usage panel) is emitted ONLY for the
-  // active slot. Inactive rows collapse to:
-  //   [ header ] · [ action row ] · [ divider ]
-  // which brings a 15-attached-slot card back under Slack's 50-block
-  // hard cap (section+actions+divider per slot = 3). Users click the
-  // inactive slot's action row to inspect its usage details.
+  // Block-budget invariant (Slack's 50-block hard cap):
+  //   active slot   = section + authState-context + usage-context + actions + divider = 5
+  //   inactive slot = section + actions + divider                                     = 3
+  //   card chrome   = header + card-actions + set-active-actions                      = 3
+  //   N=15 worst case: 3 + 5 + 14*3 = 50  (right at the cap)
   //
-  // #641 §3.1.2 info-density defer — tracked in issue #653
-  // (#644 review 4146267530 Finding #4, Option A accepted):
-  //   The spec calls for inactive-slot rows to surface a one-line usage
-  //   summary (5h util %, subscription tier, inline Activate) without
-  //   expanding the full 3-line usage panel. Implementing that while
-  //   staying under Slack's 50-block hard cap at N≥16 attached slots
-  //   requires the inline "expand" affordance plus either a Block Kit
-  //   accessory-overflow per row or a collapsible container block. Both
-  //   are M2 scope — see #653 and the reviewer-Linus 50-block overflow
-  //   note on PR #644. M1 keeps the collapsed header + actions + divider
-  //   shape so the card stays legal at 15 attached slots
-  //   (1 + 3*15 + 2 = 48 < 50).
+  // Inactive-row one-line usage summary + inline Activate affordance is
+  // M2 scope (issue #653) because adding any per-inactive-slot block
+  // overflows the cap at N≥16.
   if (isActive) {
     // Context line — only when we have something meaningful.
     const segments: string[] = [];
@@ -268,9 +257,6 @@ export function buildSlotRow(
         const source = state.rateLimitSource ? ` via ${state.rateLimitSource}` : '';
         segments.push(`rate-limited ${ts}${source}`);
       }
-      // M1-S2 — usage is no longer shown as a compact `usage 5h X% 7d Y%`
-      // segment here; the three-line progress-bar panel is emitted as a
-      // separate context block below (see `buildUsagePanelBlock`).
       if (state.cooldownUntil) {
         const untilMs = new Date(state.cooldownUntil).getTime();
         if (Number.isFinite(untilMs) && untilMs > nowMs) {
@@ -293,10 +279,7 @@ export function buildSlotRow(
       });
     }
 
-    // M1-S2 — three-line progress-bar usage panel. Rendered AFTER the
-    // rate-limit/authState context so the visual order is:
-    //   [ head ] · [ authState/rate-limit/cooldown ] · [ 5h/7d/7d-sonnet bars ]
-    // The panel is skipped entirely when `state.usage` is undefined.
+    // Three-line progress-bar panel rendered after the authState context.
     if (state?.usage) {
       const panel = buildUsagePanelBlock(state.usage, nowMs);
       if (panel) blocks.push(panel);
@@ -362,15 +345,10 @@ export function buildSlotRow(
 }
 
 /**
- * #644 review 4146267530 Finding #6 — shared store-read failure banner.
- * Push a single `:warning:` context block onto the given card so the
- * operator distinguishes a failed `getSnapshot()` fallback from a card
- * with zero slots. Both entry points (`actions.ts buildCardFromManager`
- * catch path + `cct-topic.ts loadSnapshotOrEmpty` banner) call this
- * helper so the wording is guaranteed identical across surfaces.
- *
- * Pure mutation on the passed `blocks` array — returns `void` so it
- * slots into the existing `blocks.push(...)` idiom without a rebind.
+ * Shared store-read failure banner. Pushed onto a card so operators
+ * distinguish a failed `getSnapshot()` fallback from an empty-slot card.
+ * Both entry points (actions.ts fallback + cct-topic.ts loader) call
+ * this helper to keep the wording identical across surfaces.
  */
 export function appendStoreReadFailureBanner(blocks: ZBlock[]): void {
   blocks.push({

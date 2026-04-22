@@ -3,7 +3,7 @@ import type { AuthKey } from '../../auth/auth-key';
 import type { CctStoreSnapshot, SlotState, UsageSnapshot } from '../../cct-store';
 import { getTokenManager, type TokenSummary } from '../../token-manager';
 import { formatRateLimitedAt } from '../../util/format-rate-limited-at';
-import { formatUsageBar } from '../cct/builder';
+import { formatUsageBar, formatUsageResetDelta } from '../cct/builder';
 import { CommandParser } from '../command-parser';
 import { renderCctCard } from '../z/topics/cct-topic';
 import type { CommandContext, CommandHandler, CommandResult } from './types';
@@ -262,20 +262,9 @@ export function renderUsageLines(
   return `${header}\n\`\`\`\n${rows.join('\n')}\n\`\`\``;
 }
 
-/** Render a positive ms duration as `Hh Mm` / `Mm` / `<1m`. */
-function formatDurationDelta(deltaMs: number): string {
-  if (!Number.isFinite(deltaMs) || deltaMs <= 0) return '<1m';
-  const totalMin = Math.floor(deltaMs / 60_000);
-  if (totalMin < 1) return '<1m';
-  const hours = Math.floor(totalMin / 60);
-  const mins = totalMin % 60;
-  if (hours > 0) return `${hours}h ${mins}m`;
-  return `${mins}m`;
-}
-
 function formatDurationUntil(isoUtc: string, nowMs?: number): string {
   const target = new Date(isoUtc).getTime();
   if (!Number.isFinite(target)) return 'a bit';
   const now = nowMs ?? Date.now();
-  return formatDurationDelta(target - now);
+  return formatUsageResetDelta(target - now);
 }
