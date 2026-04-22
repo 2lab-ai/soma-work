@@ -199,6 +199,75 @@ export function stripOneMSuffix(model: string): string {
 }
 
 /**
+ * Error code surfaced on thrown errors when the account lacks 1M-context
+ * entitlement. Set by `claude-handler.maybeThrowOneMUnavailable` and checked
+ * by `stream-executor.isOneMContextUnavailableError` — keeping the literal in
+ * one place prevents drift between producer and matcher.
+ */
+export const ONE_M_CONTEXT_UNAVAILABLE_CODE = 'ONE_M_CONTEXT_UNAVAILABLE';
+
+/**
+ * Detect whether `text` matches any of the three stable SDK signals that
+ * indicate the account cannot use the 1M-context beta for the attempted model.
+ *
+ * Issue #661 — Claude Agent SDK ≥ 0.2.111 surfaces these via
+ * `isApiErrorMessage: true` assistant messages (not via throw). stream-executor
+ * uses this matcher downstream to decide whether to strip `[1m]` and retry.
+ *
+ * Signal sources (observed in `@anthropic-ai/claude-agent-sdk@0.2.111`
+ * `cli.js` bundle):
+ *   1. "Extra usage is required for 1M context" (HTTP 429 rewrite)
+ *   2. "long context beta" — covers both the 400 "not yet available for this
+ *      subscription" and the 400 "incompatible with the long context beta
+ *      header" variants.
+ *   3. "not yet available for this subscription" — defensive redundancy for
+ *      the 400 subscription variant in case the "long context beta" phrasing
+ *      changes.
+ *
+ * Keeping the matcher narrow is the whole point: a broad substring like
+ * "context" would misfire on `prompt is too long` errors (Issue #661 spec
+ * test case 4) and downgrade the user's model without their consent.
+ */
+export function isOneMContextUnavailableSignal(text: string): boolean {
+  return classifyOneMUnavailable(text) !== 'none';
+}
+
+/**
+ * Classify the root cause of a 1M-context unavailability signal. The fallback
+ * (strip `[1m]`, retry bare) is the same for all kinds, but the USER-facing
+ * remediation is not: entitlement errors point to Claude Extra Usage /
+ * subscription upgrade, while auth errors need the operator to reconfigure
+ * the authentication mode.
+ *
+ * - `entitlement`: account-level 1M usage not enabled. 429 "Extra usage is
+ *   required for 1M context" or 400 "not yet available for this subscription".
+ * - `auth`: the current auth style cannot carry the long-context beta header.
+ *   400 "This authentication style is incompatible with the long context
+ *   beta header." No amount of Extra Usage will help — the fix is to change
+ *   how the bot authenticates (CCT slot / token type).
+ * - `none`: text does not match any known 1M-unavailable signal.
+ *
+ * Narrowing note: the "long context beta" substring is intentionally scoped
+ * to the auth variant and no longer overlaps with the subscription variant —
+ * keep `not yet available for this subscription` as the dedicated gate for
+ * the entitlement case.
+ */
+export type OneMUnavailableKind = 'entitlement' | 'auth' | 'none';
+
+export function classifyOneMUnavailable(text: string): OneMUnavailableKind {
+  const s = text.toLowerCase();
+  if (s.includes('incompatible with the long context beta header')) return 'auth';
+  if (s.includes('extra usage is required for 1m context')) return 'entitlement';
+  if (s.includes('not yet available for this subscription')) return 'entitlement';
+  // Residual "long context beta" mentions (without the specific auth phrase)
+  // are still treated as auth-ish: the Anthropic SDK uses this phrasing in
+  // several 400-class auth/header rejections. Safer to steer the user to
+  // an operator than to bill.
+  if (s.includes('long context beta')) return 'auth';
+  return 'none';
+}
+
+/**
  * Resolve context window for a model by name.
  *
  * Single source of truth: the `[1m]` suffix is the only signal for a 1M window.
