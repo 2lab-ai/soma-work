@@ -13,28 +13,28 @@
 
 import { isAdminUser } from '../../../admin-utils';
 import type { AuthKey, CctStoreSnapshot } from '../../../cct-store';
+import { config } from '../../../config';
 import { Logger } from '../../../logger';
 import { getTokenManager, type TokenSummary } from '../../../token-manager';
 import type { ApplyResult, RenderResult, ZTopicBinding } from '../../actions/z-settings-actions';
-import { buildCctCardBlocks } from '../../cct/builder';
+import { appendStoreReadFailureBanner, buildCctCardBlocks } from '../../cct/builder';
 
 const logger = new Logger('CctTopic');
-
-/** Z1 — upper bound for usage fan-out on card open. Chosen so the card
- * still renders responsively (under Slack's 3s budget for ephemeral post)
- * even when one or two keys are slow or unreachable. The fan-out runs
- * allSettled internally, so the slowest key caps the wait here. */
-const USAGE_ON_OPEN_TIMEOUT_MS = 1500;
 
 /**
  * Pull the latest `CctStoreSnapshot` via the public `getSnapshot()` API so
  * we can hand full `SlotState`s to the builder. Wrapped in try/catch to
  * preserve defensive behaviour — a broken store must not brick the card.
+ *
+ * `loadFailed` is true when `getSnapshot()` threw; callers surface this in
+ * a banner so operators notice the empty card is not "no slots configured"
+ * but a silent store-read failure (see #644 review P3).
  */
 async function loadSnapshotOrEmpty(): Promise<{
   slots: AuthKey[];
   states: Record<string, NonNullable<CctStoreSnapshot['state'][string]>>;
   activeKeyId?: string;
+  loadFailed?: boolean;
 }> {
   try {
     const snap = await getTokenManager().getSnapshot();
@@ -45,7 +45,7 @@ async function loadSnapshotOrEmpty(): Promise<{
     };
   } catch (err) {
     logger.warn(`loadSnapshotOrEmpty: getSnapshot failed — rendering empty card: ${(err as Error).message}`);
-    return { slots: [], states: {} };
+    return { slots: [], states: {}, loadFailed: true };
   }
 }
 
@@ -90,7 +90,7 @@ export async function renderCctCard(args: { userId: string; issuedAt: number }):
   // the snapshot if the fan-out throws or hits the timeout.
   try {
     await getTokenManager()
-      .fetchUsageForAllAttached({ timeoutMs: USAGE_ON_OPEN_TIMEOUT_MS })
+      .fetchUsageForAllAttached({ timeoutMs: config.usage.cardOpenTimeoutMs })
       .catch((err: unknown) => {
         logger.debug(`fetchUsageForAllAttached: ignored error on card open: ${(err as Error)?.message ?? err}`);
       });
@@ -100,7 +100,7 @@ export async function renderCctCard(args: { userId: string; issuedAt: number }):
     logger.debug(`fetchUsageForAllAttached accessor threw: ${(err as Error)?.message ?? err}`);
   }
 
-  const { slots, states, activeKeyId } = await loadSnapshotOrEmpty();
+  const { slots, states, activeKeyId, loadFailed } = await loadSnapshotOrEmpty();
   // Z3 runtime fence — phase1 renders CCT slots only; api_key slots are
   // store-only in PR-B and are hidden from the card row list + legacy
   // set-active buttons. A `context` line below surfaces the hidden count
@@ -113,6 +113,16 @@ export async function renderCctCard(args: { userId: string; issuedAt: number }):
     activeKeyId,
     nowMs: Date.now(),
   });
+
+  // #644 review P3 — surface store-read failures as a visible warning
+  // banner instead of an indistinguishable-from-empty card. Operators
+  // relying on the card to see slot health should notice a store outage
+  // immediately; logs alone are not enough. Shared wording with the
+  // `buildCardFromManager` fallback path via `appendStoreReadFailureBanner`
+  // (see #644 review 4146267530 Finding #6).
+  if (loadFailed) {
+    appendStoreReadFailureBanner(blocks);
+  }
 
   if (hiddenApiKeyCount > 0) {
     blocks.push({

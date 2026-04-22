@@ -33,6 +33,7 @@ const mockStore = {
   activeKeyId: undefined as string | undefined,
   state: {} as Record<string, { usage?: unknown }>,
   fetchUsageForAllAttachedCalls: 0,
+  fetchUsageForAllAttachedArgs: [] as Array<Record<string, unknown> | undefined>,
 };
 
 vi.mock('../../../token-manager', () => {
@@ -78,8 +79,9 @@ vi.mock('../../../token-manager', () => {
       },
       state: mockStore.state,
     }),
-    fetchUsageForAllAttached: async (_opts?: { timeoutMs?: number }) => {
+    fetchUsageForAllAttached: async (opts?: { timeoutMs?: number }) => {
       mockStore.fetchUsageForAllAttachedCalls += 1;
+      mockStore.fetchUsageForAllAttachedArgs.push(opts as Record<string, unknown> | undefined);
       return {} as Record<string, unknown>;
     },
   };
@@ -112,6 +114,7 @@ function resetMockStore(): void {
   mockStore.activeKeyId = 'slot-1';
   mockStore.state = {};
   mockStore.fetchUsageForAllAttachedCalls = 0;
+  mockStore.fetchUsageForAllAttachedArgs = [];
 }
 
 import { isAdminUser } from '../../../admin-utils';
@@ -166,6 +169,19 @@ describe('cct-topic.renderCctCard', () => {
     vi.mocked(isAdminUser).mockReturnValue(true);
     await renderCctCard({ userId: 'U1', issuedAt: 3 });
     expect(mockStore.fetchUsageForAllAttachedCalls).toBe(1);
+  });
+
+  it('T9-force: card-open fan-out never forwards force (local throttle must hold)', async () => {
+    // Card-open is a read path — it must never bypass the per-slot
+    // `nextUsageFetchAllowedAt` gate that protects Anthropic from
+    // refresh storms. Only the admin per-slot Refresh button (with
+    // explicit human intent) carries `force: true`.
+    resetMockStore();
+    vi.mocked(isAdminUser).mockReturnValue(true);
+    await renderCctCard({ userId: 'U1', issuedAt: 4 });
+    expect(mockStore.fetchUsageForAllAttachedArgs).toHaveLength(1);
+    const [args] = mockStore.fetchUsageForAllAttachedArgs;
+    expect(args).not.toHaveProperty('force');
   });
 
   // ── T9b: Z3 — api_key slots excluded from set-active (legacy) button set ──

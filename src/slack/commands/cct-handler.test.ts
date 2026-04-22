@@ -189,9 +189,52 @@ describe('CctHandler — Wave 5', () => {
     const msg = say.calls[0].text;
     expect(msg).toContain('Usage for *active*');
     expect(msg).toContain('(cct)');
-    expect(msg).toMatch(/5h:\s*42%/);
-    expect(msg).toMatch(/7d:\s*17%/);
+    // M1-S2 — renderUsageLines now emits the shared formatUsageBar progress-bar
+    // rows: `<label>   <bar> <pct>% · resets in …`.
+    expect(msg).toMatch(/5h\s+[█░]+\s+42%/);
+    expect(msg).toMatch(/7d\s+[█░]+\s+17%/);
     expect(msg).toContain('resets in');
+  });
+
+  it('cct usage NEVER forces — respects server-backoff (no { force: true } sent to TM)', async () => {
+    // Server-respect contract (PR#641 M1-S4): `/cct usage` is a user-triggered
+    // inspect, NOT an emergency override. It must never pass `{ force: true }`
+    // to `fetchAndStoreUsage` — doing so would bypass the per-slot
+    // `nextUsageFetchAllowedAt` backoff that protects Anthropic from the
+    // Slack command surface. Only the Refresh-buttons admin path may force.
+    const fetchAndStoreUsage = vi.fn(async (_keyId: string) => ({
+      fetchedAt: '2026-04-18T03:42:00Z',
+      fiveHour: { utilization: 0.1, resetsAt: new Date(Date.now() + 3 * 3_600_000).toISOString() },
+    }));
+    const { CctHandler } = await loadHandlerWithMockTm({
+      tokens: [{ keyId: 'slot-1', name: 'active', kind: 'cct' as const, status: 'healthy' }],
+      active: { keyId: 'slot-1', name: 'active', kind: 'cct' as const },
+      fetchAndStoreUsage,
+      snapshot: snapshotWithOAuthAttachment('slot-1', 'active'),
+    });
+    const say = makeSay();
+    const h = new CctHandler();
+    await h.execute({
+      user: adminUser,
+      channel: 'C',
+      threadTs: 'T',
+      text: 'cct usage',
+      say: say.fn,
+    });
+    expect(fetchAndStoreUsage).toHaveBeenCalledTimes(1);
+    // #644 review #6 — tighten to match the scheduler test's stricter
+    // contract (`expect(args).not.toHaveProperty('force')`). The previous
+    // matcher (`not.objectContaining({ force: true })`) would have quietly
+    // accepted a regression that explicitly passed `{ force: false }`, which
+    // signals to a future reader that `force` is a knob on this surface —
+    // exactly the anti-pattern we are guarding against. The contract is
+    // simpler and stronger: `force` must never appear at all, for any value.
+    // Single-arg calls (the production shape) are also tolerated by this
+    // guard because `secondArg === undefined` skips the check.
+    const secondArg = (fetchAndStoreUsage.mock.calls[0] as unknown as unknown[])[1];
+    if (secondArg !== undefined) {
+      expect(secondArg).not.toHaveProperty('force');
+    }
   });
 
   it('cct usage <name> looks up slot by name and calls fetchAndStoreUsage', async () => {
@@ -263,8 +306,9 @@ describe('CctHandler — Wave 5', () => {
     });
     expect(fetchAndStoreUsage).toHaveBeenCalledWith('slot-2');
     expect(say.calls[0].text).toContain('Usage for *secondary*');
-    expect(say.calls[0].text).toMatch(/5h:\s*50%/);
-    expect(say.calls[0].text).toMatch(/7d:\s*25%/);
+    // M1-S2 — migrated to the shared formatUsageBar progress-bar format.
+    expect(say.calls[0].text).toMatch(/5h\s+[█░]+\s+50%/);
+    expect(say.calls[0].text).toMatch(/7d\s+[█░]+\s+25%/);
   });
 
   it('cct usage <unknown> returns "Unknown slot: <name>"', async () => {
@@ -562,8 +606,9 @@ describe('renderUsageLines', () => {
       now,
     );
     expect(out).toContain('Usage for *x* (cct)');
-    expect(out).toMatch(/5h:\s*42%/);
-    expect(out).toMatch(/7d:\s*1%/);
+    // M1-S2 — renderUsageLines now shares `formatUsageBar`.
+    expect(out).toMatch(/5h\s+[█░]+\s+42%/);
+    expect(out).toMatch(/7d\s+[█░]+\s+1%/);
   });
 
   it('passes through utilization already in 0..100 integer form', async () => {
@@ -577,6 +622,6 @@ describe('renderUsageLines', () => {
       },
       now,
     );
-    expect(out).toMatch(/5h:\s*75%/);
+    expect(out).toMatch(/5h\s+[█░]+\s+75%/);
   });
 });

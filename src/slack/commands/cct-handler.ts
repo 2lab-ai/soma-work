@@ -3,6 +3,7 @@ import type { AuthKey } from '../../auth/auth-key';
 import type { CctStoreSnapshot, SlotState, UsageSnapshot } from '../../cct-store';
 import { getTokenManager, type TokenSummary } from '../../token-manager';
 import { formatRateLimitedAt } from '../../util/format-rate-limited-at';
+import { formatUsageBar, formatUsageResetDelta } from '../cct/builder';
 import { CommandParser } from '../command-parser';
 import { renderCctCard } from '../z/topics/cct-topic';
 import type { CommandContext, CommandHandler, CommandResult } from './types';
@@ -153,7 +154,10 @@ async function loadSnapshotSafe(): Promise<CctStoreSnapshot | null> {
 }
 
 interface UsageCapableTokenManager {
-  fetchAndStoreUsage: (keyId: string) => Promise<UsageSnapshot | null>;
+  // M1-S4: the second `{ force? }` argument is optional — `/cct usage` does
+  // NOT force-bypass the local throttle. The Slack "Refresh" button and
+  // `/cct refresh` (future) are the sole force-paths.
+  fetchAndStoreUsage: (keyId: string, opts?: { force?: boolean }) => Promise<UsageSnapshot | null>;
   getActiveToken: () => { keyId: string; name: string; kind: AuthKey['kind'] } | null;
   getSnapshot?: () => Promise<CctStoreSnapshot>;
 }
@@ -223,10 +227,17 @@ async function loadSlotState(keyId: string): Promise<SlotState | undefined> {
 /**
  * Render the Slack message body for a usage snapshot.
  *
- * Format:
+ * M1-S2: shares the same `formatUsageBar` progress-bar formatter used
+ * by the CCT card. Output format:
  *   Usage for *{name}* ({kind})
- *   • 5h: {pct}% (resets in {T})
- *   • 7d: {pct}% (resets in {T})
+ *   ```
+ *   5h        ██████░░░░ 60% · resets in 3h 12m
+ *   7d        ██░░░░░░░░ 20% · resets in 5d 0h 0m
+ *   7d-sonnet █░░░░░░░░░ 10% · resets in 5d 0h 0m
+ *   ```
+ *
+ * A monospace code fence preserves the fixed-width label column that
+ * `formatUsageBar` relies on for visual alignment.
  */
 export function renderUsageLines(
   slot: { name: string; kind: AuthKey['kind'] },
@@ -234,54 +245,26 @@ export function renderUsageLines(
   nowMs?: number,
 ): string {
   const now = nowMs ?? Date.now();
-  const lines: string[] = [`Usage for *${slot.name}* (${slot.kind})`];
+  const header = `Usage for *${slot.name}* (${slot.kind})`;
+  const rows: string[] = [];
   if (snapshot.fiveHour) {
-    const pct = toPctInt(snapshot.fiveHour.utilization);
-    const reset = formatDurationDelta(new Date(snapshot.fiveHour.resetsAt).getTime() - now);
-    lines.push(`• 5h: ${pct}% (resets in ${reset})`);
+    rows.push(formatUsageBar(snapshot.fiveHour.utilization, snapshot.fiveHour.resetsAt, now, '5h'));
   }
   if (snapshot.sevenDay) {
-    const pct = toPctInt(snapshot.sevenDay.utilization);
-    const reset = formatDurationDelta(new Date(snapshot.sevenDay.resetsAt).getTime() - now);
-    lines.push(`• 7d: ${pct}% (resets in ${reset})`);
+    rows.push(formatUsageBar(snapshot.sevenDay.utilization, snapshot.sevenDay.resetsAt, now, '7d'));
   }
   if (snapshot.sevenDaySonnet) {
-    const pct = toPctInt(snapshot.sevenDaySonnet.utilization);
-    const reset = formatDurationDelta(new Date(snapshot.sevenDaySonnet.resetsAt).getTime() - now);
-    lines.push(`• 7d (sonnet): ${pct}% (resets in ${reset})`);
+    rows.push(formatUsageBar(snapshot.sevenDaySonnet.utilization, snapshot.sevenDaySonnet.resetsAt, now, '7d-sonnet'));
   }
-  if (lines.length === 1) {
-    lines.push('_(no usage windows reported — try again after the next fetch)_');
+  if (rows.length === 0) {
+    return `${header}\n_(no usage windows reported — try again after the next fetch)_`;
   }
-  return lines.join('\n');
-}
-
-/**
- * UsageSnapshot.utilization is observed to arrive in two shapes depending
- * on the upstream endpoint version:
- *   - 0..1 float (current `/api/oauth/usage` schema) — multiply by 100.
- *   - 0..100 integer (historical) — pass through.
- */
-function toPctInt(utilization: number | undefined): number {
-  if (utilization === undefined || !Number.isFinite(utilization)) return 0;
-  const scaled = utilization <= 1 ? utilization * 100 : utilization;
-  return Math.max(0, Math.round(scaled));
-}
-
-/** Render a positive ms duration as `Hh Mm` / `Mm` / `<1m`. */
-function formatDurationDelta(deltaMs: number): string {
-  if (!Number.isFinite(deltaMs) || deltaMs <= 0) return '<1m';
-  const totalMin = Math.floor(deltaMs / 60_000);
-  if (totalMin < 1) return '<1m';
-  const hours = Math.floor(totalMin / 60);
-  const mins = totalMin % 60;
-  if (hours > 0) return `${hours}h ${mins}m`;
-  return `${mins}m`;
+  return `${header}\n\`\`\`\n${rows.join('\n')}\n\`\`\``;
 }
 
 function formatDurationUntil(isoUtc: string, nowMs?: number): string {
   const target = new Date(isoUtc).getTime();
   if (!Number.isFinite(target)) return 'a bit';
   const now = nowMs ?? Date.now();
-  return formatDurationDelta(target - now);
+  return formatUsageResetDelta(target - now);
 }
