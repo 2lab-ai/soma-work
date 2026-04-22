@@ -1,3 +1,4 @@
+import * as fs from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../user-settings-store', () => ({
@@ -20,15 +21,46 @@ vi.mock('../../metrics', () => ({
   }),
 }));
 
+// Needed by the `new` + `$skill` composition tests: the preprocessor runs
+// `SkillForceHandler.canHandle()` on the remainder, which probes the on-disk
+// `local/skills/{skill}/SKILL.md` path. We stub `fs.existsSync` /
+// `fs.readFileSync` so the tests don't depend on repo layout.
+vi.mock('node:fs');
+
+// env-paths / path-utils are only consulted for non-local ($stv:…, $user:…)
+// references in the composition path. Keep them aligned with
+// skill-force-handler.test.ts so recursion paths resolve predictably.
+// NOTE: other modules loaded by command-router (e.g. llm-chat-config-store)
+// read `CONFIG_FILE` / `ENV_FILE` / … at import time, so we MUST keep the
+// real exports and only override what we need.
+vi.mock('../../env-paths', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../env-paths')>();
+  return {
+    ...actual,
+    PLUGINS_DIR: '/mock/plugins',
+    DATA_DIR: '/mock/data',
+  };
+});
+vi.mock('../../path-utils', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../path-utils')>();
+  return {
+    ...actual,
+    isSafePathSegment: (s: string) => !!s && !s.includes('/') && !s.includes('..'),
+  };
+});
+
 import { userSettingsStore } from '../../user-settings-store';
 import { BypassHandler } from './bypass-handler';
 import { CommandRouter } from './command-router';
 import { EffortHandler } from './effort-handler';
 import { EmailHandler } from './email-handler';
+import { HelpHandler } from './help-handler';
 import { ModelHandler } from './model-handler';
+import { NewHandler } from './new-handler';
 import { PersonaHandler } from './persona-handler';
 import { PromptHandler } from './prompt-handler';
 import { RateHandler } from './rate-handler';
+import { SkillForceHandler } from './skill-force-handler';
 import { VerbosityHandler } from './verbosity-handler';
 
 /**
@@ -46,15 +78,28 @@ function buildDeps(overrides: Record<string, any> = {}): any {
     mcpManager: { getPluginManager: vi.fn() },
     claudeHandler: {
       getSession: vi.fn().mockReturnValue(null),
+      // NewHandler touches these during session reset; keep them as safe stubs
+      // so any test that traverses the `new` preprocessor doesn't blow up.
+      getSessionKey: vi.fn().mockImplementation((c: string, t: string) => `${c}:${t}`),
+      resetSessionContext: vi.fn().mockReturnValue(false),
     },
     sessionUiManager: {},
-    requestCoordinator: {},
+    requestCoordinator: {
+      isRequestActive: vi.fn().mockReturnValue(false),
+    },
     slackApi: {
       postSystemMessage: vi.fn().mockResolvedValue(undefined),
       getClient: vi.fn().mockReturnValue({}),
+      removeReaction: vi.fn().mockResolvedValue(undefined),
     },
-    reactionManager: {},
-    contextWindowManager: {},
+    reactionManager: {
+      getOriginalMessage: vi.fn().mockReturnValue(null),
+      getCurrentReaction: vi.fn().mockReturnValue(null),
+      cleanup: vi.fn(),
+    },
+    contextWindowManager: {
+      cleanupWithReaction: vi.fn().mockResolvedValue(undefined),
+    },
     ...overrides,
   };
 }
@@ -392,5 +437,241 @@ describe('CommandRouter — non-canonical bare input falls through (no tombstone
 
   it('bare "verbosity set detail" (not parser-supported) falls through', async () => {
     await assertFallsThrough('verbosity set detail');
+  });
+});
+
+/**
+ * Bug fix: when a Slack message starts with `new` (session reset) AND contains
+ * a `$skill` force trigger anywhere in the same message, `SkillForceHandler`
+ * used to win the first-match-wins loop and `NewHandler` never ran — so the
+ * session silently was NOT reset. Conversely, merely reordering the handlers
+ * would not help: `continueWithPrompt` from `NewHandler` is delivered as plain
+ * text to Claude (slack-handler.ts: effectiveText path), so `$z` in the
+ * remainder would never get resolved into an `<invoked_skills>` block.
+ *
+ * Fix: `new`/`/new` is promoted to a preprocessor (mirroring the `/z` prefix
+ * pattern). It runs session reset FIRST, then — and only then — if the
+ * remainder contains a `$skill` force trigger, `SkillForceHandler` resolves
+ * it so the reset + skill force invocation compose correctly.
+ *
+ * All OTHER command-shaped remainders (help / sessions / compact / ...) keep
+ * their existing semantics: delivered to Claude as a plain prompt. That is
+ * the narrow-scope contract and it is verified below.
+ */
+describe('CommandRouter — `new` + `$skill` composition (preprocessor)', () => {
+  /** Stub filesystem so SkillForceHandler sees a well-known skill layout. */
+  function stubSkillFs(options: { localSkills?: string[]; pluginSkills?: Record<string, string[]> } = {}): void {
+    const localSkills = new Set(options.localSkills ?? ['z']);
+    const pluginSkills = new Map<string, Set<string>>();
+    for (const [plugin, skills] of Object.entries(options.pluginSkills ?? {})) {
+      pluginSkills.set(plugin, new Set(skills));
+    }
+    vi.mocked(fs.existsSync).mockImplementation((p) => {
+      const s = String(p);
+      // Local skill layout: .../local/skills/{skill}/SKILL.md
+      const localMatch = s.match(/local\/skills\/([\w-]+)\/SKILL\.md$/);
+      if (localMatch) return localSkills.has(localMatch[1]);
+      // Plugin skill layout: /mock/plugins/{plugin}/skills/{skill}/SKILL.md
+      const pluginMatch = s.match(/\/mock\/plugins\/([\w-]+)\/skills\/([\w-]+)\/SKILL\.md$/);
+      if (pluginMatch) return pluginSkills.get(pluginMatch[1])?.has(pluginMatch[2]) ?? false;
+      return false;
+    });
+    vi.mocked(fs.readFileSync).mockImplementation((p) => {
+      const s = String(p);
+      const localMatch = s.match(/local\/skills\/([\w-]+)\/SKILL\.md$/);
+      if (localMatch) return `# ${localMatch[1]} skill body\nDo the ${localMatch[1]} thing.`;
+      const pluginMatch = s.match(/\/mock\/plugins\/([\w-]+)\/skills\/([\w-]+)\/SKILL\.md$/);
+      if (pluginMatch) return `# ${pluginMatch[1]}:${pluginMatch[2]} skill body\nDo it.`;
+      return '';
+    });
+  }
+
+  function makeRouter(depsOverrides: Record<string, any> = {}): {
+    router: CommandRouter;
+    deps: any;
+    say: ReturnType<typeof vi.fn>;
+  } {
+    const say = vi.fn().mockResolvedValue(undefined);
+    const deps = buildDeps(depsOverrides);
+    const router = new CommandRouter(deps);
+    return { router, deps, say };
+  }
+
+  function makeCtx(text: string, say: ReturnType<typeof vi.fn>): any {
+    return {
+      text,
+      user: 'U1',
+      channel: 'C1',
+      threadTs: 'T1',
+      say,
+    };
+  }
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.mocked(userSettingsStore.markMigrationHintShown).mockClear();
+  });
+
+  it('1. `new $z foo` → NewHandler runs AND SkillForce injects <invoked_skills>', async () => {
+    stubSkillFs({ localSkills: ['z'] });
+    const newExec = vi.spyOn(NewHandler.prototype, 'execute');
+    const skillExec = vi.spyOn(SkillForceHandler.prototype, 'execute');
+
+    const { router, say } = makeRouter();
+    const result = await router.route(makeCtx('new $z foo', say));
+
+    expect(newExec).toHaveBeenCalledTimes(1);
+    expect(skillExec).toHaveBeenCalledTimes(1);
+    expect(result.handled).toBe(true);
+    expect(result.continueWithPrompt).toBeDefined();
+    // Remainder after `new` is "$z foo" — that's what SkillForce sees.
+    expect(result.continueWithPrompt?.startsWith('$z foo')).toBe(true);
+    expect(result.continueWithPrompt).toContain('<invoked_skills>');
+    expect(result.continueWithPrompt).toContain('<local:z>');
+    expect(result.continueWithPrompt).toContain('</local:z>');
+  });
+
+  it('2. `/new $z foo` (slash variant) → same composition', async () => {
+    stubSkillFs({ localSkills: ['z'] });
+    const newExec = vi.spyOn(NewHandler.prototype, 'execute');
+    const skillExec = vi.spyOn(SkillForceHandler.prototype, 'execute');
+
+    const { router, say } = makeRouter();
+    const result = await router.route(makeCtx('/new $z foo', say));
+
+    expect(newExec).toHaveBeenCalledTimes(1);
+    expect(skillExec).toHaveBeenCalledTimes(1);
+    expect(result.handled).toBe(true);
+    expect(result.continueWithPrompt?.startsWith('$z foo')).toBe(true);
+    expect(result.continueWithPrompt).toContain('<local:z>');
+  });
+
+  it('3. `/z new $z foo` via full route() (stripZPrefix + translateToLegacy path)', async () => {
+    stubSkillFs({ localSkills: ['z'] });
+    const newExec = vi.spyOn(NewHandler.prototype, 'execute');
+    const skillExec = vi.spyOn(SkillForceHandler.prototype, 'execute');
+
+    const { router, say } = makeRouter();
+    const result = await router.route(makeCtx('/z new $z foo', say));
+
+    // /z is stripped to "new $z foo", translateToLegacy passes through unchanged
+    // for `new …`, preprocessor then fires for the translated form.
+    expect(newExec).toHaveBeenCalledTimes(1);
+    expect(skillExec).toHaveBeenCalledTimes(1);
+    expect(result.handled).toBe(true);
+    expect(result.continueWithPrompt?.startsWith('$z foo')).toBe(true);
+    expect(result.continueWithPrompt).toContain('<local:z>');
+  });
+
+  it('4. `new $stv:new-task implement X` → plugin skill is injected', async () => {
+    stubSkillFs({ localSkills: [], pluginSkills: { stv: ['new-task'] } });
+    const skillExec = vi.spyOn(SkillForceHandler.prototype, 'execute');
+
+    const { router, say } = makeRouter();
+    const result = await router.route(makeCtx('new $stv:new-task implement X', say));
+
+    expect(skillExec).toHaveBeenCalledTimes(1);
+    expect(result.handled).toBe(true);
+    expect(result.continueWithPrompt?.startsWith('$stv:new-task implement X')).toBe(true);
+    expect(result.continueWithPrompt).toContain('<stv:new-task>');
+    expect(result.continueWithPrompt).toContain('</stv:new-task>');
+  });
+
+  it('5. `new write a function` (no $skill) → plain remainder prompt, no SkillForce run', async () => {
+    stubSkillFs({ localSkills: ['z'] });
+    const newExec = vi.spyOn(NewHandler.prototype, 'execute');
+    const skillExec = vi.spyOn(SkillForceHandler.prototype, 'execute');
+
+    const { router, say } = makeRouter();
+    const result = await router.route(makeCtx('new write a function', say));
+
+    expect(newExec).toHaveBeenCalledTimes(1);
+    expect(skillExec).not.toHaveBeenCalled();
+    expect(result.handled).toBe(true);
+    expect(result.continueWithPrompt).toBe('write a function');
+  });
+
+  it('6. `new help` → preserves existing semantic (remainder delivered to Claude as prompt, HelpHandler NOT executed)', async () => {
+    stubSkillFs({ localSkills: ['z'] });
+    const helpExec = vi.spyOn(HelpHandler.prototype, 'execute');
+    const skillExec = vi.spyOn(SkillForceHandler.prototype, 'execute');
+
+    const { router, say } = makeRouter();
+    const result = await router.route(makeCtx('new help', say));
+
+    expect(helpExec).not.toHaveBeenCalled();
+    expect(skillExec).not.toHaveBeenCalled();
+    expect(result.handled).toBe(true);
+    expect(result.continueWithPrompt).toBe('help');
+  });
+
+  it('7. bare `new` → handled:true, continueWithPrompt undefined, SkillForce NOT run', async () => {
+    stubSkillFs({ localSkills: ['z'] });
+    const skillExec = vi.spyOn(SkillForceHandler.prototype, 'execute');
+
+    const { router, say } = makeRouter();
+    const result = await router.route(makeCtx('new', say));
+
+    expect(skillExec).not.toHaveBeenCalled();
+    expect(result.handled).toBe(true);
+    expect(result.continueWithPrompt).toBeUndefined();
+  });
+
+  it('8. `$z foo` (no `new`) → NewHandler NOT called, SkillForce matches via normal loop', async () => {
+    stubSkillFs({ localSkills: ['z'] });
+    const newExec = vi.spyOn(NewHandler.prototype, 'execute');
+    const skillExec = vi.spyOn(SkillForceHandler.prototype, 'execute');
+
+    const { router, say } = makeRouter();
+    const result = await router.route(makeCtx('$z foo', say));
+
+    expect(newExec).not.toHaveBeenCalled();
+    expect(skillExec).toHaveBeenCalledTimes(1);
+    expect(result.handled).toBe(true);
+    expect(result.continueWithPrompt).toContain('<local:z>');
+  });
+
+  it('9. active request + `new $z foo` → race guard fires, SkillForce NOT invoked', async () => {
+    stubSkillFs({ localSkills: ['z'] });
+    const postSystemMessage = vi.fn().mockResolvedValue(undefined);
+    const { router, say } = makeRouter({
+      slackApi: {
+        postSystemMessage,
+        getClient: vi.fn().mockReturnValue({}),
+        removeReaction: vi.fn().mockResolvedValue(undefined),
+      },
+      requestCoordinator: {
+        isRequestActive: vi.fn().mockReturnValue(true),
+      },
+    });
+    const skillExec = vi.spyOn(SkillForceHandler.prototype, 'execute');
+
+    const result = await router.route(makeCtx('new $z foo', say));
+
+    // Race guard surfaces the warning and short-circuits: no skill force invocation.
+    expect(postSystemMessage).toHaveBeenCalled();
+    const warningCall = postSystemMessage.mock.calls.find((c: any[]) => String(c[1] ?? '').includes('in progress'));
+    expect(warningCall).toBeDefined();
+    expect(skillExec).not.toHaveBeenCalled();
+    expect(result.handled).toBe(true);
+    expect(result.continueWithPrompt).toBeUndefined();
+  });
+
+  it('10. multi-line `new <URL>\\n$z proceed` → session reset + <invoked_skills> AND URL preserved in remainder', async () => {
+    stubSkillFs({ localSkills: ['z'] });
+    const newExec = vi.spyOn(NewHandler.prototype, 'execute');
+    const skillExec = vi.spyOn(SkillForceHandler.prototype, 'execute');
+
+    const { router, say } = makeRouter();
+    const text = 'new https://github.com/foo/bar\n$z proceed';
+    const result = await router.route(makeCtx(text, say));
+
+    expect(newExec).toHaveBeenCalledTimes(1);
+    expect(skillExec).toHaveBeenCalledTimes(1);
+    expect(result.handled).toBe(true);
+    expect(result.continueWithPrompt).toContain('https://github.com/foo/bar');
+    expect(result.continueWithPrompt).toContain('$z proceed');
+    expect(result.continueWithPrompt).toContain('<invoked_skills>');
+    expect(result.continueWithPrompt).toContain('<local:z>');
   });
 });
