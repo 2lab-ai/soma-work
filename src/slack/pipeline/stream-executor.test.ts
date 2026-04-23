@@ -82,6 +82,7 @@ vi.mock('../../token-manager', () => ({
   parseCooldownTime: vi.fn(),
 }));
 
+import { config } from '../../config';
 import type { Continuation } from '../../types';
 import { userSettingsStore } from '../../user-settings-store';
 import { type ExecuteResult, StreamExecutor } from './stream-executor';
@@ -2915,5 +2916,347 @@ describe('turnId propagation into ToolEventContext (#664)', () => {
     // turnId from the outer scope. Independently-minted ids would still
     // pass assertions 1 and 2 while silently decoupling the sink.
     expect(toolUseCtx.turnId).toBe(toolResultCtx.turnId);
+  });
+});
+
+describe('stream-executor — P3 (PHASE>=3) B3 choice wiring', () => {
+  function createP3Deps() {
+    const sessionRegistry = { persistAndBroadcast: vi.fn() };
+    return {
+      deps: {
+        claudeHandler: {
+          setActivityState: vi.fn(),
+          updateSessionResources: vi.fn(),
+          getSessionByKey: vi.fn().mockReturnValue({ ownerId: 'U1', channelId: 'C1' }),
+          getSessionRegistry: vi.fn(() => sessionRegistry),
+        },
+        fileHandler: { cleanupTempFiles: vi.fn().mockResolvedValue(undefined) },
+        toolEventProcessor: {},
+        statusReporter: {
+          updateStatusDirect: vi.fn().mockResolvedValue(undefined),
+          getStatusEmoji: vi.fn().mockReturnValue('stop_button'),
+        },
+        reactionManager: { updateReaction: vi.fn().mockResolvedValue(undefined) },
+        contextWindowManager: { handlePromptTooLong: vi.fn().mockResolvedValue(undefined) },
+        toolTracker: { scheduleCleanup: vi.fn() },
+        todoDisplayManager: { cleanup: vi.fn(), cleanupSession: vi.fn() },
+        actionHandlers: {
+          setPendingForm: vi.fn(),
+          getPendingForm: vi.fn(),
+          deletePendingForm: vi.fn(),
+          invalidateOldForms: vi.fn().mockResolvedValue(undefined),
+        },
+        requestCoordinator: { removeController: vi.fn() },
+        slackApi: { updateMessage: vi.fn().mockResolvedValue(undefined) },
+        assistantStatusManager: { clearStatus: vi.fn().mockResolvedValue(undefined) },
+        threadPanel: {
+          attachChoice: vi.fn().mockResolvedValue(undefined),
+          updatePanel: vi.fn().mockResolvedValue(undefined),
+          setStatus: vi.fn().mockResolvedValue(undefined),
+          askUser: vi.fn().mockResolvedValue({ ok: true, primaryTs: 'posted-ts' }),
+          askUserForm: vi
+            .fn()
+            .mockResolvedValue({ ok: true, primaryTs: 'posted-ts-0', allTs: ['posted-ts-0'], formIds: ['f-0'] }),
+        },
+      } as any,
+      sessionRegistry,
+    };
+  }
+
+  function createSession(): any {
+    return {
+      ownerId: 'U1',
+      channelId: 'C1',
+      threadTs: '171.100',
+      isActive: true,
+      renewState: null,
+      activityState: 'idle',
+      actionPanel: {},
+    };
+  }
+
+  afterEach(() => {
+    config.ui.fiveBlockPhase = 0;
+  });
+
+  it('PHASE=3 single-choice routes through ThreadPanel.askUser (with turnId)', async () => {
+    config.ui.fiveBlockPhase = 3;
+    const { deps, sessionRegistry } = createP3Deps();
+    const session = createSession();
+    // Make getSessionByKey return the same session the executor passes through.
+    deps.claudeHandler.getSessionByKey = vi.fn().mockReturnValue(session);
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'legacy-ts' });
+
+    await (executor as any).handleModelCommandToolResults(
+      [
+        {
+          toolUseId: 'tool-1',
+          toolName: 'mcp__model-command__run',
+          result: JSON.stringify({
+            type: 'model_command_result',
+            commandId: 'ASK_USER_QUESTION',
+            ok: true,
+            payload: {
+              question: {
+                type: 'user_choice',
+                question: '선택?',
+                choices: [
+                  { id: '1', label: 'A' },
+                  { id: '2', label: 'B' },
+                ],
+              },
+            },
+          }),
+        },
+      ],
+      session,
+      {
+        channel: 'C1',
+        threadTs: '171.100',
+        sessionKey: 'C1-171.100',
+        say,
+        turnId: 'TID-1',
+      },
+    );
+
+    expect(deps.threadPanel.askUser).toHaveBeenCalledWith(
+      'TID-1',
+      expect.objectContaining({ type: 'user_choice' }),
+      expect.any(Object),
+      expect.any(String),
+      expect.objectContaining({ channelId: 'C1', threadTs: '171.100', sessionKey: 'C1-171.100' }),
+      session,
+      'C1-171.100',
+    );
+    // legacy context.say should NOT have been used for the posted message
+    expect(say).not.toHaveBeenCalled();
+    // persist+broadcast after pendingQuestion write
+    expect(sessionRegistry.persistAndBroadcast).toHaveBeenCalledWith('C1-171.100');
+  });
+
+  it('PHASE=3 multi-choice pre-allocates formIds with turnId and calls askUserForm', async () => {
+    config.ui.fiveBlockPhase = 3;
+    const { deps } = createP3Deps();
+    deps.threadPanel.askUserForm = vi
+      .fn()
+      .mockResolvedValue({ ok: true, primaryTs: 'ts-0', allTs: ['ts-0'], formIds: ['any'] });
+    // back-fill lookup needs to return something
+    deps.actionHandlers.getPendingForm = vi.fn().mockImplementation((id: string) => ({
+      formId: id,
+      sessionKey: 'C1-171.100',
+      channel: 'C1',
+      threadTs: '171.100',
+      messageTs: '',
+      questions: [],
+      selections: {},
+      createdAt: Date.now(),
+    }));
+    const session = createSession();
+    deps.claudeHandler.getSessionByKey = vi.fn().mockReturnValue(session);
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn();
+
+    await (executor as any).handleModelCommandToolResults(
+      [
+        {
+          toolUseId: 'tool-2',
+          toolName: 'mcp__model-command__run',
+          result: JSON.stringify({
+            type: 'model_command_result',
+            commandId: 'ASK_USER_QUESTION',
+            ok: true,
+            payload: {
+              question: {
+                type: 'user_choices',
+                title: 'Multi',
+                questions: [{ id: 'q1', question: 'Q1?', choices: [{ id: '1', label: 'A' }] }],
+              },
+            },
+          }),
+        },
+      ],
+      session,
+      {
+        channel: 'C1',
+        threadTs: '171.100',
+        sessionKey: 'C1-171.100',
+        say,
+        turnId: 'TID-MULTI',
+      },
+    );
+
+    const setPendingCall = deps.actionHandlers.setPendingForm.mock.calls[0];
+    expect(setPendingCall[1]).toMatchObject({ turnId: 'TID-MULTI' });
+    expect(deps.threadPanel.askUserForm).toHaveBeenCalledWith(
+      'TID-MULTI',
+      expect.any(Array),
+      expect.any(Array),
+      expect.objectContaining({ type: 'user_choices' }),
+      expect.objectContaining({ channelId: 'C1' }),
+      session,
+      'C1-171.100',
+    );
+  });
+
+  it('PHASE=3 defensive prelude clears prior pendingChoice before a new ask', async () => {
+    config.ui.fiveBlockPhase = 3;
+    const { deps, sessionRegistry } = createP3Deps();
+    const session = createSession();
+    deps.claudeHandler.getSessionByKey = vi.fn().mockReturnValue(session);
+    const executor = new StreamExecutor(deps);
+    session.actionPanel = {
+      pendingChoice: { turnId: 'OLD', kind: 'single', choiceTs: 'oldTs', formIds: [] },
+      choiceMessageTs: 'oldTs',
+      waitingForChoice: true,
+    };
+    const say = vi.fn();
+    await (executor as any).handleModelCommandToolResults(
+      [
+        {
+          toolUseId: 'tool-3',
+          toolName: 'mcp__model-command__run',
+          result: JSON.stringify({
+            type: 'model_command_result',
+            commandId: 'ASK_USER_QUESTION',
+            ok: true,
+            payload: {
+              question: { type: 'user_choice', question: 'Q', choices: [{ id: '1', label: 'A' }] },
+            },
+          }),
+        },
+      ],
+      session,
+      {
+        channel: 'C1',
+        threadTs: '171.100',
+        sessionKey: 'C1-171.100',
+        say,
+        turnId: 'NEW',
+      },
+    );
+    // prior pendingChoice is cleared before askUser writes the new record
+    expect(sessionRegistry.persistAndBroadcast).toHaveBeenCalledWith('C1-171.100');
+    // askUser was invoked so the new record gets written inside the facade
+    expect(deps.threadPanel.askUser).toHaveBeenCalled();
+  });
+
+  it('PHASE=3 single post-failed → sendCommandChoiceFallback (legacy say)', async () => {
+    config.ui.fiveBlockPhase = 3;
+    const { deps } = createP3Deps();
+    deps.threadPanel.askUser = vi
+      .fn()
+      .mockResolvedValue({ ok: false, reason: 'post-failed', error: new Error('slack') });
+    const session = createSession();
+    deps.claudeHandler.getSessionByKey = vi.fn().mockReturnValue(session);
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'x' });
+    await (executor as any).handleModelCommandToolResults(
+      [
+        {
+          toolUseId: 'tool-4',
+          toolName: 'mcp__model-command__run',
+          result: JSON.stringify({
+            type: 'model_command_result',
+            commandId: 'ASK_USER_QUESTION',
+            ok: true,
+            payload: {
+              question: { type: 'user_choice', question: 'Q', choices: [{ id: '1', label: 'A' }] },
+            },
+          }),
+        },
+      ],
+      session,
+      {
+        channel: 'C1',
+        threadTs: '171.100',
+        sessionKey: 'C1-171.100',
+        say,
+        turnId: 'TID',
+      },
+    );
+    // sendCommandChoiceFallback uses context.say to post text fallback
+    expect(say).toHaveBeenCalled();
+  });
+
+  it('unconditional pendingQuestion write + persistAndBroadcast fires under PHASE<3', async () => {
+    config.ui.fiveBlockPhase = 0;
+    const { deps, sessionRegistry } = createP3Deps();
+    const session = createSession();
+    deps.claudeHandler.getSessionByKey = vi.fn().mockReturnValue(session);
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'x' });
+    await (executor as any).handleModelCommandToolResults(
+      [
+        {
+          toolUseId: 'tool-5',
+          toolName: 'mcp__model-command__run',
+          result: JSON.stringify({
+            type: 'model_command_result',
+            commandId: 'ASK_USER_QUESTION',
+            ok: true,
+            payload: {
+              question: { type: 'user_choice', question: 'Q', choices: [{ id: '1', label: 'A' }] },
+            },
+          }),
+        },
+      ],
+      session,
+      {
+        channel: 'C1',
+        threadTs: '171.100',
+        sessionKey: 'C1-171.100',
+        say,
+        turnId: 'TID',
+      },
+    );
+    expect(session.actionPanel?.pendingQuestion).toBeDefined();
+    expect(sessionRegistry.persistAndBroadcast).toHaveBeenCalledWith('C1-171.100');
+  });
+
+  it('PHASE<3 multi uses setPendingForm to persist messageTs (v7 fix)', async () => {
+    config.ui.fiveBlockPhase = 0;
+    const { deps } = createP3Deps();
+    const pendingCache: Record<string, any> = {};
+    deps.actionHandlers.setPendingForm = vi.fn((id: string, data: any) => {
+      pendingCache[id] = data;
+    });
+    deps.actionHandlers.getPendingForm = vi.fn((id: string) => pendingCache[id]);
+    const session = createSession();
+    deps.claudeHandler.getSessionByKey = vi.fn().mockReturnValue(session);
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'multi-ts' });
+    await (executor as any).handleModelCommandToolResults(
+      [
+        {
+          toolUseId: 'tool-6',
+          toolName: 'mcp__model-command__run',
+          result: JSON.stringify({
+            type: 'model_command_result',
+            commandId: 'ASK_USER_QUESTION',
+            ok: true,
+            payload: {
+              question: {
+                type: 'user_choices',
+                title: 'T',
+                questions: [{ id: 'q1', question: 'Q', choices: [{ id: '1', label: 'A' }] }],
+              },
+            },
+          }),
+        },
+      ],
+      session,
+      {
+        channel: 'C1',
+        threadTs: '171.100',
+        sessionKey: 'C1-171.100',
+        say,
+        turnId: 'TID',
+      },
+    );
+    // Two setPendingForm calls: initial set (empty ts) + back-fill with posted ts.
+    expect(deps.actionHandlers.setPendingForm).toHaveBeenCalledTimes(2);
+    const backfillCall = deps.actionHandlers.setPendingForm.mock.calls[1][1];
+    expect(backfillCall.messageTs).toBe('multi-ts');
   });
 });

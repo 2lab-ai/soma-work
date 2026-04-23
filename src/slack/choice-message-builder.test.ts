@@ -621,3 +621,80 @@ describe('ChoiceMessageBuilder.buildMultiChoiceFormBlocks — hero "Submit All R
     expect(hero.elements[0].text.text).toBe('🔒 추천 부족 (1/7)');
   });
 });
+
+describe('ChoiceMessageBuilder — P3 (PHASE>=3) turnId in button values', () => {
+  it('buildUserChoiceBlocks embeds turnId in every option button value when provided', () => {
+    const choice: UserChoice = {
+      type: 'user_choice',
+      question: 'Q?',
+      choices: [
+        { id: '1', label: 'A' },
+        { id: '2', label: 'B' },
+      ],
+    };
+    const payload = ChoiceMessageBuilder.buildUserChoiceBlocks(choice, 'sk-x', 'default', 'turn-abc');
+    const blocks = (payload.attachments?.[0] as any).blocks;
+    const buttons = blocks
+      .flatMap((b: any) => (b.type === 'actions' ? b.elements : []))
+      .filter((el: any) => el?.action_id?.startsWith('user_choice_'));
+    expect(buttons.length).toBeGreaterThan(0);
+    for (const btn of buttons) {
+      const v = JSON.parse(btn.value);
+      expect(v.turnId).toBe('turn-abc');
+      expect(v.sessionKey).toBe('sk-x');
+    }
+  });
+
+  it('buildUserChoiceBlocks omits turnId key when not provided (legacy byte-identical)', () => {
+    const choice: UserChoice = {
+      type: 'user_choice',
+      question: 'Q?',
+      choices: [{ id: '1', label: 'A' }],
+    };
+    const payload = ChoiceMessageBuilder.buildUserChoiceBlocks(choice, 'sk-x');
+    const blocks = (payload.attachments?.[0] as any).blocks;
+    const btn = blocks
+      .flatMap((b: any) => (b.type === 'actions' ? b.elements : []))
+      .find((el: any) => el?.action_id === 'user_choice_1');
+    const v = JSON.parse(btn.value);
+    expect('turnId' in v).toBe(false);
+    expect(Object.keys(v).sort()).toEqual(['choiceId', 'label', 'question', 'sessionKey']);
+  });
+
+  it('custom-input button embeds turnId when provided, omits when not', () => {
+    const withTurn: UserChoice = {
+      type: 'user_choice',
+      question: 'Q?',
+      choices: [{ id: '1', label: 'A' }],
+    };
+    const p1 = ChoiceMessageBuilder.buildUserChoiceBlocks(withTurn, 'sk-x', 'default', 'turn-z');
+    const p2 = ChoiceMessageBuilder.buildUserChoiceBlocks(withTurn, 'sk-x');
+    const blocksWith = (p1.attachments?.[0] as any).blocks;
+    const blocksNo = (p2.attachments?.[0] as any).blocks;
+    const customWith = blocksWith
+      .flatMap((b: any) => (b.type === 'actions' ? b.elements : []))
+      .find((el: any) => el?.action_id === 'custom_input_single');
+    const customNo = blocksNo
+      .flatMap((b: any) => (b.type === 'actions' ? b.elements : []))
+      .find((el: any) => el?.action_id === 'custom_input_single');
+    expect(customWith).toBeDefined();
+    expect(customNo).toBeDefined();
+    expect(JSON.parse(customWith!.value).turnId).toBe('turn-z');
+    expect('turnId' in JSON.parse(customNo!.value)).toBe(false);
+  });
+
+  it('hero button shape UNCHANGED under P3 (turnId not added)', () => {
+    const choices: UserChoices = {
+      type: 'user_choices',
+      questions: [{ id: 'q1', question: 'Q1?', recommendedChoiceId: '1', choices: [{ id: '1', label: 'A' }] }],
+    };
+    const payload = ChoiceMessageBuilder.buildMultiChoiceFormBlocks(choices, 'F-X', 'sk-X');
+    const blocks = (payload.attachments?.[0] as any).blocks;
+    const hero = blocks.find(
+      (b: any) => b.type === 'actions' && b.elements?.[0]?.action_id?.startsWith('submit_all_recommended'),
+    );
+    expect(hero).toBeDefined();
+    const v = JSON.parse(hero.elements[0].value);
+    expect(Object.keys(v).sort()).toEqual(['formId', 'm', 'n', 'sessionKey']);
+  });
+});

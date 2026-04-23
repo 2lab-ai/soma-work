@@ -124,12 +124,20 @@ export class SlackHandler {
     this.sessionUiManager = new SessionUiManager(claudeHandler, this.slackApi);
     this.sessionUiManager.setReactionManager(this.reactionManager);
     const completionMessageTracker = new CompletionMessageTracker();
+    // sessionRegistry is optional in ThreadPanelDeps (legacy tests construct
+    // ThreadPanel without it). Guard access here so test mocks that don't
+    // implement getSessionRegistry() keep passing.
+    const sessionRegistry =
+      typeof (this.claudeHandler as any).getSessionRegistry === 'function'
+        ? (this.claudeHandler as any).getSessionRegistry()
+        : undefined;
     this.threadPanel = new ThreadPanel({
       slackApi: this.slackApi,
       claudeHandler: this.claudeHandler,
       requestCoordinator: this.requestCoordinator,
       todoManager: this.todoManager,
       completionMessageTracker,
+      sessionRegistry,
     });
 
     // Command routing

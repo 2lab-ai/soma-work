@@ -253,6 +253,53 @@ export class ThreadSurface {
   }
 
   /**
+   * P3 (PHASE>=3) — lightweight metadata update for a posted B3 choice
+   * message. Writes `choiceMessageTs`, `waitingForChoice=true`, and resolves
+   * `choiceMessageLink` via permalink lookup. Does NOT write `choiceBlocks`
+   * (the B3 single-writer owns the buttons in its own message).
+   *
+   * Equivalent to attachChoice() minus the choiceBlocks write. Used by
+   * ThreadPanel.askUser / askUserForm P3 path AFTER session state has been
+   * written synchronously — this method is fire-and-forget for the
+   * permalink warm-up.
+   *
+   * Safe to call with `config.ui.fiveBlockPhase < 3`: it degrades to a
+   * no-op (legacy code should use attachChoice instead).
+   */
+  async setChoiceMeta(sessionKey: string, ts: string): Promise<void> {
+    if (config.ui.fiveBlockPhase < 3) return;
+    const session = this.deps.claudeHandler.getSessionByKey(sessionKey);
+    if (!session) return;
+    if (!session.actionPanel) {
+      session.actionPanel = {
+        channelId: session.channelId,
+        userId: session.ownerId,
+      };
+    }
+    session.actionPanel.choiceMessageTs = ts;
+    session.actionPanel.waitingForChoice = true;
+
+    // Trigger render with current state (best-effort).
+    try {
+      await this.renderViaFlush(session, sessionKey, true);
+    } catch (err) {
+      this.logger.warn('setChoiceMeta: render failed', {
+        sessionKey,
+        error: (err as Error)?.message ?? String(err),
+      });
+    }
+
+    // Permalink lookup (fire-and-forget, same pattern as attachChoice).
+    this.resolveChoicePermalink(session, ts).catch((err) => {
+      this.logger.warn('setChoiceMeta: permalink resolve failed', {
+        sessionKey,
+        ts,
+        error: (err as Error)?.message ?? String(err),
+      });
+    });
+  }
+
+  /**
    * Clear pending choice and force-render.
    */
   async clearChoice(sessionKey: string): Promise<void> {
@@ -263,6 +310,8 @@ export class ThreadSurface {
     session.actionPanel.waitingForChoice = false;
     session.actionPanel.choiceMessageTs = undefined;
     session.actionPanel.choiceMessageLink = undefined;
+    // P3: also clear the authoritative pending record (if present).
+    session.actionPanel.pendingChoice = undefined;
 
     await this.renderViaFlush(session, sessionKey, true);
   }

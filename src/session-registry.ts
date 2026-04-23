@@ -211,6 +211,34 @@ export class SessionRegistry {
   }
 
   /**
+   * Persist all sessions to disk AND push a dashboard update.
+   *
+   * Use this after mutating session state that the dashboard consumes
+   * (pendingQuestion, pendingChoice, waitingForChoice, etc.) OUTSIDE of an
+   * activity-state transition. `setActivityState` only persists on transition
+   * to 'idle' and broadcasts only on state change, so holding state in 'waiting'
+   * while mutating pending fields would otherwise leave disk and dashboard stale.
+   *
+   * Cost: one disk write + one websocket push per call. Keep call sites bounded
+   * to real state transitions (set/clear of pendingChoice/pendingQuestion) —
+   * not every render.
+   *
+   * `sessionKey` parameter is currently advisory (for logging / future
+   * targeted broadcasts). The underlying broadcast API is global today.
+   */
+  public persistAndBroadcast(sessionKey: string): void {
+    this.saveSessions();
+    try {
+      this.onActivityStateChangeCallback?.();
+    } catch (err) {
+      this.logger.warn('persistAndBroadcast: broadcast callback raised', {
+        sessionKey,
+        error: (err as Error)?.message ?? String(err),
+      });
+    }
+  }
+
+  /**
    * Get session key - based on channel and thread only (shared session)
    */
   getSessionKey(channelId: string, threadTs?: string): string {

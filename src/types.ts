@@ -109,6 +109,21 @@ export interface ActionPanelState {
   disabled?: boolean;
   waitingForChoice?: boolean;
   choiceBlocks?: any[];
+  /**
+   * P3 (PHASE>=3) — pending B3 choice lifecycle record. Authoritative session
+   * state for an outstanding user-choice question. Survives turn end and
+   * restart (persisted via session-registry). See docs/slack-ui-phase3.md.
+   */
+  pendingChoice?: {
+    turnId: string;
+    kind: 'single' | 'multi';
+    /** Single: message ts. Multi: primary (first form) ts. */
+    choiceTs?: string;
+    /** Multi only: form ids for all chunks. Empty for single. */
+    formIds: string[];
+    question: UserChoice | UserChoices;
+    createdAt: number;
+  };
   /** Raw question data for dashboard rendering (set when ASK_USER_QUESTION fires, cleared on answer) */
   pendingQuestion?: UserChoice | UserChoices;
   renderKey?: string;
