@@ -182,6 +182,18 @@ export const config = {
      */
     fanOutTimeoutMs: parsePositiveIntEnv('OAUTH_REFRESH_TIMEOUT_MS', 30_000, 5_000),
   },
+  /**
+   * CCT slot card v2 (#668 follow-up) — optional GET /api/oauth/profile
+   * fetch that backs the email / rate-limit-tier badge on each slot row.
+   * Disabled-by-flag rather than removed so ops can turn it off without a
+   * redeploy if the endpoint ever regresses.
+   */
+  oauthProfile: {
+    /** Disable with `OAUTH_PROFILE_ENABLED=0`. Default-on. */
+    enabled: process.env.OAUTH_PROFILE_ENABLED !== '0',
+    /** Per-fetch timeout, ms. Default 5s. Floor 500ms. */
+    timeoutMs: parsePositiveIntEnv('OAUTH_PROFILE_TIMEOUT_MS', 5_000, 500),
+  },
 };
 
 export function validateConfig() {

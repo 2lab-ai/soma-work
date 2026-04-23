@@ -335,7 +335,7 @@ describe('buildCardFromManager (post-action ephemeral card)', () => {
   });
 });
 
-describe('cct_open_remove / cct_open_rename routing', () => {
+describe('cct_open_remove routing', () => {
   function makeApp() {
     const handlers = new Map<string, (ctx: any) => Promise<void>>();
     const app = {
@@ -408,55 +408,6 @@ describe('cct_open_remove / cct_open_rename routing', () => {
       await openRemove?.(ctx);
       expect(openedViews).toHaveLength(1);
       expect(openedViews[0].view.private_metadata).toBe('slot-B');
-    } finally {
-      spy.mockRestore();
-    }
-  });
-
-  it('open_rename rejects (no view opens) when value is not a known keyId', async () => {
-    const { app, handlers } = makeApp();
-    const tm = {
-      listTokens: () => [{ keyId: 'slot-A', name: 'cctA', kind: 'cct', status: 'healthy' }],
-      getActiveToken: () => ({ keyId: 'slot-A', name: 'cctA', kind: 'cct' }),
-      getSnapshot: async () => ({
-        version: 2 as const,
-        revision: 1,
-        registry: {
-          activeKeyId: 'slot-A',
-          slots: [
-            {
-              kind: 'cct' as const,
-              source: 'setup' as const,
-              keyId: 'slot-A',
-              name: 'cctA',
-              setupToken: '',
-              createdAt: '',
-            },
-          ],
-        },
-        state: {},
-      }),
-    } as any;
-    const adminUtils = await import('../../admin-utils');
-    const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(true);
-    try {
-      registerCctActions(app, tm);
-      const openRename = handlers.get(CCT_ACTION_IDS.rename);
-      const openedViews: any[] = [];
-      const ctx = {
-        ack: vi.fn(async () => undefined),
-        body: {
-          trigger_id: 'T1',
-          user: { id: 'admin' },
-          actions: [{ value: 'slot-UNKNOWN' }],
-        },
-        client: {
-          views: { open: vi.fn(async (v: any) => openedViews.push(v)) },
-        },
-        respond: vi.fn(),
-      };
-      await openRename?.(ctx);
-      expect(openedViews).toHaveLength(0);
     } finally {
       spy.mockRestore();
     }
@@ -793,28 +744,24 @@ describe('refresh_usage action handlers (M1-S4)', () => {
     return { app, actionHandlers };
   }
 
-  it('refresh_usage_all → tm.fetchUsageForAllAttached({ timeoutMs }) called once WITHOUT force; ack runs BEFORE TM (3s budget)', async () => {
-    // Ordering contract mirrors T8f on view_submission: ack MUST land before
-    // the TM call starts, not merely before it settles. Regressing to
-    // `const p = tm.fetch(...); await ack(); await p;` would still satisfy
-    // "ack called" but blow Slack's 3s action-ack budget whenever the
-    // Anthropic fan-out stalls. The inner `expect` inside the ack mock fires
-    // at the exact crossing.
-    //
-    // Force contract (#644 review 4146267530 Finding #2 + autonomous fix):
-    // `fetchUsageForAllAttached` does NOT forward `force` to per-slot calls
-    // (see `token-manager.ts:1359-1369` and `token-manager.test.ts:1667`).
-    // Passing `{ force: true }` here was dead weight — the call-site now
-    // omits `force` entirely and this test locks the omission so a future
-    // plumbing refactor can't silently reintroduce force for the fan-out.
+  it('refresh_usage_all → tm.refreshAllAttachedOAuthTokens({ awaitProfile: true }) called once; ack runs BEFORE TM (3s budget); no usage fetch', async () => {
+    // Card v2 follow-up: [Refresh All OAuth Tokens] is a pure token-refresh
+    // fan-out. It MUST NOT call fetchUsageForAllAttached / fetchAndStoreUsage
+    // — usage re-fetches live on the separate card-level [Refresh] button.
+    // `awaitProfile: true` makes the email / rate-limit-tier badges reflect
+    // fresh data on the same click.
     const { app, actionHandlers } = makeApp();
     const callOrder: string[] = [];
-    const fetchUsageForAllAttached = vi.fn(async (_opts?: { force?: boolean; timeoutMs?: number }) => {
-      callOrder.push('tm.fetchUsageForAllAttached');
-      return {} as Record<string, unknown>;
+    const refreshAllAttachedOAuthTokens = vi.fn(async (_opts?: { awaitProfile?: boolean; timeoutMs?: number }) => {
+      callOrder.push('tm.refreshAllAttachedOAuthTokens');
+      return { 'slot-A': 'ok' } as Record<string, 'ok' | 'error'>;
     });
+    const fetchUsageForAllAttached = vi.fn(async () => ({}));
+    const fetchAndStoreUsage = vi.fn(async () => null);
     const tm = {
+      refreshAllAttachedOAuthTokens,
       fetchUsageForAllAttached,
+      fetchAndStoreUsage,
       getSnapshot: async () => ({
         version: 2 as const,
         revision: 1,
@@ -831,8 +778,7 @@ describe('refresh_usage action handlers (M1-S4)', () => {
       const h = actionHandlers.get(CCT_ACTION_IDS.refresh_usage_all);
       expect(h).toBeDefined();
       const ack = vi.fn(async () => {
-        // At the moment ack is invoked, the TM fan-out MUST NOT have started.
-        expect(fetchUsageForAllAttached).not.toHaveBeenCalled();
+        expect(refreshAllAttachedOAuthTokens).not.toHaveBeenCalled();
         callOrder.push('ack');
       });
       await h?.({
@@ -845,28 +791,28 @@ describe('refresh_usage action handlers (M1-S4)', () => {
         client: { chat: { postEphemeral: vi.fn(async () => undefined) } },
       });
       expect(ack).toHaveBeenCalled();
-      expect(fetchUsageForAllAttached).toHaveBeenCalledTimes(1);
-      const args = fetchUsageForAllAttached.mock.calls[0][0];
-      // `force` must NOT be passed at all — stricter than `force !== true`
-      // so a regression adding `{ force: false }` also fires.
-      expect(args).not.toHaveProperty('force');
-      expect(typeof args?.timeoutMs).toBe('number');
-      // Strict ordering — ack first, TM second.
-      expect(callOrder.slice(0, 2)).toEqual(['ack', 'tm.fetchUsageForAllAttached']);
+      expect(refreshAllAttachedOAuthTokens).toHaveBeenCalledTimes(1);
+      const args = refreshAllAttachedOAuthTokens.mock.calls[0][0];
+      expect(args?.awaitProfile).toBe(true);
+      // No usage fetch was issued — this handler now only refreshes tokens.
+      expect(fetchUsageForAllAttached).not.toHaveBeenCalled();
+      expect(fetchAndStoreUsage).not.toHaveBeenCalled();
+      expect(callOrder.slice(0, 2)).toEqual(['ack', 'tm.refreshAllAttachedOAuthTokens']);
     } finally {
       spy.mockRestore();
     }
   });
 
-  it('refresh_usage_all → when every attached slot returns null, post ephemeral banner instead of re-posting the card', async () => {
-    // #644 review 4146267530 Finding #2 Option A — all-null result map
-    // surfaces an ephemeral banner so the admin doesn't see a silent
-    // no-op. Empty result map (no attached slots) falls through to the
-    // normal card-repost path — see the next test.
+  it('refresh_usage_all → when every attached slot reports "error", post ephemeral banner instead of re-posting the card', async () => {
+    // All-error outcome map surfaces an ephemeral banner so the admin
+    // doesn't see a silent no-op. Empty result map (no attached slots)
+    // falls through to the normal card-repost path — see the next test.
     const { app, actionHandlers } = makeApp();
-    const fetchUsageForAllAttached = vi.fn(async () => ({ 'slot-A': null, 'slot-B': null }));
+    const refreshAllAttachedOAuthTokens = vi.fn(
+      async () => ({ 'slot-A': 'error', 'slot-B': 'error' }) as Record<string, 'ok' | 'error'>,
+    );
     const tm = {
-      fetchUsageForAllAttached,
+      refreshAllAttachedOAuthTokens,
       getSnapshot: async () => ({
         version: 2 as const,
         revision: 1,
@@ -892,10 +838,9 @@ describe('refresh_usage action handlers (M1-S4)', () => {
         },
         client: { chat: { postEphemeral } },
       });
-      expect(fetchUsageForAllAttached).toHaveBeenCalledTimes(1);
+      expect(refreshAllAttachedOAuthTokens).toHaveBeenCalledTimes(1);
       expect(postEphemeral).toHaveBeenCalledTimes(1);
       const call = postEphemeral.mock.calls[0]?.[0] as any;
-      // Banner path: top-level `text` equals the shared constant, no `blocks`.
       expect(call.channel).toBe('C1');
       expect(call.user).toBe('admin');
       expect(call.text).toBe(REFRESH_BANNERS.allNull);
@@ -906,13 +851,10 @@ describe('refresh_usage action handlers (M1-S4)', () => {
   });
 
   it('refresh_usage_all → when zero slots are attached, re-post the card normally (empty map is not "all failed")', async () => {
-    // Empty input map is NOT "all failed" — it just means no attached
-    // slots exist to fetch. The handler should re-post the normal card
-    // (which renders the "No CCT slots configured" section).
     const { app, actionHandlers } = makeApp();
-    const fetchUsageForAllAttached = vi.fn(async () => ({}) as Record<string, null>);
+    const refreshAllAttachedOAuthTokens = vi.fn(async () => ({}) as Record<string, 'ok' | 'error'>);
     const tm = {
-      fetchUsageForAllAttached,
+      refreshAllAttachedOAuthTokens,
       getSnapshot: async () => ({
         version: 2 as const,
         revision: 1,
@@ -939,122 +881,18 @@ describe('refresh_usage action handlers (M1-S4)', () => {
       });
       expect(postEphemeral).toHaveBeenCalledTimes(1);
       const call = postEphemeral.mock.calls[0]?.[0] as any;
-      // Card repost path carries a `blocks` array (Block Kit).
       expect(Array.isArray(call.blocks)).toBe(true);
     } finally {
       spy.mockRestore();
     }
   });
 
-  it('refresh_usage_slot → tm.fetchAndStoreUsage(keyId, { force: true }) called once; ack runs BEFORE TM (3s budget)', async () => {
-    const { app, actionHandlers } = makeApp();
-    const callOrder: string[] = [];
-    // #644 round 4 — return a non-null usage snapshot so this test exercises
-    // the success-path (card repost). The null-branch ephemeral banner is
-    // locked separately below so this test keeps its "happy path ack-order"
-    // scope and doesn't accidentally double-cover the failure branch.
-    const fetchAndStoreUsage = vi.fn(async () => {
-      callOrder.push('tm.fetchAndStoreUsage');
-      return {
-        fetchedAt: new Date('2026-04-21T00:00:00Z').toISOString(),
-        fiveHour: { utilization: 0.1, resetsAt: new Date('2026-04-21T05:00:00Z').toISOString() },
-      };
-    });
-    const tm = {
-      fetchAndStoreUsage,
-      getSnapshot: async () => ({
-        version: 2 as const,
-        revision: 1,
-        registry: { activeKeyId: 'cct1', slots: [] },
-        state: {},
-      }),
-      listTokens: () => [],
-      getActiveToken: () => null,
-    } as any;
-    const adminUtils = await import('../../admin-utils');
-    const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(true);
-    try {
-      registerCctActions(app, tm);
-      const h = actionHandlers.get(CCT_ACTION_IDS.refresh_usage_slot);
-      expect(h).toBeDefined();
-      const ack = vi.fn(async () => {
-        expect(fetchAndStoreUsage).not.toHaveBeenCalled();
-        callOrder.push('ack');
-      });
-      await h?.({
-        ack,
-        body: {
-          user: { id: 'admin' },
-          container: { channel_id: 'C1' },
-          actions: [{ value: 'cct1' }],
-        },
-        client: { chat: { postEphemeral: vi.fn(async () => undefined) } },
-      });
-      expect(ack).toHaveBeenCalled();
-      expect(fetchAndStoreUsage).toHaveBeenCalledTimes(1);
-      expect(fetchAndStoreUsage).toHaveBeenCalledWith('cct1', { force: true });
-      expect(callOrder.slice(0, 2)).toEqual(['ack', 'tm.fetchAndStoreUsage']);
-    } finally {
-      spy.mockRestore();
-    }
-  });
-
-  it('refresh_usage_slot → when fetchAndStoreUsage returns null, post ephemeral banner instead of re-posting the card', async () => {
-    // #644 round 4 Option A — mirrors the all-null branch in refresh_usage_all.
-    // A single-slot force-refresh that resolves to `null` (throttled or fetch
-    // failure) must surface an ephemeral banner so the admin sees that the
-    // click did nothing visible. Silently re-posting the unchanged card would
-    // look identical to a dead button.
-    const { app, actionHandlers } = makeApp();
-    const fetchAndStoreUsage = vi.fn(async () => null);
-    const tm = {
-      fetchAndStoreUsage,
-      getSnapshot: async () => ({
-        version: 2 as const,
-        revision: 1,
-        registry: { activeKeyId: 'cct1', slots: [] },
-        state: {},
-      }),
-      listTokens: () => [],
-      getActiveToken: () => null,
-    } as any;
-    const adminUtils = await import('../../admin-utils');
-    const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(true);
-    const postEphemeral = vi.fn(async (_arg: any) => undefined);
-    try {
-      registerCctActions(app, tm);
-      const h = actionHandlers.get(CCT_ACTION_IDS.refresh_usage_slot);
-      await h?.({
-        ack: vi.fn(async () => undefined),
-        body: {
-          user: { id: 'admin' },
-          container: { channel_id: 'C1' },
-          actions: [{ value: 'cct1' }],
-        },
-        client: { chat: { postEphemeral } },
-      });
-      expect(fetchAndStoreUsage).toHaveBeenCalledTimes(1);
-      expect(postEphemeral).toHaveBeenCalledTimes(1);
-      const call = postEphemeral.mock.calls[0]?.[0] as any;
-      // Banner path: top-level `text` equals the shared constant, no `blocks`.
-      expect(call.channel).toBe('C1');
-      expect(call.user).toBe('admin');
-      expect(call.text).toBe(REFRESH_BANNERS.slotNull);
-      expect(call.blocks).toBeUndefined();
-    } finally {
-      spy.mockRestore();
-    }
-  });
-
   it('refresh_usage_all → when tm throws, outer catch posts ephemeral Refresh-failed toast', async () => {
-    // #644 round 4 Option A — the outer try/catch previously only logged;
-    // the admin saw a dead button on a genuinely broken TM. Lock the
-    // toast-on-throw branch so a future refactor can't drop the feedback.
     const { app, actionHandlers } = makeApp();
-    const fetchUsageForAllAttached = vi.fn(async () => {
+    const refreshAllAttachedOAuthTokens = vi.fn(async () => {
       throw new Error('tm blew up');
     });
-    const tm = { fetchUsageForAllAttached } as any;
+    const tm = { refreshAllAttachedOAuthTokens } as any;
     const adminUtils = await import('../../admin-utils');
     const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(true);
     const postEphemeral = vi.fn(async (_arg: any) => undefined);
@@ -1070,40 +908,7 @@ describe('refresh_usage action handlers (M1-S4)', () => {
         },
         client: { chat: { postEphemeral } },
       });
-      expect(fetchUsageForAllAttached).toHaveBeenCalledTimes(1);
-      expect(postEphemeral).toHaveBeenCalledTimes(1);
-      const call = postEphemeral.mock.calls[0]?.[0] as any;
-      expect(call.text).toBe(REFRESH_BANNERS.outerCatch);
-      expect(call.channel).toBe('C1');
-      expect(call.user).toBe('admin');
-    } finally {
-      spy.mockRestore();
-    }
-  });
-
-  it('refresh_usage_slot → when tm throws, outer catch posts ephemeral Refresh-failed toast', async () => {
-    // #644 round 4 Option A — mirrors the Refresh-all outer-catch toast.
-    const { app, actionHandlers } = makeApp();
-    const fetchAndStoreUsage = vi.fn(async () => {
-      throw new Error('tm blew up');
-    });
-    const tm = { fetchAndStoreUsage } as any;
-    const adminUtils = await import('../../admin-utils');
-    const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(true);
-    const postEphemeral = vi.fn(async (_arg: any) => undefined);
-    try {
-      registerCctActions(app, tm);
-      const h = actionHandlers.get(CCT_ACTION_IDS.refresh_usage_slot);
-      await h?.({
-        ack: vi.fn(async () => undefined),
-        body: {
-          user: { id: 'admin' },
-          container: { channel_id: 'C1' },
-          actions: [{ value: 'cct1' }],
-        },
-        client: { chat: { postEphemeral } },
-      });
-      expect(fetchAndStoreUsage).toHaveBeenCalledTimes(1);
+      expect(refreshAllAttachedOAuthTokens).toHaveBeenCalledTimes(1);
       expect(postEphemeral).toHaveBeenCalledTimes(1);
       const call = postEphemeral.mock.calls[0]?.[0] as any;
       expect(call.text).toBe(REFRESH_BANNERS.outerCatch);
@@ -1116,8 +921,8 @@ describe('refresh_usage action handlers (M1-S4)', () => {
 
   it('refresh_usage_all by non-admin → ack only, no TM call', async () => {
     const { app, actionHandlers } = makeApp();
-    const fetchUsageForAllAttached = vi.fn(async () => ({}));
-    const tm = { fetchUsageForAllAttached } as any;
+    const refreshAllAttachedOAuthTokens = vi.fn(async () => ({}));
+    const tm = { refreshAllAttachedOAuthTokens } as any;
     const adminUtils = await import('../../admin-utils');
     const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(false);
     try {
@@ -1134,33 +939,7 @@ describe('refresh_usage action handlers (M1-S4)', () => {
         client: { chat: { postEphemeral: vi.fn(async () => undefined) } },
       });
       expect(ack).toHaveBeenCalled();
-      expect(fetchUsageForAllAttached).not.toHaveBeenCalled();
-    } finally {
-      spy.mockRestore();
-    }
-  });
-
-  it('refresh_usage_slot by non-admin → ack only, no TM call', async () => {
-    const { app, actionHandlers } = makeApp();
-    const fetchAndStoreUsage = vi.fn(async () => null);
-    const tm = { fetchAndStoreUsage } as any;
-    const adminUtils = await import('../../admin-utils');
-    const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(false);
-    try {
-      registerCctActions(app, tm);
-      const h = actionHandlers.get(CCT_ACTION_IDS.refresh_usage_slot);
-      const ack = vi.fn(async () => undefined);
-      await h?.({
-        ack,
-        body: {
-          user: { id: 'random' },
-          container: { channel_id: 'C1' },
-          actions: [{ value: 'cct1' }],
-        },
-        client: { chat: { postEphemeral: vi.fn(async () => undefined) } },
-      });
-      expect(ack).toHaveBeenCalled();
-      expect(fetchAndStoreUsage).not.toHaveBeenCalled();
+      expect(refreshAllAttachedOAuthTokens).not.toHaveBeenCalled();
     } finally {
       spy.mockRestore();
     }
@@ -1173,16 +952,256 @@ describe('REFRESH_BANNERS literal-lock (regression guard)', () => {
   // edits land as an explicit diff in this test.
   it('allNull banner text is locked', () => {
     expect(REFRESH_BANNERS.allNull).toBe(
-      ':warning: *Refresh all — no fresh data* — every attached slot returned no usage (throttled or failed). Check the TokenManager logs for `fetchAndStoreUsage` errors or the usage-store health.',
+      ':warning: *Refresh All OAuth Tokens — nothing refreshed* — every attached slot failed to refresh. Check the TokenManager logs for `refreshAllAttachedOAuthTokens` errors or the auth-state of each slot.',
     );
   });
-  it('slotNull banner text is locked', () => {
-    expect(REFRESH_BANNERS.slotNull).toBe(
-      ':warning: *Refresh slot — no fresh data* — this slot returned no usage (throttled or failed). Check the TokenManager logs for `fetchAndStoreUsage` errors or the usage-store health.',
+  it('cardNull banner text is locked', () => {
+    expect(REFRESH_BANNERS.cardNull).toBe(
+      ':warning: *Refresh — all usage fetches were throttled or failed.* Try again in a moment.',
     );
   });
   it('outerCatch banner text is locked', () => {
     expect(REFRESH_BANNERS.outerCatch).toBe(':warning: Refresh failed. Please try again.');
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
+// Card v2 follow-up · card-level [Refresh] (cct_refresh_card)
+// ────────────────────────────────────────────────────────────────────
+
+describe('refresh_card action handler (card v2 follow-up)', () => {
+  function makeApp() {
+    const actionHandlers = new Map<string, (ctx: any) => Promise<void>>();
+    const app = {
+      action: (id: string, fn: (ctx: any) => Promise<void>) => {
+        actionHandlers.set(id, fn);
+      },
+      view: () => {
+        /* noop */
+      },
+    } as any;
+    return { app, actionHandlers };
+  }
+
+  function tmWithAttachedSlots(keyIds: string[]) {
+    return {
+      getSnapshot: async () => ({
+        version: 2 as const,
+        revision: 1,
+        registry: {
+          activeKeyId: keyIds[0],
+          slots: keyIds.map((keyId) => ({
+            kind: 'cct' as const,
+            source: 'setup' as const,
+            keyId,
+            name: keyId,
+            setupToken: 'sk-ant-oat01-xxxx',
+            oauthAttachment: {
+              accessToken: 't',
+              refreshToken: 'r',
+              expiresAtMs: Date.now() + 3_600_000,
+              scopes: ['user:profile'],
+              acknowledgedConsumerTosRisk: true,
+            },
+            createdAt: '',
+          })),
+        },
+        state: {},
+      }),
+      listTokens: () => [],
+      getActiveToken: () => null,
+    };
+  }
+
+  it('fans out fetchAndStoreUsage(force:true) for each attached cct slot; re-posts card on success', async () => {
+    const { app, actionHandlers } = makeApp();
+    const fetchAndStoreUsage = vi.fn(async (keyId: string) => ({
+      fetchedAt: new Date().toISOString(),
+      fiveHour: { utilization: 0.1, resetsAt: new Date().toISOString() },
+      _keyId: keyId,
+    }));
+    const refreshAllAttachedOAuthTokens = vi.fn(async () => ({}));
+    const tm = {
+      ...tmWithAttachedSlots(['slot-A', 'slot-B']),
+      fetchAndStoreUsage,
+      refreshAllAttachedOAuthTokens,
+    } as any;
+    const adminUtils = await import('../../admin-utils');
+    const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(true);
+    const postEphemeral = vi.fn(async (_arg: any) => undefined);
+    try {
+      registerCctActions(app, tm);
+      const h = actionHandlers.get(CCT_ACTION_IDS.refresh_card);
+      expect(h).toBeDefined();
+      await h?.({
+        ack: vi.fn(async () => undefined),
+        body: {
+          user: { id: 'admin' },
+          container: { channel_id: 'C1' },
+          actions: [{ value: 'refresh_card' }],
+        },
+        client: { chat: { postEphemeral } },
+      });
+      expect(fetchAndStoreUsage).toHaveBeenCalledTimes(2);
+      expect(fetchAndStoreUsage).toHaveBeenCalledWith('slot-A', { force: true });
+      expect(fetchAndStoreUsage).toHaveBeenCalledWith('slot-B', { force: true });
+      // Card repost path carries `blocks`, not just `text`.
+      expect(postEphemeral).toHaveBeenCalledTimes(1);
+      const call = postEphemeral.mock.calls[0]?.[0] as any;
+      expect(Array.isArray(call.blocks)).toBe(true);
+      // This handler MUST NOT call refreshAllAttachedOAuthTokens.
+      expect(refreshAllAttachedOAuthTokens).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('when every attached slot returns null, post ephemeral cardNull banner instead of re-posting the card', async () => {
+    const { app, actionHandlers } = makeApp();
+    const fetchAndStoreUsage = vi.fn(async () => null);
+    const tm = { ...tmWithAttachedSlots(['slot-A', 'slot-B']), fetchAndStoreUsage } as any;
+    const adminUtils = await import('../../admin-utils');
+    const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(true);
+    const postEphemeral = vi.fn(async (_arg: any) => undefined);
+    try {
+      registerCctActions(app, tm);
+      const h = actionHandlers.get(CCT_ACTION_IDS.refresh_card);
+      await h?.({
+        ack: vi.fn(async () => undefined),
+        body: {
+          user: { id: 'admin' },
+          container: { channel_id: 'C1' },
+          actions: [{ value: 'refresh_card' }],
+        },
+        client: { chat: { postEphemeral } },
+      });
+      expect(fetchAndStoreUsage).toHaveBeenCalledTimes(2);
+      expect(postEphemeral).toHaveBeenCalledTimes(1);
+      const call = postEphemeral.mock.calls[0]?.[0] as any;
+      expect(call.text).toBe(REFRESH_BANNERS.cardNull);
+      expect(call.blocks).toBeUndefined();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('when fetchAndStoreUsage throws for all slots, cardNull banner fires (freshCount=0)', async () => {
+    const { app, actionHandlers } = makeApp();
+    const fetchAndStoreUsage = vi.fn(async () => {
+      throw new Error('fetch blew up');
+    });
+    const tm = { ...tmWithAttachedSlots(['slot-A']), fetchAndStoreUsage } as any;
+    const adminUtils = await import('../../admin-utils');
+    const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(true);
+    const postEphemeral = vi.fn(async (_arg: any) => undefined);
+    try {
+      registerCctActions(app, tm);
+      const h = actionHandlers.get(CCT_ACTION_IDS.refresh_card);
+      await h?.({
+        ack: vi.fn(async () => undefined),
+        body: {
+          user: { id: 'admin' },
+          container: { channel_id: 'C1' },
+          actions: [{ value: 'refresh_card' }],
+        },
+        client: { chat: { postEphemeral } },
+      });
+      expect(postEphemeral).toHaveBeenCalledTimes(1);
+      const call = postEphemeral.mock.calls[0]?.[0] as any;
+      // Per-slot throws are caught by Promise.allSettled → freshCount=0 →
+      // cardNull banner (the outer-catch path only fires if getSnapshot
+      // itself throws, which is covered by the next test).
+      expect(call.text).toBe(REFRESH_BANNERS.cardNull);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('when getSnapshot throws, outer-catch posts the outerCatch banner', async () => {
+    const { app, actionHandlers } = makeApp();
+    const tm = {
+      getSnapshot: async () => {
+        throw new Error('snapshot failed');
+      },
+      fetchAndStoreUsage: vi.fn(),
+    } as any;
+    const adminUtils = await import('../../admin-utils');
+    const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(true);
+    const postEphemeral = vi.fn(async (_arg: any) => undefined);
+    try {
+      registerCctActions(app, tm);
+      const h = actionHandlers.get(CCT_ACTION_IDS.refresh_card);
+      await h?.({
+        ack: vi.fn(async () => undefined),
+        body: {
+          user: { id: 'admin' },
+          container: { channel_id: 'C1' },
+          actions: [{ value: 'refresh_card' }],
+        },
+        client: { chat: { postEphemeral } },
+      });
+      expect(postEphemeral).toHaveBeenCalledTimes(1);
+      const call = postEphemeral.mock.calls[0]?.[0] as any;
+      expect(call.text).toBe(REFRESH_BANNERS.outerCatch);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('empty attached-slot list re-posts the card normally (freshCount=0 with keyIds=0 is not a failure)', async () => {
+    const { app, actionHandlers } = makeApp();
+    const fetchAndStoreUsage = vi.fn();
+    const tm = { ...tmWithAttachedSlots([]), fetchAndStoreUsage } as any;
+    const adminUtils = await import('../../admin-utils');
+    const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(true);
+    const postEphemeral = vi.fn(async (_arg: any) => undefined);
+    try {
+      registerCctActions(app, tm);
+      const h = actionHandlers.get(CCT_ACTION_IDS.refresh_card);
+      await h?.({
+        ack: vi.fn(async () => undefined),
+        body: {
+          user: { id: 'admin' },
+          container: { channel_id: 'C1' },
+          actions: [{ value: 'refresh_card' }],
+        },
+        client: { chat: { postEphemeral } },
+      });
+      expect(fetchAndStoreUsage).not.toHaveBeenCalled();
+      expect(postEphemeral).toHaveBeenCalledTimes(1);
+      const call = postEphemeral.mock.calls[0]?.[0] as any;
+      expect(Array.isArray(call.blocks)).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('non-admin click → ack only, no TM call', async () => {
+    const { app, actionHandlers } = makeApp();
+    const fetchAndStoreUsage = vi.fn();
+    const getSnapshot = vi.fn();
+    const tm = { fetchAndStoreUsage, getSnapshot } as any;
+    const adminUtils = await import('../../admin-utils');
+    const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(false);
+    try {
+      registerCctActions(app, tm);
+      const h = actionHandlers.get(CCT_ACTION_IDS.refresh_card);
+      const ack = vi.fn(async () => undefined);
+      await h?.({
+        ack,
+        body: {
+          user: { id: 'random' },
+          container: { channel_id: 'C1' },
+          actions: [{ value: 'refresh_card' }],
+        },
+        client: { chat: { postEphemeral: vi.fn(async () => undefined) } },
+      });
+      expect(ack).toHaveBeenCalled();
+      expect(fetchAndStoreUsage).not.toHaveBeenCalled();
+      expect(getSnapshot).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 
