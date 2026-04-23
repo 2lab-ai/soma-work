@@ -2,7 +2,13 @@
  * Slack handler modules
  */
 
-export { ActionHandlerContext, ActionHandlers, MessageEvent, MessageHandler } from './action-handlers';
+export {
+  ActionHandlerContext,
+  ActionHandlers,
+  MessageEvent,
+  MessageHandler,
+  PendingInstructionConfirmStore,
+} from './action-handlers';
 export { ActionPanelBuilder } from './action-panel-builder';
 // Native Slack AI spinner
 export { AssistantStatusManager } from './assistant-status-manager';

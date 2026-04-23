@@ -46,6 +46,7 @@ import type {
 import { coerceToAvailableModel, userSettingsStore } from '../../user-settings-store';
 import type { ActionHandlers } from '../actions';
 import { buildMarkerBlocks, SUPERSEDED_TEXT } from '../actions/click-classifier';
+import type { PendingInstructionConfirmStore } from '../actions/pending-instruction-confirm-store';
 import type { CompletionMessageTracker } from '../completion-message-tracker.js';
 import { postCompactCompleteIfNeeded, postCompactStartingIfNeeded } from '../hooks/compact-hooks';
 import {
@@ -63,6 +64,11 @@ import {
   type UsageData,
   UserChoiceHandler,
 } from '../index';
+import {
+  buildInstructionConfirmBlocks,
+  buildInstructionConfirmFallbackText,
+  buildInstructionSupersededBlocks,
+} from '../instruction-confirm-blocks';
 import { LOG_DETAIL, OutputFlag, shouldOutput, verboseTag } from '../output-flags';
 import type { RequestCoordinator } from '../request-coordinator';
 import type { SummaryService } from '../summary-service';
@@ -113,6 +119,14 @@ interface StreamExecutorDeps {
     ctx: { channel: string; threadTs: string; user: string; ts: string },
     text: string,
   ) => Promise<void>;
+  /**
+   * Shared store for deferred `UPDATE_SESSION.instructionOperations`.
+   * The stream-executor is the SOLE writer (fires on UPDATE_SESSION tool
+   * result); reader/mutator is `InstructionConfirmActionHandler`. Both
+   * must receive the SAME instance — wired in `SlackHandler.initialize`
+   * and passed to both `StreamExecutor` here and `ActionHandlers`.
+   */
+  pendingInstructionConfirmStore?: PendingInstructionConfirmStore;
 }
 
 interface StreamExecuteParams {
@@ -453,6 +467,23 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           });
         }
         session.compactionOccurred = false;
+      }
+
+      // PLAN §7 — if the user rejected the previous instruction write via
+      // the `n` button, inject a one-shot rejection notice so the assistant
+      // sees it was dropped and can reconsider. Runtime-only flag; cleared
+      // here so it never fires twice.
+      if (session.pendingInstructionRejection) {
+        if (!isSlashCommand) {
+          const opCount = session.pendingInstructionRejection.request.instructionOperations?.length ?? 0;
+          const notice = `<user-instruction-write-rejected>\nThe user rejected your previous proposal to update session.instructions (${opCount} operation${opCount === 1 ? '' : 's'}). Do not retry that exact proposal; re-evaluate whether the write is still warranted, and if so propose a different variation.\n</user-instruction-write-rejected>`;
+          finalPrompt = `${notice}\n\n${finalPrompt}`;
+          this.logger.info('Injected user-instruction-write-rejected notice', {
+            sessionKey,
+            opCount,
+          });
+        }
+        session.pendingInstructionRejection = undefined;
       }
 
       // Record user turn (fire-and-forget, non-blocking)
@@ -2592,20 +2623,29 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       if (parsed.commandId === 'UPDATE_SESSION') {
         const request = parsed.payload.request as SessionResourceUpdateRequest;
 
-        // Apply resource operations and/or instruction operations if present
         const hasResourceOps = request.operations && request.operations.length > 0;
         const hasInstructionOps = request.instructionOperations && request.instructionOperations.length > 0;
         let operationsOk = true;
-        if (hasResourceOps || hasInstructionOps) {
+
+        // Resource operations (issues/prs/docs) apply immediately. Instruction
+        // operations are GATED — see PLAN §7 — the user must click y/n
+        // before we call `updateSessionResources` for them. So we split the
+        // request: apply resource ops now, defer instruction ops to the
+        // PendingInstructionConfirmStore.
+        if (hasResourceOps) {
+          const resourceOnly: SessionResourceUpdateRequest = {
+            expectedSequence: request.expectedSequence,
+            operations: request.operations,
+            // Deliberately OMIT instructionOperations.
+          };
           const updateResult = this.deps.claudeHandler.updateSessionResources(
             context.channel,
             context.threadTs,
-            request,
+            resourceOnly,
           );
-
           if (!updateResult.ok) {
             operationsOk = false;
-            this.logger.warn('Failed to apply UPDATE_SESSION on host', {
+            this.logger.warn('Failed to apply UPDATE_SESSION resource ops on host', {
               sessionKey: context.sessionKey,
               reason: updateResult.reason,
               error: updateResult.error,
@@ -2616,15 +2656,18 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
               thread_ts: context.threadTs,
             });
           } else {
-            this.logger.info('Applied UPDATE_SESSION on host', {
+            this.logger.info('Applied UPDATE_SESSION resource ops on host', {
               sessionKey: context.sessionKey,
               sequence: updateResult.snapshot.sequence,
               issueCount: updateResult.snapshot.issues.length,
               prCount: updateResult.snapshot.prs.length,
               docCount: updateResult.snapshot.docs.length,
-              instructionCount: updateResult.snapshot.instructions.length,
             });
           }
+        }
+
+        if (hasInstructionOps) {
+          await this.interceptInstructionOperationsForConfirm(request, session, context);
         }
 
         // Apply title update only if no operations or operations succeeded
@@ -2659,6 +2702,111 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     }
 
     return { hasPendingChoice, continuation, modelCommandResults };
+  }
+
+  /**
+   * Defer `request.instructionOperations` into the PendingInstructionConfirm
+   * store and post a Slack y/n button. If a prior pending entry for the same
+   * session exists, update its message to `[superseded]` and evict it.
+   *
+   * NOTE: if the shared store is not wired (e.g. in minimal test harnesses)
+   * we fall through silently — the model will still see its write reported
+   * as pending in the UPDATE_SESSION payload, but no confirmation UI will
+   * appear. This mirrors the defensive no-op pattern used elsewhere in this
+   * file (see `dispatchPendingUserMessage` lazy check).
+   */
+  private async interceptInstructionOperationsForConfirm(
+    request: SessionResourceUpdateRequest,
+    session: ConversationSession,
+    context: StreamContext,
+  ): Promise<void> {
+    const store = this.deps.pendingInstructionConfirmStore;
+    if (!store) {
+      this.logger.warn('pendingInstructionConfirmStore not wired — instruction write dropped', {
+        sessionKey: context.sessionKey,
+        ops: request.instructionOperations?.length,
+      });
+      return;
+    }
+
+    const requestId = randomUUID();
+    const requestForStore: SessionResourceUpdateRequest = {
+      // Strip expectedSequence so the later commit doesn't race against
+      // unrelated resource sequence bumps that may happen while the user
+      // ponders the button.
+      operations: [],
+      instructionOperations: request.instructionOperations,
+    };
+
+    // Snapshot the turn initiator (or fall back to the session owner when
+    // no initiator is set yet — e.g. first turn). This is frozen into the
+    // store so the handler can evaluate the owner guard against the user
+    // who actually triggered this write, immune to later turn shifts.
+    const requesterId = session.currentInitiatorId || session.ownerId;
+
+    const evicted = store.set({
+      requestId,
+      sessionKey: context.sessionKey,
+      channelId: context.channel,
+      threadTs: context.threadTs,
+      request: requestForStore,
+      createdAt: Date.now(),
+      requesterId,
+    });
+
+    // Supersede any prior pending message for this session.
+    if (evicted?.messageTs) {
+      try {
+        await this.deps.slackApi.updateMessage(
+          evicted.channelId,
+          evicted.messageTs,
+          '⚠️ [superseded] — a newer instruction proposal replaced this one.',
+          buildInstructionSupersededBlocks(evicted.request),
+        );
+      } catch (err) {
+        this.logger.warn('Failed to update superseded confirm message', {
+          sessionKey: context.sessionKey,
+          evictedRequestId: evicted.requestId,
+          err,
+        });
+      }
+    }
+
+    const blocks = buildInstructionConfirmBlocks(requestForStore, requestId);
+    const fallback = buildInstructionConfirmFallbackText(requestForStore);
+    try {
+      const post = await this.deps.slackApi.postMessage(context.channel, fallback, {
+        threadTs: context.threadTs,
+        blocks,
+        unfurlLinks: false,
+        unfurlMedia: false,
+      });
+      if (post.ts) {
+        store.updateMessageTs(requestId, post.ts);
+      } else {
+        this.logger.warn('Confirm post returned no ts', {
+          sessionKey: context.sessionKey,
+          requestId,
+        });
+      }
+    } catch (err) {
+      this.logger.error('Failed to post instruction-confirm message', {
+        sessionKey: context.sessionKey,
+        requestId,
+        err,
+      });
+      // Best-effort cleanup — if the post fails there's nothing for the user
+      // to click, so remove the dangling store entry.
+      store.delete(requestId);
+    }
+
+    this.logger.info('Deferred instructionOperations for user y/n confirm', {
+      sessionKey: context.sessionKey,
+      requestId,
+      opCount: request.instructionOperations?.length ?? 0,
+      supersededPrior: !!evicted,
+      sessionId: session.sessionId,
+    });
   }
 
   private async renderAskUserQuestionFromCommand(
