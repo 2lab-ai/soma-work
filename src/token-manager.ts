@@ -43,7 +43,9 @@ import { ulid } from 'ulid';
 import type { ApiKeySlot, AuthKey, CctSlot, CctSlotWithSetup, OAuthAttachment } from './auth/auth-key';
 import type { AuthState, CctStoreSnapshot, Lease, RateLimitSource, SlotState, UsageSnapshot } from './cct-store';
 import { CctStore, defaultCctStorePath } from './cct-store';
+import { config } from './config';
 import { Logger, redactAnthropicSecrets } from './logger';
+import { fetchOAuthProfile, type OAuthProfile, OAuthProfileUnauthorizedError } from './oauth/profile';
 import type { OAuthCredentials } from './oauth/refresher';
 import { OAuthRefreshError, refreshClaudeCredentials } from './oauth/refresher';
 import { hasRequiredScopes, missingScopes } from './oauth/scope-check';
@@ -197,7 +199,12 @@ function resolveEnvRef(value: string): string {
 
 // ── Slot helpers ───────────────────────────────────────────────
 
-function isEligible(state: SlotState | undefined, nowMs: number): boolean {
+function isEligible(slot: AuthKey | undefined, state: SlotState | undefined, nowMs: number): boolean {
+  // Operator-opt-out: `disableRotation` is an explicit keep-off-the-roster
+  // flag that complements the health-based gates (tombstoned / revoked /
+  // refresh_failed / cooldown). Applied first so an operator can park a slot
+  // even when it's otherwise eligible (e.g. reserving a backup credential).
+  if (slot?.disableRotation) return false;
   if (!state) return true;
   if (state.tombstoned) return false;
   if (state.authState === 'revoked' || state.authState === 'refresh_failed') return false;
@@ -451,10 +458,10 @@ export class TokenManager {
       // first cct slot if every cct is in cooldown / tombstoned. Only if
       // there is no cct slot at all do we unset activeKeyId entirely.
       const currentIneligible =
-        !currentSlot || currentSlot.kind === 'api_key' || !isEligible(snap.state[currentSlot.keyId], now);
+        !currentSlot || currentSlot.kind === 'api_key' || !isEligible(currentSlot, snap.state[currentSlot.keyId], now);
       if (currentIneligible) {
         const preferred =
-          snap.registry.slots.find((s) => s.kind !== 'api_key' && isEligible(snap.state[s.keyId], now)) ??
+          snap.registry.slots.find((s) => s.kind !== 'api_key' && isEligible(s, snap.state[s.keyId], now)) ??
           snap.registry.slots.find((s) => s.kind !== 'api_key');
         if (preferred) {
           snap.registry.activeKeyId = preferred.keyId;
@@ -565,7 +572,7 @@ export class TokenManager {
         const candidate = snap.registry.slots[idx];
         // Z3 — api_key is not runtime-selectable in phase 1; skip in rotation.
         if (candidate.kind === 'api_key') continue;
-        if (isEligible(snap.state[candidate.keyId], now)) {
+        if (isEligible(candidate, snap.state[candidate.keyId], now)) {
           snap.registry.activeKeyId = candidate.keyId;
           return { keyId: candidate.keyId, name: candidate.name };
         }
@@ -621,7 +628,7 @@ export class TokenManager {
           const candidate = snap.registry.slots[idx];
           // Z3 — api_key is not runtime-selectable in phase 1; skip in rotation.
           if (candidate.kind === 'api_key') continue;
-          if (isEligible(snap.state[candidate.keyId], nowMs)) {
+          if (isEligible(candidate, snap.state[candidate.keyId], nowMs)) {
             snap.registry.activeKeyId = candidate.keyId;
             return { keyId: candidate.keyId, name: candidate.name };
           }
@@ -688,10 +695,12 @@ export class TokenManager {
       const activeId = snap.registry.activeKeyId;
       const activeSlot = activeId ? snap.registry.slots.find((s) => s.keyId === activeId) : undefined;
       let picked: string;
-      if (activeSlot && activeSlot.kind !== 'api_key' && isEligible(snap.state[activeSlot.keyId], now)) {
+      if (activeSlot && activeSlot.kind !== 'api_key' && isEligible(activeSlot, snap.state[activeSlot.keyId], now)) {
         picked = activeSlot.keyId;
       } else {
-        const candidate = snap.registry.slots.find((s) => s.kind !== 'api_key' && isEligible(snap.state[s.keyId], now));
+        const candidate = snap.registry.slots.find(
+          (s) => s.kind !== 'api_key' && isEligible(s, snap.state[s.keyId], now),
+        );
         if (!candidate) {
           throw new Error('acquireLease: no healthy slot available');
         }
@@ -874,6 +883,16 @@ export class TokenManager {
       `addSlot: ${newSlot.name} kind=${newSlot.kind} keyId=${newSlot.keyId}`,
       redactAnthropicSecrets({ keyId: newSlot.keyId, name: newSlot.name }) as Record<string, unknown>,
     );
+    // Card v2 (#668 follow-up): legacy-attachment slots carry an OAuth
+    // attachment from creation; kick off an initial profile fetch so the
+    // email / rate-limit-tier badge is populated before the first render.
+    // Setup-token and api_key slots have no attachment surface yet; their
+    // profile sync fires in `attachOAuth`.
+    if (newSlot.kind === 'cct' && newSlot.source === 'legacy-attachment') {
+      this.refreshOAuthProfile(newSlot.keyId).catch((err) => {
+        logger.warn('addSlot: profile sync failed', { keyId: newSlot.keyId, err });
+      });
+    }
     return newSlot;
   }
 
@@ -912,7 +931,7 @@ export class TokenManager {
         if (snap.registry.activeKeyId === keyId) {
           const now = Date.now();
           const replacement = snap.registry.slots.find(
-            (s) => s.keyId !== keyId && isEligible(snap.state[s.keyId], now),
+            (s) => s.keyId !== keyId && isEligible(s, snap.state[s.keyId], now),
           );
           if (replacement) snap.registry.activeKeyId = replacement.keyId;
         }
@@ -925,7 +944,7 @@ export class TokenManager {
       delete snap.state[keyId];
       if (snap.registry.activeKeyId === keyId) {
         const now = Date.now();
-        const replacement = snap.registry.slots.find((s) => isEligible(snap.state[s.keyId], now));
+        const replacement = snap.registry.slots.find((s) => isEligible(s, snap.state[s.keyId], now));
         snap.registry.activeKeyId = replacement?.keyId;
       }
       removed = true;
@@ -1037,6 +1056,12 @@ export class TokenManager {
     // this up via fetchUsageForAllAttached on next open. Swallow errors so
     // attach response is not blocked.
     void this.fetchAndStoreUsage(keyId).catch(() => {});
+    // Card v2 (#668 follow-up): pull the account/organization profile on
+    // first attach so the email / rate-limit-tier badge appears without
+    // waiting for the hourly scheduler tick.
+    this.refreshOAuthProfile(keyId).catch((err) => {
+      logger.warn('attachOAuth: profile sync failed', { keyId, err });
+    });
   }
 
   /**
@@ -1118,54 +1143,189 @@ export class TokenManager {
    * been marked `refresh_failed` / `revoked` before the throw, so callers
    * can surface the error (or swallow it if the cached authState alone
    * is enough signal).
+   *
+   * Card v2 (#668 follow-up): by default this also chains a fire-and-forget
+   * `refreshOAuthProfile` so the email / rate-limit-tier badge tracks the
+   * same cadence as the token refresh. Set `opts.syncProfile = false` to
+   * skip (used by test paths that isolate the token-only leg).
    */
-  async forceRefreshOAuth(keyId: string): Promise<void> {
+  async forceRefreshOAuth(keyId: string, opts?: { syncProfile?: boolean }): Promise<void> {
+    await this.#refreshTokenOnly(keyId);
+    if (opts?.syncProfile !== false) {
+      // Fire-and-forget: a failed profile sync must not surface as a refresh
+      // failure — the token leg already succeeded. The scheduler and Refresh
+      // button both care about the token, not the profile.
+      this.refreshOAuthProfile(keyId).catch((err) => {
+        logger.warn('forceRefreshOAuth: profile sync failed', { keyId, err });
+      });
+    }
+  }
+
+  async #refreshTokenOnly(keyId: string): Promise<void> {
     const snap = await this.store.load();
     const slot = snap.registry.slots.find((s) => s.keyId === keyId);
     if (!slot || !hasOAuthAttachment(slot)) return;
     await this.refreshAccessToken(slot);
   }
 
+  // ── OAuth profile fetch (card v2) ──────────────────────────
+  //
+  // Dedupe is keyed by `${keyId}:${attachedAt ?? 'legacy'}` so two generations
+  // of the same slot (detach → re-attach mid-flight) cannot evict each other's
+  // promise — the persist-side attachedAt guard in `#writeProfile` still
+  // rejects a stale result, but the dedupe key prevents the newer caller from
+  // silently sharing the older promise.
+  private readonly profileInflight: Map<string, Promise<OAuthProfile | null>> = new Map();
+
+  /**
+   * Fetch the OAuth profile for a CCT slot and persist it on the slot's
+   * attachment. Non-reentrant: a single 401 triggers one token refresh and
+   * one retry; subsequent 401s from the retry flow surface to the caller.
+   *
+   * Returns:
+   *   - the fetched profile on success,
+   *   - `null` when the slot has no OAuth attachment, the knob is disabled,
+   *     or a non-401 error occurred (logged at warn level).
+   */
+  async refreshOAuthProfile(keyId: string, opts?: { timeoutMs?: number }): Promise<OAuthProfile | null> {
+    if (!config.oauthProfile.enabled) return null;
+    const snap = await this.store.load();
+    const slot = snap.registry.slots.find((s) => s.keyId === keyId);
+    if (!slot || !hasOAuthAttachment(slot)) return null;
+    const attachedAt = slot.oauthAttachment.attachedAt;
+    const dedupeKey = `${keyId}:${attachedAt ?? 'legacy'}`;
+    const existing = this.profileInflight.get(dedupeKey);
+    if (existing) return existing;
+    const p = this.#doRefreshProfile(keyId, attachedAt, opts).finally(() => {
+      const current = this.profileInflight.get(dedupeKey);
+      if (current === p) this.profileInflight.delete(dedupeKey);
+    });
+    this.profileInflight.set(dedupeKey, p);
+    return p;
+  }
+
+  async #doRefreshProfile(
+    keyId: string,
+    attachedAt: number | undefined,
+    opts?: { timeoutMs?: number },
+  ): Promise<OAuthProfile | null> {
+    const timeoutMs = opts?.timeoutMs ?? config.oauthProfile.timeoutMs;
+    let token: string;
+    try {
+      token = await this.getValidAccessToken(keyId);
+    } catch (err) {
+      logger.warn('refreshOAuthProfile: pre-fetch token resolution failed', { keyId, err });
+      return null;
+    }
+    try {
+      const profile = await fetchOAuthProfile(token, { timeoutMs });
+      await this.#writeProfile(keyId, attachedAt, profile);
+      return profile;
+    } catch (err) {
+      if (err instanceof OAuthProfileUnauthorizedError) {
+        // Non-reentrant 401 retry: refresh the token (the call path below
+        // goes through `#refreshTokenOnly`, NOT through `forceRefreshOAuth`,
+        // so we don't recursively chain another `refreshOAuthProfile`), then
+        // re-fetch once. A second 401 propagates — that's a real auth
+        // failure, not a transient TTL boundary.
+        try {
+          await this.#refreshTokenOnly(keyId);
+          const freshToken = await this.getValidAccessToken(keyId);
+          const profile = await fetchOAuthProfile(freshToken, { timeoutMs });
+          await this.#writeProfile(keyId, attachedAt, profile);
+          return profile;
+        } catch (retryErr) {
+          logger.warn('refreshOAuthProfile: 401 retry failed', { keyId, err: retryErr });
+          return null;
+        }
+      }
+      logger.warn('refreshOAuthProfile: fetch failed', { keyId, err });
+      return null;
+    }
+  }
+
+  async #writeProfile(keyId: string, attachedAt: number | undefined, profile: OAuthProfile): Promise<void> {
+    await this.store.mutate((snap) => {
+      const target = snap.registry.slots.find((s) => s.keyId === keyId);
+      if (!target || target.kind !== 'cct' || target.oauthAttachment === undefined) return;
+      // attachedAt guard (mirrors the refresh/usage persist guards): reject
+      // the write when the attachment generation has changed since fetch
+      // start. `undefined` is a distinct generation and compares strictly.
+      if (target.oauthAttachment.attachedAt !== attachedAt) return;
+      target.oauthAttachment.profile = profile;
+    });
+  }
+
   /**
    * #653 M2 — Fan-out force-refresh of every OAuth-attached CCT slot.
-   * Returns a `Record<keyId, 'ok' | 'error'>` so the scheduler (and
-   * future card-level "Refresh OAuth all" button) can report per-slot
+   * Returns a `Record<keyId, 'ok' | 'error'>` so the scheduler (and the
+   * card-level "Refresh All OAuth Tokens" button) can report per-slot
    * outcomes.
    *
-   * Parallel execution under a single deadline (default 10s — the
-   * `refreshClaudeCredentials` HTTP call has its own 10s timeout, so 10s
-   * overall is tight but realistic for a 1-2 slot fleet. Scheduler wires
-   * a longer deadline for larger fleets).
+   * Parallel execution under a single shared deadline (default 30s). Token
+   * refreshes run first; when `awaitProfile: true` the profile fetches that
+   * normally run fire-and-forget are awaited on a second leg under the
+   * REMAINING portion of the same deadline — a hanging profile fetch on one
+   * slot cannot push the whole call past `timeoutMs`. The token results
+   * are returned regardless (profile latency never blocks token outcomes).
    *
    * Contract mirrors `fetchUsageForAllAttached`: timeouts return whatever
    * has landed so far; per-slot errors are caught and surfaced in the
    * returned map (not thrown) so a single bad slot doesn't poison the
    * whole tick.
+   *
+   * The scheduler calls this WITHOUT `awaitProfile` so the fire-and-forget
+   * profile leg stays hot for periodic ticks — the next tick sees fresh
+   * data even when the profile fetch lands asynchronously.
    */
-  async refreshAllAttachedOAuthTokens(opts?: { timeoutMs?: number }): Promise<Record<string, 'ok' | 'error'>> {
+  async refreshAllAttachedOAuthTokens(opts?: {
+    timeoutMs?: number;
+    awaitProfile?: boolean;
+  }): Promise<Record<string, 'ok' | 'error'>> {
+    const totalDeadline = opts?.timeoutMs ?? 30_000;
+    const startedAt = Date.now();
+    const remaining = (): number => Math.max(0, totalDeadline - (Date.now() - startedAt));
     const snap = await this.store.load();
     const keyIds = snap.registry.slots
       .filter((s) => s.kind === 'cct' && s.oauthAttachment !== undefined)
       .map((s) => s.keyId);
     const results: Record<string, 'ok' | 'error'> = {};
-    const promises = keyIds.map(async (keyId) => {
-      try {
-        await this.forceRefreshOAuth(keyId);
-        results[keyId] = 'ok';
-      } catch (err) {
-        results[keyId] = 'error';
-        logger.warn('refreshAllAttachedOAuthTokens: per-slot refresh failed', {
-          keyId,
-          err,
-        });
-      }
-    });
-    const timeoutMs = opts?.timeoutMs ?? 30_000;
-    const timeout = new Promise<void>((resolve) => {
-      const t = setTimeout(resolve, timeoutMs);
+    // When `awaitProfile: true`, suppress `forceRefreshOAuth`'s fire-and-forget
+    // profile sync so the profile fetch runs on the awaited leg below (one
+    // profile call per slot, not two).
+    const tokenTasks = keyIds.map((keyId) =>
+      this.forceRefreshOAuth(keyId, { syncProfile: opts?.awaitProfile !== true })
+        .then(() => {
+          results[keyId] = 'ok';
+        })
+        .catch((err) => {
+          results[keyId] = 'error';
+          logger.warn('refreshAllAttachedOAuthTokens: per-slot refresh failed', {
+            keyId,
+            err,
+          });
+        }),
+    );
+    const tokenDeadline = new Promise<void>((resolve) => {
+      const t = setTimeout(resolve, remaining());
       if (typeof t.unref === 'function') t.unref();
     });
-    await Promise.race([Promise.allSettled(promises), timeout]);
+    await Promise.race([Promise.allSettled(tokenTasks), tokenDeadline]);
+    if (opts?.awaitProfile) {
+      const timeLeft = remaining();
+      if (timeLeft > 0) {
+        const profileAwaits = Object.entries(results)
+          .filter(([, outcome]) => outcome === 'ok')
+          .map(([keyId]) => this.refreshOAuthProfile(keyId, { timeoutMs: timeLeft }).catch(() => null));
+        if (profileAwaits.length > 0) {
+          const profileDeadline = new Promise<void>((resolve) => {
+            const t = setTimeout(resolve, timeLeft);
+            if (typeof t.unref === 'function') t.unref();
+          });
+          await Promise.race([Promise.allSettled(profileAwaits), profileDeadline]);
+        }
+      }
+    }
     return results;
   }
 
@@ -1236,6 +1396,11 @@ export class TokenManager {
           // to strictly equal the one we captured at refresh start.
           if (target.oauthAttachment === undefined) return;
           if (target.oauthAttachment.attachedAt !== preAttachedAt) return;
+          // Carry the account/organization profile across the refresh so
+          // the card's email / rate-limit-tier badge doesn't blank out every
+          // hour when the scheduler force-refreshes. The attachment identity
+          // is unchanged; only the tokens rotate.
+          const preservedProfile = target.oauthAttachment.profile;
           const updated: OAuthAttachment = {
             accessToken: next.accessToken,
             refreshToken: next.refreshToken,
@@ -1248,6 +1413,7 @@ export class TokenManager {
           };
           if (next.subscriptionType !== undefined) updated.subscriptionType = next.subscriptionType;
           if (next.rateLimitTier !== undefined) updated.rateLimitTier = next.rateLimitTier;
+          if (preservedProfile !== undefined) updated.profile = preservedProfile;
           target.oauthAttachment = updated;
           const st = snap.state[slot.keyId] ?? { authState: 'healthy' as AuthState, activeLeases: [] };
           st.authState = 'healthy';
@@ -1423,9 +1589,9 @@ export class TokenManager {
         // `force` is deliberately dropped — per-keyId in-flight dedupe
         // shares any overlapping tick, and bypassing every slot's
         // `nextUsageFetchAllowedAt` gate would defeat the local throttle
-        // that protects Anthropic from refresh storms. The per-slot
-        // Refresh button (actions.ts `cct_refresh_usage_slot`) still
-        // force-bypasses locally for human single-slot refreshes.
+        // that protects Anthropic from refresh storms. The card-level
+        // [Refresh] button (actions.ts `cct_refresh_card`) fans out with
+        // `{ force: true }` per-slot for human-initiated refreshes.
         results[keyId] = await this.fetchAndStoreUsage(keyId, {});
       } catch {
         results[keyId] = null;

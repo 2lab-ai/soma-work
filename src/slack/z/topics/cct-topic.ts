@@ -136,23 +136,6 @@ export async function renderCctCard(args: { userId: string; issuedAt: number }):
     });
   }
 
-  // Back-compat: the text `/z cct` command still used legacy-named action
-  // IDs from the shared ui-builder. We add them here so the existing
-  // z-settings-actions router continues to resolve `set_<name>` / `next`.
-  const legacyActions: Record<string, unknown>[] = visibleSlots.map((s) => ({
-    type: 'button',
-    action_id: `z_setting_cct_set_${s.name}`,
-    text: { type: 'plain_text', text: `🔑 ${s.name}`, emoji: true },
-    value: s.name,
-  }));
-  legacyActions.push({
-    type: 'button',
-    action_id: 'z_setting_cct_set_next',
-    text: { type: 'plain_text', text: '🔄 Next (rotate)', emoji: true },
-    value: 'next',
-  });
-  blocks.push({ type: 'actions', elements: legacyActions });
-
   // Always include the cancel/dismiss button for the ZSettings pipeline.
   blocks.push({
     type: 'actions',

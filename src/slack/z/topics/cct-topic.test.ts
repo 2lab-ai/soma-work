@@ -149,18 +149,17 @@ describe('cct-topic.renderCctCard', () => {
     expect(ids).toContain('z_setting_cct_cancel');
   });
 
-  it('admin card lists <name> + next (no `set_` prefix — avoids greedy action-id parser collision)', async () => {
+  it('admin card does NOT emit legacy z_setting_cct_set_<name> buttons (card v2 follow-up)', async () => {
     resetMockStore();
     vi.mocked(isAdminUser).mockReturnValue(true);
     const { blocks } = await renderCctCard({ userId: 'U1', issuedAt: 2 });
     const ids = actionIds(blocks);
-    expect(ids).toContain('z_setting_cct_set_cct1');
-    expect(ids).toContain('z_setting_cct_set_cct2');
-    expect(ids).toContain('z_setting_cct_set_next');
-    // Regression guard: the legacy double-`set_` form is gone so the
-    // `/^z_setting_(.+)_set_(.+)$/` greedy parser can no longer split topic
-    // as `cct_set`.
-    expect(ids).not.toContain('z_setting_cct_set_set_cct1');
+    // Legacy back-compat buttons removed in the card v2 follow-up — the
+    // text `/z cct set <name>` grammar still routes via `applyCct`.
+    expect(ids).not.toContain('z_setting_cct_set_cct1');
+    expect(ids).not.toContain('z_setting_cct_set_cct2');
+    expect(ids).not.toContain('z_setting_cct_set_next');
+    expect(ids).toContain('z_setting_cct_cancel');
   });
 
   // ── T9: Z1 — renderCctCard awaits fetchUsageForAllAttached before snapshot ──
@@ -184,8 +183,11 @@ describe('cct-topic.renderCctCard', () => {
     expect(args).not.toHaveProperty('force');
   });
 
-  // ── T9b: Z3 — api_key slots excluded from set-active (legacy) button set ──
-  it('T9b: api_key slots do NOT appear as z_setting_cct_set_<name> buttons', async () => {
+  // ── T9b: Z3 — no `z_setting_cct_set_<name>` buttons are ever emitted ──
+  // (Card v2 follow-up dropped the legacy buttons; api_key exclusion is
+  //  now enforced by the render-side `visibleSlots` filter + applyCct
+  //  runtime fence instead of the button set.)
+  it('T9b: no z_setting_cct_set_<name> buttons exist even with api_key slots present', async () => {
     resetMockStore();
     mockStore.slots.push({
       kind: 'api_key',
@@ -197,7 +199,7 @@ describe('cct-topic.renderCctCard', () => {
     vi.mocked(isAdminUser).mockReturnValue(true);
     const { blocks } = await renderCctCard({ userId: 'U1', issuedAt: 4 });
     const ids = actionIds(blocks);
-    expect(ids).toContain('z_setting_cct_set_cct1');
+    expect(ids).not.toContain('z_setting_cct_set_cct1');
     expect(ids).not.toContain('z_setting_cct_set_ops-api');
   });
 
@@ -353,5 +355,76 @@ describe('createCctTopicBinding', () => {
     expect(b.topic).toBe('cct');
     expect(typeof b.apply).toBe('function');
     expect(typeof b.renderCard).toBe('function');
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
+// #668 follow-up — block-cap stress with budget footer + cct-topic trailers
+// ────────────────────────────────────────────────────────────────────
+//
+// The /z cct card stacks four tiers of blocks on top of `buildCctCardBlocks`:
+//   1. buildCctCardBlocks output (header + per-slot rows + card actions +
+//      optional set-active selector + budget footer, under the 47-block
+//      soft cap).
+//   2. optional store-read-failure banner (one context block, never in
+//      the happy path).
+//   3. legacy action row with per-name set buttons + next (one actions
+//      block).
+//   4. cancel action row (one actions block).
+//
+// Slack's hard cap is 50 blocks per message/ephemeral. If steps 3-4 plus
+// the footer ever push a 15-slot fleet over the cap, the whole payload
+// is rejected and the card fails to render. This test locks the end-to-end
+// budget so a future refactor of either builder.ts or cct-topic.ts trips
+// the assertion instead of tripping Slack at runtime.
+describe('cct-topic block-cap stress (#668 follow-up)', () => {
+  it('N=15 oauth-attached slots + budget footer + cct-topic trailers → ≤ 50 blocks', async () => {
+    const now = Date.now();
+    mockStore.slots = [];
+    mockStore.state = {};
+    mockStore.activeKeyId = 'slot-0';
+    mockStore.fetchUsageForAllAttachedCalls = 0;
+    mockStore.fetchUsageForAllAttachedArgs = [];
+    for (let i = 0; i < 15; i++) {
+      const keyId = `slot-${i}`;
+      mockStore.slots.push({
+        kind: 'cct',
+        source: 'setup',
+        keyId,
+        name: `cct${i}`,
+        setupToken: 'sk-ant-oat01-x',
+        createdAt: '',
+        oauthAttachment: {
+          accessToken: 't',
+          refreshToken: 'r',
+          expiresAtMs: now + 86_400_000,
+          scopes: ['user:profile', 'user:inference'],
+          acknowledgedConsumerTosRisk: true,
+        },
+      });
+      mockStore.state[keyId] = {
+        authState: 'healthy',
+        activeLeases: [],
+        usage: {
+          fetchedAt: new Date(now).toISOString(),
+          fiveHour: { utilization: 0.3, resetsAt: new Date(now + 3 * 3_600_000).toISOString() },
+          sevenDay: {
+            utilization: i * 0.05,
+            resetsAt: new Date(now + (i + 1) * 86_400_000).toISOString(),
+          },
+          sevenDaySonnet: {
+            utilization: i * 0.02,
+            resetsAt: new Date(now + (i + 1) * 86_400_000).toISOString(),
+          },
+        },
+      } as any;
+    }
+    vi.mocked(isAdminUser).mockReturnValue(true);
+    const { blocks } = await renderCctCard({ userId: 'U1', issuedAt: 1 });
+    // Logged in CI output so the final PR summary can cite the measured
+    // N=15 block count without rerunning the instrumentation manually.
+    // biome-ignore lint/suspicious/noConsole: intentional CI telemetry
+    console.log(`[stress N=15] block count = ${blocks.length}`);
+    expect(blocks.length).toBeLessThanOrEqual(50);
   });
 });
