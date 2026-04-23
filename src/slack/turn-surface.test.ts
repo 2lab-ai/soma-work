@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { config } from '../config';
-import { TurnSurface } from './turn-surface';
+import { type TurnAddress, TurnSurface } from './turn-surface';
 
 /**
  * TurnSurface unit tests (Issue #525, P1).
@@ -500,7 +500,8 @@ describe('TurnSurface', () => {
       config.ui.fiveBlockPhase = 2;
       const client = makeClient();
       const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
-      await expect(surface.askUser('any-turn', { x: 1 })).resolves.toBe('');
+      const addr = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1' };
+      await expect(surface.askUser('any-turn', { blocks: [] }, 'Q', addr)).resolves.toBe('');
     });
   });
 
@@ -698,6 +699,187 @@ describe('TurnSurface', () => {
         surface.renderTasks('t', todos as any, { channelId: 'C', threadTs: 't', sessionKey: 'C:t' }),
       ).resolves.toBe(false);
       expect(client.chat.postMessage).not.toHaveBeenCalled();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // B3 choice (P3) — askUser / askUserForm / resolveChoice / resolveMultiChoice
+  // -------------------------------------------------------------------------
+
+  describe('TurnSurface — P3 (PHASE>=3) B3 choice', () => {
+    beforeEach(() => {
+      config.ui.fiveBlockPhase = 3;
+    });
+
+    function makeSurfaceWithApi(overrides?: Partial<MockClient['chat']>) {
+      const client = makeClient(overrides);
+      const slackApi = {
+        getClient: vi.fn().mockReturnValue(client),
+        updateMessage: vi.fn().mockResolvedValue(undefined),
+      } as any;
+      const surface = new TurnSurface({ slackApi });
+      return { surface, client, slackApi };
+    }
+
+    it('askUser posts message and returns ts', async () => {
+      const { surface, client } = makeSurfaceWithApi({
+        postMessage: vi.fn().mockResolvedValue({ ts: 'msg-1' }),
+      });
+      const addr: TurnAddress = { channelId: 'C1', threadTs: 'thr-1', sessionKey: 'C1:thr-1' };
+      const ts = await surface.askUser('turn-1', { blocks: [{ type: 'section' }] }, 'Q?', addr);
+      expect(ts).toBe('msg-1');
+      expect(client.chat.postMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          channel: 'C1',
+          thread_ts: 'thr-1',
+          text: 'Q?',
+          blocks: [{ type: 'section' }],
+        }),
+      );
+    });
+
+    it('askUser stamps choiceTs on turn state when turn exists', async () => {
+      const { surface } = makeSurfaceWithApi({
+        postMessage: vi.fn().mockResolvedValue({ ts: 'msg-stamped' }),
+      });
+      await surface.begin({ channelId: 'C', threadTs: 'thr', sessionKey: 'C:thr', turnId: 'turn-1' });
+      const addr: TurnAddress = { channelId: 'C', threadTs: 'thr', sessionKey: 'C:thr' };
+      await surface.askUser('turn-1', { blocks: [] }, 'Q?', addr);
+      expect(surface._getChoiceTs('turn-1')).toBe('msg-stamped');
+      await surface.end('turn-1', 'completed');
+    });
+
+    it('askUser tolerates missing turn state (turn may have ended)', async () => {
+      const { surface } = makeSurfaceWithApi({
+        postMessage: vi.fn().mockResolvedValue({ ts: 'msg-orphan' }),
+      });
+      const addr: TurnAddress = { channelId: 'C', sessionKey: 'C:t' };
+      // No begin() — askUser should still work.
+      await expect(surface.askUser('orphan-turn', { blocks: [] }, 'Q', addr)).resolves.toBe('msg-orphan');
+    });
+
+    it('askUser returns empty string below PHASE=3', async () => {
+      config.ui.fiveBlockPhase = 2;
+      const { surface, client } = makeSurfaceWithApi();
+      const addr: TurnAddress = { channelId: 'C', sessionKey: 'C:t' };
+      const ts = await surface.askUser('turn-1', { blocks: [] }, 'Q?', addr);
+      expect(ts).toBe('');
+      expect(client.chat.postMessage).not.toHaveBeenCalled();
+    });
+
+    it('askUser throws when postMessage returns no ts', async () => {
+      const { surface } = makeSurfaceWithApi({
+        postMessage: vi.fn().mockResolvedValue({}),
+      });
+      const addr: TurnAddress = { channelId: 'C', sessionKey: 'C:t' };
+      await expect(surface.askUser('turn-1', { blocks: [] }, 'Q', addr)).rejects.toThrow();
+    });
+
+    it('askUser omits thread_ts when address has none (DM root)', async () => {
+      const { surface, client } = makeSurfaceWithApi({
+        postMessage: vi.fn().mockResolvedValue({ ts: 'msg-dm' }),
+      });
+      const addr: TurnAddress = { channelId: 'D1', sessionKey: 'D1:root' };
+      await surface.askUser('turn-1', { blocks: [] }, 'Q', addr);
+      const postArgs = client.chat.postMessage.mock.calls[0][0];
+      expect(postArgs.thread_ts).toBeUndefined();
+      expect(postArgs.channel).toBe('D1');
+    });
+
+    it('askUserForm posts per chunk and accumulates formTsList', async () => {
+      const { surface, client } = makeSurfaceWithApi({
+        postMessage: vi.fn().mockResolvedValueOnce({ ts: 'msg-1' }).mockResolvedValueOnce({ ts: 'msg-2' }),
+      });
+      await surface.begin({ channelId: 'C', threadTs: 'thr', sessionKey: 'C:thr', turnId: 'turn-1' });
+      const addr: TurnAddress = { channelId: 'C', threadTs: 'thr', sessionKey: 'C:thr' };
+      const ts1 = await surface.askUserForm('turn-1', { blocks: [] }, 'Q1', addr);
+      const ts2 = await surface.askUserForm('turn-1', { blocks: [] }, 'Q2', addr);
+      expect(ts1).toBe('msg-1');
+      expect(ts2).toBe('msg-2');
+      expect(surface._getFormTsList('turn-1')).toEqual(['msg-1', 'msg-2']);
+      expect(client.chat.postMessage).toHaveBeenCalledTimes(2);
+    });
+
+    it('askUserForm returns empty string below PHASE=3', async () => {
+      config.ui.fiveBlockPhase = 2;
+      const { surface } = makeSurfaceWithApi();
+      const addr: TurnAddress = { channelId: 'C', sessionKey: 'C:t' };
+      await expect(surface.askUserForm('t', { blocks: [] }, 'Q', addr)).resolves.toBe('');
+    });
+
+    it('askUserForm throws when postMessage returns no ts', async () => {
+      const { surface } = makeSurfaceWithApi({
+        postMessage: vi.fn().mockResolvedValue({}),
+      });
+      const addr: TurnAddress = { channelId: 'C', sessionKey: 'C:t' };
+      await expect(surface.askUserForm('turn-1', { blocks: [] }, 'Q', addr)).rejects.toThrow();
+    });
+
+    it('resolveChoice updates the message via slackApi.updateMessage', async () => {
+      const { surface, slackApi } = makeSurfaceWithApi();
+      await surface.resolveChoice('C', 'msg-1', 'done', [{ type: 'section' }]);
+      expect(slackApi.updateMessage).toHaveBeenCalledWith('C', 'msg-1', 'done', [{ type: 'section' }], []);
+    });
+
+    it('resolveChoice is a no-op below PHASE=3', async () => {
+      config.ui.fiveBlockPhase = 2;
+      const { surface, slackApi } = makeSurfaceWithApi();
+      await surface.resolveChoice('C', 'msg-1', 'done', []);
+      expect(slackApi.updateMessage).not.toHaveBeenCalled();
+    });
+
+    it('resolveChoice swallows message_not_found (idempotent)', async () => {
+      const { surface, slackApi } = makeSurfaceWithApi();
+      slackApi.updateMessage = vi.fn().mockRejectedValue({ data: { error: 'message_not_found' }, message: 'gone' });
+      await expect(surface.resolveChoice('C', 'gone-ts', 'x', [])).resolves.toBeUndefined();
+    });
+
+    it('resolveChoice rethrows non-message_not_found errors', async () => {
+      const { surface, slackApi } = makeSurfaceWithApi();
+      slackApi.updateMessage = vi.fn().mockRejectedValue({ data: { error: 'rate_limited' }, message: 'rl' });
+      await expect(surface.resolveChoice('C', 'ts', 'x', [])).rejects.toBeTruthy();
+    });
+
+    it('resolveMultiChoice iterates best-effort per ts', async () => {
+      const { surface, slackApi } = makeSurfaceWithApi();
+      slackApi.updateMessage = vi
+        .fn()
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce({ data: { error: 'message_not_found' } })
+        .mockResolvedValueOnce(undefined);
+      await surface.resolveMultiChoice('C', ['t1', 't2', 't3'], 'done', []);
+      expect(slackApi.updateMessage).toHaveBeenCalledTimes(3);
+    });
+
+    it('resolveMultiChoice continues past non-message_not_found errors (best-effort)', async () => {
+      const { surface, slackApi } = makeSurfaceWithApi();
+      slackApi.updateMessage = vi
+        .fn()
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce({ data: { error: 'rate_limited' } })
+        .mockResolvedValueOnce(undefined);
+      await surface.resolveMultiChoice('C', ['t1', 't2', 't3'], 'done', []);
+      expect(slackApi.updateMessage).toHaveBeenCalledTimes(3);
+    });
+
+    it('resolveMultiChoice is a no-op below PHASE=3', async () => {
+      config.ui.fiveBlockPhase = 2;
+      const { surface, slackApi } = makeSurfaceWithApi();
+      await surface.resolveMultiChoice('C', ['t1', 't2'], 'done', []);
+      expect(slackApi.updateMessage).not.toHaveBeenCalled();
+    });
+
+    it('end() does NOT force-resolve a pending choice (outlives turn)', async () => {
+      // Verify no calls to updateMessage from end() path
+      const { surface, slackApi } = makeSurfaceWithApi({
+        postMessage: vi.fn().mockResolvedValue({ ts: 'msg-1' }),
+      });
+      slackApi.updateMessage = vi.fn();
+      await surface.begin({ channelId: 'C', threadTs: 'thr', sessionKey: 'C:thr', turnId: 'turn-1' });
+      const addr: TurnAddress = { channelId: 'C', threadTs: 'thr', sessionKey: 'C:thr' };
+      await surface.askUser('turn-1', { blocks: [] }, 'Q', addr);
+      await surface.end('turn-1', 'completed');
+      expect(slackApi.updateMessage).not.toHaveBeenCalled();
     });
   });
 });
