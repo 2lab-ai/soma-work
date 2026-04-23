@@ -54,6 +54,26 @@ export interface OAuthAttachment {
    * later `undefined` before the persist is allowed).
    */
   attachedAt?: number;
+  /**
+   * CCT slot card v2 (#668 follow-up) — account / organization metadata
+   * pulled from `GET /api/oauth/profile` after attach and after scheduler
+   * refreshes. Optional so pre-v2 snapshots and legacy-attachment slots
+   * that haven't been reachable yet render without the email/tier badge.
+   *
+   * The token-refresh path MUST preserve this field across
+   * `refreshAccessToken` persists (only the tokens rotate; the account
+   * identity is unchanged). `detachOAuth` drops the whole attachment,
+   * which naturally drops the nested profile too.
+   */
+  profile?: {
+    email?: string;
+    accountUuid?: string;
+    displayName?: string;
+    organizationName?: string;
+    organizationType?: string;
+    rateLimitTier?: string;
+    fetchedAt: number;
+  };
 }
 
 /** Raw Anthropic API key. Headless; no OAuth attachment. */
@@ -63,6 +83,14 @@ export interface ApiKeySlot {
   name: string;
   value: string;
   createdAt: string;
+  /**
+   * CCT slot card v2 (#668 follow-up) — when true, `TokenManager` filters
+   * this slot out of `acquireLease` / `rotateToNext` / `rotateOnRateLimit`
+   * regardless of its otherwise-healthy status. Complements the existing
+   * `tombstoned` / `revoked` / `refresh_failed` / cooldown gates: this is
+   * an operator-opt-out, not a health signal.
+   */
+  disableRotation?: boolean;
 }
 
 /**
@@ -79,6 +107,8 @@ export interface CctSlotWithSetup {
   setupToken: string;
   oauthAttachment?: OAuthAttachment;
   createdAt: string;
+  /** See {@link ApiKeySlot.disableRotation}. */
+  disableRotation?: boolean;
 }
 
 /**
@@ -93,6 +123,8 @@ export interface CctSlotLegacyAttachmentOnly {
   name: string;
   oauthAttachment: OAuthAttachment;
   createdAt: string;
+  /** See {@link ApiKeySlot.disableRotation}. */
+  disableRotation?: boolean;
 }
 
 export type CctSlot = CctSlotWithSetup | CctSlotLegacyAttachmentOnly;

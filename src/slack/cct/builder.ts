@@ -73,11 +73,22 @@ const PROGRESS_BAR_CELLS = 10;
  */
 const USAGE_LABEL_WIDTH = 9;
 
-/** Pad a short label to the fixed column width (right-pad with spaces). */
-function padUsageLabel(label: string): string {
-  if (label.length >= USAGE_LABEL_WIDTH) return label;
-  return label + ' '.repeat(USAGE_LABEL_WIDTH - label.length);
-}
+/** Narrow alphabet for the usage-bar label. */
+export type UsageWindowLabel = '5h' | '7d' | '7d-sonnet';
+
+/** Full window duration per label (ms). Used to scale the remaining-bar. */
+const WINDOW_DURATION_MS: Record<UsageWindowLabel, number> = {
+  '5h': 5 * 3_600_000,
+  '7d': 7 * 86_400_000,
+  '7d-sonnet': 7 * 86_400_000,
+};
+
+/** Right-padded label per type — mirrors the earlier `padUsageLabel(label)`. */
+const LABEL_PADDED: Record<UsageWindowLabel, string> = {
+  '5h': '5h'.padEnd(USAGE_LABEL_WIDTH),
+  '7d': '7d'.padEnd(USAGE_LABEL_WIDTH),
+  '7d-sonnet': '7d-sonnet'.padEnd(USAGE_LABEL_WIDTH),
+};
 
 /** Integer percent (0..100) from a 0..1 or 0..100 utilization number. */
 function utilToPctInt(util: number | undefined): number {
@@ -109,61 +120,137 @@ export function formatUsageResetDelta(deltaMs: number): string {
 /**
  * Shared progress-bar formatter — used by the CCT card usage panel and the
  * `/cct usage` text output. Keeping the format centralised guarantees both
- * surfaces evolve together (bar width, glyphs, "resets in" hint).
+ * surfaces evolve together.
  *
- * Layout:
- *   `<padded_label> <bar> <pct>% · resets in Xh Ym`
- *   `<padded_label> (no data)` — sentinel form when `util` is undefined or
- *   the reset timestamp is missing.
+ * Layout (card v2 follow-up — dual bar):
+ *   `<padded_label> <utilization-bar> <pct>% · <remaining-bar> resets in Xh Ym`
+ *   `<padded_label> (no data)` — sentinel form when `util` is undefined.
+ *
+ * The remaining-bar is scaled against the window duration (`WINDOW_DURATION_MS`)
+ * so a 7d window with 3d left is a 3/7 ≈ 43% bar, and a 5h window with 30m
+ * left is a 30/300 = 10% bar. This gives operators a visual hint of how
+ * much of the window has elapsed alongside the raw duration.
+ *
+ * The legacy `· expires in X` suffix was removed in this commit — the new
+ * remaining-bar conveys the same information more compactly.
  */
 export function formatUsageBar(
   util: number | undefined,
   resetsAtIso: string | undefined,
   nowMs: number,
-  label: string,
+  label: UsageWindowLabel,
 ): string {
-  const padded = padUsageLabel(label);
+  const padded = LABEL_PADDED[label];
   if (util === undefined || !Number.isFinite(util) || !resetsAtIso) {
     return `${padded} (no data)`;
   }
   const pct = utilToPctInt(util);
   const filled = Math.max(0, Math.min(PROGRESS_BAR_CELLS, Math.round((pct / 100) * PROGRESS_BAR_CELLS)));
-  const empty = PROGRESS_BAR_CELLS - filled;
-  const bar = '█'.repeat(filled) + '░'.repeat(empty);
+  const utilBar = '█'.repeat(filled) + '░'.repeat(PROGRESS_BAR_CELLS - filled);
   const resetMs = new Date(resetsAtIso).getTime();
-  const delta = Number.isFinite(resetMs) ? resetMs - nowMs : NaN;
-  const hint = Number.isFinite(delta) ? formatUsageResetDelta(delta) : '<1m';
-  return `${padded} ${bar} ${pct}% · resets in ${hint}`;
+  const windowMs = WINDOW_DURATION_MS[label];
+  let remainingBar: string;
+  let hint: string;
+  if (!Number.isFinite(resetMs)) {
+    // Unparseable reset timestamp — show a dotted placeholder so the column
+    // layout is preserved and hint to "<1m".
+    remainingBar = '·'.repeat(PROGRESS_BAR_CELLS);
+    hint = '<1m';
+  } else {
+    const remainingMs = Math.max(0, resetMs - nowMs);
+    const rFilled = Math.max(
+      0,
+      Math.min(PROGRESS_BAR_CELLS, Math.round((remainingMs / windowMs) * PROGRESS_BAR_CELLS)),
+    );
+    remainingBar = '█'.repeat(rFilled) + '░'.repeat(PROGRESS_BAR_CELLS - rFilled);
+    hint = formatUsageResetDelta(remainingMs);
+  }
+  return `${padded} ${utilBar} ${pct}% · ${remainingBar} resets in ${hint}`;
 }
 
 /**
- * Subscription-tier badge appended to the head line of a CCT slot row.
- * Returns ` · Max 5x` / ` · Max 20x` / ` · Pro` / `` — the leading ` · `
- * is always included when there is a badge so the head line reads as a
- * dot-separated list without the caller having to concatenate separators.
+ * Format a raw `rate_limit_tier` string for display. Card v2 (#668
+ * follow-up): the profile endpoint gives us `default_claude_max_20x` etc;
+ * the card shows a human-friendly label and falls through to the raw
+ * string for unknown values so ops can still diagnose.
  *
- * `api_key` slots and CCT slots without an attachment (or without a
- * `subscriptionType`) produce the empty-string sentinel so the badge is
- * simply absent.
+ * `api_key` slots always surface as `API` (no subscription concept).
  */
-export function subscriptionBadge(slot: AuthKey): string {
-  if (!isCctSlot(slot)) return '';
-  const attachment = slot.oauthAttachment;
-  if (!attachment || !attachment.subscriptionType) return '';
-  return ` · ${formatSubscriptionType(attachment.subscriptionType)}`;
-}
-
-function formatSubscriptionType(raw: string): string {
+export function formatRateLimitTier(raw: string | undefined, kind: 'cct' | 'api_key'): string | null {
+  if (kind === 'api_key') return 'API';
+  if (!raw) return null;
   switch (raw) {
+    case 'default_claude_max_20x':
+      return 'Max 20×';
+    case 'default_claude_max_5x':
+      return 'Max 5×';
+    case 'default_claude_pro':
+      return 'Pro';
+    case 'default_claude_max':
+      return 'Max';
+    // Retain compatibility with the earlier `subscriptionType` vocabulary
+    // (max_5x / max_20x / pro) — those were already surfaced in the head
+    // line before the profile endpoint landed.
     case 'max_5x':
-      return 'Max 5x';
+      return 'Max 5×';
     case 'max_20x':
-      return 'Max 20x';
+      return 'Max 20×';
     case 'pro':
       return 'Pro';
     default:
       return raw;
   }
+}
+
+/**
+ * Subscription-tier badge appended to the head line of a CCT slot row.
+ * Returns ` · Max 5×` / ` · Max 20×` / ` · Pro` / `` — the leading ` · `
+ * is always included when there is a badge so the head line reads as a
+ * dot-separated list without the caller having to concatenate separators.
+ *
+ * Source priority (card v2):
+ *   1. oauthAttachment.profile.rateLimitTier (from /api/oauth/profile)
+ *   2. oauthAttachment.rateLimitTier         (from the refresh response)
+ *   3. oauthAttachment.subscriptionType      (legacy, pre-profile field)
+ *
+ * `api_key` slots and CCT slots without any of the three fields produce
+ * the empty-string sentinel so the badge is simply absent.
+ */
+export function subscriptionBadge(slot: AuthKey): string {
+  if (!isCctSlot(slot)) return '';
+  const attachment = slot.oauthAttachment;
+  if (!attachment) return '';
+  const raw = attachment.profile?.rateLimitTier ?? attachment.rateLimitTier ?? attachment.subscriptionType ?? undefined;
+  const formatted = formatRateLimitTier(raw, 'cct');
+  return formatted ? ` · ${formatted}` : '';
+}
+
+/**
+ * Truncate a string to `max` chars. When longer, keeps the head/tail and
+ * drops an ellipsis in the middle so the local-part and domain stay
+ * readable (e.g. `alice.long...@example.com`).
+ */
+function truncateMiddle(text: string, max: number): string {
+  if (text.length <= max) return text;
+  // Reserve 3 chars for the ellipsis; split remaining budget 60/40 so the
+  // local-part (left) keeps more characters than the domain.
+  const head = Math.max(1, Math.floor((max - 3) * 0.6));
+  const tail = Math.max(1, max - 3 - head);
+  return `${text.slice(0, head)}...${text.slice(text.length - tail)}`;
+}
+
+/**
+ * Format the profile email for the head-line suffix. Returns `` when
+ * the attachment has no profile or the profile has no email.
+ *
+ * Truncates at 40 chars (middle-ellipsis) so the head line stays within
+ * Slack's sensible mrkdwn width on narrow clients.
+ */
+function emailSuffix(slot: AuthKey): string {
+  if (!isCctSlot(slot)) return '';
+  const email = slot.oauthAttachment?.profile?.email;
+  if (!email) return '';
+  return ` · ${truncateMiddle(email, 40)}`;
 }
 
 /**
@@ -179,7 +266,10 @@ function buildUsagePanelBlock(usage: UsageSnapshot, nowMs: number, keyId: string
   if (usage.sevenDay) {
     rows.push(formatUsageBar(usage.sevenDay.utilization, usage.sevenDay.resetsAt, nowMs, '7d'));
   }
-  if (usage.sevenDaySonnet) {
+  // Card v2 (#668 follow-up): hide the 7d-sonnet row when utilization is 0
+  // (or absent). Most slots never touch Sonnet, so a flat `░░░░░░░░░░ 0%`
+  // row is line noise — drop it rather than pad the panel with it.
+  if (usage.sevenDaySonnet && usage.sevenDaySonnet.utilization > 0) {
     rows.push(formatUsageBar(usage.sevenDaySonnet.utilization, usage.sevenDaySonnet.resetsAt, nowMs, '7d-sonnet'));
   }
   if (rows.length === 0) return null;
@@ -194,7 +284,81 @@ function buildUsagePanelBlock(usage: UsageSnapshot, nowMs: number, keyId: string
   };
 }
 
-function authStateBadge(state: AuthState): string {
+/**
+ * Cooldown trigger — the reason a slot is currently parked. Priority order
+ * `7d > 5h > manual` is the user-facing intent: "biggest bucket first".
+ * Callers surface only the highest-priority trigger on the badge; the
+ * `rate-limited via <source>` segment still carries the source separately.
+ */
+export type CooldownSource = 'seven_day' | 'five_hour' | 'manual';
+
+export interface CooldownInfo {
+  /** True when any trigger fires. False ⇒ healthy cooldown-free slot. */
+  inCooldown: boolean;
+  /**
+   * ms until the cooldown expires. Clamped at ≥0 — a past `resetsAt` renders
+   * as "0s" rather than negative-duration garbage. Only meaningful when
+   * `inCooldown` is true.
+   */
+  remainingMs: number;
+  source: CooldownSource | null;
+}
+
+/**
+ * Compute the highest-priority cooldown trigger for a slot. Priority is
+ * 7d util≥1 > 5h util≥1 > manual (state.cooldownUntil in the future).
+ *
+ * Deliberate choices:
+ *   - util≥1 without a `resetsAt > now` constraint. A 7d bucket that has
+ *     exhausted still blocks the slot; whether its `resetsAt` has passed
+ *     is an upstream-timing artifact we don't second-guess here (the user
+ *     wants to see the bucket as "at-limit" regardless).
+ *   - remaining time is cap-at-zero so a stale resetsAt renders cleanly.
+ */
+export function computeCooldown(state: SlotState | undefined, nowMs: number): CooldownInfo {
+  if (!state) return { inCooldown: false, remainingMs: 0, source: null };
+  const sevenDay = state.usage?.sevenDay;
+  if (sevenDay && sevenDay.utilization >= 1) {
+    const resets = new Date(sevenDay.resetsAt).getTime();
+    const remaining = Number.isFinite(resets) ? Math.max(0, resets - nowMs) : 0;
+    return { inCooldown: true, remainingMs: remaining, source: 'seven_day' };
+  }
+  const fiveHour = state.usage?.fiveHour;
+  if (fiveHour && fiveHour.utilization >= 1) {
+    const resets = new Date(fiveHour.resetsAt).getTime();
+    const remaining = Number.isFinite(resets) ? Math.max(0, resets - nowMs) : 0;
+    return { inCooldown: true, remainingMs: remaining, source: 'five_hour' };
+  }
+  if (state.cooldownUntil) {
+    const until = new Date(state.cooldownUntil).getTime();
+    if (Number.isFinite(until) && until > nowMs) {
+      return { inCooldown: true, remainingMs: until - nowMs, source: 'manual' };
+    }
+  }
+  return { inCooldown: false, remainingMs: 0, source: null };
+}
+
+/** Human label for a {@link CooldownSource} — kept colocated with the helper. */
+function cooldownSourceLabel(source: CooldownSource): string {
+  switch (source) {
+    case 'seven_day':
+      return '7d';
+    case 'five_hour':
+      return '5h';
+    case 'manual':
+      return 'manual';
+  }
+}
+
+function authStateBadge(state: AuthState, cooldown?: CooldownInfo): string {
+  // Card v2 (#668 follow-up): when a cooldown fires, it supersedes the
+  // healthy badge — the operator cares about the remaining wait, not the
+  // underlying auth state (which is still `healthy`). `refresh_failed` and
+  // `revoked` still win over cooldown because they indicate a broken slot
+  // that won't self-recover.
+  if (cooldown?.inCooldown && state === 'healthy' && cooldown.source) {
+    return `:large_orange_circle: cooldown ${formatUsageResetDelta(cooldown.remainingMs)} via ${cooldownSourceLabel(cooldown.source)} limit`;
+  }
   switch (state) {
     case 'healthy':
       return ':large_green_circle: healthy';
@@ -243,8 +407,16 @@ function buildSlotStatusLine(
   userTz: string,
 ): string {
   const segments: string[] = [];
-  segments.push(authStateBadge(state?.authState ?? 'healthy'));
+  // Card v2 (#668 follow-up): the cooldown badge subsumes the separate
+  // "cooldown until <ts>" suffix. `rate-limited via <source>` stays distinct
+  // because it is a historical timestamp, not a live countdown.
+  const cooldown = computeCooldown(state, nowMs);
+  segments.push(authStateBadge(state?.authState ?? 'healthy', cooldown));
   if (isActive) segments.push('active');
+  // `:lock: rotation-off` — operator-opt-out flag (#668 follow-up). Always
+  // surfaces, even on healthy slots, so the parked status is obvious at
+  // a glance.
+  if (slot.disableRotation) segments.push(':lock: rotation-off');
   // OAuth expiry — only for CCT slots that carry an attachment. `api_key`
   // and bare setup slots have no OAuth to refresh so they're omitted.
   if (isCctSlot(slot) && slot.oauthAttachment !== undefined) {
@@ -255,12 +427,6 @@ function buildSlotStatusLine(
     const ts = formatRateLimitedAt(state.rateLimitedAt, userTz, nowMs);
     const source = state.rateLimitSource ? ` via ${state.rateLimitSource}` : '';
     segments.push(`rate-limited ${ts}${source}`);
-  }
-  if (state?.cooldownUntil) {
-    const untilMs = new Date(state.cooldownUntil).getTime();
-    if (Number.isFinite(untilMs) && untilMs > nowMs) {
-      segments.push(`cooldown until ${formatRateLimitedAt(state.cooldownUntil, userTz, nowMs).split(' / ')[0]}`);
-    }
   }
   if (state?.tombstoned) segments.push(':wastebasket: tombstoned (drain in progress)');
   if (state && state.activeLeases.length > 0) segments.push(`leases: ${state.activeLeases.length}`);
@@ -302,7 +468,14 @@ export function buildSlotRow(
   // are now emitted for EVERY slot — #653 M2 removes the prior isActive
   // gating so inactive rows carry the full signal (user specifically wants
   // tier + 5h + 7d always visible, not just on the currently-selected row).
-  const line1 = [':key:', `*${escapeMrkdwn(slot.name)}*`, displayKindTag(slot), subscriptionBadge(slot), tosBadge(slot)]
+  const line1 = [
+    ':key:',
+    `*${escapeMrkdwn(slot.name)}*`,
+    displayKindTag(slot),
+    subscriptionBadge(slot),
+    emailSuffix(slot),
+    tosBadge(slot),
+  ]
     .filter(Boolean)
     .join(' ');
   // Line 2: live status (auth state + active flag + OAuth expiry +
@@ -317,15 +490,12 @@ export function buildSlotRow(
   // Per-slot action row. Ordering by intent:
   //   1. Activate (primary, first) — only when slot is NOT active and
   //      NOT an api_key (api_key is store-only in phase 1).
-  //   2. Refresh — only when the slot carries an OAuth attachment (the
-  //      precondition for `/api/oauth/usage` AND the OAuth-token refresh
-  //      endpoint). Force-refreshes BOTH the OAuth access_token AND the
-  //      usage snapshot — the `Refresh` handler orchestrates both calls
-  //      so the card reflects new expiresAtMs + new usage on the same
-  //      click (see actions.ts cct_refresh_usage_slot).
-  //   3. Attach or Detach OAuth — only for setup-source cct slots.
-  //   4. Rename — always.
-  //   5. Remove — always, last (danger).
+  //   2. Attach or Detach OAuth — only for setup-source cct slots.
+  //   3. Remove — always, last (danger).
+  //
+  // Per-slot Refresh / Rename buttons were removed in the card v2
+  // follow-up: Refresh is now a card-level fan-out
+  // (`CCT_ACTION_IDS.refresh_card`), and Rename was unused in practice.
   const actionElements: ZBlock[] = [];
   if (!isActive && slot.kind !== 'api_key') {
     actionElements.push({
@@ -333,14 +503,6 @@ export function buildSlotRow(
       action_id: CCT_ACTION_IDS.activate_slot,
       style: 'primary',
       text: { type: 'plain_text', text: ':arrow_forward: Activate', emoji: true },
-      value: slot.keyId,
-    });
-  }
-  if (isCctSlot(slot) && slot.oauthAttachment !== undefined) {
-    actionElements.push({
-      type: 'button',
-      action_id: CCT_ACTION_IDS.refresh_usage_slot,
-      text: { type: 'plain_text', text: ':arrows_counterclockwise: Refresh', emoji: true },
       value: slot.keyId,
     });
   }
@@ -361,12 +523,6 @@ export function buildSlotRow(
       });
     }
   }
-  actionElements.push({
-    type: 'button',
-    action_id: CCT_ACTION_IDS.rename,
-    text: { type: 'plain_text', text: ':pencil2: Rename', emoji: true },
-    value: slot.keyId,
-  });
   actionElements.push({
     type: 'button',
     action_id: CCT_ACTION_IDS.remove,
@@ -411,10 +567,13 @@ export function appendStoreReadFailureBanner(blocks: ZBlock[]): void {
 
 /**
  * Safety margin under Slack's 50-block hard cap per message / ephemeral.
- * Stops the card assembly well short of the cap so adjacent banners
- * (store-read failure, api_key hidden context) still fit.
+ * Card v2 (#668 follow-up): lowered from 48 → 47 to reserve one extra
+ * slot for the cct-topic.ts trailer chrome (legacy set-active action row
+ * + cancel button + store-read banner) that lands AFTER this helper
+ * returns. Without the reservation a 15-slot fleet can tip over the
+ * hard cap when the budget footer and trailers all land together.
  */
-const SLACK_BLOCK_SOFT_CAP = 48;
+const SLACK_BLOCK_SOFT_CAP = 47;
 
 /**
  * Post-assembly overflow guard. Invoked only when the rich layout
@@ -447,7 +606,82 @@ function trimBlocksToSlackCap(blocks: ZBlock[]): ZBlock[] {
       blocks.splice(i, 1);
     }
   }
+  if (blocks.length <= SLACK_BLOCK_SOFT_CAP) return blocks;
+  // Phase 3 (card v2): strip the budget footer. It is a convenience
+  // summary — if the card is already pressed against the cap, the
+  // per-slot rows carry the raw percentages.
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    if (blocks.length <= SLACK_BLOCK_SOFT_CAP) break;
+    const b = blocks[i] as { type?: string; block_id?: string };
+    if (b.block_id === CCT_CARD_BLOCK_ID_PREFIX.budgetFooter) {
+      blocks.splice(i, 1);
+    }
+  }
   return blocks;
+}
+
+/**
+ * Card v2 (#668 follow-up) — "Soonest expiring 7d budget" footer.
+ *
+ * Scans every eligible CCT slot's 7d usage window and surfaces the three
+ * whose `resetsAt` is closest to `now`. Each entry shows the slot name,
+ * remaining percentage, and TTL until the window resets. The intent is
+ * to let operators see at a glance which budgets are about to roll over
+ * so they can pace dispatches accordingly.
+ *
+ * Eligibility:
+ *   - kind === 'cct' (api_key has no usage surface)
+ *   - oauthAttachment present
+ *   - state.usage.sevenDay.resetsAt parseable
+ *   - NOT tombstoned / revoked (both of these slots are going away;
+ *     their remaining budget is not useful to surface)
+ *
+ * Returns `null` when fewer than 2 eligible slots exist — a single-slot
+ * fleet doesn't benefit from a "soonest" ranking.
+ */
+export function buildBudgetFooterBlock(
+  slots: AuthKey[],
+  states: Record<string, SlotState>,
+  nowMs: number,
+): ZBlock | null {
+  interface Entry {
+    name: string;
+    remainingPct: number;
+    ttlMs: number;
+  }
+  const entries: Entry[] = [];
+  for (const slot of slots) {
+    if (slot.kind !== 'cct') continue;
+    if (slot.oauthAttachment === undefined) continue;
+    const state = states[slot.keyId];
+    if (!state) continue;
+    if (state.tombstoned) continue;
+    if (state.authState === 'revoked') continue;
+    const sevenDay = state.usage?.sevenDay;
+    if (!sevenDay) continue;
+    const resetsMs = new Date(sevenDay.resetsAt).getTime();
+    if (!Number.isFinite(resetsMs)) continue;
+    const util = Math.min(1, Math.max(0, sevenDay.utilization));
+    entries.push({
+      name: slot.name,
+      remainingPct: Math.round((1 - util) * 100),
+      ttlMs: Math.max(0, resetsMs - nowMs),
+    });
+  }
+  if (entries.length < 2) return null;
+  entries.sort((a, b) => a.ttlMs - b.ttlMs);
+  const topThree = entries.slice(0, 3);
+  const parts = topThree.map(
+    (e) => `\`${escapeMrkdwn(e.name)}\` ${e.remainingPct}% · ${formatUsageResetDelta(e.ttlMs)}`,
+  );
+  return {
+    type: 'section',
+    block_id: CCT_CARD_BLOCK_ID_PREFIX.budgetFooter,
+    text: {
+      type: 'mrkdwn',
+      text: `:hourglass_flowing_sand: *Soonest expiring 7d budget:* ${parts.join(' · ')}`,
+    },
+  };
 }
 
 /**
@@ -477,14 +711,17 @@ export function buildCctCardBlocks(input: CctCardInput): ZBlock[] {
       for (const b of rowBlocks) blocks.push(b);
       blocks.push({ type: 'divider' });
     }
+    // Card v2 (#668 follow-up): budget footer between the per-slot rows
+    // and the card-level action row. Returns null for single-slot fleets.
+    const footer = buildBudgetFooterBlock(input.slots, input.states, nowMs);
+    if (footer) blocks.push(footer);
   }
 
-  // Card-level action row: Next rotate / Add / Refresh all. Per-slot
-  // [Activate] / [Refresh] / [Rename] / [Remove] / [Attach|Detach] live on
-  // each slot row (see `buildSlotRow`). `set_active` is retained as a
-  // fallback dropdown only when there are >1 slots, for screen-reader
-  // accessibility and bulk-navigation (#653 M2: inline [Activate] button
-  // is the primary affordance; dropdown is backup).
+  // Card-level action row: Next rotate / Add / Refresh All OAuth Tokens. Per-slot
+  // [Activate] / [Remove] / [Attach|Detach] live on each slot row (see
+  // `buildSlotRow`). The per-slot inline [Activate] button is the only
+  // activation affordance; the legacy `set_active` fallback dropdown was
+  // dropped in the card v2 follow-up.
   const actionElements: ZBlock[] = [
     {
       type: 'button',
@@ -502,33 +739,17 @@ export function buildCctCardBlocks(input: CctCardInput): ZBlock[] {
     {
       type: 'button',
       action_id: CCT_ACTION_IDS.refresh_usage_all,
-      text: { type: 'plain_text', text: ':arrows_counterclockwise: Refresh all', emoji: true },
+      text: { type: 'plain_text', text: ':arrows_counterclockwise: Refresh All OAuth Tokens', emoji: true },
       value: 'refresh_all',
+    },
+    {
+      type: 'button',
+      action_id: CCT_ACTION_IDS.refresh_card,
+      text: { type: 'plain_text', text: ':arrows_counterclockwise: Refresh', emoji: true },
+      value: 'refresh_card',
     },
   ];
   blocks.push({ type: 'actions', elements: actionElements });
-
-  // Set-active selector (only when >1 slot). Kept as a fallback for large
-  // fleets where the overflow guard may have dropped inline [Activate]
-  // affordances along with their actions rows (defensive — today the
-  // guard only strips dividers and usage-context blocks).
-  if (input.slots.length > 1) {
-    const options = input.slots.map((s) => ({
-      text: { type: 'plain_text', text: s.name, emoji: false },
-      value: s.keyId,
-    }));
-    blocks.push({
-      type: 'actions',
-      elements: [
-        {
-          type: 'static_select',
-          action_id: CCT_ACTION_IDS.set_active,
-          placeholder: { type: 'plain_text', text: 'Set active slot', emoji: true },
-          options,
-        },
-      ],
-    });
-  }
 
   // Apply the overflow guard AFTER chrome is added so dividers inside
   // slot rows (not chrome) are the first casualty.
@@ -746,32 +967,6 @@ export function buildAttachOAuthModal(slot: AuthKey): Record<string, unknown> {
     callback_id: CCT_VIEW_IDS.attach,
     title: { type: 'plain_text', text: 'Attach OAuth', emoji: true },
     submit: { type: 'plain_text', text: 'Attach', emoji: true },
-    close: { type: 'plain_text', text: 'Cancel', emoji: true },
-    private_metadata: slot.keyId,
-    blocks,
-  };
-}
-
-/** Modal: Rename slot. */
-export function buildRenameSlotModal(slot: AuthKey): Record<string, unknown> {
-  const blocks: ZBlock[] = [
-    {
-      type: 'input',
-      block_id: CCT_BLOCK_IDS.rename_name,
-      label: { type: 'plain_text', text: 'New name', emoji: true },
-      element: {
-        type: 'plain_text_input',
-        action_id: CCT_ACTION_IDS.rename_input,
-        max_length: 64,
-        initial_value: slot.name,
-      },
-    },
-  ];
-  return {
-    type: 'modal',
-    callback_id: CCT_VIEW_IDS.rename,
-    title: { type: 'plain_text', text: 'Rename CCT slot', emoji: true },
-    submit: { type: 'plain_text', text: 'Rename', emoji: true },
     close: { type: 'plain_text', text: 'Cancel', emoji: true },
     private_metadata: slot.keyId,
     blocks,

@@ -21,7 +21,6 @@ import type { App } from '@slack/bolt';
 import type { WebClient } from '@slack/web-api';
 import { isAdminUser } from '../../admin-utils';
 import type { AuthKey } from '../../auth/auth-key';
-import { config } from '../../config';
 import { Logger } from '../../logger';
 import type { OAuthCredentials } from '../../oauth/refresher';
 import { hasRequiredScopes } from '../../oauth/scope-check';
@@ -33,7 +32,6 @@ import {
   buildAttachOAuthModal,
   buildCctCardBlocks,
   buildRemoveSlotModal,
-  buildRenameSlotModal,
 } from './builder';
 import { CCT_ACTION_IDS, CCT_BLOCK_IDS, CCT_VIEW_IDS } from './views';
 
@@ -49,9 +47,8 @@ const API_KEY_REGEX = /^sk-ant-api03-[A-Za-z0-9_-]{8,}$/;
 // wording in one place.
 export const REFRESH_BANNERS = {
   allNull:
-    ':warning: *Refresh all — no fresh data* — every attached slot returned no usage (throttled or failed). Check the TokenManager logs for `fetchAndStoreUsage` errors or the usage-store health.',
-  slotNull:
-    ':warning: *Refresh slot — no fresh data* — this slot returned no usage (throttled or failed). Check the TokenManager logs for `fetchAndStoreUsage` errors or the usage-store health.',
+    ':warning: *Refresh All OAuth Tokens — nothing refreshed* — every attached slot failed to refresh. Check the TokenManager logs for `refreshAllAttachedOAuthTokens` errors or the auth-state of each slot.',
+  cardNull: ':warning: *Refresh — all usage fetches were throttled or failed.* Try again in a moment.',
   outerCatch: ':warning: Refresh failed. Please try again.',
 } as const;
 
@@ -62,12 +59,9 @@ export const REFRESH_BANNERS = {
  *   action  cct_open_add       → open Add modal
  *   action  cct_kind_radio     → update Add modal (conditional blocks)
  *   action  cct_open_remove    → open Remove modal (resolves keyId from value)
- *   action  cct_open_rename    → open Rename modal (ditto)
  *   action  cct_next           → rotateToNext + re-post card
- *   action  cct_set_active     → applyToken + re-post card
  *   view    cct_add_slot       → validate + addSlot + close
  *   view    cct_remove_slot    → removeSlot (handles pending-drain) + close
- *   view    cct_rename_slot    → renameSlot + close
  */
 export function registerCctActions(app: App, tokenManager: TokenManager): void {
   // Open Add modal.
@@ -195,35 +189,6 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
     }
   });
 
-  // Open Rename modal.
-  app.action(CCT_ACTION_IDS.rename, async ({ ack, body, client }) => {
-    await ack();
-    try {
-      if (!requireAdmin(body)) return;
-      const triggerId: string | undefined = (body as any)?.trigger_id;
-      if (!triggerId) return;
-      // Per-slot Rename button: `value` carries the target keyId.
-      const bodyAction = (body as any).actions?.[0];
-      const targetKeyId = typeof bodyAction?.value === 'string' ? bodyAction.value : undefined;
-      if (!targetKeyId) {
-        logger.warn('cct_open_rename: missing keyId on action value');
-        return;
-      }
-      const snap = await tokenManager.getSnapshot();
-      const target = snap.registry.slots.find((s) => s.keyId === targetKeyId);
-      if (!target) {
-        logger.warn('cct_open_rename: target slot not found', { targetKeyId });
-        return;
-      }
-      await client.views.open({
-        trigger_id: triggerId,
-        view: buildRenameSlotModal(target) as any,
-      });
-    } catch (err) {
-      logger.error('cct_open_rename failed', err);
-    }
-  });
-
   // Rotate to next.
   app.action(CCT_ACTION_IDS.next, async ({ ack, body, client, respond }) => {
     await ack();
@@ -233,22 +198,6 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
       await respondWithCard({ tokenManager, respond, body, client });
     } catch (err) {
       logger.error('cct_next failed', err);
-    }
-  });
-
-  // Set active via fallback dropdown (kept for accessibility + bulk
-  // navigation on wide fleets). The per-slot inline [Activate] button
-  // registered below is the primary affordance for single-slot activation.
-  app.action(CCT_ACTION_IDS.set_active, async ({ ack, body, client, respond }) => {
-    await ack();
-    try {
-      if (!requireAdmin(body)) return;
-      const keyId = (body as any)?.actions?.[0]?.selected_option?.value as string | undefined;
-      if (!keyId) return;
-      await tokenManager.applyToken(keyId);
-      await respondWithCard({ tokenManager, respond, body, client });
-    } catch (err) {
-      logger.error('cct_set_active failed', err);
     }
   });
 
@@ -284,29 +233,26 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
     }
   });
 
-  // Card-level "Refresh all" (admin-only fan-out).
+  // Card-level "Refresh All OAuth Tokens" (admin-only fan-out).
   //
-  // Ack first (Slack 3s contract), then admin gate, then fetch. Does NOT
-  // forward `force` to per-slot calls — the per-keyId in-flight dedupe
-  // lets this share the scheduler's tick when they overlap, and forcing
-  // every slot would defeat the local `nextUsageFetchAllowedAt` throttle
-  // that protects Anthropic from refresh storms. See
-  // `token-manager.ts fetchUsageForAllAttached` and the test contract at
-  // `token-manager.test.ts` ("does NOT forward force").
+  // Ack first (Slack 3s contract), then admin gate, then the token-refresh
+  // fan-out. This button force-refreshes the OAuth access_token for every
+  // attached CCT slot AND awaits the profile sync under a shared deadline
+  // so the card's email / rate-limit-tier badges reflect fresh data on the
+  // same click. It does NOT re-fetch usage; usage re-fetches happen on the
+  // separate card-level [Refresh] button.
   //
-  // When every attached slot returns `null` (all fetches throttled or
-  // failed), post an ephemeral banner instead of silently re-rendering
-  // the same stale card. Partial failures still re-post so successful
-  // rows update. Empty input map (no attached slots) is not "all failed".
+  // When every attached slot reports `error` (all refreshes failed), post
+  // an ephemeral banner instead of silently re-rendering the same stale
+  // card. Partial failures still re-post so successful rows update. Empty
+  // result map (no attached slots) is not "all failed".
   app.action(CCT_ACTION_IDS.refresh_usage_all, async ({ ack, body, client }) => {
     await ack();
     try {
       if (!requireAdmin(body)) return;
-      const results = await tokenManager.fetchUsageForAllAttached({
-        timeoutMs: config.usage.fetchTimeoutMs,
-      });
-      const entries = Object.values(results);
-      const allFailed = entries.length > 0 && entries.every((r) => r === null);
+      const results = await tokenManager.refreshAllAttachedOAuthTokens({ awaitProfile: true });
+      const outcomes = Object.values(results);
+      const allFailed = outcomes.length > 0 && outcomes.every((o) => o === 'error');
       if (allFailed) {
         await postEphemeralFailure(client, body, REFRESH_BANNERS.allNull);
         return;
@@ -318,52 +264,38 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
     }
   });
 
-  // Per-slot "Refresh" — force-refresh BOTH the OAuth access_token AND
-  // the usage snapshot. Rationale (#653 M2): operators clicking Refresh
-  // expect the "OAuth refreshes in X" hint on the card to reset, not
-  // just the usage percentages. Previously the button refreshed only
-  // usage (which internally only triggered a token refresh if the
-  // access_token was within the 7h REFRESH_BUFFER_MS window), so a fresh
-  // token with 6h left would show the same expiry before and after
-  // click. Now we call `forceRefreshOAuth` first (ignoring "still fresh"
-  // short-circuit) then `fetchAndStoreUsage({force:true})`.
+  // Card-level "Refresh" — pure usage re-fetch fan-out. Siblings:
+  //   - [Refresh All OAuth Tokens] above refreshes OAuth tokens.
+  //   - This handler force-refreshes the usage snapshot on every attached
+  //     CCT slot (via `fetchAndStoreUsage(keyId, { force: true })`) so the
+  //     per-row usage bars reflect the latest Anthropic data on the same
+  //     click.
   //
-  // Admin gate + `{ force: true }` on usage fetch bypasses the local
-  // throttle for this single slot. OAuth refresh failures are logged
-  // but don't abort the usage fetch — a `revoked` token will surface
-  // via `authState` on the re-posted card, so the user sees the failure
-  // mode.
-  app.action(CCT_ACTION_IDS.refresh_usage_slot, async ({ ack, body, client }) => {
+  // When every attached slot fetch returns null (throttled or failed),
+  // post an ephemeral banner instead of silently re-rendering the same
+  // stale card.
+  app.action(CCT_ACTION_IDS.refresh_card, async ({ ack, body, client }) => {
     await ack();
     try {
       if (!requireAdmin(body)) return;
-      const bodyAction = (body as any).actions?.[0];
-      const targetKeyId = typeof bodyAction?.value === 'string' ? bodyAction.value : undefined;
-      if (!targetKeyId) {
-        logger.warn('cct_refresh_usage_slot: missing keyId on action value');
-        return;
-      }
-      // Force-refresh OAuth first. `forceRefreshOAuth` is a no-op when
-      // the slot has no attachment. Failures (401/403) mark the slot's
-      // authState but don't throw past here — we still want the usage
-      // fetch to run so the card shows the latest state + the error.
-      try {
-        await tokenManager.forceRefreshOAuth(targetKeyId);
-      } catch (err) {
-        logger.warn('cct_refresh_usage_slot: OAuth force-refresh failed (continuing with usage fetch)', {
-          targetKeyId,
-          err,
-        });
-      }
-      const result = await tokenManager.fetchAndStoreUsage(targetKeyId, { force: true });
-      if (result === null) {
-        await postEphemeralFailure(client, body, REFRESH_BANNERS.slotNull);
+      const snap = await tokenManager.getSnapshot();
+      const keyIds = snap.registry.slots
+        .filter((s) => s.kind === 'cct' && s.oauthAttachment !== undefined)
+        .map((s) => s.keyId);
+      const results = await Promise.allSettled(
+        keyIds.map((keyId) => tokenManager.fetchAndStoreUsage(keyId, { force: true })),
+      );
+      const freshCount = results.filter((r) => r.status === 'fulfilled' && r.value !== null).length;
+      if (freshCount === 0 && keyIds.length > 0) {
+        await postEphemeralFailure(client, body, REFRESH_BANNERS.cardNull);
         return;
       }
       await postEphemeralCard(tokenManager, client, body);
     } catch (err) {
-      logger.error('cct_refresh_usage_slot failed', err);
-      await postEphemeralFailure(client, body, REFRESH_BANNERS.outerCatch);
+      logger.error('cct_refresh_card failed', err);
+      await postEphemeralFailure(client, body, REFRESH_BANNERS.outerCatch).catch(() => {
+        /* ignore double-failure */
+      });
     }
   });
 
@@ -439,49 +371,6 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
       await postEphemeralCard(tokenManager, client, body);
     } catch (err) {
       logger.error('cct view_submission remove failed', err);
-    }
-  });
-
-  // View submission: Rename slot.
-  app.view(CCT_VIEW_IDS.rename, async ({ ack, body, client }) => {
-    const values: Record<string, Record<string, any>> = (body as any)?.view?.state?.values ?? {};
-    const newName = readPlainText(values, CCT_BLOCK_IDS.rename_name, CCT_ACTION_IDS.rename_input);
-    if (!newName || newName.length > 64) {
-      await ack({
-        response_action: 'errors',
-        errors: { [CCT_BLOCK_IDS.rename_name]: 'Name must be 1-64 characters.' },
-      });
-      return;
-    }
-    const clash = tokenManager.listTokens().some((t) => t.name === newName);
-    if (clash) {
-      await ack({
-        response_action: 'errors',
-        errors: { [CCT_BLOCK_IDS.rename_name]: `Name \`${newName}\` is already in use.` },
-      });
-      return;
-    }
-    try {
-      const keyId = ((body as any)?.view?.private_metadata ?? '') as string;
-      if (!keyId) {
-        await ack();
-        return;
-      }
-      await tokenManager.renameSlot(keyId, newName);
-      await ack();
-      await postEphemeralCard(tokenManager, client, body);
-    } catch (err) {
-      // Race-lost path: parallel rename landed the same name first.
-      const msg = (err as Error)?.message ?? '';
-      if (msg.startsWith('NAME_IN_USE:')) {
-        await ack({
-          response_action: 'errors',
-          errors: { [CCT_BLOCK_IDS.rename_name]: `Name \`${newName}\` is already in use.` },
-        });
-        return;
-      }
-      await ack();
-      logger.error('cct view_submission rename failed', err);
     }
   });
 

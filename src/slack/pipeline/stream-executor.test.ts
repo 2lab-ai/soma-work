@@ -2,7 +2,7 @@
  * StreamExecutor tests - focusing on continuation pattern
  */
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../user-settings-store', () => ({
   userSettingsStore: {
@@ -18,6 +18,7 @@ vi.mock('../../user-settings-store', () => ({
     getUserSettings: vi.fn().mockReturnValue(undefined),
     getUserPersona: vi.fn().mockReturnValue('default'),
     getUserDefaultModel: vi.fn().mockReturnValue('claude-opus-4-6'),
+    setUserDefaultModel: vi.fn(),
     getUserDefaultEffort: vi.fn().mockReturnValue('high'),
     getUserShowThinking: vi.fn().mockReturnValue(true),
     getUserRating: vi.fn().mockReturnValue(5),
@@ -25,6 +26,9 @@ vi.mock('../../user-settings-store', () => ({
     consumePendingRatingChange: vi.fn().mockReturnValue(null),
     setPendingRatingChange: vi.fn(),
   },
+  // `coerceToAvailableModel` is a pure function — pass-through is sufficient
+  // for tests that never exercise the AVAILABLE_MODELS allowlist guard.
+  coerceToAvailableModel: (raw: string) => raw,
 }));
 
 vi.mock('../../channel-description-cache', () => ({
@@ -1865,6 +1869,301 @@ describe('File access blocked error recovery', () => {
     const executor = new StreamExecutor({} as any);
     const error = new Error('NormalizedProviderError: permission denied: /var/secret/key.pem');
     expect((executor as any).extractBlockedPath(error)).toBe('/var/secret/key.pem');
+  });
+
+  // ── Issue #661: 1M context unavailable auto-fallback ──
+
+  beforeEach(() => {
+    // userSettingsStore is a module-level vi.mock; `mockClear()` alone leaves
+    // queued `mockReturnValueOnce` values in place across tests, so reset the
+    // implementation and re-establish the baseline `getUserDefaultModel`
+    // return value that other (non-1M) tests rely on.
+    (userSettingsStore.setUserDefaultModel as any).mockReset();
+    (userSettingsStore.getUserDefaultModel as any).mockReset();
+    (userSettingsStore.getUserDefaultModel as any).mockReturnValue('claude-opus-4-6');
+  });
+
+  /** Canonical 1M-unavailable error carrying ONE_M_CONTEXT_UNAVAILABLE code + attemptedModel. */
+  function buildOneMUnavailableError(attemptedModel = 'claude-opus-4-7[1m]'): any {
+    const err: any = new Error(
+      'API Error: Extra usage is required for 1M context · run /extra-usage to enable, or /model to switch to standard context',
+    );
+    err.code = 'ONE_M_CONTEXT_UNAVAILABLE';
+    err.attemptedModel = attemptedModel;
+    return err;
+  }
+
+  it('1M fallback case 1: session.model [1m] stripped (user default NEVER persisted)', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+
+    // Even if user default is [1m], policy is session-only — never persist.
+    (userSettingsStore.getUserDefaultModel as any).mockReturnValueOnce('claude-opus-4-7[1m]');
+    const session = { model: 'claude-opus-4-7[1m]', ownerId: 'U1' } as any;
+    const error = buildOneMUnavailableError();
+
+    const retryAfterMs = await (executor as any).handleError(
+      error,
+      session,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say,
+    );
+
+    expect(retryAfterMs).toBe(500);
+    expect(session.model).toBe('claude-opus-4-7');
+    // CRITICAL: user's persisted default is NEVER written. Session-only policy.
+    expect(userSettingsStore.setUserDefaultModel).not.toHaveBeenCalled();
+    expect(error.oneMFallbackInfo).toBeDefined();
+    expect(error.oneMFallbackInfo.sessionChanged).toBe(true);
+    expect(error.oneMFallbackInfo.bareTarget).toBe('claude-opus-4-7');
+    // Session preserved (no clearSessionId)
+    expect(deps.claudeHandler.clearSessionId).not.toHaveBeenCalled();
+    // User notice wording — session-scoped with "기본값 설정은 변경되지 않습니다"
+    expect(say).toHaveBeenCalledTimes(1);
+    const payload = say.mock.calls[0][0];
+    expect(payload.text).toContain('이번 세션 모델');
+    expect(payload.text).toContain('기본값 설정은 변경되지 않습니다');
+    expect(payload.text).toContain('claude-opus-4-7');
+  });
+
+  it('1M fallback case 2: never persists even when user default has [1m]', async () => {
+    // Regression guard for the session-only policy: no matter what the user
+    // default is, `setUserDefaultModel` must not fire. This is the invariant
+    // Z asked us to enforce — session-scoped fallback only.
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+
+    (userSettingsStore.getUserDefaultModel as any).mockReturnValueOnce('claude-opus-4-7[1m]');
+    const session = { model: 'claude-opus-4-7[1m]', ownerId: 'U1' } as any;
+    const error = buildOneMUnavailableError();
+
+    await (executor as any).handleError(error, session, 'C123:thread123', 'C123', 'thread123', [], say);
+
+    expect(userSettingsStore.setUserDefaultModel).not.toHaveBeenCalled();
+    expect((error as any).oneMFallbackInfo.sessionChanged).toBe(true);
+    // No `defaultChanged` field at all — session-only policy has no such concept.
+    expect((error as any).oneMFallbackInfo.defaultChanged).toBeUndefined();
+  });
+
+  it('1M fallback case 3: session.model undefined → pin to bare from error.attemptedModel + retry', async () => {
+    // Legacy-restored sessions can have `session.model === undefined` (the
+    // session registry preserves that shape deliberately). In that case the
+    // next turn would rehydrate `[1m]` from the user default and loop
+    // forever, so the fallback MUST pin `session.model` to the bare variant
+    // of `error.attemptedModel` even though `session.model` itself has
+    // nothing to strip.
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+
+    (userSettingsStore.getUserDefaultModel as any).mockReturnValueOnce('claude-opus-4-7[1m]');
+    const session = { ownerId: 'U1' } as any;
+    const error = buildOneMUnavailableError('claude-opus-4-7[1m]');
+
+    const retryAfterMs = await (executor as any).handleError(
+      error,
+      session,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say,
+    );
+
+    // Session model pinned to bare(attemptedModel); retry scheduled.
+    expect(retryAfterMs).toBe(500);
+    expect(session.model).toBe('claude-opus-4-7');
+    expect(userSettingsStore.setUserDefaultModel).not.toHaveBeenCalled();
+    expect(error.oneMFallbackInfo.sessionChanged).toBe(true);
+    expect(error.oneMFallbackInfo.bareTarget).toBe('claude-opus-4-7');
+    const payload = say.mock.calls[0][0];
+    // Active-pin wording — NOT the defensive "추가 변경 없음".
+    expect(payload.text).toContain('이번 세션 모델');
+    expect(payload.text).not.toContain('추가 변경 없음');
+  });
+
+  it('1M fallback case 4: turnNotifier is NOT invoked on 1M fallback', async () => {
+    const deps = createExecutorDeps();
+    deps.turnNotifier = { notify: vi.fn().mockResolvedValue(undefined) };
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+
+    (userSettingsStore.getUserDefaultModel as any).mockReturnValueOnce('claude-opus-4-7[1m]');
+    const session = { model: 'claude-opus-4-7[1m]', ownerId: 'U1' } as any;
+    const error = buildOneMUnavailableError();
+
+    await (executor as any).handleError(error, session, 'C123:thread123', 'C123', 'thread123', [], say);
+
+    expect(deps.turnNotifier.notify).not.toHaveBeenCalled();
+  });
+
+  it('1M fallback case 5: shouldClearSessionOnError returns false', () => {
+    const executor = new StreamExecutor({} as any);
+    const error = buildOneMUnavailableError();
+    expect((executor as any).shouldClearSessionOnError(error)).toBe(false);
+  });
+
+  it('1M fallback case 6: clears stale session state (lastErrorContext, fileAccessRetryCount)', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+
+    (userSettingsStore.getUserDefaultModel as any).mockReturnValueOnce('claude-opus-4-7[1m]');
+    const session = {
+      model: 'claude-opus-4-7[1m]',
+      ownerId: 'U1',
+      lastErrorContext: '파일 접근이 차단되었습니다: /tmp/old.png',
+      fileAccessRetryCount: 3,
+    } as any;
+    const error = buildOneMUnavailableError();
+
+    await (executor as any).handleError(error, session, 'C123:thread123', 'C123', 'thread123', [], say);
+
+    expect(session.lastErrorContext).toBeUndefined();
+    expect(session.fileAccessRetryCount).toBe(0);
+  });
+
+  it('1M fallback case 7: passthrough when attemptedModel is already bare (no [1m] suffix)', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+
+    (userSettingsStore.getUserDefaultModel as any).mockReturnValueOnce('claude-opus-4-7');
+    const session = { model: 'claude-opus-4-7', ownerId: 'U1' } as any;
+
+    // Error carries the 1M-unavailable signal text but attemptedModel is bare
+    // AND no code is set — matcher must reject this (not our branch's concern).
+    const err: any = new Error('API Error: Extra usage is required for 1M context · run /extra-usage to enable');
+    err.attemptedModel = 'claude-opus-4-7'; // bare
+    // No err.code — matcher gate: code !== 'ONE_M_CONTEXT_UNAVAILABLE' AND !hasOneMSuffix(attemptedModel)
+
+    // The `isOneMContextUnavailableError` matcher should return false.
+    expect((executor as any).isOneMContextUnavailableError(err)).toBe(false);
+
+    await (executor as any).handleError(err, session, 'C123:thread123', 'C123', 'thread123', [], say);
+
+    // No 1M-branch side-effects (setUserDefaultModel never called)
+    expect(userSettingsStore.setUserDefaultModel).not.toHaveBeenCalled();
+    expect((err as any).oneMFallbackInfo).toBeUndefined();
+    expect(session.model).toBe('claude-opus-4-7'); // untouched
+  });
+
+  it('1M fallback case 8: formatErrorForUser emits SDK Details and session-scoped wording', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+
+    (userSettingsStore.getUserDefaultModel as any).mockReturnValueOnce('claude-opus-4-7[1m]');
+    const session = { model: 'claude-opus-4-7[1m]', ownerId: 'U1' } as any;
+    const error = buildOneMUnavailableError();
+    (error as any).stderrContent = 'stderr trace: upstream returned 429 for 1m context';
+
+    await (executor as any).handleError(error, session, 'C123:thread123', 'C123', 'thread123', [], say);
+
+    const payload = say.mock.calls[0][0];
+    // Session-scoped wording — no "기본 설정 변경" claim
+    expect(payload.text).toContain('이번 세션 모델');
+    expect(payload.text).toContain('기본값 설정은 변경되지 않습니다');
+    expect(payload.text).toContain('claude-opus-4-7');
+    // Entitlement kind → Extra Usage recovery hint.
+    expect(payload.text).toMatch(/extra.usage/i);
+    // Permanent-change hint must use the ACTUAL bare model, not a hardcoded
+    // alias — attemptedModel was claude-opus-4-7[1m] → bare claude-opus-4-7.
+    expect(payload.text).toContain('/z model claude-opus-4-7');
+    expect(payload.text).not.toContain('/z model opus');
+    // SDK Details section preserved via shared appendSdkDetails helper
+    expect(payload.text).toContain('SDK Details:');
+    expect(payload.text).toContain('1m context');
+  });
+
+  it('1M fallback case 9: defensive no-strip when both models already bare but matcher triggers', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+
+    // Both session and default are already bare — matcher still fires via error.code
+    (userSettingsStore.getUserDefaultModel as any).mockReturnValueOnce('claude-opus-4-7');
+    const session = { model: 'claude-opus-4-7', ownerId: 'U1' } as any;
+    const error = buildOneMUnavailableError('claude-opus-4-7[1m]'); // attemptedModel preserves history
+
+    const retryAfterMs = await (executor as any).handleError(
+      error,
+      session,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say,
+    );
+
+    // Nothing to change — no retry scheduled, no persisted write
+    expect(retryAfterMs).toBeUndefined();
+    expect(userSettingsStore.setUserDefaultModel).not.toHaveBeenCalled();
+    expect(error.oneMFallbackInfo.sessionChanged).toBe(false);
+    const payload = say.mock.calls[0][0];
+    expect(payload.text).toContain('추가 변경 없음');
+    // Defensive no-op branch must NOT promise a retry that will never happen.
+    expect(payload.text).toContain('자동 재시도 없음');
+    expect(payload.text).not.toContain('bare 모델로 자동 재시도');
+  });
+
+  it('1M fallback case 10: permanent-change hint uses ACTUAL bareTarget (opus-4-6, not opus-4-7)', async () => {
+    // Regression guard: `/z model opus` used to be hardcoded, which resolves
+    // to `claude-opus-4-7`. If the user was on `claude-opus-4-6[1m]`, the
+    // session pin is `claude-opus-4-6` — the permanent-change hint must
+    // match that, otherwise following it swaps to a different model family.
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+
+    (userSettingsStore.getUserDefaultModel as any).mockReturnValueOnce('claude-opus-4-6[1m]');
+    const session = { model: 'claude-opus-4-6[1m]', ownerId: 'U1' } as any;
+    const error = buildOneMUnavailableError('claude-opus-4-6[1m]');
+
+    await (executor as any).handleError(error, session, 'C123:thread123', 'C123', 'thread123', [], say);
+
+    expect(session.model).toBe('claude-opus-4-6');
+    expect(error.oneMFallbackInfo.bareTarget).toBe('claude-opus-4-6');
+    const payload = say.mock.calls[0][0];
+    expect(payload.text).toContain('/z model claude-opus-4-6');
+    expect(payload.text).not.toContain('/z model opus');
+    expect(payload.text).not.toContain('/z model claude-opus-4-7');
+  });
+
+  it('1M fallback case 11: auth-mode 1M error uses auth-kind wording (no Extra Usage suggestion)', async () => {
+    // The matcher also catches 400 "incompatible with the long context beta
+    // header" — that's an auth-style mismatch, not a billing problem. The
+    // formatter must point the user at the operator / auth config, NOT at
+    // Claude Extra Usage.
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+
+    (userSettingsStore.getUserDefaultModel as any).mockReturnValueOnce('claude-opus-4-7[1m]');
+    const session = { model: 'claude-opus-4-7[1m]', ownerId: 'U1' } as any;
+    const err: any = new Error(
+      'API Error: 400 {"type":"error","error":{"type":"invalid_request_error","message":"This authentication style is incompatible with the long context beta header."}}',
+    );
+    err.code = 'ONE_M_CONTEXT_UNAVAILABLE';
+    err.attemptedModel = 'claude-opus-4-7[1m]';
+
+    await (executor as any).handleError(err, session, 'C123:thread123', 'C123', 'thread123', [], say);
+
+    expect(err.oneMFallbackInfo.sessionChanged).toBe(true);
+    expect(err.oneMFallbackInfo.kind).toBe('auth');
+    const payload = say.mock.calls[0][0];
+    // Auth-kind wording — points to operator, not billing.
+    expect(payload.text).toContain('인증 구성');
+    expect(payload.text).toContain('long-context 베타 헤더');
+    expect(payload.text).not.toMatch(/extra.usage/i);
+    // Session still got pinned → retry still scheduled. Auth-kind only
+    // changes the remediation copy, not the fallback mechanics.
+    expect(session.model).toBe('claude-opus-4-7');
   });
 });
 
