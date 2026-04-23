@@ -66,6 +66,7 @@ describe('InstructionConfirmActionHandler', () => {
       messageTs: 'ts-1',
       request: mkRequest(),
       createdAt: Date.now(),
+      requesterId: 'U1',
     });
 
     await handler.handleYes(
@@ -89,6 +90,7 @@ describe('InstructionConfirmActionHandler', () => {
       messageTs: 'ts-2',
       request: mkRequest(),
       createdAt: Date.now(),
+      requesterId: 'U1',
     });
 
     await handler.handleNo(
@@ -112,6 +114,7 @@ describe('InstructionConfirmActionHandler', () => {
       messageTs: 'ts-3',
       request: mkRequest(),
       createdAt: Date.now(),
+      requesterId: 'U1',
     });
 
     await handler.handleYes(
@@ -123,6 +126,34 @@ describe('InstructionConfirmActionHandler', () => {
     expect(session.systemPrompt).toBe('cached-prompt');
     // Entry should still exist — the owner can still click later.
     expect(store.get('r3')).toBeDefined();
+  });
+
+  it('handleYes rejects a drifted currentInitiatorId even when session.currentInitiatorId now matches clicker', async () => {
+    // Regression guard: before we snapshotted `requesterId` into the store,
+    // a newer turn could flip `session.currentInitiatorId` to the attacker
+    // and let that attacker approve someone else's pending write. The
+    // entry's own requesterId ('U-original') is the only trusted anchor.
+    const { handler, session, store, updateSessionResources } = mkHandler();
+    session.currentInitiatorId = 'U-attacker';
+    store.set({
+      requestId: 'r-drift',
+      sessionKey: 'C1|T1',
+      channelId: 'C1',
+      threadTs: 'T1',
+      messageTs: 'ts-drift',
+      request: mkRequest(),
+      createdAt: Date.now(),
+      requesterId: 'U-original',
+    });
+
+    await handler.handleYes(
+      { user: { id: 'U-attacker' }, actions: [{ action_id: 'instr_confirm_y:r-drift', value: 'r-drift' }] },
+      respond,
+    );
+
+    expect(updateSessionResources).not.toHaveBeenCalled();
+    expect(session.systemPrompt).toBe('cached-prompt');
+    expect(store.get('r-drift')).toBeDefined();
   });
 
   it('handleYes is a no-op for an unknown requestId', async () => {

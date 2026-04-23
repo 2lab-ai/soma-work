@@ -32,6 +32,38 @@ interface MemoryOperationResult {
 
 const logger = new Logger('UserMemoryStore');
 
+// --- Prompt-cache invalidation hook -----------------------------------------
+//
+// The user's `MEMORY.md` / `USER.md` contents are inlined into the system
+// prompt by PromptBuilder. ClaudeHandler caches that prompt on the session
+// (`session.systemPrompt`) and only rebuilds at three explicit reset points
+// (see claude-handler.ts:1068). When the store mutates, none of those points
+// fire automatically, so long-running sessions continue serving the stale
+// snapshot — the drift that review finding #3 flagged.
+//
+// To avoid a cyclic import into SessionRegistry, wiring is deferred to
+// startup (`src/index.ts`) via this setter. `invalidateForUser` is called
+// after every successful write; unwired stays silently no-op so tests and
+// isolated tooling (bd scripts, migration tools) don't need the hook.
+//
+// Contract: hook receives the affected `userId`; implementation walks
+// active sessions and clears their `systemPrompt` snapshot. See
+// SessionRegistry.invalidateSystemPromptForUser for the canonical impl.
+let invalidatePromptHook: ((userId: string) => void) | undefined;
+
+export function setMemoryPromptInvalidationHook(hook: ((userId: string) => void) | undefined): void {
+  invalidatePromptHook = hook;
+}
+
+function fireInvalidate(userId: string): void {
+  try {
+    invalidatePromptHook?.(userId);
+  } catch (err) {
+    // Invalidation failure must never block a successful write. Log and move on.
+    logger.debug('Memory prompt invalidation hook failed', { userId, err });
+  }
+}
+
 function getUserMemoryDir(userId: string): string {
   if (!isSafePathSegment(userId)) {
     throw new Error(`Invalid userId for memory storage: ${userId}`);
@@ -138,6 +170,7 @@ export function addMemory(userId: string, target: MemoryTarget, content: string)
   }
 
   writeEntries(userId, target, newEntries);
+  fireInvalidate(userId);
   logger.info('Memory added', { userId, target, entryLength: trimmed.length });
   return { ok: true, message: 'Entry added', entries: newEntries };
 }
@@ -173,6 +206,7 @@ export function replaceMemory(
   }
 
   writeEntries(userId, target, updated);
+  fireInvalidate(userId);
   logger.info('Memory replaced', { userId, target, index: idx });
   return { ok: true, message: 'Entry replaced', entries: updated };
 }
@@ -193,6 +227,7 @@ export function removeMemory(userId: string, target: MemoryTarget, oldText: stri
   updated.splice(idx, 1);
 
   writeEntries(userId, target, updated);
+  fireInvalidate(userId);
   logger.info('Memory removed', { userId, target, index: idx });
   return { ok: true, message: 'Entry removed', entries: updated };
 }
@@ -208,6 +243,7 @@ export function removeMemoryByIndex(userId: string, target: MemoryTarget, index:
   updated.splice(index - 1, 1);
 
   writeEntries(userId, target, updated);
+  fireInvalidate(userId);
   logger.info('Memory removed by index', { userId, target, index });
   return { ok: true, message: `Entry #${index} removed`, entries: updated };
 }
@@ -249,6 +285,7 @@ export function replaceMemoryByIndex(
     return { ok: false, reason: 'total over charLimit' };
   }
   writeEntries(userId, target, next);
+  fireInvalidate(userId);
   logger.info('Memory replaced by index', { userId, target, index });
   return { ok: true };
 }
@@ -302,17 +339,21 @@ export function replaceAllMemory(
     return { ok: false, reason: 'total over charLimit' };
   }
   writeEntries(userId, target, trimmedEntries);
+  fireInvalidate(userId);
   logger.info('Memory replaced in full', { userId, target, count: trimmedEntries.length });
   return { ok: true };
 }
 
 export function clearMemory(userId: string, target: MemoryTarget): MemoryOperationResult {
   writeEntries(userId, target, []);
+  fireInvalidate(userId);
   logger.info('Memory cleared', { userId, target });
   return { ok: true, message: `All ${target} entries cleared`, entries: [] };
 }
 
 export function clearAllMemory(userId: string): MemoryOperationResult {
+  // Both clearMemory calls fire invalidate themselves; ordering is
+  // idempotent so no need to coalesce.
   clearMemory(userId, 'memory');
   clearMemory(userId, 'user');
   return { ok: true, message: 'All memory and user profile entries cleared', entries: [] };

@@ -2738,6 +2738,12 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       instructionOperations: request.instructionOperations,
     };
 
+    // Snapshot the turn initiator (or fall back to the session owner when
+    // no initiator is set yet — e.g. first turn). This is frozen into the
+    // store so the handler can evaluate the owner guard against the user
+    // who actually triggered this write, immune to later turn shifts.
+    const requesterId = session.currentInitiatorId || session.ownerId;
+
     const evicted = store.set({
       requestId,
       sessionKey: context.sessionKey,
@@ -2745,6 +2751,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       threadTs: context.threadTs,
       request: requestForStore,
       createdAt: Date.now(),
+      requesterId,
     });
 
     // Supersede any prior pending message for this session.

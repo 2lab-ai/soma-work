@@ -72,13 +72,18 @@ export class InstructionConfirmActionHandler {
       return;
     }
 
-    // Owner guard — only the session owner (or the current initiator) may
-    // approve. Matches the compact-confirm UX.
+    // Owner guard — only the session owner or the user who originally
+    // triggered this instruction write (snapshotted at queue time as
+    // `entry.requesterId`) may approve. We deliberately do NOT consult
+    // `session.currentInitiatorId` here: that field mutates every turn, so
+    // a newer initiator would otherwise be able to approve a proposal
+    // raised during someone else's turn.
     const clicker = body?.user?.id;
-    if (clicker && session.ownerId !== clicker && session.currentInitiatorId !== clicker) {
+    if (clicker && session.ownerId !== clicker && entry.requesterId !== clicker) {
       this.logger.info('instr_confirm_y: non-owner click ignored', {
         clicker,
         ownerId: session.ownerId,
+        requesterId: entry.requesterId,
       });
       return;
     }
@@ -133,9 +138,14 @@ export class InstructionConfirmActionHandler {
 
     const session = this.ctx.claudeHandler.getSessionByKey(entry.sessionKey);
     if (session) {
+      // Owner guard — same snapshot rule as handleYes.
       const clicker = body?.user?.id;
-      if (clicker && session.ownerId !== clicker && session.currentInitiatorId !== clicker) {
-        this.logger.info('instr_confirm_n: non-owner click ignored', { clicker });
+      if (clicker && session.ownerId !== clicker && entry.requesterId !== clicker) {
+        this.logger.info('instr_confirm_n: non-owner click ignored', {
+          clicker,
+          ownerId: session.ownerId,
+          requesterId: entry.requesterId,
+        });
         return;
       }
       // Runtime-only flag — stream-executor consumes + clears on next turn.

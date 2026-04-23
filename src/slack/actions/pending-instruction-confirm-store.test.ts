@@ -24,6 +24,10 @@ function mkRequest(opCount = 1): SessionResourceUpdateRequest {
   };
 }
 
+// Shared requesterId for fixtures — individual tests override when the
+// owner-identity is what's under test.
+const DEFAULT_REQUESTER = 'U-owner';
+
 describe('PendingInstructionConfirmStore', () => {
   beforeEach(() => {
     // Wipe the store file between tests so each test starts clean.
@@ -39,6 +43,7 @@ describe('PendingInstructionConfirmStore', () => {
       threadTs: 'T1',
       request: mkRequest(),
       createdAt: Date.now(),
+      requesterId: DEFAULT_REQUESTER,
     };
     expect(store.set(entry)).toBeUndefined();
     expect(store.get('r1')).toEqual(entry);
@@ -59,6 +64,7 @@ describe('PendingInstructionConfirmStore', () => {
       messageTs: 'ts-a',
       request: mkRequest(),
       createdAt: Date.now(),
+      requesterId: DEFAULT_REQUESTER,
     };
     store.set(a);
     const b = { ...a, requestId: 'r2', messageTs: undefined as string | undefined };
@@ -78,6 +84,7 @@ describe('PendingInstructionConfirmStore', () => {
       threadTs: 'T1',
       request: mkRequest(),
       createdAt: Date.now(),
+      requesterId: DEFAULT_REQUESTER,
     };
     store.set(entry);
     store.updateMessageTs('r1', 'ts-123');
@@ -94,6 +101,7 @@ describe('PendingInstructionConfirmStore', () => {
       messageTs: 'ts-1',
       request: mkRequest(),
       createdAt: Date.now(),
+      requesterId: DEFAULT_REQUESTER,
     });
 
     const store2 = new PendingInstructionConfirmStore();
@@ -111,6 +119,7 @@ describe('PendingInstructionConfirmStore', () => {
       threadTs: 'T2',
       request: mkRequest(),
       createdAt: Date.now() - 25 * 60 * 60 * 1000,
+      requesterId: DEFAULT_REQUESTER,
     };
     const fresh = {
       requestId: 'new',
@@ -119,6 +128,7 @@ describe('PendingInstructionConfirmStore', () => {
       threadTs: 'T3',
       request: mkRequest(),
       createdAt: Date.now(),
+      requesterId: DEFAULT_REQUESTER,
     };
     // Write directly to file so we can set createdAt freely.
     fs.writeFileSync(STORE_FILE, JSON.stringify([expired, fresh], null, 2));
@@ -126,5 +136,44 @@ describe('PendingInstructionConfirmStore', () => {
     expect(loaded).toBe(1);
     expect(store.get('old')).toBeUndefined();
     expect(store.get('new')).toEqual(fresh);
+  });
+
+  it('drops rehydrated entries missing requesterId (pre-schema-migration)', () => {
+    // Persist a pre-migration entry shape (no requesterId) and verify the
+    // reloader refuses it rather than rehydrate an unguardable record.
+    const legacy = {
+      requestId: 'legacy',
+      sessionKey: 'C4|T4',
+      channelId: 'C4',
+      threadTs: 'T4',
+      request: mkRequest(),
+      createdAt: Date.now(),
+    };
+    fs.writeFileSync(STORE_FILE, JSON.stringify([legacy], null, 2));
+    const store = new PendingInstructionConfirmStore();
+    const loaded = store.loadForms();
+    expect(loaded).toBe(0);
+    expect(store.get('legacy')).toBeUndefined();
+  });
+
+  it('get(requestId) treats expired entries as gone and deletes them', () => {
+    // Runtime TTL guard — before the fix the expiry check only ran at
+    // loadForms time, so a long-running process could serve entries past
+    // their 24h window. Force an expired createdAt and verify get/
+    // getBySession sweep it lazily.
+    const store = new PendingInstructionConfirmStore();
+    store.set({
+      requestId: 'stale',
+      sessionKey: 'C5|T5',
+      channelId: 'C5',
+      threadTs: 'T5',
+      request: mkRequest(),
+      createdAt: Date.now() - 25 * 60 * 60 * 1000,
+      requesterId: DEFAULT_REQUESTER,
+    });
+    expect(store.get('stale')).toBeUndefined();
+    expect(store.getBySession('C5|T5')).toBeUndefined();
+    // Should also have been purged from the snapshot list.
+    expect(store.list()).toHaveLength(0);
   });
 });

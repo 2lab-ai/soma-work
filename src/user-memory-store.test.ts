@@ -352,4 +352,49 @@ describe('user-memory-store atomic write + new primitives', () => {
       });
     });
   });
+
+  // Review PR #683, finding #3 — every successful write has to notify the
+  // prompt-cache invalidation hook so long-running sessions don't keep
+  // serving stale memory in their rebuilt system prompt.
+  describe('prompt invalidation hook', () => {
+    it('fires on every successful mutator; suppresses hook errors', () => {
+      const calls: string[] = [];
+      store.setMemoryPromptInvalidationHook((uid) => {
+        calls.push(uid);
+      });
+
+      store.addMemory(userId, 'memory', 'a');
+      store.addMemory(userId, 'memory', 'b');
+      store.replaceMemory(userId, 'memory', 'a', 'A');
+      store.removeMemory(userId, 'memory', 'A');
+      store.addMemory(userId, 'memory', 'c');
+      store.removeMemoryByIndex(userId, 'memory', 1);
+      store.addMemory(userId, 'memory', 'd');
+      store.replaceMemoryByIndex(userId, 'memory', 1, 'D');
+      store.replaceAllMemory(userId, 'memory', ['e', 'f']);
+      store.clearMemory(userId, 'memory');
+      store.clearAllMemory(userId); // clearMemory x2 (memory+user)
+
+      // 10 direct mutations above, then clearAllMemory → 2 further fires.
+      expect(calls.length).toBe(12);
+      expect(calls.every((uid) => uid === userId)).toBe(true);
+
+      // Throwing inside the hook must not block the write or propagate.
+      store.setMemoryPromptInvalidationHook(() => {
+        throw new Error('boom');
+      });
+      expect(() => store.addMemory(userId, 'memory', 'after-throw')).not.toThrow();
+      expect(store.loadMemory(userId, 'memory').entries).toContain('after-throw');
+
+      // Cleanup for subsequent tests.
+      store.setMemoryPromptInvalidationHook(undefined);
+    });
+
+    it('does not fire when no hook is installed (default)', () => {
+      // Fresh module reload → no hook registered. Mutations should still
+      // succeed without throwing.
+      expect(() => store.addMemory(userId, 'memory', 'only')).not.toThrow();
+      expect(store.loadMemory(userId, 'memory').entries).toEqual(['only']);
+    });
+  });
 });

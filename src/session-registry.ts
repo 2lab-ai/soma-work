@@ -301,6 +301,34 @@ export class SessionRegistry {
   }
 
   /**
+   * Invalidate the cached `systemPrompt` snapshot on every active session
+   * owned by `userId`. The next claude-handler turn on those sessions will
+   * hit the rebuild branch in `claude-handler.ts:1068` and pick up the
+   * fresh SSOT state (memory entries, persona, user settings).
+   *
+   * Mirrors the per-session invalidation at line 822 of this file — centralised
+   * here so external mutators (user-memory-store, user-settings-store) don't
+   * have to iterate `getAllSessions()` themselves and potentially miss new
+   * owner-linked fields added later.
+   *
+   * Returns the number of sessions invalidated (useful for tests + logs).
+   */
+  invalidateSystemPromptForUser(userId: string): number {
+    if (!userId) return 0;
+    let count = 0;
+    for (const session of this.sessions.values()) {
+      if (session.ownerId !== userId) continue;
+      if (session.systemPrompt === undefined) continue;
+      session.systemPrompt = undefined;
+      count += 1;
+    }
+    if (count > 0) {
+      this.logger.debug('Invalidated systemPrompt for user sessions', { userId, count });
+    }
+    return count;
+  }
+
+  /**
    * Dashboard v2.1 — Turn timer hooks (called from stream-executor).
    * Kept on the registry so tests can exercise the timer + persistence path
    * without booting the full Slack pipeline.

@@ -7,6 +7,26 @@ import { maskUrl } from './turn-notifier.js';
 
 const logger = new Logger('UserSettingsStore');
 
+// --- Prompt-cache invalidation hook -----------------------------------------
+//
+// Settings that feed the system prompt (persona, model, verbosity, effort,
+// thinking flags, etc) drift silently away from `session.systemPrompt` until
+// the next forced rebuild. See review finding #3 — this setter lets
+// SessionRegistry hook in at startup without a cyclic import.
+let invalidatePromptHook: ((userId: string) => void) | undefined;
+
+export function setSettingsPromptInvalidationHook(hook: ((userId: string) => void) | undefined): void {
+  invalidatePromptHook = hook;
+}
+
+function fireSettingsInvalidate(userId: string): void {
+  try {
+    invalidatePromptHook?.(userId);
+  } catch (err) {
+    logger.debug('Settings prompt invalidation hook failed', { userId, err });
+  }
+}
+
 // Available models — the 8-entry user-facing allow-list.
 //
 // Contract:
@@ -482,6 +502,10 @@ export class UserSettingsStore {
       };
     }
     this.saveSettings();
+    // Centralised invalidation — every settings mutation funnels through
+    // here, so hooking the hot path once covers persona / model / verbosity
+    // / effort / theme / bypass / network etc without call-site duplication.
+    fireSettingsInvalidate(userId);
   }
 
   /**

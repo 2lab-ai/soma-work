@@ -289,6 +289,21 @@ async function start() {
     setDashboardSessionAccessor(() => claudeHandler.getAllSessions());
     claudeHandler.getSessionRegistry().setActivityStateChangeCallback(() => broadcastSessionUpdate());
 
+    // Wire prompt-cache invalidation for SSOT mutators that live outside
+    // the stream-executor (user memory writes, user settings updates). The
+    // handlers live in independent modules — injecting the registry here
+    // avoids a cyclic import while still ensuring the next turn rebuilds.
+    // See review finding #3 in PR #683.
+    {
+      const registry = claudeHandler.getSessionRegistry();
+      const invalidate = (userId: string): void => {
+        registry.invalidateSystemPromptForUser(userId);
+      };
+      userMemoryStore.setMemoryPromptInvalidationHook(invalidate);
+      const { setSettingsPromptInvalidationHook } = await import('./user-settings-store');
+      setSettingsPromptInvalidationHook(invalidate);
+    }
+
     // Connect dashboard: task accessor (resolve sessionKey → sessionId for TodoManager)
     setDashboardTaskAccessor((sessionKey: string) => {
       const session = claudeHandler.getSessionRegistry().getSessionByKey(sessionKey);

@@ -53,6 +53,14 @@ export interface PendingInstructionConfirm {
   request: SessionResourceUpdateRequest;
   /** Creation timestamp (ms). */
   createdAt: number;
+  /**
+   * Slack user id of the turn initiator at the moment the model queued the
+   * write. Snapshotted here so the owner guard survives later mutations of
+   * `session.currentInitiatorId` (which would otherwise let a newer turn's
+   * initiator approve/reject a proposal raised by someone else). Required —
+   * entries missing this field are dropped on rehydrate.
+   */
+  requesterId: string;
 }
 
 export class PendingInstructionConfirmStore {
@@ -88,12 +96,43 @@ export class PendingInstructionConfirmStore {
   }
 
   get(requestId: string): PendingInstructionConfirm | undefined {
-    return this.byRequest.get(requestId);
+    const entry = this.byRequest.get(requestId);
+    if (!entry) return undefined;
+    if (this.isExpired(entry)) {
+      this.deleteExpired(entry);
+      return undefined;
+    }
+    return entry;
   }
 
   getBySession(sessionKey: string): PendingInstructionConfirm | undefined {
     const id = this.bySession.get(sessionKey);
-    return id ? this.byRequest.get(id) : undefined;
+    if (!id) return undefined;
+    const entry = this.byRequest.get(id);
+    if (!entry) return undefined;
+    if (this.isExpired(entry)) {
+      this.deleteExpired(entry);
+      return undefined;
+    }
+    return entry;
+  }
+
+  private isExpired(entry: PendingInstructionConfirm): boolean {
+    return Date.now() - (entry.createdAt || 0) > CONFIRM_TTL_MS;
+  }
+
+  /** Drop an entry from memory + persist. Used by the runtime TTL sweep. */
+  private deleteExpired(entry: PendingInstructionConfirm): void {
+    this.byRequest.delete(entry.requestId);
+    if (this.bySession.get(entry.sessionKey) === entry.requestId) {
+      this.bySession.delete(entry.sessionKey);
+    }
+    this.saveForms();
+    this.logger.info('Dropped expired pending-instruction confirm', {
+      requestId: entry.requestId,
+      sessionKey: entry.sessionKey,
+      ageMs: Date.now() - (entry.createdAt || 0),
+    });
   }
 
   delete(requestId: string): PendingInstructionConfirm | undefined {
@@ -138,6 +177,10 @@ export class PendingInstructionConfirmStore {
         if (!entry || typeof entry !== 'object') continue;
         if (!entry.requestId || !entry.sessionKey) continue;
         if (now - (entry.createdAt || 0) > CONFIRM_TTL_MS) continue;
+        // Schema migration guard — entries persisted before `requesterId`
+        // was introduced would rehydrate with an unguardable owner check.
+        // Drop them rather than accept a bypass-shaped entry.
+        if (typeof entry.requesterId !== 'string' || entry.requesterId.length === 0) continue;
         this.byRequest.set(entry.requestId, entry);
         this.bySession.set(entry.sessionKey, entry.requestId);
         restored += 1;
