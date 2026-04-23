@@ -1015,25 +1015,27 @@ describe('authStateBadge + buildSlotStatusLine — option A (PR #672 follow-up)'
     expect(text).not.toContain('5h Cooldown');
   });
 
-  it('OAuth authState=refresh_failed → :black_circle: Unavailable + OAuth refresh hint still shown', () => {
+  it('OAuth authState=refresh_failed → :black_circle: Unavailable, NO OAuth refresh hint (broken slot, hint is noise)', () => {
     const slot = oauthAttachedSlot();
     const state: SlotState = {
       authState: 'refresh_failed',
       activeLeases: [],
     };
     const text = statusText(slot, state);
-    expect(text).toContain(':black_circle: Unavailable');
-    expect(text).toContain('OAuth refreshes in');
+    expect(text).toBe(':black_circle: Unavailable');
+    // Hint suppressed for non-healthy OAuth slots — TO-BE-3 SSOT lock.
+    expect(text).not.toContain('OAuth refreshes in');
   });
 
-  it('OAuth authState=revoked → :black_circle: Unavailable', () => {
+  it('OAuth authState=revoked → :black_circle: Unavailable, NO OAuth refresh hint', () => {
     const slot = oauthAttachedSlot();
     const state: SlotState = {
       authState: 'revoked',
       activeLeases: [],
     };
     const text = statusText(slot, state);
-    expect(text).toContain(':black_circle: Unavailable');
+    expect(text).toBe(':black_circle: Unavailable');
+    expect(text).not.toContain('OAuth refreshes in');
   });
 
   it('OAuth utilization === 1.0 exactly → cooldown fires (≥1)', () => {

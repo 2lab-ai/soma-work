@@ -418,10 +418,17 @@ function buildSlotStatusLine(
   const segments: string[] = [];
 
   if (isCctSlot(slot) && slot.oauthAttachment !== undefined) {
+    const authState = state?.authState ?? 'healthy';
     const cooldown = computeUsageCooldown(state, nowMs);
-    segments.push(authStateBadge(state?.authState ?? 'healthy', cooldown));
-    const hint = formatOAuthExpiryHint(slot.oauthAttachment.expiresAtMs, nowMs);
-    if (hint) segments.push(hint);
+    segments.push(authStateBadge(authState, cooldown));
+    // Skip OAuth refresh hint when the slot is Unavailable (refresh_failed /
+    // revoked) — OAuth refresh is no longer meaningful for a broken slot, so
+    // the hint is pure noise. Per option-A SSOT: TO-BE-3 = `:black_circle:
+    // Unavailable` only, no trailing segment.
+    if (authState === 'healthy') {
+      const hint = formatOAuthExpiryHint(slot.oauthAttachment.expiresAtMs, nowMs);
+      if (hint) segments.push(hint);
+    }
   } else {
     const cooldown = computeManualCooldown(state, nowMs);
     segments.push(authStateBadge(state?.authState ?? 'healthy', cooldown));
