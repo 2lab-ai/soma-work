@@ -273,7 +273,21 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       await tm.init();
       const s1 = await tm.addSlot({ name: 'cct1', kind: 'setup_token', value: 'v1' });
       const s2 = await tm.addSlot({ name: 'cct2', kind: 'setup_token', value: 'v2' });
-      const s3 = await tm.addSlot({ name: 'cct3', kind: 'setup_token', value: 'v3' });
+      // Issue #673 — setup slots stay eligible even when their
+      // attachment-scoped authState is 'revoked' (dispatch uses setupToken
+      // unconditionally). Use a legacy-attachment slot here so the hard
+      // gate still applies and we can assert the skip-on-revoked path.
+      const s3 = await tm.addSlot({
+        name: 'cct3',
+        kind: 'oauth_credentials',
+        credentials: {
+          accessToken: 'sk-ant-oat01-v3',
+          refreshToken: 'sk-ant-ort01-v3',
+          expiresAtMs: Date.now() + 10 * 60 * 60 * 1000,
+          scopes: [...VALID_OAUTH_SCOPES],
+        },
+        acknowledgedConsumerTosRisk: true,
+      });
       const s4 = await tm.addSlot({ name: 'cct4', kind: 'setup_token', value: 'v4' });
 
       // s1 active. Mark s2 cooling, s3 revoked — expect rotate to s4.
@@ -580,7 +594,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       const tm = new mod.TokenManager(store);
       await tm.init();
       const s = await tm.addSlot({ name: 'a', kind: 'setup_token', value: 'sk-ant-oat01-xyz' });
-      const token = await tm.getValidAccessToken(s.keyId);
+      const token = await tm.getValidAccessToken(s.keyId, 'dispatch');
       expect(token).toBe('sk-ant-oat01-xyz');
       expect(refreshClaudeCredentialsMock).not.toHaveBeenCalled();
     });
@@ -599,7 +613,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
         }),
         acknowledgedConsumerTosRisk: true,
       });
-      const token = await tm.getValidAccessToken(s.keyId);
+      const token = await tm.getValidAccessToken(s.keyId, 'dispatch');
       expect(token).toBe('sk-ant-oat01-fresh');
       expect(refreshClaudeCredentialsMock).not.toHaveBeenCalled();
     });
@@ -618,7 +632,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
         }),
         acknowledgedConsumerTosRisk: true,
       });
-      const token = await tm.getValidAccessToken(s.keyId);
+      const token = await tm.getValidAccessToken(s.keyId, 'dispatch');
       expect(token).toBe('sk-ant-oat01-stale-refreshed');
       expect(refreshClaudeCredentialsMock).toHaveBeenCalledTimes(1);
 
@@ -654,7 +668,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
         },
       );
 
-      const p = Promise.all(Array.from({ length: 10 }, () => tm.getValidAccessToken(s.keyId)));
+      const p = Promise.all(Array.from({ length: 10 }, () => tm.getValidAccessToken(s.keyId, 'dispatch')));
       // Give refreshes a microtask to register into the dedupe map
       await new Promise((r) => setTimeout(r, 10));
       resolveRefresh({
@@ -682,7 +696,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       });
       refreshClaudeCredentialsMock.mockReset();
       refreshClaudeCredentialsMock.mockRejectedValue(new OAuthRefreshError(401, '', 'unauthorized'));
-      await expect(tm.getValidAccessToken(s.keyId)).rejects.toThrow();
+      await expect(tm.getValidAccessToken(s.keyId, 'dispatch')).rejects.toThrow();
       const snap = await store.load();
       expect(snap.state[s.keyId].authState).toBe('refresh_failed');
     });
@@ -701,7 +715,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       });
       refreshClaudeCredentialsMock.mockReset();
       refreshClaudeCredentialsMock.mockRejectedValue(new OAuthRefreshError(403, '', 'forbidden'));
-      await expect(tm.getValidAccessToken(s.keyId)).rejects.toThrow();
+      await expect(tm.getValidAccessToken(s.keyId, 'dispatch')).rejects.toThrow();
       const snap = await store.load();
       expect(snap.state[s.keyId].authState).toBe('revoked');
     });
@@ -1148,6 +1162,9 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       expect(updated.source).toBe('setup');
       expect(updated.oauthAttachment?.accessToken).toBe('sk-ant-oat01-attach');
       expect(updated.oauthAttachment?.acknowledgedConsumerTosRisk).toBe(true);
+      // Issue #673 — even though the attachment landed, the dispatch path
+      // must still surface the 1-year setupToken, not the 1h OAuth access.
+      expect(await tm.getValidAccessToken(slot.keyId, 'dispatch')).toBe('sk-ant-oat01-aaa');
     });
 
     it('T4: attachOAuth with insufficient scopes (missing user:profile) rejects', async () => {
@@ -2263,8 +2280,16 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
         credentials: makeOAuthCreds(),
         acknowledgedConsumerTosRisk: true,
       });
-      // Allow the fire-and-forget chain to land.
-      await new Promise((r) => setTimeout(r, 10));
+      // Allow the fire-and-forget chain to land. Poll up to ~500ms so this
+      // isn't flaky under loaded runners (the chain spans addSlot →
+      // refreshOAuthProfile → getValidAccessToken → store.mutate → persist,
+      // which can take 50+ms with the tmp-store fs overhead).
+      for (let i = 0; i < 50; i++) {
+        if ((fetchOAuthProfileMock.mock.calls.length ?? 0) >= 1) break;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      // And another short drain for the persist step after the mock resolved.
+      await new Promise((r) => setTimeout(r, 20));
       expect(fetchOAuthProfileMock).toHaveBeenCalledTimes(1);
       const snap = await tm.getSnapshot();
       const after = snap.registry.slots.find((s: any) => s.keyId === slot.keyId) as any;
@@ -2496,6 +2521,233 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       // Exactly one profile fetch per slot (awaited leg). The fire-and-forget
       // leg inside forceRefreshOAuth is suppressed by syncProfile:false.
       expect(fetchOAuthProfileMock).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  // ── Issue #673 — getValidAccessToken purpose split ─────────
+
+  describe('getValidAccessToken purpose split (issue #673)', () => {
+    it("'dispatch': cct/setup WITH oauthAttachment returns setupToken (NOT attachment access)", async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const SETUP_TOKEN = 'sk-ant-oat01-SETUP-1Y';
+      const slot = await tm.addSlot({ name: 'setup-673', kind: 'setup_token', value: SETUP_TOKEN });
+      await tm.attachOAuth(slot.keyId, makeOAuthCreds({ accessToken: 'sk-ant-oat01-1h-oauth' }), true);
+
+      const token = await tm.getValidAccessToken(slot.keyId, 'dispatch');
+      expect(token).toBe(SETUP_TOKEN);
+      // And no refresh should have been triggered — the attachment is ignored
+      // for dispatch even if it were near-expiry.
+      expect(refreshClaudeCredentialsMock).not.toHaveBeenCalled();
+    });
+
+    it("'dispatch': cct/setup WITHOUT attachment returns setupToken", async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const s = await tm.addSlot({ name: 'bare-setup', kind: 'setup_token', value: 'sk-ant-oat01-bare' });
+      expect(await tm.getValidAccessToken(s.keyId, 'dispatch')).toBe('sk-ant-oat01-bare');
+      expect(refreshClaudeCredentialsMock).not.toHaveBeenCalled();
+    });
+
+    it("'dispatch': legacy-attachment returns attachment.accessToken and triggers refresh when near expiry", async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const s = await tm.addSlot({
+        name: 'legacy',
+        kind: 'oauth_credentials',
+        credentials: makeOAuthCreds({
+          accessToken: 'sk-ant-oat01-stale',
+          expiresAtMs: Date.now() + 60 * 60 * 1000,
+        }),
+        acknowledgedConsumerTosRisk: true,
+      });
+      const token = await tm.getValidAccessToken(s.keyId, 'dispatch');
+      expect(token).toBe('sk-ant-oat01-stale-refreshed');
+      expect(refreshClaudeCredentialsMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("'dispatch': api_key returns slot.value", async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const s = await tm.addSlot({ name: 'api', kind: 'api_key', value: 'sk-ant-api03-abcdefghij' });
+      expect(await tm.getValidAccessToken(s.keyId, 'dispatch')).toBe('sk-ant-api03-abcdefghij');
+    });
+
+    it("'oauth-api': cct/setup WITH attachment returns attachment.accessToken", async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const slot = await tm.addSlot({ name: 'setup-attached', kind: 'setup_token', value: 'sk-ant-oat01-setup' });
+      await tm.attachOAuth(slot.keyId, makeOAuthCreds({ accessToken: 'sk-ant-oat01-attachment' }), true);
+      expect(await tm.getValidAccessToken(slot.keyId, 'oauth-api')).toBe('sk-ant-oat01-attachment');
+    });
+
+    it("'oauth-api': cct/setup WITHOUT attachment throws NoOAuthAttachmentError", async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const s = await tm.addSlot({ name: 'bare-setup', kind: 'setup_token', value: 'sk-ant-oat01-bare' });
+      await expect(tm.getValidAccessToken(s.keyId, 'oauth-api')).rejects.toBeInstanceOf(mod.NoOAuthAttachmentError);
+    });
+
+    it("'oauth-api': legacy-attachment returns attachment.accessToken", async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const s = await tm.addSlot({
+        name: 'legacy',
+        kind: 'oauth_credentials',
+        credentials: makeOAuthCreds({
+          accessToken: 'sk-ant-oat01-legacy',
+          expiresAtMs: Date.now() + 10 * 60 * 60 * 1000,
+        }),
+        acknowledgedConsumerTosRisk: true,
+      });
+      expect(await tm.getValidAccessToken(s.keyId, 'oauth-api')).toBe('sk-ant-oat01-legacy');
+    });
+
+    it("'oauth-api': api_key throws NoOAuthAttachmentError", async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const s = await tm.addSlot({ name: 'api', kind: 'api_key', value: 'sk-ant-api03-abcdefghij' });
+      await expect(tm.getValidAccessToken(s.keyId, 'oauth-api')).rejects.toBeInstanceOf(mod.NoOAuthAttachmentError);
+    });
+  });
+
+  // ── Issue #673 — isEligible setup-slot dispatch guard ──────
+
+  describe('isEligible (issue #673 setup-slot dispatch guard)', () => {
+    it("cct/setup with authState='refresh_failed' + setupToken remains eligible (picked by acquireLease)", async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const s = await tm.addSlot({ name: 'setup-rf', kind: 'setup_token', value: 'sk-ant-oat01-rf' });
+      await tm.markAuthState(s.keyId, 'refresh_failed');
+
+      const lease = await tm.acquireLease('test:673-eligible-rf');
+      try {
+        // The slot was picked — confirm via activeToken identity.
+        expect(tm.getActiveToken()?.keyId).toBe(s.keyId);
+      } finally {
+        await tm.releaseLease(lease.leaseId);
+      }
+    });
+
+    it("cct/setup with authState='revoked' + setupToken remains eligible (picked by acquireLease)", async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const s = await tm.addSlot({ name: 'setup-rv', kind: 'setup_token', value: 'sk-ant-oat01-rv' });
+      await tm.markAuthState(s.keyId, 'revoked');
+
+      const lease = await tm.acquireLease('test:673-eligible-rv');
+      try {
+        expect(tm.getActiveToken()?.keyId).toBe(s.keyId);
+      } finally {
+        await tm.releaseLease(lease.leaseId);
+      }
+    });
+
+    it("legacy-attachment with authState='refresh_failed' remains INELIGIBLE (acquireLease skips)", async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      // Legacy-attachment slot (broken) + setup slot (healthy fallback).
+      const legacy = await tm.addSlot({
+        name: 'legacy-broken',
+        kind: 'oauth_credentials',
+        credentials: makeOAuthCreds({ expiresAtMs: Date.now() + 10 * 60 * 60 * 1000 }),
+        acknowledgedConsumerTosRisk: true,
+      });
+      const healthy = await tm.addSlot({ name: 'setup-ok', kind: 'setup_token', value: 'sk-ant-oat01-ok' });
+      await tm.markAuthState(legacy.keyId, 'refresh_failed');
+
+      const lease = await tm.acquireLease('test:673-legacy-skip');
+      try {
+        expect(tm.getActiveToken()?.keyId).toBe(healthy.keyId);
+      } finally {
+        await tm.releaseLease(lease.leaseId);
+      }
+    });
+
+    it('cct/setup with active cooldownUntil still INELIGIBLE (cooldown gate independent of auth)', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const cooling = await tm.addSlot({ name: 'setup-cool', kind: 'setup_token', value: 'sk-ant-oat01-cool' });
+      const healthy = await tm.addSlot({ name: 'setup-ok', kind: 'setup_token', value: 'sk-ant-oat01-ok' });
+      await store.mutate((snap) => {
+        const st = snap.state[cooling.keyId] ?? { authState: 'healthy' as const, activeLeases: [] };
+        st.cooldownUntil = new Date(Date.now() + 10 * 60_000).toISOString();
+        snap.state[cooling.keyId] = st;
+      });
+
+      const lease = await tm.acquireLease('test:673-cooldown-skip');
+      try {
+        expect(tm.getActiveToken()?.keyId).toBe(healthy.keyId);
+      } finally {
+        await tm.releaseLease(lease.leaseId);
+      }
+    });
+  });
+
+  // ── Issue #673 — fetchAndStoreUsage uses oauth-api purpose ─
+
+  describe('fetchAndStoreUsage (issue #673 oauth-api purpose)', () => {
+    it('sends attachment.accessToken (NOT setupToken) to fetchUsage for setup+attachment slot', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const slot = await tm.addSlot({ name: 's1', kind: 'setup_token', value: 'sk-ant-oat01-SETUP-673' });
+      await tm.attachOAuth(
+        slot.keyId,
+        makeOAuthCreds({
+          accessToken: 'sk-ant-oat01-ATTACHMENT-673',
+          expiresAtMs: Date.now() + 10 * 60 * 60 * 1000,
+        }),
+        true,
+      );
+      fetchUsageMock.mockReset();
+      fetchUsageMock.mockResolvedValueOnce({
+        snapshot: {
+          fetchedAt: new Date().toISOString(),
+          fiveHour: { utilization: 0.2, resetsAt: new Date(Date.now() + 3_600_000).toISOString() },
+        },
+        nextFetchAllowedAtMs: Date.now() + 120_000,
+      });
+      await tm.fetchAndStoreUsage(slot.keyId);
+      expect(fetchUsageMock).toHaveBeenCalledTimes(1);
+      expect(fetchUsageMock.mock.calls[0][0]).toBe('sk-ant-oat01-ATTACHMENT-673');
+    });
+
+    it('no-ops and returns null for cct/setup WITHOUT attachment (early-return via NoOAuthAttachmentError path)', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const s = await tm.addSlot({ name: 'bare', kind: 'setup_token', value: 'sk-ant-oat01-bare' });
+      fetchUsageMock.mockReset();
+      const result = await tm.fetchAndStoreUsage(s.keyId);
+      expect(result).toBeNull();
+      expect(fetchUsageMock).not.toHaveBeenCalled();
     });
   });
 
