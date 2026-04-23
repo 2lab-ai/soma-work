@@ -172,6 +172,16 @@ export class SlackHandler {
     );
     // Set reaction manager for MCP pending tracking (hourglass emoji)
     this.toolEventProcessor.setReactionManager(this.reactionManager);
+    // #664 P2 tool-verbose absorb: route formatted tool results into the B1
+    // stream at PHASE>=2. The `\n\n` separator is applied here (caller-side)
+    // so TurnSurface.appendText stays a generic B1 write primitive and the
+    // tool-event-processor stays decoupled from any UI façade. `appendText`
+    // itself returns `false` when the turn has no open stream or is
+    // closing — the processor treats that as a fallback signal and reverts
+    // to legacy `say`, so tool output is never silently dropped.
+    this.toolEventProcessor.setToolResultSink(
+      async (turnId, markdown) => (await this.threadPanel?.appendText(turnId, `\n\n${markdown}`)) ?? false,
+    );
 
     // ActionHandlers needs context
     const actionContext: ActionHandlerContext = {

@@ -1,6 +1,6 @@
-# GitHub issue reference — using-epic-issue 부속
+# GitHub issue reference — using-epic-tasks 부속
 
-GitHub로 에픽+서브이슈를 구현할 때의 문법/API. 플랫폼-중립 규율은 SKILL.md가 소유.
+GitHub로 Case B의 에픽+서브이슈를 구현할 때의 문법/API. 플랫폼-중립 규율은 SKILL.md가 소유. Case A 단일 이슈도 이 참조를 사용.
 
 ## 1. Sub-issue 관계 성립 (2024-12 GA)
 

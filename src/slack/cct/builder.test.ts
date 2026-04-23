@@ -4,7 +4,6 @@ import {
   appendStoreReadFailureBanner,
   buildAddSlotModal,
   buildAttachOAuthModal,
-  buildBudgetFooterBlock,
   buildCctCardBlocks,
   buildRemoveSlotModal,
   buildSlotRow,
@@ -112,20 +111,23 @@ describe('buildSlotRow', () => {
     expect(flat).toMatch(/77%/);
   });
 
-  it('shows cooldown badge when still in future (#668 follow-up: subsumed into badge, orange dot + remaining time)', () => {
+  it('shows cooldown badge when still in future (#672 follow-up: option A — non-OAuth slot, generic Cooldown label)', () => {
+    // setupSlot() has no oauthAttachment → non-OAuth path uses
+    // computeManualCooldown + generic `Cooldown` label (no `5h` / `7d` prefix).
     const slot = setupSlot();
     const now = Date.parse('2026-04-18T03:42:00Z');
     const state: SlotState = {
       authState: 'healthy',
       activeLeases: [],
-      cooldownUntil: '2026-04-18T04:42:00Z',
+      cooldownUntil: '2026-04-18T04:42:00Z', // 1h ahead → yellow boundary
     };
     const blocks = buildSlotRow(slot, state, true, now, 'Asia/Seoul');
     const text = (blocks[0] as any).text.text as string;
-    // New contract: the trailing `cooldown until <ts>` segment is gone; the
-    // badge itself surfaces the state + remaining-time + source in one glance.
-    expect(text).toMatch(/:large_orange_circle: cooldown .* via manual limit/);
+    // New contract: option-A — color circle + `Cooldown <dur>` segment.
+    // Manual cooldown does not carry the `5h` / `7d` source label.
+    expect(text).toMatch(/:large_yellow_circle: Cooldown 1h 0m/);
     expect(text).not.toMatch(/cooldown until/);
+    expect(text).not.toMatch(/via manual limit/);
   });
 
   // the OLD "inactive collapses to section + actions only" rule is
@@ -134,7 +136,10 @@ describe('buildSlotRow', () => {
   // inactive slots still carry the authState+rate-limited segments on their
   // section multi-line body. (Block budget is preserved via trimBlocksToSlackCap
   // in `buildCctCardBlocks`; the N=15 cap tests below still pass.)
-  it('inactive slot DOES render rate-limited + authState on its section body', () => {
+  it('inactive slot DOES render rate-limited + Unavailable badge on its section body (non-OAuth path)', () => {
+    // setupSlot() is non-OAuth (no oauthAttachment) → the buildSlotStatusLine
+    // non-OAuth branch keeps `rate-limited` visible. authState='refresh_failed'
+    // collapses to `Unavailable` per option A (PR #672 follow-up).
     const slot = setupSlot();
     const state: SlotState = {
       authState: 'refresh_failed',
@@ -150,10 +155,10 @@ describe('buildSlotRow', () => {
     const section = blocks[0] as any;
     expect(section.type).toBe('section');
     const text = section.text.text as string;
-    // The rate-limited timestamp + refresh_failed badge are now visible for
-    // inactive slots (inverts the M1 review-P1 behaviour which hid them).
+    // Non-OAuth slot keeps the historical rate-limited segment.
     expect(text).toMatch(/rate-limited/);
-    expect(text).toMatch(/refresh_failed/);
+    // refresh_failed → option-A `Unavailable` badge.
+    expect(text).toContain(':black_circle: Unavailable');
     // The inactive row still skips the usage panel when there's no
     // oauthAttachment, so no progress-bar glyphs leak in.
     const flat = JSON.stringify(blocks);
@@ -809,139 +814,616 @@ describe('buildCctCardBlocks — card-level action row', () => {
 });
 
 // ────────────────────────────────────────────────────────────────────
-// #668 follow-up · cooldown helper + orange badge
+// PR #672 follow-up · authStateBadge + buildSlotStatusLine option A
 // ────────────────────────────────────────────────────────────────────
 
-describe('computeCooldown + cooldown badge (#668 follow-up)', () => {
+describe('authStateBadge + buildSlotStatusLine — option A (PR #672 follow-up)', () => {
   const now = Date.parse('2026-04-22T00:00:00Z');
+  const HOUR = 3_600_000;
 
-  function slotWithAttachment(): AuthKey {
+  /** OAuth-attached cct slot factory (oauthAttachment set, expiresAtMs ~7h ahead). */
+  function oauthAttachedSlot(overrides: Partial<AuthKey> = {}): AuthKey {
     return {
       kind: 'cct',
       source: 'setup',
-      keyId: 'slot-cd',
-      name: 'cd',
+      keyId: 'slot-oauth',
+      name: 'cct-oauth',
       setupToken: 'sk-ant-oat01-xxxx',
       oauthAttachment: {
         accessToken: 't',
         refreshToken: 'r',
-        expiresAtMs: now + 86_400_000,
+        // 7h 18m ahead so the OAuth-refresh hint is not zero/expired.
+        expiresAtMs: now + 7 * HOUR + 18 * 60_000,
         scopes: ['user:profile'],
         acknowledgedConsumerTosRisk: true,
       },
       createdAt: '',
-    };
+      ...overrides,
+    } as AuthKey;
   }
 
-  it('7d utilization=1 with future resetsAt → orange cooldown badge via 7d limit', () => {
-    const slot = slotWithAttachment();
+  /** Non-OAuth setup-only cct slot factory (no oauthAttachment). */
+  function bareSetupSlot(overrides: Partial<AuthKey> = {}): AuthKey {
+    return {
+      kind: 'cct',
+      source: 'setup',
+      keyId: 'slot-bare',
+      name: 'cct-bare',
+      setupToken: 'sk-ant-oat01-xxxx',
+      createdAt: '',
+      ...overrides,
+    } as AuthKey;
+  }
+
+  function statusText(slot: AuthKey, state: SlotState | undefined, isActive = true): string {
+    const blocks = buildSlotRow(slot, state, isActive, now, 'Asia/Seoul');
+    const section = blocks[0] as any;
+    const lines = (section.text.text as string).split('\n');
+    // Line 2 holds the status segments per buildSlotRow layout.
+    return lines[1] ?? '';
+  }
+
+  // ── OAuth slots ────────────────────────────────────────────────────
+
+  it('OAuth healthy (5h util=0.5, 7d util=0.5) → green Healthy + OAuth refresh hint only', () => {
+    const slot = oauthAttachedSlot();
     const state: SlotState = {
       authState: 'healthy',
       activeLeases: [],
       usage: {
         fetchedAt: new Date(now).toISOString(),
-        sevenDay: { utilization: 1, resetsAt: new Date(now + 2 * 86_400_000).toISOString() },
+        fiveHour: { utilization: 0.5, resetsAt: new Date(now + 2 * HOUR).toISOString() },
+        sevenDay: { utilization: 0.5, resetsAt: new Date(now + 3 * 86_400_000).toISOString() },
       },
     };
-    const blocks = buildSlotRow(slot, state, true, now);
-    const text = (blocks[0] as any).text.text as string;
-    expect(text).toMatch(/:large_orange_circle: cooldown 2d 0h via 7d limit/);
+    const text = statusText(slot, state);
+    expect(text).toContain(':large_green_circle: Healthy');
+    expect(text).toContain('OAuth refreshes in 7h 18m');
+    // No cooldown noise.
+    expect(text).not.toMatch(/Cooldown/);
   });
 
-  it('7d utilization=1 with PAST resetsAt still flags cooldown (remaining clamped to 0)', () => {
-    const slot = slotWithAttachment();
+  it('OAuth 5h util=1.0, fiveHour.resetsAt = now + 30m → yellow 5h Cooldown 30m', () => {
+    const slot = oauthAttachedSlot();
     const state: SlotState = {
       authState: 'healthy',
       activeLeases: [],
       usage: {
         fetchedAt: new Date(now).toISOString(),
-        sevenDay: { utilization: 1, resetsAt: new Date(now - 3_600_000).toISOString() },
+        fiveHour: { utilization: 1.0, resetsAt: new Date(now + 30 * 60_000).toISOString() },
       },
     };
-    const blocks = buildSlotRow(slot, state, true, now);
-    const text = (blocks[0] as any).text.text as string;
-    // Remaining is clamped to 0 → renders as `<1m` via formatUsageResetDelta.
-    expect(text).toMatch(/:large_orange_circle: cooldown [^·]* via 7d limit/);
+    const text = statusText(slot, state);
+    expect(text).toContain(':large_yellow_circle: 5h Cooldown 30m');
   });
 
-  it('5h utilization=1 (no 7d trigger) → cooldown via 5h limit', () => {
-    const slot = slotWithAttachment();
+  it('OAuth 5h util=1.0, fiveHour.resetsAt = now + 3h → orange 5h Cooldown 3h 0m', () => {
+    const slot = oauthAttachedSlot();
     const state: SlotState = {
       authState: 'healthy',
       activeLeases: [],
       usage: {
         fetchedAt: new Date(now).toISOString(),
-        fiveHour: { utilization: 1, resetsAt: new Date(now + 3_600_000).toISOString() },
-        sevenDay: { utilization: 0.3, resetsAt: new Date(now + 6 * 86_400_000).toISOString() },
+        fiveHour: { utilization: 1.0, resetsAt: new Date(now + 3 * HOUR).toISOString() },
       },
     };
-    const blocks = buildSlotRow(slot, state, true, now);
-    const text = (blocks[0] as any).text.text as string;
-    expect(text).toMatch(/:large_orange_circle: cooldown 1h 0m via 5h limit/);
+    const text = statusText(slot, state);
+    expect(text).toContain(':large_orange_circle: 5h Cooldown 3h 0m');
   });
 
-  it('manual cooldownUntil only → cooldown via manual limit', () => {
-    const slot = slotWithAttachment();
+  it('OAuth boundary: 5h util=1.0, resetsAt = now + 1h exact → yellow (≤1h inclusive)', () => {
+    const slot = oauthAttachedSlot();
     const state: SlotState = {
       authState: 'healthy',
       activeLeases: [],
-      cooldownUntil: new Date(now + 30 * 60_000).toISOString(),
-    };
-    const blocks = buildSlotRow(slot, state, true, now);
-    const text = (blocks[0] as any).text.text as string;
-    expect(text).toMatch(/:large_orange_circle: cooldown 30m via manual limit/);
-  });
-
-  it('priority: 7d > 5h > manual when multiple triggers fire simultaneously', () => {
-    const slot = slotWithAttachment();
-    const state: SlotState = {
-      authState: 'healthy',
-      activeLeases: [],
-      cooldownUntil: new Date(now + 10 * 60_000).toISOString(),
       usage: {
         fetchedAt: new Date(now).toISOString(),
-        fiveHour: { utilization: 1, resetsAt: new Date(now + 3_600_000).toISOString() },
-        sevenDay: { utilization: 1, resetsAt: new Date(now + 2 * 86_400_000).toISOString() },
+        fiveHour: { utilization: 1.0, resetsAt: new Date(now + HOUR).toISOString() },
       },
     };
-    const blocks = buildSlotRow(slot, state, true, now);
-    const text = (blocks[0] as any).text.text as string;
-    // 7d wins.
-    expect(text).toMatch(/via 7d limit/);
-    expect(text).not.toMatch(/via 5h limit/);
-    expect(text).not.toMatch(/via manual limit/);
+    const text = statusText(slot, state);
+    expect(text).toContain(':large_yellow_circle:');
+    expect(text).not.toContain(':large_orange_circle:');
   });
 
-  it('historical `rate-limited via …` segment is preserved alongside the cooldown badge', () => {
-    const slot = slotWithAttachment();
+  it('OAuth boundary: 5h util=1.0, resetsAt = now + 5h exact → orange (≤5h inclusive)', () => {
+    const slot = oauthAttachedSlot();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      usage: {
+        fetchedAt: new Date(now).toISOString(),
+        fiveHour: { utilization: 1.0, resetsAt: new Date(now + 5 * HOUR).toISOString() },
+      },
+    };
+    const text = statusText(slot, state);
+    expect(text).toContain(':large_orange_circle:');
+    expect(text).not.toContain(':large_purple_circle:');
+  });
+
+  it('OAuth 7d util=1.0, sevenDay.resetsAt = now + 12h → purple 7d Cooldown 12h 0m', () => {
+    const slot = oauthAttachedSlot();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      usage: {
+        fetchedAt: new Date(now).toISOString(),
+        sevenDay: { utilization: 1.0, resetsAt: new Date(now + 12 * HOUR).toISOString() },
+      },
+    };
+    const text = statusText(slot, state);
+    expect(text).toContain(':large_purple_circle: 7d Cooldown 12h 0m');
+  });
+
+  it('OAuth boundary: 7d resetsAt = now + 24h exact → purple (≤24h inclusive)', () => {
+    const slot = oauthAttachedSlot();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      usage: {
+        fetchedAt: new Date(now).toISOString(),
+        sevenDay: { utilization: 1.0, resetsAt: new Date(now + 24 * HOUR).toISOString() },
+      },
+    };
+    const text = statusText(slot, state);
+    expect(text).toContain(':large_purple_circle:');
+    expect(text).not.toContain(':red_circle:');
+  });
+
+  it('OAuth boundary: 7d resetsAt = now + 24h + 1ms → red (>24h)', () => {
+    const slot = oauthAttachedSlot();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      usage: {
+        fetchedAt: new Date(now).toISOString(),
+        sevenDay: { utilization: 1.0, resetsAt: new Date(now + 24 * HOUR + 1).toISOString() },
+      },
+    };
+    const text = statusText(slot, state);
+    expect(text).toContain(':red_circle:');
+    expect(text).not.toContain(':large_purple_circle:');
+  });
+
+  it('OAuth 7d util=1.0, sevenDay.resetsAt = now + 2d → red 7d Cooldown 2d 0h', () => {
+    const slot = oauthAttachedSlot();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      usage: {
+        fetchedAt: new Date(now).toISOString(),
+        sevenDay: { utilization: 1.0, resetsAt: new Date(now + 2 * 86_400_000).toISOString() },
+      },
+    };
+    const text = statusText(slot, state);
+    expect(text).toContain(':red_circle: 7d Cooldown 2d 0h');
+  });
+
+  it('OAuth priority: 7d util=1 + 5h util=1 simultaneously → 7d wins', () => {
+    const slot = oauthAttachedSlot();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      usage: {
+        fetchedAt: new Date(now).toISOString(),
+        fiveHour: { utilization: 1.0, resetsAt: new Date(now + 30 * 60_000).toISOString() },
+        sevenDay: { utilization: 1.0, resetsAt: new Date(now + 12 * HOUR).toISOString() },
+      },
+    };
+    const text = statusText(slot, state);
+    expect(text).toContain('7d Cooldown');
+    expect(text).not.toContain('5h Cooldown');
+  });
+
+  it('OAuth authState=refresh_failed → :black_circle: Unavailable, NO OAuth refresh hint (broken slot, hint is noise)', () => {
+    const slot = oauthAttachedSlot();
+    const state: SlotState = {
+      authState: 'refresh_failed',
+      activeLeases: [],
+    };
+    const text = statusText(slot, state);
+    expect(text).toBe(':black_circle: Unavailable');
+    // Hint suppressed for non-healthy OAuth slots — TO-BE-3 SSOT lock.
+    expect(text).not.toContain('OAuth refreshes in');
+  });
+
+  it('OAuth authState=revoked → :black_circle: Unavailable, NO OAuth refresh hint', () => {
+    const slot = oauthAttachedSlot();
+    const state: SlotState = {
+      authState: 'revoked',
+      activeLeases: [],
+    };
+    const text = statusText(slot, state);
+    expect(text).toBe(':black_circle: Unavailable');
+    expect(text).not.toContain('OAuth refreshes in');
+  });
+
+  it('OAuth utilization === 1.0 exactly → cooldown fires (≥1)', () => {
+    const slot = oauthAttachedSlot();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      usage: {
+        fetchedAt: new Date(now).toISOString(),
+        fiveHour: { utilization: 1.0, resetsAt: new Date(now + 30 * 60_000).toISOString() },
+      },
+    };
+    const text = statusText(slot, state);
+    expect(text).toContain('5h Cooldown');
+  });
+
+  it('OAuth utilization === 0.999 → still Healthy (cooldown not triggered)', () => {
+    const slot = oauthAttachedSlot();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      usage: {
+        fetchedAt: new Date(now).toISOString(),
+        fiveHour: { utilization: 0.999, resetsAt: new Date(now + 30 * 60_000).toISOString() },
+      },
+    };
+    const text = statusText(slot, state);
+    expect(text).toContain(':large_green_circle: Healthy');
+    expect(text).not.toMatch(/Cooldown/);
+  });
+
+  it('OAuth utilization === 1.5 → cooldown fires (≥1 catches over-budget too)', () => {
+    const slot = oauthAttachedSlot();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      usage: {
+        fetchedAt: new Date(now).toISOString(),
+        fiveHour: { utilization: 1.5, resetsAt: new Date(now + 30 * 60_000).toISOString() },
+      },
+    };
+    const text = statusText(slot, state);
+    expect(text).toContain('5h Cooldown');
+  });
+
+  it('OAuth invalid resetsAt (NaN) → cooldown still triggers, remaining clamps to 0 (<1m)', () => {
+    const slot = oauthAttachedSlot();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      usage: {
+        fetchedAt: new Date(now).toISOString(),
+        fiveHour: { utilization: 1.0, resetsAt: 'not-a-valid-iso' },
+      },
+    };
+    const text = statusText(slot, state);
+    expect(text).toContain('5h Cooldown <1m');
+    // 0ms remaining ≤ 1h → yellow.
+    expect(text).toContain(':large_yellow_circle:');
+  });
+
+  it('OAuth past resetsAt (now - 1h) → cooldown clamped to 0 (<1m), yellow', () => {
+    const slot = oauthAttachedSlot();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      usage: {
+        fetchedAt: new Date(now).toISOString(),
+        fiveHour: { utilization: 1.0, resetsAt: new Date(now - HOUR).toISOString() },
+      },
+    };
+    const text = statusText(slot, state);
+    expect(text).toContain('5h Cooldown <1m');
+    expect(text).toContain(':large_yellow_circle:');
+  });
+
+  // ── Regression locks: OAuth slots HIDE all operator signals ────────
+
+  it('regression: OAuth slot hides `rate-limited` even when state.rateLimitedAt is set', () => {
+    const slot = oauthAttachedSlot();
     const state: SlotState = {
       authState: 'healthy',
       activeLeases: [],
       rateLimitedAt: new Date(now - 60_000).toISOString(),
       rateLimitSource: 'response_header',
-      cooldownUntil: new Date(now + 30 * 60_000).toISOString(),
     };
-    const blocks = buildSlotRow(slot, state, true, now, 'Asia/Seoul');
-    const text = (blocks[0] as any).text.text as string;
-    expect(text).toMatch(/:large_orange_circle: cooldown/);
-    expect(text).toMatch(/rate-limited .* via response_header/);
+    const text = statusText(slot, state);
+    expect(text).not.toMatch(/rate-limited/);
   });
 
-  it('healthy slot without any trigger → green badge, no cooldown', () => {
-    const slot = slotWithAttachment();
+  it('regression: OAuth slot hides `tombstoned` segment', () => {
+    const slot = oauthAttachedSlot();
     const state: SlotState = {
       authState: 'healthy',
       activeLeases: [],
+      tombstoned: true,
+    };
+    const text = statusText(slot, state);
+    expect(text).not.toMatch(/tombstoned/);
+  });
+
+  it('regression: OAuth slot hides `:lock: rotation-off` even when slot.disableRotation=true', () => {
+    const slot = oauthAttachedSlot({ disableRotation: true } as Partial<AuthKey>);
+    const state: SlotState = { authState: 'healthy', activeLeases: [] };
+    const text = statusText(slot, state);
+    expect(text).not.toMatch(/rotation-off/);
+  });
+
+  it('regression: OAuth slot hides `leases:` segment', () => {
+    const slot = oauthAttachedSlot();
+    const mkLease = (id: string) => ({
+      leaseId: id,
+      ownerTag: 'test',
+      acquiredAt: new Date(now).toISOString(),
+      expiresAt: new Date(now + 15 * 60_000).toISOString(),
+    });
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [mkLease('lease-1'), mkLease('lease-2'), mkLease('lease-3')],
+    };
+    const text = statusText(slot, state);
+    expect(text).not.toMatch(/leases:/);
+  });
+
+  it('regression: OAuth slot hides ` · active` segment when isActive=true', () => {
+    const slot = oauthAttachedSlot();
+    const state: SlotState = { authState: 'healthy', activeLeases: [] };
+    const text = statusText(slot, state, /* isActive */ true);
+    // The line-2 status MUST NOT include the `active` operator marker for
+    // OAuth slots (option A — utilization snapshot is the SSOT).
+    expect(text).not.toMatch(/(^|\s·\s)active(\s|$)/);
+  });
+
+  // ── Non-OAuth slots ────────────────────────────────────────────────
+
+  it('non-OAuth cooldownUntil = now + 30m → yellow Cooldown 30m', () => {
+    const slot = bareSetupSlot();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      cooldownUntil: new Date(now + 30 * 60_000).toISOString(),
+    };
+    const text = statusText(slot, state);
+    expect(text).toContain(':large_yellow_circle: Cooldown 30m');
+  });
+
+  it('non-OAuth cooldownUntil = now + 3h → orange Cooldown 3h 0m', () => {
+    const slot = bareSetupSlot();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      cooldownUntil: new Date(now + 3 * HOUR).toISOString(),
+    };
+    const text = statusText(slot, state);
+    expect(text).toContain(':large_orange_circle: Cooldown 3h 0m');
+  });
+
+  it('non-OAuth cooldownUntil in the past → green Healthy (manual cooldown expired)', () => {
+    const slot = bareSetupSlot();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      cooldownUntil: new Date(now - HOUR).toISOString(),
+    };
+    const text = statusText(slot, state);
+    expect(text).toContain(':large_green_circle: Healthy');
+    expect(text).not.toMatch(/Cooldown/);
+  });
+
+  it('non-OAuth manual cooldown label is generic — never carries `5h` / `7d` prefix', () => {
+    const slot = bareSetupSlot();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      cooldownUntil: new Date(now + 2 * HOUR).toISOString(),
+    };
+    const text = statusText(slot, state);
+    expect(text).toMatch(/Cooldown/);
+    expect(text).not.toMatch(/5h Cooldown/);
+    expect(text).not.toMatch(/7d Cooldown/);
+  });
+
+  it('non-OAuth without cooldownUntil but with rateLimitedAt → Healthy + rate-limited preserved', () => {
+    const slot = bareSetupSlot();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      rateLimitedAt: new Date(now - 60_000).toISOString(),
+      rateLimitSource: 'response_header',
+    };
+    const text = statusText(slot, state, false);
+    expect(text).toContain(':large_green_circle: Healthy');
+    expect(text).toMatch(/rate-limited .* via response_header/);
+  });
+
+  it('non-OAuth regression: `active` segment preserved for active slots', () => {
+    const slot = bareSetupSlot();
+    const text = statusText(slot, { authState: 'healthy', activeLeases: [] }, true);
+    expect(text).toContain(' · active');
+  });
+
+  it('non-OAuth regression: `:lock: rotation-off` preserved when disableRotation=true', () => {
+    const slot = bareSetupSlot({ disableRotation: true } as Partial<AuthKey>);
+    const text = statusText(slot, { authState: 'healthy', activeLeases: [] }, false);
+    expect(text).toContain(':lock: rotation-off');
+  });
+
+  it('non-OAuth regression: `tombstoned` segment preserved', () => {
+    const slot = bareSetupSlot();
+    const state: SlotState = { authState: 'healthy', activeLeases: [], tombstoned: true };
+    const text = statusText(slot, state);
+    expect(text).toMatch(/tombstoned/);
+  });
+
+  it('non-OAuth regression: `leases: N` preserved when activeLeases.length > 0', () => {
+    const slot = bareSetupSlot();
+    const mkLease = (id: string) => ({
+      leaseId: id,
+      ownerTag: 'test',
+      acquiredAt: new Date(now).toISOString(),
+      expiresAt: new Date(now + 15 * 60_000).toISOString(),
+    });
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [mkLease('l1'), mkLease('l2')],
+    };
+    const text = statusText(slot, state);
+    expect(text).toContain('leases: 2');
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
+// Codex P1 follow-up (#679) · OAuth slot cooldownUntil priority
+//
+// Background: TokenManager.isEligible / rotateOnRateLimit /
+// recordRateLimitHint still honor `state.cooldownUntil` (set on SDK 429)
+// even for OAuth slots, but the option-A card was utilization-only —
+// so an SDK-429'd OAuth slot rendered Healthy while the picker rejected
+// it. We now honor cooldownUntil in the OAuth path too, slotted between
+// utilization-driven cooldown and the healthy fallback. Priority order:
+//   7d util≥1 > 5h util≥1 > cooldownUntil(future) > healthy
+// Manual source label stays generic ("Cooldown <dur>") because the SDK
+// 429 doesn't disclose which window triggered it.
+// ────────────────────────────────────────────────────────────────────
+
+describe('Codex P1 follow-up (#679): OAuth cooldownUntil priority', () => {
+  const now = Date.parse('2026-04-22T00:00:00Z');
+  const HOUR = 3_600_000;
+
+  function oauthAttachedSlot(overrides: Partial<AuthKey> = {}): AuthKey {
+    return {
+      kind: 'cct',
+      source: 'setup',
+      keyId: 'slot-oauth',
+      name: 'cct-oauth',
+      setupToken: 'sk-ant-oat01-xxxx',
+      oauthAttachment: {
+        accessToken: 't',
+        refreshToken: 'r',
+        expiresAtMs: now + 7 * HOUR + 18 * 60_000,
+        scopes: ['user:profile'],
+        acknowledgedConsumerTosRisk: true,
+      },
+      createdAt: '',
+      ...overrides,
+    } as AuthKey;
+  }
+
+  function statusText(slot: AuthKey, state: SlotState | undefined, isActive = true): string {
+    const blocks = buildSlotRow(slot, state, isActive, now, 'Asia/Seoul');
+    const section = blocks[0] as any;
+    const lines = (section.text.text as string).split('\n');
+    return lines[1] ?? '';
+  }
+
+  it('OAuth + cooldownUntil = now + 30m, no utilization → yellow Cooldown 30m + OAuth refresh hint', () => {
+    const slot = oauthAttachedSlot();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      cooldownUntil: new Date(now + 30 * 60_000).toISOString(),
+    };
+    const text = statusText(slot, state);
+    expect(text).toContain(':large_yellow_circle: Cooldown 30m');
+    // Generic "Cooldown" — no 5h/7d prefix for manual source.
+    expect(text).not.toMatch(/5h Cooldown/);
+    expect(text).not.toMatch(/7d Cooldown/);
+    // OAuth refresh hint still emitted because authState is healthy.
+    expect(text).toContain('OAuth refreshes in');
+  });
+
+  it('OAuth + cooldownUntil = now + 3h + 5h util=0.5 (sub-threshold) → orange Cooldown 3h 0m', () => {
+    const slot = oauthAttachedSlot();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      cooldownUntil: new Date(now + 3 * HOUR).toISOString(),
       usage: {
         fetchedAt: new Date(now).toISOString(),
-        fiveHour: { utilization: 0.2, resetsAt: new Date(now + 3_600_000).toISOString() },
-        sevenDay: { utilization: 0.3, resetsAt: new Date(now + 6 * 86_400_000).toISOString() },
+        fiveHour: { utilization: 0.5, resetsAt: new Date(now + 4 * HOUR).toISOString() },
       },
     };
-    const blocks = buildSlotRow(slot, state, true, now);
-    const text = (blocks[0] as any).text.text as string;
-    expect(text).toContain(':large_green_circle: healthy');
-    expect(text).not.toMatch(/:large_orange_circle:/);
+    const text = statusText(slot, state);
+    expect(text).toContain(':large_orange_circle: Cooldown 3h 0m');
+    // Utilization < 1 so the cooldownUntil triggers, not the 5h source.
+    expect(text).not.toMatch(/5h Cooldown/);
+    expect(text).not.toMatch(/7d Cooldown/);
+  });
+
+  it('OAuth + 7d util=1.0 (resets in 12h) + cooldownUntil = now + 3h → 7d Cooldown wins (12h 0m, purple)', () => {
+    const slot = oauthAttachedSlot();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      cooldownUntil: new Date(now + 3 * HOUR).toISOString(),
+      usage: {
+        fetchedAt: new Date(now).toISOString(),
+        sevenDay: { utilization: 1.0, resetsAt: new Date(now + 12 * HOUR).toISOString() },
+      },
+    };
+    const text = statusText(slot, state);
+    expect(text).toContain(':large_purple_circle: 7d Cooldown 12h 0m');
+    // cooldownUntil is overridden by the higher-priority 7d source.
+    expect(text).not.toMatch(/(^|\s)Cooldown 3h/);
+  });
+
+  it('OAuth + 5h util=1.0 (resets in 30m) + cooldownUntil = now + 3h → 5h Cooldown wins (30m, yellow)', () => {
+    const slot = oauthAttachedSlot();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      cooldownUntil: new Date(now + 3 * HOUR).toISOString(),
+      usage: {
+        fetchedAt: new Date(now).toISOString(),
+        fiveHour: { utilization: 1.0, resetsAt: new Date(now + 30 * 60_000).toISOString() },
+      },
+    };
+    const text = statusText(slot, state);
+    expect(text).toContain(':large_yellow_circle: 5h Cooldown 30m');
+    expect(text).not.toMatch(/(^|\s)Cooldown 3h/);
+  });
+
+  it('OAuth + cooldownUntil expired (now - 1h) + util=0.5/0.5 → green Healthy', () => {
+    const slot = oauthAttachedSlot();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      cooldownUntil: new Date(now - HOUR).toISOString(),
+      usage: {
+        fetchedAt: new Date(now).toISOString(),
+        fiveHour: { utilization: 0.5, resetsAt: new Date(now + 2 * HOUR).toISOString() },
+        sevenDay: { utilization: 0.5, resetsAt: new Date(now + 3 * 86_400_000).toISOString() },
+      },
+    };
+    const text = statusText(slot, state);
+    expect(text).toContain(':large_green_circle: Healthy');
+    expect(text).not.toMatch(/Cooldown/);
+  });
+
+  it('regression lock: OAuth + cooldownUntil + util<1 → label is bare "Cooldown" (never "5h Cooldown" / "7d Cooldown")', () => {
+    const slot = oauthAttachedSlot();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      cooldownUntil: new Date(now + 2 * HOUR).toISOString(),
+      usage: {
+        fetchedAt: new Date(now).toISOString(),
+        fiveHour: { utilization: 0.3, resetsAt: new Date(now + HOUR).toISOString() },
+        sevenDay: { utilization: 0.4, resetsAt: new Date(now + 6 * 86_400_000).toISOString() },
+      },
+    };
+    const text = statusText(slot, state);
+    // Match bare " Cooldown " with no 5h/7d marker (start-of-segment after the color emoji).
+    expect(text).toMatch(/:large_orange_circle: Cooldown 2h/);
+    expect(text).not.toMatch(/5h Cooldown/);
+    expect(text).not.toMatch(/7d Cooldown/);
+  });
+
+  it('OAuth + cooldownUntil with NaN ISO → no manual cooldown fired (falls through to Healthy)', () => {
+    const slot = oauthAttachedSlot();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      cooldownUntil: 'not-a-valid-iso',
+    };
+    const text = statusText(slot, state);
+    expect(text).toContain(':large_green_circle: Healthy');
+    expect(text).not.toMatch(/Cooldown/);
   });
 });
 
@@ -1198,86 +1680,12 @@ describe('formatUsageBar — second gauge bar (card v2 follow-up)', () => {
   });
 });
 
-describe('buildBudgetFooterBlock (#668 follow-up)', () => {
+describe('buildCctCardBlocks — 15-slot fleet stays under cap (PR #672 follow-up: footer removed)', () => {
   const now = Date.parse('2026-04-22T00:00:00Z');
 
-  function makeSlotWithUsage(
-    name: string,
-    keyId: string,
-    util: number,
-    resetsAt: string,
-  ): { slot: AuthKey; state: SlotState } {
-    return {
-      slot: {
-        kind: 'cct',
-        source: 'setup',
-        keyId,
-        name,
-        setupToken: 'sk-ant-oat01-x',
-        oauthAttachment: {
-          accessToken: 't',
-          refreshToken: 'r',
-          expiresAtMs: now + 86_400_000,
-          scopes: ['user:profile'],
-          acknowledgedConsumerTosRisk: true,
-        },
-        createdAt: '',
-      },
-      state: {
-        authState: 'healthy',
-        activeLeases: [],
-        usage: {
-          fetchedAt: new Date(now).toISOString(),
-          sevenDay: { utilization: util, resetsAt },
-        },
-      },
-    };
-  }
-
-  it('returns null when fewer than 2 eligible slots', () => {
-    const a = makeSlotWithUsage('a', 's1', 0.1, new Date(now + 86_400_000).toISOString());
-    const states: Record<string, SlotState> = { s1: a.state };
-    expect(buildBudgetFooterBlock([a.slot], states, now)).toBeNull();
-  });
-
-  it('surfaces the top-3 soonest-expiring 7d budgets in order', () => {
-    const a = makeSlotWithUsage('a', 's1', 0.4, new Date(now + 4 * 86_400_000).toISOString());
-    const b = makeSlotWithUsage('b', 's2', 0.6, new Date(now + 1 * 86_400_000).toISOString());
-    const c = makeSlotWithUsage('c', 's3', 0.2, new Date(now + 2 * 86_400_000).toISOString());
-    const d = makeSlotWithUsage('d', 's4', 0.8, new Date(now + 3 * 86_400_000).toISOString());
-    const states: Record<string, SlotState> = {
-      s1: a.state,
-      s2: b.state,
-      s3: c.state,
-      s4: d.state,
-    };
-    const block = buildBudgetFooterBlock([a.slot, b.slot, c.slot, d.slot], states, now) as any;
-    expect(block).not.toBeNull();
-    const text: string = block.text.text;
-    // b (1d) → c (2d) → d (3d); a (4d) drops off.
-    expect(text.indexOf('`b`')).toBeLessThan(text.indexOf('`c`'));
-    expect(text.indexOf('`c`')).toBeLessThan(text.indexOf('`d`'));
-    expect(text).not.toContain('`a`');
-    // Remaining pct is (1 - util) * 100 rounded.
-    expect(text).toContain('`b` 40%');
-    expect(text).toContain('`c` 80%');
-  });
-
-  it('skips tombstoned / revoked slots', () => {
-    const healthy = makeSlotWithUsage('h', 's1', 0.5, new Date(now + 86_400_000).toISOString());
-    const tomb = makeSlotWithUsage('t', 's2', 0.5, new Date(now + 2 * 86_400_000).toISOString());
-    tomb.state.tombstoned = true;
-    const rev = makeSlotWithUsage('r', 's3', 0.5, new Date(now + 3 * 86_400_000).toISOString());
-    rev.state.authState = 'revoked';
-    const states: Record<string, SlotState> = { s1: healthy.state, s2: tomb.state, s3: rev.state };
-    // Only one eligible → returns null.
-    expect(buildBudgetFooterBlock([healthy.slot, tomb.slot, rev.slot], states, now)).toBeNull();
-  });
-
-  it('budget footer is wired into buildCctCardBlocks and participates in trim under cap pressure', () => {
+  it('15 OAuth-attached slots → blocks ≤ 47 (no footer; pure regression guard)', () => {
     const slots: AuthKey[] = [];
     const states: Record<string, SlotState> = {};
-    // 15 slots — footer + trailers should still fit under the 50-block cap.
     for (let i = 0; i < 15; i++) {
       const keyId = `slot-${i}`;
       slots.push({
