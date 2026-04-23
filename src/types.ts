@@ -8,8 +8,11 @@ export type {
   SessionInstruction,
   SessionInstructionAddOperation,
   SessionInstructionClearOperation,
+  SessionInstructionCompleteOperation,
   SessionInstructionOperation,
   SessionInstructionRemoveOperation,
+  SessionInstructionSetStatusOperation,
+  SessionInstructionStatus,
   SessionLink,
   SessionLinkHistory,
   SessionLinks,
@@ -34,6 +37,7 @@ import type {
   SessionInstruction,
   SessionLinkHistory,
   SessionLinks,
+  SessionResourceUpdateRequest,
   UserChoice,
   UserChoiceQuestion,
   UserChoices,
@@ -253,6 +257,24 @@ export interface ConversationSession {
   // User SSOT instructions: structured, model-readable, persisted to disk.
   // Exposed to the model via GET_SESSION and managed via UPDATE_SESSION instructionOperations.
   instructions?: SessionInstruction[];
+
+  /**
+   * Cached summary of `completed`-status instructions — used by the
+   * user-instructions block builder when there are ≥ 2 completed entries so
+   * the system prompt stays compact. `upstreamHash` is a deterministic hash
+   * over the completed subset; regenerate when it mismatches.
+   * Persisted to disk (survives restarts), runtime-regenerated when stale.
+   */
+  instructionsCompletedSummary?: { summary: string; upstreamHash: string };
+
+  /**
+   * Last rejected instruction write — set when the user clicks `n` on the
+   * confirmation button. The next turn's stream-executor injects a
+   * `<user-instruction-write-rejected/>` notice into the prompt and clears
+   * this flag. Runtime-only — NOT persisted to disk (same convention as
+   * `pendingRetryTimer` and `initialInstruction`).
+   */
+  pendingInstructionRejection?: { at: number; request: SessionResourceUpdateRequest };
 
   // Dashboard improvements (v2.1):
   // Number of /compact invocations or SDK-triggered compact_boundary events observed on this session.

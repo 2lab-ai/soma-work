@@ -125,13 +125,16 @@ const UPDATE_SESSION_SCHEMA = {
     },
     instructionOperations: {
       type: 'array',
-      description: 'Operations on user SSOT instructions (add/remove/clear)',
+      description:
+        'Operations on user SSOT instructions (add/remove/clear/complete/setStatus). ' +
+        'Writes are NOT applied immediately — the host wraps them in a user y/n ' +
+        'confirmation button in Slack. Only `y` commits.',
       items: {
         type: 'object',
         properties: {
           action: {
             type: 'string',
-            enum: ['add', 'remove', 'clear'],
+            enum: ['add', 'remove', 'clear', 'complete', 'setStatus'],
           },
           text: {
             type: 'string',
@@ -143,7 +146,16 @@ const UPDATE_SESSION_SCHEMA = {
           },
           id: {
             type: 'string',
-            description: 'Instruction ID (required for remove)',
+            description: 'Instruction ID (required for remove/complete/setStatus)',
+          },
+          evidence: {
+            type: 'string',
+            description: 'Evidence string (required for complete)',
+          },
+          status: {
+            type: 'string',
+            enum: ['active', 'todo', 'completed'],
+            description: 'New status (required for setStatus)',
           },
         },
         required: ['action'],
@@ -378,8 +390,14 @@ export function listModelCommands(context: ModelCommandContext): ModelCommandDes
     {
       id: 'UPDATE_SESSION',
       description:
-        'Update session resources with add/remove/set_active operations, and manage user SSOT instructions with instructionOperations (add/remove/clear)',
+        'Update session resources (issues/prs/docs) with add/remove/set_active operations. ' +
+        'Instruction writes via `instructionOperations` (add/remove/clear/complete/setStatus) ' +
+        'are **gated**: the host posts a user y/n button and only commits on `y`. ' +
+        'Until `y`, the model’s view of `session.instructions` is unchanged.',
       paramsSchema: UPDATE_SESSION_SCHEMA,
+      metadata: {
+        user_instructions_write_gated: true,
+      },
     },
     {
       id: 'ASK_USER_QUESTION',
@@ -561,6 +579,11 @@ export function runModelCommand(
     }
 
     const instructionOps = request.params.instructionOperations ?? [];
+    // Instruction writes are user y/n gated — the model-command layer
+    // never applies them directly. The host (stream-executor) wraps them
+    // in a confirmation UI and only commits on `y`. Emit the counts so the
+    // model can see its writes are pending, not dropped.
+    const confirmationRequired = instructionOps.length > 0;
 
     return {
       type: 'model_command_result',
@@ -569,7 +592,9 @@ export function runModelCommand(
       payload: {
         session: updateResult.snapshot,
         appliedOperations: operations.length,
-        appliedInstructionOperations: instructionOps.length,
+        appliedInstructionOperations: 0,
+        pendingInstructionOperations: instructionOps.length,
+        confirmationRequired,
         request: request.params,
         // title is passed through for host to apply
         ...(request.params.title ? { title: request.params.title } : {}),
@@ -786,6 +811,7 @@ export function applyInstructionOperations(
         text: op.text.trim(),
         addedAt: now,
         source: op.source || 'user',
+        status: 'active',
       });
       changed = true;
       continue;
@@ -805,6 +831,39 @@ export function applyInstructionOperations(
         instructions.length = 0;
         changed = true;
       }
+      continue;
+    }
+
+    if (op.action === 'complete') {
+      // Evidence is required — silently skip rather than throw, matching the
+      // lenient semantics of the rest of this function (malformed ops drop).
+      if (!op.id || !op.evidence || op.evidence.trim().length === 0) continue;
+      const entry = instructions.find((i) => i.id === op.id);
+      if (!entry) continue;
+      entry.status = 'completed';
+      entry.evidence = op.evidence.trim();
+      entry.completedAt = Date.now();
+      changed = true;
+      continue;
+    }
+
+    if (op.action === 'setStatus') {
+      if (!op.id || !op.status) continue;
+      const entry = instructions.find((i) => i.id === op.id);
+      if (!entry) continue;
+      if (entry.status === op.status) continue;
+      entry.status = op.status;
+      if (op.status === 'completed') {
+        // setStatus→completed is an escape hatch — stamp completedAt so the
+        // summary hash and block builder see a consistent timestamp. Evidence
+        // is NOT required on this path (prefer `complete` when evidence exists).
+        entry.completedAt = entry.completedAt ?? Date.now();
+      } else {
+        // Moving out of `completed` — clear the boundary fields.
+        entry.completedAt = undefined;
+        entry.evidence = undefined;
+      }
+      changed = true;
     }
   }
   return changed;

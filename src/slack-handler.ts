@@ -25,6 +25,7 @@ import {
   McpHealthMonitor,
   McpStatusDisplay,
   MessageValidator,
+  PendingInstructionConfirmStore,
   ReactionManager,
   RequestCoordinator,
   SessionUiManager,
@@ -191,6 +192,12 @@ export class SlackHandler {
       async (turnId, markdown) => (await this.threadPanel?.appendText(turnId, `\n\n${markdown}`)) ?? false,
     );
 
+    // Shared store for deferred user-instruction writes. The SAME instance
+    // must be visible to both `ActionHandlers` (button click reader) and
+    // `StreamExecutor` (write producer) — PLAN §7.
+    const pendingInstructionConfirmStore = new PendingInstructionConfirmStore();
+    pendingInstructionConfirmStore.loadForms();
+
     // ActionHandlers needs context
     const actionContext: ActionHandlerContext = {
       slackApi: this.slackApi,
@@ -202,6 +209,7 @@ export class SlackHandler {
       requestCoordinator: this.requestCoordinator,
       completionMessageTracker,
       mcpManager: this.mcpManager,
+      pendingInstructionConfirmStore,
     };
     this.actionHandlers = new ActionHandlers(actionContext);
 
@@ -257,6 +265,9 @@ export class SlackHandler {
       summaryTimer,
       completionMessageTracker,
       summaryService,
+      // Shared store — same instance ActionHandlers received above. Writer
+      // (here) and reader (handleYes/handleNo) must see identical entries.
+      pendingInstructionConfirmStore,
     });
 
     // EventRouter for event handling
