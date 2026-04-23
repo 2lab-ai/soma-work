@@ -1112,6 +1112,94 @@ describe('authStateBadge + buildSlotStatusLine — option A (PR #672 follow-up)'
     expect(text).toContain(':large_yellow_circle:');
   });
 
+  // ── #684 regression: 0..100 percent form (real Anthropic API response) ──
+  //
+  // `/api/oauth/usage` returns utilization as an integer percent (0..100).
+  // The pre-fix `>= 1` check classified any non-zero usage (≥1%) as full,
+  // so every healthy OAuth slot rendered as "7d Cooldown" in the CCT card
+  // — see PR #684 screenshot (notify 19/63, info 2/94, ai 54/79 all
+  // wrongly badged as Cooldown). The fix applies the same `> 1.5`
+  // disambiguation used by `parsePercent` in `src/oauth/header-parser.ts`.
+
+  it('#684: OAuth utilization=19 (percent form, 5h=19%) → Healthy, not Cooldown', () => {
+    const slot = oauthAttachedSlot();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      usage: {
+        fetchedAt: new Date(now).toISOString(),
+        fiveHour: { utilization: 19, resetsAt: new Date(now + HOUR).toISOString() },
+        sevenDay: { utilization: 63, resetsAt: new Date(now + 15 * HOUR).toISOString() },
+      },
+    };
+    const text = statusText(slot, state);
+    expect(text).toContain(':large_green_circle: Healthy');
+    expect(text).not.toMatch(/Cooldown/);
+  });
+
+  it('#684: OAuth utilization=94 (7d=94%, well under full) → Healthy, not 7d Cooldown', () => {
+    const slot = oauthAttachedSlot();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      usage: {
+        fetchedAt: new Date(now).toISOString(),
+        fiveHour: { utilization: 2, resetsAt: new Date(now + 4 * HOUR).toISOString() },
+        sevenDay: { utilization: 94, resetsAt: new Date(now + 24 * HOUR).toISOString() },
+      },
+    };
+    const text = statusText(slot, state);
+    expect(text).toContain(':large_green_circle: Healthy');
+    expect(text).not.toMatch(/Cooldown/);
+  });
+
+  it('#684: OAuth utilization=100 (percent form, exactly full) → 7d Cooldown', () => {
+    const slot = oauthAttachedSlot();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      usage: {
+        fetchedAt: new Date(now).toISOString(),
+        sevenDay: { utilization: 100, resetsAt: new Date(now + 16 * HOUR).toISOString() },
+      },
+    };
+    const text = statusText(slot, state);
+    expect(text).toContain('7d Cooldown');
+  });
+
+  it('#684: OAuth utilization=150 (percent form, over-budget) → 5h Cooldown', () => {
+    const slot = oauthAttachedSlot();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      usage: {
+        fetchedAt: new Date(now).toISOString(),
+        fiveHour: { utilization: 150, resetsAt: new Date(now + 30 * 60_000).toISOString() },
+      },
+    };
+    const text = statusText(slot, state);
+    expect(text).toContain('5h Cooldown');
+  });
+
+  it('#684: OAuth utilization=1 (ambiguous — treated as fraction 1.0 = full) → 5h Cooldown', () => {
+    // The `> 1.5` threshold treats `util=1` as the fraction-form boundary
+    // (exactly full). Over-budget percent-form "1%" cannot be expressed —
+    // callers with real percent data always send whole-number percents > 1
+    // (e.g. 19, 63, 94) or 0/1 rounded from fraction snapshots. This matches
+    // the existing test at "utilization === 1.0 exactly".
+    const slot = oauthAttachedSlot();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      usage: {
+        fetchedAt: new Date(now).toISOString(),
+        fiveHour: { utilization: 1, resetsAt: new Date(now + 30 * 60_000).toISOString() },
+      },
+    };
+    const text = statusText(slot, state);
+    expect(text).toContain('5h Cooldown');
+  });
+
   // ── Regression locks: OAuth slots HIDE all operator signals ────────
 
   it('regression: OAuth slot hides `rate-limited` even when state.rateLimitedAt is set', () => {
