@@ -88,7 +88,7 @@ export class ChoiceMessageBuilder {
    *   When ONLY the recommended exists (no others): banner → rec actions → custom_input own row.
    * When no recommended: a single actions block with all buttons + custom_input (legacy behavior).
    */
-  private static buildSingleChoiceActionBlocks(choice: UserChoice, sessionKey: string): any[] {
+  private static buildSingleChoiceActionBlocks(choice: UserChoice, sessionKey: string, turnId?: string): any[] {
     const rawOptions = choice.choices.slice(0, 4);
     const recId = ChoiceMessageBuilder.resolveRecommendedId(choice.recommendedChoiceId, rawOptions);
     const sanitized = rawOptions.map((o) => ChoiceMessageBuilder.sanitizeLabel(o));
@@ -99,9 +99,9 @@ export class ChoiceMessageBuilder {
     if (recommended.length === 0) {
       // Legacy single-row path
       const buttons = sanitized.map((opt, idx) =>
-        ChoiceMessageBuilder.buildChoiceButton(opt, idx, sessionKey, choice.question, false),
+        ChoiceMessageBuilder.buildChoiceButton(opt, idx, sessionKey, choice.question, false, turnId),
       );
-      buttons.push(ChoiceMessageBuilder.buildCustomInputButton(sessionKey, choice.question));
+      buttons.push(ChoiceMessageBuilder.buildCustomInputButton(sessionKey, choice.question, turnId));
       blocks.push({ type: 'actions', elements: buttons });
       return blocks;
     }
@@ -119,7 +119,7 @@ export class ChoiceMessageBuilder {
 
     // Solo rec actions row (primary-styled)
     const recButtons = recommended.map(({ opt, origIndex }) =>
-      ChoiceMessageBuilder.buildChoiceButton(opt, origIndex, sessionKey, choice.question, true),
+      ChoiceMessageBuilder.buildChoiceButton(opt, origIndex, sessionKey, choice.question, true, turnId),
     );
     blocks.push({ type: 'actions', elements: recButtons });
 
@@ -127,16 +127,16 @@ export class ChoiceMessageBuilder {
       // Only recommended — custom input on its own actions row
       blocks.push({
         type: 'actions',
-        elements: [ChoiceMessageBuilder.buildCustomInputButton(sessionKey, choice.question)],
+        elements: [ChoiceMessageBuilder.buildCustomInputButton(sessionKey, choice.question, turnId)],
       });
       return blocks;
     }
 
     blocks.push({ type: 'divider' });
     const otherButtons = others.map(({ opt, origIndex }) =>
-      ChoiceMessageBuilder.buildChoiceButton(opt, origIndex, sessionKey, choice.question, false),
+      ChoiceMessageBuilder.buildChoiceButton(opt, origIndex, sessionKey, choice.question, false, turnId),
     );
-    otherButtons.push(ChoiceMessageBuilder.buildCustomInputButton(sessionKey, choice.question));
+    otherButtons.push(ChoiceMessageBuilder.buildCustomInputButton(sessionKey, choice.question, turnId));
     blocks.push({ type: 'actions', elements: otherButtons });
 
     return blocks;
@@ -149,6 +149,7 @@ export class ChoiceMessageBuilder {
     sessionKey: string,
     question: string,
     isPrimary: boolean,
+    turnId?: string,
   ): any {
     const btn: any = {
       type: 'button',
@@ -162,6 +163,7 @@ export class ChoiceMessageBuilder {
         choiceId: opt.id,
         label: opt.label,
         question,
+        ...(turnId ? { turnId } : {}),
       }),
       action_id: `user_choice_${opt.id}`,
     };
@@ -175,17 +177,22 @@ export class ChoiceMessageBuilder {
    * Build Slack attachment for single user choice (Jira-style card UI)
    * Dispatches to themed layout builders based on theme parameter.
    */
-  static buildUserChoiceBlocks(choice: UserChoice, sessionKey: string, theme?: SessionTheme): SlackMessagePayload {
+  static buildUserChoiceBlocks(
+    choice: UserChoice,
+    sessionKey: string,
+    theme?: SessionTheme,
+    turnId?: string,
+  ): SlackMessagePayload {
     const resolvedTheme = theme ?? 'default';
 
     switch (resolvedTheme) {
       case 'compact':
-        return ChoiceMessageBuilder.buildThemeCompact(choice, sessionKey);
+        return ChoiceMessageBuilder.buildThemeCompact(choice, sessionKey, turnId);
       case 'minimal':
-        return ChoiceMessageBuilder.buildThemeMinimal(choice, sessionKey);
+        return ChoiceMessageBuilder.buildThemeMinimal(choice, sessionKey, turnId);
       case 'default':
       default:
-        return ChoiceMessageBuilder.buildThemeDefault(choice, sessionKey);
+        return ChoiceMessageBuilder.buildThemeDefault(choice, sessionKey, turnId);
     }
   }
 
@@ -193,7 +200,7 @@ export class ChoiceMessageBuilder {
   // Helper: build standard action buttons (shared across themes)
   // ---------------------------------------------------------------------------
 
-  private static buildCustomInputButton(sessionKey: string, question: string): any {
+  private static buildCustomInputButton(sessionKey: string, question: string, turnId?: string): any {
     return {
       type: 'button',
       text: {
@@ -205,6 +212,7 @@ export class ChoiceMessageBuilder {
         sessionKey,
         question,
         type: 'single',
+        ...(turnId ? { turnId } : {}),
       }),
       action_id: 'custom_input_single',
     };
@@ -226,7 +234,7 @@ export class ChoiceMessageBuilder {
   // Based on former Theme D
   // ---------------------------------------------------------------------------
 
-  private static buildThemeDefault(choice: UserChoice, sessionKey: string): SlackMessagePayload {
+  private static buildThemeDefault(choice: UserChoice, sessionKey: string, turnId?: string): SlackMessagePayload {
     const attachmentBlocks: any[] = [];
 
     // Title with emoji
@@ -283,7 +291,7 @@ export class ChoiceMessageBuilder {
       }
     }
 
-    attachmentBlocks.push(...ChoiceMessageBuilder.buildSingleChoiceActionBlocks(choice, sessionKey));
+    attachmentBlocks.push(...ChoiceMessageBuilder.buildSingleChoiceActionBlocks(choice, sessionKey, turnId));
 
     return {
       attachments: [
@@ -300,7 +308,7 @@ export class ChoiceMessageBuilder {
   // Based on former Theme C
   // ---------------------------------------------------------------------------
 
-  private static buildThemeCompact(choice: UserChoice, sessionKey: string): SlackMessagePayload {
+  private static buildThemeCompact(choice: UserChoice, sessionKey: string, turnId?: string): SlackMessagePayload {
     const blocks: any[] = [];
 
     blocks.push({
@@ -325,7 +333,7 @@ export class ChoiceMessageBuilder {
       });
     }
 
-    blocks.push(...ChoiceMessageBuilder.buildSingleChoiceActionBlocks(choice, sessionKey));
+    blocks.push(...ChoiceMessageBuilder.buildSingleChoiceActionBlocks(choice, sessionKey, turnId));
 
     return ChoiceMessageBuilder.wrapAttachment(blocks);
   }
@@ -335,7 +343,7 @@ export class ChoiceMessageBuilder {
   // Based on former Theme A
   // ---------------------------------------------------------------------------
 
-  private static buildThemeMinimal(choice: UserChoice, sessionKey: string): SlackMessagePayload {
+  private static buildThemeMinimal(choice: UserChoice, sessionKey: string, turnId?: string): SlackMessagePayload {
     const blocks: any[] = [];
 
     blocks.push({
@@ -362,7 +370,7 @@ export class ChoiceMessageBuilder {
       });
     }
 
-    blocks.push(...ChoiceMessageBuilder.buildSingleChoiceActionBlocks(choice, sessionKey));
+    blocks.push(...ChoiceMessageBuilder.buildSingleChoiceActionBlocks(choice, sessionKey, turnId));
 
     return ChoiceMessageBuilder.wrapAttachment(blocks);
   }

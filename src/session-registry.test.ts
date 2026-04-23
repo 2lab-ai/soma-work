@@ -774,3 +774,38 @@ describe('SessionRegistry deserialize — model coerce', () => {
     expect(restored?.model).toBeUndefined();
   });
 });
+
+describe('persistAndBroadcast', () => {
+  beforeEach(() => {
+    if (fs.existsSync(TEST_DATA_DIR)) {
+      fs.rmSync(TEST_DATA_DIR, { recursive: true });
+    }
+    fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
+  });
+
+  afterEach(() => {
+    if (fs.existsSync(TEST_DATA_DIR)) {
+      fs.rmSync(TEST_DATA_DIR, { recursive: true });
+    }
+  });
+
+  it('calls saveSessions + broadcast callback exactly once', () => {
+    const registry = new SessionRegistry();
+    const savesSpy = vi.spyOn(registry, 'saveSessions');
+    const broadcasts: number[] = [];
+    registry.setActivityStateChangeCallback(() => broadcasts.push(Date.now()));
+    registry.persistAndBroadcast('chan:thr');
+    expect(savesSpy).toHaveBeenCalledTimes(1);
+    expect(broadcasts.length).toBe(1);
+  });
+
+  it('swallows broadcast callback errors and still saves', () => {
+    const registry = new SessionRegistry();
+    const savesSpy = vi.spyOn(registry, 'saveSessions');
+    registry.setActivityStateChangeCallback(() => {
+      throw new Error('broadcast boom');
+    });
+    expect(() => registry.persistAndBroadcast('chan:thr')).not.toThrow();
+    expect(savesSpy).toHaveBeenCalledTimes(1);
+  });
+});
