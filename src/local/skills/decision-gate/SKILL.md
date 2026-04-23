@@ -1,6 +1,6 @@
 ---
 name: decision-gate
-description: A gate that decides between autonomous judgment and user questions based on switching cost. Used in all situations requiring a decision.
+description: A gate that decides between autonomous judgment, user question, or halt-and-decompose based on switching cost. Used in all situations requiring a decision, and to route implementation requests into Case A/B/C for using-epic-tasks.
 ---
 
 # Decision Gate — Autonomous Judgment vs User Question Discriminator
@@ -20,6 +20,7 @@ For every technical decision, estimate "How many lines would I need to change to
 | medium | ~50    | Multiple files, interface changes      |
 | large  | ~100   | Cross-cutting concerns, schema migrations |
 | xlarge | ~500   | Architecture transitions, framework replacements |
+| xxlarge | ~1000+ | Multi-epic programs, entire subsystem rewrites — MUST decompose before proceeding |
 
 ## Decision Algorithm
 
@@ -42,6 +43,13 @@ for each decision:
          — `{decision_summary}` / `{impact_scope}` / `{rollback_cost}` placeholders
          already pass the 6-rule soft gate. `local:zwork` delegates here when
          retries exceed 3; it must not own its own UIAskUserQuestion template.
+
+  4. elif switching_cost >= xxlarge (~1000+ lines):
+       → HALT — do not attempt as a single work unit
+       → 3-person review proposes decomposition into N epics (each ≤ xlarge)
+       → Ask user for decomposition approval
+       → On approval: hand each epic to using-epic-tasks Case B in independent sessions
+       → Do NOT create any epic/issue/PR before user approval
 ```
 
 ## 3-Person Majority Review (MANDATORY)
@@ -117,6 +125,8 @@ Include the 3-person review results in the question:
 | Security approach | large | OAuth provider, encryption |
 | Deployment model | xlarge | Serverless vs VPS |
 | Interface spanning multiple files | medium | Shared type design |
+| Multi-subsystem rewrite | xxlarge | Full platform migration, service split |
+| New product surface | xxlarge | New auth stack, new billing system, full module replacement |
 
 ## When to Use
 
@@ -126,6 +136,7 @@ This skill is not called directly — it is **always referenced** when a decisio
 - `new-task` Phase 3 — Use this gate for autonomous/question determination during ambiguity resolution
 - Code review — Use this gate for **implementation approach selection** per issue (not Fix/Defer/Skip, but "which approach to use for the fix")
 - General work — Use this gate when choosing an implementation approach
+- `using-epic-tasks` — Route every implementation request: Case A (< xlarge, single issue+PR) / Case B (xlarge, epic+subissues) / Case C (≥ xxlarge, halt+decompose)
 
 ## NEVER
 
@@ -133,3 +144,4 @@ This skill is not called directly — it is **always referenced** when a decisio
 - Ask the user without review
 - Ask the user without tier notation
 - "Just ask" without estimating switching cost
+- Proceed with xxlarge work as a single unit — always decompose into xlarge-or-smaller epics first
