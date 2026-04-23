@@ -129,7 +129,8 @@ export class ToolFormatter {
    */
   static formatBashTool(input: any): string {
     if (ToolFormatter.isBackgroundBash(input)) {
-      const shellId = typeof input?.shell_id === 'string' && input.shell_id ? `\n_shell_id: \`${input.shell_id}\`_` : '';
+      const shellId =
+        typeof input?.shell_id === 'string' && input.shell_id ? `\n_shell_id: \`${input.shell_id}\`_` : '';
       return `🖥️ *Running in background:*\n\`\`\`bash\n${input.command}\n\`\`\`${shellId}`;
     }
     return `🖥️ *Running command:*\n\`\`\`bash\n${input.command}\n\`\`\``;
@@ -578,9 +579,7 @@ export class ToolFormatter {
             if (ToolFormatter.isBackgroundBash(input)) {
               const shellId =
                 typeof input?.shell_id === 'string' && input.shell_id ? `\n_shell_id: \`${input.shell_id}\`_` : '';
-              parts.push(
-                `🖥️ *Running in background:* _run_in_background: true_\n\`\`\`bash\n${body}\n\`\`\`${shellId}`,
-              );
+              parts.push(`🖥️ *Running in background:* _run_in_background: true_\n\`\`\`bash\n${body}\n\`\`\`${shellId}`);
             } else {
               parts.push(`🖥️ *Running command:*\n\`\`\`bash\n${body}\n\`\`\``);
             }

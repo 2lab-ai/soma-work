@@ -71,21 +71,13 @@ export class AssistantStatusManager {
     }
   }
 
-  async setStatus(
-    channelId: string,
-    threadTs: string,
-    status: string | StatusDescriptor,
-  ): Promise<void> {
+  async setStatus(channelId: string, threadTs: string, status: string | StatusDescriptor): Promise<void> {
     // Normalize input — string is treated as static text
-    const descriptor: StatusDescriptor =
-      typeof status === 'string' ? { staticText: status } : status;
+    const descriptor: StatusDescriptor = typeof status === 'string' ? { staticText: status } : status;
 
     // Empty-string / empty-staticText → reroute to clearStatus (fixes
     // empty-string heartbeat bug where an empty status was re-sent every 20s).
-    if (
-      (descriptor.staticText === '' || descriptor.staticText === undefined) &&
-      !descriptor.resolver
-    ) {
+    if ((descriptor.staticText === '' || descriptor.staticText === undefined) && !descriptor.resolver) {
       await this.clearStatus(channelId, threadTs);
       return;
     }
@@ -121,11 +113,7 @@ export class AssistantStatusManager {
     }
   }
 
-  async clearStatus(
-    channelId: string,
-    threadTs: string,
-    options?: { expectedEpoch?: number },
-  ): Promise<void> {
+  async clearStatus(channelId: string, threadTs: string, options?: { expectedEpoch?: number }): Promise<void> {
     const key = `${channelId}:${threadTs}`;
 
     if (options?.expectedEpoch !== undefined) {
@@ -211,12 +199,7 @@ export class AssistantStatusManager {
     }
   }
 
-  getToolStatusText(
-    toolName: string,
-    serverName?: string,
-    channelId?: string,
-    threadTs?: string,
-  ): string {
+  getToolStatusText(toolName: string, serverName?: string, channelId?: string, threadTs?: string): string {
     if (serverName) {
       return `is calling ${serverName}...`;
     }
@@ -242,9 +225,7 @@ export class AssistantStatusManager {
       return;
     }
 
-    const text = entry.descriptor.resolver
-      ? entry.descriptor.resolver()
-      : (entry.descriptor.staticText ?? '');
+    const text = entry.descriptor.resolver ? entry.descriptor.resolver() : (entry.descriptor.staticText ?? '');
 
     try {
       await this.slackApi.setAssistantStatus(entry.channelId, entry.threadTs, text);
