@@ -493,10 +493,7 @@ describe('ToolEventProcessor', () => {
         mockContext,
       );
 
-      await p.handleToolResult(
-        [{ toolUseId: 'tu_bg_2', toolName: 'Bash', result: 'started' }],
-        mockContext,
-      );
+      await p.handleToolResult([{ toolUseId: 'tu_bg_2', toolName: 'Bash', result: 'started' }], mockContext);
 
       expect(status.unregister).toHaveBeenCalledTimes(1);
       expect(mcpCallTracker.endCall).toHaveBeenCalledWith('call_bg_2');
@@ -543,10 +540,7 @@ describe('ToolEventProcessor', () => {
       // late tool_result — entry is already gone from the registry, so no
       // extra unregister/counter decrement
       status.unregister.mockClear();
-      await p.handleToolResult(
-        [{ toolUseId: 'tu_bg_c', toolName: 'Bash', result: 'ok' }],
-        mockContext,
-      );
+      await p.handleToolResult([{ toolUseId: 'tu_bg_c', toolName: 'Bash', result: 'ok' }], mockContext);
       expect(status.unregister).not.toHaveBeenCalled();
     });
   });

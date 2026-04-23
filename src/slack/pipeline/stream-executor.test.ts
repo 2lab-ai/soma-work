@@ -3534,9 +3534,7 @@ describe('stream-executor — epoch guard + Bash resolver descriptor (issue #688
     await executor.execute(createParams(say));
 
     // Static string setStatus for Read: setStatus(ch, ts, 'is reading files...')
-    const staticCall = deps.assistantStatusManager.setStatus.mock.calls.find(
-      (c: any[]) => typeof c[2] === 'string',
-    );
+    const staticCall = deps.assistantStatusManager.setStatus.mock.calls.find((c: any[]) => typeof c[2] === 'string');
     expect(staticCall).toBeDefined();
     expect(deps.assistantStatusManager.getToolStatusText).toHaveBeenCalledWith('Read');
   });
@@ -3551,9 +3549,7 @@ describe('stream-executor — epoch guard + Bash resolver descriptor (issue #688
 
     await executor.execute(createParams(say));
 
-    const emptyStringSet = deps.assistantStatusManager.setStatus.mock.calls.find(
-      (c: any[]) => c[2] === '',
-    );
+    const emptyStringSet = deps.assistantStatusManager.setStatus.mock.calls.find((c: any[]) => c[2] === '');
     expect(emptyStringSet).toBeUndefined();
   });
 });
