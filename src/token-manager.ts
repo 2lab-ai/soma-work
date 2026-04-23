@@ -40,7 +40,7 @@
 import { promises as fsPromises } from 'node:fs';
 import * as path from 'node:path';
 import { ulid } from 'ulid';
-import type { ApiKeySlot, AuthKey, CctSlot, CctSlotWithSetup, OAuthAttachment } from './auth/auth-key';
+import { type ApiKeySlot, type AuthKey, type CctSlot, type CctSlotWithSetup, isCctWithSetup, type OAuthAttachment } from './auth/auth-key';
 import type { AuthState, CctStoreSnapshot, Lease, RateLimitSource, SlotState, UsageSnapshot } from './cct-store';
 import { CctStore, defaultCctStorePath } from './cct-store';
 import { config } from './config';
@@ -187,6 +187,20 @@ function maskToken(value: string): string {
   return `${value.slice(0, 20)}...${value.slice(-10)}`;
 }
 
+/**
+ * Raised by `getValidAccessToken(keyId, 'oauth-api')` when the target slot
+ * has no OAuth attachment — callers (`#doRefreshProfile`, `#doFetchAndStoreUsage`)
+ * convert this to a `null` early-return via `#getOAuthApiAccessTokenOrNull`.
+ * Never raised for `purpose: 'dispatch'`, which has a valid credential for
+ * every slot kind.
+ */
+export class NoOAuthAttachmentError extends Error {
+  constructor(keyId: string, kind: AuthKey['kind'], source?: CctSlot['source']) {
+    super(`no OAuth attachment on slot ${keyId} (kind=${kind}, source=${source ?? 'n/a'})`);
+    this.name = 'NoOAuthAttachmentError';
+  }
+}
+
 /** Resolve ${VAR_NAME} references from process.env */
 function resolveEnvRef(value: string): string {
   const match = value.match(/^\$\{(\w+)\}$/);
@@ -199,6 +213,20 @@ function resolveEnvRef(value: string): string {
 
 // ── Slot helpers ───────────────────────────────────────────────
 
+/**
+ * A slot whose dispatch credential (setupToken / api_key value) is independent
+ * of its oauthAttachment's health. For such slots an `authState` of
+ * `refresh_failed` / `revoked` only invalidates usage/profile reporting — it
+ * does NOT prevent lease acquisition for dispatch. This is the #673 fix:
+ * the attachment's 1h OAuth access_token must never gate a setup slot's lease.
+ *
+ * `legacy-attachment` intentionally does NOT qualify — it has no setupToken
+ * fallback, so an unhealthy attachment disables dispatch too.
+ */
+function hasDispatchIndependentOfAttachment(slot: AuthKey | undefined): boolean {
+  return slot !== undefined && isCctWithSetup(slot) && slot.setupToken.length > 0;
+}
+
 function isEligible(slot: AuthKey | undefined, state: SlotState | undefined, nowMs: number): boolean {
   // Operator-opt-out: `disableRotation` is an explicit keep-off-the-roster
   // flag that complements the health-based gates (tombstoned / revoked /
@@ -207,7 +235,13 @@ function isEligible(slot: AuthKey | undefined, state: SlotState | undefined, now
   if (slot?.disableRotation) return false;
   if (!state) return true;
   if (state.tombstoned) return false;
-  if (state.authState === 'revoked' || state.authState === 'refresh_failed') return false;
+  // #673 — authState gates dispatch only when no setup-token fallback exists.
+  if (
+    !hasDispatchIndependentOfAttachment(slot) &&
+    (state.authState === 'revoked' || state.authState === 'refresh_failed')
+  ) {
+    return false;
+  }
   if (state.cooldownUntil) {
     const untilMs = new Date(state.cooldownUntil).getTime();
     if (Number.isFinite(untilMs) && untilMs > nowMs) return false;
@@ -229,19 +263,19 @@ function deriveStatus(state: SlotState | undefined, nowMs: number): string {
 }
 
 /**
- * Return the access-token string a consumer would forward to the Anthropic
- * SDK for the given slot.
+ * Dispatch-path sync resolver — mirrors `getValidAccessToken(..., 'dispatch')`
+ * for use where an `await` is not possible (e.g. log formatting). The async
+ * method is the canonical entry point and handles near-expiry refresh for
+ * legacy-attachment; this helper skips the refresh but agrees on the three
+ * kind/source branches. See `getValidAccessToken` for the full contract.
  *
- *   - `api_key`                   → slot.value (`sk-ant-api03-…`)
- *   - `cct` / `source:'setup'`    → oauthAttachment.accessToken if present,
- *                                   else setupToken (`sk-ant-oat01-…`)
+ *   - `api_key`                            → slot.value
+ *   - `cct` / `source:'setup'`             → slot.setupToken  (#673: never the attachment)
  *   - `cct` / `source:'legacy-attachment'` → oauthAttachment.accessToken
  */
 function resolveActiveTokenValue(slot: AuthKey): string {
   if (slot.kind === 'api_key') return slot.value;
-  if (slot.source === 'setup') {
-    return slot.oauthAttachment?.accessToken ?? slot.setupToken;
-  }
+  if (isCctWithSetup(slot)) return slot.setupToken;
   return slot.oauthAttachment.accessToken;
 }
 
@@ -252,6 +286,11 @@ function resolveActiveTokenValue(slot: AuthKey): string {
  */
 function hasOAuthAttachment(slot: AuthKey): slot is CctSlot & { oauthAttachment: OAuthAttachment } {
   return slot.kind === 'cct' && slot.oauthAttachment !== undefined;
+}
+
+/** Does this attachment need a proactive refresh given the near-expiry buffer? */
+function needsAttachmentRefresh(attachment: OAuthAttachment, nowMs: number): boolean {
+  return attachment.expiresAtMs - nowMs < REFRESH_BUFFER_MS;
 }
 
 // ── TokenManager class ─────────────────────────────────────────
@@ -1100,30 +1139,70 @@ export class TokenManager {
 
   // ── Proactive refresh ─────────────────────────────────────
 
-  async getValidAccessToken(keyId: string): Promise<string> {
+  /**
+   * Return the access token for one of two upstream surfaces, keyed by
+   * explicit `purpose` (required — the split is a type-system concern so
+   * the #673 regression cannot recur):
+   *
+   *   - `'dispatch'` — forwarded to the Claude Agent SDK subprocess via
+   *     `CLAUDE_CODE_OAUTH_TOKEN`.
+   *       • `api_key`                            → `slot.value`
+   *       • `cct / source:'setup'`               → `slot.setupToken` (1y)
+   *         — the `oauthAttachment` is deliberately ignored so the 1h OAuth
+   *         access_token is never injected into the long-lived subprocess.
+   *       • `cct / source:'legacy-attachment'`   → near-expiry refresh +
+   *         `oauthAttachment.accessToken` (no setupToken fallback exists).
+   *
+   *   - `'oauth-api'` — soma-work's own HTTP calls to
+   *     `/api/oauth/usage` / `/api/oauth/profile`. Requires a live OAuth
+   *     attachment: throws {@link NoOAuthAttachmentError} for `api_key`
+   *     and for `cct` without `oauthAttachment`; otherwise near-expiry
+   *     refresh + `oauthAttachment.accessToken`.
+   */
+  async getValidAccessToken(keyId: string, purpose: 'dispatch' | 'oauth-api'): Promise<string> {
     const snap = await this.store.load();
     const slot = snap.registry.slots.find((s) => s.keyId === keyId);
     if (!slot) throw new Error(`getValidAccessToken: unknown keyId ${keyId}`);
-    if (slot.kind === 'api_key') return slot.value;
-    // CCT: attachment present → return fresh access token (refreshed if near expiry).
-    if (hasOAuthAttachment(slot)) {
-      const nowMs = Date.now();
-      const needsRefresh = slot.oauthAttachment.expiresAtMs - nowMs < REFRESH_BUFFER_MS;
-      if (!needsRefresh) return slot.oauthAttachment.accessToken;
-      return this.refreshAccessToken(slot);
+
+    if (purpose === 'dispatch') {
+      if (slot.kind === 'api_key') return slot.value;
+      if (isCctWithSetup(slot)) return slot.setupToken;
+      return this.#resolveAttachmentAccessToken(slot);
     }
-    // source:'setup' without attachment → return the setupToken verbatim
-    // (the SDK will lift it to an oauth session on first call).
-    if (slot.source === 'setup') return slot.setupToken;
-    throw new Error(`getValidAccessToken: CCT slot ${keyId} has no usable credential`);
+
+    if (!hasOAuthAttachment(slot)) {
+      throw new NoOAuthAttachmentError(keyId, slot.kind, slot.kind === 'cct' ? slot.source : undefined);
+    }
+    return this.#resolveAttachmentAccessToken(slot);
+  }
+
+  /** Return the attachment's access token, refreshing if it's near expiry. */
+  async #resolveAttachmentAccessToken(slot: CctSlot & { oauthAttachment: OAuthAttachment }): Promise<string> {
+    if (!needsAttachmentRefresh(slot.oauthAttachment, Date.now())) {
+      return slot.oauthAttachment.accessToken;
+    }
+    return this.refreshAccessToken(slot);
+  }
+
+  /**
+   * Non-throwing wrapper around `getValidAccessToken(keyId, 'oauth-api')` for
+   * usage/profile callers: `null` when the slot has no attachment (no throw),
+   * value when fresh or refreshed. Other errors still propagate.
+   */
+  async #getOAuthApiAccessTokenOrNull(keyId: string): Promise<string | null> {
+    try {
+      return await this.getValidAccessToken(keyId, 'oauth-api');
+    } catch (err) {
+      if (err instanceof NoOAuthAttachmentError) return null;
+      throw err;
+    }
   }
 
   async refreshCredentialsIfNeeded(keyId: string): Promise<void> {
     const snap = await this.store.load();
     const slot = snap.registry.slots.find((s) => s.keyId === keyId);
     if (!slot || !hasOAuthAttachment(slot)) return;
-    const nowMs = Date.now();
-    if (slot.oauthAttachment.expiresAtMs - nowMs >= REFRESH_BUFFER_MS) return;
+    if (!needsAttachmentRefresh(slot.oauthAttachment, Date.now())) return;
     await this.refreshAccessToken(slot);
   }
 
@@ -1210,27 +1289,29 @@ export class TokenManager {
     opts?: { timeoutMs?: number },
   ): Promise<OAuthProfile | null> {
     const timeoutMs = opts?.timeoutMs ?? config.oauthProfile.timeoutMs;
-    let token: string;
+    let token: string | null;
     try {
-      token = await this.getValidAccessToken(keyId);
+      token = await this.#getOAuthApiAccessTokenOrNull(keyId);
     } catch (err) {
       logger.warn('refreshOAuthProfile: pre-fetch token resolution failed', { keyId, err });
       return null;
     }
+    // Attachment detached between the upstream `hasOAuthAttachment` guard and
+    // now — nothing to refresh.
+    if (token === null) return null;
     try {
       const profile = await fetchOAuthProfile(token, { timeoutMs });
       await this.#writeProfile(keyId, attachedAt, profile);
       return profile;
     } catch (err) {
       if (err instanceof OAuthProfileUnauthorizedError) {
-        // Non-reentrant 401 retry: refresh the token (the call path below
-        // goes through `#refreshTokenOnly`, NOT through `forceRefreshOAuth`,
-        // so we don't recursively chain another `refreshOAuthProfile`), then
-        // re-fetch once. A second 401 propagates — that's a real auth
-        // failure, not a transient TTL boundary.
+        // Non-reentrant 401 retry: refresh token once (via `#refreshTokenOnly`
+        // to avoid recursively chaining another `refreshOAuthProfile`), then
+        // re-fetch. A second 401 propagates — that's a real auth failure.
         try {
           await this.#refreshTokenOnly(keyId);
-          const freshToken = await this.getValidAccessToken(keyId);
+          const freshToken = await this.#getOAuthApiAccessTokenOrNull(keyId);
+          if (freshToken === null) return null;
           const profile = await fetchOAuthProfile(freshToken, { timeoutMs });
           await this.#writeProfile(keyId, attachedAt, profile);
           return profile;
@@ -1488,14 +1569,16 @@ export class TokenManager {
       if (Number.isFinite(allowedMs) && allowedMs > nowMs) return null;
     }
 
-    // Ensure fresh access token (proactive refresh)
-    let accessToken: string;
+    // Attachment detached between the upstream `hasOAuthAttachment` guard and
+    // now — nothing to fetch.
+    let accessToken: string | null;
     try {
-      accessToken = await this.getValidAccessToken(keyId);
+      accessToken = await this.#getOAuthApiAccessTokenOrNull(keyId);
     } catch (err) {
       logger.warn('fetchAndStoreUsage: refresh failed pre-fetch', err);
       return null;
     }
+    if (accessToken === null) return null;
 
     const doFetch = async (token: string) => fetchUsage(token);
 
@@ -1508,7 +1591,8 @@ export class TokenManager {
           // Attempt one refresh then retry.
           try {
             await this.refreshCredentialsIfNeeded(keyId);
-            const fresh = await this.getValidAccessToken(keyId);
+            const fresh = await this.#getOAuthApiAccessTokenOrNull(keyId);
+            if (fresh === null) return null;
             result = await doFetch(fresh);
           } catch (retryErr) {
             await this.applyUsageFailureBackoff(keyId);

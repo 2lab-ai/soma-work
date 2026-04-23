@@ -45,7 +45,7 @@ describe('buildQueryEnv', () => {
     expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe('sk-ant-oat01-TOKEN-A');
   });
 
-  it('sets CLAUDE_CODE_OAUTH_TOKEN to the lease accessToken (cct slot with oauth attachment)', () => {
+  it('sets CLAUDE_CODE_OAUTH_TOKEN to lease.accessToken verbatim (format-agnostic)', () => {
     const lease = makeLease('slot-b', 'sk-ant-oat01-TOKEN-B', 'cct');
     const { env } = buildQueryEnv(lease);
     expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe('sk-ant-oat01-TOKEN-B');
