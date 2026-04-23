@@ -29,6 +29,10 @@ export interface PendingChoiceFormData {
   questions: UserChoiceQuestion[];
   selections: Record<string, { choiceId: string; label: string }>;
   createdAt: number;
+  /** P3 (PHASE>=3) — turn id that owns this form. Used by click handlers to
+   * classify stale vs live clicks. Populated under PHASE>=3; undefined for
+   * legacy PHASE<3 forms. */
+  turnId?: string;
   /**
    * Submission lock for hero "Submit All Recommended" — set to true while
    * `completeMultiChoiceForm` is in flight. Cross-surface lock (Slack ↔ dashboard).
