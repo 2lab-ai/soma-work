@@ -128,7 +128,7 @@ export class PendingInstructionConfirmStore {
       this.bySession.delete(entry.sessionKey);
     }
     this.saveForms();
-    this.logger.info('Dropped expired pending-instruction confirm', {
+    this.logger.debug('Dropped expired pending-instruction confirm', {
       requestId: entry.requestId,
       sessionKey: entry.sessionKey,
       ageMs: Date.now() - (entry.createdAt || 0),
@@ -171,15 +171,13 @@ export class PendingInstructionConfirmStore {
     try {
       const raw = fs.readFileSync(STORE_FILE, 'utf-8');
       const arr: PendingInstructionConfirm[] = JSON.parse(raw);
-      const now = Date.now();
       let restored = 0;
       for (const entry of arr) {
         if (!entry || typeof entry !== 'object') continue;
         if (!entry.requestId || !entry.sessionKey) continue;
-        if (now - (entry.createdAt || 0) > CONFIRM_TTL_MS) continue;
-        // Schema migration guard — entries persisted before `requesterId`
-        // was introduced would rehydrate with an unguardable owner check.
-        // Drop them rather than accept a bypass-shaped entry.
+        if (this.isExpired(entry)) continue;
+        // Pre-migration entries lack `requesterId`; dropping them here
+        // prevents rehydrating a record the owner guard cannot evaluate.
         if (typeof entry.requesterId !== 'string' || entry.requesterId.length === 0) continue;
         this.byRequest.set(entry.requestId, entry);
         this.bySession.set(entry.sessionKey, entry.requestId);

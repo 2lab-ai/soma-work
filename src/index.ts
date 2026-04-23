@@ -7,6 +7,8 @@ import { registerMemoryStore, registerSkillStore } from 'somalib/model-commands/
 import * as userMemoryStore from './user-memory-store';
 import { createUserSkill, deleteUserSkill, listUserSkills, updateUserSkill } from './user-skill-store';
 
+import { setSettingsPromptInvalidationHook } from './user-settings-store';
+
 registerMemoryStore(userMemoryStore);
 registerSkillStore({
   listSkills: listUserSkills,
@@ -289,18 +291,15 @@ async function start() {
     setDashboardSessionAccessor(() => claudeHandler.getAllSessions());
     claudeHandler.getSessionRegistry().setActivityStateChangeCallback(() => broadcastSessionUpdate());
 
-    // Wire prompt-cache invalidation for SSOT mutators that live outside
-    // the stream-executor (user memory writes, user settings updates). The
-    // handlers live in independent modules — injecting the registry here
-    // avoids a cyclic import while still ensuring the next turn rebuilds.
-    // See review finding #3 in PR #683.
+    // user-memory-store and user-settings-store mutate SSOT fields that
+    // feed the cached system prompt but live outside the stream-executor
+    // reset points. Injecting the registry here avoids a cyclic import.
     {
       const registry = claudeHandler.getSessionRegistry();
       const invalidate = (userId: string): void => {
         registry.invalidateSystemPromptForUser(userId);
       };
       userMemoryStore.setMemoryPromptInvalidationHook(invalidate);
-      const { setSettingsPromptInvalidationHook } = await import('./user-settings-store');
       setSettingsPromptInvalidationHook(invalidate);
     }
 

@@ -373,10 +373,10 @@ describe('user-memory-store atomic write + new primitives', () => {
       store.replaceMemoryByIndex(userId, 'memory', 1, 'D');
       store.replaceAllMemory(userId, 'memory', ['e', 'f']);
       store.clearMemory(userId, 'memory');
-      store.clearAllMemory(userId); // clearMemory x2 (memory+user)
+      store.clearAllMemory(userId); // coalesced — fires once even though it writes both files
 
-      // 10 direct mutations above, then clearAllMemory → 2 further fires.
-      expect(calls.length).toBe(12);
+      // 10 direct mutations above + 1 coalesced fire from clearAllMemory.
+      expect(calls.length).toBe(11);
       expect(calls.every((uid) => uid === userId)).toBe(true);
 
       // Throwing inside the hook must not block the write or propagate.

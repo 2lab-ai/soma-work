@@ -301,17 +301,10 @@ export class SessionRegistry {
   }
 
   /**
-   * Invalidate the cached `systemPrompt` snapshot on every active session
-   * owned by `userId`. The next claude-handler turn on those sessions will
-   * hit the rebuild branch in `claude-handler.ts:1068` and pick up the
-   * fresh SSOT state (memory entries, persona, user settings).
-   *
-   * Mirrors the per-session invalidation at line 822 of this file — centralised
-   * here so external mutators (user-memory-store, user-settings-store) don't
-   * have to iterate `getAllSessions()` themselves and potentially miss new
-   * owner-linked fields added later.
-   *
-   * Returns the number of sessions invalidated (useful for tests + logs).
+   * Clear the cached `systemPrompt` for every session owned by `userId` so
+   * the next turn rebuilds against fresh SSOT (memory, persona, settings).
+   * Centralised here to keep external mutators out of `getAllSessions()`
+   * iteration; returns the number of sessions touched for tests/logs.
    */
   invalidateSystemPromptForUser(userId: string): number {
     if (!userId) return 0;

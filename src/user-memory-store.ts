@@ -4,6 +4,7 @@ import * as path from 'path';
 import { DATA_DIR } from './env-paths';
 import { Logger } from './logger';
 import { isSafePathSegment } from './path-utils';
+import { createPromptInvalidator } from './prompt-cache-invalidation';
 
 const ENTRY_DELIMITER = '\n§\n';
 const DEFAULT_MEMORY_CHAR_LIMIT = 2200;
@@ -32,37 +33,12 @@ interface MemoryOperationResult {
 
 const logger = new Logger('UserMemoryStore');
 
-// --- Prompt-cache invalidation hook -----------------------------------------
-//
-// The user's `MEMORY.md` / `USER.md` contents are inlined into the system
-// prompt by PromptBuilder. ClaudeHandler caches that prompt on the session
-// (`session.systemPrompt`) and only rebuilds at three explicit reset points
-// (see claude-handler.ts:1068). When the store mutates, none of those points
-// fire automatically, so long-running sessions continue serving the stale
-// snapshot — the drift that review finding #3 flagged.
-//
-// To avoid a cyclic import into SessionRegistry, wiring is deferred to
-// startup (`src/index.ts`) via this setter. `invalidateForUser` is called
-// after every successful write; unwired stays silently no-op so tests and
-// isolated tooling (bd scripts, migration tools) don't need the hook.
-//
-// Contract: hook receives the affected `userId`; implementation walks
-// active sessions and clears their `systemPrompt` snapshot. See
-// SessionRegistry.invalidateSystemPromptForUser for the canonical impl.
-let invalidatePromptHook: ((userId: string) => void) | undefined;
-
-export function setMemoryPromptInvalidationHook(hook: ((userId: string) => void) | undefined): void {
-  invalidatePromptHook = hook;
-}
-
-function fireInvalidate(userId: string): void {
-  try {
-    invalidatePromptHook?.(userId);
-  } catch (err) {
-    // Invalidation failure must never block a successful write. Log and move on.
-    logger.debug('Memory prompt invalidation hook failed', { userId, err });
-  }
-}
+// Memory writes live outside the claude-handler rebuild gate, so every
+// mutator signals through this hook to drop cached systemPrompt snapshots
+// for the affected user. Wiring happens at startup in `src/index.ts`.
+const invalidator = createPromptInvalidator(logger, 'Memory');
+export const setMemoryPromptInvalidationHook = invalidator.setHook;
+const fireInvalidate = invalidator.fire;
 
 function getUserMemoryDir(userId: string): string {
   if (!isSafePathSegment(userId)) {
@@ -352,10 +328,12 @@ export function clearMemory(userId: string, target: MemoryTarget): MemoryOperati
 }
 
 export function clearAllMemory(userId: string): MemoryOperationResult {
-  // Both clearMemory calls fire invalidate themselves; ordering is
-  // idempotent so no need to coalesce.
-  clearMemory(userId, 'memory');
-  clearMemory(userId, 'user');
+  // Write both files, then fire a single invalidation — avoids two full
+  // session-table walks when one is sufficient.
+  writeEntries(userId, 'memory', []);
+  writeEntries(userId, 'user', []);
+  fireInvalidate(userId);
+  logger.info('All memory cleared', { userId });
   return { ok: true, message: 'All memory and user profile entries cleared', entries: [] };
 }
 

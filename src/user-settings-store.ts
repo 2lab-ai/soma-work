@@ -2,30 +2,19 @@ import fs from 'fs';
 import path from 'path';
 import { DATA_DIR as ENV_DATA_DIR } from './env-paths';
 import { Logger } from './logger.js';
+import { createPromptInvalidator } from './prompt-cache-invalidation';
 import { DEFAULT_LOG_VERBOSITY, getVerbosityFlags, type LogVerbosity, VERBOSITY_NAMES } from './slack/output-flags';
 import { maskUrl } from './turn-notifier.js';
 
 const logger = new Logger('UserSettingsStore');
 
-// --- Prompt-cache invalidation hook -----------------------------------------
-//
-// Settings that feed the system prompt (persona, model, verbosity, effort,
-// thinking flags, etc) drift silently away from `session.systemPrompt` until
-// the next forced rebuild. See review finding #3 — this setter lets
-// SessionRegistry hook in at startup without a cyclic import.
-let invalidatePromptHook: ((userId: string) => void) | undefined;
-
-export function setSettingsPromptInvalidationHook(hook: ((userId: string) => void) | undefined): void {
-  invalidatePromptHook = hook;
-}
-
-function fireSettingsInvalidate(userId: string): void {
-  try {
-    invalidatePromptHook?.(userId);
-  } catch (err) {
-    logger.debug('Settings prompt invalidation hook failed', { userId, err });
-  }
-}
+// Settings feed the system prompt (persona, model, verbosity, effort, etc.)
+// so mutations need to drop cached systemPrompt snapshots. Wired at startup
+// in `src/index.ts`; shared helper handles the null-safe + error-swallow
+// contract.
+const invalidator = createPromptInvalidator(logger, 'Settings');
+export const setSettingsPromptInvalidationHook = invalidator.setHook;
+const fireSettingsInvalidate = invalidator.fire;
 
 // Available models — the 8-entry user-facing allow-list.
 //
