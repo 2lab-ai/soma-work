@@ -64,6 +64,17 @@ export interface SessionLinkHistory {
 export type SessionResourceType = 'issue' | 'pr' | 'doc';
 
 /**
+ * Lifecycle status of a single user instruction.
+ *
+ * - `active`: currently guiding the model (default)
+ * - `todo`: queued for later; still prompt-injected
+ * - `completed`: finished — once there are ≥ 2 completed entries the host
+ *   summarises them into `session.instructionsCompletedSummary` to keep the
+ *   prompt compact.
+ */
+export type SessionInstructionStatus = 'active' | 'todo' | 'completed';
+
+/**
  * A single user instruction stored as SSOT in the session.
  * Persisted to disk and exposed to the model via GET_SESSION.
  */
@@ -72,6 +83,19 @@ export interface SessionInstruction {
   text: string; // The instruction content
   addedAt: number; // Unix ms when added
   source?: string; // Who added it (e.g., "user", "model")
+  /**
+   * Lifecycle status (defaults to 'active' when absent — migration is handled
+   * at load time in session-registry.loadSessions).
+   */
+  status?: SessionInstructionStatus;
+  /**
+   * Evidence describing why an instruction is `completed` (e.g., PR link,
+   * commit SHA, test name). Required at host-side when model asks to mark
+   * completed; stripped from prompt injection for brevity.
+   */
+  evidence?: string;
+  /** Unix ms when status transitioned to `completed`. */
+  completedAt?: number;
 }
 
 export interface SessionResourceSnapshot {
@@ -124,10 +148,33 @@ export interface SessionInstructionClearOperation {
   action: 'clear';
 }
 
+/**
+ * Mark an existing instruction as `completed` with evidence. The host will
+ * stamp `completedAt = Date.now()` when applying the op.
+ */
+export interface SessionInstructionCompleteOperation {
+  action: 'complete';
+  id: string;
+  evidence: string;
+}
+
+/**
+ * Explicitly transition an instruction to a new status (escape hatch).
+ * Use `complete` when moving to `completed` so the evidence/timestamp
+ * contract is enforced.
+ */
+export interface SessionInstructionSetStatusOperation {
+  action: 'setStatus';
+  id: string;
+  status: SessionInstructionStatus;
+}
+
 export type SessionInstructionOperation =
   | SessionInstructionAddOperation
   | SessionInstructionRemoveOperation
-  | SessionInstructionClearOperation;
+  | SessionInstructionClearOperation
+  | SessionInstructionCompleteOperation
+  | SessionInstructionSetStatusOperation;
 
 export interface SessionResourceUpdateRequest {
   expectedSequence?: number;
@@ -147,6 +194,12 @@ export interface SessionResourceUpdateResult {
     expected: number;
     actual: number;
   };
+  /**
+   * When true, the host deferred `instructionOperations` for user y/n
+   * confirmation instead of applying them. Resource operations on the same
+   * request are still applied normally.
+   */
+  instructionsPending?: boolean;
 }
 
 export interface SaveContextResultFile {

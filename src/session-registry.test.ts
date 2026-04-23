@@ -809,3 +809,45 @@ describe('persistAndBroadcast', () => {
     expect(savesSpy).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('invalidateSystemPromptForUser', () => {
+  beforeEach(() => {
+    if (fs.existsSync(TEST_DATA_DIR)) {
+      fs.rmSync(TEST_DATA_DIR, { recursive: true });
+    }
+    fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
+  });
+
+  afterEach(() => {
+    if (fs.existsSync(TEST_DATA_DIR)) {
+      fs.rmSync(TEST_DATA_DIR, { recursive: true });
+    }
+  });
+
+  it('clears systemPrompt only on sessions owned by the target user', () => {
+    const registry = new SessionRegistry();
+    const mine1 = registry.createSession('U-alice', 'alice', 'C1', 't1');
+    mine1.systemPrompt = 'cached-1';
+    const mine2 = registry.createSession('U-alice', 'alice', 'C2', 't2');
+    mine2.systemPrompt = 'cached-2';
+    const theirs = registry.createSession('U-bob', 'bob', 'C3', 't3');
+    theirs.systemPrompt = 'cached-bob';
+
+    const count = registry.invalidateSystemPromptForUser('U-alice');
+    expect(count).toBe(2);
+    expect(mine1.systemPrompt).toBeUndefined();
+    expect(mine2.systemPrompt).toBeUndefined();
+    // Other-user sessions untouched.
+    expect(theirs.systemPrompt).toBe('cached-bob');
+  });
+
+  it('returns 0 for an unknown userId or empty string (no-op)', () => {
+    const registry = new SessionRegistry();
+    const s = registry.createSession('U-alice', 'alice', 'C1', 't1');
+    s.systemPrompt = 'cached';
+
+    expect(registry.invalidateSystemPromptForUser('U-ghost')).toBe(0);
+    expect(registry.invalidateSystemPromptForUser('')).toBe(0);
+    expect(s.systemPrompt).toBe('cached');
+  });
+});

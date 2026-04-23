@@ -1,10 +1,16 @@
 import { isAdminUser } from '../../admin-utils';
+import type { SessionInstruction, SessionInstructionStatus } from '../../types';
 import { CommandParser } from '../command-parser';
 import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
 
 // Slack has a practical limit of ~4000 chars per message text block.
 const MAX_OUTPUT_CHARS = 3800;
 const MAX_INITIAL_PREVIEW = 1000;
+const STATUS_ICON: Record<SessionInstructionStatus, string> = {
+  active: '🟢',
+  todo: '⏳',
+  completed: '✅',
+};
 
 export class InstructionsHandler implements CommandHandler {
   constructor(private deps: CommandDependencies) {}
@@ -32,7 +38,9 @@ export class InstructionsHandler implements CommandHandler {
       return { handled: true };
     }
 
-    if (!session.initialInstruction && (!session.followUpInstructions || session.followUpInstructions.length === 0)) {
+    const ssotInstructions = session.instructions || [];
+    const hasLegacy = !!session.initialInstruction || (session.followUpInstructions?.length ?? 0) > 0;
+    if (!hasLegacy && ssotInstructions.length === 0) {
       await this.deps.slackApi.postSystemMessage(
         channel,
         '📋 *User Instructions*\n\nNo instructions captured yet. Send a message first.',
@@ -42,6 +50,28 @@ export class InstructionsHandler implements CommandHandler {
     }
 
     const lines: string[] = ['📋 *User Instructions (SSOT)*', ''];
+
+    if (ssotInstructions.length > 0) {
+      const grouped: Record<SessionInstructionStatus, SessionInstruction[]> = {
+        active: [],
+        todo: [],
+        completed: [],
+      };
+      for (const i of ssotInstructions) grouped[i.status ?? 'active'].push(i);
+      for (const status of ['active', 'todo', 'completed'] as SessionInstructionStatus[]) {
+        const entries = grouped[status];
+        if (entries.length === 0) continue;
+        lines.push(`*${STATUS_ICON[status]} ${status} (${entries.length})*`);
+        for (const i of entries) {
+          const text = i.text.length > 200 ? `${i.text.slice(0, 200)}…` : i.text;
+          const bullet = `• \`${i.id}\` — ${text}`;
+          const evidence = i.evidence ? `\n    _evidence:_ ${i.evidence.slice(0, 200)}` : '';
+          const completedAt = i.completedAt ? ` _(completed ${new Date(i.completedAt).toISOString()})_` : '';
+          lines.push(`${bullet}${completedAt}${evidence}`);
+        }
+        lines.push('');
+      }
+    }
 
     if (session.initialInstruction) {
       const preview =
@@ -76,9 +106,9 @@ export class InstructionsHandler implements CommandHandler {
     }
 
     const workflow = session.workflow || 'default';
-    const totalCount = (session.initialInstruction ? 1 : 0) + (session.followUpInstructions?.length || 0);
+    const legacyCount = (session.initialInstruction ? 1 : 0) + (session.followUpInstructions?.length || 0);
     lines.push('');
-    lines.push(`_Workflow: \`${workflow}\` | Total instructions: ${totalCount}_`);
+    lines.push(`_Workflow: \`${workflow}\` | SSOT: ${ssotInstructions.length} | Legacy turn-log: ${legacyCount}_`);
 
     await this.deps.slackApi.postSystemMessage(channel, lines.join('\n'), { threadTs });
 

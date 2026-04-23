@@ -7,6 +7,7 @@ import type { RequestCoordinator } from '../request-coordinator';
 import type { SessionUiManager } from '../session-manager';
 import type { SlackApiHelper } from '../slack-api-helper';
 import type { ThreadPanel } from '../thread-panel';
+import type { PendingInstructionConfirmStore } from './pending-instruction-confirm-store';
 
 export interface MessageEvent {
   user: string;
@@ -50,4 +51,11 @@ export interface ActionHandlerContext {
   requestCoordinator?: RequestCoordinator;
   completionMessageTracker?: CompletionMessageTracker;
   mcpManager?: McpManager;
+  /**
+   * Shared store for deferred instruction writes awaiting user y/n.
+   * Optional because minimal test harnesses may omit it — in that case
+   * the ActionHandlers class constructs its own empty instance so unit
+   * tests don't crash, but the confirm handler will never find entries.
+   */
+  pendingInstructionConfirmStore?: PendingInstructionConfirmStore;
 }

@@ -35,6 +35,12 @@ export interface ModelCommandDescriptor {
   id: ModelCommandId;
   description: string;
   paramsSchema: Record<string, unknown>;
+  /**
+   * Optional metadata flags consumed by the host runtime. Currently:
+   *   - `user_instructions_write_gated` — the command may write `session.instructions`
+   *     but the host requires user y/n confirmation before committing.
+   */
+  metadata?: Record<string, unknown>;
 }
 
 export interface ModelCommandListResponse {
@@ -85,7 +91,18 @@ export interface ModelCommandPayloadMap {
   UPDATE_SESSION: {
     session: SessionResourceSnapshot;
     appliedOperations: number;
+    /**
+     * Count of instruction operations that were actually committed.
+     * Since instruction writes now require user y/n confirmation (see
+     * `UPDATE_SESSION` description), this is always `0` on the model-command
+     * layer. `pendingInstructionOperations` carries the count queued for
+     * confirmation.
+     */
     appliedInstructionOperations: number;
+    /** Count of instruction operations queued for user y/n confirmation. */
+    pendingInstructionOperations: number;
+    /** True when the host must render a confirmation UI before committing. */
+    confirmationRequired: boolean;
     request: SessionResourceUpdateRequest;
     title?: string;
   };

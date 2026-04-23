@@ -125,6 +125,13 @@ interface SerializedSession {
   };
   // User SSOT instructions (persisted)
   instructions?: SessionInstruction[];
+  /**
+   * Cached summary of completed instructions. Persisted so that
+   * restart after a long session doesn't force a fresh summary re-build
+   * on the very next turn (keeps prompt cache warm). See
+   * `src/conversation/instructions-summarizer.ts`.
+   */
+  instructionsCompletedSummary?: { summary: string; upstreamHash: string };
   // Dashboard v2.1 — thread-aggregate snapshot fields (live aggregate derived from memory).
   compactionCount?: number;
   activeLegStartedAtMs?: number;
@@ -291,6 +298,27 @@ export class SessionRegistry {
    */
   getAllSessions(): Map<string, ConversationSession> {
     return this.sessions;
+  }
+
+  /**
+   * Clear the cached `systemPrompt` for every session owned by `userId` so
+   * the next turn rebuilds against fresh SSOT (memory, persona, settings).
+   * Centralised here to keep external mutators out of `getAllSessions()`
+   * iteration; returns the number of sessions touched for tests/logs.
+   */
+  invalidateSystemPromptForUser(userId: string): number {
+    if (!userId) return 0;
+    let count = 0;
+    for (const session of this.sessions.values()) {
+      if (session.ownerId !== userId) continue;
+      if (session.systemPrompt === undefined) continue;
+      session.systemPrompt = undefined;
+      count += 1;
+    }
+    if (count > 0) {
+      this.logger.debug('Invalidated systemPrompt for user sessions', { userId, count });
+    }
+    return count;
   }
 
   /**
@@ -835,10 +863,38 @@ export class SessionRegistry {
       this.saveSessions();
     }
 
+    if (instructionChanged) {
+      // PLAN §2 & §5 — SSOT change invalidates the cached systemPrompt and
+      // may stale the completed-summary. Clearing the snapshot forces the
+      // next buildSystemPrompt() to rebuild; the summary regen is fire-and-
+      // forget so it never blocks the write path.
+      session.systemPrompt = undefined;
+      this.scheduleInstructionsSummaryRegen(session);
+    }
+
     return {
       ok: true,
       snapshot: this.buildSessionResourceSnapshot(session),
     };
+  }
+
+  /**
+   * Fire-and-forget: regenerate the completed-instructions summary if the
+   * cached hash no longer matches the current completed subset. Kept as a
+   * private method (rather than a free function call at the import-site)
+   * so tests can stub it out cheaply.
+   *
+   * NOTE: imports the summariser lazily to avoid pulling
+   * `@anthropic-ai/claude-agent-sdk` into the session-registry import
+   * chain — tests that only touch registry state (migration, reset, etc)
+   * shouldn't need the SDK.
+   */
+  private scheduleInstructionsSummaryRegen(session: ConversationSession): void {
+    // Lazy import + eager promise swallow — this is intentionally a noop
+    // when the summariser fails (no credentials, network, etc).
+    import('./conversation/instructions-summarizer')
+      .then(({ regenerateInstructionsSummaryIfStale }) => regenerateInstructionsSummaryIfStale(session))
+      .catch((err) => this.logger.debug('Summary regen dispatch failed', { err }));
   }
 
   private buildSessionResourceSnapshot(session: ConversationSession | undefined): SessionResourceSnapshot {
@@ -1195,6 +1251,15 @@ export class SessionRegistry {
     session.systemPrompt = undefined;
     session.initialInstruction = undefined;
     session.followUpInstructions = undefined;
+    // Clear any pending rejection flag — runtime-only, must not leak across
+    // /new or CONTINUE_SESSION resetSession boundaries (otherwise the next
+    // turn would inject a stale rejection notice).
+    session.pendingInstructionRejection = undefined;
+    // NOTE: `session.instructions` and `session.instructionsCompletedSummary`
+    // are intentionally preserved — the user-SSOT semantics require them to
+    // survive `/new` and CONTINUE_SESSION resets (they represent durable
+    // intent, not per-turn conversation state). The systemPrompt clear above
+    // forces the next turn to rebuild the prompt with the preserved SSOT.
 
     // Reset activity state
     session.activityState = 'idle';
@@ -1569,6 +1634,10 @@ export class SessionRegistry {
             mergeStats: session.mergeStats,
             // User SSOT instructions (persisted)
             instructions: session.instructions,
+            // Cached completed-summary (persisted so the next turn after restart
+            // doesn't pay a cold summary rebuild). Safe to omit — the block
+            // builder falls back to a placeholder and the async regen kicks in.
+            instructionsCompletedSummary: session.instructionsCompletedSummary,
             // Dashboard v2.1 — derive-first aggregate snapshot (persisted per session)
             compactionCount: session.compactionCount,
             activeLegStartedAtMs: session.activeLegStartedAtMs,
@@ -1743,8 +1812,18 @@ export class SessionRegistry {
           conversationId: serialized.conversationId,
           // Merge code change stats
           mergeStats: serialized.mergeStats,
-          // User SSOT instructions (restored from disk)
-          instructions: Array.isArray(serialized.instructions) ? serialized.instructions : [],
+          // User SSOT instructions (restored from disk).
+          // Legacy migration: entries saved before the lifecycle-status
+          // extension lack `status`. Seed them to 'active' so the block
+          // builder can group them without special-casing `undefined`.
+          instructions: Array.isArray(serialized.instructions)
+            ? serialized.instructions.map((i) => ({
+                ...i,
+                status: i.status ?? 'active',
+              }))
+            : [],
+          // Cached completed-summary (may be stale — block builder validates via hash).
+          instructionsCompletedSummary: serialized.instructionsCompletedSummary,
           // Dashboard v2.1 — restore aggregate snapshot
           compactionCount: typeof serialized.compactionCount === 'number' ? serialized.compactionCount : 0,
           activeLegStartedAtMs: serialized.activeLegStartedAtMs,

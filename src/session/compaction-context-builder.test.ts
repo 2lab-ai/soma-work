@@ -157,4 +157,40 @@ describe('snapshotFromSession', () => {
     expect((snapshot as any).sessionId).toBeUndefined();
     expect((snapshot as any).usage).toBeUndefined();
   });
+
+  it('preserves SSOT instructions in the compaction block, grouped by status', () => {
+    const result = buildCompactionContext({
+      ownerId: 'U1',
+      title: 't',
+      instructions: [
+        { id: 'c1', text: 'closed it', addedAt: 0, status: 'completed', completedAt: 1 },
+        { id: 'a1', text: 'active one', addedAt: 0, status: 'active' },
+        { id: 't1', text: 'todo one', addedAt: 0, status: 'todo' },
+      ],
+    });
+    expect(result).toContain('User instructions (SSOT):');
+    const aIdx = result!.indexOf('[active]');
+    const tIdx = result!.indexOf('[todo]');
+    const cIdx = result!.indexOf('[completed]');
+    expect(aIdx).toBeGreaterThan(-1);
+    expect(tIdx).toBeGreaterThan(aIdx);
+    expect(cIdx).toBeGreaterThan(tIdx);
+    expect(result).toContain('active one');
+    expect(result).toContain('todo one');
+    expect(result).toContain('closed it');
+  });
+
+  it('snapshotFromSession carries instructions through', () => {
+    const session = {
+      ownerId: 'U1',
+      userId: 'U1',
+      channelId: 'C',
+      isActive: true,
+      lastActivity: new Date(),
+      instructions: [{ id: 'x', text: 'one', addedAt: 0, status: 'active' as const }],
+    } as ConversationSession;
+    const snapshot = snapshotFromSession(session);
+    expect(snapshot.instructions).toHaveLength(1);
+    expect(snapshot.instructions?.[0].id).toBe('x');
+  });
 });
