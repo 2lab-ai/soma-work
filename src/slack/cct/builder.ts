@@ -321,11 +321,24 @@ export interface CooldownInfo {
 }
 
 /**
- * OAuth-slot cooldown — utilization-first. Priority: 7d > 5h.
- * Manual `cooldownUntil` is intentionally ignored here because the
- * Anthropic OAuth profile (utilization snapshot) is the SSOT for OAuth
- * slots; the SDK 429 → cooldownUntil bookkeeping is redundant under that
- * regime. Per PR #672 follow-up.
+ * OAuth-slot cooldown — utilization-first, with `cooldownUntil` as a
+ * lower-priority fallback. Priority: 7d util≥1 > 5h util≥1 >
+ * cooldownUntil(future) > healthy.
+ *
+ * Why we honor `cooldownUntil` for OAuth slots (Codex P1 follow-up #679):
+ * the Anthropic utilization snapshot is the SSOT for an OAuth slot's
+ * BUDGET, but the SDK 429 → `cooldownUntil` bookkeeping is still consulted
+ * by the runtime picker (`TokenManager.isEligible` / `rotateOnRateLimit` /
+ * `recordRateLimitHint`). When the SDK 429s an OAuth slot before
+ * utilization rolls over to ≥1 (or before the snapshot is refreshed),
+ * the picker rejects it but the card was rendering "Healthy" — silent
+ * UX bug where the Activate button became a no-op. By falling through
+ * to `cooldownUntil` after the utilization checks miss, the card matches
+ * the picker's reality without disturbing the utilization-first ordering.
+ *
+ * The `manual` source intentionally renders as a bare "Cooldown <dur>"
+ * label (no 5h/7d marker) — the SDK 429 doesn't disclose which window
+ * triggered it, so guessing would be misleading.
  */
 export function computeUsageCooldown(state: SlotState | undefined, nowMs: number): CooldownInfo {
   if (!state) return { inCooldown: false, remainingMs: 0, source: null };
@@ -340,6 +353,16 @@ export function computeUsageCooldown(state: SlotState | undefined, nowMs: number
     const resets = new Date(fiveHour.resetsAt).getTime();
     const remaining = Number.isFinite(resets) ? Math.max(0, resets - nowMs) : 0;
     return { inCooldown: true, remainingMs: remaining, source: 'five_hour' };
+  }
+  // Codex P1 follow-up (#679): SDK 429 → state.cooldownUntil is still
+  // honored by the runtime picker (isEligible/rotateOnRateLimit). When
+  // the utilization snapshot is stale or 429 lands before utilization
+  // crosses ≥1, the OAuth card MUST surface this so UI matches picker.
+  if (state.cooldownUntil) {
+    const until = new Date(state.cooldownUntil).getTime();
+    if (Number.isFinite(until) && until > nowMs) {
+      return { inCooldown: true, remainingMs: until - nowMs, source: 'manual' };
+    }
   }
   return { inCooldown: false, remainingMs: 0, source: null };
 }

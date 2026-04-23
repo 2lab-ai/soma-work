@@ -1268,6 +1268,166 @@ describe('authStateBadge + buildSlotStatusLine — option A (PR #672 follow-up)'
 });
 
 // ────────────────────────────────────────────────────────────────────
+// Codex P1 follow-up (#679) · OAuth slot cooldownUntil priority
+//
+// Background: TokenManager.isEligible / rotateOnRateLimit /
+// recordRateLimitHint still honor `state.cooldownUntil` (set on SDK 429)
+// even for OAuth slots, but the option-A card was utilization-only —
+// so an SDK-429'd OAuth slot rendered Healthy while the picker rejected
+// it. We now honor cooldownUntil in the OAuth path too, slotted between
+// utilization-driven cooldown and the healthy fallback. Priority order:
+//   7d util≥1 > 5h util≥1 > cooldownUntil(future) > healthy
+// Manual source label stays generic ("Cooldown <dur>") because the SDK
+// 429 doesn't disclose which window triggered it.
+// ────────────────────────────────────────────────────────────────────
+
+describe('Codex P1 follow-up (#679): OAuth cooldownUntil priority', () => {
+  const now = Date.parse('2026-04-22T00:00:00Z');
+  const HOUR = 3_600_000;
+
+  function oauthAttachedSlot(overrides: Partial<AuthKey> = {}): AuthKey {
+    return {
+      kind: 'cct',
+      source: 'setup',
+      keyId: 'slot-oauth',
+      name: 'cct-oauth',
+      setupToken: 'sk-ant-oat01-xxxx',
+      oauthAttachment: {
+        accessToken: 't',
+        refreshToken: 'r',
+        expiresAtMs: now + 7 * HOUR + 18 * 60_000,
+        scopes: ['user:profile'],
+        acknowledgedConsumerTosRisk: true,
+      },
+      createdAt: '',
+      ...overrides,
+    } as AuthKey;
+  }
+
+  function statusText(slot: AuthKey, state: SlotState | undefined, isActive = true): string {
+    const blocks = buildSlotRow(slot, state, isActive, now, 'Asia/Seoul');
+    const section = blocks[0] as any;
+    const lines = (section.text.text as string).split('\n');
+    return lines[1] ?? '';
+  }
+
+  it('OAuth + cooldownUntil = now + 30m, no utilization → yellow Cooldown 30m + OAuth refresh hint', () => {
+    const slot = oauthAttachedSlot();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      cooldownUntil: new Date(now + 30 * 60_000).toISOString(),
+    };
+    const text = statusText(slot, state);
+    expect(text).toContain(':large_yellow_circle: Cooldown 30m');
+    // Generic "Cooldown" — no 5h/7d prefix for manual source.
+    expect(text).not.toMatch(/5h Cooldown/);
+    expect(text).not.toMatch(/7d Cooldown/);
+    // OAuth refresh hint still emitted because authState is healthy.
+    expect(text).toContain('OAuth refreshes in');
+  });
+
+  it('OAuth + cooldownUntil = now + 3h + 5h util=0.5 (sub-threshold) → orange Cooldown 3h 0m', () => {
+    const slot = oauthAttachedSlot();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      cooldownUntil: new Date(now + 3 * HOUR).toISOString(),
+      usage: {
+        fetchedAt: new Date(now).toISOString(),
+        fiveHour: { utilization: 0.5, resetsAt: new Date(now + 4 * HOUR).toISOString() },
+      },
+    };
+    const text = statusText(slot, state);
+    expect(text).toContain(':large_orange_circle: Cooldown 3h 0m');
+    // Utilization < 1 so the cooldownUntil triggers, not the 5h source.
+    expect(text).not.toMatch(/5h Cooldown/);
+    expect(text).not.toMatch(/7d Cooldown/);
+  });
+
+  it('OAuth + 7d util=1.0 (resets in 12h) + cooldownUntil = now + 3h → 7d Cooldown wins (12h 0m, purple)', () => {
+    const slot = oauthAttachedSlot();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      cooldownUntil: new Date(now + 3 * HOUR).toISOString(),
+      usage: {
+        fetchedAt: new Date(now).toISOString(),
+        sevenDay: { utilization: 1.0, resetsAt: new Date(now + 12 * HOUR).toISOString() },
+      },
+    };
+    const text = statusText(slot, state);
+    expect(text).toContain(':large_purple_circle: 7d Cooldown 12h 0m');
+    // cooldownUntil is overridden by the higher-priority 7d source.
+    expect(text).not.toMatch(/(^|\s)Cooldown 3h/);
+  });
+
+  it('OAuth + 5h util=1.0 (resets in 30m) + cooldownUntil = now + 3h → 5h Cooldown wins (30m, yellow)', () => {
+    const slot = oauthAttachedSlot();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      cooldownUntil: new Date(now + 3 * HOUR).toISOString(),
+      usage: {
+        fetchedAt: new Date(now).toISOString(),
+        fiveHour: { utilization: 1.0, resetsAt: new Date(now + 30 * 60_000).toISOString() },
+      },
+    };
+    const text = statusText(slot, state);
+    expect(text).toContain(':large_yellow_circle: 5h Cooldown 30m');
+    expect(text).not.toMatch(/(^|\s)Cooldown 3h/);
+  });
+
+  it('OAuth + cooldownUntil expired (now - 1h) + util=0.5/0.5 → green Healthy', () => {
+    const slot = oauthAttachedSlot();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      cooldownUntil: new Date(now - HOUR).toISOString(),
+      usage: {
+        fetchedAt: new Date(now).toISOString(),
+        fiveHour: { utilization: 0.5, resetsAt: new Date(now + 2 * HOUR).toISOString() },
+        sevenDay: { utilization: 0.5, resetsAt: new Date(now + 3 * 86_400_000).toISOString() },
+      },
+    };
+    const text = statusText(slot, state);
+    expect(text).toContain(':large_green_circle: Healthy');
+    expect(text).not.toMatch(/Cooldown/);
+  });
+
+  it('regression lock: OAuth + cooldownUntil + util<1 → label is bare "Cooldown" (never "5h Cooldown" / "7d Cooldown")', () => {
+    const slot = oauthAttachedSlot();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      cooldownUntil: new Date(now + 2 * HOUR).toISOString(),
+      usage: {
+        fetchedAt: new Date(now).toISOString(),
+        fiveHour: { utilization: 0.3, resetsAt: new Date(now + HOUR).toISOString() },
+        sevenDay: { utilization: 0.4, resetsAt: new Date(now + 6 * 86_400_000).toISOString() },
+      },
+    };
+    const text = statusText(slot, state);
+    // Match bare " Cooldown " with no 5h/7d marker (start-of-segment after the color emoji).
+    expect(text).toMatch(/:large_orange_circle: Cooldown 2h/);
+    expect(text).not.toMatch(/5h Cooldown/);
+    expect(text).not.toMatch(/7d Cooldown/);
+  });
+
+  it('OAuth + cooldownUntil with NaN ISO → no manual cooldown fired (falls through to Healthy)', () => {
+    const slot = oauthAttachedSlot();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      cooldownUntil: 'not-a-valid-iso',
+    };
+    const text = statusText(slot, state);
+    expect(text).toContain(':large_green_circle: Healthy');
+    expect(text).not.toMatch(/Cooldown/);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
 // #668 follow-up · email / rate-limit tier / rotation-off segment /
 // 7d-sonnet 0% hide / expires suffix
 // ────────────────────────────────────────────────────────────────────
