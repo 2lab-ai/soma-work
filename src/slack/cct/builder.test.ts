@@ -4,9 +4,11 @@ import {
   appendStoreReadFailureBanner,
   buildAddSlotModal,
   buildAttachOAuthModal,
+  buildBudgetFooterBlock,
   buildCctCardBlocks,
   buildRemoveSlotModal,
   buildSlotRow,
+  formatRateLimitTier,
   formatUsageBar,
   subscriptionBadge,
 } from './builder';
@@ -110,7 +112,7 @@ describe('buildSlotRow', () => {
     expect(flat).toMatch(/77%/);
   });
 
-  it('shows cooldown suffix when still in future (#653 M2: suffix lives on the section multi-line body)', () => {
+  it('shows cooldown badge when still in future (#668 follow-up: subsumed into badge, orange dot + remaining time)', () => {
     const slot = setupSlot();
     const now = Date.parse('2026-04-18T03:42:00Z');
     const state: SlotState = {
@@ -120,7 +122,10 @@ describe('buildSlotRow', () => {
     };
     const blocks = buildSlotRow(slot, state, true, now, 'Asia/Seoul');
     const text = (blocks[0] as any).text.text as string;
-    expect(text).toMatch(/cooldown until/);
+    // New contract: the trailing `cooldown until <ts>` segment is gone; the
+    // badge itself surfaces the state + remaining-time + source in one glance.
+    expect(text).toMatch(/:large_orange_circle: cooldown .* via manual limit/);
+    expect(text).not.toMatch(/cooldown until/);
   });
 
   // the OLD "inactive collapses to section + actions only" rule is
@@ -226,18 +231,18 @@ describe('buildSlotRow', () => {
     expect(text).not.toMatch(/OAuth refreshes in -/); // no negative duration
   });
 
-  it('emits per-slot Remove/Rename buttons with value = keyId', () => {
+  it('emits per-slot Remove button with value = keyId', () => {
     const slot = setupSlot();
     const blocks = buildSlotRow(slot, undefined, false, Date.parse('2026-04-18T00:00:00Z'));
-    // Last block should be the actions row with Remove + Rename.
+    // Last block should be the actions row with Remove. The per-slot
+    // Rename button was removed in the card v2 follow-up.
     const actions = blocks.find((b: any) => b.type === 'actions') as any;
     expect(actions).toBeDefined();
     const removeBtn = actions.elements.find((e: any) => e.action_id === 'cct_open_remove');
-    const renameBtn = actions.elements.find((e: any) => e.action_id === 'cct_open_rename');
     expect(removeBtn).toBeDefined();
-    expect(renameBtn).toBeDefined();
     expect(removeBtn.value).toBe(slot.keyId);
-    expect(renameBtn.value).toBe(slot.keyId);
+    // Per-slot Rename no longer exists on the row.
+    expect(actions.elements.find((e: any) => e.action_id === 'cct_open_rename')).toBeUndefined();
   });
 });
 
@@ -246,8 +251,9 @@ describe('buildCctCardBlocks', () => {
     const blocks = buildCctCardBlocks({ slots: [], states: {} });
     const anyBlock = blocks.find((b: any) => b.type === 'section') as any;
     expect(anyBlock.text.text).toMatch(/No CCT slots/);
-    // Card-level action row (Next + Add) is always present. Remove/Rename
-    // live on each slot row now, so they are absent when no slots exist.
+    // Card-level action row (Next + Add) is always present. Remove lives on
+    // each slot row now, so it is absent when no slots exist. Per-slot
+    // Rename was removed entirely in the card v2 follow-up.
     const cardActions = blocks.find((b: any) => b.type === 'actions') as any;
     const actionIds = cardActions.elements.map((e: any) => e.action_id);
     expect(actionIds).toContain('cct_next');
@@ -256,17 +262,17 @@ describe('buildCctCardBlocks', () => {
     expect(actionIds).not.toContain('cct_open_rename');
   });
 
-  it('renders set-active selector only when >1 slot', () => {
+  it('no set-active fallback dropdown is rendered regardless of slot count (card v2 follow-up)', () => {
     const slot = setupSlot();
     const slot2 = { ...setupSlot('cct2', 'slot-2') };
     const blocks = buildCctCardBlocks({ slots: [slot, slot2], states: {}, activeKeyId: 'slot-1' });
     const selectors = blocks.filter(
       (b: any) => b.type === 'actions' && b.elements.some((e: any) => e.type === 'static_select'),
     );
-    expect(selectors.length).toBe(1);
+    expect(selectors.length).toBe(0);
   });
 
-  it('each slot row carries per-slot Remove/Rename buttons whose value is that keyId', () => {
+  it('each slot row carries a per-slot Remove button whose value is that keyId (no Rename; removed in card v2 follow-up)', () => {
     const slot1 = setupSlot('cct1', 'slot-1');
     const slot2 = setupSlot('cct2', 'slot-2');
     const blocks = buildCctCardBlocks({ slots: [slot1, slot2], states: {}, activeKeyId: 'slot-1' });
@@ -280,14 +286,11 @@ describe('buildCctCardBlocks', () => {
       return btn.value as string;
     });
     expect(removeValues).toEqual(expect.arrayContaining(['slot-1', 'slot-2']));
-    // Same for rename.
-    const renameValues = blocks
-      .filter((b: any) => b.type === 'actions' && b.elements.some((e: any) => e.action_id === 'cct_open_rename'))
-      .map((r: any) => {
-        const btn = r.elements.find((e: any) => e.action_id === 'cct_open_rename');
-        return btn.value as string;
-      });
-    expect(renameValues).toEqual(expect.arrayContaining(['slot-1', 'slot-2']));
+    // No rename buttons anywhere on the card.
+    const renameRows = blocks.filter(
+      (b: any) => b.type === 'actions' && b.elements.some((e: any) => e.action_id === 'cct_open_rename'),
+    );
+    expect(renameRows).toHaveLength(0);
   });
 });
 
@@ -443,18 +446,16 @@ describe('buildRemoveSlotModal', () => {
 describe('formatUsageBar (M1-S2)', () => {
   const now = Date.parse('2026-04-21T00:00:00Z');
 
-  it('renders a left-padded label + progress bar + percent + "resets in" hint', () => {
+  it('renders a left-padded label + utilization bar + percent + remaining bar + "resets in" hint', () => {
     const iso = new Date(now + 2 * 3_600_000 + 15 * 60_000).toISOString();
     const out = formatUsageBar(0.82, iso, now, '5h');
-    // Padded label, filled blocks, unfilled blocks, percent, `resets in` hint.
-    expect(out).toMatch(/^5h\s+█+░+\s+82% · resets in /);
+    // Padded label, filled util blocks, percent, remaining bar, `resets in` hint.
+    // Structure: `5h {utilBar} 82% · {remainingBar} resets in 2h 15m`
+    expect(out).toMatch(/^5h\s+[█░]+\s+82% · [█░]+ resets in 2h 15m$/);
   });
 
   it('renders a stable "(no data)" form when util is undefined', () => {
     const out = formatUsageBar(undefined, undefined, now, '7d');
-    // Label is left-padded to the same fixed width used by the populated
-    // row so columns align visually. Exact width may be tweaked later, but
-    // the output MUST start with the label and contain the sentinel literal.
     expect(out.startsWith('7d')).toBe(true);
     expect(out).toContain('(no data)');
   });
@@ -620,7 +621,7 @@ describe('buildCctCardBlocks — Slack 50-block hard cap (#644 review P1)', () =
 // ────────────────────────────────────────────────────────────────────
 
 describe('subscriptionBadge (M1-S3)', () => {
-  it('formats max_5x → " · Max 5x"', () => {
+  it('formats max_5x → " · Max 5×"', () => {
     const slot: AuthKey = {
       kind: 'cct',
       source: 'setup',
@@ -637,10 +638,10 @@ describe('subscriptionBadge (M1-S3)', () => {
       },
       createdAt: '',
     };
-    expect(subscriptionBadge(slot)).toBe(' · Max 5x');
+    expect(subscriptionBadge(slot)).toBe(' · Max 5×');
   });
 
-  it('formats max_20x → " · Max 20x"', () => {
+  it('formats max_20x → " · Max 20×"', () => {
     const slot: AuthKey = {
       kind: 'cct',
       source: 'legacy-attachment',
@@ -656,7 +657,7 @@ describe('subscriptionBadge (M1-S3)', () => {
       },
       createdAt: '',
     };
-    expect(subscriptionBadge(slot)).toBe(' · Max 20x');
+    expect(subscriptionBadge(slot)).toBe(' · Max 20×');
   });
 
   it('formats pro → " · Pro"', () => {
@@ -706,72 +707,6 @@ describe('subscriptionBadge (M1-S3)', () => {
 // M1-S4 · per-slot + card-level Refresh buttons
 // ────────────────────────────────────────────────────────────────────
 
-describe('buildSlotRow — Refresh button (M1-S4)', () => {
-  const now = Date.parse('2026-04-21T00:00:00Z');
-  function attachedSetupSlot(): AuthKey {
-    return {
-      kind: 'cct',
-      source: 'setup',
-      keyId: 'slot-r',
-      name: 'cct-r',
-      setupToken: 'sk-ant-oat01-xxxxxxxx',
-      oauthAttachment: {
-        accessToken: 't',
-        refreshToken: 'r',
-        expiresAtMs: now + 3_600_000,
-        scopes: ['user:profile'],
-        acknowledgedConsumerTosRisk: true,
-      },
-      createdAt: '',
-    };
-  }
-
-  it('attached cct slot action row has a Refresh button carrying keyId', () => {
-    const slot = attachedSetupSlot();
-    const blocks = buildSlotRow(slot, undefined, false, now);
-    const actions = blocks.find((b: any) => b.type === 'actions') as any;
-    const ids = actions.elements.map((e: any) => e.action_id);
-    expect(ids).toContain(CCT_ACTION_IDS.refresh_usage_slot);
-    const refresh = actions.elements.find((e: any) => e.action_id === CCT_ACTION_IDS.refresh_usage_slot);
-    expect(refresh.value).toBe('slot-r');
-  });
-
-  // Negative cases — the Refresh button must NOT appear on slots that have no
-  // usage-API surface. If it did, a click would 500 on the handler side when
-  // `fetchAndStoreUsage` refuses a non-attached slot. Two distinct shapes are
-  // checked: a bare setup-source cct slot (setupToken but no oauthAttachment)
-  // and an api_key slot (entirely separate kind, no attachment concept).
-  it('bare setup-source cct slot (no oauthAttachment) has NO Refresh button', () => {
-    const slot: AuthKey = {
-      kind: 'cct',
-      source: 'setup',
-      keyId: 'slot-bare',
-      name: 'cct-bare',
-      setupToken: 'sk-ant-oat01-xxxxxxxx',
-      // oauthAttachment intentionally absent — usage API cannot reach Anthropic.
-      createdAt: '',
-    };
-    const blocks = buildSlotRow(slot, undefined, false, now);
-    const actions = blocks.find((b: any) => b.type === 'actions') as any;
-    const ids = actions.elements.map((e: any) => e.action_id);
-    expect(ids).not.toContain(CCT_ACTION_IDS.refresh_usage_slot);
-  });
-
-  it('api_key slot has NO Refresh button (no attachment surface)', () => {
-    const slot: AuthKey = {
-      kind: 'api_key',
-      keyId: 'slot-api',
-      name: 'ops-api',
-      value: 'sk-ant-api03-xxxxxxxx',
-      createdAt: '',
-    };
-    const blocks = buildSlotRow(slot, undefined, false, now);
-    const actions = blocks.find((b: any) => b.type === 'actions') as any;
-    const ids = actions.elements.map((e: any) => e.action_id);
-    expect(ids).not.toContain(CCT_ACTION_IDS.refresh_usage_slot);
-  });
-});
-
 // ────────────────────────────────────────────────────────────────────
 // #644 review — CCT_ACTION_IDS / CCT_BLOCK_IDS literal-string contract lock
 // ────────────────────────────────────────────────────────────────────
@@ -780,30 +715,27 @@ describe('buildSlotRow — Refresh button (M1-S4)', () => {
 // the Bolt block_actions router. A silent rename breaks every deployed
 // tenant's in-flight modal state (`views.update` loses typed values) and
 // mis-routes refresh clicks to unhandled handlers. Every new ID (including
-// M1-S4 `cct_refresh_usage_all` / `cct_refresh_usage_slot`) is locked here
-// so a future append-only change is intentional, not silent.
+// M1-S4 `cct_refresh_usage_all` + card-v2 follow-up `cct_refresh_card`) is
+// locked here so a future append-only change is intentional, not silent.
 describe('CCT_ACTION_IDS / CCT_BLOCK_IDS literal lock (#644 review)', () => {
   it('CCT_ACTION_IDS maps each key to its exact wire string', () => {
     expect(CCT_ACTION_IDS).toEqual({
       next: 'cct_next',
       add: 'cct_open_add',
       remove: 'cct_open_remove',
-      rename: 'cct_open_rename',
-      set_active: 'cct_set_active',
       tos_ack: 'cct_tos_ack',
       kind_radio: 'cct_kind_radio',
       name_input: 'cct_name_value',
       setup_token_input: 'cct_setup_token_value',
       oauth_blob_input: 'cct_oauth_blob_value',
       api_key_input: 'cct_api_key_value',
-      rename_input: 'cct_rename_value',
       remove_private_metadata: 'cct_remove_slot_id',
       attach: 'cct_open_attach',
       detach: 'cct_detach',
       attach_oauth_input: 'cct_attach_oauth_blob_value',
       attach_tos_ack: 'cct_attach_tos_ack_value',
       refresh_usage_all: 'cct_refresh_usage_all',
-      refresh_usage_slot: 'cct_refresh_usage_slot',
+      refresh_card: 'cct_refresh_card',
       activate_slot: 'cct_activate_slot',
     });
   });
@@ -817,7 +749,6 @@ describe('CCT_ACTION_IDS / CCT_BLOCK_IDS literal lock (#644 review)', () => {
       add_tos_ack: 'cct_add_tos_ack',
       add_api_key_value: 'cct_add_api_key_value',
       remove_confirm: 'cct_remove_confirm',
-      rename_name: 'cct_rename_name',
       attach_oauth_blob: 'cct_attach_oauth_blob',
       attach_tos_ack: 'cct_attach_tos_ack',
     });
@@ -827,14 +758,13 @@ describe('CCT_ACTION_IDS / CCT_BLOCK_IDS literal lock (#644 review)', () => {
     expect(CCT_VIEW_IDS).toEqual({
       add: 'cct_add_slot',
       remove: 'cct_remove_slot',
-      rename: 'cct_rename_slot',
       attach: 'cct_attach_oauth',
     });
   });
 });
 
-describe('buildCctCardBlocks — Refresh all (M1-S4)', () => {
-  it('card-level action row includes the new Refresh-all button alongside existing actions', () => {
+describe('buildCctCardBlocks — card-level action row', () => {
+  it('card-level action row contains Next/Add/Refresh-All-OAuth/Refresh in order (4 buttons)', () => {
     const slot: AuthKey = {
       kind: 'cct',
       source: 'setup',
@@ -850,13 +780,537 @@ describe('buildCctCardBlocks — Refresh all (M1-S4)', () => {
     ) as any;
     expect(cardRow).toBeDefined();
     const ids = cardRow.elements.map((e: any) => e.action_id);
-    expect(ids).toContain(CCT_ACTION_IDS.refresh_usage_all);
-    // Existing actions still present — contract guarantees no existing ID
-    // changes or removals in this PR.
-    expect(ids).toContain(CCT_ACTION_IDS.next);
-    expect(ids).toContain(CCT_ACTION_IDS.add);
-    // Length assertion: exactly three buttons in the card-level row.
-    expect(cardRow.elements).toHaveLength(3);
+    expect(ids).toEqual([
+      CCT_ACTION_IDS.next,
+      CCT_ACTION_IDS.add,
+      CCT_ACTION_IDS.refresh_usage_all,
+      CCT_ACTION_IDS.refresh_card,
+    ]);
+    // Length assertion: exactly four buttons in the card-level row.
+    expect(cardRow.elements).toHaveLength(4);
+  });
+
+  it('the Refresh All OAuth Tokens button carries the updated label', () => {
+    const slot: AuthKey = {
+      kind: 'cct',
+      source: 'setup',
+      keyId: 'slot-1',
+      name: 'cct1',
+      setupToken: 'sk-ant-oat01-xxxx',
+      createdAt: '',
+    };
+    const blocks = buildCctCardBlocks({ slots: [slot], states: {} });
+    const cardRow = blocks.find(
+      (b: any) => b.type === 'actions' && b.elements.some((e: any) => e.action_id === 'cct_refresh_usage_all'),
+    ) as any;
+    const btn = cardRow.elements.find((e: any) => e.action_id === 'cct_refresh_usage_all');
+    expect(btn.text.text).toBe(':arrows_counterclockwise: Refresh All OAuth Tokens');
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
+// #668 follow-up · cooldown helper + orange badge
+// ────────────────────────────────────────────────────────────────────
+
+describe('computeCooldown + cooldown badge (#668 follow-up)', () => {
+  const now = Date.parse('2026-04-22T00:00:00Z');
+
+  function slotWithAttachment(): AuthKey {
+    return {
+      kind: 'cct',
+      source: 'setup',
+      keyId: 'slot-cd',
+      name: 'cd',
+      setupToken: 'sk-ant-oat01-xxxx',
+      oauthAttachment: {
+        accessToken: 't',
+        refreshToken: 'r',
+        expiresAtMs: now + 86_400_000,
+        scopes: ['user:profile'],
+        acknowledgedConsumerTosRisk: true,
+      },
+      createdAt: '',
+    };
+  }
+
+  it('7d utilization=1 with future resetsAt → orange cooldown badge via 7d limit', () => {
+    const slot = slotWithAttachment();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      usage: {
+        fetchedAt: new Date(now).toISOString(),
+        sevenDay: { utilization: 1, resetsAt: new Date(now + 2 * 86_400_000).toISOString() },
+      },
+    };
+    const blocks = buildSlotRow(slot, state, true, now);
+    const text = (blocks[0] as any).text.text as string;
+    expect(text).toMatch(/:large_orange_circle: cooldown 2d 0h via 7d limit/);
+  });
+
+  it('7d utilization=1 with PAST resetsAt still flags cooldown (remaining clamped to 0)', () => {
+    const slot = slotWithAttachment();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      usage: {
+        fetchedAt: new Date(now).toISOString(),
+        sevenDay: { utilization: 1, resetsAt: new Date(now - 3_600_000).toISOString() },
+      },
+    };
+    const blocks = buildSlotRow(slot, state, true, now);
+    const text = (blocks[0] as any).text.text as string;
+    // Remaining is clamped to 0 → renders as `<1m` via formatUsageResetDelta.
+    expect(text).toMatch(/:large_orange_circle: cooldown [^·]* via 7d limit/);
+  });
+
+  it('5h utilization=1 (no 7d trigger) → cooldown via 5h limit', () => {
+    const slot = slotWithAttachment();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      usage: {
+        fetchedAt: new Date(now).toISOString(),
+        fiveHour: { utilization: 1, resetsAt: new Date(now + 3_600_000).toISOString() },
+        sevenDay: { utilization: 0.3, resetsAt: new Date(now + 6 * 86_400_000).toISOString() },
+      },
+    };
+    const blocks = buildSlotRow(slot, state, true, now);
+    const text = (blocks[0] as any).text.text as string;
+    expect(text).toMatch(/:large_orange_circle: cooldown 1h 0m via 5h limit/);
+  });
+
+  it('manual cooldownUntil only → cooldown via manual limit', () => {
+    const slot = slotWithAttachment();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      cooldownUntil: new Date(now + 30 * 60_000).toISOString(),
+    };
+    const blocks = buildSlotRow(slot, state, true, now);
+    const text = (blocks[0] as any).text.text as string;
+    expect(text).toMatch(/:large_orange_circle: cooldown 30m via manual limit/);
+  });
+
+  it('priority: 7d > 5h > manual when multiple triggers fire simultaneously', () => {
+    const slot = slotWithAttachment();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      cooldownUntil: new Date(now + 10 * 60_000).toISOString(),
+      usage: {
+        fetchedAt: new Date(now).toISOString(),
+        fiveHour: { utilization: 1, resetsAt: new Date(now + 3_600_000).toISOString() },
+        sevenDay: { utilization: 1, resetsAt: new Date(now + 2 * 86_400_000).toISOString() },
+      },
+    };
+    const blocks = buildSlotRow(slot, state, true, now);
+    const text = (blocks[0] as any).text.text as string;
+    // 7d wins.
+    expect(text).toMatch(/via 7d limit/);
+    expect(text).not.toMatch(/via 5h limit/);
+    expect(text).not.toMatch(/via manual limit/);
+  });
+
+  it('historical `rate-limited via …` segment is preserved alongside the cooldown badge', () => {
+    const slot = slotWithAttachment();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      rateLimitedAt: new Date(now - 60_000).toISOString(),
+      rateLimitSource: 'response_header',
+      cooldownUntil: new Date(now + 30 * 60_000).toISOString(),
+    };
+    const blocks = buildSlotRow(slot, state, true, now, 'Asia/Seoul');
+    const text = (blocks[0] as any).text.text as string;
+    expect(text).toMatch(/:large_orange_circle: cooldown/);
+    expect(text).toMatch(/rate-limited .* via response_header/);
+  });
+
+  it('healthy slot without any trigger → green badge, no cooldown', () => {
+    const slot = slotWithAttachment();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      usage: {
+        fetchedAt: new Date(now).toISOString(),
+        fiveHour: { utilization: 0.2, resetsAt: new Date(now + 3_600_000).toISOString() },
+        sevenDay: { utilization: 0.3, resetsAt: new Date(now + 6 * 86_400_000).toISOString() },
+      },
+    };
+    const blocks = buildSlotRow(slot, state, true, now);
+    const text = (blocks[0] as any).text.text as string;
+    expect(text).toContain(':large_green_circle: healthy');
+    expect(text).not.toMatch(/:large_orange_circle:/);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
+// #668 follow-up · email / rate-limit tier / rotation-off segment /
+// 7d-sonnet 0% hide / expires suffix
+// ────────────────────────────────────────────────────────────────────
+
+describe('formatRateLimitTier (#668 follow-up)', () => {
+  it('maps each known default_claude_* tier to its label', () => {
+    expect(formatRateLimitTier('default_claude_max_20x', 'cct')).toBe('Max 20×');
+    expect(formatRateLimitTier('default_claude_max_5x', 'cct')).toBe('Max 5×');
+    expect(formatRateLimitTier('default_claude_pro', 'cct')).toBe('Pro');
+    expect(formatRateLimitTier('default_claude_max', 'cct')).toBe('Max');
+  });
+  it('api_key kind always returns API regardless of raw', () => {
+    expect(formatRateLimitTier(undefined, 'api_key')).toBe('API');
+    expect(formatRateLimitTier('default_claude_max_20x', 'api_key')).toBe('API');
+  });
+  it('unknown tier passes through as the raw string', () => {
+    expect(formatRateLimitTier('default_claude_enterprise', 'cct')).toBe('default_claude_enterprise');
+  });
+  it('undefined raw on a cct slot → null (no badge)', () => {
+    expect(formatRateLimitTier(undefined, 'cct')).toBeNull();
+  });
+});
+
+describe('subscriptionBadge — profile.rateLimitTier priority (#668 follow-up)', () => {
+  const base = {
+    kind: 'cct' as const,
+    source: 'setup' as const,
+    keyId: 'k',
+    name: 'n',
+    setupToken: 'sk-ant-oat01-xxxx',
+    createdAt: '',
+  };
+  it('prefers profile.rateLimitTier over attachment.rateLimitTier and subscriptionType', () => {
+    const slot: AuthKey = {
+      ...base,
+      oauthAttachment: {
+        accessToken: 't',
+        refreshToken: 'r',
+        expiresAtMs: 0,
+        scopes: ['user:profile'],
+        acknowledgedConsumerTosRisk: true,
+        subscriptionType: 'pro',
+        rateLimitTier: 'default_claude_pro',
+        profile: { fetchedAt: 1, rateLimitTier: 'default_claude_max_20x' },
+      },
+    };
+    expect(subscriptionBadge(slot)).toBe(' · Max 20×');
+  });
+  it('falls back to attachment.rateLimitTier when profile missing', () => {
+    const slot: AuthKey = {
+      ...base,
+      oauthAttachment: {
+        accessToken: 't',
+        refreshToken: 'r',
+        expiresAtMs: 0,
+        scopes: ['user:profile'],
+        acknowledgedConsumerTosRisk: true,
+        rateLimitTier: 'default_claude_max_5x',
+      },
+    };
+    expect(subscriptionBadge(slot)).toBe(' · Max 5×');
+  });
+});
+
+describe('buildSlotRow — email suffix (#668 follow-up)', () => {
+  const now = Date.parse('2026-04-22T00:00:00Z');
+  function slotWithEmail(email: string): AuthKey {
+    return {
+      kind: 'cct',
+      source: 'setup',
+      keyId: 'slot-e',
+      name: 'cct-e',
+      setupToken: 'sk-ant-oat01-xxxx',
+      oauthAttachment: {
+        accessToken: 't',
+        refreshToken: 'r',
+        expiresAtMs: now + 86_400_000,
+        scopes: ['user:profile'],
+        acknowledgedConsumerTosRisk: true,
+        profile: { fetchedAt: 1, email, rateLimitTier: 'default_claude_max_20x' },
+      },
+      createdAt: '',
+    };
+  }
+
+  it('renders email as a " · " segment on the head line', () => {
+    const blocks = buildSlotRow(slotWithEmail('alice@example.com'), undefined, false, now);
+    const text = (blocks[0] as any).text.text as string;
+    expect(text).toContain('· alice@example.com');
+  });
+
+  it('middle-truncates emails longer than 40 chars', () => {
+    const long = 'very.long.local.part.name@very-long-corp-domain.example.com';
+    const blocks = buildSlotRow(slotWithEmail(long), undefined, false, now);
+    const text = (blocks[0] as any).text.text as string;
+    // Should contain ellipsis marker and not the full string.
+    expect(text).toMatch(/\.\.\./);
+    expect(text).not.toContain(long);
+  });
+
+  it('no email → no email segment', () => {
+    const noProfileSlot: AuthKey = {
+      kind: 'cct',
+      source: 'setup',
+      keyId: 'slot-ne',
+      name: 'cct-ne',
+      setupToken: 'sk-ant-oat01-xxxx',
+      createdAt: '',
+    };
+    const blocks = buildSlotRow(noProfileSlot, undefined, false, now);
+    const text = (blocks[0] as any).text.text as string;
+    expect(text).not.toMatch(/@/);
+  });
+});
+
+describe('buildSlotRow — rotation-off segment (#668 follow-up)', () => {
+  const now = Date.parse('2026-04-22T00:00:00Z');
+  it('renders `:lock: rotation-off` when slot.disableRotation=true', () => {
+    const slot: AuthKey = {
+      kind: 'cct',
+      source: 'setup',
+      keyId: 'slot-d',
+      name: 'cct-d',
+      setupToken: 'sk-ant-oat01-xxxx',
+      createdAt: '',
+      disableRotation: true,
+    };
+    const blocks = buildSlotRow(slot, undefined, false, now);
+    const text = (blocks[0] as any).text.text as string;
+    expect(text).toContain(':lock: rotation-off');
+  });
+  it('absent flag → no rotation-off segment', () => {
+    const slot: AuthKey = {
+      kind: 'cct',
+      source: 'setup',
+      keyId: 'slot-d',
+      name: 'cct-d',
+      setupToken: 'sk-ant-oat01-xxxx',
+      createdAt: '',
+    };
+    const blocks = buildSlotRow(slot, undefined, false, now);
+    const text = (blocks[0] as any).text.text as string;
+    expect(text).not.toContain('rotation-off');
+  });
+});
+
+describe('buildSlotRow — 7d-sonnet 0% hide (#668 follow-up)', () => {
+  const now = Date.parse('2026-04-22T00:00:00Z');
+  function slotWithAttachment(): AuthKey {
+    return {
+      kind: 'cct',
+      source: 'setup',
+      keyId: 'slot-s',
+      name: 'cct-s',
+      setupToken: 'sk-ant-oat01-xxxx',
+      oauthAttachment: {
+        accessToken: 't',
+        refreshToken: 'r',
+        expiresAtMs: now + 86_400_000,
+        scopes: ['user:profile'],
+        acknowledgedConsumerTosRisk: true,
+      },
+      createdAt: '',
+    };
+  }
+  it('hides 7d-sonnet row when utilization is exactly 0', () => {
+    const slot = slotWithAttachment();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      usage: {
+        fetchedAt: new Date(now).toISOString(),
+        fiveHour: { utilization: 0.1, resetsAt: new Date(now + 3_600_000).toISOString() },
+        sevenDaySonnet: { utilization: 0, resetsAt: new Date(now + 6 * 86_400_000).toISOString() },
+      },
+    };
+    const blocks = buildSlotRow(slot, state, true, now);
+    const flat = JSON.stringify(blocks);
+    expect(flat).not.toMatch(/7d-sonnet/);
+  });
+  it('shows 7d-sonnet row when utilization > 0', () => {
+    const slot = slotWithAttachment();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      usage: {
+        fetchedAt: new Date(now).toISOString(),
+        fiveHour: { utilization: 0.1, resetsAt: new Date(now + 3_600_000).toISOString() },
+        sevenDaySonnet: { utilization: 0.01, resetsAt: new Date(now + 6 * 86_400_000).toISOString() },
+      },
+    };
+    const blocks = buildSlotRow(slot, state, true, now);
+    const flat = JSON.stringify(blocks);
+    expect(flat).toMatch(/7d-sonnet/);
+  });
+});
+
+describe('formatUsageBar — second gauge bar (card v2 follow-up)', () => {
+  const now = Date.parse('2026-04-22T00:00:00Z');
+
+  it('drops the legacy ` · expires in <dur>` suffix from the output', () => {
+    // The duplicated `expires in` hint was replaced by a second
+    // progress bar that visualises the remaining portion of the window.
+    const iso = new Date(now + 3 * 3_600_000).toISOString();
+    const out = formatUsageBar(0.5, iso, now, '5h');
+    expect(out).not.toMatch(/expires in/);
+    expect(out).toMatch(/resets in 3h 0m$/);
+  });
+
+  it('mid-window 5h with 2.5h remaining → remaining bar roughly half-filled (5/10 cells)', () => {
+    const iso = new Date(now + 2.5 * 3_600_000).toISOString();
+    const out = formatUsageBar(0.5, iso, now, '5h');
+    // Format: `5h <utilBar> 50% · <remainingBar> resets in 2h 30m`.
+    const m = out.match(/· ([█░]+) resets in/);
+    expect(m).not.toBeNull();
+    const rBar = m![1];
+    expect(rBar.length).toBe(10);
+    // 2.5/5 = 50% → 5 filled cells.
+    expect(rBar).toBe('█████░░░░░');
+  });
+
+  it('window-just-started 7d with ~7d remaining → remaining bar near full (9-10 filled)', () => {
+    // 2.5 minutes into a 7d window → ~7d remaining.
+    const iso = new Date(now + 7 * 86_400_000 - 150_000).toISOString();
+    const out = formatUsageBar(0.1, iso, now, '7d');
+    const m = out.match(/· ([█░]+) resets in/);
+    expect(m).not.toBeNull();
+    const rBar = m![1];
+    const filled = (rBar.match(/█/g) ?? []).length;
+    expect(filled).toBeGreaterThanOrEqual(9);
+    expect(filled).toBeLessThanOrEqual(10);
+  });
+
+  it('window-expired-past 7d → remaining bar all empty, hint "<1m"', () => {
+    const iso = new Date(now - 3_600_000).toISOString(); // 1h ago
+    const out = formatUsageBar(0.95, iso, now, '7d');
+    const m = out.match(/· ([█░]+) resets in/);
+    expect(m).not.toBeNull();
+    const rBar = m![1];
+    expect(rBar).toBe('░'.repeat(10));
+    expect(out).toMatch(/resets in <1m$/);
+  });
+
+  it('invalid resetsAt → dotted-placeholder remaining bar + "<1m" hint', () => {
+    const out = formatUsageBar(0.3, 'not-a-valid-iso', now, '5h');
+    // Dotted placeholder signals the column can't be computed without
+    // dropping the row entirely.
+    expect(out).toContain('··········');
+    expect(out).toMatch(/resets in <1m$/);
+  });
+});
+
+describe('buildBudgetFooterBlock (#668 follow-up)', () => {
+  const now = Date.parse('2026-04-22T00:00:00Z');
+
+  function makeSlotWithUsage(
+    name: string,
+    keyId: string,
+    util: number,
+    resetsAt: string,
+  ): { slot: AuthKey; state: SlotState } {
+    return {
+      slot: {
+        kind: 'cct',
+        source: 'setup',
+        keyId,
+        name,
+        setupToken: 'sk-ant-oat01-x',
+        oauthAttachment: {
+          accessToken: 't',
+          refreshToken: 'r',
+          expiresAtMs: now + 86_400_000,
+          scopes: ['user:profile'],
+          acknowledgedConsumerTosRisk: true,
+        },
+        createdAt: '',
+      },
+      state: {
+        authState: 'healthy',
+        activeLeases: [],
+        usage: {
+          fetchedAt: new Date(now).toISOString(),
+          sevenDay: { utilization: util, resetsAt },
+        },
+      },
+    };
+  }
+
+  it('returns null when fewer than 2 eligible slots', () => {
+    const a = makeSlotWithUsage('a', 's1', 0.1, new Date(now + 86_400_000).toISOString());
+    const states: Record<string, SlotState> = { s1: a.state };
+    expect(buildBudgetFooterBlock([a.slot], states, now)).toBeNull();
+  });
+
+  it('surfaces the top-3 soonest-expiring 7d budgets in order', () => {
+    const a = makeSlotWithUsage('a', 's1', 0.4, new Date(now + 4 * 86_400_000).toISOString());
+    const b = makeSlotWithUsage('b', 's2', 0.6, new Date(now + 1 * 86_400_000).toISOString());
+    const c = makeSlotWithUsage('c', 's3', 0.2, new Date(now + 2 * 86_400_000).toISOString());
+    const d = makeSlotWithUsage('d', 's4', 0.8, new Date(now + 3 * 86_400_000).toISOString());
+    const states: Record<string, SlotState> = {
+      s1: a.state,
+      s2: b.state,
+      s3: c.state,
+      s4: d.state,
+    };
+    const block = buildBudgetFooterBlock([a.slot, b.slot, c.slot, d.slot], states, now) as any;
+    expect(block).not.toBeNull();
+    const text: string = block.text.text;
+    // b (1d) → c (2d) → d (3d); a (4d) drops off.
+    expect(text.indexOf('`b`')).toBeLessThan(text.indexOf('`c`'));
+    expect(text.indexOf('`c`')).toBeLessThan(text.indexOf('`d`'));
+    expect(text).not.toContain('`a`');
+    // Remaining pct is (1 - util) * 100 rounded.
+    expect(text).toContain('`b` 40%');
+    expect(text).toContain('`c` 80%');
+  });
+
+  it('skips tombstoned / revoked slots', () => {
+    const healthy = makeSlotWithUsage('h', 's1', 0.5, new Date(now + 86_400_000).toISOString());
+    const tomb = makeSlotWithUsage('t', 's2', 0.5, new Date(now + 2 * 86_400_000).toISOString());
+    tomb.state.tombstoned = true;
+    const rev = makeSlotWithUsage('r', 's3', 0.5, new Date(now + 3 * 86_400_000).toISOString());
+    rev.state.authState = 'revoked';
+    const states: Record<string, SlotState> = { s1: healthy.state, s2: tomb.state, s3: rev.state };
+    // Only one eligible → returns null.
+    expect(buildBudgetFooterBlock([healthy.slot, tomb.slot, rev.slot], states, now)).toBeNull();
+  });
+
+  it('budget footer is wired into buildCctCardBlocks and participates in trim under cap pressure', () => {
+    const slots: AuthKey[] = [];
+    const states: Record<string, SlotState> = {};
+    // 15 slots — footer + trailers should still fit under the 50-block cap.
+    for (let i = 0; i < 15; i++) {
+      const keyId = `slot-${i}`;
+      slots.push({
+        kind: 'cct',
+        source: 'setup',
+        keyId,
+        name: `cct${i}`,
+        setupToken: 'sk-ant-oat01-x',
+        oauthAttachment: {
+          accessToken: 't',
+          refreshToken: 'r',
+          expiresAtMs: now + 86_400_000,
+          scopes: ['user:profile'],
+          acknowledgedConsumerTosRisk: true,
+          subscriptionType: 'max_5x',
+        },
+        createdAt: '',
+      });
+      states[keyId] = {
+        authState: 'healthy',
+        activeLeases: [],
+        usage: {
+          fetchedAt: new Date(now).toISOString(),
+          fiveHour: { utilization: 0.3, resetsAt: new Date(now + 3 * 3_600_000).toISOString() },
+          sevenDay: {
+            utilization: i * 0.05,
+            resetsAt: new Date(now + (i + 1) * 86_400_000).toISOString(),
+          },
+        },
+      };
+    }
+    const blocks = buildCctCardBlocks({ slots, states, activeKeyId: 'slot-0', nowMs: now });
+    expect(blocks.length).toBeLessThanOrEqual(47);
   });
 });
 

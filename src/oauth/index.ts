@@ -18,6 +18,12 @@ export {
   type OAuthRefreshSchedulerOpts,
   startOAuthRefreshScheduler,
 } from './oauth-refresh-scheduler';
+export {
+  CLAUDE_OAUTH_PROFILE_URL,
+  fetchOAuthProfile,
+  type OAuthProfile,
+  OAuthProfileUnauthorizedError,
+} from './profile';
 export type { OAuthCredentials } from './refresher';
 export {
   CLAUDE_OAUTH_CLIENT_ID,
