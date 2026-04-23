@@ -132,7 +132,10 @@ export interface SlotAuthLease {
    */
   readonly keyId: string;
   /**
-   * The access token to use for this request.
+   * Dispatch access token for this request (the value forwarded to the
+   * Claude CLI via `CLAUDE_CODE_OAUTH_TOKEN`). For `cct / source:'setup'`
+   * this is the long-lived `setupToken`, never the 1h OAuth attachment
+   * access_token (see issue #673).
    *
    * Kept as `accessToken` for PR-A to avoid coupling to any not-yet-landed
    * consumer. PR-B atomically renames this to `secret` alongside its
@@ -151,13 +154,11 @@ export interface SlotAuthLease {
  * Acquire an auth lease on the active CCT slot.
  *
  * - Picks the currently-active HEALTHY slot via `tokenManager.acquireLease()`.
- * - For `oauth_credentials` slots, proactively refreshes via
- *   `tokenManager.getValidAccessToken(slotId)` (7h buffer, in-process dedupe,
- *   lock-safe). Returned `accessToken` is guaranteed-fresh at the moment of
- *   return — callers MUST pass the lease through `buildQueryEnv(lease)` and
- *   thread the resulting env into the Agent SDK's `options.env`. Do NOT
- *   mutate `process.env.CLAUDE_CODE_OAUTH_TOKEN`; concurrent dispatches on
- *   different slots would race each other on a process-global.
+ * - Resolves the dispatch token via `getValidAccessToken(keyId, 'dispatch')`;
+ *   see that method for the per-kind resolution. Callers MUST pass the
+ *   lease through `buildQueryEnv(lease)` — never mutate
+ *   `process.env.CLAUDE_CODE_OAUTH_TOKEN` (concurrent dispatches on
+ *   different slots would race on a process-global).
  * - If no healthy slot exists, throws `NoHealthySlotError`.
  *
  * The returned lease MUST be released in a `finally` block.
@@ -187,11 +188,10 @@ export async function ensureActiveSlotAuth(
     throw new NoHealthySlotError();
   }
 
-  // Pre-refresh for cct slots with OAuth attachment (7h buffer); setup-only
-  // CCT slots return the setupToken; api_key slots return slot.value.
+  // Dispatch surface — Claude CLI subprocess env. See getValidAccessToken().
   let accessToken: string;
   try {
-    accessToken = await tokenManager.getValidAccessToken(active.keyId);
+    accessToken = await tokenManager.getValidAccessToken(active.keyId, 'dispatch');
   } catch (err) {
     try {
       await tokenManager.releaseLease(lease.leaseId);
