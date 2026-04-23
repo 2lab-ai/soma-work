@@ -941,4 +941,90 @@ describe('ChoiceActionHandler — P3 (PHASE>=3) classifyClick', () => {
     expect(session.actionPanel.pendingQuestion).toBeUndefined();
     expect(sessionRegistry.persistAndBroadcast).toHaveBeenCalledWith(sessionKey);
   });
+
+  /**
+   * Regression guard for codex P1: multi-choice chunking (>6 questions) splits
+   * into N forms but `handleFormSubmit` only validates THIS form's answers.
+   * Submitting chunk 1 must NOT clear chunks 2..N — they remain live for the
+   * user to answer independently (matches legacy per-chunk semantics).
+   */
+  describe('completeMultiChoiceForm — P3 per-chunk submit (codex P1 regression guard)', () => {
+    const makeForm = (formId: string, messageTs: string, turnId: string) => ({
+      formId,
+      sessionKey,
+      channel: 'C1',
+      threadTs: 'thread-root',
+      messageTs,
+      questions: [{ id: 'q1', question: 'q?', choices: [{ id: '1', label: 'A' }] }],
+      selections: { q1: { choiceId: '1', label: 'A' } },
+      createdAt: 0,
+      turnId,
+    });
+
+    it('submitting chunk 1 of 2: only chunk 1 marked done, chunk 2 untouched, pendingChoice keeps chunk 2', async () => {
+      config.ui.fiveBlockPhase = 3;
+      formStore.set('form-A', makeForm('form-A', 'ts-A', 'turn-X'));
+      formStore.set('form-B', makeForm('form-B', 'ts-B', 'turn-X'));
+      const session = {
+        threadRootTs: 'thread-root',
+        threadTs: 'thread-root',
+        channelId: 'C1',
+        ownerId: 'U1',
+        actionPanel: {
+          pendingChoice: {
+            turnId: 'turn-X',
+            kind: 'multi',
+            choiceTs: 'ts-A',
+            formIds: ['form-A', 'form-B'],
+            question: { type: 'user_choices', questions: [] },
+            createdAt: 0,
+          },
+          pendingQuestion: { type: 'user_choices' },
+        },
+      };
+      claudeHandler.getSessionByKey.mockReturnValue(session);
+
+      await handler.completeMultiChoiceForm(formStore.get('form-A'), 'U1', 'C1', 'thread-root', 'ts-A');
+
+      // Only chunk-A's Slack message updated (chunk-B ts NOT touched).
+      const updateCalls = slackApi.updateMessage.mock.calls.filter(
+        (c: any[]) => c[1] === 'ts-A' || c[1] === 'ts-B',
+      );
+      expect(updateCalls.map((c: any[]) => c[1]).sort()).toEqual(['ts-A']);
+
+      // pendingChoice shrinks (form-A removed, form-B survives).
+      expect(session.actionPanel.pendingChoice).toBeDefined();
+      expect(session.actionPanel.pendingChoice!.formIds).toEqual(['form-B']);
+      // form-A deleted from store, form-B survives.
+      expect(formStore.get('form-A')).toBeUndefined();
+      expect(formStore.get('form-B')).toBeDefined();
+    });
+
+    it('submitting last chunk (only formId in pendingChoice): pendingChoice fully cleared', async () => {
+      config.ui.fiveBlockPhase = 3;
+      formStore.set('form-B', makeForm('form-B', 'ts-B', 'turn-X'));
+      const session = {
+        threadRootTs: 'thread-root',
+        threadTs: 'thread-root',
+        channelId: 'C1',
+        ownerId: 'U1',
+        actionPanel: {
+          pendingChoice: {
+            turnId: 'turn-X',
+            kind: 'multi',
+            choiceTs: 'ts-B',
+            formIds: ['form-B'],
+            question: { type: 'user_choices', questions: [] },
+            createdAt: 0,
+          },
+        },
+      };
+      claudeHandler.getSessionByKey.mockReturnValue(session);
+
+      await handler.completeMultiChoiceForm(formStore.get('form-B'), 'U1', 'C1', 'thread-root', 'ts-B');
+
+      expect(session.actionPanel.pendingChoice).toBeUndefined();
+      expect(formStore.get('form-B')).toBeUndefined();
+    });
+  });
 });

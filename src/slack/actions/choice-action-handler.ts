@@ -492,10 +492,14 @@ export class ChoiceActionHandler {
     const session = this.ctx.claudeHandler.getSessionByKey(pendingForm.sessionKey);
     const resolvedThreadTs = this.resolveSessionThreadTs(session, threadTs);
 
-    // P3 (PHASE>=3) — resolve via ThreadPanel.resolveMultiChoice so we update
-    // every chunk in pendingChoice.formIds via their tracked messageTs (not
-    // the ts-union resolver). Only when pendingChoice.kind === 'multi' and
-    // turnId matches this form's turnId (already checked by caller).
+    // P3 (PHASE>=3) — submit is per-chunk (handleFormSubmit only validates
+    // the submitted form's questions). Resolve only THIS chunk's messageTs
+    // in place. Remove this chunk's formId from pendingChoice.formIds; only
+    // when the last chunk is submitted does pendingChoice fully clear.
+    // Other chunks remain live so the user can answer them independently
+    // (matches legacy per-chunk semantics; prevents codex-flagged bug where
+    // submitting chunk 1 would clear chunks 2..N as "completed" while they
+    // were still unanswered).
     const pc = session?.actionPanel?.pendingChoice;
     const canUseP3 =
       config.ui.fiveBlockPhase >= 3 &&
@@ -505,56 +509,68 @@ export class ChoiceActionHandler {
       pc.kind === 'multi' &&
       pc.turnId === pendingForm.turnId;
 
-    if (canUseP3 && session && channel) {
-      // Build tsList from pendingChoice.formIds → pendingForm.messageTs via formStore
-      const tsList: string[] = [];
-      for (const fId of pc!.formIds) {
-        const form = this.formStore.get(fId);
-        if (form?.messageTs) tsList.push(form.messageTs);
-      }
-      // Delete the form *after* we've collected the tsList (so chunk lookup works).
-      this.formStore.delete(pendingForm.formId);
-      const resolved = await this.ctx
-        .threadPanel!.resolveMultiChoice(
-          session,
-          pendingForm.sessionKey,
+    if (canUseP3 && session && channel && pc && pendingForm.messageTs) {
+      // Slack update: mark ONLY this chunk's message done.
+      try {
+        await this.ctx.slackApi.updateMessage(
           channel,
-          tsList,
-          completedText,
+          pendingForm.messageTs,
+          '✅ 모든 선택 완료',
           completedBlocks,
-        )
-        .catch((err) => {
-          this.logger.warn('resolveMultiChoice threw — falling back to legacy UI update', {
-            sessionKey: pendingForm.sessionKey,
-            error: (err as Error)?.message ?? String(err),
-          });
-          return false;
+          [],
+        );
+      } catch (err) {
+        this.logger.warn('P3 per-chunk resolve: updateMessage failed', {
+          sessionKey: pendingForm.sessionKey,
+          formId: pendingForm.formId,
+          error: (err as Error)?.message ?? String(err),
         });
-      if (resolved) {
-        await this.afterP3Resolve(session, pendingForm.sessionKey, channel);
-        try {
-          const say = this.createSayFn(channel);
-          await this.ctx.messageHandler(
-            { user: userId, channel, thread_ts: resolvedThreadTs, ts: messageTs, text: combinedMessage },
-            say,
-          );
-        } catch (handlerError) {
-          this.logger.error('Multi-choice handler failed (P3), rolling back to waiting', {
-            sessionKey: pendingForm.sessionKey,
-            error: handlerError,
-          });
-          try {
-            this.ctx.claudeHandler.setActivityStateByKey(pendingForm.sessionKey, 'waiting');
-          } catch (rollbackError) {
-            this.logger.error('Failed to rollback activity state', {
-              sessionKey: pendingForm.sessionKey,
-              rollbackError,
-            });
-          }
-        }
-        return;
       }
-      // resolve returned false — fall through to legacy path.
+
+      // Remove this chunk from pendingChoice.formIds (and the formStore entry).
+      this.formStore.delete(pendingForm.formId);
+      const remainingFormIds = pc.formIds.filter((fId) => fId !== pendingForm.formId);
+      if (session.actionPanel) {
+        if (remainingFormIds.length === 0) {
+          // Last chunk submitted — clear the whole pending record.
+          session.actionPanel.pendingChoice = undefined;
+          session.actionPanel.choiceMessageTs = undefined;
+          session.actionPanel.choiceMessageLink = undefined;
+          session.actionPanel.waitingForChoice = false;
+          session.actionPanel.choiceBlocks = undefined;
+        } else {
+          // Chunks still outstanding — shrink formIds, keep pendingChoice live.
+          session.actionPanel.pendingChoice = {
+            ...pc,
+            formIds: remainingFormIds,
+          };
+        }
+      }
+
+      // afterP3Resolve handles the single persistAndBroadcast for both the
+      // formIds shrink/clear above and the pendingQuestion clear below.
+      await this.afterP3Resolve(session, pendingForm.sessionKey, channel);
+      try {
+        const say = this.createSayFn(channel);
+        await this.ctx.messageHandler(
+          { user: userId, channel, thread_ts: resolvedThreadTs, ts: messageTs, text: combinedMessage },
+          say,
+        );
+      } catch (handlerError) {
+        this.logger.error('Multi-choice handler failed (P3), rolling back to waiting', {
+          sessionKey: pendingForm.sessionKey,
+          error: handlerError,
+        });
+        try {
+          this.ctx.claudeHandler.setActivityStateByKey(pendingForm.sessionKey, 'waiting');
+        } catch (rollbackError) {
+          this.logger.error('Failed to rollback activity state', {
+            sessionKey: pendingForm.sessionKey,
+            rollbackError,
+          });
+        }
+      }
+      return;
     }
 
     this.formStore.delete(pendingForm.formId);

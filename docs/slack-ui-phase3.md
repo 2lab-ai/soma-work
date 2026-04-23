@@ -290,12 +290,24 @@ the P3 classifier and resolves normally.
 ```
 posted (askUser/askUserForm)
   → pendingChoice set + persistAndBroadcast
-    → (user clicks matching) p3 resolve → pendingChoice cleared + persistAndBroadcast
+    → (user clicks matching single) p3 resolve → pendingChoice cleared + persistAndBroadcast
+    → (user submits one chunk of N) per-chunk resolve → shrink formIds, keep pendingChoice live
+      → (last chunk submitted) formIds empty → clear pendingChoice
     → (user clicks stale) stale marker, no state change
     → (new question supersedes) defensive prelude → pendingChoice cleared + persistAndBroadcast
     → (post-failure partial rollback) defensive clear → persistAndBroadcast
     → (24h TTL via session-registry GC) silently expires
 ```
+
+**Per-chunk multi-choice submit (important):** When a multi-choice question
+chunks into N forms (>6 sub-questions), each form has its own Submit button.
+Submitting one chunk resolves ONLY that chunk's Slack message in place and
+removes the chunk's `formId` from `pendingChoice.formIds`. Remaining chunks
+stay live — the user answers them independently. This matches legacy
+per-chunk semantics (each chunk fires its own `messageHandler` dispatch) and
+prevents the bug where submitting chunk 1 would prematurely mark chunks
+2..N as "completed" while they still had unanswered questions. Only when
+`formIds` empties does the entire `pendingChoice` record clear.
 
 Turn `end()` / `fail()` do **NOT** touch `pendingChoice`. The question may
 legitimately outlive the turn that posted it (e.g. a user who steps away
