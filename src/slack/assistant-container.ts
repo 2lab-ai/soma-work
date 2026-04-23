@@ -58,7 +58,19 @@ export interface AssistantContainerDeps {
  */
 export function buildAssistantConfig(deps: AssistantContainerDeps): AssistantConfig {
   return {
-    threadStarted: async ({ setSuggestedPrompts }) => {
+    threadStarted: async ({ saveThreadContext, setSuggestedPrompts }) => {
+      // Persist the initial assistant-thread context so later handlers can
+      // correlate the conversation (Bolt's default context store only kicks
+      // in for `assistant_thread_context_changed` once we've saved at least
+      // once — see the Bolt AI assistant tutorial).
+      try {
+        await saveThreadContext();
+      } catch (err) {
+        deps.logger.debug('saveThreadContext failed on thread_started', {
+          error: (err as Error).message,
+        });
+      }
+
       try {
         await setSuggestedPrompts({
           prompts: [...SUGGESTED_PROMPTS_PLACEHOLDER],
@@ -71,7 +83,8 @@ export function buildAssistantConfig(deps: AssistantContainerDeps): AssistantCon
         });
       }
     },
-    // threadContextChanged intentionally omitted → Bolt default context store.
+    // threadContextChanged intentionally omitted → Bolt default context store
+    // (the one we primed via saveThreadContext above) handles it.
     userMessage: async ({ message, say }) => {
       await deps.handleMessage(message as unknown as MessageEvent, say);
     },

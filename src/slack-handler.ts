@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { App, Assistant } from '@slack/bolt';
+import type { App } from '@slack/bolt';
 import { getAdminUsers, isAdminUser } from './admin-utils';
 import type { ContinuationHandler, TurnRunnerSurface } from './agent-session';
 import { TurnRunner, V1QueryAdapter } from './agent-session';
@@ -101,11 +101,6 @@ export class SlackHandler {
 
   // Native Slack AI spinner
   private assistantStatusManager: AssistantStatusManager;
-
-  // #666 P4 Part 1/2 — Bolt Assistant container (sidebar, suggested prompts,
-  // userMessage → handleMessage delegation). Stored so tests / future phases
-  // can introspect registration.
-  private assistantContainer: Assistant;
 
   // Pipeline components
   private inputProcessor: InputProcessor;
@@ -317,11 +312,12 @@ export class SlackHandler {
     // `userMessage` handler delegates to `handleMessage` so assistant threads
     // behave identically to a regular DM. Native spinner activation is gated
     // by `SOMA_UI_B4_NATIVE_STATUS` (default off) — Part 2 will flip it.
-    this.assistantContainer = createAssistantContainer({
-      logger: this.logger,
-      handleMessage: this.handleMessage.bind(this),
-    });
-    app.assistant(this.assistantContainer);
+    app.assistant(
+      createAssistantContainer({
+        logger: this.logger,
+        handleMessage: this.handleMessage.bind(this),
+      }),
+    );
   }
 
   /**

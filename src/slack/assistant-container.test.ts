@@ -48,7 +48,8 @@ describe('assistant-container — buildAssistantConfig', () => {
   it('threadStarted calls setSuggestedPrompts once with 4 placeholder prompts and the expected title', async () => {
     const cfg = buildAssistantConfig(deps);
     const setSuggestedPrompts = vi.fn().mockResolvedValue(undefined);
-    const middlewareArgs = { setSuggestedPrompts } as any;
+    const saveThreadContext = vi.fn().mockResolvedValue(undefined);
+    const middlewareArgs = { setSuggestedPrompts, saveThreadContext } as any;
 
     await (cfg.threadStarted as any)(middlewareArgs);
 
@@ -59,13 +60,51 @@ describe('assistant-container — buildAssistantConfig', () => {
     expect(payload.prompts).toEqual(SUGGESTED_PROMPTS_PLACEHOLDER);
   });
 
+  // Case 3b — saves initial assistant-thread context (codex P1)
+  it('threadStarted primes Bolt context store with saveThreadContext before prompts', async () => {
+    const cfg = buildAssistantConfig(deps);
+    const callOrder: string[] = [];
+    const saveThreadContext = vi.fn(async () => {
+      callOrder.push('save');
+    });
+    const setSuggestedPrompts = vi.fn(async () => {
+      callOrder.push('prompts');
+    });
+    const middlewareArgs = { setSuggestedPrompts, saveThreadContext } as any;
+
+    await (cfg.threadStarted as any)(middlewareArgs);
+
+    expect(saveThreadContext).toHaveBeenCalledTimes(1);
+    expect(setSuggestedPrompts).toHaveBeenCalledTimes(1);
+    // save before prompts so Bolt's default context store is primed when the
+    // first user message arrives.
+    expect(callOrder).toEqual(['save', 'prompts']);
+  });
+
+  // Case 3c — saveThreadContext failure must not abort prompts or throw
+  it('threadStarted continues to setSuggestedPrompts when saveThreadContext fails', async () => {
+    const cfg = buildAssistantConfig(deps);
+    const saveThreadContext = vi.fn().mockRejectedValue(new Error('bolt store down'));
+    const setSuggestedPrompts = vi.fn().mockResolvedValue(undefined);
+    const middlewareArgs = { setSuggestedPrompts, saveThreadContext } as any;
+
+    await expect((cfg.threadStarted as any)(middlewareArgs)).resolves.toBeUndefined();
+
+    expect(setSuggestedPrompts).toHaveBeenCalledTimes(1);
+    expect(deps.logger.debug).toHaveBeenCalledWith(
+      'saveThreadContext failed on thread_started',
+      expect.objectContaining({ error: 'bolt store down' }),
+    );
+  });
+
   // Case 4 — scope-missing failure does not throw
   it('threadStarted swallows setSuggestedPrompts failures with a warn log', async () => {
     const cfg = buildAssistantConfig(deps);
     const setSuggestedPrompts = vi
       .fn()
       .mockRejectedValue(Object.assign(new Error('missing_scope'), { data: { error: 'missing_scope' } }));
-    const middlewareArgs = { setSuggestedPrompts } as any;
+    const saveThreadContext = vi.fn().mockResolvedValue(undefined);
+    const middlewareArgs = { setSuggestedPrompts, saveThreadContext } as any;
 
     await expect((cfg.threadStarted as any)(middlewareArgs)).resolves.toBeUndefined();
 

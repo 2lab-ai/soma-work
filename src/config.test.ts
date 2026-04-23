@@ -185,3 +185,44 @@ describe('parseBool (#666)', () => {
     });
   });
 });
+
+/**
+ * Regression guard for the `config.ui.b4NativeStatusEnabled` wiring. The
+ * value is evaluated at module import, so we can't trivially re-read it
+ * after mutating `process.env`. Instead we mirror the exact wiring
+ * expression (`parseBool(process.env.SOMA_UI_B4_NATIVE_STATUS, false)`)
+ * and assert it resolves to the runtime-observable semantics we rely on.
+ */
+describe('config.ui.b4NativeStatusEnabled env wiring (#666)', () => {
+  const ENV = 'SOMA_UI_B4_NATIVE_STATUS';
+  beforeEach(() => {
+    delete process.env[ENV];
+  });
+  afterEach(() => {
+    delete process.env[ENV];
+  });
+
+  it('undefined env → false (kill switch on by default — native spinner suppressed)', () => {
+    expect(parseBool(process.env[ENV], false)).toBe(false);
+  });
+
+  it('"1" env → true (explicit opt-in)', () => {
+    process.env[ENV] = '1';
+    expect(parseBool(process.env[ENV], false)).toBe(true);
+  });
+
+  it('"0" env → false (explicit disable)', () => {
+    process.env[ENV] = '0';
+    expect(parseBool(process.env[ENV], false)).toBe(false);
+  });
+
+  it('"true" env → true', () => {
+    process.env[ENV] = 'true';
+    expect(parseBool(process.env[ENV], false)).toBe(true);
+  });
+
+  it('"garbage" env → false (fallback with warn — fail-closed)', () => {
+    process.env[ENV] = 'garbage';
+    expect(parseBool(process.env[ENV], false)).toBe(false);
+  });
+});
