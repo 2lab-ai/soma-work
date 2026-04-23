@@ -19,19 +19,16 @@ const TOOL_STATUS_MAP: Record<string, string> = {
 const BG_BASH_STATUS_TEXT = 'is waiting on background shell...';
 
 /**
- * Status descriptor — either a static text or a resolver evaluated on each
- * heartbeat tick. Exactly one of the two should be set.
+ * Status descriptor — either a plain string (static text) or a thunk
+ * re-evaluated on every heartbeat tick so dynamic counters (e.g. bg bash)
+ * can be reflected live.
  */
-export interface StatusDescriptor {
-  staticText?: string;
-  resolver?: () => string;
-}
+export type StatusDescriptor = string | (() => string);
 
 interface LastStatusEntry {
   channelId: string;
   threadTs: string;
   descriptor: StatusDescriptor;
-  epoch: number;
 }
 
 /**
@@ -71,41 +68,28 @@ export class AssistantStatusManager {
     }
   }
 
-  async setStatus(channelId: string, threadTs: string, status: string | StatusDescriptor): Promise<void> {
-    // Normalize input — string is treated as static text
-    const descriptor: StatusDescriptor = typeof status === 'string' ? { staticText: status } : status;
-
-    // Empty-string / empty-staticText → reroute to clearStatus (fixes
-    // empty-string heartbeat bug where an empty status was re-sent every 20s).
-    if ((descriptor.staticText === '' || descriptor.staticText === undefined) && !descriptor.resolver) {
+  async setStatus(channelId: string, threadTs: string, status: StatusDescriptor): Promise<void> {
+    // Empty-string → reroute to clearStatus (fixes empty-string heartbeat
+    // bug where an empty status was re-sent every 20s).
+    if (typeof status === 'string' && status === '') {
       await this.clearStatus(channelId, threadTs);
       return;
     }
 
     if (!this.enabled) return;
 
-    const text = descriptor.resolver ? descriptor.resolver() : (descriptor.staticText ?? '');
+    const descriptor: StatusDescriptor = status;
+    const text = typeof descriptor === 'function' ? descriptor() : descriptor;
 
     try {
       await this.slackApi.setAssistantStatus(channelId, threadTs, text);
     } catch (error: any) {
-      this.enabled = false;
-      this.logger.debug('assistant.threads.setStatus unavailable, disabling', {
-        error: error?.data?.error || error?.message,
-      });
-      this.clearAllHeartbeats();
-      // best-effort fallback clear so Slack doesn't leave a stale spinner
-      try {
-        await this.slackApi.setAssistantStatus(channelId, threadTs, '');
-      } catch {
-        /* already disabled, swallow */
-      }
+      await this.disableAndBestEffortClear(channelId, threadTs, error);
       return;
     }
 
     const key = `${channelId}:${threadTs}`;
-    const epoch = this.epochCounter.get(key) ?? 0;
-    this.lastStatus.set(key, { channelId, threadTs, descriptor, epoch });
+    this.lastStatus.set(key, { channelId, threadTs, descriptor });
 
     if (!this.heartbeats.has(key)) {
       const timer = setInterval(() => this.heartbeatTick(key), HEARTBEAT_INTERVAL_MS);
@@ -178,8 +162,8 @@ export class AssistantStatusManager {
 
   /**
    * Build the Bash status text — dynamic on bg counter. Intended to be
-   * injected as a `StatusDescriptor.resolver` so heartbeat ticks can
-   * reflect counter changes.
+   * injected as a thunk `StatusDescriptor` so heartbeat ticks can reflect
+   * counter changes.
    */
   buildBashStatus(channelId: string, threadTs: string): string {
     const key = `${channelId}:${threadTs}`;
@@ -204,10 +188,7 @@ export class AssistantStatusManager {
       return `is calling ${serverName}...`;
     }
     if (toolName === 'Bash' && channelId && threadTs) {
-      const key = `${channelId}:${threadTs}`;
-      if ((this.bgBashCounter.get(key) ?? 0) > 0) {
-        return BG_BASH_STATUS_TEXT;
-      }
+      return this.buildBashStatus(channelId, threadTs);
     }
     return TOOL_STATUS_MAP[toolName] || 'is working...';
   }
@@ -225,23 +206,34 @@ export class AssistantStatusManager {
       return;
     }
 
-    const text = entry.descriptor.resolver ? entry.descriptor.resolver() : (entry.descriptor.staticText ?? '');
+    const text = typeof entry.descriptor === 'function' ? entry.descriptor() : entry.descriptor;
 
     try {
       await this.slackApi.setAssistantStatus(entry.channelId, entry.threadTs, text);
     } catch (error: any) {
-      this.enabled = false;
-      this.logger.debug('assistant.threads.setStatus unavailable, disabling', {
-        error: error?.data?.error || error?.message,
-      });
       // Capture before clearAllHeartbeats wipes lastStatus
       const { channelId, threadTs } = entry;
-      this.clearAllHeartbeats();
-      try {
-        await this.slackApi.setAssistantStatus(channelId, threadTs, '');
-      } catch {
-        /* already disabled, swallow */
-      }
+      await this.disableAndBestEffortClear(channelId, threadTs, error);
+    }
+  }
+
+  /**
+   * Shared failure path for setStatus and heartbeatTick: mark the manager
+   * as disabled, tear down all heartbeats, and best-effort clear the
+   * caller's (channel, thread) spinner so Slack doesn't leave a stale one
+   * behind. Swallows errors from the fallback clear since we've already
+   * disabled.
+   */
+  private async disableAndBestEffortClear(channelId: string, threadTs: string, error: unknown): Promise<void> {
+    this.enabled = false;
+    this.logger.debug('assistant.threads.setStatus unavailable, disabling', {
+      error: (error as any)?.data?.error || (error as any)?.message,
+    });
+    this.clearAllHeartbeats();
+    try {
+      await this.slackApi.setAssistantStatus(channelId, threadTs, '');
+    } catch {
+      /* already disabled, swallow */
     }
   }
 

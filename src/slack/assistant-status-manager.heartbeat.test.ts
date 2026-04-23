@@ -175,7 +175,7 @@ describe('AssistantStatusManager — Heartbeat', () => {
     let counter = 0;
     const resolver = vi.fn(() => `tick-${++counter}`);
 
-    await manager.setStatus('C123', '123.456', { resolver });
+    await manager.setStatus('C123', '123.456', resolver);
     expect(mockSlackApi.setAssistantStatus).toHaveBeenLastCalledWith('C123', '123.456', 'tick-1');
 
     await vi.advanceTimersByTimeAsync(20_000);
