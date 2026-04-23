@@ -44,12 +44,7 @@ describe('AssistantStatusManager', () => {
 
       // Expect 2 calls: the failing first call + the best-effort fallback clear
       expect(mockSlackApi.setAssistantStatus).toHaveBeenCalledTimes(2);
-      expect(mockSlackApi.setAssistantStatus).toHaveBeenNthCalledWith(
-        1,
-        'C123',
-        '123.456',
-        'is thinking...',
-      );
+      expect(mockSlackApi.setAssistantStatus).toHaveBeenNthCalledWith(1, 'C123', '123.456', 'is thinking...');
       expect(mockSlackApi.setAssistantStatus).toHaveBeenNthCalledWith(2, 'C123', '123.456', '');
 
       // Subsequent calls should be no-ops
@@ -153,9 +148,7 @@ describe('AssistantStatusManager', () => {
     it('should increment counter and return unregister that decrements', () => {
       const unregister = manager.registerBackgroundBashActive('C', 't');
 
-      expect(manager.getToolStatusText('Bash', undefined, 'C', 't')).toBe(
-        'is waiting on background shell...',
-      );
+      expect(manager.getToolStatusText('Bash', undefined, 'C', 't')).toBe('is waiting on background shell...');
 
       unregister();
       expect(manager.getToolStatusText('Bash', undefined, 'C', 't')).toBe('is running commands...');
@@ -168,9 +161,7 @@ describe('AssistantStatusManager', () => {
       un1();
       un1(); // idempotent — counter should still be 1 (from un2)
 
-      expect(manager.getToolStatusText('Bash', undefined, 'C', 't')).toBe(
-        'is waiting on background shell...',
-      );
+      expect(manager.getToolStatusText('Bash', undefined, 'C', 't')).toBe('is waiting on background shell...');
 
       un2();
       expect(manager.getToolStatusText('Bash', undefined, 'C', 't')).toBe('is running commands...');
@@ -179,12 +170,8 @@ describe('AssistantStatusManager', () => {
     it('should track counter per (channelId, threadTs) independently', () => {
       const unA = manager.registerBackgroundBashActive('C_A', 'tsA');
 
-      expect(manager.getToolStatusText('Bash', undefined, 'C_A', 'tsA')).toBe(
-        'is waiting on background shell...',
-      );
-      expect(manager.getToolStatusText('Bash', undefined, 'C_B', 'tsB')).toBe(
-        'is running commands...',
-      );
+      expect(manager.getToolStatusText('Bash', undefined, 'C_A', 'tsA')).toBe('is waiting on background shell...');
+      expect(manager.getToolStatusText('Bash', undefined, 'C_B', 'tsB')).toBe('is running commands...');
 
       unA();
     });
@@ -241,9 +228,7 @@ describe('AssistantStatusManager', () => {
 
     it('should return background-shell text when Bash bg active on thread', () => {
       const un = manager.registerBackgroundBashActive('C', 't');
-      expect(manager.getToolStatusText('Bash', undefined, 'C', 't')).toBe(
-        'is waiting on background shell...',
-      );
+      expect(manager.getToolStatusText('Bash', undefined, 'C', 't')).toBe('is waiting on background shell...');
       un();
       expect(manager.getToolStatusText('Bash', undefined, 'C', 't')).toBe('is running commands...');
     });
@@ -338,11 +323,7 @@ describe('AssistantStatusManager — descriptor resolver on heartbeat', () => {
     // Register bg and tick → resolver picks up new count
     const un = manager.registerBackgroundBashActive('C', 't');
     await vi.advanceTimersByTimeAsync(20_000);
-    expect(mockSlackApi.setAssistantStatus).toHaveBeenLastCalledWith(
-      'C',
-      't',
-      'is waiting on background shell...',
-    );
+    expect(mockSlackApi.setAssistantStatus).toHaveBeenLastCalledWith('C', 't', 'is waiting on background shell...');
 
     un();
     await vi.advanceTimersByTimeAsync(20_000);
