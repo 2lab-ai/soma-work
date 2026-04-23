@@ -40,7 +40,14 @@
 import { promises as fsPromises } from 'node:fs';
 import * as path from 'node:path';
 import { ulid } from 'ulid';
-import { type ApiKeySlot, type AuthKey, type CctSlot, type CctSlotWithSetup, isCctWithSetup, type OAuthAttachment } from './auth/auth-key';
+import {
+  type ApiKeySlot,
+  type AuthKey,
+  type CctSlot,
+  type CctSlotWithSetup,
+  isCctWithSetup,
+  type OAuthAttachment,
+} from './auth/auth-key';
 import type { AuthState, CctStoreSnapshot, Lease, RateLimitSource, SlotState, UsageSnapshot } from './cct-store';
 import { CctStore, defaultCctStorePath } from './cct-store';
 import { config } from './config';
