@@ -154,6 +154,11 @@ describe('SessionInitializer - Onboarding Detection', () => {
     mockAssistantStatusManager = {
       setStatus: vi.fn().mockResolvedValue(undefined),
       setTitle: vi.fn().mockResolvedValue(undefined),
+      clearStatus: vi.fn().mockResolvedValue(undefined),
+      bumpEpoch: vi.fn().mockReturnValue(1),
+      getToolStatusText: vi.fn().mockReturnValue('running...'),
+      buildBashStatus: vi.fn().mockReturnValue('is running commands...'),
+      registerBackgroundBashActive: vi.fn().mockReturnValue(() => {}),
     };
 
     sessionInitializer = new SessionInitializer({
