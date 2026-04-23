@@ -151,12 +151,7 @@ describe('AssistantStatusManager — Heartbeat', () => {
 
     // Expect: 1 failing tick + 1 best-effort clear with ''
     expect(mockSlackApi.setAssistantStatus).toHaveBeenCalledTimes(2);
-    expect(mockSlackApi.setAssistantStatus).toHaveBeenNthCalledWith(
-      1,
-      'C123',
-      '123.456',
-      'is thinking...',
-    );
+    expect(mockSlackApi.setAssistantStatus).toHaveBeenNthCalledWith(1, 'C123', '123.456', 'is thinking...');
     expect(mockSlackApi.setAssistantStatus).toHaveBeenNthCalledWith(2, 'C123', '123.456', '');
   });
 
