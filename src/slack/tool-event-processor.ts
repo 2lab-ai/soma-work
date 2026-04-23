@@ -25,13 +25,13 @@ import type { ToolTracker } from './tool-tracker';
  * Both paths call `unregister()` to decrement the AssistantStatusManager
  * bg-bash counter so the native spinner text resolves correctly.
  */
-export interface BgBashEntry {
+interface BgBashEntry {
   callId: string;
   toolUseId: string;
   unregister: () => void;
 }
 
-export class BackgroundBashRegistry {
+class BackgroundBashRegistry {
   private map = new Map<string /*sessionKey*/, Map<string /*toolUseId*/, BgBashEntry>>();
 
   add(sessionKey: string, toolUseId: string, entry: BgBashEntry): void {
@@ -216,10 +216,7 @@ export class ToolEventProcessor {
       // progress track via the shared MCP pipeline (virtual `_bash_bg`
       // server), plus a bg-counter increment on AssistantStatusManager so
       // the native spinner flips to "waiting on background shell…".
-      if (
-        toolUse.name === 'Bash' &&
-        (toolUse.input as { run_in_background?: unknown } | null | undefined)?.run_in_background === true
-      ) {
+      if (toolUse.name === 'Bash' && ToolFormatter.isBackgroundBash(toolUse.input)) {
         await this.startBackgroundBashTracking(toolUse, context);
       }
     }
