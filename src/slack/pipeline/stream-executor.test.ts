@@ -85,6 +85,7 @@ vi.mock('../../token-manager', () => ({
 import { config } from '../../config';
 import type { Continuation } from '../../types';
 import { userSettingsStore } from '../../user-settings-store';
+import { LOG_DETAIL } from '../output-flags';
 import { type ExecuteResult, StreamExecutor } from './stream-executor';
 
 describe('Continuation type', () => {
@@ -362,6 +363,11 @@ describe('Abort handling', () => {
       slackApi: {},
       assistantStatusManager: {
         clearStatus: vi.fn().mockResolvedValue(undefined),
+        setStatus: vi.fn().mockResolvedValue(undefined),
+        bumpEpoch: vi.fn().mockReturnValue(1),
+        getToolStatusText: vi.fn().mockReturnValue('running...'),
+        buildBashStatus: vi.fn().mockReturnValue('is running commands...'),
+        registerBackgroundBashActive: vi.fn().mockReturnValue(() => {}),
       },
       threadPanel: undefined,
     } as any;
@@ -896,6 +902,11 @@ describe('model-command integration', () => {
       },
       assistantStatusManager: {
         clearStatus: vi.fn().mockResolvedValue(undefined),
+        setStatus: vi.fn().mockResolvedValue(undefined),
+        bumpEpoch: vi.fn().mockReturnValue(1),
+        getToolStatusText: vi.fn().mockReturnValue('running...'),
+        buildBashStatus: vi.fn().mockReturnValue('is running commands...'),
+        registerBackgroundBashActive: vi.fn().mockReturnValue(() => {}),
       },
       threadPanel: {
         attachChoice: vi.fn().mockResolvedValue(undefined),
@@ -1597,6 +1608,11 @@ describe('File access blocked error recovery', () => {
       slackApi: {},
       assistantStatusManager: {
         clearStatus: vi.fn().mockResolvedValue(undefined),
+        setStatus: vi.fn().mockResolvedValue(undefined),
+        bumpEpoch: vi.fn().mockReturnValue(1),
+        getToolStatusText: vi.fn().mockReturnValue('running...'),
+        buildBashStatus: vi.fn().mockReturnValue('is running commands...'),
+        registerBackgroundBashActive: vi.fn().mockReturnValue(() => {}),
       },
       threadPanel: undefined,
     } as any;
@@ -2567,6 +2583,10 @@ describe('Email guard in execute()', () => {
       assistantStatusManager: {
         setStatus: vi.fn().mockResolvedValue(undefined),
         clearStatus: vi.fn().mockResolvedValue(undefined),
+        bumpEpoch: vi.fn().mockReturnValue(1),
+        getToolStatusText: vi.fn().mockReturnValue('running...'),
+        buildBashStatus: vi.fn().mockReturnValue('is running commands...'),
+        registerBackgroundBashActive: vi.fn().mockReturnValue(() => {}),
       },
       threadPanel: undefined,
     } as any;
@@ -2654,7 +2674,14 @@ describe('W3-B rate-limit rotation wiring', () => {
       actionHandlers: {},
       requestCoordinator: {},
       slackApi: {},
-      assistantStatusManager: { clearStatus: vi.fn().mockResolvedValue(undefined) },
+      assistantStatusManager: {
+        clearStatus: vi.fn().mockResolvedValue(undefined),
+        setStatus: vi.fn().mockResolvedValue(undefined),
+        bumpEpoch: vi.fn().mockReturnValue(1),
+        getToolStatusText: vi.fn().mockReturnValue('running...'),
+        buildBashStatus: vi.fn().mockReturnValue('is running commands...'),
+        registerBackgroundBashActive: vi.fn().mockReturnValue(() => {}),
+      },
       threadPanel: undefined,
     } as any;
   }
@@ -2835,6 +2862,9 @@ describe('turnId propagation into ToolEventContext (#664)', () => {
         setStatus: vi.fn().mockResolvedValue(undefined),
         clearStatus: vi.fn().mockResolvedValue(undefined),
         getToolStatusText: vi.fn().mockReturnValue('running tool...'),
+        bumpEpoch: vi.fn().mockReturnValue(1),
+        buildBashStatus: vi.fn().mockReturnValue('is running commands...'),
+        registerBackgroundBashActive: vi.fn().mockReturnValue(() => {}),
       },
       threadPanel: {
         beginTurn: vi.fn().mockResolvedValue(undefined),
@@ -2948,7 +2978,14 @@ describe('stream-executor — P3 (PHASE>=3) B3 choice wiring', () => {
         },
         requestCoordinator: { removeController: vi.fn() },
         slackApi: { updateMessage: vi.fn().mockResolvedValue(undefined) },
-        assistantStatusManager: { clearStatus: vi.fn().mockResolvedValue(undefined) },
+        assistantStatusManager: {
+          clearStatus: vi.fn().mockResolvedValue(undefined),
+          setStatus: vi.fn().mockResolvedValue(undefined),
+          bumpEpoch: vi.fn().mockReturnValue(1),
+          getToolStatusText: vi.fn().mockReturnValue('running...'),
+          buildBashStatus: vi.fn().mockReturnValue('is running commands...'),
+          registerBackgroundBashActive: vi.fn().mockReturnValue(() => {}),
+        },
         threadPanel: {
           attachChoice: vi.fn().mockResolvedValue(undefined),
           updatePanel: vi.fn().mockResolvedValue(undefined),
@@ -3258,5 +3295,265 @@ describe('stream-executor — P3 (PHASE>=3) B3 choice wiring', () => {
     expect(deps.actionHandlers.setPendingForm).toHaveBeenCalledTimes(2);
     const backfillCall = deps.actionHandlers.setPendingForm.mock.calls[1][1];
     expect(backfillCall.messageTs).toBe('multi-ts');
+  });
+});
+
+// ---------------------------------------------------------------------
+// Issue #688 — A-2 epoch guard + Bash resolver-descriptor wiring tests
+// ---------------------------------------------------------------------
+describe('stream-executor — epoch guard + Bash resolver descriptor (issue #688)', () => {
+  beforeEach(() => {
+    vi.mocked(userSettingsStore.getUserEmail).mockReturnValue('user@example.com');
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  // Minimal stream that yields an assistant tool_use so onToolUse fires,
+  // then a tool_result and a success result so execute() reaches the
+  // success-path clearStatus (line 1025 region) and finally block.
+  async function* toolFlowStream(toolName = 'Read') {
+    yield {
+      type: 'assistant',
+      message: {
+        content: [{ type: 'tool_use', id: 'tool_1', name: toolName, input: {} }],
+      },
+    };
+    yield {
+      type: 'user',
+      message: {
+        content: [{ type: 'tool_result', tool_use_id: 'tool_1', content: 'ok' }],
+      },
+    };
+    yield { type: 'result', subtype: 'success', total_cost_usd: 0, usage: {} };
+  }
+
+  // A stream that throws partway through to exercise the catch path
+  // (handleError with expectedEpoch) and finally guarded clearStatus.
+  async function* throwingStream() {
+    yield {
+      type: 'assistant',
+      message: {
+        content: [{ type: 'tool_use', id: 'tool_1', name: 'Read', input: {} }],
+      },
+    };
+    throw new Error('stream blew up');
+  }
+
+  function createDeps(streamFn: () => AsyncIterable<any>): any {
+    return {
+      claudeHandler: {
+        setActivityState: vi.fn(),
+        clearSessionId: vi.fn(),
+        streamQuery: vi.fn().mockImplementation(streamFn),
+        getSessionRegistry: vi.fn().mockReturnValue({
+          beginTurn: vi.fn(),
+          endTurn: vi.fn(),
+          broadcastSessionUpdate: vi.fn(),
+          getActivityState: vi.fn().mockReturnValue('idle'),
+        }),
+      },
+      fileHandler: {
+        formatFilePrompt: vi.fn().mockResolvedValue(''),
+        cleanupTempFiles: vi.fn().mockResolvedValue(undefined),
+      },
+      toolEventProcessor: {
+        handleToolUse: vi.fn().mockResolvedValue(undefined),
+        handleToolResult: vi.fn().mockResolvedValue(undefined),
+        setCompactDurationCallback: vi.fn(),
+        setReactionManager: vi.fn(),
+        setToolResultSink: vi.fn(),
+        cleanup: vi.fn(),
+      },
+      statusReporter: {
+        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
+        getStatusEmoji: vi.fn().mockReturnValue('thinking_face'),
+        cleanup: vi.fn(),
+      },
+      reactionManager: {
+        updateReaction: vi.fn().mockResolvedValue(undefined),
+        cleanup: vi.fn(),
+      },
+      contextWindowManager: {
+        handlePromptTooLong: vi.fn().mockResolvedValue(undefined),
+        cleanup: vi.fn(),
+        calculateRemainingPercent: vi.fn().mockReturnValue(100),
+        updateContextEmoji: vi.fn().mockResolvedValue(undefined),
+      },
+      toolTracker: {
+        scheduleCleanup: vi.fn(),
+        trackToolUse: vi.fn(),
+        getToolName: vi.fn(),
+        trackMcpCall: vi.fn(),
+        getMcpCallId: vi.fn(),
+        removeMcpCallId: vi.fn(),
+        getActiveMcpCallIds: vi.fn().mockReturnValue([]),
+      },
+      todoDisplayManager: {
+        cleanupSession: vi.fn(),
+        cleanup: vi.fn(),
+        handleTodoUpdate: vi.fn().mockResolvedValue(undefined),
+        setRenderRequestCallback: vi.fn(),
+        setPlanRenderCallback: vi.fn(),
+      },
+      actionHandlers: {},
+      requestCoordinator: {
+        removeController: vi.fn(),
+      },
+      slackApi: {
+        getUserProfile: vi.fn().mockResolvedValue({ email: 'user@example.com', displayName: 'User' }),
+        getClient: vi.fn().mockReturnValue({}),
+        getBotUserId: vi.fn().mockResolvedValue('U_BOT'),
+        deleteMessage: vi.fn().mockResolvedValue(undefined),
+      },
+      assistantStatusManager: {
+        setStatus: vi.fn().mockResolvedValue(undefined),
+        clearStatus: vi.fn().mockResolvedValue(undefined),
+        getToolStatusText: vi.fn().mockReturnValue('is reading files...'),
+        bumpEpoch: vi.fn().mockReturnValue(42),
+        buildBashStatus: vi.fn().mockReturnValue('is running commands...'),
+        registerBackgroundBashActive: vi.fn().mockReturnValue(() => {}),
+      },
+      threadPanel: {
+        beginTurn: vi.fn().mockResolvedValue(undefined),
+        endTurn: vi.fn().mockResolvedValue(undefined),
+        failTurn: vi.fn().mockResolvedValue(undefined),
+        isTurnSurfaceActive: vi.fn().mockReturnValue(false),
+        appendText: vi.fn().mockResolvedValue(true),
+        setStatus: vi.fn().mockResolvedValue(undefined),
+        updatePanel: vi.fn().mockResolvedValue(undefined),
+        attachChoice: vi.fn().mockResolvedValue(undefined),
+        finalizeOnEndTurn: vi.fn().mockResolvedValue(undefined),
+        renderTasks: vi.fn().mockResolvedValue(false),
+        updateHeader: vi.fn().mockResolvedValue(undefined),
+        clearChoice: vi.fn().mockResolvedValue(undefined),
+      },
+    };
+  }
+
+  function createParams(say: ReturnType<typeof vi.fn>): any {
+    return {
+      session: {
+        sessionId: 'sess_epoch',
+        ownerId: 'U_TEST',
+        // LOG_DETAIL enables STATUS_SPINNER so setStatus/clearStatus
+        // branches in execute() actually fire on this test's path.
+        logVerbosity: LOG_DETAIL,
+        usage: {},
+        terminated: false,
+      },
+      sessionKey: 'C42:thread42',
+      userName: 'testuser',
+      workingDirectory: '/tmp/test',
+      abortController: new AbortController(),
+      processedFiles: [],
+      text: 'hello',
+      channel: 'C42',
+      threadTs: 'thread42',
+      user: 'U_TEST',
+      say,
+    };
+  }
+
+  it('captures epoch on entry and passes expectedEpoch to success-path clearStatus', async () => {
+    const deps = createDeps(() => toolFlowStream('Read'));
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+    await executor.execute(createParams(say));
+
+    expect(deps.assistantStatusManager.bumpEpoch).toHaveBeenCalledWith('C42', 'thread42');
+    // Every clearStatus on the happy path must carry expectedEpoch: 42
+    // (42 is what bumpEpoch was mocked to return above).
+    const clearCalls = deps.assistantStatusManager.clearStatus.mock.calls;
+    expect(clearCalls.length).toBeGreaterThan(0);
+    for (const call of clearCalls) {
+      expect(call[0]).toBe('C42');
+      expect(call[1]).toBe('thread42');
+      expect(call[2]).toEqual({ expectedEpoch: 42 });
+    }
+  });
+
+  // S2: error path finally clearStatus reached with expectedEpoch carried
+  // through handleError as well.
+  it('reaches finally clearStatus on thrown stream and forwards expectedEpoch to handleError (S2)', async () => {
+    const deps = createDeps(() => throwingStream());
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+    const result = await executor.execute(createParams(say));
+
+    expect(result.success).toBe(false);
+
+    // bumpEpoch called exactly once at execute() entry.
+    expect(deps.assistantStatusManager.bumpEpoch).toHaveBeenCalledTimes(1);
+
+    // Every clearStatus must carry the same captured epoch.
+    const clearCalls = deps.assistantStatusManager.clearStatus.mock.calls;
+    expect(clearCalls.length).toBeGreaterThanOrEqual(1);
+    for (const call of clearCalls) {
+      expect(call[2]).toEqual({ expectedEpoch: 42 });
+    }
+  });
+
+  // Bash resolver descriptor: Bash tool routes status through a
+  // { resolver } descriptor so heartbeat ticks can recompute the text
+  // from the live bg counter.
+  it('Bash tool_use sets status with a resolver descriptor (not a static string)', async () => {
+    const deps = createDeps(() => toolFlowStream('Bash'));
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+    await executor.execute(createParams(say));
+
+    const setCalls = deps.assistantStatusManager.setStatus.mock.calls;
+    // We expect at least one call shaped with a resolver descriptor.
+    const resolverCall = setCalls.find(
+      (c: any[]) => c[2] && typeof c[2] === 'object' && typeof c[2].resolver === 'function',
+    );
+    expect(resolverCall).toBeDefined();
+    expect(resolverCall![0]).toBe('C42');
+    expect(resolverCall![1]).toBe('thread42');
+    // Invoking the resolver should delegate to buildBashStatus on the manager.
+    const text = resolverCall![2].resolver();
+    expect(text).toBe('is running commands...');
+    expect(deps.assistantStatusManager.buildBashStatus).toHaveBeenCalledWith('C42', 'thread42');
+    // getToolStatusText must NOT have been used for Bash on this path —
+    // the descriptor is injected directly.
+    for (const call of deps.assistantStatusManager.getToolStatusText.mock.calls) {
+      expect(call[0]).not.toBe('Bash');
+    }
+  });
+
+  it('non-Bash tool_use still uses the static getToolStatusText path', async () => {
+    const deps = createDeps(() => toolFlowStream('Read'));
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+    await executor.execute(createParams(say));
+
+    // Static string setStatus for Read: setStatus(ch, ts, 'is reading files...')
+    const staticCall = deps.assistantStatusManager.setStatus.mock.calls.find(
+      (c: any[]) => typeof c[2] === 'string',
+    );
+    expect(staticCall).toBeDefined();
+    expect(deps.assistantStatusManager.getToolStatusText).toHaveBeenCalledWith('Read');
+  });
+
+  // Verifies the 948-area setStatus('') got replaced by a guarded
+  // clearStatus call (not a setStatus with empty string) — the new
+  // single source of truth for "tear this spinner down" inside execute().
+  it('does not emit setStatus("") during execute() — guarded clearStatus only', async () => {
+    const deps = createDeps(() => toolFlowStream('Read'));
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+    await executor.execute(createParams(say));
+
+    const emptyStringSet = deps.assistantStatusManager.setStatus.mock.calls.find(
+      (c: any[]) => c[2] === '',
+    );
+    expect(emptyStringSet).toBeUndefined();
   });
 });
