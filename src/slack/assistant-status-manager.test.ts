@@ -34,7 +34,7 @@ describe('AssistantStatusManager', () => {
       expect(mockSlackApi.setAssistantStatus).toHaveBeenCalledWith('C123', '123.456', 'is thinking...');
     });
 
-    it('should auto-disable on first failure', async () => {
+    it('should auto-disable on first failure and best-effort clear', async () => {
       mockSlackApi.setAssistantStatus.mockRejectedValueOnce(
         Object.assign(new Error('not_allowed'), { data: { error: 'not_allowed' } }),
       );
@@ -42,9 +42,51 @@ describe('AssistantStatusManager', () => {
       await manager.setStatus('C123', '123.456', 'is thinking...');
       expect(manager.isEnabled()).toBe(false);
 
+      // Expect 2 calls: the failing first call + the best-effort fallback clear
+      expect(mockSlackApi.setAssistantStatus).toHaveBeenCalledTimes(2);
+      expect(mockSlackApi.setAssistantStatus).toHaveBeenNthCalledWith(
+        1,
+        'C123',
+        '123.456',
+        'is thinking...',
+      );
+      expect(mockSlackApi.setAssistantStatus).toHaveBeenNthCalledWith(2, 'C123', '123.456', '');
+
       // Subsequent calls should be no-ops
+      mockSlackApi.setAssistantStatus.mockClear();
       await manager.setStatus('C123', '123.456', 'is working...');
+      expect(mockSlackApi.setAssistantStatus).not.toHaveBeenCalled();
+    });
+
+    it('should reroute empty string to clearStatus (no empty-string heartbeat)', async () => {
+      const clearSpy = vi.spyOn(manager, 'clearStatus');
+
+      await manager.setStatus('C123', '123.456', '');
+
+      expect(clearSpy).toHaveBeenCalledWith('C123', '123.456');
+      expect(clearSpy).toHaveBeenCalledTimes(1);
+      // clearStatus hits slackApi exactly once with ''
       expect(mockSlackApi.setAssistantStatus).toHaveBeenCalledTimes(1);
+      expect(mockSlackApi.setAssistantStatus).toHaveBeenCalledWith('C123', '123.456', '');
+    });
+
+    it('should reroute StatusDescriptor with empty staticText to clearStatus', async () => {
+      const clearSpy = vi.spyOn(manager, 'clearStatus');
+
+      await manager.setStatus('C123', '123.456', { staticText: '' });
+
+      expect(clearSpy).toHaveBeenCalledWith('C123', '123.456');
+      expect(mockSlackApi.setAssistantStatus).toHaveBeenCalledTimes(1);
+      expect(mockSlackApi.setAssistantStatus).toHaveBeenCalledWith('C123', '123.456', '');
+    });
+
+    it('should evaluate resolver on initial call', async () => {
+      const resolver = vi.fn(() => 'resolved-text-1');
+
+      await manager.setStatus('C123', '123.456', { resolver });
+
+      expect(resolver).toHaveBeenCalledTimes(1);
+      expect(mockSlackApi.setAssistantStatus).toHaveBeenCalledWith('C123', '123.456', 'resolved-text-1');
     });
   });
 
@@ -63,6 +105,100 @@ describe('AssistantStatusManager', () => {
       mockSlackApi.setAssistantStatus.mockClear();
       await manager.clearStatus('C123', '123.456');
       expect(mockSlackApi.setAssistantStatus).not.toHaveBeenCalled();
+    });
+
+    it('should skip when expectedEpoch does not match current epoch', async () => {
+      const oldEpoch = manager.bumpEpoch('C123', '123.456'); // → 1
+      manager.bumpEpoch('C123', '123.456'); // → 2 (newer turn)
+
+      await manager.clearStatus('C123', '123.456', { expectedEpoch: oldEpoch });
+
+      expect(mockSlackApi.setAssistantStatus).not.toHaveBeenCalled();
+    });
+
+    it('should proceed when expectedEpoch matches current epoch', async () => {
+      const epoch = manager.bumpEpoch('C123', '123.456');
+
+      await manager.clearStatus('C123', '123.456', { expectedEpoch: epoch });
+
+      expect(mockSlackApi.setAssistantStatus).toHaveBeenCalledWith('C123', '123.456', '');
+    });
+
+    it('should isolate epoch per-thread (bump on one thread does not affect other)', async () => {
+      const epochA = manager.bumpEpoch('C_A', 'tsA');
+      manager.bumpEpoch('C_B', 'tsB'); // bumps B independently
+
+      await manager.clearStatus('C_A', 'tsA', { expectedEpoch: epochA });
+
+      expect(mockSlackApi.setAssistantStatus).toHaveBeenCalledWith('C_A', 'tsA', '');
+    });
+  });
+
+  describe('bumpEpoch', () => {
+    it('should return monotonically increasing values per key', () => {
+      expect(manager.bumpEpoch('C', 't')).toBe(1);
+      expect(manager.bumpEpoch('C', 't')).toBe(2);
+      expect(manager.bumpEpoch('C', 't')).toBe(3);
+    });
+
+    it('should track epochs independently per (channelId, threadTs)', () => {
+      expect(manager.bumpEpoch('C1', 't1')).toBe(1);
+      expect(manager.bumpEpoch('C2', 't2')).toBe(1);
+      expect(manager.bumpEpoch('C1', 't1')).toBe(2);
+      expect(manager.bumpEpoch('C2', 't2')).toBe(2);
+    });
+  });
+
+  describe('registerBackgroundBashActive', () => {
+    it('should increment counter and return unregister that decrements', () => {
+      const unregister = manager.registerBackgroundBashActive('C', 't');
+
+      expect(manager.getToolStatusText('Bash', undefined, 'C', 't')).toBe(
+        'is waiting on background shell...',
+      );
+
+      unregister();
+      expect(manager.getToolStatusText('Bash', undefined, 'C', 't')).toBe('is running commands...');
+    });
+
+    it('unregister should be idempotent', () => {
+      const un1 = manager.registerBackgroundBashActive('C', 't');
+      const un2 = manager.registerBackgroundBashActive('C', 't');
+
+      un1();
+      un1(); // idempotent — counter should still be 1 (from un2)
+
+      expect(manager.getToolStatusText('Bash', undefined, 'C', 't')).toBe(
+        'is waiting on background shell...',
+      );
+
+      un2();
+      expect(manager.getToolStatusText('Bash', undefined, 'C', 't')).toBe('is running commands...');
+    });
+
+    it('should track counter per (channelId, threadTs) independently', () => {
+      const unA = manager.registerBackgroundBashActive('C_A', 'tsA');
+
+      expect(manager.getToolStatusText('Bash', undefined, 'C_A', 'tsA')).toBe(
+        'is waiting on background shell...',
+      );
+      expect(manager.getToolStatusText('Bash', undefined, 'C_B', 'tsB')).toBe(
+        'is running commands...',
+      );
+
+      unA();
+    });
+  });
+
+  describe('buildBashStatus', () => {
+    it('returns foreground text when no background bash active', () => {
+      expect(manager.buildBashStatus('C', 't')).toBe('is running commands...');
+    });
+
+    it('returns background text when at least one background bash active', () => {
+      const un = manager.registerBackgroundBashActive('C', 't');
+      expect(manager.buildBashStatus('C', 't')).toBe('is waiting on background shell...');
+      un();
     });
   });
 
@@ -101,6 +237,22 @@ describe('AssistantStatusManager', () => {
 
     it('should return MCP server-specific text when serverName provided', () => {
       expect(manager.getToolStatusText('mcp__jira__search', 'jira')).toBe('is calling jira...');
+    });
+
+    it('should return background-shell text when Bash bg active on thread', () => {
+      const un = manager.registerBackgroundBashActive('C', 't');
+      expect(manager.getToolStatusText('Bash', undefined, 'C', 't')).toBe(
+        'is waiting on background shell...',
+      );
+      un();
+      expect(manager.getToolStatusText('Bash', undefined, 'C', 't')).toBe('is running commands...');
+    });
+
+    it('should fall back to static Bash text when channel/thread not provided', () => {
+      // Register bg active but query without ch/ts
+      const un = manager.registerBackgroundBashActive('C', 't');
+      expect(manager.getToolStatusText('Bash')).toBe('is running commands...');
+      un();
     });
   });
 
@@ -142,5 +294,58 @@ describe('AssistantStatusManager', () => {
       await m.setStatus('C123', '123.456', 'is thinking...');
       expect(api.setAssistantStatus).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe('AssistantStatusManager — descriptor resolver on heartbeat', () => {
+  let mockSlackApi: ReturnType<typeof createMockSlackApi>;
+  let manager: AssistantStatusManager;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    mockSlackApi = createMockSlackApi();
+    manager = new AssistantStatusManager(mockSlackApi as unknown as SlackApiHelper);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('should re-invoke resolver on each heartbeat tick', async () => {
+    let i = 0;
+    const resolver = vi.fn(() => `tick-${++i}`);
+
+    await manager.setStatus('C', 't', { resolver });
+    expect(resolver).toHaveBeenCalledTimes(1);
+    expect(mockSlackApi.setAssistantStatus).toHaveBeenLastCalledWith('C', 't', 'tick-1');
+
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(resolver).toHaveBeenCalledTimes(2);
+    expect(mockSlackApi.setAssistantStatus).toHaveBeenLastCalledWith('C', 't', 'tick-2');
+
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(resolver).toHaveBeenCalledTimes(3);
+    expect(mockSlackApi.setAssistantStatus).toHaveBeenLastCalledWith('C', 't', 'tick-3');
+  });
+
+  it('should reflect dynamic bg-bash counter via buildBashStatus resolver', async () => {
+    const resolver = () => manager.buildBashStatus('C', 't');
+    await manager.setStatus('C', 't', { resolver });
+
+    // Initially: no bg, foreground text
+    expect(mockSlackApi.setAssistantStatus).toHaveBeenLastCalledWith('C', 't', 'is running commands...');
+
+    // Register bg and tick → resolver picks up new count
+    const un = manager.registerBackgroundBashActive('C', 't');
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(mockSlackApi.setAssistantStatus).toHaveBeenLastCalledWith(
+      'C',
+      't',
+      'is waiting on background shell...',
+    );
+
+    un();
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(mockSlackApi.setAssistantStatus).toHaveBeenLastCalledWith('C', 't', 'is running commands...');
   });
 });
