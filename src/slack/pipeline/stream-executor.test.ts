@@ -3497,8 +3497,8 @@ describe('stream-executor — epoch guard + Bash resolver descriptor (issue #688
     }
   });
 
-  // Bash resolver descriptor: Bash tool routes status through a
-  // { resolver } descriptor so heartbeat ticks can recompute the text
+  // Bash resolver descriptor: Bash tool routes status through a thunk
+  // descriptor (() => string) so heartbeat ticks can recompute the text
   // from the live bg counter.
   it('Bash tool_use sets status with a resolver descriptor (not a static string)', async () => {
     const deps = createDeps(() => toolFlowStream('Bash'));
@@ -3508,15 +3508,13 @@ describe('stream-executor — epoch guard + Bash resolver descriptor (issue #688
     await executor.execute(createParams(say));
 
     const setCalls = deps.assistantStatusManager.setStatus.mock.calls;
-    // We expect at least one call shaped with a resolver descriptor.
-    const resolverCall = setCalls.find(
-      (c: any[]) => c[2] && typeof c[2] === 'object' && typeof c[2].resolver === 'function',
-    );
+    // We expect at least one call shaped with a thunk descriptor.
+    const resolverCall = setCalls.find((c: any[]) => typeof c[2] === 'function');
     expect(resolverCall).toBeDefined();
     expect(resolverCall![0]).toBe('C42');
     expect(resolverCall![1]).toBe('thread42');
     // Invoking the resolver should delegate to buildBashStatus on the manager.
-    const text = resolverCall![2].resolver();
+    const text = resolverCall![2]();
     expect(text).toBe('is running commands...');
     expect(deps.assistantStatusManager.buildBashStatus).toHaveBeenCalledWith('C42', 'thread42');
     // getToolStatusText must NOT have been used for Bash on this path —

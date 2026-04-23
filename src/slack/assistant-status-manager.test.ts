@@ -65,10 +65,10 @@ describe('AssistantStatusManager', () => {
       expect(mockSlackApi.setAssistantStatus).toHaveBeenCalledWith('C123', '123.456', '');
     });
 
-    it('should reroute StatusDescriptor with empty staticText to clearStatus', async () => {
+    it('should reroute empty-string StatusDescriptor to clearStatus', async () => {
       const clearSpy = vi.spyOn(manager, 'clearStatus');
 
-      await manager.setStatus('C123', '123.456', { staticText: '' });
+      await manager.setStatus('C123', '123.456', '');
 
       expect(clearSpy).toHaveBeenCalledWith('C123', '123.456');
       expect(mockSlackApi.setAssistantStatus).toHaveBeenCalledTimes(1);
@@ -78,7 +78,7 @@ describe('AssistantStatusManager', () => {
     it('should evaluate resolver on initial call', async () => {
       const resolver = vi.fn(() => 'resolved-text-1');
 
-      await manager.setStatus('C123', '123.456', { resolver });
+      await manager.setStatus('C123', '123.456', resolver);
 
       expect(resolver).toHaveBeenCalledTimes(1);
       expect(mockSlackApi.setAssistantStatus).toHaveBeenCalledWith('C123', '123.456', 'resolved-text-1');
@@ -300,7 +300,7 @@ describe('AssistantStatusManager — descriptor resolver on heartbeat', () => {
     let i = 0;
     const resolver = vi.fn(() => `tick-${++i}`);
 
-    await manager.setStatus('C', 't', { resolver });
+    await manager.setStatus('C', 't', resolver);
     expect(resolver).toHaveBeenCalledTimes(1);
     expect(mockSlackApi.setAssistantStatus).toHaveBeenLastCalledWith('C', 't', 'tick-1');
 
@@ -315,7 +315,7 @@ describe('AssistantStatusManager — descriptor resolver on heartbeat', () => {
 
   it('should reflect dynamic bg-bash counter via buildBashStatus resolver', async () => {
     const resolver = () => manager.buildBashStatus('C', 't');
-    await manager.setStatus('C', 't', { resolver });
+    await manager.setStatus('C', 't', resolver);
 
     // Initially: no bg, foreground text
     expect(mockSlackApi.setAssistantStatus).toHaveBeenLastCalledWith('C', 't', 'is running commands...');

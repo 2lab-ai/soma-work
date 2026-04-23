@@ -650,16 +650,16 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           if (isOutputEnabled(OutputFlag.STATUS_SPINNER)) {
             const toolName = toolUses[0]?.name;
             if (toolName) {
-              // Issue #688 — Bash uses a resolver descriptor so the
-              // heartbeat tick can recompute the text from the live
-              // background-bash counter (e.g. switch to "waiting on
-              // background shell..." when a run_in_background call is
-              // in-flight). Non-Bash tools keep the simple static path.
+              // Issue #688 — Bash uses a thunk descriptor so the heartbeat
+              // tick can recompute the text from the live background-bash
+              // counter (e.g. switch to "waiting on background shell..."
+              // when a run_in_background call is in-flight). Non-Bash
+              // tools keep the simple static path.
               if (toolName === 'Bash') {
                 const statusManager = this.deps.assistantStatusManager;
-                await statusManager.setStatus(channel, threadTs, {
-                  resolver: () => statusManager.buildBashStatus(channel, threadTs),
-                });
+                await statusManager.setStatus(channel, threadTs, () =>
+                  statusManager.buildBashStatus(channel, threadTs),
+                );
               } else {
                 const statusText = this.deps.assistantStatusManager.getToolStatusText(toolName);
                 await this.deps.assistantStatusManager.setStatus(channel, threadTs, statusText);
