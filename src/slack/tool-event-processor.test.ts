@@ -2,7 +2,8 @@
  * ToolEventProcessor tests
  */
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { config } from '../config';
 import { McpCallTracker } from '../mcp-call-tracker';
 import { McpStatusDisplay } from './mcp-status-tracker';
 import {
@@ -10,6 +11,7 @@ import {
   type ToolEventContext,
   ToolEventProcessor,
   type ToolResultEvent,
+  type ToolResultSink,
   type ToolUseEvent,
 } from './tool-event-processor';
 import { ToolTracker } from './tool-tracker';
@@ -225,6 +227,161 @@ describe('ToolEventProcessor', () => {
       await processor.handleToolResult(toolResults, mockContext);
 
       // TodoWrite results are skipped
+      expect(mockSay).not.toHaveBeenCalled();
+    });
+  });
+
+  /**
+   * Tool verbose absorb (Issue #664, PHASE>=2 sink path).
+   *
+   * Verifies the ToolResultSink contract: at PHASE>=2 with a sink installed
+   * and a `turnId` in context, `sendToolResult` routes the formatted result
+   * through the sink instead of posting a separate legacy bubble via `say`.
+   * Any missing precondition (PHASE<2, no sink, no turnId) OR a sink that
+   * returns `false` (closing turn, Slack error) falls through to legacy
+   * `say` — tool output is never silently dropped.
+   */
+  describe('Tool verbose absorb (PHASE>=2 sink)', () => {
+    const originalPhase = config.ui.fiveBlockPhase;
+    afterEach(() => {
+      // Restore between cases so a test-only flip can't leak across the
+      // vitest run (matches TurnSurface.phase()'s per-call read model).
+      config.ui.fiveBlockPhase = originalPhase;
+    });
+
+    function makeContextWithTurn(turnId?: string): ToolEventContext {
+      return { ...mockContext, turnId };
+    }
+
+    it('PHASE=0 + sink installed: legacy say fires, sink NOT called (regression)', async () => {
+      config.ui.fiveBlockPhase = 0;
+      const sink = vi.fn().mockResolvedValue(true) as unknown as ToolResultSink;
+      processor.setToolResultSink(sink);
+      toolTracker.trackToolUse('tool_1', 'Bash');
+
+      await processor.handleToolResult(
+        [{ toolUseId: 'tool_1', toolName: 'Bash', result: 'command output' }],
+        makeContextWithTurn('session:42:abc'),
+      );
+
+      expect(sink).not.toHaveBeenCalled();
+      expect(mockSay).toHaveBeenCalledTimes(1);
+    });
+
+    it('PHASE=1 + sink installed: legacy say fires, sink NOT called (regression)', async () => {
+      // P1 boundary — B1 stream is live but tool results still own their own
+      // bubble. This test enforces the rollout gate so a future phase-gate
+      // mistake can't silently promote tool absorb to PHASE=1.
+      config.ui.fiveBlockPhase = 1;
+      const sink = vi.fn().mockResolvedValue(true) as unknown as ToolResultSink;
+      processor.setToolResultSink(sink);
+      toolTracker.trackToolUse('tool_1', 'Bash');
+
+      await processor.handleToolResult(
+        [{ toolUseId: 'tool_1', toolName: 'Bash', result: 'command output' }],
+        makeContextWithTurn('session:42:abc'),
+      );
+
+      expect(sink).not.toHaveBeenCalled();
+      expect(mockSay).toHaveBeenCalledTimes(1);
+    });
+
+    it('PHASE=2 + sink + turnId + sink returns true: say is NOT called (absorbed)', async () => {
+      config.ui.fiveBlockPhase = 2;
+      const sink = vi.fn().mockResolvedValue(true);
+      processor.setToolResultSink(sink as unknown as ToolResultSink);
+      toolTracker.trackToolUse('tool_1', 'Bash');
+
+      await processor.handleToolResult(
+        [{ toolUseId: 'tool_1', toolName: 'Bash', result: 'command output' }],
+        makeContextWithTurn('session:42:abc'),
+      );
+
+      expect(sink).toHaveBeenCalledTimes(1);
+      expect(sink).toHaveBeenCalledWith('session:42:abc', expect.stringContaining('Bash'));
+      expect(mockSay).not.toHaveBeenCalled();
+    });
+
+    it('PHASE=2 + sink returns false (closing/stream-closed): falls back to legacy say', async () => {
+      // This is the closing-race fallback: during `end()` the underlying
+      // TurnSurface.appendText returns false, the sink propagates that
+      // false, and we must still emit the tool bubble rather than drop it.
+      config.ui.fiveBlockPhase = 2;
+      const sink = vi.fn().mockResolvedValue(false);
+      processor.setToolResultSink(sink as unknown as ToolResultSink);
+      toolTracker.trackToolUse('tool_1', 'Bash');
+
+      await processor.handleToolResult(
+        [{ toolUseId: 'tool_1', toolName: 'Bash', result: 'command output' }],
+        makeContextWithTurn('session:42:abc'),
+      );
+
+      expect(sink).toHaveBeenCalledTimes(1);
+      expect(mockSay).toHaveBeenCalledTimes(1);
+    });
+
+    it('PHASE=2 + NO sink installed: legacy say still fires (never silent-drop)', async () => {
+      config.ui.fiveBlockPhase = 2;
+      // No setToolResultSink call.
+      toolTracker.trackToolUse('tool_1', 'Bash');
+
+      await processor.handleToolResult(
+        [{ toolUseId: 'tool_1', toolName: 'Bash', result: 'command output' }],
+        makeContextWithTurn('session:42:abc'),
+      );
+
+      expect(mockSay).toHaveBeenCalledTimes(1);
+    });
+
+    it('PHASE=2 + sink installed but NO turnId in context: falls back to legacy say', async () => {
+      config.ui.fiveBlockPhase = 2;
+      const sink = vi.fn().mockResolvedValue(true);
+      processor.setToolResultSink(sink as unknown as ToolResultSink);
+      toolTracker.trackToolUse('tool_1', 'Bash');
+
+      await processor.handleToolResult(
+        [{ toolUseId: 'tool_1', toolName: 'Bash', result: 'command output' }],
+        makeContextWithTurn(undefined),
+      );
+
+      expect(sink).not.toHaveBeenCalled();
+      expect(mockSay).toHaveBeenCalledTimes(1);
+    });
+
+    it('setToolResultSink(null) clears the sink so legacy path resumes', async () => {
+      config.ui.fiveBlockPhase = 2;
+      const sink = vi.fn().mockResolvedValue(true);
+      processor.setToolResultSink(sink as unknown as ToolResultSink);
+      processor.setToolResultSink(null);
+      toolTracker.trackToolUse('tool_1', 'Bash');
+
+      await processor.handleToolResult(
+        [{ toolUseId: 'tool_1', toolName: 'Bash', result: 'command output' }],
+        makeContextWithTurn('session:42:abc'),
+      );
+
+      expect(sink).not.toHaveBeenCalled();
+      expect(mockSay).toHaveBeenCalledTimes(1);
+    });
+
+    it('hidden/compact render mode + PHASE=2: no sink call, no say (mode short-circuit preserved)', async () => {
+      // Short-circuit invariant: `getToolResultRenderMode` returns
+      // 'hidden' for mask 0 and 'compact' for LOG_COMPACT (TOOL_CALL on,
+      // TOOL_RESULT off). Both bypass the bubble entirely, and the sink
+      // path must inherit that invariant — absorbing tool output when
+      // the user asked to hide it would be a privacy regression.
+      config.ui.fiveBlockPhase = 2;
+      const sink = vi.fn().mockResolvedValue(true);
+      processor.setToolResultSink(sink as unknown as ToolResultSink);
+      toolTracker.trackToolUse('tool_1', 'Bash');
+      const hiddenCtx: ToolEventContext = { ...makeContextWithTurn('session:42:abc'), logVerbosity: 0 };
+
+      await processor.handleToolResult(
+        [{ toolUseId: 'tool_1', toolName: 'Bash', result: 'command output' }],
+        hiddenCtx,
+      );
+
+      expect(sink).not.toHaveBeenCalled();
       expect(mockSay).not.toHaveBeenCalled();
     });
   });

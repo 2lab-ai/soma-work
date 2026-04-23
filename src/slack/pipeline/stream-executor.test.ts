@@ -2719,3 +2719,201 @@ describe('W3-B rate-limit rotation wiring', () => {
     expect(rotateOnRateLimitMock).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * Issue #664 P2 — turnId propagation into ToolEventContext.
+ *
+ * This exercises the **real closure wiring** at stream-executor.ts:596-641
+ * (onToolUse) and :642+ (onToolResult), not a helper extraction. We drive
+ * `execute()` all the way to `StreamProcessor.process()` with a mock async
+ * generator feeding one `tool_use` and one `tool_result` message, then
+ * assert that `toolEventProcessor.handleToolUse` and `.handleToolResult`
+ * both receive the SAME turnId minted at stream-executor.ts:355. Equal
+ * turnId in both calls is the real invariant — independent random values
+ * would still pass a naive "turnId present" assertion while silently
+ * decoupling the sink from the B1 stream it's supposed to own.
+ */
+describe('turnId propagation into ToolEventContext (#664)', () => {
+  beforeEach(() => {
+    // Email guard needs a resolvable email to bypass the early return at
+    // stream-executor.ts:524. Reset it here so earlier tests that set it
+    // to empty/undefined don't leak in.
+    vi.mocked(userSettingsStore.getUserEmail).mockReturnValue('user@example.com');
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  async function* mockStreamQuery() {
+    // Assistant tool_use — triggers StreamProcessor.handleAssistantMessage →
+    // callbacks.onToolUse (stream-processor.ts:582).
+    yield {
+      type: 'assistant',
+      message: {
+        content: [{ type: 'tool_use', id: 'tool_1', name: 'Read', input: { file_path: '/t.txt' } }],
+      },
+    };
+    // User tool_result — triggers StreamProcessor.handleUserMessage →
+    // callbacks.onToolResult (stream-processor.ts:950).
+    yield {
+      type: 'user',
+      message: {
+        content: [{ type: 'tool_result', tool_use_id: 'tool_1', content: 'file contents' }],
+      },
+    };
+    // Result message — ends the stream cleanly (no aborted flag).
+    yield { type: 'result', subtype: 'success', total_cost_usd: 0, usage: {} };
+  }
+
+  function createDepsForToolFlow() {
+    return {
+      claudeHandler: {
+        setActivityState: vi.fn(),
+        clearSessionId: vi.fn(),
+        streamQuery: vi.fn().mockImplementation(() => mockStreamQuery()),
+        getSessionRegistry: vi.fn().mockReturnValue({
+          beginTurn: vi.fn(),
+          endTurn: vi.fn(),
+          broadcastSessionUpdate: vi.fn(),
+          getActivityState: vi.fn().mockReturnValue('idle'),
+        }),
+      },
+      fileHandler: {
+        formatFilePrompt: vi.fn().mockResolvedValue(''),
+        cleanupTempFiles: vi.fn().mockResolvedValue(undefined),
+      },
+      toolEventProcessor: {
+        handleToolUse: vi.fn().mockResolvedValue(undefined),
+        handleToolResult: vi.fn().mockResolvedValue(undefined),
+        setCompactDurationCallback: vi.fn(),
+        setReactionManager: vi.fn(),
+        setToolResultSink: vi.fn(),
+        cleanup: vi.fn(),
+      },
+      statusReporter: {
+        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
+        getStatusEmoji: vi.fn().mockReturnValue('thinking_face'),
+        cleanup: vi.fn(),
+      },
+      reactionManager: {
+        updateReaction: vi.fn().mockResolvedValue(undefined),
+        cleanup: vi.fn(),
+      },
+      contextWindowManager: {
+        handlePromptTooLong: vi.fn().mockResolvedValue(undefined),
+        cleanup: vi.fn(),
+      },
+      toolTracker: {
+        scheduleCleanup: vi.fn(),
+        trackToolUse: vi.fn(),
+        getToolName: vi.fn(),
+        trackMcpCall: vi.fn(),
+        getMcpCallId: vi.fn(),
+        removeMcpCallId: vi.fn(),
+        getActiveMcpCallIds: vi.fn().mockReturnValue([]),
+      },
+      todoDisplayManager: {
+        cleanupSession: vi.fn(),
+        cleanup: vi.fn(),
+        handleTodoUpdate: vi.fn().mockResolvedValue(undefined),
+        setRenderRequestCallback: vi.fn(),
+        setPlanRenderCallback: vi.fn(),
+      },
+      actionHandlers: {},
+      requestCoordinator: {
+        removeController: vi.fn(),
+      },
+      slackApi: {
+        getUserProfile: vi.fn().mockResolvedValue({ email: 'user@example.com', displayName: 'User' }),
+        getClient: vi.fn().mockReturnValue({}),
+        getBotUserId: vi.fn().mockResolvedValue('U_BOT'),
+        deleteMessage: vi.fn().mockResolvedValue(undefined),
+      },
+      assistantStatusManager: {
+        setStatus: vi.fn().mockResolvedValue(undefined),
+        clearStatus: vi.fn().mockResolvedValue(undefined),
+        getToolStatusText: vi.fn().mockReturnValue('running tool...'),
+      },
+      threadPanel: {
+        beginTurn: vi.fn().mockResolvedValue(undefined),
+        endTurn: vi.fn().mockResolvedValue(undefined),
+        failTurn: vi.fn().mockResolvedValue(undefined),
+        isTurnSurfaceActive: vi.fn().mockReturnValue(false),
+        appendText: vi.fn().mockResolvedValue(true),
+        // Execute() calls these via updateRuntimeStatus/panel paths even
+        // when we only care about the tool-event closure — no-ops keep us
+        // alive long enough to reach StreamProcessor.process().
+        setStatus: vi.fn().mockResolvedValue(undefined),
+        updatePanel: vi.fn().mockResolvedValue(undefined),
+        attachChoice: vi.fn().mockResolvedValue(undefined),
+        finalizeOnEndTurn: vi.fn().mockResolvedValue(undefined),
+        renderTasks: vi.fn().mockResolvedValue(false),
+        updateHeader: vi.fn().mockResolvedValue(undefined),
+        clearChoice: vi.fn().mockResolvedValue(undefined),
+      },
+    } as any;
+  }
+
+  function createToolFlowParams(say: ReturnType<typeof vi.fn>) {
+    return {
+      session: {
+        sessionId: 'sess_tool_flow',
+        ownerId: 'U_TEST',
+        logVerbosity: 'detail',
+        usage: {},
+        terminated: false,
+      },
+      sessionKey: 'C999:thread999',
+      userName: 'testuser',
+      workingDirectory: '/tmp/test',
+      abortController: new AbortController(),
+      processedFiles: [],
+      text: 'hello',
+      channel: 'C999',
+      threadTs: 'thread999',
+      user: 'U_TEST',
+      say,
+    } as any;
+  }
+
+  it('passes the same turnId to handleToolUse and handleToolResult', async () => {
+    const deps = createDepsForToolFlow();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    const params = createToolFlowParams(say);
+
+    await executor.execute(params);
+
+    // Assertion 1: closure fed turnId into onToolUse → handleToolUse.
+    expect(deps.toolEventProcessor.handleToolUse).toHaveBeenCalledTimes(1);
+    const toolUseCallArgs = deps.toolEventProcessor.handleToolUse.mock.calls[0];
+    const toolUseCtx = toolUseCallArgs[1];
+    expect(toolUseCtx).toEqual(
+      expect.objectContaining({
+        channel: 'C999',
+        threadTs: 'thread999',
+        sessionKey: 'C999:thread999',
+        turnId: expect.stringMatching(/^C999:thread999:\d+:[0-9a-f-]+$/),
+      }),
+    );
+
+    // Assertion 2: same closure path for onToolResult → handleToolResult.
+    expect(deps.toolEventProcessor.handleToolResult).toHaveBeenCalledTimes(1);
+    const toolResultCallArgs = deps.toolEventProcessor.handleToolResult.mock.calls[0];
+    const toolResultCtx = toolResultCallArgs[1];
+    expect(toolResultCtx).toEqual(
+      expect.objectContaining({
+        channel: 'C999',
+        threadTs: 'thread999',
+        sessionKey: 'C999:thread999',
+        turnId: expect.stringMatching(/^C999:thread999:\d+:[0-9a-f-]+$/),
+      }),
+    );
+
+    // Assertion 3 (the real invariant): both closures captured the SAME
+    // turnId from the outer scope. Independently-minted ids would still
+    // pass assertions 1 and 2 while silently decoupling the sink.
+    expect(toolUseCtx.turnId).toBe(toolResultCtx.turnId);
+  });
+});
