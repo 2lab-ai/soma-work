@@ -457,14 +457,7 @@ describe('SessionInitializer - channel routing advisory', () => {
     mockClaudeHandler.canInterrupt.mockReturnValue(true);
 
     const session = { ownerId: 'U123', ownerName: 'Owner', currentInitiatorName: 'Owner' };
-    (sessionInitializer as any).handleConcurrency(
-      'C123:thread123',
-      'C123',
-      'thread123',
-      'U123',
-      'Test User',
-      session,
-    );
+    (sessionInitializer as any).handleConcurrency('C123:thread123', 'C123', 'thread123', 'U123', 'Test User', session);
 
     expect(mockRequestCoordinator.abortSession).not.toHaveBeenCalled();
     expect(mockAssistantStatusManager.bumpEpoch).not.toHaveBeenCalled();
@@ -475,14 +468,7 @@ describe('SessionInitializer - channel routing advisory', () => {
     mockClaudeHandler.canInterrupt.mockReturnValue(false);
 
     const session = { ownerId: 'U999', ownerName: 'OtherOwner', currentInitiatorName: 'OtherOwner' };
-    (sessionInitializer as any).handleConcurrency(
-      'C123:thread123',
-      'C123',
-      'thread123',
-      'U123',
-      'Test User',
-      session,
-    );
+    (sessionInitializer as any).handleConcurrency('C123:thread123', 'C123', 'thread123', 'U123', 'Test User', session);
 
     expect(mockRequestCoordinator.abortSession).not.toHaveBeenCalled();
     expect(mockAssistantStatusManager.bumpEpoch).not.toHaveBeenCalled();
