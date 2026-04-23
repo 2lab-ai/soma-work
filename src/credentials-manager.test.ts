@@ -1,6 +1,12 @@
+import { promises as fs } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-// Mock TokenManager module before importing credentials-manager
+// Mock TokenManager module before importing credentials-manager. Keep the
+// REAL `TokenManager` class exported so the real-integration test below can
+// construct one against a tmp CctStore; only `getTokenManager()` is stubbed
+// to return the in-test mock double.
 const mockAcquireLease = vi.fn();
 const mockReleaseLease = vi.fn(async () => {});
 const mockHeartbeatLease = vi.fn(async () => {});
@@ -20,14 +26,17 @@ const mockTokenManager = {
   listTokens: vi.fn(() => []),
 };
 
-vi.mock('./token-manager', () => ({
-  getTokenManager: vi.fn(() => mockTokenManager),
-  TokenManager: class {},
-}));
+vi.mock('./token-manager', async () => {
+  const actual = await vi.importActual<typeof import('./token-manager')>('./token-manager');
+  return {
+    ...actual,
+    getTokenManager: vi.fn(() => mockTokenManager),
+  };
+});
 
 // Avoid touching config / logger filesystem
 vi.mock('./config', () => ({
-  config: { credentials: { enabled: false } },
+  config: { credentials: { enabled: false }, oauthProfile: { enabled: false, timeoutMs: 5000 } },
 }));
 
 import { ensureActiveSlotAuth, ensureValidCredentials, NoHealthySlotError } from './credentials-manager';
@@ -97,7 +106,7 @@ describe('ensureActiveSlotAuth', () => {
     const lease = await ensureActiveSlotAuth(mockTokenManager as any, 'owner');
     expect(lease.accessToken).toBe('refreshed-access-token');
     expect(lease.kind).toBe('cct');
-    expect(mockGetValidAccessToken).toHaveBeenCalledWith('slot-O');
+    expect(mockGetValidAccessToken).toHaveBeenCalledWith('slot-O', 'dispatch');
   });
 
   it('release() is idempotent', async () => {
@@ -190,5 +199,60 @@ describe('ensureValidCredentials (legacy wrapper)', () => {
     expect(r.valid).toBe(false);
     expect(r.error).toBeTruthy();
     expect(r.error).toMatch(/No healthy CCT slot/);
+  });
+});
+
+// ── Integration: issue #673 — lease.accessToken must be the slot's
+// setupToken for cct/setup+attachment slots, NOT the 1h OAuth access_token. ─
+describe('ensureActiveSlotAuth (issue #673 dispatch-token integration)', () => {
+  it('for cct/setup WITH attachment, lease.accessToken === slot.setupToken', async () => {
+    const { TokenManager } = await import('./token-manager');
+    const { CctStore } = await import('./cct-store');
+
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'cm-673-'));
+    const prevSeedFlag = process.env.SOMA_CCT_DISABLE_ENV_SEED;
+    const prevList = process.env.CLAUDE_CODE_OAUTH_TOKEN_LIST;
+    const prevSingle = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    process.env.SOMA_CCT_DISABLE_ENV_SEED = 'true';
+    delete process.env.CLAUDE_CODE_OAUTH_TOKEN_LIST;
+    delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    const store = new CctStore(path.join(tmp, 'cct-store.json'));
+    const tm = new TokenManager(store);
+    try {
+      await tm.init();
+
+      const SETUP_TOKEN = 'sk-ant-oat01-SETUP-ONE-YEAR';
+      const slot = await tm.addSlot({ name: 'setup-673', kind: 'setup_token', value: SETUP_TOKEN });
+
+      // Attach an OAuth blob whose accessToken is DIFFERENT from setupToken.
+      // A correctly-fixed dispatch path must ignore this and surface setupToken.
+      await tm.attachOAuth(
+        slot.keyId,
+        {
+          accessToken: 'sk-ant-oat01-ONE-HOUR-OAUTH',
+          refreshToken: 'sk-ant-ort01-refresh',
+          expiresAtMs: Date.now() + 10 * 60 * 60 * 1000,
+          scopes: ['user:profile', 'user:inference'],
+        },
+        true,
+      );
+
+      const lease = await ensureActiveSlotAuth(tm as any, 'test:issue-673');
+      try {
+        expect(lease.keyId).toBe(slot.keyId);
+        expect(lease.accessToken).toBe(SETUP_TOKEN);
+      } finally {
+        await lease.release();
+      }
+    } finally {
+      tm.stop();
+      await fs.rm(tmp, { recursive: true, force: true }).catch(() => {});
+      if (prevSeedFlag === undefined) delete process.env.SOMA_CCT_DISABLE_ENV_SEED;
+      else process.env.SOMA_CCT_DISABLE_ENV_SEED = prevSeedFlag;
+      if (prevList === undefined) delete process.env.CLAUDE_CODE_OAUTH_TOKEN_LIST;
+      else process.env.CLAUDE_CODE_OAUTH_TOKEN_LIST = prevList;
+      if (prevSingle === undefined) delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+      else process.env.CLAUDE_CODE_OAUTH_TOKEN = prevSingle;
+    }
   });
 });
