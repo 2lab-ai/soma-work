@@ -628,6 +628,10 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             sessionKey: ctx.sessionKey,
             say: ctx.say,
             logVerbosity: getVerbosity(),
+            // #664 P2 absorb: carry the turnId so tool-event-processor's
+            // PHASE>=2 sink path can route verbose output into the B1
+            // stream bound to this request.
+            turnId,
           });
           // Issue #42 S3: observer — 도구 시작 이벤트 수집
           for (const tu of toolUses) {
@@ -663,6 +667,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             sessionKey: ctx.sessionKey,
             say: ctx.say,
             logVerbosity: getVerbosity(),
+            // #664 P2 absorb: same turnId as the matching tool_use event,
+            // so sink-side lookups stay on one B1 stream handle.
+            turnId,
           });
           // Metrics: detect git/gh commands in Bash output (fire-and-forget)
           interceptToolResults(
