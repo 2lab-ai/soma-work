@@ -172,6 +172,55 @@ describe('applyInstructionOperations', () => {
   });
 });
 
+describe('UPDATE_SESSION instructionOperations are gated for user y/n', () => {
+  it('reports appliedInstructionOperations=0 and confirmationRequired=true when instr ops are present', () => {
+    const ctx = makeContext();
+    const result = runModelCommand(
+      {
+        commandId: 'UPDATE_SESSION',
+        params: {
+          instructionOperations: [
+            { action: 'add', text: 'new rule' },
+            { action: 'remove', id: 'does-not-matter' },
+          ],
+        },
+      } as ModelCommandRunRequest,
+      ctx,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const payload = result.payload as Record<string, unknown>;
+    expect(payload.appliedInstructionOperations).toBe(0);
+    expect(payload.pendingInstructionOperations).toBe(2);
+    expect(payload.confirmationRequired).toBe(true);
+  });
+
+  it('reports confirmationRequired=false when only resource ops are present', () => {
+    const ctx = makeContext();
+    const result = runModelCommand(
+      {
+        commandId: 'UPDATE_SESSION',
+        params: {
+          operations: [
+            {
+              action: 'add',
+              resourceType: 'issue',
+              link: { url: 'https://jira.example/PTN-1', type: 'issue', provider: 'jira' },
+            },
+          ],
+        },
+      } as ModelCommandRunRequest,
+      ctx,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const payload = result.payload as Record<string, unknown>;
+    expect(payload.appliedInstructionOperations).toBe(0);
+    expect(payload.pendingInstructionOperations).toBe(0);
+    expect(payload.confirmationRequired).toBe(false);
+  });
+});
+
 describe('GET_SESSION includes title', () => {
   it('returns title from context', () => {
     const ctx = makeContext({ sessionTitle: 'Existing Title' });

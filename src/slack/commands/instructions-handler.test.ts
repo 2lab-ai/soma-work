@@ -179,7 +179,11 @@ describe('InstructionsHandler', () => {
       expect(callArg).toContain('Also fix the lint errors');
       expect(callArg).toContain('Add unit tests too');
       expect(callArg).toContain('jira-create-pr');
-      expect(callArg).toContain('Total instructions: 3');
+      // The handler now shows SSOT vs legacy counts separately — legacy
+      // turn-log = initialInstruction (1) + followUpInstructions (2) = 3.
+      expect(callArg).toContain('Legacy turn-log: 3');
+      // No SSOT entries on this legacy fixture.
+      expect(callArg).toContain('SSOT: 0');
     });
   });
 });
