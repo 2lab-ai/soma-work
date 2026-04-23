@@ -1,9 +1,10 @@
+import { Assistant } from '@slack/bolt';
 import { describe, expect, it, vi } from 'vitest';
 import { SlackHandler } from './slack-handler';
 
 describe('SlackHandler', () => {
   it('creates thread panel after session initialization', async () => {
-    const app = { client: {} } as any;
+    const app = { client: {}, assistant: vi.fn() } as any;
     const claudeHandler = {};
     const mcpManager = {};
 
@@ -55,7 +56,7 @@ describe('SlackHandler', () => {
   });
 
   it('streams into bot-initiated thread when initializer returns migrated session', async () => {
-    const app = { client: {} } as any;
+    const app = { client: {}, assistant: vi.fn() } as any;
     const claudeHandler = {};
     const mcpManager = {};
 
@@ -116,7 +117,7 @@ describe('SlackHandler', () => {
   });
 
   it('clears waiting choice panel when user sends direct text input', async () => {
-    const app = { client: {} } as any;
+    const app = { client: {}, assistant: vi.fn() } as any;
     const claudeHandler = {
       setActivityStateByKey: vi.fn(),
     };
@@ -181,7 +182,7 @@ describe('SlackHandler', () => {
   });
 
   it('passes forceWorkflow from continuation into runDispatch', async () => {
-    const app = { client: {} } as any;
+    const app = { client: {}, assistant: vi.fn() } as any;
     const claudeHandler = {
       resetSessionContext: vi.fn(),
       getSession: vi.fn().mockReturnValue({
@@ -264,7 +265,7 @@ describe('SlackHandler', () => {
     // Bug: When user sends a follow-up message in the work thread,
     // activeThreadTs === originalThreadTs, so sourceThreadTs was set to undefined.
     // Fix: Fall back to session.sourceThread from the persisted session.
-    const app = { client: {} } as any;
+    const app = { client: {}, assistant: vi.fn() } as any;
     const claudeHandler = {};
     const mcpManager = {};
 
@@ -334,7 +335,7 @@ describe('SlackHandler', () => {
     process.env.ADMIN_USERS = 'U_ADMIN';
     resetAdminUsersCache();
 
-    const app = { client: {} } as any;
+    const app = { client: {}, assistant: vi.fn() } as any;
     const claudeHandler = {};
     const mcpManager = {};
 
@@ -383,7 +384,7 @@ describe('SlackHandler', () => {
     process.env.ADMIN_USERS = 'U_ADMIN';
     resetAdminUsersCache();
 
-    const app = { client: {} } as any;
+    const app = { client: {}, assistant: vi.fn() } as any;
     const claudeHandler = {};
     const mcpManager = {};
 
@@ -457,7 +458,7 @@ describe('SlackHandler', () => {
     resetAdminUsersCache();
 
     try {
-      const app = { client: {} } as any;
+      const app = { client: {}, assistant: vi.fn() } as any;
       const claudeHandler = {};
       const mcpManager = {};
 
@@ -517,7 +518,7 @@ describe('SlackHandler', () => {
    * ============================================================ */
 
   it('DM `/z help` routes through ZRouter with source=dm (FIX #1)', async () => {
-    const app = { client: {} } as any;
+    const app = { client: {}, assistant: vi.fn() } as any;
     const claudeHandler = {};
     const mcpManager = {};
 
@@ -575,7 +576,7 @@ describe('SlackHandler', () => {
     resetAdminUsersCache();
 
     try {
-      const app = { client: {} } as any;
+      const app = { client: {}, assistant: vi.fn() } as any;
       const claudeHandler = {};
       const mcpManager = {};
 
@@ -633,7 +634,7 @@ describe('SlackHandler', () => {
     resetAdminUsersCache();
 
     try {
-      const app = { client: {} } as any;
+      const app = { client: {}, assistant: vi.fn() } as any;
       const claudeHandler = {};
       const mcpManager = {};
 
@@ -703,7 +704,7 @@ describe('SlackHandler', () => {
     resetAdminUsersCache();
 
     try {
-      const app = { client: {} } as any;
+      const app = { client: {}, assistant: vi.fn() } as any;
       const claudeHandler = {};
       const mcpManager = {};
 
@@ -794,7 +795,7 @@ describe('SlackHandler', () => {
     const buildHandler = (
       opts: { dispatchResult?: any; routeCommandResult?: { handled: boolean; continueWithPrompt?: string } } = {},
     ) => {
-      const app = { client: {} } as any;
+      const app = { client: {}, assistant: vi.fn() } as any;
       const claudeHandler = {};
       const mcpManager = {};
       const handler = new SlackHandler(app as any, claudeHandler as any, mcpManager as any);
@@ -1112,6 +1113,23 @@ describe('SlackHandler', () => {
         // Ephemeral guide was still delivered (the user sees some feedback).
         expect(slackApi.postEphemeral).toHaveBeenCalledTimes(1);
       });
+    });
+  });
+
+  /* ============================================================
+   * #666 P4 Part 1/2 — Bolt Assistant container registration
+   * ============================================================ */
+  describe('SlackHandler — Bolt Assistant container registration (#666)', () => {
+    it('registers the Bolt Assistant container exactly once at construction time', () => {
+      const app = { client: {}, assistant: vi.fn() } as any;
+      const claudeHandler = {};
+      const mcpManager = {};
+
+      new SlackHandler(app as any, claudeHandler as any, mcpManager as any);
+
+      expect(app.assistant).toHaveBeenCalledTimes(1);
+      const registered = app.assistant.mock.calls[0][0];
+      expect(registered).toBeInstanceOf(Assistant);
     });
   });
 });

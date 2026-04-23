@@ -40,16 +40,7 @@
         "usage_hint": "(use /z new)",
         "should_escape": false
       }
-    ],
-    "assistant_view": {
-      "assistant_description": "What can I help with?",
-      "suggested_prompts": [
-        { "title": "Help me with a task", "message": "I need help with…" },
-        { "title": "Explain a concept", "message": "Please explain…" },
-        { "title": "Debug an error", "message": "I got this error:" },
-        { "title": "Review my code", "message": "Please review this code:" }
-      ]
-    }
+    ]
   },
   "oauth_config": {
     "scopes": {
@@ -83,9 +74,7 @@
         "member_joined_channel",
         "message.channels",
         "message.groups",
-        "message.im",
-        "assistant_thread_started",
-        "assistant_thread_context_changed"
+        "message.im"
       ]
     },
     "interactivity": {

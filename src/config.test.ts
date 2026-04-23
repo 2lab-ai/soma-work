@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { parseFiveBlockPhase, parsePositiveIntEnv } from './config';
+import { parseBool, parseFiveBlockPhase, parsePositiveIntEnv } from './config';
 
 // Silence the warn path; we're testing the fallback value, not the log side-effect.
 vi.mock('./logger', () => ({
@@ -127,5 +127,61 @@ describe('parsePositiveIntEnv (#641 M1-S1)', () => {
   it('no minimum set (default 0) → any positive integer passes through', () => {
     process.env[ENV_NAME] = '42';
     expect(parsePositiveIntEnv(ENV_NAME, 2_000)).toBe(42);
+  });
+});
+
+// #666 Part 1/2 — P4 kill switch. `parseBool` gates `config.ui.b4NativeStatusEnabled`,
+// which must default to `false` so that registering the Bolt Assistant container
+// in Part 1 does NOT silently re-enable the legacy spinner path before Part 2 is wired.
+describe('parseBool (#666)', () => {
+  describe('truthy values', () => {
+    it.each([
+      ['1', true],
+      ['true', true],
+      ['TRUE', true],
+      ['True', true],
+      ['yes', true],
+      ['YES', true],
+      ['on', true],
+      ['ON', true],
+    ])('parses "%s" → %s', (raw, expected) => {
+      expect(parseBool(raw, false)).toBe(expected);
+    });
+  });
+
+  describe('falsy values', () => {
+    it.each([
+      ['0', false],
+      ['false', false],
+      ['FALSE', false],
+      ['no', false],
+      ['off', false],
+    ])('parses "%s" → %s', (raw, expected) => {
+      expect(parseBool(raw, true)).toBe(expected);
+    });
+  });
+
+  describe('fallback', () => {
+    it('undefined → fallback', () => {
+      expect(parseBool(undefined, false)).toBe(false);
+      expect(parseBool(undefined, true)).toBe(true);
+    });
+
+    it('empty string → fallback', () => {
+      expect(parseBool('', false)).toBe(false);
+      expect(parseBool('', true)).toBe(true);
+    });
+
+    it('unrecognized value → fallback with warn', () => {
+      expect(parseBool('maybe', false)).toBe(false);
+      expect(parseBool('2', true)).toBe(true);
+    });
+  });
+
+  describe('whitespace tolerance', () => {
+    it('surrounding whitespace accepted', () => {
+      expect(parseBool(' 1 ', false)).toBe(true);
+      expect(parseBool(' false ', true)).toBe(false);
+    });
   });
 });

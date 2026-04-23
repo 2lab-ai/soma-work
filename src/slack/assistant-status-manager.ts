@@ -1,3 +1,4 @@
+import { config } from '../config';
 import { Logger } from '../logger';
 import type { SlackApiHelper } from './slack-api-helper';
 
@@ -29,7 +30,17 @@ export class AssistantStatusManager {
   private heartbeats = new Map<string, NodeJS.Timeout>();
   private lastStatus = new Map<string, { channelId: string; threadTs: string; status: string }>();
 
-  constructor(private slackApi: SlackApiHelper) {}
+  constructor(private slackApi: SlackApiHelper) {
+    // #666 P4 Part 1/2 — hard kill switch. Part 1 merges the Bolt Assistant
+    // container + manifest but MUST NOT activate the legacy tool-level
+    // spinner path (stream-executor.ts) before Part 2 wires turn-surface
+    // single-writer convergence and legacy suppression. Flip via
+    // `SOMA_UI_B4_NATIVE_STATUS=1` only after Part 2 merges.
+    if (!config.ui.b4NativeStatusEnabled) {
+      this.enabled = false;
+      this.logger.debug('Native status spinner suppressed (SOMA_UI_B4_NATIVE_STATUS=0)');
+    }
+  }
 
   async setStatus(channelId: string, threadTs: string, status: string): Promise<void> {
     if (!this.enabled) return;
