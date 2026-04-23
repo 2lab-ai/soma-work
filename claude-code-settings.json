@@ -1,5 +1,8 @@
 {
   "permissions": {
+    "deny": [
+      "ScheduleWakeup"
+    ],
     "allow": [
       "Bash(git clone:*)",
       "Bash(git pull:*)",
