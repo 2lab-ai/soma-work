@@ -45,6 +45,7 @@ import type {
 } from '../../types';
 import { coerceToAvailableModel, userSettingsStore } from '../../user-settings-store';
 import type { ActionHandlers } from '../actions';
+import { buildMarkerBlocks, SUPERSEDED_TEXT } from '../actions/click-classifier';
 import type { CompletionMessageTracker } from '../completion-message-tracker.js';
 import { postCompactCompleteIfNeeded, postCompactStartingIfNeeded } from '../hooks/compact-hooks';
 import {
@@ -2734,27 +2735,24 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     if (!prior) return;
 
     if (prior.kind === 'multi' && prior.formIds.length > 0) {
-      for (const formId of prior.formIds) {
-        const pendingForm = this.deps.actionHandlers.getPendingForm(formId);
-        if (pendingForm?.messageTs) {
-          await this.deps.slackApi
-            .updateMessage(
-              channel,
-              pendingForm.messageTs,
-              '⏱️ _새 질문으로 대체되었습니다._',
-              [{ type: 'section', text: { type: 'mrkdwn', text: '⏱️ _새 질문으로 대체되었습니다._' } }],
-              [],
-            )
-            .catch((err) =>
-              this.logger.warn('supersedePriorPendingChoice: rewrite failed', {
-                sessionKey,
-                formId,
-                error: (err as Error)?.message ?? String(err),
-              }),
-            );
-        }
-        this.deps.actionHandlers.deletePendingForm(formId);
-      }
+      // Prior chunks are independent Slack messages — rewrite in parallel.
+      await Promise.allSettled(
+        prior.formIds.map(async (formId) => {
+          const pendingForm = this.deps.actionHandlers.getPendingForm(formId);
+          if (pendingForm?.messageTs) {
+            await this.deps.slackApi
+              .updateMessage(channel, pendingForm.messageTs, SUPERSEDED_TEXT, buildMarkerBlocks(SUPERSEDED_TEXT), [])
+              .catch((err) =>
+                this.logger.warn('supersedePriorPendingChoice: rewrite failed', {
+                  sessionKey,
+                  formId,
+                  error: (err as Error)?.message ?? String(err),
+                }),
+              );
+          }
+          this.deps.actionHandlers.deletePendingForm(formId);
+        }),
+      );
     }
 
     if (session.actionPanel) {
@@ -2959,9 +2957,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         });
 
         if (result?.ts) {
-          // v7 fix: persist messageTs via setPendingForm so a concurrent
-          // save-to-disk captures the new ts. Previously mutated in place,
-          // which meant the ts was lost across restarts.
+          // Persist messageTs via setPendingForm so restart can resolve the form.
           const pending = this.deps.actionHandlers.getPendingForm(formId);
           if (pending) {
             this.deps.actionHandlers.setPendingForm(formId, { ...pending, messageTs: result.ts });

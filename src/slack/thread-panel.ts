@@ -5,6 +5,7 @@ import { Logger } from '../logger';
 import type { SessionRegistry } from '../session-registry';
 import type { Todo, TodoManager } from '../todo-manager';
 import type { ConversationSession, UserChoice, UserChoices } from '../types';
+import { buildMarkerBlocks, FORM_BUILD_FAILED_TEXT } from './actions/click-classifier';
 import type { CompletionMessageTracker } from './completion-message-tracker';
 import type { RequestCoordinator } from './request-coordinator';
 import type { SlackApiHelper } from './slack-api-helper';
@@ -312,30 +313,29 @@ export class ThreadPanel {
       }
     } catch (err) {
       // Partial failure: rollback Slack-side + defensive state clear.
-      for (const postedTs of allTs) {
-        await this.deps.slackApi
-          .updateMessage(
-            address.channelId,
-            postedTs,
-            '⏱️ _폼 생성에 실패했습니다._',
-            [{ type: 'section', text: { type: 'mrkdwn', text: '⏱️ _폼 생성에 실패했습니다._' } }],
-            [],
-          )
-          .catch((rollbackErr) => {
-            this.logger.warn('askUserForm: rollback updateMessage failed', {
-              sessionKey,
+      // Posted chunks are independent messages — roll back in parallel.
+      await Promise.allSettled(
+        allTs.map((postedTs) =>
+          this.deps.slackApi
+            .updateMessage(
+              address.channelId,
               postedTs,
-              error: (rollbackErr as Error)?.message ?? String(rollbackErr),
-            });
-          });
-      }
+              FORM_BUILD_FAILED_TEXT,
+              buildMarkerBlocks(FORM_BUILD_FAILED_TEXT),
+              [],
+            )
+            .catch((rollbackErr) => {
+              this.logger.warn('askUserForm: rollback updateMessage failed', {
+                sessionKey,
+                postedTs,
+                error: (rollbackErr as Error)?.message ?? String(rollbackErr),
+              });
+            }),
+        ),
+      );
       // If state was written after chunk 0, clear it.
       if (session.actionPanel?.pendingChoice?.turnId === turnId) {
-        session.actionPanel.pendingChoice = undefined;
-        session.actionPanel.choiceMessageTs = undefined;
-        session.actionPanel.choiceMessageLink = undefined;
-        session.actionPanel.waitingForChoice = false;
-        this.deps.sessionRegistry?.persistAndBroadcast(sessionKey);
+        this.clearPendingChoiceState(session, sessionKey);
       }
       return {
         ok: false,
@@ -377,18 +377,7 @@ export class ThreadPanel {
     const pc = session.actionPanel?.pendingChoice;
     if (!pc || pc.kind !== 'single' || !pc.choiceTs) return false;
     await this.turnSurface.resolveChoice(channelId, pc.choiceTs, completedText, completedBlocks);
-    if (!session.actionPanel) {
-      session.actionPanel = {
-        channelId: session.channelId,
-        userId: session.ownerId,
-      };
-    }
-    session.actionPanel.pendingChoice = undefined;
-    session.actionPanel.choiceMessageTs = undefined;
-    session.actionPanel.choiceMessageLink = undefined;
-    session.actionPanel.waitingForChoice = false;
-    session.actionPanel.choiceBlocks = undefined;
-    this.deps.sessionRegistry?.persistAndBroadcast(sessionKey);
+    this.clearPendingChoiceState(session, sessionKey);
     return true;
   }
 
@@ -408,6 +397,18 @@ export class ThreadPanel {
     const pc = session.actionPanel?.pendingChoice;
     if (!pc || pc.kind !== 'multi') return false;
     await this.turnSurface.resolveMultiChoice(channelId, tsList, completedText, completedBlocks);
+    this.clearPendingChoiceState(session, sessionKey);
+    return true;
+  }
+
+  // ---- internal helpers ----
+
+  /**
+   * P3 pendingChoice lifecycle clear — used by resolveChoice, resolveMultiChoice,
+   * and the askUserForm partial-failure defensive path. Ensures the whole P3
+   * co-field set clears atomically with a single persistAndBroadcast.
+   */
+  private clearPendingChoiceState(session: ConversationSession, sessionKey: string): void {
     if (!session.actionPanel) {
       session.actionPanel = {
         channelId: session.channelId,
@@ -420,10 +421,7 @@ export class ThreadPanel {
     session.actionPanel.waitingForChoice = false;
     session.actionPanel.choiceBlocks = undefined;
     this.deps.sessionRegistry?.persistAndBroadcast(sessionKey);
-    return true;
   }
-
-  // ---- internal helpers ----
 
   private findSessionKey(session: ConversationSession): string | undefined {
     const threadTs = session.threadRootTs || session.threadTs;

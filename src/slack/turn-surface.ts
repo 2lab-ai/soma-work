@@ -537,21 +537,25 @@ export class TurnSurface {
     completedBlocks: any[],
   ): Promise<void> {
     if (this.phase() < 3) return;
-    for (const ts of tsList) {
-      try {
-        await this.deps.slackApi.updateMessage(channelId, ts, completedText, completedBlocks, []);
-        this.logger.debug('B3 multi-choice chunk resolved', { channelId, ts });
-      } catch (err) {
-        const described = describeSlackError(err);
-        if (described.code === 'message_not_found') continue;
-        this.logger.warn('B3 resolveMultiChoice: updateMessage failed', {
-          channelId,
-          ts,
-          error: described,
-        });
-        // continue rest of tsList
-      }
-    }
+    // Chunks are independent Slack messages — update in parallel so the user
+    // sees all resolves at roughly the same wall clock. Individual failures
+    // are logged but don't fail siblings.
+    await Promise.allSettled(
+      tsList.map(async (ts) => {
+        try {
+          await this.deps.slackApi.updateMessage(channelId, ts, completedText, completedBlocks, []);
+          this.logger.debug('B3 multi-choice chunk resolved', { channelId, ts });
+        } catch (err) {
+          const described = describeSlackError(err);
+          if (described.code === 'message_not_found') return;
+          this.logger.warn('B3 resolveMultiChoice: updateMessage failed', {
+            channelId,
+            ts,
+            error: described,
+          });
+        }
+      }),
+    );
   }
 
   /**

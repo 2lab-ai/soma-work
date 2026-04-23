@@ -7,14 +7,12 @@ import type { CompletionMessageTracker } from '../completion-message-tracker';
 import type { SlackApiHelper } from '../slack-api-helper';
 import type { ThreadPanel } from '../thread-panel';
 import { UserChoiceHandler } from '../user-choice-handler';
+import { classifyClick, markClickAsStale } from './click-classifier';
 import type { PendingFormStore } from './pending-form-store';
 import type { MessageHandler, PendingChoiceFormData, SayFn } from './types';
 
 /** Sentinel choiceId for custom text input (직접입력) */
 const CUSTOM_INPUT_CHOICE_ID = '직접입력';
-
-/** Stale-click marker shown on the button message after a superseded click. */
-const STALE_CLICK_TEXT = '⏱️ _이 질문은 더 이상 유효하지 않습니다._';
 
 interface ChoiceActionContext {
   slackApi: SlackApiHelper;
@@ -23,14 +21,6 @@ interface ChoiceActionContext {
   threadPanel?: ThreadPanel;
   completionMessageTracker?: CompletionMessageTracker;
 }
-
-/**
- * P3 (PHASE>=3) classifier result — `legacy` = run pre-P3 body unchanged,
- * `p3` = use ThreadPanel resolve + synchronized state clear, `stale` = click
- * is superseded by a newer pending question, mark the clicked message and
- * drop the input.
- */
-type ClickBranch = 'legacy' | 'p3' | 'stale';
 
 /**
  * 사용자 선택 액션 핸들러
@@ -58,7 +48,7 @@ export class ChoiceActionHandler {
 
       this.logger.info('User choice selected', { sessionKey, choiceId, label, userId });
 
-      const branch = this.classifyClick({ sessionKey, payloadTurnId, messageTs });
+      const branch = classifyClick(this.ctx.claudeHandler, { sessionKey, payloadTurnId, messageTs });
 
       if (branch === 'stale') {
         this.logger.info('User choice click classified as stale — marking and returning', {
@@ -67,7 +57,7 @@ export class ChoiceActionHandler {
           messageTs,
         });
         if (channel && messageTs) {
-          await this.markClickAsStale(channel, messageTs, sessionKey);
+          await markClickAsStale(this.ctx.slackApi, this.logger, channel, messageTs, sessionKey);
         }
         return;
       }
@@ -154,9 +144,8 @@ export class ChoiceActionHandler {
         if (session.actionPanel) {
           session.actionPanel.pendingQuestion = undefined;
         }
-        // P3 parity: pendingQuestion now persists (see stream-executor) so it
-        // must also be broadcast+persisted when cleared — otherwise a dashboard
-        // restart restores a stale pending question.
+        // pendingQuestion clear must persist+broadcast so dashboard restart
+        // doesn't restore a stale question.
         try {
           this.ctx.claudeHandler.getSessionRegistry?.()?.persistAndBroadcast?.(sessionKey);
         } catch (err) {
@@ -244,7 +233,7 @@ export class ChoiceActionHandler {
       // P3 (PHASE>=3) stale-click check. For multi, payload turnId comes from
       // the PendingFormStore entry (button values don't carry turnId for
       // multi — turnId lives on the form record).
-      const branch = this.classifyClick({
+      const branch = classifyClick(this.ctx.claudeHandler, {
         sessionKey,
         payloadTurnId: pendingForm.turnId,
         formId,
@@ -256,7 +245,7 @@ export class ChoiceActionHandler {
           questionId,
         });
         if (channel && messageTs) {
-          await this.markClickAsStale(channel, messageTs, sessionKey);
+          await markClickAsStale(this.ctx.slackApi, this.logger, channel, messageTs, sessionKey);
         }
         return;
       }
@@ -334,7 +323,7 @@ export class ChoiceActionHandler {
       }
 
       // P3 (PHASE>=3) stale-click guard for the submit button.
-      const branch = this.classifyClick({
+      const branch = classifyClick(this.ctx.claudeHandler, {
         sessionKey,
         payloadTurnId: pendingForm.turnId,
         formId,
@@ -345,7 +334,7 @@ export class ChoiceActionHandler {
           formId,
         });
         if (channel && messageTs) {
-          await this.markClickAsStale(channel, messageTs, sessionKey);
+          await markClickAsStale(this.ctx.slackApi, this.logger, channel, messageTs, sessionKey);
         }
         return;
       }
@@ -593,7 +582,7 @@ export class ChoiceActionHandler {
       if (session.actionPanel) {
         session.actionPanel.pendingQuestion = undefined;
       }
-      // P3 parity: also persist+broadcast the cleared pendingQuestion.
+      // pendingQuestion clear must persist+broadcast (dashboard restart parity).
       try {
         this.ctx.claudeHandler.getSessionRegistry?.()?.persistAndBroadcast?.(pendingForm.sessionKey);
       } catch (err) {
@@ -741,7 +730,7 @@ export class ChoiceActionHandler {
       }
 
       // P3 (PHASE>=3) stale-click guard for the hero button.
-      const heroBranch = this.classifyClick({
+      const heroBranch = classifyClick(this.ctx.claudeHandler, {
         sessionKey,
         payloadTurnId: pendingForm.turnId,
         formId,
@@ -752,7 +741,7 @@ export class ChoiceActionHandler {
           formId,
         });
         if (channel && messageTs) {
-          await this.markClickAsStale(channel, messageTs, sessionKey);
+          await markClickAsStale(this.ctx.slackApi, this.logger, channel, messageTs, sessionKey);
         }
         return;
       }
@@ -1344,65 +1333,6 @@ export class ChoiceActionHandler {
     }
 
     return [...targets];
-  }
-
-  /**
-   * P3 (PHASE>=3) click routing.
-   *
-   *   'legacy' — run the pre-P3 code path unchanged.
-   *   'p3'     — use ThreadPanel.resolveChoice / resolveMultiChoice.
-   *   'stale'  — update message to stale marker and drop the dispatch.
-   *
-   * Classification matrix (PHASE>=3 only — PHASE<3 always returns 'legacy'):
-   *
-   *  | payload turnId | pendingChoice | match (turnId+ts) | branch |
-   *  | absent         | absent        | —                 | legacy |
-   *  | present        | absent        | —                 | stale  |
-   *  | absent         | present       | —                 | stale  |
-   *  | present        | present       | yes               | p3     |
-   *  | present        | present       | no                | stale  |
-   */
-  private classifyClick(args: {
-    sessionKey: string;
-    payloadTurnId?: string;
-    messageTs?: string;
-    formId?: string;
-  }): ClickBranch {
-    if (config.ui.fiveBlockPhase < 3) return 'legacy';
-
-    const session = this.ctx.claudeHandler.getSessionByKey(args.sessionKey);
-    const pc = session?.actionPanel?.pendingChoice;
-
-    if (pc) {
-      const turnIdMatches = !!args.payloadTurnId && pc.turnId === args.payloadTurnId;
-      const tsMatches =
-        pc.kind === 'single'
-          ? !!args.messageTs && pc.choiceTs === args.messageTs
-          : !!args.formId && pc.formIds.includes(args.formId);
-      if (turnIdMatches && tsMatches) return 'p3';
-      return 'stale';
-    }
-
-    // No pendingChoice: payload carries P3 identity ⇒ stale (don't resurrect
-    // a click via the ts-union legacy resolver). No P3 identity ⇒ truly
-    // pre-flip legacy message; legacy path is safe.
-    if (args.payloadTurnId) return 'stale';
-    return 'legacy';
-  }
-
-  /** Apply the stale marker to the clicked message. Best-effort (logs on failure). */
-  private async markClickAsStale(channel: string, messageTs: string, sessionKey: string): Promise<void> {
-    if (!channel || !messageTs) return;
-    const staleBlocks = [{ type: 'section', text: { type: 'mrkdwn', text: STALE_CLICK_TEXT } }];
-    try {
-      await this.ctx.slackApi.updateMessage(channel, messageTs, STALE_CLICK_TEXT, staleBlocks, []);
-    } catch (err) {
-      this.logger.warn('markClickAsStale: updateMessage failed', {
-        sessionKey,
-        messageTs,
-        error: (err as Error)?.message ?? String(err),
-      });
-    }
   }
 
   /**

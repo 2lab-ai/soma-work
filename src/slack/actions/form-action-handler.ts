@@ -1,16 +1,13 @@
 import type { ClaudeHandler } from '../../claude-handler';
-import { config } from '../../config';
 import { Logger } from '../../logger';
 import type { UserChoices } from '../../types';
 import type { SlackApiHelper } from '../slack-api-helper';
 import type { ThreadPanel } from '../thread-panel';
 import { UserChoiceHandler } from '../user-choice-handler';
 import type { ChoiceActionHandler } from './choice-action-handler';
+import { classifyClick, markClickAsStale } from './click-classifier';
 import type { PendingFormStore } from './pending-form-store';
 import { type MessageHandler, PendingChoiceFormData, type SayFn } from './types';
-
-/** Stale-click marker (must match ChoiceActionHandler). */
-const STALE_CLICK_TEXT = '⏱️ _이 질문은 더 이상 유효하지 않습니다._';
 
 interface FormActionContext {
   slackApi: SlackApiHelper;
@@ -159,7 +156,7 @@ export class FormActionHandler {
     ];
 
     // P3 (PHASE>=3) classifier — reuse the same matrix as ChoiceActionHandler.
-    const branch = this.classifyClick({ sessionKey, payloadTurnId, messageTs });
+    const branch = classifyClick(this.ctx.claudeHandler, { sessionKey, payloadTurnId, messageTs });
 
     if (branch === 'stale') {
       this.logger.info('Custom input (single) click classified as stale — marking and returning', {
@@ -167,7 +164,7 @@ export class FormActionHandler {
         payloadTurnId,
       });
       if (channel && messageTs) {
-        await this.markClickAsStale(channel, messageTs, sessionKey);
+        await markClickAsStale(this.ctx.slackApi, this.logger, channel, messageTs, sessionKey);
       }
       return;
     }
@@ -263,7 +260,7 @@ export class FormActionHandler {
 
     // P3 (PHASE>=3) classifier — turnId comes from the pendingForm record
     // (multi button values don't carry turnId).
-    const branch = this.classifyClick({
+    const branch = classifyClick(this.ctx.claudeHandler, {
       sessionKey,
       payloadTurnId: pendingForm.turnId,
       formId,
@@ -274,9 +271,7 @@ export class FormActionHandler {
         formId,
         questionId,
       });
-      if (channel && messageTs) {
-        await this.markClickAsStale(channel, messageTs, sessionKey);
-      }
+      await markClickAsStale(this.ctx.slackApi, this.logger, channel, messageTs, sessionKey);
       return;
     }
 
@@ -461,49 +456,5 @@ export class FormActionHandler {
         attachments: msgArgs.attachments,
       });
     };
-  }
-
-  /**
-   * P3 (PHASE>=3) click routing — mirror of ChoiceActionHandler.classifyClick.
-   * Kept local to this handler so FormActionHandler has no direct dependency
-   * on ChoiceActionHandler internals.
-   */
-  private classifyClick(args: {
-    sessionKey: string;
-    payloadTurnId?: string;
-    messageTs?: string;
-    formId?: string;
-  }): 'legacy' | 'p3' | 'stale' {
-    if (config.ui.fiveBlockPhase < 3) return 'legacy';
-
-    const session = this.ctx.claudeHandler.getSessionByKey(args.sessionKey);
-    const pc = session?.actionPanel?.pendingChoice;
-
-    if (pc) {
-      const turnIdMatches = !!args.payloadTurnId && pc.turnId === args.payloadTurnId;
-      const tsMatches =
-        pc.kind === 'single'
-          ? !!args.messageTs && pc.choiceTs === args.messageTs
-          : !!args.formId && pc.formIds.includes(args.formId);
-      if (turnIdMatches && tsMatches) return 'p3';
-      return 'stale';
-    }
-
-    if (args.payloadTurnId) return 'stale';
-    return 'legacy';
-  }
-
-  private async markClickAsStale(channel: string, messageTs: string, sessionKey: string): Promise<void> {
-    if (!channel || !messageTs) return;
-    const staleBlocks = [{ type: 'section', text: { type: 'mrkdwn', text: STALE_CLICK_TEXT } }];
-    try {
-      await this.ctx.slackApi.updateMessage(channel, messageTs, STALE_CLICK_TEXT, staleBlocks, []);
-    } catch (err) {
-      this.logger.warn('markClickAsStale: updateMessage failed', {
-        sessionKey,
-        messageTs,
-        error: (err as Error)?.message ?? String(err),
-      });
-    }
   }
 }
