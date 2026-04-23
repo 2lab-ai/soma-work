@@ -2751,6 +2751,77 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
     });
   });
 
+  // ── Issue #673 — regression guards from zcheck findings ───
+
+  describe('regression guards (#673 zcheck)', () => {
+    it('getValidAccessToken: throws descriptive error for unknown keyId on both purposes', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      await expect(tm.getValidAccessToken('nope', 'dispatch')).rejects.toThrow(/unknown keyId/);
+      await expect(tm.getValidAccessToken('nope', 'oauth-api')).rejects.toThrow(/unknown keyId/);
+    });
+
+    it('isEligible: cct/setup with EMPTY setupToken + authState=refresh_failed is NOT dispatch-independent', async () => {
+      // Guards the `setupToken.length > 0` branch in `hasDispatchIndependentOfAttachment`.
+      // A setup slot with an empty setupToken must NOT bypass the authState gate,
+      // because its dispatch credential is effectively missing.
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      // addSlot rejects empty values, so mutate the store directly to plant
+      // the degenerate fixture (empty-string setupToken). This is the only
+      // reachable way to express the invariant `hasDispatchIndependentOfAttachment`
+      // defends against — a migration landing such data in the registry.
+      const planted = {
+        kind: 'cct' as const,
+        source: 'setup' as const,
+        keyId: '01TESTEMPTYSETUP0000000001',
+        name: 'empty',
+        setupToken: '',
+        createdAt: new Date().toISOString(),
+      };
+      await store.mutate((snap) => {
+        snap.registry.slots.push(planted);
+        snap.state[planted.keyId] = {
+          authState: 'refresh_failed' as const,
+          activeLeases: [],
+        };
+        if (!snap.registry.activeKeyId) snap.registry.activeKeyId = planted.keyId;
+      });
+      // Health-only slot is the planted empty-setup one; acquireLease must
+      // not return it because the authState gate still applies.
+      await expect(tm.acquireLease('test:empty-setup-ineligible')).rejects.toThrow();
+    });
+
+    it('getValidAccessToken dispatch: concurrent calls on setup+attachment never trigger attachment refresh', async () => {
+      // Guards that the dispatch path for cct/setup is truly attachment-free:
+      // under N concurrent callers, `refreshAccessToken` must be invoked 0 times
+      // even when the attachment is near expiry (the attachment is supposed
+      // to be ignored entirely on this path).
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const s = await tm.addSlot({ name: 'concurrent', kind: 'setup_token', value: 'sk-ant-oat01-SETUP' });
+      // Attach near-expiry OAuth creds — dispatch must still ignore them.
+      await tm.attachOAuth(
+        s.keyId,
+        makeOAuthCreds({
+          accessToken: 'sk-ant-oat01-NEAR-EXPIRY',
+          expiresAtMs: Date.now() + 60 * 1000, // 1 min — well inside the 7h refresh buffer
+        }),
+        true,
+      );
+      refreshClaudeCredentialsMock.mockReset();
+      const tokens = await Promise.all(Array.from({ length: 10 }, () => tm.getValidAccessToken(s.keyId, 'dispatch')));
+      expect(tokens.every((t) => t === 'sk-ant-oat01-SETUP')).toBe(true);
+      expect(refreshClaudeCredentialsMock).not.toHaveBeenCalled();
+    });
+  });
+
   // ── Reaper timer ──────────────────────────────────────────
 
   describe('reaper timer', () => {

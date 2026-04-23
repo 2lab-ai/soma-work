@@ -201,6 +201,21 @@ export class NoOAuthAttachmentError extends Error {
   }
 }
 
+/**
+ * The two surfaces `getValidAccessToken` serves:
+ *   - `dispatch` → Claude CLI subprocess env (total over AuthKey)
+ *   - `oauth-api` → soma-work's `/api/oauth/*` HTTP calls
+ *     (throws `NoOAuthAttachmentError` when no attachment exists)
+ */
+export type TokenPurpose = 'dispatch' | 'oauth-api';
+
+/**
+ * A CCT slot narrowed to carry a live OAuth attachment. Shared by
+ * `hasOAuthAttachment` (type guard) and `#resolveAttachmentAccessToken` so
+ * the intersection shape is defined once.
+ */
+type AttachedCctSlot = CctSlot & { oauthAttachment: OAuthAttachment };
+
 /** Resolve ${VAR_NAME} references from process.env */
 function resolveEnvRef(value: string): string {
   const match = value.match(/^\$\{(\w+)\}$/);
@@ -223,7 +238,7 @@ function resolveEnvRef(value: string): string {
  * `legacy-attachment` intentionally does NOT qualify — it has no setupToken
  * fallback, so an unhealthy attachment disables dispatch too.
  */
-function hasDispatchIndependentOfAttachment(slot: AuthKey | undefined): boolean {
+function hasDispatchIndependentOfAttachment(slot: AuthKey | undefined): slot is CctSlotWithSetup {
   return slot !== undefined && isCctWithSetup(slot) && slot.setupToken.length > 0;
 }
 
@@ -284,7 +299,7 @@ function resolveActiveTokenValue(slot: AuthKey): string {
  * can refresh? Used to short-circuit the refresh flow for api_key slots
  * and setup-only slots that have not yet been attached.
  */
-function hasOAuthAttachment(slot: AuthKey): slot is CctSlot & { oauthAttachment: OAuthAttachment } {
+function hasOAuthAttachment(slot: AuthKey): slot is AttachedCctSlot {
   return slot.kind === 'cct' && slot.oauthAttachment !== undefined;
 }
 
@@ -1159,7 +1174,7 @@ export class TokenManager {
    *     and for `cct` without `oauthAttachment`; otherwise near-expiry
    *     refresh + `oauthAttachment.accessToken`.
    */
-  async getValidAccessToken(keyId: string, purpose: 'dispatch' | 'oauth-api'): Promise<string> {
+  async getValidAccessToken(keyId: string, purpose: TokenPurpose): Promise<string> {
     const snap = await this.store.load();
     const slot = snap.registry.slots.find((s) => s.keyId === keyId);
     if (!slot) throw new Error(`getValidAccessToken: unknown keyId ${keyId}`);
@@ -1177,7 +1192,7 @@ export class TokenManager {
   }
 
   /** Return the attachment's access token, refreshing if it's near expiry. */
-  async #resolveAttachmentAccessToken(slot: CctSlot & { oauthAttachment: OAuthAttachment }): Promise<string> {
+  async #resolveAttachmentAccessToken(slot: AttachedCctSlot): Promise<string> {
     if (!needsAttachmentRefresh(slot.oauthAttachment, Date.now())) {
       return slot.oauthAttachment.accessToken;
     }
@@ -1570,7 +1585,8 @@ export class TokenManager {
     }
 
     // Attachment detached between the upstream `hasOAuthAttachment` guard and
-    // now — nothing to fetch.
+    // now — nothing to fetch. Log so the transition is visible; no failure
+    // backoff yet because no upstream failure was observed on this path.
     let accessToken: string | null;
     try {
       accessToken = await this.#getOAuthApiAccessTokenOrNull(keyId);
@@ -1578,7 +1594,10 @@ export class TokenManager {
       logger.warn('fetchAndStoreUsage: refresh failed pre-fetch', err);
       return null;
     }
-    if (accessToken === null) return null;
+    if (accessToken === null) {
+      logger.debug('fetchAndStoreUsage: attachment detached before fetch', { keyId });
+      return null;
+    }
 
     const doFetch = async (token: string) => fetchUsage(token);
 
@@ -1592,7 +1611,14 @@ export class TokenManager {
           try {
             await this.refreshCredentialsIfNeeded(keyId);
             const fresh = await this.#getOAuthApiAccessTokenOrNull(keyId);
-            if (fresh === null) return null;
+            if (fresh === null) {
+              // Attachment detached between the 401 and the refresh attempt.
+              // The original 401 is still a real failure — apply backoff and
+              // log so we don't hammer the endpoint silently on the next tick.
+              await this.applyUsageFailureBackoff(keyId);
+              logger.warn('fetchAndStoreUsage: 401 retry aborted — attachment detached mid-flight', { keyId });
+              return null;
+            }
             result = await doFetch(fresh);
           } catch (retryErr) {
             await this.applyUsageFailureBackoff(keyId);
