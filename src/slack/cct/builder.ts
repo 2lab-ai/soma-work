@@ -118,6 +118,22 @@ export function formatUsageResetDelta(deltaMs: number): string {
 }
 
 /**
+ * Map remaining cooldown ms → Slack color emoji per option-A spec
+ * (PR #672 follow-up). Boundaries are inclusive on the upper edge:
+ *   ≤ 1h   → yellow
+ *   ≤ 5h   → orange
+ *   ≤ 24h  → purple
+ *   > 24h  → red
+ */
+function cooldownColor(remainingMs: number): string {
+  const HOUR = 3_600_000;
+  if (remainingMs <= HOUR) return ':large_yellow_circle:';
+  if (remainingMs <= 5 * HOUR) return ':large_orange_circle:';
+  if (remainingMs <= 24 * HOUR) return ':large_purple_circle:';
+  return ':red_circle:';
+}
+
+/**
  * Shared progress-bar formatter — used by the CCT card usage panel and the
  * `/cct usage` text output. Keeping the format centralised guarantees both
  * surfaces evolve together.
@@ -305,17 +321,13 @@ export interface CooldownInfo {
 }
 
 /**
- * Compute the highest-priority cooldown trigger for a slot. Priority is
- * 7d util≥1 > 5h util≥1 > manual (state.cooldownUntil in the future).
- *
- * Deliberate choices:
- *   - util≥1 without a `resetsAt > now` constraint. A 7d bucket that has
- *     exhausted still blocks the slot; whether its `resetsAt` has passed
- *     is an upstream-timing artifact we don't second-guess here (the user
- *     wants to see the bucket as "at-limit" regardless).
- *   - remaining time is cap-at-zero so a stale resetsAt renders cleanly.
+ * OAuth-slot cooldown — utilization-first. Priority: 7d > 5h.
+ * Manual `cooldownUntil` is intentionally ignored here because the
+ * Anthropic OAuth profile (utilization snapshot) is the SSOT for OAuth
+ * slots; the SDK 429 → cooldownUntil bookkeeping is redundant under that
+ * regime. Per PR #672 follow-up.
  */
-export function computeCooldown(state: SlotState | undefined, nowMs: number): CooldownInfo {
+export function computeUsageCooldown(state: SlotState | undefined, nowMs: number): CooldownInfo {
   if (!state) return { inCooldown: false, remainingMs: 0, source: null };
   const sevenDay = state.usage?.sevenDay;
   if (sevenDay && sevenDay.utilization >= 1) {
@@ -329,49 +341,43 @@ export function computeCooldown(state: SlotState | undefined, nowMs: number): Co
     const remaining = Number.isFinite(resets) ? Math.max(0, resets - nowMs) : 0;
     return { inCooldown: true, remainingMs: remaining, source: 'five_hour' };
   }
-  if (state.cooldownUntil) {
-    const until = new Date(state.cooldownUntil).getTime();
-    if (Number.isFinite(until) && until > nowMs) {
-      return { inCooldown: true, remainingMs: until - nowMs, source: 'manual' };
-    }
+  return { inCooldown: false, remainingMs: 0, source: null };
+}
+
+/**
+ * Non-OAuth slot cooldown — `state.cooldownUntil` only. This is the SDK
+ * 429-derived reset time and is the SSOT for slots that don't have an
+ * OAuth profile (api_key slots and bare setup-only slots).
+ */
+export function computeManualCooldown(state: SlotState | undefined, nowMs: number): CooldownInfo {
+  if (!state?.cooldownUntil) return { inCooldown: false, remainingMs: 0, source: null };
+  const until = new Date(state.cooldownUntil).getTime();
+  if (Number.isFinite(until) && until > nowMs) {
+    return { inCooldown: true, remainingMs: until - nowMs, source: 'manual' };
   }
   return { inCooldown: false, remainingMs: 0, source: null };
 }
 
-/** Human label for a {@link CooldownSource} — kept colocated with the helper. */
-function cooldownSourceLabel(source: CooldownSource): string {
-  switch (source) {
-    case 'seven_day':
-      return '7d';
-    case 'five_hour':
-      return '5h';
-    case 'manual':
-      return 'manual';
-  }
-}
-
-function authStateBadge(state: AuthState, cooldown?: CooldownInfo): string {
-  // Card v2 (#668 follow-up): when a cooldown fires, it supersedes the
-  // healthy badge — the operator cares about the remaining wait, not the
-  // underlying auth state (which is still `healthy`). `refresh_failed` and
-  // `revoked` still win over cooldown because they indicate a broken slot
-  // that won't self-recover.
-  if (cooldown?.inCooldown && state === 'healthy' && cooldown.source) {
-    return `:large_orange_circle: cooldown ${formatUsageResetDelta(cooldown.remainingMs)} via ${cooldownSourceLabel(cooldown.source)} limit`;
-  }
-  switch (state) {
-    case 'healthy':
-      return ':large_green_circle: healthy';
-    case 'refresh_failed':
-      return ':large_yellow_circle: refresh_failed';
-    case 'revoked':
-      return ':red_circle: revoked';
-    default: {
-      // Exhaustiveness — unreachable under the AuthState union.
-      const exhaustive: never = state;
-      return String(exhaustive);
-    }
-  }
+/**
+ * Render the leading status badge per option-A spec (PR #672 follow-up):
+ *   - refresh_failed | revoked       → :black_circle: Unavailable
+ *   - healthy + no cooldown          → :large_green_circle: Healthy
+ *   - healthy + 7d cooldown          → :{color}: 7d Cooldown <dur>
+ *   - healthy + 5h cooldown          → :{color}: 5h Cooldown <dur>
+ *   - healthy + manual cooldown      → :{color}: Cooldown <dur>
+ *   (5h/7d label suppressed for manual since it is not budget-window-tied.)
+ *
+ * Color is determined by `cooldownColor(remainingMs)`.
+ */
+function authStateBadge(authState: AuthState, cooldown: CooldownInfo): string {
+  if (authState !== 'healthy') return ':black_circle: Unavailable';
+  if (!cooldown.inCooldown) return ':large_green_circle: Healthy';
+  const color = cooldownColor(cooldown.remainingMs);
+  let sourceLabel: string;
+  if (cooldown.source === 'seven_day') sourceLabel = '7d Cooldown';
+  else if (cooldown.source === 'five_hour') sourceLabel = '5h Cooldown';
+  else sourceLabel = 'Cooldown';
+  return `${color} ${sourceLabel} ${formatUsageResetDelta(cooldown.remainingMs)}`;
 }
 
 /**
@@ -389,15 +395,18 @@ function formatOAuthExpiryHint(expiresAtMs: number, nowMs: number): string {
 }
 
 /**
- * Build the status/meta line rendered directly under the name. Always
- * includes the authState badge (defaults to `healthy` when state is
- * absent). Optionally appends `active`, OAuth expiry hint, rate-limited
- * timestamp + source, cooldown-until, tombstoned flag, and live lease
- * count — only when the underlying field is truthy.
+ * Build the second-line status segment per option-A spec
+ * (PR #672 follow-up).
  *
- * The line is always emitted for every slot (even bare setup-only slots)
- * so every row carries the `healthy` / `refresh_failed` / `revoked`
- * badge per #653 M2 — no more active-only gating.
+ * OAuth-attached slots: badge + OAuth refresh hint ONLY. The SDK
+ * utilization snapshot is the SSOT — operator-facing noise like
+ * `active`, `rate-limited`, `tombstoned`, `:lock: rotation-off`, and
+ * `leases:` is suppressed for OAuth slots. Operators inspect those via
+ * dashboards / CLI.
+ *
+ * Non-OAuth slots (api_key or bare setup-only): cooldownUntil is the
+ * SSOT, and the historical operator signals stay visible since there is
+ * no other surface for them.
  */
 function buildSlotStatusLine(
   slot: AuthKey,
@@ -407,29 +416,25 @@ function buildSlotStatusLine(
   userTz: string,
 ): string {
   const segments: string[] = [];
-  // Card v2 (#668 follow-up): the cooldown badge subsumes the separate
-  // "cooldown until <ts>" suffix. `rate-limited via <source>` stays distinct
-  // because it is a historical timestamp, not a live countdown.
-  const cooldown = computeCooldown(state, nowMs);
-  segments.push(authStateBadge(state?.authState ?? 'healthy', cooldown));
-  if (isActive) segments.push('active');
-  // `:lock: rotation-off` — operator-opt-out flag (#668 follow-up). Always
-  // surfaces, even on healthy slots, so the parked status is obvious at
-  // a glance.
-  if (slot.disableRotation) segments.push(':lock: rotation-off');
-  // OAuth expiry — only for CCT slots that carry an attachment. `api_key`
-  // and bare setup slots have no OAuth to refresh so they're omitted.
+
   if (isCctSlot(slot) && slot.oauthAttachment !== undefined) {
+    const cooldown = computeUsageCooldown(state, nowMs);
+    segments.push(authStateBadge(state?.authState ?? 'healthy', cooldown));
     const hint = formatOAuthExpiryHint(slot.oauthAttachment.expiresAtMs, nowMs);
     if (hint) segments.push(hint);
+  } else {
+    const cooldown = computeManualCooldown(state, nowMs);
+    segments.push(authStateBadge(state?.authState ?? 'healthy', cooldown));
+    if (isActive) segments.push('active');
+    if (slot.disableRotation) segments.push(':lock: rotation-off');
+    if (state?.rateLimitedAt) {
+      const ts = formatRateLimitedAt(state.rateLimitedAt, userTz, nowMs);
+      const source = state.rateLimitSource ? ` via ${state.rateLimitSource}` : '';
+      segments.push(`rate-limited ${ts}${source}`);
+    }
+    if (state?.tombstoned) segments.push(':wastebasket: tombstoned (drain in progress)');
+    if (state && state.activeLeases.length > 0) segments.push(`leases: ${state.activeLeases.length}`);
   }
-  if (state?.rateLimitedAt) {
-    const ts = formatRateLimitedAt(state.rateLimitedAt, userTz, nowMs);
-    const source = state.rateLimitSource ? ` via ${state.rateLimitSource}` : '';
-    segments.push(`rate-limited ${ts}${source}`);
-  }
-  if (state?.tombstoned) segments.push(':wastebasket: tombstoned (drain in progress)');
-  if (state && state.activeLeases.length > 0) segments.push(`leases: ${state.activeLeases.length}`);
   return segments.join(' · ');
 }
 
@@ -570,8 +575,8 @@ export function appendStoreReadFailureBanner(blocks: ZBlock[]): void {
  * Card v2 (#668 follow-up): lowered from 48 → 47 to reserve one extra
  * slot for the cct-topic.ts trailer chrome (legacy set-active action row
  * + cancel button + store-read banner) that lands AFTER this helper
- * returns. Without the reservation a 15-slot fleet can tip over the
- * hard cap when the budget footer and trailers all land together.
+ * returns. Kept at 47 in the PR #672 follow-up after the budget footer
+ * was removed, so the trailer reservation is unchanged.
  */
 const SLACK_BLOCK_SOFT_CAP = 47;
 
@@ -606,82 +611,7 @@ function trimBlocksToSlackCap(blocks: ZBlock[]): ZBlock[] {
       blocks.splice(i, 1);
     }
   }
-  if (blocks.length <= SLACK_BLOCK_SOFT_CAP) return blocks;
-  // Phase 3 (card v2): strip the budget footer. It is a convenience
-  // summary — if the card is already pressed against the cap, the
-  // per-slot rows carry the raw percentages.
-  for (let i = blocks.length - 1; i >= 0; i--) {
-    if (blocks.length <= SLACK_BLOCK_SOFT_CAP) break;
-    const b = blocks[i] as { type?: string; block_id?: string };
-    if (b.block_id === CCT_CARD_BLOCK_ID_PREFIX.budgetFooter) {
-      blocks.splice(i, 1);
-    }
-  }
   return blocks;
-}
-
-/**
- * Card v2 (#668 follow-up) — "Soonest expiring 7d budget" footer.
- *
- * Scans every eligible CCT slot's 7d usage window and surfaces the three
- * whose `resetsAt` is closest to `now`. Each entry shows the slot name,
- * remaining percentage, and TTL until the window resets. The intent is
- * to let operators see at a glance which budgets are about to roll over
- * so they can pace dispatches accordingly.
- *
- * Eligibility:
- *   - kind === 'cct' (api_key has no usage surface)
- *   - oauthAttachment present
- *   - state.usage.sevenDay.resetsAt parseable
- *   - NOT tombstoned / revoked (both of these slots are going away;
- *     their remaining budget is not useful to surface)
- *
- * Returns `null` when fewer than 2 eligible slots exist — a single-slot
- * fleet doesn't benefit from a "soonest" ranking.
- */
-export function buildBudgetFooterBlock(
-  slots: AuthKey[],
-  states: Record<string, SlotState>,
-  nowMs: number,
-): ZBlock | null {
-  interface Entry {
-    name: string;
-    remainingPct: number;
-    ttlMs: number;
-  }
-  const entries: Entry[] = [];
-  for (const slot of slots) {
-    if (slot.kind !== 'cct') continue;
-    if (slot.oauthAttachment === undefined) continue;
-    const state = states[slot.keyId];
-    if (!state) continue;
-    if (state.tombstoned) continue;
-    if (state.authState === 'revoked') continue;
-    const sevenDay = state.usage?.sevenDay;
-    if (!sevenDay) continue;
-    const resetsMs = new Date(sevenDay.resetsAt).getTime();
-    if (!Number.isFinite(resetsMs)) continue;
-    const util = Math.min(1, Math.max(0, sevenDay.utilization));
-    entries.push({
-      name: slot.name,
-      remainingPct: Math.round((1 - util) * 100),
-      ttlMs: Math.max(0, resetsMs - nowMs),
-    });
-  }
-  if (entries.length < 2) return null;
-  entries.sort((a, b) => a.ttlMs - b.ttlMs);
-  const topThree = entries.slice(0, 3);
-  const parts = topThree.map(
-    (e) => `\`${escapeMrkdwn(e.name)}\` ${e.remainingPct}% · ${formatUsageResetDelta(e.ttlMs)}`,
-  );
-  return {
-    type: 'section',
-    block_id: CCT_CARD_BLOCK_ID_PREFIX.budgetFooter,
-    text: {
-      type: 'mrkdwn',
-      text: `:hourglass_flowing_sand: *Soonest expiring 7d budget:* ${parts.join(' · ')}`,
-    },
-  };
 }
 
 /**
@@ -711,10 +641,6 @@ export function buildCctCardBlocks(input: CctCardInput): ZBlock[] {
       for (const b of rowBlocks) blocks.push(b);
       blocks.push({ type: 'divider' });
     }
-    // Card v2 (#668 follow-up): budget footer between the per-slot rows
-    // and the card-level action row. Returns null for single-slot fleets.
-    const footer = buildBudgetFooterBlock(input.slots, input.states, nowMs);
-    if (footer) blocks.push(footer);
   }
 
   // Card-level action row: Next rotate / Add / Refresh All OAuth Tokens. Per-slot
