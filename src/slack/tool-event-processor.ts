@@ -3,6 +3,7 @@
  * Extracted from slack-handler.ts tool processing logic (Phase 4.2)
  */
 
+import { config } from '../config';
 import { Logger } from '../logger';
 import { type McpCallTracker, mcpCallTracker } from '../mcp-call-tracker';
 import type { AssistantStatusManager } from './assistant-status-manager';
@@ -23,12 +24,33 @@ export interface ToolEventContext {
   say: SayFunction;
   /** Verbosity bitmask — controls result display behavior */
   logVerbosity?: number;
+  /**
+   * Turn id minted by StreamExecutor for this request. Optional for
+   * backward compatibility — if absent the PHASE>=2 B1 absorb path
+   * falls through to legacy `say`. See stream-executor.ts:355 for the
+   * format (`${sessionKey}:${ms}:${uuid}`).
+   */
+  turnId?: string;
 }
 
 /**
  * Slack say function type
  */
 export type SayFunction = (message: { text: string; thread_ts: string }) => Promise<{ ts?: string }>;
+
+/**
+ * Callback used to absorb a formatted tool result into the B1 stream at
+ * PHASE>=2. Installed by `slack-handler.ts` as a closure over
+ * `threadPanel.appendText`. Returns `true` when Slack accepted the chunk;
+ * any `false` (closing turn, closed stream, Slack error) signals the
+ * caller to fall back to legacy `context.say` so tool output is never
+ * silently dropped.
+ *
+ * Caller-side (not TurnSurface) owns the presentation separator
+ * (currently `\n\n`), so this sink stays a generic B1 write primitive
+ * and keeps TurnSurface unaware of "tool result" semantics.
+ */
+export type ToolResultSink = (turnId: string, markdown: string) => Promise<boolean>;
 
 /**
  * Tool use event from stream
@@ -66,6 +88,12 @@ export class ToolEventProcessor {
   private subagentCallIds: Set<string> = new Set();
   /** Callback for updating compact tool call messages with duration */
   private onCompactDurationUpdate?: (toolUseId: string, duration: number | null, channel: string) => Promise<void>;
+  /**
+   * PHASE>=2 sink — absorbs formatted tool results into the B1 stream.
+   * Null by default; installed by slack-handler after construction. See
+   * `ToolResultSink` for the fallback contract.
+   */
+  private toolResultSink: ToolResultSink | null = null;
 
   constructor(
     toolTracker: ToolTracker,
@@ -93,6 +121,15 @@ export class ToolEventProcessor {
    */
   setCompactDurationCallback(cb: (toolUseId: string, duration: number | null, channel: string) => Promise<void>): void {
     this.onCompactDurationUpdate = cb;
+  }
+
+  /**
+   * Install the PHASE>=2 tool-result sink. See `ToolResultSink` for the
+   * contract. Passing no callback (or `null`) clears the sink — the
+   * processor will then always use the legacy `context.say` path.
+   */
+  setToolResultSink(sink: ToolResultSink | null): void {
+    this.toolResultSink = sink;
   }
 
   /**
@@ -252,7 +289,15 @@ export class ToolEventProcessor {
   }
 
   /**
-   * Format and send tool result message (skipped in compact mode)
+   * Format and send tool result message (skipped in compact mode).
+   *
+   * PHASE>=2 contract (Issue #664): when a `toolResultSink` is installed
+   * and the context carries a `turnId`, the formatted result is absorbed
+   * into the B1 stream instead of posted as a separate message. If the
+   * sink returns `false` (turn closing, stream closed, Slack error, etc.)
+   * we fall through to the legacy `context.say` path — tool output is
+   * never silently dropped. PHASE<2 always uses the legacy path, so
+   * pre-rollout behavior is unchanged.
    */
   private async sendToolResult(
     toolResult: ToolResultEvent,
@@ -271,13 +316,27 @@ export class ToolEventProcessor {
     };
 
     const formatted = ToolFormatter.formatToolResult(result, duration, this.mcpCallTracker);
+    if (!formatted) return;
 
-    if (formatted) {
-      await context.say({
-        text: formatted,
-        thread_ts: context.threadTs,
+    // PHASE>=2: try to absorb verbose output into the B1 stream so the
+    // turn shows a single consolidated body instead of separate tool
+    // bubbles. Read the phase per-call so a mid-test env flip takes
+    // effect on the next event, matching TurnSurface.phase()'s behavior.
+    if (config.ui.fiveBlockPhase >= 2 && this.toolResultSink && context.turnId) {
+      const absorbed = await this.toolResultSink(context.turnId, formatted);
+      if (absorbed) return;
+      // Fallthrough: sink refused (no open stream, closing, Slack error).
+      // Prefer a legacy bubble over a silent drop.
+      this.logger.debug('tool-result sink returned false — falling back to legacy say', {
+        turnId: context.turnId,
+        toolUseId: toolResult.toolUseId,
       });
     }
+
+    await context.say({
+      text: formatted,
+      thread_ts: context.threadTs,
+    });
   }
 
   /**
