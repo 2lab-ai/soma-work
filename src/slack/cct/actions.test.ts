@@ -963,6 +963,9 @@ describe('REFRESH_BANNERS literal-lock (regression guard)', () => {
   it('outerCatch banner text is locked', () => {
     expect(REFRESH_BANNERS.outerCatch).toBe(':warning: Refresh failed. Please try again.');
   });
+  it('updateFailed banner text is locked', () => {
+    expect(REFRESH_BANNERS.updateFailed).toBe(':warning: 카드 갱신 실패. `/cct`를 다시 실행해주세요.');
+  });
 });
 
 // ────────────────────────────────────────────────────────────────────
@@ -1013,7 +1016,7 @@ describe('refresh_card action handler (card v2 follow-up)', () => {
     };
   }
 
-  it('fans out fetchAndStoreUsage(force:true) for each attached cct slot; re-posts card on success', async () => {
+  it('fans out fetchAndStoreUsage(force:true) for each attached cct slot; chat.update in-place on success (message surface)', async () => {
     const { app, actionHandlers } = makeApp();
     const fetchAndStoreUsage = vi.fn(async (keyId: string) => ({
       fetchedAt: new Date().toISOString(),
@@ -1028,7 +1031,9 @@ describe('refresh_card action handler (card v2 follow-up)', () => {
     } as any;
     const adminUtils = await import('../../admin-utils');
     const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(true);
+    const update = vi.fn(async (_arg: any) => undefined);
     const postEphemeral = vi.fn(async (_arg: any) => undefined);
+    const respond = vi.fn(async (_arg: any) => undefined);
     try {
       registerCctActions(app, tm);
       const h = actionHandlers.get(CCT_ACTION_IDS.refresh_card);
@@ -1037,18 +1042,26 @@ describe('refresh_card action handler (card v2 follow-up)', () => {
         ack: vi.fn(async () => undefined),
         body: {
           user: { id: 'admin' },
-          container: { channel_id: 'C1' },
+          container: { type: 'message', channel_id: 'C1', message_ts: 'ts1' },
           actions: [{ value: 'refresh_card' }],
         },
-        client: { chat: { postEphemeral } },
+        client: { chat: { update, postEphemeral } },
+        respond,
       });
       expect(fetchAndStoreUsage).toHaveBeenCalledTimes(2);
       expect(fetchAndStoreUsage).toHaveBeenCalledWith('slot-A', { force: true });
       expect(fetchAndStoreUsage).toHaveBeenCalledWith('slot-B', { force: true });
-      // Card repost path carries `blocks`, not just `text`.
-      expect(postEphemeral).toHaveBeenCalledTimes(1);
-      const call = postEphemeral.mock.calls[0]?.[0] as any;
-      expect(Array.isArray(call.blocks)).toBe(true);
+      // Card update path uses chat.update on the originating message.
+      expect(update).toHaveBeenCalledTimes(1);
+      expect(update).toHaveBeenCalledWith({
+        channel: 'C1',
+        ts: 'ts1',
+        text: ':key: CCT status',
+        blocks: expect.any(Array),
+      });
+      // No new ephemeral card should be stacked on success.
+      expect(postEphemeral).not.toHaveBeenCalled();
+      expect(respond).not.toHaveBeenCalled();
       // This handler MUST NOT call refreshAllAttachedOAuthTokens.
       expect(refreshAllAttachedOAuthTokens).not.toHaveBeenCalled();
     } finally {
@@ -1056,13 +1069,15 @@ describe('refresh_card action handler (card v2 follow-up)', () => {
     }
   });
 
-  it('when every attached slot returns null, post ephemeral cardNull banner instead of re-posting the card', async () => {
+  it('when every attached slot returns null, post ephemeral cardNull banner instead of updating the card', async () => {
     const { app, actionHandlers } = makeApp();
     const fetchAndStoreUsage = vi.fn(async () => null);
     const tm = { ...tmWithAttachedSlots(['slot-A', 'slot-B']), fetchAndStoreUsage } as any;
     const adminUtils = await import('../../admin-utils');
     const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(true);
+    const update = vi.fn(async (_arg: any) => undefined);
     const postEphemeral = vi.fn(async (_arg: any) => undefined);
+    const respond = vi.fn(async (_arg: any) => undefined);
     try {
       registerCctActions(app, tm);
       const h = actionHandlers.get(CCT_ACTION_IDS.refresh_card);
@@ -1070,12 +1085,14 @@ describe('refresh_card action handler (card v2 follow-up)', () => {
         ack: vi.fn(async () => undefined),
         body: {
           user: { id: 'admin' },
-          container: { channel_id: 'C1' },
+          container: { type: 'message', channel_id: 'C1', message_ts: 'ts1' },
           actions: [{ value: 'refresh_card' }],
         },
-        client: { chat: { postEphemeral } },
+        client: { chat: { update, postEphemeral } },
+        respond,
       });
       expect(fetchAndStoreUsage).toHaveBeenCalledTimes(2);
+      expect(update).not.toHaveBeenCalled();
       expect(postEphemeral).toHaveBeenCalledTimes(1);
       const call = postEphemeral.mock.calls[0]?.[0] as any;
       expect(call.text).toBe(REFRESH_BANNERS.cardNull);
@@ -1093,7 +1110,9 @@ describe('refresh_card action handler (card v2 follow-up)', () => {
     const tm = { ...tmWithAttachedSlots(['slot-A']), fetchAndStoreUsage } as any;
     const adminUtils = await import('../../admin-utils');
     const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(true);
+    const update = vi.fn(async (_arg: any) => undefined);
     const postEphemeral = vi.fn(async (_arg: any) => undefined);
+    const respond = vi.fn(async (_arg: any) => undefined);
     try {
       registerCctActions(app, tm);
       const h = actionHandlers.get(CCT_ACTION_IDS.refresh_card);
@@ -1101,11 +1120,13 @@ describe('refresh_card action handler (card v2 follow-up)', () => {
         ack: vi.fn(async () => undefined),
         body: {
           user: { id: 'admin' },
-          container: { channel_id: 'C1' },
+          container: { type: 'message', channel_id: 'C1', message_ts: 'ts1' },
           actions: [{ value: 'refresh_card' }],
         },
-        client: { chat: { postEphemeral } },
+        client: { chat: { update, postEphemeral } },
+        respond,
       });
+      expect(update).not.toHaveBeenCalled();
       expect(postEphemeral).toHaveBeenCalledTimes(1);
       const call = postEphemeral.mock.calls[0]?.[0] as any;
       // Per-slot throws are caught by Promise.allSettled → freshCount=0 →
@@ -1127,7 +1148,9 @@ describe('refresh_card action handler (card v2 follow-up)', () => {
     } as any;
     const adminUtils = await import('../../admin-utils');
     const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(true);
+    const update = vi.fn(async (_arg: any) => undefined);
     const postEphemeral = vi.fn(async (_arg: any) => undefined);
+    const respond = vi.fn(async (_arg: any) => undefined);
     try {
       registerCctActions(app, tm);
       const h = actionHandlers.get(CCT_ACTION_IDS.refresh_card);
@@ -1135,11 +1158,13 @@ describe('refresh_card action handler (card v2 follow-up)', () => {
         ack: vi.fn(async () => undefined),
         body: {
           user: { id: 'admin' },
-          container: { channel_id: 'C1' },
+          container: { type: 'message', channel_id: 'C1', message_ts: 'ts1' },
           actions: [{ value: 'refresh_card' }],
         },
-        client: { chat: { postEphemeral } },
+        client: { chat: { update, postEphemeral } },
+        respond,
       });
+      expect(update).not.toHaveBeenCalled();
       expect(postEphemeral).toHaveBeenCalledTimes(1);
       const call = postEphemeral.mock.calls[0]?.[0] as any;
       expect(call.text).toBe(REFRESH_BANNERS.outerCatch);
@@ -1148,13 +1173,15 @@ describe('refresh_card action handler (card v2 follow-up)', () => {
     }
   });
 
-  it('empty attached-slot list re-posts the card normally (freshCount=0 with keyIds=0 is not a failure)', async () => {
+  it('empty attached-slot list updates the card in-place (freshCount=0 with keyIds=0 is not a failure)', async () => {
     const { app, actionHandlers } = makeApp();
     const fetchAndStoreUsage = vi.fn();
     const tm = { ...tmWithAttachedSlots([]), fetchAndStoreUsage } as any;
     const adminUtils = await import('../../admin-utils');
     const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(true);
+    const update = vi.fn(async (_arg: any) => undefined);
     const postEphemeral = vi.fn(async (_arg: any) => undefined);
+    const respond = vi.fn(async (_arg: any) => undefined);
     try {
       registerCctActions(app, tm);
       const h = actionHandlers.get(CCT_ACTION_IDS.refresh_card);
@@ -1162,15 +1189,19 @@ describe('refresh_card action handler (card v2 follow-up)', () => {
         ack: vi.fn(async () => undefined),
         body: {
           user: { id: 'admin' },
-          container: { channel_id: 'C1' },
+          container: { type: 'message', channel_id: 'C1', message_ts: 'ts1' },
           actions: [{ value: 'refresh_card' }],
         },
-        client: { chat: { postEphemeral } },
+        client: { chat: { update, postEphemeral } },
+        respond,
       });
       expect(fetchAndStoreUsage).not.toHaveBeenCalled();
-      expect(postEphemeral).toHaveBeenCalledTimes(1);
-      const call = postEphemeral.mock.calls[0]?.[0] as any;
+      expect(update).toHaveBeenCalledTimes(1);
+      const call = update.mock.calls[0]?.[0] as any;
+      expect(call.channel).toBe('C1');
+      expect(call.ts).toBe('ts1');
       expect(Array.isArray(call.blocks)).toBe(true);
+      expect(postEphemeral).not.toHaveBeenCalled();
     } finally {
       spy.mockRestore();
     }
@@ -1191,14 +1222,171 @@ describe('refresh_card action handler (card v2 follow-up)', () => {
         ack,
         body: {
           user: { id: 'random' },
-          container: { channel_id: 'C1' },
+          container: { type: 'message', channel_id: 'C1', message_ts: 'ts1' },
           actions: [{ value: 'refresh_card' }],
         },
-        client: { chat: { postEphemeral: vi.fn(async () => undefined) } },
+        client: {
+          chat: { update: vi.fn(async () => undefined), postEphemeral: vi.fn(async () => undefined) },
+        },
+        respond: vi.fn(async () => undefined),
       });
       expect(ack).toHaveBeenCalled();
       expect(fetchAndStoreUsage).not.toHaveBeenCalled();
       expect(getSnapshot).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('refreshes ephemeral surface via response_url replace_original', async () => {
+    const { app, actionHandlers } = makeApp();
+    const fetchAndStoreUsage = vi.fn(async (keyId: string) => ({
+      fetchedAt: new Date().toISOString(),
+      fiveHour: { utilization: 0.1, resetsAt: new Date().toISOString() },
+      _keyId: keyId,
+    }));
+    const tm = { ...tmWithAttachedSlots(['slot-A']), fetchAndStoreUsage } as any;
+    const adminUtils = await import('../../admin-utils');
+    const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(true);
+    const update = vi.fn(async (_arg: any) => undefined);
+    const postEphemeral = vi.fn(async (_arg: any) => undefined);
+    const respond = vi.fn(async (_arg: any) => undefined);
+    try {
+      registerCctActions(app, tm);
+      const h = actionHandlers.get(CCT_ACTION_IDS.refresh_card);
+      await h?.({
+        ack: vi.fn(async () => undefined),
+        body: {
+          user: { id: 'admin' },
+          container: { type: 'ephemeral', channel_id: 'C1' },
+          actions: [{ value: 'refresh_card' }],
+        },
+        client: { chat: { update, postEphemeral } },
+        respond,
+      });
+      expect(respond).toHaveBeenCalledTimes(1);
+      expect(respond).toHaveBeenCalledWith({
+        response_type: 'ephemeral',
+        replace_original: true,
+        text: ':key: CCT status',
+        blocks: expect.any(Array),
+      });
+      // Ephemeral surface MUST NOT use chat.update (no message_ts available).
+      expect(update).not.toHaveBeenCalled();
+      // No fallback banner on success.
+      expect(postEphemeral).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('falls back to updateFailed banner when container is missing entirely', async () => {
+    const { app, actionHandlers } = makeApp();
+    const fetchAndStoreUsage = vi.fn(async (keyId: string) => ({
+      fetchedAt: new Date().toISOString(),
+      fiveHour: { utilization: 0.1, resetsAt: new Date().toISOString() },
+      _keyId: keyId,
+    }));
+    const tm = { ...tmWithAttachedSlots(['slot-A']), fetchAndStoreUsage } as any;
+    const adminUtils = await import('../../admin-utils');
+    const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(true);
+    const update = vi.fn(async (_arg: any) => undefined);
+    const postEphemeral = vi.fn(async (_arg: any) => undefined);
+    const respond = vi.fn(async (_arg: any) => undefined);
+    try {
+      registerCctActions(app, tm);
+      const h = actionHandlers.get(CCT_ACTION_IDS.refresh_card);
+      await h?.({
+        ack: vi.fn(async () => undefined),
+        body: {
+          user: { id: 'admin' },
+          // Channel-only fallback so the banner has somewhere to land.
+          channel: { id: 'C1' },
+          actions: [{ value: 'refresh_card' }],
+        },
+        client: { chat: { update, postEphemeral } },
+        respond,
+      });
+      expect(update).not.toHaveBeenCalled();
+      expect(respond).not.toHaveBeenCalled();
+      expect(postEphemeral).toHaveBeenCalledTimes(1);
+      const call = postEphemeral.mock.calls[0]?.[0] as any;
+      expect(call.text).toBe(REFRESH_BANNERS.updateFailed);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('falls back to updateFailed banner when chat.update rejects', async () => {
+    const { app, actionHandlers } = makeApp();
+    const fetchAndStoreUsage = vi.fn(async (keyId: string) => ({
+      fetchedAt: new Date().toISOString(),
+      fiveHour: { utilization: 0.1, resetsAt: new Date().toISOString() },
+      _keyId: keyId,
+    }));
+    const tm = { ...tmWithAttachedSlots(['slot-A']), fetchAndStoreUsage } as any;
+    const adminUtils = await import('../../admin-utils');
+    const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(true);
+    const update = vi.fn(async () => {
+      throw new Error('msg too old');
+    });
+    const postEphemeral = vi.fn(async (_arg: any) => undefined);
+    const respond = vi.fn(async (_arg: any) => undefined);
+    try {
+      registerCctActions(app, tm);
+      const h = actionHandlers.get(CCT_ACTION_IDS.refresh_card);
+      await h?.({
+        ack: vi.fn(async () => undefined),
+        body: {
+          user: { id: 'admin' },
+          container: { type: 'message', channel_id: 'C1', message_ts: 'ts1' },
+          actions: [{ value: 'refresh_card' }],
+        },
+        client: { chat: { update, postEphemeral } },
+        respond,
+      });
+      expect(update).toHaveBeenCalledTimes(1);
+      expect(postEphemeral).toHaveBeenCalledTimes(1);
+      const call = postEphemeral.mock.calls[0]?.[0] as any;
+      expect(call.text).toBe(REFRESH_BANNERS.updateFailed);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('falls back to updateFailed banner when respond rejects on ephemeral surface', async () => {
+    const { app, actionHandlers } = makeApp();
+    const fetchAndStoreUsage = vi.fn(async (keyId: string) => ({
+      fetchedAt: new Date().toISOString(),
+      fiveHour: { utilization: 0.1, resetsAt: new Date().toISOString() },
+      _keyId: keyId,
+    }));
+    const tm = { ...tmWithAttachedSlots(['slot-A']), fetchAndStoreUsage } as any;
+    const adminUtils = await import('../../admin-utils');
+    const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(true);
+    const update = vi.fn(async (_arg: any) => undefined);
+    const postEphemeral = vi.fn(async (_arg: any) => undefined);
+    const respond = vi.fn(async () => {
+      throw new Error('response_url expired');
+    });
+    try {
+      registerCctActions(app, tm);
+      const h = actionHandlers.get(CCT_ACTION_IDS.refresh_card);
+      await h?.({
+        ack: vi.fn(async () => undefined),
+        body: {
+          user: { id: 'admin' },
+          container: { type: 'ephemeral', channel_id: 'C1' },
+          actions: [{ value: 'refresh_card' }],
+        },
+        client: { chat: { update, postEphemeral } },
+        respond,
+      });
+      expect(respond).toHaveBeenCalledTimes(1);
+      expect(update).not.toHaveBeenCalled();
+      expect(postEphemeral).toHaveBeenCalledTimes(1);
+      const call = postEphemeral.mock.calls[0]?.[0] as any;
+      expect(call.text).toBe(REFRESH_BANNERS.updateFailed);
     } finally {
       spy.mockRestore();
     }
