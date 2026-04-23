@@ -512,13 +512,7 @@ export class ChoiceActionHandler {
     if (canUseP3 && session && channel && pc && pendingForm.messageTs) {
       // Slack update: mark ONLY this chunk's message done.
       try {
-        await this.ctx.slackApi.updateMessage(
-          channel,
-          pendingForm.messageTs,
-          '✅ 모든 선택 완료',
-          completedBlocks,
-          [],
-        );
+        await this.ctx.slackApi.updateMessage(channel, pendingForm.messageTs, '✅ 모든 선택 완료', completedBlocks, []);
       } catch (err) {
         this.logger.warn('P3 per-chunk resolve: updateMessage failed', {
           sessionKey: pendingForm.sessionKey,

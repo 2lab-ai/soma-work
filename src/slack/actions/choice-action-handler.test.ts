@@ -987,9 +987,7 @@ describe('ChoiceActionHandler — P3 (PHASE>=3) classifyClick', () => {
       await handler.completeMultiChoiceForm(formStore.get('form-A'), 'U1', 'C1', 'thread-root', 'ts-A');
 
       // Only chunk-A's Slack message updated (chunk-B ts NOT touched).
-      const updateCalls = slackApi.updateMessage.mock.calls.filter(
-        (c: any[]) => c[1] === 'ts-A' || c[1] === 'ts-B',
-      );
+      const updateCalls = slackApi.updateMessage.mock.calls.filter((c: any[]) => c[1] === 'ts-A' || c[1] === 'ts-B');
       expect(updateCalls.map((c: any[]) => c[1]).sort()).toEqual(['ts-A']);
 
       // pendingChoice shrinks (form-A removed, form-B survives).
