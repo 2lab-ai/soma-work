@@ -1,4 +1,5 @@
 import type { ClaudeHandler } from '../../claude-handler';
+import { config } from '../../config';
 import { Logger } from '../../logger';
 import type { UserChoices } from '../../types';
 import { ChoiceMessageBuilder } from '../choice-message-builder';
@@ -12,6 +13,9 @@ import type { MessageHandler, PendingChoiceFormData, SayFn } from './types';
 /** Sentinel choiceId for custom text input (직접입력) */
 const CUSTOM_INPUT_CHOICE_ID = '직접입력';
 
+/** Stale-click marker shown on the button message after a superseded click. */
+const STALE_CLICK_TEXT = '⏱️ _이 질문은 더 이상 유효하지 않습니다._';
+
 interface ChoiceActionContext {
   slackApi: SlackApiHelper;
   claudeHandler: ClaudeHandler;
@@ -19,6 +23,14 @@ interface ChoiceActionContext {
   threadPanel?: ThreadPanel;
   completionMessageTracker?: CompletionMessageTracker;
 }
+
+/**
+ * P3 (PHASE>=3) classifier result — `legacy` = run pre-P3 body unchanged,
+ * `p3` = use ThreadPanel resolve + synchronized state clear, `stale` = click
+ * is superseded by a newer pending question, mark the clicked message and
+ * drop the input.
+ */
+type ClickBranch = 'legacy' | 'p3' | 'stale';
 
 /**
  * 사용자 선택 액션 핸들러
@@ -35,7 +47,7 @@ export class ChoiceActionHandler {
     try {
       const action = body.actions[0];
       const valueData = JSON.parse(action.value);
-      const { sessionKey, choiceId, label, question } = valueData;
+      const { sessionKey, choiceId, label, question, turnId: payloadTurnId } = valueData;
       const userId = body.user?.id;
       const session = this.ctx.claudeHandler.getSessionByKey(sessionKey);
       const channel = body.channel?.id || session?.channelId;
@@ -45,6 +57,61 @@ export class ChoiceActionHandler {
       const completionMessageTs = this.resolveChoiceMessageTs(session, messageTs);
 
       this.logger.info('User choice selected', { sessionKey, choiceId, label, userId });
+
+      const branch = this.classifyClick({ sessionKey, payloadTurnId, messageTs });
+
+      if (branch === 'stale') {
+        this.logger.info('User choice click classified as stale — marking and returning', {
+          sessionKey,
+          payloadTurnId,
+          messageTs,
+        });
+        if (channel && messageTs) {
+          await this.markClickAsStale(channel, messageTs, sessionKey);
+        }
+        return;
+      }
+
+      if (branch === 'p3' && session && channel) {
+        const completedText = `✅ *${question}*\n선택: *${choiceId}. ${label}*`;
+        const completedBlocks = [
+          {
+            type: 'section',
+            text: { type: 'mrkdwn', text: completedText },
+          },
+        ];
+        const resolved = await this.ctx.threadPanel
+          ?.resolveChoice(session, sessionKey, channel, completedText, completedBlocks)
+          .catch((err) => {
+            this.logger.warn('resolveChoice threw — falling back to legacy path', {
+              sessionKey,
+              error: (err as Error)?.message ?? String(err),
+            });
+            return false;
+          });
+        if (resolved) {
+          await this.afterP3Resolve(session, sessionKey, channel);
+          try {
+            const say = this.createSayFn(channel);
+            await this.ctx.messageHandler(
+              { user: userId, channel, thread_ts: threadTs, ts: messageTs, text: choiceId },
+              say,
+            );
+          } catch (handlerError) {
+            this.logger.error('Choice handler failed (P3), rolling back to waiting', {
+              sessionKey,
+              error: handlerError,
+            });
+            try {
+              this.ctx.claudeHandler.setActivityStateByKey(sessionKey, 'waiting');
+            } catch (rollbackError) {
+              this.logger.error('Failed to rollback activity state', { sessionKey, rollbackError });
+            }
+          }
+          return;
+        }
+        // resolve returned false (unexpected under PHASE>=3 + matching pc) → fall through to legacy.
+      }
 
       // 선택 메시지 업데이트 (모든 동기화 대상에 대해)
       // Immediately replace buttons to prevent double-click on other options
@@ -86,6 +153,17 @@ export class ChoiceActionHandler {
         // Clear pending question from session (dashboard sync)
         if (session.actionPanel) {
           session.actionPanel.pendingQuestion = undefined;
+        }
+        // P3 parity: pendingQuestion now persists (see stream-executor) so it
+        // must also be broadcast+persisted when cleared — otherwise a dashboard
+        // restart restores a stale pending question.
+        try {
+          this.ctx.claudeHandler.getSessionRegistry?.()?.persistAndBroadcast?.(sessionKey);
+        } catch (err) {
+          this.logger.debug('handleUserChoice: persistAndBroadcast failed', {
+            sessionKey,
+            error: (err as Error)?.message ?? String(err),
+          });
         }
         // Delete tracked completion messages on choice selection (S8)
         if (channel) {
@@ -163,6 +241,26 @@ export class ChoiceActionHandler {
         return;
       }
 
+      // P3 (PHASE>=3) stale-click check. For multi, payload turnId comes from
+      // the PendingFormStore entry (button values don't carry turnId for
+      // multi — turnId lives on the form record).
+      const branch = this.classifyClick({
+        sessionKey,
+        payloadTurnId: pendingForm.turnId,
+        formId,
+      });
+      if (branch === 'stale') {
+        this.logger.info('Multi-choice click classified as stale — marking and returning', {
+          sessionKey,
+          formId,
+          questionId,
+        });
+        if (channel && messageTs) {
+          await this.markClickAsStale(channel, messageTs, sessionKey);
+        }
+        return;
+      }
+
       // 선택 저장
       pendingForm.selections[questionId] = { choiceId, label };
 
@@ -232,6 +330,23 @@ export class ChoiceActionHandler {
           userId,
           '❌ 폼을 찾을 수 없습니다. 시간이 만료되었을 수 있습니다.',
         );
+        return;
+      }
+
+      // P3 (PHASE>=3) stale-click guard for the submit button.
+      const branch = this.classifyClick({
+        sessionKey,
+        payloadTurnId: pendingForm.turnId,
+        formId,
+      });
+      if (branch === 'stale') {
+        this.logger.info('Form submit click classified as stale — marking and returning', {
+          sessionKey,
+          formId,
+        });
+        if (channel && messageTs) {
+          await this.markClickAsStale(channel, messageTs, sessionKey);
+        }
         return;
       }
 
@@ -377,20 +492,85 @@ export class ChoiceActionHandler {
     });
     const combinedMessage = responses.join('\n');
 
-    this.formStore.delete(pendingForm.formId);
-
-    const completionMessageTs = pendingForm.messageTs || messageTs;
-
-    // 완료 UI 업데이트 (모든 동기화 대상에 대해)
+    const completedText = `✅ *모든 선택 완료*\n\n${responses.map((r, i) => `${i + 1}. ${r}`).join('\n')}`;
     const completedBlocks = [
       {
         type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: `✅ *모든 선택 완료*\n\n${responses.map((r, i) => `${i + 1}. ${r}`).join('\n')}`,
-        },
+        text: { type: 'mrkdwn', text: completedText },
       },
     ];
+
+    const session = this.ctx.claudeHandler.getSessionByKey(pendingForm.sessionKey);
+    const resolvedThreadTs = this.resolveSessionThreadTs(session, threadTs);
+
+    // P3 (PHASE>=3) — resolve via ThreadPanel.resolveMultiChoice so we update
+    // every chunk in pendingChoice.formIds via their tracked messageTs (not
+    // the ts-union resolver). Only when pendingChoice.kind === 'multi' and
+    // turnId matches this form's turnId (already checked by caller).
+    const pc = session?.actionPanel?.pendingChoice;
+    const canUseP3 =
+      config.ui.fiveBlockPhase >= 3 &&
+      !!session &&
+      !!this.ctx.threadPanel &&
+      !!pc &&
+      pc.kind === 'multi' &&
+      pc.turnId === pendingForm.turnId;
+
+    if (canUseP3 && session && channel) {
+      // Build tsList from pendingChoice.formIds → pendingForm.messageTs via formStore
+      const tsList: string[] = [];
+      for (const fId of pc!.formIds) {
+        const form = this.formStore.get(fId);
+        if (form?.messageTs) tsList.push(form.messageTs);
+      }
+      // Delete the form *after* we've collected the tsList (so chunk lookup works).
+      this.formStore.delete(pendingForm.formId);
+      const resolved = await this.ctx
+        .threadPanel!.resolveMultiChoice(
+          session,
+          pendingForm.sessionKey,
+          channel,
+          tsList,
+          completedText,
+          completedBlocks,
+        )
+        .catch((err) => {
+          this.logger.warn('resolveMultiChoice threw — falling back to legacy UI update', {
+            sessionKey: pendingForm.sessionKey,
+            error: (err as Error)?.message ?? String(err),
+          });
+          return false;
+        });
+      if (resolved) {
+        await this.afterP3Resolve(session, pendingForm.sessionKey, channel);
+        try {
+          const say = this.createSayFn(channel);
+          await this.ctx.messageHandler(
+            { user: userId, channel, thread_ts: resolvedThreadTs, ts: messageTs, text: combinedMessage },
+            say,
+          );
+        } catch (handlerError) {
+          this.logger.error('Multi-choice handler failed (P3), rolling back to waiting', {
+            sessionKey: pendingForm.sessionKey,
+            error: handlerError,
+          });
+          try {
+            this.ctx.claudeHandler.setActivityStateByKey(pendingForm.sessionKey, 'waiting');
+          } catch (rollbackError) {
+            this.logger.error('Failed to rollback activity state', {
+              sessionKey: pendingForm.sessionKey,
+              rollbackError,
+            });
+          }
+        }
+        return;
+      }
+      // resolve returned false — fall through to legacy path.
+    }
+
+    this.formStore.delete(pendingForm.formId);
+
+    const completionMessageTs = pendingForm.messageTs || messageTs;
 
     const targetTimestamps = this.resolveChoiceSyncMessageTs(pendingForm.sessionKey, messageTs, completionMessageTs);
     for (const targetTs of targetTimestamps) {
@@ -408,12 +588,19 @@ export class ChoiceActionHandler {
     }
 
     // Claude에 전송
-    const session = this.ctx.claudeHandler.getSessionByKey(pendingForm.sessionKey);
-    const resolvedThreadTs = this.resolveSessionThreadTs(session, threadTs);
     if (session) {
       // clearChoice already fired in handleFormSubmit; only clear pending question here
       if (session.actionPanel) {
         session.actionPanel.pendingQuestion = undefined;
+      }
+      // P3 parity: also persist+broadcast the cleared pendingQuestion.
+      try {
+        this.ctx.claudeHandler.getSessionRegistry?.()?.persistAndBroadcast?.(pendingForm.sessionKey);
+      } catch (err) {
+        this.logger.debug('completeMultiChoiceForm: persistAndBroadcast failed', {
+          sessionKey: pendingForm.sessionKey,
+          error: (err as Error)?.message ?? String(err),
+        });
       }
       // Delete tracked completion messages on form submission (S8)
       if (channel) {
@@ -549,6 +736,23 @@ export class ChoiceActionHandler {
       if (pendingForm.submitting) {
         if (channel && userId) {
           await this.ctx.slackApi.postEphemeral(channel, userId, '⏳ 이미 제출 처리 중입니다.');
+        }
+        return;
+      }
+
+      // P3 (PHASE>=3) stale-click guard for the hero button.
+      const heroBranch = this.classifyClick({
+        sessionKey,
+        payloadTurnId: pendingForm.turnId,
+        formId,
+      });
+      if (heroBranch === 'stale') {
+        this.logger.info('Hero submit-all click classified as stale — marking and returning', {
+          sessionKey,
+          formId,
+        });
+        if (channel && messageTs) {
+          await this.markClickAsStale(channel, messageTs, sessionKey);
         }
         return;
       }
@@ -702,6 +906,54 @@ export class ChoiceActionHandler {
 
     this.logger.info('Dashboard choice selected', { sessionKey, choiceId, label, userId });
 
+    // P3 (PHASE>=3) — when a pendingChoice exists, route through resolveChoice.
+    // Dashboard payloads don't carry turnId, but pc.turnId always matches itself,
+    // so the classifier returns 'p3' whenever pc exists under PHASE>=3.
+    const pcSingle = session.actionPanel?.pendingChoice;
+    const canUseDashboardP3 =
+      config.ui.fiveBlockPhase >= 3 && !!this.ctx.threadPanel && !!pcSingle && pcSingle.kind === 'single';
+    if (canUseDashboardP3 && channel) {
+      const completedText = `✅ *${question}*\n선택: *${choiceId}. ${label}* _(대시보드)_`;
+      const completedBlocks = [
+        {
+          type: 'section',
+          text: { type: 'mrkdwn', text: completedText },
+        },
+      ];
+      const resolved = await this.ctx
+        .threadPanel!.resolveChoice(session, sessionKey, channel, completedText, completedBlocks)
+        .catch((err) => {
+          this.logger.warn('resolveChoice (dashboard) threw — falling back to legacy path', {
+            sessionKey,
+            error: (err as Error)?.message ?? String(err),
+          });
+          return false;
+        });
+      if (resolved) {
+        try {
+          await this.afterP3Resolve(session, sessionKey, channel);
+          const say = this.createSayFn(channel);
+          await this.ctx.messageHandler(
+            { user: userId, channel, thread_ts: threadTs, ts: String(Date.now() / 1000), text: choiceId },
+            say,
+          );
+        } catch (error) {
+          this.logger.error('Error processing dashboard choice (P3)', { sessionKey, choiceId, error });
+          try {
+            this.ctx.claudeHandler.setActivityStateByKey(sessionKey, 'waiting');
+          } catch (rollbackError) {
+            this.logger.error('Failed to rollback activity state after dashboard choice (P3)', {
+              sessionKey,
+              rollbackError,
+            });
+          }
+          throw error;
+        }
+        return;
+      }
+      // Fall through to legacy path.
+    }
+
     try {
       // Update Slack choice messages with selection confirmation
       const completedBlocks = [
@@ -732,6 +984,14 @@ export class ChoiceActionHandler {
       await this.ctx.threadPanel?.clearChoice(sessionKey);
       if (session.actionPanel) {
         session.actionPanel.pendingQuestion = undefined;
+      }
+      try {
+        this.ctx.claudeHandler.getSessionRegistry?.()?.persistAndBroadcast?.(sessionKey);
+      } catch (err) {
+        this.logger.debug('handleChoiceFromDashboard: persistAndBroadcast failed', {
+          sessionKey,
+          error: (err as Error)?.message ?? String(err),
+        });
       }
 
       // Delete tracked completion messages
@@ -859,27 +1119,87 @@ export class ChoiceActionHandler {
     // Save pendingQuestion for rollback in case messageHandler fails
     const savedPendingQuestion = session.actionPanel?.pendingQuestion;
 
-    try {
-      // Build combined response text (same format as Slack form submission)
-      const responses = questions.map((q: { id: string; question: string }) => {
-        const sel = selections[q.id];
-        if (sel.choiceId === CUSTOM_INPUT_CHOICE_ID) {
-          return `${q.question}: (직접입력) ${sel.label}`;
-        }
-        return `${q.question}: ${sel.choiceId}. ${sel.label}`;
-      });
-      const combinedMessage = responses.join('\n');
+    // Build combined response text once (shared between P3 + legacy paths)
+    const responses = questions.map((q: { id: string; question: string }) => {
+      const sel = selections[q.id];
+      if (sel.choiceId === CUSTOM_INPUT_CHOICE_ID) {
+        return `${q.question}: (직접입력) ${sel.label}`;
+      }
+      return `${q.question}: ${sel.choiceId}. ${sel.label}`;
+    });
+    const combinedMessage = responses.join('\n');
+    const dashboardCompletedText = `✅ *모든 선택 완료* _(대시보드)_\n${responses.map((r: string, i: number) => `${i + 1}. ${r}`).join('\n')}`;
+    const dashboardCompletedBlocks = [
+      {
+        type: 'section',
+        text: { type: 'mrkdwn', text: dashboardCompletedText },
+      },
+    ];
 
+    // P3 (PHASE>=3) — route through resolveMultiChoice when pendingChoice is
+    // a multi record. Dashboard payloads don't carry turnId, but pc.turnId
+    // always matches itself.
+    const pcMulti = session.actionPanel?.pendingChoice;
+    const canUseDashboardMultiP3 =
+      config.ui.fiveBlockPhase >= 3 && !!this.ctx.threadPanel && !!pcMulti && pcMulti.kind === 'multi';
+    if (canUseDashboardMultiP3 && channel) {
+      const tsList: string[] = [];
+      for (const fId of pcMulti!.formIds) {
+        const form = this.formStore.get(fId);
+        if (form?.messageTs) tsList.push(form.messageTs);
+      }
+      const resolved = await this.ctx
+        .threadPanel!.resolveMultiChoice(
+          session,
+          sessionKey,
+          channel,
+          tsList,
+          dashboardCompletedText,
+          dashboardCompletedBlocks,
+        )
+        .catch((err) => {
+          this.logger.warn('resolveMultiChoice (dashboard) threw — falling back to legacy', {
+            sessionKey,
+            error: (err as Error)?.message ?? String(err),
+          });
+          return false;
+        });
+      if (resolved) {
+        // Invalidate any pending Slack forms for this session
+        const sessionForms = this.formStore.getFormsBySession(sessionKey);
+        for (const [formId] of sessionForms) {
+          this.formStore.delete(formId);
+        }
+        try {
+          await this.afterP3Resolve(session, sessionKey, channel);
+          const say = this.createSayFn(channel);
+          await this.ctx.messageHandler(
+            { user: userId, channel, thread_ts: threadTs, ts: String(Date.now() / 1000), text: combinedMessage },
+            say,
+          );
+        } catch (error) {
+          this.logger.error('Error processing dashboard multi-choice (P3)', { sessionKey, error });
+          try {
+            if (session.actionPanel && savedPendingQuestion) {
+              session.actionPanel.pendingQuestion = savedPendingQuestion;
+            }
+            this.ctx.claudeHandler.setActivityStateByKey(sessionKey, 'waiting');
+          } catch (rollbackError) {
+            this.logger.error('Failed to rollback activity state after dashboard multi-choice (P3)', {
+              sessionKey,
+              rollbackError,
+            });
+          }
+          throw error;
+        }
+        return;
+      }
+      // Fall through to legacy path.
+    }
+
+    try {
       // Update Slack form messages with completion
-      const completedBlocks = [
-        {
-          type: 'section',
-          text: {
-            type: 'mrkdwn',
-            text: `✅ *모든 선택 완료* _(대시보드)_\n${responses.map((r: string, i: number) => `${i + 1}. ${r}`).join('\n')}`,
-          },
-        },
-      ];
+      const completedBlocks = dashboardCompletedBlocks;
 
       // Try to update the Slack form message(s)
       const choiceMessageTs = session.actionPanel?.choiceMessageTs;
@@ -909,6 +1229,14 @@ export class ChoiceActionHandler {
       }
       if (session.actionPanel) {
         session.actionPanel.pendingQuestion = undefined;
+      }
+      try {
+        this.ctx.claudeHandler.getSessionRegistry?.()?.persistAndBroadcast?.(sessionKey);
+      } catch (err) {
+        this.logger.debug('handleMultiChoiceFromDashboard: persistAndBroadcast failed', {
+          sessionKey,
+          error: (err as Error)?.message ?? String(err),
+        });
       }
 
       // Delete tracked completion messages
@@ -1016,5 +1344,107 @@ export class ChoiceActionHandler {
     }
 
     return [...targets];
+  }
+
+  /**
+   * P3 (PHASE>=3) click routing.
+   *
+   *   'legacy' — run the pre-P3 code path unchanged.
+   *   'p3'     — use ThreadPanel.resolveChoice / resolveMultiChoice.
+   *   'stale'  — update message to stale marker and drop the dispatch.
+   *
+   * Classification matrix (PHASE>=3 only — PHASE<3 always returns 'legacy'):
+   *
+   *  | payload turnId | pendingChoice | match (turnId+ts) | branch |
+   *  | absent         | absent        | —                 | legacy |
+   *  | present        | absent        | —                 | stale  |
+   *  | absent         | present       | —                 | stale  |
+   *  | present        | present       | yes               | p3     |
+   *  | present        | present       | no                | stale  |
+   */
+  private classifyClick(args: {
+    sessionKey: string;
+    payloadTurnId?: string;
+    messageTs?: string;
+    formId?: string;
+  }): ClickBranch {
+    if (config.ui.fiveBlockPhase < 3) return 'legacy';
+
+    const session = this.ctx.claudeHandler.getSessionByKey(args.sessionKey);
+    const pc = session?.actionPanel?.pendingChoice;
+
+    if (pc) {
+      const turnIdMatches = !!args.payloadTurnId && pc.turnId === args.payloadTurnId;
+      const tsMatches =
+        pc.kind === 'single'
+          ? !!args.messageTs && pc.choiceTs === args.messageTs
+          : !!args.formId && pc.formIds.includes(args.formId);
+      if (turnIdMatches && tsMatches) return 'p3';
+      return 'stale';
+    }
+
+    // No pendingChoice: payload carries P3 identity ⇒ stale (don't resurrect
+    // a click via the ts-union legacy resolver). No P3 identity ⇒ truly
+    // pre-flip legacy message; legacy path is safe.
+    if (args.payloadTurnId) return 'stale';
+    return 'legacy';
+  }
+
+  /** Apply the stale marker to the clicked message. Best-effort (logs on failure). */
+  private async markClickAsStale(channel: string, messageTs: string, sessionKey: string): Promise<void> {
+    if (!channel || !messageTs) return;
+    const staleBlocks = [{ type: 'section', text: { type: 'mrkdwn', text: STALE_CLICK_TEXT } }];
+    try {
+      await this.ctx.slackApi.updateMessage(channel, messageTs, STALE_CLICK_TEXT, staleBlocks, []);
+    } catch (err) {
+      this.logger.warn('markClickAsStale: updateMessage failed', {
+        sessionKey,
+        messageTs,
+        error: (err as Error)?.message ?? String(err),
+      });
+    }
+  }
+
+  /**
+   * Common "click resolved" terminus (P3 single + multi path). Clears the
+   * pendingQuestion, persists+broadcasts, transitions waiting→working, then
+   * deletes tracked completion messages. Caller dispatches to messageHandler
+   * after this returns.
+   */
+  private async afterP3Resolve(session: any, sessionKey: string, channel: string | undefined): Promise<void> {
+    if (session.actionPanel) {
+      session.actionPanel.pendingQuestion = undefined;
+    }
+    try {
+      this.ctx.claudeHandler.getSessionRegistry?.()?.persistAndBroadcast?.(sessionKey);
+    } catch (err) {
+      this.logger.debug('afterP3Resolve: persistAndBroadcast failed', {
+        sessionKey,
+        error: (err as Error)?.message ?? String(err),
+      });
+    }
+    if (channel) {
+      const threadRootTs = session.threadRootTs;
+      this.ctx.completionMessageTracker
+        ?.deleteAll(
+          sessionKey,
+          async (ch, ts) => {
+            if (threadRootTs && ts === threadRootTs) {
+              this.logger.error('BLOCKED: attempted to delete thread root via completion tracker (P3 choice)', {
+                sessionKey,
+                ts,
+                threadRootTs,
+              });
+              return;
+            }
+            try {
+              await this.ctx.slackApi.deleteMessage(ch, ts);
+            } catch {}
+          },
+          channel,
+        )
+        .catch(() => {});
+    }
+    this.ctx.claudeHandler.setActivityStateByKey(sessionKey, 'working');
   }
 }

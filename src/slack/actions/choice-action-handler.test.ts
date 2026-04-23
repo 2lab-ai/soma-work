@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { config } from '../../config';
 import { ChoiceActionHandler } from './choice-action-handler';
 
 function createFormStore() {
@@ -735,5 +736,209 @@ describe('ChoiceActionHandler', () => {
         /Recommendations incomplete/,
       );
     });
+  });
+});
+
+describe('ChoiceActionHandler — P3 (PHASE>=3) classifyClick', () => {
+  let formStore: ReturnType<typeof createFormStore>;
+  let slackApi: any;
+  let claudeHandler: any;
+  let messageHandler: any;
+  let threadPanel: any;
+  let sessionRegistry: any;
+  let handler: ChoiceActionHandler;
+  const sessionKey = 'C1:thread-root';
+
+  beforeEach(() => {
+    formStore = createFormStore();
+    slackApi = {
+      updateMessage: vi.fn().mockResolvedValue(undefined),
+      postEphemeral: vi.fn().mockResolvedValue(undefined),
+      postMessage: vi.fn().mockResolvedValue({ ts: 'posted' }),
+      deleteMessage: vi.fn().mockResolvedValue(undefined),
+    };
+    sessionRegistry = { persistAndBroadcast: vi.fn() };
+    claudeHandler = {
+      getSessionByKey: vi.fn(),
+      setActivityStateByKey: vi.fn(),
+      getSessionRegistry: vi.fn(() => sessionRegistry),
+    };
+    messageHandler = vi.fn().mockResolvedValue(undefined);
+    threadPanel = {
+      clearChoice: vi.fn().mockResolvedValue(undefined),
+      attachChoice: vi.fn().mockResolvedValue(undefined),
+      resolveChoice: vi.fn().mockResolvedValue(true),
+      resolveMultiChoice: vi.fn().mockResolvedValue(true),
+    };
+
+    handler = new ChoiceActionHandler(
+      { slackApi, claudeHandler, messageHandler, threadPanel } as any,
+      formStore as any,
+    );
+  });
+
+  afterEach(() => {
+    config.ui.fiveBlockPhase = 0;
+  });
+
+  const clickBody = (turnId?: string, messageTs = 'msg-1') => ({
+    actions: [
+      {
+        value: JSON.stringify({
+          sessionKey,
+          choiceId: '2',
+          label: 'B',
+          question: 'Q?',
+          ...(turnId ? { turnId } : {}),
+        }),
+      },
+    ],
+    user: { id: 'U1' },
+    channel: { id: 'C1' },
+    message: { ts: messageTs },
+  });
+
+  it('PHASE<3 always legacy, ignores payload turnId', async () => {
+    config.ui.fiveBlockPhase = 2;
+    claudeHandler.getSessionByKey.mockReturnValue({
+      threadRootTs: 'thread-root',
+      threadTs: 'thread-root',
+      actionPanel: {
+        pendingChoice: { turnId: 'tOTHER', kind: 'single', choiceTs: 'msg-other', formIds: [] },
+        choiceMessageTs: 'thread-choice',
+      },
+    });
+    await handler.handleUserChoice(clickBody('tNEW', 'msg-1'));
+    expect(threadPanel.resolveChoice).not.toHaveBeenCalled();
+    expect(slackApi.updateMessage).toHaveBeenCalled(); // legacy path updates
+    expect(messageHandler).toHaveBeenCalled();
+  });
+
+  it('PHASE>=3 + matching pendingChoice + matching turnId → p3 path', async () => {
+    config.ui.fiveBlockPhase = 3;
+    claudeHandler.getSessionByKey.mockReturnValue({
+      threadRootTs: 'thread-root',
+      threadTs: 'thread-root',
+      channelId: 'C1',
+      actionPanel: {
+        pendingChoice: { turnId: 't1', kind: 'single', choiceTs: 'msg-1', formIds: [] },
+        choiceMessageTs: 'msg-1',
+      },
+    });
+    await handler.handleUserChoice(clickBody('t1', 'msg-1'));
+    expect(threadPanel.resolveChoice).toHaveBeenCalledWith(
+      expect.any(Object),
+      sessionKey,
+      'C1',
+      expect.stringContaining('선택'),
+      expect.any(Array),
+    );
+    expect(claudeHandler.setActivityStateByKey).toHaveBeenCalledWith(sessionKey, 'working');
+    expect(messageHandler).toHaveBeenCalled();
+  });
+
+  it('PHASE>=3 + payload turnId + no pendingChoice → stale (not legacy)', async () => {
+    config.ui.fiveBlockPhase = 3;
+    claudeHandler.getSessionByKey.mockReturnValue({
+      threadRootTs: 'thread-root',
+      threadTs: 'thread-root',
+      actionPanel: {},
+    });
+    await handler.handleUserChoice(clickBody('t1', 'msg-1'));
+    // Stale marker updateMessage
+    const firstCall = slackApi.updateMessage.mock.calls[0];
+    expect(firstCall[2]).toContain('더 이상 유효하지 않습니다');
+    expect(messageHandler).not.toHaveBeenCalled();
+    expect(threadPanel.resolveChoice).not.toHaveBeenCalled();
+  });
+
+  it('PHASE>=3 + no payload turnId + no pendingChoice → legacy', async () => {
+    config.ui.fiveBlockPhase = 3;
+    claudeHandler.getSessionByKey.mockReturnValue({
+      threadRootTs: 'thread-root',
+      threadTs: 'thread-root',
+      actionPanel: {},
+    });
+    await handler.handleUserChoice(clickBody(undefined, 'msg-1'));
+    expect(threadPanel.resolveChoice).not.toHaveBeenCalled();
+    expect(slackApi.updateMessage).toHaveBeenCalled();
+    expect(messageHandler).toHaveBeenCalled();
+  });
+
+  it('PHASE>=3 + pendingChoice present + turnId mismatch → stale', async () => {
+    config.ui.fiveBlockPhase = 3;
+    claudeHandler.getSessionByKey.mockReturnValue({
+      threadRootTs: 'thread-root',
+      threadTs: 'thread-root',
+      actionPanel: {
+        pendingChoice: { turnId: 't1', kind: 'single', choiceTs: 'msg-1', formIds: [] },
+      },
+    });
+    await handler.handleUserChoice(clickBody('t2', 'msg-1'));
+    expect(slackApi.updateMessage).toHaveBeenCalledWith(
+      'C1',
+      'msg-1',
+      expect.stringContaining('더 이상 유효하지 않습니다'),
+      expect.any(Array),
+      [],
+    );
+    expect(messageHandler).not.toHaveBeenCalled();
+  });
+
+  it('PHASE>=3 + pendingChoice present + ts mismatch → stale', async () => {
+    config.ui.fiveBlockPhase = 3;
+    claudeHandler.getSessionByKey.mockReturnValue({
+      threadRootTs: 'thread-root',
+      threadTs: 'thread-root',
+      actionPanel: {
+        pendingChoice: { turnId: 't1', kind: 'single', choiceTs: 'msg-other', formIds: [] },
+      },
+    });
+    await handler.handleUserChoice(clickBody('t1', 'msg-1'));
+    expect(slackApi.updateMessage).toHaveBeenCalledWith(
+      'C1',
+      'msg-1',
+      expect.stringContaining('더 이상 유효하지 않습니다'),
+      expect.any(Array),
+      [],
+    );
+    expect(messageHandler).not.toHaveBeenCalled();
+  });
+
+  it('PHASE>=3 + no payload turnId + pendingChoice present → stale (defensive)', async () => {
+    config.ui.fiveBlockPhase = 3;
+    claudeHandler.getSessionByKey.mockReturnValue({
+      threadRootTs: 'thread-root',
+      threadTs: 'thread-root',
+      actionPanel: {
+        pendingChoice: { turnId: 't1', kind: 'single', choiceTs: 'msg-1', formIds: [] },
+      },
+    });
+    await handler.handleUserChoice(clickBody(undefined, 'msg-1'));
+    expect(slackApi.updateMessage).toHaveBeenCalledWith(
+      'C1',
+      'msg-1',
+      expect.stringContaining('더 이상 유효하지 않습니다'),
+      expect.any(Array),
+      [],
+    );
+    expect(messageHandler).not.toHaveBeenCalled();
+  });
+
+  it('P3 path persistAndBroadcast clears pendingQuestion', async () => {
+    config.ui.fiveBlockPhase = 3;
+    const session = {
+      threadRootTs: 'thread-root',
+      threadTs: 'thread-root',
+      channelId: 'C1',
+      actionPanel: {
+        pendingChoice: { turnId: 't1', kind: 'single', choiceTs: 'msg-1', formIds: [] },
+        pendingQuestion: { type: 'user_choice' },
+      },
+    };
+    claudeHandler.getSessionByKey.mockReturnValue(session);
+    await handler.handleUserChoice(clickBody('t1', 'msg-1'));
+    expect(session.actionPanel.pendingQuestion).toBeUndefined();
+    expect(sessionRegistry.persistAndBroadcast).toHaveBeenCalledWith(sessionKey);
   });
 });

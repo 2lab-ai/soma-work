@@ -12,6 +12,7 @@ import {
   isApiLikeError,
   shouldShowStatusBlock,
 } from '../../claude-status-fetcher';
+import { config } from '../../config';
 import { createConversation, recordAssistantTurn, recordUserTurn } from '../../conversation';
 import type { FileHandler, ProcessedFile } from '../../file-handler';
 import { Logger, redactAnthropicSecrets } from '../../logger';
@@ -65,7 +66,7 @@ import { LOG_DETAIL, OutputFlag, shouldOutput, verboseTag } from '../output-flag
 import type { RequestCoordinator } from '../request-coordinator';
 import type { SummaryService } from '../summary-service';
 import type { SummaryTimer } from '../summary-timer.js';
-import type { ThreadPanel, TurnContext } from '../thread-panel';
+import type { ThreadPanel, TurnAddress, TurnContext } from '../thread-panel';
 import { isLocalSlashCommand } from './local-slash-command';
 import { MessageEvent, type SayFn } from './types';
 
@@ -2649,22 +2650,27 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         });
       }
       const lastQuestion = pendingQuestions[pendingQuestions.length - 1];
-      await this.renderAskUserQuestionFromCommand(lastQuestion, session, context);
+      // P3 (PHASE>=3): stream-executor threads its per-turn `turnId` into the
+      // ASK render so button payloads + PendingFormStore entries carry the
+      // same identity as `pendingChoice.turnId`. `context.turnId` is populated
+      // by stream-executor's `execute()` for every turn.
+      await this.renderAskUserQuestionFromCommand(context.turnId, lastQuestion, session, context);
     }
 
     return { hasPendingChoice, continuation, modelCommandResults };
   }
 
   private async renderAskUserQuestionFromCommand(
+    turnId: string | undefined,
     question: UserChoice | UserChoices,
     session: ConversationSession,
     context: StreamContext,
   ): Promise<void> {
     try {
       if (question.type === 'user_choices') {
-        await this.renderMultiChoiceFromCommand(question, context);
+        await this.renderMultiChoiceFromCommand(turnId, question, context);
       } else {
-        await this.renderSingleChoiceFromCommand(question, context);
+        await this.renderSingleChoiceFromCommand(turnId, question, context);
       }
     } catch (error) {
       // If both primary render AND fallback fail (e.g. Slack rate limit),
@@ -2688,10 +2694,130 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       activeTool: undefined,
       waitingForChoice: true,
     });
+
+    // P3 (parity fix) — pendingQuestion was historically in-memory only. With
+    // P3's pendingChoice living on the session + broadcast to the dashboard,
+    // we must also persist pendingQuestion so a dashboard restart restores
+    // the question context. setActivityState persists on idle only; force a
+    // broadcast+save here regardless of PHASE so dashboard subscribers see
+    // the new pendingQuestion immediately.
+    try {
+      this.deps.claudeHandler.getSessionRegistry?.().persistAndBroadcast?.(context.sessionKey);
+    } catch (err) {
+      this.logger.debug('renderAskUserQuestionFromCommand: persistAndBroadcast failed', {
+        sessionKey: context.sessionKey,
+        error: (err as Error)?.message ?? String(err),
+      });
+    }
   }
 
-  private async renderSingleChoiceFromCommand(question: UserChoice, context: StreamContext): Promise<void> {
+  /**
+   * P3 (PHASE>=3) defensive prelude — clear any prior pendingChoice on the
+   * session before opening a new ask. Prevents split-brain between Slack UI
+   * and `pendingChoice` when a prior post succeeded but the resolve signal
+   * was lost (e.g. process restart, Slack click dropped).
+   *
+   * For `multi` priors: best-effort rewrite each prior chunk message to
+   * "⏱️ 새 질문으로 대체되었습니다." and delete PendingFormStore entries.
+   * For `single` priors: only clears session state (no Slack rewrite — the
+   * new ask replaces the visible message itself).
+   *
+   * No-op under PHASE<3 or when no prior `pendingChoice` exists.
+   */
+  private async supersedePriorPendingChoice(
+    session: ConversationSession,
+    sessionKey: string,
+    channel: string,
+  ): Promise<void> {
+    if (config.ui.fiveBlockPhase < 3) return;
+    const prior = session.actionPanel?.pendingChoice;
+    if (!prior) return;
+
+    if (prior.kind === 'multi' && prior.formIds.length > 0) {
+      for (const formId of prior.formIds) {
+        const pendingForm = this.deps.actionHandlers.getPendingForm(formId);
+        if (pendingForm?.messageTs) {
+          await this.deps.slackApi
+            .updateMessage(
+              channel,
+              pendingForm.messageTs,
+              '⏱️ _새 질문으로 대체되었습니다._',
+              [{ type: 'section', text: { type: 'mrkdwn', text: '⏱️ _새 질문으로 대체되었습니다._' } }],
+              [],
+            )
+            .catch((err) =>
+              this.logger.warn('supersedePriorPendingChoice: rewrite failed', {
+                sessionKey,
+                formId,
+                error: (err as Error)?.message ?? String(err),
+              }),
+            );
+        }
+        this.deps.actionHandlers.deletePendingForm(formId);
+      }
+    }
+
+    if (session.actionPanel) {
+      session.actionPanel.pendingChoice = undefined;
+      session.actionPanel.choiceMessageTs = undefined;
+      session.actionPanel.choiceMessageLink = undefined;
+      session.actionPanel.waitingForChoice = false;
+    }
+    try {
+      this.deps.claudeHandler.getSessionRegistry?.().persistAndBroadcast?.(sessionKey);
+    } catch (err) {
+      this.logger.debug('supersedePriorPendingChoice: persistAndBroadcast failed', {
+        sessionKey,
+        error: (err as Error)?.message ?? String(err),
+      });
+    }
+  }
+
+  private async renderSingleChoiceFromCommand(
+    turnId: string | undefined,
+    question: UserChoice,
+    context: StreamContext,
+  ): Promise<void> {
     const session = this.deps.claudeHandler.getSessionByKey(context.sessionKey);
+
+    // P3 (PHASE>=3) — route through ThreadPanel.askUser so pendingChoice state
+    // is written synchronously with the posted ts. Falls through to the legacy
+    // context.say path when PHASE<3, threadPanel is missing, or askUser reports
+    // phase-disabled (e.g. test harness mock).
+    if (config.ui.fiveBlockPhase >= 3 && session && this.deps.threadPanel && turnId) {
+      await this.supersedePriorPendingChoice(session, context.sessionKey, context.channel);
+
+      const theme = userSettingsStore.getUserSessionTheme(session.ownerId);
+      const payload = UserChoiceHandler.buildUserChoiceBlocks(question, context.sessionKey, theme, turnId);
+
+      const address: TurnAddress = {
+        channelId: context.channel,
+        threadTs: context.threadTs,
+        sessionKey: context.sessionKey,
+      };
+      const result = await this.deps.threadPanel.askUser(
+        turnId,
+        question,
+        payload,
+        question.question ?? '선택이 필요합니다',
+        address,
+        session,
+        context.sessionKey,
+      );
+
+      if (result.ok) {
+        // ThreadPanel.askUser synchronously wrote pendingChoice + persistAndBroadcast.
+        return;
+      }
+      if (result.reason === 'post-failed') {
+        await this.sendCommandChoiceFallback(question, context);
+        return;
+      }
+      // phase-disabled → fall through to legacy path below.
+    }
+
+    // Legacy path (PHASE<3 or P3 fell through). Byte-identical pre-flip
+    // output: no `turnId` threaded through `buildUserChoiceBlocks`.
     const theme = session ? userSettingsStore.getUserSessionTheme(session.ownerId) : undefined;
     const payload = UserChoiceHandler.buildUserChoiceBlocks(question, context.sessionKey, theme);
     try {
@@ -2711,7 +2837,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     }
   }
 
-  private async renderMultiChoiceFromCommand(question: UserChoices, context: StreamContext): Promise<void> {
+  private async renderMultiChoiceFromCommand(
+    turnId: string | undefined,
+    question: UserChoices,
+    context: StreamContext,
+  ): Promise<void> {
     const maxQuestionsPerForm = 6;
     const chunks: UserChoices[] = [];
     for (let index = 0; index < question.questions.length; index += maxQuestionsPerForm) {
@@ -2728,6 +2858,79 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       });
     }
 
+    const session = this.deps.claudeHandler.getSessionByKey(context.sessionKey);
+
+    // P3 (PHASE>=3): pre-allocate formIds + persist (with turnId) before any
+    // Slack round-trip so a mid-flight click finds the live form entry.
+    if (config.ui.fiveBlockPhase >= 3 && session && this.deps.threadPanel && turnId) {
+      await this.supersedePriorPendingChoice(session, context.sessionKey, context.channel);
+
+      const formIds: string[] = [];
+      for (const chunk of chunks) {
+        const formId = `form_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
+        formIds.push(formId);
+        this.deps.actionHandlers.setPendingForm(formId, {
+          formId,
+          sessionKey: context.sessionKey,
+          channel: context.channel,
+          threadTs: context.threadTs,
+          messageTs: '',
+          questions: chunk.questions,
+          selections: {},
+          createdAt: Date.now(),
+          turnId,
+        });
+      }
+      if (formIds.length > 0) {
+        await this.deps.actionHandlers.invalidateOldForms(context.sessionKey, formIds[0], this.deps.slackApi);
+      }
+
+      const chunkPayloads = chunks.map((chunk, i) => ({
+        builtPayload: UserChoiceHandler.buildMultiChoiceFormBlocks(chunk, formIds[i], context.sessionKey),
+        text: chunk.title || '📋 선택이 필요합니다',
+      }));
+
+      const address: TurnAddress = {
+        channelId: context.channel,
+        threadTs: context.threadTs,
+        sessionKey: context.sessionKey,
+      };
+      const result = await this.deps.threadPanel.askUserForm(
+        turnId,
+        chunkPayloads,
+        formIds,
+        question,
+        address,
+        session,
+        context.sessionKey,
+      );
+
+      if (result.ok) {
+        // Back-fill messageTs on each pending form. Use setPendingForm (not
+        // in-place mutation) so a concurrent save-to-disk sees the new ts.
+        for (let i = 0; i < result.allTs.length; i++) {
+          const fId = formIds[i];
+          const pending = this.deps.actionHandlers.getPendingForm(fId);
+          if (pending) {
+            this.deps.actionHandlers.setPendingForm(fId, { ...pending, messageTs: result.allTs[i] });
+          }
+        }
+        return;
+      }
+      if (result.reason === 'post-failed') {
+        for (const fId of formIds) {
+          this.deps.actionHandlers.deletePendingForm(fId);
+        }
+        await this.sendCommandChoiceFallback(question, context);
+        return;
+      }
+      // phase-disabled → fall through to legacy path (cleanup pre-allocated forms).
+      for (const fId of formIds) {
+        this.deps.actionHandlers.deletePendingForm(fId);
+      }
+    }
+
+    // Legacy path (PHASE<3 or P3 fell through).
     for (let index = 0; index < chunks.length; index += 1) {
       const chunk = chunks[index];
       const formId = `form_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
@@ -2756,9 +2959,12 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         });
 
         if (result?.ts) {
+          // v7 fix: persist messageTs via setPendingForm so a concurrent
+          // save-to-disk captures the new ts. Previously mutated in place,
+          // which meant the ts was lost across restarts.
           const pending = this.deps.actionHandlers.getPendingForm(formId);
           if (pending) {
-            pending.messageTs = result.ts;
+            this.deps.actionHandlers.setPendingForm(formId, { ...pending, messageTs: result.ts });
           }
         }
 

@@ -2,8 +2,9 @@ import type { EndTurnInfo } from '../agent-session/agent-session-types';
 import type { ClaudeHandler } from '../claude-handler';
 import { config } from '../config';
 import { Logger } from '../logger';
+import type { SessionRegistry } from '../session-registry';
 import type { Todo, TodoManager } from '../todo-manager';
-import type { ConversationSession } from '../types';
+import type { ConversationSession, UserChoice, UserChoices } from '../types';
 import type { CompletionMessageTracker } from './completion-message-tracker';
 import type { RequestCoordinator } from './request-coordinator';
 import type { SlackApiHelper } from './slack-api-helper';
@@ -17,6 +18,13 @@ interface ThreadPanelDeps {
   requestCoordinator: RequestCoordinator;
   todoManager: TodoManager;
   completionMessageTracker?: CompletionMessageTracker;
+  /**
+   * P3 (PHASE>=3) dep — SessionRegistry for persistAndBroadcast() after
+   * pendingChoice mutations. Optional for backward compatibility with
+   * legacy tests that construct ThreadPanel without it; persist calls
+   * degrade to no-ops when absent.
+   */
+  sessionRegistry?: SessionRegistry;
 }
 
 // Keeps TurnSurface `@internal` while exposing the public type contract.
@@ -169,6 +177,250 @@ export class ThreadPanel {
   async renderTasks(turnId: string, todos: Todo[], ctx?: TurnAddress): Promise<boolean> {
     if (config.ui.fiveBlockPhase < 2) return false;
     return this.turnSurface.renderTasks(turnId, todos, ctx);
+  }
+
+  // =========================================================================
+  // 5-block per-turn façade — P3 B3 choice (Issue #665)
+  //
+  // PHASE<3 → returns a sentinel (`{ok:false, reason:'phase-disabled'}` or
+  //           `false`) so callers take the legacy `context.say` +
+  //           `attachChoice` / `sendCommandChoiceFallback` path.
+  // PHASE>=3 → posts the question via TurnSurface, synchronously writes
+  //           `session.actionPanel.pendingChoice` + co-fields, and fires
+  //           permalink warm-up via `ThreadSurface.setChoiceMeta`.
+  //
+  // Write-order invariant: after postMessage returns a ts, the session state
+  // write (pendingChoice + choiceMessageTs + waitingForChoice) runs
+  // SYNCHRONOUSLY before any further await — otherwise a live click during
+  // the permalink await hits a stale "no pendingChoice" branch.
+  // =========================================================================
+
+  /**
+   * P3 (PHASE>=3) — single-choice ask. Posts the question via TurnSurface,
+   * synchronously writes session state, then fires permalink warm-up.
+   *
+   * Returns `{ok:true, primaryTs}` on success.
+   * Returns `{ok:false, reason:'phase-disabled'}` if PHASE<3 — caller
+   *   falls back to the legacy path.
+   * Returns `{ok:false, reason:'post-failed', error}` if the Slack post
+   *   itself raised — caller falls back to `sendCommandChoiceFallback`.
+   *
+   * `session` is mutated in place with the new pending record. Caller is
+   * responsible for having cleared any prior pendingChoice BEFORE calling
+   * (defensive prelude in stream-executor).
+   */
+  async askUser(
+    turnId: string,
+    question: UserChoice,
+    builtPayload: { blocks?: any[]; attachments?: any[] },
+    text: string,
+    address: TurnAddress,
+    session: ConversationSession,
+    sessionKey: string,
+  ): Promise<{ ok: true; primaryTs: string } | { ok: false; reason: 'phase-disabled' | 'post-failed'; error?: Error }> {
+    if (config.ui.fiveBlockPhase < 3) return { ok: false, reason: 'phase-disabled' };
+    let ts: string;
+    try {
+      ts = await this.turnSurface.askUser(turnId, builtPayload, text, address);
+    } catch (err) {
+      return { ok: false, reason: 'post-failed', error: err as Error };
+    }
+    if (!ts) return { ok: false, reason: 'phase-disabled' };
+
+    // SYNCHRONOUS state write — no await between postMessage and here.
+    if (!session.actionPanel) {
+      session.actionPanel = {
+        channelId: session.channelId,
+        userId: session.ownerId,
+      };
+    }
+    session.actionPanel.pendingChoice = {
+      turnId,
+      kind: 'single',
+      choiceTs: ts,
+      formIds: [],
+      question,
+      createdAt: Date.now(),
+    };
+    session.actionPanel.choiceMessageTs = ts;
+    session.actionPanel.waitingForChoice = true;
+
+    // Persist + broadcast immediately so the dashboard sees the new pending
+    // question and a concurrent restart can restore state.
+    this.deps.sessionRegistry?.persistAndBroadcast(sessionKey);
+
+    // Fire-and-forget permalink warm + render.
+    this.surface.setChoiceMeta(sessionKey, ts).catch((err) => {
+      this.logger.warn('askUser: setChoiceMeta failed', {
+        sessionKey,
+        turnId,
+        error: (err as Error)?.message ?? String(err),
+      });
+    });
+
+    return { ok: true, primaryTs: ts };
+  }
+
+  /**
+   * P3 (PHASE>=3) — multi-choice ask. Caller (stream-executor) provides
+   * pre-chunked payloads + pre-allocated formIds (already registered in
+   * PendingFormStore with turnId). ThreadPanel posts all chunks, writes
+   * state after the FIRST chunk succeeds, and rolls back Slack-side on
+   * partial failure.
+   */
+  async askUserForm(
+    turnId: string,
+    chunks: Array<{ builtPayload: { blocks?: any[]; attachments?: any[] }; text: string }>,
+    formIds: string[],
+    originalQuestion: UserChoices,
+    address: TurnAddress,
+    session: ConversationSession,
+    sessionKey: string,
+  ): Promise<
+    | { ok: true; primaryTs: string; allTs: string[]; formIds: string[] }
+    | { ok: false; reason: 'phase-disabled' }
+    | { ok: false; reason: 'post-failed'; postedTs: string[]; failedIndex: number; error: Error }
+  > {
+    if (config.ui.fiveBlockPhase < 3) return { ok: false, reason: 'phase-disabled' };
+
+    const allTs: string[] = [];
+    let i = 0;
+    try {
+      for (i = 0; i < chunks.length; i++) {
+        const ts = await this.turnSurface.askUserForm(turnId, chunks[i].builtPayload, chunks[i].text, address);
+        allTs.push(ts);
+        if (i === 0) {
+          // SYNCHRONOUS state write after FIRST successful chunk.
+          if (!session.actionPanel) {
+            session.actionPanel = {
+              channelId: session.channelId,
+              userId: session.ownerId,
+            };
+          }
+          session.actionPanel.pendingChoice = {
+            turnId,
+            kind: 'multi',
+            choiceTs: ts,
+            formIds: [...formIds],
+            question: originalQuestion,
+            createdAt: Date.now(),
+          };
+          session.actionPanel.choiceMessageTs = ts;
+          session.actionPanel.waitingForChoice = true;
+          this.deps.sessionRegistry?.persistAndBroadcast(sessionKey);
+        }
+      }
+    } catch (err) {
+      // Partial failure: rollback Slack-side + defensive state clear.
+      for (const postedTs of allTs) {
+        await this.deps.slackApi
+          .updateMessage(
+            address.channelId,
+            postedTs,
+            '⏱️ _폼 생성에 실패했습니다._',
+            [{ type: 'section', text: { type: 'mrkdwn', text: '⏱️ _폼 생성에 실패했습니다._' } }],
+            [],
+          )
+          .catch((rollbackErr) => {
+            this.logger.warn('askUserForm: rollback updateMessage failed', {
+              sessionKey,
+              postedTs,
+              error: (rollbackErr as Error)?.message ?? String(rollbackErr),
+            });
+          });
+      }
+      // If state was written after chunk 0, clear it.
+      if (session.actionPanel?.pendingChoice?.turnId === turnId) {
+        session.actionPanel.pendingChoice = undefined;
+        session.actionPanel.choiceMessageTs = undefined;
+        session.actionPanel.choiceMessageLink = undefined;
+        session.actionPanel.waitingForChoice = false;
+        this.deps.sessionRegistry?.persistAndBroadcast(sessionKey);
+      }
+      return {
+        ok: false,
+        reason: 'post-failed',
+        postedTs: allTs,
+        failedIndex: i,
+        error: err as Error,
+      };
+    }
+
+    // All chunks posted: fire-and-forget permalink warm for primary.
+    this.surface.setChoiceMeta(sessionKey, allTs[0]).catch((err) => {
+      this.logger.warn('askUserForm: setChoiceMeta failed', {
+        sessionKey,
+        turnId,
+        error: (err as Error)?.message ?? String(err),
+      });
+    });
+
+    return { ok: true, primaryTs: allTs[0], allTs, formIds };
+  }
+
+  /**
+   * P3 (PHASE>=3) — resolve the current single-choice pending record.
+   * Reads choiceTs from session state, updates the message in place,
+   * then clears pendingChoice and related fields.
+   *
+   * Returns true on P3 handled; false when PHASE<3 or no pendingChoice
+   * present (caller takes legacy path).
+   */
+  async resolveChoice(
+    session: ConversationSession,
+    sessionKey: string,
+    channelId: string,
+    completedText: string,
+    completedBlocks: any[],
+  ): Promise<boolean> {
+    if (config.ui.fiveBlockPhase < 3) return false;
+    const pc = session.actionPanel?.pendingChoice;
+    if (!pc || pc.kind !== 'single' || !pc.choiceTs) return false;
+    await this.turnSurface.resolveChoice(channelId, pc.choiceTs, completedText, completedBlocks);
+    if (!session.actionPanel) {
+      session.actionPanel = {
+        channelId: session.channelId,
+        userId: session.ownerId,
+      };
+    }
+    session.actionPanel.pendingChoice = undefined;
+    session.actionPanel.choiceMessageTs = undefined;
+    session.actionPanel.choiceMessageLink = undefined;
+    session.actionPanel.waitingForChoice = false;
+    session.actionPanel.choiceBlocks = undefined;
+    this.deps.sessionRegistry?.persistAndBroadcast(sessionKey);
+    return true;
+  }
+
+  /**
+   * P3 (PHASE>=3) — resolve the current multi-choice pending record.
+   * Caller passes the ts list (ThreadPanel does NOT own PendingFormStore).
+   */
+  async resolveMultiChoice(
+    session: ConversationSession,
+    sessionKey: string,
+    channelId: string,
+    tsList: string[],
+    completedText: string,
+    completedBlocks: any[],
+  ): Promise<boolean> {
+    if (config.ui.fiveBlockPhase < 3) return false;
+    const pc = session.actionPanel?.pendingChoice;
+    if (!pc || pc.kind !== 'multi') return false;
+    await this.turnSurface.resolveMultiChoice(channelId, tsList, completedText, completedBlocks);
+    if (!session.actionPanel) {
+      session.actionPanel = {
+        channelId: session.channelId,
+        userId: session.ownerId,
+      };
+    }
+    session.actionPanel.pendingChoice = undefined;
+    session.actionPanel.choiceMessageTs = undefined;
+    session.actionPanel.choiceMessageLink = undefined;
+    session.actionPanel.waitingForChoice = false;
+    session.actionPanel.choiceBlocks = undefined;
+    this.deps.sessionRegistry?.persistAndBroadcast(sessionKey);
+    return true;
   }
 
   // ---- internal helpers ----
