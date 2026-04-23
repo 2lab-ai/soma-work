@@ -6,6 +6,28 @@
  */
 
 import { describe, expect, it, vi } from 'vitest';
+
+// Codex P2 follow-up (#679): the `refresh_card` handler must call
+// `renderCctCard` on persistent message surfaces so the trailing
+// `z_setting_cct_cancel` button (added by the cct-topic renderer, not by
+// `buildCardFromManager`) is preserved across chat.update. Mock the
+// topic renderer so these tests don't pull the heavy admin-check +
+// fetchUsageForAllAttached + buildCctCardBlocks pipeline; we only care
+// about the renderer-selection contract.
+vi.mock('../z/topics/cct-topic', () => ({
+  renderCctCard: vi.fn(async () => ({
+    text: ':key: CCT (active: none)',
+    blocks: [
+      { type: 'header', text: { type: 'plain_text', text: ':key: CCT Tokens' } },
+      {
+        type: 'actions',
+        elements: [{ type: 'button', action_id: 'z_setting_cct_cancel', value: 'cancel' }],
+      },
+    ],
+  })),
+}));
+
+import { renderCctCard } from '../z/topics/cct-topic';
 import {
   buildCardFromManager,
   parseOAuthBlob,
@@ -1034,6 +1056,7 @@ describe('refresh_card action handler (card v2 follow-up)', () => {
     const update = vi.fn(async (_arg: any) => undefined);
     const postEphemeral = vi.fn(async (_arg: any) => undefined);
     const respond = vi.fn(async (_arg: any) => undefined);
+    (renderCctCard as any).mockClear();
     try {
       registerCctActions(app, tm);
       const h = actionHandlers.get(CCT_ACTION_IDS.refresh_card);
@@ -1059,11 +1082,109 @@ describe('refresh_card action handler (card v2 follow-up)', () => {
         text: ':key: CCT status',
         blocks: expect.any(Array),
       });
+      // Codex P2 follow-up (#679): persistent message surface MUST use
+      // renderCctCard so the trailing z_setting_cct_cancel actions row
+      // (built by cct-topic, not by buildCardFromManager) is preserved.
+      expect(renderCctCard).toHaveBeenCalledTimes(1);
+      expect(renderCctCard).toHaveBeenCalledWith({ userId: 'admin', issuedAt: expect.any(Number) });
+      const updateCall = update.mock.calls[0]?.[0] as any;
+      const blockJson = JSON.stringify(updateCall.blocks);
+      expect(blockJson).toContain('z_setting_cct_cancel');
       // No new ephemeral card should be stacked on success.
       expect(postEphemeral).not.toHaveBeenCalled();
       expect(respond).not.toHaveBeenCalled();
       // This handler MUST NOT call refreshAllAttachedOAuthTokens.
       expect(refreshAllAttachedOAuthTokens).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('falls back to buildCardFromManager when renderCctCard rejects (refresh still updates the card)', async () => {
+    const { app, actionHandlers } = makeApp();
+    const fetchAndStoreUsage = vi.fn(async (keyId: string) => ({
+      fetchedAt: new Date().toISOString(),
+      fiveHour: { utilization: 0.1, resetsAt: new Date().toISOString() },
+      _keyId: keyId,
+    }));
+    const tm = { ...tmWithAttachedSlots(['slot-A']), fetchAndStoreUsage } as any;
+    const adminUtils = await import('../../admin-utils');
+    const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(true);
+    const update = vi.fn(async (_arg: any) => undefined);
+    const postEphemeral = vi.fn(async (_arg: any) => undefined);
+    const respond = vi.fn(async (_arg: any) => undefined);
+    (renderCctCard as any).mockReset();
+    (renderCctCard as any).mockRejectedValueOnce(new Error('renderer blew up'));
+    try {
+      registerCctActions(app, tm);
+      const h = actionHandlers.get(CCT_ACTION_IDS.refresh_card);
+      await h?.({
+        ack: vi.fn(async () => undefined),
+        body: {
+          user: { id: 'admin' },
+          container: { type: 'message', channel_id: 'C1', message_ts: 'ts1' },
+          actions: [{ value: 'refresh_card' }],
+        },
+        client: { chat: { update, postEphemeral } },
+        respond,
+      });
+      expect(renderCctCard).toHaveBeenCalledTimes(1);
+      // chat.update still fires with the buildCardFromManager fallback so
+      // the user sees the refreshed card even when the heavier renderer
+      // throws (P2 fallback contract).
+      expect(update).toHaveBeenCalledTimes(1);
+      const updateCall = update.mock.calls[0]?.[0] as any;
+      expect(Array.isArray(updateCall.blocks)).toBe(true);
+      // No banner needed — fallback succeeded.
+      expect(postEphemeral).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+      // Restore the default mock impl for downstream tests.
+      (renderCctCard as any).mockImplementation(async () => ({
+        text: ':key: CCT (active: none)',
+        blocks: [
+          { type: 'header', text: { type: 'plain_text', text: ':key: CCT Tokens' } },
+          {
+            type: 'actions',
+            elements: [{ type: 'button', action_id: 'z_setting_cct_cancel', value: 'cancel' }],
+          },
+        ],
+      }));
+    }
+  });
+
+  it('ephemeral surface MUST NOT call renderCctCard (uses buildCardFromManager — no cancel button needed)', async () => {
+    const { app, actionHandlers } = makeApp();
+    const fetchAndStoreUsage = vi.fn(async (keyId: string) => ({
+      fetchedAt: new Date().toISOString(),
+      fiveHour: { utilization: 0.1, resetsAt: new Date().toISOString() },
+      _keyId: keyId,
+    }));
+    const tm = { ...tmWithAttachedSlots(['slot-A']), fetchAndStoreUsage } as any;
+    const adminUtils = await import('../../admin-utils');
+    const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(true);
+    const update = vi.fn(async (_arg: any) => undefined);
+    const postEphemeral = vi.fn(async (_arg: any) => undefined);
+    const respond = vi.fn(async (_arg: any) => undefined);
+    (renderCctCard as any).mockClear();
+    try {
+      registerCctActions(app, tm);
+      const h = actionHandlers.get(CCT_ACTION_IDS.refresh_card);
+      await h?.({
+        ack: vi.fn(async () => undefined),
+        body: {
+          user: { id: 'admin' },
+          container: { type: 'ephemeral', channel_id: 'C1' },
+          actions: [{ value: 'refresh_card' }],
+        },
+        client: { chat: { update, postEphemeral } },
+        respond,
+      });
+      // Ephemeral surface uses buildCardFromManager output — the cancel
+      // button only matters on persistent /cct or /z cct messages.
+      expect(renderCctCard).not.toHaveBeenCalled();
+      expect(respond).toHaveBeenCalledTimes(1);
+      expect(update).not.toHaveBeenCalled();
     } finally {
       spy.mockRestore();
     }

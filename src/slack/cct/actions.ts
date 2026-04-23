@@ -25,6 +25,7 @@ import { Logger } from '../../logger';
 import type { OAuthCredentials } from '../../oauth/refresher';
 import { hasRequiredScopes } from '../../oauth/scope-check';
 import type { TokenManager } from '../../token-manager';
+import { renderCctCard } from '../z/topics/cct-topic';
 import {
   type AddSlotFormKind,
   appendStoreReadFailureBanner,
@@ -326,19 +327,41 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
         return;
       }
 
+      // Surface-aware renderer choice (Codex P2 follow-up to #679):
+      //   - container.type === 'message'   → renderCctCard (persistent /cct
+      //     and /z cct messages were built by cct-topic and carry the
+      //     trailing z_setting_cct_cancel actions row; chat.update with
+      //     buildCardFromManager output strips that row).
+      //   - container.type === 'ephemeral' → buildCardFromManager (cancel
+      //     button isn't part of the ephemeral surface).
+      // renderCctCard is heavier (admin check + fetchUsageForAllAttached +
+      // buildCctCardBlocks); on failure we fall back to the
+      // buildCardFromManager output so refresh still works.
       const blocks = await buildCardFromManager(tokenManager);
       const typed = body as RefreshCardActionBody;
       const containerType = typed?.container?.type;
       const channel = typed?.container?.channel_id ?? typed?.channel?.id;
       const ts = typed?.container?.message_ts ?? typed?.message?.ts;
+      const userId = typed?.user?.id;
 
       if (containerType === 'message' && channel && ts) {
+        let messageBlocks = blocks;
+        if (userId) {
+          try {
+            const rendered = await renderCctCard({ userId, issuedAt: Date.now() });
+            messageBlocks = rendered.blocks as Record<string, unknown>[];
+          } catch (err) {
+            logger.warn('cct_refresh_card renderCctCard failed, falling back to buildCardFromManager', {
+              err: (err as Error).message,
+            });
+          }
+        }
         try {
           await client.chat.update({
             channel,
             ts,
             text: ':key: CCT status',
-            blocks: blocks as any,
+            blocks: messageBlocks as any,
           });
         } catch (err) {
           logger.warn('cct_refresh_card chat.update failed', { err: (err as Error).message });
