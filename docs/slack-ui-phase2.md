@@ -14,11 +14,17 @@ The 5-block per-turn UI (from plan v2, §3):
 
 | Block | Owner after P2 | Status in this PR |
 |---|---|---|
-| **B1** stream (markdown / tool output) | `TurnSurface` via `chat.startStream` / `appendStream` / `stopStream` | unchanged — P1 |
+| **B1** stream (assistant markdown **+ tool verbose at PHASE>=2**) | `TurnSurface` via `chat.startStream` / `appendStream` / `stopStream` | **absorbs tool verbose** (see §Tool Verbose Absorb) |
 | **B2** plan / task_card | `TurnSurface.renderTasks` via `chat.postMessage` / `chat.update` on `planTs` | **migrated** |
 | **B3** UIAskUserQuestion slot | `ThreadSurface` (legacy) | unchanged — P3 |
 | **B4** AI working indicator | `AssistantStatusManager` (legacy) | unchanged — P4 |
 | **B5** `<작업 완료>` marker | `TurnNotifier` + `CompletionMessageTracker` (legacy) | unchanged — P5 |
+
+B1 ownership under PHASE>=2 covers **two input streams**: the assistant
+text chunks emitted by the SDK (P1, unchanged) and the formatted tool
+result bodies that previously posted as standalone `chat.postMessage`
+bubbles (P2, this PR). Both ride the same `streamTs` via `appendStream`
+chunks.
 
 Message-ownership table (PHASE>=2):
 
@@ -182,6 +188,67 @@ task-list rows live **only** on `planTs` under PHASE>=2.
 - `src/slack/thread-surface.test.ts` — PHASE=0/1 embeds task list;
   PHASE=2/3 skips task section (no `getTodos` call).
 
+## Tool Verbose Absorb
+
+**Problem before P2**: `ToolEventProcessor.sendToolResult` posted every
+formatted tool result as a standalone `context.say({ text, thread_ts })`
+message. A single turn with N tool uses produced N+1 Slack bubbles
+(AI body + N tool bubbles), shredding the visual focus the P1 stream
+was supposed to restore. The issue body of [#664][issue-664] calls this
+out as the "verbose suppress → B1 흡수" gap.
+
+**Contract at PHASE>=2**:
+
+| State | Route |
+|---|---|
+| `logVerbosity` → `hidden` / `compact` render mode | short-circuit (legacy invariant, unchanged) |
+| PHASE<2 | legacy `context.say` bubble (unchanged) |
+| PHASE>=2, sink installed, `context.turnId` present, sink→`true` | absorbed into B1 via `appendText`, no legacy bubble |
+| PHASE>=2, any precondition missing OR sink→`false` | graceful fallback to `context.say` |
+
+**Sink architecture**:
+
+- `ToolEventProcessor.setToolResultSink(cb)` — optional callback, installed
+  by `slack-handler.ts` as `async (turnId, md) => (await this.threadPanel?.appendText(turnId, '\n\n' + md)) ?? false`.
+- The processor stays decoupled from `ThreadPanel` / `TurnSurface`; it only
+  knows the `ToolResultSink` type. Matches the existing
+  `setCompactDurationCallback` callback-injection pattern.
+- The `\n\n` separator lives in the **wiring closure**, not inside
+  `TurnSurface`. TurnSurface stays a generic B1 write primitive that has
+  no concept of "tool result".
+
+**Graceful degrade, not silent drop**: `appendText` returns `false`
+when the turn has no open stream, the stream is closing (`end()` / `fail()`
+in flight), or `chat.appendStream` itself raises. The sink propagates that
+`false`, and the processor logs at debug then calls `context.say` so the
+tool output still reaches the user. Under no circumstance does a tool
+result disappear.
+
+**Fence preservation**: `ToolFormatter.formatToolResult` embeds its own
+` ```diff ` fences for file edits and similar outputs. The wiring deliberately
+does **not** wrap the formatted string in an outer triple-backtick fence —
+doing so would nest and break Slack's markdown renderer. The sink writes
+the formatted string as-is with a leading blank line for visual separation.
+
+**Accepted tradeoff — first-chunk blank artifact**: When a tool result is
+the first absorbed chunk in a turn (no prior assistant text), the `\n\n`
+separator surfaces as two blank lines at the top of the B1 stream.
+Cosmetic only; content is preserved, and PHASE=0/1 behavior is
+completely untouched. A future refinement could condition the separator
+on a `TurnSurface` chunk-count getter, but that widens public API
+surface for a marginal UX gain. Not worth it at the MVP rollout.
+
+**Rate-limit monitoring point**: `chat.appendStream` goes through raw
+`client.chat.appendStream` (not the queued helper path). Tool output can
+fire in bursts — 4+ rapid `Bash` or `Read` results during a planning turn
+is normal. Stream chunks are lightweight relative to `postMessage`, but
+this is still a monitoring surface: watch the `appendStream` Slack
+rate-limit counter in the P2 soak window and flip back to PHASE=1 if it
+trips. No in-code throttle was added — the existing stream backpressure
+is expected to be sufficient.
+
+[issue-664]: https://github.com/2lab-ai/soma-work/issues/664
+
 ## Out-of-scope (Phase 2)
 
 - `src/slack/choice-message-builder.ts` — **P3**
@@ -228,6 +295,9 @@ production rollout, not the PR.
 | `src/slack/thread-surface.test.ts` | **New** — narrow P2 guard coverage (PHASE 0/1/2/3) |
 | `src/slack/todo-display-manager.ts` | `PlanRenderCallback` + `setPlanRenderCallback` + dual-call in `handleTodoUpdate` under PHASE>=2 |
 | `src/slack/todo-display-manager.test.ts` | PHASE>=2 dual-call + fallback tests |
-| `src/slack/pipeline/stream-executor.ts` | `onTodoUpdate` passes `turnId` + ctx to `handleTodoUpdate` |
-| `src/slack-handler.ts` | Wires `setPlanRenderCallback` → `threadPanel.renderTasks` |
+| `src/slack/pipeline/stream-executor.ts` | `onTodoUpdate` passes `turnId` + ctx to `handleTodoUpdate`; `onToolUse` / `onToolResult` propagate `turnId` into `ToolEventContext` (#664) |
+| `src/slack-handler.ts` | Wires `setPlanRenderCallback` → `threadPanel.renderTasks`; installs `setToolResultSink` closure (#664) |
+| `src/slack/tool-event-processor.ts` | **#664** — `ToolEventContext.turnId?`, `setToolResultSink`, PHASE>=2 sink path with graceful fallback |
+| `src/slack/tool-event-processor.test.ts` | **#664** — Tool verbose absorb (PHASE 0/1 regression + PHASE 2 sink matrix) |
+| `src/slack/pipeline/stream-executor.test.ts` | **#664** — turnId propagation via real execute() closure exercise |
 | `docs/slack-ui-phase2.md` | This document |
