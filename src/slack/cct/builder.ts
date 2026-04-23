@@ -321,20 +321,43 @@ export interface CooldownInfo {
 }
 
 /**
+ * True when a usage window is at or over its budget. Accepts both the 0..1
+ * fraction form (legacy/tests) and the 0..100 percent form (Anthropic's
+ * `/api/oauth/usage` endpoint passes through raw integer percent — see
+ * {@link parseWindow} in `src/oauth/usage.ts`).
+ *
+ * Regression (#684 follow-up): before this helper, `computeUsageCooldown`
+ * compared `utilization >= 1` directly. With the API's percent form that
+ * fires for ANY non-zero usage (≥1%), so every healthy OAuth slot rendered
+ * as "7d Cooldown". The `> 1.5` split mirrors {@link parsePercent} in
+ * `src/oauth/header-parser.ts` — values above 1.5 are percent form, values
+ * at or below 1.5 are fraction form (including over-budget 1.5 = 150%).
+ */
+function isUtilizationFull(util: number | undefined): boolean {
+  if (util === undefined || !Number.isFinite(util)) return false;
+  const fraction = util > 1.5 ? util / 100 : util;
+  return fraction >= 1;
+}
+
+/**
  * OAuth-slot cooldown — utilization-first, with `cooldownUntil` as a
- * lower-priority fallback. Priority: 7d util≥1 > 5h util≥1 >
+ * lower-priority fallback. Priority: 7d full > 5h full >
  * cooldownUntil(future) > healthy.
+ *
+ * "Full" is evaluated by {@link isUtilizationFull}, which handles both the
+ * legacy 0..1 fraction form and the 0..100 percent form the real API sends.
  *
  * Why we honor `cooldownUntil` for OAuth slots (Codex P1 follow-up #679):
  * the Anthropic utilization snapshot is the SSOT for an OAuth slot's
  * BUDGET, but the SDK 429 → `cooldownUntil` bookkeeping is still consulted
  * by the runtime picker (`TokenManager.isEligible` / `rotateOnRateLimit` /
  * `recordRateLimitHint`). When the SDK 429s an OAuth slot before
- * utilization rolls over to ≥1 (or before the snapshot is refreshed),
- * the picker rejects it but the card was rendering "Healthy" — silent
- * UX bug where the Activate button became a no-op. By falling through
- * to `cooldownUntil` after the utilization checks miss, the card matches
- * the picker's reality without disturbing the utilization-first ordering.
+ * utilization crosses the full threshold (or before the snapshot is
+ * refreshed), the picker rejects it but the card was rendering "Healthy" —
+ * silent UX bug where the Activate button became a no-op. By falling
+ * through to `cooldownUntil` after the utilization checks miss, the card
+ * matches the picker's reality without disturbing the utilization-first
+ * ordering.
  *
  * The `manual` source intentionally renders as a bare "Cooldown <dur>"
  * label (no 5h/7d marker) — the SDK 429 doesn't disclose which window
@@ -343,13 +366,13 @@ export interface CooldownInfo {
 export function computeUsageCooldown(state: SlotState | undefined, nowMs: number): CooldownInfo {
   if (!state) return { inCooldown: false, remainingMs: 0, source: null };
   const sevenDay = state.usage?.sevenDay;
-  if (sevenDay && sevenDay.utilization >= 1) {
+  if (sevenDay && isUtilizationFull(sevenDay.utilization)) {
     const resets = new Date(sevenDay.resetsAt).getTime();
     const remaining = Number.isFinite(resets) ? Math.max(0, resets - nowMs) : 0;
     return { inCooldown: true, remainingMs: remaining, source: 'seven_day' };
   }
   const fiveHour = state.usage?.fiveHour;
-  if (fiveHour && fiveHour.utilization >= 1) {
+  if (fiveHour && isUtilizationFull(fiveHour.utilization)) {
     const resets = new Date(fiveHour.resetsAt).getTime();
     const remaining = Number.isFinite(resets) ? Math.max(0, resets - nowMs) : 0;
     return { inCooldown: true, remainingMs: remaining, source: 'five_hour' };
