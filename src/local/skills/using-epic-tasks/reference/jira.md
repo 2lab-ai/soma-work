@@ -1,6 +1,6 @@
-# Jira issue reference — using-epic-issue 부속
+# Jira issue reference — using-epic-tasks 부속
 
-Atlassian Jira Cloud로 에픽+서브이슈를 구현할 때의 문법/API. Cloud 기준 (REST v3).
+Atlassian Jira Cloud로 Case B의 에픽+서브이슈를 구현할 때의 문법/API. Cloud 기준 (REST v3). Case A 단일 이슈도 이 참조를 사용.
 
 ## 1. Issue type 계층 — 본 스킬은 Epic → Story
 
