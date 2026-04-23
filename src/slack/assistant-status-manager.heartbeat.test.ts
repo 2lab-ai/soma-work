@@ -139,6 +139,59 @@ describe('AssistantStatusManager — Heartbeat', () => {
     expect(mockSlackApi.setAssistantStatus).not.toHaveBeenCalled();
   });
 
+  // disable transition should best-effort clear residual Slack spinner
+  it('heartbeat_failure_best_effort_clears', async () => {
+    await manager.setStatus('C123', '123.456', 'is thinking...');
+    mockSlackApi.setAssistantStatus.mockClear();
+
+    // Fail once (the tick), subsequent calls (the best-effort clear) succeed
+    mockSlackApi.setAssistantStatus.mockRejectedValueOnce(new Error('not_allowed'));
+
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    // Expect: 1 failing tick + 1 best-effort clear with ''
+    expect(mockSlackApi.setAssistantStatus).toHaveBeenCalledTimes(2);
+    expect(mockSlackApi.setAssistantStatus).toHaveBeenNthCalledWith(
+      1,
+      'C123',
+      '123.456',
+      'is thinking...',
+    );
+    expect(mockSlackApi.setAssistantStatus).toHaveBeenNthCalledWith(2, 'C123', '123.456', '');
+  });
+
+  // Setting empty status should not generate empty-string heartbeats
+  it('setStatus_empty_string_does_not_start_empty_heartbeat', async () => {
+    await manager.setStatus('C123', '123.456', '');
+
+    // Should have called clearStatus path once (Slack API call with '')
+    expect(mockSlackApi.setAssistantStatus).toHaveBeenCalledTimes(1);
+    expect(mockSlackApi.setAssistantStatus).toHaveBeenCalledWith('C123', '123.456', '');
+
+    mockSlackApi.setAssistantStatus.mockClear();
+
+    // Advance — no heartbeat should have been registered (clearStatus path)
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(mockSlackApi.setAssistantStatus).not.toHaveBeenCalled();
+  });
+
+  // descriptor with resolver: tick re-invokes resolver with latest state
+  it('heartbeat_tick_reinvokes_descriptor_resolver', async () => {
+    let counter = 0;
+    const resolver = vi.fn(() => `tick-${++counter}`);
+
+    await manager.setStatus('C123', '123.456', { resolver });
+    expect(mockSlackApi.setAssistantStatus).toHaveBeenLastCalledWith('C123', '123.456', 'tick-1');
+
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(mockSlackApi.setAssistantStatus).toHaveBeenLastCalledWith('C123', '123.456', 'tick-2');
+
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(mockSlackApi.setAssistantStatus).toHaveBeenLastCalledWith('C123', '123.456', 'tick-3');
+
+    expect(resolver).toHaveBeenCalledTimes(3);
+  });
+
   // ─── Scenario 5: Multi-Session Independence ───
 
   // Trace: Scenario 5, Section 3a — 독립 타이머
