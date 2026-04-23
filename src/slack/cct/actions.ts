@@ -25,6 +25,7 @@ import { Logger } from '../../logger';
 import type { OAuthCredentials } from '../../oauth/refresher';
 import { hasRequiredScopes } from '../../oauth/scope-check';
 import type { TokenManager } from '../../token-manager';
+import { renderCctCard } from '../z/topics/cct-topic';
 import {
   type AddSlotFormKind,
   appendStoreReadFailureBanner,
@@ -50,7 +51,32 @@ export const REFRESH_BANNERS = {
     ':warning: *Refresh All OAuth Tokens — nothing refreshed* — every attached slot failed to refresh. Check the TokenManager logs for `refreshAllAttachedOAuthTokens` errors or the auth-state of each slot.',
   cardNull: ':warning: *Refresh — all usage fetches were throttled or failed.* Try again in a moment.',
   outerCatch: ':warning: Refresh failed. Please try again.',
+  updateFailed: ':warning: 카드 갱신 실패. `/cct`를 다시 실행해주세요.',
 } as const;
+
+/**
+ * Surface descriptor for the `refresh_card` handler. Bolt's block_actions
+ * payload carries a `container` block whose shape varies by surface:
+ *   - `type: 'message'` → posted card; `chat.update(channel, ts, …)` works.
+ *   - `type: 'ephemeral'` → ephemeral card from `postEphemeral`; `chat.update`
+ *     is forbidden (no `message_ts` for ephemerals), so we use the
+ *     `respond` callback with `replace_original: true` against the
+ *     response_url Slack hands us per-action.
+ * Anything else (`view`, missing container) falls back to the
+ * `updateFailed` banner — we refuse to stack a fresh ephemeral card on
+ * top of the stale one because that's exactly the bug Codex flagged.
+ */
+interface RefreshCardActionBody {
+  user?: { id?: string };
+  container?: {
+    type?: 'message' | 'ephemeral' | string;
+    channel_id?: string;
+    message_ts?: string;
+  };
+  channel?: { id?: string };
+  message?: { ts?: string };
+  actions?: Array<{ value?: string }>;
+}
 
 /**
  * Register all CCT block actions + view submissions on the Bolt app.
@@ -271,10 +297,20 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
   //     per-row usage bars reflect the latest Anthropic data on the same
   //     click.
   //
+  // Surface-aware in-place update (Codex blocker follow-up to #672): the
+  // Refresh button can be clicked from either a posted message (first
+  // `/cct` card) OR from an ephemeral card spawned by a sibling action
+  // (add/remove/attach/detach/refresh_usage_all all call
+  // `postEphemeralCard`). We MUST update the clicked surface in place
+  // instead of stacking yet another ephemeral card on the channel:
+  //   - `container.type === 'message'`   → `chat.update`
+  //   - `container.type === 'ephemeral'` → `respond({ replace_original: true })`
+  //   - anything else / surface missing  → `updateFailed` banner
+  //
   // When every attached slot fetch returns null (throttled or failed),
-  // post an ephemeral banner instead of silently re-rendering the same
-  // stale card.
-  app.action(CCT_ACTION_IDS.refresh_card, async ({ ack, body, client }) => {
+  // post an ephemeral `cardNull` banner instead of silently leaving the
+  // same stale card in place.
+  app.action(CCT_ACTION_IDS.refresh_card, async ({ ack, body, client, respond }) => {
     await ack();
     try {
       if (!requireAdmin(body)) return;
@@ -290,7 +326,71 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
         await postEphemeralFailure(client, body, REFRESH_BANNERS.cardNull);
         return;
       }
-      await postEphemeralCard(tokenManager, client, body);
+
+      // Surface-aware renderer choice (Codex P2 follow-up to #679):
+      //   - container.type === 'message'   → renderCctCard (persistent /cct
+      //     and /z cct messages were built by cct-topic and carry the
+      //     trailing z_setting_cct_cancel actions row; chat.update with
+      //     buildCardFromManager output strips that row).
+      //   - container.type === 'ephemeral' → buildCardFromManager (cancel
+      //     button isn't part of the ephemeral surface).
+      // renderCctCard is heavier (admin check + fetchUsageForAllAttached +
+      // buildCctCardBlocks); on failure we fall back to the
+      // buildCardFromManager output so refresh still works.
+      const blocks = await buildCardFromManager(tokenManager);
+      const typed = body as RefreshCardActionBody;
+      const containerType = typed?.container?.type;
+      const channel = typed?.container?.channel_id ?? typed?.channel?.id;
+      const ts = typed?.container?.message_ts ?? typed?.message?.ts;
+      const userId = typed?.user?.id;
+
+      if (containerType === 'message' && channel && ts) {
+        let messageBlocks = blocks;
+        if (userId) {
+          try {
+            const rendered = await renderCctCard({ userId, issuedAt: Date.now() });
+            messageBlocks = rendered.blocks as Record<string, unknown>[];
+          } catch (err) {
+            logger.warn('cct_refresh_card renderCctCard failed, falling back to buildCardFromManager', {
+              err: (err as Error).message,
+            });
+          }
+        }
+        try {
+          await client.chat.update({
+            channel,
+            ts,
+            text: ':key: CCT status',
+            blocks: messageBlocks as any,
+          });
+        } catch (err) {
+          logger.warn('cct_refresh_card chat.update failed', { err: (err as Error).message });
+          await postEphemeralFailure(client, body, REFRESH_BANNERS.updateFailed);
+        }
+        return;
+      }
+
+      if (containerType === 'ephemeral') {
+        try {
+          await respond({
+            response_type: 'ephemeral',
+            replace_original: true,
+            text: ':key: CCT status',
+            blocks: blocks as any,
+          });
+        } catch (err) {
+          logger.warn('cct_refresh_card respond failed', { err: (err as Error).message });
+          await postEphemeralFailure(client, body, REFRESH_BANNERS.updateFailed);
+        }
+        return;
+      }
+
+      // Unknown surface — neither a persistent message nor ephemeral.
+      // Could be a view/home-tab surface or a malformed payload; either
+      // way we refuse to stack a fresh ephemeral card and surface the
+      // updateFailed banner so the operator re-invokes `/cct` explicitly.
+      logger.warn('cct_refresh_card no surface to update', { containerType });
+      await postEphemeralFailure(client, body, REFRESH_BANNERS.updateFailed);
     } catch (err) {
       logger.error('cct_refresh_card failed', err);
       await postEphemeralFailure(client, body, REFRESH_BANNERS.outerCatch).catch(() => {
