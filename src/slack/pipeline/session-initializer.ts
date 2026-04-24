@@ -1,6 +1,11 @@
 import * as fs from 'fs';
 import { getAdminUsers } from '../../admin-utils';
 import { checkRepoChannelMatch, getAllChannels, getChannel, registerChannel } from '../../channel-registry';
+import {
+  expectedHandoffKind,
+  HandoffAbortError,
+  parseHandoff,
+} from 'somalib/model-commands/handoff-parser';
 import type { ClaudeHandler } from '../../claude-handler';
 import { createConversation, getConversationUrl } from '../../conversation';
 import { getDispatchService } from '../../dispatch-service';
@@ -544,10 +549,80 @@ export class SessionInitializer {
    * Called when session needs re-dispatch (e.g., after /new or /renew)
    * @param channel - Slack channel ID
    * @param threadTs - Thread timestamp
-   * @param text - Text to use for classification
+   * @param text - Text to use for dispatch classification (typically a short
+   *   handle like an issue URL; NOT the full `<z-handoff>` prompt body)
+   * @param forceWorkflow - If set, skips classification and transitions
+   *   directly to the given workflow
+   * @param handoffPrompt - Full continuation prompt body for sentinel parsing.
+   *   Required when `forceWorkflow` is one of the z-handoff entrypoints
+   *   (`z-plan-to-work` / `z-epic-update`); ignored otherwise. Issue #695.
+   * @throws HandoffAbortError when `forceWorkflow` is a z-handoff entrypoint
+   *   and the sentinel is missing, malformed, or does not match the expected
+   *   type for the requested workflow. Caught by `SlackHandler` (safe-stop).
    */
-  async runDispatch(channel: string, threadTs: string, text: string, forceWorkflow?: WorkflowType): Promise<void> {
+  async runDispatch(
+    channel: string,
+    threadTs: string,
+    text: string,
+    forceWorkflow?: WorkflowType,
+    handoffPrompt?: string,
+  ): Promise<void> {
     const sessionKey = this.deps.claudeHandler.getSessionKey(channel, threadTs);
+
+    // Issue #695 — host-level enforcement of z session handoff entrypoints.
+    // Parse the `<z-handoff>` sentinel, verify sentinel-to-workflow mapping,
+    // persist typed metadata, and transition to the forced workflow. Any
+    // failure throws `HandoffAbortError`, which `SlackHandler` catches to
+    // emit a user-facing safe-stop message and short-circuit the retry path.
+    if (
+      (forceWorkflow === 'z-plan-to-work' || forceWorkflow === 'z-epic-update') &&
+      this.deps.claudeHandler.needsDispatch(channel, threadTs)
+    ) {
+      if (!handoffPrompt) {
+        throw new HandoffAbortError(
+          'no-sentinel',
+          'runDispatch received no handoffPrompt for forced z-* workflow',
+          forceWorkflow,
+        );
+      }
+      const parsed = parseHandoff(handoffPrompt);
+      if (!parsed.ok) {
+        throw new HandoffAbortError(parsed.reason, parsed.detail, forceWorkflow);
+      }
+      const expected = expectedHandoffKind(forceWorkflow);
+      if (parsed.context.handoffKind !== expected) {
+        throw new HandoffAbortError(
+          'type-workflow-mismatch',
+          `expected <z-handoff type="${expected}">, got type="${parsed.context.handoffKind}"`,
+          forceWorkflow,
+        );
+      }
+      const session = this.deps.claudeHandler.getSession(channel, threadTs);
+      if (!session) {
+        throw new HandoffAbortError(
+          'host-policy',
+          'session not found at handoff entry',
+          forceWorkflow,
+        );
+      }
+      session.handoffContext = parsed.context;
+      this.deps.claudeHandler.saveSessions();
+      this.logger.info('Handoff entrypoint entered', {
+        sessionKey,
+        workflow: forceWorkflow,
+        handoffKind: parsed.context.handoffKind,
+        chainId: parsed.context.chainId,
+        hopBudget: parsed.context.hopBudget,
+      });
+      this.deps.claudeHandler.transitionToMain(
+        channel,
+        threadTs,
+        forceWorkflow,
+        forceWorkflow === 'z-plan-to-work' ? 'z handoff (plan→work)' : 'z handoff (epic update)',
+      );
+      return;
+    }
+
     if (forceWorkflow && this.deps.claudeHandler.needsDispatch(channel, threadTs)) {
       this.logger.info('Forcing workflow during re-dispatch', {
         sessionKey,
