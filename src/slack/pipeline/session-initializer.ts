@@ -26,6 +26,7 @@ import type { RequestCoordinator } from '../request-coordinator';
 import type { SlackApiHelper } from '../slack-api-helper';
 import { ThreadHeaderBuilder } from '../thread-header-builder';
 import type { ThreadPanel } from '../thread-panel';
+import { getEffectiveFiveBlockPhase } from './effective-phase';
 import type { MessageEvent, SayFn, SessionInitResult } from './types';
 
 // Timeout for dispatch API call (30 seconds - Agent SDK needs time to start)
@@ -696,8 +697,13 @@ export class SessionInitializer {
       const dispatchService = getDispatchService();
       const model = dispatchService.getModel();
 
-      // Native spinner during dispatch
-      await this.deps.assistantStatusManager?.setStatus(channel, threadTs, 'is analyzing your request...');
+      // Native spinner during dispatch.
+      // #689 P4 Part 2/2 — at effective PHASE>=4, TurnSurface owns the spinner
+      // ("is thinking...") starting from begin(). Dispatch-analysis text is a
+      // legacy-only message.
+      if (this.deps.assistantStatusManager && getEffectiveFiveBlockPhase(this.deps.assistantStatusManager) < 4) {
+        await this.deps.assistantStatusManager.setStatus(channel, threadTs, 'is analyzing your request...');
+      }
       await updateDispatchPanel('워크플로우 분석 중', 'working');
 
       // Add dispatching reaction and post status message
@@ -750,8 +756,13 @@ export class SessionInitializer {
         );
       }
 
-      // Set thread title in DM history
-      await this.deps.assistantStatusManager?.setTitle(channel, threadTs, result.title);
+      // Set thread title in DM history.
+      // #689 P4 Part 2/2 — at effective PHASE>=4 the native Assistant UI owns
+      // thread titles; a separate TurnSurface title-write is tracked for a
+      // follow-up PR (docs/slack-ui-phase4.md Part 2 §Out of scope).
+      if (this.deps.assistantStatusManager && getEffectiveFiveBlockPhase(this.deps.assistantStatusManager) < 4) {
+        await this.deps.assistantStatusManager.setTitle(channel, threadTs, result.title);
+      }
 
       // Store extracted links on the session
       if (result.links && Object.keys(result.links).length > 0) {

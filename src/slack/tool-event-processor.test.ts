@@ -544,4 +544,55 @@ describe('ToolEventProcessor', () => {
       expect(status.unregister).not.toHaveBeenCalled();
     });
   });
+
+  // #689 P4 Part 2/2 — PHASE>=4 suppresses the MCP-specific legacy setStatus
+  // call. TurnSurface takes over as the single B4 writer. At PHASE<4 the
+  // legacy path must still fire (regression guard).
+  describe('#689 B4 legacy suppression', () => {
+    const originalPhase = config.ui.fiveBlockPhase;
+    afterEach(() => {
+      config.ui.fiveBlockPhase = originalPhase;
+    });
+
+    const makeMgr = (enabled: boolean) => ({
+      isEnabled: vi.fn().mockReturnValue(enabled),
+      setStatus: vi.fn().mockResolvedValue(undefined),
+      clearStatus: vi.fn().mockResolvedValue(undefined),
+      getToolStatusText: vi.fn().mockReturnValue('is calling jira...'),
+    });
+
+    it('PHASE<4: handleToolUse calls setStatus on MCP tool (legacy behaviour)', async () => {
+      config.ui.fiveBlockPhase = 3;
+      const mgr = makeMgr(true);
+      const proc = new ToolEventProcessor(toolTracker, mcpStatusDisplay, mcpCallTracker, mgr as any);
+      await proc.handleToolUse(
+        [{ id: 'tool_1', name: 'mcp__jira__search_issues', input: { q: 't' } }],
+        mockContext,
+      );
+      expect(mgr.setStatus).toHaveBeenCalledTimes(1);
+      expect(mgr.setStatus).toHaveBeenCalledWith('C123', 'thread_ts', 'is calling jira...');
+    });
+
+    it('PHASE>=4 + enabled: handleToolUse does NOT call setStatus (TurnSurface owns)', async () => {
+      config.ui.fiveBlockPhase = 4;
+      const mgr = makeMgr(true);
+      const proc = new ToolEventProcessor(toolTracker, mcpStatusDisplay, mcpCallTracker, mgr as any);
+      await proc.handleToolUse(
+        [{ id: 'tool_1', name: 'mcp__jira__search_issues', input: { q: 't' } }],
+        mockContext,
+      );
+      expect(mgr.setStatus).not.toHaveBeenCalled();
+    });
+
+    it('PHASE>=4 + disabled (clamped): handleToolUse re-fires legacy setStatus (graceful fallback)', async () => {
+      config.ui.fiveBlockPhase = 4;
+      const mgr = makeMgr(false);
+      const proc = new ToolEventProcessor(toolTracker, mcpStatusDisplay, mcpCallTracker, mgr as any);
+      await proc.handleToolUse(
+        [{ id: 'tool_1', name: 'mcp__jira__search_issues', input: { q: 't' } }],
+        mockContext,
+      );
+      expect(mgr.setStatus).toHaveBeenCalledTimes(1);
+    });
+  });
 });

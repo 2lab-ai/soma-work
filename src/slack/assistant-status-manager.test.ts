@@ -34,9 +34,12 @@ describe('AssistantStatusManager', () => {
       expect(mockSlackApi.setAssistantStatus).toHaveBeenCalledWith('C123', '123.456', 'is thinking...');
     });
 
-    it('should auto-disable on first failure and best-effort clear', async () => {
+    // #689 P4 Part 2: permanent failure (missing_scope / not_allowed_token_type
+    // / invalid_auth) disables + best-effort clear. `not_allowed` is per-thread
+    // and NOT a disable trigger anymore — see separate non-clamp test below.
+    it('should auto-disable on permanent failure and best-effort clear', async () => {
       mockSlackApi.setAssistantStatus.mockRejectedValueOnce(
-        Object.assign(new Error('not_allowed'), { data: { error: 'not_allowed' } }),
+        Object.assign(new Error('missing_scope'), { data: { error: 'missing_scope' } }),
       );
 
       await manager.setStatus('C123', '123.456', 'is thinking...');
@@ -51,6 +54,33 @@ describe('AssistantStatusManager', () => {
       mockSlackApi.setAssistantStatus.mockClear();
       await manager.setStatus('C123', '123.456', 'is working...');
       expect(mockSlackApi.setAssistantStatus).not.toHaveBeenCalled();
+    });
+
+    // #689 P4 Part 2 — per-thread `not_allowed` MUST NOT disable.
+    it('should NOT disable on per-thread not_allowed (mixed-traffic protection)', async () => {
+      mockSlackApi.setAssistantStatus.mockRejectedValueOnce(
+        Object.assign(new Error('not_allowed'), { data: { error: 'not_allowed' } }),
+      );
+
+      await manager.setStatus('C123', '123.456', 'is thinking...');
+      expect(manager.isEnabled()).toBe(true);
+
+      await manager.setStatus('C123', '123.456', 'is working...');
+      // 1 failing + 1 retry (no best-effort clear because not disabled)
+      expect(mockSlackApi.setAssistantStatus).toHaveBeenCalledTimes(2);
+    });
+
+    // #689 P4 Part 2 — transient (ratelimited/network) MUST NOT disable.
+    it('should NOT disable on transient ratelimited failure', async () => {
+      mockSlackApi.setAssistantStatus.mockRejectedValueOnce(
+        Object.assign(new Error('ratelimited'), { data: { error: 'ratelimited' } }),
+      );
+
+      await manager.setStatus('C123', '123.456', 'is thinking...');
+      expect(manager.isEnabled()).toBe(true);
+
+      await manager.setStatus('C123', '123.456', 'is working...');
+      expect(mockSlackApi.setAssistantStatus).toHaveBeenCalledTimes(2);
     });
 
     it('should reroute empty string to clearStatus (no empty-string heartbeat)', async () => {
@@ -94,7 +124,9 @@ describe('AssistantStatusManager', () => {
 
     it('should not call when disabled', async () => {
       // Force disable by triggering error
-      mockSlackApi.setAssistantStatus.mockRejectedValueOnce(new Error('fail'));
+      mockSlackApi.setAssistantStatus.mockRejectedValueOnce(
+        Object.assign(new Error('missing_scope'), { data: { error: 'missing_scope' } }),
+      );
       await manager.setStatus('C123', '123.456', 'test');
 
       mockSlackApi.setAssistantStatus.mockClear();
@@ -197,7 +229,9 @@ describe('AssistantStatusManager', () => {
     });
 
     it('should not call when disabled', async () => {
-      mockSlackApi.setAssistantStatus.mockRejectedValueOnce(new Error('fail'));
+      mockSlackApi.setAssistantStatus.mockRejectedValueOnce(
+        Object.assign(new Error('missing_scope'), { data: { error: 'missing_scope' } }),
+      );
       await manager.setStatus('C123', '123.456', 'test');
 
       await manager.setTitle('C123', '123.456', 'Title');
@@ -328,5 +362,83 @@ describe('AssistantStatusManager — descriptor resolver on heartbeat', () => {
     un();
     await vi.advanceTimersByTimeAsync(20_000);
     expect(mockSlackApi.setAssistantStatus).toHaveBeenLastCalledWith('C', 't', 'is running commands...');
+  });
+});
+
+// #689 P4 Part 2/2 — markDisabledIfScopeMissing public API. Only permanent
+// scope/auth codes flip `enabled=false`. `not_allowed` is per-thread and
+// transient codes (ratelimited / internal_error / network) are non-fatal —
+// neither should clamp the process-global manager.
+describe('markDisabledIfScopeMissing (#689)', () => {
+  let mockSlackApi: {
+    setAssistantStatus: ReturnType<typeof vi.fn>;
+    setAssistantTitle: ReturnType<typeof vi.fn>;
+  };
+  let manager: AssistantStatusManager;
+
+  beforeEach(() => {
+    mockSlackApi = {
+      setAssistantStatus: vi.fn().mockResolvedValue(undefined),
+      setAssistantTitle: vi.fn().mockResolvedValue(undefined),
+    };
+    manager = new AssistantStatusManager(mockSlackApi as unknown as SlackApiHelper);
+  });
+
+  it('missing_scope → enabled=false + clearAllHeartbeats + returns true', async () => {
+    await manager.setStatus('C123', '123.456', 'is thinking...');
+    expect(manager.isEnabled()).toBe(true);
+
+    const err = Object.assign(new Error('missing_scope'), { data: { error: 'missing_scope' } });
+    const result = manager.markDisabledIfScopeMissing(err);
+
+    expect(result).toBe(true);
+    expect(manager.isEnabled()).toBe(false);
+
+    // After disable, subsequent setStatus should be no-op even on a fresh key
+    mockSlackApi.setAssistantStatus.mockClear();
+    await manager.setStatus('C456', '999.000', 'foo');
+    expect(mockSlackApi.setAssistantStatus).not.toHaveBeenCalled();
+  });
+
+  it('not_allowed_token_type → enabled=false + returns true', () => {
+    const err = Object.assign(new Error('scope'), { data: { error: 'not_allowed_token_type' } });
+    expect(manager.markDisabledIfScopeMissing(err)).toBe(true);
+    expect(manager.isEnabled()).toBe(false);
+  });
+
+  it('invalid_auth → enabled=false + returns true', () => {
+    const err = Object.assign(new Error('auth'), { data: { error: 'invalid_auth' } });
+    expect(manager.markDisabledIfScopeMissing(err)).toBe(true);
+    expect(manager.isEnabled()).toBe(false);
+  });
+
+  it('not_allowed (per-thread) → enabled unchanged + returns false', () => {
+    const err = Object.assign(new Error('not allowed'), { data: { error: 'not_allowed' } });
+    expect(manager.markDisabledIfScopeMissing(err)).toBe(false);
+    expect(manager.isEnabled()).toBe(true);
+  });
+
+  it('generic/transient error → enabled unchanged + returns false', () => {
+    const transientErrs = [
+      new Error('network timeout'),
+      Object.assign(new Error('rl'), { data: { error: 'ratelimited' } }),
+      Object.assign(new Error('ie'), { data: { error: 'internal_error' } }),
+    ];
+    for (const err of transientErrs) {
+      expect(manager.markDisabledIfScopeMissing(err)).toBe(false);
+    }
+    expect(manager.isEnabled()).toBe(true);
+  });
+
+  it('already disabled → returns true without double clearAllHeartbeats', () => {
+    const err = Object.assign(new Error('scope'), { data: { error: 'missing_scope' } });
+    expect(manager.markDisabledIfScopeMissing(err)).toBe(true);
+    expect(manager.isEnabled()).toBe(false);
+
+    // Re-call: already disabled. Should return true (matcher matched) but
+    // no state mutation. There are no heartbeats at this point, so the
+    // idempotency is asserted by not throwing and by the return value.
+    expect(manager.markDisabledIfScopeMissing(err)).toBe(true);
+    expect(manager.isEnabled()).toBe(false);
   });
 });

@@ -7,8 +7,10 @@ import type { TodoManager } from '../todo-manager';
 import type { ConversationSession } from '../types';
 import { userSettingsStore } from '../user-settings-store';
 import { ActionPanelBuilder, type PRStatusInfo } from './action-panel-builder';
+import type { AssistantStatusManager } from './assistant-status-manager';
 import type { CompletionMessageTracker } from './completion-message-tracker';
 import { ContextWindowManager } from './context-window-manager';
+import { getEffectiveFiveBlockPhase } from './pipeline/effective-phase';
 import type { RequestCoordinator } from './request-coordinator';
 import type { SlackApiHelper } from './slack-api-helper';
 import { TaskListBlockBuilder } from './task-list-block-builder';
@@ -25,6 +27,12 @@ interface ThreadSurfaceDeps {
   requestCoordinator: RequestCoordinator;
   todoManager: TodoManager;
   completionMessageTracker?: CompletionMessageTracker;
+  /**
+   * #689 P4 Part 2/2 — optional so existing tests can construct
+   * `ThreadSurface` without this dep. When absent, the chip is NEVER
+   * suppressed (legacy behaviour).
+   */
+  assistantStatusManager?: AssistantStatusManager;
 }
 
 interface PRCacheEntry {
@@ -607,6 +615,14 @@ export class ThreadSurface {
     blocks.push(...this.buildHeaderBlocks(session));
 
     // ── 2. Status + fields section (from ActionPanelBuilder) ──
+    // #689 P4 Part 2/2 — at effective PHASE>=4, TurnSurface owns the native
+    // spinner; suppress the inline agent chip here so the user does not see
+    // a duplicate progress indicator. Clamp-aware so a runtime scope error
+    // automatically restores the chip (Phase-3-style fallback).
+    const suppressAgentChip = this.deps.assistantStatusManager
+      ? getEffectiveFiveBlockPhase(this.deps.assistantStatusManager) >= 4
+      : false;
+
     const panelPayload = ActionPanelBuilder.build({
       sessionKey,
       workflow: session.workflow,
@@ -621,6 +637,7 @@ export class ThreadSurface {
       hasActiveRequest,
       agentPhase: panelState.agentPhase,
       activeTool: panelState.activeTool,
+      suppressAgentChip,
       statusUpdatedAt: panelState.statusUpdatedAt,
       logVerbosity: session.logVerbosity,
       prStatus: prStatusInfo?.prStatus,

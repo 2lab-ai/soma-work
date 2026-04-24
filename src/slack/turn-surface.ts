@@ -1,6 +1,8 @@
 import { config } from '../config';
 import { Logger } from '../logger';
 import type { Todo } from '../todo-manager';
+import type { AssistantStatusManager } from './assistant-status-manager';
+import { getEffectiveFiveBlockPhase } from './pipeline/effective-phase';
 import type { SlackApiHelper } from './slack-api-helper';
 import { TaskListBlockBuilder } from './task-list-block-builder';
 import { TurnRenderDebouncer } from './turn-render-debouncer';
@@ -123,6 +125,13 @@ function describeSlackError(error: unknown): { code?: string; message: string } 
 
 export interface TurnSurfaceDeps {
   slackApi: SlackApiHelper;
+  /**
+   * #689 P4 Part 2/2 — TurnSurface is the sole native-status writer at
+   * effective PHASE>=4. Optional so existing tests that construct
+   * `TurnSurface` without this dep keep working (legacy behaviour: no
+   * spinner writes even if PHASE=4 — ThreadSurface chip owns the UX).
+   */
+  assistantStatusManager?: AssistantStatusManager;
 }
 
 // ---------------------------------------------------------------------------
@@ -153,6 +162,19 @@ export class TurnSurface {
    */
   private phase(): number {
     return config.ui.fiveBlockPhase;
+  }
+
+  /**
+   * #689 P4 Part 2/2 — effective phase for B4 consumers. Identical to
+   * `phase()` unless `raw >= 4 && !assistantStatusManager.isEnabled()`, in
+   * which case it clamps to 3 and emits the `soma_ui_5block_phase_clamped`
+   * metric (once-flag). If no `assistantStatusManager` is injected we fall
+   * back to the raw phase (tests / legacy constructors).
+   */
+  private effectivePhase(): number {
+    const mgr = this.deps.assistantStatusManager;
+    if (!mgr) return this.phase();
+    return getEffectiveFiveBlockPhase(mgr);
   }
 
   // -------------------------------------------------------------------------
@@ -244,6 +266,15 @@ export class TurnSurface {
         turnId: ctx.turnId,
         error: (err as Error).message,
       });
+    }
+
+    // #689 P4 Part 2/2 — B4 native spinner start. Only fires at effective
+    // PHASE>=4 (raw>=4 AND assistantStatusManager.isEnabled()). Runtime
+    // scope failure flips `enabled=false` → effective clamp to 3 on the
+    // next turn, falling back to ThreadSurface chip.
+    const mgr = this.deps.assistantStatusManager;
+    if (mgr && this.effectivePhase() >= 4 && ctx.threadTs) {
+      await mgr.setStatus(ctx.channelId, ctx.threadTs, 'is thinking...');
     }
   }
 
@@ -589,6 +620,13 @@ export class TurnSurface {
         await this.closeStream(state, 'end', reason);
       }
     } finally {
+      // #689 P4 Part 2/2 — B4 native spinner clear. Best-effort: exceptions
+      // are swallowed inside AssistantStatusManager.clearStatus. Runs before
+      // cleanupTurn() so we still have `state.ctx` in scope.
+      const mgr = this.deps.assistantStatusManager;
+      if (mgr && this.effectivePhase() >= 4 && state.ctx.threadTs) {
+        await mgr.clearStatus(state.ctx.channelId, state.ctx.threadTs);
+      }
       this.cleanupTurn(turnId, state);
     }
   }
@@ -621,6 +659,11 @@ export class TurnSurface {
         await this.closeStream(state, 'fail', 'aborted');
       }
     } finally {
+      // #689 P4 Part 2/2 — B4 native spinner clear on defensive close.
+      const mgr = this.deps.assistantStatusManager;
+      if (mgr && this.effectivePhase() >= 4 && state.ctx.threadTs) {
+        await mgr.clearStatus(state.ctx.channelId, state.ctx.threadTs);
+      }
       this.cleanupTurn(turnId, state);
     }
   }

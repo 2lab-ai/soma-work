@@ -3551,3 +3551,63 @@ describe('stream-executor — epoch guard + Bash resolver descriptor (issue #688
     expect(emptyStringSet).toBeUndefined();
   });
 });
+
+// #689 P4 Part 2/2 — `legacySetStatus` / `legacyClearStatus` private wrappers.
+// All existing stream-executor native-spinner callsites route through these so
+// they can be PHASE-gated in one place. Verified directly (white-box) to keep
+// the test isolated from the full `execute()` pipeline.
+describe('StreamExecutor — #689 legacy native-spinner suppression', () => {
+  const originalPhase = config.ui.fiveBlockPhase;
+
+  const makeExec = (phase: number, enabled: boolean) => {
+    config.ui.fiveBlockPhase = phase;
+    const mgr = {
+      isEnabled: vi.fn().mockReturnValue(enabled),
+      setStatus: vi.fn().mockResolvedValue(undefined),
+      clearStatus: vi.fn().mockResolvedValue(undefined),
+    };
+    const executor = new StreamExecutor({ assistantStatusManager: mgr } as any);
+    return { executor, mgr };
+  };
+
+  afterEach(() => {
+    config.ui.fiveBlockPhase = originalPhase;
+  });
+
+  it('PHASE<4: legacySetStatus forwards to assistantStatusManager.setStatus', async () => {
+    const { executor, mgr } = makeExec(3, true);
+    await (executor as any).legacySetStatus('C', 'thr', 'is thinking...');
+    expect(mgr.setStatus).toHaveBeenCalledTimes(1);
+    expect(mgr.setStatus).toHaveBeenCalledWith('C', 'thr', 'is thinking...');
+  });
+
+  it('PHASE>=4 + enabled: legacySetStatus is a no-op (TurnSurface owns)', async () => {
+    const { executor, mgr } = makeExec(4, true);
+    await (executor as any).legacySetStatus('C', 'thr', 'is thinking...');
+    expect(mgr.setStatus).not.toHaveBeenCalled();
+  });
+
+  it('PHASE>=4 + disabled (clamped): legacySetStatus re-activates the forward', async () => {
+    const { executor, mgr } = makeExec(4, false);
+    await (executor as any).legacySetStatus('C', 'thr', 'fallback');
+    expect(mgr.setStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it('PHASE<4: legacyClearStatus forwards to assistantStatusManager.clearStatus', async () => {
+    const { executor, mgr } = makeExec(2, true);
+    await (executor as any).legacyClearStatus('C', 'thr');
+    expect(mgr.clearStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it('PHASE>=4 + enabled: legacyClearStatus is a no-op', async () => {
+    const { executor, mgr } = makeExec(5, true);
+    await (executor as any).legacyClearStatus('C', 'thr');
+    expect(mgr.clearStatus).not.toHaveBeenCalled();
+  });
+
+  it('legacyClearStatus propagates expectedEpoch option at PHASE<4', async () => {
+    const { executor, mgr } = makeExec(2, true);
+    await (executor as any).legacyClearStatus('C', 'thr', { expectedEpoch: 3 });
+    expect(mgr.clearStatus).toHaveBeenCalledWith('C', 'thr', { expectedEpoch: 3 });
+  });
+});

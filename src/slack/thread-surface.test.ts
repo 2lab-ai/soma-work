@@ -222,6 +222,48 @@ describe('ThreadSurface — P3 setChoiceMeta / clearChoice', () => {
     expect(deps.slackApi.getPermalink).not.toHaveBeenCalled();
   });
 
+  // #689 P4 Part 2/2 — chip suppression at effective PHASE>=4
+  describe('buildCombinedBlocks — P4 chip suppression', () => {
+    const makeMgr = (enabled: boolean) => ({ isEnabled: vi.fn().mockReturnValue(enabled) }) as any;
+
+    function makeSessionWithChipState(): ConversationSession {
+      const s = makeSession();
+      s.actionPanel = { agentPhase: 'thinking', activeTool: 'Bash' };
+      (s as any).activityState = 'working';
+      return s;
+    }
+
+    function chipVisible(blocks: any[]): boolean {
+      // The chip renders as `\n_…_` italic text inside the hero status
+      // section (mrkdwn). If the text contains `\n_` the chip is present.
+      return blocks.some((b) => b.type === 'section' && b.text?.type === 'mrkdwn' && /\n_[^_]+_/.test(b.text.text));
+    }
+
+    it('PHASE<4 and no statusManager → chip present (legacy behaviour)', () => {
+      config.ui.fiveBlockPhase = 3;
+      const deps = makeDeps([]);
+      const surface = new ThreadSurface(deps);
+      const blocks = buildBlocks(surface, makeSessionWithChipState(), 'C1:t1.0');
+      expect(chipVisible(blocks)).toBe(true);
+    });
+
+    it('effective PHASE>=4 (manager enabled) → chip suppressed', () => {
+      config.ui.fiveBlockPhase = 4;
+      const deps = { ...makeDeps([]), assistantStatusManager: makeMgr(true) };
+      const surface = new ThreadSurface(deps);
+      const blocks = buildBlocks(surface, makeSessionWithChipState(), 'C1:t1.0');
+      expect(chipVisible(blocks)).toBe(false);
+    });
+
+    it('PHASE=4 but manager disabled → clamp to 3 → chip restored (graceful fallback)', () => {
+      config.ui.fiveBlockPhase = 4;
+      const deps = { ...makeDeps([]), assistantStatusManager: makeMgr(false) };
+      const surface = new ThreadSurface(deps);
+      const blocks = buildBlocks(surface, makeSessionWithChipState(), 'C1:t1.0');
+      expect(chipVisible(blocks)).toBe(true);
+    });
+  });
+
   it('clearChoice also clears pendingChoice (P3)', async () => {
     config.ui.fiveBlockPhase = 3;
     const session = makeSession();

@@ -197,6 +197,29 @@ export class AssistantStatusManager {
     return this.enabled;
   }
 
+  /**
+   * #689 P4 Part 2/2 — flip `enabled=false` iff the provided error is a
+   * permanent process-wide failure (scope/auth). Per-thread `not_allowed`
+   * and transient codes (ratelimited, internal_error, network) are
+   * intentionally NOT matched so the manager stays alive for other
+   * assistant threads in the same process.
+   *
+   * Returns `true` if a permanent code matched. Callers (setStatus /
+   * heartbeatTick catch blocks via `disableAndBestEffortClear`) use the
+   * return value to decide whether to run the best-effort clear.
+   */
+  markDisabledIfScopeMissing(err: unknown): boolean {
+    const code = (err as any)?.data?.error ?? (err as any)?.code;
+    const matched =
+      code === 'missing_scope' || code === 'not_allowed_token_type' || code === 'invalid_auth';
+    if (matched && this.enabled) {
+      this.enabled = false;
+      this.clearAllHeartbeats();
+      this.logger.warn('AssistantStatusManager disabled due to permanent scope/auth error', { code });
+    }
+    return matched;
+  }
+
   private async heartbeatTick(key: string): Promise<void> {
     const entry = this.lastStatus.get(key);
     if (!entry) {
@@ -218,18 +241,28 @@ export class AssistantStatusManager {
   }
 
   /**
-   * Shared failure path for setStatus and heartbeatTick: mark the manager
-   * as disabled, tear down all heartbeats, and best-effort clear the
-   * caller's (channel, thread) spinner so Slack doesn't leave a stale one
-   * behind. Swallows errors from the fallback clear since we've already
-   * disabled.
+   * Shared failure path for setStatus and heartbeatTick.
+   *
+   * #689 P4 Part 2/2 — narrowed: ONLY permanent scope/auth errors
+   * (`missing_scope`, `not_allowed_token_type`, `invalid_auth`) flip
+   * `enabled=false` and run the best-effort clear. Per-thread
+   * `not_allowed` and transient (ratelimited / internal_error / network)
+   * are logged at debug and skipped — the manager stays alive so the
+   * process can keep serving other assistant threads. This also prevents
+   * `getEffectiveFiveBlockPhase` from clamping to 3 on every transient
+   * blip.
    */
   private async disableAndBestEffortClear(channelId: string, threadTs: string, error: unknown): Promise<void> {
-    this.enabled = false;
-    this.logger.debug('assistant.threads.setStatus unavailable, disabling', {
-      error: (error as any)?.data?.error || (error as any)?.message,
-    });
-    this.clearAllHeartbeats();
+    const disabled = this.markDisabledIfScopeMissing(error);
+    if (!disabled) {
+      this.logger.debug('assistant.threads.setStatus transient failure — skipping this call', {
+        error: (error as any)?.data?.error || (error as any)?.message,
+      });
+      return;
+    }
+    // Permanent failure path: markDisabledIfScopeMissing already cleared
+    // heartbeats. Run the best-effort clear so Slack doesn't leave a
+    // stale spinner visible on the caller's thread.
     try {
       await this.slackApi.setAssistantStatus(channelId, threadTs, '');
     } catch {

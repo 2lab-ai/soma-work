@@ -882,4 +882,83 @@ describe('TurnSurface', () => {
       expect(slackApi.updateMessage).not.toHaveBeenCalled();
     });
   });
+
+  // #689 P4 Part 2/2 — TurnSurface owns B4 native spinner at effective PHASE>=4
+  describe('PHASE>=4 B4 native-status wiring', () => {
+    const makeMgr = (enabled: boolean) => ({
+      isEnabled: vi.fn().mockReturnValue(enabled),
+      setStatus: vi.fn().mockResolvedValue(undefined),
+      clearStatus: vi.fn().mockResolvedValue(undefined),
+    });
+
+    it('PHASE=4 + enabled: begin calls setStatus("is thinking...") once', async () => {
+      config.ui.fiveBlockPhase = 4;
+      const client = makeClient();
+      const mgr = makeMgr(true);
+      const surface = new TurnSurface({
+        slackApi: makeSlackApi(client),
+        assistantStatusManager: mgr as any,
+      });
+      await surface.begin({ channelId: 'C', threadTs: 'thr', sessionKey: 'C:thr', turnId: 't-b4' });
+      expect(mgr.setStatus).toHaveBeenCalledTimes(1);
+      expect(mgr.setStatus).toHaveBeenCalledWith('C', 'thr', 'is thinking...');
+    });
+
+    it('PHASE=4 + enabled: end calls clearStatus once', async () => {
+      config.ui.fiveBlockPhase = 4;
+      const client = makeClient();
+      const mgr = makeMgr(true);
+      const surface = new TurnSurface({
+        slackApi: makeSlackApi(client),
+        assistantStatusManager: mgr as any,
+      });
+      await surface.begin({ channelId: 'C', threadTs: 'thr', sessionKey: 'C:thr', turnId: 't-b4-e' });
+      await surface.end('t-b4-e', 'completed');
+      expect(mgr.clearStatus).toHaveBeenCalledTimes(1);
+      expect(mgr.clearStatus).toHaveBeenCalledWith('C', 'thr');
+    });
+
+    it('PHASE=4 + enabled: fail calls clearStatus (idempotent — fail twice → 1 call total)', async () => {
+      config.ui.fiveBlockPhase = 4;
+      const client = makeClient();
+      const mgr = makeMgr(true);
+      const surface = new TurnSurface({
+        slackApi: makeSlackApi(client),
+        assistantStatusManager: mgr as any,
+      });
+      await surface.begin({ channelId: 'C', threadTs: 'thr', sessionKey: 'C:thr', turnId: 't-b4-f' });
+      await surface.fail('t-b4-f', new Error('boom'));
+      await surface.fail('t-b4-f', new Error('boom again'));
+      expect(mgr.clearStatus).toHaveBeenCalledTimes(1);
+    });
+
+    it('PHASE=3: begin does NOT call setStatus (B4 gate)', async () => {
+      config.ui.fiveBlockPhase = 3;
+      const client = makeClient();
+      const mgr = makeMgr(true);
+      const surface = new TurnSurface({
+        slackApi: makeSlackApi(client),
+        assistantStatusManager: mgr as any,
+      });
+      await surface.begin({ channelId: 'C', threadTs: 'thr', sessionKey: 'C:thr', turnId: 't-no-b4' });
+      expect(mgr.setStatus).not.toHaveBeenCalled();
+    });
+
+    it('PHASE=4 + disabled (clamped to 3): begin does NOT call setStatus', async () => {
+      config.ui.fiveBlockPhase = 4;
+      const client = makeClient();
+      const mgr = makeMgr(false);
+      const surface = new TurnSurface({
+        slackApi: makeSlackApi(client),
+        assistantStatusManager: mgr as any,
+      });
+      await surface.begin({
+        channelId: 'C',
+        threadTs: 'thr',
+        sessionKey: 'C:thr',
+        turnId: 't-b4-clamp',
+      });
+      expect(mgr.setStatus).not.toHaveBeenCalled();
+    });
+  });
 });

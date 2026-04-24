@@ -219,8 +219,119 @@ paths in response — that clamp-on-scope-failure is the dedicated
 ## References
 
 - Issue: [#666 P4 — B4 native status spinner](https://github.com/2lab-ai/soma-work/issues/666)
+- Follow-up (Part 2): [#689 PHASE>=4 wiring + clamp + legacy suppression](https://github.com/2lab-ai/soma-work/issues/689)
 - Epic: [#669 한 턴 = 5 블록으로 수렴](https://github.com/2lab-ai/soma-work/issues/669)
 - Bolt Assistant source (v4.7.0):
   [`src/Assistant.ts`](https://github.com/slackapi/bolt-js/blob/%40slack/bolt%404.7.0/src/Assistant.ts#L23-L28)
 - Slack Agents API: https://docs.slack.dev/apis/assistant/
 - Slack manifest reference: https://docs.slack.dev/reference/app-manifest/
+
+---
+
+## Part 2 — PHASE>=4 wiring + clamp helper + legacy suppression
+
+Scope: issue [#689](https://github.com/2lab-ai/soma-work/issues/689). Builds
+on Part 1 (container registration + kill switch). Part 2 **activates** B4:
+`TurnSurface` becomes the single native-spinner writer and every legacy
+`setStatus`/`clearStatus`/`setTitle` callsite is gated on effective PHASE<4.
+
+### What Part 2 wires
+
+| Surface | Behaviour at effective PHASE>=4 |
+|---|---|
+| `TurnSurface.begin` | `assistantStatusManager.setStatus(channel, threadTs, 'is thinking...')` |
+| `TurnSurface.end` (any reason) | `assistantStatusManager.clearStatus(...)` |
+| `TurnSurface.fail` | `assistantStatusManager.clearStatus(...)` (idempotent) |
+| `ThreadSurface` chip (agent phase/tool) | `suppressAgentChip=true` → chip omitted |
+| `StreamExecutor` direct `setStatus`/`clearStatus` (7 sites) | no-op via `legacySetStatus`/`legacyClearStatus` wrapper |
+| `ToolEventProcessor.onToolUse` setStatus | no-op (inline gate) |
+| `SessionInitializer` dispatch `setStatus` (`'is analyzing your request...'`) | no-op (inline gate) |
+| `SessionInitializer` dispatch `setTitle` | no-op (inline gate) |
+
+10 legacy B4 writer callsites total, all PHASE-gated.
+
+### Graceful degradation — `getEffectiveFiveBlockPhase`
+
+At **boot or first-use**, if scope/auth is still missing the Slack
+`assistant.threads.setStatus` call will throw. The `catch` block in
+`AssistantStatusManager.setStatus`/`heartbeatTick` now routes through
+`markDisabledIfScopeMissing(err)`:
+
+- **Permanent codes** (`missing_scope`, `not_allowed_token_type`,
+  `invalid_auth`): flip `enabled=false` + clear heartbeats. Subsequent
+  reads of `getEffectiveFiveBlockPhase(statusManager)` clamp to 3, which
+  restores the `ThreadSurface` chip (Part 2's graceful fallback).
+- **Per-thread** `not_allowed` (the caller's thread isn't an assistant
+  thread): do NOT disable — same process may still serve other assistant
+  threads. Current call is skipped via the wrapper; next call retries.
+- **Transient** (`ratelimited`, network blip, `internal_error`): same as
+  per-thread — skip + debug log, manager stays enabled.
+
+Clamp fires the once-flag metric `soma_ui_5block_phase_clamped` (Logger
+`warn` with structured payload `{from, to, reason}`) exactly once per
+process. Aggregators can grep by the event name.
+
+**Important**: clamp does NOT restore the *native* spinner — once
+`enabled=false`, legacy `setStatus` is a no-op too. What clamp restores
+is the `ThreadSurface` chip (`suppressAgentChip=false`). Users see inline
+italic phase/tool text instead of the sidebar spinner.
+
+### Updated behaviour matrix
+
+| Stage | `SOMA_UI_B4_NATIVE_STATUS` | `SOMA_UI_5BLOCK_PHASE` | Spinner visible? | B4 writer |
+|---|---|---|---|---|
+| `main` today (Part 1 merged) | `false` (default) | any | no (kill switch) | — |
+| Part 2 + flag ON + PHASE<4 | `true` | `0..3` | yes (legacy path) | `stream-executor` direct |
+| Part 2 + flag ON + PHASE>=4 + scope OK | `true` | `>=4` | yes (native spinner) | `TurnSurface` (single) |
+| Part 2 + flag ON + PHASE>=4 + scope missing at runtime | `true` | `>=4` | no (auto clamp to 3) | `ThreadSurface` chip (PHASE-3 style) — legacy also disabled |
+
+### Rollout (Part 2)
+
+1. PR #{PR_PART2} CI green + codex ≥ 95 + zcheck pass.
+2. Merge (no manifest change — Part 1's reinstall is sufficient).
+3. Dev env flip: `SOMA_UI_B4_NATIVE_STATUS=1` + `SOMA_UI_5BLOCK_PHASE=4`.
+4. **Dev soak 1 week** (longer than other phases — native spinner UX
+   variance can only be spotted across real workload diversity).
+5. Prod flip — same env var pair.
+
+### Rollback (Part 2)
+
+Two independent dials:
+
+1. **Unflip env**: `SOMA_UI_5BLOCK_PHASE=3` → TurnSurface B4 writes stop,
+   chip returns via `suppressAgentChip=false`. No code revert needed.
+2. **Full code revert**: `git revert` the Part 2 merge commit. Part 1
+   container registration + kill switch stay intact.
+
+### Architecture notes (Part 2)
+
+- **DI chain**: `SlackHandler` constructs `AssistantStatusManager`
+  **before** `ThreadPanel`, then passes the same instance through
+  `ThreadPanelDeps.assistantStatusManager` → both `ThreadSurface` (chip
+  suppression) and `TurnSurface` (B4 writer). All three receive the
+  *same* instance so the clamp trigger fires uniformly.
+- **`TurnState.ctx`** carries `channelId` + `threadTs?` — reused in
+  `end()`/`fail()` for `clearStatus(...)` without extra state.
+- **Tool-level text transitions** (e.g. "is calling jira…") remain in
+  `ToolEventProcessor` / `StreamExecutor` legacy path for PHASE<4. A
+  follow-up PR can lift these into `TurnSurface` if the UX requires it;
+  Part 2 keeps scope tight.
+- **Thread-type awareness** is intentionally not introduced. Gate is
+  purely `effective PHASE >= 4`. The matcher discipline in
+  `markDisabledIfScopeMissing` (excluding `not_allowed`) provides the
+  mixed-traffic safety.
+
+### Tests (Part 2 additions)
+
+- `src/slack/pipeline/effective-phase.test.ts` (new, 5) — clamp + once-flag + reset
+- `src/metrics/ui-metrics.test.ts` (new, 2) — payload shape + multi-emission
+- `src/slack/assistant-status-manager.test.ts` (+8) — `markDisabledIfScopeMissing` 6 + transient-error non-clamp 2
+- `src/slack/assistant-status-manager.heartbeat.test.ts` (+1) — heartbeat transient keeps enabled
+- `src/slack/turn-surface.test.ts` (+5) — PHASE=4 begin/end/fail + PHASE=3 gate + clamp
+- `src/slack/thread-surface.test.ts` (+3) — chip visible / suppressed / clamp restores
+- `src/slack/action-panel-builder.test.ts` (+1) — `suppressAgentChip`
+- `src/slack/tool-event-processor.test.ts` (+3) — PHASE<4 / PHASE>=4 / clamp
+- `src/slack/pipeline/stream-executor.test.ts` (+5) — white-box legacy wrappers
+- `src/slack/pipeline/session-initializer-phase4.test.ts` (new, 3) — gate contract
+
+Total Part 2: **36 new tests**.

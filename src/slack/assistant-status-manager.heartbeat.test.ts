@@ -124,7 +124,7 @@ describe('AssistantStatusManager — Heartbeat', () => {
 
     // Make next API call fail (heartbeat tick)
     mockSlackApi.setAssistantStatus.mockRejectedValueOnce(
-      Object.assign(new Error('not_allowed'), { data: { error: 'not_allowed' } }),
+      Object.assign(new Error('missing_scope'), { data: { error: 'missing_scope' } }),
     );
 
     await vi.advanceTimersByTimeAsync(20_000);
@@ -139,13 +139,33 @@ describe('AssistantStatusManager — Heartbeat', () => {
     expect(mockSlackApi.setAssistantStatus).not.toHaveBeenCalled();
   });
 
+  // #689 P4 Part 2 — heartbeat transient failure MUST NOT disable the manager.
+  it('heartbeat_transient_failure_keeps_manager_enabled', async () => {
+    await manager.setStatus('C123', '123.456', 'is thinking...');
+
+    // First heartbeat tick fails with transient error, second recovers
+    mockSlackApi.setAssistantStatus.mockRejectedValueOnce(
+      Object.assign(new Error('ratelimited'), { data: { error: 'ratelimited' } }),
+    );
+
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(manager.isEnabled()).toBe(true);
+
+    // Next tick fires and succeeds
+    await vi.advanceTimersByTimeAsync(20_000);
+    // 1 explicit + 2 heartbeat ticks (first failed transient, second ok)
+    expect(mockSlackApi.setAssistantStatus).toHaveBeenCalledTimes(3);
+  });
+
   // disable transition should best-effort clear residual Slack spinner
   it('heartbeat_failure_best_effort_clears', async () => {
     await manager.setStatus('C123', '123.456', 'is thinking...');
     mockSlackApi.setAssistantStatus.mockClear();
 
-    // Fail once (the tick), subsequent calls (the best-effort clear) succeed
-    mockSlackApi.setAssistantStatus.mockRejectedValueOnce(new Error('not_allowed'));
+    // Fail once (the tick) with a permanent error, subsequent calls (best-effort clear) succeed
+    mockSlackApi.setAssistantStatus.mockRejectedValueOnce(
+      Object.assign(new Error('missing_scope'), { data: { error: 'missing_scope' } }),
+    );
 
     await vi.advanceTimersByTimeAsync(20_000);
 

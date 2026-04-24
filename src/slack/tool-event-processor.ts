@@ -10,6 +10,7 @@ import type { AssistantStatusManager } from './assistant-status-manager';
 import type { McpHealthMonitor } from './mcp-health-monitor';
 import type { McpStatusDisplay } from './mcp-status-tracker';
 import { getToolResultRenderMode, LOG_DETAIL, OutputFlag, shouldOutput } from './output-flags';
+import { getEffectiveFiveBlockPhase } from './pipeline/effective-phase';
 import type { ReactionManager } from './reaction-manager';
 import { ToolFormatter, type ToolResult } from './tool-formatter';
 import type { ToolTracker } from './tool-tracker';
@@ -239,8 +240,12 @@ export class ToolEventProcessor {
       await this.reactionManager.setMcpPending(context.sessionKey, callId);
     }
 
-    // Native spinner with MCP server name
-    if (this.assistantStatusManager) {
+    // Native spinner with MCP server name.
+    // #689 P4 Part 2/2 — at effective PHASE>=4, TurnSurface owns the native
+    // spinner ("is thinking...") as the single writer. Tool-specific text is
+    // a legacy-only transition until a follow-up PR lifts getToolStatusText
+    // into TurnSurface — see docs/slack-ui-phase4.md.
+    if (this.assistantStatusManager && getEffectiveFiveBlockPhase(this.assistantStatusManager) < 4) {
       const statusText = this.assistantStatusManager.getToolStatusText(toolUse.name, serverName);
       await this.assistantStatusManager.setStatus(context.channel, context.threadTs, statusText);
     }

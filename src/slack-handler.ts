@@ -134,6 +134,13 @@ export class SlackHandler {
       typeof (this.claudeHandler as any).getSessionRegistry === 'function'
         ? (this.claudeHandler as any).getSessionRegistry()
         : undefined;
+
+    // #689 P4 Part 2/2 — AssistantStatusManager must be constructed BEFORE
+    // ThreadPanel so ThreadPanel (→ ThreadSurface chip suppression + TurnSurface
+    // B4 spinner writer) receives the same instance that ToolEventProcessor /
+    // StreamExecutor / SessionInitializer reference downstream.
+    this.assistantStatusManager = new AssistantStatusManager(this.slackApi);
+
     this.threadPanel = new ThreadPanel({
       slackApi: this.slackApi,
       claudeHandler: this.claudeHandler,
@@ -141,6 +148,7 @@ export class SlackHandler {
       todoManager: this.todoManager,
       completionMessageTracker,
       sessionRegistry,
+      assistantStatusManager: this.assistantStatusManager,
     });
 
     // Command routing
@@ -169,9 +177,6 @@ export class SlackHandler {
     this.todoDisplayManager.setPlanRenderCallback(async (turnId, todos, ctx) => {
       return (await this.threadPanel?.renderTasks(turnId, todos, ctx)) ?? false;
     });
-
-    // Native Slack AI spinner
-    this.assistantStatusManager = new AssistantStatusManager(this.slackApi);
 
     // Tool processing
     this.toolEventProcessor = new ToolEventProcessor(
