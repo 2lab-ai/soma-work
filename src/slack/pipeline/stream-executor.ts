@@ -426,12 +426,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // B1 stream.
     const turnId = `${sessionKey}:${requestStartedAt.getTime()}:${randomUUID()}`;
 
-    // P5 B5 marker snapshot — issue #720 race fix.
-    //
-    // PR #711 used a sync accessor + let-binding, but `TurnSurface.end`'s
-    // `stopStream` (50-200ms) finished before `enrichAndNotify`'s Anthropic
-    // usage HTTP (100-500ms), so the read saw `undefined` and B5 was
-    // silently dropped. We now expose the snapshot as a Promise:
+    // P5 B5 marker snapshot.
     //
     //   - `snapshotPromise` is built once here and handed to TurnContext.
     //   - `resolveSnapshot` is called EXACTLY ONCE: with the enriched event
@@ -442,10 +437,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     //     `reason === 'completed'`, so pending is harmless on abort paths.
     //
     // There is intentionally NO `finally` safety-net resolve (codex P1-1):
-    // fixing the Promise-resolved-to-undefined in a `finally` would lock in
-    // the race at the stream-executor layer (resolveSnapshot would fire
-    // before `.then` could replace it). The 3s timeout in TurnSurface.end
-    // is the single safety net.
+    // a `finally → resolveSnapshot(undefined)` would race the `.then` rail
+    // and could lock in an undefined snapshot even when enrichment succeeded.
+    // The 3s timeout in TurnSurface.end is the single safety net.
     let resolveSnapshot!: (evt: TurnCompletionEvent | undefined) => void;
     const snapshotPromise = new Promise<TurnCompletionEvent | undefined>((resolve) => {
       resolveSnapshot = resolve;

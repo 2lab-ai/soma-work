@@ -79,10 +79,9 @@ export interface TurnContext {
    * `.catch` rail (and every non-complete path) resolves with `undefined`
    * so `end()` posts nothing.
    *
-   * The signature is async (Promise-returning) to close the race from
-   * issue #720: PR #711 had a sync accessor that read `undefined` because
-   * `stopStream` finished faster than the Anthropic usage HTTP call inside
-   * enrichment. See `docs/slack-ui-phase5.md` §"Race fix (#720)".
+   * MUST be awaited — a sync read races `stopStream` vs enrichment HTTP and
+   * silently drops B5 (issue #720). See `docs/slack-ui-phase5.md` §"Race
+   * fix (#720)" for the full rationale.
    */
   readonly buildCompletionEvent?: () => Promise<TurnCompletionEvent | undefined>;
 }
@@ -684,23 +683,26 @@ export class TurnSurface {
         });
       }
 
-      // B5 completion marker — success path only. Issue #720: the accessor
-      // now returns a Promise (`snapshotPromise` owned by stream-executor),
-      // so we MUST await it or we'd silently drop B5 — exactly the PR #711
-      // regression this fix closes. A 3s timeout caps the wait so a stuck
-      // enrichment can never hang `end()` indefinitely. The snapshot Promise
-      // itself is resolved with `undefined` on the stream-executor `.catch`
-      // rail; the explicit timeout is a defence-in-depth safety net.
+      // B5 completion marker — success path only. The accessor returns a
+      // Promise (`snapshotPromise` owned by stream-executor), so we MUST
+      // await it or we'd silently drop B5. A 3s timeout caps the wait so a
+      // stuck enrichment can never hang `end()` indefinitely; the snapshot
+      // Promise itself is resolved with `undefined` on stream-executor's
+      // `.catch` rail, and the explicit timeout is a defence-in-depth net.
       //
-      // Ordering is still "after B4 clearStatus" because `clearStatus` was
-      // already awaited above. The `send(evt)` call is detached (void +
-      // `.catch`) so the postMessage RTT doesn't extend `end()`'s hot path;
-      // only the *snapshot wait* is synchronous with close.
+      // Ordering: after B4 clearStatus (which was already awaited above).
+      // The `send(evt)` call is detached (void + `.catch`) so Slack RTT
+      // doesn't extend `end()`'s hot path — only the snapshot wait is
+      // synchronous with close.
       const capActive =
         typeof this.deps.isCompletionMarkerActive === 'function' ? this.deps.isCompletionMarkerActive() : false;
       if (reason === 'completed' && capActive && state.ctx.buildCompletionEvent && this.deps.slackBlockKitChannel) {
         let evt: TurnCompletionEvent | undefined;
         let timeoutId: ReturnType<typeof setTimeout> | undefined;
+        // True once a B5-specific warn has fired so the `else` fallback
+        // below doesn't emit a second warn for the same event (avoids
+        // double-logging the sync-throw path).
+        let warnEmitted = false;
         const TIMEOUT_MS = 3000;
         try {
           const builderPromise = Promise.resolve(state.ctx.buildCompletionEvent());
@@ -728,6 +730,7 @@ export class TurnSurface {
             error: (err as Error)?.message ?? String(err),
           });
           evt = undefined;
+          warnEmitted = true;
         } finally {
           if (timeoutId) clearTimeout(timeoutId);
         }
@@ -738,21 +741,20 @@ export class TurnSurface {
           // `channel_not_found`, `streaming_mode_mismatch`, etc.) plus the
           // channel/thread IDs — bare `err.message` alone collapses distinct
           // failure modes into the same log line.
-          const sendChannelId = state.ctx.channelId;
-          const sendThreadTs = state.ctx.threadTs;
           void this.deps.slackBlockKitChannel.send(evt).catch((err) => {
             this.logger.warn('B5 send failed', {
               turnId,
-              channelId: sendChannelId,
-              threadTs: sendThreadTs,
+              channelId: state.ctx.channelId,
+              threadTs: state.ctx.threadTs,
               error: describeSlackError(err),
             });
           });
-        } else {
+        } else if (!warnEmitted) {
           // Distinguish timeout / undefined-snapshot from the explicit
           // `reason !== 'completed'` skip — operators need this signal to
           // diagnose enrichment regressions (issue #720's symptom was
-          // silent B5 drop with no log breadcrumb).
+          // silent B5 drop with no log breadcrumb). Skipped when the
+          // sync-throw catch already logged, so one event → one warn.
           this.logger.warn('B5 snapshot unavailable — completion marker not emitted', {
             turnId,
           });
