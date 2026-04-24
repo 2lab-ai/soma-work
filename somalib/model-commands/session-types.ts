@@ -96,6 +96,22 @@ export interface Continuation {
   resetSession?: boolean; // Reset session before executing (triggers re-dispatch)
   dispatchText?: string; // Text to use for dispatch classification (if different from prompt)
   forceWorkflow?: WorkflowType;
+  /**
+   * Provenance of the continuation (issue #697, epic #694).
+   * - `'model'`: emitted via `CONTINUE_SESSION` model-command (auto-handoff); budget-consuming.
+   * - `'host'`: built programmatically by host code (renew, onboarding); NOT budget-consuming.
+   *
+   * Host-stamped only. Any `origin` value the model attempts to supply via the
+   * `CONTINUE_SESSION` payload is overwritten at the capture site by the
+   * stream-executor spread (`{ ...payload, origin: 'model' }`), so the host is
+   * authoritative on this field regardless of what the model sends.
+   *
+   * The budget guard in `slack-handler.onResetSession` uses the predicate
+   * `origin !== 'host'` so that legacy emitters (undefined) AND malformed
+   * values (e.g. `'MODEL'`, `'foo'`) fail CLOSED into enforcement. Only the
+   * canonical `'host'` value skips the guard.
+   */
+  origin?: 'model' | 'host';
 }
 
 /**
