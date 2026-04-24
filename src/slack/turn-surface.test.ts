@@ -891,6 +891,15 @@ describe('TurnSurface', () => {
       clearStatus: vi.fn().mockResolvedValue(undefined),
     });
 
+    // Reset the module-level clamp-once flag so a disabled-mgr test in
+    // this block doesn't leak state into subsequent tests. The flag lives
+    // in `src/slack/pipeline/effective-phase.ts` and is test-only reset
+    // via `__resetClampEmitted`.
+    afterEach(async () => {
+      const { __resetClampEmitted } = await import('./pipeline/effective-phase');
+      __resetClampEmitted();
+    });
+
     it('PHASE=4 + enabled: begin calls setStatus("is thinking...") once', async () => {
       config.ui.fiveBlockPhase = 4;
       const client = makeClient();
