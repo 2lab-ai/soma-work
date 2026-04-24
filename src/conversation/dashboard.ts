@@ -2744,6 +2744,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 <script>
 const INIT_USER = ${initUser};
 let currentUserId = INIT_USER || '';
+// Displayed + placeholder copy when a non-owner views a session. Kept here so
+// wording edits only touch one place instead of four button sites + panel.
+const READ_ONLY_MSG = 'Read-only — not your session';
 let currentPeriod = 'day';
 let ws = null;
 let panelOpen = false;
@@ -3287,12 +3290,14 @@ function renderCard(s, col) {
   const workingCls = (col === 'working') ? ' card-working' : '';
   const cls = 'card' + (aura ? ' ' + aura : '') + workingCls;
 
-  // Owner gating — non-owners get read-only cards (disabled action/choice buttons,
-  // read-only panel input on openPanel). Server-side RBAC on /command, /stop,
-  // /close, /trash, /answer-choice (requireSessionOwner) is the authoritative
-  // guard; client-side disabled state is UX only.
-  const isOwner = !s.ownerId || s.ownerId === currentUserId;
-  const readOnlyAttrs = isOwner ? '' : ' disabled title="Read-only — not your session"';
+  // Owner gating — server-side requireSessionOwner is the authoritative guard;
+  // this is UX only. Fail closed: if ownerId is missing (legacy record) the
+  // viewer is not treated as owner so the server-side reject is expected.
+  const isOwner = !!s.ownerId && s.ownerId === currentUserId;
+  // readOnlyAttrs carries only the disabled attribute — each button owns its
+  // own title= so there is no duplicate-attribute clash when the button already
+  // needs a descriptive tooltip (e.g. pending-question choices).
+  const readOnlyAttrs = isOwner ? '' : ' disabled';
 
   // Conversation link
   const convLink = s.conversationId
@@ -3358,14 +3363,16 @@ function renderCard(s, col) {
       var recHtml = '';
       if (recOpt) {
         var recLabel = stripRecommendedMarker(recOpt.label);
+        var recTitle = isOwner ? (recOpt.description || recLabel) : READ_ONLY_MSG;
         recHtml = '<div class="choice-row-recommended">'
-          + '<button class="btn-choice btn-choice-recommended"' + readOnlyAttrs + ' onclick="event.stopPropagation();answerChoice(\\'' + escJs(s.key) + '\\',\\'' + escJs(recOpt.id) + '\\',\\'' + escJs(recLabel) + '\\',\\'' + escJs(pq.question) + '\\',this)" title="' + escAttr(isOwner ? (recOpt.description || recLabel) : 'Read-only — not your session') + '">' + esc(recOpt.id) + '. ' + esc(recLabel) + '</button>'
+          + '<button class="btn-choice btn-choice-recommended"' + readOnlyAttrs + ' onclick="event.stopPropagation();answerChoice(\\'' + escJs(s.key) + '\\',\\'' + escJs(recOpt.id) + '\\',\\'' + escJs(recLabel) + '\\',\\'' + escJs(pq.question) + '\\',this)" title="' + escAttr(recTitle) + '">' + esc(recOpt.id) + '. ' + esc(recLabel) + '</button>'
           + '</div>'
           + (otherOpts.length > 0 ? '<hr class="choice-divider">' : '');
       }
       var otherBtns = otherOpts.map(function(c) {
         var lbl = stripRecommendedMarker(c.label);
-        return '<button class="btn-choice"' + readOnlyAttrs + ' onclick="event.stopPropagation();answerChoice(\\'' + escJs(s.key) + '\\',\\'' + escJs(c.id) + '\\',\\'' + escJs(lbl) + '\\',\\'' + escJs(pq.question) + '\\',this)" title="' + escAttr(isOwner ? (c.description || lbl) : 'Read-only — not your session') + '">' + esc(c.id) + '. ' + esc(lbl) + '</button>';
+        var btnTitle = isOwner ? (c.description || lbl) : READ_ONLY_MSG;
+        return '<button class="btn-choice"' + readOnlyAttrs + ' onclick="event.stopPropagation();answerChoice(\\'' + escJs(s.key) + '\\',\\'' + escJs(c.id) + '\\',\\'' + escJs(lbl) + '\\',\\'' + escJs(pq.question) + '\\',this)" title="' + escAttr(btnTitle) + '">' + esc(c.id) + '. ' + esc(lbl) + '</button>';
       }).join('');
       questionHtml = '<div class="card-question">'
         + '<div class="card-question-text">&#x2753; ' + esc(pq.question).slice(0, 80) + '</div>'
@@ -3378,16 +3385,17 @@ function renderCard(s, col) {
 
   // Action buttons — disabled for non-owners (server RBAC still rejects, but UI
   // shouldn't invite the click in the first place).
+  const readOnlyTitle = isOwner ? '' : ' title="' + escAttr(READ_ONLY_MSG) + '"';
   let actionBtn = '';
   if (col === 'working') {
-    actionBtn = '<button class="btn-action btn-stop"' + readOnlyAttrs + ' onclick="event.stopPropagation();doAction(\\'' + escJs(s.key) + '\\',\\'stop\\')">Stop</button>';
+    actionBtn = '<button class="btn-action btn-stop"' + readOnlyAttrs + readOnlyTitle + ' onclick="event.stopPropagation();doAction(\\'' + escJs(s.key) + '\\',\\'stop\\')">Stop</button>';
   } else if (col === 'waiting' || col === 'idle') {
-    actionBtn = '<button class="btn-action btn-close"' + readOnlyAttrs + ' onclick="event.stopPropagation();doAction(\\'' + escJs(s.key) + '\\',\\'close\\')">Close</button>';
+    actionBtn = '<button class="btn-action btn-close"' + readOnlyAttrs + readOnlyTitle + ' onclick="event.stopPropagation();doAction(\\'' + escJs(s.key) + '\\',\\'close\\')">Close</button>';
   } else if (col === 'closed') {
     // SLEEPING (live) sessions → Close (terminate); archived sessions → Trash (hide)
     actionBtn = s.terminated
-      ? '<button class="btn-action btn-trash"' + readOnlyAttrs + ' onclick="event.stopPropagation();doAction(\\'' + escJs(s.key) + '\\',\\'trash\\')">Trash</button>'
-      : '<button class="btn-action btn-close"' + readOnlyAttrs + ' onclick="event.stopPropagation();doAction(\\'' + escJs(s.key) + '\\',\\'close\\')">Close</button>';
+      ? '<button class="btn-action btn-trash"' + readOnlyAttrs + readOnlyTitle + ' onclick="event.stopPropagation();doAction(\\'' + escJs(s.key) + '\\',\\'trash\\')">Trash</button>'
+      : '<button class="btn-action btn-close"' + readOnlyAttrs + readOnlyTitle + ' onclick="event.stopPropagation();doAction(\\'' + escJs(s.key) + '\\',\\'close\\')">Close</button>';
   }
   const actionsHtml = '<div class="card-actions">' + actionBtn + '</div>';
 
@@ -3444,10 +3452,10 @@ function renderCard(s, col) {
     + '<span>' + timeAgo(s.lastActivity) + '</span>'
     + '</div>';
 
-  // Prefer summaryTitle (latest assistant turn) over the raw session title.
-  // Server emits summaryTitle on both initial /sessions response and the
-  // summaryTitleChanged WS patch, so refresh and live updates render identically.
-  const displayHeadline = (s.summaryTitle && String(s.summaryTitle).length > 0) ? s.summaryTitle : s.title;
+  // Server-side displayTitle() already prefers summaryTitle, so s.title is
+  // normally correct on its own. This fallback covers the WS patch path where
+  // summaryTitleChanged writes only s.summaryTitle.
+  const displayHeadline = s.summaryTitle || s.title;
 
   // Card order: hero → stats → title → refs → meta → issue/pr subtitles → tokens → merge → question → tasks → actions.
   // linksHtml removed (2026-04 #708): refs + issue/pr subtitles already surface
@@ -4059,13 +4067,11 @@ function connectWs() {
         // Immediate visual feedback already handled by loadSessions() in doAction
       } else if (msg.type === 'summaryTitleChanged') {
         // Dashboard v2.1 — targeted title patch. Update cache + single card.
-        // Mirror the server-side preference from #708: update summaryTitle first
-        // (so a subsequent re-render reads the right field) and also refresh title
-        // as a fallback for any path that still reads s.title.
+        // Only mutate summaryTitle; leave the raw title intact so a later
+        // re-render can still fall back to it if summaryTitle is ever cleared.
         var cached = _sessionCache[msg.sessionKey];
         if (cached) {
           cached.summaryTitle = msg.summaryTitle;
-          cached.title = msg.summaryTitle;
         }
         var cardTitleEls = document.querySelectorAll('[data-session-key="' + CSS.escape(msg.sessionKey) + '"] .card-title-text');
         for (var i = 0; i < cardTitleEls.length; i++) {
