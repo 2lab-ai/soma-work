@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { App } from '@slack/bolt';
+import { HandoffAbortError } from 'somalib/model-commands/handoff-parser';
 import { getAdminUsers, isAdminUser } from './admin-utils';
 import type { ContinuationHandler, TurnRunnerSurface } from './agent-session';
 import { TurnRunner, V1QueryAdapter } from './agent-session';
@@ -530,11 +531,19 @@ export class SlackHandler {
       onResetSession: async (continuation: any) => {
         this.claudeHandler.resetSessionContext(activeChannel, activeThreadTs);
         const dispatchText = continuation.dispatchText || continuation.prompt;
+        // Issue #695 — z handoff entrypoints need the full continuation prompt
+        // (containing the `<z-handoff>` sentinel) for host-side parsing.
+        const handoffPrompt =
+          continuation.forceWorkflow === 'z-plan-to-work' ||
+          continuation.forceWorkflow === 'z-epic-update'
+            ? (continuation.prompt as string | undefined)
+            : undefined;
         await this.sessionInitializer.runDispatch(
           activeChannel,
           activeThreadTs,
           dispatchText,
           continuation.forceWorkflow,
+          handoffPrompt,
         );
       },
       refreshSession: () => this.claudeHandler.getSession(activeChannel, activeThreadTs),
@@ -543,6 +552,43 @@ export class SlackHandler {
     try {
       await agentSession.startWithContinuation(effectiveText || '', continuationHandler, processedFiles);
     } catch (error) {
+      // Issue #695 — host-level z handoff safe-stop. `SessionInitializer.runDispatch`
+      // throws `HandoffAbortError` when a forced z-* workflow cannot be entered
+      // (missing/malformed sentinel, type-workflow mismatch, missing session).
+      // Emit a user-facing message, mark the session terminated, and skip the
+      // recoverable-error retry path so we do not silently drift into default
+      // workflow or loop retries on a structurally invalid payload.
+      if (error instanceof HandoffAbortError) {
+        this.logger.warn('Handoff entrypoint aborted', {
+          channelId: activeChannel,
+          threadTs: activeThreadTs,
+          reason: error.reason,
+          detail: error.detail,
+          forceWorkflow: error.forceWorkflow,
+        });
+        try {
+          await this.slackApi.postMessage(
+            activeChannel,
+            `❌ Handoff entrypoint 진입 실패\n` +
+              `Workflow: \`${error.forceWorkflow}\`\n` +
+              `원인: \`${error.reason}\`${error.detail ? ` — ${error.detail}` : ''}\n` +
+              `수동 재시도: \`$z <issue-url>\``,
+            { threadTs: activeThreadTs },
+          );
+        } catch (postErr) {
+          this.logger.error('Failed to post handoff-abort message', {
+            channelId: activeChannel,
+            threadTs: activeThreadTs,
+            error: (postErr as Error).message,
+          });
+        }
+        const terminatedSession = this.claudeHandler.getSession(activeChannel, activeThreadTs);
+        if (terminatedSession) {
+          terminatedSession.terminated = true;
+          this.claudeHandler.saveSessions();
+        }
+        return; // Safe-stop — skip auto-retry, do not re-throw
+      }
       // Auto-retry on recoverable errors (merged from main — auto-retry on error)
       const retryAfterMs = agentSession.getRetryAfterMs();
       if (retryAfterMs) {

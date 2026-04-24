@@ -1,0 +1,34 @@
+{{include:./common.prompt}}
+
+# z Skill — Handoff Entrypoint: plan-to-work
+
+This session was started via `CONTINUE_SESSION` with `forceWorkflow="z-plan-to-work"`.
+The host has **already** validated the `<z-handoff type="plan-to-work">` sentinel
+at the top of this prompt and parsed its typed metadata into
+`session.handoffContext` (issue #695).
+
+## Your task
+
+1. Treat the `<z-handoff type="plan-to-work">` block in this prompt body as the
+   session SSOT — the host already verified structural correctness, so there is
+   no need to re-parse or re-validate.
+2. **Skip `local:z` phase0 (clarify / new-task / codex review)** — the source
+   session completed those phases and the confirmed plan is authoritative.
+3. Register the block's `## Task List` into your todo list (TodoWrite).
+4. Record the block's `## Issue` URL and `## Parent Epic` URL as session-wide
+   SSOT (they will be needed again in phase5 when emitting `<z-handoff type="work-complete">`).
+5. Jump directly to `local:zwork` — phase2 implementation.
+
+## Forbidden
+
+- Re-running phase0 clarify or decision-gate (the origin session already made
+  those judgments and the tier is preserved in the handoff metadata).
+- Re-planning or re-scoping — the block's `## Confirmed Plan` is authoritative.
+- Opening a new issue / PR when the block already carries a `## Issue` URL.
+- Extending the handoff chain on your own. If this work produces a merged PR
+  and `## Parent Epic` is not `none`, you may emit Handoff #2 (`work-complete`)
+  at phase5 end — but that is the only outgoing handoff this session can
+  produce (hop budget = 1, enforced by #697 once implemented).
+
+See `src/local/skills/using-z/SKILL.md` §Session Handoff Protocol for the full
+contract and §Sentinel Grammar rule 4 for required block fields.
