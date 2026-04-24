@@ -35,14 +35,9 @@ interface ThreadPanelDeps {
    */
   assistantStatusManager?: AssistantStatusManager;
   /**
-   * #667 P5 — shared `SlackBlockKitChannel` instance. Wired into
-   * `TurnSurface` so it can emit the B5 `WorkflowComplete` marker at
-   * `SOMA_UI_5BLOCK_PHASE>=5`. The SAME instance must be registered in
-   * `TurnNotifier`'s channel list so the exclusion filter in
-   * stream-executor suppresses the legacy write against the same object.
-   * Optional for test compatibility — when absent, `isCompletionMarkerActive`
-   * returns `false` and `TurnSurface` silently falls back to the legacy
-   * `TurnNotifier` path regardless of phase.
+   * P5 B5 sink. MUST be the same instance registered in `TurnNotifier`'s
+   * channel list so the exclusion filter and the TurnSurface emit hit the
+   * same object. Undefined → capability reports inactive (legacy path).
    */
   slackBlockKitChannel?: SlackBlockKitChannel;
 }
@@ -77,9 +72,6 @@ export class ThreadPanel {
     this.turnSurface = new TurnSurface({
       slackApi: deps.slackApi,
       assistantStatusManager: deps.assistantStatusManager,
-      // #667 P5 — pass the shared SlackBlockKitChannel instance and a
-      // capability closure so TurnSurface can emit the B5 marker at
-      // PHASE>=5 without importing `config` or `ThreadPanel` back.
       slackBlockKitChannel: deps.slackBlockKitChannel,
       isCompletionMarkerActive: () => this.isCompletionMarkerActive(),
     });
@@ -156,16 +148,10 @@ export class ThreadPanel {
   }
 
   /**
-   * #667 P5 — capability SSOT for the B5 `WorkflowComplete` completion
-   * marker absorption. `true` means TurnSurface is the single writer of
-   * the in-thread marker and stream-executor must exclude
-   * `slack-block-kit` from TurnNotifier.
-   *
-   * Requires BOTH `SOMA_UI_5BLOCK_PHASE>=5` AND a `SlackBlockKitChannel`
-   * dependency injected at construction time. If either is missing we
-   * leave the legacy TurnNotifier path in charge — avoids a PHASE=5
-   * deployment silently dropping the B5 marker because the channel dep
-   * wasn't wired.
+   * P5 capability SSOT. `true` → TurnSurface writes the B5 marker and
+   * stream-executor excludes `slack-block-kit` from TurnNotifier. Requires
+   * both the phase flag AND the channel dep — a missing dep at PHASE=5
+   * keeps the legacy fan-out instead of silently dropping the marker.
    */
   isCompletionMarkerActive(): boolean {
     return config.ui.fiveBlockPhase >= 5 && this.deps.slackBlockKitChannel !== undefined;
