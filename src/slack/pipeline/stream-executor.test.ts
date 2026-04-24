@@ -1476,6 +1476,8 @@ describe('model-command integration', () => {
       resetSession: true,
       dispatchText: 'https://github.com/acme/repo/pull/1',
       forceWorkflow: 'pr-review',
+      // #697: model-emitted continuations are stamped with origin: 'model'
+      origin: 'model',
     });
   });
 
