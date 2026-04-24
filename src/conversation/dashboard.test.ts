@@ -205,6 +205,72 @@ describe('Dashboard API', () => {
     expect(session.tokenUsage.contextUsagePercent).toBe(40); // 80000/200000 * 100
   });
 
+  it('should expose summaryTitle on kanban sessions when session has one (#708)', async () => {
+    // #708: the initial /sessions payload must carry summaryTitle so a
+    // full-page refresh renders the same headline as the live
+    // `summaryTitleChanged` WS patch. Before this fix, sessionToKanban
+    // dropped the field and refreshed cards reverted to the raw title.
+    const sessions = new Map<string, any>();
+    sessions.set('C1:t1', {
+      sessionId: 's1',
+      title: 'Raw PTN-42 link',
+      summaryTitle: 'Refactor dashboard card render',
+      ownerId: 'U1',
+      ownerName: 'Alice',
+      channelId: 'C1',
+      threadTs: 't1',
+      activityState: 'working',
+      state: 'MAIN',
+      lastActivity: new Date(),
+    });
+    // No summaryTitle → field should be absent (undefined), not an empty string.
+    sessions.set('C2:t2', {
+      sessionId: 's2',
+      title: 'Raw only',
+      ownerId: 'U1',
+      ownerName: 'Alice',
+      channelId: 'C2',
+      threadTs: 't2',
+      activityState: 'idle',
+      state: 'MAIN',
+      lastActivity: new Date(),
+    });
+    // Empty-string summaryTitle should be treated as absent to avoid forcing
+    // the client to disambiguate '' from 'unset'.
+    sessions.set('C3:t3', {
+      sessionId: 's3',
+      title: 'Empty summary',
+      summaryTitle: '',
+      ownerId: 'U1',
+      ownerName: 'Alice',
+      channelId: 'C3',
+      threadTs: 't3',
+      activityState: 'idle',
+      state: 'MAIN',
+      lastActivity: new Date(),
+    });
+    setDashboardSessionAccessor(() => sessions);
+
+    const res = await injectWebServer({
+      method: 'GET',
+      url: '/api/dashboard/sessions',
+      headers: AUTH_HEADER,
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    const withSummary = body.board.working.find((s: any) => s.key === 'C1:t1');
+    expect(withSummary.summaryTitle).toBe('Refactor dashboard card render');
+    // Raw title remains populated so older clients still render something.
+    expect(withSummary.title).toBeTruthy();
+
+    const withoutSummary = body.board.idle.find((s: any) => s.key === 'C2:t2');
+    expect(withoutSummary.summaryTitle).toBeUndefined();
+
+    const emptySummary = body.board.idle.find((s: any) => s.key === 'C3:t3');
+    expect(emptySummary.summaryTitle).toBeUndefined();
+  });
+
   it('should include merge stats in kanban sessions', async () => {
     const sessions = new Map<string, any>();
     sessions.set('C1:t1', {
