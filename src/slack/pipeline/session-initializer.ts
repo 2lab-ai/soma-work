@@ -4,8 +4,10 @@ import { checkRepoChannelMatch, getAllChannels, getChannel, registerChannel } fr
 import {
   expectedHandoffKind,
   HandoffAbortError,
+  isZHandoffWorkflow,
   parseHandoff,
 } from 'somalib/model-commands/handoff-parser';
+import type { ZHandoffWorkflow } from 'somalib/model-commands/session-types';
 import type { ClaudeHandler } from '../../claude-handler';
 import { createConversation, getConversationUrl } from '../../conversation';
 import { getDispatchService } from '../../dispatch-service';
@@ -28,6 +30,12 @@ import type { MessageEvent, SayFn, SessionInitResult } from './types';
 
 // Timeout for dispatch API call (30 seconds - Agent SDK needs time to start)
 const DISPATCH_TIMEOUT_MS = 30000;
+
+/** Session title surface shown when entering via a z handoff entrypoint (#695). */
+const HANDOFF_ENTRY_TITLES: Record<ZHandoffWorkflow, string> = {
+  'z-plan-to-work': 'z handoff (plan→work)',
+  'z-epic-update': 'z handoff (epic update)',
+};
 
 // Track in-flight dispatch calls to prevent race conditions
 // Maps sessionKey -> Promise that resolves when dispatch completes
@@ -570,14 +578,9 @@ export class SessionInitializer {
     const sessionKey = this.deps.claudeHandler.getSessionKey(channel, threadTs);
 
     // Issue #695 — host-level enforcement of z session handoff entrypoints.
-    // Parse the `<z-handoff>` sentinel, verify sentinel-to-workflow mapping,
-    // persist typed metadata, and transition to the forced workflow. Any
-    // failure throws `HandoffAbortError`, which `SlackHandler` catches to
-    // emit a user-facing safe-stop message and short-circuit the retry path.
-    if (
-      (forceWorkflow === 'z-plan-to-work' || forceWorkflow === 'z-epic-update') &&
-      this.deps.claudeHandler.needsDispatch(channel, threadTs)
-    ) {
+    // Failure throws `HandoffAbortError`, which `SlackHandler` catches to emit
+    // a user-facing safe-stop message and short-circuit the retry path.
+    if (isZHandoffWorkflow(forceWorkflow) && this.deps.claudeHandler.needsDispatch(channel, threadTs)) {
       if (!handoffPrompt) {
         throw new HandoffAbortError(
           'no-sentinel',
@@ -599,14 +602,9 @@ export class SessionInitializer {
       }
       const session = this.deps.claudeHandler.getSession(channel, threadTs);
       if (!session) {
-        throw new HandoffAbortError(
-          'host-policy',
-          'session not found at handoff entry',
-          forceWorkflow,
-        );
+        throw new HandoffAbortError('host-policy', 'session not found at handoff entry', forceWorkflow);
       }
       session.handoffContext = parsed.context;
-      this.deps.claudeHandler.saveSessions();
       this.logger.info('Handoff entrypoint entered', {
         sessionKey,
         workflow: forceWorkflow,
@@ -614,11 +612,13 @@ export class SessionInitializer {
         chainId: parsed.context.chainId,
         hopBudget: parsed.context.hopBudget,
       });
+      // transitionToMain persists the session via SessionRegistry.saveSessions,
+      // so no explicit save is needed here for handoffContext to hit disk.
       this.deps.claudeHandler.transitionToMain(
         channel,
         threadTs,
         forceWorkflow,
-        forceWorkflow === 'z-plan-to-work' ? 'z handoff (plan→work)' : 'z handoff (epic update)',
+        HANDOFF_ENTRY_TITLES[forceWorkflow],
       );
       return;
     }

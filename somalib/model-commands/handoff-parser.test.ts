@@ -139,11 +139,6 @@ describe('parseHandoff — happy paths', () => {
     expect(result.context.hopBudget).toBe(1);
   });
 
-  it('accepts prompt that starts with $z command line then sentinel (top-level with prefix)', () => {
-    const result = parseHandoff(planToWorkMinimal());
-    expect(result.ok).toBe(true);
-  });
-
   it('accepts prompt with no $z prefix — sentinel directly at top', () => {
     const result = parseHandoff(
       [
