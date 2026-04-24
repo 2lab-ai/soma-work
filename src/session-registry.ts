@@ -1243,6 +1243,13 @@ export class SessionRegistry {
     session.state = 'INITIALIZING';
     session.workflow = undefined;
 
+    // Clear stale handoff metadata. The AD-12 filter (#695) persists sessions
+    // that still have handoffContext; leaving it here after a reset would keep
+    // a stale metadata blob on disk forever when the reset is not immediately
+    // followed by a new forced-handoff runDispatch. A real handoff entry
+    // overwrites this field before the first post-reset save.
+    session.handoffContext = undefined;
+
     // Clear current initiator (fresh start means no active initiator)
     session.currentInitiatorId = undefined;
     session.currentInitiatorName = undefined;

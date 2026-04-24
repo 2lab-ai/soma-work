@@ -12,12 +12,15 @@
  *   `parseHandoff` + mapping check before deterministic workflow entry.
  */
 
+import { randomUUID } from 'node:crypto';
 import type {
   HandoffContext,
   HandoffKind,
   HandoffParseFailure,
   HandoffTier,
   ParseResult,
+  WorkflowType,
+  ZHandoffWorkflow,
 } from './session-types';
 
 const VALID_TIERS: ReadonlySet<HandoffTier> = new Set([
@@ -37,54 +40,65 @@ const REQUIRED_FIELDS: Record<HandoffKind, readonly string[]> = {
 };
 
 /**
+ * Type guard for `ZHandoffWorkflow`. Defined here (runtime module) so src/
+ * callers can destructure it alongside `parseHandoff` and `extractSentinelType`.
+ */
+export function isZHandoffWorkflow(w: WorkflowType | undefined): w is ZHandoffWorkflow {
+  return w === 'z-plan-to-work' || w === 'z-epic-update';
+}
+
+/**
  * Workflow → expected sentinel kind mapping.
  *
  * `forceWorkflow='z-plan-to-work'` MUST arrive with `<z-handoff type="plan-to-work">`;
  * `forceWorkflow='z-epic-update'` MUST arrive with `<z-handoff type="work-complete">`.
  * Mismatch is a `type-workflow-mismatch` failure.
  */
-export function expectedHandoffKind(
-  forceWorkflow: 'z-plan-to-work' | 'z-epic-update',
-): HandoffKind {
+export function expectedHandoffKind(forceWorkflow: ZHandoffWorkflow): HandoffKind {
   return forceWorkflow === 'z-plan-to-work' ? 'plan-to-work' : 'work-complete';
+}
+
+/**
+ * Locate the sentinel opening line at the top level of `lines`. Top-level =
+ * the first non-empty line, optionally preceded by a `$z ...` command line
+ * (per SKILL.md Handoff #1/#2 payload shape). Returns the line index or `-1`
+ * when no top-level opening is present.
+ *
+ * Shared by `parseHandoff` and `extractSentinelType` so the "where does a
+ * sentinel live" rule cannot drift between the validator and the runtime
+ * parser.
+ */
+function findSentinelOpeningLine(lines: readonly string[]): number {
+  let idx = 0;
+  while (idx < lines.length && lines[idx].trim() === '') idx++;
+  if (idx >= lines.length) return -1;
+  if (/^\$z\b/.test(lines[idx])) {
+    idx++;
+    while (idx < lines.length && lines[idx].trim() === '') idx++;
+  }
+  if (idx >= lines.length) return -1;
+  return idx;
 }
 
 /**
  * Lightweight existence + type-extraction check for the validator layer.
  *
- * Scans for a well-formed `<z-handoff type="...">` opening tag at the top
- * level of the prompt (optionally preceded by a `$z ...` command line, per
- * SKILL.md payload format). Returns the captured type if valid, otherwise
- * `null`. Does NOT validate closing tag, required fields, or duplicates —
- * those are `parseHandoff`'s job.
+ * Returns the captured type if the prompt has a well-formed top-level
+ * `<z-handoff type="..."/>` opening with a known type; otherwise null. Does
+ * NOT validate closing tag, required fields, or duplicates — those are
+ * `parseHandoff`'s job.
  */
 export function extractSentinelType(promptText: string): HandoffKind | null {
   const lines = promptText.split(/\r?\n/);
-  let idx = 0;
-
-  // Skip leading blank lines.
-  while (idx < lines.length && lines[idx].trim() === '') idx++;
-  if (idx >= lines.length) return null;
-
-  // Optionally skip a leading "$z ..." command line (per SKILL.md payload format).
-  if (/^\$z\b/.test(lines[idx])) {
-    idx++;
-    while (idx < lines.length && lines[idx].trim() === '') idx++;
-    if (idx >= lines.length) return null;
-  }
-
-  const openMatch = /^<z-handoff\s+type="([^"]+)">\s*$/.exec(lines[idx]);
+  const openIdx = findSentinelOpeningLine(lines);
+  if (openIdx < 0) return null;
+  const openMatch = /^<z-handoff\s+type="([^"]+)">\s*$/.exec(lines[openIdx]);
   if (!openMatch) return null;
-
   const captured = openMatch[1];
-  if (!VALID_KINDS.has(captured as HandoffKind)) return null;
-  return captured as HandoffKind;
+  return VALID_KINDS.has(captured as HandoffKind) ? (captured as HandoffKind) : null;
 }
 
-/**
- * Lightweight "does this prompt look like it has a handoff sentinel?" check.
- * True iff `extractSentinelType` returns a valid kind.
- */
+/** True iff the prompt carries a well-formed top-level handoff sentinel. */
 export function hasHandoffSentinel(promptText: string): boolean {
   return extractSentinelType(promptText) !== null;
 }
@@ -99,31 +113,21 @@ export function hasHandoffSentinel(promptText: string): boolean {
  * On success, fills host-managed fields (`chainId` UUID, `hopBudget` = 1).
  */
 export function parseHandoff(promptText: string): ParseResult {
-  // 1. Bulk existence check — distinguishes "no sentinel" from "has sentinel but malformed".
+  // Distinguishes "no sentinel anywhere" from "has sentinel but malformed" —
+  // consumers branch on `reason` to decide whether to fall through to phase0
+  // vs emit a safe-stop.
   if (!/<z-handoff\b/.test(promptText)) {
     return { ok: false, reason: 'no-sentinel', detail: '' };
   }
 
   const lines = promptText.split(/\r?\n/);
-  let idx = 0;
-
-  // 2. Skip leading blank lines and optional "$z ..." command line.
-  while (idx < lines.length && lines[idx].trim() === '') idx++;
-  if (idx >= lines.length) {
-    return { ok: false, reason: 'no-sentinel', detail: '' };
-  }
-  if (/^\$z\b/.test(lines[idx])) {
-    idx++;
-    while (idx < lines.length && lines[idx].trim() === '') idx++;
-  }
-  if (idx >= lines.length) {
+  const openLineIdx = findSentinelOpeningLine(lines);
+  if (openLineIdx < 0) {
     return { ok: false, reason: 'sentinel-not-top-level', detail: '' };
   }
 
-  // 3. The first real content line must be the opening sentinel.
-  const openLine = lines[idx];
-  const looseOpen = /^<z-handoff\b/.test(openLine);
-  if (!looseOpen) {
+  const openLine = lines[openLineIdx];
+  if (!/^<z-handoff\b/.test(openLine)) {
     return {
       ok: false,
       reason: 'sentinel-not-top-level',
@@ -134,11 +138,7 @@ export function parseHandoff(promptText: string): ParseResult {
   // Strict opening: <z-handoff type="..."> with double quotes, no extra attrs.
   const strictOpen = /^<z-handoff\s+type="([^"]+)">\s*$/.exec(openLine);
   if (!strictOpen) {
-    return {
-      ok: false,
-      reason: 'malformed-opening',
-      detail: openLine.trim(),
-    };
+    return { ok: false, reason: 'malformed-opening', detail: openLine.trim() };
   }
 
   const capturedType = strictOpen[1];
@@ -147,8 +147,6 @@ export function parseHandoff(promptText: string): ParseResult {
   }
   const handoffKind = capturedType as HandoffKind;
 
-  // 4. Scan forward for the closing tag.
-  const openLineIdx = idx;
   let closeIdx = -1;
   for (let j = openLineIdx + 1; j < lines.length; j++) {
     if (/^<\/z-handoff>\s*$/.test(lines[j])) {
@@ -160,27 +158,22 @@ export function parseHandoff(promptText: string): ParseResult {
     return { ok: false, reason: 'missing-closing', detail: '' };
   }
 
-  // 5. Scan past the close for another opening tag (duplicate detection).
   for (let j = closeIdx + 1; j < lines.length; j++) {
     if (/^<z-handoff\b/.test(lines[j])) {
       return { ok: false, reason: 'duplicate-sentinel', detail: '' };
     }
   }
 
-  // 6. Parse inner body into "## Heading" → value (multi-line) map.
   const body = lines.slice(openLineIdx + 1, closeIdx);
   const fields = parseFields(body);
 
-  // 7. Validate required fields per type.
   for (const required of REQUIRED_FIELDS[handoffKind]) {
     if (!(required in fields)) {
       return { ok: false, reason: 'missing-required-field', detail: required };
     }
   }
 
-  // 8. Derive HandoffContext per AD-3.
-  const context = deriveContext(handoffKind, fields);
-  return { ok: true, context };
+  return { ok: true, context: deriveContext(handoffKind, fields) };
 }
 
 /**
@@ -192,12 +185,12 @@ export function parseHandoff(promptText: string): ParseResult {
 export class HandoffAbortError extends Error {
   readonly reason: HandoffParseFailure | 'host-policy';
   readonly detail: string;
-  readonly forceWorkflow: 'z-plan-to-work' | 'z-epic-update';
+  readonly forceWorkflow: ZHandoffWorkflow;
 
   constructor(
     reason: HandoffParseFailure | 'host-policy',
     detail: string,
-    forceWorkflow: 'z-plan-to-work' | 'z-epic-update',
+    forceWorkflow: ZHandoffWorkflow,
   ) {
     super(`HandoffAbort(${forceWorkflow}): ${reason} — ${detail}`);
     this.name = 'HandoffAbortError';
@@ -304,23 +297,8 @@ function deriveContext(
     escapeEligible,
     tier,
     issueRequiredByUser,
-    chainId: mintChainId(),
+    // UUID is a log-correlation id only; hopBudget seed is #697's starting point.
+    chainId: randomUUID(),
     hopBudget: 1,
   };
-}
-
-function mintChainId(): string {
-  // `crypto.randomUUID()` is available on Node >= 19 and all modern browsers.
-  // Fallback to a hex pseudo-UUID in the extremely unlikely case it's missing.
-  try {
-    // @ts-ignore — runtime environments may lack typings.
-    const g: any = globalThis;
-    if (g?.crypto?.randomUUID) return g.crypto.randomUUID();
-  } catch {
-    // fall through
-  }
-  // Fallback: timestamp + random hex. Not cryptographically strong, only
-  // used as a log-correlation id when crypto.randomUUID is unavailable.
-  const hex = Math.floor(Math.random() * 0xffffffff).toString(16).padStart(8, '0');
-  return `handoff-${Date.now().toString(16)}-${hex}`;
 }

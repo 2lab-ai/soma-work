@@ -10,7 +10,7 @@ import type {
   UserChoices,
   WorkflowType,
 } from './session-types';
-import { expectedHandoffKind, extractSentinelType } from './handoff-parser';
+import { expectedHandoffKind, extractSentinelType, isZHandoffWorkflow } from './handoff-parser';
 import type {
   AskUserQuestionParams,
   ContinueSessionParams,
@@ -693,14 +693,14 @@ function parseContinueSessionParams(
     // sentinel in the prompt AND a type attribute matching the workflow.
     // Lightweight regex check here; full structural validation happens at
     // runtime in `SessionInitializer.runDispatch`.
-    if (forceWorkflow === 'z-plan-to-work' || forceWorkflow === 'z-epic-update') {
+    if (isZHandoffWorkflow(forceWorkflow as WorkflowType)) {
       const sentinelType = extractSentinelType(prompt);
       if (!sentinelType) {
         return invalidArgs(
           `CONTINUE_SESSION forceWorkflow '${forceWorkflow}' requires <z-handoff> sentinel in prompt`,
         );
       }
-      const expected = expectedHandoffKind(forceWorkflow);
+      const expected = expectedHandoffKind(forceWorkflow as 'z-plan-to-work' | 'z-epic-update');
       if (sentinelType !== expected) {
         return invalidArgs(
           `CONTINUE_SESSION forceWorkflow '${forceWorkflow}' requires <z-handoff type="${expected}">, got type="${sentinelType}"`,

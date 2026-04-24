@@ -110,11 +110,13 @@ describe('Handoff entrypoint end-to-end (#695)', () => {
     const validation = validateModelCommandRunArgs(payload);
     expect(validation.ok).toBe(true);
 
-    // 2. Prime a session in INITIALIZING state (simulates post-resetSessionContext).
+    // 2. Prime a live session, then mirror the slack-handler reset flow
+    // (resetSessionContext → runDispatch) instead of mutating internals.
     const session = registry.createSession('U1', 'Tester', 'C1', '999.001');
-    // State starts as INITIALIZING via createSession; ensure no stale sessionId.
-    session.sessionId = undefined;
-    session.state = 'INITIALIZING';
+    session.sessionId = 'prior-conversation-id';
+    registry.transitionToMain('C1', '999.001', 'default', 'prior title');
+    registry.resetSessionContext('C1', '999.001');
+    void session; // reset went through the registry; we re-fetch below
 
     // 3. Run the dispatch flow as slack-handler onResetSession would.
     await initializer.runDispatch(
