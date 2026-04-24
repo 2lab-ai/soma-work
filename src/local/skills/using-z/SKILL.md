@@ -157,7 +157,7 @@ z 컨트롤러의 phase 전환 중 **세션 경계**를 넘는 것은 두 지점
 | 결정적 새 세션 진입 | **구현 완료 (#695)** — 전용 `WorkflowType` (`z-plan-to-work`, `z-epic-update`) + host sentinel 검증 + `session.handoffContext` typed persistence | — |
 | 세션당 handoff 예산 | **구현 완료 (#697)** — `src/slack/handoff-budget.ts` + `slack-handler.onResetSession` 가드; `ConversationSession.autoHandoffBudget` 필드 (default 1, `resetSessionContext`에서 재초기화); 호스트-빌트 continuation (renew/onboarding)은 `Continuation.origin: 'host'` 마커로 제외 | — |
 | 1-hop 재귀 방지 | **구현 완료 (#697)** — 세션 예산 고갈 시 `HandoffBudgetExhaustedError` throw + slack-handler 외부 catch에서 safe-stop (`#695`의 `HandoffAbortError` 패턴과 동일, 단 session terminate는 하지 않음 — 수동 재입력 대기) | — |
-| Dispatch 실패 복구 | z handoff 경로는 safe-stop 구현 (#695 — `HandoffAbortError`) | default fallback 제거 일반화 (#698) |
+| Dispatch 실패 복구 | **구현 완료 (#698)** — `src/slack/dispatch-abort.ts` + `session-initializer`의 4개 drift site (classifier catch, in-flight wait-timeout, forceWorkflow `transitionToMain` × 2)가 `DispatchAbortError` throw로 전환; `session.handoffContext` 또는 `forcedWorkflowHint` 있을 때만 safe-stop, 일반 Slack 메시지 경로는 기존 default drift 유지; `slack-handler` widened outer catch에서 `terminateSession` + postMessage with handoff metadata | — |
 
 **이 스킬 문서는 핸드오프 계약을 정의한다. 항목별 host-side 강제 진척은 위 표에 단일 진실원으로 기록한다.** 본문에 PR/이슈 번호를 박지 않는다 — 시간이 지나면 노이즈가 되고, 구체 추적은 위 표(또는 그 표가 가리키는 에픽)가 소유한다.
 
