@@ -1080,4 +1080,216 @@ describe('TurnSurface', () => {
       }
     });
   });
+
+  // -------------------------------------------------------------------------
+  // #667 P5 — B5 completion marker absorption
+  //
+  // TurnSurface becomes the single writer for Slack-thread WorkflowComplete
+  // B5 messages at PHASE>=5. The event snapshot is produced by a caller-
+  // provided `buildCompletionEvent` closure on TurnContext. The send is
+  // gated by `isCompletionMarkerActive` capability closure on deps.
+  // -------------------------------------------------------------------------
+  describe('B5 completion marker (#667 P5)', () => {
+    beforeEach(() => {
+      config.ui.fiveBlockPhase = 5;
+    });
+
+    function makeBlockKitChannel() {
+      return { send: vi.fn().mockResolvedValue(undefined) };
+    }
+
+    function makeEvent() {
+      return {
+        category: 'WorkflowComplete' as const,
+        userId: 'U1',
+        channel: 'C1',
+        threadTs: 't1.0',
+        sessionTitle: 'Session X',
+        durationMs: 1234,
+      };
+    }
+
+    it("end('completed') + capability active + builder returns event → send called once with the event", async () => {
+      const client = makeClient();
+      const channel = makeBlockKitChannel();
+      const surface = new TurnSurface({
+        slackApi: makeSlackApi(client),
+        slackBlockKitChannel: channel as any,
+        isCompletionMarkerActive: () => true,
+      } as any);
+
+      const evt = makeEvent();
+      const ctx = {
+        channelId: 'C1',
+        threadTs: 't1.0',
+        sessionKey: 'C1:t1.0',
+        turnId: 'C1:t1.0:b5-1',
+        buildCompletionEvent: () => evt,
+      };
+      await surface.begin(ctx as any);
+      await surface.end(ctx.turnId, 'completed');
+
+      expect(channel.send).toHaveBeenCalledTimes(1);
+      expect(channel.send).toHaveBeenCalledWith(evt);
+    });
+
+    it("end('completed') + capability active + builder returns undefined → send not called", async () => {
+      const client = makeClient();
+      const channel = makeBlockKitChannel();
+      const surface = new TurnSurface({
+        slackApi: makeSlackApi(client),
+        slackBlockKitChannel: channel as any,
+        isCompletionMarkerActive: () => true,
+      } as any);
+
+      const ctx = {
+        channelId: 'C1',
+        threadTs: 't1.0',
+        sessionKey: 'C1:t1.0',
+        turnId: 'C1:t1.0:b5-2',
+        buildCompletionEvent: () => undefined,
+      };
+      await surface.begin(ctx as any);
+      await surface.end(ctx.turnId, 'completed');
+
+      expect(channel.send).not.toHaveBeenCalled();
+    });
+
+    it("end('completed') + capability inactive → send not called", async () => {
+      const client = makeClient();
+      const channel = makeBlockKitChannel();
+      const surface = new TurnSurface({
+        slackApi: makeSlackApi(client),
+        slackBlockKitChannel: channel as any,
+        isCompletionMarkerActive: () => false,
+      } as any);
+
+      const ctx = {
+        channelId: 'C1',
+        threadTs: 't1.0',
+        sessionKey: 'C1:t1.0',
+        turnId: 'C1:t1.0:b5-3',
+        buildCompletionEvent: () => makeEvent(),
+      };
+      await surface.begin(ctx as any);
+      await surface.end(ctx.turnId, 'completed');
+
+      expect(channel.send).not.toHaveBeenCalled();
+    });
+
+    it("end('completed') + no builder on ctx → send not called", async () => {
+      const client = makeClient();
+      const channel = makeBlockKitChannel();
+      const surface = new TurnSurface({
+        slackApi: makeSlackApi(client),
+        slackBlockKitChannel: channel as any,
+        isCompletionMarkerActive: () => true,
+      } as any);
+
+      // No `buildCompletionEvent` on ctx.
+      const ctx = {
+        channelId: 'C1',
+        threadTs: 't1.0',
+        sessionKey: 'C1:t1.0',
+        turnId: 'C1:t1.0:b5-4',
+      };
+      await surface.begin(ctx as any);
+      await surface.end(ctx.turnId, 'completed');
+
+      expect(channel.send).not.toHaveBeenCalled();
+    });
+
+    it('fail(err) → send not called (unconditional, regardless of capability)', async () => {
+      const client = makeClient();
+      const channel = makeBlockKitChannel();
+      const surface = new TurnSurface({
+        slackApi: makeSlackApi(client),
+        slackBlockKitChannel: channel as any,
+        isCompletionMarkerActive: () => true,
+      } as any);
+
+      const ctx = {
+        channelId: 'C1',
+        threadTs: 't1.0',
+        sessionKey: 'C1:t1.0',
+        turnId: 'C1:t1.0:b5-fail',
+        buildCompletionEvent: () => makeEvent(),
+      };
+      await surface.begin(ctx as any);
+      await surface.fail(ctx.turnId, new Error('boom'));
+
+      expect(channel.send).not.toHaveBeenCalled();
+    });
+
+    it("end('aborted') → send not called", async () => {
+      const client = makeClient();
+      const channel = makeBlockKitChannel();
+      const surface = new TurnSurface({
+        slackApi: makeSlackApi(client),
+        slackBlockKitChannel: channel as any,
+        isCompletionMarkerActive: () => true,
+      } as any);
+
+      const ctx = {
+        channelId: 'C1',
+        threadTs: 't1.0',
+        sessionKey: 'C1:t1.0',
+        turnId: 'C1:t1.0:b5-abort',
+        buildCompletionEvent: () => makeEvent(),
+      };
+      await surface.begin(ctx as any);
+      await surface.end(ctx.turnId, 'aborted');
+
+      expect(channel.send).not.toHaveBeenCalled();
+    });
+
+    it('send throwing does not prevent cleanupTurn (state removed, activeTurn cleared)', async () => {
+      const client = makeClient();
+      const channel = { send: vi.fn().mockRejectedValue(new Error('slack down')) };
+      const surface = new TurnSurface({
+        slackApi: makeSlackApi(client),
+        slackBlockKitChannel: channel as any,
+        isCompletionMarkerActive: () => true,
+      } as any);
+
+      const ctx = {
+        channelId: 'C1',
+        threadTs: 't1.0',
+        sessionKey: 'C1:t1.0',
+        turnId: 'C1:t1.0:b5-throw',
+        buildCompletionEvent: () => makeEvent(),
+      };
+      await surface.begin(ctx as any);
+      await surface.end(ctx.turnId, 'completed');
+
+      expect(channel.send).toHaveBeenCalledTimes(1);
+      // Cleanup ran — in-memory state removed.
+      expect(surface._hasActiveTurn(ctx.sessionKey)).toBe(false);
+      expect(surface._getTurnStateSnapshot(ctx.turnId)).toBeUndefined();
+    });
+
+    it('PHASE<5 regression: capability returning false (raw<5) → no send (legacy behavior preserved)', async () => {
+      config.ui.fiveBlockPhase = 4;
+      const client = makeClient();
+      const channel = makeBlockKitChannel();
+      const surface = new TurnSurface({
+        slackApi: makeSlackApi(client),
+        slackBlockKitChannel: channel as any,
+        // Capability correctly reports false when raw<5.
+        isCompletionMarkerActive: () => false,
+      } as any);
+
+      const ctx = {
+        channelId: 'C1',
+        threadTs: 't1.0',
+        sessionKey: 'C1:t1.0',
+        turnId: 'C1:t1.0:b5-legacy',
+        buildCompletionEvent: () => makeEvent(),
+      };
+      await surface.begin(ctx as any);
+      await surface.end(ctx.turnId, 'completed');
+
+      expect(channel.send).not.toHaveBeenCalled();
+    });
+  });
 });
