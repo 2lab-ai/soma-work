@@ -102,9 +102,8 @@ const CASE_A_ESCAPE_MARKER = /Case A escape/;
 
 function formatBlockMessage(reason: PrIssueGuardReason, ctx: HandoffContext, toolName: string): string {
   const sourceIssueUrl = ctx.sourceIssueUrl ?? 'null';
-  const escapeEligible = String(ctx.escapeEligible);
-  const issueRequiredByUser = String(ctx.issueRequiredByUser);
-  const chainId = ctx.chainId;
+  const issueNum = ctx.sourceIssueUrl ? extractIssueNumber(ctx.sourceIssueUrl) : null;
+  const issueRef = `Closes #${issueNum ?? '<n>'}`;
 
   const header = `🚫 PR creation blocked: handoff session lacks linked-issue evidence.`;
   const toolLine = `Tool: ${toolName}`;
@@ -112,12 +111,11 @@ function formatBlockMessage(reason: PrIssueGuardReason, ctx: HandoffContext, too
   const ctxBlock = [
     'handoffContext:',
     `  sourceIssueUrl: ${sourceIssueUrl}`,
-    `  escapeEligible: ${escapeEligible}`,
-    `  issueRequiredByUser: ${issueRequiredByUser}`,
-    `  chainId: ${chainId}`,
+    `  escapeEligible: ${ctx.escapeEligible}`,
+    `  issueRequiredByUser: ${ctx.issueRequiredByUser}`,
+    `  chainId: ${ctx.chainId}`,
   ].join('\n');
 
-  // Reason-specific cause + fix hints
   const causeAndFix = (() => {
     switch (reason) {
       case 'no-issue-no-escape':
@@ -132,27 +130,22 @@ function formatBlockMessage(reason: PrIssueGuardReason, ctx: HandoffContext, too
           `     producer must emit \`## Escape Eligible: true\` (3-condition validated) AND`,
           `     the PR body must include \`Case A escape (tier=tiny|small, no issue by policy)\`.`,
         ].join('\n');
-      case 'missing-closes-issue': {
-        const issueNum = ctx.sourceIssueUrl ? extractIssueNumber(ctx.sourceIssueUrl) : null;
+      case 'missing-closes-issue':
         return [
           `Cause: handoff session has \`sourceIssueUrl=${sourceIssueUrl}\` but the PR body does`,
-          `not contain \`Closes #${issueNum ?? '<n>'}\`.`,
+          `not contain \`${issueRef}\`.`,
           ``,
-          `Fix: include \`Closes #${issueNum ?? '<n>'}\` in the PR body. Use inline content`,
-          `(literal string or heredoc) — shell variable indirection (\`--body "$VAR"\`) is`,
-          `not visible to the static check.`,
+          `Fix: include \`${issueRef}\` in the PR body. Use inline content (literal string or`,
+          `heredoc) — shell variable indirection (\`--body "$VAR"\`) is not visible to the static check.`,
         ].join('\n');
-      }
-      case 'wrong-issue-number': {
-        const issueNum = ctx.sourceIssueUrl ? extractIssueNumber(ctx.sourceIssueUrl) : null;
+      case 'wrong-issue-number':
         return [
           `Cause: PR body references a \`Closes #N\` that does not match this handoff's`,
-          `\`sourceIssueUrl=${sourceIssueUrl}\` (expected \`Closes #${issueNum ?? '<n>'}\`).`,
+          `\`sourceIssueUrl=${sourceIssueUrl}\` (expected \`${issueRef}\`).`,
           ``,
-          `Fix: change the body to reference \`Closes #${issueNum ?? '<n>'}\`. If you intended a`,
-          `different issue, restart the workflow from that issue with \`$z <issue_url>\`.`,
+          `Fix: change the body to reference \`${issueRef}\`. If you intended a different issue,`,
+          `restart the workflow from that issue with \`$z <issue_url>\`.`,
         ].join('\n');
-      }
       case 'missing-escape-marker':
         return [
           `Cause: handoff session has \`escapeEligible=true\` (Case A escape path) but the PR`,
@@ -310,16 +303,15 @@ export interface SdkHookEntry {
   hooks: Array<(input: HookInput) => Promise<HookJSONOutput>>;
 }
 
-const PR_CREATE_BASH_MATCHER = 'Bash';
-const PR_CREATE_MCP_MATCHER = 'mcp__';
-
 /**
  * Build the two PreToolUse hook entries (Bash + mcp__) for the PR-issue
  * precondition. Caller pushes these into `preToolUseHooks` at
  * `claude-handler.ts:~949`.
  *
- * The MCP matcher fires for ALL `mcp__*` tools — the hook itself filters to
- * `mcp__github__create_pull_request` to avoid interfering with other MCP calls.
+ * The mcp__ matcher fires for ALL mcp__* tools — the hook filters to
+ * `mcp__github__create_pull_request` BEFORE the session lookup so unrelated
+ * MCP calls in handoff sessions don't pay the lookup cost. Same for the Bash
+ * matcher: it short-circuits before lookup when the command isn't a PR-create.
  *
  * Hook return contract per SDK 0.2.111 `PreToolUseHookSpecificOutput`:
  *   - block: `{ hookSpecificOutput: { hookEventName, permissionDecision: 'deny',
@@ -334,20 +326,21 @@ export function buildPrIssueHookEntries(deps: PrIssueHookDeps): SdkHookEntry[] {
   const makeHook =
     (matcherKind: 'bash' | 'mcp') =>
     async (input: HookInput): Promise<HookJSONOutput> => {
-      const ctx = deps.getHandoffContext();
-      if (!ctx) {
-        // Caller's getHandoffContext is responsible for distinguishing
-        // no-session vs no-handoffContext in its own logs (it has access
-        // to richer context). Factory just notes the skip.
-        deps.logger.info('PR-issue guard skipped: no handoff context', deps.logCtx);
-        return { continue: true };
-      }
-
       const toolName = (input as { tool_name?: string }).tool_name || '';
       const toolInput = (input as { tool_input?: Record<string, unknown> }).tool_input;
 
-      // The mcp__ matcher fires for ALL mcp__* tools — filter to the PR creation one.
-      if (matcherKind === 'mcp' && toolName !== 'mcp__github__create_pull_request') {
+      // Cheap gate: skip lookup entirely for tool calls that can't create a PR.
+      if (matcherKind === 'mcp') {
+        if (toolName !== 'mcp__github__create_pull_request') return { continue: true };
+      } else {
+        const cmd = typeof toolInput?.command === 'string' ? toolInput.command : '';
+        if (!/\bgh\s+pr\s+create\b/.test(cmd)) return { continue: true };
+      }
+
+      // Now we know this IS a PR-creation attempt. Resolve handoff context.
+      const ctx = deps.getHandoffContext();
+      if (!ctx) {
+        deps.logger.info('PR-issue guard skipped: no handoff context on PR-create attempt', deps.logCtx);
         return { continue: true };
       }
 
@@ -377,7 +370,7 @@ export function buildPrIssueHookEntries(deps: PrIssueHookDeps): SdkHookEntry[] {
     };
 
   return [
-    { matcher: PR_CREATE_BASH_MATCHER, hooks: [makeHook('bash')] },
-    { matcher: PR_CREATE_MCP_MATCHER, hooks: [makeHook('mcp')] },
+    { matcher: 'Bash', hooks: [makeHook('bash')] },
+    { matcher: 'mcp__', hooks: [makeHook('mcp')] },
   ];
 }

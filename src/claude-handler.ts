@@ -950,52 +950,24 @@ export class ClaudeHandler {
         }
 
         // ── PR-issue precondition (#696) ──
-        // For sessions started via z handoff (session.handoffContext set),
-        // require a linked source issue (or validated Case A escape) before
-        // allowing PR creation via Bash `gh pr create` or
-        // `mcp__github__create_pull_request`. Sessions without handoffContext
-        // (legacy / non-z) are unaffected.
+        // For z-handoff sessions (session.handoffContext set), require a linked
+        // source issue (or validated Case A escape) before allowing PR creation
+        // via Bash `gh pr create` or `mcp__github__create_pull_request`. Sessions
+        // without handoffContext are unaffected.
         //
-        // Multi-hook precedence per SDK 0.2.111 runtime is `deny > defer > ask
-        // > allow > undefined`, so this `deny` wins over the bypass-mode Bash
-        // hook's `allow` regardless of array order.
+        // SDK multi-hook precedence is `deny > allow` (verified cli.js:8208-8240
+        // in @anthropic-ai/claude-agent-sdk@0.2.111), so this deny wins over the
+        // bypass-mode Bash hook's allow regardless of array order.
         //
-        // Spec: docs/pr-issue-precondition/spec.md
-        // Trace: docs/pr-issue-precondition/trace.md S2
-        {
-          const sessionRegistryRef = this.sessionRegistry;
-          const loggerRef = this.logger;
-          const channelRef = slackContext.channel;
-          const threadTsRef = slackContext.threadTs;
-          preToolUseHooks.push(
-            ...buildPrIssueHookEntries({
-              getHandoffContext: () => {
-                const session = sessionRegistryRef.getSession(channelRef, threadTsRef);
-                if (!session) {
-                  loggerRef.info('PR-issue guard skipped: no session', {
-                    channel: channelRef,
-                    threadTs: threadTsRef,
-                  });
-                  return undefined;
-                }
-                if (!session.handoffContext) {
-                  loggerRef.info('PR-issue guard skipped: non-handoff session', {
-                    channel: channelRef,
-                    threadTs: threadTsRef,
-                    ownerName: session.ownerName,
-                  });
-                  return undefined;
-                }
-                return session.handoffContext;
-              },
-              logger: {
-                info: (msg, data) => loggerRef.info(msg, data),
-                warn: (msg, data) => loggerRef.warn(msg, data),
-              },
-              logCtx: { channel: channelRef, threadTs: threadTsRef },
-            }),
-          );
-        }
+        // Spec / trace: docs/pr-issue-precondition/{spec,trace}.md
+        preToolUseHooks.push(
+          ...buildPrIssueHookEntries({
+            getHandoffContext: () =>
+              this.sessionRegistry.getSession(slackContext.channel, slackContext.threadTs)?.handoffContext,
+            logger: this.logger,
+            logCtx: { channel: slackContext.channel, threadTs: slackContext.threadTs },
+          }),
+        );
 
         if (preToolUseHooks.length > 0) {
           options.hooks = {

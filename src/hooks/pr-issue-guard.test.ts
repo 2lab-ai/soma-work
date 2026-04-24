@@ -10,6 +10,8 @@ import { describe, expect, it, vi } from 'vitest';
 import type { HandoffContext } from '../types';
 import { buildPrIssueHookEntries, handlePrIssuePrecondition, type PrIssueHookLogger } from './pr-issue-guard';
 
+const SOURCE = 'https://github.com/2lab-ai/soma-work/issues/696';
+
 function makeContext(overrides: Partial<HandoffContext> = {}): HandoffContext {
   return {
     handoffKind: 'plan-to-work',
@@ -54,8 +56,6 @@ describe('pr-issue-guard — tool shape / non-targets', () => {
 });
 
 describe('pr-issue-guard — sourceIssueUrl path (Bash)', () => {
-  const SOURCE = 'https://github.com/2lab-ai/soma-work/issues/696';
-
   it('T1.4 sourceIssueUrl + body has Closes #N → pass', () => {
     const result = handlePrIssuePrecondition({
       toolName: 'Bash',
@@ -110,8 +110,6 @@ describe('pr-issue-guard — sourceIssueUrl path (Bash)', () => {
 });
 
 describe('pr-issue-guard — Bash adversarial (codex-flagged)', () => {
-  const SOURCE = 'https://github.com/2lab-ai/soma-work/issues/696';
-
   it('T1.9 marker only in --title → block (--body content is "x")', () => {
     const result = handlePrIssuePrecondition({
       toolName: 'Bash',
@@ -189,8 +187,6 @@ describe('pr-issue-guard — escapeEligible path (Bash)', () => {
 });
 
 describe('pr-issue-guard — MCP path', () => {
-  const SOURCE = 'https://github.com/2lab-ai/soma-work/issues/696';
-
   it('T1.15 MCP create_pull_request with Closes #N in body → pass', () => {
     const result = handlePrIssuePrecondition({
       toolName: 'mcp__github__create_pull_request',
@@ -222,8 +218,6 @@ describe('pr-issue-guard — MCP path', () => {
 });
 
 describe('pr-issue-guard — precedence', () => {
-  const SOURCE = 'https://github.com/2lab-ai/soma-work/issues/696';
-
   it('T1.16 mixed metadata: sourceIssueUrl AND escapeEligible=true — issue path wins', () => {
     // Per spec AD-8: a handoff with both fields set is a producer-side bug; the issue is
     // authoritative. Only Closes #N satisfies the guard, NOT the escape marker.
@@ -384,7 +378,10 @@ describe('buildPrIssueHookEntries — SDK hook factory', () => {
     } as Parameters<typeof bashHook>[0]);
 
     expect(output).toEqual({ continue: true });
-    expect(logger.info).toHaveBeenCalledWith('PR-issue guard skipped: no handoff context', LOG_CTX);
+    expect(logger.info).toHaveBeenCalledWith(
+      'PR-issue guard skipped: no handoff context on PR-create attempt',
+      LOG_CTX,
+    );
   });
 
   it('mcp__ matcher filters: non-create_pull_request mcp__ tools pass through', async () => {
