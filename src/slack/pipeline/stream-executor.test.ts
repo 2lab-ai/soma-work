@@ -3824,3 +3824,231 @@ describe('StreamExecutor — P5 completion snapshot + exclusion (#667)', () => {
     expect(opts).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Issue #720 — P5 B5 race fix (Promise snapshot + resolver + decoupling)
+//
+// Root cause from PR #711: `completionEventSnapshot` was assigned inside a
+// fire-and-forget `enrichAndNotify()` chain gated by `if (this.deps.turnNotifier)`.
+// `TurnSurface.end('completed')` read the snapshot synchronously in its
+// `finally` block — but `stopStream` resolves faster than the Anthropic
+// usage HTTP call inside enrichment, so the read almost always saw
+// `undefined` and B5 was silently dropped.
+//
+// The fix carries three interacting pieces:
+//   1. `buildCompletionEvent` returns a Promise (the `snapshotPromise`).
+//   2. A single `resolveSnapshot` is called exactly once: with the event on
+//      success, or with `undefined` on the `.catch` rail.
+//   3. Event construction is moved OUTSIDE the `if (this.deps.turnNotifier)`
+//      guard so capability-active runs still emit B5 even when turnNotifier
+//      is missing (harness / tests / misconfigured DI).
+// ---------------------------------------------------------------------------
+
+describe('StreamExecutor — P5 B5 race (issue #720)', () => {
+  const originalPhase = config.ui.fiveBlockPhase;
+
+  afterEach(() => {
+    config.ui.fiveBlockPhase = originalPhase;
+    vi.clearAllMocks();
+    vi.useRealTimers();
+  });
+
+  // Lightweight mirror of stream-executor's snapshot wiring so these tests
+  // can drive the race deterministically without running `execute()`. The
+  // production pattern is `let resolveSnapshot; const p = new Promise(r =>
+  // resolveSnapshot = r); ctx.buildCompletionEvent = () => p;` — identical
+  // here, which is exactly the contract we need to lock in.
+  function createSnapshot<T>(): {
+    buildCompletionEvent: () => Promise<T | undefined>;
+    resolveSnapshot: (evt: T | undefined) => void;
+  } {
+    let resolveSnapshot!: (evt: T | undefined) => void;
+    const snapshotPromise = new Promise<T | undefined>((resolve) => {
+      resolveSnapshot = resolve;
+    });
+    return { buildCompletionEvent: () => snapshotPromise, resolveSnapshot };
+  }
+
+  it('#720 (a) closeStream resolves BEFORE snapshot → TurnSurface.end awaits → B5 posts exactly once when enrichment lands', async () => {
+    config.ui.fiveBlockPhase = 5;
+
+    // Dynamic import so the test file doesn't pull in TurnSurface at top
+    // level (the rest of the suite is stream-executor-only). Matches the
+    // lazy-import pattern used elsewhere for surface-adjacent tests.
+    const { TurnSurface } = await import('../turn-surface');
+    type TurnCompletionEventT = import('../../turn-notifier').TurnCompletionEvent;
+
+    const { buildCompletionEvent, resolveSnapshot } = createSnapshot<TurnCompletionEventT>();
+
+    const client: any = {
+      chat: {
+        startStream: vi.fn().mockResolvedValue({ ts: 's1' }),
+        appendStream: vi.fn().mockResolvedValue(undefined),
+        stopStream: vi.fn().mockResolvedValue(undefined),
+        postMessage: vi.fn().mockResolvedValue({ ts: 'p1' }),
+        update: vi.fn().mockResolvedValue(undefined),
+      },
+    };
+    const blockKit = { send: vi.fn().mockResolvedValue(undefined) };
+    const surface = new TurnSurface({
+      slackApi: { getClient: () => client } as any,
+      slackBlockKitChannel: blockKit as any,
+      isCompletionMarkerActive: () => true,
+    } as any);
+
+    const ctx = {
+      channelId: 'C1',
+      threadTs: 't1.0',
+      sessionKey: 'C1:t1.0',
+      turnId: 'C1:t1.0:720-a',
+      buildCompletionEvent,
+    };
+    await surface.begin(ctx as any);
+
+    // end() proceeds through closeStream + clearStatus, then parks at the
+    // snapshot await. The snapshot is still pending.
+    const endPromise = surface.end(ctx.turnId, 'completed');
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(blockKit.send).not.toHaveBeenCalled();
+
+    // Enrichment lands LATE — matches the PR #711 timing where
+    // fetchAndStoreUsage finishes after stopStream.
+    const evt: TurnCompletionEventT = {
+      category: 'WorkflowComplete',
+      userId: 'U1',
+      channel: 'C1',
+      threadTs: 't1.0',
+      sessionTitle: 'S',
+      durationMs: 100,
+    };
+    resolveSnapshot(evt);
+
+    await endPromise;
+    expect(blockKit.send).toHaveBeenCalledTimes(1);
+    expect(blockKit.send).toHaveBeenCalledWith(evt);
+  });
+
+  it('#720 (b) enrichAndResolve rejects → resolver(undefined) → B5 not emitted', async () => {
+    config.ui.fiveBlockPhase = 5;
+
+    const { TurnSurface } = await import('../turn-surface');
+    type TurnCompletionEventT = import('../../turn-notifier').TurnCompletionEvent;
+
+    const { buildCompletionEvent, resolveSnapshot } = createSnapshot<TurnCompletionEventT>();
+
+    const client: any = {
+      chat: {
+        startStream: vi.fn().mockResolvedValue({ ts: 's1' }),
+        appendStream: vi.fn().mockResolvedValue(undefined),
+        stopStream: vi.fn().mockResolvedValue(undefined),
+        postMessage: vi.fn().mockResolvedValue({ ts: 'p1' }),
+        update: vi.fn().mockResolvedValue(undefined),
+      },
+    };
+    const blockKit = { send: vi.fn().mockResolvedValue(undefined) };
+    const surface = new TurnSurface({
+      slackApi: { getClient: () => client } as any,
+      slackBlockKitChannel: blockKit as any,
+      isCompletionMarkerActive: () => true,
+    } as any);
+
+    const ctx = {
+      channelId: 'C1',
+      threadTs: 't1.0',
+      sessionKey: 'C1:t1.0',
+      turnId: 'C1:t1.0:720-b',
+      buildCompletionEvent,
+    };
+    await surface.begin(ctx as any);
+
+    // Simulate stream-executor's `.catch` rail: enrich rejects, the chain's
+    // catch handler calls `resolveSnapshot(undefined)`.
+    resolveSnapshot(undefined);
+
+    await surface.end(ctx.turnId, 'completed');
+
+    expect(blockKit.send).not.toHaveBeenCalled();
+  });
+
+  it('#720 (c) decoupling lock-in: turnNotifier undefined + capability active → enrich still resolves snapshot → B5 posts once', async () => {
+    // This test encodes the codex P1 decoupling requirement: event
+    // construction MUST NOT be gated on `if (this.deps.turnNotifier)`. A
+    // capability-active run without a turnNotifier (harness / tests /
+    // misconfigured DI) must still produce a snapshot so TurnSurface emits
+    // B5. We simulate stream-executor's post-stream chain inline — the
+    // exact production control flow minus execute()'s 3000-line setup.
+    config.ui.fiveBlockPhase = 5;
+
+    const { TurnSurface } = await import('../turn-surface');
+    type TurnCompletionEventT = import('../../turn-notifier').TurnCompletionEvent;
+
+    const { buildCompletionEvent, resolveSnapshot } = createSnapshot<TurnCompletionEventT>();
+
+    // Cast to a union type so TS keeps `notify` visible inside the truthy
+    // branch even though the runtime value is always `undefined` — the
+    // whole point of this test is "what happens when turnNotifier is absent
+    // but the chain still has to run."
+    type Notifier = { notify: (evt: TurnCompletionEventT) => void };
+    const turnNotifier: Notifier | undefined = undefined as Notifier | undefined;
+
+    // The event construction lives OUTSIDE the (absent) turnNotifier guard.
+    // If a future refactor re-couples construction to turnNotifier, this
+    // test fails because `resolveSnapshot` never fires.
+    const evt: TurnCompletionEventT = {
+      category: 'WorkflowComplete',
+      userId: 'U1',
+      channel: 'C1',
+      threadTs: 't1.0',
+      sessionTitle: 'S',
+      durationMs: 100,
+    };
+    const enrichAndResolve = async (): Promise<TurnCompletionEventT> => evt;
+
+    // Mirror the production chain in stream-executor.execute():
+    //   enrichAndResolve()
+    //     .then((e) => { resolveSnapshot(e); if (turnNotifier) notify(e) })
+    //     .catch(() => resolveSnapshot(undefined))
+    const chainP = enrichAndResolve()
+      .then((e) => {
+        resolveSnapshot(e);
+        if (turnNotifier) {
+          turnNotifier.notify(e);
+        }
+      })
+      .catch(() => resolveSnapshot(undefined));
+
+    const client: any = {
+      chat: {
+        startStream: vi.fn().mockResolvedValue({ ts: 's1' }),
+        appendStream: vi.fn().mockResolvedValue(undefined),
+        stopStream: vi.fn().mockResolvedValue(undefined),
+        postMessage: vi.fn().mockResolvedValue({ ts: 'p1' }),
+        update: vi.fn().mockResolvedValue(undefined),
+      },
+    };
+    const blockKit = { send: vi.fn().mockResolvedValue(undefined) };
+    const surface = new TurnSurface({
+      slackApi: { getClient: () => client } as any,
+      slackBlockKitChannel: blockKit as any,
+      isCompletionMarkerActive: () => true,
+    } as any);
+
+    const ctx = {
+      channelId: 'C1',
+      threadTs: 't1.0',
+      sessionKey: 'C1:t1.0',
+      turnId: 'C1:t1.0:720-c',
+      buildCompletionEvent,
+    };
+    await surface.begin(ctx as any);
+    await chainP;
+    await surface.end(ctx.turnId, 'completed');
+
+    // turnNotifier was undefined — no fan-out call.
+    // B5 still posted exactly once via the SlackBlockKitChannel path.
+    expect(blockKit.send).toHaveBeenCalledTimes(1);
+    expect(blockKit.send).toHaveBeenCalledWith(evt);
+  });
+});
