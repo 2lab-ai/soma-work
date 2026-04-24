@@ -2746,11 +2746,18 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       }
 
       if (parsed.commandId === 'CONTINUE_SESSION') {
-        continuation = parsed.payload.continuation;
+        // Issue #697: stamp `origin: 'model'` on model-emitted continuations
+        // so `slack-handler.onResetSession` can distinguish them from
+        // host-built continuations (renew/onboarding — stamped 'host' below)
+        // for auto-handoff budget enforcement. The spread-then-override pattern
+        // also strips any origin value a misbehaving model may have supplied
+        // in the payload (host authority on this field).
+        continuation = { ...parsed.payload.continuation, origin: 'model' };
         this.logger.info('Captured CONTINUE_SESSION from model-command', {
           sessionKey: context.sessionKey,
           resetSession: continuation.resetSession === true,
           forceWorkflow: continuation.forceWorkflow,
+          origin: 'model',
           dispatchTextPreview: continuation.dispatchText?.slice(0, 120),
         });
         continue;
@@ -3499,6 +3506,8 @@ ${userInstruction}`;
       prompt: loadPrompt,
       resetSession: true,
       dispatchText: userMessage || undefined,
+      // Issue #697: host-built continuation — skip auto-handoff budget enforcement.
+      origin: 'host',
     };
   }
 
@@ -3674,6 +3683,8 @@ ${userInstruction}`;
         prompt: result.user_message,
         resetSession: true,
         dispatchText: result.user_message,
+        // Issue #697: host-built continuation — skip auto-handoff budget enforcement.
+        origin: 'host',
       };
     }
 

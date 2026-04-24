@@ -155,8 +155,8 @@ z 컨트롤러의 phase 전환 중 **세션 경계**를 넘는 것은 두 지점
 |---|---|---|
 | Handoff #1 전 Issue URL 검증 | **구현 완료 (#696)** — `src/hooks/pr-issue-guard.ts` via in-process SDK PreToolUse hook (Bash + MCP) + prompt 계약 (defense-in-depth) | — |
 | 결정적 새 세션 진입 | **구현 완료 (#695)** — 전용 `WorkflowType` (`z-plan-to-work`, `z-epic-update`) + host sentinel 검증 + `session.handoffContext` typed persistence | — |
-| 세션당 handoff 예산 | `session.handoffContext.hopBudget=1` 필드 저장 (#695) | host-side 소비 로직 (#697) |
-| 1-hop 재귀 방지 | 문서 invariant (Rule #3 예산 고갈) | host-side `autoHandoffDepth` nonce (#697) |
+| 세션당 handoff 예산 | **구현 완료 (#697)** — `src/slack/handoff-budget.ts` + `slack-handler.onResetSession` 가드; `ConversationSession.autoHandoffBudget` 필드 (default 1, `resetSessionContext`에서 재초기화); 호스트-빌트 continuation (renew/onboarding)은 `Continuation.origin: 'host'` 마커로 제외 | — |
+| 1-hop 재귀 방지 | **구현 완료 (#697)** — 세션 예산 고갈 시 `HandoffBudgetExhaustedError` throw + slack-handler 외부 catch에서 safe-stop (`#695`의 `HandoffAbortError` 패턴과 동일, 단 session terminate는 하지 않음 — 수동 재입력 대기) | — |
 | Dispatch 실패 복구 | z handoff 경로는 safe-stop 구현 (#695 — `HandoffAbortError`) | default fallback 제거 일반화 (#698) |
 
 **이 스킬 문서는 핸드오프 계약을 정의한다. 항목별 host-side 강제 진척은 위 표에 단일 진실원으로 기록한다.** 본문에 PR/이슈 번호를 박지 않는다 — 시간이 지나면 노이즈가 되고, 구체 추적은 위 표(또는 그 표가 가리키는 에픽)가 소유한다.
