@@ -37,8 +37,8 @@ When invoked via session handoff from z phase1, the initial session prompt carri
 
 5. Create PR.
    - **Precondition**: Issue URL must be present in session-level SSOT (Case A/B), **or** a validly qualified Case A escape marker must be set. The escape marker is valid only when **all three**: (a) tier=`tiny`|`small` per `using-epic-tasks`, (b) the original user request contained no "issue first" demand (re-verify against `## Original Request Excerpt` in the handoff payload), **and** (c) repository policy does not require a linked issue (re-verify against `## Repository Policy`). Missing or invalid → abort PR creation and return control to `local:z` phase1 with the reason. This prevents orphan PRs with no linked issue.
-   - PR body MUST include `Closes #<issue>` for Case A/B, or an explicit `Case A escape (tier=tiny|small, no issue by policy)` note when the qualified escape marker is used.
-   - *(Currently a prompt-level contract; host-side guard is tracked in the Handoff Enforcement epic — see `local:using-z` §Enforcement Status.)*
+   - PR body MUST include `Closes #<issue>` for Case A/B, or an explicit `Case A escape (tier=tiny|small, no issue by policy)` note when the qualified escape marker is used. **Inline only** — body must be passed as inline content to `--body` (literal string or heredoc). Shell variable indirection (e.g. `--body "$VAR"`) is host-rejected because the static check cannot see the runtime value.
+   - *(Host-enforced via in-process SDK PreToolUse hook — `src/hooks/pr-issue-guard.ts` wired through `src/claude-handler.ts` (#696). Bash `gh pr create` and MCP `mcp__github__create_pull_request` both covered. This prompt rule remains as defense-in-depth.)*
 
 6. Invoke `stv:verify` — repeat until passing (max 5 times, then `local:decision-gate`).
 
