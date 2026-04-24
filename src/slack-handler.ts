@@ -141,6 +141,16 @@ export class SlackHandler {
     // StreamExecutor / SessionInitializer reference downstream.
     this.assistantStatusManager = new AssistantStatusManager(this.slackApi);
 
+    // #667 P5 — construct the SlackBlockKitChannel ONCE so ThreadPanel
+    // (→ TurnSurface B5 emit path) and TurnNotifier (legacy fan-out) share
+    // the exact same instance. Object identity matters: the exclusion
+    // filter in stream-executor matches by channel `name`, but the two
+    // wirings must observe the same runtime side-effects (e.g. completion-
+    // message-tracker dedup state). Constructing two separate instances
+    // would split tracker state and let a double-write slip through at
+    // PHASE<5 if someone ever flipped the filter in reverse.
+    const slackBlockKitChannel = new SlackBlockKitChannel(this.slackApi, completionMessageTracker);
+
     this.threadPanel = new ThreadPanel({
       slackApi: this.slackApi,
       claudeHandler: this.claudeHandler,
@@ -149,6 +159,7 @@ export class SlackHandler {
       completionMessageTracker,
       sessionRegistry,
       assistantStatusManager: this.assistantStatusManager,
+      slackBlockKitChannel,
     });
 
     // Command routing
@@ -242,9 +253,15 @@ export class SlackHandler {
       threadPanel: this.threadPanel,
     });
 
-    // Wire turn completion notification channels
+    // Wire turn completion notification channels. #667 P5 — the
+    // `slack-block-kit` slot uses the SHARED instance constructed above
+    // so ThreadPanel (capability owner + TurnSurface emit path) and
+    // TurnNotifier observe the exact same object. stream-executor's
+    // `excludeChannelNames: ['slack-block-kit']` filter matches by
+    // `name`, but sharing the instance keeps tracker / rate-limit /
+    // backoff state consistent across both call sites.
     const turnNotifier = new TurnNotifier([
-      new SlackBlockKitChannel(this.slackApi, completionMessageTracker),
+      slackBlockKitChannel,
       new SlackDmChannel(this.slackApi, userSettingsStore),
       new WebhookChannel(userSettingsStore),
       new TelegramChannel(userSettingsStore, process.env.TELEGRAM_BOT_TOKEN),

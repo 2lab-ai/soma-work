@@ -133,12 +133,39 @@ export function maskUrl(raw: string): string {
 
 // --- TurnNotifier service ---
 
+/**
+ * Options for {@link TurnNotifier.notify}.
+ *
+ * #667 P5 — `excludeChannelNames` lets the caller skip specific channels by
+ * `name` even when they are `isEnabled`. Used by `stream-executor` at
+ * `SOMA_UI_5BLOCK_PHASE>=5` + capability-active to suppress the legacy
+ * `slack-block-kit` write so `TurnSurface` becomes the single writer of
+ * the in-thread `WorkflowComplete` B5 marker. The filter is a caller-
+ * controlled no-op: when omitted, behaviour is identical to the pre-P5
+ * signature.
+ *
+ * Exclusion does NOT override `isEnabled` — a disabled channel stays not-
+ * sent even if absent from the filter. Unknown names are a no-op filter.
+ */
+export interface TurnNotifierNotifyOpts {
+  /** Channel `name` values to skip. Empty array ≡ no filter. */
+  excludeChannelNames?: string[];
+}
+
 export class TurnNotifier {
   constructor(private channels: NotificationChannel[]) {}
 
-  async notify(event: TurnCompletionEvent): Promise<void> {
+  async notify(event: TurnCompletionEvent, opts?: TurnNotifierNotifyOpts): Promise<void> {
+    const excludeSet =
+      opts?.excludeChannelNames && opts.excludeChannelNames.length > 0 ? new Set(opts.excludeChannelNames) : undefined;
+
+    // Apply the caller-controlled filter BEFORE `isEnabled` so a channel
+    // marked for exclusion isn't needlessly probed. Filter is a no-op when
+    // `opts` is undefined or the names array is empty.
+    const candidateChannels = excludeSet ? this.channels.filter((ch) => !excludeSet.has(ch.name)) : this.channels;
+
     const enabledChannels = await Promise.all(
-      this.channels.map(async (ch) => {
+      candidateChannels.map(async (ch) => {
         try {
           const enabled = await ch.isEnabled(event.userId);
           return enabled ? ch : null;
