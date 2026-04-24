@@ -21,6 +21,7 @@
 import * as crypto from 'node:crypto';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import * as jwt from 'jsonwebtoken';
+import { isAdminUser } from '../admin-utils';
 import { config } from '../config';
 import { Logger } from '../logger';
 
@@ -842,7 +843,11 @@ export async function registerOAuthRoutes(server: FastifyInstance): Promise<void
         csrfToken = generateCsrfToken(payload.sub, payload.exp);
       }
     }
-    reply.send({ user, csrfToken });
+    // #716: surface ADMIN_USERS membership so the dashboard can render
+    // the admin-mode toggle. Non-admin sessions get isAdmin:false; the
+    // server still re-checks isAdminUser(sub) on every write request,
+    // so flipping this flag client-side does not grant privileges.
+    reply.send({ user, isAdmin: isAdminUser(user.slackUserId), csrfToken });
   });
 
   if (anyEnabled) {
