@@ -570,10 +570,7 @@ describe('ToolEventProcessor', () => {
       config.ui.fiveBlockPhase = 3;
       const mgr = makeMgr(true);
       const proc = new ToolEventProcessor(toolTracker, mcpStatusDisplay, mcpCallTracker, mgr as any);
-      await proc.handleToolUse(
-        [{ id: 'tool_1', name: 'mcp__jira__search_issues', input: { q: 't' } }],
-        mockContext,
-      );
+      await proc.handleToolUse([{ id: 'tool_1', name: 'mcp__jira__search_issues', input: { q: 't' } }], mockContext);
       expect(mgr.setStatus).toHaveBeenCalledTimes(1);
       expect(mgr.setStatus).toHaveBeenCalledWith('C123', 'thread_ts', 'is calling jira...');
     });
@@ -582,10 +579,7 @@ describe('ToolEventProcessor', () => {
       config.ui.fiveBlockPhase = 4;
       const mgr = makeMgr(true);
       const proc = new ToolEventProcessor(toolTracker, mcpStatusDisplay, mcpCallTracker, mgr as any);
-      await proc.handleToolUse(
-        [{ id: 'tool_1', name: 'mcp__jira__search_issues', input: { q: 't' } }],
-        mockContext,
-      );
+      await proc.handleToolUse([{ id: 'tool_1', name: 'mcp__jira__search_issues', input: { q: 't' } }], mockContext);
       expect(mgr.setStatus).not.toHaveBeenCalled();
     });
 
@@ -593,11 +587,31 @@ describe('ToolEventProcessor', () => {
       config.ui.fiveBlockPhase = 4;
       const mgr = makeMgr(false);
       const proc = new ToolEventProcessor(toolTracker, mcpStatusDisplay, mcpCallTracker, mgr as any);
-      await proc.handleToolUse(
-        [{ id: 'tool_1', name: 'mcp__jira__search_issues', input: { q: 't' } }],
-        mockContext,
-      );
+      await proc.handleToolUse([{ id: 'tool_1', name: 'mcp__jira__search_issues', input: { q: 't' } }], mockContext);
       expect(mgr.setStatus).toHaveBeenCalledTimes(1);
+    });
+
+    // #700 round-3 review finding #8 — getToolStatusText returning undefined
+    // must NEVER surface as setStatus('') — which reroutes to clearStatus
+    // internally and would wipe the spinner mid-tool. Lock the defensive
+    // skip so a future bug (TOOL_STATUS_MAP becoming Partial, serverName
+    // resolution change) cannot silently regress into a clear.
+    it('getToolStatusText returns undefined: setStatus is NOT called with empty string', async () => {
+      config.ui.fiveBlockPhase = 3;
+      const mgr = {
+        isEnabled: vi.fn().mockReturnValue(true),
+        setStatus: vi.fn().mockResolvedValue(undefined),
+        clearStatus: vi.fn().mockResolvedValue(undefined),
+        getToolStatusText: vi.fn().mockReturnValue(undefined),
+      };
+      const proc = new ToolEventProcessor(toolTracker, mcpStatusDisplay, mcpCallTracker, mgr as any);
+
+      await proc.handleToolUse([{ id: 'tool_1', name: 'mcp__jira__search_issues', input: { q: 't' } }], mockContext);
+
+      // Either setStatus was not called, or it was called with a defined
+      // non-empty string. NEVER with '' — that reroutes to clearStatus.
+      const emptyCalls = mgr.setStatus.mock.calls.filter(([, , text]) => text === '' || text == null);
+      expect(emptyCalls.length).toBe(0);
     });
   });
 });

@@ -471,4 +471,159 @@ describe('markDisabledIfScopeMissing (#689)', () => {
     expect(manager.markDisabledIfScopeMissing(err)).toBe(true);
     expect(manager.isEnabled()).toBe(false);
   });
+
+  // #700 round-3 review finding #5 — err.code fallback path. Raw
+  // WebAPIPlatformError / hand-thrown errors surface the code at the top
+  // level (not under .data.error). Lock the `?? err.code` fallback so a
+  // refactor that drops it can't silently pass.
+  describe('err.code fallback (round-3 #5)', () => {
+    it('err.code=missing_scope (no data.error) → disables', () => {
+      const err = Object.assign(new Error('x'), { code: 'missing_scope' });
+      expect(manager.markDisabledIfScopeMissing(err)).toBe(true);
+      expect(manager.isEnabled()).toBe(false);
+    });
+
+    it('err.code=not_allowed (no data.error) → stays enabled', () => {
+      const err = Object.assign(new Error('x'), { code: 'not_allowed' });
+      expect(manager.markDisabledIfScopeMissing(err)).toBe(false);
+      expect(manager.isEnabled()).toBe(true);
+    });
+  });
+
+  // #700 round-3 review finding #9 — edge inputs to the matcher. Verifies
+  // the `typeof code === 'string' && PERMANENT_CODES.has(code)` guard and
+  // the `?? ` precedence: any non-string or non-matching code path must
+  // leave `enabled=true`.
+  describe('edge inputs (round-3 #9)', () => {
+    it('err is null → returns false, stays enabled', () => {
+      expect(manager.markDisabledIfScopeMissing(null)).toBe(false);
+      expect(manager.isEnabled()).toBe(true);
+    });
+
+    it('err is undefined → returns false, stays enabled', () => {
+      expect(manager.markDisabledIfScopeMissing(undefined)).toBe(false);
+      expect(manager.isEnabled()).toBe(true);
+    });
+
+    it('numeric code → returns false, stays enabled', () => {
+      const err = Object.assign(new Error('x'), { code: 403 });
+      expect(manager.markDisabledIfScopeMissing(err)).toBe(false);
+      expect(manager.isEnabled()).toBe(true);
+    });
+
+    it('?? precedence: data.error truthy non-match wins over matching err.code', () => {
+      // `?? ` prefers data.error iff it's nullish — here `data.error` is a
+      // non-empty string (`'not_allowed'`, transient), so the matcher must
+      // read that and ignore the permanent `err.code='missing_scope'`.
+      const err = Object.assign(new Error('x'), {
+        data: { error: 'not_allowed' },
+        code: 'missing_scope',
+      });
+      expect(manager.markDisabledIfScopeMissing(err)).toBe(false);
+      expect(manager.isEnabled()).toBe(true);
+    });
+  });
+});
+
+// #700 round-3 review finding #10 / user decision C — sustained-transient
+// observability: the per-key consecutive-transient-failure counter must
+// emit a single `logger.warn` when it crosses TRANSIENT_WARN_THRESHOLD
+// and reset on the next success. Debug logs for every failure stay.
+describe('sustained-transient counter (#700 round-3 #10 option C)', () => {
+  let mockSlackApi: {
+    setAssistantStatus: ReturnType<typeof vi.fn>;
+    setAssistantTitle: ReturnType<typeof vi.fn>;
+  };
+  let manager: AssistantStatusManager;
+  const CHANNEL = 'C777';
+  const THREAD = '777.700';
+  const KEY = `${CHANNEL}:${THREAD}`;
+
+  function makeTransientErr(): Error {
+    return Object.assign(new Error('rl'), { data: { error: 'ratelimited' } });
+  }
+
+  beforeEach(() => {
+    mockSlackApi = {
+      setAssistantStatus: vi.fn().mockResolvedValue(undefined),
+      setAssistantTitle: vi.fn().mockResolvedValue(undefined),
+    };
+    manager = new AssistantStatusManager(mockSlackApi as unknown as SlackApiHelper);
+  });
+
+  it('warn fires exactly once when count hits 10 consecutive transients', async () => {
+    // Patch in a warn spy on the manager's logger
+    const warnSpy = vi.spyOn((manager as any).logger, 'warn');
+    const debugSpy = vi.spyOn((manager as any).logger, 'debug');
+
+    // Force 10 consecutive transient failures via setStatus.
+    mockSlackApi.setAssistantStatus.mockRejectedValue(makeTransientErr());
+    for (let i = 0; i < 10; i += 1) {
+      await manager.setStatus(CHANNEL, THREAD, `is thinking ${i}...`);
+    }
+
+    // Exactly one warn carrying count=10, rest are debug.
+    const warnCalls = warnSpy.mock.calls.filter(
+      (c) => typeof c[0] === 'string' && c[0].includes('sustained transient Slack degradation'),
+    );
+    expect(warnCalls.length).toBe(1);
+    expect(warnCalls[0][1]).toMatchObject({ key: KEY, count: 10 });
+
+    // Ticks 1..9 emitted debug. (Manager may emit other debug lines, so
+    // filter to the transient-failure debug.)
+    const debugTransient = debugSpy.mock.calls.filter(
+      (c) => typeof c[0] === 'string' && c[0].includes('setStatus transient failure — persisting for heartbeat retry'),
+    );
+    expect(debugTransient.length).toBe(9);
+
+    // Manager stays enabled — transient codes must not flip it.
+    expect(manager.isEnabled()).toBe(true);
+  });
+
+  it('successful call resets counter; next 10 failures re-warn', async () => {
+    const warnSpy = vi.spyOn((manager as any).logger, 'warn');
+
+    // Build up 9 transient failures (1 below threshold).
+    mockSlackApi.setAssistantStatus.mockRejectedValue(makeTransientErr());
+    for (let i = 0; i < 9; i += 1) {
+      await manager.setStatus(CHANNEL, THREAD, 'x');
+    }
+    // No warn yet.
+    expect(
+      warnSpy.mock.calls.filter((c) => typeof c[0] === 'string' && c[0].includes('sustained transient')).length,
+    ).toBe(0);
+
+    // Next call succeeds → counter resets.
+    mockSlackApi.setAssistantStatus.mockResolvedValueOnce(undefined);
+    await manager.setStatus(CHANNEL, THREAD, 'y');
+
+    // Now 10 more failures → warn should fire exactly once again.
+    mockSlackApi.setAssistantStatus.mockRejectedValue(makeTransientErr());
+    for (let i = 0; i < 10; i += 1) {
+      await manager.setStatus(CHANNEL, THREAD, 'z');
+    }
+    const warnCalls = warnSpy.mock.calls.filter(
+      (c) => typeof c[0] === 'string' && c[0].includes('sustained transient'),
+    );
+    expect(warnCalls.length).toBe(1);
+    expect(warnCalls[0][1]).toMatchObject({ count: 10 });
+  });
+
+  it('permanent error path does NOT increment transient counter', async () => {
+    const warnSpy = vi.spyOn((manager as any).logger, 'warn');
+    const permErr = Object.assign(new Error('scope'), {
+      data: { error: 'missing_scope' },
+    });
+    mockSlackApi.setAssistantStatus.mockRejectedValue(permErr);
+
+    await manager.setStatus(CHANNEL, THREAD, 'boom');
+
+    // Permanent path disables + emits a DIFFERENT warn ("disabled due to
+    // permanent scope/auth error"), never the "sustained transient" one.
+    expect(manager.isEnabled()).toBe(false);
+    const sustainedWarns = warnSpy.mock.calls.filter(
+      (c) => typeof c[0] === 'string' && c[0].includes('sustained transient'),
+    );
+    expect(sustainedWarns.length).toBe(0);
+  });
 });

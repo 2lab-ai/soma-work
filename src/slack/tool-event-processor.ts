@@ -243,9 +243,14 @@ export class ToolEventProcessor {
     // Native spinner with MCP server name — legacy-only; TurnSurface owns
     // the single B4 writer at PHASE>=4. Lifting getToolStatusText into
     // TurnSurface is a follow-up — see docs/slack-ui-phase4.md.
+    // Skip when the descriptor is undefined/empty — `setStatus('')` reroutes
+    // to `clearStatus` internally, which would silently wipe the spinner
+    // mid-tool instead of leaving the previous status visible.
     if (shouldRunLegacyB4Path(this.assistantStatusManager)) {
       const statusText = this.assistantStatusManager?.getToolStatusText(toolUse.name, serverName);
-      await this.assistantStatusManager?.setStatus(context.channel, context.threadTs, statusText ?? '');
+      if (statusText) {
+        await this.assistantStatusManager?.setStatus(context.channel, context.threadTs, statusText);
+      }
     }
 
     const config = {

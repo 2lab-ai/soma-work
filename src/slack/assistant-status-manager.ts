@@ -43,6 +43,17 @@ const PERMANENT_CODES = new Set<string>([
 ]);
 
 /**
+ * Sustained-transient observability threshold (#700 P2 decision C).
+ * A single transient blip is expected (Slack ratelimited spikes, network
+ * partitions); sustained failures are not. Emit a single warn when the
+ * per-key consecutive-transient-failure counter crosses this threshold,
+ * then stay silent until the next success resets it.
+ *
+ * 10 failures × 20s heartbeat ≈ 3 min of sustained degradation per thread.
+ */
+const TRANSIENT_WARN_THRESHOLD = 10;
+
+/**
  * Status descriptor — either a plain string (static text) or a thunk
  * re-evaluated on every heartbeat tick so dynamic counters (e.g. bg bash)
  * can be reflected live.
@@ -79,6 +90,12 @@ export class AssistantStatusManager {
   private lastStatus = new Map<string, LastStatusEntry>();
   private epochCounter = new Map<string, number>();
   private bgBashCounter = new Map<string, number>();
+  /**
+   * Per-(channel, threadTs) count of consecutive transient Slack failures
+   * since the last successful setStatus / heartbeat write on that key.
+   * Used by the TRANSIENT_WARN_THRESHOLD observability gate (#700 P2 C).
+   */
+  private transientFailuresSinceLastSuccess = new Map<string, number>();
 
   constructor(private slackApi: SlackApiHelper) {
     // #666 P4 Part 1/2 — hard kill switch. Part 1 merges the Bolt Assistant
@@ -112,14 +129,13 @@ export class AssistantStatusManager {
     // circuit — they flip `enabled=false` and run the best-effort clear.
     try {
       await this.slackApi.setAssistantStatus(channelId, threadTs, text);
+      this.recordSetStatusSuccess(key);
     } catch (error: any) {
       if (this.markDisabledIfScopeMissing(error)) {
         await this.bestEffortClearSlack(channelId, threadTs);
         return;
       }
-      this.logger.debug('assistant.threads.setStatus transient failure — persisting for heartbeat retry', {
-        error: (error as any)?.data?.error || (error as any)?.message,
-      });
+      this.recordTransientFailure(key, error);
     }
 
     this.lastStatus.set(key, { channelId, threadTs, descriptor });
@@ -156,10 +172,14 @@ export class AssistantStatusManager {
     if (!this.enabled) return;
     try {
       await this.slackApi.setAssistantStatus(channelId, threadTs, '');
+      // Explicit clear succeeded — reset the sustained-transient counter
+      // so the next setStatus on this key starts fresh.
+      this.recordSetStatusSuccess(key);
     } catch (error: any) {
       // Permanent scope/auth here also flips enabled=false and arms the
-      // PHASE>=4 → 3 clamp; transient failures log debug and noop.
-      await this.disableAndBestEffortClear(channelId, threadTs, error);
+      // PHASE>=4 → 3 clamp; transient failures increment the counter and
+      // emit a single warn at TRANSIENT_WARN_THRESHOLD.
+      await this.disableAndBestEffortClear(channelId, threadTs, error, key);
     }
   }
 
@@ -271,14 +291,17 @@ export class AssistantStatusManager {
       return;
     }
 
-    const text = typeof entry.descriptor === 'function' ? entry.descriptor() : entry.descriptor;
-
     try {
+      // Invoke descriptor thunk inside try so a throwing thunk (future
+      // callers may wire descriptors that dereference stale state) cannot
+      // escape as an unhandled rejection from the setInterval callback.
+      const text = typeof entry.descriptor === 'function' ? entry.descriptor() : entry.descriptor;
       await this.slackApi.setAssistantStatus(entry.channelId, entry.threadTs, text);
+      this.recordSetStatusSuccess(key);
     } catch (error: any) {
       // Capture before clearAllHeartbeats wipes lastStatus
       const { channelId, threadTs } = entry;
-      await this.disableAndBestEffortClear(channelId, threadTs, error);
+      await this.disableAndBestEffortClear(channelId, threadTs, error, key);
     }
   }
 
@@ -294,18 +317,61 @@ export class AssistantStatusManager {
    * `getEffectiveFiveBlockPhase` from clamping to 3 on every transient
    * blip.
    */
-  private async disableAndBestEffortClear(channelId: string, threadTs: string, error: unknown): Promise<void> {
+  private async disableAndBestEffortClear(
+    channelId: string,
+    threadTs: string,
+    error: unknown,
+    key?: string,
+  ): Promise<void> {
     const disabled = this.markDisabledIfScopeMissing(error);
     if (!disabled) {
-      this.logger.debug('assistant.threads.setStatus transient failure — skipping this call', {
-        error: (error as any)?.data?.error || (error as any)?.message,
-      });
+      // Transient path — manager stays enabled, but observe sustained
+      // degradation so operators see rate-limit storms / network partitions
+      // that otherwise only manifest as a silently-missing spinner.
+      this.recordTransientFailure(key ?? `${channelId}:${threadTs}`, error);
       return;
     }
     // Permanent failure path: markDisabledIfScopeMissing already cleared
     // heartbeats. Run the best-effort clear so Slack doesn't leave a
     // stale spinner visible on the caller's thread.
     await this.bestEffortClearSlack(channelId, threadTs);
+  }
+
+  /**
+   * #700 P2 C — reset the per-key consecutive-transient-failure counter on
+   * every successful Slack write. This is the signal that degradation has
+   * recovered; the next crossing of TRANSIENT_WARN_THRESHOLD will re-warn.
+   */
+  private recordSetStatusSuccess(key: string): void {
+    if (this.transientFailuresSinceLastSuccess.has(key)) {
+      this.transientFailuresSinceLastSuccess.delete(key);
+    }
+  }
+
+  /**
+   * #700 P2 C — increment per-key consecutive-transient-failure counter.
+   * Emit a single `logger.warn` the first time the count reaches the
+   * threshold (~3 min of sustained degradation at the 20s heartbeat).
+   * Subsequent ticks stay at debug until the next success resets.
+   */
+  private recordTransientFailure(key: string, error: unknown): void {
+    const prev = this.transientFailuresSinceLastSuccess.get(key) ?? 0;
+    const next = prev + 1;
+    this.transientFailuresSinceLastSuccess.set(key, next);
+    const errorCode = (error as any)?.data?.error || (error as any)?.message;
+    if (next === TRANSIENT_WARN_THRESHOLD) {
+      this.logger.warn('sustained transient Slack degradation — native spinner likely invisible on this thread', {
+        key,
+        count: next,
+        error: errorCode,
+      });
+    } else {
+      this.logger.debug('assistant.threads.setStatus transient failure — persisting for heartbeat retry', {
+        key,
+        count: next,
+        error: errorCode,
+      });
+    }
   }
 
   /**
@@ -338,6 +404,9 @@ export class AssistantStatusManager {
     }
     this.heartbeats.clear();
     this.lastStatus.clear();
+    // The sustained-transient counter only matters while the manager is
+    // enabled; once disabled, clearing avoids leaking stale per-key state.
+    this.transientFailuresSinceLastSuccess.clear();
     // Note: bgBashCounter and epochCounter are turn-level state, independent
     // of the manager's Slack API enablement. Do NOT clear them here.
   }

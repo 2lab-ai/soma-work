@@ -267,7 +267,50 @@ describe('SessionInitializer — #689 dispatch B4 gate (behavioural)', () => {
       await sessionInitializer.initialize(buildEvent() as any, '/test/dir');
 
       expect(mockAssistantStatusManager.clearStatus).toHaveBeenCalledTimes(1);
-      expect(mockAssistantStatusManager.clearStatus).toHaveBeenCalledWith('C123', 'thread123', { expectedEpoch: 1 });
+      expect(mockAssistantStatusManager.clearStatus).toHaveBeenCalledWith('C123', 'thread123', {
+        expectedEpoch: 1,
+      });
+    });
+  });
+
+  // #700 round-3 review finding #7 — `runDispatch()` is the alternate entry
+  // (after /new, /renew, z-handoff transitions). It routes to the same
+  // `dispatchWorkflow` private method that `initialize()` does, so the
+  // PHASE>=4 gate must hold here too. A new spinner write in
+  // `runDispatch`'s force-workflow branch would slip past `initialize`
+  // coverage — this test locks the dispatch-path entry separately.
+  describe('runDispatch PHASE gate (#700 round-3 #7)', () => {
+    beforeEach(() => {
+      // needsDispatch is true + no forceWorkflow → runDispatch routes to
+      // dispatchWorkflow (the gate lives there).
+      mockClaudeHandler.needsDispatch.mockReturnValue(true);
+    });
+
+    it('PHASE=4 + enabled: runDispatch does NOT call setStatus or setTitle', async () => {
+      config.ui.fiveBlockPhase = 4;
+      mockAssistantStatusManager = makeStatusManager(true);
+      buildInitializer();
+
+      await sessionInitializer.runDispatch('C123', 'thread123', 'Review PR https://github.com/acme/repo/pull/1');
+
+      expect(mockAssistantStatusManager.setStatus).not.toHaveBeenCalled();
+      expect(mockAssistantStatusManager.setTitle).not.toHaveBeenCalled();
+    });
+
+    it('PHASE=3 + enabled: runDispatch fires setStatus + setTitle (legacy path)', async () => {
+      config.ui.fiveBlockPhase = 3;
+      mockAssistantStatusManager = makeStatusManager(true);
+      buildInitializer();
+
+      await sessionInitializer.runDispatch('C123', 'thread123', 'Review PR https://github.com/acme/repo/pull/1');
+
+      expect(mockAssistantStatusManager.setStatus).toHaveBeenCalledTimes(1);
+      expect(mockAssistantStatusManager.setStatus).toHaveBeenCalledWith(
+        'C123',
+        'thread123',
+        'is analyzing your request...',
+      );
+      expect(mockAssistantStatusManager.setTitle).toHaveBeenCalledTimes(1);
     });
   });
 });

@@ -640,14 +640,24 @@ export class TurnSurface {
         await this.closeStream(state, 'end', reason);
       }
     } finally {
-      // #689 P4 Part 2/2 — B4 native spinner clear. Best-effort: exceptions
-      // are swallowed inside AssistantStatusManager.clearStatus.
+      // #689 P4 Part 2/2 — B4 native spinner clear. Wrapped: although
+      // `clearStatus` swallows its own Slack errors, `effectivePhase()`
+      // and the epoch/`clearInterval` path can still throw. A throw here
+      // must NEVER skip `cleanupTurn` — orphaning `this.turns` would make
+      // the next turn hit the `begin()` called-twice guard and drop silently.
       // #688 — pass `statusEpoch` so a stale close from a superseded turn
       // cannot wipe a spinner set by the newer turn on the same thread.
-      const mgr = this.deps.assistantStatusManager;
-      if (mgr && this.effectivePhase() >= 4 && state.ctx.threadTs) {
-        const opts = state.ctx.statusEpoch !== undefined ? { expectedEpoch: state.ctx.statusEpoch } : undefined;
-        await mgr.clearStatus(state.ctx.channelId, state.ctx.threadTs, opts);
+      try {
+        const mgr = this.deps.assistantStatusManager;
+        if (mgr && this.effectivePhase() >= 4 && state.ctx.threadTs) {
+          const opts = state.ctx.statusEpoch !== undefined ? { expectedEpoch: state.ctx.statusEpoch } : undefined;
+          await mgr.clearStatus(state.ctx.channelId, state.ctx.threadTs, opts);
+        }
+      } catch (err) {
+        this.logger.warn('B4 native spinner clear in end() threw — cleanup continues', {
+          turnId,
+          error: (err as Error)?.message ?? String(err),
+        });
       }
       this.cleanupTurn(turnId, state);
     }
@@ -682,10 +692,18 @@ export class TurnSurface {
       }
     } finally {
       // #689 P4 Part 2/2 + #688 — same B4 clear + epoch guard as end().
-      const mgr = this.deps.assistantStatusManager;
-      if (mgr && this.effectivePhase() >= 4 && state.ctx.threadTs) {
-        const opts = state.ctx.statusEpoch !== undefined ? { expectedEpoch: state.ctx.statusEpoch } : undefined;
-        await mgr.clearStatus(state.ctx.channelId, state.ctx.threadTs, opts);
+      // Wrapped for the same reason: a throw must never skip `cleanupTurn`.
+      try {
+        const mgr = this.deps.assistantStatusManager;
+        if (mgr && this.effectivePhase() >= 4 && state.ctx.threadTs) {
+          const opts = state.ctx.statusEpoch !== undefined ? { expectedEpoch: state.ctx.statusEpoch } : undefined;
+          await mgr.clearStatus(state.ctx.channelId, state.ctx.threadTs, opts);
+        }
+      } catch (err) {
+        this.logger.warn('B4 native spinner clear in fail() threw — cleanup continues', {
+          turnId,
+          error: (err as Error)?.message ?? String(err),
+        });
       }
       this.cleanupTurn(turnId, state);
     }

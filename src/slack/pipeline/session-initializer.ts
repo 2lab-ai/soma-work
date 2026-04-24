@@ -700,11 +700,7 @@ export class SessionInitializer {
       // Native spinner during dispatch — legacy-only; TurnSurface.begin owns
       // the "is thinking..." spinner at effective PHASE>=4 (#689 P4 Part 2).
       if (shouldRunLegacyB4Path(this.deps.assistantStatusManager)) {
-        await this.deps.assistantStatusManager?.setStatus(
-          channel,
-          threadTs,
-          'is analyzing your request...',
-        );
+        await this.deps.assistantStatusManager?.setStatus(channel, threadTs, 'is analyzing your request...');
       }
       await updateDispatchPanel('워크플로우 분석 중', 'working');
 

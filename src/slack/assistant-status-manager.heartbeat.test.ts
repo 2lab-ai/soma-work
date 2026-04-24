@@ -235,4 +235,40 @@ describe('AssistantStatusManager — Heartbeat', () => {
     expect(mockSlackApi.setAssistantStatus).toHaveBeenCalledTimes(1);
     expect(mockSlackApi.setAssistantStatus).toHaveBeenCalledWith('C2', '2.0', 'is working...');
   });
+
+  // #700 round-3 review finding #6 — Multi-thread timer-leak: a permanent
+  // failure on ONE key must kill EVERY live heartbeat, not only the failing
+  // one. Previous coverage only asserted the single-key case. The realistic
+  // bug shape (N live threads, one hits missing_scope, the other N-1 timers
+  // survive forever) is what this test locks in.
+  it('permanent_failure_on_one_key_kills_all_heartbeats (#700 round-3 #6)', async () => {
+    // Arm heartbeats on 3 distinct (channel, threadTs) keys.
+    await manager.setStatus('C_alpha', 'alpha.0', 'alpha-status');
+    await manager.setStatus('C_beta', 'beta.0', 'beta-status');
+    await manager.setStatus('C_gamma', 'gamma.0', 'gamma-status');
+
+    // Initial 3 writes landed.
+    expect(mockSlackApi.setAssistantStatus).toHaveBeenCalledTimes(3);
+    mockSlackApi.setAssistantStatus.mockClear();
+
+    // The NEXT slack call (which will be the first heartbeat tick for
+    // whichever key the scheduler fires first) rejects with a permanent
+    // scope error. Subsequent calls (the best-effort clear) succeed.
+    mockSlackApi.setAssistantStatus.mockRejectedValueOnce(
+      Object.assign(new Error('missing_scope'), { data: { error: 'missing_scope' } }),
+    );
+
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    // Manager should now be disabled process-wide.
+    expect(manager.isEnabled()).toBe(false);
+
+    // Record calls that happened in this 20s window (failing tick + best-
+    // effort clear for the failing key), then clear to assert that NO
+    // further ticks fire across 60s — meaning every other key's heartbeat
+    // timer was also disarmed by clearAllHeartbeats().
+    mockSlackApi.setAssistantStatus.mockClear();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(mockSlackApi.setAssistantStatus).not.toHaveBeenCalled();
+  });
 });

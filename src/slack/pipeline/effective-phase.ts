@@ -27,8 +27,16 @@ export function getEffectiveFiveBlockPhase(statusManager: AssistantStatusManager
   const raw = config.ui.fiveBlockPhase;
   if (raw >= 4 && !statusManager.isEnabled()) {
     if (!clampEmittedOnce) {
-      emitUiPhaseClamped({ from: raw, to: 3, reason: 'assistant-status-disabled' });
+      // Set the once-flag BEFORE the metric emit so a logger throw here
+      // cannot (a) violate the once-guarantee by leaving the flag false
+      // and re-emitting forever, nor (b) bubble through the callers of
+      // this helper and defeat the graceful-degradation return below.
       clampEmittedOnce = true;
+      try {
+        emitUiPhaseClamped({ from: raw, to: 3, reason: 'assistant-status-disabled' });
+      } catch {
+        // Metric emit is best-effort; never disrupt the clamp return.
+      }
     }
     return 3;
   }
@@ -44,9 +52,7 @@ export function getEffectiveFiveBlockPhase(statusManager: AssistantStatusManager
  * Centralizing the predicate also pulls the `mgr && ...` null-check out of
  * every callsite — the dispatch / tool-event / per-turn paths read uniform.
  */
-export function shouldRunLegacyB4Path(
-  statusManager: AssistantStatusManager | null | undefined,
-): boolean {
+export function shouldRunLegacyB4Path(statusManager: AssistantStatusManager | null | undefined): boolean {
   return !!statusManager && getEffectiveFiveBlockPhase(statusManager) < 4;
 }
 
