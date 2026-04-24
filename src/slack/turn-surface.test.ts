@@ -1331,13 +1331,21 @@ describe('TurnSurface', () => {
 
       // Kick off end() — it should proceed through closeStream + clearStatus,
       // then suspend awaiting `buildCompletionEvent()`.
-      const endPromise = surface.end(ctx.turnId, 'completed');
+      let endSettled = false;
+      const endPromise = surface.end(ctx.turnId, 'completed').finally(() => {
+        endSettled = true;
+      });
 
       // Give microtasks + the mocked stopStream/appendStream chain time to
       // drain so we're parked at the snapshot await.
       await Promise.resolve();
       await Promise.resolve();
       await Promise.resolve();
+      // Lock-in: end() MUST still be pending because buildCompletionEvent()
+      // hasn't resolved. A naive sync-read implementation would have
+      // returned by now — this guard would flag that regression even if
+      // `send` was somehow called with the unresolved Promise object.
+      expect(endSettled).toBe(false);
       expect(channel.send).not.toHaveBeenCalled();
 
       // Now the async enrichment completes — snapshot resolves late, and
@@ -1346,6 +1354,7 @@ describe('TurnSurface', () => {
 
       await endPromise;
 
+      expect(endSettled).toBe(true);
       expect(channel.send).toHaveBeenCalledTimes(1);
       expect(channel.send).toHaveBeenCalledWith(evt);
     });

@@ -3907,10 +3907,17 @@ describe('StreamExecutor — P5 B5 race (issue #720)', () => {
 
     // end() proceeds through closeStream + clearStatus, then parks at the
     // snapshot await. The snapshot is still pending.
-    const endPromise = surface.end(ctx.turnId, 'completed');
+    let endSettled = false;
+    const endPromise = surface.end(ctx.turnId, 'completed').finally(() => {
+      endSettled = true;
+    });
     await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
+    // Lock-in: end() MUST still be pending — proves the await is real.
+    // A sync-read regression (e.g., `evt = state.ctx.buildCompletionEvent()
+    // as TurnCompletionEvent`) would have let end() resolve by now.
+    expect(endSettled).toBe(false);
     expect(blockKit.send).not.toHaveBeenCalled();
 
     // Enrichment lands LATE — matches the PR #711 timing where
@@ -3926,6 +3933,7 @@ describe('StreamExecutor — P5 B5 race (issue #720)', () => {
     resolveSnapshot(evt);
 
     await endPromise;
+    expect(endSettled).toBe(true);
     expect(blockKit.send).toHaveBeenCalledTimes(1);
     expect(blockKit.send).toHaveBeenCalledWith(evt);
   });
@@ -4048,6 +4056,128 @@ describe('StreamExecutor — P5 B5 race (issue #720)', () => {
 
     // turnNotifier was undefined — no fan-out call.
     // B5 still posted exactly once via the SlackBlockKitChannel path.
+    expect(blockKit.send).toHaveBeenCalledTimes(1);
+    expect(blockKit.send).toHaveBeenCalledWith(evt);
+  });
+
+  it('#720 (f) contract lock-in: resolveSnapshot called twice (evt, then undefined) — snapshot retains first value → B5 posts with evt', async () => {
+    // Guards against a future refactor that adds a `finally → resolveSnapshot
+    // (undefined)` safety-net (the codex P1-1 anti-pattern). ECMA Promise
+    // semantics silently drop the second resolve, but the SNAPSHOT is what
+    // matters: TurnSurface.end awaits the Promise and sees whatever the
+    // FIRST resolve produced. This test proves that invariant: once the
+    // .then rail resolves with the event, a subsequent .catch-rail
+    // `resolveSnapshot(undefined)` is a no-op and B5 still posts.
+    config.ui.fiveBlockPhase = 5;
+
+    const { TurnSurface } = await import('../turn-surface');
+    type TurnCompletionEventT = import('../../turn-notifier').TurnCompletionEvent;
+
+    const { buildCompletionEvent, resolveSnapshot } = createSnapshot<TurnCompletionEventT>();
+
+    const evt: TurnCompletionEventT = {
+      category: 'WorkflowComplete',
+      userId: 'U1',
+      channel: 'C1',
+      threadTs: 't1.0',
+      sessionTitle: 'S',
+      durationMs: 100,
+    };
+
+    // First call wins — second is a no-op (Promise resolve is idempotent).
+    resolveSnapshot(evt);
+    resolveSnapshot(undefined);
+
+    const client: any = {
+      chat: {
+        startStream: vi.fn().mockResolvedValue({ ts: 's1' }),
+        appendStream: vi.fn().mockResolvedValue(undefined),
+        stopStream: vi.fn().mockResolvedValue(undefined),
+        postMessage: vi.fn().mockResolvedValue({ ts: 'p1' }),
+        update: vi.fn().mockResolvedValue(undefined),
+      },
+    };
+    const blockKit = { send: vi.fn().mockResolvedValue(undefined) };
+    const surface = new TurnSurface({
+      slackApi: { getClient: () => client } as any,
+      slackBlockKitChannel: blockKit as any,
+      isCompletionMarkerActive: () => true,
+    } as any);
+
+    const ctx = {
+      channelId: 'C1',
+      threadTs: 't1.0',
+      sessionKey: 'C1:t1.0',
+      turnId: 'C1:t1.0:720-f',
+      buildCompletionEvent,
+    };
+    await surface.begin(ctx as any);
+    await surface.end(ctx.turnId, 'completed');
+
+    expect(blockKit.send).toHaveBeenCalledTimes(1);
+    expect(blockKit.send).toHaveBeenCalledWith(evt);
+  });
+
+  it('#720 (g) concurrent end() during snapshot await is idempotent (state.closing short-circuits second call)', async () => {
+    // New 3s await window between "enter end()" and "return" widens the
+    // pre-existing idempotency invariant: a second end() call during the
+    // await must hit `!state || state.closing` and no-op, not double-post.
+    config.ui.fiveBlockPhase = 5;
+
+    const { TurnSurface } = await import('../turn-surface');
+    type TurnCompletionEventT = import('../../turn-notifier').TurnCompletionEvent;
+
+    const { buildCompletionEvent, resolveSnapshot } = createSnapshot<TurnCompletionEventT>();
+
+    const client: any = {
+      chat: {
+        startStream: vi.fn().mockResolvedValue({ ts: 's1' }),
+        appendStream: vi.fn().mockResolvedValue(undefined),
+        stopStream: vi.fn().mockResolvedValue(undefined),
+        postMessage: vi.fn().mockResolvedValue({ ts: 'p1' }),
+        update: vi.fn().mockResolvedValue(undefined),
+      },
+    };
+    const blockKit = { send: vi.fn().mockResolvedValue(undefined) };
+    const surface = new TurnSurface({
+      slackApi: { getClient: () => client } as any,
+      slackBlockKitChannel: blockKit as any,
+      isCompletionMarkerActive: () => true,
+    } as any);
+
+    const ctx = {
+      channelId: 'C1',
+      threadTs: 't1.0',
+      sessionKey: 'C1:t1.0',
+      turnId: 'C1:t1.0:720-g',
+      buildCompletionEvent,
+    };
+    await surface.begin(ctx as any);
+
+    // Park first end() on the snapshot await.
+    const endP1 = surface.end(ctx.turnId, 'completed');
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Second end() enters, finds state.closing=true from first call's
+    // synchronous mark, and returns immediately without awaiting.
+    const endP2 = surface.end(ctx.turnId, 'completed');
+    await endP2;
+    expect(blockKit.send).not.toHaveBeenCalled();
+
+    // Release the first call's snapshot — it finishes and posts B5 once.
+    const evt: TurnCompletionEventT = {
+      category: 'WorkflowComplete',
+      userId: 'U1',
+      channel: 'C1',
+      threadTs: 't1.0',
+      sessionTitle: 'S',
+      durationMs: 100,
+    };
+    resolveSnapshot(evt);
+    await endP1;
+
     expect(blockKit.send).toHaveBeenCalledTimes(1);
     expect(blockKit.send).toHaveBeenCalledWith(evt);
   });

@@ -707,12 +707,19 @@ export class TurnSurface {
           const timeoutPromise = new Promise<undefined>((resolve) => {
             timeoutId = setTimeout(() => resolve(undefined), TIMEOUT_MS);
           });
-          // Swallow a late rejection from the builder (codex P2 — late-
-          // rejection hygiene): Promise.race settles on whichever side lands
-          // first, but the loser's eventual rejection would surface as an
-          // unhandled rejection if we didn't attach a no-op catch.
-          builderPromise.catch(() => {
-            /* late rejection swallowed — same as enrich-chain catch */
+          // Log-and-swallow a late rejection from the builder (codex P2 —
+          // late-rejection hygiene): Promise.race settles on whichever side
+          // lands first; the loser's eventual rejection would surface as an
+          // unhandled rejection if we didn't attach a catch. We log a
+          // breadcrumb rather than silently swallowing — if enrichment is
+          // chronically failing but mostly winning the race, operators still
+          // see the signal instead of the B5 silently posting fine today
+          // until the timing shifts tomorrow.
+          builderPromise.catch((err) => {
+            this.logger.warn('B5 builder late-rejection after race settled', {
+              turnId,
+              error: (err as Error)?.message ?? String(err),
+            });
           });
           evt = await Promise.race<TurnCompletionEvent | undefined>([builderPromise, timeoutPromise]);
         } catch (err) {
@@ -726,10 +733,19 @@ export class TurnSurface {
         }
 
         if (evt) {
+          // send() fire-and-forget with structured-error logging. Operators
+          // triaging B5 drops need the Slack error code (`rate_limited`,
+          // `channel_not_found`, `streaming_mode_mismatch`, etc.) plus the
+          // channel/thread IDs — bare `err.message` alone collapses distinct
+          // failure modes into the same log line.
+          const sendChannelId = state.ctx.channelId;
+          const sendThreadTs = state.ctx.threadTs;
           void this.deps.slackBlockKitChannel.send(evt).catch((err) => {
             this.logger.warn('B5 send failed', {
               turnId,
-              error: (err as Error)?.message ?? String(err),
+              channelId: sendChannelId,
+              threadTs: sendThreadTs,
+              error: describeSlackError(err),
             });
           });
         } else {

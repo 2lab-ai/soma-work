@@ -1295,26 +1295,49 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         return finalEnrichedEvent;
       };
 
-      // Single chain, two exclusive rails: `.then` resolves the snapshot
-      // with the event AND conditionally calls turnNotifier.notify; `.catch`
-      // resolves the snapshot with `undefined` AND logs. resolveSnapshot
-      // fires exactly once either way. No `finally` safety-net resolve —
-      // that would race the `.then` rail and lock in a `undefined` snapshot
-      // (codex P1-1).
+      // Single chain, two exclusive rails:
+      //   `.then` — resolves the snapshot with the event (B5 SSOT), then
+      //     conditionally calls turnNotifier.notify. Notify is wrapped in
+      //     its own try/catch so a notifier throw stays on the enrich-
+      //     success side — it cannot propagate into the outer `.catch` and
+      //     produce a second `resolveSnapshot(undefined)` call that races
+      //     the first. The second resolve would be a Promise no-op, but
+      //     the log would be misleading ("Turn completion enrichment
+      //     failed" when enrichment had succeeded).
+      //   `.catch` — enrichment-only failures (usageBefore / fetchAndStoreUsage
+      //     HTTP failures, etc.). Resolves the snapshot with `undefined` so
+      //     TurnSurface.end's `await` unblocks with no B5 emit.
+      // resolveSnapshot fires exactly once either way. No `finally` safety-
+      // net resolve — that would race the `.then` rail and lock in a
+      // `undefined` snapshot (codex P1-1).
       enrichAndResolve()
         .then((evt) => {
           resolveSnapshot(evt);
           if (this.deps.turnNotifier) {
-            // P5 exclusion — `buildCompletionNotifyOpts()` returns undefined
-            // when capability is inactive, so the notify call is shape-
-            // identical to pre-P5 on the legacy path.
-            const notifyOpts = this.buildCompletionNotifyOpts();
-            this.deps.turnNotifier.notify(evt, notifyOpts);
+            try {
+              // P5 exclusion — `buildCompletionNotifyOpts()` returns undefined
+              // when capability is inactive, so the notify call is shape-
+              // identical to pre-P5 on the legacy path.
+              const notifyOpts = this.buildCompletionNotifyOpts();
+              this.deps.turnNotifier.notify(evt, notifyOpts);
+            } catch (err: unknown) {
+              // Notifier throws are their own failure mode — logged with a
+              // distinct message so operators can triage "enrich failed" vs
+              // "notify threw" from the log alone.
+              this.logger.warn('TurnNotifier.notify threw', {
+                sessionKey,
+                turnId,
+                error: (err as { message?: string })?.message ?? String(err),
+              });
+            }
           }
         })
         .catch((err: unknown) => {
           resolveSnapshot(undefined);
-          this.logger.warn('Turn notification failed', {
+          this.logger.warn('Turn completion enrichment failed', {
+            sessionKey,
+            turnId,
+            stage: 'enrich',
             error: (err as { message?: string })?.message ?? String(err),
           });
         });
