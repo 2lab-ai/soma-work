@@ -133,12 +133,27 @@ export function maskUrl(raw: string): string {
 
 // --- TurnNotifier service ---
 
+/**
+ * Options for {@link TurnNotifier.notify}. `excludeChannelNames` filters
+ * channels by `name` before `isEnabled` is probed (exclusion doesn't override
+ * enablement). Omitting opts is identical to the pre-P5 single-arg signature.
+ */
+export interface TurnNotifierNotifyOpts {
+  /** Channel `name` values to skip. Empty array ≡ no filter. */
+  excludeChannelNames?: string[];
+}
+
 export class TurnNotifier {
   constructor(private channels: NotificationChannel[]) {}
 
-  async notify(event: TurnCompletionEvent): Promise<void> {
+  async notify(event: TurnCompletionEvent, opts?: TurnNotifierNotifyOpts): Promise<void> {
+    const excludeSet =
+      opts?.excludeChannelNames && opts.excludeChannelNames.length > 0 ? new Set(opts.excludeChannelNames) : undefined;
+
+    const candidateChannels = excludeSet ? this.channels.filter((ch) => !excludeSet.has(ch.name)) : this.channels;
+
     const enabledChannels = await Promise.all(
-      this.channels.map(async (ch) => {
+      candidateChannels.map(async (ch) => {
         try {
           const enabled = await ch.isEnabled(event.userId);
           return enabled ? ch : null;
