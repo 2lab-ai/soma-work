@@ -102,7 +102,10 @@ describe('SessionInitializer - Onboarding Detection', () => {
       isSleeping: vi.fn().mockReturnValue(false),
       wakeFromSleep: vi.fn(),
       needsDispatch: vi.fn().mockReturnValue(true),
-      transitionToMain: vi.fn(),
+      // Issue #698: transitionToMain now returns boolean (`true`=success,
+      // `false`=session missing or already transitioned). Default mock returns
+      // `true` so existing forceWorkflow tests don't trigger DispatchAbortError.
+      transitionToMain: vi.fn().mockReturnValue(true),
       setActivityState: vi.fn(),
       canInterrupt: vi.fn().mockReturnValue(false),
       updateInitiator: vi.fn(),
