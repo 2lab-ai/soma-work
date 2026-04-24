@@ -283,7 +283,21 @@ export class TurnSurface {
     // next turn, falling back to ThreadSurface chip.
     const mgr = this.deps.assistantStatusManager;
     if (mgr && this.effectivePhase() >= 4 && ctx.threadTs) {
-      await mgr.setStatus(ctx.channelId, ctx.threadTs, 'is thinking...');
+      // #700 review P1 — match `chat.startStream`'s fail-open stance above:
+      // setStatus hitting a Slack error must NOT crash begin() because the
+      // B1 stream and downstream turn lifecycle are independent of the
+      // sidebar spinner. AssistantStatusManager already handles permanent
+      // scope/auth internally (flips enabled=false → clamp to 3) and
+      // persists+heartbeats transient failures, so we only need to shield
+      // against unexpected throws.
+      try {
+        await mgr.setStatus(ctx.channelId, ctx.threadTs, 'is thinking...');
+      } catch (err) {
+        this.logger.warn('B4 native spinner setStatus failed in begin()', {
+          turnId: ctx.turnId,
+          error: (err as Error).message,
+        });
+      }
     }
   }
 

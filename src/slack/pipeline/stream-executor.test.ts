@@ -3408,6 +3408,12 @@ describe('stream-executor — epoch guard + Bash resolver descriptor (issue #688
         deleteMessage: vi.fn().mockResolvedValue(undefined),
       },
       assistantStatusManager: {
+        // #700 review P1 — isEnabled drives `shouldRunLegacyB4Path` /
+        // `getEffectiveFiveBlockPhase`. Default enabled=true so the
+        // pre-existing #688 tests keep running through the legacy path
+        // at PHASE<4 (raw default); tests that need PHASE>=4 behaviour
+        // override `config.ui.fiveBlockPhase` + this flag.
+        isEnabled: vi.fn().mockReturnValue(true),
         setStatus: vi.fn().mockResolvedValue(undefined),
         clearStatus: vi.fn().mockResolvedValue(undefined),
         getToolStatusText: vi.fn().mockReturnValue('is reading files...'),
@@ -3549,6 +3555,61 @@ describe('stream-executor — epoch guard + Bash resolver descriptor (issue #688
 
     const emptyStringSet = deps.assistantStatusManager.setStatus.mock.calls.find((c: any[]) => c[2] === '');
     expect(emptyStringSet).toBeUndefined();
+  });
+
+  // #700 review P1 — PHASE>=4 Bash behavioural coverage. The onToolUse
+  // legacy-setStatus wrapper must route through `shouldRunLegacyB4Path`
+  // so Bash no longer double-writes the spinner when TurnSurface owns
+  // it. When the manager is clamped (disabled), the descriptor path must
+  // re-activate and fire the resolver so the heartbeat still reflects
+  // bg-bash counter changes. Both assertions directly protect the Bash
+  // + native spinner path against regressions.
+  describe('PHASE>=4 Bash legacy suppression (#700 P1)', () => {
+    const originalPhase = config.ui.fiveBlockPhase;
+
+    afterEach(async () => {
+      config.ui.fiveBlockPhase = originalPhase;
+      const { __resetClampEmitted } = await import('./effective-phase');
+      __resetClampEmitted();
+    });
+
+    it('PHASE=4 + enabled: Bash tool_use does NOT call legacy setStatus (TurnSurface owns)', async () => {
+      config.ui.fiveBlockPhase = 4;
+      const deps = createDeps(() => toolFlowStream('Bash'));
+      deps.assistantStatusManager.isEnabled = vi.fn().mockReturnValue(true);
+      const executor = new StreamExecutor(deps);
+      const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+      await executor.execute(createParams(say));
+
+      // All Bash legacy setStatus callsites in execute() / onToolUse
+      // route through `legacySetStatus` → `shouldRunLegacyB4Path` and
+      // must short-circuit. Zero setStatus writes on the clamp=false
+      // path is the success condition.
+      expect(deps.assistantStatusManager.setStatus).not.toHaveBeenCalled();
+    });
+
+    it('PHASE=4 + disabled (clamped): Bash tool_use re-fires the resolver descriptor', async () => {
+      config.ui.fiveBlockPhase = 4;
+      const deps = createDeps(() => toolFlowStream('Bash'));
+      // Clamp: disabled manager pulls `getEffectiveFiveBlockPhase` down
+      // to 3 so the legacy path runs and the Bash resolver descriptor is
+      // injected (so live heartbeats can reflect the bg-bash counter).
+      deps.assistantStatusManager.isEnabled = vi.fn().mockReturnValue(false);
+      const executor = new StreamExecutor(deps);
+      const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+      await executor.execute(createParams(say));
+
+      const setCalls = deps.assistantStatusManager.setStatus.mock.calls;
+      const resolverCall = setCalls.find((c: any[]) => typeof c[2] === 'function');
+      expect(resolverCall).toBeDefined();
+      expect(resolverCall![0]).toBe('C42');
+      expect(resolverCall![1]).toBe('thread42');
+      // Resolver delegates to buildBashStatus — matches the PHASE<4
+      // behaviour in the existing #688 test above.
+      expect(resolverCall![2]()).toBe('is running commands...');
+    });
   });
 });
 

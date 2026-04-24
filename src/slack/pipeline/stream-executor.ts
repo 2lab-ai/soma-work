@@ -14,7 +14,7 @@ import {
 } from '../../claude-status-fetcher';
 import { config } from '../../config';
 import { createConversation, recordAssistantTurn, recordUserTurn } from '../../conversation';
-import { getEffectiveFiveBlockPhase, shouldRunLegacyB4Path } from './effective-phase';
+import { shouldRunLegacyB4Path } from './effective-phase';
 import type { FileHandler, ProcessedFile } from '../../file-handler';
 import { Logger, redactAnthropicSecrets } from '../../logger';
 import { isMidThreadMention } from '../../mcp-config-builder';
@@ -237,8 +237,11 @@ export class StreamExecutor {
    * sessions is unchanged.
    */
   private async legacySetStatus(channel: string, threadTs: string, text: string): Promise<void> {
+    // #700 review P2 — use `shouldRunLegacyB4Path` so the predicate matches
+    // dispatch / tool-event gates (null-safe on manager) and future phase
+    // changes only touch one predicate.
     const mgr = this.deps.assistantStatusManager;
-    if (getEffectiveFiveBlockPhase(mgr) >= 4) return;
+    if (!shouldRunLegacyB4Path(mgr)) return;
     await mgr.setStatus(channel, threadTs, text);
   }
 
@@ -248,7 +251,7 @@ export class StreamExecutor {
     options?: { expectedEpoch?: number },
   ): Promise<void> {
     const mgr = this.deps.assistantStatusManager;
-    if (getEffectiveFiveBlockPhase(mgr) >= 4) return;
+    if (!shouldRunLegacyB4Path(mgr)) return;
     await mgr.clearStatus(channel, threadTs, options);
   }
 

@@ -160,10 +160,11 @@ would see no bot response in an Assistant thread. Delegating to the same
 DM UX.
 
 ### Kill-switch rationale
-The legacy tool-level spinner path in `src/slack/pipeline/stream-executor.ts`
-(`:540`, `:611`) calls `AssistantStatusManager.setStatus` unconditionally
-under `STATUS_SPINNER` verbosity (default behaviour for
-`logVerbosity ?? LOG_DETAIL` sessions). Once the Assistant container is
+The legacy tool-level spinner path inside
+`src/slack/pipeline/stream-executor.ts` (see the callsites routed through
+`legacySetStatus` / `legacyClearStatus`) calls
+`AssistantStatusManager.setStatus` unconditionally under `STATUS_SPINNER`
+verbosity (default behaviour for `logVerbosity ?? LOG_DETAIL` sessions). Once the Assistant container is
 registered and `assistant:write` is installed, those calls could begin
 succeeding in assistant threads — a Part 2 behaviour surfacing in Part 1.
 The kill switch collapses this by flipping `enabled=false` at
@@ -248,7 +249,14 @@ on Part 1 (container registration + kill switch). Part 2 **activates** B4:
 | `SessionInitializer` dispatch `setStatus` (`'is analyzing your request...'`) | no-op (inline gate) |
 | `SessionInitializer` dispatch `setTitle` | no-op (inline gate) |
 
-10 legacy B4 writer callsites total, all PHASE-gated.
+All legacy B4 writer callsites are routed through
+`shouldRunLegacyB4Path(statusManager)` (or the `legacySetStatus` /
+`legacyClearStatus` wrappers in `stream-executor.ts`). To enumerate the
+current set without introducing a drifting count here, run:
+
+```
+git grep -nE 'shouldRunLegacyB4Path|legacy(Set|Clear)Status' src/slack
+```
 
 ### Graceful degradation — `getEffectiveFiveBlockPhase`
 
@@ -257,10 +265,17 @@ At **boot or first-use**, if scope/auth is still missing the Slack
 `AssistantStatusManager.setStatus`/`heartbeatTick` now routes through
 `markDisabledIfScopeMissing(err)`:
 
-- **Permanent codes** (`missing_scope`, `not_allowed_token_type`,
-  `invalid_auth`): flip `enabled=false` + clear heartbeats. Subsequent
-  reads of `getEffectiveFiveBlockPhase(statusManager)` clamp to 3, which
-  restores the `ThreadSurface` chip (Part 2's graceful fallback).
+- **Permanent codes** — two named subsets:
+  - **scope/auth**: `missing_scope`, `not_allowed_token_type`,
+    `invalid_auth`
+  - **token lifecycle**: `token_revoked`, `token_expired`,
+    `account_inactive`
+
+  Any hit flips `enabled=false` + clears heartbeats. Subsequent reads
+  of `getEffectiveFiveBlockPhase(statusManager)` clamp to 3, which
+  restores the `ThreadSurface` chip (Part 2's graceful fallback). The
+  canonical list lives in `PERMANENT_CODES` inside
+  `src/slack/assistant-status-manager.ts` — this doc mirrors that set.
 - **Per-thread** `not_allowed` (the caller's thread isn't an assistant
   thread): do NOT disable — same process may still serve other assistant
   threads. Current call is skipped via the wrapper; next call retries.

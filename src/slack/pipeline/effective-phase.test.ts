@@ -18,7 +18,7 @@ const emitSpy = vi.hoisted(() => vi.fn());
 vi.mock('../../config', () => ({ config: mockConfig }));
 vi.mock('../../metrics/ui-metrics', () => ({ emitUiPhaseClamped: emitSpy }));
 
-import { __resetClampEmitted, getEffectiveFiveBlockPhase } from './effective-phase';
+import { __resetClampEmitted, getEffectiveFiveBlockPhase, shouldRunLegacyB4Path } from './effective-phase';
 
 const makeMgr = (enabled: boolean) => ({ isEnabled: vi.fn().mockReturnValue(enabled) }) as any;
 
@@ -73,5 +73,47 @@ describe('getEffectiveFiveBlockPhase (#689)', () => {
     __resetClampEmitted();
     getEffectiveFiveBlockPhase(mgr);
     expect(emitSpy).toHaveBeenCalledTimes(2);
+  });
+});
+
+// #700 review P2 — dedicated coverage for the `shouldRunLegacyB4Path`
+// predicate. The wrapper funnels every legacy callsite (stream-executor,
+// tool-event, session-initializer) through one null-safe check so the PHASE
+// gate + "manager exists" guard cannot drift across callsites.
+describe('shouldRunLegacyB4Path (#689)', () => {
+  beforeEach(() => {
+    __resetClampEmitted();
+    emitSpy.mockClear();
+    mockConfig.ui.fiveBlockPhase = 0;
+  });
+
+  afterEach(() => {
+    __resetClampEmitted();
+  });
+
+  it('returns false when the manager is null', () => {
+    mockConfig.ui.fiveBlockPhase = 3;
+    expect(shouldRunLegacyB4Path(null)).toBe(false);
+  });
+
+  it('returns false when the manager is undefined', () => {
+    mockConfig.ui.fiveBlockPhase = 3;
+    expect(shouldRunLegacyB4Path(undefined)).toBe(false);
+  });
+
+  it('returns true when raw phase < 4 and manager exists', () => {
+    mockConfig.ui.fiveBlockPhase = 3;
+    expect(shouldRunLegacyB4Path(makeMgr(true))).toBe(true);
+    expect(shouldRunLegacyB4Path(makeMgr(false))).toBe(true);
+  });
+
+  it('returns false when raw phase = 4 and manager is enabled (TurnSurface owns)', () => {
+    mockConfig.ui.fiveBlockPhase = 4;
+    expect(shouldRunLegacyB4Path(makeMgr(true))).toBe(false);
+  });
+
+  it('returns true when raw phase = 4 and manager is disabled (clamped → legacy wins)', () => {
+    mockConfig.ui.fiveBlockPhase = 4;
+    expect(shouldRunLegacyB4Path(makeMgr(false))).toBe(true);
   });
 });

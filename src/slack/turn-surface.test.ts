@@ -1015,5 +1015,65 @@ describe('TurnSurface', () => {
       });
       expect(mgr.setStatus).not.toHaveBeenCalled();
     });
+
+    // #700 review P2 — supersede-race integration test. Exercises the
+    // actual AssistantStatusManager (not a mock) to prove the epoch guard
+    // in `clearStatus` drops a stale fail(A) after begin(B) has already
+    // bumped the epoch on the same (channel, threadTs). Regression shield
+    // for the scenario the #688 epoch plumbing was designed to prevent.
+    it("PHASE=4 + supersede race: fail(A) with A's old statusEpoch does NOT clear B's spinner", async () => {
+      config.ui.fiveBlockPhase = 4;
+      const originalB4 = config.ui.b4NativeStatusEnabled;
+      config.ui.b4NativeStatusEnabled = true;
+      try {
+        const client = makeClient();
+        const setAssistantStatus = vi.fn().mockResolvedValue(undefined);
+        const slackApi = {
+          getClient: vi.fn().mockReturnValue(client),
+          setAssistantStatus,
+        } as any;
+        const { AssistantStatusManager } = await import('./assistant-status-manager');
+        const mgr = new AssistantStatusManager(slackApi);
+        const surface = new TurnSurface({ slackApi, assistantStatusManager: mgr });
+
+        // Turn A opens at epoch 1
+        const epochA = mgr.bumpEpoch('C', 'thr');
+        await surface.begin({
+          channelId: 'C',
+          threadTs: 'thr',
+          sessionKey: 'C:thr',
+          turnId: 't-A',
+          statusEpoch: epochA,
+        });
+
+        // Turn B supersedes: bump epoch → begin(B) sets a fresh spinner
+        const epochB = mgr.bumpEpoch('C', 'thr');
+        await surface.begin({
+          channelId: 'C',
+          threadTs: 'thr',
+          sessionKey: 'C:thr',
+          turnId: 't-B',
+          statusEpoch: epochB,
+        });
+
+        // Snapshot calls up to now — B just set its spinner. The
+        // regression we're guarding: fail(A) below MUST NOT fire an empty
+        // setAssistantStatus('') against this (channel, threadTs).
+        const callsBeforeFail = setAssistantStatus.mock.calls.length;
+
+        // A's in-flight path loses the race and fires fail(A) after B has
+        // already started. With the #688 epoch guard, mgr.clearStatus
+        // drops the stale clear silently.
+        await surface.fail('t-A', new Error('superseded'));
+
+        const clearCalls = setAssistantStatus.mock.calls.slice(callsBeforeFail).filter(([, , text]) => text === '');
+        expect(clearCalls).toHaveLength(0);
+
+        // Sanity: the initial begin(A) + begin(B) setStatus writes landed.
+        expect(callsBeforeFail).toBeGreaterThanOrEqual(2);
+      } finally {
+        config.ui.b4NativeStatusEnabled = originalB4;
+      }
+    });
   });
 });

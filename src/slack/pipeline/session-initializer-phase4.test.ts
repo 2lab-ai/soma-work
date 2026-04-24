@@ -74,6 +74,7 @@ vi.mock('../../dispatch-service', () => ({
 }));
 
 import { config } from '../../config';
+import { getDispatchService } from '../../dispatch-service';
 import { __resetClampEmitted } from './effective-phase';
 import { SessionInitializer } from './session-initializer';
 
@@ -231,5 +232,42 @@ describe('SessionInitializer — #689 dispatch B4 gate (behavioural)', () => {
 
     expect(mockAssistantStatusManager.setStatus).toHaveBeenCalledTimes(1);
     expect(mockAssistantStatusManager.setTitle).toHaveBeenCalledTimes(1);
+  });
+
+  // #700 review P2 — behavioural coverage of the dispatch-error clearStatus
+  // PHASE>=4 gate. Reject `dispatchService.dispatch` to drive the catch
+  // branch at session-initializer.ts:743 and lock the expected behaviour on
+  // both sides of the `shouldRunLegacyB4Path` gate. Protects against the
+  // subtle regression where a refactor drops the gate and every PHASE>=4
+  // dispatch failure silently nukes a just-set TurnSurface spinner.
+  describe('dispatch-error clearStatus PHASE gate (#700 P2)', () => {
+    it('PHASE=4 + enabled: dispatch rejection does NOT call clearStatus (TurnSurface owns)', async () => {
+      config.ui.fiveBlockPhase = 4;
+      mockAssistantStatusManager = makeStatusManager(true);
+      // Force dispatch to fail so the catch branch runs.
+      const service = vi.mocked(getDispatchService)();
+      vi.mocked(service.dispatch).mockRejectedValueOnce(new Error('dispatch blew up'));
+      buildInitializer();
+
+      await sessionInitializer.initialize(buildEvent() as any, '/test/dir');
+
+      expect(mockAssistantStatusManager.clearStatus).not.toHaveBeenCalled();
+    });
+
+    it('PHASE=3 + enabled: dispatch rejection calls clearStatus once with expectedEpoch', async () => {
+      config.ui.fiveBlockPhase = 3;
+      mockAssistantStatusManager = makeStatusManager(true);
+      // bumpEpoch returns 1 (makeStatusManager default) so we assert the
+      // same value gets forwarded as expectedEpoch — this is the #688
+      // guarantee the dispatch flow relies on.
+      const service = vi.mocked(getDispatchService)();
+      vi.mocked(service.dispatch).mockRejectedValueOnce(new Error('dispatch blew up'));
+      buildInitializer();
+
+      await sessionInitializer.initialize(buildEvent() as any, '/test/dir');
+
+      expect(mockAssistantStatusManager.clearStatus).toHaveBeenCalledTimes(1);
+      expect(mockAssistantStatusManager.clearStatus).toHaveBeenCalledWith('C123', 'thread123', { expectedEpoch: 1 });
+    });
   });
 });

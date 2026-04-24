@@ -104,15 +104,33 @@ export class AssistantStatusManager {
 
     const descriptor: StatusDescriptor = status;
     const text = typeof descriptor === 'function' ? descriptor() : descriptor;
+    const key = `${channelId}:${threadTs}`;
 
     try {
       await this.slackApi.setAssistantStatus(channelId, threadTs, text);
     } catch (error: any) {
-      await this.disableAndBestEffortClear(channelId, threadTs, error);
+      // #700 review P1 — transient setStatus failure at PHASE>=4 must not
+      // silently drop the spinner. Permanent scope/auth codes still flip
+      // enabled=false via disableAndBestEffortClear; for everything else
+      // (ratelimited, internal_error, network, per-thread not_allowed) we
+      // PERSIST the descriptor and START the heartbeat so the next 20s
+      // tick retries automatically. This reuses the existing heartbeat
+      // infra — no new timer per call.
+      if (this.markDisabledIfScopeMissing(error)) {
+        await this.bestEffortClearSlack(channelId, threadTs);
+        return;
+      }
+      this.logger.debug('assistant.threads.setStatus transient failure — persisting for heartbeat retry', {
+        error: (error as any)?.data?.error || (error as any)?.message,
+      });
+      this.lastStatus.set(key, { channelId, threadTs, descriptor });
+      if (!this.heartbeats.has(key)) {
+        const timer = setInterval(() => this.heartbeatTick(key), HEARTBEAT_INTERVAL_MS);
+        this.heartbeats.set(key, timer);
+      }
       return;
     }
 
-    const key = `${channelId}:${threadTs}`;
     this.lastStatus.set(key, { channelId, threadTs, descriptor });
 
     if (!this.heartbeats.has(key)) {
@@ -127,6 +145,15 @@ export class AssistantStatusManager {
     if (options?.expectedEpoch !== undefined) {
       const currentEpoch = this.epochCounter.get(key) ?? 0;
       if (currentEpoch !== options.expectedEpoch) {
+        // #700 review P2 — log the stale-drop at debug so operators can
+        // diagnose supersede-race behaviour without turning every hit into
+        // a warn.
+        this.logger.debug('clearStatus epoch mismatch — stale clear dropped', {
+          channelId,
+          threadTs,
+          expectedEpoch: options.expectedEpoch,
+          currentEpoch,
+        });
         // stale clear — a newer turn has already bumped past this epoch;
         // silently drop to avoid killing the newer spinner.
         return;
@@ -144,8 +171,11 @@ export class AssistantStatusManager {
     if (!this.enabled) return;
     try {
       await this.slackApi.setAssistantStatus(channelId, threadTs, '');
-    } catch {
-      // already disabled or not critical
+    } catch (error: any) {
+      // #700 review P1 — permanent scope/auth failures during clearStatus
+      // must also flip enabled=false and trigger the PHASE>=4→3 clamp.
+      // Transient failures fall through the debug-log branch.
+      await this.disableAndBestEffortClear(channelId, threadTs, error);
     }
   }
 
@@ -291,6 +321,16 @@ export class AssistantStatusManager {
     // Permanent failure path: markDisabledIfScopeMissing already cleared
     // heartbeats. Run the best-effort clear so Slack doesn't leave a
     // stale spinner visible on the caller's thread.
+    await this.bestEffortClearSlack(channelId, threadTs);
+  }
+
+  /**
+   * Fire-and-forget Slack setAssistantStatus('') that swallows every error.
+   * Used on the permanent-failure branch where `enabled` is already false
+   * so retrying is pointless — we just want to give Slack a chance to drop
+   * any lingering spinner on the caller's thread.
+   */
+  private async bestEffortClearSlack(channelId: string, threadTs: string): Promise<void> {
     try {
       await this.slackApi.setAssistantStatus(channelId, threadTs, '');
     } catch {
