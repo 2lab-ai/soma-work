@@ -90,11 +90,24 @@ const LABEL_PADDED: Record<UsageWindowLabel, string> = {
   '7d-sonnet': '7d-sonnet'.padEnd(USAGE_LABEL_WIDTH),
 };
 
-/** Integer percent (0..100) from a 0..1 or 0..100 utilization number. */
+/**
+ * Integer percent (0..100) from the Anthropic utilization wire format.
+ *
+ * #701 — Anthropic's `/api/oauth/usage` endpoint passes through raw
+ * integer percent (0..100+). The pre-#701 implementation split on
+ * `util <= 1` to paper over a legacy "0..1 fraction" form, but the split
+ * has an irreducible ambiguity at `util === 1` (is it 1% or 100%?). With
+ * the server pinned to percent form the dual-form is dead weight AND
+ * actively buggy: server value `1` (= 1%) rendered as `100%` AND tripped
+ * `isUtilizationFull` the moment the 7d window hit a single percent.
+ *
+ * Percent-only interpretation — `Math.round(clamp(util, 0..100))`. Tests
+ * that historically passed fractional inputs (0.82, 0.5, etc.) have been
+ * migrated to percent form to match what the real server sends.
+ */
 function utilToPctInt(util: number | undefined): number {
   if (util === undefined || !Number.isFinite(util)) return 0;
-  const scaled = util <= 1 ? util * 100 : util;
-  return Math.max(0, Math.min(100, Math.round(scaled)));
+  return Math.max(0, Math.min(100, Math.round(util)));
 }
 
 /**
@@ -270,11 +283,28 @@ function emailSuffix(slot: AuthKey): string {
 }
 
 /**
+ * Stale-usage threshold for prepending a `:warning:` glyph to the
+ * `fetched <ago>` suffix. Anything ≤ 10 min is "fresh enough"; beyond
+ * that the operator should treat the render with some skepticism.
+ */
+const USAGE_STALE_WARN_MS = 10 * 60 * 1000;
+
+/**
  * Build the three usage-panel rows (5h / 7d / 7d-sonnet) as a single
  * context block. Returns `null` when the slot has no usage data — callers
  * simply skip the panel in that case (no placeholder rendered).
+ *
+ * #701 additions (no new blocks, all in-panel):
+ *   - trailing `fetched <ago>` suffix on the final row so operators can
+ *     tell fresh snapshots from hours-old stale ones. `:warning:` glyph
+ *     prepends when the snapshot is older than {@link USAGE_STALE_WARN_MS}.
+ *   - when `state.lastRefreshError` is present alongside a snapshot, a
+ *     single dim warning line is prepended INSIDE the same context block
+ *     (above the code fence) — the per-slot block count stays at 1, so
+ *     the existing 50-block budget math at `buildCctCardBlocks` is
+ *     unaffected.
  */
-function buildUsagePanelBlock(usage: UsageSnapshot, nowMs: number, keyId: string): ZBlock | null {
+function buildUsagePanelBlock(usage: UsageSnapshot, nowMs: number, keyId: string, state?: SlotState): ZBlock | null {
   const rows: string[] = [];
   if (usage.fiveHour) {
     rows.push(formatUsageBar(usage.fiveHour.utilization, usage.fiveHour.resetsAt, nowMs, '5h'));
@@ -289,10 +319,37 @@ function buildUsagePanelBlock(usage: UsageSnapshot, nowMs: number, keyId: string
     rows.push(formatUsageBar(usage.sevenDaySonnet.utilization, usage.sevenDaySonnet.resetsAt, nowMs, '7d-sonnet'));
   }
   if (rows.length === 0) return null;
+
+  // #701 — append `fetched <ago>` suffix to the final row. One suffix per
+  // panel (the snapshot is atomic; all windows share fetchedAt). Gracefully
+  // skip if fetchedAt is missing/unparseable — the rest of the panel still
+  // renders.
+  const fetchedAtMs = Date.parse(usage.fetchedAt);
+  if (Number.isFinite(fetchedAtMs)) {
+    const ageMs = Math.max(0, nowMs - fetchedAtMs);
+    const ago = formatUsageResetDelta(ageMs);
+    const glyph = ageMs > USAGE_STALE_WARN_MS ? ':warning: ' : '';
+    rows[rows.length - 1] = `${rows[rows.length - 1]} · ${glyph}fetched ${ago} ago`;
+  }
+
+  // #701 — when refresh is currently failing AND a (likely stale) usage
+  // snapshot exists, prepend an in-panel warning line inside the SAME
+  // context block. This is critical to the block-budget invariant: the
+  // staleness warning must not add a new block.
+  let staleHeader = '';
+  if (
+    state?.lastRefreshError &&
+    typeof state?.lastRefreshFailedAt === 'number' &&
+    Number.isFinite(state.lastRefreshFailedAt)
+  ) {
+    const failedAgo = formatUsageResetDelta(nowMs - state.lastRefreshFailedAt);
+    staleHeader = `:warning: _Usage is stale — last refresh failed ${failedAgo} ago._\n`;
+  }
+
   // Wrap in a code fence so Slack preserves the monospace alignment that
   // the padded labels rely on. `block_id` is prefixed so the overflow
   // guard can identify usage panels by id rather than by text content.
-  const text = '```\n' + rows.join('\n') + '\n```';
+  const text = `${staleHeader}\`\`\`\n${rows.join('\n')}\n\`\`\``;
   return {
     type: 'context',
     block_id: `${CCT_CARD_BLOCK_ID_PREFIX.usagePanel}${keyId}`,
@@ -321,22 +378,22 @@ export interface CooldownInfo {
 }
 
 /**
- * True when a usage window is at or over its budget. Accepts both the 0..1
- * fraction form (legacy/tests) and the 0..100 percent form (Anthropic's
- * `/api/oauth/usage` endpoint passes through raw integer percent — see
- * {@link parseWindow} in `src/oauth/usage.ts`).
+ * True when a usage window is at or over its budget.
  *
- * Regression (#684 follow-up): before this helper, `computeUsageCooldown`
- * compared `utilization >= 1` directly. With the API's percent form that
- * fires for ANY non-zero usage (≥1%), so every healthy OAuth slot rendered
- * as "7d Cooldown". The `> 1.5` split mirrors {@link parsePercent} in
- * `src/oauth/header-parser.ts` — values above 1.5 are percent form, values
- * at or below 1.5 are fraction form (including over-budget 1.5 = 150%).
+ * #701 — Anthropic's `/api/oauth/usage` endpoint sends raw integer percent.
+ * The pre-#701 implementation kept a dual-form escape hatch with `> 1.5`
+ * as the fraction/percent split, but the boundary was irreducibly
+ * ambiguous at `util === 1` (interpreted as 100% fraction form → Full).
+ * Server value `1` (= 1%) therefore falsely tripped the 7d Cooldown badge.
+ *
+ * Percent-only interpretation now agrees with {@link utilToPctInt}: full
+ * means `util >= 100`. Sibling helper
+ * `normalizeUtilizationToPercent` in `src/slack/pipeline/stream-executor.ts`
+ * was updated in the same PR for consistency.
  */
 function isUtilizationFull(util: number | undefined): boolean {
   if (util === undefined || !Number.isFinite(util)) return false;
-  const fraction = util > 1.5 ? util / 100 : util;
-  return fraction >= 1;
+  return util >= 100;
 }
 
 /**
@@ -441,6 +498,43 @@ function formatOAuthExpiryHint(expiresAtMs: number, nowMs: number): string {
 }
 
 /**
+ * Emoji glyph for a refresh-error kind. Rate-limited uses the hourglass
+ * because it is a "come back later" signal rather than a user error;
+ * network / timeout use the satellite-antenna because the upstream is
+ * unreachable. Everything else uses the generic warning glyph.
+ */
+function refreshErrorGlyph(kind: string): string {
+  if (kind === 'rate_limited') return ':hourglass:';
+  if (kind === 'network' || kind === 'timeout') return ':satellite_antenna:';
+  return ':warning:';
+}
+
+/**
+ * Format the `lastRefreshError` diagnostic as a single concatenatable
+ * segment for `buildSlotStatusLine` (#701).
+ *
+ * The `message` comes from the `TokenManager.classifyRefreshError` fixed-
+ * template table — never from raw `err.message` or response bodies — so
+ * rendering it here is the only place an operator sees the short reason.
+ * `consecutiveRefreshFailures >= 2` appends a ` · ×N` streak badge so a
+ * slot stuck in retry loops is visually distinguishable from a single blip.
+ */
+function formatRefreshErrorSegment(state: SlotState | undefined, nowMs: number): string | null {
+  const err = state?.lastRefreshError;
+  if (!err) return null;
+  const ago =
+    typeof state?.lastRefreshFailedAt === 'number' && Number.isFinite(state.lastRefreshFailedAt)
+      ? ` (${formatUsageResetDelta(nowMs - state.lastRefreshFailedAt)} ago)`
+      : '';
+  const glyph = refreshErrorGlyph(err.kind);
+  const streak =
+    state?.consecutiveRefreshFailures !== undefined && state.consecutiveRefreshFailures >= 2
+      ? ` · ×${state.consecutiveRefreshFailures}`
+      : '';
+  return `${glyph} ${err.message}${ago}${streak}`;
+}
+
+/**
  * Build the second-line status segment per option-A spec
  * (PR #672 follow-up).
  *
@@ -475,6 +569,13 @@ function buildSlotStatusLine(
       const hint = formatOAuthExpiryHint(slot.oauthAttachment.expiresAtMs, nowMs);
       if (hint) segments.push(hint);
     }
+    // #701 — surface the most recent refresh failure regardless of
+    // authState. For `healthy` slots this attaches context to "why is
+    // usage stale?"; for `refresh_failed` / `revoked` slots it replaces
+    // the empty right-hand side with an actual reason the operator can
+    // read (the refresh hint above is suppressed for non-healthy states).
+    const refreshErrSeg = formatRefreshErrorSegment(state, nowMs);
+    if (refreshErrSeg) segments.push(refreshErrSeg);
   } else {
     const cooldown = computeManualCooldown(state, nowMs);
     segments.push(authStateBadge(state?.authState ?? 'healthy', cooldown));
@@ -598,7 +699,7 @@ export function buildSlotRow(
   // the block-budget overflow guard in `buildCctCardBlocks` collapses
   // these first if the card would exceed Slack's 50-block cap.
   if (state?.usage && isCctSlot(slot) && slot.oauthAttachment !== undefined) {
-    const panel = buildUsagePanelBlock(state.usage, nowMs, slot.keyId);
+    const panel = buildUsagePanelBlock(state.usage, nowMs, slot.keyId, state);
     if (panel) blocks.push(panel);
   }
 
