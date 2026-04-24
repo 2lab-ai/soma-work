@@ -33,6 +33,7 @@ import {
   buildAttachOAuthModal,
   buildCctCardBlocks,
   buildRemoveSlotModal,
+  escapeMrkdwn,
 } from './builder';
 import { CCT_ACTION_IDS, CCT_BLOCK_IDS, CCT_VIEW_IDS } from './views';
 
@@ -79,9 +80,13 @@ export interface RefreshFailureSummary {
  */
 export function buildPartialFailureBanner(failures: RefreshFailureSummary[], total: number): string {
   if (failures.length === 0) return '';
+  // Slot names are operator-controlled strings; they pass addSlot's
+  // length/uniqueness validation but NOT mrkdwn-safety. Escape `*`/`_`/`\``
+  // before composing so a slot named e.g. `ops*` doesn't collapse the
+  // banner's bold-header wrapper or stray into a mention-like token.
   const labelFor = (f: RefreshFailureSummary): string => {
     const detail = f.status !== undefined ? `${f.status}` : f.kind;
-    return `${f.name} (${detail})`;
+    return `${escapeMrkdwn(f.name)} (${detail})`;
   };
   const shown = failures.slice(0, 5).map(labelFor).join(', ');
   const overflow = failures.length > 5 ? ` … (+${failures.length - 5} more)` : '';
@@ -321,28 +326,25 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
       const startingByKeyId = new Map(startingAttached.map((s) => [s.keyId, s]));
 
       const results = await tokenManager.refreshAllAttachedOAuthTokens({ awaitProfile: true });
-      const outcomes = Object.values(results);
-      const allFailed = outcomes.length > 0 && outcomes.every((o) => o === 'error');
-      if (allFailed) {
-        await postEphemeralFailure(client, body, REFRESH_BANNERS.allNull);
-        return;
-      }
 
-      // #701 — classify starting keyIds against `results` AND the reloaded
-      // snapshot so the mixed-failure banner is accurate:
-      //   - 'ok' → success.
-      //   - 'error' → failure; reason from snap2's persisted lastRefreshError.
-      //   - missing from results + still attached in snap2 → timeout.
-      //   - missing from results + slot gone/detached in snap2 → omit (a
-      //     concurrent teardown is not a user-facing failure).
+      // #701 — classify EVERY starting keyId first (before deciding
+      // all-failed vs. mixed), then derive the totals from that
+      // classification. Deciding off raw `results` has two spec gaps the
+      // second reviewer flagged: (1) when every slot hits the shared
+      // deadline `results` is empty and the naive check misses all-failed,
+      // (2) concurrently torn-down slots inflate the banner denominator.
       const snap2 = await tokenManager.getSnapshot();
       const stillAttached = new Set(
         snap2.registry.slots.filter((s) => s.kind === 'cct' && s.oauthAttachment !== undefined).map((s) => s.keyId),
       );
+      let okCount = 0;
       const failures: RefreshFailureSummary[] = [];
       for (const keyId of startingKeyIds) {
         const outcome = results[keyId];
-        if (outcome === 'ok') continue;
+        if (outcome === 'ok') {
+          okCount += 1;
+          continue;
+        }
         if (outcome === 'error') {
           const errInfo = snap2.state[keyId]?.lastRefreshError;
           failures.push({
@@ -353,10 +355,20 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
           continue;
         }
         // Missing from results. Differentiate timeout vs. concurrent teardown.
+        // Teardown cases are omitted from accounting entirely (spec).
         if (stillAttached.has(keyId)) {
           failures.push({ name: startingByKeyId.get(keyId)?.name ?? keyId, kind: 'timeout' });
         }
-        // else: slot removed or detached concurrently → omit from failures.
+      }
+
+      const effectiveTotal = okCount + failures.length;
+
+      // All-failed path — no successes, at least one failure. Covers the
+      // "every slot timed out" case (empty `results`) that the naive
+      // check would have sent into the mixed path with no successes.
+      if (failures.length > 0 && okCount === 0 && effectiveTotal > 0) {
+        await postEphemeralFailure(client, body, REFRESH_BANNERS.allNull);
+        return;
       }
 
       if (failures.length === 0) {
@@ -367,8 +379,10 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
 
       // Mixed outcomes → single ephemeral surface: banner block + card
       // blocks in one `chat.postEphemeral` call. Prevents the ordering
-      // race that two separate ephemeral posts would introduce.
-      const banner = buildPartialFailureBanner(failures, startingKeyIds.length);
+      // race that two separate ephemeral posts would introduce. Denominator
+      // is `effectiveTotal` (ok + failed) — concurrent teardown is OMITTED,
+      // matching the spec's accounting rules.
+      const banner = buildPartialFailureBanner(failures, effectiveTotal);
       await postEphemeralCardWithBanner(tokenManager, client, body, banner);
     } catch (err) {
       logger.error('cct_refresh_usage_all failed', err);

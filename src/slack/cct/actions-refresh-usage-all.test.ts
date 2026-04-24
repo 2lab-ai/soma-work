@@ -137,6 +137,14 @@ describe('#701: buildPartialFailureBanner', () => {
     expect(out).not.toContain('sk-ant-');
     expect(out).not.toContain('invalid_grant');
   });
+
+  it('escapes mrkdwn-active chars in slot names (second-reviewer P2)', () => {
+    // Slot names pass length/uniqueness validation but not mrkdwn safety.
+    // A name like `ops*` would otherwise collapse the banner's bold wrapper.
+    const out = buildPartialFailureBanner([{ name: 'ops*dev_1`raw', kind: 'timeout' }], 1);
+    expect(out).toContain('ops\\*dev\\_1\\`raw');
+    expect(out).not.toContain('ops*dev_1`raw (timeout)');
+  });
 });
 
 describe('#701: refresh_usage_all mixed-failure surface', () => {
@@ -228,6 +236,81 @@ describe('#701: refresh_usage_all mixed-failure surface', () => {
     const bannerText = (payload.blocks as Array<{ text?: { text?: string } }>)[0]?.text?.text ?? '';
     expect(bannerText).toContain('1 of 2 failed');
     expect(bannerText).toContain('bB (timeout)');
+  });
+
+  it('all-timeout (empty results, all still attached) → allNull banner, not mixed surface', async () => {
+    // Second-reviewer spec gap: the pre-fix code decided `allFailed` from
+    // the raw `results` map. An empty map (every slot hit the fan-out
+    // deadline) would slip into the mixed path with a confusing banner.
+    // After the fix, timeouts count as failures and an all-failed outcome
+    // correctly routes to `allNull`.
+    const keys = [
+      { keyId: 'a', name: 'aA' },
+      { keyId: 'b', name: 'bB' },
+    ];
+    const snap = snapshotWith(keys);
+    const tm = {
+      refreshAllAttachedOAuthTokens: vi.fn(async () => ({})), // all timed out
+      getSnapshot: vi.fn(async () => snap),
+    } as any;
+    const { postEphemeral } = await runHandler(tm);
+    expect(postEphemeral).toHaveBeenCalledTimes(1);
+    const payload = firstPayload(postEphemeral);
+    expect(payload.text).toContain('nothing refreshed');
+  });
+
+  it('mixed + concurrent detach → denominator EXCLUDES torn-down slot', async () => {
+    // Second-reviewer P1: naive denominator was `startingKeyIds.length`,
+    // which inflated the "N of M failed" banner when a slot was concurrently
+    // detached/removed mid-flight. After the fix, denominator is
+    // `ok + failed`, omitting teardown cases entirely.
+    const starting = [
+      { keyId: 'a', name: 'aA' }, // ok
+      { keyId: 'b', name: 'bB' }, // torn down
+      { keyId: 'c', name: 'cC' }, // error
+    ];
+    // snap2: `b` no longer attached.
+    const snap1 = snapshotWith(starting, {
+      c: {
+        lastRefreshError: {
+          kind: 'server',
+          status: 500,
+          message: 'Refresh server error (500)',
+          at: Date.now() - 60_000,
+        },
+      },
+    });
+    const snap2 = snapshotWith(
+      [
+        { keyId: 'a', name: 'aA' },
+        { keyId: 'c', name: 'cC' },
+      ],
+      {
+        c: {
+          lastRefreshError: {
+            kind: 'server',
+            status: 500,
+            message: 'Refresh server error (500)',
+            at: Date.now() - 60_000,
+          },
+        },
+      },
+    );
+    let call = 0;
+    const tm = {
+      refreshAllAttachedOAuthTokens: vi.fn(async () => ({ a: 'ok', c: 'error' })), // `b` missing
+      getSnapshot: vi.fn(async () => {
+        call += 1;
+        return call === 1 ? snap1 : snap2;
+      }),
+    } as any;
+    const { postEphemeral } = await runHandler(tm);
+    const payload = firstPayload(postEphemeral);
+    const bannerText = (payload.blocks as Array<{ text?: { text?: string } }>)[0]?.text?.text ?? '';
+    // effectiveTotal = ok(1) + failed(1) = 2, NOT 3 (starting count).
+    expect(bannerText).toContain('1 of 2 failed');
+    expect(bannerText).toContain('cC (500)');
+    expect(bannerText).not.toContain('bB'); // torn-down slot omitted entirely
   });
 
   it('missing-from-results + slot gone in snap2 → OMITTED from failure accounting', async () => {
