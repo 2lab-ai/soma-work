@@ -15,6 +15,54 @@ import { ToolFormatter, type ToolResult } from './tool-formatter';
 import type { ToolTracker } from './tool-tracker';
 
 /**
+ * Issue #688 — entry stored in BackgroundBashRegistry per live
+ * `Bash({run_in_background:true})` invocation. The registry is keyed by
+ * `(sessionKey, toolUseId)` so that:
+ *  - `handleToolResult` can remove the exact entry by `toolUseId` on the
+ *    stream's own tool_result (normal completion).
+ *  - `cleanup()` (turn end) can `drain(sessionKey)` to sweep any bg bash
+ *    that never produced a tool_result.
+ * Both paths call `unregister()` to decrement the AssistantStatusManager
+ * bg-bash counter so the native spinner text resolves correctly.
+ */
+interface BgBashEntry {
+  callId: string;
+  toolUseId: string;
+  unregister: () => void;
+}
+
+class BackgroundBashRegistry {
+  private map = new Map<string /*sessionKey*/, Map<string /*toolUseId*/, BgBashEntry>>();
+
+  add(sessionKey: string, toolUseId: string, entry: BgBashEntry): void {
+    let bucket = this.map.get(sessionKey);
+    if (!bucket) {
+      bucket = new Map();
+      this.map.set(sessionKey, bucket);
+    }
+    bucket.set(toolUseId, entry);
+  }
+
+  remove(sessionKey: string, toolUseId: string): BgBashEntry | undefined {
+    const bucket = this.map.get(sessionKey);
+    if (!bucket) return undefined;
+    const entry = bucket.get(toolUseId);
+    if (!entry) return undefined;
+    bucket.delete(toolUseId);
+    if (bucket.size === 0) this.map.delete(sessionKey);
+    return entry;
+  }
+
+  drain(sessionKey: string): BgBashEntry[] {
+    const bucket = this.map.get(sessionKey);
+    if (!bucket) return [];
+    const entries = Array.from(bucket.values());
+    this.map.delete(sessionKey);
+    return entries;
+  }
+}
+
+/**
  * Context for tool event processing
  */
 export interface ToolEventContext {
@@ -86,6 +134,12 @@ export class ToolEventProcessor {
   private assistantStatusManager: AssistantStatusManager | null;
   private mcpHealthMonitor: McpHealthMonitor | null = null;
   private subagentCallIds: Set<string> = new Set();
+  /**
+   * Issue #688 — registry of live `Bash({run_in_background:true})` calls.
+   * Populated by `startBackgroundBashTracking`, drained by
+   * `handleToolResult` (normal completion) or `cleanup()` (turn end).
+   */
+  private backgroundBashRegistry = new BackgroundBashRegistry();
   /** Callback for updating compact tool call messages with duration */
   private onCompactDurationUpdate?: (toolUseId: string, duration: number | null, channel: string) => Promise<void>;
   /**
@@ -157,6 +211,14 @@ export class ToolEventProcessor {
       if (toolUse.name === 'Task') {
         await this.startSubagentTracking(toolUse, context);
       }
+
+      // Issue #688 — Bash with run_in_background=true gets its own
+      // progress track via the shared MCP pipeline (virtual `_bash_bg`
+      // server), plus a bg-counter increment on AssistantStatusManager so
+      // the native spinner flips to "waiting on background shell…".
+      if (toolUse.name === 'Bash' && ToolFormatter.isBackgroundBash(toolUse.input)) {
+        await this.startBackgroundBashTracking(toolUse, context);
+      }
     }
   }
 
@@ -222,6 +284,44 @@ export class ToolEventProcessor {
   }
 
   /**
+   * Issue #688 — start progress tracking for a background Bash. Mirrors
+   * `startSubagentTracking` so the `_bash_bg` virtual server rides the
+   * same McpStatusDisplay / McpCallTracker pipeline. The
+   * AssistantStatusManager bg-counter increment returns an idempotent
+   * unregister function, which is stored on the registry entry and
+   * invoked either by `handleToolResult` (normal close) or by
+   * `cleanup()` (turn-end sweep for calls that never produced a result).
+   */
+  private async startBackgroundBashTracking(toolUse: ToolUseEvent, context: ToolEventContext): Promise<void> {
+    const rawCommand = String((toolUse.input as { command?: unknown } | null | undefined)?.command ?? '');
+    const cmdPrefix = ToolFormatter.truncateString(rawCommand, 80);
+
+    const callId = this.mcpCallTracker.startCall('_bash_bg', 'bash');
+    this.toolTracker.trackMcpCall(toolUse.id, callId);
+
+    const unregister =
+      this.assistantStatusManager?.registerBackgroundBashActive(context.channel, context.threadTs) ?? (() => {});
+
+    this.backgroundBashRegistry.add(context.sessionKey, toolUse.id, {
+      callId,
+      toolUseId: toolUse.id,
+      unregister,
+    });
+
+    const config = {
+      displayType: 'BashBG',
+      displayLabel: `\`${cmdPrefix}\``,
+      initialDelay: 0,
+      predictKey: { serverName: '_bash_bg', toolName: 'bash' },
+      paramsSummary: '',
+    };
+
+    if (shouldOutput(OutputFlag.MCP_PROGRESS, context.logVerbosity ?? LOG_DETAIL)) {
+      this.mcpStatusDisplay.registerCall(context.sessionKey, callId, config, context.channel, context.threadTs);
+    }
+  }
+
+  /**
    * Handle tool result events from user message
    * - End MCP call tracking
    * - Format and send results
@@ -231,6 +331,22 @@ export class ToolEventProcessor {
       // Lookup tool name from tracking if not set
       if (!toolResult.toolName && toolResult.toolUseId) {
         toolResult.toolName = this.toolTracker.getToolName(toolResult.toolUseId);
+      }
+
+      // Issue #688 — background Bash registry: drop the entry and
+      // decrement the bg-bash counter. endMcpTracking still owns the
+      // McpCallTracker/McpStatusDisplay closure (callId-based), so we
+      // must NOT call completeCall from here to avoid double-closing.
+      const bgEntry = this.backgroundBashRegistry.remove(context.sessionKey, toolResult.toolUseId);
+      if (bgEntry) {
+        try {
+          bgEntry.unregister();
+        } catch (err) {
+          this.logger.debug('bg bash unregister threw', {
+            toolUseId: toolResult.toolUseId,
+            error: (err as Error)?.message ?? String(err),
+          });
+        }
       }
 
       // End MCP call tracking and get duration
@@ -344,6 +460,28 @@ export class ToolEventProcessor {
    * Completes any active MCP calls and cleans up the session tick.
    */
   cleanup(sessionKey?: string): void {
+    // Issue #688 — sweep any background bashes that never produced a
+    // tool_result. Decrement their bg-bash counters BEFORE the general
+    // activeMcpCallIds sweep below — otherwise the native spinner text
+    // could continue to resolve to "waiting on background shell" after
+    // the turn is gone. `endMcpTracking` also runs below for the same
+    // callId via activeMcpCallIds, so we only touch the counter here and
+    // let the existing `completeCall(callId, null)` close the display.
+    if (sessionKey) {
+      const bgEntries = this.backgroundBashRegistry.drain(sessionKey);
+      for (const entry of bgEntries) {
+        try {
+          entry.unregister();
+        } catch (err) {
+          this.logger.debug('bg bash unregister threw during sweep', {
+            sessionKey,
+            toolUseId: entry.toolUseId,
+            error: (err as Error)?.message ?? String(err),
+          });
+        }
+      }
+    }
+
     // Complete any outstanding MCP calls
     const activeMcpCallIds = this.toolTracker.getActiveMcpCallIds();
     for (const callId of activeMcpCallIds) {

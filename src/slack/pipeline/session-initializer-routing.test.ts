@@ -59,6 +59,7 @@ vi.mock('../../dispatch-service', () => ({
 }));
 
 import * as channelRegistry from '../../channel-registry';
+import { getDispatchService } from '../../dispatch-service';
 import { SessionInitializer } from './session-initializer';
 
 describe('SessionInitializer - channel routing advisory', () => {
@@ -160,6 +161,11 @@ describe('SessionInitializer - channel routing advisory', () => {
     mockAssistantStatusManager = {
       setStatus: vi.fn().mockResolvedValue(undefined),
       setTitle: vi.fn().mockResolvedValue(undefined),
+      clearStatus: vi.fn().mockResolvedValue(undefined),
+      bumpEpoch: vi.fn().mockReturnValue(1),
+      getToolStatusText: vi.fn().mockReturnValue('running...'),
+      buildBashStatus: vi.fn().mockReturnValue('is running commands...'),
+      registerBackgroundBashActive: vi.fn().mockReturnValue(() => {}),
     };
 
     sessionInitializer = new SessionInitializer({
@@ -418,5 +424,86 @@ describe('SessionInitializer - channel routing advisory', () => {
       return;
     }
     process.env.DEFAULT_UPDATE_CHANNEL = originalDefaultUpdateChannel;
+  });
+
+  // -----------------------------------------------------------------
+  // Issue #688 — A-3 epoch guard wiring tests
+  // -----------------------------------------------------------------
+
+  // S6: handleConcurrency abort branch → bumpEpoch called so a stale
+  // clearStatus from the aborted turn cannot kill the newer spinner.
+  it('handleConcurrency bumps status epoch when aborting an active request (S6)', () => {
+    mockRequestCoordinator.isRequestActive.mockReturnValue(true);
+    mockClaudeHandler.canInterrupt.mockReturnValue(true);
+
+    const session = { ownerId: 'U123', ownerName: 'Owner', currentInitiatorName: 'Owner' };
+    const ctl = (sessionInitializer as any).handleConcurrency(
+      'C123:thread123',
+      'C123',
+      'thread123',
+      'U123',
+      'Test User',
+      session,
+    );
+
+    // Aborted, then epoch bumped, and concurrency returns a fresh AbortController.
+    expect(mockRequestCoordinator.abortSession).toHaveBeenCalledWith('C123:thread123');
+    expect(mockAssistantStatusManager.bumpEpoch).toHaveBeenCalledWith('C123', 'thread123');
+    expect(ctl).toBeInstanceOf(AbortController);
+  });
+
+  it('handleConcurrency does NOT bump epoch when no active request (S6 negative)', () => {
+    mockRequestCoordinator.isRequestActive.mockReturnValue(false);
+    mockClaudeHandler.canInterrupt.mockReturnValue(true);
+
+    const session = { ownerId: 'U123', ownerName: 'Owner', currentInitiatorName: 'Owner' };
+    (sessionInitializer as any).handleConcurrency('C123:thread123', 'C123', 'thread123', 'U123', 'Test User', session);
+
+    expect(mockRequestCoordinator.abortSession).not.toHaveBeenCalled();
+    expect(mockAssistantStatusManager.bumpEpoch).not.toHaveBeenCalled();
+  });
+
+  it('handleConcurrency does NOT bump epoch when user cannot interrupt (S6 negative)', () => {
+    mockRequestCoordinator.isRequestActive.mockReturnValue(true);
+    mockClaudeHandler.canInterrupt.mockReturnValue(false);
+
+    const session = { ownerId: 'U999', ownerName: 'OtherOwner', currentInitiatorName: 'OtherOwner' };
+    (sessionInitializer as any).handleConcurrency('C123:thread123', 'C123', 'thread123', 'U123', 'Test User', session);
+
+    expect(mockRequestCoordinator.abortSession).not.toHaveBeenCalled();
+    expect(mockAssistantStatusManager.bumpEpoch).not.toHaveBeenCalled();
+  });
+
+  // S3: dispatchWorkflow failure path → guarded clearStatus with
+  // dispatch-captured expectedEpoch. The dispatch service mock rejects
+  // so the catch branch runs.
+  it('dispatchWorkflow failure triggers guarded clearStatus with expectedEpoch (S3)', async () => {
+    // Make dispatch service reject so the catch branch runs.
+    const dispatchSvc = (getDispatchService as any)();
+    dispatchSvc.dispatch.mockRejectedValueOnce(new Error('boom'));
+
+    // bumpEpoch returns 7 so we can assert expectedEpoch propagation.
+    mockAssistantStatusManager.bumpEpoch.mockReturnValueOnce(7);
+
+    await (sessionInitializer as any).dispatchWorkflow('C123', 'thread123', 'some text', 'C123:thread123');
+
+    // Entry epoch bump happened once for this dispatch.
+    expect(mockAssistantStatusManager.bumpEpoch).toHaveBeenCalledWith('C123', 'thread123');
+
+    // catch branch's guarded clearStatus carried the captured epoch.
+    expect(mockAssistantStatusManager.clearStatus).toHaveBeenCalledWith('C123', 'thread123', {
+      expectedEpoch: 7,
+    });
+  });
+
+  it('dispatchWorkflow bumps epoch on entry even on success path', async () => {
+    // Success path: dispatch mock resolves (default). We still expect bumpEpoch
+    // to be called at entry so concurrent/stale clears from prior turns are
+    // isolated from this dispatch.
+    mockAssistantStatusManager.bumpEpoch.mockReturnValueOnce(3);
+
+    await (sessionInitializer as any).dispatchWorkflow('C123', 'thread123', 'some text', 'C123:thread123');
+
+    expect(mockAssistantStatusManager.bumpEpoch).toHaveBeenCalledWith('C123', 'thread123');
   });
 });

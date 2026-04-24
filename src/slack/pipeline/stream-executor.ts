@@ -298,6 +298,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       say,
     } = params;
 
+    // Issue #688 — capture per-turn status epoch. Every clearStatus call
+    // emitted by this execute() carries `expectedEpoch: epoch` so that a
+    // stale clear from a previous (aborted) turn cannot kill a newer
+    // spinner set by a subsequent turn on the same (channel, threadTs).
+    // Must be function-scope (not a class field) so concurrent executions
+    // on different threads don't clobber each other.
+    const epoch = this.deps.assistantStatusManager.bumpEpoch(channel, threadTs);
+
     // Cancel summary timer on new user input
     // Trace: docs/turn-summary-lifecycle/trace.md, S2
     if (this.deps.summaryTimer) {
@@ -642,8 +650,20 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           if (isOutputEnabled(OutputFlag.STATUS_SPINNER)) {
             const toolName = toolUses[0]?.name;
             if (toolName) {
-              const statusText = this.deps.assistantStatusManager.getToolStatusText(toolName);
-              await this.deps.assistantStatusManager.setStatus(channel, threadTs, statusText);
+              // Issue #688 — Bash uses a thunk descriptor so the heartbeat
+              // tick can recompute the text from the live background-bash
+              // counter (e.g. switch to "waiting on background shell..."
+              // when a run_in_background call is in-flight). Non-Bash
+              // tools keep the simple static path.
+              if (toolName === 'Bash') {
+                const statusManager = this.deps.assistantStatusManager;
+                await statusManager.setStatus(channel, threadTs, () =>
+                  statusManager.buildBashStatus(channel, threadTs),
+                );
+              } else {
+                const statusText = this.deps.assistantStatusManager.getToolStatusText(toolName);
+                await this.deps.assistantStatusManager.setStatus(channel, threadTs, statusText);
+              }
             }
           }
           const toolName = toolUses[0]?.name;
@@ -976,7 +996,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
               );
             }
             if (isOutputEnabled(OutputFlag.STATUS_SPINNER)) {
-              await this.deps.assistantStatusManager.setStatus(channel, threadTs, '');
+              // Issue #688 — empty-string setStatus previously triggered the
+              // heartbeat to re-send `''` every 20s (ghost spinner). The
+              // manager now reroutes setStatus('') to clearStatus, but
+              // calling clearStatus explicitly here makes intent clear and
+              // carries the epoch guard so a stale call doesn't race.
+              await this.deps.assistantStatusManager.clearStatus(channel, threadTs, {
+                expectedEpoch: epoch,
+              });
             }
           }
         },
@@ -1053,7 +1080,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       }
       // Always clear status regardless of verbosity — heartbeat timer must be stopped
       // to prevent leaked intervals when verbosity changes mid-stream.
-      await this.deps.assistantStatusManager.clearStatus(channel, threadTs);
+      // Issue #688 — guarded by this turn's epoch so a stale call from a
+      // previous aborted turn cannot nuke a newer spinner.
+      await this.deps.assistantStatusManager.clearStatus(channel, threadTs, {
+        expectedEpoch: epoch,
+      });
 
       // Transition activity state
       // Issue #391: Skip idle transition when continuation exists — next turn starts immediately,
@@ -1273,9 +1304,26 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         say,
         requestAborted,
         activeSlotSnapshot,
+        epoch,
       );
       return { success: false, messageCount: 0, retryAfterMs };
     } finally {
+      // Issue #688 — defense-in-depth status clear on every exit path.
+      // The success and error branches above already clear with the
+      // same epoch guard; the manager is idempotent, and the guard
+      // means this call is a no-op if a newer turn has already bumped
+      // past `epoch`. Covers early-return paths that might skip the
+      // normal success/error clears.
+      try {
+        await this.deps.assistantStatusManager.clearStatus(channel, threadTs, {
+          expectedEpoch: epoch,
+        });
+      } catch (err) {
+        this.logger.debug('stream-executor: finally clearStatus failed', {
+          turnId,
+          error: (err as Error)?.message ?? String(err),
+        });
+      }
       // Idempotent: if end/fail already ran (catch or early-return path
       // inside try), TurnSurface state is cleared and this is a no-op.
       // Covers success-path exits via return from the try block.
@@ -1351,9 +1399,16 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     say: SayFn,
     requestAborted: boolean = false,
     activeSlotAtQueryStart: ActiveTokenInfo | null = null,
+    expectedEpoch?: number,
   ): Promise<number | undefined> {
-    // Clear native spinner on any error and reset activity state
-    await this.deps.assistantStatusManager.clearStatus(channel, threadTs);
+    // Clear native spinner on any error and reset activity state.
+    // Issue #688 — guard with the caller's captured epoch so a stale
+    // error-path clear from a previous turn cannot kill a newer spinner.
+    await this.deps.assistantStatusManager.clearStatus(
+      channel,
+      threadTs,
+      expectedEpoch !== undefined ? { expectedEpoch } : undefined,
+    );
     this.deps.claudeHandler.setActivityState(channel, threadTs, 'idle');
 
     // Check for context overflow error

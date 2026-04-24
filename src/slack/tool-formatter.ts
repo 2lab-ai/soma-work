@@ -112,9 +112,27 @@ export class ToolFormatter {
   }
 
   /**
+   * Issue #688 — detect Bash tool with run_in_background=true. Shared
+   * across detail/compact/verbose render paths so bg labels stay
+   * consistent. `shell_id` (when present on input) is rendered as
+   * supporting metadata; at the time of writing the harness only emits
+   * `command`/`run_in_background`, so this is a no-op there.
+   */
+  static isBackgroundBash(input: unknown): boolean {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) return false;
+    const obj = input as { run_in_background?: unknown; command?: unknown };
+    return obj.run_in_background === true && typeof obj.command === 'string';
+  }
+
+  /**
    * Format Bash tool usage
    */
   static formatBashTool(input: any): string {
+    if (ToolFormatter.isBackgroundBash(input)) {
+      const shellId =
+        typeof input?.shell_id === 'string' && input.shell_id ? `\n_shell_id: \`${input.shell_id}\`_` : '';
+      return `🖥️ *Running in background:*\n\`\`\`bash\n${input.command}\n\`\`\`${shellId}`;
+    }
     return `🖥️ *Running command:*\n\`\`\`bash\n${input.command}\n\`\`\``;
   }
 
@@ -389,8 +407,13 @@ export class ToolFormatter {
         return `${emoji} Write \`${ToolFormatter.compactPath(input.file_path)}\``;
       case 'Read':
         return `${emoji} Read \`${ToolFormatter.compactPath(input.file_path)}\``;
-      case 'Bash':
-        return `${emoji} Bash \`${ToolFormatter.truncateString(String(input.command || ''), 40)}\``;
+      case 'Bash': {
+        const cmd = ToolFormatter.truncateString(String(input?.command || ''), 40);
+        if (ToolFormatter.isBackgroundBash(input)) {
+          return `${emoji} Running in background: \`${cmd}\``;
+        }
+        return `${emoji} Bash \`${cmd}\``;
+      }
       case 'Glob':
         return `${emoji} Glob \`${ToolFormatter.truncateString(String(input.pattern || ''), 30)}\``;
       case 'Grep':
@@ -551,11 +574,17 @@ export class ToolFormatter {
               `📄 *Creating \`${input.file_path}\`*\n\`\`\`\n${ToolFormatter.truncateString(input.content, ToolFormatter.VERBOSE_TEXT_LIMIT)}\n\`\`\``,
             );
             break;
-          case 'Bash':
-            parts.push(
-              `🖥️ *Running command:*\n\`\`\`bash\n${ToolFormatter.truncateString(input.command, ToolFormatter.VERBOSE_TEXT_LIMIT)}\n\`\`\``,
-            );
+          case 'Bash': {
+            const body = ToolFormatter.truncateString(input.command, ToolFormatter.VERBOSE_TEXT_LIMIT);
+            if (ToolFormatter.isBackgroundBash(input)) {
+              const shellId =
+                typeof input?.shell_id === 'string' && input.shell_id ? `\n_shell_id: \`${input.shell_id}\`_` : '';
+              parts.push(`🖥️ *Running in background:* _run_in_background: true_\n\`\`\`bash\n${body}\n\`\`\`${shellId}`);
+            } else {
+              parts.push(`🖥️ *Running command:*\n\`\`\`bash\n${body}\n\`\`\``);
+            }
             break;
+          }
           default:
             if (name.startsWith('mcp__')) {
               parts.push(ToolFormatter.formatMcpTool(name, input));
