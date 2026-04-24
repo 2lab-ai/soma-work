@@ -184,6 +184,17 @@ export class CommandParser {
   }
 
   /**
+   * Check if text is the `dashboard` Slack command (issue #704).
+   *
+   * Accepts bare `dashboard` / `/dashboard`. Sub-commands are intentionally
+   * NOT supported — the command's sole job is to mint and reply with a
+   * one-click SSO URL for the requesting user.
+   */
+  static isDashboardCommand(text: string): boolean {
+    return /^\/?dashboard$/i.test(text.trim());
+  }
+
+  /**
    * Check if text is a bypass command
    */
   // --- Notify command ---
@@ -895,6 +906,8 @@ export class CommandParser {
     'cwd',
     // MCP
     'mcp',
+    // Dashboard (Slack SSO link — #704)
+    'dashboard',
     // Permissions
     'bypass',
     // Sandbox
