@@ -409,4 +409,49 @@ describe('ConversationWebServer Authentication', () => {
       expect(response.headers.location).toBe('/login?error=sso_missing');
     });
   });
+
+  describe('getViewerBaseUrl hostname fallback', () => {
+    it('prefers config.viewerUrl when set', async () => {
+      mockConfig.conversation.viewerUrl = 'http://my-reverse-proxy:8080';
+      const { getViewerBaseUrl } = await import('./web-server');
+      expect(getViewerBaseUrl()).toBe('http://my-reverse-proxy:8080');
+      mockConfig.conversation.viewerUrl = '';
+    });
+
+    it('falls back to viewerHost when it is a real hostname, not a bind token', async () => {
+      mockConfig.conversation.viewerUrl = '';
+      mockConfig.conversation.viewerPort = 33000;
+      mockConfig.conversation.viewerHost = 'oudwood-512';
+      const { getViewerBaseUrl } = await import('./web-server');
+      expect(getViewerBaseUrl()).toBe('http://oudwood-512:33000');
+      mockConfig.conversation.viewerHost = '127.0.0.1';
+      mockConfig.conversation.viewerPort = 0;
+    });
+
+    it('falls back to os.hostname() when viewerHost is a bind-only token', async () => {
+      mockConfig.conversation.viewerUrl = '';
+      mockConfig.conversation.viewerPort = 33000;
+      mockConfig.conversation.viewerHost = '127.0.0.1';
+      const os = await import('node:os');
+      const expected = os.hostname() && os.hostname() !== 'localhost' ? os.hostname() : 'localhost';
+      const { getViewerBaseUrl } = await import('./web-server');
+      expect(getViewerBaseUrl()).toBe(`http://${expected}:33000`);
+      mockConfig.conversation.viewerPort = 0;
+    });
+
+    it('treats 0.0.0.0 and localhost bind values the same as 127.0.0.1', async () => {
+      mockConfig.conversation.viewerUrl = '';
+      mockConfig.conversation.viewerPort = 33000;
+      for (const bind of ['0.0.0.0', 'localhost']) {
+        mockConfig.conversation.viewerHost = bind;
+        vi.resetModules();
+        const { getViewerBaseUrl } = await import('./web-server');
+        const url = getViewerBaseUrl();
+        expect(url).not.toContain('0.0.0.0');
+        expect(url).toMatch(/^http:\/\/[^:]+:33000$/);
+      }
+      mockConfig.conversation.viewerHost = '127.0.0.1';
+      mockConfig.conversation.viewerPort = 0;
+    });
+  });
 });
