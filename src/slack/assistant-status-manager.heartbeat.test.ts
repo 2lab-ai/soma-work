@@ -1,4 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// #666 P4 kill-switch: heartbeat tests assume the native spinner is enabled.
+const mockConfig = vi.hoisted(() => ({
+  ui: {
+    fiveBlockPhase: 0,
+    b4NativeStatusEnabled: true,
+  },
+}));
+vi.mock('../config', () => ({ config: mockConfig }));
+
 import { AssistantStatusManager } from './assistant-status-manager';
 import type { SlackApiHelper } from './slack-api-helper';
 

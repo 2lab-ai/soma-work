@@ -37,6 +37,7 @@ import {
   ToolEventProcessor,
   ToolTracker,
 } from './slack';
+import { createAssistantContainer } from './slack/assistant-container';
 import { CompletionMessageTracker } from './slack/completion-message-tracker';
 import { createForkExecutor } from './slack/create-fork-executor';
 import { buildCompactHooks } from './slack/hooks/compact-hooks';
@@ -301,6 +302,20 @@ export class SlackHandler {
         threadTs,
         slackApi: this.slackApi,
         eventRouter: this.eventRouter,
+      }),
+    );
+
+    // #666 P4 Part 1/2 — Register the Bolt Assistant container. Enables the
+    // Slack Assistant sidebar + 4 suggested prompts; routes
+    // `assistant_thread_started` / `assistant_thread_context_changed` and
+    // assistant-thread `message.im` events through this middleware. The
+    // `userMessage` handler delegates to `handleMessage` so assistant threads
+    // behave identically to a regular DM. Native spinner activation is gated
+    // by `SOMA_UI_B4_NATIVE_STATUS` (default off) — Part 2 will flip it.
+    app.assistant(
+      createAssistantContainer({
+        logger: this.logger,
+        handleMessage: this.handleMessage.bind(this),
       }),
     );
   }
