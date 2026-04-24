@@ -26,7 +26,7 @@ import type { RequestCoordinator } from '../request-coordinator';
 import type { SlackApiHelper } from '../slack-api-helper';
 import { ThreadHeaderBuilder } from '../thread-header-builder';
 import type { ThreadPanel } from '../thread-panel';
-import { getEffectiveFiveBlockPhase } from './effective-phase';
+import { shouldRunLegacyB4Path } from './effective-phase';
 import type { MessageEvent, SayFn, SessionInitResult } from './types';
 
 // Timeout for dispatch API call (30 seconds - Agent SDK needs time to start)
@@ -697,12 +697,14 @@ export class SessionInitializer {
       const dispatchService = getDispatchService();
       const model = dispatchService.getModel();
 
-      // Native spinner during dispatch.
-      // #689 P4 Part 2/2 — at effective PHASE>=4, TurnSurface owns the spinner
-      // ("is thinking...") starting from begin(). Dispatch-analysis text is a
-      // legacy-only message.
-      if (this.deps.assistantStatusManager && getEffectiveFiveBlockPhase(this.deps.assistantStatusManager) < 4) {
-        await this.deps.assistantStatusManager.setStatus(channel, threadTs, 'is analyzing your request...');
+      // Native spinner during dispatch — legacy-only; TurnSurface.begin owns
+      // the "is thinking..." spinner at effective PHASE>=4 (#689 P4 Part 2).
+      if (shouldRunLegacyB4Path(this.deps.assistantStatusManager)) {
+        await this.deps.assistantStatusManager?.setStatus(
+          channel,
+          threadTs,
+          'is analyzing your request...',
+        );
       }
       await updateDispatchPanel('워크플로우 분석 중', 'working');
 
@@ -756,12 +758,11 @@ export class SessionInitializer {
         );
       }
 
-      // Set thread title in DM history.
-      // #689 P4 Part 2/2 — at effective PHASE>=4 the native Assistant UI owns
-      // thread titles; a separate TurnSurface title-write is tracked for a
-      // follow-up PR (docs/slack-ui-phase4.md Part 2 §Out of scope).
-      if (this.deps.assistantStatusManager && getEffectiveFiveBlockPhase(this.deps.assistantStatusManager) < 4) {
-        await this.deps.assistantStatusManager.setTitle(channel, threadTs, result.title);
+      // Set thread title in DM history — legacy-only; at effective PHASE>=4
+      // the native Assistant UI owns thread titles (TurnSurface title-write
+      // is tracked for a follow-up — docs/slack-ui-phase4.md §Out of scope).
+      if (shouldRunLegacyB4Path(this.deps.assistantStatusManager)) {
+        await this.deps.assistantStatusManager?.setTitle(channel, threadTs, result.title);
       }
 
       // Store extracted links on the session
@@ -806,19 +807,11 @@ export class SessionInitializer {
       this.deps.claudeHandler.transitionToMain(channel, threadTs, 'default', fallbackTitle);
       await updateDispatchPanel('기본 워크플로우로 전환', 'idle');
 
-      // Issue #688 — dispatch failed; the "is analyzing your request..."
-      // spinner set at line 624 must be torn down. Guarded by
-      // dispatchEpoch so a stale clear arriving after a newer turn has
-      // already bumped past this epoch becomes a no-op.
-      // #689 P4 Part 2/2 — also gate on PHASE<4 to mirror the setStatus /
-      // setTitle gates above (lines 634/693): at effective PHASE>=4
-      // TurnSurface is the sole native-status writer, so the dispatch
-      // path must not race a turn-owned spinner with a stale clear.
-      if (
-        this.deps.assistantStatusManager &&
-        getEffectiveFiveBlockPhase(this.deps.assistantStatusManager) < 4
-      ) {
-        await this.deps.assistantStatusManager.clearStatus(channel, threadTs, {
+      // Tear down the dispatch spinner. Epoch-guarded (#688) so a stale
+      // clear from a superseded dispatch can't kill a newer turn's spinner;
+      // PHASE-gated (#689 P4) so we don't race TurnSurface at PHASE>=4.
+      if (shouldRunLegacyB4Path(this.deps.assistantStatusManager)) {
+        await this.deps.assistantStatusManager?.clearStatus(channel, threadTs, {
           expectedEpoch: dispatchEpoch,
         });
       }

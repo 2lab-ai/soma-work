@@ -630,14 +630,9 @@ export class TurnSurface {
       }
     } finally {
       // #689 P4 Part 2/2 — B4 native spinner clear. Best-effort: exceptions
-      // are swallowed inside AssistantStatusManager.clearStatus. Runs before
-      // cleanupTurn() so we still have `state.ctx` in scope.
-      //
-      // Issue #688 — pass the per-turn `statusEpoch` (when caller threaded
-      // one through TurnContext) so a stale close from a superseded turn
-      // cannot wipe a spinner set by the newer turn on the same
-      // (channel, threadTs). Mirrors stream-executor's clearStatus guards
-      // (e.g. line 1035, 1116, 1349).
+      // are swallowed inside AssistantStatusManager.clearStatus.
+      // #688 — pass `statusEpoch` so a stale close from a superseded turn
+      // cannot wipe a spinner set by the newer turn on the same thread.
       const mgr = this.deps.assistantStatusManager;
       if (mgr && this.effectivePhase() >= 4 && state.ctx.threadTs) {
         const opts =
@@ -676,8 +671,7 @@ export class TurnSurface {
         await this.closeStream(state, 'fail', 'aborted');
       }
     } finally {
-      // #689 P4 Part 2/2 — B4 native spinner clear on defensive close.
-      // Issue #688 — same epoch guard as end(); see comment there.
+      // #689 P4 Part 2/2 + #688 — same B4 clear + epoch guard as end().
       const mgr = this.deps.assistantStatusManager;
       if (mgr && this.effectivePhase() >= 4 && state.ctx.threadTs) {
         const opts =

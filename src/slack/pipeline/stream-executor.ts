@@ -14,7 +14,7 @@ import {
 } from '../../claude-status-fetcher';
 import { config } from '../../config';
 import { createConversation, recordAssistantTurn, recordUserTurn } from '../../conversation';
-import { getEffectiveFiveBlockPhase } from './effective-phase';
+import { getEffectiveFiveBlockPhase, shouldRunLegacyB4Path } from './effective-phase';
 import type { FileHandler, ProcessedFile } from '../../file-handler';
 import { Logger, redactAnthropicSecrets } from '../../logger';
 import { isMidThreadMention } from '../../mcp-config-builder';
@@ -691,10 +691,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
               // tools keep the simple static path.
               if (toolName === 'Bash') {
                 const statusManager = this.deps.assistantStatusManager;
-                // PHASE>=4 the native spinner is the single writer; suppress
-                // the legacy thunk-based setStatus path to mirror
-                // `legacySetStatus` (line 237) and the non-Bash branch below.
-                if (getEffectiveFiveBlockPhase(statusManager) < 4) {
+                // PHASE>=4: TurnSurface is the single B4 writer — same gate
+                // as `legacySetStatus` (line 237) and the non-Bash branch.
+                if (shouldRunLegacyB4Path(statusManager)) {
                   await statusManager.setStatus(channel, threadTs, () =>
                     statusManager.buildBashStatus(channel, threadTs),
                   );

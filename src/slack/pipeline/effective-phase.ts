@@ -35,6 +35,21 @@ export function getEffectiveFiveBlockPhase(statusManager: AssistantStatusManager
   return raw;
 }
 
+/**
+ * True iff the legacy (PHASE<4) B4 path should run for this manager — i.e.
+ * the manager exists AND effective phase is below 4. At PHASE>=4 with an
+ * enabled manager TurnSurface owns the native B4 surface, so legacy
+ * setStatus/setTitle/clearStatus callsites must short-circuit.
+ *
+ * Centralizing the predicate also pulls the `mgr && ...` null-check out of
+ * every callsite — the dispatch / tool-event / per-turn paths read uniform.
+ */
+export function shouldRunLegacyB4Path(
+  statusManager: AssistantStatusManager | null | undefined,
+): boolean {
+  return !!statusManager && getEffectiveFiveBlockPhase(statusManager) < 4;
+}
+
 /** Test-only: reset the process-wide once-flag so tests do not leak state. */
 export function __resetClampEmitted(): void {
   clampEmittedOnce = false;
