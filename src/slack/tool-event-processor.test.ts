@@ -550,8 +550,13 @@ describe('ToolEventProcessor', () => {
   // legacy path must still fire (regression guard).
   describe('#689 B4 legacy suppression', () => {
     const originalPhase = config.ui.fiveBlockPhase;
-    afterEach(() => {
+    afterEach(async () => {
       config.ui.fiveBlockPhase = originalPhase;
+      // Reset the module-level clamp-once flag so the disabled-mgr clamp
+      // test doesn't leak state into subsequent tests. Mirrors the pattern
+      // in turn-surface.test.ts (commit 1c83d5e).
+      const { __resetClampEmitted } = await import('./pipeline/effective-phase');
+      __resetClampEmitted();
     });
 
     const makeMgr = (enabled: boolean) => ({

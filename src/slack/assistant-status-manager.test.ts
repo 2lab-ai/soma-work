@@ -56,6 +56,36 @@ describe('AssistantStatusManager', () => {
       expect(mockSlackApi.setAssistantStatus).not.toHaveBeenCalled();
     });
 
+    // #689 P4 Part 2 — token-lifecycle codes (token_revoked / token_expired /
+    // account_inactive) are permanent and MUST disable the manager
+    // process-wide, same as scope/auth failures.
+    it('should auto-disable on token_revoked (permanent token-lifecycle)', async () => {
+      mockSlackApi.setAssistantStatus.mockRejectedValueOnce(
+        Object.assign(new Error('token_revoked'), { data: { error: 'token_revoked' } }),
+      );
+
+      await manager.setStatus('C123', '123.456', 'is thinking...');
+      expect(manager.isEnabled()).toBe(false);
+    });
+
+    it('should auto-disable on token_expired (permanent token-lifecycle)', async () => {
+      mockSlackApi.setAssistantStatus.mockRejectedValueOnce(
+        Object.assign(new Error('token_expired'), { data: { error: 'token_expired' } }),
+      );
+
+      await manager.setStatus('C123', '123.456', 'is thinking...');
+      expect(manager.isEnabled()).toBe(false);
+    });
+
+    it('should auto-disable on account_inactive (permanent token-lifecycle)', async () => {
+      mockSlackApi.setAssistantStatus.mockRejectedValueOnce(
+        Object.assign(new Error('account_inactive'), { data: { error: 'account_inactive' } }),
+      );
+
+      await manager.setStatus('C123', '123.456', 'is thinking...');
+      expect(manager.isEnabled()).toBe(false);
+    });
+
     // #689 P4 Part 2 — per-thread `not_allowed` MUST NOT disable.
     it('should NOT disable on per-thread not_allowed (mixed-traffic protection)', async () => {
       mockSlackApi.setAssistantStatus.mockRejectedValueOnce(

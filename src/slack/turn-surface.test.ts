@@ -924,7 +924,53 @@ describe('TurnSurface', () => {
       await surface.begin({ channelId: 'C', threadTs: 'thr', sessionKey: 'C:thr', turnId: 't-b4-e' });
       await surface.end('t-b4-e', 'completed');
       expect(mgr.clearStatus).toHaveBeenCalledTimes(1);
-      expect(mgr.clearStatus).toHaveBeenCalledWith('C', 'thr');
+      // Issue #688 — third arg is the optional expectedEpoch options bag.
+      // When TurnContext omits `statusEpoch` (this test does) end()/fail()
+      // pass `undefined`, which `clearStatus` treats as "no epoch guard".
+      expect(mgr.clearStatus).toHaveBeenCalledWith('C', 'thr', undefined);
+    });
+
+    // Issue #688 — when TurnContext threads a `statusEpoch`, end()/fail()
+    // forward it as `expectedEpoch` so a stale close from a superseded
+    // turn cannot wipe a spinner set by the newer turn.
+    it('PHASE=4 + enabled + statusEpoch: end forwards expectedEpoch to clearStatus', async () => {
+      config.ui.fiveBlockPhase = 4;
+      const client = makeClient();
+      const mgr = makeMgr(true);
+      const surface = new TurnSurface({
+        slackApi: makeSlackApi(client),
+        assistantStatusManager: mgr as any,
+      });
+      await surface.begin({
+        channelId: 'C',
+        threadTs: 'thr',
+        sessionKey: 'C:thr',
+        turnId: 't-b4-epoch',
+        statusEpoch: 7,
+      });
+      await surface.end('t-b4-epoch', 'completed');
+      expect(mgr.clearStatus).toHaveBeenCalledTimes(1);
+      expect(mgr.clearStatus).toHaveBeenCalledWith('C', 'thr', { expectedEpoch: 7 });
+    });
+
+    it('PHASE=4 + enabled + statusEpoch: fail forwards expectedEpoch to clearStatus', async () => {
+      config.ui.fiveBlockPhase = 4;
+      const client = makeClient();
+      const mgr = makeMgr(true);
+      const surface = new TurnSurface({
+        slackApi: makeSlackApi(client),
+        assistantStatusManager: mgr as any,
+      });
+      await surface.begin({
+        channelId: 'C',
+        threadTs: 'thr',
+        sessionKey: 'C:thr',
+        turnId: 't-b4-epoch-f',
+        statusEpoch: 11,
+      });
+      await surface.fail('t-b4-epoch-f', new Error('boom'));
+      expect(mgr.clearStatus).toHaveBeenCalledTimes(1);
+      expect(mgr.clearStatus).toHaveBeenCalledWith('C', 'thr', { expectedEpoch: 11 });
     });
 
     it('PHASE=4 + enabled: fail calls clearStatus (idempotent — fail twice → 1 call total)', async () => {

@@ -19,6 +19,30 @@ const TOOL_STATUS_MAP: Record<string, string> = {
 const BG_BASH_STATUS_TEXT = 'is waiting on background shell...';
 
 /**
+ * Slack error codes that indicate the manager should disable itself
+ * process-wide. All of these mean future writes will keep failing the
+ * same way for every thread — so re-trying just burns work on dead
+ * requests and pollutes logs.
+ *
+ * Scope/auth (3): missing_scope, not_allowed_token_type, invalid_auth.
+ * Token lifecycle (3): token_revoked, token_expired, account_inactive
+ * — Slack returns these when the install was uninstalled, the OAuth
+ * token rotated, or the workspace owner deactivated the account.
+ *
+ * Transient codes (ratelimited, internal_error, network) and the
+ * per-thread `not_allowed` are intentionally NOT here — they may
+ * succeed on retry or for a different thread.
+ */
+const PERMANENT_CODES = new Set<string>([
+  'missing_scope',
+  'not_allowed_token_type',
+  'invalid_auth',
+  'token_revoked',
+  'token_expired',
+  'account_inactive',
+]);
+
+/**
  * Status descriptor — either a plain string (static text) or a thunk
  * re-evaluated on every heartbeat tick so dynamic counters (e.g. bg bash)
  * can be reflected live.
@@ -210,8 +234,12 @@ export class AssistantStatusManager {
    */
   markDisabledIfScopeMissing(err: unknown): boolean {
     const code = (err as any)?.data?.error ?? (err as any)?.code;
-    const matched =
-      code === 'missing_scope' || code === 'not_allowed_token_type' || code === 'invalid_auth';
+    // Permanent process-wide failures: scope/auth/token-lifecycle. All of
+    // these mean future writes will keep failing the same way for every
+    // thread in this process — staying enabled just burns retries on dead
+    // requests. Transient codes (ratelimited, internal_error, network)
+    // and per-thread `not_allowed` stay out so the manager survives them.
+    const matched = typeof code === 'string' && PERMANENT_CODES.has(code);
     if (matched && this.enabled) {
       this.enabled = false;
       this.clearAllHeartbeats();

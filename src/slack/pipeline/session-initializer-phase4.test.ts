@@ -1,60 +1,235 @@
 /**
- * SessionInitializer — #689 P4 Part 2/2 legacy suppression smoke.
+ * SessionInitializer — #689 P4 Part 2/2 dispatch B4 gate (behavioural).
  *
- * The dispatch flow has two native-spinner writers that must be gated on
- * effective PHASE<4 so TurnSurface owns the B4 surface at PHASE>=4:
+ * Locks the gating behaviour of the dispatch flow's two native-spinner writers:
  *   - `assistantStatusManager.setStatus(channel, threadTs, 'is analyzing your request...')`
  *   - `assistantStatusManager.setTitle(channel, threadTs, <title>)`
  *
- * This file only exercises the small gate — the full dispatch workflow has
- * its own coverage in `session-initializer-routing.test.ts`. Here we lock
- * the PHASE-dependent behaviour directly so a future refactor of the gate
- * (e.g. moving it inside AssistantStatusManager) cannot silently regress.
+ * At effective PHASE>=4 (raw PHASE=4 + manager enabled) TurnSurface owns the
+ * native B4 surface, so both calls MUST be suppressed. At PHASE<4 OR a clamped
+ * PHASE=4 (manager disabled → fall back to PHASE=3 chip), both calls MUST fire.
+ *
+ * Drives the real `SessionInitializer.initialize()` → dispatch path with spied
+ * mocks instead of mirroring the gate locally — a refactor that moves the gate
+ * inside `AssistantStatusManager` (or anywhere else) cannot silently regress.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const mockConfig = vi.hoisted(() => ({
-  ui: {
-    fiveBlockPhase: 0,
-    b4NativeStatusEnabled: true,
+vi.mock('../../user-settings-store', () => ({
+  userSettingsStore: {
+    getUserSettings: vi.fn().mockReturnValue({
+      userId: 'U123',
+      accepted: true,
+      defaultDirectory: '',
+      bypassPermission: false,
+      persona: 'default',
+      defaultModel: 'claude-opus-4-7',
+      lastUpdated: new Date().toISOString(),
+    }),
+    createPendingUser: vi.fn(),
+    getModelDisplayName: vi.fn().mockReturnValue('Opus 4.7'),
+    getUserSessionTheme: vi.fn().mockReturnValue('D'),
   },
+  DEFAULT_MODEL: 'claude-opus-4-7',
 }));
-vi.mock('../../config', () => ({ config: mockConfig }));
-vi.mock('../../metrics/ui-metrics', () => ({ emitUiPhaseClamped: vi.fn() }));
 
-import { getEffectiveFiveBlockPhase } from './effective-phase';
+vi.mock('../../admin-utils', () => ({
+  isAdminUser: vi.fn().mockReturnValue(false),
+  getAdminUsers: vi.fn().mockReturnValue(new Set(['U_ADMIN1'])),
+}));
 
-describe('SessionInitializer B4 dispatch gate (#689)', () => {
-  const makeMgr = (enabled: boolean) => ({
-    isEnabled: vi.fn().mockReturnValue(enabled),
-    setStatus: vi.fn().mockResolvedValue(undefined),
-    setTitle: vi.fn().mockResolvedValue(undefined),
+vi.mock('../../conversation', () => ({
+  createConversation: vi.fn().mockReturnValue('conv-123'),
+  getConversationUrl: vi.fn().mockReturnValue('http://localhost:3000/conversations/conv-123'),
+}));
+
+vi.mock('../../channel-registry', () => ({
+  checkRepoChannelMatch: vi.fn().mockReturnValue({
+    correct: true,
+    suggestedChannels: [],
+    reason: 'matched',
+  }),
+  getChannel: vi.fn().mockReturnValue({
+    id: 'C123',
+    name: 'workspace-soma-work',
+    purpose: '',
+    topic: '',
+    repos: ['acme/repo'],
+    joinedAt: Date.now(),
+  }),
+  getAllChannels: vi.fn().mockReturnValue([]),
+  registerChannel: vi.fn().mockResolvedValue(null),
+}));
+
+vi.mock('../../dispatch-service', () => ({
+  getDispatchService: vi.fn().mockReturnValue({
+    dispatch: vi.fn().mockResolvedValue({
+      workflow: 'pr-review',
+      title: 'PR Review',
+      links: {},
+    }),
+    getModel: vi.fn().mockReturnValue('test-model'),
+    isReady: vi.fn().mockReturnValue(true),
+  }),
+}));
+
+import { config } from '../../config';
+import { __resetClampEmitted } from './effective-phase';
+import { SessionInitializer } from './session-initializer';
+
+describe('SessionInitializer — #689 dispatch B4 gate (behavioural)', () => {
+  let sessionInitializer: SessionInitializer;
+  let mockClaudeHandler: any;
+  let mockSlackApi: any;
+  let mockMessageValidator: any;
+  let mockReactionManager: any;
+  let mockContextWindowManager: any;
+  let mockRequestCoordinator: any;
+  let mockAssistantStatusManager: any;
+  const originalPhase = config.ui.fiveBlockPhase;
+
+  function buildEvent() {
+    return {
+      user: 'U123',
+      channel: 'C123',
+      thread_ts: undefined,
+      ts: 'thread123',
+      text: 'Review PR https://github.com/acme/repo/pull/1',
+    };
+  }
+
+  function makeStatusManager(enabled: boolean) {
+    return {
+      isEnabled: vi.fn().mockReturnValue(enabled),
+      setStatus: vi.fn().mockResolvedValue(undefined),
+      setTitle: vi.fn().mockResolvedValue(undefined),
+      clearStatus: vi.fn().mockResolvedValue(undefined),
+      bumpEpoch: vi.fn().mockReturnValue(1),
+      getToolStatusText: vi.fn().mockReturnValue('running...'),
+      buildBashStatus: vi.fn().mockReturnValue('is running commands...'),
+      registerBackgroundBashActive: vi.fn().mockReturnValue(() => {}),
+    };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+
+    mockClaudeHandler = {
+      getSessionKey: vi.fn().mockReturnValue('C123:thread123'),
+      getSession: vi.fn().mockReturnValue(null),
+      createSession: vi.fn().mockReturnValue({
+        ownerId: 'U123',
+        ownerName: 'Test User',
+        userId: 'U123',
+        channelId: 'C123',
+        threadTs: 'thread123',
+        isActive: true,
+        lastActivity: new Date(),
+        activityState: 'idle',
+      }),
+      isSleeping: vi.fn().mockReturnValue(false),
+      wakeFromSleep: vi.fn(),
+      needsDispatch: vi.fn().mockReturnValue(true),
+      transitionToMain: vi.fn(),
+      setSessionLinks: vi.fn(),
+      canInterrupt: vi.fn().mockReturnValue(false),
+      updateInitiator: vi.fn(),
+      terminateSession: vi.fn(),
+    };
+
+    mockSlackApi = {
+      getUserName: vi.fn().mockResolvedValue('Test User'),
+      postMessage: vi.fn().mockResolvedValue({ ts: 'msg123' }),
+      getPermalink: vi.fn().mockResolvedValue('https://workspace.slack.com/archives/C123/p1739000000001000'),
+      postEphemeral: vi.fn().mockResolvedValue({ ts: 'eph123' }),
+      addReaction: vi.fn().mockResolvedValue(undefined),
+      removeReaction: vi.fn().mockResolvedValue(undefined),
+      updateMessage: vi.fn().mockResolvedValue(undefined),
+      deleteThreadBotMessages: vi.fn().mockResolvedValue(undefined),
+      getClient: vi.fn().mockReturnValue({}),
+    };
+
+    mockMessageValidator = {
+      validateWorkingDirectory: vi.fn().mockReturnValue({
+        valid: true,
+        workingDirectory: '/test/dir',
+      }),
+    };
+
+    mockReactionManager = {
+      setOriginalMessage: vi.fn(),
+      clearSessionLifecycleEmojis: vi.fn().mockResolvedValue(undefined),
+      getCurrentReaction: vi.fn().mockReturnValue(null),
+      cleanup: vi.fn(),
+    };
+
+    mockContextWindowManager = {
+      setOriginalMessage: vi.fn().mockResolvedValue(undefined),
+    };
+
+    mockRequestCoordinator = {
+      isRequestActive: vi.fn().mockReturnValue(false),
+      setController: vi.fn(),
+      abortSession: vi.fn(),
+    };
   });
 
   afterEach(() => {
-    mockConfig.ui.fiveBlockPhase = 0;
+    config.ui.fiveBlockPhase = originalPhase;
+    // Reset the module-level clamp-once flag so the disabled-mgr clamp test
+    // doesn't leak the "already emitted" state into other tests.
+    __resetClampEmitted();
   });
 
-  it('PHASE<4 + enabled: gate allows setStatus + setTitle (legacy)', () => {
-    mockConfig.ui.fiveBlockPhase = 3;
-    const mgr = makeMgr(true);
-    // Mirror the wire used in session-initializer.ts:
-    //   if (mgr && getEffectiveFiveBlockPhase(mgr) < 4) { ... setStatus(...)/setTitle(...) }
-    const allow = mgr && getEffectiveFiveBlockPhase(mgr as any) < 4;
-    expect(allow).toBe(true);
+  function buildInitializer() {
+    sessionInitializer = new SessionInitializer({
+      claudeHandler: mockClaudeHandler,
+      slackApi: mockSlackApi,
+      messageValidator: mockMessageValidator,
+      workingDirManager: { createSessionBaseDir: vi.fn().mockReturnValue(undefined) } as any,
+      reactionManager: mockReactionManager,
+      contextWindowManager: mockContextWindowManager,
+      requestCoordinator: mockRequestCoordinator,
+      assistantStatusManager: mockAssistantStatusManager,
+    });
+  }
+
+  it('PHASE=3 + enabled: setStatus + setTitle each fire once (legacy path)', async () => {
+    config.ui.fiveBlockPhase = 3;
+    mockAssistantStatusManager = makeStatusManager(true);
+    buildInitializer();
+
+    await sessionInitializer.initialize(buildEvent() as any, '/test/dir');
+
+    expect(mockAssistantStatusManager.setStatus).toHaveBeenCalledTimes(1);
+    expect(mockAssistantStatusManager.setStatus).toHaveBeenCalledWith(
+      'C123',
+      'thread123',
+      'is analyzing your request...',
+    );
+    expect(mockAssistantStatusManager.setTitle).toHaveBeenCalledTimes(1);
+    expect(mockAssistantStatusManager.setTitle).toHaveBeenCalledWith('C123', 'thread123', 'PR Review');
   });
 
-  it('PHASE=4 + enabled: gate suppresses setStatus + setTitle (TurnSurface owns)', () => {
-    mockConfig.ui.fiveBlockPhase = 4;
-    const mgr = makeMgr(true);
-    const allow = mgr && getEffectiveFiveBlockPhase(mgr as any) < 4;
-    expect(allow).toBe(false);
+  it('PHASE=4 + enabled: setStatus + setTitle are suppressed (TurnSurface owns)', async () => {
+    config.ui.fiveBlockPhase = 4;
+    mockAssistantStatusManager = makeStatusManager(true);
+    buildInitializer();
+
+    await sessionInitializer.initialize(buildEvent() as any, '/test/dir');
+
+    expect(mockAssistantStatusManager.setStatus).not.toHaveBeenCalled();
+    expect(mockAssistantStatusManager.setTitle).not.toHaveBeenCalled();
   });
 
-  it('PHASE=4 + disabled (clamped): gate re-allows legacy (graceful fallback)', () => {
-    mockConfig.ui.fiveBlockPhase = 4;
-    const mgr = makeMgr(false);
-    const allow = mgr && getEffectiveFiveBlockPhase(mgr as any) < 4;
-    expect(allow).toBe(true);
+  it('PHASE=4 + disabled (clamped to 3): setStatus + setTitle each fire once (graceful fallback)', async () => {
+    config.ui.fiveBlockPhase = 4;
+    mockAssistantStatusManager = makeStatusManager(false);
+    buildInitializer();
+
+    await sessionInitializer.initialize(buildEvent() as any, '/test/dir');
+
+    expect(mockAssistantStatusManager.setStatus).toHaveBeenCalledTimes(1);
+    expect(mockAssistantStatusManager.setTitle).toHaveBeenCalledTimes(1);
   });
 });

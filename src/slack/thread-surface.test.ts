@@ -226,6 +226,14 @@ describe('ThreadSurface — P3 setChoiceMeta / clearChoice', () => {
   describe('buildCombinedBlocks — P4 chip suppression', () => {
     const makeMgr = (enabled: boolean) => ({ isEnabled: vi.fn().mockReturnValue(enabled) }) as any;
 
+    // Reset the module-level clamp-once flag so the disabled-mgr clamp test
+    // doesn't leak into subsequent tests in this file. Mirrors the pattern
+    // in turn-surface.test.ts (commit 1c83d5e).
+    afterEach(async () => {
+      const { __resetClampEmitted } = await import('./pipeline/effective-phase');
+      __resetClampEmitted();
+    });
+
     function makeSessionWithChipState(): ConversationSession {
       const s = makeSession();
       s.actionPanel = { agentPhase: 'thinking', activeTool: 'Bash' };

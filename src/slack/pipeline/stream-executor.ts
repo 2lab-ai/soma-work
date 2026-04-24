@@ -411,6 +411,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       threadTs: threadTs || undefined,
       sessionKey,
       turnId,
+      // Issue #688 — thread the per-turn epoch through TurnContext so
+      // TurnSurface.end()/fail() can pass it as `expectedEpoch` to
+      // clearStatus, mirroring the caller-owns-epoch pattern used by the
+      // explicit clearStatus calls below (e.g. lines ~1035, 1116, 1349).
+      statusEpoch: epoch,
     };
     await this.deps.threadPanel?.beginTurn(turnContext);
 
@@ -686,9 +691,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
               // tools keep the simple static path.
               if (toolName === 'Bash') {
                 const statusManager = this.deps.assistantStatusManager;
-                await statusManager.setStatus(channel, threadTs, () =>
-                  statusManager.buildBashStatus(channel, threadTs),
-                );
+                // PHASE>=4 the native spinner is the single writer; suppress
+                // the legacy thunk-based setStatus path to mirror
+                // `legacySetStatus` (line 237) and the non-Bash branch below.
+                if (getEffectiveFiveBlockPhase(statusManager) < 4) {
+                  await statusManager.setStatus(channel, threadTs, () =>
+                    statusManager.buildBashStatus(channel, threadTs),
+                  );
+                }
               } else {
                 const statusText = this.deps.assistantStatusManager.getToolStatusText(toolName);
                 await this.legacySetStatus(channel, threadTs, statusText);

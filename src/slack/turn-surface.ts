@@ -59,6 +59,15 @@ export interface TurnContext {
   readonly sessionKey: string;
   /** Unique turn id — stream-executor uses `${sessionKey}:${turnStartTs}`. */
   readonly turnId: string;
+  /**
+   * Issue #688 — per-turn AssistantStatusManager epoch captured by the
+   * caller via `bumpEpoch(channel, threadTs)`. When present, TurnSurface's
+   * end()/fail() pass it as `expectedEpoch` to `clearStatus` so a stale
+   * close from a superseded turn cannot wipe the spinner set by the
+   * newer turn on the same (channel, threadTs). Optional so existing
+   * callers/tests that don't drive native status writes are unchanged.
+   */
+  readonly statusEpoch?: number;
 }
 
 /**
@@ -623,9 +632,17 @@ export class TurnSurface {
       // #689 P4 Part 2/2 — B4 native spinner clear. Best-effort: exceptions
       // are swallowed inside AssistantStatusManager.clearStatus. Runs before
       // cleanupTurn() so we still have `state.ctx` in scope.
+      //
+      // Issue #688 — pass the per-turn `statusEpoch` (when caller threaded
+      // one through TurnContext) so a stale close from a superseded turn
+      // cannot wipe a spinner set by the newer turn on the same
+      // (channel, threadTs). Mirrors stream-executor's clearStatus guards
+      // (e.g. line 1035, 1116, 1349).
       const mgr = this.deps.assistantStatusManager;
       if (mgr && this.effectivePhase() >= 4 && state.ctx.threadTs) {
-        await mgr.clearStatus(state.ctx.channelId, state.ctx.threadTs);
+        const opts =
+          state.ctx.statusEpoch !== undefined ? { expectedEpoch: state.ctx.statusEpoch } : undefined;
+        await mgr.clearStatus(state.ctx.channelId, state.ctx.threadTs, opts);
       }
       this.cleanupTurn(turnId, state);
     }
@@ -660,9 +677,12 @@ export class TurnSurface {
       }
     } finally {
       // #689 P4 Part 2/2 — B4 native spinner clear on defensive close.
+      // Issue #688 — same epoch guard as end(); see comment there.
       const mgr = this.deps.assistantStatusManager;
       if (mgr && this.effectivePhase() >= 4 && state.ctx.threadTs) {
-        await mgr.clearStatus(state.ctx.channelId, state.ctx.threadTs);
+        const opts =
+          state.ctx.statusEpoch !== undefined ? { expectedEpoch: state.ctx.statusEpoch } : undefined;
+        await mgr.clearStatus(state.ctx.channelId, state.ctx.threadTs, opts);
       }
       this.cleanupTurn(turnId, state);
     }

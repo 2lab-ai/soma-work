@@ -3570,8 +3570,13 @@ describe('StreamExecutor — #689 legacy native-spinner suppression', () => {
     return { executor, mgr };
   };
 
-  afterEach(() => {
+  afterEach(async () => {
     config.ui.fiveBlockPhase = originalPhase;
+    // Reset the module-level clamp-once flag so the disabled-mgr clamp test
+    // doesn't leak the "already emitted" state into other suites in this
+    // file. Mirrors the pattern in turn-surface.test.ts (commit 1c83d5e).
+    const { __resetClampEmitted } = await import('./effective-phase');
+    __resetClampEmitted();
   });
 
   it('PHASE<4: legacySetStatus forwards to assistantStatusManager.setStatus', async () => {

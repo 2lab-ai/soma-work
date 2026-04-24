@@ -810,9 +810,18 @@ export class SessionInitializer {
       // spinner set at line 624 must be torn down. Guarded by
       // dispatchEpoch so a stale clear arriving after a newer turn has
       // already bumped past this epoch becomes a no-op.
-      await this.deps.assistantStatusManager?.clearStatus(channel, threadTs, {
-        expectedEpoch: dispatchEpoch,
-      });
+      // #689 P4 Part 2/2 — also gate on PHASE<4 to mirror the setStatus /
+      // setTitle gates above (lines 634/693): at effective PHASE>=4
+      // TurnSurface is the sole native-status writer, so the dispatch
+      // path must not race a turn-owned spinner with a stale clear.
+      if (
+        this.deps.assistantStatusManager &&
+        getEffectiveFiveBlockPhase(this.deps.assistantStatusManager) < 4
+      ) {
+        await this.deps.assistantStatusManager.clearStatus(channel, threadTs, {
+          expectedEpoch: dispatchEpoch,
+        });
+      }
     } finally {
       clearTimeout(timeoutId);
       // Clean up the in-flight tracking and resolve waiting promises
