@@ -1614,4 +1614,162 @@ describe('SlackHandler', () => {
       expect(execute.mock.calls.length).toBeGreaterThanOrEqual(2);
     });
   });
+
+  // -------------------------------------------------------------------
+  // Issue #698 — safe-stop on dispatch failure
+  // -------------------------------------------------------------------
+
+  describe('DispatchAbortError outer catch (#698)', () => {
+    it('T3.1 DispatchAbortError from initialize() (widened catch scope) → postMessage with safe-stop text + terminateSession called + NO auto-retry', async () => {
+      const { DispatchAbortError } = await import('./slack/dispatch-abort');
+
+      const app = { client: {}, assistant: vi.fn() } as any;
+      const claudeHandler = {
+        getSession: vi
+          .fn()
+          .mockReturnValue({ handoffContext: { chainId: 'xyz-789', sourceIssueUrl: 'https://example.com/issues/42' } }),
+        getSessionKey: vi.fn().mockReturnValue('C123:111.222'),
+        terminateSession: vi.fn().mockReturnValue(true),
+        saveSessions: vi.fn(),
+      };
+      const handler = new SlackHandler(app as any, claudeHandler as any, {} as any);
+      const handlerAny = handler as any;
+      const postMessage = vi.fn().mockResolvedValue({ ts: 'msg-dispatch-abort' });
+      handlerAny.slackApi = {
+        addReaction: vi.fn().mockResolvedValue(undefined),
+        removeReaction: vi.fn().mockResolvedValue(undefined),
+        postMessage,
+      };
+      handlerAny.inputProcessor = {
+        processFiles: vi.fn().mockResolvedValue({ files: [], shouldContinue: true }),
+        routeCommand: vi.fn().mockResolvedValue({ handled: false, continueWithPrompt: undefined }),
+      };
+      // initialize() throws DispatchAbortError BEFORE agentSession is created.
+      handlerAny.sessionInitializer = {
+        validateWorkingDirectory: vi.fn().mockResolvedValue({ valid: true, workingDirectory: '/tmp' }),
+        initialize: vi.fn().mockRejectedValue(
+          new DispatchAbortError('transition-failed', 'transitionToMain returned false', 'pr-review', undefined, {
+            chainId: 'xyz-789',
+            sourceIssueUrl: 'https://example.com/issues/42',
+            handoffKind: 'plan-to-work',
+          } as any),
+        ),
+      };
+      handlerAny.threadPanel = { create: vi.fn().mockResolvedValue(undefined) };
+
+      const autoRetryScheduler = vi.fn();
+      handlerAny.autoResumeSession = autoRetryScheduler;
+
+      const say = vi.fn().mockResolvedValue({ ts: 'msg' });
+      await handler.handleMessage({ user: 'U123', channel: 'C123', ts: '111.222', text: 'trigger' } as any, say);
+
+      // Safe-stop message posted with dispatch-specific text
+      const dispatchAbortCall = postMessage.mock.calls.find((c: any[]) =>
+        String(c[1]).includes('Dispatch 실패 — safe-stop'),
+      );
+      expect(dispatchAbortCall).toBeDefined();
+      expect(String(dispatchAbortCall![1])).toContain('transition-failed');
+      expect(String(dispatchAbortCall![1])).toContain('pr-review');
+      expect(String(dispatchAbortCall![1])).toContain('xyz-789');
+      // Hard-stop — session terminated
+      expect(claudeHandler.terminateSession).toHaveBeenCalledWith('C123:111.222');
+      // No auto-retry scheduled
+      expect(autoRetryScheduler).not.toHaveBeenCalled();
+    });
+
+    it('T3.2 DispatchAbortError with handoffContext → message includes sourceIssueUrl/chainId; distinct from HandoffAbortError/HandoffBudgetExhaustedError', async () => {
+      const { DispatchAbortError } = await import('./slack/dispatch-abort');
+
+      const app = { client: {}, assistant: vi.fn() } as any;
+      const claudeHandler = {
+        getSession: vi.fn().mockReturnValue({ handoffContext: null }),
+        getSessionKey: vi.fn().mockReturnValue('C123:111.222'),
+        terminateSession: vi.fn().mockReturnValue(true),
+        saveSessions: vi.fn(),
+      };
+      const handler = new SlackHandler(app as any, claudeHandler as any, {} as any);
+      const handlerAny = handler as any;
+      const postMessage = vi.fn().mockResolvedValue({ ts: 'msg' });
+      handlerAny.slackApi = {
+        addReaction: vi.fn().mockResolvedValue(undefined),
+        removeReaction: vi.fn().mockResolvedValue(undefined),
+        postMessage,
+      };
+      handlerAny.inputProcessor = {
+        processFiles: vi.fn().mockResolvedValue({ files: [], shouldContinue: true }),
+        routeCommand: vi.fn().mockResolvedValue({ handled: false, continueWithPrompt: undefined }),
+      };
+      handlerAny.sessionInitializer = {
+        validateWorkingDirectory: vi.fn().mockResolvedValue({ valid: true, workingDirectory: '/tmp' }),
+        initialize: vi.fn().mockRejectedValue(
+          new DispatchAbortError('classifier-failed', 'LLM 500', undefined, 2500, {
+            chainId: 'chain-abc',
+            sourceIssueUrl: 'https://github.com/owner/repo/issues/777',
+            parentEpicUrl: 'https://github.com/owner/repo/issues/100',
+            handoffKind: 'plan-to-work',
+            tier: 'medium',
+            escapeEligible: false,
+            issueRequiredByUser: true,
+            hopBudget: 1,
+          } as any),
+        ),
+      };
+      handlerAny.threadPanel = { create: vi.fn().mockResolvedValue(undefined) };
+
+      const say = vi.fn().mockResolvedValue({ ts: 'msg' });
+      await handler.handleMessage({ user: 'U123', channel: 'C123', ts: '111.222', text: 'trigger' } as any, say);
+
+      // Message includes handoff metadata
+      const msgCall = postMessage.mock.calls.find((c: any[]) => String(c[1]).includes('Dispatch 실패 — safe-stop'));
+      expect(msgCall).toBeDefined();
+      expect(String(msgCall![1])).toContain('https://github.com/owner/repo/issues/777');
+      expect(String(msgCall![1])).toContain('https://github.com/owner/repo/issues/100');
+      expect(String(msgCall![1])).toContain('chain-abc');
+      expect(String(msgCall![1])).toContain('2500ms');
+      // Not confused with other error types — distinct header
+      expect(String(msgCall![1])).not.toContain('Handoff entrypoint 진입 실패');
+      expect(String(msgCall![1])).not.toContain('자동 세션 핸드오프 예산 초과');
+    });
+
+    it('T3.3 DispatchAbortError is NOT recoverable — auto-retry scheduler NOT invoked (structural failure)', async () => {
+      const { DispatchAbortError } = await import('./slack/dispatch-abort');
+
+      const app = { client: {}, assistant: vi.fn() } as any;
+      const claudeHandler = {
+        getSession: vi.fn().mockReturnValue({ handoffContext: undefined }),
+        getSessionKey: vi.fn().mockReturnValue('C123:111.222'),
+        terminateSession: vi.fn().mockReturnValue(true),
+        saveSessions: vi.fn(),
+      };
+      const handler = new SlackHandler(app as any, claudeHandler as any, {} as any);
+      const handlerAny = handler as any;
+      handlerAny.slackApi = {
+        addReaction: vi.fn().mockResolvedValue(undefined),
+        removeReaction: vi.fn().mockResolvedValue(undefined),
+        postMessage: vi.fn().mockResolvedValue({ ts: 'msg' }),
+      };
+      handlerAny.inputProcessor = {
+        processFiles: vi.fn().mockResolvedValue({ files: [], shouldContinue: true }),
+        routeCommand: vi.fn().mockResolvedValue({ handled: false, continueWithPrompt: undefined }),
+      };
+      handlerAny.sessionInitializer = {
+        validateWorkingDirectory: vi.fn().mockResolvedValue({ valid: true, workingDirectory: '/tmp' }),
+        initialize: vi
+          .fn()
+          .mockRejectedValue(new DispatchAbortError('classifier-timeout', 'timeout', undefined, 30000, undefined)),
+      };
+      handlerAny.threadPanel = { create: vi.fn().mockResolvedValue(undefined) };
+
+      const autoRetryScheduler = vi.fn();
+      handlerAny.autoResumeSession = autoRetryScheduler;
+
+      const say = vi.fn().mockResolvedValue({ ts: 'msg' });
+      await handler.handleMessage({ user: 'U123', channel: 'C123', ts: '111.222', text: 'trigger' } as any, say);
+
+      // terminateSession called (hard-stop)
+      expect(claudeHandler.terminateSession).toHaveBeenCalled();
+      // Auto-retry NOT invoked
+      expect(autoRetryScheduler).not.toHaveBeenCalled();
+    });
+  });
 });
