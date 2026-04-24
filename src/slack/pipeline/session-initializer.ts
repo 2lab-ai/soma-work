@@ -18,6 +18,7 @@ import type { WorkingDirectoryManager } from '../../working-directory-manager';
 import { buildChannelRouteBlocks } from '../actions/channel-route-action-handler';
 import type { AssistantStatusManager } from '../assistant-status-manager';
 import type { ContextWindowManager } from '../context-window-manager';
+import { DispatchAbortError } from '../dispatch-abort';
 import { MessageFormatter } from '../message-formatter';
 import type { MessageValidator } from '../message-validator';
 import { LOG_DETAIL, OutputFlag, shouldOutput } from '../output-flags';
@@ -312,12 +313,24 @@ export class SessionInitializer {
           sessionKey,
           workflow: forceWorkflow,
         });
-        this.deps.claudeHandler.transitionToMain(
+        // Issue #698 Site D: check transitionToMain return value. `false` means
+        // session missing OR already transitioned (race loss); both are legitimate
+        // safe-stop conditions for forceWorkflow paths per spec AD-4.
+        const ok = this.deps.claudeHandler.transitionToMain(
           channel,
           threadTs,
           forceWorkflow,
           forceWorkflow === 'onboarding' ? 'Onboarding' : 'New Session',
         );
+        if (!ok) {
+          throw new DispatchAbortError(
+            'transition-failed',
+            'transitionToMain returned false for initialize forceWorkflow branch (session missing or already transitioned)',
+            forceWorkflow,
+            undefined,
+            session.handoffContext,
+          );
+        }
       } else {
         // Check if dispatch is already in flight for this session (race condition prevention)
         const existingDispatch = dispatchInFlight.get(sessionKey);
@@ -332,8 +345,22 @@ export class SessionInitializer {
             await Promise.race([existingDispatch, waitTimeoutPromise]);
           } catch (err) {
             this.logger.warn('Timed out waiting for existing dispatch', { sessionKey, error: (err as Error).message });
-            // Fallback: transition to default if still INITIALIZING after timeout
+            // Issue #698 Site B: if session has declared workflow intent via
+            // handoffContext (#695), drifting to default would silently lose
+            // the handoff. Throw DispatchAbortError instead; otherwise keep
+            // existing default-drift (spec §Done: "일반 dispatch 실패 경로는
+            // 기존과 동일 동작").
             if (this.deps.claudeHandler.needsDispatch(channel, threadTs)) {
+              if (session.handoffContext !== undefined) {
+                // waitTimeoutId cleared in finally even after throw
+                throw new DispatchAbortError(
+                  'wait-timeout',
+                  (err as Error).message,
+                  undefined,
+                  DISPATCH_TIMEOUT_MS,
+                  session.handoffContext,
+                );
+              }
               this.deps.claudeHandler.transitionToMain(channel, threadTs, 'default', 'New Session');
             }
           } finally {
@@ -624,12 +651,24 @@ export class SessionInitializer {
         sessionKey,
         workflow: forceWorkflow,
       });
-      this.deps.claudeHandler.transitionToMain(
+      // Issue #698 Site C: check transitionToMain return value. Same semantics
+      // as Site D — `false` is legitimate safe-stop for forceWorkflow paths.
+      const ok = this.deps.claudeHandler.transitionToMain(
         channel,
         threadTs,
         forceWorkflow,
         forceWorkflow === 'onboarding' ? 'Onboarding' : 'Session Reset',
       );
+      if (!ok) {
+        const currentSession = this.deps.claudeHandler.getSession(channel, threadTs);
+        throw new DispatchAbortError(
+          'transition-failed',
+          'transitionToMain returned false for runDispatch forceWorkflow branch (session missing or already transitioned)',
+          forceWorkflow,
+          undefined,
+          currentSession?.handoffContext,
+        );
+      }
       return;
     }
 
@@ -646,7 +685,13 @@ export class SessionInitializer {
    * Uses AbortController for proper timeout cancellation
    * Tracks in-flight dispatch to prevent race conditions
    */
-  private async dispatchWorkflow(channel: string, threadTs: string, text: string, sessionKey: string): Promise<void> {
+  private async dispatchWorkflow(
+    channel: string,
+    threadTs: string,
+    text: string,
+    sessionKey: string,
+    forcedWorkflowHint?: WorkflowType,
+  ): Promise<void> {
     // Register dispatch in-flight SYNCHRONOUSLY before any async work
     // This prevents race condition where two messages both pass the check
     let resolveTracking: () => void;
@@ -784,21 +829,72 @@ export class SessionInitializer {
       await updateDispatchPanel('사용자 액션 대기', 'idle');
     } catch (error) {
       const elapsed = Date.now() - startTime;
-      this.logger.error(`❌ Dispatch failed after ${elapsed}ms, using default workflow`, { error });
+      this.logger.error(`❌ Dispatch failed after ${elapsed}ms`, { error });
 
-      // Remove dispatching reaction
-      await this.deps.slackApi.removeReaction(channel, threadTs, 'mag');
+      // Issue #698 AD-2: activation check — safe-stop when session has
+      // handoffContext (entered via #695 z-handoff) OR caller passed
+      // forcedWorkflowHint. Otherwise preserve existing default-drift
+      // behavior per spec §Done ("일반 dispatch 실패 경로는 기존과 동일 동작").
+      const session = this.deps.claudeHandler.getSession(channel, threadTs);
+      const shouldSafeStop = session?.handoffContext !== undefined || forcedWorkflowHint !== undefined;
 
-      // Update dispatch message with error
+      // AD-4.5: best-effort cleanup — inner try/catch so a rejected Slack API
+      // call can't mask the DispatchAbortError throw.
+      const bestEffort = async (label: string, fn: () => Promise<unknown>): Promise<void> => {
+        try {
+          await fn();
+        } catch (cleanupErr) {
+          this.logger.warn(`Dispatch-abort cleanup failed: ${label}`, {
+            channel,
+            threadTs,
+            error: (cleanupErr as Error).message,
+          });
+        }
+      };
+
+      await bestEffort('removeReaction', () => this.deps.slackApi.removeReaction(channel, threadTs, 'mag'));
+
+      // AD-5.1: safe-stop branch uses distinct panel message; default-drift
+      // branch keeps existing text for backward compat.
       if (dispatchMessageTs) {
-        await this.deps.slackApi.updateMessage(
-          channel,
-          dispatchMessageTs,
-          `⚠️ *Workflow:* \`default\` _(dispatch failed after ${elapsed}ms)_`,
-        );
+        if (shouldSafeStop) {
+          await bestEffort('updateMessage-safeStop', () =>
+            this.deps.slackApi.updateMessage(
+              channel,
+              dispatchMessageTs!,
+              `🚫 Dispatch 실패 — safe-stop (#698) _(${elapsed}ms)_`,
+            ),
+          );
+        } else {
+          await bestEffort('updateMessage-default', () =>
+            this.deps.slackApi.updateMessage(
+              channel,
+              dispatchMessageTs!,
+              `⚠️ *Workflow:* \`default\` _(dispatch failed after ${elapsed}ms)_`,
+            ),
+          );
+        }
       }
 
-      // Fallback to default workflow on error
+      if (shouldSafeStop) {
+        // Clear spinner before throw (best-effort). Epoch-guarded + PHASE-gated
+        // same as default path below.
+        if (shouldRunLegacyB4Path(this.deps.assistantStatusManager)) {
+          await bestEffort('clearStatus-safeStop', () =>
+            this.deps.assistantStatusManager!.clearStatus(channel, threadTs, {
+              expectedEpoch: dispatchEpoch,
+            }),
+          );
+        }
+        // Map AbortError (DISPATCH_TIMEOUT_MS fired) to classifier-timeout;
+        // any other thrown error is classifier-failed.
+        const err = error as Error;
+        const reason = err.name === 'AbortError' ? 'classifier-timeout' : 'classifier-failed';
+        throw new DispatchAbortError(reason, err.message, forcedWorkflowHint, elapsed, session?.handoffContext);
+      }
+
+      // Default drift (UNCHANGED behavior per spec §Done "일반 dispatch 실패
+      // 경로는 기존과 동일 동작"). Same transitionToMain + panel update as before.
       const fallbackTitle = MessageFormatter.generateSessionTitle(text);
       this.deps.claudeHandler.transitionToMain(channel, threadTs, 'default', fallbackTitle);
       await updateDispatchPanel('기본 워크플로우로 전환', 'idle');

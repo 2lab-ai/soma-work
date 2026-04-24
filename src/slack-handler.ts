@@ -41,6 +41,7 @@ import {
 import { createAssistantContainer } from './slack/assistant-container';
 import { CompletionMessageTracker } from './slack/completion-message-tracker';
 import { createForkExecutor } from './slack/create-fork-executor';
+import { DispatchAbortError, formatDispatchAbortMessage } from './slack/dispatch-abort';
 import {
   checkAndConsumeBudget,
   formatBudgetExhaustedMessage,
@@ -489,110 +490,122 @@ export class SlackHandler {
       return;
     }
 
+    // Issue #698 AD-5.5: pre-declare fallback variables so the outer catch can
+    // always post to the right thread, even if `initialize()` throws (in which
+    // case sessionResult-derived values are unavailable).
+    let activeChannel: string = channel;
+    let activeThreadTs: string = originalThreadTs;
+    let agentSession: V1QueryAdapter | undefined;
+
     // Step 4: Initialize session (pass effectiveText for proper dispatch after command parsing)
-    const sessionResult = await this.sessionInitializer.initialize(
-      event,
-      cwdResult.workingDirectory!,
-      effectiveText,
-      forceWorkflow,
-    );
-
-    // Channel routing check: if session was halted due to wrong channel, stop processing
-    if (sessionResult.halted) {
-      await this.slackApi.removeReaction(channel, ts, 'eyes');
-      return;
-    }
-
-    const activeChannel = sessionResult.session.channelId || channel;
-    const activeThreadTs = sessionResult.session.threadRootTs || sessionResult.session.threadTs || originalThreadTs;
-
-    const hasPendingChoice = sessionResult.session.actionPanel?.waitingForChoice === true;
-    if (hasPendingChoice) {
-      await this.threadPanel?.clearChoice(sessionResult.sessionKey);
-      // Treat direct user message as completing manual input from choice UI.
-      this.claudeHandler.setActivityStateByKey(sessionResult.sessionKey, 'working');
-    }
-
-    await this.threadPanel?.create(sessionResult.session, sessionResult.sessionKey);
-
-    // Replace eyes with brain emoji - message is being sent to model
-    // Skip for first message (creates thread) - model adds emoji via reactionManager
-    await this.slackApi.removeReaction(channel, ts, 'eyes');
-    if (thread_ts) {
-      await this.slackApi.addReaction(channel, ts, 'brain');
-    }
-
-    // Step 5: Execute via AgentSession (Phase 3c — Issue #87)
-    // For the initial mention (thread migration), activeThreadTs differs from originalThreadTs.
-    // For continuation messages in the work thread, both are equal — fall back to persisted sourceThread.
-    const sourceThreadTs =
-      activeThreadTs !== originalThreadTs ? originalThreadTs : sessionResult.session.sourceThread?.threadTs;
-    const sourceChannel = activeChannel !== channel ? channel : sessionResult.session.sourceThread?.channel;
-
-    const agentSession = this.createAgentSession(sessionResult, wrappedSay, {
-      channel: activeChannel,
-      threadTs: activeThreadTs,
-      user: event.user,
-      mentionTs: ts,
-      sourceThreadTs,
-      sourceChannel,
-      synthetic: event.synthetic,
-    });
-
-    const continuationHandler: ContinuationHandler = {
-      shouldContinue: (result) => {
-        const cont = result.continuation as any;
-        if (!cont) return { continue: false };
-        return { continue: true, prompt: cont.prompt };
-      },
-      onResetSession: async (continuation: any) => {
-        // Issue #697 — host-enforced auto-handoff budget for model-emitted
-        // CONTINUE_SESSION. Host-built continuations (renew/onboarding) are
-        // stamped `origin: 'host'` at their stream-executor builders and skip
-        // enforcement. Predicate is "anything NOT 'host' enforces" so malformed
-        // values (e.g. 'MODEL', 'foo') fail closed instead of silently
-        // bypassing the guard (spec AD-3 / AD-13).
-        if (continuation.origin !== undefined && continuation.origin !== 'model' && continuation.origin !== 'host') {
-          this.logger.warn('Continuation.origin has unexpected value; treating as model-emitted', {
-            channelId: activeChannel,
-            threadTs: activeThreadTs,
-            origin: continuation.origin,
-          });
-        }
-        const shouldEnforceBudget = continuation.origin !== 'host';
-        if (shouldEnforceBudget) {
-          const currentSession = this.claudeHandler.getSession(activeChannel, activeThreadTs);
-          const budget = checkAndConsumeBudget(currentSession);
-          if (!budget.allowed) {
-            throw new HandoffBudgetExhaustedError(
-              // biome-ignore lint/style/noNonNullAssertion: reason is always set when allowed=false
-              budget.reason!,
-              budget.budgetBefore,
-              continuation.forceWorkflow,
-              currentSession?.handoffContext?.chainId,
-            );
-          }
-        }
-
-        this.claudeHandler.resetSessionContext(activeChannel, activeThreadTs);
-        const dispatchText = continuation.dispatchText || continuation.prompt;
-        // Issue #695 — z handoff entrypoints need the full continuation prompt
-        // (containing the `<z-handoff>` sentinel) for host-side parsing.
-        const handoffPrompt = isZHandoffWorkflow(continuation.forceWorkflow)
-          ? (continuation.prompt as string | undefined)
-          : undefined;
-        await this.sessionInitializer.runDispatch(
-          activeChannel,
-          activeThreadTs,
-          dispatchText,
-          continuation.forceWorkflow,
-          handoffPrompt,
-        );
-      },
-      refreshSession: () => this.claudeHandler.getSession(activeChannel, activeThreadTs),
-    };
-
+    // NOTE: initialize() is now INSIDE the outer try (widened for #698 so
+    // DispatchAbortError thrown from Sites B/D in session-initializer reaches
+    // the outer catch arm below).
     try {
+      const sessionResult = await this.sessionInitializer.initialize(
+        event,
+        cwdResult.workingDirectory!,
+        effectiveText,
+        forceWorkflow,
+      );
+
+      // Channel routing check: if session was halted due to wrong channel, stop processing
+      if (sessionResult.halted) {
+        await this.slackApi.removeReaction(channel, ts, 'eyes');
+        return;
+      }
+
+      activeChannel = sessionResult.session.channelId || channel;
+      activeThreadTs = sessionResult.session.threadRootTs || sessionResult.session.threadTs || originalThreadTs;
+
+      const hasPendingChoice = sessionResult.session.actionPanel?.waitingForChoice === true;
+      if (hasPendingChoice) {
+        await this.threadPanel?.clearChoice(sessionResult.sessionKey);
+        // Treat direct user message as completing manual input from choice UI.
+        this.claudeHandler.setActivityStateByKey(sessionResult.sessionKey, 'working');
+      }
+
+      await this.threadPanel?.create(sessionResult.session, sessionResult.sessionKey);
+
+      // Replace eyes with brain emoji - message is being sent to model
+      // Skip for first message (creates thread) - model adds emoji via reactionManager
+      await this.slackApi.removeReaction(channel, ts, 'eyes');
+      if (thread_ts) {
+        await this.slackApi.addReaction(channel, ts, 'brain');
+      }
+
+      // Step 5: Execute via AgentSession (Phase 3c — Issue #87)
+      // For the initial mention (thread migration), activeThreadTs differs from originalThreadTs.
+      // For continuation messages in the work thread, both are equal — fall back to persisted sourceThread.
+      const sourceThreadTs =
+        activeThreadTs !== originalThreadTs ? originalThreadTs : sessionResult.session.sourceThread?.threadTs;
+      const sourceChannel = activeChannel !== channel ? channel : sessionResult.session.sourceThread?.channel;
+
+      agentSession = this.createAgentSession(sessionResult, wrappedSay, {
+        channel: activeChannel,
+        threadTs: activeThreadTs,
+        user: event.user,
+        mentionTs: ts,
+        sourceThreadTs,
+        sourceChannel,
+        synthetic: event.synthetic,
+      });
+
+      const continuationHandler: ContinuationHandler = {
+        shouldContinue: (result) => {
+          const cont = result.continuation as any;
+          if (!cont) return { continue: false };
+          return { continue: true, prompt: cont.prompt };
+        },
+        onResetSession: async (continuation: any) => {
+          // Issue #697 — host-enforced auto-handoff budget for model-emitted
+          // CONTINUE_SESSION. Host-built continuations (renew/onboarding) are
+          // stamped `origin: 'host'` at their stream-executor builders and skip
+          // enforcement. Predicate is "anything NOT 'host' enforces" so malformed
+          // values (e.g. 'MODEL', 'foo') fail closed instead of silently
+          // bypassing the guard (spec AD-3 / AD-13).
+          if (continuation.origin !== undefined && continuation.origin !== 'model' && continuation.origin !== 'host') {
+            this.logger.warn('Continuation.origin has unexpected value; treating as model-emitted', {
+              channelId: activeChannel,
+              threadTs: activeThreadTs,
+              origin: continuation.origin,
+            });
+          }
+          const shouldEnforceBudget = continuation.origin !== 'host';
+          if (shouldEnforceBudget) {
+            const currentSession = this.claudeHandler.getSession(activeChannel, activeThreadTs);
+            const budget = checkAndConsumeBudget(currentSession);
+            if (!budget.allowed) {
+              throw new HandoffBudgetExhaustedError(
+                // biome-ignore lint/style/noNonNullAssertion: reason is always set when allowed=false
+                budget.reason!,
+                budget.budgetBefore,
+                continuation.forceWorkflow,
+                currentSession?.handoffContext?.chainId,
+              );
+            }
+          }
+
+          this.claudeHandler.resetSessionContext(activeChannel, activeThreadTs);
+          const dispatchText = continuation.dispatchText || continuation.prompt;
+          // Issue #695 — z handoff entrypoints need the full continuation prompt
+          // (containing the `<z-handoff>` sentinel) for host-side parsing.
+          const handoffPrompt = isZHandoffWorkflow(continuation.forceWorkflow)
+            ? (continuation.prompt as string | undefined)
+            : undefined;
+          await this.sessionInitializer.runDispatch(
+            activeChannel,
+            activeThreadTs,
+            dispatchText,
+            continuation.forceWorkflow,
+            handoffPrompt,
+          );
+        },
+        refreshSession: () => this.claudeHandler.getSession(activeChannel, activeThreadTs),
+      };
+
+      // End of widened try (#698 AD-5.5) — startWithContinuation is the last
+      // async step inside the try.
       await agentSession.startWithContinuation(effectiveText || '', continuationHandler, processedFiles);
     } catch (error) {
       // Issue #695 — host-level z handoff safe-stop. `SessionInitializer.runDispatch`
@@ -676,7 +689,59 @@ export class SlackHandler {
         // is a structural ceiling, not a transient error.
         return;
       }
-      // Auto-retry on recoverable errors (merged from main — auto-retry on error)
+      // Issue #698 — safe-stop on dispatch failure. `session-initializer`
+      // throws `DispatchAbortError` at four drift sites (classifier catch,
+      // in-flight wait-timeout, and two forceWorkflow transitionToMain paths)
+      // when session has declared workflow intent (handoffContext or
+      // forcedWorkflowHint). Hard stop — terminate session (same as
+      // HandoffAbortError #695) but with dispatch-specific message + metadata.
+      if (error instanceof DispatchAbortError) {
+        this.logger.warn('Dispatch aborted — safe-stop', {
+          channelId: activeChannel,
+          threadTs: activeThreadTs,
+          reason: error.reason,
+          workflow: error.workflow,
+          detail: error.detail,
+          elapsedMs: error.elapsedMs,
+          chainId: error.handoffContext?.chainId,
+        });
+        try {
+          await this.slackApi.postMessage(
+            activeChannel,
+            formatDispatchAbortMessage({
+              reason: error.reason,
+              workflow: error.workflow,
+              detail: error.detail,
+              elapsedMs: error.elapsedMs,
+              handoffContext: error.handoffContext,
+            }),
+            { threadTs: activeThreadTs },
+          );
+        } catch (postErr) {
+          this.logger.error('Failed to post dispatch-abort message', {
+            channelId: activeChannel,
+            threadTs: activeThreadTs,
+            error: (postErr as Error).message,
+          });
+        }
+        // Hard stop — same semantics as HandoffAbortError (#695). The dispatch
+        // pipeline failed, session state is inconsistent; terminate rather than
+        // risk half-initialized drift on next message.
+        const sessionKey = this.claudeHandler.getSessionKey(activeChannel, activeThreadTs);
+        this.claudeHandler.terminateSession(sessionKey);
+        return; // Structural failure — skip auto-retry.
+      }
+      // Auto-retry on recoverable errors (merged from main — auto-retry on error).
+      // Issue #698 AD-5.5: guard against `agentSession` being undefined when
+      // `initialize()` throws before agentSession was created.
+      if (!agentSession) {
+        this.logger.warn('Error in initialize() before agentSession was created; skipping auto-retry', {
+          channelId: activeChannel,
+          threadTs: activeThreadTs,
+          error: (error as Error).message,
+        });
+        throw error; // propagate — no retry context
+      }
       const retryAfterMs = agentSession.getRetryAfterMs();
       if (retryAfterMs) {
         const currentSession = this.claudeHandler.getSession(activeChannel, activeThreadTs);
