@@ -15,10 +15,7 @@ vi.mock('./env-paths', () => ({
 import { SessionRegistry } from './session-registry';
 import type { HandoffContext } from './types';
 
-const TEST_DATA_DIR = path.join(
-  process.env.TMPDIR ?? os.tmpdir(),
-  'soma-work-session-registry-handoff-test',
-);
+const TEST_DATA_DIR = path.join(process.env.TMPDIR ?? os.tmpdir(), 'soma-work-session-registry-handoff-test');
 
 function sampleContext(overrides: Partial<HandoffContext> = {}): HandoffContext {
   return {

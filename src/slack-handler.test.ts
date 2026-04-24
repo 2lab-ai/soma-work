@@ -1269,9 +1269,9 @@ describe('SlackHandler', () => {
           abortController: new AbortController(),
           halted: false,
         }),
-        runDispatch: vi.fn().mockRejectedValue(
-          new HandoffAbortError('missing-closing', 'no closing tag', 'z-plan-to-work'),
-        ),
+        runDispatch: vi
+          .fn()
+          .mockRejectedValue(new HandoffAbortError('missing-closing', 'no closing tag', 'z-plan-to-work')),
       };
 
       const autoRetryScheduler = vi.fn();
