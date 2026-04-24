@@ -173,14 +173,16 @@ function _isSameOriginRequest(request: FastifyRequest): boolean {
  * in via `/auth/token` must NOT be silently downgraded to a Slack
  * identity by clicking a Slack `dashboard` link (Oracle re-review P1).
  */
-function _getCurrentSession(
-  request: FastifyRequest,
-): { kind: 'jwt'; user: DashboardUser } | { kind: 'bearer' } | null {
+function _getCurrentSession(request: FastifyRequest): { kind: 'jwt'; user: DashboardUser } | { kind: 'bearer' } | null {
   const cookieHeader = request.headers.cookie || '';
   const match = cookieHeader.match(new RegExp(`${COOKIE_NAME}=([^;]+)`));
   if (!match) return null;
   const cookieVal = decodeURIComponent(match[1]);
-  if (cookieVal.startsWith('bearer:') && config.conversation.viewerToken && cookieVal.slice(7) === config.conversation.viewerToken) {
+  if (
+    cookieVal.startsWith('bearer:') &&
+    config.conversation.viewerToken &&
+    cookieVal.slice(7) === config.conversation.viewerToken
+  ) {
     return { kind: 'bearer' };
   }
   const user = verifyDashboardToken(cookieVal);
@@ -692,8 +694,7 @@ export async function registerOAuthRoutes(server: FastifyInstance): Promise<void
     // admin sessions — an admin browser could be silently switched to a
     // Slack identity without the interstitial.
     const existing = _getCurrentSession(request);
-    const existingMatchesRequest =
-      existing?.kind === 'jwt' && existing.user.slackUserId === payload.sub;
+    const existingMatchesRequest = existing?.kind === 'jwt' && existing.user.slackUserId === payload.sub;
     if (existing && !existingMatchesRequest) {
       logger.warn('Slack SSO: session switch requires confirmation', {
         currentKind: existing.kind,

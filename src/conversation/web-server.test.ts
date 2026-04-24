@@ -252,11 +252,9 @@ describe('ConversationWebServer Authentication', () => {
 
       // Forge a token that looks like a session cookie (no type='sso_exchange').
       const jwt = await import('jsonwebtoken');
-      const sessionLike = jwt.sign(
-        { sub: 'U1', email: 'e@x', name: 'N', provider: 'slack' },
-        'test-jwt-secret',
-        { expiresIn: 3600 },
-      );
+      const sessionLike = jwt.sign({ sub: 'U1', email: 'e@x', name: 'N', provider: 'slack' }, 'test-jwt-secret', {
+        expiresIn: 3600,
+      });
       const response = await injectWebServer({
         method: 'GET',
         url: `/auth/sso?token=${encodeURIComponent(sessionLike)}`,
