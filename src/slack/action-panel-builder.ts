@@ -76,6 +76,10 @@ const WORKFLOW_ACTIONS: Record<WorkflowType, PanelActionKey[]> = {
   'pr-docs-confluence': ['pr_review_new', 'pr_review_renew'],
   deploy: [],
   default: [],
+  // Handoff entrypoints (issue #695) — no action-panel buttons; sessions enter
+  // the z skill via deterministic workflow routing, not panel clicks.
+  'z-plan-to-work': [],
+  'z-epic-update': [],
 };
 
 export class ActionPanelBuilder {
