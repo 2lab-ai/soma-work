@@ -37,6 +37,13 @@ const logger = new Logger('Dashboard');
 export interface KanbanSession {
   key: string;
   title: string;
+  /**
+   * Latest assistant-turn summaryTitle for this session, when one has been
+   * generated. Clients prefer this over {@link title} for card display so
+   * refreshed pages match the live `summaryTitleChanged` WS patch. Absent
+   * when no assistant turn has produced a summaryTitle yet.
+   */
+  summaryTitle?: string;
   ownerName: string;
   ownerId: string;
   workflow: string;
@@ -367,6 +374,10 @@ function sessionToKanban(key: string, s: any): KanbanSession {
   return {
     key,
     title: displayTitle(s),
+    // Emit summaryTitle so initial board renders (and full-page refresh) match
+    // the live broadcastSummaryTitleChanged WS patch. Session registry stores
+    // this on the session record itself — see session-registry.ts applyTitle.
+    summaryTitle: typeof s.summaryTitle === 'string' && s.summaryTitle.length > 0 ? s.summaryTitle : undefined,
     ownerName: s.ownerName || s.ownerId || 'unknown',
     ownerId: s.ownerId || '',
     workflow: s.workflow || 'default',
@@ -467,6 +478,8 @@ export function archivedToKanban(archived: ArchivedSession): KanbanSession {
   return {
     key: `archived_${archived.sessionKey}_${archived.archivedAt}`,
     title: displayTitle(archived),
+    summaryTitle:
+      typeof archived.summaryTitle === 'string' && archived.summaryTitle.length > 0 ? archived.summaryTitle : undefined,
     ownerName: archived.ownerName || archived.ownerId || 'unknown',
     ownerId: archived.ownerId || '',
     workflow: archived.workflow || 'default',
@@ -1871,11 +1884,14 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .kanban-col .empty-hint { text-align: center; padding: 24px 12px; font-size: 12px; color: var(--text-tertiary); opacity: 0.5; font-style: italic; }
 
 /* ── TASK LIST — compact rows ── */
+/* min-width: 0 on the flex row lets the content child shrink; otherwise the
+   content intrinsic width pushes the right-aligned duration out of view. */
 .card-tasks { margin-top: 6px; border-top: 1px solid var(--border); padding-top: 4px; }
-.card-task { font-size: 12px; color: var(--text-secondary); display: flex; align-items: center; gap: 4px; padding: 2px 0; line-height: 1.3; }
+.card-task { font-size: 12px; color: var(--text-secondary); display: flex; align-items: center; gap: 4px; padding: 2px 0; line-height: 1.3; min-width: 0; }
 .card-task.completed { color: var(--text-tertiary); opacity: 0.55; }
 .card-task.in_progress { color: var(--text); font-weight: 600; }
 .card-task .task-icon { flex-shrink: 0; }
+.card-task .task-content { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .spin { display: inline-block; animation: spin 1.5s linear infinite; }
 @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 .tasks-more { font-size: 12px; color: var(--text-tertiary); margin-top: 2px; font-weight: 600; }
@@ -3271,16 +3287,12 @@ function renderCard(s, col) {
   const workingCls = (col === 'working') ? ' card-working' : '';
   const cls = 'card' + (aura ? ' ' + aura : '') + workingCls;
 
-  // Links
-  const links = [];
-  if (s.issueUrl) {
-    links.push('<a href="' + esc(s.issueUrl) + '" target="_blank" onclick="event.stopPropagation()">&#x1F4CB; ' + esc(s.issueLabel || 'Issue') + '</a>');
-  }
-  if (s.prUrl) {
-    var prBadge = s.prStatus ? '<span class="pr-badge pr-' + esc(s.prStatus) + '">' + esc(s.prStatus) + '</span>' : '';
-    links.push('<a href="' + esc(s.prUrl) + '" target="_blank" onclick="event.stopPropagation()">&#x1F500; ' + esc(s.prLabel || 'PR') + prBadge + '</a>');
-  }
-  const linksHtml = links.length ? '<div class="card-links">' + links.join('') + '</div>' : '';
+  // Owner gating — non-owners get read-only cards (disabled action/choice buttons,
+  // read-only panel input on openPanel). Server-side RBAC on /command, /stop,
+  // /close, /trash, /answer-choice (requireSessionOwner) is the authoritative
+  // guard; client-side disabled state is UX only.
+  const isOwner = !s.ownerId || s.ownerId === currentUserId;
+  const readOnlyAttrs = isOwner ? '' : ' disabled title="Read-only — not your session"';
 
   // Conversation link
   const convLink = s.conversationId
@@ -3330,7 +3342,7 @@ function renderCard(s, col) {
       } else if (t.status === 'in_progress' && t.startedAt) {
         durStr = ' <span style="font-size:10px;color:var(--accent);margin-left:auto;flex-shrink:0">' + formatDuration(Date.now() - t.startedAt) + '...</span>';
       }
-      return '<div class="card-task ' + cls2 + '"><span class="task-icon">' + icon + '</span>' + esc(t.content.slice(0, 50)) + durStr + '</div>';
+      return '<div class="card-task ' + cls2 + '"><span class="task-icon">' + icon + '</span><span class="task-content">' + esc(t.content.slice(0, 50)) + '</span>' + durStr + '</div>';
     }).join('');
     tasksHtml = '<div class="card-tasks">' + taskItems + (extra > 0 ? '<div class="tasks-more">+' + extra + ' more</div>' : '') + '</div>';
   }
@@ -3347,13 +3359,13 @@ function renderCard(s, col) {
       if (recOpt) {
         var recLabel = stripRecommendedMarker(recOpt.label);
         recHtml = '<div class="choice-row-recommended">'
-          + '<button class="btn-choice btn-choice-recommended" onclick="event.stopPropagation();answerChoice(\\'' + escJs(s.key) + '\\',\\'' + escJs(recOpt.id) + '\\',\\'' + escJs(recLabel) + '\\',\\'' + escJs(pq.question) + '\\',this)" title="' + escAttr(recOpt.description || recLabel) + '">' + esc(recOpt.id) + '. ' + esc(recLabel) + '</button>'
+          + '<button class="btn-choice btn-choice-recommended"' + readOnlyAttrs + ' onclick="event.stopPropagation();answerChoice(\\'' + escJs(s.key) + '\\',\\'' + escJs(recOpt.id) + '\\',\\'' + escJs(recLabel) + '\\',\\'' + escJs(pq.question) + '\\',this)" title="' + escAttr(isOwner ? (recOpt.description || recLabel) : 'Read-only — not your session') + '">' + esc(recOpt.id) + '. ' + esc(recLabel) + '</button>'
           + '</div>'
           + (otherOpts.length > 0 ? '<hr class="choice-divider">' : '');
       }
       var otherBtns = otherOpts.map(function(c) {
         var lbl = stripRecommendedMarker(c.label);
-        return '<button class="btn-choice" onclick="event.stopPropagation();answerChoice(\\'' + escJs(s.key) + '\\',\\'' + escJs(c.id) + '\\',\\'' + escJs(lbl) + '\\',\\'' + escJs(pq.question) + '\\',this)" title="' + escAttr(c.description || lbl) + '">' + esc(c.id) + '. ' + esc(lbl) + '</button>';
+        return '<button class="btn-choice"' + readOnlyAttrs + ' onclick="event.stopPropagation();answerChoice(\\'' + escJs(s.key) + '\\',\\'' + escJs(c.id) + '\\',\\'' + escJs(lbl) + '\\',\\'' + escJs(pq.question) + '\\',this)" title="' + escAttr(isOwner ? (c.description || lbl) : 'Read-only — not your session') + '">' + esc(c.id) + '. ' + esc(lbl) + '</button>';
       }).join('');
       questionHtml = '<div class="card-question">'
         + '<div class="card-question-text">&#x2753; ' + esc(pq.question).slice(0, 80) + '</div>'
@@ -3364,17 +3376,18 @@ function renderCard(s, col) {
     }
   }
 
-  // Action buttons
+  // Action buttons — disabled for non-owners (server RBAC still rejects, but UI
+  // shouldn't invite the click in the first place).
   let actionBtn = '';
   if (col === 'working') {
-    actionBtn = '<button class="btn-action btn-stop" onclick="event.stopPropagation();doAction(\\'' + escJs(s.key) + '\\',\\'stop\\')">Stop</button>';
+    actionBtn = '<button class="btn-action btn-stop"' + readOnlyAttrs + ' onclick="event.stopPropagation();doAction(\\'' + escJs(s.key) + '\\',\\'stop\\')">Stop</button>';
   } else if (col === 'waiting' || col === 'idle') {
-    actionBtn = '<button class="btn-action btn-close" onclick="event.stopPropagation();doAction(\\'' + escJs(s.key) + '\\',\\'close\\')">Close</button>';
+    actionBtn = '<button class="btn-action btn-close"' + readOnlyAttrs + ' onclick="event.stopPropagation();doAction(\\'' + escJs(s.key) + '\\',\\'close\\')">Close</button>';
   } else if (col === 'closed') {
     // SLEEPING (live) sessions → Close (terminate); archived sessions → Trash (hide)
     actionBtn = s.terminated
-      ? '<button class="btn-action btn-trash" onclick="event.stopPropagation();doAction(\\'' + escJs(s.key) + '\\',\\'trash\\')">Trash</button>'
-      : '<button class="btn-action btn-close" onclick="event.stopPropagation();doAction(\\'' + escJs(s.key) + '\\',\\'close\\')">Close</button>';
+      ? '<button class="btn-action btn-trash"' + readOnlyAttrs + ' onclick="event.stopPropagation();doAction(\\'' + escJs(s.key) + '\\',\\'trash\\')">Trash</button>'
+      : '<button class="btn-action btn-close"' + readOnlyAttrs + ' onclick="event.stopPropagation();doAction(\\'' + escJs(s.key) + '\\',\\'close\\')">Close</button>';
   }
   const actionsHtml = '<div class="card-actions">' + actionBtn + '</div>';
 
@@ -3390,10 +3403,13 @@ function renderCard(s, col) {
   // — the 1-Hz updater at updateTimers() (see ~line 2880) reads them via
   // querySelectorAll('.card-timer-live'). We always emit the live span, even in
   // the zero state, so polling picks it up the instant the leg starts.
+  //
+  // The hero value is "current turn" = current leg elapsed (active accumulator
+  // plus any open-leg delta). Thread totals (Σ) live on the row below.
   const heroTimerHtml =
-    '<div class="card-timer-hero">'
+    '<div class="card-timer-hero" title="현재 턴 경과 시간 (Current turn)">'
     + '<span class="hero-icon">&#x23F1;&#xFE0F;</span>'
-    + '<span class="card-timer-live" data-leg-started="' + legStarted + '" data-accumulated="' + accumulated + '" title="Current leg active time">' + formatNmSSs(accumulated + (legStarted ? Date.now() - legStarted : 0)) + '</span>'
+    + '<span class="card-timer-live" data-leg-started="' + legStarted + '" data-accumulated="' + accumulated + '" title="현재 턴 경과 시간 (Current turn)">' + formatNmSSs(accumulated + (legStarted ? Date.now() - legStarted : 0)) + '</span>'
     + '</div>';
 
   // Stats row: thread total (Σ) · compactions · session count. No live span here —
@@ -3428,14 +3444,20 @@ function renderCard(s, col) {
     + '<span>' + timeAgo(s.lastActivity) + '</span>'
     + '</div>';
 
-  // Card order: hero → stats → title → refs → meta → links → subtitles → tokens → merge → question → tasks → actions.
+  // Prefer summaryTitle (latest assistant turn) over the raw session title.
+  // Server emits summaryTitle on both initial /sessions response and the
+  // summaryTitleChanged WS patch, so refresh and live updates render identically.
+  const displayHeadline = (s.summaryTitle && String(s.summaryTitle).length > 0) ? s.summaryTitle : s.title;
+
+  // Card order: hero → stats → title → refs → meta → issue/pr subtitles → tokens → merge → question → tasks → actions.
+  // linksHtml removed (2026-04 #708): refs + issue/pr subtitles already surface
+  // the same hrefs; the iconized line was redundant and bloated the card.
   return '<div class="' + cls + '" draggable="true" data-session-key="' + escJs(s.key) + '" data-source-col="' + col + '" onclick="openPanel(\\'' + escJs(s.key) + '\\')">'
     + heroTimerHtml
     + timerRowHtml
-    + '<div class="card-title"><span class="card-title-text">' + esc(s.title) + '</span>' + slackLink + convLink + '</div>'
+    + '<div class="card-title"><span class="card-title-text">' + esc(displayHeadline) + '</span>' + slackLink + convLink + '</div>'
     + refsHtml
     + metaHtml
-    + linksHtml
     + (s.issueTitle ? '<div style="font-size:0.7em;color:var(--text-secondary);margin-top:3px">' + esc(s.issueTitle).slice(0, 60) + '</div>' : '')
     + (s.prTitle ? '<div style="font-size:0.7em;color:var(--text-secondary);margin-top:2px">' + esc(s.prTitle).slice(0, 60) + '</div>' : '')
     + tokenHtml
@@ -4037,8 +4059,12 @@ function connectWs() {
         // Immediate visual feedback already handled by loadSessions() in doAction
       } else if (msg.type === 'summaryTitleChanged') {
         // Dashboard v2.1 — targeted title patch. Update cache + single card.
+        // Mirror the server-side preference from #708: update summaryTitle first
+        // (so a subsequent re-render reads the right field) and also refresh title
+        // as a fallback for any path that still reads s.title.
         var cached = _sessionCache[msg.sessionKey];
         if (cached) {
+          cached.summaryTitle = msg.summaryTitle;
           cached.title = msg.summaryTitle;
         }
         var cardTitleEls = document.querySelectorAll('[data-session-key="' + CSS.escape(msg.sessionKey) + '"] .card-title-text');
@@ -4092,7 +4118,7 @@ function openPanel(sessionKey) {
   panelSessionKey = sessionKey;
   panelConvId = s.conversationId || null;
 
-  document.getElementById('panel-title').textContent = s.title || 'Untitled';
+  document.getElementById('panel-title').textContent = s.summaryTitle || s.title || 'Untitled';
 
   // TitleSub
   var titleSubTextEl = document.getElementById('panel-title-sub-text');
@@ -4190,14 +4216,21 @@ function openPanel(sessionKey) {
     turnsEl.innerHTML = '<p style="color:var(--text-secondary);text-align:center;margin-top:40px">No conversation recorded</p>';
   }
 
-  // Command input — always visible; disabled + hint for terminated / sleeping sessions.
+  // Command input — always visible; disabled + hint for terminated / sleeping
+  // sessions, or when viewer is not the session owner (#708 read-only mode).
+  // Non-owner takes precedence over isClosed so the message is informative.
   const cmdEl = document.getElementById('panel-command');
   cmdEl.style.display = '';
   const cmdInput = document.getElementById('cmd-input');
   const cmdBtn = document.getElementById('cmd-send');
   const cmdHint = document.getElementById('cmd-hint');
   const isClosed = s.terminated || s.sessionState === 'SLEEPING';
-  if (isClosed) {
+  const isOwnerPanel = !s.ownerId || s.ownerId === currentUserId;
+  if (!isOwnerPanel) {
+    if (cmdInput) { cmdInput.disabled = true; cmdInput.placeholder = 'Read-only — not your session'; }
+    if (cmdBtn) { cmdBtn.disabled = true; }
+    if (cmdHint) { cmdHint.style.display = 'none'; }
+  } else if (isClosed) {
     if (cmdInput) { cmdInput.disabled = true; cmdInput.placeholder = '\uC774 \uC138\uC158\uC740 \uC885\uB8CC\uB418\uC5C8\uC2B5\uB2C8\uB2E4'; }
     if (cmdBtn) { cmdBtn.disabled = true; }
     if (cmdHint) { cmdHint.style.display = ''; }
