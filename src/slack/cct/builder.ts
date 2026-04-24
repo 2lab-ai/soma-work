@@ -535,6 +535,21 @@ function formatRefreshErrorSegment(state: SlotState | undefined, nowMs: number):
 }
 
 /**
+ * Format the `rateLimitedAt` / `rateLimitSource` pair as a
+ * `rate-limited <ts> via <source>` segment. Returns null when the state
+ * has no `rateLimitedAt` — caller can unconditionally push `?? []`.
+ * Source suffix is omitted for legacy payloads that predate
+ * `rateLimitSource` (raw enum matches the TokenManager classifier, same
+ * shape both branches of `buildSlotStatusLine` emit).
+ */
+function formatRateLimitedSegment(state: SlotState | undefined, userTz: string, nowMs: number): string | null {
+  if (!state?.rateLimitedAt) return null;
+  const ts = formatRateLimitedAt(state.rateLimitedAt, userTz, nowMs);
+  const source = state.rateLimitSource ? ` via ${state.rateLimitSource}` : '';
+  return `rate-limited ${ts}${source}`;
+}
+
+/**
  * Build the second-line status segment per option-A spec
  * (PR #672 follow-up).
  *
@@ -561,12 +576,13 @@ function buildSlotStatusLine(
     const authState = state?.authState ?? 'healthy';
     const cooldown = computeUsageCooldown(state, nowMs);
     segments.push(authStateBadge(authState, cooldown));
-    // #723 +B: rate-limit source context for OAuth bare 'Cooldown'.
-    // Gated on healthy + manual cooldown + actual rate-limit event.
-    if (authState === 'healthy' && cooldown.source === 'manual' && state?.rateLimitedAt) {
-      const ts = formatRateLimitedAt(state.rateLimitedAt, userTz, nowMs);
-      const source = state.rateLimitSource ? ` via ${state.rateLimitSource}` : '';
-      segments.push(`rate-limited ${ts}${source}`);
+    // #723 +B: rate-limit source context for the OAuth bare 'Cooldown' badge.
+    // 5h/7d cooldowns self-explain (the badge names the window); only the
+    // manual source (SDK 429 → cooldownUntil) needs this context. Gated on
+    // healthy so the Unavailable branch below isn't mixed with two reasons.
+    if (authState === 'healthy' && cooldown.source === 'manual') {
+      const rlSeg = formatRateLimitedSegment(state, userTz, nowMs);
+      if (rlSeg) segments.push(rlSeg);
     }
     // Skip OAuth refresh hint when the slot is Unavailable (refresh_failed /
     // revoked) — OAuth refresh is no longer meaningful for a broken slot, so
@@ -583,7 +599,12 @@ function buildSlotStatusLine(
     // read (the refresh hint above is suppressed for non-healthy states).
     const refreshErrSeg = formatRefreshErrorSegment(state, nowMs);
     if (refreshErrSeg) segments.push(refreshErrSeg);
-    // #723 +D: Unavailable-reason fallback when no lastRefreshError diagnostic.
+    // #723 +D: when formatRefreshErrorSegment returns nothing (no
+    // `lastRefreshError` on file — e.g. direct ops mutation, or an
+    // upgrade that landed before the diagnostic was written back),
+    // give the bare Unavailable badge a canned reason so the card is
+    // self-explanatory. Skipped when refreshErrSeg already supplies
+    // richer context (no double-up).
     if (authState !== 'healthy' && !refreshErrSeg) {
       segments.push(authState === 'revoked' ? ':warning: OAuth revoked' : ':warning: OAuth refresh failed');
     }
@@ -592,11 +613,8 @@ function buildSlotStatusLine(
     segments.push(authStateBadge(state?.authState ?? 'healthy', cooldown));
     if (isActive) segments.push('active');
     if (slot.disableRotation) segments.push(':lock: rotation-off');
-    if (state?.rateLimitedAt) {
-      const ts = formatRateLimitedAt(state.rateLimitedAt, userTz, nowMs);
-      const source = state.rateLimitSource ? ` via ${state.rateLimitSource}` : '';
-      segments.push(`rate-limited ${ts}${source}`);
-    }
+    const rlSeg = formatRateLimitedSegment(state, userTz, nowMs);
+    if (rlSeg) segments.push(rlSeg);
     if (state?.tombstoned) segments.push(':wastebasket: tombstoned (drain in progress)');
     if (state && state.activeLeases.length > 0) segments.push(`leases: ${state.activeLeases.length}`);
   }
