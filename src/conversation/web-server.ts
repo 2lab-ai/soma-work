@@ -1,3 +1,4 @@
+import * as os from 'node:os';
 import fastifyFormbody from '@fastify/formbody';
 import Fastify, {
   type FastifyInstance,
@@ -267,10 +268,48 @@ function getPort(): number {
 }
 
 /**
- * Get the public base URL for conversation viewer
+ * Resolve the host label for URLs emitted by the server when no explicit
+ * `CONVERSATION_VIEWER_URL` is configured.
+ *
+ * `localhost` is the wrong default for links shared outside the process —
+ * Slack sends the URL to a user who opens it on another device on the LAN,
+ * so the link must resolve to the *host*, not the viewer's own machine.
+ *
+ * Priority:
+ *   1. `config.conversation.viewerHost` when it's an externally meaningful
+ *      bind address (not `127.0.0.1` / `localhost` / `0.0.0.0` which are
+ *      bind-only tokens, not reachable hostnames).
+ *   2. `os.hostname()` — the OS-reported short hostname (e.g. `oudwood-512`,
+ *      `mac-mini-dev`), resolvable on the local network via DNS/mDNS.
+ *   3. `localhost` as a last resort (matches prior behaviour for single-box
+ *      dev where hostname resolution isn't available).
+ */
+function _resolveViewerHost(): string {
+  const bound = config.conversation.viewerHost;
+  if (bound && bound !== '127.0.0.1' && bound !== '0.0.0.0' && bound !== 'localhost') {
+    return bound;
+  }
+  const hn = os.hostname();
+  if (hn && hn !== 'localhost') return hn;
+  return 'localhost';
+}
+
+/**
+ * Get the public base URL for conversation viewer.
+ *
+ * `config.conversation.viewerUrl` (env `CONVERSATION_VIEWER_URL`) wins —
+ * an explicit URL is the operator's intent and may include a scheme,
+ * port, or reverse-proxy hostname that host-detection cannot infer.
+ * Only when it's unset do we fall back to the detected hostname so that
+ * links shared via Slack (e.g. the `dashboard` SSO URL, `/conversations`
+ * links) are reachable from other devices on the network — `localhost`
+ * would route the recipient's browser back to their own machine and
+ * fail.
  */
 export function getViewerBaseUrl(): string {
-  return config.conversation.viewerUrl || `http://localhost:${activePort || getPort()}`;
+  if (config.conversation.viewerUrl) return config.conversation.viewerUrl;
+  const port = activePort || getPort();
+  return `http://${_resolveViewerHost()}:${port}`;
 }
 
 /**
