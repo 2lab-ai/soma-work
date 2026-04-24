@@ -36,11 +36,13 @@ const MS_USERINFO_URL = 'https://graph.microsoft.com/v1.0/me';
 
 // ── Types ──
 
+export type DashboardProvider = 'google' | 'microsoft' | 'slack';
+
 export interface DashboardUser {
   slackUserId: string;
   email: string;
   name: string;
-  provider: 'google' | 'microsoft';
+  provider: DashboardProvider;
 }
 
 export type AuthMode = 'oauth_jwt' | 'bearer_header' | 'bearer_cookie' | 'none';
@@ -119,11 +121,33 @@ export function verifyDashboardToken(token: string): DashboardUser | null {
       slackUserId: payload.sub,
       email: payload.email,
       name: payload.name,
-      provider: payload.provider as 'google' | 'microsoft',
+      provider: payload.provider as DashboardProvider,
     };
   } catch {
     return null;
   }
+}
+
+/**
+ * Issue a dashboard session JWT for a Slack-authenticated user.
+ *
+ * Used by the `dashboard` Slack command (issue #704) to mint a link that the
+ * user can click to get a session cookie without going through OAuth. The
+ * Slack event pipeline has already verified the Slack user id via the signed
+ * Slack request, so we trust `slackUserId` as the subject. `email` / `name`
+ * come from `UserSettingsStore` (auto-populated from `users.info`) and are
+ * only used for display; authorization throughout the dashboard keys on
+ * `sub` (Slack user id). The token reuses the same signing key and expiry
+ * as the OAuth flow, so every downstream check (auth middleware, CSRF,
+ * JWT rotation, absolute-max lifetime) is identical.
+ */
+export function issueSlackToken(params: { slackUserId: string; email: string; name: string }): string {
+  return issueToken({
+    slackUserId: params.slackUserId,
+    email: params.email,
+    name: params.name,
+    provider: 'slack',
+  });
 }
 
 /** Verify JWT and return raw payload (for JWT rotation logic). */
@@ -452,6 +476,41 @@ export async function registerOAuthRoutes(server: FastifyInstance): Promise<void
     clearCookieAndRedirect(reply, '/login');
   });
 
+  // ── Slack SSO (GET) — redeem a signed link from the `dashboard` Slack command ──
+  //
+  // The `dashboard` Slack command (see `slack/commands/dashboard-handler.ts`)
+  // mints a JWT with provider=`slack` and sends the user a URL of the form
+  // `/auth/sso?token=<jwt>`. This handler verifies the token, sets the
+  // standard `soma_dash_token` cookie, and redirects to the dashboard.
+  //
+  // Why a GET route (not a `?auth=` preHandler on `/dashboard`):
+  //   - clean separation from `authMiddleware` — the SSO route *sets* the
+  //     cookie, so it must run without `authMiddleware`
+  //   - symmetric with `POST /auth/token` (legacy bearer login) so future
+  //     login mechanisms all live under `/auth/*`
+  //   - removes the `?token=` query from the address bar via a 303 redirect,
+  //     so the sensitive token never lingers in browser history
+  //
+  // The cookie flags (`HttpOnly; SameSite=Lax; Path=/; Max-Age=jwtExpiresIn`)
+  // match `setCookieAndRedirect` exactly — downstream auth middleware can't
+  // tell the difference between a Slack SSO session and a Google/Microsoft
+  // OAuth session, which is intentional.
+  server.get<{ Querystring: { token?: string } }>('/auth/sso', async (request, reply) => {
+    const token = request.query.token;
+    if (!token) {
+      reply.redirect('/login?error=sso_missing');
+      return;
+    }
+    const user = verifyDashboardToken(token);
+    if (!user) {
+      logger.warn('Slack SSO: token verification failed');
+      reply.redirect('/login?error=sso_invalid');
+      return;
+    }
+    logger.info('Slack SSO login success', { slackUserId: user.slackUserId, provider: user.provider });
+    setCookieAndRedirect(reply, token, `/dashboard/${user.slackUserId}`);
+  });
+
   // ── Token login (server-side) — replaces client-side cookie write ──
   server.post<{ Body: { token: string } }>('/auth/token', async (request, reply) => {
     const { token: providedToken } = request.body || {};
@@ -598,6 +657,8 @@ if (err) {
     'microsoft_failed': 'Microsoft sign-in failed. Please try again.',
     'no_match': 'No matching Slack account found for ' + (params.get('email') || 'this email') + '. Contact your admin.',
     'state_mismatch': 'Authentication state mismatch. Please try again.',
+    'sso_missing': 'Slack SSO link is missing a token. Request a new dashboard link in Slack.',
+    'sso_invalid': 'Slack SSO link expired or is invalid. Request a new dashboard link in Slack.',
   };
   el.innerHTML = '<div class="error-msg">' + (msgs[err] || 'Authentication error.') + '</div>';
 }

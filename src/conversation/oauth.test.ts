@@ -119,4 +119,30 @@ describe('OAuth module', () => {
       // No assertion needed — just verifying no throw
     });
   });
+
+  describe('issueSlackToken (#704)', () => {
+    it('should mint a JWT that verifyDashboardToken accepts with provider=slack', async () => {
+      const { issueSlackToken } = await import('./oauth');
+      const token = issueSlackToken({
+        slackUserId: 'U789',
+        email: 'carol@slack.local',
+        name: 'Carol',
+      });
+      const user = verifyDashboardToken(token);
+      expect(user).not.toBeNull();
+      expect(user!.slackUserId).toBe('U789');
+      expect(user!.email).toBe('carol@slack.local');
+      expect(user!.name).toBe('Carol');
+      expect(user!.provider).toBe('slack');
+    });
+
+    it('should produce a token decodable by the shared JWT secret', async () => {
+      const { issueSlackToken } = await import('./oauth');
+      const token = issueSlackToken({ slackUserId: 'U1', email: 'e@x', name: 'N' });
+      const decoded = jwt.verify(token, 'test-jwt-secret') as any;
+      expect(decoded.sub).toBe('U1');
+      expect(decoded.provider).toBe('slack');
+      expect(decoded.originalIat).toBeTypeOf('number');
+    });
+  });
 });

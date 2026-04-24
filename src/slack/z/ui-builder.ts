@@ -123,6 +123,11 @@ export const DEFAULT_HELP_CATEGORIES: HelpCategory[] = [
     topics: [{ id: 'usage', label: 'usage' }],
   },
   {
+    title: '*📈 Dashboard*',
+    description: '대시보드 원클릭 로그인 링크',
+    topics: [{ id: 'dashboard', label: 'dashboard' }],
+  },
+  {
     title: '*🛠️ Admin*',
     description: '관리자 전용 명령',
     topics: [
