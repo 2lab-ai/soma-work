@@ -33,6 +33,7 @@ import {
   buildAttachOAuthModal,
   buildCctCardBlocks,
   buildRemoveSlotModal,
+  escapeMrkdwn,
 } from './builder';
 import { CCT_ACTION_IDS, CCT_BLOCK_IDS, CCT_VIEW_IDS } from './views';
 
@@ -53,6 +54,57 @@ export const REFRESH_BANNERS = {
   outerCatch: ':warning: Refresh failed. Please try again.',
   updateFailed: ':warning: 카드 갱신 실패. `/cct`를 다시 실행해주세요.',
 } as const;
+
+/**
+ * #701 — single-failure descriptor used by the `Refresh All OAuth Tokens`
+ * partial-failure banner. `name` is safe Slack-mrkdwn (slot names have
+ * been validated through `addSlot`); `kind` is one of the fixed
+ * {@link import('../../cct-store').RefreshErrorKind} arms, never the
+ * freeform message. `status` is the numeric HTTP code when the upstream
+ * supplied one — rendered as `(429)` / `(500)` for at-a-glance debugging.
+ */
+export interface RefreshFailureSummary {
+  name: string;
+  kind: string;
+  status?: number;
+}
+
+/**
+ * Build the `Refresh All OAuth Tokens` mixed-failure banner header.
+ *
+ * Only `name` + `kind` + `status` land here — NEVER `lastRefreshError.message`
+ * or any freeform text. The contract is "secret-leak safe by construction":
+ * `kind` is a fixed ASCII enum and `status` is a number. Names are
+ * truncated at 5 entries with a ` … (+N more)` suffix so a large fleet
+ * keeps the banner under Slack's reasonable mrkdwn width.
+ */
+/**
+ * Escape a slot-name for safe inclusion in a Slack mrkdwn banner.
+ *
+ * Slot names pass `addSlot`'s length/uniqueness check but NOT Slack
+ * mrkdwn safety. Two escape layers are required:
+ *   1. mrkdwn formatting chars (`*` `_` `\``) via {@link escapeMrkdwn}
+ *      so `ops*dev` doesn't collapse the banner's bold-header wrapper.
+ *   2. HTML-entity encoding for `<`, `>`, `&` per Slack's escaping rule
+ *      (https://api.slack.com/reference/surfaces/formatting#escaping) so
+ *      a name like `<@UOPS>` / `<!channel>` / `<!here>` doesn't render
+ *      as a mention inside the banner.
+ */
+function escapeSlotNameForBanner(name: string): string {
+  const htmlEscaped = name.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return escapeMrkdwn(htmlEscaped);
+}
+
+export function buildPartialFailureBanner(failures: RefreshFailureSummary[], total: number): string {
+  if (failures.length === 0) return '';
+  const labelFor = (f: RefreshFailureSummary): string => {
+    const detail = f.status !== undefined ? `${f.status}` : f.kind;
+    return `${escapeSlotNameForBanner(f.name)} (${detail})`;
+  };
+  const shown = failures.slice(0, 5).map(labelFor).join(', ');
+  const overflow = failures.length > 5 ? ` … (+${failures.length - 5} more)` : '';
+  return `:warning: *Refresh All OAuth Tokens — ${failures.length} of ${total} failed:* ${shown}${overflow}`;
+}
 
 /**
  * Surface descriptor for the `refresh_card` handler. Bolt's block_actions
@@ -276,14 +328,75 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
     await ack();
     try {
       if (!requireAdmin(body)) return;
+      // #701 — capture the starting keyIds BEFORE the refresh call so we
+      // can detect slots that timed out (missing from `results`) separately
+      // from slots that were concurrently removed/detached.
+      const startingSnap = await tokenManager.getSnapshot();
+      const startingAttached = startingSnap.registry.slots.filter(
+        (s) => s.kind === 'cct' && s.oauthAttachment !== undefined,
+      );
+      const startingKeyIds = startingAttached.map((s) => s.keyId);
+      const startingByKeyId = new Map(startingAttached.map((s) => [s.keyId, s]));
+
       const results = await tokenManager.refreshAllAttachedOAuthTokens({ awaitProfile: true });
-      const outcomes = Object.values(results);
-      const allFailed = outcomes.length > 0 && outcomes.every((o) => o === 'error');
-      if (allFailed) {
+
+      // #701 — classify EVERY starting keyId first (before deciding
+      // all-failed vs. mixed), then derive the totals from that
+      // classification. Deciding off raw `results` has two spec gaps the
+      // second reviewer flagged: (1) when every slot hits the shared
+      // deadline `results` is empty and the naive check misses all-failed,
+      // (2) concurrently torn-down slots inflate the banner denominator.
+      const snap2 = await tokenManager.getSnapshot();
+      const stillAttached = new Set(
+        snap2.registry.slots.filter((s) => s.kind === 'cct' && s.oauthAttachment !== undefined).map((s) => s.keyId),
+      );
+      let okCount = 0;
+      const failures: RefreshFailureSummary[] = [];
+      for (const keyId of startingKeyIds) {
+        const outcome = results[keyId];
+        if (outcome === 'ok') {
+          okCount += 1;
+          continue;
+        }
+        if (outcome === 'error') {
+          const errInfo = snap2.state[keyId]?.lastRefreshError;
+          failures.push({
+            name: startingByKeyId.get(keyId)?.name ?? keyId,
+            kind: errInfo?.kind ?? 'unknown',
+            ...(errInfo?.status !== undefined ? { status: errInfo.status } : {}),
+          });
+          continue;
+        }
+        // Missing from results. Differentiate timeout vs. concurrent teardown.
+        // Teardown cases are omitted from accounting entirely (spec).
+        if (stillAttached.has(keyId)) {
+          failures.push({ name: startingByKeyId.get(keyId)?.name ?? keyId, kind: 'timeout' });
+        }
+      }
+
+      const effectiveTotal = okCount + failures.length;
+
+      // All-failed path — no successes, at least one failure. Covers the
+      // "every slot timed out" case (empty `results`) that the naive
+      // check would have sent into the mixed path with no successes.
+      if (failures.length > 0 && okCount === 0 && effectiveTotal > 0) {
         await postEphemeralFailure(client, body, REFRESH_BANNERS.allNull);
         return;
       }
-      await postEphemeralCard(tokenManager, client, body);
+
+      if (failures.length === 0) {
+        // No partial failures — render the updated card (unchanged path).
+        await postEphemeralCard(tokenManager, client, body);
+        return;
+      }
+
+      // Mixed outcomes → single ephemeral surface: banner block + card
+      // blocks in one `chat.postEphemeral` call. Prevents the ordering
+      // race that two separate ephemeral posts would introduce. Denominator
+      // is `effectiveTotal` (ok + failed) — concurrent teardown is OMITTED,
+      // matching the spec's accounting rules.
+      const banner = buildPartialFailureBanner(failures, effectiveTotal);
+      await postEphemeralCardWithBanner(tokenManager, client, body, banner);
     } catch (err) {
       logger.error('cct_refresh_usage_all failed', err);
       await postEphemeralFailure(client, body, REFRESH_BANNERS.outerCatch);
@@ -708,6 +821,49 @@ async function postEphemeralCard(tokenManager: TokenManager, client: WebClient, 
     });
   } catch (err) {
     logger.debug('postEphemeralCard failed', { err });
+  }
+}
+
+/**
+ * #701 — single-surface partial-failure ephemeral. The banner `section`
+ * block is prepended to the card blocks so the operator sees the failure
+ * summary AND the updated per-row warnings in a single atomic message.
+ * This replaces the pre-#701 "post banner; then post card" sequence that
+ * could arrive out of order.
+ *
+ * On transport failure we fall back to a single `postEphemeralFailure`
+ * with just the banner — losing the card detail is acceptable, losing
+ * the failure signal entirely is not.
+ */
+async function postEphemeralCardWithBanner(
+  tokenManager: TokenManager,
+  client: WebClient,
+  body: unknown,
+  banner: string,
+): Promise<void> {
+  const target = resolveEphemeralTarget(body);
+  if (!target) {
+    logger.warn('postEphemeralCardWithBanner: missing user/channel on action body; banner dropped', { banner });
+    return;
+  }
+  const cardBlocks = await buildCardFromManager(tokenManager);
+  const blocks = [
+    {
+      type: 'section',
+      text: { type: 'mrkdwn', text: banner },
+    },
+    ...cardBlocks,
+  ];
+  try {
+    await client.chat.postEphemeral({
+      channel: target.channel,
+      user: target.userId,
+      text: ':warning: CCT refresh — partial failure',
+      blocks: blocks as any,
+    });
+  } catch (err) {
+    logger.debug('postEphemeralCardWithBanner failed; falling back to banner-only', { err });
+    await postEphemeralFailure(client, body, banner);
   }
 }
 

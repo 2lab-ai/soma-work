@@ -11,9 +11,11 @@ import { ChannelRouteActionHandler } from './channel-route-action-handler';
 import { ChoiceActionHandler } from './choice-action-handler';
 import { CompactActionHandler } from './compact-action-handler';
 import { FormActionHandler } from './form-action-handler';
+import { InstructionConfirmActionHandler } from './instruction-confirm-action-handler';
 import { JiraActionHandler } from './jira-action-handler';
 import { McpToolPermissionActionHandler } from './mcp-tool-permission-action-handler';
 import { PendingFormStore } from './pending-form-store';
+import { PendingInstructionConfirmStore } from './pending-instruction-confirm-store';
 import { PermissionActionHandler } from './permission-action-handler';
 import { PluginUpdateActionHandler } from './plugin-update-action-handler';
 import { PRActionHandler } from './pr-action-handler';
@@ -24,6 +26,7 @@ import { UserAcceptanceActionHandler } from './user-acceptance-action-handler';
 import { ZSettingsActionHandler, type ZTopicRegistry } from './z-settings-actions';
 
 export { PendingFormStore } from './pending-form-store';
+export { PendingInstructionConfirmStore } from './pending-instruction-confirm-store';
 // Re-export types for backwards compatibility
 export { ActionHandlerContext, MessageEvent, MessageHandler, PendingChoiceFormData, RespondFn, SayFn } from './types';
 
@@ -34,6 +37,7 @@ export { ActionHandlerContext, MessageEvent, MessageHandler, PendingChoiceFormDa
 export class ActionHandlers {
   private logger = new Logger('ActionHandlers');
   private formStore: PendingFormStore;
+  private pendingInstructionConfirmStore: PendingInstructionConfirmStore;
   private permissionHandler: PermissionActionHandler;
   private sessionHandler: SessionActionHandler;
   private compactHandler: CompactActionHandler;
@@ -47,11 +51,20 @@ export class ActionHandlers {
   private usageCardHandler: UsageCardActionHandler;
   private mcpToolPermissionHandler: McpToolPermissionActionHandler;
   private pluginUpdateHandler: PluginUpdateActionHandler;
+  private instructionConfirmHandler: InstructionConfirmActionHandler;
   private zSettingsHandler: ZSettingsActionHandler;
   private zTopicRegistry: ZTopicRegistry;
 
   constructor(private ctx: ActionHandlerContext) {
     this.formStore = new PendingFormStore();
+    // The stream-executor side of the confirm flow needs the SAME store
+    // instance we hand to `InstructionConfirmActionHandler` below. The
+    // composition root (`SlackHandler`) is expected to inject its
+    // already-constructed store via `ctx.pendingInstructionConfirmStore`;
+    // when absent (tests, minimal harnesses), we fall back to a fresh
+    // local instance so the handler stays callable even if no writes
+    // will ever land.
+    this.pendingInstructionConfirmStore = ctx.pendingInstructionConfirmStore ?? new PendingInstructionConfirmStore();
 
     // Optional-chain the call: test harnesses pass minimal ClaudeHandler mocks
     // that omit getSessionRegistry. In that case `PermissionActionHandler`'s
@@ -137,6 +150,15 @@ export class ActionHandlers {
       mcpManager: ctx.mcpManager,
     });
 
+    // Instruction-confirm y/n handler — uses the same shared store as
+    // StreamExecutor so a write deferred by the executor is visible to
+    // the click handler (PLAN §7).
+    this.instructionConfirmHandler = new InstructionConfirmActionHandler({
+      slackApi: ctx.slackApi,
+      claudeHandler: ctx.claudeHandler,
+      store: this.pendingInstructionConfirmStore,
+    });
+
     // `/z` Block Kit action/view router — registered alongside the others
     // in `registerHandlers`. The registry is populated up-front so tests and
     // introspection callers can access topic bindings before `registerHandlers`
@@ -150,6 +172,16 @@ export class ActionHandlers {
   /** Topic registry backing the `/z` Block Kit actions. Exposed for tests. */
   getZTopicRegistry(): ZTopicRegistry {
     return this.zTopicRegistry;
+  }
+
+  /**
+   * The shared store for deferred instruction writes. Exposed so the
+   * composition root (`SlackHandler`) can pass the SAME instance to
+   * `StreamExecutor` — both halves of the confirm flow must see the
+   * same entries (PLAN §7).
+   */
+  getPendingInstructionConfirmStore(): PendingInstructionConfirmStore {
+    return this.pendingInstructionConfirmStore;
   }
 
   /**
@@ -345,6 +377,18 @@ export class ActionHandlers {
     app.action(/^plugin_update_force_/, async ({ ack, body, respond }) => {
       await ack();
       await this.pluginUpdateHandler.handleForceUpdate(body, respond);
+    });
+
+    // Instruction-write confirmation buttons (PLAN §7).
+    // action_id format: `instr_confirm_y:<requestId>` / `instr_confirm_n:<requestId>`.
+    app.action(/^instr_confirm_y:/, async ({ ack, body, respond }) => {
+      await ack();
+      await this.instructionConfirmHandler.handleYes(body, respond);
+    });
+
+    app.action(/^instr_confirm_n:/, async ({ ack, body, respond }) => {
+      await ack();
+      await this.instructionConfirmHandler.handleNo(body, respond);
     });
 
     app.action('managed_message_delete_cancel', async ({ ack, body, respond }) => {

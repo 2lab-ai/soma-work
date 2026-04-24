@@ -320,6 +320,33 @@ describe('ActionPanelBuilder', () => {
     expect(contextIdx).toBeLessThan(actionsIdx);
   });
 
+  // #689 P4 Part 2/2 — suppressAgentChip flag
+  it('suppressAgentChip=true omits agent chip from status text', () => {
+    const withChip = ActionPanelBuilder.build({
+      sessionKey: 'session-chip-on',
+      workflow: 'default',
+      agentPhase: 'thinking',
+      activeTool: 'Bash',
+      hasActiveRequest: true,
+    });
+    const withoutChip = ActionPanelBuilder.build({
+      sessionKey: 'session-chip-off',
+      workflow: 'default',
+      agentPhase: 'thinking',
+      activeTool: 'Bash',
+      hasActiveRequest: true,
+      suppressAgentChip: true,
+    });
+
+    // With chip: expect a `\n_…_` agent chip appended after the badge
+    const withHero = withChip.blocks.find((b: any) => b.type === 'section' && b.text?.type === 'mrkdwn');
+    expect(withHero.text.text).toMatch(/\n_[^_]+_/);
+
+    // Without chip: hero section has NO appended `\n_…_` chip line
+    const withoutHero = withoutChip.blocks.find((b: any) => b.type === 'section' && b.text?.type === 'mrkdwn');
+    expect(withoutHero.text.text).not.toMatch(/\n_[^_]+_/);
+  });
+
   it('renders PR status in 2-column layout beside status badge', () => {
     const payload = ActionPanelBuilder.build({
       sessionKey: 'session-pr-layout',
@@ -335,5 +362,19 @@ describe('ActionPanelBuilder', () => {
     expect(heroSection.fields[0].text).toContain('사용 가능');
     expect(heroSection.fields[1].text).toContain('*PR*');
     expect(heroSection.fields[1].text).toContain('Approved');
+  });
+
+  it('renders only close button for z-plan-to-work handoff workflow (#695)', () => {
+    const payload = ActionPanelBuilder.build({ sessionKey: 'session-z1', workflow: 'z-plan-to-work' });
+    const actionBlocks = payload.blocks.filter((block) => block.type === 'actions');
+    const actionIds = actionBlocks.flatMap((block: any) => block.elements.map((el: any) => el.action_id));
+    expect(actionIds).toEqual(['panel_close']);
+  });
+
+  it('renders only close button for z-epic-update handoff workflow (#695)', () => {
+    const payload = ActionPanelBuilder.build({ sessionKey: 'session-z2', workflow: 'z-epic-update' });
+    const actionBlocks = payload.blocks.filter((block) => block.type === 'actions');
+    const actionIds = actionBlocks.flatMap((block: any) => block.elements.map((el: any) => el.action_id));
+    expect(actionIds).toEqual(['panel_close']);
   });
 });

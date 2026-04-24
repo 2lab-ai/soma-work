@@ -491,3 +491,13 @@ call-tracker.sh reset
 │ Before completion: run `call-tracker.sh report`             │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+## Forbidden Tools
+
+- **`ScheduleWakeup` 사용금지.** 호출해도 세션 재진입이 보장되지 않는다. 한 번 불리면 다시 돌아오지 않는다.
+- **대체 패턴 (폴링/장기 대기):**
+  - `Bash(run_in_background: true)` — 백그라운드 작업 실행, `task_id` 반환
+  - `Monitor` — 이벤트 스트림 구독 (각 stdout 라인이 한 이벤트)
+  - `TaskStop({task_id})` — 실행 중단
+- `local:llm-dispatch` 스킬이 위 패턴의 canonical reference. 장기 LLM 호출이 필요하면 거기서부터 시작.
+- 짧은 폴링은 `Bash(run_in_background:false)` + `sleep`으로 직렬 처리.

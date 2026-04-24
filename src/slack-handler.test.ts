@@ -1,9 +1,10 @@
+import { Assistant } from '@slack/bolt';
 import { describe, expect, it, vi } from 'vitest';
 import { SlackHandler } from './slack-handler';
 
 describe('SlackHandler', () => {
   it('creates thread panel after session initialization', async () => {
-    const app = { client: {} } as any;
+    const app = { client: {}, assistant: vi.fn() } as any;
     const claudeHandler = {};
     const mcpManager = {};
 
@@ -55,7 +56,7 @@ describe('SlackHandler', () => {
   });
 
   it('streams into bot-initiated thread when initializer returns migrated session', async () => {
-    const app = { client: {} } as any;
+    const app = { client: {}, assistant: vi.fn() } as any;
     const claudeHandler = {};
     const mcpManager = {};
 
@@ -116,7 +117,7 @@ describe('SlackHandler', () => {
   });
 
   it('clears waiting choice panel when user sends direct text input', async () => {
-    const app = { client: {} } as any;
+    const app = { client: {}, assistant: vi.fn() } as any;
     const claudeHandler = {
       setActivityStateByKey: vi.fn(),
     };
@@ -181,7 +182,7 @@ describe('SlackHandler', () => {
   });
 
   it('passes forceWorkflow from continuation into runDispatch', async () => {
-    const app = { client: {} } as any;
+    const app = { client: {}, assistant: vi.fn() } as any;
     const claudeHandler = {
       resetSessionContext: vi.fn(),
       getSession: vi.fn().mockReturnValue({
@@ -252,11 +253,13 @@ describe('SlackHandler', () => {
     await handler.handleMessage(event as any, say);
 
     expect(claudeHandler.resetSessionContext).toHaveBeenCalledWith('C123', '111.222');
+    // Non z-* workflow: handoffPrompt is undefined (5th arg added in #695)
     expect(handlerAny.sessionInitializer.runDispatch).toHaveBeenCalledWith(
       'C123',
       '111.222',
       'https://github.com/acme/repo/pull/1',
       'pr-review',
+      undefined,
     );
   });
 
@@ -264,7 +267,7 @@ describe('SlackHandler', () => {
     // Bug: When user sends a follow-up message in the work thread,
     // activeThreadTs === originalThreadTs, so sourceThreadTs was set to undefined.
     // Fix: Fall back to session.sourceThread from the persisted session.
-    const app = { client: {} } as any;
+    const app = { client: {}, assistant: vi.fn() } as any;
     const claudeHandler = {};
     const mcpManager = {};
 
@@ -334,7 +337,7 @@ describe('SlackHandler', () => {
     process.env.ADMIN_USERS = 'U_ADMIN';
     resetAdminUsersCache();
 
-    const app = { client: {} } as any;
+    const app = { client: {}, assistant: vi.fn() } as any;
     const claudeHandler = {};
     const mcpManager = {};
 
@@ -383,7 +386,7 @@ describe('SlackHandler', () => {
     process.env.ADMIN_USERS = 'U_ADMIN';
     resetAdminUsersCache();
 
-    const app = { client: {} } as any;
+    const app = { client: {}, assistant: vi.fn() } as any;
     const claudeHandler = {};
     const mcpManager = {};
 
@@ -457,7 +460,7 @@ describe('SlackHandler', () => {
     resetAdminUsersCache();
 
     try {
-      const app = { client: {} } as any;
+      const app = { client: {}, assistant: vi.fn() } as any;
       const claudeHandler = {};
       const mcpManager = {};
 
@@ -517,7 +520,7 @@ describe('SlackHandler', () => {
    * ============================================================ */
 
   it('DM `/z help` routes through ZRouter with source=dm (FIX #1)', async () => {
-    const app = { client: {} } as any;
+    const app = { client: {}, assistant: vi.fn() } as any;
     const claudeHandler = {};
     const mcpManager = {};
 
@@ -575,7 +578,7 @@ describe('SlackHandler', () => {
     resetAdminUsersCache();
 
     try {
-      const app = { client: {} } as any;
+      const app = { client: {}, assistant: vi.fn() } as any;
       const claudeHandler = {};
       const mcpManager = {};
 
@@ -633,7 +636,7 @@ describe('SlackHandler', () => {
     resetAdminUsersCache();
 
     try {
-      const app = { client: {} } as any;
+      const app = { client: {}, assistant: vi.fn() } as any;
       const claudeHandler = {};
       const mcpManager = {};
 
@@ -703,7 +706,7 @@ describe('SlackHandler', () => {
     resetAdminUsersCache();
 
     try {
-      const app = { client: {} } as any;
+      const app = { client: {}, assistant: vi.fn() } as any;
       const claudeHandler = {};
       const mcpManager = {};
 
@@ -794,7 +797,7 @@ describe('SlackHandler', () => {
     const buildHandler = (
       opts: { dispatchResult?: any; routeCommandResult?: { handled: boolean; continueWithPrompt?: string } } = {},
     ) => {
-      const app = { client: {} } as any;
+      const app = { client: {}, assistant: vi.fn() } as any;
       const claudeHandler = {};
       const mcpManager = {};
       const handler = new SlackHandler(app as any, claudeHandler as any, mcpManager as any);
@@ -1112,6 +1115,203 @@ describe('SlackHandler', () => {
         // Ephemeral guide was still delivered (the user sees some feedback).
         expect(slackApi.postEphemeral).toHaveBeenCalledTimes(1);
       });
+    });
+  });
+
+  /* ============================================================
+   * #666 P4 Part 1/2 — Bolt Assistant container registration
+   * ============================================================ */
+  describe('SlackHandler — Bolt Assistant container registration (#666)', () => {
+    it('registers the Bolt Assistant container exactly once at construction time', () => {
+      const app = { client: {}, assistant: vi.fn() } as any;
+      const claudeHandler = {};
+      const mcpManager = {};
+
+      new SlackHandler(app as any, claudeHandler as any, mcpManager as any);
+
+      expect(app.assistant).toHaveBeenCalledTimes(1);
+      const registered = app.assistant.mock.calls[0][0];
+      expect(registered).toBeInstanceOf(Assistant);
+    });
+  });
+
+  // -------------------------------------------------------------------
+  // Issue #695 — z handoff entrypoint safe-stop
+  // -------------------------------------------------------------------
+
+  describe('z handoff entrypoint plumbing (#695)', () => {
+    function planToWorkPromptBody(): string {
+      return [
+        '$z phase2 https://example.com/issue/1',
+        '',
+        '<z-handoff type="plan-to-work">',
+        '## Issue',
+        'https://example.com/issue/1',
+        '## Parent Epic',
+        'none',
+        '## Task List',
+        '- [ ] step 1',
+        '</z-handoff>',
+      ].join('\n');
+    }
+
+    it('passes handoffPrompt=continuation.prompt into runDispatch for z-plan-to-work', async () => {
+      const { HandoffAbortError } = await import('somalib/model-commands/handoff-parser');
+      void HandoffAbortError; // keep import used across builds
+
+      const app = { client: {}, assistant: vi.fn() } as any;
+      const claudeHandler = {
+        resetSessionContext: vi.fn(),
+        getSession: vi.fn().mockReturnValue({
+          ownerId: 'U123',
+          channelId: 'C123',
+          threadTs: '111.222',
+        }),
+        saveSessions: vi.fn(),
+      };
+      const mcpManager = {};
+      const handler = new SlackHandler(app as any, claudeHandler as any, mcpManager as any);
+      const handlerAny = handler as any;
+
+      handlerAny.slackApi = {
+        addReaction: vi.fn().mockResolvedValue(undefined),
+        removeReaction: vi.fn().mockResolvedValue(undefined),
+        postMessage: vi.fn().mockResolvedValue({ ts: 'msg123' }),
+      };
+      handlerAny.inputProcessor = {
+        processFiles: vi.fn().mockResolvedValue({ files: [], shouldContinue: true }),
+        routeCommand: vi.fn().mockResolvedValue({ handled: false, continueWithPrompt: undefined }),
+      };
+      handlerAny.sessionInitializer = {
+        validateWorkingDirectory: vi.fn().mockResolvedValue({ valid: true, workingDirectory: '/tmp' }),
+        initialize: vi.fn().mockResolvedValue({
+          session: { ownerId: 'U123', channelId: 'C123', threadTs: '111.222' },
+          sessionKey: 'C123:111.222',
+          isNewSession: true,
+          userName: 'Test User',
+          workingDirectory: '/tmp',
+          abortController: new AbortController(),
+          halted: false,
+        }),
+        runDispatch: vi.fn().mockResolvedValue(undefined),
+      };
+      handlerAny.streamExecutor = {
+        execute: vi
+          .fn()
+          .mockResolvedValueOnce({
+            success: true,
+            messageCount: 1,
+            continuation: {
+              prompt: planToWorkPromptBody(),
+              resetSession: true,
+              dispatchText: 'https://example.com/issue/1',
+              forceWorkflow: 'z-plan-to-work',
+            },
+          })
+          .mockResolvedValueOnce({ success: true, messageCount: 1 }),
+      };
+      handlerAny.threadPanel = { create: vi.fn().mockResolvedValue(undefined) };
+
+      const say = vi.fn().mockResolvedValue({ ts: 'msg123' });
+      await handler.handleMessage(
+        {
+          user: 'U123',
+          channel: 'C123',
+          ts: '111.222',
+          text: 'kick off',
+        } as any,
+        say,
+      );
+
+      const callArgs = handlerAny.sessionInitializer.runDispatch.mock.calls[0];
+      expect(callArgs[0]).toBe('C123');
+      expect(callArgs[1]).toBe('111.222');
+      expect(callArgs[3]).toBe('z-plan-to-work');
+      expect(callArgs[4]).toContain('<z-handoff type="plan-to-work">');
+    });
+
+    it('catches HandoffAbortError from runDispatch: posts safe-stop message, marks session terminated, skips retry', async () => {
+      const { HandoffAbortError } = await import('somalib/model-commands/handoff-parser');
+
+      const app = { client: {}, assistant: vi.fn() } as any;
+      const terminatedSession: any = {
+        ownerId: 'U123',
+        channelId: 'C123',
+        threadTs: '111.222',
+      };
+      const claudeHandler = {
+        resetSessionContext: vi.fn(),
+        getSession: vi.fn().mockReturnValue(terminatedSession),
+        getSessionKey: vi.fn().mockReturnValue('C123:111.222'),
+        terminateSession: vi.fn().mockReturnValue(true),
+      };
+      const mcpManager = {};
+      const handler = new SlackHandler(app as any, claudeHandler as any, mcpManager as any);
+      const handlerAny = handler as any;
+
+      const postMessage = vi.fn().mockResolvedValue({ ts: 'msg-abort' });
+      handlerAny.slackApi = {
+        addReaction: vi.fn().mockResolvedValue(undefined),
+        removeReaction: vi.fn().mockResolvedValue(undefined),
+        postMessage,
+      };
+      handlerAny.inputProcessor = {
+        processFiles: vi.fn().mockResolvedValue({ files: [], shouldContinue: true }),
+        routeCommand: vi.fn().mockResolvedValue({ handled: false, continueWithPrompt: undefined }),
+      };
+      handlerAny.sessionInitializer = {
+        validateWorkingDirectory: vi.fn().mockResolvedValue({ valid: true, workingDirectory: '/tmp' }),
+        initialize: vi.fn().mockResolvedValue({
+          session: { ownerId: 'U123', channelId: 'C123', threadTs: '111.222' },
+          sessionKey: 'C123:111.222',
+          isNewSession: true,
+          userName: 'Test User',
+          workingDirectory: '/tmp',
+          abortController: new AbortController(),
+          halted: false,
+        }),
+        runDispatch: vi
+          .fn()
+          .mockRejectedValue(new HandoffAbortError('missing-closing', 'no closing tag', 'z-plan-to-work')),
+      };
+
+      const autoRetryScheduler = vi.fn();
+      handlerAny.autoResumeSession = autoRetryScheduler;
+
+      // Throw from startWithContinuation — emulate v1-query-adapter propagating
+      // the HandoffAbortError after onResetSession throws.
+      handlerAny.streamExecutor = {
+        execute: vi.fn().mockImplementation(async () => {
+          throw new HandoffAbortError('missing-closing', 'no closing tag', 'z-plan-to-work');
+        }),
+      };
+      handlerAny.threadPanel = { create: vi.fn().mockResolvedValue(undefined) };
+
+      const say = vi.fn().mockResolvedValue({ ts: 'msg123' });
+      await handler.handleMessage(
+        {
+          user: 'U123',
+          channel: 'C123',
+          ts: '111.222',
+          text: 'trigger abort',
+        } as any,
+        say,
+      );
+
+      // Safe-stop message posted to thread
+      expect(postMessage).toHaveBeenCalled();
+      const msgCall = postMessage.mock.calls.find((c: any[]) => String(c[1]).includes('Handoff entrypoint 진입 실패'));
+      expect(msgCall).toBeDefined();
+      expect(msgCall![0]).toBe('C123');
+      expect(String(msgCall![1])).toContain('z-plan-to-work');
+      expect(String(msgCall![1])).toContain('missing-closing');
+      expect(msgCall![2]).toEqual({ threadTs: '111.222' });
+
+      // Session fully terminated (archive + cleanup + map delete + persist)
+      expect(claudeHandler.terminateSession).toHaveBeenCalledWith('C123:111.222');
+
+      // No auto-retry scheduled
+      expect(autoRetryScheduler).not.toHaveBeenCalled();
     });
   });
 });

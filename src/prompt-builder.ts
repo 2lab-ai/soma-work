@@ -8,7 +8,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { SYSTEM_PROMPT_FILE } from './env-paths';
 import { Logger } from './logger';
-import type { WorkflowType } from './types';
+import { buildUserInstructionsBlock } from './prompt/user-instructions-block';
+import type { ConversationSession, WorkflowType } from './types';
 import { formatMemoryForPrompt } from './user-memory-store';
 import { userSettingsStore } from './user-settings-store';
 import { listUserSkills } from './user-skill-store';
@@ -367,9 +368,16 @@ export class PromptBuilder {
 
   /**
    * Build the complete system prompt for a user
-   * Includes base prompt (or workflow prompt) and user's persona
+   * Includes base prompt (or workflow prompt) and user's persona.
+   *
+   * When a `session` is provided, the user-instructions SSOT block is
+   * appended so the model sees the current active/todo/completed
+   * instructions on every fresh build. The caller is expected to cache
+   * the result on `session.systemPrompt` and only rebuild at the three
+   * reset points (first turn / reset / post-compact) + SSOT change
+   * invalidations. See PLAN.md §2 for the cache protocol.
    */
-  buildSystemPrompt(userId?: string, workflow?: WorkflowType): string | undefined {
+  buildSystemPrompt(userId?: string, workflow?: WorkflowType, session?: ConversationSession): string | undefined {
     // Load workflow-specific prompt or default
     let systemPrompt = workflow
       ? this.loadWorkflowPrompt(workflow) || this.defaultSystemPrompt || ''
@@ -412,6 +420,16 @@ export class PromptBuilder {
         }
       } catch {
         // Skills dir may not exist — that's fine, no skills to inject
+      }
+    }
+
+    // Inject user-instructions SSOT block (last — so it sits at the bottom
+    // of the prompt and receives high recency attention from the model).
+    // Empty when the session has no instructions yet.
+    if (session) {
+      const instructionsBlock = buildUserInstructionsBlock(session);
+      if (instructionsBlock) {
+        systemPrompt = systemPrompt ? `${systemPrompt}\n\n${instructionsBlock}` : instructionsBlock;
       }
     }
 

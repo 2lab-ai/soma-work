@@ -757,15 +757,16 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       fetchUsageMock.mockResolvedValueOnce({
         snapshot: {
           fetchedAt: new Date().toISOString(),
-          fiveHour: { utilization: 0.5, resetsAt: new Date(Date.now() + 3_600_000).toISOString() },
+          fiveHour: { utilization: 50, resetsAt: new Date(Date.now() + 3_600_000).toISOString() },
         },
         nextFetchAllowedAtMs: Date.now() + 2 * 60 * 1000,
       });
       const result = await tm.fetchAndStoreUsage(s.keyId);
       expect(result).not.toBeNull();
-      expect(result?.fiveHour?.utilization).toBe(0.5);
+      // #701 — percent-form stored verbatim.
+      expect(result?.fiveHour?.utilization).toBe(50);
       const snap = await store.load();
-      expect(snap.state[s.keyId].usage?.fiveHour?.utilization).toBe(0.5);
+      expect(snap.state[s.keyId].usage?.fiveHour?.utilization).toBe(50);
       expect(snap.state[s.keyId].lastUsageFetchedAt).toBeDefined();
     });
 
@@ -785,7 +786,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       fetchUsageMock.mockResolvedValueOnce({
         snapshot: {
           fetchedAt: new Date().toISOString(),
-          fiveHour: { utilization: 0.1, resetsAt: new Date().toISOString() },
+          fiveHour: { utilization: 10, resetsAt: new Date().toISOString() },
         },
         nextFetchAllowedAtMs: Date.now() + 120_000,
       });
@@ -1074,7 +1075,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       fetchUsageMock.mockImplementation(async () => ({
         snapshot: {
           fetchedAt: new Date().toISOString(),
-          fiveHour: { utilization: 0.3, resetsAt: new Date(Date.now() + 3_600_000).toISOString() },
+          fiveHour: { utilization: 30, resetsAt: new Date(Date.now() + 3_600_000).toISOString() },
         },
         nextFetchAllowedAtMs: Date.now() + 2 * 60 * 1000,
       }));
@@ -1110,12 +1111,12 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       resolveFetch({
         snapshot: {
           fetchedAt: new Date().toISOString(),
-          fiveHour: { utilization: 0.5, resetsAt: new Date(Date.now() + 3_600_000).toISOString() },
+          fiveHour: { utilization: 50, resetsAt: new Date(Date.now() + 3_600_000).toISOString() },
         },
         nextFetchAllowedAtMs: Date.now() + 2 * 60 * 1000,
       });
       const results = await parallel;
-      expect(results.every((r) => r?.fiveHour?.utilization === 0.5)).toBe(true);
+      expect(results.every((r) => r?.fiveHour?.utilization === 50)).toBe(true);
       // Critical assertion: upstream fetch hit at most once thanks to dedupe.
       expect(fetchUsageMock).toHaveBeenCalledTimes(1);
     });
@@ -1199,7 +1200,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
           ...(snap.state[slot.keyId] ?? { authState: 'healthy', activeLeases: [] }),
           usage: {
             fetchedAt: new Date().toISOString(),
-            fiveHour: { utilization: 0.42, resetsAt: new Date(Date.now() + 3_600_000).toISOString() },
+            fiveHour: { utilization: 42, resetsAt: new Date(Date.now() + 3_600_000).toISOString() },
           },
           lastUsageFetchedAt: new Date().toISOString(),
         };
@@ -1318,7 +1319,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
         return {
           snapshot: {
             fetchedAt: '2026-04-19T00:00:00Z',
-            fiveHour: { utilization: 0.5, resetsAt: '2026-04-19T05:00:00Z' },
+            fiveHour: { utilization: 50, resetsAt: '2026-04-19T05:00:00Z' },
           },
           nextFetchAllowedAtMs: Date.now() + 60_000,
         };
@@ -1511,7 +1512,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
         return {
           snapshot: {
             fetchedAt: '2026-04-19T00:00:00Z',
-            fiveHour: { utilization: 0.99, resetsAt: '2026-04-19T05:00:00Z' },
+            fiveHour: { utilization: 99, resetsAt: '2026-04-19T05:00:00Z' },
           },
           nextFetchAllowedAtMs: Date.now() + 60_000,
         };
@@ -1684,14 +1685,15 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       fetchUsageMock.mockResolvedValueOnce({
         snapshot: {
           fetchedAt: new Date().toISOString(),
-          fiveHour: { utilization: 0.9, resetsAt: new Date(Date.now() + 3_600_000).toISOString() },
+          fiveHour: { utilization: 90, resetsAt: new Date(Date.now() + 3_600_000).toISOString() },
         },
         nextFetchAllowedAtMs: Date.now() + 2 * 60 * 1000,
       });
       // With force, fetchUsage MUST be invoked despite the gate.
       const result = await tm.fetchAndStoreUsage(s.keyId, { force: true });
       expect(fetchUsageMock).toHaveBeenCalledTimes(1);
-      expect(result?.fiveHour?.utilization).toBe(0.9);
+      // #701 — percent-form stored verbatim.
+      expect(result?.fiveHour?.utilization).toBe(90);
     });
 
     it('force:false (default) still respects nextUsageFetchAllowedAt gate — regression guard', async () => {
@@ -1746,7 +1748,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       fetchUsageMock.mockResolvedValue({
         snapshot: {
           fetchedAt: new Date().toISOString(),
-          fiveHour: { utilization: 0.1, resetsAt: new Date(Date.now() + 3_600_000).toISOString() },
+          fiveHour: { utilization: 10, resetsAt: new Date(Date.now() + 3_600_000).toISOString() },
         },
         nextFetchAllowedAtMs: Date.now() + 2 * 60 * 1000,
       });
@@ -1805,7 +1807,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
         return {
           snapshot: {
             fetchedAt: '2026-04-19T00:00:00Z',
-            fiveHour: { utilization: 0.42, resetsAt: '2026-04-19T05:00:00Z' },
+            fiveHour: { utilization: 42, resetsAt: '2026-04-19T05:00:00Z' },
           },
           nextFetchAllowedAtMs: Date.now() + 60_000,
         };
@@ -1858,7 +1860,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
         return {
           snapshot: {
             fetchedAt: '2026-04-20T00:00:00Z',
-            fiveHour: { utilization: 0.77, resetsAt: '2026-04-20T05:00:00Z' },
+            fiveHour: { utilization: 77, resetsAt: '2026-04-20T05:00:00Z' },
           },
           nextFetchAllowedAtMs: Date.now() + 60_000,
         };
@@ -2729,7 +2731,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       fetchUsageMock.mockResolvedValueOnce({
         snapshot: {
           fetchedAt: new Date().toISOString(),
-          fiveHour: { utilization: 0.2, resetsAt: new Date(Date.now() + 3_600_000).toISOString() },
+          fiveHour: { utilization: 20, resetsAt: new Date(Date.now() + 3_600_000).toISOString() },
         },
         nextFetchAllowedAtMs: Date.now() + 120_000,
       });

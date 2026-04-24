@@ -474,6 +474,9 @@ export class DispatchService {
     'pr-docs-confluence',
     'deploy',
     'default',
+    // z controller session handoff entrypoints (issue #695).
+    'z-plan-to-work',
+    'z-epic-update',
   ]);
 
   /**

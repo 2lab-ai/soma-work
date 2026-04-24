@@ -21,6 +21,7 @@ import {
   isSshCommand,
 } from './dangerous-command-filter';
 import { CONFIG_FILE } from './env-paths';
+import { buildPrIssueHookEntries } from './hooks/pr-issue-guard';
 import { Logger } from './logger';
 import type { McpManager } from './mcp-manager';
 import { mcpToolGrantStore } from './mcp-tool-grant-store';
@@ -948,6 +949,26 @@ export class ClaudeHandler {
           }
         }
 
+        // ── PR-issue precondition (#696) ──
+        // For z-handoff sessions (session.handoffContext set), require a linked
+        // source issue (or validated Case A escape) before allowing PR creation
+        // via Bash `gh pr create` or `mcp__github__create_pull_request`. Sessions
+        // without handoffContext are unaffected.
+        //
+        // SDK multi-hook precedence is `deny > allow` (verified cli.js:8208-8240
+        // in @anthropic-ai/claude-agent-sdk@0.2.111), so this deny wins over the
+        // bypass-mode Bash hook's allow regardless of array order.
+        //
+        // Spec / trace: docs/pr-issue-precondition/{spec,trace}.md
+        preToolUseHooks.push(
+          ...buildPrIssueHookEntries({
+            getHandoffContext: () =>
+              this.sessionRegistry.getSession(slackContext.channel, slackContext.threadTs)?.handoffContext,
+            logger: this.logger,
+            logCtx: { channel: slackContext.channel, threadTs: slackContext.threadTs },
+          }),
+        );
+
         if (preToolUseHooks.length > 0) {
           options.hooks = {
             ...options.hooks,
@@ -1053,30 +1074,49 @@ export class ClaudeHandler {
         }
       }
 
-      // Build system prompt with persona and workflow
-      // Use session owner for user variable resolution (Co-Authored-By attribution)
-      // Falls back to current user if no session exists yet
+      // Build system prompt with persona and workflow.
+      // Rebuild gate (PLAN.md §2) — the prompt is expensive to rebuild (reads
+      // files, formats memory, etc.) and every rebuild is a prompt-cache
+      // miss. So we rebuild only at the three reset points
+      //   (a) first turn           — `!session.sessionId`
+      //   (b) post-compact         — `session.compactionOccurred === true`
+      //   (c) no cached snapshot   — `!session.systemPrompt`
+      // SSOT mutators (InstructionConfirmActionHandler.handleYes,
+      // regenerateInstructionsSummaryIfStale) clear `session.systemPrompt`
+      // on change so the next turn lands on branch (c) and rebuilds.
       const workflow = session?.workflow || 'default';
       const promptUserId = session?.ownerId || slackContext?.user;
-      let builtSystemPrompt = this.promptBuilder.buildSystemPrompt(promptUserId, workflow);
+      const shouldRebuild =
+        !session || !session.systemPrompt || session.compactionOccurred === true || !session.sessionId;
 
-      // Inject channel description as additional context
-      if (builtSystemPrompt && slackContext?.channelDescription) {
-        builtSystemPrompt = `${builtSystemPrompt}\n\n<channel-description source="slack">\n${slackContext.channelDescription}\n</channel-description>`;
-      }
+      let builtSystemPrompt: string | undefined;
+      if (shouldRebuild) {
+        builtSystemPrompt = this.promptBuilder.buildSystemPrompt(promptUserId, workflow, session);
 
-      // Inject structured repository context from channel registry
-      // This provides explicit repo identification so the model doesn't have to guess from raw description
-      const hasRepos = slackContext?.repos && slackContext.repos.length > 0;
-      const hasConfluence = !!slackContext?.confluenceUrl;
-      if (builtSystemPrompt && (hasRepos || hasConfluence)) {
-        builtSystemPrompt = `${builtSystemPrompt}\n\n${buildRepoContextBlock(slackContext!.repos || [], slackContext!.confluenceUrl)}`;
-      }
+        // Inject channel description as additional context
+        if (builtSystemPrompt && slackContext?.channelDescription) {
+          builtSystemPrompt = `${builtSystemPrompt}\n\n<channel-description source="slack">\n${slackContext.channelDescription}\n</channel-description>`;
+        }
 
-      // Snapshot the fully-built system prompt into the session for admin debugging ("show prompt").
-      // Always overwrite to avoid showing a stale prompt from a previous turn.
-      if (session) {
-        session.systemPrompt = builtSystemPrompt || undefined;
+        // Inject structured repository context from channel registry.
+        // This provides explicit repo identification so the model doesn't
+        // have to guess from raw description.
+        const hasRepos = slackContext?.repos && slackContext.repos.length > 0;
+        const hasConfluence = !!slackContext?.confluenceUrl;
+        if (builtSystemPrompt && (hasRepos || hasConfluence)) {
+          builtSystemPrompt = `${builtSystemPrompt}\n\n${buildRepoContextBlock(slackContext!.repos || [], slackContext!.confluenceUrl)}`;
+        }
+
+        // Cache the freshly-built prompt on the session so subsequent turns
+        // skip the rebuild until the next reset / SSOT change.
+        if (session) {
+          session.systemPrompt = builtSystemPrompt || undefined;
+        }
+      } else {
+        // Reuse the cached snapshot. Skip channel / repo injection —
+        // they were baked in at build time and don't change across turns
+        // within the same logical session.
+        builtSystemPrompt = session!.systemPrompt;
       }
       if (builtSystemPrompt) {
         options.systemPrompt = builtSystemPrompt;
