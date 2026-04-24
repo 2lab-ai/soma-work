@@ -55,28 +55,40 @@ function isPrCreateBashCommand(cmd: string): boolean {
 
 /**
  * Extract the substring of the bash command that follows the `--body` /
- * `-b` / `--body-file` flag *within the `gh pr create` segment*.
+ * `-b` flag *within the `gh pr create` segment*.
  *
  * Two-step:
  *   1. Anchor to `\bgh\s+pr\s+create\b` so a stray `--body` in an unrelated
  *      earlier command (e.g., `echo "--body Closes #696" && gh pr create
  *      --body "x"`) is not used as the body source.
- *   2. Locate the first `--body` flag in the tail and return everything
- *      after it.
+ *   2. Locate the first `--body` / `-b` flag in the tail and return
+ *      everything after it.
  *
- * Returns the WHOLE remainder (we don't try to find the matching close
- * quote — that requires shell tokenization and is out of scope per
- * spec AD-6). Marker check uses regex which tolerates trailing tokens.
+ * `--body-file` is **explicitly excluded** by the negative lookahead in the
+ * flag regex. The file content is not visible to a static check, so without
+ * exclusion `gh pr create --body-file body.md && echo "Closes #N"` would
+ * false-pass when the marker appears in the chained tail. Per spec AD-6
+ * "Out of scope: --body-file (file-backed body)". By returning null when
+ * only --body-file is present (treating it as an unknown body), the caller
+ * blocks with the appropriate missing-marker reason.
+ *
+ * Returns the WHOLE remainder of the tail when --body / -b is found (we
+ * don't try to find the matching close quote — that requires shell
+ * tokenization and is out of scope per spec AD-6). Marker check uses regex
+ * which tolerates trailing tokens.
  *
  * Returns `null` when:
  *   - no `gh pr create` substring is present, OR
- *   - no `--body` / `-b` flag follows it.
+ *   - no `--body` / `-b` flag follows it (including --body-file alone).
  */
 function extractBashBodyContent(cmd: string): string | null {
   const ghMatch = /\bgh\s+pr\s+create\b/.exec(cmd);
   if (!ghMatch) return null;
   const tail = cmd.slice(ghMatch.index + ghMatch[0].length);
-  const flagMatch = /(?:--body(?:-file)?|-b)(?:\s|=)/.exec(tail);
+  // Negative lookahead `(?!-)` after --body excludes --body-file (and any
+  // future --body-* variant). Matches: --body, --body=, --body<space>,
+  // -b, -b=, -b<space>. Does NOT match: --body-file, --body-file=, etc.
+  const flagMatch = /(?:--body(?!-)|-b)(?:\s|=)/.exec(tail);
   if (!flagMatch) return null;
   return tail.slice(flagMatch.index + flagMatch[0].length);
 }
