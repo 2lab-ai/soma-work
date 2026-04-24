@@ -145,6 +145,27 @@ describe('#701: buildPartialFailureBanner', () => {
     expect(out).toContain('ops\\*dev\\_1\\`raw');
     expect(out).not.toContain('ops*dev_1`raw (timeout)');
   });
+
+  it('escapes Slack mention-like < > & chars in slot names (P2 follow-up)', () => {
+    // Residual P2 flagged on re-review: a slot named `<@UOPS>` would
+    // render as a real mention in the banner. HTML-entity-encode the
+    // `<` / `>` / `&` chars per Slack's formatting rules so the banner
+    // displays the literal text.
+    const out = buildPartialFailureBanner(
+      [
+        { name: '<@UOPS>', kind: 'timeout' },
+        { name: '<!channel>', kind: 'network' },
+        { name: 'foo&bar', kind: 'unknown' },
+      ],
+      3,
+    );
+    expect(out).toContain('&lt;@UOPS&gt;');
+    expect(out).toContain('&lt;!channel&gt;');
+    expect(out).toContain('foo&amp;bar');
+    // The banner MUST NOT contain unescaped Slack mention tokens.
+    expect(out).not.toMatch(/<@UOPS>\s*\(/);
+    expect(out).not.toMatch(/<!channel>\s*\(/);
+  });
 });
 
 describe('#701: refresh_usage_all mixed-failure surface', () => {

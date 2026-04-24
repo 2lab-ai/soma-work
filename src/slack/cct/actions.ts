@@ -78,15 +78,28 @@ export interface RefreshFailureSummary {
  * truncated at 5 entries with a ` … (+N more)` suffix so a large fleet
  * keeps the banner under Slack's reasonable mrkdwn width.
  */
+/**
+ * Escape a slot-name for safe inclusion in a Slack mrkdwn banner.
+ *
+ * Slot names pass `addSlot`'s length/uniqueness check but NOT Slack
+ * mrkdwn safety. Two escape layers are required:
+ *   1. mrkdwn formatting chars (`*` `_` `\``) via {@link escapeMrkdwn}
+ *      so `ops*dev` doesn't collapse the banner's bold-header wrapper.
+ *   2. HTML-entity encoding for `<`, `>`, `&` per Slack's escaping rule
+ *      (https://api.slack.com/reference/surfaces/formatting#escaping) so
+ *      a name like `<@UOPS>` / `<!channel>` / `<!here>` doesn't render
+ *      as a mention inside the banner.
+ */
+function escapeSlotNameForBanner(name: string): string {
+  const htmlEscaped = name.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return escapeMrkdwn(htmlEscaped);
+}
+
 export function buildPartialFailureBanner(failures: RefreshFailureSummary[], total: number): string {
   if (failures.length === 0) return '';
-  // Slot names are operator-controlled strings; they pass addSlot's
-  // length/uniqueness validation but NOT mrkdwn-safety. Escape `*`/`_`/`\``
-  // before composing so a slot named e.g. `ops*` doesn't collapse the
-  // banner's bold-header wrapper or stray into a mention-like token.
   const labelFor = (f: RefreshFailureSummary): string => {
     const detail = f.status !== undefined ? `${f.status}` : f.kind;
-    return `${escapeMrkdwn(f.name)} (${detail})`;
+    return `${escapeSlotNameForBanner(f.name)} (${detail})`;
   };
   const shown = failures.slice(0, 5).map(labelFor).join(', ');
   const overflow = failures.length > 5 ? ` … (+${failures.length - 5} more)` : '';
