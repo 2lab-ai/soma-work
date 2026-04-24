@@ -336,4 +336,18 @@ describe('ActionPanelBuilder', () => {
     expect(heroSection.fields[1].text).toContain('*PR*');
     expect(heroSection.fields[1].text).toContain('Approved');
   });
+
+  it('renders only close button for z-plan-to-work handoff workflow (#695)', () => {
+    const payload = ActionPanelBuilder.build({ sessionKey: 'session-z1', workflow: 'z-plan-to-work' });
+    const actionBlocks = payload.blocks.filter((block) => block.type === 'actions');
+    const actionIds = actionBlocks.flatMap((block: any) => block.elements.map((el: any) => el.action_id));
+    expect(actionIds).toEqual(['panel_close']);
+  });
+
+  it('renders only close button for z-epic-update handoff workflow (#695)', () => {
+    const payload = ActionPanelBuilder.build({ sessionKey: 'session-z2', workflow: 'z-epic-update' });
+    const actionBlocks = payload.blocks.filter((block) => block.type === 'actions');
+    const actionIds = actionBlocks.flatMap((block: any) => block.elements.map((el: any) => el.action_id));
+    expect(actionIds).toEqual(['panel_close']);
+  });
 });

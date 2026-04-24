@@ -16,6 +16,7 @@ import type {
   ActionPanelState,
   ActivityState,
   ConversationSession,
+  HandoffContext,
   SessionInstruction,
   SessionLink,
   SessionLinkHistory,
@@ -139,6 +140,12 @@ interface SerializedSession {
   summaryTitle?: string;
   summaryTitleTurnId?: string;
   summaryTitleLastUpdatedAtMs?: number;
+  /**
+   * Typed handoff metadata parsed from a `<z-handoff>` sentinel (issue #695).
+   * Persisted verbatim so downstream guards (#696/#697/#698) can consume the
+   * structured state after restart or mid-session.
+   */
+  handoffContext?: HandoffContext;
 }
 
 /**
@@ -1236,6 +1243,13 @@ export class SessionRegistry {
     session.state = 'INITIALIZING';
     session.workflow = undefined;
 
+    // Clear stale handoff metadata. The AD-12 filter (#695) persists sessions
+    // that still have handoffContext; leaving it here after a reset would keep
+    // a stale metadata blob on disk forever when the reset is not immediately
+    // followed by a new forced-handoff runDispatch. A real handoff entry
+    // overwrites this field before the first post-reset save.
+    session.handoffContext = undefined;
+
     // Clear current initiator (fresh start means no active initiator)
     session.currentInitiatorId = undefined;
     session.currentInitiatorName = undefined;
@@ -1592,8 +1606,13 @@ export class SessionRegistry {
 
       const sessionsArray: SerializedSession[] = [];
       for (const [key, session] of this.sessions.entries()) {
-        // Only save sessions with sessionId (meaning they have conversation history)
-        if (session.sessionId) {
+        // Save sessions that have conversation history (sessionId) OR a pending
+        // handoff context (AD-12, issue #695). The handoffContext branch covers
+        // the narrow window between `resetSessionContext()` (which clears
+        // sessionId) and the first model turn after a forced handoff entrypoint,
+        // where the typed metadata must survive a crash/restart so downstream
+        // guards (#696/#697/#698) can consume it.
+        if (session.sessionId || session.handoffContext) {
           this.ensureSessionLinkState(session);
           sessionsArray.push({
             key,
@@ -1645,6 +1664,8 @@ export class SessionRegistry {
             summaryTitle: session.summaryTitle,
             summaryTitleTurnId: session.summaryTitleTurnId,
             summaryTitleLastUpdatedAtMs: session.summaryTitleLastUpdatedAtMs,
+            // Typed handoff metadata (issue #695)
+            handoffContext: session.handoffContext,
           });
         }
       }
@@ -1692,6 +1713,8 @@ export class SessionRegistry {
         mergeStats: serialized.mergeStats,
         instructions: serialized.instructions,
         activityState: serialized.activityState || 'idle',
+        // Preserve handoff metadata for diagnostic parity when archiving.
+        handoffContext: serialized.handoffContext,
       };
       getArchiveStore().archive(session, serialized.key, reason);
     } catch (err) {
@@ -1831,6 +1854,9 @@ export class SessionRegistry {
           summaryTitle: serialized.summaryTitle,
           summaryTitleTurnId: serialized.summaryTitleTurnId,
           summaryTitleLastUpdatedAtMs: serialized.summaryTitleLastUpdatedAtMs,
+          // Typed handoff metadata (issue #695) — present only for sessions
+          // that entered via forceWorkflow z-plan-to-work / z-epic-update.
+          handoffContext: serialized.handoffContext,
           // Compaction Tracking (#617): runtime-only dedupe state — always reset on reload.
           // Pending state (autoCompactPending / pendingUserText / pendingEventContext) is
           // intentionally NOT rehydrated because the original event context cannot be
