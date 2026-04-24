@@ -32,6 +32,33 @@ export function parseFiveBlockPhase(raw: string | undefined): number {
 }
 
 /**
+ * Defensive boolean parser for ENV knobs (#666 P4).
+ *
+ * Accepted truthy: `1`, `true`, `yes`, `on` (case-insensitive, trimmed).
+ * Accepted falsy:  `0`, `false`, `no`, `off` (case-insensitive, trimmed).
+ * Anything else (including `undefined`/empty) returns `fallback` — unrecognized
+ * non-empty values additionally log a warn so an operator typo surfaces
+ * instead of silently reverting to the default.
+ *
+ * Runtime consumers should read the parsed value (e.g. `config.ui.b4NativeStatusEnabled`);
+ * this function is exported for unit tests only.
+ */
+export function parseBool(raw: string | undefined, fallback: boolean): boolean {
+  if (raw === undefined) return fallback;
+  const trimmed = raw.trim();
+  if (trimmed === '') return fallback;
+  const normalized = trimmed.toLowerCase();
+  if (normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on') {
+    return true;
+  }
+  if (normalized === '0' || normalized === 'false' || normalized === 'no' || normalized === 'off') {
+    return false;
+  }
+  logger.warn(`boolean env "${raw}" unrecognized; falling back to ${fallback}`);
+  return fallback;
+}
+
+/**
  * Defensive parser for positive-integer ENV knobs (#641 M1-S1). Keeps the
  * per-field inline pattern that the rest of this file uses but avoids
  * duplicating the validate-then-warn boilerplate for every usage-scheduler
@@ -82,6 +109,15 @@ export const config = {
      *   5 = + B5 completion marker
      */
     fiveBlockPhase: parseFiveBlockPhase(process.env.SOMA_UI_5BLOCK_PHASE),
+    /**
+     * #666 P4 B4 native status spinner kill switch. `false` (default) forces
+     * `AssistantStatusManager` to initialize with `enabled=false`, so every
+     * `client.assistant.threads.setStatus` call is a no-op even if the Bolt
+     * Assistant container has been registered and `assistant:write` is
+     * installed. Flip to `true` only once Part 2 (PHASE>=4 turn-surface
+     * wiring + legacy suppression) has merged. See docs/slack-ui-phase4.md.
+     */
+    b4NativeStatusEnabled: parseBool(process.env.SOMA_UI_B4_NATIVE_STATUS, false),
   },
   claude: {
     useBedrock: process.env.CLAUDE_CODE_USE_BEDROCK === '1',

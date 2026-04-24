@@ -1,4 +1,15 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// #666 P4 kill-switch: default tests assume the native spinner is enabled.
+// Tests that exercise the kill-switch explicitly mutate `mockConfig` below.
+const mockConfig = vi.hoisted(() => ({
+  ui: {
+    fiveBlockPhase: 0,
+    b4NativeStatusEnabled: true,
+  },
+}));
+vi.mock('../config', () => ({ config: mockConfig }));
+
 import { AssistantStatusManager } from './assistant-status-manager';
 import type { SlackApiHelper } from './slack-api-helper';
 
@@ -96,6 +107,40 @@ describe('AssistantStatusManager', () => {
   describe('isEnabled', () => {
     it('should be enabled by default', () => {
       expect(manager.isEnabled()).toBe(true);
+    });
+  });
+
+  // #666 P4 Part 1/2 — B4 native spinner kill switch. Default is OFF so that
+  // registering the Bolt Assistant container in Part 1 does not silently
+  // activate spinner wiring before Part 2 is wired. Flip via
+  // SOMA_UI_B4_NATIVE_STATUS=1 after Part 2 lands.
+  describe('constructor — B4 native-status kill switch (#666)', () => {
+    // Restore the flag to the tests' happy-path default so we don't leak into
+    // other describes inside this file.
+    afterEach(() => {
+      mockConfig.ui.b4NativeStatusEnabled = true;
+    });
+
+    it('sets enabled=false when config.ui.b4NativeStatusEnabled is false (default off)', () => {
+      mockConfig.ui.b4NativeStatusEnabled = false;
+      const api = createMockSlackApi();
+      const m = new AssistantStatusManager(api as unknown as SlackApiHelper);
+      expect(m.isEnabled()).toBe(false);
+    });
+
+    it('leaves enabled=true when config.ui.b4NativeStatusEnabled is true (opt-in)', () => {
+      mockConfig.ui.b4NativeStatusEnabled = true;
+      const api = createMockSlackApi();
+      const m = new AssistantStatusManager(api as unknown as SlackApiHelper);
+      expect(m.isEnabled()).toBe(true);
+    });
+
+    it('setStatus is a no-op (no API call) when kill switch is off', async () => {
+      mockConfig.ui.b4NativeStatusEnabled = false;
+      const api = createMockSlackApi();
+      const m = new AssistantStatusManager(api as unknown as SlackApiHelper);
+      await m.setStatus('C123', '123.456', 'is thinking...');
+      expect(api.setAssistantStatus).not.toHaveBeenCalled();
     });
   });
 });
