@@ -196,4 +196,76 @@ describe('ConversationWebServer Authentication', () => {
       expect(authResponse.statusCode).toBe(200);
     });
   });
+
+  describe('Slack SSO /auth/sso (#704)', () => {
+    it('should set soma_dash_token cookie and redirect to user dashboard for valid token', async () => {
+      mockConfig.oauth.jwtSecret = 'test-jwt-secret';
+      mockConfig.conversation.viewerToken = '';
+
+      const { startWebServer, injectWebServer } = await import('./web-server');
+      await startWebServer({ listen: false });
+      server = true;
+
+      const jwt = await import('jsonwebtoken');
+      const token = jwt.sign(
+        { sub: 'U_SSO', email: 'sso@slack.local', name: 'SSO User', provider: 'slack' },
+        'test-jwt-secret',
+        { expiresIn: 3600 },
+      );
+
+      const response = await injectWebServer({
+        method: 'GET',
+        url: `/auth/sso?token=${encodeURIComponent(token)}`,
+      });
+
+      expect(response.statusCode).toBe(302);
+      expect(response.headers.location).toBe('/dashboard/U_SSO');
+      const setCookie = response.headers['set-cookie'];
+      expect(setCookie).toBeDefined();
+      const cookieStr = Array.isArray(setCookie) ? setCookie.join(';') : String(setCookie);
+      expect(cookieStr).toContain('soma_dash_token=');
+      expect(cookieStr).toContain('HttpOnly');
+      expect(cookieStr).toContain('SameSite=Lax');
+      // Reset for next tests in this file
+      mockConfig.oauth.jwtSecret = '';
+    });
+
+    it('should redirect to /login?error=sso_invalid for a bogus token', async () => {
+      mockConfig.oauth.jwtSecret = 'test-jwt-secret';
+      mockConfig.conversation.viewerToken = '';
+
+      const { startWebServer, injectWebServer } = await import('./web-server');
+      await startWebServer({ listen: false });
+      server = true;
+
+      const response = await injectWebServer({
+        method: 'GET',
+        url: '/auth/sso?token=not-a-jwt',
+      });
+
+      expect(response.statusCode).toBe(302);
+      expect(response.headers.location).toBe('/login?error=sso_invalid');
+      // No cookie leaked on failure
+      expect(response.headers['set-cookie']).toBeUndefined();
+      mockConfig.oauth.jwtSecret = '';
+    });
+
+    it('should redirect to /login?error=sso_missing when token querystring absent', async () => {
+      mockConfig.oauth.jwtSecret = 'test-jwt-secret';
+      mockConfig.conversation.viewerToken = '';
+
+      const { startWebServer, injectWebServer } = await import('./web-server');
+      await startWebServer({ listen: false });
+      server = true;
+
+      const response = await injectWebServer({
+        method: 'GET',
+        url: '/auth/sso',
+      });
+
+      expect(response.statusCode).toBe(302);
+      expect(response.headers.location).toBe('/login?error=sso_missing');
+      mockConfig.oauth.jwtSecret = '';
+    });
+  });
 });
