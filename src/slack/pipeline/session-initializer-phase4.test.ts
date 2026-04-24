@@ -131,7 +131,7 @@ describe('SessionInitializer — #689 dispatch B4 gate (behavioural)', () => {
       isSleeping: vi.fn().mockReturnValue(false),
       wakeFromSleep: vi.fn(),
       needsDispatch: vi.fn().mockReturnValue(true),
-      transitionToMain: vi.fn(),
+      transitionToMain: vi.fn().mockReturnValue(true), // #698 transitionToMain returns boolean
       setSessionLinks: vi.fn(),
       canInterrupt: vi.fn().mockReturnValue(false),
       updateInitiator: vi.fn(),

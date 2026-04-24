@@ -42,10 +42,14 @@ legacy `slack-block-kit` channel posts the in-thread marker.
   reports active.
 - `ThreadPanel.isCompletionMarkerActive()` capability SSOT:
   `config.ui.fiveBlockPhase >= 5 && slackBlockKitChannel !== undefined`.
-- `TurnContext.buildCompletionEvent?: () => TurnCompletionEvent | undefined`
-  — callback injected by `stream-executor` before `begin()`. Holds a plain-
-  object snapshot assigned exactly once after async enrichment succeeds on
-  the happy path.
+- `TurnContext.buildCompletionEvent?: () => Promise<TurnCompletionEvent | undefined>`
+  — closure injected by `stream-executor` before `begin()`. Returns the
+  SAME per-turn `snapshotPromise` on every invocation. The Promise is
+  resolved exactly once with the enriched event on the async success rail,
+  or with `undefined` on the `.catch` rail. `TurnSurface.end` awaits it
+  under a 3s timeout guard. See §"Race fix (#720)" below for the full
+  rationale; the sync form used in PR #711 raced `stopStream` and
+  silently dropped B5.
 - `StreamExecutor.buildCompletionNotifyOpts()` helper — returns
   `{ excludeChannelNames: ['slack-block-kit'] }` iff the capability is
   active; otherwise `undefined`.
@@ -74,10 +78,13 @@ legacy `slack-block-kit` channel posts the in-thread marker.
 - **Telegram channel** — untouched.
 - **`CompletionMessageTracker`** — `src/slack/completion-message-tracker.ts`
   is not modified. See Design decisions §"Why tracker is unchanged" below.
-- **Abort / 1M-context-fallback / supersede paths** — do not assign the
-  snapshot. The closure returns `undefined` and TurnSurface does not emit
-  B5, matching the legacy `TurnNotifier` behaviour where aborted turns
-  never fire `WorkflowComplete`.
+- **Abort / 1M-context-fallback / supersede paths** — never reach the
+  `.then` / `.catch` rails, so `snapshotPromise` stays pending. The pending
+  Promise is garbage-collected with `turnContext` when `execute()` returns.
+  `TurnSurface.end` only awaits `buildCompletionEvent()` on
+  `reason === 'completed'`, so pending is harmless on the abort paths —
+  matching the legacy `TurnNotifier` behaviour where aborted turns never
+  fire `WorkflowComplete`.
 
 ## Design decisions
 
@@ -95,32 +102,44 @@ Alternatives considered:
   two branches (success / error) introduces ordering bugs (`end()` might
   fire before the mutation lands on the error path) and couples
   `TurnSurface` to `stream-executor`'s timing.
-- **Option C — callback on `TurnContext`, closure owns the snapshot
-  (chosen)**: `stream-executor` installs the closure before `begin()`.
-  The closure closes over a mutable local. Success path assigns exactly
-  ONCE after the async enrichment Promise resolves. `TurnSurface.end()`
-  invokes the closure — gets the snapshot or `undefined`. Failure /
-  abort / supersede paths never reach the single assignment, so the
-  closure returns `undefined` and no B5 is emitted. The assignment and
-  the read are totally ordered (both run on the event loop; the read
-  runs inside `end()`'s `try` block which is awaited from
-  `endTurn(...)` in the `finally` block of `execute()`, and the
-  assignment runs from the fire-and-forget `enrichAndNotify()` chain
-  started earlier in the same tick).
+- **Option C — Promise-backed closure on `TurnContext` (chosen)**:
+  `stream-executor` builds `snapshotPromise` + `resolveSnapshot` before
+  `begin()`. The closure `() => snapshotPromise` returns the same Promise
+  on every call. Success path resolves it with the enriched event on the
+  `.then` rail; the `.catch` rail resolves with `undefined`. Failure /
+  abort / supersede paths never reach either rail and the Promise stays
+  pending until GC. `TurnSurface.end()` awaits under a 3s `Promise.race`
+  safety net. The assignment and the read are now totally ordered via
+  the Promise — `end()` cannot proceed past the await until one of the
+  two rails fires (or the timeout triggers). This replaces the original
+  sync-closure design that raced `stopStream`; see §"Race fix (#720)"
+  below for the history.
 
-### Snapshot pattern — plain object, single assignment
+### Snapshot pattern — Promise, resolved once
 
-The closure returns the SAME object reference stream-executor constructed
-from enrichment (`finalEnrichedEvent`). This is a plain `TurnCompletionEvent`
-literal — no live references to `session`, `turnCollector`, or any other
-mutable state. If future refactors ever introduce a live reference, this
-doc's invariant breaks; prefer cloning at assignment time rather than
-loosening the invariant.
+The closure returns the SAME Promise reference on every call. The Promise
+is constructed once per `execute()` call alongside a matching
+`resolveSnapshot` resolver. The resolver is called exactly once —
+`resolveSnapshot(finalEnrichedEvent)` on the happy path, or
+`resolveSnapshot(undefined)` on the `.catch` rail. Subsequent resolver
+calls are silent no-ops per ECMA Promise semantics; the abort catch-block,
+the 1M-fallback branch, and `handleError` do NOT call the resolver, so
+those paths leave the Promise pending (harmless — `TurnSurface.end` only
+awaits on `reason === 'completed'`).
 
-One assignment, one call site. `completionEventSnapshot = finalEnrichedEvent`
-lives on the happy path just above `turnNotifier.notify(...)` in
-`enrichAndNotify()`. The abort catch-block, the 1M-fallback branch, and
-`handleError` do NOT assign.
+`finalEnrichedEvent` is a plain `TurnCompletionEvent` literal with no live
+references to `session`, `turnCollector`, or any other mutable state. If
+future refactors ever introduce a live reference, this doc's invariant
+breaks; prefer cloning at resolver time rather than loosening the
+invariant.
+
+**Explicit anti-pattern — no `finally` safety-net resolve.** Adding a
+`finally → resolveSnapshot(undefined)` to the chain would race the
+`.then` rail: if `finally` runs between the event creation and the
+`.then` body, the snapshot would be locked to `undefined` before the
+event could reach it. That is exactly the PR #711 shape the #720 fix
+removes. The single safety net is the 3s `Promise.race` timeout inside
+`TurnSurface.end`.
 
 ### Capability SSOT — `ThreadPanel.isCompletionMarkerActive()`
 
@@ -204,11 +223,19 @@ posts via the legacy path instead of disappearing.
 2. **B4 clearStatus** — `assistantStatusManager.clearStatus(channel,
    threadTs, { expectedEpoch })` at effective PHASE>=4 (unchanged from
    P4 Part 2). Throws swallowed so step 3 and 4 still run.
-3. **NEW — B5 send** — iff `reason === 'completed'` AND
+3. **B5 send** — iff `reason === 'completed'` AND
    `isCompletionMarkerActive() === true` AND `buildCompletionEvent` AND
    `slackBlockKitChannel` are all truthy:
-   `slackBlockKitChannel.send(evt)` where `evt = buildCompletionEvent()`
-   is the plain-object snapshot. Throws swallowed so step 4 still runs.
+   - `evt = await Promise.race([buildCompletionEvent(), 3s timeout])` —
+     closes issue #720's race by waiting for the async enrichment
+     snapshot instead of reading it synchronously (see §"Race fix
+     (#720)" below for the full history).
+   - If `evt` is defined: `void slackBlockKitChannel.send(evt).catch(warn)`
+     — detached post so the Slack RTT doesn't extend `end()`'s hot path.
+   - If `evt` is `undefined` (timeout or `.catch` rail): warn with
+     `turnId`, no send. Explicit log so operators can distinguish a
+     timeout from the "capability inactive" skip.
+   - Both branches swallow throws so step 4 still runs.
 4. **cleanupTurn** — remove `turnId` from `this.turns`, clear the
    `activeTurn` map entry if still pointing at this turnId, cancel any
    pending render-debouncer entry.
@@ -295,9 +322,11 @@ path that P5's side-fix exposed.
 - `src/slack-handler.test.ts` — `SlackBlockKitChannel` constructed once,
   same instance passed to both `ThreadPanel` and `TurnNotifier`.
 - `src/slack/turn-surface.test.ts` — B5 emit on `end('completed')` at
-  capability active; no emit on `fail()`; no emit when capability
-  inactive; `buildCompletionEvent` closure invoked before `SlackBlockKitChannel.send`;
-  send-throws are caught and `cleanupTurn` still runs.
+  capability active (builder resolves with event); no emit on `fail()`;
+  no emit when capability inactive; `buildCompletionEvent` Promise
+  awaited before `SlackBlockKitChannel.send`; send-throws are caught and
+  `cleanupTurn` still runs. See §"Race fix (#720)" for the additional
+  `(d)` delayed-snapshot and `(e)` 3s-timeout regression cases.
 - `src/slack/pipeline/stream-executor.test.ts` —
   - `buildCompletionNotifyOpts()` returns
     `{ excludeChannelNames: ['slack-block-kit'] }` when capability active,
@@ -305,14 +334,164 @@ path that P5's side-fix exposed.
     missing).
   - `handleError` always calls `TurnNotifier.notify` with NO opts
     (Exception fan-out unchanged).
+  - #720 regression triplet `(a)/(b)/(c)` locks in the Promise-snapshot
+    wiring + decoupling from `turnNotifier` presence. See §"Race fix
+    (#720)" → "Tests locking in the race fix" below.
 
 `completion-message-tracker.test.ts` intentionally unchanged — tracker
 semantics untouched.
 
+## Race fix (#720) — Promise snapshot + awaited emit
+
+[PR #711](https://github.com/2lab-ai/soma-work/pull/711) implemented the
+P5 pattern described above with a **synchronous** `buildCompletionEvent`
+accessor. That was wrong for the observed timing: under PHASE=5 with the
+capability active, the live order is
+
+```
+stream-executor success path (all on the same tick):
+  enrichAndNotify = async () => {
+    await usageBeforePromise;       // HTTP (usually already resolved)
+    await fetchAndStoreUsage(...);  // Anthropic usage HTTP, 100-500ms
+    completionEventSnapshot = event;
+    turnNotifier.notify(event, { excludeChannelNames:['slack-block-kit'] });
+  };
+  enrichAndNotify().catch(warn);    // FIRE-AND-FORGET
+
+// meanwhile in the finally block, before enrichAndNotify resolves:
+await threadPanel.endTurn(turnId, 'completed')
+  → TurnSurface.end('completed')
+    → await closeStream (Slack stopStream, 50-200ms — faster than usage HTTP)
+    → const evt = state.ctx.buildCompletionEvent();   // sync read
+    → (returns undefined — race lost)
+    → if (evt) send();                                // silently skipped
+```
+
+`stopStream` reliably finished **before** the snapshot assignment, so the
+sync read returned `undefined` and B5 was silently dropped on every
+PHASE=5 run. The legacy `TurnNotifier` fan-out was **also** dropped because
+stream-executor already excluded `slack-block-kit` from the fan-out —
+double-write protection turned the race into a zero-write outcome. At
+PHASE<5 the race is invisible because the capability closure returns
+`false` and the legacy fan-out paints B5 normally.
+
+### Fix shape
+
+Three interlocking pieces:
+
+1. **`TurnContext.buildCompletionEvent` is async.** The signature changes
+   from `() => TurnCompletionEvent | undefined` to
+   `() => Promise<TurnCompletionEvent | undefined>`. The closure returns
+   the **same** `snapshotPromise` on every invocation — a Promise owned
+   by `stream-executor`.
+2. **`resolveSnapshot` fires exactly once.** `stream-executor` constructs
+   `snapshotPromise` + `resolveSnapshot` before `begin()`. The post-stream
+   chain has two exclusive rails:
+   - `.then(evt)`: `resolveSnapshot(evt)` + *(if turnNotifier present)*
+     `notify(evt, opts)`.
+   - `.catch(err)`: `resolveSnapshot(undefined)` + warn.
+
+   There is intentionally **no `finally` safety-net resolve** (codex P1-1):
+   adding `finally → resolveSnapshot(undefined)` would race the `.then`
+   rail and re-establish the exact bug — a `.then` that resolved with the
+   event could be followed by a `finally` that re-resolves with
+   `undefined`. Promise `resolve` calls after the first are no-ops, but
+   the inverse order (finally before then) would lock in `undefined`. The
+   abort / 1M-fallback / supersede paths simply never reach either rail;
+   `snapshotPromise` stays pending, and GC collects it with `turnContext`
+   when `execute()` returns. `TurnSurface.end` only awaits it on
+   `reason === 'completed'`, so pending is harmless on the abort paths.
+3. **Event construction is decoupled from `if (turnNotifier)` guard**
+   (codex P1-2). Building `finalEnrichedEvent` now happens on the `enrich
+   AndResolve()` rail unconditionally; the `turnNotifier.notify(...)` call
+   lives inside an `if (this.deps.turnNotifier)` branch *after*
+   `resolveSnapshot(evt)`. This ensures capability-active harness runs
+   without a wired `turnNotifier` still produce a snapshot so
+   `TurnSurface.end` emits B5 through `SlackBlockKitChannel.send`.
+4. **`TurnSurface.end` awaits the snapshot with a bounded timeout.** The
+   B5 emit block now does
+   ```ts
+   evt = await Promise.race([
+     Promise.resolve(buildCompletionEvent()),
+     new Promise<undefined>((r) => setTimeout(() => r(undefined), 3000)),
+   ]);
+   if (evt) send(evt); else logger.warn('B5 snapshot unavailable ...');
+   ```
+   The 3s timeout is the single safety net: it caps worst-case latency if
+   the `.catch` rail itself fails to run (impossible in practice, but
+   defence-in-depth is cheap here). The late-rejection of the loser is
+   swallowed via `builderPromise.catch(() => {})` to prevent
+   unhandled-rejection surfacing (codex P2).
+
+### Sequence diagram (after #720)
+
+```
+stream-executor.execute() success path:
+  snapshotPromise, resolveSnapshot := createSnapshot();
+  turnContext.buildCompletionEvent = () => snapshotPromise;
+
+  enrichAndResolve()
+    ├─ ...await usage HTTP...
+    ├─ build finalEnrichedEvent
+    └─ return evt
+     .then(evt ↦ resolveSnapshot(evt); if(turnNotifier) notify(evt, opts))
+     .catch(err ↦ resolveSnapshot(undefined); warn)
+
+  // later, in finally:
+  threadPanel.endTurn('completed')
+    → TurnSurface.end('completed')
+      → await closeStream
+      → await clearStatus
+      → await Promise.race([snapshotPromise, 3s timeout])
+         ├─ snapshot resolves first (happy path) → evt defined → send(evt)
+         └─ timeout wins → evt = undefined → warn, no send
+      → cleanupTurn
+```
+
+### Behaviour matrix (after #720)
+
+| Path | snapshot Promise outcome | TurnSurface.end B5 |
+|---|---|---|
+| Success (`reason='completed'`, enrich resolves) | resolves with event | `send(evt)` — B5 posted |
+| Enrichment rejects (usage HTTP throws, etc.) | resolves with `undefined` | no send, no warn from timeout (the stream-executor catch already logged "Turn notification failed") |
+| Abort / 1M fallback / supersede (`reason='aborted'`) | pending forever (then GC'd) | guard skips the await entirely |
+| Capability inactive at PHASE<5 / missing dep | Promise still resolves (we don't gate resolve on capability) | guard skips the await entirely |
+| 3s timeout hit (defence-in-depth) | still pending | `undefined` + warn, legacy fan-out already drew B5 on non-excluded runs |
+
+### Tests locking in the race fix
+
+- `src/slack/turn-surface.test.ts`
+  - *(d)* snapshot resolves 100ms AFTER `closeStream` completes →
+    `end()` awaits → `SlackBlockKitChannel.send` called exactly once
+    with the enriched event.
+  - *(e)* snapshot never resolves → 3s timeout elapses (`vi.useFakeTimers`)
+    → `send` not called, warn emitted carrying the turnId.
+  - All 7 existing `buildCompletionEvent: () => ...` mocks wrapped as
+    `() => Promise.resolve(...)` to satisfy the new async signature.
+- `src/slack/pipeline/stream-executor.test.ts`
+  - *(a)* `snapshotPromise` resolves **after** `TurnSurface.end` enters the
+    snapshot await → B5 posted once.
+  - *(b)* `resolveSnapshot(undefined)` (simulating enrich `.catch` rail)
+    → `send` not called.
+  - *(c)* **Decoupling lock-in**: `turnNotifier === undefined` +
+    capability active → event still constructed, `resolveSnapshot` still
+    fires, `SlackBlockKitChannel.send` still called once. Regression-
+    guards against re-coupling event construction back inside
+    `if (this.deps.turnNotifier)`.
+
+### Rollback (additional, on top of §Rollback dials above)
+
+- **Env dial still works**: `SOMA_UI_5BLOCK_PHASE=4` flips capability
+  inactive → legacy fan-out redraws B5 via `TurnNotifier`.
+- **Code revert**: `git revert` of the #720 PR restores the PR #711 sync
+  shape. The race returns; use env dial instead if regression surfaces.
+
 ## References
 
 - Issue: [#667 P5 — B5 완료 마커를 TurnSurface에 흡수](https://github.com/2lab-ai/soma-work/issues/667)
+- Issue: [#720 P5 B5 race fix — Promise snapshot + await in TurnSurface.end](https://github.com/2lab-ai/soma-work/issues/720)
 - Epic: [#669 한 턴 = 5 블록으로 수렴](https://github.com/2lab-ai/soma-work/issues/669)
 - Prerequisite: [#700 PR — P4 Part 2: B4 native-spinner single writer](https://github.com/2lab-ai/soma-work/pull/700)
+- Initial P5 implementation: [#711 PR](https://github.com/2lab-ai/soma-work/pull/711)
 - Phase 4 doc: [docs/slack-ui-phase4.md](./slack-ui-phase4.md)
 - Phase 3 doc: [docs/slack-ui-phase3.md](./slack-ui-phase3.md)
