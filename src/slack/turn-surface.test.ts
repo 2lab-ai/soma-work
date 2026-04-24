@@ -1124,7 +1124,7 @@ describe('TurnSurface', () => {
         threadTs: 't1.0',
         sessionKey: 'C1:t1.0',
         turnId: 'C1:t1.0:b5-1',
-        buildCompletionEvent: () => evt,
+        buildCompletionEvent: () => Promise.resolve(evt),
       };
       await surface.begin(ctx as any);
       await surface.end(ctx.turnId, 'completed');
@@ -1147,7 +1147,7 @@ describe('TurnSurface', () => {
         threadTs: 't1.0',
         sessionKey: 'C1:t1.0',
         turnId: 'C1:t1.0:b5-2',
-        buildCompletionEvent: () => undefined,
+        buildCompletionEvent: () => Promise.resolve(undefined),
       };
       await surface.begin(ctx as any);
       await surface.end(ctx.turnId, 'completed');
@@ -1169,7 +1169,7 @@ describe('TurnSurface', () => {
         threadTs: 't1.0',
         sessionKey: 'C1:t1.0',
         turnId: 'C1:t1.0:b5-3',
-        buildCompletionEvent: () => makeEvent(),
+        buildCompletionEvent: () => Promise.resolve(makeEvent()),
       };
       await surface.begin(ctx as any);
       await surface.end(ctx.turnId, 'completed');
@@ -1213,7 +1213,7 @@ describe('TurnSurface', () => {
         threadTs: 't1.0',
         sessionKey: 'C1:t1.0',
         turnId: 'C1:t1.0:b5-fail',
-        buildCompletionEvent: () => makeEvent(),
+        buildCompletionEvent: () => Promise.resolve(makeEvent()),
       };
       await surface.begin(ctx as any);
       await surface.fail(ctx.turnId, new Error('boom'));
@@ -1235,7 +1235,7 @@ describe('TurnSurface', () => {
         threadTs: 't1.0',
         sessionKey: 'C1:t1.0',
         turnId: 'C1:t1.0:b5-abort',
-        buildCompletionEvent: () => makeEvent(),
+        buildCompletionEvent: () => Promise.resolve(makeEvent()),
       };
       await surface.begin(ctx as any);
       await surface.end(ctx.turnId, 'aborted');
@@ -1257,7 +1257,7 @@ describe('TurnSurface', () => {
         threadTs: 't1.0',
         sessionKey: 'C1:t1.0',
         turnId: 'C1:t1.0:b5-throw',
-        buildCompletionEvent: () => makeEvent(),
+        buildCompletionEvent: () => Promise.resolve(makeEvent()),
       };
       await surface.begin(ctx as any);
       await surface.end(ctx.turnId, 'completed');
@@ -1284,12 +1284,127 @@ describe('TurnSurface', () => {
         threadTs: 't1.0',
         sessionKey: 'C1:t1.0',
         turnId: 'C1:t1.0:b5-legacy',
-        buildCompletionEvent: () => makeEvent(),
+        buildCompletionEvent: () => Promise.resolve(makeEvent()),
       };
       await surface.begin(ctx as any);
       await surface.end(ctx.turnId, 'completed');
 
       expect(channel.send).not.toHaveBeenCalled();
+    });
+
+    // -------------------------------------------------------------------------
+    // Issue #720 — P5 B5 race fix (Promise snapshot + await + 3s timeout)
+    //
+    // PR #711 regressed B5 at PHASE=5 because `TurnSurface.end` read the
+    // completion snapshot synchronously while `stream-executor.enrichAndNotify`
+    // assigned it asynchronously after `stopStream` had already closed. The
+    // fix converts `buildCompletionEvent` to return a Promise, and `end()`
+    // `await`s the snapshot (bounded by a 3s timeout). These two regression
+    // tests lock in the new contract.
+    // -------------------------------------------------------------------------
+
+    it('#720 (d) snapshot resolves AFTER closeStream (delayed by 100ms) → end() awaits → send called with event', async () => {
+      const client = makeClient();
+      const channel = makeBlockKitChannel();
+      const surface = new TurnSurface({
+        slackApi: makeSlackApi(client),
+        slackBlockKitChannel: channel as any,
+        isCompletionMarkerActive: () => true,
+      } as any);
+
+      // Simulate stream-executor's snapshot Promise: resolver is held by
+      // the "enrich" side; TurnSurface.end must await the pending Promise.
+      let resolveSnapshot!: (evt: ReturnType<typeof makeEvent> | undefined) => void;
+      const snapshotPromise = new Promise<ReturnType<typeof makeEvent> | undefined>((resolve) => {
+        resolveSnapshot = resolve;
+      });
+
+      const evt = makeEvent();
+      const ctx = {
+        channelId: 'C1',
+        threadTs: 't1.0',
+        sessionKey: 'C1:t1.0',
+        turnId: 'C1:t1.0:b5-race-d',
+        buildCompletionEvent: () => snapshotPromise,
+      };
+      await surface.begin(ctx as any);
+
+      // Kick off end() — it should proceed through closeStream + clearStatus,
+      // then suspend awaiting `buildCompletionEvent()`.
+      let endSettled = false;
+      const endPromise = surface.end(ctx.turnId, 'completed').finally(() => {
+        endSettled = true;
+      });
+
+      // Give microtasks + the mocked stopStream/appendStream chain time to
+      // drain so we're parked at the snapshot await.
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      // Lock-in: end() MUST still be pending because buildCompletionEvent()
+      // hasn't resolved. A naive sync-read implementation would have
+      // returned by now — this guard would flag that regression even if
+      // `send` was somehow called with the unresolved Promise object.
+      expect(endSettled).toBe(false);
+      expect(channel.send).not.toHaveBeenCalled();
+
+      // Now the async enrichment completes — snapshot resolves late, and
+      // end() must pick it up and post B5.
+      setTimeout(() => resolveSnapshot(evt), 0);
+
+      await endPromise;
+
+      expect(endSettled).toBe(true);
+      expect(channel.send).toHaveBeenCalledTimes(1);
+      expect(channel.send).toHaveBeenCalledWith(evt);
+    });
+
+    it('#720 (e) snapshot never resolves → 3s timeout elapses → evt undefined → send not called + warn logged', async () => {
+      vi.useFakeTimers();
+      try {
+        const client = makeClient();
+        const channel = makeBlockKitChannel();
+        const surface = new TurnSurface({
+          slackApi: makeSlackApi(client),
+          slackBlockKitChannel: channel as any,
+          isCompletionMarkerActive: () => true,
+        } as any);
+
+        const loggerWarnSpy = vi.spyOn((surface as any).logger, 'warn');
+
+        // Snapshot Promise never resolves — simulates enrichAndResolve hang.
+        const snapshotPromise = new Promise<ReturnType<typeof makeEvent> | undefined>(() => {
+          /* never settle */
+        });
+
+        const ctx = {
+          channelId: 'C1',
+          threadTs: 't1.0',
+          sessionKey: 'C1:t1.0',
+          turnId: 'C1:t1.0:b5-timeout-e',
+          buildCompletionEvent: () => snapshotPromise,
+        };
+        await surface.begin(ctx as any);
+
+        const endPromise = surface.end(ctx.turnId, 'completed');
+
+        // Advance past the 3s timeout — end()'s Promise.race resolves
+        // to `undefined` via the timeout branch.
+        await vi.advanceTimersByTimeAsync(3000);
+        await endPromise;
+
+        expect(channel.send).not.toHaveBeenCalled();
+
+        // Warn logged with the turnId + timeout signature. We don't assert
+        // an exact message to avoid coupling to phrasing; the turnId is
+        // enough to verify the B5-specific warn fired.
+        const b5Warns = loggerWarnSpy.mock.calls.filter((args) =>
+          JSON.stringify(args).includes('C1:t1.0:b5-timeout-e'),
+        );
+        expect(b5Warns.length).toBeGreaterThanOrEqual(1);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 });
