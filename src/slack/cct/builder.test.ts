@@ -1045,26 +1045,27 @@ describe('authStateBadge + buildSlotStatusLine — option A (PR #672 follow-up)'
     expect(text).not.toContain('5h Cooldown');
   });
 
-  it('OAuth authState=refresh_failed → :black_circle: Unavailable, NO OAuth refresh hint (broken slot, hint is noise)', () => {
+  it('OAuth authState=refresh_failed → :black_circle: Unavailable · :warning: OAuth refresh failed (D fallback, no refresh hint)', () => {
     const slot = oauthAttachedSlot();
     const state: SlotState = {
       authState: 'refresh_failed',
       activeLeases: [],
     };
     const text = statusText(slot, state);
-    expect(text).toBe(':black_circle: Unavailable');
+    // #723 +D: without lastRefreshError diagnostic, fall back to a canned reason.
+    expect(text).toBe(':black_circle: Unavailable · :warning: OAuth refresh failed');
     // Hint suppressed for non-healthy OAuth slots — TO-BE-3 SSOT lock.
     expect(text).not.toContain('OAuth refreshes in');
   });
 
-  it('OAuth authState=revoked → :black_circle: Unavailable, NO OAuth refresh hint', () => {
+  it('OAuth authState=revoked → :black_circle: Unavailable · :warning: OAuth revoked (D fallback, no refresh hint)', () => {
     const slot = oauthAttachedSlot();
     const state: SlotState = {
       authState: 'revoked',
       activeLeases: [],
     };
     const text = statusText(slot, state);
-    expect(text).toBe(':black_circle: Unavailable');
+    expect(text).toBe(':black_circle: Unavailable · :warning: OAuth revoked');
     expect(text).not.toContain('OAuth refreshes in');
   });
 
@@ -1543,6 +1544,177 @@ describe('Codex P1 follow-up (#679): OAuth cooldownUntil priority', () => {
     const text = statusText(slot, state);
     expect(text).toContain(':large_green_circle: Healthy');
     expect(text).not.toMatch(/Cooldown/);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
+// #723: B+D UX context — rate-limit source attribution for OAuth bare
+// "Cooldown", plus a canned "Unavailable" reason when the refresh-error
+// diagnostic is missing.
+//
+// +B surfaces *why* the badge shows bare "Cooldown" (manual source) —
+// the rate-limited timestamp + source enum the TokenManager already
+// records. Gated on: authState=healthy, cooldown.source='manual',
+// state.rateLimitedAt present. Non-manual sources (5h/7d) win priority
+// in the badge and already self-explain, so B is quiet there.
+//
+// +D surfaces *why* the badge shows "Unavailable" when there is no
+// lastRefreshError diagnostic yet (e.g. the state was mutated directly
+// by ops tooling). When a lastRefreshError *is* present, formatRefresh-
+// ErrorSegment produces a richer message and D stays silent (no
+// double-up).
+// ────────────────────────────────────────────────────────────────────
+
+describe('B+D UX context (#723)', () => {
+  const now = Date.parse('2026-04-22T00:00:00Z');
+  const HOUR = 3_600_000;
+
+  function oauthAttachedSlot(overrides: Partial<AuthKey> = {}): AuthKey {
+    return {
+      kind: 'cct',
+      source: 'setup',
+      keyId: 'slot-oauth',
+      name: 'cct-oauth',
+      setupToken: 'sk-ant-oat01-xxxx',
+      oauthAttachment: {
+        accessToken: 't',
+        refreshToken: 'r',
+        expiresAtMs: now + 7 * HOUR + 18 * 60_000,
+        scopes: ['user:profile'],
+        acknowledgedConsumerTosRisk: true,
+      },
+      createdAt: '',
+      ...overrides,
+    } as AuthKey;
+  }
+
+  function statusText(slot: AuthKey, state: SlotState | undefined, isActive = true): string {
+    const blocks = buildSlotRow(slot, state, isActive, now, 'Asia/Seoul');
+    const section = blocks[0] as any;
+    const lines = (section.text.text as string).split('\n');
+    return lines[1] ?? '';
+  }
+
+  // ── +B: rate-limit source attribution on bare Cooldown ─────────────
+
+  it('B: OAuth healthy + manual cooldown (future) + rateLimitedAt + source=response_header → rate-limited <ts> via response_header between badge and refresh hint', () => {
+    const slot = oauthAttachedSlot();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      cooldownUntil: new Date(now + 2 * HOUR).toISOString(),
+      rateLimitedAt: new Date(now - 5 * 60_000).toISOString(),
+      rateLimitSource: 'response_header',
+    };
+    const text = statusText(slot, state);
+    expect(text).toContain(':large_orange_circle: Cooldown 2h');
+    expect(text).toContain('rate-limited');
+    expect(text).toContain('via response_header');
+    // Segment ordering: badge → rate-limited → OAuth refresh hint.
+    const idxCooldown = text.indexOf('Cooldown 2h');
+    const idxRL = text.indexOf('rate-limited');
+    const idxHint = text.indexOf('OAuth refreshes in');
+    expect(idxCooldown).toBeGreaterThanOrEqual(0);
+    expect(idxRL).toBeGreaterThan(idxCooldown);
+    expect(idxHint).toBeGreaterThan(idxRL);
+  });
+
+  it('B: OAuth healthy + manual cooldown + rateLimitedAt + rateLimitSource undefined → rate-limited <ts> with no "via ..." suffix', () => {
+    const slot = oauthAttachedSlot();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      cooldownUntil: new Date(now + 2 * HOUR).toISOString(),
+      rateLimitedAt: new Date(now - 5 * 60_000).toISOString(),
+    };
+    const text = statusText(slot, state);
+    expect(text).toContain('rate-limited');
+    // No attribution suffix when source is undefined (legacy payload).
+    expect(text).not.toContain(' via ');
+  });
+
+  it('B: OAuth healthy + manual cooldown + rateLimitedAt undefined → NO rate-limited segment (legacy-migrated cooldown path)', () => {
+    const slot = oauthAttachedSlot();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      cooldownUntil: new Date(now + 2 * HOUR).toISOString(),
+    };
+    const text = statusText(slot, state);
+    expect(text).toContain(':large_orange_circle: Cooldown 2h');
+    expect(text).not.toContain('rate-limited');
+  });
+
+  it('B gate: OAuth healthy + 5h util=1.0 cooldown + rateLimitedAt + rateLimitSource → NO rate-limited segment (attribution is manual-source-only)', () => {
+    const slot = oauthAttachedSlot();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      rateLimitedAt: new Date(now - 5 * 60_000).toISOString(),
+      rateLimitSource: 'response_header',
+      usage: {
+        fetchedAt: new Date(now).toISOString(),
+        fiveHour: { utilization: 100, resetsAt: new Date(now + 30 * 60_000).toISOString() },
+      },
+    };
+    const text = statusText(slot, state);
+    expect(text).toContain('5h Cooldown');
+    // 5h self-explains; B is quiet so we don't double-attribute.
+    expect(text).not.toContain('rate-limited');
+  });
+
+  it('B gate: OAuth non-healthy + manual cooldown + rateLimitedAt + rateLimitSource → NO rate-limited segment (B is healthy-only)', () => {
+    const slot = oauthAttachedSlot();
+    const state: SlotState = {
+      authState: 'refresh_failed',
+      activeLeases: [],
+      cooldownUntil: new Date(now + 2 * HOUR).toISOString(),
+      rateLimitedAt: new Date(now - 5 * 60_000).toISOString(),
+      rateLimitSource: 'response_header',
+    };
+    const text = statusText(slot, state);
+    // Unavailable wins; D fallback supplies the reason.
+    expect(text).toBe(':black_circle: Unavailable · :warning: OAuth refresh failed');
+    expect(text).not.toContain('rate-limited');
+  });
+
+  // ── +D: Unavailable-reason fallback when no refresh diagnostic ────
+
+  it('D gate: OAuth authState=refresh_failed WITH lastRefreshError → refreshErrSeg wins, no :warning: OAuth refresh failed fallback', () => {
+    const slot = oauthAttachedSlot();
+    const state: SlotState = {
+      authState: 'refresh_failed',
+      activeLeases: [],
+      lastRefreshFailedAt: now - 2 * 60_000,
+      lastRefreshError: {
+        kind: 'unauthorized',
+        message: 'OAuth refresh rejected (401)',
+        at: now - 2 * 60_000,
+      },
+    };
+    const text = statusText(slot, state);
+    expect(text).toContain(':black_circle: Unavailable');
+    expect(text).toContain('OAuth refresh rejected (401)');
+    // D fallback suppressed when the diagnostic is present (no double-up).
+    expect(text).not.toContain(':warning: OAuth refresh failed');
+  });
+
+  it('D gate: OAuth authState=revoked WITH lastRefreshError → refreshErrSeg wins, no :warning: OAuth revoked fallback', () => {
+    const slot = oauthAttachedSlot();
+    const state: SlotState = {
+      authState: 'revoked',
+      activeLeases: [],
+      lastRefreshFailedAt: now - 2 * 60_000,
+      lastRefreshError: {
+        kind: 'revoked',
+        message: 'OAuth credentials revoked',
+        at: now - 2 * 60_000,
+      },
+    };
+    const text = statusText(slot, state);
+    expect(text).toContain(':black_circle: Unavailable');
+    expect(text).toContain('OAuth credentials revoked');
+    expect(text).not.toContain(':warning: OAuth revoked');
   });
 });
 
