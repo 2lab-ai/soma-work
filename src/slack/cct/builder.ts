@@ -1066,7 +1066,7 @@ function radioOption(kind: AddSlotFormKind): Record<string, unknown> {
 }
 
 /** Minimal mrkdwn-safe escape: strips `*` and `_` that would close formatting. */
-function escapeMrkdwn(text: string): string {
+export function escapeMrkdwn(text: string): string {
   return text.replace(/[*_`]/g, (ch) => `\\${ch}`);
 }
 

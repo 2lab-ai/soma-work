@@ -833,13 +833,50 @@ describe('refresh_usage action handlers (M1-S4)', () => {
     const refreshAllAttachedOAuthTokens = vi.fn(
       async () => ({ 'slot-A': 'error', 'slot-B': 'error' }) as Record<string, 'ok' | 'error'>,
     );
+    // #701 — snapshot must agree with `results` keys: the handler
+    // classifies starting keyIds against the snapshot, not the raw map.
+    const attachedSlots = [
+      {
+        kind: 'cct' as const,
+        source: 'setup' as const,
+        keyId: 'slot-A',
+        name: 'A',
+        setupToken: 'sk-ant-oat01-a',
+        createdAt: '2026-04-01T00:00:00Z',
+        oauthAttachment: {
+          accessToken: 't',
+          refreshToken: 'r',
+          expiresAtMs: Date.now() + 3_600_000,
+          scopes: ['user:profile', 'user:inference'],
+          acknowledgedConsumerTosRisk: true as const,
+        },
+      },
+      {
+        kind: 'cct' as const,
+        source: 'setup' as const,
+        keyId: 'slot-B',
+        name: 'B',
+        setupToken: 'sk-ant-oat01-b',
+        createdAt: '2026-04-01T00:00:00Z',
+        oauthAttachment: {
+          accessToken: 't',
+          refreshToken: 'r',
+          expiresAtMs: Date.now() + 3_600_000,
+          scopes: ['user:profile', 'user:inference'],
+          acknowledgedConsumerTosRisk: true as const,
+        },
+      },
+    ];
     const tm = {
       refreshAllAttachedOAuthTokens,
       getSnapshot: async () => ({
         version: 2 as const,
         revision: 1,
-        registry: { activeKeyId: 'slot-A', slots: [] },
-        state: {},
+        registry: { activeKeyId: 'slot-A', slots: attachedSlots },
+        state: {
+          'slot-A': { authState: 'healthy', activeLeases: [] },
+          'slot-B': { authState: 'healthy', activeLeases: [] },
+        },
       }),
       listTokens: () => [],
       getActiveToken: () => null,
