@@ -110,6 +110,83 @@ function _consumeSsoJti(jti: string, expSec: number): boolean {
   return true;
 }
 
+/**
+ * Returns the configured viewer base URL host ("host:port" — no scheme).
+ * Used by `_isSameOriginRequest` to compare against incoming `Origin`
+ * / `Referer` headers. Falls back to the `Host` request header when
+ * `config.conversation.viewerUrl` isn't set (dev mode) — in that case
+ * any absolute URL whose authority matches the request's own `Host` is
+ * accepted as same-origin.
+ */
+function _viewerOriginHost(request: FastifyRequest): string | null {
+  const configured = config.conversation.viewerUrl;
+  if (configured) {
+    try {
+      return new URL(configured).host;
+    } catch {
+      // fallthrough to Host header
+    }
+  }
+  const hostHeader = request.headers.host;
+  return typeof hostHeader === 'string' ? hostHeader : null;
+}
+
+/**
+ * Same-origin check for state-changing endpoints like
+ * `POST /auth/sso/confirm` (#704). Login CSRF / session-fixation
+ * protection: without this guard an attacker who holds a valid
+ * exchange token can auto-submit a top-level form from any origin
+ * and silently bind the victim's browser to the attacker's account
+ * (Oracle review P1). `SameSite=Lax` only constrains *sending* cookies,
+ * not *setting* them via Set-Cookie, so it does not defend this path.
+ *
+ * Policy: allow the request only when Origin (preferred) or Referer
+ * resolves to the same host as `viewerUrl` (or the request's own
+ * `Host`). A missing Origin AND missing Referer is refused — legitimate
+ * browser form submits from the interstitial always include at least
+ * one.
+ */
+function _isSameOriginRequest(request: FastifyRequest): boolean {
+  const expectedHost = _viewerOriginHost(request);
+  if (!expectedHost) return false;
+  const origin = request.headers.origin;
+  const referer = request.headers.referer;
+  const candidate = typeof origin === 'string' ? origin : typeof referer === 'string' ? referer : null;
+  if (!candidate) return false;
+  try {
+    return new URL(candidate).host === expectedHost;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Report the "current session" holder of the request's cookie, if any.
+ * Covers BOTH auth modes the server recognises:
+ *   - OAuth JWT cookies (`soma_dash_token=<jwt>`)
+ *   - Admin bearer cookies (`soma_dash_token=bearer:<viewerToken>`)
+ *
+ * Returns `{ kind: 'jwt', user }` for JWT sessions, `{ kind: 'bearer' }`
+ * for admin, or `null` when the cookie is missing / garbage. The
+ * session-fixation guard needs the bearer branch because
+ * `getDashboardUser` alone would miss it — an admin who's already signed
+ * in via `/auth/token` must NOT be silently downgraded to a Slack
+ * identity by clicking a Slack `dashboard` link (Oracle re-review P1).
+ */
+function _getCurrentSession(
+  request: FastifyRequest,
+): { kind: 'jwt'; user: DashboardUser } | { kind: 'bearer' } | null {
+  const cookieHeader = request.headers.cookie || '';
+  const match = cookieHeader.match(new RegExp(`${COOKIE_NAME}=([^;]+)`));
+  if (!match) return null;
+  const cookieVal = decodeURIComponent(match[1]);
+  if (cookieVal.startsWith('bearer:') && config.conversation.viewerToken && cookieVal.slice(7) === config.conversation.viewerToken) {
+    return { kind: 'bearer' };
+  }
+  const user = verifyDashboardToken(cookieVal);
+  return user ? { kind: 'jwt', user } : null;
+}
+
 // ── User lookup ──
 
 type UserLookupFn = (email: string) => { userId: string; name: string } | null;
@@ -609,13 +686,28 @@ export async function registerOAuthRoutes(server: FastifyInstance): Promise<void
     // don't want the consume side-effect to have already fired on the
     // rejection path. The interstitial re-POSTs the original token,
     // and THAT path consumes the jti.
-    const existing = getDashboardUser(request);
-    if (existing && existing.slackUserId !== payload.sub) {
+    //
+    // Covers BOTH cookie modes (JWT + bearer:admin) via `_getCurrentSession`.
+    // Oracle re-review caught that `getDashboardUser` alone missed bearer
+    // admin sessions — an admin browser could be silently switched to a
+    // Slack identity without the interstitial.
+    const existing = _getCurrentSession(request);
+    const existingMatchesRequest =
+      existing?.kind === 'jwt' && existing.user.slackUserId === payload.sub;
+    if (existing && !existingMatchesRequest) {
       logger.warn('Slack SSO: session switch requires confirmation', {
-        currentUser: existing.slackUserId,
+        currentKind: existing.kind,
+        currentUser: existing.kind === 'jwt' ? existing.user.slackUserId : 'admin',
         requestedUser: payload.sub,
       });
-      reply.type('text/html; charset=utf-8').send(renderSsoConfirmPage(token, existing, payload));
+      // `no-store` keeps the token out of browser back/forward cache —
+      // combined with the 303 on the POST side, the exchange JWT never
+      // lingers in the session-history stack.
+      reply
+        .type('text/html; charset=utf-8')
+        .header('Cache-Control', 'no-store, no-cache, must-revalidate')
+        .header('Pragma', 'no-cache')
+        .send(renderSsoConfirmPage(token, existing, payload));
       return;
     }
 
@@ -650,7 +742,23 @@ export async function registerOAuthRoutes(server: FastifyInstance): Promise<void
   // exchange token from the hidden form field and consume the jti here
   // (not on the GET) so a drive-by GET doesn't burn the token just to
   // show a page the user will likely cancel.
+  //
+  // Same-origin enforcement (Oracle re-review P1): the exchange JWT
+  // alone is NOT proof of user intent — an attacker who holds any
+  // valid exchange token could auto-submit a cross-origin form POST
+  // and silently bind the victim's browser to the attacker's session
+  // (SameSite=Lax does not protect Set-Cookie, only cookie-send). We
+  // reject any POST whose Origin/Referer doesn't match our viewer
+  // host.
   server.post<{ Body: { token?: string } }>('/auth/sso/confirm', async (request, reply) => {
+    if (!_isSameOriginRequest(request)) {
+      logger.warn('Slack SSO confirm: rejected cross-origin POST', {
+        origin: request.headers.origin ?? null,
+        referer: request.headers.referer ?? null,
+      });
+      reply.status(403).send('Forbidden: cross-origin confirmation not allowed');
+      return;
+    }
     const token = request.body?.token;
     if (!token) {
       reply.status(400).send('Missing token');
@@ -658,11 +766,11 @@ export async function registerOAuthRoutes(server: FastifyInstance): Promise<void
     }
     const payload = verifySsoExchangeToken(token);
     if (!payload) {
-      reply.redirect('/login?error=sso_invalid');
+      reply.redirect('/login?error=sso_invalid', 303);
       return;
     }
     if (!_consumeSsoJti(payload.jti, payload.exp)) {
-      reply.redirect('/login?error=sso_consumed');
+      reply.redirect('/login?error=sso_consumed', 303);
       return;
     }
     const sessionToken = issueToken({
@@ -672,7 +780,16 @@ export async function registerOAuthRoutes(server: FastifyInstance): Promise<void
       provider: 'slack',
     });
     logger.info('Slack SSO login success via session switch', { slackUserId: payload.sub });
-    setCookieAndRedirect(reply, sessionToken, `/dashboard/${payload.sub}`);
+    // 303 after POST so the browser issues GET for the final dashboard
+    // URL — standard POST-redirect-GET, also keeps the form resubmit
+    // prompt out of the back button.
+    const maxAge = config.oauth.jwtExpiresIn;
+    const secure = (config.conversation.viewerUrl || '').startsWith('https');
+    reply.header(
+      'Set-Cookie',
+      `${COOKIE_NAME}=${encodeURIComponent(sessionToken)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure ? '; Secure' : ''}`,
+    );
+    reply.redirect(`/dashboard/${payload.sub}`, 303);
   });
 
   // ── Token login (server-side) — replaces client-side cookie write ──
@@ -770,11 +887,13 @@ function _htmlEscape(s: string): string {
  */
 function renderSsoConfirmPage(
   token: string,
-  current: DashboardUser,
+  current: { kind: 'jwt'; user: DashboardUser } | { kind: 'bearer' },
   requested: { sub: string; name: string; email: string },
 ): string {
-  const currentName = _htmlEscape(current.name || current.slackUserId);
-  const currentEmail = _htmlEscape(current.email || '');
+  const currentName = _htmlEscape(
+    current.kind === 'jwt' ? current.user.name || current.user.slackUserId : 'Admin (API token)',
+  );
+  const currentEmail = _htmlEscape(current.kind === 'jwt' ? current.user.email || '' : '');
   const requestedName = _htmlEscape(requested.name || requested.sub);
   const requestedEmail = _htmlEscape(requested.email || '');
   const tokenEsc = _htmlEscape(token);
@@ -893,22 +1012,36 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 
 <script>
 // Show error from query params
+// Render error text as a text node so any attacker-controlled URL
+// parameter (e.g. ?error=no_match&email=<img onerror=...>) is neutered —
+// innerHTML on user-controlled data is reflected XSS (Oracle re-review,
+// pre-existing). The wrapper div is created imperatively.
+function _showError(msg) {
+  const el = document.getElementById('error');
+  if (!el) return;
+  const wrap = document.createElement('div');
+  wrap.className = 'error-msg';
+  wrap.textContent = msg;
+  el.replaceChildren(wrap);
+}
 const params = new URLSearchParams(location.search);
 const err = params.get('error');
 if (err) {
-  const el = document.getElementById('error');
+  const emailParam = params.get('email') || 'this email';
   const msgs = {
     'google_denied': 'Google sign-in was cancelled.',
     'google_failed': 'Google sign-in failed. Please try again.',
     'microsoft_denied': 'Microsoft sign-in was cancelled.',
     'microsoft_failed': 'Microsoft sign-in failed. Please try again.',
-    'no_match': 'No matching Slack account found for ' + (params.get('email') || 'this email') + '. Contact your admin.',
+    // emailParam is inserted as text only via _showError — do NOT switch
+    // this branch back to innerHTML.
+    'no_match': 'No matching Slack account found for ' + emailParam + '. Contact your admin.',
     'state_mismatch': 'Authentication state mismatch. Please try again.',
     'sso_missing': 'Slack SSO link is missing a token. Request a new dashboard link in Slack.',
     'sso_invalid': 'Slack SSO link expired or is invalid. Request a new dashboard link in Slack.',
     'sso_consumed': 'Slack SSO link was already used. Request a new dashboard link in Slack.',
   };
-  el.innerHTML = '<div class="error-msg">' + (msgs[err] || 'Authentication error.') + '</div>';
+  _showError(msgs[err] || 'Authentication error.');
 }
 
 function loginWithToken() {
@@ -920,9 +1053,9 @@ function loginWithToken() {
     body: JSON.stringify({ token }),
   }).then(r => r.json()).then(data => {
     if (data.ok) location.href = data.redirect || '/dashboard';
-    else document.getElementById('error').innerHTML = '<div class="error-msg">Invalid token.</div>';
+    else _showError('Invalid token.');
   }).catch(() => {
-    document.getElementById('error').innerHTML = '<div class="error-msg">Login failed.</div>';
+    _showError('Login failed.');
   });
 }
 </script>
