@@ -1,6 +1,8 @@
 import { config } from '../config';
 import { Logger } from '../logger';
 import type { Todo } from '../todo-manager';
+import type { AssistantStatusManager } from './assistant-status-manager';
+import { getEffectiveFiveBlockPhase } from './pipeline/effective-phase';
 import type { SlackApiHelper } from './slack-api-helper';
 import { TaskListBlockBuilder } from './task-list-block-builder';
 import { TurnRenderDebouncer } from './turn-render-debouncer';
@@ -57,6 +59,15 @@ export interface TurnContext {
   readonly sessionKey: string;
   /** Unique turn id — stream-executor uses `${sessionKey}:${turnStartTs}`. */
   readonly turnId: string;
+  /**
+   * Issue #688 — per-turn AssistantStatusManager epoch captured by the
+   * caller via `bumpEpoch(channel, threadTs)`. When present, TurnSurface's
+   * end()/fail() pass it as `expectedEpoch` to `clearStatus` so a stale
+   * close from a superseded turn cannot wipe the spinner set by the
+   * newer turn on the same (channel, threadTs). Optional so existing
+   * callers/tests that don't drive native status writes are unchanged.
+   */
+  readonly statusEpoch?: number;
 }
 
 /**
@@ -123,6 +134,13 @@ function describeSlackError(error: unknown): { code?: string; message: string } 
 
 export interface TurnSurfaceDeps {
   slackApi: SlackApiHelper;
+  /**
+   * #689 P4 Part 2/2 — TurnSurface is the sole native-status writer at
+   * effective PHASE>=4. Optional so existing tests that construct
+   * `TurnSurface` without this dep keep working (legacy behaviour: no
+   * spinner writes even if PHASE=4 — ThreadSurface chip owns the UX).
+   */
+  assistantStatusManager?: AssistantStatusManager;
 }
 
 // ---------------------------------------------------------------------------
@@ -153,6 +171,19 @@ export class TurnSurface {
    */
   private phase(): number {
     return config.ui.fiveBlockPhase;
+  }
+
+  /**
+   * #689 P4 Part 2/2 — effective phase for B4 consumers. Identical to
+   * `phase()` unless `raw >= 4 && !assistantStatusManager.isEnabled()`, in
+   * which case it clamps to 3 and emits the `soma_ui_5block_phase_clamped`
+   * metric (once-flag). If no `assistantStatusManager` is injected we fall
+   * back to the raw phase (tests / legacy constructors).
+   */
+  private effectivePhase(): number {
+    const mgr = this.deps.assistantStatusManager;
+    if (!mgr) return this.phase();
+    return getEffectiveFiveBlockPhase(mgr);
   }
 
   // -------------------------------------------------------------------------
@@ -244,6 +275,26 @@ export class TurnSurface {
         turnId: ctx.turnId,
         error: (err as Error).message,
       });
+    }
+
+    // #689 P4 Part 2/2 — B4 native spinner start. Only fires at effective
+    // PHASE>=4 (raw>=4 AND assistantStatusManager.isEnabled()). Runtime
+    // scope failure flips `enabled=false` → effective clamp to 3 on the
+    // next turn, falling back to ThreadSurface chip.
+    const mgr = this.deps.assistantStatusManager;
+    if (mgr && this.effectivePhase() >= 4 && ctx.threadTs) {
+      // Fail-open matching `chat.startStream` above: the B1 stream + turn
+      // lifecycle must survive a sidebar-spinner throw. The manager handles
+      // expected permanent/transient codes internally, so this try/catch
+      // only shields against unexpected throws.
+      try {
+        await mgr.setStatus(ctx.channelId, ctx.threadTs, 'is thinking...');
+      } catch (err) {
+        this.logger.warn('B4 native spinner setStatus failed in begin()', {
+          turnId: ctx.turnId,
+          error: (err as Error).message,
+        });
+      }
     }
   }
 
@@ -589,6 +640,25 @@ export class TurnSurface {
         await this.closeStream(state, 'end', reason);
       }
     } finally {
+      // #689 P4 Part 2/2 — B4 native spinner clear. Wrapped: although
+      // `clearStatus` swallows its own Slack errors, `effectivePhase()`
+      // and the epoch/`clearInterval` path can still throw. A throw here
+      // must NEVER skip `cleanupTurn` — orphaning `this.turns` would make
+      // the next turn hit the `begin()` called-twice guard and drop silently.
+      // #688 — pass `statusEpoch` so a stale close from a superseded turn
+      // cannot wipe a spinner set by the newer turn on the same thread.
+      try {
+        const mgr = this.deps.assistantStatusManager;
+        if (mgr && this.effectivePhase() >= 4 && state.ctx.threadTs) {
+          const opts = state.ctx.statusEpoch !== undefined ? { expectedEpoch: state.ctx.statusEpoch } : undefined;
+          await mgr.clearStatus(state.ctx.channelId, state.ctx.threadTs, opts);
+        }
+      } catch (err) {
+        this.logger.warn('B4 native spinner clear in end() threw — cleanup continues', {
+          turnId,
+          error: (err as Error)?.message ?? String(err),
+        });
+      }
       this.cleanupTurn(turnId, state);
     }
   }
@@ -621,6 +691,20 @@ export class TurnSurface {
         await this.closeStream(state, 'fail', 'aborted');
       }
     } finally {
+      // #689 P4 Part 2/2 + #688 — same B4 clear + epoch guard as end().
+      // Wrapped for the same reason: a throw must never skip `cleanupTurn`.
+      try {
+        const mgr = this.deps.assistantStatusManager;
+        if (mgr && this.effectivePhase() >= 4 && state.ctx.threadTs) {
+          const opts = state.ctx.statusEpoch !== undefined ? { expectedEpoch: state.ctx.statusEpoch } : undefined;
+          await mgr.clearStatus(state.ctx.channelId, state.ctx.threadTs, opts);
+        }
+      } catch (err) {
+        this.logger.warn('B4 native spinner clear in fail() threw — cleanup continues', {
+          turnId,
+          error: (err as Error)?.message ?? String(err),
+        });
+      }
       this.cleanupTurn(turnId, state);
     }
   }

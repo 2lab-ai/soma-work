@@ -10,6 +10,7 @@ import type { AssistantStatusManager } from './assistant-status-manager';
 import type { McpHealthMonitor } from './mcp-health-monitor';
 import type { McpStatusDisplay } from './mcp-status-tracker';
 import { getToolResultRenderMode, LOG_DETAIL, OutputFlag, shouldOutput } from './output-flags';
+import { shouldRunLegacyB4Path } from './pipeline/effective-phase';
 import type { ReactionManager } from './reaction-manager';
 import { ToolFormatter, type ToolResult } from './tool-formatter';
 import type { ToolTracker } from './tool-tracker';
@@ -239,10 +240,17 @@ export class ToolEventProcessor {
       await this.reactionManager.setMcpPending(context.sessionKey, callId);
     }
 
-    // Native spinner with MCP server name
-    if (this.assistantStatusManager) {
-      const statusText = this.assistantStatusManager.getToolStatusText(toolUse.name, serverName);
-      await this.assistantStatusManager.setStatus(context.channel, context.threadTs, statusText);
+    // Native spinner with MCP server name — legacy-only; TurnSurface owns
+    // the single B4 writer at PHASE>=4. Lifting getToolStatusText into
+    // TurnSurface is a follow-up — see docs/slack-ui-phase4.md.
+    // Skip when the descriptor is undefined/empty — `setStatus('')` reroutes
+    // to `clearStatus` internally, which would silently wipe the spinner
+    // mid-tool instead of leaving the previous status visible.
+    if (shouldRunLegacyB4Path(this.assistantStatusManager)) {
+      const statusText = this.assistantStatusManager?.getToolStatusText(toolUse.name, serverName);
+      if (statusText) {
+        await this.assistantStatusManager?.setStatus(context.channel, context.threadTs, statusText);
+      }
     }
 
     const config = {
@@ -342,7 +350,10 @@ export class ToolEventProcessor {
         try {
           bgEntry.unregister();
         } catch (err) {
-          this.logger.debug('bg bash unregister threw', {
+          // unregister is idempotent (released flag). A throw here means
+          // two code paths are fighting over the same entry — surface as
+          // warn so a real concurrency bug doesn't hide at debug level.
+          this.logger.warn('bg bash unregister threw', {
             toolUseId: toolResult.toolUseId,
             error: (err as Error)?.message ?? String(err),
           });
@@ -473,7 +484,8 @@ export class ToolEventProcessor {
         try {
           entry.unregister();
         } catch (err) {
-          this.logger.debug('bg bash unregister threw during sweep', {
+          // Same warn-level rationale as handleToolResult's unregister catch.
+          this.logger.warn('bg bash unregister threw during sweep', {
             sessionKey,
             toolUseId: entry.toolUseId,
             error: (err as Error)?.message ?? String(err),

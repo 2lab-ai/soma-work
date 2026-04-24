@@ -882,4 +882,202 @@ describe('TurnSurface', () => {
       expect(slackApi.updateMessage).not.toHaveBeenCalled();
     });
   });
+
+  // #689 P4 Part 2/2 — TurnSurface owns B4 native spinner at effective PHASE>=4
+  describe('PHASE>=4 B4 native-status wiring', () => {
+    const makeMgr = (enabled: boolean) => ({
+      isEnabled: vi.fn().mockReturnValue(enabled),
+      setStatus: vi.fn().mockResolvedValue(undefined),
+      clearStatus: vi.fn().mockResolvedValue(undefined),
+    });
+
+    // Reset the module-level clamp-once flag so a disabled-mgr test in
+    // this block doesn't leak state into subsequent tests. The flag lives
+    // in `src/slack/pipeline/effective-phase.ts` and is test-only reset
+    // via `__resetClampEmitted`.
+    afterEach(async () => {
+      const { __resetClampEmitted } = await import('./pipeline/effective-phase');
+      __resetClampEmitted();
+    });
+
+    it('PHASE=4 + enabled: begin calls setStatus("is thinking...") once', async () => {
+      config.ui.fiveBlockPhase = 4;
+      const client = makeClient();
+      const mgr = makeMgr(true);
+      const surface = new TurnSurface({
+        slackApi: makeSlackApi(client),
+        assistantStatusManager: mgr as any,
+      });
+      await surface.begin({ channelId: 'C', threadTs: 'thr', sessionKey: 'C:thr', turnId: 't-b4' });
+      expect(mgr.setStatus).toHaveBeenCalledTimes(1);
+      expect(mgr.setStatus).toHaveBeenCalledWith('C', 'thr', 'is thinking...');
+    });
+
+    it('PHASE=4 + enabled: end calls clearStatus once', async () => {
+      config.ui.fiveBlockPhase = 4;
+      const client = makeClient();
+      const mgr = makeMgr(true);
+      const surface = new TurnSurface({
+        slackApi: makeSlackApi(client),
+        assistantStatusManager: mgr as any,
+      });
+      await surface.begin({ channelId: 'C', threadTs: 'thr', sessionKey: 'C:thr', turnId: 't-b4-e' });
+      await surface.end('t-b4-e', 'completed');
+      expect(mgr.clearStatus).toHaveBeenCalledTimes(1);
+      // Issue #688 — third arg is the optional expectedEpoch options bag.
+      // When TurnContext omits `statusEpoch` (this test does) end()/fail()
+      // pass `undefined`, which `clearStatus` treats as "no epoch guard".
+      expect(mgr.clearStatus).toHaveBeenCalledWith('C', 'thr', undefined);
+    });
+
+    // Issue #688 — when TurnContext threads a `statusEpoch`, end()/fail()
+    // forward it as `expectedEpoch` so a stale close from a superseded
+    // turn cannot wipe a spinner set by the newer turn.
+    it('PHASE=4 + enabled + statusEpoch: end forwards expectedEpoch to clearStatus', async () => {
+      config.ui.fiveBlockPhase = 4;
+      const client = makeClient();
+      const mgr = makeMgr(true);
+      const surface = new TurnSurface({
+        slackApi: makeSlackApi(client),
+        assistantStatusManager: mgr as any,
+      });
+      await surface.begin({
+        channelId: 'C',
+        threadTs: 'thr',
+        sessionKey: 'C:thr',
+        turnId: 't-b4-epoch',
+        statusEpoch: 7,
+      });
+      await surface.end('t-b4-epoch', 'completed');
+      expect(mgr.clearStatus).toHaveBeenCalledTimes(1);
+      expect(mgr.clearStatus).toHaveBeenCalledWith('C', 'thr', { expectedEpoch: 7 });
+    });
+
+    it('PHASE=4 + enabled + statusEpoch: fail forwards expectedEpoch to clearStatus', async () => {
+      config.ui.fiveBlockPhase = 4;
+      const client = makeClient();
+      const mgr = makeMgr(true);
+      const surface = new TurnSurface({
+        slackApi: makeSlackApi(client),
+        assistantStatusManager: mgr as any,
+      });
+      await surface.begin({
+        channelId: 'C',
+        threadTs: 'thr',
+        sessionKey: 'C:thr',
+        turnId: 't-b4-epoch-f',
+        statusEpoch: 11,
+      });
+      await surface.fail('t-b4-epoch-f', new Error('boom'));
+      expect(mgr.clearStatus).toHaveBeenCalledTimes(1);
+      expect(mgr.clearStatus).toHaveBeenCalledWith('C', 'thr', { expectedEpoch: 11 });
+    });
+
+    it('PHASE=4 + enabled: fail calls clearStatus (idempotent — fail twice → 1 call total)', async () => {
+      config.ui.fiveBlockPhase = 4;
+      const client = makeClient();
+      const mgr = makeMgr(true);
+      const surface = new TurnSurface({
+        slackApi: makeSlackApi(client),
+        assistantStatusManager: mgr as any,
+      });
+      await surface.begin({ channelId: 'C', threadTs: 'thr', sessionKey: 'C:thr', turnId: 't-b4-f' });
+      await surface.fail('t-b4-f', new Error('boom'));
+      await surface.fail('t-b4-f', new Error('boom again'));
+      expect(mgr.clearStatus).toHaveBeenCalledTimes(1);
+    });
+
+    it('PHASE=3: begin does NOT call setStatus (B4 gate)', async () => {
+      config.ui.fiveBlockPhase = 3;
+      const client = makeClient();
+      const mgr = makeMgr(true);
+      const surface = new TurnSurface({
+        slackApi: makeSlackApi(client),
+        assistantStatusManager: mgr as any,
+      });
+      await surface.begin({ channelId: 'C', threadTs: 'thr', sessionKey: 'C:thr', turnId: 't-no-b4' });
+      expect(mgr.setStatus).not.toHaveBeenCalled();
+    });
+
+    it('PHASE=4 + disabled (clamped to 3): begin does NOT call setStatus', async () => {
+      config.ui.fiveBlockPhase = 4;
+      const client = makeClient();
+      const mgr = makeMgr(false);
+      const surface = new TurnSurface({
+        slackApi: makeSlackApi(client),
+        assistantStatusManager: mgr as any,
+      });
+      await surface.begin({
+        channelId: 'C',
+        threadTs: 'thr',
+        sessionKey: 'C:thr',
+        turnId: 't-b4-clamp',
+      });
+      expect(mgr.setStatus).not.toHaveBeenCalled();
+    });
+
+    // #700 review P2 — supersede-race integration test. Exercises the
+    // actual AssistantStatusManager (not a mock) to prove the epoch guard
+    // in `clearStatus` drops a stale fail(A) after begin(B) has already
+    // bumped the epoch on the same (channel, threadTs). Regression shield
+    // for the scenario the #688 epoch plumbing was designed to prevent.
+    it("PHASE=4 + supersede race: fail(A) with A's old statusEpoch does NOT clear B's spinner", async () => {
+      config.ui.fiveBlockPhase = 4;
+      const originalB4 = config.ui.b4NativeStatusEnabled;
+      config.ui.b4NativeStatusEnabled = true;
+      const client = makeClient();
+      const setAssistantStatus = vi.fn().mockResolvedValue(undefined);
+      const slackApi = {
+        getClient: vi.fn().mockReturnValue(client),
+        setAssistantStatus,
+      } as any;
+      const { AssistantStatusManager } = await import('./assistant-status-manager');
+      const mgr = new AssistantStatusManager(slackApi);
+      const surface = new TurnSurface({ slackApi, assistantStatusManager: mgr });
+      let epochB = 0;
+      try {
+        // Turn A opens at epoch 1
+        const epochA = mgr.bumpEpoch('C', 'thr');
+        await surface.begin({
+          channelId: 'C',
+          threadTs: 'thr',
+          sessionKey: 'C:thr',
+          turnId: 't-A',
+          statusEpoch: epochA,
+        });
+
+        // Turn B supersedes: bump epoch → begin(B) sets a fresh spinner
+        epochB = mgr.bumpEpoch('C', 'thr');
+        await surface.begin({
+          channelId: 'C',
+          threadTs: 'thr',
+          sessionKey: 'C:thr',
+          turnId: 't-B',
+          statusEpoch: epochB,
+        });
+
+        // Snapshot calls up to now — B just set its spinner. The
+        // regression we're guarding: fail(A) below MUST NOT fire an empty
+        // setAssistantStatus('') against this (channel, threadTs).
+        const callsBeforeFail = setAssistantStatus.mock.calls.length;
+
+        // A's in-flight path loses the race and fires fail(A) after B has
+        // already started. With the #688 epoch guard, mgr.clearStatus
+        // drops the stale clear silently.
+        await surface.fail('t-A', new Error('superseded'));
+
+        const clearCalls = setAssistantStatus.mock.calls.slice(callsBeforeFail).filter(([, , text]) => text === '');
+        expect(clearCalls).toHaveLength(0);
+
+        // Sanity: the initial begin(A) + begin(B) setStatus writes landed.
+        expect(callsBeforeFail).toBeGreaterThanOrEqual(2);
+      } finally {
+        // Drain B's live 20s heartbeat so the test doesn't leak a Node
+        // timer into the vitest worker. (A's heartbeat shares the same
+        // (channel,threadTs) key — one clearStatus covers both.)
+        if (epochB) await mgr.clearStatus('C', 'thr', { expectedEpoch: epochB });
+        config.ui.b4NativeStatusEnabled = originalB4;
+      }
+    });
+  });
 });

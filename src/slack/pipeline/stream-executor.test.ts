@@ -3408,6 +3408,12 @@ describe('stream-executor — epoch guard + Bash resolver descriptor (issue #688
         deleteMessage: vi.fn().mockResolvedValue(undefined),
       },
       assistantStatusManager: {
+        // #700 review P1 — isEnabled drives `shouldRunLegacyB4Path` /
+        // `getEffectiveFiveBlockPhase`. Default enabled=true so the
+        // pre-existing #688 tests keep running through the legacy path
+        // at PHASE<4 (raw default); tests that need PHASE>=4 behaviour
+        // override `config.ui.fiveBlockPhase` + this flag.
+        isEnabled: vi.fn().mockReturnValue(true),
         setStatus: vi.fn().mockResolvedValue(undefined),
         clearStatus: vi.fn().mockResolvedValue(undefined),
         getToolStatusText: vi.fn().mockReturnValue('is reading files...'),
@@ -3549,5 +3555,125 @@ describe('stream-executor — epoch guard + Bash resolver descriptor (issue #688
 
     const emptyStringSet = deps.assistantStatusManager.setStatus.mock.calls.find((c: any[]) => c[2] === '');
     expect(emptyStringSet).toBeUndefined();
+  });
+
+  // #700 review P1 — PHASE>=4 Bash behavioural coverage. The onToolUse
+  // legacy-setStatus wrapper must route through `shouldRunLegacyB4Path`
+  // so Bash no longer double-writes the spinner when TurnSurface owns
+  // it. When the manager is clamped (disabled), the descriptor path must
+  // re-activate and fire the resolver so the heartbeat still reflects
+  // bg-bash counter changes. Both assertions directly protect the Bash
+  // + native spinner path against regressions.
+  describe('PHASE>=4 Bash legacy suppression (#700 P1)', () => {
+    const originalPhase = config.ui.fiveBlockPhase;
+
+    afterEach(async () => {
+      config.ui.fiveBlockPhase = originalPhase;
+      const { __resetClampEmitted } = await import('./effective-phase');
+      __resetClampEmitted();
+    });
+
+    it('PHASE=4 + enabled: Bash tool_use does NOT call legacy setStatus (TurnSurface owns)', async () => {
+      config.ui.fiveBlockPhase = 4;
+      const deps = createDeps(() => toolFlowStream('Bash'));
+      deps.assistantStatusManager.isEnabled = vi.fn().mockReturnValue(true);
+      const executor = new StreamExecutor(deps);
+      const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+      await executor.execute(createParams(say));
+
+      // All Bash legacy setStatus callsites in execute() / onToolUse
+      // route through `legacySetStatus` → `shouldRunLegacyB4Path` and
+      // must short-circuit. Zero setStatus writes on the clamp=false
+      // path is the success condition.
+      expect(deps.assistantStatusManager.setStatus).not.toHaveBeenCalled();
+    });
+
+    it('PHASE=4 + disabled (clamped): Bash tool_use re-fires the resolver descriptor', async () => {
+      config.ui.fiveBlockPhase = 4;
+      const deps = createDeps(() => toolFlowStream('Bash'));
+      // Clamp: disabled manager pulls `getEffectiveFiveBlockPhase` down
+      // to 3 so the legacy path runs and the Bash resolver descriptor is
+      // injected (so live heartbeats can reflect the bg-bash counter).
+      deps.assistantStatusManager.isEnabled = vi.fn().mockReturnValue(false);
+      const executor = new StreamExecutor(deps);
+      const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+      await executor.execute(createParams(say));
+
+      const setCalls = deps.assistantStatusManager.setStatus.mock.calls;
+      const resolverCall = setCalls.find((c: any[]) => typeof c[2] === 'function');
+      expect(resolverCall).toBeDefined();
+      expect(resolverCall![0]).toBe('C42');
+      expect(resolverCall![1]).toBe('thread42');
+      // Resolver delegates to buildBashStatus — matches the PHASE<4
+      // behaviour in the existing #688 test above.
+      expect(resolverCall![2]()).toBe('is running commands...');
+    });
+  });
+});
+
+// #689 P4 Part 2/2 — `legacySetStatus` / `legacyClearStatus` private wrappers.
+// All existing stream-executor native-spinner callsites route through these so
+// they can be PHASE-gated in one place. Verified directly (white-box) to keep
+// the test isolated from the full `execute()` pipeline.
+describe('StreamExecutor — #689 legacy native-spinner suppression', () => {
+  const originalPhase = config.ui.fiveBlockPhase;
+
+  const makeExec = (phase: number, enabled: boolean) => {
+    config.ui.fiveBlockPhase = phase;
+    const mgr = {
+      isEnabled: vi.fn().mockReturnValue(enabled),
+      setStatus: vi.fn().mockResolvedValue(undefined),
+      clearStatus: vi.fn().mockResolvedValue(undefined),
+    };
+    const executor = new StreamExecutor({ assistantStatusManager: mgr } as any);
+    return { executor, mgr };
+  };
+
+  afterEach(async () => {
+    config.ui.fiveBlockPhase = originalPhase;
+    // Reset the module-level clamp-once flag so the disabled-mgr clamp test
+    // doesn't leak the "already emitted" state into other suites in this
+    // file. Mirrors the pattern in turn-surface.test.ts (commit 1c83d5e).
+    const { __resetClampEmitted } = await import('./effective-phase');
+    __resetClampEmitted();
+  });
+
+  it('PHASE<4: legacySetStatus forwards to assistantStatusManager.setStatus', async () => {
+    const { executor, mgr } = makeExec(3, true);
+    await (executor as any).legacySetStatus('C', 'thr', 'is thinking...');
+    expect(mgr.setStatus).toHaveBeenCalledTimes(1);
+    expect(mgr.setStatus).toHaveBeenCalledWith('C', 'thr', 'is thinking...');
+  });
+
+  it('PHASE>=4 + enabled: legacySetStatus is a no-op (TurnSurface owns)', async () => {
+    const { executor, mgr } = makeExec(4, true);
+    await (executor as any).legacySetStatus('C', 'thr', 'is thinking...');
+    expect(mgr.setStatus).not.toHaveBeenCalled();
+  });
+
+  it('PHASE>=4 + disabled (clamped): legacySetStatus re-activates the forward', async () => {
+    const { executor, mgr } = makeExec(4, false);
+    await (executor as any).legacySetStatus('C', 'thr', 'fallback');
+    expect(mgr.setStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it('PHASE<4: legacyClearStatus forwards to assistantStatusManager.clearStatus', async () => {
+    const { executor, mgr } = makeExec(2, true);
+    await (executor as any).legacyClearStatus('C', 'thr');
+    expect(mgr.clearStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it('PHASE>=4 + enabled: legacyClearStatus is a no-op', async () => {
+    const { executor, mgr } = makeExec(5, true);
+    await (executor as any).legacyClearStatus('C', 'thr');
+    expect(mgr.clearStatus).not.toHaveBeenCalled();
+  });
+
+  it('legacyClearStatus propagates expectedEpoch option at PHASE<4', async () => {
+    const { executor, mgr } = makeExec(2, true);
+    await (executor as any).legacyClearStatus('C', 'thr', { expectedEpoch: 3 });
+    expect(mgr.clearStatus).toHaveBeenCalledWith('C', 'thr', { expectedEpoch: 3 });
   });
 });

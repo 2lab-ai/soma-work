@@ -6,6 +6,7 @@ import type { SessionRegistry } from '../session-registry';
 import type { Todo, TodoManager } from '../todo-manager';
 import type { ConversationSession, UserChoice, UserChoices } from '../types';
 import { buildMarkerBlocks, FORM_BUILD_FAILED_TEXT } from './actions/click-classifier';
+import type { AssistantStatusManager } from './assistant-status-manager';
 import type { CompletionMessageTracker } from './completion-message-tracker';
 import type { RequestCoordinator } from './request-coordinator';
 import type { SlackApiHelper } from './slack-api-helper';
@@ -26,6 +27,12 @@ interface ThreadPanelDeps {
    * degrade to no-ops when absent.
    */
   sessionRegistry?: SessionRegistry;
+  /**
+   * #689 P4 Part 2/2 — threaded into ThreadSurface (chip suppression) and
+   * TurnSurface (native spinner writer). Optional so existing tests that
+   * construct ThreadPanel without this dep continue to pass.
+   */
+  assistantStatusManager?: AssistantStatusManager;
 }
 
 // Keeps TurnSurface `@internal` while exposing the public type contract.
@@ -55,7 +62,10 @@ export class ThreadPanel {
 
   constructor(private deps: ThreadPanelDeps) {
     this.surface = new ThreadSurface(deps);
-    this.turnSurface = new TurnSurface({ slackApi: deps.slackApi });
+    this.turnSurface = new TurnSurface({
+      slackApi: deps.slackApi,
+      assistantStatusManager: deps.assistantStatusManager,
+    });
   }
 
   async create(session: ConversationSession, sessionKey: string): Promise<void> {
