@@ -164,8 +164,8 @@ describe('CctHandler — Wave 5', () => {
   it('cct usage (no name) fetches usage for the active cct slot with oauth attachment', async () => {
     const fetchAndStoreUsage = vi.fn(async (_keyId: string) => ({
       fetchedAt: '2026-04-18T03:42:00Z',
-      fiveHour: { utilization: 0.42, resetsAt: new Date(Date.now() + 3 * 3_600_000).toISOString() },
-      sevenDay: { utilization: 0.17, resetsAt: new Date(Date.now() + 5 * 86_400_000).toISOString() },
+      fiveHour: { utilization: 42, resetsAt: new Date(Date.now() + 3 * 3_600_000).toISOString() },
+      sevenDay: { utilization: 17, resetsAt: new Date(Date.now() + 5 * 86_400_000).toISOString() },
     }));
     const { CctHandler } = await loadHandlerWithMockTm({
       tokens: [{ keyId: 'slot-1', name: 'active', kind: 'cct' as const, status: 'healthy' }],
@@ -204,7 +204,7 @@ describe('CctHandler — Wave 5', () => {
     // Slack command surface. Only the Refresh-buttons admin path may force.
     const fetchAndStoreUsage = vi.fn(async (_keyId: string) => ({
       fetchedAt: '2026-04-18T03:42:00Z',
-      fiveHour: { utilization: 0.1, resetsAt: new Date(Date.now() + 3 * 3_600_000).toISOString() },
+      fiveHour: { utilization: 10, resetsAt: new Date(Date.now() + 3 * 3_600_000).toISOString() },
     }));
     const { CctHandler } = await loadHandlerWithMockTm({
       tokens: [{ keyId: 'slot-1', name: 'active', kind: 'cct' as const, status: 'healthy' }],
@@ -240,8 +240,8 @@ describe('CctHandler — Wave 5', () => {
   it('cct usage <name> looks up slot by name and calls fetchAndStoreUsage', async () => {
     const fetchAndStoreUsage = vi.fn(async (_keyId: string) => ({
       fetchedAt: '2026-04-18T03:42:00Z',
-      fiveHour: { utilization: 0.5, resetsAt: new Date(Date.now() + 2 * 3_600_000).toISOString() },
-      sevenDay: { utilization: 0.25, resetsAt: new Date(Date.now() + 3 * 86_400_000).toISOString() },
+      fiveHour: { utilization: 50, resetsAt: new Date(Date.now() + 2 * 3_600_000).toISOString() },
+      sevenDay: { utilization: 25, resetsAt: new Date(Date.now() + 3 * 86_400_000).toISOString() },
     }));
     // Build a snapshot where BOTH slots carry oauthAttachment so the lookup
     // for 'secondary' passes the attachment gate.
@@ -593,15 +593,17 @@ describe('CctHandler — Wave 5', () => {
 });
 
 describe('renderUsageLines', () => {
-  it('scales 0..1 utilization to 0..100 percent integer', async () => {
+  it('renders percent-form utilization to 0..100 integer (rounds 42.34 → 42; 1 → 1%)', async () => {
+    // #701 — utilization is now treated as percent-form only (no fraction→percent
+    // scaling). `42.34` rounds to `42`, and `1` renders as 1% (NOT 100%).
     const { renderUsageLines } = await import('./cct-handler');
     const now = Date.parse('2026-04-18T00:00:00Z');
     const out = renderUsageLines(
       { name: 'x', kind: 'cct' },
       {
         fetchedAt: '2026-04-18T00:00:00Z',
-        fiveHour: { utilization: 0.4234, resetsAt: '2026-04-18T03:45:00Z' },
-        sevenDay: { utilization: 0.01, resetsAt: '2026-04-25T00:00:00Z' },
+        fiveHour: { utilization: 42.34, resetsAt: '2026-04-18T03:45:00Z' },
+        sevenDay: { utilization: 1, resetsAt: '2026-04-25T00:00:00Z' },
       },
       now,
     );

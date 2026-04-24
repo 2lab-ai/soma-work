@@ -914,7 +914,15 @@ describe('refresh_usage action handlers (M1-S4)', () => {
     const refreshAllAttachedOAuthTokens = vi.fn(async () => {
       throw new Error('tm blew up');
     });
-    const tm = { refreshAllAttachedOAuthTokens } as any;
+    // #701 — handler now calls getSnapshot before refreshAllAttached; return
+    // a valid empty snapshot so the test still exercises the later throw.
+    const getSnapshot = vi.fn(async () => ({
+      version: 2 as const,
+      revision: 1,
+      registry: { slots: [] },
+      state: {},
+    }));
+    const tm = { refreshAllAttachedOAuthTokens, getSnapshot } as any;
     const adminUtils = await import('../../admin-utils');
     const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(true);
     const postEphemeral = vi.fn(async (_arg: any) => undefined);
