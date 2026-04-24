@@ -26,6 +26,7 @@ import type { RequestCoordinator } from '../request-coordinator';
 import type { SlackApiHelper } from '../slack-api-helper';
 import { ThreadHeaderBuilder } from '../thread-header-builder';
 import type { ThreadPanel } from '../thread-panel';
+import { shouldRunLegacyB4Path } from './effective-phase';
 import type { MessageEvent, SayFn, SessionInitResult } from './types';
 
 // Timeout for dispatch API call (30 seconds - Agent SDK needs time to start)
@@ -696,8 +697,11 @@ export class SessionInitializer {
       const dispatchService = getDispatchService();
       const model = dispatchService.getModel();
 
-      // Native spinner during dispatch
-      await this.deps.assistantStatusManager?.setStatus(channel, threadTs, 'is analyzing your request...');
+      // Native spinner during dispatch — legacy-only; TurnSurface.begin owns
+      // the "is thinking..." spinner at effective PHASE>=4 (#689 P4 Part 2).
+      if (shouldRunLegacyB4Path(this.deps.assistantStatusManager)) {
+        await this.deps.assistantStatusManager?.setStatus(channel, threadTs, 'is analyzing your request...');
+      }
       await updateDispatchPanel('워크플로우 분석 중', 'working');
 
       // Add dispatching reaction and post status message
@@ -750,8 +754,12 @@ export class SessionInitializer {
         );
       }
 
-      // Set thread title in DM history
-      await this.deps.assistantStatusManager?.setTitle(channel, threadTs, result.title);
+      // Set thread title in DM history — legacy-only; at effective PHASE>=4
+      // the native Assistant UI owns thread titles (TurnSurface title-write
+      // is tracked for a follow-up — docs/slack-ui-phase4.md §Out of scope).
+      if (shouldRunLegacyB4Path(this.deps.assistantStatusManager)) {
+        await this.deps.assistantStatusManager?.setTitle(channel, threadTs, result.title);
+      }
 
       // Store extracted links on the session
       if (result.links && Object.keys(result.links).length > 0) {
@@ -795,13 +803,14 @@ export class SessionInitializer {
       this.deps.claudeHandler.transitionToMain(channel, threadTs, 'default', fallbackTitle);
       await updateDispatchPanel('기본 워크플로우로 전환', 'idle');
 
-      // Issue #688 — dispatch failed; the "is analyzing your request..."
-      // spinner set at line 624 must be torn down. Guarded by
-      // dispatchEpoch so a stale clear arriving after a newer turn has
-      // already bumped past this epoch becomes a no-op.
-      await this.deps.assistantStatusManager?.clearStatus(channel, threadTs, {
-        expectedEpoch: dispatchEpoch,
-      });
+      // Tear down the dispatch spinner. Epoch-guarded (#688) so a stale
+      // clear from a superseded dispatch can't kill a newer turn's spinner;
+      // PHASE-gated (#689 P4) so we don't race TurnSurface at PHASE>=4.
+      if (shouldRunLegacyB4Path(this.deps.assistantStatusManager)) {
+        await this.deps.assistantStatusManager?.clearStatus(channel, threadTs, {
+          expectedEpoch: dispatchEpoch,
+        });
+      }
     } finally {
       clearTimeout(timeoutId);
       // Clean up the in-flight tracking and resolve waiting promises

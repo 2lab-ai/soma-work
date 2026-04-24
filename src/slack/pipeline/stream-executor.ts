@@ -74,6 +74,7 @@ import type { RequestCoordinator } from '../request-coordinator';
 import type { SummaryService } from '../summary-service';
 import type { SummaryTimer } from '../summary-timer.js';
 import type { ThreadPanel, TurnAddress, TurnContext } from '../thread-panel';
+import { shouldRunLegacyB4Path } from './effective-phase';
 import { isLocalSlashCommand } from './local-slash-command';
 import { MessageEvent, type SayFn } from './types';
 
@@ -226,6 +227,30 @@ export class StreamExecutor {
   private summaryAbortControllers = new Map<string, AbortController>();
 
   constructor(private deps: StreamExecutorDeps) {}
+
+  /**
+   * #689 P4 Part 2/2 — legacy native-spinner writer wrapper. At effective
+   * PHASE>=4 this is a no-op because `TurnSurface.begin/end` owns the
+   * native spinner as the single writer. At PHASE<4 (and at clamped
+   * PHASE=4 when `AssistantStatusManager` is disabled) the wrapper
+   * forwards to the legacy path so operational behaviour for PHASE<4
+   * sessions is unchanged.
+   */
+  private async legacySetStatus(channel: string, threadTs: string, text: string): Promise<void> {
+    const mgr = this.deps.assistantStatusManager;
+    if (!shouldRunLegacyB4Path(mgr)) return;
+    await mgr.setStatus(channel, threadTs, text);
+  }
+
+  private async legacyClearStatus(
+    channel: string,
+    threadTs: string,
+    options?: { expectedEpoch?: number },
+  ): Promise<void> {
+    const mgr = this.deps.assistantStatusManager;
+    if (!shouldRunLegacyB4Path(mgr)) return;
+    await mgr.clearStatus(channel, threadTs, options);
+  }
 
   /**
    * 프롬프트 준비
@@ -386,6 +411,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       threadTs: threadTs || undefined,
       sessionKey,
       turnId,
+      // Issue #688 — thread the per-turn epoch through TurnContext so
+      // TurnSurface.end()/fail() can pass it as `expectedEpoch` to
+      // clearStatus, mirroring the caller-owns-epoch pattern used by the
+      // explicit clearStatus calls below (e.g. lines ~1035, 1116, 1349).
+      statusEpoch: epoch,
     };
     await this.deps.threadPanel?.beginTurn(turnContext);
 
@@ -581,7 +611,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         await this.deps.reactionManager.updateReaction(sessionKey, this.deps.statusReporter.getStatusEmoji('thinking'));
       }
       if (isOutputEnabled(OutputFlag.STATUS_SPINNER)) {
-        await this.deps.assistantStatusManager.setStatus(channel, threadTs, 'is thinking...');
+        await this.legacySetStatus(channel, threadTs, 'is thinking...');
       }
 
       // Create Slack context for permission prompts + channel description for system prompt
@@ -661,12 +691,16 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
               // tools keep the simple static path.
               if (toolName === 'Bash') {
                 const statusManager = this.deps.assistantStatusManager;
-                await statusManager.setStatus(channel, threadTs, () =>
-                  statusManager.buildBashStatus(channel, threadTs),
-                );
+                // PHASE>=4: TurnSurface is the single B4 writer — same gate
+                // as `legacySetStatus` (line 237) and the non-Bash branch.
+                if (shouldRunLegacyB4Path(statusManager)) {
+                  await statusManager.setStatus(channel, threadTs, () =>
+                    statusManager.buildBashStatus(channel, threadTs),
+                  );
+                }
               } else {
                 const statusText = this.deps.assistantStatusManager.getToolStatusText(toolName);
-                await this.deps.assistantStatusManager.setStatus(channel, threadTs, statusText);
+                await this.legacySetStatus(channel, threadTs, statusText);
               }
             }
           }
@@ -969,7 +1003,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         onStatusUpdate: async (status: string) => {
           if (status === 'compacting') {
             // Context compaction start — always visible regardless of verbosity
-            await this.deps.assistantStatusManager.setStatus(channel, threadTs, '🗜️ 컨텍스트 압축 시작...');
+            await this.legacySetStatus(channel, threadTs, '🗜️ 컨텍스트 압축 시작...');
             // #617 AC4 fallback: if the SDK PreCompact hook never fires
             // (older SDK or edge case), the `compacting` status still
             // guarantees a thread-visible "starting" post. Epoch dedupe in
@@ -991,7 +1025,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             })();
           } else if (status === 'compact_done') {
             // Context compaction end — always visible regardless of verbosity
-            await this.deps.assistantStatusManager.setStatus(channel, threadTs, '✅ 컨텍스트 압축 완료');
+            await this.legacySetStatus(channel, threadTs, '✅ 컨텍스트 압축 완료');
           } else if (status === 'working') {
             if (isOutputEnabled(OutputFlag.STATUS_REACTION)) {
               await this.deps.reactionManager.updateReaction(
@@ -1005,7 +1039,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
               // manager now reroutes setStatus('') to clearStatus, but
               // calling clearStatus explicitly here makes intent clear and
               // carries the epoch guard so a stale call doesn't race.
-              await this.deps.assistantStatusManager.clearStatus(channel, threadTs, {
+              await this.legacyClearStatus(channel, threadTs, {
                 expectedEpoch: epoch,
               });
             }
@@ -1086,7 +1120,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // to prevent leaked intervals when verbosity changes mid-stream.
       // Issue #688 — guarded by this turn's epoch so a stale call from a
       // previous aborted turn cannot nuke a newer spinner.
-      await this.deps.assistantStatusManager.clearStatus(channel, threadTs, {
+      await this.legacyClearStatus(channel, threadTs, {
         expectedEpoch: epoch,
       });
 
@@ -1319,7 +1353,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // past `epoch`. Covers early-return paths that might skip the
       // normal success/error clears.
       try {
-        await this.deps.assistantStatusManager.clearStatus(channel, threadTs, {
+        await this.legacyClearStatus(channel, threadTs, {
           expectedEpoch: epoch,
         });
       } catch (err) {
@@ -1408,11 +1442,16 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // Clear native spinner on any error and reset activity state.
     // Issue #688 — guard with the caller's captured epoch so a stale
     // error-path clear from a previous turn cannot kill a newer spinner.
-    await this.deps.assistantStatusManager.clearStatus(
-      channel,
-      threadTs,
-      expectedEpoch !== undefined ? { expectedEpoch } : undefined,
-    );
+    // Wrap the clear: a throw here must not skip the downstream
+    // reaction-update + user-facing `say(errorDetails)` ~240 lines below.
+    try {
+      await this.legacyClearStatus(channel, threadTs, expectedEpoch !== undefined ? { expectedEpoch } : undefined);
+    } catch (err) {
+      this.logger.debug('handleError: legacyClearStatus failed — continuing error notification', {
+        sessionKey,
+        error: (err as Error)?.message ?? String(err),
+      });
+    }
     this.deps.claudeHandler.setActivityState(channel, threadTs, 'idle');
 
     // Check for context overflow error

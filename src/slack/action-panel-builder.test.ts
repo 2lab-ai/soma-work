@@ -320,6 +320,33 @@ describe('ActionPanelBuilder', () => {
     expect(contextIdx).toBeLessThan(actionsIdx);
   });
 
+  // #689 P4 Part 2/2 — suppressAgentChip flag
+  it('suppressAgentChip=true omits agent chip from status text', () => {
+    const withChip = ActionPanelBuilder.build({
+      sessionKey: 'session-chip-on',
+      workflow: 'default',
+      agentPhase: 'thinking',
+      activeTool: 'Bash',
+      hasActiveRequest: true,
+    });
+    const withoutChip = ActionPanelBuilder.build({
+      sessionKey: 'session-chip-off',
+      workflow: 'default',
+      agentPhase: 'thinking',
+      activeTool: 'Bash',
+      hasActiveRequest: true,
+      suppressAgentChip: true,
+    });
+
+    // With chip: expect a `\n_…_` agent chip appended after the badge
+    const withHero = withChip.blocks.find((b: any) => b.type === 'section' && b.text?.type === 'mrkdwn');
+    expect(withHero.text.text).toMatch(/\n_[^_]+_/);
+
+    // Without chip: hero section has NO appended `\n_…_` chip line
+    const withoutHero = withoutChip.blocks.find((b: any) => b.type === 'section' && b.text?.type === 'mrkdwn');
+    expect(withoutHero.text.text).not.toMatch(/\n_[^_]+_/);
+  });
+
   it('renders PR status in 2-column layout beside status badge', () => {
     const payload = ActionPanelBuilder.build({
       sessionKey: 'session-pr-layout',
