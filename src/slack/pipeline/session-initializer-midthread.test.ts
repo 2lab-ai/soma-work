@@ -100,7 +100,7 @@ beforeEach(() => {
     isSleeping: vi.fn().mockReturnValue(false),
     wakeFromSleep: vi.fn(),
     needsDispatch: vi.fn().mockReturnValue(true),
-    transitionToMain: vi.fn(),
+    transitionToMain: vi.fn().mockReturnValue(true), // #698 transitionToMain returns boolean
     setActivityState: vi.fn(),
     canInterrupt: vi.fn().mockReturnValue(false),
     updateInitiator: vi.fn(),
