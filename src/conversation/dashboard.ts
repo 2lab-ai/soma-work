@@ -168,36 +168,51 @@ function getAllSessions(): Map<string, any> {
 }
 
 /**
- * Verify the authenticated user may write to the target session.
+ * #716 write-access predicate. Returns true when the authenticated
+ * caller may mutate a resource owned by `ownerId`:
+ *   - bearer admin (viewer token / API client)
+ *   - oauth user, owns the resource
+ *   - oauth user in ADMIN_USERS AND `X-Admin-Mode: on` header set
  *
- * #716 policy:
- *   - bearer admin (viewer token / API client): allowed
- *   - oauth user, owns session: allowed
- *   - oauth user, in ADMIN_USERS AND `X-Admin-Mode: on` header set: allowed
- *   - everything else: 403
- *
- * Reads (`/api/dashboard/sessions`, `/api/dashboard/session/:id`, etc.)
- * remain world-readable for any authenticated session — see #716 spec.
+ * The header alone proves nothing — `authContext.isAdmin` is rebuilt
+ * per-request from the verified JWT, so a non-admin shipping `on` is
+ * still rejected.
  */
-function requireSessionOwner(request: any, reply: any, sessionKey: string): boolean {
+function _hasWriteAccess(request: any, ownerId: string | undefined): boolean {
   const authContext = request.authContext;
-  // Bearer admin (viewer token) bypasses — global admin credential.
   if (authContext?.mode === 'bearer_header' || authContext?.mode === 'bearer_cookie') return true;
-
-  const sessions = _getSessionsFn?.();
-  const targetSession = sessions?.get(sessionKey);
-  const ownerId = targetSession?.ownerId;
-  // Owner of the session.
   if (authContext?.userId && ownerId && authContext.userId === ownerId) return true;
-  // OAuth admin in admin mode (header `X-Admin-Mode: on` + ADMIN_USERS membership).
-  // Both conditions required: a non-admin sending the header is rejected because
-  // `authContext.isAdmin` is rebuilt per-request from `isAdminUser(sub)`.
   const adminModeHeader = request.headers?.['x-admin-mode'];
   const adminModeOn = Array.isArray(adminModeHeader) ? adminModeHeader[0] === 'on' : adminModeHeader === 'on';
   if (authContext?.isAdmin && adminModeOn) return true;
+  return false;
+}
 
+/**
+ * Write-gate for kanban session actions (stop / close / trash / command /
+ * answer-* / submit-recommended). Reads remain world-readable per #716.
+ */
+function requireSessionOwner(request: any, reply: any, sessionKey: string): boolean {
+  const sessions = _getSessionsFn?.();
+  const targetSession = sessions?.get(sessionKey);
+  if (_hasWriteAccess(request, targetSession?.ownerId)) return true;
   reply.status(403).send({
     error: 'Forbidden — write requires session ownership, or admin user with X-Admin-Mode: on header (#716)',
+  });
+  return false;
+}
+
+/**
+ * Same #716 write-access policy applied to a conversation record (used
+ * by `resummarize` and `generate-title` which key off the conversation,
+ * not the live session). Oracle re-review (#717 P2) caught that those
+ * two write routes still used the older `authContext.isAdmin` shortcut
+ * and skipped the X-Admin-Mode gate.
+ */
+function requireConversationWriteAccess(request: any, reply: any, ownerId: string | undefined): boolean {
+  if (_hasWriteAccess(request, ownerId)) return true;
+  reply.status(403).send({
+    error: 'Forbidden — write requires conversation ownership, or admin user with X-Admin-Mode: on header (#716)',
   });
   return false;
 }
@@ -1052,19 +1067,16 @@ export async function registerDashboardRoutes(
     { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
       try {
-        // RBAC: check conversation ownership
-        const authContext = (request as any).authContext;
-        if (authContext && !authContext.isAdmin) {
-          const record = await getConversation(request.params.conversationId);
-          if (!record) {
-            reply.status(404).send({ error: 'Turn not found or not an assistant turn' });
-            return;
-          }
-          if (authContext.userId && record.ownerId !== authContext.userId) {
-            reply.status(403).send({ error: 'You can only modify your own conversations' });
-            return;
-          }
+        // #716 / Oracle re-review P2: enforce the same write-access
+        // policy as kanban actions — bearer admin, owner, or
+        // OAuth admin with X-Admin-Mode: on header. The previous
+        // shortcut (isAdmin alone) skipped the safe-mode header.
+        const record = await getConversation(request.params.conversationId);
+        if (!record) {
+          reply.status(404).send({ error: 'Turn not found or not an assistant turn' });
+          return;
         }
+        if (!requireConversationWriteAccess(request, reply, record.ownerId)) return;
         const ok = await resummarizeTurn(request.params.conversationId, request.params.turnId);
         if (!ok) {
           reply.status(404).send({ error: 'Turn not found or not an assistant turn' });
@@ -1089,12 +1101,9 @@ export async function registerDashboardRoutes(
           reply.status(404).send({ error: 'Not found' });
           return;
         }
-        // RBAC: check conversation ownership
-        const authContext = (request as any).authContext;
-        if (authContext && !authContext.isAdmin && authContext.userId && record.ownerId !== authContext.userId) {
-          reply.status(403).send({ error: 'You can only modify your own conversations' });
-          return;
-        }
+        // #716 / Oracle re-review P2: same write-access policy as
+        // resummarize and kanban actions.
+        if (!requireConversationWriteAccess(request, reply, record.ownerId)) return;
 
         // Build conversation content from first few turns
         const contentParts = record.turns
