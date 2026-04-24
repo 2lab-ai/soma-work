@@ -62,7 +62,7 @@ function snapshotWith(
   };
 }
 
-async function runHandler(tm: any, body: any = undefined, postEphemeral = vi.fn(async () => undefined)) {
+async function runHandler(tm: any, body: any = undefined, postEphemeral = vi.fn(async (_arg: any) => undefined)) {
   const { app, actionHandlers } = makeApp();
   const adminUtils = await import('../../admin-utils');
   const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(true);
@@ -83,6 +83,15 @@ async function runHandler(tm: any, body: any = undefined, postEphemeral = vi.fn(
     spy.mockRestore();
   }
   return { postEphemeral };
+}
+
+/** Narrow `mock.calls[0][0]` for assertion callers; asserts a call happened first. */
+function firstPayload(mock: ReturnType<typeof vi.fn>): any {
+  const first = mock.mock.calls[0];
+  if (!first || first.length === 0) {
+    throw new Error('expected at least one call to postEphemeral');
+  }
+  return first[0];
 }
 
 describe('#701: buildPartialFailureBanner', () => {
@@ -147,7 +156,7 @@ describe('#701: refresh_usage_all mixed-failure surface', () => {
     } as any;
     const { postEphemeral } = await runHandler(tm);
     expect(postEphemeral).toHaveBeenCalledTimes(1);
-    const payload = postEphemeral.mock.calls[0][0];
+    const payload = firstPayload(postEphemeral);
     expect(payload.text).toBe(':key: CCT status'); // plain card, no banner header.
   });
 
@@ -163,7 +172,7 @@ describe('#701: refresh_usage_all mixed-failure surface', () => {
     } as any;
     const { postEphemeral } = await runHandler(tm);
     expect(postEphemeral).toHaveBeenCalledTimes(1);
-    const payload = postEphemeral.mock.calls[0][0];
+    const payload = firstPayload(postEphemeral);
     expect(payload.text).toContain('nothing refreshed');
   });
 
@@ -191,7 +200,7 @@ describe('#701: refresh_usage_all mixed-failure surface', () => {
     } as any;
     const { postEphemeral } = await runHandler(tm);
     expect(postEphemeral).toHaveBeenCalledTimes(1); // single-surface invariant.
-    const payload = postEphemeral.mock.calls[0][0];
+    const payload = firstPayload(postEphemeral);
     expect(payload.text).toContain('partial failure');
     // First block is the banner section with the failure summary.
     const blocks = payload.blocks as Array<{ type: string; text?: { text: string } }>;
@@ -215,7 +224,7 @@ describe('#701: refresh_usage_all mixed-failure surface', () => {
       getSnapshot: vi.fn(async () => snap),
     } as any;
     const { postEphemeral } = await runHandler(tm);
-    const payload = postEphemeral.mock.calls[0][0];
+    const payload = firstPayload(postEphemeral);
     const bannerText = (payload.blocks as Array<{ text?: { text?: string } }>)[0]?.text?.text ?? '';
     expect(bannerText).toContain('1 of 2 failed');
     expect(bannerText).toContain('bB (timeout)');
@@ -238,7 +247,7 @@ describe('#701: refresh_usage_all mixed-failure surface', () => {
       }),
     } as any;
     const { postEphemeral } = await runHandler(tm);
-    const payload = postEphemeral.mock.calls[0][0];
+    const payload = firstPayload(postEphemeral);
     // All-ok path: text is plain card title (no partial failure).
     expect(payload.text).toBe(':key: CCT status');
   });
