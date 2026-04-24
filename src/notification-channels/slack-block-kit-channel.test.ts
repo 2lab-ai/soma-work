@@ -361,4 +361,43 @@ describe('SlackBlockKitChannel — Rich Turn Notification', () => {
       expect(blocks[0].text.text).toContain('작업 완료');
     });
   });
+
+  // -------------------------------------------------------------------------
+  // #667 P5 side-fix — non-empty fallback text on postMessage
+  // Slack rejects empty text when blocks are present (silent drop or retry).
+  // -------------------------------------------------------------------------
+  describe('fallback text (#667 P5 side-fix)', () => {
+    it('passes a non-empty text fallback derived from sessionTitle when present', async () => {
+      const api = createMockSlackApi();
+      const channel = new SlackBlockKitChannel(api);
+      await channel.send(makeEvent({ sessionTitle: 'PR #77 리뷰' }));
+
+      const call = api.postMessage.mock.calls[0];
+      const text = call[1];
+      expect(text).toBe('PR #77 리뷰');
+    });
+
+    it('falls back to category label when sessionTitle is missing', async () => {
+      const api = createMockSlackApi();
+      const channel = new SlackBlockKitChannel(api);
+      await channel.send(makeEvent({ sessionTitle: undefined, category: 'WorkflowComplete' }));
+
+      const call = api.postMessage.mock.calls[0];
+      const text = call[1];
+      // Contract: when sessionTitle is absent, fallback is the event.category
+      // string. Guarantees non-empty text so Slack accepts the blocks payload.
+      expect(text).toBe('WorkflowComplete');
+    });
+
+    it('never passes empty string as text', async () => {
+      const api = createMockSlackApi();
+      const channel = new SlackBlockKitChannel(api);
+      await channel.send(makeEvent({ sessionTitle: '' }));
+
+      const call = api.postMessage.mock.calls[0];
+      const text = call[1];
+      expect(typeof text).toBe('string');
+      expect(text.length).toBeGreaterThan(0);
+    });
+  });
 });

@@ -728,3 +728,68 @@ describe('ThreadPanel — P3 (PHASE>=3) B3 choice facade', () => {
     expect(slackApi.updateMessage).not.toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// #667 P5 — ThreadPanel.isCompletionMarkerActive()
+//
+// Capability SSOT used by both TurnSurface (emit gate) and stream-executor
+// (exclusion gate). Returns true iff PHASE>=5 AND slackBlockKitChannel dep
+// was injected.
+// ---------------------------------------------------------------------------
+
+describe('ThreadPanel — isCompletionMarkerActive (#667 P5)', () => {
+  const originalPhase = config.ui.fiveBlockPhase;
+
+  afterEach(() => {
+    config.ui.fiveBlockPhase = originalPhase;
+    vi.clearAllMocks();
+  });
+
+  function makeDeps(slackBlockKitChannel?: unknown) {
+    return {
+      slackApi: {
+        postMessage: vi.fn(),
+        updateMessage: vi.fn(),
+        postEphemeral: vi.fn(),
+        getPermalink: vi.fn(),
+        getClient: vi.fn().mockReturnValue({
+          chat: {
+            startStream: vi.fn(),
+            appendStream: vi.fn(),
+            stopStream: vi.fn(),
+            postMessage: vi.fn(),
+            update: vi.fn(),
+          },
+        }),
+      } as any,
+      claudeHandler: { getSessionByKey: vi.fn() } as any,
+      requestCoordinator: { isRequestActive: vi.fn().mockReturnValue(false) } as any,
+      todoManager: { getTodos: vi.fn().mockReturnValue([]) } as any,
+      slackBlockKitChannel: slackBlockKitChannel as any,
+    };
+  }
+
+  it('PHASE=4 + channel undefined → false', () => {
+    config.ui.fiveBlockPhase = 4;
+    const panel = new ThreadPanel(makeDeps(undefined));
+    expect(panel.isCompletionMarkerActive()).toBe(false);
+  });
+
+  it('PHASE=4 + channel defined → false', () => {
+    config.ui.fiveBlockPhase = 4;
+    const panel = new ThreadPanel(makeDeps({ send: vi.fn() }));
+    expect(panel.isCompletionMarkerActive()).toBe(false);
+  });
+
+  it('PHASE=5 + channel undefined → false', () => {
+    config.ui.fiveBlockPhase = 5;
+    const panel = new ThreadPanel(makeDeps(undefined));
+    expect(panel.isCompletionMarkerActive()).toBe(false);
+  });
+
+  it('PHASE=5 + channel defined → true', () => {
+    config.ui.fiveBlockPhase = 5;
+    const panel = new ThreadPanel(makeDeps({ send: vi.fn() }));
+    expect(panel.isCompletionMarkerActive()).toBe(true);
+  });
+});

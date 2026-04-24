@@ -39,8 +39,14 @@ export class SlackBlockKitChannel implements NotificationChannel {
     const theme = userSettingsStore.getUserSessionTheme(event.userId);
     const blocks = this.buildBlocksForTheme(theme, event, emoji, label);
 
+    // #667 P5 side-fix — Slack requires a non-empty `text` fallback when
+    // `blocks` / `attachments` are present (empty text silently drops the
+    // message on some clients and fails accessibility fallbacks). Use the
+    // session title (richer) and fall back to the event category.
+    const fallbackText = event.sessionTitle || event.category;
+
     try {
-      const result = await this.slackApi.postMessage(event.channel, '', {
+      const result = await this.slackApi.postMessage(event.channel, fallbackText, {
         threadTs: event.threadTs,
         attachments: [{ color, blocks }],
       });

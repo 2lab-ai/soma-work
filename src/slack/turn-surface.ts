@@ -1,6 +1,8 @@
 import { config } from '../config';
 import { Logger } from '../logger';
+import type { SlackBlockKitChannel } from '../notification-channels/slack-block-kit-channel';
 import type { Todo } from '../todo-manager';
+import type { TurnCompletionEvent } from '../turn-notifier';
 import type { AssistantStatusManager } from './assistant-status-manager';
 import { getEffectiveFiveBlockPhase } from './pipeline/effective-phase';
 import type { SlackApiHelper } from './slack-api-helper';
@@ -68,6 +70,22 @@ export interface TurnContext {
    * callers/tests that don't drive native status writes are unchanged.
    */
   readonly statusEpoch?: number;
+  /**
+   * #667 P5 — snapshot accessor for the B5 `WorkflowComplete` marker. The
+   * caller (stream-executor) installs this closure BEFORE `begin()` and
+   * assigns the enriched event to the closed-over variable EXACTLY ONCE
+   * on the success path (after async enrichAndNotify completes). When
+   * TurnSurface.end('completed') runs and the capability is active, it
+   * invokes this closure to retrieve the plain-object snapshot and posts
+   * the marker to Slack via the shared `SlackBlockKitChannel`.
+   *
+   * Failure / abort / 1M-fallback / supersede paths deliberately leave
+   * the closed-over variable undefined — the closure returns undefined
+   * and no B5 marker is posted (matches the legacy TurnNotifier
+   * semantics where Exception / aborted turns never emit a
+   * WorkflowComplete notification).
+   */
+  readonly buildCompletionEvent?: () => TurnCompletionEvent | undefined;
 }
 
 /**
@@ -141,6 +159,23 @@ export interface TurnSurfaceDeps {
    * spinner writes even if PHASE=4 — ThreadSurface chip owns the UX).
    */
   assistantStatusManager?: AssistantStatusManager;
+  /**
+   * #667 P5 — shared `SlackBlockKitChannel`. Used by `end('completed')`
+   * to emit the B5 `WorkflowComplete` marker when the capability closure
+   * below reports active. Optional so existing tests / legacy construction
+   * (PHASE<5) keeps working; when undefined the B5 emit path is a no-op.
+   */
+  slackBlockKitChannel?: SlackBlockKitChannel;
+  /**
+   * #667 P5 — capability SSOT closure. Returning `true` means TurnSurface
+   * is the single writer of the B5 marker (stream-executor must also
+   * exclude `slack-block-kit` from its `TurnNotifier.notify` call).
+   * Provided as a closure rather than a ThreadPanel reference to avoid
+   * the circular import ThreadPanel → TurnSurface → ThreadPanel. Optional
+   * (defaults to inactive) so existing tests / harness code doesn't need
+   * to wire the capability explicitly.
+   */
+  isCompletionMarkerActive?: () => boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -659,6 +694,32 @@ export class TurnSurface {
           error: (err as Error)?.message ?? String(err),
         });
       }
+
+      // #667 P5 — B5 completion marker emit. Runs between B4 clearStatus
+      // and cleanupTurn so:
+      //   (a) the spinner is already cleared (visual ordering matches the
+      //       legacy TurnNotifier path), and
+      //   (b) in-memory state is still alive (debuggable on throw).
+      // Only fires on the SUCCESS end path (`reason === 'completed'`) AND
+      // when capability is active AND builder+channel are both wired. Any
+      // throw is caught so cleanupTurn below still runs — a leaked turn
+      // state would block the next turn's `begin()` silently.
+      try {
+        const capActive =
+          typeof this.deps.isCompletionMarkerActive === 'function' ? this.deps.isCompletionMarkerActive() : false;
+        if (reason === 'completed' && capActive && state.ctx.buildCompletionEvent && this.deps.slackBlockKitChannel) {
+          const evt = state.ctx.buildCompletionEvent();
+          if (evt) {
+            await this.deps.slackBlockKitChannel.send(evt);
+          }
+        }
+      } catch (err) {
+        this.logger.warn('B5 send in end() threw — continuing cleanup', {
+          turnId,
+          error: (err as Error)?.message ?? String(err),
+        });
+      }
+
       this.cleanupTurn(turnId, state);
     }
   }
