@@ -173,14 +173,18 @@ interface FinalFooterData {
 }
 
 /**
- * Normalize a UsageWindow's utilization (raw 0..1 or 0..100 from the
- * Anthropic usage API) to a 0..100 percent, matching the legacy
- * `ClaudeUsageSnapshot` contract that the footer/notifier expect.
+ * Normalize a UsageWindow's utilization to a 0..100 percent, matching the
+ * legacy `ClaudeUsageSnapshot` contract that the footer/notifier expect.
+ *
+ * #701 — Anthropic's `/api/oauth/usage` endpoint sends raw integer
+ * percent. The pre-#701 dual-form split at `raw <= 1.5` silently
+ * misinterpreted server value `1` (= 1%) as `100%` (fraction form 1.0).
+ * Dropped in favour of a single percent-only path that matches
+ * `utilToPctInt` / `isUtilizationFull` in `src/slack/cct/builder.ts`.
  */
-function normalizeUtilizationToPercent(raw: number | undefined): number | undefined {
+export function normalizeUtilizationToPercent(raw: number | undefined): number | undefined {
   if (typeof raw !== 'number' || !Number.isFinite(raw)) return undefined;
-  const percent = raw <= 1.5 ? raw * 100 : raw;
-  const clamped = Math.max(0, Math.min(100, percent));
+  const clamped = Math.max(0, Math.min(100, raw));
   return Math.round(clamped * 10) / 10;
 }
 

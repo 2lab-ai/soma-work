@@ -22,6 +22,8 @@ export type {
   Lease,
   PersistedSnapshot,
   RateLimitSource,
+  RefreshErrorInfo,
+  RefreshErrorKind,
   SlotState,
   UsageSnapshot,
   UsageWindow,
