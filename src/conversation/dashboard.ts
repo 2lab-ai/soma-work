@@ -167,19 +167,39 @@ function getAllSessions(): Map<string, any> {
   return _getSessionsFn();
 }
 
-/** Verify the authenticated user owns the target session. Returns null if OK, or a 403 reply if not. */
+/**
+ * Verify the authenticated user may write to the target session.
+ *
+ * #716 policy:
+ *   - bearer admin (viewer token / API client): allowed
+ *   - oauth user, owns session: allowed
+ *   - oauth user, in ADMIN_USERS AND `X-Admin-Mode: on` header set: allowed
+ *   - everything else: 403
+ *
+ * Reads (`/api/dashboard/sessions`, `/api/dashboard/session/:id`, etc.)
+ * remain world-readable for any authenticated session — see #716 spec.
+ */
 function requireSessionOwner(request: any, reply: any, sessionKey: string): boolean {
   const authContext = request.authContext;
-  // Admin bypasses ownership check
-  if (authContext?.isAdmin) return true;
+  // Bearer admin (viewer token) bypasses — global admin credential.
+  if (authContext?.mode === 'bearer_header' || authContext?.mode === 'bearer_cookie') return true;
 
   const sessions = _getSessionsFn?.();
   const targetSession = sessions?.get(sessionKey);
-  if (authContext?.userId && targetSession && targetSession.ownerId !== authContext.userId) {
-    reply.status(403).send({ error: 'You can only modify your own sessions' });
-    return false;
-  }
-  return true;
+  const ownerId = targetSession?.ownerId;
+  // Owner of the session.
+  if (authContext?.userId && ownerId && authContext.userId === ownerId) return true;
+  // OAuth admin in admin mode (header `X-Admin-Mode: on` + ADMIN_USERS membership).
+  // Both conditions required: a non-admin sending the header is rejected because
+  // `authContext.isAdmin` is rebuilt per-request from `isAdminUser(sub)`.
+  const adminModeHeader = request.headers?.['x-admin-mode'];
+  const adminModeOn = Array.isArray(adminModeHeader) ? adminModeHeader[0] === 'on' : adminModeHeader === 'on';
+  if (authContext?.isAdmin && adminModeOn) return true;
+
+  reply.status(403).send({
+    error: 'Forbidden — write requires session ownership, or admin user with X-Admin-Mode: on header (#716)',
+  });
+  return false;
 }
 
 // ── Task accessor ──────────────────────────────────────────────────
@@ -839,12 +859,10 @@ export async function registerDashboardRoutes(
         reply.status(400).send({ error: 'userId is required' });
         return;
       }
-      // RBAC: OAuth users can only view their own stats
-      const authContext = (request as any).authContext;
-      if (authContext && !authContext.isAdmin && authContext.userId && authContext.userId !== userId) {
-        reply.status(403).send({ error: 'You can only view your own stats' });
-        return;
-      }
+      // #716: stats are world-readable for any authenticated user. The
+      // session/conversation contents are also world-readable; write
+      // operations (close/command/resummarize) remain gated by
+      // requireSessionOwner.
       const period = (['day', 'week', 'month'].includes(rawPeriod || '') ? rawPeriod : 'day') as
         | 'day'
         | 'week'
@@ -963,12 +981,10 @@ export async function registerDashboardRoutes(
         reply.status(404).send({ error: 'Conversation not found' });
         return;
       }
-      // RBAC: OAuth users can only view their own session details
-      const authContext = (request as any).authContext;
-      if (authContext && !authContext.isAdmin && authContext.userId && record.ownerId !== authContext.userId) {
-        reply.status(403).send({ error: 'You can only view your own sessions' });
-        return;
-      }
+      // #716: session details world-readable for any authenticated user.
+      // Writes (resummarize/title/close/command/answer-choice/...) still
+      // run requireSessionOwner so cross-user reads do not imply
+      // cross-user writes.
 
       const DEFAULT_LIMIT = 30;
       const MAX_LIMIT = 200;
@@ -1554,6 +1570,28 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .topbar .user-pill.is-admin b::before { content: '★ '; color: var(--accent); }
 .topbar .user-pill[data-clickable="true"] { cursor: pointer; transition: border-color var(--speed) var(--ease); }
 .topbar .user-pill[data-clickable="true"]:hover { border-color: var(--accent); color: var(--text); }
+
+/* ── ADMIN MODE TOGGLE — visible only for ADMIN_USERS (#716) ── */
+.topbar .admin-toggle {
+  background: var(--surface-raised);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  min-height: 32px;
+  transition: border-color var(--speed) var(--ease), color var(--speed) var(--ease), background var(--speed) var(--ease);
+}
+.topbar .admin-toggle:hover { border-color: var(--accent); color: var(--text); }
+.topbar .admin-toggle[aria-pressed="true"] {
+  background: rgba(248, 81, 73, 0.18);
+  border-color: var(--red, #f85149);
+  color: var(--red, #f85149);
+}
+.topbar .admin-toggle[aria-pressed="true"]:hover { background: rgba(248, 81, 73, 0.28); }
 #theme-toggle {
   background: var(--surface-raised);
   border: 1px solid var(--border);
@@ -2563,6 +2601,15 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
         <option value="">All Users</option>
       </select>
       <a href="/conversations">&#x1F4DD; <span class="nav-text">Conversations</span><span class="nav-icon" style="display:none">Conv</span></a>
+      <button
+        id="admin-mode-toggle"
+        type="button"
+        class="admin-toggle"
+        style="display:none"
+        aria-pressed="false"
+        title="Toggle admin write mode (#716)"
+        onclick="toggleAdminMode()"
+      ><span id="admin-mode-label">Admin: OFF</span></button>
       <span
         class="user-pill"
         id="user-pill"
@@ -2943,12 +2990,88 @@ function _applyUserPill(data) {
   pill.style.display = 'inline-flex';
   pill.classList.toggle('is-admin', isAdmin);
   pill.setAttribute('data-clickable', 'true');
+
+  // #716: admin-mode toggle visibility. Only ADMIN_USERS members see
+  // the button; clicking it stores soma_admin_mode in localStorage and
+  // _adminFetch attaches X-Admin-Mode: <on|off> to every API call.
+  // Bearer-cookie admin (viewer token) is treated as always-admin and
+  // also gets the toggle.
+  const isAdminCapable = !!(data && (data.isAdmin || (data.user && data.user.name && data.isAdmin)));
+  const toggle = document.getElementById('admin-mode-toggle');
+  if (toggle) {
+    if (isAdminCapable) {
+      toggle.style.display = 'inline-flex';
+      _renderAdminModeButton();
+    } else {
+      toggle.style.display = 'none';
+      // Non-admin must NEVER ship X-Admin-Mode: on. Force-clear stored mode.
+      try { localStorage.removeItem('soma_admin_mode'); } catch(_e) {}
+    }
+  }
 }
 function handleUserPillClick() {
   const pill = document.getElementById('user-pill');
   if (!pill || pill.getAttribute('data-clickable') !== 'true') return;
   location.href = '/auth/logout';
 }
+
+// Admin mode (#716)
+//
+// Client-side safe-mode flag. The button only appears for users in
+// ADMIN_USERS (server reports isAdmin:true on /auth/me). When ON,
+// the dashboard sends X-Admin-Mode: on with every state-mutating
+// request, which the server cross-checks against isAdminUser(sub)
+// before allowing a write to a session the user does not own.
+//
+// Toggling OFF does NOT remove ADMIN_USERS membership; it just makes
+// the session behave like a normal user (own-session writes only).
+// This protects against accidental cross-user clicks during routine
+// browsing.
+function _isAdminModeOn() {
+  try { return localStorage.getItem('soma_admin_mode') === 'on'; } catch(_e) { return false; }
+}
+function _setAdminMode(on) {
+  try { localStorage.setItem('soma_admin_mode', on ? 'on' : 'off'); } catch(_e) {}
+}
+function _renderAdminModeButton() {
+  const btn = document.getElementById('admin-mode-toggle');
+  const lbl = document.getElementById('admin-mode-label');
+  if (!btn || !lbl) return;
+  const on = _isAdminModeOn();
+  btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+  lbl.textContent = on ? 'Admin: ON' : 'Admin: OFF';
+}
+function toggleAdminMode() {
+  _setAdminMode(!_isAdminModeOn());
+  _renderAdminModeButton();
+}
+
+// #716: monkey-patch fetch ONCE at boot so every state-mutating request
+// (POST/PUT/PATCH/DELETE) carries X-Admin-Mode: <on|off> from
+// localStorage. The server cross-checks against ADMIN_USERS membership
+// on the verified JWT; non-admins shipping "on" are rejected
+// regardless. We do not touch GET requests because reads are
+// world-readable for any authenticated user under the new policy.
+(function _installAdminModeFetch() {
+  if (typeof window === 'undefined' || !window.fetch) return;
+  const origFetch = window.fetch.bind(window);
+  window.fetch = function(input, init) {
+    try {
+      const method = (init && init.method ? String(init.method) : (input && input.method) || 'GET').toUpperCase();
+      if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
+        const mode = _isAdminModeOn() ? 'on' : 'off';
+        const headers = new Headers((init && init.headers) || (input && input.headers) || {});
+        // Don't clobber an explicit caller-set value.
+        if (!headers.has('X-Admin-Mode')) headers.set('X-Admin-Mode', mode);
+        const next = Object.assign({}, init || {}, { headers });
+        return origFetch(input, next);
+      }
+    } catch (_e) {
+      // fall through to origFetch on any unexpected shape
+    }
+    return origFetch(input, init);
+  };
+})();
 
 // Fetch CSRF token (reusable — called on load and after JWT rotation invalidates token)
 async function refreshCsrfToken() {

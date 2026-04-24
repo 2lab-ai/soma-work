@@ -92,12 +92,24 @@ export class InputProcessor {
       return { handled: true, continueWithPrompt: '/compact' };
     }
 
+    // #716: provide a closed-over postEphemeral so handlers like
+    // `dashboard` can reply privately to the requester without leaking
+    // credentials to the rest of the channel/thread. Falls back silently
+    // if SlackApiHelper isn't injected (tests / minimal pipelines).
+    const slackApi = this.deps.slackApi;
+    const postEphemeral = slackApi
+      ? async (msg: { text: string; blocks?: any[] }) => {
+          await slackApi.postEphemeral(channel, user, msg.text, threadTs, msg.blocks);
+        }
+      : undefined;
+
     const commandResult = await this.deps.commandRouter.route({
       user,
       channel,
       threadTs,
       text,
       say,
+      postEphemeral,
     });
 
     return {
