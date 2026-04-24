@@ -24,6 +24,15 @@ export interface CommandContext {
    * Missing for paths where Slack doesn't provide one (e.g. `app_home_opened`).
    */
   triggerId?: string;
+  /**
+   * Send a message visible only to the requesting user (Slack
+   * `chat.postEphemeral`). Optional — populated by the dispatcher
+   * when the channel/user pair is known. Falls back to `say` when
+   * absent. Use this for command responses that contain credentials
+   * (e.g. `dashboard` SSO link, #716) or are noise to the rest of
+   * the channel.
+   */
+  postEphemeral?: PostEphemeralFn;
 }
 
 /**
@@ -63,6 +72,13 @@ export type SayFn = (message: {
   blocks?: any[];
   attachments?: any[];
 }) => Promise<{ ts?: string; channel?: string }>;
+
+/**
+ * Slack postEphemeral function type. Sends a message visible only to
+ * `user` in the resolved channel/thread. Returns void because Slack's
+ * `chat.postEphemeral` does not produce a permalink-able message ts.
+ */
+export type PostEphemeralFn = (message: { text: string; blocks?: any[] }) => Promise<void>;
 
 /**
  * Command handler interface

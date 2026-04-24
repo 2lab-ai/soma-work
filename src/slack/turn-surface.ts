@@ -1,6 +1,8 @@
 import { config } from '../config';
 import { Logger } from '../logger';
+import type { SlackBlockKitChannel } from '../notification-channels/slack-block-kit-channel';
 import type { Todo } from '../todo-manager';
+import type { TurnCompletionEvent } from '../turn-notifier';
 import type { AssistantStatusManager } from './assistant-status-manager';
 import { getEffectiveFiveBlockPhase } from './pipeline/effective-phase';
 import type { SlackApiHelper } from './slack-api-helper';
@@ -68,6 +70,13 @@ export interface TurnContext {
    * callers/tests that don't drive native status writes are unchanged.
    */
   readonly statusEpoch?: number;
+  /**
+   * P5 snapshot accessor for the B5 `WorkflowComplete` marker. stream-executor
+   * writes the snapshot exactly once on the success path after async enrichment
+   * completes; failure/abort/1M-fallback/supersede leave it undefined so `end()`
+   * posts nothing (matching legacy TurnNotifier semantics for non-complete turns).
+   */
+  readonly buildCompletionEvent?: () => TurnCompletionEvent | undefined;
 }
 
 /**
@@ -141,6 +150,13 @@ export interface TurnSurfaceDeps {
    * spinner writes even if PHASE=4 — ThreadSurface chip owns the UX).
    */
   assistantStatusManager?: AssistantStatusManager;
+  /** P5 B5 marker sink. Undefined → emit path no-ops (tests / PHASE<5). */
+  slackBlockKitChannel?: SlackBlockKitChannel;
+  /**
+   * P5 capability gate. Passed as a closure (not a ThreadPanel ref) to break
+   * the circular import ThreadPanel → TurnSurface → ThreadPanel.
+   */
+  isCompletionMarkerActive?: () => boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -659,6 +675,25 @@ export class TurnSurface {
           error: (err as Error)?.message ?? String(err),
         });
       }
+
+      // B5 completion marker — success path only. Detached (not awaited) so the
+      // Slack postMessage RTT doesn't block turn close; matches the legacy
+      // `enrichAndNotify().catch(...)` pattern in stream-executor. Ordering is
+      // still "after B4 clearStatus" because setStatus was already awaited above.
+      const capActive =
+        typeof this.deps.isCompletionMarkerActive === 'function' ? this.deps.isCompletionMarkerActive() : false;
+      if (reason === 'completed' && capActive && state.ctx.buildCompletionEvent && this.deps.slackBlockKitChannel) {
+        const evt = state.ctx.buildCompletionEvent();
+        if (evt) {
+          void this.deps.slackBlockKitChannel.send(evt).catch((err) => {
+            this.logger.warn('B5 send failed', {
+              turnId,
+              error: (err as Error)?.message ?? String(err),
+            });
+          });
+        }
+      }
+
       this.cleanupTurn(turnId, state);
     }
   }
