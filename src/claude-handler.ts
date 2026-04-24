@@ -21,6 +21,7 @@ import {
   isSshCommand,
 } from './dangerous-command-filter';
 import { CONFIG_FILE } from './env-paths';
+import { buildPrIssueHookEntries } from './hooks/pr-issue-guard';
 import { Logger } from './logger';
 import type { McpManager } from './mcp-manager';
 import { mcpToolGrantStore } from './mcp-tool-grant-store';
@@ -947,6 +948,26 @@ export class ClaudeHandler {
             });
           }
         }
+
+        // ── PR-issue precondition (#696) ──
+        // For z-handoff sessions (session.handoffContext set), require a linked
+        // source issue (or validated Case A escape) before allowing PR creation
+        // via Bash `gh pr create` or `mcp__github__create_pull_request`. Sessions
+        // without handoffContext are unaffected.
+        //
+        // SDK multi-hook precedence is `deny > allow` (verified cli.js:8208-8240
+        // in @anthropic-ai/claude-agent-sdk@0.2.111), so this deny wins over the
+        // bypass-mode Bash hook's allow regardless of array order.
+        //
+        // Spec / trace: docs/pr-issue-precondition/{spec,trace}.md
+        preToolUseHooks.push(
+          ...buildPrIssueHookEntries({
+            getHandoffContext: () =>
+              this.sessionRegistry.getSession(slackContext.channel, slackContext.threadTs)?.handoffContext,
+            logger: this.logger,
+            logCtx: { channel: slackContext.channel, threadTs: slackContext.threadTs },
+          }),
+        );
 
         if (preToolUseHooks.length > 0) {
           options.hooks = {
