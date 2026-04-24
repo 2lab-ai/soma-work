@@ -561,6 +561,13 @@ function buildSlotStatusLine(
     const authState = state?.authState ?? 'healthy';
     const cooldown = computeUsageCooldown(state, nowMs);
     segments.push(authStateBadge(authState, cooldown));
+    // #723 +B: rate-limit source context for OAuth bare 'Cooldown'.
+    // Gated on healthy + manual cooldown + actual rate-limit event.
+    if (authState === 'healthy' && cooldown.source === 'manual' && state?.rateLimitedAt) {
+      const ts = formatRateLimitedAt(state.rateLimitedAt, userTz, nowMs);
+      const source = state.rateLimitSource ? ` via ${state.rateLimitSource}` : '';
+      segments.push(`rate-limited ${ts}${source}`);
+    }
     // Skip OAuth refresh hint when the slot is Unavailable (refresh_failed /
     // revoked) — OAuth refresh is no longer meaningful for a broken slot, so
     // the hint is pure noise. Per option-A SSOT: TO-BE-3 = `:black_circle:
@@ -576,6 +583,10 @@ function buildSlotStatusLine(
     // read (the refresh hint above is suppressed for non-healthy states).
     const refreshErrSeg = formatRefreshErrorSegment(state, nowMs);
     if (refreshErrSeg) segments.push(refreshErrSeg);
+    // #723 +D: Unavailable-reason fallback when no lastRefreshError diagnostic.
+    if (authState !== 'healthy' && !refreshErrSeg) {
+      segments.push(authState === 'revoked' ? ':warning: OAuth revoked' : ':warning: OAuth refresh failed');
+    }
   } else {
     const cooldown = computeManualCooldown(state, nowMs);
     segments.push(authStateBadge(state?.authState ?? 'healthy', cooldown));
