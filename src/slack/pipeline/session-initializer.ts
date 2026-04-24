@@ -584,6 +584,12 @@ export class SessionInitializer {
     });
     dispatchInFlight.set(sessionKey, trackingPromise);
 
+    // Issue #688 — capture dispatch-scoped epoch. Any clearStatus call
+    // emitted by this dispatch (including fallback / failure paths) must
+    // carry `expectedEpoch: dispatchEpoch` so a stale clear from an
+    // aborted prior turn cannot nuke a newer spinner on the same thread.
+    const dispatchEpoch = this.deps.assistantStatusManager?.bumpEpoch(channel, threadTs) ?? 0;
+
     const startTime = Date.now();
     const abortController = new AbortController();
     const timeoutId = setTimeout(() => {
@@ -718,6 +724,14 @@ export class SessionInitializer {
       const fallbackTitle = MessageFormatter.generateSessionTitle(text);
       this.deps.claudeHandler.transitionToMain(channel, threadTs, 'default', fallbackTitle);
       await updateDispatchPanel('기본 워크플로우로 전환', 'idle');
+
+      // Issue #688 — dispatch failed; the "is analyzing your request..."
+      // spinner set at line 624 must be torn down. Guarded by
+      // dispatchEpoch so a stale clear arriving after a newer turn has
+      // already bumped past this epoch becomes a no-op.
+      await this.deps.assistantStatusManager?.clearStatus(channel, threadTs, {
+        expectedEpoch: dispatchEpoch,
+      });
     } finally {
       clearTimeout(timeoutId);
       // Clean up the in-flight tracking and resolve waiting promises
@@ -947,6 +961,10 @@ export class SessionInitializer {
       if (canInterrupt) {
         this.logger.debug('Cancelling existing request for session', { sessionKey, interruptedBy: userName });
         this.deps.requestCoordinator.abortSession(sessionKey);
+        // Issue #688 — per-(channel, threadTs) epoch bump so any stale
+        // clearStatus from the aborted turn (arriving after the new turn
+        // has set its spinner) becomes a no-op via expectedEpoch guard.
+        this.deps.assistantStatusManager?.bumpEpoch(channel, threadTs);
       } else {
         this.logger.debug('User cannot interrupt, message will be processed after current response', {
           sessionKey,

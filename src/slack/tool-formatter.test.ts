@@ -600,4 +600,85 @@ describe('ToolFormatter', () => {
       expect(result).not.toContain('—');
     });
   });
+
+  /**
+   * Issue #688 — background Bash labels across detail/compact/verbose
+   * render paths. Foreground Bash output MUST remain unchanged so the
+   * regression set in this file still holds.
+   */
+  describe('Background Bash labels (issue #688)', () => {
+    describe('isBackgroundBash', () => {
+      it('returns true only for run_in_background=true plus string command', () => {
+        expect(ToolFormatter.isBackgroundBash({ command: 'sleep 5', run_in_background: true })).toBe(true);
+      });
+      it('returns false for foreground Bash', () => {
+        expect(ToolFormatter.isBackgroundBash({ command: 'ls' })).toBe(false);
+        expect(ToolFormatter.isBackgroundBash({ command: 'ls', run_in_background: false })).toBe(false);
+      });
+      it('returns false for non-object / missing command', () => {
+        expect(ToolFormatter.isBackgroundBash(null)).toBe(false);
+        expect(ToolFormatter.isBackgroundBash(undefined)).toBe(false);
+        expect(ToolFormatter.isBackgroundBash({ run_in_background: true })).toBe(false);
+        expect(ToolFormatter.isBackgroundBash('sleep 5')).toBe(false);
+      });
+    });
+
+    describe('detail path: formatBashTool', () => {
+      it('foreground: unchanged "Running command" label (regression)', () => {
+        const result = ToolFormatter.formatBashTool({ command: 'ls' });
+        expect(result).toContain('Running command');
+        expect(result).not.toContain('Running in background');
+      });
+      it('background: "Running in background" label + bash code block', () => {
+        const result = ToolFormatter.formatBashTool({ command: 'sleep 10', run_in_background: true });
+        expect(result).toContain('Running in background');
+        expect(result).toContain('sleep 10');
+        expect(result).toContain('```bash');
+      });
+      it('background with shell_id: renders shell_id metadata', () => {
+        const result = ToolFormatter.formatBashTool({
+          command: 'sleep 10',
+          run_in_background: true,
+          shell_id: 'sh_42',
+        });
+        expect(result).toContain('Running in background');
+        expect(result).toContain('sh_42');
+      });
+    });
+
+    describe('compact path: formatOneLineToolUse', () => {
+      it('foreground: unchanged "Bash `cmd`" label (regression)', () => {
+        const result = ToolFormatter.formatOneLineToolUse('Bash', { command: 'npm test' });
+        expect(result).toContain('Bash');
+        expect(result).toContain('npm test');
+        expect(result).not.toContain('Running in background');
+      });
+      it('background: "Running in background: `cmd`" label', () => {
+        const result = ToolFormatter.formatOneLineToolUse('Bash', {
+          command: 'sleep 60',
+          run_in_background: true,
+        });
+        expect(result).toContain('Running in background');
+        expect(result).toContain('sleep 60');
+      });
+    });
+
+    describe('verbose path: formatToolUseVerbose', () => {
+      it('foreground: unchanged "Running command" label (regression)', () => {
+        const result = ToolFormatter.formatToolUseVerbose([
+          { type: 'tool_use', name: 'Bash', input: { command: 'ls' } },
+        ]);
+        expect(result).toContain('Running command');
+        expect(result).not.toContain('Running in background');
+      });
+      it('background: "Running in background" + run_in_background flag dump', () => {
+        const result = ToolFormatter.formatToolUseVerbose([
+          { type: 'tool_use', name: 'Bash', input: { command: 'sleep 5', run_in_background: true } },
+        ]);
+        expect(result).toContain('Running in background');
+        expect(result).toContain('run_in_background');
+        expect(result).toContain('sleep 5');
+      });
+    });
+  });
 });

@@ -146,5 +146,6 @@ Primary — caller MUST invoke `TaskStop({task_id})` **before** any new planning
 - Combining `resumeSessionId` with `model` or `config` → `MUTUAL_EXCLUSION`.
 - Merging NDJSON into the artifact → poisons summarization.
 - Reusing a stale `artifact_path` on retry → partial writes indistinguishable from retry output.
+- **`ScheduleWakeup` 금지**: 불러도 미복귀. 장기 폴링은 primary path(`Bash(run_in_background:true)` + `Monitor` + `TaskStop`) 또는 fallback의 `mcp__llm__chat(timeoutMs, resumeSessionId)`로 해결.
 
 **Authoring:** SKILL.md ≤ 10 KB (target <9 KB). Runtime-soft; CI/review enforces.
