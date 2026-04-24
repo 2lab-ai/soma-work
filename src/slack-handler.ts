@@ -41,6 +41,11 @@ import {
 import { createAssistantContainer } from './slack/assistant-container';
 import { CompletionMessageTracker } from './slack/completion-message-tracker';
 import { createForkExecutor } from './slack/create-fork-executor';
+import {
+  checkAndConsumeBudget,
+  formatBudgetExhaustedMessage,
+  HandoffBudgetExhaustedError,
+} from './slack/handoff-budget';
 import { buildCompactHooks } from './slack/hooks/compact-hooks';
 import { InputProcessor, type MessageEvent, SessionInitializer, StreamExecutor } from './slack/pipeline';
 import { SummaryService } from './slack/summary-service';
@@ -541,6 +546,34 @@ export class SlackHandler {
         return { continue: true, prompt: cont.prompt };
       },
       onResetSession: async (continuation: any) => {
+        // Issue #697 — host-enforced auto-handoff budget for model-emitted
+        // CONTINUE_SESSION. Host-built continuations (renew/onboarding) are
+        // stamped `origin: 'host'` at their stream-executor builders and skip
+        // enforcement. Predicate is "anything NOT 'host' enforces" so malformed
+        // values (e.g. 'MODEL', 'foo') fail closed instead of silently
+        // bypassing the guard (spec AD-3 / AD-13).
+        if (continuation.origin !== undefined && continuation.origin !== 'model' && continuation.origin !== 'host') {
+          this.logger.warn('Continuation.origin has unexpected value; treating as model-emitted', {
+            channelId: activeChannel,
+            threadTs: activeThreadTs,
+            origin: continuation.origin,
+          });
+        }
+        const shouldEnforceBudget = continuation.origin !== 'host';
+        if (shouldEnforceBudget) {
+          const currentSession = this.claudeHandler.getSession(activeChannel, activeThreadTs);
+          const budget = checkAndConsumeBudget(currentSession);
+          if (!budget.allowed) {
+            throw new HandoffBudgetExhaustedError(
+              // biome-ignore lint/style/noNonNullAssertion: reason is always set when allowed=false
+              budget.reason!,
+              budget.budgetBefore,
+              continuation.forceWorkflow,
+              currentSession?.handoffContext?.chainId,
+            );
+          }
+        }
+
         this.claudeHandler.resetSessionContext(activeChannel, activeThreadTs);
         const dispatchText = continuation.dispatchText || continuation.prompt;
         // Issue #695 — z handoff entrypoints need the full continuation prompt
@@ -599,6 +632,49 @@ export class SlackHandler {
         const sessionKey = this.claudeHandler.getSessionKey(activeChannel, activeThreadTs);
         this.claudeHandler.terminateSession(sessionKey);
         return; // Safe-stop — skip auto-retry, do not re-throw
+      }
+      // Issue #697 — auto-handoff budget soft-stop. `onResetSession` throws
+      // `HandoffBudgetExhaustedError` when the session has already used its
+      // one-per-session hop (or when the session is missing at the seam —
+      // invariant break). Unlike `HandoffAbortError` above, we keep the
+      // session alive (soft ceiling) so the user can re-enter manually via
+      // `$z <issue-url>`.
+      if (error instanceof HandoffBudgetExhaustedError) {
+        this.logger.warn('Auto-handoff budget exhausted — CONTINUE_SESSION rejected', {
+          channelId: activeChannel,
+          threadTs: activeThreadTs,
+          reason: error.reason,
+          budgetBefore: error.budgetBefore,
+          forceWorkflow: error.attemptedWorkflow,
+          chainId: error.chainId,
+        });
+        try {
+          // Re-fetch handoffContext from the (still-alive, pre-reset) session
+          // for richer context in the rejection message. The throw happened
+          // BEFORE `resetSessionContext` could run, so handoffContext is still
+          // present if the session was a z-handoff entry.
+          const liveSession = this.claudeHandler.getSession(activeChannel, activeThreadTs);
+          await this.slackApi.postMessage(
+            activeChannel,
+            formatBudgetExhaustedMessage({
+              reason: error.reason,
+              attemptedWorkflow: error.attemptedWorkflow,
+              handoffContext: liveSession?.handoffContext,
+              budgetBefore: error.budgetBefore,
+            }),
+            { threadTs: activeThreadTs },
+          );
+        } catch (postErr) {
+          this.logger.error('Failed to post budget-exhausted message', {
+            channelId: activeChannel,
+            threadTs: activeThreadTs,
+            error: (postErr as Error).message,
+          });
+        }
+        // Do NOT call terminateSession — soft ceiling; session stays alive
+        // for manual user re-entry. Skip auto-retry — the budget exhaustion
+        // is a structural ceiling, not a transient error.
+        return;
       }
       // Auto-retry on recoverable errors (merged from main — auto-retry on error)
       const retryAfterMs = agentSession.getRetryAfterMs();
