@@ -30,6 +30,7 @@ import {
   stripOneMSuffix,
 } from '../../metrics/model-registry';
 import { interceptToolResults } from '../../metrics/tool-result-interceptor';
+import { SLACK_BLOCK_KIT_CHANNEL_NAME } from '../../notification-channels/slack-block-kit-channel';
 import { checkAndSchedulePendingCompact } from '../../session/compact-threshold-checker';
 import { buildCompactionContext, snapshotFromSession } from '../../session/compaction-context-builder';
 import { type ActiveTokenInfo, getTokenManager, parseCooldownTime } from '../../token-manager';
@@ -258,22 +259,14 @@ export class StreamExecutor {
   }
 
   /**
-   * #667 P5 — Build the `TurnNotifier.notify` options used by the
-   * WorkflowComplete success path. Returns `{ excludeChannelNames:
-   * ['slack-block-kit'] }` when `ThreadPanel.isCompletionMarkerActive()`
-   * reports the capability is live (PHASE>=5 + shared channel wired), so
-   * `TurnSurface.end('completed')` becomes the single writer of the B5
-   * in-thread marker. Returns `undefined` otherwise so `notify()` is
-   * invoked with its legacy single-argument signature and the legacy
-   * fan-out posts the marker.
-   *
-   * Exception path (`handleError`) deliberately does NOT consult this
-   * helper — Exceptions always fan out to all channels (TurnSurface never
-   * emits Exception events, so no double-post risk).
+   * Excludes `slack-block-kit` from the WorkflowComplete fan-out when the
+   * P5 capability is live, so `TurnSurface.end('completed')` is the single
+   * writer of the B5 in-thread marker. Exception path (`handleError`)
+   * deliberately does NOT call this — Exceptions fan out to all channels.
    */
   private buildCompletionNotifyOpts(): TurnNotifierNotifyOpts | undefined {
     if (this.deps.threadPanel?.isCompletionMarkerActive() === true) {
-      return { excludeChannelNames: ['slack-block-kit'] };
+      return { excludeChannelNames: [SLACK_BLOCK_KIT_CHANNEL_NAME] };
     }
     return undefined;
   }
@@ -433,16 +426,10 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // B1 stream.
     const turnId = `${sessionKey}:${requestStartedAt.getTime()}:${randomUUID()}`;
 
-    // #667 P5 — snapshot closure for the B5 `WorkflowComplete` marker.
-    // The closure captures a mutable local so stream-executor can assign
-    // the enriched event exactly ONCE on the success path (after async
-    // enrichAndNotify completes). TurnSurface.end('completed') invokes
-    // the closure at B5 emit time and receives:
-    //   - a plain-object snapshot when the happy path assigned it, or
-    //   - `undefined` when the turn aborted / errored / was superseded
-    //     (closure still closed over the original unassigned `let`).
-    // A plain-object snapshot is required so mutations on the live event
-    // shape (if any ever appear) can't retro-edit what gets posted.
+    // P5 B5 marker snapshot — assigned exactly once on the success path
+    // after async enrichment completes. Undefined on abort/error/supersede
+    // so TurnSurface.end posts nothing. Snapshot is a plain object so later
+    // mutations on the live event shape can't retro-edit the posted marker.
     let completionEventSnapshot: TurnCompletionEvent | undefined;
     const buildCompletionEvent = (): TurnCompletionEvent | undefined => completionEventSnapshot;
 
@@ -456,7 +443,6 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // clearStatus, mirroring the caller-owns-epoch pattern used by the
       // explicit clearStatus calls below (e.g. lines ~1035, 1116, 1349).
       statusEpoch: epoch,
-      // #667 P5 — B5 completion-marker snapshot accessor (see above).
       buildCompletionEvent,
     };
     await this.deps.threadPanel?.beginTurn(turnContext);
@@ -1280,18 +1266,13 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             toolStats: Object.keys(toolStats).length > 0 ? toolStats : undefined,
           };
 
-          // #667 P5 — SINGLE assignment on the success path. The
-          // closure on TurnContext.buildCompletionEvent now returns this
-          // plain-object snapshot when TurnSurface.end('completed') runs.
-          // Abort / 1M-fallback / supersede paths never reach this line,
-          // so the snapshot stays undefined and B5 is not emitted.
+          // P5 snapshot — single assignment on success; abort/error/supersede
+          // never reach this line and the closure returns undefined.
           completionEventSnapshot = finalEnrichedEvent;
 
-          // #667 P5 — when the B5 in-thread marker capability is active,
-          // exclude `slack-block-kit` from the legacy fan-out so the
-          // marker is written exactly once (by TurnSurface). At PHASE<5
-          // or capability inactive `buildCompletionNotifyOpts()` returns
-          // undefined and the notify call is shape-identical to pre-P5.
+          // P5 exclusion — `buildCompletionNotifyOpts()` returns undefined when
+          // the capability is inactive, so the notify call is shape-identical
+          // to pre-P5 on the legacy path.
           const notifyOpts = this.buildCompletionNotifyOpts();
           this.deps.turnNotifier!.notify(finalEnrichedEvent, notifyOpts);
         };
