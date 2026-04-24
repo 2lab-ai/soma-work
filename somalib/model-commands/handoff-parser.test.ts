@@ -204,6 +204,35 @@ describe('parseHandoff — malformed inputs', () => {
     expect(result.reason).toBe('duplicate-sentinel');
   });
 
+  it('reports duplicate-sentinel when a second <z-handoff> opens inside the body before closing', () => {
+    // Inner opening BEFORE the first closing tag — without this check the
+    // parser would stop at the inner closing and mis-parse (grammar rule 5).
+    const text = [
+      '<z-handoff type="plan-to-work">',
+      '## Issue',
+      'https://example.com/issue/1',
+      '## Parent Epic',
+      'none',
+      '## Task List',
+      '- [ ] outer',
+      '<z-handoff type="work-complete">',
+      '## Completed Subissue',
+      'https://example.com/issue/2',
+      '## PR',
+      'https://example.com/pr/1',
+      '## Summary',
+      'inner',
+      '## Remaining Epic Checklist',
+      '- [x] inner',
+      '</z-handoff>',
+      '</z-handoff>',
+    ].join('\n');
+    const result = parseHandoff(text);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.reason).toBe('duplicate-sentinel');
+  });
+
   it('reports unknown-type for an unrecognized type attribute', () => {
     const text = [
       '<z-handoff type="foo-bar">',

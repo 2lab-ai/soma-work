@@ -1242,7 +1242,8 @@ describe('SlackHandler', () => {
       const claudeHandler = {
         resetSessionContext: vi.fn(),
         getSession: vi.fn().mockReturnValue(terminatedSession),
-        saveSessions: vi.fn(),
+        getSessionKey: vi.fn().mockReturnValue('C123:111.222'),
+        terminateSession: vi.fn().mockReturnValue(true),
       };
       const mcpManager = {};
       const handler = new SlackHandler(app as any, claudeHandler as any, mcpManager as any);
@@ -1306,9 +1307,8 @@ describe('SlackHandler', () => {
       expect(String(msgCall![1])).toContain('missing-closing');
       expect(msgCall![2]).toEqual({ threadTs: '111.222' });
 
-      // Session marked terminated + saved
-      expect(terminatedSession.terminated).toBe(true);
-      expect(claudeHandler.saveSessions).toHaveBeenCalled();
+      // Session fully terminated (archive + cleanup + map delete + persist)
+      expect(claudeHandler.terminateSession).toHaveBeenCalledWith('C123:111.222');
 
       // No auto-retry scheduled
       expect(autoRetryScheduler).not.toHaveBeenCalled();
