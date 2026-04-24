@@ -1529,6 +1529,31 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 }
 .topbar .nav a:hover,
 .topbar .nav select:hover { border-color: var(--accent); color: var(--text); }
+
+/* ── USER PILL — "Logged in as <name>" + logout, rendered from /auth/me ── */
+.topbar .user-pill {
+  display: none; /* toggled by JS once /auth/me resolves */
+  align-items: center;
+  gap: 6px;
+  background: var(--surface-raised);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  min-height: 32px;
+  cursor: default;
+  white-space: nowrap;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.topbar .user-pill b { color: var(--text); font-weight: 700; }
+.topbar .user-pill.is-admin b::before { content: '★ '; color: var(--accent); }
+.topbar .user-pill[data-clickable="true"] { cursor: pointer; transition: border-color var(--speed) var(--ease); }
+.topbar .user-pill[data-clickable="true"]:hover { border-color: var(--accent); color: var(--text); }
 #theme-toggle {
   background: var(--surface-raised);
   border: 1px solid var(--border);
@@ -2538,6 +2563,13 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
         <option value="">All Users</option>
       </select>
       <a href="/conversations">&#x1F4DD; <span class="nav-text">Conversations</span><span class="nav-icon" style="display:none">Conv</span></a>
+      <span
+        class="user-pill"
+        id="user-pill"
+        title="Click to logout"
+        data-clickable="false"
+        onclick="handleUserPillClick()"
+      >Logged in as <b id="user-pill-name">…</b></span>
       <button id="theme-toggle" onclick="toggleTheme()" aria-label="Toggle theme"></button>
     </div>
   </div>
@@ -2875,11 +2907,58 @@ function renderPanelTaskItem(t) {
 }
 let _csrfToken = '';
 
+/*
+ * Populate the "Logged in as <name>" pill in the topbar.
+ *
+ * Rendered from /auth/me for three session types:
+ *   - OAuth JWT (Google/Microsoft/Slack SSO) — shows user.name, pill is
+ *     clickable and logs out on click.
+ *   - bearer_cookie (admin viewer token) — shows "Admin" with a star marker,
+ *     still clickable (logout clears the cookie).
+ *   - unauthenticated (/auth/me → 401) — pill stays hidden; auth middleware
+ *     is about to redirect us to /login anyway.
+ *
+ * Kept in sync with server-side setCookieAndRedirect / clearCookieAndRedirect —
+ * the click handler calls GET /auth/logout (not a form POST) because the
+ * logout endpoint is intentionally CSRF-free; it only clears the cookie.
+ */
+function _applyUserPill(data) {
+  const pill = document.getElementById('user-pill');
+  const nameEl = document.getElementById('user-pill-name');
+  if (!pill || !nameEl) return;
+  let label = '';
+  let isAdmin = false;
+  if (data && data.user && data.user.name) {
+    label = data.user.name;
+  } else if (data && data.isAdmin) {
+    label = 'Admin';
+    isAdmin = true;
+  }
+  if (!label) {
+    pill.style.display = 'none';
+    pill.setAttribute('data-clickable', 'false');
+    return;
+  }
+  nameEl.textContent = label;
+  pill.style.display = 'inline-flex';
+  pill.classList.toggle('is-admin', isAdmin);
+  pill.setAttribute('data-clickable', 'true');
+}
+function handleUserPillClick() {
+  const pill = document.getElementById('user-pill');
+  if (!pill || pill.getAttribute('data-clickable') !== 'true') return;
+  location.href = '/auth/logout';
+}
+
 // Fetch CSRF token (reusable — called on load and after JWT rotation invalidates token)
 async function refreshCsrfToken() {
   try {
     const res = await fetch('/auth/me');
-    if (res.ok) { const data = await res.json(); _csrfToken = data.csrfToken || ''; }
+    if (res.ok) {
+      const data = await res.json();
+      _csrfToken = data.csrfToken || '';
+      _applyUserPill(data);
+    }
   } catch {}
 }
 refreshCsrfToken();
