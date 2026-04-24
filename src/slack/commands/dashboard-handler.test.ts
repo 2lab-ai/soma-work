@@ -71,7 +71,7 @@ describe('DashboardHandler (#704)', () => {
   });
 
   describe('execute', () => {
-    it('refuses when no signing key is configured', async () => {
+    it('refuses when no signing key is configured (ephemeral fallback)', async () => {
       mockGetJwtSecret.mockReturnValue('');
       const ctx = makeCtx();
 
@@ -147,6 +147,40 @@ describe('DashboardHandler (#704)', () => {
       const sayArg = (ctx.say as any).mock.calls[0][0];
       expect(sayArg.text).toContain('Failed to create a dashboard login link');
       expect(sayArg.text).not.toContain('signing exploded');
+    });
+
+    // #716 — ephemeral path: when ctx.postEphemeral is provided, the
+    // handler MUST use it and MUST NOT fall back to say (which posts to
+    // the public thread).
+    it('uses postEphemeral when available and never calls say', async () => {
+      mockGetJwtSecret.mockReturnValue('some-secret');
+      mockEnsureUserExists.mockReturnValue({ userId: 'U_USER1', slackName: 'Alice', email: 'a@x' });
+      mockIssueSlackToken.mockReturnValue('signed.jwt');
+      const postEphemeral = vi.fn().mockResolvedValue(undefined);
+      const ctx = makeCtx({ postEphemeral });
+
+      await handler.execute(ctx);
+
+      expect(postEphemeral).toHaveBeenCalledTimes(1);
+      const arg = postEphemeral.mock.calls[0][0];
+      expect(arg.text).toContain('Dashboard login link');
+      expect(arg.text).toContain('http://macmini:33000/auth/sso?token=signed.jwt');
+      expect(ctx.say).not.toHaveBeenCalled();
+    });
+
+    it('uses postEphemeral on the no-secret refusal path too', async () => {
+      mockGetJwtSecret.mockReturnValue('');
+      const postEphemeral = vi.fn().mockResolvedValue(undefined);
+      const ctx = makeCtx({ postEphemeral });
+
+      await handler.execute(ctx);
+
+      expect(postEphemeral).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: expect.stringContaining('Dashboard authentication is not configured'),
+        }),
+      );
+      expect(ctx.say).not.toHaveBeenCalled();
     });
   });
 });

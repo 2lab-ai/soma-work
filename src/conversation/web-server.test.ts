@@ -410,7 +410,7 @@ describe('ConversationWebServer Authentication', () => {
     });
   });
 
-  describe('getViewerBaseUrl hostname fallback', () => {
+  describe('getViewerBaseUrl hostname fallback (#715)', () => {
     it('prefers config.viewerUrl when set', async () => {
       mockConfig.conversation.viewerUrl = 'http://my-reverse-proxy:8080';
       const { getViewerBaseUrl } = await import('./web-server');
@@ -452,6 +452,77 @@ describe('ConversationWebServer Authentication', () => {
       }
       mockConfig.conversation.viewerHost = '127.0.0.1';
       mockConfig.conversation.viewerPort = 0;
+    });
+  });
+
+  describe('Write access policy (#716)', () => {
+    let requireWriteAccess: typeof import('./web-server').requireWriteAccess;
+
+    beforeEach(async () => {
+      const mod = await import('./web-server');
+      requireWriteAccess = mod.requireWriteAccess;
+    });
+
+    function makeReply() {
+      const calls: Array<{ status: number; body: any }> = [];
+      let status = 200;
+      const reply = {
+        status(code: number) {
+          status = code;
+          return this;
+        },
+        send(body: any) {
+          calls.push({ status, body });
+        },
+        get _calls() {
+          return calls;
+        },
+      };
+      return reply;
+    }
+
+    function makeRequest(authContext: any, headers: Record<string, string> = {}) {
+      return { headers, authContext } as any;
+    }
+
+    it('allows bearer_header (admin viewer token) for any owner', () => {
+      const r = makeReply();
+      const req = makeRequest({ mode: 'bearer_header', isAdmin: true });
+      expect(requireWriteAccess(req, r as any, 'someone-else')).toBe(true);
+      expect((r as any)._calls).toHaveLength(0);
+    });
+
+    it('allows owner of resource', () => {
+      const r = makeReply();
+      const req = makeRequest({ mode: 'oauth_jwt', userId: 'UA', isAdmin: false });
+      expect(requireWriteAccess(req, r as any, 'UA')).toBe(true);
+    });
+
+    it('rejects non-owner non-admin', () => {
+      const r = makeReply();
+      const req = makeRequest({ mode: 'oauth_jwt', userId: 'UA', isAdmin: false });
+      expect(requireWriteAccess(req, r as any, 'UB')).toBe(false);
+      expect((r as any)._calls[0].status).toBe(403);
+    });
+
+    it('rejects admin without X-Admin-Mode header (safe mode)', () => {
+      const r = makeReply();
+      const req = makeRequest({ mode: 'oauth_jwt', userId: 'UA', isAdmin: true });
+      expect(requireWriteAccess(req, r as any, 'UB')).toBe(false);
+      expect((r as any)._calls[0].status).toBe(403);
+    });
+
+    it('allows admin WITH X-Admin-Mode: on header', () => {
+      const r = makeReply();
+      const req = makeRequest({ mode: 'oauth_jwt', userId: 'UA', isAdmin: true }, { 'x-admin-mode': 'on' });
+      expect(requireWriteAccess(req, r as any, 'UB')).toBe(true);
+    });
+
+    it('rejects non-admin even when X-Admin-Mode: on is forged', () => {
+      const r = makeReply();
+      const req = makeRequest({ mode: 'oauth_jwt', userId: 'UA', isAdmin: false }, { 'x-admin-mode': 'on' });
+      expect(requireWriteAccess(req, r as any, 'UB')).toBe(false);
+      expect((r as any)._calls[0].status).toBe(403);
     });
   });
 });
