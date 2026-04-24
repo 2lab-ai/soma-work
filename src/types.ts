@@ -2,14 +2,22 @@
 // Re-export for backward compatibility — all src/ files import from './types'.
 export type {
   Continuation,
+  HandoffContext,
+  HandoffKind,
+  HandoffParseFailure,
+  HandoffTier,
+  ParseResult,
   RenewState,
   SaveContextResultFile,
   SaveContextResultPayload,
   SessionInstruction,
   SessionInstructionAddOperation,
   SessionInstructionClearOperation,
+  SessionInstructionCompleteOperation,
   SessionInstructionOperation,
   SessionInstructionRemoveOperation,
+  SessionInstructionSetStatusOperation,
+  SessionInstructionStatus,
   SessionLink,
   SessionLinkHistory,
   SessionLinks,
@@ -29,11 +37,13 @@ export type {
 } from 'somalib/model-commands/session-types';
 
 import type {
+  HandoffContext,
   RenewState,
   SaveContextResultPayload,
   SessionInstruction,
   SessionLinkHistory,
   SessionLinks,
+  SessionResourceUpdateRequest,
   UserChoice,
   UserChoiceQuestion,
   UserChoices,
@@ -109,6 +119,21 @@ export interface ActionPanelState {
   disabled?: boolean;
   waitingForChoice?: boolean;
   choiceBlocks?: any[];
+  /**
+   * P3 (PHASE>=3) — pending B3 choice lifecycle record. Authoritative session
+   * state for an outstanding user-choice question. Survives turn end and
+   * restart (persisted via session-registry). See docs/slack-ui-phase3.md.
+   */
+  pendingChoice?: {
+    turnId: string;
+    kind: 'single' | 'multi';
+    /** Single: message ts. Multi: primary (first form) ts. */
+    choiceTs?: string;
+    /** Multi only: form ids for all chunks. Empty for single. */
+    formIds: string[];
+    question: UserChoice | UserChoices;
+    createdAt: number;
+  };
   /** Raw question data for dashboard rendering (set when ASK_USER_QUESTION fires, cleared on answer) */
   pendingQuestion?: UserChoice | UserChoices;
   renderKey?: string;
@@ -152,6 +177,13 @@ export interface ConversationSession {
   linkHistory?: SessionLinkHistory;
   // Monotonic sequence for optimistic concurrency on session link updates
   linkSequence?: number;
+  /**
+   * Typed handoff metadata parsed from the `<z-handoff>` sentinel that
+   * started this session (issue #695, epic #694). Present only for sessions
+   * entered via `forceWorkflow='z-plan-to-work' | 'z-epic-update'`. Consumed
+   * by downstream guards (#696/#697/#698) without re-parsing the prompt.
+   */
+  handoffContext?: HandoffContext;
   // Tool-driven save result used by renew command (preferred over text parsing)
   renewSaveResult?: SaveContextResultPayload;
   // Ghost Session Fix #99: defense-in-depth flag for in-flight code to self-terminate
@@ -238,6 +270,24 @@ export interface ConversationSession {
   // User SSOT instructions: structured, model-readable, persisted to disk.
   // Exposed to the model via GET_SESSION and managed via UPDATE_SESSION instructionOperations.
   instructions?: SessionInstruction[];
+
+  /**
+   * Cached summary of `completed`-status instructions — used by the
+   * user-instructions block builder when there are ≥ 2 completed entries so
+   * the system prompt stays compact. `upstreamHash` is a deterministic hash
+   * over the completed subset; regenerate when it mismatches.
+   * Persisted to disk (survives restarts), runtime-regenerated when stale.
+   */
+  instructionsCompletedSummary?: { summary: string; upstreamHash: string };
+
+  /**
+   * Last rejected instruction write — set when the user clicks `n` on the
+   * confirmation button. The next turn's stream-executor injects a
+   * `<user-instruction-write-rejected/>` notice into the prompt and clears
+   * this flag. Runtime-only — NOT persisted to disk (same convention as
+   * `pendingRetryTimer` and `initialInstruction`).
+   */
+  pendingInstructionRejection?: { at: number; request: SessionResourceUpdateRequest };
 
   // Dashboard improvements (v2.1):
   // Number of /compact invocations or SDK-triggered compact_boundary events observed on this session.

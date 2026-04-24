@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { App } from '@slack/bolt';
+import { HandoffAbortError, isZHandoffWorkflow } from 'somalib/model-commands/handoff-parser';
 import { getAdminUsers, isAdminUser } from './admin-utils';
 import type { ContinuationHandler, TurnRunnerSurface } from './agent-session';
 import { TurnRunner, V1QueryAdapter } from './agent-session';
@@ -25,6 +26,7 @@ import {
   McpHealthMonitor,
   McpStatusDisplay,
   MessageValidator,
+  PendingInstructionConfirmStore,
   ReactionManager,
   RequestCoordinator,
   SessionUiManager,
@@ -36,6 +38,7 @@ import {
   ToolEventProcessor,
   ToolTracker,
 } from './slack';
+import { createAssistantContainer } from './slack/assistant-container';
 import { CompletionMessageTracker } from './slack/completion-message-tracker';
 import { createForkExecutor } from './slack/create-fork-executor';
 import { buildCompactHooks } from './slack/hooks/compact-hooks';
@@ -124,12 +127,28 @@ export class SlackHandler {
     this.sessionUiManager = new SessionUiManager(claudeHandler, this.slackApi);
     this.sessionUiManager.setReactionManager(this.reactionManager);
     const completionMessageTracker = new CompletionMessageTracker();
+    // sessionRegistry is optional in ThreadPanelDeps (legacy tests construct
+    // ThreadPanel without it). Guard access here so test mocks that don't
+    // implement getSessionRegistry() keep passing.
+    const sessionRegistry =
+      typeof (this.claudeHandler as any).getSessionRegistry === 'function'
+        ? (this.claudeHandler as any).getSessionRegistry()
+        : undefined;
+
+    // #689 P4 Part 2/2 — AssistantStatusManager must be constructed BEFORE
+    // ThreadPanel so ThreadPanel (→ ThreadSurface chip suppression + TurnSurface
+    // B4 spinner writer) receives the same instance that ToolEventProcessor /
+    // StreamExecutor / SessionInitializer reference downstream.
+    this.assistantStatusManager = new AssistantStatusManager(this.slackApi);
+
     this.threadPanel = new ThreadPanel({
       slackApi: this.slackApi,
       claudeHandler: this.claudeHandler,
       requestCoordinator: this.requestCoordinator,
       todoManager: this.todoManager,
       completionMessageTracker,
+      sessionRegistry,
+      assistantStatusManager: this.assistantStatusManager,
     });
 
     // Command routing
@@ -159,9 +178,6 @@ export class SlackHandler {
       return (await this.threadPanel?.renderTasks(turnId, todos, ctx)) ?? false;
     });
 
-    // Native Slack AI spinner
-    this.assistantStatusManager = new AssistantStatusManager(this.slackApi);
-
     // Tool processing
     this.toolEventProcessor = new ToolEventProcessor(
       this.toolTracker,
@@ -183,6 +199,12 @@ export class SlackHandler {
       async (turnId, markdown) => (await this.threadPanel?.appendText(turnId, `\n\n${markdown}`)) ?? false,
     );
 
+    // Shared store for deferred user-instruction writes. The SAME instance
+    // must be visible to both `ActionHandlers` (button click reader) and
+    // `StreamExecutor` (write producer) — PLAN §7.
+    const pendingInstructionConfirmStore = new PendingInstructionConfirmStore();
+    pendingInstructionConfirmStore.loadForms();
+
     // ActionHandlers needs context
     const actionContext: ActionHandlerContext = {
       slackApi: this.slackApi,
@@ -194,6 +216,7 @@ export class SlackHandler {
       requestCoordinator: this.requestCoordinator,
       completionMessageTracker,
       mcpManager: this.mcpManager,
+      pendingInstructionConfirmStore,
     };
     this.actionHandlers = new ActionHandlers(actionContext);
 
@@ -249,6 +272,9 @@ export class SlackHandler {
       summaryTimer,
       completionMessageTracker,
       summaryService,
+      // Shared store — same instance ActionHandlers received above. Writer
+      // (here) and reader (handleYes/handleNo) must see identical entries.
+      pendingInstructionConfirmStore,
     });
 
     // EventRouter for event handling
@@ -282,6 +308,20 @@ export class SlackHandler {
         threadTs,
         slackApi: this.slackApi,
         eventRouter: this.eventRouter,
+      }),
+    );
+
+    // #666 P4 Part 1/2 — Register the Bolt Assistant container. Enables the
+    // Slack Assistant sidebar + 4 suggested prompts; routes
+    // `assistant_thread_started` / `assistant_thread_context_changed` and
+    // assistant-thread `message.im` events through this middleware. The
+    // `userMessage` handler delegates to `handleMessage` so assistant threads
+    // behave identically to a regular DM. Native spinner activation is gated
+    // by `SOMA_UI_B4_NATIVE_STATUS` (default off) — Part 2 will flip it.
+    app.assistant(
+      createAssistantContainer({
+        logger: this.logger,
+        handleMessage: this.handleMessage.bind(this),
       }),
     );
   }
@@ -496,11 +536,17 @@ export class SlackHandler {
       onResetSession: async (continuation: any) => {
         this.claudeHandler.resetSessionContext(activeChannel, activeThreadTs);
         const dispatchText = continuation.dispatchText || continuation.prompt;
+        // Issue #695 — z handoff entrypoints need the full continuation prompt
+        // (containing the `<z-handoff>` sentinel) for host-side parsing.
+        const handoffPrompt = isZHandoffWorkflow(continuation.forceWorkflow)
+          ? (continuation.prompt as string | undefined)
+          : undefined;
         await this.sessionInitializer.runDispatch(
           activeChannel,
           activeThreadTs,
           dispatchText,
           continuation.forceWorkflow,
+          handoffPrompt,
         );
       },
       refreshSession: () => this.claudeHandler.getSession(activeChannel, activeThreadTs),
@@ -509,6 +555,44 @@ export class SlackHandler {
     try {
       await agentSession.startWithContinuation(effectiveText || '', continuationHandler, processedFiles);
     } catch (error) {
+      // Issue #695 — host-level z handoff safe-stop. `SessionInitializer.runDispatch`
+      // throws `HandoffAbortError` when a forced z-* workflow cannot be entered
+      // (missing/malformed sentinel, type-workflow mismatch, missing session).
+      // Emit a user-facing message, mark the session terminated, and skip the
+      // recoverable-error retry path so we do not silently drift into default
+      // workflow or loop retries on a structurally invalid payload.
+      if (error instanceof HandoffAbortError) {
+        this.logger.warn('Handoff entrypoint aborted', {
+          channelId: activeChannel,
+          threadTs: activeThreadTs,
+          reason: error.reason,
+          detail: error.detail,
+          forceWorkflow: error.forceWorkflow,
+        });
+        try {
+          await this.slackApi.postMessage(
+            activeChannel,
+            `❌ Handoff entrypoint 진입 실패\n` +
+              `Workflow: \`${error.forceWorkflow}\`\n` +
+              `원인: \`${error.reason}\`${error.detail ? ` — ${error.detail}` : ''}\n` +
+              `수동 재시도: \`$z <issue-url>\``,
+            { threadTs: activeThreadTs },
+          );
+        } catch (postErr) {
+          this.logger.error('Failed to post handoff-abort message', {
+            channelId: activeChannel,
+            threadTs: activeThreadTs,
+            error: (postErr as Error).message,
+          });
+        }
+        // Full termination (archive + cleanup + delete from registry) rather
+        // than just flipping `session.terminated`. A half-reset session left in
+        // the Map would otherwise be resurrected on the user's next message in
+        // the same thread, defeating the safe-stop.
+        const sessionKey = this.claudeHandler.getSessionKey(activeChannel, activeThreadTs);
+        this.claudeHandler.terminateSession(sessionKey);
+        return; // Safe-stop — skip auto-retry, do not re-throw
+      }
       // Auto-retry on recoverable errors (merged from main — auto-retry on error)
       const retryAfterMs = agentSession.getRetryAfterMs();
       if (retryAfterMs) {

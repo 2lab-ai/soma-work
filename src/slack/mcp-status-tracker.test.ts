@@ -407,6 +407,62 @@ describe('McpStatusDisplay', () => {
     });
   });
 
+  /**
+   * Issue #688 — BashBG displayType uses a custom single-line render so
+   * the tracker's running-state text matches the S7 acceptance copy
+   * ("⏳ Running in background — <cmd> (Ns)"). Non-BashBG displayTypes
+   * must keep the original multi-line render.
+   */
+  describe('BashBG displayType (issue #688)', () => {
+    function bashBgConfig(label: string): StatusUpdateConfig {
+      return {
+        displayType: 'BashBG',
+        displayLabel: label,
+        initialDelay: 0,
+        predictKey: { serverName: '_bash_bg', toolName: 'bash' },
+        paramsSummary: '',
+      };
+    }
+
+    it('renders "⏳ Running in background — <label> (Ns)" for running BashBG', async () => {
+      mockMcpCallTracker.getElapsedTime.mockReturnValue(7000);
+      display.registerCall('session1', 'call_bg', bashBgConfig('`sleep 10`'), 'C123', '111.222');
+
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      const postText = mockSlackApi.postMessage.mock.calls[0][1];
+      expect(postText).toContain('⏳ Running in background');
+      expect(postText).toContain('`sleep 10`');
+      expect(postText).toMatch(/\(\d+s\)/);
+      // should NOT carry the default Korean multi-line "실행 중" header
+      expect(postText).not.toContain('실행 중:');
+    });
+
+    it('does not break when a BashBG call is one of many (multi-call header path)', async () => {
+      display.registerCall('session1', 'call_mcp', mcpConfig('codex', 'search'), 'C123', '111.222');
+      display.registerCall('session1', 'call_bg', bashBgConfig('`sleep 10`'), 'C123', '111.222');
+
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      // 1 API call — consolidated. BashBG shows up on its line via
+      // the existing renderCallLine path; the text must render without
+      // throwing and must contain both entries.
+      expect(mockSlackApi.postMessage).toHaveBeenCalledTimes(1);
+      const postText = mockSlackApi.postMessage.mock.calls[0][1];
+      expect(postText).toContain('codex → search');
+      expect(postText).toContain('`sleep 10`');
+    });
+
+    it('non-BashBG types keep their original single-call multi-line render (regression)', async () => {
+      display.registerCall('session1', 'call_mcp', mcpConfig('codex', 'search'), 'C123', '111.222');
+      await vi.advanceTimersByTimeAsync(10_000);
+      const postText = mockSlackApi.postMessage.mock.calls[0][1];
+      // Canonical multi-line "실행 중" header from buildRunningText must
+      // still appear for plain MCP
+      expect(postText).toContain('실행 중:');
+    });
+  });
+
   describe('adaptive prediction rendering', () => {
     it('should show adaptive indicator when elapsed exceeds predicted', async () => {
       mockMcpCallTracker.getPredictedDuration.mockReturnValue(34800); // 34.8s

@@ -1,4 +1,11 @@
 import * as fs from 'fs';
+import {
+  expectedHandoffKind,
+  HandoffAbortError,
+  isZHandoffWorkflow,
+  parseHandoff,
+} from 'somalib/model-commands/handoff-parser';
+import type { ZHandoffWorkflow } from 'somalib/model-commands/session-types';
 import { getAdminUsers } from '../../admin-utils';
 import { checkRepoChannelMatch, getAllChannels, getChannel, registerChannel } from '../../channel-registry';
 import type { ClaudeHandler } from '../../claude-handler';
@@ -19,10 +26,17 @@ import type { RequestCoordinator } from '../request-coordinator';
 import type { SlackApiHelper } from '../slack-api-helper';
 import { ThreadHeaderBuilder } from '../thread-header-builder';
 import type { ThreadPanel } from '../thread-panel';
+import { shouldRunLegacyB4Path } from './effective-phase';
 import type { MessageEvent, SayFn, SessionInitResult } from './types';
 
 // Timeout for dispatch API call (30 seconds - Agent SDK needs time to start)
 const DISPATCH_TIMEOUT_MS = 30000;
+
+/** Session title surface shown when entering via a z handoff entrypoint (#695). */
+const HANDOFF_ENTRY_TITLES: Record<ZHandoffWorkflow, string> = {
+  'z-plan-to-work': 'z handoff (plan→work)',
+  'z-epic-update': 'z handoff (epic update)',
+};
 
 // Track in-flight dispatch calls to prevent race conditions
 // Maps sessionKey -> Promise that resolves when dispatch completes
@@ -544,10 +558,67 @@ export class SessionInitializer {
    * Called when session needs re-dispatch (e.g., after /new or /renew)
    * @param channel - Slack channel ID
    * @param threadTs - Thread timestamp
-   * @param text - Text to use for classification
+   * @param text - Text to use for dispatch classification (typically a short
+   *   handle like an issue URL; NOT the full `<z-handoff>` prompt body)
+   * @param forceWorkflow - If set, skips classification and transitions
+   *   directly to the given workflow
+   * @param handoffPrompt - Full continuation prompt body for sentinel parsing.
+   *   Required when `forceWorkflow` is one of the z-handoff entrypoints
+   *   (`z-plan-to-work` / `z-epic-update`); ignored otherwise. Issue #695.
+   * @throws HandoffAbortError when `forceWorkflow` is a z-handoff entrypoint
+   *   and the sentinel is missing, malformed, or does not match the expected
+   *   type for the requested workflow. Caught by `SlackHandler` (safe-stop).
    */
-  async runDispatch(channel: string, threadTs: string, text: string, forceWorkflow?: WorkflowType): Promise<void> {
+  async runDispatch(
+    channel: string,
+    threadTs: string,
+    text: string,
+    forceWorkflow?: WorkflowType,
+    handoffPrompt?: string,
+  ): Promise<void> {
     const sessionKey = this.deps.claudeHandler.getSessionKey(channel, threadTs);
+
+    // Issue #695 — host-level enforcement of z session handoff entrypoints.
+    // Failure throws `HandoffAbortError`, which `SlackHandler` catches to emit
+    // a user-facing safe-stop message and short-circuit the retry path.
+    if (isZHandoffWorkflow(forceWorkflow) && this.deps.claudeHandler.needsDispatch(channel, threadTs)) {
+      if (!handoffPrompt) {
+        throw new HandoffAbortError(
+          'no-sentinel',
+          'runDispatch received no handoffPrompt for forced z-* workflow',
+          forceWorkflow,
+        );
+      }
+      const parsed = parseHandoff(handoffPrompt);
+      if (!parsed.ok) {
+        throw new HandoffAbortError(parsed.reason, parsed.detail, forceWorkflow);
+      }
+      const expected = expectedHandoffKind(forceWorkflow);
+      if (parsed.context.handoffKind !== expected) {
+        throw new HandoffAbortError(
+          'type-workflow-mismatch',
+          `expected <z-handoff type="${expected}">, got type="${parsed.context.handoffKind}"`,
+          forceWorkflow,
+        );
+      }
+      const session = this.deps.claudeHandler.getSession(channel, threadTs);
+      if (!session) {
+        throw new HandoffAbortError('host-policy', 'session not found at handoff entry', forceWorkflow);
+      }
+      session.handoffContext = parsed.context;
+      this.logger.info('Handoff entrypoint entered', {
+        sessionKey,
+        workflow: forceWorkflow,
+        handoffKind: parsed.context.handoffKind,
+        chainId: parsed.context.chainId,
+        hopBudget: parsed.context.hopBudget,
+      });
+      // transitionToMain persists the session via SessionRegistry.saveSessions,
+      // so no explicit save is needed here for handoffContext to hit disk.
+      this.deps.claudeHandler.transitionToMain(channel, threadTs, forceWorkflow, HANDOFF_ENTRY_TITLES[forceWorkflow]);
+      return;
+    }
+
     if (forceWorkflow && this.deps.claudeHandler.needsDispatch(channel, threadTs)) {
       this.logger.info('Forcing workflow during re-dispatch', {
         sessionKey,
@@ -583,6 +654,12 @@ export class SessionInitializer {
       resolveTracking = resolve;
     });
     dispatchInFlight.set(sessionKey, trackingPromise);
+
+    // Issue #688 — capture dispatch-scoped epoch. Any clearStatus call
+    // emitted by this dispatch (including fallback / failure paths) must
+    // carry `expectedEpoch: dispatchEpoch` so a stale clear from an
+    // aborted prior turn cannot nuke a newer spinner on the same thread.
+    const dispatchEpoch = this.deps.assistantStatusManager?.bumpEpoch(channel, threadTs) ?? 0;
 
     const startTime = Date.now();
     const abortController = new AbortController();
@@ -620,8 +697,11 @@ export class SessionInitializer {
       const dispatchService = getDispatchService();
       const model = dispatchService.getModel();
 
-      // Native spinner during dispatch
-      await this.deps.assistantStatusManager?.setStatus(channel, threadTs, 'is analyzing your request...');
+      // Native spinner during dispatch — legacy-only; TurnSurface.begin owns
+      // the "is thinking..." spinner at effective PHASE>=4 (#689 P4 Part 2).
+      if (shouldRunLegacyB4Path(this.deps.assistantStatusManager)) {
+        await this.deps.assistantStatusManager?.setStatus(channel, threadTs, 'is analyzing your request...');
+      }
       await updateDispatchPanel('워크플로우 분석 중', 'working');
 
       // Add dispatching reaction and post status message
@@ -674,8 +754,12 @@ export class SessionInitializer {
         );
       }
 
-      // Set thread title in DM history
-      await this.deps.assistantStatusManager?.setTitle(channel, threadTs, result.title);
+      // Set thread title in DM history — legacy-only; at effective PHASE>=4
+      // the native Assistant UI owns thread titles (TurnSurface title-write
+      // is tracked for a follow-up — docs/slack-ui-phase4.md §Out of scope).
+      if (shouldRunLegacyB4Path(this.deps.assistantStatusManager)) {
+        await this.deps.assistantStatusManager?.setTitle(channel, threadTs, result.title);
+      }
 
       // Store extracted links on the session
       if (result.links && Object.keys(result.links).length > 0) {
@@ -718,6 +802,15 @@ export class SessionInitializer {
       const fallbackTitle = MessageFormatter.generateSessionTitle(text);
       this.deps.claudeHandler.transitionToMain(channel, threadTs, 'default', fallbackTitle);
       await updateDispatchPanel('기본 워크플로우로 전환', 'idle');
+
+      // Tear down the dispatch spinner. Epoch-guarded (#688) so a stale
+      // clear from a superseded dispatch can't kill a newer turn's spinner;
+      // PHASE-gated (#689 P4) so we don't race TurnSurface at PHASE>=4.
+      if (shouldRunLegacyB4Path(this.deps.assistantStatusManager)) {
+        await this.deps.assistantStatusManager?.clearStatus(channel, threadTs, {
+          expectedEpoch: dispatchEpoch,
+        });
+      }
     } finally {
       clearTimeout(timeoutId);
       // Clean up the in-flight tracking and resolve waiting promises
@@ -947,6 +1040,10 @@ export class SessionInitializer {
       if (canInterrupt) {
         this.logger.debug('Cancelling existing request for session', { sessionKey, interruptedBy: userName });
         this.deps.requestCoordinator.abortSession(sessionKey);
+        // Issue #688 — per-(channel, threadTs) epoch bump so any stale
+        // clearStatus from the aborted turn (arriving after the new turn
+        // has set its spinner) becomes a no-op via expectedEpoch guard.
+        this.deps.assistantStatusManager?.bumpEpoch(channel, threadTs);
       } else {
         this.logger.debug('User cannot interrupt, message will be processed after current response', {
           sessionKey,

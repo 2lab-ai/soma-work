@@ -40,3 +40,7 @@ Begin:
 1. **TodoWrite** to plan all steps (MANDATORY)
 2. Work, delegating to agents as needed
 3. Return results when complete
+
+## Forbidden Tools
+
+- **`ScheduleWakeup` 사용금지** — 호출해도 세션 재진입 보장 없음. 장기 폴링은 `Bash(run_in_background:true)` + `Monitor` + `TaskStop` 조합 사용 (`local:llm-dispatch` 스킬 참조). 상세는 include된 orchestrator-workflow의 "Forbidden Tools" 섹션.

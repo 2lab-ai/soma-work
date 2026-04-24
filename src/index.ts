@@ -5,6 +5,7 @@ installConsoleRedaction();
 import './env-paths';
 import { registerMemoryStore, registerSkillStore } from 'somalib/model-commands/catalog';
 import * as userMemoryStore from './user-memory-store';
+import { setSettingsPromptInvalidationHook } from './user-settings-store';
 import { createUserSkill, deleteUserSkill, listUserSkills, updateUserSkill } from './user-skill-store';
 
 registerMemoryStore(userMemoryStore);
@@ -288,6 +289,18 @@ async function start() {
     // Connect dashboard: session accessor + real-time WebSocket broadcast on state changes
     setDashboardSessionAccessor(() => claudeHandler.getAllSessions());
     claudeHandler.getSessionRegistry().setActivityStateChangeCallback(() => broadcastSessionUpdate());
+
+    // user-memory-store and user-settings-store mutate SSOT fields that
+    // feed the cached system prompt but live outside the stream-executor
+    // reset points. Injecting the registry here avoids a cyclic import.
+    {
+      const registry = claudeHandler.getSessionRegistry();
+      const invalidate = (userId: string): void => {
+        registry.invalidateSystemPromptForUser(userId);
+      };
+      userMemoryStore.setMemoryPromptInvalidationHook(invalidate);
+      setSettingsPromptInvalidationHook(invalidate);
+    }
 
     // Connect dashboard: task accessor (resolve sessionKey → sessionId for TodoManager)
     setDashboardTaskAccessor((sessionKey: string) => {

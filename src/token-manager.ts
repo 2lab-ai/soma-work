@@ -48,7 +48,15 @@ import {
   isCctWithSetup,
   type OAuthAttachment,
 } from './auth/auth-key';
-import type { AuthState, CctStoreSnapshot, Lease, RateLimitSource, SlotState, UsageSnapshot } from './cct-store';
+import type {
+  AuthState,
+  CctStoreSnapshot,
+  Lease,
+  RateLimitSource,
+  RefreshErrorInfo,
+  SlotState,
+  UsageSnapshot,
+} from './cct-store';
 import { CctStore, defaultCctStorePath } from './cct-store';
 import { config } from './config';
 import { Logger, redactAnthropicSecrets } from './logger';
@@ -1022,6 +1030,119 @@ export class TokenManager {
     await this.refreshCache();
   }
 
+  // ── Refresh diagnostics (#701) ──────────────────────────────
+
+  /**
+   * Persist the most recent refresh failure for `keyId`, guarded by the
+   * attachment generation captured at refresh start.
+   *
+   * Attachment-generation guard — drops the write silently when any of:
+   *   (a) the slot no longer exists (removed between refresh start and
+   *       persist); writing would resurrect `state[keyId]` as an orphan
+   *       entry the remove path never cleans up.
+   *   (b) the slot exists but no longer has an OAuthAttachment (detached);
+   *       keeping the failure around after detach misleads the card, and
+   *       `#detachOAuthOnSetupSlot` wipes these fields on the way out so
+   *       a survivor here would be a wrong-generation leak.
+   *   (c) the current `attachedAt` differs from the captured one (detach +
+   *       reattach landed between refresh start and persist); the failure
+   *       belongs to the OLD generation and must not leak onto the new.
+   *
+   * Dropping the write is intentionally silent — a logger.warn on every
+   * concurrent detach would be pure noise, and the caller's own
+   * `throw err` still surfaces the failure to the immediate invoker.
+   *
+   * Unauthorized (401) flips `authState → refresh_failed`; revoked (403)
+   * flips `authState → revoked`. Every other kind keeps `authState` at
+   * `'healthy'` — the slot may recover on the next tick, and a rogue
+   * status change would make `isEligible` reject the slot for transient
+   * server blips.
+   */
+  async markRefreshFailure(
+    keyId: string,
+    attachedAt: number | undefined,
+    info: Omit<RefreshErrorInfo, 'at'>,
+  ): Promise<void> {
+    const at = Date.now();
+    await this.store.mutate((snap) => {
+      const slot = snap.registry.slots.find((s) => s.keyId === keyId);
+      if (!slot || slot.kind !== 'cct' || slot.oauthAttachment === undefined) return;
+      if (slot.oauthAttachment.attachedAt !== attachedAt) return;
+      const prev = snap.state[keyId] ?? { authState: 'healthy' as AuthState, activeLeases: [] };
+      const nextAuthState: AuthState =
+        info.kind === 'unauthorized' ? 'refresh_failed' : info.kind === 'revoked' ? 'revoked' : prev.authState;
+      const updated: SlotState = {
+        ...prev,
+        authState: nextAuthState,
+        lastRefreshFailedAt: at,
+        lastRefreshError: { ...info, at },
+        consecutiveRefreshFailures: (prev.consecutiveRefreshFailures ?? 0) + 1,
+      };
+      snap.state[keyId] = updated;
+    });
+    await this.refreshCache();
+  }
+
+  /**
+   * Bucket an OAuth refresh error into a UI-safe, metric-groupable
+   * {@link RefreshErrorKind} + fixed template message.
+   *
+   * **Safety model (non-negotiable):** every returned `message` is a
+   * static ASCII string from the table below. Raw `err.message`,
+   * `OAuthRefreshError.body`, response bodies, and any adversary-
+   * controlled text are never interpolated into the result. This is the
+   * primary secret-leak containment boundary for refresh failures;
+   * `src/token-manager.classify-refresh-error.test.ts` fires
+   * `sk-ant-oat01-…` patterns through adversarial inputs and asserts
+   * the stored message is exactly the template.
+   *
+   * The parse bucket keys on `body === ''` plus the refresher's two
+   * distinctive message prefixes (`"OAuth refresh response was not
+   * valid JSON"`, `"OAuth refresh response missing"`) because the
+   * underlying `OAuthRefreshError` carries `response.status` (typically
+   * 200) in that path — status alone cannot distinguish parse errors
+   * from non-2xx failures.
+   */
+  static classifyRefreshError(err: unknown): Omit<RefreshErrorInfo, 'at'> {
+    if (err instanceof OAuthRefreshError) {
+      const status = err.status;
+      // Parse/missing-field errors from the refresher land with
+      // `body === ''` and a known message prefix. Checking both the
+      // empty body AND the message prefix avoids collisions with e.g.
+      // a future server that returns an empty body on 4xx.
+      if (
+        err.body === '' &&
+        (err.message.startsWith('OAuth refresh response was not valid JSON') ||
+          err.message.startsWith('OAuth refresh response missing'))
+      ) {
+        return { kind: 'parse', message: 'Refresh response malformed' };
+      }
+      if (status === 401) return { kind: 'unauthorized', status: 401, message: 'Refresh rejected (401 invalid_grant)' };
+      if (status === 403) return { kind: 'revoked', status: 403, message: 'Refresh revoked (403)' };
+      if (status === 429) return { kind: 'rate_limited', status: 429, message: 'Refresh throttled (429)' };
+      if (status >= 500 && status <= 599)
+        return { kind: 'server', status, message: `Refresh server error (${status})` };
+      return { kind: 'unknown', status, message: `Refresh failed (${status})` };
+    }
+    // AbortError from the refresher's 30s timeout controller.
+    if (err instanceof Error && err.name === 'AbortError') {
+      return { kind: 'timeout', message: 'Refresh timed out after 30s' };
+    }
+    // Node-level network errors. `code` may be attached by undici/fetch;
+    // a vanilla TypeError from fetch ("fetch failed") also counts.
+    const code = (err as { code?: unknown } | null)?.code;
+    if (
+      (err instanceof TypeError && err.message.toLowerCase().includes('fetch')) ||
+      code === 'ECONNRESET' ||
+      code === 'ENOTFOUND' ||
+      code === 'EAI_AGAIN' ||
+      code === 'ECONNREFUSED'
+    ) {
+      return { kind: 'network', message: 'Refresh network error' };
+    }
+    return { kind: 'unknown', message: 'Refresh failed (unknown)' };
+  }
+
   // ── Attach / detach OAuth on setup-source CCT slots (Z2) ─
 
   /**
@@ -1043,6 +1164,13 @@ export class TokenManager {
       delete st.lastUsageFetchedAt;
       delete st.nextUsageFetchAllowedAt;
       delete st.consecutiveUsageFailures;
+      // #701 — refresh diagnostics are attachment-scoped. Without an
+      // attachment a `lastRefreshError` is meaningless and must not leak
+      // into a later attach cycle's card render.
+      delete st.lastRefreshAt;
+      delete st.lastRefreshFailedAt;
+      delete st.lastRefreshError;
+      delete st.consecutiveRefreshFailures;
       // Codex P0 fix #3: clear attachment-scoped auth state. With no
       // attachment, 'refresh_failed'/'revoked' are not meaningful (a bare
       // setup-source slot uses setupToken verbatim). Leaving stale marks
@@ -1109,8 +1237,21 @@ export class TokenManager {
       // a stale `refresh_failed` / `revoked` mark from a prior attachment
       // must become eligible again once fresh creds are supplied. Without
       // this, `isEligible` rejects the slot and `acquireLease` skips it.
+      //
+      // #701 — also wipe the refresh diagnostics. Belt-and-suspenders for
+      // the rare race where an in-flight `markRefreshFailure` lands just
+      // before this attach mutate: `markRefreshFailure` already no-ops on
+      // `attachedAt` mismatch, but a successful failure-write for the
+      // OLD generation that completes between detach and attach would
+      // still be present here. Deleting on attach guarantees the fresh
+      // generation starts from a clean slate.
       const prev = snap.state[slot.keyId] ?? { authState: 'healthy' as AuthState, activeLeases: [] };
-      snap.state[slot.keyId] = { ...prev, authState: 'healthy' };
+      const reset: SlotState = { ...prev, authState: 'healthy' };
+      delete reset.lastRefreshAt;
+      delete reset.lastRefreshFailedAt;
+      delete reset.lastRefreshError;
+      delete reset.consecutiveRefreshFailures;
+      snap.state[slot.keyId] = reset;
     });
     await this.refreshCache();
     // Fire-and-forget usage fetch — the renderCctCard path will also pick
@@ -1473,10 +1614,16 @@ export class TokenManager {
               : {}),
           });
         } catch (err) {
-          if (err instanceof OAuthRefreshError) {
-            if (err.status === 401) await this.markAuthState(slot.keyId, 'refresh_failed');
-            else if (err.status === 403) await this.markAuthState(slot.keyId, 'revoked');
-          }
+          // #701 — capture every refresh failure (not just 401/403) under
+          // the attachment-generation guard in `markRefreshFailure`, so the
+          // card can surface it and operators have a signal for 429 / 5xx
+          // / network / timeout / parse errors. The authState flip is now
+          // centralised inside `markRefreshFailure` (unauthorized →
+          // refresh_failed, revoked → revoked); other kinds keep authState
+          // at 'healthy' so transient server blips don't remove the slot
+          // from `isEligible`.
+          const info = TokenManager.classifyRefreshError(err);
+          await this.markRefreshFailure(slot.keyId, preAttachedAt, info);
           throw err;
         }
         // Persist — single-step under the store lock.
@@ -1520,6 +1667,14 @@ export class TokenManager {
           target.oauthAttachment = updated;
           const st = snap.state[slot.keyId] ?? { authState: 'healthy' as AuthState, activeLeases: [] };
           st.authState = 'healthy';
+          // #701 — refresh success clears the failure diagnostics so the
+          // card's error segment + stale-usage row both disappear on the
+          // next render. Stamping `lastRefreshAt` lets the staleness hint
+          // show how long ago the current token was minted.
+          st.lastRefreshAt = Date.now();
+          delete st.lastRefreshFailedAt;
+          delete st.lastRefreshError;
+          st.consecutiveRefreshFailures = 0;
           snap.state[slot.keyId] = st;
         });
         await this.refreshCache();

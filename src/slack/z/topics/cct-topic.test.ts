@@ -407,7 +407,7 @@ describe('cct-topic block-cap stress (#668 follow-up)', () => {
         activeLeases: [],
         usage: {
           fetchedAt: new Date(now).toISOString(),
-          fiveHour: { utilization: 0.3, resetsAt: new Date(now + 3 * 3_600_000).toISOString() },
+          fiveHour: { utilization: 30, resetsAt: new Date(now + 3 * 3_600_000).toISOString() },
           sevenDay: {
             utilization: i * 0.05,
             resetsAt: new Date(now + (i + 1) * 86_400_000).toISOString(),

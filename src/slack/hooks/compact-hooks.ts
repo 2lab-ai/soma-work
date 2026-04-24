@@ -574,6 +574,12 @@ async function handleSessionStart(deps: CompactHookDeps, payload: SessionStartHo
   // Setting the legacy flag + the per-epoch dedupe keeps both paths consistent.
   if (buildCompactionContext(snapshotFromSession(session))) {
     session.compactionOccurred = true;
+    // PLAN §3 — reset point (c): invalidate the cached systemPrompt snapshot
+    // so the next rebuild lands on the reset branch in claude-handler.
+    // The rebuild-gate also checks `compactionOccurred`, but clearing the
+    // snapshot here makes the post-compact contract explicit and survives
+    // refactors where the gate's condition changes.
+    session.systemPrompt = undefined;
   }
   rehydrated[epoch] = true;
 }

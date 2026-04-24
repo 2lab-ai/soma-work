@@ -16,6 +16,7 @@ import type {
   ActionPanelState,
   ActivityState,
   ConversationSession,
+  HandoffContext,
   SessionInstruction,
   SessionLink,
   SessionLinkHistory,
@@ -125,6 +126,13 @@ interface SerializedSession {
   };
   // User SSOT instructions (persisted)
   instructions?: SessionInstruction[];
+  /**
+   * Cached summary of completed instructions. Persisted so that
+   * restart after a long session doesn't force a fresh summary re-build
+   * on the very next turn (keeps prompt cache warm). See
+   * `src/conversation/instructions-summarizer.ts`.
+   */
+  instructionsCompletedSummary?: { summary: string; upstreamHash: string };
   // Dashboard v2.1 — thread-aggregate snapshot fields (live aggregate derived from memory).
   compactionCount?: number;
   activeLegStartedAtMs?: number;
@@ -132,6 +140,12 @@ interface SerializedSession {
   summaryTitle?: string;
   summaryTitleTurnId?: string;
   summaryTitleLastUpdatedAtMs?: number;
+  /**
+   * Typed handoff metadata parsed from a `<z-handoff>` sentinel (issue #695).
+   * Persisted verbatim so downstream guards (#696/#697/#698) can consume the
+   * structured state after restart or mid-session.
+   */
+  handoffContext?: HandoffContext;
 }
 
 /**
@@ -211,6 +225,34 @@ export class SessionRegistry {
   }
 
   /**
+   * Persist all sessions to disk AND push a dashboard update.
+   *
+   * Use this after mutating session state that the dashboard consumes
+   * (pendingQuestion, pendingChoice, waitingForChoice, etc.) OUTSIDE of an
+   * activity-state transition. `setActivityState` only persists on transition
+   * to 'idle' and broadcasts only on state change, so holding state in 'waiting'
+   * while mutating pending fields would otherwise leave disk and dashboard stale.
+   *
+   * Cost: one disk write + one websocket push per call. Keep call sites bounded
+   * to real state transitions (set/clear of pendingChoice/pendingQuestion) —
+   * not every render.
+   *
+   * `sessionKey` parameter is currently advisory (for logging / future
+   * targeted broadcasts). The underlying broadcast API is global today.
+   */
+  public persistAndBroadcast(sessionKey: string): void {
+    this.saveSessions();
+    try {
+      this.onActivityStateChangeCallback?.();
+    } catch (err) {
+      this.logger.warn('persistAndBroadcast: broadcast callback raised', {
+        sessionKey,
+        error: (err as Error)?.message ?? String(err),
+      });
+    }
+  }
+
+  /**
    * Get session key - based on channel and thread only (shared session)
    */
   getSessionKey(channelId: string, threadTs?: string): string {
@@ -263,6 +305,27 @@ export class SessionRegistry {
    */
   getAllSessions(): Map<string, ConversationSession> {
     return this.sessions;
+  }
+
+  /**
+   * Clear the cached `systemPrompt` for every session owned by `userId` so
+   * the next turn rebuilds against fresh SSOT (memory, persona, settings).
+   * Centralised here to keep external mutators out of `getAllSessions()`
+   * iteration; returns the number of sessions touched for tests/logs.
+   */
+  invalidateSystemPromptForUser(userId: string): number {
+    if (!userId) return 0;
+    let count = 0;
+    for (const session of this.sessions.values()) {
+      if (session.ownerId !== userId) continue;
+      if (session.systemPrompt === undefined) continue;
+      session.systemPrompt = undefined;
+      count += 1;
+    }
+    if (count > 0) {
+      this.logger.debug('Invalidated systemPrompt for user sessions', { userId, count });
+    }
+    return count;
   }
 
   /**
@@ -807,10 +870,38 @@ export class SessionRegistry {
       this.saveSessions();
     }
 
+    if (instructionChanged) {
+      // PLAN §2 & §5 — SSOT change invalidates the cached systemPrompt and
+      // may stale the completed-summary. Clearing the snapshot forces the
+      // next buildSystemPrompt() to rebuild; the summary regen is fire-and-
+      // forget so it never blocks the write path.
+      session.systemPrompt = undefined;
+      this.scheduleInstructionsSummaryRegen(session);
+    }
+
     return {
       ok: true,
       snapshot: this.buildSessionResourceSnapshot(session),
     };
+  }
+
+  /**
+   * Fire-and-forget: regenerate the completed-instructions summary if the
+   * cached hash no longer matches the current completed subset. Kept as a
+   * private method (rather than a free function call at the import-site)
+   * so tests can stub it out cheaply.
+   *
+   * NOTE: imports the summariser lazily to avoid pulling
+   * `@anthropic-ai/claude-agent-sdk` into the session-registry import
+   * chain — tests that only touch registry state (migration, reset, etc)
+   * shouldn't need the SDK.
+   */
+  private scheduleInstructionsSummaryRegen(session: ConversationSession): void {
+    // Lazy import + eager promise swallow — this is intentionally a noop
+    // when the summariser fails (no credentials, network, etc).
+    import('./conversation/instructions-summarizer')
+      .then(({ regenerateInstructionsSummaryIfStale }) => regenerateInstructionsSummaryIfStale(session))
+      .catch((err) => this.logger.debug('Summary regen dispatch failed', { err }));
   }
 
   private buildSessionResourceSnapshot(session: ConversationSession | undefined): SessionResourceSnapshot {
@@ -1152,6 +1243,13 @@ export class SessionRegistry {
     session.state = 'INITIALIZING';
     session.workflow = undefined;
 
+    // Clear stale handoff metadata. The AD-12 filter (#695) persists sessions
+    // that still have handoffContext; leaving it here after a reset would keep
+    // a stale metadata blob on disk forever when the reset is not immediately
+    // followed by a new forced-handoff runDispatch. A real handoff entry
+    // overwrites this field before the first post-reset save.
+    session.handoffContext = undefined;
+
     // Clear current initiator (fresh start means no active initiator)
     session.currentInitiatorId = undefined;
     session.currentInitiatorName = undefined;
@@ -1167,6 +1265,15 @@ export class SessionRegistry {
     session.systemPrompt = undefined;
     session.initialInstruction = undefined;
     session.followUpInstructions = undefined;
+    // Clear any pending rejection flag — runtime-only, must not leak across
+    // /new or CONTINUE_SESSION resetSession boundaries (otherwise the next
+    // turn would inject a stale rejection notice).
+    session.pendingInstructionRejection = undefined;
+    // NOTE: `session.instructions` and `session.instructionsCompletedSummary`
+    // are intentionally preserved — the user-SSOT semantics require them to
+    // survive `/new` and CONTINUE_SESSION resets (they represent durable
+    // intent, not per-turn conversation state). The systemPrompt clear above
+    // forces the next turn to rebuild the prompt with the preserved SSOT.
 
     // Reset activity state
     session.activityState = 'idle';
@@ -1499,8 +1606,13 @@ export class SessionRegistry {
 
       const sessionsArray: SerializedSession[] = [];
       for (const [key, session] of this.sessions.entries()) {
-        // Only save sessions with sessionId (meaning they have conversation history)
-        if (session.sessionId) {
+        // Save sessions that have conversation history (sessionId) OR a pending
+        // handoff context (AD-12, issue #695). The handoffContext branch covers
+        // the narrow window between `resetSessionContext()` (which clears
+        // sessionId) and the first model turn after a forced handoff entrypoint,
+        // where the typed metadata must survive a crash/restart so downstream
+        // guards (#696/#697/#698) can consume it.
+        if (session.sessionId || session.handoffContext) {
           this.ensureSessionLinkState(session);
           sessionsArray.push({
             key,
@@ -1541,6 +1653,10 @@ export class SessionRegistry {
             mergeStats: session.mergeStats,
             // User SSOT instructions (persisted)
             instructions: session.instructions,
+            // Cached completed-summary (persisted so the next turn after restart
+            // doesn't pay a cold summary rebuild). Safe to omit — the block
+            // builder falls back to a placeholder and the async regen kicks in.
+            instructionsCompletedSummary: session.instructionsCompletedSummary,
             // Dashboard v2.1 — derive-first aggregate snapshot (persisted per session)
             compactionCount: session.compactionCount,
             activeLegStartedAtMs: session.activeLegStartedAtMs,
@@ -1548,6 +1664,8 @@ export class SessionRegistry {
             summaryTitle: session.summaryTitle,
             summaryTitleTurnId: session.summaryTitleTurnId,
             summaryTitleLastUpdatedAtMs: session.summaryTitleLastUpdatedAtMs,
+            // Typed handoff metadata (issue #695)
+            handoffContext: session.handoffContext,
           });
         }
       }
@@ -1595,6 +1713,8 @@ export class SessionRegistry {
         mergeStats: serialized.mergeStats,
         instructions: serialized.instructions,
         activityState: serialized.activityState || 'idle',
+        // Preserve handoff metadata for diagnostic parity when archiving.
+        handoffContext: serialized.handoffContext,
       };
       getArchiveStore().archive(session, serialized.key, reason);
     } catch (err) {
@@ -1715,8 +1835,18 @@ export class SessionRegistry {
           conversationId: serialized.conversationId,
           // Merge code change stats
           mergeStats: serialized.mergeStats,
-          // User SSOT instructions (restored from disk)
-          instructions: Array.isArray(serialized.instructions) ? serialized.instructions : [],
+          // User SSOT instructions (restored from disk).
+          // Legacy migration: entries saved before the lifecycle-status
+          // extension lack `status`. Seed them to 'active' so the block
+          // builder can group them without special-casing `undefined`.
+          instructions: Array.isArray(serialized.instructions)
+            ? serialized.instructions.map((i) => ({
+                ...i,
+                status: i.status ?? 'active',
+              }))
+            : [],
+          // Cached completed-summary (may be stale — block builder validates via hash).
+          instructionsCompletedSummary: serialized.instructionsCompletedSummary,
           // Dashboard v2.1 — restore aggregate snapshot
           compactionCount: typeof serialized.compactionCount === 'number' ? serialized.compactionCount : 0,
           activeLegStartedAtMs: serialized.activeLegStartedAtMs,
@@ -1724,6 +1854,9 @@ export class SessionRegistry {
           summaryTitle: serialized.summaryTitle,
           summaryTitleTurnId: serialized.summaryTitleTurnId,
           summaryTitleLastUpdatedAtMs: serialized.summaryTitleLastUpdatedAtMs,
+          // Typed handoff metadata (issue #695) — present only for sessions
+          // that entered via forceWorkflow z-plan-to-work / z-epic-update.
+          handoffContext: serialized.handoffContext,
           // Compaction Tracking (#617): runtime-only dedupe state — always reset on reload.
           // Pending state (autoCompactPending / pendingUserText / pendingEventContext) is
           // intentionally NOT rehydrated because the original event context cannot be

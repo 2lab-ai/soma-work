@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { config } from '../config';
-import { TurnSurface } from './turn-surface';
+import { type TurnAddress, TurnSurface } from './turn-surface';
 
 /**
  * TurnSurface unit tests (Issue #525, P1).
@@ -500,7 +500,8 @@ describe('TurnSurface', () => {
       config.ui.fiveBlockPhase = 2;
       const client = makeClient();
       const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
-      await expect(surface.askUser('any-turn', { x: 1 })).resolves.toBe('');
+      const addr = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1' };
+      await expect(surface.askUser('any-turn', { blocks: [] }, 'Q', addr)).resolves.toBe('');
     });
   });
 
@@ -698,6 +699,385 @@ describe('TurnSurface', () => {
         surface.renderTasks('t', todos as any, { channelId: 'C', threadTs: 't', sessionKey: 'C:t' }),
       ).resolves.toBe(false);
       expect(client.chat.postMessage).not.toHaveBeenCalled();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // B3 choice (P3) — askUser / askUserForm / resolveChoice / resolveMultiChoice
+  // -------------------------------------------------------------------------
+
+  describe('TurnSurface — P3 (PHASE>=3) B3 choice', () => {
+    beforeEach(() => {
+      config.ui.fiveBlockPhase = 3;
+    });
+
+    function makeSurfaceWithApi(overrides?: Partial<MockClient['chat']>) {
+      const client = makeClient(overrides);
+      const slackApi = {
+        getClient: vi.fn().mockReturnValue(client),
+        updateMessage: vi.fn().mockResolvedValue(undefined),
+      } as any;
+      const surface = new TurnSurface({ slackApi });
+      return { surface, client, slackApi };
+    }
+
+    it('askUser posts message and returns ts', async () => {
+      const { surface, client } = makeSurfaceWithApi({
+        postMessage: vi.fn().mockResolvedValue({ ts: 'msg-1' }),
+      });
+      const addr: TurnAddress = { channelId: 'C1', threadTs: 'thr-1', sessionKey: 'C1:thr-1' };
+      const ts = await surface.askUser('turn-1', { blocks: [{ type: 'section' }] }, 'Q?', addr);
+      expect(ts).toBe('msg-1');
+      expect(client.chat.postMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          channel: 'C1',
+          thread_ts: 'thr-1',
+          text: 'Q?',
+          blocks: [{ type: 'section' }],
+        }),
+      );
+    });
+
+    it('askUser stamps choiceTs on turn state when turn exists', async () => {
+      const { surface } = makeSurfaceWithApi({
+        postMessage: vi.fn().mockResolvedValue({ ts: 'msg-stamped' }),
+      });
+      await surface.begin({ channelId: 'C', threadTs: 'thr', sessionKey: 'C:thr', turnId: 'turn-1' });
+      const addr: TurnAddress = { channelId: 'C', threadTs: 'thr', sessionKey: 'C:thr' };
+      await surface.askUser('turn-1', { blocks: [] }, 'Q?', addr);
+      expect(surface._getChoiceTs('turn-1')).toBe('msg-stamped');
+      await surface.end('turn-1', 'completed');
+    });
+
+    it('askUser tolerates missing turn state (turn may have ended)', async () => {
+      const { surface } = makeSurfaceWithApi({
+        postMessage: vi.fn().mockResolvedValue({ ts: 'msg-orphan' }),
+      });
+      const addr: TurnAddress = { channelId: 'C', sessionKey: 'C:t' };
+      // No begin() — askUser should still work.
+      await expect(surface.askUser('orphan-turn', { blocks: [] }, 'Q', addr)).resolves.toBe('msg-orphan');
+    });
+
+    it('askUser returns empty string below PHASE=3', async () => {
+      config.ui.fiveBlockPhase = 2;
+      const { surface, client } = makeSurfaceWithApi();
+      const addr: TurnAddress = { channelId: 'C', sessionKey: 'C:t' };
+      const ts = await surface.askUser('turn-1', { blocks: [] }, 'Q?', addr);
+      expect(ts).toBe('');
+      expect(client.chat.postMessage).not.toHaveBeenCalled();
+    });
+
+    it('askUser throws when postMessage returns no ts', async () => {
+      const { surface } = makeSurfaceWithApi({
+        postMessage: vi.fn().mockResolvedValue({}),
+      });
+      const addr: TurnAddress = { channelId: 'C', sessionKey: 'C:t' };
+      await expect(surface.askUser('turn-1', { blocks: [] }, 'Q', addr)).rejects.toThrow();
+    });
+
+    it('askUser omits thread_ts when address has none (DM root)', async () => {
+      const { surface, client } = makeSurfaceWithApi({
+        postMessage: vi.fn().mockResolvedValue({ ts: 'msg-dm' }),
+      });
+      const addr: TurnAddress = { channelId: 'D1', sessionKey: 'D1:root' };
+      await surface.askUser('turn-1', { blocks: [] }, 'Q', addr);
+      const postArgs = client.chat.postMessage.mock.calls[0][0];
+      expect(postArgs.thread_ts).toBeUndefined();
+      expect(postArgs.channel).toBe('D1');
+    });
+
+    it('askUserForm posts per chunk and accumulates formTsList', async () => {
+      const { surface, client } = makeSurfaceWithApi({
+        postMessage: vi.fn().mockResolvedValueOnce({ ts: 'msg-1' }).mockResolvedValueOnce({ ts: 'msg-2' }),
+      });
+      await surface.begin({ channelId: 'C', threadTs: 'thr', sessionKey: 'C:thr', turnId: 'turn-1' });
+      const addr: TurnAddress = { channelId: 'C', threadTs: 'thr', sessionKey: 'C:thr' };
+      const ts1 = await surface.askUserForm('turn-1', { blocks: [] }, 'Q1', addr);
+      const ts2 = await surface.askUserForm('turn-1', { blocks: [] }, 'Q2', addr);
+      expect(ts1).toBe('msg-1');
+      expect(ts2).toBe('msg-2');
+      expect(surface._getFormTsList('turn-1')).toEqual(['msg-1', 'msg-2']);
+      expect(client.chat.postMessage).toHaveBeenCalledTimes(2);
+    });
+
+    it('askUserForm returns empty string below PHASE=3', async () => {
+      config.ui.fiveBlockPhase = 2;
+      const { surface } = makeSurfaceWithApi();
+      const addr: TurnAddress = { channelId: 'C', sessionKey: 'C:t' };
+      await expect(surface.askUserForm('t', { blocks: [] }, 'Q', addr)).resolves.toBe('');
+    });
+
+    it('askUserForm throws when postMessage returns no ts', async () => {
+      const { surface } = makeSurfaceWithApi({
+        postMessage: vi.fn().mockResolvedValue({}),
+      });
+      const addr: TurnAddress = { channelId: 'C', sessionKey: 'C:t' };
+      await expect(surface.askUserForm('turn-1', { blocks: [] }, 'Q', addr)).rejects.toThrow();
+    });
+
+    it('resolveChoice updates the message via slackApi.updateMessage', async () => {
+      const { surface, slackApi } = makeSurfaceWithApi();
+      await surface.resolveChoice('C', 'msg-1', 'done', [{ type: 'section' }]);
+      expect(slackApi.updateMessage).toHaveBeenCalledWith('C', 'msg-1', 'done', [{ type: 'section' }], []);
+    });
+
+    it('resolveChoice is a no-op below PHASE=3', async () => {
+      config.ui.fiveBlockPhase = 2;
+      const { surface, slackApi } = makeSurfaceWithApi();
+      await surface.resolveChoice('C', 'msg-1', 'done', []);
+      expect(slackApi.updateMessage).not.toHaveBeenCalled();
+    });
+
+    it('resolveChoice swallows message_not_found (idempotent)', async () => {
+      const { surface, slackApi } = makeSurfaceWithApi();
+      slackApi.updateMessage = vi.fn().mockRejectedValue({ data: { error: 'message_not_found' }, message: 'gone' });
+      await expect(surface.resolveChoice('C', 'gone-ts', 'x', [])).resolves.toBeUndefined();
+    });
+
+    it('resolveChoice rethrows non-message_not_found errors', async () => {
+      const { surface, slackApi } = makeSurfaceWithApi();
+      slackApi.updateMessage = vi.fn().mockRejectedValue({ data: { error: 'rate_limited' }, message: 'rl' });
+      await expect(surface.resolveChoice('C', 'ts', 'x', [])).rejects.toBeTruthy();
+    });
+
+    it('resolveMultiChoice iterates best-effort per ts', async () => {
+      const { surface, slackApi } = makeSurfaceWithApi();
+      slackApi.updateMessage = vi
+        .fn()
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce({ data: { error: 'message_not_found' } })
+        .mockResolvedValueOnce(undefined);
+      await surface.resolveMultiChoice('C', ['t1', 't2', 't3'], 'done', []);
+      expect(slackApi.updateMessage).toHaveBeenCalledTimes(3);
+    });
+
+    it('resolveMultiChoice continues past non-message_not_found errors (best-effort)', async () => {
+      const { surface, slackApi } = makeSurfaceWithApi();
+      slackApi.updateMessage = vi
+        .fn()
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce({ data: { error: 'rate_limited' } })
+        .mockResolvedValueOnce(undefined);
+      await surface.resolveMultiChoice('C', ['t1', 't2', 't3'], 'done', []);
+      expect(slackApi.updateMessage).toHaveBeenCalledTimes(3);
+    });
+
+    it('resolveMultiChoice is a no-op below PHASE=3', async () => {
+      config.ui.fiveBlockPhase = 2;
+      const { surface, slackApi } = makeSurfaceWithApi();
+      await surface.resolveMultiChoice('C', ['t1', 't2'], 'done', []);
+      expect(slackApi.updateMessage).not.toHaveBeenCalled();
+    });
+
+    it('end() does NOT force-resolve a pending choice (outlives turn)', async () => {
+      // Verify no calls to updateMessage from end() path
+      const { surface, slackApi } = makeSurfaceWithApi({
+        postMessage: vi.fn().mockResolvedValue({ ts: 'msg-1' }),
+      });
+      slackApi.updateMessage = vi.fn();
+      await surface.begin({ channelId: 'C', threadTs: 'thr', sessionKey: 'C:thr', turnId: 'turn-1' });
+      const addr: TurnAddress = { channelId: 'C', threadTs: 'thr', sessionKey: 'C:thr' };
+      await surface.askUser('turn-1', { blocks: [] }, 'Q', addr);
+      await surface.end('turn-1', 'completed');
+      expect(slackApi.updateMessage).not.toHaveBeenCalled();
+    });
+  });
+
+  // #689 P4 Part 2/2 — TurnSurface owns B4 native spinner at effective PHASE>=4
+  describe('PHASE>=4 B4 native-status wiring', () => {
+    const makeMgr = (enabled: boolean) => ({
+      isEnabled: vi.fn().mockReturnValue(enabled),
+      setStatus: vi.fn().mockResolvedValue(undefined),
+      clearStatus: vi.fn().mockResolvedValue(undefined),
+    });
+
+    // Reset the module-level clamp-once flag so a disabled-mgr test in
+    // this block doesn't leak state into subsequent tests. The flag lives
+    // in `src/slack/pipeline/effective-phase.ts` and is test-only reset
+    // via `__resetClampEmitted`.
+    afterEach(async () => {
+      const { __resetClampEmitted } = await import('./pipeline/effective-phase');
+      __resetClampEmitted();
+    });
+
+    it('PHASE=4 + enabled: begin calls setStatus("is thinking...") once', async () => {
+      config.ui.fiveBlockPhase = 4;
+      const client = makeClient();
+      const mgr = makeMgr(true);
+      const surface = new TurnSurface({
+        slackApi: makeSlackApi(client),
+        assistantStatusManager: mgr as any,
+      });
+      await surface.begin({ channelId: 'C', threadTs: 'thr', sessionKey: 'C:thr', turnId: 't-b4' });
+      expect(mgr.setStatus).toHaveBeenCalledTimes(1);
+      expect(mgr.setStatus).toHaveBeenCalledWith('C', 'thr', 'is thinking...');
+    });
+
+    it('PHASE=4 + enabled: end calls clearStatus once', async () => {
+      config.ui.fiveBlockPhase = 4;
+      const client = makeClient();
+      const mgr = makeMgr(true);
+      const surface = new TurnSurface({
+        slackApi: makeSlackApi(client),
+        assistantStatusManager: mgr as any,
+      });
+      await surface.begin({ channelId: 'C', threadTs: 'thr', sessionKey: 'C:thr', turnId: 't-b4-e' });
+      await surface.end('t-b4-e', 'completed');
+      expect(mgr.clearStatus).toHaveBeenCalledTimes(1);
+      // Issue #688 — third arg is the optional expectedEpoch options bag.
+      // When TurnContext omits `statusEpoch` (this test does) end()/fail()
+      // pass `undefined`, which `clearStatus` treats as "no epoch guard".
+      expect(mgr.clearStatus).toHaveBeenCalledWith('C', 'thr', undefined);
+    });
+
+    // Issue #688 — when TurnContext threads a `statusEpoch`, end()/fail()
+    // forward it as `expectedEpoch` so a stale close from a superseded
+    // turn cannot wipe a spinner set by the newer turn.
+    it('PHASE=4 + enabled + statusEpoch: end forwards expectedEpoch to clearStatus', async () => {
+      config.ui.fiveBlockPhase = 4;
+      const client = makeClient();
+      const mgr = makeMgr(true);
+      const surface = new TurnSurface({
+        slackApi: makeSlackApi(client),
+        assistantStatusManager: mgr as any,
+      });
+      await surface.begin({
+        channelId: 'C',
+        threadTs: 'thr',
+        sessionKey: 'C:thr',
+        turnId: 't-b4-epoch',
+        statusEpoch: 7,
+      });
+      await surface.end('t-b4-epoch', 'completed');
+      expect(mgr.clearStatus).toHaveBeenCalledTimes(1);
+      expect(mgr.clearStatus).toHaveBeenCalledWith('C', 'thr', { expectedEpoch: 7 });
+    });
+
+    it('PHASE=4 + enabled + statusEpoch: fail forwards expectedEpoch to clearStatus', async () => {
+      config.ui.fiveBlockPhase = 4;
+      const client = makeClient();
+      const mgr = makeMgr(true);
+      const surface = new TurnSurface({
+        slackApi: makeSlackApi(client),
+        assistantStatusManager: mgr as any,
+      });
+      await surface.begin({
+        channelId: 'C',
+        threadTs: 'thr',
+        sessionKey: 'C:thr',
+        turnId: 't-b4-epoch-f',
+        statusEpoch: 11,
+      });
+      await surface.fail('t-b4-epoch-f', new Error('boom'));
+      expect(mgr.clearStatus).toHaveBeenCalledTimes(1);
+      expect(mgr.clearStatus).toHaveBeenCalledWith('C', 'thr', { expectedEpoch: 11 });
+    });
+
+    it('PHASE=4 + enabled: fail calls clearStatus (idempotent — fail twice → 1 call total)', async () => {
+      config.ui.fiveBlockPhase = 4;
+      const client = makeClient();
+      const mgr = makeMgr(true);
+      const surface = new TurnSurface({
+        slackApi: makeSlackApi(client),
+        assistantStatusManager: mgr as any,
+      });
+      await surface.begin({ channelId: 'C', threadTs: 'thr', sessionKey: 'C:thr', turnId: 't-b4-f' });
+      await surface.fail('t-b4-f', new Error('boom'));
+      await surface.fail('t-b4-f', new Error('boom again'));
+      expect(mgr.clearStatus).toHaveBeenCalledTimes(1);
+    });
+
+    it('PHASE=3: begin does NOT call setStatus (B4 gate)', async () => {
+      config.ui.fiveBlockPhase = 3;
+      const client = makeClient();
+      const mgr = makeMgr(true);
+      const surface = new TurnSurface({
+        slackApi: makeSlackApi(client),
+        assistantStatusManager: mgr as any,
+      });
+      await surface.begin({ channelId: 'C', threadTs: 'thr', sessionKey: 'C:thr', turnId: 't-no-b4' });
+      expect(mgr.setStatus).not.toHaveBeenCalled();
+    });
+
+    it('PHASE=4 + disabled (clamped to 3): begin does NOT call setStatus', async () => {
+      config.ui.fiveBlockPhase = 4;
+      const client = makeClient();
+      const mgr = makeMgr(false);
+      const surface = new TurnSurface({
+        slackApi: makeSlackApi(client),
+        assistantStatusManager: mgr as any,
+      });
+      await surface.begin({
+        channelId: 'C',
+        threadTs: 'thr',
+        sessionKey: 'C:thr',
+        turnId: 't-b4-clamp',
+      });
+      expect(mgr.setStatus).not.toHaveBeenCalled();
+    });
+
+    // #700 review P2 — supersede-race integration test. Exercises the
+    // actual AssistantStatusManager (not a mock) to prove the epoch guard
+    // in `clearStatus` drops a stale fail(A) after begin(B) has already
+    // bumped the epoch on the same (channel, threadTs). Regression shield
+    // for the scenario the #688 epoch plumbing was designed to prevent.
+    it("PHASE=4 + supersede race: fail(A) with A's old statusEpoch does NOT clear B's spinner", async () => {
+      config.ui.fiveBlockPhase = 4;
+      const originalB4 = config.ui.b4NativeStatusEnabled;
+      config.ui.b4NativeStatusEnabled = true;
+      const client = makeClient();
+      const setAssistantStatus = vi.fn().mockResolvedValue(undefined);
+      const slackApi = {
+        getClient: vi.fn().mockReturnValue(client),
+        setAssistantStatus,
+      } as any;
+      const { AssistantStatusManager } = await import('./assistant-status-manager');
+      const mgr = new AssistantStatusManager(slackApi);
+      const surface = new TurnSurface({ slackApi, assistantStatusManager: mgr });
+      let epochB = 0;
+      try {
+        // Turn A opens at epoch 1
+        const epochA = mgr.bumpEpoch('C', 'thr');
+        await surface.begin({
+          channelId: 'C',
+          threadTs: 'thr',
+          sessionKey: 'C:thr',
+          turnId: 't-A',
+          statusEpoch: epochA,
+        });
+
+        // Turn B supersedes: bump epoch → begin(B) sets a fresh spinner
+        epochB = mgr.bumpEpoch('C', 'thr');
+        await surface.begin({
+          channelId: 'C',
+          threadTs: 'thr',
+          sessionKey: 'C:thr',
+          turnId: 't-B',
+          statusEpoch: epochB,
+        });
+
+        // Snapshot calls up to now — B just set its spinner. The
+        // regression we're guarding: fail(A) below MUST NOT fire an empty
+        // setAssistantStatus('') against this (channel, threadTs).
+        const callsBeforeFail = setAssistantStatus.mock.calls.length;
+
+        // A's in-flight path loses the race and fires fail(A) after B has
+        // already started. With the #688 epoch guard, mgr.clearStatus
+        // drops the stale clear silently.
+        await surface.fail('t-A', new Error('superseded'));
+
+        const clearCalls = setAssistantStatus.mock.calls.slice(callsBeforeFail).filter(([, , text]) => text === '');
+        expect(clearCalls).toHaveLength(0);
+
+        // Sanity: the initial begin(A) + begin(B) setStatus writes landed.
+        expect(callsBeforeFail).toBeGreaterThanOrEqual(2);
+      } finally {
+        // Drain B's live 20s heartbeat so the test doesn't leak a Node
+        // timer into the vitest worker. (A's heartbeat shares the same
+        // (channel,threadTs) key — one clearStatus covers both.)
+        if (epochB) await mgr.clearStatus('C', 'thr', { expectedEpoch: epochB });
+        config.ui.b4NativeStatusEnabled = originalB4;
+      }
     });
   });
 });

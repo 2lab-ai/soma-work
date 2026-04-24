@@ -7,6 +7,7 @@ import type { RequestCoordinator } from '../request-coordinator';
 import type { SessionUiManager } from '../session-manager';
 import type { SlackApiHelper } from '../slack-api-helper';
 import type { ThreadPanel } from '../thread-panel';
+import type { PendingInstructionConfirmStore } from './pending-instruction-confirm-store';
 
 export interface MessageEvent {
   user: string;
@@ -29,6 +30,10 @@ export interface PendingChoiceFormData {
   questions: UserChoiceQuestion[];
   selections: Record<string, { choiceId: string; label: string }>;
   createdAt: number;
+  /** P3 (PHASE>=3) — turn id that owns this form. Used by click handlers to
+   * classify stale vs live clicks. Populated under PHASE>=3; undefined for
+   * legacy PHASE<3 forms. */
+  turnId?: string;
   /**
    * Submission lock for hero "Submit All Recommended" — set to true while
    * `completeMultiChoiceForm` is in flight. Cross-surface lock (Slack ↔ dashboard).
@@ -46,4 +51,11 @@ export interface ActionHandlerContext {
   requestCoordinator?: RequestCoordinator;
   completionMessageTracker?: CompletionMessageTracker;
   mcpManager?: McpManager;
+  /**
+   * Shared store for deferred instruction writes awaiting user y/n.
+   * Optional because minimal test harnesses may omit it — in that case
+   * the ActionHandlers class constructs its own empty instance so unit
+   * tests don't crash, but the confirm handler will never find entries.
+   */
+  pendingInstructionConfirmStore?: PendingInstructionConfirmStore;
 }

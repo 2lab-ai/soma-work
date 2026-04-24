@@ -279,6 +279,17 @@ export class McpStatusDisplay {
   private renderSingleCallText(call: ActiveCallEntry): string {
     const params = call.config.paramsSummary ? ` ${call.config.paramsSummary}` : '';
 
+    // Issue #688 — Bash background calls get a single-line running
+    // format so the tracker's output aligns with the S7 acceptance text
+    // ("⏳ Running in background — <cmd> (Ns)"). Completion/timeout
+    // reuse the generic formatting below.
+    if (call.status === 'running' && call.config.displayType === 'BashBG') {
+      const elapsed = this.mcpCallTracker.getElapsedTime(call.callId);
+      const elapsedMs = elapsed ?? Date.now() - call.startTime;
+      const seconds = Math.round(elapsedMs / 1000);
+      return `⏳ Running in background — ${call.config.displayLabel} (${seconds}s)`;
+    }
+
     if (call.status === 'completed') {
       let text = `🟢 *${call.config.displayType} 완료: ${call.config.displayLabel}*${params}`;
       if (call.duration !== undefined) {
