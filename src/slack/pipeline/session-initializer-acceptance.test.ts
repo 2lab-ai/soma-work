@@ -44,7 +44,7 @@ describe('SessionInitializer — acceptance gate', () => {
       getSessionKey: vi.fn().mockReturnValue('C123:thread123'),
       needsDispatch: vi.fn().mockReturnValue(true),
       isSleeping: vi.fn().mockReturnValue(false),
-      transitionToMain: vi.fn(),
+      transitionToMain: vi.fn().mockReturnValue(true), // #698 transitionToMain returns boolean
     };
   });
 

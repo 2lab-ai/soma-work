@@ -71,12 +71,19 @@ export interface TurnContext {
    */
   readonly statusEpoch?: number;
   /**
-   * P5 snapshot accessor for the B5 `WorkflowComplete` marker. stream-executor
-   * writes the snapshot exactly once on the success path after async enrichment
-   * completes; failure/abort/1M-fallback/supersede leave it undefined so `end()`
-   * posts nothing (matching legacy TurnNotifier semantics for non-complete turns).
+   * P5 snapshot accessor for the B5 `WorkflowComplete` marker.
+   *
+   * Returns the **same Promise** on every invocation — a `snapshotPromise`
+   * built once by `stream-executor` alongside the matching `resolveSnapshot`.
+   * The success path resolves with the enriched `TurnCompletionEvent`; the
+   * `.catch` rail (and every non-complete path) resolves with `undefined`
+   * so `end()` posts nothing.
+   *
+   * MUST be awaited — a sync read races `stopStream` vs enrichment HTTP and
+   * silently drops B5 (issue #720). See `docs/slack-ui-phase5.md` §"Race
+   * fix (#720)" for the full rationale.
    */
-  readonly buildCompletionEvent?: () => TurnCompletionEvent | undefined;
+  readonly buildCompletionEvent?: () => Promise<TurnCompletionEvent | undefined>;
 }
 
 /**
@@ -676,20 +683,80 @@ export class TurnSurface {
         });
       }
 
-      // B5 completion marker — success path only. Detached (not awaited) so the
-      // Slack postMessage RTT doesn't block turn close; matches the legacy
-      // `enrichAndNotify().catch(...)` pattern in stream-executor. Ordering is
-      // still "after B4 clearStatus" because setStatus was already awaited above.
+      // B5 completion marker — success path only. The accessor returns a
+      // Promise (`snapshotPromise` owned by stream-executor), so we MUST
+      // await it or we'd silently drop B5. A 3s timeout caps the wait so a
+      // stuck enrichment can never hang `end()` indefinitely; the snapshot
+      // Promise itself is resolved with `undefined` on stream-executor's
+      // `.catch` rail, and the explicit timeout is a defence-in-depth net.
+      //
+      // Ordering: after B4 clearStatus (which was already awaited above).
+      // The `send(evt)` call is detached (void + `.catch`) so Slack RTT
+      // doesn't extend `end()`'s hot path — only the snapshot wait is
+      // synchronous with close.
       const capActive =
         typeof this.deps.isCompletionMarkerActive === 'function' ? this.deps.isCompletionMarkerActive() : false;
       if (reason === 'completed' && capActive && state.ctx.buildCompletionEvent && this.deps.slackBlockKitChannel) {
-        const evt = state.ctx.buildCompletionEvent();
-        if (evt) {
-          void this.deps.slackBlockKitChannel.send(evt).catch((err) => {
-            this.logger.warn('B5 send failed', {
+        let evt: TurnCompletionEvent | undefined;
+        let timeoutId: ReturnType<typeof setTimeout> | undefined;
+        // True once a B5-specific warn has fired so the `else` fallback
+        // below doesn't emit a second warn for the same event (avoids
+        // double-logging the sync-throw path).
+        let warnEmitted = false;
+        const TIMEOUT_MS = 3000;
+        try {
+          const builderPromise = Promise.resolve(state.ctx.buildCompletionEvent());
+          const timeoutPromise = new Promise<undefined>((resolve) => {
+            timeoutId = setTimeout(() => resolve(undefined), TIMEOUT_MS);
+          });
+          // Log-and-swallow a late rejection from the builder (codex P2 —
+          // late-rejection hygiene): Promise.race settles on whichever side
+          // lands first; the loser's eventual rejection would surface as an
+          // unhandled rejection if we didn't attach a catch. We log a
+          // breadcrumb rather than silently swallowing — if enrichment is
+          // chronically failing but mostly winning the race, operators still
+          // see the signal instead of the B5 silently posting fine today
+          // until the timing shifts tomorrow.
+          builderPromise.catch((err) => {
+            this.logger.warn('B5 builder late-rejection after race settled', {
               turnId,
               error: (err as Error)?.message ?? String(err),
             });
+          });
+          evt = await Promise.race<TurnCompletionEvent | undefined>([builderPromise, timeoutPromise]);
+        } catch (err) {
+          this.logger.warn('B5 buildCompletionEvent threw synchronously', {
+            turnId,
+            error: (err as Error)?.message ?? String(err),
+          });
+          evt = undefined;
+          warnEmitted = true;
+        } finally {
+          if (timeoutId) clearTimeout(timeoutId);
+        }
+
+        if (evt) {
+          // send() fire-and-forget with structured-error logging. Operators
+          // triaging B5 drops need the Slack error code (`rate_limited`,
+          // `channel_not_found`, `streaming_mode_mismatch`, etc.) plus the
+          // channel/thread IDs — bare `err.message` alone collapses distinct
+          // failure modes into the same log line.
+          void this.deps.slackBlockKitChannel.send(evt).catch((err) => {
+            this.logger.warn('B5 send failed', {
+              turnId,
+              channelId: state.ctx.channelId,
+              threadTs: state.ctx.threadTs,
+              error: describeSlackError(err),
+            });
+          });
+        } else if (!warnEmitted) {
+          // Distinguish timeout / undefined-snapshot from the explicit
+          // `reason !== 'completed'` skip — operators need this signal to
+          // diagnose enrichment regressions (issue #720's symptom was
+          // silent B5 drop with no log breadcrumb). Skipped when the
+          // sync-throw catch already logged, so one event → one warn.
+          this.logger.warn('B5 snapshot unavailable — completion marker not emitted', {
+            turnId,
           });
         }
       }
