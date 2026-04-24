@@ -1,3 +1,4 @@
+import * as os from 'node:os';
 import fastifyFormbody from '@fastify/formbody';
 import Fastify, {
   type FastifyInstance,
@@ -7,6 +8,7 @@ import Fastify, {
   type LightMyRequestResponse,
 } from 'fastify';
 import * as jwt from 'jsonwebtoken';
+import { isAdminUser } from '../admin-utils';
 import { config } from '../config';
 import { IS_DEV } from '../env-paths';
 import { registerHookRoutes } from '../hooks';
@@ -74,12 +76,18 @@ function buildAuthContext(request: FastifyRequest): AuthContext | null {
         // Session exceeded absolute max — force re-login
         return null;
       }
+      // OAuth-authenticated users inherit admin capability from
+      // ADMIN_USERS env (#716). The dashboard further gates write
+      // operations behind an explicit X-Admin-Mode: on header so the
+      // admin's normal browsing stays in "safe mode" by default — but
+      // the SERVER never trusts the header alone; it always re-checks
+      // isAdminUser(sub) before allowing cross-user writes.
       return {
         mode: 'oauth_jwt',
         userId: payload.sub,
         email: payload.email,
         name: payload.name,
-        isAdmin: false,
+        isAdmin: isAdminUser(payload.sub),
       };
     }
   }
@@ -213,28 +221,28 @@ async function csrfMiddleware(request: FastifyRequest, reply: FastifyReply): Pro
 }
 
 /**
- * Resource authorization middleware factory.
- * Loads a resource, checks ownership, attaches to request.
+ * Resource loader middleware factory (formerly `authorizeResource`).
+ *
+ * #716 changed conversation/dashboard reads to be world-readable for any
+ * authenticated user, so this middleware no longer enforces ownership.
+ * It just loads the resource (404 on miss) and attaches it to the
+ * request — write routes use `requireWriteAccess` separately.
+ *
+ * The `getOwnerId` parameter is still accepted (and unused) so call
+ * sites do not have to be touched in the same change as the policy
+ * update; a follow-up cleanup may drop it.
  */
 function authorizeResource<T>(
   loadResource: (request: FastifyRequest) => Promise<T | null>,
-  getOwnerId: (resource: T) => string,
+  _getOwnerId: (resource: T) => string,
 ) {
   return async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
     const authContext = (request as any).authContext as AuthContext | undefined;
     if (!authContext) return; // authMiddleware handles this
 
-    // Admin bypass
-    if (authContext.isAdmin) return;
-
     const resource = await loadResource(request);
     if (!resource) {
       reply.status(404).send({ error: 'Not found' });
-      return;
-    }
-
-    if (!authContext.userId || getOwnerId(resource) !== authContext.userId) {
-      reply.status(403).send({ error: 'Forbidden — you can only access your own resources' });
       return;
     }
 
@@ -243,7 +251,53 @@ function authorizeResource<T>(
   };
 }
 
-export { authMiddleware, authorizeResource, csrfMiddleware };
+/**
+ * Read-only check for an X-Admin-Mode header.
+ *
+ * The server uses this together with `authContext.isAdmin` to decide
+ * whether an admin's *currently active* session is in admin mode. The
+ * header alone is not sufficient — `authContext.isAdmin` is rebuilt on
+ * every request from `isAdminUser(sub)` against ADMIN_USERS env, so
+ * non-admins cannot opt into write privileges by injecting the header.
+ */
+function isAdminModeHeaderOn(request: FastifyRequest): boolean {
+  const v = request.headers['x-admin-mode'];
+  if (Array.isArray(v)) return v[0] === 'on';
+  return v === 'on';
+}
+
+/**
+ * Authorize a write operation against a per-user resource (#716 policy).
+ *
+ *   - bearer_header / bearer_cookie (admin viewer token): always allowed.
+ *   - oauth_jwt user, owns the resource (`ownerId === userId`): allowed.
+ *   - oauth_jwt user, admin (in ADMIN_USERS) AND `X-Admin-Mode: on`
+ *     header set: allowed for any owner.
+ *   - everything else: 403.
+ *
+ * Returns true when the request may proceed, false after sending the 403
+ * response (caller must early-return).
+ */
+function requireWriteAccess(request: FastifyRequest, reply: FastifyReply, ownerId: string | undefined): boolean {
+  const authContext = (request as any).authContext as AuthContext | undefined;
+  if (!authContext) {
+    // authMiddleware should have already handled this; defensive 401.
+    reply.status(401).send({ error: 'Unauthorized' });
+    return false;
+  }
+  // Bearer admin (viewer token) bypasses — it's a global admin credential.
+  if (authContext.mode === 'bearer_header' || authContext.mode === 'bearer_cookie') return true;
+  // Owner of the resource.
+  if (authContext.userId && ownerId && authContext.userId === ownerId) return true;
+  // OAuth admin in admin mode.
+  if (authContext.isAdmin && isAdminModeHeaderOn(request)) return true;
+  reply.status(403).send({
+    error: 'Forbidden — write access requires session ownership, or admin user with X-Admin-Mode: on header (#716)',
+  });
+  return false;
+}
+
+export { authMiddleware, authorizeResource, csrfMiddleware, isAdminModeHeaderOn, requireWriteAccess };
 
 let server: FastifyInstance | null = null;
 let activePort: number | null = null;
@@ -267,10 +321,48 @@ function getPort(): number {
 }
 
 /**
- * Get the public base URL for conversation viewer
+ * Resolve the host label for URLs emitted by the server when no explicit
+ * `CONVERSATION_VIEWER_URL` is configured.
+ *
+ * `localhost` is the wrong default for links shared outside the process —
+ * Slack sends the URL to a user who opens it on another device on the LAN,
+ * so the link must resolve to the *host*, not the viewer's own machine.
+ *
+ * Priority:
+ *   1. `config.conversation.viewerHost` when it's an externally meaningful
+ *      bind address (not `127.0.0.1` / `localhost` / `0.0.0.0` which are
+ *      bind-only tokens, not reachable hostnames).
+ *   2. `os.hostname()` — the OS-reported short hostname (e.g. `oudwood-512`,
+ *      `mac-mini-dev`), resolvable on the local network via DNS/mDNS.
+ *   3. `localhost` as a last resort (matches prior behaviour for single-box
+ *      dev where hostname resolution isn't available).
+ */
+function _resolveViewerHost(): string {
+  const bound = config.conversation.viewerHost;
+  if (bound && bound !== '127.0.0.1' && bound !== '0.0.0.0' && bound !== 'localhost') {
+    return bound;
+  }
+  const hn = os.hostname();
+  if (hn && hn !== 'localhost') return hn;
+  return 'localhost';
+}
+
+/**
+ * Get the public base URL for conversation viewer.
+ *
+ * `config.conversation.viewerUrl` (env `CONVERSATION_VIEWER_URL`) wins —
+ * an explicit URL is the operator's intent and may include a scheme,
+ * port, or reverse-proxy hostname that host-detection cannot infer.
+ * Only when it's unset do we fall back to the detected hostname so that
+ * links shared via Slack (e.g. the `dashboard` SSO URL, `/conversations`
+ * links) are reachable from other devices on the network — `localhost`
+ * would route the recipient's browser back to their own machine and
+ * fail.
  */
 export function getViewerBaseUrl(): string {
-  return config.conversation.viewerUrl || `http://localhost:${activePort || getPort()}`;
+  if (config.conversation.viewerUrl) return config.conversation.viewerUrl;
+  const port = activePort || getPort();
+  return `http://${_resolveViewerHost()}:${port}`;
 }
 
 /**

@@ -114,3 +114,84 @@ describe('SessionRegistry — handoffContext persistence (#695)', () => {
     expect(reader.getSession('C1', '171.004')).toBeUndefined();
   });
 });
+
+describe('SessionRegistry — autoHandoffBudget persistence (#697)', () => {
+  beforeEach(() => {
+    if (fs.existsSync(TEST_DATA_DIR)) {
+      fs.rmSync(TEST_DATA_DIR, { recursive: true });
+    }
+    fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
+  });
+
+  afterEach(() => {
+    if (fs.existsSync(TEST_DATA_DIR)) {
+      fs.rmSync(TEST_DATA_DIR, { recursive: true });
+    }
+  });
+
+  it('T2.1 fresh session from createSession has autoHandoffBudget=1 (spec AD-6)', () => {
+    const registry = new SessionRegistry();
+    const session = registry.createSession('U1', 'Tester', 'C1', '172.001');
+    expect(session.autoHandoffBudget).toBe(1);
+  });
+
+  it('T2.2 session with autoHandoffBudget=0 round-trips through save/load', () => {
+    const writer = new SessionRegistry();
+    const session = writer.createSession('U1', 'Tester', 'C1', '172.002');
+    session.sessionId = 'sess-budget-0';
+    session.autoHandoffBudget = 0; // simulate post-consume state
+
+    writer.saveSessions();
+
+    const reader = new SessionRegistry();
+    reader.loadSessions();
+    const restored = reader.getSession('C1', '172.002');
+
+    expect(restored?.autoHandoffBudget).toBe(0);
+  });
+
+  it('T2.3 pre-#697 disk state (SerializedSession without autoHandoffBudget) loads as undefined', () => {
+    // Hand-craft a legacy session payload without the autoHandoffBudget field.
+    const legacyPayload = [
+      {
+        key: 'C1:172.003',
+        ownerId: 'U1',
+        ownerName: 'Tester',
+        userId: 'U1',
+        channelId: 'C1',
+        threadTs: '172.003',
+        sessionId: 'sess-legacy-budget',
+        isActive: true,
+        lastActivity: new Date().toISOString(),
+        state: 'MAIN',
+        workflow: 'default',
+      },
+    ];
+    fs.writeFileSync(path.join(TEST_DATA_DIR, 'sessions.json'), JSON.stringify(legacyPayload, null, 2));
+
+    const reader = new SessionRegistry();
+    const loaded = reader.loadSessions();
+    expect(loaded).toBe(1);
+    const restored = reader.getSession('C1', '172.003');
+    expect(restored?.autoHandoffBudget).toBeUndefined();
+  });
+
+  it('T2.4 resetSessionContext restores autoHandoffBudget=1 after prior decrement to 0', () => {
+    const registry = new SessionRegistry();
+    const session = registry.createSession('U1', 'Tester', 'C1', '172.004');
+    // `resetSessionContext` early-returns unless `sessionId` is set — simulate
+    // a session with active conversation history (the realistic post-model-turn
+    // state in which `resetSession: true` continuations fire).
+    session.sessionId = 'sess-active';
+    session.autoHandoffBudget = 0; // simulate consumed
+    expect(session.autoHandoffBudget).toBe(0);
+
+    const didReset = registry.resetSessionContext('C1', '172.004');
+    expect(didReset).toBe(true);
+
+    const resetted = registry.getSession('C1', '172.004');
+    expect(resetted?.autoHandoffBudget).toBe(1);
+    // Also verifies #695 handoffContext clear still works side-by-side.
+    expect(resetted?.handoffContext).toBeUndefined();
+  });
+});

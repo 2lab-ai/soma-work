@@ -1476,6 +1476,8 @@ describe('model-command integration', () => {
       resetSession: true,
       dispatchText: 'https://github.com/acme/repo/pull/1',
       forceWorkflow: 'pr-review',
+      // #697: model-emitted continuations are stamped with origin: 'model'
+      origin: 'model',
     });
   });
 
@@ -3675,5 +3677,150 @@ describe('StreamExecutor — #689 legacy native-spinner suppression', () => {
     const { executor, mgr } = makeExec(2, true);
     await (executor as any).legacyClearStatus('C', 'thr', { expectedEpoch: 3 });
     expect(mgr.clearStatus).toHaveBeenCalledWith('C', 'thr', { expectedEpoch: 3 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #667 P5 — Completion snapshot + exclusion contract
+//
+// The success path in `execute()`:
+//   1. builds a `completionEvent` closure on TurnContext (`buildCompletionEvent`)
+//      passed into turnSurface.begin()
+//   2. on success, assigns `completionEvent = finalEnrichedEvent` ONCE
+//   3. at notify time: when ThreadPanel.isCompletionMarkerActive() is true,
+//      calls `turnNotifier.notify(finalEnrichedEvent, { excludeChannelNames: ['slack-block-kit'] })`
+//
+// The Exception path (handleError) is UNCHANGED — no exclusion opts.
+//
+// These tests white-box the exclusion-decision helper used by both paths
+// and the Exception-path contract. Full `execute()` integration remains
+// covered by the wider suite above; here we isolate the exclusion gate.
+// ---------------------------------------------------------------------------
+describe('StreamExecutor — P5 completion snapshot + exclusion (#667)', () => {
+  const originalPhase = config.ui.fiveBlockPhase;
+
+  afterEach(() => {
+    config.ui.fiveBlockPhase = originalPhase;
+    vi.clearAllMocks();
+  });
+
+  function createDepsWithNotifier(opts: { markerActive: boolean }) {
+    return {
+      claudeHandler: {
+        setActivityState: vi.fn(),
+        clearSessionId: vi.fn(),
+      },
+      fileHandler: {
+        cleanupTempFiles: vi.fn().mockResolvedValue(undefined),
+      },
+      toolEventProcessor: {},
+      statusReporter: {
+        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
+        getStatusEmoji: vi.fn().mockReturnValue('warning'),
+      },
+      reactionManager: {
+        updateReaction: vi.fn().mockResolvedValue(undefined),
+      },
+      contextWindowManager: {
+        handlePromptTooLong: vi.fn().mockResolvedValue(undefined),
+      },
+      toolTracker: {},
+      todoDisplayManager: {},
+      actionHandlers: {},
+      requestCoordinator: {},
+      slackApi: {},
+      assistantStatusManager: {
+        clearStatus: vi.fn().mockResolvedValue(undefined),
+        setStatus: vi.fn().mockResolvedValue(undefined),
+        bumpEpoch: vi.fn().mockReturnValue(1),
+        getToolStatusText: vi.fn().mockReturnValue('running...'),
+        buildBashStatus: vi.fn().mockReturnValue('is running commands...'),
+        registerBackgroundBashActive: vi.fn().mockReturnValue(() => {}),
+      },
+      threadPanel: {
+        isCompletionMarkerActive: vi.fn().mockReturnValue(opts.markerActive),
+        setStatus: vi.fn().mockResolvedValue(undefined),
+      },
+      turnNotifier: {
+        notify: vi.fn().mockResolvedValue(undefined),
+      },
+    } as any;
+  }
+
+  it('Exception path (handleError) — PHASE=5 + capability active → notify called WITHOUT excludeChannelNames', async () => {
+    config.ui.fiveBlockPhase = 5;
+    const deps = createDepsWithNotifier({ markerActive: true });
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = new Error('generic failure');
+
+    await (executor as any).handleError(error, { ownerId: 'U1' } as any, 'C:t', 'C', 't', [], say);
+
+    // Exactly one notify call — Exception category — and the second arg
+    // (opts) must be undefined (no exclusion for Exceptions).
+    expect(deps.turnNotifier.notify).toHaveBeenCalledTimes(1);
+    const [payload, opts] = deps.turnNotifier.notify.mock.calls[0];
+    expect(payload.category).toBe('Exception');
+    expect(opts).toBeUndefined();
+  });
+
+  it('Exception path (handleError) — PHASE<5 → notify called WITHOUT excludeChannelNames (legacy unchanged)', async () => {
+    config.ui.fiveBlockPhase = 4;
+    const deps = createDepsWithNotifier({ markerActive: false });
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = new Error('generic failure');
+
+    await (executor as any).handleError(error, { ownerId: 'U1' } as any, 'C:t', 'C', 't', [], say);
+
+    expect(deps.turnNotifier.notify).toHaveBeenCalledTimes(1);
+    const [, opts] = deps.turnNotifier.notify.mock.calls[0];
+    expect(opts).toBeUndefined();
+  });
+
+  it('Success-path exclusion helper: builds { excludeChannelNames: ["slack-block-kit"] } when capability active', () => {
+    config.ui.fiveBlockPhase = 5;
+    const deps = createDepsWithNotifier({ markerActive: true });
+    const executor = new StreamExecutor(deps);
+
+    // buildNotifyOpts is the internal helper that encodes the exclusion
+    // gate contract: when ThreadPanel.isCompletionMarkerActive() returns
+    // true, the WorkflowComplete notify call receives
+    // `{ excludeChannelNames: ['slack-block-kit'] }`. Otherwise, it
+    // returns `undefined` so `notify` is called with its legacy single-arg
+    // signature.
+    const opts = (executor as any).buildCompletionNotifyOpts();
+    expect(opts).toEqual({ excludeChannelNames: ['slack-block-kit'] });
+  });
+
+  it('Success-path exclusion helper: returns undefined when capability inactive', () => {
+    config.ui.fiveBlockPhase = 5;
+    const deps = createDepsWithNotifier({ markerActive: false });
+    const executor = new StreamExecutor(deps);
+
+    const opts = (executor as any).buildCompletionNotifyOpts();
+    expect(opts).toBeUndefined();
+  });
+
+  it('Success-path exclusion helper: returns undefined at PHASE<5', () => {
+    config.ui.fiveBlockPhase = 4;
+    // Even if a threadPanel claims markerActive=true here, capability
+    // aggregation depends on PHASE>=5 inside isCompletionMarkerActive —
+    // our test simulates that by having markerActive mirror the phase.
+    const deps = createDepsWithNotifier({ markerActive: false });
+    const executor = new StreamExecutor(deps);
+
+    const opts = (executor as any).buildCompletionNotifyOpts();
+    expect(opts).toBeUndefined();
+  });
+
+  it('Success-path exclusion helper: returns undefined when threadPanel is missing', () => {
+    config.ui.fiveBlockPhase = 5;
+    const deps = createDepsWithNotifier({ markerActive: true });
+    deps.threadPanel = undefined;
+    const executor = new StreamExecutor(deps);
+
+    const opts = (executor as any).buildCompletionNotifyOpts();
+    expect(opts).toBeUndefined();
   });
 });

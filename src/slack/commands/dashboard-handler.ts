@@ -33,7 +33,20 @@ export class DashboardHandler implements CommandHandler {
   }
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
-    const { user, threadTs, say } = ctx;
+    const { user, threadTs, say, postEphemeral } = ctx;
+
+    // #716: prefer ephemeral so the SSO URL only goes to the requester.
+    // Channels with multiple members do not see the link in their
+    // history, notification preview, or unread count. Fall back to a
+    // thread-public reply when the dispatcher did not inject
+    // postEphemeral (e.g. legacy callers, tests).
+    const reply = async (text: string) => {
+      if (postEphemeral) {
+        await postEphemeral({ text });
+      } else {
+        await say({ text, thread_ts: threadTs });
+      }
+    };
 
     // Refuse to mint a token when no signing key is configured. Without a
     // secret `issueSlackToken` would either sign with an ephemeral key that
@@ -41,12 +54,10 @@ export class DashboardHandler implements CommandHandler {
     // never accept — both of which would silently break auth. Failing fast
     // with an actionable message is safer than handing out a broken URL.
     if (!getJwtSecret()) {
-      await say({
-        text:
-          '❌ Dashboard authentication is not configured on this server.\n' +
+      await reply(
+        '❌ Dashboard authentication is not configured on this server.\n' +
           'Ask an admin to set `DASHBOARD_JWT_SECRET` or `CONVERSATION_VIEWER_TOKEN` in `.env`.',
-        thread_ts: threadTs,
-      });
+      );
       return { handled: true };
     }
 
@@ -71,10 +82,7 @@ export class DashboardHandler implements CommandHandler {
         error: err instanceof Error ? err.message : String(err),
         userId: user,
       });
-      await say({
-        text: '❌ Failed to create a dashboard login link. Check server logs.',
-        thread_ts: threadTs,
-      });
+      await reply('❌ Failed to create a dashboard login link. Check server logs.');
       return { handled: true };
     }
 
@@ -89,12 +97,10 @@ export class DashboardHandler implements CommandHandler {
     // echoing the credential at all. If a user needs to open the link
     // in a different browser, they can right-click → copy link on the
     // hyperlink. Issuing a fresh `dashboard` command is cheap.
-    await say({
-      text:
-        `🔐 *Dashboard login link* (single-use, expires in 10 minutes)\n` +
+    await reply(
+      `🔐 *Dashboard login link* (single-use, expires in 10 minutes)\n` +
         `<${url}|Open your dashboard> — do not forward.`,
-      thread_ts: threadTs,
-    });
+    );
     return { handled: true };
   }
 }

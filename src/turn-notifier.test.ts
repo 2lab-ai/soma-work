@@ -101,4 +101,123 @@ describe('TurnNotifier', () => {
       expect(getCategoryColor('Exception')).toBe('#FF5630');
     });
   });
+
+  // -------------------------------------------------------------------------
+  // P5 (#667) — excludeChannelNames filter
+  // -------------------------------------------------------------------------
+  describe('excludeChannelNames (#667 P5)', () => {
+    function makeEvent() {
+      return {
+        category: 'WorkflowComplete' as const,
+        userId: 'U1',
+        channel: 'C1',
+        threadTs: '123.456',
+        durationMs: 1000,
+      };
+    }
+
+    it('notify(evt) — no opts — all enabled channels send (default unchanged)', async () => {
+      const slackBlock = {
+        name: 'slack-block-kit',
+        isEnabled: vi.fn().mockResolvedValue(true),
+        send: vi.fn().mockResolvedValue(undefined),
+      };
+      const dm = {
+        name: 'slack-dm',
+        isEnabled: vi.fn().mockResolvedValue(true),
+        send: vi.fn().mockResolvedValue(undefined),
+      };
+      const notifier = new TurnNotifier([slackBlock, dm]);
+
+      await notifier.notify(makeEvent());
+
+      expect(slackBlock.send).toHaveBeenCalledOnce();
+      expect(dm.send).toHaveBeenCalledOnce();
+    });
+
+    it('notify(evt, { excludeChannelNames: ["slack-block-kit"] }) — skips slack-block-kit, others sent', async () => {
+      const slackBlock = {
+        name: 'slack-block-kit',
+        isEnabled: vi.fn().mockResolvedValue(true),
+        send: vi.fn().mockResolvedValue(undefined),
+      };
+      const dm = {
+        name: 'slack-dm',
+        isEnabled: vi.fn().mockResolvedValue(true),
+        send: vi.fn().mockResolvedValue(undefined),
+      };
+      const webhook = {
+        name: 'webhook',
+        isEnabled: vi.fn().mockResolvedValue(true),
+        send: vi.fn().mockResolvedValue(undefined),
+      };
+      const notifier = new TurnNotifier([slackBlock, dm, webhook]);
+
+      await notifier.notify(makeEvent(), { excludeChannelNames: ['slack-block-kit'] });
+
+      expect(slackBlock.send).not.toHaveBeenCalled();
+      expect(dm.send).toHaveBeenCalledOnce();
+      expect(webhook.send).toHaveBeenCalledOnce();
+    });
+
+    it('notify(evt, { excludeChannelNames: [] }) — empty filter behaves like no opts', async () => {
+      const slackBlock = {
+        name: 'slack-block-kit',
+        isEnabled: vi.fn().mockResolvedValue(true),
+        send: vi.fn().mockResolvedValue(undefined),
+      };
+      const dm = {
+        name: 'slack-dm',
+        isEnabled: vi.fn().mockResolvedValue(true),
+        send: vi.fn().mockResolvedValue(undefined),
+      };
+      const notifier = new TurnNotifier([slackBlock, dm]);
+
+      await notifier.notify(makeEvent(), { excludeChannelNames: [] });
+
+      expect(slackBlock.send).toHaveBeenCalledOnce();
+      expect(dm.send).toHaveBeenCalledOnce();
+    });
+
+    it('notify(evt, { excludeChannelNames: ["unknown-name"] }) — unknown name is a no-op filter', async () => {
+      const slackBlock = {
+        name: 'slack-block-kit',
+        isEnabled: vi.fn().mockResolvedValue(true),
+        send: vi.fn().mockResolvedValue(undefined),
+      };
+      const dm = {
+        name: 'slack-dm',
+        isEnabled: vi.fn().mockResolvedValue(true),
+        send: vi.fn().mockResolvedValue(undefined),
+      };
+      const notifier = new TurnNotifier([slackBlock, dm]);
+
+      await notifier.notify(makeEvent(), { excludeChannelNames: ['does-not-exist'] });
+
+      expect(slackBlock.send).toHaveBeenCalledOnce();
+      expect(dm.send).toHaveBeenCalledOnce();
+    });
+
+    it('disabled channels stay not-sent even if their name is in excludeChannelNames (filter does not re-enable)', async () => {
+      const slackBlock = {
+        name: 'slack-block-kit',
+        isEnabled: vi.fn().mockResolvedValue(false),
+        send: vi.fn().mockResolvedValue(undefined),
+      };
+      const dm = {
+        name: 'slack-dm',
+        isEnabled: vi.fn().mockResolvedValue(true),
+        send: vi.fn().mockResolvedValue(undefined),
+      };
+      const notifier = new TurnNotifier([slackBlock, dm]);
+
+      // Exclusion list includes slack-block-kit (already disabled) AND slack-dm.
+      // Expectation: both get skipped — exclusion does NOT override isEnabled=false
+      // (slack-block-kit would never have sent anyway), and slack-dm is excluded.
+      await notifier.notify(makeEvent(), { excludeChannelNames: ['slack-block-kit', 'slack-dm'] });
+
+      expect(slackBlock.send).not.toHaveBeenCalled();
+      expect(dm.send).not.toHaveBeenCalled();
+    });
+  });
 });
