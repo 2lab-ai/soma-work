@@ -1,4 +1,11 @@
 import * as fs from 'fs';
+import {
+  expectedHandoffKind,
+  HandoffAbortError,
+  isZHandoffWorkflow,
+  parseHandoff,
+} from 'somalib/model-commands/handoff-parser';
+import type { ZHandoffWorkflow } from 'somalib/model-commands/session-types';
 import { getAdminUsers } from '../../admin-utils';
 import { checkRepoChannelMatch, getAllChannels, getChannel, registerChannel } from '../../channel-registry';
 import type { ClaudeHandler } from '../../claude-handler';
@@ -23,6 +30,12 @@ import type { MessageEvent, SayFn, SessionInitResult } from './types';
 
 // Timeout for dispatch API call (30 seconds - Agent SDK needs time to start)
 const DISPATCH_TIMEOUT_MS = 30000;
+
+/** Session title surface shown when entering via a z handoff entrypoint (#695). */
+const HANDOFF_ENTRY_TITLES: Record<ZHandoffWorkflow, string> = {
+  'z-plan-to-work': 'z handoff (plan→work)',
+  'z-epic-update': 'z handoff (epic update)',
+};
 
 // Track in-flight dispatch calls to prevent race conditions
 // Maps sessionKey -> Promise that resolves when dispatch completes
@@ -544,10 +557,67 @@ export class SessionInitializer {
    * Called when session needs re-dispatch (e.g., after /new or /renew)
    * @param channel - Slack channel ID
    * @param threadTs - Thread timestamp
-   * @param text - Text to use for classification
+   * @param text - Text to use for dispatch classification (typically a short
+   *   handle like an issue URL; NOT the full `<z-handoff>` prompt body)
+   * @param forceWorkflow - If set, skips classification and transitions
+   *   directly to the given workflow
+   * @param handoffPrompt - Full continuation prompt body for sentinel parsing.
+   *   Required when `forceWorkflow` is one of the z-handoff entrypoints
+   *   (`z-plan-to-work` / `z-epic-update`); ignored otherwise. Issue #695.
+   * @throws HandoffAbortError when `forceWorkflow` is a z-handoff entrypoint
+   *   and the sentinel is missing, malformed, or does not match the expected
+   *   type for the requested workflow. Caught by `SlackHandler` (safe-stop).
    */
-  async runDispatch(channel: string, threadTs: string, text: string, forceWorkflow?: WorkflowType): Promise<void> {
+  async runDispatch(
+    channel: string,
+    threadTs: string,
+    text: string,
+    forceWorkflow?: WorkflowType,
+    handoffPrompt?: string,
+  ): Promise<void> {
     const sessionKey = this.deps.claudeHandler.getSessionKey(channel, threadTs);
+
+    // Issue #695 — host-level enforcement of z session handoff entrypoints.
+    // Failure throws `HandoffAbortError`, which `SlackHandler` catches to emit
+    // a user-facing safe-stop message and short-circuit the retry path.
+    if (isZHandoffWorkflow(forceWorkflow) && this.deps.claudeHandler.needsDispatch(channel, threadTs)) {
+      if (!handoffPrompt) {
+        throw new HandoffAbortError(
+          'no-sentinel',
+          'runDispatch received no handoffPrompt for forced z-* workflow',
+          forceWorkflow,
+        );
+      }
+      const parsed = parseHandoff(handoffPrompt);
+      if (!parsed.ok) {
+        throw new HandoffAbortError(parsed.reason, parsed.detail, forceWorkflow);
+      }
+      const expected = expectedHandoffKind(forceWorkflow);
+      if (parsed.context.handoffKind !== expected) {
+        throw new HandoffAbortError(
+          'type-workflow-mismatch',
+          `expected <z-handoff type="${expected}">, got type="${parsed.context.handoffKind}"`,
+          forceWorkflow,
+        );
+      }
+      const session = this.deps.claudeHandler.getSession(channel, threadTs);
+      if (!session) {
+        throw new HandoffAbortError('host-policy', 'session not found at handoff entry', forceWorkflow);
+      }
+      session.handoffContext = parsed.context;
+      this.logger.info('Handoff entrypoint entered', {
+        sessionKey,
+        workflow: forceWorkflow,
+        handoffKind: parsed.context.handoffKind,
+        chainId: parsed.context.chainId,
+        hopBudget: parsed.context.hopBudget,
+      });
+      // transitionToMain persists the session via SessionRegistry.saveSessions,
+      // so no explicit save is needed here for handoffContext to hit disk.
+      this.deps.claudeHandler.transitionToMain(channel, threadTs, forceWorkflow, HANDOFF_ENTRY_TITLES[forceWorkflow]);
+      return;
+    }
+
     if (forceWorkflow && this.deps.claudeHandler.needsDispatch(channel, threadTs)) {
       this.logger.info('Forcing workflow during re-dispatch', {
         sessionKey,

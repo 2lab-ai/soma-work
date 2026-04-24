@@ -968,3 +968,133 @@ describe('Rule 5 × recommendedChoiceId — explicit id satisfies invariant', ()
     expect(w.some((s) => s.includes('no Recommended marker'))).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// CONTINUE_SESSION forceWorkflow validation — z handoff entrypoints (#695)
+// ---------------------------------------------------------------------------
+
+describe('CONTINUE_SESSION forceWorkflow — z handoff entrypoints (#695)', () => {
+  function planToWorkPrompt(): string {
+    return [
+      '$z phase2 https://example.com/issue/1',
+      '',
+      '<z-handoff type="plan-to-work">',
+      '## Issue',
+      'https://example.com/issue/1',
+      '## Parent Epic',
+      'none',
+      '## Task List',
+      '- [ ] work',
+      '</z-handoff>',
+    ].join('\n');
+  }
+
+  function workCompletePrompt(): string {
+    return [
+      '$z epic-update https://example.com/issue/10',
+      '',
+      '<z-handoff type="work-complete">',
+      '## Completed Subissue',
+      'https://example.com/issue/1',
+      '## PR',
+      'https://example.com/pr/2',
+      '## Summary',
+      'Done.',
+      '## Remaining Epic Checklist',
+      '- [x] item',
+      '</z-handoff>',
+    ].join('\n');
+  }
+
+  function run(params: Record<string, unknown>) {
+    return validateModelCommandRunArgs({
+      commandId: 'CONTINUE_SESSION',
+      params,
+    });
+  }
+
+  it('accepts z-plan-to-work with matching plan-to-work sentinel', () => {
+    const result = run({
+      prompt: planToWorkPrompt(),
+      resetSession: true,
+      dispatchText: 'https://example.com/issue/1',
+      forceWorkflow: 'z-plan-to-work',
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it('accepts z-epic-update with matching work-complete sentinel', () => {
+    const result = run({
+      prompt: workCompletePrompt(),
+      resetSession: true,
+      dispatchText: 'https://example.com/issue/10',
+      forceWorkflow: 'z-epic-update',
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it('rejects z-plan-to-work when prompt has no <z-handoff> sentinel', () => {
+    const result = run({
+      prompt: 'just a regular prompt',
+      resetSession: true,
+      forceWorkflow: 'z-plan-to-work',
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.error.code).toBe('INVALID_ARGS');
+    expect(result.error.message).toContain('<z-handoff>');
+  });
+
+  it('rejects z-plan-to-work paired with a work-complete sentinel (mismatch)', () => {
+    const result = run({
+      prompt: workCompletePrompt(),
+      resetSession: true,
+      forceWorkflow: 'z-plan-to-work',
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.error.code).toBe('INVALID_ARGS');
+    expect(result.error.message).toContain('plan-to-work');
+    expect(result.error.message).toContain('work-complete');
+  });
+
+  it('rejects z-epic-update paired with a plan-to-work sentinel (mismatch)', () => {
+    const result = run({
+      prompt: planToWorkPrompt(),
+      resetSession: true,
+      forceWorkflow: 'z-epic-update',
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.error.code).toBe('INVALID_ARGS');
+    expect(result.error.message).toContain('work-complete');
+    expect(result.error.message).toContain('plan-to-work');
+  });
+
+  it('accepts default workflow without a sentinel (backward compat)', () => {
+    const result = run({
+      prompt: 'plain user message, nothing to see here',
+      resetSession: true,
+      forceWorkflow: 'default',
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it('accepts CONTINUE_SESSION without any forceWorkflow', () => {
+    const result = run({
+      prompt: 'plain message',
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it('rejects z-plan-to-work with resetSession: false (existing invariant preserved)', () => {
+    const result = run({
+      prompt: planToWorkPrompt(),
+      resetSession: false,
+      forceWorkflow: 'z-plan-to-work',
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.error.message).toContain('resetSession=true');
+  });
+});

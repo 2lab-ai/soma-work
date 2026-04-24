@@ -11,7 +11,76 @@ export type WorkflowType =
   | 'pr-fix-and-update'
   | 'pr-docs-confluence'
   | 'deploy'
-  | 'default';
+  | 'default'
+  // z controller session handoff entrypoints (issue #695, epic #694).
+  // Host-level enforced: CONTINUE_SESSION.forceWorkflow → SessionInitializer.runDispatch
+  // validates the <z-handoff> sentinel and parses typed metadata into
+  // ConversationSession.handoffContext before deterministic workflow entry.
+  | 'z-plan-to-work'
+  | 'z-epic-update';
+
+// ===============================================================
+// Session handoff (issue #695) — typed metadata persistence
+// ===============================================================
+
+/**
+ * Subset of `WorkflowType` carrying the z controller handoff entrypoints.
+ * All host-side enforcement (validator precondition, `runDispatch` parse +
+ * mapping check, `slack-handler` safe-stop) keys off this discriminator.
+ *
+ * Type guard `isZHandoffWorkflow` is exported from `handoff-parser.ts` (runtime).
+ */
+export type ZHandoffWorkflow = 'z-plan-to-work' | 'z-epic-update';
+
+/** Sentinel type attribute → discriminator. */
+export type HandoffKind = 'plan-to-work' | 'work-complete';
+
+/** using-epic-tasks tier classification (authoritative: producer). */
+export type HandoffTier = 'tiny' | 'small' | 'medium' | 'large' | 'xlarge';
+
+/**
+ * Typed handoff context parsed from a `<z-handoff>` sentinel.
+ * Persisted on `ConversationSession.handoffContext` so downstream guards
+ * (issue-link precondition #696, hop budget #697, dispatch safe-stop #698)
+ * can consume the structured state without re-parsing the prompt.
+ *
+ * Producer-authoritative fields (via `##` headings in the sentinel):
+ * - `handoffKind` (from `type="..."` attribute)
+ * - `sourceIssueUrl` (from `## Issue` or `## Completed Subissue`)
+ * - `parentEpicUrl` (from `## Parent Epic`, plan-to-work only)
+ * - `tier` (from optional `## Tier` field; null when absent/unknown)
+ * - `escapeEligible` (from optional `## Escape Eligible`; conservative default false)
+ * - `issueRequiredByUser` (from optional `## Issue Required By User`; conservative default true)
+ *
+ * Host-managed fields:
+ * - `chainId`: UUID minted by the host parser on each successful parse
+ * - `hopBudget`: initialized to 1 here; consumption/decrement is #697 scope
+ */
+export interface HandoffContext {
+  handoffKind: HandoffKind;
+  sourceIssueUrl: string | null;
+  escapeEligible: boolean;
+  tier: HandoffTier | null;
+  issueRequiredByUser: boolean;
+  parentEpicUrl: string | null;
+  chainId: string;
+  hopBudget: number;
+}
+
+/** Enumerated failure reasons from `parseHandoff`. */
+export type HandoffParseFailure =
+  | 'no-sentinel'
+  | 'duplicate-sentinel'
+  | 'malformed-opening'
+  | 'missing-closing'
+  | 'unknown-type'
+  | 'missing-required-field'
+  | 'sentinel-not-top-level'
+  | 'type-workflow-mismatch';
+
+export type ParseResult =
+  | { ok: true; context: HandoffContext }
+  | { ok: false; reason: HandoffParseFailure; detail: string };
 
 /**
  * Renew command state

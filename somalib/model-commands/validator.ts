@@ -10,6 +10,7 @@ import type {
   UserChoices,
   WorkflowType,
 } from './session-types';
+import { expectedHandoffKind, extractSentinelType, isZHandoffWorkflow } from './handoff-parser';
 import type {
   AskUserQuestionParams,
   ContinueSessionParams,
@@ -32,6 +33,9 @@ const WORKFLOW_TYPES: WorkflowType[] = [
   'pr-docs-confluence',
   'deploy',
   'default',
+  // z controller session handoff entrypoints (issue #695).
+  'z-plan-to-work',
+  'z-epic-update',
 ];
 
 const ASK_USER_QUESTION_ALLOWED_TYPES = ['user_choice', 'user_choice_group'] as const;
@@ -683,6 +687,25 @@ function parseContinueSessionParams(
 
     if (resetSession !== true) {
       return invalidArgs('CONTINUE_SESSION forceWorkflow requires resetSession=true');
+    }
+
+    // Issue #695 — z handoff entrypoints require a top-level <z-handoff>
+    // sentinel in the prompt AND a type attribute matching the workflow.
+    // Lightweight regex check here; full structural validation happens at
+    // runtime in `SessionInitializer.runDispatch`.
+    if (isZHandoffWorkflow(forceWorkflow as WorkflowType)) {
+      const sentinelType = extractSentinelType(prompt);
+      if (!sentinelType) {
+        return invalidArgs(
+          `CONTINUE_SESSION forceWorkflow '${forceWorkflow}' requires <z-handoff> sentinel in prompt`,
+        );
+      }
+      const expected = expectedHandoffKind(forceWorkflow as 'z-plan-to-work' | 'z-epic-update');
+      if (sentinelType !== expected) {
+        return invalidArgs(
+          `CONTINUE_SESSION forceWorkflow '${forceWorkflow}' requires <z-handoff type="${expected}">, got type="${sentinelType}"`,
+        );
+      }
     }
   }
 
