@@ -12,6 +12,7 @@ import { Logger } from './logger';
 import { getMetricsEmitter } from './metrics/event-emitter';
 import { normalizeTmpPath } from './path-utils';
 import { getArchiveStore } from './session-archive';
+import { DEFAULT_AUTO_HANDOFF_BUDGET } from './slack/handoff-budget';
 import type {
   ActionPanelState,
   ActivityState,
@@ -146,6 +147,12 @@ interface SerializedSession {
    * structured state after restart or mid-session.
    */
   handoffContext?: HandoffContext;
+  /**
+   * Host-enforced auto-handoff budget (issue #697). See `ConversationSession`
+   * for full contract. Persisted as primitive number; `undefined` on load
+   * from pre-#697 disk state is handled defensively by `checkAndConsumeBudget`.
+   */
+  autoHandoffBudget?: number;
 }
 
 /**
@@ -402,6 +409,9 @@ export class SessionRegistry {
       effort: userSettingsStore.getUserDefaultEffort(ownerId),
       state: 'INITIALIZING', // Start in INITIALIZING state
       activityState: 'idle',
+      // Host-enforced auto-handoff budget (#697). Fresh sessions start with
+      // DEFAULT_AUTO_HANDOFF_BUDGET=1; consumed in slack-handler.onResetSession.
+      autoHandoffBudget: DEFAULT_AUTO_HANDOFF_BUDGET,
       // Compaction Tracking (#617): explicit zero-state for epoch-based dedupe.
       compactEpoch: 0,
       compactPostedByEpoch: {},
@@ -1250,6 +1260,12 @@ export class SessionRegistry {
     // overwrites this field before the first post-reset save.
     session.handoffContext = undefined;
 
+    // Reset auto-handoff budget to fresh 1 (issue #697, epic #694).
+    // After resetSessionContext, the same sessionKey becomes a new logical
+    // session; it gets independent budget per spec §Scope "체인 계승이
+    // 아닌 독립 예산".
+    session.autoHandoffBudget = DEFAULT_AUTO_HANDOFF_BUDGET;
+
     // Clear current initiator (fresh start means no active initiator)
     session.currentInitiatorId = undefined;
     session.currentInitiatorName = undefined;
@@ -1666,6 +1682,8 @@ export class SessionRegistry {
             summaryTitleLastUpdatedAtMs: session.summaryTitleLastUpdatedAtMs,
             // Typed handoff metadata (issue #695)
             handoffContext: session.handoffContext,
+            // Host-enforced auto-handoff budget (issue #697)
+            autoHandoffBudget: session.autoHandoffBudget,
           });
         }
       }
@@ -1857,6 +1875,10 @@ export class SessionRegistry {
           // Typed handoff metadata (issue #695) — present only for sessions
           // that entered via forceWorkflow z-plan-to-work / z-epic-update.
           handoffContext: serialized.handoffContext,
+          // Host-enforced auto-handoff budget (issue #697). `?? 1` defensive
+          // backfill is deferred to `checkAndConsumeBudget` so pre-#697 disk
+          // state loads as `undefined` and is handled by the guard.
+          autoHandoffBudget: serialized.autoHandoffBudget,
           // Compaction Tracking (#617): runtime-only dedupe state — always reset on reload.
           // Pending state (autoCompactPending / pendingUserText / pendingEventContext) is
           // intentionally NOT rehydrated because the original event context cannot be

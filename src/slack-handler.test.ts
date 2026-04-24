@@ -1353,4 +1353,265 @@ describe('SlackHandler', () => {
       expect(slackBlockInNotifier).toBe(threadPanelDepsChannel);
     });
   });
+
+  // -------------------------------------------------------------------
+  // Issue #697 — per-session auto-handoff budget enforcement
+  // -------------------------------------------------------------------
+
+  describe('onResetSession budget enforcement (#697)', () => {
+    /**
+     * Common test harness: builds a SlackHandler with mocked deps that allow
+     * a continuation to propagate through the adapter's startWithContinuation
+     * loop. Caller customizes `sessionStub` (for budget + handoffContext),
+     * `continuation` (emitted on first execute), and `onResetSessionThrow`
+     * expectations via the returned mocks.
+     */
+    function makeBudgetTestHarness(options: {
+      sessionAutoHandoffBudget?: number;
+      sessionHandoffContext?: any;
+      continuation: {
+        prompt: string;
+        resetSession: boolean;
+        dispatchText?: string;
+        forceWorkflow?: string;
+        origin?: string;
+      };
+    }) {
+      const app = { client: {}, assistant: vi.fn() } as any;
+      const sessionStub: any = {
+        ownerId: 'U123',
+        channelId: 'C123',
+        threadTs: '111.222',
+        autoHandoffBudget: options.sessionAutoHandoffBudget,
+        handoffContext: options.sessionHandoffContext,
+      };
+      const claudeHandler = {
+        resetSessionContext: vi.fn().mockReturnValue(true),
+        getSession: vi.fn().mockReturnValue(sessionStub),
+        getSessionKey: vi.fn().mockReturnValue('C123:111.222'),
+        terminateSession: vi.fn().mockReturnValue(true),
+        saveSessions: vi.fn(),
+      };
+      const mcpManager = {};
+      const handler = new SlackHandler(app as any, claudeHandler as any, mcpManager as any);
+      const handlerAny = handler as any;
+
+      const postMessage = vi.fn().mockResolvedValue({ ts: 'msg-budget' });
+      handlerAny.slackApi = {
+        addReaction: vi.fn().mockResolvedValue(undefined),
+        removeReaction: vi.fn().mockResolvedValue(undefined),
+        postMessage,
+      };
+      handlerAny.inputProcessor = {
+        processFiles: vi.fn().mockResolvedValue({ files: [], shouldContinue: true }),
+        routeCommand: vi.fn().mockResolvedValue({ handled: false, continueWithPrompt: undefined }),
+      };
+      handlerAny.sessionInitializer = {
+        validateWorkingDirectory: vi.fn().mockResolvedValue({ valid: true, workingDirectory: '/tmp' }),
+        initialize: vi.fn().mockResolvedValue({
+          session: sessionStub,
+          sessionKey: 'C123:111.222',
+          isNewSession: true,
+          userName: 'Test User',
+          workingDirectory: '/tmp',
+          abortController: new AbortController(),
+          halted: false,
+        }),
+        runDispatch: vi.fn().mockResolvedValue(undefined),
+      };
+      // streamExecutor.execute:
+      //   - first call → result with continuation (triggers startWithContinuation loop)
+      //   - subsequent calls → result without continuation (loop exits normally)
+      const execute = vi
+        .fn()
+        .mockResolvedValueOnce({
+          success: true,
+          messageCount: 1,
+          continuation: options.continuation,
+        })
+        .mockResolvedValue({ success: true, messageCount: 1 });
+      handlerAny.streamExecutor = { execute };
+      handlerAny.threadPanel = { create: vi.fn().mockResolvedValue(undefined) };
+
+      return { handler, handlerAny, claudeHandler, postMessage, execute, sessionStub };
+    }
+
+    it('T4.1 model-emitted (origin:model) budget=1 first hop → decrements to 0, proceeds with reset+dispatch', async () => {
+      const { handler, claudeHandler, execute, sessionStub } = makeBudgetTestHarness({
+        sessionAutoHandoffBudget: 1,
+        continuation: {
+          prompt: 'next prompt',
+          resetSession: true,
+          dispatchText: 'https://example.com/issue/1',
+          forceWorkflow: 'z-plan-to-work',
+          origin: 'model',
+        },
+      });
+
+      const say = vi.fn().mockResolvedValue({ ts: 'msg-ok' });
+      await handler.handleMessage({ user: 'U123', channel: 'C123', ts: '111.222', text: 'kick off' } as any, say);
+
+      // Budget was decremented 1 → 0.
+      expect(sessionStub.autoHandoffBudget).toBe(0);
+      // Reset and dispatch both ran.
+      expect(claudeHandler.resetSessionContext).toHaveBeenCalled();
+      // streamExecutor.execute called at least twice: first turn + continue(prompt).
+      expect(execute.mock.calls.length).toBeGreaterThanOrEqual(2);
+    });
+
+    it('T4.2 model-emitted (origin:model) budget=0 second hop → throws HandoffBudgetExhaustedError; caught; postMessage with exhausted-reason text; session NOT terminated; streamExecutor.execute called EXACTLY ONCE (proves P0 fix — loop stopped)', async () => {
+      const { handler, claudeHandler, postMessage, execute } = makeBudgetTestHarness({
+        sessionAutoHandoffBudget: 0, // already exhausted
+        sessionHandoffContext: {
+          handoffKind: 'plan-to-work',
+          sourceIssueUrl: 'https://example.com/issues/1',
+          parentEpicUrl: null,
+          escapeEligible: false,
+          tier: 'medium',
+          issueRequiredByUser: true,
+          chainId: 'abc-123-xyz',
+          hopBudget: 1,
+        },
+        continuation: {
+          prompt: 'second hop prompt',
+          resetSession: true,
+          dispatchText: 'https://example.com/issue/1',
+          forceWorkflow: 'z-plan-to-work',
+          origin: 'model',
+        },
+      });
+
+      const say = vi.fn().mockResolvedValue({ ts: 'msg-budget' });
+      await handler.handleMessage({ user: 'U123', channel: 'C123', ts: '111.222', text: 'second attempt' } as any, say);
+
+      // P0-fix proof: execute called EXACTLY ONCE. The v1-query-adapter
+      // continuation loop stopped after onResetSession throw (if throw didn't
+      // stop the loop, execute would be called twice via continue(prompt)).
+      expect(execute).toHaveBeenCalledTimes(1);
+      // resetSessionContext NOT called (check fired BEFORE reset).
+      expect(claudeHandler.resetSessionContext).not.toHaveBeenCalled();
+      // Rejection message posted with exhausted text + chainId.
+      expect(postMessage).toHaveBeenCalled();
+      const budgetMsg = postMessage.mock.calls.find((c: any[]) => String(c[1]).includes('예산 초과'));
+      expect(budgetMsg).toBeDefined();
+      expect(String(budgetMsg![1])).toContain('abc-123-xyz');
+      expect(String(budgetMsg![1])).toContain('z-plan-to-work');
+      // Session NOT terminated (soft ceiling).
+      expect(claudeHandler.terminateSession).not.toHaveBeenCalled();
+    });
+
+    it('T4.3 host-built (origin:host) continuation → skips guard entirely; resets and dispatches even when session.autoHandoffBudget=0', async () => {
+      const { handler, claudeHandler, execute, sessionStub } = makeBudgetTestHarness({
+        sessionAutoHandoffBudget: 0, // would reject if enforced
+        continuation: {
+          prompt: 'renew load prompt',
+          resetSession: true,
+          dispatchText: 'user requested renew',
+          origin: 'host', // renew/onboarding path — skip guard
+        },
+      });
+
+      const say = vi.fn().mockResolvedValue({ ts: 'msg-renew' });
+      await handler.handleMessage({ user: 'U123', channel: 'C123', ts: '111.222', text: '/renew' } as any, say);
+
+      // Guard skipped → reset and dispatch both ran even with budget=0.
+      expect(claudeHandler.resetSessionContext).toHaveBeenCalled();
+      // autoHandoffBudget untouched.
+      expect(sessionStub.autoHandoffBudget).toBe(0);
+      // Continuation-loop second turn ran (execute ≥ 2 calls).
+      expect(execute.mock.calls.length).toBeGreaterThanOrEqual(2);
+    });
+
+    it('T4.4 HandoffBudgetExhaustedError with reason=no-session caught at outer catch → posts invariant-break message; session NOT terminated', async () => {
+      // Emulate the throw-from-onResetSession propagation by having execute
+      // throw the error directly (same pattern as the existing HandoffAbortError
+      // test at line 1233). This covers the outer-catch behavior for the
+      // no-session reason branch; the reason-detection itself is covered by
+      // the T1.1 unit test on checkAndConsumeBudget(undefined).
+      const { HandoffBudgetExhaustedError } = await import('./slack/handoff-budget');
+      const app = { client: {}, assistant: vi.fn() } as any;
+      const claudeHandler = {
+        resetSessionContext: vi.fn().mockReturnValue(true),
+        getSession: vi.fn().mockReturnValue({ ownerId: 'U123', channelId: 'C123', threadTs: '111.222' }),
+        getSessionKey: vi.fn().mockReturnValue('C123:111.222'),
+        terminateSession: vi.fn().mockReturnValue(true),
+        saveSessions: vi.fn(),
+      };
+      const handler = new SlackHandler(app as any, claudeHandler as any, {} as any);
+      const handlerAny = handler as any;
+      const postMessage = vi.fn().mockResolvedValue({ ts: 'msg-no-session' });
+      handlerAny.slackApi = {
+        addReaction: vi.fn().mockResolvedValue(undefined),
+        removeReaction: vi.fn().mockResolvedValue(undefined),
+        postMessage,
+      };
+      handlerAny.inputProcessor = {
+        processFiles: vi.fn().mockResolvedValue({ files: [], shouldContinue: true }),
+        routeCommand: vi.fn().mockResolvedValue({ handled: false, continueWithPrompt: undefined }),
+      };
+      handlerAny.sessionInitializer = {
+        validateWorkingDirectory: vi.fn().mockResolvedValue({ valid: true, workingDirectory: '/tmp' }),
+        initialize: vi.fn().mockResolvedValue({
+          session: { ownerId: 'U123', channelId: 'C123', threadTs: '111.222' },
+          sessionKey: 'C123:111.222',
+          isNewSession: true,
+          userName: 'Test User',
+          workingDirectory: '/tmp',
+          abortController: new AbortController(),
+          halted: false,
+        }),
+        runDispatch: vi.fn().mockResolvedValue(undefined),
+      };
+      const execute = vi.fn().mockImplementation(async () => {
+        throw new HandoffBudgetExhaustedError('no-session', 0, 'z-plan-to-work', undefined);
+      });
+      handlerAny.streamExecutor = { execute };
+      handlerAny.threadPanel = { create: vi.fn().mockResolvedValue(undefined) };
+
+      const say = vi.fn().mockResolvedValue({ ts: 'msg' });
+      await handler.handleMessage({ user: 'U123', channel: 'C123', ts: '111.222', text: 'trigger' } as any, say);
+
+      // Rejection with no-session reason.
+      expect(postMessage).toHaveBeenCalled();
+      const invariantMsg = postMessage.mock.calls.find((c: any[]) => String(c[1]).includes('session 상태 불일치'));
+      expect(invariantMsg).toBeDefined();
+      expect(String(invariantMsg![1])).toContain('invariant break');
+      expect(String(invariantMsg![1])).toContain('z-plan-to-work');
+      // Session NOT terminated (soft ceiling — distinct from HandoffAbortError).
+      expect(claudeHandler.terminateSession).not.toHaveBeenCalled();
+    });
+
+    it('T4.5 origin:"MODEL" (wrong case, adversarial) → predicate falls through to enforcement; budget consumed; warn log fired for unexpected value', async () => {
+      const warn = vi.fn();
+      const { handler, handlerAny, execute, sessionStub } = makeBudgetTestHarness({
+        sessionAutoHandoffBudget: 1,
+        continuation: {
+          prompt: 'adversarial prompt',
+          resetSession: true,
+          origin: 'MODEL', // wrong case — not canonical 'model'
+        },
+      });
+      // Replace logger with a spy.
+      handlerAny.logger = {
+        info: vi.fn(),
+        warn,
+        error: vi.fn(),
+        debug: vi.fn(),
+      };
+
+      const say = vi.fn().mockResolvedValue({ ts: 'msg' });
+      await handler.handleMessage({ user: 'U123', channel: 'C123', ts: '111.222', text: 'trigger' } as any, say);
+
+      // Budget was consumed (enforcement fired).
+      expect(sessionStub.autoHandoffBudget).toBe(0);
+      // Warn log fired for unexpected origin.
+      const warnCall = warn.mock.calls.find((c: any[]) =>
+        String(c[0]).includes('Continuation.origin has unexpected value'),
+      );
+      expect(warnCall).toBeDefined();
+      expect(warnCall![1].origin).toBe('MODEL');
+      // Continuation loop ran at least 2 turns (enforcement passed).
+      expect(execute.mock.calls.length).toBeGreaterThanOrEqual(2);
+    });
+  });
 });
