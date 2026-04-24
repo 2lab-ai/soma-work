@@ -372,8 +372,15 @@ export class ClaudeHandler {
 
   // ===== Session State Machine =====
 
-  transitionToMain(channelId: string, threadTs: string | undefined, workflow: WorkflowType, title?: string): void {
-    this.sessionRegistry.transitionToMain(channelId, threadTs, workflow, title);
+  /**
+   * @returns `true` if the session was transitioned to MAIN state; `false` if
+   *   the session was not found or had already transitioned (e.g., race loss).
+   *   Issue #698: forceWorkflow callers check this to detect race-loss and
+   *   raise `DispatchAbortError` rather than silently continuing with undefined
+   *   workflow state. Pre-#698 callers that ignore the return value still work.
+   */
+  transitionToMain(channelId: string, threadTs: string | undefined, workflow: WorkflowType, title?: string): boolean {
+    return this.sessionRegistry.transitionToMain(channelId, threadTs, workflow, title);
   }
 
   needsDispatch(channelId: string, threadTs?: string): boolean {
