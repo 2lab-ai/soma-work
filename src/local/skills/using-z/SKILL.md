@@ -70,13 +70,21 @@ z 컨트롤러의 phase 전환 중 **세션 경계**를 넘는 것은 두 지점
 {
   "commandId": "CONTINUE_SESSION",
   "params": {
-    "prompt": "$z phase2 <ISSUE_URL or task-slug>\n\n<z-handoff type=\"plan-to-work\">\n## Issue\n<ISSUE_URL or \"none (Case A escape, tier=tiny|small)\">\n## Parent Epic\n<EPIC_URL or \"none\">\n## Original Request Excerpt\n<원 유저 SSOT instruction 발췌 — 수신 세션이 escape 조건 및 scope를 재검증 가능하게>\n## Repository Policy\n<issue-required: true|false — CONTRIBUTING/policy가 이슈 선행을 요구하는지 여부>\n## Confirmed Plan\n<plan markdown — Goal / Scope / Done>\n## Task List\n- [ ] task 1\n- [ ] task 2\n## Codex Review\nscore: <N>/100 — <verdict>\n</z-handoff>",
+    "prompt": "$z phase2 <ISSUE_URL or task-slug>\n\n<z-handoff type=\"plan-to-work\">\n## Issue\n<ISSUE_URL or \"none (Case A escape, tier=tiny|small)\">\n## Parent Epic\n<EPIC_URL or \"none\">\n## Tier\n<tiny|small|medium|large|xlarge>\n## Escape Eligible\n<true|false>\n## Issue Required By User\n<true|false>\n## Original Request Excerpt\n<원 유저 SSOT instruction 발췌 — 수신 세션이 escape 조건 및 scope를 재검증 가능하게>\n## Repository Policy\n<issue-required: true|false — CONTRIBUTING/policy가 이슈 선행을 요구하는지 여부>\n## Confirmed Plan\n<plan markdown — Goal / Scope / Done>\n## Task List\n- [ ] task 1\n- [ ] task 2\n## Codex Review\nscore: <N>/100 — <verdict>\n</z-handoff>",
     "resetSession": true,
     "dispatchText": "<ISSUE_URL or task-slug>",
-    "forceWorkflow": "default"
+    "forceWorkflow": "z-plan-to-work"
   }
 }
 ```
+
+**Producer-authoritative typed fields** (host persists these verbatim as `session.handoffContext`, issue #695):
+
+- `## Tier` — `using-epic-tasks` 판정 tier.
+- `## Escape Eligible` — Case A 3-condition validation 통과 여부 (단순 마커 존재가 아닌 검증 통과).
+- `## Issue Required By User` — 유저 원 요청에 선행 이슈 요구 존재 여부.
+
+모두 optional — 누락 시 conservative defaults (tier=null, escapeEligible=false, issueRequiredByUser=true). 명시할수록 downstream guards (#696/#697/#698)가 신뢰할 수 있는 상태를 본다.
 
 **새 세션 z phase0 동작**:
 
@@ -105,7 +113,7 @@ z 컨트롤러의 phase 전환 중 **세션 경계**를 넘는 것은 두 지점
     "prompt": "$z epic-update <EPIC_URL>\n\n<z-handoff type=\"work-complete\">\n## Completed Subissue\n<SUBISSUE_URL>\n## PR\n<PR_URL>\n## Summary\n<1-3줄 behavior 요약 — 무엇이 달성되었는지, 파일명/함수명 금지>\n## Remaining Epic Checklist\n- [x] 완료된 서브이슈 타이틀\n- [ ] 남은 서브이슈 타이틀 + URL\n</z-handoff>",
     "resetSession": true,
     "dispatchText": "<EPIC_URL>",
-    "forceWorkflow": "default"
+    "forceWorkflow": "z-epic-update"
   }
 }
 ```
@@ -126,7 +134,7 @@ z 컨트롤러의 phase 전환 중 **세션 경계**를 넘는 것은 두 지점
 1. **Exact form.** 여는 태그는 정확히 `<z-handoff type="plan-to-work">` 또는 `<z-handoff type="work-complete">` — 대소문자 구분, 속성은 쌍따옴표 고정. 변형(대소문자·홑따옴표·공백 변형) 불매칭.
 2. **Top-level only.** sentinel은 **dispatched prompt의 최상위 래퍼**로만 인정. 유저가 이슈 코멘트·버그 리포트에 이전 handoff 블록을 **인용**한 경우는 sentinel 아님 — 반드시 handoff 본문이 `$z ...` 커맨드 라인 바로 아래의 최상위 블록이어야 함. 애매하면 sentinel 아님으로 판정 (fall-through to normal phase0).
 3. **Closing tag 필수.** 여는 태그는 있으나 `</z-handoff>`가 없으면 **malformed** → safe-stop + 유저 에러 출력. 조용한 fall-through 금지.
-4. **Required fields 검증.** `type="plan-to-work"`은 `## Issue`, `## Parent Epic`, `## Task List` 세 섹션 필수. `type="work-complete"`은 `## Completed Subissue`, `## PR`, `## Summary`, `## Remaining Epic Checklist` 네 섹션 필수. 누락 시 malformed → safe-stop.
+4. **Required fields 검증.** `type="plan-to-work"`은 `## Issue`, `## Parent Epic`, `## Task List` 세 섹션 필수. `type="work-complete"`은 `## Completed Subissue`, `## PR`, `## Summary`, `## Remaining Epic Checklist` 네 섹션 필수. 누락 시 malformed → safe-stop. `plan-to-work`의 **optional typed-metadata fields** (producer-authoritative, host가 `session.handoffContext`로 persist): `## Tier`, `## Escape Eligible`, `## Issue Required By User`. 누락 시 host는 conservative defaults를 사용하지만 downstream guard (#696/#697/#698)가 정확히 동작하려면 producer가 명시 권장.
 5. **Duplicate sentinels.** 한 prompt에 `plan-to-work`와 `work-complete`가 동시 등장하면 **hard error** — 어느 쪽도 선택하지 않고 safe-stop. 같은 type이 두 번 나와도 마찬가지.
 6. **원요청 재검증 가능성.** `plan-to-work` 블록은 `## Original Request Excerpt` 필드로 원본 유저 SSOT instruction을 발췌 carrying — 수신 세션이 Case A escape 조건(또는 기타 계약)을 재검증 가능하게.
 
@@ -136,7 +144,7 @@ z 컨트롤러의 phase 전환 중 **세션 경계**를 넘는 것은 두 지점
 2. `resetSession: true` 필수. 세션 컨텍스트 누적 금지.
 3. **Handoff 예산 — 세션당 자동 1회**. 한 세션은 자동 handoff를 **최대 1회** 발행할 수 있다. 단, handoff로 시작된 **새 세션은 자신의 수명주기에서 다시 1회**를 발행할 수 있다 (phase2 구현 세션이 phase5에서 Handoff #2를 발행하는 것은 이 예산 안). 금지되는 것은: 한 세션 안에서 두 번 이상 발행, 또는 `work-complete` 수신 세션이 다음 서브이슈를 자동 체인으로 발행하는 것.
 4. `<z-handoff>` sentinel 없는 prompt는 직접 유저 요청이므로 phase0부터 정상 진행.
-5. `forceWorkflow: "default"` 사용. z는 workflow가 아닌 skill이므로 default 분류기가 `$z` prefix를 보고 z skill로 라우팅 (결정성 한계는 §Enforcement Status 참고).
+5. `forceWorkflow: "z-plan-to-work"` (Handoff #1) 또는 `"z-epic-update"` (Handoff #2) 사용. 이 workflow 타입들은 issue #695에서 host-level로 구현 — host가 sentinel 존재/유효성/type 매핑을 검증하고 safe-stop (누락/malformed/mismatch 시). 기존 `"default"` 값은 legacy path로만 유효하며 결정적 새 세션 진입 보장이 없음.
 6. payload의 `<z-handoff>` 블록 안에는 **구현 토큰(파일 경로, 함수명, ENV) 금지** — `using-ha-thinking` 규율. Summary / Plan은 behavior 레벨.
 
 ### Enforcement Status
@@ -145,13 +153,13 @@ z 컨트롤러의 phase 전환 중 **세션 경계**를 넘는 것은 두 지점
 
 | 항목 | 현재 강제 수단 | 목표 강제 수단 |
 |---|---|---|
-| Handoff #1 전 Issue URL 검증 | prompt convention (모델 규율) | `zwork` / PR 생성 경로 host-side guard |
-| 결정적 새 세션 진입 | **없음** — `default.prompt` 분류기가 `$z` prefix를 best-effort 매칭. prompt collision 시 오라우팅 가능 | 전용 `WorkflowType` (`z-plan-to-work`, `z-epic-update`) |
-| 세션당 handoff 예산 | 문서 Rule #3 | host-side `hopBudget` 카운터 |
-| 1-hop 재귀 방지 | 문서 invariant (Rule #3 예산 고갈) | host-side `autoHandoffDepth` nonce |
-| Dispatch 실패 복구 | default workflow 표류 | safe-stop + 유저 수동 retry 안내 |
+| Handoff #1 전 Issue URL 검증 | prompt convention (모델 규율) | `zwork` / PR 생성 경로 host-side guard (#696) |
+| 결정적 새 세션 진입 | **구현 완료 (#695)** — 전용 `WorkflowType` (`z-plan-to-work`, `z-epic-update`) + host sentinel 검증 + `session.handoffContext` typed persistence | — |
+| 세션당 handoff 예산 | `session.handoffContext.hopBudget=1` 필드 저장 (#695) | host-side 소비 로직 (#697) |
+| 1-hop 재귀 방지 | 문서 invariant (Rule #3 예산 고갈) | host-side `autoHandoffDepth` nonce (#697) |
+| Dispatch 실패 복구 | z handoff 경로는 safe-stop 구현 (#695 — `HandoffAbortError`) | default fallback 제거 일반화 (#698) |
 
-**이 스킬 문서는 핸드오프 계약을 정의한다. host-side 강제 코드는 별도 에픽(Case B)에서 구현**. 모델이 이 문서를 따르면 의도대로 동작하지만, 현재 `default + $z` 경로에는 표류 가능성이 남아있음.
+**이 스킬 문서는 핸드오프 계약을 정의한다. host-side 강제 코드는 에픽 #694 (Case B) 에서 구현 중** — #695 (결정적 진입 + typed metadata) 완료. PR precondition (#696), hop budget 소비 (#697), dispatch safe-stop 일반화 (#698) 후속 진행.
 
 ## Invariants (general)
 

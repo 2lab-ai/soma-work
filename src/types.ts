@@ -2,6 +2,11 @@
 // Re-export for backward compatibility — all src/ files import from './types'.
 export type {
   Continuation,
+  HandoffContext,
+  HandoffKind,
+  HandoffParseFailure,
+  HandoffTier,
+  ParseResult,
   RenewState,
   SaveContextResultFile,
   SaveContextResultPayload,
@@ -32,6 +37,7 @@ export type {
 } from 'somalib/model-commands/session-types';
 
 import type {
+  HandoffContext,
   RenewState,
   SaveContextResultPayload,
   SessionInstruction,
@@ -171,6 +177,13 @@ export interface ConversationSession {
   linkHistory?: SessionLinkHistory;
   // Monotonic sequence for optimistic concurrency on session link updates
   linkSequence?: number;
+  /**
+   * Typed handoff metadata parsed from the `<z-handoff>` sentinel that
+   * started this session (issue #695, epic #694). Present only for sessions
+   * entered via `forceWorkflow='z-plan-to-work' | 'z-epic-update'`. Consumed
+   * by downstream guards (#696/#697/#698) without re-parsing the prompt.
+   */
+  handoffContext?: HandoffContext;
   // Tool-driven save result used by renew command (preferred over text parsing)
   renewSaveResult?: SaveContextResultPayload;
   // Ghost Session Fix #99: defense-in-depth flag for in-flight code to self-terminate
