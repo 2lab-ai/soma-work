@@ -82,8 +82,10 @@ vi.mock('../../token-manager', () => ({
   parseCooldownTime: vi.fn(),
 }));
 
+import { config } from '../../config';
 import type { Continuation } from '../../types';
 import { userSettingsStore } from '../../user-settings-store';
+import { LOG_DETAIL } from '../output-flags';
 import { type ExecuteResult, StreamExecutor } from './stream-executor';
 
 describe('Continuation type', () => {
@@ -361,6 +363,11 @@ describe('Abort handling', () => {
       slackApi: {},
       assistantStatusManager: {
         clearStatus: vi.fn().mockResolvedValue(undefined),
+        setStatus: vi.fn().mockResolvedValue(undefined),
+        bumpEpoch: vi.fn().mockReturnValue(1),
+        getToolStatusText: vi.fn().mockReturnValue('running...'),
+        buildBashStatus: vi.fn().mockReturnValue('is running commands...'),
+        registerBackgroundBashActive: vi.fn().mockReturnValue(() => {}),
       },
       threadPanel: undefined,
     } as any;
@@ -895,6 +902,11 @@ describe('model-command integration', () => {
       },
       assistantStatusManager: {
         clearStatus: vi.fn().mockResolvedValue(undefined),
+        setStatus: vi.fn().mockResolvedValue(undefined),
+        bumpEpoch: vi.fn().mockReturnValue(1),
+        getToolStatusText: vi.fn().mockReturnValue('running...'),
+        buildBashStatus: vi.fn().mockReturnValue('is running commands...'),
+        registerBackgroundBashActive: vi.fn().mockReturnValue(() => {}),
       },
       threadPanel: {
         attachChoice: vi.fn().mockResolvedValue(undefined),
@@ -1596,6 +1608,11 @@ describe('File access blocked error recovery', () => {
       slackApi: {},
       assistantStatusManager: {
         clearStatus: vi.fn().mockResolvedValue(undefined),
+        setStatus: vi.fn().mockResolvedValue(undefined),
+        bumpEpoch: vi.fn().mockReturnValue(1),
+        getToolStatusText: vi.fn().mockReturnValue('running...'),
+        buildBashStatus: vi.fn().mockReturnValue('is running commands...'),
+        registerBackgroundBashActive: vi.fn().mockReturnValue(() => {}),
       },
       threadPanel: undefined,
     } as any;
@@ -2566,6 +2583,10 @@ describe('Email guard in execute()', () => {
       assistantStatusManager: {
         setStatus: vi.fn().mockResolvedValue(undefined),
         clearStatus: vi.fn().mockResolvedValue(undefined),
+        bumpEpoch: vi.fn().mockReturnValue(1),
+        getToolStatusText: vi.fn().mockReturnValue('running...'),
+        buildBashStatus: vi.fn().mockReturnValue('is running commands...'),
+        registerBackgroundBashActive: vi.fn().mockReturnValue(() => {}),
       },
       threadPanel: undefined,
     } as any;
@@ -2653,7 +2674,14 @@ describe('W3-B rate-limit rotation wiring', () => {
       actionHandlers: {},
       requestCoordinator: {},
       slackApi: {},
-      assistantStatusManager: { clearStatus: vi.fn().mockResolvedValue(undefined) },
+      assistantStatusManager: {
+        clearStatus: vi.fn().mockResolvedValue(undefined),
+        setStatus: vi.fn().mockResolvedValue(undefined),
+        bumpEpoch: vi.fn().mockReturnValue(1),
+        getToolStatusText: vi.fn().mockReturnValue('running...'),
+        buildBashStatus: vi.fn().mockReturnValue('is running commands...'),
+        registerBackgroundBashActive: vi.fn().mockReturnValue(() => {}),
+      },
       threadPanel: undefined,
     } as any;
   }
@@ -2834,6 +2862,9 @@ describe('turnId propagation into ToolEventContext (#664)', () => {
         setStatus: vi.fn().mockResolvedValue(undefined),
         clearStatus: vi.fn().mockResolvedValue(undefined),
         getToolStatusText: vi.fn().mockReturnValue('running tool...'),
+        bumpEpoch: vi.fn().mockReturnValue(1),
+        buildBashStatus: vi.fn().mockReturnValue('is running commands...'),
+        registerBackgroundBashActive: vi.fn().mockReturnValue(() => {}),
       },
       threadPanel: {
         beginTurn: vi.fn().mockResolvedValue(undefined),
@@ -2915,5 +2946,734 @@ describe('turnId propagation into ToolEventContext (#664)', () => {
     // turnId from the outer scope. Independently-minted ids would still
     // pass assertions 1 and 2 while silently decoupling the sink.
     expect(toolUseCtx.turnId).toBe(toolResultCtx.turnId);
+  });
+});
+
+describe('stream-executor — P3 (PHASE>=3) B3 choice wiring', () => {
+  function createP3Deps() {
+    const sessionRegistry = { persistAndBroadcast: vi.fn() };
+    return {
+      deps: {
+        claudeHandler: {
+          setActivityState: vi.fn(),
+          updateSessionResources: vi.fn(),
+          getSessionByKey: vi.fn().mockReturnValue({ ownerId: 'U1', channelId: 'C1' }),
+          getSessionRegistry: vi.fn(() => sessionRegistry),
+        },
+        fileHandler: { cleanupTempFiles: vi.fn().mockResolvedValue(undefined) },
+        toolEventProcessor: {},
+        statusReporter: {
+          updateStatusDirect: vi.fn().mockResolvedValue(undefined),
+          getStatusEmoji: vi.fn().mockReturnValue('stop_button'),
+        },
+        reactionManager: { updateReaction: vi.fn().mockResolvedValue(undefined) },
+        contextWindowManager: { handlePromptTooLong: vi.fn().mockResolvedValue(undefined) },
+        toolTracker: { scheduleCleanup: vi.fn() },
+        todoDisplayManager: { cleanup: vi.fn(), cleanupSession: vi.fn() },
+        actionHandlers: {
+          setPendingForm: vi.fn(),
+          getPendingForm: vi.fn(),
+          deletePendingForm: vi.fn(),
+          invalidateOldForms: vi.fn().mockResolvedValue(undefined),
+        },
+        requestCoordinator: { removeController: vi.fn() },
+        slackApi: { updateMessage: vi.fn().mockResolvedValue(undefined) },
+        assistantStatusManager: {
+          clearStatus: vi.fn().mockResolvedValue(undefined),
+          setStatus: vi.fn().mockResolvedValue(undefined),
+          bumpEpoch: vi.fn().mockReturnValue(1),
+          getToolStatusText: vi.fn().mockReturnValue('running...'),
+          buildBashStatus: vi.fn().mockReturnValue('is running commands...'),
+          registerBackgroundBashActive: vi.fn().mockReturnValue(() => {}),
+        },
+        threadPanel: {
+          attachChoice: vi.fn().mockResolvedValue(undefined),
+          updatePanel: vi.fn().mockResolvedValue(undefined),
+          setStatus: vi.fn().mockResolvedValue(undefined),
+          askUser: vi.fn().mockResolvedValue({ ok: true, primaryTs: 'posted-ts' }),
+          askUserForm: vi
+            .fn()
+            .mockResolvedValue({ ok: true, primaryTs: 'posted-ts-0', allTs: ['posted-ts-0'], formIds: ['f-0'] }),
+        },
+      } as any,
+      sessionRegistry,
+    };
+  }
+
+  function createSession(): any {
+    return {
+      ownerId: 'U1',
+      channelId: 'C1',
+      threadTs: '171.100',
+      isActive: true,
+      renewState: null,
+      activityState: 'idle',
+      actionPanel: {},
+    };
+  }
+
+  afterEach(() => {
+    config.ui.fiveBlockPhase = 0;
+  });
+
+  it('PHASE=3 single-choice routes through ThreadPanel.askUser (with turnId)', async () => {
+    config.ui.fiveBlockPhase = 3;
+    const { deps, sessionRegistry } = createP3Deps();
+    const session = createSession();
+    // Make getSessionByKey return the same session the executor passes through.
+    deps.claudeHandler.getSessionByKey = vi.fn().mockReturnValue(session);
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'legacy-ts' });
+
+    await (executor as any).handleModelCommandToolResults(
+      [
+        {
+          toolUseId: 'tool-1',
+          toolName: 'mcp__model-command__run',
+          result: JSON.stringify({
+            type: 'model_command_result',
+            commandId: 'ASK_USER_QUESTION',
+            ok: true,
+            payload: {
+              question: {
+                type: 'user_choice',
+                question: '선택?',
+                choices: [
+                  { id: '1', label: 'A' },
+                  { id: '2', label: 'B' },
+                ],
+              },
+            },
+          }),
+        },
+      ],
+      session,
+      {
+        channel: 'C1',
+        threadTs: '171.100',
+        sessionKey: 'C1-171.100',
+        say,
+        turnId: 'TID-1',
+      },
+    );
+
+    expect(deps.threadPanel.askUser).toHaveBeenCalledWith(
+      'TID-1',
+      expect.objectContaining({ type: 'user_choice' }),
+      expect.any(Object),
+      expect.any(String),
+      expect.objectContaining({ channelId: 'C1', threadTs: '171.100', sessionKey: 'C1-171.100' }),
+      session,
+      'C1-171.100',
+    );
+    // legacy context.say should NOT have been used for the posted message
+    expect(say).not.toHaveBeenCalled();
+    // persist+broadcast after pendingQuestion write
+    expect(sessionRegistry.persistAndBroadcast).toHaveBeenCalledWith('C1-171.100');
+  });
+
+  it('PHASE=3 multi-choice pre-allocates formIds with turnId and calls askUserForm', async () => {
+    config.ui.fiveBlockPhase = 3;
+    const { deps } = createP3Deps();
+    deps.threadPanel.askUserForm = vi
+      .fn()
+      .mockResolvedValue({ ok: true, primaryTs: 'ts-0', allTs: ['ts-0'], formIds: ['any'] });
+    // back-fill lookup needs to return something
+    deps.actionHandlers.getPendingForm = vi.fn().mockImplementation((id: string) => ({
+      formId: id,
+      sessionKey: 'C1-171.100',
+      channel: 'C1',
+      threadTs: '171.100',
+      messageTs: '',
+      questions: [],
+      selections: {},
+      createdAt: Date.now(),
+    }));
+    const session = createSession();
+    deps.claudeHandler.getSessionByKey = vi.fn().mockReturnValue(session);
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn();
+
+    await (executor as any).handleModelCommandToolResults(
+      [
+        {
+          toolUseId: 'tool-2',
+          toolName: 'mcp__model-command__run',
+          result: JSON.stringify({
+            type: 'model_command_result',
+            commandId: 'ASK_USER_QUESTION',
+            ok: true,
+            payload: {
+              question: {
+                type: 'user_choices',
+                title: 'Multi',
+                questions: [{ id: 'q1', question: 'Q1?', choices: [{ id: '1', label: 'A' }] }],
+              },
+            },
+          }),
+        },
+      ],
+      session,
+      {
+        channel: 'C1',
+        threadTs: '171.100',
+        sessionKey: 'C1-171.100',
+        say,
+        turnId: 'TID-MULTI',
+      },
+    );
+
+    const setPendingCall = deps.actionHandlers.setPendingForm.mock.calls[0];
+    expect(setPendingCall[1]).toMatchObject({ turnId: 'TID-MULTI' });
+    expect(deps.threadPanel.askUserForm).toHaveBeenCalledWith(
+      'TID-MULTI',
+      expect.any(Array),
+      expect.any(Array),
+      expect.objectContaining({ type: 'user_choices' }),
+      expect.objectContaining({ channelId: 'C1' }),
+      session,
+      'C1-171.100',
+    );
+  });
+
+  it('PHASE=3 defensive prelude clears prior pendingChoice before a new ask', async () => {
+    config.ui.fiveBlockPhase = 3;
+    const { deps, sessionRegistry } = createP3Deps();
+    const session = createSession();
+    deps.claudeHandler.getSessionByKey = vi.fn().mockReturnValue(session);
+    const executor = new StreamExecutor(deps);
+    session.actionPanel = {
+      pendingChoice: { turnId: 'OLD', kind: 'single', choiceTs: 'oldTs', formIds: [] },
+      choiceMessageTs: 'oldTs',
+      waitingForChoice: true,
+    };
+    const say = vi.fn();
+    await (executor as any).handleModelCommandToolResults(
+      [
+        {
+          toolUseId: 'tool-3',
+          toolName: 'mcp__model-command__run',
+          result: JSON.stringify({
+            type: 'model_command_result',
+            commandId: 'ASK_USER_QUESTION',
+            ok: true,
+            payload: {
+              question: { type: 'user_choice', question: 'Q', choices: [{ id: '1', label: 'A' }] },
+            },
+          }),
+        },
+      ],
+      session,
+      {
+        channel: 'C1',
+        threadTs: '171.100',
+        sessionKey: 'C1-171.100',
+        say,
+        turnId: 'NEW',
+      },
+    );
+    // prior pendingChoice is cleared before askUser writes the new record
+    expect(sessionRegistry.persistAndBroadcast).toHaveBeenCalledWith('C1-171.100');
+    // askUser was invoked so the new record gets written inside the facade
+    expect(deps.threadPanel.askUser).toHaveBeenCalled();
+  });
+
+  it('PHASE=3 single post-failed → sendCommandChoiceFallback (legacy say)', async () => {
+    config.ui.fiveBlockPhase = 3;
+    const { deps } = createP3Deps();
+    deps.threadPanel.askUser = vi
+      .fn()
+      .mockResolvedValue({ ok: false, reason: 'post-failed', error: new Error('slack') });
+    const session = createSession();
+    deps.claudeHandler.getSessionByKey = vi.fn().mockReturnValue(session);
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'x' });
+    await (executor as any).handleModelCommandToolResults(
+      [
+        {
+          toolUseId: 'tool-4',
+          toolName: 'mcp__model-command__run',
+          result: JSON.stringify({
+            type: 'model_command_result',
+            commandId: 'ASK_USER_QUESTION',
+            ok: true,
+            payload: {
+              question: { type: 'user_choice', question: 'Q', choices: [{ id: '1', label: 'A' }] },
+            },
+          }),
+        },
+      ],
+      session,
+      {
+        channel: 'C1',
+        threadTs: '171.100',
+        sessionKey: 'C1-171.100',
+        say,
+        turnId: 'TID',
+      },
+    );
+    // sendCommandChoiceFallback uses context.say to post text fallback
+    expect(say).toHaveBeenCalled();
+  });
+
+  it('unconditional pendingQuestion write + persistAndBroadcast fires under PHASE<3', async () => {
+    config.ui.fiveBlockPhase = 0;
+    const { deps, sessionRegistry } = createP3Deps();
+    const session = createSession();
+    deps.claudeHandler.getSessionByKey = vi.fn().mockReturnValue(session);
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'x' });
+    await (executor as any).handleModelCommandToolResults(
+      [
+        {
+          toolUseId: 'tool-5',
+          toolName: 'mcp__model-command__run',
+          result: JSON.stringify({
+            type: 'model_command_result',
+            commandId: 'ASK_USER_QUESTION',
+            ok: true,
+            payload: {
+              question: { type: 'user_choice', question: 'Q', choices: [{ id: '1', label: 'A' }] },
+            },
+          }),
+        },
+      ],
+      session,
+      {
+        channel: 'C1',
+        threadTs: '171.100',
+        sessionKey: 'C1-171.100',
+        say,
+        turnId: 'TID',
+      },
+    );
+    expect(session.actionPanel?.pendingQuestion).toBeDefined();
+    expect(sessionRegistry.persistAndBroadcast).toHaveBeenCalledWith('C1-171.100');
+  });
+
+  it('PHASE<3 multi uses setPendingForm to persist messageTs (v7 fix)', async () => {
+    config.ui.fiveBlockPhase = 0;
+    const { deps } = createP3Deps();
+    const pendingCache: Record<string, any> = {};
+    deps.actionHandlers.setPendingForm = vi.fn((id: string, data: any) => {
+      pendingCache[id] = data;
+    });
+    deps.actionHandlers.getPendingForm = vi.fn((id: string) => pendingCache[id]);
+    const session = createSession();
+    deps.claudeHandler.getSessionByKey = vi.fn().mockReturnValue(session);
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'multi-ts' });
+    await (executor as any).handleModelCommandToolResults(
+      [
+        {
+          toolUseId: 'tool-6',
+          toolName: 'mcp__model-command__run',
+          result: JSON.stringify({
+            type: 'model_command_result',
+            commandId: 'ASK_USER_QUESTION',
+            ok: true,
+            payload: {
+              question: {
+                type: 'user_choices',
+                title: 'T',
+                questions: [{ id: 'q1', question: 'Q', choices: [{ id: '1', label: 'A' }] }],
+              },
+            },
+          }),
+        },
+      ],
+      session,
+      {
+        channel: 'C1',
+        threadTs: '171.100',
+        sessionKey: 'C1-171.100',
+        say,
+        turnId: 'TID',
+      },
+    );
+    // Two setPendingForm calls: initial set (empty ts) + back-fill with posted ts.
+    expect(deps.actionHandlers.setPendingForm).toHaveBeenCalledTimes(2);
+    const backfillCall = deps.actionHandlers.setPendingForm.mock.calls[1][1];
+    expect(backfillCall.messageTs).toBe('multi-ts');
+  });
+});
+
+// ---------------------------------------------------------------------
+// Issue #688 — A-2 epoch guard + Bash resolver-descriptor wiring tests
+// ---------------------------------------------------------------------
+describe('stream-executor — epoch guard + Bash resolver descriptor (issue #688)', () => {
+  beforeEach(() => {
+    vi.mocked(userSettingsStore.getUserEmail).mockReturnValue('user@example.com');
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  // Minimal stream that yields an assistant tool_use so onToolUse fires,
+  // then a tool_result and a success result so execute() reaches the
+  // success-path clearStatus (line 1025 region) and finally block.
+  async function* toolFlowStream(toolName = 'Read') {
+    yield {
+      type: 'assistant',
+      message: {
+        content: [{ type: 'tool_use', id: 'tool_1', name: toolName, input: {} }],
+      },
+    };
+    yield {
+      type: 'user',
+      message: {
+        content: [{ type: 'tool_result', tool_use_id: 'tool_1', content: 'ok' }],
+      },
+    };
+    yield { type: 'result', subtype: 'success', total_cost_usd: 0, usage: {} };
+  }
+
+  // A stream that throws partway through to exercise the catch path
+  // (handleError with expectedEpoch) and finally guarded clearStatus.
+  async function* throwingStream() {
+    yield {
+      type: 'assistant',
+      message: {
+        content: [{ type: 'tool_use', id: 'tool_1', name: 'Read', input: {} }],
+      },
+    };
+    throw new Error('stream blew up');
+  }
+
+  function createDeps(streamFn: () => AsyncIterable<any>): any {
+    return {
+      claudeHandler: {
+        setActivityState: vi.fn(),
+        clearSessionId: vi.fn(),
+        streamQuery: vi.fn().mockImplementation(streamFn),
+        getSessionRegistry: vi.fn().mockReturnValue({
+          beginTurn: vi.fn(),
+          endTurn: vi.fn(),
+          broadcastSessionUpdate: vi.fn(),
+          getActivityState: vi.fn().mockReturnValue('idle'),
+        }),
+      },
+      fileHandler: {
+        formatFilePrompt: vi.fn().mockResolvedValue(''),
+        cleanupTempFiles: vi.fn().mockResolvedValue(undefined),
+      },
+      toolEventProcessor: {
+        handleToolUse: vi.fn().mockResolvedValue(undefined),
+        handleToolResult: vi.fn().mockResolvedValue(undefined),
+        setCompactDurationCallback: vi.fn(),
+        setReactionManager: vi.fn(),
+        setToolResultSink: vi.fn(),
+        cleanup: vi.fn(),
+      },
+      statusReporter: {
+        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
+        getStatusEmoji: vi.fn().mockReturnValue('thinking_face'),
+        cleanup: vi.fn(),
+      },
+      reactionManager: {
+        updateReaction: vi.fn().mockResolvedValue(undefined),
+        cleanup: vi.fn(),
+      },
+      contextWindowManager: {
+        handlePromptTooLong: vi.fn().mockResolvedValue(undefined),
+        cleanup: vi.fn(),
+        calculateRemainingPercent: vi.fn().mockReturnValue(100),
+        updateContextEmoji: vi.fn().mockResolvedValue(undefined),
+      },
+      toolTracker: {
+        scheduleCleanup: vi.fn(),
+        trackToolUse: vi.fn(),
+        getToolName: vi.fn(),
+        trackMcpCall: vi.fn(),
+        getMcpCallId: vi.fn(),
+        removeMcpCallId: vi.fn(),
+        getActiveMcpCallIds: vi.fn().mockReturnValue([]),
+      },
+      todoDisplayManager: {
+        cleanupSession: vi.fn(),
+        cleanup: vi.fn(),
+        handleTodoUpdate: vi.fn().mockResolvedValue(undefined),
+        setRenderRequestCallback: vi.fn(),
+        setPlanRenderCallback: vi.fn(),
+      },
+      actionHandlers: {},
+      requestCoordinator: {
+        removeController: vi.fn(),
+      },
+      slackApi: {
+        getUserProfile: vi.fn().mockResolvedValue({ email: 'user@example.com', displayName: 'User' }),
+        getClient: vi.fn().mockReturnValue({}),
+        getBotUserId: vi.fn().mockResolvedValue('U_BOT'),
+        deleteMessage: vi.fn().mockResolvedValue(undefined),
+      },
+      assistantStatusManager: {
+        // #700 review P1 — isEnabled drives `shouldRunLegacyB4Path` /
+        // `getEffectiveFiveBlockPhase`. Default enabled=true so the
+        // pre-existing #688 tests keep running through the legacy path
+        // at PHASE<4 (raw default); tests that need PHASE>=4 behaviour
+        // override `config.ui.fiveBlockPhase` + this flag.
+        isEnabled: vi.fn().mockReturnValue(true),
+        setStatus: vi.fn().mockResolvedValue(undefined),
+        clearStatus: vi.fn().mockResolvedValue(undefined),
+        getToolStatusText: vi.fn().mockReturnValue('is reading files...'),
+        bumpEpoch: vi.fn().mockReturnValue(42),
+        buildBashStatus: vi.fn().mockReturnValue('is running commands...'),
+        registerBackgroundBashActive: vi.fn().mockReturnValue(() => {}),
+      },
+      threadPanel: {
+        beginTurn: vi.fn().mockResolvedValue(undefined),
+        endTurn: vi.fn().mockResolvedValue(undefined),
+        failTurn: vi.fn().mockResolvedValue(undefined),
+        isTurnSurfaceActive: vi.fn().mockReturnValue(false),
+        appendText: vi.fn().mockResolvedValue(true),
+        setStatus: vi.fn().mockResolvedValue(undefined),
+        updatePanel: vi.fn().mockResolvedValue(undefined),
+        attachChoice: vi.fn().mockResolvedValue(undefined),
+        finalizeOnEndTurn: vi.fn().mockResolvedValue(undefined),
+        renderTasks: vi.fn().mockResolvedValue(false),
+        updateHeader: vi.fn().mockResolvedValue(undefined),
+        clearChoice: vi.fn().mockResolvedValue(undefined),
+      },
+    };
+  }
+
+  function createParams(say: ReturnType<typeof vi.fn>): any {
+    return {
+      session: {
+        sessionId: 'sess_epoch',
+        ownerId: 'U_TEST',
+        // LOG_DETAIL enables STATUS_SPINNER so setStatus/clearStatus
+        // branches in execute() actually fire on this test's path.
+        logVerbosity: LOG_DETAIL,
+        usage: {},
+        terminated: false,
+      },
+      sessionKey: 'C42:thread42',
+      userName: 'testuser',
+      workingDirectory: '/tmp/test',
+      abortController: new AbortController(),
+      processedFiles: [],
+      text: 'hello',
+      channel: 'C42',
+      threadTs: 'thread42',
+      user: 'U_TEST',
+      say,
+    };
+  }
+
+  it('captures epoch on entry and passes expectedEpoch to success-path clearStatus', async () => {
+    const deps = createDeps(() => toolFlowStream('Read'));
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+    await executor.execute(createParams(say));
+
+    expect(deps.assistantStatusManager.bumpEpoch).toHaveBeenCalledWith('C42', 'thread42');
+    // Every clearStatus on the happy path must carry expectedEpoch: 42
+    // (42 is what bumpEpoch was mocked to return above).
+    const clearCalls = deps.assistantStatusManager.clearStatus.mock.calls;
+    expect(clearCalls.length).toBeGreaterThan(0);
+    for (const call of clearCalls) {
+      expect(call[0]).toBe('C42');
+      expect(call[1]).toBe('thread42');
+      expect(call[2]).toEqual({ expectedEpoch: 42 });
+    }
+  });
+
+  // S2: error path finally clearStatus reached with expectedEpoch carried
+  // through handleError as well.
+  it('reaches finally clearStatus on thrown stream and forwards expectedEpoch to handleError (S2)', async () => {
+    const deps = createDeps(() => throwingStream());
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+    const result = await executor.execute(createParams(say));
+
+    expect(result.success).toBe(false);
+
+    // bumpEpoch called exactly once at execute() entry.
+    expect(deps.assistantStatusManager.bumpEpoch).toHaveBeenCalledTimes(1);
+
+    // Every clearStatus must carry the same captured epoch.
+    const clearCalls = deps.assistantStatusManager.clearStatus.mock.calls;
+    expect(clearCalls.length).toBeGreaterThanOrEqual(1);
+    for (const call of clearCalls) {
+      expect(call[2]).toEqual({ expectedEpoch: 42 });
+    }
+  });
+
+  // Bash resolver descriptor: Bash tool routes status through a thunk
+  // descriptor (() => string) so heartbeat ticks can recompute the text
+  // from the live bg counter.
+  it('Bash tool_use sets status with a resolver descriptor (not a static string)', async () => {
+    const deps = createDeps(() => toolFlowStream('Bash'));
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+    await executor.execute(createParams(say));
+
+    const setCalls = deps.assistantStatusManager.setStatus.mock.calls;
+    // We expect at least one call shaped with a thunk descriptor.
+    const resolverCall = setCalls.find((c: any[]) => typeof c[2] === 'function');
+    expect(resolverCall).toBeDefined();
+    expect(resolverCall![0]).toBe('C42');
+    expect(resolverCall![1]).toBe('thread42');
+    // Invoking the resolver should delegate to buildBashStatus on the manager.
+    const text = resolverCall![2]();
+    expect(text).toBe('is running commands...');
+    expect(deps.assistantStatusManager.buildBashStatus).toHaveBeenCalledWith('C42', 'thread42');
+    // getToolStatusText must NOT have been used for Bash on this path —
+    // the descriptor is injected directly.
+    for (const call of deps.assistantStatusManager.getToolStatusText.mock.calls) {
+      expect(call[0]).not.toBe('Bash');
+    }
+  });
+
+  it('non-Bash tool_use still uses the static getToolStatusText path', async () => {
+    const deps = createDeps(() => toolFlowStream('Read'));
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+    await executor.execute(createParams(say));
+
+    // Static string setStatus for Read: setStatus(ch, ts, 'is reading files...')
+    const staticCall = deps.assistantStatusManager.setStatus.mock.calls.find((c: any[]) => typeof c[2] === 'string');
+    expect(staticCall).toBeDefined();
+    expect(deps.assistantStatusManager.getToolStatusText).toHaveBeenCalledWith('Read');
+  });
+
+  // Verifies the 948-area setStatus('') got replaced by a guarded
+  // clearStatus call (not a setStatus with empty string) — the new
+  // single source of truth for "tear this spinner down" inside execute().
+  it('does not emit setStatus("") during execute() — guarded clearStatus only', async () => {
+    const deps = createDeps(() => toolFlowStream('Read'));
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+    await executor.execute(createParams(say));
+
+    const emptyStringSet = deps.assistantStatusManager.setStatus.mock.calls.find((c: any[]) => c[2] === '');
+    expect(emptyStringSet).toBeUndefined();
+  });
+
+  // #700 review P1 — PHASE>=4 Bash behavioural coverage. The onToolUse
+  // legacy-setStatus wrapper must route through `shouldRunLegacyB4Path`
+  // so Bash no longer double-writes the spinner when TurnSurface owns
+  // it. When the manager is clamped (disabled), the descriptor path must
+  // re-activate and fire the resolver so the heartbeat still reflects
+  // bg-bash counter changes. Both assertions directly protect the Bash
+  // + native spinner path against regressions.
+  describe('PHASE>=4 Bash legacy suppression (#700 P1)', () => {
+    const originalPhase = config.ui.fiveBlockPhase;
+
+    afterEach(async () => {
+      config.ui.fiveBlockPhase = originalPhase;
+      const { __resetClampEmitted } = await import('./effective-phase');
+      __resetClampEmitted();
+    });
+
+    it('PHASE=4 + enabled: Bash tool_use does NOT call legacy setStatus (TurnSurface owns)', async () => {
+      config.ui.fiveBlockPhase = 4;
+      const deps = createDeps(() => toolFlowStream('Bash'));
+      deps.assistantStatusManager.isEnabled = vi.fn().mockReturnValue(true);
+      const executor = new StreamExecutor(deps);
+      const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+      await executor.execute(createParams(say));
+
+      // All Bash legacy setStatus callsites in execute() / onToolUse
+      // route through `legacySetStatus` → `shouldRunLegacyB4Path` and
+      // must short-circuit. Zero setStatus writes on the clamp=false
+      // path is the success condition.
+      expect(deps.assistantStatusManager.setStatus).not.toHaveBeenCalled();
+    });
+
+    it('PHASE=4 + disabled (clamped): Bash tool_use re-fires the resolver descriptor', async () => {
+      config.ui.fiveBlockPhase = 4;
+      const deps = createDeps(() => toolFlowStream('Bash'));
+      // Clamp: disabled manager pulls `getEffectiveFiveBlockPhase` down
+      // to 3 so the legacy path runs and the Bash resolver descriptor is
+      // injected (so live heartbeats can reflect the bg-bash counter).
+      deps.assistantStatusManager.isEnabled = vi.fn().mockReturnValue(false);
+      const executor = new StreamExecutor(deps);
+      const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+      await executor.execute(createParams(say));
+
+      const setCalls = deps.assistantStatusManager.setStatus.mock.calls;
+      const resolverCall = setCalls.find((c: any[]) => typeof c[2] === 'function');
+      expect(resolverCall).toBeDefined();
+      expect(resolverCall![0]).toBe('C42');
+      expect(resolverCall![1]).toBe('thread42');
+      // Resolver delegates to buildBashStatus — matches the PHASE<4
+      // behaviour in the existing #688 test above.
+      expect(resolverCall![2]()).toBe('is running commands...');
+    });
+  });
+});
+
+// #689 P4 Part 2/2 — `legacySetStatus` / `legacyClearStatus` private wrappers.
+// All existing stream-executor native-spinner callsites route through these so
+// they can be PHASE-gated in one place. Verified directly (white-box) to keep
+// the test isolated from the full `execute()` pipeline.
+describe('StreamExecutor — #689 legacy native-spinner suppression', () => {
+  const originalPhase = config.ui.fiveBlockPhase;
+
+  const makeExec = (phase: number, enabled: boolean) => {
+    config.ui.fiveBlockPhase = phase;
+    const mgr = {
+      isEnabled: vi.fn().mockReturnValue(enabled),
+      setStatus: vi.fn().mockResolvedValue(undefined),
+      clearStatus: vi.fn().mockResolvedValue(undefined),
+    };
+    const executor = new StreamExecutor({ assistantStatusManager: mgr } as any);
+    return { executor, mgr };
+  };
+
+  afterEach(async () => {
+    config.ui.fiveBlockPhase = originalPhase;
+    // Reset the module-level clamp-once flag so the disabled-mgr clamp test
+    // doesn't leak the "already emitted" state into other suites in this
+    // file. Mirrors the pattern in turn-surface.test.ts (commit 1c83d5e).
+    const { __resetClampEmitted } = await import('./effective-phase');
+    __resetClampEmitted();
+  });
+
+  it('PHASE<4: legacySetStatus forwards to assistantStatusManager.setStatus', async () => {
+    const { executor, mgr } = makeExec(3, true);
+    await (executor as any).legacySetStatus('C', 'thr', 'is thinking...');
+    expect(mgr.setStatus).toHaveBeenCalledTimes(1);
+    expect(mgr.setStatus).toHaveBeenCalledWith('C', 'thr', 'is thinking...');
+  });
+
+  it('PHASE>=4 + enabled: legacySetStatus is a no-op (TurnSurface owns)', async () => {
+    const { executor, mgr } = makeExec(4, true);
+    await (executor as any).legacySetStatus('C', 'thr', 'is thinking...');
+    expect(mgr.setStatus).not.toHaveBeenCalled();
+  });
+
+  it('PHASE>=4 + disabled (clamped): legacySetStatus re-activates the forward', async () => {
+    const { executor, mgr } = makeExec(4, false);
+    await (executor as any).legacySetStatus('C', 'thr', 'fallback');
+    expect(mgr.setStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it('PHASE<4: legacyClearStatus forwards to assistantStatusManager.clearStatus', async () => {
+    const { executor, mgr } = makeExec(2, true);
+    await (executor as any).legacyClearStatus('C', 'thr');
+    expect(mgr.clearStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it('PHASE>=4 + enabled: legacyClearStatus is a no-op', async () => {
+    const { executor, mgr } = makeExec(5, true);
+    await (executor as any).legacyClearStatus('C', 'thr');
+    expect(mgr.clearStatus).not.toHaveBeenCalled();
+  });
+
+  it('legacyClearStatus propagates expectedEpoch option at PHASE<4', async () => {
+    const { executor, mgr } = makeExec(2, true);
+    await (executor as any).legacyClearStatus('C', 'thr', { expectedEpoch: 3 });
+    expect(mgr.clearStatus).toHaveBeenCalledWith('C', 'thr', { expectedEpoch: 3 });
   });
 });

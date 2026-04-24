@@ -143,3 +143,159 @@ describe('ThreadSurface.buildCombinedBlocks — P2 B2 guard', () => {
     expect(hasTaskListEmbed(blocks)).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// P3 (PHASE>=3) — setChoiceMeta + clearChoice (extended pendingChoice clear)
+// ---------------------------------------------------------------------------
+
+describe('ThreadSurface — P3 setChoiceMeta / clearChoice', () => {
+  const originalPhase = config.ui.fiveBlockPhase;
+
+  afterEach(() => {
+    config.ui.fiveBlockPhase = originalPhase;
+    vi.clearAllMocks();
+  });
+
+  function makeP3Deps(session: ConversationSession) {
+    const slackApi = {
+      getClient: vi.fn().mockReturnValue({}),
+      getPermalink: vi.fn().mockResolvedValue('https://slack.example/p1'),
+      postMessage: vi.fn().mockResolvedValue({ ts: 'panel-ts' }),
+      updateMessage: vi.fn().mockResolvedValue(undefined),
+    };
+    const claudeHandler = {
+      getSessionByKey: vi.fn().mockReturnValue(session),
+      getSessionKey: vi.fn().mockReturnValue('C1:t1.0'),
+    };
+    const requestCoordinator = { isRequestActive: vi.fn().mockReturnValue(false) };
+    const todoManager = { getTodos: vi.fn().mockReturnValue([]), getEffectiveStatus: vi.fn() };
+    return {
+      slackApi: slackApi as any,
+      claudeHandler: claudeHandler as any,
+      requestCoordinator: requestCoordinator as any,
+      todoManager: todoManager as any,
+    };
+  }
+
+  it('setChoiceMeta writes choiceMessageTs + waitingForChoice and attempts permalink', async () => {
+    config.ui.fiveBlockPhase = 3;
+    const session = makeSession();
+    const deps = makeP3Deps(session);
+    const surface = new ThreadSurface(deps);
+
+    await surface.setChoiceMeta('C1:t1.0', 'choice-ts-1');
+
+    expect(session.actionPanel?.choiceMessageTs).toBe('choice-ts-1');
+    expect(session.actionPanel?.waitingForChoice).toBe(true);
+    // Permalink fetch fires (fire-and-forget) — allow pending microtasks to run
+    await new Promise((r) => setImmediate(r));
+    expect(deps.slackApi.getPermalink).toHaveBeenCalledWith('C1', 'choice-ts-1');
+  });
+
+  it('setChoiceMeta does NOT write choiceBlocks (the B3 message owns its own buttons)', async () => {
+    config.ui.fiveBlockPhase = 3;
+    const session = makeSession();
+    const deps = makeP3Deps(session);
+    const surface = new ThreadSurface(deps);
+
+    await surface.setChoiceMeta('C1:t1.0', 'choice-ts-2');
+    expect(session.actionPanel?.choiceBlocks).toBeUndefined();
+  });
+
+  it('setChoiceMeta is a no-op below PHASE=3', async () => {
+    config.ui.fiveBlockPhase = 2;
+    const session = makeSession();
+    const deps = makeP3Deps(session);
+    const surface = new ThreadSurface(deps);
+
+    await surface.setChoiceMeta('C1:t1.0', 'never-written');
+    expect(session.actionPanel?.choiceMessageTs).toBeUndefined();
+    expect(deps.slackApi.getPermalink).not.toHaveBeenCalled();
+  });
+
+  it('setChoiceMeta is a no-op when session is missing', async () => {
+    config.ui.fiveBlockPhase = 3;
+    const deps = makeP3Deps({} as any);
+    (deps.claudeHandler.getSessionByKey as any) = vi.fn().mockReturnValue(undefined);
+    const surface = new ThreadSurface(deps);
+    await expect(surface.setChoiceMeta('missing', 'ts')).resolves.toBeUndefined();
+    expect(deps.slackApi.getPermalink).not.toHaveBeenCalled();
+  });
+
+  // #689 P4 Part 2/2 — chip suppression at effective PHASE>=4
+  describe('buildCombinedBlocks — P4 chip suppression', () => {
+    const makeMgr = (enabled: boolean) => ({ isEnabled: vi.fn().mockReturnValue(enabled) }) as any;
+
+    // Reset the module-level clamp-once flag so the disabled-mgr clamp test
+    // doesn't leak into subsequent tests in this file. Mirrors the pattern
+    // in turn-surface.test.ts (commit 1c83d5e).
+    afterEach(async () => {
+      const { __resetClampEmitted } = await import('./pipeline/effective-phase');
+      __resetClampEmitted();
+    });
+
+    function makeSessionWithChipState(): ConversationSession {
+      const s = makeSession();
+      s.actionPanel = { agentPhase: 'thinking', activeTool: 'Bash' };
+      (s as any).activityState = 'working';
+      return s;
+    }
+
+    function chipVisible(blocks: any[]): boolean {
+      // The chip renders as `\n_…_` italic text inside the hero status
+      // section (mrkdwn). If the text contains `\n_` the chip is present.
+      return blocks.some((b) => b.type === 'section' && b.text?.type === 'mrkdwn' && /\n_[^_]+_/.test(b.text.text));
+    }
+
+    it('PHASE<4 and no statusManager → chip present (legacy behaviour)', () => {
+      config.ui.fiveBlockPhase = 3;
+      const deps = makeDeps([]);
+      const surface = new ThreadSurface(deps);
+      const blocks = buildBlocks(surface, makeSessionWithChipState(), 'C1:t1.0');
+      expect(chipVisible(blocks)).toBe(true);
+    });
+
+    it('effective PHASE>=4 (manager enabled) → chip suppressed', () => {
+      config.ui.fiveBlockPhase = 4;
+      const deps = { ...makeDeps([]), assistantStatusManager: makeMgr(true) };
+      const surface = new ThreadSurface(deps);
+      const blocks = buildBlocks(surface, makeSessionWithChipState(), 'C1:t1.0');
+      expect(chipVisible(blocks)).toBe(false);
+    });
+
+    it('PHASE=4 but manager disabled → clamp to 3 → chip restored (graceful fallback)', () => {
+      config.ui.fiveBlockPhase = 4;
+      const deps = { ...makeDeps([]), assistantStatusManager: makeMgr(false) };
+      const surface = new ThreadSurface(deps);
+      const blocks = buildBlocks(surface, makeSessionWithChipState(), 'C1:t1.0');
+      expect(chipVisible(blocks)).toBe(true);
+    });
+  });
+
+  it('clearChoice also clears pendingChoice (P3)', async () => {
+    config.ui.fiveBlockPhase = 3;
+    const session = makeSession();
+    session.actionPanel = {
+      choiceMessageTs: 'ts-xyz',
+      choiceMessageLink: 'link',
+      waitingForChoice: true,
+      choiceBlocks: [{ type: 'section' } as any],
+      pendingChoice: {
+        turnId: 'turn-1',
+        kind: 'single',
+        choiceTs: 'ts-xyz',
+        formIds: [],
+        question: {} as any,
+        createdAt: 1,
+      },
+    };
+    const deps = makeP3Deps(session);
+    const surface = new ThreadSurface(deps);
+    await surface.clearChoice('C1:t1.0');
+    expect(session.actionPanel?.pendingChoice).toBeUndefined();
+    expect(session.actionPanel?.choiceBlocks).toBeUndefined();
+    expect(session.actionPanel?.waitingForChoice).toBe(false);
+    expect(session.actionPanel?.choiceMessageTs).toBeUndefined();
+    expect(session.actionPanel?.choiceMessageLink).toBeUndefined();
+  });
+});

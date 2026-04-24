@@ -413,4 +413,205 @@ describe('ToolEventProcessor', () => {
       expect(() => processor.cleanup()).not.toThrow();
     });
   });
+
+  /**
+   * Issue #688 — Background Bash progress tracking.
+   *
+   * Bash({run_in_background:true}) rides the shared MCP progress
+   * pipeline via the `_bash_bg` virtual server, plus an
+   * AssistantStatusManager bg-counter increment so the native spinner
+   * can flip to "waiting on background shell". These tests cover the
+   * S7/S8/S10 acceptance rows from docs/agent-status-visibility/plan.md.
+   */
+  describe('Background Bash tracking (issue #688)', () => {
+    function makeStatusManager() {
+      const unregister = vi.fn();
+      const register = vi.fn(() => unregister);
+      return {
+        register,
+        unregister,
+        manager: {
+          registerBackgroundBashActive: register,
+          getToolStatusText: vi.fn().mockReturnValue('is running commands...'),
+          buildBashStatus: vi.fn().mockReturnValue('is running commands...'),
+          setStatus: vi.fn().mockResolvedValue(undefined),
+          clearStatus: vi.fn().mockResolvedValue(undefined),
+          bumpEpoch: vi.fn().mockReturnValue(1),
+          isEnabled: vi.fn().mockReturnValue(true),
+          setTitle: vi.fn(),
+        },
+      };
+    }
+
+    it('S7: Bash run_in_background=true triggers startCall + trackMcpCall + registerCall + registerBackgroundBashActive', async () => {
+      mcpCallTracker.startCall.mockReturnValueOnce('call_bg_1');
+      const status = makeStatusManager();
+      const p = new ToolEventProcessor(toolTracker, mcpStatusDisplay, mcpCallTracker, status.manager as any);
+
+      const toolUses: ToolUseEvent[] = [
+        { id: 'tu_bg_1', name: 'Bash', input: { command: 'sleep 10', run_in_background: true } },
+      ];
+
+      await p.handleToolUse(toolUses, mockContext);
+
+      expect(mcpCallTracker.startCall).toHaveBeenCalledWith('_bash_bg', 'bash');
+      expect(toolTracker.getMcpCallId('tu_bg_1')).toBe('call_bg_1');
+      expect(status.register).toHaveBeenCalledWith('C123', 'thread_ts');
+      expect(mcpStatusDisplay.registerCall).toHaveBeenCalledWith(
+        'C123:thread_ts',
+        'call_bg_1',
+        expect.objectContaining({
+          displayType: 'BashBG',
+          displayLabel: '`sleep 10`',
+          predictKey: { serverName: '_bash_bg', toolName: 'bash' },
+        }),
+        'C123',
+        'thread_ts',
+      );
+    });
+
+    it('foreground Bash (no run_in_background) does NOT start bg tracking (regression)', async () => {
+      const status = makeStatusManager();
+      const p = new ToolEventProcessor(toolTracker, mcpStatusDisplay, mcpCallTracker, status.manager as any);
+
+      const toolUses: ToolUseEvent[] = [{ id: 'tu_fg_1', name: 'Bash', input: { command: 'ls' } }];
+
+      await p.handleToolUse(toolUses, mockContext);
+
+      expect(mcpCallTracker.startCall).not.toHaveBeenCalled();
+      expect(status.register).not.toHaveBeenCalled();
+      expect(mcpStatusDisplay.registerCall).not.toHaveBeenCalled();
+    });
+
+    it('S8: same tool_use_id tool_result triggers registry remove + unregister + endMcpTracking', async () => {
+      mcpCallTracker.startCall.mockReturnValueOnce('call_bg_2');
+      const status = makeStatusManager();
+      const p = new ToolEventProcessor(toolTracker, mcpStatusDisplay, mcpCallTracker, status.manager as any);
+
+      await p.handleToolUse(
+        [{ id: 'tu_bg_2', name: 'Bash', input: { command: 'sleep 5', run_in_background: true } }],
+        mockContext,
+      );
+
+      await p.handleToolResult([{ toolUseId: 'tu_bg_2', toolName: 'Bash', result: 'started' }], mockContext);
+
+      expect(status.unregister).toHaveBeenCalledTimes(1);
+      expect(mcpCallTracker.endCall).toHaveBeenCalledWith('call_bg_2');
+      expect(mcpStatusDisplay.completeCall).toHaveBeenCalledWith('call_bg_2', 1000);
+    });
+
+    it('S10: turn-end sweep via cleanup() drains live bg entries and unregisters each', async () => {
+      mcpCallTracker.startCall.mockReturnValueOnce('call_bg_a').mockReturnValueOnce('call_bg_b');
+      const status = makeStatusManager();
+      const p = new ToolEventProcessor(toolTracker, mcpStatusDisplay, mcpCallTracker, status.manager as any);
+
+      await p.handleToolUse(
+        [
+          { id: 'tu_bg_a', name: 'Bash', input: { command: 'sleep 20', run_in_background: true } },
+          { id: 'tu_bg_b', name: 'Bash', input: { command: 'sleep 30', run_in_background: true } },
+        ],
+        mockContext,
+      );
+
+      // Simulate turn end without any tool_result arriving.
+      p.cleanup('C123:thread_ts');
+
+      expect(status.unregister).toHaveBeenCalledTimes(2);
+      // completeCall for both active calls arrives from the activeMcpCallIds
+      // sweep in cleanup(), not from a direct completeCall in sweep.
+      expect(mcpStatusDisplay.completeCall).toHaveBeenCalledWith('call_bg_a', null);
+      expect(mcpStatusDisplay.completeCall).toHaveBeenCalledWith('call_bg_b', null);
+      expect(mcpStatusDisplay.cleanupSession).toHaveBeenCalledWith('C123:thread_ts');
+    });
+
+    it('tool_result after cleanup (already-swept) does not unregister again (idempotent)', async () => {
+      mcpCallTracker.startCall.mockReturnValueOnce('call_bg_c');
+      const status = makeStatusManager();
+      const p = new ToolEventProcessor(toolTracker, mcpStatusDisplay, mcpCallTracker, status.manager as any);
+
+      await p.handleToolUse(
+        [{ id: 'tu_bg_c', name: 'Bash', input: { command: 'echo hi', run_in_background: true } }],
+        mockContext,
+      );
+
+      p.cleanup('C123:thread_ts');
+      expect(status.unregister).toHaveBeenCalledTimes(1);
+
+      // late tool_result — entry is already gone from the registry, so no
+      // extra unregister/counter decrement
+      status.unregister.mockClear();
+      await p.handleToolResult([{ toolUseId: 'tu_bg_c', toolName: 'Bash', result: 'ok' }], mockContext);
+      expect(status.unregister).not.toHaveBeenCalled();
+    });
+  });
+
+  // #689 P4 Part 2/2 — PHASE>=4 suppresses the MCP-specific legacy setStatus
+  // call. TurnSurface takes over as the single B4 writer. At PHASE<4 the
+  // legacy path must still fire (regression guard).
+  describe('#689 B4 legacy suppression', () => {
+    const originalPhase = config.ui.fiveBlockPhase;
+    afterEach(async () => {
+      config.ui.fiveBlockPhase = originalPhase;
+      // Reset the module-level clamp-once flag so the disabled-mgr clamp
+      // test doesn't leak state into subsequent tests. Mirrors the pattern
+      // in turn-surface.test.ts (commit 1c83d5e).
+      const { __resetClampEmitted } = await import('./pipeline/effective-phase');
+      __resetClampEmitted();
+    });
+
+    const makeMgr = (enabled: boolean) => ({
+      isEnabled: vi.fn().mockReturnValue(enabled),
+      setStatus: vi.fn().mockResolvedValue(undefined),
+      clearStatus: vi.fn().mockResolvedValue(undefined),
+      getToolStatusText: vi.fn().mockReturnValue('is calling jira...'),
+    });
+
+    it('PHASE<4: handleToolUse calls setStatus on MCP tool (legacy behaviour)', async () => {
+      config.ui.fiveBlockPhase = 3;
+      const mgr = makeMgr(true);
+      const proc = new ToolEventProcessor(toolTracker, mcpStatusDisplay, mcpCallTracker, mgr as any);
+      await proc.handleToolUse([{ id: 'tool_1', name: 'mcp__jira__search_issues', input: { q: 't' } }], mockContext);
+      expect(mgr.setStatus).toHaveBeenCalledTimes(1);
+      expect(mgr.setStatus).toHaveBeenCalledWith('C123', 'thread_ts', 'is calling jira...');
+    });
+
+    it('PHASE>=4 + enabled: handleToolUse does NOT call setStatus (TurnSurface owns)', async () => {
+      config.ui.fiveBlockPhase = 4;
+      const mgr = makeMgr(true);
+      const proc = new ToolEventProcessor(toolTracker, mcpStatusDisplay, mcpCallTracker, mgr as any);
+      await proc.handleToolUse([{ id: 'tool_1', name: 'mcp__jira__search_issues', input: { q: 't' } }], mockContext);
+      expect(mgr.setStatus).not.toHaveBeenCalled();
+    });
+
+    it('PHASE>=4 + disabled (clamped): handleToolUse re-fires legacy setStatus (graceful fallback)', async () => {
+      config.ui.fiveBlockPhase = 4;
+      const mgr = makeMgr(false);
+      const proc = new ToolEventProcessor(toolTracker, mcpStatusDisplay, mcpCallTracker, mgr as any);
+      await proc.handleToolUse([{ id: 'tool_1', name: 'mcp__jira__search_issues', input: { q: 't' } }], mockContext);
+      expect(mgr.setStatus).toHaveBeenCalledTimes(1);
+    });
+
+    // #700 round-3 review finding #8 — getToolStatusText returning undefined
+    // must NEVER surface as setStatus('') — which reroutes to clearStatus
+    // internally and would wipe the spinner mid-tool. Lock the defensive
+    // skip so a future bug (TOOL_STATUS_MAP becoming Partial, serverName
+    // resolution change) cannot silently regress into a clear.
+    it('getToolStatusText returns undefined: setStatus is NOT called with empty string', async () => {
+      config.ui.fiveBlockPhase = 3;
+      const mgr = {
+        isEnabled: vi.fn().mockReturnValue(true),
+        setStatus: vi.fn().mockResolvedValue(undefined),
+        clearStatus: vi.fn().mockResolvedValue(undefined),
+        getToolStatusText: vi.fn().mockReturnValue(undefined),
+      };
+      const proc = new ToolEventProcessor(toolTracker, mcpStatusDisplay, mcpCallTracker, mgr as any);
+
+      await proc.handleToolUse([{ id: 'tool_1', name: 'mcp__jira__search_issues', input: { q: 't' } }], mockContext);
+
+      // Either setStatus was not called, or it was called with a defined
+      // non-empty string. NEVER with '' — that reroutes to clearStatus.
+      const emptyCalls = mgr.setStatus.mock.calls.filter(([, , text]) => text === '' || text == null);
+      expect(emptyCalls.length).toBe(0);
+    });
+  });
 });

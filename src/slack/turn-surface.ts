@@ -1,6 +1,8 @@
 import { config } from '../config';
 import { Logger } from '../logger';
 import type { Todo } from '../todo-manager';
+import type { AssistantStatusManager } from './assistant-status-manager';
+import { getEffectiveFiveBlockPhase } from './pipeline/effective-phase';
 import type { SlackApiHelper } from './slack-api-helper';
 import { TaskListBlockBuilder } from './task-list-block-builder';
 import { TurnRenderDebouncer } from './turn-render-debouncer';
@@ -57,6 +59,15 @@ export interface TurnContext {
   readonly sessionKey: string;
   /** Unique turn id — stream-executor uses `${sessionKey}:${turnStartTs}`. */
   readonly turnId: string;
+  /**
+   * Issue #688 — per-turn AssistantStatusManager epoch captured by the
+   * caller via `bumpEpoch(channel, threadTs)`. When present, TurnSurface's
+   * end()/fail() pass it as `expectedEpoch` to `clearStatus` so a stale
+   * close from a superseded turn cannot wipe the spinner set by the
+   * newer turn on the same (channel, threadTs). Optional so existing
+   * callers/tests that don't drive native status writes are unchanged.
+   */
+  readonly statusEpoch?: number;
 }
 
 /**
@@ -90,6 +101,17 @@ interface TurnState {
    * renderTasks without a prior begin()) also use this field.
    */
   planTs?: string;
+  /**
+   * P3 single-choice ts. Set by askUser() on successful post. NON-AUTHORITATIVE
+   * (the source of truth is session.actionPanel.pendingChoice.choiceTs, written
+   * by ThreadPanel). Here purely for per-turn debug/observability.
+   */
+  choiceTs?: string;
+  /**
+   * P3 multi-choice form ts list. Populated by askUserForm() per chunk.
+   * Same observability-only semantics as choiceTs.
+   */
+  formTsList: string[];
   startedAt: number;
   /** Monotonic counter of appended chunks (debug/observability). */
   appendedChunks: number;
@@ -112,6 +134,13 @@ function describeSlackError(error: unknown): { code?: string; message: string } 
 
 export interface TurnSurfaceDeps {
   slackApi: SlackApiHelper;
+  /**
+   * #689 P4 Part 2/2 — TurnSurface is the sole native-status writer at
+   * effective PHASE>=4. Optional so existing tests that construct
+   * `TurnSurface` without this dep keep working (legacy behaviour: no
+   * spinner writes even if PHASE=4 — ThreadSurface chip owns the UX).
+   */
+  assistantStatusManager?: AssistantStatusManager;
 }
 
 // ---------------------------------------------------------------------------
@@ -142,6 +171,19 @@ export class TurnSurface {
    */
   private phase(): number {
     return config.ui.fiveBlockPhase;
+  }
+
+  /**
+   * #689 P4 Part 2/2 — effective phase for B4 consumers. Identical to
+   * `phase()` unless `raw >= 4 && !assistantStatusManager.isEnabled()`, in
+   * which case it clamps to 3 and emits the `soma_ui_5block_phase_clamped`
+   * metric (once-flag). If no `assistantStatusManager` is injected we fall
+   * back to the raw phase (tests / legacy constructors).
+   */
+  private effectivePhase(): number {
+    const mgr = this.deps.assistantStatusManager;
+    if (!mgr) return this.phase();
+    return getEffectiveFiveBlockPhase(mgr);
   }
 
   // -------------------------------------------------------------------------
@@ -189,6 +231,7 @@ export class TurnSurface {
       startedAt: Date.now(),
       appendedChunks: 0,
       closing: false,
+      formTsList: [],
     });
     this.activeTurn.set(ctx.sessionKey, ctx.turnId);
 
@@ -232,6 +275,26 @@ export class TurnSurface {
         turnId: ctx.turnId,
         error: (err as Error).message,
       });
+    }
+
+    // #689 P4 Part 2/2 — B4 native spinner start. Only fires at effective
+    // PHASE>=4 (raw>=4 AND assistantStatusManager.isEnabled()). Runtime
+    // scope failure flips `enabled=false` → effective clamp to 3 on the
+    // next turn, falling back to ThreadSurface chip.
+    const mgr = this.deps.assistantStatusManager;
+    if (mgr && this.effectivePhase() >= 4 && ctx.threadTs) {
+      // Fail-open matching `chat.startStream` above: the B1 stream + turn
+      // lifecycle must survive a sidebar-spinner throw. The manager handles
+      // expected permanent/transient codes internally, so this try/catch
+      // only shields against unexpected throws.
+      try {
+        await mgr.setStatus(ctx.channelId, ctx.threadTs, 'is thinking...');
+      } catch (err) {
+        this.logger.warn('B4 native spinner setStatus failed in begin()', {
+          turnId: ctx.turnId,
+          error: (err as Error).message,
+        });
+      }
     }
   }
 
@@ -323,6 +386,7 @@ export class TurnSurface {
         startedAt: Date.now(),
         appendedChunks: 0,
         closing: false,
+        formTsList: [],
       };
       this.turns.set(turnId, state);
     }
@@ -402,16 +466,147 @@ export class TurnSurface {
   }
 
   /**
-   * B3 (choice block) entry point — activated in P3.
+   * B3 (single choice) post — PHASE>=3. Posts a pre-built single-choice
+   * payload as a fresh `chat.postMessage`. Returns the message ts so the
+   * caller (ThreadPanel) can synchronously write it into session state.
    *
-   * In P1 (PHASE<3) this returns immediately; the legacy user-choice-handler
-   * flow continues to own B3. Returning an empty string is a deliberate
-   * sentinel — P3 will return a selection id.
+   * TurnSurface stays writer-only: it does NOT touch session state,
+   * pending-choice records, or permalinks. Those are ThreadPanel's job.
+   *
+   * PHASE<3: returns empty string (sentinel, caller falls back to legacy).
+   * Failure: throws (caller's try/catch handles rollback).
+   *
+   * `address` is required because the turn may have already ended by post
+   * time; `turnId` is observability-only (looked up in `this.turns` to
+   * stamp `state.choiceTs` on success; missing turnState is tolerated).
    */
-  async askUser(turnId: string, _payload: unknown): Promise<string> {
+  async askUser(
+    turnId: string,
+    builtPayload: { blocks?: any[]; attachments?: any[] },
+    text: string,
+    address: TurnAddress,
+  ): Promise<string> {
     if (this.phase() < 3) return '';
-    this.logger.debug('askUser invoked before P3 wiring', { turnId });
-    return '';
+    const client = this.deps.slackApi.getClient();
+    const postArgs: Record<string, unknown> = {
+      channel: address.channelId,
+      text,
+      ...builtPayload,
+    };
+    if (address.threadTs) postArgs.thread_ts = address.threadTs;
+    const result: { ts?: string } = await (client.chat as any).postMessage(postArgs);
+    if (!result?.ts) {
+      throw new Error('chat.postMessage returned no ts');
+    }
+    const state = this.turns.get(turnId);
+    if (state) state.choiceTs = result.ts;
+    this.logger.debug('B3 single-choice message posted', {
+      turnId,
+      choiceTs: result.ts,
+    });
+    return result.ts;
+  }
+
+  /**
+   * B3 (multi-choice chunk) post — PHASE>=3. Posts ONE chunk of a multi-
+   * choice form. Caller (ThreadPanel) loops this per chunk.
+   *
+   * Returns the chunk's message ts. Throws on failure — caller rolls back
+   * posted chunks.
+   */
+  async askUserForm(
+    turnId: string,
+    builtPayload: { blocks?: any[]; attachments?: any[] },
+    text: string,
+    address: TurnAddress,
+  ): Promise<string> {
+    if (this.phase() < 3) return '';
+    const client = this.deps.slackApi.getClient();
+    const postArgs: Record<string, unknown> = {
+      channel: address.channelId,
+      text,
+      ...builtPayload,
+    };
+    if (address.threadTs) postArgs.thread_ts = address.threadTs;
+    const result: { ts?: string } = await (client.chat as any).postMessage(postArgs);
+    if (!result?.ts) {
+      throw new Error('chat.postMessage returned no ts');
+    }
+    const state = this.turns.get(turnId);
+    if (state) state.formTsList.push(result.ts);
+    this.logger.debug('B3 multi-choice chunk posted', {
+      turnId,
+      formTs: result.ts,
+      chunkCount: state?.formTsList.length,
+    });
+    return result.ts;
+  }
+
+  /**
+   * B3 in-place resolve — PHASE>=3. Updates the single choice message with
+   * the "✅ 선택: …" completed blocks. Idempotent — swallow
+   * `message_not_found` (user or cleanup may have deleted the message).
+   */
+  async resolveChoice(
+    channelId: string,
+    choiceTs: string,
+    completedText: string,
+    completedBlocks: any[],
+  ): Promise<void> {
+    if (this.phase() < 3) return;
+    try {
+      await this.deps.slackApi.updateMessage(channelId, choiceTs, completedText, completedBlocks, []);
+      this.logger.debug('B3 single-choice resolved', { channelId, choiceTs });
+    } catch (err) {
+      const described = describeSlackError(err);
+      if (described.code === 'message_not_found') {
+        this.logger.debug('B3 resolveChoice: message already gone (idempotent)', {
+          channelId,
+          choiceTs,
+        });
+        return;
+      }
+      this.logger.warn('B3 resolveChoice: updateMessage failed', {
+        channelId,
+        choiceTs,
+        error: described,
+      });
+      throw err;
+    }
+  }
+
+  /**
+   * B3 multi-choice in-place resolve — iterates per-chunk ts update.
+   * Best-effort per chunk: a single chunk failure logs but does not abort
+   * the remaining updates (user already saw the click feedback; best to
+   * finish as many chunks as possible).
+   */
+  async resolveMultiChoice(
+    channelId: string,
+    tsList: string[],
+    completedText: string,
+    completedBlocks: any[],
+  ): Promise<void> {
+    if (this.phase() < 3) return;
+    // Chunks are independent Slack messages — update in parallel so the user
+    // sees all resolves at roughly the same wall clock. Individual failures
+    // are logged but don't fail siblings.
+    await Promise.allSettled(
+      tsList.map(async (ts) => {
+        try {
+          await this.deps.slackApi.updateMessage(channelId, ts, completedText, completedBlocks, []);
+          this.logger.debug('B3 multi-choice chunk resolved', { channelId, ts });
+        } catch (err) {
+          const described = describeSlackError(err);
+          if (described.code === 'message_not_found') return;
+          this.logger.warn('B3 resolveMultiChoice: updateMessage failed', {
+            channelId,
+            ts,
+            error: described,
+          });
+        }
+      }),
+    );
   }
 
   /**
@@ -445,6 +640,25 @@ export class TurnSurface {
         await this.closeStream(state, 'end', reason);
       }
     } finally {
+      // #689 P4 Part 2/2 — B4 native spinner clear. Wrapped: although
+      // `clearStatus` swallows its own Slack errors, `effectivePhase()`
+      // and the epoch/`clearInterval` path can still throw. A throw here
+      // must NEVER skip `cleanupTurn` — orphaning `this.turns` would make
+      // the next turn hit the `begin()` called-twice guard and drop silently.
+      // #688 — pass `statusEpoch` so a stale close from a superseded turn
+      // cannot wipe a spinner set by the newer turn on the same thread.
+      try {
+        const mgr = this.deps.assistantStatusManager;
+        if (mgr && this.effectivePhase() >= 4 && state.ctx.threadTs) {
+          const opts = state.ctx.statusEpoch !== undefined ? { expectedEpoch: state.ctx.statusEpoch } : undefined;
+          await mgr.clearStatus(state.ctx.channelId, state.ctx.threadTs, opts);
+        }
+      } catch (err) {
+        this.logger.warn('B4 native spinner clear in end() threw — cleanup continues', {
+          turnId,
+          error: (err as Error)?.message ?? String(err),
+        });
+      }
       this.cleanupTurn(turnId, state);
     }
   }
@@ -477,6 +691,20 @@ export class TurnSurface {
         await this.closeStream(state, 'fail', 'aborted');
       }
     } finally {
+      // #689 P4 Part 2/2 + #688 — same B4 clear + epoch guard as end().
+      // Wrapped for the same reason: a throw must never skip `cleanupTurn`.
+      try {
+        const mgr = this.deps.assistantStatusManager;
+        if (mgr && this.effectivePhase() >= 4 && state.ctx.threadTs) {
+          const opts = state.ctx.statusEpoch !== undefined ? { expectedEpoch: state.ctx.statusEpoch } : undefined;
+          await mgr.clearStatus(state.ctx.channelId, state.ctx.threadTs, opts);
+        }
+      } catch (err) {
+        this.logger.warn('B4 native spinner clear in fail() threw — cleanup continues', {
+          turnId,
+          error: (err as Error)?.message ?? String(err),
+        });
+      }
       this.cleanupTurn(turnId, state);
     }
   }
@@ -603,5 +831,15 @@ export class TurnSurface {
       appendedChunks: state.appendedChunks,
       closing: state.closing,
     };
+  }
+
+  /** @internal — visibility for unit tests; do not call from production code. */
+  _getChoiceTs(turnId: string): string | undefined {
+    return this.turns.get(turnId)?.choiceTs;
+  }
+
+  /** @internal — visibility for unit tests; do not call from production code. */
+  _getFormTsList(turnId: string): string[] {
+    return this.turns.get(turnId)?.formTsList ?? [];
   }
 }

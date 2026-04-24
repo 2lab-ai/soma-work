@@ -12,6 +12,7 @@ import {
   isApiLikeError,
   shouldShowStatusBlock,
 } from '../../claude-status-fetcher';
+import { config } from '../../config';
 import { createConversation, recordAssistantTurn, recordUserTurn } from '../../conversation';
 import type { FileHandler, ProcessedFile } from '../../file-handler';
 import { Logger, redactAnthropicSecrets } from '../../logger';
@@ -44,6 +45,8 @@ import type {
 } from '../../types';
 import { coerceToAvailableModel, userSettingsStore } from '../../user-settings-store';
 import type { ActionHandlers } from '../actions';
+import { buildMarkerBlocks, SUPERSEDED_TEXT } from '../actions/click-classifier';
+import type { PendingInstructionConfirmStore } from '../actions/pending-instruction-confirm-store';
 import type { CompletionMessageTracker } from '../completion-message-tracker.js';
 import { postCompactCompleteIfNeeded, postCompactStartingIfNeeded } from '../hooks/compact-hooks';
 import {
@@ -61,11 +64,17 @@ import {
   type UsageData,
   UserChoiceHandler,
 } from '../index';
+import {
+  buildInstructionConfirmBlocks,
+  buildInstructionConfirmFallbackText,
+  buildInstructionSupersededBlocks,
+} from '../instruction-confirm-blocks';
 import { LOG_DETAIL, OutputFlag, shouldOutput, verboseTag } from '../output-flags';
 import type { RequestCoordinator } from '../request-coordinator';
 import type { SummaryService } from '../summary-service';
 import type { SummaryTimer } from '../summary-timer.js';
-import type { ThreadPanel, TurnContext } from '../thread-panel';
+import type { ThreadPanel, TurnAddress, TurnContext } from '../thread-panel';
+import { shouldRunLegacyB4Path } from './effective-phase';
 import { isLocalSlashCommand } from './local-slash-command';
 import { MessageEvent, type SayFn } from './types';
 
@@ -111,6 +120,14 @@ interface StreamExecutorDeps {
     ctx: { channel: string; threadTs: string; user: string; ts: string },
     text: string,
   ) => Promise<void>;
+  /**
+   * Shared store for deferred `UPDATE_SESSION.instructionOperations`.
+   * The stream-executor is the SOLE writer (fires on UPDATE_SESSION tool
+   * result); reader/mutator is `InstructionConfirmActionHandler`. Both
+   * must receive the SAME instance — wired in `SlackHandler.initialize`
+   * and passed to both `StreamExecutor` here and `ActionHandlers`.
+   */
+  pendingInstructionConfirmStore?: PendingInstructionConfirmStore;
 }
 
 interface StreamExecuteParams {
@@ -157,14 +174,18 @@ interface FinalFooterData {
 }
 
 /**
- * Normalize a UsageWindow's utilization (raw 0..1 or 0..100 from the
- * Anthropic usage API) to a 0..100 percent, matching the legacy
- * `ClaudeUsageSnapshot` contract that the footer/notifier expect.
+ * Normalize a UsageWindow's utilization to a 0..100 percent, matching the
+ * legacy `ClaudeUsageSnapshot` contract that the footer/notifier expect.
+ *
+ * #701 — Anthropic's `/api/oauth/usage` endpoint sends raw integer
+ * percent. The pre-#701 dual-form split at `raw <= 1.5` silently
+ * misinterpreted server value `1` (= 1%) as `100%` (fraction form 1.0).
+ * Dropped in favour of a single percent-only path that matches
+ * `utilToPctInt` / `isUtilizationFull` in `src/slack/cct/builder.ts`.
  */
-function normalizeUtilizationToPercent(raw: number | undefined): number | undefined {
+export function normalizeUtilizationToPercent(raw: number | undefined): number | undefined {
   if (typeof raw !== 'number' || !Number.isFinite(raw)) return undefined;
-  const percent = raw <= 1.5 ? raw * 100 : raw;
-  const clamped = Math.max(0, Math.min(100, percent));
+  const clamped = Math.max(0, Math.min(100, raw));
   return Math.round(clamped * 10) / 10;
 }
 
@@ -206,6 +227,30 @@ export class StreamExecutor {
   private summaryAbortControllers = new Map<string, AbortController>();
 
   constructor(private deps: StreamExecutorDeps) {}
+
+  /**
+   * #689 P4 Part 2/2 — legacy native-spinner writer wrapper. At effective
+   * PHASE>=4 this is a no-op because `TurnSurface.begin/end` owns the
+   * native spinner as the single writer. At PHASE<4 (and at clamped
+   * PHASE=4 when `AssistantStatusManager` is disabled) the wrapper
+   * forwards to the legacy path so operational behaviour for PHASE<4
+   * sessions is unchanged.
+   */
+  private async legacySetStatus(channel: string, threadTs: string, text: string): Promise<void> {
+    const mgr = this.deps.assistantStatusManager;
+    if (!shouldRunLegacyB4Path(mgr)) return;
+    await mgr.setStatus(channel, threadTs, text);
+  }
+
+  private async legacyClearStatus(
+    channel: string,
+    threadTs: string,
+    options?: { expectedEpoch?: number },
+  ): Promise<void> {
+    const mgr = this.deps.assistantStatusManager;
+    if (!shouldRunLegacyB4Path(mgr)) return;
+    await mgr.clearStatus(channel, threadTs, options);
+  }
 
   /**
    * 프롬프트 준비
@@ -281,6 +326,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       user,
       say,
     } = params;
+
+    // Issue #688 — capture per-turn status epoch. Every clearStatus call
+    // emitted by this execute() carries `expectedEpoch: epoch` so that a
+    // stale clear from a previous (aborted) turn cannot kill a newer
+    // spinner set by a subsequent turn on the same (channel, threadTs).
+    // Must be function-scope (not a class field) so concurrent executions
+    // on different threads don't clobber each other.
+    const epoch = this.deps.assistantStatusManager.bumpEpoch(channel, threadTs);
 
     // Cancel summary timer on new user input
     // Trace: docs/turn-summary-lifecycle/trace.md, S2
@@ -358,6 +411,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       threadTs: threadTs || undefined,
       sessionKey,
       turnId,
+      // Issue #688 — thread the per-turn epoch through TurnContext so
+      // TurnSurface.end()/fail() can pass it as `expectedEpoch` to
+      // clearStatus, mirroring the caller-owns-epoch pattern used by the
+      // explicit clearStatus calls below (e.g. lines ~1035, 1116, 1349).
+      statusEpoch: epoch,
     };
     await this.deps.threadPanel?.beginTurn(turnContext);
 
@@ -453,6 +511,23 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         session.compactionOccurred = false;
       }
 
+      // PLAN §7 — if the user rejected the previous instruction write via
+      // the `n` button, inject a one-shot rejection notice so the assistant
+      // sees it was dropped and can reconsider. Runtime-only flag; cleared
+      // here so it never fires twice.
+      if (session.pendingInstructionRejection) {
+        if (!isSlashCommand) {
+          const opCount = session.pendingInstructionRejection.request.instructionOperations?.length ?? 0;
+          const notice = `<user-instruction-write-rejected>\nThe user rejected your previous proposal to update session.instructions (${opCount} operation${opCount === 1 ? '' : 's'}). Do not retry that exact proposal; re-evaluate whether the write is still warranted, and if so propose a different variation.\n</user-instruction-write-rejected>`;
+          finalPrompt = `${notice}\n\n${finalPrompt}`;
+          this.logger.info('Injected user-instruction-write-rejected notice', {
+            sessionKey,
+            opCount,
+          });
+        }
+        session.pendingInstructionRejection = undefined;
+      }
+
       // Record user turn (fire-and-forget, non-blocking)
       // Auto-create conversation if session lost its conversationId (e.g., after restart backfill miss)
       if (!session.conversationId && text && channel) {
@@ -536,7 +611,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         await this.deps.reactionManager.updateReaction(sessionKey, this.deps.statusReporter.getStatusEmoji('thinking'));
       }
       if (isOutputEnabled(OutputFlag.STATUS_SPINNER)) {
-        await this.deps.assistantStatusManager.setStatus(channel, threadTs, 'is thinking...');
+        await this.legacySetStatus(channel, threadTs, 'is thinking...');
       }
 
       // Create Slack context for permission prompts + channel description for system prompt
@@ -609,8 +684,24 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           if (isOutputEnabled(OutputFlag.STATUS_SPINNER)) {
             const toolName = toolUses[0]?.name;
             if (toolName) {
-              const statusText = this.deps.assistantStatusManager.getToolStatusText(toolName);
-              await this.deps.assistantStatusManager.setStatus(channel, threadTs, statusText);
+              // Issue #688 — Bash uses a thunk descriptor so the heartbeat
+              // tick can recompute the text from the live background-bash
+              // counter (e.g. switch to "waiting on background shell..."
+              // when a run_in_background call is in-flight). Non-Bash
+              // tools keep the simple static path.
+              if (toolName === 'Bash') {
+                const statusManager = this.deps.assistantStatusManager;
+                // PHASE>=4: TurnSurface is the single B4 writer — same gate
+                // as `legacySetStatus` (line 237) and the non-Bash branch.
+                if (shouldRunLegacyB4Path(statusManager)) {
+                  await statusManager.setStatus(channel, threadTs, () =>
+                    statusManager.buildBashStatus(channel, threadTs),
+                  );
+                }
+              } else {
+                const statusText = this.deps.assistantStatusManager.getToolStatusText(toolName);
+                await this.legacySetStatus(channel, threadTs, statusText);
+              }
             }
           }
           const toolName = toolUses[0]?.name;
@@ -912,7 +1003,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         onStatusUpdate: async (status: string) => {
           if (status === 'compacting') {
             // Context compaction start — always visible regardless of verbosity
-            await this.deps.assistantStatusManager.setStatus(channel, threadTs, '🗜️ 컨텍스트 압축 시작...');
+            await this.legacySetStatus(channel, threadTs, '🗜️ 컨텍스트 압축 시작...');
             // #617 AC4 fallback: if the SDK PreCompact hook never fires
             // (older SDK or edge case), the `compacting` status still
             // guarantees a thread-visible "starting" post. Epoch dedupe in
@@ -934,7 +1025,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             })();
           } else if (status === 'compact_done') {
             // Context compaction end — always visible regardless of verbosity
-            await this.deps.assistantStatusManager.setStatus(channel, threadTs, '✅ 컨텍스트 압축 완료');
+            await this.legacySetStatus(channel, threadTs, '✅ 컨텍스트 압축 완료');
           } else if (status === 'working') {
             if (isOutputEnabled(OutputFlag.STATUS_REACTION)) {
               await this.deps.reactionManager.updateReaction(
@@ -943,7 +1034,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
               );
             }
             if (isOutputEnabled(OutputFlag.STATUS_SPINNER)) {
-              await this.deps.assistantStatusManager.setStatus(channel, threadTs, '');
+              // Issue #688 — empty-string setStatus previously triggered the
+              // heartbeat to re-send `''` every 20s (ghost spinner). The
+              // manager now reroutes setStatus('') to clearStatus, but
+              // calling clearStatus explicitly here makes intent clear and
+              // carries the epoch guard so a stale call doesn't race.
+              await this.legacyClearStatus(channel, threadTs, {
+                expectedEpoch: epoch,
+              });
             }
           }
         },
@@ -1020,7 +1118,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       }
       // Always clear status regardless of verbosity — heartbeat timer must be stopped
       // to prevent leaked intervals when verbosity changes mid-stream.
-      await this.deps.assistantStatusManager.clearStatus(channel, threadTs);
+      // Issue #688 — guarded by this turn's epoch so a stale call from a
+      // previous aborted turn cannot nuke a newer spinner.
+      await this.legacyClearStatus(channel, threadTs, {
+        expectedEpoch: epoch,
+      });
 
       // Transition activity state
       // Issue #391: Skip idle transition when continuation exists — next turn starts immediately,
@@ -1240,9 +1342,26 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         say,
         requestAborted,
         activeSlotSnapshot,
+        epoch,
       );
       return { success: false, messageCount: 0, retryAfterMs };
     } finally {
+      // Issue #688 — defense-in-depth status clear on every exit path.
+      // The success and error branches above already clear with the
+      // same epoch guard; the manager is idempotent, and the guard
+      // means this call is a no-op if a newer turn has already bumped
+      // past `epoch`. Covers early-return paths that might skip the
+      // normal success/error clears.
+      try {
+        await this.legacyClearStatus(channel, threadTs, {
+          expectedEpoch: epoch,
+        });
+      } catch (err) {
+        this.logger.debug('stream-executor: finally clearStatus failed', {
+          turnId,
+          error: (err as Error)?.message ?? String(err),
+        });
+      }
       // Idempotent: if end/fail already ran (catch or early-return path
       // inside try), TurnSurface state is cleared and this is a no-op.
       // Covers success-path exits via return from the try block.
@@ -1318,9 +1437,21 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     say: SayFn,
     requestAborted: boolean = false,
     activeSlotAtQueryStart: ActiveTokenInfo | null = null,
+    expectedEpoch?: number,
   ): Promise<number | undefined> {
-    // Clear native spinner on any error and reset activity state
-    await this.deps.assistantStatusManager.clearStatus(channel, threadTs);
+    // Clear native spinner on any error and reset activity state.
+    // Issue #688 — guard with the caller's captured epoch so a stale
+    // error-path clear from a previous turn cannot kill a newer spinner.
+    // Wrap the clear: a throw here must not skip the downstream
+    // reaction-update + user-facing `say(errorDetails)` ~240 lines below.
+    try {
+      await this.legacyClearStatus(channel, threadTs, expectedEpoch !== undefined ? { expectedEpoch } : undefined);
+    } catch (err) {
+      this.logger.debug('handleError: legacyClearStatus failed — continuing error notification', {
+        sessionKey,
+        error: (err as Error)?.message ?? String(err),
+      });
+    }
     this.deps.claudeHandler.setActivityState(channel, threadTs, 'idle');
 
     // Check for context overflow error
@@ -2590,20 +2721,29 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       if (parsed.commandId === 'UPDATE_SESSION') {
         const request = parsed.payload.request as SessionResourceUpdateRequest;
 
-        // Apply resource operations and/or instruction operations if present
         const hasResourceOps = request.operations && request.operations.length > 0;
         const hasInstructionOps = request.instructionOperations && request.instructionOperations.length > 0;
         let operationsOk = true;
-        if (hasResourceOps || hasInstructionOps) {
+
+        // Resource operations (issues/prs/docs) apply immediately. Instruction
+        // operations are GATED — see PLAN §7 — the user must click y/n
+        // before we call `updateSessionResources` for them. So we split the
+        // request: apply resource ops now, defer instruction ops to the
+        // PendingInstructionConfirmStore.
+        if (hasResourceOps) {
+          const resourceOnly: SessionResourceUpdateRequest = {
+            expectedSequence: request.expectedSequence,
+            operations: request.operations,
+            // Deliberately OMIT instructionOperations.
+          };
           const updateResult = this.deps.claudeHandler.updateSessionResources(
             context.channel,
             context.threadTs,
-            request,
+            resourceOnly,
           );
-
           if (!updateResult.ok) {
             operationsOk = false;
-            this.logger.warn('Failed to apply UPDATE_SESSION on host', {
+            this.logger.warn('Failed to apply UPDATE_SESSION resource ops on host', {
               sessionKey: context.sessionKey,
               reason: updateResult.reason,
               error: updateResult.error,
@@ -2614,15 +2754,18 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
               thread_ts: context.threadTs,
             });
           } else {
-            this.logger.info('Applied UPDATE_SESSION on host', {
+            this.logger.info('Applied UPDATE_SESSION resource ops on host', {
               sessionKey: context.sessionKey,
               sequence: updateResult.snapshot.sequence,
               issueCount: updateResult.snapshot.issues.length,
               prCount: updateResult.snapshot.prs.length,
               docCount: updateResult.snapshot.docs.length,
-              instructionCount: updateResult.snapshot.instructions.length,
             });
           }
+        }
+
+        if (hasInstructionOps) {
+          await this.interceptInstructionOperationsForConfirm(request, session, context);
         }
 
         // Apply title update only if no operations or operations succeeded
@@ -2649,22 +2792,132 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         });
       }
       const lastQuestion = pendingQuestions[pendingQuestions.length - 1];
-      await this.renderAskUserQuestionFromCommand(lastQuestion, session, context);
+      // P3 (PHASE>=3): stream-executor threads its per-turn `turnId` into the
+      // ASK render so button payloads + PendingFormStore entries carry the
+      // same identity as `pendingChoice.turnId`. `context.turnId` is populated
+      // by stream-executor's `execute()` for every turn.
+      await this.renderAskUserQuestionFromCommand(context.turnId, lastQuestion, session, context);
     }
 
     return { hasPendingChoice, continuation, modelCommandResults };
   }
 
+  /**
+   * Defer `request.instructionOperations` into the PendingInstructionConfirm
+   * store and post a Slack y/n button. If a prior pending entry for the same
+   * session exists, update its message to `[superseded]` and evict it.
+   *
+   * NOTE: if the shared store is not wired (e.g. in minimal test harnesses)
+   * we fall through silently — the model will still see its write reported
+   * as pending in the UPDATE_SESSION payload, but no confirmation UI will
+   * appear. This mirrors the defensive no-op pattern used elsewhere in this
+   * file (see `dispatchPendingUserMessage` lazy check).
+   */
+  private async interceptInstructionOperationsForConfirm(
+    request: SessionResourceUpdateRequest,
+    session: ConversationSession,
+    context: StreamContext,
+  ): Promise<void> {
+    const store = this.deps.pendingInstructionConfirmStore;
+    if (!store) {
+      this.logger.warn('pendingInstructionConfirmStore not wired — instruction write dropped', {
+        sessionKey: context.sessionKey,
+        ops: request.instructionOperations?.length,
+      });
+      return;
+    }
+
+    const requestId = randomUUID();
+    const requestForStore: SessionResourceUpdateRequest = {
+      // Strip expectedSequence so the later commit doesn't race against
+      // unrelated resource sequence bumps that may happen while the user
+      // ponders the button.
+      operations: [],
+      instructionOperations: request.instructionOperations,
+    };
+
+    // Snapshot the turn initiator (or fall back to the session owner when
+    // no initiator is set yet — e.g. first turn). This is frozen into the
+    // store so the handler can evaluate the owner guard against the user
+    // who actually triggered this write, immune to later turn shifts.
+    const requesterId = session.currentInitiatorId || session.ownerId;
+
+    const evicted = store.set({
+      requestId,
+      sessionKey: context.sessionKey,
+      channelId: context.channel,
+      threadTs: context.threadTs,
+      request: requestForStore,
+      createdAt: Date.now(),
+      requesterId,
+    });
+
+    // Supersede any prior pending message for this session.
+    if (evicted?.messageTs) {
+      try {
+        await this.deps.slackApi.updateMessage(
+          evicted.channelId,
+          evicted.messageTs,
+          '⚠️ [superseded] — a newer instruction proposal replaced this one.',
+          buildInstructionSupersededBlocks(evicted.request),
+        );
+      } catch (err) {
+        this.logger.warn('Failed to update superseded confirm message', {
+          sessionKey: context.sessionKey,
+          evictedRequestId: evicted.requestId,
+          err,
+        });
+      }
+    }
+
+    const blocks = buildInstructionConfirmBlocks(requestForStore, requestId);
+    const fallback = buildInstructionConfirmFallbackText(requestForStore);
+    try {
+      const post = await this.deps.slackApi.postMessage(context.channel, fallback, {
+        threadTs: context.threadTs,
+        blocks,
+        unfurlLinks: false,
+        unfurlMedia: false,
+      });
+      if (post.ts) {
+        store.updateMessageTs(requestId, post.ts);
+      } else {
+        this.logger.warn('Confirm post returned no ts', {
+          sessionKey: context.sessionKey,
+          requestId,
+        });
+      }
+    } catch (err) {
+      this.logger.error('Failed to post instruction-confirm message', {
+        sessionKey: context.sessionKey,
+        requestId,
+        err,
+      });
+      // Best-effort cleanup — if the post fails there's nothing for the user
+      // to click, so remove the dangling store entry.
+      store.delete(requestId);
+    }
+
+    this.logger.info('Deferred instructionOperations for user y/n confirm', {
+      sessionKey: context.sessionKey,
+      requestId,
+      opCount: request.instructionOperations?.length ?? 0,
+      supersededPrior: !!evicted,
+      sessionId: session.sessionId,
+    });
+  }
+
   private async renderAskUserQuestionFromCommand(
+    turnId: string | undefined,
     question: UserChoice | UserChoices,
     session: ConversationSession,
     context: StreamContext,
   ): Promise<void> {
     try {
       if (question.type === 'user_choices') {
-        await this.renderMultiChoiceFromCommand(question, context);
+        await this.renderMultiChoiceFromCommand(turnId, question, context);
       } else {
-        await this.renderSingleChoiceFromCommand(question, context);
+        await this.renderSingleChoiceFromCommand(turnId, question, context);
       }
     } catch (error) {
       // If both primary render AND fallback fail (e.g. Slack rate limit),
@@ -2688,10 +2941,127 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       activeTool: undefined,
       waitingForChoice: true,
     });
+
+    // P3 (parity fix) — pendingQuestion was historically in-memory only. With
+    // P3's pendingChoice living on the session + broadcast to the dashboard,
+    // we must also persist pendingQuestion so a dashboard restart restores
+    // the question context. setActivityState persists on idle only; force a
+    // broadcast+save here regardless of PHASE so dashboard subscribers see
+    // the new pendingQuestion immediately.
+    try {
+      this.deps.claudeHandler.getSessionRegistry?.().persistAndBroadcast?.(context.sessionKey);
+    } catch (err) {
+      this.logger.debug('renderAskUserQuestionFromCommand: persistAndBroadcast failed', {
+        sessionKey: context.sessionKey,
+        error: (err as Error)?.message ?? String(err),
+      });
+    }
   }
 
-  private async renderSingleChoiceFromCommand(question: UserChoice, context: StreamContext): Promise<void> {
+  /**
+   * P3 (PHASE>=3) defensive prelude — clear any prior pendingChoice on the
+   * session before opening a new ask. Prevents split-brain between Slack UI
+   * and `pendingChoice` when a prior post succeeded but the resolve signal
+   * was lost (e.g. process restart, Slack click dropped).
+   *
+   * For `multi` priors: best-effort rewrite each prior chunk message to
+   * "⏱️ 새 질문으로 대체되었습니다." and delete PendingFormStore entries.
+   * For `single` priors: only clears session state (no Slack rewrite — the
+   * new ask replaces the visible message itself).
+   *
+   * No-op under PHASE<3 or when no prior `pendingChoice` exists.
+   */
+  private async supersedePriorPendingChoice(
+    session: ConversationSession,
+    sessionKey: string,
+    channel: string,
+  ): Promise<void> {
+    if (config.ui.fiveBlockPhase < 3) return;
+    const prior = session.actionPanel?.pendingChoice;
+    if (!prior) return;
+
+    if (prior.kind === 'multi' && prior.formIds.length > 0) {
+      // Prior chunks are independent Slack messages — rewrite in parallel.
+      await Promise.allSettled(
+        prior.formIds.map(async (formId) => {
+          const pendingForm = this.deps.actionHandlers.getPendingForm(formId);
+          if (pendingForm?.messageTs) {
+            await this.deps.slackApi
+              .updateMessage(channel, pendingForm.messageTs, SUPERSEDED_TEXT, buildMarkerBlocks(SUPERSEDED_TEXT), [])
+              .catch((err) =>
+                this.logger.warn('supersedePriorPendingChoice: rewrite failed', {
+                  sessionKey,
+                  formId,
+                  error: (err as Error)?.message ?? String(err),
+                }),
+              );
+          }
+          this.deps.actionHandlers.deletePendingForm(formId);
+        }),
+      );
+    }
+
+    if (session.actionPanel) {
+      session.actionPanel.pendingChoice = undefined;
+      session.actionPanel.choiceMessageTs = undefined;
+      session.actionPanel.choiceMessageLink = undefined;
+      session.actionPanel.waitingForChoice = false;
+    }
+    try {
+      this.deps.claudeHandler.getSessionRegistry?.().persistAndBroadcast?.(sessionKey);
+    } catch (err) {
+      this.logger.debug('supersedePriorPendingChoice: persistAndBroadcast failed', {
+        sessionKey,
+        error: (err as Error)?.message ?? String(err),
+      });
+    }
+  }
+
+  private async renderSingleChoiceFromCommand(
+    turnId: string | undefined,
+    question: UserChoice,
+    context: StreamContext,
+  ): Promise<void> {
     const session = this.deps.claudeHandler.getSessionByKey(context.sessionKey);
+
+    // P3 (PHASE>=3) — route through ThreadPanel.askUser so pendingChoice state
+    // is written synchronously with the posted ts. Falls through to the legacy
+    // context.say path when PHASE<3, threadPanel is missing, or askUser reports
+    // phase-disabled (e.g. test harness mock).
+    if (config.ui.fiveBlockPhase >= 3 && session && this.deps.threadPanel && turnId) {
+      await this.supersedePriorPendingChoice(session, context.sessionKey, context.channel);
+
+      const theme = userSettingsStore.getUserSessionTheme(session.ownerId);
+      const payload = UserChoiceHandler.buildUserChoiceBlocks(question, context.sessionKey, theme, turnId);
+
+      const address: TurnAddress = {
+        channelId: context.channel,
+        threadTs: context.threadTs,
+        sessionKey: context.sessionKey,
+      };
+      const result = await this.deps.threadPanel.askUser(
+        turnId,
+        question,
+        payload,
+        question.question ?? '선택이 필요합니다',
+        address,
+        session,
+        context.sessionKey,
+      );
+
+      if (result.ok) {
+        // ThreadPanel.askUser synchronously wrote pendingChoice + persistAndBroadcast.
+        return;
+      }
+      if (result.reason === 'post-failed') {
+        await this.sendCommandChoiceFallback(question, context);
+        return;
+      }
+      // phase-disabled → fall through to legacy path below.
+    }
+
+    // Legacy path (PHASE<3 or P3 fell through). Byte-identical pre-flip
+    // output: no `turnId` threaded through `buildUserChoiceBlocks`.
     const theme = session ? userSettingsStore.getUserSessionTheme(session.ownerId) : undefined;
     const payload = UserChoiceHandler.buildUserChoiceBlocks(question, context.sessionKey, theme);
     try {
@@ -2711,7 +3081,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     }
   }
 
-  private async renderMultiChoiceFromCommand(question: UserChoices, context: StreamContext): Promise<void> {
+  private async renderMultiChoiceFromCommand(
+    turnId: string | undefined,
+    question: UserChoices,
+    context: StreamContext,
+  ): Promise<void> {
     const maxQuestionsPerForm = 6;
     const chunks: UserChoices[] = [];
     for (let index = 0; index < question.questions.length; index += maxQuestionsPerForm) {
@@ -2728,6 +3102,79 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       });
     }
 
+    const session = this.deps.claudeHandler.getSessionByKey(context.sessionKey);
+
+    // P3 (PHASE>=3): pre-allocate formIds + persist (with turnId) before any
+    // Slack round-trip so a mid-flight click finds the live form entry.
+    if (config.ui.fiveBlockPhase >= 3 && session && this.deps.threadPanel && turnId) {
+      await this.supersedePriorPendingChoice(session, context.sessionKey, context.channel);
+
+      const formIds: string[] = [];
+      for (const chunk of chunks) {
+        const formId = `form_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
+        formIds.push(formId);
+        this.deps.actionHandlers.setPendingForm(formId, {
+          formId,
+          sessionKey: context.sessionKey,
+          channel: context.channel,
+          threadTs: context.threadTs,
+          messageTs: '',
+          questions: chunk.questions,
+          selections: {},
+          createdAt: Date.now(),
+          turnId,
+        });
+      }
+      if (formIds.length > 0) {
+        await this.deps.actionHandlers.invalidateOldForms(context.sessionKey, formIds[0], this.deps.slackApi);
+      }
+
+      const chunkPayloads = chunks.map((chunk, i) => ({
+        builtPayload: UserChoiceHandler.buildMultiChoiceFormBlocks(chunk, formIds[i], context.sessionKey),
+        text: chunk.title || '📋 선택이 필요합니다',
+      }));
+
+      const address: TurnAddress = {
+        channelId: context.channel,
+        threadTs: context.threadTs,
+        sessionKey: context.sessionKey,
+      };
+      const result = await this.deps.threadPanel.askUserForm(
+        turnId,
+        chunkPayloads,
+        formIds,
+        question,
+        address,
+        session,
+        context.sessionKey,
+      );
+
+      if (result.ok) {
+        // Back-fill messageTs on each pending form. Use setPendingForm (not
+        // in-place mutation) so a concurrent save-to-disk sees the new ts.
+        for (let i = 0; i < result.allTs.length; i++) {
+          const fId = formIds[i];
+          const pending = this.deps.actionHandlers.getPendingForm(fId);
+          if (pending) {
+            this.deps.actionHandlers.setPendingForm(fId, { ...pending, messageTs: result.allTs[i] });
+          }
+        }
+        return;
+      }
+      if (result.reason === 'post-failed') {
+        for (const fId of formIds) {
+          this.deps.actionHandlers.deletePendingForm(fId);
+        }
+        await this.sendCommandChoiceFallback(question, context);
+        return;
+      }
+      // phase-disabled → fall through to legacy path (cleanup pre-allocated forms).
+      for (const fId of formIds) {
+        this.deps.actionHandlers.deletePendingForm(fId);
+      }
+    }
+
+    // Legacy path (PHASE<3 or P3 fell through).
     for (let index = 0; index < chunks.length; index += 1) {
       const chunk = chunks[index];
       const formId = `form_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
@@ -2756,9 +3203,10 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         });
 
         if (result?.ts) {
+          // Persist messageTs via setPendingForm so restart can resolve the form.
           const pending = this.deps.actionHandlers.getPendingForm(formId);
           if (pending) {
-            pending.messageTs = result.ts;
+            this.deps.actionHandlers.setPendingForm(formId, { ...pending, messageTs: result.ts });
           }
         }
 

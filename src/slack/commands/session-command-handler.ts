@@ -172,17 +172,28 @@ export class SessionCommandHandler implements CommandHandler {
       lines.push(...dirLines);
     }
 
-    // User SSOT Instructions
+    // User SSOT Instructions — grouped by status so the prompt-injection
+    // shape is visible at a glance (PLAN §9).
     if (session.instructions?.length > 0) {
-      lines.push(`*Instructions (SSOT):* ${session.instructions.length}`);
-      for (let i = 0; i < Math.min(session.instructions.length, 5); i++) {
-        const inst = session.instructions[i];
-        const preview = inst.text.length > 80 ? inst.text.slice(0, 80) + '…' : inst.text;
-        lines.push(`  ${i + 1}. ${preview}`);
+      const counts = { active: 0, todo: 0, completed: 0 };
+      for (const i of session.instructions) counts[(i.status ?? 'active') as keyof typeof counts]++;
+      lines.push(
+        `*Instructions (SSOT):* ${session.instructions.length} ` +
+          `— 🟢 ${counts.active} active, ⏳ ${counts.todo} todo, ✅ ${counts.completed} completed`,
+      );
+      let shown = 0;
+      for (const status of ['active', 'todo', 'completed'] as const) {
+        const entries = session.instructions.filter((i: { status?: string }) => (i.status ?? 'active') === status);
+        if (entries.length === 0) continue;
+        for (const inst of entries.slice(0, 2)) {
+          const preview = inst.text.length > 80 ? `${inst.text.slice(0, 80)}…` : inst.text;
+          const icon = status === 'active' ? '🟢' : status === 'todo' ? '⏳' : '✅';
+          lines.push(`  ${icon} ${preview}`);
+          shown++;
+        }
       }
-      if (session.instructions.length > 5) {
-        lines.push(`  _...and ${session.instructions.length - 5} more_`);
-      }
+      const remaining = session.instructions.length - shown;
+      if (remaining > 0) lines.push(`  _...and ${remaining} more — use \`/instructions\`_`);
     }
 
     // Uptime

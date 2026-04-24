@@ -196,4 +196,217 @@ describe('ConversationWebServer Authentication', () => {
       expect(authResponse.statusCode).toBe(200);
     });
   });
+
+  describe('Slack SSO /auth/sso (#704)', () => {
+    beforeEach(() => {
+      mockConfig.oauth.jwtSecret = 'test-jwt-secret';
+      mockConfig.conversation.viewerToken = '';
+    });
+
+    it('redeems a valid exchange token: sets cookie and redirects', async () => {
+      const { startWebServer, injectWebServer } = await import('./web-server');
+      const { issueSlackToken } = await import('./oauth');
+      await startWebServer({ listen: false });
+      server = true;
+
+      const token = issueSlackToken({ slackUserId: 'U_SSO', email: 'sso@slack.local', name: 'SSO User' });
+
+      const response = await injectWebServer({
+        method: 'GET',
+        url: `/auth/sso?token=${encodeURIComponent(token)}`,
+      });
+
+      expect(response.statusCode).toBe(302);
+      expect(response.headers.location).toBe('/dashboard/U_SSO');
+      const setCookie = response.headers['set-cookie'];
+      expect(setCookie).toBeDefined();
+      const cookieStr = Array.isArray(setCookie) ? setCookie.join(';') : String(setCookie);
+      expect(cookieStr).toContain('soma_dash_token=');
+      expect(cookieStr).toContain('HttpOnly');
+      expect(cookieStr).toContain('SameSite=Lax');
+    });
+
+    it('rejects a second redemption of the same exchange token (jti consumed)', async () => {
+      const { startWebServer, injectWebServer } = await import('./web-server');
+      const { issueSlackToken } = await import('./oauth');
+      await startWebServer({ listen: false });
+      server = true;
+
+      const token = issueSlackToken({ slackUserId: 'U_SSO', email: 'e@x', name: 'N' });
+
+      const first = await injectWebServer({ method: 'GET', url: `/auth/sso?token=${encodeURIComponent(token)}` });
+      expect(first.statusCode).toBe(302);
+      expect(first.headers.location).toBe('/dashboard/U_SSO');
+
+      const replay = await injectWebServer({ method: 'GET', url: `/auth/sso?token=${encodeURIComponent(token)}` });
+      expect(replay.statusCode).toBe(302);
+      expect(replay.headers.location).toBe('/login?error=sso_consumed');
+      // No cookie issued on replay
+      expect(replay.headers['set-cookie']).toBeUndefined();
+    });
+
+    it('rejects a session-type JWT passed as an exchange token', async () => {
+      const { startWebServer, injectWebServer } = await import('./web-server');
+      await startWebServer({ listen: false });
+      server = true;
+
+      // Forge a token that looks like a session cookie (no type='sso_exchange').
+      const jwt = await import('jsonwebtoken');
+      const sessionLike = jwt.sign({ sub: 'U1', email: 'e@x', name: 'N', provider: 'slack' }, 'test-jwt-secret', {
+        expiresIn: 3600,
+      });
+      const response = await injectWebServer({
+        method: 'GET',
+        url: `/auth/sso?token=${encodeURIComponent(sessionLike)}`,
+      });
+      expect(response.statusCode).toBe(302);
+      expect(response.headers.location).toBe('/login?error=sso_invalid');
+    });
+
+    it('shows a session-switch confirmation page when a different user is already logged in', async () => {
+      const { startWebServer, injectWebServer } = await import('./web-server');
+      const { issueSlackToken } = await import('./oauth');
+      await startWebServer({ listen: false });
+      server = true;
+
+      // Existing session cookie for UA.
+      const jwt = await import('jsonwebtoken');
+      const existingSession = jwt.sign(
+        { sub: 'UA', email: 'a@x', name: 'Alice', provider: 'slack' },
+        'test-jwt-secret',
+        { expiresIn: 3600 },
+      );
+      // Fresh exchange token for UB.
+      const exchange = issueSlackToken({ slackUserId: 'UB', email: 'b@x', name: 'Bob' });
+
+      const response = await injectWebServer({
+        method: 'GET',
+        url: `/auth/sso?token=${encodeURIComponent(exchange)}`,
+        headers: { cookie: `soma_dash_token=${encodeURIComponent(existingSession)}` },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.headers['content-type']).toContain('text/html');
+      expect(response.body).toContain('Switch accounts?');
+      expect(response.body).toContain('Alice'); // current user
+      expect(response.body).toContain('Bob'); // requested user
+      // The jti MUST NOT be consumed on the interstitial path — user
+      // might still cancel. Verify the token can still POST-confirm.
+      expect(response.headers['set-cookie']).toBeUndefined();
+    });
+
+    it('POST /auth/sso/confirm redeems the switch explicitly when same-origin', async () => {
+      mockConfig.conversation.viewerUrl = 'http://localhost:3000';
+      const { startWebServer, injectWebServer } = await import('./web-server');
+      const { issueSlackToken } = await import('./oauth');
+      await startWebServer({ listen: false });
+      server = true;
+
+      const exchange = issueSlackToken({ slackUserId: 'UC', email: 'c@x', name: 'Carol' });
+      const body = `token=${encodeURIComponent(exchange)}`;
+      const response = await injectWebServer({
+        method: 'POST',
+        url: '/auth/sso/confirm',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          origin: 'http://localhost:3000',
+        },
+        payload: body,
+      });
+      expect(response.statusCode).toBe(303);
+      expect(response.headers.location).toBe('/dashboard/UC');
+      const setCookie = response.headers['set-cookie'];
+      expect(Array.isArray(setCookie) ? setCookie.join(';') : String(setCookie)).toContain('soma_dash_token=');
+      mockConfig.conversation.viewerUrl = '';
+    });
+
+    it('POST /auth/sso/confirm REJECTS cross-origin submit (CSRF guard)', async () => {
+      mockConfig.conversation.viewerUrl = 'http://localhost:3000';
+      const { startWebServer, injectWebServer } = await import('./web-server');
+      const { issueSlackToken } = await import('./oauth');
+      await startWebServer({ listen: false });
+      server = true;
+
+      const exchange = issueSlackToken({ slackUserId: 'UA', email: 'a@x', name: 'Attacker' });
+      const body = `token=${encodeURIComponent(exchange)}`;
+      const response = await injectWebServer({
+        method: 'POST',
+        url: '/auth/sso/confirm',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          origin: 'https://evil.example.com',
+        },
+        payload: body,
+      });
+      expect(response.statusCode).toBe(403);
+      expect(response.headers['set-cookie']).toBeUndefined();
+      mockConfig.conversation.viewerUrl = '';
+    });
+
+    it('POST /auth/sso/confirm REJECTS when Origin and Referer are both absent', async () => {
+      mockConfig.conversation.viewerUrl = 'http://localhost:3000';
+      const { startWebServer, injectWebServer } = await import('./web-server');
+      const { issueSlackToken } = await import('./oauth');
+      await startWebServer({ listen: false });
+      server = true;
+
+      const exchange = issueSlackToken({ slackUserId: 'UA', email: 'a@x', name: 'A' });
+      const body = `token=${encodeURIComponent(exchange)}`;
+      const response = await injectWebServer({
+        method: 'POST',
+        url: '/auth/sso/confirm',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        payload: body,
+      });
+      expect(response.statusCode).toBe(403);
+      expect(response.headers['set-cookie']).toBeUndefined();
+      mockConfig.conversation.viewerUrl = '';
+    });
+
+    it('interstitial fires when bearer:admin cookie is already present for a different identity', async () => {
+      mockConfig.conversation.viewerToken = 'admin-viewer-token';
+      const { startWebServer, injectWebServer } = await import('./web-server');
+      const { issueSlackToken } = await import('./oauth');
+      await startWebServer({ listen: false });
+      server = true;
+
+      const exchange = issueSlackToken({ slackUserId: 'UB', email: 'b@x', name: 'Bob' });
+
+      const response = await injectWebServer({
+        method: 'GET',
+        url: `/auth/sso?token=${encodeURIComponent(exchange)}`,
+        headers: { cookie: `soma_dash_token=${encodeURIComponent('bearer:admin-viewer-token')}` },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain('Switch accounts?');
+      expect(response.body).toContain('Admin (API token)');
+      expect(response.body).toContain('Bob');
+      expect(response.headers['cache-control']).toContain('no-store');
+      // jti preserved for the later POST
+      expect(response.headers['set-cookie']).toBeUndefined();
+      mockConfig.conversation.viewerToken = '';
+    });
+
+    it('redirects with sso_invalid on a bogus token', async () => {
+      const { startWebServer, injectWebServer } = await import('./web-server');
+      await startWebServer({ listen: false });
+      server = true;
+
+      const response = await injectWebServer({ method: 'GET', url: '/auth/sso?token=not-a-jwt' });
+      expect(response.statusCode).toBe(302);
+      expect(response.headers.location).toBe('/login?error=sso_invalid');
+      expect(response.headers['set-cookie']).toBeUndefined();
+    });
+
+    it('redirects with sso_missing when token querystring absent', async () => {
+      const { startWebServer, injectWebServer } = await import('./web-server');
+      await startWebServer({ listen: false });
+      server = true;
+
+      const response = await injectWebServer({ method: 'GET', url: '/auth/sso' });
+      expect(response.statusCode).toBe(302);
+      expect(response.headers.location).toBe('/login?error=sso_missing');
+    });
+  });
 });

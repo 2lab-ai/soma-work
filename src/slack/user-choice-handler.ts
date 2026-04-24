@@ -23,10 +23,19 @@ export class UserChoiceHandler {
   }
 
   /**
-   * Build Slack attachment for single user choice
+   * Build Slack attachment for single user choice.
+   *
+   * Optional `turnId` threads through to per-button JSON `value` so P3
+   * (PHASE>=3) click handlers can classify stale vs live clicks. PHASE<3
+   * callers omit `turnId` to preserve byte-identical legacy output.
    */
-  static buildUserChoiceBlocks(choice: UserChoice, sessionKey: string, theme?: SessionTheme): SlackMessagePayload {
-    return ChoiceMessageBuilder.buildUserChoiceBlocks(choice, sessionKey, theme);
+  static buildUserChoiceBlocks(
+    choice: UserChoice,
+    sessionKey: string,
+    theme?: SessionTheme,
+    turnId?: string,
+  ): SlackMessagePayload {
+    return ChoiceMessageBuilder.buildUserChoiceBlocks(choice, sessionKey, theme, turnId);
   }
 
   /**

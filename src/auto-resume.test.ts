@@ -28,6 +28,7 @@ function createTestHandler() {
     client: {
       chat: { postMessage: mockPostMessage },
     },
+    assistant: vi.fn(),
   } as any;
 
   const mockGetCrashRecoveredSessions = vi.fn().mockReturnValue([]);

@@ -93,6 +93,24 @@ describe('PromptBuilder', () => {
       expect(prompt).toBeDefined();
       // Should get the default prompt as fallback
     });
+
+    it('should load z-plan-to-work workflow prompt (#695)', () => {
+      const prompt = builder.loadWorkflowPrompt('z-plan-to-work');
+      expect(prompt).toBeDefined();
+      expect(typeof prompt).toBe('string');
+      expect(prompt!.length).toBeGreaterThan(0);
+      expect(prompt).toContain('plan-to-work');
+      expect(prompt).toContain('local:zwork');
+    });
+
+    it('should load z-epic-update workflow prompt (#695)', () => {
+      const prompt = builder.loadWorkflowPrompt('z-epic-update');
+      expect(prompt).toBeDefined();
+      expect(typeof prompt).toBe('string');
+      expect(prompt!.length).toBeGreaterThan(0);
+      expect(prompt).toContain('work-complete');
+      expect(prompt).toContain('Remaining Epic Checklist');
+    });
   });
 
   describe('buildSystemPrompt', () => {

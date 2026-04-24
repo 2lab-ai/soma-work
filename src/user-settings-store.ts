@@ -2,10 +2,19 @@ import fs from 'fs';
 import path from 'path';
 import { DATA_DIR as ENV_DATA_DIR } from './env-paths';
 import { Logger } from './logger.js';
+import { createPromptInvalidator } from './prompt-cache-invalidation';
 import { DEFAULT_LOG_VERBOSITY, getVerbosityFlags, type LogVerbosity, VERBOSITY_NAMES } from './slack/output-flags';
 import { maskUrl } from './turn-notifier.js';
 
 const logger = new Logger('UserSettingsStore');
+
+// Settings feed the system prompt (persona, model, verbosity, effort, etc.)
+// so mutations need to drop cached systemPrompt snapshots. Wired at startup
+// in `src/index.ts`; shared helper handles the null-safe + error-swallow
+// contract.
+const invalidator = createPromptInvalidator(logger, 'Settings');
+export const setSettingsPromptInvalidationHook = invalidator.setHook;
+const fireSettingsInvalidate = invalidator.fire;
 
 // Available models — the 8-entry user-facing allow-list.
 //
@@ -482,6 +491,10 @@ export class UserSettingsStore {
       };
     }
     this.saveSettings();
+    // Centralised invalidation — every settings mutation funnels through
+    // here, so hooking the hot path once covers persona / model / verbosity
+    // / effort / theme / bypass / network etc without call-site duplication.
+    fireSettingsInvalidate(userId);
   }
 
   /**

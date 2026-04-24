@@ -9,6 +9,7 @@ export {
   MessageHandler,
   PendingChoiceFormData,
   PendingFormStore,
+  PendingInstructionConfirmStore,
   RespondFn,
   SayFn,
 } from './actions';

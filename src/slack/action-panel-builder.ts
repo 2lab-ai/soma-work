@@ -26,6 +26,13 @@ export interface ActionPanelBuildParams {
   hasActiveRequest?: boolean;
   agentPhase?: string;
   activeTool?: string;
+  /**
+   * #689 P4 Part 2/2 — when `true`, the agent-chip (rendered as a phase +
+   * tool byline below the badge) is omitted from the status blocks. Set
+   * by `ThreadSurface` at effective PHASE>=4 so `TurnSurface` can own the
+   * visible progress indicator (native spinner) without a duplicate chip.
+   */
+  suppressAgentChip?: boolean;
   statusUpdatedAt?: number;
   logVerbosity?: number;
   prStatus?: PRStatusInfo;
@@ -76,6 +83,10 @@ const WORKFLOW_ACTIONS: Record<WorkflowType, PanelActionKey[]> = {
   'pr-docs-confluence': ['pr_review_new', 'pr_review_renew'],
   deploy: [],
   default: [],
+  // Handoff entrypoints (issue #695) — no action-panel buttons; sessions enter
+  // the z skill via deterministic workflow routing, not panel clicks.
+  'z-plan-to-work': [],
+  'z-epic-update': [],
 };
 
 export class ActionPanelBuilder {
@@ -164,6 +175,7 @@ export class ActionPanelBuilder {
         hasActiveRequest: params.hasActiveRequest,
         agentPhase: params.agentPhase,
         activeTool: params.activeTool,
+        suppressAgentChip: params.suppressAgentChip,
         prStatus: params.prStatus,
         contextRemainingPercent: params.contextRemainingPercent,
       }),
@@ -238,17 +250,22 @@ export class ActionPanelBuilder {
     hasActiveRequest?: boolean;
     agentPhase?: string;
     activeTool?: string;
+    suppressAgentChip?: boolean;
     prStatus?: PRStatusInfo;
     contextRemainingPercent?: number;
   }): any[] {
     const badge = ActionPanelBuilder.statusBadge(params.status);
-    const agentChip = ActionPanelBuilder.buildAgentChip({
-      waitingForChoice: params.waitingForChoice,
-      activityState: params.activityState,
-      hasActiveRequest: params.hasActiveRequest,
-      agentPhase: params.agentPhase,
-      activeTool: params.activeTool,
-    });
+    // #689 P4 Part 2/2 — TurnSurface is the B4 writer at effective PHASE>=4;
+    // the agent chip here would be a duplicate progress indicator, so skip it.
+    const agentChip = params.suppressAgentChip
+      ? null
+      : ActionPanelBuilder.buildAgentChip({
+          waitingForChoice: params.waitingForChoice,
+          activityState: params.activityState,
+          hasActiveRequest: params.hasActiveRequest,
+          agentPhase: params.agentPhase,
+          activeTool: params.activeTool,
+        });
 
     const statusText = agentChip ? `${badge}\n_${agentChip}_` : badge;
 
