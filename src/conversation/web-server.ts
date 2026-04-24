@@ -1,3 +1,4 @@
+import fastifyFormbody from '@fastify/formbody';
 import Fastify, {
   type FastifyInstance,
   type FastifyReply,
@@ -289,6 +290,12 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   }
 
   server = Fastify({ logger: false });
+
+  // Required for HTML form POSTs (e.g. the SSO session-switch interstitial
+  // at `POST /auth/sso/confirm`, #704). Fastify does not parse
+  // application/x-www-form-urlencoded by default; without this plugin the
+  // handler would receive an empty `request.body`.
+  await server.register(fastifyFormbody);
 
   // ---- HTML Routes (require auth when token is configured) ----
 
