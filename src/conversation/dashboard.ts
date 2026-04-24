@@ -4231,9 +4231,11 @@ function openPanel(sessionKey) {
   const cmdBtn = document.getElementById('cmd-send');
   const cmdHint = document.getElementById('cmd-hint');
   const isClosed = s.terminated || s.sessionState === 'SLEEPING';
-  const isOwnerPanel = !s.ownerId || s.ownerId === currentUserId;
+  // Fail closed — mirror renderCard so a missing ownerId never unlocks the
+  // panel input for a non-authenticated viewer.
+  const isOwnerPanel = !!s.ownerId && s.ownerId === currentUserId;
   if (!isOwnerPanel) {
-    if (cmdInput) { cmdInput.disabled = true; cmdInput.placeholder = 'Read-only — not your session'; }
+    if (cmdInput) { cmdInput.disabled = true; cmdInput.placeholder = READ_ONLY_MSG; }
     if (cmdBtn) { cmdBtn.disabled = true; }
     if (cmdHint) { cmdHint.style.display = 'none'; }
   } else if (isClosed) {
