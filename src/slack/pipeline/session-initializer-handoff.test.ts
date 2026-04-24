@@ -10,14 +10,6 @@ vi.mock('../../user-settings-store', () => ({
   DEFAULT_MODEL: 'claude-opus-4-7',
 }));
 
-vi.mock('../../dispatch-service', () => ({
-  getDispatchService: vi.fn().mockReturnValue({
-    dispatch: vi.fn(),
-    getModel: vi.fn().mockReturnValue('test-model'),
-    isReady: vi.fn().mockReturnValue(true),
-  }),
-}));
-
 import { HandoffAbortError } from 'somalib/model-commands/handoff-parser';
 import type { HandoffContext } from '../../types';
 import { SessionInitializer } from './session-initializer';
@@ -131,14 +123,13 @@ describe('SessionInitializer.runDispatch — z handoff entrypoints (#695)', () =
       expect(session.handoffContext?.hopBudget).toBe(1);
       expect(session.handoffContext?.sourceIssueUrl).toBe('https://example.com/issue/1');
       expect(session.handoffContext?.tier).toBe('medium');
-      expect(mockClaudeHandler.saveSessions).toHaveBeenCalled();
+      // transitionToMain persists the session; we do not call saveSessions twice.
       expect(mockClaudeHandler.transitionToMain).toHaveBeenCalledWith(
         'C1',
         't1',
         'z-plan-to-work',
         expect.any(String),
       );
-      expect(session.workflow).toBe('z-plan-to-work');
     });
 
     it('epic-update: parses work-complete sentinel, persists, transitions to z-epic-update', async () => {

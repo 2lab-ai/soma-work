@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { App } from '@slack/bolt';
-import { HandoffAbortError } from 'somalib/model-commands/handoff-parser';
+import { HandoffAbortError, isZHandoffWorkflow } from 'somalib/model-commands/handoff-parser';
 import { getAdminUsers, isAdminUser } from './admin-utils';
 import type { ContinuationHandler, TurnRunnerSurface } from './agent-session';
 import { TurnRunner, V1QueryAdapter } from './agent-session';
@@ -533,11 +533,9 @@ export class SlackHandler {
         const dispatchText = continuation.dispatchText || continuation.prompt;
         // Issue #695 — z handoff entrypoints need the full continuation prompt
         // (containing the `<z-handoff>` sentinel) for host-side parsing.
-        const handoffPrompt =
-          continuation.forceWorkflow === 'z-plan-to-work' ||
-          continuation.forceWorkflow === 'z-epic-update'
-            ? (continuation.prompt as string | undefined)
-            : undefined;
+        const handoffPrompt = isZHandoffWorkflow(continuation.forceWorkflow)
+          ? (continuation.prompt as string | undefined)
+          : undefined;
         await this.sessionInitializer.runDispatch(
           activeChannel,
           activeThreadTs,

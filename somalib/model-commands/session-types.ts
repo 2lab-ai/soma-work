@@ -23,6 +23,15 @@ export type WorkflowType =
 // Session handoff (issue #695) — typed metadata persistence
 // ===============================================================
 
+/**
+ * Subset of `WorkflowType` carrying the z controller handoff entrypoints.
+ * All host-side enforcement (validator precondition, `runDispatch` parse +
+ * mapping check, `slack-handler` safe-stop) keys off this discriminator.
+ *
+ * Type guard `isZHandoffWorkflow` is exported from `handoff-parser.ts` (runtime).
+ */
+export type ZHandoffWorkflow = 'z-plan-to-work' | 'z-epic-update';
+
 /** Sentinel type attribute → discriminator. */
 export type HandoffKind = 'plan-to-work' | 'work-complete';
 
