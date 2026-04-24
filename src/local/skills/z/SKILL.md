@@ -44,7 +44,7 @@ Invoke `local:zreflect`
 5. Output the full plan and get confirmation from the user via `local:UIAskUserQuestion`. Use the `../UIAskUserQuestion/templates/z-phase1-plan-approval.json`.
 6. Update Tasks with TodoWrite with the confirmed plan.
 7. **Handoff to phase2 via new session** (contract: `local:using-z` §Session Handoff Protocol → Handoff #1):
-   - Verify Issue URL from `using-epic-tasks` Case A/B output. Use a Case A escape marker only when **both** conditions hold: (a) `using-epic-tasks` classified this as tier=`tiny`|`small`, **and** (b) the original user request contained no up-front "issue first" demand. If either condition fails, the Issue URL path is mandatory.
+   - Verify Issue URL from `using-epic-tasks` Case A/B output. Use a Case A escape marker only when **all three** conditions hold: (a) `using-epic-tasks` classified this as tier=`tiny`|`small`, (b) the original user request contained no explicit or implicit "issue first" demand, **and** (c) the repository policy (CONTRIBUTING, team rules, branch protection, PR template) does not require a linked issue for any PR at this tier. If any condition fails, the Issue URL path is mandatory.
    - If neither Issue URL nor a validly qualified escape marker is available, **do not call CONTINUE_SESSION** — return to step 2 and fix the plan. This is the structural gate preventing issue-less PRs.
    - Call `mcp__model-command__run` with `CONTINUE_SESSION` per the Handoff #1 payload spec: carries Issue URL (or escape marker), Parent Epic (or `none`), Confirmed Plan, Task List, Codex Review score.
    - `resetSession: true`. The current session ends — phase2 runs in the **new session** (which enters via phase0 step 0.5).
