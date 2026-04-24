@@ -184,6 +184,28 @@ export interface ConversationSession {
    * by downstream guards (#696/#697/#698) without re-parsing the prompt.
    */
   handoffContext?: HandoffContext;
+  /**
+   * Host-enforced auto-handoff budget (issue #697, epic #694).
+   *
+   * Initialized to `DEFAULT_AUTO_HANDOFF_BUDGET` (=1) at session creation.
+   * Decremented by 1 each time the session emits a `CONTINUE_SESSION`
+   * (auto-handoff) via model-command. When 0, the next emission is rejected
+   * by `slack-handler.onResetSession` — it throws `HandoffBudgetExhaustedError`,
+   * which the outer try/catch turns into a Slack message; the session stays
+   * alive (soft ceiling) so the user can re-enter manually via `$z <url>`.
+   *
+   * Re-assigned to 1 in `resetSessionContext` so the same sessionKey becomes
+   * a fresh logical session with independent budget (spec §Scope "체인 계승이
+   * 아닌 독립 예산").
+   *
+   * `undefined` on deserialization from pre-#697 disk state is treated as 1
+   * defensively by `checkAndConsumeBudget` (`?? DEFAULT_AUTO_HANDOFF_BUDGET`).
+   *
+   * NOTE: `HandoffContext.hopBudget` (#695, seeded to 1 by `parseHandoff`) is
+   * informational / diagnostic only. This field is the authoritative store
+   * for host enforcement — see `src/slack/handoff-budget.ts`.
+   */
+  autoHandoffBudget?: number;
   // Tool-driven save result used by renew command (preferred over text parsing)
   renewSaveResult?: SaveContextResultPayload;
   // Ghost Session Fix #99: defense-in-depth flag for in-flight code to self-terminate

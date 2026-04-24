@@ -30,10 +30,16 @@ import {
   stripOneMSuffix,
 } from '../../metrics/model-registry';
 import { interceptToolResults } from '../../metrics/tool-result-interceptor';
+import { SLACK_BLOCK_KIT_CHANNEL_NAME } from '../../notification-channels/slack-block-kit-channel';
 import { checkAndSchedulePendingCompact } from '../../session/compact-threshold-checker';
 import { buildCompactionContext, snapshotFromSession } from '../../session/compaction-context-builder';
 import { type ActiveTokenInfo, getTokenManager, parseCooldownTime } from '../../token-manager';
-import { determineTurnCategory, type TurnNotifier } from '../../turn-notifier';
+import {
+  determineTurnCategory,
+  type TurnCompletionEvent,
+  type TurnNotifier,
+  type TurnNotifierNotifyOpts,
+} from '../../turn-notifier';
 import type {
   Continuation,
   ConversationSession,
@@ -253,6 +259,19 @@ export class StreamExecutor {
   }
 
   /**
+   * Excludes `slack-block-kit` from the WorkflowComplete fan-out when the
+   * P5 capability is live, so `TurnSurface.end('completed')` is the single
+   * writer of the B5 in-thread marker. Exception path (`handleError`)
+   * deliberately does NOT call this — Exceptions fan out to all channels.
+   */
+  private buildCompletionNotifyOpts(): TurnNotifierNotifyOpts | undefined {
+    if (this.deps.threadPanel?.isCompletionMarkerActive() === true) {
+      return { excludeChannelNames: [SLACK_BLOCK_KIT_CHANNEL_NAME] };
+    }
+    return undefined;
+  }
+
+  /**
    * 프롬프트 준비
    */
   async preparePrompt(
@@ -406,6 +425,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // turnId) would silently skip — leaving the second turn without an open
     // B1 stream.
     const turnId = `${sessionKey}:${requestStartedAt.getTime()}:${randomUUID()}`;
+
+    // P5 B5 marker snapshot — assigned exactly once on the success path
+    // after async enrichment completes. Undefined on abort/error/supersede
+    // so TurnSurface.end posts nothing. Snapshot is a plain object so later
+    // mutations on the live event shape can't retro-edit the posted marker.
+    let completionEventSnapshot: TurnCompletionEvent | undefined;
+    const buildCompletionEvent = (): TurnCompletionEvent | undefined => completionEventSnapshot;
+
     const turnContext: TurnContext = {
       channelId: channel,
       threadTs: threadTs || undefined,
@@ -416,6 +443,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // clearStatus, mirroring the caller-owns-epoch pattern used by the
       // explicit clearStatus calls below (e.g. lines ~1035, 1116, 1349).
       statusEpoch: epoch,
+      buildCompletionEvent,
     };
     await this.deps.threadPanel?.beginTurn(turnContext);
 
@@ -1205,7 +1233,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
               (session.usage.currentCacheCreateTokens ?? 0)
             : undefined;
 
-          this.deps.turnNotifier!.notify({
+          const finalEnrichedEvent: TurnCompletionEvent = {
             category,
             userId: session.ownerId || user,
             channel,
@@ -1236,7 +1264,17 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
                 ? Math.round(usageAfter.sevenDay - usageBefore.sevenDay)
                 : undefined,
             toolStats: Object.keys(toolStats).length > 0 ? toolStats : undefined,
-          });
+          };
+
+          // P5 snapshot — single assignment on success; abort/error/supersede
+          // never reach this line and the closure returns undefined.
+          completionEventSnapshot = finalEnrichedEvent;
+
+          // P5 exclusion — `buildCompletionNotifyOpts()` returns undefined when
+          // the capability is inactive, so the notify call is shape-identical
+          // to pre-P5 on the legacy path.
+          const notifyOpts = this.buildCompletionNotifyOpts();
+          this.deps.turnNotifier!.notify(finalEnrichedEvent, notifyOpts);
         };
         enrichAndNotify().catch((err) => this.logger.warn('Turn notification failed', { error: err?.message }));
 
@@ -2708,11 +2746,18 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       }
 
       if (parsed.commandId === 'CONTINUE_SESSION') {
-        continuation = parsed.payload.continuation;
+        // Issue #697: stamp `origin: 'model'` on model-emitted continuations
+        // so `slack-handler.onResetSession` can distinguish them from
+        // host-built continuations (renew/onboarding — stamped 'host' below)
+        // for auto-handoff budget enforcement. The spread-then-override pattern
+        // also strips any origin value a misbehaving model may have supplied
+        // in the payload (host authority on this field).
+        continuation = { ...parsed.payload.continuation, origin: 'model' };
         this.logger.info('Captured CONTINUE_SESSION from model-command', {
           sessionKey: context.sessionKey,
           resetSession: continuation.resetSession === true,
           forceWorkflow: continuation.forceWorkflow,
+          origin: 'model',
           dispatchTextPreview: continuation.dispatchText?.slice(0, 120),
         });
         continue;
@@ -3461,6 +3506,8 @@ ${userInstruction}`;
       prompt: loadPrompt,
       resetSession: true,
       dispatchText: userMessage || undefined,
+      // Issue #697: host-built continuation — skip auto-handoff budget enforcement.
+      origin: 'host',
     };
   }
 
@@ -3636,6 +3683,8 @@ ${userInstruction}`;
         prompt: result.user_message,
         resetSession: true,
         dispatchText: result.user_message,
+        // Issue #697: host-built continuation — skip auto-handoff budget enforcement.
+        origin: 'host',
       };
     }
 

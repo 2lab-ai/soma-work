@@ -18,8 +18,11 @@ import { type SessionTheme, userSettingsStore } from '../user-settings-store.js'
 
 const logger = new Logger('SlackBlockKitChannel');
 
+/** Stable identifier for `TurnNotifier.notify({ excludeChannelNames: [...] })` and future filters. */
+export const SLACK_BLOCK_KIT_CHANNEL_NAME = 'slack-block-kit';
+
 export class SlackBlockKitChannel implements NotificationChannel {
-  name = 'slack-block-kit';
+  name = SLACK_BLOCK_KIT_CHANNEL_NAME;
 
   constructor(
     private slackApi: { postMessage: (channel: string, text: string, options?: any) => Promise<any> },
@@ -39,8 +42,12 @@ export class SlackBlockKitChannel implements NotificationChannel {
     const theme = userSettingsStore.getUserSessionTheme(event.userId);
     const blocks = this.buildBlocksForTheme(theme, event, emoji, label);
 
+    // Slack requires a non-empty `text` fallback when blocks/attachments are present
+    // (empty text silently drops the message on some clients and breaks accessibility).
+    const fallbackText = event.sessionTitle || event.category;
+
     try {
-      const result = await this.slackApi.postMessage(event.channel, '', {
+      const result = await this.slackApi.postMessage(event.channel, fallbackText, {
         threadTs: event.threadTs,
         attachments: [{ color, blocks }],
       });

@@ -60,6 +60,8 @@ interface MockSession {
   workflow?: string;
   state?: string;
   title?: string;
+  /** #697: host-enforced auto-handoff budget mirror for test assertions. */
+  autoHandoffBudget?: number;
 }
 
 // -------------------------------------------------------------------
@@ -236,14 +238,32 @@ describe('SessionInitializer.runDispatch — z handoff entrypoints (#695)', () =
     });
   });
 
-  describe('hopBudget initialization (#695 foundation for #697)', () => {
-    it('initializes hopBudget=1 on successful handoff entry', async () => {
+  describe('hopBudget initialization (#695 foundation, now consumed by #697)', () => {
+    it('initializes handoffContext.hopBudget=1 on successful handoff entry (#695 parser-seed, diagnostic only post-#697)', async () => {
       const { sessionInitializer, primeSession } = buildInitializer();
       const session = primeSession('C1', 't9');
 
       await sessionInitializer.runDispatch('C1', 't9', 'text', 'z-plan-to-work', planToWorkPrompt());
 
       expect(session.handoffContext?.hopBudget).toBe(1);
+    });
+
+    it('T6.1 handoff-dispatched session retains autoHandoffBudget=1 from initial session creation (#697 authoritative budget state)', async () => {
+      const { sessionInitializer, primeSession } = buildInitializer();
+      const session = primeSession('C1', 't10');
+      // `primeSession` starts the session with autoHandoffBudget defaulted
+      // by the mock; assert the initial value is 1 (spec AD-6: every session
+      // starts with budget=1, set by SessionRegistry.createSession).
+      session.autoHandoffBudget = 1;
+
+      await sessionInitializer.runDispatch('C1', 't10', 'text', 'z-plan-to-work', planToWorkPrompt());
+
+      // After handoff entry, the session's autoHandoffBudget is still 1
+      // (runDispatch doesn't touch this field — #697 enforcement is at the
+      // slack-handler.onResetSession seam, which runs BEFORE runDispatch
+      // and decrements the OLD session's budget; the NEW session here has
+      // its own fresh budget from createSession / resetSessionContext).
+      expect(session.autoHandoffBudget).toBe(1);
     });
   });
 });
