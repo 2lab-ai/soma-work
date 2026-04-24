@@ -149,6 +149,23 @@ describe('pr-issue-guard — Bash adversarial (codex-flagged)', () => {
     expect(result.blocked).toBe(true);
     expect(result.reason).toBe('missing-closes-issue');
   });
+
+  it('T1.20 --body-file with marker in chained tail → block (file content not visible to static check)', () => {
+    // Per spec AD-6, --body-file is out of scope (file-backed body). Without explicit
+    // exclusion, the chained `echo "Closes #696"` after --body-file body.md would
+    // false-pass because the regex would have matched --body-file and returned the
+    // rest of the command as "body content". The `(?!-)` negative lookahead in the
+    // extractor explicitly excludes --body-file.
+    const result = handlePrIssuePrecondition({
+      toolName: 'Bash',
+      toolInput: {
+        command: 'gh pr create --body-file body.md && echo "Closes #696"',
+      },
+      handoffContext: makeContext({ sourceIssueUrl: SOURCE }),
+    });
+    expect(result.blocked).toBe(true);
+    expect(result.reason).toBe('missing-closes-issue');
+  });
 });
 
 describe('pr-issue-guard — escapeEligible path (Bash)', () => {
@@ -214,6 +231,31 @@ describe('pr-issue-guard — MCP path', () => {
     });
     expect(result.blocked).toBe(true);
     expect(result.reason).toBe('missing-escape-marker');
+  });
+
+  it('T1.21 MCP with non-string body → block (unknown-tool-shape defensive branch)', () => {
+    // Defends against malformed MCP input. Static type can't always guarantee body
+    // is a string in untyped tool_input from the SDK boundary.
+    const result = handlePrIssuePrecondition({
+      toolName: 'mcp__github__create_pull_request',
+      toolInput: { body: 123 as unknown as string },
+      handoffContext: makeContext({ sourceIssueUrl: SOURCE }),
+    });
+    expect(result.blocked).toBe(true);
+    expect(result.reason).toBe('unknown-tool-shape');
+  });
+});
+
+describe('pr-issue-guard — defensive branches', () => {
+  it('T1.22 sourceIssueUrl with malformed URL (no /issues/<n>) → block (malformed-source-issue-url)', () => {
+    // Should not happen if parseHandoff did its job, but defense-in-depth.
+    const result = handlePrIssuePrecondition({
+      toolName: 'Bash',
+      toolInput: { command: 'gh pr create --body "Closes #696"' },
+      handoffContext: makeContext({ sourceIssueUrl: 'https://example.com/not-an-issue' }),
+    });
+    expect(result.blocked).toBe(true);
+    expect(result.reason).toBe('malformed-source-issue-url');
   });
 });
 
