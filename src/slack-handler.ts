@@ -580,11 +580,12 @@ export class SlackHandler {
             error: (postErr as Error).message,
           });
         }
-        const terminatedSession = this.claudeHandler.getSession(activeChannel, activeThreadTs);
-        if (terminatedSession) {
-          terminatedSession.terminated = true;
-          this.claudeHandler.saveSessions();
-        }
+        // Full termination (archive + cleanup + delete from registry) rather
+        // than just flipping `session.terminated`. A half-reset session left in
+        // the Map would otherwise be resurrected on the user's next message in
+        // the same thread, defeating the safe-stop.
+        const sessionKey = this.claudeHandler.getSessionKey(activeChannel, activeThreadTs);
+        this.claudeHandler.terminateSession(sessionKey);
         return; // Safe-stop — skip auto-retry, do not re-throw
       }
       // Auto-retry on recoverable errors (merged from main — auto-retry on error)

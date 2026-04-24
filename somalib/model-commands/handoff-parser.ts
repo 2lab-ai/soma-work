@@ -147,21 +147,28 @@ export function parseHandoff(promptText: string): ParseResult {
   }
   const handoffKind = capturedType as HandoffKind;
 
+  // Scan every line after the opening tag until EOF. The FIRST `</z-handoff>`
+  // closes the block; any `<z-handoff>` opening seen before that close is a
+  // nested/duplicated opening that must hard-fail (SKILL.md §Sentinel Grammar
+  // rule 5). After the first close, any further `<z-handoff>` is also a
+  // duplicate. Splitting the two scans would let an inner opening inside the
+  // body parse as ordinary content, so the rule is enforced in one pass.
   let closeIdx = -1;
   for (let j = openLineIdx + 1; j < lines.length; j++) {
-    if (/^<\/z-handoff>\s*$/.test(lines[j])) {
+    const line = lines[j];
+    if (closeIdx < 0 && /^<z-handoff\b/.test(line)) {
+      return { ok: false, reason: 'duplicate-sentinel', detail: '' };
+    }
+    if (closeIdx < 0 && /^<\/z-handoff>\s*$/.test(line)) {
       closeIdx = j;
-      break;
+      continue;
+    }
+    if (closeIdx >= 0 && /^<z-handoff\b/.test(line)) {
+      return { ok: false, reason: 'duplicate-sentinel', detail: '' };
     }
   }
   if (closeIdx < 0) {
     return { ok: false, reason: 'missing-closing', detail: '' };
-  }
-
-  for (let j = closeIdx + 1; j < lines.length; j++) {
-    if (/^<z-handoff\b/.test(lines[j])) {
-      return { ok: false, reason: 'duplicate-sentinel', detail: '' };
-    }
   }
 
   const body = lines.slice(openLineIdx + 1, closeIdx);
