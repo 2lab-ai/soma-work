@@ -14,7 +14,6 @@ import {
 } from '../../claude-status-fetcher';
 import { config } from '../../config';
 import { createConversation, recordAssistantTurn, recordUserTurn } from '../../conversation';
-import { shouldRunLegacyB4Path } from './effective-phase';
 import type { FileHandler, ProcessedFile } from '../../file-handler';
 import { Logger, redactAnthropicSecrets } from '../../logger';
 import { isMidThreadMention } from '../../mcp-config-builder';
@@ -75,6 +74,7 @@ import type { RequestCoordinator } from '../request-coordinator';
 import type { SummaryService } from '../summary-service';
 import type { SummaryTimer } from '../summary-timer.js';
 import type { ThreadPanel, TurnAddress, TurnContext } from '../thread-panel';
+import { shouldRunLegacyB4Path } from './effective-phase';
 import { isLocalSlashCommand } from './local-slash-command';
 import { MessageEvent, type SayFn } from './types';
 
@@ -237,9 +237,6 @@ export class StreamExecutor {
    * sessions is unchanged.
    */
   private async legacySetStatus(channel: string, threadTs: string, text: string): Promise<void> {
-    // #700 review P2 — use `shouldRunLegacyB4Path` so the predicate matches
-    // dispatch / tool-event gates (null-safe on manager) and future phase
-    // changes only touch one predicate.
     const mgr = this.deps.assistantStatusManager;
     if (!shouldRunLegacyB4Path(mgr)) return;
     await mgr.setStatus(channel, threadTs, text);
@@ -1445,11 +1442,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // Clear native spinner on any error and reset activity state.
     // Issue #688 — guard with the caller's captured epoch so a stale
     // error-path clear from a previous turn cannot kill a newer spinner.
-    await this.legacyClearStatus(
-      channel,
-      threadTs,
-      expectedEpoch !== undefined ? { expectedEpoch } : undefined,
-    );
+    await this.legacyClearStatus(channel, threadTs, expectedEpoch !== undefined ? { expectedEpoch } : undefined);
     this.deps.claudeHandler.setActivityState(channel, threadTs, 'idle');
 
     // Check for context overflow error

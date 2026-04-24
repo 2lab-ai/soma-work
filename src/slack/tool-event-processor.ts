@@ -345,10 +345,9 @@ export class ToolEventProcessor {
         try {
           bgEntry.unregister();
         } catch (err) {
-          // #700 review P3 — unregister is idempotent by construction
-          // (released flag). Hitting this path means two code paths are
-          // fighting over the same entry; surface as warn so ops can
-          // notice instead of hiding it at debug level.
+          // unregister is idempotent (released flag). A throw here means
+          // two code paths are fighting over the same entry — surface as
+          // warn so a real concurrency bug doesn't hide at debug level.
           this.logger.warn('bg bash unregister threw', {
             toolUseId: toolResult.toolUseId,
             error: (err as Error)?.message ?? String(err),
@@ -480,8 +479,7 @@ export class ToolEventProcessor {
         try {
           entry.unregister();
         } catch (err) {
-          // #700 review P3 — see handleToolResult above: raise to warn so
-          // real concurrency bugs during sweep are visible.
+          // Same warn-level rationale as handleToolResult's unregister catch.
           this.logger.warn('bg bash unregister threw during sweep', {
             sessionKey,
             toolUseId: entry.toolUseId,

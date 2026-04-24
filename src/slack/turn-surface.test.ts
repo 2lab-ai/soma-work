@@ -1025,17 +1025,17 @@ describe('TurnSurface', () => {
       config.ui.fiveBlockPhase = 4;
       const originalB4 = config.ui.b4NativeStatusEnabled;
       config.ui.b4NativeStatusEnabled = true;
+      const client = makeClient();
+      const setAssistantStatus = vi.fn().mockResolvedValue(undefined);
+      const slackApi = {
+        getClient: vi.fn().mockReturnValue(client),
+        setAssistantStatus,
+      } as any;
+      const { AssistantStatusManager } = await import('./assistant-status-manager');
+      const mgr = new AssistantStatusManager(slackApi);
+      const surface = new TurnSurface({ slackApi, assistantStatusManager: mgr });
+      let epochB = 0;
       try {
-        const client = makeClient();
-        const setAssistantStatus = vi.fn().mockResolvedValue(undefined);
-        const slackApi = {
-          getClient: vi.fn().mockReturnValue(client),
-          setAssistantStatus,
-        } as any;
-        const { AssistantStatusManager } = await import('./assistant-status-manager');
-        const mgr = new AssistantStatusManager(slackApi);
-        const surface = new TurnSurface({ slackApi, assistantStatusManager: mgr });
-
         // Turn A opens at epoch 1
         const epochA = mgr.bumpEpoch('C', 'thr');
         await surface.begin({
@@ -1047,7 +1047,7 @@ describe('TurnSurface', () => {
         });
 
         // Turn B supersedes: bump epoch → begin(B) sets a fresh spinner
-        const epochB = mgr.bumpEpoch('C', 'thr');
+        epochB = mgr.bumpEpoch('C', 'thr');
         await surface.begin({
           channelId: 'C',
           threadTs: 'thr',
@@ -1072,6 +1072,10 @@ describe('TurnSurface', () => {
         // Sanity: the initial begin(A) + begin(B) setStatus writes landed.
         expect(callsBeforeFail).toBeGreaterThanOrEqual(2);
       } finally {
+        // Drain B's live 20s heartbeat so the test doesn't leak a Node
+        // timer into the vitest worker. (A's heartbeat shares the same
+        // (channel,threadTs) key — one clearStatus covers both.)
+        if (epochB) await mgr.clearStatus('C', 'thr', { expectedEpoch: epochB });
         config.ui.b4NativeStatusEnabled = originalB4;
       }
     });

@@ -283,13 +283,10 @@ export class TurnSurface {
     // next turn, falling back to ThreadSurface chip.
     const mgr = this.deps.assistantStatusManager;
     if (mgr && this.effectivePhase() >= 4 && ctx.threadTs) {
-      // #700 review P1 — match `chat.startStream`'s fail-open stance above:
-      // setStatus hitting a Slack error must NOT crash begin() because the
-      // B1 stream and downstream turn lifecycle are independent of the
-      // sidebar spinner. AssistantStatusManager already handles permanent
-      // scope/auth internally (flips enabled=false → clamp to 3) and
-      // persists+heartbeats transient failures, so we only need to shield
-      // against unexpected throws.
+      // Fail-open matching `chat.startStream` above: the B1 stream + turn
+      // lifecycle must survive a sidebar-spinner throw. The manager handles
+      // expected permanent/transient codes internally, so this try/catch
+      // only shields against unexpected throws.
       try {
         await mgr.setStatus(ctx.channelId, ctx.threadTs, 'is thinking...');
       } catch (err) {
@@ -649,8 +646,7 @@ export class TurnSurface {
       // cannot wipe a spinner set by the newer turn on the same thread.
       const mgr = this.deps.assistantStatusManager;
       if (mgr && this.effectivePhase() >= 4 && state.ctx.threadTs) {
-        const opts =
-          state.ctx.statusEpoch !== undefined ? { expectedEpoch: state.ctx.statusEpoch } : undefined;
+        const opts = state.ctx.statusEpoch !== undefined ? { expectedEpoch: state.ctx.statusEpoch } : undefined;
         await mgr.clearStatus(state.ctx.channelId, state.ctx.threadTs, opts);
       }
       this.cleanupTurn(turnId, state);
@@ -688,8 +684,7 @@ export class TurnSurface {
       // #689 P4 Part 2/2 + #688 — same B4 clear + epoch guard as end().
       const mgr = this.deps.assistantStatusManager;
       if (mgr && this.effectivePhase() >= 4 && state.ctx.threadTs) {
-        const opts =
-          state.ctx.statusEpoch !== undefined ? { expectedEpoch: state.ctx.statusEpoch } : undefined;
+        const opts = state.ctx.statusEpoch !== undefined ? { expectedEpoch: state.ctx.statusEpoch } : undefined;
         await mgr.clearStatus(state.ctx.channelId, state.ctx.threadTs, opts);
       }
       this.cleanupTurn(turnId, state);
