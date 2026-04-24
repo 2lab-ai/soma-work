@@ -119,4 +119,63 @@ describe('OAuth module', () => {
       // No assertion needed — just verifying no throw
     });
   });
+
+  describe('issueSlackToken (#704)', () => {
+    it('is an exchange token — verifyDashboardToken REJECTS it', async () => {
+      // Exchange tokens carry type='sso_exchange' and must not be usable
+      // as session cookies directly. verifyDashboardToken returns null.
+      const { issueSlackToken } = await import('./oauth');
+      const token = issueSlackToken({
+        slackUserId: 'U789',
+        email: 'carol@slack.local',
+        name: 'Carol',
+      });
+      expect(verifyDashboardToken(token)).toBeNull();
+    });
+
+    it('is decodable by verifySsoExchangeToken with jti+sub+provider', async () => {
+      const oauth = await import('./oauth');
+      const token = oauth.issueSlackToken({ slackUserId: 'U1', email: 'e@x', name: 'N' });
+      const payload = oauth.verifySsoExchangeToken(token);
+      expect(payload).not.toBeNull();
+      expect(payload!.sub).toBe('U1');
+      expect(payload!.provider).toBe('slack');
+      expect(payload!.type).toBe('sso_exchange');
+      expect(payload!.jti).toMatch(/^[0-9a-f]{32}$/);
+      expect(payload!.exp).toBeTypeOf('number');
+    });
+
+    it('has short TTL (~SSO_EXCHANGE_EXPIRES_IN_SEC seconds)', async () => {
+      const oauth = await import('./oauth');
+      const before = Math.floor(Date.now() / 1000);
+      const token = oauth.issueSlackToken({ slackUserId: 'U1', email: 'e@x', name: 'N' });
+      const payload = oauth.verifySsoExchangeToken(token)!;
+      const ttl = payload.exp - before;
+      // Allow a few seconds of slack either way for test-runner pauses.
+      expect(ttl).toBeGreaterThan(oauth.SSO_EXCHANGE_EXPIRES_IN_SEC - 5);
+      expect(ttl).toBeLessThanOrEqual(oauth.SSO_EXCHANGE_EXPIRES_IN_SEC + 1);
+    });
+
+    it('verifySsoExchangeToken rejects a session token (wrong type)', async () => {
+      const oauth = await import('./oauth');
+      // Manually sign a token WITHOUT type='sso_exchange' — mimics a
+      // stolen session cookie being replayed as an SSO URL.
+      const fakeSession = jwt.sign(
+        { sub: 'U1', email: 'e@x', name: 'N', provider: 'slack', jti: 'abcd' },
+        'test-jwt-secret',
+        { expiresIn: 3600 },
+      );
+      expect(oauth.verifySsoExchangeToken(fakeSession)).toBeNull();
+    });
+
+    it('verifyDashboardToken rejects a token with type=sso_exchange', async () => {
+      // Attacker tries to stuff an exchange token into the cookie jar,
+      // bypassing /auth/sso. buildAuthContext calls verifyDashboardToken /
+      // verifyDashboardTokenRaw — both must refuse.
+      const oauth = await import('./oauth');
+      const token = oauth.issueSlackToken({ slackUserId: 'U1', email: 'e@x', name: 'N' });
+      expect(verifyDashboardToken(token)).toBeNull();
+      expect(oauth.verifyDashboardTokenRaw(token)).toBeNull();
+    });
+  });
 });

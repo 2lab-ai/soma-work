@@ -12,6 +12,7 @@ import { CompactHandler } from './compact-handler';
 import { CompactThresholdHandler } from './compact-threshold-handler';
 import { ContextHandler } from './context-handler';
 import { CwdHandler } from './cwd-handler';
+import { DashboardHandler } from './dashboard-handler';
 import { EffortHandler } from './effort-handler';
 import { EmailHandler } from './email-handler';
 import { HelpHandler } from './help-handler';
@@ -70,6 +71,7 @@ export class CommandRouter {
       new CctHandler(),
       new CwdHandler(deps),
       new McpHandler(deps),
+      new DashboardHandler(),
       new MarketplaceHandler(deps),
       new PluginsHandler(deps),
       this.skillForceHandler, // $local:skillname — must come before SessionCommandHandler
