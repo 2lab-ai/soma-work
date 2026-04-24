@@ -1,6 +1,4 @@
 import * as fs from 'fs';
-import { getAdminUsers } from '../../admin-utils';
-import { checkRepoChannelMatch, getAllChannels, getChannel, registerChannel } from '../../channel-registry';
 import {
   expectedHandoffKind,
   HandoffAbortError,
@@ -8,6 +6,8 @@ import {
   parseHandoff,
 } from 'somalib/model-commands/handoff-parser';
 import type { ZHandoffWorkflow } from 'somalib/model-commands/session-types';
+import { getAdminUsers } from '../../admin-utils';
+import { checkRepoChannelMatch, getAllChannels, getChannel, registerChannel } from '../../channel-registry';
 import type { ClaudeHandler } from '../../claude-handler';
 import { createConversation, getConversationUrl } from '../../conversation';
 import { getDispatchService } from '../../dispatch-service';
@@ -614,12 +614,7 @@ export class SessionInitializer {
       });
       // transitionToMain persists the session via SessionRegistry.saveSessions,
       // so no explicit save is needed here for handoffContext to hit disk.
-      this.deps.claudeHandler.transitionToMain(
-        channel,
-        threadTs,
-        forceWorkflow,
-        HANDOFF_ENTRY_TITLES[forceWorkflow],
-      );
+      this.deps.claudeHandler.transitionToMain(channel, threadTs, forceWorkflow, HANDOFF_ENTRY_TITLES[forceWorkflow]);
       return;
     }
 
