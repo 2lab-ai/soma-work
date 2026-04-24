@@ -81,14 +81,18 @@ export class DashboardHandler implements CommandHandler {
     const url = `${getViewerBaseUrl()}/auth/sso?token=${encodeURIComponent(token)}`;
     logger.info('Issued Slack SSO link', { userId: user });
 
+    // Only emit the clickable `<url|label>` form — intentionally NOT the
+    // raw URL again. The token is a bearer credential; printing it a
+    // second time makes copy/paste from Slack logs / notification
+    // previews trivial. The server-side jti store + 10-minute TTL
+    // already bound the replay window, but defense in depth means not
+    // echoing the credential at all. If a user needs to open the link
+    // in a different browser, they can right-click → copy link on the
+    // hyperlink. Issuing a fresh `dashboard` command is cheap.
     await say({
-      // The ephemeral-looking layout (<URL|label>) lets Slack render a
-      // clickable link while keeping the token visible if the user wants to
-      // copy it manually (e.g. open in another browser).
       text:
-        `🔐 *Dashboard login link* (valid for your session; do not share)\n` +
-        `<${url}|Open your dashboard>\n\n` +
-        `Raw: \`${url}\``,
+        `🔐 *Dashboard login link* (single-use, expires in 10 minutes)\n` +
+        `<${url}|Open your dashboard> — do not forward.`,
       thread_ts: threadTs,
     });
     return { handled: true };
