@@ -141,6 +141,11 @@ export class SlackHandler {
     // StreamExecutor / SessionInitializer reference downstream.
     this.assistantStatusManager = new AssistantStatusManager(this.slackApi);
 
+    // Shared SlackBlockKitChannel — both ThreadPanel (→ TurnSurface B5 emit)
+    // and TurnNotifier (legacy fan-out) observe the same instance so they
+    // share tracker dedup state. Constructing two would split that state.
+    const slackBlockKitChannel = new SlackBlockKitChannel(this.slackApi, completionMessageTracker);
+
     this.threadPanel = new ThreadPanel({
       slackApi: this.slackApi,
       claudeHandler: this.claudeHandler,
@@ -149,6 +154,7 @@ export class SlackHandler {
       completionMessageTracker,
       sessionRegistry,
       assistantStatusManager: this.assistantStatusManager,
+      slackBlockKitChannel,
     });
 
     // Command routing
@@ -242,9 +248,10 @@ export class SlackHandler {
       threadPanel: this.threadPanel,
     });
 
-    // Wire turn completion notification channels
+    // Wire turn completion notification channels. `slackBlockKitChannel`
+    // is the shared instance constructed above.
     const turnNotifier = new TurnNotifier([
-      new SlackBlockKitChannel(this.slackApi, completionMessageTracker),
+      slackBlockKitChannel,
       new SlackDmChannel(this.slackApi, userSettingsStore),
       new WebhookChannel(userSettingsStore),
       new TelegramChannel(userSettingsStore, process.env.TELEGRAM_BOT_TOKEN),

@@ -1314,4 +1314,43 @@ describe('SlackHandler', () => {
       expect(autoRetryScheduler).not.toHaveBeenCalled();
     });
   });
+
+  // -------------------------------------------------------------------------
+  // #667 P5 — SlackBlockKitChannel single-instance sharing
+  //
+  // Invariant: the same SlackBlockKitChannel instance is wired into BOTH
+  // ThreadPanel (via deps.slackBlockKitChannel) AND TurnNotifier's channel
+  // list. If two separate instances leaked, the capability gate
+  // (ThreadPanel.isCompletionMarkerActive) would disagree with the
+  // TurnSurface emit path.
+  // -------------------------------------------------------------------------
+  describe('SlackBlockKitChannel single-instance sharing (#667 P5)', () => {
+    it('ThreadPanel receives the exact same SlackBlockKitChannel instance that TurnNotifier holds', () => {
+      const app = { client: {}, assistant: vi.fn() } as any;
+      const claudeHandler = {};
+      const mcpManager = {};
+
+      const handler = new SlackHandler(app as any, claudeHandler as any, mcpManager as any);
+      const handlerAny = handler as any;
+
+      // ThreadPanel stores deps on `this.deps` — the slackBlockKitChannel
+      // passed in must be the same reference that TurnNotifier holds in
+      // its channel list.
+      const threadPanelDepsChannel = handlerAny.threadPanel?.deps?.slackBlockKitChannel;
+      expect(threadPanelDepsChannel).toBeDefined();
+
+      // TurnNotifier is wired into streamExecutor.deps.turnNotifier. Its
+      // channel list must contain the SAME reference as ThreadPanel's dep.
+      const turnNotifier = handlerAny.streamExecutor?.deps?.turnNotifier;
+      expect(turnNotifier).toBeDefined();
+      const notifierChannels: any[] = (turnNotifier as any).channels;
+      expect(Array.isArray(notifierChannels)).toBe(true);
+
+      const slackBlockInNotifier = notifierChannels.find((c) => c?.name === 'slack-block-kit');
+      expect(slackBlockInNotifier).toBeDefined();
+
+      // Object identity — NOT structural equality.
+      expect(slackBlockInNotifier).toBe(threadPanelDepsChannel);
+    });
+  });
 });

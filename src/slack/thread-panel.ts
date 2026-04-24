@@ -2,6 +2,7 @@ import type { EndTurnInfo } from '../agent-session/agent-session-types';
 import type { ClaudeHandler } from '../claude-handler';
 import { config } from '../config';
 import { Logger } from '../logger';
+import type { SlackBlockKitChannel } from '../notification-channels/slack-block-kit-channel';
 import type { SessionRegistry } from '../session-registry';
 import type { Todo, TodoManager } from '../todo-manager';
 import type { ConversationSession, UserChoice, UserChoices } from '../types';
@@ -33,6 +34,12 @@ interface ThreadPanelDeps {
    * construct ThreadPanel without this dep continue to pass.
    */
   assistantStatusManager?: AssistantStatusManager;
+  /**
+   * P5 B5 sink. MUST be the same instance registered in `TurnNotifier`'s
+   * channel list so the exclusion filter and the TurnSurface emit hit the
+   * same object. Undefined → capability reports inactive (legacy path).
+   */
+  slackBlockKitChannel?: SlackBlockKitChannel;
 }
 
 // Keeps TurnSurface `@internal` while exposing the public type contract.
@@ -65,6 +72,8 @@ export class ThreadPanel {
     this.turnSurface = new TurnSurface({
       slackApi: deps.slackApi,
       assistantStatusManager: deps.assistantStatusManager,
+      slackBlockKitChannel: deps.slackBlockKitChannel,
+      isCompletionMarkerActive: () => this.isCompletionMarkerActive(),
     });
   }
 
@@ -136,6 +145,16 @@ export class ThreadPanel {
    */
   isTurnSurfaceActive(): boolean {
     return config.ui.fiveBlockPhase >= 1;
+  }
+
+  /**
+   * P5 capability SSOT. `true` → TurnSurface writes the B5 marker and
+   * stream-executor excludes `slack-block-kit` from TurnNotifier. Requires
+   * both the phase flag AND the channel dep — a missing dep at PHASE=5
+   * keeps the legacy fan-out instead of silently dropping the marker.
+   */
+  isCompletionMarkerActive(): boolean {
+    return config.ui.fiveBlockPhase >= 5 && this.deps.slackBlockKitChannel !== undefined;
   }
 
   /** Open a per-turn B1 stream. PHASE=0 no-ops. */
