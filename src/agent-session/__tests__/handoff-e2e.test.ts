@@ -17,20 +17,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Keep vi.mock hoisting-safe — inline the path construction.
 vi.mock('../../env-paths', () => ({
-  DATA_DIR: require('path').join(
-    process.env.TMPDIR ?? require('os').tmpdir(),
-    'soma-work-handoff-e2e-test',
-  ),
+  DATA_DIR: require('path').join(process.env.TMPDIR ?? require('os').tmpdir(), 'soma-work-handoff-e2e-test'),
 }));
 
 import { validateModelCommandRunArgs } from 'somalib/model-commands/validator';
 import { SessionRegistry } from '../../session-registry';
 import { SessionInitializer } from '../../slack/pipeline/session-initializer';
 
-const TEST_DATA_DIR = path.join(
-  process.env.TMPDIR ?? os.tmpdir(),
-  'soma-work-handoff-e2e-test',
-);
+const TEST_DATA_DIR = path.join(process.env.TMPDIR ?? os.tmpdir(), 'soma-work-handoff-e2e-test');
 
 function planToWorkPayload() {
   const prompt = [

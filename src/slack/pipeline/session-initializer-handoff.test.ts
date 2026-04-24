@@ -124,12 +124,7 @@ describe('SessionInitializer.runDispatch — z handoff entrypoints (#695)', () =
       expect(session.handoffContext?.sourceIssueUrl).toBe('https://example.com/issue/1');
       expect(session.handoffContext?.tier).toBe('medium');
       // transitionToMain persists the session; we do not call saveSessions twice.
-      expect(mockClaudeHandler.transitionToMain).toHaveBeenCalledWith(
-        'C1',
-        't1',
-        'z-plan-to-work',
-        expect.any(String),
-      );
+      expect(mockClaudeHandler.transitionToMain).toHaveBeenCalledWith('C1', 't1', 'z-plan-to-work', expect.any(String));
     });
 
     it('epic-update: parses work-complete sentinel, persists, transitions to z-epic-update', async () => {
@@ -141,12 +136,7 @@ describe('SessionInitializer.runDispatch — z handoff entrypoints (#695)', () =
 
       expect(session.handoffContext?.handoffKind).toBe('work-complete');
       expect(session.handoffContext?.sourceIssueUrl).toBe('https://example.com/issue/1');
-      expect(mockClaudeHandler.transitionToMain).toHaveBeenCalledWith(
-        'C1',
-        't2',
-        'z-epic-update',
-        expect.any(String),
-      );
+      expect(mockClaudeHandler.transitionToMain).toHaveBeenCalledWith('C1', 't2', 'z-epic-update', expect.any(String));
     });
   });
 
@@ -159,9 +149,7 @@ describe('SessionInitializer.runDispatch — z handoff entrypoints (#695)', () =
         sessionInitializer.runDispatch('C1', 't3', 'irrelevant', 'z-plan-to-work', undefined),
       ).rejects.toSatisfy((err: unknown) => {
         return (
-          err instanceof HandoffAbortError &&
-          err.reason === 'no-sentinel' &&
-          err.forceWorkflow === 'z-plan-to-work'
+          err instanceof HandoffAbortError && err.reason === 'no-sentinel' && err.forceWorkflow === 'z-plan-to-work'
         );
       });
     });
@@ -179,11 +167,11 @@ describe('SessionInitializer.runDispatch — z handoff entrypoints (#695)', () =
         '- [ ] step',
       ].join('\n');
 
-      await expect(
-        sessionInitializer.runDispatch('C1', 't4', 'text', 'z-plan-to-work', malformed),
-      ).rejects.toSatisfy((err: unknown) => {
-        return err instanceof HandoffAbortError && err.reason === 'missing-closing';
-      });
+      await expect(sessionInitializer.runDispatch('C1', 't4', 'text', 'z-plan-to-work', malformed)).rejects.toSatisfy(
+        (err: unknown) => {
+          return err instanceof HandoffAbortError && err.reason === 'missing-closing';
+        },
+      );
     });
 
     it('throws HandoffAbortError(type-workflow-mismatch) for plan-to-work sentinel + z-epic-update workflow', async () => {
@@ -233,12 +221,7 @@ describe('SessionInitializer.runDispatch — z handoff entrypoints (#695)', () =
 
       await sessionInitializer.runDispatch('C1', 't7', 'text', 'onboarding');
 
-      expect(mockClaudeHandler.transitionToMain).toHaveBeenCalledWith(
-        'C1',
-        't7',
-        'onboarding',
-        'Onboarding',
-      );
+      expect(mockClaudeHandler.transitionToMain).toHaveBeenCalledWith('C1', 't7', 'onboarding', 'Onboarding');
       // saveSessions is NOT called from the existing onboarding branch — only z-* branch calls it.
       expect(mockClaudeHandler.saveSessions).not.toHaveBeenCalled();
     });
