@@ -48,6 +48,49 @@ export interface UsageSnapshot {
   sevenDaySonnet?: UsageWindow;
 }
 
+/**
+ * Bucketed cause for the most recent OAuth refresh failure. Used both as a
+ * UI styling hint (emoji + wording per kind in `buildSlotStatusLine`) and
+ * as a metric-grouping key. When deserialising an older snapshot whose
+ * persisted kind is not one of these arms, callers fall back to
+ * `'unknown'` rather than throwing — we do not want a bad disk string to
+ * brick the card.
+ */
+export type RefreshErrorKind =
+  | 'unauthorized'
+  | 'revoked'
+  | 'rate_limited'
+  | 'server'
+  | 'network'
+  | 'timeout'
+  | 'parse'
+  | 'unknown';
+
+/**
+ * Persistent diagnostic payload for the most recent OAuth refresh failure.
+ * Written by `TokenManager.markRefreshFailure`, cleared by the success
+ * path of `refreshAccessToken` and by `detachOAuth` / `attachOAuth`.
+ *
+ * **Safety model (non-negotiable):** the `message` field is sourced ONLY
+ * from a fixed ASCII template table in
+ * `TokenManager.classifyRefreshError`. Raw `err.message`,
+ * `OAuthRefreshError.body`, and any adversary-controlled string never
+ * reach this field. This is the secret-leak containment boundary;
+ * `src/token-manager.classify-refresh-error.test.ts` fires adversarial
+ * `sk-ant-oat01-…` patterns through the classifier and asserts the
+ * stored message is exactly the template.
+ */
+export interface RefreshErrorInfo {
+  /** HTTP status if the failure came from the refresh endpoint (401/403/429/5xx); `undefined` for network/abort/parse. */
+  status?: number;
+  /** UI-safe fixed-template message. NEVER interpolates user-facing or adversary-controlled text. */
+  message: string;
+  /** Epoch ms — duplicates `SlotState.lastRefreshFailedAt` so log payloads stay self-describing. */
+  at: number;
+  /** Coarse bucket for UI styling + metric grouping. */
+  kind: RefreshErrorKind;
+}
+
 export interface SlotState {
   /** ISO UTC; set when rate limit first detected in current window. */
   rateLimitedAt?: string;
@@ -66,6 +109,19 @@ export interface SlotState {
   /** Count of consecutive usage-fetch failures; reset to 0 on success.
    *  Used as the ladder index for {@link nextUsageBackoffMs}. */
   consecutiveUsageFailures?: number;
+  /**
+   * Epoch ms of the last OAuth refresh attempt that succeeded. Cleared on
+   * detach/attach. The `/cct` card uses this (together with
+   * {@link lastRefreshFailedAt}) to contextualise the usage panel's
+   * `fetched <ago>` suffix when a refresh is currently failing.
+   */
+  lastRefreshAt?: number;
+  /** Epoch ms of the last OAuth refresh attempt that failed. Cleared on the next successful refresh and on detach/attach. */
+  lastRefreshFailedAt?: number;
+  /** Diagnostic payload for the last failure. See {@link RefreshErrorInfo} for the fixed-template safety model. */
+  lastRefreshError?: RefreshErrorInfo;
+  /** Count of consecutive OAuth refresh failures; reset to 0 on success. Absent = 0. */
+  consecutiveRefreshFailures?: number;
 }
 
 export interface CctRegistry {
