@@ -143,10 +143,6 @@ export class TaskListBlockBuilder {
       fallbackLines.push(`${icon} ${escapeMrkdwn(todo.content)}`);
     }
 
-    // Plan block. `title` is a REQUIRED plain_text composition object —
-    // Slack rejects the block with `invalid_blocks` if it's missing. Use a
-    // task-count header so the plan card has a meaningful label even when
-    // there is only one todo.
     const planBlock: Record<string, unknown> = {
       type: 'plan',
       title: {

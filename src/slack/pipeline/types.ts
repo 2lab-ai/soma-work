@@ -4,6 +4,14 @@ import type { ConversationSession } from '../../types';
 export interface MessageEvent {
   user: string;
   channel: string;
+  /**
+   * Slack workspace/team id of the originating user. Slack populates this
+   * for both AppMentionEvent and GenericMessageEvent; missing only on
+   * synthetic events (auto-resume, auto-retry, mid-thread injection).
+   * Required by `chat.startStream` (`recipient_team_id`) — see
+   * `TurnContext.recipientTeamId`.
+   */
+  team?: string;
   thread_ts?: string;
   ts: string;
   text?: string;
