@@ -106,6 +106,74 @@ describe('TurnSurface', () => {
       expect(surface._getTurnStateSnapshot(ctx.turnId)).toBeUndefined();
     });
 
+    // Regression: Slack rejects channel/thread streaming with
+    // `missing_recipient_team_id` unless both `recipient_user_id` and
+    // `recipient_team_id` are sent. The pair must be passed atomically —
+    // sending one alone is treated as a shape error rather than a
+    // fallback to assistant-thread mode.
+    it('forwards recipient_user_id + recipient_team_id when both are present on the context', async () => {
+      const client = makeClient();
+      const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
+
+      const ctx = {
+        channelId: 'C1',
+        threadTs: 't1.0',
+        sessionKey: 'C1:t1.0',
+        turnId: 'C1:t1.0:1000',
+        recipientUserId: 'U1',
+        recipientTeamId: 'T1',
+      };
+      await surface.begin(ctx);
+      await surface.end(ctx.turnId, 'completed');
+
+      expect(client.chat.startStream).toHaveBeenCalledWith({
+        channel: 'C1',
+        thread_ts: 't1.0',
+        recipient_user_id: 'U1',
+        recipient_team_id: 'T1',
+      });
+    });
+
+    it('omits both recipient fields when only recipient_user_id is supplied (no partial pair)', async () => {
+      const client = makeClient();
+      const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
+
+      const ctx = {
+        channelId: 'C1',
+        threadTs: 't1.0',
+        sessionKey: 'C1:t1.0',
+        turnId: 'C1:t1.0:1001',
+        recipientUserId: 'U1',
+        // recipientTeamId intentionally absent
+      };
+      await surface.begin(ctx);
+      await surface.end(ctx.turnId, 'completed');
+
+      const call = (client.chat.startStream as any).mock.calls[0][0];
+      expect(call.recipient_user_id).toBeUndefined();
+      expect(call.recipient_team_id).toBeUndefined();
+    });
+
+    it('omits both recipient fields when only recipient_team_id is supplied (no partial pair)', async () => {
+      const client = makeClient();
+      const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
+
+      const ctx = {
+        channelId: 'C1',
+        threadTs: 't1.0',
+        sessionKey: 'C1:t1.0',
+        turnId: 'C1:t1.0:1002',
+        recipientTeamId: 'T1',
+        // recipientUserId intentionally absent
+      };
+      await surface.begin(ctx);
+      await surface.end(ctx.turnId, 'completed');
+
+      const call = (client.chat.startStream as any).mock.calls[0][0];
+      expect(call.recipient_user_id).toBeUndefined();
+      expect(call.recipient_team_id).toBeUndefined();
+    });
+
     it('omits thread_ts when TurnContext does not supply one (DM root)', async () => {
       const client = makeClient();
       const surface = new TurnSurface({ slackApi: makeSlackApi(client) });

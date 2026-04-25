@@ -545,6 +545,11 @@ export class SlackHandler {
         channel: activeChannel,
         threadTs: activeThreadTs,
         user: event.user,
+        // `event.team` carries the workspace id for both AppMentionEvent
+        // and GenericMessageEvent. Empty string keeps the typed shape
+        // when Slack omits it (synthetic events, mid-thread injection)
+        // — chat.startStream then drops both recipient fields together.
+        teamId: (event as any).team ?? '',
         mentionTs: ts,
         sourceThreadTs,
         sourceChannel,
@@ -807,6 +812,15 @@ export class SlackHandler {
       channel: string;
       threadTs: string;
       user: string;
+      /**
+       * Slack workspace/team id of the originating user. Required by
+       * `chat.startStream` (channel/thread streaming) — without it Slack
+       * returns `missing_recipient_team_id` and the B1 stream is silently
+       * dropped. Sourced from the message event (`event.team`); empty
+       * string is tolerated (stream falls back to omitting both recipient
+       * fields together).
+       */
+      teamId: string;
       mentionTs: string;
       sourceThreadTs?: string;
       sourceChannel?: string;
@@ -839,6 +853,7 @@ export class SlackHandler {
       channel: context.channel,
       threadTs: context.threadTs,
       user: context.user,
+      teamId: context.teamId,
       say,
       mentionTs: context.mentionTs,
       sourceThreadTs: context.sourceThreadTs,

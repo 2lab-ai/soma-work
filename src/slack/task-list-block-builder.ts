@@ -91,8 +91,14 @@ export class TaskListBlockBuilder {
    *   - `text`: newline-separated emoji-prefixed summary (renders in push
    *     notifications and old Slack clients).
    *   - `blocks`:
-   *       1. `{ type: 'plan', tasks: [task_card, ...] }` — rich rendering on
-   *          new clients (Block Kit 2026-02+).
+   *       1. `{ type: 'plan', title: <plain_text>, tasks: [task_card, ...] }`
+   *          — rich rendering on new clients (Block Kit 2026-02+). The
+   *          `title` field is a Slack plain_text composition object and is
+   *          REQUIRED by the plan block schema; omitting it triggers
+   *          `invalid_blocks` ("missing required field: title
+   *          [json-pointer:/blocks/0]") on `chat.postMessage`/`chat.update`.
+   *          The title shows up as the plan card header — we surface a
+   *          `Tasks (N)` count so users can see the scope at a glance.
    *       2. `{ type: 'section', text: { type: 'mrkdwn', text: '...' } }` —
    *          fallback visible on old clients that silently drop unknown plan
    *          blocks. Content is mrkdwn-escaped to prevent injection from
@@ -137,8 +143,17 @@ export class TaskListBlockBuilder {
       fallbackLines.push(`${icon} ${escapeMrkdwn(todo.content)}`);
     }
 
+    // Plan block. `title` is a REQUIRED plain_text composition object —
+    // Slack rejects the block with `invalid_blocks` if it's missing. Use a
+    // task-count header so the plan card has a meaningful label even when
+    // there is only one todo.
     const planBlock: Record<string, unknown> = {
       type: 'plan',
+      title: {
+        type: 'plain_text',
+        text: `Tasks (${todos.length})`,
+        emoji: false,
+      },
       tasks: taskCards,
     };
 

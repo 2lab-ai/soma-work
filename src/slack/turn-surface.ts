@@ -62,6 +62,22 @@ export interface TurnContext {
   /** Unique turn id — stream-executor uses `${sessionKey}:${turnStartTs}`. */
   readonly turnId: string;
   /**
+   * Recipient user id for `chat.startStream`. Slack rejects channel/thread
+   * streaming with `missing_recipient_team_id` when this is absent (the API
+   * requires both `recipient_user_id` AND `recipient_team_id` for
+   * non-assistant-thread streams). Source: the originating message event
+   * (`event.user`). Optional only so unit tests / pre-P1 paths can omit it
+   * — production turns built by stream-executor MUST set it.
+   */
+  readonly recipientUserId?: string;
+  /**
+   * Recipient team id for `chat.startStream`. Same contract as
+   * `recipientUserId` — both must be present together; an assistant-thread
+   * stream is the only Slack scenario where they're optional, and we don't
+   * use that path. Source: the originating message event (`event.team`).
+   */
+  readonly recipientTeamId?: string;
+  /**
    * Issue #688 — per-turn AssistantStatusManager epoch captured by the
    * caller via `bumpEpoch(channel, threadTs)`. When present, TurnSurface's
    * end()/fail() pass it as `expectedEpoch` to `clearStatus` so a stale
@@ -263,9 +279,21 @@ export class TurnSurface {
       // SDK typing bug: `ChatStartStreamArguments.thread_ts` is marked
       // required but the API accepts DM-root streams without it. Cast to
       // `any` bridges the gap. See ui-test-handler.ts for the same pattern.
+      //
+      // `recipient_user_id` + `recipient_team_id` are REQUIRED for channel
+      // and thread streaming (only assistant-thread streams may omit them,
+      // and we don't take that path). Without both, Slack returns
+      // `missing_recipient_team_id` and the stream is silently lost. We
+      // only attach them when BOTH are present — passing one alone is
+      // worse than passing neither (the API treats partial fields as a
+      // shape mismatch rather than falling back to assistant-thread mode).
       const startArgs: Record<string, unknown> = { channel: ctx.channelId };
       if (ctx.threadTs) {
         startArgs.thread_ts = ctx.threadTs;
+      }
+      if (ctx.recipientUserId && ctx.recipientTeamId) {
+        startArgs.recipient_user_id = ctx.recipientUserId;
+        startArgs.recipient_team_id = ctx.recipientTeamId;
       }
       const result: { ts?: string } = await (client.chat as any).startStream(startArgs);
       const state = this.turns.get(ctx.turnId);
