@@ -192,17 +192,18 @@ interface SkillShareResult {
  * so the standalone MCP layer (`SkillFileStore.shareSkill`) can never drift.
  */
 export function shareUserSkill(userId: string, skillName: string): SkillShareResult {
+  // Disambiguate invalid-name vs not-found before delegating: getUserSkill
+  // collapses both into `null`, but the dispatcher needs distinct messages
+  // sourced from the shared skill-share-errors module.
   if (!isValidSkillName(skillName)) {
     return { ok: false, message: invalidSkillNameMessage(skillName) };
   }
 
-  const skillFile = getSkillPath(userId, skillName);
-  if (!fs.existsSync(skillFile)) {
+  const detail = getUserSkill(userId, skillName);
+  if (!detail) {
     return { ok: false, message: skillNotFoundMessage(skillName) };
   }
 
-  const content = fs.readFileSync(skillFile, 'utf-8');
-
-  logger.info('User skill shared', { userId, skillName, length: content.length });
-  return { ok: true, message: `Skill "${skillName}" read for share.`, content };
+  logger.info('User skill shared', { userId, skillName, length: detail.content.length });
+  return { ok: true, message: `Skill "${skillName}" read for share.`, content: detail.content };
 }
