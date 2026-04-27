@@ -1752,12 +1752,15 @@ export class SessionRegistry {
             // left untouched (the store never overwrites a corrupt file
             // — that decision belongs to ops / the quarantine path).
             if (err instanceof UserSessionStoreCorruptError) {
-              this.logger.error('assertSessionPointer (on-save) — user-session.json corrupt; nulling in-memory pointer', {
-                sessionKey: key,
-                ownerId: session.ownerId,
-                file: err.file,
-                err: err.message,
-              });
+              this.logger.error(
+                'assertSessionPointer (on-save) — user-session.json corrupt; nulling in-memory pointer',
+                {
+                  sessionKey: key,
+                  ownerId: session.ownerId,
+                  file: err.file,
+                  err: err.message,
+                },
+              );
               pointerForDisk = null;
               session.currentInstructionId = null;
             } else {

@@ -33,11 +33,11 @@ import { type LegacyInstructionStatus, mapLegacyInstructionStatus } from './lega
 import { Logger } from './logger';
 import { withPidLock } from './pid-lock';
 import {
+  getUserSessionStore,
   type LifecycleEvent,
   type UserInstruction,
   type UserSessionDoc,
   UserSessionStore,
-  getUserSessionStore,
 } from './user-session-store';
 
 const logger = new Logger('UserInstructionsMigration');

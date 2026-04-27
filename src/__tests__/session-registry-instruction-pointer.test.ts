@@ -49,11 +49,7 @@ vi.mock('../env-paths', () => ({
 }));
 
 import { SessionRegistry } from '../session-registry';
-import {
-  type UserSessionDoc,
-  initUserSessionStore,
-  UserSessionStoreCorruptError,
-} from '../user-session-store';
+import { initUserSessionStore, type UserSessionDoc, UserSessionStoreCorruptError } from '../user-session-store';
 
 let TEST_DATA_DIR: string;
 
@@ -197,22 +193,31 @@ describe('SessionRegistry × UserSessionStoreCorruptError handling', () => {
     // UserSessionStoreCorruptError must surface at logger.error (NOT
     // debug) and the in-memory pointer must be nulled so we don't
     // re-write the bad pointer to sessions.json.
-    const errorSpy = vi.spyOn((writer as unknown as { logger: { error: (...args: unknown[]) => void } }).logger, 'error');
-    const debugSpy = vi.spyOn((writer as unknown as { logger: { debug: (...args: unknown[]) => void } }).logger, 'debug');
+    const errorSpy = vi.spyOn(
+      (writer as unknown as { logger: { error: (...args: unknown[]) => void } }).logger,
+      'error',
+    );
+    const debugSpy = vi.spyOn(
+      (writer as unknown as { logger: { debug: (...args: unknown[]) => void } }).logger,
+      'debug',
+    );
 
     expect(() => writer.saveSessions()).not.toThrow();
 
     // P1-A: must escalate to logger.error, not logger.debug
-    const errorCalls = errorSpy.mock.calls.filter((args) =>
-      String(args[0] ?? '').includes('UserSessionStoreCorruptError') ||
-      String(args[0] ?? '').toLowerCase().includes('user-session.json corrupt') ||
-      String(args[0] ?? '').toLowerCase().includes('session pointer'),
+    const errorCalls = errorSpy.mock.calls.filter(
+      (args) =>
+        String(args[0] ?? '').includes('UserSessionStoreCorruptError') ||
+        String(args[0] ?? '')
+          .toLowerCase()
+          .includes('user-session.json corrupt') ||
+        String(args[0] ?? '')
+          .toLowerCase()
+          .includes('session pointer'),
     );
     expect(errorCalls.length).toBeGreaterThan(0);
 
-    const debugCalls = debugSpy.mock.calls.filter((args) =>
-      String(args[0] ?? '').includes('assertSessionPointer'),
-    );
+    const debugCalls = debugSpy.mock.calls.filter((args) => String(args[0] ?? '').includes('assertSessionPointer'));
     // The legacy "skipped at debug" path is what round-1 used for ALL
     // errors. After P1-A, the corrupt-store path must NOT take the debug
     // branch.
@@ -261,8 +266,14 @@ describe('SessionRegistry × UserSessionStoreCorruptError handling', () => {
     initUserSessionStore(TEST_DATA_DIR);
 
     const reader = new SessionRegistry();
-    const errorSpy = vi.spyOn((reader as unknown as { logger: { error: (...args: unknown[]) => void } }).logger, 'error');
-    const debugSpy = vi.spyOn((reader as unknown as { logger: { debug: (...args: unknown[]) => void } }).logger, 'debug');
+    const errorSpy = vi.spyOn(
+      (reader as unknown as { logger: { error: (...args: unknown[]) => void } }).logger,
+      'error',
+    );
+    const debugSpy = vi.spyOn(
+      (reader as unknown as { logger: { debug: (...args: unknown[]) => void } }).logger,
+      'debug',
+    );
 
     expect(() => reader.loadSessions()).not.toThrow();
     const restored = reader.getSession('C8', 'T8');
@@ -273,16 +284,19 @@ describe('SessionRegistry × UserSessionStoreCorruptError handling', () => {
     expect(restored?.currentInstructionId ?? null).toBeNull();
 
     // Error path surfaces, debug path does NOT swallow.
-    const errorCalls = errorSpy.mock.calls.filter((args) =>
-      String(args[0] ?? '').includes('UserSessionStoreCorruptError') ||
-      String(args[0] ?? '').toLowerCase().includes('user-session.json corrupt') ||
-      String(args[0] ?? '').toLowerCase().includes('session pointer'),
+    const errorCalls = errorSpy.mock.calls.filter(
+      (args) =>
+        String(args[0] ?? '').includes('UserSessionStoreCorruptError') ||
+        String(args[0] ?? '')
+          .toLowerCase()
+          .includes('user-session.json corrupt') ||
+        String(args[0] ?? '')
+          .toLowerCase()
+          .includes('session pointer'),
     );
     expect(errorCalls.length).toBeGreaterThan(0);
 
-    const debugCalls = debugSpy.mock.calls.filter((args) =>
-      String(args[0] ?? '').includes('assertSessionPointer'),
-    );
+    const debugCalls = debugSpy.mock.calls.filter((args) => String(args[0] ?? '').includes('assertSessionPointer'));
     expect(debugCalls.length).toBe(0);
   });
 });

@@ -488,9 +488,9 @@ describe('runStartupUserInstructionsMigration — singleton store coherence (P1-
     await runStartupUserInstructionsMigration({ dataDir });
 
     // Disk MUST contain the migrated row.
-    const onDisk = JSON.parse(
-      fs.readFileSync(path.join(userDir, 'user-session.json'), 'utf-8'),
-    ) as { instructions: Array<{ id: string }> };
+    const onDisk = JSON.parse(fs.readFileSync(path.join(userDir, 'user-session.json'), 'utf-8')) as {
+      instructions: Array<{ id: string }>;
+    };
     expect(onDisk.instructions.find((i) => i.id === 'i1')).toBeDefined();
 
     // P1-D contract: the singleton must agree with disk after migration.
