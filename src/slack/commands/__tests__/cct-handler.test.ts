@@ -627,3 +627,442 @@ describe('renderUsageLines', () => {
     expect(out).toMatch(/5h\s+[█░]+\s+75%/);
   });
 });
+
+// ──────────────────────────────────────────────────────────────────────
+// #749 — `cct auto` / `cct auto dry` admin trigger
+//
+// All 12 outcome variants of `evaluateAndMaybeRotate` must produce a
+// deterministic compact thread-only message. The handler MUST force-on
+// (`enabled: true`) regardless of `process.env.AUTO_ROTATE_ENABLED` because
+// the env knob gates the *hourly* tick — a manual `cct auto` is an explicit
+// operator request. The handler MUST NOT call `notifyAutoRotation` —
+// DEFAULT_UPDATE_CHANNEL publishing is reserved for the hourly path.
+// ──────────────────────────────────────────────────────────────────────
+describe('CctHandler — cct auto (#749)', () => {
+  const adminUser = (process.env.ADMIN_USERS?.split(',')[0] || 'U_ADMIN').trim();
+
+  function makeSayCct(): FakeSay {
+    const calls: FakeSay['calls'] = [];
+    const fn = async (m: { text: string; blocks?: unknown[]; thread_ts?: string }): Promise<{ ts?: string }> => {
+      calls.push(m);
+      return {};
+    };
+    return { calls, fn };
+  }
+
+  /**
+   * Loader that wires fakes for: admin gate, renderCctCard (unused on auto
+   * path but pulled in by the import graph), TokenManager singleton, and
+   * the `evaluateAndMaybeRotate` symbol on the auto-rotate module. The
+   * `evaluateMock` returned lets each test assert the second-argument
+   * options object (`enabled`, `dryRun`, thresholds, `usageMaxAgeMs`).
+   */
+  async function loadHandlerForAuto(opts: {
+    outcome: import('../../../oauth/auto-rotate').RotationOutcome;
+    snapshot?: Record<string, unknown> | null;
+    snapshotThrows?: boolean;
+    isAdmin?: boolean;
+  }): Promise<{
+    CctHandler: typeof import('../cct-handler').CctHandler;
+    evaluateMock: ReturnType<typeof vi.fn>;
+    snapshotMock: ReturnType<typeof vi.fn>;
+  }> {
+    vi.resetModules();
+
+    const isAdmin = opts.isAdmin ?? true;
+    vi.doMock('../../../admin-utils', () => ({
+      isAdminUser: (u: string) => isAdmin && u === adminUser,
+    }));
+
+    vi.doMock('../../z/topics/cct-topic', () => ({
+      renderCctCard: async () => ({ text: '🔑 CCT', blocks: [] }),
+    }));
+
+    const snapshotMock = opts.snapshotThrows
+      ? vi.fn(async () => {
+          throw new Error('snapshot failed');
+        })
+      : vi.fn(async () => opts.snapshot ?? { registry: { activeKeyId: undefined, slots: [] }, state: {} });
+    const fakeTm = {
+      listTokens: () => [{ keyId: 'k1', name: 'cct1', kind: 'cct' as const, status: 'healthy' }],
+      listRuntimeSelectableTokens: () => [{ keyId: 'k1', name: 'cct1', kind: 'cct' as const, status: 'healthy' }],
+      getActiveToken: () => ({ keyId: 'k1', name: 'cct1', kind: 'cct' as const }),
+      fetchAndStoreUsage: async () => null,
+      rotateToNext: async () => null,
+      applyToken: async () => undefined,
+      getSnapshot: snapshotMock,
+      // Real method is unused on the auto path because we mock evaluateAndMaybeRotate;
+      // include a stub so the handler's `applyTokenIfActiveMatches` adapter can be
+      // referenced without throwing at import-shape time.
+      applyTokenIfActiveMatches: vi.fn(),
+    };
+    vi.doMock('../../../token-manager', () => ({
+      getTokenManager: () => fakeTm,
+    }));
+
+    const evaluateMock = vi.fn(async () => opts.outcome);
+    vi.doMock('../../../oauth/auto-rotate', () => ({
+      evaluateAndMaybeRotate: evaluateMock,
+    }));
+
+    const mod = await import('../cct-handler');
+    return { CctHandler: mod.CctHandler, evaluateMock, snapshotMock };
+  }
+
+  // ── 1: non-admin gate ─────────────────────────────────────────────
+  it('non-admin user → "⛔ Admin only command" (no evaluator call)', async () => {
+    const { CctHandler, evaluateMock } = await loadHandlerForAuto({
+      outcome: { kind: 'noop', reason: 'active-not-set', active: null, debug: emptyDebug() },
+      isAdmin: false,
+    });
+    const say = makeSayCct();
+    await new CctHandler().execute({ user: 'U_OTHER', channel: 'C', threadTs: 'T', text: 'cct auto', say: say.fn });
+    expect(say.calls[0].text).toBe('⛔ Admin only command');
+    expect(evaluateMock).not.toHaveBeenCalled();
+  });
+
+  // ── 2: rotated (live, normal — from set) ──────────────────────────
+  it('rotated normal — emits :repeat: with 5h/7d % and resets-Δ', async () => {
+    const { CctHandler } = await loadHandlerForAuto({
+      outcome: {
+        kind: 'rotated',
+        from: { keyId: 'k1', name: 'old', fiveHourUtilization: 0.4, sevenDayUtilization: 0.5 },
+        to: candidate({ name: 'new', fiveHour: 0.8, sevenDay: 0.6 }),
+        debug: emptyDebug(),
+      },
+    });
+    const say = makeSayCct();
+    await new CctHandler().execute({ user: adminUser, channel: 'C', threadTs: 'T', text: 'cct auto', say: say.fn });
+    const t = say.calls[0].text;
+    expect(t).toContain(':repeat: Auto-rotated *old* → *new*');
+    expect(t).toContain('80.0%'); // pct(0.8) pin
+    expect(t).toContain('60.0%');
+    expect(t).toMatch(/7d resets/);
+  });
+
+  // ── 3: rotated (live, first-boot — from === null) ─────────────────
+  it('rotated first-boot — from=null renders as *(none)*', async () => {
+    const { CctHandler } = await loadHandlerForAuto({
+      outcome: {
+        kind: 'rotated',
+        from: null,
+        to: candidate({ name: 'first', fiveHour: 0.1, sevenDay: 0.2 }),
+        debug: emptyDebug(),
+      },
+    });
+    const say = makeSayCct();
+    await new CctHandler().execute({ user: adminUser, channel: 'C', threadTs: 'T', text: 'cct auto', say: say.fn });
+    expect(say.calls[0].text).toContain(':repeat: Auto-rotated *(none)* → *first*');
+  });
+
+  // ── 4: noop active-is-best ────────────────────────────────────────
+  it('noop active-is-best — :white_check_mark: with active name', async () => {
+    const { CctHandler } = await loadHandlerForAuto({
+      outcome: {
+        kind: 'noop',
+        reason: 'active-is-best',
+        active: { keyId: 'k1', name: 'optimal', sevenDayResetsAt: '2026-05-01T00:00:00Z' },
+        debug: emptyDebug(),
+      },
+    });
+    const say = makeSayCct();
+    await new CctHandler().execute({ user: adminUser, channel: 'C', threadTs: 'T', text: 'cct auto', say: say.fn });
+    expect(say.calls[0].text).toContain(':white_check_mark: Active *optimal* is already optimal');
+  });
+
+  // ── 5: noop active-not-set ────────────────────────────────────────
+  it('noop active-not-set — :warning: No active slot configured', async () => {
+    const { CctHandler } = await loadHandlerForAuto({
+      outcome: { kind: 'noop', reason: 'active-not-set', active: null, debug: emptyDebug() },
+    });
+    const say = makeSayCct();
+    await new CctHandler().execute({ user: adminUser, channel: 'C', threadTs: 'T', text: 'cct auto', say: say.fn });
+    expect(say.calls[0].text).toBe(':warning: No active slot configured');
+  });
+
+  // ── 6: skipped active-lease (lease count via getSnapshot) ─────────
+  it('skipped active-lease — reads lease count via getSnapshot, names the active slot', async () => {
+    const debug = { ...emptyDebug(), activeKeyId: 'k1' };
+    const { CctHandler } = await loadHandlerForAuto({
+      outcome: { kind: 'skipped', reason: 'active-lease', debug },
+      snapshot: {
+        registry: { activeKeyId: 'k1', slots: [{ keyId: 'k1', name: 'active-slot' }] },
+        state: { k1: { activeLeases: ['lease-a', 'lease-b'] } },
+      },
+    });
+    const say = makeSayCct();
+    await new CctHandler().execute({ user: adminUser, channel: 'C', threadTs: 'T', text: 'cct auto', say: say.fn });
+    const t = say.calls[0].text;
+    expect(t).toContain(':hourglass: Skipped — active *active-slot*');
+    expect(t).toContain('2 in-flight lease(s)');
+    expect(t).toContain('Try `cct auto` again');
+  });
+
+  // ── 7: skipped active-lease — fail-soft (getSnapshot throws → 0/keyId) ─
+  it('skipped active-lease fail-soft — getSnapshot throws → count=0, name=keyId', async () => {
+    const debug = { ...emptyDebug(), activeKeyId: 'k1' };
+    const { CctHandler, snapshotMock } = await loadHandlerForAuto({
+      outcome: { kind: 'skipped', reason: 'active-lease', debug },
+      snapshotThrows: true,
+    });
+    const say = makeSayCct();
+    await new CctHandler().execute({ user: adminUser, channel: 'C', threadTs: 'T', text: 'cct auto', say: say.fn });
+    expect(snapshotMock).toHaveBeenCalled();
+    const t = say.calls[0].text;
+    // Fail-soft: lease-count → 0, name → keyId fallback (`k1`).
+    expect(t).toContain(':hourglass: Skipped — active *k1* has 0 in-flight lease(s)');
+  });
+
+  // ── 8: skipped no-candidate (with rejected bullets) ───────────────
+  it('skipped no-candidate — emits per-slot rejected bullets', async () => {
+    const debug = {
+      ...emptyDebug(),
+      rejected: [
+        { keyId: 'k1', name: 'cct1', reason: 'over-five-hour-threshold' as const },
+        { keyId: 'k2', name: 'cct2', reason: 'auth-unhealthy' as const },
+      ],
+    };
+    const { CctHandler } = await loadHandlerForAuto({
+      outcome: { kind: 'skipped', reason: 'no-candidate', debug },
+    });
+    const say = makeSayCct();
+    await new CctHandler().execute({ user: adminUser, channel: 'C', threadTs: 'T', text: 'cct auto', say: say.fn });
+    const t = say.calls[0].text;
+    expect(t).toContain(':warning: No eligible candidate. See debug:');
+    expect(t).toContain('• cct1 (k1): rejected (over-five-hour-threshold)');
+    expect(t).toContain('• cct2 (k2): rejected (auth-unhealthy)');
+  });
+
+  // ── 9: skipped disabled — defensive (unreachable but must not crash) ─
+  it('skipped disabled (defensive) — emits internal-bug warning', async () => {
+    const { CctHandler } = await loadHandlerForAuto({
+      outcome: { kind: 'skipped', reason: 'disabled', debug: emptyDebug() },
+    });
+    const say = makeSayCct();
+    await new CctHandler().execute({ user: adminUser, channel: 'C', threadTs: 'T', text: 'cct auto', say: say.fn });
+    expect(say.calls[0].text).toContain('handler wiring bug');
+    expect(say.calls[0].text).toContain('disabled');
+  });
+
+  // ── 10: skipped race-active-changed ───────────────────────────────
+  it('skipped race-active-changed — :hourglass: with retry hint', async () => {
+    const { CctHandler } = await loadHandlerForAuto({
+      outcome: { kind: 'skipped', reason: 'race-active-changed', debug: emptyDebug() },
+    });
+    const say = makeSayCct();
+    await new CctHandler().execute({ user: adminUser, channel: 'C', threadTs: 'T', text: 'cct auto', say: say.fn });
+    expect(say.calls[0].text).toBe(':hourglass: Skipped — active changed under us. Try `cct auto` again.');
+  });
+
+  // ── 11: skipped race-precondition-failed ──────────────────────────
+  it('skipped race-precondition-failed — :hourglass: with retry hint', async () => {
+    const { CctHandler } = await loadHandlerForAuto({
+      outcome: { kind: 'skipped', reason: 'race-precondition-failed', debug: emptyDebug() },
+    });
+    const say = makeSayCct();
+    await new CctHandler().execute({ user: adminUser, channel: 'C', threadTs: 'T', text: 'cct auto', say: say.fn });
+    expect(say.calls[0].text).toBe(':hourglass: Skipped — slot eligibility changed under us. Try `cct auto` again.');
+  });
+
+  // ── 12: dry-run would:rotate normal ──────────────────────────────
+  it('dry-run would:rotate normal — :test_tube: prefix', async () => {
+    const { CctHandler } = await loadHandlerForAuto({
+      outcome: {
+        kind: 'dry-run',
+        would: 'rotate',
+        from: { keyId: 'k1', name: 'cur' },
+        to: candidate({ name: 'best', fiveHour: 0.3, sevenDay: 0.4 }),
+        debug: emptyDebug(),
+      },
+    });
+    const say = makeSayCct();
+    await new CctHandler().execute({ user: adminUser, channel: 'C', threadTs: 'T', text: 'cct auto dry', say: say.fn });
+    const t = say.calls[0].text;
+    expect(t).toContain(':test_tube: [dry-run] Would rotate *cur* → *best*');
+    expect(t).toContain('7d resets');
+  });
+
+  // ── 13: dry-run would:rotate first-boot ──────────────────────────
+  it('dry-run would:rotate first-boot — from=null renders as *(none)*', async () => {
+    const { CctHandler } = await loadHandlerForAuto({
+      outcome: {
+        kind: 'dry-run',
+        would: 'rotate',
+        from: null,
+        to: candidate({ name: 'first', fiveHour: 0.1, sevenDay: 0.1 }),
+        debug: emptyDebug(),
+      },
+    });
+    const say = makeSayCct();
+    await new CctHandler().execute({ user: adminUser, channel: 'C', threadTs: 'T', text: 'cct auto dry', say: say.fn });
+    expect(say.calls[0].text).toContain(':test_tube: [dry-run] Would rotate *(none)* → *first*');
+  });
+
+  // ── 14: dry-run would:noop ────────────────────────────────────────
+  it('dry-run would:noop — :test_tube: optimal', async () => {
+    const { CctHandler } = await loadHandlerForAuto({
+      outcome: {
+        kind: 'dry-run',
+        would: 'noop',
+        from: { keyId: 'k1', name: 'cur' },
+        to: candidate({ name: 'cur', fiveHour: 0.4, sevenDay: 0.5 }),
+        debug: emptyDebug(),
+      },
+    });
+    const say = makeSayCct();
+    await new CctHandler().execute({ user: adminUser, channel: 'C', threadTs: 'T', text: 'cct auto dry', say: say.fn });
+    expect(say.calls[0].text).toBe(':test_tube: [dry-run] Active *cur* is already optimal');
+  });
+
+  // ── 15: dry-run would:skipped (with rejected bullets) ─────────────
+  it('dry-run would:skipped — :test_tube: + rejected bullets', async () => {
+    const debug = {
+      ...emptyDebug(),
+      rejected: [{ keyId: 'k1', name: 'cct1', reason: 'cooldown' as const }],
+    };
+    const { CctHandler } = await loadHandlerForAuto({
+      outcome: { kind: 'dry-run', would: 'skipped', from: null, to: null, debug },
+    });
+    const say = makeSayCct();
+    await new CctHandler().execute({ user: adminUser, channel: 'C', threadTs: 'T', text: 'cct auto dry', say: say.fn });
+    const t = say.calls[0].text;
+    expect(t).toContain(':test_tube: [dry-run] No eligible candidate.');
+    expect(t).toContain('• cct1 (k1): rejected (cooldown)');
+  });
+
+  // ── 16: full-opts assertion — force-on regardless of env ──────────
+  it('full-opts: passes enabled:true even with AUTO_ROTATE_ENABLED=0; thresholds + usageMaxAgeMs canonical', async () => {
+    const prev = process.env.AUTO_ROTATE_ENABLED;
+    process.env.AUTO_ROTATE_ENABLED = '0';
+    try {
+      const { CctHandler, evaluateMock } = await loadHandlerForAuto({
+        outcome: { kind: 'noop', reason: 'active-not-set', active: null, debug: emptyDebug() },
+      });
+      const say = makeSayCct();
+      await new CctHandler().execute({ user: adminUser, channel: 'C', threadTs: 'T', text: 'cct auto', say: say.fn });
+      expect(evaluateMock).toHaveBeenCalledTimes(1);
+      const opts = evaluateMock.mock.calls[0][1];
+      expect(opts).toMatchObject({
+        enabled: true, // ← force-on; AUTO_ROTATE_ENABLED gates only the hourly tick
+        dryRun: false,
+        thresholds: {
+          fiveHourMax: expect.any(Number),
+          sevenDayMax: expect.any(Number),
+        },
+        usageMaxAgeMs: expect.any(Number),
+      });
+      // Mirror the production wiring at src/index.ts:160-177 — usageMaxAgeMs
+      // must be 2× the usage refresh interval. Read defaults from config.
+      const { config } = await import('../../../config');
+      expect(opts.thresholds.fiveHourMax).toBe(config.autoRotate.fiveHourMax);
+      expect(opts.thresholds.sevenDayMax).toBe(config.autoRotate.sevenDayMax);
+      expect(opts.usageMaxAgeMs).toBe(2 * config.usage.refreshIntervalMs);
+    } finally {
+      if (prev === undefined) delete process.env.AUTO_ROTATE_ENABLED;
+      else process.env.AUTO_ROTATE_ENABLED = prev;
+    }
+  });
+
+  // ── 17: dryRun flag — `cct auto` → false; `cct auto dry` → true ───
+  it('dryRun: cct auto → false; cct auto dry → true', async () => {
+    const { CctHandler: H1, evaluateMock: m1 } = await loadHandlerForAuto({
+      outcome: { kind: 'noop', reason: 'active-not-set', active: null, debug: emptyDebug() },
+    });
+    await new H1().execute({ user: adminUser, channel: 'C', threadTs: 'T', text: 'cct auto', say: makeSayCct().fn });
+    expect(m1.mock.calls[0][1].dryRun).toBe(false);
+
+    const { CctHandler: H2, evaluateMock: m2 } = await loadHandlerForAuto({
+      outcome: {
+        kind: 'dry-run',
+        would: 'noop',
+        from: { keyId: 'k1', name: 'cur' },
+        to: candidate({ name: 'cur', fiveHour: 0.4, sevenDay: 0.5 }),
+        debug: emptyDebug(),
+      },
+    });
+    await new H2().execute({
+      user: adminUser,
+      channel: 'C',
+      threadTs: 'T',
+      text: 'cct auto dry',
+      say: makeSayCct().fn,
+    });
+    expect(m2.mock.calls[0][1].dryRun).toBe(true);
+  });
+
+  // ── 18: pct formatter pin — 0.8 → "80.0%", undefined → "—" ────────
+  it('pct formatter pin: 0.8 → "80.0%", undefined → "—"', async () => {
+    const { CctHandler } = await loadHandlerForAuto({
+      outcome: {
+        kind: 'rotated',
+        from: { keyId: 'k1', name: 'old', fiveHourUtilization: undefined, sevenDayUtilization: undefined },
+        to: candidate({ name: 'new', fiveHour: 0.8, sevenDay: undefined }),
+        debug: emptyDebug(),
+      },
+    });
+    const say = makeSayCct();
+    await new CctHandler().execute({ user: adminUser, channel: 'C', threadTs: 'T', text: 'cct auto', say: say.fn });
+    const t = say.calls[0].text;
+    // The rotated message includes `5h N% / 7d M%` taken from the *target*
+    // candidate, not from `from`. Pin both edge cases at once.
+    expect(t).toContain('5h 80.0%');
+    expect(t).toContain('7d —');
+  });
+
+  // ── 19: handler MUST NOT call notifyAutoRotation (DEFAULT_UPDATE_CHANNEL) ──
+  // The handler imports nothing from auto-rotate-notifier, so the simplest
+  // contract is to assert that the import graph stays clean: only the
+  // `evaluateAndMaybeRotate` mock is invoked, and `say` is called exactly
+  // once with a thread_ts (no channel-broadcast surface).
+  it('thread-only: emits exactly one say() with thread_ts; never publishes to a broadcast channel', async () => {
+    const { CctHandler } = await loadHandlerForAuto({
+      outcome: {
+        kind: 'rotated',
+        from: { keyId: 'k1', name: 'old' },
+        to: candidate({ name: 'new', fiveHour: 0.5, sevenDay: 0.5 }),
+        debug: emptyDebug(),
+      },
+    });
+    const say = makeSayCct();
+    await new CctHandler().execute({
+      user: adminUser,
+      channel: 'C',
+      threadTs: 'T123',
+      text: 'cct auto',
+      say: say.fn,
+    });
+    expect(say.calls).toHaveLength(1);
+    expect(say.calls[0].thread_ts).toBe('T123');
+  });
+});
+
+// ── Test fixture helpers (top-level so all describe blocks can share) ──
+
+function emptyDebug(): import('../../../oauth/auto-rotate').RotationDebug {
+  return {
+    evaluatedAt: '2026-04-27T00:00:00.000Z',
+    thresholds: { fiveHourMax: 0.8, sevenDayMax: 0.9 },
+    activeKeyId: undefined,
+    candidates: [],
+    rejected: [],
+  };
+}
+
+function candidate(opts: {
+  name: string;
+  fiveHour: number;
+  sevenDay: number | undefined;
+  resetsAt?: string;
+}): import('../../../oauth/auto-rotate').RotationCandidate {
+  const resetsAt = opts.resetsAt ?? '2026-05-01T00:00:00Z';
+  return {
+    keyId: `k-${opts.name}`,
+    name: opts.name,
+    sevenDayResetsAt: resetsAt,
+    sevenDayResetsAtMs: new Date(resetsAt).getTime(),
+    fiveHourUtilization: opts.fiveHour,
+    // RotationCandidate types `sevenDayUtilization` as required `number`;
+    // for pct-formatter "—" tests we cast undefined deliberately.
+    sevenDayUtilization: opts.sevenDay as unknown as number,
+  };
+}

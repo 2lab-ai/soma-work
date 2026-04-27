@@ -1,6 +1,6 @@
 import { WebClient } from '@slack/web-api';
 import type { DangerousRule } from './dangerous-command-filter.js';
-import { StderrLogger } from './stderr-logger.js';
+import { StderrLogger } from 'somalib/stderr-logger.js';
 
 const logger = new StderrLogger('SlackPermissionMessenger');
 

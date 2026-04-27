@@ -6,8 +6,8 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { CronStorage } from 'somalib/cron/cron-storage';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { CronStorage } from '../cron-storage';
 
 describe('Cron Execution History', () => {
   let storage: CronStorage;

@@ -2,18 +2,16 @@
  * CronStorage — Persistent cron job storage.
  * Trace: docs/cron-scheduler/trace.md, Scenarios 2-3
  *
- * Stores cron jobs as JSON in ${DATA_DIR}/cron-jobs.json.
+ * Stores cron jobs as JSON at the file path supplied by the caller.
  * Pattern: src/metrics/report-scheduler.ts (loadScheduleState/saveScheduleState)
  */
 
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
-import { DATA_DIR } from './env-paths';
-import { Logger } from './logger';
+import { StderrLogger } from '../stderr-logger';
 
-const logger = new Logger('CronStorage');
-const CRON_FILE = path.join(DATA_DIR, 'cron-jobs.json');
+const logger = new StderrLogger('CronStorage');
 
 // --- Types ---
 
@@ -211,7 +209,7 @@ export function isValidCronName(name: string): boolean {
 export class CronStorage {
   private filePath: string;
 
-  constructor(filePath: string = CRON_FILE) {
+  constructor(filePath: string) {
     this.filePath = filePath;
   }
 

@@ -29,7 +29,7 @@ export interface RouteResult {
   unknownAlias?: boolean;
 }
 
-const DEFAULT_CODEX_MODEL = 'gpt-5.4';
+const DEFAULT_CODEX_MODEL = 'gpt-5.5';
 const DEFAULT_GEMINI_MODEL = 'gemini-3.1-pro-preview';
 
 export function routeModel(model: string): RouteResult {

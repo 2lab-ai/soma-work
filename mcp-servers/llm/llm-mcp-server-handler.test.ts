@@ -87,7 +87,7 @@ describe('LlmMCPServer.handleTool — chat new/resume', () => {
     const s = parseStructured(result);
     expect(s.sessionId).toBeTypeOf('string');
     expect(s.backend).toBe('codex');
-    expect(s.model).toBe('gpt-5.4');
+    expect(s.model).toBe('gpt-5.5');
     expect(s.content).toBe('hello from backend');
   });
 
@@ -131,7 +131,7 @@ describe('LlmMCPServer.handleTool — chat new/resume', () => {
       'llm.chat.empty-session-id',
       // Pin both fields: a routing regression that drops `model` would go
       // unnoticed if we only asserted `backend`.
-      expect.objectContaining({ backend: 'codex', model: 'gpt-5.4' }),
+      expect.objectContaining({ backend: 'codex', model: 'gpt-5.5' }),
     );
   });
 
