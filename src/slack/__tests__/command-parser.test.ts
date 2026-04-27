@@ -1377,6 +1377,37 @@ describe('CommandParser', () => {
       expect(CommandParser.parseCctCommand('cct set cct2')).toEqual({ action: 'set', target: 'cct2' });
       expect(CommandParser.parseCctCommand('cct next')).toEqual({ action: 'next' });
     });
+
+    // ── #749: `cct auto` / `cct auto dry` admin trigger ──────────────
+    it('parses "cct auto" as live rotation evaluator (dry=false)', () => {
+      expect(CommandParser.parseCctCommand('cct auto')).toEqual({ action: 'auto', dry: false });
+      expect(CommandParser.parseCctCommand('/cct auto')).toEqual({ action: 'auto', dry: false });
+    });
+
+    it('parses "cct auto dry" as eval-only (dry=true) — longest-match must fire BEFORE bare "cct auto"', () => {
+      expect(CommandParser.parseCctCommand('cct auto dry')).toEqual({ action: 'auto', dry: true });
+      expect(CommandParser.parseCctCommand('/cct auto dry')).toEqual({ action: 'auto', dry: true });
+    });
+
+    it('recognises "cct auto" and "cct auto dry" via isCctCommand', () => {
+      expect(CommandParser.isCctCommand('cct auto')).toBe(true);
+      expect(CommandParser.isCctCommand('cct auto dry')).toBe(true);
+      expect(CommandParser.isCctCommand('/cct auto')).toBe(true);
+      expect(CommandParser.isCctCommand('/cct auto dry')).toBe(true);
+    });
+
+    it('rejects unknown auto-suffix variants via isCctCommand', () => {
+      // No `cct auto force` — that's an explicitly out-of-scope future knob.
+      expect(CommandParser.isCctCommand('cct auto force')).toBe(false);
+      expect(CommandParser.isCctCommand('cct auto unknown')).toBe(false);
+      expect(CommandParser.isCctCommand('cct auto dry extra')).toBe(false);
+    });
+
+    it('help text mentions both `cct auto` and `cct auto dry`', () => {
+      const help = CommandParser.getHelpMessage();
+      expect(help).toContain('cct auto');
+      expect(help).toContain('cct auto dry');
+    });
   });
 
   // #617 followup v2 — `/compact` yes/no confirmation variant.
