@@ -55,6 +55,18 @@ export interface OAuthRefreshSchedulerOpts {
     setInterval: (fn: () => void, ms: number) => ReturnType<typeof setInterval>;
     clearInterval: (h: ReturnType<typeof setInterval>) => void;
   };
+  /**
+   * #737 — invoked AFTER every successful (or failed) refresh fan-out
+   * settles, in the same tick. Production wiring: auto CCT rotation
+   * evaluator. Errors are caught and logged so they cannot kill the
+   * scheduler. The hook runs sequentially after refresh — never
+   * concurrently — so it can read the freshly-refreshed snapshot
+   * without racing the refresh writes.
+   *
+   * KEEP THIS OPTIONAL: tests that don't care about auto-rotation
+   * shouldn't have to stub out a no-op callback.
+   */
+  onAfterTick?: () => Promise<void>;
 }
 
 /**
@@ -70,6 +82,7 @@ export class OAuthRefreshScheduler {
   readonly #intervalMs: number;
   readonly #timeoutMs: number;
   readonly #clock: NonNullable<OAuthRefreshSchedulerOpts['clock']>;
+  readonly #onAfterTick: (() => Promise<void>) | undefined;
   #handle: ReturnType<typeof setInterval> | null = null;
 
   constructor(tm: TokenManager, opts: OAuthRefreshSchedulerOpts) {
@@ -80,6 +93,7 @@ export class OAuthRefreshScheduler {
       setInterval: (fn, ms) => setInterval(fn, ms),
       clearInterval: (h) => clearInterval(h),
     };
+    this.#onAfterTick = opts.onAfterTick;
   }
 
   /** Start pumping. Idempotent — a second call is a no-op. */
@@ -135,6 +149,20 @@ export class OAuthRefreshScheduler {
         timeoutMs: this.#timeoutMs,
         intervalMs: this.#intervalMs,
       });
+    }
+    // #737 — auto-rotation hook. Runs even if the refresh fan-out
+    // failed, because rotation only depends on the persisted snapshot:
+    // a stale tick still has the previous snapshot's usage to work with,
+    // and skipping rotation on every refresh hiccup would defeat the
+    // hourly cadence the user spec calls out.
+    if (this.#onAfterTick) {
+      try {
+        await this.#onAfterTick();
+      } catch (err) {
+        logger.warn('OAuth refresh tick onAfterTick hook threw (swallowed)', {
+          err,
+        });
+      }
     }
   }
 }

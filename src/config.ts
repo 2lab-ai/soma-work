@@ -90,6 +90,37 @@ export function parsePositiveIntEnv(name: string, fallback: number, minimum: num
   return n;
 }
 
+/**
+ * Defensive parser for unit-interval (0..1) ENV knobs (#737). Fallback when
+ * unset / empty / non-numeric / out-of-range. Clamps to `[minimum, maximum]`
+ * with a warn so an operator typo (`AUTO_ROTATE_FIVEH_THRESHOLD=80` instead
+ * of `0.8`) doesn't silently disable the threshold by always-passing.
+ *
+ * Inclusive bounds — the spec wording is "≤ 80%", which matches `<=` in the
+ * comparator, so 0.8 must remain a valid threshold.
+ *
+ * @internal exported for unit tests; runtime consumers should read
+ *           `config.autoRotate.*` instead.
+ */
+export function parseUnitIntervalEnv(name: string, fallback: number, minimum: number = 0, maximum: number = 1): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) {
+    logger.warn(`${name}="${raw}" invalid (expected number 0..1); falling back to ${fallback}`);
+    return fallback;
+  }
+  if (n < minimum) {
+    logger.warn(`${name}="${raw}" below minimum ${minimum}; clamping to ${minimum}`);
+    return minimum;
+  }
+  if (n > maximum) {
+    logger.warn(`${name}="${raw}" above maximum ${maximum}; clamping to ${maximum}`);
+    return maximum;
+  }
+  return n;
+}
+
 export const config = {
   slack: {
     botToken: process.env.SLACK_BOT_TOKEN!,
@@ -217,6 +248,30 @@ export const config = {
      * this to a value that cancels every refresh before it completes.
      */
     fanOutTimeoutMs: parsePositiveIntEnv('OAUTH_REFRESH_TIMEOUT_MS', 30_000, 5_000),
+  },
+  /**
+   * Auto CCT rotation (#737) — runs piggybacked on the OAuth refresh
+   * scheduler's tick. Disabled implicitly when `OAUTH_REFRESH_ENABLED=0`
+   * (the hook never fires); explicitly disable via
+   * `AUTO_ROTATE_ENABLED=0` to keep the refresh tick but skip rotation.
+   *
+   * Thresholds are inclusive upper bounds on usage utilisation (0..1).
+   * Defaults match the user spec verbatim: 5h ≤ 80%, 7d ≤ 90%.
+   */
+  autoRotate: {
+    /** Emergency-off knob. Default-on. */
+    enabled: process.env.AUTO_ROTATE_ENABLED !== '0',
+    /**
+     * Dry-run mode: evaluate + log + (optionally) notify, but never call
+     * `applyToken`. Useful when rolling out the feature on a busy bot
+     * to confirm the candidate selection matches expectations before
+     * letting it actually flip the active slot.
+     */
+    dryRun: process.env.AUTO_ROTATE_DRY_RUN === '1',
+    /** 5h utilisation upper bound. Default 0.8 (80%). */
+    fiveHourMax: parseUnitIntervalEnv('AUTO_ROTATE_FIVEH_THRESHOLD', 0.8),
+    /** 7d utilisation upper bound. Default 0.9 (90%). */
+    sevenDayMax: parseUnitIntervalEnv('AUTO_ROTATE_SEVEND_THRESHOLD', 0.9),
   },
   /**
    * CCT slot card v2 (#668 follow-up) — optional GET /api/oauth/profile

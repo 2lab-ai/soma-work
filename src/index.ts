@@ -18,6 +18,7 @@ registerSkillStore({
 });
 
 import { App } from '@slack/bolt';
+import type { WebClient } from '@slack/web-api';
 import { initA2tService, shutdownA2tService } from './a2t/a2t-service';
 import { scanChannels } from './channel-registry';
 import { ClaudeHandler } from './claude-handler';
@@ -53,6 +54,8 @@ import { Logger } from './logger';
 import { McpManager } from './mcp-manager';
 import { startReportScheduler, stopReportScheduler } from './metrics';
 import {
+  evaluateAndMaybeRotate,
+  notifyAutoRotation,
   type OAuthRefreshScheduler,
   startOAuthRefreshScheduler,
   startUsageRefreshScheduler,
@@ -123,10 +126,62 @@ async function start() {
     // refreshTokens as `refresh_failed` within 1h (rather than waiting
     // for a dispatch to touch the slot) and keeps the card's "OAuth
     // refreshes in X" hint honest. Null when OAUTH_REFRESH_ENABLED=0.
+    //
+    // #737 — onAfterTick wires auto CCT rotation. The Slack client is
+    // captured by reference through `getSlackClient` (set after `new App`
+    // below) because the App is constructed later in bootstrap. The
+    // first refresh tick fires `intervalMs` after start (default 1h), by
+    // which point `slackClient` is unconditionally populated.
+    let slackClient: WebClient | null = null;
+    const getSlackClient = () => slackClient;
     const oauthRefreshScheduler: OAuthRefreshScheduler | null = startOAuthRefreshScheduler(tokenManager, {
       intervalMs: config.oauthRefresh.intervalMs,
       timeoutMs: config.oauthRefresh.fanOutTimeoutMs,
       enabled: config.oauthRefresh.enabled,
+      onAfterTick: async () => {
+        const outcome = await evaluateAndMaybeRotate(
+          {
+            loadSnapshot: () => tokenManager.getSnapshot(),
+            applyToken: (keyId) => tokenManager.applyToken(keyId),
+          },
+          {
+            enabled: config.autoRotate.enabled,
+            dryRun: config.autoRotate.dryRun,
+            thresholds: {
+              fiveHourMax: config.autoRotate.fiveHourMax,
+              sevenDayMax: config.autoRotate.sevenDayMax,
+            },
+          },
+        );
+        if (outcome.kind === 'rotated') {
+          logger.info('Auto CCT rotated', {
+            from: outcome.from?.name,
+            to: outcome.to.name,
+            sevenDayResetsAt: outcome.to.sevenDayResetsAt,
+          });
+          const client = getSlackClient();
+          if (client) {
+            await notifyAutoRotation(client, { from: outcome.from, to: outcome.to });
+          } else {
+            logger.warn('Auto CCT rotated but Slack client not yet available — notify skipped', {
+              to: outcome.to.name,
+            });
+          }
+        } else if (outcome.kind === 'noop') {
+          logger.debug('Auto CCT rotation no-op', {
+            reason: outcome.reason,
+            active: outcome.active?.name,
+          });
+        } else if (outcome.kind === 'skipped') {
+          logger.info('Auto CCT rotation skipped', { reason: outcome.reason });
+        } else if (outcome.kind === 'dry-run') {
+          logger.info('Auto CCT rotation dry-run', {
+            would: outcome.would,
+            from: outcome.from?.name,
+            to: outcome.to?.name,
+          });
+        }
+      },
     });
     timing('OAuth refresh scheduler wired');
 
@@ -143,6 +198,11 @@ async function start() {
       socketMode: true,
       appToken: config.slack.appToken,
     });
+
+    // #737 — publish the Slack client into the auto-rotate hook closure.
+    // The OAuth refresh scheduler was wired before App existed; its first
+    // tick fires `intervalMs` later (default 1h) so by then this is set.
+    slackClient = app.client;
 
     // Log ALL incoming events (before any handler)
     app.use(async ({ payload, body, next }) => {

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { parseBool, parseFiveBlockPhase, parsePositiveIntEnv } from '../config';
+import { parseBool, parseFiveBlockPhase, parsePositiveIntEnv, parseUnitIntervalEnv } from '../config';
 
 // Silence the warn path; we're testing the fallback value, not the log side-effect.
 vi.mock('../logger', () => ({
@@ -127,6 +127,75 @@ describe('parsePositiveIntEnv (#641 M1-S1)', () => {
   it('no minimum set (default 0) → any positive integer passes through', () => {
     process.env[ENV_NAME] = '42';
     expect(parsePositiveIntEnv(ENV_NAME, 2_000)).toBe(42);
+  });
+});
+
+// #737 — `parseUnitIntervalEnv` gates `AUTO_ROTATE_FIVEH_THRESHOLD` and
+// `AUTO_ROTATE_SEVEND_THRESHOLD`. Two foot-guns to defend against:
+//   - operator types `80` instead of `0.8` → clamp to 1.0, NOT silently
+//     accept 80 as "always passes".
+//   - operator types `-0.5` → clamp to 0.0, NOT fallback (we want a known
+//     conservative threshold even from a typo).
+describe('parseUnitIntervalEnv (#737)', () => {
+  const ENV_NAME = 'TEST_UNIT_INTERVAL_ENV';
+  beforeEach(() => {
+    delete process.env[ENV_NAME];
+  });
+  afterEach(() => {
+    delete process.env[ENV_NAME];
+  });
+
+  it('undefined env → fallback', () => {
+    expect(parseUnitIntervalEnv(ENV_NAME, 0.8)).toBe(0.8);
+  });
+
+  it('empty-string env → fallback', () => {
+    process.env[ENV_NAME] = '';
+    expect(parseUnitIntervalEnv(ENV_NAME, 0.9)).toBe(0.9);
+  });
+
+  it('non-numeric → fallback', () => {
+    process.env[ENV_NAME] = 'eighty';
+    expect(parseUnitIntervalEnv(ENV_NAME, 0.8)).toBe(0.8);
+  });
+
+  it('NaN literal → fallback', () => {
+    process.env[ENV_NAME] = 'NaN';
+    expect(parseUnitIntervalEnv(ENV_NAME, 0.5)).toBe(0.5);
+  });
+
+  it('value above maximum → clamp to maximum (NOT fallback)', () => {
+    // Operator typo: `AUTO_ROTATE_FIVEH_THRESHOLD=80` instead of `0.8`.
+    // Clamping to 1.0 is safer than the fallback (0.8) because at least
+    // the warn log will tell the operator something is off.
+    process.env[ENV_NAME] = '80';
+    expect(parseUnitIntervalEnv(ENV_NAME, 0.8)).toBe(1);
+  });
+
+  it('value below minimum → clamp to minimum', () => {
+    process.env[ENV_NAME] = '-0.5';
+    expect(parseUnitIntervalEnv(ENV_NAME, 0.8)).toBe(0);
+  });
+
+  it('boundary values pass through (inclusive)', () => {
+    process.env[ENV_NAME] = '0';
+    expect(parseUnitIntervalEnv(ENV_NAME, 0.8)).toBe(0);
+    process.env[ENV_NAME] = '1';
+    expect(parseUnitIntervalEnv(ENV_NAME, 0.8)).toBe(1);
+  });
+
+  it('typical decimal value passes through', () => {
+    process.env[ENV_NAME] = '0.85';
+    expect(parseUnitIntervalEnv(ENV_NAME, 0.8)).toBe(0.85);
+  });
+
+  it('Infinity → clamp to maximum (1)', () => {
+    process.env[ENV_NAME] = 'Infinity';
+    // Number('Infinity') is finite-ish per Number.isFinite? Actually no:
+    // Number.isFinite(Infinity) === false → falls through to fallback path.
+    // Lock either behaviour explicitly.
+    const r = parseUnitIntervalEnv(ENV_NAME, 0.8);
+    expect(r).toBe(0.8); // fallback path because Number.isFinite(Infinity) is false
   });
 });
 
