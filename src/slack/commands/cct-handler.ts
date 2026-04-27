@@ -1,6 +1,8 @@
 import { isAdminUser } from '../../admin-utils';
 import type { AuthKey } from '../../auth/auth-key';
 import type { CctStoreSnapshot, SlotState, UsageSnapshot } from '../../cct-store';
+import { config } from '../../config';
+import { evaluateAndMaybeRotate, type RotationOutcome } from '../../oauth/auto-rotate';
 import { getTokenManager, type TokenSummary } from '../../token-manager';
 import { formatRateLimitedAt } from '../../util/format-rate-limited-at';
 import { formatUsageBar, formatUsageResetDelta } from '../cct/builder';
@@ -115,6 +117,34 @@ export class CctHandler implements CommandHandler {
       }
     } else if (action.action === 'usage') {
       await handleUsage(action.target, tm, tokens, (t) => say({ text: t, thread_ts: threadTs }));
+    } else if (action.action === 'auto') {
+      // Manual operator trigger of the #737 auto-rotate evaluator. Force-on:
+      // we deliberately ignore `config.autoRotate.enabled` because that env
+      // knob gates the *hourly tick*; an operator typing `cct auto` expects
+      // an explicit one-shot evaluation regardless. Threshold + max-age
+      // mirror the production wiring in `src/index.ts:160-177` so the
+      // verdict matches what the next scheduled tick would produce. We do
+      // NOT call `notifyAutoRotation` — DEFAULT_UPDATE_CHANNEL publishing
+      // is reserved for the hourly path so the operator channel doesn't
+      // double-up on manual evaluations.
+      const outcome = await evaluateAndMaybeRotate(
+        {
+          loadSnapshot: () => tm.getSnapshot(),
+          applyTokenIfActiveMatches: (target, expected, precond) =>
+            tm.applyTokenIfActiveMatches(target, expected, precond),
+        },
+        {
+          enabled: true,
+          dryRun: action.dry,
+          thresholds: {
+            fiveHourMax: config.autoRotate.fiveHourMax,
+            sevenDayMax: config.autoRotate.sevenDayMax,
+          },
+          usageMaxAgeMs: 2 * config.usage.refreshIntervalMs,
+        },
+      );
+      const out = await renderRotationOutcome(outcome);
+      await say({ text: out, thread_ts: threadTs });
     }
 
     return { handled: true };
@@ -267,4 +297,124 @@ function formatDurationUntil(isoUtc: string, nowMs?: number): string {
   if (!Number.isFinite(target)) return 'a bit';
   const now = nowMs ?? Date.now();
   return formatUsageResetDelta(target - now);
+}
+
+// ── #749 Auto-rotate text command renderer ─────────────────────────
+
+/**
+ * Format a 0..1 utilization fraction as `XX.X%`. Inline clone of
+ * `auto-rotate-notifier.ts:25-28` — duplicated rather than imported because
+ * the notifier module pulls in `@slack/web-api` block-kit dependencies that
+ * we don't want to drag into the text-only handler. Behavior pinned by
+ * test (`80.0%` for `0.8`, `—` for `undefined` / non-finite).
+ */
+function pct(util: number | undefined): string {
+  if (util === undefined || !Number.isFinite(util)) return '—';
+  return `${(util * 100).toFixed(1)}%`;
+}
+
+/**
+ * Format the millisecond delta until the active slot's 7d window resets,
+ * routed through the existing `formatUsageResetDelta` helper for "Δ" parity
+ * with the `/cct usage` card. Returns `—` if the ISO is missing/invalid.
+ */
+function fmtResetsDelta(iso: string | undefined, nowMs?: number): string {
+  if (!iso) return '—';
+  const target = new Date(iso).getTime();
+  if (!Number.isFinite(target)) return '—';
+  const now = nowMs ?? Date.now();
+  return formatUsageResetDelta(target - now);
+}
+
+/**
+ * Best-effort lookup of the active slot's in-flight lease count for the
+ * `skipped/active-lease` outcome message. Reads through `loadSnapshotSafe`
+ * (which already swallows store errors); if that returns null OR the keyId
+ * is missing, fall back to `0` — the operator just gets a less specific
+ * "N=0" lease line, never an exception. The slot name also falls back to
+ * the keyId in the same path.
+ */
+async function leaseCountForActive(activeKeyId: string): Promise<{ count: number; name: string }> {
+  const snap = await loadSnapshotSafe();
+  if (!snap) return { count: 0, name: activeKeyId };
+  const slot = snap.registry.slots.find((s) => s.keyId === activeKeyId);
+  const state = snap.state[activeKeyId];
+  return {
+    count: state?.activeLeases?.length ?? 0,
+    name: slot?.name ?? activeKeyId,
+  };
+}
+
+/**
+ * Render the 12-variant outcome of `evaluateAndMaybeRotate` to a single
+ * compact thread-only Slack text line (or short bullet list for the
+ * `no-candidate` reject breakdown). Mapping is fixed by the #749 plan
+ * table — every `RotationOutcome` discriminant must produce a deterministic
+ * non-empty string so the operator always sees *something* in the thread.
+ */
+export async function renderRotationOutcome(outcome: RotationOutcome): Promise<string> {
+  if (outcome.kind === 'rotated') {
+    const fromName = outcome.from?.name ?? '(none)';
+    const resets = fmtResetsDelta(outcome.to.sevenDayResetsAt);
+    const five = pct(outcome.to.fiveHourUtilization);
+    const seven = pct(outcome.to.sevenDayUtilization);
+    return `:repeat: Auto-rotated *${fromName}* → *${outcome.to.name}* (7d resets ${resets}, 5h ${five} / 7d ${seven})`;
+  }
+
+  if (outcome.kind === 'noop') {
+    if (outcome.reason === 'active-not-set') {
+      return ':warning: No active slot configured';
+    }
+    // active-is-best
+    const name = outcome.active?.name ?? '(unknown)';
+    return `:white_check_mark: Active *${name}* is already optimal — no rotation needed`;
+  }
+
+  if (outcome.kind === 'skipped') {
+    if (outcome.reason === 'active-lease') {
+      const activeKeyId = outcome.debug.activeKeyId;
+      if (activeKeyId) {
+        const { count, name } = await leaseCountForActive(activeKeyId);
+        return `:hourglass: Skipped — active *${name}* has ${count} in-flight lease(s) at last read. Try \`cct auto\` again after the lease drains.`;
+      }
+      return `:hourglass: Skipped — active slot has in-flight leases. Try \`cct auto\` again after the lease drains.`;
+    }
+    if (outcome.reason === 'no-candidate') {
+      const bullets =
+        outcome.debug.rejected.length > 0
+          ? outcome.debug.rejected.map((r) => `• ${r.name} (${r.keyId}): rejected (${r.reason})`).join('\n')
+          : '• (no slots evaluated)';
+      return `:warning: No eligible candidate. See debug:\n${bullets}`;
+    }
+    if (outcome.reason === 'disabled') {
+      // Defensive — `cct auto` always passes `enabled: true`, so this branch
+      // is only reachable if a future caller forgets the override. Keep the
+      // user-visible string honest about the unexpected state.
+      return ':warning: Auto-rotation disabled internally — bug, please report';
+    }
+    if (outcome.reason === 'race-active-changed') {
+      return ':hourglass: Skipped — active changed under us. Try `cct auto` again.';
+    }
+    // race-precondition-failed
+    return ':hourglass: Skipped — slot eligibility changed under us. Try `cct auto` again.';
+  }
+
+  // dry-run
+  if (outcome.would === 'rotate' && outcome.to) {
+    const fromName = outcome.from?.name ?? '(none)';
+    const resets = fmtResetsDelta(outcome.to.sevenDayResetsAt);
+    return `:test_tube: [dry-run] Would rotate *${fromName}* → *${outcome.to.name}* (7d resets ${resets})`;
+  }
+  if (outcome.would === 'noop') {
+    const name = outcome.from?.name ?? '(unknown)';
+    return `:test_tube: [dry-run] Active *${name}* is already optimal`;
+  }
+  // would === 'skipped'
+  const bullets =
+    outcome.debug.rejected.length > 0
+      ? outcome.debug.rejected.map((r) => `• ${r.name} (${r.keyId}): rejected (${r.reason})`).join('\n')
+      : '';
+  return bullets
+    ? `:test_tube: [dry-run] No eligible candidate.\n${bullets}`
+    : `:test_tube: [dry-run] No eligible candidate.`;
 }
