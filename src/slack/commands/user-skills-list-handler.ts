@@ -1,5 +1,11 @@
 import { Logger } from '../../logger';
-import { listUserSkills } from '../../user-skill-store';
+import { listUserSkills, type UserSkillMeta } from '../../user-skill-store';
+import {
+  LEGACY_INVOKE_ACTION_ID_PREFIX,
+  MENU_ACTION_ID_PREFIX,
+  VALUE_KIND_EDIT,
+  VALUE_KIND_INVOKE,
+} from '../actions/user-skill-menu-action-handler';
 import { escapeSlackMrkdwn } from '../mrkdwn-escape';
 import type { CommandContext, CommandHandler, CommandResult } from './types';
 
@@ -18,15 +24,15 @@ const MAX_SECTIONS_BEFORE_OVERFLOW = 49; // 49 sections + 1 context = 50 blocks
 /** Description truncation for safety against the section.text 3000-char cap. */
 const DESC_TRUNC_LEN = 200;
 
-/** Action ID prefix matched by `/^user_skill_invoke_/` in `actions/index.ts`. */
-const ACTION_ID_PREFIX = 'user_skill_invoke_';
-
-const VALUE_KIND = 'user_skill_invoke';
+/** Slack overflow option text caps. Each `text.text` is plain_text ≤ 75 chars. */
+const OVERFLOW_OPTION_TEXT_MAX = 75;
+/** Slack overflow needs at least 2 options; below that we fall back to button. */
+const OVERFLOW_MIN_OPTIONS = 2;
 
 /**
  * Handles bare `$user` (single token) — lists the requesting user's personal
  * skills as Slack buttons. Each button, when clicked, dispatches via
- * `UserSkillInvokeActionHandler` which re-injects `$user:{name}` into the
+ * `UserSkillMenuActionHandler` which re-injects `$user:{name}` into the
  * Slack message pipeline (the same path a typed `$user:{name}` takes).
  *
  * Registered BEFORE `SkillForceHandler` in `command-router.ts` so that bare
@@ -75,7 +81,7 @@ export class UserSkillsListHandler implements CommandHandler {
       });
     }
 
-    const fallback = `🎯 Personal Skills (${skills.length}) — 버튼을 눌러 발동`;
+    const fallback = `🎯 Personal Skills (${skills.length}) — 버튼을 눌러 발동/편집`;
 
     this.logger.info('Listed personal skills as buttons', {
       user,
@@ -92,24 +98,78 @@ export class UserSkillsListHandler implements CommandHandler {
     return { handled: true };
   }
 
-  private buildSkillSection(skill: { name: string; description: string }, requesterId: string): any {
-    const safeDesc = escapeSlackMrkdwn(skill.description || '_(no description)_').substring(0, DESC_TRUNC_LEN);
+  private buildSkillSection(skill: UserSkillMeta, requesterId: string): any {
+    const baseDesc = skill.description || '_(no description)_';
+    const safeDesc = escapeSlackMrkdwn(baseDesc).substring(0, DESC_TRUNC_LEN);
+    // Multi-file skills get an inline label inside the section text — no
+    // separate context block (issue #750 §정책 확정: "별도 블록 0").
+    const multiFileNote = skill.isSingleFile ? '' : '\n_📁 multi-file — `MANAGE_SKILL update` 사용_';
     return {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `*\`$user:${skill.name}\`*\n${safeDesc}`,
+        text: `*\`$user:${skill.name}\`*\n${safeDesc}${multiFileNote}`,
       },
-      accessory: {
-        type: 'button',
-        text: { type: 'plain_text', text: '발동', emoji: true },
-        action_id: `${ACTION_ID_PREFIX}${skill.name}`,
-        value: JSON.stringify({
-          kind: VALUE_KIND,
-          skillName: skill.name,
-          requesterId,
-        }),
-      },
+      accessory: this.buildSkillAccessory(skill.name, requesterId, skill.isSingleFile),
     };
   }
+
+  /**
+   * Build the accessory element (overflow / button / undefined).
+   *
+   * - Single-file skill → overflow with 발동 + 편집 (≥2 options ⇒ overflow valid).
+   * - Multi-file skill → button with 발동 only (BC-compatible action_id).
+   * - Zero-option fallback → no accessory + a context note. This is defensive;
+   *   under current invariants we always emit ≥1 option.
+   */
+  private buildSkillAccessory(skillName: string, requesterId: string, isSingle: boolean): any {
+    const invokeOption = this.buildOption('🚀 발동', VALUE_KIND_INVOKE, skillName, requesterId);
+    const editOption = isSingle ? this.buildOption('✏️ 편집', VALUE_KIND_EDIT, skillName, requesterId) : null;
+
+    // Filter out any option whose visible text exceeded Slack's 75-char cap.
+    // Today the labels are static emojis + Korean — the filter is defensive
+    // for future label changes.
+    const options = [invokeOption, editOption].filter((o): o is OverflowOption => o !== null);
+    const safe = options.filter((o) => o.text.text.length <= OVERFLOW_OPTION_TEXT_MAX);
+
+    if (safe.length === 0) {
+      // Defensive zero-option fallback — render no accessory at all so the
+      // Slack client doesn't reject the block. Users can still invoke the
+      // skill by typing `$user:<name>` directly.
+      this.logger.warn('user-skill list: zero renderable options', { skillName });
+      return undefined;
+    }
+
+    if (safe.length >= OVERFLOW_MIN_OPTIONS) {
+      return {
+        type: 'overflow',
+        action_id: `${MENU_ACTION_ID_PREFIX}${skillName}`,
+        options: safe,
+      };
+    }
+
+    // Exactly one option ⇒ button (overflow needs ≥2). Multi-file skills land
+    // here. We keep the legacy `user_skill_invoke_` prefix so any in-flight
+    // message rendered by an older release still routes correctly even after
+    // the BC regex is eventually removed.
+    const only = safe[0];
+    return {
+      type: 'button',
+      text: { type: 'plain_text', text: only.text.text, emoji: true },
+      action_id: `${LEGACY_INVOKE_ACTION_ID_PREFIX}${skillName}`,
+      value: only.value,
+    };
+  }
+
+  private buildOption(label: string, kind: string, skillName: string, requesterId: string): OverflowOption {
+    return {
+      text: { type: 'plain_text', text: label, emoji: true },
+      value: JSON.stringify({ kind, skillName, requesterId }),
+    };
+  }
+}
+
+interface OverflowOption {
+  text: { type: 'plain_text'; text: string; emoji?: boolean };
+  value: string;
 }

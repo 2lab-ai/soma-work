@@ -4,6 +4,9 @@ import { UserSkillsListHandler } from '../user-skills-list-handler';
 
 vi.mock('../../../user-skill-store');
 
+/** Convenience builder — issue #750 added `isSingleFile` to UserSkillMeta. */
+const skill = (name: string, description = '', isSingleFile = true) => ({ name, description, isSingleFile });
+
 describe('UserSkillsListHandler', () => {
   const handler = new UserSkillsListHandler();
   const mockSay = vi.fn().mockResolvedValue({ ts: '1' });
@@ -68,10 +71,10 @@ describe('UserSkillsListHandler', () => {
       expect(arg.blocks).toBeUndefined();
     });
 
-    it('emits per-skill section blocks with accessory buttons', async () => {
+    it('emits per-skill section blocks with overflow accessory for single-file skills', async () => {
       vi.mocked(userSkillStore.listUserSkills).mockReturnValue([
-        { name: 'a', description: 'first skill' },
-        { name: 'deploy', description: 'deploy helper' },
+        skill('a', 'first skill'),
+        skill('deploy', 'deploy helper'),
       ]);
 
       const result = await handler.execute(makeCtx('$user', 'U42'));
@@ -85,14 +88,19 @@ describe('UserSkillsListHandler', () => {
       // One section block per skill
       const sectionBlocks = arg.blocks.filter((b: any) => b.type === 'section');
       expect(sectionBlocks.length).toBe(2);
-      // Each section has an accessory button
+      // Each section has an overflow accessory carrying invoke + edit options.
       for (const b of sectionBlocks) {
-        expect(b.accessory?.type).toBe('button');
-        expect(b.accessory?.action_id).toMatch(/^user_skill_invoke_/);
-        const value = JSON.parse(b.accessory?.value);
-        expect(value.kind).toBe('user_skill_invoke');
-        expect(value.requesterId).toBe('U42');
-        expect(typeof value.skillName).toBe('string');
+        expect(b.accessory?.type).toBe('overflow');
+        expect(b.accessory?.action_id).toMatch(/^user_skill_menu_/);
+        const opts = b.accessory.options;
+        expect(opts.length).toBe(2);
+        const kinds = opts.map((o: any) => JSON.parse(o.value).kind);
+        expect(kinds).toEqual(['user_skill_invoke', 'user_skill_edit']);
+        for (const o of opts) {
+          const v = JSON.parse(o.value);
+          expect(v.requesterId).toBe('U42');
+          expect(typeof v.skillName).toBe('string');
+        }
       }
       // Skill names appear in section text
       const allText = sectionBlocks.map((b: any) => b.text?.text).join('\n');
@@ -100,9 +108,45 @@ describe('UserSkillsListHandler', () => {
       expect(allText).toContain('$user:deploy');
     });
 
+    it('renders multi-file skills with a button (BC) accessory + inline label', async () => {
+      vi.mocked(userSkillStore.listUserSkills).mockReturnValue([skill('multi', 'multi-file skill', false)]);
+
+      await handler.execute(makeCtx('$user', 'U7'));
+
+      const blocks = mockSay.mock.calls[0][0].blocks;
+      const section = blocks.find((b: any) => b.type === 'section');
+      // Inline label is part of the section text — no separate context block.
+      expect(section.text.text).toMatch(/multi-file/i);
+      expect(blocks.filter((b: any) => b.type === 'context').length).toBe(0);
+      // Accessory must be the legacy button with `user_skill_invoke_` prefix
+      // so older clients (or in-flight messages) still route correctly.
+      expect(section.accessory.type).toBe('button');
+      expect(section.accessory.action_id).toMatch(/^user_skill_invoke_/);
+      const v = JSON.parse(section.accessory.value);
+      expect(v.kind).toBe('user_skill_invoke');
+      expect(v.skillName).toBe('multi');
+      expect(v.requesterId).toBe('U7');
+    });
+
+    it('mixes single + multi-file skills in a single render', async () => {
+      vi.mocked(userSkillStore.listUserSkills).mockReturnValue([
+        skill('single', 's', true),
+        skill('multi', 'm', false),
+      ]);
+
+      await handler.execute(makeCtx('$user'));
+
+      const blocks = mockSay.mock.calls[0][0].blocks;
+      const sections = blocks.filter((b: any) => b.type === 'section');
+      const singleSection = sections.find((b: any) => b.text.text.includes('$user:single'));
+      const multiSection = sections.find((b: any) => b.text.text.includes('$user:multi'));
+      expect(singleSection.accessory.type).toBe('overflow');
+      expect(multiSection.accessory.type).toBe('button');
+    });
+
     it('truncates long descriptions to 200 chars', async () => {
       const longDesc = 'x'.repeat(500);
-      vi.mocked(userSkillStore.listUserSkills).mockReturnValue([{ name: 'long', description: longDesc }]);
+      vi.mocked(userSkillStore.listUserSkills).mockReturnValue([skill('long', longDesc)]);
 
       await handler.execute(makeCtx('$user'));
 
@@ -114,9 +158,7 @@ describe('UserSkillsListHandler', () => {
     });
 
     it('escapes Slack mrkdwn metacharacters in description', async () => {
-      vi.mocked(userSkillStore.listUserSkills).mockReturnValue([
-        { name: 'esc', description: '<@U999> & <https://x|x>' },
-      ]);
+      vi.mocked(userSkillStore.listUserSkills).mockReturnValue([skill('esc', '<@U999> & <https://x|x>')]);
 
       await handler.execute(makeCtx('$user'));
 
@@ -128,7 +170,7 @@ describe('UserSkillsListHandler', () => {
     });
 
     it('handles skills with no description gracefully', async () => {
-      vi.mocked(userSkillStore.listUserSkills).mockReturnValue([{ name: 'bare', description: '' }]);
+      vi.mocked(userSkillStore.listUserSkills).mockReturnValue([skill('bare', '')]);
 
       await handler.execute(makeCtx('$user'));
 
@@ -138,10 +180,7 @@ describe('UserSkillsListHandler', () => {
     });
 
     it('renders 50 skills without overflow context block', async () => {
-      const skills = Array.from({ length: 50 }, (_, i) => ({
-        name: `s${i.toString().padStart(2, '0')}`,
-        description: `desc ${i}`,
-      }));
+      const skills = Array.from({ length: 50 }, (_, i) => skill(`s${i.toString().padStart(2, '0')}`, `desc ${i}`));
       vi.mocked(userSkillStore.listUserSkills).mockReturnValue(skills);
 
       await handler.execute(makeCtx('$user'));
@@ -155,10 +194,7 @@ describe('UserSkillsListHandler', () => {
     });
 
     it('defensively trims to 49 sections + context block when store cap exceeded (future-proof)', async () => {
-      const skills = Array.from({ length: 60 }, (_, i) => ({
-        name: `s${i.toString().padStart(2, '0')}`,
-        description: `desc ${i}`,
-      }));
+      const skills = Array.from({ length: 60 }, (_, i) => skill(`s${i.toString().padStart(2, '0')}`, `desc ${i}`));
       vi.mocked(userSkillStore.listUserSkills).mockReturnValue(skills);
 
       await handler.execute(makeCtx('$user'));
