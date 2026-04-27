@@ -9,15 +9,17 @@
  * Prints a JSON summary of what changed (users touched, new instructions
  * projected, backup path on apply mode).
  *
- * The same migration function is invoked eagerly at startup
- * (`src/index.ts` → `runStartupUserInstructionsMigration`); this script is
- * the operator-side knob for re-running the projection or previewing it
- * without restarting the bot.
+ * Both this admin script AND the eager-boot path
+ * (`src/index.ts` → `runStartupUserInstructionsMigration`) call into the
+ * exact same flow (PID-locked migration + atomic `sessions.json` pointer
+ * apply). This is intentional — running `--apply` here MUST produce
+ * byte-identical disk state to a fresh boot, so operators can preview /
+ * re-run the projection without restarting the bot (#727 P1-2).
  */
 
 import '../src/env-paths';
 import { DATA_DIR } from '../src/env-paths';
-import { migrateUserInstructions } from '../src/user-instructions-migration';
+import { runStartupUserInstructionsMigration } from '../src/user-instructions-migration';
 
 interface ParsedArgs {
   dryRun: boolean;
@@ -40,10 +42,10 @@ function parseArgs(argv: string[]): ParsedArgs {
   return { dryRun };
 }
 
-function main(): void {
+async function main(): Promise<void> {
   const { dryRun } = parseArgs(process.argv.slice(2));
 
-  const result = migrateUserInstructions({ dataDir: DATA_DIR, dryRun });
+  const result = await runStartupUserInstructionsMigration({ dataDir: DATA_DIR, dryRun });
 
   // Single line of structured output for log capture.
   process.stdout.write(
@@ -65,4 +67,7 @@ function main(): void {
   );
 }
 
-main();
+main().catch((err) => {
+  process.stderr.write(`migrate:user-instructions failed: ${(err as Error).message}\n`);
+  process.exit(1);
+});

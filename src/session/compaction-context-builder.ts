@@ -134,15 +134,22 @@ function formatLink(link: SessionLink): string {
 function formatInstructions(instructions?: SessionInstruction[]): string[] {
   if (!instructions || instructions.length === 0) return [];
   // Sealed status set (#754): active | completed | cancelled. Legacy 'todo'
-  // is migrated to 'active' before reaching this builder.
-  const grouped = { active: [] as string[], cancelled: [] as string[], completed: [] as string[] };
+  // is migrated to 'active' before reaching this builder. PR1 (#754) scope
+  // is mechanical sealed-enum compatibility only — cancelled entries are
+  // READ (no crash) but DROPPED from the compaction context. Surfacing
+  // cancelled state to the model is prompt-block design behavior owned by
+  // #756.
+  // TODO(#756): expose cancelled instructions in compaction context.
+  const grouped = { active: [] as string[], completed: [] as string[] };
   for (const i of instructions) {
     const s = i.status ?? 'active';
     const text = i.text.replace(/\s+/g, ' ').trim();
     if (!text) continue;
     if (s === 'completed') grouped.completed.push(`- [completed] ${text}`);
-    else if (s === 'cancelled') grouped.cancelled.push(`- [cancelled] ${text}`);
-    else grouped.active.push(`- [active] ${text}`);
+    else if (s === 'cancelled') {
+      // Intentionally skipped in PR1 (#754). #756 owns cancelled-rendering.
+      continue;
+    } else grouped.active.push(`- [active] ${text}`);
   }
-  return [...grouped.active, ...grouped.cancelled, ...grouped.completed];
+  return [...grouped.active, ...grouped.completed];
 }

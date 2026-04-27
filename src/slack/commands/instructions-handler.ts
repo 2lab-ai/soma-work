@@ -66,9 +66,11 @@ export class InstructionsHandler implements CommandHandler {
         for (const i of entries) {
           const text = i.text.length > 200 ? `${i.text.slice(0, 200)}…` : i.text;
           const bullet = `• \`${i.id}\` — ${text}`;
-          const evidence = i.evidence ? `\n    _evidence:_ ${i.evidence.slice(0, 200)}` : '';
-          const completedAt = i.completedAt ? ` _(completed ${new Date(i.completedAt).toISOString()})_` : '';
-          lines.push(`${bullet}${completedAt}${evidence}`);
+          // Sealed shape (#727 P1-5): no `evidence` on the instruction row.
+          // The dashboard / drilldown surface reads completion evidence
+          // from the matching `lifecycleEvents` `op:'complete'` payload.
+          const completedAt = i.completedAt ? ` _(completed ${i.completedAt})_` : '';
+          lines.push(`${bullet}${completedAt}`);
         }
         lines.push('');
       }

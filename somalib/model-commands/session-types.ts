@@ -164,57 +164,60 @@ export type SessionResourceType = 'issue' | 'pr' | 'doc';
 export type SessionInstructionStatus = 'active' | 'completed' | 'cancelled';
 
 /**
+ * Source enum for a session-instruction row (sealed #727).
+ *
+ * - `model`                 — model proposed via UPDATE_SESSION + user y/n confirm (#755)
+ * - `user-manual-dashboard` — direct dashboard click (#759); click == confirm
+ * - `migration`             — produced by `user-instructions-migration.ts`
+ *                             when projecting legacy `sessions.json` rows
+ */
+export type SessionInstructionSource = 'model' | 'user-manual-dashboard' | 'migration';
+
+/**
  * A single user instruction stored as SSOT in the session.
- * Persisted to disk (legacy: `data/sessions.json::session.instructions[]`;
- * sealed master: `data/users/{userId}/user-session.json::instructions[]`)
- * and exposed to the model via GET_SESSION.
  *
- * Both legacy session-scope + sealed user-scope storage share this shape.
- * The user-scope master adds two extra fields beyond the legacy session
- * mirror: `linkedSessionIds` and `sourceRawInputIds`. Those are optional
- * here so legacy sessions can serialize without them.
+ * Sealed shape (#727 / #754). Both the legacy session-scope mirror
+ * (`data/sessions.json::session.instructions[]`) and the user-scope master
+ * (`data/users/{userId}/user-session.json::instructions[]`) share this
+ * exact shape so there is one type to read by the prompt block / dashboard
+ * / compaction-context builder.
  *
- * `addedAt` is kept for backward-compatibility; the user-scope store also
- * carries an ISO `createdAt` (see `UserInstruction` in
- * `src/user-session-store.ts`) for sealed schema parity.
+ * The legacy `addedAt` (unix ms number) and free-form `source: string`
+ * fields were dropped in favor of the sealed `createdAt` (ISO string) and
+ * the `SessionInstructionSource` enum. Pre-#754 disk state is migrated
+ * in-memory at load time in `session-registry.loadSessions` — disk
+ * compatibility is preserved without leaking the legacy types into the
+ * type signature.
+ *
+ * The instruction itself has NO `evidence` field — completion evidence
+ * belongs in the `lifecycleEvents` `op:'complete'` payload (#727 P1-5).
  */
 export interface SessionInstruction {
-  id: string; // Unique ID (e.g., "instr_1712000000000_0")
-  text: string; // The instruction content
-  addedAt: number; // Unix ms when added (legacy)
+  /** Unique ID (e.g., "instr_1712000000000_0"). */
+  id: string;
+  /** The instruction content. */
+  text: string;
+  /** ISO timestamp of creation. */
+  createdAt: string;
+  /** Origin of the entry (sealed enum). */
+  source: SessionInstructionSource;
+  /** Lifecycle status. */
+  status: SessionInstructionStatus;
+  /** ISO timestamp set when status transitions to `completed`. */
+  completedAt?: string;
+  /** ISO timestamp set when status transitions to `cancelled`. */
+  cancelledAt?: string;
   /**
-   * Origin of the entry. Legacy free-form string is kept for backward
-   * compatibility with older sessions.json payloads; the sealed master
-   * tightens this to the enum below (see `UserInstructionSource`).
+   * Sessions that have ever been linked to this instruction. Append-only,
+   * deduplicated. Required on the sealed shape (may be empty `[]`).
    */
-  source?: string;
-  /**
-   * Lifecycle status (defaults to 'active' when absent — migration is handled
-   * at load time in session-registry.loadSessions).
-   */
-  status?: SessionInstructionStatus;
-  /**
-   * Evidence describing why an instruction is `completed` (e.g., PR link,
-   * commit SHA, test name). Required at host-side when model asks to mark
-   * completed; stripped from prompt injection for brevity.
-   */
-  evidence?: string;
-  /** Unix ms when status transitioned to `completed`. */
-  completedAt?: number;
-  /** Unix ms when status transitioned to `cancelled` (sealed schema). */
-  cancelledAt?: number;
-  /**
-   * Sessions that have ever been linked to this instruction (sealed schema).
-   * Append-only, deduplicated. Optional on legacy session-scope mirrors.
-   */
-  linkedSessionIds?: string[];
+  linkedSessionIds: string[];
   /**
    * Raw-input back-references populated by #760. Each entry pins a single
-   * raw-input row by `{ sessionKey, rawInputId }` so the instruction can be
-   * traced back to the user's original message text even after compaction.
-   * Optional everywhere until #760 lands.
+   * raw-input row by `{ sessionKey, rawInputId }`. Required on the sealed
+   * shape (may be empty `[]`).
    */
-  sourceRawInputIds?: Array<{ sessionKey: string; rawInputId: string }>;
+  sourceRawInputIds: Array<{ sessionKey: string; rawInputId: string }>;
 }
 
 export interface SessionResourceSnapshot {

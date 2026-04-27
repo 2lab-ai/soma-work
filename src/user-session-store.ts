@@ -33,7 +33,7 @@ import { Logger } from './logger';
  *
  * Sealed by issue #727 / #754:
  * - `active`    — live work, may be a session's `currentInstructionId`
- * - `completed` — finished (paired with optional `evidence`)
+ * - `completed` — finished
  * - `cancelled` — explicitly stopped by the user; FIRST-CLASS state distinct
  *                 from `completed` (Q3 sealed YES)
  */
@@ -65,8 +65,6 @@ export interface UserInstruction {
   completedAt?: string;
   /** ISO timestamp set when status transitions to `cancelled`. */
   cancelledAt?: string;
-  /** Evidence supplied at completion time (PR link, commit SHA, test name, …). */
-  evidence?: string;
   source: UserInstructionSource;
   /**
    * Raw-input back-references populated by #760. Each entry pins a single
@@ -120,6 +118,25 @@ export interface UserSessionDoc {
   schemaVersion: 1;
   instructions: UserInstruction[];
   lifecycleEvents: LifecycleEvent[];
+}
+
+/**
+ * Thrown when the on-disk user-session.json exists but cannot be parsed
+ * into a valid sealed document (malformed JSON, root not an object,
+ * `instructions` / `lifecycleEvents` not arrays, schema-version drift,
+ * referential-integrity violation). The caller decides whether to halt
+ * the process or quarantine the file (rename to `.corrupt-{ts}`); the
+ * store NEVER overwrites or silently degrades a corrupt file.
+ */
+export class UserSessionStoreCorruptError extends Error {
+  readonly userId: string;
+  readonly file: string;
+  constructor(message: string, userId: string, file: string) {
+    super(message);
+    this.name = 'UserSessionStoreCorruptError';
+    this.userId = userId;
+    this.file = file;
+  }
 }
 
 // ── Internal helpers ─────────────────────────────────────────────────────────
@@ -179,9 +196,34 @@ function validateInstruction(inst: UserInstruction, idx: number): void {
   if (!Array.isArray(inst.linkedSessionIds)) {
     throw new Error(`UserSessionStore: instructions[${idx}].linkedSessionIds must be an array`);
   }
+  for (const sk of inst.linkedSessionIds) {
+    if (typeof sk !== 'string' || sk.length === 0) {
+      throw new Error(`UserSessionStore: instructions[${idx}].linkedSessionIds entries must be non-empty strings`);
+    }
+  }
   if (!Array.isArray(inst.sourceRawInputIds)) {
     throw new Error(`UserSessionStore: instructions[${idx}].sourceRawInputIds must be an array`);
   }
+  // Sealed shape: each entry MUST be an object with `sessionKey` + `rawInputId`
+  // string fields (Q-array-of-strings was rejected by #727).
+  inst.sourceRawInputIds.forEach((entry, j) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw new Error(
+        `UserSessionStore: instructions[${idx}].sourceRawInputIds[${j}] must be an object { sessionKey, rawInputId }`,
+      );
+    }
+    const e = entry as { sessionKey?: unknown; rawInputId?: unknown };
+    if (typeof e.sessionKey !== 'string' || e.sessionKey.length === 0) {
+      throw new Error(
+        `UserSessionStore: instructions[${idx}].sourceRawInputIds[${j}].sessionKey must be a non-empty string`,
+      );
+    }
+    if (typeof e.rawInputId !== 'string' || e.rawInputId.length === 0) {
+      throw new Error(
+        `UserSessionStore: instructions[${idx}].sourceRawInputIds[${j}].rawInputId must be a non-empty string`,
+      );
+    }
+  });
   if (typeof inst.createdAt !== 'string') {
     throw new Error(`UserSessionStore: instructions[${idx}].createdAt must be an ISO string`);
   }
@@ -238,12 +280,24 @@ function validateDoc(doc: UserSessionDoc): void {
 
   doc.lifecycleEvents.forEach((evt, idx) => {
     validateLifecycleEvent(evt, idx);
-    if (evt.instructionId !== undefined && evt.instructionId !== null && !seenIds.has(evt.instructionId)) {
-      // Non-fatal: instructionId may reference an event before the row was
-      // committed (e.g. add+rejected with no instruction created). The sealed
-      // schema explicitly allows null, and we don't validate referential
-      // integrity for unknown ids — the dashboard derives per-instruction
-      // logs by filter, missing references just produce empty drilldowns.
+    // Sealed referential-integrity rule (#727 P1-7): when a lifecycle event
+    // points at an instruction, that instruction MUST exist on the same doc.
+    // `null` is the legitimate "pending-add rejected/superseded" carve-out
+    // and is left alone. The data-model PR is exactly where this invariant
+    // is owed (the audit log cannot drift from the instruction list).
+    if (evt.instructionId !== undefined && evt.instructionId !== null) {
+      if (typeof evt.instructionId !== 'string' || evt.instructionId.length === 0) {
+        throw new Error(`UserSessionStore: lifecycleEvents[${idx}].instructionId must be a non-empty string or null`);
+      }
+      if (!seenIds.has(evt.instructionId)) {
+        throw new UserSessionStoreCorruptError(
+          `UserSessionStore: lifecycleEvents[${idx}].instructionId ${JSON.stringify(
+            evt.instructionId,
+          )} does not appear in instructions[]`,
+          'unknown',
+          'in-memory',
+        );
+      }
     }
   });
 }
@@ -252,6 +306,17 @@ function validateDoc(doc: UserSessionDoc): void {
 
 export class UserSessionStore {
   private dataDir: string;
+  /**
+   * Per-userId in-memory cache of the parsed doc. Populated on `load()` and
+   * invalidated on `save()`. Returned as a structured clone (`structuredClone`)
+   * so callers cannot mutate cached state by reference. The cache is
+   * intentionally process-local: the only writer to a user's
+   * `user-session.json` is THIS process — `pid-lock` enforces single-instance
+   * boot, and the file is updated atomically (tmp → rename). External
+   * mutation (admin script, manual edit) requires a process restart, which
+   * matches the existing operational contract.
+   */
+  private cache: Map<string, UserSessionDoc> = new Map();
 
   constructor(baseDir?: string) {
     this.dataDir = baseDir || DATA_DIR;
@@ -278,29 +343,76 @@ export class UserSessionStore {
    * Load the user-session document. Returns an empty doc with
    * `schemaVersion: 1` when no file exists for the user (this is a normal
    * state — it just means the user has never had an instruction yet).
+   *
+   * Throws `UserSessionStoreCorruptError` when an existing file cannot be
+   * parsed or fails sealed schema/invariant checks. The caller decides
+   * whether to halt the process or quarantine the file. Crucially the store
+   * NEVER overwrites a malformed-but-existing file by silently substituting
+   * `[]` (data-loss path) — that backfill is reserved for the missing-file
+   * path only.
+   *
+   * Performance seam (#755): a per-userId in-memory cache is used so the
+   * hot read path (per-turn `listActiveInstructions`/`findInstruction`) does
+   * not re-read disk on every call. The cache is invalidated on `save()`.
    */
   load(userId: string): UserSessionDoc {
     const file = this.filePath(userId);
-    if (!fs.existsSync(file)) return emptyDoc();
+    const cached = this.cache.get(userId);
+    if (cached) {
+      return structuredClone(cached);
+    }
+    if (!fs.existsSync(file)) {
+      // Missing-file path — fresh skeleton. Do NOT cache; absent users are
+      // common in tests and the cost of computing emptyDoc() is trivial,
+      // while caching empty docs would mask filesystem state changes
+      // (e.g. an admin running migrate after a user's first save).
+      return emptyDoc();
+    }
+    let raw: string;
     try {
-      const raw = fs.readFileSync(file, 'utf-8');
-      const parsed = JSON.parse(raw) as UserSessionDoc;
-      // Defensive backfill on load — old corrupt files surface as a thrown
-      // error from validateDoc rather than silently degrading.
-      if (parsed && typeof parsed === 'object') {
-        if (!Array.isArray((parsed as Partial<UserSessionDoc>).instructions)) {
-          (parsed as UserSessionDoc).instructions = [];
-        }
-        if (!Array.isArray((parsed as Partial<UserSessionDoc>).lifecycleEvents)) {
-          (parsed as UserSessionDoc).lifecycleEvents = [];
-        }
-      }
-      validateDoc(parsed);
-      return parsed;
+      raw = fs.readFileSync(file, 'utf-8');
     } catch (err) {
-      logger.error('Failed to load user-session doc', { userId, error: err });
+      logger.error('Failed to read user-session doc', { userId, error: err });
       throw err;
     }
+    let parsed: UserSessionDoc;
+    try {
+      parsed = JSON.parse(raw) as UserSessionDoc;
+    } catch (err) {
+      throw new UserSessionStoreCorruptError(
+        `UserSessionStore: ${file} is not valid JSON: ${(err as Error).message}`,
+        userId,
+        file,
+      );
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new UserSessionStoreCorruptError(`UserSessionStore: ${file} root must be an object`, userId, file);
+    }
+    // Sealed contract: an existing file with malformed array fields is
+    // CORRUPT, not a state we silently smooth over. Replacing them with `[]`
+    // and continuing would let the next save() overwrite real on-disk data
+    // with an empty doc — a catastrophic data-loss path.
+    if (!Array.isArray((parsed as Partial<UserSessionDoc>).instructions)) {
+      throw new UserSessionStoreCorruptError(`UserSessionStore: ${file} 'instructions' is not an array`, userId, file);
+    }
+    if (!Array.isArray((parsed as Partial<UserSessionDoc>).lifecycleEvents)) {
+      throw new UserSessionStoreCorruptError(
+        `UserSessionStore: ${file} 'lifecycleEvents' is not an array`,
+        userId,
+        file,
+      );
+    }
+    try {
+      validateDoc(parsed);
+    } catch (err) {
+      if (err instanceof UserSessionStoreCorruptError) {
+        // Re-stamp the userId/file fields (validateDoc has no doc-context).
+        throw new UserSessionStoreCorruptError((err as Error).message, userId, file);
+      }
+      throw new UserSessionStoreCorruptError((err as Error).message, userId, file);
+    }
+    this.cache.set(userId, structuredClone(parsed));
+    return parsed;
   }
 
   /**
@@ -323,7 +435,27 @@ export class UserSessionStore {
       } catch {
         /* ignore */
       }
+      // Invalidate cache: we don't know if the on-disk state matches our
+      // in-memory copy after a partial failure. Force the next load() to
+      // re-read.
+      this.cache.delete(userId);
       throw err;
+    }
+    // Refresh cache to reflect the just-written state.
+    this.cache.set(userId, structuredClone(doc));
+  }
+
+  /**
+   * Test/admin helper — drop the per-userId cache so a subsequent `load()`
+   * re-reads from disk. Production code does NOT need this (the only writer
+   * to user-session.json is this process, and `save()` keeps the cache in
+   * sync); it exists for tests that mutate disk out-of-band.
+   */
+  invalidateCache(userId?: string): void {
+    if (userId === undefined) {
+      this.cache.clear();
+    } else {
+      this.cache.delete(userId);
     }
   }
 
@@ -354,6 +486,70 @@ export class UserSessionStore {
         `UserSessionStore: instruction ${JSON.stringify(currentInstructionId)} is cancelled and cannot be a session's current pointer`,
       );
     }
+  }
+
+  /**
+   * Validate a session-side `currentInstructionId` against the user's doc.
+   *
+   * Returns the input `currentInstructionId` when it resolves to an `active`
+   * instruction on the doc OR when it is null/undefined (normal state).
+   *
+   * Returns `null` (with a `state: 'rejected'` lifecycle audit appended to
+   * `doc.lifecycleEvents`) when the pointer points at a completed,
+   * cancelled, or non-existent instruction. The doc is mutated in place so
+   * the caller can persist the audit row through the normal save() path.
+   *
+   * Used by SessionRegistry on both `save` (defensive — block writes that
+   * would breach the invariant) and `load` (self-heal on disk drift).
+   */
+  assertSessionPointer(
+    doc: UserSessionDoc,
+    sessionKey: string,
+    currentInstructionId: string | null | undefined,
+    opts?: { now?: () => string; reason?: 'on-save' | 'on-load' },
+  ): string | null {
+    if (currentInstructionId === null || currentInstructionId === undefined) {
+      return null;
+    }
+    const inst = doc.instructions.find((i) => i.id === currentInstructionId);
+    let badReason: string | null = null;
+    if (!inst) {
+      badReason = 'unknown';
+    } else if (inst.status === 'completed') {
+      badReason = 'completed';
+    } else if (inst.status === 'cancelled') {
+      badReason = 'cancelled';
+    }
+    if (!badReason) {
+      return currentInstructionId;
+    }
+    const now = (opts?.now ?? (() => new Date().toISOString()))();
+    const auditId = `pointer-rejected_${sessionKey}_${currentInstructionId}_${now}`;
+    // Append a rejected lifecycle audit row. We deliberately set
+    // instructionId to null because the pointer is being severed; the
+    // payload carries the original id for forensic drilldown.
+    doc.lifecycleEvents.push({
+      id: auditId,
+      instructionId: null,
+      sessionKey,
+      op: 'link',
+      state: 'rejected',
+      at: now,
+      by: { type: 'system', id: 'session-registry' },
+      payload: {
+        kind: 'pointer-invariant-violation',
+        reason: badReason,
+        rejectedInstructionId: currentInstructionId,
+        when: opts?.reason ?? 'on-save',
+      },
+    });
+    logger.warn('Session pointer rejected — invariant violation', {
+      sessionKey,
+      currentInstructionId,
+      reason: badReason,
+      when: opts?.reason ?? 'on-save',
+    });
+    return null;
   }
 
   /**

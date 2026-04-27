@@ -75,11 +75,16 @@ describe('UPDATE_SESSION with title', () => {
 
 describe('applyInstructionOperations', () => {
   function makeInstructions(...texts: string[]): SessionInstruction[] {
+    // Sealed shape (#727 / #754) — required createdAt (ISO string),
+    // source enum, linkedSessionIds + sourceRawInputIds arrays.
     return texts.map((text, i) => ({
       id: `instr_test_${i}`,
       text,
-      addedAt: Date.now(),
-      source: 'user',
+      createdAt: new Date().toISOString(),
+      source: 'model',
+      status: 'active',
+      linkedSessionIds: [],
+      sourceRawInputIds: [],
     }));
   }
 
@@ -91,8 +96,13 @@ describe('applyInstructionOperations', () => {
     expect(changed).toBe(true);
     expect(instructions).toHaveLength(1);
     expect(instructions[0].text).toBe('Always use TypeScript');
-    expect(instructions[0].source).toBe('user');
+    // Sealed source enum (#727 P1-4) — legacy 'user' is coerced to 'model'.
+    expect(instructions[0].source).toBe('model');
     expect(instructions[0].id).toMatch(/^instr_\d+_\d+$/);
+    // Sealed shape carries ISO createdAt + empty array seams.
+    expect(typeof instructions[0].createdAt).toBe('string');
+    expect(instructions[0].linkedSessionIds).toEqual([]);
+    expect(instructions[0].sourceRawInputIds).toEqual([]);
   });
 
   it('trims whitespace from instruction text', () => {
@@ -176,9 +186,20 @@ describe('applyInstructionOperations', () => {
     expect(instructions.map((i) => i.text)).toEqual(['second', 'third']);
   });
 
-  it('uses custom source when provided', () => {
+  it('uses custom sealed source when provided', () => {
     const instructions: SessionInstruction[] = [];
-    applyInstructionOperations(instructions, [{ action: 'add', text: 'model says', source: 'model' }]);
+    applyInstructionOperations(instructions, [
+      { action: 'add', text: 'dashboard says', source: 'user-manual-dashboard' },
+    ]);
+    expect(instructions[0].source).toBe('user-manual-dashboard');
+  });
+
+  it('coerces legacy free-form source values to the sealed enum', () => {
+    const instructions: SessionInstruction[] = [];
+    // Legacy 'user' value is no longer in the sealed enum (#727 P1-4) —
+    // catalog coerces unknown sources to 'model' (the model is the
+    // canonical caller of UPDATE_SESSION).
+    applyInstructionOperations(instructions, [{ action: 'add', text: 'pretend legacy', source: 'user' }]);
     expect(instructions[0].source).toBe('model');
   });
 });

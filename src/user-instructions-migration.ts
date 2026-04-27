@@ -6,7 +6,9 @@
  * Reads the legacy `data/sessions.json` (per-session `instructions[]`) and
  * projects it onto the sealed user-scope master at
  * `data/users/{userId}/user-session.json`. Idempotent — running twice
- * produces the exact same on-disk state.
+ * produces the exact same on-disk state, even if a previous run wrote the
+ * instruction row but crashed before writing the lifecycle event (the loop
+ * is split into two independently-idempotent phases — see body comments).
  *
  * Sealed current-pointer rule (#727 sealed decisions):
  *   - 1 active legacy instruction → set `currentInstructionId` on that session
@@ -20,15 +22,21 @@
  *   *then* accept Slack/dashboard traffic.
  *
  * This module is also exposed as `npm run migrate:user-instructions --
- *   --dry-run|--apply` via `scripts/migrate-user-instructions.ts`.
+ *   --dry-run|--apply` via `scripts/migrate-user-instructions.ts`. Both
+ * entry points share the same `runStartupUserInstructionsMigration` flow
+ * so admin and boot can never drift.
  */
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { type LegacyInstructionStatus, mapLegacyInstructionStatus } from './legacy-instruction-status';
 import { Logger } from './logger';
+import { withPidLock } from './pid-lock';
 import { type LifecycleEvent, type UserInstruction, type UserSessionDoc, UserSessionStore } from './user-session-store';
 
 const logger = new Logger('UserInstructionsMigration');
+
+const MIGRATION_LOCK_NAME = 'user-instructions-migration.pid';
 
 // ── Legacy session shape (subset we rely on for migration) ──────────────────
 
@@ -38,7 +46,7 @@ export interface LegacyInstruction {
   addedAt: number;
   source?: string;
   /** Legacy enum included `'todo'`; we map it to `'active'` during migration. */
-  status?: 'active' | 'todo' | 'completed' | 'cancelled';
+  status?: LegacyInstructionStatus;
   evidence?: string;
   completedAt?: number;
   cancelledAt?: number;
@@ -104,13 +112,6 @@ function defaultNow(): string {
   return new Date().toISOString();
 }
 
-function legacyStatusToSealed(status: LegacyInstruction['status']): UserInstruction['status'] {
-  if (status === 'completed') return 'completed';
-  if (status === 'cancelled') return 'cancelled';
-  // 'active', 'todo', undefined → 'active' (sealed migration rule).
-  return 'active';
-}
-
 function epochToIso(ms: number | undefined, fallback: string): string {
   if (typeof ms !== 'number' || !Number.isFinite(ms) || ms <= 0) return fallback;
   try {
@@ -139,10 +140,10 @@ function backupSessionsFile(sessionsFile: string, now: string): string {
  *   BEFORE writing any user docs. Backup failure aborts (no partial state).
  * - For each legacy session that has `instructions[]`, groups by `ownerId
  *   ?? userId` and merges into the per-user `user-session.json`.
- * - Idempotent: instructions already present in the user doc (matched by id)
- *   are not duplicated. Lifecycle events for the same migration receive the
- *   same `id` (`mig_<userId>_<instructionId>_<sessionKey>`) so re-runs
- *   produce the same set.
+ * - Idempotent at row granularity: instruction rows already present in the
+ *   user doc (matched by id) are not duplicated, AND the lifecycle event
+ *   sweep is independent — a previous partial save (instruction written,
+ *   lifecycle event missing) is repaired on the next run (#727 P0-3).
  * - Returns `sessionPointers` so the caller can apply
  *   `currentInstructionId`/`instructionHistory` onto sessions.json.
  */
@@ -216,43 +217,46 @@ export function migrateUserInstructions(opts: MigrationOptions): MigrationResult
       const projected: UserInstruction[] = [];
       for (const li of insts) {
         if (!li.id || typeof li.text !== 'string') continue;
-        if (existingIds.has(li.id)) {
-          // Already migrated (idempotent path) — still need it in `projected`
-          // for the per-session pointer rule below, so look it up.
-          const existing = doc.instructions.find((i) => i.id === li.id);
-          if (existing) {
-            // Ensure the session is in linkedSessionIds (idempotent).
-            UserSessionStore.appendLinkedSession(existing, session.key);
-            projected.push(existing);
+
+        // ── Phase 1 (idempotent): ensure the instruction row exists ──
+        let inst = doc.instructions.find((i) => i.id === li.id);
+        if (!inst) {
+          const sealedStatus = mapLegacyInstructionStatus(li.status);
+          const createdAt = epochToIso(li.addedAt, now);
+          const newInst: UserInstruction = {
+            id: li.id,
+            text: li.text,
+            status: sealedStatus,
+            linkedSessionIds: [session.key],
+            createdAt,
+            source: 'migration',
+            sourceRawInputIds: [],
+          };
+          if (sealedStatus === 'completed') {
+            newInst.completedAt = epochToIso(li.completedAt, createdAt);
+            // Sealed schema (#727 P1-5) has no `evidence` field on the
+            // instruction itself — completion evidence belongs in the
+            // lifecycle `op:'complete'` payload, not the instruction row.
           }
-          continue;
+          if (sealedStatus === 'cancelled') {
+            newInst.cancelledAt = epochToIso(li.cancelledAt, createdAt);
+          }
+          doc.instructions.push(newInst);
+          existingIds.add(li.id);
+          userMutated = true;
+          result.newInstructions += 1;
+          inst = newInst;
+        } else {
+          // Already migrated (idempotent path) — ensure the session is in
+          // linkedSessionIds (idempotent dedup).
+          UserSessionStore.appendLinkedSession(inst, session.key);
         }
+        projected.push(inst);
 
-        const sealedStatus = legacyStatusToSealed(li.status);
-        const createdAt = epochToIso(li.addedAt, now);
-        const newInst: UserInstruction = {
-          id: li.id,
-          text: li.text,
-          status: sealedStatus,
-          linkedSessionIds: [session.key],
-          createdAt,
-          source: 'migration',
-          sourceRawInputIds: [],
-        };
-        if (sealedStatus === 'completed') {
-          newInst.completedAt = epochToIso(li.completedAt, createdAt);
-          if (li.evidence) newInst.evidence = li.evidence;
-        }
-        if (sealedStatus === 'cancelled') {
-          newInst.cancelledAt = epochToIso(li.cancelledAt, createdAt);
-        }
-        doc.instructions.push(newInst);
-        existingIds.add(li.id);
-        projected.push(newInst);
-        userMutated = true;
-        result.newInstructions += 1;
-
-        // Append a deterministic migration lifecycle event per instruction.
+        // ── Phase 2 (independently idempotent): ensure the migration
+        // lifecycle event exists for this (userId, instructionId, sessionKey).
+        // Split from Phase 1 so a previous partial save (Phase 1 written,
+        // process killed before Phase 2) is repaired on the next pass.
         const evtId = `mig_${userId}_${li.id}_${session.key}`;
         if (!existingEventIds.has(evtId)) {
           const evt: LifecycleEvent = {
@@ -261,7 +265,7 @@ export function migrateUserInstructions(opts: MigrationOptions): MigrationResult
             sessionKey: session.key,
             op: 'add',
             state: 'confirmed',
-            at: createdAt,
+            at: inst.createdAt,
             by: { type: 'migration', id: 'migration' },
             payload: {
               kind: 'migration',
@@ -271,6 +275,7 @@ export function migrateUserInstructions(opts: MigrationOptions): MigrationResult
           };
           doc.lifecycleEvents.push(evt);
           existingEventIds.add(evtId);
+          userMutated = true;
         }
       }
 
@@ -295,9 +300,6 @@ export function migrateUserInstructions(opts: MigrationOptions): MigrationResult
       if (!opts.dryRun) {
         store.save(userId, doc);
       }
-    } else if (sessions.length > 0) {
-      // No new instructions but we still computed pointers (idempotent path).
-      // No save needed.
     }
   }
 
@@ -350,90 +352,80 @@ export function applySessionPointersToSessionsArray(
 }
 
 /**
+ * Apply the migration's sessionPointers atomically to disk. Reads
+ * `${dataDir}/sessions.json`, mutates pointers in memory, and writes via
+ * tmp → rename. Throws on any I/O / parse error — the caller (eager boot
+ * + admin script) is expected to abort startup, NOT swallow.
+ */
+function applySessionPointersToDisk(
+  dataDir: string,
+  sessionPointers: MigrationResult['sessionPointers'],
+): { touched: number } {
+  const sessionsFile = path.join(dataDir, 'sessions.json');
+  if (!fs.existsSync(sessionsFile)) return { touched: 0 };
+  if (Object.keys(sessionPointers).length === 0) return { touched: 0 };
+  const raw = fs.readFileSync(sessionsFile, 'utf-8');
+  const arr = JSON.parse(raw) as Array<Record<string, unknown>>;
+  if (!Array.isArray(arr)) {
+    throw new Error(`sessions.json root must be an array (got ${typeof arr})`);
+  }
+  const touched = applySessionPointersToSessionsArray(arr, sessionPointers);
+  if (touched > 0) {
+    const tmp = `${sessionsFile}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(arr, null, 2), 'utf-8');
+    fs.renameSync(tmp, sessionsFile);
+    logger.info('Applied session pointers to sessions.json', { touched });
+  }
+  return { touched };
+}
+
+/**
  * Eager startup wrapper. Wraps `migrateUserInstructions` + applies the
- * resulting pointers back to sessions.json under a startup lock file.
+ * resulting pointers back to sessions.json under a startup PID lock.
  *
  * Contract:
- * - Holds an exclusive lock at `${dataDir}/.migration.lock` for the duration.
+ * - Holds a liveness-checked PID lock at
+ *   `${dataDir}/user-instructions-migration.pid` for the duration. Stale
+ *   locks from `kill -9` are reclaimed automatically (no 30s deadlock
+ *   window) — we delegate to `withPidLock` which uses
+ *   `process.kill(pid, 0)` to detect dead holders.
  * - Atomically rewrites `sessions.json` if any pointer was applied.
  * - Idempotent — safe to call on every boot.
+ * - Pointer-apply failure is fatal: the boot path MUST NOT continue with
+ *   user docs migrated but `sessions.json` stale (#727 P1-3 — a silent
+ *   discrepancy meant the dashboard would render against drifted pointers).
  *
  * Slack/dashboard traffic must NOT be accepted before this resolves
  * (#727 sealed Q7).
+ *
+ * The admin script (`scripts/migrate-user-instructions.ts --apply`) calls
+ * the same function so both entry points produce byte-identical disk state
+ * (#727 P1-2).
  */
 export async function runStartupUserInstructionsMigration(opts: {
   dataDir: string;
+  dryRun?: boolean;
   now?: () => string;
 }): Promise<MigrationResult> {
-  const lockFile = path.join(opts.dataDir, '.migration.lock');
   if (!fs.existsSync(opts.dataDir)) {
     fs.mkdirSync(opts.dataDir, { recursive: true });
   }
 
-  // Best-effort exclusive lock — `wx` flag fails if the file already exists.
-  let acquired = false;
-  try {
-    const fd = fs.openSync(lockFile, 'wx');
-    fs.writeSync(fd, `${process.pid}\n${new Date().toISOString()}\n`);
-    fs.closeSync(fd);
-    acquired = true;
-  } catch (err) {
-    const code = (err as { code?: string })?.code;
-    if (code === 'EEXIST') {
-      logger.warn('Migration lock already held — another process is running migration. Waiting for release.', {
-        lockFile,
-      });
-      // Block briefly until the lock disappears (poll). Bounded by 30s — past
-      // that we surface the failure rather than starve startup forever.
-      const deadline = Date.now() + 30_000;
-      while (fs.existsSync(lockFile) && Date.now() < deadline) {
-        await new Promise<void>((resolve) => setTimeout(resolve, 200));
-      }
-      if (fs.existsSync(lockFile)) {
-        throw new Error(`Migration lock at ${lockFile} held for >30s — aborting startup migration`);
-      }
-      // Retry exactly once.
-      const fd = fs.openSync(lockFile, 'wx');
-      fs.writeSync(fd, `${process.pid}\n${new Date().toISOString()}\n`);
-      fs.closeSync(fd);
-      acquired = true;
-    } else {
-      throw err;
-    }
-  }
+  const dryRun = opts.dryRun ?? false;
 
-  try {
+  return await withPidLock(opts.dataDir, MIGRATION_LOCK_NAME, async () => {
     const result = migrateUserInstructions({
       dataDir: opts.dataDir,
-      dryRun: false,
+      dryRun,
       now: opts.now,
     });
 
-    // Apply pointers onto sessions.json so SessionRegistry sees them on next read.
-    const sessionsFile = path.join(opts.dataDir, 'sessions.json');
-    if (fs.existsSync(sessionsFile) && Object.keys(result.sessionPointers).length > 0) {
-      try {
-        const raw = fs.readFileSync(sessionsFile, 'utf-8');
-        const arr = JSON.parse(raw) as Array<Record<string, unknown>>;
-        const touched = applySessionPointersToSessionsArray(arr, result.sessionPointers);
-        if (touched > 0) {
-          const tmp = `${sessionsFile}.tmp`;
-          fs.writeFileSync(tmp, JSON.stringify(arr, null, 2), 'utf-8');
-          fs.renameSync(tmp, sessionsFile);
-          logger.info('Applied session pointers to sessions.json', { touched });
-        }
-      } catch (err) {
-        logger.error('Failed to apply pointers onto sessions.json (migration succeeded)', { error: err });
-      }
+    // Apply pointers onto sessions.json so SessionRegistry sees them on
+    // next read. Failures here ABORT — we cannot accept Slack/dashboard
+    // traffic with user docs migrated and sessions.json stale.
+    if (!dryRun) {
+      applySessionPointersToDisk(opts.dataDir, result.sessionPointers);
     }
     return result;
-  } finally {
-    if (acquired) {
-      try {
-        fs.unlinkSync(lockFile);
-      } catch {
-        /* lock cleanup best-effort */
-      }
-    }
-  }
+  });
 }

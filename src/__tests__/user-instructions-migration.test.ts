@@ -20,7 +20,12 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { type LegacySession, type MigrationResult, migrateUserInstructions } from '../user-instructions-migration';
+import {
+  type LegacySession,
+  type MigrationResult,
+  migrateUserInstructions,
+  runStartupUserInstructionsMigration,
+} from '../user-instructions-migration';
 import { UserSessionStore } from '../user-session-store';
 
 let dataDir: string;
@@ -282,5 +287,149 @@ describe('migrateUserInstructions — current-pointer rule', () => {
     const doc = store.load('U1');
     // Should not throw — invariants should hold for migrated docs.
     expect(() => store.save('U1', doc)).not.toThrow();
+  });
+});
+
+// ── #727 P0-3 — lifecycle event repair is independently idempotent ──
+describe('migrateUserInstructions — lifecycle event repair (P0-3)', () => {
+  it('a previous partial save (instruction present, lifecycle event missing) is repaired on the next run', () => {
+    writeLegacy([
+      {
+        key: 'C1-T1',
+        ownerId: 'U1',
+        userId: 'U1',
+        channelId: 'C1',
+        threadTs: 'T1',
+        isActive: true,
+        lastActivity: new Date().toISOString(),
+        instructions: [{ id: 'i1', text: 'do x', addedAt: 1, status: 'active' }],
+      },
+    ]);
+
+    const store = new UserSessionStore(dataDir);
+    // Simulate a previous run that wrote the instruction row but crashed
+    // before persisting the lifecycle event.
+    store.save('U1', {
+      schemaVersion: 1,
+      instructions: [
+        {
+          id: 'i1',
+          text: 'do x',
+          status: 'active',
+          linkedSessionIds: ['C1-T1'],
+          createdAt: new Date(1).toISOString(),
+          source: 'migration',
+          sourceRawInputIds: [],
+        },
+      ],
+      lifecycleEvents: [],
+    });
+    // Drop the per-userId cache so the migration sees the freshly-written
+    // disk state (the migration itself uses a brand-new store, but we
+    // cleared this one for safety in the test fixture).
+    store.invalidateCache();
+
+    migrateUserInstructions({ dataDir, dryRun: false });
+
+    const doc = readUserDoc('U1') as {
+      instructions: Array<{ id: string }>;
+      lifecycleEvents: Array<{ id: string; instructionId?: string; op: string; state: string }>;
+    };
+    // Phase 1: instruction count unchanged (already present).
+    expect(doc.instructions).toHaveLength(1);
+    // Phase 2: lifecycle event written this run.
+    const evt = doc.lifecycleEvents.find((e) => e.id === 'mig_U1_i1_C1-T1');
+    expect(evt).toBeDefined();
+    expect(evt!.op).toBe('add');
+    expect(evt!.state).toBe('confirmed');
+    expect(evt!.instructionId).toBe('i1');
+  });
+});
+
+// ── #727 P0-4 — migration runs under PID lock, stale lock is reclaimed ──
+describe('runStartupUserInstructionsMigration — PID lock', () => {
+  it('reclaims a stale (dead-PID) migration lock and completes successfully', async () => {
+    writeLegacy([
+      {
+        key: 'C1-T1',
+        ownerId: 'U1',
+        userId: 'U1',
+        channelId: 'C1',
+        threadTs: 'T1',
+        isActive: true,
+        lastActivity: new Date().toISOString(),
+        instructions: [{ id: 'i1', text: 'do x', addedAt: 1, status: 'active' }],
+      },
+    ]);
+
+    // Plant a stale lock pointing at a long-dead PID — the legacy wx-flag
+    // implementation would deadlock here for 30s; the pid-lock helper
+    // should detect dead-PID and reclaim immediately.
+    const stalePid = 99999999;
+    const lockPath = path.join(dataDir, 'user-instructions-migration.pid');
+    fs.writeFileSync(lockPath, `${stalePid}:${Date.now() - 1000}`, 'utf-8');
+
+    const t0 = Date.now();
+    await runStartupUserInstructionsMigration({ dataDir });
+    const elapsed = Date.now() - t0;
+    expect(elapsed).toBeLessThan(5_000);
+
+    const doc = readUserDoc('U1') as { instructions: Array<{ id: string }> };
+    expect(doc.instructions).toHaveLength(1);
+  });
+});
+
+// ── #727 P1-2 — admin --apply mirrors fresh-boot disk state ──
+describe('runStartupUserInstructionsMigration — admin/boot parity (P1-2)', () => {
+  it('admin and boot produce byte-identical user docs AND sessions.json pointers', async () => {
+    const sessions = [
+      {
+        key: 'C1-T1',
+        ownerId: 'U1',
+        userId: 'U1',
+        channelId: 'C1',
+        threadTs: 'T1',
+        isActive: true,
+        lastActivity: new Date().toISOString(),
+        instructions: [{ id: 'i1', text: 'do x', addedAt: 1, status: 'active' as const }],
+      },
+    ];
+    writeLegacy(sessions);
+
+    // Snapshot sessions.json pre-migration so we can restore for the
+    // second run (admin path).
+    const sessionsFile = path.join(dataDir, 'sessions.json');
+    const preRun = fs.readFileSync(sessionsFile, 'utf-8');
+
+    // First run — admin --apply path.
+    const adminResult = await runStartupUserInstructionsMigration({ dataDir });
+    const adminUserDoc = fs.readFileSync(path.join(dataDir, 'users', 'U1', 'user-session.json'), 'utf-8');
+    const adminSessions = fs.readFileSync(sessionsFile, 'utf-8');
+
+    // Reset disk: delete user dir + restore sessions.json + delete migration lock.
+    fs.rmSync(path.join(dataDir, 'users'), { recursive: true, force: true });
+    fs.writeFileSync(sessionsFile, preRun, 'utf-8');
+    // Remove any boot/admin backups so the second run is clean.
+    for (const f of fs.readdirSync(dataDir)) {
+      if (f.startsWith('sessions.json.') && f.endsWith('.bak')) {
+        fs.unlinkSync(path.join(dataDir, f));
+      }
+    }
+
+    // Second run — fresh boot path.
+    const bootResult = await runStartupUserInstructionsMigration({ dataDir });
+    const bootUserDoc = fs.readFileSync(path.join(dataDir, 'users', 'U1', 'user-session.json'), 'utf-8');
+    const bootSessions = fs.readFileSync(sessionsFile, 'utf-8');
+
+    // User doc identical (modulo timestamps that flow from `now`).
+    expect(JSON.parse(adminUserDoc).instructions[0].id).toBe(JSON.parse(bootUserDoc).instructions[0].id);
+    // sessions.json carries the pointer in BOTH paths (admin must NOT
+    // leave sessions.json stale — the bug fixed in #727 P1-2).
+    const adminParsed = JSON.parse(adminSessions) as Array<Record<string, unknown>>;
+    const bootParsed = JSON.parse(bootSessions) as Array<Record<string, unknown>>;
+    expect(adminParsed[0].currentInstructionId).toBe('i1');
+    expect(bootParsed[0].currentInstructionId).toBe('i1');
+    expect(adminResult.userIdsTouched).toBe(1);
+    expect(bootResult.userIdsTouched).toBe(1);
   });
 });

@@ -105,6 +105,11 @@ export interface UserInstructionStore {
  * Sealed user-instruction record shape (mirrors `UserInstruction` in
  * `src/user-session-store.ts`). Re-declared here so somalib stays free of a
  * back-reference to host-side modules.
+ *
+ * Sealed schema (#727 / #754) — note: there is intentionally NO `evidence`
+ * field on the instruction itself. Completion evidence belongs in the
+ * `lifecycleEvents` `op:'complete'` payload, where the audit log already
+ * records who supplied it and when (#727 P1-5).
  */
 export interface UserInstructionRecord {
   id: string;
@@ -114,7 +119,6 @@ export interface UserInstructionRecord {
   createdAt: string;
   completedAt?: string;
   cancelledAt?: string;
-  evidence?: string;
   source: 'model' | 'user-manual-dashboard' | 'migration';
   sourceRawInputIds: Array<{ sessionKey: string; rawInputId: string }>;
 }
@@ -959,10 +963,38 @@ const MAX_INSTRUCTIONS = 50;
 
 let _instrCounter = 0;
 
+const VALID_INSTRUCTION_SOURCES: ReadonlySet<SessionInstruction['source']> = new Set([
+  'model',
+  'user-manual-dashboard',
+  'migration',
+]);
+
+function coerceInstructionSource(raw: string | undefined): SessionInstruction['source'] {
+  if (raw && (VALID_INSTRUCTION_SOURCES as ReadonlySet<string>).has(raw)) {
+    return raw as SessionInstruction['source'];
+  }
+  // Legacy/free-form values (e.g. 'user') and missing source default to
+  // 'model' — `applyInstructionOperations` is invoked from UPDATE_SESSION
+  // (model-side), so the model is the canonical originator at this seam.
+  // Dashboard adds (#759) and migration projections (#754) carry their own
+  // explicit source value.
+  return 'model';
+}
+
 /**
- * Apply instruction operations (add/remove/clear) to a mutable instructions array.
+ * Apply instruction operations (add/remove/clear/complete/setStatus) to a
+ * mutable instructions array.
+ *
  * Shared between catalog (snapshot) and session-registry (host-side).
  * Returns true if any mutation occurred.
+ *
+ * Sealed shape (#727 / #754):
+ * - `createdAt` is an ISO string (was `addedAt: number`).
+ * - `source` is the `SessionInstructionSource` enum (was free-form string).
+ * - `linkedSessionIds` / `sourceRawInputIds` are required arrays (default `[]`).
+ * - There is NO `evidence` field on the row; the `complete` op routes the
+ *   evidence string into the `lifecycleEvents` `op:'complete'` payload at
+ *   the host layer (this function only flips the row state).
  */
 export function applyInstructionOperations(
   instructions: SessionInstruction[],
@@ -975,13 +1007,15 @@ export function applyInstructionOperations(
     if (op.action === 'add') {
       if (!op.text || op.text.trim().length === 0) continue;
       if (instructions.length >= MAX_INSTRUCTIONS) continue;
-      const now = Date.now();
+      const nowMs = Date.now();
       instructions.push({
-        id: `instr_${now}_${++_instrCounter}`,
+        id: `instr_${nowMs}_${++_instrCounter}`,
         text: op.text.trim(),
-        addedAt: now,
-        source: op.source || 'user',
+        createdAt: new Date(nowMs).toISOString(),
+        source: coerceInstructionSource(op.source),
         status: 'active',
+        linkedSessionIds: [],
+        sourceRawInputIds: [],
       });
       changed = true;
       continue;
@@ -1005,14 +1039,16 @@ export function applyInstructionOperations(
     }
 
     if (op.action === 'complete') {
-      // Evidence is required — silently skip rather than throw, matching the
-      // lenient semantics of the rest of this function (malformed ops drop).
+      // Evidence is required at the model API surface (it is captured into
+      // the lifecycle event payload by the host layer in #755); we silently
+      // skip malformed ops here, matching the lenient semantics of the rest
+      // of this function. The instruction row itself does NOT carry an
+      // `evidence` field per the sealed schema (#727 P1-5).
       if (!op.id || !op.evidence || op.evidence.trim().length === 0) continue;
       const entry = instructions.find((i) => i.id === op.id);
       if (!entry) continue;
       entry.status = 'completed';
-      entry.evidence = op.evidence.trim();
-      entry.completedAt = Date.now();
+      entry.completedAt = new Date().toISOString();
       changed = true;
       continue;
     }
@@ -1025,13 +1061,15 @@ export function applyInstructionOperations(
       entry.status = op.status;
       if (op.status === 'completed') {
         // setStatus→completed is an escape hatch — stamp completedAt so the
-        // summary hash and block builder see a consistent timestamp. Evidence
-        // is NOT required on this path (prefer `complete` when evidence exists).
-        entry.completedAt = entry.completedAt ?? Date.now();
-      } else {
-        // Moving out of `completed` — clear the boundary fields.
+        // summary hash and block builder see a consistent timestamp.
+        entry.completedAt = entry.completedAt ?? new Date().toISOString();
+      } else if (op.status === 'cancelled') {
+        entry.cancelledAt = entry.cancelledAt ?? new Date().toISOString();
         entry.completedAt = undefined;
-        entry.evidence = undefined;
+      } else {
+        // Moving back to `active` — clear the boundary fields.
+        entry.completedAt = undefined;
+        entry.cancelledAt = undefined;
       }
       changed = true;
     }

@@ -18,15 +18,39 @@ function mkSession(instructions: SessionInstruction[]): ConversationSession {
   } as ConversationSession;
 }
 
-function mkInstr(partial: Partial<SessionInstruction>): SessionInstruction {
+type LegacyInstrFixture = {
+  id?: string;
+  text?: string;
+  createdAt?: string;
+  status?: SessionInstruction['status'];
+  source?: SessionInstruction['source'];
+  // Legacy fixture fields — accepted for terseness, normalised below.
+  addedAt?: number;
+  completedAt?: number | string;
+  evidence?: string;
+  linkedSessionIds?: string[];
+  sourceRawInputIds?: SessionInstruction['sourceRawInputIds'];
+};
+
+function mkInstr(partial: LegacyInstrFixture): SessionInstruction {
+  // Sealed shape (#727 / #754): `createdAt` is an ISO string, `source` is
+  // an enum, `linkedSessionIds` / `sourceRawInputIds` are required arrays,
+  // and there is no `evidence` field. Tests still accept legacy fixture
+  // numbers (`addedAt`, numeric `completedAt`) for terseness; they're
+  // converted to ISO here.
+  const createdAt =
+    partial.createdAt ??
+    (typeof partial.addedAt === 'number' ? new Date(partial.addedAt).toISOString() : new Date(0).toISOString());
   return {
     id: partial.id ?? 'instr_default',
     text: partial.text ?? 'do the thing',
-    addedAt: partial.addedAt ?? 0,
-    source: partial.source,
+    createdAt,
+    source: partial.source ?? 'model',
     status: partial.status ?? 'active',
-    evidence: partial.evidence,
-    completedAt: partial.completedAt,
+    completedAt:
+      typeof partial.completedAt === 'number' ? new Date(partial.completedAt).toISOString() : partial.completedAt,
+    linkedSessionIds: partial.linkedSessionIds ?? [],
+    sourceRawInputIds: partial.sourceRawInputIds ?? [],
   };
 }
 
@@ -51,9 +75,11 @@ describe('buildUserInstructionsBlock', () => {
     expect(block).not.toContain('## Completed');
   });
 
-  it('groups active / cancelled / completed sections in that order', () => {
-    // Sealed status set (#754): active | completed | cancelled. Legacy 'todo'
-    // collapses into 'active' at migration time.
+  it('renders active before completed and DROPS cancelled (PR1 scope, TODO(#756))', () => {
+    // Sealed status set (#754): active | completed | cancelled. PR1 (#754)
+    // is mechanical sealed-enum compatibility ONLY — the builder must read
+    // 'cancelled' rows without crashing but MUST NOT render them. Surfacing
+    // cancelled to the prompt is owned by #756.
     const block = buildUserInstructionsBlock(
       mkSession([
         mkInstr({ id: 'c', text: 'completed-one', status: 'completed', completedAt: 1 }),
@@ -62,11 +88,12 @@ describe('buildUserInstructionsBlock', () => {
       ]),
     );
     const activeIdx = block.indexOf('## Active');
-    const cancelledIdx = block.indexOf('## Cancelled');
     const completedIdx = block.indexOf('## Completed');
     expect(activeIdx).toBeGreaterThan(-1);
-    expect(cancelledIdx).toBeGreaterThan(activeIdx);
-    expect(completedIdx).toBeGreaterThan(cancelledIdx);
+    expect(completedIdx).toBeGreaterThan(activeIdx);
+    // PR1: cancelled section is intentionally absent.
+    expect(block).not.toContain('## Cancelled');
+    expect(block).not.toContain('cancelled-one');
   });
 
   it('renders a single completed entry verbatim (no summary)', () => {
