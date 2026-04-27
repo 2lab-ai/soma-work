@@ -10,7 +10,7 @@ import { getAdminUsers } from '../../admin-utils';
 import { checkRepoChannelMatch, getAllChannels, getChannel, registerChannel } from '../../channel-registry';
 import type { ClaudeHandler } from '../../claude-handler';
 import { createConversation, getConversationUrl } from '../../conversation';
-import { adaptHandler, stampLinkTitlesAndDeriveSessionTitle } from '../../conversation/link-derived-title';
+import { scheduleLinkDerivedTitleRefresh } from '../../conversation/link-derived-title';
 import { getDispatchService } from '../../dispatch-service';
 import { Logger } from '../../logger';
 import type { ConversationSession, WorkflowType } from '../../types';
@@ -818,23 +818,7 @@ export class SessionInitializer {
           prUrl: result.links.pr?.url,
         });
 
-        // #762 — fire-and-forget link-derived title pipeline. Captures the
-        // current generation+URL set, fetches GitHub/Jira titles, stamps
-        // them onto the session links, and (when titles resolve) derives a
-        // session-level title that beats the raw "first-message" string.
-        // Errors are logged at warn-level inside the helper, so a failed
-        // refresh never breaks dispatch.
-        const sessionKey = this.deps.claudeHandler.getSessionKey(channel, threadTs);
-        stampLinkTitlesAndDeriveSessionTitle(adaptHandler(this.deps.claudeHandler), {
-          channelId: channel,
-          threadTs,
-          sessionKey,
-        }).catch((err) => {
-          this.logger.warn('Link-derived title refresh failed (dispatch entry)', {
-            sessionKey,
-            error: (err as Error).message,
-          });
-        });
+        scheduleLinkDerivedTitleRefresh(this.deps.claudeHandler, channel, threadTs, 'dispatch-entry');
       } else {
         this.logger.info('🔗 No links extracted from dispatch', {
           channel,

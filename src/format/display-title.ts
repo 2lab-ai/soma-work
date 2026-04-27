@@ -20,7 +20,11 @@ export interface DisplayTitleSource {
   };
 }
 
-function nonBlank(value: string | undefined | null): string | undefined {
+/**
+ * Treat empty / whitespace-only strings as missing. Exported so
+ * `link-derived-title.ts` (and any future title-source) shares one definition.
+ */
+export function nonBlank(value: string | undefined | null): string | undefined {
   if (typeof value !== 'string') return undefined;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;

@@ -12,8 +12,7 @@
  *   3. Re-check URL set + generation against the session BEFORE writing —
  *      `resetSessionContext` (or a fresh /link command) bumps generation,
  *      so a slow refresh from before the reset aborts cleanly.
- *   4. Stamp each link's `title` via `setSessionLink` (full title, no
- *      truncation — display-side capping owns layout decisions).
+ *   4. Stamp each link's `title` via `setSessionLink`.
  *   5. Derive a `session.title`:
  *        - exactly one resolved title → use it as-is
  *        - issue + PR titles → ask Haiku for a 1-line summary; fall back to
@@ -23,10 +22,16 @@
  * `summaryTitle` ownership stays elsewhere — this module only stages a stable
  * baseline (`title` + `links.*.title`) so `displayTitle()`'s priority chain
  * has good fallbacks while the LLM summarizer warms up.
+ *
+ * Concurrency: `inFlightSessions` keys on `ConversationSession` so the three
+ * trigger surfaces firing simultaneously (e.g. dispatch + onSessionLinksDetected
+ * during the same turn) collapse to one fetch — same precedent as
+ * `instructions-summarizer.ts:35`.
  */
 
 import type { ClaudeHandler } from '../claude-handler';
 import { broadcastSingleSessionUpdate } from '../conversation/dashboard';
+import { nonBlank } from '../format/display-title';
 import { fetchBatchLinkMetadata } from '../link-metadata-fetcher';
 import { Logger } from '../logger';
 import type { ConversationSession, SessionLink, SessionLinks } from '../types';
@@ -34,8 +39,14 @@ import { generateSessionSummaryTitle } from './summarizer';
 
 const logger = new Logger('LinkDerivedTitle');
 
-/** Cap stored on `session.title` so the UI never has to defend against megabyte titles. */
+/** Cap stored on `session.title` — the UI never has to defend against megabyte titles. */
 const MAX_SESSION_TITLE_LENGTH = 200;
+
+/** Slot order used both for SessionLinks iteration and SessionLink[] zipping. */
+const LINK_SLOTS: ReadonlyArray<keyof SessionLinks> = ['issue', 'pr', 'doc'];
+
+/** In-flight dedup — at most one refresh per session at a time. */
+const inFlightSessions = new WeakSet<ConversationSession>();
 
 interface SessionAddress {
   channelId: string;
@@ -49,7 +60,6 @@ interface SessionAddress {
  */
 export interface LinkDerivedTitleHandler {
   getSession(channelId: string, threadTs?: string): ConversationSession | undefined;
-  getSessionByKey(sessionKey: string): ConversationSession | undefined;
   setSessionLink(channelId: string, threadTs: string | undefined, link: SessionLink): void;
   setSessionTitle(channelId: string, threadTs: string | undefined, title: string): void;
 }
@@ -95,28 +105,43 @@ export async function stampLinkTitlesAndDeriveSessionTitle(
     return;
   }
 
+  if (inFlightSessions.has(session)) {
+    logger.debug('Link-title refresh already in flight for session — skipping', { sessionKey });
+    return;
+  }
+  inFlightSessions.add(session);
+
+  try {
+    await runRefresh(handler, address, session);
+  } finally {
+    inFlightSessions.delete(session);
+  }
+}
+
+async function runRefresh(
+  handler: LinkDerivedTitleHandler,
+  address: SessionAddress,
+  session: ConversationSession,
+): Promise<void> {
+  const { channelId, threadTs, sessionKey } = address;
+
   const initialUrls = captureUrls(session.links);
   const initialGeneration = session.linkRefreshGeneration ?? 0;
 
-  // Build the SessionLink[] to pass to fetchBatchLinkMetadata. Skip slots that
-  // already carry a non-blank title — title is the slow remote field, status
-  // is the cheap one, and we don't want to clobber a label-only refresh.
-  const slots: Array<{ slot: 'issue' | 'pr' | 'doc'; link: SessionLink }> = [];
-  if (session.links?.issue?.url && !nonBlank(session.links.issue.title)) {
-    slots.push({ slot: 'issue', link: { ...session.links.issue } });
-  }
-  if (session.links?.pr?.url && !nonBlank(session.links.pr.title)) {
-    slots.push({ slot: 'pr', link: { ...session.links.pr } });
-  }
-  if (session.links?.doc?.url && !nonBlank(session.links.doc.title)) {
-    slots.push({ slot: 'doc', link: { ...session.links.doc } });
+  // Skip slots that already carry a title — title is the slow remote field, and
+  // an empty fetcher result would otherwise erase a previously-good cached
+  // value via the no-op write guard below.
+  const slots: Array<{ slot: keyof SessionLinks; link: SessionLink }> = [];
+  for (const slot of LINK_SLOTS) {
+    const link = session.links?.[slot];
+    if (link?.url && !nonBlank(link.title)) {
+      slots.push({ slot, link: { ...link } });
+    }
   }
 
   if (slots.length === 0) {
-    // Even with no slots to fetch, the existing titles might still let us
-    // refresh `session.title` (e.g. cached titles arrived from a prior
-    // run). Compute & write below using the current link state.
-    await maybeWriteSessionTitle(handler, address, session, initialGeneration, initialUrls);
+    // Cached titles from a prior run may still let us refresh `session.title`.
+    await maybeWriteSessionTitle(handler, address, initialGeneration, initialUrls);
     return;
   }
 
@@ -131,8 +156,8 @@ export async function stampLinkTitlesAndDeriveSessionTitle(
     return;
   }
 
-  // Re-check freshness BEFORE any write. Bail out if the session was reset
-  // or the user pointed at different URLs while we were in flight.
+  // Stale-guard before any write. resetSessionContext bumps generation; the
+  // user (or model) may have pointed at different URLs while we were in flight.
   const liveSession = handler.getSession(channelId, threadTs);
   if (!liveSession) return;
   const liveUrls = captureUrls(liveSession.links);
@@ -147,9 +172,6 @@ export async function stampLinkTitlesAndDeriveSessionTitle(
     return;
   }
 
-  // Stamp each link's title back via setSessionLink. Skip writes when
-  // metadata returned no title (e.g. token-less environment) so we don't
-  // erase a previously-good cached value.
   for (let i = 0; i < slots.length; i++) {
     const slotInfo = slots[i];
     const updated = enriched[i];
@@ -158,34 +180,23 @@ export async function stampLinkTitlesAndDeriveSessionTitle(
     handler.setSessionLink(channelId, threadTs, { ...slotInfo.link, ...updated });
   }
 
-  await maybeWriteSessionTitle(handler, address, liveSession, initialGeneration, initialUrls);
-}
-
-/**
- * Variant for the `/link <type> <url>` flow: fetch a single link's title,
- * then funnel through the same derivation pipeline. Kept as a thin wrapper
- * so callers don't need to know whether the addition was a 1-link or N-link
- * update — both end up running through `stampLinkTitlesAndDeriveSessionTitle`.
- */
-export async function stampLinkTitleIfMissing(
-  handler: LinkDerivedTitleHandler,
-  address: SessionAddress,
-): Promise<void> {
-  await stampLinkTitlesAndDeriveSessionTitle(handler, address);
+  await maybeWriteSessionTitle(handler, address, initialGeneration, initialUrls);
 }
 
 async function maybeWriteSessionTitle(
   handler: LinkDerivedTitleHandler,
   address: SessionAddress,
-  baseline: ConversationSession,
   baselineGeneration: number,
   baselineUrls: UrlSnapshot,
 ): Promise<void> {
   const { channelId, threadTs, sessionKey } = address;
 
-  // Re-read the session — setSessionLink calls above may have refreshed
-  // titles that we want to consume here.
-  const session = handler.getSession(channelId, threadTs) ?? baseline;
+  // Re-read so setSessionLink writes above are visible. If the session vanished
+  // mid-flight, abort — the `?? baseline` fallback would re-introduce the exact
+  // stale state the guards just rejected.
+  const session = handler.getSession(channelId, threadTs);
+  if (!session) return;
+
   const issueTitle = nonBlank(session.links?.issue?.title);
   const prTitle = nonBlank(session.links?.pr?.title);
   const docTitle = nonBlank(session.links?.doc?.title);
@@ -199,28 +210,23 @@ async function maybeWriteSessionTitle(
   } else if (issueTitle && prTitle && !docTitle) {
     derived = await summarizeIssueAndPrTitles(issueTitle, prTitle);
   } else {
-    // 3-link case (rare) or 2-link with doc — join titles deterministically.
     derived = clampTitle(titles.join(' · '));
   }
 
   if (!derived) return;
 
-  // Stale-guard once more before writing — we may have made another async hop
-  // (LLM call) between the freshness check and this point.
+  // Re-check after the LLM hop — generation/URL set may have moved again.
   const liveSession = handler.getSession(channelId, threadTs);
   if (!liveSession) return;
   if ((liveSession.linkRefreshGeneration ?? 0) !== baselineGeneration) return;
   if (!urlsEqual(captureUrls(liveSession.links), baselineUrls)) return;
 
-  // Don't blat a meaningful existing title with the same value.
-  const currentTitle = nonBlank(liveSession.title);
-  if (currentTitle === derived) return;
+  if (nonBlank(liveSession.title) === derived) return;
 
   handler.setSessionTitle(channelId, threadTs, derived);
   try {
     broadcastSingleSessionUpdate(sessionKey);
   } catch (err) {
-    // Broadcast failures must not break the title write.
     logger.warn('broadcastSingleSessionUpdate failed', {
       sessionKey,
       error: (err as Error).message,
@@ -229,12 +235,10 @@ async function maybeWriteSessionTitle(
 }
 
 /**
- * Ask Haiku (via `generateSessionSummaryTitle`) to fold issue + PR titles
- * into a single concise headline. Falls back to `${issue} · ${pr}` (clamped)
- * when the LLM call returns null.
+ * Ask Haiku to fold issue + PR titles into a single concise headline. Falls
+ * back to `${issue} · ${pr}` (clamped) when the LLM call returns null or throws.
  *
- * Exposed so unit tests can target the issue+PR branch directly without
- * going through the full pipeline.
+ * Exported so unit tests can target the issue+PR branch directly.
  */
 export async function summarizeIssueAndPrTitles(issueTitle: string, prTitle: string): Promise<string> {
   const fallback = clampTitle(`${issueTitle} · ${prTitle}`);
@@ -252,22 +256,42 @@ export async function summarizeIssueAndPrTitles(issueTitle: string, prTitle: str
   return fallback;
 }
 
-function nonBlank(value: string | undefined | null): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : undefined;
-}
-
 /**
  * Adapter: lift a real `ClaudeHandler` into the narrower
- * `LinkDerivedTitleHandler` shape. Lets call sites pass `claudeHandler`
- * directly without leaking the full surface into this module's tests.
+ * `LinkDerivedTitleHandler` shape. Keeps test mocks small.
  */
 export function adaptHandler(handler: ClaudeHandler): LinkDerivedTitleHandler {
   return {
     getSession: handler.getSession.bind(handler),
-    getSessionByKey: handler.getSessionByKey.bind(handler),
     setSessionLink: handler.setSessionLink.bind(handler),
     setSessionTitle: handler.setSessionTitle.bind(handler),
   };
+}
+
+/**
+ * Fire-and-forget scheduler — collapses the boilerplate (sessionKey lookup +
+ * `.catch` log) the three trigger surfaces all need. `tag` is a free-form
+ * label that lands in the warn log so failures point back to the call site.
+ */
+export function scheduleLinkDerivedTitleRefresh(
+  claudeHandler: Pick<
+    ClaudeHandler,
+    'getSession' | 'getSessionByKey' | 'getSessionKey' | 'setSessionLink' | 'setSessionTitle'
+  >,
+  channelId: string,
+  threadTs: string | undefined,
+  tag: string,
+): void {
+  const sessionKey = claudeHandler.getSessionKey(channelId, threadTs);
+  stampLinkTitlesAndDeriveSessionTitle(adaptHandler(claudeHandler as ClaudeHandler), {
+    channelId,
+    threadTs,
+    sessionKey,
+  }).catch((err) => {
+    logger.warn('Link-derived title refresh failed', {
+      tag,
+      sessionKey,
+      error: (err as Error).message,
+    });
+  });
 }

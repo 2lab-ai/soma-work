@@ -19,6 +19,10 @@ interface LinkMetadata {
 // Cache: url -> metadata
 const metadataCache = new Map<string, LinkMetadata>();
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+// GitHub PR/issue title max ≈ 256, Jira summary max = 255. 500 is a defensive
+// upper bound that never clips real titles but stops a malicious or pathological
+// upstream from pinning multi-MB strings in cache.
+const MAX_CACHED_TITLE_LENGTH = 500;
 
 // Status emoji mapping
 const STATUS_EMOJI: Record<string, string> = {
@@ -90,17 +94,22 @@ export async function fetchLinkMetadata(link: SessionLink): Promise<{ title?: st
       metadata = await fetchJiraMetadata(link);
     }
 
-    // Cache the full title (#762) — display-time truncation is the consumer's
-    // responsibility (e.g. dashboard sub-row caps at 60 chars). Storing the
-    // full string lets ref-pill hover tooltips show the complete title and
-    // gives the LLM-driven session-title summarizer real input.
+    // Cache the title without the legacy 40-char cap so ref-pill hovers and
+    // the LLM session-title summarizer see real input — but bound at
+    // MAX_CACHED_TITLE_LENGTH to keep memory predictable. Display-time
+    // truncation (e.g. dashboard sub-row 60-char clip) remains the consumer's
+    // responsibility.
+    const cachedTitle =
+      metadata.title && metadata.title.length > MAX_CACHED_TITLE_LENGTH
+        ? metadata.title.slice(0, MAX_CACHED_TITLE_LENGTH)
+        : metadata.title;
     metadataCache.set(link.url, {
-      title: metadata.title,
+      title: cachedTitle,
       status: metadata.status,
       fetchedAt: Date.now(),
     });
 
-    return { title: metadata.title || link.title, status: metadata.status || link.status };
+    return { title: cachedTitle || link.title, status: metadata.status || link.status };
   } catch (error) {
     logger.warn('Failed to fetch link metadata', { url: link.url, error: (error as Error).message });
     // Return existing data on failure (graceful degradation)

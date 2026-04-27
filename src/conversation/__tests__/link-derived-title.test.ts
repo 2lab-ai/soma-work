@@ -63,7 +63,6 @@ function makeHandler(session: ConversationSession): {
   const ref = { current: session };
   const handler: LinkDerivedTitleHandler = {
     getSession: () => ref.current,
-    getSessionByKey: () => ref.current,
     setSessionLink: (_c, _t, link) => {
       setLinkCalls.push(link);
       // Mirror what session-registry does: stamp into session.links by type.

@@ -378,14 +378,11 @@ function cardDerivedFields(src: {
 function sessionToKanban(key: string, s: any): KanbanSession {
   const tasks = _getTasksFn ? _getTasksFn(key) : undefined;
   const aggregate = computeThreadAggregate(s.channelId, s.threadTs, getAllSessions(), Date.now());
+  const headline = displayTitle(s);
   return {
     key,
-    title: displayTitle(s),
-    // Server-side headline (#762) — single source of truth for the card &
-    // panel title surfaces. Reuses `displayTitle()` so its priority chain
-    // (summaryTitle → issueTitle → prTitle → title → 'Untitled') stays
-    // authoritative; the client renders this verbatim.
-    displayHeadline: displayTitle(s),
+    title: headline,
+    displayHeadline: headline,
     // Emit summaryTitle so initial board renders (and full-page refresh) match
     // the live broadcastSummaryTitleChanged WS patch. Session registry stores
     // this on the session record itself — see session-registry.ts applyTitle.
@@ -487,10 +484,11 @@ const DASHBOARD_ARCHIVE_MAX_AGE_MS = 48 * 60 * 60 * 1000;
  * Trace: Scenario 3, Section 3a transformation
  */
 export function archivedToKanban(archived: ArchivedSession): KanbanSession {
+  const headline = displayTitle(archived);
   return {
     key: `archived_${archived.sessionKey}_${archived.archivedAt}`,
-    title: displayTitle(archived),
-    displayHeadline: displayTitle(archived),
+    title: headline,
+    displayHeadline: headline,
     summaryTitle:
       typeof archived.summaryTitle === 'string' && archived.summaryTitle.length > 0 ? archived.summaryTitle : undefined,
     ownerName: archived.ownerName || archived.ownerId || 'unknown',
@@ -833,18 +831,27 @@ export function broadcastConversationUpdate(conversationId: string, turn: any): 
 /**
  * Dashboard v2.1 — targeted summaryTitle update. Sent in lieu of a full
  * session_update to avoid re-sending the whole board for a title change.
- * Clients patch the matching card's title in place.
  *
- * Also carries the resolved `displayHeadline` (#762) so clients don't have to
- * re-implement the priority chain — when the headline source flips between
- * tiers (e.g. issueTitle vanishing on /new) the server-truth value wins.
+ * Carries the resolved `displayHeadline` (#762) so clients render server-truth
+ * directly instead of re-implementing the priority chain. No-op when the
+ * session is gone — same defensive shape as `broadcastSingleSessionUpdate`,
+ * so a missing session surfaces as a server-side log line rather than a
+ * silently-degraded payload.
  */
 export function broadcastSummaryTitleChanged(sessionKey: string, summaryTitle: string): void {
   if (wsClients.size === 0) return;
   try {
     const session = _getSessionsFn?.().get(sessionKey);
-    const displayHeadline = session ? displayTitle(session) : summaryTitle;
-    const payload = JSON.stringify({ type: 'summaryTitleChanged', sessionKey, summaryTitle, displayHeadline });
+    if (!session) {
+      logger.warn('broadcastSummaryTitleChanged: session not found', { sessionKey });
+      return;
+    }
+    const payload = JSON.stringify({
+      type: 'summaryTitleChanged',
+      sessionKey,
+      summaryTitle,
+      displayHeadline: displayTitle(session),
+    });
     for (const client of wsClients) {
       try {
         client.send(payload);
@@ -3478,8 +3485,6 @@ function renderCard(s, col) {
     + '</div>';
 
   // Short refs (PTN-123 · PR-123). escAttr for href/title because they're attribute values.
-  // #762: prefer the fetched issue/PR title in the hover tooltip — falls back to
-  // the human label, then the short ref, so unfetched links still get a tooltip.
   const refParts = [];
   if (s.issueShortRef && s.issueUrl) {
     const issueTip = s.issueTitle || s.issueLabel || s.issueShortRef;
