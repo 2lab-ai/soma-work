@@ -147,6 +147,14 @@ interface StreamExecuteParams {
   channel: string;
   threadTs: string;
   user: string;
+  /**
+   * Slack workspace/team id of the originating user. Required by
+   * `chat.startStream` (channel/thread streaming). Sourced from the
+   * Slack message event (`event.team`); empty string when unknown — the
+   * stream call then omits both recipient fields together (see
+   * `TurnContext.recipientTeamId`).
+   */
+  teamId?: string;
   say: SayFn;
   mentionTs?: string;
   /** Original thread ts before bot-initiated thread migration */
@@ -456,6 +464,12 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // clearStatus, mirroring the caller-owns-epoch pattern used by the
       // explicit clearStatus calls below (e.g. lines ~1035, 1116, 1349).
       statusEpoch: epoch,
+      // `chat.startStream` rejects channel/thread streams without BOTH
+      // recipient_user_id and recipient_team_id (`missing_recipient_team_id`).
+      // We treat empty strings as "not available" so the stream call falls
+      // back to omitting both fields together — never sending a partial pair.
+      recipientUserId: user || undefined,
+      recipientTeamId: params.teamId || undefined,
       buildCompletionEvent,
     };
     await this.deps.threadPanel?.beginTurn(turnContext);
