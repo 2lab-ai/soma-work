@@ -23,6 +23,7 @@ import { SessionActionHandler } from './session-action-handler';
 import type { ActionHandlerContext, PendingChoiceFormData } from './types';
 import { UsageCardActionHandler } from './usage-card-action-handler';
 import { UserAcceptanceActionHandler } from './user-acceptance-action-handler';
+import { UserSkillInvokeActionHandler } from './user-skill-invoke-action-handler';
 import { ZSettingsActionHandler, type ZTopicRegistry } from './z-settings-actions';
 
 export { PendingFormStore } from './pending-form-store';
@@ -48,6 +49,7 @@ export class ActionHandlers {
   private actionPanelHandler: ActionPanelActionHandler;
   private channelRouteHandler: ChannelRouteActionHandler;
   private userAcceptanceHandler: UserAcceptanceActionHandler;
+  private userSkillInvokeHandler: UserSkillInvokeActionHandler;
   private usageCardHandler: UsageCardActionHandler;
   private mcpToolPermissionHandler: McpToolPermissionActionHandler;
   private pluginUpdateHandler: PluginUpdateActionHandler;
@@ -137,6 +139,15 @@ export class ActionHandlers {
 
     this.userAcceptanceHandler = new UserAcceptanceActionHandler({
       slackApi: ctx.slackApi,
+    });
+
+    // Personal-skill button click handler — paired with UserSkillsListHandler
+    // (`$user` bare command). Buttons carry requesterId; mismatched clickers
+    // are rejected ephemerally.
+    this.userSkillInvokeHandler = new UserSkillInvokeActionHandler({
+      slackApi: ctx.slackApi,
+      claudeHandler: ctx.claudeHandler,
+      messageHandler: ctx.messageHandler,
     });
 
     // Usage card carousel tab click handler — Trace: docs/usage-card-dark/trace.md, Scenarios 8/9/11
@@ -267,6 +278,14 @@ export class ActionHandlers {
     app.action(/^user_choice_/, async ({ ack, body }) => {
       await ack();
       await this.choiceHandler.handleUserChoice(body);
+    });
+
+    // Personal-skill button (paired with `$user` bare command). Each button
+    // value carries `{kind, skillName, requesterId}`; the handler enforces
+    // the requester binding and re-injects `$user:{name}` into the pipeline.
+    app.action(/^user_skill_invoke_/, async ({ ack, body, respond }) => {
+      await ack();
+      await this.userSkillInvokeHandler.handleInvoke(body, respond);
     });
 
     app.action(/^multi_choice_/, async ({ ack, body }) => {
