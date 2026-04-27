@@ -258,13 +258,17 @@ export async function summarizeIssueAndPrTitles(issueTitle: string, prTitle: str
 
 /**
  * Adapter: lift a real `ClaudeHandler` into the narrower
- * `LinkDerivedTitleHandler` shape. Keeps test mocks small.
+ * `LinkDerivedTitleHandler` shape. Methods are wrapped (not bound) so the
+ * adapter never reads `setSessionLink` / `setSessionTitle` until the
+ * pipeline actually needs them — important for tests whose mocks only
+ * implement the read side, and whose `getSession` returns null causing the
+ * pipeline to bail before touching the write methods.
  */
 export function adaptHandler(handler: ClaudeHandler): LinkDerivedTitleHandler {
   return {
-    getSession: handler.getSession.bind(handler),
-    setSessionLink: handler.setSessionLink.bind(handler),
-    setSessionTitle: handler.setSessionTitle.bind(handler),
+    getSession: (channelId, threadTs) => handler.getSession(channelId, threadTs),
+    setSessionLink: (channelId, threadTs, link) => handler.setSessionLink(channelId, threadTs, link),
+    setSessionTitle: (channelId, threadTs, title) => handler.setSessionTitle(channelId, threadTs, title),
   };
 }
 
