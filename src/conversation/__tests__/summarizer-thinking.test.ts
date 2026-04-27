@@ -168,8 +168,26 @@ describe('#762 — thinking option propagates through every title/summary LLM si
       })();
     });
     const items = [
-      { id: 'a', text: 'fix bug', status: 'completed' as const, addedAt: 1, completedAt: 2 },
-      { id: 'b', text: 'add tests', status: 'completed' as const, addedAt: 3, completedAt: 4 },
+      {
+        id: 'a',
+        text: 'fix bug',
+        status: 'completed' as const,
+        createdAt: '2026-04-27T00:00:00.001Z',
+        completedAt: '2026-04-27T00:00:00.002Z',
+        linkedSessionIds: [],
+        source: 'model' as const,
+        sourceRawInputIds: [],
+      },
+      {
+        id: 'b',
+        text: 'add tests',
+        status: 'completed' as const,
+        createdAt: '2026-04-27T00:00:00.003Z',
+        completedAt: '2026-04-27T00:00:00.004Z',
+        linkedSessionIds: [],
+        source: 'model' as const,
+        sourceRawInputIds: [],
+      },
     ];
     const result = await summarizeCompletedInstructions(items);
     expect(result).toBeTruthy();
