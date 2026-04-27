@@ -415,7 +415,7 @@ export class PromptBuilder {
           const skillList = userSkills
             .map((s) => `- \`$user:${s.name}\`: ${s.description || '(no description)'}`)
             .join('\n');
-          const skillBlock = `\n## Your Personal Skills\nYou have ${userSkills.length} personal skill(s). Invoke with \`$user:skill-name\`. Manage with MANAGE_SKILL command (create/update/delete/list).\n${skillList}`;
+          const skillBlock = `\n## Your Personal Skills\nYou have ${userSkills.length} personal skill(s). Invoke with \`$user:skill-name\`. Manage with MANAGE_SKILL command (create/update/delete/list/share).\n${skillList}`;
           systemPrompt = systemPrompt ? `${systemPrompt}\n${skillBlock}` : skillBlock;
         }
       } catch {
