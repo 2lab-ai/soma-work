@@ -1,6 +1,6 @@
 import { spawn, ChildProcess } from 'child_process';
 import { EventEmitter } from 'events';
-import { StderrLogger } from './stderr-logger.js';
+import { StderrLogger } from 'somalib/stderr-logger.js';
 
 /**
  * JSON-RPC 2.0 types

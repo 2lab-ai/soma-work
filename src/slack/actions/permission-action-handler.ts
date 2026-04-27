@@ -1,6 +1,6 @@
+import { type PermissionResponse, sharedStore } from 'somalib/permission/shared-store';
 import { Logger } from '../../logger';
 import type { SessionRegistry } from '../../session-registry';
-import { type PermissionResponse, sharedStore } from '../../shared-store';
 import type { RespondFn } from './types';
 
 /**
