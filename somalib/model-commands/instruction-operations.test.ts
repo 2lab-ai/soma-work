@@ -6,7 +6,9 @@ describe('applyInstructionOperations — lifecycle ops', () => {
   function seed(): SessionInstruction[] {
     return [
       { id: 'i1', text: 'a', addedAt: 1, status: 'active' },
-      { id: 'i2', text: 'b', addedAt: 2, status: 'todo' },
+      // Sealed schema: legacy 'todo' migrated to 'active'; 'cancelled' is the
+      // new first-class non-active state.
+      { id: 'i2', text: 'b', addedAt: 2, status: 'cancelled' },
     ];
   }
 
@@ -53,7 +55,7 @@ describe('applyInstructionOperations — lifecycle ops', () => {
 
   it('setStatus no-op when target status already matches', () => {
     const arr = seed();
-    const changed = applyInstructionOperations(arr, [{ action: 'setStatus', id: 'i2', status: 'todo' }]);
+    const changed = applyInstructionOperations(arr, [{ action: 'setStatus', id: 'i2', status: 'cancelled' }]);
     expect(changed).toBe(false);
   });
 
@@ -61,7 +63,7 @@ describe('applyInstructionOperations — lifecycle ops', () => {
     const arr = seed();
     const changed = applyInstructionOperations(arr, [
       { action: 'complete', id: 'ghost', evidence: 'x' },
-      { action: 'setStatus', id: 'ghost', status: 'todo' },
+      { action: 'setStatus', id: 'ghost', status: 'cancelled' },
     ]);
     expect(changed).toBe(false);
   });

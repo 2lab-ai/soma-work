@@ -159,24 +159,26 @@ describe('snapshotFromSession', () => {
   });
 
   it('preserves SSOT instructions in the compaction block, grouped by status', () => {
+    // Sealed status set (#754): active | completed | cancelled. Legacy 'todo'
+    // collapses into 'active' at migration time.
     const result = buildCompactionContext({
       ownerId: 'U1',
       title: 't',
       instructions: [
         { id: 'c1', text: 'closed it', addedAt: 0, status: 'completed', completedAt: 1 },
         { id: 'a1', text: 'active one', addedAt: 0, status: 'active' },
-        { id: 't1', text: 'todo one', addedAt: 0, status: 'todo' },
+        { id: 'x1', text: 'cancelled one', addedAt: 0, status: 'cancelled' },
       ],
     });
     expect(result).toContain('User instructions (SSOT):');
     const aIdx = result!.indexOf('[active]');
-    const tIdx = result!.indexOf('[todo]');
+    const xIdx = result!.indexOf('[cancelled]');
     const cIdx = result!.indexOf('[completed]');
     expect(aIdx).toBeGreaterThan(-1);
-    expect(tIdx).toBeGreaterThan(aIdx);
-    expect(cIdx).toBeGreaterThan(tIdx);
+    expect(xIdx).toBeGreaterThan(aIdx);
+    expect(cIdx).toBeGreaterThan(xIdx);
     expect(result).toContain('active one');
-    expect(result).toContain('todo one');
+    expect(result).toContain('cancelled one');
     expect(result).toContain('closed it');
   });
 

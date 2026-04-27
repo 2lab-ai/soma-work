@@ -151,23 +151,43 @@ export type SessionResourceType = 'issue' | 'pr' | 'doc';
 /**
  * Lifecycle status of a single user instruction.
  *
- * - `active`: currently guiding the model (default)
- * - `todo`: queued for later; still prompt-injected
- * - `completed`: finished — once there are ≥ 2 completed entries the host
- *   summarises them into `session.instructionsCompletedSummary` to keep the
- *   prompt compact.
+ * Sealed shape (issue #727 / #754):
+ * - `active`: live work — guides the model and may be a session's `currentInstructionId`
+ * - `completed`: finished — paired with `evidence` (when the model marked it)
+ * - `cancelled`: explicitly stopped by the user; first-class state, NOT
+ *   collapsed into `completed` so the dashboard archives view can distinguish
+ *   "shipped" from "abandoned".
+ *
+ * Legacy `'todo'` is migrated to `'active'` at load/migration time
+ * (see `src/user-instructions-migration.ts`).
  */
-export type SessionInstructionStatus = 'active' | 'todo' | 'completed';
+export type SessionInstructionStatus = 'active' | 'completed' | 'cancelled';
 
 /**
  * A single user instruction stored as SSOT in the session.
- * Persisted to disk and exposed to the model via GET_SESSION.
+ * Persisted to disk (legacy: `data/sessions.json::session.instructions[]`;
+ * sealed master: `data/users/{userId}/user-session.json::instructions[]`)
+ * and exposed to the model via GET_SESSION.
+ *
+ * Both legacy session-scope + sealed user-scope storage share this shape.
+ * The user-scope master adds two extra fields beyond the legacy session
+ * mirror: `linkedSessionIds` and `sourceRawInputIds`. Those are optional
+ * here so legacy sessions can serialize without them.
+ *
+ * `addedAt` is kept for backward-compatibility; the user-scope store also
+ * carries an ISO `createdAt` (see `UserInstruction` in
+ * `src/user-session-store.ts`) for sealed schema parity.
  */
 export interface SessionInstruction {
   id: string; // Unique ID (e.g., "instr_1712000000000_0")
   text: string; // The instruction content
-  addedAt: number; // Unix ms when added
-  source?: string; // Who added it (e.g., "user", "model")
+  addedAt: number; // Unix ms when added (legacy)
+  /**
+   * Origin of the entry. Legacy free-form string is kept for backward
+   * compatibility with older sessions.json payloads; the sealed master
+   * tightens this to the enum below (see `UserInstructionSource`).
+   */
+  source?: string;
   /**
    * Lifecycle status (defaults to 'active' when absent — migration is handled
    * at load time in session-registry.loadSessions).
@@ -181,6 +201,20 @@ export interface SessionInstruction {
   evidence?: string;
   /** Unix ms when status transitioned to `completed`. */
   completedAt?: number;
+  /** Unix ms when status transitioned to `cancelled` (sealed schema). */
+  cancelledAt?: number;
+  /**
+   * Sessions that have ever been linked to this instruction (sealed schema).
+   * Append-only, deduplicated. Optional on legacy session-scope mirrors.
+   */
+  linkedSessionIds?: string[];
+  /**
+   * Raw-input back-references populated by #760. Each entry pins a single
+   * raw-input row by `{ sessionKey, rawInputId }` so the instruction can be
+   * traced back to the user's original message text even after compaction.
+   * Optional everywhere until #760 lands.
+   */
+  sourceRawInputIds?: Array<{ sessionKey: string; rawInputId: string }>;
 }
 
 export interface SessionResourceSnapshot {

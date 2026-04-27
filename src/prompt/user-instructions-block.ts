@@ -56,13 +56,15 @@ export function buildUserInstructionsBlock(session: ConversationSession | undefi
   const instructions = session?.instructions || [];
   if (instructions.length === 0) return '';
 
+  // Sealed status set (#754): active | completed | cancelled. Legacy 'todo'
+  // is migrated to 'active' before reaching this builder.
   const active: SessionInstruction[] = [];
-  const todo: SessionInstruction[] = [];
+  const cancelled: SessionInstruction[] = [];
   const completed: SessionInstruction[] = [];
   for (const i of instructions) {
     const s = i.status ?? 'active';
-    if (s === 'todo') todo.push(i);
-    else if (s === 'completed') completed.push(i);
+    if (s === 'completed') completed.push(i);
+    else if (s === 'cancelled') cancelled.push(i);
     else active.push(i);
   }
 
@@ -71,8 +73,8 @@ export function buildUserInstructionsBlock(session: ConversationSession | undefi
   if (active.length > 0) {
     sections.push(['## Active', ...active.map(renderBullet)].join('\n'));
   }
-  if (todo.length > 0) {
-    sections.push(['## Todo', ...todo.map(renderBullet)].join('\n'));
+  if (cancelled.length > 0) {
+    sections.push(['## Cancelled', ...cancelled.map(renderBullet)].join('\n'));
   }
 
   if (completed.length === 1) {

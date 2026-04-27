@@ -20,11 +20,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import {
-  migrateUserInstructions,
-  type LegacySession,
-  type MigrationResult,
-} from '../user-instructions-migration';
+import { type LegacySession, type MigrationResult, migrateUserInstructions } from '../user-instructions-migration';
 import { UserSessionStore } from '../user-session-store';
 
 let dataDir: string;
@@ -66,9 +62,7 @@ describe('migrateUserInstructions — backup + idempotency', () => {
 
     migrateUserInstructions({ dataDir, dryRun: false });
 
-    const backupFiles = fs
-      .readdirSync(dataDir)
-      .filter((f) => f.startsWith('sessions.json.') && f.endsWith('.bak'));
+    const backupFiles = fs.readdirSync(dataDir).filter((f) => f.startsWith('sessions.json.') && f.endsWith('.bak'));
     expect(backupFiles.length).toBe(1);
   });
 
@@ -89,9 +83,7 @@ describe('migrateUserInstructions — backup + idempotency', () => {
     migrateUserInstructions({ dataDir, dryRun: true });
 
     expect(fs.existsSync(path.join(dataDir, 'users'))).toBe(false);
-    const backupFiles = fs
-      .readdirSync(dataDir)
-      .filter((f) => f.startsWith('sessions.json.') && f.endsWith('.bak'));
+    const backupFiles = fs.readdirSync(dataDir).filter((f) => f.startsWith('sessions.json.') && f.endsWith('.bak'));
     expect(backupFiles).toHaveLength(0);
   });
 
@@ -118,10 +110,12 @@ describe('migrateUserInstructions — backup + idempotency', () => {
     const r2 = migrateUserInstructions({ dataDir, dryRun: false });
     const after2 = JSON.stringify(readUserDoc('U1'));
 
+    // On-disk state must be byte-identical across runs.
     expect(after1).toBe(after2);
-    // The second pass should report 0 new instructions
-    expect(r2.userIdsTouched).toBe(r1.userIdsTouched);
+    expect(r1.newInstructions).toBe(2);
+    // Second pass: no new mutations.
     expect(r2.newInstructions).toBe(0);
+    expect(r2.userIdsTouched).toBe(0);
   });
 
   it('migrates legacy `todo` status to `active`', () => {

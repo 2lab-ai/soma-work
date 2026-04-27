@@ -51,20 +51,22 @@ describe('buildUserInstructionsBlock', () => {
     expect(block).not.toContain('## Completed');
   });
 
-  it('groups active / todo / completed sections in that order', () => {
+  it('groups active / cancelled / completed sections in that order', () => {
+    // Sealed status set (#754): active | completed | cancelled. Legacy 'todo'
+    // collapses into 'active' at migration time.
     const block = buildUserInstructionsBlock(
       mkSession([
         mkInstr({ id: 'c', text: 'completed-one', status: 'completed', completedAt: 1 }),
         mkInstr({ id: 'a', text: 'active-one', status: 'active' }),
-        mkInstr({ id: 't', text: 'todo-one', status: 'todo' }),
+        mkInstr({ id: 'x', text: 'cancelled-one', status: 'cancelled' }),
       ]),
     );
     const activeIdx = block.indexOf('## Active');
-    const todoIdx = block.indexOf('## Todo');
+    const cancelledIdx = block.indexOf('## Cancelled');
     const completedIdx = block.indexOf('## Completed');
     expect(activeIdx).toBeGreaterThan(-1);
-    expect(todoIdx).toBeGreaterThan(activeIdx);
-    expect(completedIdx).toBeGreaterThan(todoIdx);
+    expect(cancelledIdx).toBeGreaterThan(activeIdx);
+    expect(completedIdx).toBeGreaterThan(cancelledIdx);
   });
 
   it('renders a single completed entry verbatim (no summary)', () => {
@@ -132,7 +134,7 @@ describe('computeCompletedUpstreamHash', () => {
     const withExtras = [
       ...onlyCompleted,
       mkInstr({ id: 'a1', status: 'active' }),
-      mkInstr({ id: 't1', status: 'todo' }),
+      mkInstr({ id: 't1', status: 'cancelled' }),
     ];
     expect(computeCompletedUpstreamHash(onlyCompleted)).toBe(computeCompletedUpstreamHash(withExtras));
   });

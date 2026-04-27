@@ -67,6 +67,98 @@ function getSkillStore(): SkillStore {
   return _skillStore;
 }
 
+// User-instruction store interface — injected by the host app via
+// registerUserInstructionStore() (#754). Sealed master at
+// `data/users/{userId}/user-session.json`. The lifecycle 5-op semantics
+// (add/link/complete/cancel/rename) and the y/n confirm gate are #755 scope;
+// this PR exposes the storage + pointer plumbing only so other call sites
+// (UPDATE_SESSION host wrapper, dashboard read API, archive snapshot) can
+// hit a stable seam.
+//
+// All methods are synchronous — the underlying impl is fs-based (atomic
+// tmp→rename writes, see src/user-session-store.ts).
+export interface UserInstructionStore {
+  /**
+   * Read a user's instruction master. Returns an empty `{ schemaVersion: 1,
+   * instructions: [], lifecycleEvents: [] }` doc when the user has never had
+   * any instructions yet.
+   */
+  loadUserDoc(userId: string): UserInstructionDoc;
+  /**
+   * Persist the doc atomically. Throws on schema/invariant violation; the
+   * caller is expected to validate at higher layers (lifecycle ops in #755).
+   */
+  saveUserDoc(userId: string, doc: UserInstructionDoc): void;
+  /**
+   * List active instructions for a user. Convenience wrapper over loadUserDoc
+   * for the dashboard / prompt block read paths. Sorted by createdAt asc.
+   */
+  listActiveInstructions(userId: string): UserInstructionRecord[];
+  /**
+   * Find a single instruction by id (or undefined). Used by lifecycle ops
+   * to look up the row for `link/complete/cancel/rename`.
+   */
+  findInstruction(userId: string, instructionId: string): UserInstructionRecord | undefined;
+}
+
+/**
+ * Sealed user-instruction record shape (mirrors `UserInstruction` in
+ * `src/user-session-store.ts`). Re-declared here so somalib stays free of a
+ * back-reference to host-side modules.
+ */
+export interface UserInstructionRecord {
+  id: string;
+  text: string;
+  status: 'active' | 'completed' | 'cancelled';
+  linkedSessionIds: string[];
+  createdAt: string;
+  completedAt?: string;
+  cancelledAt?: string;
+  evidence?: string;
+  source: 'model' | 'user-manual-dashboard' | 'migration';
+  sourceRawInputIds: Array<{ sessionKey: string; rawInputId: string }>;
+}
+
+/** Sealed lifecycle audit-log row (mirrors `LifecycleEvent` in src/). */
+export interface UserLifecycleEventRecord {
+  id: string;
+  requestId?: string;
+  instructionId?: string | null;
+  sessionKey: string;
+  op: 'add' | 'link' | 'complete' | 'cancel' | 'rename';
+  state: 'requested' | 'confirmed' | 'rejected' | 'superseded' | 'manual';
+  at: string;
+  by: { type: 'slack-user' | 'system' | 'migration'; id: string };
+  payload: unknown;
+}
+
+export interface UserInstructionDoc {
+  schemaVersion: 1;
+  instructions: UserInstructionRecord[];
+  lifecycleEvents: UserLifecycleEventRecord[];
+}
+
+let _userInstructionStore: UserInstructionStore | null = null;
+
+/**
+ * Register the user-instruction store (sealed master at
+ * `data/users/{userId}/user-session.json`). The lifecycle 5-op semantics
+ * (#755) read/write through this seam; this PR only exposes the storage.
+ */
+export function registerUserInstructionStore(store: UserInstructionStore): void {
+  _userInstructionStore = store;
+}
+
+/**
+ * Lookup helper. Returns null when the host has not registered a store —
+ * call sites in this PR must tolerate null (the lifecycle gate in #755 will
+ * make registration mandatory for all dispatch paths that produce
+ * lifecycle events).
+ */
+export function getUserInstructionStore(): UserInstructionStore | null {
+  return _userInstructionStore;
+}
+
 // Rating store interface — injected by the host app via registerRatingStore().
 // Returns user's current model rating (0-10, default 5).
 export interface RatingStore {
@@ -175,7 +267,7 @@ const UPDATE_SESSION_SCHEMA = {
           },
           status: {
             type: 'string',
-            enum: ['active', 'todo', 'completed'],
+            enum: ['active', 'completed', 'cancelled'],
             description: 'New status (required for setStatus)',
           },
         },

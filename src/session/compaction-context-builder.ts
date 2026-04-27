@@ -133,14 +133,16 @@ function formatLink(link: SessionLink): string {
 
 function formatInstructions(instructions?: SessionInstruction[]): string[] {
   if (!instructions || instructions.length === 0) return [];
-  const grouped = { active: [] as string[], todo: [] as string[], completed: [] as string[] };
+  // Sealed status set (#754): active | completed | cancelled. Legacy 'todo'
+  // is migrated to 'active' before reaching this builder.
+  const grouped = { active: [] as string[], cancelled: [] as string[], completed: [] as string[] };
   for (const i of instructions) {
     const s = i.status ?? 'active';
     const text = i.text.replace(/\s+/g, ' ').trim();
     if (!text) continue;
-    if (s === 'todo') grouped.todo.push(`- [todo] ${text}`);
-    else if (s === 'completed') grouped.completed.push(`- [completed] ${text}`);
+    if (s === 'completed') grouped.completed.push(`- [completed] ${text}`);
+    else if (s === 'cancelled') grouped.cancelled.push(`- [cancelled] ${text}`);
     else grouped.active.push(`- [active] ${text}`);
   }
-  return [...grouped.active, ...grouped.todo, ...grouped.completed];
+  return [...grouped.active, ...grouped.cancelled, ...grouped.completed];
 }

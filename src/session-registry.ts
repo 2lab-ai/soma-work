@@ -127,8 +127,19 @@ interface SerializedSession {
       mergedAt: number;
     }>;
   };
-  // User SSOT instructions (persisted)
+  // User SSOT instructions (persisted, legacy mirror — see types.ts).
   instructions?: SessionInstruction[];
+  /**
+   * Sealed pointer to the user-scope instruction this session points at
+   * (#754). `null` / `undefined` is normal — a session may be in a
+   * non-instruction turn (chat / question / clarification).
+   */
+  currentInstructionId?: string | null;
+  /**
+   * Sealed append-only list of every instruction id this session has ever
+   * pointed at (#754). Survives compact / restart.
+   */
+  instructionHistory?: string[];
   /**
    * Cached summary of completed instructions. Persisted so that
    * restart after a long session doesn't force a fresh summary re-build
@@ -1685,8 +1696,11 @@ export class SessionRegistry {
             conversationId: session.conversationId,
             // Merge code change stats
             mergeStats: session.mergeStats,
-            // User SSOT instructions (persisted)
+            // User SSOT instructions (persisted, legacy mirror — see types.ts)
             instructions: session.instructions,
+            // Sealed pointer to user-scope instruction master (#754).
+            currentInstructionId: session.currentInstructionId,
+            instructionHistory: session.instructionHistory,
             // Cached completed-summary (persisted so the next turn after restart
             // doesn't pay a cold summary rebuild). Safe to omit — the block
             // builder falls back to a placeholder and the async regen kicks in.
@@ -1748,6 +1762,15 @@ export class SessionRegistry {
         conversationId: serialized.conversationId,
         mergeStats: serialized.mergeStats,
         instructions: serialized.instructions,
+        // Sealed pointer + history (#754) — preserve so the archive snapshot
+        // can render "what instruction was open when this session ended".
+        currentInstructionId:
+          typeof serialized.currentInstructionId === 'string' || serialized.currentInstructionId === null
+            ? serialized.currentInstructionId
+            : null,
+        instructionHistory: Array.isArray(serialized.instructionHistory)
+          ? serialized.instructionHistory.filter((x): x is string => typeof x === 'string')
+          : [],
         activityState: serialized.activityState || 'idle',
         // Preserve handoff metadata for diagnostic parity when archiving.
         handoffContext: serialized.handoffContext,
@@ -1872,15 +1895,27 @@ export class SessionRegistry {
           conversationId: serialized.conversationId,
           // Merge code change stats
           mergeStats: serialized.mergeStats,
-          // User SSOT instructions (restored from disk).
-          // Legacy migration: entries saved before the lifecycle-status
-          // extension lack `status`. Seed them to 'active' so the block
-          // builder can group them without special-casing `undefined`.
+          // User SSOT instructions (restored from disk, legacy mirror).
+          // Migration: legacy 'todo' status -> 'active' (sealed schema #754).
+          // Entries saved before the lifecycle-status extension lack `status`
+          // entirely; seed them to 'active' so the block builder doesn't
+          // special-case undefined.
           instructions: Array.isArray(serialized.instructions)
             ? serialized.instructions.map((i) => ({
                 ...i,
-                status: i.status ?? 'active',
+                status:
+                  // 'todo' is a legacy enum value — migrate to 'active'.
+                  (i.status as string | undefined) === 'todo' ? 'active' : (i.status ?? 'active'),
               }))
+            : [],
+          // Sealed pointer to user-scope instruction master (#754). undefined
+          // on pre-#754 disk state is treated as "no pointer" (== null).
+          currentInstructionId:
+            typeof serialized.currentInstructionId === 'string' || serialized.currentInstructionId === null
+              ? serialized.currentInstructionId
+              : null,
+          instructionHistory: Array.isArray(serialized.instructionHistory)
+            ? serialized.instructionHistory.filter((x): x is string => typeof x === 'string')
             : [],
           // Cached completed-summary (may be stale — block builder validates via hash).
           instructionsCompletedSummary: serialized.instructionsCompletedSummary,

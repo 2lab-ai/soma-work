@@ -306,7 +306,28 @@ export interface ConversationSession {
 
   // User SSOT instructions: structured, model-readable, persisted to disk.
   // Exposed to the model via GET_SESSION and managed via UPDATE_SESSION instructionOperations.
+  //
+  // Legacy field — kept for one-version backward compatibility while the sealed
+  // user-scope master at `data/users/{userId}/user-session.json` becomes
+  // authoritative (#754). New code should read instructions from
+  // UserSessionStore via `currentInstructionId` / `instructionHistory`.
   instructions?: SessionInstruction[];
+
+  /**
+   * Sealed pointer to the user-scope instruction this session is currently
+   * working on (#754). `null` is a normal state (sealed Q4: a turn can be
+   * chat / question / clarification, not always a tracked instruction).
+   * Set/cleared only via the user-confirm gate (#755) — the data model PR
+   * persists the field; the lifecycle ops in #755 mutate it.
+   */
+  currentInstructionId?: string | null;
+
+  /**
+   * Sealed history of every instruction id this session has ever pointed at
+   * (append-only, deduplicated) (#754). Survives compact / restart and is
+   * archived alongside the session on terminate / sleep_expired.
+   */
+  instructionHistory?: string[];
 
   /**
    * Cached summary of `completed`-status instructions — used by the
