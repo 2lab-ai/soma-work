@@ -2331,17 +2331,30 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
         credentials: makeOAuthCreds(),
         acknowledgedConsumerTosRisk: true,
       });
-      // Clear the mock after the addSlot-driven profile call.
-      await new Promise((r) => setTimeout(r, 5));
+      // Wait for the addSlot-driven fire-and-forget profile sync to land BEFORE
+      // resetting the mock — same poll pattern as the addSlot test above. The
+      // bare `setTimeout(5ms)` was tight enough to race under loaded CI runners
+      // (#737 PR — observed 2 vs 1 expected calls because the addSlot sync
+      // landed AFTER the reset, then forceRefreshOAuth fired its own).
+      for (let i = 0; i < 50; i++) {
+        if ((fetchOAuthProfileMock.mock.calls.length ?? 0) >= 1) break;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      await new Promise((r) => setTimeout(r, 20));
       fetchOAuthProfileMock.mockReset();
       fetchOAuthProfileMock.mockResolvedValue({ fetchedAt: 3, email: 'chained@example.com' });
       await tm.forceRefreshOAuth(slot.keyId);
-      await new Promise((r) => setTimeout(r, 10));
+      // Same poll pattern for the chained sync — drain up to 500ms.
+      for (let i = 0; i < 50; i++) {
+        if ((fetchOAuthProfileMock.mock.calls.length ?? 0) >= 1) break;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      await new Promise((r) => setTimeout(r, 20));
       expect(fetchOAuthProfileMock).toHaveBeenCalledTimes(1);
 
       fetchOAuthProfileMock.mockReset();
       await tm.forceRefreshOAuth(slot.keyId, { syncProfile: false });
-      await new Promise((r) => setTimeout(r, 10));
+      await new Promise((r) => setTimeout(r, 50));
       expect(fetchOAuthProfileMock).not.toHaveBeenCalled();
     });
 
@@ -2510,8 +2523,15 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
         accessToken: `${current.accessToken}-refreshed`,
         expiresAtMs: Date.now() + 8 * 60 * 60 * 1000,
       }));
-      // Drain the fire-and-forget profile sync that `addSlot` fires, then
-      // reset the mock so the assertion below counts only the fan-out leg.
+      // Drain the fire-and-forget profile syncs that the two addSlot calls
+      // fire (one each). Bare setTimeout(20ms) raced under loaded CI runners
+      // and let one of the addSlot profile calls land AFTER the reset, then
+      // counted against the fan-out assertion (#737 PR observed 1 vs 2 expected).
+      // Poll up to 500ms for both calls to land before resetting.
+      for (let i = 0; i < 50; i++) {
+        if ((fetchOAuthProfileMock.mock.calls.length ?? 0) >= 2) break;
+        await new Promise((r) => setTimeout(r, 10));
+      }
       await new Promise((r) => setTimeout(r, 20));
       fetchOAuthProfileMock.mockReset();
       fetchOAuthProfileMock.mockImplementation(async () => ({
