@@ -205,21 +205,37 @@ export function validateModelCommandRunArgs(args: unknown): ValidationResult {
       return invalidArgs('MANAGE_SKILL params must be an object with action');
     }
     const action = params.action;
-    if (action !== 'create' && action !== 'update' && action !== 'delete' && action !== 'list') {
-      return invalidArgs(`MANAGE_SKILL action must be 'create', 'update', 'delete', or 'list', got: ${String(action)}`);
+    if (
+      action !== 'create' &&
+      action !== 'update' &&
+      action !== 'delete' &&
+      action !== 'list' &&
+      action !== 'share'
+    ) {
+      return invalidArgs(
+        `MANAGE_SKILL action must be 'create', 'update', 'delete', 'list', or 'share', got: ${String(action)}`,
+      );
     }
-    if ((action === 'create' || action === 'update' || action === 'delete') && typeof params.name !== 'string') {
-      return invalidArgs('MANAGE_SKILL name is required for create/update/delete');
+    if (
+      (action === 'create' || action === 'update' || action === 'delete' || action === 'share') &&
+      typeof params.name !== 'string'
+    ) {
+      return invalidArgs('MANAGE_SKILL name is required for create/update/delete/share');
     }
     if ((action === 'create' || action === 'update') && typeof params.content !== 'string') {
       return invalidArgs('MANAGE_SKILL content is required for create/update');
+    }
+    // share is read-only on the server side — refuse callers that pass content
+    // so a sloppy request can never be misinterpreted as a hidden update.
+    if (action === 'share' && params.content !== undefined) {
+      return invalidArgs('MANAGE_SKILL share does not accept content; only name is required');
     }
     return {
       ok: true,
       request: {
         commandId: 'MANAGE_SKILL',
         params: {
-          action: action as 'create' | 'update' | 'delete' | 'list',
+          action: action as 'create' | 'update' | 'delete' | 'list' | 'share',
           name: typeof params.name === 'string' ? params.name : undefined,
           content: typeof params.content === 'string' ? params.content : undefined,
         },

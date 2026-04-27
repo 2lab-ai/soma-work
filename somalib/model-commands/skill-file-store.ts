@@ -7,6 +7,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import type { SkillStore } from './catalog';
+import { invalidSkillNameMessage, skillNotFoundMessage } from './skill-share-errors';
 
 const MAX_SKILL_SIZE = 10 * 1024; // 10KB
 const MAX_SKILLS_PER_USER = 50;
@@ -93,5 +94,27 @@ export class SkillFileStore implements SkillStore {
     if (!fs.existsSync(skillDir)) return { ok: false, message: `Skill "${name}" not found.` };
     fs.rmSync(skillDir, { recursive: true, force: true });
     return { ok: true, message: `Skill "${name}" deleted.` };
+  }
+
+  /**
+   * Read raw SKILL.md for cross-user copy-paste. The dispatcher applies the
+   * character-count cap (`SHARE_CONTENT_CHAR_LIMIT`) — this layer just answers
+   * "valid name?" / "exists?" / "here is the content".
+   *
+   * Error messages are imported from `skill-share-errors.ts` so this layer and
+   * the in-process `src/user-skill-store.ts` cannot drift on user-facing
+   * wording (the test suite would catch drift, but routing both through one
+   * module makes drift impossible by construction).
+   */
+  shareSkill(user: string, name: string): { ok: boolean; message: string; content?: string } {
+    if (!SKILL_NAME_PATTERN.test(name) || !isSafeSegment(name)) {
+      return { ok: false, message: invalidSkillNameMessage(name) };
+    }
+    const fp = this.skillPath(user, name);
+    if (!fs.existsSync(fp)) {
+      return { ok: false, message: skillNotFoundMessage(name) };
+    }
+    const content = fs.readFileSync(fp, 'utf-8');
+    return { ok: true, message: `Skill "${name}" read for share.`, content };
   }
 }

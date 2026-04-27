@@ -35,6 +35,22 @@ export interface SkillStore {
   createSkill(user: string, name: string, content: string): { ok: boolean; message: string };
   updateSkill(user: string, name: string, content: string): { ok: boolean; message: string };
   deleteSkill(user: string, name: string): { ok: boolean; message: string };
+  /**
+   * Read the full SKILL.md content for cross-user copy-paste install.
+   *
+   * Contract:
+   *   - happy: `{ ok: true, message, content }` — `content` is the raw SKILL.md
+   *     bytes, not yet capped (the dispatcher applies `SHARE_CONTENT_CHAR_LIMIT`)
+   *   - invalid name: `{ ok: false, message: invalidSkillNameMessage(name) }`
+   *   - not found:    `{ ok: false, message: skillNotFoundMessage(name) }`
+   *
+   * Both implementations import their messages from `skill-share-errors.ts`
+   * so the two layers cannot drift on user-facing wording.
+   */
+  shareSkill(
+    user: string,
+    name: string,
+  ): { ok: boolean; message: string; content?: string };
 }
 
 let _skillStore: SkillStore | null = null;
@@ -78,6 +94,11 @@ import type {
   ModelCommandRunResponse,
   SaveMemoryParams,
 } from './types';
+import {
+  SHARE_CONTENT_CHAR_LIMIT,
+  shareOverLimitMessage,
+  shareSuccessMessage,
+} from './skill-share-errors';
 import { checkAskUserQuestionQuality } from './validator';
 
 const HISTORY_KEY_BY_RESOURCE: Record<SessionResourceType, 'issues' | 'prs' | 'docs'> = {
@@ -296,16 +317,20 @@ const MANAGE_SKILL_SCHEMA = {
   properties: {
     action: {
       type: 'string',
-      enum: ['create', 'update', 'delete', 'list'],
-      description: 'create: new skill, update: overwrite existing, delete: remove, list: show all',
+      enum: ['create', 'update', 'delete', 'list', 'share'],
+      description:
+        'create: new skill, update: overwrite existing, delete: remove, ' +
+        'list: show all, share: return full content for cross-user copy-paste install',
     },
     name: {
       type: 'string',
-      description: 'Skill name in kebab-case (e.g. my-deploy). Required for create/update/delete.',
+      description: 'Skill name in kebab-case (e.g. my-deploy). Required for create/update/delete/share.',
     },
     content: {
       type: 'string',
-      description: 'Full SKILL.md content with YAML frontmatter. Required for create/update.',
+      description:
+        'Full SKILL.md content with YAML frontmatter. Required for create/update. ' +
+        'Must NOT be supplied for share (the server reads existing content).',
     },
   },
   required: ['action'],
@@ -427,7 +452,17 @@ export function listModelCommands(context: ModelCommandContext): ModelCommandDes
       {
         id: 'MANAGE_SKILL',
         description:
-          'Create, update, delete, or list user personal skills. Skills are SKILL.md files with YAML frontmatter. Invoke via $user:skill-name. Immediately available after creation.',
+          'Create, update, delete, list, or share user personal skills. ' +
+          'Skills are SKILL.md files with YAML frontmatter. Invoke via $user:skill-name. ' +
+          'Immediately available after creation. ' +
+          'share: pass only `name` — the response payload returns the full SKILL.md ' +
+          'content for cross-user copy-paste install. When you receive a share response, ' +
+          'render the returned content verbatim inside a fenced code block in the Slack ' +
+          'thread, then append a single line instructing any reader to invoke MANAGE_SKILL ' +
+          'with action=create using the same name and content to install the skill on ' +
+          "their own account. Maximum shareable content is " +
+          `${SHARE_CONTENT_CHAR_LIMIT} characters; over-cap returns ok=false and the ` +
+          'caller must trim the SKILL.md before retrying.',
         paramsSchema: MANAGE_SKILL_SCHEMA,
       },
       {
@@ -733,6 +768,49 @@ export function runModelCommand(
         commandId: 'MANAGE_SKILL',
         ok: true,
         payload: { ok: result.ok, message: result.message },
+      };
+    }
+    if (params.action === 'share') {
+      if (!params.name) {
+        return toRunError('MANAGE_SKILL', { code: 'INVALID_ARGS', message: 'name required for share' });
+      }
+      const result = store.shareSkill(context.user, params.name);
+      // Storage-level failures (invalid name / not found) propagate verbatim —
+      // both layers source their messages from `skill-share-errors.ts` so they
+      // cannot drift.
+      if (!result.ok || result.content === undefined) {
+        return {
+          type: 'model_command_result',
+          commandId: 'MANAGE_SKILL',
+          ok: true,
+          payload: { ok: result.ok, message: result.message },
+        };
+      }
+      // Wire-format constraint owned by the dispatcher, not the storage layer:
+      // refuse to ship payloads larger than the Slack rich-text rendering
+      // budget. Measured in characters (UTF-16 code units), matching how the
+      // recipient model will count when it inlines the body in a code block.
+      if (result.content.length > SHARE_CONTENT_CHAR_LIMIT) {
+        return {
+          type: 'model_command_result',
+          commandId: 'MANAGE_SKILL',
+          ok: true,
+          payload: {
+            ok: false,
+            message: shareOverLimitMessage(params.name, result.content.length),
+          },
+        };
+      }
+      return {
+        type: 'model_command_result',
+        commandId: 'MANAGE_SKILL',
+        ok: true,
+        payload: {
+          ok: true,
+          message: shareSuccessMessage(params.name),
+          name: params.name,
+          content: result.content,
+        },
       };
     }
     return toRunError('MANAGE_SKILL', { code: 'INVALID_ARGS', message: `Unknown action: ${params.action}` });
