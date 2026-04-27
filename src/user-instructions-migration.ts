@@ -32,7 +32,13 @@ import * as path from 'node:path';
 import { type LegacyInstructionStatus, mapLegacyInstructionStatus } from './legacy-instruction-status';
 import { Logger } from './logger';
 import { withPidLock } from './pid-lock';
-import { type LifecycleEvent, type UserInstruction, type UserSessionDoc, UserSessionStore } from './user-session-store';
+import {
+  type LifecycleEvent,
+  type UserInstruction,
+  type UserSessionDoc,
+  UserSessionStore,
+  getUserSessionStore,
+} from './user-session-store';
 
 const logger = new Logger('UserInstructionsMigration');
 
@@ -191,6 +197,15 @@ export function migrateUserInstructions(opts: MigrationOptions): MigrationResult
     }
   }
 
+  // Round-2 P1-D: migration MUST coordinate with the process-wide
+  // singleton so the read paths in session-registry / dashboard /
+  // instructions handler immediately observe the migrated rows. We
+  // create a working store rooted at `opts.dataDir` (admin scripts may
+  // run with a non-default DATA_DIR for dry-run / test fixtures), and
+  // ALSO invalidate the singleton's cache for every userId we touched.
+  // The next `getUserSessionStore().load(userId)` call then reads the
+  // freshly migrated doc from disk instead of returning the stale
+  // pre-migration cached copy.
   const store = new UserSessionStore(opts.dataDir);
   const touchedUsers = new Set<string>();
 
@@ -304,6 +319,21 @@ export function migrateUserInstructions(opts: MigrationOptions): MigrationResult
   }
 
   result.userIdsTouched = touchedUsers.size;
+
+  // Round-2 P1-D: invalidate the singleton's per-userId cache for every
+  // user we touched so the next read via `getUserSessionStore()` (which
+  // is what session-registry / dashboard / handlers use) reflects the
+  // migrated state. Without this, the singleton silently returns its
+  // stale pre-migration doc until process restart.
+  if (!opts.dryRun && touchedUsers.size > 0) {
+    const singleton = getUserSessionStore();
+    if (singleton !== store) {
+      for (const userId of touchedUsers) {
+        singleton.invalidateCache(userId);
+      }
+    }
+  }
+
   logger.info('user-instructions migration complete', {
     dataDir: opts.dataDir,
     dryRun: opts.dryRun,
