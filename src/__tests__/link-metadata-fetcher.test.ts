@@ -68,6 +68,47 @@ describe('fetchBatchLinkMetadata', () => {
     expect(result[1].title).toBe('Fix bug');
   });
 
+  it('preserves full title past the legacy 40-char cap (#762)', async () => {
+    // Pre-#762 the fetcher truncated to 40 chars. #762 stores the real title
+    // (subject to a defensive 500-char ceiling — see MAX_CACHED_TITLE_LENGTH)
+    // so the dashboard ref-pill hover tooltip and the LLM summarizer see real
+    // input.
+    const longTitle = `A really long PR title that definitely exceeds the old 40-character cap ${'–'.repeat(50)}`;
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ title: longTitle, state: 'open', draft: false }),
+    });
+    vi.stubGlobal('fetch', mockFetch);
+
+    const link: SessionLink = {
+      url: 'https://github.com/org/repo/pull/999',
+      type: 'pr',
+      provider: 'github',
+    };
+
+    const result = await fetchLinkMetadata(link);
+    expect(result.title).toBe(longTitle);
+    expect(result.title?.length).toBeGreaterThan(40);
+  });
+
+  it('caps stored title at MAX_CACHED_TITLE_LENGTH to prevent unbounded memory (#762)', async () => {
+    // GitHub/Jira real titles cap around 256, so 500 chars is "any real title
+    // wins"; only pathological payloads get clipped.
+    const pathological = 'A'.repeat(2000);
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ title: pathological, state: 'open', draft: false }),
+    });
+    vi.stubGlobal('fetch', mockFetch);
+
+    const result = await fetchLinkMetadata({
+      url: 'https://github.com/org/repo/pull/2000',
+      type: 'pr',
+      provider: 'github',
+    });
+    expect(result.title?.length).toBe(500);
+  });
+
   it('one link failure does not block others', async () => {
     let callCount = 0;
     const mockFetch = vi.fn().mockImplementation(async (url: string) => {
