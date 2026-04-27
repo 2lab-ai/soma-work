@@ -85,7 +85,9 @@ describe('SkillForceHandler', () => {
       expect(handler.canHandle('$local something')).toBe(false);
     });
 
-    // Bare $skill shorthand tests
+    // Bare $skill shorthand tests — fallback chain
+    // Resolution priority: user → local → stv → superpowers → other plugins (PLUGINS_DIR scan)
+
     it('matches bare "$z" when local skill exists on disk', () => {
       vi.mocked(fs.existsSync).mockImplementation((p) => String(p).includes('local/skills/z/SKILL.md'));
       expect(handler.canHandle('$z')).toBe(true);
@@ -96,18 +98,93 @@ describe('SkillForceHandler', () => {
       expect(handler.canHandle('$z 해줘')).toBe(true);
     });
 
-    it('does NOT match bare "$model" when no local skill exists', () => {
+    it('matches bare "$z" when only stv plugin owns it (fallback chain)', () => {
+      vi.mocked(fs.existsSync).mockImplementation((p) => String(p) === '/mock/plugins/stv/skills/z/SKILL.md');
+      expect(handler.canHandle('$z')).toBe(true);
+    });
+
+    it('matches bare "$z" when only superpowers plugin owns it (fallback chain)', () => {
+      vi.mocked(fs.existsSync).mockImplementation((p) => String(p) === '/mock/plugins/superpowers/skills/z/SKILL.md');
+      expect(handler.canHandle('$z')).toBe(true);
+    });
+
+    it('matches bare "$z" via PLUGINS_DIR scan when found in unlisted plugin', () => {
+      vi.mocked(fs.existsSync).mockImplementation((p) => {
+        const s = String(p);
+        return s === '/mock/plugins' || s === '/mock/plugins/custom/skills/z/SKILL.md';
+      });
+      vi.mocked(fs.readdirSync).mockReturnValue([{ name: 'custom', isDirectory: () => true } as any] as any);
+      expect(handler.canHandle('$z')).toBe(true);
+    });
+
+    it('matches bare "$z" via user namespace when userId provided', () => {
+      vi.mocked(fs.existsSync).mockImplementation((p) => String(p) === '/mock/data/U1/skills/z/SKILL.md');
+      expect(handler.canHandle('$z', 'U1')).toBe(true);
+    });
+
+    it('does NOT match bare "$z" via user namespace when userId absent', () => {
+      vi.mocked(fs.existsSync).mockImplementation((p) => String(p) === '/mock/data/U1/skills/z/SKILL.md');
+      // No userId → user slot is skipped per spec; nothing else owns "z" → false.
+      expect(handler.canHandle('$z')).toBe(false);
+    });
+
+    it('does NOT match bare "$model" when no namespace owns it', () => {
       vi.mocked(fs.existsSync).mockReturnValue(false);
       expect(handler.canHandle('$model opus')).toBe(false);
     });
 
-    it('does NOT match bare "$nonexistent" when no local skill exists', () => {
+    it('does NOT match bare "$nonexistent" when no namespace owns it', () => {
       vi.mocked(fs.existsSync).mockReturnValue(false);
       expect(handler.canHandle('$nonexistent')).toBe(false);
     });
 
+    it('matches bare "$z" when ambiguous across multiple plugins (so execute can surface error)', () => {
+      vi.mocked(fs.existsSync).mockImplementation((p) => {
+        const s = String(p);
+        return (
+          s === '/mock/plugins' ||
+          s === '/mock/plugins/foo/skills/z/SKILL.md' ||
+          s === '/mock/plugins/bar/skills/z/SKILL.md'
+        );
+      });
+      vi.mocked(fs.readdirSync).mockReturnValue([
+        { name: 'foo', isDirectory: () => true } as any,
+        { name: 'bar', isDirectory: () => true } as any,
+      ] as any);
+      expect(handler.canHandle('$z')).toBe(true);
+    });
+
     it('matches "$user:my-skill" (qualified user namespace)', () => {
       expect(handler.canHandle('$user:my-skill')).toBe(true);
+    });
+
+    // Known-directive blacklist — bare $word that names a sibling command
+    // handler (`$model`, `$effort`, etc.) must NOT trigger fs probing.
+    it('does NOT probe filesystem for bare directive names like "$model"', () => {
+      const existsSpy = vi.mocked(fs.existsSync);
+      existsSpy.mockReturnValue(true); // would match anything if probed
+      expect(handler.canHandle('$model opus')).toBe(false);
+      expect(existsSpy).not.toHaveBeenCalled();
+    });
+
+    it('does NOT probe filesystem for bare "$verbosity"', () => {
+      const existsSpy = vi.mocked(fs.existsSync);
+      existsSpy.mockReturnValue(true);
+      expect(handler.canHandle('$verbosity compact')).toBe(false);
+      expect(existsSpy).not.toHaveBeenCalled();
+    });
+
+    it('does NOT probe filesystem for bare "$effort"', () => {
+      const existsSpy = vi.mocked(fs.existsSync);
+      existsSpy.mockReturnValue(true);
+      expect(handler.canHandle('$effort high')).toBe(false);
+      expect(existsSpy).not.toHaveBeenCalled();
+    });
+
+    it('still allows qualified "$user:effort" even though "effort" is blacklisted', () => {
+      // Blacklist only applies to bare resolution; qualified explicitly names
+      // the namespace, so a user with a literal `effort` skill stays reachable.
+      expect(handler.canHandle('$user:effort')).toBe(true);
     });
   });
 
@@ -355,21 +432,134 @@ describe('SkillForceHandler', () => {
       expect(prompt).toContain('<stv:new-task>');
     });
 
-    // Bare $skill execute tests
-    it('resolves bare "$z" as local:z', async () => {
+    // Bare $skill execute tests — fallback chain
+    // Resolution priority: user → local → stv → superpowers → other plugins (PLUGINS_DIR scan)
+
+    it('resolves bare "$z" to user:z when user namespace owns it (highest priority)', async () => {
+      // ctx.user='U1' is provided by makeCtx; everything-true mock means user slot wins.
       vi.mocked(fs.existsSync).mockReturnValue(true);
-      vi.mocked(fs.readFileSync).mockReturnValue('# Z Bare');
+      vi.mocked(fs.readFileSync).mockReturnValue('# Z User');
+
+      const result = await handler.execute(makeCtx('$z'));
+
+      expect(result.handled).toBe(true);
+      const prompt = result.continueWithPrompt as string;
+      expect(prompt).toContain('<user:z>');
+      expect(prompt).toContain('# Z User');
+    });
+
+    it('resolves bare "$z" to local:z when user namespace empty', async () => {
+      vi.mocked(fs.existsSync).mockImplementation((p) => String(p).includes('local/skills/z/SKILL.md'));
+      vi.mocked(fs.readFileSync).mockReturnValue('# Z Local');
 
       const result = await handler.execute(makeCtx('$z'));
 
       expect(result.handled).toBe(true);
       const prompt = result.continueWithPrompt as string;
       expect(prompt).toContain('<local:z>');
-      expect(prompt).toContain('# Z Bare');
+      expect(prompt).toContain('# Z Local');
     });
 
-    it('deduplicates bare "$z" and qualified "$local:z"', async () => {
-      vi.mocked(fs.existsSync).mockReturnValue(true);
+    it('resolves bare "$z" to stv:z when only stv plugin owns it', async () => {
+      vi.mocked(fs.existsSync).mockImplementation((p) => String(p) === '/mock/plugins/stv/skills/z/SKILL.md');
+      vi.mocked(fs.readFileSync).mockReturnValue('# Z STV');
+
+      const result = await handler.execute(makeCtx('$z'));
+
+      expect(result.handled).toBe(true);
+      const prompt = result.continueWithPrompt as string;
+      expect(prompt).toContain('<stv:z>');
+    });
+
+    it('resolves bare "$z" to superpowers:z when only superpowers owns it', async () => {
+      vi.mocked(fs.existsSync).mockImplementation((p) => String(p) === '/mock/plugins/superpowers/skills/z/SKILL.md');
+      vi.mocked(fs.readFileSync).mockReturnValue('# Z SP');
+
+      const result = await handler.execute(makeCtx('$z'));
+
+      expect(result.handled).toBe(true);
+      const prompt = result.continueWithPrompt as string;
+      expect(prompt).toContain('<superpowers:z>');
+    });
+
+    it('resolves bare "$z" via PLUGINS_DIR scan when found in unlisted plugin', async () => {
+      vi.mocked(fs.existsSync).mockImplementation((p) => {
+        const s = String(p);
+        return s === '/mock/plugins' || s === '/mock/plugins/custom/skills/z/SKILL.md';
+      });
+      vi.mocked(fs.readdirSync).mockReturnValue([{ name: 'custom', isDirectory: () => true } as any] as any);
+      vi.mocked(fs.readFileSync).mockReturnValue('# Z Custom');
+
+      const result = await handler.execute(makeCtx('$z'));
+
+      expect(result.handled).toBe(true);
+      const prompt = result.continueWithPrompt as string;
+      expect(prompt).toContain('<custom:z>');
+    });
+
+    it('reports ambiguous error and skips invocation when bare "$z" matches multiple plugins', async () => {
+      vi.mocked(fs.existsSync).mockImplementation((p) => {
+        const s = String(p);
+        return (
+          s === '/mock/plugins' ||
+          s === '/mock/plugins/foo/skills/z/SKILL.md' ||
+          s === '/mock/plugins/bar/skills/z/SKILL.md'
+        );
+      });
+      vi.mocked(fs.readdirSync).mockReturnValue([
+        { name: 'foo', isDirectory: () => true } as any,
+        { name: 'bar', isDirectory: () => true } as any,
+      ] as any);
+
+      const result = await handler.execute(makeCtx('$z'));
+
+      expect(result.handled).toBe(true);
+      expect(result.continueWithPrompt).toBeUndefined();
+      expect(mockSay).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: expect.stringContaining('모호한'),
+        }),
+      );
+      expect(mockSay).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: expect.stringContaining('foo:z'),
+        }),
+      );
+    });
+
+    it('skips user namespace when userId absent and falls through to local', async () => {
+      vi.mocked(fs.existsSync).mockImplementation((p) => String(p).includes('local/skills/z/SKILL.md'));
+      vi.mocked(fs.readFileSync).mockReturnValue('# Z Local');
+
+      const result = await handler.execute({
+        user: undefined as any,
+        channel: 'C1',
+        threadTs: '171.100',
+        text: '$z',
+        say: mockSay,
+      });
+
+      expect(result.handled).toBe(true);
+      const prompt = result.continueWithPrompt as string;
+      expect(prompt).toContain('<local:z>');
+      // Crucially, no user-path probing happened
+      const userPathProbed = vi.mocked(fs.existsSync).mock.calls.some((c) => String(c[0]).startsWith('/mock/data/'));
+      expect(userPathProbed).toBe(false);
+    });
+
+    it('returns handled:false when bare "$z" cannot be resolved anywhere', async () => {
+      vi.mocked(fs.existsSync).mockReturnValue(false);
+
+      const result = await handler.execute(makeCtx('$z'));
+
+      // handled:false lets the message fall through to subsequent handlers/Claude.
+      expect(result.handled).toBe(false);
+      expect(result.continueWithPrompt).toBeUndefined();
+    });
+
+    it('deduplicates bare "$z" and qualified "$local:z" when both resolve to local', async () => {
+      // Only local owns "z" → bare $z resolves to local:z, same key as $local:z → dedup.
+      vi.mocked(fs.existsSync).mockImplementation((p) => String(p).includes('local/skills/z/SKILL.md'));
       vi.mocked(fs.readFileSync).mockReturnValue('# Z');
 
       const result = await handler.execute(makeCtx('$z and $local:z'));

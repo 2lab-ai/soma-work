@@ -85,9 +85,14 @@ export type PostEphemeralFn = (message: { text: string; blocks?: any[] }) => Pro
  */
 export interface CommandHandler {
   /**
-   * Check if this handler can process the given text
+   * Check if this handler can process the given text.
+   *
+   * `userId` is optional and only consulted by handlers that need it
+   * (e.g. {@link import('./skill-force-handler').SkillForceHandler} probes
+   * `DATA_DIR/{userId}/skills/...` for user-scoped bare `$skill` resolution).
+   * Existing handlers ignoring the parameter remain backward compatible.
    */
-  canHandle(text: string): boolean;
+  canHandle(text: string, userId?: string): boolean;
 
   /**
    * Execute the command

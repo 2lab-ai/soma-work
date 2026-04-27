@@ -12,7 +12,7 @@ vi.mock('fs', async () => {
 });
 
 // Mock stderr-logger
-vi.mock('./stderr-logger.js', () => ({
+vi.mock('somalib/stderr-logger.js', () => ({
   StderrLogger: class {
     debug() {}
     info() {}

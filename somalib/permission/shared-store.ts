@@ -1,7 +1,7 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { StderrLogger } from './stderr-logger.js';
+import { StderrLogger } from '../stderr-logger';
 
 const logger = new StderrLogger('SharedStore');
 
@@ -21,8 +21,12 @@ export interface PendingApproval {
   expires_at: number;
   /**
    * Overridable dangerous-rule ids matched by this approval request.
-   * Mirrors the field in `mcp-servers/_shared/shared-store.ts`. See that file
-   * for the authoritative documentation.
+   * Populated when the approval originated from a bypass-mode Bash escalation
+   * (permission-mcp-server re-runs `overridableMatchedRuleIds()` on entry).
+   *
+   * Consumed by the Slack action handler to know which rule(s) to silence
+   * for the session when the user clicks "Approve & disable rule for this
+   * session". Absent for non-Bash tools and non-dangerous commands.
    */
   rule_ids?: string[];
 }
@@ -119,7 +123,10 @@ export class SharedStore {
   /**
    * Wait for a permission response with polling
    */
-  async waitForPermissionResponse(approvalId: string, timeoutMs: number = 5 * 60 * 1000): Promise<PermissionResponse> {
+  async waitForPermissionResponse(
+    approvalId: string,
+    timeoutMs: number = 5 * 60 * 1000
+  ): Promise<PermissionResponse> {
     const filePath = path.join(this.responseDir, `${approvalId}.json`);
     const startTime = Date.now();
     const pollInterval = 500; // 500ms polling interval

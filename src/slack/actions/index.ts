@@ -23,6 +23,8 @@ import { SessionActionHandler } from './session-action-handler';
 import type { ActionHandlerContext, PendingChoiceFormData } from './types';
 import { UsageCardActionHandler } from './usage-card-action-handler';
 import { UserAcceptanceActionHandler } from './user-acceptance-action-handler';
+import { UserSkillEditViewSubmissionHandler, type ViewAck } from './user-skill-edit-view-submission-handler';
+import { USER_SKILL_EDIT_MODAL_CALLBACK_ID, UserSkillMenuActionHandler } from './user-skill-menu-action-handler';
 import { ZSettingsActionHandler, type ZTopicRegistry } from './z-settings-actions';
 
 export { PendingFormStore } from './pending-form-store';
@@ -48,6 +50,8 @@ export class ActionHandlers {
   private actionPanelHandler: ActionPanelActionHandler;
   private channelRouteHandler: ChannelRouteActionHandler;
   private userAcceptanceHandler: UserAcceptanceActionHandler;
+  private userSkillMenuHandler: UserSkillMenuActionHandler;
+  private userSkillEditSubmitHandler: UserSkillEditViewSubmissionHandler;
   private usageCardHandler: UsageCardActionHandler;
   private mcpToolPermissionHandler: McpToolPermissionActionHandler;
   private pluginUpdateHandler: PluginUpdateActionHandler;
@@ -136,6 +140,20 @@ export class ActionHandlers {
     });
 
     this.userAcceptanceHandler = new UserAcceptanceActionHandler({
+      slackApi: ctx.slackApi,
+    });
+
+    // Personal-skill menu (overflow / button) click handler — paired with
+    // UserSkillsListHandler (`$user` bare command). Each option/button value
+    // carries `{kind, skillName, requesterId}`. Mismatched clickers are
+    // rejected ephemerally; `kind=user_skill_invoke` re-injects `$user:{name}`,
+    // `kind=user_skill_edit` opens the inline-edit modal (issue #750).
+    this.userSkillMenuHandler = new UserSkillMenuActionHandler({
+      slackApi: ctx.slackApi,
+      claudeHandler: ctx.claudeHandler,
+      messageHandler: ctx.messageHandler,
+    });
+    this.userSkillEditSubmitHandler = new UserSkillEditViewSubmissionHandler({
       slackApi: ctx.slackApi,
     });
 
@@ -267,6 +285,35 @@ export class ActionHandlers {
     app.action(/^user_choice_/, async ({ ack, body }) => {
       await ack();
       await this.choiceHandler.handleUserChoice(body);
+    });
+
+    // Personal-skill menu accessory (paired with `$user` bare command).
+    //   - `/^user_skill_menu_/`     → new overflow accessory (single-file
+    //     skills, options: 발동 + 편집).
+    //   - `/^user_skill_invoke_/`   → BC button accessory (multi-file skills
+    //     and any in-flight messages rendered before issue #750 shipped).
+    //
+    // Both regexes route to the SAME handler (`handleAction`) which dispatches
+    // on the `kind` field inside the parsed action value, NOT on the
+    // action_id prefix. The BC route can be removed once all in-flight
+    // messages have aged out.
+    app.action(/^user_skill_menu_/, async ({ ack, body, respond, client }) => {
+      await ack();
+      await this.userSkillMenuHandler.handleAction(body, respond, client);
+    });
+
+    app.action(/^user_skill_invoke_/, async ({ ack, body, respond, client }) => {
+      await ack();
+      await this.userSkillMenuHandler.handleAction(body, respond, client);
+    });
+
+    // Inline-edit modal submission (issue #750). The view-submission handler
+    // calls `ack()` itself with `response_action: 'errors' | 'clear'` so the
+    // wiring layer must NOT pre-ack — Slack rejects double-acks.
+    app.view(USER_SKILL_EDIT_MODAL_CALLBACK_ID, async ({ ack, body, client }) => {
+      // Bolt's union ack type can't be narrowed structurally here; `ViewAck`
+      // captures the `view_submission` arm so the cast names a real type.
+      await this.userSkillEditSubmitHandler.handleSubmit(ack as ViewAck, body, client);
     });
 
     app.action(/^multi_choice_/, async ({ ack, body }) => {

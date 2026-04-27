@@ -629,6 +629,81 @@ export class TokenManager {
     await this.refreshCache();
   }
 
+  /**
+   * #737 P0 — Transactional applyToken with re-checks inside the CAS.
+   *
+   * The naive `applyToken` flips `activeKeyId` unconditionally. Callers
+   * that selected a target on a stale snapshot (auto-rotation evaluator)
+   * MUST re-validate the world inside the same write that flips the
+   * pointer; otherwise:
+   *
+   *   • Active slot may have acquired an in-flight lease between the
+   *     evaluator's snapshot read and applyToken — we'd yank the slot
+   *     mid-stream, defeating the whole "wait for leases to drain"
+   *     guarantee.
+   *   • Target slot may have been tombstoned / put into cooldown by a
+   *     concurrent rate-limit handler — we'd activate a known-bad slot.
+   *
+   * This method runs inside `store.mutate`, so the predicate sees the
+   * authoritative snapshot at write time. If the predicate returns false
+   * (or active changed), the rotation is aborted and a typed reason is
+   * returned to the caller for logging.
+   *
+   * Returns:
+   *   • `{ rotated: true }` — activeKeyId was updated.
+   *   • `{ rotated: false, reason: 'active-changed' }` — `expectedFromKeyId`
+   *     no longer matches snapshot's activeKeyId. Caller should re-evaluate.
+   *   • `{ rotated: false, reason: 'unknown-key' }` — target slot vanished.
+   *   • `{ rotated: false, reason: 'api-key-not-selectable' }` — target is
+   *     api_key (same fence as `applyToken`).
+   *   • `{ rotated: false, reason: 'precondition-failed' }` — caller's
+   *     predicate vetoed the rotation (e.g. lease appeared, slot in cooldown).
+   */
+  async applyTokenIfActiveMatches(
+    targetKeyId: string,
+    expectedFromKeyId: string | undefined,
+    precondition: (
+      snap: CctStoreSnapshot,
+      target: AuthKey,
+      targetState: SlotState | undefined,
+      activeState: SlotState | undefined,
+    ) => boolean,
+  ): Promise<
+    | { rotated: true }
+    | { rotated: false; reason: 'active-changed' | 'unknown-key' | 'api-key-not-selectable' | 'precondition-failed' }
+  > {
+    const result = await this.store.mutate<
+      | { rotated: true }
+      | { rotated: false; reason: 'active-changed' | 'unknown-key' | 'api-key-not-selectable' | 'precondition-failed' }
+    >((snap) => {
+      if (snap.registry.activeKeyId !== expectedFromKeyId) {
+        return { rotated: false, reason: 'active-changed' };
+      }
+      const slot = snap.registry.slots.find((s) => s.keyId === targetKeyId);
+      if (!slot) return { rotated: false, reason: 'unknown-key' };
+      if (slot.kind === 'api_key') return { rotated: false, reason: 'api-key-not-selectable' };
+      const targetState = snap.state[targetKeyId];
+      const activeState = expectedFromKeyId ? snap.state[expectedFromKeyId] : undefined;
+      if (!precondition(snap, slot, targetState, activeState)) {
+        return { rotated: false, reason: 'precondition-failed' };
+      }
+      snap.registry.activeKeyId = targetKeyId;
+      return { rotated: true };
+    });
+    if (result.rotated) {
+      const snap = await this.store.load();
+      const slot = this.getActiveSlotFromSnap(snap);
+      if (slot) {
+        logger.info(
+          `applyTokenIfActiveMatches: active=${slot.name} (${maskToken(resolveActiveTokenValue(slot))})`,
+          redactAnthropicSecrets({ keyId: targetKeyId, name: slot.name }) as Record<string, unknown>,
+        );
+      }
+      await this.refreshCache();
+    }
+    return result;
+  }
+
   async rotateToNext(): Promise<{ keyId: string; name: string } | null> {
     const result = await this.store.mutate<{ keyId: string; name: string } | null>((snap) => {
       if (snap.registry.slots.length <= 1) return null;

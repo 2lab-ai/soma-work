@@ -11,12 +11,12 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import * as path from 'path';
-import { StderrLogger } from '../_shared/stderr-logger.js';
+import { StderrLogger } from 'somalib/stderr-logger.js';
 import {
   CronStorage,
   isValidCronExpression,
   isValidCronName,
-} from '../_shared/cron-storage.js';
+} from 'somalib/cron/cron-storage.js';
 
 const logger = new StderrLogger('CronMcpServer');
 
@@ -85,7 +85,7 @@ function handleCreate(args: Record<string, any>, context: CronContext, storage: 
 
   // Build model config
   const effectiveModelType = model_type || 'default';
-  let modelConfig: import('../_shared/cron-storage.js').CronModelConfig | undefined;
+  let modelConfig: import('somalib/cron/cron-storage.js').CronModelConfig | undefined;
   if (effectiveModelType !== 'default') {
     if (effectiveModelType === 'fast') {
       modelConfig = { type: 'fast' };
@@ -202,7 +202,7 @@ class CronMcpServer {
     const dataDir = process.env.SOMA_DATA_DIR;
     const cronFilePath = dataDir
       ? path.join(dataDir, 'cron-jobs.json')
-      : undefined;
+      : path.join(process.cwd(), 'data', 'cron-jobs.json');
     this.storage = new CronStorage(cronFilePath);
     this.server = new Server(
       { name: 'cron', version: '1.0.0' },

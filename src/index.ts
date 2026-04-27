@@ -18,6 +18,9 @@ registerSkillStore({
 });
 
 import { App } from '@slack/bolt';
+import type { WebClient } from '@slack/web-api';
+import * as path from 'path';
+import { CronStorage } from 'somalib/cron/cron-storage';
 import { initA2tService, shutdownA2tService } from './a2t/a2t-service';
 import { scanChannels } from './channel-registry';
 import { ClaudeHandler } from './claude-handler';
@@ -45,7 +48,6 @@ import {
   stopWebServer,
 } from './conversation';
 import { CronScheduler, type SyntheticMessageEvent } from './cron-scheduler';
-import { CronStorage } from './cron-storage';
 import { initializeDispatchService } from './dispatch-service';
 import { CONFIG_FILE, DATA_DIR, MCP_CONFIG_FILE, PLUGINS_DIR } from './env-paths';
 import { discoverInstallations, getGitHubAppAuth, isGitHubAppConfigured } from './github-auth.js';
@@ -53,6 +55,8 @@ import { Logger } from './logger';
 import { McpManager } from './mcp-manager';
 import { startReportScheduler, stopReportScheduler } from './metrics';
 import {
+  evaluateAndMaybeRotate,
+  notifyAutoRotation,
   type OAuthRefreshScheduler,
   startOAuthRefreshScheduler,
   startUsageRefreshScheduler,
@@ -117,18 +121,10 @@ async function start() {
     });
     timing('Usage refresh scheduler wired');
 
-    // #653 M2 — Start CCT OAuth-token refresh scheduler. Hourly fan-out
-    // force-refreshes every attached slot's access_token via
-    // `TokenManager.refreshAllAttachedOAuthTokens`. Surfaces stale
-    // refreshTokens as `refresh_failed` within 1h (rather than waiting
-    // for a dispatch to touch the slot) and keeps the card's "OAuth
-    // refreshes in X" hint honest. Null when OAUTH_REFRESH_ENABLED=0.
-    const oauthRefreshScheduler: OAuthRefreshScheduler | null = startOAuthRefreshScheduler(tokenManager, {
-      intervalMs: config.oauthRefresh.intervalMs,
-      timeoutMs: config.oauthRefresh.fanOutTimeoutMs,
-      enabled: config.oauthRefresh.enabled,
-    });
-    timing('OAuth refresh scheduler wired');
+    // OAuth refresh + auto-rotation scheduler is wired AFTER `new App`
+    // below (#737 P0 hygiene fix) so we can pass `app.client` directly
+    // to the rotation notifier — no late-binding closure required.
+    let oauthRefreshScheduler: OAuthRefreshScheduler | null = null;
 
     logger.info('Starting Claude Code Slack bot', {
       debug: config.debug,
@@ -143,6 +139,68 @@ async function start() {
       socketMode: true,
       appToken: config.slack.appToken,
     });
+
+    // #653 M2 — Start CCT OAuth-token refresh scheduler. Hourly fan-out
+    // force-refreshes every attached slot's access_token via
+    // `TokenManager.refreshAllAttachedOAuthTokens`. Surfaces stale
+    // refreshTokens as `refresh_failed` within 1h and keeps the card's
+    // "OAuth refreshes in X" hint honest. Null when OAUTH_REFRESH_ENABLED=0.
+    //
+    // #737 — onAfterTick wires auto CCT rotation. Wired after `new App`
+    // so we pass `app.client` directly (no late-binding closure). The
+    // CAS commit primitive `applyTokenIfActiveMatches` re-validates the
+    // active slot's lease count + target slot's eligibility inside the
+    // same store.mutate that flips activeKeyId — preventing a TOCTOU
+    // window between the evaluator's snapshot read and the commit.
+    const slackClient: WebClient = app.client;
+    oauthRefreshScheduler = startOAuthRefreshScheduler(tokenManager, {
+      intervalMs: config.oauthRefresh.intervalMs,
+      timeoutMs: config.oauthRefresh.fanOutTimeoutMs,
+      enabled: config.oauthRefresh.enabled,
+      onAfterTick: async () => {
+        const outcome = await evaluateAndMaybeRotate(
+          {
+            loadSnapshot: () => tokenManager.getSnapshot(),
+            applyTokenIfActiveMatches: (target, expected, precond) =>
+              tokenManager.applyTokenIfActiveMatches(target, expected, precond),
+          },
+          {
+            enabled: config.autoRotate.enabled,
+            dryRun: config.autoRotate.dryRun,
+            thresholds: {
+              fiveHourMax: config.autoRotate.fiveHourMax,
+              sevenDayMax: config.autoRotate.sevenDayMax,
+            },
+            // Reject candidates whose usage snapshot is older than 2× the
+            // usage refresh interval. A stuck poller can't pin the rotation
+            // decision on a stale resetsAt that has already elapsed upstream.
+            usageMaxAgeMs: 2 * config.usage.refreshIntervalMs,
+          },
+        );
+        if (outcome.kind === 'rotated') {
+          logger.info('Auto CCT rotated', {
+            from: outcome.from?.name,
+            to: outcome.to.name,
+            sevenDayResetsAt: outcome.to.sevenDayResetsAt,
+          });
+          await notifyAutoRotation(slackClient, { from: outcome.from, to: outcome.to });
+        } else if (outcome.kind === 'noop') {
+          logger.debug('Auto CCT rotation no-op', {
+            reason: outcome.reason,
+            active: outcome.active?.name,
+          });
+        } else if (outcome.kind === 'skipped') {
+          logger.info('Auto CCT rotation skipped', { reason: outcome.reason });
+        } else if (outcome.kind === 'dry-run') {
+          logger.info('Auto CCT rotation dry-run', {
+            would: outcome.would,
+            from: outcome.from?.name,
+            to: outcome.to?.name,
+          });
+        }
+      },
+    });
+    timing('OAuth refresh scheduler wired');
 
     // Log ALL incoming events (before any handler)
     app.use(async ({ payload, body, next }) => {
@@ -625,7 +683,7 @@ async function start() {
     // Trace: docs/cron-scheduler/spec.md §5.4 — Scheduler lifecycle
     let cronScheduler: CronScheduler | null = null;
     try {
-      const cronStorage = new CronStorage();
+      const cronStorage = new CronStorage(path.join(DATA_DIR, 'cron-jobs.json'));
 
       // Build a real say function that posts to Slack via chat.postMessage.
       // noopSay caused drain output to be silently discarded — the model ran
