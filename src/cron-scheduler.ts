@@ -12,7 +12,7 @@ import {
   type CronModelConfig,
   type CronStorage,
   matchesCronExpression,
-} from './cron-storage';
+} from 'somalib/cron/cron-storage';
 import { Logger } from './logger';
 import type { SessionRegistry } from './session-registry';
 import type { ConversationSession } from './types';

@@ -29,7 +29,7 @@ vi.mock('@modelcontextprotocol/sdk/types.js', () => ({
   ListToolsRequestSchema: 'ListToolsRequestSchema',
 }));
 
-vi.mock('./stderr-logger.js', () => ({
+vi.mock('somalib/stderr-logger.js', () => ({
   StderrLogger: class {
     debug() {}
     info() {}
