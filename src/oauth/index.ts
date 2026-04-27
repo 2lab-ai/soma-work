@@ -7,6 +7,20 @@
 
 export type { UsageSnapshot } from '../cct-store/types';
 export {
+  type ActiveSummary,
+  buildRotationDebug,
+  type EvaluateAndRotateOpts,
+  evaluateAndMaybeRotate,
+  type RejectReason,
+  type RotationCandidate,
+  type RotationDebug,
+  type RotationDeps,
+  type RotationOutcome,
+  type RotationThresholds,
+  selectBestRotationCandidate,
+} from './auto-rotate';
+export { notifyAutoRotation, type RotationNotifyPayload } from './auto-rotate-notifier';
+export {
   hintsIndicateExhausted,
   parseRateLimitHeaders,
   type RateLimitHint,
