@@ -40,6 +40,7 @@ import { SkillsHandler } from './skills-handler';
 import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
 import { UITestHandler } from './ui-test-handler';
 import { UsageHandler } from './usage-handler';
+import { UserSkillsListHandler } from './user-skills-list-handler';
 import { VerbosityHandler } from './verbosity-handler';
 import { WebhookHandler } from './webhook-handler';
 
@@ -74,6 +75,11 @@ export class CommandRouter {
       new DashboardHandler(),
       new MarketplaceHandler(deps),
       new PluginsHandler(deps),
+      // $user (bare) → list personal skills as buttons. Registered BEFORE
+      // skillForceHandler so a hypothetical local skill named `user` cannot
+      // shadow the menu shortcut. Qualified `$user:foo` falls through to
+      // skillForceHandler unchanged (different canHandle pattern).
+      new UserSkillsListHandler(),
       this.skillForceHandler, // $local:skillname — must come before SessionCommandHandler
       new SessionCommandHandler(deps), // $ prefix — must come before Model/Verbosity
       new BypassHandler(),
