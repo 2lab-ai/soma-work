@@ -26,7 +26,7 @@ import {
   migrateUserInstructions,
   runStartupUserInstructionsMigration,
 } from '../user-instructions-migration';
-import { UserSessionStore } from '../user-session-store';
+import { getUserSessionStore, initUserSessionStore, UserSessionStore } from '../user-session-store';
 
 let dataDir: string;
 
@@ -431,5 +431,73 @@ describe('runStartupUserInstructionsMigration — admin/boot parity (P1-2)', () 
     expect(bootParsed[0].currentInstructionId).toBe('i1');
     expect(adminResult.userIdsTouched).toBe(1);
     expect(bootResult.userIdsTouched).toBe(1);
+  });
+});
+
+// ── #727 P1-D — single store instance, no cache divergence ──────────────────
+//
+// Round-2 oracle review flagged that `migrateUserInstructions` constructs a
+// fresh `new UserSessionStore(opts.dataDir)` while `session-registry.ts` reads
+// via the `getUserSessionStore()` singleton. The two stores have INDEPENDENT
+// per-userId caches, so the singleton can return stale (or empty) docs after
+// a successful migration unless the migration uses the singleton itself
+// (option-a) or the caller explicitly invalidates (option-b).
+//
+// We assert option-a: after `runStartupUserInstructionsMigration` completes,
+// reading via `getUserSessionStore()` immediately reflects the migrated data
+// — without any explicit `invalidateCache()` call.
+describe('runStartupUserInstructionsMigration — singleton store coherence (P1-D)', () => {
+  it('singleton getUserSessionStore() reflects migrated data even when its cache was warmed pre-migration', async () => {
+    // Pin the singleton at the per-test data dir.
+    initUserSessionStore(dataDir);
+    const singleton = getUserSessionStore();
+
+    // Pre-seed an existing user-session.json so the singleton's `load()`
+    // populates its in-memory cache (the FILE-EXISTS branch caches; the
+    // FILE-MISSING branch does not). This models the steady-state path
+    // where the user already has a master doc before the migration runs
+    // again (e.g. ops re-run of `migrate-user-instructions --apply` or
+    // boot ordering where another component primed the cache first).
+    const userDir = path.join(dataDir, 'users', 'U1');
+    fs.mkdirSync(userDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(userDir, 'user-session.json'),
+      JSON.stringify({ schemaVersion: 1, instructions: [], lifecycleEvents: [] }, null, 2),
+    );
+    // Warm the singleton cache.
+    const beforeMig = singleton.load('U1');
+    expect(beforeMig.instructions.length).toBe(0);
+
+    // Now stage a legacy session and run the migration. With round-1
+    // wiring, migration constructs a fresh `new UserSessionStore(...)` —
+    // the disk gets the new row, but the singleton's cache still holds
+    // the warmed empty-instructions doc.
+    writeLegacy([
+      {
+        key: 'C1-T1',
+        ownerId: 'U1',
+        userId: 'U1',
+        channelId: 'C1',
+        threadTs: 'T1',
+        isActive: true,
+        lastActivity: new Date().toISOString(),
+        instructions: [{ id: 'i1', text: 'do x', addedAt: 1, status: 'active' }],
+      },
+    ]);
+
+    await runStartupUserInstructionsMigration({ dataDir });
+
+    // Disk MUST contain the migrated row.
+    const onDisk = JSON.parse(
+      fs.readFileSync(path.join(userDir, 'user-session.json'), 'utf-8'),
+    ) as { instructions: Array<{ id: string }> };
+    expect(onDisk.instructions.find((i) => i.id === 'i1')).toBeDefined();
+
+    // P1-D contract: the singleton must agree with disk after migration.
+    // Round-1 fails here because the migration used a separate
+    // UserSessionStore instance and only invalidated ITS cache.
+    const visible = singleton.load('U1');
+    expect(visible.instructions.find((i) => i.id === 'i1')).toBeDefined();
+    expect(visible.instructions.find((i) => i.id === 'i1')?.status).toBe('active');
   });
 });
