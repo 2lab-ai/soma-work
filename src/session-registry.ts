@@ -31,7 +31,7 @@ import type {
   SessionState,
   WorkflowType,
 } from './types';
-import { getUserSessionStore } from './user-session-store';
+import { getUserSessionStore, UserSessionStoreCorruptError } from './user-session-store';
 import { coerceToAvailableModel, type EffortLevel, userSettingsStore } from './user-settings-store';
 
 const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
@@ -1743,7 +1743,33 @@ export class SessionRegistry {
               }
             }
           } catch (err) {
-            this.logger.debug('assertSessionPointer (on-save) skipped', { sessionKey: key, error: err });
+            // Round-2 P1-A: do NOT silently log at debug. A
+            // UserSessionStoreCorruptError means the user master is
+            // unreadable / failed sealed validation — ops MUST see it,
+            // and we MUST null the in-memory pointer so we don't write
+            // a sessions.json that trusts an unvalidated pointer onto
+            // disk this save cycle. The corrupt user-session.json is
+            // left untouched (the store never overwrites a corrupt file
+            // — that decision belongs to ops / the quarantine path).
+            if (err instanceof UserSessionStoreCorruptError) {
+              this.logger.error('assertSessionPointer (on-save) — user-session.json corrupt; nulling in-memory pointer', {
+                sessionKey: key,
+                ownerId: session.ownerId,
+                file: err.file,
+                err: err.message,
+              });
+              pointerForDisk = null;
+              session.currentInstructionId = null;
+            } else {
+              // Any other failure (filesystem flake, etc) — best-effort,
+              // but ops still need to see it. Promoted from debug to
+              // error per round-2 P1-A.
+              this.logger.error('assertSessionPointer (on-save) failed', {
+                sessionKey: key,
+                ownerId: session.ownerId,
+                err: (err as Error)?.message ?? String(err),
+              });
+            }
           }
           sessionsArray.push({
             key,
@@ -2082,10 +2108,28 @@ export class SessionRegistry {
             }
           }
         } catch (err) {
-          this.logger.debug('assertSessionPointer (on-load) skipped', {
-            sessionKey: serialized.key,
-            error: err,
-          });
+          // Round-2 P1-B: do NOT silently log at debug. The corrupt
+          // user-session.json case must escalate to logger.error AND
+          // clear the in-memory pointer so the rest of the load loop
+          // does not trust a pointer we could not validate. Skipping
+          // the audit-row save is intentional — the store call is what
+          // failed, and we never want this catch to overwrite the
+          // corrupt master.
+          if (err instanceof UserSessionStoreCorruptError) {
+            this.logger.error('assertSessionPointer (on-load) — user-session.json corrupt; nulling in-memory pointer', {
+              sessionKey: serialized.key,
+              ownerId: session.ownerId,
+              file: err.file,
+              err: err.message,
+            });
+            session.currentInstructionId = null;
+          } else {
+            this.logger.error('assertSessionPointer (on-load) failed', {
+              sessionKey: serialized.key,
+              ownerId: session.ownerId,
+              err: (err as Error)?.message ?? String(err),
+            });
+          }
         }
         this.sessions.set(serialized.key, session);
         loaded++;
