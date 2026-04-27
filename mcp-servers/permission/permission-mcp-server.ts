@@ -5,7 +5,7 @@ import { BaseMcpServer } from '../_shared/base-mcp-server.js';
 import type { ToolDefinition, ToolResult } from '../_shared/base-mcp-server.js';
 import { overridableMatchedRuleIds, rulesByIds } from '../_shared/dangerous-command-filter.js';
 import { sharedStore, PendingApproval, PermissionResponse } from 'somalib/permission/shared-store.js';
-import { SlackPermissionMessenger } from '../_shared/slack-messenger.js';
+import { SlackPermissionMessenger } from 'somalib/permission/slack-messenger.js';
 
 interface PermissionRequest {
   tool_name: string;
