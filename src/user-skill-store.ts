@@ -10,6 +10,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { invalidSkillNameMessage, skillNotFoundMessage } from 'somalib/model-commands/skill-share-errors';
 import { DATA_DIR } from './env-paths';
 import { Logger } from './logger';
 import { isSafePathSegment } from './path-utils';
@@ -173,4 +174,36 @@ export function deleteUserSkill(userId: string, skillName: string): SkillOperati
 
   logger.info('User skill deleted', { userId, skillName });
   return { ok: true, message: `Skill "${skillName}" deleted.` };
+}
+
+interface SkillShareResult {
+  ok: boolean;
+  message: string;
+  content?: string;
+}
+
+/**
+ * Read raw SKILL.md for cross-user copy-paste install via MANAGE_SKILL share.
+ *
+ * The dispatcher (`somalib/model-commands/catalog.ts`) applies the
+ * character-count cap and crafts the success/over-limit message. This layer
+ * only answers: "is the name valid?" / "does it exist?" / "here is the
+ * content". Error messages come from the shared `skill-share-errors` module
+ * so the standalone MCP layer (`SkillFileStore.shareSkill`) can never drift.
+ */
+export function shareUserSkill(userId: string, skillName: string): SkillShareResult {
+  // Disambiguate invalid-name vs not-found before delegating: getUserSkill
+  // collapses both into `null`, but the dispatcher needs distinct messages
+  // sourced from the shared skill-share-errors module.
+  if (!isValidSkillName(skillName)) {
+    return { ok: false, message: invalidSkillNameMessage(skillName) };
+  }
+
+  const detail = getUserSkill(userId, skillName);
+  if (!detail) {
+    return { ok: false, message: skillNotFoundMessage(skillName) };
+  }
+
+  logger.info('User skill shared', { userId, skillName, length: detail.content.length });
+  return { ok: true, message: `Skill "${skillName}" read for share.`, content: detail.content };
 }

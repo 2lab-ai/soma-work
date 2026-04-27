@@ -66,7 +66,7 @@ export interface SaveMemoryParams {
 }
 
 export interface ManageSkillParams {
-  action: 'create' | 'update' | 'delete' | 'list';
+  action: 'create' | 'update' | 'delete' | 'list' | 'share';
   name?: string;
   content?: string;
 }
@@ -137,6 +137,14 @@ export interface ModelCommandPayloadMap {
     ok: boolean;
     message: string;
     skills?: Array<{ name: string; description: string }>;
+    /** Skill name echoed on share happy path (so recipient knows what to install). */
+    name?: string;
+    /**
+     * Full SKILL.md content. Present only on share happy path; omitted on
+     * over-limit / not-found / invalid-name. Recipient model renders as a
+     * fenced code block (see MANAGE_SKILL descriptor for the format contract).
+     */
+    content?: string;
   };
   RATE: {
     rating: number;

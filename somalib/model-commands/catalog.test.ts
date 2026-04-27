@@ -1,6 +1,17 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { SessionInstruction, SessionInstructionOperation } from './session-types';
-import { applyInstructionOperations, getDefaultSessionSnapshot, runModelCommand } from './catalog';
+import {
+  applyInstructionOperations,
+  getDefaultSessionSnapshot,
+  registerSkillStore,
+  runModelCommand,
+  type SkillStore,
+} from './catalog';
+import {
+  SHARE_CONTENT_CHAR_LIMIT,
+  invalidSkillNameMessage,
+  shareOverLimitMessage,
+} from './skill-share-errors';
 import type { ModelCommandContext, ModelCommandRunRequest } from './types';
 
 function makeContext(overrides?: Partial<ModelCommandContext>): ModelCommandContext {
@@ -238,5 +249,213 @@ describe('GET_SESSION includes title', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.payload).toHaveProperty('title', null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MANAGE_SKILL share dispatcher (added in this PR)
+// ---------------------------------------------------------------------------
+//
+// The dispatcher owns the wire-format invariants that storage shouldn't know
+// about — specifically the 2500-char cap. Storage outcomes (happy / invalid
+// name / not found) are exercised in `skill-file-store.test.ts`; here we
+// verify the dispatcher composes the right payload from each storage answer
+// and rejects oversized content even when storage said ok.
+
+describe('MANAGE_SKILL share dispatcher', () => {
+  // A do-nothing baseline so we can override exactly the method under test.
+  function makeStubStore(overrides: Partial<SkillStore>): SkillStore {
+    return {
+      listSkills: () => [],
+      createSkill: () => ({ ok: true, message: 'stub' }),
+      updateSkill: () => ({ ok: true, message: 'stub' }),
+      deleteSkill: () => ({ ok: true, message: 'stub' }),
+      shareSkill: () => ({ ok: false, message: 'stub default' }),
+      ...overrides,
+    };
+  }
+
+  function shareCtx(): ModelCommandContext {
+    return {
+      channel: 'C123',
+      threadTs: '111.222',
+      user: 'U123',
+      session: getDefaultSessionSnapshot(),
+    };
+  }
+
+  let originalStore: SkillStore | null = null;
+
+  beforeEach(() => {
+    // Snapshot whatever store was registered (likely none in this test process)
+    // so we don't leak between cases. We can't `getSkillStore` from outside,
+    // so we just re-register the stub each test and clear at end with a
+    // throw-on-call sentinel.
+    originalStore = null;
+  });
+
+  afterEach(() => {
+    // Replace with a throw-on-call sentinel so a leak from a later unrelated
+    // test would fail loudly rather than silently use stale data.
+    registerSkillStore({
+      listSkills: () => {
+        throw new Error('skill store leak');
+      },
+      createSkill: () => {
+        throw new Error('skill store leak');
+      },
+      updateSkill: () => {
+        throw new Error('skill store leak');
+      },
+      deleteSkill: () => {
+        throw new Error('skill store leak');
+      },
+      shareSkill: () => {
+        throw new Error('skill store leak');
+      },
+    });
+    void originalStore; // explicit ignore — kept for symmetry with beforeEach
+  });
+
+  it('happy path — under cap returns ok=true with name + content in payload', () => {
+    const skillContent = 'Body well under 2500 chars.';
+    registerSkillStore(
+      makeStubStore({
+        shareSkill: (_user, name) => ({
+          ok: true,
+          message: `Skill "${name}" read for share.`,
+          content: skillContent,
+        }),
+      }),
+    );
+
+    const result = runModelCommand(
+      {
+        commandId: 'MANAGE_SKILL',
+        params: { action: 'share', name: 'my-deploy' },
+      } as ModelCommandRunRequest,
+      shareCtx(),
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const payload = result.payload as Record<string, unknown>;
+    expect(payload.ok).toBe(true);
+    expect(payload.name).toBe('my-deploy');
+    expect(payload.content).toBe(skillContent);
+    // Success message should at minimum echo the skill name and tell the
+    // recipient to call create with the same name+content. We don't assert the
+    // exact wording (that's a UX-ish concern owned by `skill-share-errors.ts`)
+    // but we DO assert the action keyword shows up so the contract surface is
+    // visible from this test layer.
+    expect(typeof payload.message).toBe('string');
+    expect(payload.message as string).toContain('create');
+  });
+
+  it('over-cap — content exceeding SHARE_CONTENT_CHAR_LIMIT is refused with structured error', () => {
+    const oversized = 'x'.repeat(SHARE_CONTENT_CHAR_LIMIT + 1);
+    registerSkillStore(
+      makeStubStore({
+        shareSkill: () => ({
+          ok: true,
+          message: 'Skill ok at storage layer.',
+          content: oversized,
+        }),
+      }),
+    );
+
+    const result = runModelCommand(
+      {
+        commandId: 'MANAGE_SKILL',
+        params: { action: 'share', name: 'big-skill' },
+      } as ModelCommandRunRequest,
+      shareCtx(),
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const payload = result.payload as Record<string, unknown>;
+    expect(payload.ok).toBe(false);
+    // Content must NOT leak through when the cap rejects the payload —
+    // otherwise a Slack viewer could still receive a giant message.
+    expect(payload.content).toBeUndefined();
+    expect(payload.name).toBeUndefined();
+    expect(payload.message).toBe(shareOverLimitMessage('big-skill', oversized.length));
+  });
+
+  it('boundary — content exactly at SHARE_CONTENT_CHAR_LIMIT is accepted', () => {
+    const exact = 'y'.repeat(SHARE_CONTENT_CHAR_LIMIT);
+    registerSkillStore(
+      makeStubStore({
+        shareSkill: () => ({ ok: true, message: 'ok', content: exact }),
+      }),
+    );
+
+    const result = runModelCommand(
+      {
+        commandId: 'MANAGE_SKILL',
+        params: { action: 'share', name: 'edge-case' },
+      } as ModelCommandRunRequest,
+      shareCtx(),
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const payload = result.payload as Record<string, unknown>;
+    expect(payload.ok).toBe(true);
+    expect(payload.content).toBe(exact);
+  });
+
+  it('invalid-name passthrough — storage failure surfaces with no content + ok:false', () => {
+    const badName = 'Bad_Name';
+    registerSkillStore(
+      makeStubStore({
+        shareSkill: (_user, name) => ({
+          ok: false,
+          message: invalidSkillNameMessage(name),
+        }),
+      }),
+    );
+
+    const result = runModelCommand(
+      {
+        commandId: 'MANAGE_SKILL',
+        params: { action: 'share', name: badName },
+      } as ModelCommandRunRequest,
+      shareCtx(),
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const payload = result.payload as Record<string, unknown>;
+    expect(payload.ok).toBe(false);
+    expect(payload.content).toBeUndefined();
+    expect(payload.message).toBe(invalidSkillNameMessage(badName));
+  });
+
+  it('rejects share when name is missing at the dispatcher layer', () => {
+    // The validator catches this first, but the dispatcher has its own guard
+    // for callers that bypass validation (e.g. internal direct invocation).
+    registerSkillStore(
+      makeStubStore({
+        shareSkill: () => {
+          throw new Error('storage should not be called when name is missing');
+        },
+      }),
+    );
+
+    const result = runModelCommand(
+      {
+        commandId: 'MANAGE_SKILL',
+        params: { action: 'share' },
+      } as ModelCommandRunRequest,
+      shareCtx(),
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('INVALID_ARGS');
+    expect(result.error.message).toContain('name');
+    expect(result.error.message).toContain('share');
   });
 });

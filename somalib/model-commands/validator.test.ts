@@ -1098,3 +1098,76 @@ describe('CONTINUE_SESSION forceWorkflow — z handoff entrypoints (#695)', () =
     expect(result.error.message).toContain('resetSession=true');
   });
 });
+
+// ---------------------------------------------------------------------------
+// MANAGE_SKILL — share action (added in this PR)
+// ---------------------------------------------------------------------------
+//
+// share is the "read full SKILL.md for cross-user copy-paste install" action.
+// At the validator layer the only invariants are:
+//   1. action='share' is allowed (was rejected pre-PR)
+//   2. name MUST be a string (no name → reject)
+//   3. content MUST NOT be present (defined → reject — share is read-only on
+//      the server side; a stray `content` field could otherwise be silently
+//      misinterpreted as a hidden update on a future code path)
+//
+// Kebab-case, existence, and the 2500-char cap belong to the storage and
+// dispatcher layers respectively — covered by their own tests.
+
+describe('MANAGE_SKILL share action — validator', () => {
+  function run(params: Record<string, unknown>) {
+    return validateModelCommandRunArgs({
+      commandId: 'MANAGE_SKILL',
+      params,
+    });
+  }
+
+  it('accepts share with name only', () => {
+    const result = run({ action: 'share', name: 'my-deploy' });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    expect(result.request.commandId).toBe('MANAGE_SKILL');
+    expect(result.request.params).toMatchObject({ action: 'share', name: 'my-deploy' });
+    // No content should have been forwarded.
+    expect((result.request.params as { content?: string }).content).toBeUndefined();
+  });
+
+  it('rejects share when name is missing', () => {
+    const result = run({ action: 'share' });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.error.code).toBe('INVALID_ARGS');
+    expect(result.error.message).toContain('name is required');
+    expect(result.error.message).toContain('share');
+  });
+
+  it('rejects share when name is not a string', () => {
+    const result = run({ action: 'share', name: 42 });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.error.code).toBe('INVALID_ARGS');
+    expect(result.error.message).toContain('name is required');
+  });
+
+  it('rejects share when content is provided', () => {
+    const result = run({
+      action: 'share',
+      name: 'my-deploy',
+      content: 'sneak in a write under cover of share',
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.error.code).toBe('INVALID_ARGS');
+    expect(result.error.message).toContain('share');
+    expect(result.error.message).toContain('content');
+  });
+
+  it('rejects unknown action with `share` listed in the allowed enum', () => {
+    const result = run({ action: 'haxx0r' });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.error.code).toBe('INVALID_ARGS');
+    // Make sure the new action shows up in the error so callers can self-correct.
+    expect(result.error.message).toContain('share');
+  });
+});
