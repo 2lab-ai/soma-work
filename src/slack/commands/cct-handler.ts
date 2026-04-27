@@ -292,38 +292,32 @@ export function renderUsageLines(
   return `${header}\n\`\`\`\n${rows.join('\n')}\n\`\`\``;
 }
 
-function formatDurationUntil(isoUtc: string, nowMs?: number): string {
+/**
+ * Render an ISO-timestamp delta to the same `Δ` shape as the `/cct usage`
+ * card. `fallback` controls the string used when the ISO is missing or
+ * unparseable — the `/cct usage` "Try again later" path wants `'a bit'`,
+ * the `/cct auto` rotation lines want `'—'`.
+ */
+function formatDurationUntil(isoUtc: string | undefined, opts?: { fallback?: string; nowMs?: number }): string {
+  const fallback = opts?.fallback ?? 'a bit';
+  if (!isoUtc) return fallback;
   const target = new Date(isoUtc).getTime();
-  if (!Number.isFinite(target)) return 'a bit';
-  const now = nowMs ?? Date.now();
+  if (!Number.isFinite(target)) return fallback;
+  const now = opts?.nowMs ?? Date.now();
   return formatUsageResetDelta(target - now);
 }
 
 // ── #749 Auto-rotate text command renderer ─────────────────────────
 
 /**
- * Format a 0..1 utilization fraction as `XX.X%`. Inline clone of
- * `auto-rotate-notifier.ts:25-28` — duplicated rather than imported because
- * the notifier module pulls in `@slack/web-api` block-kit dependencies that
- * we don't want to drag into the text-only handler. Behavior pinned by
- * test (`80.0%` for `0.8`, `—` for `undefined` / non-finite).
+ * Format a 0..1 utilization fraction as `XX.X%`. Mirrors `fmtPct` in
+ * `auto-rotate-notifier.ts:25-28` — kept inline (rather than imported) to
+ * keep the text-only handler independent of the block-kit notifier module's
+ * import graph. Pinned by test (`0.8 → "80.0%"`, `undefined → "—"`).
  */
 function pct(util: number | undefined): string {
   if (util === undefined || !Number.isFinite(util)) return '—';
   return `${(util * 100).toFixed(1)}%`;
-}
-
-/**
- * Format the millisecond delta until the active slot's 7d window resets,
- * routed through the existing `formatUsageResetDelta` helper for "Δ" parity
- * with the `/cct usage` card. Returns `—` if the ISO is missing/invalid.
- */
-function fmtResetsDelta(iso: string | undefined, nowMs?: number): string {
-  if (!iso) return '—';
-  const target = new Date(iso).getTime();
-  if (!Number.isFinite(target)) return '—';
-  const now = nowMs ?? Date.now();
-  return formatUsageResetDelta(target - now);
 }
 
 /**
@@ -333,6 +327,13 @@ function fmtResetsDelta(iso: string | undefined, nowMs?: number): string {
  * is missing, fall back to `0` — the operator just gets a less specific
  * "N=0" lease line, never an exception. The slot name also falls back to
  * the keyId in the same path.
+ *
+ * Why a second snapshot read (the evaluator already loaded one): the
+ * `RotationOutcome` discriminant doesn't carry lease-count or slot-name on
+ * the `active-lease` branch. Adding those fields would touch every caller
+ * of `evaluateAndMaybeRotate`, including the hourly-tick path in `index.ts`.
+ * The cct-text command is admin-only and rare, so a second `getSnapshot()`
+ * is cheap insurance — not worth the cross-module ripple.
  */
 async function leaseCountForActive(activeKeyId: string): Promise<{ count: number; name: string }> {
   const snap = await loadSnapshotSafe();
@@ -345,6 +346,11 @@ async function leaseCountForActive(activeKeyId: string): Promise<{ count: number
   };
 }
 
+/** Format the per-slot rejection bullets used by both no-candidate and dry-run/skipped. */
+function formatRejectedBullets(rejected: ReadonlyArray<{ keyId: string; name: string; reason: string }>): string {
+  return rejected.map((r) => `• ${r.name} (${r.keyId}): rejected (${r.reason})`).join('\n');
+}
+
 /**
  * Render the 12-variant outcome of `evaluateAndMaybeRotate` to a single
  * compact thread-only Slack text line (or short bullet list for the
@@ -355,7 +361,7 @@ async function leaseCountForActive(activeKeyId: string): Promise<{ count: number
 export async function renderRotationOutcome(outcome: RotationOutcome): Promise<string> {
   if (outcome.kind === 'rotated') {
     const fromName = outcome.from?.name ?? '(none)';
-    const resets = fmtResetsDelta(outcome.to.sevenDayResetsAt);
+    const resets = formatDurationUntil(outcome.to.sevenDayResetsAt, { fallback: '—' });
     const five = pct(outcome.to.fiveHourUtilization);
     const seven = pct(outcome.to.sevenDayUtilization);
     return `:repeat: Auto-rotated *${fromName}* → *${outcome.to.name}* (7d resets ${resets}, 5h ${five} / 7d ${seven})`;
@@ -365,7 +371,6 @@ export async function renderRotationOutcome(outcome: RotationOutcome): Promise<s
     if (outcome.reason === 'active-not-set') {
       return ':warning: No active slot configured';
     }
-    // active-is-best
     const name = outcome.active?.name ?? '(unknown)';
     return `:white_check_mark: Active *${name}* is already optimal — no rotation needed`;
   }
@@ -381,39 +386,34 @@ export async function renderRotationOutcome(outcome: RotationOutcome): Promise<s
     }
     if (outcome.reason === 'no-candidate') {
       const bullets =
-        outcome.debug.rejected.length > 0
-          ? outcome.debug.rejected.map((r) => `• ${r.name} (${r.keyId}): rejected (${r.reason})`).join('\n')
-          : '• (no slots evaluated)';
+        outcome.debug.rejected.length > 0 ? formatRejectedBullets(outcome.debug.rejected) : '• (no slots evaluated)';
       return `:warning: No eligible candidate. See debug:\n${bullets}`;
     }
     if (outcome.reason === 'disabled') {
       // Defensive — `cct auto` always passes `enabled: true`, so this branch
-      // is only reachable if a future caller forgets the override. Keep the
-      // user-visible string honest about the unexpected state.
-      return ':warning: Auto-rotation disabled internally — bug, please report';
+      // is only reachable if a future caller forgets the override. Surface
+      // a message that points the on-call operator at the right surface
+      // (the handler's evaluateAndMaybeRotate call site) rather than a
+      // generic "report it" line.
+      return ':warning: Auto-rotation evaluator returned `disabled` — handler wiring bug, check the `enabled:` arg at the cct-handler call site';
     }
     if (outcome.reason === 'race-active-changed') {
       return ':hourglass: Skipped — active changed under us. Try `cct auto` again.';
     }
-    // race-precondition-failed
     return ':hourglass: Skipped — slot eligibility changed under us. Try `cct auto` again.';
   }
 
   // dry-run
   if (outcome.would === 'rotate' && outcome.to) {
     const fromName = outcome.from?.name ?? '(none)';
-    const resets = fmtResetsDelta(outcome.to.sevenDayResetsAt);
+    const resets = formatDurationUntil(outcome.to.sevenDayResetsAt, { fallback: '—' });
     return `:test_tube: [dry-run] Would rotate *${fromName}* → *${outcome.to.name}* (7d resets ${resets})`;
   }
   if (outcome.would === 'noop') {
     const name = outcome.from?.name ?? '(unknown)';
     return `:test_tube: [dry-run] Active *${name}* is already optimal`;
   }
-  // would === 'skipped'
-  const bullets =
-    outcome.debug.rejected.length > 0
-      ? outcome.debug.rejected.map((r) => `• ${r.name} (${r.keyId}): rejected (${r.reason})`).join('\n')
-      : '';
+  const bullets = outcome.debug.rejected.length > 0 ? formatRejectedBullets(outcome.debug.rejected) : '';
   return bullets
     ? `:test_tube: [dry-run] No eligible candidate.\n${bullets}`
     : `:test_tube: [dry-run] No eligible candidate.`;

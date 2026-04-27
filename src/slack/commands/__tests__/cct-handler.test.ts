@@ -840,7 +840,8 @@ describe('CctHandler — cct auto (#749)', () => {
     });
     const say = makeSayCct();
     await new CctHandler().execute({ user: adminUser, channel: 'C', threadTs: 'T', text: 'cct auto', say: say.fn });
-    expect(say.calls[0].text).toContain('Auto-rotation disabled internally — bug');
+    expect(say.calls[0].text).toContain('handler wiring bug');
+    expect(say.calls[0].text).toContain('disabled');
   });
 
   // ── 10: skipped race-active-changed ───────────────────────────────
