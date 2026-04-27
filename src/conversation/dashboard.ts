@@ -44,6 +44,13 @@ export interface KanbanSession {
    * when no assistant turn has produced a summaryTitle yet.
    */
   summaryTitle?: string;
+  /**
+   * Server-resolved card / panel headline (#762). Computed by `displayTitle()`
+   * over the full priority chain (`summaryTitle → issueTitle → prTitle →
+   * title → 'Untitled'`). Clients render this verbatim instead of repeating
+   * the priority logic, so card and panel surfaces stay in lock-step.
+   */
+  displayHeadline: string;
   ownerName: string;
   ownerId: string;
   workflow: string;
@@ -374,6 +381,11 @@ function sessionToKanban(key: string, s: any): KanbanSession {
   return {
     key,
     title: displayTitle(s),
+    // Server-side headline (#762) — single source of truth for the card &
+    // panel title surfaces. Reuses `displayTitle()` so its priority chain
+    // (summaryTitle → issueTitle → prTitle → title → 'Untitled') stays
+    // authoritative; the client renders this verbatim.
+    displayHeadline: displayTitle(s),
     // Emit summaryTitle so initial board renders (and full-page refresh) match
     // the live broadcastSummaryTitleChanged WS patch. Session registry stores
     // this on the session record itself — see session-registry.ts applyTitle.
@@ -478,6 +490,7 @@ export function archivedToKanban(archived: ArchivedSession): KanbanSession {
   return {
     key: `archived_${archived.sessionKey}_${archived.archivedAt}`,
     title: displayTitle(archived),
+    displayHeadline: displayTitle(archived),
     summaryTitle:
       typeof archived.summaryTitle === 'string' && archived.summaryTitle.length > 0 ? archived.summaryTitle : undefined,
     ownerName: archived.ownerName || archived.ownerId || 'unknown',
@@ -821,11 +834,17 @@ export function broadcastConversationUpdate(conversationId: string, turn: any): 
  * Dashboard v2.1 — targeted summaryTitle update. Sent in lieu of a full
  * session_update to avoid re-sending the whole board for a title change.
  * Clients patch the matching card's title in place.
+ *
+ * Also carries the resolved `displayHeadline` (#762) so clients don't have to
+ * re-implement the priority chain — when the headline source flips between
+ * tiers (e.g. issueTitle vanishing on /new) the server-truth value wins.
  */
 export function broadcastSummaryTitleChanged(sessionKey: string, summaryTitle: string): void {
   if (wsClients.size === 0) return;
   try {
-    const payload = JSON.stringify({ type: 'summaryTitleChanged', sessionKey, summaryTitle });
+    const session = _getSessionsFn?.().get(sessionKey);
+    const displayHeadline = session ? displayTitle(session) : summaryTitle;
+    const payload = JSON.stringify({ type: 'summaryTitleChanged', sessionKey, summaryTitle, displayHeadline });
     for (const client of wsClients) {
       try {
         client.send(payload);
@@ -835,6 +854,35 @@ export function broadcastSummaryTitleChanged(sessionKey: string, summaryTitle: s
     }
   } catch (error) {
     logger.error('Failed to broadcast summaryTitleChanged', error);
+  }
+}
+
+/**
+ * Push a single-session kanban payload (#762) — used by the link-derived title
+ * pipeline so a card that just got its first real title doesn't have to wait
+ * for the next periodic full-board broadcast. Sends the same `KanbanSession`
+ * shape that `sessionToKanban` produces, so the client just feeds it back
+ * through `renderCard()`.
+ *
+ * No-op when the session can't be found (terminated/unknown key) — that path
+ * would otherwise emit a malformed event the client would silently ignore.
+ */
+export function broadcastSingleSessionUpdate(sessionKey: string): void {
+  if (wsClients.size === 0) return;
+  try {
+    const session = _getSessionsFn?.().get(sessionKey);
+    if (!session || !session.sessionId) return;
+    const kanban = sessionToKanban(sessionKey, session);
+    const payload = JSON.stringify({ type: 'sessionUpdated', session: kanban });
+    for (const client of wsClients) {
+      try {
+        client.send(payload);
+      } catch {
+        wsClients.delete(client);
+      }
+    }
+  } catch (error) {
+    logger.error('Failed to broadcast single session update', error);
   }
 }
 
@@ -3430,12 +3478,16 @@ function renderCard(s, col) {
     + '</div>';
 
   // Short refs (PTN-123 · PR-123). escAttr for href/title because they're attribute values.
+  // #762: prefer the fetched issue/PR title in the hover tooltip — falls back to
+  // the human label, then the short ref, so unfetched links still get a tooltip.
   const refParts = [];
   if (s.issueShortRef && s.issueUrl) {
-    refParts.push('<a href="' + escAttr(s.issueUrl) + '" target="_blank" onclick="event.stopPropagation()" title="' + escAttr(s.issueLabel || s.issueShortRef) + '">' + esc(s.issueShortRef) + '</a>');
+    const issueTip = s.issueTitle || s.issueLabel || s.issueShortRef;
+    refParts.push('<a href="' + escAttr(s.issueUrl) + '" target="_blank" onclick="event.stopPropagation()" title="' + escAttr(issueTip) + '">' + esc(s.issueShortRef) + '</a>');
   }
   if (s.prShortRef && s.prUrl) {
-    refParts.push('<a href="' + escAttr(s.prUrl) + '" target="_blank" onclick="event.stopPropagation()" title="' + escAttr(s.prLabel || s.prShortRef) + '">' + esc(s.prShortRef) + '</a>');
+    const prTip = s.prTitle || s.prLabel || s.prShortRef;
+    refParts.push('<a href="' + escAttr(s.prUrl) + '" target="_blank" onclick="event.stopPropagation()" title="' + escAttr(prTip) + '">' + esc(s.prShortRef) + '</a>');
   }
   const refsHtml = refParts.length
     ? '<div class="card-refs">' + refParts.join('<span class="ref-sep">&middot;</span>') + '</div>'
@@ -3452,10 +3504,11 @@ function renderCard(s, col) {
     + '<span>' + timeAgo(s.lastActivity) + '</span>'
     + '</div>';
 
-  // Server-side displayTitle() already prefers summaryTitle, so s.title is
-  // normally correct on its own. This fallback covers the WS patch path where
-  // summaryTitleChanged writes only s.summaryTitle.
-  const displayHeadline = s.summaryTitle || s.title;
+  // Server-resolved headline (#762) — displayHeadline reflects the full
+  // priority chain (summaryTitle then issueTitle then prTitle then title then
+  // 'Untitled'). The local fallback covers the WS patch path where
+  // summaryTitleChanged / sessionUpdated may have rewritten only a subset.
+  const displayHeadline = s.displayHeadline || s.summaryTitle || s.title;
 
   // Card order: hero → stats → title → refs → meta → issue/pr subtitles → tokens → merge → question → tasks → actions.
   // linksHtml removed (2026-04 #708): refs + issue/pr subtitles already surface
@@ -4066,20 +4119,45 @@ function connectWs() {
       } else if (msg.type === 'session_action') {
         // Immediate visual feedback already handled by loadSessions() in doAction
       } else if (msg.type === 'summaryTitleChanged') {
-        // Dashboard v2.1 — targeted title patch. Update cache + single card.
-        // Only mutate summaryTitle; leave the raw title intact so a later
-        // re-render can still fall back to it if summaryTitle is ever cleared.
+        // Dashboard v2.1 + #762 — targeted title patch. Server resolves the
+        // displayHeadline through the full priority chain and sends both
+        // values: summaryTitle is what gets cached, displayHeadline is what
+        // the UI actually paints. Falls back to summaryTitle for backward
+        // compat with payloads pre-#762.
         var cached = _sessionCache[msg.sessionKey];
         if (cached) {
           cached.summaryTitle = msg.summaryTitle;
+          if (msg.displayHeadline) cached.displayHeadline = msg.displayHeadline;
         }
+        var headline = msg.displayHeadline || msg.summaryTitle;
         var cardTitleEls = document.querySelectorAll('[data-session-key="' + CSS.escape(msg.sessionKey) + '"] .card-title-text');
         for (var i = 0; i < cardTitleEls.length; i++) {
-          cardTitleEls[i].textContent = msg.summaryTitle;
+          cardTitleEls[i].textContent = headline;
         }
         if (panelOpen && panelSessionKey === msg.sessionKey) {
           var pt = document.getElementById('panel-title');
-          if (pt) pt.textContent = msg.summaryTitle;
+          if (pt) pt.textContent = headline;
+        }
+      } else if (msg.type === 'sessionUpdated' && msg.session && msg.session.key) {
+        // #762 — single-session card refresh from broadcastSingleSessionUpdate.
+        // Replace just this card's outerHTML so the link-derived title flow
+        // (which fires before the next full board push) lands immediately.
+        // Preserves the column the card already lives in by reading the
+        // existing element's data-source-col attribute.
+        var updatedKey = msg.session.key;
+        _sessionCache[updatedKey] = msg.session;
+        var existingCard = document.querySelector('[data-session-key="' + CSS.escape(updatedKey) + '"]');
+        if (existingCard) {
+          var col = existingCard.getAttribute('data-source-col') || 'idle';
+          var newHtml = renderCard(msg.session, col);
+          var wrapper = document.createElement('div');
+          wrapper.innerHTML = newHtml;
+          var newCard = wrapper.firstElementChild;
+          if (newCard) existingCard.replaceWith(newCard);
+        }
+        if (panelOpen && panelSessionKey === updatedKey) {
+          var pt2 = document.getElementById('panel-title');
+          if (pt2) pt2.textContent = msg.session.displayHeadline || msg.session.summaryTitle || msg.session.title || 'Untitled';
         }
       }
     } catch (e) { /* ignore */ }
@@ -4124,7 +4202,10 @@ function openPanel(sessionKey) {
   panelSessionKey = sessionKey;
   panelConvId = s.conversationId || null;
 
-  document.getElementById('panel-title').textContent = s.summaryTitle || s.title || 'Untitled';
+  // #762 — single source of truth for headline. displayHeadline carries the
+  // server-resolved priority chain; older WS messages without it still get a
+  // sensible fallback.
+  document.getElementById('panel-title').textContent = s.displayHeadline || s.summaryTitle || s.title || 'Untitled';
 
   // TitleSub
   var titleSubTextEl = document.getElementById('panel-title-sub-text');

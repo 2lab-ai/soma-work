@@ -19,7 +19,6 @@ interface LinkMetadata {
 // Cache: url -> metadata
 const metadataCache = new Map<string, LinkMetadata>();
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
-const MAX_TITLE_LENGTH = 40;
 
 // Status emoji mapping
 const STATUS_EMOJI: Record<string, string> = {
@@ -91,14 +90,17 @@ export async function fetchLinkMetadata(link: SessionLink): Promise<{ title?: st
       metadata = await fetchJiraMetadata(link);
     }
 
-    const truncatedTitle = metadata.title ? truncateTitle(metadata.title, MAX_TITLE_LENGTH) : undefined;
+    // Cache the full title (#762) — display-time truncation is the consumer's
+    // responsibility (e.g. dashboard sub-row caps at 60 chars). Storing the
+    // full string lets ref-pill hover tooltips show the complete title and
+    // gives the LLM-driven session-title summarizer real input.
     metadataCache.set(link.url, {
-      title: truncatedTitle,
+      title: metadata.title,
       status: metadata.status,
       fetchedAt: Date.now(),
     });
 
-    return { title: truncatedTitle || link.title, status: metadata.status || link.status };
+    return { title: metadata.title || link.title, status: metadata.status || link.status };
   } catch (error) {
     logger.warn('Failed to fetch link metadata', { url: link.url, error: (error as Error).message });
     // Return existing data on failure (graceful degradation)
@@ -467,9 +469,4 @@ export async function fetchGitHubPRReviewStatus(
     logger.warn('Failed to fetch GitHub PR review status', { url: link.url, error: (error as Error).message });
     return undefined;
   }
-}
-
-function truncateTitle(title: string, maxLen: number): string {
-  if (title.length <= maxLen) return title;
-  return title.substring(0, maxLen - 1) + '…';
 }

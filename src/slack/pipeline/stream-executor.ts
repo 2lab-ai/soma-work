@@ -14,6 +14,7 @@ import {
 } from '../../claude-status-fetcher';
 import { config } from '../../config';
 import { createConversation, recordAssistantTurn, recordUserTurn } from '../../conversation';
+import { adaptHandler, stampLinkTitlesAndDeriveSessionTitle } from '../../conversation/link-derived-title';
 import type { FileHandler, ProcessedFile } from '../../file-handler';
 import { Logger, redactAnthropicSecrets } from '../../logger';
 import { isMidThreadMention } from '../../mcp-config-builder';
@@ -889,6 +890,21 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             hasIssue: !!links.issue,
             hasPr: !!links.pr,
             hasDoc: !!links.doc,
+          });
+
+          // #762 — fire-and-forget link-derived title pipeline. Mid-conversation
+          // link attachments (model-emitted) flow through the same pipeline as
+          // dispatch-time and `/link` so the dashboard card title updates as
+          // soon as the GitHub/Jira fetch resolves.
+          stampLinkTitlesAndDeriveSessionTitle(adaptHandler(this.deps.claudeHandler), {
+            channelId: channel,
+            threadTs,
+            sessionKey,
+          }).catch((err) => {
+            this.logger.warn('Link-derived title refresh failed (mid-conversation)', {
+              sessionKey,
+              error: (err as Error).message,
+            });
           });
         },
         onChannelMessageDetected: async (messageText) => {

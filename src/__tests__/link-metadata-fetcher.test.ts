@@ -68,6 +68,29 @@ describe('fetchBatchLinkMetadata', () => {
     expect(result[1].title).toBe('Fix bug');
   });
 
+  it('preserves full title untruncated (#762)', async () => {
+    // Pre-#762 the fetcher truncated to 40 chars; #762 stores the full title
+    // so the dashboard ref-pill hover tooltip and the LLM session-title
+    // summarizer both see the real headline.
+    const longTitle = 'A really long PR title that definitely exceeds the old 40-character cap ' + '–'.repeat(50);
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ title: longTitle, state: 'open', draft: false }),
+    });
+    vi.stubGlobal('fetch', mockFetch);
+
+    const link: SessionLink = {
+      url: 'https://github.com/org/repo/pull/999',
+      type: 'pr',
+      provider: 'github',
+    };
+
+    const result = await fetchLinkMetadata(link);
+    expect(result.title).toBe(longTitle);
+    // Must NOT be truncated
+    expect(result.title?.length).toBeGreaterThan(40);
+  });
+
   it('one link failure does not block others', async () => {
     let callCount = 0;
     const mockFetch = vi.fn().mockImplementation(async (url: string) => {

@@ -1,3 +1,4 @@
+import { adaptHandler, stampLinkTitleIfMissing } from '../../conversation/link-derived-title';
 import { Logger } from '../../logger';
 import type { SessionLink } from '../../types';
 import { CommandParser } from '../command-parser';
@@ -59,6 +60,22 @@ export class LinkHandler implements CommandHandler {
       };
 
       this.deps.claudeHandler.setSessionLink(channel, threadTs, link);
+
+      // #762 — fire-and-forget link-derived title pipeline. Fills in the real
+      // title (GitHub / Jira) and updates the session title when this is the
+      // only / second link so the dashboard card stops showing the raw first
+      // user message. Failures are logged inside the helper.
+      const sessionKey = this.deps.claudeHandler.getSessionKey(channel, threadTs);
+      stampLinkTitleIfMissing(adaptHandler(this.deps.claudeHandler), {
+        channelId: channel,
+        threadTs: threadTs ?? undefined,
+        sessionKey,
+      }).catch((err) => {
+        this.logger.warn('Link-derived title refresh failed (link command)', {
+          sessionKey,
+          error: (err as Error).message,
+        });
+      });
 
       const typeLabels = { issue: '이슈', pr: 'PR', doc: '문서' };
       await say({
