@@ -157,6 +157,35 @@ describe('SkillForceHandler', () => {
     it('matches "$user:my-skill" (qualified user namespace)', () => {
       expect(handler.canHandle('$user:my-skill')).toBe(true);
     });
+
+    // Known-directive blacklist — bare $word that names a sibling command
+    // handler (`$model`, `$effort`, etc.) must NOT trigger fs probing.
+    it('does NOT probe filesystem for bare directive names like "$model"', () => {
+      const existsSpy = vi.mocked(fs.existsSync);
+      existsSpy.mockReturnValue(true); // would match anything if probed
+      expect(handler.canHandle('$model opus')).toBe(false);
+      expect(existsSpy).not.toHaveBeenCalled();
+    });
+
+    it('does NOT probe filesystem for bare "$verbosity"', () => {
+      const existsSpy = vi.mocked(fs.existsSync);
+      existsSpy.mockReturnValue(true);
+      expect(handler.canHandle('$verbosity compact')).toBe(false);
+      expect(existsSpy).not.toHaveBeenCalled();
+    });
+
+    it('does NOT probe filesystem for bare "$effort"', () => {
+      const existsSpy = vi.mocked(fs.existsSync);
+      existsSpy.mockReturnValue(true);
+      expect(handler.canHandle('$effort high')).toBe(false);
+      expect(existsSpy).not.toHaveBeenCalled();
+    });
+
+    it('still allows qualified "$user:effort" even though "effort" is blacklisted', () => {
+      // Blacklist only applies to bare resolution; qualified explicitly names
+      // the namespace, so a user with a literal `effort` skill stays reachable.
+      expect(handler.canHandle('$user:effort')).toBe(true);
+    });
   });
 
   describe('execute()', () => {

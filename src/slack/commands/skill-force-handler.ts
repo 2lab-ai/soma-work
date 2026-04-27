@@ -40,12 +40,70 @@ const BARE_SKILL_PATTERN = /\$([\w-]+)(?![\w-]*:)/g;
  * If all four miss, a final pass scans every other plugin directory under
  * `PLUGINS_DIR` for an exact-name match (see {@link SkillForceHandler.scanRemainingPlugins}).
  */
-const BARE_FALLBACK_NAMESPACES: ReadonlyArray<'user' | 'local' | 'stv' | 'superpowers'> = [
-  'user',
-  'local',
-  'stv',
-  'superpowers',
-];
+type FallbackNamespace = 'user' | 'local' | 'stv' | 'superpowers';
+const BARE_FALLBACK_NAMESPACES: ReadonlyArray<FallbackNamespace> = ['user', 'local', 'stv', 'superpowers'];
+
+/**
+ * Plugin slots inside {@link BARE_FALLBACK_NAMESPACES} (i.e. excluding the
+ * `user`/`local` namespaces that don't live under `PLUGINS_DIR`). Used by
+ * {@link SkillForceHandler.scanRemainingPlugins} to skip plugins already
+ * probed in steps 3–4. Derived from the priority list so adding a new plugin
+ * slot only requires editing one place.
+ */
+const PRIORITY_PLUGIN_SLOTS: ReadonlyArray<string> = BARE_FALLBACK_NAMESPACES.filter(
+  (ns): ns is 'stv' | 'superpowers' => ns === 'stv' || ns === 'superpowers',
+);
+
+/**
+ * Bare `$word` tokens that look like skills but are documented top-level
+ * directives handled by sibling command handlers (`ModelHandler`,
+ * `VerbosityHandler`, `EffortHandler`, etc.). Without this short-circuit,
+ * every common command message (e.g. `$model opus`, `$effort high`) would
+ * walk the full fallback chain (4–12 `existsSync` syscalls + a `readdirSync`)
+ * before discovering nothing matches and falling through to the actual
+ * directive handler. Order matters in {@link CommandRouter} (this handler
+ * runs before the directives) so the cheap blacklist check matters here, not
+ * just an aesthetic.
+ *
+ * Keep this list narrow to bare directive verbs that are unlikely to ever
+ * become real skill names. A `$plugin:directive` form is unaffected — the
+ * blacklist only applies to bare resolution.
+ */
+const KNOWN_NON_SKILL_DIRECTIVES: ReadonlySet<string> = new Set([
+  'model',
+  'verbosity',
+  'effort',
+  'persona',
+  'bypass',
+  'sandbox',
+  'rate',
+  'email',
+  'notify',
+  'webhook',
+  'compact',
+  'close',
+  'report',
+  'usage',
+  'help',
+  'context',
+  'renew',
+  'onboarding',
+  'mcp',
+  'cwd',
+  'cct',
+  'instructions',
+  'prompt',
+  'admin',
+  'dashboard',
+  'marketplace',
+  'plugins',
+  'skills',
+  'memory',
+  'restore',
+  'new',
+  'session',
+  'link',
+]);
 
 /** Qualified skill reference: plugin + skill name */
 interface SkillRef {
@@ -248,10 +306,19 @@ export class SkillForceHandler implements CommandHandler {
   /**
    * Resolve a bare `$skill` to a single namespace by walking the fallback
    * chain. Pure read-only filesystem probing; no caching (skill installs are
-   * rare and the call is gated by canHandle / extractSkillRefs anyway).
+   * rare relative to dispatch frequency).
+   *
+   * Two cheap short-circuits run before any filesystem syscall:
+   *   1. unsafe `name` (path traversal) → `not_found`
+   *   2. `name ∈ KNOWN_NON_SKILL_DIRECTIVES` → `not_found` (avoids 4–12
+   *      syscalls for `$model`, `$effort`, `$verbosity`, … on every command
+   *      message — see the const's JSDoc for rationale).
    */
   private resolveBareSkill(name: string, userId?: string): BareResolution {
     if (!isSafePathSegment(name)) {
+      return { kind: 'not_found', name };
+    }
+    if (KNOWN_NON_SKILL_DIRECTIVES.has(name)) {
       return { kind: 'not_found', name };
     }
 
@@ -267,10 +334,9 @@ export class SkillForceHandler implements CommandHandler {
     }
 
     // 5: scan remaining plugins under PLUGINS_DIR for an exact-name match.
-    // Excludes `stv` and `superpowers` (already probed) and any plugin
+    // Excludes the priority plugin slots (already probed) and any plugin
     // directory that fails the safe-segment check.
-    const skip = new Set<string>(['stv', 'superpowers']);
-    const matches = this.scanRemainingPlugins(name, skip);
+    const matches = this.scanRemainingPlugins(name);
 
     if (matches.length === 1) {
       const plugin = matches[0];
@@ -288,32 +354,43 @@ export class SkillForceHandler implements CommandHandler {
 
   /**
    * List plugin directories under {@link PLUGINS_DIR} that own a skill named
-   * `name`, excluding the ones in `skip`. Used as the final fallback step
-   * for bare `$skill` resolution.
+   * `name`, excluding {@link PRIORITY_PLUGIN_SLOTS} (already probed in steps
+   * 3–4) and any plugin directory that fails the safe-segment check.
    *
-   * Errors (missing PLUGINS_DIR, unreadable entries) are swallowed — this is
-   * a best-effort lookup, not a critical path.
+   * Skill paths are constructed via {@link SkillForceHandler.resolveSkillPath}
+   * so the on-disk layout convention (`{plugin}/skills/{name}/SKILL.md`)
+   * lives in exactly one place.
+   *
+   * `ENOENT` on the directory itself is swallowed (PLUGINS_DIR may not exist
+   * in dev/test environments). Other errors are logged at WARN — this is a
+   * best-effort lookup, not a critical path.
    */
-  private scanRemainingPlugins(name: string, skip: Set<string>): string[] {
-    if (!fs.existsSync(PLUGINS_DIR)) return [];
-    let entries: fs.Dirent[];
+  private scanRemainingPlugins(name: string): string[] {
+    let entries: fs.Dirent[] | undefined;
     try {
       entries = fs.readdirSync(PLUGINS_DIR, { withFileTypes: true });
     } catch (err) {
-      this.logger.warn('PLUGINS_DIR read failed during bare-skill scan', {
-        pluginsDir: PLUGINS_DIR,
-        error: (err as Error).message,
-      });
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT') {
+        this.logger.warn('PLUGINS_DIR read failed during bare-skill scan', {
+          pluginsDir: PLUGINS_DIR,
+          error: (err as Error).message,
+        });
+      }
       return [];
     }
+    // Defensive: real fs always returns an array or throws, but auto-mocked
+    // `vi.fn()` returns undefined — guard so the for-of below can't crash.
+    if (!Array.isArray(entries)) return [];
 
+    const skip = new Set<string>(PRIORITY_PLUGIN_SLOTS);
     const matches: string[] = [];
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
       const plugin = entry.name;
       if (skip.has(plugin)) continue;
       if (!isSafePathSegment(plugin)) continue;
-      const skillPath = path.join(PLUGINS_DIR, plugin, 'skills', name, 'SKILL.md');
+      const skillPath = this.resolveSkillPath({ plugin, skill: name, key: '' });
       if (fs.existsSync(skillPath)) {
         matches.push(plugin);
       }
@@ -324,15 +401,28 @@ export class SkillForceHandler implements CommandHandler {
   /**
    * Resolve the filesystem path for a skill based on its plugin.
    *
-   * - local  → dist/local/skills/{skill}/SKILL.md
-   * - user   → DATA_DIR/{userId}/skills/{skill}/SKILL.md
-   * - others → {PLUGINS_DIR}/{plugin}/skills/{skill}/SKILL.md
+   * - `local` → `LOCAL_SKILLS_DIR/{skill}/SKILL.md`
+   * - `user`  → `DATA_DIR/{userId}/skills/{skill}/SKILL.md` (requires safe userId+skill)
+   * - others  → `{PLUGINS_DIR}/{plugin}/skills/{skill}/SKILL.md`
+   *
+   * Throws if `ref.plugin === 'user'` but the userId/skill safety guard
+   * fails. The previous behavior — silently falling through to the generic
+   * `PLUGINS_DIR/user/skills/...` branch — would build a real but
+   * surprising path (e.g. for a malformed userId). Failing loud surfaces
+   * the misconfiguration instead of routing to the wrong namespace.
+   * Callers (`resolveBareSkill`) already gate the user slot on the same
+   * safety check, so this throw should be unreachable in practice.
    */
   private resolveSkillPath(ref: SkillRef, userId?: string): string {
     if (ref.plugin === 'local') {
       return path.join(LOCAL_SKILLS_DIR, ref.skill, 'SKILL.md');
     }
-    if (ref.plugin === 'user' && userId && isSafePathSegment(userId) && isSafePathSegment(ref.skill)) {
+    if (ref.plugin === 'user') {
+      if (!userId || !isSafePathSegment(userId) || !isSafePathSegment(ref.skill)) {
+        throw new Error(
+          `resolveSkillPath: user namespace requires safe userId + skill (got userId=${JSON.stringify(userId)}, skill=${JSON.stringify(ref.skill)})`,
+        );
+      }
       return path.join(DATA_DIR, userId, 'skills', ref.skill, 'SKILL.md');
     }
     return path.join(PLUGINS_DIR, ref.plugin, 'skills', ref.skill, 'SKILL.md');
