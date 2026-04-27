@@ -46,7 +46,7 @@ describe('routeModel', () => {
     const { routeModel } = await import('./llm-mcp-server.js');
     const route = routeModel('codex');
     expect(route.backend).toBe('codex');
-    expect(route.model).toBe('gpt-5.4');
+    expect(route.model).toBe('gpt-5.5');
   });
 
   it('routes "gemini" alias to gemini backend with defaults', async () => {

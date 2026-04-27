@@ -14,7 +14,7 @@
 import { WebClient } from '@slack/web-api';
 import { BaseMcpServer } from '../_shared/base-mcp-server.js';
 import type { ToolDefinition, ToolResult } from '../_shared/base-mcp-server.js';
-import { sharedStore, type PendingApproval, type PermissionResponse } from '../_shared/shared-store.js';
+import { sharedStore, type PendingApproval, type PermissionResponse } from 'somalib/permission/shared-store.js';
 import { McpToolGrantStore, parseDuration, MAX_GRANT_DURATION_MS, type PermissionLevel } from '../../src/mcp-tool-grant-store.js';
 import { loadMcpToolPermissions, type McpToolPermissionConfig } from '../../src/mcp-tool-permission-config.js';
 import { isAdminUser, getAdminUsers } from '../../src/admin-utils.js';

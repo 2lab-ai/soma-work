@@ -10,7 +10,8 @@ export type CctAction =
   | { action: 'next' }
   | { action: 'usage'; target?: string }
   | { action: 'add-forbidden' }
-  | { action: 'rm-forbidden' };
+  | { action: 'rm-forbidden' }
+  | { action: 'auto'; dry: boolean };
 
 export type BypassAction = 'on' | 'off' | 'status';
 export type SandboxAction = 'on' | 'off' | 'status';
@@ -123,7 +124,7 @@ export class CommandParser {
    * is disabled in favour of the `/z cct` Block Kit modal buttons.
    */
   static isCctCommand(text: string): boolean {
-    return /^\/?cct(?:\s+(?:next|set\s+\S+|usage(?:\s+\S+)?|add(?:\s+.*)?|rm(?:\s+.*)?|remove(?:\s+.*)?))?$/i.test(
+    return /^\/?cct(?:\s+(?:next|set\s+\S+|usage(?:\s+\S+)?|add(?:\s+.*)?|rm(?:\s+.*)?|remove(?:\s+.*)?|auto(?:\s+dry)?))?$/i.test(
       text.trim(),
     );
   }
@@ -154,6 +155,17 @@ export class CommandParser {
     if (usageMatch) {
       const target = usageMatch[1];
       return target ? { action: 'usage', target } : { action: 'usage' };
+    }
+    // auto — manual admin trigger of #737 auto-rotate. Longest-match first:
+    // `cct auto dry` (eval-only) MUST be tested before `cct auto` (live rotate)
+    // so the bare form is not greedy-matched first. Force-on at the handler:
+    // the AUTO_ROTATE_ENABLED env knob gates the *hourly* tick only — `cct auto`
+    // is an explicit operator request and must always evaluate.
+    if (/^\/?cct\s+auto\s+dry$/i.test(trimmed)) {
+      return { action: 'auto', dry: true };
+    }
+    if (/^\/?cct\s+auto$/i.test(trimmed)) {
+      return { action: 'auto', dry: false };
     }
     // add / rm / remove — forbidden via text; handler returns error referencing the card.
     if (/^\/?cct\s+add\b/i.test(trimmed)) {
@@ -1119,6 +1131,8 @@ export class CommandParser {
       '• `cct set <name>` - Switch active token (e.g., `cct set cct2`)',
       '• `cct next` - Rotate to next available token',
       '• `cct usage [<name>]` - Show usage snapshot (5h/7d) for a slot; defaults to active',
+      '• `cct auto` - Run auto-rotation evaluation now (ignores `AUTO_ROTATE_ENABLED`; rotates if a better slot wins)',
+      '• `cct auto dry` - Same evaluation, but only reports what *would* happen (no rotation)',
       '• _Note: token add/remove via text is disabled — use the *Add* / *Remove* buttons on the `/z cct` card._',
       '',
       '*Credentials:*',

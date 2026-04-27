@@ -6,6 +6,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { type CronJob, CronStorage } from 'somalib/cron/cron-storage';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   CronScheduler,
@@ -13,7 +14,6 @@ import {
   resolveModelOverride,
   type SyntheticMessageEvent,
 } from '../cron-scheduler';
-import { type CronJob, CronStorage } from '../cron-storage';
 import { SessionRegistry } from '../session-registry';
 import { ConversationSession } from '../types';
 

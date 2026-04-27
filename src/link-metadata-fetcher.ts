@@ -19,7 +19,10 @@ interface LinkMetadata {
 // Cache: url -> metadata
 const metadataCache = new Map<string, LinkMetadata>();
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
-const MAX_TITLE_LENGTH = 40;
+// GitHub PR/issue title max ≈ 256, Jira summary max = 255. 500 is a defensive
+// upper bound that never clips real titles but stops a malicious or pathological
+// upstream from pinning multi-MB strings in cache.
+const MAX_CACHED_TITLE_LENGTH = 500;
 
 // Status emoji mapping
 const STATUS_EMOJI: Record<string, string> = {
@@ -91,14 +94,22 @@ export async function fetchLinkMetadata(link: SessionLink): Promise<{ title?: st
       metadata = await fetchJiraMetadata(link);
     }
 
-    const truncatedTitle = metadata.title ? truncateTitle(metadata.title, MAX_TITLE_LENGTH) : undefined;
+    // Cache the title without the legacy 40-char cap so ref-pill hovers and
+    // the LLM session-title summarizer see real input — but bound at
+    // MAX_CACHED_TITLE_LENGTH to keep memory predictable. Display-time
+    // truncation (e.g. dashboard sub-row 60-char clip) remains the consumer's
+    // responsibility.
+    const cachedTitle =
+      metadata.title && metadata.title.length > MAX_CACHED_TITLE_LENGTH
+        ? metadata.title.slice(0, MAX_CACHED_TITLE_LENGTH)
+        : metadata.title;
     metadataCache.set(link.url, {
-      title: truncatedTitle,
+      title: cachedTitle,
       status: metadata.status,
       fetchedAt: Date.now(),
     });
 
-    return { title: truncatedTitle || link.title, status: metadata.status || link.status };
+    return { title: cachedTitle || link.title, status: metadata.status || link.status };
   } catch (error) {
     logger.warn('Failed to fetch link metadata', { url: link.url, error: (error as Error).message });
     // Return existing data on failure (graceful degradation)
@@ -467,9 +478,4 @@ export async function fetchGitHubPRReviewStatus(
     logger.warn('Failed to fetch GitHub PR review status', { url: link.url, error: (error as Error).message });
     return undefined;
   }
-}
-
-function truncateTitle(title: string, maxLen: number): string {
-  if (title.length <= maxLen) return title;
-  return title.substring(0, maxLen - 1) + '…';
 }

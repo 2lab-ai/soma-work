@@ -1,6 +1,7 @@
 import { LEGACY_RECOMMENDED_SUFFIX_RE } from 'somalib/model-commands/validator';
 import type { UserChoice, UserChoiceOption, UserChoices } from '../types';
 import type { SessionTheme } from '../user-settings-store';
+import { escapeSlackMrkdwn } from './mrkdwn-escape';
 
 export interface SlackMessagePayload {
   blocks?: any[];
@@ -9,18 +10,6 @@ export interface SlackMessagePayload {
 
 // Option number emojis for visual distinction
 const OPTION_EMOJIS = ['1️⃣', '2️⃣', '3️⃣', '4️⃣'];
-
-/**
- * Escape user-controlled text for inclusion inside a Slack `mrkdwn` block.
- *
- * Slack only requires `&`, `<`, `>` to be entity-encoded for text embedded in
- * `mrkdwn`; this prevents labels like `<@U123>` from triggering mentions and
- * `<url|label>` from rendering as links. Formatting chars (`*_~`) remain intact
- * — banner is already bold via surrounding `*…*`, so wrapping cancels out.
- */
-function escapeSlackMrkdwn(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
 
 /**
  * Slack 블록 UI 빌딩 로직

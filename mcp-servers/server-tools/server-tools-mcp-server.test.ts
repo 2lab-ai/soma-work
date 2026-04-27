@@ -40,7 +40,7 @@ vi.mock('@modelcontextprotocol/sdk/types.js', () => ({
 }));
 
 // Mock stderr-logger
-vi.mock('../_shared/stderr-logger.js', () => ({
+vi.mock('somalib/stderr-logger.js', () => ({
   StderrLogger: class {
     debug() {}
     info() {}

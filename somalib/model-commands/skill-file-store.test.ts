@@ -47,9 +47,10 @@ describe('SkillFileStore.shareSkill', () => {
     const result = store.shareSkill(userId, skillName);
 
     expect(result.ok).toBe(true);
-    // SkillFileStore.createSkill trims trailing whitespace on write — we read
-    // back what was actually persisted. The CONTENT (post-trim) must be
-    // identical to what was written, so both sides see the same SKILL.md.
+    // SkillFileStore.createSkill persists `content` verbatim (issue #750).
+    // The trim is used only for the empty / oversize validation; the bytes
+    // on disk match the bytes the caller passed in, so the inline-edit modal
+    // can round-trip a SKILL.md without silent whitespace rewrites.
     expect(result.content).toBe(content);
     expect(result.message).toContain('my-deploy');
   });

@@ -4,7 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import { BaseMcpServer } from '../_shared/base-mcp-server.js';
 import type { ToolDefinition, ToolResult } from '../_shared/base-mcp-server.js';
-import { StderrLogger } from '../_shared/stderr-logger.js';
+import { StderrLogger } from 'somalib/stderr-logger.js';
 import {
   getDefaultSessionSnapshot,
   listModelCommands,

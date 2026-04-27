@@ -74,6 +74,12 @@ describe('ActionHandlers', () => {
       expect(mockApp.action).toHaveBeenCalledWith('deny_tool', expect.any(Function));
       expect(mockApp.action).toHaveBeenCalledWith('terminate_session', expect.any(Function));
       expect(mockApp.action).toHaveBeenCalledWith(/^user_choice_/, expect.any(Function));
+      expect(mockApp.action).toHaveBeenCalledWith(/^user_skill_invoke_/, expect.any(Function));
+      // Issue #750: overflow accessory introduces `user_skill_menu_*` action
+      // ids and the `user_skill_edit_modal_submit` view callback. Both routes
+      // dispatch into the same handler family.
+      expect(mockApp.action).toHaveBeenCalledWith(/^user_skill_menu_/, expect.any(Function));
+      expect(mockApp.view).toHaveBeenCalledWith('user_skill_edit_modal_submit', expect.any(Function));
       expect(mockApp.action).toHaveBeenCalledWith(/^multi_choice_/, expect.any(Function));
       expect(mockApp.action).toHaveBeenCalledWith(/^panel_/, expect.any(Function));
       expect(mockApp.action).toHaveBeenCalledWith('managed_message_delete_cancel', expect.any(Function));

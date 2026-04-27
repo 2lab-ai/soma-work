@@ -40,6 +40,7 @@ import { SkillsHandler } from './skills-handler';
 import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
 import { UITestHandler } from './ui-test-handler';
 import { UsageHandler } from './usage-handler';
+import { UserSkillsListHandler } from './user-skills-list-handler';
 import { VerbosityHandler } from './verbosity-handler';
 import { WebhookHandler } from './webhook-handler';
 
@@ -74,6 +75,11 @@ export class CommandRouter {
       new DashboardHandler(),
       new MarketplaceHandler(deps),
       new PluginsHandler(deps),
+      // $user (bare) → list personal skills as buttons. Registered BEFORE
+      // skillForceHandler so a hypothetical local skill named `user` cannot
+      // shadow the menu shortcut. Qualified `$user:foo` falls through to
+      // skillForceHandler unchanged (different canHandle pattern).
+      new UserSkillsListHandler(),
       this.skillForceHandler, // $local:skillname — must come before SessionCommandHandler
       new SessionCommandHandler(deps), // $ prefix — must come before Model/Verbosity
       new BypassHandler(),
@@ -182,7 +188,7 @@ export class CommandRouter {
         return newResult;
       }
       const remainder = newResult.continueWithPrompt;
-      if (this.skillForceHandler.canHandle(remainder)) {
+      if (this.skillForceHandler.canHandle(remainder, ctx.user)) {
         // IMPORTANT: skillResult INTENTIONALLY supersedes newResult.
         // NewHandler's session-reset side effects (postSystemMessage, emoji
         // cleanup, state reset) already ran above. We now replace the
@@ -199,7 +205,7 @@ export class CommandRouter {
     }
 
     for (const handler of this.handlers) {
-      if (handler.canHandle(routedText)) {
+      if (handler.canHandle(routedText, ctx.user)) {
         this.logger.debug('Routing to handler', {
           handler: handler.constructor.name,
           text: routedText.substring(0, 50),

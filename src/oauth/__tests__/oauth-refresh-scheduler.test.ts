@@ -198,6 +198,109 @@ describe('OAuthRefreshScheduler (#653 M2)', () => {
     expect(schedIdx).toBeLessThan(tmIdx);
   });
 
+  it('#737 onAfterTick fires after refresh fan-out resolves', async () => {
+    const { clock, fireTick } = makeFakeClock();
+    const tm = makeTm();
+    const order: string[] = [];
+    tm.refreshAllAttachedOAuthTokens = vi.fn(async () => {
+      order.push('refresh');
+      return {};
+    });
+    const onAfter = vi.fn(async () => {
+      order.push('after');
+    });
+    const s = new OAuthRefreshScheduler(tm, {
+      intervalMs: 60 * 60_000,
+      timeoutMs: 30_000,
+      enabled: true,
+      clock,
+      onAfterTick: onAfter,
+    });
+    s.start();
+    fireTick();
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    expect(onAfter).toHaveBeenCalledTimes(1);
+    expect(order).toEqual(['refresh', 'after']);
+  });
+
+  it('#737 onAfterTick still fires when the refresh fan-out throws', async () => {
+    const { clock, fireTick } = makeFakeClock();
+    const tm = makeTm({
+      refreshAllAttachedOAuthTokens: vi.fn().mockRejectedValueOnce(new Error('boom')),
+    });
+    const onAfter = vi.fn(async () => undefined);
+    const s = new OAuthRefreshScheduler(tm, {
+      intervalMs: 60 * 60_000,
+      timeoutMs: 30_000,
+      enabled: true,
+      clock,
+      onAfterTick: onAfter,
+    });
+    s.start();
+    fireTick();
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    expect(onAfter).toHaveBeenCalledTimes(1);
+  });
+
+  it('#737 P1 onAfterTick mutex: overlapping ticks do NOT invoke the hook concurrently', async () => {
+    // First hook holds; second tick fires before it resolves; second
+    // hook should be skipped (debug-logged), not queued and not invoked.
+    const { clock, fireTick } = makeFakeClock();
+    const tm = makeTm();
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let calls = 0;
+    const onAfter = vi.fn(async () => {
+      calls++;
+      await pending;
+    });
+    const s = new OAuthRefreshScheduler(tm, {
+      intervalMs: 60 * 60_000,
+      timeoutMs: 30_000,
+      enabled: true,
+      clock,
+      onAfterTick: onAfter,
+    });
+    s.start();
+    fireTick(); // first tick → hook acquired pending
+    await new Promise((r) => setImmediate(r));
+    expect(calls).toBe(1);
+    fireTick(); // second tick → hook in flight, skip
+    await new Promise((r) => setImmediate(r));
+    expect(calls).toBe(1); // NOT invoked again
+    release(); // unblock first
+    await pending;
+    await new Promise((r) => setImmediate(r));
+    fireTick(); // third tick → previous resolved, hook fires again
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    expect(calls).toBe(2);
+  });
+
+  it('#737 onAfterTick throwing does not prevent the next tick from firing', async () => {
+    const { clock, fireTick } = makeFakeClock();
+    const tm = makeTm();
+    const onAfter = vi.fn().mockRejectedValueOnce(new Error('hook boom')).mockResolvedValueOnce(undefined);
+    const s = new OAuthRefreshScheduler(tm, {
+      intervalMs: 60 * 60_000,
+      timeoutMs: 30_000,
+      enabled: true,
+      clock,
+      onAfterTick: onAfter,
+    });
+    s.start();
+    fireTick();
+    await new Promise((r) => setImmediate(r));
+    fireTick();
+    await new Promise((r) => setImmediate(r));
+    expect(tm.refreshAllAttachedOAuthTokens).toHaveBeenCalledTimes(2);
+    expect(onAfter).toHaveBeenCalledTimes(2);
+  });
+
   it('INVARIANT: bootstrap wires startOAuthRefreshScheduler after startUsageRefreshScheduler', async () => {
     // Document-by-test the bootstrap order so a refactor that puts
     // the OAuth scheduler before usage (or drops it entirely) is caught.

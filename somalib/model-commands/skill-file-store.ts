@@ -67,7 +67,10 @@ export class SkillFileStore implements SkillStore {
     const fp = this.skillPath(user, name);
     if (fs.existsSync(fp)) return { ok: false, message: `Skill "${name}" already exists. Use update.` };
     fs.mkdirSync(path.dirname(fp), { recursive: true });
-    fs.writeFileSync(fp, trimmed, 'utf-8');
+    // Verbatim persistence — validation used the trimmed length, but we
+    // write the original bytes so the inline-edit modal (Slack-host counterpart
+    // of this MCP store) can round-trip a SKILL.md without silent rewrites.
+    fs.writeFileSync(fp, content, 'utf-8');
     return { ok: true, message: `Skill "${name}" created.` };
   }
 
@@ -82,7 +85,8 @@ export class SkillFileStore implements SkillStore {
     }
     const fp = this.skillPath(user, name);
     if (!fs.existsSync(fp)) return { ok: false, message: `Skill "${name}" not found. Use create.` };
-    fs.writeFileSync(fp, trimmed, 'utf-8');
+    // Verbatim persistence — see createSkill comment.
+    fs.writeFileSync(fp, content, 'utf-8');
     return { ok: true, message: `Skill "${name}" updated.` };
   }
 

@@ -14,6 +14,7 @@ import {
 } from '../../claude-status-fetcher';
 import { config } from '../../config';
 import { createConversation, recordAssistantTurn, recordUserTurn } from '../../conversation';
+import { scheduleLinkDerivedTitleRefresh } from '../../conversation/link-derived-title';
 import type { FileHandler, ProcessedFile } from '../../file-handler';
 import { Logger, redactAnthropicSecrets } from '../../logger';
 import { isMidThreadMention } from '../../mcp-config-builder';
@@ -890,6 +891,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             hasPr: !!links.pr,
             hasDoc: !!links.doc,
           });
+
+          scheduleLinkDerivedTitleRefresh(this.deps.claudeHandler, channel, threadTs, 'mid-conversation');
         },
         onChannelMessageDetected: async (messageText) => {
           try {
