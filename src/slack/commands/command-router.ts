@@ -188,7 +188,7 @@ export class CommandRouter {
         return newResult;
       }
       const remainder = newResult.continueWithPrompt;
-      if (this.skillForceHandler.canHandle(remainder)) {
+      if (this.skillForceHandler.canHandle(remainder, ctx.user)) {
         // IMPORTANT: skillResult INTENTIONALLY supersedes newResult.
         // NewHandler's session-reset side effects (postSystemMessage, emoji
         // cleanup, state reset) already ran above. We now replace the
@@ -205,7 +205,7 @@ export class CommandRouter {
     }
 
     for (const handler of this.handlers) {
-      if (handler.canHandle(routedText)) {
+      if (handler.canHandle(routedText, ctx.user)) {
         this.logger.debug('Routing to handler', {
           handler: handler.constructor.name,
           text: routedText.substring(0, 50),
