@@ -1,3 +1,4 @@
+import { scheduleLinkDerivedTitleRefresh } from '../../conversation/link-derived-title';
 import { Logger } from '../../logger';
 import type { SessionLink } from '../../types';
 import { CommandParser } from '../command-parser';
@@ -59,6 +60,8 @@ export class LinkHandler implements CommandHandler {
       };
 
       this.deps.claudeHandler.setSessionLink(channel, threadTs, link);
+
+      scheduleLinkDerivedTitleRefresh(this.deps.claudeHandler, channel, threadTs, 'link-command');
 
       const typeLabels = { issue: '이슈', pr: 'PR', doc: '문서' };
       await say({

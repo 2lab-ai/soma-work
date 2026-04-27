@@ -10,6 +10,7 @@ import { getAdminUsers } from '../../admin-utils';
 import { checkRepoChannelMatch, getAllChannels, getChannel, registerChannel } from '../../channel-registry';
 import type { ClaudeHandler } from '../../claude-handler';
 import { createConversation, getConversationUrl } from '../../conversation';
+import { scheduleLinkDerivedTitleRefresh } from '../../conversation/link-derived-title';
 import { getDispatchService } from '../../dispatch-service';
 import { Logger } from '../../logger';
 import type { ConversationSession, WorkflowType } from '../../types';
@@ -816,6 +817,8 @@ export class SessionInitializer {
           hasPrLink: !!result.links.pr,
           prUrl: result.links.pr?.url,
         });
+
+        scheduleLinkDerivedTitleRefresh(this.deps.claudeHandler, channel, threadTs, 'dispatch-entry');
       } else {
         this.logger.info('🔗 No links extracted from dispatch', {
           channel,
