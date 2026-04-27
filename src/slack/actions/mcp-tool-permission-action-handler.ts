@@ -15,6 +15,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { type PermissionResponse, sharedStore } from 'somalib/permission/shared-store';
 import { isAdminUser } from '../../admin-utils';
 import { Logger } from '../../logger';
 import {
@@ -23,7 +24,6 @@ import {
   type PermissionLevel,
   parseDuration,
 } from '../../mcp-tool-grant-store';
-import { type PermissionResponse, sharedStore } from '../../shared-store';
 import type { RespondFn } from './types';
 
 /** Check if a response file already exists for this request (race condition guard) */

@@ -1,5 +1,5 @@
 import * as fs from 'fs';
-import { StderrLogger } from './stderr-logger.js';
+import { StderrLogger } from 'somalib/stderr-logger.js';
 
 export interface ConfigCacheOptions<T> {
   /** JSON key in config file (e.g. 'llmChat', 'server-tools') */
