@@ -6,7 +6,7 @@ import './env-paths';
 import { registerMemoryStore, registerSkillStore } from 'somalib/model-commands/catalog';
 import * as userMemoryStore from './user-memory-store';
 import { setSettingsPromptInvalidationHook } from './user-settings-store';
-import { createUserSkill, deleteUserSkill, listUserSkills, updateUserSkill } from './user-skill-store';
+import { createUserSkill, deleteUserSkill, listUserSkills, shareUserSkill, updateUserSkill } from './user-skill-store';
 
 registerMemoryStore(userMemoryStore);
 registerSkillStore({
@@ -14,6 +14,7 @@ registerSkillStore({
   createSkill: createUserSkill,
   updateSkill: updateUserSkill,
   deleteSkill: deleteUserSkill,
+  shareSkill: shareUserSkill,
 });
 
 import { App } from '@slack/bolt';
