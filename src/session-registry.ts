@@ -87,6 +87,8 @@ interface SerializedSession {
   links?: SessionLinks;
   linkHistory?: SessionLinkHistory;
   linkSequence?: number;
+  /** Monotonic generation token for link-derived title refresh (#762). */
+  linkRefreshGeneration?: number;
   // Sleep mode
   sleepStartedAt?: string; // ISO date string
   // Activity state
@@ -982,6 +984,12 @@ export class SessionRegistry {
     if (!Number.isInteger(session.linkSequence)) {
       session.linkSequence = 0;
     }
+
+    if (!Number.isInteger(session.linkRefreshGeneration)) {
+      // Backfill on legacy sessions / pre-#762 disk state — start at 0 so the
+      // first fire-and-forget refresh sees a stable baseline.
+      session.linkRefreshGeneration = 0;
+    }
   }
 
   private applySessionResourceOperations(
@@ -1330,6 +1338,12 @@ export class SessionRegistry {
     session.summaryTitleTurnId = undefined;
     session.summaryTitleLastUpdatedAtMs = undefined;
 
+    // Bump link-derived title generation token (#762) — any in-flight
+    // fire-and-forget refresh job from before this reset will see the new
+    // value when it tries to write back, and abort instead of clobbering the
+    // freshly-cleared title with a stale one.
+    session.linkRefreshGeneration = (session.linkRefreshGeneration ?? 0) + 1;
+
     this.saveSessions();
     this.broadcastSessionUpdate();
     return true;
@@ -1648,6 +1662,10 @@ export class SessionRegistry {
             links: session.links,
             linkHistory: session.linkHistory,
             linkSequence: session.linkSequence,
+            // Persist link-derived title generation token (#762) — must be
+            // monotonic across restart so post-restart fire-and-forget jobs
+            // continue to see a stable version baseline.
+            linkRefreshGeneration: session.linkRefreshGeneration,
             sleepStartedAt: session.sleepStartedAt?.toISOString(),
             activityState: session.activityState,
             logVerbosity: session.logVerbosity,
@@ -1804,6 +1822,7 @@ export class SessionRegistry {
           links: serialized.links,
           linkHistory: serialized.linkHistory,
           linkSequence: serialized.linkSequence,
+          linkRefreshGeneration: serialized.linkRefreshGeneration,
           sleepStartedAt,
           activityState: serialized.activityState || 'idle', // Preserve saved state for correct dashboard display; crash recovery handles auto-resume
           logVerbosity: serialized.logVerbosity,

@@ -82,6 +82,10 @@ ${truncatedLines}`;
       settingSources: [],
       plugins: [],
       env,
+      // Adaptive thinking on Sonnet 4.5 can silently consume the output budget
+      // on this short summarisation task, leaving an empty response. Disable
+      // thinking — straightforward compression doesn't need reasoning. (#762)
+      thinking: { type: 'disabled' },
       stderr: (data: string) => {
         logger.warn('InstructionsSummarizer stderr', { data: data.trimEnd() });
       },

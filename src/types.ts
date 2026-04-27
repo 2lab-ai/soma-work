@@ -178,6 +178,21 @@ export interface ConversationSession {
   // Monotonic sequence for optimistic concurrency on session link updates
   linkSequence?: number;
   /**
+   * Monotonic generation token for link-derived title refresh (#762).
+   *
+   * Incremented on `resetSessionContext` (and any other link-context reset)
+   * so fire-and-forget title-refresh jobs that started before the reset
+   * abort their write when they wake up — preventing a stale title from a
+   * previous session attaching to the new context.
+   *
+   * Also serves as a URL-set version: callers capture the URL set + generation
+   * before the async fetch and re-check both before writing.
+   *
+   * Persisted to disk so generation stays monotonic across restarts.
+   * `undefined` on legacy data is treated as 0 by callers.
+   */
+  linkRefreshGeneration?: number;
+  /**
    * Typed handoff metadata parsed from the `<z-handoff>` sentinel that
    * started this session (issue #695, epic #694). Present only for sessions
    * entered via `forceWorkflow='z-plan-to-work' | 'z-epic-update'`. Consumed

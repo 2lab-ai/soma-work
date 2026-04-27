@@ -63,6 +63,11 @@ ${truncatedContent}`;
       settingSources: [],
       plugins: [],
       env,
+      // Adaptive thinking on Haiku/Sonnet 4.5 silently consumes the entire
+      // output budget on these tiny prompts, leaving an empty response that
+      // breaks JSON.parse. Disable thinking — these calls are 1-shot
+      // structured-output tasks where reasoning is unnecessary. (#762)
+      thinking: { type: 'disabled' },
       stderr: (data: string) => {
         logger.warn('Summarizer stderr', { data: data.trimEnd() });
       },
@@ -191,6 +196,11 @@ async function runTitleQuery(
     settingSources: [],
     plugins: [],
     env,
+    // Adaptive thinking on Haiku/Sonnet 4.5 silently consumes the entire
+    // output budget on these tiny prompts, leaving an empty response that
+    // breaks JSON.parse. Disable thinking — these calls are 1-shot
+    // structured-output tasks where reasoning is unnecessary. (#762)
+    thinking: { type: 'disabled' },
     stderr: (data: string) => {
       logger.warn('SessionSummaryTitle stderr', { data: data.trimEnd() });
     },
