@@ -120,21 +120,39 @@ async function start() {
     });
     timing('Usage refresh scheduler wired');
 
+    // OAuth refresh + auto-rotation scheduler is wired AFTER `new App`
+    // below (#737 P0 hygiene fix) so we can pass `app.client` directly
+    // to the rotation notifier — no late-binding closure required.
+    let oauthRefreshScheduler: OAuthRefreshScheduler | null = null;
+
+    logger.info('Starting Claude Code Slack bot', {
+      debug: config.debug,
+      useBedrock: config.claude.useBedrock,
+      useVertex: config.claude.useVertex,
+    });
+
+    // Initialize Slack app
+    const app = new App({
+      token: config.slack.botToken,
+      signingSecret: config.slack.signingSecret,
+      socketMode: true,
+      appToken: config.slack.appToken,
+    });
+
     // #653 M2 — Start CCT OAuth-token refresh scheduler. Hourly fan-out
     // force-refreshes every attached slot's access_token via
     // `TokenManager.refreshAllAttachedOAuthTokens`. Surfaces stale
-    // refreshTokens as `refresh_failed` within 1h (rather than waiting
-    // for a dispatch to touch the slot) and keeps the card's "OAuth
-    // refreshes in X" hint honest. Null when OAUTH_REFRESH_ENABLED=0.
+    // refreshTokens as `refresh_failed` within 1h and keeps the card's
+    // "OAuth refreshes in X" hint honest. Null when OAUTH_REFRESH_ENABLED=0.
     //
-    // #737 — onAfterTick wires auto CCT rotation. The Slack client is
-    // captured by reference through `getSlackClient` (set after `new App`
-    // below) because the App is constructed later in bootstrap. The
-    // first refresh tick fires `intervalMs` after start (default 1h), by
-    // which point `slackClient` is unconditionally populated.
-    let slackClient: WebClient | null = null;
-    const getSlackClient = () => slackClient;
-    const oauthRefreshScheduler: OAuthRefreshScheduler | null = startOAuthRefreshScheduler(tokenManager, {
+    // #737 — onAfterTick wires auto CCT rotation. Wired after `new App`
+    // so we pass `app.client` directly (no late-binding closure). The
+    // CAS commit primitive `applyTokenIfActiveMatches` re-validates the
+    // active slot's lease count + target slot's eligibility inside the
+    // same store.mutate that flips activeKeyId — preventing a TOCTOU
+    // window between the evaluator's snapshot read and the commit.
+    const slackClient: WebClient = app.client;
+    oauthRefreshScheduler = startOAuthRefreshScheduler(tokenManager, {
       intervalMs: config.oauthRefresh.intervalMs,
       timeoutMs: config.oauthRefresh.fanOutTimeoutMs,
       enabled: config.oauthRefresh.enabled,
@@ -142,7 +160,8 @@ async function start() {
         const outcome = await evaluateAndMaybeRotate(
           {
             loadSnapshot: () => tokenManager.getSnapshot(),
-            applyToken: (keyId) => tokenManager.applyToken(keyId),
+            applyTokenIfActiveMatches: (target, expected, precond) =>
+              tokenManager.applyTokenIfActiveMatches(target, expected, precond),
           },
           {
             enabled: config.autoRotate.enabled,
@@ -151,6 +170,10 @@ async function start() {
               fiveHourMax: config.autoRotate.fiveHourMax,
               sevenDayMax: config.autoRotate.sevenDayMax,
             },
+            // Reject candidates whose usage snapshot is older than 2× the
+            // usage refresh interval. A stuck poller can't pin the rotation
+            // decision on a stale resetsAt that has already elapsed upstream.
+            usageMaxAgeMs: 2 * config.usage.refreshIntervalMs,
           },
         );
         if (outcome.kind === 'rotated') {
@@ -159,14 +182,7 @@ async function start() {
             to: outcome.to.name,
             sevenDayResetsAt: outcome.to.sevenDayResetsAt,
           });
-          const client = getSlackClient();
-          if (client) {
-            await notifyAutoRotation(client, { from: outcome.from, to: outcome.to });
-          } else {
-            logger.warn('Auto CCT rotated but Slack client not yet available — notify skipped', {
-              to: outcome.to.name,
-            });
-          }
+          await notifyAutoRotation(slackClient, { from: outcome.from, to: outcome.to });
         } else if (outcome.kind === 'noop') {
           logger.debug('Auto CCT rotation no-op', {
             reason: outcome.reason,
@@ -184,25 +200,6 @@ async function start() {
       },
     });
     timing('OAuth refresh scheduler wired');
-
-    logger.info('Starting Claude Code Slack bot', {
-      debug: config.debug,
-      useBedrock: config.claude.useBedrock,
-      useVertex: config.claude.useVertex,
-    });
-
-    // Initialize Slack app
-    const app = new App({
-      token: config.slack.botToken,
-      signingSecret: config.slack.signingSecret,
-      socketMode: true,
-      appToken: config.slack.appToken,
-    });
-
-    // #737 — publish the Slack client into the auto-rotate hook closure.
-    // The OAuth refresh scheduler was wired before App existed; its first
-    // tick fires `intervalMs` later (default 1h) so by then this is set.
-    slackClient = app.client;
 
     // Log ALL incoming events (before any handler)
     app.use(async ({ payload, body, next }) => {

@@ -244,6 +244,43 @@ describe('OAuthRefreshScheduler (#653 M2)', () => {
     expect(onAfter).toHaveBeenCalledTimes(1);
   });
 
+  it('#737 P1 onAfterTick mutex: overlapping ticks do NOT invoke the hook concurrently', async () => {
+    // First hook holds; second tick fires before it resolves; second
+    // hook should be skipped (debug-logged), not queued and not invoked.
+    const { clock, fireTick } = makeFakeClock();
+    const tm = makeTm();
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let calls = 0;
+    const onAfter = vi.fn(async () => {
+      calls++;
+      await pending;
+    });
+    const s = new OAuthRefreshScheduler(tm, {
+      intervalMs: 60 * 60_000,
+      timeoutMs: 30_000,
+      enabled: true,
+      clock,
+      onAfterTick: onAfter,
+    });
+    s.start();
+    fireTick(); // first tick → hook acquired pending
+    await new Promise((r) => setImmediate(r));
+    expect(calls).toBe(1);
+    fireTick(); // second tick → hook in flight, skip
+    await new Promise((r) => setImmediate(r));
+    expect(calls).toBe(1); // NOT invoked again
+    release(); // unblock first
+    await pending;
+    await new Promise((r) => setImmediate(r));
+    fireTick(); // third tick → previous resolved, hook fires again
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    expect(calls).toBe(2);
+  });
+
   it('#737 onAfterTick throwing does not prevent the next tick from firing', async () => {
     const { clock, fireTick } = makeFakeClock();
     const tm = makeTm();

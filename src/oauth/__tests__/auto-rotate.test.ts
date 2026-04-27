@@ -4,9 +4,11 @@ import type { CctStoreSnapshot, SlotState, UsageSnapshot } from '../../cct-store
 import {
   buildRotationDebug,
   evaluateAndMaybeRotate,
+  type RotationApplyResult,
   type RotationDeps,
   type RotationThresholds,
   selectBestRotationCandidate,
+  selectBestRotationCandidateWithMaxAge,
 } from '../auto-rotate';
 
 const T: RotationThresholds = { fiveHourMax: 0.8, sevenDayMax: 0.9 };
@@ -33,9 +35,14 @@ function apiKey(keyId: string, name: string): AuthKey {
   };
 }
 
-function usage(fiveHour: number, sevenDay: number, sevenDayResetsAt: string): UsageSnapshot {
+function usage(
+  fiveHour: number,
+  sevenDay: number,
+  sevenDayResetsAt: string,
+  fetchedAt = '2026-04-27T03:00:00Z',
+): UsageSnapshot {
   return {
-    fetchedAt: '2026-04-27T00:00:00Z',
+    fetchedAt,
     fiveHour: { utilization: fiveHour, resetsAt: '2026-04-27T05:00:00Z' },
     sevenDay: { utilization: sevenDay, resetsAt: sevenDayResetsAt },
   };
@@ -155,6 +162,36 @@ describe('selectBestRotationCandidate (#737)', () => {
     const s = snap([cct('a', 'A')], { a: state({ usage: usage(0.1, 0.2, 'not-a-date') }) });
     expect(selectBestRotationCandidate(s, NOW, T)).toBeNull();
   });
+
+  it('candidate carries fetchedAtMs from usage.fetchedAt', () => {
+    const s = snap([cct('a', 'A')], {
+      a: state({ usage: usage(0.1, 0.2, '2026-04-30T00:00:00Z', '2026-04-27T02:50:00Z') }),
+    });
+    const c = selectBestRotationCandidate(s, NOW, T);
+    expect(c?.fetchedAtMs).toBe(new Date('2026-04-27T02:50:00Z').getTime());
+  });
+});
+
+describe('selectBestRotationCandidateWithMaxAge (#737 P1)', () => {
+  it('rejects candidate whose usage is older than usageMaxAgeMs', () => {
+    // fetchedAt at NOW - 2h; usageMaxAgeMs = 1h → reject.
+    const stale = '2026-04-27T01:00:00Z';
+    const s = snap([cct('a', 'A')], { a: state({ usage: usage(0.1, 0.2, '2026-04-30T00:00:00Z', stale) }) });
+    expect(selectBestRotationCandidateWithMaxAge(s, NOW, T, 60 * 60_000)).toBeNull();
+  });
+
+  it('accepts candidate whose usage is fresher than usageMaxAgeMs', () => {
+    // fetchedAt at NOW - 30min; usageMaxAgeMs = 1h → accept.
+    const fresh = '2026-04-27T02:30:00Z';
+    const s = snap([cct('a', 'A')], { a: state({ usage: usage(0.1, 0.2, '2026-04-30T00:00:00Z', fresh) }) });
+    expect(selectBestRotationCandidateWithMaxAge(s, NOW, T, 60 * 60_000)?.keyId).toBe('a');
+  });
+
+  it('Infinity disables the max-age filter (parity with selectBestRotationCandidate)', () => {
+    const ancient = '2024-01-01T00:00:00Z';
+    const s = snap([cct('a', 'A')], { a: state({ usage: usage(0.1, 0.2, '2026-04-30T00:00:00Z', ancient) }) });
+    expect(selectBestRotationCandidateWithMaxAge(s, NOW, T, Number.POSITIVE_INFINITY)?.keyId).toBe('a');
+  });
 });
 
 describe('buildRotationDebug (#737)', () => {
@@ -175,17 +212,44 @@ describe('buildRotationDebug (#737)', () => {
     expect(rejectMap.b).toBe('over-five-hour-threshold');
     expect(rejectMap.c).toBe('not-cct');
   });
+
+  it('reports usage-stale rejection when usageMaxAgeMs cuts a candidate', () => {
+    const stale = '2026-04-27T01:00:00Z';
+    const s = snap([cct('a', 'A')], { a: state({ usage: usage(0.5, 0.5, '2026-04-28T00:00:00Z', stale) }) }, 'a');
+    const dbg = buildRotationDebug(s, NOW, T, 60 * 60_000);
+    expect(dbg.candidates).toHaveLength(0);
+    expect(dbg.rejected[0]?.reason).toBe('usage-stale');
+  });
 });
 
 describe('evaluateAndMaybeRotate (#737)', () => {
+  /**
+   * Test deps that simulate the production CAS commit primitive.
+   * `applyTokenIfActiveMatches` mirrors `TokenManager.applyTokenIfActiveMatches`:
+   *   - Verifies expectedFromKeyId matches current activeKeyId
+   *   - Runs precondition against current state
+   *   - On success, mutates the in-memory snapshot
+   */
   function deps(initial: CctStoreSnapshot): RotationDeps & { applied: string[] } {
     let current = initial;
     const applied: string[] = [];
     return {
       loadSnapshot: async () => current,
-      applyToken: async (keyId) => {
-        applied.push(keyId);
-        current = { ...current, registry: { ...current.registry, activeKeyId: keyId } };
+      applyTokenIfActiveMatches: async (target, expected, precondition): Promise<RotationApplyResult> => {
+        if (current.registry.activeKeyId !== expected) {
+          return { rotated: false, reason: 'active-changed' };
+        }
+        const slot = current.registry.slots.find((s) => s.keyId === target);
+        if (!slot) return { rotated: false, reason: 'unknown-key' };
+        if (slot.kind === 'api_key') return { rotated: false, reason: 'api-key-not-selectable' };
+        const targetState = current.state[target];
+        const activeState = expected ? current.state[expected] : undefined;
+        if (!precondition(current, slot, targetState, activeState)) {
+          return { rotated: false, reason: 'precondition-failed' };
+        }
+        applied.push(target);
+        current = { ...current, registry: { ...current.registry, activeKeyId: target } };
+        return { rotated: true };
       },
       applied,
     };
@@ -300,7 +364,7 @@ describe('evaluateAndMaybeRotate (#737)', () => {
     expect(d.applied).toEqual([]);
   });
 
-  it('dry-run reports `would: rotate` without calling applyToken', async () => {
+  it('dry-run reports `would: rotate` without calling applyTokenIfActiveMatches', async () => {
     const s = snap(
       [cct('a', 'A'), cct('b', 'B')],
       {
@@ -391,7 +455,7 @@ describe('evaluateAndMaybeRotate (#737)', () => {
     expect(r.kind).toBe('noop');
   });
 
-  it('applyToken errors propagate (caller — onAfterTick — wraps in try/catch)', async () => {
+  it('applyTokenIfActiveMatches errors propagate (caller — onAfterTick — wraps in try/catch)', async () => {
     const s = snap(
       [cct('a', 'A'), cct('b', 'B')],
       {
@@ -402,12 +466,184 @@ describe('evaluateAndMaybeRotate (#737)', () => {
     );
     const failingDeps: RotationDeps = {
       loadSnapshot: async () => s,
-      applyToken: vi.fn(async () => {
+      applyTokenIfActiveMatches: vi.fn(async () => {
         throw new Error('CAS conflict');
       }),
     };
     await expect(
       evaluateAndMaybeRotate(failingDeps, { enabled: true, dryRun: false, thresholds: T, now: () => NOW }),
     ).rejects.toThrow('CAS conflict');
+  });
+
+  // ── #737 P0 race window — TOCTOU between snapshot read and applyToken commit ──
+
+  it('TOCTOU: lease appears between snapshot read and CAS → race-precondition-failed', async () => {
+    // Snapshot says active 'a' has 0 leases. By the time CAS runs, a new
+    // lease has arrived. Production deps call the predicate against the
+    // authoritative snapshot inside store.mutate — the test deps simulate
+    // this by checking `activeState.activeLeases.length === 0` at commit
+    // time on a mutated copy.
+    const lease = {
+      leaseId: 'race-lease',
+      ownerTag: 'stream-executor:C999:9999999999.999',
+      acquiredAt: '2026-04-27T03:00:00.500Z',
+      expiresAt: '2026-04-27T03:15:00Z',
+    };
+    const observedSnapshot = snap(
+      [cct('a', 'A'), cct('b', 'B')],
+      {
+        a: state({ usage: usage(0.5, 0.5, '2026-05-01T00:00:00Z') }), // 0 leases at read time
+        b: state({ usage: usage(0.5, 0.5, '2026-04-28T00:00:00Z') }),
+      },
+      'a',
+    );
+    const csaSnapshot: CctStoreSnapshot = {
+      ...observedSnapshot,
+      state: {
+        ...observedSnapshot.state,
+        a: { ...observedSnapshot.state.a, activeLeases: [lease] }, // lease appeared by commit time
+      },
+    };
+    const applied: string[] = [];
+    const racingDeps: RotationDeps = {
+      loadSnapshot: async () => observedSnapshot,
+      applyTokenIfActiveMatches: async (target, expected, precondition) => {
+        if (csaSnapshot.registry.activeKeyId !== expected) return { rotated: false, reason: 'active-changed' };
+        const slot = csaSnapshot.registry.slots.find((s) => s.keyId === target);
+        if (!slot || slot.kind === 'api_key') return { rotated: false, reason: 'unknown-key' };
+        const targetState = csaSnapshot.state[target];
+        const activeState = expected ? csaSnapshot.state[expected] : undefined;
+        if (!precondition(csaSnapshot, slot, targetState, activeState)) {
+          return { rotated: false, reason: 'precondition-failed' };
+        }
+        applied.push(target);
+        return { rotated: true };
+      },
+    };
+    const r = await evaluateAndMaybeRotate(racingDeps, {
+      enabled: true,
+      dryRun: false,
+      thresholds: T,
+      now: () => NOW,
+    });
+    expect(r.kind).toBe('skipped');
+    if (r.kind === 'skipped') expect(r.reason).toBe('race-precondition-failed');
+    expect(applied).toEqual([]);
+    // Use observedSnapshot to silence the unused-binding linter — test
+    // relies on csaSnapshot mutation, observedSnapshot is the seed.
+    void observedSnapshot;
+    void csaSnapshot;
+  });
+
+  it('TOCTOU: active changed under us → race-active-changed', async () => {
+    const observed = snap(
+      [cct('a', 'A'), cct('b', 'B')],
+      {
+        a: state({ usage: usage(0.5, 0.5, '2026-05-01T00:00:00Z') }),
+        b: state({ usage: usage(0.5, 0.5, '2026-04-28T00:00:00Z') }),
+      },
+      'a',
+    );
+    const racingDeps: RotationDeps = {
+      loadSnapshot: async () => observed,
+      applyTokenIfActiveMatches: async (_target, expected) => {
+        // Simulate another writer that flipped active to 'c' between
+        // snapshot read and CAS.
+        if (expected !== 'c') return { rotated: false, reason: 'active-changed' };
+        return { rotated: true };
+      },
+    };
+    const r = await evaluateAndMaybeRotate(racingDeps, {
+      enabled: true,
+      dryRun: false,
+      thresholds: T,
+      now: () => NOW,
+    });
+    expect(r.kind).toBe('skipped');
+    if (r.kind === 'skipped') expect(r.reason).toBe('race-active-changed');
+  });
+
+  it('TOCTOU: target slot lost eligibility (cooldown) between read and CAS → race-precondition-failed', async () => {
+    // Snapshot says 'b' is eligible. Between read and CAS, 'b' gets put
+    // into cooldown by a rate-limit handler. The predicate must catch this.
+    const observed = snap(
+      [cct('a', 'A'), cct('b', 'B')],
+      {
+        a: state({ usage: usage(0.5, 0.5, '2026-05-01T00:00:00Z') }),
+        b: state({ usage: usage(0.5, 0.5, '2026-04-28T00:00:00Z') }),
+      },
+      'a',
+    );
+    const csaState: Record<string, SlotState> = {
+      ...observed.state,
+      b: { ...observed.state.b, cooldownUntil: '2026-04-27T04:00:00Z' }, // cooldown appeared
+    };
+    const csa: CctStoreSnapshot = { ...observed, state: csaState };
+    const applied: string[] = [];
+    const racingDeps: RotationDeps = {
+      loadSnapshot: async () => observed,
+      applyTokenIfActiveMatches: async (target, expected, precondition) => {
+        const slot = csa.registry.slots.find((s) => s.keyId === target);
+        if (!slot) return { rotated: false, reason: 'unknown-key' };
+        const targetState = csa.state[target];
+        const activeState = expected ? csa.state[expected] : undefined;
+        if (!precondition(csa, slot, targetState, activeState)) {
+          return { rotated: false, reason: 'precondition-failed' };
+        }
+        applied.push(target);
+        return { rotated: true };
+      },
+    };
+    const r = await evaluateAndMaybeRotate(racingDeps, {
+      enabled: true,
+      dryRun: false,
+      thresholds: T,
+      now: () => NOW,
+    });
+    expect(r.kind).toBe('skipped');
+    if (r.kind === 'skipped') expect(r.reason).toBe('race-precondition-failed');
+    expect(applied).toEqual([]);
+  });
+
+  it('usageMaxAgeMs: stale candidate is rejected → skipped no-candidate', async () => {
+    // Stale = 2h old. With usageMaxAgeMs=1h, the only slot drops out of
+    // the candidate pool → no-candidate.
+    const stale = '2026-04-27T01:00:00Z';
+    const s = snap([cct('a', 'A')], { a: state({ usage: usage(0.5, 0.5, '2026-04-28T00:00:00Z', stale) }) }, 'a');
+    const d = deps(s);
+    const r = await evaluateAndMaybeRotate(d, {
+      enabled: true,
+      dryRun: false,
+      thresholds: T,
+      now: () => NOW,
+      usageMaxAgeMs: 60 * 60_000,
+    });
+    expect(r.kind).toBe('skipped');
+    if (r.kind === 'skipped') expect(r.reason).toBe('no-candidate');
+    expect(d.applied).toEqual([]);
+  });
+
+  it('usageMaxAgeMs: fresh candidate alongside stale → fresh wins', async () => {
+    const stale = '2026-04-27T01:00:00Z';
+    const fresh = '2026-04-27T02:55:00Z';
+    const s = snap(
+      [cct('a', 'A'), cct('b', 'B')],
+      {
+        a: state({ usage: usage(0.5, 0.5, '2026-04-28T00:00:00Z', stale) }), // stale, would have won
+        b: state({ usage: usage(0.5, 0.5, '2026-04-29T00:00:00Z', fresh) }), // fresh, later resetsAt but only candidate
+      },
+      'a',
+    );
+    const d = deps(s);
+    const r = await evaluateAndMaybeRotate(d, {
+      enabled: true,
+      dryRun: false,
+      thresholds: T,
+      now: () => NOW,
+      usageMaxAgeMs: 60 * 60_000,
+    });
+    expect(r.kind).toBe('rotated');
+    if (r.kind === 'rotated') expect(r.to.keyId).toBe('b');
+    expect(d.applied).toEqual(['b']);
   });
 });

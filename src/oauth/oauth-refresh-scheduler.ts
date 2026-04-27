@@ -84,6 +84,22 @@ export class OAuthRefreshScheduler {
   readonly #clock: NonNullable<OAuthRefreshSchedulerOpts['clock']>;
   readonly #onAfterTick: (() => Promise<void>) | undefined;
   #handle: ReturnType<typeof setInterval> | null = null;
+  /**
+   * #737 P1 — onAfterTick mutex. The refresh fan-out itself can overlap
+   * (TokenManager dedupes by composite keyId), but the hook runs side-
+   * effecting writes (auto-rotation `applyTokenIfActiveMatches` + Slack
+   * notify). Two overlapping hooks could:
+   *   • Apply different keyIds back-to-back from stale snapshots — the
+   *     CAS predicate inside applyTokenIfActiveMatches catches this, but
+   *     duplicate Slack notifications would still post.
+   *   • Hit the Slack rate limit unnecessarily.
+   *
+   * If a hook is in flight when the next tick fires, skip the new hook
+   * invocation entirely (do NOT queue) — the next interval (1h later
+   * by default) will catch up. Skipping is preferable to queueing
+   * because rotation decisions get stale fast.
+   */
+  #hookInFlight: Promise<void> | null = null;
 
   constructor(tm: TokenManager, opts: OAuthRefreshSchedulerOpts) {
     this.#tm = tm;
@@ -155,13 +171,30 @@ export class OAuthRefreshScheduler {
     // a stale tick still has the previous snapshot's usage to work with,
     // and skipping rotation on every refresh hiccup would defeat the
     // hourly cadence the user spec calls out.
+    //
+    // Mutex: skip (don't queue) if a previous hook is still running.
     if (this.#onAfterTick) {
-      try {
-        await this.#onAfterTick();
-      } catch (err) {
-        logger.warn('OAuth refresh tick onAfterTick hook threw (swallowed)', {
-          err,
-        });
+      if (this.#hookInFlight) {
+        logger.debug('OAuth refresh tick onAfterTick skipped (previous hook in flight)');
+      } else {
+        const hook = this.#onAfterTick;
+        const inFlight = (async () => {
+          try {
+            await hook();
+          } catch (err) {
+            logger.warn('OAuth refresh tick onAfterTick hook threw (swallowed)', {
+              err,
+            });
+          }
+        })();
+        this.#hookInFlight = inFlight;
+        try {
+          await inFlight;
+        } finally {
+          // Only clear if we're still the owning in-flight; defensive against
+          // a future change that allows nested invocations.
+          if (this.#hookInFlight === inFlight) this.#hookInFlight = null;
+        }
       }
     }
   }
