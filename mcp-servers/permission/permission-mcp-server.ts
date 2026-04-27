@@ -4,7 +4,7 @@ import { WebClient } from '@slack/web-api';
 import { BaseMcpServer } from '../_shared/base-mcp-server.js';
 import type { ToolDefinition, ToolResult } from '../_shared/base-mcp-server.js';
 import { overridableMatchedRuleIds, rulesByIds } from '../_shared/dangerous-command-filter.js';
-import { sharedStore, PendingApproval, PermissionResponse } from '../_shared/shared-store.js';
+import { sharedStore, PendingApproval, PermissionResponse } from 'somalib/permission/shared-store.js';
 import { SlackPermissionMessenger } from '../_shared/slack-messenger.js';
 
 interface PermissionRequest {

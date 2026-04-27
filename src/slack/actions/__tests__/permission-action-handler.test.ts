@@ -1,14 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../../shared-store', () => ({
+vi.mock('somalib/permission/shared-store', () => ({
   sharedStore: {
     storePermissionResponse: vi.fn().mockResolvedValue(undefined),
     getPendingApproval: vi.fn(),
   },
 }));
 
+import { sharedStore } from 'somalib/permission/shared-store';
 import type { SessionRegistry } from '../../../session-registry';
-import { sharedStore } from '../../../shared-store';
 import { PermissionActionHandler } from '../permission-action-handler';
 import type { RespondFn } from '../types';
 

@@ -19,6 +19,8 @@ registerSkillStore({
 
 import { App } from '@slack/bolt';
 import type { WebClient } from '@slack/web-api';
+import * as path from 'path';
+import { CronStorage } from 'somalib/cron/cron-storage';
 import { initA2tService, shutdownA2tService } from './a2t/a2t-service';
 import { scanChannels } from './channel-registry';
 import { ClaudeHandler } from './claude-handler';
@@ -46,7 +48,6 @@ import {
   stopWebServer,
 } from './conversation';
 import { CronScheduler, type SyntheticMessageEvent } from './cron-scheduler';
-import { CronStorage } from './cron-storage';
 import { initializeDispatchService } from './dispatch-service';
 import { CONFIG_FILE, DATA_DIR, MCP_CONFIG_FILE, PLUGINS_DIR } from './env-paths';
 import { discoverInstallations, getGitHubAppAuth, isGitHubAppConfigured } from './github-auth.js';
@@ -682,7 +683,7 @@ async function start() {
     // Trace: docs/cron-scheduler/spec.md §5.4 — Scheduler lifecycle
     let cronScheduler: CronScheduler | null = null;
     try {
-      const cronStorage = new CronStorage();
+      const cronStorage = new CronStorage(path.join(DATA_DIR, 'cron-jobs.json'));
 
       // Build a real say function that posts to Slack via chat.postMessage.
       // noopSay caused drain output to be silently discarded — the model ran
