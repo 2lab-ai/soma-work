@@ -672,4 +672,32 @@ describe('TaskListBlockBuilder.buildPlanTasks (P2 plan/task_card)', () => {
     const ids = planBlock.tasks.map((tc: any) => tc.task_id);
     expect(new Set(ids).size).toBe(ids.length);
   });
+
+  // Regression: Slack rejects the plan block with `invalid_blocks` and
+  // `missing required field: title [json-pointer:/blocks/0]` if `title` is
+  // omitted. The title MUST be a plain_text composition object (not a
+  // bare string). This regressed for the entire P2 lifetime — first
+  // observed 2026-04-23 09:00 UTC and silently dropped every B2 plan
+  // post until fixed.
+  it('plan block has a required top-level title as a plain_text composition object', () => {
+    const todos: Todo[] = [
+      { id: '1', content: 'a', status: 'pending', priority: 'high' },
+      { id: '2', content: 'b', status: 'in_progress', priority: 'high' },
+    ];
+    const result = TaskListBlockBuilder.buildPlanTasks(todos);
+    const planBlock = result.blocks.find((b: any) => b.type === 'plan');
+    expect(planBlock.title).toBeDefined();
+    expect(planBlock.title).toEqual({
+      type: 'plain_text',
+      text: 'Tasks (2)',
+      emoji: false,
+    });
+  });
+
+  it('plan title task count tracks the todo length', () => {
+    const todos: Todo[] = [{ id: '1', content: 'only one', status: 'pending', priority: 'high' }];
+    const result = TaskListBlockBuilder.buildPlanTasks(todos);
+    const planBlock = result.blocks.find((b: any) => b.type === 'plan');
+    expect((planBlock.title as any).text).toBe('Tasks (1)');
+  });
 });
