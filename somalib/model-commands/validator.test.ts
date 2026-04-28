@@ -1171,3 +1171,103 @@ describe('MANAGE_SKILL share action — validator', () => {
     expect(result.error.message).toContain('share');
   });
 });
+
+// ---------------------------------------------------------------------------
+// UPDATE_SESSION — instructionOperations alone payload (PR2 P0-1, #755)
+// ---------------------------------------------------------------------------
+//
+// Pure lifecycle requests carry only `instructionOperations` — no `operations`
+// or `title`. The validator MUST accept them as a sole payload AND forward the
+// `instructionOperations` field on the parsed request so the dispatcher
+// (`runModelCommand`) can route them through the user y/n confirmation flow.
+// Pre-fix the validator both rejected the request AND silently dropped the
+// field even when it didn't reject.
+describe('UPDATE_SESSION instructionOperations alone payload', () => {
+  it('accepts instructionOperations as a sole payload (no operations, no title)', () => {
+    const result = validateModelCommandRunArgs({
+      commandId: 'UPDATE_SESSION',
+      params: {
+        instructionOperations: [
+          { action: 'add', text: 'Always pin runtime versions' },
+        ],
+      },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    expect(result.request.commandId).toBe('UPDATE_SESSION');
+    const params = result.request.params as {
+      operations?: unknown[];
+      title?: string;
+      instructionOperations?: Array<{ action: string }>;
+    };
+    expect(params.instructionOperations).toBeDefined();
+    expect(params.instructionOperations).toHaveLength(1);
+    expect(params.instructionOperations?.[0]).toMatchObject({
+      action: 'add',
+      text: 'Always pin runtime versions',
+    });
+  });
+
+  it('forwards instructionOperations alongside operations + title', () => {
+    const result = validateModelCommandRunArgs({
+      commandId: 'UPDATE_SESSION',
+      params: {
+        title: 'Linked',
+        operations: [
+          {
+            action: 'add',
+            resourceType: 'issue',
+            link: { url: 'https://jira.example/PTN-1', type: 'issue', provider: 'jira' },
+          },
+        ],
+        instructionOperations: [
+          { action: 'cancel', id: 'instr_1' },
+        ],
+      },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    const params = result.request.params as {
+      operations?: unknown[];
+      title?: string;
+      instructionOperations?: Array<{ action: string }>;
+    };
+    expect(params.title).toBe('Linked');
+    expect(params.operations).toHaveLength(1);
+    expect(params.instructionOperations).toHaveLength(1);
+    expect(params.instructionOperations?.[0]).toMatchObject({ action: 'cancel', id: 'instr_1' });
+  });
+
+  it('still rejects empty UPDATE_SESSION (no operations, no title, no instructionOperations)', () => {
+    const result = validateModelCommandRunArgs({
+      commandId: 'UPDATE_SESSION',
+      params: {},
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.error.code).toBe('INVALID_ARGS');
+    expect(result.error.message).toMatch(/operations|title|instructionOperations/i);
+  });
+
+  it('accepts each sealed lifecycle action through the validator', () => {
+    const cases: Array<Record<string, unknown>> = [
+      { action: 'add', text: 'rule' },
+      { action: 'link', id: 'instr_1', sessionKey: 'C/u/T' },
+      { action: 'complete', id: 'instr_1', evidence: 'PR #999' },
+      { action: 'cancel', id: 'instr_1' },
+      { action: 'rename', id: 'instr_1', text: 'updated rule' },
+    ];
+    for (const op of cases) {
+      const result = validateModelCommandRunArgs({
+        commandId: 'UPDATE_SESSION',
+        params: { instructionOperations: [op] },
+      });
+      expect(result.ok, `op=${String(op.action)}`).toBe(true);
+      if (!result.ok) continue;
+      const params = result.request.params as {
+        instructionOperations?: Array<Record<string, unknown>>;
+      };
+      expect(params.instructionOperations?.[0]).toMatchObject(op);
+    }
+  });
+});
