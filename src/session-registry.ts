@@ -1239,6 +1239,94 @@ export class SessionRegistry {
   }
 
   /**
+   * N-confirm path: append a `state: 'rejected'` lifecycleEvents row to the
+   * user master without mutating any instruction data.
+   *
+   * The rejected event for an `add` lifecycle has `instructionId = null`
+   * (no instruction was ever created). For other ops (link/complete/cancel/
+   * rename) the original target id is recorded so the dashboard drilldown
+   * can show "tried to X, user said no".
+   */
+  recordRejectedLifecycle(session: ConversationSession, meta: LifecycleConfirmMeta): void {
+    this.appendLifecycleAuditOnly(session, meta, 'rejected');
+  }
+
+  /**
+   * Internal helper — append a single lifecycleEvents row with the given
+   * non-mutating state ('rejected' or 'superseded'). No data mutation, no
+   * pointer update; the row's `instructionId` is null for `add` rejections
+   * (where no instruction exists yet) and the op's target id otherwise.
+   */
+  private appendLifecycleAuditOnly(
+    session: ConversationSession,
+    meta: LifecycleConfirmMeta,
+    state: 'rejected' | 'superseded',
+  ): void {
+    const userId = session.ownerId;
+    if (!userId) {
+      this.logger.warn('appendLifecycleAuditOnly: session has no ownerId — skipping audit', {
+        sessionId: session.sessionId,
+        requestId: meta.requestId,
+        state,
+      });
+      return;
+    }
+    const sessionKey = this.getSessionKey(session.channelId, session.threadTs);
+    const store = getUserSessionStore();
+
+    let userDoc;
+    try {
+      userDoc = store.load(userId);
+    } catch (err) {
+      this.logger.error('appendLifecycleAuditOnly: failed to load user master', {
+        userId,
+        sessionKey,
+        requestId: meta.requestId,
+        state,
+        error: (err as Error)?.message ?? String(err),
+      });
+      return;
+    }
+
+    const op = meta.ops[0];
+    let instructionId: string | null = null;
+    if (op && meta.type !== 'add') {
+      instructionId = (op as { id?: string }).id ?? null;
+      // Verify the target still exists on the master. If it doesn't (race
+      // with concurrent migration / manual edit), record null rather than
+      // dangle a foreign-key reference — `validateDoc` would reject the save
+      // otherwise.
+      if (instructionId && !userDoc.instructions.some((i) => i.id === instructionId)) {
+        instructionId = null;
+      }
+    }
+
+    const audit: LifecycleEvent = {
+      id: `evt_${Date.now()}_${randomUUID().slice(0, 8)}`,
+      requestId: meta.requestId,
+      instructionId,
+      sessionKey,
+      op: meta.type,
+      state,
+      at: new Date().toISOString(),
+      by: meta.by,
+      payload: this.buildLifecyclePayload(meta),
+    };
+    userDoc.lifecycleEvents.push(audit);
+    try {
+      store.save(userId, userDoc);
+    } catch (err) {
+      this.logger.error('appendLifecycleAuditOnly: failed to save user master', {
+        userId,
+        sessionKey,
+        requestId: meta.requestId,
+        state,
+        error: (err as Error)?.message ?? String(err),
+      });
+    }
+  }
+
+  /**
    * Build the audit payload for a lifecycle event. Different op types carry
    * different forensic fields — `complete` includes the evidence string,
    * `rename` includes the new text, `add`/`link`/`cancel` include the raw
