@@ -2523,19 +2523,24 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
         credentials: makeOAuthCreds(),
         acknowledgedConsumerTosRisk: true,
       });
-      // Profile fetch is hanging (resolveProfile not yet called), so the
-      // drain MUST wait for it to settle. Schedule the resolution after
-      // the drain starts.
+      // Wait for the fire-and-forget refreshOAuthProfile to register itself
+      // in the inflight map (it has an `await store.load()` before set()).
+      // biome-ignore lint/suspicious/noExplicitAny: test-only internal access
+      const inflightMap = (tm as any).profileInflight as Map<string, unknown>;
+      for (let i = 0; i < 50; i++) {
+        if (inflightMap.size >= 1) break;
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      expect(inflightMap.size).toBe(1);
+      // Now schedule the drain; it must wait for the (still hanging) fetch.
       const drainP = tm.drainPendingProfileFetches();
-      // Microtask gap, then resolve the inflight fetch.
+      // Yield, then resolve the hanging fetch.
       await new Promise((r) => setTimeout(r, 5));
       resolveProfile();
       await drainP;
-      // After drain, the in-flight map MUST be empty so subsequent
-      // dedupe lookups always create a fresh entry.
-      // Internal access: cast to any for the private map. Test seam.
-      // biome-ignore lint/suspicious/noExplicitAny: test-only internal access
-      expect((tm as any).profileInflight.size).toBe(0);
+      // After drain, the in-flight map MUST be empty so subsequent dedupe
+      // lookups always create a fresh entry.
+      expect(inflightMap.size).toBe(0);
     });
 
     it('awaitProfile: true suppresses the fire-and-forget profile leg (one profile fetch per slot, not two)', async () => {
@@ -2562,15 +2567,11 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
         expiresAtMs: Date.now() + 8 * 60 * 60 * 1000,
       }));
       // Drain the fire-and-forget profile syncs that the two addSlot calls
-      // fire (one each). Bare setTimeout(20ms) raced under loaded CI runners
-      // and let one of the addSlot profile calls land AFTER the reset, then
-      // counted against the fan-out assertion (#737 PR observed 1 vs 2 expected).
-      // Poll up to 500ms for both calls to land before resetting.
-      for (let i = 0; i < 50; i++) {
-        if ((fetchOAuthProfileMock.mock.calls.length ?? 0) >= 2) break;
-        await new Promise((r) => setTimeout(r, 10));
-      }
-      await new Promise((r) => setTimeout(r, 20));
+      // fire (one each). The previous setTimeout-poll approach raced under
+      // loaded CI runners (#737 PR observed 1 vs 2 expected). The deterministic
+      // `drainPendingProfileFetches` helper awaits the in-flight map to
+      // quiesce so subsequent calls always create fresh dedupe entries.
+      await tm.drainPendingProfileFetches();
       fetchOAuthProfileMock.mockReset();
       fetchOAuthProfileMock.mockImplementation(async () => ({
         fetchedAt: Date.now(),

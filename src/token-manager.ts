@@ -1495,6 +1495,31 @@ export class TokenManager {
   private readonly profileInflight: Map<string, Promise<OAuthProfile | null>> = new Map();
 
   /**
+   * Awaits all currently in-flight profile fetches to settle and the dedupe
+   * map to drain. Used by tests to deterministically synchronize on the
+   * fire-and-forget profile fetches that `addSlot` / `attachOAuth` /
+   * `forceRefreshOAuth` kick off (avoids relying on bare setTimeout polls,
+   * which raced under loaded CI runners — #737 PR / #758 PR4 fix loop #1).
+   */
+  async drainPendingProfileFetches(): Promise<void> {
+    // Loop until the map stabilizes empty across two ticks. New entries can
+    // appear (e.g. a 401 retry that re-enters), so a single drain pass is
+    // not sufficient — we drain, yield to microtasks, and re-check.
+    for (let i = 0; i < 20; i++) {
+      const pending = Array.from(this.profileInflight.values());
+      if (pending.length === 0) {
+        // Two empty ticks in a row = quiescent.
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        if (this.profileInflight.size === 0) return;
+        continue;
+      }
+      await Promise.allSettled(pending);
+      // Yield to allow `.finally(() => map.delete(...))` to run.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+  }
+
+  /**
    * Fetch the OAuth profile for a CCT slot and persist it on the slot's
    * attachment. Non-reentrant: a single 401 triggers one token refresh and
    * one retry; subsequent 401s from the retry flow surface to the caller.
