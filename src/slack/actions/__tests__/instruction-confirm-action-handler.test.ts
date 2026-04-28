@@ -32,7 +32,13 @@ function mkHandler() {
   const session = mkSession();
   // #755: handleYes routes through applyConfirmedLifecycle (sealed
   // one-tx). updateSessionResources is no longer the y-confirm seam.
-  const applyConfirmedLifecycle = vi.fn(() => ({ ok: true, instructionId: 'instr-test' }));
+  // PR2 P1-1: pending-store delete is now the FOURTH step inside the tx,
+  // passed as a callback. The mock invokes it so the test exercises the
+  // post-commit fanout (Slack message update, store.get returns undefined).
+  const applyConfirmedLifecycle = vi.fn((_session, _meta, pendingDelete?: () => void) => {
+    if (pendingDelete) pendingDelete();
+    return { ok: true, instructionId: 'instr-test' };
+  });
   const recordRejectedLifecycle = vi.fn();
   const recordSupersededLifecycle = vi.fn();
   const getSessionByKey = vi.fn(() => session);

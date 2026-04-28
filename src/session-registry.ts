@@ -1026,13 +1026,29 @@ export class SessionRegistry {
 
   /**
    * Y-confirm path: commit a sealed lifecycle op to the user master AND the
-   * session pointer in ONE transaction. On any failure both disks roll back
-   * to the pre-call state and the result is `{ ok: false, reason: 'TX_FAILED' }`.
+   * session pointer in ONE transaction. On any failure all disk writes roll
+   * back to the pre-call state and the result is
+   * `{ ok: false, reason: 'TX_FAILED' }`.
    *
-   * Caller (`InstructionConfirmActionHandler.handleYes`) is responsible for
-   * deleting the pending-confirm entry AFTER this returns ok=true.
+   * Sealed 4-step transaction (#755 §구현 스펙, PR2 P1-1):
+   *   ① user-store mutation + audit row append (state: 'confirmed')
+   *   ② session-side pointer + instructionHistory update
+   *   ③ session-side persistence (`saveSessions`)
+   *   ④ pending-confirm-store delete (caller-supplied callback)
+   *
+   * Steps ②/③/④ failing must roll back the user-master commit; step ④
+   * failing additionally rolls back ②+③ via the pre-call snapshot. The
+   * callback is supplied by the caller so this seam stays decoupled from
+   * the Slack pending-store implementation but the tx boundary still owns
+   * the side-effect ordering. Pre-PR2 the caller (handleYes) ran the delete
+   * AFTER this returned ok=true, so a delete failure stranded the pending
+   * entry while the user master was already mutated.
    */
-  applyConfirmedLifecycle(session: ConversationSession, meta: LifecycleConfirmMeta): LifecycleConfirmResult {
+  applyConfirmedLifecycle(
+    session: ConversationSession,
+    meta: LifecycleConfirmMeta,
+    pendingDelete?: () => void,
+  ): LifecycleConfirmResult {
     const userId = session.ownerId;
     if (!userId) {
       return { ok: false, reason: 'SESSION_NOT_FOUND', error: 'session has no ownerId' };
@@ -1209,7 +1225,44 @@ export class SessionRegistry {
         throw sessionSaveErr;
       }
 
-      // 6. SSOT change — invalidate cached prompt + schedule summary regen.
+      // 6. Pending-store delete is the FOURTH step of the sealed tx (#755
+      //    P1-1). If the callback throws, roll back the user master AND the
+      //    session-side persistence so the audit log and the data agree —
+      //    pre-PR2 this lived in handleYes() outside the rollback envelope.
+      if (pendingDelete) {
+        try {
+          pendingDelete();
+        } catch (deleteErr) {
+          // Roll back user master.
+          try {
+            store.save(userId, userDocBefore);
+            store.invalidateCache(userId);
+          } catch (rollbackErr) {
+            this.logger.error('applyConfirmedLifecycle: rollback of user master also failed (pending-delete path)', {
+              userId,
+              sessionKey,
+              requestId: meta.requestId,
+              rollbackError: (rollbackErr as Error)?.message ?? String(rollbackErr),
+            });
+          }
+          // Roll back session-side state in memory + on disk.
+          session.currentInstructionId = sessionPointerBefore;
+          session.instructionHistory = sessionHistoryBefore;
+          try {
+            this.saveSessions();
+          } catch (sessionRollbackErr) {
+            this.logger.error('applyConfirmedLifecycle: rollback of session-side persistence also failed', {
+              userId,
+              sessionKey,
+              requestId: meta.requestId,
+              error: (sessionRollbackErr as Error)?.message ?? String(sessionRollbackErr),
+            });
+          }
+          throw deleteErr;
+        }
+      }
+
+      // 7. SSOT change — invalidate cached prompt + schedule summary regen.
       session.systemPrompt = undefined;
       this.scheduleInstructionsSummaryRegen(session);
 

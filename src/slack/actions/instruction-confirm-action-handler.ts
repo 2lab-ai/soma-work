@@ -90,12 +90,18 @@ export class InstructionConfirmActionHandler {
       return;
     }
 
-    // Sealed (#755) y-confirm: commit a single lifecycle transaction over
-    // the user master AND session pointer. The pending entry's `type` and
-    // `by` are the authoritative metadata source (snapshotted at queue
-    // time) so the audit row can never drift on later session shifts.
+    // Sealed (#755) y-confirm: commit a single 4-step lifecycle transaction
+    // over the user master AND session pointer AND pending-store. The pending
+    // entry's `type` and `by` are the authoritative metadata source
+    // (snapshotted at queue time) so the audit row can never drift on later
+    // session shifts. PR2 P1-1: the pending-store delete is now passed as a
+    // callback that runs INSIDE the rollback envelope — pre-fix the delete
+    // ran AFTER applyConfirmedLifecycle returned ok=true, so a delete failure
+    // would leave the user master mutated with a stranded pending entry.
     const meta = this.buildLifecycleMeta(entry);
-    const result = this.ctx.claudeHandler.applyConfirmedLifecycle(session, meta);
+    const result = this.ctx.claudeHandler.applyConfirmedLifecycle(session, meta, () => {
+      this.ctx.store.delete(requestId);
+    });
     if (!result.ok) {
       this.logger.warn('instr_confirm_y: applyConfirmedLifecycle failed', {
         requestId,
@@ -130,8 +136,7 @@ export class InstructionConfirmActionHandler {
         });
       }
     }
-
-    this.ctx.store.delete(requestId);
+    // pending-store delete already happened inside applyConfirmedLifecycle.
   }
 
   async handleNo(body: any, _respond: RespondFn): Promise<void> {

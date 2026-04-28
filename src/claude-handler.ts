@@ -376,8 +376,9 @@ export class ClaudeHandler {
   applyConfirmedLifecycle(
     session: import('./types').ConversationSession,
     meta: import('./session-registry').LifecycleConfirmMeta,
+    pendingDelete?: () => void,
   ): import('./session-registry').LifecycleConfirmResult {
-    return this.sessionRegistry.applyConfirmedLifecycle(session, meta);
+    return this.sessionRegistry.applyConfirmedLifecycle(session, meta, pendingDelete);
   }
 
   recordRejectedLifecycle(
