@@ -220,7 +220,9 @@ export class ClaudeHandler {
    * `<current-user-instruction>` block never renders the
    * `pending: <op>` line in prod even though tests cover the path.
    */
-  setPendingInstructionConfirmStore(store: import('./slack/actions/pending-instruction-confirm-store').PendingInstructionConfirmStore): void {
+  setPendingInstructionConfirmStore(
+    store: import('./slack/actions/pending-instruction-confirm-store').PendingInstructionConfirmStore,
+  ): void {
     this.promptBuilder.setPendingInstructionConfirmStore(store);
   }
 
