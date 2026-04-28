@@ -183,3 +183,106 @@ describe('TodoManager — auto-link userInstructionId from currentInstructionId'
     expect(parsed.todos[0].status).toBe('completed');
   });
 });
+
+describe('TodoManager — cancelled/completed instruction guard', () => {
+  it('throws when creating a Todo whose currentInstructionId is cancelled', () => {
+    const mgr = new TodoManager({ baseDir: tmpRoot });
+    expect(() =>
+      mgr.updateTodos('sess-1', [baseTodo()], {
+        userId: 'U1',
+        currentInstructionId: 'instr_dead',
+        instructionStatusLookup: (id) => (id === 'instr_dead' ? 'cancelled' : 'unknown'),
+      }),
+    ).toThrow(/cancelled|completed/i);
+  });
+
+  it('throws when creating a Todo whose currentInstructionId is completed', () => {
+    const mgr = new TodoManager({ baseDir: tmpRoot });
+    expect(() =>
+      mgr.updateTodos('sess-1', [baseTodo()], {
+        userId: 'U1',
+        currentInstructionId: 'instr_done',
+        instructionStatusLookup: (id) => (id === 'instr_done' ? 'completed' : 'unknown'),
+      }),
+    ).toThrow(/cancelled|completed/i);
+  });
+
+  it('allows creation when currentInstructionId is active', () => {
+    const mgr = new TodoManager({ baseDir: tmpRoot });
+    expect(() =>
+      mgr.updateTodos('sess-1', [baseTodo()], {
+        userId: 'U1',
+        currentInstructionId: 'instr_live',
+        instructionStatusLookup: (id) => (id === 'instr_live' ? 'active' : 'unknown'),
+      }),
+    ).not.toThrow();
+    expect(mgr.getTodos('sess-1')[0].userInstructionId).toBe('instr_live');
+  });
+
+  it('allows updates to existing Todos even after their instruction completes (frozen)', () => {
+    const mgr = new TodoManager({ baseDir: tmpRoot });
+    // Create Todo while instr_live is active.
+    mgr.updateTodos('sess-1', [baseTodo()], {
+      userId: 'U1',
+      currentInstructionId: 'instr_live',
+      instructionStatusLookup: () => 'active',
+    });
+
+    // The instruction completes. Now we update Todo status — must NOT throw
+    // because we are not creating a new link, just mutating an existing Todo.
+    expect(() =>
+      mgr.updateTodos('sess-1', [baseTodo({ status: 'completed' })], {
+        userId: 'U1',
+        currentInstructionId: 'instr_live',
+        instructionStatusLookup: () => 'completed',
+      }),
+    ).not.toThrow();
+    expect(mgr.getTodos('sess-1')[0].status).toBe('completed');
+  });
+
+  it('does NOT save the file when guard throws (RAM and disk stay clean)', () => {
+    const mgr = new TodoManager({ baseDir: tmpRoot });
+    expect(() =>
+      mgr.updateTodos('sess-1', [baseTodo()], {
+        userId: 'U1',
+        currentInstructionId: 'instr_dead',
+        instructionStatusLookup: () => 'cancelled',
+      }),
+    ).toThrow();
+
+    expect(mgr.getTodos('sess-1')).toEqual([]);
+    const file = path.join(tmpRoot, 'users', 'U1', 'todos.json');
+    expect(fs.existsSync(file)).toBe(false);
+  });
+
+  it('rejects when ANY new Todo in a batch links to a dead instruction', () => {
+    const mgr = new TodoManager({ baseDir: tmpRoot });
+    // First create t1 under an active instruction.
+    mgr.updateTodos('sess-1', [baseTodo({ id: 't1' })], {
+      userId: 'U1',
+      currentInstructionId: 'instr_live',
+      instructionStatusLookup: () => 'active',
+    });
+
+    // Now an update that adds t2 while instr_dead is the current pointer
+    // (but the lookup says cancelled). t1 is existing (frozen, fine), t2 is
+    // a new creation under a dead instruction → MUST throw, t1 must NOT be
+    // mutated.
+    const file = path.join(tmpRoot, 'users', 'U1', 'todos.json');
+    const before = fs.readFileSync(file, 'utf-8');
+    expect(() =>
+      mgr.updateTodos('sess-1', [baseTodo({ id: 't1' }), baseTodo({ id: 't2', content: 'New' })], {
+        userId: 'U1',
+        currentInstructionId: 'instr_dead',
+        instructionStatusLookup: (id) => (id === 'instr_dead' ? 'cancelled' : 'active'),
+      }),
+    ).toThrow(/cancelled|completed/i);
+
+    // Disk state is unchanged.
+    expect(fs.readFileSync(file, 'utf-8')).toBe(before);
+    // RAM: only t1 still present.
+    const stored = mgr.getTodos('sess-1');
+    expect(stored).toHaveLength(1);
+    expect(stored[0].id).toBe('t1');
+  });
+});
