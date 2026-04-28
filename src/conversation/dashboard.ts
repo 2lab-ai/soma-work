@@ -3086,6 +3086,48 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .show-older-btn { min-height: 40px; padding: 8px 16px; }
   .card { padding: 12px 16px; }
 }
+
+/* #758 P1-4 — Instruction drill-down slide panel */
+.instruction-panel-overlay {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0.4);
+  opacity: 0; pointer-events: none;
+  transition: opacity 0.18s ease-out;
+  z-index: 80;
+}
+.instruction-panel-overlay.open { opacity: 1; pointer-events: auto; }
+.instruction-panel {
+  position: fixed; top: 0; right: 0; bottom: 0;
+  width: min(420px, 90vw);
+  background: var(--surface, #fff);
+  color: var(--text, #111);
+  box-shadow: -4px 0 16px rgba(0,0,0,0.18);
+  border-left: 1px solid var(--border, #e5e7eb);
+  transform: translateX(100%);
+  transition: transform 0.22s ease-out;
+  z-index: 90;
+  display: flex; flex-direction: column;
+  padding: 16px;
+  overflow-y: auto;
+}
+.instruction-panel.open { transform: translateX(0); }
+.instruction-panel-header {
+  display: flex; align-items: center; justify-content: space-between;
+  border-bottom: 1px solid var(--border, #e5e7eb);
+  padding-bottom: 8px;
+}
+.instruction-panel-close {
+  background: transparent; border: 0; cursor: pointer;
+  font-size: 20px; line-height: 1; padding: 4px 8px;
+  color: var(--text-secondary, #555);
+}
+.instruction-panel-section { margin-top: 10px; }
+.instruction-panel-list { display: flex; flex-direction: column; gap: 4px; }
+.instruction-panel-row {
+  font-size: 0.9em; padding: 4px 0;
+  border-bottom: 1px solid var(--border, #f1f1f1);
+}
+.instruction-panel-empty { padding: 4px 0; }
 </style>
 </head>
 <body>
@@ -3150,6 +3192,34 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
         <div class="instructions-empty" style="color:var(--text-tertiary);font-size:0.85em">No active instructions for this user.</div>
       </div>
     </div>
+
+    <!-- #758 P1-4 — Drill-down slide panel. Hidden by default; populated by
+         openInstructionPanel(id) and revealed by toggling the .open class. -->
+    <div id="instruction-panel-overlay" class="instruction-panel-overlay" onclick="closeInstructionPanel()"></div>
+    <aside id="instruction-panel" class="instruction-panel" aria-hidden="true">
+      <header class="instruction-panel-header">
+        <h3 id="instruction-panel-title" style="margin:0;font-size:1em">Instruction</h3>
+        <button class="instruction-panel-close" onclick="closeInstructionPanel()" aria-label="Close">&times;</button>
+      </header>
+      <section class="instruction-panel-section">
+        <h4 style="font-size:0.85em;color:var(--text-secondary);margin:12px 0 6px">Linked Sessions</h4>
+        <div id="instruction-panel-linked-sessions" class="instruction-panel-list">
+          <div class="instruction-panel-empty" style="color:var(--text-tertiary);font-size:0.85em">No linked sessions.</div>
+        </div>
+      </section>
+      <section class="instruction-panel-section">
+        <h4 style="font-size:0.85em;color:var(--text-secondary);margin:12px 0 6px">Tasks</h4>
+        <div id="instruction-panel-tasks" class="instruction-panel-list">
+          <div class="instruction-panel-empty" style="color:var(--text-tertiary);font-size:0.85em">No tasks.</div>
+        </div>
+      </section>
+      <section class="instruction-panel-section">
+        <h4 style="font-size:0.85em;color:var(--text-secondary);margin:12px 0 6px">Lifecycle Events</h4>
+        <div id="instruction-panel-lifecycle" class="instruction-panel-list">
+          <div class="instruction-panel-empty" style="color:var(--text-tertiary);font-size:0.85em">No lifecycle events.</div>
+        </div>
+      </section>
+    </aside>
 
     <div style="border-top:1px solid var(--border);margin:16px 0 12px;opacity:0.5"></div>
     <h2 style="font-size:0.95em;margin-bottom:12px;color:var(--text-secondary)">&#x1F4CB; &#xC138;&#xC158; &#xBCF4;&#xB4DC;</h2>
@@ -4083,17 +4153,76 @@ async function proposeInstructionLifecycle(instructionId, op) {
   } catch (e) { console.error('proposeInstructionLifecycle error', e); }
 }
 
-// Drill-down panel placeholder. The full panel UI is rendered server-truth
-// when the user clicks a card; for now we just navigate using the existing
-// session-detail panel infra by fetching the drill-down JSON.
+// #758 P1-4 — Drill-down slide panel. Fetches /api/dashboard/instructions/:id
+// and renders three sections (linked sessions, tasks union, lifecycle events).
 async function openInstructionPanel(instructionId) {
   if (!currentUserId) return;
   try {
     var res = await fetch('/api/dashboard/instructions/' + encodeURIComponent(instructionId) + '?userId=' + encodeURIComponent(currentUserId));
     if (!res.ok) { console.error('Failed to drill down', res.status); return; }
     var data = await res.json();
-    console.info('instruction drilldown', data);
+    var titleEl = document.getElementById('instruction-panel-title');
+    if (titleEl && data.instruction) {
+      titleEl.textContent = data.instruction.text || data.instruction.id || 'Instruction';
+    }
+    // Section: linked sessions.
+    var linkedEl = document.getElementById('instruction-panel-linked-sessions');
+    if (linkedEl) {
+      if (data.linkedSessions && data.linkedSessions.length > 0) {
+        linkedEl.innerHTML = data.linkedSessions.map(function(ls) {
+          var titleStr = ls.title || ls.sessionKey;
+          var stateLabel = ls.activityState ? (' [' + ls.activityState + ']') : '';
+          return '<div class="instruction-panel-row" data-session-key="' + escAttr(ls.sessionKey) + '">'
+            + '<span class="' + (ls.activityState || 'idle') + '-dot" style="display:inline-block;width:6px;height:6px;border-radius:50%;margin-right:6px"></span>'
+            + esc(titleStr) + esc(stateLabel)
+            + '</div>';
+        }).join('');
+      } else {
+        linkedEl.innerHTML = '<div class="instruction-panel-empty" style="color:var(--text-tertiary);font-size:0.85em">No linked sessions.</div>';
+      }
+    }
+    // Section: tasks union.
+    var tasksEl = document.getElementById('instruction-panel-tasks');
+    if (tasksEl) {
+      if (data.tasks && data.tasks.length > 0) {
+        tasksEl.innerHTML = data.tasks.map(function(t) {
+          var statusBadge = '<span class="todo-status-badge todo-' + escAttr(t.status) + '">' + esc(t.status) + '</span>';
+          return '<div class="instruction-panel-row">' + statusBadge + ' ' + esc(t.content || t.id || '(unnamed)') + '</div>';
+        }).join('');
+      } else {
+        tasksEl.innerHTML = '<div class="instruction-panel-empty" style="color:var(--text-tertiary);font-size:0.85em">No tasks.</div>';
+      }
+    }
+    // Section: lifecycle events.
+    var lifecycleEl = document.getElementById('instruction-panel-lifecycle');
+    if (lifecycleEl) {
+      if (data.lifecycleEvents && data.lifecycleEvents.length > 0) {
+        lifecycleEl.innerHTML = data.lifecycleEvents.map(function(evt) {
+          var when = evt.at ? new Date(evt.at).toLocaleString() : '';
+          var byDesc = evt.by && evt.by.id ? (' by ' + evt.by.id) : '';
+          return '<div class="instruction-panel-row">'
+            + '<span class="lifecycle-op">' + esc(evt.op || '?') + '</span>'
+            + ' <span class="lifecycle-state">[' + esc(evt.state || '?') + ']</span>'
+            + ' <span class="lifecycle-at" style="color:var(--text-tertiary);font-size:0.85em">' + esc(when) + esc(byDesc) + '</span>'
+            + '</div>';
+        }).join('');
+      } else {
+        lifecycleEl.innerHTML = '<div class="instruction-panel-empty" style="color:var(--text-tertiary);font-size:0.85em">No lifecycle events.</div>';
+      }
+    }
+    // Reveal the slide panel + overlay.
+    var panel = document.getElementById('instruction-panel');
+    var overlay = document.getElementById('instruction-panel-overlay');
+    if (panel) { panel.classList.add('open'); panel.setAttribute('aria-hidden', 'false'); }
+    if (overlay) overlay.classList.add('open');
   } catch (e) { console.error('openInstructionPanel error', e); }
+}
+
+function closeInstructionPanel() {
+  var panel = document.getElementById('instruction-panel');
+  var overlay = document.getElementById('instruction-panel-overlay');
+  if (panel) { panel.classList.remove('open'); panel.setAttribute('aria-hidden', 'true'); }
+  if (overlay) overlay.classList.remove('open');
 }
 
 // ── Action handler (with CSRF retry on 403 after JWT rotation) ──
