@@ -102,11 +102,14 @@ describe('TodoManager.updateTodos', () => {
     status: 'pending',
     priority: 'high',
   };
+  // Since #757 every stored Todo carries a `userInstructionId` field
+  // (`null` when the session has no `currentInstructionId`).
+  const storedTodo: Todo = { ...validTodo, userInstructionId: null };
 
   it('stores valid todos', () => {
     const mgr = new TodoManager();
     mgr.updateTodos('sess-1', [validTodo]);
-    expect(mgr.getTodos('sess-1')).toEqual([validTodo]);
+    expect(mgr.getTodos('sess-1')).toEqual([storedTodo]);
   });
 
   it('rejects non-array input and preserves previous state', () => {
@@ -115,7 +118,7 @@ describe('TodoManager.updateTodos', () => {
 
     // Pass a non-array — previous state should be preserved
     mgr.updateTodos('sess-1', 'not-an-array' as unknown as Todo[]);
-    expect(mgr.getTodos('sess-1')).toEqual([validTodo]);
+    expect(mgr.getTodos('sess-1')).toEqual([storedTodo]);
   });
 
   it('rejects null input and preserves previous state', () => {
@@ -123,7 +126,7 @@ describe('TodoManager.updateTodos', () => {
     mgr.updateTodos('sess-1', [validTodo]);
 
     mgr.updateTodos('sess-1', null as unknown as Todo[]);
-    expect(mgr.getTodos('sess-1')).toEqual([validTodo]);
+    expect(mgr.getTodos('sess-1')).toEqual([storedTodo]);
   });
 
   it('rejects object input and preserves previous state', () => {
@@ -131,13 +134,13 @@ describe('TodoManager.updateTodos', () => {
     mgr.updateTodos('sess-1', [validTodo]);
 
     mgr.updateTodos('sess-1', { content: 'foo' } as unknown as Todo[]);
-    expect(mgr.getTodos('sess-1')).toEqual([validTodo]);
+    expect(mgr.getTodos('sess-1')).toEqual([storedTodo]);
   });
 
   it('filters malformed items from array input', () => {
     const mgr = new TodoManager();
     mgr.updateTodos('sess-1', [validTodo, null as unknown as Todo]);
-    expect(mgr.getTodos('sess-1')).toEqual([validTodo]);
+    expect(mgr.getTodos('sess-1')).toEqual([storedTodo]);
   });
 
   it('fires onUpdate callback with validated todos', () => {
@@ -147,7 +150,7 @@ describe('TodoManager.updateTodos', () => {
 
     mgr.updateTodos('sess-1', [validTodo]);
     expect(calls).toHaveLength(1);
-    expect(calls[0]).toEqual([validTodo]);
+    expect(calls[0]).toEqual([storedTodo]);
   });
 
   it('does not fire onUpdate callback for rejected input', () => {
