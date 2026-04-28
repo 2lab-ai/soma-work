@@ -291,13 +291,16 @@ export class TodoManager {
         // Carry forward existing timestamps
         if (prev.startedAt && !task.startedAt) task.startedAt = prev.startedAt;
         if (prev.completedAt && !task.completedAt) task.completedAt = prev.completedAt;
-      }
-      // Default new Todos to `userInstructionId: null` so the disk schema
-      // always carries the field. The actual stamping from
-      // `opts.currentInstructionId` (and frozen-at-creation semantics) is
-      // wired up in the auto-link step of #757.
-      if (!('userInstructionId' in task) || task.userInstructionId === undefined) {
-        task.userInstructionId = null;
+        // ── Frozen-at-creation (#727 sealed): once a Todo has a
+        // userInstructionId, subsequent updates NEVER change it, even if
+        // `opts.currentInstructionId` shifted mid-session. The link is
+        // pinned at the moment of creation and stays put for the
+        // Todo's lifetime.
+        task.userInstructionId = prev.userInstructionId ?? null;
+      } else {
+        // First sighting — auto-link from opts.currentInstructionId. Null
+        // is the legitimate "no current instruction" state.
+        task.userInstructionId = opts?.currentInstructionId ?? null;
       }
       // Stamp on status transitions (handle regressions too)
       if (task.status === 'pending') {
