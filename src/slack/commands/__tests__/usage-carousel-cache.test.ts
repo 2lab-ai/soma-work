@@ -10,6 +10,7 @@ function makeEntry(expiresAt: number, userId = 'U_ALICE'): TabCacheEntry {
       '7d': 'F_7',
       '30d': 'F_30',
       all: 'F_ALL',
+      models: 'F_MODELS',
     },
     userId,
     expiresAt,
