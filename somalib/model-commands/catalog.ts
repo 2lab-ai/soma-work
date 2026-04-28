@@ -243,7 +243,13 @@ const UPDATE_SESSION_SCHEMA = {
     instructionOperations: {
       type: 'array',
       description:
-        'Operations on user SSOT instructions (add/remove/clear/complete/setStatus). ' +
+        'Operations on user SSOT instructions. ' +
+        'Sealed lifecycle vocabulary (#755 / parent #727): ' +
+        '`add | link | complete | cancel | rename`. ' +
+        '`remove`, `clear`, and `setStatus` are kept as legacy / escape-hatch ' +
+        'actions for backwards compatibility but new prompts must NOT emit them — ' +
+        'every mutation that the user must authorise has to go through one of ' +
+        'the 5 sealed ops so the lifecycle audit log stays complete. ' +
         'Writes are NOT applied immediately — the host wraps them in a user y/n ' +
         'confirmation button in Slack. Only `y` commits.',
       items: {
@@ -251,11 +257,25 @@ const UPDATE_SESSION_SCHEMA = {
         properties: {
           action: {
             type: 'string',
-            enum: ['add', 'remove', 'clear', 'complete', 'setStatus'],
+            // Sealed first: add/link/complete/cancel/rename. Legacy after:
+            // remove/clear/setStatus (kept for compat — prompts should not emit).
+            enum: [
+              'add',
+              'link',
+              'complete',
+              'cancel',
+              'rename',
+              'remove',
+              'clear',
+              'setStatus',
+            ],
+            description:
+              'Sealed: add|link|complete|cancel|rename. ' +
+              'Legacy (deprecated, accepted for compat): remove|clear|setStatus.',
           },
           text: {
             type: 'string',
-            description: 'Instruction text (required for add)',
+            description: 'Instruction text (required for add and rename)',
           },
           source: {
             type: 'string',
@@ -263,16 +283,24 @@ const UPDATE_SESSION_SCHEMA = {
           },
           id: {
             type: 'string',
-            description: 'Instruction ID (required for remove/complete/setStatus)',
+            description: 'Instruction ID (required for link/complete/cancel/rename and legacy remove/setStatus)',
+          },
+          sessionKey: {
+            type: 'string',
+            description:
+              'Session key the instruction is being attached to (required for `link`). ' +
+              'Append-only to instruction.linkedSessionIds; status/text/currentInstructionId untouched.',
           },
           evidence: {
             type: 'string',
             description: 'Evidence string (required for complete)',
           },
           status: {
+            // @deprecated — used only by the legacy `setStatus` action; new prompts
+            // should emit `complete` or `cancel` instead.
             type: 'string',
             enum: ['active', 'completed', 'cancelled'],
-            description: 'New status (required for setStatus)',
+            description: 'New status (required for legacy setStatus action — deprecated)',
           },
         },
         required: ['action'],
@@ -512,9 +540,11 @@ export function listModelCommands(context: ModelCommandContext): ModelCommandDes
       id: 'UPDATE_SESSION',
       description:
         'Update session resources (issues/prs/docs) with add/remove/set_active operations. ' +
-        'Instruction writes via `instructionOperations` (add/remove/clear/complete/setStatus) ' +
-        'are **gated**: the host posts a user y/n button and only commits on `y`. ' +
-        'Until `y`, the model’s view of `session.instructions` is unchanged.',
+        'Instruction writes via `instructionOperations` are **gated**: the host posts a user ' +
+        'y/n button and only commits on `y`. Sealed lifecycle vocabulary: ' +
+        '`add | link | complete | cancel | rename` (#755 / #727). Legacy aliases ' +
+        '`remove | clear | setStatus` are kept for backwards compatibility but new prompts ' +
+        'should NOT emit them. Until `y`, the model’s view of `session.instructions` is unchanged.',
       paramsSchema: UPDATE_SESSION_SCHEMA,
       metadata: {
         user_instructions_write_gated: true,
@@ -1072,6 +1102,51 @@ export function applyInstructionOperations(
         entry.cancelledAt = undefined;
       }
       changed = true;
+      continue;
+    }
+
+    // Sealed 5-op lifecycle vocabulary (#755 / #727).
+    //
+    // `link` / `cancel` / `rename` are user-authorised state transitions —
+    // catalog-side mutations are field-level only; the lifecycleEvents push
+    // (state='confirmed' / 'rejected' / 'superseded') happens in the
+    // SessionRegistry transaction layer that wraps this call.
+
+    if (op.action === 'link') {
+      if (!op.id || !op.sessionKey) continue;
+      const entry = instructions.find((i) => i.id === op.id);
+      if (!entry) continue;
+      if (entry.linkedSessionIds.includes(op.sessionKey)) continue;
+      entry.linkedSessionIds.push(op.sessionKey);
+      changed = true;
+      continue;
+    }
+
+    if (op.action === 'cancel') {
+      if (!op.id) continue;
+      const entry = instructions.find((i) => i.id === op.id);
+      if (!entry) continue;
+      if (entry.status === 'cancelled') continue;
+      entry.status = 'cancelled';
+      entry.cancelledAt = entry.cancelledAt ?? new Date().toISOString();
+      // Cancel is first-class (Q3) — do NOT collapse into completed.
+      entry.completedAt = undefined;
+      changed = true;
+      continue;
+    }
+
+    if (op.action === 'rename') {
+      if (!op.id) continue;
+      const trimmed = typeof op.text === 'string' ? op.text.trim() : '';
+      if (trimmed.length === 0) continue;
+      const entry = instructions.find((i) => i.id === op.id);
+      if (!entry) continue;
+      if (entry.text === trimmed) continue;
+      // Rename is text-only (Q5) — id, status, linkedSessionIds, source,
+      // sourceRawInputIds preserved.
+      entry.text = trimmed;
+      changed = true;
+      continue;
     }
   }
   return changed;

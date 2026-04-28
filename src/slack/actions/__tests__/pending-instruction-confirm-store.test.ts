@@ -41,9 +41,11 @@ describe('PendingInstructionConfirmStore', () => {
       sessionKey: 'C1|T1',
       channelId: 'C1',
       threadTs: 'T1',
-      request: mkRequest(),
+      payload: mkRequest(),
       createdAt: Date.now(),
       requesterId: DEFAULT_REQUESTER,
+      type: 'add' as const,
+      by: { type: 'slack-user' as const, id: DEFAULT_REQUESTER },
     };
     expect(store.set(entry)).toBeUndefined();
     expect(store.get('r1')).toEqual(entry);
@@ -62,9 +64,11 @@ describe('PendingInstructionConfirmStore', () => {
       channelId: 'C1',
       threadTs: 'T1',
       messageTs: 'ts-a',
-      request: mkRequest(),
+      payload: mkRequest(),
       createdAt: Date.now(),
       requesterId: DEFAULT_REQUESTER,
+      type: 'add' as const,
+      by: { type: 'slack-user' as const, id: DEFAULT_REQUESTER },
     };
     store.set(a);
     const b = { ...a, requestId: 'r2', messageTs: undefined as string | undefined };
@@ -82,9 +86,11 @@ describe('PendingInstructionConfirmStore', () => {
       sessionKey: 'C1|T1',
       channelId: 'C1',
       threadTs: 'T1',
-      request: mkRequest(),
+      payload: mkRequest(),
       createdAt: Date.now(),
       requesterId: DEFAULT_REQUESTER,
+      type: 'add' as const,
+      by: { type: 'slack-user' as const, id: DEFAULT_REQUESTER },
     };
     store.set(entry);
     store.updateMessageTs('r1', 'ts-123');
@@ -99,9 +105,11 @@ describe('PendingInstructionConfirmStore', () => {
       channelId: 'C1',
       threadTs: 'T1',
       messageTs: 'ts-1',
-      request: mkRequest(),
+      payload: mkRequest(),
       createdAt: Date.now(),
       requesterId: DEFAULT_REQUESTER,
+      type: 'add' as const,
+      by: { type: 'slack-user' as const, id: DEFAULT_REQUESTER },
     });
 
     const store2 = new PendingInstructionConfirmStore();
@@ -117,18 +125,22 @@ describe('PendingInstructionConfirmStore', () => {
       sessionKey: 'C2|T2',
       channelId: 'C2',
       threadTs: 'T2',
-      request: mkRequest(),
+      payload: mkRequest(),
       createdAt: Date.now() - 25 * 60 * 60 * 1000,
       requesterId: DEFAULT_REQUESTER,
+      type: 'add' as const,
+      by: { type: 'slack-user' as const, id: DEFAULT_REQUESTER },
     };
     const fresh = {
       requestId: 'new',
       sessionKey: 'C3|T3',
       channelId: 'C3',
       threadTs: 'T3',
-      request: mkRequest(),
+      payload: mkRequest(),
       createdAt: Date.now(),
       requesterId: DEFAULT_REQUESTER,
+      type: 'add' as const,
+      by: { type: 'slack-user' as const, id: DEFAULT_REQUESTER },
     };
     // Write directly to file so we can set createdAt freely.
     fs.writeFileSync(STORE_FILE, JSON.stringify([expired, fresh], null, 2));
@@ -146,7 +158,7 @@ describe('PendingInstructionConfirmStore', () => {
       sessionKey: 'C4|T4',
       channelId: 'C4',
       threadTs: 'T4',
-      request: mkRequest(),
+      payload: mkRequest(),
       createdAt: Date.now(),
     };
     fs.writeFileSync(STORE_FILE, JSON.stringify([legacy], null, 2));
@@ -167,9 +179,11 @@ describe('PendingInstructionConfirmStore', () => {
       sessionKey: 'C5|T5',
       channelId: 'C5',
       threadTs: 'T5',
-      request: mkRequest(),
+      payload: mkRequest(),
       createdAt: Date.now() - 25 * 60 * 60 * 1000,
       requesterId: DEFAULT_REQUESTER,
+      type: 'add',
+      by: { type: 'slack-user', id: DEFAULT_REQUESTER },
     });
     expect(store.get('stale')).toBeUndefined();
     expect(store.getBySession('C5|T5')).toBeUndefined();

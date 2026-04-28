@@ -3,6 +3,7 @@ import type { SessionInstruction, SessionInstructionOperation } from './session-
 import {
   applyInstructionOperations,
   getDefaultSessionSnapshot,
+  listModelCommands,
   registerSkillStore,
   runModelCommand,
   type SkillStore,
@@ -201,6 +202,58 @@ describe('applyInstructionOperations', () => {
     // canonical caller of UPDATE_SESSION).
     applyInstructionOperations(instructions, [{ action: 'add', text: 'pretend legacy', source: 'user' }]);
     expect(instructions[0].source).toBe('model');
+  });
+});
+
+describe('listModelCommands UPDATE_SESSION schema exposes sealed lifecycle actions', () => {
+  // PR2 P0-2 (#755): the listModelCommands JSON schema is what the model
+  // sees when it asks what arguments UPDATE_SESSION will accept. If the
+  // exposed enum does not include `link`, `cancel`, or `rename`, those 3
+  // sealed lifecycle ops are unreachable through the public command surface
+  // even if the host could otherwise process them.
+  function getInstructionActionEnum(): string[] {
+    const ctx = makeContext();
+    const cmds = listModelCommands(ctx);
+    const updateSession = cmds.find((c) => c.id === 'UPDATE_SESSION');
+    if (!updateSession) throw new Error('UPDATE_SESSION not in catalog');
+    const schema = updateSession.paramsSchema as {
+      properties?: {
+        instructionOperations?: {
+          items?: {
+            properties?: {
+              action?: { enum?: string[] };
+            };
+          };
+        };
+      };
+    };
+    const enumValues = schema.properties?.instructionOperations?.items?.properties?.action?.enum;
+    if (!Array.isArray(enumValues)) {
+      throw new Error('instructionOperations.action.enum missing in schema');
+    }
+    return enumValues;
+  }
+
+  it('exposes the sealed action `link` in instructionOperations.action.enum', () => {
+    expect(getInstructionActionEnum()).toContain('link');
+  });
+
+  it('exposes the sealed action `cancel` in instructionOperations.action.enum', () => {
+    expect(getInstructionActionEnum()).toContain('cancel');
+  });
+
+  it('exposes the sealed action `rename` in instructionOperations.action.enum', () => {
+    expect(getInstructionActionEnum()).toContain('rename');
+  });
+
+  it('keeps legacy action `clear` in the enum for backwards compatibility', () => {
+    // Legacy/escape-hatch ops stay accepted (validator + dispatcher), but
+    // the JSDoc / description marks them as deprecated.
+    expect(getInstructionActionEnum()).toContain('clear');
+  });
+
+  it('keeps legacy action `setStatus` in the enum for backwards compatibility', () => {
+    expect(getInstructionActionEnum()).toContain('setStatus');
   });
 });
 

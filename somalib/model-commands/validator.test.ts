@@ -1171,3 +1171,233 @@ describe('MANAGE_SKILL share action — validator', () => {
     expect(result.error.message).toContain('share');
   });
 });
+
+// ---------------------------------------------------------------------------
+// UPDATE_SESSION — instructionOperations alone payload (PR2 P0-1, #755)
+// ---------------------------------------------------------------------------
+//
+// Pure lifecycle requests carry only `instructionOperations` — no `operations`
+// or `title`. The validator MUST accept them as a sole payload AND forward the
+// `instructionOperations` field on the parsed request so the dispatcher
+// (`runModelCommand`) can route them through the user y/n confirmation flow.
+// Pre-fix the validator both rejected the request AND silently dropped the
+// field even when it didn't reject.
+describe('UPDATE_SESSION instructionOperations alone payload', () => {
+  it('accepts instructionOperations as a sole payload (no operations, no title)', () => {
+    const result = validateModelCommandRunArgs({
+      commandId: 'UPDATE_SESSION',
+      params: {
+        instructionOperations: [
+          { action: 'add', text: 'Always pin runtime versions' },
+        ],
+      },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    expect(result.request.commandId).toBe('UPDATE_SESSION');
+    const params = result.request.params as {
+      operations?: unknown[];
+      title?: string;
+      instructionOperations?: Array<{ action: string }>;
+    };
+    expect(params.instructionOperations).toBeDefined();
+    expect(params.instructionOperations).toHaveLength(1);
+    expect(params.instructionOperations?.[0]).toMatchObject({
+      action: 'add',
+      text: 'Always pin runtime versions',
+    });
+  });
+
+  it('forwards instructionOperations alongside operations + title', () => {
+    const result = validateModelCommandRunArgs({
+      commandId: 'UPDATE_SESSION',
+      params: {
+        title: 'Linked',
+        operations: [
+          {
+            action: 'add',
+            resourceType: 'issue',
+            link: { url: 'https://jira.example/PTN-1', type: 'issue', provider: 'jira' },
+          },
+        ],
+        instructionOperations: [
+          { action: 'cancel', id: 'instr_1' },
+        ],
+      },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    const params = result.request.params as {
+      operations?: unknown[];
+      title?: string;
+      instructionOperations?: Array<{ action: string }>;
+    };
+    expect(params.title).toBe('Linked');
+    expect(params.operations).toHaveLength(1);
+    expect(params.instructionOperations).toHaveLength(1);
+    expect(params.instructionOperations?.[0]).toMatchObject({ action: 'cancel', id: 'instr_1' });
+  });
+
+  it('still rejects empty UPDATE_SESSION (no operations, no title, no instructionOperations)', () => {
+    const result = validateModelCommandRunArgs({
+      commandId: 'UPDATE_SESSION',
+      params: {},
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.error.code).toBe('INVALID_ARGS');
+    expect(result.error.message).toMatch(/operations|title|instructionOperations/i);
+  });
+
+  it('accepts each sealed lifecycle action through the validator', () => {
+    const cases: Array<Record<string, unknown>> = [
+      { action: 'add', text: 'rule' },
+      { action: 'link', id: 'instr_1', sessionKey: 'C/u/T' },
+      { action: 'complete', id: 'instr_1', evidence: 'PR #999' },
+      { action: 'cancel', id: 'instr_1' },
+      { action: 'rename', id: 'instr_1', text: 'updated rule' },
+    ];
+    for (const op of cases) {
+      const result = validateModelCommandRunArgs({
+        commandId: 'UPDATE_SESSION',
+        params: { instructionOperations: [op] },
+      });
+      expect(result.ok, `op=${String(op.action)}`).toBe(true);
+      if (!result.ok) continue;
+      const params = result.request.params as {
+        instructionOperations?: Array<Record<string, unknown>>;
+      };
+      expect(params.instructionOperations?.[0]).toMatchObject(op);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PR2 fix loop #2 P1-A — multi-op `instructionOperations` is REJECTED at the
+// validator. Pre-fix `applyConfirmedLifecycle` only applied `meta.ops[0]` and
+// silently dropped `ops[1..]` — a real data-loss path on Yes-confirm. The
+// sealed contract is "one pending entry per session" (#755), so every
+// instructionOperations request must carry exactly one op. The model is
+// expected to re-emit one op at a time when it needs multiple mutations.
+// ---------------------------------------------------------------------------
+describe('UPDATE_SESSION instructionOperations multi-op rejection (#755 PR2 fix loop #2 P1-A)', () => {
+  it('rejects a 2-op instructionOperations request with a clear error to the model', () => {
+    const result = validateModelCommandRunArgs({
+      commandId: 'UPDATE_SESSION',
+      params: {
+        instructionOperations: [
+          { action: 'add', text: 'rule one' },
+          { action: 'add', text: 'rule two' },
+        ],
+      },
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.error.code).toBe('INVALID_ARGS');
+    // The error must explicitly mention the single-op contract so the model
+    // can self-correct and re-emit one op per request.
+    expect(result.error.message).toMatch(/single|one|per/i);
+    expect(result.error.message).toMatch(/instructionOperations/);
+  });
+
+  it('rejects a 3-op mix (add + cancel + rename) with the same single-op error', () => {
+    const result = validateModelCommandRunArgs({
+      commandId: 'UPDATE_SESSION',
+      params: {
+        instructionOperations: [
+          { action: 'add', text: 'a' },
+          { action: 'cancel', id: 'instr_1' },
+          { action: 'rename', id: 'instr_2', text: 'b' },
+        ],
+      },
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.error.code).toBe('INVALID_ARGS');
+    expect(result.error.message).toMatch(/single|one|per/i);
+  });
+
+  it('still accepts a single-op instructionOperations request', () => {
+    const result = validateModelCommandRunArgs({
+      commandId: 'UPDATE_SESSION',
+      params: {
+        instructionOperations: [{ action: 'add', text: 'only one' }],
+      },
+    });
+    expect(result.ok).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PR2 fix loop #2 P1-B — legacy lifecycle ops (`remove` / `clear` / `setStatus`)
+// MUST be rejected at the validator with a clear deprecation error. Pre-fix
+// they were advertised as compat but stream-executor coerced them to
+// `type='add'` and `applyConfirmedLifecycle` then rejected them at the
+// bottom — a "lying compat" path. Now the validator cuts them off upstream
+// so the model gets a clear error and can re-emit a sealed action
+// (`cancel` for `remove`, etc.).
+// ---------------------------------------------------------------------------
+describe('UPDATE_SESSION instructionOperations legacy actions rejection (#755 PR2 fix loop #2 P1-B)', () => {
+  it('rejects `remove` with a deprecation error pointing to `cancel`', () => {
+    const result = validateModelCommandRunArgs({
+      commandId: 'UPDATE_SESSION',
+      params: {
+        instructionOperations: [{ action: 'remove', id: 'instr_1' }],
+      },
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.error.code).toBe('INVALID_ARGS');
+    expect(result.error.message).toMatch(/deprecat/i);
+    expect(result.error.message).toMatch(/remove/);
+    expect(result.error.message).toMatch(/cancel/i);
+  });
+
+  it('rejects `clear` with a deprecation error', () => {
+    const result = validateModelCommandRunArgs({
+      commandId: 'UPDATE_SESSION',
+      params: {
+        instructionOperations: [{ action: 'clear' }],
+      },
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.error.code).toBe('INVALID_ARGS');
+    expect(result.error.message).toMatch(/deprecat/i);
+    expect(result.error.message).toMatch(/clear/);
+  });
+
+  it('rejects `setStatus` with a deprecation error pointing to `complete`/`cancel`', () => {
+    const result = validateModelCommandRunArgs({
+      commandId: 'UPDATE_SESSION',
+      params: {
+        instructionOperations: [
+          { action: 'setStatus', id: 'instr_1', status: 'completed' },
+        ],
+      },
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.error.code).toBe('INVALID_ARGS');
+    expect(result.error.message).toMatch(/deprecat/i);
+    expect(result.error.message).toMatch(/setStatus/);
+    expect(result.error.message).toMatch(/complete|cancel/i);
+  });
+
+  it('still accepts the 5 sealed actions (no regression)', () => {
+    const cases = [
+      { action: 'add', text: 'rule' },
+      { action: 'link', id: 'instr_1', sessionKey: 'C/u/T' },
+      { action: 'complete', id: 'instr_1', evidence: 'PR #999' },
+      { action: 'cancel', id: 'instr_1' },
+      { action: 'rename', id: 'instr_1', text: 'updated rule' },
+    ];
+    for (const op of cases) {
+      const result = validateModelCommandRunArgs({
+        commandId: 'UPDATE_SESSION',
+        params: { instructionOperations: [op] },
+      });
+      expect(result.ok, `op=${String(op.action)}`).toBe(true);
+    }
+  });
+});

@@ -2947,7 +2947,10 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     }
 
     const requestId = randomUUID();
-    const requestForStore: SessionResourceUpdateRequest = {
+    // PR2 P1-4 (#755): the persisted entry carries the deferred update
+    // under `payload` (sealed shape, matches lifecycleEvents[].payload).
+    // Local name kept as `payloadForStore` so the call sites read clean.
+    const payloadForStore: SessionResourceUpdateRequest = {
       // Strip expectedSequence so the later commit doesn't race against
       // unrelated resource sequence bumps that may happen while the user
       // ponders the button.
@@ -2961,36 +2964,76 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // who actually triggered this write, immune to later turn shifts.
     const requesterId = session.currentInitiatorId || session.ownerId;
 
+    // Sealed pending entry shape (#755): derive `type` from the first op so
+    // the SessionRegistry tx can attribute the resulting `lifecycleEvents[]`
+    // row without re-scanning the request. The 5-op vocabulary
+    // (add|link|complete|cancel|rename) is the model's user-confirmable
+    // alphabet — legacy ops (remove/clear/setStatus) fall back to 'add'
+    // for audit-attribution purposes; in practice we never see them paired
+    // with the y/n confirm path post-#755.
+    const firstOp = request.instructionOperations?.[0];
+    const lifecycleType: import('../actions/pending-instruction-confirm-store').PendingInstructionConfirmType =
+      firstOp &&
+      (firstOp.action === 'add' ||
+        firstOp.action === 'link' ||
+        firstOp.action === 'complete' ||
+        firstOp.action === 'cancel' ||
+        firstOp.action === 'rename')
+        ? firstOp.action
+        : 'add';
+
     const evicted = store.set({
       requestId,
       sessionKey: context.sessionKey,
       channelId: context.channel,
       threadTs: context.threadTs,
-      request: requestForStore,
+      payload: payloadForStore,
       createdAt: Date.now(),
       requesterId,
+      type: lifecycleType,
+      by: { type: 'slack-user', id: requesterId },
     });
 
     // Supersede any prior pending message for this session.
-    if (evicted?.messageTs) {
+    if (evicted) {
+      // Sealed audit (#755): the evicted entry gets a state='superseded'
+      // lifecycle row before the new pending UI is posted, so the
+      // dashboard drilldown shows what intent the model abandoned.
       try {
-        await this.deps.slackApi.updateMessage(
-          evicted.channelId,
-          evicted.messageTs,
-          '⚠️ [superseded] — a newer instruction proposal replaced this one.',
-          buildInstructionSupersededBlocks(evicted.request),
-        );
+        this.deps.claudeHandler.recordSupersededLifecycle(session, {
+          requestId: evicted.requestId,
+          type: evicted.type,
+          by: evicted.by,
+          ops: evicted.payload.instructionOperations ?? [],
+        });
       } catch (err) {
-        this.logger.warn('Failed to update superseded confirm message', {
+        this.logger.warn('Failed to record superseded lifecycle audit', {
           sessionKey: context.sessionKey,
           evictedRequestId: evicted.requestId,
           err,
         });
       }
+      if (evicted.messageTs) {
+        try {
+          await this.deps.slackApi.updateMessage(
+            evicted.channelId,
+            evicted.messageTs,
+            '⚠️ [superseded] — a newer instruction proposal replaced this one.',
+            buildInstructionSupersededBlocks(evicted.payload),
+          );
+        } catch (err) {
+          this.logger.warn('Failed to update superseded confirm message', {
+            sessionKey: context.sessionKey,
+            evictedRequestId: evicted.requestId,
+            err,
+          });
+        }
+      }
     }
 
-    const blocks = buildInstructionConfirmBlocks(requestForStore, requestId);
-    const fallback = buildInstructionConfirmFallbackText(requestForStore);
+    const blocks = buildInstructionConfirmBlocks(payloadForStore, requestId);
+    const fallback = buildInstructionConfirmFallbackText(payloadForStore);
+    let postSucceeded = false;
     try {
       const post = await this.deps.slackApi.postMessage(context.channel, fallback, {
         threadTs: context.threadTs,
@@ -3000,11 +3043,16 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       });
       if (post.ts) {
         store.updateMessageTs(requestId, post.ts);
+        postSucceeded = true;
       } else {
         this.logger.warn('Confirm post returned no ts', {
           sessionKey: context.sessionKey,
           requestId,
         });
+        // No ts means the user can't actually click the button. Treat this
+        // the same as a thrown post error: drop the store entry and skip
+        // the 'requested' audit row so we don't leave an orphan.
+        store.delete(requestId);
       }
     } catch (err) {
       this.logger.error('Failed to post instruction-confirm message', {
@@ -3015,6 +3063,35 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // Best-effort cleanup — if the post fails there's nothing for the user
       // to click, so remove the dangling store entry.
       store.delete(requestId);
+    }
+
+    // Sealed audit (#755 P1-3 / PR2 fix loop #2 P1-C): every successfully-posted
+    // pending entry gets exactly one `state: 'requested'` lifecycleEvents row.
+    // The terminal row ('confirmed'|'rejected'|'superseded'|'manual') is
+    // written later by the corresponding seam (applyConfirmedLifecycle /
+    // handleNo / supersede branch / migration). Without this row the dashboard
+    // cannot distinguish "model proposed but user ignored" from "model never
+    // proposed in the first place".
+    //
+    // Pre-fix this was written BEFORE the Slack post, so a post failure left
+    // an orphan 'requested' row with no terminal counterpart. Now we only
+    // record after the post succeeds — semantically "requested" means the
+    // user was actually asked, and a failed post means they weren't.
+    if (postSucceeded) {
+      try {
+        this.deps.claudeHandler.recordRequestedLifecycle(session, {
+          requestId,
+          type: lifecycleType,
+          by: { type: 'slack-user', id: requesterId },
+          ops: request.instructionOperations ?? [],
+        });
+      } catch (err) {
+        this.logger.warn('Failed to record requested lifecycle audit', {
+          sessionKey: context.sessionKey,
+          requestId,
+          err,
+        });
+      }
     }
 
     this.logger.info('Deferred instructionOperations for user y/n confirm', {

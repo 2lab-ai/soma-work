@@ -1,5 +1,6 @@
 import type {
   SaveContextResultPayload,
+  SessionInstructionOperation,
   SessionLink,
   SessionResourceOperation,
   SessionResourceType,
@@ -306,9 +307,38 @@ function parseUpdateSessionRequest(
     }
   }
 
-  // Must have at least one of operations or title
-  if (operations.length === 0 && !title) {
-    return invalidArgs('UPDATE_SESSION requires operations or title');
+  // Lifecycle (instruction) operations are gated for user y/n in the host;
+  // validator MUST forward them to the dispatcher (PR2 P0-1, #755). Pre-fix
+  // the validator silently dropped this field AND rejected requests carrying
+  // only instructionOperations — which made pure lifecycle requests
+  // (link/cancel/rename) unreachable.
+  //
+  // PR2 fix loop #2 P1-A: enforce the sealed "single pending per session"
+  // rule (#755) at the validator. Pre-fix `applyConfirmedLifecycle` only
+  // applied `meta.ops[0]` and silently dropped `ops[1..]` — a data-loss
+  // path on Yes-confirm. By rejecting at the gate, the model gets a clear
+  // error and is expected to re-emit one op at a time.
+  const rawInstructionOps = raw.instructionOperations;
+  const instructionOperations: SessionInstructionOperation[] = [];
+  if (Array.isArray(rawInstructionOps) && rawInstructionOps.length > 1) {
+    return invalidArgs(
+      'UPDATE_SESSION instructionOperations must contain exactly one op per request ' +
+        '(sealed "single pending per session" rule, #755). Re-emit one op at a time.',
+    );
+  }
+  if (Array.isArray(rawInstructionOps) && rawInstructionOps.length > 0) {
+    for (const entry of rawInstructionOps) {
+      const parsed = parseSessionInstructionOperation(entry);
+      if (!parsed.ok) {
+        return parsed;
+      }
+      instructionOperations.push(parsed.value);
+    }
+  }
+
+  // Must have at least one of operations, title, or instructionOperations
+  if (operations.length === 0 && !title && instructionOperations.length === 0) {
+    return invalidArgs('UPDATE_SESSION requires operations, title, or instructionOperations');
   }
 
   const expectedSequence = raw.expectedSequence;
@@ -322,8 +352,107 @@ function parseUpdateSessionRequest(
       expectedSequence: expectedSequence as number | undefined,
       operations,
       ...(title ? { title } : {}),
+      ...(instructionOperations.length > 0 ? { instructionOperations } : {}),
     },
   };
+}
+
+const SEALED_LIFECYCLE_ACTIONS = ['add', 'link', 'complete', 'cancel', 'rename'] as const;
+const LEGACY_LIFECYCLE_ACTIONS = ['remove', 'clear', 'setStatus'] as const;
+const ALL_LIFECYCLE_ACTIONS: readonly string[] = [
+  ...SEALED_LIFECYCLE_ACTIONS,
+  ...LEGACY_LIFECYCLE_ACTIONS,
+];
+
+/**
+ * PR2 fix loop #2 P1-B (#755): legacy actions are deprecated and rejected
+ * at the validator with a clear pointer at the sealed replacement. Pre-fix
+ * the validator accepted them, stream-executor coerced them to type='add',
+ * and `applyConfirmedLifecycle` then rejected them at the bottom — a "lying
+ * compat" path. We cut the path at the validator so the model gets one
+ * actionable error and can re-emit a sealed action.
+ */
+const LEGACY_LIFECYCLE_DEPRECATIONS: Record<(typeof LEGACY_LIFECYCLE_ACTIONS)[number], string> = {
+  remove:
+    "instructionOperation 'remove' is deprecated and no longer supported. " +
+    "Use 'cancel' (preserves the row + audit trail) instead.",
+  clear:
+    "instructionOperation 'clear' is deprecated and no longer supported. " +
+    "Issue per-row 'cancel' ops one at a time (sealed single-pending rule, #755).",
+  setStatus:
+    "instructionOperation 'setStatus' is deprecated and no longer supported. " +
+    "Use 'complete' (with evidence) for completed status, 'cancel' for cancelled.",
+};
+
+function parseSessionInstructionOperation(
+  raw: unknown,
+): { ok: true; value: SessionInstructionOperation } | { ok: false; error: ModelCommandError } {
+  if (!isRecord(raw)) {
+    return invalidArgs('UPDATE_SESSION instructionOperation must be an object');
+  }
+  const action = raw.action;
+  if (typeof action !== 'string' || !ALL_LIFECYCLE_ACTIONS.includes(action)) {
+    return invalidArgs(
+      `Unsupported instructionOperation action: ${String(action)} ` +
+        `(allowed: ${SEALED_LIFECYCLE_ACTIONS.join('|')})`,
+    );
+  }
+
+  // PR2 fix loop #2 P1-B: reject legacy actions upstream so the lying
+  // compat coercion path in stream-executor never fires.
+  if ((LEGACY_LIFECYCLE_ACTIONS as readonly string[]).includes(action)) {
+    return invalidArgs(LEGACY_LIFECYCLE_DEPRECATIONS[action as (typeof LEGACY_LIFECYCLE_ACTIONS)[number]]);
+  }
+
+  if (action === 'add') {
+    if (typeof raw.text !== 'string' || raw.text.trim() === '') {
+      return invalidArgs('instructionOperation add requires non-empty text');
+    }
+    return {
+      ok: true,
+      value: {
+        action: 'add',
+        text: raw.text,
+        ...(typeof raw.source === 'string' ? { source: raw.source } : {}),
+      },
+    };
+  }
+
+  if (action === 'complete') {
+    if (typeof raw.id !== 'string' || raw.id === '') {
+      return invalidArgs('instructionOperation complete requires id');
+    }
+    if (typeof raw.evidence !== 'string') {
+      return invalidArgs('instructionOperation complete requires evidence string');
+    }
+    return { ok: true, value: { action: 'complete', id: raw.id, evidence: raw.evidence } };
+  }
+
+  if (action === 'link') {
+    if (typeof raw.id !== 'string' || raw.id === '') {
+      return invalidArgs('instructionOperation link requires id');
+    }
+    if (typeof raw.sessionKey !== 'string' || raw.sessionKey === '') {
+      return invalidArgs('instructionOperation link requires sessionKey');
+    }
+    return { ok: true, value: { action: 'link', id: raw.id, sessionKey: raw.sessionKey } };
+  }
+
+  if (action === 'cancel') {
+    if (typeof raw.id !== 'string' || raw.id === '') {
+      return invalidArgs('instructionOperation cancel requires id');
+    }
+    return { ok: true, value: { action: 'cancel', id: raw.id } };
+  }
+
+  // action === 'rename'
+  if (typeof raw.id !== 'string' || raw.id === '') {
+    return invalidArgs('instructionOperation rename requires id');
+  }
+  if (typeof raw.text !== 'string' || raw.text.trim() === '') {
+    return invalidArgs('instructionOperation rename requires non-empty text');
+  }
+  return { ok: true, value: { action: 'rename', id: raw.id, text: raw.text } };
 }
 
 function parseSessionOperation(

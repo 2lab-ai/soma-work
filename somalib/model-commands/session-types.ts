@@ -254,6 +254,14 @@ export type SessionResourceOperation =
 
 /**
  * Operations for managing user SSOT instructions in a session.
+ *
+ * Sealed 5-op lifecycle vocabulary (#755 / parent #727):
+ *   `add | link | complete | cancel | rename`
+ *
+ * `remove`, `clear`, and `setStatus` are escape-hatch / legacy ops kept for
+ * backwards compatibility with already-emitted prompts; new code should NOT
+ * emit them — every mutation that the user is supposed to authorise must go
+ * through one of the 5 sealed ops so the lifecycle audit log stays complete.
  */
 export interface SessionInstructionAddOperation {
   action: 'add';
@@ -281,9 +289,9 @@ export interface SessionInstructionCompleteOperation {
 }
 
 /**
- * Explicitly transition an instruction to a new status (escape hatch).
- * Use `complete` when moving to `completed` so the evidence/timestamp
- * contract is enforced.
+ * @deprecated Use `complete` / `cancel` instead. `setStatus` is kept only as
+ * a legacy escape hatch — new prompts must NOT emit it. Removing it from the
+ * union would force a compat break with already-emitted model output.
  */
 export interface SessionInstructionSetStatusOperation {
   action: 'setStatus';
@@ -291,12 +299,49 @@ export interface SessionInstructionSetStatusOperation {
   status: SessionInstructionStatus;
 }
 
+/**
+ * Attach an existing instruction to a NEW session — sealed `link` event
+ * (Q2: link is its own lifecycle event, distinct from `add`). Appends the
+ * supplied `sessionKey` to the instruction's `linkedSessionIds` (deduped).
+ * Does NOT change status, text, or `currentInstructionId` — those moves
+ * are the SessionRegistry transaction layer's job (#755).
+ */
+export interface SessionInstructionLinkOperation {
+  action: 'link';
+  id: string;
+  sessionKey: string;
+}
+
+/**
+ * Mark an existing instruction as `cancelled` (sealed first-class state,
+ * Q3: distinct from `completed`). Stamps `cancelledAt`; clears
+ * `completedAt` defensively. The dashboard archives view (#759)
+ * distinguishes "shipped" from "abandoned" via this state.
+ */
+export interface SessionInstructionCancelOperation {
+  action: 'cancel';
+  id: string;
+}
+
+/**
+ * Rename an existing instruction. Mutates `text` ONLY — id, status,
+ * linkedSessionIds, and source are preserved (Q5: rename is text-only).
+ */
+export interface SessionInstructionRenameOperation {
+  action: 'rename';
+  id: string;
+  text: string;
+}
+
 export type SessionInstructionOperation =
   | SessionInstructionAddOperation
   | SessionInstructionRemoveOperation
   | SessionInstructionClearOperation
   | SessionInstructionCompleteOperation
-  | SessionInstructionSetStatusOperation;
+  | SessionInstructionSetStatusOperation
+  | SessionInstructionLinkOperation
+  | SessionInstructionCancelOperation
+  | SessionInstructionRenameOperation;
 
 export interface SessionResourceUpdateRequest {
   expectedSequence?: number;
