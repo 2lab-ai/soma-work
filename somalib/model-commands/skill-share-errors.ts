@@ -17,6 +17,17 @@
 /** Maximum shareable content length, measured in characters (UTF-16 code units). */
 export const SHARE_CONTENT_CHAR_LIMIT = 2500;
 
+/**
+ * Maximum skill-name length in characters. Owned here so both store
+ * implementations (`src/user-skill-store.ts` and
+ * `somalib/model-commands/skill-file-store.ts`) can import the same constant
+ * instead of redeclaring it with a "kept in lockstep" comment that the
+ * compiler can't enforce. See `MAX_SKILL_NAME_LENGTH` in `user-skill-store.ts`
+ * for the original 64-char rationale (Slack overflow option text + action_id
+ * caps).
+ */
+export const MAX_SKILL_NAME_LENGTH = 64;
+
 export function invalidSkillNameMessage(name: string): string {
   return `Invalid skill name "${name}". Use kebab-case (e.g. my-deploy).`;
 }

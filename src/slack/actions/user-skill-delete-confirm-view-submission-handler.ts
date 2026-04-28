@@ -1,40 +1,17 @@
 import type { WebClient } from '@slack/web-api';
 import { Logger } from '../../logger';
 import { deleteUserSkill, isValidSkillName, userSkillExists } from '../../user-skill-store';
-import { buildUserSkillListBlocks } from '../commands/user-skills-list-handler';
 import type { SlackApiHelper } from '../slack-api-helper';
 import type { ViewAck } from './user-skill-edit-view-submission-handler';
+import {
+  parseSkillViewMetadataBase,
+  postSkillEphemeral,
+  refreshSkillListMessage,
+  type SkillViewMetadataBase,
+} from './user-skill-view-submission-shared';
 
 interface UserSkillDeleteViewContext {
   slackApi: SlackApiHelper;
-}
-
-interface ParsedMetadata {
-  requesterId: string;
-  skillName: string;
-  channelId: string;
-  threadTs: string;
-  messageTs: string;
-}
-
-function parseMetadata(raw: unknown): ParsedMetadata | null {
-  if (typeof raw !== 'string' || raw.length === 0) return null;
-  let parsed: any;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return null;
-  }
-  if (!parsed || typeof parsed.requesterId !== 'string' || typeof parsed.skillName !== 'string') {
-    return null;
-  }
-  return {
-    requesterId: parsed.requesterId,
-    skillName: parsed.skillName,
-    channelId: typeof parsed.channelId === 'string' ? parsed.channelId : '',
-    threadTs: typeof parsed.threadTs === 'string' ? parsed.threadTs : '',
-    messageTs: typeof parsed.messageTs === 'string' ? parsed.messageTs : '',
-  };
 }
 
 /**
@@ -56,7 +33,7 @@ export class UserSkillDeleteConfirmViewSubmissionHandler {
   async handleSubmit(ack: ViewAck, body: any, _client: WebClient): Promise<void> {
     try {
       const view = body?.view;
-      const meta = parseMetadata(view?.private_metadata);
+      const meta = parseSkillViewMetadataBase(view?.private_metadata);
       if (!meta) {
         this.logger.warn('user_skill_delete submit: invalid private_metadata');
         await ack({
@@ -92,20 +69,7 @@ export class UserSkillDeleteConfirmViewSubmissionHandler {
         // success and post an informational ephemeral so the user knows
         // the desired end state was reached even though we did nothing.
         await ack({ response_action: 'clear' });
-        if (meta.channelId) {
-          try {
-            await this.ctx.slackApi.postEphemeral(
-              meta.channelId,
-              meta.requesterId,
-              `ℹ️ 이미 삭제됨: \`$user:${meta.skillName}\``,
-              meta.threadTs || undefined,
-            );
-          } catch (err) {
-            this.logger.debug('user_skill_delete submit: postEphemeral failed', {
-              err: (err as Error)?.message ?? String(err),
-            });
-          }
-        }
+        await postSkillEphemeral(this.ctx.slackApi, meta, `ℹ️ 이미 삭제됨: \`$user:${meta.skillName}\``, this.logger);
         return;
       }
 
@@ -141,61 +105,12 @@ export class UserSkillDeleteConfirmViewSubmissionHandler {
   }
 
   /**
-   * Refresh the originating list message (or replace it with a placeholder
-   * when the user just deleted their last skill) and post an ephemeral
-   * confirmation. Best-effort.
+   * Refresh the originating list message (replacing with an empty-state
+   * placeholder when the user just deleted their last skill) and post an
+   * ephemeral confirmation. Both halves best-effort via the shared helpers.
    */
-  private async refreshListMessageAndConfirm(meta: ParsedMetadata): Promise<void> {
-    if (meta.channelId && meta.messageTs) {
-      try {
-        const refreshed = buildUserSkillListBlocks(meta.requesterId);
-        if (refreshed) {
-          await this.ctx.slackApi.updateMessage(
-            meta.channelId,
-            meta.messageTs,
-            refreshed.fallback,
-            refreshed.blocks,
-            [],
-          );
-        } else {
-          // No skills left — replace the list with a small empty-state note.
-          await this.ctx.slackApi.updateMessage(
-            meta.channelId,
-            meta.messageTs,
-            '📭 등록된 personal skill이 없습니다.',
-            [
-              {
-                type: 'section',
-                text: { type: 'mrkdwn', text: '📭 등록된 personal skill이 없습니다.' },
-              },
-            ],
-            [],
-          );
-        }
-      } catch (err) {
-        this.logger.warn('user_skill_delete submit: list refresh failed', {
-          channel: meta.channelId,
-          messageTs: meta.messageTs,
-          err: (err as Error)?.message ?? String(err),
-        });
-      }
-    }
-
-    if (meta.channelId) {
-      try {
-        await this.ctx.slackApi.postEphemeral(
-          meta.channelId,
-          meta.requesterId,
-          `🗑 삭제됨: \`$user:${meta.skillName}\``,
-          meta.threadTs || undefined,
-        );
-      } catch (err) {
-        this.logger.warn('user_skill_delete submit: postEphemeral failed', {
-          channel: meta.channelId,
-          requesterId: meta.requesterId,
-          err: (err as Error)?.message ?? String(err),
-        });
-      }
-    }
+  private async refreshListMessageAndConfirm(meta: SkillViewMetadataBase): Promise<void> {
+    await refreshSkillListMessage(this.ctx.slackApi, meta, this.logger, '📭 등록된 personal skill이 없습니다.');
+    await postSkillEphemeral(this.ctx.slackApi, meta, `🗑 삭제됨: \`$user:${meta.skillName}\``, this.logger);
   }
 }

@@ -23,6 +23,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import {
   invalidSkillNameMessage,
+  MAX_SKILL_NAME_LENGTH as MAX_SKILL_NAME_LENGTH_SHARED,
   type SkillRenameErrorCode,
   skillNotFoundMessage,
   skillRenameIoFailureMessage,
@@ -60,15 +61,19 @@ export const MAX_SKILL_SIZE = 10 * 1024; // 10KB
 /** Max skills per user (enforced on create only). */
 const MAX_SKILLS_PER_USER = 50;
 /**
- * Max skill-name length in characters (enforced on create only).
+ * Max skill-name length in characters (enforced on create / rename only).
  *
  * Slack `overflow` option `text.text` is capped at 75 chars; an `action_id`
  * is capped at 255. Our action_id format is `user_skill_menu_<name>` (16-byte
  * prefix), so 64 keeps the longest action_id under 80 chars with comfortable
  * headroom for future prefix changes. Older skills with longer names predate
  * this cap and must stay editable, so update/delete do not enforce it.
+ *
+ * Re-exported from `skill-share-errors.ts` so this and the standalone MCP
+ * store import the SAME constant — the previous "kept in lockstep" comment
+ * was enforced only by code-review.
  */
-export const MAX_SKILL_NAME_LENGTH = 64;
+export const MAX_SKILL_NAME_LENGTH = MAX_SKILL_NAME_LENGTH_SHARED;
 /** Kebab-case skill name pattern. */
 const SKILL_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 

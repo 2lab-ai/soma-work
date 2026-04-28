@@ -1,41 +1,18 @@
 import type { WebClient } from '@slack/web-api';
 import { Logger } from '../../logger';
 import { isValidSkillName, renameUserSkill, userSkillExists } from '../../user-skill-store';
-import { buildUserSkillListBlocks } from '../commands/user-skills-list-handler';
 import type { SlackApiHelper } from '../slack-api-helper';
 import type { ViewAck } from './user-skill-edit-view-submission-handler';
 import { USER_SKILL_RENAME_ACTION_ID, USER_SKILL_RENAME_BLOCK_ID } from './user-skill-menu-action-handler';
+import {
+  parseSkillViewMetadataBase,
+  postSkillEphemeral,
+  refreshSkillListMessage,
+  type SkillViewMetadataBase,
+} from './user-skill-view-submission-shared';
 
 interface UserSkillRenameViewContext {
   slackApi: SlackApiHelper;
-}
-
-interface ParsedMetadata {
-  requesterId: string;
-  skillName: string;
-  channelId: string;
-  threadTs: string;
-  messageTs: string;
-}
-
-function parseMetadata(raw: unknown): ParsedMetadata | null {
-  if (typeof raw !== 'string' || raw.length === 0) return null;
-  let parsed: any;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return null;
-  }
-  if (!parsed || typeof parsed.requesterId !== 'string' || typeof parsed.skillName !== 'string') {
-    return null;
-  }
-  return {
-    requesterId: parsed.requesterId,
-    skillName: parsed.skillName,
-    channelId: typeof parsed.channelId === 'string' ? parsed.channelId : '',
-    threadTs: typeof parsed.threadTs === 'string' ? parsed.threadTs : '',
-    messageTs: typeof parsed.messageTs === 'string' ? parsed.messageTs : '',
-  };
 }
 
 function extractNewName(view: any): string | null {
@@ -72,7 +49,7 @@ export class UserSkillRenameViewSubmissionHandler {
   async handleSubmit(ack: ViewAck, body: any, _client: WebClient): Promise<void> {
     try {
       const view = body?.view;
-      const meta = parseMetadata(view?.private_metadata);
+      const meta = parseSkillViewMetadataBase(view?.private_metadata);
       if (!meta) {
         this.logger.warn('user_skill_rename submit: invalid private_metadata');
         await ack({
@@ -139,8 +116,7 @@ export class UserSkillRenameViewSubmissionHandler {
       if (!result.ok) {
         // Map granular error code → inline modal message. Same wording as
         // the storage layer's `message` field, but block-id-keyed so Slack
-        // renders it under the input. The default branch is defensive — the
-        // store always sets `error` on failure.
+        // renders it under the input.
         await ack({
           response_action: 'errors',
           errors: { [USER_SKILL_RENAME_BLOCK_ID]: result.message },
@@ -176,45 +152,22 @@ export class UserSkillRenameViewSubmissionHandler {
 
   /**
    * Re-render the list message in place (so the renamed entry shows its new
-   * name) and post an ephemeral confirmation. Both are best-effort.
+   * name) and post an ephemeral confirmation. Both halves best-effort via the
+   * shared helpers in `user-skill-view-submission-shared.ts`.
+   *
+   * Empty-state placeholder is unreachable here (rename never deletes the last
+   * skill) but the shared helper requires the parameter — pass the canonical
+   * "no skills" string so a future code path that DOES leave the user with
+   * zero skills (e.g. if rename ever soft-deletes on conflict) renders the
+   * same UX as the delete handler.
    */
-  private async refreshListMessageAndConfirm(meta: ParsedMetadata, newName: string): Promise<void> {
-    if (meta.channelId && meta.messageTs) {
-      try {
-        const refreshed = buildUserSkillListBlocks(meta.requesterId);
-        if (refreshed) {
-          await this.ctx.slackApi.updateMessage(
-            meta.channelId,
-            meta.messageTs,
-            refreshed.fallback,
-            refreshed.blocks,
-            [],
-          );
-        }
-      } catch (err) {
-        this.logger.warn('user_skill_rename submit: list refresh failed', {
-          channel: meta.channelId,
-          messageTs: meta.messageTs,
-          err: (err as Error)?.message ?? String(err),
-        });
-      }
-    }
-
-    if (meta.channelId) {
-      try {
-        await this.ctx.slackApi.postEphemeral(
-          meta.channelId,
-          meta.requesterId,
-          `✅ 이름 변경됨: \`$user:${meta.skillName}\` → \`$user:${newName}\``,
-          meta.threadTs || undefined,
-        );
-      } catch (err) {
-        this.logger.warn('user_skill_rename submit: postEphemeral failed', {
-          channel: meta.channelId,
-          requesterId: meta.requesterId,
-          err: (err as Error)?.message ?? String(err),
-        });
-      }
-    }
+  private async refreshListMessageAndConfirm(meta: SkillViewMetadataBase, newName: string): Promise<void> {
+    await refreshSkillListMessage(this.ctx.slackApi, meta, this.logger, '📭 등록된 personal skill이 없습니다.');
+    await postSkillEphemeral(
+      this.ctx.slackApi,
+      meta,
+      `✅ 이름 변경됨: \`$user:${meta.skillName}\` → \`$user:${newName}\``,
+      this.logger,
+    );
   }
 }

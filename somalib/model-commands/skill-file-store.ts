@@ -10,6 +10,7 @@ import * as path from 'path';
 import type { SkillStore } from './catalog';
 import {
   invalidSkillNameMessage,
+  MAX_SKILL_NAME_LENGTH,
   type SkillRenameErrorCode,
   skillNotFoundMessage,
   skillRenameIoFailureMessage,
@@ -22,11 +23,6 @@ import {
 const MAX_SKILL_SIZE = 10 * 1024; // 10KB
 const MAX_SKILLS_PER_USER = 50;
 const SKILL_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
-/**
- * Mirrors `MAX_SKILL_NAME_LENGTH` in `src/user-skill-store.ts` — kept in lock-
- * step so the rename action enforces the same length cap on both stores.
- */
-const MAX_SKILL_NAME_LENGTH_RENAME = 64;
 
 function isSafeSegment(s: string): boolean {
   return /^[A-Za-z0-9_-]+$/.test(s);
@@ -168,10 +164,10 @@ export class SkillFileStore implements SkillStore {
     if (!SKILL_NAME_PATTERN.test(newName) || !isSafeSegment(newName)) {
       return { ok: false, message: invalidSkillNameMessage(newName), error: 'INVALID' };
     }
-    if (newName.length > MAX_SKILL_NAME_LENGTH_RENAME) {
+    if (newName.length > MAX_SKILL_NAME_LENGTH) {
       return {
         ok: false,
-        message: `Skill name too long (${newName.length} > ${MAX_SKILL_NAME_LENGTH_RENAME} chars).`,
+        message: `Skill name too long (${newName.length} > ${MAX_SKILL_NAME_LENGTH} chars).`,
         error: 'INVALID',
       };
     }
