@@ -298,9 +298,7 @@ export class TodoManager {
         if (prev) continue; // existing Todo — link is frozen, no new FK created
         const status = lookup(newLink);
         if (status === 'cancelled' || status === 'completed') {
-          throw new Error(
-            `TodoManager: cannot create Todo linked to ${status} instruction ${JSON.stringify(newLink)}`,
-          );
+          throw new Error(`TodoManager: cannot create Todo linked to ${status} instruction ${JSON.stringify(newLink)}`);
         }
       }
     }
