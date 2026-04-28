@@ -79,47 +79,15 @@ export interface SessionResourceUpdateRequest {
   title?: string;
 }
 
-export interface SaveContextResultFile {
-  name: string;
-  content: string;
-}
-
-export interface SaveContextResultPayload {
-  success?: boolean;
-  status?: string;
-  id?: string;
-  save_id?: string;
-  dir?: string;
-  path?: string;
-  summary?: string;
-  title?: string;
-  files?: SaveContextResultFile[];
-  error?: string;
-}
-
-export interface UserChoiceOption {
-  id: string;
-  label: string;
-  description?: string;
-}
-
-export interface UserChoiceQuestion {
-  id: string;
-  question: string;
-  choices: UserChoiceOption[];
-  context?: string;
-}
-
-export interface UserChoice {
-  type: 'user_choice';
-  question: string;
-  choices: UserChoiceOption[];
-  context?: string;
-}
-
-export interface UserChoices {
-  type: 'user_choices';
-  title?: string;
-  description?: string;
-  questions: UserChoiceQuestion[];
-}
+// SaveContextResult* and UserChoice* types are owned by somalib so that the
+// mcp-server processes and the parent harness share a single source of truth
+// (e.g. the recommendedChoiceId field on UserChoice/UserChoiceQuestion).
+// See https://github.com/2lab-ai/soma-work/issues/767 (#744-B).
+export type {
+  SaveContextResultFile,
+  SaveContextResultPayload,
+  UserChoiceOption,
+  UserChoiceQuestion,
+  UserChoice,
+  UserChoices,
+} from 'somalib/model-commands/session-types.js';
