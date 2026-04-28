@@ -66,6 +66,7 @@ import {
   setDashboardSubmitRecommendedHandler,
   setDashboardTaskAccessor,
   setDashboardTrashHandler,
+  wireDashboardInstructionAccessors,
   setOAuthUserLookup,
   setOnSummaryGeneratedCallback,
   setOnTurnRecordedCallback,
@@ -415,6 +416,62 @@ async function start() {
         startedAt: t.startedAt,
         completedAt: t.completedAt,
       }));
+    });
+
+    // #758 P1-2 — Wire the instruction-centric accessors (UserSessionStore
+    // load, TodoManager.findTodosByInstructionId) and the lifecycle propose
+    // handler. Without this the dashboard's instruction endpoints would
+    // return null because the test-only setters are never called in
+    // production. The propose handler enqueues a PendingInstructionConfirm
+    // entry on the same shared store the model-driven y/n flow uses, so
+    // the user's y/n click in Slack continues to be the only authority
+    // that mutates the user-session store (PR2 confirm gate).
+    wireDashboardInstructionAccessors({
+      userSessionStore: getUserSessionStore(),
+      todoManager: slackHandler.getTodoManager(),
+      lifecycleProposeHandler: async (req) => {
+        const requestId = `dash-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+        // The dashboard route already validates `op` and the requesterId.
+        // We synthesise a minimal pending entry: the existing y/n flow only
+        // requires sessionKey, requestId, payload, requesterId, type, by.
+        // The dashboard supplies userId+instructionId+op; downstream the
+        // proposal needs a sessionKey to bind to. We pick the first linked
+        // session of the instruction (or the user's most-recent active
+        // session if none) so the user sees the y/n form in a real thread.
+        const doc = getUserSessionStore().load(req.userId);
+        const inst = doc.instructions.find((i) => i.id === req.instructionId);
+        const sessionKey =
+          inst?.linkedSessionIds[0] ||
+          claudeHandler
+            .getAllSessions()
+            .keys()
+            .next().value ||
+          `${req.userId}:dashboard`;
+        slackHandler.getPendingInstructionConfirmStore().set({
+          requestId,
+          sessionKey,
+          messageTs: undefined,
+          payload: {
+            // SessionResourceUpdateRequest shape — minimal proposal.
+            kind: 'instruction-lifecycle',
+            op: req.op,
+            instructionId: req.instructionId,
+            userId: req.userId,
+            payload: req.payload,
+          } as any,
+          createdAt: Date.now(),
+          requesterId: req.userId,
+          type: req.op === 'add' ? 'add' : req.op === 'link' ? 'link' : req.op === 'rename' ? 'rename' : (req.op === 'complete' ? 'complete' : 'cancel'),
+          by: { type: 'user', id: req.userId },
+        } as any);
+        logger.info('Dashboard: lifecycle proposal enqueued', {
+          requestId,
+          userId: req.userId,
+          instructionId: req.instructionId,
+          op: req.op,
+        });
+        return { requestId };
+      },
     });
 
     // Connect dashboard: stop handler (abort running session)

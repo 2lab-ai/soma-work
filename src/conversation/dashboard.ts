@@ -395,6 +395,40 @@ export function setDashboardLifecycleProposeHandler(fn: LifecycleProposeHandler)
   _lifecycleProposeHandlerFn = fn;
 }
 
+/**
+ * #758 P1-2 — Production wiring helper. Index.ts calls this once at
+ * boot with the real UserSessionStore + TodoManager + lifecycle
+ * propose handler so the route handlers see real data instead of
+ * test-only stubs.
+ *
+ * Each dependency is duck-typed (we only need a single method per
+ * dependency) so test rigs can pass minimal mocks without pulling in
+ * the heavyweight constructors.
+ */
+export function wireDashboardInstructionAccessors(deps: {
+  userSessionStore: { load: (userId: string) => UserSessionDoc };
+  todoManager: { findTodosByInstructionId: (userId: string, instructionId: string) => Todo[] };
+  lifecycleProposeHandler: LifecycleProposeHandler;
+}): void {
+  setDashboardUserInstructionsAccessor((userId) => {
+    try {
+      return deps.userSessionStore.load(userId);
+    } catch (err) {
+      logger.warn('UserInstructionsAccessor: load failed', { userId, err });
+      return null;
+    }
+  });
+  setDashboardInstructionTodosAccessor((userId, instructionId) => {
+    try {
+      return deps.todoManager.findTodosByInstructionId(userId, instructionId);
+    } catch (err) {
+      logger.warn('InstructionTodosAccessor: lookup failed', { userId, instructionId, err });
+      return [];
+    }
+  });
+  setDashboardLifecycleProposeHandler(deps.lifecycleProposeHandler);
+}
+
 // Mirror of UserSessionStore's id-charset rule. We can't import the
 // helper from user-session-store because it's not exported; the rule is
 // trivially small and re-statable here, and any drift would be a build
