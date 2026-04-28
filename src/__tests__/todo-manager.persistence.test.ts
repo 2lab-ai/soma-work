@@ -286,3 +286,66 @@ describe('TodoManager — cancelled/completed instruction guard', () => {
     expect(stored[0].id).toBe('t1');
   });
 });
+
+describe('TodoManager — findTodosByInstructionId (cross-session)', () => {
+  it('returns Todos linked to the same instruction across multiple sessions', () => {
+    const mgr = new TodoManager({ baseDir: tmpRoot });
+    mgr.updateTodos('sess-A', [baseTodo({ id: 't-a1' })], {
+      userId: 'U1',
+      currentInstructionId: 'instr_42',
+    });
+    mgr.updateTodos('sess-B', [baseTodo({ id: 't-b1', content: 'Other session task' })], {
+      userId: 'U1',
+      currentInstructionId: 'instr_42',
+    });
+    mgr.updateTodos('sess-C', [baseTodo({ id: 't-c1', content: 'Different instruction' })], {
+      userId: 'U1',
+      currentInstructionId: 'instr_99',
+    });
+
+    const linked = mgr.findTodosByInstructionId('U1', 'instr_42');
+    const ids = linked.map((t) => t.id).sort();
+    expect(ids).toEqual(['t-a1', 't-b1']);
+  });
+
+  it('returns empty array when no Todos are linked to the instruction', () => {
+    const mgr = new TodoManager({ baseDir: tmpRoot });
+    mgr.updateTodos('sess-1', [baseTodo()], { userId: 'U1', currentInstructionId: 'instr_42' });
+
+    expect(mgr.findTodosByInstructionId('U1', 'instr_unknown')).toEqual([]);
+  });
+
+  it('does NOT cross user boundaries', () => {
+    const mgr = new TodoManager({ baseDir: tmpRoot });
+    mgr.updateTodos('sess-A', [baseTodo({ id: 't-u1' })], { userId: 'U1', currentInstructionId: 'instr_42' });
+    mgr.updateTodos('sess-B', [baseTodo({ id: 't-u2' })], { userId: 'U2', currentInstructionId: 'instr_42' });
+
+    const u1Linked = mgr.findTodosByInstructionId('U1', 'instr_42');
+    expect(u1Linked.map((t) => t.id)).toEqual(['t-u1']);
+
+    const u2Linked = mgr.findTodosByInstructionId('U2', 'instr_42');
+    expect(u2Linked.map((t) => t.id)).toEqual(['t-u2']);
+  });
+
+  it('skips Todos with userInstructionId=null', () => {
+    const mgr = new TodoManager({ baseDir: tmpRoot });
+    mgr.updateTodos('sess-A', [baseTodo({ id: 't-null' })], { userId: 'U1', currentInstructionId: null });
+    mgr.updateTodos('sess-B', [baseTodo({ id: 't-link' })], { userId: 'U1', currentInstructionId: 'instr_42' });
+
+    const linked = mgr.findTodosByInstructionId('U1', 'instr_42');
+    expect(linked.map((t) => t.id)).toEqual(['t-link']);
+  });
+
+  it('finds Todos that were rehydrated via loadFromDisk', () => {
+    const mgr1 = new TodoManager({ baseDir: tmpRoot });
+    mgr1.updateTodos('sess-A', [baseTodo({ id: 't-a' })], { userId: 'U1', currentInstructionId: 'instr_42' });
+    mgr1.updateTodos('sess-B', [baseTodo({ id: 't-b' })], { userId: 'U1', currentInstructionId: 'instr_42' });
+
+    // New manager — must rehydrate from disk before findTodosByInstructionId
+    // can see anything.
+    const mgr2 = new TodoManager({ baseDir: tmpRoot });
+    mgr2.loadFromDisk('U1');
+    const linked = mgr2.findTodosByInstructionId('U1', 'instr_42');
+    expect(linked.map((t) => t.id).sort()).toEqual(['t-a', 't-b']);
+  });
+});
