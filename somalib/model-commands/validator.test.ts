@@ -1271,3 +1271,59 @@ describe('UPDATE_SESSION instructionOperations alone payload', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// PR2 fix loop #2 P1-A — multi-op `instructionOperations` is REJECTED at the
+// validator. Pre-fix `applyConfirmedLifecycle` only applied `meta.ops[0]` and
+// silently dropped `ops[1..]` — a real data-loss path on Yes-confirm. The
+// sealed contract is "one pending entry per session" (#755), so every
+// instructionOperations request must carry exactly one op. The model is
+// expected to re-emit one op at a time when it needs multiple mutations.
+// ---------------------------------------------------------------------------
+describe('UPDATE_SESSION instructionOperations multi-op rejection (#755 PR2 fix loop #2 P1-A)', () => {
+  it('rejects a 2-op instructionOperations request with a clear error to the model', () => {
+    const result = validateModelCommandRunArgs({
+      commandId: 'UPDATE_SESSION',
+      params: {
+        instructionOperations: [
+          { action: 'add', text: 'rule one' },
+          { action: 'add', text: 'rule two' },
+        ],
+      },
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.error.code).toBe('INVALID_ARGS');
+    // The error must explicitly mention the single-op contract so the model
+    // can self-correct and re-emit one op per request.
+    expect(result.error.message).toMatch(/single|one|per/i);
+    expect(result.error.message).toMatch(/instructionOperations/);
+  });
+
+  it('rejects a 3-op mix (add + cancel + rename) with the same single-op error', () => {
+    const result = validateModelCommandRunArgs({
+      commandId: 'UPDATE_SESSION',
+      params: {
+        instructionOperations: [
+          { action: 'add', text: 'a' },
+          { action: 'cancel', id: 'instr_1' },
+          { action: 'rename', id: 'instr_2', text: 'b' },
+        ],
+      },
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.error.code).toBe('INVALID_ARGS');
+    expect(result.error.message).toMatch(/single|one|per/i);
+  });
+
+  it('still accepts a single-op instructionOperations request', () => {
+    const result = validateModelCommandRunArgs({
+      commandId: 'UPDATE_SESSION',
+      params: {
+        instructionOperations: [{ action: 'add', text: 'only one' }],
+      },
+    });
+    expect(result.ok).toBe(true);
+  });
+});
