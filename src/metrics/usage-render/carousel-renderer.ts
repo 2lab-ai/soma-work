@@ -17,8 +17,12 @@ import type { CarouselStats, TabId } from './types';
 
 // ─── Defaults ──────────────────────────────────────────────────────────
 
-/** Tab render order — matches button order in carousel. */
-const TAB_IDS: TabId[] = ['24h', '7d', '30d', 'all'];
+/**
+ * Tab render order — matches button order in carousel. Includes 'models'
+ * as the rightmost tab so the Models view ships in the same parallel
+ * `Promise.all` batch as the period tabs and lands in the same TabCache.
+ */
+const TAB_IDS: TabId[] = ['24h', '7d', '30d', 'all', 'models'];
 
 /** Canvas size per tab PNG. */
 const CANVAS_WIDTH = 1600;
