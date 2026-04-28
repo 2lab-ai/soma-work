@@ -212,6 +212,104 @@ export class ClaudeHandler {
   }
 
   /**
+   * Inject the SlackHandler-owned `PendingInstructionConfirmStore` into
+   * the underlying `PromptBuilder` (#756 PR3a fix loop #1, P1-C).
+   *
+   * Called by `SlackHandler` during bootstrap AFTER it constructs the
+   * shared store. Production wiring requirement: without this call, the
+   * `<current-user-instruction>` block never renders the
+   * `pending: <op>` line in prod even though tests cover the path.
+   */
+  setPendingInstructionConfirmStore(
+    store: import('./slack/actions/pending-instruction-confirm-store').PendingInstructionConfirmStore,
+  ): void {
+    this.promptBuilder.setPendingInstructionConfirmStore(store);
+  }
+
+  /**
+   * Assemble the final system prompt the model will see this turn
+   * (#756 PR3a fix loop #1, P1-A/P1-B).
+   *
+   * Layout (top → bottom):
+   *   <workflow prompt> + <persona> + <memory> + <skills>
+   *   + <user-instructions-ssot>
+   *   + <channel-description>            (if slackContext.channelDescription)
+   *   + <channel-repository>             (if repos / confluenceUrl)
+   *   + <current-user-instruction>       (LAST — re-derived per turn)
+   *
+   * Caching contract:
+   *   - The PREFIX (everything up to and including channel-repository)
+   *     is built once per reset point and cached on
+   *     `session.systemPrompt`.
+   *   - The `<current-user-instruction>` block is re-derived from the
+   *     user-scope master + pending-confirm store on EVERY turn so the
+   *     model never sees a stale snapshot, even when the prefix is
+   *     served from cache. P1-B fix.
+   *   - The block is appended AFTER channel-description / repo context
+   *     so it lands in the very last slot of the prompt — receiving the
+   *     highest recency weight in the model's attention. P1-A fix.
+   *
+   * Public so the assembly is unit-testable without spinning up the SDK
+   * (see `claude-handler.system-prompt-ordering.test.ts`).
+   */
+  assembleSystemPromptForTurn(
+    session: ConversationSession | undefined,
+    slackContext?: SlackContext,
+  ): string | undefined {
+    const workflow = session?.workflow || 'default';
+    const promptUserId = session?.ownerId || slackContext?.user;
+
+    // Rebuild gate (PLAN.md §2). The PREFIX is what we cache — channel /
+    // repo context don't change across turns within a session.
+    const shouldRebuild =
+      !session || !session.systemPrompt || session.compactionOccurred === true || !session.sessionId;
+
+    let prefix: string | undefined;
+    if (shouldRebuild) {
+      // Build the prefix WITHOUT the `<current-user-instruction>` block —
+      // we'll append a fresh one below.
+      prefix = this.promptBuilder.buildSystemPrompt(promptUserId, workflow, session, {
+        omitCurrentInstructionBlock: true,
+      });
+
+      // Inject channel description as additional context.
+      if (prefix && slackContext?.channelDescription) {
+        prefix = `${prefix}\n\n<channel-description source="slack">\n${slackContext.channelDescription}\n</channel-description>`;
+      }
+
+      // Inject structured repository context from channel registry.
+      const hasRepos = !!slackContext?.repos && slackContext.repos.length > 0;
+      const hasConfluence = !!slackContext?.confluenceUrl;
+      if (prefix && (hasRepos || hasConfluence)) {
+        prefix = `${prefix}\n\n${buildRepoContextBlock(slackContext!.repos || [], slackContext!.confluenceUrl)}`;
+      }
+
+      // Cache the prefix on the session so subsequent turns skip the
+      // rebuild until the next reset / SSOT change.
+      if (session) {
+        session.systemPrompt = prefix || undefined;
+      }
+    } else {
+      // Reuse the cached prefix.
+      prefix = session!.systemPrompt;
+    }
+
+    // Re-derive the `<current-user-instruction>` block FRESH every turn.
+    let block: string | undefined;
+    if (session && (session.ownerId || promptUserId)) {
+      const masterUserId = session.ownerId || promptUserId;
+      if (masterUserId) {
+        block = this.promptBuilder.buildCurrentInstructionBlockForSession(masterUserId, session);
+      }
+    }
+
+    if (prefix && block) return `${prefix}\n\n${block}`;
+    if (prefix) return prefix;
+    if (block) return block;
+    return undefined;
+  }
+
+  /**
    * Resolve effective plugin paths dynamically from PluginManager.
    * Called each time a new session is created so that forceRefresh/rollback
    * changes are immediately reflected without service restart.
@@ -1127,40 +1225,15 @@ export class ClaudeHandler {
       // SSOT mutators (InstructionConfirmActionHandler.handleYes,
       // regenerateInstructionsSummaryIfStale) clear `session.systemPrompt`
       // on change so the next turn lands on branch (c) and rebuilds.
+      //
+      // PR3a fix loop #1 (#756 P1-A/P1-B): the cached snapshot is the
+      // *prefix* only — `<current-user-instruction>` is re-derived per
+      // turn and appended AFTER channel-description / repo context so it
+      // (1) sits at the very tail of the prompt and (2) reflects fresh
+      // user-instruction state on every turn even when the prefix is
+      // cached. See `assembleSystemPromptForTurn` for the assembly seam.
       const workflow = session?.workflow || 'default';
-      const promptUserId = session?.ownerId || slackContext?.user;
-      const shouldRebuild =
-        !session || !session.systemPrompt || session.compactionOccurred === true || !session.sessionId;
-
-      let builtSystemPrompt: string | undefined;
-      if (shouldRebuild) {
-        builtSystemPrompt = this.promptBuilder.buildSystemPrompt(promptUserId, workflow, session);
-
-        // Inject channel description as additional context
-        if (builtSystemPrompt && slackContext?.channelDescription) {
-          builtSystemPrompt = `${builtSystemPrompt}\n\n<channel-description source="slack">\n${slackContext.channelDescription}\n</channel-description>`;
-        }
-
-        // Inject structured repository context from channel registry.
-        // This provides explicit repo identification so the model doesn't
-        // have to guess from raw description.
-        const hasRepos = slackContext?.repos && slackContext.repos.length > 0;
-        const hasConfluence = !!slackContext?.confluenceUrl;
-        if (builtSystemPrompt && (hasRepos || hasConfluence)) {
-          builtSystemPrompt = `${builtSystemPrompt}\n\n${buildRepoContextBlock(slackContext!.repos || [], slackContext!.confluenceUrl)}`;
-        }
-
-        // Cache the freshly-built prompt on the session so subsequent turns
-        // skip the rebuild until the next reset / SSOT change.
-        if (session) {
-          session.systemPrompt = builtSystemPrompt || undefined;
-        }
-      } else {
-        // Reuse the cached snapshot. Skip channel / repo injection —
-        // they were baked in at build time and don't change across turns
-        // within the same logical session.
-        builtSystemPrompt = session!.systemPrompt;
-      }
+      const builtSystemPrompt = this.assembleSystemPromptForTurn(session, slackContext);
       if (builtSystemPrompt) {
         options.systemPrompt = builtSystemPrompt;
         this.logger.info(`\uD83D\uDE80 STARTING QUERY with workflow: [${workflow}]`, {

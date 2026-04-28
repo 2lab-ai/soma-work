@@ -212,10 +212,19 @@ export class SlackHandler {
     );
 
     // Shared store for deferred user-instruction writes. The SAME instance
-    // must be visible to both `ActionHandlers` (button click reader) and
-    // `StreamExecutor` (write producer) — PLAN §7.
+    // must be visible to both `ActionHandlers` (button click reader),
+    // `StreamExecutor` (write producer), AND the production
+    // `PromptBuilder` owned by `ClaudeHandler` (#756 PR3a fix loop #1,
+    // P1-C). Without the third leg, the `pending: <op>` line in the
+    // `<current-user-instruction>` block never renders in prod even
+    // though the happy-path tests cover it (those inject the store
+    // directly into the builder constructor).
     const pendingInstructionConfirmStore = new PendingInstructionConfirmStore();
     pendingInstructionConfirmStore.loadForms();
+    // Forward the store to the production PromptBuilder via ClaudeHandler.
+    // Optional-chained so existing tests that mock claudeHandler as `{}`
+    // keep working without re-stubbing every test fixture.
+    (this.claudeHandler as any).setPendingInstructionConfirmStore?.(pendingInstructionConfirmStore);
 
     // ActionHandlers needs context
     const actionContext: ActionHandlerContext = {
