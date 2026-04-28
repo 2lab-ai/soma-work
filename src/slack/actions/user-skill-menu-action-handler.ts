@@ -14,6 +14,7 @@ import {
 } from '../../user-skill-store';
 import type { SlackApiHelper } from '../slack-api-helper';
 import type { MessageHandler, RespondFn, SayFn } from './types';
+import { buildSkillViewPrivateMetadata } from './user-skill-view-submission-shared';
 
 interface UserSkillMenuContext {
   slackApi: SlackApiHelper;
@@ -288,7 +289,7 @@ export class UserSkillMenuActionHandler {
       return;
     }
 
-    const privateMetadata = JSON.stringify({
+    const privateMetadata = buildSkillViewPrivateMetadata({
       requesterId: value.requesterId,
       skillName: value.skillName,
       channelId: channel ?? '',
@@ -346,7 +347,7 @@ export class UserSkillMenuActionHandler {
       return;
     }
 
-    const privateMetadata = JSON.stringify({
+    const privateMetadata = buildSkillViewPrivateMetadata({
       requesterId: value.requesterId,
       skillName: value.skillName,
       channelId: channel ?? '',
@@ -556,14 +557,16 @@ export class UserSkillMenuActionHandler {
     //    skill changed under us between modal-open and modal-submit.
     const contentHash = computeContentHash(detail.content);
 
-    const privateMetadata = JSON.stringify({
-      requesterId: value.requesterId,
-      skillName: value.skillName,
-      channelId: channel ?? '',
-      threadTs: threadTs ?? '',
-      messageTs: messageTs ?? '',
-      contentHash,
-    });
+    const privateMetadata = buildSkillViewPrivateMetadata(
+      {
+        requesterId: value.requesterId,
+        skillName: value.skillName,
+        channelId: channel ?? '',
+        threadTs: threadTs ?? '',
+        messageTs: messageTs ?? '',
+      },
+      { contentHash },
+    );
 
     try {
       await client.views.open({

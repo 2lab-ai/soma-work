@@ -30,6 +30,19 @@ export interface SkillViewMetadataBase {
 }
 
 /**
+ * Symmetric writer for `private_metadata` — the menu-action-handler uses this
+ * when opening a modal so the 5-field shape stays in lockstep with the
+ * `parseSkillViewMetadataBase` reader.
+ *
+ * `extra` is for handlers that layer additional fields on top of the base
+ * shape (e.g. edit carries `contentHash`). Edit handler still owns its own
+ * `ParsedMetadata` reader because of that extra field; the writer is shared.
+ */
+export function buildSkillViewPrivateMetadata(base: SkillViewMetadataBase, extra?: Record<string, unknown>): string {
+  return JSON.stringify(extra ? { ...base, ...extra } : base);
+}
+
+/**
  * Parse the JSON `private_metadata` carried by a personal-skill view-submission.
  *
  * Returns `null` for any structural mismatch — the caller is expected to ack
