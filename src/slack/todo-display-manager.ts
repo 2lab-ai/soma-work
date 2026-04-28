@@ -1,6 +1,6 @@
 import { config } from '../config';
 import { Logger } from '../logger';
-import { parseTodos, type Todo, type TodoManager } from '../todo-manager';
+import { type InstructionStatusLookup, parseTodos, type Todo, type TodoManager } from '../todo-manager';
 import type { ConversationSession } from '../types';
 import { LOG_DETAIL, OutputFlag, shouldOutput } from './output-flags';
 import type { ReactionManager } from './reaction-manager';
@@ -9,6 +9,27 @@ import type { TurnAddress } from './turn-surface';
 
 export interface TodoUpdateInput {
   todos?: Todo[];
+}
+
+/**
+ * Per-call wiring threaded into `TodoManager.updateTodos` from the
+ * production seam (#757 PR3b). Lives at the call site (stream-executor)
+ * so this manager stays unaware of how userId / currentInstructionId /
+ * instruction-status are sourced.
+ *
+ * - `userId`                  → enables disk write-through to
+ *                                `data/users/{userId}/todos.json`.
+ *                                When omitted the manager stays RAM-only
+ *                                (legacy unit-test path).
+ * - `currentInstructionId`    → auto-links new Todos to the session's
+ *                                current instruction (frozen at creation).
+ * - `instructionStatusLookup` → cancelled/completed FK guard oracle.
+ *                                Without it the guard is a no-op.
+ */
+export interface TodoDisplayUpdateOptions {
+  userId?: string;
+  currentInstructionId?: string | null;
+  instructionStatusLookup?: InstructionStatusLookup;
 }
 
 export type SayFunction = (message: { text: string; thread_ts: string }) => Promise<{ ts?: string }>;
@@ -93,6 +114,7 @@ export class TodoDisplayManager {
     session?: ConversationSession,
     turnId?: string,
     turnCtx?: TurnAddress,
+    opts?: TodoDisplayUpdateOptions,
   ): Promise<void> {
     if (!sessionId || !input.todos) {
       return;
@@ -110,8 +132,14 @@ export class TodoDisplayManager {
 
     // Check if there's a significant change
     if (this.todoManager.hasSignificantChange(oldTodos, newTodos)) {
-      // Update the todo manager
-      this.todoManager.updateTodos(sessionId, newTodos);
+      // Update the todo manager. Threading `opts` (userId +
+      // currentInstructionId + instructionStatusLookup) from the
+      // production seam (#757 PR3b) is what activates the disk write-
+      // through, the auto-link of userInstructionId, and the
+      // cancelled/completed FK guard. Without `opts` the manager stays
+      // RAM-only — that path is reserved for legacy callers / unit
+      // tests that don't have a session in scope.
+      this.todoManager.updateTodos(sessionId, newTodos, opts);
 
       // Manage task-list timing on session
       if (session) {

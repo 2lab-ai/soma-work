@@ -34,6 +34,7 @@ import { interceptToolResults } from '../../metrics/tool-result-interceptor';
 import { SLACK_BLOCK_KIT_CHANNEL_NAME } from '../../notification-channels/slack-block-kit-channel';
 import { checkAndSchedulePendingCompact } from '../../session/compact-threshold-checker';
 import { buildCompactionContext, snapshotFromSession } from '../../session/compaction-context-builder';
+import type { InstructionStatus } from '../../todo-manager';
 import { type ActiveTokenInfo, getTokenManager, parseCooldownTime } from '../../token-manager';
 import {
   determineTurnCategory,
@@ -50,6 +51,7 @@ import type {
   UserChoice,
   UserChoices,
 } from '../../types';
+import { getUserSessionStore } from '../../user-session-store';
 import { coerceToAvailableModel, userSettingsStore } from '../../user-settings-store';
 import type { ActionHandlers } from '../actions';
 import { buildMarkerBlocks, SUPERSEDED_TEXT } from '../actions/click-classifier';
@@ -854,6 +856,38 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         onTodoUpdate: async (input, ctx) => {
           // Task list is part of thread header — always update regardless of verbosity.
           // The TODO_UPDATE flag only gates the legacy standalone message inside handleTodoUpdate.
+          //
+          // #757 PR3b wiring: thread session.ownerId + session.currentInstructionId
+          // + a UserSessionStore-backed status lookup so the TodoManager can:
+          //   1. Persist the TodoWrite to data/users/{userId}/todos.json
+          //   2. Auto-link new Todos to the session's current instruction
+          //   3. Reject creation against cancelled / completed instructions
+          //
+          // `session.ownerId` is required (set at session creation in
+          // SessionRegistry); `currentInstructionId` is `null` for chat
+          // turns that aren't tracking an instruction yet.
+          const wiringUserId = session.ownerId;
+          const wiringInstructionId = session.currentInstructionId ?? null;
+          const wiringLookup = (instructionId: string): InstructionStatus => {
+            try {
+              const doc = getUserSessionStore().load(wiringUserId);
+              const inst = doc.instructions.find((i) => i.id === instructionId);
+              if (!inst) return 'unknown';
+              return inst.status as InstructionStatus;
+            } catch (err) {
+              // Corrupt store / read failure → treat as unknown so the
+              // guard does not throw on a transient I/O fault. The
+              // store-corrupt path is loudly surfaced elsewhere
+              // (UserSessionStoreCorruptError handlers in session-registry).
+              this.logger.warn('TodoWrite instruction-status lookup failed; treating as unknown', {
+                sessionKey: ctx.sessionKey,
+                userId: wiringUserId,
+                instructionId,
+                error: (err as Error).message,
+              });
+              return 'unknown';
+            }
+          };
           await this.deps.todoDisplayManager.handleTodoUpdate(
             input,
             ctx.sessionKey,
@@ -868,6 +902,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
               channelId: turnContext.channelId,
               threadTs: turnContext.threadTs,
               sessionKey: turnContext.sessionKey,
+            },
+            {
+              userId: wiringUserId,
+              currentInstructionId: wiringInstructionId,
+              instructionStatusLookup: wiringLookup,
             },
           );
         },

@@ -70,11 +70,7 @@ const todoPayload = (over: Partial<Todo> = {}): Todo => ({
 describe('TodoDisplayManager — production wiring (PR3b)', () => {
   it('persists TodoWrite to data/users/{userId}/todos.json via opts.userId', async () => {
     const todoManager = new TodoManager({ baseDir: tmpRoot });
-    const display = new TodoDisplayManager(
-      fakeSlackApi() as any,
-      todoManager,
-      fakeReactionManager() as any,
-    );
+    const display = new TodoDisplayManager(fakeSlackApi() as any, todoManager, fakeReactionManager() as any);
     const session = baseSession({ currentInstructionId: null });
     const say = vi.fn().mockResolvedValue({ ts: '111.222' });
 
@@ -106,11 +102,7 @@ describe('TodoDisplayManager — production wiring (PR3b)', () => {
 
   it('auto-links userInstructionId from session.currentInstructionId', async () => {
     const todoManager = new TodoManager({ baseDir: tmpRoot });
-    const display = new TodoDisplayManager(
-      fakeSlackApi() as any,
-      todoManager,
-      fakeReactionManager() as any,
-    );
+    const display = new TodoDisplayManager(fakeSlackApi() as any, todoManager, fakeReactionManager() as any);
     const session = baseSession({ currentInstructionId: 'instr_live' });
     const say = vi.fn().mockResolvedValue({ ts: '111.222' });
 
@@ -145,17 +137,11 @@ describe('TodoDisplayManager — production wiring (PR3b)', () => {
 
   it('fires cancelled-instruction guard through the seam (rejects new Todo)', async () => {
     const todoManager = new TodoManager({ baseDir: tmpRoot });
-    const display = new TodoDisplayManager(
-      fakeSlackApi() as any,
-      todoManager,
-      fakeReactionManager() as any,
-    );
+    const display = new TodoDisplayManager(fakeSlackApi() as any, todoManager, fakeReactionManager() as any);
     const session = baseSession({ currentInstructionId: 'instr_dead' });
     const say = vi.fn().mockResolvedValue({ ts: '111.222' });
 
-    const lookup = vi.fn(
-      (id: string): InstructionStatus => (id === 'instr_dead' ? 'cancelled' : 'unknown'),
-    );
+    const lookup = vi.fn((id: string): InstructionStatus => (id === 'instr_dead' ? 'cancelled' : 'unknown'));
 
     await expect(
       display.handleTodoUpdate(
@@ -186,17 +172,11 @@ describe('TodoDisplayManager — production wiring (PR3b)', () => {
 
   it('fires completed-instruction guard through the seam (rejects new Todo)', async () => {
     const todoManager = new TodoManager({ baseDir: tmpRoot });
-    const display = new TodoDisplayManager(
-      fakeSlackApi() as any,
-      todoManager,
-      fakeReactionManager() as any,
-    );
+    const display = new TodoDisplayManager(fakeSlackApi() as any, todoManager, fakeReactionManager() as any);
     const session = baseSession({ currentInstructionId: 'instr_done' });
     const say = vi.fn().mockResolvedValue({ ts: '111.222' });
 
-    const lookup = vi.fn(
-      (id: string): InstructionStatus => (id === 'instr_done' ? 'completed' : 'unknown'),
-    );
+    const lookup = vi.fn((id: string): InstructionStatus => (id === 'instr_done' ? 'completed' : 'unknown'));
 
     await expect(
       display.handleTodoUpdate(
