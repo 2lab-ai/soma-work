@@ -2994,28 +2994,6 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       by: { type: 'slack-user', id: requesterId },
     });
 
-    // Sealed audit (#755 P1-3): every pending entry gets exactly one
-    // `state: 'requested'` lifecycleEvents row at queue-time. The terminal
-    // row ('confirmed'|'rejected'|'superseded'|'manual') is written later
-    // by the corresponding seam (applyConfirmedLifecycle / handleNo /
-    // supersede branch / migration). Without this row the dashboard
-    // cannot distinguish "model proposed but user ignored" from "model
-    // never proposed in the first place".
-    try {
-      this.deps.claudeHandler.recordRequestedLifecycle(session, {
-        requestId,
-        type: lifecycleType,
-        by: { type: 'slack-user', id: requesterId },
-        ops: request.instructionOperations ?? [],
-      });
-    } catch (err) {
-      this.logger.warn('Failed to record requested lifecycle audit', {
-        sessionKey: context.sessionKey,
-        requestId,
-        err,
-      });
-    }
-
     // Supersede any prior pending message for this session.
     if (evicted) {
       // Sealed audit (#755): the evicted entry gets a state='superseded'
@@ -3055,6 +3033,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
 
     const blocks = buildInstructionConfirmBlocks(payloadForStore, requestId);
     const fallback = buildInstructionConfirmFallbackText(payloadForStore);
+    let postSucceeded = false;
     try {
       const post = await this.deps.slackApi.postMessage(context.channel, fallback, {
         threadTs: context.threadTs,
@@ -3064,11 +3043,16 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       });
       if (post.ts) {
         store.updateMessageTs(requestId, post.ts);
+        postSucceeded = true;
       } else {
         this.logger.warn('Confirm post returned no ts', {
           sessionKey: context.sessionKey,
           requestId,
         });
+        // No ts means the user can't actually click the button. Treat this
+        // the same as a thrown post error: drop the store entry and skip
+        // the 'requested' audit row so we don't leave an orphan.
+        store.delete(requestId);
       }
     } catch (err) {
       this.logger.error('Failed to post instruction-confirm message', {
@@ -3079,6 +3063,35 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // Best-effort cleanup — if the post fails there's nothing for the user
       // to click, so remove the dangling store entry.
       store.delete(requestId);
+    }
+
+    // Sealed audit (#755 P1-3 / PR2 fix loop #2 P1-C): every successfully-posted
+    // pending entry gets exactly one `state: 'requested'` lifecycleEvents row.
+    // The terminal row ('confirmed'|'rejected'|'superseded'|'manual') is
+    // written later by the corresponding seam (applyConfirmedLifecycle /
+    // handleNo / supersede branch / migration). Without this row the dashboard
+    // cannot distinguish "model proposed but user ignored" from "model never
+    // proposed in the first place".
+    //
+    // Pre-fix this was written BEFORE the Slack post, so a post failure left
+    // an orphan 'requested' row with no terminal counterpart. Now we only
+    // record after the post succeeds — semantically "requested" means the
+    // user was actually asked, and a failed post means they weren't.
+    if (postSucceeded) {
+      try {
+        this.deps.claudeHandler.recordRequestedLifecycle(session, {
+          requestId,
+          type: lifecycleType,
+          by: { type: 'slack-user', id: requesterId },
+          ops: request.instructionOperations ?? [],
+        });
+      } catch (err) {
+        this.logger.warn('Failed to record requested lifecycle audit', {
+          sessionKey: context.sessionKey,
+          requestId,
+          err,
+        });
+      }
     }
 
     this.logger.info('Deferred instructionOperations for user y/n confirm', {
