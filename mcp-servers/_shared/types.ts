@@ -79,10 +79,7 @@ export interface SessionResourceUpdateRequest {
   title?: string;
 }
 
-// SaveContextResult* and UserChoice* types are owned by somalib so that the
-// mcp-server processes and the parent harness share a single source of truth
-// (e.g. the recommendedChoiceId field on UserChoice/UserChoiceQuestion).
-// See https://github.com/2lab-ai/soma-work/issues/767 (#744-B).
+// Re-exported from somalib so harness and mcp-servers share one definition.
 export type {
   SaveContextResultFile,
   SaveContextResultPayload,
