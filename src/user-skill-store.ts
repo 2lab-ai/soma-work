@@ -18,30 +18,62 @@
  *     skills with longer names (created before the cap) must remain editable.
  */
 
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import * as fs from 'fs';
 import * as path from 'path';
-import { invalidSkillNameMessage, skillNotFoundMessage } from 'somalib/model-commands/skill-share-errors';
+import {
+  invalidSkillNameMessage,
+  MAX_SKILL_NAME_LENGTH as MAX_SKILL_NAME_LENGTH_SHARED,
+  type SkillRenameErrorCode,
+  skillNotFoundMessage,
+  skillRenameIoFailureMessage,
+  skillRenameSameNameMessage,
+  skillRenameSourceMissingMessage,
+  skillRenameSuccessMessage,
+  skillRenameTargetExistsMessage,
+} from 'somalib/model-commands/skill-share-errors';
 import { DATA_DIR } from './env-paths';
 import { Logger } from './logger';
 import { isSafePathSegment } from './path-utils';
+import { createPromptInvalidator } from './prompt-cache-invalidation';
 
 const logger = new Logger('UserSkillStore');
+
+/**
+ * Invalidation hook for cached `session.systemPrompt` snapshots.
+ *
+ * Personal skills are injected into every system prompt via `prompt-builder.ts`,
+ * so any mutation (create/update/delete/rename) must drop cached snapshots for
+ * the affected user. Wired at startup in `src/index.ts` to
+ * `SessionRegistry.invalidateSystemPromptForUser`.
+ *
+ * Mutators (4 functions) call `fireInvalidate(userId)` only on the happy path —
+ * a failed write doesn't change disk state and shouldn't waste a rebuild.
+ *
+ * Mirrors the user-memory-store / user-settings-store pattern.
+ */
+const invalidator = createPromptInvalidator(logger, 'Skill');
+export const setSkillPromptInvalidationHook = invalidator.setHook;
+const fireInvalidate = invalidator.fire;
 
 /** Max SKILL.md file size in bytes (post-trim length used for the check). */
 export const MAX_SKILL_SIZE = 10 * 1024; // 10KB
 /** Max skills per user (enforced on create only). */
 const MAX_SKILLS_PER_USER = 50;
 /**
- * Max skill-name length in characters (enforced on create only).
+ * Max skill-name length in characters (enforced on create / rename only).
  *
  * Slack `overflow` option `text.text` is capped at 75 chars; an `action_id`
  * is capped at 255. Our action_id format is `user_skill_menu_<name>` (16-byte
  * prefix), so 64 keeps the longest action_id under 80 chars with comfortable
  * headroom for future prefix changes. Older skills with longer names predate
  * this cap and must stay editable, so update/delete do not enforce it.
+ *
+ * Re-exported from `skill-share-errors.ts` so this and the standalone MCP
+ * store import the SAME constant — the previous "kept in lockstep" comment
+ * was enforced only by code-review.
  */
-export const MAX_SKILL_NAME_LENGTH = 64;
+export const MAX_SKILL_NAME_LENGTH = MAX_SKILL_NAME_LENGTH_SHARED;
 /** Kebab-case skill name pattern. */
 const SKILL_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 
@@ -277,6 +309,7 @@ export function createUserSkill(userId: string, skillName: string, content: stri
   fs.writeFileSync(skillFile, content, 'utf-8');
 
   logger.info('User skill created', { userId, skillName });
+  fireInvalidate(userId);
   return { ok: true, message: `Skill "${skillName}" created.` };
 }
 
@@ -302,6 +335,7 @@ export function updateUserSkill(userId: string, skillName: string, content: stri
   fs.writeFileSync(skillFile, content, 'utf-8');
 
   logger.info('User skill updated', { userId, skillName });
+  fireInvalidate(userId);
   return { ok: true, message: `Skill "${skillName}" updated.` };
 }
 
@@ -318,7 +352,123 @@ export function deleteUserSkill(userId: string, skillName: string): SkillOperati
   fs.rmSync(skillDir, { recursive: true, force: true });
 
   logger.info('User skill deleted', { userId, skillName });
+  fireInvalidate(userId);
   return { ok: true, message: `Skill "${skillName}" deleted.` };
+}
+
+interface SkillRenameResult {
+  ok: boolean;
+  message: string;
+  /** Granular discriminant — see `SkillRenameErrorCode`. */
+  error?: SkillRenameErrorCode;
+}
+
+/**
+ * Rename `skills/{oldName}/` → `skills/{newName}/` in place.
+ *
+ * Why a 2-step `fs.rename` through a uuid-suffixed temp directory:
+ *   - On case-insensitive filesystems (Darwin APFS default, Windows NTFS
+ *     without the case-sensitive flag), `fs.renameSync(src, dst)` where
+ *     `src.toLowerCase() === dst.toLowerCase()` is a no-op — the inode is
+ *     identical, the OS reports success, but the directory keeps its old
+ *     casing. Staging through a temp name makes case-only renames real.
+ *   - The temp path makes the operation atomic from the dir-listing
+ *     perspective: a parallel `listUserSkills` can never observe both old
+ *     and new names at the same time.
+ *   - The uuid suffix is collision-resistant against parallel renames in
+ *     the same `skills/` dir.
+ *
+ * Validation order:
+ *   1. Both names match `isValidSkillName` (kebab + path-segment safety).
+ *   2. `newName` length ≤ MAX_SKILL_NAME_LENGTH (the same cap createUserSkill
+ *      enforces — rename is functionally a "create with old content").
+ *   3. `oldName !== newName` (no-op rejected with INVALID so the caller
+ *      doesn't fire an invalidation hook for nothing).
+ *   4. Source exists.
+ *   5. Target doesn't exist (skipped on case-only rename — the inode lookup
+ *      would lie).
+ *
+ * Failure modes return a granular `error` discriminant so the Slack rename
+ * modal can map storage errors onto inline `response_action: 'errors'`
+ * strings without re-parsing prose:
+ *   - INVALID    name violates predicate / length cap / same as old
+ *   - NOT_FOUND  source dir missing
+ *   - EEXIST     target dir already taken (true collision, not case-only)
+ *   - IO         fs.rename threw despite the pre-checks (rare, post-race)
+ *
+ * Verbatim persistence: SKILL.md bytes are not touched. The frontmatter
+ * `name:` field is left as-is — same policy as updateUserSkill (the user
+ * owns the body content; the dirname is the SSOT for invocation).
+ */
+export function renameUserSkill(userId: string, oldName: string, newName: string): SkillRenameResult {
+  if (!isValidSkillName(oldName)) {
+    return { ok: false, message: invalidSkillNameMessage(oldName), error: 'INVALID' };
+  }
+  if (!isValidSkillName(newName)) {
+    return { ok: false, message: invalidSkillNameMessage(newName), error: 'INVALID' };
+  }
+  if (newName.length > MAX_SKILL_NAME_LENGTH) {
+    return {
+      ok: false,
+      message: `Skill name too long (${newName.length} > ${MAX_SKILL_NAME_LENGTH} chars).`,
+      error: 'INVALID',
+    };
+  }
+  if (oldName === newName) {
+    return { ok: false, message: skillRenameSameNameMessage(oldName), error: 'INVALID' };
+  }
+
+  const skillsRoot = getUserSkillsDir(userId);
+  const srcDir = path.join(skillsRoot, oldName);
+  const dstDir = path.join(skillsRoot, newName);
+
+  if (!fs.existsSync(srcDir)) {
+    return { ok: false, message: skillRenameSourceMissingMessage(oldName), error: 'NOT_FOUND' };
+  }
+
+  // Case-only rename: existsSync(dstDir) returns true on case-insensitive FS
+  // because the inode is the source. Skip the EEXIST guard in that case —
+  // the temp staging step below is what makes the rename real.
+  //
+  // Currently unreachable under the kebab-case predicate (which rejects
+  // uppercase outright), so `oldName.toLowerCase() === newName.toLowerCase()`
+  // can only be true when oldName === newName, which we already short-circuit
+  // above. Kept as defense-in-depth in case the predicate is ever relaxed
+  // (e.g. to allow camelCase aliases). The temp-staging path below is what
+  // makes a future case-only rename actually move bits, not just no-op.
+  const isCaseOnlyRename = oldName.toLowerCase() === newName.toLowerCase();
+  if (!isCaseOnlyRename && fs.existsSync(dstDir)) {
+    return { ok: false, message: skillRenameTargetExistsMessage(newName), error: 'EEXIST' };
+  }
+
+  const tempDir = path.join(skillsRoot, `.rename-${randomUUID()}`);
+
+  try {
+    fs.renameSync(srcDir, tempDir);
+  } catch {
+    return { ok: false, message: skillRenameIoFailureMessage(oldName, newName), error: 'IO' };
+  }
+
+  try {
+    fs.renameSync(tempDir, dstDir);
+  } catch {
+    // Roll back so the user's skill doesn't vanish silently.
+    try {
+      fs.renameSync(tempDir, srcDir);
+    } catch {
+      logger.warn('User skill rename: rollback failed — temp dir survives', {
+        userId,
+        oldName,
+        newName,
+        tempDir,
+      });
+    }
+    return { ok: false, message: skillRenameIoFailureMessage(oldName, newName), error: 'IO' };
+  }
+
+  logger.info('User skill renamed', { userId, oldName, newName });
+  fireInvalidate(userId);
+  return { ok: true, message: skillRenameSuccessMessage(oldName, newName) };
 }
 
 interface SkillShareResult {
