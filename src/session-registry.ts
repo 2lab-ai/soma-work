@@ -6,7 +6,6 @@
 import { randomUUID } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
-import { applyInstructionOperations } from 'somalib/model-commands/catalog';
 import { decodeSlackEntities } from './dispatch-service';
 import { DATA_DIR } from './env-paths';
 import { mapLegacyInstructionStatus } from './legacy-instruction-status';
@@ -978,29 +977,36 @@ export class SessionRegistry {
       };
     }
 
-    // Apply instruction operations (shared helper)
-    if (!session.instructions) {
-      session.instructions = [];
+    // PR2 P1-2 (#755): instruction writes are gated through
+    // `applyConfirmedLifecycle` — `updateSessionResources` MUST NOT mutate
+    // `session.instructions` based on `request.instructionOperations`,
+    // otherwise the y/n gate is bypassed AND the user master loses its
+    // `lifecycleEvents[]` audit row. Stream-executor already strips this
+    // field before calling here; the defence-in-depth keeps direct callers
+    // (tests, future code paths) from sneaking writes past the gate.
+    if (request.instructionOperations && request.instructionOperations.length > 0) {
+      this.logger.warn(
+        'updateSessionResources: instructionOperations passed directly — IGNORED. ' +
+          'Use applyConfirmedLifecycle (post-y/n) instead.',
+        {
+          sessionKey: this.getSessionKey(channelId, threadTs),
+          opCount: request.instructionOperations.length,
+        },
+      );
     }
-    const instructionChanged = applyInstructionOperations(session.instructions, request.instructionOperations);
+    const instructionsPending = !!(
+      request.instructionOperations && request.instructionOperations.length > 0
+    );
 
-    if (applyResult.changed || instructionChanged) {
+    if (applyResult.changed) {
       session.linkSequence = (session.linkSequence ?? 0) + 1;
       this.saveSessions();
-    }
-
-    if (instructionChanged) {
-      // PLAN §2 & §5 — SSOT change invalidates the cached systemPrompt and
-      // may stale the completed-summary. Clearing the snapshot forces the
-      // next buildSystemPrompt() to rebuild; the summary regen is fire-and-
-      // forget so it never blocks the write path.
-      session.systemPrompt = undefined;
-      this.scheduleInstructionsSummaryRegen(session);
     }
 
     return {
       ok: true,
       snapshot: this.buildSessionResourceSnapshot(session),
+      ...(instructionsPending ? { instructionsPending: true } : {}),
     };
   }
 
