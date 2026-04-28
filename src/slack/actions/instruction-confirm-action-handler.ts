@@ -127,7 +127,7 @@ export class InstructionConfirmActionHandler {
           entry.channelId,
           entry.messageTs,
           '✅ Instruction write applied.',
-          buildInstructionAppliedBlocks(entry.request),
+          buildInstructionAppliedBlocks(entry.payload),
         );
       } catch (err) {
         this.logger.warn('instr_confirm_y: failed to update confirm message', {
@@ -164,7 +164,7 @@ export class InstructionConfirmActionHandler {
         return;
       }
       // Runtime-only flag — stream-executor consumes + clears on next turn.
-      session.pendingInstructionRejection = { at: Date.now(), request: entry.request };
+      session.pendingInstructionRejection = { at: Date.now(), request: entry.payload };
 
       // Sealed (#755) n-confirm: append a state='rejected' lifecycle audit
       // row on the user master. No data mutation.
@@ -178,7 +178,7 @@ export class InstructionConfirmActionHandler {
           entry.channelId,
           entry.messageTs,
           '❌ Instruction write rejected.',
-          buildInstructionRejectedBlocks(entry.request),
+          buildInstructionRejectedBlocks(entry.payload),
         );
       } catch (err) {
         this.logger.warn('instr_confirm_n: failed to update confirm message', {
@@ -198,7 +198,7 @@ export class InstructionConfirmActionHandler {
    * payload the SessionRegistry tx replays.
    */
   private buildLifecycleMeta(entry: PendingInstructionConfirm): LifecycleConfirmMeta {
-    const ops: SessionInstructionOperation[] = entry.request.instructionOperations ?? [];
+    const ops: SessionInstructionOperation[] = entry.payload.instructionOperations ?? [];
     return {
       requestId: entry.requestId,
       type: entry.type,

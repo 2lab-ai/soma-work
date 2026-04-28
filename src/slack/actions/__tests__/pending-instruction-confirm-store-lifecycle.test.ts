@@ -144,7 +144,7 @@ describe('PendingInstructionConfirmStore — sealed lifecycle entry shape (#755)
     store.set(entry);
 
     // In-memory get: payload is present, request is not.
-    const got = store.get('r-payload') as Record<string, unknown>;
+    const got = store.get('r-payload') as unknown as Record<string, unknown>;
     expect(got).toBeDefined();
     expect(got.payload).toEqual(mkRequest('add'));
     expect((got as { request?: unknown }).request).toBeUndefined();
@@ -152,7 +152,7 @@ describe('PendingInstructionConfirmStore — sealed lifecycle entry shape (#755)
     // Round-trip through disk: same shape after rehydrate.
     const reloaded = new PendingInstructionConfirmStore();
     expect(reloaded.loadForms()).toBe(1);
-    const after = reloaded.get('r-payload') as Record<string, unknown>;
+    const after = reloaded.get('r-payload') as unknown as Record<string, unknown>;
     expect(after.payload).toEqual(mkRequest('add'));
     expect((after as { request?: unknown }).request).toBeUndefined();
   });

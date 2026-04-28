@@ -76,8 +76,13 @@ export interface PendingInstructionConfirm {
    * the caller must call `updateMessageTs()` once the post resolves.
    */
   messageTs?: string;
-  /** The deferred `UPDATE_SESSION` request payload. */
-  request: SessionResourceUpdateRequest;
+  /**
+   * The deferred `UPDATE_SESSION` payload (sealed shape per #727 / #755 —
+   * matches the `lifecycleEvents[].payload` anchor so the dashboard and
+   * the pending store both speak the same language). Pre-PR2 this was
+   * named `request`; renamed under PR2 P1-4.
+   */
+  payload: SessionResourceUpdateRequest;
   /** Creation timestamp (ms). */
   createdAt: number;
   /**
@@ -227,6 +232,11 @@ export class PendingInstructionConfirmStore {
         if (!VALID_PENDING_TYPES.has(entry.type as PendingInstructionConfirmType)) continue;
         const by = entry.by as PendingInstructionConfirmBy | undefined;
         if (!by || by.type !== 'slack-user' || typeof by.id !== 'string' || by.id.length === 0) continue;
+        // PR2 P1-4 (#755): the sealed shape carries the deferred update
+        // under `payload`, not the pre-PR2 `request` field. Pre-PR2 entries
+        // are dropped rather than coerced — the model can re-propose on
+        // the next turn with the sealed shape.
+        if (!entry.payload || typeof entry.payload !== 'object') continue;
         this.byRequest.set(entry.requestId, entry);
         this.bySession.set(entry.sessionKey, entry.requestId);
         restored += 1;

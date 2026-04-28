@@ -21,7 +21,7 @@ interface PendingStoreEntry {
   sessionKey: string;
   channelId: string;
   threadTs: string;
-  request: SessionResourceUpdateRequest;
+  payload: SessionResourceUpdateRequest;
   createdAt: number;
   requesterId: string;
   type: 'add' | 'link' | 'complete' | 'cancel' | 'rename';

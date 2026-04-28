@@ -2947,7 +2947,10 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     }
 
     const requestId = randomUUID();
-    const requestForStore: SessionResourceUpdateRequest = {
+    // PR2 P1-4 (#755): the persisted entry carries the deferred update
+    // under `payload` (sealed shape, matches lifecycleEvents[].payload).
+    // Local name kept as `payloadForStore` so the call sites read clean.
+    const payloadForStore: SessionResourceUpdateRequest = {
       // Strip expectedSequence so the later commit doesn't race against
       // unrelated resource sequence bumps that may happen while the user
       // ponders the button.
@@ -2984,7 +2987,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       sessionKey: context.sessionKey,
       channelId: context.channel,
       threadTs: context.threadTs,
-      request: requestForStore,
+      payload: payloadForStore,
       createdAt: Date.now(),
       requesterId,
       type: lifecycleType,
@@ -3023,7 +3026,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           requestId: evicted.requestId,
           type: evicted.type,
           by: evicted.by,
-          ops: evicted.request.instructionOperations ?? [],
+          ops: evicted.payload.instructionOperations ?? [],
         });
       } catch (err) {
         this.logger.warn('Failed to record superseded lifecycle audit', {
@@ -3038,7 +3041,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             evicted.channelId,
             evicted.messageTs,
             '⚠️ [superseded] — a newer instruction proposal replaced this one.',
-            buildInstructionSupersededBlocks(evicted.request),
+            buildInstructionSupersededBlocks(evicted.payload),
           );
         } catch (err) {
           this.logger.warn('Failed to update superseded confirm message', {
@@ -3050,8 +3053,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       }
     }
 
-    const blocks = buildInstructionConfirmBlocks(requestForStore, requestId);
-    const fallback = buildInstructionConfirmFallbackText(requestForStore);
+    const blocks = buildInstructionConfirmBlocks(payloadForStore, requestId);
+    const fallback = buildInstructionConfirmFallbackText(payloadForStore);
     try {
       const post = await this.deps.slackApi.postMessage(context.channel, fallback, {
         threadTs: context.threadTs,
