@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MetricsEventStore } from '../event-store';
 import { computeDerivedMetrics, computeTrend, ReportAggregator } from '../report-aggregator';
 import type { AggregatedMetrics, MetricsEvent, MetricsEventType } from '../types';
+import { OTHER_MODEL_ID, rowTotalTokens } from '../usage-render/types';
 
 // Contract tests — Scenario 4: ReportAggregator
 // Trace: docs/daily-weekly-report/trace.md
@@ -530,15 +531,11 @@ describe('aggregateCarousel', () => {
 
   // === Models tab — per-model breakdown over the 30d window ===
 
-  /**
-   * Narrow `tabs.models` to its non-empty `ModelsTabStats` form.
-   * The discriminating union (`empty: true | false`) cannot disambiguate
-   * `CarouselTabStats` vs `ModelsTabStats` on its own — we use `tabId === 'models'`
-   * as the secondary guard.
-   */
-  function asModels(tab: import('../usage-render/types').TabResult): import('../usage-render/types').ModelsTabStats {
+  /** Narrow `tabs.models` to its non-empty form. */
+  function asModels(
+    tab: import('../usage-render/types').ModelsTabResult,
+  ): import('../usage-render/types').ModelsTabStats {
     if (tab.empty) throw new Error('models should not be empty');
-    if (tab.tabId !== 'models') throw new Error('expected models tabId');
     return tab;
   }
 
@@ -557,9 +554,9 @@ describe('aggregateCarousel', () => {
     expect(m.tabId).toBe('models');
     expect(m.totalTokens).toBe(1000);
     expect(m.rows).toHaveLength(3);
-    // Sorted by totalTokens desc.
+    // Sorted by total-tokens desc.
     expect(m.rows[0].model).toBe('claude-opus-4-7');
-    expect(m.rows[0].totalTokens).toBe(700);
+    expect(rowTotalTokens(m.rows[0])).toBe(700);
     expect(m.rows[1].model).toBe('claude-sonnet-4-6');
     expect(m.rows[2].model).toBe('claude-haiku-4-5');
 
@@ -589,10 +586,10 @@ describe('aggregateCarousel', () => {
 
     // 7 kept rows + 1 'other' row = 8 total (MODELS_TAB_MAX_ROWS).
     expect(m.rows).toHaveLength(8);
-    expect(m.rows[7].model).toBe('other');
+    expect(m.rows[7].model).toBe(OTHER_MODEL_ID);
     // 'other' is the sum of the bottom 3 (indices 7, 8, 9 — tokens 650, 600, 550).
-    expect(m.rows[7].totalTokens).toBe(650 + 600 + 550);
-    expect(m.dailyByModel.other).toBeDefined();
+    expect(rowTotalTokens(m.rows[7])).toBe(650 + 600 + 550);
+    expect(m.dailyByModel[OTHER_MODEL_ID]).toBeDefined();
   });
 
   it('models tab: dailyByModel buckets line up with the windowStart..+29 calendar', async () => {

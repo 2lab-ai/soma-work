@@ -9,7 +9,8 @@ import { describe, expect, it, vi } from 'vitest';
 import type { CarouselRendererOptions } from '../carousel-renderer';
 import { renderCarousel } from '../carousel-renderer';
 import { EchartsInitError, ResvgNativeError } from '../errors';
-import type { CarouselStats, CarouselTabStats, EmptyTabStats, TabId } from '../types';
+import type { CarouselStats, EmptyTabStats, TabId } from '../types';
+import { type CarouselTabsOverrides, makeCarouselStats as makeBaseCarouselStats } from './fixtures';
 
 // ───────────────────── Helpers ────────────────────────────────────────
 
@@ -51,79 +52,10 @@ function hashByte(s: string): number {
   return h;
 }
 
-// ───────────────────── Fixtures ───────────────────────────────────────
-
-function makeTabStats(tabId: Exclude<TabId, 'models'>): CarouselTabStats {
-  return {
-    empty: false,
-    tabId,
-    targetUserId: 'U_TEST',
-    targetUserName: 'Tester',
-    windowStart: '2026-03-20',
-    windowEnd: '2026-04-18',
-    totals: { tokens: 12345, costUsd: 0.42, sessions: 3 },
-    favoriteModel: { model: 'claude-opus', tokens: 10000 },
-    hourly: Array.from({ length: 24 }, (_, h) => h * 10),
-    heatmap: [{ date: '2026-04-10', tokens: 500, cellIndex: 0 }],
-    rankings: {
-      tokensTop: [{ userId: 'U_TEST', userName: 'Tester', totalTokens: 12345, rank: 1 }],
-      targetTokenRow: null,
-    },
-    activeDays: 5,
-    longestStreakDays: 3,
-    currentStreakDays: 2,
-    topSessions: [],
-    longestSession: null,
-    mostActiveDay: null,
-  };
-}
-
-function makeModelsTab(): import('../types').ModelsTabStats {
-  return {
-    empty: false,
-    tabId: 'models',
-    targetUserId: 'U_TEST',
-    targetUserName: 'Tester',
-    windowStart: '2026-03-20',
-    windowEnd: '2026-04-18',
-    totalTokens: 12345,
-    rows: [
-      {
-        model: 'claude-opus',
-        inputTokens: 5000,
-        outputTokens: 6000,
-        cacheReadTokens: 1000,
-        cacheCreateTokens: 345,
-        totalTokens: 12345,
-      },
-    ],
-    dayKeys: Array.from({ length: 30 }, (_, i) => `2026-03-${String(20 + (i % 11)).padStart(2, '0')}`),
-    dailyByModel: { 'claude-opus': new Array(30).fill(0).map((_, i) => (i === 0 ? 12345 : 0)) },
-  };
-}
-
-function makeCarouselStats(
-  overrides: Partial<{
-    '24h': CarouselTabStats | EmptyTabStats;
-    '7d': CarouselTabStats | EmptyTabStats;
-    '30d': CarouselTabStats | EmptyTabStats;
-    all: CarouselTabStats | EmptyTabStats;
-    models: import('../types').ModelsTabStats | EmptyTabStats;
-  }> = {},
-): CarouselStats {
-  return {
-    targetUserId: 'U_TEST',
-    targetUserName: 'Tester',
-    now: '2026-04-18T12:00:00+09:00',
-    tabs: {
-      '24h': overrides['24h'] ?? makeTabStats('24h'),
-      '7d': overrides['7d'] ?? makeTabStats('7d'),
-      '30d': overrides['30d'] ?? makeTabStats('30d'),
-      all: overrides.all ?? makeTabStats('all'),
-      models: overrides.models ?? makeModelsTab(),
-    },
-  };
-}
+// Shared base fixtures live in `./fixtures`. The renderer tests don't care
+// about specific stat values — they only check parallel render shape — so
+// we delegate directly.
+const makeCarouselStats = (overrides: CarouselTabsOverrides = {}): CarouselStats => makeBaseCarouselStats(overrides);
 
 type BuildOptionMock = NonNullable<CarouselRendererOptions['buildOption']>;
 type InitChartMock = NonNullable<CarouselRendererOptions['initChart']>;

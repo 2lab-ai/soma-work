@@ -8,28 +8,34 @@
 import { describe, expect, it } from 'vitest';
 import { buildCardOption, buildStubOption, buildTabOption, MODEL_PALETTE } from '../buildCarouselOption';
 import { DARK_PALETTE, HEATMAP_SCALE } from '../dark-palette';
-import type { CarouselStats, CarouselTabStats, EmptyTabStats, ModelsTabStats, PeriodTabId, TabId } from '../types';
+import type { CarouselTabStats, EmptyTabStats, PeriodTabId } from '../types';
+import {
+  makeCarouselStats as makeBaseCarouselStats,
+  makeEmptyTabStats as makeEmpty,
+  makeModelsTabStats as makeModelsStats,
+  makePeriodTabStats,
+} from './fixtures';
 
-// ───── Fixtures ────────────────────────────────────────────────────────
+// ───── Local fixtures (heatmap-aware) ───────────────────────────────────
+// `makePeriodTabStats` from fixtures.ts uses a 1-cell stub heatmap. The
+// option-builder tests need realistic per-tab heatmap shapes (168/35/84
+// cells), so we wrap it here.
 
 function makeNonEmptyStats(tabId: PeriodTabId, overrides: Partial<CarouselTabStats> = {}): CarouselTabStats {
   let heatmap: CarouselTabStats['heatmap'] = [];
   if (tabId === '7d') {
-    // 168 cells (7 days × 24 hours)
     heatmap = Array.from({ length: 168 }, (_, i) => ({
       date: `2026-04-${String((Math.floor(i / 24) % 30) + 1).padStart(2, '0')}`,
       tokens: (i * 37) % 1000,
       cellIndex: i,
     }));
   } else if (tabId === '30d') {
-    // 35 cells (5 rows × 7 cols)
     heatmap = Array.from({ length: 35 }, (_, i) => ({
       date: `2026-04-${String((i % 30) + 1).padStart(2, '0')}`,
       tokens: (i * 113) % 2000,
       cellIndex: i,
     }));
   } else if (tabId === 'all') {
-    // 84 cells (12 months × 7 weekdays)
     heatmap = Array.from({ length: 84 }, (_, i) => ({
       date: `2026-${String((Math.floor(i / 7) % 12) + 1).padStart(2, '0')}-01`,
       tokens: (i * 251) % 3000,
@@ -37,18 +43,8 @@ function makeNonEmptyStats(tabId: PeriodTabId, overrides: Partial<CarouselTabSta
     }));
   }
 
-  return {
-    empty: false,
-    tabId,
-    targetUserId: 'U_TEST',
-    targetUserName: 'Tester',
-    windowStart: '2026-03-20',
-    windowEnd: '2026-04-18',
-    totals: {
-      tokens: 123_456,
-      costUsd: 4.56,
-      sessions: 7,
-    },
+  return makePeriodTabStats(tabId, {
+    totals: { tokens: 123_456, costUsd: 4.56, sessions: 7 },
     favoriteModel: { model: 'claude-opus-4-7', tokens: 80_000 },
     hourly: Array.from({ length: 24 }, (_, h) => h * 100),
     heatmap,
@@ -63,64 +59,19 @@ function makeNonEmptyStats(tabId: PeriodTabId, overrides: Partial<CarouselTabSta
     longestSession: { sessionKey: 'S2', durationMs: 7_200_000 },
     mostActiveDay: { date: '2026-04-10', tokens: 9_999 },
     ...overrides,
-  };
-}
-
-function makeEmpty(tabId: TabId): EmptyTabStats {
-  return {
-    empty: true,
-    tabId,
-    windowStart: '2026-03-20',
-    windowEnd: '2026-04-18',
-  };
-}
-
-function makeModelsStats(overrides: Partial<ModelsTabStats> = {}): ModelsTabStats {
-  return {
-    empty: false,
-    tabId: 'models',
-    targetUserId: 'U_TEST',
-    targetUserName: 'Tester',
-    windowStart: '2026-03-20',
-    windowEnd: '2026-04-18',
-    totalTokens: 1000,
-    rows: [
-      {
-        model: 'claude-opus-4-7',
-        inputTokens: 400,
-        outputTokens: 500,
-        cacheReadTokens: 50,
-        cacheCreateTokens: 50,
-        totalTokens: 1000,
-      },
-    ],
-    dayKeys: Array.from({ length: 30 }, (_, i) => `2026-03-${String(20 + (i % 11)).padStart(2, '0')}`),
-    dailyByModel: { 'claude-opus-4-7': new Array(30).fill(0).map((_, i) => (i === 0 ? 1000 : 0)) },
-    ...overrides,
-  };
+  });
 }
 
 function makeCarouselStats(
-  overrides: Partial<{
-    '24h': CarouselTabStats | EmptyTabStats;
-    '7d': CarouselTabStats | EmptyTabStats;
-    '30d': CarouselTabStats | EmptyTabStats;
-    all: CarouselTabStats | EmptyTabStats;
-    models: ModelsTabStats | EmptyTabStats;
-  }> = {},
-): CarouselStats {
-  return {
-    targetUserId: 'U_TEST',
-    targetUserName: 'Tester',
-    now: '2026-04-18T12:00:00+09:00',
-    tabs: {
-      '24h': overrides['24h'] ?? makeNonEmptyStats('24h'),
-      '7d': overrides['7d'] ?? makeNonEmptyStats('7d'),
-      '30d': overrides['30d'] ?? makeNonEmptyStats('30d'),
-      all: overrides.all ?? makeNonEmptyStats('all'),
-      models: overrides.models ?? makeModelsStats(),
-    },
-  };
+  overrides: Parameters<typeof makeBaseCarouselStats>[0] = {},
+): ReturnType<typeof makeBaseCarouselStats> {
+  return makeBaseCarouselStats({
+    '24h': overrides['24h'] ?? makeNonEmptyStats('24h'),
+    '7d': overrides['7d'] ?? makeNonEmptyStats('7d'),
+    '30d': overrides['30d'] ?? makeNonEmptyStats('30d'),
+    all: overrides.all ?? makeNonEmptyStats('all'),
+    models: overrides.models,
+  });
 }
 
 // ───── buildTabOption per tab ───────────────────────────────────────────
@@ -302,21 +253,13 @@ describe('buildTabOption — models', () => {
   it('returns one stacked-bar series per row, colors taken from MODEL_PALETTE', () => {
     const stats = makeModelsStats({
       rows: [
-        {
-          model: 'opus-4-7',
-          inputTokens: 70,
-          outputTokens: 20,
-          cacheReadTokens: 5,
-          cacheCreateTokens: 5,
-          totalTokens: 100,
-        },
+        { model: 'opus-4-7', inputTokens: 70, outputTokens: 20, cacheReadInputTokens: 5, cacheCreationInputTokens: 5 },
         {
           model: 'sonnet-4-6',
           inputTokens: 30,
           outputTokens: 10,
-          cacheReadTokens: 0,
-          cacheCreateTokens: 0,
-          totalTokens: 40,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
         },
       ],
       dayKeys: Array.from({ length: 30 }, (_, i) => `2026-03-${String(20 + (i % 11)).padStart(2, '0')}`),

@@ -27,14 +27,15 @@ import {
   type WeeklyReport,
 } from './types';
 import { currentStreak, longestStreak } from './usage-render/streaks';
-import type {
-  CarouselRanking,
-  CarouselStats,
-  CarouselTabStats,
-  EmptyTabStats,
-  ModelsTabRow,
-  ModelsTabStats,
-  PeriodTabId,
+import {
+  type CarouselRanking,
+  type CarouselStats,
+  type CarouselTabStats,
+  type EmptyTabStats,
+  type ModelsTabRow,
+  type ModelsTabStats,
+  OTHER_MODEL_ID,
+  type PeriodTabId,
 } from './usage-render/types';
 
 const logger = new Logger('ReportAggregator');
@@ -416,14 +417,14 @@ export class ReportAggregator {
     const firstDate = kstShiftDay(endOfDayKey, -365);
     const events = await this.store.readRange(firstDate, endOfDayKey);
 
-    // Per-window builders for the target user. Only the four PERIOD windows
-    // need builders — the Models tab is derived from the 30d builder via
-    // `buildModelsTab`, not from its own scan.
+    // Per-window builders for the target user. Only the 30d builder collects
+    // per-(day, model) sub-counts; the Models tab is fixed to that window
+    // and shares this builder via `buildModelsTab`.
     const builders: Record<PeriodTabId, WindowBuilder> = {
-      '24h': makeWindowBuilder(),
-      '7d': makeWindowBuilder(),
-      '30d': makeWindowBuilder(),
-      all: makeWindowBuilder(),
+      '24h': makeWindowBuilder({ collectPerDayModel: false }),
+      '7d': makeWindowBuilder({ collectPerDayModel: false }),
+      '30d': makeWindowBuilder({ collectPerDayModel: true }),
+      all: makeWindowBuilder({ collectPerDayModel: false }),
     };
 
     // Global rankings accumulator — 30d only, shared across tabs.
@@ -520,12 +521,9 @@ export class ReportAggregator {
           }
         } else if (m.model) {
           b.perModel.set(m.model, (b.perModel.get(m.model) || 0) + tokens);
-          addPerDayModel(b, dayKey, m.model, {
-            inputTokens: m.inputTokens,
-            outputTokens: m.outputTokens,
-            cacheReadInputTokens: m.cacheReadInputTokens,
-            cacheCreationInputTokens: m.cacheCreationInputTokens,
-          });
+          // `m` already exposes the ModelTokenUsage token fields directly,
+          // so pass it through as-is rather than repacking.
+          addPerDayModel(b, dayKey, m.model, m);
         }
       }
     }
@@ -612,19 +610,14 @@ export class ReportAggregator {
 // === Carousel helpers ===
 
 /**
- * One ModelBucket = the four token sub-counts the Models tab needs to render
- * "X in · Y out" rows + percentages. Cost is intentionally NOT tracked here —
- * the Models view shows token mix, not spend.
+ * Per-(day, model) token sub-counts collected by the 30d window scan and
+ * consumed by `buildModelsTab`. Cost is intentionally NOT tracked — the Models
+ * view shows token mix, not spend — so we drop `costUsd` from `ModelTokenUsage`.
  */
-interface ModelBucket {
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheCreateTokens: number;
-}
+type ModelBucket = Omit<ModelTokenUsage, 'costUsd'>;
 
 function emptyModelBucket(): ModelBucket {
-  return { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0 };
+  return { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 };
 }
 
 interface WindowBuilder {
@@ -642,16 +635,15 @@ interface WindowBuilder {
   perSession: Map<string, { tokens: number; firstMs: number; lastMs: number; count: number }>;
   perModel: Map<string, number>;
   /**
-   * Per-(dateKey, model) token sub-counts. Used by the Models tab to render
-   * the stacked bar chart (per day) + the per-model breakdown rows. Populated
-   * uniformly across all windows so the 30d builder can be consumed by
-   * `buildModelsTab` without an extra scan; other windows pay a small
-   * memory cost (one ModelBucket per (day, model) tuple) and ignore it.
+   * Per-(dateKey, model) token sub-counts — populated only on the 30d builder
+   * (the only consumer is `buildModelsTab`, which is fixed to that window).
+   * Other builders carry `null` so they don't pay the per-(day,model) Map
+   * allocation cost on workspaces with hundreds of distinct models.
    */
-  perDayModel: Map<string, Map<string, ModelBucket>>;
+  perDayModel: Map<string, Map<string, ModelBucket>> | null;
 }
 
-function makeWindowBuilder(): WindowBuilder {
+function makeWindowBuilder(opts: { collectPerDayModel: boolean }): WindowBuilder {
   return {
     tokens: 0,
     cost: 0,
@@ -661,26 +653,18 @@ function makeWindowBuilder(): WindowBuilder {
     daySet: new Set(),
     perSession: new Map(),
     perModel: new Map(),
-    perDayModel: new Map(),
+    perDayModel: opts.collectPerDayModel ? new Map() : null,
   };
 }
 
 /**
  * Add usage tokens to a `(dayKey, model)` bucket inside `b.perDayModel`.
- * Allocates the inner Map / bucket lazily so empty (day, model) pairs
- * cost zero memory.
+ * No-op when `b.perDayModel` is null (non-30d builders don't track this).
+ * Accepts the raw `ModelTokenUsage` shape so call sites pass through events
+ * without re-keying field names.
  */
-function addPerDayModel(
-  b: WindowBuilder,
-  dayKey: string,
-  model: string,
-  usage: {
-    inputTokens?: number;
-    outputTokens?: number;
-    cacheReadInputTokens?: number;
-    cacheCreationInputTokens?: number;
-  },
-): void {
+function addPerDayModel(b: WindowBuilder, dayKey: string, model: string, usage: Partial<ModelTokenUsage>): void {
+  if (!b.perDayModel) return;
   let inner = b.perDayModel.get(dayKey);
   if (!inner) {
     inner = new Map();
@@ -693,8 +677,8 @@ function addPerDayModel(
   }
   bucket.inputTokens += usage.inputTokens || 0;
   bucket.outputTokens += usage.outputTokens || 0;
-  bucket.cacheReadTokens += usage.cacheReadInputTokens || 0;
-  bucket.cacheCreateTokens += usage.cacheCreationInputTokens || 0;
+  bucket.cacheReadInputTokens += usage.cacheReadInputTokens || 0;
+  bucket.cacheCreationInputTokens += usage.cacheCreationInputTokens || 0;
 }
 
 /**
@@ -890,9 +874,9 @@ function buildModelsTab(
   targetUserId: string,
   targetUserName: string | undefined,
 ): ModelsTabStats | EmptyTabStats {
-  // No model events at all → empty marker (handler short-circuits the tab
-  // through buildStubOption like the other tabs).
-  if (b.perDayModel.size === 0) {
+  // perDayModel is null on builders that didn't opt into per-(day,model) collection.
+  // The aggregator only enables it for the 30d builder — anything else here is a bug.
+  if (!b.perDayModel || b.perDayModel.size === 0) {
     return { empty: true, tabId: 'models', windowStart: bounds.start, windowEnd: bounds.end };
   }
 
@@ -903,19 +887,15 @@ function buildModelsTab(
       const acc = totals.get(model) ?? emptyModelBucket();
       acc.inputTokens += bucket.inputTokens;
       acc.outputTokens += bucket.outputTokens;
-      acc.cacheReadTokens += bucket.cacheReadTokens;
-      acc.cacheCreateTokens += bucket.cacheCreateTokens;
+      acc.cacheReadInputTokens += bucket.cacheReadInputTokens;
+      acc.cacheCreationInputTokens += bucket.cacheCreationInputTokens;
       totals.set(model, acc);
     }
   }
 
-  function bucketTotal(buc: ModelBucket): number {
-    return buc.inputTokens + buc.outputTokens + buc.cacheReadTokens + buc.cacheCreateTokens;
-  }
-
   // Defensive — if every bucket summed to zero (e.g. only `cost` was set),
   // treat as empty rather than emit a degenerate chart.
-  const grandTotal = Array.from(totals.values()).reduce((s, buc) => s + bucketTotal(buc), 0);
+  const grandTotal = Array.from(totals.values()).reduce((s, buc) => s + bucketTotalTokens(buc), 0);
   if (grandTotal === 0) {
     return { empty: true, tabId: 'models', windowStart: bounds.start, windowEnd: bounds.end };
   }
@@ -923,64 +903,43 @@ function buildModelsTab(
   // Sort by total tokens desc; alpha-stable for ties so the rendered order
   // matches the implicit color assignment in `buildModelsTabOption`.
   const sorted = Array.from(totals.entries())
-    .map(([model, buc]) => ({ model, buc, total: bucketTotal(buc) }))
+    .map(([model, buc]) => ({ model, buc, total: bucketTotalTokens(buc) }))
     .sort((a, c) => c.total - a.total || a.model.localeCompare(c.model));
 
   // Fold the long tail past MAX_ROWS-1 into a synthetic 'other' row.
-  let kept: typeof sorted;
-  let tail: typeof sorted;
-  if (sorted.length <= MODELS_TAB_MAX_ROWS) {
-    kept = sorted;
-    tail = [];
-  } else {
-    kept = sorted.slice(0, MODELS_TAB_MAX_ROWS - 1);
-    tail = sorted.slice(MODELS_TAB_MAX_ROWS - 1);
-  }
+  const kept = sorted.length <= MODELS_TAB_MAX_ROWS ? sorted : sorted.slice(0, MODELS_TAB_MAX_ROWS - 1);
+  const tail = sorted.length <= MODELS_TAB_MAX_ROWS ? [] : sorted.slice(MODELS_TAB_MAX_ROWS - 1);
 
-  const rows: ModelsTabRow[] = kept.map(({ model, buc, total }) => ({
-    model,
-    inputTokens: buc.inputTokens,
-    outputTokens: buc.outputTokens,
-    cacheReadTokens: buc.cacheReadTokens,
-    cacheCreateTokens: buc.cacheCreateTokens,
-    totalTokens: total,
-  }));
+  const rows: ModelsTabRow[] = kept.map(({ model, buc }) => ({ model, ...buc }));
 
   if (tail.length > 0) {
-    const otherRow: ModelsTabRow = {
-      model: 'other',
+    rows.push({
+      model: OTHER_MODEL_ID,
       inputTokens: tail.reduce((s, x) => s + x.buc.inputTokens, 0),
       outputTokens: tail.reduce((s, x) => s + x.buc.outputTokens, 0),
-      cacheReadTokens: tail.reduce((s, x) => s + x.buc.cacheReadTokens, 0),
-      cacheCreateTokens: tail.reduce((s, x) => s + x.buc.cacheCreateTokens, 0),
-      totalTokens: tail.reduce((s, x) => s + x.total, 0),
-    };
-    rows.push(otherRow);
+      cacheReadInputTokens: tail.reduce((s, x) => s + x.buc.cacheReadInputTokens, 0),
+      cacheCreationInputTokens: tail.reduce((s, x) => s + x.buc.cacheCreationInputTokens, 0),
+    });
   }
 
   // Stable 30-day x-axis: always windowStart..windowStart+29 in KST,
   // even if some days have zero activity. Keeps the stacked bar's
   // x-axis consistent across re-renders for the same window.
   const dayKeys: string[] = [];
-  for (let d = 0; d < 30; d++) {
-    dayKeys.push(kstShiftDay(bounds.start, d));
-  }
+  for (let d = 0; d < 30; d++) dayKeys.push(kstShiftDay(bounds.start, d));
 
   // Build per-model per-day series. Tail folds into 'other' to match `rows`.
   const tailSet = new Set(tail.map((t) => t.model));
   const dailyByModel: Record<string, number[]> = {};
-  for (const row of rows) {
-    dailyByModel[row.model] = new Array<number>(dayKeys.length).fill(0);
-  }
+  for (const row of rows) dailyByModel[row.model] = new Array<number>(dayKeys.length).fill(0);
   for (let i = 0; i < dayKeys.length; i++) {
-    const dayKey = dayKeys[i];
-    const inner = b.perDayModel.get(dayKey);
+    const inner = b.perDayModel.get(dayKeys[i]);
     if (!inner) continue;
     for (const [model, bucket] of inner) {
-      const seriesKey = tailSet.has(model) ? 'other' : model;
+      const seriesKey = tailSet.has(model) ? OTHER_MODEL_ID : model;
       const series = dailyByModel[seriesKey];
-      if (!series) continue; // Defensive — shouldn't happen because rows covers all keep+other.
-      series[i] += bucketTotal(bucket);
+      if (!series) continue;
+      series[i] += bucketTotalTokens(bucket);
     }
   }
 
@@ -996,6 +955,16 @@ function buildModelsTab(
     dayKeys,
     dailyByModel,
   };
+}
+
+/** input + output + cacheRead + cacheCreate. Single-source-of-truth for "total tokens" of one model bucket / row. */
+function bucketTotalTokens(b: {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+}): number {
+  return b.inputTokens + b.outputTokens + b.cacheReadInputTokens + b.cacheCreationInputTokens;
 }
 
 // === Token Usage Helpers ===

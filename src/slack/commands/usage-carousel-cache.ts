@@ -16,9 +16,7 @@
 //   already expired. Keeps memory bounded under heavy churn without an
 //   expensive full scan.
 //
-// TabId source: re-export from `usage-render/types` so the cache and the
-// rest of the carousel share one definition. Adding a new tab (e.g. 'models')
-// only requires changing the source type.
+// TabId is re-exported from usage-render/types so cache and carousel share one source.
 
 import type { TabId } from '../../metrics/usage-render/types';
 

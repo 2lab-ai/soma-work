@@ -75,23 +75,32 @@ export interface CarouselTabStats {
   mostActiveDay: { date: string; tokens: number } | null;
 }
 
-/** Per-model totals row for the Models tab breakdown list. */
+/**
+ * Synthetic model id used as the fold-row when there are more distinct models
+ * in the window than `MODELS_TAB_MAX_ROWS`. A dedicated id (instead of an
+ * empty string or null) so the breakdown table can show it as a normal row.
+ */
+export const OTHER_MODEL_ID = 'other';
+
+/**
+ * Per-model totals row for the Models tab breakdown list.
+ *
+ * Field names mirror `ModelTokenUsage` so a row can be built directly from a
+ * model bucket via spread (`{ model, ...bucket }`). The total is derived via
+ * `rowTotalTokens(row)` rather than stored — single source of truth.
+ */
 export interface ModelsTabRow {
-  /** Full model id as recorded in `token_usage.metadata.modelBreakdown` keys. */
+  /** Full model id as recorded in `token_usage.metadata.modelBreakdown` keys, or `OTHER_MODEL_ID`. */
   model: string;
-  /** Sum of `inputTokens` over the window (no cache tokens). */
   inputTokens: number;
-  /** Sum of `outputTokens` over the window. */
   outputTokens: number;
-  /** Sum of `cacheReadInputTokens` over the window. */
-  cacheReadTokens: number;
-  /** Sum of `cacheCreationInputTokens` over the window. */
-  cacheCreateTokens: number;
-  /**
-   * input + output + cacheRead + cacheCreate. Used for the percentage
-   * column and to pick the top-N display set.
-   */
-  totalTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+}
+
+/** input + output + cacheRead + cacheCreate. Use everywhere a row's "total tokens" is needed. */
+export function rowTotalTokens(row: ModelsTabRow): number {
+  return row.inputTokens + row.outputTokens + row.cacheReadInputTokens + row.cacheCreationInputTokens;
 }
 
 /**

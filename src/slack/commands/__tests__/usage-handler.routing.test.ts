@@ -1,18 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { makeCarouselStats, makeEmptyTabStats as makeEmptyTab } from '../../../metrics/usage-render/__tests__/fixtures';
 import {
   EchartsInitError,
   FontLoadError,
   ResvgNativeError,
   SlackPostError,
 } from '../../../metrics/usage-render/errors';
-import type {
-  CarouselStats,
-  CarouselTabStats,
-  EmptyTabStats,
-  ModelsTabStats,
-  PeriodTabId,
-  TabId,
-} from '../../../metrics/usage-render/types';
+import type { CarouselStats, TabId } from '../../../metrics/usage-render/types';
 import type { CommandContext, CommandDependencies } from '../types';
 import { TabCache } from '../usage-carousel-cache';
 import {
@@ -51,81 +45,6 @@ function makeDeps(): CommandDependencies {
 }
 
 const ALL_TABS: readonly TabId[] = ['24h', '7d', '30d', 'all', 'models'] as const;
-
-function makeTabStats(tabId: PeriodTabId, overrides: Partial<CarouselTabStats> = {}): CarouselTabStats {
-  return {
-    empty: false,
-    tabId,
-    targetUserId: 'U_ALICE',
-    targetUserName: 'Alice',
-    windowStart: '2026-03-19',
-    windowEnd: '2026-04-17',
-    totals: { tokens: 100, costUsd: 0.1, sessions: 1 },
-    favoriteModel: null,
-    hourly: new Array(24).fill(0),
-    heatmap: [],
-    rankings: { tokensTop: [], targetTokenRow: null },
-    activeDays: 1,
-    longestStreakDays: 1,
-    currentStreakDays: 1,
-    topSessions: [],
-    longestSession: null,
-    mostActiveDay: null,
-    ...overrides,
-  };
-}
-
-function makeEmptyTab(tabId: TabId): EmptyTabStats {
-  return { empty: true, tabId, windowStart: '2026-03-19', windowEnd: '2026-04-17' };
-}
-
-function makeModelsTab(overrides: Partial<ModelsTabStats> = {}): ModelsTabStats {
-  return {
-    empty: false,
-    tabId: 'models',
-    targetUserId: 'U_ALICE',
-    targetUserName: 'Alice',
-    windowStart: '2026-03-19',
-    windowEnd: '2026-04-17',
-    totalTokens: 100,
-    rows: [
-      {
-        model: 'claude-opus-4-7',
-        inputTokens: 40,
-        outputTokens: 50,
-        cacheReadTokens: 5,
-        cacheCreateTokens: 5,
-        totalTokens: 100,
-      },
-    ],
-    dayKeys: Array.from({ length: 30 }, (_, i) => `2026-03-${String(19 + i).padStart(2, '0')}`),
-    dailyByModel: { 'claude-opus-4-7': new Array<number>(30).fill(0).map((_, i) => (i === 0 ? 100 : 0)) },
-    ...overrides,
-  };
-}
-
-function makeCarouselStats(
-  partial: Partial<{
-    '24h': CarouselTabStats | EmptyTabStats;
-    '7d': CarouselTabStats | EmptyTabStats;
-    '30d': CarouselTabStats | EmptyTabStats;
-    all: CarouselTabStats | EmptyTabStats;
-    models: ModelsTabStats | EmptyTabStats;
-  }> = {},
-): CarouselStats {
-  return {
-    targetUserId: 'U_ALICE',
-    targetUserName: 'Alice',
-    now: '2026-04-17T14:00:00+09:00',
-    tabs: {
-      '24h': partial['24h'] ?? makeTabStats('24h'),
-      '7d': partial['7d'] ?? makeTabStats('7d'),
-      '30d': partial['30d'] ?? makeTabStats('30d'),
-      all: partial.all ?? makeTabStats('all'),
-      models: partial.models ?? makeModelsTab(),
-    },
-  };
-}
 
 function makeCarouselOverrides(
   opts: {

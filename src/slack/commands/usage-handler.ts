@@ -169,11 +169,8 @@ export class UsageHandler implements CommandHandler {
 
       const carouselStats = await aggregateCarousel({ targetUserId: user, now });
 
-      // All-empty short-circuit (Scenario 12) — only the four PERIOD tabs are
-      // checked. The 'models' tab derives from the 30d period builder, so if
-      // every period tab is empty 'models' is too. Including 'models' in the
-      // check would be redundant; excluding it keeps the contract identical
-      // to pre-Models-tab behavior.
+      // All-empty short-circuit (Scenario 12) — only period tabs are checked.
+      // 'models' derives from the 30d builder, so it's redundant to include.
       const periodTabIds: readonly TabId[] = ['24h', '7d', '30d', 'all'] as const;
       const allEmpty = periodTabIds.every((t) => carouselStats.tabs[t].empty === true);
       if (allEmpty) {
@@ -182,9 +179,7 @@ export class UsageHandler implements CommandHandler {
         return { handled: true };
       }
 
-      // Render 5 tab PNGs in parallel (renderer handles stub PNGs for empty
-      // tabs). 'models' is rendered alongside the period tabs so all five
-      // file IDs are cached together for click-driven `chat.update`.
+      // Render all 5 tab PNGs in parallel (renderer handles stub PNGs for empty tabs).
       const allTabIds: readonly TabId[] = ['24h', '7d', '30d', 'all', 'models'] as const;
       const renderCarousel = this.overrides.renderCarousel ?? defaultRenderCarousel;
       const pngMap = await renderCarousel(carouselStats, '30d');

@@ -8,7 +8,15 @@
 
 import { DARK_PALETTE, HEATMAP_SCALE } from './dark-palette';
 import { pickFunFact } from './fun-facts';
-import type { CarouselStats, CarouselTabStats, ModelsTabStats, PeriodTabId, TabId, TabResult } from './types';
+import {
+  type CarouselStats,
+  type CarouselTabStats,
+  type ModelsTabStats,
+  type PeriodTabId,
+  rowTotalTokens,
+  type TabId,
+  type TabResult,
+} from './types';
 
 /**
  * Loose typing intentionally — we avoid a hard dep on ECharts types for
@@ -40,21 +48,23 @@ const EMPTY_MESSAGE: Record<TabId, string> = {
 
 /**
  * 8-color palette for the Models tab stacked-bar series and breakdown rows.
- * Order matches the sort order in `ModelsTabStats.rows` (totalTokens desc),
- * so the largest model gets `MODEL_PALETTE[0]` etc. Index 7 is intentionally
- * desaturated to read as the 'other' fold row when present.
+ * Order matches the sort in `ModelsTabStats.rows` (totalTokens desc): the
+ * largest model gets `MODEL_PALETTE[0]`, etc. Index 7 reuses the muted text
+ * color so the 'other' fold row reads as low-emphasis.
  *
+ * The endpoints reuse `DARK_PALETTE.accent` / `.textMuted` so a future
+ * palette tweak propagates without drifting from the rest of the card.
  * Palette tuned against `DARK_PALETTE.bg` (#1A1A1A) for ≥ 4.5:1 contrast.
  */
 export const MODEL_PALETTE: readonly string[] = [
-  '#CD7F5C', // accent (primary — matches DARK_PALETTE.accent)
+  DARK_PALETTE.accent, // primary
   '#5C8FCD', // blue
   '#9C5CCD', // purple
   '#5CCD8F', // green
   '#CDB85C', // gold
   '#CD5C7F', // pink
   '#5CCDC9', // teal
-  '#8F8880', // muted (other / tail)
+  DARK_PALETTE.textMuted, // 'other' / tail
 ] as const;
 
 // ─── Helpers ───────────────────────────────────────────────────────────
@@ -156,12 +166,6 @@ function axisStyle() {
 
 // ─── Option builders per tab ───────────────────────────────────────────
 
-/** 'YYYY-MM-DD' → 'M/D' (no zero-pad) for the 30-tick stacked-bar x-axis. */
-function compactDateLabel(dayKey: string): string {
-  const [, mm, dd] = dayKey.split('-');
-  return `${parseInt(mm, 10)}/${parseInt(dd, 10)}`;
-}
-
 function build24hOption(stats: CarouselTabStats, selected: boolean): EChartsOptionLike {
   const hourlyCategories = Array.from({ length: 24 }, (_, h) => `${h}`);
   const barColor = selected ? DARK_PALETTE.accent : DARK_PALETTE.accentSoft;
@@ -262,7 +266,7 @@ function buildHeatmapOption(
  * present, lands on the desaturated tail color.
  */
 function buildModelsTabOption(stats: ModelsTabStats, _selected: boolean): EChartsOptionLike {
-  const xAxisData = stats.dayKeys.map(compactDateLabel);
+  const xAxisData = stats.dayKeys.map(shortDateLabel);
 
   const series = stats.rows.map((row, i) => ({
     id: `models-bar-${row.model}`,
@@ -346,13 +350,12 @@ export function buildTabOption(tabId: TabId, stats: TabResult, selected: boolean
   if (stats.empty) {
     return buildStubOption(tabId);
   }
-  if (tabId === 'models') {
-    // Defensive narrowing — non-empty stats whose tabId is 'models' must
-    // be ModelsTabStats by construction in `aggregateCarousel`.
-    return buildModelsTabOption(stats as ModelsTabStats, selected);
-  }
-  if (tabId === '24h') return build24hOption(stats as CarouselTabStats, selected);
-  return buildHeatmapOption(tabId, stats as CarouselTabStats, selected);
+  // Discriminate on the stats payload, not the `tabId` parameter — the
+  // payload's `tabId` is the real type discriminator and lets TS narrow
+  // without `as` casts.
+  if (stats.tabId === 'models') return buildModelsTabOption(stats, selected);
+  if (stats.tabId === '24h') return build24hOption(stats, selected);
+  return buildHeatmapOption(stats.tabId, stats, selected);
 }
 
 // ─── Public: buildCardOption ───────────────────────────────────────────
@@ -481,184 +484,12 @@ export function buildCardOption(carousel: CarouselStats, tabId: TabId, selected:
     });
   });
 
-  // Body content — branches on whether the selected tab is a period tab
-  // (Overview view) or the Models tab. Empty tabs short-circuit through
-  // the base option's stub graphic merge below.
+  // Empty tabs short-circuit through the base option's stub graphic merge below.
   if (!tabStats.empty) {
-    if (tabId === 'models') {
-      const models = tabStats as ModelsTabStats;
-      // Models tab body: per-model breakdown rows under the stacked-bar chart.
-      // Layout: rows start at y=1280 (just below the chart's `bottom:1000`
-      // gap area), 8 rows × 90px = 720px tall, ending at y=2000.
-      const rowsY = 1280;
-      const rowH = 90;
-      const denom = Math.max(1, models.totalTokens);
-
-      // Header line above the rows.
-      graphic.push({
-        id: 'models-rows-header',
-        type: 'text',
-        left: 80,
-        top: rowsY - 60,
-        style: {
-          text: `Token usage by model — Last 30d (총 ${fmt(models.totalTokens)} tokens)`,
-          fill: DARK_PALETTE.text,
-          fontFamily: FONT_FAMILY,
-          fontSize: 24,
-          fontWeight: 'bold',
-        },
-      });
-
-      models.rows.forEach((row, i) => {
-        const y = rowsY + i * rowH;
-        const color = MODEL_PALETTE[i % MODEL_PALETTE.length];
-        const pct = ((row.totalTokens / denom) * 100).toFixed(1);
-
-        // Color swatch (matches the stacked-bar series color).
-        graphic.push({
-          id: `models-row-swatch-${i}`,
-          type: 'rect',
-          left: 80,
-          top: y + 12,
-          shape: { width: 28, height: 28, r: 4 },
-          style: { fill: color, backgroundColor: color, stroke: color },
-          z: 2,
-        });
-
-        // Model name (left).
-        graphic.push({
-          id: `models-row-name-${i}`,
-          type: 'text',
-          left: 130,
-          top: y + 14,
-          style: {
-            text: row.model,
-            fill: DARK_PALETTE.text,
-            fontFamily: FONT_FAMILY,
-            fontSize: 26,
-            fontWeight: 'bold',
-          },
-        });
-
-        // Token sub-counts (middle): "{in} in · {out} out".
-        graphic.push({
-          id: `models-row-tokens-${i}`,
-          type: 'text',
-          left: 700,
-          top: y + 18,
-          style: {
-            text: `${fmt(row.inputTokens)} in · ${fmt(row.outputTokens)} out`,
-            fill: DARK_PALETTE.textMuted,
-            fontFamily: FONT_FAMILY,
-            fontSize: 22,
-          },
-        });
-
-        // Percentage (right).
-        graphic.push({
-          id: `models-row-pct-${i}`,
-          type: 'text',
-          right: 80,
-          top: y + 14,
-          style: {
-            text: `${pct}%`,
-            fill: DARK_PALETTE.text,
-            fontFamily: FONT_FAMILY,
-            fontSize: 26,
-            fontWeight: 'bold',
-          },
-        });
-      });
+    if (tabStats.tabId === 'models') {
+      pushModelsBodyGraphics(graphic, tabStats);
     } else {
-      const periodStats = tabStats as CarouselTabStats;
-      // Period-tab body: existing metric grid + fun fact + ranking row.
-      const metrics: Array<{ label: string; value: string }> = [
-        {
-          label: 'Favorite model',
-          value: periodStats.favoriteModel ? periodStats.favoriteModel.model : '—',
-        },
-        { label: 'Total tokens', value: fmt(periodStats.totals.tokens) },
-        { label: 'Sessions', value: `${periodStats.totals.sessions}` },
-        { label: 'Active days', value: `${periodStats.activeDays}` },
-        {
-          label: 'Most active day',
-          value: periodStats.mostActiveDay ? periodStats.mostActiveDay.date : '—',
-        },
-        {
-          label: 'Longest session',
-          value: periodStats.longestSession ? durationLabel(periodStats.longestSession.durationMs) : '—',
-        },
-        { label: 'Longest streak', value: `${periodStats.longestStreakDays}일` },
-        { label: 'Current streak', value: `${periodStats.currentStreakDays}일` },
-      ];
-      const metricY = 1500;
-      const colW = 360;
-      const rowH = 80;
-      metrics.forEach((m, i) => {
-        const col = i % 4;
-        const row = Math.floor(i / 4);
-        const x = 80 + col * colW;
-        const y = metricY + row * rowH;
-        graphic.push({
-          id: `metric-label-${i}`,
-          type: 'text',
-          left: x,
-          top: y,
-          style: {
-            text: m.label,
-            fill: DARK_PALETTE.textMuted,
-            fontFamily: FONT_FAMILY,
-            fontSize: 18,
-          },
-        });
-        graphic.push({
-          id: `metric-value-${i}`,
-          type: 'text',
-          left: x,
-          top: y + 26,
-          style: {
-            text: m.value,
-            fill: DARK_PALETTE.text,
-            fontFamily: FONT_FAMILY,
-            fontSize: 28,
-            fontWeight: 'bold',
-          },
-        });
-      });
-
-      // Fun fact
-      graphic.push({
-        id: 'fun-fact',
-        type: 'text',
-        left: 80,
-        top: 1780,
-        style: {
-          text: `💡 ${pickFunFact(periodStats.totals.tokens)}`,
-          fill: DARK_PALETTE.accent,
-          fontFamily: FONT_FAMILY,
-          fontSize: 24,
-          fontWeight: 'bold',
-        },
-      });
-
-      // Ranking row
-      const rank =
-        periodStats.rankings.targetTokenRow ??
-        periodStats.rankings.tokensTop.find((r) => r.userId === periodStats.targetUserId) ??
-        null;
-      const rankText = rank ? `Ranking — #${rank.rank} · ${fmt(rank.totalTokens)} tokens` : 'Ranking — —';
-      graphic.push({
-        id: 'ranking-row',
-        type: 'text',
-        left: 80,
-        top: 1900,
-        style: {
-          text: rankText,
-          fill: DARK_PALETTE.text,
-          fontFamily: FONT_FAMILY,
-          fontSize: 22,
-        },
-      });
+      pushPeriodBodyGraphics(graphic, tabStats);
     }
   }
 
@@ -685,4 +516,150 @@ export function buildCardOption(carousel: CarouselStats, tabId: TabId, selected:
     title,
     graphic,
   };
+}
+
+// ─── Body helpers (period vs models) ──────────────────────────────────
+
+/**
+ * Period-tab body: 8-cell metric grid (favorite model / total tokens / etc.)
+ * + fun fact + ranking row.
+ */
+function pushPeriodBodyGraphics(graphic: Array<Record<string, unknown>>, periodStats: CarouselTabStats): void {
+  const metrics: Array<{ label: string; value: string }> = [
+    { label: 'Favorite model', value: periodStats.favoriteModel ? periodStats.favoriteModel.model : '—' },
+    { label: 'Total tokens', value: fmt(periodStats.totals.tokens) },
+    { label: 'Sessions', value: `${periodStats.totals.sessions}` },
+    { label: 'Active days', value: `${periodStats.activeDays}` },
+    { label: 'Most active day', value: periodStats.mostActiveDay ? periodStats.mostActiveDay.date : '—' },
+    {
+      label: 'Longest session',
+      value: periodStats.longestSession ? durationLabel(periodStats.longestSession.durationMs) : '—',
+    },
+    { label: 'Longest streak', value: `${periodStats.longestStreakDays}일` },
+    { label: 'Current streak', value: `${periodStats.currentStreakDays}일` },
+  ];
+  const metricY = 1500;
+  const colW = 360;
+  const rowH = 80;
+  metrics.forEach((m, i) => {
+    const col = i % 4;
+    const row = Math.floor(i / 4);
+    const x = 80 + col * colW;
+    const y = metricY + row * rowH;
+    graphic.push({
+      id: `metric-label-${i}`,
+      type: 'text',
+      left: x,
+      top: y,
+      style: { text: m.label, fill: DARK_PALETTE.textMuted, fontFamily: FONT_FAMILY, fontSize: 18 },
+    });
+    graphic.push({
+      id: `metric-value-${i}`,
+      type: 'text',
+      left: x,
+      top: y + 26,
+      style: { text: m.value, fill: DARK_PALETTE.text, fontFamily: FONT_FAMILY, fontSize: 28, fontWeight: 'bold' },
+    });
+  });
+
+  graphic.push({
+    id: 'fun-fact',
+    type: 'text',
+    left: 80,
+    top: 1780,
+    style: {
+      text: `💡 ${pickFunFact(periodStats.totals.tokens)}`,
+      fill: DARK_PALETTE.accent,
+      fontFamily: FONT_FAMILY,
+      fontSize: 24,
+      fontWeight: 'bold',
+    },
+  });
+
+  const rank =
+    periodStats.rankings.targetTokenRow ??
+    periodStats.rankings.tokensTop.find((r) => r.userId === periodStats.targetUserId) ??
+    null;
+  const rankText = rank ? `Ranking — #${rank.rank} · ${fmt(rank.totalTokens)} tokens` : 'Ranking — —';
+  graphic.push({
+    id: 'ranking-row',
+    type: 'text',
+    left: 80,
+    top: 1900,
+    style: { text: rankText, fill: DARK_PALETTE.text, fontFamily: FONT_FAMILY, fontSize: 22 },
+  });
+}
+
+/**
+ * Models-tab body: per-model breakdown rows under the stacked-bar chart.
+ * Layout: rows start at y=1280 (just below the chart's `bottom:1000` gap area),
+ * 8 rows × 90px = 720px tall, ending at y=2000.
+ */
+function pushModelsBodyGraphics(graphic: Array<Record<string, unknown>>, models: ModelsTabStats): void {
+  const rowsY = 1280;
+  const rowH = 90;
+  const denom = Math.max(1, models.totalTokens);
+
+  graphic.push({
+    id: 'models-rows-header',
+    type: 'text',
+    left: 80,
+    top: rowsY - 60,
+    style: {
+      text: `Token usage by model — Last 30d (총 ${fmt(models.totalTokens)} tokens)`,
+      fill: DARK_PALETTE.text,
+      fontFamily: FONT_FAMILY,
+      fontSize: 24,
+      fontWeight: 'bold',
+    },
+  });
+
+  models.rows.forEach((row, i) => {
+    const y = rowsY + i * rowH;
+    const color = MODEL_PALETTE[i % MODEL_PALETTE.length];
+    const total = rowTotalTokens(row);
+    const pct = ((total / denom) * 100).toFixed(1);
+
+    graphic.push({
+      id: `models-row-swatch-${i}`,
+      type: 'rect',
+      left: 80,
+      top: y + 12,
+      shape: { width: 28, height: 28, r: 4 },
+      style: { fill: color, backgroundColor: color, stroke: color },
+      z: 2,
+    });
+    graphic.push({
+      id: `models-row-name-${i}`,
+      type: 'text',
+      left: 130,
+      top: y + 14,
+      style: { text: row.model, fill: DARK_PALETTE.text, fontFamily: FONT_FAMILY, fontSize: 26, fontWeight: 'bold' },
+    });
+    graphic.push({
+      id: `models-row-tokens-${i}`,
+      type: 'text',
+      left: 700,
+      top: y + 18,
+      style: {
+        text: `${fmt(row.inputTokens)} in · ${fmt(row.outputTokens)} out`,
+        fill: DARK_PALETTE.textMuted,
+        fontFamily: FONT_FAMILY,
+        fontSize: 22,
+      },
+    });
+    graphic.push({
+      id: `models-row-pct-${i}`,
+      type: 'text',
+      right: 80,
+      top: y + 14,
+      style: {
+        text: `${pct}%`,
+        fill: DARK_PALETTE.text,
+        fontFamily: FONT_FAMILY,
+        fontSize: 26,
+        fontWeight: 'bold',
+      },
+    });
+  });
 }
