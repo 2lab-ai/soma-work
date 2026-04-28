@@ -8,6 +8,7 @@
  * three new read API shapes plus the propose-lifecycle indirection.
  */
 
+import * as jwt from 'jsonwebtoken';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { LifecycleEvent, UserInstruction, UserSessionDoc } from '../../user-session-store';
 
@@ -24,10 +25,22 @@ const mockConfig = {
   oauth: {
     google: { clientId: '', clientSecret: '' },
     microsoft: { clientId: '', clientSecret: '' },
-    jwtSecret: '',
+    jwtSecret: 'test-jwt-secret-for-owner-scope-tests',
     jwtExpiresIn: 604800,
   },
 };
+
+// Helper: forge a JWT cookie for an oauth_jwt-mode authenticated user.
+// Mirrors the production JWT shape (sub/email/name/originalIat).
+function makeOAuthCookie(userId: string, email = `${userId}@example.com`): string {
+  const now = Math.floor(Date.now() / 1000);
+  const token = jwt.sign(
+    { sub: userId, email, name: userId, provider: 'google', originalIat: now },
+    mockConfig.oauth.jwtSecret,
+    { expiresIn: mockConfig.oauth.jwtExpiresIn },
+  );
+  return `soma_dash_token=${encodeURIComponent(token)}`;
+}
 
 // Use TMPDIR (sandbox-writable) so user-settings store can mkdir without
 // running into the sandbox /tmp write block.
@@ -438,6 +451,80 @@ describe('Dashboard instruction-centric read APIs (#758)', () => {
     });
     expect(res.statusCode).toBe(400);
     expect(handler).not.toHaveBeenCalled();
+  });
+
+  // ── Codex P1-1 — Owner-scope auth on instruction read endpoints ──
+
+  describe('owner-scope auth (codex P1-1 #758)', () => {
+    beforeEach(() => {
+      // Cross-user instruction reads must be denied. We reuse the same
+      // accessor for every user — the route is responsible for gating.
+      const docU1 = makeDoc({
+        instructions: [makeInstruction({ id: 'inst-A', text: 'U1 work', linkedSessionIds: [] })],
+      });
+      setDashboardUserInstructionsAccessor((userId: string) => (userId === 'U1' ? docU1 : null));
+      setDashboardSessionAccessor(() => new Map());
+      setDashboardInstructionTodosAccessor(() => []);
+    });
+
+    it('U1 (owner) CAN read /api/dashboard/users/U1/instructions', async () => {
+      const res = await injectWebServer({
+        method: 'GET',
+        url: '/api/dashboard/users/U1/instructions',
+        headers: { Cookie: makeOAuthCookie('U1') },
+      });
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body);
+      expect(body.userId).toBe('U1');
+      expect(body.instructions).toHaveLength(1);
+    });
+
+    it('U2 (non-owner, non-admin) CANNOT read U1 instructions — 403', async () => {
+      const res = await injectWebServer({
+        method: 'GET',
+        url: '/api/dashboard/users/U1/instructions',
+        headers: { Cookie: makeOAuthCookie('U2') },
+      });
+      expect(res.statusCode).toBe(403);
+    });
+
+    it('U2 (non-owner, non-admin) CANNOT read U1 instruction drill-down — 403', async () => {
+      const res = await injectWebServer({
+        method: 'GET',
+        url: '/api/dashboard/instructions/inst-A?userId=U1',
+        headers: { Cookie: makeOAuthCookie('U2') },
+      });
+      expect(res.statusCode).toBe(403);
+    });
+
+    it('U1 (owner) CAN read own instruction drill-down', async () => {
+      const res = await injectWebServer({
+        method: 'GET',
+        url: '/api/dashboard/instructions/inst-A?userId=U1',
+        headers: { Cookie: makeOAuthCookie('U1') },
+      });
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body);
+      expect(body.instruction.id).toBe('inst-A');
+    });
+
+    it('admin (bearer header) CAN read any user instructions', async () => {
+      const res = await injectWebServer({
+        method: 'GET',
+        url: '/api/dashboard/users/U1/instructions',
+        headers: AUTH_HEADER, // Bearer test-token = admin
+      });
+      expect(res.statusCode).toBe(200);
+    });
+
+    it('admin (bearer header) CAN read any user drill-down', async () => {
+      const res = await injectWebServer({
+        method: 'GET',
+        url: '/api/dashboard/instructions/inst-A?userId=U1',
+        headers: AUTH_HEADER,
+      });
+      expect(res.statusCode).toBe(200);
+    });
   });
 });
 
