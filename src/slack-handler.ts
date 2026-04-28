@@ -79,6 +79,9 @@ export class SlackHandler {
   private fileHandler: FileHandler;
   private todoManager: TodoManager;
   private mcpManager: McpManager;
+  // #758 P1-2 — exposed for the dashboard's lifecycle propose handler
+  // wiring. Same instance shared with ActionHandlers + StreamExecutor.
+  private pendingInstructionConfirmStore!: PendingInstructionConfirmStore;
 
   // Modular helpers
   private slackApi: SlackApiHelper;
@@ -213,9 +216,12 @@ export class SlackHandler {
 
     // Shared store for deferred user-instruction writes. The SAME instance
     // must be visible to both `ActionHandlers` (button click reader) and
-    // `StreamExecutor` (write producer) — PLAN §7.
+    // `StreamExecutor` (write producer) — PLAN §7. The instance is also
+    // captured on `this` (#758 P1-2) so the dashboard's lifecycle propose
+    // handler can enqueue the same confirm flow the model-driven path uses.
     const pendingInstructionConfirmStore = new PendingInstructionConfirmStore();
     pendingInstructionConfirmStore.loadForms();
+    this.pendingInstructionConfirmStore = pendingInstructionConfirmStore;
 
     // ActionHandlers needs context
     const actionContext: ActionHandlerContext = {
@@ -1352,6 +1358,16 @@ export class SlackHandler {
   /** Expose todo manager for dashboard task accessor */
   getTodoManager(): TodoManager {
     return this.todoManager;
+  }
+
+  /**
+   * #758 P1-2 — Expose the shared PendingInstructionConfirmStore so the
+   * dashboard's lifecycle propose handler can enqueue confirm entries
+   * that the existing ActionHandlers y/n flow consumes (same path as
+   * the model-driven proposals).
+   */
+  getPendingInstructionConfirmStore(): PendingInstructionConfirmStore {
+    return this.pendingInstructionConfirmStore;
   }
 
   /** Handle choice answer from dashboard — delegates to ChoiceActionHandler for full Slack UI cleanup */

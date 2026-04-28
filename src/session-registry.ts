@@ -314,6 +314,18 @@ export class SessionRegistry {
   private onActivityStateChangeCallback?: () => void;
 
   /**
+   * #758 P1-3 — callback fired AFTER `applyConfirmedLifecycle` commits a
+   * lifecycle transition. The dashboard wires its WS broadcast helpers
+   * here so confirmed add/link/complete/cancel/rename push real-time
+   * deltas to clients.
+   */
+  private onLifecycleAppliedCallback?: (evt: {
+    userId: string;
+    op: import('./user-session-store').LifecycleOp;
+    instruction: UserInstruction;
+  }) => void;
+
+  /**
    * Set callbacks for session expiry events
    */
   setExpiryCallbacks(callbacks: SessionExpiryCallbacks): void {
@@ -325,6 +337,21 @@ export class SessionRegistry {
    */
   setActivityStateChangeCallback(callback: () => void): void {
     this.onActivityStateChangeCallback = callback;
+  }
+
+  /**
+   * #758 P1-3 — register the dashboard's lifecycle-applied broadcast
+   * handler. Called once at boot from index.ts. The registry invokes
+   * the handler synchronously after applyConfirmedLifecycle returns ok.
+   */
+  setLifecycleAppliedCallback(
+    callback: (evt: {
+      userId: string;
+      op: import('./user-session-store').LifecycleOp;
+      instruction: UserInstruction;
+    }) => void,
+  ): void {
+    this.onLifecycleAppliedCallback = callback;
   }
 
   /**
@@ -1269,6 +1296,27 @@ export class SessionRegistry {
       // 7. SSOT change — invalidate cached prompt + schedule summary regen.
       session.systemPrompt = undefined;
       this.scheduleInstructionsSummaryRegen(session);
+
+      // 8. #758 P1-3 — fire the dashboard WS broadcast hook so clients see
+      //    the lifecycle delta in real time. Defensive: failures here MUST
+      //    NOT roll back the committed transaction (the broadcast is a
+      //    nice-to-have observability path, not part of the SSOT contract).
+      if (this.onLifecycleAppliedCallback && instructionAtCommit) {
+        try {
+          this.onLifecycleAppliedCallback({
+            userId,
+            op: meta.type,
+            instruction: instructionAtCommit,
+          });
+        } catch (broadcastErr) {
+          this.logger.warn('applyConfirmedLifecycle: broadcast hook failed', {
+            userId,
+            sessionKey,
+            requestId: meta.requestId,
+            error: (broadcastErr as Error)?.message ?? String(broadcastErr),
+          });
+        }
+      }
 
       return { ok: true, instructionId };
     } catch (err) {

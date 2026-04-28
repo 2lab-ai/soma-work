@@ -1,4 +1,8 @@
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const TEST_DATA_DIR = path.join(os.tmpdir(), 'soma-test-data');
 
 // ── Mocks ──
 
@@ -19,7 +23,7 @@ const mockConfig = {
 };
 
 vi.mock('../../config', () => ({ config: mockConfig }));
-vi.mock('../../env-paths', () => ({ IS_DEV: true, DATA_DIR: '/tmp/test-data' }));
+vi.mock('../../env-paths', () => ({ IS_DEV: true, DATA_DIR: TEST_DATA_DIR }));
 vi.mock('../recorder', () => ({
   listConversations: vi.fn().mockResolvedValue([]),
   getConversation: vi.fn().mockResolvedValue(null),
@@ -950,9 +954,11 @@ describe('Dashboard API', () => {
     // Count action closings — each doAction has 2 escaped quote pairs (key + action)
     const actionClosings = script.match(/\\',\\'/g);
     expect(actionClosings).not.toBeNull();
-    // 4 doAction calls × 1 sep + 1 resummarize + 4 answerChoice × 3 seps + 1 selectMc × 1 sep = 18 closing patterns
+    // 4 doAction calls × 1 sep + 1 resummarize + 4 answerChoice × 3 seps
+    //   + 1 selectMc × 1 sep + 2 proposeInstructionLifecycle × 1 sep = 20 closing patterns
     // (answerChoice appears at 4 sites: card-recommended, card-non-recommended, panel-recommended, panel-non-recommended)
-    expect(actionClosings!.length).toBe(18);
+    // (proposeInstructionLifecycle appears at 2 sites: complete, cancel — added in PR4 #758)
+    expect(actionClosings!.length).toBe(20);
   });
 
   // ── Guard: detect unescaped inline handlers if new ones are added ──

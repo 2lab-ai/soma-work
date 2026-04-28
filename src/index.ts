@@ -56,6 +56,7 @@ import {
   broadcastSessionUpdate,
   broadcastSummaryTitleChanged,
   broadcastTaskUpdate,
+  getLifecycleAppliedHandler,
   initRecorder,
   setDashboardChoiceAnswerHandler,
   setDashboardCloseHandler,
@@ -72,8 +73,11 @@ import {
   setSessionTitleBridge,
   startWebServer,
   stopWebServer,
+  wireDashboardInstructionAccessors,
+  wireLifecycleBroadcasts,
 } from './conversation';
 import { CronScheduler, type SyntheticMessageEvent } from './cron-scheduler';
+import { createDashboardLifecycleProposeHandler } from './dashboard-lifecycle-propose';
 import { initializeDispatchService } from './dispatch-service';
 import { CONFIG_FILE, DATA_DIR, MCP_CONFIG_FILE, PLUGINS_DIR } from './env-paths';
 import { discoverInstallations, getGitHubAppAuth, isGitHubAppConfigured } from './github-auth.js';
@@ -392,6 +396,17 @@ async function start() {
     setDashboardSessionAccessor(() => claudeHandler.getAllSessions());
     claudeHandler.getSessionRegistry().setActivityStateChangeCallback(() => broadcastSessionUpdate());
 
+    // #758 P1-3 — Wire the dashboard WS broadcast helpers and bridge them to
+    // the SessionRegistry's lifecycle-applied callback so confirmed
+    // add/link/complete/cancel/rename push real-time deltas to clients.
+    wireLifecycleBroadcasts();
+    {
+      const lifecycleHandler = getLifecycleAppliedHandler();
+      if (lifecycleHandler) {
+        claudeHandler.getSessionRegistry().setLifecycleAppliedCallback(lifecycleHandler);
+      }
+    }
+
     // user-memory-store and user-settings-store mutate SSOT fields that
     // feed the cached system prompt but live outside the stream-executor
     // reset points. Injecting the registry here avoids a cyclic import.
@@ -415,6 +430,31 @@ async function start() {
         startedAt: t.startedAt,
         completedAt: t.completedAt,
       }));
+    });
+
+    // #758 P1-2 — Wire the instruction-centric accessors (UserSessionStore
+    // load, TodoManager.findTodosByInstructionId) and the lifecycle propose
+    // handler. Without this the dashboard's instruction endpoints would
+    // return null because the test-only setters are never called in
+    // production. The propose handler enqueues a PendingInstructionConfirm
+    // entry on the same shared store the model-driven y/n flow uses, so
+    // the user's y/n click in Slack continues to be the only authority
+    // that mutates the user-session store (PR2 confirm gate).
+    wireDashboardInstructionAccessors({
+      userSessionStore: getUserSessionStore(),
+      todoManager: slackHandler.getTodoManager(),
+      // PR4 fix loop #2 P1-LIFECYCLE-PROPOSE: route the dashboard `[⋯]`
+      // propose POSTs through the sealed factory. The factory builds a
+      // proper pending entry with `payload.instructionOperations`,
+      // `by.type='slack-user'`, AND posts the y/n message to the
+      // instruction's first linked-session thread so the user can actually
+      // confirm. Pre-fix the inline lambda left `instructionOperations`
+      // missing (→ INVALID_OP on apply) and never posted to Slack.
+      lifecycleProposeHandler: createDashboardLifecycleProposeHandler({
+        pendingStore: slackHandler.getPendingInstructionConfirmStore(),
+        sessionRegistry: claudeHandler.getSessionRegistry(),
+        slackApi: slackHandler.getSlackApi(),
+      }),
     });
 
     // Connect dashboard: stop handler (abort running session)
