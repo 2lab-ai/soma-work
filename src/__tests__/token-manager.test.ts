@@ -2500,6 +2500,44 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       expect(outcomes[0]).toBe('ok');
     });
 
+    it('drainPendingProfileFetches() awaits in-flight profile fetches deterministically (CI-2 #758)', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      // addSlot kicks off a fire-and-forget refreshOAuthProfile for
+      // legacy-attachment slots. We need a deterministic way to await
+      // that completion before mockReset(), otherwise it races on CI.
+      let resolveProfile!: () => void;
+      fetchOAuthProfileMock.mockReset();
+      fetchOAuthProfileMock.mockImplementation(
+        async () =>
+          new Promise<{ fetchedAt: number; email: string; rateLimitTier: string }>((resolve) => {
+            resolveProfile = () =>
+              resolve({ fetchedAt: Date.now(), email: 'a@b', rateLimitTier: 'default_claude_max_5x' });
+          }),
+      );
+      await tm.addSlot({
+        name: 'drain-target',
+        kind: 'oauth_credentials',
+        credentials: makeOAuthCreds(),
+        acknowledgedConsumerTosRisk: true,
+      });
+      // Profile fetch is hanging (resolveProfile not yet called), so the
+      // drain MUST wait for it to settle. Schedule the resolution after
+      // the drain starts.
+      const drainP = tm.drainPendingProfileFetches();
+      // Microtask gap, then resolve the inflight fetch.
+      await new Promise((r) => setTimeout(r, 5));
+      resolveProfile();
+      await drainP;
+      // After drain, the in-flight map MUST be empty so subsequent
+      // dedupe lookups always create a fresh entry.
+      // Internal access: cast to any for the private map. Test seam.
+      // biome-ignore lint/suspicious/noExplicitAny: test-only internal access
+      expect((tm as any).profileInflight.size).toBe(0);
+    });
+
     it('awaitProfile: true suppresses the fire-and-forget profile leg (one profile fetch per slot, not two)', async () => {
       const { mod, storeMod } = await importSut();
       const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
