@@ -177,4 +177,69 @@ describe('PendingInstructionConfirmStore — sealed lifecycle entry shape (#755)
     expect(loaded).toBe(0);
     expect(store.get('legacy-req')).toBeUndefined();
   });
+
+  // PR2 fix loop #2 P2 (#755): the rehydrate guard also validates that
+  // `payload.instructionOperations` is a non-empty array AND its single op's
+  // `action` matches the entry's `type`. Without this, a corrupted on-disk
+  // entry with mismatched `type=add` but `payload.instructionOperations[0]
+  // .action='cancel'` would mis-attribute the lifecycleEvents row built
+  // from `entry.type` while the catalog applies the (different) op.
+  it('rejects rehydrate when payload.instructionOperations is missing or empty', () => {
+    const corrupt = {
+      requestId: 'corrupt-no-ops',
+      sessionKey: 'C9|T9',
+      channelId: 'C9',
+      threadTs: 'T9',
+      payload: { instructionOperations: [] }, // empty
+      createdAt: Date.now(),
+      requesterId: REQUESTER,
+      type: 'add' as const,
+      by: { type: 'slack-user' as const, id: REQUESTER },
+    };
+    fs.writeFileSync(STORE_FILE, JSON.stringify([corrupt], null, 2));
+    const store = new PendingInstructionConfirmStore();
+    expect(store.loadForms()).toBe(0);
+    expect(store.get('corrupt-no-ops')).toBeUndefined();
+  });
+
+  it('rejects rehydrate when entry.type does not match payload op action', () => {
+    const mismatched = {
+      requestId: 'mismatched',
+      sessionKey: 'C9|T9',
+      channelId: 'C9',
+      threadTs: 'T9',
+      payload: mkRequest('cancel'), // op.action === 'cancel'
+      createdAt: Date.now(),
+      requesterId: REQUESTER,
+      type: 'add' as const, // ← inconsistent with payload op
+      by: { type: 'slack-user' as const, id: REQUESTER },
+    };
+    fs.writeFileSync(STORE_FILE, JSON.stringify([mismatched], null, 2));
+    const store = new PendingInstructionConfirmStore();
+    expect(store.loadForms()).toBe(0);
+    expect(store.get('mismatched')).toBeUndefined();
+  });
+
+  it('rejects rehydrate when payload carries multiple ops (sealed single-op rule)', () => {
+    const multi = {
+      requestId: 'multi',
+      sessionKey: 'C9|T9',
+      channelId: 'C9',
+      threadTs: 'T9',
+      payload: {
+        instructionOperations: [
+          { action: 'add', text: 'one' },
+          { action: 'add', text: 'two' },
+        ],
+      },
+      createdAt: Date.now(),
+      requesterId: REQUESTER,
+      type: 'add' as const,
+      by: { type: 'slack-user' as const, id: REQUESTER },
+    };
+    fs.writeFileSync(STORE_FILE, JSON.stringify([multi], null, 2));
+    const store = new PendingInstructionConfirmStore();
+    expect(store.loadForms()).toBe(0);
+    expect(store.get('multi')).toBeUndefined();
+  });
 });
