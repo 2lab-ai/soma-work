@@ -297,8 +297,14 @@ export class TodoManager {
         const prev = previous.find((p) => p.id === task.id);
         if (prev) continue; // existing Todo — link is frozen, no new FK created
         const status = lookup(newLink);
-        if (status === 'cancelled' || status === 'completed') {
-          throw new Error(`TodoManager: cannot create Todo linked to ${status} instruction ${JSON.stringify(newLink)}`);
+        // Whitelist 'active': anything else (cancelled, completed, unknown,
+        // or a future status the lookup adds) refuses creation. 'unknown'
+        // covers BOTH "instruction not found in user master" AND "I/O
+        // failure" — accepting either would create a dangling FK, exactly
+        // the corruption mode this guard exists to prevent.
+        if (status !== 'active') {
+          const reason = status === 'unknown' ? 'unknown/missing' : status;
+          throw new Error(`TodoManager: cannot create Todo linked to ${reason} instruction ${JSON.stringify(newLink)}`);
         }
       }
     }
