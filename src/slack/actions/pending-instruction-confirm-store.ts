@@ -242,8 +242,7 @@ export class PendingInstructionConfirmStore {
         // op.action matches the entry's `type`. Without this, a corrupted
         // entry would mis-attribute the lifecycleEvents row built from
         // `entry.type` while the catalog applies the (different) op.
-        const payloadOps = (entry.payload as { instructionOperations?: unknown })
-          .instructionOperations;
+        const payloadOps = (entry.payload as { instructionOperations?: unknown }).instructionOperations;
         if (!Array.isArray(payloadOps) || payloadOps.length !== 1) continue;
         const op0 = payloadOps[0] as { action?: unknown } | undefined;
         if (!op0 || typeof op0 !== 'object') continue;
