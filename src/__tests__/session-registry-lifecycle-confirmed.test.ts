@@ -269,3 +269,82 @@ describe('SessionRegistry.applyConfirmedLifecycle — y-confirm one-transaction'
     expect(audit?.state).toBe('confirmed');
   });
 });
+
+// PR2 P1-3 (#755): a `state: 'requested'` row is appended at the moment the
+// model emits an instructionOperations request and the host queues it for
+// y/n confirmation. The audit log thus carries one 'requested' row per
+// pending entry plus exactly one terminal row per request.
+describe('SessionRegistry.recordRequestedLifecycle — pending-creation audit row (#755 P1-3)', () => {
+  it('appends a state="requested" row to the user master without mutating instructions', () => {
+    const userId = 'U-REQ-1';
+    writeUserDoc(userId, {
+      schemaVersion: 1,
+      instructions: [],
+      lifecycleEvents: [],
+    });
+
+    const reg = new SessionRegistry();
+    const session = reg.createSession(userId, 'Tester', 'C-REQ-1', 'T-REQ-1');
+    session.sessionId = 'sid-REQ-1';
+    const sessionKey = reg.getSessionKey('C-REQ-1', 'T-REQ-1');
+
+    reg.recordRequestedLifecycle(session, {
+      requestId: 'req-REQ-1',
+      type: 'add',
+      by: { type: 'slack-user', id: userId },
+      ops: [{ action: 'add', text: 'queued write' }],
+    });
+
+    const doc = readUserDoc(userId);
+    // No data mutation — instructions[] still empty until y-confirm tx.
+    expect(doc.instructions).toHaveLength(0);
+
+    // Exactly one 'requested' row matching the pending entry.
+    const requested = doc.lifecycleEvents.filter((e) => e.requestId === 'req-REQ-1');
+    expect(requested).toHaveLength(1);
+    expect(requested[0].state).toBe('requested');
+    expect(requested[0].op).toBe('add');
+    expect(requested[0].sessionKey).toBe(sessionKey);
+    expect(requested[0].by).toEqual({ type: 'slack-user', id: userId });
+    // For 'add' the instruction id is null at request-time (the y-confirm
+    // tx is what mints it).
+    expect(requested[0].instructionId).toBeNull();
+  });
+
+  it('records instructionId for non-add ops (link/complete/cancel/rename) at request-time', () => {
+    const userId = 'U-REQ-2';
+    writeUserDoc(userId, {
+      schemaVersion: 1,
+      instructions: [
+        {
+          id: 'inst-target',
+          text: 'pre-existing',
+          status: 'active',
+          linkedSessionIds: [],
+          createdAt: '2026-04-01T00:00:00.000Z',
+          source: 'model',
+          sourceRawInputIds: [],
+        },
+      ],
+      lifecycleEvents: [],
+    });
+
+    const reg = new SessionRegistry();
+    const session = reg.createSession(userId, 'Tester', 'C-REQ-2', 'T-REQ-2');
+    session.sessionId = 'sid-REQ-2';
+
+    reg.recordRequestedLifecycle(session, {
+      requestId: 'req-REQ-2',
+      type: 'cancel',
+      by: { type: 'slack-user', id: userId },
+      ops: [{ action: 'cancel', id: 'inst-target' }],
+    });
+
+    const doc = readUserDoc(userId);
+    expect(doc.instructions[0].status).toBe('active'); // unchanged
+    const audit = doc.lifecycleEvents.find((e) => e.requestId === 'req-REQ-2');
+    expect(audit?.state).toBe('requested');
+    expect(audit?.op).toBe('cancel');
+    expect(audit?.instructionId).toBe('inst-target');
+  });
+});
