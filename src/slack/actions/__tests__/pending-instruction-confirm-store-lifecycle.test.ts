@@ -61,7 +61,7 @@ describe('PendingInstructionConfirmStore — sealed lifecycle entry shape (#755)
         sessionKey: 'C1|T1',
         channelId: 'C1',
         threadTs: 'T1',
-        request: mkRequest(action),
+        payload: mkRequest(action),
         createdAt: Date.now(),
         requesterId: REQUESTER,
         type: action,
@@ -89,7 +89,7 @@ describe('PendingInstructionConfirmStore — sealed lifecycle entry shape (#755)
       sessionKey: 'C9|T9',
       channelId: 'C9',
       threadTs: 'T9',
-      request: mkRequest('add'),
+      payload: mkRequest('add'),
       createdAt: Date.now(),
       requesterId: REQUESTER,
       // type and by intentionally absent
@@ -108,18 +108,73 @@ describe('PendingInstructionConfirmStore — sealed lifecycle entry shape (#755)
       sessionKey: 'C1|T1',
       channelId: 'C1',
       threadTs: 'T1',
-      request: mkRequest('add'),
+      payload: mkRequest('add'),
       createdAt: Date.now(),
       requesterId: REQUESTER,
       type: 'add' as const,
       by: { type: 'slack-user' as const, id: REQUESTER },
     };
     store.set(a);
-    const b = { ...a, requestId: 'rB', type: 'link' as const, request: mkRequest('link') };
+    const b = { ...a, requestId: 'rB', type: 'link' as const, payload: mkRequest('link') };
     const evicted = store.set(b);
     expect(evicted?.requestId).toBe('rA');
     expect(evicted?.type).toBe('add');
     expect(store.get('rA')).toBeUndefined();
     expect(store.get('rB')?.type).toBe('link');
+  });
+
+  // PR2 P1-4 (#755): the sealed pending-confirm entry shape carries the
+  // deferred update under `payload` (matching the lifecycleEvents[].payload
+  // anchor), not `request`. The pre-PR2 store used `request` which made
+  // the persistent entry diverge from the audit-row shape, forcing a
+  // rename inside InstructionConfirmActionHandler at every read.
+  it('persists the deferred update under `payload` (sealed shape) — not the legacy `request`', () => {
+    const store = new PendingInstructionConfirmStore();
+    const entry = {
+      requestId: 'r-payload',
+      sessionKey: 'C1|T1',
+      channelId: 'C1',
+      threadTs: 'T1',
+      payload: mkRequest('add'),
+      createdAt: Date.now(),
+      requesterId: REQUESTER,
+      type: 'add' as const,
+      by: { type: 'slack-user' as const, id: REQUESTER },
+    };
+    store.set(entry);
+
+    // In-memory get: payload is present, request is not.
+    const got = store.get('r-payload') as Record<string, unknown>;
+    expect(got).toBeDefined();
+    expect(got.payload).toEqual(mkRequest('add'));
+    expect((got as { request?: unknown }).request).toBeUndefined();
+
+    // Round-trip through disk: same shape after rehydrate.
+    const reloaded = new PendingInstructionConfirmStore();
+    expect(reloaded.loadForms()).toBe(1);
+    const after = reloaded.get('r-payload') as Record<string, unknown>;
+    expect(after.payload).toEqual(mkRequest('add'));
+    expect((after as { request?: unknown }).request).toBeUndefined();
+  });
+
+  it('rejects rehydrate of entries that carry only the legacy `request` field (pre-PR2 shape)', () => {
+    // A pre-PR2 entry persisted under `request` would not satisfy the
+    // sealed shape; the loader rejects it rather than silently coerce.
+    const legacy = {
+      requestId: 'legacy-req',
+      sessionKey: 'C9|T9',
+      channelId: 'C9',
+      threadTs: 'T9',
+      request: mkRequest('add'), // legacy field
+      createdAt: Date.now(),
+      requesterId: REQUESTER,
+      type: 'add' as const,
+      by: { type: 'slack-user' as const, id: REQUESTER },
+    };
+    fs.writeFileSync(STORE_FILE, JSON.stringify([legacy], null, 2));
+    const store = new PendingInstructionConfirmStore();
+    const loaded = store.loadForms();
+    expect(loaded).toBe(0);
+    expect(store.get('legacy-req')).toBeUndefined();
   });
 });
