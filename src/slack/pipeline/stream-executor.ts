@@ -2970,7 +2970,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // with the y/n confirm path post-#755.
     const firstOp = request.instructionOperations?.[0];
     const lifecycleType: import('../actions/pending-instruction-confirm-store').PendingInstructionConfirmType =
-      firstOp && (firstOp.action === 'add' ||
+      firstOp &&
+      (firstOp.action === 'add' ||
         firstOp.action === 'link' ||
         firstOp.action === 'complete' ||
         firstOp.action === 'cancel' ||
