@@ -310,11 +310,9 @@ function formatDurationUntil(isoUtc: string | undefined, opts?: { fallback?: str
 // ── #749 Auto-rotate text command renderer ─────────────────────────
 
 /**
- * Format a utilization value (0..100 percent — store SSOT per #685/#781)
- * as `XX.X%`. Mirrors `fmtPct` in `auto-rotate-notifier.ts` — kept
- * inline (rather than imported) to keep the text-only handler
- * independent of the block-kit notifier module's import graph. Pinned
- * by test (`80 → "80.0%"`, `undefined → "—"`).
+ * Format a utilization value (percent, 0..100) as `XX.X%`. Mirrors
+ * `fmtPct` in `auto-rotate-notifier.ts`; inlined to keep this handler
+ * out of the notifier module's import graph.
  */
 function pct(util: number | undefined): string {
   if (util === undefined || !Number.isFinite(util)) return '—';

@@ -22,13 +22,7 @@ export interface RotationNotifyPayload {
   to: RotationCandidate;
 }
 
-/**
- * Format a utilization value (0..100 percent — store SSOT, see #685/#781)
- * as `XX.X%`. The `*100` scaling that used to live here was a birth
- * defect from #737 — the engine + store agreed on percent form, only
- * this renderer (and `cct-handler.pct`) carried the stale 0..1
- * assumption, producing four-digit "6300.0%" hourly notifications.
- */
+/** Format a utilization value (percent, 0..100) as `XX.X%`. */
 function fmtPct(util: number | undefined): string {
   if (util === undefined || !Number.isFinite(util)) return '—';
   return `${util.toFixed(1)}%`;

@@ -255,15 +255,10 @@ export const config = {
    * (the hook never fires); explicitly disable via
    * `AUTO_ROTATE_ENABLED=0` to keep the refresh tick but skip rotation.
    *
-   * Unit boundary (#685/#781). The store SSOT for `usage.*.utilization`
-   * is raw API percent (0..100) per #685, so the rotation engine reads
-   * thresholds in percent form. The operator-facing env vars
-   * (`AUTO_ROTATE_FIVEH_THRESHOLD`, `AUTO_ROTATE_SEVEND_THRESHOLD`) are
-   * kept in the legacy 0..1 unit-interval form for backwards
-   * compatibility — `parseUnitIntervalEnv` validates / clamps in 0..1,
-   * and we multiply by 100 here so everything downstream of the config
-   * boundary reads percent. Defaults match the user spec verbatim:
-   * 5h ≤ 80%, 7d ≤ 90%. Pinned by `config.test.ts`.
+   * Operator-facing env knobs (`AUTO_ROTATE_FIVEH_THRESHOLD`,
+   * `AUTO_ROTATE_SEVEND_THRESHOLD`) are 0..1 fractions for backwards
+   * compatibility; the rotation engine reads percent (store SSOT,
+   * 0..100) — hence the `* 100` boundary multiply (#781).
    */
   autoRotate: {
     /** Emergency-off knob. Default-on. */
@@ -275,16 +270,9 @@ export const config = {
      * letting it actually flip the active slot.
      */
     dryRun: process.env.AUTO_ROTATE_DRY_RUN === '1',
-    /**
-     * 5h utilisation upper bound, in percent (0..100). Default 80.
-     * Env knob `AUTO_ROTATE_FIVEH_THRESHOLD` stays 0..1 for operator
-     * compatibility — see the `autoRotate` block JSDoc above.
-     */
+    /** 5h utilisation upper bound, percent (0..100). Default 80. */
     fiveHourMax: parseUnitIntervalEnv('AUTO_ROTATE_FIVEH_THRESHOLD', 0.8) * 100,
-    /**
-     * 7d utilisation upper bound, in percent (0..100). Default 90. See
-     * `fiveHourMax` for the env-knob unit contract.
-     */
+    /** 7d utilisation upper bound, percent (0..100). Default 90. */
     sevenDayMax: parseUnitIntervalEnv('AUTO_ROTATE_SEVEND_THRESHOLD', 0.9) * 100,
   },
   /**
