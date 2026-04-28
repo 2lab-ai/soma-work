@@ -4497,7 +4497,20 @@ async function generateTitleSub(convId) {
   textEl.textContent = 'Generating title...';
   btn.style.display = 'none';
   try {
-    var res = await fetch('/api/dashboard/session/' + encodeURIComponent(convId) + '/generate-title', { method: 'POST' });
+    // #771 — CSRF-protected POST. Mirror doAction / answerChoice pattern:
+    // attach X-CSRF-Token, and on 403 (JWT rotation invalidated the token)
+    // refresh and retry once. The route applies csrfMiddleware so the prior
+    // header-less fetch was an immediate 403.
+    const url = '/api/dashboard/session/' + encodeURIComponent(convId) + '/generate-title';
+    const headers = {};
+    if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
+    var res = await fetch(url, { method: 'POST', headers });
+    if (res.status === 403) {
+      await refreshCsrfToken();
+      const retryHeaders = {};
+      if (_csrfToken) retryHeaders['X-CSRF-Token'] = _csrfToken;
+      res = await fetch(url, { method: 'POST', headers: retryHeaders });
+    }
     var data = await res.json();
     if (data.titleSub) {
       textEl.textContent = data.titleSub;
