@@ -1,13 +1,27 @@
 import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+// Use $TMPDIR (sandbox-allowed) rather than the bare /tmp path so this
+// suite runs under macOS Claude Code sandboxing too. `vi.hoisted` makes
+// the path computation visible to the hoisted `vi.mock` factory below.
+const hoisted = vi.hoisted(() => {
+  const fsh = require('node:fs') as typeof import('node:fs');
+  const osh = require('node:os') as typeof import('node:os');
+  const pathh = require('node:path') as typeof import('node:path');
+  return {
+    dir: fsh.mkdtempSync(pathh.join(osh.tmpdir(), 'soma-work-session-registry-test-')),
+  };
+});
+
 vi.mock('../env-paths', () => ({
-  DATA_DIR: '/tmp/soma-work-session-registry-test',
+  DATA_DIR: hoisted.dir,
 }));
 
 import { SessionRegistry } from '../session-registry';
 
-const TEST_DATA_DIR = '/tmp/soma-work-session-registry-test';
+const TEST_DATA_DIR = hoisted.dir;
 
 describe('SessionRegistry persistence', () => {
   beforeEach(() => {
@@ -318,7 +332,7 @@ describe('SessionRegistry persistence', () => {
       },
     ];
     fs.writeFileSync(
-      require('path').join('/tmp/soma-work-session-registry-test', 'sessions.json'),
+      require('path').join(TEST_DATA_DIR, 'sessions.json'),
       JSON.stringify(oldFormatSessions, null, 2),
     );
 
@@ -374,7 +388,7 @@ describe('SessionRegistry persistence', () => {
       },
     ];
     fs.writeFileSync(
-      require('path').join('/tmp/soma-work-session-registry-test', 'sessions.json'),
+      require('path').join(TEST_DATA_DIR, 'sessions.json'),
       JSON.stringify(maliciousSessions, null, 2),
     );
 
@@ -849,5 +863,72 @@ describe('invalidateSystemPromptForUser', () => {
     expect(registry.invalidateSystemPromptForUser('U-ghost')).toBe(0);
     expect(registry.invalidateSystemPromptForUser('')).toBe(0);
     expect(s.systemPrompt).toBe('cached');
+  });
+});
+
+// PR2 P1-2 (#755): updateSessionResources is not the y/n-gated seam.
+// Sealed contract — every instruction write that the user is supposed to
+// authorise must go through `applyConfirmedLifecycle`. So passing
+// `instructionOperations` directly to `updateSessionResources` MUST NOT
+// mutate `session.instructions` — the gate would otherwise be bypassed
+// (and the audit log would lose the lifecycleEvents row).
+describe('SessionRegistry.updateSessionResources — instructionOperations are NOT applied directly (#755 P1-2)', () => {
+  beforeEach(() => {
+    if (fs.existsSync(TEST_DATA_DIR)) {
+      fs.rmSync(TEST_DATA_DIR, { recursive: true });
+    }
+    fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
+  });
+
+  afterEach(() => {
+    if (fs.existsSync(TEST_DATA_DIR)) {
+      fs.rmSync(TEST_DATA_DIR, { recursive: true });
+    }
+  });
+
+  it('does not mutate session.instructions when only instructionOperations are passed', () => {
+    const reg = new SessionRegistry();
+    const session = reg.createSession('U-p12-1', 'Tester', 'C-P12-1', 't-p12-1');
+    session.sessionId = 'session-p12-1';
+    const before = session.instructions ? [...session.instructions] : [];
+
+    const result = reg.updateSessionResources('C-P12-1', 't-p12-1', {
+      instructionOperations: [{ action: 'add', text: 'should not write directly' }],
+    });
+
+    // The call should return ok=true (no resource ops failed), but
+    // session.instructions MUST NOT have grown — instruction writes are
+    // host-side gated and must go through applyConfirmedLifecycle.
+    expect(result.ok).toBe(true);
+    expect(session.instructions ?? []).toEqual(before);
+  });
+
+  it('does not mutate session.instructions even when paired with resource operations', () => {
+    const reg = new SessionRegistry();
+    const session = reg.createSession('U-p12-2', 'Tester', 'C-P12-2', 't-p12-2');
+    session.sessionId = 'session-p12-2';
+    const before = session.instructions ? [...session.instructions] : [];
+
+    const result = reg.updateSessionResources('C-P12-2', 't-p12-2', {
+      operations: [
+        {
+          action: 'add',
+          resourceType: 'issue',
+          link: { url: 'https://jira.example/PTN-P12', type: 'issue', provider: 'jira' },
+        },
+      ],
+      instructionOperations: [
+        { action: 'add', text: 'piggyback write' },
+        { action: 'remove', id: 'whatever' },
+      ],
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // Resource op applied normally.
+    expect(result.snapshot.issues).toHaveLength(1);
+    // Instruction ops dropped — user master is the source of truth, gated
+    // through applyConfirmedLifecycle.
+    expect(session.instructions ?? []).toEqual(before);
   });
 });
