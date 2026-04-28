@@ -1,4 +1,5 @@
 import type { WebClient } from '@slack/web-api';
+import { SHARE_CONTENT_CHAR_LIMIT, shareOverLimitMessage } from 'somalib/model-commands/skill-share-errors';
 import type { ClaudeHandler } from '../../claude-handler';
 import { Logger } from '../../logger';
 import {
@@ -7,6 +8,8 @@ import {
   isSingleFileSkill,
   isValidSkillName,
   MAX_INLINE_EDIT_CHARS,
+  MAX_SKILL_NAME_LENGTH,
+  shareUserSkill,
   userSkillExists,
 } from '../../user-skill-store';
 import type { SlackApiHelper } from '../slack-api-helper';
@@ -27,6 +30,20 @@ interface UserSkillMenuContext {
  */
 export const VALUE_KIND_INVOKE = 'user_skill_invoke';
 export const VALUE_KIND_EDIT = 'user_skill_edit';
+/**
+ * Issue #774 additions — keep verbs alongside the existing pair so the
+ * dispatch in `handleAction` stays exhaustive at compile time.
+ *
+ *   delete  → opens a confirmation modal (Slack overflow options can't carry
+ *             their own confirm dialog, so a 2-step modal is the safest UX).
+ *   rename  → opens a rename modal (single text input).
+ *   share   → posts an ephemeral message with a four-backtick fenced code
+ *             block carrying the SKILL.md content + install instructions.
+ *             Read-only (does not fire system-prompt invalidation).
+ */
+export const VALUE_KIND_DELETE = 'user_skill_delete';
+export const VALUE_KIND_RENAME = 'user_skill_rename';
+export const VALUE_KIND_SHARE = 'user_skill_share';
 
 /**
  * Action_id prefixes for the per-skill accessory.
@@ -54,10 +71,53 @@ export const USER_SKILL_EDIT_BLOCK_ID = 'user_skill_edit_body';
  */
 export const USER_SKILL_EDIT_ACTION_ID = 'user_skill_edit_value';
 
+/** callback_id / block / action ids for the rename modal (issue #774). */
+export const USER_SKILL_RENAME_MODAL_CALLBACK_ID = 'user_skill_rename_modal_submit';
+export const USER_SKILL_RENAME_BLOCK_ID = 'user_skill_rename_input';
+export const USER_SKILL_RENAME_ACTION_ID = 'user_skill_rename_value';
+
+/** callback_id for the delete confirmation modal (issue #774). */
+export const USER_SKILL_DELETE_MODAL_CALLBACK_ID = 'user_skill_delete_modal_submit';
+
+type SkillMenuKind =
+  | typeof VALUE_KIND_INVOKE
+  | typeof VALUE_KIND_EDIT
+  | typeof VALUE_KIND_DELETE
+  | typeof VALUE_KIND_RENAME
+  | typeof VALUE_KIND_SHARE;
+
 interface ParsedActionValue {
-  kind: typeof VALUE_KIND_INVOKE | typeof VALUE_KIND_EDIT;
+  kind: SkillMenuKind;
   skillName: string;
   requesterId: string;
+}
+
+const KNOWN_KINDS: ReadonlySet<SkillMenuKind> = new Set([
+  VALUE_KIND_INVOKE,
+  VALUE_KIND_EDIT,
+  VALUE_KIND_DELETE,
+  VALUE_KIND_RENAME,
+  VALUE_KIND_SHARE,
+]);
+
+/**
+ * Build the four-backtick fenced share message body. Four backticks (instead
+ * of three) lets a SKILL.md that itself contains triple-backtick code blocks
+ * round-trip without breaking the Slack code-fence parser. SKILL.md authors
+ * commonly include `\`\`\`` examples, so three-backtick fencing would chop the
+ * shared content at the first inner fence.
+ */
+function buildShareMessage(skillName: string, content: string): string {
+  return [
+    `📤 *Personal skill 공유:* \`$user:${skillName}\``,
+    '',
+    '복사해서 다른 워크스페이스 / 다른 유저에게 전달하면 됩니다.',
+    '받는 쪽은 동일한 이름으로 `MANAGE_SKILL action=create` 호출하면 설치됩니다.',
+    '',
+    '````',
+    content,
+    '````',
+  ].join('\n');
 }
 
 interface ResolvedClick {
@@ -137,18 +197,192 @@ export class UserSkillMenuActionHandler {
         return;
       }
 
-      if (click.value.kind === VALUE_KIND_EDIT) {
-        await this.handleEdit(click, respond, client);
-        return;
+      switch (click.value.kind) {
+        case VALUE_KIND_EDIT:
+          await this.handleEdit(click, respond, client);
+          return;
+        case VALUE_KIND_DELETE:
+          await this.handleDelete(click, respond, client);
+          return;
+        case VALUE_KIND_RENAME:
+          await this.handleRename(click, respond, client);
+          return;
+        case VALUE_KIND_SHARE:
+          await this.handleShare(click, respond);
+          return;
+        case VALUE_KIND_INVOKE:
+        default:
+          // Fail safe: any unrecognized kind routes to invoke (the most-used
+          // verb). resolveClick already coerces unknown kinds to INVOKE, so
+          // the default branch is defensive.
+          await this.handleInvoke(click, respond);
+          return;
       }
-
-      // Default: invoke (covers both `kind=user_skill_invoke` and any
-      // unrecognized kind — fail safe by routing to the existing invoke
-      // path).
-      await this.handleInvoke(click, respond);
     } catch (error) {
       this.logger.error('Error processing user skill menu action', error);
     }
+  }
+
+  /**
+   * Open the delete confirmation modal. Slack `overflow` options can't carry
+   * a per-option `confirm` dialog (the dialog applies to the whole element),
+   * so we use a 2-step modal: option click → modal "정말 삭제할까요?" → confirm.
+   */
+  private async handleDelete(click: ResolvedClick, respond: RespondFn, client?: WebClient): Promise<void> {
+    const { value, channel, messageTs, threadTs, triggerId } = click;
+
+    if (!userSkillExists(value.requesterId, value.skillName)) {
+      await respond({
+        response_type: 'ephemeral',
+        text: `❌ 스킬이 더 이상 존재하지 않습니다: \`$user:${value.skillName}\``,
+        replace_original: false,
+      });
+      return;
+    }
+
+    if (!triggerId || !client) {
+      this.logger.warn('user_skill_menu delete: missing trigger_id or client');
+      await respond({
+        response_type: 'ephemeral',
+        text: '⚠️ 모달을 여는 데 필요한 정보가 누락되었습니다 (trigger_id missing).',
+        replace_original: false,
+      });
+      return;
+    }
+
+    const privateMetadata = JSON.stringify({
+      requesterId: value.requesterId,
+      skillName: value.skillName,
+      channelId: channel ?? '',
+      threadTs: threadTs ?? '',
+      messageTs: messageTs ?? '',
+    });
+
+    try {
+      await client.views.open({
+        trigger_id: triggerId,
+        view: buildSkillDeleteModal({ skillName: value.skillName, privateMetadata }) as any,
+      });
+      this.logger.info('user_skill_menu: delete modal opened', {
+        requesterId: value.requesterId,
+        skillName: value.skillName,
+      });
+    } catch (err) {
+      this.logger.error('user_skill_menu delete: views.open failed', {
+        skillName: value.skillName,
+        err: (err as Error)?.message ?? String(err),
+      });
+      await respond({
+        response_type: 'ephemeral',
+        text: `⚠️ 삭제 확인 모달을 여는 데 실패했습니다: ${(err as Error)?.message ?? String(err)}`,
+        replace_original: false,
+      });
+    }
+  }
+
+  /**
+   * Open the rename modal. The view-submission handler revalidates the new
+   * name and calls `renameUserSkill`. Storage-layer errors map to inline
+   * `response_action: 'errors'` strings via the granular error code so the
+   * user sees a precise message (target exists / invalid name / etc.).
+   */
+  private async handleRename(click: ResolvedClick, respond: RespondFn, client?: WebClient): Promise<void> {
+    const { value, channel, messageTs, threadTs, triggerId } = click;
+
+    if (!userSkillExists(value.requesterId, value.skillName)) {
+      await respond({
+        response_type: 'ephemeral',
+        text: `❌ 스킬이 더 이상 존재하지 않습니다: \`$user:${value.skillName}\``,
+        replace_original: false,
+      });
+      return;
+    }
+
+    if (!triggerId || !client) {
+      this.logger.warn('user_skill_menu rename: missing trigger_id or client');
+      await respond({
+        response_type: 'ephemeral',
+        text: '⚠️ 모달을 여는 데 필요한 정보가 누락되었습니다 (trigger_id missing).',
+        replace_original: false,
+      });
+      return;
+    }
+
+    const privateMetadata = JSON.stringify({
+      requesterId: value.requesterId,
+      skillName: value.skillName,
+      channelId: channel ?? '',
+      threadTs: threadTs ?? '',
+      messageTs: messageTs ?? '',
+    });
+
+    try {
+      await client.views.open({
+        trigger_id: triggerId,
+        view: buildSkillRenameModal({ skillName: value.skillName, privateMetadata }) as any,
+      });
+      this.logger.info('user_skill_menu: rename modal opened', {
+        requesterId: value.requesterId,
+        skillName: value.skillName,
+      });
+    } catch (err) {
+      this.logger.error('user_skill_menu rename: views.open failed', {
+        skillName: value.skillName,
+        err: (err as Error)?.message ?? String(err),
+      });
+      await respond({
+        response_type: 'ephemeral',
+        text: `⚠️ 이름변경 모달을 여는 데 실패했습니다: ${(err as Error)?.message ?? String(err)}`,
+        replace_original: false,
+      });
+    }
+  }
+
+  /**
+   * Post the SKILL.md as an ephemeral four-backtick code block. Read-only —
+   * does not fire the system-prompt invalidation hook. The 2500-char cap
+   * matches the wire-level dispatcher's `SHARE_CONTENT_CHAR_LIMIT` so a Slack-
+   * shared SKILL.md can also be installed via MANAGE_SKILL share without
+   * surprise truncation.
+   */
+  private async handleShare(click: ResolvedClick, respond: RespondFn): Promise<void> {
+    const { value } = click;
+
+    const result = shareUserSkill(value.requesterId, value.skillName);
+    if (!result.ok || result.content === undefined) {
+      await respond({
+        response_type: 'ephemeral',
+        text: `❌ ${result.message}`,
+        replace_original: false,
+      });
+      return;
+    }
+
+    if (result.content.length > SHARE_CONTENT_CHAR_LIMIT) {
+      // Same wire-level cap as the model-command dispatcher. Slack would
+      // accept the larger payload (the message limit is 40000 chars), but
+      // we want the share UX to match what a recipient model can install
+      // via MANAGE_SKILL action=create — that path enforces the same cap.
+      await respond({
+        response_type: 'ephemeral',
+        text: `❌ ${shareOverLimitMessage(value.skillName, result.content.length)}`,
+        replace_original: false,
+      });
+      return;
+    }
+
+    const body = buildShareMessage(value.skillName, result.content);
+    await respond({
+      response_type: 'ephemeral',
+      text: body,
+      replace_original: false,
+    });
+
+    this.logger.info('user_skill_menu: share rendered', {
+      requesterId: value.requesterId,
+      skillName: value.skillName,
+      length: result.content.length,
+    });
   }
 
   private async handleInvoke(click: ResolvedClick, respond: RespondFn): Promise<void> {
@@ -353,7 +587,12 @@ export class UserSkillMenuActionHandler {
     const skillName = typeof parsed.skillName === 'string' ? parsed.skillName : '';
     const requesterId = typeof parsed.requesterId === 'string' ? parsed.requesterId : '';
     const rawKind = typeof parsed.kind === 'string' ? parsed.kind : VALUE_KIND_INVOKE;
-    const kind = rawKind === VALUE_KIND_EDIT ? VALUE_KIND_EDIT : VALUE_KIND_INVOKE;
+    // Whitelist known kinds — anything else (forged payload, future verb
+    // typo, etc.) collapses to INVOKE (the original BC behavior). New verbs
+    // MUST be added to KNOWN_KINDS to be reachable.
+    const kind: SkillMenuKind = KNOWN_KINDS.has(rawKind as SkillMenuKind)
+      ? (rawKind as SkillMenuKind)
+      : VALUE_KIND_INVOKE;
 
     const messageTs: string | undefined = body?.message?.ts;
     return {
@@ -420,6 +659,72 @@ export function buildSkillEditModal(args: {
           multiline: true,
           initial_value: args.initialValue,
           max_length: MAX_INLINE_EDIT_CHARS,
+        },
+      },
+    ],
+  };
+}
+
+/**
+ * Build the rename modal — single text input pre-filled with the current name.
+ * The view-submission handler revalidates the new name and dispatches to
+ * `renameUserSkill`.
+ */
+export function buildSkillRenameModal(args: { skillName: string; privateMetadata: string }): Record<string, any> {
+  return {
+    type: 'modal',
+    callback_id: USER_SKILL_RENAME_MODAL_CALLBACK_ID,
+    private_metadata: args.privateMetadata,
+    title: { type: 'plain_text', text: '📝 이름변경'.slice(0, 24) },
+    submit: { type: 'plain_text', text: '변경' },
+    close: { type: 'plain_text', text: '취소' },
+    blocks: [
+      {
+        type: 'context',
+        elements: [
+          {
+            type: 'mrkdwn',
+            text: `현재 이름: \`$user:${args.skillName}\` — kebab-case (소문자/숫자/하이픈) 만 허용됩니다.`,
+          },
+        ],
+      },
+      {
+        type: 'input',
+        block_id: USER_SKILL_RENAME_BLOCK_ID,
+        label: { type: 'plain_text', text: '새 이름' },
+        element: {
+          type: 'plain_text_input',
+          action_id: USER_SKILL_RENAME_ACTION_ID,
+          initial_value: args.skillName,
+          max_length: MAX_SKILL_NAME_LENGTH,
+          placeholder: { type: 'plain_text', text: 'my-new-skill' },
+        },
+      },
+    ],
+  };
+}
+
+/**
+ * Build the delete confirmation modal — body is non-editable, submit acts as
+ * "I confirm". 2-step modal because Slack `overflow` options can't carry a
+ * per-option `confirm` dialog.
+ */
+export function buildSkillDeleteModal(args: { skillName: string; privateMetadata: string }): Record<string, any> {
+  return {
+    type: 'modal',
+    callback_id: USER_SKILL_DELETE_MODAL_CALLBACK_ID,
+    private_metadata: args.privateMetadata,
+    title: { type: 'plain_text', text: '🗑 삭제 확인'.slice(0, 24) },
+    submit: { type: 'plain_text', text: '삭제' },
+    close: { type: 'plain_text', text: '취소' },
+    blocks: [
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text:
+            `정말 \`$user:${args.skillName}\` 를 삭제할까요?\n\n` +
+            '*이 작업은 되돌릴 수 없습니다.* SKILL.md 와 디렉터리 전체가 제거됩니다.',
         },
       },
     ],

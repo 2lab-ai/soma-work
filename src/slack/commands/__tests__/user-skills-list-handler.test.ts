@@ -71,7 +71,7 @@ describe('UserSkillsListHandler', () => {
       expect(arg.blocks).toBeUndefined();
     });
 
-    it('emits per-skill section blocks with overflow accessory for single-file skills', async () => {
+    it('emits per-skill section blocks with 5-option overflow accessory for single-file skills', async () => {
       vi.mocked(userSkillStore.listUserSkills).mockReturnValue([
         skill('a', 'first skill'),
         skill('deploy', 'deploy helper'),
@@ -88,14 +88,22 @@ describe('UserSkillsListHandler', () => {
       // One section block per skill
       const sectionBlocks = arg.blocks.filter((b: any) => b.type === 'section');
       expect(sectionBlocks.length).toBe(2);
-      // Each section has an overflow accessory carrying invoke + edit options.
+      // Single-file overflow now carries 5 options (issue #774):
+      //   invoke / edit / delete / rename / share
+      // — Slack `overflow` cap is exactly 5, so we hit the limit on purpose.
       for (const b of sectionBlocks) {
         expect(b.accessory?.type).toBe('overflow');
         expect(b.accessory?.action_id).toMatch(/^user_skill_menu_/);
         const opts = b.accessory.options;
-        expect(opts.length).toBe(2);
+        expect(opts.length).toBe(5);
         const kinds = opts.map((o: any) => JSON.parse(o.value).kind);
-        expect(kinds).toEqual(['user_skill_invoke', 'user_skill_edit']);
+        expect(kinds).toEqual([
+          'user_skill_invoke',
+          'user_skill_edit',
+          'user_skill_delete',
+          'user_skill_rename',
+          'user_skill_share',
+        ]);
         for (const o of opts) {
           const v = JSON.parse(o.value);
           expect(v.requesterId).toBe('U42');
@@ -108,7 +116,7 @@ describe('UserSkillsListHandler', () => {
       expect(allText).toContain('$user:deploy');
     });
 
-    it('renders multi-file skills with a button (BC) accessory + inline label', async () => {
+    it('renders multi-file skills with a 4-option overflow accessory (no edit) + inline label', async () => {
       vi.mocked(userSkillStore.listUserSkills).mockReturnValue([skill('multi', 'multi-file skill', false)]);
 
       await handler.execute(makeCtx('$user', 'U7'));
@@ -118,14 +126,20 @@ describe('UserSkillsListHandler', () => {
       // Inline label is part of the section text — no separate context block.
       expect(section.text.text).toMatch(/multi-file/i);
       expect(blocks.filter((b: any) => b.type === 'context').length).toBe(0);
-      // Accessory must be the legacy button with `user_skill_invoke_` prefix
-      // so older clients (or in-flight messages) still route correctly.
-      expect(section.accessory.type).toBe('button');
-      expect(section.accessory.action_id).toMatch(/^user_skill_invoke_/);
-      const v = JSON.parse(section.accessory.value);
-      expect(v.kind).toBe('user_skill_invoke');
-      expect(v.skillName).toBe('multi');
-      expect(v.requesterId).toBe('U7');
+      // Multi-file gets overflow with 4 options (no 편집) since the inline
+      // edit modal can only round-trip a single-file SKILL.md — issue #774
+      // promotes delete/rename/share, which are file-count-agnostic.
+      expect(section.accessory.type).toBe('overflow');
+      expect(section.accessory.action_id).toMatch(/^user_skill_menu_/);
+      const opts = section.accessory.options;
+      expect(opts.length).toBe(4);
+      const kinds = opts.map((o: any) => JSON.parse(o.value).kind);
+      expect(kinds).toEqual(['user_skill_invoke', 'user_skill_delete', 'user_skill_rename', 'user_skill_share']);
+      // edit must NOT be present for multi-file skills.
+      expect(kinds).not.toContain('user_skill_edit');
+      const invokeValue = JSON.parse(opts[0].value);
+      expect(invokeValue.skillName).toBe('multi');
+      expect(invokeValue.requesterId).toBe('U7');
     });
 
     it('mixes single + multi-file skills in a single render', async () => {
@@ -140,8 +154,12 @@ describe('UserSkillsListHandler', () => {
       const sections = blocks.filter((b: any) => b.type === 'section');
       const singleSection = sections.find((b: any) => b.text.text.includes('$user:single'));
       const multiSection = sections.find((b: any) => b.text.text.includes('$user:multi'));
+      // Both render as overflow now (issue #774), but the option counts differ:
+      // single-file = 5 (with 편집), multi-file = 4 (without 편집).
       expect(singleSection.accessory.type).toBe('overflow');
-      expect(multiSection.accessory.type).toBe('button');
+      expect(multiSection.accessory.type).toBe('overflow');
+      expect(singleSection.accessory.options.length).toBe(5);
+      expect(multiSection.accessory.options.length).toBe(4);
     });
 
     it('truncates long descriptions to 200 chars', async () => {

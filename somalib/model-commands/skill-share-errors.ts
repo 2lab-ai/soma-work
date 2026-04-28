@@ -39,3 +39,43 @@ export function shareOverLimitMessage(name: string, length: number): string {
     `(${SHARE_CONTENT_CHAR_LIMIT} chars). Trim the SKILL.md before sharing.`
   );
 }
+
+/**
+ * Stable error codes for `SkillStore.renameSkill` failures.
+ *
+ * Owned here (not in catalog.ts) so both store implementations agree on the
+ * machine-readable discriminant — the Slack rename modal switches on this
+ * code to map storage errors onto inline `response_action: 'errors'` strings
+ * without re-parsing prose.
+ *
+ *   NOT_FOUND  — source skill directory does not exist.
+ *   EEXIST     — a skill with `newName` already exists (case-insensitive
+ *                filesystems collapse `foo` and `Foo`, but the rename layer
+ *                still uses a temp-staging step so `foo → Foo` is allowed
+ *                provided no third skill named `Foo` exists).
+ *   INVALID    — name violates the kebab-case predicate or the length cap,
+ *                or oldName === newName (no-op rejected so callers don't
+ *                accidentally fire invalidation hooks for a no-op).
+ *   IO         — fs.rename or fs.rmdir threw despite the pre-checks.
+ */
+export type SkillRenameErrorCode = 'NOT_FOUND' | 'EEXIST' | 'INVALID' | 'IO';
+
+export function skillRenameSuccessMessage(oldName: string, newName: string): string {
+  return `Skill "${oldName}" renamed to "${newName}".`;
+}
+
+export function skillRenameTargetExistsMessage(newName: string): string {
+  return `Skill "${newName}" already exists. Pick a different name or delete the existing one first.`;
+}
+
+export function skillRenameSameNameMessage(name: string): string {
+  return `New name "${name}" is identical to the current name — nothing to do.`;
+}
+
+export function skillRenameSourceMissingMessage(name: string): string {
+  return `Skill "${name}" not found.`;
+}
+
+export function skillRenameIoFailureMessage(oldName: string, newName: string): string {
+  return `Failed to rename "${oldName}" to "${newName}" — filesystem error.`;
+}

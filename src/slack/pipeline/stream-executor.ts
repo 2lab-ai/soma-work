@@ -2793,6 +2793,28 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // Issue #42 S3: 성공 결과 수집
       modelCommandResults.push({ commandId: parsed.commandId, ok: true, payload: parsed.payload });
 
+      // MANAGE_SKILL mutation signal (#774) — when storage created/updated/
+      // deleted/renamed a personal skill, drop the cached system prompt for
+      // the affected user so the next turn re-injects the skill list. The
+      // `mutated` field is emitted ONLY on the happy path (see catalog.ts
+      // dispatch), so a no-op or failed call won't trigger a wasted rebuild.
+      // share/list never carry `mutated` (read-only).
+      if (parsed.commandId === 'MANAGE_SKILL') {
+        const payload = parsed.payload as { ok?: boolean; mutated?: { kind?: string; user?: string } };
+        if (payload?.ok && payload.mutated?.kind === 'skill' && typeof payload.mutated.user === 'string') {
+          try {
+            this.deps.claudeHandler.getSessionRegistry().invalidateSystemPromptForUser(payload.mutated.user);
+          } catch (err) {
+            // Non-fatal — the cache will self-heal on the next reset point.
+            this.logger.debug('MANAGE_SKILL invalidation hook failed', {
+              sessionKey: context.sessionKey,
+              user: payload.mutated.user,
+              err: (err as Error)?.message ?? String(err),
+            });
+          }
+        }
+      }
+
       if (parsed.commandId === 'ASK_USER_QUESTION') {
         pendingQuestions.push(parsed.payload.question);
         hasPendingChoice = true;

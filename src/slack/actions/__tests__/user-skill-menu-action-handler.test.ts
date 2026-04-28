@@ -281,4 +281,206 @@ describe('UserSkillMenuActionHandler', () => {
       expect(respond.mock.calls[0][0].text).toMatch(/실패|fail/i);
     });
   });
+
+  // ---------- delete (overflow option, kind=delete) — issue #774 ----------
+
+  describe('delete (overflow option)', () => {
+    const makeDeleteBody = (overrides: { userId?: string; triggerId?: string | null } = {}) => ({
+      actions: [
+        {
+          type: 'overflow',
+          selected_option: {
+            value: JSON.stringify({
+              kind: 'user_skill_delete',
+              skillName: 'a',
+              requesterId: 'U1',
+            }),
+          },
+        },
+      ],
+      user: { id: overrides.userId ?? 'U1' },
+      channel: { id: 'C1' },
+      message: { ts: 'msg-ts', thread_ts: 'thread-ts' },
+      trigger_id: overrides.triggerId === null ? undefined : (overrides.triggerId ?? 'trig-1'),
+    });
+
+    it('opens the delete confirmation modal when the skill exists', async () => {
+      await handler.handleAction(makeDeleteBody(), respond, client);
+
+      expect(viewsOpen).toHaveBeenCalledTimes(1);
+      const view = viewsOpen.mock.calls[0][0].view;
+      expect(view.callback_id).toBe('user_skill_delete_modal_submit');
+      const meta = JSON.parse(view.private_metadata);
+      expect(meta).toMatchObject({
+        requesterId: 'U1',
+        skillName: 'a',
+        channelId: 'C1',
+      });
+      // No re-injection / message update on delete-click.
+      expect(messageHandler).not.toHaveBeenCalled();
+      expect(slackApi.updateMessage).not.toHaveBeenCalled();
+    });
+
+    it('rejects delete when clicker !== requester (no views.open)', async () => {
+      await handler.handleAction(makeDeleteBody({ userId: 'U-other' }), respond, client);
+      expect(viewsOpen).not.toHaveBeenCalled();
+      expect(respond.mock.calls[0][0].response_type).toBe('ephemeral');
+    });
+
+    it('fails closed with an ephemeral when the skill no longer exists', async () => {
+      vi.mocked(userSkillStore.userSkillExists).mockReturnValue(false);
+      await handler.handleAction(makeDeleteBody(), respond, client);
+      expect(viewsOpen).not.toHaveBeenCalled();
+      expect(respond.mock.calls[0][0].text).toMatch(/존재하지 않/);
+    });
+
+    it('fails closed with an ephemeral when trigger_id is missing', async () => {
+      await handler.handleAction(makeDeleteBody({ triggerId: null }), respond, client);
+      expect(viewsOpen).not.toHaveBeenCalled();
+      expect(respond.mock.calls[0][0].text).toMatch(/trigger/i);
+    });
+  });
+
+  // ---------- rename (overflow option, kind=rename) — issue #774 ----------
+
+  describe('rename (overflow option)', () => {
+    const makeRenameBody = (overrides: { userId?: string; triggerId?: string | null } = {}) => ({
+      actions: [
+        {
+          type: 'overflow',
+          selected_option: {
+            value: JSON.stringify({
+              kind: 'user_skill_rename',
+              skillName: 'a',
+              requesterId: 'U1',
+            }),
+          },
+        },
+      ],
+      user: { id: overrides.userId ?? 'U1' },
+      channel: { id: 'C1' },
+      message: { ts: 'msg-ts', thread_ts: 'thread-ts' },
+      trigger_id: overrides.triggerId === null ? undefined : (overrides.triggerId ?? 'trig-1'),
+    });
+
+    it('opens the rename modal pre-filled with the current name', async () => {
+      await handler.handleAction(makeRenameBody(), respond, client);
+
+      expect(viewsOpen).toHaveBeenCalledTimes(1);
+      const view = viewsOpen.mock.calls[0][0].view;
+      expect(view.callback_id).toBe('user_skill_rename_modal_submit');
+      const meta = JSON.parse(view.private_metadata);
+      expect(meta).toMatchObject({ requesterId: 'U1', skillName: 'a', channelId: 'C1' });
+      // Input must pre-fill with the current name so a small edit
+      // (e.g. typo fix) doesn't require retyping.
+      const input = view.blocks.find((b: any) => b.type === 'input');
+      expect(input.element.initial_value).toBe('a');
+    });
+
+    it('rejects rename when clicker !== requester', async () => {
+      await handler.handleAction(makeRenameBody({ userId: 'U-other' }), respond, client);
+      expect(viewsOpen).not.toHaveBeenCalled();
+    });
+
+    it('fails closed when the skill no longer exists', async () => {
+      vi.mocked(userSkillStore.userSkillExists).mockReturnValue(false);
+      await handler.handleAction(makeRenameBody(), respond, client);
+      expect(viewsOpen).not.toHaveBeenCalled();
+      expect(respond.mock.calls[0][0].text).toMatch(/존재하지 않/);
+    });
+  });
+
+  // ---------- share (overflow option, kind=share) — issue #774 ----------
+
+  describe('share (overflow option)', () => {
+    const makeShareBody = (overrides: { userId?: string } = {}) => ({
+      actions: [
+        {
+          type: 'overflow',
+          selected_option: {
+            value: JSON.stringify({
+              kind: 'user_skill_share',
+              skillName: 'a',
+              requesterId: 'U1',
+            }),
+          },
+        },
+      ],
+      user: { id: overrides.userId ?? 'U1' },
+      channel: { id: 'C1' },
+      message: { ts: 'msg-ts', thread_ts: 'thread-ts' },
+      trigger_id: 'trig-1',
+    });
+
+    it('posts an ephemeral with a four-backtick fenced SKILL.md (so triple-backtick examples round-trip)', async () => {
+      const skillBody = ['---', 'name: a', '---', '', '```python', 'print("inner fence")', '```'].join('\n');
+      vi.mocked(userSkillStore.shareUserSkill).mockReturnValue({
+        ok: true,
+        message: 'ok',
+        content: skillBody,
+      });
+
+      await handler.handleAction(makeShareBody(), respond, client);
+
+      expect(respond).toHaveBeenCalledTimes(1);
+      const arg = respond.mock.calls[0][0];
+      expect(arg.response_type).toBe('ephemeral');
+      // Four-backtick fence is what the plan calls out so SKILL.md content
+      // containing triple backticks (e.g. inline code examples) does NOT
+      // chop the share message at the first inner fence.
+      expect(arg.text).toContain('````');
+      expect(arg.text).toContain('print("inner fence")');
+      // The fence must wrap the body — count outer fences == 2.
+      const fenceCount = (arg.text.match(/^````$/gm) || []).length;
+      expect(fenceCount).toBe(2);
+      // Read-only — no views.open, no message update, no re-injection.
+      expect(viewsOpen).not.toHaveBeenCalled();
+      expect(slackApi.updateMessage).not.toHaveBeenCalled();
+      expect(messageHandler).not.toHaveBeenCalled();
+    });
+
+    it('reports an ephemeral error when shareUserSkill fails (storage layer)', async () => {
+      vi.mocked(userSkillStore.shareUserSkill).mockReturnValue({
+        ok: false,
+        message: 'Skill "a" not found.',
+      });
+
+      await handler.handleAction(makeShareBody(), respond, client);
+
+      expect(respond).toHaveBeenCalledTimes(1);
+      expect(respond.mock.calls[0][0].text).toContain('not found');
+    });
+
+    it('reports an over-limit ephemeral when SKILL.md exceeds the share cap', async () => {
+      // SHARE_CONTENT_CHAR_LIMIT === 2500 (skill-share-errors.ts).
+      const oversized = 'x'.repeat(2501);
+      vi.mocked(userSkillStore.shareUserSkill).mockReturnValue({
+        ok: true,
+        message: 'ok',
+        content: oversized,
+      });
+
+      await handler.handleAction(makeShareBody(), respond, client);
+
+      expect(respond).toHaveBeenCalledTimes(1);
+      expect(respond.mock.calls[0][0].text).toMatch(/exceeds share limit|2500/);
+      // The over-limit branch must NOT leak the body — ephemeral text should
+      // not contain the giant payload.
+      expect(respond.mock.calls[0][0].text).not.toContain('xxxxx'.repeat(100));
+    });
+
+    it('rejects share when clicker !== requester', async () => {
+      vi.mocked(userSkillStore.shareUserSkill).mockReturnValue({
+        ok: true,
+        message: 'ok',
+        content: 'body',
+      });
+
+      await handler.handleAction(makeShareBody({ userId: 'U-other' }), respond, client);
+
+      // Requester guard fires first → ephemeral, no shareUserSkill call.
+      expect(userSkillStore.shareUserSkill).not.toHaveBeenCalled();
+      expect(respond.mock.calls[0][0].response_type).toBe('ephemeral');
+    });
+  });
 });

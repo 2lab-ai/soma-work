@@ -6,7 +6,15 @@ import './env-paths';
 import { registerMemoryStore, registerSkillStore } from 'somalib/model-commands/catalog';
 import * as userMemoryStore from './user-memory-store';
 import { setSettingsPromptInvalidationHook } from './user-settings-store';
-import { createUserSkill, deleteUserSkill, listUserSkills, shareUserSkill, updateUserSkill } from './user-skill-store';
+import {
+  createUserSkill,
+  deleteUserSkill,
+  listUserSkills,
+  renameUserSkill,
+  setSkillPromptInvalidationHook,
+  shareUserSkill,
+  updateUserSkill,
+} from './user-skill-store';
 
 registerMemoryStore(userMemoryStore);
 registerSkillStore({
@@ -15,6 +23,7 @@ registerSkillStore({
   updateSkill: updateUserSkill,
   deleteSkill: deleteUserSkill,
   shareSkill: shareUserSkill,
+  renameSkill: renameUserSkill,
 });
 
 import { App } from '@slack/bolt';
@@ -349,9 +358,10 @@ async function start() {
     setDashboardSessionAccessor(() => claudeHandler.getAllSessions());
     claudeHandler.getSessionRegistry().setActivityStateChangeCallback(() => broadcastSessionUpdate());
 
-    // user-memory-store and user-settings-store mutate SSOT fields that
-    // feed the cached system prompt but live outside the stream-executor
-    // reset points. Injecting the registry here avoids a cyclic import.
+    // user-memory-store, user-settings-store, AND user-skill-store mutate
+    // SSOT fields that feed the cached system prompt but live outside the
+    // stream-executor reset points. Injecting the registry here avoids a
+    // cyclic import.
     {
       const registry = claudeHandler.getSessionRegistry();
       const invalidate = (userId: string): void => {
@@ -359,6 +369,10 @@ async function start() {
       };
       userMemoryStore.setMemoryPromptInvalidationHook(invalidate);
       setSettingsPromptInvalidationHook(invalidate);
+      // Personal skills are injected into every system prompt by
+      // `prompt-builder.ts`, so create/update/delete/rename mutations must
+      // also drop cached snapshots for the affected user. (#774)
+      setSkillPromptInvalidationHook(invalidate);
     }
 
     // Connect dashboard: task accessor (resolve sessionKey → sessionId for TodoManager)
