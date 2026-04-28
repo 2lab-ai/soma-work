@@ -1,5 +1,7 @@
 import type {
   SaveContextResultPayload,
+  SessionInstructionOperation,
+  SessionInstructionStatus,
   SessionLink,
   SessionResourceOperation,
   SessionResourceType,
@@ -306,9 +308,26 @@ function parseUpdateSessionRequest(
     }
   }
 
-  // Must have at least one of operations or title
-  if (operations.length === 0 && !title) {
-    return invalidArgs('UPDATE_SESSION requires operations or title');
+  // Lifecycle (instruction) operations are gated for user y/n in the host;
+  // validator MUST forward them to the dispatcher (PR2 P0-1, #755). Pre-fix
+  // the validator silently dropped this field AND rejected requests carrying
+  // only instructionOperations — which made pure lifecycle requests
+  // (link/cancel/rename) unreachable.
+  const rawInstructionOps = raw.instructionOperations;
+  const instructionOperations: SessionInstructionOperation[] = [];
+  if (Array.isArray(rawInstructionOps) && rawInstructionOps.length > 0) {
+    for (const entry of rawInstructionOps) {
+      const parsed = parseSessionInstructionOperation(entry);
+      if (!parsed.ok) {
+        return parsed;
+      }
+      instructionOperations.push(parsed.value);
+    }
+  }
+
+  // Must have at least one of operations, title, or instructionOperations
+  if (operations.length === 0 && !title && instructionOperations.length === 0) {
+    return invalidArgs('UPDATE_SESSION requires operations, title, or instructionOperations');
   }
 
   const expectedSequence = raw.expectedSequence;
@@ -322,8 +341,112 @@ function parseUpdateSessionRequest(
       expectedSequence: expectedSequence as number | undefined,
       operations,
       ...(title ? { title } : {}),
+      ...(instructionOperations.length > 0 ? { instructionOperations } : {}),
     },
   };
+}
+
+const SEALED_LIFECYCLE_ACTIONS = ['add', 'link', 'complete', 'cancel', 'rename'] as const;
+const LEGACY_LIFECYCLE_ACTIONS = ['remove', 'clear', 'setStatus'] as const;
+const ALL_LIFECYCLE_ACTIONS: readonly string[] = [
+  ...SEALED_LIFECYCLE_ACTIONS,
+  ...LEGACY_LIFECYCLE_ACTIONS,
+];
+const INSTRUCTION_STATUSES: SessionInstructionStatus[] = ['active', 'completed', 'cancelled'];
+
+function parseSessionInstructionOperation(
+  raw: unknown,
+): { ok: true; value: SessionInstructionOperation } | { ok: false; error: ModelCommandError } {
+  if (!isRecord(raw)) {
+    return invalidArgs('UPDATE_SESSION instructionOperation must be an object');
+  }
+  const action = raw.action;
+  if (typeof action !== 'string' || !ALL_LIFECYCLE_ACTIONS.includes(action)) {
+    return invalidArgs(
+      `Unsupported instructionOperation action: ${String(action)} ` +
+        `(allowed: ${ALL_LIFECYCLE_ACTIONS.join('|')})`,
+    );
+  }
+
+  if (action === 'add') {
+    if (typeof raw.text !== 'string' || raw.text.trim() === '') {
+      return invalidArgs('instructionOperation add requires non-empty text');
+    }
+    return {
+      ok: true,
+      value: {
+        action: 'add',
+        text: raw.text,
+        ...(typeof raw.source === 'string' ? { source: raw.source } : {}),
+      },
+    };
+  }
+
+  if (action === 'remove') {
+    if (typeof raw.id !== 'string' || raw.id === '') {
+      return invalidArgs('instructionOperation remove requires id');
+    }
+    return { ok: true, value: { action: 'remove', id: raw.id } };
+  }
+
+  if (action === 'clear') {
+    return { ok: true, value: { action: 'clear' } };
+  }
+
+  if (action === 'complete') {
+    if (typeof raw.id !== 'string' || raw.id === '') {
+      return invalidArgs('instructionOperation complete requires id');
+    }
+    if (typeof raw.evidence !== 'string') {
+      return invalidArgs('instructionOperation complete requires evidence string');
+    }
+    return { ok: true, value: { action: 'complete', id: raw.id, evidence: raw.evidence } };
+  }
+
+  if (action === 'setStatus') {
+    if (typeof raw.id !== 'string' || raw.id === '') {
+      return invalidArgs('instructionOperation setStatus requires id');
+    }
+    if (!INSTRUCTION_STATUSES.includes(raw.status as SessionInstructionStatus)) {
+      return invalidArgs(
+        `instructionOperation setStatus requires status in ${INSTRUCTION_STATUSES.join('|')}`,
+      );
+    }
+    return {
+      ok: true,
+      value: {
+        action: 'setStatus',
+        id: raw.id,
+        status: raw.status as SessionInstructionStatus,
+      },
+    };
+  }
+
+  if (action === 'link') {
+    if (typeof raw.id !== 'string' || raw.id === '') {
+      return invalidArgs('instructionOperation link requires id');
+    }
+    if (typeof raw.sessionKey !== 'string' || raw.sessionKey === '') {
+      return invalidArgs('instructionOperation link requires sessionKey');
+    }
+    return { ok: true, value: { action: 'link', id: raw.id, sessionKey: raw.sessionKey } };
+  }
+
+  if (action === 'cancel') {
+    if (typeof raw.id !== 'string' || raw.id === '') {
+      return invalidArgs('instructionOperation cancel requires id');
+    }
+    return { ok: true, value: { action: 'cancel', id: raw.id } };
+  }
+
+  // action === 'rename'
+  if (typeof raw.id !== 'string' || raw.id === '') {
+    return invalidArgs('instructionOperation rename requires id');
+  }
+  if (typeof raw.text !== 'string' || raw.text.trim() === '') {
+    return invalidArgs('instructionOperation rename requires non-empty text');
+  }
+  return { ok: true, value: { action: 'rename', id: raw.id, text: raw.text } };
 }
 
 function parseSessionOperation(
