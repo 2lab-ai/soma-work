@@ -726,8 +726,9 @@ describe('CctHandler — cct auto (#749)', () => {
     const { CctHandler } = await loadHandlerForAuto({
       outcome: {
         kind: 'rotated',
-        from: { keyId: 'k1', name: 'old', fiveHourUtilization: 0.4, sevenDayUtilization: 0.5 },
-        to: candidate({ name: 'new', fiveHour: 0.8, sevenDay: 0.6 }),
+        // Per #701 + #778, utilization is percent form (0..100).
+        from: { keyId: 'k1', name: 'old', fiveHourUtilization: 40, sevenDayUtilization: 50 },
+        to: candidate({ name: 'new', fiveHour: 80, sevenDay: 60 }),
         debug: emptyDebug(),
       },
     });
@@ -735,7 +736,7 @@ describe('CctHandler — cct auto (#749)', () => {
     await new CctHandler().execute({ user: adminUser, channel: 'C', threadTs: 'T', text: 'cct auto', say: say.fn });
     const t = say.calls[0].text;
     expect(t).toContain(':repeat: Auto-rotated *old* → *new*');
-    expect(t).toContain('80.0%'); // pct(0.8) pin
+    expect(t).toContain('80.0%'); // pct(80) pin
     expect(t).toContain('60.0%');
     expect(t).toMatch(/7d resets/);
   });
@@ -746,7 +747,7 @@ describe('CctHandler — cct auto (#749)', () => {
       outcome: {
         kind: 'rotated',
         from: null,
-        to: candidate({ name: 'first', fiveHour: 0.1, sevenDay: 0.2 }),
+        to: candidate({ name: 'first', fiveHour: 10, sevenDay: 20 }),
         debug: emptyDebug(),
       },
     });
@@ -871,7 +872,7 @@ describe('CctHandler — cct auto (#749)', () => {
         kind: 'dry-run',
         would: 'rotate',
         from: { keyId: 'k1', name: 'cur' },
-        to: candidate({ name: 'best', fiveHour: 0.3, sevenDay: 0.4 }),
+        to: candidate({ name: 'best', fiveHour: 30, sevenDay: 40 }),
         debug: emptyDebug(),
       },
     });
@@ -889,7 +890,7 @@ describe('CctHandler — cct auto (#749)', () => {
         kind: 'dry-run',
         would: 'rotate',
         from: null,
-        to: candidate({ name: 'first', fiveHour: 0.1, sevenDay: 0.1 }),
+        to: candidate({ name: 'first', fiveHour: 10, sevenDay: 10 }),
         debug: emptyDebug(),
       },
     });
@@ -905,7 +906,7 @@ describe('CctHandler — cct auto (#749)', () => {
         kind: 'dry-run',
         would: 'noop',
         from: { keyId: 'k1', name: 'cur' },
-        to: candidate({ name: 'cur', fiveHour: 0.4, sevenDay: 0.5 }),
+        to: candidate({ name: 'cur', fiveHour: 40, sevenDay: 50 }),
         debug: emptyDebug(),
       },
     });
@@ -976,7 +977,7 @@ describe('CctHandler — cct auto (#749)', () => {
         kind: 'dry-run',
         would: 'noop',
         from: { keyId: 'k1', name: 'cur' },
-        to: candidate({ name: 'cur', fiveHour: 0.4, sevenDay: 0.5 }),
+        to: candidate({ name: 'cur', fiveHour: 40, sevenDay: 50 }),
         debug: emptyDebug(),
       },
     });
@@ -990,13 +991,14 @@ describe('CctHandler — cct auto (#749)', () => {
     expect(m2.mock.calls[0][1].dryRun).toBe(true);
   });
 
-  // ── 18: pct formatter pin — 0.8 → "80.0%", undefined → "—" ────────
-  it('pct formatter pin: 0.8 → "80.0%", undefined → "—"', async () => {
+  // ── 18: pct formatter pin — 80 → "80.0%", undefined → "—" ─────────
+  // Per #701 + #778, pct() input is percent form (0..100), so 80 → "80.0%".
+  it('pct formatter pin: 80 → "80.0%", undefined → "—"', async () => {
     const { CctHandler } = await loadHandlerForAuto({
       outcome: {
         kind: 'rotated',
         from: { keyId: 'k1', name: 'old', fiveHourUtilization: undefined, sevenDayUtilization: undefined },
-        to: candidate({ name: 'new', fiveHour: 0.8, sevenDay: undefined }),
+        to: candidate({ name: 'new', fiveHour: 80, sevenDay: undefined }),
         debug: emptyDebug(),
       },
     });
@@ -1019,7 +1021,7 @@ describe('CctHandler — cct auto (#749)', () => {
       outcome: {
         kind: 'rotated',
         from: { keyId: 'k1', name: 'old' },
-        to: candidate({ name: 'new', fiveHour: 0.5, sevenDay: 0.5 }),
+        to: candidate({ name: 'new', fiveHour: 50, sevenDay: 50 }),
         debug: emptyDebug(),
       },
     });
@@ -1041,7 +1043,8 @@ describe('CctHandler — cct auto (#749)', () => {
 function emptyDebug(): import('../../../oauth/auto-rotate').RotationDebug {
   return {
     evaluatedAt: '2026-04-27T00:00:00.000Z',
-    thresholds: { fiveHourMax: 0.8, sevenDayMax: 0.9 },
+    // Per #701 + #778, thresholds are percent form (0..100).
+    thresholds: { fiveHourMax: 80, sevenDayMax: 90 },
     activeKeyId: undefined,
     candidates: [],
     rejected: [],

@@ -91,34 +91,53 @@ export function parsePositiveIntEnv(name: string, fallback: number, minimum: num
 }
 
 /**
- * Defensive parser for unit-interval (0..1) ENV knobs (#737). Fallback when
- * unset / empty / non-numeric / out-of-range. Clamps to `[minimum, maximum]`
- * with a warn so an operator typo (`AUTO_ROTATE_FIVEH_THRESHOLD=80` instead
- * of `0.8`) doesn't silently disable the threshold by always-passing.
+ * Defensive parser for percent (0..100) ENV knobs (#737, units realigned by
+ * #778). Fallback when unset / empty / non-numeric. Clamps out-of-range
+ * values to `[minimum, maximum]` with a warn.
  *
- * Inclusive bounds — the spec wording is "≤ 80%", which matches `<=` in the
- * comparator, so 0.8 must remain a valid threshold.
+ * Backwards-compatibility migration (#778):
+ *   Before #701, `usage.*.utilization` and these thresholds were stored in
+ *   fraction form (0..1). Operators may still have
+ *   `AUTO_ROTATE_FIVEH_THRESHOLD=0.8` set in their env from that era. To
+ *   avoid silently rejecting every healthy slot (the original #778 bug),
+ *   any value satisfying `0 < n <= 1` is auto-migrated to `n * 100` and a
+ *   one-shot warn references #778 so operators know to update the env.
+ *   `n === 0` is taken at face value (no migration). Ambiguity at the
+ *   exact boundary `n === 1` is resolved as legacy fraction → 100, since
+ *   "1%" as a percent threshold would itself reject every healthy slot
+ *   and is the less plausible operator intent.
+ *
+ * Inclusive bounds — the spec wording is "≤ 80%", which matches `<=` in
+ * the comparator, so `80` must remain a valid threshold.
  *
  * @internal exported for unit tests; runtime consumers should read
  *           `config.autoRotate.*` instead.
  */
-export function parseUnitIntervalEnv(name: string, fallback: number, minimum: number = 0, maximum: number = 1): number {
+export function parsePercentEnv(name: string, fallback: number, minimum: number = 0, maximum: number = 100): number {
   const raw = process.env[name];
   if (raw === undefined || raw === '') return fallback;
   const n = Number(raw);
   if (!Number.isFinite(n)) {
-    logger.warn(`${name}="${raw}" invalid (expected number 0..1); falling back to ${fallback}`);
+    logger.warn(`${name}="${raw}" invalid (expected number 0..100); falling back to ${fallback}`);
     return fallback;
   }
-  if (n < minimum) {
+  // Legacy fraction-form auto-migration. See #778.
+  let value = n;
+  if (n > 0 && n <= 1) {
+    value = n * 100;
+    logger.warn(
+      `${name}="${raw}" looks like legacy fraction form (0..1); auto-migrating to ${value} (percent). Update your env to avoid this warning. See #778.`,
+    );
+  }
+  if (value < minimum) {
     logger.warn(`${name}="${raw}" below minimum ${minimum}; clamping to ${minimum}`);
     return minimum;
   }
-  if (n > maximum) {
+  if (value > maximum) {
     logger.warn(`${name}="${raw}" above maximum ${maximum}; clamping to ${maximum}`);
     return maximum;
   }
-  return n;
+  return value;
 }
 
 export const config = {
@@ -255,7 +274,8 @@ export const config = {
    * (the hook never fires); explicitly disable via
    * `AUTO_ROTATE_ENABLED=0` to keep the refresh tick but skip rotation.
    *
-   * Thresholds are inclusive upper bounds on usage utilisation (0..1).
+   * Thresholds are inclusive upper bounds on usage utilisation in
+   * percent form (0..100, per #701; see `parsePercentEnv` and #778).
    * Defaults match the user spec verbatim: 5h ≤ 80%, 7d ≤ 90%.
    */
   autoRotate: {
@@ -268,10 +288,10 @@ export const config = {
      * letting it actually flip the active slot.
      */
     dryRun: process.env.AUTO_ROTATE_DRY_RUN === '1',
-    /** 5h utilisation upper bound. Default 0.8 (80%). */
-    fiveHourMax: parseUnitIntervalEnv('AUTO_ROTATE_FIVEH_THRESHOLD', 0.8),
-    /** 7d utilisation upper bound. Default 0.9 (90%). */
-    sevenDayMax: parseUnitIntervalEnv('AUTO_ROTATE_SEVEND_THRESHOLD', 0.9),
+    /** 5h utilisation upper bound, percent form. Default 80. */
+    fiveHourMax: parsePercentEnv('AUTO_ROTATE_FIVEH_THRESHOLD', 80),
+    /** 7d utilisation upper bound, percent form. Default 90. */
+    sevenDayMax: parsePercentEnv('AUTO_ROTATE_SEVEND_THRESHOLD', 90),
   },
   /**
    * CCT slot card v2 (#668 follow-up) — optional GET /api/oauth/profile

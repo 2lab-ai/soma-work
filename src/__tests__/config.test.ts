@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { parseBool, parseFiveBlockPhase, parsePositiveIntEnv, parseUnitIntervalEnv } from '../config';
+import { parseBool, parseFiveBlockPhase, parsePercentEnv, parsePositiveIntEnv } from '../config';
 
 // Silence the warn path; we're testing the fallback value, not the log side-effect.
 vi.mock('../logger', () => ({
@@ -130,14 +130,17 @@ describe('parsePositiveIntEnv (#641 M1-S1)', () => {
   });
 });
 
-// #737 — `parseUnitIntervalEnv` gates `AUTO_ROTATE_FIVEH_THRESHOLD` and
-// `AUTO_ROTATE_SEVEND_THRESHOLD`. Two foot-guns to defend against:
-//   - operator types `80` instead of `0.8` → clamp to 1.0, NOT silently
-//     accept 80 as "always passes".
-//   - operator types `-0.5` → clamp to 0.0, NOT fallback (we want a known
-//     conservative threshold even from a typo).
-describe('parseUnitIntervalEnv (#737)', () => {
-  const ENV_NAME = 'TEST_UNIT_INTERVAL_ENV';
+// #737 + #778 — `parsePercentEnv` gates `AUTO_ROTATE_FIVEH_THRESHOLD` and
+// `AUTO_ROTATE_SEVEND_THRESHOLD`. Per #701, both `usage.*.utilization` and
+// these thresholds are stored in percent form (0..100). #778 also added a
+// backwards-compat auto-migration for legacy fraction-form env values
+// (0 < n <= 1) so deployments that still ship `AUTO_ROTATE_FIVEH_THRESHOLD=0.8`
+// don't reject every healthy slot. Foot-guns to defend against:
+//   - operator types `200` (above 100) → clamp to 100, not "always passes"
+//   - operator types `-1` → clamp to 0
+//   - legacy fraction form (0.8) → auto-scale to 80 + warn (#778)
+describe('parsePercentEnv (#737 + #778)', () => {
+  const ENV_NAME = 'TEST_PERCENT_ENV';
   beforeEach(() => {
     delete process.env[ENV_NAME];
   });
@@ -146,56 +149,89 @@ describe('parseUnitIntervalEnv (#737)', () => {
   });
 
   it('undefined env → fallback', () => {
-    expect(parseUnitIntervalEnv(ENV_NAME, 0.8)).toBe(0.8);
+    expect(parsePercentEnv(ENV_NAME, 80)).toBe(80);
   });
 
   it('empty-string env → fallback', () => {
     process.env[ENV_NAME] = '';
-    expect(parseUnitIntervalEnv(ENV_NAME, 0.9)).toBe(0.9);
+    expect(parsePercentEnv(ENV_NAME, 90)).toBe(90);
   });
 
   it('non-numeric → fallback', () => {
     process.env[ENV_NAME] = 'eighty';
-    expect(parseUnitIntervalEnv(ENV_NAME, 0.8)).toBe(0.8);
+    expect(parsePercentEnv(ENV_NAME, 80)).toBe(80);
   });
 
   it('NaN literal → fallback', () => {
     process.env[ENV_NAME] = 'NaN';
-    expect(parseUnitIntervalEnv(ENV_NAME, 0.5)).toBe(0.5);
+    expect(parsePercentEnv(ENV_NAME, 50)).toBe(50);
   });
 
   it('value above maximum → clamp to maximum (NOT fallback)', () => {
-    // Operator typo: `AUTO_ROTATE_FIVEH_THRESHOLD=80` instead of `0.8`.
-    // Clamping to 1.0 is safer than the fallback (0.8) because at least
-    // the warn log will tell the operator something is off.
-    process.env[ENV_NAME] = '80';
-    expect(parseUnitIntervalEnv(ENV_NAME, 0.8)).toBe(1);
+    // Operator typo: `AUTO_ROTATE_FIVEH_THRESHOLD=150` rather than `80`.
+    // Clamping at 100 is safer than fallback because at least the warn
+    // log will tell the operator something is off.
+    process.env[ENV_NAME] = '150';
+    expect(parsePercentEnv(ENV_NAME, 80)).toBe(100);
   });
 
   it('value below minimum → clamp to minimum', () => {
-    process.env[ENV_NAME] = '-0.5';
-    expect(parseUnitIntervalEnv(ENV_NAME, 0.8)).toBe(0);
+    process.env[ENV_NAME] = '-1';
+    expect(parsePercentEnv(ENV_NAME, 80)).toBe(0);
   });
 
   it('boundary values pass through (inclusive)', () => {
     process.env[ENV_NAME] = '0';
-    expect(parseUnitIntervalEnv(ENV_NAME, 0.8)).toBe(0);
-    process.env[ENV_NAME] = '1';
-    expect(parseUnitIntervalEnv(ENV_NAME, 0.8)).toBe(1);
+    expect(parsePercentEnv(ENV_NAME, 80)).toBe(0);
+    // 100 is the upper boundary in percent form; passes through.
+    process.env[ENV_NAME] = '100';
+    expect(parsePercentEnv(ENV_NAME, 80)).toBe(100);
   });
 
-  it('typical decimal value passes through', () => {
-    process.env[ENV_NAME] = '0.85';
-    expect(parseUnitIntervalEnv(ENV_NAME, 0.8)).toBe(0.85);
+  it('typical percent value passes through', () => {
+    process.env[ENV_NAME] = '85';
+    expect(parsePercentEnv(ENV_NAME, 80)).toBe(85);
   });
 
-  it('Infinity → clamp to maximum (1)', () => {
+  it('Infinity → fallback (Number.isFinite(Infinity) is false)', () => {
     process.env[ENV_NAME] = 'Infinity';
-    // Number('Infinity') is finite-ish per Number.isFinite? Actually no:
-    // Number.isFinite(Infinity) === false → falls through to fallback path.
-    // Lock either behaviour explicitly.
-    const r = parseUnitIntervalEnv(ENV_NAME, 0.8);
-    expect(r).toBe(0.8); // fallback path because Number.isFinite(Infinity) is false
+    expect(parsePercentEnv(ENV_NAME, 80)).toBe(80);
+  });
+
+  // ── #778 backwards-compat migration: legacy fraction (0..1] auto-scales ──
+
+  it('#778 migration: legacy fraction 0.8 auto-scales to 80', () => {
+    process.env[ENV_NAME] = '0.8';
+    expect(parsePercentEnv(ENV_NAME, 80)).toBe(80);
+  });
+
+  it('#778 migration: legacy fraction 0.9 auto-scales to 90', () => {
+    process.env[ENV_NAME] = '0.9';
+    expect(parsePercentEnv(ENV_NAME, 80)).toBe(90);
+  });
+
+  it('#778 migration: ambiguous boundary 1 resolves to 100 (legacy fraction interpretation)', () => {
+    // The exact boundary value `1` is ambiguous (could be percent "1%" or
+    // fraction "100%"). #778 documents the resolution: prefer the legacy
+    // fraction interpretation, since "1%" as a threshold would itself
+    // reject every healthy slot (the very bug we are fixing).
+    process.env[ENV_NAME] = '1';
+    expect(parsePercentEnv(ENV_NAME, 80)).toBe(100);
+  });
+
+  it('#778 migration: 0 is taken at face value (no scaling, no warn)', () => {
+    process.env[ENV_NAME] = '0';
+    expect(parsePercentEnv(ENV_NAME, 80)).toBe(0);
+  });
+
+  it('#778 migration: 0.5 auto-scales to 50', () => {
+    process.env[ENV_NAME] = '0.5';
+    expect(parsePercentEnv(ENV_NAME, 80)).toBe(50);
+  });
+
+  it('#778 migration: 80 (already percent) passes through unchanged', () => {
+    process.env[ENV_NAME] = '80';
+    expect(parsePercentEnv(ENV_NAME, 80)).toBe(80);
   });
 });
 
