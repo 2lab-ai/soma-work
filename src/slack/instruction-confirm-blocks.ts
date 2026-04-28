@@ -24,6 +24,11 @@ const ACTION_LABELS: Record<SessionInstructionOperation['action'], string> = {
   clear: 'Clear all instructions',
   complete: 'Mark instruction completed',
   setStatus: 'Change instruction status',
+  // Sealed 5-op lifecycle vocabulary (#755) — link/cancel/rename complete the
+  // model→host op alphabet for user-confirmable instruction state changes.
+  link: 'Link instruction to this session',
+  cancel: 'Cancel instruction',
+  rename: 'Rename instruction',
 };
 
 function summariseOp(op: SessionInstructionOperation): string {
@@ -39,6 +44,12 @@ function summariseOp(op: SessionInstructionOperation): string {
       return `*${label}*: \`${op.id}\` — evidence: “${truncate(op.evidence, 200)}”`;
     case 'setStatus':
       return `*${label}*: \`${op.id}\` → \`${op.status}\``;
+    case 'link':
+      return `*${label}*: \`${op.id}\` ↔ \`${op.sessionKey}\``;
+    case 'cancel':
+      return `*${label}*: \`${op.id}\``;
+    case 'rename':
+      return `*${label}*: \`${op.id}\` → “${truncate(op.text, 200)}”`;
     default:
       return `*Unknown operation*: ${JSON.stringify(op)}`;
   }

@@ -1072,6 +1072,51 @@ export function applyInstructionOperations(
         entry.cancelledAt = undefined;
       }
       changed = true;
+      continue;
+    }
+
+    // Sealed 5-op lifecycle vocabulary (#755 / #727).
+    //
+    // `link` / `cancel` / `rename` are user-authorised state transitions —
+    // catalog-side mutations are field-level only; the lifecycleEvents push
+    // (state='confirmed' / 'rejected' / 'superseded') happens in the
+    // SessionRegistry transaction layer that wraps this call.
+
+    if (op.action === 'link') {
+      if (!op.id || !op.sessionKey) continue;
+      const entry = instructions.find((i) => i.id === op.id);
+      if (!entry) continue;
+      if (entry.linkedSessionIds.includes(op.sessionKey)) continue;
+      entry.linkedSessionIds.push(op.sessionKey);
+      changed = true;
+      continue;
+    }
+
+    if (op.action === 'cancel') {
+      if (!op.id) continue;
+      const entry = instructions.find((i) => i.id === op.id);
+      if (!entry) continue;
+      if (entry.status === 'cancelled') continue;
+      entry.status = 'cancelled';
+      entry.cancelledAt = entry.cancelledAt ?? new Date().toISOString();
+      // Cancel is first-class (Q3) — do NOT collapse into completed.
+      entry.completedAt = undefined;
+      changed = true;
+      continue;
+    }
+
+    if (op.action === 'rename') {
+      if (!op.id) continue;
+      const trimmed = typeof op.text === 'string' ? op.text.trim() : '';
+      if (trimmed.length === 0) continue;
+      const entry = instructions.find((i) => i.id === op.id);
+      if (!entry) continue;
+      if (entry.text === trimmed) continue;
+      // Rename is text-only (Q5) — id, status, linkedSessionIds, source,
+      // sourceRawInputIds preserved.
+      entry.text = trimmed;
+      changed = true;
+      continue;
     }
   }
   return changed;
