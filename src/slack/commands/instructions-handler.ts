@@ -6,10 +6,11 @@ import type { CommandContext, CommandDependencies, CommandHandler, CommandResult
 // Slack has a practical limit of ~4000 chars per message text block.
 const MAX_OUTPUT_CHARS = 3800;
 const MAX_INITIAL_PREVIEW = 1000;
+// Sealed status set (#754): active | completed | cancelled.
 const STATUS_ICON: Record<SessionInstructionStatus, string> = {
   active: '🟢',
-  todo: '⏳',
   completed: '✅',
+  cancelled: '🚫',
 };
 
 export class InstructionsHandler implements CommandHandler {
@@ -54,20 +55,22 @@ export class InstructionsHandler implements CommandHandler {
     if (ssotInstructions.length > 0) {
       const grouped: Record<SessionInstructionStatus, SessionInstruction[]> = {
         active: [],
-        todo: [],
         completed: [],
+        cancelled: [],
       };
       for (const i of ssotInstructions) grouped[i.status ?? 'active'].push(i);
-      for (const status of ['active', 'todo', 'completed'] as SessionInstructionStatus[]) {
+      for (const status of ['active', 'cancelled', 'completed'] as SessionInstructionStatus[]) {
         const entries = grouped[status];
         if (entries.length === 0) continue;
         lines.push(`*${STATUS_ICON[status]} ${status} (${entries.length})*`);
         for (const i of entries) {
           const text = i.text.length > 200 ? `${i.text.slice(0, 200)}…` : i.text;
           const bullet = `• \`${i.id}\` — ${text}`;
-          const evidence = i.evidence ? `\n    _evidence:_ ${i.evidence.slice(0, 200)}` : '';
-          const completedAt = i.completedAt ? ` _(completed ${new Date(i.completedAt).toISOString()})_` : '';
-          lines.push(`${bullet}${completedAt}${evidence}`);
+          // Sealed shape (#727 P1-5): no `evidence` on the instruction row.
+          // The dashboard / drilldown surface reads completion evidence
+          // from the matching `lifecycleEvents` `op:'complete'` payload.
+          const completedAt = i.completedAt ? ` _(completed ${i.completedAt})_` : '';
+          lines.push(`${bullet}${completedAt}`);
         }
         lines.push('');
       }

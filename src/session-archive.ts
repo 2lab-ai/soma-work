@@ -57,6 +57,11 @@ export interface ArchivedSession {
   links?: SessionLinks;
   linkHistory?: SessionLinkHistory;
   instructions?: SessionInstruction[];
+  // Sealed pointer + history (#754). Preserved on archive so the dashboard
+  // archives view (#759) can render "what instruction was open when this
+  // session ended" without joining against the user master.
+  currentInstructionId?: string | null;
+  instructionHistory?: string[];
   mergeStats?: {
     totalLinesAdded: number;
     totalLinesDeleted: number;
@@ -133,6 +138,11 @@ function sessionToArchive(
     links: session.links ? JSON.parse(JSON.stringify(session.links)) : undefined,
     linkHistory: session.linkHistory ? JSON.parse(JSON.stringify(session.linkHistory)) : undefined,
     instructions: session.instructions ? JSON.parse(JSON.stringify(session.instructions)) : undefined,
+    // Sealed pointer + history snapshot (#754). currentInstructionId may be
+    // null (normal state) — preserve verbatim. instructionHistory is copied
+    // by spread to detach from the live array.
+    currentInstructionId: session.currentInstructionId === undefined ? null : session.currentInstructionId,
+    instructionHistory: Array.isArray(session.instructionHistory) ? [...session.instructionHistory] : [],
     mergeStats: session.mergeStats ? JSON.parse(JSON.stringify(session.mergeStats)) : undefined,
     usage: session.usage ? JSON.parse(JSON.stringify(session.usage)) : undefined,
 

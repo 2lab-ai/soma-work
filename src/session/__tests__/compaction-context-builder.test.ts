@@ -158,26 +158,55 @@ describe('snapshotFromSession', () => {
     expect((snapshot as any).usage).toBeUndefined();
   });
 
-  it('preserves SSOT instructions in the compaction block, grouped by status', () => {
+  it('preserves active + completed instructions in the compaction block; cancelled is dropped (PR1, TODO(#756))', () => {
+    // Sealed status set (#727 / #754): active | completed | cancelled. PR1
+    // is mechanical sealed-enum compatibility ONLY — cancelled rows are
+    // READ without crashing but MUST NOT be carried into compaction
+    // context. Surfacing cancelled state is owned by #756.
     const result = buildCompactionContext({
       ownerId: 'U1',
       title: 't',
       instructions: [
-        { id: 'c1', text: 'closed it', addedAt: 0, status: 'completed', completedAt: 1 },
-        { id: 'a1', text: 'active one', addedAt: 0, status: 'active' },
-        { id: 't1', text: 'todo one', addedAt: 0, status: 'todo' },
+        {
+          id: 'c1',
+          text: 'closed it',
+          createdAt: new Date(0).toISOString(),
+          source: 'model',
+          status: 'completed',
+          completedAt: new Date(1).toISOString(),
+          linkedSessionIds: [],
+          sourceRawInputIds: [],
+        },
+        {
+          id: 'a1',
+          text: 'active one',
+          createdAt: new Date(0).toISOString(),
+          source: 'model',
+          status: 'active',
+          linkedSessionIds: [],
+          sourceRawInputIds: [],
+        },
+        {
+          id: 'x1',
+          text: 'cancelled one',
+          createdAt: new Date(0).toISOString(),
+          source: 'model',
+          status: 'cancelled',
+          linkedSessionIds: [],
+          sourceRawInputIds: [],
+        },
       ],
     });
     expect(result).toContain('User instructions (SSOT):');
     const aIdx = result!.indexOf('[active]');
-    const tIdx = result!.indexOf('[todo]');
     const cIdx = result!.indexOf('[completed]');
     expect(aIdx).toBeGreaterThan(-1);
-    expect(tIdx).toBeGreaterThan(aIdx);
-    expect(cIdx).toBeGreaterThan(tIdx);
+    expect(cIdx).toBeGreaterThan(aIdx);
     expect(result).toContain('active one');
-    expect(result).toContain('todo one');
     expect(result).toContain('closed it');
+    // PR1: cancelled is intentionally dropped.
+    expect(result).not.toContain('[cancelled]');
+    expect(result).not.toContain('cancelled one');
   });
 
   it('snapshotFromSession carries instructions through', () => {
@@ -187,7 +216,17 @@ describe('snapshotFromSession', () => {
       channelId: 'C',
       isActive: true,
       lastActivity: new Date(),
-      instructions: [{ id: 'x', text: 'one', addedAt: 0, status: 'active' as const }],
+      instructions: [
+        {
+          id: 'x',
+          text: 'one',
+          createdAt: new Date(0).toISOString(),
+          source: 'model' as const,
+          status: 'active' as const,
+          linkedSessionIds: [],
+          sourceRawInputIds: [],
+        },
+      ],
     } as ConversationSession;
     const snapshot = snapshotFromSession(session);
     expect(snapshot.instructions).toHaveLength(1);

@@ -74,7 +74,17 @@ describe('SessionArchiveStore', () => {
       workflow: 'default',
       links: { issue: { url: 'https://github.com/issues/1', type: 'issue', provider: 'github', label: 'PTN-123' } },
       mergeStats: { totalLinesAdded: 100, totalLinesDeleted: 20, mergedPRs: [] },
-      instructions: [{ id: 'i1', text: 'Do X', addedAt: Date.now() }],
+      instructions: [
+        {
+          id: 'i1',
+          text: 'Do X',
+          createdAt: new Date().toISOString(),
+          source: 'model',
+          status: 'active',
+          linkedSessionIds: [],
+          sourceRawInputIds: [],
+        },
+      ],
     });
 
     store.archive(session, 'C0AK-123.456', 'terminated');

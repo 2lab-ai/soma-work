@@ -8,6 +8,7 @@ import * as path from 'path';
 import { applyInstructionOperations } from 'somalib/model-commands/catalog';
 import { decodeSlackEntities } from './dispatch-service';
 import { DATA_DIR } from './env-paths';
+import { mapLegacyInstructionStatus } from './legacy-instruction-status';
 import { Logger } from './logger';
 import { getMetricsEmitter } from './metrics/event-emitter';
 import { normalizeTmpPath } from './path-utils';
@@ -30,6 +31,7 @@ import type {
   SessionState,
   WorkflowType,
 } from './types';
+import { getUserSessionStore, UserSessionStoreCorruptError } from './user-session-store';
 import { coerceToAvailableModel, type EffortLevel, userSettingsStore } from './user-settings-store';
 
 const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
@@ -63,6 +65,66 @@ const ACTIVE_KEY_BY_RESOURCE: Record<SessionResourceType, keyof SessionLinks> = 
   pr: 'pr',
   doc: 'doc',
 };
+
+const VALID_SESSION_INSTRUCTION_SOURCES: ReadonlySet<SessionInstruction['source']> = new Set([
+  'model',
+  'user-manual-dashboard',
+  'migration',
+]);
+
+function epochToIsoOrNow(value: unknown, fallback: string): string {
+  if (typeof value === 'string' && value.length > 0) return value;
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+    try {
+      return new Date(value).toISOString();
+    } catch {
+      return fallback;
+    }
+  }
+  return fallback;
+}
+
+/**
+ * Migrate a single legacy `session.instructions[]` entry into the sealed
+ * shape (#727 / #754). Pre-#754 disk state used `addedAt: number` /
+ * free-form `source: string` / optional `linkedSessionIds` /
+ * `sourceRawInputIds`. The disk file is left intact — this is an in-memory
+ * normalization so the rest of the codebase only ever sees the sealed
+ * shape. The next save() naturally rewrites disk in the new shape.
+ */
+function migrateLegacySessionInstruction(raw: Record<string, unknown>, sessionKey: string): SessionInstruction {
+  const fallback = new Date().toISOString();
+  const status = mapLegacyInstructionStatus(raw.status as string | undefined);
+  const sourceRaw = typeof raw.source === 'string' ? raw.source : undefined;
+  const source: SessionInstruction['source'] =
+    sourceRaw && (VALID_SESSION_INSTRUCTION_SOURCES as ReadonlySet<string>).has(sourceRaw)
+      ? (sourceRaw as SessionInstruction['source'])
+      : 'migration';
+  const inst: SessionInstruction = {
+    id: typeof raw.id === 'string' ? raw.id : '',
+    text: typeof raw.text === 'string' ? raw.text : '',
+    createdAt: epochToIsoOrNow(raw.createdAt ?? raw.addedAt, fallback),
+    status,
+    source,
+    linkedSessionIds: Array.isArray(raw.linkedSessionIds)
+      ? (raw.linkedSessionIds as unknown[]).filter((x): x is string => typeof x === 'string')
+      : [sessionKey],
+    sourceRawInputIds: Array.isArray(raw.sourceRawInputIds)
+      ? (raw.sourceRawInputIds as Array<{ sessionKey?: unknown; rawInputId?: unknown }>).filter(
+          (e): e is { sessionKey: string; rawInputId: string } =>
+            !!e && typeof e === 'object' && typeof e.sessionKey === 'string' && typeof e.rawInputId === 'string',
+        )
+      : [],
+  };
+  if (status === 'completed') {
+    const completedAt = epochToIsoOrNow(raw.completedAt, inst.createdAt);
+    inst.completedAt = completedAt;
+  }
+  if (status === 'cancelled') {
+    inst.cancelledAt = epochToIsoOrNow(raw.cancelledAt, inst.createdAt);
+  }
+  return inst;
+}
 
 /**
  * Serialized session for file persistence
@@ -127,8 +189,19 @@ interface SerializedSession {
       mergedAt: number;
     }>;
   };
-  // User SSOT instructions (persisted)
+  // User SSOT instructions (persisted, legacy mirror — see types.ts).
   instructions?: SessionInstruction[];
+  /**
+   * Sealed pointer to the user-scope instruction this session points at
+   * (#754). `null` / `undefined` is normal — a session may be in a
+   * non-instruction turn (chat / question / clarification).
+   */
+  currentInstructionId?: string | null;
+  /**
+   * Sealed append-only list of every instruction id this session has ever
+   * pointed at (#754). Survives compact / restart.
+   */
+  instructionHistory?: string[];
   /**
    * Cached summary of completed instructions. Persisted so that
    * restart after a long session doesn't force a fresh summary re-build
@@ -1644,6 +1717,63 @@ export class SessionRegistry {
         // guards (#696/#697/#698) can consume it.
         if (session.sessionId || session.handoffContext) {
           this.ensureSessionLinkState(session);
+          // Sealed pointer invariant (#727 P0-1): before persisting, verify
+          // `currentInstructionId` resolves to an `active` instruction on
+          // the user's master doc. Bad pointers (unknown / completed /
+          // cancelled) are nulled out and a `state:'rejected'` audit event
+          // is appended to the user master, then the master is saved. The
+          // store call is wrapped because (a) the user-instruction store
+          // may be running in a test that hasn't initialized the data
+          // root, and (b) we never want a save-pointer guard to crash the
+          // entire `saveSessions()` write — the audit + null-out is the
+          // best-effort recovery, the host-side `assertCurrentPointerOk`
+          // remains the strict guard for new pointer assignments.
+          let pointerForDisk = session.currentInstructionId ?? null;
+          try {
+            if (session.currentInstructionId && session.ownerId) {
+              const store = getUserSessionStore();
+              const userDoc = store.load(session.ownerId);
+              const validated = store.assertSessionPointer(userDoc, key, session.currentInstructionId, {
+                reason: 'on-save',
+              });
+              if (validated !== session.currentInstructionId) {
+                pointerForDisk = null;
+                session.currentInstructionId = null;
+                store.save(session.ownerId, userDoc);
+              }
+            }
+          } catch (err) {
+            // Round-2 P1-A: do NOT silently log at debug. A
+            // UserSessionStoreCorruptError means the user master is
+            // unreadable / failed sealed validation — ops MUST see it,
+            // and we MUST null the in-memory pointer so we don't write
+            // a sessions.json that trusts an unvalidated pointer onto
+            // disk this save cycle. The corrupt user-session.json is
+            // left untouched (the store never overwrites a corrupt file
+            // — that decision belongs to ops / the quarantine path).
+            if (err instanceof UserSessionStoreCorruptError) {
+              this.logger.error(
+                'assertSessionPointer (on-save) — user-session.json corrupt; nulling in-memory pointer',
+                {
+                  sessionKey: key,
+                  ownerId: session.ownerId,
+                  file: err.file,
+                  err: err.message,
+                },
+              );
+              pointerForDisk = null;
+              session.currentInstructionId = null;
+            } else {
+              // Any other failure (filesystem flake, etc) — best-effort,
+              // but ops still need to see it. Promoted from debug to
+              // error per round-2 P1-A.
+              this.logger.error('assertSessionPointer (on-save) failed', {
+                sessionKey: key,
+                ownerId: session.ownerId,
+                err: (err as Error)?.message ?? String(err),
+              });
+            }
+          }
           sessionsArray.push({
             key,
             ownerId: session.ownerId,
@@ -1685,8 +1815,11 @@ export class SessionRegistry {
             conversationId: session.conversationId,
             // Merge code change stats
             mergeStats: session.mergeStats,
-            // User SSOT instructions (persisted)
+            // User SSOT instructions (persisted, legacy mirror — see types.ts)
             instructions: session.instructions,
+            // Sealed pointer to user-scope instruction master (#754).
+            currentInstructionId: pointerForDisk,
+            instructionHistory: session.instructionHistory,
             // Cached completed-summary (persisted so the next turn after restart
             // doesn't pay a cold summary rebuild). Safe to omit — the block
             // builder falls back to a placeholder and the async regen kicks in.
@@ -1747,7 +1880,23 @@ export class SessionRegistry {
         linkHistory: serialized.linkHistory,
         conversationId: serialized.conversationId,
         mergeStats: serialized.mergeStats,
-        instructions: serialized.instructions,
+        // Migrate legacy instruction shape on archive too — see loadSessions()
+        // for the rationale. The archive store should never see pre-#754
+        // disk shapes leaking through.
+        instructions: Array.isArray(serialized.instructions)
+          ? serialized.instructions.map((i) =>
+              migrateLegacySessionInstruction(i as unknown as Record<string, unknown>, serialized.key),
+            )
+          : undefined,
+        // Sealed pointer + history (#754) — preserve so the archive snapshot
+        // can render "what instruction was open when this session ended".
+        currentInstructionId:
+          typeof serialized.currentInstructionId === 'string' || serialized.currentInstructionId === null
+            ? serialized.currentInstructionId
+            : null,
+        instructionHistory: Array.isArray(serialized.instructionHistory)
+          ? serialized.instructionHistory.filter((x): x is string => typeof x === 'string')
+          : [],
         activityState: serialized.activityState || 'idle',
         // Preserve handoff metadata for diagnostic parity when archiving.
         handoffContext: serialized.handoffContext,
@@ -1872,15 +2021,31 @@ export class SessionRegistry {
           conversationId: serialized.conversationId,
           // Merge code change stats
           mergeStats: serialized.mergeStats,
-          // User SSOT instructions (restored from disk).
-          // Legacy migration: entries saved before the lifecycle-status
-          // extension lack `status`. Seed them to 'active' so the block
-          // builder can group them without special-casing `undefined`.
+          // User SSOT instructions (restored from disk, legacy mirror).
+          // Sealed shape (#727 / #754) — pre-#754 entries used `addedAt`
+          // (number), free-form `source: string`, and legacy `'todo'`
+          // status. We migrate them in-memory via
+          // `migrateLegacySessionInstruction` so the rest of the codebase
+          // sees only the sealed shape (the next save() rewrites disk).
+          // The shared helper uses `mapLegacyInstructionStatus` so the
+          // migration logic cannot drift from `user-instructions-migration`
+          // (#727 P1-6).
           instructions: Array.isArray(serialized.instructions)
-            ? serialized.instructions.map((i) => ({
-                ...i,
-                status: i.status ?? 'active',
-              }))
+            ? serialized.instructions.map((i) =>
+                migrateLegacySessionInstruction(i as unknown as Record<string, unknown>, serialized.key),
+              )
+            : [],
+          // Sealed pointer to user-scope instruction master (#754). undefined
+          // on pre-#754 disk state is treated as "no pointer" (== null). The
+          // pointer is later validated against the user's master doc by
+          // `assertSessionPointer` below — invalid pointers are nulled out
+          // and an audit row appended to `lifecycleEvents`.
+          currentInstructionId:
+            typeof serialized.currentInstructionId === 'string' || serialized.currentInstructionId === null
+              ? serialized.currentInstructionId
+              : null,
+          instructionHistory: Array.isArray(serialized.instructionHistory)
+            ? serialized.instructionHistory.filter((x): x is string => typeof x === 'string')
             : [],
           // Cached completed-summary (may be stale — block builder validates via hash).
           instructionsCompletedSummary: serialized.instructionsCompletedSummary,
@@ -1925,6 +2090,50 @@ export class SessionRegistry {
           session.activeLegStartedAtMs = undefined;
         }
         this.ensureSessionLinkState(session);
+        // Sealed pointer self-heal on load (#727 P0-1). Disk drift can
+        // produce sessions with `currentInstructionId` that no longer
+        // resolves on the user master (instruction was completed /
+        // cancelled / removed by the dashboard while this session was
+        // sleeping). Detect, null out, and append a `rejected` audit row.
+        // Best-effort: any failure (test mode without user master, etc) is
+        // logged and ignored — the strict invariant lives at the write
+        // sites (lifecycle ops in #755).
+        try {
+          if (session.currentInstructionId && session.ownerId) {
+            const store = getUserSessionStore();
+            const userDoc = store.load(session.ownerId);
+            const validated = store.assertSessionPointer(userDoc, serialized.key, session.currentInstructionId, {
+              reason: 'on-load',
+            });
+            if (validated !== session.currentInstructionId) {
+              session.currentInstructionId = null;
+              store.save(session.ownerId, userDoc);
+            }
+          }
+        } catch (err) {
+          // Round-2 P1-B: do NOT silently log at debug. The corrupt
+          // user-session.json case must escalate to logger.error AND
+          // clear the in-memory pointer so the rest of the load loop
+          // does not trust a pointer we could not validate. Skipping
+          // the audit-row save is intentional — the store call is what
+          // failed, and we never want this catch to overwrite the
+          // corrupt master.
+          if (err instanceof UserSessionStoreCorruptError) {
+            this.logger.error('assertSessionPointer (on-load) — user-session.json corrupt; nulling in-memory pointer', {
+              sessionKey: serialized.key,
+              ownerId: session.ownerId,
+              file: err.file,
+              err: err.message,
+            });
+            session.currentInstructionId = null;
+          } else {
+            this.logger.error('assertSessionPointer (on-load) failed', {
+              sessionKey: serialized.key,
+              ownerId: session.ownerId,
+              err: (err as Error)?.message ?? String(err),
+            });
+          }
+        }
         this.sessions.set(serialized.key, session);
         loaded++;
 

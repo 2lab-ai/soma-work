@@ -95,12 +95,17 @@ function tryAtomicCreate(lockPath: string, content: string): boolean {
  * 2. If file exists, read and validate the incumbent:
  *    - Dead/invalid PID → remove stale lock, retry atomic create
  *    - Alive PID → return false (caller should exit)
+ *
+ * The optional `lockName` lets callers reuse the same liveness-checked lock
+ * for non-default purposes (e.g. user-instructions migration uses
+ * `'user-instructions-migration.pid'`). When omitted, defaults to the
+ * single-instance-guard `soma-work.pid` filename.
  */
-export function acquirePidLock(dataDir: string): boolean {
+export function acquirePidLock(dataDir: string, lockName: string = LOCK_FILENAME): boolean {
   // Ensure data directory exists (first boot safety)
   mkdirSync(dataDir, { recursive: true });
 
-  const lockPath = join(dataDir, LOCK_FILENAME);
+  const lockPath = join(dataDir, lockName);
   const content = buildLockContent();
 
   // Attempt 1: Try atomic create
@@ -158,8 +163,8 @@ export function acquirePidLock(dataDir: string): boolean {
  * Release the PID lock. Only removes if the lock file contains our PID.
  * This prevents accidentally removing another instance's lock.
  */
-export function releasePidLock(dataDir: string): void {
-  const lockPath = join(dataDir, LOCK_FILENAME);
+export function releasePidLock(dataDir: string, lockName: string = LOCK_FILENAME): void {
+  const lockPath = join(dataDir, lockName);
 
   try {
     const content = readFileSync(lockPath, 'utf-8');
@@ -169,5 +174,29 @@ export function releasePidLock(dataDir: string): void {
     }
   } catch {
     // File missing or unreadable — nothing to release
+  }
+}
+
+/**
+ * Wrap an async function in a named PID lock. The lock is reclaimed
+ * automatically if a previous holder died (stale lock detection via
+ * `process.kill(pid, 0)`), eliminating the deadlock window the wx-flag +
+ * 30s polling implementation suffered from on `kill -9`.
+ *
+ * Throws when another LIVE instance currently holds the lock — the caller
+ * (e.g. eager-boot wrapper) decides whether to surface the error or wait.
+ *
+ * Both the happy path and the error path release the lock so callers
+ * cannot leak a stale lock by failing during the critical section.
+ */
+export async function withPidLock<T>(dataDir: string, lockName: string, fn: () => Promise<T>): Promise<T> {
+  const acquired = acquirePidLock(dataDir, lockName);
+  if (!acquired) {
+    throw new Error(`[pid-lock] Could not acquire ${lockName} in ${dataDir} — another live process holds it`);
+  }
+  try {
+    return await fn();
+  } finally {
+    releasePidLock(dataDir, lockName);
   }
 }

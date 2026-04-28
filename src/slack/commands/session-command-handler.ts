@@ -175,19 +175,20 @@ export class SessionCommandHandler implements CommandHandler {
     // User SSOT Instructions — grouped by status so the prompt-injection
     // shape is visible at a glance (PLAN §9).
     if (session.instructions?.length > 0) {
-      const counts = { active: 0, todo: 0, completed: 0 };
+      // Sealed status set (#754): active | completed | cancelled.
+      const counts = { active: 0, completed: 0, cancelled: 0 };
       for (const i of session.instructions) counts[(i.status ?? 'active') as keyof typeof counts]++;
       lines.push(
         `*Instructions (SSOT):* ${session.instructions.length} ` +
-          `— 🟢 ${counts.active} active, ⏳ ${counts.todo} todo, ✅ ${counts.completed} completed`,
+          `— 🟢 ${counts.active} active, 🚫 ${counts.cancelled} cancelled, ✅ ${counts.completed} completed`,
       );
       let shown = 0;
-      for (const status of ['active', 'todo', 'completed'] as const) {
+      for (const status of ['active', 'cancelled', 'completed'] as const) {
         const entries = session.instructions.filter((i: { status?: string }) => (i.status ?? 'active') === status);
         if (entries.length === 0) continue;
         for (const inst of entries.slice(0, 2)) {
           const preview = inst.text.length > 80 ? `${inst.text.slice(0, 80)}…` : inst.text;
-          const icon = status === 'active' ? '🟢' : status === 'todo' ? '⏳' : '✅';
+          const icon = status === 'active' ? '🟢' : status === 'cancelled' ? '🚫' : '✅';
           lines.push(`  ${icon} ${preview}`);
           shown++;
         }

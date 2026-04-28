@@ -58,11 +58,14 @@ export async function summarizeCompletedInstructions(items: SessionInstruction[]
       throw credErr;
     }
 
+    // Sealed shape (#727 P1-5): instruction rows no longer carry `evidence`.
+    // The completion evidence — when needed — is fetched from the matching
+    // `lifecycleEvents` `op:'complete'` payload by the lifecycle ops (#755).
+    // For PR1 we just summarise the instruction text.
     const lines = items
       .map((i, idx) => {
         const text = i.text.replace(/\s+/g, ' ').trim();
-        const ev = i.evidence ? ` (evidence: ${i.evidence.slice(0, 200)})` : '';
-        return `[${idx + 1}] ${text}${ev}`;
+        return `[${idx + 1}] ${text}`;
       })
       .join('\n');
     const truncatedLines = lines.length > 6000 ? `${lines.slice(0, 6000)}\n...[truncated]` : lines;

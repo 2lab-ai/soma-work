@@ -51,28 +51,38 @@ function renderBullet(i: SessionInstruction): string {
  * Build the `<user-instructions-ssot>` block. Returns an empty string when
  * there are no instructions — the caller should not emit the opening tag in
  * that case (keeps prompt noise-free for fresh sessions).
+ *
+ * PR1 scope (#754) is mechanical sealed-enum compatibility only. The
+ * builder must read the new `'cancelled'` status without crashing — but
+ * MUST NOT render cancelled instructions into the prompt. Surfacing
+ * cancelled state to the model is a prompt-block design decision that
+ * belongs in #756.
+ *
+ * TODO(#756): expose cancelled instructions in prompt block.
  */
 export function buildUserInstructionsBlock(session: ConversationSession | undefined): string {
   const instructions = session?.instructions || [];
   if (instructions.length === 0) return '';
 
+  // Sealed status set (#754): active | completed | cancelled. Legacy 'todo'
+  // is migrated to 'active' before reaching this builder. Cancelled entries
+  // are READ (no crash) but DROPPED from the rendered prompt — see
+  // TODO(#756) above.
   const active: SessionInstruction[] = [];
-  const todo: SessionInstruction[] = [];
   const completed: SessionInstruction[] = [];
   for (const i of instructions) {
     const s = i.status ?? 'active';
-    if (s === 'todo') todo.push(i);
-    else if (s === 'completed') completed.push(i);
-    else active.push(i);
+    if (s === 'completed') completed.push(i);
+    else if (s === 'cancelled') {
+      // Intentionally skipped in PR1 (#754). #756 owns cancelled-rendering.
+      continue;
+    } else active.push(i);
   }
 
   const sections: string[] = [];
 
   if (active.length > 0) {
     sections.push(['## Active', ...active.map(renderBullet)].join('\n'));
-  }
-  if (todo.length > 0) {
-    sections.push(['## Todo', ...todo.map(renderBullet)].join('\n'));
   }
 
   if (completed.length === 1) {

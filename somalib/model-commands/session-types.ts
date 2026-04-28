@@ -151,36 +151,73 @@ export type SessionResourceType = 'issue' | 'pr' | 'doc';
 /**
  * Lifecycle status of a single user instruction.
  *
- * - `active`: currently guiding the model (default)
- * - `todo`: queued for later; still prompt-injected
- * - `completed`: finished — once there are ≥ 2 completed entries the host
- *   summarises them into `session.instructionsCompletedSummary` to keep the
- *   prompt compact.
+ * Sealed shape (issue #727 / #754):
+ * - `active`: live work — guides the model and may be a session's `currentInstructionId`
+ * - `completed`: finished — paired with `evidence` (when the model marked it)
+ * - `cancelled`: explicitly stopped by the user; first-class state, NOT
+ *   collapsed into `completed` so the dashboard archives view can distinguish
+ *   "shipped" from "abandoned".
+ *
+ * Legacy `'todo'` is migrated to `'active'` at load/migration time
+ * (see `src/user-instructions-migration.ts`).
  */
-export type SessionInstructionStatus = 'active' | 'todo' | 'completed';
+export type SessionInstructionStatus = 'active' | 'completed' | 'cancelled';
+
+/**
+ * Source enum for a session-instruction row (sealed #727).
+ *
+ * - `model`                 — model proposed via UPDATE_SESSION + user y/n confirm (#755)
+ * - `user-manual-dashboard` — direct dashboard click (#759); click == confirm
+ * - `migration`             — produced by `user-instructions-migration.ts`
+ *                             when projecting legacy `sessions.json` rows
+ */
+export type SessionInstructionSource = 'model' | 'user-manual-dashboard' | 'migration';
 
 /**
  * A single user instruction stored as SSOT in the session.
- * Persisted to disk and exposed to the model via GET_SESSION.
+ *
+ * Sealed shape (#727 / #754). Both the legacy session-scope mirror
+ * (`data/sessions.json::session.instructions[]`) and the user-scope master
+ * (`data/users/{userId}/user-session.json::instructions[]`) share this
+ * exact shape so there is one type to read by the prompt block / dashboard
+ * / compaction-context builder.
+ *
+ * The legacy `addedAt` (unix ms number) and free-form `source: string`
+ * fields were dropped in favor of the sealed `createdAt` (ISO string) and
+ * the `SessionInstructionSource` enum. Pre-#754 disk state is migrated
+ * in-memory at load time in `session-registry.loadSessions` — disk
+ * compatibility is preserved without leaking the legacy types into the
+ * type signature.
+ *
+ * The instruction itself has NO `evidence` field — completion evidence
+ * belongs in the `lifecycleEvents` `op:'complete'` payload (#727 P1-5).
  */
 export interface SessionInstruction {
-  id: string; // Unique ID (e.g., "instr_1712000000000_0")
-  text: string; // The instruction content
-  addedAt: number; // Unix ms when added
-  source?: string; // Who added it (e.g., "user", "model")
+  /** Unique ID (e.g., "instr_1712000000000_0"). */
+  id: string;
+  /** The instruction content. */
+  text: string;
+  /** ISO timestamp of creation. */
+  createdAt: string;
+  /** Origin of the entry (sealed enum). */
+  source: SessionInstructionSource;
+  /** Lifecycle status. */
+  status: SessionInstructionStatus;
+  /** ISO timestamp set when status transitions to `completed`. */
+  completedAt?: string;
+  /** ISO timestamp set when status transitions to `cancelled`. */
+  cancelledAt?: string;
   /**
-   * Lifecycle status (defaults to 'active' when absent — migration is handled
-   * at load time in session-registry.loadSessions).
+   * Sessions that have ever been linked to this instruction. Append-only,
+   * deduplicated. Required on the sealed shape (may be empty `[]`).
    */
-  status?: SessionInstructionStatus;
+  linkedSessionIds: string[];
   /**
-   * Evidence describing why an instruction is `completed` (e.g., PR link,
-   * commit SHA, test name). Required at host-side when model asks to mark
-   * completed; stripped from prompt injection for brevity.
+   * Raw-input back-references populated by #760. Each entry pins a single
+   * raw-input row by `{ sessionKey, rawInputId }`. Required on the sealed
+   * shape (may be empty `[]`).
    */
-  evidence?: string;
-  /** Unix ms when status transitioned to `completed`. */
-  completedAt?: number;
+  sourceRawInputIds: Array<{ sessionKey: string; rawInputId: string }>;
 }
 
 export interface SessionResourceSnapshot {

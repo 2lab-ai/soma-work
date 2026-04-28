@@ -67,6 +67,102 @@ function getSkillStore(): SkillStore {
   return _skillStore;
 }
 
+// User-instruction store interface — injected by the host app via
+// registerUserInstructionStore() (#754). Sealed master at
+// `data/users/{userId}/user-session.json`. The lifecycle 5-op semantics
+// (add/link/complete/cancel/rename) and the y/n confirm gate are #755 scope;
+// this PR exposes the storage + pointer plumbing only so other call sites
+// (UPDATE_SESSION host wrapper, dashboard read API, archive snapshot) can
+// hit a stable seam.
+//
+// All methods are synchronous — the underlying impl is fs-based (atomic
+// tmp→rename writes, see src/user-session-store.ts).
+export interface UserInstructionStore {
+  /**
+   * Read a user's instruction master. Returns an empty `{ schemaVersion: 1,
+   * instructions: [], lifecycleEvents: [] }` doc when the user has never had
+   * any instructions yet.
+   */
+  loadUserDoc(userId: string): UserInstructionDoc;
+  /**
+   * Persist the doc atomically. Throws on schema/invariant violation; the
+   * caller is expected to validate at higher layers (lifecycle ops in #755).
+   */
+  saveUserDoc(userId: string, doc: UserInstructionDoc): void;
+  /**
+   * List active instructions for a user. Convenience wrapper over loadUserDoc
+   * for the dashboard / prompt block read paths. Sorted by createdAt asc.
+   */
+  listActiveInstructions(userId: string): UserInstructionRecord[];
+  /**
+   * Find a single instruction by id (or undefined). Used by lifecycle ops
+   * to look up the row for `link/complete/cancel/rename`.
+   */
+  findInstruction(userId: string, instructionId: string): UserInstructionRecord | undefined;
+}
+
+/**
+ * Sealed user-instruction record shape (mirrors `UserInstruction` in
+ * `src/user-session-store.ts`). Re-declared here so somalib stays free of a
+ * back-reference to host-side modules.
+ *
+ * Sealed schema (#727 / #754) — note: there is intentionally NO `evidence`
+ * field on the instruction itself. Completion evidence belongs in the
+ * `lifecycleEvents` `op:'complete'` payload, where the audit log already
+ * records who supplied it and when (#727 P1-5).
+ */
+export interface UserInstructionRecord {
+  id: string;
+  text: string;
+  status: 'active' | 'completed' | 'cancelled';
+  linkedSessionIds: string[];
+  createdAt: string;
+  completedAt?: string;
+  cancelledAt?: string;
+  source: 'model' | 'user-manual-dashboard' | 'migration';
+  sourceRawInputIds: Array<{ sessionKey: string; rawInputId: string }>;
+}
+
+/** Sealed lifecycle audit-log row (mirrors `LifecycleEvent` in src/). */
+export interface UserLifecycleEventRecord {
+  id: string;
+  requestId?: string;
+  instructionId?: string | null;
+  sessionKey: string;
+  op: 'add' | 'link' | 'complete' | 'cancel' | 'rename';
+  state: 'requested' | 'confirmed' | 'rejected' | 'superseded' | 'manual';
+  at: string;
+  by: { type: 'slack-user' | 'system' | 'migration'; id: string };
+  payload: unknown;
+}
+
+export interface UserInstructionDoc {
+  schemaVersion: 1;
+  instructions: UserInstructionRecord[];
+  lifecycleEvents: UserLifecycleEventRecord[];
+}
+
+let _userInstructionStore: UserInstructionStore | null = null;
+
+/**
+ * Register the user-instruction store (sealed master at
+ * `data/users/{userId}/user-session.json`). The lifecycle 5-op semantics
+ * (#755) read/write through this seam; this PR only exposes the storage.
+ */
+export function registerUserInstructionStore(store: UserInstructionStore): void {
+  _userInstructionStore = store;
+}
+
+/**
+ * Lookup helper. Returns null when the host has not registered a store —
+ * call sites in this PR must tolerate null (the lifecycle gate in #755 will
+ * make registration mandatory for all dispatch paths that produce
+ * lifecycle events).
+ */
+export function getUserInstructionStore(): UserInstructionStore | null {
+  return _userInstructionStore;
+}
+
 // Rating store interface — injected by the host app via registerRatingStore().
 // Returns user's current model rating (0-10, default 5).
 export interface RatingStore {
@@ -175,7 +271,7 @@ const UPDATE_SESSION_SCHEMA = {
           },
           status: {
             type: 'string',
-            enum: ['active', 'todo', 'completed'],
+            enum: ['active', 'completed', 'cancelled'],
             description: 'New status (required for setStatus)',
           },
         },
@@ -867,10 +963,38 @@ const MAX_INSTRUCTIONS = 50;
 
 let _instrCounter = 0;
 
+const VALID_INSTRUCTION_SOURCES: ReadonlySet<SessionInstruction['source']> = new Set([
+  'model',
+  'user-manual-dashboard',
+  'migration',
+]);
+
+function coerceInstructionSource(raw: string | undefined): SessionInstruction['source'] {
+  if (raw && (VALID_INSTRUCTION_SOURCES as ReadonlySet<string>).has(raw)) {
+    return raw as SessionInstruction['source'];
+  }
+  // Legacy/free-form values (e.g. 'user') and missing source default to
+  // 'model' — `applyInstructionOperations` is invoked from UPDATE_SESSION
+  // (model-side), so the model is the canonical originator at this seam.
+  // Dashboard adds (#759) and migration projections (#754) carry their own
+  // explicit source value.
+  return 'model';
+}
+
 /**
- * Apply instruction operations (add/remove/clear) to a mutable instructions array.
+ * Apply instruction operations (add/remove/clear/complete/setStatus) to a
+ * mutable instructions array.
+ *
  * Shared between catalog (snapshot) and session-registry (host-side).
  * Returns true if any mutation occurred.
+ *
+ * Sealed shape (#727 / #754):
+ * - `createdAt` is an ISO string (was `addedAt: number`).
+ * - `source` is the `SessionInstructionSource` enum (was free-form string).
+ * - `linkedSessionIds` / `sourceRawInputIds` are required arrays (default `[]`).
+ * - There is NO `evidence` field on the row; the `complete` op routes the
+ *   evidence string into the `lifecycleEvents` `op:'complete'` payload at
+ *   the host layer (this function only flips the row state).
  */
 export function applyInstructionOperations(
   instructions: SessionInstruction[],
@@ -883,13 +1007,15 @@ export function applyInstructionOperations(
     if (op.action === 'add') {
       if (!op.text || op.text.trim().length === 0) continue;
       if (instructions.length >= MAX_INSTRUCTIONS) continue;
-      const now = Date.now();
+      const nowMs = Date.now();
       instructions.push({
-        id: `instr_${now}_${++_instrCounter}`,
+        id: `instr_${nowMs}_${++_instrCounter}`,
         text: op.text.trim(),
-        addedAt: now,
-        source: op.source || 'user',
+        createdAt: new Date(nowMs).toISOString(),
+        source: coerceInstructionSource(op.source),
         status: 'active',
+        linkedSessionIds: [],
+        sourceRawInputIds: [],
       });
       changed = true;
       continue;
@@ -913,14 +1039,16 @@ export function applyInstructionOperations(
     }
 
     if (op.action === 'complete') {
-      // Evidence is required — silently skip rather than throw, matching the
-      // lenient semantics of the rest of this function (malformed ops drop).
+      // Evidence is required at the model API surface (it is captured into
+      // the lifecycle event payload by the host layer in #755); we silently
+      // skip malformed ops here, matching the lenient semantics of the rest
+      // of this function. The instruction row itself does NOT carry an
+      // `evidence` field per the sealed schema (#727 P1-5).
       if (!op.id || !op.evidence || op.evidence.trim().length === 0) continue;
       const entry = instructions.find((i) => i.id === op.id);
       if (!entry) continue;
       entry.status = 'completed';
-      entry.evidence = op.evidence.trim();
-      entry.completedAt = Date.now();
+      entry.completedAt = new Date().toISOString();
       changed = true;
       continue;
     }
@@ -933,13 +1061,15 @@ export function applyInstructionOperations(
       entry.status = op.status;
       if (op.status === 'completed') {
         // setStatus→completed is an escape hatch — stamp completedAt so the
-        // summary hash and block builder see a consistent timestamp. Evidence
-        // is NOT required on this path (prefer `complete` when evidence exists).
-        entry.completedAt = entry.completedAt ?? Date.now();
-      } else {
-        // Moving out of `completed` — clear the boundary fields.
+        // summary hash and block builder see a consistent timestamp.
+        entry.completedAt = entry.completedAt ?? new Date().toISOString();
+      } else if (op.status === 'cancelled') {
+        entry.cancelledAt = entry.cancelledAt ?? new Date().toISOString();
         entry.completedAt = undefined;
-        entry.evidence = undefined;
+      } else {
+        // Moving back to `active` — clear the boundary fields.
+        entry.completedAt = undefined;
+        entry.cancelledAt = undefined;
       }
       changed = true;
     }

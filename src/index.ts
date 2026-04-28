@@ -3,8 +3,14 @@ import { installConsoleRedaction } from './logger';
 installConsoleRedaction();
 
 import './env-paths';
-import { registerMemoryStore, registerSkillStore } from 'somalib/model-commands/catalog';
+import {
+  registerMemoryStore,
+  registerSkillStore,
+  registerUserInstructionStore,
+  type UserInstructionStore,
+} from 'somalib/model-commands/catalog';
 import * as userMemoryStore from './user-memory-store';
+import { getUserSessionStore } from './user-session-store';
 import { setSettingsPromptInvalidationHook } from './user-settings-store';
 import { createUserSkill, deleteUserSkill, listUserSkills, shareUserSkill, updateUserSkill } from './user-skill-store';
 
@@ -16,6 +22,26 @@ registerSkillStore({
   deleteSkill: deleteUserSkill,
   shareSkill: shareUserSkill,
 });
+
+// Sealed user-instruction master (#754). Lifecycle 5-op semantics
+// (add/link/complete/cancel/rename) land in #755; this PR registers the
+// storage + read entry points so other modules can already hit a stable seam.
+const userInstructionStoreAdapter: UserInstructionStore = {
+  loadUserDoc: (userId) => getUserSessionStore().load(userId),
+  saveUserDoc: (userId, doc) => getUserSessionStore().save(userId, doc),
+  listActiveInstructions: (userId) => {
+    const doc = getUserSessionStore().load(userId);
+    return doc.instructions
+      .filter((i) => i.status === 'active')
+      .slice()
+      .sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0));
+  },
+  findInstruction: (userId, instructionId) => {
+    const doc = getUserSessionStore().load(userId);
+    return doc.instructions.find((i) => i.id === instructionId);
+  },
+};
+registerUserInstructionStore(userInstructionStoreAdapter);
 
 import { App } from '@slack/bolt';
 import type { WebClient } from '@slack/web-api';
@@ -69,6 +95,7 @@ import { SlackHandler } from './slack-handler';
 import { notifyStartup } from './startup-notifier';
 import { getTokenManager } from './token-manager';
 import { loadUnifiedConfig } from './unified-config-loader';
+import { runStartupUserInstructionsMigration } from './user-instructions-migration';
 
 const logger = new Logger('Main');
 
@@ -319,6 +346,22 @@ async function start() {
     // Setup event handlers
     slackHandler.setupEventHandlers();
     timing('Event handlers setup');
+
+    // Eager user-instruction migration (#754, sealed Q7). Runs under a
+    // startup lock and patches `sessions.json` with the per-session
+    // currentInstructionId/instructionHistory pointers BEFORE
+    // SessionRegistry.loadSessions() reads it. Slack/dashboard accept must
+    // not happen before this resolves — the rest of startup blocks on
+    // `await` here.
+    try {
+      const migrationResult = await runStartupUserInstructionsMigration({ dataDir: DATA_DIR });
+      timing(
+        `User-instruction migration complete (users=${migrationResult.userIdsTouched}, new=${migrationResult.newInstructions})`,
+      );
+    } catch (err) {
+      logger.error('Eager user-instruction migration failed — refusing to accept Slack traffic', err);
+      throw err;
+    }
 
     // Load saved sessions from previous run
     const loadedSessions = slackHandler.loadSavedSessions();
