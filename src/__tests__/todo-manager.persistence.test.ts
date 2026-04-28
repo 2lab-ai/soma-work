@@ -1,0 +1,108 @@
+/**
+ * TodoManager — persistence + instruction FK contract tests.
+ *
+ * Issue: #757 (parent epic #727).
+ *
+ * Sealed scope:
+ *   - On-disk path: data/users/{userId}/todos.json
+ *   - File schema: { schemaVersion: 1, todos: Array<Todo & { sessionId, userInstructionId }> }
+ *   - Atomic write tmp → rename. RAM and disk stay in sync (write-through).
+ */
+
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+
+import { type Todo, TodoManager } from '../todo-manager';
+
+let tmpRoot: string;
+
+beforeEach(() => {
+  tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'soma-todo-mgr-'));
+});
+
+afterEach(() => {
+  if (tmpRoot && fs.existsSync(tmpRoot)) {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+const baseTodo = (over: Partial<Todo> = {}): Todo => ({
+  id: 't1',
+  content: 'Do thing',
+  status: 'pending',
+  priority: 'medium',
+  ...over,
+});
+
+describe('TodoManager — disk path layout', () => {
+  it('persists to data/users/{userId}/todos.json under the configured baseDir', () => {
+    const mgr = new TodoManager({ baseDir: tmpRoot });
+    mgr.updateTodos('sess-1', [baseTodo()], { userId: 'U1' });
+
+    const expected = path.join(tmpRoot, 'users', 'U1', 'todos.json');
+    expect(fs.existsSync(expected)).toBe(true);
+  });
+
+  it('writes file atomically (no leftover *.tmp on success)', () => {
+    const mgr = new TodoManager({ baseDir: tmpRoot });
+    mgr.updateTodos('sess-1', [baseTodo()], { userId: 'U1' });
+
+    const userDir = path.join(tmpRoot, 'users', 'U1');
+    const files = fs.readdirSync(userDir);
+    expect(files).toContain('todos.json');
+    expect(files.filter((f) => f.endsWith('.tmp'))).toHaveLength(0);
+  });
+
+  it('rejects unsafe userId (path traversal / separator)', () => {
+    const mgr = new TodoManager({ baseDir: tmpRoot });
+    expect(() => mgr.updateTodos('sess-1', [baseTodo()], { userId: '../etc' })).toThrow();
+    expect(() => mgr.updateTodos('sess-1', [baseTodo()], { userId: 'a/b' })).toThrow();
+  });
+});
+
+describe('TodoManager — file schema (sealed shape)', () => {
+  it('writes schemaVersion=1 envelope with todos[] each carrying sessionId + userInstructionId', () => {
+    const mgr = new TodoManager({ baseDir: tmpRoot });
+    mgr.updateTodos('sess-1', [baseTodo()], { userId: 'U1', currentInstructionId: null });
+
+    const file = path.join(tmpRoot, 'users', 'U1', 'todos.json');
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    expect(parsed.schemaVersion).toBe(1);
+    expect(Array.isArray(parsed.todos)).toBe(true);
+    expect(parsed.todos).toHaveLength(1);
+    expect(parsed.todos[0].sessionId).toBe('sess-1');
+    expect(parsed.todos[0].userInstructionId).toBeNull();
+    expect(parsed.todos[0].id).toBe('t1');
+    expect(parsed.todos[0].content).toBe('Do thing');
+  });
+
+  it('round-trips through loadFromDisk', () => {
+    const mgr1 = new TodoManager({ baseDir: tmpRoot });
+    mgr1.updateTodos('sess-1', [baseTodo()], { userId: 'U1', currentInstructionId: null });
+
+    // Fresh manager — load from disk.
+    const mgr2 = new TodoManager({ baseDir: tmpRoot });
+    mgr2.loadFromDisk('U1');
+    const round = mgr2.getTodos('sess-1');
+    expect(round).toHaveLength(1);
+    expect(round[0].id).toBe('t1');
+    expect(round[0].userInstructionId).toBeNull();
+  });
+
+  it('loadFromDisk with no file is a no-op (RAM stays empty)', () => {
+    const mgr = new TodoManager({ baseDir: tmpRoot });
+    expect(() => mgr.loadFromDisk('U1')).not.toThrow();
+    expect(mgr.getTodos('sess-1')).toEqual([]);
+  });
+
+  it('treats malformed JSON as a hard error (NEVER silently overwrites)', () => {
+    const userDir = path.join(tmpRoot, 'users', 'U1');
+    fs.mkdirSync(userDir, { recursive: true });
+    fs.writeFileSync(path.join(userDir, 'todos.json'), '{not json', 'utf-8');
+
+    const mgr = new TodoManager({ baseDir: tmpRoot });
+    expect(() => mgr.loadFromDisk('U1')).toThrow();
+  });
+});
