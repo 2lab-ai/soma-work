@@ -459,7 +459,7 @@ let promptBuilderInstance: PromptBuilder | undefined;
 /**
  * Get the singleton PromptBuilder instance
  */
-export function getPromptBuilder(): PromptBuilder {
+function getPromptBuilder(): PromptBuilder {
   if (!promptBuilderInstance) {
     promptBuilderInstance = new PromptBuilder();
   }

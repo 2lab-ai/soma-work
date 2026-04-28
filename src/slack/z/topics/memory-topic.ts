@@ -77,7 +77,7 @@ export function chunkByChars(text: string, maxChars: number): string[] {
 }
 
 /** 3000-char Slack section cap with a markdown-friendly tail. */
-export function enforceSectionCharCap(blocks: ZBlock[]): ZBlock[] {
+function enforceSectionCharCap(blocks: ZBlock[]): ZBlock[] {
   for (const b of blocks) {
     if ((b as { type?: string }).type !== 'section') continue;
     const text = (b as { text?: { text?: string } }).text;
@@ -97,7 +97,7 @@ export function enforceSectionCharCap(blocks: ZBlock[]): ZBlock[] {
  * Per-entry sections are identified by their Slack-side block_id prefix
  * (`z_memory_entry_*`) that we set at render time.
  */
-export function bytePayloadGuard(blocks: ZBlock[]): ZBlock[] {
+function bytePayloadGuard(blocks: ZBlock[]): ZBlock[] {
   const byteLen = (arr: ZBlock[]) => Buffer.byteLength(JSON.stringify(arr), 'utf8');
   if (byteLen(blocks) <= 12000) return blocks;
 
@@ -478,7 +478,7 @@ export async function renderMemoryCard(args: { userId: string; issuedAt: number 
  * renderPendingCard — 2-stage rerender placeholder (Scenario 15)
  * ------------------------------------------------------------------ */
 
-export async function renderPendingCard(args: {
+async function renderPendingCard(args: {
   userId: string;
   target: 'memory' | 'user';
   idx: number | 'all';
@@ -779,7 +779,7 @@ export function buildClearManageModal(args: { memEntries: string[]; usrEntries: 
  *   - `'add'` (default): the existing add-user-profile modal.
  *   - `'clear_manage'`: bulk-delete modal; requires `userId` to load entries.
  */
-export async function openMemoryModal(args: {
+async function openMemoryModal(args: {
   client: WebClient;
   triggerId: string;
   kind?: MemoryModalKind;

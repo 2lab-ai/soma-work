@@ -71,7 +71,7 @@ export function parseGhPrMergeResult(output: string): { prNumber?: number } | nu
  * Parse gh pr view --json additions,deletions output.
  * Example: {"additions":150,"deletions":30}
  */
-export function parseGhPrViewStats(output: string): { additions: number; deletions: number } | null {
+function parseGhPrViewStats(output: string): { additions: number; deletions: number } | null {
   try {
     // Look for JSON with additions/deletions fields
     const jsonMatch = output.match(/\{[^}]*"additions"\s*:\s*\d+[^}]*\}/);

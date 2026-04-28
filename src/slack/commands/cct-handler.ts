@@ -358,7 +358,7 @@ function formatRejectedBullets(rejected: ReadonlyArray<{ keyId: string; name: st
  * table — every `RotationOutcome` discriminant must produce a deterministic
  * non-empty string so the operator always sees *something* in the thread.
  */
-export async function renderRotationOutcome(outcome: RotationOutcome): Promise<string> {
+async function renderRotationOutcome(outcome: RotationOutcome): Promise<string> {
   if (outcome.kind === 'rotated') {
     const fromName = outcome.from?.name ?? '(none)';
     const resets = formatDurationUntil(outcome.to.sevenDayResetsAt, { fallback: '—' });

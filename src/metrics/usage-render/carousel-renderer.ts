@@ -35,7 +35,7 @@ let testFontPath: string | null = null;
 const MIN_FONT_BYTES = 1024 * 100; // 100KB
 
 /** Test-only: override font path (resets cache). */
-export function __setCarouselFontPathForTests(p: string | null): void {
+function __setCarouselFontPathForTests(p: string | null): void {
   fontPathPromise = null;
   testFontPath = p;
 }

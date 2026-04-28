@@ -297,7 +297,7 @@ function requireWriteAccess(request: FastifyRequest, reply: FastifyReply, ownerI
   return false;
 }
 
-export { authMiddleware, authorizeResource, csrfMiddleware, isAdminModeHeaderOn, requireWriteAccess };
+export { requireWriteAccess };
 
 let server: FastifyInstance | null = null;
 let activePort: number | null = null;
