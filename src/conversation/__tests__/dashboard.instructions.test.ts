@@ -578,6 +578,37 @@ describe('Dashboard HTML — Active Instructions section (#758)', () => {
     expect(() => new Function(script)).not.toThrow();
   });
 
+  // ── Codex P1-4 — Drill-down panel UI ──
+
+  it('drill-down panel renders linked sessions, tasks union, and lifecycle events sections', async () => {
+    const res = await injectWebServer({
+      method: 'GET',
+      url: '/dashboard',
+      headers: AUTH_HEADER,
+    });
+    const html: string = res.body;
+    // The slide-panel container must be present in the page shell so
+    // openInstructionPanel can populate it on click without a full reload.
+    expect(html).toContain('id="instruction-panel"');
+    expect(html).toContain('id="instruction-panel-overlay"');
+    // Section anchors for the three required regions.
+    expect(html).toContain('id="instruction-panel-linked-sessions"');
+    expect(html).toContain('id="instruction-panel-tasks"');
+    expect(html).toContain('id="instruction-panel-lifecycle"');
+    // Inline JS must render real DOM, not just console.info.
+    const scriptMatch = html.match(/<script>([\s\S]*?)<\/script>/);
+    expect(scriptMatch).not.toBeNull();
+    const script = scriptMatch![1];
+    // openInstructionPanel must populate the panel sections; the
+    // placeholder console.info path leaks the drill-down JSON to devtools
+    // and renders nothing visible — codex P1-4 flagged exactly that.
+    expect(script).toMatch(/instruction-panel-linked-sessions/);
+    expect(script).toMatch(/instruction-panel-tasks/);
+    expect(script).toMatch(/instruction-panel-lifecycle/);
+    // The drill-down should expose a close action so the slide panel can hide.
+    expect(script).toContain('closeInstructionPanel');
+  });
+
   it('the [⋯] menu only PROPOSES lifecycle ops (never POSTs to a direct-mutation route)', async () => {
     const res = await injectWebServer({
       method: 'GET',
