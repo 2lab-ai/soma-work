@@ -603,6 +603,78 @@ describe('Dashboard HTML — Active Instructions section (#758)', () => {
   });
 });
 
+describe('Dashboard production wiring (codex P1-2 #758)', () => {
+  let dashboard: typeof import('../dashboard');
+  let startWebServer: any;
+  let stopWebServer: any;
+  let injectWebServer: any;
+
+  beforeEach(async () => {
+    vi.resetModules();
+    mockConfig.conversation.viewerToken = 'test-token';
+    const webServer = await import('../web-server');
+    startWebServer = webServer.startWebServer;
+    stopWebServer = webServer.stopWebServer;
+    injectWebServer = webServer.injectWebServer;
+    dashboard = await import('../dashboard');
+    dashboard.setDashboardSessionAccessor(() => new Map());
+    await startWebServer({ listen: false });
+  });
+
+  afterEach(async () => {
+    await stopWebServer();
+  });
+
+  it('exports a wireDashboardInstructionAccessors helper that connects real stores', () => {
+    // The helper must exist so production boot wires the setters once with
+    // real UserSessionStore + TodoManager + lifecycle propose handler.
+    expect(typeof dashboard.wireDashboardInstructionAccessors).toBe('function');
+  });
+
+  it('wireDashboardInstructionAccessors() drives the active-instructions endpoint with real data', async () => {
+    // Build a real-ish UserSessionStore-shaped accessor and TodoManager-shaped
+    // accessor. This proves the production wiring path goes through the
+    // setters that the route handler reads.
+    const docs = new Map<string, UserSessionDoc>();
+    const userDoc = makeDoc({
+      instructions: [
+        makeInstruction({
+          id: 'inst-prod',
+          text: 'Production wired',
+          status: 'active',
+          linkedSessionIds: [],
+        }),
+      ],
+    });
+    docs.set('U-prod', userDoc);
+
+    const store = {
+      load: (userId: string): UserSessionDoc => docs.get(userId) ?? makeDoc(),
+    };
+    const todoManager = {
+      findTodosByInstructionId: (_userId: string, _instructionId: string) => [],
+    };
+    const lifecycleProposeHandler = vi.fn().mockResolvedValue({ requestId: 'req-prod' });
+
+    dashboard.wireDashboardInstructionAccessors({
+      userSessionStore: store as any,
+      todoManager: todoManager as any,
+      lifecycleProposeHandler: lifecycleProposeHandler as any,
+    });
+
+    const res = await injectWebServer({
+      method: 'GET',
+      url: '/api/dashboard/users/U-prod/instructions',
+      headers: AUTH_HEADER,
+    });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.instructions).toHaveLength(1);
+    expect(body.instructions[0].id).toBe('inst-prod');
+    expect(body.instructions[0].text).toBe('Production wired');
+  });
+});
+
 describe('Dashboard WS instruction broadcasts (#758)', () => {
   let dashboard: typeof import('../dashboard');
 
