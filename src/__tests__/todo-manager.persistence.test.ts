@@ -106,3 +106,80 @@ describe('TodoManager — file schema (sealed shape)', () => {
     expect(() => mgr.loadFromDisk('U1')).toThrow();
   });
 });
+
+describe('TodoManager — auto-link userInstructionId from currentInstructionId', () => {
+  it('stamps userInstructionId from opts.currentInstructionId on first creation', () => {
+    const mgr = new TodoManager({ baseDir: tmpRoot });
+    mgr.updateTodos('sess-1', [baseTodo()], { userId: 'U1', currentInstructionId: 'instr_42' });
+
+    const stored = mgr.getTodos('sess-1');
+    expect(stored[0].userInstructionId).toBe('instr_42');
+  });
+
+  it('stamps userInstructionId=null when currentInstructionId is null', () => {
+    const mgr = new TodoManager({ baseDir: tmpRoot });
+    mgr.updateTodos('sess-1', [baseTodo()], { userId: 'U1', currentInstructionId: null });
+
+    const stored = mgr.getTodos('sess-1');
+    expect(stored[0].userInstructionId).toBeNull();
+  });
+
+  it('stamps userInstructionId=null when no opts (defensive default)', () => {
+    const mgr = new TodoManager({ baseDir: tmpRoot });
+    mgr.updateTodos('sess-1', [baseTodo()]);
+
+    const stored = mgr.getTodos('sess-1');
+    expect(stored[0].userInstructionId).toBeNull();
+  });
+
+  it('frozen at creation: subsequent updates do NOT change userInstructionId', () => {
+    const mgr = new TodoManager({ baseDir: tmpRoot });
+    mgr.updateTodos('sess-1', [baseTodo()], { userId: 'U1', currentInstructionId: 'instr_A' });
+
+    // currentInstructionId changes mid-session — the existing Todo's link must stay frozen.
+    mgr.updateTodos('sess-1', [baseTodo({ status: 'in_progress' })], {
+      userId: 'U1',
+      currentInstructionId: 'instr_B',
+    });
+
+    const stored = mgr.getTodos('sess-1');
+    expect(stored).toHaveLength(1);
+    expect(stored[0].userInstructionId).toBe('instr_A');
+    expect(stored[0].status).toBe('in_progress');
+  });
+
+  it('newly added Todo in a later update gets the THEN-current instructionId', () => {
+    const mgr = new TodoManager({ baseDir: tmpRoot });
+    mgr.updateTodos('sess-1', [baseTodo({ id: 't1' })], { userId: 'U1', currentInstructionId: 'instr_A' });
+
+    // Now add t2 while currentInstructionId is instr_B
+    mgr.updateTodos('sess-1', [baseTodo({ id: 't1' }), baseTodo({ id: 't2', content: 'New thing' })], {
+      userId: 'U1',
+      currentInstructionId: 'instr_B',
+    });
+
+    const stored = mgr.getTodos('sess-1');
+    const t1 = stored.find((t) => t.id === 't1');
+    const t2 = stored.find((t) => t.id === 't2');
+    expect(t1?.userInstructionId).toBe('instr_A');
+    expect(t2?.userInstructionId).toBe('instr_B');
+  });
+
+  it('persists userInstructionId through write-through on every mutation', () => {
+    const mgr = new TodoManager({ baseDir: tmpRoot });
+    mgr.updateTodos('sess-1', [baseTodo()], { userId: 'U1', currentInstructionId: 'instr_A' });
+
+    // Read the file directly between mutations.
+    const file = path.join(tmpRoot, 'users', 'U1', 'todos.json');
+    let parsed = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    expect(parsed.todos[0].userInstructionId).toBe('instr_A');
+
+    mgr.updateTodos('sess-1', [baseTodo({ status: 'completed' })], {
+      userId: 'U1',
+      currentInstructionId: 'instr_B', // changed but Todo is frozen
+    });
+    parsed = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    expect(parsed.todos[0].userInstructionId).toBe('instr_A');
+    expect(parsed.todos[0].status).toBe('completed');
+  });
+});
