@@ -9,11 +9,16 @@
  *     load snapshot → pure pick → check leases → applyToken → notify.
  *     Each step is independently testable through injected dependencies.
  *
- * Policy (locked by issue #737):
+ * Policy (locked by issue #737, units realigned by #778):
  *   - Eligibility: `kind === 'cct'` AND `!disableRotation` AND
  *     `state.authState === 'healthy'` AND not tombstoned AND not in
  *     cooldown AND usage snapshot present (both 5h + 7d windows) AND
  *     `fiveHour.utilization ≤ fiveHourMax` AND `sevenDay.utilization ≤ sevenDayMax`.
+ *   - Unit convention (since #701): `usage.fiveHour.utilization` and
+ *     `usage.sevenDay.utilization` are stored in **percent form** (0..100),
+ *     and `RotationThresholds` are also in percent form. Both sides of the
+ *     `>` comparison must therefore be percent. #778 fixed a left-over
+ *     fraction-form threshold default that rejected every healthy slot.
  *   - Selection: minimum `sevenDay.resetsAt` (= soonest to reset).
  *     Tie-break 1: lower `fiveHour.utilization`.
  *     Tie-break 2: keyId lexicographic (deterministic).
@@ -42,9 +47,18 @@ import { isCctSlot } from '../auth/auth-key';
 import type { CctStoreSnapshot, SlotState, UsageSnapshot } from '../cct-store/types';
 
 export interface RotationThresholds {
-  /** 0..1, inclusive upper bound on `usage.fiveHour.utilization`. */
+  /**
+   * Inclusive upper bound on `usage.fiveHour.utilization`, in percent
+   * form (0..100). Per #701 + #778, both this threshold and the
+   * `usage.*.utilization` values it is compared against are in percent
+   * form. Mixing fraction (0..1) form here would reject every healthy
+   * slot — see #778.
+   */
   fiveHourMax: number;
-  /** 0..1, inclusive upper bound on `usage.sevenDay.utilization`. */
+  /**
+   * Inclusive upper bound on `usage.sevenDay.utilization`, in percent
+   * form (0..100). See `fiveHourMax` for the unit convention.
+   */
   sevenDayMax: number;
 }
 
@@ -55,7 +69,9 @@ export interface RotationCandidate {
   sevenDayResetsAt: string;
   /** Epoch ms parsed from `sevenDayResetsAt` (for downstream comparison without re-parsing). */
   sevenDayResetsAtMs: number;
+  /** Percent form (0..100). See `RotationThresholds` for the unit convention. */
   fiveHourUtilization: number;
+  /** Percent form (0..100). See `RotationThresholds` for the unit convention. */
   sevenDayUtilization: number;
   /** Epoch ms parsed from `usage.fetchedAt`. Undefined when fetchedAt is missing/invalid. */
   fetchedAtMs?: number;
@@ -254,7 +270,11 @@ export type RotationOutcome =
 export interface ActiveSummary {
   keyId: string;
   name: string;
-  /** Active slot's own usage stats at decision time, if present. Useful for the notify body. */
+  /**
+   * Active slot's own usage stats at decision time, if present. Useful
+   * for the notify body. Percent form (0..100); see `RotationThresholds`
+   * for the unit convention.
+   */
   fiveHourUtilization?: number;
   sevenDayUtilization?: number;
   sevenDayResetsAt?: string;

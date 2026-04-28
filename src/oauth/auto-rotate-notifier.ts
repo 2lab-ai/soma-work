@@ -22,9 +22,14 @@ export interface RotationNotifyPayload {
   to: RotationCandidate;
 }
 
+/**
+ * Format a percent-form (0..100) utilisation value as a "12.3%" string.
+ * Per #701/#778, `usage.*.utilization` is stored in percent form, so no
+ * `* 100` scaling is applied here.
+ */
 function fmtPct(util: number | undefined): string {
   if (util === undefined || !Number.isFinite(util)) return '—';
-  return `${(util * 100).toFixed(1)}%`;
+  return `${util.toFixed(1)}%`;
 }
 
 function fmtResetsAt(iso: string | undefined): string {

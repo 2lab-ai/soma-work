@@ -38,20 +38,21 @@ function asNotifyClient(client: {
   return client as unknown as Parameters<typeof notifyAutoRotation>[0];
 }
 
+// Per #701 + #778, utilization fields are stored in percent form (0..100).
 const candidate = {
   keyId: 'b',
   name: 'B',
   sevenDayResetsAt: '2026-04-28T00:00:00Z',
   sevenDayResetsAtMs: new Date('2026-04-28T00:00:00Z').getTime(),
-  fiveHourUtilization: 0.42,
-  sevenDayUtilization: 0.55,
+  fiveHourUtilization: 42,
+  sevenDayUtilization: 55,
 };
 
 const activeSummary = {
   keyId: 'a',
   name: 'A',
-  fiveHourUtilization: 0.7,
-  sevenDayUtilization: 0.8,
+  fiveHourUtilization: 70,
+  sevenDayUtilization: 80,
   sevenDayResetsAt: '2026-05-01T00:00:00Z',
 };
 
