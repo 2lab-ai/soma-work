@@ -1327,3 +1327,77 @@ describe('UPDATE_SESSION instructionOperations multi-op rejection (#755 PR2 fix 
     expect(result.ok).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// PR2 fix loop #2 P1-B — legacy lifecycle ops (`remove` / `clear` / `setStatus`)
+// MUST be rejected at the validator with a clear deprecation error. Pre-fix
+// they were advertised as compat but stream-executor coerced them to
+// `type='add'` and `applyConfirmedLifecycle` then rejected them at the
+// bottom — a "lying compat" path. Now the validator cuts them off upstream
+// so the model gets a clear error and can re-emit a sealed action
+// (`cancel` for `remove`, etc.).
+// ---------------------------------------------------------------------------
+describe('UPDATE_SESSION instructionOperations legacy actions rejection (#755 PR2 fix loop #2 P1-B)', () => {
+  it('rejects `remove` with a deprecation error pointing to `cancel`', () => {
+    const result = validateModelCommandRunArgs({
+      commandId: 'UPDATE_SESSION',
+      params: {
+        instructionOperations: [{ action: 'remove', id: 'instr_1' }],
+      },
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.error.code).toBe('INVALID_ARGS');
+    expect(result.error.message).toMatch(/deprecat/i);
+    expect(result.error.message).toMatch(/remove/);
+    expect(result.error.message).toMatch(/cancel/i);
+  });
+
+  it('rejects `clear` with a deprecation error', () => {
+    const result = validateModelCommandRunArgs({
+      commandId: 'UPDATE_SESSION',
+      params: {
+        instructionOperations: [{ action: 'clear' }],
+      },
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.error.code).toBe('INVALID_ARGS');
+    expect(result.error.message).toMatch(/deprecat/i);
+    expect(result.error.message).toMatch(/clear/);
+  });
+
+  it('rejects `setStatus` with a deprecation error pointing to `complete`/`cancel`', () => {
+    const result = validateModelCommandRunArgs({
+      commandId: 'UPDATE_SESSION',
+      params: {
+        instructionOperations: [
+          { action: 'setStatus', id: 'instr_1', status: 'completed' },
+        ],
+      },
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.error.code).toBe('INVALID_ARGS');
+    expect(result.error.message).toMatch(/deprecat/i);
+    expect(result.error.message).toMatch(/setStatus/);
+    expect(result.error.message).toMatch(/complete|cancel/i);
+  });
+
+  it('still accepts the 5 sealed actions (no regression)', () => {
+    const cases = [
+      { action: 'add', text: 'rule' },
+      { action: 'link', id: 'instr_1', sessionKey: 'C/u/T' },
+      { action: 'complete', id: 'instr_1', evidence: 'PR #999' },
+      { action: 'cancel', id: 'instr_1' },
+      { action: 'rename', id: 'instr_1', text: 'updated rule' },
+    ];
+    for (const op of cases) {
+      const result = validateModelCommandRunArgs({
+        commandId: 'UPDATE_SESSION',
+        params: { instructionOperations: [op] },
+      });
+      expect(result.ok, `op=${String(op.action)}`).toBe(true);
+    }
+  });
+});
