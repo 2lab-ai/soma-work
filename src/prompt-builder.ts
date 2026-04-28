@@ -91,6 +91,22 @@ export class PromptBuilder {
   }
 
   /**
+   * Inject the pending-instruction confirm store after construction
+   * (#756 PR3a fix loop #1, P1-C).
+   *
+   * The singleton `PromptBuilder` is created by `ClaudeHandler` before
+   * `SlackHandler` constructs the shared `PendingInstructionConfirmStore`,
+   * so production wiring is a setter — `SlackHandler` calls
+   * `claudeHandler.setPendingInstructionConfirmStore(store)` during
+   * bootstrap, which forwards here. Without this, the
+   * `<current-user-instruction>` block never renders the
+   * `pending: <op>` line in production.
+   */
+  setPendingInstructionConfirmStore(store: PendingInstructionConfirmStore): void {
+    this.pendingInstructionConfirmStore = store;
+  }
+
+  /**
    * Get the resolved prompt directory (for testing)
    */
   getPromptDir(): string {
@@ -383,6 +399,17 @@ export class PromptBuilder {
   }
 
   /**
+   * Options for `buildSystemPrompt` (#756 PR3a fix loop #1).
+   *
+   * `omitCurrentInstructionBlock` lets the caller skip the trailing
+   * `<current-user-instruction>` block emission. Used by `ClaudeHandler`
+   * which caches the prefix on `session.systemPrompt` and re-derives the
+   * block freshly on EVERY turn — appended AFTER `<channel-description>`
+   * and `<channel-repository>` so the block lands in the very last slot.
+   * Existing callers that want the legacy (block-included) behavior pass
+   * nothing — defaults to `false`.
+   */
+  /**
    * Build the complete system prompt for a user
    * Includes base prompt (or workflow prompt) and user's persona.
    *
@@ -393,7 +420,12 @@ export class PromptBuilder {
    * reset points (first turn / reset / post-compact) + SSOT change
    * invalidations. See PLAN.md §2 for the cache protocol.
    */
-  buildSystemPrompt(userId?: string, workflow?: WorkflowType, session?: ConversationSession): string | undefined {
+  buildSystemPrompt(
+    userId?: string,
+    workflow?: WorkflowType,
+    session?: ConversationSession,
+    options?: { omitCurrentInstructionBlock?: boolean },
+  ): string | undefined {
     // Load workflow-specific prompt or default
     let systemPrompt = workflow
       ? this.loadWorkflowPrompt(workflow) || this.defaultSystemPrompt || ''
@@ -461,7 +493,14 @@ export class PromptBuilder {
     //
     // Skipped when no session is supplied (dispatch / classifier
     // one-shots are session-less).
-    if (session && (session.ownerId || userId)) {
+    //
+    // PR3a fix loop #1, P1-A: ClaudeHandler appends `<channel-description>`
+    // and `<channel-repository>` AFTER this method returns. To keep the
+    // block at the very tail of the FINAL prompt, ClaudeHandler now passes
+    // `omitCurrentInstructionBlock: true` and re-emits the block itself
+    // post-suffixes. Other callers (existing tests, dispatch) get the
+    // legacy in-line emission.
+    if (!options?.omitCurrentInstructionBlock && session && (session.ownerId || userId)) {
       const masterUserId = session.ownerId || userId;
       if (masterUserId) {
         const currentInstrBlock = this.buildCurrentInstructionBlockForSession(masterUserId, session);
@@ -486,8 +525,14 @@ export class PromptBuilder {
    * pending-confirm entry from the injected store. Failures are logged
    * and degrade to an empty string — a missing/corrupt master must not
    * sink the entire prompt build.
+   *
+   * Public so `ClaudeHandler` can re-derive the block freshly per turn
+   * (PR3a fix loop #1, P1-A/P1-B): ClaudeHandler appends channel /
+   * repo suffixes AFTER `buildSystemPrompt` returns and then appends a
+   * fresh block — keeping the block at the tail of the prompt AND
+   * keeping its content current even when the prefix is cached.
    */
-  private buildCurrentInstructionBlockForSession(userId: string, session: ConversationSession): string | undefined {
+  buildCurrentInstructionBlockForSession(userId: string, session: ConversationSession): string | undefined {
     let doc;
     try {
       doc = getUserSessionStore().load(userId);
