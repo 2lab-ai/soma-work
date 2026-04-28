@@ -66,9 +66,36 @@ export interface SaveMemoryParams {
 }
 
 export interface ManageSkillParams {
-  action: 'create' | 'update' | 'delete' | 'list' | 'share';
+  action: 'create' | 'update' | 'delete' | 'list' | 'share' | 'rename';
   name?: string;
+  /**
+   * New skill name for `action='rename'` only.
+   *
+   * Validator and dispatcher both require `newName` to be present (and a
+   * different string than `name`) when `action==='rename'`; absent for every
+   * other action. Same kebab-case predicate as `name`.
+   */
+  newName?: string;
   content?: string;
+}
+
+/**
+ * Mutation signal attached to a successful MANAGE_SKILL payload.
+ *
+ * Why it's a distinct field rather than implicit on `action`: the payload
+ * crosses an MCP wire boundary (model-command server → host stream-executor),
+ * so the host needs an explicit, machine-readable trigger to invalidate the
+ * cached `session.systemPrompt` for the affected user. `kind: 'skill'` lets
+ * future stores (e.g. team-shared skills) widen this without breaking the
+ * existing match.
+ *
+ * Only emitted on the four mutating actions (create/update/delete/rename)
+ * AND only on `payload.ok === true`. `share` and `list` are read-only.
+ */
+export interface ManageSkillMutationSignal {
+  kind: 'skill';
+  user: string;
+  action: 'create' | 'update' | 'delete' | 'rename';
 }
 
 export interface ModelCommandParamsMap {
@@ -145,6 +172,14 @@ export interface ModelCommandPayloadMap {
      * fenced code block (see MANAGE_SKILL descriptor for the format contract).
      */
     content?: string;
+    /**
+     * Wire-level signal that the host should invalidate cached system prompts
+     * for `user`. Present iff the dispatcher succeeded on a mutating action
+     * (create/update/delete/rename) AND the storage call returned ok=true.
+     * Absent for share/list and for failures, by design — see
+     * `ManageSkillMutationSignal` for the field contract.
+     */
+    mutated?: ManageSkillMutationSignal;
   };
   RATE: {
     rating: number;

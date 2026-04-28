@@ -23,8 +23,15 @@ import { SessionActionHandler } from './session-action-handler';
 import type { ActionHandlerContext, PendingChoiceFormData } from './types';
 import { UsageCardActionHandler } from './usage-card-action-handler';
 import { UserAcceptanceActionHandler } from './user-acceptance-action-handler';
+import { UserSkillDeleteConfirmViewSubmissionHandler } from './user-skill-delete-confirm-view-submission-handler';
 import { UserSkillEditViewSubmissionHandler, type ViewAck } from './user-skill-edit-view-submission-handler';
-import { USER_SKILL_EDIT_MODAL_CALLBACK_ID, UserSkillMenuActionHandler } from './user-skill-menu-action-handler';
+import {
+  USER_SKILL_DELETE_MODAL_CALLBACK_ID,
+  USER_SKILL_EDIT_MODAL_CALLBACK_ID,
+  USER_SKILL_RENAME_MODAL_CALLBACK_ID,
+  UserSkillMenuActionHandler,
+} from './user-skill-menu-action-handler';
+import { UserSkillRenameViewSubmissionHandler } from './user-skill-rename-view-submission-handler';
 import { ZSettingsActionHandler, type ZTopicRegistry } from './z-settings-actions';
 
 export { PendingFormStore } from './pending-form-store';
@@ -52,6 +59,8 @@ export class ActionHandlers {
   private userAcceptanceHandler: UserAcceptanceActionHandler;
   private userSkillMenuHandler: UserSkillMenuActionHandler;
   private userSkillEditSubmitHandler: UserSkillEditViewSubmissionHandler;
+  private userSkillRenameSubmitHandler: UserSkillRenameViewSubmissionHandler;
+  private userSkillDeleteSubmitHandler: UserSkillDeleteConfirmViewSubmissionHandler;
   private usageCardHandler: UsageCardActionHandler;
   private mcpToolPermissionHandler: McpToolPermissionActionHandler;
   private pluginUpdateHandler: PluginUpdateActionHandler;
@@ -154,6 +163,16 @@ export class ActionHandlers {
       messageHandler: ctx.messageHandler,
     });
     this.userSkillEditSubmitHandler = new UserSkillEditViewSubmissionHandler({
+      slackApi: ctx.slackApi,
+    });
+    // Issue #774 — rename / delete view-submission handlers. Both close the
+    // modal on success and best-effort update the originating list message
+    // in place (so the user sees the new name / removed entry without
+    // re-typing `$user`).
+    this.userSkillRenameSubmitHandler = new UserSkillRenameViewSubmissionHandler({
+      slackApi: ctx.slackApi,
+    });
+    this.userSkillDeleteSubmitHandler = new UserSkillDeleteConfirmViewSubmissionHandler({
       slackApi: ctx.slackApi,
     });
 
@@ -314,6 +333,17 @@ export class ActionHandlers {
       // Bolt's union ack type can't be narrowed structurally here; `ViewAck`
       // captures the `view_submission` arm so the cast names a real type.
       await this.userSkillEditSubmitHandler.handleSubmit(ack as ViewAck, body, client);
+    });
+
+    // Rename modal submission (issue #774). Same no-pre-ack contract as the
+    // edit modal — handler emits `response_action: 'errors' | 'clear'`.
+    app.view(USER_SKILL_RENAME_MODAL_CALLBACK_ID, async ({ ack, body, client }) => {
+      await this.userSkillRenameSubmitHandler.handleSubmit(ack as ViewAck, body, client);
+    });
+
+    // Delete confirmation modal submission (issue #774). Submission == confirm.
+    app.view(USER_SKILL_DELETE_MODAL_CALLBACK_ID, async ({ ack, body, client }) => {
+      await this.userSkillDeleteSubmitHandler.handleSubmit(ack as ViewAck, body, client);
     });
 
     app.action(/^multi_choice_/, async ({ ack, body }) => {
