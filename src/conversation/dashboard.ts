@@ -248,6 +248,34 @@ function requireConversationWriteAccess(request: any, reply: any, ownerId: strin
   return false;
 }
 
+/**
+ * Codex P1-1 (#758) — owner-scope read predicate for per-user resources
+ * (instruction lists / drill-down). Returns true when the caller may
+ * read a resource owned by `ownerId`:
+ *   - bearer admin (viewer token / API client)
+ *   - oauth user, owns the resource
+ *   - oauth user in ADMIN_USERS (no X-Admin-Mode required for reads —
+ *     reads are observational, not mutating)
+ *
+ * Sessions/conversations remain world-readable (#716); this stricter
+ * gate applies to instruction-centric reads which leak per-user work.
+ */
+function _hasOwnerScopeReadAccess(request: any, ownerId: string | undefined): boolean {
+  const authContext = request.authContext;
+  if (authContext?.mode === 'bearer_header' || authContext?.mode === 'bearer_cookie') return true;
+  if (authContext?.userId && ownerId && authContext.userId === ownerId) return true;
+  if (authContext?.isAdmin) return true;
+  return false;
+}
+
+function requireOwnerScopeRead(request: any, reply: any, ownerId: string | undefined): boolean {
+  if (_hasOwnerScopeReadAccess(request, ownerId)) return true;
+  reply.status(403).send({
+    error: 'Forbidden — instruction reads require ownership or admin (codex P1-1 #758)',
+  });
+  return false;
+}
+
 // ── Task accessor ──────────────────────────────────────────────────
 
 type TaskAccessor = (sessionKey: string) =>
@@ -1186,10 +1214,11 @@ export async function registerDashboardRoutes(
 
   // ── #758 instruction-centric reads ──
   //
-  // World-readable for any authenticated caller (matches the existing
-  // session-detail policy — writes remain owner-only). Read-only by
-  // design: the [⋯] menu in the UI talks to /propose-lifecycle which
-  // delegates to the PR2 confirm gate.
+  // Owner-scope auth (codex P1-1 fix): only the owner or an admin may
+  // read a user's instructions. Sessions/conversations remain
+  // world-readable per #716, but instructions leak per-user work and
+  // need a tighter read gate. The [⋯] menu in the UI talks to
+  // /propose-lifecycle which delegates to the PR2 confirm gate.
 
   // Per-user active instructions with linked sessions + Todo progress
   // aggregation.
@@ -1202,6 +1231,7 @@ export async function registerDashboardRoutes(
         reply.status(400).send({ error: 'Invalid userId' });
         return;
       }
+      if (!requireOwnerScopeRead(request, reply, userId)) return;
       const doc = _userInstructionsAccessorFn ? _userInstructionsAccessorFn(userId) : null;
       const instructions = doc?.instructions ?? [];
       const sessions = getAllSessions();
@@ -1258,6 +1288,7 @@ export async function registerDashboardRoutes(
         reply.status(400).send({ error: 'Invalid userId' });
         return;
       }
+      if (!requireOwnerScopeRead(request, reply, userId)) return;
       const doc = _userInstructionsAccessorFn ? _userInstructionsAccessorFn(userId) : null;
       const inst = doc?.instructions.find((i) => i.id === request.params.id);
       if (!inst) {
