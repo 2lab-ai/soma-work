@@ -1252,6 +1252,20 @@ export class SessionRegistry {
   }
 
   /**
+   * Supersede path: a new pending-confirm request arrived for the same
+   * session while an older one was still waiting on the user. The older
+   * entry is evicted from the pending store; we record a `state:
+   * 'superseded'` row here so the audit trail shows the intent the model
+   * dropped.
+   *
+   * Stream-executor calls this with the EVICTED entry's metadata, NOT the
+   * new pending request. No instruction data is mutated.
+   */
+  recordSupersededLifecycle(session: ConversationSession, meta: LifecycleConfirmMeta): void {
+    this.appendLifecycleAuditOnly(session, meta, 'superseded');
+  }
+
+  /**
    * Internal helper — append a single lifecycleEvents row with the given
    * non-mutating state ('rejected' or 'superseded'). No data mutation, no
    * pointer update; the row's `instructionId` is null for `add` rejections
