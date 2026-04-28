@@ -52,14 +52,11 @@ vi.mock('../user-memory-store', () => ({
   formatMemoryForPrompt: vi.fn().mockReturnValue(''),
 }));
 
+import { CURRENT_INSTRUCTION_BLOCK_CLOSE, CURRENT_INSTRUCTION_BLOCK_OPEN } from '../prompt/current-instruction-block';
 import { PromptBuilder } from '../prompt-builder';
-import { initUserSessionStore, type UserInstruction } from '../user-session-store';
-import {
-  CURRENT_INSTRUCTION_BLOCK_CLOSE,
-  CURRENT_INSTRUCTION_BLOCK_OPEN,
-} from '../prompt/current-instruction-block';
 import { PendingInstructionConfirmStore } from '../slack/actions/pending-instruction-confirm-store';
 import type { ConversationSession } from '../types';
+import { initUserSessionStore, type UserInstruction } from '../user-session-store';
 
 let TEST_DIR: string;
 const USER_ID = 'U_PROMPT_BUILDER_756';

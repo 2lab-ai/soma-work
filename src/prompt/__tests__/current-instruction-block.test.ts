@@ -15,13 +15,13 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import type { PendingInstructionConfirm } from '../../slack/actions/pending-instruction-confirm-store';
+import type { UserSessionDoc } from '../../user-session-store';
 import {
   buildCurrentInstructionBlock,
   CURRENT_INSTRUCTION_BLOCK_CLOSE,
   CURRENT_INSTRUCTION_BLOCK_OPEN,
 } from '../current-instruction-block';
-import type { UserSessionDoc } from '../../user-session-store';
-import type { PendingInstructionConfirm } from '../../slack/actions/pending-instruction-confirm-store';
 
 const NOW_MS = Date.UTC(2026, 3, 28, 12, 0, 0); // 2026-04-28 12:00 UTC
 const NOW_ISO = new Date(NOW_MS).toISOString();
@@ -269,7 +269,9 @@ describe('buildCurrentInstructionBlock', () => {
       sessionKey: 'C1-T1',
       channelId: 'C1',
       threadTs: 'T1',
-      payload: { instructionOperations: [{ action: 'complete', id: 'inst_1' }] } as unknown as PendingInstructionConfirm['payload'],
+      payload: {
+        instructionOperations: [{ action: 'complete', id: 'inst_1' }],
+      } as unknown as PendingInstructionConfirm['payload'],
       createdAt: NOW_MS - 30 * 60 * 1000,
       requesterId: 'U_REQ',
       type: 'complete',
@@ -306,7 +308,9 @@ describe('buildCurrentInstructionBlock', () => {
       sessionKey: 'C1-T1',
       channelId: 'C1',
       threadTs: 'T1',
-      payload: { instructionOperations: [{ action: 'rename', id: 'inst_1', text: 'do x prime' }] } as unknown as PendingInstructionConfirm['payload'],
+      payload: {
+        instructionOperations: [{ action: 'rename', id: 'inst_1', text: 'do x prime' }],
+      } as unknown as PendingInstructionConfirm['payload'],
       createdAt: NOW_MS - 5 * 60 * 1000,
       requesterId: 'U_REQ',
       type: 'rename',
