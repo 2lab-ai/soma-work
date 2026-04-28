@@ -31,6 +31,33 @@ const STORE_FILE = path.join(DATA_DIR, 'pending-instruction-confirms.json');
 const CONFIRM_TTL_MS = 24 * 60 * 60 * 1000;
 
 /**
+ * Sealed 5-op lifecycle vocabulary (#755). Every pending confirm entry
+ * carries one of these in `type` so the SessionRegistry tx can build the
+ * `lifecycleEvents[]` audit row without re-scanning `request.instructionOperations`.
+ */
+export type PendingInstructionConfirmType = 'add' | 'link' | 'complete' | 'cancel' | 'rename';
+
+const VALID_PENDING_TYPES: ReadonlySet<PendingInstructionConfirmType> = new Set([
+  'add',
+  'link',
+  'complete',
+  'cancel',
+  'rename',
+]);
+
+/**
+ * Actor descriptor matching the sealed `lifecycleEvents[].by` shape.
+ * `slack-user` is the only valid producer at the y/n confirm seam — `system`
+ * and `migration` are reserved for self-heal / migration audits and never
+ * flow through the pending store. `id` is the Slack user-id of the
+ * triggering user (snapshotted at queue-time, immune to later turn shifts).
+ */
+export interface PendingInstructionConfirmBy {
+  type: 'slack-user';
+  id: string;
+}
+
+/**
  * Payload persisted per pending entry. `requestId` is the primary key —
  * mirrored into the Slack action_id so the button click maps back here.
  */
@@ -61,6 +88,20 @@ export interface PendingInstructionConfirm {
    * entries missing this field are dropped on rehydrate.
    */
   requesterId: string;
+  /**
+   * Sealed lifecycle op that produced this entry (#755). Used by the
+   * SessionRegistry transaction to build the `lifecycleEvents[]` row when
+   * the user clicks y/n. Required.
+   */
+  type: PendingInstructionConfirmType;
+  /**
+   * Sealed actor descriptor matching `lifecycleEvents[].by` (#755 / #727).
+   * The `id` mirrors `requesterId` at queue-time; carrying both is
+   * intentional — `requesterId` is the existing owner-guard anchor and
+   * `by` is the audit-log anchor, and we want the two seams independently
+   * verifiable on disk.
+   */
+  by: PendingInstructionConfirmBy;
 }
 
 export class PendingInstructionConfirmStore {
@@ -179,6 +220,13 @@ export class PendingInstructionConfirmStore {
         // Pre-migration entries lack `requesterId`; dropping them here
         // prevents rehydrating a record the owner guard cannot evaluate.
         if (typeof entry.requesterId !== 'string' || entry.requesterId.length === 0) continue;
+        // Pre-#755 entries lack the sealed `type` + `by` fields. Treating
+        // them as `add` here would silently mis-attribute lifecycle events,
+        // so we drop them — the model can re-propose on the next turn and
+        // a fresh entry with the sealed shape will be queued.
+        if (!VALID_PENDING_TYPES.has(entry.type as PendingInstructionConfirmType)) continue;
+        const by = entry.by as PendingInstructionConfirmBy | undefined;
+        if (!by || by.type !== 'slack-user' || typeof by.id !== 'string' || by.id.length === 0) continue;
         this.byRequest.set(entry.requestId, entry);
         this.bySession.set(entry.sessionKey, entry.requestId);
         restored += 1;

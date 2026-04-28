@@ -67,6 +67,8 @@ describe('InstructionConfirmActionHandler', () => {
       request: mkRequest(),
       createdAt: Date.now(),
       requesterId: 'U1',
+      type: 'add',
+      by: { type: 'slack-user', id: 'U1' },
     });
 
     await handler.handleYes(
@@ -91,6 +93,8 @@ describe('InstructionConfirmActionHandler', () => {
       request: mkRequest(),
       createdAt: Date.now(),
       requesterId: 'U1',
+      type: 'add',
+      by: { type: 'slack-user', id: 'U1' },
     });
 
     await handler.handleNo(
@@ -115,6 +119,8 @@ describe('InstructionConfirmActionHandler', () => {
       request: mkRequest(),
       createdAt: Date.now(),
       requesterId: 'U1',
+      type: 'add',
+      by: { type: 'slack-user', id: 'U1' },
     });
 
     await handler.handleYes(
@@ -144,6 +150,8 @@ describe('InstructionConfirmActionHandler', () => {
       request: mkRequest(),
       createdAt: Date.now(),
       requesterId: 'U-original',
+      type: 'add',
+      by: { type: 'slack-user', id: 'U-original' },
     });
 
     await handler.handleYes(

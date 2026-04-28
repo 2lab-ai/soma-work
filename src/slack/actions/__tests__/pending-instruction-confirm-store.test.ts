@@ -44,6 +44,8 @@ describe('PendingInstructionConfirmStore', () => {
       request: mkRequest(),
       createdAt: Date.now(),
       requesterId: DEFAULT_REQUESTER,
+      type: 'add' as const,
+      by: { type: 'slack-user' as const, id: DEFAULT_REQUESTER },
     };
     expect(store.set(entry)).toBeUndefined();
     expect(store.get('r1')).toEqual(entry);
@@ -65,6 +67,8 @@ describe('PendingInstructionConfirmStore', () => {
       request: mkRequest(),
       createdAt: Date.now(),
       requesterId: DEFAULT_REQUESTER,
+      type: 'add' as const,
+      by: { type: 'slack-user' as const, id: DEFAULT_REQUESTER },
     };
     store.set(a);
     const b = { ...a, requestId: 'r2', messageTs: undefined as string | undefined };
@@ -85,6 +89,8 @@ describe('PendingInstructionConfirmStore', () => {
       request: mkRequest(),
       createdAt: Date.now(),
       requesterId: DEFAULT_REQUESTER,
+      type: 'add' as const,
+      by: { type: 'slack-user' as const, id: DEFAULT_REQUESTER },
     };
     store.set(entry);
     store.updateMessageTs('r1', 'ts-123');
@@ -102,6 +108,8 @@ describe('PendingInstructionConfirmStore', () => {
       request: mkRequest(),
       createdAt: Date.now(),
       requesterId: DEFAULT_REQUESTER,
+      type: 'add' as const,
+      by: { type: 'slack-user' as const, id: DEFAULT_REQUESTER },
     });
 
     const store2 = new PendingInstructionConfirmStore();
@@ -120,6 +128,8 @@ describe('PendingInstructionConfirmStore', () => {
       request: mkRequest(),
       createdAt: Date.now() - 25 * 60 * 60 * 1000,
       requesterId: DEFAULT_REQUESTER,
+      type: 'add' as const,
+      by: { type: 'slack-user' as const, id: DEFAULT_REQUESTER },
     };
     const fresh = {
       requestId: 'new',
@@ -129,6 +139,8 @@ describe('PendingInstructionConfirmStore', () => {
       request: mkRequest(),
       createdAt: Date.now(),
       requesterId: DEFAULT_REQUESTER,
+      type: 'add' as const,
+      by: { type: 'slack-user' as const, id: DEFAULT_REQUESTER },
     };
     // Write directly to file so we can set createdAt freely.
     fs.writeFileSync(STORE_FILE, JSON.stringify([expired, fresh], null, 2));
@@ -170,6 +182,8 @@ describe('PendingInstructionConfirmStore', () => {
       request: mkRequest(),
       createdAt: Date.now() - 25 * 60 * 60 * 1000,
       requesterId: DEFAULT_REQUESTER,
+      type: 'add',
+      by: { type: 'slack-user', id: DEFAULT_REQUESTER },
     });
     expect(store.get('stale')).toBeUndefined();
     expect(store.getBySession('C5|T5')).toBeUndefined();

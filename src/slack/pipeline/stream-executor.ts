@@ -2961,6 +2961,23 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // who actually triggered this write, immune to later turn shifts.
     const requesterId = session.currentInitiatorId || session.ownerId;
 
+    // Sealed pending entry shape (#755): derive `type` from the first op so
+    // the SessionRegistry tx can attribute the resulting `lifecycleEvents[]`
+    // row without re-scanning the request. The 5-op vocabulary
+    // (add|link|complete|cancel|rename) is the model's user-confirmable
+    // alphabet — legacy ops (remove/clear/setStatus) fall back to 'add'
+    // for audit-attribution purposes; in practice we never see them paired
+    // with the y/n confirm path post-#755.
+    const firstOp = request.instructionOperations?.[0];
+    const lifecycleType: import('../actions/pending-instruction-confirm-store').PendingInstructionConfirmType =
+      firstOp && (firstOp.action === 'add' ||
+        firstOp.action === 'link' ||
+        firstOp.action === 'complete' ||
+        firstOp.action === 'cancel' ||
+        firstOp.action === 'rename')
+        ? firstOp.action
+        : 'add';
+
     const evicted = store.set({
       requestId,
       sessionKey: context.sessionKey,
@@ -2969,6 +2986,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       request: requestForStore,
       createdAt: Date.now(),
       requesterId,
+      type: lifecycleType,
+      by: { type: 'slack-user', id: requesterId },
     });
 
     // Supersede any prior pending message for this session.
