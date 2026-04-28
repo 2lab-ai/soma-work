@@ -230,9 +230,7 @@ describe('Dashboard instruction-centric read APIs (#758)', () => {
 
   it('drill-down returns instruction + tasks union + lifecycle events filtered by id', async () => {
     const doc = makeDoc({
-      instructions: [
-        makeInstruction({ id: 'inst-A', text: 'A', linkedSessionIds: ['C1:t1', 'C2:t2'] }),
-      ],
+      instructions: [makeInstruction({ id: 'inst-A', text: 'A', linkedSessionIds: ['C1:t1', 'C2:t2'] })],
       lifecycleEvents: [
         makeLifecycleEvent({ id: 'evt-A1', instructionId: 'inst-A', op: 'add', state: 'confirmed' }),
         makeLifecycleEvent({ id: 'evt-A2', instructionId: 'inst-A', op: 'link', state: 'confirmed' }),

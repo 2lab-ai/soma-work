@@ -25,7 +25,9 @@ import { MetricsEventStore } from '../metrics/event-store';
 import { ReportAggregator } from '../metrics/report-aggregator';
 import { AggregatedMetrics, type MetricsEvent } from '../metrics/types';
 import { type ArchivedSession, getArchiveStore } from '../session-archive';
+import type { Todo } from '../todo-manager';
 import { buildThreadPermalink } from '../turn-notifier';
+import type { LifecycleEvent, LifecycleOp, UserInstruction, UserSessionDoc } from '../user-session-store';
 import { coerceEffort, type EffortLevel, userSettingsStore } from '../user-settings-store';
 import { getConversation, resummarizeTurn, updateConversationTitleSub } from './recorder';
 import { generateTitle } from './title-generator';
@@ -106,6 +108,21 @@ export interface KanbanSession {
   issueShortRef?: string;
   /** GitHub PR short ref like "PR-123" derived from prUrl */
   prShortRef?: string;
+  /**
+   * #758 — sealed pointer mirror. The session-registry persists
+   * `currentInstructionId` on the session record (see #754); we surface it
+   * on the kanban payload so the inline panel can render the
+   * "Current instruction" row without re-fetching the user-session-store.
+   * Absent when the session has no active instruction (Q4 sealed: `null` is
+   * a normal state).
+   */
+  currentInstructionId?: string;
+  /**
+   * #758 — append-only history mirror. Allows the existing kanban session
+   * card panel to render an "Instructions history" timeline without
+   * re-reading the user-scope master.
+   */
+  instructionHistory?: string[];
   /** Pending user choice question (present when activityState === 'waiting' and a question was asked) */
   pendingQuestion?: {
     type: 'user_choice' | 'user_choices';
@@ -301,6 +318,66 @@ export function setDashboardSubmitRecommendedHandler(fn: SubmitRecommendedHandle
   _submitRecommendedHandlerFn = fn;
 }
 
+// ── #758 instruction-centric read seam ───────────────────────────────
+//
+// The dashboard never reads `data/users/{userId}/user-session.json`
+// directly — the controller wires the UserSessionStore through these
+// accessors so the route handlers stay independent of disk I/O and
+// remain trivially mockable from the unit suite. Same shape as the
+// kanban session accessor above.
+
+type UserInstructionsAccessor = (userId: string) => UserSessionDoc | null;
+let _userInstructionsAccessorFn: UserInstructionsAccessor | null = null;
+
+/** Register accessor that returns the per-user instruction master (#758). */
+export function setDashboardUserInstructionsAccessor(fn: UserInstructionsAccessor): void {
+  _userInstructionsAccessorFn = fn;
+}
+
+type InstructionTodosAccessor = (userId: string, instructionId: string) => Todo[];
+let _instructionTodosAccessorFn: InstructionTodosAccessor | null = null;
+
+/**
+ * Register accessor that returns Todos linked to a single instruction id
+ * across all of a user's sessions. The controller wires this to
+ * `TodoManager.findTodosByInstructionId` (#757). Read-only.
+ */
+export function setDashboardInstructionTodosAccessor(fn: InstructionTodosAccessor): void {
+  _instructionTodosAccessorFn = fn;
+}
+
+/**
+ * #758 lifecycle propose handler — the [⋯] menu on each instruction card
+ * may only PROPOSE a transition. The controller routes the proposal
+ * through the existing PR2 user-confirm gate (y/n) so the dashboard
+ * never mutates the user-session-store directly. Manual-override
+ * actions are a separate seam in #759.
+ */
+export type LifecycleProposeRequest = {
+  userId: string;
+  instructionId: string;
+  op: LifecycleOp;
+  /** Optional payload — e.g. new text for `rename`. */
+  payload?: unknown;
+};
+type LifecycleProposeHandler = (req: LifecycleProposeRequest) => Promise<{ requestId: string }>;
+let _lifecycleProposeHandlerFn: LifecycleProposeHandler | null = null;
+
+export function setDashboardLifecycleProposeHandler(fn: LifecycleProposeHandler): void {
+  _lifecycleProposeHandlerFn = fn;
+}
+
+// Mirror of UserSessionStore's id-charset rule. We can't import the
+// helper from user-session-store because it's not exported; the rule is
+// trivially small and re-statable here, and any drift would be a build
+// break the tests catch.
+function isSafeUserIdParam(userId: string): boolean {
+  if (!userId || typeof userId !== 'string') return false;
+  if (userId.includes('/') || userId.includes('\\') || userId.includes('\x00')) return false;
+  if (userId === '.' || userId === '..' || userId.startsWith('..')) return false;
+  return /^[A-Za-z0-9._-]+$/.test(userId);
+}
+
 // ── Kanban transformation ──────────────────────────────────────────
 
 // Dashboard v2.1 — max active-leg duration cap (mirrors session-registry).
@@ -437,6 +514,13 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     threadTotalActiveMs: aggregate.totalActiveMs,
     threadSessionCount: aggregate.sessionCount,
     threadCompactionCount: aggregate.compactionCount,
+    // #758 — surface the sealed instruction pointer + history mirror so the
+    // existing kanban panel can render "Current instruction" /
+    // "Instructions history" without re-reading the user-scope master.
+    // Empty history arrays are dropped (the UI treats absent === empty).
+    currentInstructionId: typeof s.currentInstructionId === 'string' ? s.currentInstructionId : undefined,
+    instructionHistory:
+      Array.isArray(s.instructionHistory) && s.instructionHistory.length > 0 ? [...s.instructionHistory] : undefined,
     ...cardDerivedFields({ effort: s.effort, ownerId: s.ownerId, links: s.links, persistedEffort: true }),
     pendingQuestion: s.actionPanel?.pendingQuestion
       ? s.actionPanel.pendingQuestion.type === 'user_choice'
@@ -893,6 +977,57 @@ export function broadcastSingleSessionUpdate(sessionKey: string): void {
   }
 }
 
+/**
+ * #758 — broadcast a "new instruction" event so the Active Instructions
+ * section can prepend a card without a full board reload. Scoped to the
+ * owner's WS clients (admins also see it). Defensive: never throws.
+ */
+export function broadcastInstructionCreated(userId: string, instruction: UserInstruction): void {
+  broadcastInstructionEvent(userId, 'instructionCreated', { instruction });
+}
+
+/**
+ * #758 — broadcast an instruction status / link / rename change. The
+ * payload carries the full sealed instruction so the client just re-renders
+ * the card.
+ */
+export function broadcastInstructionUpdated(userId: string, instruction: UserInstruction): void {
+  broadcastInstructionEvent(userId, 'instructionUpdated', { instruction });
+}
+
+/**
+ * #758 — broadcast a `completed` / `cancelled` transition. The client
+ * removes the card from the active list (the drill-down stays reachable
+ * if the panel is open). The status enum is sealed by #754.
+ */
+export function broadcastInstructionClosed(
+  userId: string,
+  instructionId: string,
+  status: 'completed' | 'cancelled',
+): void {
+  broadcastInstructionEvent(userId, 'instructionClosed', { instructionId, status });
+}
+
+function broadcastInstructionEvent(userId: string, type: string, extra: Record<string, unknown>): void {
+  if (wsClients.size === 0) return;
+  try {
+    const payload = JSON.stringify({ type, userId, ...extra });
+    for (const client of wsClients) {
+      // Owner-scope: same policy as broadcastConversationUpdate. Admin
+      // dashboards always see every user's events; bare clients only see
+      // their own user.
+      if (!client.isAdmin && client.userId && client.userId !== userId) continue;
+      try {
+        client.send(payload);
+      } catch {
+        wsClients.delete(client);
+      }
+    }
+  } catch (error) {
+    logger.error('Failed to broadcast instruction event', { type, error });
+  }
+}
+
 /** Broadcast session action feedback to all connected WebSocket clients */
 export function broadcastSessionAction(sessionKey: string, action: 'stop' | 'close' | 'trash'): void {
   if (wsClients.size === 0) return;
@@ -1048,6 +1183,163 @@ export async function registerDashboardRoutes(
     }
     reply.send({ users: Array.from(users.entries()).map(([id, name]) => ({ id, name })) });
   });
+
+  // ── #758 instruction-centric reads ──
+  //
+  // World-readable for any authenticated caller (matches the existing
+  // session-detail policy — writes remain owner-only). Read-only by
+  // design: the [⋯] menu in the UI talks to /propose-lifecycle which
+  // delegates to the PR2 confirm gate.
+
+  // Per-user active instructions with linked sessions + Todo progress
+  // aggregation.
+  server.get<{ Params: { userId: string } }>(
+    '/api/dashboard/users/:userId/instructions',
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      const { userId } = request.params;
+      if (!isSafeUserIdParam(userId)) {
+        reply.status(400).send({ error: 'Invalid userId' });
+        return;
+      }
+      const doc = _userInstructionsAccessorFn ? _userInstructionsAccessorFn(userId) : null;
+      const instructions = doc?.instructions ?? [];
+      const sessions = getAllSessions();
+      const now = Date.now();
+      const out = instructions
+        .filter((inst) => inst.status === 'active')
+        .map((inst) => {
+          const linkedSessions = inst.linkedSessionIds.map((sk) => {
+            const live = sessions.get(sk);
+            return {
+              sessionKey: sk,
+              activityState: (live?.activityState as 'working' | 'waiting' | 'idle' | undefined) ?? undefined,
+              title: live?.summaryTitle || live?.title || undefined,
+              ownerId: live?.ownerId || undefined,
+            };
+          });
+          const todos: Todo[] = _instructionTodosAccessorFn ? _instructionTodosAccessorFn(userId, inst.id) : [];
+          const progress = {
+            total: todos.length,
+            completed: todos.filter((t) => t.status === 'completed').length,
+            in_progress: todos.filter((t) => t.status === 'in_progress').length,
+            pending: todos.filter((t) => t.status === 'pending').length,
+          };
+          const created = Date.parse(inst.createdAt);
+          const ageMs = Number.isFinite(created) ? Math.max(0, now - created) : 0;
+          return {
+            id: inst.id,
+            text: inst.text,
+            status: inst.status,
+            source: inst.source,
+            createdAt: inst.createdAt,
+            ageMs,
+            linkedSessions,
+            progress,
+          };
+        });
+      reply.send({ userId, instructions: out });
+    },
+  );
+
+  // Per-instruction drill-down: linked sessions + tasks union + lifecycle
+  // events filtered by `instructionId` from the top-level
+  // lifecycleEvents[] master (PR1).
+  server.get<{ Params: { id: string }; Querystring: { userId?: string } }>(
+    '/api/dashboard/instructions/:id',
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      const userId = request.query.userId;
+      if (!userId) {
+        reply.status(400).send({ error: 'userId query parameter is required' });
+        return;
+      }
+      if (!isSafeUserIdParam(userId)) {
+        reply.status(400).send({ error: 'Invalid userId' });
+        return;
+      }
+      const doc = _userInstructionsAccessorFn ? _userInstructionsAccessorFn(userId) : null;
+      const inst = doc?.instructions.find((i) => i.id === request.params.id);
+      if (!inst) {
+        reply.status(404).send({ error: 'Instruction not found' });
+        return;
+      }
+      const sessions = getAllSessions();
+      const linkedSessions = inst.linkedSessionIds.map((sk) => {
+        const live = sessions.get(sk);
+        return {
+          sessionKey: sk,
+          activityState: (live?.activityState as 'working' | 'waiting' | 'idle' | undefined) ?? undefined,
+          title: live?.summaryTitle || live?.title || undefined,
+          ownerId: live?.ownerId || undefined,
+        };
+      });
+      const tasks: Todo[] = _instructionTodosAccessorFn ? _instructionTodosAccessorFn(userId, inst.id) : [];
+      const lifecycleEvents: LifecycleEvent[] = (doc?.lifecycleEvents ?? []).filter((e) => e.instructionId === inst.id);
+      reply.send({
+        instruction: {
+          id: inst.id,
+          text: inst.text,
+          status: inst.status,
+          source: inst.source,
+          createdAt: inst.createdAt,
+          completedAt: inst.completedAt,
+          cancelledAt: inst.cancelledAt,
+        },
+        linkedSessions,
+        tasks,
+        lifecycleEvents,
+      });
+    },
+  );
+
+  // Lifecycle propose seam: the dashboard ALWAYS hands off to the
+  // controller, which routes through the PR2 user-confirm gate. There is
+  // no direct-mutation route in this PR — manual override is #759.
+  const ALLOWED_LIFECYCLE_OPS: ReadonlySet<LifecycleOp> = new Set(['add', 'link', 'complete', 'cancel', 'rename']);
+  server.post<{ Params: { id: string }; Body: { userId?: string; op?: string; payload?: unknown } }>(
+    '/api/dashboard/instructions/:id/propose-lifecycle',
+    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
+    async (request, reply) => {
+      const { id } = request.params;
+      const body = request.body || {};
+      const userId = body.userId;
+      const op = body.op;
+      if (!userId || typeof userId !== 'string' || !isSafeUserIdParam(userId)) {
+        reply.status(400).send({ error: 'userId is required and must be a valid id' });
+        return;
+      }
+      if (!op || typeof op !== 'string' || !ALLOWED_LIFECYCLE_OPS.has(op as LifecycleOp)) {
+        reply.status(400).send({ error: 'op must be one of: add | link | complete | cancel | rename' });
+        return;
+      }
+      // #716: ownership / admin gate — same policy as session writes.
+      // Ownership here is the userId argument: the caller must own the
+      // instruction or be an admin in safe-mode.
+      if (!_hasWriteAccess(request, userId)) {
+        reply.status(403).send({
+          error: 'Forbidden — propose requires ownership, or admin user with X-Admin-Mode: on header (#716)',
+        });
+        return;
+      }
+      if (!_lifecycleProposeHandlerFn) {
+        reply.status(501).send({ error: 'Lifecycle propose handler not configured' });
+        return;
+      }
+      try {
+        const result = await _lifecycleProposeHandlerFn({
+          userId,
+          instructionId: id,
+          op: op as LifecycleOp,
+          payload: body.payload,
+        });
+        reply.status(202).send({ ok: true, requestId: result.requestId });
+      } catch (error) {
+        logger.error('Error proposing instruction lifecycle change', error);
+        reply.status(500).send({ error: 'Internal Server Error' });
+      }
+    },
+  );
 
   // Session detail (conversation turns for slide panel)
   // Supports pagination via ?limit=N&before=<turnId>. Default limit=30, max=200.
@@ -2722,6 +3014,18 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 
     <div class="chart-row" id="chart-row"></div>
 
+    <!-- #758 — Active Instructions section (read-only). The [⋯] menu only
+         PROPOSES lifecycle ops; the controller routes through the PR2
+         user-confirm gate so the dashboard never mutates the user-scope
+         master directly. -->
+    <div id="instructions-section" style="margin-top:16px">
+      <div style="border-top:1px solid var(--border);margin:16px 0 12px;opacity:0.5"></div>
+      <h2 style="font-size:0.95em;margin-bottom:12px;color:var(--text-secondary)">&#x1F3AF; Active Instructions</h2>
+      <div id="instructions-list" class="instructions-list" data-empty="true">
+        <div class="instructions-empty" style="color:var(--text-tertiary);font-size:0.85em">No active instructions for this user.</div>
+      </div>
+    </div>
+
     <div style="border-top:1px solid var(--border);margin:16px 0 12px;opacity:0.5"></div>
     <h2 style="font-size:0.95em;margin-bottom:12px;color:var(--text-secondary)">&#x1F4CB; &#xC138;&#xC158; &#xBCF4;&#xB4DC;</h2>
     <div class="kanban" id="kanban">
@@ -3281,6 +3585,7 @@ function selectUser(userId) {
   history.replaceState(null, '', userId ? '/dashboard/' + userId : '/dashboard');
   loadSessions();
   loadStats();
+  loadInstructions();
 }
 
 // ── Period ──
@@ -3541,6 +3846,129 @@ async function loadSessions() {
     const data = await res.json();
     renderBoard(data.board);
   } catch (e) { console.error('Failed to load sessions', e); }
+}
+
+// ── #758 Active Instructions section (read-only) ──
+//
+// The [⋯] menu on every card only PROPOSES a lifecycle change via
+// /api/dashboard/instructions/:id/propose-lifecycle. The controller
+// routes the proposal through the PR2 user-confirm gate so this surface
+// never mutates the user-scope master directly. Manual override actions
+// (#759) are out of scope for this PR.
+async function loadInstructions() {
+  var listEl = document.getElementById('instructions-list');
+  if (!listEl) return;
+  if (!currentUserId) {
+    listEl.setAttribute('data-empty', 'true');
+    listEl.innerHTML = '<div class="instructions-empty" style="color:var(--text-tertiary);font-size:0.85em">Select a user to view active instructions.</div>';
+    return;
+  }
+  try {
+    var res = await fetch('/api/dashboard/users/' + encodeURIComponent(currentUserId) + '/instructions');
+    if (!res.ok) {
+      listEl.setAttribute('data-empty', 'true');
+      listEl.innerHTML = '<div class="instructions-empty" style="color:var(--red);font-size:0.85em">Failed to load instructions.</div>';
+      return;
+    }
+    var data = await res.json();
+    var arr = (data && Array.isArray(data.instructions)) ? data.instructions : [];
+    if (arr.length === 0) {
+      listEl.setAttribute('data-empty', 'true');
+      listEl.innerHTML = '<div class="instructions-empty" style="color:var(--text-tertiary);font-size:0.85em">No active instructions for this user.</div>';
+      return;
+    }
+    listEl.setAttribute('data-empty', 'false');
+    listEl.innerHTML = arr.map(renderInstructionCard).join('');
+  } catch (e) {
+    console.error('Failed to load instructions', e);
+  }
+}
+
+function renderInstructionCard(inst) {
+  var progress = inst.progress || { total: 0, completed: 0, in_progress: 0, pending: 0 };
+  var pct = progress.total > 0 ? Math.round((progress.completed / progress.total) * 100) : 0;
+  var ageMin = Math.max(1, Math.round((inst.ageMs || 0) / 60000));
+  var ageLabel = ageMin < 60
+    ? (ageMin + 'm')
+    : (ageMin < 24 * 60 ? Math.round(ageMin / 60) + 'h' : Math.round(ageMin / (24 * 60)) + 'd');
+  var linked = (inst.linkedSessions || []).map(function(ls) {
+    var dot = (ls.activityState === 'working') ? '\\u{1F7E2}'
+      : (ls.activityState === 'waiting') ? '\\u{1F7E1}'
+        : (ls.activityState === 'idle') ? '\\u{26AA}'
+          : '\\u{26AB}';
+    return dot + ' ' + esc(ls.sessionKey);
+  }).join(' \\u00B7 ');
+  return ''
+    + '<div class="instruction-card" data-instruction-id="' + escAttr(inst.id) + '" onclick="openInstructionPanel(\\'' + escJs(inst.id) + '\\')">'
+    +   '<div class="instruction-card-row" style="display:flex;align-items:flex-start;gap:8px">'
+    +     '<div style="flex:1;min-width:0">'
+    +       '<div class="instruction-text" style="font-weight:500;color:var(--text);line-height:1.3">' + esc(inst.text || '(no text)') + '</div>'
+    +       '<div class="instruction-meta" style="font-size:11px;color:var(--text-secondary);margin-top:4px">' + linked + ' \\u00B7 age ' + esc(ageLabel) + '</div>'
+    +       '<div class="instruction-progress" style="font-size:11px;color:var(--text-tertiary);margin-top:4px">'
+    +         esc('Progress: ' + progress.completed + ' / ' + progress.total + ' (' + pct + '%)')
+    +       '</div>'
+    +     '</div>'
+    +     '<button class="instruction-menu-btn" type="button"'
+    +       ' aria-label="Instruction menu"'
+    +       ' onclick="event.stopPropagation();toggleInstructionMenu(\\'' + escJs(inst.id) + '\\',this)"'
+    +       ' style="background:none;border:1px solid var(--border);color:var(--text-secondary);padding:2px 6px;cursor:pointer">\\u22EF</button>'
+    +   '</div>'
+    + '</div>';
+}
+
+// Toggle the propose-only menu next to a card. Each item POSTs to
+// /api/dashboard/instructions/:id/propose-lifecycle so the controller's
+// PR2 confirm gate (#755) handles the actual transition. The dashboard
+// NEVER hits a per-instruction direct-mutation route — that is #759.
+function toggleInstructionMenu(instructionId, anchor) {
+  var existing = document.getElementById('instruction-menu-popover');
+  if (existing) { existing.remove(); }
+  var menu = document.createElement('div');
+  menu.id = 'instruction-menu-popover';
+  menu.style.cssText = 'position:absolute;background:var(--surface-raised);border:1px solid var(--border);padding:4px 0;z-index:200;font-size:12px';
+  var rect = anchor.getBoundingClientRect();
+  menu.style.left = (rect.left + window.scrollX) + 'px';
+  menu.style.top = (rect.bottom + window.scrollY + 4) + 'px';
+  menu.innerHTML = ''
+    + '<div class="instruction-menu-item" style="padding:6px 12px;cursor:pointer" onclick="proposeInstructionLifecycle(\\'' + escJs(instructionId) + '\\',\\'complete\\')">완료 제안</div>'
+    + '<div class="instruction-menu-item" style="padding:6px 12px;cursor:pointer" onclick="proposeInstructionLifecycle(\\'' + escJs(instructionId) + '\\',\\'cancel\\')">취소 제안</div>';
+  document.body.appendChild(menu);
+  setTimeout(function() {
+    document.addEventListener('click', function dismiss() { menu.remove(); document.removeEventListener('click', dismiss); }, { once: true });
+  }, 0);
+}
+
+async function proposeInstructionLifecycle(instructionId, op) {
+  if (!currentUserId) { console.warn('proposeInstructionLifecycle: no current user'); return; }
+  try {
+    var headers = { 'Content-Type': 'application/json' };
+    if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
+    var url = '/api/dashboard/instructions/' + encodeURIComponent(instructionId) + '/propose-lifecycle';
+    var bodyStr = JSON.stringify({ userId: currentUserId, op: op });
+    var res = await fetch(url, { method: 'POST', headers: headers, body: bodyStr });
+    if (res.status === 403) {
+      await refreshCsrfToken();
+      var retryHeaders = { 'Content-Type': 'application/json' };
+      if (_csrfToken) retryHeaders['X-CSRF-Token'] = _csrfToken;
+      res = await fetch(url, { method: 'POST', headers: retryHeaders, body: bodyStr });
+    }
+    if (!res.ok) {
+      console.error('Propose lifecycle failed', op, res.status);
+    }
+  } catch (e) { console.error('proposeInstructionLifecycle error', e); }
+}
+
+// Drill-down panel placeholder. The full panel UI is rendered server-truth
+// when the user clicks a card; for now we just navigate using the existing
+// session-detail panel infra by fetching the drill-down JSON.
+async function openInstructionPanel(instructionId) {
+  if (!currentUserId) return;
+  try {
+    var res = await fetch('/api/dashboard/instructions/' + encodeURIComponent(instructionId) + '?userId=' + encodeURIComponent(currentUserId));
+    if (!res.ok) { console.error('Failed to drill down', res.status); return; }
+    var data = await res.json();
+    console.info('instruction drilldown', data);
+  } catch (e) { console.error('openInstructionPanel error', e); }
 }
 
 // ── Action handler (with CSRF retry on 403 after JWT rotation) ──
@@ -4142,6 +4570,13 @@ function connectWs() {
         if (panelOpen && panelSessionKey === msg.sessionKey) {
           var pt = document.getElementById('panel-title');
           if (pt) pt.textContent = headline;
+        }
+      } else if (msg.type === 'instructionCreated' || msg.type === 'instructionUpdated' || msg.type === 'instructionClosed') {
+        // #758 — re-render the Active Instructions section. We always
+        // re-fetch the active list from the read API so the client never
+        // owns derived state (progress + ageMs need a server round-trip).
+        if (currentUserId && (!msg.userId || msg.userId === currentUserId)) {
+          loadInstructions();
         }
       } else if (msg.type === 'sessionUpdated' && msg.session && msg.session.key) {
         // #762 — single-session card refresh from broadcastSingleSessionUpdate.
