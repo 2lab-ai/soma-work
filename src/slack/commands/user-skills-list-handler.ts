@@ -1,5 +1,8 @@
 import { Logger } from '../../logger';
 import { listUserSkills, type UserSkillMeta } from '../../user-skill-store';
+// Pulled from the leaf module instead of '../actions/user-skill-menu-action-handler'
+// to break the cycle list-handler → menu-action-handler → view-submission-shared
+// → list-handler (#745).
 import {
   LEGACY_INVOKE_ACTION_ID_PREFIX,
   MENU_ACTION_ID_PREFIX,
@@ -8,7 +11,7 @@ import {
   VALUE_KIND_INVOKE,
   VALUE_KIND_RENAME,
   VALUE_KIND_SHARE,
-} from '../actions/user-skill-menu-action-handler';
+} from '../actions/user-skill-action-kinds';
 import { escapeSlackMrkdwn } from '../mrkdwn-escape';
 import type { CommandContext, CommandHandler, CommandResult } from './types';
 

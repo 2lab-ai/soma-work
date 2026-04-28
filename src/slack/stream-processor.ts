@@ -16,7 +16,10 @@ import {
   SourceWorkingDirDirectiveHandler,
 } from './directives';
 import { markdownToBlocks, thinkingToQuoteBlock } from './formatters';
-import { MessageFormatter, ToolFormatter, UserChoiceHandler } from './index';
+// Direct module imports — going through the barrel (`./index`) creates a
+// `slack/index.ts → stream-processor.ts → index.ts` cycle that breaks
+// tree-shaking and risks init-order issues. See #745.
+import { MessageFormatter } from './message-formatter';
 import {
   shouldOutput as checkOutputFlag,
   getThinkingRenderMode,
@@ -26,6 +29,8 @@ import {
   OutputFlag,
   verboseTag,
 } from './output-flags';
+import { ToolFormatter } from './tool-formatter';
+import { UserChoiceHandler } from './user-choice-handler';
 
 /**
  * Context for stream processing
