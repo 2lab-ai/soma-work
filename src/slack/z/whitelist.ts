@@ -8,7 +8,7 @@
  * See: plan/MASTER-SPEC.md §4 (Naked whitelist — user-modified exception).
  */
 
-import { stripZPrefix } from './normalize';
+import { stripZPrefix } from './strip-z-prefix';
 
 /**
  * Returns true if `text` matches one of the whitelisted naked commands.

@@ -14,6 +14,19 @@ import {
 } from '../../user-skill-store';
 import type { SlackApiHelper } from '../slack-api-helper';
 import type { MessageHandler, RespondFn, SayFn } from './types';
+// Action discriminators (`VALUE_KIND_*`) and action-id prefixes live in this
+// leaf so `commands/user-skills-list-handler.ts` can import them without
+// forming the cycle list-handler → menu-action-handler → view-submission-shared
+// → list-handler (#745).
+import {
+  LEGACY_INVOKE_ACTION_ID_PREFIX,
+  MENU_ACTION_ID_PREFIX,
+  VALUE_KIND_DELETE,
+  VALUE_KIND_EDIT,
+  VALUE_KIND_INVOKE,
+  VALUE_KIND_RENAME,
+  VALUE_KIND_SHARE,
+} from './user-skill-action-kinds';
 import { buildSkillViewPrivateMetadata } from './user-skill-view-submission-shared';
 
 interface UserSkillMenuContext {
@@ -21,44 +34,6 @@ interface UserSkillMenuContext {
   claudeHandler: ClaudeHandler;
   messageHandler: MessageHandler;
 }
-
-/**
- * Single source of truth for the verb embedded in the action `value` payload.
- * The renderer (`UserSkillsListHandler`) imports these to build the option
- * value, and the dispatch in `handleAction` switches on the parsed `kind`.
- * Keeping them here means a typo on either side fails to compile rather than
- * silently degrading to "default invoke".
- */
-export const VALUE_KIND_INVOKE = 'user_skill_invoke';
-export const VALUE_KIND_EDIT = 'user_skill_edit';
-/**
- * Issue #774 additions — keep verbs alongside the existing pair so the
- * dispatch in `handleAction` stays exhaustive at compile time.
- *
- *   delete  → opens a confirmation modal (Slack overflow options can't carry
- *             their own confirm dialog, so a 2-step modal is the safest UX).
- *   rename  → opens a rename modal (single text input).
- *   share   → posts an ephemeral message with a four-backtick fenced code
- *             block carrying the SKILL.md content + install instructions.
- *             Read-only (does not fire system-prompt invalidation).
- */
-export const VALUE_KIND_DELETE = 'user_skill_delete';
-export const VALUE_KIND_RENAME = 'user_skill_rename';
-export const VALUE_KIND_SHARE = 'user_skill_share';
-
-/**
- * Action_id prefixes for the per-skill accessory.
- *
- * Issue #750 promotes the single-button accessory to an overflow menu carrying
- * `발동` + `편집` for single-file skills (multi-file skills still get a plain
- * button). The new prefix `user_skill_menu_` covers overflow accessories;
- * `user_skill_invoke_` stays as the BC button prefix. `actions/index.ts`
- * registers two regexes (`/^user_skill_invoke_/` for legacy in-flight
- * messages, `/^user_skill_menu_/` for new ones) and routes both to the same
- * handler.
- */
-export const MENU_ACTION_ID_PREFIX = 'user_skill_menu_';
-export const LEGACY_INVOKE_ACTION_ID_PREFIX = 'user_skill_invoke_';
 
 /** callback_id for the inline-edit modal — paired with the view handler. */
 export const USER_SKILL_EDIT_MODAL_CALLBACK_ID = 'user_skill_edit_modal_submit';
