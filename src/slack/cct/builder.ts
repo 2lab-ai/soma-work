@@ -16,7 +16,6 @@ import {
   CCT_CARD_BLOCK_ID_PREFIX,
   CCT_VIEW_IDS,
   OAUTH_BLOB_HELP,
-  OAUTH_BLOB_WARN_THRESHOLD,
   SLACK_PLAIN_TEXT_INPUT_MAX,
 } from './views';
 
@@ -1098,5 +1097,3 @@ function radioOption(kind: AddSlotFormKind): Record<string, unknown> {
 export function escapeMrkdwn(text: string): string {
   return text.replace(/[*_`]/g, (ch) => `\\${ch}`);
 }
-
-// Re-export the warn threshold so actions.ts can trip on it if needed.
