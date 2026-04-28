@@ -237,6 +237,17 @@ export class PendingInstructionConfirmStore {
         // are dropped rather than coerced — the model can re-propose on
         // the next turn with the sealed shape.
         if (!entry.payload || typeof entry.payload !== 'object') continue;
+        // PR2 fix loop #2 P2 (#755): also validate that the on-disk
+        // `payload.instructionOperations` is a single-op array AND its
+        // op.action matches the entry's `type`. Without this, a corrupted
+        // entry would mis-attribute the lifecycleEvents row built from
+        // `entry.type` while the catalog applies the (different) op.
+        const payloadOps = (entry.payload as { instructionOperations?: unknown })
+          .instructionOperations;
+        if (!Array.isArray(payloadOps) || payloadOps.length !== 1) continue;
+        const op0 = payloadOps[0] as { action?: unknown } | undefined;
+        if (!op0 || typeof op0 !== 'object') continue;
+        if (typeof op0.action !== 'string' || op0.action !== entry.type) continue;
         this.byRequest.set(entry.requestId, entry);
         this.bySession.set(entry.sessionKey, entry.requestId);
         restored += 1;
