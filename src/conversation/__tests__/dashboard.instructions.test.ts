@@ -736,7 +736,7 @@ describe('Dashboard WS instruction broadcasts (#758)', () => {
       status: 'active',
       linkedSessionIds: ['C1:t1'],
       createdAt: '2026-04-20T00:00:00.000Z',
-      source: 'user',
+      source: 'model',
       sourceRawInputIds: [],
     };
     onApplied!({ userId: 'U1', op: 'add', instruction: inst });
@@ -757,7 +757,7 @@ describe('Dashboard WS instruction broadcasts (#758)', () => {
       status: 'active',
       linkedSessionIds: ['C1:t1'],
       createdAt: '2026-04-20T00:00:00.000Z',
-      source: 'user',
+      source: 'model',
       sourceRawInputIds: [],
     };
     onApplied!({ userId: 'U1', op: 'link', instruction: inst });
@@ -780,7 +780,7 @@ describe('Dashboard WS instruction broadcasts (#758)', () => {
       status: 'completed',
       linkedSessionIds: [],
       createdAt: '2026-04-20T00:00:00.000Z',
-      source: 'user',
+      source: 'model',
       sourceRawInputIds: [],
       completedAt: '2026-04-21T00:00:00.000Z',
     };

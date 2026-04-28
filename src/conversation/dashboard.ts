@@ -1090,6 +1090,66 @@ function broadcastInstructionEvent(userId: string, type: string, extra: Record<s
   }
 }
 
+/**
+ * #758 P1-3 — wire SessionRegistry lifecycle hits to the WS broadcast
+ * helpers. The dashboard registers the resulting handler with
+ * `SessionRegistry.setLifecycleAppliedCallback(...)` at boot so every
+ * confirmed lifecycle transition pushes a real-time delta to clients.
+ *
+ * The injected `broadcast*` callbacks default to the module-local
+ * helpers but are overridable for unit tests so the wiring contract
+ * stays observable without fanning fake WS clients.
+ */
+export type LifecycleAppliedEvent = {
+  userId: string;
+  op: LifecycleOp;
+  instruction: UserInstruction;
+};
+type BroadcastCreated = (userId: string, instruction: UserInstruction) => void;
+type BroadcastUpdated = (userId: string, instruction: UserInstruction) => void;
+type BroadcastClosed = (userId: string, instructionId: string, status: 'completed' | 'cancelled') => void;
+let _lifecycleAppliedHandler: ((evt: LifecycleAppliedEvent) => void) | null = null;
+
+export function wireLifecycleBroadcasts(emit?: {
+  broadcastCreated?: BroadcastCreated;
+  broadcastUpdated?: BroadcastUpdated;
+  broadcastClosed?: BroadcastClosed;
+}): void {
+  const created = emit?.broadcastCreated ?? broadcastInstructionCreated;
+  const updated = emit?.broadcastUpdated ?? broadcastInstructionUpdated;
+  const closed = emit?.broadcastClosed ?? broadcastInstructionClosed;
+  _lifecycleAppliedHandler = (evt) => {
+    try {
+      switch (evt.op) {
+        case 'add':
+          created(evt.userId, evt.instruction);
+          return;
+        case 'link':
+        case 'rename':
+          updated(evt.userId, evt.instruction);
+          return;
+        case 'complete':
+          closed(evt.userId, evt.instruction.id, 'completed');
+          return;
+        case 'cancel':
+          closed(evt.userId, evt.instruction.id, 'cancelled');
+          return;
+        default: {
+          // Defensive: a future op must explicitly opt-in. Log so we notice.
+          logger.warn('LifecycleAppliedHandler: unhandled op', { op: evt.op });
+        }
+      }
+    } catch (err) {
+      logger.error('LifecycleAppliedHandler: broadcast failed', { op: evt.op, err });
+    }
+  };
+}
+
+/** Returns the currently-wired lifecycle-applied handler (or null). */
+export function getLifecycleAppliedHandler(): ((evt: LifecycleAppliedEvent) => void) | null {
+  return _lifecycleAppliedHandler;
+}
+
 /** Broadcast session action feedback to all connected WebSocket clients */
 export function broadcastSessionAction(sessionKey: string, action: 'stop' | 'close' | 'trash'): void {
   if (wsClients.size === 0) return;

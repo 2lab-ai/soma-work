@@ -61,12 +61,14 @@ import {
   setDashboardCloseHandler,
   setDashboardCommandHandler,
   setDashboardMultiChoiceAnswerHandler,
+  getLifecycleAppliedHandler,
   setDashboardSessionAccessor,
   setDashboardStopHandler,
   setDashboardSubmitRecommendedHandler,
   setDashboardTaskAccessor,
   setDashboardTrashHandler,
   wireDashboardInstructionAccessors,
+  wireLifecycleBroadcasts,
   setOAuthUserLookup,
   setOnSummaryGeneratedCallback,
   setOnTurnRecordedCallback,
@@ -392,6 +394,17 @@ async function start() {
     // Connect dashboard: session accessor + real-time WebSocket broadcast on state changes
     setDashboardSessionAccessor(() => claudeHandler.getAllSessions());
     claudeHandler.getSessionRegistry().setActivityStateChangeCallback(() => broadcastSessionUpdate());
+
+    // #758 P1-3 — Wire the dashboard WS broadcast helpers and bridge them to
+    // the SessionRegistry's lifecycle-applied callback so confirmed
+    // add/link/complete/cancel/rename push real-time deltas to clients.
+    wireLifecycleBroadcasts();
+    {
+      const lifecycleHandler = getLifecycleAppliedHandler();
+      if (lifecycleHandler) {
+        claudeHandler.getSessionRegistry().setLifecycleAppliedCallback(lifecycleHandler);
+      }
+    }
 
     // user-memory-store and user-settings-store mutate SSOT fields that
     // feed the cached system prompt but live outside the stream-executor
