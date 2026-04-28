@@ -56,25 +56,25 @@ import {
   broadcastSessionUpdate,
   broadcastSummaryTitleChanged,
   broadcastTaskUpdate,
+  getLifecycleAppliedHandler,
   initRecorder,
   setDashboardChoiceAnswerHandler,
   setDashboardCloseHandler,
   setDashboardCommandHandler,
   setDashboardMultiChoiceAnswerHandler,
-  getLifecycleAppliedHandler,
   setDashboardSessionAccessor,
   setDashboardStopHandler,
   setDashboardSubmitRecommendedHandler,
   setDashboardTaskAccessor,
   setDashboardTrashHandler,
-  wireDashboardInstructionAccessors,
-  wireLifecycleBroadcasts,
   setOAuthUserLookup,
   setOnSummaryGeneratedCallback,
   setOnTurnRecordedCallback,
   setSessionTitleBridge,
   startWebServer,
   stopWebServer,
+  wireDashboardInstructionAccessors,
+  wireLifecycleBroadcasts,
 } from './conversation';
 import { CronScheduler, type SyntheticMessageEvent } from './cron-scheduler';
 import { initializeDispatchService } from './dispatch-service';
@@ -454,12 +454,7 @@ async function start() {
         const doc = getUserSessionStore().load(req.userId);
         const inst = doc.instructions.find((i) => i.id === req.instructionId);
         const sessionKey =
-          inst?.linkedSessionIds[0] ||
-          claudeHandler
-            .getAllSessions()
-            .keys()
-            .next().value ||
-          `${req.userId}:dashboard`;
+          inst?.linkedSessionIds[0] || claudeHandler.getAllSessions().keys().next().value || `${req.userId}:dashboard`;
         slackHandler.getPendingInstructionConfirmStore().set({
           requestId,
           sessionKey,
@@ -474,7 +469,16 @@ async function start() {
           } as any,
           createdAt: Date.now(),
           requesterId: req.userId,
-          type: req.op === 'add' ? 'add' : req.op === 'link' ? 'link' : req.op === 'rename' ? 'rename' : (req.op === 'complete' ? 'complete' : 'cancel'),
+          type:
+            req.op === 'add'
+              ? 'add'
+              : req.op === 'link'
+                ? 'link'
+                : req.op === 'rename'
+                  ? 'rename'
+                  : req.op === 'complete'
+                    ? 'complete'
+                    : 'cancel',
           by: { type: 'user', id: req.userId },
         } as any);
         logger.info('Dashboard: lifecycle proposal enqueued', {
