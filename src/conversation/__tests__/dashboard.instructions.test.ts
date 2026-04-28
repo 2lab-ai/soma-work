@@ -704,4 +704,98 @@ describe('Dashboard WS instruction broadcasts (#758)', () => {
     expect(() => dashboard.broadcastInstructionUpdated('U1', inst)).not.toThrow();
     expect(() => dashboard.broadcastInstructionClosed('U1', 'inst-A', 'completed')).not.toThrow();
   });
+
+  // ── Codex P1-3 — WS broadcast wiring on lifecycle events ──
+
+  it('exports a wireLifecycleBroadcasts(emit) helper that translates lifecycle hits to WS broadcasts', () => {
+    expect(typeof dashboard.wireLifecycleBroadcasts).toBe('function');
+  });
+
+  it('wireLifecycleBroadcasts: confirmed add fires instructionCreated', async () => {
+    const captured: Array<{ type: string; userId: string; payload: unknown }> = [];
+    // Spy on the broadcast helpers via override. Cleanest: wire a fake
+    // emit function that captures the calls instead of going through wsClients.
+    dashboard.wireLifecycleBroadcasts({
+      broadcastCreated: (userId: string, instruction: UserInstruction) => {
+        captured.push({ type: 'created', userId, payload: instruction });
+      },
+      broadcastUpdated: (userId: string, instruction: UserInstruction) => {
+        captured.push({ type: 'updated', userId, payload: instruction });
+      },
+      broadcastClosed: (userId: string, instructionId: string, status: 'completed' | 'cancelled') => {
+        captured.push({ type: 'closed', userId, payload: { instructionId, status } });
+      },
+    });
+
+    const onApplied = dashboard.getLifecycleAppliedHandler();
+    expect(typeof onApplied).toBe('function');
+
+    const inst: UserInstruction = {
+      id: 'inst-A',
+      text: 'new one',
+      status: 'active',
+      linkedSessionIds: ['C1:t1'],
+      createdAt: '2026-04-20T00:00:00.000Z',
+      source: 'user',
+      sourceRawInputIds: [],
+    };
+    onApplied!({ userId: 'U1', op: 'add', instruction: inst });
+    expect(captured).toEqual([{ type: 'created', userId: 'U1', payload: inst }]);
+  });
+
+  it('wireLifecycleBroadcasts: confirmed link/rename fires instructionUpdated', () => {
+    const captured: Array<{ type: string }> = [];
+    dashboard.wireLifecycleBroadcasts({
+      broadcastCreated: () => captured.push({ type: 'created' }),
+      broadcastUpdated: () => captured.push({ type: 'updated' }),
+      broadcastClosed: () => captured.push({ type: 'closed' }),
+    });
+    const onApplied = dashboard.getLifecycleAppliedHandler();
+    const inst: UserInstruction = {
+      id: 'inst-A',
+      text: 'x',
+      status: 'active',
+      linkedSessionIds: ['C1:t1'],
+      createdAt: '2026-04-20T00:00:00.000Z',
+      source: 'user',
+      sourceRawInputIds: [],
+    };
+    onApplied!({ userId: 'U1', op: 'link', instruction: inst });
+    onApplied!({ userId: 'U1', op: 'rename', instruction: inst });
+    expect(captured.map((c) => c.type)).toEqual(['updated', 'updated']);
+  });
+
+  it('wireLifecycleBroadcasts: confirmed complete/cancel fires instructionClosed with status', () => {
+    const captured: Array<{ type: string; status?: string }> = [];
+    dashboard.wireLifecycleBroadcasts({
+      broadcastCreated: () => captured.push({ type: 'created' }),
+      broadcastUpdated: () => captured.push({ type: 'updated' }),
+      broadcastClosed: (_u: string, _id: string, status: 'completed' | 'cancelled') =>
+        captured.push({ type: 'closed', status }),
+    });
+    const onApplied = dashboard.getLifecycleAppliedHandler();
+    const completeInst: UserInstruction = {
+      id: 'inst-A',
+      text: 'x',
+      status: 'completed',
+      linkedSessionIds: [],
+      createdAt: '2026-04-20T00:00:00.000Z',
+      source: 'user',
+      sourceRawInputIds: [],
+      completedAt: '2026-04-21T00:00:00.000Z',
+    };
+    const cancelInst: UserInstruction = {
+      ...completeInst,
+      id: 'inst-B',
+      status: 'cancelled',
+      cancelledAt: '2026-04-21T00:00:00.000Z',
+    };
+    delete (completeInst as any).cancelledAt;
+    onApplied!({ userId: 'U1', op: 'complete', instruction: completeInst });
+    onApplied!({ userId: 'U1', op: 'cancel', instruction: cancelInst });
+    expect(captured).toEqual([
+      { type: 'closed', status: 'completed' },
+      { type: 'closed', status: 'cancelled' },
+    ]);
+  });
 });
