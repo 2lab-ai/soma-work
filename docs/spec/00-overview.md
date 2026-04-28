@@ -299,7 +299,7 @@ soma-work/
 │   │   └── token-refresh-scheduler.ts
 │   │
 │   ├── permission/                   # Permission modules
-│   │   ├── service.ts, slack-messenger.ts
+│   │   ├── service.ts
 │   │
 │   ├── prompt/workflows/             # 9 workflow prompts
 │   ├── persona/                      # 12 bot personas
