@@ -1,7 +1,6 @@
 import type {
   SaveContextResultPayload,
   SessionInstructionOperation,
-  SessionInstructionStatus,
   SessionLink,
   SessionResourceOperation,
   SessionResourceType,
@@ -364,7 +363,26 @@ const ALL_LIFECYCLE_ACTIONS: readonly string[] = [
   ...SEALED_LIFECYCLE_ACTIONS,
   ...LEGACY_LIFECYCLE_ACTIONS,
 ];
-const INSTRUCTION_STATUSES: SessionInstructionStatus[] = ['active', 'completed', 'cancelled'];
+
+/**
+ * PR2 fix loop #2 P1-B (#755): legacy actions are deprecated and rejected
+ * at the validator with a clear pointer at the sealed replacement. Pre-fix
+ * the validator accepted them, stream-executor coerced them to type='add',
+ * and `applyConfirmedLifecycle` then rejected them at the bottom — a "lying
+ * compat" path. We cut the path at the validator so the model gets one
+ * actionable error and can re-emit a sealed action.
+ */
+const LEGACY_LIFECYCLE_DEPRECATIONS: Record<(typeof LEGACY_LIFECYCLE_ACTIONS)[number], string> = {
+  remove:
+    "instructionOperation 'remove' is deprecated and no longer supported. " +
+    "Use 'cancel' (preserves the row + audit trail) instead.",
+  clear:
+    "instructionOperation 'clear' is deprecated and no longer supported. " +
+    "Issue per-row 'cancel' ops one at a time (sealed single-pending rule, #755).",
+  setStatus:
+    "instructionOperation 'setStatus' is deprecated and no longer supported. " +
+    "Use 'complete' (with evidence) for completed status, 'cancel' for cancelled.",
+};
 
 function parseSessionInstructionOperation(
   raw: unknown,
@@ -376,8 +394,14 @@ function parseSessionInstructionOperation(
   if (typeof action !== 'string' || !ALL_LIFECYCLE_ACTIONS.includes(action)) {
     return invalidArgs(
       `Unsupported instructionOperation action: ${String(action)} ` +
-        `(allowed: ${ALL_LIFECYCLE_ACTIONS.join('|')})`,
+        `(allowed: ${SEALED_LIFECYCLE_ACTIONS.join('|')})`,
     );
+  }
+
+  // PR2 fix loop #2 P1-B: reject legacy actions upstream so the lying
+  // compat coercion path in stream-executor never fires.
+  if ((LEGACY_LIFECYCLE_ACTIONS as readonly string[]).includes(action)) {
+    return invalidArgs(LEGACY_LIFECYCLE_DEPRECATIONS[action as (typeof LEGACY_LIFECYCLE_ACTIONS)[number]]);
   }
 
   if (action === 'add') {
@@ -394,17 +418,6 @@ function parseSessionInstructionOperation(
     };
   }
 
-  if (action === 'remove') {
-    if (typeof raw.id !== 'string' || raw.id === '') {
-      return invalidArgs('instructionOperation remove requires id');
-    }
-    return { ok: true, value: { action: 'remove', id: raw.id } };
-  }
-
-  if (action === 'clear') {
-    return { ok: true, value: { action: 'clear' } };
-  }
-
   if (action === 'complete') {
     if (typeof raw.id !== 'string' || raw.id === '') {
       return invalidArgs('instructionOperation complete requires id');
@@ -413,25 +426,6 @@ function parseSessionInstructionOperation(
       return invalidArgs('instructionOperation complete requires evidence string');
     }
     return { ok: true, value: { action: 'complete', id: raw.id, evidence: raw.evidence } };
-  }
-
-  if (action === 'setStatus') {
-    if (typeof raw.id !== 'string' || raw.id === '') {
-      return invalidArgs('instructionOperation setStatus requires id');
-    }
-    if (!INSTRUCTION_STATUSES.includes(raw.status as SessionInstructionStatus)) {
-      return invalidArgs(
-        `instructionOperation setStatus requires status in ${INSTRUCTION_STATUSES.join('|')}`,
-      );
-    }
-    return {
-      ok: true,
-      value: {
-        action: 'setStatus',
-        id: raw.id,
-        status: raw.status as SessionInstructionStatus,
-      },
-    };
   }
 
   if (action === 'link') {
