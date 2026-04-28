@@ -402,7 +402,8 @@ describe('createDashboardLifecycleProposeHandler — model-vs-dashboard parity (
     // user no longer has two live y/n button posts in the thread. The
     // model-path text starts with '⚠️ [superseded]' — assert by substring.
     expect(slackApi.updateMessage).toHaveBeenCalled();
-    const updateCall = slackApi.updateMessage.mock.calls.find((c: any[]) => c[1] === 'ts-1');
+    const updateCalls = slackApi.updateMessage.mock.calls as unknown as any[][];
+    const updateCall = updateCalls.find((c) => c[1] === 'ts-1');
     expect(updateCall).toBeDefined();
     if (!updateCall) throw new Error('updateMessage(ts-1) not called');
     expect(updateCall[0]).toBe('C-SUP'); // channel
