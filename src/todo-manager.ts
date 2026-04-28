@@ -282,8 +282,30 @@ export class TodoManager {
       return;
     }
 
-    // ── Timing: carry over / stamp startedAt & completedAt ──
     const previous = this.todos.get(sessionId) || [];
+
+    // ── Cancelled/completed instruction guard (#757) ──
+    // Runs BEFORE any RAM mutation or disk write so a rejected batch
+    // leaves both surfaces in their last-known-good state. The guard only
+    // applies to NEW Todos (id not in `previous`) because frozen-at-
+    // creation already pins existing links — updating an existing Todo
+    // whose instruction has since completed is allowed (#727 sealed).
+    if (opts?.instructionStatusLookup && opts.currentInstructionId) {
+      const lookup = opts.instructionStatusLookup;
+      const newLink = opts.currentInstructionId;
+      for (const task of validated) {
+        const prev = previous.find((p) => p.id === task.id);
+        if (prev) continue; // existing Todo — link is frozen, no new FK created
+        const status = lookup(newLink);
+        if (status === 'cancelled' || status === 'completed') {
+          throw new Error(
+            `TodoManager: cannot create Todo linked to ${status} instruction ${JSON.stringify(newLink)}`,
+          );
+        }
+      }
+    }
+
+    // ── Timing: carry over / stamp startedAt & completedAt ──
     const now = Date.now();
     for (const task of validated) {
       const prev = previous.find((p) => p.id === task.id);
