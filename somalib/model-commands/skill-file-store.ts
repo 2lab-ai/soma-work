@@ -189,7 +189,11 @@ export class SkillFileStore implements SkillStore {
 
     // Case-only rename guard: when `name.toLowerCase() === newName.toLowerCase()`
     // and they refer to the same inode (case-insensitive FS), `existsSync(dstDir)`
-    // would lie and return true. Skip the EEXIST check in that specific case.
+    // would lie and return true. Currently unreachable under the kebab-case
+    // predicate (which rejects uppercase outright), so this branch is
+    // defense-in-depth against future predicate relaxation (e.g. camelCase
+    // aliases). The temp-staging step below is what makes a future case-only
+    // rename actually move bits, not just no-op.
     const isCaseOnlyRename = name.toLowerCase() === newName.toLowerCase();
     if (!isCaseOnlyRename && fs.existsSync(dstDir)) {
       return { ok: false, message: skillRenameTargetExistsMessage(newName), error: 'EEXIST' };

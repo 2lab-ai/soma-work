@@ -101,22 +101,42 @@ const KNOWN_KINDS: ReadonlySet<SkillMenuKind> = new Set([
 ]);
 
 /**
- * Build the four-backtick fenced share message body. Four backticks (instead
- * of three) lets a SKILL.md that itself contains triple-backtick code blocks
- * round-trip without breaking the Slack code-fence parser. SKILL.md authors
- * commonly include `\`\`\`` examples, so three-backtick fencing would chop the
- * shared content at the first inner fence.
+ * Build the fenced share message body.
+ *
+ * Three backticks is the most common fence; SKILL.md authors frequently embed
+ * triple-backtick examples (e.g. ```python ... ```), which would chop a
+ * 3-backtick wrapper at the first inner fence. Four backticks works for those
+ * but breaks again if a SKILL.md happens to contain a 4-backtick literal of
+ * its own. Solution: scan `content` for the longest run of backticks and pick
+ * a fence one tick longer (minimum 4). This is the standard CommonMark
+ * "longest-fence-wins" trick and guarantees the wrapper outlives anything
+ * the body could carry.
  */
+function chooseSafeFence(content: string): string {
+  // Find the longest contiguous backtick run in the body.
+  let longest = 0;
+  const matches = content.match(/`+/g);
+  if (matches) {
+    for (const m of matches) {
+      if (m.length > longest) longest = m.length;
+    }
+  }
+  // Floor at 3 (so the result is ≥ 4) — Slack treats <3 as inline code.
+  const fenceLen = Math.max(longest, 3) + 1;
+  return '`'.repeat(fenceLen);
+}
+
 function buildShareMessage(skillName: string, content: string): string {
+  const fence = chooseSafeFence(content);
   return [
     `📤 *Personal skill 공유:* \`$user:${skillName}\``,
     '',
     '복사해서 다른 워크스페이스 / 다른 유저에게 전달하면 됩니다.',
     '받는 쪽은 동일한 이름으로 `MANAGE_SKILL action=create` 호출하면 설치됩니다.',
     '',
-    '````',
+    fence,
     content,
-    '````',
+    fence,
   ].join('\n');
 }
 
@@ -220,6 +240,24 @@ export class UserSkillMenuActionHandler {
       }
     } catch (error) {
       this.logger.error('Error processing user skill menu action', error);
+      // Best-effort visible failure — without this the click vanishes silently
+      // (the spinner stops but no message appears), which is indistinguishable
+      // from "Slack ate the click" for the user. Each verb's own try/catch
+      // already converts known failures into ephemerals; this catches the
+      // pre-dispatch path (resolveClick crash, isValidSkillName throw, etc.).
+      // The respond call itself is wrapped so a transport failure here can't
+      // mask the original error in the logs.
+      try {
+        await respond({
+          response_type: 'ephemeral',
+          text: '⚠️ 메뉴 처리 중 예상치 못한 오류가 발생했습니다.',
+          replace_original: false,
+        });
+      } catch (respondErr) {
+        this.logger.warn('user_skill_menu: ack-after-error respond failed', {
+          err: (respondErr as Error)?.message ?? String(respondErr),
+        });
+      }
     }
   }
 

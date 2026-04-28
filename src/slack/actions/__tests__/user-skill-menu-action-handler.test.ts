@@ -425,9 +425,9 @@ describe('UserSkillMenuActionHandler', () => {
       expect(respond).toHaveBeenCalledTimes(1);
       const arg = respond.mock.calls[0][0];
       expect(arg.response_type).toBe('ephemeral');
-      // Four-backtick fence is what the plan calls out so SKILL.md content
-      // containing triple backticks (e.g. inline code examples) does NOT
-      // chop the share message at the first inner fence.
+      // Four-backtick fence is the minimum the share builder picks so SKILL.md
+      // content containing triple backticks (e.g. inline code examples) does
+      // NOT chop the share message at the first inner fence.
       expect(arg.text).toContain('````');
       expect(arg.text).toContain('print("inner fence")');
       // The fence must wrap the body — count outer fences == 2.
@@ -437,6 +437,29 @@ describe('UserSkillMenuActionHandler', () => {
       expect(viewsOpen).not.toHaveBeenCalled();
       expect(slackApi.updateMessage).not.toHaveBeenCalled();
       expect(messageHandler).not.toHaveBeenCalled();
+    });
+
+    it('escalates to a 5-backtick fence when SKILL.md itself contains a four-backtick literal', async () => {
+      // CommonMark "longest-fence-wins" rule — a SKILL.md that documents the
+      // share path itself (or a meta-docs skill) might contain `````` literally.
+      // The wrapper must always outlive the longest backtick run inside the
+      // body, otherwise the share message chops at the first inner fence.
+      const skillBody = ['---', 'name: meta', '---', '', '````', 'four-tick literal', '````'].join('\n');
+      vi.mocked(userSkillStore.shareUserSkill).mockReturnValue({
+        ok: true,
+        message: 'ok',
+        content: skillBody,
+      });
+
+      await handler.handleAction(makeShareBody(), respond, client);
+
+      expect(respond).toHaveBeenCalledTimes(1);
+      const arg = respond.mock.calls[0][0];
+      // Outer fence must be 5 backticks (longest inner = 4, fence = 4+1).
+      const fiveCount = (arg.text.match(/^`````$/gm) || []).length;
+      expect(fiveCount).toBe(2);
+      // The 4-backtick literal must survive as content — body present, not eaten.
+      expect(arg.text).toContain('four-tick literal');
     });
 
     it('reports an ephemeral error when shareUserSkill fails (storage layer)', async () => {

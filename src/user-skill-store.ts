@@ -424,6 +424,13 @@ export function renameUserSkill(userId: string, oldName: string, newName: string
   // Case-only rename: existsSync(dstDir) returns true on case-insensitive FS
   // because the inode is the source. Skip the EEXIST guard in that case —
   // the temp staging step below is what makes the rename real.
+  //
+  // Currently unreachable under the kebab-case predicate (which rejects
+  // uppercase outright), so `oldName.toLowerCase() === newName.toLowerCase()`
+  // can only be true when oldName === newName, which we already short-circuit
+  // above. Kept as defense-in-depth in case the predicate is ever relaxed
+  // (e.g. to allow camelCase aliases). The temp-staging path below is what
+  // makes a future case-only rename actually move bits, not just no-op.
   const isCaseOnlyRename = oldName.toLowerCase() === newName.toLowerCase();
   if (!isCaseOnlyRename && fs.existsSync(dstDir)) {
     return { ok: false, message: skillRenameTargetExistsMessage(newName), error: 'EEXIST' };
