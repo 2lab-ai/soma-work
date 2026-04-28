@@ -1,6 +1,5 @@
 import { WebClient } from '@slack/web-api';
-import type { DangerousRule } from './dangerous-command-filter.js';
-import { StderrLogger } from 'somalib/stderr-logger.js';
+import { StderrLogger } from '../stderr-logger';
 
 const logger = new StderrLogger('SlackPermissionMessenger');
 
@@ -13,6 +12,20 @@ export interface PermissionMessageContext {
 export interface PermissionMessageResult {
   ts?: string;
   channel?: string;
+}
+
+/**
+ * Minimal rule shape this messenger needs to render the
+ * "Approve & disable rule for this session" button. Defined locally to keep
+ * somalib free of cross-package imports — DangerousRule (in
+ * mcp-servers/_shared/dangerous-command-filter.ts and
+ * src/dangerous-command-filter.ts) is a structural superset of this interface,
+ * so callers can pass DangerousRule arrays directly.
+ */
+export interface PermissionRuleSummary {
+  readonly id: string;
+  readonly label: string;
+  readonly description: string;
 }
 
 /**
@@ -34,7 +47,7 @@ export class SlackPermissionMessenger {
     input: any,
     approvalId: string,
     user?: string,
-    overridableRules: ReadonlyArray<DangerousRule> = []
+    overridableRules: ReadonlyArray<PermissionRuleSummary> = []
   ): any[] {
     const userMention = user ? `<@${user}>` : 'Unknown';
 
