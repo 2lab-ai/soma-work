@@ -15,6 +15,7 @@ const DEFAULT_FILE_IDS: Record<TabId, string> = {
   '7d': 'F_7',
   '30d': 'F_30',
   all: 'F_ALL',
+  models: 'F_MODELS',
 };
 
 function makeTabCache(entries: Record<string, { fileIds?: Record<TabId, string>; userId: string }> = {}): TabCache {
@@ -94,14 +95,15 @@ describe('UsageCardActionHandler', () => {
       // actions block_id is static
       expect(blocks[2].block_id).toBe('usage_card_tabs');
 
-      // 7d is the 2nd button (index 1) in ['24h','7d','30d','all']
+      // 7d is the 2nd button (index 1) in ['24h','7d','30d','all','models']
       const buttons = blocks[2].elements as any[];
-      expect(buttons).toHaveLength(4);
+      expect(buttons).toHaveLength(5);
       expect(buttons[1].value).toBe('7d');
       expect(buttons[1].style).toBe('primary');
       expect(buttons[0].style).toBeUndefined();
       expect(buttons[2].style).toBeUndefined();
       expect(buttons[3].style).toBeUndefined();
+      expect(buttons[4].style).toBeUndefined();
 
       // respond NOT called
       expect(mockRespond).not.toHaveBeenCalled();
@@ -200,6 +202,33 @@ describe('UsageCardActionHandler', () => {
     const blocks = client.chat.update.mock.calls[0][0].blocks as any[];
     expect(blocks[2].block_id).toBe('usage_card_tabs');
     expect(blocks[2].block_id).not.toContain('MSG1');
+  });
+
+  // ── Models tab click — happy path ────────────────────────────────
+  describe('models tab (Scenario 8 extension)', () => {
+    it('owner click on models button → chat.update with models image + models primary', async () => {
+      const client = makeClient();
+      const body = makeBody({ userId: 'U_OWNER', tab: 'models' });
+
+      await handler.handleTabClick(body, client, mockRespond);
+
+      expect(client.chat.update).toHaveBeenCalledTimes(1);
+      const blocks = client.chat.update.mock.calls[0][0].blocks as any[];
+
+      // Image points at the models PNG
+      expect(blocks[1].slack_file.id).toBe(DEFAULT_FILE_IDS.models);
+
+      // 5 buttons; only models is primary
+      const buttons = blocks[2].elements as any[];
+      expect(buttons).toHaveLength(5);
+      expect(buttons[4].value).toBe('models');
+      expect(buttons[4].style).toBe('primary');
+      for (const b of buttons.slice(0, 4)) {
+        expect(b.style).toBeUndefined();
+      }
+
+      expect(mockRespond).not.toHaveBeenCalled();
+    });
   });
 
   // ── Selected tab image swap + primary highlight movement ────────

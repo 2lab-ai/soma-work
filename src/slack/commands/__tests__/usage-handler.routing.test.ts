@@ -5,7 +5,14 @@ import {
   ResvgNativeError,
   SlackPostError,
 } from '../../../metrics/usage-render/errors';
-import type { CarouselStats, CarouselTabStats, EmptyTabStats, TabId } from '../../../metrics/usage-render/types';
+import type {
+  CarouselStats,
+  CarouselTabStats,
+  EmptyTabStats,
+  ModelsTabStats,
+  PeriodTabId,
+  TabId,
+} from '../../../metrics/usage-render/types';
 import type { CommandContext, CommandDependencies } from '../types';
 import { TabCache } from '../usage-carousel-cache';
 import {
@@ -43,9 +50,9 @@ function makeDeps(): CommandDependencies {
   } as unknown as CommandDependencies;
 }
 
-const ALL_TABS: readonly TabId[] = ['24h', '7d', '30d', 'all'] as const;
+const ALL_TABS: readonly TabId[] = ['24h', '7d', '30d', 'all', 'models'] as const;
 
-function makeTabStats(tabId: TabId, overrides: Partial<CarouselTabStats> = {}): CarouselTabStats {
+function makeTabStats(tabId: PeriodTabId, overrides: Partial<CarouselTabStats> = {}): CarouselTabStats {
   return {
     empty: false,
     tabId,
@@ -72,7 +79,40 @@ function makeEmptyTab(tabId: TabId): EmptyTabStats {
   return { empty: true, tabId, windowStart: '2026-03-19', windowEnd: '2026-04-17' };
 }
 
-function makeCarouselStats(partial: Partial<Record<TabId, CarouselTabStats | EmptyTabStats>> = {}): CarouselStats {
+function makeModelsTab(overrides: Partial<ModelsTabStats> = {}): ModelsTabStats {
+  return {
+    empty: false,
+    tabId: 'models',
+    targetUserId: 'U_ALICE',
+    targetUserName: 'Alice',
+    windowStart: '2026-03-19',
+    windowEnd: '2026-04-17',
+    totalTokens: 100,
+    rows: [
+      {
+        model: 'claude-opus-4-7',
+        inputTokens: 40,
+        outputTokens: 50,
+        cacheReadTokens: 5,
+        cacheCreateTokens: 5,
+        totalTokens: 100,
+      },
+    ],
+    dayKeys: Array.from({ length: 30 }, (_, i) => `2026-03-${String(19 + i).padStart(2, '0')}`),
+    dailyByModel: { 'claude-opus-4-7': new Array<number>(30).fill(0).map((_, i) => (i === 0 ? 100 : 0)) },
+    ...overrides,
+  };
+}
+
+function makeCarouselStats(
+  partial: Partial<{
+    '24h': CarouselTabStats | EmptyTabStats;
+    '7d': CarouselTabStats | EmptyTabStats;
+    '30d': CarouselTabStats | EmptyTabStats;
+    all: CarouselTabStats | EmptyTabStats;
+    models: ModelsTabStats | EmptyTabStats;
+  }> = {},
+): CarouselStats {
   return {
     targetUserId: 'U_ALICE',
     targetUserName: 'Alice',
@@ -82,6 +122,7 @@ function makeCarouselStats(partial: Partial<Record<TabId, CarouselTabStats | Emp
       '7d': partial['7d'] ?? makeTabStats('7d'),
       '30d': partial['30d'] ?? makeTabStats('30d'),
       all: partial.all ?? makeTabStats('all'),
+      models: partial.models ?? makeModelsTab(),
     },
   };
 }
@@ -118,6 +159,7 @@ function makeCarouselOverrides(
         '7d': Buffer.from([0x89]),
         '30d': Buffer.from([0x89]),
         all: Buffer.from([0x89]),
+        models: Buffer.from([0x89]),
       }
     );
   });
@@ -238,7 +280,8 @@ describe('UsageHandler subcommand routing', () => {
     expect(result.handled).toBe(true);
     expect(aggregateCarousel).toHaveBeenCalledTimes(1);
     expect(renderCarousel).toHaveBeenCalledTimes(1);
-    expect(filesUploadV2).toHaveBeenCalledTimes(4);
+    // 5 PNGs: 24h / 7d / 30d / all / models — each uploaded once.
+    expect(filesUploadV2).toHaveBeenCalledTimes(5);
     expect(postMessage).toHaveBeenCalledTimes(1);
   });
 });
@@ -303,7 +346,7 @@ describe('UsageHandler.handleCard — carousel', () => {
     expect(renderCarousel).toHaveBeenCalledTimes(1);
     expect(renderCarousel.mock.calls[0][1]).toBe('30d');
 
-    expect(filesUploadV2).toHaveBeenCalledTimes(4);
+    expect(filesUploadV2).toHaveBeenCalledTimes(5);
     for (const call of filesUploadV2.mock.calls) {
       const args = call[0] as Record<string, unknown>;
       expect(args).not.toHaveProperty('channel_id');
@@ -311,7 +354,7 @@ describe('UsageHandler.handleCard — carousel', () => {
       expect(args).not.toHaveProperty('thread_ts');
       expect(args).not.toHaveProperty('initial_comment');
       expect(args.request_file_info).toBe(false);
-      expect(String(args.filename)).toMatch(/^usage-card-(24h|7d|30d|all)\.png$/);
+      expect(String(args.filename)).toMatch(/^usage-card-(24h|7d|30d|all|models)\.png$/);
     }
 
     expect(postMessage).toHaveBeenCalledTimes(1);
@@ -327,7 +370,13 @@ describe('UsageHandler.handleCard — carousel', () => {
     const cached = tabCache.get('TS_POST');
     expect(cached).toBeDefined();
     expect(cached!.userId).toBe('U_ALICE');
-    expect(cached!.fileIds).toEqual({ '24h': 'F_24h', '7d': 'F_7d', '30d': 'F_30d', all: 'F_all' });
+    expect(cached!.fileIds).toEqual({
+      '24h': 'F_24h',
+      '7d': 'F_7d',
+      '30d': 'F_30d',
+      all: 'F_all',
+      models: 'F_models',
+    });
   });
 
   it('all-empty short-circuit: all 4 tabs empty → ephemeral, no render/upload/post', async () => {
@@ -364,7 +413,7 @@ describe('UsageHandler.handleCard — carousel', () => {
     await handler.handleCard(makeCtx());
 
     expect(renderCarousel).toHaveBeenCalledTimes(1);
-    expect(filesUploadV2).toHaveBeenCalledTimes(4);
+    expect(filesUploadV2).toHaveBeenCalledTimes(5);
     expect(postMessage).toHaveBeenCalledTimes(1);
     expect(tabCache.get('TS_POST')).toBeDefined();
   });

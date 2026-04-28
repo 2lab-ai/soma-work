@@ -29,7 +29,7 @@ interface UsageCardDeps {
 
 /** Module-local typeguard — keeps the handler closed against future tab drift. */
 function isTabId(v: unknown): v is TabId {
-  return v === '24h' || v === '7d' || v === '30d' || v === 'all';
+  return v === '24h' || v === '7d' || v === '30d' || v === 'all' || v === 'models';
 }
 
 export class UsageCardActionHandler {

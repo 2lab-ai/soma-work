@@ -32,8 +32,9 @@ import type {
   CarouselStats,
   CarouselTabStats,
   EmptyTabStats,
-  TabId,
-  TabResult,
+  ModelsTabRow,
+  ModelsTabStats,
+  PeriodTabId,
 } from './usage-render/types';
 
 const logger = new Logger('ReportAggregator');
@@ -415,8 +416,10 @@ export class ReportAggregator {
     const firstDate = kstShiftDay(endOfDayKey, -365);
     const events = await this.store.readRange(firstDate, endOfDayKey);
 
-    // Per-window builders for the target user.
-    const builders: Record<TabId, WindowBuilder> = {
+    // Per-window builders for the target user. Only the four PERIOD windows
+    // need builders — the Models tab is derived from the 30d builder via
+    // `buildModelsTab`, not from its own scan.
+    const builders: Record<PeriodTabId, WindowBuilder> = {
       '24h': makeWindowBuilder(),
       '7d': makeWindowBuilder(),
       '30d': makeWindowBuilder(),
@@ -469,7 +472,7 @@ export class ReportAggregator {
       const sessionKey = m.sessionKey || e.sessionKey;
 
       // Each of 4 windows: if event in range, accumulate.
-      const winRanges: Array<[TabId, number, number]> = [
+      const winRanges: Array<[PeriodTabId, number, number]> = [
         ['24h', w24Start, w24End],
         ['7d', w7Start, w7End],
         ['30d', w30Start, w30End],
@@ -513,9 +516,16 @@ export class ReportAggregator {
               (u.cacheReadInputTokens || 0) +
               (u.cacheCreationInputTokens || 0);
             b.perModel.set(model, (b.perModel.get(model) || 0) + t);
+            addPerDayModel(b, dayKey, model, u);
           }
         } else if (m.model) {
           b.perModel.set(m.model, (b.perModel.get(m.model) || 0) + tokens);
+          addPerDayModel(b, dayKey, m.model, {
+            inputTokens: m.inputTokens,
+            outputTokens: m.outputTokens,
+            cacheReadInputTokens: m.cacheReadInputTokens,
+            cacheCreationInputTokens: m.cacheCreationInputTokens,
+          });
         }
       }
     }
@@ -534,8 +544,8 @@ export class ReportAggregator {
     const targetTokenRow = tokensSorted.find((r) => r.userId === targetUserId) ?? null;
     const sharedRankings = { tokensTop, targetTokenRow } as const;
 
-    // Compute per-tab window boundaries as YYYY-MM-DD strings.
-    const windowBoundsStr: Record<TabId, { start: string; end: string }> = {
+    // Compute per-period-tab window boundaries as YYYY-MM-DD strings.
+    const windowBoundsStr: Record<PeriodTabId, { start: string; end: string }> = {
       '24h': { start: timestampToDateInTz(w24Start), end: endOfDayKey },
       '7d': { start: kstShiftDay(endOfDayKey, -6), end: endOfDayKey },
       '30d': { start: kstShiftDay(endOfDayKey, -29), end: endOfDayKey },
@@ -545,7 +555,12 @@ export class ReportAggregator {
       },
     };
 
-    const tabs: Record<TabId, TabResult> = {
+    // Models tab is fixed to the 30d window — it shares the 30d builder so
+    // the per-day-per-model accumulator is read straight from there with no
+    // extra event scan.
+    const models = buildModelsTab(builders['30d'], windowBoundsStr['30d'], targetUserId, resolvedTargetUserName);
+
+    const tabs: CarouselStats['tabs'] = {
       '24h': buildTab(
         '24h',
         builders['24h'],
@@ -582,6 +597,7 @@ export class ReportAggregator {
         sharedRankings,
         todayKey,
       ),
+      models,
     };
 
     return {
@@ -594,6 +610,22 @@ export class ReportAggregator {
 }
 
 // === Carousel helpers ===
+
+/**
+ * One ModelBucket = the four token sub-counts the Models tab needs to render
+ * "X in · Y out" rows + percentages. Cost is intentionally NOT tracked here —
+ * the Models view shows token mix, not spend.
+ */
+interface ModelBucket {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreateTokens: number;
+}
+
+function emptyModelBucket(): ModelBucket {
+  return { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0 };
+}
 
 interface WindowBuilder {
   tokens: number;
@@ -609,6 +641,14 @@ interface WindowBuilder {
   daySet: Set<string>;
   perSession: Map<string, { tokens: number; firstMs: number; lastMs: number; count: number }>;
   perModel: Map<string, number>;
+  /**
+   * Per-(dateKey, model) token sub-counts. Used by the Models tab to render
+   * the stacked bar chart (per day) + the per-model breakdown rows. Populated
+   * uniformly across all windows so the 30d builder can be consumed by
+   * `buildModelsTab` without an extra scan; other windows pay a small
+   * memory cost (one ModelBucket per (day, model) tuple) and ignore it.
+   */
+  perDayModel: Map<string, Map<string, ModelBucket>>;
 }
 
 function makeWindowBuilder(): WindowBuilder {
@@ -621,7 +661,40 @@ function makeWindowBuilder(): WindowBuilder {
     daySet: new Set(),
     perSession: new Map(),
     perModel: new Map(),
+    perDayModel: new Map(),
   };
+}
+
+/**
+ * Add usage tokens to a `(dayKey, model)` bucket inside `b.perDayModel`.
+ * Allocates the inner Map / bucket lazily so empty (day, model) pairs
+ * cost zero memory.
+ */
+function addPerDayModel(
+  b: WindowBuilder,
+  dayKey: string,
+  model: string,
+  usage: {
+    inputTokens?: number;
+    outputTokens?: number;
+    cacheReadInputTokens?: number;
+    cacheCreationInputTokens?: number;
+  },
+): void {
+  let inner = b.perDayModel.get(dayKey);
+  if (!inner) {
+    inner = new Map();
+    b.perDayModel.set(dayKey, inner);
+  }
+  let bucket = inner.get(model);
+  if (!bucket) {
+    bucket = emptyModelBucket();
+    inner.set(model, bucket);
+  }
+  bucket.inputTokens += usage.inputTokens || 0;
+  bucket.outputTokens += usage.outputTokens || 0;
+  bucket.cacheReadTokens += usage.cacheReadInputTokens || 0;
+  bucket.cacheCreateTokens += usage.cacheCreationInputTokens || 0;
 }
 
 /**
@@ -663,14 +736,14 @@ function kstMonthsBetween(a: string, b: string): number {
 }
 
 function buildTab(
-  tabId: TabId,
+  tabId: PeriodTabId,
   b: WindowBuilder,
   bounds: { start: string; end: string },
   targetUserId: string,
   targetUserName: string | undefined,
   sharedRankings: { tokensTop: CarouselRanking[]; targetTokenRow: CarouselRanking | null },
   todayKey: string,
-): TabResult {
+): CarouselTabStats | EmptyTabStats {
   if (b.tokens <= 0 && b.daySet.size === 0) {
     const empty: EmptyTabStats = {
       empty: true,
@@ -786,6 +859,143 @@ function buildTab(
     mostActiveDay,
   };
   return stats;
+}
+
+/**
+ * Maximum distinct model series before we fold the long tail into a single
+ * synthetic `'other'` row. Keeps the stacked-bar legend & color palette
+ * from exploding when a workspace tries dozens of models in 30d.
+ */
+const MODELS_TAB_MAX_ROWS = 8;
+
+/**
+ * Build the per-model breakdown view (Models tab) from the 30d window builder.
+ *
+ * Trace: docs/usage-card-models/trace.md
+ *
+ * Pure transformation of `b.perDayModel` — no extra event scan. Returns
+ * EmptyTabStats when no model events were recorded in the window.
+ *
+ * Sorting & folding:
+ *  - Models are ranked by `totalTokens` desc (input+output+cacheRead+cacheCreate).
+ *  - Top `MODELS_TAB_MAX_ROWS - 1` rows are kept; everything else is summed
+ *    into a synthetic `'other'` row appended to the tail. When the source set
+ *    already fits, no fold row is emitted.
+ *  - `dayKeys` is always 30 entries (oldest → newest) regardless of activity,
+ *    so the chart x-axis is stable across re-renders.
+ */
+function buildModelsTab(
+  b: WindowBuilder,
+  bounds: { start: string; end: string },
+  targetUserId: string,
+  targetUserName: string | undefined,
+): ModelsTabStats | EmptyTabStats {
+  // No model events at all → empty marker (handler short-circuits the tab
+  // through buildStubOption like the other tabs).
+  if (b.perDayModel.size === 0) {
+    return { empty: true, tabId: 'models', windowStart: bounds.start, windowEnd: bounds.end };
+  }
+
+  // Aggregate per-model totals across the window.
+  const totals = new Map<string, ModelBucket>();
+  for (const [, perModel] of b.perDayModel) {
+    for (const [model, bucket] of perModel) {
+      const acc = totals.get(model) ?? emptyModelBucket();
+      acc.inputTokens += bucket.inputTokens;
+      acc.outputTokens += bucket.outputTokens;
+      acc.cacheReadTokens += bucket.cacheReadTokens;
+      acc.cacheCreateTokens += bucket.cacheCreateTokens;
+      totals.set(model, acc);
+    }
+  }
+
+  function bucketTotal(buc: ModelBucket): number {
+    return buc.inputTokens + buc.outputTokens + buc.cacheReadTokens + buc.cacheCreateTokens;
+  }
+
+  // Defensive — if every bucket summed to zero (e.g. only `cost` was set),
+  // treat as empty rather than emit a degenerate chart.
+  const grandTotal = Array.from(totals.values()).reduce((s, buc) => s + bucketTotal(buc), 0);
+  if (grandTotal === 0) {
+    return { empty: true, tabId: 'models', windowStart: bounds.start, windowEnd: bounds.end };
+  }
+
+  // Sort by total tokens desc; alpha-stable for ties so the rendered order
+  // matches the implicit color assignment in `buildModelsTabOption`.
+  const sorted = Array.from(totals.entries())
+    .map(([model, buc]) => ({ model, buc, total: bucketTotal(buc) }))
+    .sort((a, c) => c.total - a.total || a.model.localeCompare(c.model));
+
+  // Fold the long tail past MAX_ROWS-1 into a synthetic 'other' row.
+  let kept: typeof sorted;
+  let tail: typeof sorted;
+  if (sorted.length <= MODELS_TAB_MAX_ROWS) {
+    kept = sorted;
+    tail = [];
+  } else {
+    kept = sorted.slice(0, MODELS_TAB_MAX_ROWS - 1);
+    tail = sorted.slice(MODELS_TAB_MAX_ROWS - 1);
+  }
+
+  const rows: ModelsTabRow[] = kept.map(({ model, buc, total }) => ({
+    model,
+    inputTokens: buc.inputTokens,
+    outputTokens: buc.outputTokens,
+    cacheReadTokens: buc.cacheReadTokens,
+    cacheCreateTokens: buc.cacheCreateTokens,
+    totalTokens: total,
+  }));
+
+  if (tail.length > 0) {
+    const otherRow: ModelsTabRow = {
+      model: 'other',
+      inputTokens: tail.reduce((s, x) => s + x.buc.inputTokens, 0),
+      outputTokens: tail.reduce((s, x) => s + x.buc.outputTokens, 0),
+      cacheReadTokens: tail.reduce((s, x) => s + x.buc.cacheReadTokens, 0),
+      cacheCreateTokens: tail.reduce((s, x) => s + x.buc.cacheCreateTokens, 0),
+      totalTokens: tail.reduce((s, x) => s + x.total, 0),
+    };
+    rows.push(otherRow);
+  }
+
+  // Stable 30-day x-axis: always windowStart..windowStart+29 in KST,
+  // even if some days have zero activity. Keeps the stacked bar's
+  // x-axis consistent across re-renders for the same window.
+  const dayKeys: string[] = [];
+  for (let d = 0; d < 30; d++) {
+    dayKeys.push(kstShiftDay(bounds.start, d));
+  }
+
+  // Build per-model per-day series. Tail folds into 'other' to match `rows`.
+  const tailSet = new Set(tail.map((t) => t.model));
+  const dailyByModel: Record<string, number[]> = {};
+  for (const row of rows) {
+    dailyByModel[row.model] = new Array<number>(dayKeys.length).fill(0);
+  }
+  for (let i = 0; i < dayKeys.length; i++) {
+    const dayKey = dayKeys[i];
+    const inner = b.perDayModel.get(dayKey);
+    if (!inner) continue;
+    for (const [model, bucket] of inner) {
+      const seriesKey = tailSet.has(model) ? 'other' : model;
+      const series = dailyByModel[seriesKey];
+      if (!series) continue; // Defensive — shouldn't happen because rows covers all keep+other.
+      series[i] += bucketTotal(bucket);
+    }
+  }
+
+  return {
+    empty: false,
+    tabId: 'models',
+    targetUserId,
+    targetUserName,
+    windowStart: bounds.start,
+    windowEnd: bounds.end,
+    totalTokens: grandTotal,
+    rows,
+    dayKeys,
+    dailyByModel,
+  };
 }
 
 // === Token Usage Helpers ===

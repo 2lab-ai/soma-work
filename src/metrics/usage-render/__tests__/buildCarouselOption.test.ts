@@ -6,13 +6,13 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { buildCardOption, buildStubOption, buildTabOption } from '../buildCarouselOption';
+import { buildCardOption, buildStubOption, buildTabOption, MODEL_PALETTE } from '../buildCarouselOption';
 import { DARK_PALETTE, HEATMAP_SCALE } from '../dark-palette';
-import type { CarouselStats, CarouselTabStats, EmptyTabStats, TabId } from '../types';
+import type { CarouselStats, CarouselTabStats, EmptyTabStats, ModelsTabStats, PeriodTabId, TabId } from '../types';
 
 // ───── Fixtures ────────────────────────────────────────────────────────
 
-function makeNonEmptyStats(tabId: TabId, overrides: Partial<CarouselTabStats> = {}): CarouselTabStats {
+function makeNonEmptyStats(tabId: PeriodTabId, overrides: Partial<CarouselTabStats> = {}): CarouselTabStats {
   let heatmap: CarouselTabStats['heatmap'] = [];
   if (tabId === '7d') {
     // 168 cells (7 days × 24 hours)
@@ -75,7 +75,40 @@ function makeEmpty(tabId: TabId): EmptyTabStats {
   };
 }
 
-function makeCarouselStats(overrides: Partial<Record<TabId, CarouselTabStats | EmptyTabStats>> = {}): CarouselStats {
+function makeModelsStats(overrides: Partial<ModelsTabStats> = {}): ModelsTabStats {
+  return {
+    empty: false,
+    tabId: 'models',
+    targetUserId: 'U_TEST',
+    targetUserName: 'Tester',
+    windowStart: '2026-03-20',
+    windowEnd: '2026-04-18',
+    totalTokens: 1000,
+    rows: [
+      {
+        model: 'claude-opus-4-7',
+        inputTokens: 400,
+        outputTokens: 500,
+        cacheReadTokens: 50,
+        cacheCreateTokens: 50,
+        totalTokens: 1000,
+      },
+    ],
+    dayKeys: Array.from({ length: 30 }, (_, i) => `2026-03-${String(20 + (i % 11)).padStart(2, '0')}`),
+    dailyByModel: { 'claude-opus-4-7': new Array(30).fill(0).map((_, i) => (i === 0 ? 1000 : 0)) },
+    ...overrides,
+  };
+}
+
+function makeCarouselStats(
+  overrides: Partial<{
+    '24h': CarouselTabStats | EmptyTabStats;
+    '7d': CarouselTabStats | EmptyTabStats;
+    '30d': CarouselTabStats | EmptyTabStats;
+    all: CarouselTabStats | EmptyTabStats;
+    models: ModelsTabStats | EmptyTabStats;
+  }> = {},
+): CarouselStats {
   return {
     targetUserId: 'U_TEST',
     targetUserName: 'Tester',
@@ -85,6 +118,7 @@ function makeCarouselStats(overrides: Partial<Record<TabId, CarouselTabStats | E
       '7d': overrides['7d'] ?? makeNonEmptyStats('7d'),
       '30d': overrides['30d'] ?? makeNonEmptyStats('30d'),
       all: overrides.all ?? makeNonEmptyStats('all'),
+      models: overrides.models ?? makeModelsStats(),
     },
   };
 }
@@ -197,6 +231,7 @@ describe('buildStubOption', () => {
     '7d',
     '30d',
     'all',
+    'models',
   ] as const)('returns dark-bg option with localized empty message for %s', (tabId) => {
     const opt = buildStubOption(tabId) as any;
     expect(opt.backgroundColor).toBe(DARK_PALETTE.bg);
@@ -258,5 +293,112 @@ describe('buildCardOption', () => {
     })();
     const allText = `${graphics.map((g: any) => g?.style?.text ?? g?.text ?? '').join(' ')} ${titleText}`;
     expect(allText).toContain('활동 없음');
+  });
+});
+
+// ───── Models tab ───────────────────────────────────────────────────────
+
+describe('buildTabOption — models', () => {
+  it('returns one stacked-bar series per row, colors taken from MODEL_PALETTE', () => {
+    const stats = makeModelsStats({
+      rows: [
+        {
+          model: 'opus-4-7',
+          inputTokens: 70,
+          outputTokens: 20,
+          cacheReadTokens: 5,
+          cacheCreateTokens: 5,
+          totalTokens: 100,
+        },
+        {
+          model: 'sonnet-4-6',
+          inputTokens: 30,
+          outputTokens: 10,
+          cacheReadTokens: 0,
+          cacheCreateTokens: 0,
+          totalTokens: 40,
+        },
+      ],
+      dayKeys: Array.from({ length: 30 }, (_, i) => `2026-03-${String(20 + (i % 11)).padStart(2, '0')}`),
+      dailyByModel: {
+        'opus-4-7': new Array(30).fill(0).map((_, i) => (i === 0 ? 100 : 0)),
+        'sonnet-4-6': new Array(30).fill(0).map((_, i) => (i === 1 ? 40 : 0)),
+      },
+      totalTokens: 140,
+    });
+    const opt = buildTabOption('models', stats, false) as any;
+    expect(Array.isArray(opt.series)).toBe(true);
+    expect(opt.series).toHaveLength(2);
+    expect(opt.series.every((s: any) => s.type === 'bar')).toBe(true);
+    expect(opt.series.every((s: any) => s.stack === 'modelsStack')).toBe(true);
+    expect(opt.series[0].itemStyle.color).toBe(MODEL_PALETTE[0]);
+    expect(opt.series[1].itemStyle.color).toBe(MODEL_PALETTE[1]);
+    expect(opt.visualMap).toBeUndefined();
+    const xAxis = Array.isArray(opt.xAxis) ? opt.xAxis[0] : opt.xAxis;
+    expect(xAxis.data).toHaveLength(30);
+  });
+
+  it('empty models stats → stub option with localized 모델 활동 없음 message', () => {
+    const empty: EmptyTabStats = { empty: true, tabId: 'models', windowStart: '2026-03-20', windowEnd: '2026-04-18' };
+    const opt = buildTabOption('models', empty, false) as any;
+    expect(opt.backgroundColor).toBe(DARK_PALETTE.bg);
+    const graphics = Array.isArray(opt.graphic) ? opt.graphic : [opt.graphic];
+    const allText = graphics.map((g: any) => g?.style?.text ?? g?.text ?? '').join(' ');
+    expect(allText).toContain('모델 활동 없음');
+  });
+});
+
+describe('buildCardOption — models', () => {
+  it('emits per-model breakdown rows (swatch / name / tokens / pct) when tabId is models', () => {
+    const opt = buildCardOption(makeCarouselStats(), 'models', true) as any;
+    const graphics = Array.isArray(opt.graphic) ? opt.graphic : [opt.graphic];
+    const swatch = graphics.find((g: any) => g?.id === 'models-row-swatch-0');
+    const name = graphics.find((g: any) => g?.id === 'models-row-name-0');
+    const tokens = graphics.find((g: any) => g?.id === 'models-row-tokens-0');
+    const pct = graphics.find((g: any) => g?.id === 'models-row-pct-0');
+    expect(swatch).toBeDefined();
+    expect(name?.style?.text).toBe('claude-opus-4-7');
+    expect(tokens?.style?.text).toBe('400 in · 500 out');
+    expect(pct?.style?.text).toBe('100.0%');
+  });
+
+  it('Models subtab is the bold/active label when tabId is models', () => {
+    const opt = buildCardOption(makeCarouselStats(), 'models', true) as any;
+    const graphics = Array.isArray(opt.graphic) ? opt.graphic : [opt.graphic];
+    const overview = graphics.find((g: any) => g?.id === 'subtab-overview');
+    const models = graphics.find((g: any) => g?.id === 'subtab-models');
+    expect(models?.style?.fontWeight).toBe('bold');
+    expect(models?.style?.fill).toBe(DARK_PALETTE.text);
+    expect(overview?.style?.fontWeight).toBe('normal');
+    expect(overview?.style?.fill).toBe(DARK_PALETTE.textMuted);
+  });
+
+  it('NO period-tab pill is highlighted when tabId is models (period axis is not relevant)', () => {
+    const opt = buildCardOption(makeCarouselStats(), 'models', true) as any;
+    const graphics = Array.isArray(opt.graphic) ? opt.graphic : [opt.graphic];
+    const tabPills = graphics.filter((g: any) => g?.periodTab === true);
+    expect(tabPills.length).toBe(4);
+    for (const p of tabPills) {
+      expect(p.style?.fill).toBe(DARK_PALETTE.surface);
+    }
+  });
+
+  it('does NOT emit metric grid / fun-fact / ranking-row on the Models tab', () => {
+    const opt = buildCardOption(makeCarouselStats(), 'models', true) as any;
+    const graphics = Array.isArray(opt.graphic) ? opt.graphic : [opt.graphic];
+    expect(graphics.find((g: any) => g?.id === 'fun-fact')).toBeUndefined();
+    expect(graphics.find((g: any) => g?.id === 'ranking-row')).toBeUndefined();
+    expect(graphics.find((g: any) => g?.id === 'metric-label-0')).toBeUndefined();
+  });
+
+  it('selecting a period tab keeps Overview as active subtab + Models muted', () => {
+    const opt = buildCardOption(makeCarouselStats(), '30d', true) as any;
+    const graphics = Array.isArray(opt.graphic) ? opt.graphic : [opt.graphic];
+    const overview = graphics.find((g: any) => g?.id === 'subtab-overview');
+    const models = graphics.find((g: any) => g?.id === 'subtab-models');
+    expect(overview?.style?.fontWeight).toBe('bold');
+    expect(overview?.style?.fill).toBe(DARK_PALETTE.text);
+    expect(models?.style?.fontWeight).toBe('normal');
+    expect(models?.style?.fill).toBe(DARK_PALETTE.textMuted);
   });
 });

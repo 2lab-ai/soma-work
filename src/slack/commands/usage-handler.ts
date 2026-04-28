@@ -169,21 +169,28 @@ export class UsageHandler implements CommandHandler {
 
       const carouselStats = await aggregateCarousel({ targetUserId: user, now });
 
-      // All-empty short-circuit (Scenario 12) — no events in any window at all.
-      const tabIds: readonly TabId[] = ['24h', '7d', '30d', 'all'] as const;
-      const allEmpty = tabIds.every((t) => carouselStats.tabs[t].empty === true);
+      // All-empty short-circuit (Scenario 12) — only the four PERIOD tabs are
+      // checked. The 'models' tab derives from the 30d period builder, so if
+      // every period tab is empty 'models' is too. Including 'models' in the
+      // check would be redundant; excluding it keeps the contract identical
+      // to pre-Models-tab behavior.
+      const periodTabIds: readonly TabId[] = ['24h', '7d', '30d', 'all'] as const;
+      const allEmpty = periodTabIds.every((t) => carouselStats.tabs[t].empty === true);
       if (allEmpty) {
         this.logger.info('carousel_all_empty', { userId: user });
         await this.postEphemeral(ctx, '최근 30일간 기록된 사용량이 없습니다. `/usage` 로 기본 집계를 먼저 확인하세요.');
         return { handled: true };
       }
 
-      // Render 4 tab PNGs in parallel (renderer handles stub PNGs for empty tabs).
+      // Render 5 tab PNGs in parallel (renderer handles stub PNGs for empty
+      // tabs). 'models' is rendered alongside the period tabs so all five
+      // file IDs are cached together for click-driven `chat.update`.
+      const allTabIds: readonly TabId[] = ['24h', '7d', '30d', 'all', 'models'] as const;
       const renderCarousel = this.overrides.renderCarousel ?? defaultRenderCarousel;
       const pngMap = await renderCarousel(carouselStats, '30d');
 
-      // Upload 4 PNGs — NO `channel_id` / `channels` / `thread_ts` / `initial_comment`
-      // so Slack does NOT auto-post 4 orphan file messages into the channel.
+      // Upload 5 PNGs — NO `channel_id` / `channels` / `thread_ts` / `initial_comment`
+      // so Slack does NOT auto-post 5 orphan file messages into the channel.
       const slackApi = this.overrides.slackApi;
       const filesUploadV2: (args: Record<string, unknown>) => Promise<unknown> = slackApi
         ? (args) => slackApi.filesUploadV2(args)
@@ -203,7 +210,7 @@ export class UsageHandler implements CommandHandler {
         }
         return [tabId, extractFileId(res)];
       };
-      const uploadResults = await Promise.all(tabIds.map((t) => uploadTab(t)));
+      const uploadResults = await Promise.all(allTabIds.map((t) => uploadTab(t)));
       const fileIds = Object.fromEntries(uploadResults) as Record<TabId, string>;
 
       // Post carousel message with cold-cache retry. `postMessage` may reject
