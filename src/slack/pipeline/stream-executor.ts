@@ -2991,20 +2991,39 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     });
 
     // Supersede any prior pending message for this session.
-    if (evicted?.messageTs) {
+    if (evicted) {
+      // Sealed audit (#755): the evicted entry gets a state='superseded'
+      // lifecycle row before the new pending UI is posted, so the
+      // dashboard drilldown shows what intent the model abandoned.
       try {
-        await this.deps.slackApi.updateMessage(
-          evicted.channelId,
-          evicted.messageTs,
-          '⚠️ [superseded] — a newer instruction proposal replaced this one.',
-          buildInstructionSupersededBlocks(evicted.request),
-        );
+        this.deps.claudeHandler.recordSupersededLifecycle(session, {
+          requestId: evicted.requestId,
+          type: evicted.type,
+          by: evicted.by,
+          ops: evicted.request.instructionOperations ?? [],
+        });
       } catch (err) {
-        this.logger.warn('Failed to update superseded confirm message', {
+        this.logger.warn('Failed to record superseded lifecycle audit', {
           sessionKey: context.sessionKey,
           evictedRequestId: evicted.requestId,
           err,
         });
+      }
+      if (evicted.messageTs) {
+        try {
+          await this.deps.slackApi.updateMessage(
+            evicted.channelId,
+            evicted.messageTs,
+            '⚠️ [superseded] — a newer instruction proposal replaced this one.',
+            buildInstructionSupersededBlocks(evicted.request),
+          );
+        } catch (err) {
+          this.logger.warn('Failed to update superseded confirm message', {
+            sessionKey: context.sessionKey,
+            evictedRequestId: evicted.requestId,
+            err,
+          });
+        }
       }
     }
 

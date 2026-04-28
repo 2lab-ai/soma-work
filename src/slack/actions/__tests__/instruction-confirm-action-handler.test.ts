@@ -30,21 +30,34 @@ function mkSession(partial: Partial<ConversationSession> = {}): ConversationSess
 
 function mkHandler() {
   const session = mkSession();
-  const updateSessionResources = vi.fn(() => ({
-    ok: true,
-    snapshot: { issues: [], prs: [], docs: [], active: {}, instructions: [], sequence: 1 },
-  }));
+  // #755: handleYes routes through applyConfirmedLifecycle (sealed
+  // one-tx). updateSessionResources is no longer the y-confirm seam.
+  const applyConfirmedLifecycle = vi.fn(() => ({ ok: true, instructionId: 'instr-test' }));
+  const recordRejectedLifecycle = vi.fn();
+  const recordSupersededLifecycle = vi.fn();
   const getSessionByKey = vi.fn(() => session);
   const slackApi = {
     updateMessage: vi.fn(async () => {}),
   } as unknown as SlackApiHelper;
   const claudeHandler = {
-    updateSessionResources,
+    applyConfirmedLifecycle,
+    recordRejectedLifecycle,
+    recordSupersededLifecycle,
     getSessionByKey,
   } as unknown as ClaudeHandler;
   const store = new PendingInstructionConfirmStore();
   const handler = new InstructionConfirmActionHandler({ slackApi, claudeHandler, store });
-  return { handler, session, store, claudeHandler, slackApi, updateSessionResources, getSessionByKey };
+  return {
+    handler,
+    session,
+    store,
+    claudeHandler,
+    slackApi,
+    applyConfirmedLifecycle,
+    recordRejectedLifecycle,
+    recordSupersededLifecycle,
+    getSessionByKey,
+  };
 }
 
 function mkRequest(): SessionResourceUpdateRequest {
@@ -56,8 +69,8 @@ const respond = vi.fn(async () => {});
 describe('InstructionConfirmActionHandler', () => {
   beforeEach(() => respond.mockClear());
 
-  it('handleYes commits the request, clears systemPrompt, updates the Slack message, deletes the entry', async () => {
-    const { handler, session, store, slackApi, updateSessionResources } = mkHandler();
+  it('handleYes commits the request via applyConfirmedLifecycle, clears systemPrompt, updates the Slack message, deletes the entry', async () => {
+    const { handler, session, store, slackApi, applyConfirmedLifecycle } = mkHandler();
     store.set({
       requestId: 'r1',
       sessionKey: 'C1|T1',
@@ -76,14 +89,18 @@ describe('InstructionConfirmActionHandler', () => {
       respond,
     );
 
-    expect(updateSessionResources).toHaveBeenCalledTimes(1);
+    expect(applyConfirmedLifecycle).toHaveBeenCalledTimes(1);
+    const meta = applyConfirmedLifecycle.mock.calls[0][1];
+    expect(meta.requestId).toBe('r1');
+    expect(meta.type).toBe('add');
+    expect(meta.by).toEqual({ type: 'slack-user', id: 'U1' });
     expect(session.systemPrompt).toBeUndefined();
     expect(slackApi.updateMessage).toHaveBeenCalledTimes(1);
     expect(store.get('r1')).toBeUndefined();
   });
 
-  it('handleNo sets pendingInstructionRejection, updates the Slack message, deletes the entry', async () => {
-    const { handler, session, store, slackApi } = mkHandler();
+  it('handleNo sets pendingInstructionRejection, records rejected lifecycle, updates the Slack message, deletes the entry', async () => {
+    const { handler, session, store, slackApi, recordRejectedLifecycle } = mkHandler();
     store.set({
       requestId: 'r2',
       sessionKey: 'C1|T1',
@@ -104,12 +121,16 @@ describe('InstructionConfirmActionHandler', () => {
 
     expect(session.pendingInstructionRejection).toBeDefined();
     expect(session.pendingInstructionRejection?.request.instructionOperations?.length).toBe(1);
+    expect(recordRejectedLifecycle).toHaveBeenCalledTimes(1);
+    const rejMeta = recordRejectedLifecycle.mock.calls[0][1];
+    expect(rejMeta.requestId).toBe('r2');
+    expect(rejMeta.type).toBe('add');
     expect(slackApi.updateMessage).toHaveBeenCalledTimes(1);
     expect(store.get('r2')).toBeUndefined();
   });
 
   it('handleYes bails out when clicker is not the session owner', async () => {
-    const { handler, session, store, updateSessionResources } = mkHandler();
+    const { handler, session, store, applyConfirmedLifecycle } = mkHandler();
     store.set({
       requestId: 'r3',
       sessionKey: 'C1|T1',
@@ -128,7 +149,7 @@ describe('InstructionConfirmActionHandler', () => {
       respond,
     );
 
-    expect(updateSessionResources).not.toHaveBeenCalled();
+    expect(applyConfirmedLifecycle).not.toHaveBeenCalled();
     expect(session.systemPrompt).toBe('cached-prompt');
     // Entry should still exist — the owner can still click later.
     expect(store.get('r3')).toBeDefined();
@@ -139,7 +160,7 @@ describe('InstructionConfirmActionHandler', () => {
     // a newer turn could flip `session.currentInitiatorId` to the attacker
     // and let that attacker approve someone else's pending write. The
     // entry's own requesterId ('U-original') is the only trusted anchor.
-    const { handler, session, store, updateSessionResources } = mkHandler();
+    const { handler, session, store, applyConfirmedLifecycle } = mkHandler();
     session.currentInitiatorId = 'U-attacker';
     store.set({
       requestId: 'r-drift',
@@ -159,17 +180,17 @@ describe('InstructionConfirmActionHandler', () => {
       respond,
     );
 
-    expect(updateSessionResources).not.toHaveBeenCalled();
+    expect(applyConfirmedLifecycle).not.toHaveBeenCalled();
     expect(session.systemPrompt).toBe('cached-prompt');
     expect(store.get('r-drift')).toBeDefined();
   });
 
   it('handleYes is a no-op for an unknown requestId', async () => {
-    const { handler, updateSessionResources } = mkHandler();
+    const { handler, applyConfirmedLifecycle } = mkHandler();
     await handler.handleYes(
       { user: { id: 'U1' }, actions: [{ action_id: 'instr_confirm_y:missing', value: 'missing' }] },
       respond,
     );
-    expect(updateSessionResources).not.toHaveBeenCalled();
+    expect(applyConfirmedLifecycle).not.toHaveBeenCalled();
   });
 });

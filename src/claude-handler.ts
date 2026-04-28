@@ -366,6 +366,34 @@ export class ClaudeHandler {
     return this.sessionRegistry.updateSessionResources(channelId, threadTs, request);
   }
 
+  /**
+   * Sealed lifecycle delegations (#755) — the y/n confirm gate uses these
+   * to commit confirmed lifecycle ops, append rejected/superseded audit
+   * rows, and (downstream of stream-executor) record an eviction. Kept as
+   * thin pass-throughs so the action handler does not need to depend on
+   * SessionRegistry directly.
+   */
+  applyConfirmedLifecycle(
+    session: import('./types').ConversationSession,
+    meta: import('./session-registry').LifecycleConfirmMeta,
+  ): import('./session-registry').LifecycleConfirmResult {
+    return this.sessionRegistry.applyConfirmedLifecycle(session, meta);
+  }
+
+  recordRejectedLifecycle(
+    session: import('./types').ConversationSession,
+    meta: import('./session-registry').LifecycleConfirmMeta,
+  ): void {
+    this.sessionRegistry.recordRejectedLifecycle(session, meta);
+  }
+
+  recordSupersededLifecycle(
+    session: import('./types').ConversationSession,
+    meta: import('./session-registry').LifecycleConfirmMeta,
+  ): void {
+    this.sessionRegistry.recordSupersededLifecycle(session, meta);
+  }
+
   refreshSessionActivityByKey(sessionKey: string): boolean {
     return this.sessionRegistry.refreshSessionActivityByKey(sessionKey);
   }

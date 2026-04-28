@@ -14,6 +14,8 @@
 
 import type { ClaudeHandler } from '../../claude-handler';
 import { Logger } from '../../logger';
+import type { LifecycleConfirmMeta } from '../../session-registry';
+import type { ConversationSession, SessionInstructionOperation, SessionResourceUpdateRequest } from '../../types';
 import {
   buildInstructionAppliedBlocks,
   buildInstructionRejectedBlocks,
@@ -21,7 +23,7 @@ import {
   INSTRUCTION_CONFIRM_YES_ACTION,
 } from '../instruction-confirm-blocks';
 import type { SlackApiHelper } from '../slack-api-helper';
-import type { PendingInstructionConfirmStore } from './pending-instruction-confirm-store';
+import type { PendingInstructionConfirm, PendingInstructionConfirmStore } from './pending-instruction-confirm-store';
 import type { RespondFn } from './types';
 
 export interface InstructionConfirmActionContext {
@@ -88,18 +90,26 @@ export class InstructionConfirmActionHandler {
       return;
     }
 
-    const result = this.ctx.claudeHandler.updateSessionResources(session.channelId, session.threadTs, entry.request);
+    // Sealed (#755) y-confirm: commit a single lifecycle transaction over
+    // the user master AND session pointer. The pending entry's `type` and
+    // `by` are the authoritative metadata source (snapshotted at queue
+    // time) so the audit row can never drift on later session shifts.
+    const meta = this.buildLifecycleMeta(entry);
+    const result = this.ctx.claudeHandler.applyConfirmedLifecycle(session, meta);
     if (!result.ok) {
-      this.logger.warn('instr_confirm_y: updateSessionResources failed', {
+      this.logger.warn('instr_confirm_y: applyConfirmedLifecycle failed', {
         requestId,
         reason: result.reason,
         error: result.error,
       });
+      // Leave the pending entry intact so the user can retry once the
+      // underlying issue (corrupt store, ENOSPC, …) clears.
       return;
     }
 
-    // Snapshot invalidation — next claude-handler call rebuilds the prompt
-    // with the new SSOT. See PLAN §2.
+    // applyConfirmedLifecycle already invalidates `session.systemPrompt`
+    // on success — re-asserting here so a future contract change cannot
+    // silently regress the prompt-cache invalidation.
     session.systemPrompt = undefined;
 
     // Terminal message — no buttons, just the applied summary. `block_id`
@@ -150,6 +160,11 @@ export class InstructionConfirmActionHandler {
       }
       // Runtime-only flag — stream-executor consumes + clears on next turn.
       session.pendingInstructionRejection = { at: Date.now(), request: entry.request };
+
+      // Sealed (#755) n-confirm: append a state='rejected' lifecycle audit
+      // row on the user master. No data mutation.
+      const meta = this.buildLifecycleMeta(entry);
+      this.ctx.claudeHandler.recordRejectedLifecycle(session, meta);
     }
 
     if (entry.messageTs) {
@@ -169,6 +184,22 @@ export class InstructionConfirmActionHandler {
     }
 
     this.ctx.store.delete(requestId);
+  }
+
+  /**
+   * Build the sealed `LifecycleConfirmMeta` (#755) from a pending entry.
+   * The entry's `type`/`by` were snapshotted at queue time by
+   * stream-executor; the request's instructionOperations array is the
+   * payload the SessionRegistry tx replays.
+   */
+  private buildLifecycleMeta(entry: PendingInstructionConfirm): LifecycleConfirmMeta {
+    const ops: SessionInstructionOperation[] = entry.request.instructionOperations ?? [];
+    return {
+      requestId: entry.requestId,
+      type: entry.type,
+      by: entry.by,
+      ops,
+    };
   }
 
   /** Action ID prefixes — exposed for the ActionRouter. */
