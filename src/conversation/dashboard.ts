@@ -5373,6 +5373,9 @@ document.addEventListener('drop', function(e) {
 // ── Init ──
 loadUsers();
 loadSessions().then(function() { loadStats(); });
+// #758 P1-5 — populate Active Instructions on first render so users see
+// their open instructions without having to switch users in the dropdown.
+loadInstructions();
 connectWs();
 setInterval(loadSessions, 30000);
 </script>
