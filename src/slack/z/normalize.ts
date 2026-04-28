@@ -27,6 +27,10 @@ import { isLegacyNaked } from './tombstone';
 import type { ZInvocation, ZRespond, ZSource } from './types';
 import { isWhitelistedNaked } from './whitelist';
 
+// BC re-export — `slack-handler.ts`, `event-router.ts`, `command-router.ts`,
+// and `__tests__/normalize.test.ts` still import `stripZPrefix` from here.
+// Authoritative location is `./strip-z-prefix`; do not delete this re-export
+// without migrating all four call sites first (#745 follow-up candidate).
 export { stripZPrefix } from './strip-z-prefix';
 
 export interface NormalizeInput {

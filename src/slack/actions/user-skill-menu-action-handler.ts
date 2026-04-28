@@ -14,21 +14,10 @@ import {
 } from '../../user-skill-store';
 import type { SlackApiHelper } from '../slack-api-helper';
 import type { MessageHandler, RespondFn, SayFn } from './types';
-import { buildSkillViewPrivateMetadata } from './user-skill-view-submission-shared';
-
-interface UserSkillMenuContext {
-  slackApi: SlackApiHelper;
-  claudeHandler: ClaudeHandler;
-  messageHandler: MessageHandler;
-}
-
-// `VALUE_KIND_*` and the action-id prefix constants moved to
-// `./user-skill-action-kinds` so the renderer
-// (`commands/user-skills-list-handler.ts`) can import them without forming a
-// `list-handler → menu-action-handler → view-submission-shared → list-handler`
-// cycle (#745). Re-exported here so existing callers (`actions/index.ts`,
-// view-submission handlers, in-flight `user-skill-*` references) keep
-// working unchanged.
+// Action discriminators (`VALUE_KIND_*`) and action-id prefixes live in this
+// leaf so `commands/user-skills-list-handler.ts` can import them without
+// forming the cycle list-handler → menu-action-handler → view-submission-shared
+// → list-handler (#745).
 import {
   LEGACY_INVOKE_ACTION_ID_PREFIX,
   MENU_ACTION_ID_PREFIX,
@@ -38,16 +27,13 @@ import {
   VALUE_KIND_RENAME,
   VALUE_KIND_SHARE,
 } from './user-skill-action-kinds';
+import { buildSkillViewPrivateMetadata } from './user-skill-view-submission-shared';
 
-export {
-  LEGACY_INVOKE_ACTION_ID_PREFIX,
-  MENU_ACTION_ID_PREFIX,
-  VALUE_KIND_DELETE,
-  VALUE_KIND_EDIT,
-  VALUE_KIND_INVOKE,
-  VALUE_KIND_RENAME,
-  VALUE_KIND_SHARE,
-} from './user-skill-action-kinds';
+interface UserSkillMenuContext {
+  slackApi: SlackApiHelper;
+  claudeHandler: ClaudeHandler;
+  messageHandler: MessageHandler;
+}
 
 /** callback_id for the inline-edit modal — paired with the view handler. */
 export const USER_SKILL_EDIT_MODAL_CALLBACK_ID = 'user_skill_edit_modal_submit';

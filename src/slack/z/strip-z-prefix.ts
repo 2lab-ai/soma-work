@@ -9,6 +9,10 @@
  * Pure / synchronous / no z-domain types.
  */
 
+// Hoisted at module scope so the regex isn't recompiled per inbound `/z`
+// message. No `g` flag → safe to share across calls without `lastIndex` state.
+const Z_PREFIX_RE = /^\/z(?:\s+([\s\S]*))?$/i;
+
 /**
  * Strip a leading `/z` prefix. Returns the trimmed remainder, or `null` if
  * the input does NOT start with `/z`.
@@ -18,7 +22,7 @@
  * returns `''`.
  */
 export function stripZPrefix(text: string): string | null {
-  const match = text.match(/^\/z(?:\s+([\s\S]*))?$/i);
+  const match = Z_PREFIX_RE.exec(text);
   if (!match) return null;
   return (match[1] ?? '').trim();
 }
