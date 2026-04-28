@@ -8,9 +8,12 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { SYSTEM_PROMPT_FILE } from './env-paths';
 import { Logger } from './logger';
+import { buildCurrentInstructionBlock } from './prompt/current-instruction-block';
 import { buildUserInstructionsBlock } from './prompt/user-instructions-block';
+import type { PendingInstructionConfirmStore } from './slack/actions/pending-instruction-confirm-store';
 import type { ConversationSession, WorkflowType } from './types';
 import { formatMemoryForPrompt } from './user-memory-store';
+import { getUserSessionStore, UserSessionStoreCorruptError } from './user-session-store';
 import { userSettingsStore } from './user-settings-store';
 import { listUserSkills } from './user-skill-store';
 
@@ -36,6 +39,16 @@ const VARIABLE_PATTERN = /(?<!\\)\{\{([\w.]+)\}\}/g;
 export interface PromptBuilderOptions {
   agentName?: string;
   promptDir?: string; // explicit override, takes precedence over agentName
+  /**
+   * Optional pending-confirm store (#756). When provided, `buildSystemPrompt`
+   * surfaces the active `pending: <op>` line in the
+   * `<current-user-instruction>` block. Production callers wire the
+   * SlackHandler-owned singleton; tests inject their own.
+   *
+   * Left optional so session-less dispatch / classifier prompt builds (and
+   * existing tests) keep working without touching the pending store.
+   */
+  pendingInstructionConfirmStore?: PendingInstructionConfirmStore;
 }
 
 /**
@@ -53,10 +66,13 @@ export class PromptBuilder {
   private fallbackPromptDir: string;
   /** Agent name (undefined for main bot) */
   private agentName: string | undefined;
+  /** Optional pending-instruction confirm store (#756). */
+  private pendingInstructionConfirmStore: PendingInstructionConfirmStore | undefined;
 
   constructor(options?: PromptBuilderOptions) {
     this.fallbackPromptDir = PROMPT_DIR;
     this.agentName = options?.agentName;
+    this.pendingInstructionConfirmStore = options?.pendingInstructionConfirmStore;
 
     if (options?.promptDir) {
       // Explicit prompt dir override
@@ -433,6 +449,28 @@ export class PromptBuilder {
       }
     }
 
+    // Inject `<current-user-instruction>` dual-protection block (#756).
+    //
+    // FIXED POSITION: rendered AFTER the legacy user-instructions-ssot
+    // block so it occupies the very last slot of the system prompt and
+    // receives the highest recency weight in the model's attention. The
+    // host re-runs `buildSystemPrompt` at every reset point (first turn /
+    // post-compact / SSOT-mutated cache invalidation), so this block is
+    // re-derived from the user-scope master each time — surviving
+    // compact/reset by construction.
+    //
+    // Skipped when no session is supplied (dispatch / classifier
+    // one-shots are session-less).
+    if (session && (session.ownerId || userId)) {
+      const masterUserId = session.ownerId || userId;
+      if (masterUserId) {
+        const currentInstrBlock = this.buildCurrentInstructionBlockForSession(masterUserId, session);
+        if (currentInstrBlock) {
+          systemPrompt = systemPrompt ? `${systemPrompt}\n\n${currentInstrBlock}` : currentInstrBlock;
+        }
+      }
+    }
+
     // Process runtime variables (e.g., {{user.email}})
     // Done last so dynamic values are always current
     if (systemPrompt) {
@@ -440,6 +478,41 @@ export class PromptBuilder {
     }
 
     return systemPrompt || undefined;
+  }
+
+  /**
+   * Render the `<current-user-instruction>` block for a session by reading
+   * the user-scope master via `getUserSessionStore()` and (optionally) the
+   * pending-confirm entry from the injected store. Failures are logged
+   * and degrade to an empty string — a missing/corrupt master must not
+   * sink the entire prompt build.
+   */
+  private buildCurrentInstructionBlockForSession(userId: string, session: ConversationSession): string | undefined {
+    let doc;
+    try {
+      doc = getUserSessionStore().load(userId);
+    } catch (err) {
+      if (err instanceof UserSessionStoreCorruptError) {
+        // Sealed contract: store NEVER overwrites a corrupt file. We
+        // log + skip the block rather than substituting a fake doc that
+        // would silently mis-inform the model about active instructions.
+        this.logger.error('Skipping <current-user-instruction>: user master is corrupt', {
+          userId,
+          file: err.file,
+        });
+      } else {
+        this.logger.error('Skipping <current-user-instruction>: failed to load user master', { userId, error: err });
+      }
+      return undefined;
+    }
+    const sessionKey = `${session.channelId}-${session.threadTs || 'direct'}`;
+    const pending = this.pendingInstructionConfirmStore?.getBySession(sessionKey);
+    return buildCurrentInstructionBlock({
+      doc,
+      sessionKey,
+      currentInstructionId: session.currentInstructionId ?? null,
+      pending,
+    });
   }
 
   /**
