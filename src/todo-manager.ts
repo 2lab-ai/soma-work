@@ -361,6 +361,32 @@ export class TodoManager {
     return this.todos.get(sessionId) || [];
   }
 
+  /**
+   * Cross-session lookup: every Todo owned by `userId` whose
+   * `userInstructionId === instructionId`. Used by the dashboard /
+   * inspector seam (#759) to answer "which Todos came out of THIS
+   * instruction?".
+   *
+   * Scoped to one user (never crosses userId boundaries) and skips Todos
+   * whose link is null. Caller must `loadFromDisk(userId)` first if the
+   * manager is freshly constructed; this method does NOT auto-rehydrate
+   * because the production seam keeps state in RAM after the first read
+   * and rehydration is the controller's job (matches UserSessionStore's
+   * load contract).
+   */
+  findTodosByInstructionId(userId: string, instructionId: string): Todo[] {
+    const out: Todo[] = [];
+    for (const [sid, list] of this.todos) {
+      if (this.sessionOwner.get(sid) !== userId) continue;
+      for (const t of list) {
+        if (t.userInstructionId === instructionId) {
+          out.push(t);
+        }
+      }
+    }
+    return out;
+  }
+
   formatTodoList(todos: Todo[]): string {
     if (todos.length === 0) {
       return '📋 *Task List*\n\nNo tasks defined yet.';
