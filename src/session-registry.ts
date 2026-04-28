@@ -3,6 +3,7 @@
  * Extracted from claude-handler.ts (Phase 5.1)
  */
 
+import { randomUUID } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { applyInstructionOperations } from 'somalib/model-commands/catalog';
@@ -20,6 +21,7 @@ import type {
   ConversationSession,
   HandoffContext,
   SessionInstruction,
+  SessionInstructionOperation,
   SessionLink,
   SessionLinkHistory,
   SessionLinks,
@@ -31,8 +33,40 @@ import type {
   SessionState,
   WorkflowType,
 } from './types';
-import { getUserSessionStore, UserSessionStoreCorruptError } from './user-session-store';
+import {
+  getUserSessionStore,
+  type LifecycleEvent,
+  type LifecycleOp,
+  type UserInstruction,
+  UserSessionStore,
+  UserSessionStoreCorruptError,
+} from './user-session-store';
 import { coerceToAvailableModel, type EffortLevel, userSettingsStore } from './user-settings-store';
+
+/**
+ * Sealed lifecycle metadata required to commit a confirmed (or reject /
+ * supersede) `lifecycleEvents[]` row on the user master (#755).
+ *
+ * Built by the y/n confirm seam from the persisted `PendingInstructionConfirm`
+ * entry — `requestId` ties the audit row back to the pending message,
+ * `type` is the sealed 5-op vocabulary key, `by` is the actor descriptor,
+ * `ops` is the original instruction-operation payload (used for both the
+ * row mutation and the audit `payload`).
+ */
+export interface LifecycleConfirmMeta {
+  requestId: string;
+  type: LifecycleOp;
+  by: { type: 'slack-user'; id: string };
+  ops: SessionInstructionOperation[];
+}
+
+export interface LifecycleConfirmResult {
+  ok: boolean;
+  reason?: 'TX_FAILED' | 'SESSION_NOT_FOUND' | 'INVALID_OP';
+  error?: string;
+  /** Resolved instruction id (for `add` it's the freshly minted id). */
+  instructionId?: string;
+}
 
 const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
 
@@ -968,6 +1002,265 @@ export class SessionRegistry {
       ok: true,
       snapshot: this.buildSessionResourceSnapshot(session),
     };
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Sealed user-instruction lifecycle transactions (sub-issue #755)
+  //
+  // The y/n confirm gate (`pending-instruction-confirm-store`) defers
+  // model-emitted instruction writes until the user clicks Yes/No. When the
+  // click arrives, this seam commits the change as a single transaction over
+  // the user master (`data/users/{userId}/user-session.json`) AND the
+  // session pointer + `instructionHistory`. Any failure rolls back BOTH disk
+  // writes so the audit log can never drift from the data.
+  //
+  // The audit row appended to `lifecycleEvents[]` carries:
+  //   - `requestId`     : the pending-confirm primary key
+  //   - `instructionId` : the resolved instruction (null for rejected `add`)
+  //   - `op` / `state`  : sealed 5-op + state-machine vocabulary
+  //   - `by`            : `{ type: 'slack-user', id }` actor descriptor
+  //   - `payload`       : the raw `SessionInstructionOperation[]` so the
+  //                       dashboard drilldown can reconstruct intent
+  //
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Y-confirm path: commit a sealed lifecycle op to the user master AND the
+   * session pointer in ONE transaction. On any failure both disks roll back
+   * to the pre-call state and the result is `{ ok: false, reason: 'TX_FAILED' }`.
+   *
+   * Caller (`InstructionConfirmActionHandler.handleYes`) is responsible for
+   * deleting the pending-confirm entry AFTER this returns ok=true.
+   */
+  applyConfirmedLifecycle(session: ConversationSession, meta: LifecycleConfirmMeta): LifecycleConfirmResult {
+    const userId = session.ownerId;
+    if (!userId) {
+      return { ok: false, reason: 'SESSION_NOT_FOUND', error: 'session has no ownerId' };
+    }
+    const sessionKey = this.getSessionKey(session.channelId, session.threadTs);
+
+    const store = getUserSessionStore();
+    let userDoc;
+    try {
+      userDoc = store.load(userId);
+    } catch (err) {
+      this.logger.error('applyConfirmedLifecycle: failed to load user master', {
+        userId,
+        sessionKey,
+        requestId: meta.requestId,
+        error: (err as Error)?.message ?? String(err),
+      });
+      return { ok: false, reason: 'TX_FAILED', error: (err as Error)?.message ?? 'load failed' };
+    }
+
+    // Snapshot for rollback — both halves of the tx.
+    const userDocBefore = structuredClone(userDoc);
+    const sessionPointerBefore = session.currentInstructionId ?? null;
+    const sessionHistoryBefore = [...(session.instructionHistory ?? [])];
+
+    try {
+      const op = meta.ops[0];
+      let instructionId: string | undefined;
+      let instructionAtCommit: UserInstruction | undefined;
+
+      if (!op) {
+        return { ok: false, reason: 'INVALID_OP', error: 'no ops in lifecycle meta' };
+      }
+
+      switch (meta.type) {
+        case 'add': {
+          if (op.action !== 'add') {
+            return { ok: false, reason: 'INVALID_OP', error: `add lifecycle requires add op, got ${op.action}` };
+          }
+          const text = op.text?.trim() ?? '';
+          if (text.length === 0) {
+            return { ok: false, reason: 'INVALID_OP', error: 'add op text is empty' };
+          }
+          const now = Date.now();
+          const newInst: UserInstruction = {
+            id: `instr_${now}_${randomUUID().slice(0, 8)}`,
+            text,
+            status: 'active',
+            linkedSessionIds: [sessionKey],
+            createdAt: new Date(now).toISOString(),
+            source: 'model',
+            sourceRawInputIds: [],
+          };
+          userDoc.instructions.push(newInst);
+          instructionId = newInst.id;
+          instructionAtCommit = newInst;
+          break;
+        }
+        case 'link': {
+          if (op.action !== 'link') {
+            return { ok: false, reason: 'INVALID_OP', error: `link lifecycle requires link op, got ${op.action}` };
+          }
+          const target = userDoc.instructions.find((i) => i.id === op.id);
+          if (!target) {
+            return { ok: false, reason: 'INVALID_OP', error: `link target ${op.id} not found on user master` };
+          }
+          UserSessionStore.appendLinkedSession(target, op.sessionKey || sessionKey);
+          if ((op.sessionKey || sessionKey) !== sessionKey) {
+            UserSessionStore.appendLinkedSession(target, sessionKey);
+          }
+          instructionId = target.id;
+          instructionAtCommit = target;
+          break;
+        }
+        case 'complete': {
+          if (op.action !== 'complete') {
+            return {
+              ok: false,
+              reason: 'INVALID_OP',
+              error: `complete lifecycle requires complete op, got ${op.action}`,
+            };
+          }
+          const target = userDoc.instructions.find((i) => i.id === op.id);
+          if (!target) {
+            return { ok: false, reason: 'INVALID_OP', error: `complete target ${op.id} not found on user master` };
+          }
+          target.status = 'completed';
+          target.completedAt = target.completedAt ?? new Date().toISOString();
+          UserSessionStore.appendLinkedSession(target, sessionKey);
+          instructionId = target.id;
+          instructionAtCommit = target;
+          break;
+        }
+        case 'cancel': {
+          if (op.action !== 'cancel') {
+            return { ok: false, reason: 'INVALID_OP', error: `cancel lifecycle requires cancel op, got ${op.action}` };
+          }
+          const target = userDoc.instructions.find((i) => i.id === op.id);
+          if (!target) {
+            return { ok: false, reason: 'INVALID_OP', error: `cancel target ${op.id} not found on user master` };
+          }
+          target.status = 'cancelled';
+          target.cancelledAt = target.cancelledAt ?? new Date().toISOString();
+          target.completedAt = undefined; // cancel is first-class, not collapsed into completed
+          UserSessionStore.appendLinkedSession(target, sessionKey);
+          instructionId = target.id;
+          instructionAtCommit = target;
+          break;
+        }
+        case 'rename': {
+          if (op.action !== 'rename') {
+            return { ok: false, reason: 'INVALID_OP', error: `rename lifecycle requires rename op, got ${op.action}` };
+          }
+          const newText = (op.text ?? '').trim();
+          if (newText.length === 0) {
+            return { ok: false, reason: 'INVALID_OP', error: 'rename op text is empty' };
+          }
+          const target = userDoc.instructions.find((i) => i.id === op.id);
+          if (!target) {
+            return { ok: false, reason: 'INVALID_OP', error: `rename target ${op.id} not found on user master` };
+          }
+          target.text = newText;
+          instructionId = target.id;
+          instructionAtCommit = target;
+          break;
+        }
+        default: {
+          return { ok: false, reason: 'INVALID_OP', error: `unknown lifecycle type ${meta.type}` };
+        }
+      }
+
+      // 2. Update session pointer + instructionHistory.
+      if (instructionId) {
+        if (meta.type === 'add' || meta.type === 'link') {
+          session.currentInstructionId = instructionId;
+          if (!session.instructionHistory) session.instructionHistory = [];
+          if (!session.instructionHistory.includes(instructionId)) {
+            session.instructionHistory.push(instructionId);
+          }
+        } else if (meta.type === 'complete' || meta.type === 'cancel') {
+          if (session.currentInstructionId === instructionId) {
+            session.currentInstructionId = null;
+          }
+        }
+        // rename → no pointer change
+      }
+
+      // 3. Append the lifecycleEvents[] audit row.
+      const audit: LifecycleEvent = {
+        id: `evt_${Date.now()}_${randomUUID().slice(0, 8)}`,
+        requestId: meta.requestId,
+        instructionId: instructionId ?? null,
+        sessionKey,
+        op: meta.type,
+        state: 'confirmed',
+        at: new Date().toISOString(),
+        by: meta.by,
+        payload: this.buildLifecyclePayload(meta, instructionAtCommit),
+      };
+      userDoc.lifecycleEvents.push(audit);
+
+      // 4. Atomic write of the user master. validateDoc enforces sealed
+      //    schema + ref integrity, so any drift throws here.
+      store.save(userId, userDoc);
+
+      // 5. Persist the session-side mutation (pointer + history).
+      try {
+        this.saveSessions();
+      } catch (sessionSaveErr) {
+        // Roll back the user master write before re-throwing so both halves
+        // stay coherent.
+        store.save(userId, userDocBefore);
+        store.invalidateCache(userId);
+        throw sessionSaveErr;
+      }
+
+      // 6. SSOT change — invalidate cached prompt + schedule summary regen.
+      session.systemPrompt = undefined;
+      this.scheduleInstructionsSummaryRegen(session);
+
+      return { ok: true, instructionId };
+    } catch (err) {
+      try {
+        store.save(userId, userDocBefore);
+      } catch (rollbackErr) {
+        this.logger.error('applyConfirmedLifecycle: rollback of user master also failed', {
+          userId,
+          sessionKey,
+          requestId: meta.requestId,
+          rollbackError: (rollbackErr as Error)?.message ?? String(rollbackErr),
+        });
+      }
+      session.currentInstructionId = sessionPointerBefore;
+      session.instructionHistory = sessionHistoryBefore;
+      this.logger.error('applyConfirmedLifecycle: tx failed — rolled back', {
+        userId,
+        sessionKey,
+        requestId: meta.requestId,
+        type: meta.type,
+        error: (err as Error)?.message ?? String(err),
+      });
+      return { ok: false, reason: 'TX_FAILED', error: (err as Error)?.message ?? String(err) };
+    }
+  }
+
+  /**
+   * Build the audit payload for a lifecycle event. Different op types carry
+   * different forensic fields — `complete` includes the evidence string,
+   * `rename` includes the new text, `add`/`link`/`cancel` include the raw
+   * op for replay. Kept in one place so the schema stays consistent across
+   * confirmed/rejected/superseded rows.
+   */
+  private buildLifecyclePayload(meta: LifecycleConfirmMeta, instructionAtCommit?: UserInstruction): unknown {
+    const op = meta.ops[0];
+    const base: Record<string, unknown> = { ops: meta.ops };
+    if (instructionAtCommit) {
+      base.instructionTextAtCommit = instructionAtCommit.text;
+    }
+    if (op?.action === 'complete') {
+      base.evidence = op.evidence;
+    }
+    if (op?.action === 'rename') {
+      base.newText = op.text;
+    }
+    if (op?.action === 'add') {
+      base.text = op.text;
+    }
+    return base;
   }
 
   /**
