@@ -578,6 +578,28 @@ describe('Dashboard HTML — Active Instructions section (#758)', () => {
     expect(() => new Function(script)).not.toThrow();
   });
 
+  // ── Codex P1-5 — Initial dashboard load includes instructions ──
+
+  it('initial dashboard render flow calls loadInstructions on boot', async () => {
+    const res = await injectWebServer({
+      method: 'GET',
+      url: '/dashboard',
+      headers: AUTH_HEADER,
+    });
+    const html: string = res.body;
+    const scriptMatch = html.match(/<script>([\s\S]*?)<\/script>/);
+    expect(scriptMatch).not.toBeNull();
+    const script = scriptMatch![1];
+    // Find the init block at the bottom of the inline JS — the boot sequence
+    // calls loadUsers, loadSessions, loadStats; codex P1-5 requires
+    // loadInstructions there too so the Active Instructions section is
+    // populated on first render without requiring a user click.
+    const initIdx = script.lastIndexOf('// \u2500\u2500 Init \u2500\u2500');
+    expect(initIdx).toBeGreaterThan(-1);
+    const initBlock = script.slice(initIdx);
+    expect(initBlock).toMatch(/loadInstructions\s*\(/);
+  });
+
   // ── Codex P1-4 — Drill-down panel UI ──
 
   it('drill-down panel renders linked sessions, tasks union, and lifecycle events sections', async () => {
