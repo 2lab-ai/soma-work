@@ -994,9 +994,7 @@ export class SessionRegistry {
         },
       );
     }
-    const instructionsPending = !!(
-      request.instructionOperations && request.instructionOperations.length > 0
-    );
+    const instructionsPending = !!(request.instructionOperations && request.instructionOperations.length > 0);
 
     if (applyResult.changed) {
       session.linkSequence = (session.linkSequence ?? 0) + 1;

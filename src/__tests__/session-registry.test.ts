@@ -1,6 +1,4 @@
 import fs from 'fs';
-import os from 'os';
-import path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Use $TMPDIR (sandbox-allowed) rather than the bare /tmp path so this
@@ -331,10 +329,7 @@ describe('SessionRegistry persistence', () => {
         // NO sessionWorkingDir field — simulates pre-fix JSON
       },
     ];
-    fs.writeFileSync(
-      require('path').join(TEST_DATA_DIR, 'sessions.json'),
-      JSON.stringify(oldFormatSessions, null, 2),
-    );
+    fs.writeFileSync(require('path').join(TEST_DATA_DIR, 'sessions.json'), JSON.stringify(oldFormatSessions, null, 2));
 
     const reader = new SessionRegistry();
     reader.loadSessions();
@@ -387,10 +382,7 @@ describe('SessionRegistry persistence', () => {
         sessionWorkingDir: '/tmp/../etc/passwd', // path traversal attempt
       },
     ];
-    fs.writeFileSync(
-      require('path').join(TEST_DATA_DIR, 'sessions.json'),
-      JSON.stringify(maliciousSessions, null, 2),
-    );
+    fs.writeFileSync(require('path').join(TEST_DATA_DIR, 'sessions.json'), JSON.stringify(maliciousSessions, null, 2));
 
     const reader = new SessionRegistry();
     reader.loadSessions();
