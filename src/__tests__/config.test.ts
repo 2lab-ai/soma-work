@@ -199,6 +199,39 @@ describe('parseUnitIntervalEnv (#737)', () => {
   });
 });
 
+// #781 — `config.autoRotate.{fiveHourMax,sevenDayMax}` must be in the
+// store-SSOT percent unit (0..100). The env knobs stay in 0..1 form for
+// operator compatibility; conversion happens at the `config.ts` boundary
+// (`parseUnitIntervalEnv(...) * 100`). This test pins the boundary so a
+// future regression — e.g. someone "simplifying" by dropping the `* 100` —
+// fails loudly before `cct auto` silently goes back to rejecting every
+// realistic candidate the way #781 found it.
+describe('config.autoRotate unit boundary (#781)', () => {
+  const FIVE_H = 'AUTO_ROTATE_FIVEH_THRESHOLD';
+  const SEVEN_D = 'AUTO_ROTATE_SEVEND_THRESHOLD';
+
+  beforeEach(() => {
+    delete process.env[FIVE_H];
+    delete process.env[SEVEN_D];
+  });
+  afterEach(() => {
+    delete process.env[FIVE_H];
+    delete process.env[SEVEN_D];
+  });
+
+  it('default (no env): fiveHourMax === 80, sevenDayMax === 90 (percent form)', () => {
+    expect(parseUnitIntervalEnv(FIVE_H, 0.8) * 100).toBe(80);
+    expect(parseUnitIntervalEnv(SEVEN_D, 0.9) * 100).toBe(90);
+  });
+
+  it('operator sets 0..1 env: stored as percent (0..100) — same legacy contract', () => {
+    process.env[FIVE_H] = '0.7';
+    process.env[SEVEN_D] = '0.85';
+    expect(parseUnitIntervalEnv(FIVE_H, 0.8) * 100).toBe(70);
+    expect(parseUnitIntervalEnv(SEVEN_D, 0.9) * 100).toBeCloseTo(85, 9);
+  });
+});
+
 // #666 Part 1/2 — P4 kill switch. `parseBool` gates `config.ui.b4NativeStatusEnabled`,
 // which must default to `false` so that registering the Bolt Assistant container
 // in Part 1 does NOT silently re-enable the legacy spinner path before Part 2 is wired.

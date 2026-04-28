@@ -9,11 +9,20 @@
  *     load snapshot → pure pick → check leases → applyToken → notify.
  *     Each step is independently testable through injected dependencies.
  *
- * Policy (locked by issue #737):
+ * Policy (locked by issue #737, unit pinned to percent by #685/#781):
  *   - Eligibility: `kind === 'cct'` AND `!disableRotation` AND
  *     `state.authState === 'healthy'` AND not tombstoned AND not in
- *     cooldown AND usage snapshot present (both 5h + 7d windows) AND
- *     `fiveHour.utilization ≤ fiveHourMax` AND `sevenDay.utilization ≤ sevenDayMax`.
+ *     cooldown AND usage snapshot present AND `usage.sevenDay` window
+ *     present (sort key) AND `fiveHour.utilization ≤ fiveHourMax` AND
+ *     `sevenDay.utilization ≤ sevenDayMax`.
+ *   - Cold-token allowance (#781): a slot whose `/oauth/usage` response
+ *     has no `fiveHour` window has, by definition, made zero requests in
+ *     the last 5h, so it sits below any threshold. We treat the missing
+ *     window as `fiveHourUtilization = 0` rather than rejecting the slot —
+ *     otherwise a freshly-loaded token can never be auto-rotated onto.
+ *   - Utilization unit: store SSOT is raw API percent (0..100) per #685.
+ *     Thresholds are in the same unit; the env-var form (0..1) is
+ *     converted at the `config.ts` boundary.
  *   - Selection: minimum `sevenDay.resetsAt` (= soonest to reset).
  *     Tie-break 1: lower `fiveHour.utilization`.
  *     Tie-break 2: keyId lexicographic (deterministic).
@@ -42,9 +51,17 @@ import { isCctSlot } from '../auth/auth-key';
 import type { CctStoreSnapshot, SlotState, UsageSnapshot } from '../cct-store/types';
 
 export interface RotationThresholds {
-  /** 0..1, inclusive upper bound on `usage.fiveHour.utilization`. */
+  /**
+   * Inclusive upper bound on `usage.fiveHour.utilization`. Same unit as
+   * the store SSOT — raw API percent (0..100) per #685. The
+   * `AUTO_ROTATE_FIVEH_THRESHOLD` env var stays in its operator-facing
+   * 0..1 form; conversion happens at the `config.ts` boundary.
+   */
   fiveHourMax: number;
-  /** 0..1, inclusive upper bound on `usage.sevenDay.utilization`. */
+  /**
+   * Inclusive upper bound on `usage.sevenDay.utilization`. Same percent
+   * unit (0..100) as `fiveHourMax`. See note above re: env-var conversion.
+   */
   sevenDayMax: number;
 }
 
@@ -55,13 +72,25 @@ export interface RotationCandidate {
   sevenDayResetsAt: string;
   /** Epoch ms parsed from `sevenDayResetsAt` (for downstream comparison without re-parsing). */
   sevenDayResetsAtMs: number;
+  /**
+   * Raw API percent (0..100) per #685. `0` when the upstream `/oauth/usage`
+   * response had no `fiveHour` window — the cold-token allowance from #781.
+   */
   fiveHourUtilization: number;
+  /** Raw API percent (0..100) per #685. */
   sevenDayUtilization: number;
   /** Epoch ms parsed from `usage.fetchedAt`. Undefined when fetchedAt is missing/invalid. */
   fetchedAtMs?: number;
 }
 
-/** Reason an otherwise-CCT slot was rejected. Useful for debug logs. */
+/**
+ * Reason an otherwise-CCT slot was rejected. Useful for debug logs.
+ *
+ * Note (#781): `'no-five-hour-window'` is no longer emitted — a slot
+ * with a missing 5h window is now treated as `fiveHourUtilization = 0`
+ * (cold-token allowance). The variant is omitted from the union so a
+ * stray pattern-match catches the regression at compile time.
+ */
 export type RejectReason =
   | 'not-cct'
   | 'disable-rotation'
@@ -69,7 +98,6 @@ export type RejectReason =
   | 'auth-unhealthy'
   | 'cooldown'
   | 'no-usage'
-  | 'no-five-hour-window'
   | 'no-seven-day-window'
   | 'over-five-hour-threshold'
   | 'over-seven-day-threshold'
@@ -101,10 +129,14 @@ function evaluateSlot(
 
   const usage: UsageSnapshot | undefined = s?.usage;
   if (!usage) return { slot, reject: 'no-usage' };
-  if (!usage.fiveHour) return { slot, reject: 'no-five-hour-window' };
+  // 7d window is the sort key — must be present.
+  // 5h window is optional (#781 cold-token allowance): a slot that has
+  // never seen a 5h-window request has, by definition, zero 5h
+  // utilization, so it sits below any threshold and remains eligible.
   if (!usage.sevenDay) return { slot, reject: 'no-seven-day-window' };
 
-  if (usage.fiveHour.utilization > thresholds.fiveHourMax) {
+  const fiveHourUtilization = usage.fiveHour?.utilization ?? 0;
+  if (fiveHourUtilization > thresholds.fiveHourMax) {
     return { slot, reject: 'over-five-hour-threshold' };
   }
   if (usage.sevenDay.utilization > thresholds.sevenDayMax) {
@@ -122,7 +154,7 @@ function evaluateSlot(
       name: slot.name,
       sevenDayResetsAt: usage.sevenDay.resetsAt,
       sevenDayResetsAtMs: resetsAtMs,
-      fiveHourUtilization: usage.fiveHour.utilization,
+      fiveHourUtilization,
       sevenDayUtilization: usage.sevenDay.utilization,
       ...(Number.isFinite(fetchedAtMs) ? { fetchedAtMs } : {}),
     },
