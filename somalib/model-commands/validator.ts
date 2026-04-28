@@ -313,8 +313,20 @@ function parseUpdateSessionRequest(
   // the validator silently dropped this field AND rejected requests carrying
   // only instructionOperations — which made pure lifecycle requests
   // (link/cancel/rename) unreachable.
+  //
+  // PR2 fix loop #2 P1-A: enforce the sealed "single pending per session"
+  // rule (#755) at the validator. Pre-fix `applyConfirmedLifecycle` only
+  // applied `meta.ops[0]` and silently dropped `ops[1..]` — a data-loss
+  // path on Yes-confirm. By rejecting at the gate, the model gets a clear
+  // error and is expected to re-emit one op at a time.
   const rawInstructionOps = raw.instructionOperations;
   const instructionOperations: SessionInstructionOperation[] = [];
+  if (Array.isArray(rawInstructionOps) && rawInstructionOps.length > 1) {
+    return invalidArgs(
+      'UPDATE_SESSION instructionOperations must contain exactly one op per request ' +
+        '(sealed "single pending per session" rule, #755). Re-emit one op at a time.',
+    );
+  }
   if (Array.isArray(rawInstructionOps) && rawInstructionOps.length > 0) {
     for (const entry of rawInstructionOps) {
       const parsed = parseSessionInstructionOperation(entry);
