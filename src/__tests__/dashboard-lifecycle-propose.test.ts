@@ -70,7 +70,7 @@ describe('createDashboardLifecycleProposeHandler — sealed pending shape (#758 
           id: 'inst-X',
           text: 'ship the dashboard',
           status: 'active',
-          linkedSessionIds: ['C-A:T-A'],
+          linkedSessionIds: ['C-A-T-A'],
           createdAt: '2026-04-01T00:00:00.000Z',
           source: 'model',
           sourceRawInputIds: [],
@@ -154,7 +154,7 @@ describe('createDashboardLifecycleProposeHandler — sealed pending shape (#758 
           id: 'inst-Y',
           text: 'feature stub',
           status: 'active',
-          linkedSessionIds: ['C-B:T-B'],
+          linkedSessionIds: ['C-B-T-B'],
           createdAt: '2026-04-01T00:00:00.000Z',
           source: 'model',
           sourceRawInputIds: [],
@@ -207,7 +207,7 @@ describe('createDashboardLifecycleProposeHandler — sealed pending shape (#758 
           id: 'inst-Z',
           text: 'old',
           status: 'active',
-          linkedSessionIds: ['C-C:T-C'],
+          linkedSessionIds: ['C-C-T-C'],
           createdAt: '2026-04-01T00:00:00.000Z',
           source: 'model',
           sourceRawInputIds: [],
@@ -239,9 +239,7 @@ describe('createDashboardLifecycleProposeHandler — sealed pending shape (#758 
 
     const entry = store.get(result.requestId);
     if (!entry) throw new Error('entry missing');
-    expect(entry.payload.instructionOperations).toEqual([
-      { action: 'rename', id: 'inst-Z', text: 'new title' },
-    ]);
+    expect(entry.payload.instructionOperations).toEqual([{ action: 'rename', id: 'inst-Z', text: 'new title' }]);
 
     const session = reg.getSessionByKey(sessionKey);
     if (!session) throw new Error('session missing');
@@ -281,9 +279,9 @@ describe('createDashboardLifecycleProposeHandler — sealed pending shape (#758 
       slackApi: slackApi as any,
     });
 
-    await expect(
-      handler({ userId, instructionId: 'inst-NL', op: 'complete' }),
-    ).rejects.toThrow(/no linked session|cannot post/i);
+    await expect(handler({ userId, instructionId: 'inst-NL', op: 'complete' })).rejects.toThrow(
+      /no linked session|cannot post/i,
+    );
     // No silent pending entry on failure — the dashboard caller surfaces 5xx.
     expect(store.list()).toHaveLength(0);
   });

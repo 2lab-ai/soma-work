@@ -77,6 +77,7 @@ import {
   wireLifecycleBroadcasts,
 } from './conversation';
 import { CronScheduler, type SyntheticMessageEvent } from './cron-scheduler';
+import { createDashboardLifecycleProposeHandler } from './dashboard-lifecycle-propose';
 import { initializeDispatchService } from './dispatch-service';
 import { CONFIG_FILE, DATA_DIR, MCP_CONFIG_FILE, PLUGINS_DIR } from './env-paths';
 import { discoverInstallations, getGitHubAppAuth, isGitHubAppConfigured } from './github-auth.js';
@@ -442,53 +443,18 @@ async function start() {
     wireDashboardInstructionAccessors({
       userSessionStore: getUserSessionStore(),
       todoManager: slackHandler.getTodoManager(),
-      lifecycleProposeHandler: async (req) => {
-        const requestId = `dash-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-        // The dashboard route already validates `op` and the requesterId.
-        // We synthesise a minimal pending entry: the existing y/n flow only
-        // requires sessionKey, requestId, payload, requesterId, type, by.
-        // The dashboard supplies userId+instructionId+op; downstream the
-        // proposal needs a sessionKey to bind to. We pick the first linked
-        // session of the instruction (or the user's most-recent active
-        // session if none) so the user sees the y/n form in a real thread.
-        const doc = getUserSessionStore().load(req.userId);
-        const inst = doc.instructions.find((i) => i.id === req.instructionId);
-        const sessionKey =
-          inst?.linkedSessionIds[0] || claudeHandler.getAllSessions().keys().next().value || `${req.userId}:dashboard`;
-        slackHandler.getPendingInstructionConfirmStore().set({
-          requestId,
-          sessionKey,
-          messageTs: undefined,
-          payload: {
-            // SessionResourceUpdateRequest shape — minimal proposal.
-            kind: 'instruction-lifecycle',
-            op: req.op,
-            instructionId: req.instructionId,
-            userId: req.userId,
-            payload: req.payload,
-          } as any,
-          createdAt: Date.now(),
-          requesterId: req.userId,
-          type:
-            req.op === 'add'
-              ? 'add'
-              : req.op === 'link'
-                ? 'link'
-                : req.op === 'rename'
-                  ? 'rename'
-                  : req.op === 'complete'
-                    ? 'complete'
-                    : 'cancel',
-          by: { type: 'user', id: req.userId },
-        } as any);
-        logger.info('Dashboard: lifecycle proposal enqueued', {
-          requestId,
-          userId: req.userId,
-          instructionId: req.instructionId,
-          op: req.op,
-        });
-        return { requestId };
-      },
+      // PR4 fix loop #2 P1-LIFECYCLE-PROPOSE: route the dashboard `[⋯]`
+      // propose POSTs through the sealed factory. The factory builds a
+      // proper pending entry with `payload.instructionOperations`,
+      // `by.type='slack-user'`, AND posts the y/n message to the
+      // instruction's first linked-session thread so the user can actually
+      // confirm. Pre-fix the inline lambda left `instructionOperations`
+      // missing (→ INVALID_OP on apply) and never posted to Slack.
+      lifecycleProposeHandler: createDashboardLifecycleProposeHandler({
+        pendingStore: slackHandler.getPendingInstructionConfirmStore(),
+        sessionRegistry: claudeHandler.getSessionRegistry(),
+        slackApi: slackHandler.getSlackApi(),
+      }),
     });
 
     // Connect dashboard: stop handler (abort running session)
