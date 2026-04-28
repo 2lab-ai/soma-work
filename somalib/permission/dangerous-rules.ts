@@ -242,6 +242,13 @@ export function overridableRulesByIds(ruleIds: ReadonlyArray<string>): Dangerous
     .filter((r): r is DangerousRule => r !== undefined && r.sessionOverridable);
 }
 
+// Hoisted at module scope so the regex isn't recompiled per Bash command. The
+// `g` flag on TMP_USER_RE means call sites must use `matchAll` (fresh iterator
+// per call) instead of `.exec`-in-a-loop, which would carry `lastIndex` state
+// across concurrent callers.
+const TMP_TRAVERSAL_RE = /(?:\/private)?\/tmp\/[^\s]*\.\./;
+const TMP_USER_RE = /(?:\/private)?\/tmp\/([UW][A-Z0-9]+)\b/g;
+
 /**
  * Cross-user directory access detection.
  * Detects commands that reference another user's /tmp/{userId}/ directory.
@@ -250,17 +257,21 @@ export function overridableRulesByIds(ruleIds: ReadonlyArray<string>): Dangerous
  * Matches both /tmp/{userId} and /private/tmp/{userId} (macOS normalization).
  * Slack user IDs follow pattern: [UW] + uppercase alphanumeric (e.g., U094E5L4A15).
  * Enterprise Grid uses W-prefixed IDs — both must be covered.
+ *
+ * @internal Parent-process enforcement only. The permission MCP child MUST NOT
+ *   call this directly — the bypass-mode escalation surface
+ *   (`overridableMatchedRuleIds` / `overridableRulesByIds`) deliberately
+ *   excludes this rule. Cross-user access is denied by a dedicated PreToolUse
+ *   hook in `claude-handler.ts`, independent of bypass state.
  */
 export function isCrossUserAccess(command: string, currentUserId: string): boolean {
   // Reject any /tmp/ path containing traversal segments — prevents escaping
   // own directory via /tmp/U094E5L4A15/../U09F1M5MML1/
-  if (/(?:\/private)?\/tmp\/[^\s]*\.\./.test(command)) {
+  if (TMP_TRAVERSAL_RE.test(command)) {
     return true;
   }
 
-  const tmpPathPattern = /(?:\/private)?\/tmp\/([UW][A-Z0-9]+)\b/g;
-  let match: RegExpExecArray | null;
-  while ((match = tmpPathPattern.exec(command)) !== null) {
+  for (const match of command.matchAll(TMP_USER_RE)) {
     if (match[1] !== currentUserId) {
       return true;
     }
@@ -277,6 +288,11 @@ const SSH_PATTERNS: ReadonlyArray<RegExp> = [/\bssh\b/, /\bscp\b/, /\bsftp\b/, /
 /**
  * Check if a bash command involves SSH (remote server access).
  * SSH commands are admin-only — non-admin users must use server-tools MCP instead.
+ *
+ * @internal Parent-process enforcement only. Same isolation contract as
+ *   `isCrossUserAccess` — the bypass-mode escalation surface excludes the
+ *   `ssh-remote` rule, and SSH commands are denied by a dedicated parent-side
+ *   PreToolUse hook in `claude-handler.ts`.
  */
 export function isSshCommand(command: string): boolean {
   return SSH_PATTERNS.some((pattern) => pattern.test(command));

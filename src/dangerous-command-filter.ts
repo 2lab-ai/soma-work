@@ -23,7 +23,7 @@
  */
 
 import type { DangerousRule } from 'somalib/permission/dangerous-rules';
-import { DANGEROUS_RULES } from 'somalib/permission/dangerous-rules';
+import { DANGEROUS_RULES, overridableRulesByIds } from 'somalib/permission/dangerous-rules';
 
 export type { DangerousRule, DangerousRuleContext } from 'somalib/permission/dangerous-rules';
 export {
@@ -126,10 +126,13 @@ export function bypassBashPermissionDecision(
  * Look up an overridable rule by id. Returns undefined for unknown or
  * lockdown-only rule ids. Callers must tolerate undefined — stale button
  * payloads (e.g. old pending approvals after a rule rename) reach here.
+ *
+ * Delegates to `overridableRulesByIds` so the "drop lockdown ids" rule lives
+ * in exactly one place — adding a new lockdown rule to the catalog
+ * automatically excludes it here too.
  */
 export function getOverridableRule(ruleId: string): DangerousRule | undefined {
-  const rule = DANGEROUS_RULES.find((r) => r.id === ruleId);
-  return rule?.sessionOverridable ? rule : undefined;
+  return overridableRulesByIds([ruleId])[0];
 }
 
 /**
