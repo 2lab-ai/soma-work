@@ -1,4 +1,8 @@
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const TEST_DATA_DIR = path.join(os.tmpdir(), 'soma-test-data');
 
 // ── Mocks ──
 
@@ -19,7 +23,7 @@ const mockConfig = {
 };
 
 vi.mock('../../config', () => ({ config: mockConfig }));
-vi.mock('../../env-paths', () => ({ IS_DEV: true, DATA_DIR: '/tmp/test-data' }));
+vi.mock('../../env-paths', () => ({ IS_DEV: true, DATA_DIR: TEST_DATA_DIR }));
 vi.mock('../recorder', () => ({
   listConversations: vi.fn().mockResolvedValue([]),
   getConversation: vi.fn().mockResolvedValue(null),
