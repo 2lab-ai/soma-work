@@ -200,4 +200,41 @@ describe('TodoDisplayManager — production wiring (PR3b)', () => {
 
     expect(todoManager.getTodos('sess-wire')).toEqual([]);
   });
+
+  it('fires unknown-instruction guard through the seam (rejects new Todo with dangling FK)', async () => {
+    // Linus/codex round-2 P1: when wiringLookup returns 'unknown' (instruction
+    // missing from user master OR transient I/O failure), the guard MUST
+    // refuse — accepting it would create a Todo with a dangling FK, which is
+    // exactly the corruption mode the guard exists to prevent.
+    const todoManager = new TodoManager({ baseDir: tmpRoot });
+    const display = new TodoDisplayManager(fakeSlackApi() as any, todoManager, fakeReactionManager() as any);
+    const session = baseSession({ currentInstructionId: 'instr_missing' });
+    const say = vi.fn().mockResolvedValue({ ts: '111.222' });
+
+    const lookup = vi.fn((_id: string): InstructionStatus => 'unknown');
+
+    await expect(
+      display.handleTodoUpdate(
+        { todos: [todoPayload({ id: 't-orphan', content: 'Should reject' })] },
+        'sess-wire',
+        'sess-wire',
+        'C1',
+        't1.0',
+        say,
+        0,
+        session,
+        undefined,
+        undefined,
+        {
+          userId: session.ownerId,
+          currentInstructionId: session.currentInstructionId ?? null,
+          instructionStatusLookup: lookup,
+        },
+      ),
+    ).rejects.toThrow(/unknown/);
+
+    expect(todoManager.getTodos('sess-wire')).toEqual([]);
+    const file = path.join(tmpRoot, 'users', 'U_WIRE', 'todos.json');
+    expect(fs.existsSync(file)).toBe(false);
+  });
 });
