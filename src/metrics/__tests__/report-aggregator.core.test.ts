@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MetricsEventStore } from '../event-store';
 import { computeDerivedMetrics, computeTrend, ReportAggregator } from '../report-aggregator';
 import type { AggregatedMetrics, MetricsEvent, MetricsEventType } from '../types';
+import { OTHER_MODEL_ID, rowTotalTokens } from '../usage-render/types';
 
 // Contract tests — Scenario 4: ReportAggregator
 // Trace: docs/daily-weekly-report/trace.md
@@ -347,13 +348,13 @@ describe('aggregateCarousel', () => {
 
   const TARGET = 'U_TARGET';
 
-  it('all 4 empty: target user has 0 events → every tab is {empty:true}', async () => {
+  it('all empty: target user has 0 events → every tab (incl. models) is {empty:true}', async () => {
     const now = new Date('2026-04-18T12:00:00+09:00');
     const { aggregator } = makeAgg([]);
     const result = await aggregator.aggregateCarousel({ targetUserId: TARGET, now });
 
     expect(result.targetUserId).toBe(TARGET);
-    for (const tabId of ['24h', '7d', '30d', 'all'] as const) {
+    for (const tabId of ['24h', '7d', '30d', 'all', 'models'] as const) {
       expect(result.tabs[tabId]).toMatchObject({ empty: true, tabId });
       expect(typeof (result.tabs[tabId] as any).windowStart).toBe('string');
       expect(typeof (result.tabs[tabId] as any).windowEnd).toBe('string');
@@ -526,5 +527,89 @@ describe('aggregateCarousel', () => {
     if (tAll.empty) throw new Error('all should not be empty');
     expect(tAll.windowStart).toBe('2026-01-15');
     expect(tAll.windowEnd).toBe('2026-04-18');
+  });
+
+  // === Models tab — per-model breakdown over the 30d window ===
+
+  /** Narrow `tabs.models` to its non-empty form. */
+  function asModels(
+    tab: import('../usage-render/types').ModelsTabResult,
+  ): import('../usage-render/types').ModelsTabStats {
+    if (tab.empty) throw new Error('models should not be empty');
+    return tab;
+  }
+
+  it('models tab: per-model totals + percentages add up to ≈100%', async () => {
+    const now = new Date('2026-04-18T12:00:00+09:00');
+    const ts = hoursAgo(now, 6);
+    const events: MetricsEvent[] = [
+      tokenEvent({ timestamp: ts, userId: TARGET, tokens: 700, model: 'claude-opus-4-7' }),
+      tokenEvent({ timestamp: ts + 1, userId: TARGET, tokens: 200, model: 'claude-sonnet-4-6' }),
+      tokenEvent({ timestamp: ts + 2, userId: TARGET, tokens: 100, model: 'claude-haiku-4-5' }),
+    ];
+    const { aggregator } = makeAgg(events);
+    const result = await aggregator.aggregateCarousel({ targetUserId: TARGET, now });
+    const m = asModels(result.tabs.models);
+
+    expect(m.tabId).toBe('models');
+    expect(m.totalTokens).toBe(1000);
+    expect(m.rows).toHaveLength(3);
+    // Sorted by total-tokens desc.
+    expect(m.rows[0].model).toBe('claude-opus-4-7');
+    expect(rowTotalTokens(m.rows[0])).toBe(700);
+    expect(m.rows[1].model).toBe('claude-sonnet-4-6');
+    expect(m.rows[2].model).toBe('claude-haiku-4-5');
+
+    // dayKeys is always 30 days, dailyByModel covers each row.
+    expect(m.dayKeys).toHaveLength(30);
+    for (const row of m.rows) {
+      expect(m.dailyByModel[row.model]).toBeDefined();
+      expect(m.dailyByModel[row.model]).toHaveLength(30);
+    }
+  });
+
+  it('models tab: long tail beyond 8 distinct models folds into a single "other" row', async () => {
+    const now = new Date('2026-04-18T12:00:00+09:00');
+    const ts = hoursAgo(now, 6);
+    // 10 distinct models — top 7 should be kept individually + 3 folded into 'other'.
+    const events: MetricsEvent[] = Array.from({ length: 10 }, (_, i) =>
+      tokenEvent({
+        timestamp: ts + i,
+        userId: TARGET,
+        tokens: 1000 - i * 50, // strictly descending so order is deterministic
+        model: `model-${i}`,
+      }),
+    );
+    const { aggregator } = makeAgg(events);
+    const result = await aggregator.aggregateCarousel({ targetUserId: TARGET, now });
+    const m = asModels(result.tabs.models);
+
+    // 7 kept rows + 1 'other' row = 8 total (MODELS_TAB_MAX_ROWS).
+    expect(m.rows).toHaveLength(8);
+    expect(m.rows[7].model).toBe(OTHER_MODEL_ID);
+    // 'other' is the sum of the bottom 3 (indices 7, 8, 9 — tokens 650, 600, 550).
+    expect(rowTotalTokens(m.rows[7])).toBe(650 + 600 + 550);
+    expect(m.dailyByModel[OTHER_MODEL_ID]).toBeDefined();
+  });
+
+  it('models tab: dailyByModel buckets line up with the windowStart..+29 calendar', async () => {
+    const now = new Date('2026-04-18T12:00:00+09:00');
+    // One event 5 days ago (day index 24 from windowStart of 30d window).
+    // 30d windowStart = todayKey - 29d = 2026-03-20; event at 2026-04-13 → day 24.
+    const events: MetricsEvent[] = [
+      tokenEvent({ timestamp: new Date('2026-04-13T10:00:00+09:00').getTime(), userId: TARGET, tokens: 500 }),
+    ];
+    const { aggregator } = makeAgg(events);
+    const result = await aggregator.aggregateCarousel({ targetUserId: TARGET, now });
+    const m = asModels(result.tabs.models);
+
+    expect(m.dayKeys[0]).toBe('2026-03-20');
+    expect(m.dayKeys[29]).toBe('2026-04-18');
+    expect(m.dayKeys[24]).toBe('2026-04-13');
+    // Token count lands in the day-24 bucket of the (only) model row.
+    const series = m.dailyByModel[m.rows[0].model];
+    expect(series[24]).toBe(500);
+    expect(series[0]).toBe(0);
+    expect(series[29]).toBe(0);
   });
 });

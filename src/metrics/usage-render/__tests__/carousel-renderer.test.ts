@@ -9,7 +9,8 @@ import { describe, expect, it, vi } from 'vitest';
 import type { CarouselRendererOptions } from '../carousel-renderer';
 import { renderCarousel } from '../carousel-renderer';
 import { EchartsInitError, ResvgNativeError } from '../errors';
-import type { CarouselStats, CarouselTabStats, EmptyTabStats, TabId } from '../types';
+import type { CarouselStats, EmptyTabStats, TabId } from '../types';
+import { type CarouselTabsOverrides, makeCarouselStats as makeBaseCarouselStats } from './fixtures';
 
 // ───────────────────── Helpers ────────────────────────────────────────
 
@@ -51,46 +52,10 @@ function hashByte(s: string): number {
   return h;
 }
 
-// ───────────────────── Fixtures ───────────────────────────────────────
-
-function makeTabStats(tabId: TabId): CarouselTabStats {
-  return {
-    empty: false,
-    tabId,
-    targetUserId: 'U_TEST',
-    targetUserName: 'Tester',
-    windowStart: '2026-03-20',
-    windowEnd: '2026-04-18',
-    totals: { tokens: 12345, costUsd: 0.42, sessions: 3 },
-    favoriteModel: { model: 'claude-opus', tokens: 10000 },
-    hourly: Array.from({ length: 24 }, (_, h) => h * 10),
-    heatmap: [{ date: '2026-04-10', tokens: 500, cellIndex: 0 }],
-    rankings: {
-      tokensTop: [{ userId: 'U_TEST', userName: 'Tester', totalTokens: 12345, rank: 1 }],
-      targetTokenRow: null,
-    },
-    activeDays: 5,
-    longestStreakDays: 3,
-    currentStreakDays: 2,
-    topSessions: [],
-    longestSession: null,
-    mostActiveDay: null,
-  };
-}
-
-function makeCarouselStats(overrides: Partial<Record<TabId, CarouselTabStats | EmptyTabStats>> = {}): CarouselStats {
-  return {
-    targetUserId: 'U_TEST',
-    targetUserName: 'Tester',
-    now: '2026-04-18T12:00:00+09:00',
-    tabs: {
-      '24h': overrides['24h'] ?? makeTabStats('24h'),
-      '7d': overrides['7d'] ?? makeTabStats('7d'),
-      '30d': overrides['30d'] ?? makeTabStats('30d'),
-      all: overrides.all ?? makeTabStats('all'),
-    },
-  };
-}
+// Shared base fixtures live in `./fixtures`. The renderer tests don't care
+// about specific stat values — they only check parallel render shape — so
+// we delegate directly.
+const makeCarouselStats = (overrides: CarouselTabsOverrides = {}): CarouselStats => makeBaseCarouselStats(overrides);
 
 type BuildOptionMock = NonNullable<CarouselRendererOptions['buildOption']>;
 type InitChartMock = NonNullable<CarouselRendererOptions['initChart']>;
@@ -128,14 +93,14 @@ function mocks(overrides: { buildOption?: BuildOptionMock; initChart?: InitChart
 // ───────────────────── Cases ──────────────────────────────────────────
 
 describe('renderCarousel', () => {
-  it('happy path → returns 4 PNGs keyed by TabId, each 1600×2200', async () => {
+  it('happy path → returns 5 PNGs keyed by TabId, each 1600×2200', async () => {
     const { buildOption, initChart, svgToPng } = mocks();
     const stats = makeCarouselStats();
 
     const result = await renderCarousel(stats, '30d', { buildOption, initChart, svgToPng });
 
-    expect(Object.keys(result).sort()).toEqual(['24h', '30d', '7d', 'all']);
-    for (const tabId of ['24h', '7d', '30d', 'all'] as TabId[]) {
+    expect(Object.keys(result).sort()).toEqual(['24h', '30d', '7d', 'all', 'models']);
+    for (const tabId of ['24h', '7d', '30d', 'all', 'models'] as TabId[]) {
       const png = result[tabId];
       expect(Buffer.isBuffer(png)).toBe(true);
       // PNG magic
@@ -151,23 +116,23 @@ describe('renderCarousel', () => {
     }
   });
 
-  it('initChart called 4 times (parallel)', async () => {
+  it('initChart called 5 times (parallel — 4 period tabs + models)', async () => {
     const { buildOption, initChart, svgToPng } = mocks();
     await renderCarousel(makeCarouselStats(), '30d', { buildOption, initChart, svgToPng });
-    expect(initChart).toHaveBeenCalledTimes(4);
+    expect(initChart).toHaveBeenCalledTimes(5);
     expect(initChart).toHaveBeenCalledWith(1600, 2200);
   });
 
-  it('buildOption receives selected=true once and false thrice', async () => {
+  it('buildOption receives selected=true once and false four times', async () => {
     const { buildOption, initChart, svgToPng } = mocks();
     await renderCarousel(makeCarouselStats(), '7d', { buildOption, initChart, svgToPng });
 
     const calls = (buildOption as unknown as { mock: { calls: Array<[CarouselStats, TabId, boolean]> } }).mock.calls;
-    expect(calls).toHaveLength(4);
+    expect(calls).toHaveLength(5);
     const selectedCalls = calls.filter((c) => c[2] === true);
     const unselectedCalls = calls.filter((c) => c[2] === false);
     expect(selectedCalls).toHaveLength(1);
-    expect(unselectedCalls).toHaveLength(3);
+    expect(unselectedCalls).toHaveLength(4);
     expect(selectedCalls[0][1]).toBe('7d');
   });
 
@@ -224,9 +189,9 @@ describe('renderCarousel', () => {
     const result = await renderCarousel(stats, '30d', { buildOption, initChart, svgToPng });
 
     // Renderer does NOT skip empty tabs — option builder decides stub.
-    expect(buildOption).toHaveBeenCalledTimes(4);
-    expect(initChart).toHaveBeenCalledTimes(4);
-    expect(Object.keys(result)).toHaveLength(4);
+    expect(buildOption).toHaveBeenCalledTimes(5);
+    expect(initChart).toHaveBeenCalledTimes(5);
+    expect(Object.keys(result)).toHaveLength(5);
     expect(result['24h']).toBeDefined();
     // Confirm buildOption saw the full stats + '24h' tabId
     const buildMock = buildOption as unknown as { mock: { calls: unknown[][] } };
@@ -234,10 +199,10 @@ describe('renderCarousel', () => {
     expect(tabIdCalls).toContain('24h');
   });
 
-  it('dispose called exactly once per chart (4 total)', async () => {
+  it('dispose called exactly once per chart (5 total: 4 period + models)', async () => {
     const { buildOption, initChart, svgToPng, charts } = mocks();
     await renderCarousel(makeCarouselStats(), '30d', { buildOption, initChart, svgToPng });
-    expect(charts).toHaveLength(4);
+    expect(charts).toHaveLength(5);
     for (const c of charts) {
       expect(c.dispose).toHaveBeenCalledTimes(1);
     }
