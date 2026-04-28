@@ -90,10 +90,14 @@ describe('InstructionConfirmActionHandler', () => {
     );
 
     expect(applyConfirmedLifecycle).toHaveBeenCalledTimes(1);
-    const meta = applyConfirmedLifecycle.mock.calls[0][1];
-    expect(meta.requestId).toBe('r1');
-    expect(meta.type).toBe('add');
-    expect(meta.by).toEqual({ type: 'slack-user', id: 'U1' });
+    const metaArg = (applyConfirmedLifecycle.mock.calls[0] as unknown[])[1] as {
+      requestId: string;
+      type: string;
+      by: { type: string; id: string };
+    };
+    expect(metaArg.requestId).toBe('r1');
+    expect(metaArg.type).toBe('add');
+    expect(metaArg.by).toEqual({ type: 'slack-user', id: 'U1' });
     expect(session.systemPrompt).toBeUndefined();
     expect(slackApi.updateMessage).toHaveBeenCalledTimes(1);
     expect(store.get('r1')).toBeUndefined();
@@ -122,7 +126,10 @@ describe('InstructionConfirmActionHandler', () => {
     expect(session.pendingInstructionRejection).toBeDefined();
     expect(session.pendingInstructionRejection?.request.instructionOperations?.length).toBe(1);
     expect(recordRejectedLifecycle).toHaveBeenCalledTimes(1);
-    const rejMeta = recordRejectedLifecycle.mock.calls[0][1];
+    const rejMeta = (recordRejectedLifecycle.mock.calls[0] as unknown[])[1] as {
+      requestId: string;
+      type: string;
+    };
     expect(rejMeta.requestId).toBe('r2');
     expect(rejMeta.type).toBe('add');
     expect(slackApi.updateMessage).toHaveBeenCalledTimes(1);
