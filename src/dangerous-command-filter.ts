@@ -1,189 +1,40 @@
 /**
- * Dangerous Command Filter
+ * Dangerous Command Filter — parent-process surface.
  *
- * Detects dangerous bash command patterns that should ALWAYS require
- * user permission, even when bypass mode is enabled.
+ * The full rule catalog (`DANGEROUS_RULES`) and the matcher helpers
+ * (`matchRules`, `rulesByIds`, `overridableMatchedRuleIds`,
+ * `overridableRulesByIds`, `isCrossUserAccess`, `isSshCommand`) live in
+ * `somalib/permission/dangerous-rules.ts` so the permission MCP child can
+ * import them without duplicating the catalog. This file re-exports them so
+ * existing parent-process callers (`src/claude-handler.ts`, tests) keep
+ * working unchanged.
  *
- * Prevents scenarios like one session killing processes from another session.
+ * Parent-only logic that stays here:
+ *   - `bypassBashPermissionDecision` — the bypass-mode Bash escalation.
+ *     Lives outside somalib because it consults `SessionRegistry`-style
+ *     `isRuleDisabled` predicates that are parent-side concepts.
+ *   - `checkDangerousCommand` / `isDangerousCommand` — legacy helpers used
+ *     by parent-process audit / logging.
+ *   - `getOverridableRule` — convenience lookup for parent-side payload
+ *     handlers; returns undefined for lockdown ids by design.
  *
- * Architecture:
- *   - DANGEROUS_RULES is the SSOT catalog of named rules used by the Slack
- *     permission UI and the session-scoped rule-disable mechanism.
- *   - `sessionOverridable` flags whether a rule can be temporarily silenced
- *     for a single ConversationSession via the "Approve & disable rule for
- *     this session" button. Lockdown rules (`false`) are always enforced.
- *   - `cross-user-access` and `ssh-remote` are catalog entries for parity, but
- *     their enforcement paths are DIFFERENT from the bypass-mode Bash escalation:
- *       * cross-user-access: always-deny pre-hook (claude-handler.ts), runs
- *         before bypass decision. Included here for UI labelling only.
- *       * ssh-remote: present for future wiring; today the bypass hook does
- *         NOT consult this rule (behaviour preserved). `sessionOverridable=false`
- *         documents that if it were wired, it would be a lockdown.
- *   - `bypassBashPermissionDecision` only consults rules that are both
- *     matched AND `sessionOverridable=true`, so catalog additions never
- *     silently change bypass behaviour.
+ * See `somalib/permission/dangerous-rules.ts` for the file-header notes on
+ * lockdown isolation invariants and the architecture of the rule catalog.
  */
 
-/**
- * Matcher context passed to per-rule match functions.
- * `userId` is the Slack user initiating the command — required by rules that
- * enforce per-user filesystem isolation (e.g. cross-user /tmp access).
- */
-export interface DangerousRuleContext {
-  readonly userId?: string;
-}
+import type { DangerousRule } from 'somalib/permission/dangerous-rules';
+import { DANGEROUS_RULES, overridableRulesByIds } from 'somalib/permission/dangerous-rules';
 
-/**
- * A single named dangerous-command rule.
- *
- * `id` is a stable, machine-readable identifier used to key the session-level
- * disable set. It is part of the action payload sent via Slack buttons, so
- * treat it as a public string and do not rename casually.
- */
-export interface DangerousRule {
-  readonly id: string;
-  /** Short human label shown in the Slack permission UI. */
-  readonly label: string;
-  /** One-line description used in UI tooltips / logs. */
-  readonly description: string;
-  /**
-   * Whether this rule can be silenced for a single ConversationSession via
-   * the "Approve & disable rule for this session" button. `false` = lockdown.
-   */
-  readonly sessionOverridable: boolean;
-  /**
-   * Predicate that decides whether `command` matches this rule. Must be pure.
-   * `ctx.userId` is consulted by rules that need per-user context.
-   */
-  readonly match: (command: string, ctx: DangerousRuleContext) => boolean;
-}
-
-/**
- * Registry of all dangerous-command rules. Declared once, consumed by:
- *   - `matchRules()` / `checkDangerousCommand()` / `isDangerousCommand()`
- *   - `bypassBashPermissionDecision()` (overridable subset only)
- *   - permission-mcp-server (re-runs `matchRules()` to populate Slack buttons)
- */
-export const DANGEROUS_RULES: ReadonlyArray<DangerousRule> = [
-  // Process killing
-  {
-    id: 'kill',
-    label: 'kill process',
-    description: 'Sends a signal to a running process. Can terminate sibling sessions.',
-    sessionOverridable: true,
-    match: (cmd) => /\bkill\b/.test(cmd),
-  },
-  {
-    id: 'pkill',
-    label: 'pkill process',
-    description: 'Pattern-based process killer.',
-    sessionOverridable: true,
-    match: (cmd) => /\bpkill\b/.test(cmd),
-  },
-  {
-    id: 'killall',
-    label: 'killall process',
-    description: 'Kills all processes matching a name.',
-    sessionOverridable: true,
-    match: (cmd) => /\bkillall\b/.test(cmd),
-  },
-
-  // Destructive file operations
-  {
-    id: 'rm-recursive',
-    label: 'recursive delete',
-    description: 'rm with -r / -R / --recursive: recursively deletes a tree.',
-    sessionOverridable: true,
-    match: (cmd) => /\brm\s+(-[a-zA-Z]*r[a-zA-Z]*\s|.*--recursive)/.test(cmd),
-  },
-  {
-    id: 'rm-force',
-    label: 'force delete',
-    description: 'rm -f: force-deletes without prompting.',
-    sessionOverridable: true,
-    match: (cmd) => /\brm\s+-[a-zA-Z]*f/.test(cmd),
-  },
-  {
-    id: 'rm-force-long',
-    label: 'force delete (--force)',
-    description: 'rm --force: same as -f.',
-    sessionOverridable: true,
-    match: (cmd) => /\brm\s+.*--force/.test(cmd),
-  },
-
-  // System-level operations
-  {
-    id: 'shutdown',
-    label: 'system shutdown',
-    description: 'Powers down the host.',
-    sessionOverridable: true,
-    match: (cmd) => /\bshutdown\b/.test(cmd),
-  },
-  {
-    id: 'reboot',
-    label: 'system reboot',
-    description: 'Reboots the host.',
-    sessionOverridable: true,
-    match: (cmd) => /\breboot\b/.test(cmd),
-  },
-  {
-    id: 'halt',
-    label: 'system halt',
-    description: 'Halts the host.',
-    sessionOverridable: true,
-    match: (cmd) => /\bhalt\b/.test(cmd),
-  },
-  {
-    id: 'mkfs',
-    label: 'format filesystem',
-    description: 'Formats a block device — destroys data.',
-    sessionOverridable: true,
-    match: (cmd) => /\bmkfs\b/.test(cmd),
-  },
-
-  // Disk operations
-  {
-    id: 'dd-if',
-    label: 'disk copy (dd)',
-    description: 'dd if=...: raw block copy, can overwrite disks.',
-    sessionOverridable: true,
-    match: (cmd) => /\bdd\s+if=/.test(cmd),
-  },
-
-  // Dangerous permission changes
-  {
-    id: 'chmod-world-recursive',
-    label: 'recursive world-writable chmod',
-    description: 'chmod -R with world-writable bits.',
-    sessionOverridable: true,
-    match: (cmd) => /\bchmod\s+(-[a-zA-Z]*R|--recursive)\s+[0-7]*7[0-7]*7/.test(cmd),
-  },
-
-  // Lockdown rules — present in the catalog for labelling/parity only.
-  // See file-header notes: these do NOT flow through `bypassBashPermissionDecision()`.
-  {
-    id: 'cross-user-access',
-    label: 'cross-user /tmp access',
-    description: "Accesses another user's /tmp/{userId}/ directory. Blocked for data isolation.",
-    sessionOverridable: false,
-    match: (cmd, ctx) => (ctx.userId ? isCrossUserAccess(cmd, ctx.userId) : false),
-  },
-  {
-    id: 'ssh-remote',
-    label: 'SSH / SCP / SFTP / rsync-over-ssh',
-    description: 'Remote shell/file operations. Admin-only. Not silencable per-session.',
-    sessionOverridable: false,
-    match: (cmd) => isSshCommand(cmd),
-  },
-];
-
-/**
- * Return every rule that matches `command` (zero or more).
- * Both overridable and lockdown rules are returned — callers decide what to do.
- */
-export function matchRules(command: string, ctx: DangerousRuleContext = {}): DangerousRule[] {
-  return DANGEROUS_RULES.filter((rule) => rule.match(command, ctx));
-}
+export type { DangerousRule, DangerousRuleContext } from 'somalib/permission/dangerous-rules';
+export {
+  DANGEROUS_RULES,
+  isCrossUserAccess,
+  isSshCommand,
+  matchRules,
+  overridableMatchedRuleIds,
+  overridableRulesByIds,
+  rulesByIds,
+} from 'somalib/permission/dangerous-rules';
 
 /**
  * Legacy result type — preserved for backward compat with pre-catalog callers/tests.
@@ -220,46 +71,6 @@ export function checkDangerousCommand(command: string): DangerousCommandResult {
  */
 export function isDangerousCommand(command: string): boolean {
   return DANGEROUS_RULES.some((rule) => rule.sessionOverridable && rule.match(command, {}));
-}
-
-/**
- * Cross-user directory access detection.
- * Detects commands that reference another user's /tmp/{userId}/ directory.
- * Enforces per-user filesystem isolation — always deny, regardless of bypass mode.
- *
- * Matches both /tmp/{userId} and /private/tmp/{userId} (macOS normalization).
- * Slack user IDs follow pattern: [UW] + uppercase alphanumeric (e.g., U094E5L4A15).
- * Enterprise Grid uses W-prefixed IDs — both must be covered.
- */
-export function isCrossUserAccess(command: string, currentUserId: string): boolean {
-  // Reject any /tmp/ path containing traversal segments — prevents escaping
-  // own directory via /tmp/U094E5L4A15/../U09F1M5MML1/
-  if (/(?:\/private)?\/tmp\/[^\s]*\.\./.test(command)) {
-    return true;
-  }
-
-  const tmpPathPattern = /(?:\/private)?\/tmp\/([UW][A-Z0-9]+)\b/g;
-  let match: RegExpExecArray | null;
-  while ((match = tmpPathPattern.exec(command)) !== null) {
-    if (match[1] !== currentUserId) {
-      return true;
-    }
-  }
-  return false;
-}
-
-/**
- * SSH command patterns — matches `ssh`, `scp`, `sftp`, `rsync` over SSH.
- * These commands allow remote server access and must be restricted to admin users.
- */
-const SSH_PATTERNS: ReadonlyArray<RegExp> = [/\bssh\b/, /\bscp\b/, /\bsftp\b/, /\brsync\b.*\b-e\s+['"]?ssh/];
-
-/**
- * Check if a bash command involves SSH (remote server access).
- * SSH commands are admin-only — non-admin users must use server-tools MCP instead.
- */
-export function isSshCommand(command: string): boolean {
-  return SSH_PATTERNS.some((pattern) => pattern.test(command));
 }
 
 /**
@@ -312,23 +123,16 @@ export function bypassBashPermissionDecision(
 }
 
 /**
- * Returns the overridable rule ids that match `command` (cross-user/ssh
- * excluded). Used by the permission MCP server to re-derive what rule was
- * responsible for a Bash escalation without re-serialising decision state
- * through the SDK boundary.
- */
-export function overridableMatchedRuleIds(command: string): string[] {
-  return DANGEROUS_RULES.filter((rule) => rule.sessionOverridable && rule.match(command, {})).map((rule) => rule.id);
-}
-
-/**
  * Look up an overridable rule by id. Returns undefined for unknown or
  * lockdown-only rule ids. Callers must tolerate undefined — stale button
  * payloads (e.g. old pending approvals after a rule rename) reach here.
+ *
+ * Delegates to `overridableRulesByIds` so the "drop lockdown ids" rule lives
+ * in exactly one place — adding a new lockdown rule to the catalog
+ * automatically excludes it here too.
  */
 export function getOverridableRule(ruleId: string): DangerousRule | undefined {
-  const rule = DANGEROUS_RULES.find((r) => r.id === ruleId);
-  return rule?.sessionOverridable ? rule : undefined;
+  return overridableRulesByIds([ruleId])[0];
 }
 
 /**

@@ -9,6 +9,7 @@ import {
   isSshCommand,
   matchRules,
   overridableMatchedRuleIds,
+  overridableRulesByIds,
 } from '../dangerous-command-filter';
 
 describe('isDangerousCommand', () => {
@@ -326,5 +327,87 @@ describe('rule catalog', () => {
     it('returns undefined for unknown ids', () => {
       expect(getOverridableRule('nonexistent')).toBeUndefined();
     });
+  });
+});
+
+/**
+ * Lockdown isolation invariants — guards the catalog/somalib re-export refactor
+ * (#768). The full catalog now lives in `somalib/permission/dangerous-rules.ts`,
+ * which means the MCP child can in principle import lockdown rules. These
+ * invariants prove that:
+ *   1. The overridable surface (`overridableRulesByIds`) silently drops lockdown
+ *      ids — naive `rulesByIds` would have leaked them.
+ *   2. Every existing lockdown rule is automatically isolated, and any future
+ *      lockdown rule added to the catalog inherits that isolation.
+ *   3. The bypass-mode Bash hook (`bypassBashPermissionDecision`) NEVER
+ *      escalates lockdown matches. Parent-side helpers (`isCrossUserAccess`,
+ *      `isSshCommand`) still detect them — they enforce on dedicated
+ *      pre-hooks in `claude-handler.ts`, not through the bypass escalation.
+ */
+describe('lockdown isolation invariants', () => {
+  it('overridableRulesByIds([only lockdown ids]) returns empty array — never leaks lockdown rules through the overridable surface', () => {
+    expect(overridableRulesByIds(['cross-user-access', 'ssh-remote'])).toEqual([]);
+  });
+
+  it('overridableRulesByIds preserves overridable rules and silently drops lockdown ids in mixed input', () => {
+    const result = overridableRulesByIds(['kill', 'cross-user-access', 'rm-recursive', 'ssh-remote']);
+    expect(result.map((r) => r.id)).toEqual(['kill', 'rm-recursive']);
+  });
+
+  it('property: every non-overridable rule in the catalog is excluded from overridableRulesByIds and overridableMatchedRuleIds', () => {
+    const lockdownRules = DANGEROUS_RULES.filter((r) => !r.sessionOverridable);
+    // Sanity: catalog must currently have at least one lockdown rule, else the
+    // invariant test is vacuously true and would silently allow regression.
+    expect(lockdownRules.length).toBeGreaterThan(0);
+
+    // Synthetic command that matches each lockdown rule via its actual matcher.
+    // For per-user matchers (cross-user-access), provide both userId and a path
+    // that triggers the rule under that user.
+    const syntheticCmdFor: Record<string, { command: string; ctx?: { userId?: string } }> = {
+      'cross-user-access': {
+        command: 'cat /tmp/U09F1M5MML1/file.txt',
+        ctx: { userId: 'U094E5L4A15' },
+      },
+      'ssh-remote': { command: 'ssh user@host ls' },
+    };
+
+    for (const rule of lockdownRules) {
+      // (a) overridable lookup never resolves a lockdown id
+      expect(overridableRulesByIds([rule.id])).toEqual([]);
+
+      // (b) matcher actually fires (sanity — synthetic command must hit the
+      // rule via the full-catalog matchRules path with proper ctx)
+      const synthetic = syntheticCmdFor[rule.id];
+      if (!synthetic) {
+        throw new Error(
+          `lockdown isolation invariants: missing synthetic command for new lockdown rule '${rule.id}'. Add an entry to syntheticCmdFor before merging.`,
+        );
+      }
+      expect(matchRules(synthetic.command, synthetic.ctx ?? {}).map((r) => r.id)).toContain(rule.id);
+
+      // (c) overridable matcher (no ctx, ignores lockdown rules) does NOT
+      // include this lockdown id, even though the command literally matches it
+      expect(overridableMatchedRuleIds(synthetic.command)).not.toContain(rule.id);
+    }
+  });
+
+  it('cross-user / ssh isolation: bypass hook returns "allow", parent-path helpers still detect the offence', () => {
+    // Bypass-mode Bash gate consults only the overridable subset, so lockdown
+    // matches MUST degrade to 'allow' here. The parent process enforces them
+    // via dedicated pre-hooks in claude-handler.ts (`isCrossUserAccess` and
+    // `isSshCommand`), independent of bypass state.
+    const crossUserCmd = 'cat /tmp/U09F1M5MML1/file.txt';
+    expect(bypassBashPermissionDecision(crossUserCmd)).toEqual({
+      decision: 'allow',
+      matchedRuleIds: [],
+    });
+    expect(isCrossUserAccess(crossUserCmd, 'U094E5L4A15')).toBe(true);
+
+    const sshCmd = 'ssh user@host docker ps';
+    expect(bypassBashPermissionDecision(sshCmd)).toEqual({
+      decision: 'allow',
+      matchedRuleIds: [],
+    });
+    expect(isSshCommand(sshCmd)).toBe(true);
   });
 });

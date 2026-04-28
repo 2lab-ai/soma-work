@@ -3,7 +3,7 @@
 import { WebClient } from '@slack/web-api';
 import { BaseMcpServer } from '../_shared/base-mcp-server.js';
 import type { ToolDefinition, ToolResult } from '../_shared/base-mcp-server.js';
-import { overridableMatchedRuleIds, rulesByIds } from '../_shared/dangerous-command-filter.js';
+import { overridableMatchedRuleIds, overridableRulesByIds } from 'somalib/permission/dangerous-rules.js';
 import { sharedStore, PendingApproval, PermissionResponse } from 'somalib/permission/shared-store.js';
 import { SlackPermissionMessenger } from 'somalib/permission/slack-messenger.js';
 
@@ -69,7 +69,11 @@ class PermissionMCPServer extends BaseMcpServer {
     // non-Bash tools (or Bash commands that don't match any rule) this stays
     // empty and no extra button is rendered.
     const ruleIds = this.deriveRuleIds(tool_name, input);
-    const overridableRules = rulesByIds(ruleIds);
+    // overridableRulesByIds (subset semantics) instead of full-catalog rulesByIds:
+    // even if a stale lockdown id reaches the MCP child via a pending approval
+    // payload, the Slack UI must not render it as silencable. See
+    // somalib/permission/dangerous-rules.ts for the lockdown isolation invariant.
+    const overridableRules = overridableRulesByIds(ruleIds);
 
     const blocks = this.messenger.buildRequestBlocks(
       tool_name,
