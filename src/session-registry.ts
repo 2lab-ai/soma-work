@@ -1298,6 +1298,20 @@ export class SessionRegistry {
   }
 
   /**
+   * Pending-creation path: append a `state: 'requested'` lifecycleEvents
+   * row to the user master at the moment the model emits an
+   * `instructionOperations` request and the host queues it for y/n
+   * confirmation. The audit log thus carries one 'requested' row per
+   * pending entry plus exactly one terminal row per request
+   * ('confirmed' | 'rejected' | 'superseded' | 'manual') so the dashboard
+   * can compute pending → terminal latency without inferring the queue
+   * state from the pending-store snapshot. PR2 P1-3 (#755).
+   */
+  recordRequestedLifecycle(session: ConversationSession, meta: LifecycleConfirmMeta): void {
+    this.appendLifecycleAuditOnly(session, meta, 'requested');
+  }
+
+  /**
    * N-confirm path: append a `state: 'rejected'` lifecycleEvents row to the
    * user master without mutating any instruction data.
    *
@@ -1326,14 +1340,15 @@ export class SessionRegistry {
 
   /**
    * Internal helper — append a single lifecycleEvents row with the given
-   * non-mutating state ('rejected' or 'superseded'). No data mutation, no
-   * pointer update; the row's `instructionId` is null for `add` rejections
-   * (where no instruction exists yet) and the op's target id otherwise.
+   * non-mutating state ('requested', 'rejected', or 'superseded'). No data
+   * mutation, no pointer update; the row's `instructionId` is null for
+   * `add` events (where no instruction exists yet — the y-confirm tx is
+   * what mints the id) and the op's target id otherwise.
    */
   private appendLifecycleAuditOnly(
     session: ConversationSession,
     meta: LifecycleConfirmMeta,
-    state: 'rejected' | 'superseded',
+    state: 'requested' | 'rejected' | 'superseded',
   ): void {
     const userId = session.ownerId;
     if (!userId) {

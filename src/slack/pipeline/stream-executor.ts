@@ -2991,6 +2991,28 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       by: { type: 'slack-user', id: requesterId },
     });
 
+    // Sealed audit (#755 P1-3): every pending entry gets exactly one
+    // `state: 'requested'` lifecycleEvents row at queue-time. The terminal
+    // row ('confirmed'|'rejected'|'superseded'|'manual') is written later
+    // by the corresponding seam (applyConfirmedLifecycle / handleNo /
+    // supersede branch / migration). Without this row the dashboard
+    // cannot distinguish "model proposed but user ignored" from "model
+    // never proposed in the first place".
+    try {
+      this.deps.claudeHandler.recordRequestedLifecycle(session, {
+        requestId,
+        type: lifecycleType,
+        by: { type: 'slack-user', id: requesterId },
+        ops: request.instructionOperations ?? [],
+      });
+    } catch (err) {
+      this.logger.warn('Failed to record requested lifecycle audit', {
+        sessionKey: context.sessionKey,
+        requestId,
+        err,
+      });
+    }
+
     // Supersede any prior pending message for this session.
     if (evicted) {
       // Sealed audit (#755): the evicted entry gets a state='superseded'

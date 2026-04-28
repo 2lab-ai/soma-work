@@ -381,6 +381,13 @@ export class ClaudeHandler {
     return this.sessionRegistry.applyConfirmedLifecycle(session, meta, pendingDelete);
   }
 
+  recordRequestedLifecycle(
+    session: import('./types').ConversationSession,
+    meta: import('./session-registry').LifecycleConfirmMeta,
+  ): void {
+    this.sessionRegistry.recordRequestedLifecycle(session, meta);
+  }
+
   recordRejectedLifecycle(
     session: import('./types').ConversationSession,
     meta: import('./session-registry').LifecycleConfirmMeta,
