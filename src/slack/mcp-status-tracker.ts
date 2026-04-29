@@ -31,18 +31,10 @@ interface SessionTick {
   currentIntervalMs: number;
   /**
    * Issue #794 — serialized render queue. Every render path
-   * (`setInterval` tick, immediate-on-register tick,
-   * `flushSession` final tick) chains onto this promise via
-   * `renderChain.then(doTick)`. Two effects:
-   *   1. No two concurrent `doTick` runs for the same session — even
-   *      if a `setInterval` and an `await flushSession` race, Slack
-   *      sees their `postMessage` / `updateMessage` calls in enqueue
-   *      order, never interleaved.
-   *   2. `flushSession` can `await tick(tick)` to wait until the
-   *      chain — including any in-flight render — has reached a
-   *      quiescent point before its own final render runs.
-   * Reset to `Promise.resolve()` on session creation so the first
-   * enqueued render has nothing to wait on.
+   * (setInterval tick, immediate-on-register tick, `flushSession`)
+   * enqueues onto this chain so Slack never sees interleaved
+   * `postMessage`/`updateMessage` for the same session, and
+   * `flushSession` can `await tick(tick)` to drain pending renders.
    */
   renderChain: Promise<void>;
 }

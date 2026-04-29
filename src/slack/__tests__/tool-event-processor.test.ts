@@ -394,26 +394,20 @@ describe('ToolEventProcessor', () => {
     it('should call flushSession on mcpStatusDisplay (issue #794)', async () => {
       await processor.cleanup('C123:thread_ts');
 
-      // Issue #794 — `flushSession` is the new awaitable final-render
-      // fence. `cleanupSession` is only the legacy fallback when the
-      // display does not expose `flushSession` (older mocks).
+      // Issue #794 — `flushSession` is the awaitable final-render fence.
       expect(mcpStatusDisplay.flushSession).toHaveBeenCalledWith('C123:thread_ts');
       expect(mcpStatusDisplay.cleanupSession).not.toHaveBeenCalled();
     });
 
-    it('should fall back to cleanupSession when flushSession is absent (legacy mock)', async () => {
-      const legacyDisplay: any = {
-        registerCall: vi.fn(),
-        completeCall: vi.fn(),
-        cleanupSession: vi.fn(),
-        // Intentionally no `flushSession` property to exercise the
-        // feature-detect fallback in `ToolEventProcessor.cleanup`.
-      };
-      const legacyProcessor = new ToolEventProcessor(toolTracker, legacyDisplay, mcpCallTracker);
+    it('should fall back to cleanupSession when flushSession throws', async () => {
+      // flushSession does Slack I/O; on failure cleanup must still tear
+      // down the session tick synchronously so timers don't leak.
+      mcpStatusDisplay.flushSession.mockRejectedValueOnce(new Error('slack down'));
 
-      await legacyProcessor.cleanup('C123:thread_ts');
+      await processor.cleanup('C123:thread_ts');
 
-      expect(legacyDisplay.cleanupSession).toHaveBeenCalledWith('C123:thread_ts');
+      expect(mcpStatusDisplay.flushSession).toHaveBeenCalledWith('C123:thread_ts');
+      expect(mcpStatusDisplay.cleanupSession).toHaveBeenCalledWith('C123:thread_ts');
     });
 
     it('should complete active MCP calls before cleanup (legacy global sweep, no turnId)', async () => {
