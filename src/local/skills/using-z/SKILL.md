@@ -90,7 +90,11 @@ z 컨트롤러의 phase 전환 중 **세션 경계**를 넘는 것은 두 지점
 
 - `## Task List` — human-friendly checklist that the new session registers into TodoWrite for progress display. Canonical task IDs come from `## Dependency Groups` / `## Per-Task Dispatch Payloads`; the Task List is **not** cross-validated against them. Use it to give the user a readable summary, not as a parser source-of-truth.
 
-**Required (host parser rejects the handoff with `invalid-plan-payload` if missing or empty):**
+**Required (host parser rejects the handoff if the heading is missing OR if the parsed contents are structurally invalid):**
+
+- 누락 시 — heading 자체가 빠진 경우 — `missing-required-field` (parser-level, before structural validation).
+- 헤딩은 있으나 내용이 비었거나 구조가 깨진 경우 — `invalid-plan-payload` with sub-detail (`empty-dependency-groups`, `empty-per-task-payloads`, `group-task-without-payload:<id>`, `payload-task-without-group:<id>`, `duplicate-group-task:<id>`, `duplicate-payload-task:<id>`, `unclosed-payload-fence:<id>`).
+- 같은 `## Heading`이 두 번 나타나면 — `duplicate-field` (heading 단위, 어떤 heading이든).
 
 - `## Dependency Groups` — phase 1 planner의 dependency-group 분할. 새 세션 phase 2가 그룹 단위 병렬 dispatch를 결정하기 위해 필수. 비어 있으면 새 세션은 PLAN.md를 직접 파싱하지 못하므로 phase 2를 진행할 수 없음 (z 컨트롤러는 repo 파일을 읽지 않는다). Host parser는 빈 그룹을 `invalid-plan-payload (empty-dependency-groups)`로 거부.
 - `## Per-Task Dispatch Payloads` — task-id별 self-contained subagent 프롬프트. 각 `### task-id` 본문은 **4개 이상의 backtick으로 감싸야 함** (`` ```` … ```` ``). 3-backtick fence는 거부됨 — planner가 작성하는 실제 프롬프트는 commit message HEREDOC / PR body / language-tagged code 등 inner 3-backtick code block을 포함하므로, 3-tick outer fence는 첫 inner 3-tick block에서 종료되어 payload가 잘려 나간다. Host parser는: (a) 각 group taskId가 정확히 하나의 4+-tick fenced payload와 매칭되는지 cross-validate, (b) group / payload 모두 duplicate taskId 거부, (c) opening fence 후 매칭되는 closing fence가 없으면 `unclosed-payload-fence:<taskId>`로 거부, (d) 미스매치 시 `group-task-without-payload:<id>` 또는 `payload-task-without-group:<id>`로 거부. 모든 실패는 `invalid-plan-payload` reason + 구체적 detail로 surface된다.
@@ -150,6 +154,7 @@ z 컨트롤러의 phase 전환 중 **세션 경계**를 넘는 것은 두 지점
 3. **Closing tag 필수.** 여는 태그는 있으나 `</z-handoff>`가 없으면 **malformed** → safe-stop + 유저 에러 출력. 조용한 fall-through 금지.
 4. **Required fields 검증.** `type="plan-to-work"`은 `## Issue`, `## Parent Epic`, `## Task List`, `## Dependency Groups`, `## Per-Task Dispatch Payloads` 다섯 섹션 필수. `type="work-complete"`은 `## Completed Subissue`, `## PR`, `## Summary`, `## Remaining Epic Checklist` 네 섹션 필수. 누락 시 malformed → safe-stop. `plan-to-work`의 **optional typed-metadata fields** (producer-authoritative, host가 `session.handoffContext`로 persist): `## Tier`, `## Escape Eligible`, `## Issue Required By User`, `## Original Request Excerpt`, `## Repository Policy`, `## Codex Review`. 누락 시 host는 conservative defaults를 사용하지만 downstream host guard가 정확히 동작하려면 producer가 명시 권장. (Dependency Groups + Per-Task Dispatch Payloads는 phase 2 controller가 PLAN.md를 직접 파싱하지 못하므로 required로 승격됨.)
 5. **Duplicate sentinels.** 한 prompt에 `plan-to-work`와 `work-complete`가 동시 등장하면 **hard error** — 어느 쪽도 선택하지 않고 safe-stop. 같은 type이 두 번 나와도 마찬가지.
+5a. **Duplicate `##` headings.** 한 sentinel body 안에 같은 `## Heading`이 두 번 등장하면 `duplicate-field` → safe-stop. 후행 occurrence가 silent하게 선행을 덮는 일이 없다 (planner가 두 payload를 emit했거나 copy-paste 버그를 숨기는 결과를 차단).
 6. **원요청 재검증 가능성.** `plan-to-work` 블록은 `## Original Request Excerpt` 필드로 원본 유저 SSOT instruction을 발췌 carrying — 수신 세션이 Case A escape 조건(또는 기타 계약)을 재검증 가능하게.
 
 ### Protocol Rules (host enforcement pending)

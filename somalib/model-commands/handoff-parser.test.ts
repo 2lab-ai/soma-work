@@ -383,6 +383,62 @@ describe('parseHandoff — malformed inputs', () => {
     expect(result.reason).toBe('sentinel-not-top-level');
   });
 
+  it('reports duplicate-field when the same ## Heading appears twice', () => {
+    // Strict parsing: silent overwrite would mask either a planner emitting
+    // two payloads or a copy-paste bug. The parser must reject.
+    const text = [
+      '<z-handoff type="plan-to-work">',
+      '## Issue',
+      'https://example.com/1',
+      '## Issue',
+      'https://example.com/2',
+      '## Parent Epic',
+      'none',
+      '## Task List',
+      '- [ ] foo',
+      '## Dependency Groups',
+      'Group 1: [foo]',
+      '## Per-Task Dispatch Payloads',
+      '### foo',
+      '````',
+      'do foo',
+      '````',
+      '</z-handoff>',
+    ].join('\n');
+    const result = parseHandoff(text);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.reason).toBe('duplicate-field');
+    expect(result.detail).toBe('Issue');
+  });
+
+  it('reports duplicate-field for repeated ## Dependency Groups', () => {
+    const text = [
+      '<z-handoff type="plan-to-work">',
+      '## Issue',
+      'https://example.com/1',
+      '## Parent Epic',
+      'none',
+      '## Task List',
+      '- [ ] foo',
+      '## Dependency Groups',
+      'Group 1: [foo]',
+      '## Per-Task Dispatch Payloads',
+      '### foo',
+      '````',
+      'do foo',
+      '````',
+      '## Dependency Groups',
+      'Group 99: [foo]',
+      '</z-handoff>',
+    ].join('\n');
+    const result = parseHandoff(text);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.reason).toBe('duplicate-field');
+    expect(result.detail).toBe('Dependency Groups');
+  });
+
   it('reports malformed-opening for missing quotes in type attribute', () => {
     const text = [
       '<z-handoff type=plan-to-work>',

@@ -78,7 +78,8 @@ Scan the incoming user prompt for a `<z-handoff>` block. The grammar is owned by
 3. **Closing tag required.** Opening tag without `</z-handoff>` → **malformed** → emit error to user + safe-stop. Do not silently fall through.
 4. **Required fields.** `plan-to-work` must contain `## Issue`, `## Parent Epic`, `## Task List`, `## Dependency Groups`, `## Per-Task Dispatch Payloads`. `work-complete` must contain `## Completed Subissue`, `## PR`, `## Summary`, `## Remaining Epic Checklist`. Any missing → `missing-required-field` → safe-stop. Each `### task-id` body inside `## Per-Task Dispatch Payloads` must be wrapped in a 4+-backtick fenced code block; semantic mismatches (empty groups, empty payloads, group↔payload mismatch, duplicate task IDs, unclosed payload fence) surface as `invalid-plan-payload` with a sub-detail.
 5. **Duplicate sentinels.** Both `plan-to-work` and `work-complete` in one prompt, or the same type twice → hard error → safe-stop.
-6. **Optional typed fields** (`plan-to-work` only): `## Tier`, `## Escape Eligible`, `## Issue Required By User`, `## Original Request Excerpt`, `## Repository Policy`. Missing → conservative defaults (tier=null, escapeEligible=false, issueRequiredByUser=true).
+6. **Optional typed fields** (`plan-to-work` only): `## Tier`, `## Escape Eligible`, `## Issue Required By User`, `## Original Request Excerpt`, `## Repository Policy`, `## Codex Review`. Missing → conservative defaults (tier=null, escapeEligible=false, issueRequiredByUser=true, originalRequestExcerpt=null, repositoryPolicy=null, codexReview=null).
+7. **Duplicate `## Heading` detection.** The same heading appearing twice in the same handoff body is `duplicate-field` → safe-stop. Strict parsing rejects rather than silently letting the later occurrence win.
 
 Routing on a valid sentinel:
 
@@ -112,7 +113,7 @@ If the request is a bug report, dispatch a `stv:debug` driver subagent (backgrou
 
 ### 0.4 Bootstrap, then parallel explore (two sequential dispatch waves)
 
-**Wave A — bootstrap (single subagent, blocking):** dispatch a **bootstrap subagent** that creates the working folder `/tmp/<slackId>/<repo>_<ts>_<key>` and `git clone --depth=1 -b <base>` the target repo into it. Returns: absolute repo path + base SHA + base branch name. The orchestrator waits for this report before Wave B.
+**Wave A — bootstrap (single subagent, blocking):** dispatch a **bootstrap subagent** that creates the working folder `/tmp/<slackId>/<repo>_<ts>_<key>` and `git clone --depth=1 -b <base>` the target repo into it. Returns: absolute repo path + base SHA + base branch name. The orchestrator waits for this report before Wave B. **Per-task worktrees are not yet known here** — the planner has not run yet, so phase 0.4 only stages the cloned base. Per-task worktrees are created later in §2.0 once the dependency graph is known.
 
 **Wave B — explore (parallel subagents, after bootstrap returns):** dispatch ≥2 explore subagents concurrently, each receiving the absolute repo path from Wave A:
 
@@ -204,20 +205,19 @@ The orchestrator session ends. Phase 2 enters a fresh session via the sentinel b
 
 ## Phase 2 — Implementation
 
-### 2.0 Bootstrap (handoff-entry only)
+### 2.0 Bootstrap — per-task worktrees (always run)
 
-A phase-2 handoff session enters with `session.handoffContext` populated but no working folder or worktrees yet. Dispatch a **bootstrap subagent** (`Agent`, `general-purpose`, `run_in_background: true`) that:
+Whether phase 2 is reached via handoff (fresh session) or same-session (the unusual direct-prompt path), §2.0 always runs because phase 0.4 only stages the base clone — per-task worktrees are not created until the dependency graph from `## Dependency Groups` is known.
 
-1. Creates the working folder `/tmp/<slackId>/<repo>_<ts>_<key>`.
-2. `git clone --depth=1 -b <base>` the target repo into it.
-3. **Creates one worktree per task in `## Dependency Groups`** — every task across every group gets its worktree up front, so Group N+1 doesn't need a fresh clone after Group N merges. Worktree path convention: `<working_folder>/<task-id>` with branch `<task-id>` from `<base>`.
-4. Returns the absolute working-folder path + per-task worktree paths + base SHA.
+Dispatch a **bootstrap subagent** (`Agent`, `general-purpose`, `run_in_background: true`) that:
 
-Wait for the bootstrap report before 2.1.
+1. Reuses the working folder if it already exists (same-session case, created in phase 0.4); otherwise creates `/tmp/<slackId>/<repo>_<ts>_<key>` and clones the target repo via `git clone --depth=1 -b <base>` (handoff-entry case).
+2. **Creates one worktree per task in `## Dependency Groups`** — every task across every group gets its worktree up front, so Group N+1 doesn't need a fresh clone after Group N merges. Worktree path convention: `<working_folder>/<task-id>` with branch `<task-id>` from `<base>`.
+3. Returns the absolute working-folder path + per-task worktree paths + base SHA.
 
-Between groups (after Group N's PRs merge in phase 5.1), dispatch a **base-refresh subagent** that pulls the new base into the existing worktrees of Group N+1 — do not recreate the worktrees.
+Wait for the bootstrap report before §2.1.
 
-If phase 2 was reached same-session (rare — only via direct user prompt that already passed phase 0–1 and skipped the handoff), the worktrees from phase 0.4 are still valid; skip 2.0.
+Between groups (after Group N's PRs merge in §5.1), dispatch a **base-refresh subagent** that pulls the new base into the existing worktrees of Group N+1 — **do not recreate the worktrees**. The worktrees from §2.0 are reused for the entire phase 2 lifecycle.
 
 ### 2.1 Repeat-back gate (entry)
 
@@ -304,7 +304,7 @@ Dispatch a **merge driver subagent** (background). Prompt:
 - Pre-merge re-check: `gh pr view --json reviewDecision,mergeable,state`. If `reviewDecision != APPROVED` (e.g. dismiss-stale-reviews voided the prior approval after a force-push), return blocker — do not merge.
 - `gh pr merge --squash --delete-branch` (no `--admin`, no self-approve).
 - Capture merge commit SHA.
-- If next dependency group exists: pull base, recreate worktrees for next group's branches.
+- If a next dependency group exists, **dispatch a separate base-refresh subagent** (do not recreate worktrees) that pulls the new base into Group N+1's existing worktrees — those worktrees were created up front in §2.0 and are reused for the entire phase 2 lifecycle.
 
 ### 5.2 Conflict subagent
 

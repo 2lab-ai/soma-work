@@ -172,7 +172,15 @@ export type HandoffParseFailure =
    *     headings AND inner triple-backtick code blocks
    * `detail` field carries the specific sub-reason.
    */
-  | 'invalid-plan-payload';
+  | 'invalid-plan-payload'
+  /**
+   * The handoff body has the same `## Heading` declared twice (or more).
+   * Strict sentinel parsing rejects this rather than silently letting the
+   * later occurrence win — duplicate fields are an authoring bug whose
+   * silent acceptance would mask either the planner emitting two payloads
+   * or a copy-paste mistake. `detail` carries the duplicate heading name.
+   */
+  | 'duplicate-field';
 
 export type ParseResult =
   | { ok: true; context: HandoffContext }

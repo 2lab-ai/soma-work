@@ -197,7 +197,11 @@ export function parseHandoff(promptText: string): ParseResult {
   }
 
   const body = lines.slice(openLineIdx + 1, closeIdx);
-  const fields = parseFields(body);
+  const parseFieldsResult = parseFields(body);
+  if (!parseFieldsResult.ok) {
+    return { ok: false, reason: 'duplicate-field', detail: parseFieldsResult.detail };
+  }
+  const fields = parseFieldsResult.fields;
 
   for (const required of REQUIRED_FIELDS[handoffKind]) {
     if (!(required in fields)) {
@@ -329,11 +333,15 @@ export class HandoffAbortError extends Error {
  * `## Heading` line or end of body. Leading/trailing blank lines in values
  * are trimmed.
  */
-function parseFields(body: readonly string[]): Record<string, string> {
+function parseFields(
+  body: readonly string[],
+): { ok: true; fields: Record<string, string> } | { ok: false; detail: string } {
   const fields: Record<string, string> = {};
+  const seenHeadings = new Set<string>();
   let currentHeading: string | null = null;
   let currentBuf: string[] = [];
   let fenceMarker: string | null = null;
+  let duplicateDetail: string | null = null;
 
   const flush = () => {
     if (currentHeading !== null) {
@@ -375,7 +383,15 @@ function parseFields(body: readonly string[]): Record<string, string> {
       const headingMatch = /^## (.+?)\s*$/.exec(line);
       if (headingMatch) {
         flush();
-        currentHeading = headingMatch[1];
+        const heading = headingMatch[1];
+        if (seenHeadings.has(heading) && duplicateDetail === null) {
+          // Record the first duplicate seen and keep parsing so we can return
+          // a deterministic detail. Continuing past duplicates would let the
+          // later occurrence overwrite the earlier — strict parsing rejects.
+          duplicateDetail = heading;
+        }
+        seenHeadings.add(heading);
+        currentHeading = heading;
         currentBuf = [];
         continue;
       }
@@ -386,7 +402,10 @@ function parseFields(body: readonly string[]): Record<string, string> {
     }
   }
   flush();
-  return fields;
+  if (duplicateDetail !== null) {
+    return { ok: false, detail: duplicateDetail };
+  }
+  return { ok: true, fields };
 }
 
 /**

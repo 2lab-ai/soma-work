@@ -150,6 +150,52 @@ describe('SessionInitializer.runDispatch — z handoff entrypoints (#695)', () =
       expect(mockClaudeHandler.transitionToMain).toHaveBeenCalledWith('C1', 't1', 'z-plan-to-work', expect.any(String));
     });
 
+    it('plan-to-work: persists Original Request Excerpt / Repository Policy / Codex Review when present', async () => {
+      const { sessionInitializer, primeSession } = buildInitializer();
+      const session = primeSession('C1', 't1b');
+      const prompt = [
+        '$z phase2 https://example.com/issue/1',
+        '',
+        '<z-handoff type="plan-to-work">',
+        '## Issue',
+        'https://example.com/issue/1',
+        '## Parent Epic',
+        'none',
+        '## Tier',
+        'medium',
+        '## Original Request Excerpt',
+        "user's verbatim request line",
+        '## Repository Policy',
+        'issue-required: true',
+        '## Task List',
+        '- [ ] step 1',
+        '## Dependency Groups',
+        'Group 1: [step-1]',
+        '## Per-Task Dispatch Payloads',
+        '### step-1',
+        '````',
+        'Self-contained subagent prompt for step 1.',
+        '````',
+        '## Codex Review',
+        'score: 97/100 — APPROVE_FOR_EXECUTION',
+        '</z-handoff>',
+      ].join('\n');
+
+      await sessionInitializer.runDispatch('C1', 't1b', 'https://example.com/issue/1', 'z-plan-to-work', prompt);
+
+      expect(session.handoffContext?.originalRequestExcerpt).toBe("user's verbatim request line");
+      expect(session.handoffContext?.repositoryPolicy).toBe('issue-required: true');
+      expect(session.handoffContext?.codexReview).toEqual({
+        score: '97/100',
+        verdict: 'APPROVE_FOR_EXECUTION',
+      });
+      // dependencyGroups + perTaskDispatchPayloads round-trip from prompt → session.
+      expect(session.handoffContext?.dependencyGroups).toEqual([['step-1']]);
+      expect(session.handoffContext?.perTaskDispatchPayloads).toEqual([
+        { taskId: 'step-1', prompt: 'Self-contained subagent prompt for step 1.' },
+      ]);
+    });
+
     it('epic-update: parses work-complete sentinel, persists, transitions to z-epic-update', async () => {
       const { sessionInitializer, mockClaudeHandler, primeSession } = buildInitializer();
       const session = primeSession('C1', 't2');
