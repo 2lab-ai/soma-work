@@ -304,7 +304,11 @@ Dispatch a **merge driver subagent** (background). Prompt:
 - Pre-merge re-check: `gh pr view --json reviewDecision,mergeable,state`. If `reviewDecision != APPROVED` (e.g. dismiss-stale-reviews voided the prior approval after a force-push), return blocker — do not merge.
 - `gh pr merge --squash --delete-branch` (no `--admin`, no self-approve).
 - Capture merge commit SHA.
-- Final report: PR state (`MERGED`), merge commit SHA, blocker (if any).
+
+**Final report — merge-status discriminated shape** (canonical contract — both §5.1 and §5.2 use this exact shape so §5.1.a can branch on it identically):
+
+- On success: `{ status: 'MERGED', mergeCommitSha: '<sha>', details?: '<free-form context>' }`.
+- On blocker: `{ status: 'blocker', detail: '<short identifier — e.g. reviewDecision-regressed-after-force-push, ci-fail-after-3-cycles, signed-commit-required-no-key>', context?: '<free-form diagnostic>' }`.
 
 The merge subagent does **not** dispatch other subagents — that's the controller's job. The next step is decided by the orchestrator on receipt of the merge report (see §5.1.a below).
 
@@ -312,8 +316,8 @@ The merge subagent does **not** dispatch other subagents — that's the controll
 
 The orchestrator decides what to do next based on the merge subagent's report:
 
-- **Merge subagent reported `blocker` (rebase conflict, post-rebase reviewDecision regression, etc.)** → dispatch §5.2 (conflict / blocker cleanup). The §5.2 subagent uses the same merge-status report contract (see §5.2 below); feed its report **back into §5.1.a** — do **not** re-dispatch the §5.1 merge driver, since the §5.2 subagent may have already merged the PR. Re-enter §5.1 only if §5.2 explicitly reports a fresh unresolvable blocker requiring user escalation (bounded by §5.2's retry cap).
-- **Merge subagent reported `MERGED` (success)** → inspect whether more dependency groups remain in `## Dependency Groups`:
+- **Merge subagent reported `status: 'blocker'`** (rebase conflict, post-rebase reviewDecision regression, signed-commit failure, etc.) → dispatch §5.2 (conflict / blocker cleanup). The §5.2 subagent uses the same merge-status report shape; feed its report **back into §5.1.a** — do **not** re-dispatch the §5.1 merge driver, since §5.2 may have already merged the PR. If §5.2 itself reports `status: 'blocker'`, follow §5.2's escalation rule (bounded retry → `UIAskUserQuestion`) — do **not** re-feed it into §5.1.a's `MERGED` branch and do **not** re-dispatch §5.1 until the user's decision explicitly resolves the blocker.
+- **Merge subagent reported `status: 'MERGED'`** (success) → inspect whether more dependency groups remain in `## Dependency Groups`:
   - **Next group exists** (more PRs to ship): dispatch a **base-refresh subagent** (background) that pulls the new base into Group N+1's existing worktrees — those worktrees were created up front in §2.0 and are reused for the entire phase 2 lifecycle. Do **not** recreate worktrees. After the base-refresh report returns, **return to §2.2** and dispatch Group N+1's implementer subagents. §5.3 / §5.4 are skipped this turn.
   - **No next group** (this was the last PR for the epic / single-issue case): proceed to §5.3 (`es` executive summary), then §5.4 (Handoff #2 if Parent Epic ≠ none).
 
