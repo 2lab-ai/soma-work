@@ -133,11 +133,16 @@ Dispatch a **merge driver subagent** (background) that:
 
 The orchestrator then dispatches Group N+1's implementer subagents (back to phase 2).
 
-### Conflict handling:
+### Blocker routing (matches z/SKILL.md §5.1.a taxonomy):
 
-- Rebase conflict → dispatch a separate conflict-resolution subagent (rebase + force-with-lease + CI watch + reviewDecision recheck + merge). See `05-rebase-merge-conflict.md`.
-- The conflict subagent's final report **must use the same merge-status discriminated shape** as the §5.1 merge subagent: `{ status: 'MERGED', mergeCommitSha } | { status: 'blocker', detail }`. The controller routes its report through §5.1.a exactly as it would the §5.1 merge subagent's — **do not re-dispatch §5.1's merge driver** when §5.2 already returns `MERGED`.
-- Orchestrator does **not** resolve conflicts directly. Bounded retry: max 2 §5.2 dispatches per PR; a second `blocker` triggers `UIAskUserQuestion` escalation.
+The merge subagent's `{ status: 'blocker', detail }` report routes by `detail`:
+
+- **`rebase-conflict-*` / `unresolvable-conflict-on-shared-file`** → dispatch a separate conflict-resolution subagent (rebase + force-with-lease + CI watch + reviewDecision recheck + merge). See `05-rebase-merge-conflict.md`. Subagent's final report uses the same discriminated `{ status: 'MERGED', mergeCommitSha } | { status: 'blocker', detail }` shape; controller routes it through §5.1.a as if it were §5.1's merge subagent — do **not** re-dispatch §5.1's merge driver when the conflict subagent already returns `MERGED`. Bounded retry: max 2 §5.2 dispatches per PR; a second `blocker` triggers `UIAskUserQuestion` escalation.
+- **`reviewDecision-regressed-after-force-push`** → return to phase 4 for a fresh user approve, then re-enter §5.1 with the original PR. Not a §5.2 case — there is no conflict to resolve.
+- **`branch-protection-blocked` / `no-eligible-reviewer` / `required-ci-label-missing` / `signed-commit-required-no-key`** → `UIAskUserQuestion` escalation directly (policy / authorization blocker, not rebase).
+- **Unknown / unmatched `detail`** → `UIAskUserQuestion` so the user can resolve or re-classify.
+
+Orchestrator does **not** resolve conflicts directly in any branch.
 
 ## phase 5.E — Epic Update (handoff-only entry; manual close)
 
