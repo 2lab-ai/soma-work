@@ -43,66 +43,142 @@ function parseCronContext(raw?: string): CronContext {
 
 // --- Tool handlers ---
 
-function handleCreate(args: Record<string, any>, context: CronContext, storage: CronStorage): { text: string; isError: boolean } {
-  const { name, expression, prompt, channel, threadTs, mode, model_type, model_name, reasoning_effort, fast_mode, target } = args;
+type CronModelConfig = import('somalib/cron/cron-storage.js').CronModelConfig;
 
-  // Validation
+interface ValidatedCreateInput {
+  name: string;
+  expression: string;
+  prompt: string;
+  targetChannel: string;
+  threadTs: string | undefined;
+  effectiveMode: 'default' | 'fastlane';
+  effectiveTarget: 'channel' | 'thread' | 'dm';
+}
+
+type ValidationResult =
+  | { ok: true; parsed: ValidatedCreateInput }
+  | { ok: false; errorText: string };
+
+type ModelConfigResult =
+  | { ok: true; modelConfig: CronModelConfig | undefined }
+  | { ok: false; errorText: string };
+
+function validateRequiredArgs(args: Record<string, any>): string | null {
+  const { name, expression, prompt } = args;
   if (!name || !expression || !prompt) {
-    return { text: 'Error: name, expression, and prompt are required', isError: true };
+    return 'Error: name, expression, and prompt are required';
   }
-
   if (!isValidCronName(name)) {
-    return { text: `Error: Invalid cron name '${name}'. Use alphanumeric, hyphens, underscores (1-64 chars)`, isError: true };
+    return `Error: Invalid cron name '${name}'. Use alphanumeric, hyphens, underscores (1-64 chars)`;
   }
-
   if (!isValidCronExpression(expression)) {
-    return { text: `Error: Invalid cron expression '${expression}'. Use 5-field format: min hour dom mon dow`, isError: true };
+    return `Error: Invalid cron expression '${expression}'. Use 5-field format: min hour dom mon dow`;
   }
-
   if (typeof prompt !== 'string' || prompt.length === 0 || prompt.length > 4000) {
-    return { text: 'Error: prompt must be a non-empty string (max 4000 chars)', isError: true };
+    return 'Error: prompt must be a non-empty string (max 4000 chars)';
   }
+  return null;
+}
 
-  const targetChannel = channel || context.channel;
-  if (!targetChannel || (!targetChannel.startsWith('C') && !targetChannel.startsWith('D'))) {
-    return { text: `Error: Invalid channel '${targetChannel}'`, isError: true };
-  }
+function validateModeAndTarget(
+  args: Record<string, any>,
+): { ok: true; effectiveMode: 'default' | 'fastlane'; effectiveTarget: 'channel' | 'thread' | 'dm' } | { ok: false; errorText: string } {
+  const { threadTs, mode, target } = args;
 
-  // Validate mode
   const effectiveMode = mode || 'default';
   if (effectiveMode !== 'default' && effectiveMode !== 'fastlane') {
-    return { text: `Error: Invalid mode '${mode}'. Use 'default' or 'fastlane'`, isError: true };
+    return { ok: false, errorText: `Error: Invalid mode '${mode}'. Use 'default' or 'fastlane'` };
   }
 
-  // Validate target
   const effectiveTarget = target || 'channel';
   if (!['channel', 'thread', 'dm'].includes(effectiveTarget)) {
-    return { text: `Error: Invalid target '${target}'. Use 'channel', 'thread', or 'dm'`, isError: true };
+    return { ok: false, errorText: `Error: Invalid target '${target}'. Use 'channel', 'thread', or 'dm'` };
   }
   if (effectiveTarget === 'thread' && !threadTs) {
-    return { text: 'Error: threadTs is required when target is "thread"', isError: true };
+    return { ok: false, errorText: 'Error: threadTs is required when target is "thread"' };
+  }
+  return { ok: true, effectiveMode, effectiveTarget };
+}
+
+function validateCreateInput(args: Record<string, any>, context: CronContext): ValidationResult {
+  const requiredErr = validateRequiredArgs(args);
+  if (requiredErr) return { ok: false, errorText: requiredErr };
+
+  const targetChannel = args.channel || context.channel;
+  if (!targetChannel || (!targetChannel.startsWith('C') && !targetChannel.startsWith('D'))) {
+    return { ok: false, errorText: `Error: Invalid channel '${targetChannel}'` };
   }
 
-  // Build model config
+  const modeTarget = validateModeAndTarget(args);
+  if (!modeTarget.ok) return { ok: false, errorText: modeTarget.errorText };
+
+  return {
+    ok: true,
+    parsed: {
+      name: args.name,
+      expression: args.expression,
+      prompt: args.prompt,
+      targetChannel,
+      threadTs: args.threadTs || undefined,
+      effectiveMode: modeTarget.effectiveMode,
+      effectiveTarget: modeTarget.effectiveTarget,
+    },
+  };
+}
+
+function buildModelConfig(args: Record<string, any>): ModelConfigResult {
+  const { model_type, model_name, reasoning_effort, fast_mode } = args;
   const effectiveModelType = model_type || 'default';
-  let modelConfig: import('somalib/cron/cron-storage.js').CronModelConfig | undefined;
-  if (effectiveModelType !== 'default') {
-    if (effectiveModelType === 'fast') {
-      modelConfig = { type: 'fast' };
-    } else if (effectiveModelType === 'custom') {
-      if (!model_name) {
-        return { text: 'Error: model_name is required when model_type is "custom"', isError: true };
-      }
-      modelConfig = {
+
+  if (effectiveModelType === 'default') {
+    return { ok: true, modelConfig: undefined };
+  }
+  if (effectiveModelType === 'fast') {
+    return { ok: true, modelConfig: { type: 'fast' } };
+  }
+  if (effectiveModelType === 'custom') {
+    if (!model_name) {
+      return { ok: false, errorText: 'Error: model_name is required when model_type is "custom"' };
+    }
+    return {
+      ok: true,
+      modelConfig: {
         type: 'custom',
         model: model_name,
         reasoningEffort: reasoning_effort || undefined,
         fastMode: fast_mode ?? undefined,
-      };
-    } else {
-      return { text: `Error: Invalid model_type '${model_type}'. Use 'default', 'fast', or 'custom'`, isError: true };
-    }
+      },
+    };
   }
+  return { ok: false, errorText: `Error: Invalid model_type '${model_type}'. Use 'default', 'fast', or 'custom'` };
+}
+
+function formatCreateSuccess(
+  job: { name: string; id: string; expression: string; channel: string; prompt: string },
+  effectiveMode: 'default' | 'fastlane',
+  modelConfig: CronModelConfig | undefined,
+  effectiveTarget: 'channel' | 'thread' | 'dm',
+): string {
+  const modeStr = effectiveMode === 'fastlane' ? ' | mode: fastlane' : '';
+  const modelStr = modelConfig
+    ? ` | model: ${modelConfig.type}${modelConfig.model ? `(${modelConfig.model})` : ''}`
+    : '';
+  const targetStr = effectiveTarget !== 'channel' ? ` | target: ${effectiveTarget}` : '';
+  return `Cron job '${job.name}' created.\nID: ${job.id}\nExpression: ${job.expression}\nChannel: ${job.channel}${modeStr}${modelStr}${targetStr}\nPrompt: ${job.prompt}`;
+}
+
+export function handleCreate(args: Record<string, any>, context: CronContext, storage: CronStorage): { text: string; isError: boolean } {
+  const validation = validateCreateInput(args, context);
+  if (!validation.ok) {
+    return { text: validation.errorText, isError: true };
+  }
+  const { name, expression, prompt, targetChannel, threadTs, effectiveMode, effectiveTarget } = validation.parsed;
+
+  const modelResult = buildModelConfig(args);
+  if (!modelResult.ok) {
+    return { text: modelResult.errorText, isError: true };
+  }
+  const { modelConfig } = modelResult;
 
   try {
     const job = storage.addJob({
@@ -114,16 +190,9 @@ function handleCreate(args: Record<string, any>, context: CronContext, storage: 
       threadTs: threadTs || null,
       mode: effectiveMode === 'default' ? undefined : effectiveMode,
       modelConfig,
-      target: effectiveTarget === 'channel' ? undefined : effectiveTarget as 'thread' | 'dm',
+      target: effectiveTarget === 'channel' ? undefined : effectiveTarget,
     });
-
-    const modeStr = effectiveMode === 'fastlane' ? ' | mode: fastlane' : '';
-    const modelStr = modelConfig ? ` | model: ${modelConfig.type}${modelConfig.model ? `(${modelConfig.model})` : ''}` : '';
-    const targetStr = effectiveTarget !== 'channel' ? ` | target: ${effectiveTarget}` : '';
-    return {
-      text: `Cron job '${job.name}' created.\nID: ${job.id}\nExpression: ${job.expression}\nChannel: ${job.channel}${modeStr}${modelStr}${targetStr}\nPrompt: ${job.prompt}`,
-      isError: false,
-    };
+    return { text: formatCreateSuccess(job, effectiveMode, modelConfig, effectiveTarget), isError: false };
   } catch (error: any) {
     if (error.message?.startsWith('DUPLICATE_NAME')) {
       return { text: `Error: Cron job '${name}' already exists for this user`, isError: true };
