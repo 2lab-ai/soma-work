@@ -19,6 +19,11 @@ vi.mock('../user-memory-store', () => ({
   formatMemoryForPrompt: vi.fn().mockReturnValue(''),
 }));
 
+// Mock user-skill-store so we can override listUserSkills per-test
+vi.mock('../user-skill-store', () => ({
+  listUserSkills: vi.fn().mockReturnValue([]),
+}));
+
 import { PromptBuilder } from '../prompt-builder';
 
 describe('PromptBuilder', () => {
@@ -137,6 +142,47 @@ describe('PromptBuilder', () => {
 
       // The prompt should be built (persona loading is attempted)
       expect(prompt).toBeDefined();
+    });
+
+    it('should append persistent memory block when formatMemoryForPrompt returns content', async () => {
+      // Covers applyPersistentMemory happy path (prompt-builder.ts lines 425-432).
+      const { formatMemoryForPrompt } = await import('../user-memory-store');
+      vi.mocked(formatMemoryForPrompt).mockReturnValueOnce('<memory>\nuser likes TypeScript\n</memory>');
+
+      const prompt = builder.buildSystemPrompt('U123', 'default');
+
+      expect(prompt).toBeDefined();
+      expect(prompt).toContain('<memory>\nuser likes TypeScript\n</memory>');
+      expect(prompt).toContain('persistent memory across sessions');
+    });
+
+    it('should append personal skills block when listUserSkills returns entries', async () => {
+      // Covers applyPersonalSkills happy path (prompt-builder.ts lines 438-453).
+      const { listUserSkills } = await import('../user-skill-store');
+      vi.mocked(listUserSkills).mockReturnValueOnce([
+        { name: 'my-skill', description: 'a personal skill', isSingleFile: true },
+      ]);
+
+      const prompt = builder.buildSystemPrompt('U123', 'default');
+
+      expect(prompt).toBeDefined();
+      expect(prompt).toContain('## Your Personal Skills');
+      expect(prompt).toContain('`$user:my-skill`: a personal skill');
+    });
+
+    it('should append user-instructions block when session has instructions', () => {
+      // Covers applyUserInstructions happy path (prompt-builder.ts lines 460-465).
+      const session: any = {
+        instructions: [
+          { id: 'i1', text: 'always run tests before pushing', addedAt: 1, status: 'active' },
+        ],
+      };
+
+      const prompt = builder.buildSystemPrompt(undefined, 'default', session);
+
+      expect(prompt).toBeDefined();
+      expect(prompt).toContain('<user-instructions-ssot>');
+      expect(prompt).toContain('always run tests before pushing');
     });
   });
 
