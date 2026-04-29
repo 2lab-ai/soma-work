@@ -319,7 +319,9 @@ The orchestrator decides what to do next based on the merge subagent's report:
 
 ### 5.2 Conflict / blocker subagent
 
-Triggered only when §5.1's merge subagent returns a `blocker`. The orchestrator dispatches a **separate conflict-resolution subagent** (background) — see `reference/samples/05-rebase-merge-conflict.md` — that handles rebase + force-push + reviewDecision recheck + merge. The orchestrator does not resolve conflicts itself. After this subagent's report, loop back to §5.1.a. (A successful merge cannot still need conflict cleanup; this branch only runs on the blocker path.)
+Triggered only when §5.1's merge subagent returns a `blocker`. The orchestrator dispatches a **separate conflict-resolution subagent** (background) — see `reference/samples/05-rebase-merge-conflict.md` — that handles rebase + force-push + reviewDecision recheck + merge. The orchestrator does not resolve conflicts itself.
+
+**Report contract** — the §5.2 subagent's final report MUST use the same shape as §5.1's merge subagent: a discriminated `{ status: 'MERGED', mergeCommitSha } | { status: 'blocker', detail }` so §5.1.a can branch on it identically. On `MERGED` the orchestrator routes through §5.1.a (next-group base-refresh OR final closeout) — **do not re-dispatch the §5.1 merge driver**, the conflict subagent already merged the PR. On a fresh `blocker` (e.g. an immediate rebase regression on top of a still-blocked PR), the orchestrator escalates via `UIAskUserQuestion` rather than looping §5.2 indefinitely (bounded retry, max 2).
 
 ### 5.3 Executive summary + es
 
