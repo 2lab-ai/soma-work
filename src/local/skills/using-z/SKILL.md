@@ -70,7 +70,7 @@ z 컨트롤러의 phase 전환 중 **세션 경계**를 넘는 것은 두 지점
 {
   "commandId": "CONTINUE_SESSION",
   "params": {
-    "prompt": "$z phase2 <ISSUE_URL or task-slug>\n\n<z-handoff type=\"plan-to-work\">\n## Issue\n<ISSUE_URL or \"none (Case A escape, tier=tiny|small)\">\n## Parent Epic\n<EPIC_URL or \"none\">\n## Tier\n<tiny|small|medium|large|xlarge>\n## Escape Eligible\n<true|false>\n## Issue Required By User\n<true|false>\n## Original Request Excerpt\n<원 유저 SSOT instruction 발췌 — 수신 세션이 escape 조건 및 scope를 재검증 가능하게>\n## Repository Policy\n<issue-required: true|false — CONTRIBUTING/policy가 이슈 선행을 요구하는지 여부>\n## Confirmed Plan\n<plan markdown — Goal / Scope / Done>\n## Task List\n- [ ] task 1\n- [ ] task 2\n## Dependency Groups\nGroup 1: [task-id-A, task-id-B]\nGroup 2: [task-id-C]\n## Per-Task Dispatch Payloads\n### task-id-A\n```\n<self-contained subagent prompt — worktree path placeholder, branch, base, file/line changes, tests, commands, commit/PR templates>\n```\n### task-id-B\n```\n<self-contained subagent prompt …>\n```\n### task-id-C\n```\n<self-contained subagent prompt …>\n```\n## Codex Review\nscore: <N>/100 — <verdict>\n</z-handoff>",
+    "prompt": "$z phase2 <ISSUE_URL or task-slug>\n\n<z-handoff type=\"plan-to-work\">\n## Issue\n<ISSUE_URL or \"none (Case A escape, tier=tiny|small)\">\n## Parent Epic\n<EPIC_URL or \"none\">\n## Tier\n<tiny|small|medium|large|xlarge>\n## Escape Eligible\n<true|false>\n## Issue Required By User\n<true|false>\n## Original Request Excerpt\n<원 유저 SSOT instruction 발췌 — 수신 세션이 escape 조건 및 scope를 재검증 가능하게>\n## Repository Policy\n<issue-required: true|false — CONTRIBUTING/policy가 이슈 선행을 요구하는지 여부>\n## Confirmed Plan\n<plan markdown — Goal / Scope / Done>\n## Task List\n- [ ] task 1\n- [ ] task 2\n## Dependency Groups\nGroup 1: [task-id-A, task-id-B]\nGroup 2: [task-id-C]\n## Per-Task Dispatch Payloads\n### task-id-A\n````\n<self-contained subagent prompt — worktree path placeholder, branch, base, file/line changes, tests, commands, commit/PR templates. MAY contain inner ``` code blocks for commit-message HEREDOC, PR body, language-tagged examples — outer 4-backtick fence keeps them safe.>\n````\n### task-id-B\n````\n<self-contained subagent prompt …>\n````\n### task-id-C\n````\n<self-contained subagent prompt …>\n````\n## Codex Review\nscore: <N>/100 — <verdict>\n</z-handoff>",
     "resetSession": true,
     "dispatchText": "<ISSUE_URL or task-slug>",
     "forceWorkflow": "z-plan-to-work"
@@ -86,10 +86,14 @@ z 컨트롤러의 phase 전환 중 **세션 경계**를 넘는 것은 두 지점
 - `## Escape Eligible` — Case A 3-condition validation 통과 여부 (단순 마커 존재가 아닌 검증 통과). 누락 시 false.
 - `## Issue Required By User` — 유저 원 요청에 선행 이슈 요구 존재 여부. 누락 시 true (보수적).
 
+**Display-only required heading (host parser checks heading presence only, no semantic validation):**
+
+- `## Task List` — human-friendly checklist that the new session registers into TodoWrite for progress display. Canonical task IDs come from `## Dependency Groups` / `## Per-Task Dispatch Payloads`; the Task List is **not** cross-validated against them. Use it to give the user a readable summary, not as a parser source-of-truth.
+
 **Required (host parser rejects the handoff with `invalid-plan-payload` if missing or empty):**
 
 - `## Dependency Groups` — phase 1 planner의 dependency-group 분할. 새 세션 phase 2가 그룹 단위 병렬 dispatch를 결정하기 위해 필수. 비어 있으면 새 세션은 PLAN.md를 직접 파싱하지 못하므로 phase 2를 진행할 수 없음 (z 컨트롤러는 repo 파일을 읽지 않는다). Host parser는 빈 그룹을 `invalid-plan-payload (empty-dependency-groups)`로 거부.
-- `## Per-Task Dispatch Payloads` — task-id별 self-contained subagent 프롬프트. 각 `### task-id` 본문은 ` ``` … ``` ` fenced block으로 감싸야 함 (planner가 작성하는 프롬프트 자체가 `## ...` markdown heading을 포함하므로 fence 없이는 outer parser가 잘못 잘라낸다). Host parser는 각 group taskId가 정확히 하나의 fenced payload와 매칭되는지 cross-validate하며, 미스매치 시 `invalid-plan-payload (group-task-without-payload:<id>` 또는 `payload-task-without-group:<id>)`로 거부.
+- `## Per-Task Dispatch Payloads` — task-id별 self-contained subagent 프롬프트. 각 `### task-id` 본문은 **4개 이상의 backtick으로 감싸야 함** (`` ```` … ```` ``). 3-backtick fence는 거부됨 — planner가 작성하는 실제 프롬프트는 commit message HEREDOC / PR body / language-tagged code 등 inner 3-backtick code block을 포함하므로, 3-tick outer fence는 첫 inner 3-tick block에서 종료되어 payload가 잘려 나간다. Host parser는: (a) 각 group taskId가 정확히 하나의 4+-tick fenced payload와 매칭되는지 cross-validate, (b) group / payload 모두 duplicate taskId 거부, (c) opening fence 후 매칭되는 closing fence가 없으면 `unclosed-payload-fence:<taskId>`로 거부, (d) 미스매치 시 `group-task-without-payload:<id>` 또는 `payload-task-without-group:<id>`로 거부. 모든 실패는 `invalid-plan-payload` reason + 구체적 detail로 surface된다.
 
 **새 세션 z phase0 동작**:
 

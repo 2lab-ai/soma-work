@@ -36,6 +36,8 @@ function makeHandoffContext(overrides: Partial<HandoffContext> = {}): HandoffCon
     escapeEligible: false,
     tier: null,
     issueRequiredByUser: true,
+    originalRequestExcerpt: null,
+    repositoryPolicy: null,
     dependencyGroups: [],
     perTaskDispatchPayloads: [],
     chainId: 'test-chain-uuid',

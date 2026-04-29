@@ -166,7 +166,7 @@ Group 4 [░░░░░░░░░░] Pending dependency
 - System pushes task-notification → new turn re-enters orchestrator.
 - No `ScheduleWakeup` / `sleep` / polling.
 - Progress estimation: read-only `stat <output_file>` mtime + size (no `Read` of streaming logs — context pollution).
-- External state: read-only `gh pr list / gh pr view --json … / gh run list / gh api -X GET …` only.
+- External state: read-only `gh pr list / gh pr view --json … / gh issue view --json … / gh run list / gh api -X GET …` only.
 
 ## Failure Modes & Recovery
 

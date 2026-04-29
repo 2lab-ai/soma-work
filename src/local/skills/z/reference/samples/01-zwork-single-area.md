@@ -2,7 +2,7 @@
 
 **Purpose**: template for the orchestrator's per-task `Agent` dispatch when a sub-task touches a single stack with no upstream/downstream wire alignment. The variables in `<…>` are filled by the **planner subagent** (phase 1.2) and carried into the new session via `<z-handoff type="plan-to-work">` `## Per-Task Dispatch Payloads`. The orchestrator never reads `PLAN.md` — the handoff payload is the only carrier.
 
-> **Carrier wrapping**: the body below (everything from "You will complete sub-task…" down to "Final report") is the planner-authored subagent prompt. When the planner emits the handoff block, this entire body is wrapped in a ` ``` … ``` ` fenced code block under `### <taskId>`. The fence is mandatory because the body contains its own `##` and `###` markdown headings, which would otherwise collide with the outer handoff parser. Once the new session unwraps the fence, the prompt is passed verbatim to the implementer `Agent` dispatch.
+> **Carrier wrapping**: the body below (everything from "You will complete sub-task…" down to "Final report") is the planner-authored subagent prompt. When the planner emits the handoff block, this entire body is wrapped in a **4+-backtick** fenced code block (`` ```` … ```` ``) under `### <taskId>`. Four backticks (not three) because the body itself contains inner triple-backtick code blocks for the commit-message HEREDOC and the `gh pr create --body` heredoc — a 3-backtick outer fence would be terminated by the first inner block and the rest of the prompt would silently spill out. Once the new session unwraps the 4-tick fence, the prompt is passed verbatim to the implementer `Agent` dispatch with the inner 3-tick blocks intact.
 
 **Subagent type**: `general-purpose`
 **`run_in_background`**: `true`

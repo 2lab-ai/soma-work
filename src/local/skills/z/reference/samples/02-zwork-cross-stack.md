@@ -5,7 +5,7 @@
 **Subagent type**: `general-purpose`
 **`run_in_background`**: `true`
 
-> **Carrier wrapping**: as in `01-zwork-single-area.md`, the planner-authored body below is wrapped in a ` ``` … ``` ` fenced code block under `### <taskId>` inside the `<z-handoff type="plan-to-work">` block's `## Per-Task Dispatch Payloads` section. The fence keeps the inner `##` headings safe from the outer handoff parser.
+> **Carrier wrapping**: as in `01-zwork-single-area.md`, the planner-authored body below is wrapped in a **4+-backtick** fenced code block (`` ```` … ```` ``) under `### <taskId>` inside the `<z-handoff type="plan-to-work">` block's `## Per-Task Dispatch Payloads` section. Four backticks because the body contains inner triple-backtick blocks (commit message, PR body) — a 3-backtick outer fence would be prematurely closed.
 
 ---
 

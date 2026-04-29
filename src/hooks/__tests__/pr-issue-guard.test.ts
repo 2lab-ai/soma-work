@@ -20,6 +20,8 @@ function makeContext(overrides: Partial<HandoffContext> = {}): HandoffContext {
     escapeEligible: false,
     tier: null,
     issueRequiredByUser: true,
+    originalRequestExcerpt: null,
+    repositoryPolicy: null,
     dependencyGroups: [],
     perTaskDispatchPayloads: [],
     chainId: 'test-chain-id',

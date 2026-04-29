@@ -25,6 +25,8 @@ function sampleContext(overrides: Partial<HandoffContext> = {}): HandoffContext 
     escapeEligible: false,
     tier: 'medium',
     issueRequiredByUser: true,
+    originalRequestExcerpt: null,
+    repositoryPolicy: null,
     dependencyGroups: [['task-1']],
     perTaskDispatchPayloads: [{ taskId: 'task-1', prompt: 'subagent prompt' }],
     chainId: '11111111-1111-1111-1111-111111111111',

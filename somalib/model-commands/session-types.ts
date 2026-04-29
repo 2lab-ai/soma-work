@@ -65,6 +65,12 @@ export interface PerTaskDispatchPayload {
  * - `tier` (from optional `## Tier` field; null when absent/unknown)
  * - `escapeEligible` (from optional `## Escape Eligible`; conservative default false)
  * - `issueRequiredByUser` (from optional `## Issue Required By User`; conservative default true)
+ * - `originalRequestExcerpt` (from optional `## Original Request Excerpt`;
+ *   the user's verbatim instruction excerpt — needed by the new session to
+ *   re-verify the Case A escape `no-issue-first` clause)
+ * - `repositoryPolicy` (from optional `## Repository Policy`; the area-B
+ *   explore report's verdict on whether repo policy requires an issue —
+ *   needed by the new session to re-verify Case A escape clause c)
  * - `dependencyGroups` (from required `## Dependency Groups`, plan-to-work
  *   only; the new session needs this to drive per-group parallel dispatch
  *   without reading the working folder's `PLAN.md`)
@@ -83,6 +89,21 @@ export interface HandoffContext {
   tier: HandoffTier | null;
   issueRequiredByUser: boolean;
   parentEpicUrl: string | null;
+  /**
+   * Plan-to-work only. The user's original SSOT instruction (or an excerpt of
+   * it) — carried so the new session can re-verify Case A escape conditions
+   * without re-prompting the user. Null when absent or when handoffKind is
+   * `work-complete`.
+   */
+  originalRequestExcerpt: string | null;
+  /**
+   * Plan-to-work only. The area-B explore report's verdict on whether the
+   * repository's CONTRIBUTING / branch-protection / PR-template policy
+   * requires every PR to be linked to an issue. The new session uses this to
+   * re-verify Case A escape clause (c). Null when absent or when handoffKind
+   * is `work-complete`.
+   */
+  repositoryPolicy: string | null;
   /**
    * Plan-to-work only. Ordered list of dependency groups; each group is an
    * array of `taskId`s that may run in parallel. Across groups is sequential.

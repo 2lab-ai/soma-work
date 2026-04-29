@@ -60,8 +60,8 @@ itself — it dispatches subagents per phase (see `src/local/skills/z/SKILL.md`
 - **Direct execution.** No `Bash` mutation against the repo (clone, checkout,
   push, rebase, gh-create / merge / edit), no `Edit` / `Write` against repo
   source files, no direct `mcp__llm__chat`. Read-only state probes (`stat`,
-  `gh pr list`, `gh pr view --json …`, `gh run list`, `gh api -X GET`) are
-  allowed per `z/SKILL.md` §Hard Rules.
+  `gh pr list`, `gh pr view --json …`, `gh issue view --json …`,
+  `gh run list`, `gh api -X GET`) are allowed per `z/SKILL.md` §Hard Rules.
 - Invoking `local:zwork` as a same-session skill — phase 2 dispatches the
   per-task implementer subagents from the planner's payloads. The standalone
   `local:zwork` skill is for direct user invocation, not handoff entry.

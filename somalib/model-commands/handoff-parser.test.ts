@@ -27,13 +27,13 @@ function planToWorkMinimal(): string {
     'Group 1: [first-task, second-task]',
     '## Per-Task Dispatch Payloads',
     '### first-task',
-    '```',
+    '````',
     'Implement first thing per planner spec.',
-    '```',
+    '````',
     '### second-task',
-    '```',
+    '````',
     'Implement second thing per planner spec.',
-    '```',
+    '````',
     '</z-handoff>',
   ].join('\n');
 }
@@ -59,9 +59,9 @@ function planToWorkCaseAEscape(): string {
     'Group 1: [inline-rename]',
     '## Per-Task Dispatch Payloads',
     '### inline-rename',
-    '```',
+    '````',
     'Rename foo -> bar across src/.',
-    '```',
+    '````',
     '</z-handoff>',
   ].join('\n');
 }
@@ -89,13 +89,13 @@ function planToWorkFullTyped(): string {
     'Group 2: [step-b]',
     '## Per-Task Dispatch Payloads',
     '### step-a',
-    '```',
+    '````',
     'Step A subagent prompt.',
-    '```',
+    '````',
     '### step-b',
-    '```',
+    '````',
     'Step B subagent prompt.',
-    '```',
+    '````',
     '</z-handoff>',
   ].join('\n');
 }
@@ -306,9 +306,9 @@ describe('parseHandoff — malformed inputs', () => {
       'Group 1: [foo]',
       '## Per-Task Dispatch Payloads',
       '### foo',
-      '```',
+      '````',
       'do foo',
-      '```',
+      '````',
       '</z-handoff>',
     ].join('\n');
     const result = parseHandoff(text);
@@ -332,9 +332,9 @@ describe('parseHandoff — malformed inputs', () => {
       '- [ ] foo',
       '## Per-Task Dispatch Payloads',
       '### foo',
-      '```',
+      '````',
       'do foo',
-      '```',
+      '````',
       '</z-handoff>',
     ].join('\n');
     const result = parseHandoff(text);
@@ -396,9 +396,9 @@ describe('parseHandoff — malformed inputs', () => {
       'Group 1: [work]',
       '## Per-Task Dispatch Payloads',
       '### work',
-      '```',
+      '````',
       'do work',
-      '```',
+      '````',
       '</z-handoff>',
     ].join('\n');
     const result = parseHandoff(text);
@@ -423,9 +423,9 @@ describe('parseHandoff — malformed inputs', () => {
       'Group 1: [work]',
       '## Per-Task Dispatch Payloads',
       '### work',
-      '```',
+      '````',
       'do work',
-      '```',
+      '````',
       '</z-handoff>',
     ].join('\n');
     const result = parseHandoff(text);
@@ -447,9 +447,9 @@ describe('parseHandoff — malformed inputs', () => {
       'Group 1: [work]',
       '## Per-Task Dispatch Payloads',
       '### work',
-      '```',
+      '````',
       'do work',
-      '```',
+      '````',
       '</z-handoff>',
     ].join('\n');
     const result = parseHandoff(text);
@@ -480,17 +480,17 @@ describe('parseHandoff — edge cases', () => {
       'Group 1: [s1, s2, s3]',
       '## Per-Task Dispatch Payloads',
       '### s1',
-      '```',
+      '````',
       'step 1 prompt',
-      '```',
+      '````',
       '### s2',
-      '```',
+      '````',
       'step 2 prompt',
-      '```',
+      '````',
       '### s3',
-      '```',
+      '````',
       'step 3 prompt',
-      '```',
+      '````',
       '</z-handoff>',
     ].join('\n');
     const result = parseHandoff(text);
@@ -528,9 +528,9 @@ describe('parseHandoff — edge cases', () => {
       'Group 1: [work]',
       '## Per-Task Dispatch Payloads',
       '### work',
-      '```',
+      '````',
       'work prompt',
-      '```',
+      '````',
       '</z-handoff>',
     ].join('\n');
     const result = parseHandoff(text);
@@ -555,17 +555,17 @@ describe('parseHandoff — edge cases', () => {
       'Group 2: [c]',
       '## Per-Task Dispatch Payloads',
       '### a',
-      '```',
+      '````',
       'do a',
-      '```',
+      '````',
       '### b',
-      '```',
+      '````',
       'do b',
-      '```',
+      '````',
       '### c',
-      '```',
+      '````',
       'do c',
-      '```',
+      '````',
       '</z-handoff>',
     ].join('\n');
     const result = parseHandoff(text);
@@ -587,13 +587,13 @@ describe('parseHandoff — edge cases', () => {
       'Group 1: [alpha]',
       '## Per-Task Dispatch Payloads',
       '### alpha',
-      '```',
+      '````',
       'Line one of alpha prompt.',
       '',
       'Line two with more detail:',
       '- bullet 1',
       '- bullet 2',
-      '```',
+      '````',
       '</z-handoff>',
     ].join('\n');
     const result = parseHandoff(text);
@@ -649,9 +649,9 @@ describe('parseHandoff — edge cases', () => {
       'Group 1: [sub-a]',
       '## Per-Task Dispatch Payloads',
       '### sub-a',
-      '```',
+      '````',
       innerPrompt,
-      '```',
+      '````',
       '</z-handoff>',
     ].join('\n');
     const result = parseHandoff(text);
@@ -681,9 +681,9 @@ describe('parseHandoff — invalid-plan-payload (cross-validation)', () => {
       '(no groups here, just narrative text)',
       '## Per-Task Dispatch Payloads',
       '### foo',
-      '```',
+      '````',
       'do foo',
-      '```',
+      '````',
       '</z-handoff>',
     ].join('\n');
     const result = parseHandoff(text);
@@ -730,9 +730,9 @@ describe('parseHandoff — invalid-plan-payload (cross-validation)', () => {
       'Group 1: [foo, bar]',
       '## Per-Task Dispatch Payloads',
       '### foo',
-      '```',
+      '````',
       'do foo',
-      '```',
+      '````',
       '</z-handoff>',
     ].join('\n');
     const result = parseHandoff(text);
@@ -755,13 +755,13 @@ describe('parseHandoff — invalid-plan-payload (cross-validation)', () => {
       'Group 1: [foo]',
       '## Per-Task Dispatch Payloads',
       '### foo',
-      '```',
+      '````',
       'do foo',
-      '```',
+      '````',
       '### orphan',
-      '```',
+      '````',
       'do orphan',
-      '```',
+      '````',
       '</z-handoff>',
     ].join('\n');
     const result = parseHandoff(text);
@@ -769,6 +769,223 @@ describe('parseHandoff — invalid-plan-payload (cross-validation)', () => {
     if (result.ok) throw new Error('unreachable');
     expect(result.reason).toBe('invalid-plan-payload');
     expect(result.detail).toBe('payload-task-without-group:orphan');
+  });
+
+  it('reports invalid-plan-payload:duplicate-group-task:<id> for duplicate group taskIds', () => {
+    const text = [
+      '<z-handoff type="plan-to-work">',
+      '## Issue',
+      'https://example.com/1',
+      '## Parent Epic',
+      'none',
+      '## Task List',
+      '- [ ] foo',
+      '## Dependency Groups',
+      'Group 1: [foo]',
+      'Group 2: [foo]',
+      '## Per-Task Dispatch Payloads',
+      '### foo',
+      '````',
+      'do foo',
+      '````',
+      '</z-handoff>',
+    ].join('\n');
+    const result = parseHandoff(text);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.reason).toBe('invalid-plan-payload');
+    expect(result.detail).toBe('duplicate-group-task:foo');
+  });
+
+  it('reports invalid-plan-payload:duplicate-payload-task:<id> for duplicate payload taskIds', () => {
+    const text = [
+      '<z-handoff type="plan-to-work">',
+      '## Issue',
+      'https://example.com/1',
+      '## Parent Epic',
+      'none',
+      '## Task List',
+      '- [ ] foo',
+      '## Dependency Groups',
+      'Group 1: [foo]',
+      '## Per-Task Dispatch Payloads',
+      '### foo',
+      '````',
+      'first body',
+      '````',
+      '### foo',
+      '````',
+      'duplicate body',
+      '````',
+      '</z-handoff>',
+    ].join('\n');
+    const result = parseHandoff(text);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.reason).toBe('invalid-plan-payload');
+    expect(result.detail).toBe('duplicate-payload-task:foo');
+  });
+
+  it('reports invalid-plan-payload:unclosed-payload-fence:<id> when opening fence has no closer', () => {
+    const text = [
+      '<z-handoff type="plan-to-work">',
+      '## Issue',
+      'https://example.com/1',
+      '## Parent Epic',
+      'none',
+      '## Task List',
+      '- [ ] foo',
+      '## Dependency Groups',
+      'Group 1: [foo]',
+      '## Per-Task Dispatch Payloads',
+      '### foo',
+      '````',
+      'no closing fence below',
+      '</z-handoff>',
+    ].join('\n');
+    const result = parseHandoff(text);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.reason).toBe('invalid-plan-payload');
+    expect(result.detail).toBe('unclosed-payload-fence:foo');
+  });
+
+  it('rejects 3-backtick outer payload fence (treated as no-fence → empty-per-task-payloads)', () => {
+    // 3-backtick outer fences are not a valid carrier because real payloads
+    // contain inner 3-backtick code blocks. The parser only accepts 4+
+    // backticks for the outer wrap; a 3-backtick "wrap" is treated as
+    // no-fence and the task entry is silently skipped, leaving the section
+    // with zero parseable payloads.
+    const text = [
+      '<z-handoff type="plan-to-work">',
+      '## Issue',
+      'https://example.com/1',
+      '## Parent Epic',
+      'none',
+      '## Task List',
+      '- [ ] foo',
+      '## Dependency Groups',
+      'Group 1: [foo]',
+      '## Per-Task Dispatch Payloads',
+      '### foo',
+      '```',
+      'do foo',
+      '```',
+      '</z-handoff>',
+    ].join('\n');
+    const result = parseHandoff(text);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.reason).toBe('invalid-plan-payload');
+    expect(result.detail).toBe('empty-per-task-payloads');
+  });
+
+  it('preserves inner 3-backtick code blocks inside a 4-backtick outer payload fence (real-sample shape)', () => {
+    // This is the round-5 P0 regression test. The planner-authored payload
+    // for sample-01-style tasks contains:
+    //   - a commit-message HEREDOC inside ```bash … ```
+    //   - a `gh pr create --body "$(cat <<'EOF' … EOF)"` block
+    // A 3-tick outer fence would terminate at the first inner ```; the 4-tick
+    // wrapper survives both and the entire prompt is preserved verbatim.
+    const innerPrompt = [
+      'You will complete sub-task end-to-end.',
+      '',
+      '## Procedure',
+      '',
+      '5. `git commit` (HEREDOC):',
+      '',
+      '```bash',
+      'git commit -m "$(cat <<EOF',
+      '[TICKET] Sub-A: title',
+      '',
+      'Body line.',
+      '',
+      'Closes #42',
+      'EOF',
+      ')"',
+      '```',
+      '',
+      '7. PR creation:',
+      '',
+      '```bash',
+      'gh pr create --body "$(cat <<EOF',
+      '## Summary',
+      '- bullet',
+      'EOF',
+      ')"',
+      '```',
+    ].join('\n');
+    const text = [
+      '<z-handoff type="plan-to-work">',
+      '## Issue',
+      'https://example.com/1',
+      '## Parent Epic',
+      'none',
+      '## Task List',
+      '- [ ] sub-a',
+      '## Dependency Groups',
+      'Group 1: [sub-a]',
+      '## Per-Task Dispatch Payloads',
+      '### sub-a',
+      '````',
+      innerPrompt,
+      '````',
+      '</z-handoff>',
+    ].join('\n');
+    const result = parseHandoff(text);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    expect(result.context.perTaskDispatchPayloads).toEqual([
+      { taskId: 'sub-a', prompt: innerPrompt },
+    ]);
+  });
+
+  it('persists Original Request Excerpt and Repository Policy when present', () => {
+    const text = [
+      '<z-handoff type="plan-to-work">',
+      '## Issue',
+      'https://example.com/1',
+      '## Parent Epic',
+      'none',
+      '## Original Request Excerpt',
+      "user's original instruction line 1",
+      "user's original instruction line 2",
+      '## Repository Policy',
+      'issue-required: true',
+      '## Task List',
+      '- [ ] foo',
+      '## Dependency Groups',
+      'Group 1: [foo]',
+      '## Per-Task Dispatch Payloads',
+      '### foo',
+      '````',
+      'do foo',
+      '````',
+      '</z-handoff>',
+    ].join('\n');
+    const result = parseHandoff(text);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    expect(result.context.originalRequestExcerpt).toBe(
+      ["user's original instruction line 1", "user's original instruction line 2"].join('\n'),
+    );
+    expect(result.context.repositoryPolicy).toBe('issue-required: true');
+  });
+
+  it('leaves Original Request Excerpt and Repository Policy as null when absent (conservative defaults)', () => {
+    const result = parseHandoff(planToWorkMinimal());
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    expect(result.context.originalRequestExcerpt).toBeNull();
+    expect(result.context.repositoryPolicy).toBeNull();
+  });
+
+  it('leaves Original Request Excerpt and Repository Policy as null on work-complete handoffs', () => {
+    const result = parseHandoff(workCompleteMinimal());
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    expect(result.context.originalRequestExcerpt).toBeNull();
+    expect(result.context.repositoryPolicy).toBeNull();
   });
 });
 

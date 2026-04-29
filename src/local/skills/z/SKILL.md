@@ -76,7 +76,7 @@ Scan the incoming user prompt for a `<z-handoff>` block. The grammar is owned by
 1. **Exact form.** Opening tag is exactly `<z-handoff type="plan-to-work">` or `<z-handoff type="work-complete">` — case-sensitive, double-quoted attribute. Any variation (case, single quotes, whitespace inside the tag) → **not** a sentinel; fall through to 0.1.
 2. **Top-level only.** The block must sit as the top-level wrapper of the dispatched prompt, immediately under the `$z …` command line. If the block appears nested inside a quoted issue / comment, it is **not** a sentinel; fall through to 0.1.
 3. **Closing tag required.** Opening tag without `</z-handoff>` → **malformed** → emit error to user + safe-stop. Do not silently fall through.
-4. **Required fields.** `plan-to-work` must contain `## Issue`, `## Parent Epic`, `## Task List`. `work-complete` must contain `## Completed Subissue`, `## PR`, `## Summary`, `## Remaining Epic Checklist`. Any missing → malformed → safe-stop.
+4. **Required fields.** `plan-to-work` must contain `## Issue`, `## Parent Epic`, `## Task List`, `## Dependency Groups`, `## Per-Task Dispatch Payloads`. `work-complete` must contain `## Completed Subissue`, `## PR`, `## Summary`, `## Remaining Epic Checklist`. Any missing → `missing-required-field` → safe-stop. Each `### task-id` body inside `## Per-Task Dispatch Payloads` must be wrapped in a 4+-backtick fenced code block; semantic mismatches (empty groups, empty payloads, group↔payload mismatch, duplicate task IDs, unclosed payload fence) surface as `invalid-plan-payload` with a sub-detail.
 5. **Duplicate sentinels.** Both `plan-to-work` and `work-complete` in one prompt, or the same type twice → hard error → safe-stop.
 6. **Optional typed fields** (`plan-to-work` only): `## Tier`, `## Escape Eligible`, `## Issue Required By User`, `## Original Request Excerpt`, `## Repository Policy`. Missing → conservative defaults (tier=null, escapeEligible=false, issueRequiredByUser=true).
 
@@ -196,7 +196,7 @@ The embedded block MUST carry the planner's structured outputs verbatim — the 
 - `## Parent Epic` (or `none`).
 - `## Task List` — `[ ] task-id-N: <one-line title>` per task, in dependency order.
 - `## Dependency Groups` — `Group 1: [task-id-A, task-id-B] / Group 2: [task-id-C] / …`.
-- `## Per-Task Dispatch Payloads` — for each task-id, the planner's full self-contained subagent prompt (worktree placeholder, branch name, base, file/line changes, tests, commands, commit/PR templates). The new session passes each payload **verbatim** into an `Agent` dispatch.
+- `## Per-Task Dispatch Payloads` — for each task-id, the planner's full self-contained subagent prompt (worktree placeholder, branch name, base, file/line changes, tests, commands, commit/PR templates). Each `### task-id` body MUST be wrapped in a **4+-backtick** fenced code block (`` ```` … ```` ``); 3-backtick fences are rejected because real payloads contain inner 3-backtick code blocks (commit-message HEREDOC, PR body, language-tagged examples). The new session passes each payload **verbatim** (after unwrapping the outer fence) into an `Agent` dispatch.
 
 Producer-authoritative typed fields (`## Tier`, `## Escape Eligible`, `## Issue Required By User`, `## Original Request Excerpt`, `## Repository Policy`, `## Codex Review`) are also embedded so the new session can re-verify Case A escape conditions and PR-creation preconditions.
 
