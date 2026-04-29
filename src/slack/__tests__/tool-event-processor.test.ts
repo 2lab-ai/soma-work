@@ -30,10 +30,14 @@ describe('ToolEventProcessor', () => {
       registerCall: vi.fn(),
       completeCall: vi.fn(),
       cleanupSession: vi.fn(),
+      // Issue #794 — async final-render fence. Mock returns immediately
+      // so cleanup tests don't hang on a real Promise.
+      flushSession: vi.fn().mockResolvedValue(undefined),
     };
     mcpCallTracker = {
       startCall: vi.fn().mockReturnValue('call_123'),
       endCall: vi.fn().mockReturnValue(1000),
+      getElapsedTime: vi.fn().mockReturnValue(750),
       getToolStats: vi.fn().mockReturnValue(null),
     };
     processor = new ToolEventProcessor(toolTracker, mcpStatusDisplay, mcpCallTracker);
@@ -387,30 +391,259 @@ describe('ToolEventProcessor', () => {
   });
 
   describe('cleanup', () => {
-    it('should call cleanupSession on mcpStatusDisplay', () => {
-      processor.cleanup('C123:thread_ts');
+    it('should call flushSession on mcpStatusDisplay (issue #794)', async () => {
+      await processor.cleanup('C123:thread_ts');
 
-      expect(mcpStatusDisplay.cleanupSession).toHaveBeenCalledWith('C123:thread_ts');
+      // Issue #794 — `flushSession` is the new awaitable final-render
+      // fence. `cleanupSession` is only the legacy fallback when the
+      // display does not expose `flushSession` (older mocks).
+      expect(mcpStatusDisplay.flushSession).toHaveBeenCalledWith('C123:thread_ts');
+      expect(mcpStatusDisplay.cleanupSession).not.toHaveBeenCalled();
     });
 
-    it('should complete active MCP calls before cleanup', () => {
+    it('should fall back to cleanupSession when flushSession is absent (legacy mock)', async () => {
+      const legacyDisplay: any = {
+        registerCall: vi.fn(),
+        completeCall: vi.fn(),
+        cleanupSession: vi.fn(),
+        // Intentionally no `flushSession` property to exercise the
+        // feature-detect fallback in `ToolEventProcessor.cleanup`.
+      };
+      const legacyProcessor = new ToolEventProcessor(toolTracker, legacyDisplay, mcpCallTracker);
+
+      await legacyProcessor.cleanup('C123:thread_ts');
+
+      expect(legacyDisplay.cleanupSession).toHaveBeenCalledWith('C123:thread_ts');
+    });
+
+    it('should complete active MCP calls before cleanup (legacy global sweep, no turnId)', async () => {
       // Track active MCP calls
       toolTracker.trackToolUse('tool_1', 'mcp__codex__search');
       toolTracker.trackMcpCall('tool_1', 'call_1');
       toolTracker.trackToolUse('tool_2', 'mcp__jira__search');
       toolTracker.trackMcpCall('tool_2', 'call_2');
 
-      processor.cleanup('C123:thread_ts');
+      // No turnId provided → legacy `getActiveMcpCallIds` sweep path.
+      await processor.cleanup('C123:thread_ts');
 
       // Should complete active calls
       expect(mcpStatusDisplay.completeCall).toHaveBeenCalledWith('call_1', null);
       expect(mcpStatusDisplay.completeCall).toHaveBeenCalledWith('call_2', null);
-      // Then cleanup session
-      expect(mcpStatusDisplay.cleanupSession).toHaveBeenCalledWith('C123:thread_ts');
+      // Then flush session (issue #794 await fence)
+      expect(mcpStatusDisplay.flushSession).toHaveBeenCalledWith('C123:thread_ts');
     });
 
     it('should not throw without sessionKey', () => {
       expect(() => processor.cleanup()).not.toThrow();
+    });
+  });
+
+  /**
+   * Issue #794 — Subagent (Task) progress visibility in minimal mode.
+   *
+   * Three independent surfaces drive these tests:
+   *   1. `BackgroundTaskRegistry` — turn-scoped registry of live
+   *      `Task({run_in_background:true})` calls. Defends against
+   *      same-session turn replacement (cf. session-initializer:1138).
+   *   2. `isBackgroundTaskSpawnAck` — the bg Task tool_result that
+   *      arrives within ~1s with `task_id: …` is a spawn-ack, NOT a
+   *      completion. Suppress `endMcpTracking` so the progress UI
+   *      survives until turn end.
+   *   3. `cleanup(sessionKey, turnId)` — async, turn-scoped:
+   *      drains bg Task entries, sweeps callIds for THIS turn only,
+   *      then awaits `flushSession` for the final consolidated render.
+   */
+  describe('Subagent progress in minimal mode (issue #794)', () => {
+    function makeBgTaskInput(prompt = 'do something long') {
+      return {
+        subagent_type: 'general-purpose',
+        prompt,
+        run_in_background: true,
+      };
+    }
+    function makeFgTaskInput(prompt = 'do something fast') {
+      return {
+        subagent_type: 'general-purpose',
+        prompt,
+      };
+    }
+
+    // S15b — bg Task: `Subagent (bg)` displayType + registry add.
+    it('S15b: startSubagentTracking({run_in_background:true}) → displayType "Subagent (bg)"', async () => {
+      const ctx: ToolEventContext = { ...mockContext, turnId: 'C123:1:turn-A' };
+      await processor.handleToolUse([{ id: 'tu_bg_subagent', name: 'Task', input: makeBgTaskInput() }], ctx);
+
+      expect(mcpStatusDisplay.registerCall).toHaveBeenCalledWith(
+        'C123:thread_ts',
+        'call_123',
+        expect.objectContaining({ displayType: 'Subagent (bg)' }),
+        'C123',
+        'thread_ts',
+      );
+    });
+
+    // S15c — fg Task: legacy `Subagent` displayType.
+    it('S15c: startSubagentTracking({run_in_background:false}) → displayType "Subagent"', async () => {
+      const ctx: ToolEventContext = { ...mockContext, turnId: 'C123:1:turn-A' };
+      await processor.handleToolUse([{ id: 'tu_fg_subagent', name: 'Task', input: makeFgTaskInput() }], ctx);
+
+      expect(mcpStatusDisplay.registerCall).toHaveBeenCalledWith(
+        'C123:thread_ts',
+        'call_123',
+        expect.objectContaining({ displayType: 'Subagent' }),
+        'C123',
+        'thread_ts',
+      );
+    });
+
+    // S13 — bg Task spawn-ack: keeps progress UI alive.
+    it('S13: bg Task spawn-ack tool_result → endMcpTracking SKIPPED + onCompactDurationUpdate fired', async () => {
+      const compactCb = vi.fn().mockResolvedValue(undefined);
+      processor.setCompactDurationCallback(compactCb);
+
+      const ctx: ToolEventContext = { ...mockContext, turnId: 'C123:1:turn-A' };
+      await processor.handleToolUse([{ id: 'tu_bg_ack', name: 'Task', input: makeBgTaskInput() }], ctx);
+
+      // Reset the call mock so we can isolate the result-handling effect.
+      mcpCallTracker.endCall.mockClear();
+      mcpStatusDisplay.completeCall.mockClear();
+
+      const spawnAckText = 'Task started in background. output_file: /tmp/x.json task_id: abc-123-def';
+      await processor.handleToolResult(
+        [{ toolUseId: 'tu_bg_ack', toolName: 'Task', result: spawnAckText, isError: false }],
+        ctx,
+      );
+
+      // Progress UI must survive — no endMcpTracking.
+      expect(mcpCallTracker.endCall).not.toHaveBeenCalled();
+      expect(mcpStatusDisplay.completeCall).not.toHaveBeenCalled();
+      // Compact one-line still closes via onCompactDurationUpdate.
+      expect(compactCb).toHaveBeenCalledWith('tu_bg_ack', expect.any(Number), 'C123');
+    });
+
+    // S14 — bg Task error result: normal close (no special-case).
+    it('S14: bg Task error tool_result → falls through to endMcpTracking + sendToolResult', async () => {
+      const ctx: ToolEventContext = { ...mockContext, turnId: 'C123:1:turn-A' };
+      await processor.handleToolUse([{ id: 'tu_bg_err', name: 'Task', input: makeBgTaskInput() }], ctx);
+
+      mcpCallTracker.endCall.mockClear();
+      mcpStatusDisplay.completeCall.mockClear();
+
+      // Even with `task_id` text, isError=true is a real failure: close normally.
+      await processor.handleToolResult(
+        [
+          {
+            toolUseId: 'tu_bg_err',
+            toolName: 'Task',
+            result: 'Failed to spawn: subagent panic. task_id: nope',
+            isError: true,
+          },
+        ],
+        ctx,
+      );
+
+      expect(mcpCallTracker.endCall).toHaveBeenCalledWith('call_123');
+      expect(mcpStatusDisplay.completeCall).toHaveBeenCalledWith('call_123', 1000);
+    });
+
+    // S14b — bg Task non-ack result without `task_id`: normal close too.
+    it('S14b: bg Task result without task_id marker → endMcpTracking fires', async () => {
+      const ctx: ToolEventContext = { ...mockContext, turnId: 'C123:1:turn-A' };
+      await processor.handleToolUse([{ id: 'tu_bg_no_id', name: 'Task', input: makeBgTaskInput() }], ctx);
+
+      mcpCallTracker.endCall.mockClear();
+
+      await processor.handleToolResult(
+        [{ toolUseId: 'tu_bg_no_id', toolName: 'Task', result: 'no marker here', isError: false }],
+        ctx,
+      );
+
+      expect(mcpCallTracker.endCall).toHaveBeenCalledWith('call_123');
+    });
+
+    // S15 — async cleanup with bg Task: drain registry + flushSession.
+    it('S15: cleanup(sessionKey, turnId) drains bg Task → endMcpTracking + flushSession awaited', async () => {
+      const ctx: ToolEventContext = { ...mockContext, turnId: 'C123:1:turn-A' };
+      mcpCallTracker.startCall.mockReturnValueOnce('call_bg_task');
+      await processor.handleToolUse([{ id: 'tu_bg_drain', name: 'Task', input: makeBgTaskInput() }], ctx);
+
+      mcpCallTracker.endCall.mockClear();
+      mcpStatusDisplay.flushSession.mockClear();
+
+      // Turn ends with the bg Task still alive — cleanup must drain it.
+      await processor.cleanup('C123:thread_ts', 'C123:1:turn-A');
+
+      expect(mcpCallTracker.endCall).toHaveBeenCalledWith('call_bg_task');
+      expect(mcpStatusDisplay.flushSession).toHaveBeenCalledWith('C123:thread_ts');
+    });
+
+    // S15-bis — same-session, two turns: cleanup(turn1) leaves turn2 callIds alone.
+    it('S15-bis: cleanup(turn1) does NOT complete callIds registered under turn2 (callIdsByTurn)', async () => {
+      // turn1 — register one MCP call.
+      mcpCallTracker.startCall.mockReturnValueOnce('call_turn1');
+      const ctxTurn1: ToolEventContext = { ...mockContext, turnId: 'C123:1:turn-1' };
+      await processor.handleToolUse([{ id: 'tu_turn1', name: 'mcp__codex__search', input: { q: 't' } }], ctxTurn1);
+
+      // turn2 — same session, register another MCP call BEFORE turn1 cleans up.
+      mcpCallTracker.startCall.mockReturnValueOnce('call_turn2');
+      const ctxTurn2: ToolEventContext = { ...mockContext, turnId: 'C123:1:turn-2' };
+      await processor.handleToolUse([{ id: 'tu_turn2', name: 'mcp__codex__search', input: { q: 't' } }], ctxTurn2);
+
+      mcpStatusDisplay.completeCall.mockClear();
+
+      // turn1's cleanup arrives — must touch only turn1's callId.
+      await processor.cleanup('C123:thread_ts', 'C123:1:turn-1');
+
+      expect(mcpStatusDisplay.completeCall).toHaveBeenCalledWith('call_turn1', null);
+      expect(mcpStatusDisplay.completeCall).not.toHaveBeenCalledWith('call_turn2', null);
+    });
+
+    // S15-tri — same-session, two turns: cleanup(turn1) leaves turn2 bg Task alone.
+    it('S15-tri: cleanup(turn1) does NOT drain turn2 background Task entries', async () => {
+      mcpCallTracker.startCall.mockReturnValueOnce('call_bg_t1');
+      const ctxTurn1: ToolEventContext = { ...mockContext, turnId: 'C123:1:turn-1' };
+      await processor.handleToolUse(
+        [{ id: 'tu_bg_t1', name: 'Task', input: makeBgTaskInput('turn-1 task') }],
+        ctxTurn1,
+      );
+
+      mcpCallTracker.startCall.mockReturnValueOnce('call_bg_t2');
+      const ctxTurn2: ToolEventContext = { ...mockContext, turnId: 'C123:1:turn-2' };
+      await processor.handleToolUse(
+        [{ id: 'tu_bg_t2', name: 'Task', input: makeBgTaskInput('turn-2 task') }],
+        ctxTurn2,
+      );
+
+      mcpCallTracker.endCall.mockClear();
+
+      // turn1 cleanup — drain turn1 entry only.
+      await processor.cleanup('C123:thread_ts', 'C123:1:turn-1');
+
+      expect(mcpCallTracker.endCall).toHaveBeenCalledWith('call_bg_t1');
+      expect(mcpCallTracker.endCall).not.toHaveBeenCalledWith('call_bg_t2');
+    });
+
+    // Foreground Task spawn-ack-shaped result still closes normally.
+    it('foreground Task with task_id-shaped result still ends tracking (NOT a spawn-ack)', async () => {
+      const ctx: ToolEventContext = { ...mockContext, turnId: 'C123:1:turn-A' };
+      await processor.handleToolUse([{ id: 'tu_fg_task', name: 'Task', input: makeFgTaskInput() }], ctx);
+
+      mcpCallTracker.endCall.mockClear();
+
+      await processor.handleToolResult(
+        [
+          {
+            toolUseId: 'tu_fg_task',
+            toolName: 'Task',
+            result: 'something with task_id: abc',
+            isError: false,
+          },
+        ],
+        ctx,
+      );
+
+      // No registry entry → not a spawn-ack → normal close.
+      expect(mcpCallTracker.endCall).toHaveBeenCalledWith('call_123');
     });
   });
 
@@ -513,15 +746,20 @@ describe('ToolEventProcessor', () => {
         mockContext,
       );
 
-      // Simulate turn end without any tool_result arriving.
-      p.cleanup('C123:thread_ts');
+      // Simulate turn end without any tool_result arriving. Issue #794
+      // — `cleanup` is async; await it so the awaitable bg drain and
+      // flushSession both finish before assertions run.
+      await p.cleanup('C123:thread_ts');
 
       expect(status.unregister).toHaveBeenCalledTimes(2);
       // completeCall for both active calls arrives from the activeMcpCallIds
-      // sweep in cleanup(), not from a direct completeCall in sweep.
+      // sweep in cleanup() (legacy fallback when no turnId is provided).
       expect(mcpStatusDisplay.completeCall).toHaveBeenCalledWith('call_bg_a', null);
       expect(mcpStatusDisplay.completeCall).toHaveBeenCalledWith('call_bg_b', null);
-      expect(mcpStatusDisplay.cleanupSession).toHaveBeenCalledWith('C123:thread_ts');
+      // Issue #794 — final-render fence is `flushSession`, not the legacy
+      // `cleanupSession`. The mock provides `flushSession` so the
+      // feature-detect branch picks it.
+      expect(mcpStatusDisplay.flushSession).toHaveBeenCalledWith('C123:thread_ts');
     });
 
     it('tool_result after cleanup (already-swept) does not unregister again (idempotent)', async () => {
