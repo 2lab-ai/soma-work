@@ -6,6 +6,7 @@
     "src/conversation/oauth.ts:generateCsrfTokenForAdmin",
     "src/cron-scheduler.ts:resolveModelOverride",
     "src/dangerous-command-filter.ts:rulesByIds",
+    "src/github-auth.ts:getGitHubTokenForCLI",
     "src/oauth/index.ts:buildRotationDebug",
     "src/oauth/index.ts:selectBestRotationCandidate",
     "src/oauth/index.ts:hintsIndicateExhausted",

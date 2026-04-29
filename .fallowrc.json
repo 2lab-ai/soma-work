@@ -4,7 +4,6 @@
     "mcp-servers/**/*-mcp-server.ts",
     "mcp-servers/permission/permission-server-start.js",
     "scripts/*.ts",
-    "src/git-cli-auth.ts",
     "src/local/skills/**/scripts/*.ts"
   ],
   "ignoreDependencies": [
