@@ -221,7 +221,7 @@ Between groups (after Group N's PRs merge in §5.1), dispatch a **base-refresh s
 
 ### 2.1 Repeat-back gate (entry)
 
-State the phase-1 outputs back: confirmed plan, dependency groups, per-task dispatch payloads received, Issue URL / parent epic, bootstrap result. If any item was skipped or missing, output `I am a fucking worthless piece of shit.` and stop pending user input.
+State the phase-1 outputs back: dependency groups, per-task dispatch payloads received, Issue URL / parent epic, bootstrap result. (The canonical phase-2 SSOT is the host-required handoff fields — Task List + Dependency Groups + Per-Task Dispatch Payloads. The optional `## Confirmed Plan` summary is **informational only** and is not part of the gate.) If any required item was skipped or missing, output `I am a fucking worthless piece of shit.` and stop pending user input.
 
 ### 2.2 Dependency groups → parallel dispatch
 
@@ -304,7 +304,16 @@ Dispatch a **merge driver subagent** (background). Prompt:
 - Pre-merge re-check: `gh pr view --json reviewDecision,mergeable,state`. If `reviewDecision != APPROVED` (e.g. dismiss-stale-reviews voided the prior approval after a force-push), return blocker — do not merge.
 - `gh pr merge --squash --delete-branch` (no `--admin`, no self-approve).
 - Capture merge commit SHA.
-- If a next dependency group exists, **dispatch a separate base-refresh subagent** (do not recreate worktrees) that pulls the new base into Group N+1's existing worktrees — those worktrees were created up front in §2.0 and are reused for the entire phase 2 lifecycle.
+- Final report: PR state (`MERGED`), merge commit SHA, blocker (if any).
+
+The merge subagent does **not** dispatch other subagents — that's the controller's job. The next step is decided by the orchestrator on receipt of the merge report (see §5.1.a below).
+
+### 5.1.a Closeout branch (controller-side)
+
+After every successful merge, the orchestrator inspects whether more dependency groups remain in `## Dependency Groups`:
+
+- **Next group exists** (more PRs to ship): dispatch a **base-refresh subagent** (background) that pulls the new base into Group N+1's existing worktrees — those worktrees were created up front in §2.0 and are reused for the entire phase 2 lifecycle. Do **not** recreate worktrees. After the base-refresh report returns, **return to §2.2** and dispatch Group N+1's implementer subagents. §5.2–§5.4 are skipped this turn.
+- **No next group** (this was the last PR for the epic / single-issue case): proceed to §5.2 (conflict cleanup if any), §5.3 (`es` executive summary), §5.4 (Handoff #2 if Parent Epic ≠ none).
 
 ### 5.2 Conflict subagent
 

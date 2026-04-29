@@ -54,8 +54,12 @@ itself — it dispatches subagents per phase (see `src/local/skills/z/SKILL.md`
 
 - Re-running phase 0 clarify, decision-gate, or codex plan review (the origin
   session already made those judgments and the tier / score are preserved in
-  the handoff metadata).
-- Re-planning or re-scoping — the block's `## Confirmed Plan` is authoritative.
+  the handoff metadata as `## Tier` and `## Codex Review`).
+- Re-planning or re-scoping — the **canonical phase-2 SSOT** is `## Task List`
+  (display) + `## Dependency Groups` (controller routing) + `## Per-Task
+  Dispatch Payloads` (verbatim subagent prompts), all host-required by the
+  handoff schema. `## Confirmed Plan` is an optional behavior-level summary
+  for the user — informational only, do not treat it as authoritative.
 - Opening a new issue when the block already carries a `## Issue` URL.
 - **Direct execution.** No `Bash` mutation against the repo (clone, checkout,
   push, rebase, gh-create / merge / edit), no `Edit` / `Write` against repo

@@ -132,7 +132,15 @@ export function hasHandoffSentinel(promptText: string): boolean {
  *
  * Failure precedence (returned in this order when multiple conditions apply):
  *   no-sentinel → sentinel-not-top-level → malformed-opening → unknown-type →
- *   missing-closing → duplicate-sentinel → missing-required-field
+ *   missing-closing → duplicate-sentinel → duplicate-field →
+ *   missing-required-field → invalid-plan-payload
+ *
+ * `duplicate-field` (same `## Heading` appearing twice in one sentinel body)
+ * fails before required-field detection so the error is "fix the duplicate"
+ * rather than the misleading "missing field" that the post-flush state
+ * would otherwise produce. `invalid-plan-payload` runs after required-field
+ * detection and only for `plan-to-work`; it covers fenced-payload + group ↔
+ * payload cross-validation failures (see HandoffParseFailure docs).
  *
  * On success, fills host-managed fields (`chainId` UUID, `hopBudget` = 1).
  */

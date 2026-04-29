@@ -99,6 +99,8 @@ export interface CodexReviewRecord {
  * - `perTaskDispatchPayloads` (from required `## Per-Task Dispatch Payloads`,
  *   plan-to-work only; the new session passes each payload verbatim to an
  *   implementer `Agent` dispatch)
+ * - `codexReview` (from optional `## Codex Review`, plan-to-work only;
+ *   { score, verdict } parsed from the planner-loop's final review line)
  *
  * Host-managed fields:
  * - `chainId`: UUID minted by the host parser on each successful parse
