@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { saveUnifiedConfig, type UnifiedConfig } from '../unified-config-loader';
+import { parseAgentsConfig, saveUnifiedConfig, type UnifiedConfig } from '../unified-config-loader';
 
 describe('saveUnifiedConfig', () => {
   let tmpDir: string;
@@ -170,5 +170,270 @@ describe('loadUnifiedConfig — legacy llmChat handling', () => {
 
     const written = JSON.parse(fs.readFileSync(configFile, 'utf-8'));
     expect(written).not.toHaveProperty('llmChat');
+  });
+});
+
+/**
+ * Characterization tests for `parseAgentsConfig` (issue #793 PR 1/8 — fallow
+ * complexity refactor). These pin down the contract before extraction so the
+ * decomposition into validator helpers stays byte-equivalent.
+ *
+ * Invariants guarded:
+ *   1. Returns `{}` silently (no warn) when raw / raw.agents is missing or
+ *      not a plain object.
+ *   2. Per-agent validation order: slackBotToken → slackAppToken →
+ *      signingSecret. The first failure decides the warning message — order
+ *      matters because it shapes the user-facing diagnostic.
+ *   3. `xoxb-` / `xapp-` prefixes are required; `signingSecret` length ≥ 20.
+ *   4. Optional defaults: `promptDir` falls back to `src/prompt/${name}`,
+ *      `persona` to `'default'`, while `description` and `model` stay
+ *      `undefined` when absent or non-string.
+ *   5. Skip-on-warn: an invalid agent must not poison sibling agents — the
+ *      valid ones still load.
+ *   6. The summary `logger.info` fires only when ≥ 1 agent loaded.
+ */
+describe('parseAgentsConfig — characterization (issue #793 PR1)', () => {
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+  let infoSpy: ReturnType<typeof vi.spyOn>;
+
+  const VALID_BOT = 'xoxb-1234567890-abcdefghijklm';
+  const VALID_APP = 'xapp-1-A0123456789-1234567890123-abcdef';
+  const VALID_SIGNING = 'a'.repeat(32); // ≥ 20 chars
+
+  function makeValidAgent(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      slackBotToken: VALID_BOT,
+      slackAppToken: VALID_APP,
+      signingSecret: VALID_SIGNING,
+      ...overrides,
+    };
+  }
+
+  function lastWarn(): string | undefined {
+    const calls = warnSpy.mock.calls;
+    if (calls.length === 0) return undefined;
+    const [first] = calls[calls.length - 1] as [unknown];
+    return typeof first === 'string' ? first : undefined;
+  }
+
+  beforeEach(() => {
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // Logger.info() routes through console.log under the hood (see src/logger.ts).
+    infoSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+    infoSpy.mockRestore();
+  });
+
+  describe('skip-silent on missing/invalid raw.agents', () => {
+    it.each([
+      ['null raw', null],
+      ['undefined raw', undefined],
+      ['raw without agents', { mcpServers: {} }],
+      ['raw.agents = null', { agents: null }],
+      ['raw.agents = string', { agents: 'oops' }],
+      ['raw.agents = number', { agents: 42 }],
+    ])('returns {} silently for %s', (_label, raw) => {
+      const result = parseAgentsConfig(raw);
+      expect(result).toEqual({});
+      expect(warnSpy).not.toHaveBeenCalled();
+      expect(infoSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('per-agent entry shape', () => {
+    it('warns and skips when agent entry is not an object', () => {
+      const result = parseAgentsConfig({ agents: { bad: 'not-an-object' } });
+      expect(result).toEqual({});
+      expect(lastWarn()).toContain("Skipping agent 'bad'");
+      expect(lastWarn()).toContain('not an object');
+    });
+
+    it('warns and skips when agent entry is null', () => {
+      const result = parseAgentsConfig({ agents: { bad: null } });
+      expect(result).toEqual({});
+      expect(lastWarn()).toContain("Skipping agent 'bad'");
+    });
+  });
+
+  describe('slackBotToken validation', () => {
+    it('skips when slackBotToken is missing', () => {
+      const agent = makeValidAgent({ slackBotToken: undefined });
+      const result = parseAgentsConfig({ agents: { a: agent } });
+      expect(result).toEqual({});
+      expect(lastWarn()).toContain('missing or invalid slackBotToken');
+    });
+
+    it('skips when slackBotToken is not a string', () => {
+      const agent = makeValidAgent({ slackBotToken: 123 });
+      const result = parseAgentsConfig({ agents: { a: agent } });
+      expect(result).toEqual({});
+      expect(lastWarn()).toContain('missing or invalid slackBotToken');
+    });
+
+    it("skips when slackBotToken does not start with 'xoxb-'", () => {
+      const agent = makeValidAgent({ slackBotToken: 'xoxa-wrong-prefix-token' });
+      const result = parseAgentsConfig({ agents: { a: agent } });
+      expect(result).toEqual({});
+      expect(lastWarn()).toContain("slackBotToken must start with 'xoxb-'");
+    });
+  });
+
+  describe('slackAppToken validation', () => {
+    it('skips when slackAppToken is missing', () => {
+      const agent = makeValidAgent({ slackAppToken: undefined });
+      const result = parseAgentsConfig({ agents: { a: agent } });
+      expect(result).toEqual({});
+      expect(lastWarn()).toContain('missing or invalid slackAppToken');
+    });
+
+    it("skips when slackAppToken does not start with 'xapp-'", () => {
+      const agent = makeValidAgent({ slackAppToken: 'xoxb-not-an-app-token' });
+      const result = parseAgentsConfig({ agents: { a: agent } });
+      expect(result).toEqual({});
+      expect(lastWarn()).toContain("slackAppToken must start with 'xapp-'");
+    });
+  });
+
+  describe('signingSecret validation', () => {
+    it('skips when signingSecret is missing', () => {
+      const agent = makeValidAgent({ signingSecret: undefined });
+      const result = parseAgentsConfig({ agents: { a: agent } });
+      expect(result).toEqual({});
+      expect(lastWarn()).toContain('missing or invalid signingSecret');
+    });
+
+    it('skips when signingSecret is not a string', () => {
+      const agent = makeValidAgent({ signingSecret: 12345 });
+      const result = parseAgentsConfig({ agents: { a: agent } });
+      expect(result).toEqual({});
+      expect(lastWarn()).toContain('missing or invalid signingSecret');
+    });
+
+    it('skips when signingSecret length < 20', () => {
+      const agent = makeValidAgent({ signingSecret: 'a'.repeat(19) });
+      const result = parseAgentsConfig({ agents: { a: agent } });
+      expect(result).toEqual({});
+      expect(lastWarn()).toContain('min 20 chars');
+    });
+
+    it('accepts signingSecret of exactly 20 chars', () => {
+      const agent = makeValidAgent({ signingSecret: 'a'.repeat(20) });
+      const result = parseAgentsConfig({ agents: { a: agent } });
+      expect(result.a).toBeDefined();
+      expect(result.a.signingSecret).toBe('a'.repeat(20));
+    });
+  });
+
+  describe('validation order', () => {
+    // Order matters because the first failing rule decides the warning
+    // message. Pinning this guards against accidentally reordering checks
+    // during the extraction.
+    it('reports slackBotToken failure before slackAppToken when both are bad', () => {
+      const agent = makeValidAgent({
+        slackBotToken: 'xoxa-bad',
+        slackAppToken: 'wrong-prefix',
+      });
+      parseAgentsConfig({ agents: { a: agent } });
+      expect(lastWarn()).toContain('slackBotToken');
+    });
+
+    it('reports slackAppToken failure before signingSecret when both are bad', () => {
+      const agent = makeValidAgent({
+        slackAppToken: 'wrong-prefix',
+        signingSecret: 'short',
+      });
+      parseAgentsConfig({ agents: { a: agent } });
+      expect(lastWarn()).toContain('slackAppToken');
+    });
+  });
+
+  describe('valid agent — typed AgentConfig with defaults', () => {
+    it('builds AgentConfig with promptDir=`src/prompt/${name}` default', () => {
+      const result = parseAgentsConfig({ agents: { vega: makeValidAgent() } });
+      expect(result.vega).toEqual({
+        slackBotToken: VALID_BOT,
+        slackAppToken: VALID_APP,
+        signingSecret: VALID_SIGNING,
+        promptDir: 'src/prompt/vega',
+        persona: 'default',
+        description: undefined,
+        model: undefined,
+      });
+    });
+
+    it('honors explicit promptDir / persona / description / model', () => {
+      const agent = makeValidAgent({
+        promptDir: 'custom/path',
+        persona: 'expert',
+        description: 'Test agent',
+        model: 'claude-sonnet-4-7',
+      });
+      const result = parseAgentsConfig({ agents: { vega: agent } });
+      expect(result.vega.promptDir).toBe('custom/path');
+      expect(result.vega.persona).toBe('expert');
+      expect(result.vega.description).toBe('Test agent');
+      expect(result.vega.model).toBe('claude-sonnet-4-7');
+    });
+
+    it('falls back to defaults when promptDir / persona are non-string', () => {
+      const agent = makeValidAgent({ promptDir: 123, persona: { not: 'string' } });
+      const result = parseAgentsConfig({ agents: { vega: agent } });
+      expect(result.vega.promptDir).toBe('src/prompt/vega');
+      expect(result.vega.persona).toBe('default');
+    });
+
+    it('leaves description / model undefined when non-string', () => {
+      const agent = makeValidAgent({ description: 42, model: false });
+      const result = parseAgentsConfig({ agents: { vega: agent } });
+      expect(result.vega.description).toBeUndefined();
+      expect(result.vega.model).toBeUndefined();
+    });
+  });
+
+  describe('skip-on-warn isolation', () => {
+    it('one invalid agent does not block sibling valid agents', () => {
+      const result = parseAgentsConfig({
+        agents: {
+          good1: makeValidAgent(),
+          bad: makeValidAgent({ slackBotToken: 'xoxa-bad' }),
+          good2: makeValidAgent(),
+        },
+      });
+      expect(Object.keys(result).sort()).toEqual(['good1', 'good2']);
+      expect(result.good1).toBeDefined();
+      expect(result.good2).toBeDefined();
+      expect(result.bad).toBeUndefined();
+    });
+  });
+
+  describe('summary logging', () => {
+    it('emits summary info with count + names when ≥ 1 agent loaded', () => {
+      parseAgentsConfig({
+        agents: {
+          alpha: makeValidAgent(),
+          beta: makeValidAgent(),
+        },
+      });
+      const infoMessages = infoSpy.mock.calls
+        .map((c: unknown[]) => c[0])
+        .filter((m: unknown): m is string => typeof m === 'string');
+      const summary = infoMessages.find((m) => m.includes('Loaded') && m.includes('agent configurations'));
+      expect(summary).toBeDefined();
+      expect(summary).toContain('Loaded 2 agent configurations');
+      expect(summary).toContain('alpha');
+      expect(summary).toContain('beta');
+    });
+
+    it('does not emit summary info when zero agents loaded', () => {
+      parseAgentsConfig({ agents: { bad: makeValidAgent({ slackBotToken: 'xoxa-bad' }) } });
+      const infoMessages = infoSpy.mock.calls
+        .map((c: unknown[]) => c[0])
+        .filter((m: unknown): m is string => typeof m === 'string');
+      const summary = infoMessages.find((m) => m.includes('agent configurations'));
+      expect(summary).toBeUndefined();
+    });
   });
 });
