@@ -378,60 +378,11 @@ export class PromptBuilder {
    * invalidations. See PLAN.md §2 for the cache protocol.
    */
   buildSystemPrompt(userId?: string, workflow?: WorkflowType, session?: ConversationSession): string | undefined {
-    // Load workflow-specific prompt or default
-    let systemPrompt = workflow
-      ? this.loadWorkflowPrompt(workflow) || this.defaultSystemPrompt || ''
-      : this.defaultSystemPrompt || '';
-
-    // Load and append user's persona
-    if (userId) {
-      const personaName = userSettingsStore.getUserPersona(userId);
-      const personaContent = this.loadPersona(personaName);
-
-      if (personaContent) {
-        systemPrompt = systemPrompt
-          ? `${systemPrompt}\n\n<persona>\n${personaContent}\n</persona>`
-          : `<persona>\n${personaContent}\n</persona>`;
-
-        this.logger.debug('Applied persona', { user: userId, persona: personaName, workflow });
-      }
-    }
-
-    // Inject persistent memory (after persona, before variable processing)
-    if (userId) {
-      const memoryBlock = formatMemoryForPrompt(userId);
-      if (memoryBlock) {
-        const guidance = `\nYou have persistent memory across sessions. Save durable facts using the SAVE_MEMORY model-command: user preferences, environment details, tool quirks, and stable conventions. Memory is injected into every turn, so keep it compact and focused on facts that will still matter later.\nPrioritize what reduces future user steering -- the most valuable memory is one that prevents the user from having to correct or remind you again.\nDo NOT save: task progress, session outcomes, completed-work logs, or temporary TODO state.\n`;
-        systemPrompt = systemPrompt ? `${systemPrompt}\n\n${guidance}\n${memoryBlock}` : `${guidance}\n${memoryBlock}`;
-        this.logger.debug('Injected persistent memory', { user: userId });
-      }
-    }
-
-    // Inject user personal skills list (lazy — only names + descriptions)
-    if (userId) {
-      try {
-        const userSkills = listUserSkills(userId);
-        if (userSkills.length > 0) {
-          const skillList = userSkills
-            .map((s) => `- \`$user:${s.name}\`: ${s.description || '(no description)'}`)
-            .join('\n');
-          const skillBlock = `\n## Your Personal Skills\nYou have ${userSkills.length} personal skill(s). Invoke with \`$user:skill-name\`. Manage with MANAGE_SKILL command (create/update/delete/rename/list/share).\n${skillList}`;
-          systemPrompt = systemPrompt ? `${systemPrompt}\n${skillBlock}` : skillBlock;
-        }
-      } catch {
-        // Skills dir may not exist — that's fine, no skills to inject
-      }
-    }
-
-    // Inject user-instructions SSOT block (last — so it sits at the bottom
-    // of the prompt and receives high recency attention from the model).
-    // Empty when the session has no instructions yet.
-    if (session) {
-      const instructionsBlock = buildUserInstructionsBlock(session);
-      if (instructionsBlock) {
-        systemPrompt = systemPrompt ? `${systemPrompt}\n\n${instructionsBlock}` : instructionsBlock;
-      }
-    }
+    let systemPrompt = this.loadBaseSystemPrompt(workflow);
+    systemPrompt = this.applyUserPersona(systemPrompt, userId, workflow);
+    systemPrompt = this.applyPersistentMemory(systemPrompt, userId);
+    systemPrompt = this.applyPersonalSkills(systemPrompt, userId);
+    systemPrompt = this.applyUserInstructions(systemPrompt, session);
 
     // Process runtime variables (e.g., {{user.email}})
     // Done last so dynamic values are always current
@@ -440,6 +391,77 @@ export class PromptBuilder {
     }
 
     return systemPrompt || undefined;
+  }
+
+  /**
+   * Load workflow-specific prompt or default.
+   * Returns '' when no prompt is available so downstream concatenation
+   * helpers can use the `prompt ? ... : block` empty-string pattern.
+   */
+  private loadBaseSystemPrompt(workflow?: WorkflowType): string {
+    return workflow
+      ? this.loadWorkflowPrompt(workflow) || this.defaultSystemPrompt || ''
+      : this.defaultSystemPrompt || '';
+  }
+
+  /**
+   * Load and append the user's persona, wrapped in <persona> tags.
+   */
+  private applyUserPersona(prompt: string, userId?: string, workflow?: WorkflowType): string {
+    if (!userId) return prompt;
+    const personaName = userSettingsStore.getUserPersona(userId);
+    const personaContent = this.loadPersona(personaName);
+    if (!personaContent) return prompt;
+
+    this.logger.debug('Applied persona', { user: userId, persona: personaName, workflow });
+    return prompt
+      ? `${prompt}\n\n<persona>\n${personaContent}\n</persona>`
+      : `<persona>\n${personaContent}\n</persona>`;
+  }
+
+  /**
+   * Inject persistent memory (after persona, before variable processing).
+   */
+  private applyPersistentMemory(prompt: string, userId?: string): string {
+    if (!userId) return prompt;
+    const memoryBlock = formatMemoryForPrompt(userId);
+    if (!memoryBlock) return prompt;
+
+    const guidance = `\nYou have persistent memory across sessions. Save durable facts using the SAVE_MEMORY model-command: user preferences, environment details, tool quirks, and stable conventions. Memory is injected into every turn, so keep it compact and focused on facts that will still matter later.\nPrioritize what reduces future user steering -- the most valuable memory is one that prevents the user from having to correct or remind you again.\nDo NOT save: task progress, session outcomes, completed-work logs, or temporary TODO state.\n`;
+    this.logger.debug('Injected persistent memory', { user: userId });
+    return prompt ? `${prompt}\n\n${guidance}\n${memoryBlock}` : `${guidance}\n${memoryBlock}`;
+  }
+
+  /**
+   * Inject user personal skills list (lazy — only names + descriptions).
+   */
+  private applyPersonalSkills(prompt: string, userId?: string): string {
+    if (!userId) return prompt;
+    try {
+      const userSkills = listUserSkills(userId);
+      if (userSkills.length === 0) return prompt;
+
+      const skillList = userSkills
+        .map((s) => `- \`$user:${s.name}\`: ${s.description || '(no description)'}`)
+        .join('\n');
+      const skillBlock = `\n## Your Personal Skills\nYou have ${userSkills.length} personal skill(s). Invoke with \`$user:skill-name\`. Manage with MANAGE_SKILL command (create/update/delete/rename/list/share).\n${skillList}`;
+      return prompt ? `${prompt}\n${skillBlock}` : skillBlock;
+    } catch {
+      // Skills dir may not exist — that's fine, no skills to inject
+      return prompt;
+    }
+  }
+
+  /**
+   * Inject user-instructions SSOT block (last — so it sits at the bottom
+   * of the prompt and receives high recency attention from the model).
+   * Empty when the session has no instructions yet.
+   */
+  private applyUserInstructions(prompt: string, session?: ConversationSession): string {
+    if (!session) return prompt;
+    const instructionsBlock = buildUserInstructionsBlock(session);
+    if (!instructionsBlock) return prompt;
+    return prompt ? `${prompt}\n\n${instructionsBlock}` : instructionsBlock;
   }
 
   /**

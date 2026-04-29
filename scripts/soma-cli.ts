@@ -74,6 +74,30 @@ interface ConversationRecord {
   turns: ConversationTurn[];
 }
 
+// ── DI options for showSession ──────────────────────────────────────
+
+interface ShowSessionOptions {
+  archivesDir?: string;
+  conversationsDir?: string;
+  write?: (line: string) => void;
+  writeErr?: (line: string) => void;
+  exit?: (code: number) => never;
+}
+
+interface ShowSessionContext {
+  archivesDir: string;
+  conversationsDir: string;
+  write: (line: string) => void;
+  writeErr: (line: string) => void;
+  exit: (code: number) => never;
+}
+
+interface ShowSessionArgs {
+  sessionKey: string;
+  showConversation: boolean;
+  jsonOutput: boolean;
+}
+
 // ── Helpers ─────────────────────────────────────────────────────────
 
 function loadAllArchives(): ArchivedSession[] {
@@ -91,9 +115,9 @@ function loadAllArchives(): ArchivedSession[] {
   return archives.sort((a, b) => b.archivedAt - a.archivedAt);
 }
 
-function loadConversation(conversationId: string): ConversationRecord | null {
+function loadConversation(conversationsDir: string, conversationId: string): ConversationRecord | null {
   const safeId = conversationId.replace(/[^a-zA-Z0-9_-]/g, '');
-  const filePath = path.join(CONVERSATIONS_DIR, `${safeId}.json`);
+  const filePath = path.join(conversationsDir, `${safeId}.json`);
   if (!fs.existsSync(filePath)) return null;
   try {
     return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
@@ -184,124 +208,145 @@ function listSessions(args: string[]): void {
   console.log(`\nTotal: ${archives.length} session(s)`);
 }
 
-function showSession(args: string[]): void {
-  if (args.length === 0) {
-    console.error('Usage: soma-cli sessions show <sessionKey> [--conversation] [--json]');
-    process.exit(1);
+// ── showSession helpers ─────────────────────────────────────────────
+
+function parseShowArgs(args: string[]): ShowSessionArgs {
+  return {
+    sessionKey: args[0],
+    showConversation: args.includes('--conversation'),
+    jsonOutput: args.includes('--json'),
+  };
+}
+
+type LoadArchiveResult = { ok: true; archive: ArchivedSession } | { ok: false; error: string };
+
+function loadArchiveBySessionKey(archivesDir: string, sessionKey: string): LoadArchiveResult {
+  if (!fs.existsSync(archivesDir)) {
+    return { ok: false, error: `Session not found: ${sessionKey}` };
   }
-
-  const sessionKey = args[0];
-  const showConversation = args.includes('--conversation');
-  const jsonOutput = args.includes('--json');
-
-  // Find archive file (append-only naming: {key}_{timestamp}.json)
   const sanitizedKey = sessionKey.replace(/[^a-zA-Z0-9._-]/g, '-');
-
-  if (!fs.existsSync(ARCHIVES_DIR)) {
-    console.error(`Session not found: ${sessionKey}`);
-    process.exit(1);
-  }
-
-  // Find the most recent archive matching this key
   const prefix = `${sanitizedKey}_`;
   const matchingFiles = fs
-    .readdirSync(ARCHIVES_DIR)
+    .readdirSync(archivesDir)
     .filter((f) => f.startsWith(prefix) && f.endsWith('.json'))
     .sort()
     .reverse();
-
   if (matchingFiles.length === 0) {
-    console.error(`Session not found: ${sessionKey}`);
-    process.exit(1);
+    return { ok: false, error: `Session not found: ${sessionKey}` };
   }
-
-  const archivePath = path.join(ARCHIVES_DIR, matchingFiles[0]);
-
-  let archived: ArchivedSession;
+  const archivePath = path.join(archivesDir, matchingFiles[0]);
   try {
-    archived = JSON.parse(fs.readFileSync(archivePath, 'utf-8'));
+    return { ok: true, archive: JSON.parse(fs.readFileSync(archivePath, 'utf-8')) as ArchivedSession };
   } catch {
-    console.error(`Failed to parse archive: ${sessionKey}`);
-    process.exit(1);
+    return { ok: false, error: `Failed to parse archive: ${sessionKey}` };
   }
+}
 
-  if (jsonOutput && !showConversation) {
-    console.log(JSON.stringify(archived, null, 2));
-    return;
-  }
+function printSessionHeader(archived: ArchivedSession, write: (line: string) => void): void {
+  write(`Session: ${archived.sessionKey}`);
+  write(`Owner:   ${archived.ownerName || 'unknown'} (${archived.ownerId})`);
+  write(`Model:   ${archived.model || 'unknown'}`);
+  write(`Title:   ${archived.title || 'Untitled'}`);
+  write(`Workflow: ${archived.workflow || 'default'}`);
+  write(`Archived: ${formatDate(archived.archivedAt)} (${archived.archiveReason})`);
+  write(`Last Activity: ${archived.lastActivity}`);
+  write(`Final State: ${archived.finalState || 'unknown'} / ${archived.finalActivityState || 'unknown'}`);
+}
 
-  // Session detail
-  console.log(`Session: ${archived.sessionKey}`);
-  console.log(`Owner:   ${archived.ownerName || 'unknown'} (${archived.ownerId})`);
-  console.log(`Model:   ${archived.model || 'unknown'}`);
-  console.log(`Title:   ${archived.title || 'Untitled'}`);
-  console.log(`Workflow: ${archived.workflow || 'default'}`);
-  console.log(`Archived: ${formatDate(archived.archivedAt)} (${archived.archiveReason})`);
-  console.log(`Last Activity: ${archived.lastActivity}`);
-  console.log(`Final State: ${archived.finalState || 'unknown'} / ${archived.finalActivityState || 'unknown'}`);
-
+function printSessionExtras(archived: ArchivedSession, write: (line: string) => void): void {
   if (archived.links?.issue) {
-    console.log(`\nIssue: ${archived.links.issue.label || ''} — ${archived.links.issue.url}`);
+    write(`\nIssue: ${archived.links.issue.label || ''} — ${archived.links.issue.url}`);
   }
   if (archived.links?.pr) {
-    console.log(
-      `PR: ${archived.links.pr.label || ''} (${archived.links.pr.status || 'unknown'}) — ${archived.links.pr.url}`,
-    );
+    write(`PR: ${archived.links.pr.label || ''} (${archived.links.pr.status || 'unknown'}) — ${archived.links.pr.url}`);
   }
-
   if (archived.mergeStats) {
-    console.log(
+    write(
       `\nMerge Stats: +${archived.mergeStats.totalLinesAdded} / -${archived.mergeStats.totalLinesDeleted} (${archived.mergeStats.mergedPRs?.length || 0} PRs merged)`,
     );
   }
-
   if (archived.usage) {
-    console.log(
+    write(
       `\nToken Usage: ${archived.usage.totalInputTokens.toLocaleString()} in / ${archived.usage.totalOutputTokens.toLocaleString()} out / $${archived.usage.totalCostUsd.toFixed(4)}`,
     );
   }
-
   if (archived.instructions?.length) {
-    console.log(`\nInstructions:`);
+    write(`\nInstructions:`);
     for (const instr of archived.instructions) {
-      console.log(`  ${instr.id}. [${instr.source || 'user'}] ${instr.text}`);
+      write(`  ${instr.id}. [${instr.source || 'user'}] ${instr.text}`);
     }
   }
+}
 
-  // Conversation
-  if (showConversation) {
-    if (!archived.conversationId) {
-      console.log('\nNo conversation linked to this session.');
-      return;
-    }
+function printConversationTurn(turn: ConversationTurn, write: (line: string) => void): void {
+  const time = formatDate(turn.timestamp);
+  if (turn.role === 'user') {
+    write(`[User] ${turn.userName || 'unknown'} — ${time}`);
+    write(`  ${truncate(turn.rawContent, 200)}\n`);
+    return;
+  }
+  const summary = turn.summaryTitle || truncate(turn.rawContent, 100);
+  write(`[Assistant] — ${time}`);
+  write(`  ${summary}`);
+  if (turn.summaryBody) write(`  ${turn.summaryBody}`);
+  write('');
+}
 
-    const conversation = loadConversation(archived.conversationId);
-    if (!conversation) {
-      console.log(`\nConversation ${archived.conversationId} not found on disk.`);
-      return;
-    }
+function printConversationSection(archived: ArchivedSession, parsed: ShowSessionArgs, ctx: ShowSessionContext): void {
+  if (!archived.conversationId) {
+    ctx.write('\nNo conversation linked to this session.');
+    return;
+  }
+  const conversation = loadConversation(ctx.conversationsDir, archived.conversationId);
+  if (!conversation) {
+    ctx.write(`\nConversation ${archived.conversationId} not found on disk.`);
+    return;
+  }
+  if (parsed.jsonOutput) {
+    ctx.write(JSON.stringify({ session: archived, conversation }, null, 2));
+    return;
+  }
+  ctx.write(`\n${'─'.repeat(60)}`);
+  ctx.write(`Conversation: ${conversation.turns.length} turns\n`);
+  for (const turn of conversation.turns) {
+    printConversationTurn(turn, ctx.write);
+  }
+}
 
-    if (jsonOutput) {
-      console.log(JSON.stringify({ session: archived, conversation }, null, 2));
-      return;
-    }
+function showSession(args: string[], opts: ShowSessionOptions = {}): void {
+  const ctx: ShowSessionContext = {
+    archivesDir: opts.archivesDir ?? ARCHIVES_DIR,
+    conversationsDir: opts.conversationsDir ?? CONVERSATIONS_DIR,
+    write: opts.write ?? ((line: string) => console.log(line)),
+    writeErr: opts.writeErr ?? ((line: string) => console.error(line)),
+    exit: opts.exit ?? ((code: number) => process.exit(code)),
+  };
 
-    console.log(`\n${'─'.repeat(60)}`);
-    console.log(`Conversation: ${conversation.turns.length} turns\n`);
+  if (args.length === 0) {
+    ctx.writeErr('Usage: soma-cli sessions show <sessionKey> [--conversation] [--json]');
+    ctx.exit(1);
+    return;
+  }
 
-    for (const turn of conversation.turns) {
-      const time = formatDate(turn.timestamp);
-      if (turn.role === 'user') {
-        console.log(`[User] ${turn.userName || 'unknown'} — ${time}`);
-        console.log(`  ${truncate(turn.rawContent, 200)}\n`);
-      } else {
-        const summary = turn.summaryTitle || truncate(turn.rawContent, 100);
-        console.log(`[Assistant] — ${time}`);
-        console.log(`  ${summary}`);
-        if (turn.summaryBody) console.log(`  ${turn.summaryBody}`);
-        console.log();
-      }
-    }
+  const parsed = parseShowArgs(args);
+  const result = loadArchiveBySessionKey(ctx.archivesDir, parsed.sessionKey);
+  if (!result.ok) {
+    ctx.writeErr(result.error);
+    ctx.exit(1);
+    return;
+  }
+
+  const archived = result.archive;
+  if (parsed.jsonOutput && !parsed.showConversation) {
+    ctx.write(JSON.stringify(archived, null, 2));
+    return;
+  }
+
+  printSessionHeader(archived, ctx.write);
+  printSessionExtras(archived, ctx.write);
+
+  if (parsed.showConversation) {
+    printConversationSection(archived, parsed, ctx);
   }
 }
 
@@ -343,4 +388,18 @@ List Options:
   }
 }
 
-main();
+// Only execute when invoked directly (not imported by tests).
+if (require.main === module) {
+  main();
+}
+
+export type { ArchivedSession, ConversationRecord, ShowSessionOptions };
+// ── Test-only exports ───────────────────────────────────────────────
+export {
+  loadArchiveBySessionKey,
+  parseShowArgs,
+  printConversationSection,
+  printSessionExtras,
+  printSessionHeader,
+  showSession,
+};
