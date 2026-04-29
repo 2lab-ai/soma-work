@@ -4,7 +4,7 @@ import type { Logger } from '../../logger';
 import type { SlackApiHelper } from '../slack-api-helper';
 
 /** Stale-click marker shown on a button message after a superseded click. */
-export const STALE_CLICK_TEXT = '⏱️ _이 질문은 더 이상 유효하지 않습니다._';
+const STALE_CLICK_TEXT = '⏱️ _이 질문은 더 이상 유효하지 않습니다._';
 
 /** Rollback marker for askUserForm partial-failure. */
 export const FORM_BUILD_FAILED_TEXT = '⏱️ _폼 생성에 실패했습니다._';

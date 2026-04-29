@@ -40,7 +40,7 @@ export interface TurnObserver {
  * No-op 기본 구현.
  * TurnObserver가 설정되지 않은 경우의 fallback.
  */
-export const NULL_OBSERVER: TurnObserver = {
+const NULL_OBSERVER: TurnObserver = {
   onToolStart() {},
   onToolEnd() {},
   onModelCommandResult() {},

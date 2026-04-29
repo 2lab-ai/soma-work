@@ -76,10 +76,13 @@ describe('fetchUsage', () => {
       status: 200,
       headers: new Headers(),
       text: async () => '',
+      // Wire-JSON utilization is raw API percent (0..100) per #685/#701/#781.
+      // The parser is pass-through, so the assertions below use the same
+      // percent unit the test asserts the snapshot carries.
       json: async () => ({
-        five_hour: { utilization: 0.25, resets_at: '2026-04-18T17:00:00Z' },
-        seven_day: { utilization: 0.5, resets_at: '2026-04-25T00:00:00Z' },
-        seven_day_sonnet: { utilization: 0.1, resets_at: '2026-04-25T00:00:00Z' },
+        five_hour: { utilization: 25, resets_at: '2026-04-18T17:00:00Z' },
+        seven_day: { utilization: 50, resets_at: '2026-04-25T00:00:00Z' },
+        seven_day_sonnet: { utilization: 10, resets_at: '2026-04-25T00:00:00Z' },
       }),
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -95,9 +98,9 @@ describe('fetchUsage', () => {
     expect(headers['anthropic-beta']).toBe('oauth-2025-04-20');
 
     expect(result.snapshot.fetchedAt).toBe('2026-04-18T12:00:00.000Z');
-    expect(result.snapshot.fiveHour).toEqual({ utilization: 0.25, resetsAt: '2026-04-18T17:00:00Z' });
-    expect(result.snapshot.sevenDay).toEqual({ utilization: 0.5, resetsAt: '2026-04-25T00:00:00Z' });
-    expect(result.snapshot.sevenDaySonnet).toEqual({ utilization: 0.1, resetsAt: '2026-04-25T00:00:00Z' });
+    expect(result.snapshot.fiveHour).toEqual({ utilization: 25, resetsAt: '2026-04-18T17:00:00Z' });
+    expect(result.snapshot.sevenDay).toEqual({ utilization: 50, resetsAt: '2026-04-25T00:00:00Z' });
+    expect(result.snapshot.sevenDaySonnet).toEqual({ utilization: 10, resetsAt: '2026-04-25T00:00:00Z' });
     expect(result.nextFetchAllowedAtMs).toBe(Date.now() + 2 * 60 * 1000);
   });
 
@@ -108,13 +111,13 @@ describe('fetchUsage', () => {
       headers: new Headers(),
       text: async () => '',
       json: async () => ({
-        five_hour: { utilization: 0.33, resets_at: '2026-04-18T17:00:00Z' },
+        five_hour: { utilization: 33, resets_at: '2026-04-18T17:00:00Z' },
       }),
     });
     vi.stubGlobal('fetch', fetchMock);
 
     const result = await fetchUsage('access-abc');
-    expect(result.snapshot.fiveHour).toEqual({ utilization: 0.33, resetsAt: '2026-04-18T17:00:00Z' });
+    expect(result.snapshot.fiveHour).toEqual({ utilization: 33, resetsAt: '2026-04-18T17:00:00Z' });
     expect(result.snapshot.sevenDay).toBeUndefined();
     expect(result.snapshot.sevenDaySonnet).toBeUndefined();
   });

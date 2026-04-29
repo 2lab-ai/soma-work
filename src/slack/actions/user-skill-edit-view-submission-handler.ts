@@ -9,6 +9,7 @@ import {
 } from '../../user-skill-store';
 import type { SlackApiHelper } from '../slack-api-helper';
 import { USER_SKILL_EDIT_ACTION_ID, USER_SKILL_EDIT_BLOCK_ID } from './user-skill-menu-action-handler';
+import { postSkillEphemeral } from './user-skill-view-submission-shared';
 
 interface UserSkillEditViewContext {
   slackApi: SlackApiHelper;
@@ -203,7 +204,7 @@ export class UserSkillEditViewSubmissionHandler {
         // Step 8 — ack clear so Slack closes the modal.
         await ack({ response_action: 'clear' });
         // Step 9 — best-effort confirmation.
-        await this.postConfirmation(meta, '✅ 변경 없음 — 저장하지 않았습니다.');
+        await postSkillEphemeral(this.ctx.slackApi, meta, '✅ 변경 없음 — 저장하지 않았습니다.', this.logger);
         return;
       }
 
@@ -223,7 +224,7 @@ export class UserSkillEditViewSubmissionHandler {
       // Step 9 — post-ack ephemeral confirmation. Transport errors here are
       // logged but do not bubble — the save already succeeded and the modal
       // is gone, so we cannot re-open an inline error.
-      await this.postConfirmation(meta, `✅ 스킬 저장됨: \`$user:${meta.skillName}\``);
+      await postSkillEphemeral(this.ctx.slackApi, meta, `✅ 스킬 저장됨: \`$user:${meta.skillName}\``, this.logger);
       this.logger.info('user_skill_edit submit: saved', {
         requesterId: meta.requesterId,
         skillName: meta.skillName,
@@ -244,25 +245,6 @@ export class UserSkillEditViewSubmissionHandler {
           err: (ackErr as Error)?.message ?? String(ackErr),
         });
       }
-    }
-  }
-
-  /**
-   * Post the success/no-op confirmation as an ephemeral message back to the
-   * originating channel/thread. Failures are logged but never re-thrown —
-   * the modal is already closed and we never want to obscure a successful
-   * save with a transport error toast.
-   */
-  private async postConfirmation(meta: ParsedMetadata, text: string): Promise<void> {
-    if (!meta.channelId) return;
-    try {
-      await this.ctx.slackApi.postEphemeral(meta.channelId, meta.requesterId, text, meta.threadTs || undefined);
-    } catch (err) {
-      this.logger.warn('user_skill_edit submit: postEphemeral failed', {
-        channel: meta.channelId,
-        requesterId: meta.requesterId,
-        err: (err as Error)?.message ?? String(err),
-      });
     }
   }
 }

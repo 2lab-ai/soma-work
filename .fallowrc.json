@@ -1,0 +1,12 @@
+{
+  "$schema": "https://docs.fallow.tools/schema/fallowrc.schema.json",
+  "dynamicallyLoaded": [
+    "mcp-servers/**/*-mcp-server.ts",
+    "mcp-servers/permission/permission-server-start.js",
+    "scripts/*.ts",
+    "src/local/skills/**/scripts/*.ts"
+  ],
+  "ignoreDependencies": [
+    "playwright"
+  ]
+}

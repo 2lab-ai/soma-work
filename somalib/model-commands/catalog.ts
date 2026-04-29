@@ -51,6 +51,28 @@ export interface SkillStore {
     user: string,
     name: string,
   ): { ok: boolean; message: string; content?: string };
+  /**
+   * Rename a skill directory in place: `skills/{name}/` → `skills/{newName}/`.
+   *
+   * Implementation contract (both storage layers):
+   *   - happy:        `{ ok: true, message: skillRenameSuccessMessage(...) }`
+   *   - same name:    `{ ok: false, message, error: 'INVALID' }`
+   *   - source gone:  `{ ok: false, message, error: 'NOT_FOUND' }`
+   *   - target taken: `{ ok: false, message, error: 'EEXIST' }`
+   *   - bad name:     `{ ok: false, message, error: 'INVALID' }`
+   *   - fs failure:   `{ ok: false, message, error: 'IO' }` (post-pre-check race)
+   *
+   * Move semantics: the implementation MUST stage through a temporary path
+   * inside the user's `skills/` directory so case-only renames (e.g. `foo`
+   * → `Foo`) work on case-insensitive filesystems without losing the source.
+   * Plain `fs.renameSync(src, dst)` would no-op on Darwin/Windows when the
+   * inode is identical.
+   */
+  renameSkill(
+    user: string,
+    name: string,
+    newName: string,
+  ): { ok: boolean; message: string; error?: 'NOT_FOUND' | 'EEXIST' | 'INVALID' | 'IO' };
 }
 
 let _skillStore: SkillStore | null = null;
@@ -317,20 +339,28 @@ const MANAGE_SKILL_SCHEMA = {
   properties: {
     action: {
       type: 'string',
-      enum: ['create', 'update', 'delete', 'list', 'share'],
+      enum: ['create', 'update', 'delete', 'list', 'share', 'rename'],
       description:
         'create: new skill, update: overwrite existing, delete: remove, ' +
-        'list: show all, share: return full content for cross-user copy-paste install',
+        'list: show all, share: return full content for cross-user copy-paste install, ' +
+        'rename: move SKILL.md directory from `name` to `newName`',
     },
     name: {
       type: 'string',
-      description: 'Skill name in kebab-case (e.g. my-deploy). Required for create/update/delete/share.',
+      description:
+        'Skill name in kebab-case (e.g. my-deploy). Required for create/update/delete/share/rename.',
+    },
+    newName: {
+      type: 'string',
+      description:
+        'New skill name (kebab-case). Required for rename only — must differ from `name`.',
     },
     content: {
       type: 'string',
       description:
         'Full SKILL.md content with YAML frontmatter. Required for create/update. ' +
-        'Must NOT be supplied for share (the server reads existing content).',
+        'Must NOT be supplied for share or rename (server reads existing content for share; ' +
+        'rename is metadata-only and does not change SKILL.md bytes).',
     },
   },
   required: ['action'],
@@ -452,9 +482,12 @@ export function listModelCommands(context: ModelCommandContext): ModelCommandDes
       {
         id: 'MANAGE_SKILL',
         description:
-          'Create, update, delete, list, or share user personal skills. ' +
+          'Create, update, delete, rename, list, or share user personal skills. ' +
           'Skills are SKILL.md files with YAML frontmatter. Invoke via $user:skill-name. ' +
           'Immediately available after creation. ' +
+          'rename: pass `name` (current) + `newName` (kebab-case, different) — moves ' +
+          'the entire skill directory in place so multi-file skills keep their ' +
+          'sibling resources. ' +
           'share: pass only `name` — the response payload returns the full SKILL.md ' +
           'content for cross-user copy-paste install. When you receive a share response, ' +
           'render the returned content verbatim inside a fenced code block in the Slack ' +
@@ -500,7 +533,7 @@ function updateActiveFromArray(snapshot: SessionResourceSnapshot, resourceType: 
   snapshot.active[activeKey] = links.length > 0 ? links[links.length - 1] : undefined;
 }
 
-export function applySessionUpdateToSnapshot(
+function applySessionUpdateToSnapshot(
   snapshot: SessionResourceSnapshot,
   request: SessionResourceUpdateRequest,
 ): { ok: true; snapshot: SessionResourceSnapshot } | { ok: false; error: ModelCommandError } {
@@ -743,7 +776,17 @@ export function runModelCommand(
         type: 'model_command_result',
         commandId: 'MANAGE_SKILL',
         ok: true,
-        payload: { ok: result.ok, message: result.message },
+        payload: {
+          ok: result.ok,
+          message: result.message,
+          // Stamp the mutation signal only on the happy path. A failed create
+          // (over cap, name collision, validation error) hasn't changed disk
+          // state, so emitting `mutated` would falsely invalidate the cached
+          // system prompt and trigger a wasted rebuild.
+          ...(result.ok
+            ? { mutated: { kind: 'skill' as const, user: context.user, action: 'create' as const } }
+            : {}),
+        },
       };
     }
     if (params.action === 'update') {
@@ -755,7 +798,13 @@ export function runModelCommand(
         type: 'model_command_result',
         commandId: 'MANAGE_SKILL',
         ok: true,
-        payload: { ok: result.ok, message: result.message },
+        payload: {
+          ok: result.ok,
+          message: result.message,
+          ...(result.ok
+            ? { mutated: { kind: 'skill' as const, user: context.user, action: 'update' as const } }
+            : {}),
+        },
       };
     }
     if (params.action === 'delete') {
@@ -767,7 +816,39 @@ export function runModelCommand(
         type: 'model_command_result',
         commandId: 'MANAGE_SKILL',
         ok: true,
-        payload: { ok: result.ok, message: result.message },
+        payload: {
+          ok: result.ok,
+          message: result.message,
+          ...(result.ok
+            ? { mutated: { kind: 'skill' as const, user: context.user, action: 'delete' as const } }
+            : {}),
+        },
+      };
+    }
+    if (params.action === 'rename') {
+      if (!params.name || !params.newName) {
+        return toRunError('MANAGE_SKILL', {
+          code: 'INVALID_ARGS',
+          message: 'name and newName required for rename',
+        });
+      }
+      const result = store.renameSkill(context.user, params.name, params.newName);
+      return {
+        type: 'model_command_result',
+        commandId: 'MANAGE_SKILL',
+        ok: true,
+        payload: {
+          ok: result.ok,
+          message: result.message,
+          // Same emit-on-success-only invariant as create/update/delete:
+          // a failed rename did not change disk state. The granular `error`
+          // discriminant from storage is intentionally NOT exposed on the
+          // wire — Slack rename modal consumes it via the in-process call,
+          // and remote callers only need ok/message.
+          ...(result.ok
+            ? { mutated: { kind: 'skill' as const, user: context.user, action: 'rename' as const } }
+            : {}),
+        },
       };
     }
     if (params.action === 'share') {

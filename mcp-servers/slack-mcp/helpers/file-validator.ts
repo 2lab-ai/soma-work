@@ -5,14 +5,14 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 
 /** Maximum file size for uploads: 1 GB */
-export const MAX_FILE_SIZE = 1_073_741_824;
+const MAX_FILE_SIZE = 1_073_741_824;
 
 /** Allowlisted root directories for file uploads */
-export const ALLOWED_UPLOAD_ROOTS = ['/tmp', '/private/tmp'];
+const ALLOWED_UPLOAD_ROOTS = ['/tmp', '/private/tmp'];
 
-export const IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico', 'tiff', 'tif', 'heic', 'heif', 'avif']);
-export const AUDIO_EXTENSIONS = new Set(['mp3', 'wav', 'ogg', 'flac', 'm4a', 'aac', 'wma']);
-export const VIDEO_EXTENSIONS = new Set(['mp4', 'mov', 'avi', 'mkv', 'webm', 'wmv', 'm4v', 'mpg', 'mpeg', '3gp']);
+const IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico', 'tiff', 'tif', 'heic', 'heif', 'avif']);
+const AUDIO_EXTENSIONS = new Set(['mp3', 'wav', 'ogg', 'flac', 'm4a', 'aac', 'wma']);
+const VIDEO_EXTENSIONS = new Set(['mp4', 'mov', 'avi', 'mkv', 'webm', 'wmv', 'm4v', 'mpg', 'mpeg', '3gp']);
 export const ALLOWED_MEDIA_EXTENSIONS = new Set([...IMAGE_EXTENSIONS, ...AUDIO_EXTENSIONS, ...VIDEO_EXTENSIONS]);
 
 export function isImageFile(mimetype?: string, filename?: string): boolean {

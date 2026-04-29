@@ -4,7 +4,7 @@
 import type { WebClient } from '@slack/web-api';
 
 /** Extract pagination cursor from Slack API response. */
-export function extractCursor(response: { response_metadata?: { next_cursor?: string } }): string | undefined {
+function extractCursor(response: { response_metadata?: { next_cursor?: string } }): string | undefined {
   const c = response.response_metadata?.next_cursor;
   return c && c.length > 0 ? c : undefined;
 }
@@ -12,7 +12,7 @@ export function extractCursor(response: { response_metadata?: { next_cursor?: st
 /**
  * Get total message count in thread (root + replies).
  */
-export async function getTotalCount(
+async function getTotalCount(
   slack: WebClient,
   channel: string,
   threadTs: string,
@@ -39,7 +39,7 @@ export async function getTotalCount(
 /**
  * Fetch a slice of thread messages by offset and limit.
  */
-export async function fetchThreadSlice(
+async function fetchThreadSlice(
   slack: WebClient,
   channel: string,
   threadTs: string,
@@ -86,7 +86,7 @@ export async function fetchThreadSlice(
  * Returns { messages, rootWasInjected } so the caller can distinguish
  * "extra because root was prepended" from "extra because unseen messages exist."
  */
-export async function fetchMessagesBefore(
+async function fetchMessagesBefore(
   slack: WebClient,
   channel: string,
   threadTs: string,
@@ -136,7 +136,7 @@ export async function fetchMessagesBefore(
 /**
  * Fetch up to `count` replies starting after anchorTs (exclusive).
  */
-export async function fetchMessagesAfter(
+async function fetchMessagesAfter(
   slack: WebClient,
   channel: string,
   threadTs: string,

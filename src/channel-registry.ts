@@ -182,7 +182,7 @@ export function unregisterChannel(channelId: string): void {
  * Find the correct channel for a given repo.
  * Returns the channel ID(s) mapped to this repo, or empty array.
  */
-export function findChannelsForRepo(repoFullName: string): string[] {
+function findChannelsForRepo(repoFullName: string): string[] {
   // Normalize: lowercase, strip .git suffix
   const normalized = repoFullName.toLowerCase().replace(/\.git$/, '');
   const result = repoToChannels.get(normalized) || [];
@@ -201,7 +201,7 @@ export function findChannelsForRepo(repoFullName: string): string[] {
 /**
  * Extract repo owner/name from a GitHub URL.
  */
-export function extractRepoFromUrl(url: string): string | null {
+function extractRepoFromUrl(url: string): string | null {
   const match = url.match(/github\.com\/([a-zA-Z0-9_-]+\/[a-zA-Z0-9._-]+)/);
   if (!match) {
     logger.debug('🔗 extractRepoFromUrl: no match', { url });

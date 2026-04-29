@@ -111,7 +111,7 @@ function cacheRecord(id: string, record: ConversationRecord): void {
 /**
  * Remove a conversation from the in-memory cache (e.g., on session end).
  */
-export function removeFromCache(id: string): void {
+function removeFromCache(id: string): void {
   activeConversations.delete(id);
   writeLocks.delete(id);
 }
@@ -465,7 +465,7 @@ export async function updateConversationTitleSub(conversationId: string, titleSu
 /**
  * Update conversation metadata (title, workflow)
  */
-export async function updateConversationMeta(
+async function updateConversationMeta(
   conversationId: string,
   updates: { title?: string; workflow?: string },
 ): Promise<void> {

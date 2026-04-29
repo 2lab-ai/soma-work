@@ -1171,3 +1171,76 @@ describe('MANAGE_SKILL share action — validator', () => {
     expect(result.error.message).toContain('share');
   });
 });
+
+// ---------------------------------------------------------------------------
+// MANAGE_SKILL — rename action (issue #774)
+// ---------------------------------------------------------------------------
+//
+// Rename is a metadata-only operation: move `skills/{name}` → `skills/{newName}`.
+// At the validator layer the invariants are:
+//   1. action='rename' is allowed (was rejected pre-#774).
+//   2. name AND newName MUST both be strings.
+//   3. content MUST NOT be present — rename does not modify SKILL.md bytes.
+//   4. Same-name no-op rejection lives at the storage layer (it returns
+//      `error: 'INVALID'`) — the validator only enforces shape, not semantics.
+
+describe('MANAGE_SKILL rename action — validator', () => {
+  function run(params: Record<string, unknown>) {
+    return validateModelCommandRunArgs({
+      commandId: 'MANAGE_SKILL',
+      params,
+    });
+  }
+
+  it('accepts rename with name + newName', () => {
+    const result = run({ action: 'rename', name: 'old-name', newName: 'new-name' });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    expect(result.request.commandId).toBe('MANAGE_SKILL');
+    expect(result.request.params).toMatchObject({
+      action: 'rename',
+      name: 'old-name',
+      newName: 'new-name',
+    });
+    // content must not be forwarded silently.
+    expect((result.request.params as { content?: string }).content).toBeUndefined();
+  });
+
+  it('rejects rename when newName is missing', () => {
+    const result = run({ action: 'rename', name: 'old-name' });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.error.code).toBe('INVALID_ARGS');
+    expect(result.error.message).toContain('newName');
+  });
+
+  it('rejects rename when name is missing', () => {
+    const result = run({ action: 'rename', newName: 'new-name' });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.error.code).toBe('INVALID_ARGS');
+    expect(result.error.message).toContain('name is required');
+  });
+
+  it('rejects rename when content is provided', () => {
+    const result = run({
+      action: 'rename',
+      name: 'old',
+      newName: 'new',
+      content: 'sneak in a write under cover of rename',
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.error.code).toBe('INVALID_ARGS');
+    expect(result.error.message).toContain('rename');
+    expect(result.error.message).toContain('content');
+  });
+
+  it('rejects rename when newName is not a string', () => {
+    const result = run({ action: 'rename', name: 'old', newName: 42 });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.error.code).toBe('INVALID_ARGS');
+    expect(result.error.message).toContain('newName');
+  });
+});
