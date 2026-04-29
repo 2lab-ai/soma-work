@@ -12,7 +12,7 @@ A GitHub epic issue URL where the body already contains Sub-A/B/C decomposition 
 The orchestrator session has the constrained tool surface defined in `z/SKILL.md` §Hard Rules:
 
 - Allowed: `TodoWrite`, `Agent`, `UIAskUserQuestion`, `mcp__model-command__run` `CONTINUE_SESSION`, read-only `Read` of orchestrator-side notes.
-- Allowed read-only state probe: `Bash` for `stat <path>`, `gh pr list`, `gh pr view --json …`, `gh run list`, `gh api -X GET …`. **No mutating commands.**
+- Allowed read-only state probe: `Bash` for `stat <path>`, `gh pr list`, `gh pr view --json …`, `gh issue view --json …`, `gh run list`, `gh api -X GET …`. **No mutating commands.**
 - Forbidden: any mutating `gh` / `git`, `Edit` / `Write` against repo files, direct `mcp__llm__chat`, `ScheduleWakeup`, foreground sleep / polling.
 
 Anything that touches code, the working tree, the remote, or GitHub state is a **subagent dispatch**, not an orchestrator action.
@@ -57,14 +57,13 @@ The orchestrator emits `<z-handoff type="plan-to-work">` per `using-z` §Handoff
 
 The new session enters z phase 2 controller semantics (per `z-plan-to-work.prompt`). It dispatches implementer subagents — it does **not** become an implementer.
 
-### Worktree isolation per group
+### Worktree isolation
 
-The phase-2 controller dispatches a **worktree-setup subagent** at the start of each group that:
+The phase-2 controller dispatches a **bootstrap subagent (z phase 2.0)** as the first step of the new session. It creates the working folder, clones the repo at the resolved base, and creates the per-task worktrees for **every** task in `## Dependency Groups` up front (one worktree per task, not just for Group 1). This matches `z/SKILL.md` §2.0 — handoff sessions enter without a working folder, so a single bootstrap covers all groups before §2.1 repeat-back.
 
-- `cd <repo> && git checkout <base> && git pull origin <base> --ff-only`
-- `git worktree add -b <branch> ../sub-<letter> <base>` per sub.
+Between groups (after Group N's PRs merge in phase 5), the controller dispatches a small **base-refresh subagent** that pulls the new base into the existing worktrees so Group N+1's tasks rebase cleanly. It does not recreate the worktrees from scratch.
 
-The orchestrator never runs `git` itself.
+The orchestrator never runs `git` itself in either step.
 
 ### Implementer subagent dispatch (1 agent per sub, `run_in_background: true`)
 
@@ -85,7 +84,7 @@ The phase-2 controller passes each `## Per-Task Dispatch Payloads` entry verbati
 ### Within-group parallel, across-group sequential
 
 - Group 1 (entry, deps=0): dispatch all subs concurrently in a single `Agent` call message.
-- Group N+1: dispatched only after Group N's PRs are merged in phase 5 (controller pulls base, dispatches new worktree-setup subagent, then dispatches Group N+1's implementers).
+- Group N+1: dispatched only after Group N's PRs are merged in phase 5 (controller dispatches a base-refresh subagent to pull the new base into the existing Group N+1 worktrees, then dispatches Group N+1's implementers).
 
 ## phase 3 — Post-Impl Gate (per PR)
 
@@ -130,7 +129,7 @@ Dispatch a **merge driver subagent** (background) that:
 - Pre-merge re-checks `gh pr view --json reviewDecision,mergeable,state`. If `reviewDecision != APPROVED` (e.g. dismiss-stale-reviews voided the prior approval after a force-push), returns a blocker — the orchestrator routes back to phase 4.
 - `gh pr merge <num> --squash --delete-branch` (no `--admin`).
 - Captures merge commit SHA (epic Tracker update).
-- Optionally creates next group's worktrees (pull base → `git worktree add`).
+- After merge, the controller dispatches a **base-refresh subagent** to pull the new base into the next group's existing worktrees (created up front by the bootstrap subagent).
 
 The orchestrator then dispatches Group N+1's implementer subagents (back to phase 2).
 

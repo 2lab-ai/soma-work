@@ -70,7 +70,7 @@ z 컨트롤러의 phase 전환 중 **세션 경계**를 넘는 것은 두 지점
 {
   "commandId": "CONTINUE_SESSION",
   "params": {
-    "prompt": "$z phase2 <ISSUE_URL or task-slug>\n\n<z-handoff type=\"plan-to-work\">\n## Issue\n<ISSUE_URL or \"none (Case A escape, tier=tiny|small)\">\n## Parent Epic\n<EPIC_URL or \"none\">\n## Tier\n<tiny|small|medium|large|xlarge>\n## Escape Eligible\n<true|false>\n## Issue Required By User\n<true|false>\n## Original Request Excerpt\n<원 유저 SSOT instruction 발췌 — 수신 세션이 escape 조건 및 scope를 재검증 가능하게>\n## Repository Policy\n<issue-required: true|false — CONTRIBUTING/policy가 이슈 선행을 요구하는지 여부>\n## Confirmed Plan\n<plan markdown — Goal / Scope / Done>\n## Task List\n- [ ] task 1\n- [ ] task 2\n## Dependency Groups\nGroup 1: [task-id-A, task-id-B]\nGroup 2: [task-id-C]\n## Per-Task Dispatch Payloads\n### task-id-A\n<self-contained subagent prompt — worktree path placeholder, branch, base, file/line changes, tests, commands, commit/PR templates>\n### task-id-B\n<self-contained subagent prompt …>\n### task-id-C\n<self-contained subagent prompt …>\n## Codex Review\nscore: <N>/100 — <verdict>\n</z-handoff>",
+    "prompt": "$z phase2 <ISSUE_URL or task-slug>\n\n<z-handoff type=\"plan-to-work\">\n## Issue\n<ISSUE_URL or \"none (Case A escape, tier=tiny|small)\">\n## Parent Epic\n<EPIC_URL or \"none\">\n## Tier\n<tiny|small|medium|large|xlarge>\n## Escape Eligible\n<true|false>\n## Issue Required By User\n<true|false>\n## Original Request Excerpt\n<원 유저 SSOT instruction 발췌 — 수신 세션이 escape 조건 및 scope를 재검증 가능하게>\n## Repository Policy\n<issue-required: true|false — CONTRIBUTING/policy가 이슈 선행을 요구하는지 여부>\n## Confirmed Plan\n<plan markdown — Goal / Scope / Done>\n## Task List\n- [ ] task 1\n- [ ] task 2\n## Dependency Groups\nGroup 1: [task-id-A, task-id-B]\nGroup 2: [task-id-C]\n## Per-Task Dispatch Payloads\n### task-id-A\n```\n<self-contained subagent prompt — worktree path placeholder, branch, base, file/line changes, tests, commands, commit/PR templates>\n```\n### task-id-B\n```\n<self-contained subagent prompt …>\n```\n### task-id-C\n```\n<self-contained subagent prompt …>\n```\n## Codex Review\nscore: <N>/100 — <verdict>\n</z-handoff>",
     "resetSession": true,
     "dispatchText": "<ISSUE_URL or task-slug>",
     "forceWorkflow": "z-plan-to-work"
@@ -80,13 +80,16 @@ z 컨트롤러의 phase 전환 중 **세션 경계**를 넘는 것은 두 지점
 
 **Producer-authoritative typed fields** (host persists these verbatim as `session.handoffContext`):
 
-- `## Tier` — `using-epic-tasks` 판정 tier.
-- `## Escape Eligible` — Case A 3-condition validation 통과 여부 (단순 마커 존재가 아닌 검증 통과).
-- `## Issue Required By User` — 유저 원 요청에 선행 이슈 요구 존재 여부.
-- `## Dependency Groups` — phase 1 planner의 dependency-group 분할. 새 세션 phase 2가 그룹 단위 병렬 dispatch를 결정하기 위해 필수. 누락 시 새 세션은 PLAN.md를 직접 파싱하지 못하므로 phase 2를 진행할 수 없음 (z 컨트롤러는 repo 파일을 읽지 않는다).
-- `## Per-Task Dispatch Payloads` — task-id별 self-contained subagent 프롬프트. 새 세션은 이를 verbatim으로 phase 2 implementer subagent에 전달한다. 누락 시 phase 2 진행 불가.
+**Optional (host applies conservative defaults if missing):**
 
-모두 optional — 누락 시 conservative defaults (tier=null, escapeEligible=false, issueRequiredByUser=true, dependencyGroups=빈, dispatchPayloads=빈). 단 dependencyGroups / dispatchPayloads가 비어 있으면 phase 2 controller는 진행할 수 없으므로 producer 측이 반드시 채워야 함.
+- `## Tier` — `using-epic-tasks` 판정 tier. 누락 시 null.
+- `## Escape Eligible` — Case A 3-condition validation 통과 여부 (단순 마커 존재가 아닌 검증 통과). 누락 시 false.
+- `## Issue Required By User` — 유저 원 요청에 선행 이슈 요구 존재 여부. 누락 시 true (보수적).
+
+**Required (host parser rejects the handoff with `invalid-plan-payload` if missing or empty):**
+
+- `## Dependency Groups` — phase 1 planner의 dependency-group 분할. 새 세션 phase 2가 그룹 단위 병렬 dispatch를 결정하기 위해 필수. 비어 있으면 새 세션은 PLAN.md를 직접 파싱하지 못하므로 phase 2를 진행할 수 없음 (z 컨트롤러는 repo 파일을 읽지 않는다). Host parser는 빈 그룹을 `invalid-plan-payload (empty-dependency-groups)`로 거부.
+- `## Per-Task Dispatch Payloads` — task-id별 self-contained subagent 프롬프트. 각 `### task-id` 본문은 ` ``` … ``` ` fenced block으로 감싸야 함 (planner가 작성하는 프롬프트 자체가 `## ...` markdown heading을 포함하므로 fence 없이는 outer parser가 잘못 잘라낸다). Host parser는 각 group taskId가 정확히 하나의 fenced payload와 매칭되는지 cross-validate하며, 미스매치 시 `invalid-plan-payload (group-task-without-payload:<id>` 또는 `payload-task-without-group:<id>)`로 거부.
 
 **새 세션 z phase0 동작**:
 
@@ -94,7 +97,7 @@ z 컨트롤러의 phase 전환 중 **세션 경계**를 넘는 것은 두 지점
 2. clarify / new-task / codex 리뷰 단계 **스킵**.
 3. Task List를 TodoWrite로 등록.
 4. Issue URL + Parent Epic + Original Request Excerpt + Repository Policy + Dependency Groups + Per-Task Dispatch Payloads를 세션 전역 SSOT로 보관.
-5. **`local:z` phase 2의 컨트롤러 시맨틱으로 진입**한다 — `local:zwork`를 직접 invoke하지 않는다. 새 세션은 z 오케스트레이터로서 (a) phase 2.1 repeat-back gate, (b) Dependency Groups 순회, (c) 각 그룹 내 Per-Task Dispatch Payloads를 verbatim으로 implementer subagent에 dispatch (`Agent`, `general-purpose`, `run_in_background:true`), (d) push 모델로 대기. zwork 워크플로 prompt가 시키는 "직접 implementer로 행동" 지시는 본 컨트랙트와 충돌하므로 무효 — `z-plan-to-work` 워크플로 prompt는 z phase 2 컨트롤러로 라우팅한다.
+5. **`local:z` phase 2의 컨트롤러 시맨틱으로 진입**한다 — `local:zwork`를 직접 invoke하지 않는다. 새 세션은 z 오케스트레이터로서 (a) **phase 2.0 bootstrap subagent** (working folder 생성 + clone + per-task worktrees 생성, blocking), (b) phase 2.1 repeat-back gate, (c) Dependency Groups 순회, (d) 각 그룹 내 Per-Task Dispatch Payloads를 verbatim으로 implementer subagent에 dispatch (`Agent`, `general-purpose`, `run_in_background:true`), (e) push 모델로 대기. zwork 워크플로 prompt가 시키는 "직접 implementer로 행동" 지시는 본 컨트랙트와 충돌하므로 무효 — `z-plan-to-work` 워크플로 prompt는 z phase 2 컨트롤러로 라우팅한다.
 
 ### Handoff #2 — work → epic (서브이슈인 경우만)
 

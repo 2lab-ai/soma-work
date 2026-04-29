@@ -61,7 +61,7 @@ Skip on first read of a session. After that, invoke `local:zreflect` once per se
 | 0.1    | bug report                             | dispatch                       | `stv:debug` driver                                   |
 | 0.2    | Case C (tier ≥ xxlarge)                | halt; dispatch decomposition reviewers; ask user to split | 3-reviewer decomposition |
 | 1      | clarified intent                       | dispatch planner → review-subagent loop → user approve → issue-creation | planner + reviewer + issue-creator |
-| 2      | plan approved (or `plan-to-work` handoff) | repeat-back gate → per-task dispatch (parallel within group) | per-task implementer |
+| 2      | plan approved (or `plan-to-work` handoff) | bootstrap subagent → repeat-back gate → per-task dispatch (parallel within group) | bootstrap + per-task implementer |
 | 3      | PR exists                              | dispatch post-impl-gate driver per PR | zcheck driver (Step 0–3 only)                |
 | 4      | post-impl-gate clean                   | build briefing → ASK_USER approve | —                                                |
 | 5      | user approved merge                    | dispatch merge driver; on conflict, separate conflict driver | merge / conflict          |
@@ -82,7 +82,7 @@ Scan the incoming user prompt for a `<z-handoff>` block. The grammar is owned by
 
 Routing on a valid sentinel:
 
-- `plan-to-work` → register Task List into TodoWrite, store Issue URL + Parent Epic + Original Request Excerpt + Repository Policy as session SSOT, **jump to phase 2 (start at 2.1 repeat-back gate)**. Skip 0.1–0.6.
+- `plan-to-work` → register Task List into TodoWrite, store Issue URL + Parent Epic + Original Request Excerpt + Repository Policy + Dependency Groups + Per-Task Dispatch Payloads (all from `session.handoffContext`) as session SSOT, **jump to phase 2 starting at §2.0 bootstrap subagent** (the new session has no working folder yet — bootstrap before the §2.1 repeat-back gate). Skip 0.1–0.6.
 - `work-complete` → **jump to phase 5.E**. Skip 0.1–0.6.
 - Neither / malformed → continue with 0.1 (or safe-stop on malformed).
 
@@ -200,13 +200,22 @@ The embedded block MUST carry the planner's structured outputs verbatim — the 
 
 Producer-authoritative typed fields (`## Tier`, `## Escape Eligible`, `## Issue Required By User`, `## Original Request Excerpt`, `## Repository Policy`, `## Codex Review`) are also embedded so the new session can re-verify Case A escape conditions and PR-creation preconditions.
 
-The orchestrator session ends. Phase 2 enters a fresh session via the sentinel branch in 0.0 and proceeds to 2.1 below.
+The orchestrator session ends. Phase 2 enters a fresh session via the sentinel branch in 0.0 and proceeds to **§2.0 bootstrap → §2.1 repeat-back → §2.2/§2.3 dispatch**.
 
 ## Phase 2 — Implementation
 
 ### 2.0 Bootstrap (handoff-entry only)
 
-A phase-2 handoff session enters with `session.handoffContext` populated but no working folder or worktrees yet. Dispatch a **bootstrap subagent** (`Agent`, `general-purpose`, `run_in_background: true`) that creates the working folder, clones the repo, creates the per-task worktrees from `## Dependency Groups`, and returns the absolute paths. Wait for the bootstrap report before 2.1.
+A phase-2 handoff session enters with `session.handoffContext` populated but no working folder or worktrees yet. Dispatch a **bootstrap subagent** (`Agent`, `general-purpose`, `run_in_background: true`) that:
+
+1. Creates the working folder `/tmp/<slackId>/<repo>_<ts>_<key>`.
+2. `git clone --depth=1 -b <base>` the target repo into it.
+3. **Creates one worktree per task in `## Dependency Groups`** — every task across every group gets its worktree up front, so Group N+1 doesn't need a fresh clone after Group N merges. Worktree path convention: `<working_folder>/<task-id>` with branch `<task-id>` from `<base>`.
+4. Returns the absolute working-folder path + per-task worktree paths + base SHA.
+
+Wait for the bootstrap report before 2.1.
+
+Between groups (after Group N's PRs merge in phase 5.1), dispatch a **base-refresh subagent** that pulls the new base into the existing worktrees of Group N+1 — do not recreate the worktrees.
 
 If phase 2 was reached same-session (rare — only via direct user prompt that already passed phase 0–1 and skipped the handoff), the worktrees from phase 0.4 are still valid; skip 2.0.
 
@@ -334,7 +343,7 @@ If Parent Epic is `none` → end normally; do not emit Handoff #2.
 - The system pushes a task-notification when the subagent completes → next user turn re-enters the orchestrator.
 - **Forbidden**: `ScheduleWakeup`, foreground `sleep`, retry-loops with `sleep`, polling.
 - **Progress estimation**: `stat <output_file>` for mtime/size. Do not `Read` the streaming log — context pollution.
-- **External state probes**: read-only `gh pr/run list`, `gh pr view --json …`, `gh api -X GET …` only. No mutation. (See Hard Rules tool surface.)
+- **External state probes**: read-only `gh pr list`, `gh pr view --json …`, `gh issue view --json …`, `gh run list`, `gh api -X GET …` only. No mutation. (See Hard Rules tool surface for the canonical list.)
 
 ## Progress Display (every user-facing turn)
 

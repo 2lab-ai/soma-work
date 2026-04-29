@@ -204,7 +204,51 @@ export function parseHandoff(promptText: string): ParseResult {
     }
   }
 
-  return { ok: true, context: deriveContext(handoffKind, fields) };
+  const context = deriveContext(handoffKind, fields);
+
+  if (handoffKind === 'plan-to-work') {
+    const validation = validatePlanToWorkContext(context);
+    if (!validation.ok) {
+      return { ok: false, reason: 'invalid-plan-payload', detail: validation.detail };
+    }
+  }
+
+  return { ok: true, context };
+}
+
+/**
+ * Cross-validate a parsed plan-to-work `HandoffContext`. Required headings
+ * are already present at this point — this checks structural / semantic
+ * coherence between `dependencyGroups` and `perTaskDispatchPayloads`.
+ *
+ * Returns a discriminated result so the caller can attach a precise `detail`
+ * to the `invalid-plan-payload` failure.
+ */
+function validatePlanToWorkContext(
+  ctx: HandoffContext,
+): { ok: true } | { ok: false; detail: string } {
+  if (ctx.dependencyGroups.length === 0) {
+    return { ok: false, detail: 'empty-dependency-groups' };
+  }
+  if (ctx.perTaskDispatchPayloads.length === 0) {
+    return { ok: false, detail: 'empty-per-task-payloads' };
+  }
+  const payloadIds = new Set(ctx.perTaskDispatchPayloads.map((p) => p.taskId));
+  const groupIds = new Set<string>();
+  for (const group of ctx.dependencyGroups) {
+    for (const id of group) groupIds.add(id);
+  }
+  for (const id of groupIds) {
+    if (!payloadIds.has(id)) {
+      return { ok: false, detail: `group-task-without-payload:${id}` };
+    }
+  }
+  for (const id of payloadIds) {
+    if (!groupIds.has(id)) {
+      return { ok: false, detail: `payload-task-without-group:${id}` };
+    }
+  }
+  return { ok: true };
 }
 
 /**
@@ -237,14 +281,27 @@ export class HandoffAbortError extends Error {
 
 /**
  * Group a body (array of lines between opening and closing tags) into a
- * `{ heading → value }` map. Multi-line values accepted — a value continues
- * until the next `## Heading` line or end of body. Leading/trailing blank
- * lines in values are trimmed.
+ * `{ heading → value }` map.
+ *
+ * **Fence-aware**: lines inside ```` ``` ```` fenced code blocks are NOT
+ * scanned for `## Heading` markers. The planner-authored
+ * `## Per-Task Dispatch Payloads` value embeds full self-contained subagent
+ * prompts, which themselves contain `## ...` markdown headings (e.g.
+ * `## Work environment`, `## Sub-issue`). Without fence-awareness those inner
+ * headings would be misparsed as top-level handoff fields and clobber the
+ * payload value. The required convention is: each `### task-id` body inside
+ * the Per-Task Dispatch Payloads section is wrapped in a fenced block
+ * (` ``` … ``` `) so the parser preserves it verbatim.
+ *
+ * Multi-line values accepted — a value continues until the next top-level
+ * `## Heading` line or end of body. Leading/trailing blank lines in values
+ * are trimmed.
  */
 function parseFields(body: readonly string[]): Record<string, string> {
   const fields: Record<string, string> = {};
   let currentHeading: string | null = null;
   let currentBuf: string[] = [];
+  let fenceMarker: string | null = null;
 
   const flush = () => {
     if (currentHeading !== null) {
@@ -258,12 +315,34 @@ function parseFields(body: readonly string[]): Record<string, string> {
   };
 
   for (const line of body) {
-    const headingMatch = /^## (.+?)\s*$/.exec(line);
-    if (headingMatch) {
-      flush();
-      currentHeading = headingMatch[1];
-      currentBuf = [];
-    } else if (currentHeading !== null) {
+    // Track fenced code blocks. We only need backtick fences (matches
+    // `using-z` payload spec); tilde fences are not part of the contract.
+    // Match opening fence `` ``` `` or `` ```lang `` (any number of backticks
+    // ≥ 3). Closing fence must use the same backtick count.
+    const fenceMatch = /^(`{3,})/.exec(line);
+    if (fenceMatch) {
+      const ticks = fenceMatch[1];
+      if (fenceMarker === null) {
+        fenceMarker = ticks;
+      } else if (ticks === fenceMarker) {
+        fenceMarker = null;
+      }
+      // Either way the fence line itself is captured into the current value.
+      if (currentHeading !== null) currentBuf.push(line);
+      continue;
+    }
+
+    if (fenceMarker === null) {
+      const headingMatch = /^## (.+?)\s*$/.exec(line);
+      if (headingMatch) {
+        flush();
+        currentHeading = headingMatch[1];
+        currentBuf = [];
+        continue;
+      }
+    }
+
+    if (currentHeading !== null) {
       currentBuf.push(line);
     }
   }
@@ -377,40 +456,66 @@ function parseDependencyGroups(value: string): ReadonlyArray<ReadonlyArray<strin
 /**
  * Parse a `## Per-Task Dispatch Payloads` block into per-taskId prompts.
  *
- * Expected shape — each task starts with `### <taskId>` (or `### task-id-X:`)
- * followed by its self-contained subagent prompt (free-form, possibly
- * multi-line). Body of each section is captured verbatim until the next
- * `### ` marker.
+ * Required shape — each task starts with `### <taskId>` followed by a
+ * fenced code block containing the self-contained subagent prompt:
  *
- * Permissive on the heading suffix (colon or whitespace tolerated). Empty
- * input returns `[]`.
+ *     ### task-id-A
+ *     ```
+ *     <self-contained subagent prompt — multi-line, may contain ##
+ *      headings, code blocks of its own, etc>
+ *     ```
+ *     ### task-id-B
+ *     ```
+ *     <…>
+ *     ```
+ *
+ * The fence is mandatory because the payload body legitimately contains
+ * `##` and `###` markdown headings; without the fence those would collide
+ * with the outer parser. Tasks lacking a fence are skipped (the structural
+ * validator in `validatePlanToWorkContext` will then surface the resulting
+ * group↔payload mismatch as `invalid-plan-payload`).
+ *
+ * Empty input or an input with no fenced bodies returns `[]`.
  */
 function parsePerTaskDispatchPayloads(value: string): ReadonlyArray<PerTaskDispatchPayload> {
   const payloads: PerTaskDispatchPayload[] = [];
-  let currentId: string | null = null;
-  let currentBuf: string[] = [];
+  const lines = value.split(/\r?\n/);
+  let i = 0;
 
-  const flush = () => {
-    if (currentId !== null) {
-      // Trim leading/trailing blank lines but preserve interior structure.
-      while (currentBuf.length > 0 && currentBuf[0].trim() === '') currentBuf.shift();
-      while (currentBuf.length > 0 && currentBuf[currentBuf.length - 1].trim() === '') {
-        currentBuf.pop();
+  while (i < lines.length) {
+    const headingMatch = /^### (.+?)\s*:?\s*$/.exec(lines[i]);
+    if (!headingMatch) {
+      i++;
+      continue;
+    }
+    const taskId = headingMatch[1].trim();
+    i++;
+
+    // Skip blank lines until the opening fence.
+    while (i < lines.length && lines[i].trim() === '') i++;
+    if (i >= lines.length) break;
+
+    const openMatch = /^(`{3,})/.exec(lines[i]);
+    if (!openMatch) {
+      // No fence → skip this task entry. Cross-validation will catch the
+      // resulting group↔payload mismatch as `invalid-plan-payload`.
+      continue;
+    }
+    const ticks = openMatch[1];
+    i++;
+
+    const buf: string[] = [];
+    while (i < lines.length) {
+      const closeMatch = /^(`{3,})\s*$/.exec(lines[i]);
+      if (closeMatch && closeMatch[1] === ticks) {
+        i++;
+        break;
       }
-      payloads.push({ taskId: currentId, prompt: currentBuf.join('\n') });
+      buf.push(lines[i]);
+      i++;
     }
-  };
-
-  for (const line of value.split(/\r?\n/)) {
-    const headingMatch = /^### (.+?)\s*:?\s*$/.exec(line);
-    if (headingMatch) {
-      flush();
-      currentId = headingMatch[1].trim();
-      currentBuf = [];
-    } else if (currentId !== null) {
-      currentBuf.push(line);
-    }
+    payloads.push({ taskId, prompt: buf.join('\n') });
   }
-  flush();
+
   return payloads;
 }

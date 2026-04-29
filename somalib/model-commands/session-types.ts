@@ -108,7 +108,20 @@ export type HandoffParseFailure =
   | 'unknown-type'
   | 'missing-required-field'
   | 'sentinel-not-top-level'
-  | 'type-workflow-mismatch';
+  | 'type-workflow-mismatch'
+  /**
+   * `plan-to-work` payload structurally invalid even though all required
+   * headings are present. Triggered by:
+   *   - empty `## Dependency Groups` (no parseable groups)
+   *   - empty `## Per-Task Dispatch Payloads` (no parseable tasks)
+   *   - groups reference taskIds with no matching `### taskId` payload
+   *   - payloads define taskIds not referenced in any group
+   *   - a `### taskId` payload body is not wrapped in a `` ``` `` fenced block
+   *     (the only safe carrier for self-contained subagent prompts that
+   *     contain their own markdown headings)
+   * `detail` field carries the specific sub-reason.
+   */
+  | 'invalid-plan-payload';
 
 export type ParseResult =
   | { ok: true; context: HandoffContext }

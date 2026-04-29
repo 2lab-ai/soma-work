@@ -1155,7 +1155,9 @@ describe('SlackHandler', () => {
         'Group 1: [step-1]',
         '## Per-Task Dispatch Payloads',
         '### step-1',
+        '```',
         'subagent prompt for step 1',
+        '```',
         '</z-handoff>',
       ].join('\n');
     }
