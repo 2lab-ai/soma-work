@@ -12,8 +12,13 @@
  * Policy (locked by issue #737):
  *   - Eligibility: `kind === 'cct'` AND `!disableRotation` AND
  *     `state.authState === 'healthy'` AND not tombstoned AND not in
- *     cooldown AND usage snapshot present (both 5h + 7d windows) AND
- *     `fiveHour.utilization ≤ fiveHourMax` AND `sevenDay.utilization ≤ sevenDayMax`.
+ *     cooldown AND usage snapshot present AND `usage.sevenDay` window
+ *     present (sort key) AND `fiveHour.utilization ≤ fiveHourMax` AND
+ *     `sevenDay.utilization ≤ sevenDayMax`.
+ *   - Cold-token allowance (#781): a missing `usage.fiveHour` window
+ *     means zero requests in the last 5h, so the slot stays under any
+ *     threshold and remains eligible (treated as `fiveHourUtilization = 0`).
+ *     Without this, a freshly-loaded token can never be auto-rotated onto.
  *   - Selection: minimum `sevenDay.resetsAt` (= soonest to reset).
  *     Tie-break 1: lower `fiveHour.utilization`.
  *     Tie-break 2: keyId lexicographic (deterministic).
@@ -42,9 +47,9 @@ import { isCctSlot } from '../auth/auth-key';
 import type { CctStoreSnapshot, SlotState, UsageSnapshot } from '../cct-store/types';
 
 export interface RotationThresholds {
-  /** 0..1, inclusive upper bound on `usage.fiveHour.utilization`. */
+  /** Inclusive upper bound on `usage.fiveHour.utilization` (percent, 0..100). */
   fiveHourMax: number;
-  /** 0..1, inclusive upper bound on `usage.sevenDay.utilization`. */
+  /** Inclusive upper bound on `usage.sevenDay.utilization` (percent, 0..100). */
   sevenDayMax: number;
 }
 
@@ -55,13 +60,20 @@ export interface RotationCandidate {
   sevenDayResetsAt: string;
   /** Epoch ms parsed from `sevenDayResetsAt` (for downstream comparison without re-parsing). */
   sevenDayResetsAtMs: number;
+  /** Percent (0..100). 0 when `/oauth/usage` had no fiveHour window — see policy. */
   fiveHourUtilization: number;
+  /** Percent (0..100). */
   sevenDayUtilization: number;
   /** Epoch ms parsed from `usage.fetchedAt`. Undefined when fetchedAt is missing/invalid. */
   fetchedAtMs?: number;
 }
 
-/** Reason an otherwise-CCT slot was rejected. Useful for debug logs. */
+/**
+ * Reason an otherwise-CCT slot was rejected. Useful for debug logs.
+ *
+ * `'no-five-hour-window'` is intentionally absent from the union so
+ * any pattern-match still expecting it fails at compile time (#781).
+ */
 export type RejectReason =
   | 'not-cct'
   | 'disable-rotation'
@@ -69,7 +81,6 @@ export type RejectReason =
   | 'auth-unhealthy'
   | 'cooldown'
   | 'no-usage'
-  | 'no-five-hour-window'
   | 'no-seven-day-window'
   | 'over-five-hour-threshold'
   | 'over-seven-day-threshold'
@@ -101,10 +112,11 @@ function evaluateSlot(
 
   const usage: UsageSnapshot | undefined = s?.usage;
   if (!usage) return { slot, reject: 'no-usage' };
-  if (!usage.fiveHour) return { slot, reject: 'no-five-hour-window' };
+  // 7d window is the sort key — required. 5h window optional (cold-token allowance, see policy).
   if (!usage.sevenDay) return { slot, reject: 'no-seven-day-window' };
 
-  if (usage.fiveHour.utilization > thresholds.fiveHourMax) {
+  const fiveHourUtilization = usage.fiveHour?.utilization ?? 0;
+  if (fiveHourUtilization > thresholds.fiveHourMax) {
     return { slot, reject: 'over-five-hour-threshold' };
   }
   if (usage.sevenDay.utilization > thresholds.sevenDayMax) {
@@ -122,7 +134,7 @@ function evaluateSlot(
       name: slot.name,
       sevenDayResetsAt: usage.sevenDay.resetsAt,
       sevenDayResetsAtMs: resetsAtMs,
-      fiveHourUtilization: usage.fiveHour.utilization,
+      fiveHourUtilization,
       sevenDayUtilization: usage.sevenDay.utilization,
       ...(Number.isFinite(fetchedAtMs) ? { fetchedAtMs } : {}),
     },

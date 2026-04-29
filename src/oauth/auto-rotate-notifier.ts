@@ -22,9 +22,10 @@ export interface RotationNotifyPayload {
   to: RotationCandidate;
 }
 
+/** Format a utilization value (percent, 0..100) as `XX.X%`. */
 function fmtPct(util: number | undefined): string {
   if (util === undefined || !Number.isFinite(util)) return '—';
-  return `${(util * 100).toFixed(1)}%`;
+  return `${util.toFixed(1)}%`;
 }
 
 function fmtResetsAt(iso: string | undefined): string {
