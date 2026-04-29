@@ -22,8 +22,9 @@ You will run zcheck Step 0–3 on PR `<PR_URL>` end-to-end. **Do not stop midway
 1. `cd <ABSOLUTE_WORKTREE_PATH>`.
 2. `git fetch origin <BASE_BRANCH> --quiet`.
 3. `git rebase origin/<BASE_BRANCH>` — handle conflicts inline (preserve both intents; never drop the PR's changes).
-4. If rebase produced changes: `git push --force origin <BRANCH_NAME>`.
-5. **simplify**: `git diff origin/<BASE_BRANCH>... > /tmp/<SUB_KEY>-zcheck.diff` and audit for reuse / quality / efficiency hard-blockers. Fix in this PR. Push narration / chore comments to a follow-up.
+4. If rebase produced changes: `git push --force-with-lease origin <BRANCH_NAME>` (raw `--force` is forbidden — it can clobber concurrent commits from another reviewer).
+5. After force-push, re-read `gh pr view <NUM> --repo <ORG>/<REPO> --json reviewDecision,mergeable,state` — `dismiss_stale_reviews` may have voided the prior approval. Carry the post-rebase `reviewDecision` into the final report so the orchestrator can route back to phase 4 if needed.
+6. **simplify**: `git diff origin/<BASE_BRANCH>... > "$TMPDIR/<SUB_KEY>-zcheck.diff"` and audit for reuse / quality / efficiency hard-blockers. Fix in this PR. Push narration / chore comments to a follow-up.
 
 ### Step 1: CI must pass
 

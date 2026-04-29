@@ -37,28 +37,37 @@ You will complete sub-task `<SUB_KEY>` of epic `<EPIC_NUM>` end-to-end. Result =
 2. Apply changes per §1 + §2.
 3. Build: `<build command>` — must stay at-or-below the warning baseline.
 4. Test: `<test command>` — all green.
-5. `git add` changed files + `git commit` (HEREDOC):
+5. `git add` changed files + `git commit` with the **HEREDOC literal** (Co-Author email must already be resolved by the orchestrator before dispatch — if `z@2lab.ai` is empty, abort and return a blocker):
 
-```
+```bash
+git commit -m "$(cat <<'EOF'
 [<TICKET_KEY>] <SUB_KEY>: <one-line title>
 
 <2–4 line behavior-level description — what changes, why, scope boundary.
 No file paths / function names; that lives in the PR diff.>
 
-Refs: #<SUB_NUM>, #<EPIC_NUM>
+Closes #<SUB_NUM>
+Refs: #<EPIC_NUM>
 
 Co-Authored-By: Z <z@2lab.ai>
+EOF
+)"
 ```
 
 6. `git push -u origin <BRANCH_NAME>`
-7. `gh pr create --repo <ORG>/<REPO> --base <BASE_BRANCH> --title "[<TICKET_KEY>] <SUB_KEY>: <one-line title>" --body-file <(cat <<'EOF'
+7. PR creation — **inline `--body` literal heredoc only**. Never `--body-file`, never `--body "$VAR"` (host pre-tool guard rejects shell-variable indirection because the static check cannot see the runtime value):
+
+```bash
+gh pr create --repo <ORG>/<REPO> --base <BASE_BRANCH> \
+  --title "[<TICKET_KEY>] <SUB_KEY>: <one-line title>" \
+  --body "$(cat <<'EOF'
 ## Summary
 - <bullet 1 — behavior change>
 - <bullet 2 — behavior change>
 - <bullet 3 — invariants preserved>
 
 ## Refs
-- Sub-issue: #<SUB_NUM>
+- Closes #<SUB_NUM>
 - Parent epic: #<EPIC_NUM>
 - Dependency: <none / Group X subs>
 
@@ -77,14 +86,19 @@ Co-Authored-By: Z <z@2lab.ai>
 Co-Authored-By: Z <z@2lab.ai>
 EOF
 )"
+```
+
+> **Case A escape variant** (only when tier=tiny|small ∧ no implicit/explicit issue-first ask ∧ repo policy does not require an issue): replace `Closes #<SUB_NUM>` in both the commit message and PR body with the literal note `Case A escape (tier=tiny|small, no issue by policy)`. Do not omit the line — host PR-guard requires either form.
 
 ## Hard rules
 - Build / test failure → fix and retry. **Never** `--no-verify`, **never** skip hooks.
-- Commit message must include `Refs: #<SUB_NUM>, #<EPIC_NUM>`.
-- PR title format `[<TICKET_KEY>] <SUB_KEY>: …` (PR-guard checks the ticket key prefix).
+- Commit message and PR body must include either `Closes #<SUB_NUM>` (Case A/B) or the literal Case A escape note. The host PR-issue-guard rejects PRs missing both.
+- PR title format `[<TICKET_KEY>] <SUB_KEY>: …` (PR-guard checks the ticket-key prefix).
 - PR description must include `## Summary` and `## Test plan` (PR template).
+- Co-Author email is non-negotiable. The orchestrator confirms `z@2lab.ai` resolves before dispatch; if your prompt arrives without a confirmed email, return a `blocker` field instead of guessing.
 - Do **not** commit comments narrating the epic / orchestrator reasoning.
 - Bot token cannot `gh pr merge --admin` and cannot self-approve — do not try.
+- Subagent does **not** call `UIAskUserQuestion` / `decision-gate` UI. On a real blocker, return a `blocker` field in the final report.
 - Do not stop midway. Do not return without a PR URL.
 
 ## Final report (when done)

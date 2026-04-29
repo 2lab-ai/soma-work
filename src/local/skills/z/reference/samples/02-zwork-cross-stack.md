@@ -97,22 +97,28 @@ one cycle, after which the deprecated field is removed.>
 
 Compatibility: <explicit one-line statement>.
 
-Refs: #<SUB_NUM>, #<EPIC_NUM>
+Closes #<SUB_NUM>
+Refs: #<EPIC_NUM>
 
 Co-Authored-By: Z <z@2lab.ai>
 ```
 
-7. `git push -u origin <BRANCH_NAME>`.
-8. `gh pr create` with title `[<TICKET_KEY>] <SUB_KEY>: <one-line title>` and body:
+(Co-Author email must already be resolved by the orchestrator before dispatch — if `z@2lab.ai` is empty in your prompt, abort and return a blocker.)
 
-```
+7. `git push -u origin <BRANCH_NAME>`.
+8. PR creation — **inline `--body` literal heredoc only**. Never `--body-file`, never `--body "$VAR"`:
+
+```bash
+gh pr create --repo <ORG>/<REPO> --base <BASE_BRANCH> \
+  --title "[<TICKET_KEY>] <SUB_KEY>: <one-line title>" \
+  --body "$(cat <<'EOF'
 ## Summary
 - Stack A: <bullets>
 - Stack B: <bullets>
 - Compatibility: <statement>
 
 ## Refs
-- Sub-issue: #<SUB_NUM>
+- Closes #<SUB_NUM>
 - Parent epic: #<EPIC_NUM>
 - Dependency: <none / Group X>
 - Follow-up: <next-sub-task that consumes the new field>
@@ -130,12 +136,19 @@ Co-Authored-By: Z <z@2lab.ai>
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 
 Co-Authored-By: Z <z@2lab.ai>
+EOF
+)"
 ```
+
+> **Case A escape variant** (only when tier=tiny|small ∧ no implicit/explicit issue-first ask ∧ repo policy does not require an issue): replace `Closes #<SUB_NUM>` in both the commit and PR body with the literal note `Case A escape (tier=tiny|small, no issue by policy)`. Cross-stack work is rarely tier ≤ small, so this variant is uncommon for this template.
 
 ## Hard rules
 - Confirm wire form (int vs. string) **before** writing the Stack-A enum. Wrong choice = silent failure.
 - Legacy fallback mapping is permissive (warn + skip on unknown value). Never error in fallback path — that breaks compat.
+- Commit message and PR body must include either `Closes #<SUB_NUM>` (Case A/B) or the literal Case A escape note. Host PR-issue-guard rejects PRs missing both.
 - PR description must include `## Summary` and `## Test plan`.
+- Co-Author email is non-negotiable; if missing in your prompt, return a `blocker` field instead of guessing.
+- Subagent does **not** call `UIAskUserQuestion` / `decision-gate` UI. On a real blocker, return a `blocker` field.
 - After PR creation, report the wire-form decision so the orchestrator can record it for downstream subs.
 - Do not stop midway. Do not return without a PR URL.
 

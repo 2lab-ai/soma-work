@@ -86,7 +86,7 @@ The prompt MUST contain:
 ## phase 3 — zcheck (per PR)
 
 ### Standard zcheck subagent (Step 0–3; Step 4 is the orchestrator's)
-- Step 0: `cd worktree` → fetch → `git rebase origin/<base>` → resolve conflicts → force-push if changed → simplify (reuse / quality / efficiency hard-blockers; split narration to follow-up).
+- Step 0: `cd worktree` → fetch → `git rebase origin/<base>` → resolve conflicts → `git push --force-with-lease` if changed (raw `--force` forbidden) → re-read `reviewDecision` (dismiss-stale-reviews regression check) → simplify (reuse / quality / efficiency hard-blockers; split narration to follow-up).
 - Step 1: CI watch — `gh run list` → latest run id → `gh run watch <id> --exit-status`. Failed → `gh run view <id> --log-failed` → fix → push → restart.
 - Step 2: review threads — `gh api graphql reviewThreads` + `gh pr view --json comments`. Greptile / codex P0/P1 → fix → push → restart Step 1. Resolve threads via `resolveReviewThread` mutation.
 - Step 3: ztrace — per-scenario callstack (happy + edge) — invariants pinned by code + tests.
@@ -124,14 +124,14 @@ Options (4):
 - Rebase conflict → delegate to a separate subagent (rebase + force-push + CI watch + merge).
 - Orchestrator does **not** resolve conflicts directly.
 
-## phase 5.E — Epic Update (close gated by user)
+## phase 5.E — Epic Update
 1. Epic body Tracker update:
    - Merged subs: `[x]` + merge SHA.
    - Open PR subs: `[ ] PR #NNN OPEN`.
    - Progress section (X merged / Y open).
    - Dependency groups marked ✅ / 🟡.
 2. Add epic comment — merge order, deliverable summary, next step.
-3. Close only on explicit user instruction.
+3. **Close policy** (must match `using-z` §Handoff #2 step 5 and `using-epic-tasks/reference/github.md` Epic Done gate): if all sub-issues are closed and the checklist is fully `[x]`, the epic-update subagent closes the epic automatically. If unfinished sub-issues remain, list them but do **not** auto-chain to the next sub-issue's Handoff #1 — the user must initiate manually with `$z <next>`.
 
 ## Progress Display (after every user turn)
 
@@ -152,8 +152,9 @@ Group 4 [░░░░░░░░░░] Pending dependency
 ## Failure Modes & Recovery
 - Subagent reports incomplete ("Proceeding to Step 1" then ends) → fresh subagent (or `SendMessage` continuation). Orchestrator does NOT finish the work itself.
 - Build failure → subagent fix loop; no `--no-verify`, no hooks skip.
-- Branch protection BLOCKED → user GitHub approve (no `--admin` workaround).
-- Force-push dismissed reviews → confirm and re-request approve.
+- Branch protection BLOCKED (no eligible reviewer / required CI label / signed-commits required) → orchestrator routes via `UIAskUserQuestion`; do not try `--admin` or `-c commit.gpgsign=false` workarounds.
+- Force-push dismissed reviews → phase-3 / phase-5 subagent re-reads `reviewDecision` after force-push and reports the regression; orchestrator routes back to phase 4 for fresh approve before merge.
+- 401 / 403 token issue → try header swap (`Bearer` ↔ `token`), alternate env token, raw `curl`, alternate trigger path, then real fix. Escalate to user only after all five fail.
 
 ## Memory Rules (durable)
 - `ScheduleWakeup` permanently banned.
