@@ -17,8 +17,11 @@ itself — it dispatches subagents per phase (see `src/local/skills/z/SKILL.md`
    session SSOT. The host already verified structural correctness, so there is
    no need to re-parse or re-validate.
 2. **Skip `local:z` phase 0 and phase 1** — the source session completed those
-   phases and the confirmed plan is authoritative. Do not re-clarify, do not
-   re-plan, do not re-classify the tier.
+   phases. The host-required handoff fields (`## Issue` / `## Parent Epic` /
+   `## Task List` / `## Dependency Groups` / `## Per-Task Dispatch Payloads`)
+   are the canonical phase-2 SSOT — that is what your controller routing uses.
+   `## Confirmed Plan` is optional informational summary only. Do not
+   re-clarify, do not re-plan, do not re-classify the tier.
 3. Register the block's `## Task List` into your todo list (TodoWrite).
 4. Record the block's `## Issue` URL, `## Parent Epic` URL, `## Original Request
    Excerpt`, and `## Repository Policy` as session-wide SSOT (they will be
@@ -31,10 +34,11 @@ itself — it dispatches subagents per phase (see `src/local/skills/z/SKILL.md`
       that creates the working folder, clones the repo, creates the per-task
       worktrees from `## Dependency Groups`, and returns the absolute paths.
       Wait for the report.
-   2. **§2.1 Repeat-back gate** — state phase-1 outputs back: confirmed plan,
-      dependency groups, per-task dispatch payloads received, Issue URL /
-      parent epic, bootstrap result. Missing or unresolved item → output the
-      gate's failure line and stop pending user input.
+   2. **§2.1 Repeat-back gate** — state phase-1 outputs back: dependency
+      groups, per-task dispatch payloads received, Issue URL / parent epic,
+      bootstrap result. (`## Confirmed Plan` is optional informational summary
+      and is NOT part of the gate.) Missing or unresolved required item →
+      output the gate's failure line and stop pending user input.
    3. **§2.2 + §2.3 — substitute worktree paths into the per-task payloads**
       and dispatch the tasks. For each Dependency Group, in order, dispatch
       the contained tasks' Per-Task Dispatch Payloads as **parallel implementer

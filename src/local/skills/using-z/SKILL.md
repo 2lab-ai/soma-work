@@ -80,7 +80,7 @@ z 컨트롤러의 phase 전환 중 **세션 경계**를 넘는 것은 두 지점
 
 **Producer-authoritative typed fields** (host persists these verbatim as `session.handoffContext`):
 
-**Optional (host applies conservative defaults if missing — typed and persisted on `session.handoffContext`):**
+**Optional typed metadata (host applies conservative defaults if missing — typed and persisted on `session.handoffContext`):**
 
 - `## Tier` — `using-epic-tasks` 판정 tier. 누락 시 null.
 - `## Escape Eligible` — Case A 3-condition validation 통과 여부 (단순 마커 존재가 아닌 검증 통과). 누락 시 false.
@@ -88,7 +88,10 @@ z 컨트롤러의 phase 전환 중 **세션 경계**를 넘는 것은 두 지점
 - `## Original Request Excerpt` — 유저의 원 SSOT instruction 발췌. 새 세션이 Case A escape `no-issue-first` clause를 재검증하기 위함. 누락 시 null.
 - `## Repository Policy` — area-B explore report의 "repo policy가 PR-issue 링크를 요구하는가" 결론. Case A escape clause (c) 재검증용. 누락 시 null.
 - `## Codex Review` — phase 1.3 planner-loop의 최종 codex review record (`{ score, verdict }`). 새 세션이 audit / surface 가능. 누락 시 null.
-- `## Confirmed Plan` — behavior-level summary (informational only, parser는 사실상 무시). 누락해도 무방. **canonical phase-2 SSOT는 Task List + Dependency Groups + Per-Task Dispatch Payloads** — Confirmed Plan은 보조 텍스트.
+
+**Optional informational text (NOT typed, NOT persisted on `session.handoffContext`):**
+
+- `## Confirmed Plan` — behavior-level summary for the user. Parser는 heading 존재만 확인하고 typed field로 변환하지 않는다 (canonical phase-2 SSOT는 Task List + Dependency Groups + Per-Task Dispatch Payloads에 있으므로). 누락해도 무방. handoff body에 들어가도 자유 형식 텍스트 — Confirmed Plan을 phase-2 라우팅 source로 사용하지 말 것.
 
 **Display-only required heading (host parser checks heading presence only, no semantic validation):**
 

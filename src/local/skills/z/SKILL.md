@@ -308,16 +308,18 @@ Dispatch a **merge driver subagent** (background). Prompt:
 
 The merge subagent does **not** dispatch other subagents — that's the controller's job. The next step is decided by the orchestrator on receipt of the merge report (see §5.1.a below).
 
-### 5.1.a Closeout branch (controller-side)
+### 5.1.a Branch on the merge subagent's report (controller-side)
 
-After every successful merge, the orchestrator inspects whether more dependency groups remain in `## Dependency Groups`:
+The orchestrator decides what to do next based on the merge subagent's report:
 
-- **Next group exists** (more PRs to ship): dispatch a **base-refresh subagent** (background) that pulls the new base into Group N+1's existing worktrees — those worktrees were created up front in §2.0 and are reused for the entire phase 2 lifecycle. Do **not** recreate worktrees. After the base-refresh report returns, **return to §2.2** and dispatch Group N+1's implementer subagents. §5.2–§5.4 are skipped this turn.
-- **No next group** (this was the last PR for the epic / single-issue case): proceed to §5.2 (conflict cleanup if any), §5.3 (`es` executive summary), §5.4 (Handoff #2 if Parent Epic ≠ none).
+- **Merge subagent reported `blocker` (rebase conflict, post-rebase reviewDecision regression, etc.)** → §5.2 (conflict / blocker cleanup). Loop back to §5.1 once the blocker subagent resolves it. **Successful merge has not happened yet** — do not proceed to closeout.
+- **Merge subagent reported `MERGED` (success)** → inspect whether more dependency groups remain in `## Dependency Groups`:
+  - **Next group exists** (more PRs to ship): dispatch a **base-refresh subagent** (background) that pulls the new base into Group N+1's existing worktrees — those worktrees were created up front in §2.0 and are reused for the entire phase 2 lifecycle. Do **not** recreate worktrees. After the base-refresh report returns, **return to §2.2** and dispatch Group N+1's implementer subagents. §5.3 / §5.4 are skipped this turn.
+  - **No next group** (this was the last PR for the epic / single-issue case): proceed to §5.3 (`es` executive summary), then §5.4 (Handoff #2 if Parent Epic ≠ none).
 
-### 5.2 Conflict subagent
+### 5.2 Conflict / blocker subagent
 
-If the merge subagent reports rebase conflicts that need resolution, dispatch a **separate conflict-resolution subagent** (background) — see `reference/samples/05-rebase-merge-conflict.md`. The orchestrator does not resolve conflicts itself.
+Triggered only when §5.1's merge subagent returns a `blocker`. The orchestrator dispatches a **separate conflict-resolution subagent** (background) — see `reference/samples/05-rebase-merge-conflict.md` — that handles rebase + force-push + reviewDecision recheck + merge. The orchestrator does not resolve conflicts itself. After this subagent's report, loop back to §5.1.a. (A successful merge cannot still need conflict cleanup; this branch only runs on the blocker path.)
 
 ### 5.3 Executive summary + es
 
