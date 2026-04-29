@@ -26,17 +26,25 @@ itself — it dispatches subagents per phase (see `src/local/skills/z/SKILL.md`
    re-verifying the Case A escape condition during PR creation).
 5. Parse the block's `## Dependency Groups` and `## Per-Task Dispatch Payloads`
    sections — these are the planner's pre-computed phase-2 inputs.
-6. **Enter `local:z` phase 2 controller semantics**:
-   1. Run the phase-2 entry repeat-back gate (§2.1 — state phase-1 outputs back;
-      missing item → output the gate's failure line and stop).
-   2. For each Dependency Group, in order, dispatch the contained tasks'
-      Per-Task Dispatch Payloads as **parallel implementer subagents** in a
-      single `Agent` call message (`subagent_type: "general-purpose"`,
-      `run_in_background: true`). Pass each payload verbatim.
-   3. Wait for the subagent reports via the push notification model (no
-      `ScheduleWakeup`, no polling).
-   4. On a subagent `blocker` field, route the question through `UIAskUserQuestion`
-      (orchestrator-side only — subagents do not call it themselves).
+6. **Enter `local:z` phase 2 controller semantics — start at §2.0 bootstrap**:
+   1. **§2.0 Bootstrap subagent (blocking)** — dispatch a bootstrap subagent
+      that creates the working folder, clones the repo, creates the per-task
+      worktrees from `## Dependency Groups`, and returns the absolute paths.
+      Wait for the report.
+   2. **§2.1 Repeat-back gate** — state phase-1 outputs back: confirmed plan,
+      dependency groups, per-task dispatch payloads received, Issue URL /
+      parent epic, bootstrap result. Missing or unresolved item → output the
+      gate's failure line and stop pending user input.
+   3. **§2.2 + §2.3 — substitute worktree paths into the per-task payloads**
+      and dispatch the tasks. For each Dependency Group, in order, dispatch
+      the contained tasks' Per-Task Dispatch Payloads as **parallel implementer
+      subagents** in a single `Agent` call message
+      (`subagent_type: "general-purpose"`, `run_in_background: true`). Pass
+      each payload verbatim (with the worktree path placeholder substituted).
+   4. **§2.4 Wait** for the subagent reports via the push notification model
+      (no `ScheduleWakeup`, no polling). On a subagent `blocker` field, route
+      the question through `UIAskUserQuestion` (orchestrator-side only —
+      subagents do not call it themselves).
 7. After every group merges, advance to phase 3 (post-impl gate dispatch),
    phase 4 (user approve), phase 5 (merge driver dispatch). All phases obey
    the controller contract — **do not** invoke `local:zwork` as the executor

@@ -19,6 +19,7 @@ import type {
   HandoffParseFailure,
   HandoffTier,
   ParseResult,
+  PerTaskDispatchPayload,
   WorkflowType,
   ZHandoffWorkflow,
 } from './session-types';
@@ -33,9 +34,23 @@ const VALID_TIERS: ReadonlySet<HandoffTier> = new Set([
 
 const VALID_KINDS: ReadonlySet<HandoffKind> = new Set(['plan-to-work', 'work-complete']);
 
-/** Required `##` heading set per sentinel type (grammar rule 4). */
+/**
+ * Required `##` heading set per sentinel type (grammar rule 4).
+ *
+ * `Dependency Groups` and `Per-Task Dispatch Payloads` are required for
+ * `plan-to-work` because the new session is a fresh controller and must not
+ * read `PLAN.md` from the working folder (z/SKILL.md §Hard Rules forbids the
+ * orchestrator from reading repo source). The handoff payload is the only
+ * carrier for the planner's structured output.
+ */
 const REQUIRED_FIELDS: Record<HandoffKind, readonly string[]> = {
-  'plan-to-work': ['Issue', 'Parent Epic', 'Task List'],
+  'plan-to-work': [
+    'Issue',
+    'Parent Epic',
+    'Task List',
+    'Dependency Groups',
+    'Per-Task Dispatch Payloads',
+  ],
   'work-complete': ['Completed Subissue', 'PR', 'Summary', 'Remaining Epic Checklist'],
 };
 
@@ -81,6 +96,14 @@ function findSentinelOpeningLine(lines: readonly string[]): number {
 }
 
 /**
+ * Strict opening-tag regex. Single space between `<z-handoff` and `type=`,
+ * exactly double-quoted attribute, no trailing whitespace, no other attributes.
+ * Matches `using-z` SKILL.md §Sentinel Grammar rule 1: "case-sensitive,
+ * double-quoted attribute. 변형(대소문자·홑따옴표·공백 변형) 불매칭."
+ */
+const STRICT_OPEN_RE = /^<z-handoff type="([^"]+)">$/;
+
+/**
  * Lightweight existence + type-extraction check for the validator layer.
  *
  * Returns the captured type if the prompt has a well-formed top-level
@@ -92,7 +115,7 @@ export function extractSentinelType(promptText: string): HandoffKind | null {
   const lines = promptText.split(/\r?\n/);
   const openIdx = findSentinelOpeningLine(lines);
   if (openIdx < 0) return null;
-  const openMatch = /^<z-handoff\s+type="([^"]+)">\s*$/.exec(lines[openIdx]);
+  const openMatch = STRICT_OPEN_RE.exec(lines[openIdx]);
   if (!openMatch) return null;
   const captured = openMatch[1];
   return VALID_KINDS.has(captured as HandoffKind) ? (captured as HandoffKind) : null;
@@ -135,8 +158,9 @@ export function parseHandoff(promptText: string): ParseResult {
     };
   }
 
-  // Strict opening: <z-handoff type="..."> with double quotes, no extra attrs.
-  const strictOpen = /^<z-handoff\s+type="([^"]+)">\s*$/.exec(openLine);
+  // Strict opening: <z-handoff type="..."> — single space, double quotes,
+  // no extra attrs, no trailing whitespace. See STRICT_OPEN_RE for the contract.
+  const strictOpen = STRICT_OPEN_RE.exec(openLine);
   if (!strictOpen) {
     return { ok: false, reason: 'malformed-opening', detail: openLine.trim() };
   }
@@ -297,6 +321,14 @@ function deriveContext(
   // Default is true (conservative — require issue unless producer explicitly says otherwise).
   const issueRequiredByUser = issueRequiredParsed !== false;
 
+  // Plan-to-work-only structured fields. work-complete leaves these empty.
+  const dependencyGroups =
+    kind === 'plan-to-work' ? parseDependencyGroups(fields['Dependency Groups'] ?? '') : [];
+  const perTaskDispatchPayloads =
+    kind === 'plan-to-work'
+      ? parsePerTaskDispatchPayloads(fields['Per-Task Dispatch Payloads'] ?? '')
+      : [];
+
   return {
     handoffKind: kind,
     sourceIssueUrl,
@@ -304,8 +336,81 @@ function deriveContext(
     escapeEligible,
     tier,
     issueRequiredByUser,
+    dependencyGroups,
+    perTaskDispatchPayloads,
     // UUID is a log-correlation id only; hopBudget seed is #697's starting point.
     chainId: randomUUID(),
     hopBudget: 1,
   };
+}
+
+/**
+ * Parse a `## Dependency Groups` block into ordered groups of taskIds.
+ *
+ * Expected line shape (one per group, in declared order):
+ *
+ *     Group 1: [task-id-A, task-id-B]
+ *     Group 2: [task-id-C]
+ *
+ * Permissive: leading whitespace, optional `Group N:` prefix, comma- or
+ * whitespace-separated taskIds inside the brackets. Empty / unparseable input
+ * returns `[]` (the schema check upstream already enforced presence; here
+ * we just extract structure).
+ */
+function parseDependencyGroups(value: string): ReadonlyArray<ReadonlyArray<string>> {
+  const groups: string[][] = [];
+  for (const rawLine of value.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (line === '') continue;
+    const bracketMatch = /\[([^\]]*)\]/.exec(line);
+    if (!bracketMatch) continue;
+    const inside = bracketMatch[1];
+    const ids = inside
+      .split(/[\s,]+/)
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    if (ids.length > 0) groups.push(ids);
+  }
+  return groups;
+}
+
+/**
+ * Parse a `## Per-Task Dispatch Payloads` block into per-taskId prompts.
+ *
+ * Expected shape — each task starts with `### <taskId>` (or `### task-id-X:`)
+ * followed by its self-contained subagent prompt (free-form, possibly
+ * multi-line). Body of each section is captured verbatim until the next
+ * `### ` marker.
+ *
+ * Permissive on the heading suffix (colon or whitespace tolerated). Empty
+ * input returns `[]`.
+ */
+function parsePerTaskDispatchPayloads(value: string): ReadonlyArray<PerTaskDispatchPayload> {
+  const payloads: PerTaskDispatchPayload[] = [];
+  let currentId: string | null = null;
+  let currentBuf: string[] = [];
+
+  const flush = () => {
+    if (currentId !== null) {
+      // Trim leading/trailing blank lines but preserve interior structure.
+      while (currentBuf.length > 0 && currentBuf[0].trim() === '') currentBuf.shift();
+      while (currentBuf.length > 0 && currentBuf[currentBuf.length - 1].trim() === '') {
+        currentBuf.pop();
+      }
+      payloads.push({ taskId: currentId, prompt: currentBuf.join('\n') });
+    }
+  };
+
+  for (const line of value.split(/\r?\n/)) {
+    const headingMatch = /^### (.+?)\s*:?\s*$/.exec(line);
+    if (headingMatch) {
+      flush();
+      currentId = headingMatch[1].trim();
+      currentBuf = [];
+    } else if (currentId !== null) {
+      currentBuf.push(line);
+    }
+  }
+  flush();
+  return payloads;
 }

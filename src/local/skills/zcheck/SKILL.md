@@ -37,7 +37,7 @@ The dispatching prompt declares the mode. `local:z` always invokes orchestrator-
 gh run list --branch <BRANCH> --repo <OWNER/REPO> --limit 1 --json status,conclusion,databaseId -q '.[0]'
 ```
 
-- **in_progress:** 30초마다 폴링.
+- **in_progress:** `gh run watch <id> --exit-status`로 push-style 대기 (foreground sleep / 30초 폴링 금지 — 본 워치는 GitHub의 push 알림 기반).
 - **failed:** `gh run view <RUN_ID> --log-failed`로 진단 → fix → commit+push
 - 병렬 작업: step 2를 병렬로 처리한다. 하지만 이 CI가 완료 되면 반드시 다시 Step 2작업을 해야한다. CI가 새 코드 리뷰 커멘트를 추가할 수 있다.
 - **success:** Step 2으로.

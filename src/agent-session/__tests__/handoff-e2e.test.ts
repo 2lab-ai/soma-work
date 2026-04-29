@@ -43,6 +43,11 @@ function planToWorkPayload() {
     'true',
     '## Task List',
     '- [ ] step 1',
+    '## Dependency Groups',
+    'Group 1: [step-1]',
+    '## Per-Task Dispatch Payloads',
+    '### step-1',
+    'Self-contained subagent prompt for step 1.',
     '</z-handoff>',
   ].join('\n');
   return {

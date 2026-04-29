@@ -24,15 +24,20 @@ For every technical decision, estimate "How many lines would I need to change to
 
 ## Decision Algorithm
 
+Branches are checked in **descending tier order** so the largest-cost match
+wins. (An earlier version checked `medium` before `xxlarge`, which made the
+`xxlarge` halt branch unreachable — fixed: `xxlarge` is now the first branch.)
+
 ```
 for each decision:
   1. Estimate switching_cost = how many lines to change if reversing this decision later?
 
-  2. if switching_cost < small (~20 lines):
-       → Autonomous judgment
-       → 3-person review majority vote (you + oracle-reviewer + oracle-gemini-reviewer)
-       → Proceed in the direction agreed upon by 2/3 or more
-       → Do not ask the user
+  2. if switching_cost >= xxlarge (~1000+ lines):
+       → HALT — do not attempt as a single work unit
+       → 3-person review proposes decomposition into N epics (each ≤ xlarge)
+       → Ask user for decomposition approval
+       → On approval: hand each epic to using-epic-tasks Case B in independent sessions
+       → Do NOT create any epic/issue/PR before user approval
 
   3. elif switching_cost >= medium (~50 lines):
        → Ask the user
@@ -42,14 +47,15 @@ for each decision:
          [`../UIAskUserQuestion/templates/decision-gate-tier-medium.json`](../UIAskUserQuestion/templates/decision-gate-tier-medium.json)
          — `{decision_summary}` / `{impact_scope}` / `{rollback_cost}` placeholders
          already pass the 6-rule soft gate. `local:zwork` delegates here when
-         retries exceed 3; it must not own its own UIAskUserQuestion template.
+         retries exceed 3 (standalone mode only — orchestrator-mode subagents
+         return a `blocker` field instead); it must not own its own
+         UIAskUserQuestion template.
 
-  4. elif switching_cost >= xxlarge (~1000+ lines):
-       → HALT — do not attempt as a single work unit
-       → 3-person review proposes decomposition into N epics (each ≤ xlarge)
-       → Ask user for decomposition approval
-       → On approval: hand each epic to using-epic-tasks Case B in independent sessions
-       → Do NOT create any epic/issue/PR before user approval
+  4. else (switching_cost < medium — i.e. tiny / small):
+       → Autonomous judgment
+       → 3-person review majority vote (you + oracle-reviewer + oracle-gemini-reviewer)
+       → Proceed in the direction agreed upon by 2/3 or more
+       → Do not ask the user
 ```
 
 ## 3-Person Majority Review (MANDATORY)

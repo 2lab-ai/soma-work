@@ -23,6 +23,13 @@ function planToWorkMinimal(): string {
     '## Task List',
     '- [ ] first task',
     '- [ ] second task',
+    '## Dependency Groups',
+    'Group 1: [first-task, second-task]',
+    '## Per-Task Dispatch Payloads',
+    '### first-task',
+    'Implement first thing per planner spec.',
+    '### second-task',
+    'Implement second thing per planner spec.',
     '</z-handoff>',
   ].join('\n');
 }
@@ -44,6 +51,11 @@ function planToWorkCaseAEscape(): string {
     'false',
     '## Task List',
     '- [ ] inline rename',
+    '## Dependency Groups',
+    'Group 1: [inline-rename]',
+    '## Per-Task Dispatch Payloads',
+    '### inline-rename',
+    'Rename foo -> bar across src/.',
     '</z-handoff>',
   ].join('\n');
 }
@@ -66,6 +78,14 @@ function planToWorkFullTyped(): string {
     '## Task List',
     '- [ ] step a',
     '- [ ] step b',
+    '## Dependency Groups',
+    'Group 1: [step-a]',
+    'Group 2: [step-b]',
+    '## Per-Task Dispatch Payloads',
+    '### step-a',
+    'Step A subagent prompt.',
+    '### step-b',
+    'Step B subagent prompt.',
     '</z-handoff>',
   ].join('\n');
 }
@@ -106,6 +126,12 @@ describe('parseHandoff — happy paths', () => {
     expect(result.context.hopBudget).toBe(1);
     expect(typeof result.context.chainId).toBe('string');
     expect(result.context.chainId.length).toBeGreaterThan(0);
+    // Required structured fields are now persisted.
+    expect(result.context.dependencyGroups).toEqual([['first-task', 'second-task']]);
+    expect(result.context.perTaskDispatchPayloads).toEqual([
+      { taskId: 'first-task', prompt: 'Implement first thing per planner spec.' },
+      { taskId: 'second-task', prompt: 'Implement second thing per planner spec.' },
+    ]);
   });
 
   it('parses plan-to-work Case A escape with typed fields', () => {
@@ -117,17 +143,27 @@ describe('parseHandoff — happy paths', () => {
     expect(result.context.tier).toBe('tiny');
     expect(result.context.escapeEligible).toBe(true);
     expect(result.context.issueRequiredByUser).toBe(false);
+    expect(result.context.dependencyGroups).toEqual([['inline-rename']]);
+    expect(result.context.perTaskDispatchPayloads).toEqual([
+      { taskId: 'inline-rename', prompt: 'Rename foo -> bar across src/.' },
+    ]);
   });
 
-  it('parses plan-to-work Case B with tier=medium', () => {
+  it('parses plan-to-work Case B with tier=medium and multiple dependency groups', () => {
     const result = parseHandoff(planToWorkFullTyped());
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error('unreachable');
     expect(result.context.tier).toBe('medium');
     expect(result.context.sourceIssueUrl).toBe('https://github.com/owner/repo/issues/99');
+    // Across-group sequencing is preserved by parse order.
+    expect(result.context.dependencyGroups).toEqual([['step-a'], ['step-b']]);
+    expect(result.context.perTaskDispatchPayloads.map((p) => p.taskId)).toEqual([
+      'step-a',
+      'step-b',
+    ]);
   });
 
-  it('parses work-complete minimal', () => {
+  it('parses work-complete minimal — plan-only fields are empty', () => {
     const result = parseHandoff(workCompleteMinimal());
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error('unreachable');
@@ -137,6 +173,8 @@ describe('parseHandoff — happy paths', () => {
     expect(result.context.escapeEligible).toBe(false);
     expect(result.context.issueRequiredByUser).toBe(true);
     expect(result.context.hopBudget).toBe(1);
+    expect(result.context.dependencyGroups).toEqual([]);
+    expect(result.context.perTaskDispatchPayloads).toEqual([]);
   });
 
   it('accepts prompt with no $z prefix — sentinel directly at top', () => {
@@ -254,6 +292,11 @@ describe('parseHandoff — malformed inputs', () => {
       'none',
       '## Task List',
       '- [ ] foo',
+      '## Dependency Groups',
+      'Group 1: [foo]',
+      '## Per-Task Dispatch Payloads',
+      '### foo',
+      'do foo',
       '</z-handoff>',
     ].join('\n');
     const result = parseHandoff(text);
@@ -261,6 +304,50 @@ describe('parseHandoff — malformed inputs', () => {
     if (result.ok) throw new Error('unreachable');
     expect(result.reason).toBe('missing-required-field');
     expect(result.detail).toBe('Issue');
+  });
+
+  it('reports missing-required-field when plan-to-work has no ## Dependency Groups', () => {
+    // Phase-2 controller cannot dispatch without the planner's dependency
+    // groups in the handoff payload (z/SKILL.md §Hard Rules forbids reading
+    // PLAN.md from the working folder).
+    const text = [
+      '<z-handoff type="plan-to-work">',
+      '## Issue',
+      'https://example.com/1',
+      '## Parent Epic',
+      'none',
+      '## Task List',
+      '- [ ] foo',
+      '## Per-Task Dispatch Payloads',
+      '### foo',
+      'do foo',
+      '</z-handoff>',
+    ].join('\n');
+    const result = parseHandoff(text);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.reason).toBe('missing-required-field');
+    expect(result.detail).toBe('Dependency Groups');
+  });
+
+  it('reports missing-required-field when plan-to-work has no ## Per-Task Dispatch Payloads', () => {
+    const text = [
+      '<z-handoff type="plan-to-work">',
+      '## Issue',
+      'https://example.com/1',
+      '## Parent Epic',
+      'none',
+      '## Task List',
+      '- [ ] foo',
+      '## Dependency Groups',
+      'Group 1: [foo]',
+      '</z-handoff>',
+    ].join('\n');
+    const result = parseHandoff(text);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.reason).toBe('missing-required-field');
+    expect(result.detail).toBe('Per-Task Dispatch Payloads');
   });
 
   it('reports sentinel-not-top-level when other content precedes the sentinel', () => {
@@ -291,6 +378,58 @@ describe('parseHandoff — malformed inputs', () => {
       'none',
       '## Task List',
       '- [ ] work',
+      '## Dependency Groups',
+      'Group 1: [work]',
+      '## Per-Task Dispatch Payloads',
+      '### work',
+      'do work',
+      '</z-handoff>',
+    ].join('\n');
+    const result = parseHandoff(text);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.reason).toBe('malformed-opening');
+  });
+
+  it('reports malformed-opening for double-space variant in opening tag', () => {
+    // Grammar rule 1: "변형(대소문자·홑따옴표·공백 변형) 불매칭". Strict regex
+    // is the contract — multi-space between `<z-handoff` and `type=` is a
+    // whitespace variant.
+    const text = [
+      '<z-handoff  type="plan-to-work">',
+      '## Issue',
+      'https://example.com/1',
+      '## Parent Epic',
+      'none',
+      '## Task List',
+      '- [ ] work',
+      '## Dependency Groups',
+      'Group 1: [work]',
+      '## Per-Task Dispatch Payloads',
+      '### work',
+      'do work',
+      '</z-handoff>',
+    ].join('\n');
+    const result = parseHandoff(text);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.reason).toBe('malformed-opening');
+  });
+
+  it('reports malformed-opening for trailing whitespace in opening tag', () => {
+    const text = [
+      '<z-handoff type="plan-to-work"> ',
+      '## Issue',
+      'https://example.com/1',
+      '## Parent Epic',
+      'none',
+      '## Task List',
+      '- [ ] work',
+      '## Dependency Groups',
+      'Group 1: [work]',
+      '## Per-Task Dispatch Payloads',
+      '### work',
+      'do work',
       '</z-handoff>',
     ].join('\n');
     const result = parseHandoff(text);
@@ -317,6 +456,15 @@ describe('parseHandoff — edge cases', () => {
       '- [ ] step 2',
       '  - sub step',
       '- [ ] step 3',
+      '## Dependency Groups',
+      'Group 1: [s1, s2, s3]',
+      '## Per-Task Dispatch Payloads',
+      '### s1',
+      'step 1 prompt',
+      '### s2',
+      'step 2 prompt',
+      '### s3',
+      'step 3 prompt',
       '</z-handoff>',
     ].join('\n');
     const result = parseHandoff(text);
@@ -350,12 +498,83 @@ describe('parseHandoff — edge cases', () => {
       'gigantic',
       '## Task List',
       '- [ ] work',
+      '## Dependency Groups',
+      'Group 1: [work]',
+      '## Per-Task Dispatch Payloads',
+      '### work',
+      'work prompt',
       '</z-handoff>',
     ].join('\n');
     const result = parseHandoff(text);
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error('unreachable');
     expect(result.context.tier).toBeNull();
+  });
+
+  it('parses comma- or whitespace-separated taskIds inside group brackets', () => {
+    const text = [
+      '<z-handoff type="plan-to-work">',
+      '## Issue',
+      'https://example.com/1',
+      '## Parent Epic',
+      'none',
+      '## Task List',
+      '- [ ] a',
+      '- [ ] b',
+      '- [ ] c',
+      '## Dependency Groups',
+      'Group 1: [a, b]',
+      'Group 2: [c]',
+      '## Per-Task Dispatch Payloads',
+      '### a',
+      'do a',
+      '### b',
+      'do b',
+      '### c',
+      'do c',
+      '</z-handoff>',
+    ].join('\n');
+    const result = parseHandoff(text);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    expect(result.context.dependencyGroups).toEqual([['a', 'b'], ['c']]);
+  });
+
+  it('preserves multi-line dispatch payload bodies verbatim', () => {
+    const text = [
+      '<z-handoff type="plan-to-work">',
+      '## Issue',
+      'https://example.com/1',
+      '## Parent Epic',
+      'none',
+      '## Task List',
+      '- [ ] alpha',
+      '## Dependency Groups',
+      'Group 1: [alpha]',
+      '## Per-Task Dispatch Payloads',
+      '### alpha',
+      'Line one of alpha prompt.',
+      '',
+      'Line two with more detail:',
+      '- bullet 1',
+      '- bullet 2',
+      '</z-handoff>',
+    ].join('\n');
+    const result = parseHandoff(text);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    expect(result.context.perTaskDispatchPayloads).toEqual([
+      {
+        taskId: 'alpha',
+        prompt: [
+          'Line one of alpha prompt.',
+          '',
+          'Line two with more detail:',
+          '- bullet 1',
+          '- bullet 2',
+        ].join('\n'),
+      },
+    ]);
   });
 });
 

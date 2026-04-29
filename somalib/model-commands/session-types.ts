@@ -39,6 +39,20 @@ export type HandoffKind = 'plan-to-work' | 'work-complete';
 export type HandoffTier = 'tiny' | 'small' | 'medium' | 'large' | 'xlarge';
 
 /**
+ * One per-task dispatch payload extracted from a `plan-to-work` handoff.
+ * The planner authored it as a self-contained subagent prompt; the new
+ * session passes the `prompt` verbatim into an `Agent` dispatch in z phase 2.
+ *
+ * `taskId` is the matching id from the handoff's `## Dependency Groups` —
+ * e.g. `Group 1: [task-id-A, task-id-B]` and the corresponding
+ * `### task-id-A` / `### task-id-B` blocks under `## Per-Task Dispatch Payloads`.
+ */
+export interface PerTaskDispatchPayload {
+  taskId: string;
+  prompt: string;
+}
+
+/**
  * Typed handoff context parsed from a `<z-handoff>` sentinel.
  * Persisted on `ConversationSession.handoffContext` so downstream guards
  * (issue-link precondition #696, hop budget #697, dispatch safe-stop #698)
@@ -51,6 +65,12 @@ export type HandoffTier = 'tiny' | 'small' | 'medium' | 'large' | 'xlarge';
  * - `tier` (from optional `## Tier` field; null when absent/unknown)
  * - `escapeEligible` (from optional `## Escape Eligible`; conservative default false)
  * - `issueRequiredByUser` (from optional `## Issue Required By User`; conservative default true)
+ * - `dependencyGroups` (from required `## Dependency Groups`, plan-to-work
+ *   only; the new session needs this to drive per-group parallel dispatch
+ *   without reading the working folder's `PLAN.md`)
+ * - `perTaskDispatchPayloads` (from required `## Per-Task Dispatch Payloads`,
+ *   plan-to-work only; the new session passes each payload verbatim to an
+ *   implementer `Agent` dispatch)
  *
  * Host-managed fields:
  * - `chainId`: UUID minted by the host parser on each successful parse
@@ -63,6 +83,18 @@ export interface HandoffContext {
   tier: HandoffTier | null;
   issueRequiredByUser: boolean;
   parentEpicUrl: string | null;
+  /**
+   * Plan-to-work only. Ordered list of dependency groups; each group is an
+   * array of `taskId`s that may run in parallel. Across groups is sequential.
+   * Empty array on `work-complete` handoffs.
+   */
+  dependencyGroups: ReadonlyArray<ReadonlyArray<string>>;
+  /**
+   * Plan-to-work only. Per-task self-contained subagent prompts authored by
+   * the planner. The new session looks up `taskId`s from `dependencyGroups`
+   * here. Empty array on `work-complete` handoffs.
+   */
+  perTaskDispatchPayloads: ReadonlyArray<PerTaskDispatchPayload>;
   chainId: string;
   hopBudget: number;
 }

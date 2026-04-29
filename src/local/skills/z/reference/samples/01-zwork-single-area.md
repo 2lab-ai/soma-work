@@ -1,6 +1,6 @@
 # Sample 1 — phase-2 dispatch: zwork (single-area implementation)
 
-**Purpose**: template for the orchestrator's per-task `Agent` dispatch when a sub-task touches a single stack with no upstream/downstream wire alignment. The variables in `<…>` are filled by the orchestrator from PLAN.md.
+**Purpose**: template for the orchestrator's per-task `Agent` dispatch when a sub-task touches a single stack with no upstream/downstream wire alignment. The variables in `<…>` are filled by the **planner subagent** (phase 1.2) and carried into the new session via `<z-handoff type="plan-to-work">` `## Per-Task Dispatch Payloads`. The orchestrator never reads `PLAN.md` — the handoff payload is the only carrier.
 
 **Subagent type**: `general-purpose`
 **`run_in_background`**: `true`

@@ -17,6 +17,8 @@ function makeHandoffContext(overrides: Partial<HandoffContext> = {}): HandoffCon
     escapeEligible: false,
     tier: 'medium',
     issueRequiredByUser: true,
+    dependencyGroups: [['t1']],
+    perTaskDispatchPayloads: [{ taskId: 't1', prompt: 'do t1' }],
     chainId: 'test-chain-uuid',
     hopBudget: 1,
     ...overrides,

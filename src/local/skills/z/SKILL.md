@@ -32,8 +32,8 @@ The orchestrator's tools are split into three lists. Anything not on these lists
 
 **Allowed (read-only state probe, scoped):**
 
-- `Bash` for **observation only** and **only these commands**: `stat <path>` (mtime/size of subagent output files), `gh pr list`, `gh pr view --json …` (read-only field selectors), `gh run list`, `gh api -X GET …` (read-only). No `gh pr create / merge / edit / review`, no `gh issue create / edit / close`, no `gh run watch`, no `gh run rerun`. CI watching is a subagent job.
-- These probes exist solely to drive orchestrator decisions (e.g. "is the merge subagent's PR actually merged?"). They never produce side effects on the repo or remote.
+- `Bash` for **observation only** and **only these commands**: `stat <path>` (mtime/size of subagent output files), `gh pr list`, `gh pr view --json …` (read-only field selectors), `gh issue view --json …` (read-only — used in phase 5.E to read epic body / state before dispatching the update subagent), `gh run list`, `gh api -X GET …` (read-only). No `gh pr create / merge / edit / review / comment`, no `gh issue create / edit / close / comment`, no `gh run watch`, no `gh run rerun`. CI watching is a subagent job.
+- These probes exist solely to drive orchestrator decisions (e.g. "is the merge subagent's PR actually merged?", "what is the epic body's current Tracker state before I dispatch the update?"). They never produce side effects on the repo or remote.
 
 **Forbidden (orchestrator-side, always):**
 
