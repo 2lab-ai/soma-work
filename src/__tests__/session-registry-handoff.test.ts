@@ -29,6 +29,7 @@ function sampleContext(overrides: Partial<HandoffContext> = {}): HandoffContext 
     repositoryPolicy: null,
     dependencyGroups: [['task-1']],
     perTaskDispatchPayloads: [{ taskId: 'task-1', prompt: 'subagent prompt' }],
+    codexReview: null,
     chainId: '11111111-1111-1111-1111-111111111111',
     hopBudget: 1,
     ...overrides,

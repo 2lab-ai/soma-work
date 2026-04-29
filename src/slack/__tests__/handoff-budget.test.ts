@@ -40,6 +40,7 @@ function makeHandoffContext(overrides: Partial<HandoffContext> = {}): HandoffCon
     repositoryPolicy: null,
     dependencyGroups: [],
     perTaskDispatchPayloads: [],
+    codexReview: null,
     chainId: 'test-chain-uuid',
     hopBudget: 1,
     ...overrides,

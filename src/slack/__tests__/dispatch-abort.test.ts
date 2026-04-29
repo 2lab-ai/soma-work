@@ -21,6 +21,7 @@ function makeHandoffContext(overrides: Partial<HandoffContext> = {}): HandoffCon
     repositoryPolicy: null,
     dependencyGroups: [['t1']],
     perTaskDispatchPayloads: [{ taskId: 't1', prompt: 'do t1' }],
+    codexReview: null,
     chainId: 'test-chain-uuid',
     hopBudget: 1,
     ...overrides,

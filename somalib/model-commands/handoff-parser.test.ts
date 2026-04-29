@@ -986,6 +986,69 @@ describe('parseHandoff — invalid-plan-payload (cross-validation)', () => {
     if (!result.ok) throw new Error('unreachable');
     expect(result.context.originalRequestExcerpt).toBeNull();
     expect(result.context.repositoryPolicy).toBeNull();
+    expect(result.context.codexReview).toBeNull();
+  });
+
+  it('persists Codex Review record (score + verdict) when present', () => {
+    const text = [
+      '<z-handoff type="plan-to-work">',
+      '## Issue',
+      'https://example.com/1',
+      '## Parent Epic',
+      'none',
+      '## Task List',
+      '- [ ] foo',
+      '## Dependency Groups',
+      'Group 1: [foo]',
+      '## Per-Task Dispatch Payloads',
+      '### foo',
+      '````',
+      'do foo',
+      '````',
+      '## Codex Review',
+      'score: 96/100 — APPROVE_FOR_EXECUTION',
+      '</z-handoff>',
+    ].join('\n');
+    const result = parseHandoff(text);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    expect(result.context.codexReview).toEqual({
+      score: '96/100',
+      verdict: 'APPROVE_FOR_EXECUTION',
+    });
+  });
+
+  it('parses Codex Review without "score:" prefix and without verdict', () => {
+    const text = [
+      '<z-handoff type="plan-to-work">',
+      '## Issue',
+      'https://example.com/1',
+      '## Parent Epic',
+      'none',
+      '## Task List',
+      '- [ ] foo',
+      '## Dependency Groups',
+      'Group 1: [foo]',
+      '## Per-Task Dispatch Payloads',
+      '### foo',
+      '````',
+      'do foo',
+      '````',
+      '## Codex Review',
+      '99/100',
+      '</z-handoff>',
+    ].join('\n');
+    const result = parseHandoff(text);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    expect(result.context.codexReview).toEqual({ score: '99/100', verdict: '' });
+  });
+
+  it('leaves codexReview as null when ## Codex Review heading is absent', () => {
+    const result = parseHandoff(planToWorkMinimal());
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    expect(result.context.codexReview).toBeNull();
   });
 });
 

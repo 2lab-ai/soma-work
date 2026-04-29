@@ -14,6 +14,7 @@
 
 import { randomUUID } from 'node:crypto';
 import type {
+  CodexReviewRecord,
   HandoffContext,
   HandoffKind,
   HandoffParseFailure,
@@ -451,6 +452,8 @@ function deriveContext(
     kind === 'plan-to-work' ? trimOrNull(fields['Original Request Excerpt']) : null;
   const repositoryPolicy =
     kind === 'plan-to-work' ? trimOrNull(fields['Repository Policy']) : null;
+  const codexReview =
+    kind === 'plan-to-work' ? parseCodexReview(fields['Codex Review']) : null;
 
   // Plan-to-work-only structured fields. work-complete leaves these empty.
   const dependencyGroups =
@@ -467,10 +470,40 @@ function deriveContext(
     repositoryPolicy,
     dependencyGroups,
     perTaskDispatchPayloads,
+    codexReview,
     // UUID is a log-correlation id only; hopBudget seed is #697's starting point.
     chainId: randomUUID(),
     hopBudget: 1,
   };
+}
+
+/**
+ * Parse a `## Codex Review` field into a structured `{ score, verdict }`.
+ *
+ * Accepted shapes (all variants of the `using-z` Handoff #1 sample line):
+ *
+ *     score: 96/100 — APPROVE_FOR_EXECUTION
+ *     score: 96 — pass
+ *     96/100 — APPROVE
+ *     96/100
+ *
+ * The first form is the canonical one. The parser is permissive: any leading
+ * `score:` / `score =` is stripped, then the line is split on `—` / `-` (em
+ * dash or ascii hyphen with surrounding whitespace) into score + verdict.
+ * Returns null on empty input.
+ */
+function parseCodexReview(raw: string | undefined): CodexReviewRecord | null {
+  if (raw === undefined) return null;
+  const trimmed = raw.trim();
+  if (trimmed === '') return null;
+  // Strip leading "score:" / "score =" prefixes (case-insensitive).
+  const stripped = trimmed.replace(/^score\s*[:=]\s*/i, '');
+  // Split on em dash or ascii hyphen with surrounding whitespace.
+  const parts = stripped.split(/\s+(?:—|-)\s+/);
+  const score = parts[0]?.trim() ?? '';
+  const verdict = parts.slice(1).join(' — ').trim();
+  if (score === '') return null;
+  return { score, verdict };
 }
 
 /**

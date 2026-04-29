@@ -40,8 +40,16 @@ export type HandoffTier = 'tiny' | 'small' | 'medium' | 'large' | 'xlarge';
 
 /**
  * One per-task dispatch payload extracted from a `plan-to-work` handoff.
+ *
  * The planner authored it as a self-contained subagent prompt; the new
  * session passes the `prompt` verbatim into an `Agent` dispatch in z phase 2.
+ * The body is delivered inside the handoff under `### <taskId>` wrapped in a
+ * **4+-backtick** fenced code block (the 4-tick wrap is mandatory because
+ * real planner-authored prompts contain inner triple-backtick code blocks
+ * for commit-message HEREDOC, PR body, language-tagged samples; a 3-tick
+ * outer fence would terminate at the first inner block and silently
+ * truncate the payload). The parser unwraps the outer fence; the `prompt`
+ * field carries the body verbatim including any inner 3-tick blocks.
  *
  * `taskId` is the matching id from the handoff's `## Dependency Groups` —
  * e.g. `Group 1: [task-id-A, task-id-B]` and the corresponding
@@ -50,6 +58,20 @@ export type HandoffTier = 'tiny' | 'small' | 'medium' | 'large' | 'xlarge';
 export interface PerTaskDispatchPayload {
   taskId: string;
   prompt: string;
+}
+
+/**
+ * Plan-time codex review record carried in the handoff for downstream
+ * reference. Persisted on `HandoffContext.codexReview` so the new session can
+ * reproduce or audit the score that gated phase 1.
+ *
+ * Free-form `score` (string) is preserved verbatim — common shapes are
+ * `"95/100"` or `"95"`. The numeric value is not cross-validated; the
+ * verdict text is the producer's APPROVE_FOR_EXECUTION line or equivalent.
+ */
+export interface CodexReviewRecord {
+  score: string;
+  verdict: string;
 }
 
 /**
@@ -116,6 +138,13 @@ export interface HandoffContext {
    * here. Empty array on `work-complete` handoffs.
    */
   perTaskDispatchPayloads: ReadonlyArray<PerTaskDispatchPayload>;
+  /**
+   * Plan-to-work only. The planner-loop's final codex review record (score +
+   * verdict) carried from phase 1.3 — persisted so the new session can
+   * surface or audit the gated score without re-running the review. Null
+   * when absent or when handoffKind is `work-complete`.
+   */
+  codexReview: CodexReviewRecord | null;
   chainId: string;
   hopBudget: number;
 }
@@ -137,9 +166,10 @@ export type HandoffParseFailure =
    *   - empty `## Per-Task Dispatch Payloads` (no parseable tasks)
    *   - groups reference taskIds with no matching `### taskId` payload
    *   - payloads define taskIds not referenced in any group
-   *   - a `### taskId` payload body is not wrapped in a `` ``` `` fenced block
-   *     (the only safe carrier for self-contained subagent prompts that
-   *     contain their own markdown headings)
+   *   - a `### taskId` payload body is not wrapped in a **4+-backtick**
+   *     (`` ```` … ```` ``) fenced block — the only safe carrier for
+   *     self-contained subagent prompts that contain their own ## / ###
+   *     headings AND inner triple-backtick code blocks
    * `detail` field carries the specific sub-reason.
    */
   | 'invalid-plan-payload';

@@ -132,6 +132,20 @@ describe('SessionInitializer.runDispatch — z handoff entrypoints (#695)', () =
       expect(session.handoffContext?.hopBudget).toBe(1);
       expect(session.handoffContext?.sourceIssueUrl).toBe('https://example.com/issue/1');
       expect(session.handoffContext?.tier).toBe('medium');
+      // The new round-3+ structured fields must be persisted, otherwise the
+      // phase-2 controller has no way to dispatch implementer subagents
+      // without reading repo files (which the controller is forbidden from
+      // doing per z/SKILL.md §Hard Rules).
+      expect(session.handoffContext?.dependencyGroups).toEqual([['step-1']]);
+      expect(session.handoffContext?.perTaskDispatchPayloads).toEqual([
+        { taskId: 'step-1', prompt: 'Self-contained subagent prompt for step 1.' },
+      ]);
+      // round-5 metadata: producer-authoritative optional fields default to
+      // null when absent. The test fixture omits Original Request Excerpt /
+      // Repository Policy / Codex Review intentionally.
+      expect(session.handoffContext?.originalRequestExcerpt).toBeNull();
+      expect(session.handoffContext?.repositoryPolicy).toBeNull();
+      expect(session.handoffContext?.codexReview).toBeNull();
       // transitionToMain persists the session; we do not call saveSessions twice.
       expect(mockClaudeHandler.transitionToMain).toHaveBeenCalledWith('C1', 't1', 'z-plan-to-work', expect.any(String));
     });

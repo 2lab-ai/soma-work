@@ -5,17 +5,25 @@ description: "Implementation phase. Subagent-driven development, PR creation, an
 
 # zwork — Implementation
 
-Receives a confirmed plan and task list from `local:z`. Executes implementation through subagent-driven development, creates a PR, and verifies spec compliance.
+Implements a single task end-to-end: subagent-driven development, RED tests → GREEN, PR creation, spec verification.
+
+## Two invocation modes
+
+| Mode | Caller | Owns user dialogue? | Owns the task list? |
+|---|---|---|---|
+| **standalone** | direct user invocation (`$zwork …`) | yes — may call `decision-gate` / `UIAskUserQuestion` after exhausting retries | yes |
+| **orchestrator-mode** (phase-2 implementer subagent under `local:z`) | `local:z` phase 2 dispatches one `Agent` subagent per task with the planner-authored `Per-Task Dispatch Payload` | **no** — must return a structured `blocker` field on real impasses; the z orchestrator routes the question | no — the subagent works on its single task; the parent z session keeps the global TodoWrite |
+
+`local:z` always invokes orchestrator-mode. The standalone mode is for ad-hoc PR work that does not pass through phase 1 planning.
 
 ## Input
 
-- Confirmed plan
-- Task list (TodoWrite)
-- **Issue URL** — required for `using-epic-tasks` Case A / Case B (sub-issue of an epic)
-- **Case A escape marker** — allowed only when **all three** conditions hold: (a) `using-epic-tasks` classified the work as tier=`tiny`|`small`, (b) the original user request contained no explicit or implicit "issue first" demand, **and** (c) repository policy does not require a linked issue at this tier. Any missing → escape invalid, Issue URL path is mandatory. Receiving sessions must re-verify against the `## Original Request Excerpt` and `## Repository Policy` fields in the `<z-handoff>` payload — do not trust the escape marker blindly.
-- **Parent Epic URL** (optional) — present when this work is a sub-issue of an epic; carried forward for z phase5 Handoff #2
+- The task to implement (commit message, PR title/body, file/line changes, test cases — already inlined by the planner in orchestrator-mode, or freshly stated by the user in standalone mode).
+- **Issue URL** — required for `using-epic-tasks` Case A / Case B.
+- **Case A escape marker** — allowed only when **all three** conditions hold: (a) `using-epic-tasks` classified the work as tier=`tiny`|`small`, (b) the original user request contained no explicit or implicit "issue first" demand, **and** (c) repository policy does not require a linked issue at this tier. Any missing → escape invalid, Issue URL path is mandatory. In orchestrator-mode, re-verify against the `## Original Request Excerpt` and `## Repository Policy` fields persisted on `session.handoffContext` (see `using-z` §Handoff #1 typed metadata) — do not trust the escape marker blindly.
+- **Parent Epic URL** (optional) — present when the work is a sub-issue of an epic; carried forward in orchestrator-mode for the parent z session's phase 5 Handoff #2.
 
-When invoked via session handoff from z phase1, the initial session prompt carries a `<z-handoff type="plan-to-work">` block (contract: `local:using-z` §Session Handoff Protocol → Handoff #1). z phase0 step 0.5 parses the block and injects the Task List into TodoWrite — zwork reads Issue URL / Parent Epic from session-level SSOT set by phase0. If neither Issue URL nor Case A escape marker is present, zwork must not proceed to PR creation (see step 5 below).
+In **orchestrator-mode**, the parent `local:z` phase-2 controller dispatches an `Agent(general-purpose, run_in_background:true)` subagent and passes the planner-authored Per-Task Dispatch Payload (already containing the worktree path, branch, base, file/line changes, tests, commands, commit/PR templates) verbatim. The subagent reads SSOT (Issue URL / Parent Epic) from the prompt — it does not parse `session.handoffContext` itself; that is the parent controller's job per `z/SKILL.md` §2.0–§2.3. If neither Issue URL nor Case A escape marker is present in the dispatch prompt, the subagent must return a `blocker` to the parent and not proceed to PR creation (see step 5 below).
 
 ## Process
 
