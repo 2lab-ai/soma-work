@@ -33,6 +33,93 @@ export interface UnifiedConfig {
 }
 
 /**
+ * Tagged-union return for validators below. Surfacing the failure as data
+ * (rather than throwing) lets `parseAgentsConfig` apply the skip-on-warn
+ * rule without try/catch noise: one bad agent must not poison sibling
+ * agents — Trace: docs/multi-agent/trace.md, Scenario 1.
+ */
+type Result<T, E> = { ok: true; value: T } | { ok: false; error: E };
+
+/**
+ * Required tokens an agent must declare (string-typed).
+ * Listed explicitly to keep `extractRequiredString` callers type-safe.
+ */
+type RequiredAgentStringKey = 'slackBotToken' | 'slackAppToken' | 'signingSecret';
+
+/**
+ * Pull a required string field off a raw agent entry, optionally enforcing
+ * a fixed prefix (Slack token format) and/or a minimum length. The two
+ * failure modes produce distinct warnings on purpose:
+ *   - presence / type / min-length     → 'missing or invalid <key>[ (min N chars)]'
+ *   - prefix mismatch                  → "<key> must start with '<prefix>-'"
+ *
+ * The original `parseAgentsConfig` (cog 30) ran these checks inline; the
+ * exact wording is part of the contract pinned by the characterization
+ * tests in `src/__tests__/unified-config-loader.test.ts`.
+ */
+function extractRequiredString(
+  name: string,
+  agent: Record<string, unknown>,
+  key: RequiredAgentStringKey,
+  opts?: { prefix?: string; minLength?: number },
+): Result<string, string> {
+  const value = agent[key];
+  const minLength = opts?.minLength ?? 0;
+
+  if (!value || typeof value !== 'string' || value.length < minLength) {
+    const suffix = minLength > 0 ? ` (min ${minLength} chars)` : '';
+    return { ok: false, error: `Skipping agent '${name}': missing or invalid ${key}${suffix}` };
+  }
+
+  if (opts?.prefix && !value.startsWith(opts.prefix)) {
+    return {
+      ok: false,
+      error: `Skipping agent '${name}': ${key} must start with '${opts.prefix}'`,
+    };
+  }
+
+  return { ok: true, value };
+}
+
+/**
+ * Validate one raw agent entry and assemble the typed `AgentConfig`.
+ * Validation order is fixed (slackBotToken → slackAppToken → signingSecret)
+ * because the first-failing rule decides the warning text — reordering
+ * would silently change diagnostics seen by operators.
+ *
+ * Optional fields fall back to defaults documented on `AgentConfig`:
+ *   - promptDir → `src/prompt/${name}`
+ *   - persona   → 'default'
+ *   - description / model → undefined when absent or non-string
+ */
+function validateAgentConfig(name: string, raw: unknown): Result<AgentConfig, string> {
+  if (!raw || typeof raw !== 'object') {
+    return { ok: false, error: `Skipping agent '${name}': invalid entry (not an object)` };
+  }
+  const agent = raw as Record<string, unknown>;
+
+  const bot = extractRequiredString(name, agent, 'slackBotToken', { prefix: 'xoxb-' });
+  if (!bot.ok) return bot;
+  const app = extractRequiredString(name, agent, 'slackAppToken', { prefix: 'xapp-' });
+  if (!app.ok) return app;
+  const signing = extractRequiredString(name, agent, 'signingSecret', { minLength: 20 });
+  if (!signing.ok) return signing;
+
+  return {
+    ok: true,
+    value: {
+      slackBotToken: bot.value,
+      slackAppToken: app.value,
+      signingSecret: signing.value,
+      promptDir: (typeof agent.promptDir === 'string' ? agent.promptDir : undefined) || `src/prompt/${name}`,
+      persona: (typeof agent.persona === 'string' ? agent.persona : undefined) || 'default',
+      description: typeof agent.description === 'string' ? agent.description : undefined,
+      model: typeof agent.model === 'string' ? agent.model : undefined,
+    },
+  };
+}
+
+/**
  * Parse and validate the agents section from raw config JSON.
  * Invalid agents are skipped with a warning (not fatal).
  * Trace: docs/multi-agent/trace.md, Scenario 1
@@ -45,47 +132,17 @@ export function parseAgentsConfig(raw: any): Record<string, AgentConfig> {
   }
 
   for (const [name, entry] of Object.entries(raw.agents)) {
-    const agent = entry as Record<string, unknown>;
-    if (!agent || typeof agent !== 'object') {
-      logger.warn(`Skipping agent '${name}': invalid entry (not an object)`);
-      continue;
+    const validated = validateAgentConfig(name, entry);
+    if (validated.ok) {
+      result[name] = validated.value;
+    } else {
+      logger.warn(validated.error);
     }
-
-    // Validate required tokens
-    if (!agent.slackBotToken || typeof agent.slackBotToken !== 'string') {
-      logger.warn(`Skipping agent '${name}': missing or invalid slackBotToken`);
-      continue;
-    }
-    if (!agent.slackBotToken.startsWith('xoxb-')) {
-      logger.warn(`Skipping agent '${name}': slackBotToken must start with 'xoxb-'`);
-      continue;
-    }
-    if (!agent?.slackAppToken || typeof agent.slackAppToken !== 'string') {
-      logger.warn(`Skipping agent '${name}': missing or invalid slackAppToken`);
-      continue;
-    }
-    if (!agent.slackAppToken.startsWith('xapp-')) {
-      logger.warn(`Skipping agent '${name}': slackAppToken must start with 'xapp-'`);
-      continue;
-    }
-    if (!agent?.signingSecret || typeof agent.signingSecret !== 'string' || agent.signingSecret.length < 20) {
-      logger.warn(`Skipping agent '${name}': missing or invalid signingSecret (min 20 chars)`);
-      continue;
-    }
-
-    result[name] = {
-      slackBotToken: agent.slackBotToken as string,
-      slackAppToken: agent.slackAppToken as string,
-      signingSecret: agent.signingSecret as string,
-      promptDir: (typeof agent.promptDir === 'string' ? agent.promptDir : undefined) || `src/prompt/${name}`,
-      persona: (typeof agent.persona === 'string' ? agent.persona : undefined) || 'default',
-      description: typeof agent.description === 'string' ? agent.description : undefined,
-      model: typeof agent.model === 'string' ? agent.model : undefined,
-    };
   }
 
-  if (Object.keys(result).length > 0) {
-    logger.info(`Loaded ${Object.keys(result).length} agent configurations: [${Object.keys(result).join(', ')}]`);
+  const names = Object.keys(result);
+  if (names.length > 0) {
+    logger.info(`Loaded ${names.length} agent configurations: [${names.join(', ')}]`);
   }
 
   return result;
