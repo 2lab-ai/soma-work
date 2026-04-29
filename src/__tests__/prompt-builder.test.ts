@@ -173,9 +173,7 @@ describe('PromptBuilder', () => {
     it('should append user-instructions block when session has instructions', () => {
       // Covers applyUserInstructions happy path (prompt-builder.ts lines 460-465).
       const session: any = {
-        instructions: [
-          { id: 'i1', text: 'always run tests before pushing', addedAt: 1, status: 'active' },
-        ],
+        instructions: [{ id: 'i1', text: 'always run tests before pushing', addedAt: 1, status: 'active' }],
       };
 
       const prompt = builder.buildSystemPrompt(undefined, 'default', session);
