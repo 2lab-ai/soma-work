@@ -335,9 +335,14 @@ export interface UsageSnapshot {
 }
 ```
 
-`utilization` is a 0..1 float on the wire; renderers
-(`src/slack/cct/builder.ts::toPct`, `cct-handler.ts::toPctInt`) scale
-it to an integer percentage and also accept 0..100 for forward-compat.
+`utilization` is a raw API percent (0..100) on the wire — pinned by
+#685/#701 after the legacy 0..1 dual-form ambiguity (1 = 1% vs 100%)
+broke the 7d Cooldown badge. Renderers
+(`src/slack/cct/builder.ts::utilToPctInt`, `cct-handler.ts::pct`) and
+the rotation engine (`src/oauth/auto-rotate.ts`) all read this same
+percent unit. Operator-facing env knobs
+(`AUTO_ROTATE_FIVEH_THRESHOLD`, `AUTO_ROTATE_SEVEND_THRESHOLD`) keep
+their 0..1 form; conversion happens at the `config.ts` boundary.
 
 ### Per-slot `lastFetchedAt` + `nextUsageFetchAllowedAt`
 

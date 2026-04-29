@@ -11,7 +11,9 @@ import {
   selectBestRotationCandidateWithMaxAge,
 } from '../auto-rotate';
 
-const T: RotationThresholds = { fiveHourMax: 0.8, sevenDayMax: 0.9 };
+// Thresholds are in store-SSOT percent form (0..100, see #685/#781).
+// `config.ts` converts the operator-facing 0..1 env vars at the boundary.
+const T: RotationThresholds = { fiveHourMax: 80, sevenDayMax: 90 };
 
 function cct(keyId: string, name: string, opts: Partial<AuthKey> = {}): AuthKey {
   return {
@@ -73,7 +75,7 @@ describe('selectBestRotationCandidate (#737)', () => {
   });
 
   it('returns null when only api_key slots exist', () => {
-    const s = snap([apiKey('k1', 'k1')], { k1: state({ usage: usage(0.1, 0.2, '2026-04-30T00:00:00Z') }) });
+    const s = snap([apiKey('k1', 'k1')], { k1: state({ usage: usage(10, 20, '2026-04-30T00:00:00Z') }) });
     expect(selectBestRotationCandidate(s, NOW, T)).toBeNull();
   });
 
@@ -82,18 +84,18 @@ describe('selectBestRotationCandidate (#737)', () => {
     expect(selectBestRotationCandidate(s, NOW, T)).toBeNull();
   });
 
-  it('rejects slots above the 5h threshold (>0.8)', () => {
-    const s = snap([cct('a', 'A')], { a: state({ usage: usage(0.9, 0.5, '2026-04-30T00:00:00Z') }) });
+  it('rejects slots above the 5h threshold (>80)', () => {
+    const s = snap([cct('a', 'A')], { a: state({ usage: usage(90, 50, '2026-04-30T00:00:00Z') }) });
     expect(selectBestRotationCandidate(s, NOW, T)).toBeNull();
   });
 
-  it('rejects slots above the 7d threshold (>0.9)', () => {
-    const s = snap([cct('a', 'A')], { a: state({ usage: usage(0.5, 0.95, '2026-04-30T00:00:00Z') }) });
+  it('rejects slots above the 7d threshold (>90)', () => {
+    const s = snap([cct('a', 'A')], { a: state({ usage: usage(50, 95, '2026-04-30T00:00:00Z') }) });
     expect(selectBestRotationCandidate(s, NOW, T)).toBeNull();
   });
 
   it('accepts slots exactly at the threshold (inclusive bounds)', () => {
-    const s = snap([cct('a', 'A')], { a: state({ usage: usage(0.8, 0.9, '2026-04-30T00:00:00Z') }) });
+    const s = snap([cct('a', 'A')], { a: state({ usage: usage(80, 90, '2026-04-30T00:00:00Z') }) });
     const c = selectBestRotationCandidate(s, NOW, T);
     expect(c?.keyId).toBe('a');
   });
@@ -102,7 +104,7 @@ describe('selectBestRotationCandidate (#737)', () => {
     const s = snap([cct('a', 'A')], {
       a: state({
         cooldownUntil: '2026-04-27T04:00:00Z', // future
-        usage: usage(0.1, 0.2, '2026-04-30T00:00:00Z'),
+        usage: usage(10, 20, '2026-04-30T00:00:00Z'),
       }),
     });
     expect(selectBestRotationCandidate(s, NOW, T)).toBeNull();
@@ -112,7 +114,7 @@ describe('selectBestRotationCandidate (#737)', () => {
     const s = snap([cct('a', 'A')], {
       a: state({
         cooldownUntil: '2026-04-27T02:00:00Z', // past
-        usage: usage(0.1, 0.2, '2026-04-30T00:00:00Z'),
+        usage: usage(10, 20, '2026-04-30T00:00:00Z'),
       }),
     });
     expect(selectBestRotationCandidate(s, NOW, T)?.keyId).toBe('a');
@@ -120,55 +122,96 @@ describe('selectBestRotationCandidate (#737)', () => {
 
   it('rejects slots with disableRotation=true', () => {
     const s = snap([cct('a', 'A', { disableRotation: true } as Partial<AuthKey>)], {
-      a: state({ usage: usage(0.1, 0.2, '2026-04-30T00:00:00Z') }),
+      a: state({ usage: usage(10, 20, '2026-04-30T00:00:00Z') }),
     });
     expect(selectBestRotationCandidate(s, NOW, T)).toBeNull();
   });
 
   it('rejects tombstoned and unhealthy slots', () => {
     const s = snap([cct('a', 'A'), cct('b', 'B')], {
-      a: state({ tombstoned: true, usage: usage(0.1, 0.2, '2026-04-30T00:00:00Z') }),
-      b: state({ authState: 'refresh_failed', usage: usage(0.1, 0.2, '2026-04-30T00:00:00Z') }),
+      a: state({ tombstoned: true, usage: usage(10, 20, '2026-04-30T00:00:00Z') }),
+      b: state({ authState: 'refresh_failed', usage: usage(10, 20, '2026-04-30T00:00:00Z') }),
     });
     expect(selectBestRotationCandidate(s, NOW, T)).toBeNull();
   });
 
   it('picks the slot with the soonest 7d resetsAt', () => {
     const s = snap([cct('a', 'A'), cct('b', 'B'), cct('c', 'C')], {
-      a: state({ usage: usage(0.5, 0.5, '2026-05-01T00:00:00Z') }),
-      b: state({ usage: usage(0.5, 0.5, '2026-04-28T00:00:00Z') }), // soonest
-      c: state({ usage: usage(0.5, 0.5, '2026-04-30T00:00:00Z') }),
+      a: state({ usage: usage(50, 50, '2026-05-01T00:00:00Z') }),
+      b: state({ usage: usage(50, 50, '2026-04-28T00:00:00Z') }), // soonest
+      c: state({ usage: usage(50, 50, '2026-04-30T00:00:00Z') }),
     });
     expect(selectBestRotationCandidate(s, NOW, T)?.keyId).toBe('b');
   });
 
   it('tie-break 1: equal resetsAt → lower 5h utilisation wins', () => {
     const s = snap([cct('a', 'A'), cct('b', 'B')], {
-      a: state({ usage: usage(0.6, 0.5, '2026-04-28T00:00:00Z') }),
-      b: state({ usage: usage(0.3, 0.5, '2026-04-28T00:00:00Z') }), // lower 5h
+      a: state({ usage: usage(60, 50, '2026-04-28T00:00:00Z') }),
+      b: state({ usage: usage(30, 50, '2026-04-28T00:00:00Z') }), // lower 5h
     });
     expect(selectBestRotationCandidate(s, NOW, T)?.keyId).toBe('b');
   });
 
   it('tie-break 2: equal resetsAt + equal 5h → keyId lex order wins (deterministic)', () => {
     const s = snap([cct('z', 'Z'), cct('a', 'A')], {
-      z: state({ usage: usage(0.5, 0.5, '2026-04-28T00:00:00Z') }),
-      a: state({ usage: usage(0.5, 0.5, '2026-04-28T00:00:00Z') }),
+      z: state({ usage: usage(50, 50, '2026-04-28T00:00:00Z') }),
+      a: state({ usage: usage(50, 50, '2026-04-28T00:00:00Z') }),
     });
     expect(selectBestRotationCandidate(s, NOW, T)?.keyId).toBe('a');
   });
 
   it('rejects slots with non-finite resetsAt', () => {
-    const s = snap([cct('a', 'A')], { a: state({ usage: usage(0.1, 0.2, 'not-a-date') }) });
+    const s = snap([cct('a', 'A')], { a: state({ usage: usage(10, 20, 'not-a-date') }) });
     expect(selectBestRotationCandidate(s, NOW, T)).toBeNull();
   });
 
   it('candidate carries fetchedAtMs from usage.fetchedAt', () => {
     const s = snap([cct('a', 'A')], {
-      a: state({ usage: usage(0.1, 0.2, '2026-04-30T00:00:00Z', '2026-04-27T02:50:00Z') }),
+      a: state({ usage: usage(10, 20, '2026-04-30T00:00:00Z', '2026-04-27T02:50:00Z') }),
     });
     const c = selectBestRotationCandidate(s, NOW, T);
     expect(c?.fetchedAtMs).toBe(new Date('2026-04-27T02:50:00Z').getTime());
+  });
+
+  // ── #781 percent-form unit regression guards ──────────────────────────
+  // Pin the store-SSOT percent contract that the engine, renderers, and
+  // config boundary all share (#685 → #781). The pre-fix code interpreted
+  // `usage.*.utilization` as a 0..1 fraction while the store wrote 0..100,
+  // so every realistic percent (3..63) tripped the "> 0.8" comparator and
+  // every slot got rejected as `over-five-hour-threshold` — auto-rotate
+  // never produced a successful rotation in production. These three tests
+  // lock the percent contract end-to-end on the pure selector.
+
+  it('regression #781: realistic percent-form value (63) under threshold (80) → accepts (was the production failure case)', () => {
+    // The exact production observation: `notify` at 63% with `fiveHourMax=80`
+    // was being rejected as `over-five-hour-threshold` because the engine
+    // compared 63 against the unconverted env value 0.8.
+    const s = snap([cct('notify', 'notify')], {
+      notify: state({ usage: usage(63, 33, '2026-04-30T00:00:00Z') }),
+    });
+    expect(selectBestRotationCandidate(s, NOW, T)?.keyId).toBe('notify');
+  });
+
+  it('regression #781: percent-form value (85) above threshold (80) → rejects', () => {
+    const s = snap([cct('a', 'A')], { a: state({ usage: usage(85, 50, '2026-04-30T00:00:00Z') }) });
+    expect(selectBestRotationCandidate(s, NOW, T)).toBeNull();
+  });
+
+  it('regression #781: cold-token (no fiveHour window) with valid sevenDay → accepts as fiveHourUtilization=0', () => {
+    // Mirrors the production `ai` slot case from issue #781 — a slot that
+    // has never had a 5h-window request returns no `fiveHour` window from
+    // /oauth/usage. The pre-fix code rejected this as
+    // `'no-five-hour-window'`; the new contract treats it as cold ⇒ 0%
+    // ⇒ under any threshold ⇒ eligible.
+    const cold: UsageSnapshot = {
+      fetchedAt: '2026-04-27T03:00:00Z',
+      // five_hour intentionally omitted
+      sevenDay: { utilization: 5, resetsAt: '2026-04-30T00:00:00Z' },
+    };
+    const s = snap([cct('ai', 'ai')], { ai: state({ usage: cold }) });
+    const c = selectBestRotationCandidate(s, NOW, T);
+    expect(c?.keyId).toBe('ai');
+    expect(c?.fiveHourUtilization).toBe(0);
   });
 });
 
@@ -176,20 +219,20 @@ describe('selectBestRotationCandidateWithMaxAge (#737 P1)', () => {
   it('rejects candidate whose usage is older than usageMaxAgeMs', () => {
     // fetchedAt at NOW - 2h; usageMaxAgeMs = 1h → reject.
     const stale = '2026-04-27T01:00:00Z';
-    const s = snap([cct('a', 'A')], { a: state({ usage: usage(0.1, 0.2, '2026-04-30T00:00:00Z', stale) }) });
+    const s = snap([cct('a', 'A')], { a: state({ usage: usage(10, 20, '2026-04-30T00:00:00Z', stale) }) });
     expect(selectBestRotationCandidateWithMaxAge(s, NOW, T, 60 * 60_000)).toBeNull();
   });
 
   it('accepts candidate whose usage is fresher than usageMaxAgeMs', () => {
     // fetchedAt at NOW - 30min; usageMaxAgeMs = 1h → accept.
     const fresh = '2026-04-27T02:30:00Z';
-    const s = snap([cct('a', 'A')], { a: state({ usage: usage(0.1, 0.2, '2026-04-30T00:00:00Z', fresh) }) });
+    const s = snap([cct('a', 'A')], { a: state({ usage: usage(10, 20, '2026-04-30T00:00:00Z', fresh) }) });
     expect(selectBestRotationCandidateWithMaxAge(s, NOW, T, 60 * 60_000)?.keyId).toBe('a');
   });
 
   it('Infinity disables the max-age filter (parity with selectBestRotationCandidate)', () => {
     const ancient = '2024-01-01T00:00:00Z';
-    const s = snap([cct('a', 'A')], { a: state({ usage: usage(0.1, 0.2, '2026-04-30T00:00:00Z', ancient) }) });
+    const s = snap([cct('a', 'A')], { a: state({ usage: usage(10, 20, '2026-04-30T00:00:00Z', ancient) }) });
     expect(selectBestRotationCandidateWithMaxAge(s, NOW, T, Number.POSITIVE_INFINITY)?.keyId).toBe('a');
   });
 });
@@ -199,8 +242,8 @@ describe('buildRotationDebug (#737)', () => {
     const s = snap(
       [cct('a', 'A'), cct('b', 'B'), apiKey('c', 'C')],
       {
-        a: state({ usage: usage(0.5, 0.5, '2026-04-28T00:00:00Z') }), // candidate
-        b: state({ usage: usage(0.95, 0.5, '2026-04-28T00:00:00Z') }), // over 5h
+        a: state({ usage: usage(50, 50, '2026-04-28T00:00:00Z') }), // candidate
+        b: state({ usage: usage(95, 50, '2026-04-28T00:00:00Z') }), // over 5h
       },
       'a',
     );
@@ -215,7 +258,7 @@ describe('buildRotationDebug (#737)', () => {
 
   it('reports usage-stale rejection when usageMaxAgeMs cuts a candidate', () => {
     const stale = '2026-04-27T01:00:00Z';
-    const s = snap([cct('a', 'A')], { a: state({ usage: usage(0.5, 0.5, '2026-04-28T00:00:00Z', stale) }) }, 'a');
+    const s = snap([cct('a', 'A')], { a: state({ usage: usage(50, 50, '2026-04-28T00:00:00Z', stale) }) }, 'a');
     const dbg = buildRotationDebug(s, NOW, T, 60 * 60_000);
     expect(dbg.candidates).toHaveLength(0);
     expect(dbg.rejected[0]?.reason).toBe('usage-stale');
@@ -259,8 +302,8 @@ describe('evaluateAndMaybeRotate (#737)', () => {
     const s = snap(
       [cct('a', 'A'), cct('b', 'B')],
       {
-        a: state({ usage: usage(0.5, 0.5, '2026-05-01T00:00:00Z') }),
-        b: state({ usage: usage(0.5, 0.5, '2026-04-28T00:00:00Z') }), // soonest
+        a: state({ usage: usage(50, 50, '2026-05-01T00:00:00Z') }),
+        b: state({ usage: usage(50, 50, '2026-04-28T00:00:00Z') }), // soonest
       },
       'a',
     );
@@ -283,8 +326,8 @@ describe('evaluateAndMaybeRotate (#737)', () => {
     const s = snap(
       [cct('a', 'A'), cct('b', 'B')],
       {
-        a: state({ usage: usage(0.5, 0.5, '2026-04-28T00:00:00Z') }), // soonest = active
-        b: state({ usage: usage(0.5, 0.5, '2026-05-01T00:00:00Z') }),
+        a: state({ usage: usage(50, 50, '2026-04-28T00:00:00Z') }), // soonest = active
+        b: state({ usage: usage(50, 50, '2026-05-01T00:00:00Z') }),
       },
       'a',
     );
@@ -300,7 +343,7 @@ describe('evaluateAndMaybeRotate (#737)', () => {
   });
 
   it('skipped when no candidate meets the eligibility filter', async () => {
-    const s = snap([cct('a', 'A')], { a: state({ usage: usage(0.95, 0.95, '2026-04-28T00:00:00Z') }) }, 'a');
+    const s = snap([cct('a', 'A')], { a: state({ usage: usage(95, 95, '2026-04-28T00:00:00Z') }) }, 'a');
     const d = deps(s);
     const r = await evaluateAndMaybeRotate(d, {
       enabled: true,
@@ -325,9 +368,9 @@ describe('evaluateAndMaybeRotate (#737)', () => {
       {
         a: state({
           activeLeases: [lease],
-          usage: usage(0.5, 0.5, '2026-05-01T00:00:00Z'),
+          usage: usage(50, 50, '2026-05-01T00:00:00Z'),
         }),
-        b: state({ usage: usage(0.5, 0.5, '2026-04-28T00:00:00Z') }),
+        b: state({ usage: usage(50, 50, '2026-04-28T00:00:00Z') }),
       },
       'a',
     );
@@ -347,8 +390,8 @@ describe('evaluateAndMaybeRotate (#737)', () => {
     const s = snap(
       [cct('a', 'A'), cct('b', 'B')],
       {
-        a: state({ usage: usage(0.5, 0.5, '2026-05-01T00:00:00Z') }),
-        b: state({ usage: usage(0.5, 0.5, '2026-04-28T00:00:00Z') }),
+        a: state({ usage: usage(50, 50, '2026-05-01T00:00:00Z') }),
+        b: state({ usage: usage(50, 50, '2026-04-28T00:00:00Z') }),
       },
       'a',
     );
@@ -368,8 +411,8 @@ describe('evaluateAndMaybeRotate (#737)', () => {
     const s = snap(
       [cct('a', 'A'), cct('b', 'B')],
       {
-        a: state({ usage: usage(0.5, 0.5, '2026-05-01T00:00:00Z') }),
-        b: state({ usage: usage(0.5, 0.5, '2026-04-28T00:00:00Z') }),
+        a: state({ usage: usage(50, 50, '2026-05-01T00:00:00Z') }),
+        b: state({ usage: usage(50, 50, '2026-04-28T00:00:00Z') }),
       },
       'a',
     );
@@ -389,7 +432,7 @@ describe('evaluateAndMaybeRotate (#737)', () => {
   });
 
   it('dry-run reports `would: noop` when active is already best', async () => {
-    const s = snap([cct('a', 'A')], { a: state({ usage: usage(0.5, 0.5, '2026-04-28T00:00:00Z') }) }, 'a');
+    const s = snap([cct('a', 'A')], { a: state({ usage: usage(50, 50, '2026-04-28T00:00:00Z') }) }, 'a');
     const d = deps(s);
     const r = await evaluateAndMaybeRotate(d, {
       enabled: true,
@@ -411,10 +454,10 @@ describe('evaluateAndMaybeRotate (#737)', () => {
     const s = snap(
       [cct('a', 'A'), cct('b', 'B')],
       {
-        a: state({ usage: usage(0.5, 0.5, '2026-05-01T00:00:00Z') }), // active, no lease
+        a: state({ usage: usage(50, 50, '2026-05-01T00:00:00Z') }), // active, no lease
         b: state({
           activeLeases: [lease], // candidate has lease — irrelevant
-          usage: usage(0.5, 0.5, '2026-04-28T00:00:00Z'),
+          usage: usage(50, 50, '2026-04-28T00:00:00Z'),
         }),
       },
       'a',
@@ -433,7 +476,7 @@ describe('evaluateAndMaybeRotate (#737)', () => {
   it('handles snapshot with no activeKeyId (first-boot case): rotates to first eligible', async () => {
     const s = snap(
       [cct('a', 'A')],
-      { a: state({ usage: usage(0.5, 0.5, '2026-04-28T00:00:00Z') }) },
+      { a: state({ usage: usage(50, 50, '2026-04-28T00:00:00Z') }) },
       // no activeKeyId
     );
     const d = deps(s);
@@ -449,7 +492,7 @@ describe('evaluateAndMaybeRotate (#737)', () => {
   });
 
   it('uses Date.now() when `now` not provided (smoke test — does not throw)', async () => {
-    const s = snap([cct('a', 'A')], { a: state({ usage: usage(0.5, 0.5, '2030-01-01T00:00:00Z') }) }, 'a');
+    const s = snap([cct('a', 'A')], { a: state({ usage: usage(50, 50, '2030-01-01T00:00:00Z') }) }, 'a');
     const d = deps(s);
     const r = await evaluateAndMaybeRotate(d, { enabled: true, dryRun: false, thresholds: T });
     expect(r.kind).toBe('noop');
@@ -459,8 +502,8 @@ describe('evaluateAndMaybeRotate (#737)', () => {
     const s = snap(
       [cct('a', 'A'), cct('b', 'B')],
       {
-        a: state({ usage: usage(0.5, 0.5, '2026-05-01T00:00:00Z') }),
-        b: state({ usage: usage(0.5, 0.5, '2026-04-28T00:00:00Z') }),
+        a: state({ usage: usage(50, 50, '2026-05-01T00:00:00Z') }),
+        b: state({ usage: usage(50, 50, '2026-04-28T00:00:00Z') }),
       },
       'a',
     );
@@ -492,8 +535,8 @@ describe('evaluateAndMaybeRotate (#737)', () => {
     const observedSnapshot = snap(
       [cct('a', 'A'), cct('b', 'B')],
       {
-        a: state({ usage: usage(0.5, 0.5, '2026-05-01T00:00:00Z') }), // 0 leases at read time
-        b: state({ usage: usage(0.5, 0.5, '2026-04-28T00:00:00Z') }),
+        a: state({ usage: usage(50, 50, '2026-05-01T00:00:00Z') }), // 0 leases at read time
+        b: state({ usage: usage(50, 50, '2026-04-28T00:00:00Z') }),
       },
       'a',
     );
@@ -539,8 +582,8 @@ describe('evaluateAndMaybeRotate (#737)', () => {
     const observed = snap(
       [cct('a', 'A'), cct('b', 'B')],
       {
-        a: state({ usage: usage(0.5, 0.5, '2026-05-01T00:00:00Z') }),
-        b: state({ usage: usage(0.5, 0.5, '2026-04-28T00:00:00Z') }),
+        a: state({ usage: usage(50, 50, '2026-05-01T00:00:00Z') }),
+        b: state({ usage: usage(50, 50, '2026-04-28T00:00:00Z') }),
       },
       'a',
     );
@@ -569,8 +612,8 @@ describe('evaluateAndMaybeRotate (#737)', () => {
     const observed = snap(
       [cct('a', 'A'), cct('b', 'B')],
       {
-        a: state({ usage: usage(0.5, 0.5, '2026-05-01T00:00:00Z') }),
-        b: state({ usage: usage(0.5, 0.5, '2026-04-28T00:00:00Z') }),
+        a: state({ usage: usage(50, 50, '2026-05-01T00:00:00Z') }),
+        b: state({ usage: usage(50, 50, '2026-04-28T00:00:00Z') }),
       },
       'a',
     );
@@ -609,7 +652,7 @@ describe('evaluateAndMaybeRotate (#737)', () => {
     // Stale = 2h old. With usageMaxAgeMs=1h, the only slot drops out of
     // the candidate pool → no-candidate.
     const stale = '2026-04-27T01:00:00Z';
-    const s = snap([cct('a', 'A')], { a: state({ usage: usage(0.5, 0.5, '2026-04-28T00:00:00Z', stale) }) }, 'a');
+    const s = snap([cct('a', 'A')], { a: state({ usage: usage(50, 50, '2026-04-28T00:00:00Z', stale) }) }, 'a');
     const d = deps(s);
     const r = await evaluateAndMaybeRotate(d, {
       enabled: true,
@@ -629,8 +672,8 @@ describe('evaluateAndMaybeRotate (#737)', () => {
     const s = snap(
       [cct('a', 'A'), cct('b', 'B')],
       {
-        a: state({ usage: usage(0.5, 0.5, '2026-04-28T00:00:00Z', stale) }), // stale, would have won
-        b: state({ usage: usage(0.5, 0.5, '2026-04-29T00:00:00Z', fresh) }), // fresh, later resetsAt but only candidate
+        a: state({ usage: usage(50, 50, '2026-04-28T00:00:00Z', stale) }), // stale, would have won
+        b: state({ usage: usage(50, 50, '2026-04-29T00:00:00Z', fresh) }), // fresh, later resetsAt but only candidate
       },
       'a',
     );
