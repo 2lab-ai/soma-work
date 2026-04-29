@@ -351,7 +351,7 @@ describe('parseAgentsConfig — characterization (issue #793 PR1)', () => {
   });
 
   describe('valid agent — typed AgentConfig with defaults', () => {
-    it('builds AgentConfig with promptDir=`src/prompt/${name}` default', () => {
+    it("builds AgentConfig with promptDir defaulting to 'src/prompt/<name>'", () => {
       const result = parseAgentsConfig({ agents: { vega: makeValidAgent() } });
       expect(result.vega).toEqual({
         slackBotToken: VALID_BOT,
@@ -390,6 +390,34 @@ describe('parseAgentsConfig — characterization (issue #793 PR1)', () => {
       const result = parseAgentsConfig({ agents: { vega: agent } });
       expect(result.vega.description).toBeUndefined();
       expect(result.vega.model).toBeUndefined();
+    });
+
+    // The two optional-field code paths intentionally differ on empty strings,
+    // and conflating them would silently change observable output for users
+    // who deliberately blank a description. Pin the asymmetry explicitly so
+    // the refactor that names these helpers cannot regress it.
+    it("treats promptDir = '' as falsy (falls back to default)", () => {
+      const agent = makeValidAgent({ promptDir: '' });
+      const result = parseAgentsConfig({ agents: { vega: agent } });
+      expect(result.vega.promptDir).toBe('src/prompt/vega');
+    });
+
+    it("treats persona = '' as falsy (falls back to 'default')", () => {
+      const agent = makeValidAgent({ persona: '' });
+      const result = parseAgentsConfig({ agents: { vega: agent } });
+      expect(result.vega.persona).toBe('default');
+    });
+
+    it("preserves description = '' verbatim (deliberate blank stays blank)", () => {
+      const agent = makeValidAgent({ description: '' });
+      const result = parseAgentsConfig({ agents: { vega: agent } });
+      expect(result.vega.description).toBe('');
+    });
+
+    it("preserves model = '' verbatim (deliberate blank stays blank)", () => {
+      const agent = makeValidAgent({ model: '' });
+      const result = parseAgentsConfig({ agents: { vega: agent } });
+      expect(result.vega.model).toBe('');
     });
   });
 

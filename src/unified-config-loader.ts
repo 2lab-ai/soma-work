@@ -82,15 +82,40 @@ function extractRequiredString(
 }
 
 /**
+ * Read an optional string field, returning `fallback` when the field is
+ * absent, non-string, OR empty. Used for `promptDir` / `persona`: an empty
+ * value here would silently overwrite the documented default, so we treat
+ * it as "unset."
+ */
+function optionalStringWithFallback(agent: Record<string, unknown>, key: string, fallback: string): string {
+  const value = agent[key];
+  return typeof value === 'string' && value.length > 0 ? value : fallback;
+}
+
+/**
+ * Read an optional string field, returning `undefined` only when the field
+ * is absent or non-string. Empty strings are preserved verbatim — used for
+ * `description` / `model`, which are allowed to be deliberately blank.
+ *
+ * The asymmetry vs. `optionalStringWithFallback` is intentional and pinned
+ * by tests in `unified-config-loader.test.ts`.
+ */
+function optionalString(agent: Record<string, unknown>, key: string): string | undefined {
+  const value = agent[key];
+  return typeof value === 'string' ? value : undefined;
+}
+
+/**
  * Validate one raw agent entry and assemble the typed `AgentConfig`.
  * Validation order is fixed (slackBotToken → slackAppToken → signingSecret)
  * because the first-failing rule decides the warning text — reordering
  * would silently change diagnostics seen by operators.
  *
  * Optional fields fall back to defaults documented on `AgentConfig`:
- *   - promptDir → `src/prompt/${name}`
- *   - persona   → 'default'
+ *   - promptDir → `src/prompt/${name}`     (empty string ⇒ fallback)
+ *   - persona   → 'default'                (empty string ⇒ fallback)
  *   - description / model → undefined when absent or non-string
+ *                          (empty string preserved verbatim)
  */
 function validateAgentConfig(name: string, raw: unknown): Result<AgentConfig, string> {
   if (!raw || typeof raw !== 'object') {
@@ -111,10 +136,10 @@ function validateAgentConfig(name: string, raw: unknown): Result<AgentConfig, st
       slackBotToken: bot.value,
       slackAppToken: app.value,
       signingSecret: signing.value,
-      promptDir: (typeof agent.promptDir === 'string' ? agent.promptDir : undefined) || `src/prompt/${name}`,
-      persona: (typeof agent.persona === 'string' ? agent.persona : undefined) || 'default',
-      description: typeof agent.description === 'string' ? agent.description : undefined,
-      model: typeof agent.model === 'string' ? agent.model : undefined,
+      promptDir: optionalStringWithFallback(agent, 'promptDir', `src/prompt/${name}`),
+      persona: optionalStringWithFallback(agent, 'persona', 'default'),
+      description: optionalString(agent, 'description'),
+      model: optionalString(agent, 'model'),
     },
   };
 }
