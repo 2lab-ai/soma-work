@@ -1,31 +1,12 @@
 {
-  "unused_files": [
-    "mcp-servers/_shared/index.ts",
-    "mcp-servers/cron/cron-mcp-server.ts",
-    "mcp-servers/llm/scripts/stdio-self-proof-harness.ts",
-    "mcp-servers/llm/scripts/stdio-self-proof.ts",
-    "mcp-servers/mcp-tool-permission/mcp-tool-permission-mcp-server.ts",
-    "mcp-servers/permission/permission-server-start.js",
-    "mcp-servers/slack-mcp/helpers/thread-fetcher.ts",
-    "mcp-servers/slack-mcp/slack-mcp-server.ts",
-    "scripts/gen-usage-card-fixture.ts",
-    "scripts/provision-agent.ts",
-    "scripts/screenshot-dashboard.ts",
-    "scripts/soma-cli.ts",
-    "src/git-cli-auth.ts",
-    "src/image-handler.ts",
-    "src/local/skills/github-pr/scripts/extract-pr-data.ts",
-    "src/permission/index.ts",
-    "src/permission/service.ts",
-    "src/plugin/index.ts",
-    "src/test-utils/index.ts"
-  ],
+  "unused_files": [],
   "unused_exports": [
     "somalib/permission/dangerous-rules.ts:rulesByIds",
     "src/conversation/oauth.ts:generateCsrfToken",
     "src/conversation/oauth.ts:generateCsrfTokenForAdmin",
     "src/cron-scheduler.ts:resolveModelOverride",
     "src/dangerous-command-filter.ts:rulesByIds",
+    "src/github-auth.ts:getGitHubTokenForCLI",
     "src/oauth/index.ts:buildRotationDebug",
     "src/oauth/index.ts:selectBestRotationCandidate",
     "src/oauth/index.ts:hintsIndicateExhausted",
@@ -90,8 +71,6 @@
     "mcp-servers/_shared/types.ts:UserChoiceQuestion",
     "mcp-servers/_shared/types.ts:UserChoice",
     "mcp-servers/_shared/types.ts:UserChoices",
-    "mcp-servers/llm/llm-mcp-server.ts:RouteResult",
-    "mcp-servers/llm/llm-mcp-server.ts:LlmMcpDeps",
     "mcp-servers/llm/runtime/codex-runtime.ts:CodexRuntimeOptions",
     "mcp-servers/llm/runtime/gemini-runtime.ts:GeminiRuntimeOptions",
     "mcp-servers/llm/runtime/watchdog.ts:WatchdogOptions",
@@ -613,6 +592,8 @@
     "src/user-settings-store.ts:UserSettingsStore.consumePendingRatingChange",
     "src/user-settings-store.ts:UserSettingsStore.getUserDefaultDirectory",
     "src/user-settings-store.ts:UserSettingsStore.setUserDefaultDirectory",
+    "src/user-settings-store.ts:UserSettingsStore.getUserBypassPermission",
+    "src/user-settings-store.ts:UserSettingsStore.setUserBypassPermission",
     "src/user-settings-store.ts:UserSettingsStore.getUserPersona",
     "src/user-settings-store.ts:UserSettingsStore.setUserPersona",
     "src/user-settings-store.ts:UserSettingsStore.getUserDefaultModel",
@@ -648,9 +629,7 @@
     "src/working-directory-manager.ts:WorkingDirectoryManager.formatChannelSetupMessage"
   ],
   "unresolved_imports": [],
-  "unlisted_dependencies": [
-    "playwright"
-  ],
+  "unlisted_dependencies": [],
   "duplicate_exports": [
     "MAX_SKILL_NAME_LENGTH|somalib/model-commands/skill-share-errors.ts|src/user-skill-store.ts",
     "MemoryAction|src/slack/command-parser.ts|src/user-memory-store.ts",
