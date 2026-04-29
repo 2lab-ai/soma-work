@@ -272,6 +272,47 @@ export interface StreamResult {
 export type { EndTurnInfo };
 
 /**
+ * Extract `task_id` from a Task tool result.
+ *
+ * The SDK returns spawn-ack text like
+ *   `"Task started in background. output_file: /path task_id: abc123"`
+ * either as a top-level string or as a `{ type: 'text', text: ... }` part
+ * inside an array result. Returns the captured id, or `undefined` if no
+ * marker is present.
+ *
+ * Issue #794 — exported as a module-level helper so
+ * `ToolEventProcessor.isBackgroundTaskSpawnAck` can reuse the exact regex
+ * (`/task_id[:\s]+(\S+)/i`) instead of hand-rolling its own. DRY across
+ * the spawn-ack detection path eliminates the misdetection class where a
+ * minor regex drift would either suppress every `endMcpTracking` call
+ * (false-positive: leaks running state across turns) or kill the bg
+ * progress UI on real spawn-acks (false-negative: regression of the
+ * symptom this issue closes).
+ */
+export function extractTaskIdFromResult(result: unknown): string | undefined {
+  if (!result) return undefined;
+
+  // If result is a string, search for task_id pattern
+  if (typeof result === 'string') {
+    const match = result.match(/task_id[:\s]+(\S+)/i);
+    return match?.[1];
+  }
+
+  // If result is an array (common SDK format), search text parts
+  if (Array.isArray(result)) {
+    for (const part of result) {
+      const text = typeof part === 'string' ? part : (part as { text?: unknown } | null | undefined)?.text;
+      if (typeof text === 'string') {
+        const match = text.match(/task_id[:\s]+(\S+)/i);
+        if (match) return match[1];
+      }
+    }
+  }
+
+  return undefined;
+}
+
+/**
  * StreamProcessor handles the for-await loop over Claude SDK messages
  */
 export class StreamProcessor {
@@ -1411,7 +1452,7 @@ export class StreamProcessor {
       if (!taskInput) continue;
 
       // Extract task_id from the result text (SDK returns it in the result)
-      const taskId = this.extractTaskIdFromResult(tr.result);
+      const taskId = extractTaskIdFromResult(tr.result);
       if (taskId) {
         const summary = ToolFormatter.getTaskToolSummary(taskInput);
         this.backgroundTaskMeta.set(taskId, {
@@ -1422,34 +1463,6 @@ export class StreamProcessor {
       }
       this.pendingTaskInputs.delete(tr.toolUseId);
     }
-  }
-
-  /**
-   * Extract task_id from a Task tool result.
-   * The SDK returns text like "Task started in background. output_file: /path task_id: abc123"
-   * or the result may contain structured data.
-   */
-  private extractTaskIdFromResult(result: any): string | undefined {
-    if (!result) return undefined;
-
-    // If result is a string, search for task_id pattern
-    if (typeof result === 'string') {
-      const match = result.match(/task_id[:\s]+(\S+)/i);
-      return match?.[1];
-    }
-
-    // If result is an array (common SDK format), search text parts
-    if (Array.isArray(result)) {
-      for (const part of result) {
-        const text = typeof part === 'string' ? part : part?.text;
-        if (typeof text === 'string') {
-          const match = text.match(/task_id[:\s]+(\S+)/i);
-          if (match) return match[1];
-        }
-      }
-    }
-
-    return undefined;
   }
 
   /**
