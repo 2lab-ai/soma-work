@@ -533,7 +533,7 @@ function updateActiveFromArray(snapshot: SessionResourceSnapshot, resourceType: 
   snapshot.active[activeKey] = links.length > 0 ? links[links.length - 1] : undefined;
 }
 
-export function applySessionUpdateToSnapshot(
+function applySessionUpdateToSnapshot(
   snapshot: SessionResourceSnapshot,
   request: SessionResourceUpdateRequest,
 ): { ok: true; snapshot: SessionResourceSnapshot } | { ok: false; error: ModelCommandError } {

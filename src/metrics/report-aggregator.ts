@@ -1182,7 +1182,7 @@ export function computeTrend(current: AggregatedMetrics, previous: AggregatedMet
   };
 }
 
-export function computeDailyBreakdown(events: MetricsEvent[], weekStart: string): DailyBreakdown[] {
+function computeDailyBreakdown(events: MetricsEvent[], weekStart: string): DailyBreakdown[] {
   const breakdown: DailyBreakdown[] = [];
 
   for (let i = 0; i < 7; i++) {
@@ -1207,7 +1207,7 @@ export function computeDailyBreakdown(events: MetricsEvent[], weekStart: string)
   return breakdown;
 }
 
-export function computeHourlyDistribution(events: MetricsEvent[]): HourlyDistribution[] {
+function computeHourlyDistribution(events: MetricsEvent[]): HourlyDistribution[] {
   const hours = new Array(24).fill(0);
 
   for (const e of events) {
@@ -1218,13 +1218,13 @@ export function computeHourlyDistribution(events: MetricsEvent[]): HourlyDistrib
   return hours.map((count, hour) => ({ hour, eventCount: count }));
 }
 
-export function findPeakHour(distribution: HourlyDistribution[]): number | null {
+function findPeakHour(distribution: HourlyDistribution[]): number | null {
   if (distribution.length === 0) return null;
   const max = distribution.reduce((best, curr) => (curr.eventCount > best.eventCount ? curr : best));
   return max.eventCount > 0 ? max.hour : null;
 }
 
-export function computeAchievements(
+function computeAchievements(
   m: AggregatedMetrics,
   d: DerivedMetrics,
   dailyBreakdown: DailyBreakdown[] | null,
@@ -1305,7 +1305,7 @@ export function computeAchievements(
   return achievements.slice(0, 5); // Max 5
 }
 
-export function computeFunFacts(
+function computeFunFacts(
   m: AggregatedMetrics,
   d: DerivedMetrics,
   events: MetricsEvent[],

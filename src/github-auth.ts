@@ -17,7 +17,7 @@ export type { GitHubAppConfig };
  * GitHubAppAuth - Facade that coordinates GitHub authentication components
  * Maintains backward compatibility while delegating to specialized classes
  */
-export class GitHubAppAuth {
+class GitHubAppAuth {
   private apiClient: GitHubApiClient;
   private credentialsManager: GitCredentialsManager;
   private tokenScheduler: TokenRefreshScheduler | null = null;

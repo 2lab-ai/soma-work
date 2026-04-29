@@ -22,7 +22,7 @@ const PERSONA_TAGLINES: Record<string, string> = {
   feynman: 'Feynman — 호기심·설명',
 };
 
-export function personaTagline(id: string): string | undefined {
+function personaTagline(id: string): string | undefined {
   return PERSONA_TAGLINES[id.toLowerCase()];
 }
 

@@ -45,7 +45,7 @@ export interface DispatchResult {
  * DispatchService classifies user messages and routes to appropriate workflows
  * Now uses ClaudeHandler for unified auth (Claude subscription / Agent SDK)
  */
-export class DispatchService {
+class DispatchService {
   private logger = new Logger('DispatchService');
   private model: string;
   private dispatchPrompt: string | undefined;

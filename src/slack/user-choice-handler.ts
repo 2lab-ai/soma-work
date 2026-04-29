@@ -8,7 +8,6 @@ import { type ExtractedChoice, UserChoiceExtractor } from './user-choice-extract
 
 export { SlackMessagePayload } from './choice-message-builder';
 // Re-export types for backwards compatibility
-export { ExtractedChoice } from './user-choice-extractor';
 
 /**
  * Facade class that combines extraction and UI building functionality

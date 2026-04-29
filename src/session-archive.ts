@@ -351,7 +351,7 @@ export function getArchiveStore(): SessionArchiveStore {
 /**
  * Initialize with custom base directory (for testing).
  */
-export function initArchiveStore(baseDir?: string): SessionArchiveStore {
+function initArchiveStore(baseDir?: string): SessionArchiveStore {
   _instance = new SessionArchiveStore(baseDir);
   return _instance;
 }

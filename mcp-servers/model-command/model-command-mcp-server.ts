@@ -199,7 +199,7 @@ class ModelCommandMcpServer extends BaseMcpServer {
 
 let serverInstance: ModelCommandMcpServer | null = null;
 
-export function getModelCommandServer(): ModelCommandMcpServer {
+function getModelCommandServer(): ModelCommandMcpServer {
   if (!serverInstance) {
     serverInstance = new ModelCommandMcpServer();
   }
