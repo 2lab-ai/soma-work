@@ -5,16 +5,28 @@ description: "**Trigger always** before ask user fopr Approval. Also trigger jus
 
 # zcheck — Post-Implementation Verification Gate
 
-PR이 mergeable 상태가 될 때까지 루프
+PR이 mergeable 상태가 될 때까지 루프.
+
+## Invocation modes
+
+| Mode | Caller | Step 4 (user approve) |
+|---|---|---|
+| **standalone** | user, ad-hoc PR check | zcheck owns Step 4 — calls `UIAskUserQuestion` directly |
+| **orchestrator-mode** (phase-3 subagent under `local:z`) | `local:z` phase 3 dispatch | zcheck **must skip Step 4** — orchestrator owns user dialogue. Subagent returns Step 0–3 results in a structured report and ends. |
+
+The dispatching prompt declares the mode. `local:z` always invokes orchestrator-mode and explicitly forbids Step 4 in its dispatch prompt; ad-hoc invocation defaults to standalone.
 
 ## Input
 
 - PR URL or `owner/repo#number`
+- Mode: `standalone` (default) or `orchestrator-mode` (set when invoked via `local:z` phase 3).
 
-## Step 0: Update bracnh
+## Step 0: Update branch
 
 1. base branch로 새로 `rebase` 한다. 충돌이 발생하면 충돌을 처리한다.
-2. Invoke `simplify`
+2. Push가 필요하면 `git push --force-with-lease` 사용 (raw `--force` 금지 — 동시 다른 reviewer commit을 덮어쓸 위험).
+3. Force-push 직후 `gh pr view <NUM> --json reviewDecision,mergeable,state` 재확인. `dismiss_stale_reviews` 설정에 따라 직전 approve가 무효화될 수 있음 — 결과는 final report에 기록.
+4. Invoke `simplify`.
 
 ## Step 1: CI Must Pass
 
@@ -25,7 +37,7 @@ PR이 mergeable 상태가 될 때까지 루프
 gh run list --branch <BRANCH> --repo <OWNER/REPO> --limit 1 --json status,conclusion,databaseId -q '.[0]'
 ```
 
-- **in_progress:** 30초마다 폴링.
+- **in_progress:** `gh run watch <id> --exit-status`로 push-style 대기 (foreground sleep / 30초 폴링 금지 — 본 워치는 GitHub의 push 알림 기반).
 - **failed:** `gh run view <RUN_ID> --log-failed`로 진단 → fix → commit+push
 - 병렬 작업: step 2를 병렬로 처리한다. 하지만 이 CI가 완료 되면 반드시 다시 Step 2작업을 해야한다. CI가 새 코드 리뷰 커멘트를 추가할 수 있다.
 - **success:** Step 2으로.
@@ -37,11 +49,19 @@ gh run list --branch <BRANCH> --repo <OWNER/REPO> --limit 1 --json status,conclu
 3. 0 unresolved까지 루프.
 
 
-## Step 3: 유저 설득
+## Step 3: ztrace 리포트 생성
 
-이 PR을 Approve할수 있는 이유를 `local:ztrace` 스킬을 사용하여 유저에게 브리핑한다.
+`local:ztrace`로 PR 변경의 시나리오별 콜스택을 리포트로 생성한다.
+
+- **standalone**: 그 결과를 그대로 유저에게 출력 + Step 4로 진행.
+- **orchestrator-mode**: 결과를 final report에 포함시켜 z 오케스트레이터에 반환. 유저 설득(브리핑·approve 요청)은 `local:z` phase 4가 소유한다.
 
 ## Step 4: Request Approve
+
+**Mode-conditional:**
+
+- **orchestrator-mode** (invoked by `local:z` phase 3): skip this step entirely. Return Step 0–3 results in a structured report and end. The orchestrator builds the briefing and calls `UIAskUserQuestion` itself.
+- **standalone**: continue below.
 
 1. 유저애게 이슈와 approve를 요청할 **PR 링크**를 보낸다 `local:UIAskUserQuestion`으로 approve 요청. 템플릿: `../UIAskUserQuestion/templates/zcheck-pr-approve.json`
 리뷰 코멘트 해결 수, CI 상태, 변경 범위를 보낸다. 네 점수가 -10점 이하로 떨어지면 너는 대체될 것이다. 
