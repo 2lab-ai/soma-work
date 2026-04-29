@@ -312,7 +312,7 @@ The merge subagent does **not** dispatch other subagents — that's the controll
 
 The orchestrator decides what to do next based on the merge subagent's report:
 
-- **Merge subagent reported `blocker` (rebase conflict, post-rebase reviewDecision regression, etc.)** → §5.2 (conflict / blocker cleanup). Loop back to §5.1 once the blocker subagent resolves it. **Successful merge has not happened yet** — do not proceed to closeout.
+- **Merge subagent reported `blocker` (rebase conflict, post-rebase reviewDecision regression, etc.)** → dispatch §5.2 (conflict / blocker cleanup). The §5.2 subagent uses the same merge-status report contract (see §5.2 below); feed its report **back into §5.1.a** — do **not** re-dispatch the §5.1 merge driver, since the §5.2 subagent may have already merged the PR. Re-enter §5.1 only if §5.2 explicitly reports a fresh unresolvable blocker requiring user escalation (bounded by §5.2's retry cap).
 - **Merge subagent reported `MERGED` (success)** → inspect whether more dependency groups remain in `## Dependency Groups`:
   - **Next group exists** (more PRs to ship): dispatch a **base-refresh subagent** (background) that pulls the new base into Group N+1's existing worktrees — those worktrees were created up front in §2.0 and are reused for the entire phase 2 lifecycle. Do **not** recreate worktrees. After the base-refresh report returns, **return to §2.2** and dispatch Group N+1's implementer subagents. §5.3 / §5.4 are skipped this turn.
   - **No next group** (this was the last PR for the epic / single-issue case): proceed to §5.3 (`es` executive summary), then §5.4 (Handoff #2 if Parent Epic ≠ none).

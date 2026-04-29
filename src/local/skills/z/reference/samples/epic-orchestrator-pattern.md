@@ -136,7 +136,8 @@ The orchestrator then dispatches Group N+1's implementer subagents (back to phas
 ### Conflict handling:
 
 - Rebase conflict → dispatch a separate conflict-resolution subagent (rebase + force-with-lease + CI watch + reviewDecision recheck + merge). See `05-rebase-merge-conflict.md`.
-- Orchestrator does **not** resolve conflicts directly.
+- The conflict subagent's final report **must use the same merge-status discriminated shape** as the §5.1 merge subagent: `{ status: 'MERGED', mergeCommitSha } | { status: 'blocker', detail }`. The controller routes its report through §5.1.a exactly as it would the §5.1 merge subagent's — **do not re-dispatch §5.1's merge driver** when §5.2 already returns `MERGED`.
+- Orchestrator does **not** resolve conflicts directly. Bounded retry: max 2 §5.2 dispatches per PR; a second `blocker` triggers `UIAskUserQuestion` escalation.
 
 ## phase 5.E — Epic Update (handoff-only entry; manual close)
 

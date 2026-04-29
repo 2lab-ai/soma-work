@@ -35,12 +35,31 @@ Sibling PR `<SIBLING_PR_URL>` was just merged into `<BASE_BRANCH>` at `<merge_sh
 8. `reviewDecision == APPROVED` and CI green → `gh pr merge <NUM> --repo <ORG>/<REPO> --squash --delete-branch`.
 9. `gh pr view <NUM> --json state,mergeCommit --jq '.'` — confirm `state=MERGED` and capture merge SHA.
 
-## Final report
-- Rebase outcome (conflict files + how each was resolved).
-- CI run id + final conclusion.
-- Pre-merge `reviewDecision` (APPROVED required; otherwise `blocker`).
-- Merge commit SHA.
-- `state=MERGED` confirmation.
+## Final report — must use the merge-status discriminated shape (z/SKILL.md §5.2)
+
+The orchestrator's §5.1.a controller branches on a discriminated `{ status: 'MERGED', mergeCommitSha } | { status: 'blocker', detail }` shape — the same shape §5.1's merge subagent uses. **Conform to it exactly** so §5.1.a can route the report identically.
+
+### On success — `status: 'MERGED'`
+
+Return:
+
+- `status`: `MERGED`
+- `mergeCommitSha`: the merge commit hash (from `gh pr view --json mergeCommit`).
+- `details` (informational, free-form, must NOT cause the controller to re-dispatch the §5.1 merge driver — the conflict subagent has already merged the PR):
+  - Rebase outcome (conflict files + how each was resolved).
+  - CI run id + final conclusion.
+  - Pre-merge `reviewDecision` (APPROVED at the time of merge).
+  - `state=MERGED` confirmation.
+
+### On unresolvable blocker — `status: 'blocker'`
+
+Return:
+
+- `status`: `blocker`
+- `detail`: a short string identifying the blocker (e.g. `reviewDecision-regressed-after-force-push`, `unresolvable-conflict-on-shared-file`, `ci-fail-after-2-fix-cycles`, `signed-commit-required-no-key`).
+- Diagnostic context (free-form): rebase log, CI failure tail, the `gh pr view --json` snapshot.
+
+The orchestrator's §5.2 retry cap (max 2) means a second `blocker` from this subagent triggers `UIAskUserQuestion` escalation — do not loop indefinitely.
 
 ## Hard rules
 - **Do not stop midway. Do not hand back early.**
