@@ -65,25 +65,17 @@ class BackgroundBashRegistry {
 }
 
 /**
- * Issue #794 — entry stored in BackgroundTaskRegistry per live
- * `Task({run_in_background:true})` invocation. Unlike BashBG (#688), Task
- * does NOT carry an AssistantStatusManager bg-counter — Subagent runs in
- * the background but is invisible to the native "waiting on background
- * shell" spinner — so there is no `unregister` callback. The registry's
- * sole job is to gate `endMcpTracking` on the spawn-ack tool_result so
- * the McpStatusDisplay progress UI stays alive until the turn ends.
+ * Issue #794 — live `Task({run_in_background:true})` entry. Unlike
+ * BashBG (#688), Subagent has no AssistantStatusManager bg-counter, so
+ * no `unregister` is stored. Entries gate `endMcpTracking` on the
+ * spawn-ack so the McpStatusDisplay progress UI stays alive until the
+ * turn ends.
  *
- * Keyed by `(turnId, toolUseId)` to defend against same-session turn
- * replacement (`session-initializer.ts:1138/1157`): if turn1's cleanup
- * drained a session-keyed registry it would clobber turn2's just-spawned
- * bg Task entries. `toolUseId` alone is unique across turns, but the
- * `turnId` outer bucket lets `cleanup(sessionKey, turnId)` drain only
- * its own turn's entries.
- *
- * Falls back to a `hasAnyByToolUseId`/`removeAnyByToolUseId` scan when
- * the caller doesn't have a `turnId` (older code paths in tests, or the
- * `handleToolResult` spawn-ack detector that runs before context.turnId
- * is reliably populated).
+ * Keyed by `(turnId, toolUseId)` so same-session turn replacement does
+ * not let one turn's cleanup drain another turn's just-spawned entries.
+ * `hasAnyByToolUseId` / `removeAnyByToolUseId` provide a turnId-less
+ * scan for the spawn-ack path, which fires before context.turnId is
+ * reliably threaded.
  */
 interface BgTaskEntry {
   callId: string;
@@ -228,27 +220,15 @@ export class ToolEventProcessor {
    * `handleToolResult` (normal completion) or `cleanup()` (turn end).
    */
   private backgroundBashRegistry = new BackgroundBashRegistry();
-  /**
-   * Issue #794 — registry of live `Task({run_in_background:true})` calls.
-   * Turn-scoped; populated by `startSubagentTracking` when the turnId is
-   * known, drained by `cleanup(sessionKey, turnId)` at turn end. Used by
-   * `isBackgroundTaskSpawnAck` to suppress `endMcpTracking` on the
-   * spawn-ack tool_result so the McpStatusDisplay progress UI survives
-   * until turn end.
-   */
+  /** Issue #794 — see `BgTaskEntry` doc. */
   private backgroundTaskRegistry = new BackgroundTaskRegistry();
   /**
    * Issue #794 — turn-scoped index of live McpCallTracker callIds.
-   *
-   * Replaces the previous `toolTracker.getActiveMcpCallIds()` global
-   * sweep in `cleanup()`. Same-session turn replacement
-   * (`session-initializer.ts:1138/1157`) used to leak: turn1's cleanup
-   * would `completeCall(callId, null)` for callIds that turn2 had just
-   * registered, false-completing live calls. Bucketing by turnId at
-   * registration site means cleanup only sweeps its own turn's calls.
-   *
-   * Populated at every `startCall` site (MCP / Subagent / BashBG) and
-   * cleared at every `endCall` site (`endMcpTracking`).
+   * Replaces the global `toolTracker.getActiveMcpCallIds()` sweep so
+   * `cleanup(sessionKey, turnId)` closes only its own turn's calls,
+   * preventing same-session turn replacement from false-completing a
+   * newer turn's just-registered calls. Populated at every `startCall`
+   * site, cleared at every `endCall` site.
    */
   private callIdsByTurn: Map<string, Set<string>> = new Map();
   /** Callback for updating compact tool call messages with duration */
@@ -500,48 +480,22 @@ export class ToolEventProcessor {
         }
       }
 
-      // Issue #794 — bg Task spawn-ack: the SDK posts a `task_id: …`
-      // tool_result within ~1s of the tool_use to acknowledge the
-      // background spawn. The actual subagent then continues running
-      // for minutes. We must NOT close the progress entry on this
-      // ack — `cleanup(sessionKey, turnId)` at turn end is the single
-      // source of completion. Two-branch decision tree:
-      //
-      //   (1) spawn-ack (`!isError && hasMatchingEntry && task_id`):
-      //       skip endMcpTracking + skip sendToolResult, but still
-      //       close the compact one-liner via onCompactDurationUpdate
-      //       so the inline `⏳` flips to `🟢 (Ns)`.
-      //   (2) non-ack result on a tracked bg Task (`isError` or no
-      //       `task_id`): drop the registry entry now (so cleanup's
-      //       drain doesn't see a stale entry), then fall through to
-      //       the normal endMcpTracking + sendToolResult path.
-      //
-      // Foreground Task and non-Task tools never match (1) and only
-      // match (2)'s `removed === undefined` case, which is a no-op.
+      // Issue #794 — bg Task spawn-ack keeps the progress UI alive
+      // (cleanup at turn end owns completion). See
+      // `isBackgroundTaskSpawnAck` for the precondition contract.
       if (this.isBackgroundTaskSpawnAck(toolResult)) {
         const callId = this.toolTracker.getMcpCallId(toolResult.toolUseId);
         const elapsed = callId ? (this.mcpCallTracker.getElapsedTime(callId) ?? 0) : 0;
         if (this.onCompactDurationUpdate) {
           await this.onCompactDurationUpdate(toolResult.toolUseId, elapsed, context.channel);
         }
-        this.logger.debug('bg Task spawn-ack — keeping progress alive', {
-          toolUseId: toolResult.toolUseId,
-          elapsed,
-        });
         continue;
       }
 
-      // (2) bg Task non-spawn-ack (error or `task_id`-less result) —
-      // remove the registry entry so the turn-end drain sees a clean
-      // slate, then fall through to the normal endMcpTracking path.
-      const removedBgTask = this.backgroundTaskRegistry.removeAnyByToolUseId(toolResult.toolUseId);
-      if (removedBgTask) {
-        this.logger.debug('bg Task non-ack result — closing normally', {
-          toolUseId: toolResult.toolUseId,
-          isError: toolResult.isError,
-          turnId: removedBgTask.turnId,
-        });
-      }
+      // Non-ack result on a tracked bg Task: drop the registry entry
+      // now so the turn-end drain doesn't see a stale entry, then fall
+      // through to the normal endMcpTracking + sendToolResult path.
+      this.backgroundTaskRegistry.removeAnyByToolUseId(toolResult.toolUseId);
 
       // End MCP call tracking and get duration
       const duration = await this.endMcpTracking(toolResult.toolUseId, context.sessionKey);
@@ -708,46 +662,28 @@ export class ToolEventProcessor {
   /**
    * Cleanup resources on abort or completion.
    *
-   * Issue #794 — async + turn-scoped:
-   *   - Async because `flushSession` waits on the McpStatusDisplay
-   *     render chain to drain so the final "completed" line lands
-   *     before we tear down. Sync-fire-and-forget would leave a stale
-   *     "in flight" message on screen.
-   *   - `turnId` is required to safely sweep callIds and bg Task
-   *     entries belonging to this turn only. Same-session turn
-   *     replacement (`session-initializer.ts:1138/1157`) reuses the
-   *     `sessionKey`, so a session-wide sweep would false-complete
-   *     calls owned by a newer turn that started before the old turn's
-   *     cleanup ran. When `turnId` is absent (legacy callers), we fall
-   *     back to the old `getActiveMcpCallIds()` global sweep — same
-   *     race exposure as before, but no functional regression.
+   * Async because `flushSession` awaits the McpStatusDisplay render
+   * chain so the final "completed" line lands before teardown. When
+   * `turnId` is provided we do a turn-scoped callId sweep; without it
+   * we fall back to a global sweep (same race exposure as pre-#794,
+   * kept for legacy callers).
    *
-   * Drain order matters:
-   *   1. Background Bash entries (#688) — release their bg-bash
-   *      counters BEFORE we close the display, otherwise the spinner
-   *      text leaks past the turn.
-   *   2. Background Task entries (#794) — `await endMcpTracking` so
-   *      the McpStatusDisplay entries flip to `completed` with real
-   *      duration before flushSession renders them.
+   * Drain order:
+   *   1. Background Bash counters (#688) — release before display close.
+   *   2. Background Task entries (#794) — endMcpTracking each (parallel)
+   *      so display entries flip to `completed` before flushSession.
    *   3. Outstanding callId sweep (turn-scoped or legacy global).
-   *   4. `flushSession(sessionKey)` to await the final render and tear
-   *      the session tick down.
+   *   4. `flushSession(sessionKey)` for final render + tick teardown.
    */
   async cleanup(sessionKey?: string, turnId?: string): Promise<void> {
-    // Issue #688 — sweep any background bashes that never produced a
-    // tool_result. Decrement their bg-bash counters BEFORE the general
-    // activeMcpCallIds sweep below — otherwise the native spinner text
-    // could continue to resolve to "waiting on background shell" after
-    // the turn is gone. `endMcpTracking` also runs below for the same
-    // callId via activeMcpCallIds, so we only touch the counter here and
-    // let the existing `completeCall(callId, null)` close the display.
     if (sessionKey) {
       const bgEntries = this.backgroundBashRegistry.drain(sessionKey);
       for (const entry of bgEntries) {
         try {
           entry.unregister();
         } catch (err) {
-          // Same warn-level rationale as handleToolResult's unregister catch.
+          // Idempotent — a throw here means two paths fight over the
+          // same entry; warn so a real concurrency bug doesn't hide.
           this.logger.warn('bg bash unregister threw during sweep', {
             sessionKey,
             toolUseId: entry.toolUseId,
@@ -757,31 +693,28 @@ export class ToolEventProcessor {
       }
     }
 
-    // Issue #794 — sweep any background Tasks that never produced a
-    // non-ack tool_result before turn end. Each entry routes through
-    // `endMcpTracking` so the McpCallTracker / McpStatusDisplay state
-    // closes consistently with the foreground Task path.
     if (turnId) {
       const bgTaskEntries = this.backgroundTaskRegistry.drain(turnId);
-      for (const entry of bgTaskEntries) {
-        try {
-          await this.endMcpTracking(entry.toolUseId, sessionKey);
-        } catch (err) {
-          this.logger.warn('bg Task endMcpTracking threw during cleanup sweep', {
-            sessionKey,
-            turnId,
-            toolUseId: entry.toolUseId,
-            error: (err as Error)?.message ?? String(err),
-          });
-        }
-      }
+      // Parallel — `endMcpTracking` does Slack reaction-clear API calls;
+      // serializing N would multiply turn-end latency by N RTTs. The
+      // shared-state mutations inside (Map ops, completeCall) all run
+      // synchronously between awaits, so concurrency is safe.
+      await Promise.all(
+        bgTaskEntries.map(async (entry) => {
+          try {
+            await this.endMcpTracking(entry.toolUseId, sessionKey);
+          } catch (err) {
+            this.logger.warn('bg Task endMcpTracking threw during cleanup sweep', {
+              sessionKey,
+              turnId,
+              toolUseId: entry.toolUseId,
+              error: (err as Error)?.message ?? String(err),
+            });
+          }
+        }),
+      );
     }
 
-    // Complete any outstanding MCP calls. Turn-scoped sweep (preferred)
-    // when the caller threaded `turnId` through; legacy global sweep
-    // otherwise. The turn-scoped path closes only this turn's callIds —
-    // critical for same-session turn replacement (cf. callIdsByTurn
-    // field doc).
     if (turnId) {
       const turnCallIds = this.callIdsByTurn.get(turnId);
       if (turnCallIds) {
@@ -791,37 +724,23 @@ export class ToolEventProcessor {
         this.callIdsByTurn.delete(turnId);
       }
     } else {
-      // Legacy fallback — caller did not provide turnId. Same race
-      // exposure as before this fix (same-session turn replacement may
-      // false-complete the new turn's calls), but no functional
-      // regression for callers that never had turnId.
+      // Legacy fallback — same race exposure as before #794.
       const activeMcpCallIds = this.toolTracker.getActiveMcpCallIds();
       for (const callId of activeMcpCallIds) {
         this.mcpStatusDisplay.completeCall(callId, null);
       }
     }
 
-    // Cleanup session tick. `flushSession` (async) waits on the render
-    // chain so the user sees the final "completed" line before the
-    // tick stops; falls back to `cleanupSession` semantics when no
-    // running calls remain. Older McpStatusDisplay implementations
-    // (test mocks) may not expose `flushSession`, so we feature-detect
-    // and fall back to the synchronous `cleanupSession`.
     if (sessionKey) {
-      const display = this.mcpStatusDisplay as McpStatusDisplay & {
-        flushSession?: (sessionKey: string) => Promise<void>;
-      };
-      if (typeof display.flushSession === 'function') {
-        try {
-          await display.flushSession(sessionKey);
-        } catch (err) {
-          this.logger.warn('mcpStatusDisplay.flushSession threw — falling back to cleanupSession', {
-            sessionKey,
-            error: (err as Error)?.message ?? String(err),
-          });
-          this.mcpStatusDisplay.cleanupSession(sessionKey);
-        }
-      } else {
+      try {
+        await this.mcpStatusDisplay.flushSession(sessionKey);
+      } catch (err) {
+        // flushSession does Slack I/O; on failure fall back to a
+        // synchronous tear-down so the session tick doesn't leak.
+        this.logger.warn('mcpStatusDisplay.flushSession threw — falling back to cleanupSession', {
+          sessionKey,
+          error: (err as Error)?.message ?? String(err),
+        });
         this.mcpStatusDisplay.cleanupSession(sessionKey);
       }
     }
