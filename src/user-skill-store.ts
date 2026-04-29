@@ -57,7 +57,7 @@ export const setSkillPromptInvalidationHook = invalidator.setHook;
 const fireInvalidate = invalidator.fire;
 
 /** Max SKILL.md file size in bytes (post-trim length used for the check). */
-export const MAX_SKILL_SIZE = 10 * 1024; // 10KB
+const MAX_SKILL_SIZE = 10 * 1024; // 10KB
 /** Max skills per user (enforced on create only). */
 const MAX_SKILLS_PER_USER = 50;
 /**

@@ -105,6 +105,6 @@ export function invalidateChannelCache(channelId: string): void {
 /**
  * Clear all cached descriptions.
  */
-export function clearChannelCache(): void {
+function clearChannelCache(): void {
   cache.clear();
 }

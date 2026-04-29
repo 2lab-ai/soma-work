@@ -45,7 +45,6 @@ export {
   OAuthRefreshError,
   refreshClaudeCredentials,
 } from './refresher';
-export { hasRequiredScopes, missingScopes, REQUIRED_OAUTH_SCOPES } from './scope-check';
 export {
   CLAUDE_USAGE_URL,
   fetchUsage,

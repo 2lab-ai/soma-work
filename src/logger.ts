@@ -169,7 +169,7 @@ function getConfig() {
 }
 
 // Reset cache (for testing or dynamic config)
-export function resetLoggerConfig() {
+function resetLoggerConfig() {
   cachedLevel = null;
   cachedEnabled = undefined;
   cachedMuted = null;
