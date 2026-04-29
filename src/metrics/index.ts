@@ -3,12 +3,6 @@
  * Used by CommandRouter to inject report dependencies into ReportHandler.
  */
 
-export { getMetricsEmitter, initMetricsEmitter, MetricsEventEmitter } from './event-emitter';
-export { MetricsEventStore } from './event-store';
-export { ReportAggregator } from './report-aggregator';
-export { ReportFormatter } from './report-formatter';
-export { ReportPublisher } from './report-publisher';
-export { ReportScheduler } from './report-scheduler';
 export type {
   Achievement,
   AggregatedMetrics,

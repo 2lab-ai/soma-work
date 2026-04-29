@@ -25,8 +25,8 @@ import {
  */
 export type EChartsOptionLike = Record<string, unknown>;
 
-export const CANVAS_WIDTH = 1600;
-export const CANVAS_HEIGHT = 2200;
+const CANVAS_WIDTH = 1600;
+const CANVAS_HEIGHT = 2200;
 
 const FONT_FAMILY = 'Noto Sans KR';
 

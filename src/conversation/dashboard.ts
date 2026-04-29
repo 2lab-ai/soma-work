@@ -483,7 +483,7 @@ const DASHBOARD_ARCHIVE_MAX_AGE_MS = 48 * 60 * 60 * 1000;
  * Convert an ArchivedSession to KanbanSession for the closed column.
  * Trace: Scenario 3, Section 3a transformation
  */
-export function archivedToKanban(archived: ArchivedSession): KanbanSession {
+function archivedToKanban(archived: ArchivedSession): KanbanSession {
   const headline = displayTitle(archived);
   return {
     key: `archived_${archived.sessionKey}_${archived.archivedAt}`,
@@ -894,7 +894,7 @@ export function broadcastSingleSessionUpdate(sessionKey: string): void {
 }
 
 /** Broadcast session action feedback to all connected WebSocket clients */
-export function broadcastSessionAction(sessionKey: string, action: 'stop' | 'close' | 'trash'): void {
+function broadcastSessionAction(sessionKey: string, action: 'stop' | 'close' | 'trash'): void {
   if (wsClients.size === 0) return;
   try {
     const payload = JSON.stringify({ type: 'session_action', sessionKey, action });

@@ -102,7 +102,7 @@ export function buildNotifyTelegramModal(): Record<string, any> {
   };
 }
 
-export async function openNotifyModal(args: { client: WebClient; triggerId: string }): Promise<void> {
+async function openNotifyModal(args: { client: WebClient; triggerId: string }): Promise<void> {
   const { client, triggerId } = args;
   if (!triggerId) {
     logger.warn('openNotifyModal: missing trigger_id');

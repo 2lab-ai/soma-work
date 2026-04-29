@@ -36,8 +36,10 @@ import { ZSettingsActionHandler, type ZTopicRegistry } from './z-settings-action
 
 export { PendingFormStore } from './pending-form-store';
 export { PendingInstructionConfirmStore } from './pending-instruction-confirm-store';
-// Re-export types for backwards compatibility
-export { ActionHandlerContext, MessageEvent, MessageHandler, PendingChoiceFormData, RespondFn, SayFn } from './types';
+// Re-export types for backwards compatibility — `PendingChoiceFormData` and
+// `RespondFn` are consumed by the action-handlers barrel (`src/slack/action-handlers.ts`).
+export type { PendingChoiceFormData, RespondFn } from './types';
+export { ActionHandlerContext, MessageEvent, MessageHandler, SayFn } from './types';
 
 /**
  * ActionRouter - 모든 액션 핸들러 통합 라우터

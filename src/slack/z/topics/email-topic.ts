@@ -104,7 +104,7 @@ export function buildEmailModal(current: string | undefined): Record<string, any
   };
 }
 
-export async function openEmailModal(args: { client: WebClient; triggerId: string; userId: string }): Promise<void> {
+async function openEmailModal(args: { client: WebClient; triggerId: string; userId: string }): Promise<void> {
   const { client, triggerId, userId } = args;
   if (!triggerId) {
     logger.warn('openEmailModal: missing trigger_id');

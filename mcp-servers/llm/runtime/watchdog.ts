@@ -29,8 +29,8 @@ export interface WatchdogOptions {
   killGraceMs?: number;
 }
 
-export const DEFAULT_TIMEOUT_MS = 300_000;
-export const DEFAULT_KILL_GRACE_MS = 5_000;
+const DEFAULT_TIMEOUT_MS = 300_000;
+const DEFAULT_KILL_GRACE_MS = 5_000;
 
 export async function runWithWatchdog<T>(
   waitForResult: Promise<T>,

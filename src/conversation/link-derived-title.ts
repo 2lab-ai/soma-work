@@ -264,7 +264,7 @@ export async function summarizeIssueAndPrTitles(issueTitle: string, prTitle: str
  * implement the read side, and whose `getSession` returns null causing the
  * pipeline to bail before touching the write methods.
  */
-export function adaptHandler(handler: ClaudeHandler): LinkDerivedTitleHandler {
+function adaptHandler(handler: ClaudeHandler): LinkDerivedTitleHandler {
   return {
     getSession: (channelId, threadTs) => handler.getSession(channelId, threadTs),
     setSessionLink: (channelId, threadTs, link) => handler.setSessionLink(channelId, threadTs, link),

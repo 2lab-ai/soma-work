@@ -35,7 +35,7 @@ export interface PendingApproval {
  * File-based shared store for inter-process communication
  * between the permission MCP server and Slack handler
  */
-export class SharedStore {
+class SharedStore {
   private storeDir: string;
   private pendingDir: string;
   private responseDir: string;

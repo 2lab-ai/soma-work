@@ -16,7 +16,6 @@ import {
   CCT_CARD_BLOCK_ID_PREFIX,
   CCT_VIEW_IDS,
   OAUTH_BLOB_HELP,
-  OAUTH_BLOB_WARN_THRESHOLD,
   SLACK_PLAIN_TEXT_INPUT_MAX,
 } from './views';
 
@@ -420,7 +419,7 @@ function isUtilizationFull(util: number | undefined): boolean {
  * label (no 5h/7d marker) — the SDK 429 doesn't disclose which window
  * triggered it, so guessing would be misleading.
  */
-export function computeUsageCooldown(state: SlotState | undefined, nowMs: number): CooldownInfo {
+function computeUsageCooldown(state: SlotState | undefined, nowMs: number): CooldownInfo {
   if (!state) return { inCooldown: false, remainingMs: 0, source: null };
   const sevenDay = state.usage?.sevenDay;
   if (sevenDay && isUtilizationFull(sevenDay.utilization)) {
@@ -452,7 +451,7 @@ export function computeUsageCooldown(state: SlotState | undefined, nowMs: number
  * 429-derived reset time and is the SSOT for slots that don't have an
  * OAuth profile (api_key slots and bare setup-only slots).
  */
-export function computeManualCooldown(state: SlotState | undefined, nowMs: number): CooldownInfo {
+function computeManualCooldown(state: SlotState | undefined, nowMs: number): CooldownInfo {
   if (!state?.cooldownUntil) return { inCooldown: false, remainingMs: 0, source: null };
   const until = new Date(state.cooldownUntil).getTime();
   if (Number.isFinite(until) && until > nowMs) {
@@ -1098,6 +1097,3 @@ function radioOption(kind: AddSlotFormKind): Record<string, unknown> {
 export function escapeMrkdwn(text: string): string {
   return text.replace(/[*_`]/g, (ch) => `\\${ch}`);
 }
-
-// Re-export the warn threshold so actions.ts can trip on it if needed.
-export { OAUTH_BLOB_WARN_THRESHOLD };

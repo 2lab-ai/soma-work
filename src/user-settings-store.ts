@@ -103,9 +103,9 @@ export const DEFAULT_THINKING_ENABLED = true;
 export const DEFAULT_SHOW_THINKING = true;
 
 // UI display themes — 3-tier system (shared across Session List, Thread Header, Turn End, AskUser)
-export const SESSION_THEMES = ['default', 'compact', 'minimal'] as const;
+const SESSION_THEMES = ['default', 'compact', 'minimal'] as const;
 export type SessionTheme = (typeof SESSION_THEMES)[number];
-export const DEFAULT_THEME: SessionTheme = 'default';
+const DEFAULT_THEME: SessionTheme = 'default';
 export const THEME_NAMES: Record<SessionTheme, string> = {
   default: 'Default (Rich Card)',
   compact: 'Compact',

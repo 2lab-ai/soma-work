@@ -641,7 +641,7 @@ export class UserSkillMenuActionHandler {
  * `block_id` / `action_id`. `initial_value` is the verbatim SKILL.md bytes
  * the menu handler read at click time.
  */
-export function buildSkillEditModal(args: {
+function buildSkillEditModal(args: {
   skillName: string;
   initialValue: string;
   privateMetadata: string;
@@ -686,7 +686,7 @@ export function buildSkillEditModal(args: {
  * The view-submission handler revalidates the new name and dispatches to
  * `renameUserSkill`.
  */
-export function buildSkillRenameModal(args: { skillName: string; privateMetadata: string }): Record<string, any> {
+function buildSkillRenameModal(args: { skillName: string; privateMetadata: string }): Record<string, any> {
   return {
     type: 'modal',
     callback_id: USER_SKILL_RENAME_MODAL_CALLBACK_ID,
@@ -725,7 +725,7 @@ export function buildSkillRenameModal(args: { skillName: string; privateMetadata
  * "I confirm". 2-step modal because Slack `overflow` options can't carry a
  * per-option `confirm` dialog.
  */
-export function buildSkillDeleteModal(args: { skillName: string; privateMetadata: string }): Record<string, any> {
+function buildSkillDeleteModal(args: { skillName: string; privateMetadata: string }): Record<string, any> {
   return {
     type: 'modal',
     callback_id: USER_SKILL_DELETE_MODAL_CALLBACK_ID,
