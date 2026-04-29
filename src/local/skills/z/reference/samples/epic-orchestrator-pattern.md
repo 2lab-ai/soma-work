@@ -1,73 +1,75 @@
 # Epic Orchestrator Pattern — Multi-Sub-Issue + Multi-PR
 
-This is the reference pattern that `local:z` follows in its xlarge-tier mode (epic with multiple sub-issues, multiple PRs, dependency graph). The same controller discipline applies to smaller tiers — strip the multi-PR plumbing but keep the "controller dispatches subagents" rule.
+This is the reference pattern that `local:z` follows in its xlarge-tier mode (Case B — epic with multiple sub-issues, multiple PRs, dependency graph). The same controller discipline applies to smaller tiers — strip the multi-PR plumbing but keep the "controller dispatches subagents" rule.
+
+> **Reading order:** read `local:z` SKILL.md and `local:using-z` SKILL.md first; this file shows the orchestration shape, not the contracts.
 
 ## Trigger
 A GitHub epic issue URL where the body already contains Sub-A/B/C decomposition + dependency graph, and the user says "process from start to finish" or equivalent.
 
-## Your Role: Controller (NOT Executor)
-- No direct code / git / CI work.
-- All execution → subagent (`Agent`, `general-purpose`, `run_in_background:true`).
-- This session = dispatch + monitor + user dialogue + decision processing.
-- Avoid context blow-up: subagents return a final report only; details stay in their worktree.
+## Your Role: Controller (NOT executor)
 
-## Tool Rules
-- `Agent` (`run_in_background:true`) — subagent dispatch.
-- Worktree isolation — `git worktree add -b <branch> ../<dir> <base>`.
-- **`ScheduleWakeup` is forbidden.** It does not return.
-- `gh` CLI — issue / PR / run / api graphql.
-- `mcp__llm__chat` (gemini / codex) — plan review.
-- `mcp__model-command__run` `ASK_USER_QUESTION` — user decision.
+The orchestrator session has the constrained tool surface defined in `z/SKILL.md` §Hard Rules:
+
+- Allowed: `TodoWrite`, `Agent`, `UIAskUserQuestion`, `mcp__model-command__run` `CONTINUE_SESSION`, read-only `Read` of orchestrator-side notes.
+- Allowed read-only state probe: `Bash` for `stat <path>`, `gh pr list`, `gh pr view --json …`, `gh run list`, `gh api -X GET …`. **No mutating commands.**
+- Forbidden: any mutating `gh` / `git`, `Edit` / `Write` against repo files, direct `mcp__llm__chat`, `ScheduleWakeup`, foreground sleep / polling.
+
+Anything that touches code, the working tree, the remote, or GitHub state is a **subagent dispatch**, not an orchestrator action.
 
 ## phase 0 — Reception & Clarification
-1. SSOT preserved: emit user instruction + epic body verbatim.
-2. Fetch epic body (`gh issue view <num> --json body --jq .body`).
-3. Working folder: `/tmp/<slackId>/<repo>_<ts>_<epicNum>` + `git clone --depth=1 -b <base>` for the base.
-4. Resolve ambiguity — typically 3 decision points:
+
+1. **SSOT preserved**: emit user instruction + epic body verbatim. (To pull the epic body, dispatch a small **epic-fetch subagent** that runs `gh issue view <num> --json body --jq .body` and returns the body text — the orchestrator does not run `gh` itself unless the call is read-only and minimal; a fetch subagent keeps the discipline uniform.)
+2. **Bootstrap (Wave A — single subagent, blocking)**: dispatch a bootstrap subagent that creates `/tmp/<slackId>/<repo>_<ts>_<epicNum>` and `git clone --depth=1 -b <base>` the target repo into it. Returns: absolute repo path + base SHA + base branch name.
+3. **Resolve ambiguity** (orchestrator-side dialogue) — typically 3 decision points:
    - Split unit (sub-issue × N PR vs. grouped PR vs. single PR).
-   - Scope end (code merge / dev2 canary / prod rollout).
+   - Scope end (code merge / staging deploy / prod rollout).
    - Optional sub-task disposition (implement / follow-up / skip).
    Ask via `ASK_USER_QUESTION` with `payload.type: 'user_choice_group'` (one batch, multiple questions).
-5. Code-location validation — dispatch 3 explore subagents in parallel (`run_in_background:true`):
-   - Area A specialist (e.g. C# admin).
-   - Area B specialist (e.g. Rust agent).
-   - Build / deploy / CI environment (workflows, branch protection, deploy targets).
+4. **Code-location validation (Wave B — parallel explore subagents, after Wave A returns)** — dispatch ≥3 explore subagents concurrently (`run_in_background: true`):
+   - Area A specialist (the dominant stack of the change).
+   - Area B specialist (the other stack).
+   - Build / deploy / CI environment (workflows, branch protection, deploy targets, CODEOWNERS, required CI labels, signed-commit requirements).
    Each report ≤1500 chars compressed.
-6. Compile facts not in the issue body — pre-existing DB columns, enum wire format, CI mandates, CODEOWNERS.
+5. **Compile facts not in the issue body** — pre-existing DB columns, enum wire format, CI mandates, CODEOWNERS, branch-protection rules, signed-commit policies. The orchestrator's session never reads source files; the explore reports are the only source.
 
 ## phase 1 — Plan
-1. Write `PLAN.md` (in working dir) — sections:
-   - SSOT + user decisions.
-   - Deliverables (sub-issue count, PR count, deploy scope).
-   - Dependency graph → parallel groups (Group 1..N).
-   - Explore findings — supplements / corrections to the issue body.
-   - Per-sub draft body (location, change, tests, branch, PR title, deps).
-   - Phase 2 dispatch flow (which group runs in parallel).
-   - CI pass criteria.
-   - Rollback unit.
-   - Open questions / risks.
-2. `mcp__llm__chat` (gemini or codex) review → score + P0/P1.
-3. Score < 95 → fix P0/P1 → re-review (loop).
-4. `ASK_USER_QUESTION` (single user_choice) for plan approval. Options:
-   - Approve → create sub-issues on GitHub + dispatch Group 1.
-   - Modify → capture delta, re-run planner.
-   - Halt → stop.
+
+1. **Dispatch the planner subagent** with: SSOT, tier from decision-gate, clarification answers, explore reports, working-folder absolute path. Planner writes `PLAN.md` in the working folder and returns a structured report containing `## Plan Summary`, `## Dependency Groups`, `## Per-Task Dispatch Payloads` (one per sub-task), `## Open Questions`. The orchestrator never reads `PLAN.md` itself — the report's structured fields are the only carrier.
+2. **Dispatch a review subagent** that runs an LLM critic against `PLAN.md` and returns a score + P0/P1 list. (The orchestrator does not call `mcp__llm__chat` directly — wrapping it in a subagent keeps the critic's raw output out of the orchestrator's context.)
+3. Score < 95 → dispatch a fix subagent with the P0/P1 list → re-review. Bound at 3 cycles; on cycle 4 escalate via `UIAskUserQuestion`.
+4. `ASK_USER_QUESTION` (single user_choice) for plan approval. Options: Approve, Modify (capture delta, re-dispatch planner), Halt.
 
 ## phase 1.4 — Sub-issue creation + Epic Tracker
-1. Each sub-issue body → `/tmp/sub-X.md` (inline the PLAN.md sub section).
-2. `gh issue create` for N+1 (N implementation + 1 follow-up).
-3. Epic body update — Tracker section prefixed:
-   - Per-sub checkbox + dependency group marker.
-   - `gh issue edit <num> --body-file <merged>`.
 
-## phase 2 — Implementation Dispatch (per group)
+Dispatch an **issue-creation subagent** (background) that:
+
+1. Writes each sub-issue body to a tmp file using the planner's per-task payload.
+2. `gh issue create` for each (N implementation + 1 follow-up if applicable).
+3. Creates / updates the epic tracker — Tracker section prefixed in the epic body with per-sub checkboxes + dependency-group markers.
+4. Returns the sub-issue URLs and the epic URL.
+
+## phase 1.7 — Handoff to phase 2
+
+The orchestrator emits `<z-handoff type="plan-to-work">` per `using-z` §Handoff #1 with the planner's structured outputs (`## Dependency Groups`, `## Per-Task Dispatch Payloads`) carried inline so the next session can dispatch without re-reading `PLAN.md`. `forceWorkflow: "z-plan-to-work"`. Current session ends.
+
+## phase 2 — Implementation Dispatch (per group, in the new session)
+
+The new session enters z phase 2 controller semantics (per `z-plan-to-work.prompt`). It dispatches implementer subagents — it does **not** become an implementer.
 
 ### Worktree isolation per group
-- `cd <repo> && git checkout <base> && git pull origin <base> --ff-only`.
+
+The phase-2 controller dispatches a **worktree-setup subagent** at the start of each group that:
+
+- `cd <repo> && git checkout <base> && git pull origin <base> --ff-only`
 - `git worktree add -b <branch> ../sub-<letter> <base>` per sub.
 
-### Subagent dispatch (1 agent per sub, `run_in_background:true`)
-The prompt MUST contain:
+The orchestrator never runs `git` itself.
+
+### Implementer subagent dispatch (1 agent per sub, `run_in_background: true`)
+
+The phase-2 controller passes each `## Per-Task Dispatch Payloads` entry verbatim to an `Agent(general-purpose, run_in_background:true)`. Each payload (authored by the planner in phase 1) contains:
+
 - Worktree absolute path (cwd isolation).
 - Branch name + base.
 - Sub-issue URL + parent epic.
@@ -75,97 +77,118 @@ The prompt MUST contain:
 - Test cases by name.
 - Build / test / clippy commands.
 - HEREDOC commit message + PR title + PR body templates.
-- Loud "do not stop, do not hand back without finishing".
-- "Do not embed narration comments (epic ref, sub id) in code".
-- Bot-token limits (no `--admin`, no self-approve).
+- "Do not stop, do not hand back without finishing" line.
+- "No narrative comments referencing the orchestrator / epic / reasoning chain — but `Closes #<SUB_NUM>` and `Refs: #<EPIC_NUM>` ARE required" rule.
+- Bot-token limits (no `--admin`, no self-approve, no `--no-verify`, no signed-commit bypass).
+- "No `UIAskUserQuestion` / `decision-gate` UI — return a `blocker` field on real blockers" rule.
 
 ### Within-group parallel, across-group sequential
-- Group 1 (entry, deps=0): dispatch all subs concurrently.
-- Group N+1: dispatch only after Group N is merged (pull base → recreate worktrees).
 
-## phase 3 — zcheck (per PR)
+- Group 1 (entry, deps=0): dispatch all subs concurrently in a single `Agent` call message.
+- Group N+1: dispatched only after Group N's PRs are merged in phase 5 (controller pulls base, dispatches new worktree-setup subagent, then dispatches Group N+1's implementers).
 
-### Standard zcheck subagent (Step 0–3; Step 4 is the orchestrator's)
-- Step 0: `cd worktree` → fetch → `git rebase origin/<base>` → resolve conflicts → `git push --force-with-lease` if changed (raw `--force` forbidden) → re-read `reviewDecision` (dismiss-stale-reviews regression check) → simplify (reuse / quality / efficiency hard-blockers; split narration to follow-up).
-- Step 1: CI watch — `gh run list` → latest run id → `gh run watch <id> --exit-status`. Failed → `gh run view <id> --log-failed` → fix → push → restart.
-- Step 2: review threads — `gh api graphql reviewThreads` + `gh pr view --json comments`. Greptile / codex P0/P1 → fix → push → restart Step 1. Resolve threads via `resolveReviewThread` mutation.
-- Step 3: ztrace — per-scenario callstack (happy + edge) — invariants pinned by code + tests.
-- Step 4 SKIP — orchestrator handles user dialogue.
+## phase 3 — Post-Impl Gate (per PR)
+
+The phase-2 controller dispatches a **post-impl-gate driver subagent** per PR (background). The dispatch prompt inlines the procedure (do **not** invoke `local:zcheck` as a same-session skill — that skill's standalone Step 4 owns user dialogue, which conflicts with orchestrator-mode):
+
+- Step 0: `cd worktree` → fetch → `git rebase origin/<base>` → resolve conflicts → `git push --force-with-lease` if changed (raw `--force` forbidden) → re-read `gh pr view --json reviewDecision,mergeable,state` (dismiss-stale-reviews regression check) → simplify (reuse / quality / efficiency hard-blockers; split narration to follow-up).
+- Step 1: CI watch — `gh run list` → latest run id → `gh run watch <id> --exit-status`. Failed → `gh run view <id> --log-failed` → fix → push → restart Step 1.
+- Step 2: review threads — `gh api graphql reviewThreads` + `gh pr view --json comments`. Greptile / Codex P0 / P1 → fix → push → restart Step 1. Resolve threads via `resolveReviewThread` mutation.
+- Step 3: ztrace — per-scenario callstack (happy + edge) — invariants pinned by code + tests. **Output to report, do not call `UIAskUserQuestion`.**
+- **Step 4 SKIP** — orchestrator handles user dialogue (phase 4 below).
 
 ### Core invariants
-- Loop until 0 unresolved.
+
+- Loop until 0 unresolved threads.
 - No approve request while CI failing.
 - Any code change → restart Step 1.
+- Post-rebase `reviewDecision != APPROVED` → return blocker; orchestrator routes back to phase 4 for fresh approve.
 
 ## phase 4 — User Approve
 
-Per PR, `ASK_USER_QUESTION` (user_choice). Context:
+**Orchestrator-side**, per PR. `ASK_USER_QUESTION` (user_choice). Context:
+
 - PR URL + sub-issue + parent epic.
 - Step 0–3 results (✅ / ⚠ / ❌).
 - Key ztrace scenario summary.
 - Fixes applied (greptile / codex P0/P1 disposition).
-- Next step (next group dispatch or epic close).
+- Post-rebase `reviewDecision`.
+- Next step (next group dispatch or epic close question).
 
 Options (4):
 - 1: approved → merge + advance (RATE +1).
 - 2: re-run ztrace (RATE −2).
-- 3: zcheck from Step 1 (RATE −3).
+- 3: post-impl gate from Step 1 (RATE −3).
 - 4: halt / restart (RATE −5).
 
 ## phase 5 — Merge & Next Group
 
 ### On user "1":
+
+Dispatch a **merge driver subagent** (background) that:
+
+- Pre-merge re-checks `gh pr view --json reviewDecision,mergeable,state`. If `reviewDecision != APPROVED` (e.g. dismiss-stale-reviews voided the prior approval after a force-push), returns a blocker — the orchestrator routes back to phase 4.
 - `gh pr merge <num> --squash --delete-branch` (no `--admin`).
-- Capture merge commit SHA (epic Tracker update).
-- Create next group's worktrees (pull base → `git worktree add`).
-- Dispatch next group.
+- Captures merge commit SHA (epic Tracker update).
+- Optionally creates next group's worktrees (pull base → `git worktree add`).
+
+The orchestrator then dispatches Group N+1's implementer subagents (back to phase 2).
 
 ### Conflict handling:
-- Rebase conflict → delegate to a separate subagent (rebase + force-push + CI watch + merge).
+
+- Rebase conflict → dispatch a separate conflict-resolution subagent (rebase + force-with-lease + CI watch + reviewDecision recheck + merge). See `05-rebase-merge-conflict.md`.
 - Orchestrator does **not** resolve conflicts directly.
 
-## phase 5.E — Epic Update
-1. Epic body Tracker update:
-   - Merged subs: `[x]` + merge SHA.
-   - Open PR subs: `[ ] PR #NNN OPEN`.
-   - Progress section (X merged / Y open).
-   - Dependency groups marked ✅ / 🟡.
-2. Add epic comment — merge order, deliverable summary, next step.
-3. **Close policy** (must match `using-z` §Handoff #2 step 5 and `using-epic-tasks/reference/github.md` Epic Done gate): if all sub-issues are closed and the checklist is fully `[x]`, the epic-update subagent closes the epic automatically. If unfinished sub-issues remain, list them but do **not** auto-chain to the next sub-issue's Handoff #1 — the user must initiate manually with `$z <next>`.
+## phase 5.E — Epic Update (handoff-only entry; manual close)
+
+Reachable only via `<z-handoff type="work-complete">` from a phase-5 work session. The orchestrator-side bookkeeping is via subagent only:
+
+1. Dispatch an **epic-update subagent**:
+   - Epic body Tracker update — merged subs `[x]` + merge SHA, open subs `[ ] PR #NNN OPEN`, progress section, dependency-group markers ✅ / 🟡.
+   - Epic comment — merge order, deliverable summary, next step.
+   - **Do not close the epic.**
+   - Final report: lines flipped, open sub-issue count, Done gate (open == 0 ∧ checklist fully `[x]`) — pass / fail.
+2. **Manual close policy** (`using-epic-tasks/reference/github.md` §3 + SKILL.md Invariant 4):
+   - Done gate fails → list remaining sub-issues to user, stop.
+   - Done gate passes → `UIAskUserQuestion` asking the user whether to close. On approval, dispatch a close subagent. Auto-close is forbidden — epics close only after human Done-Done verification.
 
 ## Progress Display (after every user turn)
 
 ```
 Group 1 [▓▓▓▓▓▓▓▓▓▓] ✅ MERGED  Sub-X <commit>
 Group 2 [▓▓▓▓▓▓▓▓▓▓] ✅ MERGED
-Group 3 [▓▓▓▓▓░░░░░] 🟡 zcheck running (subagent <id>)
+Group 3 [▓▓▓▓▓░░░░░] 🟡 post-impl gate running (subagent <id>)
 Group 4 [░░░░░░░░░░] Pending dependency
 ```
 
 ## Wait Mechanism (Push)
+
 - `Agent(run_in_background:true)` → out-of-process subagent → orchestrator turn ends.
 - System pushes task-notification → new turn re-enters orchestrator.
 - No `ScheduleWakeup` / `sleep` / polling.
-- Progress estimation: `stat <output_file>` mtime + size (no `Read` — context pollution).
-- External state: `gh pr/run list` for GitHub.
+- Progress estimation: read-only `stat <output_file>` mtime + size (no `Read` of streaming logs — context pollution).
+- External state: read-only `gh pr list / gh pr view --json … / gh run list / gh api -X GET …` only.
 
 ## Failure Modes & Recovery
+
 - Subagent reports incomplete ("Proceeding to Step 1" then ends) → fresh subagent (or `SendMessage` continuation). Orchestrator does NOT finish the work itself.
-- Build failure → subagent fix loop; no `--no-verify`, no hooks skip.
-- Branch protection BLOCKED (no eligible reviewer / required CI label / signed-commits required) → orchestrator routes via `UIAskUserQuestion`; do not try `--admin` or `-c commit.gpgsign=false` workarounds.
+- Build / test / lint failure → subagent fix loop; no `--no-verify`, no hooks skip.
+- Branch protection BLOCKED (no eligible reviewer / required CI label / signed-commits) → orchestrator routes via `UIAskUserQuestion`; do not try `--admin` or `-c commit.gpgsign=false` workarounds.
 - Force-push dismissed reviews → phase-3 / phase-5 subagent re-reads `reviewDecision` after force-push and reports the regression; orchestrator routes back to phase 4 for fresh approve before merge.
 - 401 / 403 token issue → try header swap (`Bearer` ↔ `token`), alternate env token, raw `curl`, alternate trigger path, then real fix. Escalate to user only after all five fail.
 
 ## Memory Rules (durable)
+
 - `ScheduleWakeup` permanently banned.
-- Per-PR zcheck / impl / CI fix → always subagent (orchestrator = controller only).
+- Per-PR post-impl gate / impl / CI fix / merge → always subagent (orchestrator = controller only).
 - Self-check phase + TodoWrite after every user turn.
 - New mid-flight instructions = new PR candidates (4-signal: file area / rollback unit / reviewer / decision coverage).
 
 ## Deliverables (epic complete)
+
 - N PRs merged (dependency-ordered, each PR independently revertible).
 - DB schema migration count = 0 when pre-existing columns suffice.
 - Follow-up sub-issue (out-of-scope items).
-- Rollout docs (dev2 deploy + canary verification + rollback + prod feature-flag plan).
+- Rollout docs (deploy procedure + canary verification + rollback + prod feature-flag plan, per the deployment surface the area-B explore reported).
 - Epic Tracker updated (commit SHAs).
 - Session-memory rules added (apply to next epic).

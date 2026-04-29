@@ -70,7 +70,7 @@ z 컨트롤러의 phase 전환 중 **세션 경계**를 넘는 것은 두 지점
 {
   "commandId": "CONTINUE_SESSION",
   "params": {
-    "prompt": "$z phase2 <ISSUE_URL or task-slug>\n\n<z-handoff type=\"plan-to-work\">\n## Issue\n<ISSUE_URL or \"none (Case A escape, tier=tiny|small)\">\n## Parent Epic\n<EPIC_URL or \"none\">\n## Tier\n<tiny|small|medium|large|xlarge>\n## Escape Eligible\n<true|false>\n## Issue Required By User\n<true|false>\n## Original Request Excerpt\n<원 유저 SSOT instruction 발췌 — 수신 세션이 escape 조건 및 scope를 재검증 가능하게>\n## Repository Policy\n<issue-required: true|false — CONTRIBUTING/policy가 이슈 선행을 요구하는지 여부>\n## Confirmed Plan\n<plan markdown — Goal / Scope / Done>\n## Task List\n- [ ] task 1\n- [ ] task 2\n## Codex Review\nscore: <N>/100 — <verdict>\n</z-handoff>",
+    "prompt": "$z phase2 <ISSUE_URL or task-slug>\n\n<z-handoff type=\"plan-to-work\">\n## Issue\n<ISSUE_URL or \"none (Case A escape, tier=tiny|small)\">\n## Parent Epic\n<EPIC_URL or \"none\">\n## Tier\n<tiny|small|medium|large|xlarge>\n## Escape Eligible\n<true|false>\n## Issue Required By User\n<true|false>\n## Original Request Excerpt\n<원 유저 SSOT instruction 발췌 — 수신 세션이 escape 조건 및 scope를 재검증 가능하게>\n## Repository Policy\n<issue-required: true|false — CONTRIBUTING/policy가 이슈 선행을 요구하는지 여부>\n## Confirmed Plan\n<plan markdown — Goal / Scope / Done>\n## Task List\n- [ ] task 1\n- [ ] task 2\n## Dependency Groups\nGroup 1: [task-id-A, task-id-B]\nGroup 2: [task-id-C]\n## Per-Task Dispatch Payloads\n### task-id-A\n<self-contained subagent prompt — worktree path placeholder, branch, base, file/line changes, tests, commands, commit/PR templates>\n### task-id-B\n<self-contained subagent prompt …>\n### task-id-C\n<self-contained subagent prompt …>\n## Codex Review\nscore: <N>/100 — <verdict>\n</z-handoff>",
     "resetSession": true,
     "dispatchText": "<ISSUE_URL or task-slug>",
     "forceWorkflow": "z-plan-to-work"
@@ -83,16 +83,18 @@ z 컨트롤러의 phase 전환 중 **세션 경계**를 넘는 것은 두 지점
 - `## Tier` — `using-epic-tasks` 판정 tier.
 - `## Escape Eligible` — Case A 3-condition validation 통과 여부 (단순 마커 존재가 아닌 검증 통과).
 - `## Issue Required By User` — 유저 원 요청에 선행 이슈 요구 존재 여부.
+- `## Dependency Groups` — phase 1 planner의 dependency-group 분할. 새 세션 phase 2가 그룹 단위 병렬 dispatch를 결정하기 위해 필수. 누락 시 새 세션은 PLAN.md를 직접 파싱하지 못하므로 phase 2를 진행할 수 없음 (z 컨트롤러는 repo 파일을 읽지 않는다).
+- `## Per-Task Dispatch Payloads` — task-id별 self-contained subagent 프롬프트. 새 세션은 이를 verbatim으로 phase 2 implementer subagent에 전달한다. 누락 시 phase 2 진행 불가.
 
-모두 optional — 누락 시 conservative defaults (tier=null, escapeEligible=false, issueRequiredByUser=true). 명시할수록 downstream host guards가 신뢰할 수 있는 상태를 본다.
+모두 optional — 누락 시 conservative defaults (tier=null, escapeEligible=false, issueRequiredByUser=true, dependencyGroups=빈, dispatchPayloads=빈). 단 dependencyGroups / dispatchPayloads가 비어 있으면 phase 2 controller는 진행할 수 없으므로 producer 측이 반드시 채워야 함.
 
 **새 세션 z phase0 동작**:
 
-1. prompt에서 `<z-handoff type="plan-to-work">` 탐지
-2. clarify / new-task / codex 리뷰 단계 **스킵**
-3. Task List를 TodoWrite로 등록
-4. Issue URL + Parent Epic을 세션 전역 SSOT로 보관 (phase5에서 재사용)
-5. phase2 (`local:zwork`) 직행
+1. prompt에서 `<z-handoff type="plan-to-work">` 탐지.
+2. clarify / new-task / codex 리뷰 단계 **스킵**.
+3. Task List를 TodoWrite로 등록.
+4. Issue URL + Parent Epic + Original Request Excerpt + Repository Policy + Dependency Groups + Per-Task Dispatch Payloads를 세션 전역 SSOT로 보관.
+5. **`local:z` phase 2의 컨트롤러 시맨틱으로 진입**한다 — `local:zwork`를 직접 invoke하지 않는다. 새 세션은 z 오케스트레이터로서 (a) phase 2.1 repeat-back gate, (b) Dependency Groups 순회, (c) 각 그룹 내 Per-Task Dispatch Payloads를 verbatim으로 implementer subagent에 dispatch (`Agent`, `general-purpose`, `run_in_background:true`), (d) push 모델로 대기. zwork 워크플로 prompt가 시키는 "직접 implementer로 행동" 지시는 본 컨트랙트와 충돌하므로 무효 — `z-plan-to-work` 워크플로 prompt는 z phase 2 컨트롤러로 라우팅한다.
 
 ### Handoff #2 — work → epic (서브이슈인 경우만)
 
@@ -120,12 +122,17 @@ z 컨트롤러의 phase 전환 중 **세션 경계**를 넘는 것은 두 지점
 
 **새 세션 z phase0 동작 (phase5.E branch)**:
 
-1. prompt에서 `<z-handoff type="work-complete">` 탐지
-2. clarify / plan 단계 **스킵**
-3. 에픽 이슈에 Summary를 코멘트로 포스팅
-4. 에픽 body Checklist 갱신 (`[ ]` → `[x]` 전환)
-5. 하위 이슈 전부 closed + 체크리스트 전부 `[x]` → `using-epic-tasks/reference/github.md`(또는 `jira.md`)의 Epic Done 게이트 검증 후 에픽 close
-6. 미완료 서브이슈 있으면 목록만 유저에게 출력. **자동으로 다음 서브이슈의 Handoff #1을 연쇄하지 않음** — 유저가 직접 `$z <next_subissue_url>` 입력하도록 유지.
+1. prompt에서 `<z-handoff type="work-complete">` 탐지.
+2. clarify / plan 단계 **스킵**.
+3. **`local:z` phase 5.E의 컨트롤러 시맨틱으로 진입** — 직접 GitHub mutation 금지. 다음 단계는 모두 subagent dispatch로 처리:
+   - epic 이슈에 Summary를 코멘트로 포스팅 → epic-update subagent.
+   - epic body Checklist 갱신 (`[ ]` → `[x]`) → 동일 subagent.
+4. **Epic close 정책 — 수동 close 유지** (`using-epic-tasks/reference/github.md` §3 + SKILL.md Invariant 4: 에픽은 사람이 Done-Done 검증 후 수동 close).
+   - epic-update subagent는 절대 epic을 자동 close하지 않는다.
+   - 모든 서브이슈가 closed + 체크리스트 전부 `[x]`이면 z 오케스트레이터가 `UIAskUserQuestion`으로 "에픽 close하시겠습니까?" 결정 요청. 유저 승인 시 close subagent dispatch.
+   - 미완료 서브이슈 있으면 목록만 유저에게 출력하고 끝낸다.
+5. **자동으로 다음 서브이슈의 Handoff #1을 연쇄하지 않음** — 유저가 직접 `$z <next_subissue_url>` 입력하도록 유지 (Protocol Rules #3, hop budget = 1).
+6. `z-epic-update` 워크플로 prompt가 시키는 "직접 코멘트/체크리스트/close 실행" 지시는 본 컨트랙트와 충돌 — 워크플로 prompt는 z phase 5.E 컨트롤러로 라우팅한다.
 
 ### Sentinel Grammar
 
@@ -134,7 +141,7 @@ z 컨트롤러의 phase 전환 중 **세션 경계**를 넘는 것은 두 지점
 1. **Exact form.** 여는 태그는 정확히 `<z-handoff type="plan-to-work">` 또는 `<z-handoff type="work-complete">` — 대소문자 구분, 속성은 쌍따옴표 고정. 변형(대소문자·홑따옴표·공백 변형) 불매칭.
 2. **Top-level only.** sentinel은 **dispatched prompt의 최상위 래퍼**로만 인정. 유저가 이슈 코멘트·버그 리포트에 이전 handoff 블록을 **인용**한 경우는 sentinel 아님 — 반드시 handoff 본문이 `$z ...` 커맨드 라인 바로 아래의 최상위 블록이어야 함. 애매하면 sentinel 아님으로 판정 (fall-through to normal phase0).
 3. **Closing tag 필수.** 여는 태그는 있으나 `</z-handoff>`가 없으면 **malformed** → safe-stop + 유저 에러 출력. 조용한 fall-through 금지.
-4. **Required fields 검증.** `type="plan-to-work"`은 `## Issue`, `## Parent Epic`, `## Task List` 세 섹션 필수. `type="work-complete"`은 `## Completed Subissue`, `## PR`, `## Summary`, `## Remaining Epic Checklist` 네 섹션 필수. 누락 시 malformed → safe-stop. `plan-to-work`의 **optional typed-metadata fields** (producer-authoritative, host가 `session.handoffContext`로 persist): `## Tier`, `## Escape Eligible`, `## Issue Required By User`. 누락 시 host는 conservative defaults를 사용하지만 downstream host guard가 정확히 동작하려면 producer가 명시 권장.
+4. **Required fields 검증.** `type="plan-to-work"`은 `## Issue`, `## Parent Epic`, `## Task List`, `## Dependency Groups`, `## Per-Task Dispatch Payloads` 다섯 섹션 필수. `type="work-complete"`은 `## Completed Subissue`, `## PR`, `## Summary`, `## Remaining Epic Checklist` 네 섹션 필수. 누락 시 malformed → safe-stop. `plan-to-work`의 **optional typed-metadata fields** (producer-authoritative, host가 `session.handoffContext`로 persist): `## Tier`, `## Escape Eligible`, `## Issue Required By User`, `## Original Request Excerpt`, `## Repository Policy`, `## Codex Review`. 누락 시 host는 conservative defaults를 사용하지만 downstream host guard가 정확히 동작하려면 producer가 명시 권장. (Dependency Groups + Per-Task Dispatch Payloads는 phase 2 controller가 PLAN.md를 직접 파싱하지 못하므로 required로 승격됨.)
 5. **Duplicate sentinels.** 한 prompt에 `plan-to-work`와 `work-complete`가 동시 등장하면 **hard error** — 어느 쪽도 선택하지 않고 safe-stop. 같은 type이 두 번 나와도 마찬가지.
 6. **원요청 재검증 가능성.** `plan-to-work` 블록은 `## Original Request Excerpt` 필드로 원본 유저 SSOT instruction을 발췌 carrying — 수신 세션이 Case A escape 조건(또는 기타 계약)을 재검증 가능하게.
 

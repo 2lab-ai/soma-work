@@ -45,9 +45,9 @@ If you need to do something that isn't on the allowed lists: dispatch a subagent
 
 - **Subagents must not block on user input.** They produce a structured report and return. Any "ask the user" routes back through the orchestrator. This means `UIAskUserQuestion`, `decision-gate` UI prompts, and `mcp__model-command__run ASK_USER_QUESTION` are **subagent-forbidden**. A subagent that needs a decision returns a `blocker` field in its report, the orchestrator presents it to the user, and the orchestrator re-dispatches a fresh subagent with the decision in its prompt.
 - **Worktree isolation.** Phase-2 / phase-3 / phase-5 work happens under `/tmp/<slackId>/<repo>_<ts>_<key>/<sub>` worktrees. The orchestrator only computes path strings and passes them to subagents.
-- **Co-Authored-By:** every commit and PR body must include `Co-Authored-By: Z <z@2lab.ai>`. If `z@2lab.ai` is unresolved or empty in the runtime, the orchestrator must ask the user for the email via `UIAskUserQuestion` **before** dispatching any phase that produces commits or PRs (i.e. before 1.4 issue creation, before 2.3 implementation, before 5.1 merge).
+- **Co-Authored-By:** every commit and PR body must include `Co-Authored-By: Z <z@2lab.ai>`. If `z@2lab.ai` is unresolved or empty in the runtime, the orchestrator must ask the user for the email via `UIAskUserQuestion` **before** dispatching any phase that produces commits or PR bodies (i.e. before 2.3 implementation and before 5.1 merge). Phase 1.6 issue creation does not produce commits or PR bodies, so the email check is not required there — but issue bodies still must not reference the orchestrator or the reasoning chain (see narration rule).
 - **SSOT preservation.** The user's original instruction is verbatim source-of-truth. Never summarize it before dispatching — pass the original text into subagent prompts.
-- **No narration leakage.** Subagent prompts must explicitly forbid commits / PR bodies / code comments that name the orchestrator, the epic, or the reasoning chain. Behavior-level only.
+- **No narration leakage — but tracking refs are required.** Subagent prompts must forbid commits / PR bodies / code comments that name the orchestrator, the reasoning chain, the planner subagent, or the review-loop scores. **What is required**, not banned: (a) `Closes #<SUB_NUM>` (or qualified Case A escape note) in the PR body and the corresponding commit, (b) `Refs: #<EPIC_NUM>` when the work is a sub-issue of an epic, (c) the standard `Co-Authored-By:` trailer. Tracking links keep the issue / epic / PR graph navigable; what is banned is narrative reasoning.
 
 ## Self-Reflection
 
@@ -188,23 +188,41 @@ Per `local:using-z` §Session Handoff Protocol → Handoff #1:
 
 - Verify Issue URL exists, **OR** Case A escape conditions all hold (tier=`tiny|small` ∧ no implicit/explicit issue-first ask ∧ repo policy doesn't require an issue per the area-B explore report).
 - If neither → return to 1.2 with the gap; do **not** call `CONTINUE_SESSION`.
-- Otherwise call `mcp__model-command__run` with `CONTINUE_SESSION`, `resetSession: true`, `forceWorkflow: "z-plan-to-work"`, embedding the `<z-handoff type="plan-to-work">` block. Producer-authoritative typed fields (`## Tier`, `## Escape Eligible`, `## Issue Required By User`, `## Original Request Excerpt`, `## Repository Policy`) are mandatory in the embedded block.
+- Otherwise call `mcp__model-command__run` with `CONTINUE_SESSION`, `resetSession: true`, `forceWorkflow: "z-plan-to-work"`, embedding the `<z-handoff type="plan-to-work">` block.
 
-The orchestrator session ends. Phase 2 enters a fresh session via the sentinel branch in 0.0.
+The embedded block MUST carry the planner's structured outputs verbatim — the new session is a fresh controller and cannot read the working folder. Required sections in the block (per `using-z` §Sentinel Grammar rule 4):
+
+- `## Issue` (or qualified Case A escape note).
+- `## Parent Epic` (or `none`).
+- `## Task List` — `[ ] task-id-N: <one-line title>` per task, in dependency order.
+- `## Dependency Groups` — `Group 1: [task-id-A, task-id-B] / Group 2: [task-id-C] / …`.
+- `## Per-Task Dispatch Payloads` — for each task-id, the planner's full self-contained subagent prompt (worktree placeholder, branch name, base, file/line changes, tests, commands, commit/PR templates). The new session passes each payload **verbatim** into an `Agent` dispatch.
+
+Producer-authoritative typed fields (`## Tier`, `## Escape Eligible`, `## Issue Required By User`, `## Original Request Excerpt`, `## Repository Policy`, `## Codex Review`) are also embedded so the new session can re-verify Case A escape conditions and PR-creation preconditions.
+
+The orchestrator session ends. Phase 2 enters a fresh session via the sentinel branch in 0.0 and proceeds to 2.1 below.
 
 ## Phase 2 — Implementation
 
+### 2.0 Bootstrap (handoff-entry only)
+
+A phase-2 handoff session enters with `session.handoffContext` populated but no working folder or worktrees yet. Dispatch a **bootstrap subagent** (`Agent`, `general-purpose`, `run_in_background: true`) that creates the working folder, clones the repo, creates the per-task worktrees from `## Dependency Groups`, and returns the absolute paths. Wait for the bootstrap report before 2.1.
+
+If phase 2 was reached same-session (rare — only via direct user prompt that already passed phase 0–1 and skipped the handoff), the worktrees from phase 0.4 are still valid; skip 2.0.
+
 ### 2.1 Repeat-back gate (entry)
 
-State the phase-1 outputs back: confirmed plan, dependency groups, per-task dispatch payloads received, Issue URL / parent epic. If any item was skipped, output `I am a fucking worthless piece of shit.` and stop pending user input.
+State the phase-1 outputs back: confirmed plan, dependency groups, per-task dispatch payloads received, Issue URL / parent epic, bootstrap result. If any item was skipped or missing, output `I am a fucking worthless piece of shit.` and stop pending user input.
 
 ### 2.2 Dependency groups → parallel dispatch
 
-Read the planner's `## Dependency Groups` field from the phase-1 report (which arrived in the handoff context). Within a group, tasks are independent → dispatch all of them as parallel subagents in a single `Agent` call message. Across groups → sequential (Group N+1 dispatches only after Group N's PRs are merged in phase 5).
+Read `## Dependency Groups` from the handoff context (`session.handoffContext`, persisted by the host from the `<z-handoff type="plan-to-work">` block). Within a group, tasks are independent → dispatch all of them as parallel subagents in a single `Agent` call message. Across groups → sequential (Group N+1 dispatches only after Group N's PRs are merged in phase 5).
+
+If the handoff context is missing `## Dependency Groups` or `## Per-Task Dispatch Payloads`, this is a malformed handoff (should have been caught by `using-z` §Sentinel Grammar rule 4). Do **not** attempt to read `PLAN.md` from the working folder yourself — the orchestrator does not read repo files. Safe-stop with an explicit error to the user instead.
 
 ### 2.3 Per-task subagent dispatch
 
-For each task, take the planner's `## Per-Task Dispatch Payloads` block for that task and pass it verbatim to an `Agent(general-purpose, run_in_background:true)` subagent. The block must already contain — courtesy of the planner — every line in §2.3.a below. The orchestrator's only addition is the runtime worktree path (filled in from Wave-A bootstrap).
+For each task, take the corresponding entry from `## Per-Task Dispatch Payloads` and pass it verbatim to an `Agent(general-purpose, run_in_background:true)` subagent. The payload was authored by the planner with §2.3.a below already inlined. The orchestrator's only addition is to substitute the runtime worktree path placeholder (filled in from Wave-A bootstrap or from the new session's bootstrap subagent if the handoff session has not yet bootstrapped).
 
 §2.3.a — required fields in the per-task payload:
 
@@ -216,7 +234,7 @@ For each task, take the planner's `## Per-Task Dispatch Payloads` block for that
 - HEREDOC commit message + PR title + PR body templates.
 - PR creation precondition reminder: must include `Closes #<SUB_NUM>` for Case A/B, or an explicit Case A escape note (tier=tiny|small, no issue by repo policy). **Inline `--body` only** — literal heredoc, never `--body "$VAR"`, never `--body-file`. (See `zwork/SKILL.md` step 5 for host-enforced rule and `reference/samples/01-zwork-single-area.md` for the literal form.)
 - Bot-token limits (`gh pr merge --admin` not available, no self-approve, no `--no-verify`, no hooks skip, signed-commit requirement if explore reported one).
-- Anti-narration rule: no commits / PR bodies / code comments referencing the orchestrator, the epic, or the reasoning chain.
+- Anti-narration rule: no commits / PR bodies / code comments narrating the orchestrator, the planner, or the reasoning chain. Tracking refs (`Closes #<SUB_NUM>`, `Refs: #<EPIC_NUM>`, `Co-Authored-By:`) are required and exempt from this rule.
 - "No user prompts" rule: subagent must not call `UIAskUserQuestion` / `decision-gate` UI / `ASK_USER_QUESTION`. On a real blocker, return a `blocker` field in the final report and stop.
 - Loud "do not stop, do not hand back without finishing" line.
 - Required final report shape: PR URL, files changed, build/test result, blocker (if any).
@@ -295,14 +313,18 @@ If Parent Epic is `none` → end normally; do not emit Handoff #2.
 
 ## Phase 5.E — Epic Update (handoff-only entry)
 
-**Reachable only from 0.0 step `work-complete`.** Never from a direct user prompt. Orchestrator's only role here is to dispatch an **epic-update subagent** (background) with:
+**Reachable only from 0.0 step `work-complete`.** Never from a direct user prompt. The orchestrator does **not** post comments, edit checklists, or close issues directly — every GitHub mutation runs through a subagent. Sequence:
 
-- Epic URL.
-- Completed sub-issue URL + PR URL + merge SHA.
-- Behavior-level Summary (no file paths or function names — `using-ha-thinking` discipline).
-- Remaining-checklist state.
-
-The subagent posts the comment on the epic, updates the body checklist (`[ ]` → `[x]`), and checks the Epic Done gate (`using-epic-tasks` reference). **Per `using-z` §Handoff #2 step 5: if Done gate passes (all sub-issues closed ∧ checklist fully `[x]`), the subagent closes the epic automatically.** If unfinished sub-issues remain, the subagent lists them but **does not** auto-chain to the next sub-issue's Handoff #1 — the user must initiate manually with `$z <next>`.
+1. Dispatch an **epic-update subagent** (`Agent`, `general-purpose`, `run_in_background:true`) with:
+   - Epic URL.
+   - Completed sub-issue URL + PR URL + merge SHA.
+   - Behavior-level Summary (no file paths or function names — `using-ha-thinking` discipline).
+   - Remaining-checklist state.
+   - Procedure: post the Summary as a comment on the epic; flip the relevant checklist line from `[ ]` to `[x]`; **do not close the epic**.
+   - Final report: which lines were flipped, how many sub-issues remain open, whether the Done gate (open sub-issues == 0 ∧ checklist fully `[x]`) passes.
+2. On the report:
+   - **Done gate fails** → list the remaining sub-issues (title + URL) to the user and stop. Do **not** auto-chain to the next sub-issue's Handoff #1 (using-z §Protocol Rules #3 — hop budget exhausted).
+   - **Done gate passes** → call `local:UIAskUserQuestion` asking the user whether to close the epic. Manual close is the policy: epics close only after human Done-Done verification (`using-epic-tasks/reference/github.md` §3 + `using-epic-tasks/SKILL.md` Invariant 4). On user approval, dispatch a close subagent (`gh issue close <epic>`). On user decline / no-response: leave the epic open and end.
 
 `es` already fired in phase 5; phase 5.E does **not** re-emit it.
 

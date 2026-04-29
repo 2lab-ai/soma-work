@@ -40,7 +40,9 @@ When invoked via session handoff from z phase1, the initial session prompt carri
    - PR body MUST include `Closes #<issue>` for Case A/B, or an explicit `Case A escape (tier=tiny|small, no issue by policy)` note when the qualified escape marker is used. **Inline only** — body must be passed as inline content to `--body` (literal string or heredoc). Shell variable indirection (e.g. `--body "$VAR"`) is host-rejected because the static check cannot see the runtime value.
    - *(Host-enforced via in-process SDK PreToolUse hook — `src/hooks/pr-issue-guard.ts` wired through `src/claude-handler.ts`. Bash `gh pr create` and MCP `mcp__github__create_pull_request` both covered. This prompt rule remains as defense-in-depth.)*
 
-6. Invoke `stv:verify` — repeat until passing (max 5 times, then `local:decision-gate`).
+6. Invoke `stv:verify` — repeat until passing (max 5 times). On the 6th cycle:
+   - **standalone mode**: ask the user via `local:decision-gate`.
+   - **orchestrator-mode** (invoked as a phase-2 implementer subagent by `local:z`): do **not** call `decision-gate` UI or `UIAskUserQuestion`. Return a structured `blocker` field in the final report — the z orchestrator owns the user dialogue and will route the question itself per `z/SKILL.md` §2.4.
 
 7. Invoke `review-pr`
 
@@ -48,5 +50,5 @@ When invoked via session handoff from z phase1, the initial session prompt carri
 
 ## Exit
 
-Hand off to `local:z` which will dispatch `local:zcheck` for the post-implementation gate.
-Do NOT handle CI polling, review comment resolution, or approve requests — that is `local:zcheck`'s responsibility.
+- **standalone mode**: hand off to `local:zcheck` for the post-implementation gate (zcheck owns Step 4 user approve in this mode).
+- **orchestrator-mode**: return the final report (PR URL, files changed, build/test result, blocker if any) to the `local:z` orchestrator. **z phase 3 dispatches the post-impl-gate driver (zcheck Step 0–3 only) and z phase 4 owns the user approve dialogue** — not zcheck, not zwork. Do NOT handle CI polling, review comment resolution, or approve requests yourself in either mode.

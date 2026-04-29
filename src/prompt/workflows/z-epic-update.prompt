@@ -7,32 +7,60 @@ The host has **already** validated the `<z-handoff type="work-complete">`
 sentinel at the top of this prompt and parsed its typed metadata into
 `session.handoffContext` (issue #695).
 
-## Your task
+## Your task — enter `local:z` phase 5.E as the **orchestrator**, not the bookkeeper
+
+`local:z` is a controller. Phase 5.E does not perform GitHub mutations directly —
+it dispatches an epic-update subagent and (for epic close) an explicit user
+question, per `src/local/skills/z/SKILL.md` §Phase 5.E and the manual-close
+policy in `src/local/skills/using-epic-tasks/reference/github.md` §3.
 
 1. Treat the `<z-handoff type="work-complete">` block in this prompt body as
    the session SSOT. The host verified its structure — you do not re-parse.
 2. **Skip `local:z` phases 0–4** — the implementation session already shipped
    the PR. Your only job is to reflect that completion back into the parent
-   epic.
-3. Post the block's `## Summary` (1–3 lines of behavior-level description) plus
-   `## PR` link as a comment on the parent epic issue.
-4. Update the parent epic's body checklist: flip the line for the just-merged
-   subissue from `[ ]` to `[x]`.
-5. Inspect `## Remaining Epic Checklist`:
-   - If all subissues are complete AND the Epic Done gate (see
-     `using-epic-tasks/reference/github.md` or `reference/jira.md`) passes,
-     close the epic.
-   - Otherwise, print the remaining subissue list to the user and stop. **Do
-     not** automatically emit Handoff #1 for the next subissue
-     (using-z §Protocol Rules #3 — no auto-chain).
+   epic, by orchestrating subagents.
+3. **Dispatch an epic-update subagent** (`Agent`, `general-purpose`,
+   `run_in_background: true`) with the following inputs:
+   - Parent epic URL.
+   - Block's `## Completed Subissue` URL + `## PR` URL + merge SHA (read merge
+     SHA from `gh pr view --json mergeCommit` if not already in the block).
+   - Block's `## Summary` (1–3 lines, behavior-level — `using-ha-thinking`
+     discipline; do not embed file paths or function names).
+   - Block's `## Remaining Epic Checklist`.
+   - Procedure: post the Summary as a comment on the epic; flip the relevant
+     line in the epic body checklist from `[ ]` to `[x]`; **do not close the
+     epic** (manual-close policy below).
+   - Final report: which lines were flipped, any open sub-issues, the Done-gate
+     evaluation result (open sub-issues == 0 and checklist fully `[x]`?).
+4. When the subagent's report returns:
+   - **Done gate fails** (open sub-issues remain or checklist still has `[ ]`):
+     print the remaining sub-issue list (title + URL) to the user and stop.
+     Do **not** auto-chain to the next sub-issue's Handoff #1
+     (using-z §Protocol Rules #3 — no auto-chain, hop budget exhausted).
+   - **Done gate passes** (every sub-issue closed and checklist fully `[x]`):
+     `local:UIAskUserQuestion` asking the user whether to close the epic.
+     Manual close is the policy: epics close only after human Done-Done
+     verification (`using-epic-tasks/reference/github.md` §3 +
+     `using-epic-tasks/SKILL.md` Invariant 4). On user approval, dispatch a
+     close subagent that runs the epic-close API call. On user decline or
+     no-response: leave the epic open and end.
 
 ## Forbidden
 
+- **Direct execution.** No `gh issue comment`, `gh issue edit`, `gh issue close`
+  in this session. All GitHub mutations go through subagents. No `Edit` /
+  `Write` against repo source files. No direct `mcp__llm__chat`. Read-only
+  state probes (`gh issue view --json`, `gh api -X GET`) are allowed per
+  `z/SKILL.md` §Hard Rules.
 - Re-examining the epic spec or redesigning scope — that was settled when the
   epic was created.
-- Marking an incomplete subissue as done.
-- Automatically chaining into the next subissue's Handoff #1. The user must
-  manually kick off the next subissue with `$z <subissue-url>`.
+- Marking an incomplete sub-issue as done.
+- **Auto-closing the epic** based on the Done gate alone. The Done gate is
+  necessary but not sufficient — explicit user approval is required per the
+  manual-close policy. Auto-closing violates `using-epic-tasks` Invariant 4.
+- Re-emitting `local:es` (the work session already fired it during phase 5.3).
+- Automatically chaining into the next sub-issue's Handoff #1. The user must
+  manually kick off the next sub-issue with `$z <subissue-url>`.
 
-> Hop-budget enforcement (per-session limit of 1 auto-handoff) is issue #697
-> scope — this prompt only guides the default, non-chained behavior.
+> Hop-budget enforcement (per-session limit of 1 auto-handoff) is host-side
+> issue #697 — this prompt only guides the default, non-chained behavior.

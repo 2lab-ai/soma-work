@@ -7,28 +7,61 @@ The host has **already** validated the `<z-handoff type="plan-to-work">` sentine
 at the top of this prompt and parsed its typed metadata into
 `session.handoffContext` (issue #695).
 
-## Your task
+## Your task — enter `local:z` phase 2 as the **orchestrator**, not the implementer
+
+`local:z` is a controller. The controller never executes implementation work
+itself — it dispatches subagents per phase (see `src/local/skills/z/SKILL.md`
+§Hard Rules). This handoff session must hold to that contract.
 
 1. Treat the `<z-handoff type="plan-to-work">` block in this prompt body as the
-   session SSOT — the host already verified structural correctness, so there is
+   session SSOT. The host already verified structural correctness, so there is
    no need to re-parse or re-validate.
-2. **Skip `local:z` phase0 (clarify / new-task / codex review)** — the source
-   session completed those phases and the confirmed plan is authoritative.
+2. **Skip `local:z` phase 0 and phase 1** — the source session completed those
+   phases and the confirmed plan is authoritative. Do not re-clarify, do not
+   re-plan, do not re-classify the tier.
 3. Register the block's `## Task List` into your todo list (TodoWrite).
-4. Record the block's `## Issue` URL and `## Parent Epic` URL as session-wide
-   SSOT (they will be needed again in phase5 when emitting `<z-handoff type="work-complete">`).
-5. Jump directly to `local:zwork` — phase2 implementation.
+4. Record the block's `## Issue` URL, `## Parent Epic` URL, `## Original Request
+   Excerpt`, and `## Repository Policy` as session-wide SSOT (they will be
+   needed for phase 5 when emitting `<z-handoff type="work-complete">` and for
+   re-verifying the Case A escape condition during PR creation).
+5. Parse the block's `## Dependency Groups` and `## Per-Task Dispatch Payloads`
+   sections — these are the planner's pre-computed phase-2 inputs.
+6. **Enter `local:z` phase 2 controller semantics**:
+   1. Run the phase-2 entry repeat-back gate (§2.1 — state phase-1 outputs back;
+      missing item → output the gate's failure line and stop).
+   2. For each Dependency Group, in order, dispatch the contained tasks'
+      Per-Task Dispatch Payloads as **parallel implementer subagents** in a
+      single `Agent` call message (`subagent_type: "general-purpose"`,
+      `run_in_background: true`). Pass each payload verbatim.
+   3. Wait for the subagent reports via the push notification model (no
+      `ScheduleWakeup`, no polling).
+   4. On a subagent `blocker` field, route the question through `UIAskUserQuestion`
+      (orchestrator-side only — subagents do not call it themselves).
+7. After every group merges, advance to phase 3 (post-impl gate dispatch),
+   phase 4 (user approve), phase 5 (merge driver dispatch). All phases obey
+   the controller contract — **do not** invoke `local:zwork` as the executor
+   in this session, and **do not** run `gh` / `git` mutating commands directly.
 
 ## Forbidden
 
-- Re-running phase0 clarify or decision-gate (the origin session already made
-  those judgments and the tier is preserved in the handoff metadata).
+- Re-running phase 0 clarify, decision-gate, or codex plan review (the origin
+  session already made those judgments and the tier / score are preserved in
+  the handoff metadata).
 - Re-planning or re-scoping — the block's `## Confirmed Plan` is authoritative.
-- Opening a new issue / PR when the block already carries a `## Issue` URL.
+- Opening a new issue when the block already carries a `## Issue` URL.
+- **Direct execution.** No `Bash` mutation against the repo (clone, checkout,
+  push, rebase, gh-create / merge / edit), no `Edit` / `Write` against repo
+  source files, no direct `mcp__llm__chat`. Read-only state probes (`stat`,
+  `gh pr list`, `gh pr view --json …`, `gh run list`, `gh api -X GET`) are
+  allowed per `z/SKILL.md` §Hard Rules.
+- Invoking `local:zwork` as a same-session skill — phase 2 dispatches the
+  per-task implementer subagents from the planner's payloads. The standalone
+  `local:zwork` skill is for direct user invocation, not handoff entry.
 - Extending the handoff chain on your own. If this work produces a merged PR
   and `## Parent Epic` is not `none`, you may emit Handoff #2 (`work-complete`)
-  at phase5 end — but that is the only outgoing handoff this session can
-  produce (hop budget = 1, enforced by #697 once implemented).
+  at phase 5 end — but that is the only outgoing handoff this session can
+  produce (hop budget = 1, enforced by #697).
 
 See `src/local/skills/using-z/SKILL.md` §Session Handoff Protocol for the full
-contract and §Sentinel Grammar rule 4 for required block fields.
+contract and §Sentinel Grammar rule 4 for required block fields, and
+`src/local/skills/z/SKILL.md` §Phase 2 for the per-task dispatch discipline.

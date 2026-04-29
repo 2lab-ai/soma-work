@@ -49,9 +49,12 @@ gh run list --branch <BRANCH> --repo <OWNER/REPO> --limit 1 --json status,conclu
 3. 0 unresolved까지 루프.
 
 
-## Step 3: 유저 설득
+## Step 3: ztrace 리포트 생성
 
-이 PR을 Approve할수 있는 이유를 `local:ztrace` 스킬을 사용하여 유저에게 브리핑한다.
+`local:ztrace`로 PR 변경의 시나리오별 콜스택을 리포트로 생성한다.
+
+- **standalone**: 그 결과를 그대로 유저에게 출력 + Step 4로 진행.
+- **orchestrator-mode**: 결과를 final report에 포함시켜 z 오케스트레이터에 반환. 유저 설득(브리핑·approve 요청)은 `local:z` phase 4가 소유한다.
 
 ## Step 4: Request Approve
 
