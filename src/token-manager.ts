@@ -182,7 +182,7 @@ export interface AddApiKeyInput {
 export type AddSlotInput = AddSetupTokenInput | AddOAuthCredentialsInput | AddApiKeyInput;
 
 /** Format guard for `sk-ant-api03-<base64url>` commercial API keys. */
-export const API_KEY_REGEX = /^sk-ant-api03-[A-Za-z0-9_-]{8,}$/;
+const API_KEY_REGEX = /^sk-ant-api03-[A-Za-z0-9_-]{8,}$/;
 
 export interface RotateOnRateLimitOptions {
   source: RateLimitSource;
@@ -1988,7 +1988,7 @@ export function getTokenManager(): TokenManager {
 /**
  * Reset the singleton (test-only).
  */
-export function __resetTokenManagerSingleton(): void {
+function __resetTokenManagerSingleton(): void {
   if (singleton) singleton.stop();
   singleton = null;
 }

@@ -12,7 +12,7 @@ export function parseModelCommandRunResponse(raw: unknown): ModelCommandRunRespo
   return null;
 }
 
-export function parseModelCommandListResponse(raw: unknown): ModelCommandListResponse | null {
+function parseModelCommandListResponse(raw: unknown): ModelCommandListResponse | null {
   const candidates = extractJsonCandidates(raw);
   for (const candidate of candidates) {
     if (!isRecord(candidate)) continue;
@@ -23,7 +23,7 @@ export function parseModelCommandListResponse(raw: unknown): ModelCommandListRes
   return null;
 }
 
-export function extractJsonCandidates(raw: unknown): unknown[] {
+function extractJsonCandidates(raw: unknown): unknown[] {
   const candidates: unknown[] = [];
   collectCandidates(raw, candidates);
   return candidates;

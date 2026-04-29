@@ -8,7 +8,7 @@
  */
 
 /** KST offset from UTC in minutes. */
-export const KST_OFFSET_MINUTES = 9 * 60;
+const KST_OFFSET_MINUTES = 9 * 60;
 
 const MS_PER_MINUTE = 60 * 1000;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -48,7 +48,7 @@ function formatUtcDate(date: Date): string {
  * Distinct KST 'YYYY-MM-DD' days among events whose timestamp is
  * within the inclusive window `[windowStart, windowEnd]`.
  */
-export function activeDayKeys(events: Array<{ ts: Date | number }>, windowStart: Date, windowEnd: Date): Set<string> {
+function activeDayKeys(events: Array<{ ts: Date | number }>, windowStart: Date, windowEnd: Date): Set<string> {
   const startMs = windowStart.getTime();
   const endMs = windowEnd.getTime();
   const out = new Set<string>();

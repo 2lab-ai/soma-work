@@ -79,47 +79,12 @@ export interface SessionResourceUpdateRequest {
   title?: string;
 }
 
-export interface SaveContextResultFile {
-  name: string;
-  content: string;
-}
-
-export interface SaveContextResultPayload {
-  success?: boolean;
-  status?: string;
-  id?: string;
-  save_id?: string;
-  dir?: string;
-  path?: string;
-  summary?: string;
-  title?: string;
-  files?: SaveContextResultFile[];
-  error?: string;
-}
-
-export interface UserChoiceOption {
-  id: string;
-  label: string;
-  description?: string;
-}
-
-export interface UserChoiceQuestion {
-  id: string;
-  question: string;
-  choices: UserChoiceOption[];
-  context?: string;
-}
-
-export interface UserChoice {
-  type: 'user_choice';
-  question: string;
-  choices: UserChoiceOption[];
-  context?: string;
-}
-
-export interface UserChoices {
-  type: 'user_choices';
-  title?: string;
-  description?: string;
-  questions: UserChoiceQuestion[];
-}
+// Re-exported from somalib so harness and mcp-servers share one definition.
+export type {
+  SaveContextResultFile,
+  SaveContextResultPayload,
+  UserChoiceOption,
+  UserChoiceQuestion,
+  UserChoice,
+  UserChoices,
+} from 'somalib/model-commands/session-types.js';

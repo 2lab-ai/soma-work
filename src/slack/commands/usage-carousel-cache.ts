@@ -2,11 +2,11 @@
 //
 // TabCache — in-memory LRU cache for the usage-card carousel's per-message
 // tab file IDs. One entry per posted card message (keyed by `messageTs`),
-// carrying the 4 pre-rendered PNG file IDs + owner + absolute expiry.
+// carrying the pre-rendered PNG file IDs + owner + absolute expiry.
 //
-// Why it exists: `usage_card_tab` block_actions need the 4 file IDs to
+// Why it exists: `usage_card_tab` block_actions need the file IDs to
 // rebuild `chat.update` blocks when the user clicks a tab. Re-rendering on
-// every click would defeat the point of pre-rendering all 4 tabs upfront.
+// every click would defeat the point of pre-rendering all tabs upfront.
 //
 // Semantics:
 // - TTL: lazy — `get()` checks `expiresAt` and purges on miss.
@@ -15,8 +15,12 @@
 // - Opportunistic eviction on `set()`: scan first 10 entries and drop any
 //   already expired. Keeps memory bounded under heavy churn without an
 //   expensive full scan.
+//
+// TabId is re-exported from usage-render/types so cache and carousel share one source.
 
-export type TabId = '24h' | '7d' | '30d' | 'all';
+import type { TabId } from '../../metrics/usage-render/types';
+
+export type { TabId } from '../../metrics/usage-render/types';
 
 export interface TabCacheEntry {
   fileIds: Record<TabId, string>;

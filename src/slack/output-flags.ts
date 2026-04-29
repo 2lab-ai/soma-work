@@ -62,7 +62,7 @@ export type LogVerbosity = 'minimal' | 'compact' | 'detail' | 'verbose';
 const ALWAYS = OutputFlag.USER_CHOICE | OutputFlag.PERMISSION | OutputFlag.ERROR;
 
 /** MINIMAL — final result + essential interactions + long-running status + task progress + skill announcements */
-export const LOG_MINIMAL =
+const LOG_MINIMAL =
   ALWAYS |
   OutputFlag.FINAL_RESULT |
   OutputFlag.MCP_PROGRESS |
@@ -71,7 +71,7 @@ export const LOG_MINIMAL =
   OutputFlag.SKILL_INVOCATION;
 
 /** COMPACT — thinking + tool names (no detail) + status/meta */
-export const LOG_COMPACT =
+const LOG_COMPACT =
   LOG_MINIMAL |
   OutputFlag.THINKING |
   OutputFlag.TOOL_CALL |
@@ -87,7 +87,7 @@ export const LOG_COMPACT =
 export const LOG_DETAIL = LOG_COMPACT | OutputFlag.TOOL_DETAIL | OutputFlag.TOOL_RESULT | OutputFlag.SYSTEM;
 
 /** VERBOSE — everything including raw data */
-export const LOG_VERBOSE = LOG_DETAIL | OutputFlag.RAW_DATA;
+const LOG_VERBOSE = LOG_DETAIL | OutputFlag.RAW_DATA;
 
 // ── Lookup helpers ───────────────────────────────────────────────────
 
@@ -167,12 +167,12 @@ const LEVELS_ASC: { name: string; mask: number }[] = [
 ];
 
 /** Get the human-readable name of an OutputFlag value */
-export function getOutputFlagName(flag: number): string {
+function getOutputFlagName(flag: number): string {
   return FLAG_NAME_MAP[flag] ?? `FLAG_${flag}`;
 }
 
 /** Get the minimum verbosity level that includes the given flag */
-export function getMinVerbosityLevel(flag: number): string {
+function getMinVerbosityLevel(flag: number): string {
   for (const { name, mask } of LEVELS_ASC) {
     if ((mask & flag) !== 0) return name;
   }

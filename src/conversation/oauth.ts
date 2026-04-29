@@ -480,7 +480,7 @@ export function validateCsrfToken(
 
 // ── OAuth state helpers ──
 
-export function generateOAuthState(provider: string): string {
+function generateOAuthState(provider: string): string {
   return crypto.randomBytes(16).toString('hex') + ':' + provider;
 }
 
@@ -488,7 +488,7 @@ function getOAuthStateCookieName(provider: string): string {
   return `soma_oauth_state_${provider}`;
 }
 
-export function setOAuthStateCookie(reply: any, provider: string, state: string): void {
+function setOAuthStateCookie(reply: any, provider: string, state: string): void {
   const secure = (config.conversation.viewerUrl || '').startsWith('https');
   const cookieName = getOAuthStateCookieName(provider);
   reply.header(
@@ -497,7 +497,7 @@ export function setOAuthStateCookie(reply: any, provider: string, state: string)
   );
 }
 
-export function validateOAuthState(request: any, provider: string, stateParam: string | undefined): boolean {
+function validateOAuthState(request: any, provider: string, stateParam: string | undefined): boolean {
   if (!stateParam) return false;
   const cookieName = getOAuthStateCookieName(provider);
   const cookieHeader = request.headers.cookie || '';
@@ -507,7 +507,7 @@ export function validateOAuthState(request: any, provider: string, stateParam: s
   return cookieState === stateParam && stateParam.endsWith(':' + provider);
 }
 
-export function clearOAuthStateCookie(reply: any, provider: string): void {
+function clearOAuthStateCookie(reply: any, provider: string): void {
   const cookieName = getOAuthStateCookieName(provider);
   reply.header('Set-Cookie', `${cookieName}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
 }

@@ -265,4 +265,192 @@ describe('user-skill-store', () => {
       expect(a).not.toBe(b);
     });
   });
+
+  // -------------------------------------------------------------------------
+  // renameUserSkill (issue #774)
+  // -------------------------------------------------------------------------
+  //
+  // Storage-layer contract:
+  //   - happy:        valid src + valid dst → ok=true, byte-identical SKILL.md
+  //   - same name:    src === dst         → ok=false, error='INVALID'
+  //   - source gone:  no source dir       → ok=false, error='NOT_FOUND'
+  //   - target taken: dst exists          → ok=false, error='EEXIST'
+  //   - bad name:     pattern violation   → ok=false, error='INVALID'
+  //   - length cap:   newName too long    → ok=false, error='INVALID'
+  //   - case-only:    foo → foo-2         → ok=true (temp staging path exercised)
+  //
+  // The 32-byte path-segment safety predicate (`isSafePathSegment`) is shared
+  // with the existing validator — we don't re-test traversal here because the
+  // `isValidSkillName` test class above already covers it.
+  describe('renameUserSkill', () => {
+    function srcContent(): string {
+      return ['---', 'name: old', 'description: ye olde', '---', '', 'body'].join('\n');
+    }
+
+    it('renames an existing skill — source dir disappears, target dir contains identical bytes', () => {
+      const content = srcContent();
+      store.createUserSkill(userId, 'old', content);
+
+      const result = store.renameUserSkill(userId, 'old', 'new-name');
+
+      expect(result.ok).toBe(true);
+      expect(result.error).toBeUndefined();
+      expect(fs.existsSync(path.join(tempDir, userId, 'skills', 'old'))).toBe(false);
+      const dst = path.join(tempDir, userId, 'skills', 'new-name', 'SKILL.md');
+      expect(fs.existsSync(dst)).toBe(true);
+      expect(fs.readFileSync(dst, 'utf-8')).toBe(content);
+    });
+
+    it('returns INVALID when oldName === newName', () => {
+      store.createUserSkill(userId, 'same', srcContent());
+
+      const result = store.renameUserSkill(userId, 'same', 'same');
+
+      expect(result.ok).toBe(false);
+      expect(result.error).toBe('INVALID');
+    });
+
+    it('returns NOT_FOUND when source skill does not exist', () => {
+      const result = store.renameUserSkill(userId, 'missing', 'new-name');
+      expect(result.ok).toBe(false);
+      expect(result.error).toBe('NOT_FOUND');
+    });
+
+    it('returns EEXIST when target name is already taken (no rollback needed)', () => {
+      store.createUserSkill(userId, 'src', srcContent());
+      store.createUserSkill(userId, 'dst', srcContent().replace('old', 'dst'));
+
+      const result = store.renameUserSkill(userId, 'src', 'dst');
+
+      expect(result.ok).toBe(false);
+      expect(result.error).toBe('EEXIST');
+      // Both dirs survive — the rename never touched disk.
+      expect(fs.existsSync(path.join(tempDir, userId, 'skills', 'src'))).toBe(true);
+      expect(fs.existsSync(path.join(tempDir, userId, 'skills', 'dst'))).toBe(true);
+    });
+
+    it('returns INVALID for a kebab-case-violating new name', () => {
+      store.createUserSkill(userId, 'src', srcContent());
+      const result = store.renameUserSkill(userId, 'src', 'Bad_Name');
+      expect(result.ok).toBe(false);
+      expect(result.error).toBe('INVALID');
+    });
+
+    it('returns INVALID for a too-long new name', () => {
+      store.createUserSkill(userId, 'src', srcContent());
+      const tooLong = 'a'.repeat(store.MAX_SKILL_NAME_LENGTH + 1);
+      const result = store.renameUserSkill(userId, 'src', tooLong);
+      expect(result.ok).toBe(false);
+      expect(result.error).toBe('INVALID');
+    });
+
+    it('handles a case-only-style rename through a temp staging directory', () => {
+      // Use a distinct case-only target to exercise the temp-staging path. On
+      // case-insensitive filesystems plain fs.rename(src, dst) is a no-op when
+      // src.toLowerCase() === dst.toLowerCase(); staging through a uuid-suffixed
+      // temp dir makes the rename real. We can't lowercase-only here because
+      // the kebab-case predicate rejects uppercase, so we use `foo` → `foo-2`.
+      store.createUserSkill(userId, 'foo', srcContent());
+      const result = store.renameUserSkill(userId, 'foo', 'foo-2');
+      expect(result.ok).toBe(true);
+      expect(fs.existsSync(path.join(tempDir, userId, 'skills', 'foo'))).toBe(false);
+      expect(fs.existsSync(path.join(tempDir, userId, 'skills', 'foo-2', 'SKILL.md'))).toBe(true);
+    });
+
+    it('preserves multi-file siblings (non-SKILL.md files) through the rename', () => {
+      // Issue #774 spec: "rename은 디렉터리 통째로" — multi-file skills must
+      // keep their sibling resources after a rename.
+      store.createUserSkill(userId, 'multi', srcContent());
+      const skillDir = path.join(tempDir, userId, 'skills', 'multi');
+      fs.writeFileSync(path.join(skillDir, 'reference.md'), 'sibling content', 'utf-8');
+
+      const result = store.renameUserSkill(userId, 'multi', 'renamed');
+
+      expect(result.ok).toBe(true);
+      const newDir = path.join(tempDir, userId, 'skills', 'renamed');
+      expect(fs.existsSync(path.join(newDir, 'SKILL.md'))).toBe(true);
+      expect(fs.readFileSync(path.join(newDir, 'reference.md'), 'utf-8')).toBe('sibling content');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Prompt invalidation hook plumbing (issue #774)
+  // -------------------------------------------------------------------------
+  //
+  // The store fires the registered invalidation hook on every mutation
+  // (create/update/delete/rename) AND only on the happy path. Failures must
+  // not fire the hook (the cached system prompt is still correct, and a
+  // wasted rebuild would be observable as a perf regression in the dashboard).
+  // share/list never fire — read-only.
+  describe('prompt invalidation hook', () => {
+    it('fires on createUserSkill success', () => {
+      const calls: string[] = [];
+      store.setSkillPromptInvalidationHook((u) => calls.push(u));
+
+      store.createUserSkill(userId, 'a', '---\nname: a\n---\nbody');
+
+      expect(calls).toEqual([userId]);
+    });
+
+    it('fires on updateUserSkill success', () => {
+      const calls: string[] = [];
+      store.createUserSkill(userId, 'a', '---\nname: a\n---\nbody');
+      store.setSkillPromptInvalidationHook((u) => calls.push(u));
+
+      store.updateUserSkill(userId, 'a', '---\nname: a\n---\nbody2');
+
+      expect(calls).toEqual([userId]);
+    });
+
+    it('fires on deleteUserSkill success', () => {
+      const calls: string[] = [];
+      store.createUserSkill(userId, 'a', '---\nname: a\n---\nbody');
+      store.setSkillPromptInvalidationHook((u) => calls.push(u));
+
+      store.deleteUserSkill(userId, 'a');
+
+      expect(calls).toEqual([userId]);
+    });
+
+    it('fires on renameUserSkill success', () => {
+      const calls: string[] = [];
+      store.createUserSkill(userId, 'old', '---\nname: old\n---\nbody');
+      store.setSkillPromptInvalidationHook((u) => calls.push(u));
+
+      store.renameUserSkill(userId, 'old', 'new-name');
+
+      expect(calls).toEqual([userId]);
+    });
+
+    it('does NOT fire on createUserSkill failure (invalid name)', () => {
+      const calls: string[] = [];
+      store.setSkillPromptInvalidationHook((u) => calls.push(u));
+
+      const result = store.createUserSkill(userId, 'Bad_Name', 'body');
+      expect(result.ok).toBe(false);
+      expect(calls).toEqual([]);
+    });
+
+    it('does NOT fire on renameUserSkill failure (target taken)', () => {
+      store.createUserSkill(userId, 'a', '---\nname: a\n---\nbody');
+      store.createUserSkill(userId, 'b', '---\nname: b\n---\nbody');
+      const calls: string[] = [];
+      store.setSkillPromptInvalidationHook((u) => calls.push(u));
+
+      const result = store.renameUserSkill(userId, 'a', 'b');
+      expect(result.ok).toBe(false);
+      expect(result.error).toBe('EEXIST');
+      expect(calls).toEqual([]);
+    });
+
+    it('does NOT fire on shareUserSkill (read-only)', () => {
+      store.createUserSkill(userId, 'a', '---\nname: a\n---\nbody');
+      const calls: string[] = [];
+      store.setSkillPromptInvalidationHook((u) => calls.push(u));
+
+      const result = store.shareUserSkill(userId, 'a');
+      expect(result.ok).toBe(true);
+      expect(calls).toEqual([]);
+    });
+  });
 });

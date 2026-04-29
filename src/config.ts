@@ -255,8 +255,10 @@ export const config = {
    * (the hook never fires); explicitly disable via
    * `AUTO_ROTATE_ENABLED=0` to keep the refresh tick but skip rotation.
    *
-   * Thresholds are inclusive upper bounds on usage utilisation (0..1).
-   * Defaults match the user spec verbatim: 5h ≤ 80%, 7d ≤ 90%.
+   * Operator-facing env knobs (`AUTO_ROTATE_FIVEH_THRESHOLD`,
+   * `AUTO_ROTATE_SEVEND_THRESHOLD`) are 0..1 fractions for backwards
+   * compatibility; the rotation engine reads percent (store SSOT,
+   * 0..100) — hence the `* 100` boundary multiply (#781).
    */
   autoRotate: {
     /** Emergency-off knob. Default-on. */
@@ -268,10 +270,10 @@ export const config = {
      * letting it actually flip the active slot.
      */
     dryRun: process.env.AUTO_ROTATE_DRY_RUN === '1',
-    /** 5h utilisation upper bound. Default 0.8 (80%). */
-    fiveHourMax: parseUnitIntervalEnv('AUTO_ROTATE_FIVEH_THRESHOLD', 0.8),
-    /** 7d utilisation upper bound. Default 0.9 (90%). */
-    sevenDayMax: parseUnitIntervalEnv('AUTO_ROTATE_SEVEND_THRESHOLD', 0.9),
+    /** 5h utilisation upper bound, percent (0..100). Default 80. */
+    fiveHourMax: parseUnitIntervalEnv('AUTO_ROTATE_FIVEH_THRESHOLD', 0.8) * 100,
+    /** 7d utilisation upper bound, percent (0..100). Default 90. */
+    sevenDayMax: parseUnitIntervalEnv('AUTO_ROTATE_SEVEND_THRESHOLD', 0.9) * 100,
   },
   /**
    * CCT slot card v2 (#668 follow-up) — optional GET /api/oauth/profile

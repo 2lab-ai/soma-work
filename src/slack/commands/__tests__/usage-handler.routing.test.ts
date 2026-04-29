@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { makeCarouselStats, makeEmptyTabStats as makeEmptyTab } from '../../../metrics/usage-render/__tests__/fixtures';
 import {
   EchartsInitError,
   FontLoadError,
   ResvgNativeError,
   SlackPostError,
 } from '../../../metrics/usage-render/errors';
-import type { CarouselStats, CarouselTabStats, EmptyTabStats, TabId } from '../../../metrics/usage-render/types';
+import type { CarouselStats, TabId } from '../../../metrics/usage-render/types';
 import type { CommandContext, CommandDependencies } from '../types';
 import { TabCache } from '../usage-carousel-cache';
 import {
@@ -43,48 +44,7 @@ function makeDeps(): CommandDependencies {
   } as unknown as CommandDependencies;
 }
 
-const ALL_TABS: readonly TabId[] = ['24h', '7d', '30d', 'all'] as const;
-
-function makeTabStats(tabId: TabId, overrides: Partial<CarouselTabStats> = {}): CarouselTabStats {
-  return {
-    empty: false,
-    tabId,
-    targetUserId: 'U_ALICE',
-    targetUserName: 'Alice',
-    windowStart: '2026-03-19',
-    windowEnd: '2026-04-17',
-    totals: { tokens: 100, costUsd: 0.1, sessions: 1 },
-    favoriteModel: null,
-    hourly: new Array(24).fill(0),
-    heatmap: [],
-    rankings: { tokensTop: [], targetTokenRow: null },
-    activeDays: 1,
-    longestStreakDays: 1,
-    currentStreakDays: 1,
-    topSessions: [],
-    longestSession: null,
-    mostActiveDay: null,
-    ...overrides,
-  };
-}
-
-function makeEmptyTab(tabId: TabId): EmptyTabStats {
-  return { empty: true, tabId, windowStart: '2026-03-19', windowEnd: '2026-04-17' };
-}
-
-function makeCarouselStats(partial: Partial<Record<TabId, CarouselTabStats | EmptyTabStats>> = {}): CarouselStats {
-  return {
-    targetUserId: 'U_ALICE',
-    targetUserName: 'Alice',
-    now: '2026-04-17T14:00:00+09:00',
-    tabs: {
-      '24h': partial['24h'] ?? makeTabStats('24h'),
-      '7d': partial['7d'] ?? makeTabStats('7d'),
-      '30d': partial['30d'] ?? makeTabStats('30d'),
-      all: partial.all ?? makeTabStats('all'),
-    },
-  };
-}
+const ALL_TABS: readonly TabId[] = ['24h', '7d', '30d', 'all', 'models'] as const;
 
 function makeCarouselOverrides(
   opts: {
@@ -118,6 +78,7 @@ function makeCarouselOverrides(
         '7d': Buffer.from([0x89]),
         '30d': Buffer.from([0x89]),
         all: Buffer.from([0x89]),
+        models: Buffer.from([0x89]),
       }
     );
   });
@@ -238,7 +199,8 @@ describe('UsageHandler subcommand routing', () => {
     expect(result.handled).toBe(true);
     expect(aggregateCarousel).toHaveBeenCalledTimes(1);
     expect(renderCarousel).toHaveBeenCalledTimes(1);
-    expect(filesUploadV2).toHaveBeenCalledTimes(4);
+    // 5 PNGs: 24h / 7d / 30d / all / models — each uploaded once.
+    expect(filesUploadV2).toHaveBeenCalledTimes(5);
     expect(postMessage).toHaveBeenCalledTimes(1);
   });
 });
@@ -303,7 +265,7 @@ describe('UsageHandler.handleCard — carousel', () => {
     expect(renderCarousel).toHaveBeenCalledTimes(1);
     expect(renderCarousel.mock.calls[0][1]).toBe('30d');
 
-    expect(filesUploadV2).toHaveBeenCalledTimes(4);
+    expect(filesUploadV2).toHaveBeenCalledTimes(5);
     for (const call of filesUploadV2.mock.calls) {
       const args = call[0] as Record<string, unknown>;
       expect(args).not.toHaveProperty('channel_id');
@@ -311,7 +273,7 @@ describe('UsageHandler.handleCard — carousel', () => {
       expect(args).not.toHaveProperty('thread_ts');
       expect(args).not.toHaveProperty('initial_comment');
       expect(args.request_file_info).toBe(false);
-      expect(String(args.filename)).toMatch(/^usage-card-(24h|7d|30d|all)\.png$/);
+      expect(String(args.filename)).toMatch(/^usage-card-(24h|7d|30d|all|models)\.png$/);
     }
 
     expect(postMessage).toHaveBeenCalledTimes(1);
@@ -327,7 +289,13 @@ describe('UsageHandler.handleCard — carousel', () => {
     const cached = tabCache.get('TS_POST');
     expect(cached).toBeDefined();
     expect(cached!.userId).toBe('U_ALICE');
-    expect(cached!.fileIds).toEqual({ '24h': 'F_24h', '7d': 'F_7d', '30d': 'F_30d', all: 'F_all' });
+    expect(cached!.fileIds).toEqual({
+      '24h': 'F_24h',
+      '7d': 'F_7d',
+      '30d': 'F_30d',
+      all: 'F_all',
+      models: 'F_models',
+    });
   });
 
   it('all-empty short-circuit: all 4 tabs empty → ephemeral, no render/upload/post', async () => {
@@ -364,7 +332,7 @@ describe('UsageHandler.handleCard — carousel', () => {
     await handler.handleCard(makeCtx());
 
     expect(renderCarousel).toHaveBeenCalledTimes(1);
-    expect(filesUploadV2).toHaveBeenCalledTimes(4);
+    expect(filesUploadV2).toHaveBeenCalledTimes(5);
     expect(postMessage).toHaveBeenCalledTimes(1);
     expect(tabCache.get('TS_POST')).toBeDefined();
   });

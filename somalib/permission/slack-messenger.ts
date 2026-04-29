@@ -16,11 +16,11 @@ export interface PermissionMessageResult {
 
 /**
  * Minimal rule shape this messenger needs to render the
- * "Approve & disable rule for this session" button. Defined locally to keep
- * somalib free of cross-package imports — DangerousRule (in
- * mcp-servers/_shared/dangerous-command-filter.ts and
+ * "Approve & disable rule for this session" button. Defined locally as a
+ * narrow structural contract — DangerousRule (in
+ * somalib/permission/dangerous-rules.ts, re-exported by
  * src/dangerous-command-filter.ts) is a structural superset of this interface,
- * so callers can pass DangerousRule arrays directly.
+ * so callers can pass DangerousRule arrays directly without conversion.
  */
 export interface PermissionRuleSummary {
   readonly id: string;

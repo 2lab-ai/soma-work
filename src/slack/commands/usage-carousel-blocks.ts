@@ -16,7 +16,7 @@
 import type { TabId } from '../../metrics/usage-render/types';
 
 /** Button order on the carousel. Matches TabId tuple in `types.ts`. */
-const TAB_ORDER: readonly TabId[] = ['24h', '7d', '30d', 'all'] as const;
+const TAB_ORDER: readonly TabId[] = ['24h', '7d', '30d', 'all', 'models'] as const;
 
 /** Human-readable button labels. Korean/English neutral. */
 const LABEL: Record<TabId, string> = {
@@ -24,6 +24,7 @@ const LABEL: Record<TabId, string> = {
   '7d': 'Last 7d',
   '30d': 'Last 30d',
   all: 'All time',
+  models: 'Models',
 };
 
 /**
