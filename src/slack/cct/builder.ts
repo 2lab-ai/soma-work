@@ -400,8 +400,8 @@ function isUtilizationFull(util: number | undefined): boolean {
  * lower-priority fallback. Priority: 7d full > 5h full >
  * cooldownUntil(future) > healthy.
  *
- * "Full" is evaluated by {@link isUtilizationFull}, which handles both the
- * legacy 0..1 fraction form and the 0..100 percent form the real API sends.
+ * "Full" is evaluated by {@link isUtilizationFull} — `util >= 100` against
+ * the percent-form store SSOT (see #685/#701).
  *
  * Why we honor `cooldownUntil` for OAuth slots (Codex P1 follow-up #679):
  * the Anthropic utilization snapshot is the SSOT for an OAuth slot's

@@ -172,7 +172,7 @@ interface StreamExecuteParams {
  * turn-notifier rendering. Derived from {@link UsageSnapshot} by
  * {@link toUsagePercentSnapshot}. Kept local to decouple rendering from
  * the wire-format `UsageSnapshot` (which carries `resetsAt` and utilization
- * in raw 0..1 or 0..100 form).
+ * as raw API percent 0..100 per #685).
  */
 interface UsagePercentSnapshot {
   fiveHour?: number;
