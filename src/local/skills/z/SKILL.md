@@ -314,19 +314,25 @@ The merge subagent does **not** dispatch other subagents — that's the controll
 
 ### 5.1.a Branch on the merge subagent's report (controller-side)
 
-The orchestrator decides what to do next based on the merge subagent's report:
+The orchestrator decides what to do next based on the merge subagent's report. Two branches: success or blocker.
 
-- **Merge subagent reported `status: 'blocker'`** → route by the report's `detail` field through the **blocker taxonomy** below. The same taxonomy is applied to **any** blocker report fed into §5.1.a — including §5.2's own report when it returns `status: 'blocker'`. The taxonomy is the single source of truth; §5.2 does not get its own escalation rule, it routes back through here.
+#### Success branch — `status: 'MERGED'`
 
-#### Blocker taxonomy (applied to §5.1's report and §5.2's report identically)
+Inspect whether more dependency groups remain in `## Dependency Groups`:
+
+- **Next group exists** (more PRs to ship): dispatch a **base-refresh subagent** (background) that pulls the new base into Group N+1's existing worktrees — those worktrees were created up front in §2.0 and are reused for the entire phase 2 lifecycle. Do **not** recreate worktrees. After the base-refresh report returns, **return to §2.2** and dispatch Group N+1's implementer subagents. §5.3 / §5.4 are skipped this turn.
+- **No next group** (this was the last PR for the epic / single-issue case): proceed to §5.3 (`es` executive summary), then §5.4 (Handoff #2 if Parent Epic ≠ none).
+
+#### Blocker branch — `status: 'blocker'`
+
+Route by the report's `detail` field through the **blocker taxonomy** below. The same taxonomy is applied to **any** blocker report fed into §5.1.a — including §5.2's own report when it returns `status: 'blocker'`. The taxonomy is the single source of truth; §5.2 does not get its own escalation rule, it routes back through here.
+
+##### Blocker taxonomy (applied to §5.1's report and §5.2's report identically)
 
 - `unresolvable-conflict-on-shared-file` / `rebase-conflict-*` → §5.2 (conflict subagent: rebase / force-with-lease / recheck / merge). Feed §5.2's report back into §5.1.a — do **not** re-dispatch the §5.1 merge driver; §5.2 may have already merged. **Bounded §5.2 retry**: max 2 §5.2 dispatches per PR; if §5.2 returns `status: 'blocker'` with the same conflict-class `detail` twice, escalate via `UIAskUserQuestion` (the user decides whether to abort, override, or hand-merge).
 - `reviewDecision-regressed-after-force-push` (or any `reviewDecision != APPROVED` post-rebase) → return to **phase 4** for a fresh user approve. Do **not** dispatch §5.2 — there is no conflict to resolve, only a stale-review regression. After approve, re-enter §5.1 with the original PR. **Same routing applies if this `detail` arrives in §5.2's report** (e.g. §5.2 force-pushed and the approval got dismissed again).
 - `branch-protection-blocked` / `no-eligible-reviewer` / `required-ci-label-missing` / `signed-commit-required-no-key` → escalate via `UIAskUserQuestion` (see Failure Modes & Recovery table). Do **not** dispatch §5.2 — these are policy / authorization blockers, not rebase issues. Same routing if the `detail` arrives via §5.2.
 - `unknown-blocker` or any `detail` not in the above taxonomy → escalate via `UIAskUserQuestion` so the user can either resolve it or re-classify the failure mode.
-- **Merge subagent reported `status: 'MERGED'`** (success) → inspect whether more dependency groups remain in `## Dependency Groups`:
-  - **Next group exists** (more PRs to ship): dispatch a **base-refresh subagent** (background) that pulls the new base into Group N+1's existing worktrees — those worktrees were created up front in §2.0 and are reused for the entire phase 2 lifecycle. Do **not** recreate worktrees. After the base-refresh report returns, **return to §2.2** and dispatch Group N+1's implementer subagents. §5.3 / §5.4 are skipped this turn.
-  - **No next group** (this was the last PR for the epic / single-issue case): proceed to §5.3 (`es` executive summary), then §5.4 (Handoff #2 if Parent Epic ≠ none).
 
 ### 5.2 Conflict subagent
 

@@ -59,7 +59,10 @@ Return:
 - `detail`: a short string identifying the blocker (e.g. `reviewDecision-regressed-after-force-push`, `unresolvable-conflict-on-shared-file`, `ci-fail-after-2-fix-cycles`, `signed-commit-required-no-key`).
 - Diagnostic context (free-form): rebase log, CI failure tail, the `gh pr view --json` snapshot.
 
-The orchestrator's §5.2 retry cap (max 2) means a second `blocker` from this subagent triggers `UIAskUserQuestion` escalation — do not loop indefinitely.
+The orchestrator routes this `{ status: 'blocker', detail }` report through `z/SKILL.md` §5.1.a's unified taxonomy — exactly as it would §5.1's merge subagent's blocker report. So:
+
+- A non-conflict `detail` from this subagent (e.g. `reviewDecision-regressed-after-force-push` after this subagent force-pushed and the prior approval got dismissed) routes to **its own taxonomy branch** (phase 4 fresh approve, in that example) — NOT to `UIAskUserQuestion`.
+- The §5.2 bounded retry (max 2 §5.2 dispatches per PR → escalation) only fires for **repeated conflict-class** blocker details (`unresolvable-conflict-on-shared-file`, `rebase-conflict-*`). Other classes have their own routing and do not consume the §5.2 retry budget.
 
 ## Hard rules
 - **Do not stop midway. Do not hand back early.**
