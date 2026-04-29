@@ -271,6 +271,7 @@ describe('MANAGE_SKILL share dispatcher', () => {
       updateSkill: () => ({ ok: true, message: 'stub' }),
       deleteSkill: () => ({ ok: true, message: 'stub' }),
       shareSkill: () => ({ ok: false, message: 'stub default' }),
+      renameSkill: () => ({ ok: true, message: 'stub rename' }),
       ...overrides,
     };
   }
@@ -311,6 +312,9 @@ describe('MANAGE_SKILL share dispatcher', () => {
         throw new Error('skill store leak');
       },
       shareSkill: () => {
+        throw new Error('skill store leak');
+      },
+      renameSkill: () => {
         throw new Error('skill store leak');
       },
     });
@@ -457,5 +461,169 @@ describe('MANAGE_SKILL share dispatcher', () => {
     expect(result.error.code).toBe('INVALID_ARGS');
     expect(result.error.message).toContain('name');
     expect(result.error.message).toContain('share');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MANAGE_SKILL rename + mutation signal (issue #774)
+// ---------------------------------------------------------------------------
+//
+// The dispatcher attaches `mutated: { kind: 'skill', user, action }` to the
+// MANAGE_SKILL payload only on the happy path of a mutating action. The host
+// stream-executor uses that signal to drop cached system prompts for the
+// affected user. This test class verifies BOTH halves of the contract:
+//   1. mutated is present on rename/create/update/delete success.
+//   2. mutated is absent on rename failure / share / list (read-only or no-op).
+
+describe('MANAGE_SKILL rename dispatcher + mutation signal', () => {
+  function makeStubStore(overrides: Partial<SkillStore>): SkillStore {
+    return {
+      listSkills: () => [],
+      createSkill: () => ({ ok: true, message: 'stub create' }),
+      updateSkill: () => ({ ok: true, message: 'stub update' }),
+      deleteSkill: () => ({ ok: true, message: 'stub delete' }),
+      shareSkill: () => ({ ok: false, message: 'stub share default' }),
+      renameSkill: () => ({ ok: true, message: 'stub rename' }),
+      ...overrides,
+    };
+  }
+
+  function ctx(): ModelCommandContext {
+    return {
+      channel: 'C123',
+      threadTs: '111.222',
+      user: 'U-rename',
+      session: getDefaultSessionSnapshot(),
+    };
+  }
+
+  it('rename happy path returns ok=true and stamps mutated.kind=skill', () => {
+    let called = false;
+    registerSkillStore(
+      makeStubStore({
+        renameSkill: (user, name, newName) => {
+          called = true;
+          expect(user).toBe('U-rename');
+          expect(name).toBe('old');
+          expect(newName).toBe('new');
+          return { ok: true, message: 'renamed' };
+        },
+      }),
+    );
+
+    const result = runModelCommand(
+      {
+        commandId: 'MANAGE_SKILL',
+        params: { action: 'rename', name: 'old', newName: 'new' },
+      } as ModelCommandRunRequest,
+      ctx(),
+    );
+
+    expect(called).toBe(true);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const payload = result.payload as Record<string, unknown>;
+    expect(payload.ok).toBe(true);
+    expect(payload.mutated).toMatchObject({ kind: 'skill', user: 'U-rename', action: 'rename' });
+  });
+
+  it('rename failure (storage returns ok=false) does NOT stamp mutated', () => {
+    registerSkillStore(
+      makeStubStore({
+        renameSkill: () => ({ ok: false, message: 'target taken', error: 'EEXIST' }),
+      }),
+    );
+
+    const result = runModelCommand(
+      {
+        commandId: 'MANAGE_SKILL',
+        params: { action: 'rename', name: 'old', newName: 'new' },
+      } as ModelCommandRunRequest,
+      ctx(),
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const payload = result.payload as Record<string, unknown>;
+    expect(payload.ok).toBe(false);
+    expect(payload.mutated).toBeUndefined();
+  });
+
+  it('create/update/delete success all stamp mutated.action correctly', () => {
+    registerSkillStore(makeStubStore({}));
+
+    const cActions: Array<{ params: Record<string, unknown>; expected: string }> = [
+      { params: { action: 'create', name: 'a', content: 'body' }, expected: 'create' },
+      { params: { action: 'update', name: 'a', content: 'body' }, expected: 'update' },
+      { params: { action: 'delete', name: 'a' }, expected: 'delete' },
+    ];
+    for (const tc of cActions) {
+      const result = runModelCommand(
+        { commandId: 'MANAGE_SKILL', params: tc.params } as ModelCommandRunRequest,
+        ctx(),
+      );
+      expect(result.ok).toBe(true);
+      if (!result.ok) continue;
+      const payload = result.payload as Record<string, unknown>;
+      expect(payload.ok).toBe(true);
+      expect(payload.mutated).toMatchObject({ kind: 'skill', user: 'U-rename', action: tc.expected });
+    }
+  });
+
+  it('share + list NEVER stamp mutated (read-only invariant)', () => {
+    registerSkillStore(
+      makeStubStore({
+        shareSkill: () => ({ ok: true, message: 'shared', content: 'body' }),
+        listSkills: () => [{ name: 'a', description: '' }],
+      }),
+    );
+
+    const shareResult = runModelCommand(
+      {
+        commandId: 'MANAGE_SKILL',
+        params: { action: 'share', name: 'a' },
+      } as ModelCommandRunRequest,
+      ctx(),
+    );
+    expect(shareResult.ok).toBe(true);
+    if (shareResult.ok) {
+      const sharePayload = shareResult.payload as Record<string, unknown>;
+      expect(sharePayload.ok).toBe(true);
+      expect(sharePayload.mutated).toBeUndefined();
+    }
+
+    const listResult = runModelCommand(
+      { commandId: 'MANAGE_SKILL', params: { action: 'list' } } as ModelCommandRunRequest,
+      ctx(),
+    );
+    expect(listResult.ok).toBe(true);
+    if (listResult.ok) {
+      const listPayload = listResult.payload as Record<string, unknown>;
+      expect(listPayload.ok).toBe(true);
+      expect(listPayload.mutated).toBeUndefined();
+    }
+  });
+
+  it('rejects rename when newName is missing at the dispatcher layer', () => {
+    registerSkillStore(
+      makeStubStore({
+        renameSkill: () => {
+          throw new Error('storage should not be called when newName is missing');
+        },
+      }),
+    );
+
+    const result = runModelCommand(
+      {
+        commandId: 'MANAGE_SKILL',
+        params: { action: 'rename', name: 'old' },
+      } as ModelCommandRunRequest,
+      ctx(),
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('INVALID_ARGS');
+    expect(result.error.message).toContain('newName');
   });
 });

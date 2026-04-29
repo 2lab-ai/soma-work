@@ -402,7 +402,7 @@ export class McpClient extends EventEmitter {
 /**
  * Convenience function to create a Codex MCP client
  */
-export function createCodexClient(options?: {
+function createCodexClient(options?: {
   cwd?: string;
   model?: string;
 }): McpClient {

@@ -210,17 +210,22 @@ export function validateModelCommandRunArgs(args: unknown): ValidationResult {
       action !== 'update' &&
       action !== 'delete' &&
       action !== 'list' &&
-      action !== 'share'
+      action !== 'share' &&
+      action !== 'rename'
     ) {
       return invalidArgs(
-        `MANAGE_SKILL action must be 'create', 'update', 'delete', 'list', or 'share', got: ${String(action)}`,
+        `MANAGE_SKILL action must be 'create', 'update', 'delete', 'list', 'share', or 'rename', got: ${String(action)}`,
       );
     }
     if (
-      (action === 'create' || action === 'update' || action === 'delete' || action === 'share') &&
+      (action === 'create' ||
+        action === 'update' ||
+        action === 'delete' ||
+        action === 'share' ||
+        action === 'rename') &&
       typeof params.name !== 'string'
     ) {
-      return invalidArgs('MANAGE_SKILL name is required for create/update/delete/share');
+      return invalidArgs('MANAGE_SKILL name is required for create/update/delete/share/rename');
     }
     if ((action === 'create' || action === 'update') && typeof params.content !== 'string') {
       return invalidArgs('MANAGE_SKILL content is required for create/update');
@@ -230,13 +235,25 @@ export function validateModelCommandRunArgs(args: unknown): ValidationResult {
     if (action === 'share' && params.content !== undefined) {
       return invalidArgs('MANAGE_SKILL share does not accept content; only name is required');
     }
+    // rename is a metadata-only operation — it must not carry SKILL.md bytes
+    // (those would silently shadow the persisted content). Storage layer also
+    // rejects accidental coupling, but we fail closed at the wire boundary.
+    if (action === 'rename') {
+      if (typeof params.newName !== 'string') {
+        return invalidArgs('MANAGE_SKILL rename requires newName');
+      }
+      if (params.content !== undefined) {
+        return invalidArgs('MANAGE_SKILL rename does not accept content; only name + newName are required');
+      }
+    }
     return {
       ok: true,
       request: {
         commandId: 'MANAGE_SKILL',
         params: {
-          action: action as 'create' | 'update' | 'delete' | 'list' | 'share',
+          action: action as 'create' | 'update' | 'delete' | 'list' | 'share' | 'rename',
           name: typeof params.name === 'string' ? params.name : undefined,
+          newName: typeof params.newName === 'string' ? params.newName : undefined,
           content: typeof params.content === 'string' ? params.content : undefined,
         },
       },

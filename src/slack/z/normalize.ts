@@ -22,9 +22,16 @@
  *    (unrelated prose; caller decides).
  */
 
+import { stripZPrefix } from './strip-z-prefix';
 import { isLegacyNaked } from './tombstone';
 import type { ZInvocation, ZRespond, ZSource } from './types';
 import { isWhitelistedNaked } from './whitelist';
+
+// BC re-export — `slack-handler.ts`, `event-router.ts`, `command-router.ts`,
+// and `__tests__/normalize.test.ts` still import `stripZPrefix` from here.
+// Authoritative location is `./strip-z-prefix`; do not delete this re-export
+// without migrating all four call sites first (#745 follow-up candidate).
+export { stripZPrefix } from './strip-z-prefix';
 
 export interface NormalizeInput {
   source: ZSource;
@@ -65,16 +72,6 @@ export function normalizeZInvocation(input: NormalizeInput): ZInvocation {
 
   // Unrecognized naked input — let the caller decide (likely pass-through to Claude).
   return makeZInvocation(input, raw, raw, { isLegacyNaked: false, whitelistedNaked: false });
-}
-
-/**
- * Strip a leading `/z` prefix. Returns the trimmed remainder, or `null` if
- * the input does NOT start with `/z`.
- */
-export function stripZPrefix(text: string): string | null {
-  const match = text.match(/^\/z(?:\s+([\s\S]*))?$/i);
-  if (!match) return null;
-  return (match[1] ?? '').trim();
 }
 
 function makeZInvocation(

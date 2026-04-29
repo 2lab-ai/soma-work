@@ -11,10 +11,8 @@ export type {
   CctSlotWithSetup,
   OAuthAttachment,
 } from '../auth/auth-key';
-export { isApiKeySlot, isCctLegacyAttachmentOnly, isCctSlot, isCctWithSetup } from '../auth/auth-key';
-export { migrateLegacyCooldowns } from './migrate';
-export { migrateV1ToV2 } from './migrate-v2';
-export { CctStore, RevisionConflictError } from './store';
+export { isCctSlot } from '../auth/auth-key';
+export { CctStore } from './store';
 export type {
   AuthState,
   CctRegistry,

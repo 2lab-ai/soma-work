@@ -310,14 +310,13 @@ function formatDurationUntil(isoUtc: string | undefined, opts?: { fallback?: str
 // ── #749 Auto-rotate text command renderer ─────────────────────────
 
 /**
- * Format a 0..1 utilization fraction as `XX.X%`. Mirrors `fmtPct` in
- * `auto-rotate-notifier.ts:25-28` — kept inline (rather than imported) to
- * keep the text-only handler independent of the block-kit notifier module's
- * import graph. Pinned by test (`0.8 → "80.0%"`, `undefined → "—"`).
+ * Format a utilization value (percent, 0..100) as `XX.X%`. Mirrors
+ * `fmtPct` in `auto-rotate-notifier.ts`; inlined to keep this handler
+ * out of the notifier module's import graph.
  */
 function pct(util: number | undefined): string {
   if (util === undefined || !Number.isFinite(util)) return '—';
-  return `${(util * 100).toFixed(1)}%`;
+  return `${util.toFixed(1)}%`;
 }
 
 /**
@@ -358,7 +357,7 @@ function formatRejectedBullets(rejected: ReadonlyArray<{ keyId: string; name: st
  * table — every `RotationOutcome` discriminant must produce a deterministic
  * non-empty string so the operator always sees *something* in the thread.
  */
-export async function renderRotationOutcome(outcome: RotationOutcome): Promise<string> {
+async function renderRotationOutcome(outcome: RotationOutcome): Promise<string> {
   if (outcome.kind === 'rotated') {
     const fromName = outcome.from?.name ?? '(none)';
     const resets = formatDurationUntil(outcome.to.sevenDayResetsAt, { fallback: '—' });

@@ -99,9 +99,7 @@ src/                              # ~27,000 LOC (excl. test/local)
 ├── dangerous-command-filter.ts   # Bypass danger filter
 ├── env-paths.ts                  # Environment path resolution
 ├── file-handler.ts               # File handling
-├── git-cli-auth.ts               # Git CLI auth helper
 ├── github-auth.ts                # GitHub auth facade
-├── image-handler.ts              # Image handling
 ├── mcp-call-tracker.ts           # MCP call statistics
 ├── mcp-client.ts                 # MCP client
 ├── permission-mcp-server.ts      # Permission MCP server (245)

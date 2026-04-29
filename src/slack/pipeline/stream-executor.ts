@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { parseModelCommandRunResponse } from 'somalib/model-commands/result-parser';
+import type { ModelCommandPayloadMap } from 'somalib/model-commands/types';
 import type { ModelCommandResult } from '../../agent-session/agent-session-types.js';
 import { TurnResultCollector } from '../../agent-session/turn-result-collector.js';
 import type { UsageSnapshot } from '../../cct-store/types';
@@ -171,7 +172,7 @@ interface StreamExecuteParams {
  * turn-notifier rendering. Derived from {@link UsageSnapshot} by
  * {@link toUsagePercentSnapshot}. Kept local to decouple rendering from
  * the wire-format `UsageSnapshot` (which carries `resetsAt` and utilization
- * in raw 0..1 or 0..100 form).
+ * as raw API percent 0..100 per #685).
  */
 interface UsagePercentSnapshot {
   fiveHour?: number;
@@ -2792,6 +2793,33 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
 
       // Issue #42 S3: 성공 결과 수집
       modelCommandResults.push({ commandId: parsed.commandId, ok: true, payload: parsed.payload });
+
+      // MANAGE_SKILL mutation signal — when storage created/updated/deleted/
+      // renamed a personal skill, drop the cached system prompt for the
+      // affected user so the next turn re-injects the skill list. The
+      // `mutated` field is emitted ONLY on the happy path (see catalog.ts
+      // dispatch), so a no-op or failed call won't trigger a wasted rebuild.
+      // share/list never carry `mutated` (read-only).
+      //
+      // This is the wire-level entry — it covers MCP-server-as-separate-process
+      // callers. For local model-command dispatch the in-process invalidation
+      // hook in `user-skill-store.ts` already fires synchronously inside the
+      // store mutators; the second invalidate here is idempotent.
+      if (parsed.commandId === 'MANAGE_SKILL') {
+        const payload = parsed.payload as ModelCommandPayloadMap['MANAGE_SKILL'];
+        if (payload.ok && payload.mutated?.kind === 'skill') {
+          try {
+            this.deps.claudeHandler.getSessionRegistry().invalidateSystemPromptForUser(payload.mutated.user);
+          } catch (err) {
+            // Non-fatal — the cache will self-heal on the next reset point.
+            this.logger.debug('MANAGE_SKILL invalidation hook failed', {
+              sessionKey: context.sessionKey,
+              user: payload.mutated.user,
+              err: (err as Error)?.message ?? String(err),
+            });
+          }
+        }
+      }
 
       if (parsed.commandId === 'ASK_USER_QUESTION') {
         pendingQuestions.push(parsed.payload.question);

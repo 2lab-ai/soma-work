@@ -31,7 +31,7 @@ export interface ClaudeCredentials {
 /**
  * Read credentials from ~/.claude/.credentials.json
  */
-export function readCredentials(): ClaudeCredentials | null {
+function readCredentials(): ClaudeCredentials | null {
   try {
     if (!fs.existsSync(CREDENTIALS_PATH)) {
       logger.warn('Credentials file not found', { path: CREDENTIALS_PATH });
@@ -95,7 +95,7 @@ export function copyBackupCredentials(): boolean {
 /**
  * Check if automatic credential restore is enabled
  */
-export function isAutoRestoreEnabled(): boolean {
+function isAutoRestoreEnabled(): boolean {
   return process.env.AUTOMATIC_RESTORE_CREDENTIAL === '1';
 }
 

@@ -120,7 +120,7 @@ export async function fetchLinkMetadata(link: SessionLink): Promise<{ title?: st
 /**
  * Convenience wrapper - fetch title only (backward compatible)
  */
-export async function fetchLinkTitle(link: SessionLink): Promise<string | undefined> {
+async function fetchLinkTitle(link: SessionLink): Promise<string | undefined> {
   if (link.title) return link.title;
   const metadata = await fetchLinkMetadata(link);
   return metadata.title;
@@ -224,7 +224,7 @@ export function extractJiraKey(url: string): string | undefined {
   return match?.[1];
 }
 
-export function extractGitHubPRInfo(url: string): { owner: string; repo: string; number: number } | undefined {
+function extractGitHubPRInfo(url: string): { owner: string; repo: string; number: number } | undefined {
   const match = url.match(/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
   if (!match) return undefined;
   return { owner: match[1], repo: match[2], number: parseInt(match[3], 10) };
