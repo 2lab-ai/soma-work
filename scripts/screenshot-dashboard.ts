@@ -181,29 +181,25 @@ async function setupMockSessions() {
  * connectWs() leaves ws-status in its initial 'Connecting...' state. We
  * drive each WS state explicitly via page.evaluate below so the assertion
  * is deterministic and not race-prone.
+ *
+ * Only the surface dashboard.ts actually touches is stubbed — onopen /
+ * onclose / onerror / onmessage properties. The constructor and `close()`
+ * are kept because connectWs constructs a new WebSocket and calls close()
+ * on error. Everything else (readyState constants, addEventListener) is
+ * unused by production code and intentionally omitted.
  */
 async function installWsStub(page: Page) {
   await page.addInitScript(() => {
     class StubWebSocket {
-      static CONNECTING = 0;
-      static OPEN = 1;
-      static CLOSING = 2;
-      static CLOSED = 3;
       onopen: ((ev: unknown) => void) | null = null;
       onclose: ((ev: unknown) => void) | null = null;
       onerror: ((ev: unknown) => void) | null = null;
       onmessage: ((ev: unknown) => void) | null = null;
-      readyState = 0;
       url: string;
       constructor(url: string) {
         this.url = url;
       }
-      send(_data: unknown) {}
-      close() {
-        this.readyState = 3;
-      }
-      addEventListener() {}
-      removeEventListener() {}
+      close() {}
     }
     // Override before the dashboard inline script runs.
     (window as unknown as { WebSocket: typeof StubWebSocket }).WebSocket = StubWebSocket;
@@ -215,6 +211,10 @@ async function installWsStub(page: Page) {
  * production code paths (ws.onopen body / _applyUserPill / admin-mode
  * localStorage) so the visual + measured layout matches what a real
  * user would see.
+ *
+ * The page-side helpers (`__setLive`, `__getDashWindow`) are installed
+ * once per page in the init script so each branch below stays small and
+ * the "what does Live look like" definition lives in one place.
  */
 async function applyState(page: Page, state: WsState, longName: string) {
   // Reset between states to avoid bleed.
@@ -231,61 +231,133 @@ async function applyState(page: Page, state: WsState, longName: string) {
 
   if (state === 'live') {
     await page.evaluate(() => {
-      const el = document.getElementById('ws-status');
-      if (el) {
-        el.textContent = 'Live';
-        el.title = 'WebSocket: Live';
-        el.setAttribute('aria-label', 'WebSocket: Live');
-        el.style.background = 'rgba(62,207,142,0.2)';
-        el.style.borderColor = 'var(--green)';
-        el.style.color = 'var(--green)';
-      }
-      const w = window as unknown as { _applyUserPill?: (d: unknown) => void };
-      if (w._applyUserPill) w._applyUserPill({ user: { name: 'Zhuge' } });
+      window.__setLive();
+      window.__getDashWindow()._applyUserPill?.({ user: { name: 'Zhuge' } });
     });
     return;
   }
 
   if (state === 'admin') {
     await page.evaluate(() => {
-      const el = document.getElementById('ws-status');
-      if (el) {
-        el.textContent = 'Live';
-        el.title = 'WebSocket: Live';
-        el.setAttribute('aria-label', 'WebSocket: Live');
-        el.style.background = 'rgba(62,207,142,0.2)';
-        el.style.borderColor = 'var(--green)';
-        el.style.color = 'var(--green)';
-      }
-      const w = window as unknown as {
-        _applyUserPill?: (d: unknown) => void;
-        _renderAdminModeButton?: () => void;
-      };
-      if (w._applyUserPill) w._applyUserPill({ user: { name: 'Zhuge' }, isAdmin: true });
+      window.__setLive();
+      const w = window.__getDashWindow();
+      w._applyUserPill?.({ user: { name: 'Zhuge' }, isAdmin: true });
       try {
         localStorage.setItem('soma_admin_mode', 'on');
       } catch (_e) {}
-      if (w._renderAdminModeButton) w._renderAdminModeButton();
+      w._renderAdminModeButton?.();
     });
     return;
   }
 
   if (state === 'long-korean') {
     await page.evaluate((name) => {
-      const el = document.getElementById('ws-status');
-      if (el) {
-        el.textContent = 'Live';
-        el.title = 'WebSocket: Live';
-        el.setAttribute('aria-label', 'WebSocket: Live');
-        el.style.background = 'rgba(62,207,142,0.2)';
-        el.style.borderColor = 'var(--green)';
-        el.style.color = 'var(--green)';
-      }
-      const w = window as unknown as { _applyUserPill?: (d: unknown) => void };
-      if (w._applyUserPill) w._applyUserPill({ user: { name } });
+      window.__setLive();
+      window.__getDashWindow()._applyUserPill?.({ user: { name } });
     }, longName);
     return;
   }
+}
+
+/**
+ * Install per-page helpers used by `applyState`. Done once at page boot
+ * (not per state) so each `applyState` branch is a 2-line call instead
+ * of a copy-paste of the 6-property "set ws-status to Live" mutation.
+ */
+async function installApplyStateHelpers(page: Page) {
+  await page.addInitScript(() => {
+    type DashboardWindow = Window & {
+      _applyUserPill?: (data: unknown) => void;
+      _renderAdminModeButton?: () => void;
+    };
+    (window as unknown as { __getDashWindow: () => DashboardWindow }).__getDashWindow = () =>
+      window as unknown as DashboardWindow;
+
+    (window as unknown as { __setLive: () => void }).__setLive = () => {
+      const el = document.getElementById('ws-status');
+      if (!el) return;
+      el.textContent = 'Live';
+      el.title = 'WebSocket: Live';
+      el.setAttribute('aria-label', 'WebSocket: Live');
+      el.style.background = 'rgba(62,207,142,0.2)';
+      el.style.borderColor = 'var(--green)';
+      el.style.color = 'var(--green)';
+    };
+  });
+}
+
+/**
+ * Run all viewport/state assertions for a single browser. Pulled out of
+ * the outer loop so we can run chromium and webkit in parallel.
+ */
+async function runBrowserAssertions(
+  name: 'chromium' | 'webkit',
+  type: BrowserType,
+  baseUrl: string,
+  overflowDir: string,
+): Promise<{ failures: string[]; total: number }> {
+  const failures: string[] = [];
+  let total = 0;
+
+  let browser: Browser;
+  try {
+    browser = await type.launch({ headless: true });
+  } catch (err) {
+    console.warn(`[topbar] ${name} unavailable, skipping: ${(err as Error).message}`);
+    return { failures, total };
+  }
+  try {
+    for (const vw of MOBILE_VIEWPORTS) {
+      const ctx = await browser.newContext({ viewport: { width: vw, height: 800 } });
+      const page = await ctx.newPage();
+      try {
+        await installWsStub(page);
+        await installApplyStateHelpers(page);
+        await page.goto(`${baseUrl}/dashboard`);
+        // Wait for the inline script to finish wiring up globals
+        // (_applyUserPill / _renderAdminModeButton). If it never appears,
+        // the per-state mutations become silent no-ops and assertions
+        // would pass spuriously — fail loud instead of swallowing.
+        try {
+          await page.waitForFunction(
+            () => typeof (window as unknown as { _applyUserPill?: unknown })._applyUserPill === 'function',
+            { timeout: 10000 },
+          );
+        } catch (err) {
+          console.warn(
+            `[topbar] ${name}-${vw}: _applyUserPill never wired up (${(err as Error).message}); state mutations may be no-ops`,
+          );
+        }
+
+        for (const state of STATES) {
+          total++;
+          await applyState(page, state, LONG_KOREAN_NAME);
+          // Let layout settle.
+          await page.waitForTimeout(120);
+          const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+          const tag = `${name}-${vw}-${state}`;
+          // Topbar is the focus — full page would be wasteful; use the
+          // viewport-cropped capture so reviewers see exactly the
+          // "above the fold" layout the assertion measured.
+          await page.screenshot({ path: path.join(overflowDir, `${tag}.png`) });
+          if (overflow > 0) {
+            const msg = `[overflow] ${tag}: scrollWidth-innerWidth=${overflow}px (>0)`;
+            console.error(msg);
+            failures.push(msg);
+          } else {
+            console.log(`[ok] ${tag}: overflow=${overflow}px`);
+          }
+        }
+      } finally {
+        await page.close();
+        await ctx.close();
+      }
+    }
+  } finally {
+    await browser.close();
+  }
+
+  return { failures, total };
 }
 
 async function runOverflowAssertions(
@@ -295,67 +367,24 @@ async function runOverflowAssertions(
   const overflowDir = path.join(outputDir, 'topbar');
   if (!fs.existsSync(overflowDir)) fs.mkdirSync(overflowDir, { recursive: true });
 
-  const failures: string[] = [];
-  let total = 0;
-
   const browsers: { name: 'chromium' | 'webkit'; type: BrowserType }[] = [
     { name: 'chromium', type: chromium },
     { name: 'webkit', type: webkit },
   ];
 
-  for (const { name, type } of browsers) {
-    let browser: Browser;
-    try {
-      browser = await type.launch({ headless: true });
-    } catch (err) {
-      console.warn(`[topbar] ${name} unavailable, skipping: ${(err as Error).message}`);
-      continue;
-    }
-    try {
-      for (const vw of MOBILE_VIEWPORTS) {
-        const ctx = await browser.newContext({ viewport: { width: vw, height: 800 } });
-        const page = await ctx.newPage();
-        await installWsStub(page);
-        await page.goto(`${baseUrl}/dashboard`);
-        // Wait for the inline script to finish wiring up globals
-        // (_applyUserPill / _renderAdminModeButton).
-        await page
-          .waitForFunction(
-            () => typeof (window as unknown as { _applyUserPill?: unknown })._applyUserPill === 'function',
-            { timeout: 10000 },
-          )
-          .catch(() => {});
+  // Browsers are independent processes — run them concurrently so the
+  // 48-case wall-clock is dominated by the slower of the two, not their
+  // sum. (Per-viewport inside each browser stays sequential because
+  // launching 6 contexts at once on a single machine adds noise without
+  // saving meaningful time.)
+  const results = await Promise.all(
+    browsers.map(({ name, type }) => runBrowserAssertions(name, type, baseUrl, overflowDir)),
+  );
 
-        for (const state of STATES) {
-          total++;
-          await applyState(page, state, LONG_KOREAN_NAME);
-          // Let layout settle.
-          await page.waitForTimeout(120);
-          const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
-          const tag = `${name}-${vw}-${state}`;
-          await page.screenshot({
-            path: path.join(overflowDir, `${tag}.png`),
-            // Topbar is the focus — full page would be wasteful; use the
-            // viewport-cropped capture so reviewers see exactly the
-            // "above the fold" layout the assertion measured.
-          });
-          if (overflow > 0) {
-            const msg = `[overflow] ${tag}: scrollWidth-innerWidth=${overflow}px (>0)`;
-            console.error(msg);
-            failures.push(msg);
-          } else {
-            console.log(`[ok] ${tag}: overflow=${overflow}px`);
-          }
-        }
-        await page.close();
-        await ctx.close();
-      }
-    } finally {
-      await browser.close();
-    }
-  }
-
-  return { failures, total };
+  return {
+    failures: results.flatMap((r) => r.failures),
+    total: results.reduce((sum, r) => sum + r.total, 0),
+  };
 }
 
 async function captureLegacyScreenshots(baseUrl: string, outputDir: string) {
