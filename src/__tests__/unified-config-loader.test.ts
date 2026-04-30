@@ -445,10 +445,10 @@ describe('parseAgentsConfig — characterization (issue #793 PR1)', () => {
           beta: makeValidAgent(),
         },
       });
-      const infoMessages = infoSpy.mock.calls
+      const infoMessages: string[] = infoSpy.mock.calls
         .map((c: unknown[]) => c[0])
         .filter((m: unknown): m is string => typeof m === 'string');
-      const summary = infoMessages.find((m) => m.includes('Loaded') && m.includes('agent configurations'));
+      const summary = infoMessages.find((m: string) => m.includes('Loaded') && m.includes('agent configurations'));
       expect(summary).toBeDefined();
       expect(summary).toContain('Loaded 2 agent configurations');
       expect(summary).toContain('alpha');
@@ -457,10 +457,10 @@ describe('parseAgentsConfig — characterization (issue #793 PR1)', () => {
 
     it('does not emit summary info when zero agents loaded', () => {
       parseAgentsConfig({ agents: { bad: makeValidAgent({ slackBotToken: 'xoxa-bad' }) } });
-      const infoMessages = infoSpy.mock.calls
+      const infoMessages: string[] = infoSpy.mock.calls
         .map((c: unknown[]) => c[0])
         .filter((m: unknown): m is string => typeof m === 'string');
-      const summary = infoMessages.find((m) => m.includes('agent configurations'));
+      const summary = infoMessages.find((m: string) => m.includes('agent configurations'));
       expect(summary).toBeUndefined();
     });
   });
