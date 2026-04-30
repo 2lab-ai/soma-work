@@ -2024,10 +2024,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // Parse cooldown from both error message and stderr content.
     const errorText = `${error?.message || ''} ${error?.stderrContent || ''}`;
     const parsedCooldown = parseCooldownTime(errorText);
-    // #801 — `knownReset` distinguishes a parsed wall-clock (direct upstream
-    // evidence) from the 60-minute fallback. The TokenManager uses it to
-    // gate the cross-account shared-bucket cooldown propagation heuristic;
-    // see `docs/cct-shared-bucket-cooldown-propagation/spec.md`.
+    // `knownReset` distinguishes a parsed wall-clock (direct upstream evidence)
+    // from the 60-minute fallback; TokenManager gates shared-bucket cooldown
+    // propagation on it (see `docs/cct-shared-bucket-cooldown-propagation/spec.md`).
     const knownReset = parsedCooldown !== null;
     const cooldownMinutes = knownReset ? Math.max(1, Math.round((parsedCooldown.getTime() - Date.now()) / 60_000)) : 60; // default 1 hour
 

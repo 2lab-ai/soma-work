@@ -78,24 +78,17 @@ const DEFAULT_REAPER_INTERVAL_MS = 30 * 1000; // 30 seconds
 // stale and refresh on the next hint — prevents indefinite stickiness.
 const RATE_LIMIT_WINDOW_MS = 5 * 60 * 60 * 1000;
 
-// #801 — shared-bucket cooldown propagation.
-// Default match window: ±90 s. `parseCooldownTime` rounds to the minute
-// (so two cascade hits within the same minute boundary will be ≤60 000 ms
-// apart at the source), the 30 s slack covers network jitter and clock
-// skew. Override via `process.env.CCT_SHARED_BUCKET_WINDOW_MS`.
+// Shared-bucket cooldown propagation (#801).
+// `parseCooldownTime` rounds to the minute, so two cascade hits within the
+// same minute boundary land ≤60 000 ms apart; the 30 s slack covers network
+// jitter and clock skew. Override via `process.env.CCT_SHARED_BUCKET_WINDOW_MS`.
 const DEFAULT_SHARED_BUCKET_WINDOW_MS = 90_000;
-// Match-anchor and propagation-target gate. See spec §1, §5.5 and trace
-// scenarios 5/10/11 — only direct upstream evidence may anchor a match
-// (and only the same set is observable as a propagation target's source
-// going forward — propagation writes `inferred_shared`).
+// Only direct upstream evidence may anchor a match — `manual` and
+// `inferred_shared` are excluded so a single inference cannot chain across
+// the whole pool (see `RateLimitSource` doc-comment).
 const DIRECT_EVIDENCE_SOURCES: ReadonlyArray<RateLimitSource> = ['error_string', 'response_header'];
 
-/**
- * Resolve the shared-bucket match window. Reads `process.env.CCT_SHARED_BUCKET_WINDOW_MS`
- * once per call so tests + ops can override without restart. Logs a warning
- * and falls back to the default for `NaN` / `≤0` (the existing pattern in
- * the codebase for env-driven number knobs).
- */
+/** Read on each call so tests + ops can override without restart. */
 function resolveSharedBucketWindowMs(): number {
   const raw = process.env.CCT_SHARED_BUCKET_WINDOW_MS;
   if (raw === undefined || raw === '') return DEFAULT_SHARED_BUCKET_WINDOW_MS;
@@ -111,25 +104,15 @@ function resolveSharedBucketWindowMs(): number {
  * #801 — Shared-bucket cooldown propagation helper.
  *
  * When a CCT slot is rate-limited and a sibling already carries a future
- * cooldownUntil within ±W ms (both observations sourced from direct
- * upstream evidence — `error_string` / `response_header`), propagate the
- * new cooldownUntil to every other eligible OAuth-attached CCT sibling
- * that is not already in a future cooldown. Eliminates the N-1 wasted
- * 429-spawn cycles that otherwise occur under a shared-bucket cascade.
+ * `cooldownUntil` within ±`windowMs` (both sourced from direct upstream
+ * evidence — `error_string` / `response_header`), propagate the new
+ * `cooldownUntil` to every other eligible OAuth-attached CCT sibling that
+ * is not already in a future cooldown. Eliminates the N-1 wasted 429-spawn
+ * cycles that otherwise occur under a shared-bucket cascade.
  *
- * Mutation discipline: the helper writes directly into `snap.state[...]`
- * because it runs INSIDE the existing `store.mutate(snap => …)` callback;
- * the surrounding CAS retry handles concurrent transactions automatically.
- *
- * @param snap              The mutable snapshot currently being committed.
- * @param cooldownUntilIso  The new cooldownUntil for `currentId` (also the
- *                          propagation target's cooldownUntil when matched).
- * @param nowMs             The call's `Date.now()` snapshot.
- * @param nowIso            The call's `nowIso`.
- * @param windowMs          The resolved match window (post env lookup).
- * @param currentId         The active slot's keyId — excluded from both the
- *                          match-anchor scan and the propagation loop.
- * @returns `{ matchedSiblingKeyId, propagatedCount }` so the caller can log.
+ * Runs INSIDE the existing `store.mutate(snap => …)` callback so direct
+ * `snap.state[...]` writes are safe — the surrounding CAS retry handles
+ * concurrent transactions.
  */
 function propagateInferredSharedCooldownIfMatched(
   snap: CctStoreSnapshot,
@@ -139,36 +122,27 @@ function propagateInferredSharedCooldownIfMatched(
   windowMs: number,
   currentId: string,
 ): { matchedSiblingKeyId: string; propagatedCount: number } | null {
-  // The new cooldownUntil expressed in epoch-ms — the match-anchor scan
-  // measures sibling cooldowns against this timestamp. Derived once from
-  // `cooldownUntilIso` so the helper accepts a single source of truth for
-  // the new wall-clock.
   const anchorMs = new Date(cooldownUntilIso).getTime();
-  // Eligibility filter shared by the match-anchor scan and the propagation
-  // loop. Mirrors the spec §3 (Mechanism) and AC-5 / AC-11 — the two passes
-  // walk the SAME eligible set so an operator-opt-out (`disableRotation`)
-  // and a non-attached / api_key sibling can neither anchor nor receive
-  // propagation. Iteration walks `registry.slots` (not `state` keys) so
-  // orphan state rows cannot leak in either direction.
+
+  // Eligibility shared by both passes (match-anchor scan + propagation loop)
+  // so `disableRotation` / `api_key` / no-attachment / tombstoned siblings
+  // can neither anchor a match nor receive propagation. Iteration walks
+  // `registry.slots` (not `state` keys) so orphan state rows can't leak in.
   function isEligibleSibling(slot: AuthKey): boolean {
     if (slot.keyId === currentId) return false;
     if (slot.kind === 'api_key') return false;
     if (slot.kind === 'cct' && slot.oauthAttachment === undefined) return false;
     if (slot.disableRotation) return false;
-    const stateK = snap.state[slot.keyId];
-    if (stateK?.tombstoned) return false;
-    return true;
+    return !snap.state[slot.keyId]?.tombstoned;
   }
 
-  // Match-anchor scan — direct evidence only, future cooldown only, within window.
   let matchedSiblingKeyId: string | undefined;
   for (const slot of snap.registry.slots) {
     if (!isEligibleSibling(slot)) continue;
     const stateK = snap.state[slot.keyId];
     if (!stateK?.cooldownUntil) continue;
     const existingMs = new Date(stateK.cooldownUntil).getTime();
-    if (!Number.isFinite(existingMs)) continue;
-    if (existingMs <= nowMs) continue;
+    if (!Number.isFinite(existingMs) || existingMs <= nowMs) continue;
     const sourceK = stateK.rateLimitSource;
     if (sourceK === undefined || !DIRECT_EVIDENCE_SOURCES.includes(sourceK)) continue;
     if (Math.abs(existingMs - anchorMs) <= windowMs) {
@@ -179,17 +153,16 @@ function propagateInferredSharedCooldownIfMatched(
 
   if (matchedSiblingKeyId === undefined) return null;
 
-  // Propagation loop — same eligibility filter, plus AC-4: skip siblings
-  // that already carry a future cooldownUntil (never overwrite an existing
-  // mark — preserves "operator-set manual" + "earlier direct evidence" + "
-  // sibling already inferred_shared from another anchor in this same call").
+  // AC-4 — never overwrite a sibling that already carries a future cooldown
+  // (preserves operator-set `manual`, earlier direct evidence, and any
+  // `inferred_shared` written by an earlier anchor in this same call).
   let propagatedCount = 0;
   for (const slot of snap.registry.slots) {
     if (!isEligibleSibling(slot)) continue;
     const stateK = snap.state[slot.keyId] ?? { authState: 'healthy' as AuthState, activeLeases: [] };
     if (stateK.cooldownUntil) {
       const existingMs = new Date(stateK.cooldownUntil).getTime();
-      if (Number.isFinite(existingMs) && existingMs > nowMs) continue; // AC-4
+      if (Number.isFinite(existingMs) && existingMs > nowMs) continue;
     }
     stateK.cooldownUntil = cooldownUntilIso;
     stateK.rateLimitedAt = nowIso;
@@ -312,14 +285,11 @@ export interface RotateOnRateLimitOptions {
   rateLimitedAt?: string;
   cooldownMinutes?: number;
   /**
-   * #801 — set to `true` when the caller actually parsed a wall-clock reset
-   * (e.g. `parseCooldownTime` returned a `Date`), `false` when it fell back
-   * to the 60-minute default. Gates the shared-bucket cooldown propagation
-   * heuristic so two coincidental fallbacks cannot chain into a phantom
-   * shared bucket. Defaults to `false` when omitted (preserves backward
-   * compat for any non-stream-executor caller).
-   *
-   * See `docs/cct-shared-bucket-cooldown-propagation/spec.md`.
+   * `true` when the caller parsed an actual wall-clock reset (i.e.
+   * `parseCooldownTime` returned a `Date`); `false` when falling back to the
+   * 60-minute default. Gates shared-bucket cooldown propagation (#801) so two
+   * coincidental fallbacks cannot chain into a phantom shared bucket. Defaults
+   * to `false` for backward compat with non-stream-executor callers.
    */
   knownReset?: boolean;
 }
@@ -873,13 +843,12 @@ export class TokenManager {
     const nowIso = new Date().toISOString();
     const nowMs = Date.now();
     const cooldownUntilIso = new Date(nowMs + cooldownMs).toISOString();
-    // #801 — resolve once per call so tests + ops can override without restart.
     const sharedBucketWindowMs = resolveSharedBucketWindowMs();
 
-    // Returned alongside `rotated` from the mutate so we can log AFTER the
-    // CAS commits. Wrapping into a tuple keeps TS control-flow happy: a
-    // bare `let propagationOutcome = null` captured by the closure gets
-    // narrowed back to `null` post-await, swallowing all field accesses.
+    // The propagation outcome rides back out of the mutate (rather than
+    // closure-captured) so each CAS retry produces a self-contained result —
+    // no stale-snapshot log can leak from a discarded retry, and TS doesn't
+    // narrow a captured `let` back to `null` across the await boundary.
     type RotateMutateResult = {
       rotated: { keyId: string; name: string } | null;
       outcome: { matchedSiblingKeyId: string; propagatedCount: number } | null;
@@ -907,17 +876,10 @@ export class TokenManager {
       state.cooldownUntil = cooldownUntilIso;
       snap.state[currentId] = state;
 
-      // #801 — Shared-bucket cooldown propagation. Trigger gate: only when
-      // the caller actually parsed a wall-clock reset AND the source is
-      // direct upstream evidence. `manual` and `inferred_shared` cannot
-      // initiate (they're operator-set / already inferred). Two coincidental
-      // 60-min fallbacks (`knownReset:false`) are likewise barred from
-      // chaining into a phantom shared bucket.
-      //
-      // The outcome is returned alongside `rotated` (rather than captured
-      // by closure on a `let` outside the mutate) so each CAS retry
-      // produces a fresh, self-contained result tuple — no stale-snapshot
-      // log can leak from a discarded retry.
+      // Trigger gate — only fire propagation when the caller actually parsed
+      // a wall-clock reset AND the source is direct upstream evidence. Two
+      // coincidental 60-min fallbacks (`knownReset:false`) or operator/
+      // already-inferred sources cannot chain into a phantom shared bucket.
       let outcome: RotateMutateResult['outcome'] = null;
       if (effectiveOpts.knownReset === true && DIRECT_EVIDENCE_SOURCES.includes(source)) {
         outcome = propagateInferredSharedCooldownIfMatched(
