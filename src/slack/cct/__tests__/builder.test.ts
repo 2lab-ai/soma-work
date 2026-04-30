@@ -168,14 +168,16 @@ describe('buildSlotRow', () => {
   // the [Activate] button appears on every non-active slot that
   // can be activated (i.e. cct slots, not api_key). Lock the button shape
   // + styling + value so the actions.ts router keeps routing correctly.
-  it('non-active cct slot gets [Activate] button with style=primary and value=keyId', () => {
+  it('non-active cct slot gets [Activate] button with style=primary and value=cm:admin|keyId (#803)', () => {
     const slot = setupSlot('cct-foo', 'slot-foo');
     const blocks = buildSlotRow(slot, undefined, false, Date.parse('2026-04-21T00:00:00Z'));
     const actions = blocks.find((b: any) => b.type === 'actions') as any;
     const activateBtn = actions.elements.find((e: any) => e.action_id === CCT_ACTION_IDS.activate_slot);
     expect(activateBtn).toBeDefined();
     expect(activateBtn.style).toBe('primary');
-    expect(activateBtn.value).toBe('slot-foo');
+    // #803 — button value is now `cm:<mode>|<payload>` so the action
+    // dispatch can preserve the card mode across re-renders.
+    expect(activateBtn.value).toBe('cm:admin|slot-foo');
   });
 
   it('active cct slot does NOT get [Activate] button (already active)', () => {
@@ -236,7 +238,7 @@ describe('buildSlotRow', () => {
     expect(text).not.toMatch(/OAuth refreshes in -/); // no negative duration
   });
 
-  it('emits per-slot Remove button with value = keyId', () => {
+  it('emits per-slot Remove button with value = cm:admin|keyId (#803)', () => {
     const slot = setupSlot();
     const blocks = buildSlotRow(slot, undefined, false, Date.parse('2026-04-18T00:00:00Z'));
     // Last block should be the actions row with Remove. The per-slot
@@ -245,7 +247,7 @@ describe('buildSlotRow', () => {
     expect(actions).toBeDefined();
     const removeBtn = actions.elements.find((e: any) => e.action_id === 'cct_open_remove');
     expect(removeBtn).toBeDefined();
-    expect(removeBtn.value).toBe(slot.keyId);
+    expect(removeBtn.value).toBe(`cm:admin|${slot.keyId}`);
     // Per-slot Rename no longer exists on the row.
     expect(actions.elements.find((e: any) => e.action_id === 'cct_open_rename')).toBeUndefined();
   });
@@ -290,12 +292,147 @@ describe('buildCctCardBlocks', () => {
       const btn = r.elements.find((e: any) => e.action_id === 'cct_open_remove');
       return btn.value as string;
     });
-    expect(removeValues).toEqual(expect.arrayContaining(['slot-1', 'slot-2']));
+    // #803 — button values are now `cm:admin|<keyId>`.
+    expect(removeValues).toEqual(expect.arrayContaining(['cm:admin|slot-1', 'cm:admin|slot-2']));
     // No rename buttons anywhere on the card.
     const renameRows = blocks.filter(
       (b: any) => b.type === 'actions' && b.elements.some((e: any) => e.action_id === 'cct_open_rename'),
     );
     expect(renameRows).toHaveLength(0);
+  });
+
+  // ────────────────────────────────────────────────────────────────────
+  // #803 — viewerMode='readonly' (non-admin reveal)
+  // ────────────────────────────────────────────────────────────────────
+
+  it('#803: viewerMode=readonly strips per-slot mutating actions but keeps slot rows', () => {
+    const slot1 = setupSlot('cct1', 'slot-1');
+    const slot2 = setupSlot('cct2', 'slot-2');
+    const blocks = buildCctCardBlocks({
+      slots: [slot1, slot2],
+      states: {},
+      activeKeyId: 'slot-1',
+      viewerMode: 'readonly',
+    });
+    // Slot rows MUST still render — readonly viewer sees the same identity
+    // line and status segments as admin (#803 spec Q3=A).
+    const flat = JSON.stringify(blocks);
+    expect(flat).toContain('cct1');
+    expect(flat).toContain('cct2');
+    // No per-slot Activate / Attach / Detach / Remove anywhere on the card.
+    const allActionIds = blocks
+      .filter((b: any) => b.type === 'actions')
+      .flatMap((b: any) => b.elements.map((e: any) => e.action_id));
+    expect(allActionIds).not.toContain(CCT_ACTION_IDS.activate_slot);
+    expect(allActionIds).not.toContain(CCT_ACTION_IDS.attach);
+    expect(allActionIds).not.toContain(CCT_ACTION_IDS.detach);
+    expect(allActionIds).not.toContain(CCT_ACTION_IDS.remove);
+  });
+
+  it('#803: viewerMode=readonly omits per-slot empty actions block (no zero-element actions row)', () => {
+    const slot = setupSlot('cct1', 'slot-1');
+    const blocks = buildCctCardBlocks({
+      slots: [slot],
+      states: {},
+      activeKeyId: 'slot-1',
+      viewerMode: 'readonly',
+    });
+    // Slack rejects an `actions` block with zero elements. The readonly
+    // path must SKIP the per-slot actions block entirely instead of
+    // emitting an empty one. Only the card-level Refresh actions block
+    // should remain after the slot row + divider.
+    const allActions = blocks.filter((b: any) => b.type === 'actions');
+    for (const a of allActions) {
+      expect((a as any).elements.length).toBeGreaterThan(0);
+    }
+    // Exactly ONE actions block on the card (card-level Refresh only).
+    expect(allActions.length).toBe(1);
+  });
+
+  it('#803: viewerMode=readonly card-level row is Refresh only (no Add/Next/RefreshAll)', () => {
+    const slot = setupSlot('cct1', 'slot-1');
+    const blocks = buildCctCardBlocks({
+      slots: [slot],
+      states: {},
+      activeKeyId: 'slot-1',
+      viewerMode: 'readonly',
+    });
+    const allActions = blocks.filter((b: any) => b.type === 'actions');
+    const lastRow = allActions[allActions.length - 1] as any;
+    const ids = lastRow.elements.map((e: any) => e.action_id);
+    expect(ids).toEqual([CCT_ACTION_IDS.refresh_card]);
+    // The card-level Refresh button carries the readonly mode in its
+    // value so the action handler can preserve the card mode + force
+    // gate on re-render.
+    expect(lastRow.elements[0].value).toBe('cm:readonly|refresh_card');
+  });
+
+  it('#803: viewerMode=readonly empty-state copy switches from "Click *Add*" to "(no slots cached)"', () => {
+    const blocks = buildCctCardBlocks({ slots: [], states: {}, viewerMode: 'readonly' });
+    const flat = JSON.stringify(blocks);
+    expect(flat).toContain('(no slots cached)');
+    expect(flat).not.toMatch(/Click \*Add\*/);
+    // Even in the empty case, the readonly card-level row is Refresh only.
+    const allActions = blocks.filter((b: any) => b.type === 'actions') as any[];
+    expect(allActions).toHaveLength(1);
+    expect(allActions[0].elements.map((e: any) => e.action_id)).toEqual([CCT_ACTION_IDS.refresh_card]);
+  });
+
+  it('#803: viewerMode=admin stamps cm:admin| on every per-slot AND card-level button value', () => {
+    const slot = setupSlot('cct1', 'slot-1');
+    const blocks = buildCctCardBlocks({
+      slots: [slot],
+      states: {},
+      activeKeyId: undefined,
+      viewerMode: 'admin',
+    });
+    const allButtons = blocks
+      .filter((b: any) => b.type === 'actions')
+      .flatMap((b: any) => b.elements.filter((e: any) => e.type === 'button'));
+    for (const btn of allButtons) {
+      expect(btn.value).toMatch(/^cm:admin\|/);
+    }
+  });
+
+  it('#803: usage panel still renders for attached slots in viewerMode=readonly', () => {
+    const slot: AuthKey = {
+      kind: 'cct',
+      source: 'setup',
+      keyId: 'slot-1',
+      name: 'cct1',
+      setupToken: 'sk-ant-oat01-x',
+      oauthAttachment: {
+        accessToken: 't',
+        refreshToken: 'r',
+        expiresAtMs: Date.parse('2026-12-31T00:00:00Z'),
+        scopes: ['user:profile'],
+        acknowledgedConsumerTosRisk: true,
+      },
+      createdAt: '',
+    };
+    const states: Record<string, any> = {
+      'slot-1': {
+        authState: 'healthy',
+        activeLeases: [],
+        usage: {
+          fetchedAt: '2026-04-21T00:00:00Z',
+          fiveHour: { utilization: 50, resetsAt: '2026-04-21T03:00:00Z' },
+          sevenDay: { utilization: 20, resetsAt: '2026-04-28T00:00:00Z' },
+        },
+      },
+    };
+    const blocks = buildCctCardBlocks({
+      slots: [slot],
+      states,
+      activeKeyId: 'slot-1',
+      nowMs: Date.parse('2026-04-21T00:00:00Z'),
+      viewerMode: 'readonly',
+    });
+    // Usage progress glyph must still be present so non-admin sees usage.
+    const flat = JSON.stringify(blocks);
+    expect(flat).toMatch(/█/);
+    expect(flat).toMatch(/5h/);
+    expect(flat).toMatch(/7d/);
   });
 });
 
@@ -394,7 +531,8 @@ describe('buildSlotRow Attach/Detach buttons (Z2)', () => {
     expect(ids).toContain(CCT_ACTION_IDS.attach);
     expect(ids).not.toContain(CCT_ACTION_IDS.detach);
     const attachBtn = actions.elements.find((e: any) => e.action_id === CCT_ACTION_IDS.attach);
-    expect(attachBtn.value).toBe('slot-bare');
+    // #803 — button value is now `cm:admin|<keyId>`.
+    expect(attachBtn.value).toBe('cm:admin|slot-bare');
   });
 
   it('T7c-ii: setup-source cct slot with attachment gets Detach OAuth button', () => {
@@ -405,7 +543,8 @@ describe('buildSlotRow Attach/Detach buttons (Z2)', () => {
     expect(ids).toContain(CCT_ACTION_IDS.detach);
     expect(ids).not.toContain(CCT_ACTION_IDS.attach);
     const detachBtn = actions.elements.find((e: any) => e.action_id === CCT_ACTION_IDS.detach);
-    expect(detachBtn.value).toBe('slot-attached');
+    // #803 — button value is now `cm:admin|<keyId>`.
+    expect(detachBtn.value).toBe('cm:admin|slot-attached');
   });
 
   it('T7c-iii: legacy-attachment cct slot has NO Attach/Detach (mandatory-attachment arm)', () => {
