@@ -2948,6 +2948,81 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       expect(cAt).toBeLessThanOrEqual(afterMs + 50);
       // Propagated cooldownUntil should equal B's cooldownUntil (the new anchor).
       expect(snap.state[c.keyId].cooldownUntil).toBe(snap.state[b.keyId].cooldownUntil);
+      // SAME `nowIso` must be stamped on every propagation target — the spec
+      // (§5.1) computes it once per call. A regression that minted a fresh
+      // `new Date().toISOString()` per target would produce ms-level drift
+      // that `cAt ∈ [beforeMs-50, afterMs+50]` would silently tolerate.
+      expect(snap.state[c.keyId].rateLimitedAt).toBe(snap.state[b.keyId].rateLimitedAt);
+    });
+
+    it('AC-2d: |Δ| just outside window (5 min apart) does NOT propagate', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const [a, , c] = await addSixOauthSlots(tm);
+      await tm.rotateOnRateLimit('first', { source: 'error_string', cooldownMinutes: 60, knownReset: true });
+      // Push A's cooldown 5 minutes earlier — well past the 90 s window.
+      await store.mutate((snap) => {
+        const aMs = new Date(snap.state[a.keyId].cooldownUntil as string).getTime();
+        snap.state[a.keyId].cooldownUntil = new Date(aMs - 5 * 60_000).toISOString();
+      });
+      await tm.rotateOnRateLimit('second', { source: 'error_string', cooldownMinutes: 60, knownReset: true });
+      const snap = await store.load();
+      expect(snap.state[c.keyId].rateLimitSource).toBeUndefined();
+      expect(snap.state[c.keyId].cooldownUntil).toBeUndefined();
+    });
+
+    it('AC-2f: missing state row on a sibling — synthesized default still receives propagation', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const [, , c] = await addSixOauthSlots(tm);
+      await tm.rotateOnRateLimit('first', { source: 'error_string', cooldownMinutes: 60, knownReset: true });
+      // Simulate registry/state desync: drop C's state row entirely.
+      await store.mutate((snap) => {
+        delete snap.state[c.keyId];
+      });
+      await tm.rotateOnRateLimit('second', { source: 'error_string', cooldownMinutes: 60, knownReset: true });
+      const snap = await store.load();
+      // Helper synthesizes `{ authState:'healthy', activeLeases:[] }` and writes propagation.
+      expect(snap.state[c.keyId]).toBeDefined();
+      expect(snap.state[c.keyId].rateLimitSource).toBe('inferred_shared');
+      expect(snap.state[c.keyId].cooldownUntil).toBeDefined();
+    });
+
+    it('AC-6c: env "90s" silently parsed as 90 ms is rejected — strict-integer guard', async () => {
+      // `Number.parseInt("90s", 10) === 90`. Without the strict-integer guard
+      // this would silently set a 90 ms window; with it, the value is rejected
+      // and the default 90_000 ms applies.
+      process.env.CCT_SHARED_BUCKET_WINDOW_MS = '90s';
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        const { mod, storeMod } = await importSut();
+        const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+        const tm = new mod.TokenManager(store);
+        await tm.init();
+        const [, , c] = await addSixOauthSlots(tm);
+        // Two consecutive calls — within the default 90 000 ms window propagation should
+        // fire. If the guard is missing the runtime window collapses to 90 ms and even
+        // back-to-back calls (a few ms apart) won't reliably satisfy `<= W`. We also
+        // assert the warning surfaced.
+        await tm.rotateOnRateLimit('first', { source: 'error_string', cooldownMinutes: 60, knownReset: true });
+        await tm.rotateOnRateLimit('second', { source: 'error_string', cooldownMinutes: 60, knownReset: true });
+        const snap = await store.load();
+        expect(snap.state[c.keyId].rateLimitSource).toBe('inferred_shared');
+        const allCalls = [
+          ...warnSpy.mock.calls.map((c) => c.join(' ')),
+          ...errorSpy.mock.calls.map((c) => c.join(' ')),
+        ].join('\n');
+        expect(allCalls).toMatch(/CCT_SHARED_BUCKET_WINDOW_MS invalid \(90s\)/);
+      } finally {
+        delete process.env.CCT_SHARED_BUCKET_WINDOW_MS;
+        warnSpy.mockRestore();
+        errorSpy.mockRestore();
+      }
     });
 
     it('AC-2c: rotation returns null when all siblings just propagated', async () => {
@@ -3175,7 +3250,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       }
     });
 
-    it('AC-9: 6-slot cascade collapses after 2 rotateOnRateLimit calls; remaining 4 marked inferred_shared', async () => {
+    it('AC-9: 6-slot cascade collapses after exactly 2 rotateOnRateLimit calls; 3rd is no-op', async () => {
       const { mod, storeMod } = await importSut();
       const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
       const tm = new mod.TokenManager(store);
@@ -3189,16 +3264,42 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
         knownReset: true,
       });
       expect(r1).not.toBeNull();
+      // After call #2 the pool is exhausted — exactly 2 calls is the AC-9 invariant.
+      // (A regression that propagated on the FIRST call would also leave r2 === null
+      // but the snapshot would show all 6 slots already cooled before r2 fires; the
+      // r1 !== null assertion above pins that the FIRST call still rotated to a sibling.)
       expect(r2).toBeNull();
-      const snap = await store.load();
-      // First two slots — direct error_string marks.
-      expect(snap.state[all[0].keyId].rateLimitSource).toBe('error_string');
-      expect(snap.state[all[1].keyId].rateLimitSource).toBe('error_string');
-      // Last four — inferred_shared.
+      const snap2 = await store.load();
+      const cooled2 = Object.values(snap2.state).filter((s) => s.cooldownUntil).length;
+      expect(cooled2).toBe(6);
+      // 3rd call must be a true no-op for the propagation pool — every healthy
+      // sibling already carries a future cooldown, so AC-4 forbids overwrites.
+      // (The active slot's own cooldownUntil is re-stamped by the direct-mark
+      // path on every call — that's pre-#801 behavior; the AC-9 invariant is
+      // about the propagated siblings, not the active slot.)
+      const r3 = await tm.rotateOnRateLimit('third', { source: 'error_string', cooldownMinutes: 60, knownReset: true });
+      expect(r3).toBeNull();
+      const snap3 = await store.load();
+      // Sources: first two stay error_string, last four stay inferred_shared
+      // (NOT promoted to error_string by the 3rd call).
+      expect(snap3.state[all[0].keyId].rateLimitSource).toBe('error_string');
+      expect(snap3.state[all[1].keyId].rateLimitSource).toBe('error_string');
       for (let i = 2; i < 6; i++) {
-        expect(snap.state[all[i].keyId].rateLimitSource).toBe('inferred_shared');
-        expect(snap.state[all[i].keyId].cooldownUntil).toBeDefined();
+        expect(snap3.state[all[i].keyId].rateLimitSource).toBe('inferred_shared');
+        expect(snap3.state[all[i].keyId].cooldownUntil).toBeDefined();
       }
+      // AC-4: propagation siblings (i ∈ 2..5) are NOT overwritten by call #3.
+      // Slot all[1] is the active slot at call #3 (pinned by call #1 → no eligible
+      // rotation in #2 → activeKeyId stays on all[1]) so its cooldownUntil gets
+      // re-stamped by the direct-mark path; we explicitly exclude it.
+      for (let i = 2; i < 6; i++) {
+        expect(snap3.state[all[i].keyId].cooldownUntil).toBe(snap2.state[all[i].keyId].cooldownUntil);
+      }
+      // Slot all[0] was the active slot at call #1; after call #1 active rotated
+      // to all[1] → all[0] is a sibling for calls #2 and #3. Its cooldownUntil
+      // was last set by call #1's direct-mark and NOT overwritten by call #2's
+      // propagation (AC-4) nor by call #3 (still in future).
+      expect(snap3.state[all[0].keyId].cooldownUntil).toBe(snap2.state[all[0].keyId].cooldownUntil);
     });
 
     it('AC-10: knownReset=false suppresses propagation even when a within-window match exists', async () => {

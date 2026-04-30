@@ -2027,8 +2027,16 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // `knownReset` distinguishes a parsed wall-clock (direct upstream evidence)
     // from the 60-minute fallback; TokenManager gates shared-bucket cooldown
     // propagation on it (see `docs/cct-shared-bucket-cooldown-propagation/spec.md`).
-    const knownReset = parsedCooldown !== null;
-    const cooldownMinutes = knownReset ? Math.max(1, Math.round((parsedCooldown.getTime() - Date.now()) / 60_000)) : 60; // default 1 hour
+    //
+    // We additionally reject parsed resets that are already in the past — a
+    // stale "resets 7pm" parsed at 8pm would otherwise be clamped to a 1-min
+    // cooldown by `Math.max(1, …)` and still report `knownReset: true`,
+    // letting the propagation gate fire across the whole pool with a synthetic
+    // 1-min cooldown (silent BLOCK from the audit). A stale reset is no
+    // better than the 60-min fallback, so degrade to that path.
+    const now = Date.now();
+    const knownReset = parsedCooldown !== null && parsedCooldown.getTime() > now;
+    const cooldownMinutes = knownReset ? Math.max(1, Math.round((parsedCooldown.getTime() - now) / 60_000)) : 60; // default 1 hour
 
     const reason = `stream-executor rate-limit${
       activeSlotAtQueryStart ? ` on slot=${activeSlotAtQueryStart.name}` : ''

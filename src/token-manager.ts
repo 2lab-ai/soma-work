@@ -88,12 +88,22 @@ const DEFAULT_SHARED_BUCKET_WINDOW_MS = 90_000;
 // the whole pool (see `RateLimitSource` doc-comment).
 const DIRECT_EVIDENCE_SOURCES: ReadonlyArray<RateLimitSource> = ['error_string', 'response_header'];
 
-/** Read on each call so tests + ops can override without restart. */
+/**
+ * Read on each call so tests + ops can override without restart.
+ *
+ * Strict-integer parse: `Number.parseInt('90s', 10)` returns `90`, silently
+ * dropping the trailing unit and producing a 90 ms window — four orders of
+ * magnitude smaller than intended. We require the raw value to match
+ * `^\d+$` so a misconfigured `90s` / `1e9` / `5min` triggers the warn-and-
+ * fallback path instead of being silently accepted as a tiny window.
+ */
 function resolveSharedBucketWindowMs(): number {
   const raw = process.env.CCT_SHARED_BUCKET_WINDOW_MS;
   if (raw === undefined || raw === '') return DEFAULT_SHARED_BUCKET_WINDOW_MS;
-  const parsed = Number.parseInt(raw, 10);
-  if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  if (/^\d+$/.test(raw)) {
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
   logger.warn(
     `CCT_SHARED_BUCKET_WINDOW_MS invalid (${raw}); falling back to default ${DEFAULT_SHARED_BUCKET_WINDOW_MS}ms`,
   );
@@ -123,6 +133,16 @@ function propagateInferredSharedCooldownIfMatched(
   currentId: string,
 ): { matchedSiblingKeyId: string; propagatedCount: number } | null {
   const anchorMs = new Date(cooldownUntilIso).getTime();
+  // Defence in depth: the caller computes `cooldownUntilIso` from
+  // `new Date(nowMs + cooldownMs).toISOString()`, which throws on a non-finite
+  // intermediate. If a future caller hands us a malformed ISO string anyway
+  // we'd silently match against `NaN` (and `Math.abs(NaN - x) <= W` is false),
+  // so propagation would just no-op. Bail explicitly with a warn so the
+  // misconfiguration is visible.
+  if (!Number.isFinite(anchorMs)) {
+    logger.warn(`shared-bucket propagation: non-finite anchor cooldownUntil=${cooldownUntilIso}; skipping`);
+    return null;
+  }
 
   // Eligibility shared by both passes (match-anchor scan + propagation loop)
   // so `disableRotation` / `api_key` / no-attachment / tombstoned siblings
