@@ -572,7 +572,16 @@ function formatRefreshErrorSegment(state: SlotState | undefined, nowMs: number):
 function formatRateLimitedSegment(state: SlotState | undefined, userTz: string, nowMs: number): string | null {
   if (!state?.rateLimitedAt) return null;
   const ts = formatRateLimitedAt(state.rateLimitedAt, userTz, nowMs);
-  const source = state.rateLimitSource ? ` via ${state.rateLimitSource}` : '';
+  // #801 — `inferred_shared` is the cross-account shared-bucket propagation
+  // arm: the slot itself wasn't directly rate-limited, but a sibling was at
+  // the same wall-clock reset, so we cooled this one too. Operators need to
+  // tell that apart from a direct 429 — the other arms keep their raw enum
+  // suffix so debugging logs cross-link cleanly with the rate-limit source.
+  const source = state.rateLimitSource
+    ? state.rateLimitSource === 'inferred_shared'
+      ? ' via inferred shared bucket'
+      : ` via ${state.rateLimitSource}`
+    : '';
   return `rate-limited ${ts}${source}`;
 }
 

@@ -2860,4 +2860,399 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       expect(true).toBe(true);
     });
   });
+
+  // ── #801 — inferred-shared cooldown propagation ─────────
+  //
+  // Cross-account shared-bucket heuristic: when two CCT slots cool down on
+  // the same wall-clock reset within ±W ms (with both observations sourced
+  // from a parsed wall-clock — `error_string` / `response_header`, NOT the
+  // 60-minute fallback), propagate the cooldown to the rest of the eligible
+  // CCT-with-attachment pool. Eliminates N-1 wasted CLI spawns under a
+  // shared-bucket cascade. See `docs/cct-shared-bucket-cooldown-propagation/`.
+  describe('rotateOnRateLimit > inferred-shared propagation (#801)', () => {
+    async function addOauthSlot(
+      tm: import('../token-manager').TokenManager,
+      name: string,
+      accessTokenSeed: string,
+    ): Promise<{ keyId: string; name: string }> {
+      return await tm.addSlot({
+        name,
+        kind: 'oauth_credentials',
+        credentials: makeOAuthCreds({ accessToken: accessTokenSeed }),
+        acknowledgedConsumerTosRisk: true,
+      });
+    }
+
+    async function addSixOauthSlots(
+      tm: import('../token-manager').TokenManager,
+    ): Promise<Array<{ keyId: string; name: string }>> {
+      const out: Array<{ keyId: string; name: string }> = [];
+      for (const n of ['A', 'B', 'C', 'D', 'E', 'F']) {
+        out.push(await addOauthSlot(tm, n, `sk-ant-oat01-${n}`));
+      }
+      return out;
+    }
+
+    it('AC-1: first 429 in pristine state marks only active slot', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const [a, b, c] = await addSixOauthSlots(tm);
+      // First call: A is active. No sibling has cooldownUntil → no match → no propagation.
+      await tm.rotateOnRateLimit('first', { source: 'error_string', cooldownMinutes: 60, knownReset: true });
+      const snap = await store.load();
+      // A — marked normally as the active slot.
+      expect(snap.state[a.keyId].rateLimitSource).toBe('error_string');
+      expect(snap.state[a.keyId].cooldownUntil).toBeDefined();
+      // B, C — pristine.
+      expect(snap.state[b.keyId].rateLimitSource).toBeUndefined();
+      expect(snap.state[b.keyId].cooldownUntil).toBeUndefined();
+      expect(snap.state[c.keyId].rateLimitSource).toBeUndefined();
+      expect(snap.state[c.keyId].cooldownUntil).toBeUndefined();
+    });
+
+    it('AC-2a: second 429 within window propagates to all eligible siblings with source=inferred_shared', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const [a, b, c, d, e, f] = await addSixOauthSlots(tm);
+      // 1st: marks A. Active rotates to B.
+      await tm.rotateOnRateLimit('first', { source: 'error_string', cooldownMinutes: 60, knownReset: true });
+      // 2nd: marks B. cooldownUntil_B is within ±90s of cooldownUntil_A → match → propagate to C,D,E,F.
+      await tm.rotateOnRateLimit('second', { source: 'error_string', cooldownMinutes: 60, knownReset: true });
+      const snap = await store.load();
+      expect(snap.state[a.keyId].rateLimitSource).toBe('error_string');
+      expect(snap.state[b.keyId].rateLimitSource).toBe('error_string');
+      for (const sib of [c, d, e, f]) {
+        expect(snap.state[sib.keyId].rateLimitSource).toBe('inferred_shared');
+        expect(snap.state[sib.keyId].cooldownUntil).toBeDefined();
+      }
+    });
+
+    it('AC-2b: propagated rateLimitedAt and cooldownUntil equal the call values (per-call now)', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const [, b, c] = await addSixOauthSlots(tm);
+      await tm.rotateOnRateLimit('first', { source: 'error_string', cooldownMinutes: 60, knownReset: true });
+      const beforeMs = Date.now();
+      await tm.rotateOnRateLimit('second', { source: 'error_string', cooldownMinutes: 60, knownReset: true });
+      const afterMs = Date.now();
+      const snap = await store.load();
+      // Propagated rateLimitedAt should be ~now of the 2nd call (between beforeMs and afterMs + slack).
+      const cAt = new Date(snap.state[c.keyId].rateLimitedAt as string).getTime();
+      expect(cAt).toBeGreaterThanOrEqual(beforeMs - 50);
+      expect(cAt).toBeLessThanOrEqual(afterMs + 50);
+      // Propagated cooldownUntil should equal B's cooldownUntil (the new anchor).
+      expect(snap.state[c.keyId].cooldownUntil).toBe(snap.state[b.keyId].cooldownUntil);
+    });
+
+    it('AC-2c: rotation returns null when all siblings just propagated', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      await addSixOauthSlots(tm);
+      await tm.rotateOnRateLimit('first', { source: 'error_string', cooldownMinutes: 60, knownReset: true });
+      const second = await tm.rotateOnRateLimit('second', {
+        source: 'error_string',
+        cooldownMinutes: 60,
+        knownReset: true,
+      });
+      // After call #2 every sibling A..F has a future cooldownUntil → no eligible left.
+      expect(second).toBeNull();
+    });
+
+    it('AC-3: second 429 outside window does NOT propagate (independent buckets)', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const [a, b, c, d] = await addSixOauthSlots(tm);
+      // Mark A first.
+      await tm.rotateOnRateLimit('first', { source: 'error_string', cooldownMinutes: 60, knownReset: true });
+      // Push A's cooldown far away (outside any reasonable window).
+      await store.mutate((snap) => {
+        snap.state[a.keyId].cooldownUntil = new Date(Date.now() + 10 * 60 * 60 * 1000).toISOString();
+      });
+      // Active is now B. Call rotate on B with cooldownMinutes:60 — B's cooldown
+      // is ~60min from now; A's is ~10h from now → outside ±W ms.
+      await tm.rotateOnRateLimit('second', { source: 'error_string', cooldownMinutes: 60, knownReset: true });
+      const snap = await store.load();
+      expect(snap.state[b.keyId].rateLimitSource).toBe('error_string');
+      // C, D pristine — no propagation.
+      expect(snap.state[c.keyId].rateLimitSource).toBeUndefined();
+      expect(snap.state[c.keyId].cooldownUntil).toBeUndefined();
+      expect(snap.state[d.keyId].rateLimitSource).toBeUndefined();
+      expect(snap.state[d.keyId].cooldownUntil).toBeUndefined();
+    });
+
+    it('AC-4: sibling already in future cooldown is not overwritten by propagation', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const [, , c] = await addSixOauthSlots(tm);
+      await tm.rotateOnRateLimit('first', { source: 'error_string', cooldownMinutes: 60, knownReset: true });
+      // Pre-seed C with its OWN future cooldown distinct from the anchor.
+      const preExistingC = new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString();
+      await store.mutate((snap) => {
+        snap.state[c.keyId].cooldownUntil = preExistingC;
+        snap.state[c.keyId].rateLimitSource = 'manual';
+        snap.state[c.keyId].rateLimitedAt = new Date().toISOString();
+      });
+      await tm.rotateOnRateLimit('second', { source: 'error_string', cooldownMinutes: 60, knownReset: true });
+      const snap = await store.load();
+      // C must remain unchanged — its own cooldownUntil is intact.
+      expect(snap.state[c.keyId].cooldownUntil).toBe(preExistingC);
+      expect(snap.state[c.keyId].rateLimitSource).toBe('manual');
+    });
+
+    it('AC-5a: api_key + no-attachment + tombstoned siblings are skipped as propagation targets', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      // Two OAuth-attached slots (a active, b sibling that will be 2nd-cycle).
+      const a = await addOauthSlot(tm, 'a', 'sk-ant-oat01-a');
+      const b = await addOauthSlot(tm, 'b', 'sk-ant-oat01-b');
+      // Ineligible siblings:
+      const apiKey = await tm.addSlot({ name: 'api', kind: 'api_key', value: 'sk-ant-api03-xxxxxxxxxxx' });
+      const setupOnly = await tm.addSlot({ name: 'setup', kind: 'setup_token', value: 'sk-ant-oat01-setuponly' });
+      const tomb = await addOauthSlot(tm, 'tomb', 'sk-ant-oat01-tomb');
+      await store.mutate((snap) => {
+        snap.state[tomb.keyId].tombstoned = true;
+      });
+      // One eligible target so we can verify propagation actually fired.
+      const target = await addOauthSlot(tm, 'target', 'sk-ant-oat01-target');
+
+      await tm.rotateOnRateLimit('first', { source: 'error_string', cooldownMinutes: 60, knownReset: true });
+      await tm.rotateOnRateLimit('second', { source: 'error_string', cooldownMinutes: 60, knownReset: true });
+
+      const snap = await store.load();
+      // a and b — direct marks.
+      expect(snap.state[a.keyId].rateLimitSource).toBe('error_string');
+      expect(snap.state[b.keyId].rateLimitSource).toBe('error_string');
+      // target — propagated.
+      expect(snap.state[target.keyId].rateLimitSource).toBe('inferred_shared');
+      // ineligible siblings: untouched.
+      expect(snap.state[apiKey.keyId].rateLimitSource).toBeUndefined();
+      expect(snap.state[apiKey.keyId].cooldownUntil).toBeUndefined();
+      expect(snap.state[setupOnly.keyId].rateLimitSource).toBeUndefined();
+      expect(snap.state[setupOnly.keyId].cooldownUntil).toBeUndefined();
+      // tomb has tombstoned=true — must NOT receive propagation cooldown either.
+      expect(snap.state[tomb.keyId].rateLimitSource).toBeUndefined();
+      expect(snap.state[tomb.keyId].cooldownUntil).toBeUndefined();
+    });
+
+    it('AC-5b: ineligible siblings cannot serve as match anchors even with cooldownUntil within window', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      // Active will be `active`. Sibling `target` is fully eligible.
+      // Sibling `setupOnly` (CCT no attachment) carries a cooldownUntil that
+      // would match within window — but is ineligible to anchor.
+      const active = await addOauthSlot(tm, 'active', 'sk-ant-oat01-active');
+      const setupOnly = await tm.addSlot({ name: 'setup', kind: 'setup_token', value: 'sk-ant-oat01-only' });
+      const target = await addOauthSlot(tm, 'target', 'sk-ant-oat01-target');
+
+      // Seed setupOnly with a cooldownUntil that would otherwise be within window
+      // of a 60-min cooldown (set to ~60min from now, source=error_string).
+      const fakeAnchor = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+      await store.mutate((snap) => {
+        snap.state[setupOnly.keyId].cooldownUntil = fakeAnchor;
+        snap.state[setupOnly.keyId].rateLimitSource = 'error_string';
+        snap.state[setupOnly.keyId].rateLimitedAt = new Date().toISOString();
+      });
+
+      // active is currently active (first added). Call rotate with knownReset.
+      await tm.rotateOnRateLimit('hit', { source: 'error_string', cooldownMinutes: 60, knownReset: true });
+
+      const snap = await store.load();
+      // active marked normally.
+      expect(snap.state[active.keyId].rateLimitSource).toBe('error_string');
+      // target NOT propagated — setupOnly cannot anchor (no oauthAttachment).
+      expect(snap.state[target.keyId].rateLimitSource).toBeUndefined();
+      expect(snap.state[target.keyId].cooldownUntil).toBeUndefined();
+      // setupOnly's pre-seeded state untouched by us in this code path.
+      expect(snap.state[setupOnly.keyId].cooldownUntil).toBe(fakeAnchor);
+    });
+
+    it('AC-5c: disableRotation sibling cannot anchor a match nor be a propagation target', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const active = await addOauthSlot(tm, 'active', 'sk-ant-oat01-active');
+      const disabled = await addOauthSlot(tm, 'disabled', 'sk-ant-oat01-disabled');
+      const target = await addOauthSlot(tm, 'target', 'sk-ant-oat01-target');
+      // Mark `disabled` as disableRotation=true with a within-window cooldownUntil
+      // that would otherwise anchor a match.
+      const fakeAnchor = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+      await store.mutate((snap) => {
+        const d = snap.registry.slots.find((s) => s.keyId === disabled.keyId);
+        if (!d) throw new Error('disabled slot missing');
+        d.disableRotation = true;
+        snap.state[disabled.keyId].cooldownUntil = fakeAnchor;
+        snap.state[disabled.keyId].rateLimitSource = 'error_string';
+        snap.state[disabled.keyId].rateLimitedAt = new Date().toISOString();
+      });
+
+      await tm.rotateOnRateLimit('hit', { source: 'error_string', cooldownMinutes: 60, knownReset: true });
+
+      const snap = await store.load();
+      // active marked normally.
+      expect(snap.state[active.keyId].rateLimitSource).toBe('error_string');
+      // target NOT propagated (no eligible anchor).
+      expect(snap.state[target.keyId].rateLimitSource).toBeUndefined();
+      expect(snap.state[target.keyId].cooldownUntil).toBeUndefined();
+      // disabled untouched (operator-opt-out preserved end-to-end).
+      expect(snap.state[disabled.keyId].cooldownUntil).toBe(fakeAnchor);
+    });
+
+    it('AC-6a: env CCT_SHARED_BUCKET_WINDOW_MS=300000 widens the match window', async () => {
+      process.env.CCT_SHARED_BUCKET_WINDOW_MS = '300000'; // 5 min
+      try {
+        const { mod, storeMod } = await importSut();
+        const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+        const tm = new mod.TokenManager(store);
+        await tm.init();
+        const [a, , c] = await addSixOauthSlots(tm);
+        // Mark A normally.
+        await tm.rotateOnRateLimit('first', { source: 'error_string', cooldownMinutes: 60, knownReset: true });
+        // Shift A's cooldown 4 minutes (240 000 ms) earlier — outside the
+        // default 90 s window but within the widened 5-min window.
+        await store.mutate((snap) => {
+          const aMs = new Date(snap.state[a.keyId].cooldownUntil as string).getTime();
+          snap.state[a.keyId].cooldownUntil = new Date(aMs - 240_000).toISOString();
+        });
+        // Active is B now. Call rotate.
+        await tm.rotateOnRateLimit('second', { source: 'error_string', cooldownMinutes: 60, knownReset: true });
+        const snap = await store.load();
+        // C must be propagated (within widened 300 000 ms window).
+        expect(snap.state[c.keyId].rateLimitSource).toBe('inferred_shared');
+        expect(snap.state[c.keyId].cooldownUntil).toBeDefined();
+      } finally {
+        delete process.env.CCT_SHARED_BUCKET_WINDOW_MS;
+      }
+    });
+
+    it('AC-6b: invalid env value falls back to default 90000 with warning logged', async () => {
+      process.env.CCT_SHARED_BUCKET_WINDOW_MS = 'not-a-number';
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        const { mod, storeMod } = await importSut();
+        const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+        const tm = new mod.TokenManager(store);
+        await tm.init();
+        const [a, , c] = await addSixOauthSlots(tm);
+        await tm.rotateOnRateLimit('first', { source: 'error_string', cooldownMinutes: 60, knownReset: true });
+        // Shift A's cooldown 4 minutes earlier — outside default 90 s.
+        await store.mutate((snap) => {
+          const aMs = new Date(snap.state[a.keyId].cooldownUntil as string).getTime();
+          snap.state[a.keyId].cooldownUntil = new Date(aMs - 240_000).toISOString();
+        });
+        await tm.rotateOnRateLimit('second', { source: 'error_string', cooldownMinutes: 60, knownReset: true });
+        const snap = await store.load();
+        // C must NOT be propagated (env was invalid → fallback to 90s window → outside).
+        expect(snap.state[c.keyId].rateLimitSource).toBeUndefined();
+        expect(snap.state[c.keyId].cooldownUntil).toBeUndefined();
+        // Warning surfaced to console (the project's Logger funnels through console).
+        const allCalls = [
+          ...warnSpy.mock.calls.map((c) => c.join(' ')),
+          ...errorSpy.mock.calls.map((c) => c.join(' ')),
+        ].join('\n');
+        expect(allCalls).toMatch(/CCT_SHARED_BUCKET_WINDOW_MS/);
+      } finally {
+        delete process.env.CCT_SHARED_BUCKET_WINDOW_MS;
+        warnSpy.mockRestore();
+        errorSpy.mockRestore();
+      }
+    });
+
+    it('AC-9: 6-slot cascade collapses after 2 rotateOnRateLimit calls; remaining 4 marked inferred_shared', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const all = await addSixOauthSlots(tm);
+      // Two cascade calls.
+      const r1 = await tm.rotateOnRateLimit('first', { source: 'error_string', cooldownMinutes: 60, knownReset: true });
+      const r2 = await tm.rotateOnRateLimit('second', {
+        source: 'error_string',
+        cooldownMinutes: 60,
+        knownReset: true,
+      });
+      expect(r1).not.toBeNull();
+      expect(r2).toBeNull();
+      const snap = await store.load();
+      // First two slots — direct error_string marks.
+      expect(snap.state[all[0].keyId].rateLimitSource).toBe('error_string');
+      expect(snap.state[all[1].keyId].rateLimitSource).toBe('error_string');
+      // Last four — inferred_shared.
+      for (let i = 2; i < 6; i++) {
+        expect(snap.state[all[i].keyId].rateLimitSource).toBe('inferred_shared');
+        expect(snap.state[all[i].keyId].cooldownUntil).toBeDefined();
+      }
+    });
+
+    it('AC-10: knownReset=false suppresses propagation even when a within-window match exists', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const [, b, c] = await addSixOauthSlots(tm);
+      // First call seeds A's cooldown (knownReset:true, source=error_string).
+      await tm.rotateOnRateLimit('first', { source: 'error_string', cooldownMinutes: 60, knownReset: true });
+      // Second call has knownReset:false (caller's parseCooldownTime returned null).
+      // A's cooldownUntil is within window but trigger gate must reject.
+      await tm.rotateOnRateLimit('second', { source: 'error_string', cooldownMinutes: 60, knownReset: false });
+      const snap = await store.load();
+      // B marked normally, but no propagation to C.
+      expect(snap.state[b.keyId].rateLimitSource).toBe('error_string');
+      expect(snap.state[c.keyId].rateLimitSource).toBeUndefined();
+      expect(snap.state[c.keyId].cooldownUntil).toBeUndefined();
+    });
+
+    it('AC-11a: sibling rateLimitSource=manual cannot anchor a match', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const [a, , c] = await addSixOauthSlots(tm);
+      await tm.rotateOnRateLimit('first', { source: 'error_string', cooldownMinutes: 60, knownReset: true });
+      // Re-stamp A as manual.
+      await store.mutate((snap) => {
+        snap.state[a.keyId].rateLimitSource = 'manual';
+      });
+      // 2nd call: A has cooldownUntil within window but its source is 'manual' → cannot anchor.
+      await tm.rotateOnRateLimit('second', { source: 'error_string', cooldownMinutes: 60, knownReset: true });
+      const snap = await store.load();
+      expect(snap.state[c.keyId].rateLimitSource).toBeUndefined();
+      expect(snap.state[c.keyId].cooldownUntil).toBeUndefined();
+    });
+
+    it('AC-11b: sibling rateLimitSource=inferred_shared cannot anchor a match (no chaining)', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const [a, , c] = await addSixOauthSlots(tm);
+      await tm.rotateOnRateLimit('first', { source: 'error_string', cooldownMinutes: 60, knownReset: true });
+      // Re-stamp A as inferred_shared.
+      await store.mutate((snap) => {
+        snap.state[a.keyId].rateLimitSource = 'inferred_shared';
+      });
+      // 2nd call: A's cooldownUntil within window but source 'inferred_shared' cannot anchor.
+      await tm.rotateOnRateLimit('second', { source: 'error_string', cooldownMinutes: 60, knownReset: true });
+      const snap = await store.load();
+      expect(snap.state[c.keyId].rateLimitSource).toBeUndefined();
+      expect(snap.state[c.keyId].cooldownUntil).toBeUndefined();
+    });
+  });
 });

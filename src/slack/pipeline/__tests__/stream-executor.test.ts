@@ -79,7 +79,11 @@ vi.mock('../../../token-manager', () => ({
     rotateOnRateLimit: rotateOnRateLimitMock,
     fetchAndStoreUsage: fetchAndStoreUsageMock,
   }),
-  parseCooldownTime: vi.fn(),
+  // Default to `null` (the production type signature is `Date | null`) so
+  // the new `parsedCooldown !== null` check in tryRotateToken behaves the
+  // same in tests as in production. Individual tests that need a parsed
+  // cooldown override with `vi.mocked(parseCooldownTime).mockReturnValueOnce(...)`.
+  parseCooldownTime: vi.fn().mockReturnValue(null),
 }));
 
 import { config } from '../../../config';
@@ -2747,6 +2751,81 @@ describe('W3-B rate-limit rotation wiring', () => {
     );
 
     expect(rotateOnRateLimitMock).not.toHaveBeenCalled();
+  });
+
+  // #801 AC-12 — `tryRotateToken` plumbs the new `knownReset` flag so
+  // `rotateOnRateLimit`'s shared-bucket propagation gate can distinguish a
+  // parsed wall-clock cooldown (direct evidence) from the 60-minute
+  // fallback (no evidence). The flag must mirror `parsedCooldown !== null`.
+  it('AC-12a: parsed cooldown text → rotateOnRateLimit called with knownReset:true', async () => {
+    // Override the parseCooldownTime mock to return a real Date for this call.
+    const tokenManagerModule = await import('../../../token-manager');
+    const parseMock = vi.mocked(tokenManagerModule.parseCooldownTime);
+    parseMock.mockReturnValueOnce(new Date(Date.now() + 30 * 60 * 1000));
+
+    const executor = new StreamExecutor(createMinimalDeps());
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = new Error("You've hit your limit · resets 8pm (Asia/Seoul). Claude Code process exited with code 1");
+    const activeSlot = { slotId: 'slot_abc', name: 'cct1', kind: 'setup_token' as const };
+
+    await (executor as any).handleError(
+      error,
+      {} as any,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say,
+      false,
+      activeSlot,
+    );
+
+    expect(rotateOnRateLimitMock).toHaveBeenCalledTimes(1);
+    const [, opts] = rotateOnRateLimitMock.mock.calls[0];
+    expect(opts).toEqual(
+      expect.objectContaining({
+        source: 'error_string',
+        knownReset: true,
+        cooldownMinutes: expect.any(Number),
+      }),
+    );
+    expect(opts.cooldownMinutes).toBeGreaterThan(0);
+  });
+
+  it('AC-12b: unparseable error → rotateOnRateLimit called with knownReset:false and cooldownMinutes:60', async () => {
+    // Default mock returns undefined → tryRotateToken treats as null → fallback path.
+    const tokenManagerModule = await import('../../../token-manager');
+    const parseMock = vi.mocked(tokenManagerModule.parseCooldownTime);
+    parseMock.mockReturnValueOnce(null);
+
+    const executor = new StreamExecutor(createMinimalDeps());
+    const say = vi.fn().mockResolvedValue(undefined);
+    // The combined message still triggers isRateLimitError (contains "rate limit") so
+    // tryRotateToken runs — but parseCooldownTime returns null → fallback 60m path.
+    const error = new Error('rate limit exceeded');
+    const activeSlot = { slotId: 'slot_abc', name: 'cct1', kind: 'setup_token' as const };
+
+    await (executor as any).handleError(
+      error,
+      {} as any,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say,
+      false,
+      activeSlot,
+    );
+
+    expect(rotateOnRateLimitMock).toHaveBeenCalledTimes(1);
+    const [, opts] = rotateOnRateLimitMock.mock.calls[0];
+    expect(opts).toEqual(
+      expect.objectContaining({
+        source: 'error_string',
+        knownReset: false,
+        cooldownMinutes: 60,
+      }),
+    );
   });
 });
 
