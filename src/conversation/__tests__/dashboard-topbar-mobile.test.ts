@@ -168,6 +168,34 @@ describe('dashboard topbar mobile overflow fix (#800)', () => {
     });
   });
 
+  describe('CSS — coarse-pointer × narrow combined media (#800 codex P2)', () => {
+    // Touch devices match `@media (pointer: coarse)` which sets
+    // `padding: 8px 16px` on `.topbar .nav a, .topbar .nav select` —
+    // wide enough to push the topbar past 360-414px viewports.
+    // Combined queries restore tight padding at narrow widths.
+    // These rules MUST come AFTER `@media (pointer: coarse)` in source
+    // order so the more specific (combined) query wins the cascade.
+
+    it('@media (max-width: 680px) and (pointer: coarse) trims nav padding to 4px 8px', () => {
+      const block = DASHBOARD_TS.match(/@media \(max-width: 680px\) and \(pointer: coarse\) \{[\s\S]*?\n\}/)?.[0];
+      expect(block).toBeTruthy();
+      expect(block).toMatch(/\.topbar\s+\.nav\s+a,\s*\.topbar\s+\.nav\s+select\s*\{[^}]*padding:\s*4px\s+8px/);
+    });
+
+    it('@media (max-width: 480px) and (pointer: coarse) trims nav padding to 4px 6px', () => {
+      const block = DASHBOARD_TS.match(/@media \(max-width: 480px\) and \(pointer: coarse\) \{[\s\S]*?\n\}/)?.[0];
+      expect(block).toBeTruthy();
+      expect(block).toMatch(/\.topbar\s+\.nav\s+a,\s*\.topbar\s+\.nav\s+select\s*\{[^}]*padding:\s*4px\s+6px/);
+    });
+
+    it('combined coarse-narrow rules come AFTER @media (pointer: coarse) in source order', () => {
+      const coarseIdx = DASHBOARD_TS.indexOf('@media (pointer: coarse) {');
+      const narrowCoarseIdx = DASHBOARD_TS.indexOf('@media (max-width: 680px) and (pointer: coarse)');
+      expect(coarseIdx).toBeGreaterThan(0);
+      expect(narrowCoarseIdx).toBeGreaterThan(coarseIdx);
+    });
+  });
+
   describe('Anti-regression: avoided side-effects', () => {
     it('does NOT add html, body { overflow-x: hidden } — width is fitted directly', () => {
       // Hiding overflow would mask future regressions. The fix relies on

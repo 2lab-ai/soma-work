@@ -2717,6 +2717,18 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .show-older-btn { min-height: 40px; padding: 8px 16px; }
   .card { padding: 12px 16px; }
 }
+/* ── #800: TOUCH x NARROW — restore tight padding so the coarse-pointer
+   tap-target (16px horizontal) does not push the topbar past mobile
+   widths. min-height stays at 40px for touch-target accessibility
+   (WCAG 2.5.5); only the inline padding shrinks. These blocks must
+   stay AFTER @media (pointer: coarse) in source order so the more
+   specific (combined) query wins the cascade. ── */
+@media (max-width: 680px) and (pointer: coarse) {
+  .topbar .nav a, .topbar .nav select { padding: 4px 8px; }
+}
+@media (max-width: 480px) and (pointer: coarse) {
+  .topbar .nav a, .topbar .nav select { padding: 4px 6px; }
+}
 </style>
 </head>
 <body>

@@ -8,11 +8,15 @@
  *    so client-side fetch() works. Output: screenshots/dashboard-*.png.
  *
  * 2. **Mobile topbar overflow assertion (#800)** — for every combination of
- *    {chromium, webkit} × {360, 375, 390, 414, 480, 680} ×
- *    {connecting, live, admin, long-korean} (= 48 cases), assert that
+ *    {chromium, webkit} × {fine, coarse pointer} ×
+ *    {360, 375, 390, 414, 480, 680} × {connecting, live, admin, long-korean}
+ *    (= 96 cases), assert that
  *    `documentElement.scrollWidth - window.innerWidth <= 0`. Any positive
  *    overflow throws and exits non-zero. Per-case screenshots are written to
- *    `screenshots/topbar/<browser>-<vw>-<state>.png` for offline review.
+ *    `screenshots/topbar/<browser>-<pointer>-<vw>-<state>.png`. The coarse
+ *    branch matters because real phones match `@media (pointer: coarse)`,
+ *    which dashboard.ts uses to enlarge tap targets — a regression that
+ *    only blows up on touch devices is silent under desktop emulation.
  */
 
 import * as fs from 'node:fs';
@@ -20,9 +24,15 @@ import * as path from 'node:path';
 import { type Browser, type BrowserType, chromium, type Page, webkit } from 'playwright';
 
 type WsState = 'connecting' | 'live' | 'admin' | 'long-korean';
+type Pointer = 'fine' | 'coarse';
 
 const MOBILE_VIEWPORTS = [360, 375, 390, 414, 480, 680] as const;
 const STATES: WsState[] = ['connecting', 'live', 'admin', 'long-korean'];
+// Real phones match `(pointer: coarse)` which adds bigger nav-item
+// padding via dashboard.ts `@media (pointer: coarse)`. We exercise both
+// the desktop (fine) and touch (coarse) cascades so a regression that
+// only blows up on real touch devices is not silently passed.
+const POINTERS: Pointer[] = ['fine', 'coarse'];
 // 30+ character Korean username (kept above the 30-char threshold called
 // out in the issue acceptance criteria).
 const LONG_KOREAN_NAME = '가나다라마바사아자차카타파하가나다라마바사아자차카타파하가나다라'; // 32 chars
@@ -307,50 +317,56 @@ async function runBrowserAssertions(
     return { failures, total };
   }
   try {
-    for (const vw of MOBILE_VIEWPORTS) {
-      const ctx = await browser.newContext({ viewport: { width: vw, height: 800 } });
-      const page = await ctx.newPage();
-      try {
-        await installWsStub(page);
-        await installApplyStateHelpers(page);
-        await page.goto(`${baseUrl}/dashboard`);
-        // Wait for the inline script to finish wiring up globals
-        // (_applyUserPill / _renderAdminModeButton). If it never appears,
-        // the per-state mutations become silent no-ops and assertions
-        // would pass spuriously — fail loud instead of swallowing.
+    for (const pointer of POINTERS) {
+      for (const vw of MOBILE_VIEWPORTS) {
+        // hasTouch + isMobile triggers `(pointer: coarse)` media-query
+        // matching in both chromium and webkit, exercising the
+        // dashboard.ts `@media (pointer: coarse)` cascade that real
+        // phones hit. Without this, the desktop (fine-pointer) branch
+        // is the only one tested.
+        const ctx = await browser.newContext({
+          viewport: { width: vw, height: 800 },
+          hasTouch: pointer === 'coarse',
+          isMobile: pointer === 'coarse' && name === 'chromium',
+        });
+        const page = await ctx.newPage();
         try {
+          await installWsStub(page);
+          await installApplyStateHelpers(page);
+          await page.goto(`${baseUrl}/dashboard`);
+          // Wait for the inline script to finish wiring up globals
+          // (_applyUserPill / _renderAdminModeButton). If it never
+          // appears, the per-state mutations become silent no-ops and
+          // assertions would pass spuriously — throw and fail the run
+          // instead of swallowing.
           await page.waitForFunction(
             () => typeof (window as unknown as { _applyUserPill?: unknown })._applyUserPill === 'function',
             { timeout: 10000 },
           );
-        } catch (err) {
-          console.warn(
-            `[topbar] ${name}-${vw}: _applyUserPill never wired up (${(err as Error).message}); state mutations may be no-ops`,
-          );
-        }
 
-        for (const state of STATES) {
-          total++;
-          await applyState(page, state, LONG_KOREAN_NAME);
-          // Let layout settle.
-          await page.waitForTimeout(120);
-          const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
-          const tag = `${name}-${vw}-${state}`;
-          // Topbar is the focus — full page would be wasteful; use the
-          // viewport-cropped capture so reviewers see exactly the
-          // "above the fold" layout the assertion measured.
-          await page.screenshot({ path: path.join(overflowDir, `${tag}.png`) });
-          if (overflow > 0) {
-            const msg = `[overflow] ${tag}: scrollWidth-innerWidth=${overflow}px (>0)`;
-            console.error(msg);
-            failures.push(msg);
-          } else {
-            console.log(`[ok] ${tag}: overflow=${overflow}px`);
+          for (const state of STATES) {
+            total++;
+            await applyState(page, state, LONG_KOREAN_NAME);
+            // Let layout settle.
+            await page.waitForTimeout(120);
+            const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+            const tag = `${name}-${pointer}-${vw}-${state}`;
+            // Topbar is the focus — full page would be wasteful; use the
+            // viewport-cropped capture so reviewers see exactly the
+            // "above the fold" layout the assertion measured.
+            await page.screenshot({ path: path.join(overflowDir, `${tag}.png`) });
+            if (overflow > 0) {
+              const msg = `[overflow] ${tag}: scrollWidth-innerWidth=${overflow}px (>0)`;
+              console.error(msg);
+              failures.push(msg);
+            } else {
+              console.log(`[ok] ${tag}: overflow=${overflow}px`);
+            }
           }
+        } finally {
+          await page.close();
+          await ctx.close();
         }
-      } finally {
-        await page.close();
-        await ctx.close();
       }
     }
   } finally {
