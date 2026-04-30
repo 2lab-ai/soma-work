@@ -31,15 +31,6 @@ export class CctHandler implements CommandHandler {
   async execute(ctx: CommandContext): Promise<CommandResult> {
     const { user, text, threadTs, say } = ctx;
 
-    // Admin check
-    if (!isAdminUser(user)) {
-      await say({
-        text: '⛔ Admin only command',
-        thread_ts: threadTs,
-      });
-      return { handled: true };
-    }
-
     const action = CommandParser.parseCctCommand(text);
     const tm = getTokenManager();
     // Z3 runtime fence (PR-B phase1): `cct set <name>` / `cct usage <name>`
@@ -49,10 +40,29 @@ export class CctHandler implements CommandHandler {
     // spawn isolation and will remove the filter.
     const tokens = tm.listRuntimeSelectableTokens();
 
+    // #803 — non-admin users may now run `cct status` (the default) so
+    // they can see cached slot state. All MUTATING actions (set, next,
+    // add, rm, usage refetch, auto) remain admin-only. The admin gate
+    // is therefore moved AFTER the action-discriminator dispatch and
+    // only fires on the mutating arms.
+    const admin = isAdminUser(user);
+    const denyNonAdmin = async (): Promise<CommandResult> => {
+      await say({
+        text: '⛔ Admin only command',
+        thread_ts: threadTs,
+      });
+      return { handled: true };
+    };
+
     // `cct add …` / `cct rm …` are forbidden via text — the modal on the
     // `/z cct` card is the only path for token mutation (ToS ack, split
     // fields, lease drain semantics live there).
+    //
+    // These two arms are admin-only because they hint at the admin
+    // path. Non-admin sees the standard `⛔ Admin only command` line so
+    // we don't leak the existence of the modal-only mutation surface.
     if (action.action === 'add-forbidden') {
+      if (!admin) return denyNonAdmin();
       await say({
         text: 'Token add via text is disabled. Open the `/z cct` card and use the *Add* button.',
         thread_ts: threadTs,
@@ -60,6 +70,7 @@ export class CctHandler implements CommandHandler {
       return { handled: true };
     }
     if (action.action === 'rm-forbidden') {
+      if (!admin) return denyNonAdmin();
       await say({
         text: 'Token remove via text is disabled. Open the `/z cct` card and use the *Remove* button.',
         thread_ts: threadTs,
@@ -68,6 +79,9 @@ export class CctHandler implements CommandHandler {
     }
 
     if (tokens.length === 0) {
+      // Empty-store message is informational, not a mutation. Fine for
+      // every viewer — the renderCctCard path also tells non-admin the
+      // empty state.
       await say({
         text: 'No CCT tokens configured. Set `CLAUDE_CODE_OAUTH_TOKEN_LIST` environment variable.',
         thread_ts: threadTs,
@@ -76,9 +90,9 @@ export class CctHandler implements CommandHandler {
     }
 
     if (action.action === 'status') {
-      // Render the Block Kit card. The plain-text fallback composes the
-      // active slot's rate-limited timestamp via `formatRateLimitedAt`
-      // so non-block clients see `YYYY-MM-DD HH:mm KST / HH:mmZ (Nm ago)`.
+      // #803 — `status` is the only non-mutating arm. Both admin and
+      // non-admin can read it; renderCctCard derives the viewerMode
+      // from `isAdminUser(userId)` so non-admin sees the readonly card.
       const { text: cardFallback, blocks } = await renderCctCard({
         userId: user,
         issuedAt: Date.now(),
@@ -86,6 +100,9 @@ export class CctHandler implements CommandHandler {
       const fallback = await buildStatusTextFallback(cardFallback);
       await say({ text: fallback, blocks, thread_ts: threadTs });
     } else if (action.action === 'next') {
+      // #803 — admin gate on the mutating arms. Status was the only arm
+      // that flowed past without an admin check.
+      if (!admin) return denyNonAdmin();
       const result = await tm.rotateToNext();
       if (result) {
         const active = tm.getActiveToken();
@@ -100,6 +117,7 @@ export class CctHandler implements CommandHandler {
         });
       }
     } else if (action.action === 'set') {
+      if (!admin) return denyNonAdmin();
       const match = tokens.find((t: TokenSummary) => t.name === action.target);
       if (match) {
         await tm.applyToken(match.keyId);
@@ -116,8 +134,17 @@ export class CctHandler implements CommandHandler {
         });
       }
     } else if (action.action === 'usage') {
+      // `cct usage [<name>]` issues an Anthropic API call (force-fetch
+      // to bypass the cached snapshot), so it must remain admin-only —
+      // it triggers a side effect on Anthropic's billing meter and is
+      // the same surface the in-card Refresh All OAuth Tokens fan-out
+      // hits. The readonly card surface gives non-admin a Refresh
+      // button that is non-force and respects the throttle, which is
+      // the appropriate non-admin affordance.
+      if (!admin) return denyNonAdmin();
       await handleUsage(action.target, tm, tokens, (t) => say({ text: t, thread_ts: threadTs }));
     } else if (action.action === 'auto') {
+      if (!admin) return denyNonAdmin();
       // Manual operator trigger of the #737 auto-rotate evaluator. Force-on:
       // we deliberately ignore `config.autoRotate.enabled` because that env
       // knob gates the *hourly tick*; an operator typing `cct auto` expects

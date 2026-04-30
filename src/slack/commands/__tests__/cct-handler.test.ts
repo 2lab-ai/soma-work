@@ -590,6 +590,67 @@ describe('CctHandler — Wave 5', () => {
     expect(text).toMatch(/\(\d+m ago\)/);
     expect(text).toContain('response_header');
   });
+
+  // ────────────────────────────────────────────────────────────────────
+  // #803 — non-admin can run `cct status` (the only non-mutating arm)
+  // ────────────────────────────────────────────────────────────────────
+
+  it('#803: non-admin user runs `cct` (status) → renderCctCard is called, no admin-only banner', async () => {
+    const { CctHandler } = await loadHandlerWithMockTm({
+      tokens: [{ keyId: 'k1', name: 'cct1', kind: 'cct', status: 'healthy' }],
+      active: { keyId: 'k1', name: 'cct1', kind: 'cct' },
+    });
+    const say = makeSay();
+    // 'U_OTHER' is NOT in ADMIN_USERS (the loadHandler mock only accepts adminUser).
+    await new CctHandler().execute({ user: 'U_OTHER', channel: 'C', threadTs: 'T', text: 'cct', say: say.fn });
+    expect(say.calls[0].text).not.toBe('⛔ Admin only command');
+    // The mocked renderCctCard returns this exact text.
+    expect(say.calls[0].text).toContain('CCT');
+    expect(Array.isArray(say.calls[0].blocks)).toBe(true);
+  });
+
+  it('#803: non-admin `cct next` → "⛔ Admin only command", no rotateToNext call', async () => {
+    const rotateToNext = vi.fn(async () => null);
+    const { CctHandler } = await loadHandlerWithMockTm({
+      tokens: [{ keyId: 'k1', name: 'cct1', kind: 'cct', status: 'healthy' }],
+      rotateToNext,
+    });
+    const say = makeSay();
+    await new CctHandler().execute({ user: 'U_OTHER', channel: 'C', threadTs: 'T', text: 'cct next', say: say.fn });
+    expect(say.calls[0].text).toBe('⛔ Admin only command');
+    expect(rotateToNext).not.toHaveBeenCalled();
+  });
+
+  it('#803: non-admin `cct set <name>` → "⛔ Admin only command", no applyToken call', async () => {
+    const applyToken = vi.fn(async () => undefined);
+    const { CctHandler } = await loadHandlerWithMockTm({
+      tokens: [{ keyId: 'k1', name: 'cct1', kind: 'cct', status: 'healthy' }],
+      applyToken,
+    });
+    const say = makeSay();
+    await new CctHandler().execute({
+      user: 'U_OTHER',
+      channel: 'C',
+      threadTs: 'T',
+      text: 'cct set cct1',
+      say: say.fn,
+    });
+    expect(say.calls[0].text).toBe('⛔ Admin only command');
+    expect(applyToken).not.toHaveBeenCalled();
+  });
+
+  it('#803: non-admin `cct usage` → "⛔ Admin only command", no fetchAndStoreUsage call', async () => {
+    const fetchAndStoreUsage = vi.fn(async () => null);
+    const { CctHandler } = await loadHandlerWithMockTm({
+      tokens: [{ keyId: 'k1', name: 'cct1', kind: 'cct', status: 'healthy' }],
+      active: { keyId: 'k1', name: 'cct1', kind: 'cct' },
+      fetchAndStoreUsage,
+    });
+    const say = makeSay();
+    await new CctHandler().execute({ user: 'U_OTHER', channel: 'C', threadTs: 'T', text: 'cct usage', say: say.fn });
+    expect(say.calls[0].text).toBe('⛔ Admin only command');
+    expect(fetchAndStoreUsage).not.toHaveBeenCalled();
+  });
 });
 
 describe('renderUsageLines', () => {
