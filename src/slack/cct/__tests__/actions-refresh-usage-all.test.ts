@@ -62,34 +62,68 @@ function snapshotWith(
   };
 }
 
-async function runHandler(tm: any, body: any = undefined, postEphemeral = vi.fn(async (_arg: any) => undefined)) {
+/**
+ * #803 — handler now does in-place card updates via `chat.update` (message
+ * surface) instead of stacking a fresh ephemeral. The runHandler helper
+ * builds a message-surface body so the in-place path is exercised.
+ *
+ * The mock client therefore captures BOTH `chat.update` (success path
+ * surface) and `chat.postEphemeral` (the residual error-fallback paths
+ * — outerCatch banner, unknown-surface fallback). Tests assert against
+ * whichever call landed for the scenario.
+ *
+ * `mockGetTokenManager`: the in-place path uses `renderCctCard`, which
+ * pulls a token-manager from `getTokenManager()`. We point it at the
+ * same fake the handler dispatched against so the rendered card uses
+ * the same snapshot.
+ */
+async function runHandler(
+  tm: any,
+  body: any = undefined,
+  overrides?: {
+    update?: ReturnType<typeof vi.fn>;
+    postEphemeral?: ReturnType<typeof vi.fn>;
+    respond?: ReturnType<typeof vi.fn>;
+  },
+) {
+  const update = overrides?.update ?? vi.fn(async (_arg: any) => undefined);
+  const postEphemeral = overrides?.postEphemeral ?? vi.fn(async (_arg: any) => undefined);
+  const respond = overrides?.respond ?? vi.fn(async (_arg: any) => undefined);
   const { app, actionHandlers } = makeApp();
   const adminUtils = await import('../../../admin-utils');
   const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(true);
+  // Wire the token-manager mock into the cct-topic getTokenManager so the
+  // in-place message-surface path that calls `renderCctCard` doesn't blow
+  // up on a `tokenManager is undefined` lookup.
+  const tmModule = await import('../../../token-manager');
+  const tmSpy = vi.spyOn(tmModule, 'getTokenManager').mockReturnValue(tm);
   try {
     registerCctActions(app, tm);
     const h = actionHandlers.get(CCT_ACTION_IDS.refresh_usage_all);
     const actionBody = body ?? {
       user: { id: 'admin' },
-      container: { channel_id: 'C1' },
-      actions: [{ value: 'all' }],
+      // #803 — message-surface body so the in-place path is exercised.
+      container: { type: 'message', channel_id: 'C1', message_ts: '1.0' },
+      actions: [{ value: 'cm:admin|refresh_all' }],
     };
     await h?.({
       ack: vi.fn(async () => undefined),
       body: actionBody,
-      client: { chat: { postEphemeral } },
+      client: { chat: { update, postEphemeral } },
+      respond,
     });
   } finally {
     spy.mockRestore();
+    tmSpy.mockRestore();
   }
-  return { postEphemeral };
+  return { update, postEphemeral, respond };
 }
 
 /** Narrow `mock.calls[0][0]` for assertion callers; asserts a call happened first. */
 function firstPayload(mock: ReturnType<typeof vi.fn>): any {
   const first = mock.mock.calls[0];
   if (!first || first.length === 0) {
-    throw new Error('expected at least one call to postEphemeral');
+    throw new Error('expected at least one call');
   }
   return first[0];
 }
@@ -173,7 +207,7 @@ describe('#701: refresh_usage_all mixed-failure surface', () => {
     vi.restoreAllMocks();
   });
 
-  it('all ok → single postEphemeral (card only, no banner)', async () => {
+  it('all ok → single chat.update (card only, no banner) [#803]', async () => {
     const keys = [
       { keyId: 'a', name: 'aA' },
       { keyId: 'b', name: 'bB' },
@@ -182,14 +216,23 @@ describe('#701: refresh_usage_all mixed-failure surface', () => {
     const tm = {
       refreshAllAttachedOAuthTokens: vi.fn(async () => ({ a: 'ok', b: 'ok' })),
       getSnapshot: vi.fn(async () => snap),
+      fetchUsageForAllAttached: vi.fn(async () => ({ a: null, b: null })),
     } as any;
-    const { postEphemeral } = await runHandler(tm);
-    expect(postEphemeral).toHaveBeenCalledTimes(1);
-    const payload = firstPayload(postEphemeral);
+    const { update, postEphemeral } = await runHandler(tm);
+    // #803 — successful flow goes in-place via chat.update; ephemeral
+    // fallback is unused on the happy path.
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(postEphemeral).not.toHaveBeenCalled();
+    const payload = firstPayload(update);
     expect(payload.text).toBe(':key: CCT status'); // plain card, no banner header.
+    expect(Array.isArray(payload.blocks)).toBe(true);
+    // No banner section prepended in the success path.
+    const firstBlockText = (payload.blocks as Array<{ text?: { text?: string } }>)[0]?.text?.text ?? '';
+    expect(firstBlockText).not.toContain('nothing refreshed');
+    expect(firstBlockText).not.toContain('partial failure');
   });
 
-  it('all error → allNull banner (single ephemeral, no card)', async () => {
+  it('all error → chat.update with allNull banner section + card [#803]', async () => {
     const keys = [
       { keyId: 'a', name: 'aA' },
       { keyId: 'b', name: 'bB' },
@@ -198,14 +241,21 @@ describe('#701: refresh_usage_all mixed-failure surface', () => {
     const tm = {
       refreshAllAttachedOAuthTokens: vi.fn(async () => ({ a: 'error', b: 'error' })),
       getSnapshot: vi.fn(async () => snap),
+      fetchUsageForAllAttached: vi.fn(async () => ({ a: null, b: null })),
     } as any;
-    const { postEphemeral } = await runHandler(tm);
-    expect(postEphemeral).toHaveBeenCalledTimes(1);
-    const payload = firstPayload(postEphemeral);
-    expect(payload.text).toContain('nothing refreshed');
+    const { update } = await runHandler(tm);
+    expect(update).toHaveBeenCalledTimes(1);
+    const payload = firstPayload(update);
+    // #803 — banner is now prepended to the card blocks (in-place
+    // surface), not posted as a text-only ephemeral.
+    const blocks = payload.blocks as Array<{ type: string; text?: { text?: string } }>;
+    expect(blocks[0]?.type).toBe('section');
+    expect(blocks[0]?.text?.text).toContain('nothing refreshed');
+    // Card chrome follows the banner.
+    expect(blocks.length).toBeGreaterThan(1);
   });
 
-  it('mixed (2 ok, 2 error) → SINGLE postEphemeral with banner section + card blocks', async () => {
+  it('mixed (2 ok, 2 error) → SINGLE chat.update with banner section + card blocks [#803]', async () => {
     const keys = [
       { keyId: 'a', name: 'aA' },
       { keyId: 'b', name: 'bB' },
@@ -226,11 +276,12 @@ describe('#701: refresh_usage_all mixed-failure surface', () => {
     const tm = {
       refreshAllAttachedOAuthTokens: vi.fn(async () => ({ a: 'ok', b: 'error', c: 'ok', d: 'error' })),
       getSnapshot: vi.fn(async () => snap),
+      fetchUsageForAllAttached: vi.fn(async () => ({})),
     } as any;
-    const { postEphemeral } = await runHandler(tm);
-    expect(postEphemeral).toHaveBeenCalledTimes(1); // single-surface invariant.
-    const payload = firstPayload(postEphemeral);
-    expect(payload.text).toContain('partial failure');
+    const { update } = await runHandler(tm);
+    expect(update).toHaveBeenCalledTimes(1); // single-surface invariant.
+    const payload = firstPayload(update);
+    expect(payload.text).toBe(':key: CCT status');
     // First block is the banner section with the failure summary.
     const blocks = payload.blocks as Array<{ type: string; text?: { text: string } }>;
     expect(blocks[0]?.type).toBe('section');
@@ -251,15 +302,16 @@ describe('#701: refresh_usage_all mixed-failure surface', () => {
       // `b` didn't settle before the fan-out deadline — not present in results.
       refreshAllAttachedOAuthTokens: vi.fn(async () => ({ a: 'ok' })),
       getSnapshot: vi.fn(async () => snap),
+      fetchUsageForAllAttached: vi.fn(async () => ({})),
     } as any;
-    const { postEphemeral } = await runHandler(tm);
-    const payload = firstPayload(postEphemeral);
+    const { update } = await runHandler(tm);
+    const payload = firstPayload(update);
     const bannerText = (payload.blocks as Array<{ text?: { text?: string } }>)[0]?.text?.text ?? '';
     expect(bannerText).toContain('1 of 2 failed');
     expect(bannerText).toContain('bB (timeout)');
   });
 
-  it('all-timeout (empty results, all still attached) → allNull banner, not mixed surface', async () => {
+  it('all-timeout (empty results, all still attached) → allNull banner [#803 in-place]', async () => {
     // Second-reviewer spec gap: the pre-fix code decided `allFailed` from
     // the raw `results` map. An empty map (every slot hit the fan-out
     // deadline) would slip into the mixed path with a confusing banner.
@@ -273,11 +325,13 @@ describe('#701: refresh_usage_all mixed-failure surface', () => {
     const tm = {
       refreshAllAttachedOAuthTokens: vi.fn(async () => ({})), // all timed out
       getSnapshot: vi.fn(async () => snap),
+      fetchUsageForAllAttached: vi.fn(async () => ({})),
     } as any;
-    const { postEphemeral } = await runHandler(tm);
-    expect(postEphemeral).toHaveBeenCalledTimes(1);
-    const payload = firstPayload(postEphemeral);
-    expect(payload.text).toContain('nothing refreshed');
+    const { update } = await runHandler(tm);
+    expect(update).toHaveBeenCalledTimes(1);
+    const payload = firstPayload(update);
+    const blocks = payload.blocks as Array<{ text?: { text?: string } }>;
+    expect(blocks[0]?.text?.text ?? '').toContain('nothing refreshed');
   });
 
   it('mixed + concurrent detach → denominator EXCLUDES torn-down slot', async () => {
@@ -324,9 +378,10 @@ describe('#701: refresh_usage_all mixed-failure surface', () => {
         call += 1;
         return call === 1 ? snap1 : snap2;
       }),
+      fetchUsageForAllAttached: vi.fn(async () => ({})),
     } as any;
-    const { postEphemeral } = await runHandler(tm);
-    const payload = firstPayload(postEphemeral);
+    const { update } = await runHandler(tm);
+    const payload = firstPayload(update);
     const bannerText = (payload.blocks as Array<{ text?: { text?: string } }>)[0]?.text?.text ?? '';
     // effectiveTotal = ok(1) + failed(1) = 2, NOT 3 (starting count).
     expect(bannerText).toContain('1 of 2 failed');
@@ -349,10 +404,14 @@ describe('#701: refresh_usage_all mixed-failure surface', () => {
         call += 1;
         return call === 1 ? snap1 : snap2;
       }),
+      fetchUsageForAllAttached: vi.fn(async () => ({})),
     } as any;
-    const { postEphemeral } = await runHandler(tm);
-    const payload = firstPayload(postEphemeral);
+    const { update } = await runHandler(tm);
+    const payload = firstPayload(update);
     // All-ok path: text is plain card title (no partial failure).
     expect(payload.text).toBe(':key: CCT status');
+    // No banner section prepended.
+    const blocks = payload.blocks as Array<{ text?: { text?: string } }>;
+    expect(blocks[0]?.text?.text ?? '').not.toContain('failed');
   });
 });
