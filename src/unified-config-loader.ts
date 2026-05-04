@@ -10,6 +10,7 @@
 
 import * as fs from 'fs';
 import type { A2tConfig } from './a2t/types';
+import { RESERVED_LEASE_KEYS } from './auth/query-env-builder';
 import { Logger } from './logger';
 import type { McpServerConfig } from './mcp/config-loader';
 import { validatePluginConfig } from './plugin/config-parser';
@@ -17,6 +18,15 @@ import type { PluginConfig } from './plugin/types';
 import type { AgentConfig } from './types';
 
 const logger = new Logger('UnifiedConfigLoader');
+
+/**
+ * Identifier regex for `claude.env` keys. Matches POSIX env-var conventions
+ * (alpha/underscore start, alphanumeric/underscore continue). Anything else
+ * is rejected at load time — operators get a warn so the typo is visible.
+ */
+const ENV_KEY_REGEX = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+const RESERVED_LEASE_KEYS_SET = new Set<string>(RESERVED_LEASE_KEYS);
 
 /**
  * Process-scoped guard so the legacy `llmChat` warning fires at most once.
@@ -30,6 +40,103 @@ export interface UnifiedConfig {
   plugin?: PluginConfig;
   agents?: Record<string, AgentConfig>;
   a2t?: A2tConfig;
+  /**
+   * Operator-controlled env vars injected into every Claude Agent SDK
+   * subprocess at `query()` time, equivalent to a shell `KEY=VALUE`
+   * prefix on the `claude` invocation.
+   *
+   * The dotted JSON key (`"claude.env"`) is preserved verbatim so the file
+   * round-trips through `plugin-manager.saveConfig` (which uses
+   * `{...full, plugin: ...}` spread) without rename.
+   *
+   * Values in this Record are always strings — the parser stringifies
+   * `number`/`boolean` JSON values and rejects everything else with a warn.
+   */
+  'claude.env'?: Record<string, string>;
+}
+
+/**
+ * Validate and normalize the raw `config.json#claude.env` field into a
+ * `Record<string, string>` ready to install via `setQueryEnvAdditional`.
+ *
+ * Rules (mirrored in unit tests):
+ *   - The whole field must be a plain JSON object. `null`, arrays, strings,
+ *     numbers → field ignored entirely with a warn.
+ *   - Keys must match `/^[A-Za-z_][A-Za-z0-9_]*$/` → otherwise drop entry.
+ *   - Keys in `RESERVED_LEASE_KEYS` → drop entry with a warn ("operator
+ *     footgun guard"). The lease/auth path owns those slots.
+ *   - Values: `string` (verbatim, including empty string for "unset"
+ *     intent), `boolean` (→ `"true"` / `"false"`), finite `number`
+ *     (→ `String(n)`). Everything else (`null`, `undefined`, object, array,
+ *     `NaN`, `Infinity`, `bigint`, `symbol`, `function`) → drop with warn.
+ *
+ * Logging contract: warnings include only the offending KEY name, never
+ * the value. Operators may misconfigure secrets here; logs MUST NOT leak
+ * them. `unified-config-loader.test.ts` enforces this with a regex.
+ */
+export function parseClaudeEnv(raw: unknown): Record<string, string> | undefined {
+  if (raw === undefined) return undefined;
+
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    logger.warn(`Ignoring config.json#"claude.env": expected a JSON object, got ${describeKind(raw)}`);
+    return undefined;
+  }
+
+  const result: Record<string, string> = {};
+
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!ENV_KEY_REGEX.test(key)) {
+      logger.warn(`Skipping claude.env entry: invalid env key (key=${key})`);
+      continue;
+    }
+    if (RESERVED_LEASE_KEYS_SET.has(key)) {
+      logger.warn(`Skipping claude.env entry: ${key} is reserved (auth/provider/proxy slot owned by lease)`);
+      continue;
+    }
+    const coerced = coerceEnvValue(value);
+    if (coerced === null) {
+      // describeKind never reads the value contents — only its typeof — so
+      // string contents (which may be a secret) never reach the log.
+      logger.warn(`Skipping claude.env entry: invalid value type (key=${key}, type=${describeKind(value)})`);
+      continue;
+    }
+    result[key] = coerced;
+  }
+
+  return result;
+}
+
+/**
+ * Stringify a JSON value for env injection, or return `null` to signal
+ * "drop this entry." Empty string IS allowed — operators may want to clear
+ * an inherited process.env value; layer 2 of `buildQueryEnv` writes
+ * `env[KEY] = ''` which is forwarded to the spawn.
+ */
+function coerceEnvValue(value: unknown): string | null {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'boolean') return String(value);
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) return null;
+    return String(value);
+  }
+  return null;
+}
+
+/**
+ * Describe a JSON value's shape WITHOUT echoing its contents — used in
+ * warn messages. Returns one of: 'null', 'undefined', 'array', 'object',
+ * 'string', 'number', 'boolean', 'bigint', 'symbol', 'function', 'NaN',
+ * 'Infinity'. Never includes the actual value, so secrets cannot leak.
+ */
+function describeKind(value: unknown): string {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'array';
+  const t = typeof value;
+  if (t === 'number') {
+    if (Number.isNaN(value as number)) return 'NaN';
+    if (!Number.isFinite(value as number)) return 'Infinity';
+  }
+  return t;
 }
 
 /**
@@ -206,6 +313,14 @@ export function loadUnifiedConfig(configFile: string, mcpFallback: string): Unif
         result.a2t = raw.a2t as A2tConfig;
       }
 
+      // Parse claude.env — operator-controlled env vars injected into every
+      // Claude Agent SDK subprocess. Validated + denylist-filtered;
+      // warnings log keys only (never values).
+      const claudeEnv = parseClaudeEnv(raw['claude.env']);
+      if (claudeEnv && Object.keys(claudeEnv).length > 0) {
+        result['claude.env'] = claudeEnv;
+      }
+
       // PR #639 removed the `llmChat` subsystem (prompt-builder snippet,
       // llmChatConfigStore, Slack LlmChatHandler). Legacy configs still
       // carrying `llmChat` keep working but the key is silently dropped on
@@ -228,6 +343,8 @@ export function loadUnifiedConfig(configFile: string, mcpFallback: string): Unif
         hasPluginConfig: !!result.plugin,
         agents: result.agents ? Object.keys(result.agents).length : 0,
         hasA2t: !!result.a2t,
+        // keys-only — never log the values
+        claudeEnvKeys: result['claude.env'] ? Object.keys(result['claude.env']) : [],
       });
 
       return result;

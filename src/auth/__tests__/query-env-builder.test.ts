@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { SlotAuthLease } from '../../credentials-manager';
-import { buildQueryEnv } from '../query-env-builder';
+import { buildQueryEnv, getQueryEnvAdditional, RESERVED_LEASE_KEYS, setQueryEnvAdditional } from '../query-env-builder';
 
 function makeLease(keyId: string, accessToken: string, kind: SlotAuthLease['kind'] = 'cct'): SlotAuthLease {
   return {
@@ -30,6 +30,9 @@ describe('buildQueryEnv', () => {
     // Intentionally set a "wrong" global token to prove the builder does NOT
     // depend on or propagate it.
     process.env.CLAUDE_CODE_OAUTH_TOKEN = 'GLOBAL-WRONG-TOKEN';
+    // Reset module-level additional env between tests — the setter is a
+    // shared singleton and any leftover state would cross-pollinate cases.
+    setQueryEnvAdditional({});
   });
 
   afterEach(() => {
@@ -37,6 +40,7 @@ describe('buildQueryEnv', () => {
     else process.env.CLAUDE_CODE_OAUTH_TOKEN = originalOauthToken;
     if (originalFoo === undefined) delete process.env.__QENV_BUILDER_FIXTURE__;
     else process.env.__QENV_BUILDER_FIXTURE__ = originalFoo;
+    setQueryEnvAdditional({});
   });
 
   it('sets CLAUDE_CODE_OAUTH_TOKEN to the lease accessToken (cct slot without attachment)', () => {
@@ -109,5 +113,63 @@ describe('buildQueryEnv', () => {
     for (const v of Object.values(env)) {
       expect(typeof v).toBe('string');
     }
+  });
+
+  // ===== claude.env / setQueryEnvAdditional =====
+
+  it('overlays setQueryEnvAdditional values on top of process.env', () => {
+    setQueryEnvAdditional({ FOO: 'bar', __QENV_BUILDER_FIXTURE__: 'overridden' });
+    const lease = makeLease('slot-a', 'TOKEN-A', 'cct');
+    const { env } = buildQueryEnv(lease);
+    expect(env.FOO).toBe('bar');
+    // Operator override wins over the inherited process.env value.
+    expect(env.__QENV_BUILDER_FIXTURE__).toBe('overridden');
+    // process.env itself remains untouched.
+    expect(process.env.FOO).toBeUndefined();
+    expect(process.env.__QENV_BUILDER_FIXTURE__).toBe('keep-me');
+  });
+
+  it('lease token override beats additional env even if it tries to set CLAUDE_CODE_OAUTH_TOKEN (defense in depth)', () => {
+    // Bypass the load-time denylist by calling the setter directly with
+    // a poisoned key. The build-time override must still win.
+    setQueryEnvAdditional({ CLAUDE_CODE_OAUTH_TOKEN: 'EVIL' });
+    const lease = makeLease('slot-a', 'GENUINE-LEASE-TOKEN', 'cct');
+    const { env } = buildQueryEnv(lease);
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe('GENUINE-LEASE-TOKEN');
+  });
+
+  it('setQueryEnvAdditional defensively clones — caller mutation does not leak', () => {
+    const input: Record<string, string> = { FOO: 'initial' };
+    setQueryEnvAdditional(input);
+    // Mutate the caller's object after registration.
+    input.FOO = 'mutated';
+    input.NEW = 'sneak-in';
+    const lease = makeLease('slot-a', 'TOKEN', 'cct');
+    const { env } = buildQueryEnv(lease);
+    expect(env.FOO).toBe('initial');
+    expect(env.NEW).toBeUndefined();
+  });
+
+  it('getQueryEnvAdditional returns a clone, not the live state', () => {
+    setQueryEnvAdditional({ FOO: 'bar' });
+    const snapshot = getQueryEnvAdditional();
+    snapshot.FOO = 'mutated-snapshot';
+    snapshot.NEW = 'sneak-in';
+    // Subsequent build still sees the original state.
+    const lease = makeLease('slot-a', 'TOKEN', 'cct');
+    const { env } = buildQueryEnv(lease);
+    expect(env.FOO).toBe('bar');
+    expect(env.NEW).toBeUndefined();
+  });
+
+  it('RESERVED_LEASE_KEYS is frozen and contains the auth/proxy/provider slots', () => {
+    expect(Object.isFrozen(RESERVED_LEASE_KEYS)).toBe(true);
+    // Spot-check the canonical entries — full list pinned by the parser
+    // tests in unified-config-loader.test.ts.
+    expect(RESERVED_LEASE_KEYS).toContain('CLAUDE_CODE_OAUTH_TOKEN');
+    expect(RESERVED_LEASE_KEYS).toContain('ANTHROPIC_API_KEY');
+    expect(RESERVED_LEASE_KEYS).toContain('CLAUDE_CONFIG_DIR');
+    expect(RESERVED_LEASE_KEYS).toContain('HTTPS_PROXY');
+    expect(RESERVED_LEASE_KEYS).toContain('NODE_EXTRA_CA_CERTS');
   });
 });
