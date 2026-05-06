@@ -225,6 +225,17 @@ describe('cct-topic.renderCctCard', () => {
     expect(mockStore.fetchUsageForAllAttachedCalls).toBe(0);
   });
 
+  it('#803: skipOnOpenFetch=true skips on-open fan-out even for admin viewer (avoids double-fetch from refresh handler)', async () => {
+    resetMockStore();
+    vi.mocked(isAdminUser).mockReturnValue(true);
+    // refresh_card path: actor is admin, viewerMode='admin', but the
+    // handler already performed the usage refetch — passing
+    // skipOnOpenFetch=true must prevent renderCctCard from firing a
+    // second redundant fan-out against Anthropic.
+    await renderCctCard({ userId: 'U1', issuedAt: 33, viewerMode: 'admin', skipOnOpenFetch: true });
+    expect(mockStore.fetchUsageForAllAttachedCalls).toBe(0);
+  });
+
   it('T9-force: card-open fan-out never forwards force (local throttle must hold)', async () => {
     // Card-open is a read path — it must never bypass the per-slot
     // `nextUsageFetchAllowedAt` gate that protects Anthropic from

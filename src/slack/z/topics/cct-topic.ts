@@ -52,40 +52,39 @@ async function loadSnapshotOrEmpty(): Promise<{
 /**
  * Render the `/cct` Block Kit card.
  *
- * #803 — Non-admin users now see the FULL slot status (mode='readonly')
- * with mutating affordances stripped. The `viewerMode` opt allows
- * action-handler callers (e.g. `refresh_card`) to override the
- * actor-derived default so a non-admin clicking Refresh on an admin
- * card preserves the admin layout instead of flipping it to readonly.
- *
  * Render-mode rules:
  *   - Pass an explicit `viewerMode` → use it verbatim. This is the
- *     "preserve cardMode across viewers" path (#803 spec Q1=A).
+ *     "preserve cardMode across viewers" path (#803 spec Q1=A) — used
+ *     by action handlers that decode the originating button's
+ *     `cm:<mode>|<payload>` value and want re-rendering to keep that
+ *     mode regardless of who clicked.
  *   - Otherwise → derive from `isAdminUser(userId)` (admin↔'admin',
  *     non-admin↔'readonly').
  *
  * Side effects:
  *   - Admin viewer (effective mode = 'admin') triggers the on-open
  *     `fetchUsageForAllAttached` fan-out so the card reflects fresh
- *     usage on every open. (Z1 contract — preserved.)
- *   - Readonly viewer (effective mode = 'readonly') SKIPS the fetch
- *     fan-out. Live refetch is an admin-only mutation against the
- *     Anthropic API; non-admin viewers see the latest cached snapshot
- *     ONLY (#803 spec Q2=B / Q3=A).
+ *     usage on every open (Z1 contract).
+ *   - Readonly viewer SKIPS the fetch fan-out — live refetch is an
+ *     admin-only mutation against the Anthropic API; non-admin viewers
+ *     see the latest cached snapshot only.
+ *   - `skipOnOpenFetch: true` → caller has already performed the
+ *     relevant fetch (e.g. the `refresh_card` action handler) and
+ *     wants the card render to read snapshot only. Avoids double
+ *     fan-out against Anthropic on the same click.
  */
 export async function renderCctCard(args: {
   userId: string;
   issuedAt: number;
   viewerMode?: CctCardViewerMode;
+  skipOnOpenFetch?: boolean;
 }): Promise<RenderResult> {
-  const { userId, viewerMode: viewerModeOverride } = args;
+  const { userId, viewerMode: viewerModeOverride, skipOnOpenFetch } = args;
   const effectiveViewerMode: CctCardViewerMode = viewerModeOverride ?? (isAdminUser(userId) ? 'admin' : 'readonly');
 
-  // #803 — On-open fetchUsage fan-out is admin-only. Readonly viewers
-  // see whatever is already in the cached snapshot. The Refresh button
-  // on the readonly card calls `fetchUsageForAllAttached` non-force,
-  // which still respects the per-slot 5-minute throttle.
-  if (effectiveViewerMode === 'admin') {
+  // Admin viewer triggers the on-open fan-out unless the caller has
+  // already settled the usage refresh.
+  if (effectiveViewerMode === 'admin' && !skipOnOpenFetch) {
     try {
       await getTokenManager()
         .fetchUsageForAllAttached({ timeoutMs: config.usage.cardOpenTimeoutMs })
