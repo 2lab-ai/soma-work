@@ -10,7 +10,8 @@
       "db_query": "write",
       "logs": "read",
       "list": "read",
-      "list_service": "read"
+      "list_service": "read",
+      "list_stack": "read"
     },
     "example-server": {
       "ssh": { "host": "your-server.example.com" },
@@ -23,6 +24,9 @@
           "password": "your_password"
         }
       }
+    },
+    "example-swarm-manager": {
+      "ssh": { "host": "swarm-manager.example.com" }
     }
   },
   "a2t": {
