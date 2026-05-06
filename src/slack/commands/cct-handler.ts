@@ -4,8 +4,7 @@ import type { CctStoreSnapshot, SlotState, UsageSnapshot } from '../../cct-store
 import { config } from '../../config';
 import { evaluateAndMaybeRotate, type RotationOutcome } from '../../oauth/auto-rotate';
 import { getTokenManager, type TokenSummary } from '../../token-manager';
-import { formatRateLimitedAt } from '../../util/format-rate-limited-at';
-import { formatRateLimitSource, formatUsageBar, formatUsageResetDelta } from '../cct/builder';
+import { formatRateLimitedSegment, formatUsageBar, formatUsageResetDelta } from '../cct/builder';
 import { CommandParser } from '../command-parser';
 import { renderCctCard } from '../z/topics/cct-topic';
 import type { CommandContext, CommandHandler, CommandResult } from './types';
@@ -205,11 +204,8 @@ async function buildStatusTextFallback(cardFallback: string | undefined): Promis
     ? snap.registry.slots.find((s) => s.keyId === snap.registry.activeKeyId)
     : undefined;
   if (!active) return header;
-  const state = snap.state[active.keyId];
-  if (!state?.rateLimitedAt) return header;
-  const ts = formatRateLimitedAt(state.rateLimitedAt);
-  const source = formatRateLimitSource(state.rateLimitSource);
-  return `${header}\nrate-limited ${ts}${source}`;
+  const segment = formatRateLimitedSegment(snap.state[active.keyId]);
+  return segment === null ? header : `${header}\n${segment}`;
 }
 
 /** Defensive snapshot read through the public `getSnapshot()` API. */

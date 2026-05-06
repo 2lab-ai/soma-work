@@ -568,10 +568,15 @@ function formatRefreshErrorSegment(state: SlotState | undefined, nowMs: number):
  * Source suffix is omitted for legacy payloads that predate
  * `rateLimitSource` (raw enum matches the TokenManager classifier, same
  * shape both branches of `buildSlotStatusLine` emit).
+ *
+ * Exported so the `/cct` text-fallback in `cct-handler.ts` can render the
+ * exact same segment instead of hand-rolling the template.
+ * `userTz` / `nowMs` mirror `formatRateLimitedAt` defaults (Asia/Seoul,
+ * `Date.now()`) so non-Block-Kit callers can omit them.
  */
-function formatRateLimitedSegment(state: SlotState | undefined, userTz: string, nowMs: number): string | null {
+export function formatRateLimitedSegment(state: SlotState | undefined, userTz?: string, nowMs?: number): string | null {
   if (!state?.rateLimitedAt) return null;
-  const ts = formatRateLimitedAt(state.rateLimitedAt, userTz, nowMs);
+  const ts = formatRateLimitedAt(state.rateLimitedAt, userTz ?? 'Asia/Seoul', nowMs);
   const source = formatRateLimitSource(state.rateLimitSource);
   return `rate-limited ${ts}${source}`;
 }
