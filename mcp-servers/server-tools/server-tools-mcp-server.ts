@@ -331,7 +331,81 @@ export function handleList() {
   };
 }
 
+// Extract stderr text from an exec error regardless of Buffer/string typing.
+function readStderr(err: unknown): string {
+  if (err && typeof err === 'object' && 'stderr' in err) {
+    const v = (err as { stderr?: unknown }).stderr;
+    if (typeof v === 'string') return v;
+    if (Buffer.isBuffer(v)) return v.toString('utf-8');
+  }
+  return '';
+}
+
+// Detect "not a swarm manager" daemon errors. Re-throws non-matching errors as-is.
+function rethrowAsSwarmError(err: unknown, server: string): never {
+  const stderr = readStderr(err);
+  if (/not a swarm manager/i.test(stderr)) {
+    throw new Error(`Server '${server}' is not a Docker Swarm manager`);
+  }
+  throw err;
+}
+
+function parseNdjson(output: string, source: string): unknown[] {
+  return output
+    .trim()
+    .split('\n')
+    .filter((line) => line.trim())
+    .map((line) => {
+      try {
+        return JSON.parse(line);
+      } catch {
+        const snippet = line.length > 100 ? `${line.slice(0, 100)}…` : line;
+        throw new Error(`Invalid NDJSON from ${source}: ${snippet}`);
+      }
+    });
+}
+
 export function handleListService(args: Record<string, unknown>) {
+  const server = args.server as string;
+  const stack = args.stack as string | undefined;
+  const config = loadConfig();
+
+  if (!config[server]) {
+    throw new Error(`Unknown server: ${server}`);
+  }
+
+  const sshHost = config[server].ssh.host;
+
+  let output: string;
+  if (stack !== undefined) {
+    validateDockerName(stack, 'stack');
+    try {
+      output = execFileSync(
+        'ssh',
+        [sshHost, 'docker', 'stack', 'services', stack, '--format', 'json'],
+        { timeout: 30000, encoding: 'utf-8' },
+      );
+    } catch (err) {
+      // rethrowAsSwarmError is `never`-returning; this catch never falls through.
+      rethrowAsSwarmError(err, server);
+    }
+  } else {
+    output = execFileSync(
+      'ssh',
+      [sshHost, 'docker', 'ps', '--format', 'json'],
+      { timeout: 30000, encoding: 'utf-8' },
+    );
+  }
+
+  // Non-null: catch above either reassigns or throws via `never`-typed helper.
+  const services = parseNdjson(output!, 'docker stack services / ps');
+
+  return {
+    content: [{ type: 'text' as const, text: JSON.stringify(services) }],
+  };
+}
+
+export function handleListStack(args: Record<string, unknown>) {
   const server = args.server as string;
   const config = loadConfig();
 
@@ -340,26 +414,31 @@ export function handleListService(args: Record<string, unknown>) {
   }
 
   const sshHost = config[server].ssh.host;
-  const output = execFileSync(
-    'ssh',
-    [sshHost, 'docker', 'ps', '--format', 'json'],
-    { timeout: 30000, encoding: 'utf-8' },
-  );
 
-  const containers = output
-    .trim()
-    .split('\n')
-    .filter((line) => line.trim())
-    .map((line) => JSON.parse(line));
+  let output: string;
+  try {
+    output = execFileSync(
+      'ssh',
+      [sshHost, 'docker', 'stack', 'ls', '--format', 'json'],
+      { timeout: 30000, encoding: 'utf-8' },
+    );
+  } catch (err) {
+    // rethrowAsSwarmError is `never`-returning; this catch never falls through.
+    rethrowAsSwarmError(err, server);
+  }
+
+  // Non-null: catch above either reassigns or throws via `never`-typed helper.
+  const stacks = parseNdjson(output!, 'docker stack ls');
 
   return {
-    content: [{ type: 'text' as const, text: JSON.stringify(containers) }],
+    content: [{ type: 'text' as const, text: JSON.stringify(stacks) }],
   };
 }
 
 export function handleLogs(args: Record<string, unknown>) {
   const server = args.server as string;
   const service = args.service as string;
+  const stack = args.stack as string | undefined;
   const tail = (args.tail as number) ?? 100;
   if (!Number.isInteger(tail) || tail < 0 || tail > 10000) {
     throw new Error('Invalid tail: must be an integer between 0 and 10000');
@@ -374,12 +453,24 @@ export function handleLogs(args: Record<string, unknown>) {
     throw new Error(`Unknown server: ${server}`);
   }
 
+  // All input shape validation first (names + timestamps), then mode-specific rules.
+  if (stack !== undefined) validateDockerName(stack, 'stack');
   validateDockerName(service, 'service');
   if (since) validateTimestamp(since, 'since');
   if (until) validateTimestamp(until, 'until');
 
+  if (stack !== undefined && until !== undefined) {
+    throw new Error('--until is not supported when stack is set (docker service logs has no --until flag)');
+  }
+
   const sshHost = config[server].ssh.host;
-  const sshArgs = [sshHost, 'docker', 'logs', '--tail', String(tail)];
+  const sshArgs: string[] = [sshHost];
+
+  if (stack !== undefined) {
+    sshArgs.push('docker', 'service', 'logs', '--tail', String(tail));
+  } else {
+    sshArgs.push('docker', 'logs', '--tail', String(tail));
+  }
 
   if (since) sshArgs.push('--since', since);
   if (until) sshArgs.push('--until', until);
@@ -685,7 +776,22 @@ class ServerToolsMCPServer extends BaseMcpServer {
       },
       {
         name: 'list_service',
-        description: 'List running Docker containers on a server via SSH.',
+        description: 'List running Docker containers (or Swarm services when stack is set) on a server via SSH. Default mode: docker ps. With stack: docker stack services <stack> --format json. Output is opaque NDJSON pass-through; field names differ between modes.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            server: { type: 'string', description: 'Server name from config.' },
+            stack: {
+              type: 'string',
+              description: 'Optional Docker Swarm stack name. When set, lists services of the stack via "docker stack services" instead of "docker ps".',
+            },
+          },
+          required: ['server'],
+        },
+      },
+      {
+        name: 'list_stack',
+        description: 'List Docker Swarm stacks on a server via SSH. Calls "docker stack ls --format json" and returns NDJSON-parsed array. Errors if the host is not a Swarm manager.',
         inputSchema: {
           type: 'object',
           properties: { server: { type: 'string', description: 'Server name from config.' } },
@@ -694,15 +800,19 @@ class ServerToolsMCPServer extends BaseMcpServer {
       },
       {
         name: 'logs',
-        description: 'Fetch Docker container logs from a server via SSH.',
+        description: 'Fetch Docker container logs (or Swarm service logs when stack is set) from a server via SSH. Default mode: docker logs. With stack: docker service logs (caller must pass the full <stack>_<svc> name in service). NOTE: --until is not supported in stack mode.',
         inputSchema: {
           type: 'object',
           properties: {
             server: { type: 'string', description: 'Server name from config.' },
-            service: { type: 'string', description: 'Docker container/service name.' },
+            service: { type: 'string', description: 'Docker container/service name. In stack mode, pass the full <stack>_<svc> name.' },
+            stack: {
+              type: 'string',
+              description: 'Optional Docker Swarm stack name. When set, fetches logs via "docker service logs" (Swarm mode). --until is not supported in this mode.',
+            },
             tail: { type: 'number', description: 'Number of lines to tail (default: 100).' },
             since: { type: 'string', description: 'Show logs since timestamp (e.g., "2024-01-01T00:00:00").' },
-            until: { type: 'string', description: 'Show logs until timestamp.' },
+            until: { type: 'string', description: 'Show logs until timestamp. Not supported when stack is set.' },
             timestamps: { type: 'boolean', description: 'Show timestamps in log output.' },
           },
           required: ['server', 'service'],
@@ -781,6 +891,8 @@ class ServerToolsMCPServer extends BaseMcpServer {
         return handleList();
       case 'list_service':
         return handleListService(args);
+      case 'list_stack':
+        return handleListStack(args);
       case 'logs':
         return handleLogs(args);
       case 'db_query':

@@ -61,6 +61,7 @@ import {
   resetConfigCache,
   handleList,
   handleListService,
+  handleListStack,
   handleLogs,
   handleDbQuery,
   handleRedisQuery,
@@ -677,6 +678,126 @@ describe('handleListService', () => {
     mockConfig(PROD_CONFIG, 7000);
     expect(() => handleListService({ server: 'nonexistent' })).toThrow('Unknown server: nonexistent');
   });
+
+  describe('with stack option', () => {
+    it('calls SSH with docker stack services and parses NDJSON output', () => {
+      mockConfig(PROD_CONFIG, 7100);
+
+      const stackOutput = '{"Name":"mystack_web","Replicas":"3/3"}\n{"Name":"mystack_api","Replicas":"2/2"}\n';
+      vi.mocked(child_process.execFileSync).mockReturnValue(stackOutput);
+
+      const result = handleListService({ server: 'prod', stack: 'mystack' });
+      const services = JSON.parse(result.content[0].text);
+
+      expect(child_process.execFileSync).toHaveBeenCalledWith(
+        'ssh',
+        ['prod.example.com', 'docker', 'stack', 'services', 'mystack', '--format', 'json'],
+        expect.objectContaining({ timeout: 30000 }),
+      );
+      expect(services).toHaveLength(2);
+      expect(services[0].Name).toBe('mystack_web');
+    });
+
+    it('rejects invalid stack name (shell metacharacters)', () => {
+      mockConfig(PROD_CONFIG, 7200);
+      expect(() => handleListService({ server: 'prod', stack: 'mystack;rm -rf /' })).toThrow(/invalid.*stack/i);
+      expect(() => handleListService({ server: 'prod', stack: 'mystack$(whoami)' })).toThrow(/invalid.*stack/i);
+    });
+
+    it('throws typed error when host is not a swarm manager', () => {
+      mockConfig(PROD_CONFIG, 7300);
+
+      const err: any = new Error('Command failed');
+      err.stderr = Buffer.from('Error response from daemon: This node is not a swarm manager.');
+      vi.mocked(child_process.execFileSync).mockImplementation(() => {
+        throw err;
+      });
+
+      expect(() => handleListService({ server: 'prod', stack: 'mystack' })).toThrow(
+        /not a Docker Swarm manager/i,
+      );
+    });
+
+    it('throws for unknown server even when stack is set', () => {
+      mockConfig(PROD_CONFIG, 7400);
+      expect(() => handleListService({ server: 'nope', stack: 'mystack' })).toThrow('Unknown server: nope');
+    });
+  });
+});
+
+// ══════════════════════════════════════════════════════════════
+// handleListStack
+// ══════════════════════════════════════════════════════════════
+
+describe('handleListStack', () => {
+  const originalEnv = process.env;
+
+  beforeEach(() => {
+    process.env = { ...originalEnv };
+    resetConfigCache();
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+    vi.restoreAllMocks();
+  });
+
+  it('calls SSH with docker stack ls --format json and parses NDJSON output', () => {
+    mockConfig(PROD_CONFIG, 7500);
+
+    const stackLsOutput = '{"Name":"mystack","Services":"3"}\n{"Name":"otherstack","Services":"1"}\n';
+    vi.mocked(child_process.execFileSync).mockReturnValue(stackLsOutput);
+
+    const result = handleListStack({ server: 'prod' });
+    const stacks = JSON.parse(result.content[0].text);
+
+    expect(child_process.execFileSync).toHaveBeenCalledWith(
+      'ssh',
+      ['prod.example.com', 'docker', 'stack', 'ls', '--format', 'json'],
+      expect.objectContaining({ timeout: 30000 }),
+    );
+    expect(stacks).toHaveLength(2);
+    expect(stacks[0].Name).toBe('mystack');
+    expect(stacks[1].Name).toBe('otherstack');
+  });
+
+  it('returns empty array when no stacks deployed', () => {
+    mockConfig(PROD_CONFIG, 7600);
+    vi.mocked(child_process.execFileSync).mockReturnValue('');
+
+    const result = handleListStack({ server: 'prod' });
+    const stacks = JSON.parse(result.content[0].text);
+    expect(stacks).toEqual([]);
+  });
+
+  it('throws for unknown server', () => {
+    mockConfig(PROD_CONFIG, 7700);
+    expect(() => handleListStack({ server: 'nonexistent' })).toThrow('Unknown server: nonexistent');
+  });
+
+  it('throws typed error when host is not a swarm manager', () => {
+    mockConfig(PROD_CONFIG, 7800);
+
+    const err: any = new Error('Command failed');
+    err.stderr = Buffer.from('Error response from daemon: This node is not a swarm manager.');
+    vi.mocked(child_process.execFileSync).mockImplementation(() => {
+      throw err;
+    });
+
+    expect(() => handleListStack({ server: 'prod' })).toThrow(/not a Docker Swarm manager/i);
+  });
+
+  it('rethrows non-swarm errors unchanged', () => {
+    mockConfig(PROD_CONFIG, 7900);
+
+    const err: any = new Error('ssh: connect to host prod.example.com port 22: Connection refused');
+    err.stderr = Buffer.from('ssh: connect to host prod.example.com port 22: Connection refused');
+    vi.mocked(child_process.execFileSync).mockImplementation(() => {
+      throw err;
+    });
+
+    expect(() => handleListStack({ server: 'prod' })).toThrow(/Connection refused/i);
+  });
 });
 
 // ══════════════════════════════════════════════════════════════
@@ -794,6 +915,84 @@ describe('handleLogs', () => {
 
     expect(result.content[0].text).toBe('line1\nline2\nline3\n');
     expect(result.content[0].type).toBe('text');
+  });
+
+  describe('with stack option', () => {
+    it('calls SSH with docker service logs (Swarm mode)', () => {
+      mockConfig(PROD_CONFIG, 10400);
+      vi.mocked(child_process.execFileSync).mockReturnValue('swarm log output');
+
+      handleLogs({
+        server: 'prod',
+        stack: 'mystack',
+        service: 'mystack_web',
+        tail: 50,
+        since: '10m',
+        timestamps: true,
+      });
+
+      expect(child_process.execFileSync).toHaveBeenCalledWith(
+        'ssh',
+        [
+          'prod.example.com',
+          'docker', 'service', 'logs',
+          '--tail', '50',
+          '--since', '10m',
+          '--timestamps',
+          'mystack_web',
+        ],
+        expect.objectContaining({ timeout: 30000, maxBuffer: 1024 * 1024 }),
+      );
+    });
+
+    it('defaults tail to 100 in stack mode when omitted', () => {
+      mockConfig(PROD_CONFIG, 10500);
+      vi.mocked(child_process.execFileSync).mockReturnValue('output');
+
+      handleLogs({ server: 'prod', stack: 'mystack', service: 'mystack_web' });
+
+      expect(child_process.execFileSync).toHaveBeenCalledWith(
+        'ssh',
+        expect.arrayContaining(['service', 'logs', '--tail', '100']),
+        expect.any(Object),
+      );
+    });
+
+    it('rejects --until when stack is set', () => {
+      mockConfig(PROD_CONFIG, 10600);
+      expect(() =>
+        handleLogs({
+          server: 'prod',
+          stack: 'mystack',
+          service: 'mystack_web',
+          until: '2024-01-01',
+        }),
+      ).toThrow(/--until.*not supported.*stack/i);
+    });
+
+    it('rejects invalid stack name', () => {
+      mockConfig(PROD_CONFIG, 10700);
+      expect(() =>
+        handleLogs({ server: 'prod', stack: 'mystack;rm', service: 'mystack_web' }),
+      ).toThrow(/invalid.*stack/i);
+      expect(() =>
+        handleLogs({ server: 'prod', stack: 'mystack$(whoami)', service: 'mystack_web' }),
+      ).toThrow(/invalid.*stack/i);
+    });
+
+    it('still validates service name when stack is set', () => {
+      mockConfig(PROD_CONFIG, 10800);
+      expect(() =>
+        handleLogs({ server: 'prod', stack: 'mystack', service: 'mystack_web; rm -rf /' }),
+      ).toThrow(/invalid.*service/i);
+    });
+
+    it('throws for unknown server in stack mode', () => {
+      mockConfig(PROD_CONFIG, 10900);
+      expect(() =>
+        handleLogs({ server: 'nope', stack: 'mystack', service: 'mystack_web' }),
+      ).toThrow('Unknown server: nope');
+    });
   });
 });
 
