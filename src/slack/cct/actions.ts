@@ -111,30 +111,6 @@ export function buildPartialFailureBanner(failures: RefreshFailureSummary[], tot
 }
 
 /**
- * Surface descriptor for the `refresh_card` handler. Bolt's block_actions
- * payload carries a `container` block whose shape varies by surface:
- *   - `type: 'message'` → posted card; `chat.update(channel, ts, …)` works.
- *   - `type: 'ephemeral'` → ephemeral card from `postEphemeral`; `chat.update`
- *     is forbidden (no `message_ts` for ephemerals), so we use the
- *     `respond` callback with `replace_original: true` against the
- *     response_url Slack hands us per-action.
- * Anything else (`view`, missing container) falls back to the
- * `updateFailed` banner — we refuse to stack a fresh ephemeral card on
- * top of the stale one because that's exactly the bug Codex flagged.
- */
-interface RefreshCardActionBody {
-  user?: { id?: string };
-  container?: {
-    type?: 'message' | 'ephemeral' | string;
-    channel_id?: string;
-    message_ts?: string;
-  };
-  channel?: { id?: string };
-  message?: { ts?: string };
-  actions?: Array<{ value?: string }>;
-}
-
-/**
  * Register all CCT block actions + view submissions on the Bolt app.
  *
  * Registered routes:
@@ -478,21 +454,20 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
       // `force=true` fetch is gated to (admin actor) ∧ (cardMode='admin')
       // so non-admin clicking Refresh on an admin-mode card
       // re-renders without forcing a fresh fetch — throttle is honored.
-      const decoded = decodeActionButtonValue(body);
-      if (!decoded && (body as any)?.actions?.[0]?.value !== undefined) {
-        // Value present but unparseable. Banner + bail.
+      const decoded = decodeCctActionValue((body as { actions?: Array<{ value?: unknown }> })?.actions?.[0]?.value);
+      if (decoded.kind === 'invalid') {
         logger.warn('cct_refresh_card: invalid action value');
         await postEphemeralFailure(client, body, REFRESH_BANNERS.updateFailed);
         return;
       }
       const userIdValue = actorUserId(body);
-      const cardMode = decoded?.cardMode ?? null; // null when legacy / no value.
-      const isLegacy = decoded?.isLegacy ?? false;
+      const cardMode = decoded.kind === 'tagged' ? decoded.mode : null; // null on legacy.
       const actorIsAdmin = userIdValue ? isAdminUser(userIdValue) : false;
-      // Force gate: legacy decode → force=false (cardMode unknown,
-      // safer to throttle); tagged → force only when actor is admin AND
-      // cardMode is 'admin'.
-      const allowForce = !isLegacy && actorIsAdmin && cardMode === 'admin';
+      // Force gate: tagged 'admin' AND admin actor → force fetch.
+      // `cardMode === 'admin'` already implies non-legacy (legacy → null),
+      // so the legacy branch falls through to non-force without a separate
+      // check.
+      const allowForce = actorIsAdmin && cardMode === 'admin';
       const renderMode: CctCardViewerMode = resolveRenderMode(cardMode, userIdValue);
 
       const snap = await tokenManager.getSnapshot();
@@ -534,6 +509,10 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
 
       const banner = throttledAllNull ? ':warning: _Cached usage · refresh limited (5-minute throttle)._' : undefined;
 
+      // skipOnOpenFetch=true — both branches above already settled the
+      // usage refetch (or intentionally skipped it for empty fleets);
+      // a second on-open fan-out from renderCctCard would be redundant
+      // and potentially double-bill against Anthropic on the force path.
       const result = await renderCardInPlace({
         tokenManager,
         body,
@@ -541,6 +520,7 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
         respond,
         viewerMode: renderMode,
         prependBanner: banner,
+        skipOnOpenFetch: true,
       });
       if (result.surface === 'unknown' || !result.ok) {
         // Unknown surface or transport failure — surface the fallback
@@ -549,7 +529,7 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
         // (that's exactly what #803 fixes).
         if (result.surface === 'unknown') {
           logger.warn('cct_refresh_card no surface to update', {
-            container: (body as any)?.container,
+            container: (body as { container?: unknown })?.container,
           });
         }
         await postEphemeralFailure(client, body, REFRESH_BANNERS.updateFailed);
@@ -770,7 +750,7 @@ function decodeActionButtonValue(body: unknown): {
   cardMode: CctCardMode | null;
   isLegacy: boolean;
 } | null {
-  const raw = (body as any)?.actions?.[0]?.value;
+  const raw = (body as { actions?: Array<{ value?: unknown }> })?.actions?.[0]?.value;
   const decoded = decodeCctActionValue(raw);
   if (decoded.kind === 'invalid') return null;
   if (decoded.kind === 'legacy') {
@@ -902,19 +882,16 @@ function readCheckboxes(values: Record<string, Record<string, any>>, blockId: st
   return selected.map((o) => (typeof o?.value === 'string' ? (o.value as string) : '')).filter((v) => v.length > 0);
 }
 
-async function respondWithCard(opts: {
-  tokenManager: TokenManager;
-  respond?: (msg: any) => Promise<unknown>;
-  body: unknown;
-  client: WebClient;
-}): Promise<void> {
-  const { tokenManager, respond, body, client } = opts;
-  const blocks = await buildCardFromManager(tokenManager);
-  if (respond) {
-    await respond({ response_type: 'ephemeral', replace_original: false, blocks, text: ':key: CCT' });
-    return;
-  }
-  await postEphemeralCard(tokenManager, client, body);
+/**
+ * Prepend a Slack `section` banner block to a list of card blocks. Returns
+ * the input untouched when `banner` is empty/undefined so the caller can
+ * always pipe through it. Both `renderCardInPlace` factories and the
+ * future banner sites use this — a single change-point if the banner
+ * markup ever needs `block_id` / `accessory` / styling.
+ */
+function withBannerPrefix(banner: string | undefined, blocks: Record<string, unknown>[]): Record<string, unknown>[] {
+  if (!banner) return blocks;
+  return [{ type: 'section', text: { type: 'mrkdwn', text: banner } }, ...blocks];
 }
 
 /**
@@ -946,17 +923,33 @@ async function renderCardInPlace(opts: {
   viewerMode: CctCardViewerMode;
   text?: string;
   prependBanner?: string;
+  /**
+   * Tell the inner `renderCctCard` to skip its on-open
+   * `fetchUsageForAllAttached` fan-out. Set this when the action
+   * handler has already performed the relevant fetch (force or
+   * non-force) so the card render doesn't fire a second redundant
+   * fan-out against Anthropic.
+   */
+  skipOnOpenFetch?: boolean;
 }): Promise<{ surface: 'message' | 'ephemeral' | 'unknown'; ok: boolean }> {
   const { tokenManager, body, client, respond, viewerMode, prependBanner } = opts;
   const text = opts.text ?? ':key: CCT status';
   const userId = actorUserId(body);
   const renderMessageBlocks = async (): Promise<Record<string, unknown>[]> => {
     // Persistent message surfaces use renderCctCard so the trailing
-    // `z_setting_cct_cancel` chrome row survives chat.update.
+    // `z_setting_cct_cancel` chrome row survives chat.update. The
+    // skipOnOpenFetch hint is set when the action handler ALREADY
+    // performed a usage refetch (force or non-force) — a second
+    // fan-out from renderCctCard's on-open hook would be redundant.
     let blocks: Record<string, unknown>[];
     if (userId) {
       try {
-        const rendered = await renderCctCard({ userId, issuedAt: Date.now(), viewerMode });
+        const rendered = await renderCctCard({
+          userId,
+          issuedAt: Date.now(),
+          viewerMode,
+          skipOnOpenFetch: opts.skipOnOpenFetch,
+        });
         blocks = rendered.blocks as Record<string, unknown>[];
       } catch (err) {
         logger.warn('renderCardInPlace: renderCctCard failed, falling back to buildCardFromManager', {
@@ -967,11 +960,11 @@ async function renderCardInPlace(opts: {
     } else {
       blocks = await buildCardFromManager(tokenManager, { viewerMode });
     }
-    return prependBanner ? [{ type: 'section', text: { type: 'mrkdwn', text: prependBanner } }, ...blocks] : blocks;
+    return withBannerPrefix(prependBanner, blocks);
   };
   const renderEphemeralBlocks = async (): Promise<Record<string, unknown>[]> => {
     const blocks = await buildCardFromManager(tokenManager, { viewerMode });
-    return prependBanner ? [{ type: 'section', text: { type: 'mrkdwn', text: prependBanner } }, ...blocks] : blocks;
+    return withBannerPrefix(prependBanner, blocks);
   };
   return renderInPlace({
     body: body as Parameters<typeof renderInPlace>[0]['body'],
@@ -1017,49 +1010,6 @@ async function postEphemeralCard(tokenManager: TokenManager, client: WebClient, 
     });
   } catch (err) {
     logger.debug('postEphemeralCard failed', { err });
-  }
-}
-
-/**
- * #701 — single-surface partial-failure ephemeral. The banner `section`
- * block is prepended to the card blocks so the operator sees the failure
- * summary AND the updated per-row warnings in a single atomic message.
- * This replaces the pre-#701 "post banner; then post card" sequence that
- * could arrive out of order.
- *
- * On transport failure we fall back to a single `postEphemeralFailure`
- * with just the banner — losing the card detail is acceptable, losing
- * the failure signal entirely is not.
- */
-async function postEphemeralCardWithBanner(
-  tokenManager: TokenManager,
-  client: WebClient,
-  body: unknown,
-  banner: string,
-): Promise<void> {
-  const target = resolveEphemeralTarget(body);
-  if (!target) {
-    logger.warn('postEphemeralCardWithBanner: missing user/channel on action body; banner dropped', { banner });
-    return;
-  }
-  const cardBlocks = await buildCardFromManager(tokenManager);
-  const blocks = [
-    {
-      type: 'section',
-      text: { type: 'mrkdwn', text: banner },
-    },
-    ...cardBlocks,
-  ];
-  try {
-    await client.chat.postEphemeral({
-      channel: target.channel,
-      user: target.userId,
-      text: ':warning: CCT refresh — partial failure',
-      blocks: blocks as any,
-    });
-  } catch (err) {
-    logger.debug('postEphemeralCardWithBanner failed; falling back to banner-only', { err });
-    await postEphemeralFailure(client, body, banner);
   }
 }
 

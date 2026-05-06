@@ -1468,6 +1468,7 @@ describe('refresh_card action handler (card v2 follow-up)', () => {
         userId: 'admin',
         issuedAt: expect.any(Number),
         viewerMode: 'admin',
+        skipOnOpenFetch: true,
       });
       const updateCall = update.mock.calls[0]?.[0] as any;
       const blockJson = JSON.stringify(updateCall.blocks);
@@ -1758,6 +1759,7 @@ describe('refresh_card action handler (card v2 follow-up)', () => {
         userId: 'random',
         issuedAt: expect.any(Number),
         viewerMode: 'admin',
+        skipOnOpenFetch: true,
       });
     } finally {
       spy.mockRestore();
@@ -1797,6 +1799,7 @@ describe('refresh_card action handler (card v2 follow-up)', () => {
         userId: 'random',
         issuedAt: expect.any(Number),
         viewerMode: 'readonly',
+        skipOnOpenFetch: true,
       });
     } finally {
       spy.mockRestore();
