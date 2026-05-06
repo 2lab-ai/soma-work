@@ -21,11 +21,13 @@ import type { App } from '@slack/bolt';
 import type { WebClient } from '@slack/web-api';
 import { isAdminUser } from '../../admin-utils';
 import type { AuthKey } from '../../auth/auth-key';
+import { config } from '../../config';
 import { Logger } from '../../logger';
 import type { OAuthCredentials } from '../../oauth/refresher';
 import { hasRequiredScopes } from '../../oauth/scope-check';
 import type { TokenManager } from '../../token-manager';
 import { renderCctCard } from '../z/topics/cct-topic';
+import { type CctCardMode, decodeCctActionValue } from './action-value';
 import {
   type AddSlotFormKind,
   appendStoreReadFailureBanner,
@@ -33,8 +35,10 @@ import {
   buildAttachOAuthModal,
   buildCctCardBlocks,
   buildRemoveSlotModal,
+  type CctCardViewerMode,
   escapeMrkdwn,
 } from './builder';
+import { renderInPlace } from './render-in-place';
 import { CCT_ACTION_IDS, CCT_BLOCK_IDS, CCT_VIEW_IDS } from './views';
 
 const logger = new Logger('CctActions');
@@ -107,30 +111,6 @@ export function buildPartialFailureBanner(failures: RefreshFailureSummary[], tot
 }
 
 /**
- * Surface descriptor for the `refresh_card` handler. Bolt's block_actions
- * payload carries a `container` block whose shape varies by surface:
- *   - `type: 'message'` → posted card; `chat.update(channel, ts, …)` works.
- *   - `type: 'ephemeral'` → ephemeral card from `postEphemeral`; `chat.update`
- *     is forbidden (no `message_ts` for ephemerals), so we use the
- *     `respond` callback with `replace_original: true` against the
- *     response_url Slack hands us per-action.
- * Anything else (`view`, missing container) falls back to the
- * `updateFailed` banner — we refuse to stack a fresh ephemeral card on
- * top of the stale one because that's exactly the bug Codex flagged.
- */
-interface RefreshCardActionBody {
-  user?: { id?: string };
-  container?: {
-    type?: 'message' | 'ephemeral' | string;
-    channel_id?: string;
-    message_ts?: string;
-  };
-  channel?: { id?: string };
-  message?: { ts?: string };
-  actions?: Array<{ value?: string }>;
-}
-
-/**
  * Register all CCT block actions + view submissions on the Bolt app.
  *
  * Registered routes:
@@ -184,14 +164,15 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
       if (!requireAdmin(body)) return;
       const triggerId: string | undefined = (body as any)?.trigger_id;
       if (!triggerId) return;
-      // Per-slot Remove button: `value` carries the target keyId. Reject
-      // if absent or unknown — no silent fallback to active/slots[0].
-      const bodyAction = (body as any).actions?.[0];
-      const targetKeyId = typeof bodyAction?.value === 'string' ? bodyAction.value : undefined;
-      if (!targetKeyId) {
-        logger.warn('cct_open_remove: missing keyId on action value');
+      // Per-slot Remove button: `value` carries the target keyId,
+      // tagged via the #803 codec. Reject if invalid — no silent
+      // fallback to active/slots[0].
+      const decoded = decodeActionButtonValue(body);
+      if (!decoded) {
+        logger.warn('cct_open_remove: invalid or missing keyId on action value');
         return;
       }
+      const targetKeyId = decoded.payload;
       const snap = await tokenManager.getSnapshot();
       const target = snap.registry.slots.find((s) => s.keyId === targetKeyId);
       if (!target) {
@@ -219,12 +200,12 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
       if (!requireAdmin(body)) return;
       const triggerId: string | undefined = (body as any)?.trigger_id;
       if (!triggerId) return;
-      const bodyAction = (body as any).actions?.[0];
-      const targetKeyId = typeof bodyAction?.value === 'string' ? bodyAction.value : undefined;
-      if (!targetKeyId) {
-        logger.warn('cct_open_attach: missing keyId on action value');
+      const decoded = decodeActionButtonValue(body);
+      if (!decoded) {
+        logger.warn('cct_open_attach: invalid or missing keyId on action value');
         return;
       }
+      const targetKeyId = decoded.payload;
       const snap = await tokenManager.getSnapshot();
       const target = snap.registry.slots.find((s) => s.keyId === targetKeyId);
       if (!target) {
@@ -248,52 +229,72 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
   });
 
   // Z2 — Detach OAuth. Inline action (no modal): validate → ack → mutate.
-  // The card is re-posted ephemerally so the user immediately sees the
-  // Attach button replace the Detach button for that slot.
-  app.action(CCT_ACTION_IDS.detach, async ({ ack, body, client }) => {
+  //
+  // #803 — replaces the prior `postEphemeralCard` (which spawned a fresh
+  // ephemeral on top of the stale card) with `renderCardInPlace` so the
+  // clicked surface updates in place. cardMode is preserved from the
+  // originating button so a non-admin viewing an admin-mode card who
+  // clicked Detach (which they cannot) would have been refused at the
+  // admin gate; admin-on-admin-card is the only happy path here.
+  app.action(CCT_ACTION_IDS.detach, async ({ ack, body, client, respond }) => {
     await ack();
     try {
       if (!requireAdmin(body)) return;
-      const bodyAction = (body as any).actions?.[0];
-      const targetKeyId = typeof bodyAction?.value === 'string' ? bodyAction.value : undefined;
-      if (!targetKeyId) {
-        logger.warn('cct_detach: missing keyId on action value');
+      const decoded = decodeActionButtonValue(body);
+      if (!decoded) {
+        logger.warn('cct_detach: invalid or missing keyId on action value');
         return;
       }
+      const targetKeyId = decoded.payload;
+      const renderMode = resolveRenderMode(decoded.cardMode, actorUserId(body));
       await tokenManager.detachOAuth(targetKeyId);
-      await postEphemeralCard(tokenManager, client, body);
+      await renderCardInPlace({ tokenManager, body, client, respond, viewerMode: renderMode });
     } catch (err) {
       logger.error('cct_detach failed', err);
     }
   });
 
   // Rotate to next.
+  //
+  // #803 — in-place card update via renderCardInPlace.
   app.action(CCT_ACTION_IDS.next, async ({ ack, body, client, respond }) => {
     await ack();
     try {
       if (!requireAdmin(body)) return;
+      // Decode the button value so legacy `value:'next'` (pre-#803) and
+      // tagged `cm:admin|next` both flow through. cardMode falls back
+      // to actor-derived when legacy.
+      const decoded = decodeActionButtonValue(body);
+      const renderMode = resolveRenderMode(decoded?.cardMode ?? null, actorUserId(body));
       await tokenManager.rotateToNext();
-      await respondWithCard({ tokenManager, respond, body, client });
+      await renderCardInPlace({ tokenManager, body, client, respond, viewerMode: renderMode });
     } catch (err) {
       logger.error('cct_next failed', err);
     }
   });
 
   // Per-slot [Activate] button. Admin gate + `applyToken(keyId)`
-  // + re-post card. Button is only emitted for non-active, non-api_key
-  // slots (see `buildSlotRow`); the handler re-validates server-side so
-  // a stale card (where the user already rotated elsewhere) can't force
-  // a runtime exception into `applyToken`'s api_key reject path.
+  // + in-place card re-render.
+  //
+  // Button is only emitted for non-active, non-api_key slots (see
+  // `buildSlotRow`); the handler re-validates server-side so a stale
+  // card (where the user already rotated elsewhere) can't force a
+  // runtime exception into `applyToken`'s api_key reject path.
+  //
+  // #803 — `respondWithCard` (which posted a fresh ephemeral via
+  // `respond({replace_original:false})`) replaced by `renderCardInPlace`
+  // so the clicked surface updates in place.
   app.action(CCT_ACTION_IDS.activate_slot, async ({ ack, body, client, respond }) => {
     await ack();
     try {
       if (!requireAdmin(body)) return;
-      const bodyAction = (body as any).actions?.[0];
-      const targetKeyId = typeof bodyAction?.value === 'string' ? bodyAction.value : undefined;
-      if (!targetKeyId) {
-        logger.warn('cct_activate_slot: missing keyId on action value');
+      const decoded = decodeActionButtonValue(body);
+      if (!decoded) {
+        logger.warn('cct_activate_slot: invalid or missing keyId on action value');
         return;
       }
+      const targetKeyId = decoded.payload;
+      const renderMode = resolveRenderMode(decoded.cardMode, actorUserId(body));
       const snap = await tokenManager.getSnapshot();
       const target = snap.registry.slots.find((s) => s.keyId === targetKeyId);
       if (!target) {
@@ -305,7 +306,7 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
         return;
       }
       await tokenManager.applyToken(targetKeyId);
-      await respondWithCard({ tokenManager, respond, body, client });
+      await renderCardInPlace({ tokenManager, body, client, respond, viewerMode: renderMode });
     } catch (err) {
       logger.error('cct_activate_slot failed', err);
     }
@@ -324,10 +325,15 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
   // an ephemeral banner instead of silently re-rendering the same stale
   // card. Partial failures still re-post so successful rows update. Empty
   // result map (no attached slots) is not "all failed".
-  app.action(CCT_ACTION_IDS.refresh_usage_all, async ({ ack, body, client }) => {
+  app.action(CCT_ACTION_IDS.refresh_usage_all, async ({ ack, body, client, respond }) => {
     await ack();
     try {
       if (!requireAdmin(body)) return;
+      // #803 — refresh_usage_all is admin-only and only emitted on the
+      // admin card, so cardMode is implicitly 'admin'. Decode for
+      // legacy compat anyway so a pre-#803 button still flows through.
+      const decoded = decodeActionButtonValue(body);
+      const renderMode = resolveRenderMode(decoded?.cardMode ?? null, actorUserId(body));
       // #701 — capture the starting keyIds BEFORE the refresh call so we
       // can detect slots that timed out (missing from `results`) separately
       // from slots that were concurrently removed/detached.
@@ -376,27 +382,44 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
 
       const effectiveTotal = okCount + failures.length;
 
-      // All-failed path — no successes, at least one failure. Covers the
-      // "every slot timed out" case (empty `results`) that the naive
-      // check would have sent into the mixed path with no successes.
+      // #803 — All three outcome arms now go through `renderCardInPlace`
+      // so the originating card surface is updated in place rather than
+      // stacking a fresh ephemeral on top of the stale card.
+      //
+      // All-failed: prepend the `allNull` banner (no successes worth
+      // re-rendering, but still render so the operator sees the card
+      // chrome explaining why).
+      // Partial: prepend the partial-failure banner with name (kind/code)
+      // bullets.
+      // Success-only: render the card with no banner.
+
+      let banner: string | undefined;
       if (failures.length > 0 && okCount === 0 && effectiveTotal > 0) {
-        await postEphemeralFailure(client, body, REFRESH_BANNERS.allNull);
-        return;
+        banner = REFRESH_BANNERS.allNull;
+      } else if (failures.length > 0) {
+        banner = buildPartialFailureBanner(failures, effectiveTotal);
       }
 
-      if (failures.length === 0) {
-        // No partial failures — render the updated card (unchanged path).
-        await postEphemeralCard(tokenManager, client, body);
-        return;
+      const result = await renderCardInPlace({
+        tokenManager,
+        body,
+        client,
+        respond,
+        viewerMode: renderMode,
+        prependBanner: banner,
+      });
+      if (result.surface === 'unknown' || !result.ok) {
+        // Couldn't update the surface — surface the banner via
+        // ephemeral fallback so we at least don't drop the failure
+        // signal on the floor.
+        if (banner) {
+          await postEphemeralFailure(client, body, banner);
+        } else {
+          // Success-only path failed to render. Operator gets a generic
+          // "card update failed" line so they re-invoke /cct.
+          await postEphemeralFailure(client, body, REFRESH_BANNERS.updateFailed);
+        }
       }
-
-      // Mixed outcomes → single ephemeral surface: banner block + card
-      // blocks in one `chat.postEphemeral` call. Prevents the ordering
-      // race that two separate ephemeral posts would introduce. Denominator
-      // is `effectiveTotal` (ok + failed) — concurrent teardown is OMITTED,
-      // matching the spec's accounting rules.
-      const banner = buildPartialFailureBanner(failures, effectiveTotal);
-      await postEphemeralCardWithBanner(tokenManager, client, body, banner);
     } catch (err) {
       logger.error('cct_refresh_usage_all failed', err);
       await postEphemeralFailure(client, body, REFRESH_BANNERS.outerCatch);
@@ -426,84 +449,91 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
   app.action(CCT_ACTION_IDS.refresh_card, async ({ ack, body, client, respond }) => {
     await ack();
     try {
-      if (!requireAdmin(body)) return;
+      // #803 — `refresh_card` is now allowed for non-admin (the only
+      // affordance on the readonly card). Side-effect-bearing
+      // `force=true` fetch is gated to (admin actor) ∧ (cardMode='admin')
+      // so non-admin clicking Refresh on an admin-mode card
+      // re-renders without forcing a fresh fetch — throttle is honored.
+      const decoded = decodeCctActionValue((body as { actions?: Array<{ value?: unknown }> })?.actions?.[0]?.value);
+      if (decoded.kind === 'invalid') {
+        logger.warn('cct_refresh_card: invalid action value');
+        await postEphemeralFailure(client, body, REFRESH_BANNERS.updateFailed);
+        return;
+      }
+      const userIdValue = actorUserId(body);
+      const cardMode = decoded.kind === 'tagged' ? decoded.mode : null; // null on legacy.
+      const actorIsAdmin = userIdValue ? isAdminUser(userIdValue) : false;
+      // Force gate: tagged 'admin' AND admin actor → force fetch.
+      // `cardMode === 'admin'` already implies non-legacy (legacy → null),
+      // so the legacy branch falls through to non-force without a separate
+      // check.
+      const allowForce = actorIsAdmin && cardMode === 'admin';
+      const renderMode: CctCardViewerMode = resolveRenderMode(cardMode, userIdValue);
+
       const snap = await tokenManager.getSnapshot();
       const keyIds = snap.registry.slots
         .filter((s) => s.kind === 'cct' && s.oauthAttachment !== undefined)
         .map((s) => s.keyId);
-      const results = await Promise.allSettled(
-        keyIds.map((keyId) => tokenManager.fetchAndStoreUsage(keyId, { force: true })),
-      );
-      const freshCount = results.filter((r) => r.status === 'fulfilled' && r.value !== null).length;
-      if (freshCount === 0 && keyIds.length > 0) {
-        await postEphemeralFailure(client, body, REFRESH_BANNERS.cardNull);
-        return;
-      }
 
-      // Surface-aware renderer choice (Codex P2 follow-up to #679):
-      //   - container.type === 'message'   → renderCctCard (persistent /cct
-      //     and /z cct messages were built by cct-topic and carry the
-      //     trailing z_setting_cct_cancel actions row; chat.update with
-      //     buildCardFromManager output strips that row).
-      //   - container.type === 'ephemeral' → buildCardFromManager (cancel
-      //     button isn't part of the ephemeral surface).
-      // renderCctCard is heavier (admin check + fetchUsageForAllAttached +
-      // buildCctCardBlocks); on failure we fall back to the
-      // buildCardFromManager output so refresh still works.
-      const blocks = await buildCardFromManager(tokenManager);
-      const typed = body as RefreshCardActionBody;
-      const containerType = typed?.container?.type;
-      const channel = typed?.container?.channel_id ?? typed?.channel?.id;
-      const ts = typed?.container?.message_ts ?? typed?.message?.ts;
-      const userId = typed?.user?.id;
-
-      if (containerType === 'message' && channel && ts) {
-        let messageBlocks = blocks;
-        if (userId) {
-          try {
-            const rendered = await renderCctCard({ userId, issuedAt: Date.now() });
-            messageBlocks = rendered.blocks as Record<string, unknown>[];
-          } catch (err) {
-            logger.warn('cct_refresh_card renderCctCard failed, falling back to buildCardFromManager', {
-              err: (err as Error).message,
-            });
-          }
+      let throttledAllNull = false;
+      if (allowForce) {
+        // Admin-on-admin-card: fan-out force fetch (existing behavior).
+        const results = await Promise.allSettled(
+          keyIds.map((keyId) => tokenManager.fetchAndStoreUsage(keyId, { force: true })),
+        );
+        const freshCount = results.filter((r) => r.status === 'fulfilled' && r.value !== null).length;
+        if (freshCount === 0 && keyIds.length > 0) {
+          await postEphemeralFailure(client, body, REFRESH_BANNERS.cardNull);
+          return;
         }
+      } else if (keyIds.length > 0) {
+        // Non-force path (non-admin, OR admin-on-readonly-card, OR
+        // legacy value). `fetchUsageForAllAttached` respects the
+        // per-keyId 5-minute throttle. When the timeout fires before
+        // any slot returns or every slot is throttled, the result map
+        // values are null — surface a context banner that says so but
+        // STILL render the cached card so the user sees something.
         try {
-          await client.chat.update({
-            channel,
-            ts,
-            text: ':key: CCT status',
-            blocks: messageBlocks as any,
+          const results = await tokenManager.fetchUsageForAllAttached({
+            timeoutMs: config.usage.cardOpenTimeoutMs,
           });
+          const fresh = Object.values(results).filter((v) => v !== null).length;
+          if (fresh === 0) throttledAllNull = true;
         } catch (err) {
-          logger.warn('cct_refresh_card chat.update failed', { err: (err as Error).message });
-          await postEphemeralFailure(client, body, REFRESH_BANNERS.updateFailed);
+          logger.debug('cct_refresh_card non-force fetch failed; rendering cached', {
+            err: (err as Error)?.message ?? err,
+          });
+          throttledAllNull = true;
         }
-        return;
       }
 
-      if (containerType === 'ephemeral') {
-        try {
-          await respond({
-            response_type: 'ephemeral',
-            replace_original: true,
-            text: ':key: CCT status',
-            blocks: blocks as any,
-          });
-        } catch (err) {
-          logger.warn('cct_refresh_card respond failed', { err: (err as Error).message });
-          await postEphemeralFailure(client, body, REFRESH_BANNERS.updateFailed);
-        }
-        return;
-      }
+      const banner = throttledAllNull ? ':warning: _Cached usage · refresh limited (5-minute throttle)._' : undefined;
 
-      // Unknown surface — neither a persistent message nor ephemeral.
-      // Could be a view/home-tab surface or a malformed payload; either
-      // way we refuse to stack a fresh ephemeral card and surface the
-      // updateFailed banner so the operator re-invokes `/cct` explicitly.
-      logger.warn('cct_refresh_card no surface to update', { containerType });
-      await postEphemeralFailure(client, body, REFRESH_BANNERS.updateFailed);
+      // skipOnOpenFetch=true — both branches above already settled the
+      // usage refetch (or intentionally skipped it for empty fleets);
+      // a second on-open fan-out from renderCctCard would be redundant
+      // and potentially double-bill against Anthropic on the force path.
+      const result = await renderCardInPlace({
+        tokenManager,
+        body,
+        client,
+        respond,
+        viewerMode: renderMode,
+        prependBanner: banner,
+        skipOnOpenFetch: true,
+      });
+      if (result.surface === 'unknown' || !result.ok) {
+        // Unknown surface or transport failure — surface the fallback
+        // banner so the operator re-invokes `/cct` explicitly. Refuse
+        // to stack a fresh ephemeral card on top of the stale one
+        // (that's exactly what #803 fixes).
+        if (result.surface === 'unknown') {
+          logger.warn('cct_refresh_card no surface to update', {
+            container: (body as { container?: unknown })?.container,
+          });
+        }
+        await postEphemeralFailure(client, body, REFRESH_BANNERS.updateFailed);
+      }
     } catch (err) {
       logger.error('cct_refresh_card failed', err);
       await postEphemeralFailure(client, body, REFRESH_BANNERS.outerCatch).catch(() => {
@@ -513,7 +543,23 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
   });
 
   // View submission: Add slot.
+  //
+  // #803 — admin gate added on the view submission entry. The modal-
+  // open gate (`cct_open_add`) is the primary UX gate, but a non-admin
+  // could in theory craft a `view_submission` payload directly via a
+  // leaked view_id. Server-side gate makes the trust boundary
+  // unambiguous.
   app.view(CCT_VIEW_IDS.add, async ({ ack, body, client }) => {
+    if (!requireAdmin(body)) {
+      // ack-with-errors keeps the modal open (non-admin shouldn't have
+      // gotten here in normal flow); we surface a generic error keyed
+      // by the name field so something visible appears.
+      await ack({
+        response_action: 'errors',
+        errors: { [CCT_BLOCK_IDS.add_name]: 'Admin only.' },
+      });
+      return;
+    }
     const values: Record<string, Record<string, any>> = (body as any)?.view?.state?.values ?? {};
     const errors = validateAddSubmission(values, tokenManager);
     if (errors) {
@@ -565,7 +611,16 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
   });
 
   // View submission: Remove slot.
+  //
+  // #803 — admin gate added on the view submission entry. The modal-
+  // open gate (`cct_open_remove`) is the primary UX gate; the
+  // server-side gate here defends against direct view_submission
+  // posts.
   app.view(CCT_VIEW_IDS.remove, async ({ ack, body, client }) => {
+    if (!requireAdmin(body)) {
+      await ack();
+      return;
+    }
     await ack();
     try {
       const keyId = ((body as any)?.view?.private_metadata ?? '') as string;
@@ -599,6 +654,14 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
   //   4. Runtime errors from `attachOAuth` (race-lost kind/source checks,
   //      scope drift) surface via ephemeral DM — the modal is already closed.
   app.view(CCT_VIEW_IDS.attach, async ({ ack, body, client }) => {
+    // #803 — admin gate added on the view submission entry.
+    if (!requireAdmin(body)) {
+      await ack({
+        response_action: 'errors',
+        errors: { [CCT_BLOCK_IDS.attach_oauth_blob]: 'Admin only.' },
+      });
+      return;
+    }
     const values: Record<string, Record<string, any>> = (body as any)?.view?.state?.values ?? {};
     const blob = readPlainText(values, CCT_BLOCK_IDS.attach_oauth_blob, CCT_ACTION_IDS.attach_oauth_input);
     const creds = parseOAuthBlob(blob);
@@ -664,6 +727,52 @@ function requireAdmin(body: unknown): boolean {
     return false;
   }
   return true;
+}
+
+/**
+ * Pull the actor user id off the bolt body. Returns null when missing.
+ */
+function actorUserId(body: unknown): string | null {
+  const userId = (body as any)?.user?.id;
+  return typeof userId === 'string' && userId.length > 0 ? userId : null;
+}
+
+/**
+ * Decode a button's `value` into `{ payload, cardMode, isLegacy }`.
+ *
+ * Returns null when the value is invalid — handler must ack and refuse
+ * the action. Legacy values surface as `{ isLegacy: true, cardMode: null }`
+ * so the caller can force `force=false` and fall back to the actor's
+ * render mode. Tagged values surface the encoded mode verbatim.
+ */
+function decodeActionButtonValue(body: unknown): {
+  payload: string;
+  cardMode: CctCardMode | null;
+  isLegacy: boolean;
+} | null {
+  const raw = (body as { actions?: Array<{ value?: unknown }> })?.actions?.[0]?.value;
+  const decoded = decodeCctActionValue(raw);
+  if (decoded.kind === 'invalid') return null;
+  if (decoded.kind === 'legacy') {
+    return { payload: decoded.payload, cardMode: null, isLegacy: true };
+  }
+  return { payload: decoded.payload, cardMode: decoded.mode, isLegacy: false };
+}
+
+/**
+ * Resolve the effective render mode for an action handler.
+ *
+ *   - tagged value (cardMode='admin'|'readonly') → use it. This is the
+ *     "preserve cardMode across viewers" rule (#803 spec Q1=A).
+ *   - legacy value (no `cm:` prefix) → fall back to the actor's mode.
+ *     Legacy buttons can only have been emitted before #803 landed, so
+ *     the safest mapping is "render the card as the actor would see a
+ *     fresh /cct".
+ */
+function resolveRenderMode(cardMode: CctCardMode | null, actorUserIdValue: string | null): CctCardMode {
+  if (cardMode !== null) return cardMode;
+  if (actorUserIdValue && isAdminUser(actorUserIdValue)) return 'admin';
+  return 'readonly';
 }
 
 /**
@@ -773,19 +882,99 @@ function readCheckboxes(values: Record<string, Record<string, any>>, blockId: st
   return selected.map((o) => (typeof o?.value === 'string' ? (o.value as string) : '')).filter((v) => v.length > 0);
 }
 
-async function respondWithCard(opts: {
+/**
+ * Prepend a Slack `section` banner block to a list of card blocks. Returns
+ * the input untouched when `banner` is empty/undefined so the caller can
+ * always pipe through it. Both `renderCardInPlace` factories and the
+ * future banner sites use this — a single change-point if the banner
+ * markup ever needs `block_id` / `accessory` / styling.
+ */
+function withBannerPrefix(banner: string | undefined, blocks: Record<string, unknown>[]): Record<string, unknown>[] {
+  if (!banner) return blocks;
+  return [{ type: 'section', text: { type: 'mrkdwn', text: banner } }, ...blocks];
+}
+
+/**
+ * #803 — Render an in-place card update across the message + ephemeral
+ * surfaces.
+ *
+ * `viewerMode` determines what the user sees — locked to the cardMode
+ * stamped on the originating button (or actor-derived fallback when the
+ * button was a legacy raw value).
+ *
+ * Message surface: delegate to `renderCctCard` so the trailing
+ * `z_setting_cct_cancel` actions row that the cct-topic adds is
+ * preserved across `chat.update` (a `buildCardFromManager` blob would
+ * strip that chrome row).
+ *
+ * Ephemeral surface: lighter `buildCardFromManager` is sufficient — the
+ * cancel row only lives on persistent message cards.
+ *
+ * `prependBanner` lets the caller layer a single section block above
+ * the card (used by refresh_card on the throttle-all-null path and the
+ * refresh_usage_all partial-failure path). The banner is a Slack
+ * mrkdwn string.
+ */
+async function renderCardInPlace(opts: {
   tokenManager: TokenManager;
-  respond?: (msg: any) => Promise<unknown>;
   body: unknown;
   client: WebClient;
-}): Promise<void> {
-  const { tokenManager, respond, body, client } = opts;
-  const blocks = await buildCardFromManager(tokenManager);
-  if (respond) {
-    await respond({ response_type: 'ephemeral', replace_original: false, blocks, text: ':key: CCT' });
-    return;
-  }
-  await postEphemeralCard(tokenManager, client, body);
+  respond?: (msg: any) => Promise<unknown>;
+  viewerMode: CctCardViewerMode;
+  text?: string;
+  prependBanner?: string;
+  /**
+   * Tell the inner `renderCctCard` to skip its on-open
+   * `fetchUsageForAllAttached` fan-out. Set this when the action
+   * handler has already performed the relevant fetch (force or
+   * non-force) so the card render doesn't fire a second redundant
+   * fan-out against Anthropic.
+   */
+  skipOnOpenFetch?: boolean;
+}): Promise<{ surface: 'message' | 'ephemeral' | 'unknown'; ok: boolean }> {
+  const { tokenManager, body, client, respond, viewerMode, prependBanner } = opts;
+  const text = opts.text ?? ':key: CCT status';
+  const userId = actorUserId(body);
+  const renderMessageBlocks = async (): Promise<Record<string, unknown>[]> => {
+    // Persistent message surfaces use renderCctCard so the trailing
+    // `z_setting_cct_cancel` chrome row survives chat.update. The
+    // skipOnOpenFetch hint is set when the action handler ALREADY
+    // performed a usage refetch (force or non-force) — a second
+    // fan-out from renderCctCard's on-open hook would be redundant.
+    let blocks: Record<string, unknown>[];
+    if (userId) {
+      try {
+        const rendered = await renderCctCard({
+          userId,
+          issuedAt: Date.now(),
+          viewerMode,
+          skipOnOpenFetch: opts.skipOnOpenFetch,
+        });
+        blocks = rendered.blocks as Record<string, unknown>[];
+      } catch (err) {
+        logger.warn('renderCardInPlace: renderCctCard failed, falling back to buildCardFromManager', {
+          err: (err as Error).message,
+        });
+        blocks = await buildCardFromManager(tokenManager, { viewerMode });
+      }
+    } else {
+      blocks = await buildCardFromManager(tokenManager, { viewerMode });
+    }
+    return withBannerPrefix(prependBanner, blocks);
+  };
+  const renderEphemeralBlocks = async (): Promise<Record<string, unknown>[]> => {
+    const blocks = await buildCardFromManager(tokenManager, { viewerMode });
+    return withBannerPrefix(prependBanner, blocks);
+  };
+  return renderInPlace({
+    body: body as Parameters<typeof renderInPlace>[0]['body'],
+    client,
+    respond,
+    text,
+    renderMessageBlocks,
+    renderEphemeralBlocks,
+    logger,
+  });
 }
 
 /**
@@ -825,49 +1014,6 @@ async function postEphemeralCard(tokenManager: TokenManager, client: WebClient, 
 }
 
 /**
- * #701 — single-surface partial-failure ephemeral. The banner `section`
- * block is prepended to the card blocks so the operator sees the failure
- * summary AND the updated per-row warnings in a single atomic message.
- * This replaces the pre-#701 "post banner; then post card" sequence that
- * could arrive out of order.
- *
- * On transport failure we fall back to a single `postEphemeralFailure`
- * with just the banner — losing the card detail is acceptable, losing
- * the failure signal entirely is not.
- */
-async function postEphemeralCardWithBanner(
-  tokenManager: TokenManager,
-  client: WebClient,
-  body: unknown,
-  banner: string,
-): Promise<void> {
-  const target = resolveEphemeralTarget(body);
-  if (!target) {
-    logger.warn('postEphemeralCardWithBanner: missing user/channel on action body; banner dropped', { banner });
-    return;
-  }
-  const cardBlocks = await buildCardFromManager(tokenManager);
-  const blocks = [
-    {
-      type: 'section',
-      text: { type: 'mrkdwn', text: banner },
-    },
-    ...cardBlocks,
-  ];
-  try {
-    await client.chat.postEphemeral({
-      channel: target.channel,
-      user: target.userId,
-      text: ':warning: CCT refresh — partial failure',
-      blocks: blocks as any,
-    });
-  } catch (err) {
-    logger.debug('postEphemeralCardWithBanner failed; falling back to banner-only', { err });
-    await postEphemeralFailure(client, body, banner);
-  }
-}
-
-/**
  * Ephemeral failure banner used by the refresh handlers when an
  * all-null / null result would otherwise re-render an identical card.
  */
@@ -890,7 +1036,21 @@ async function postEphemeralFailure(client: WebClient, body: unknown, message: s
   }
 }
 
-export async function buildCardFromManager(tokenManager: TokenManager): Promise<Record<string, unknown>[]> {
+/**
+ * Build a CCT card from the live `TokenManager` snapshot.
+ *
+ * `viewerMode` is forwarded to `buildCctCardBlocks` so callers that
+ * render an in-place ephemeral update can preserve the cardMode that
+ * was stamped onto the originating button (#803). Default is `'admin'`
+ * for backward compatibility with the small number of legacy call
+ * sites that don't pass an explicit mode (kept until those callers are
+ * audited in a follow-up).
+ */
+export async function buildCardFromManager(
+  tokenManager: TokenManager,
+  opts: { viewerMode?: CctCardViewerMode } = {},
+): Promise<Record<string, unknown>[]> {
+  const viewerMode: CctCardViewerMode = opts.viewerMode ?? 'admin';
   // Always load the authoritative snapshot so post-action ephemeral cards
   // reflect current per-slot state (rate-limit timestamps, usage, cooldown)
   // rather than rendering with an empty `states` map.
@@ -910,6 +1070,7 @@ export async function buildCardFromManager(tokenManager: TokenManager): Promise<
       states: snap.state ?? {},
       activeKeyId: snap.registry.activeKeyId,
       nowMs: Date.now(),
+      viewerMode,
     });
     if (hiddenApiKeyCount > 0) {
       blocks.push({
@@ -940,6 +1101,7 @@ export async function buildCardFromManager(tokenManager: TokenManager): Promise<
       slots: visibleSlots,
       states: {},
       activeKeyId: active?.keyId,
+      viewerMode,
     });
     // Surface the store-read failure with the shared banner wording.
     appendStoreReadFailureBanner(blocks);
