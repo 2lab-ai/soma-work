@@ -28,7 +28,7 @@ export interface QueryEnvResult {
  * Single source of truth — consumed by:
  *   - {@link setQueryEnvAdditional} / {@link buildQueryEnv} (build-time
  *     defense in depth: lease token override happens last)
- *   - `parseClaudeEnv()` in `unified-config-loader.ts` (load-time drop with
+ *   - `parseClaudeEnv()` in `config-loader.ts` (load-time drop with
  *     warn so operators learn about the conflict)
  */
 export const RESERVED_LEASE_KEYS: readonly string[] = Object.freeze([

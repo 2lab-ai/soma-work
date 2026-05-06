@@ -35,6 +35,7 @@ import { setQueryEnvAdditional } from './auth/query-env-builder';
 import { scanChannels } from './channel-registry';
 import { ClaudeHandler } from './claude-handler';
 import { config, runPreflightChecks, validateConfig } from './config';
+import { loadConfig } from './config-loader';
 import {
   broadcastConversationUpdate,
   broadcastSessionUpdate,
@@ -59,7 +60,7 @@ import {
 } from './conversation';
 import { CronScheduler, type SyntheticMessageEvent } from './cron-scheduler';
 import { initializeDispatchService } from './dispatch-service';
-import { CONFIG_FILE, DATA_DIR, MCP_CONFIG_FILE, PLUGINS_DIR } from './env-paths';
+import { CONFIG_FILE, DATA_DIR, PLUGINS_DIR } from './env-paths';
 import { discoverInstallations, getGitHubAppAuth, isGitHubAppConfigured } from './github-auth.js';
 import { Logger } from './logger';
 import { McpManager } from './mcp-manager';
@@ -78,7 +79,6 @@ import { getVersionInfo, notifyRelease } from './release-notifier';
 import { SlackHandler } from './slack-handler';
 import { notifyStartup } from './startup-notifier';
 import { getTokenManager } from './token-manager';
-import { loadUnifiedConfig } from './unified-config-loader';
 
 const logger = new Logger('Main');
 
@@ -230,9 +230,9 @@ async function start() {
 
     timing('Slack App initialized');
 
-    // Load unified config (config.json → fallback mcp-servers.json)
-    const unifiedConfig = loadUnifiedConfig(CONFIG_FILE, MCP_CONFIG_FILE);
-    timing('Unified config loaded');
+    // Load config from config.json (mcpServers + plugin + agents + claude.env + a2t)
+    const appConfig = loadConfig(CONFIG_FILE);
+    timing('Config loaded');
 
     // Install operator-controlled additional env (config.json#claude.env)
     // BEFORE any ClaudeHandler / SDK consumers are constructed, so every
@@ -240,7 +240,7 @@ async function start() {
     // (claude-handler ×2, conversation/* ×3, slack/z/topics/*) sees the
     // installed env. Hot reload is intentionally not supported — operators
     // must restart after editing config.json#claude.env.
-    const claudeEnv = unifiedConfig['claude.env'] ?? {};
+    const claudeEnv = appConfig['claude.env'] ?? {};
     setQueryEnvAdditional(claudeEnv);
     const claudeEnvKeys = Object.keys(claudeEnv);
     if (claudeEnvKeys.length > 0) {
@@ -248,15 +248,16 @@ async function start() {
       timing(`claude.env applied (${claudeEnvKeys.length} vars): [${claudeEnvKeys.join(', ')}]`);
     }
 
-    // Initialize MCP manager (from unified config or legacy path)
-    const mcpManager = unifiedConfig.mcpServers
-      ? McpManager.fromParsedServers(unifiedConfig.mcpServers)
-      : new McpManager();
+    // Initialize MCP manager from config.json#mcpServers.
+    // Empty section ⇒ start with no remote MCP servers; default/internal
+    // servers (llm, agent, model-command, …) are still provisioned by
+    // McpServerFactory inside the manager.
+    const mcpManager = McpManager.fromParsedServers(appConfig.mcpServers ?? {});
     const mcpConfig = mcpManager.loadConfiguration();
     timing(`MCP config loaded (${mcpConfig ? Object.keys(mcpConfig.mcpServers).length : 0} servers)`);
 
     // Initialize Plugin manager
-    const pluginManager = new PluginManager(unifiedConfig.plugin || {}, PLUGINS_DIR);
+    const pluginManager = new PluginManager(appConfig.plugin || {}, PLUGINS_DIR);
     try {
       await pluginManager.initialize();
       mcpManager.setPluginManager(pluginManager);
@@ -285,7 +286,7 @@ async function start() {
 
     // Initialize A2T service (audio-to-text transcription, non-critical)
     try {
-      const a2tConfig = unifiedConfig.a2t || {};
+      const a2tConfig = appConfig.a2t || {};
       if (a2tConfig.enabled !== false) {
         const a2t = await initA2tService(a2tConfig);
         if (a2t) {
@@ -302,10 +303,10 @@ async function start() {
 
     // Initialize AgentManager if agents are configured (Trace: docs/multi-agent/trace.md, S2)
     let agentManager: import('./agent-manager').AgentManager | undefined;
-    if (unifiedConfig.agents && Object.keys(unifiedConfig.agents).length > 0) {
+    if (appConfig.agents && Object.keys(appConfig.agents).length > 0) {
       const { AgentManager } = await import('./agent-manager');
-      agentManager = new AgentManager(unifiedConfig.agents, mcpManager);
-      timing(`AgentManager created (${Object.keys(unifiedConfig.agents).length} agents configured)`);
+      agentManager = new AgentManager(appConfig.agents, mcpManager);
+      timing(`AgentManager created (${Object.keys(appConfig.agents).length} agents configured)`);
     }
 
     // Initialize handlers
@@ -313,8 +314,8 @@ async function start() {
     // Plugin paths are now resolved dynamically via mcpManager.getPluginManager()?.getPluginPaths()
     // inside ClaudeHandler.getEffectivePluginPaths() — no static injection needed.
     // Inject agent configs into ClaudeHandler's McpConfigBuilder
-    if (unifiedConfig.agents && Object.keys(unifiedConfig.agents).length > 0) {
-      claudeHandler.setAgentConfigs(unifiedConfig.agents);
+    if (appConfig.agents && Object.keys(appConfig.agents).length > 0) {
+      claudeHandler.setAgentConfigs(appConfig.agents);
     }
     timing('ClaudeHandler initialized');
 

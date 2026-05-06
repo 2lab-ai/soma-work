@@ -7,6 +7,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { ModelCommandContext } from 'somalib/model-commands/types';
 import { isAdminUser } from './admin-utils';
+import { substituteEnvVars } from './config-env-substitution';
 import { CONFIG_FILE, DATA_DIR } from './env-paths';
 import { Logger } from './logger';
 import type { McpManager } from './mcp-manager';
@@ -664,7 +665,13 @@ export class McpConfigBuilder {
         return null;
       }
       try {
-        this.rawConfigCache = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
+        const parsed = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
+        // Substitute ${VAR} placeholders so server-tools entries (DB
+        // credentials etc.) honor the same env-var contract documented
+        // for mcpServers headers. Missing-var warnings are deduped at
+        // the module level — already emitted by loadConfig at
+        // boot, so we silence them here to avoid double-logs.
+        this.rawConfigCache = substituteEnvVars(parsed).value;
       } catch {
         this.rawConfigCache = null;
       }
