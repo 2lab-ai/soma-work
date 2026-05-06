@@ -165,7 +165,7 @@ describe('buildQueryEnv', () => {
   it('RESERVED_LEASE_KEYS is frozen and contains the auth/proxy/provider slots', () => {
     expect(Object.isFrozen(RESERVED_LEASE_KEYS)).toBe(true);
     // Spot-check the canonical entries — full list pinned by the parser
-    // tests in unified-config-loader.test.ts.
+    // tests in config-loader.test.ts.
     expect(RESERVED_LEASE_KEYS).toContain('CLAUDE_CODE_OAUTH_TOKEN');
     expect(RESERVED_LEASE_KEYS).toContain('ANTHROPIC_API_KEY');
     expect(RESERVED_LEASE_KEYS).toContain('CLAUDE_CONFIG_DIR');

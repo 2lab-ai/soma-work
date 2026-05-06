@@ -4,7 +4,7 @@
  * Coverage strategy: the substitution happens at parse-time on the JSON
  * value, before any structural validator runs. So the test surface is the
  * pure function `substituteEnvVars` (covers grammar) plus an integration
- * test through `loadUnifiedConfig` (covers the wiring + warn dedupe).
+ * test through `loadConfig` (covers the wiring + warn dedupe).
  *
  * Secret-leak guard: assertions inspect the warn payload to make sure the
  * substituted value never appears in logs — only the placeholder NAME does.
