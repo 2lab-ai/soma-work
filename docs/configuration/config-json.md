@@ -23,7 +23,7 @@ Resolution is in `src/env-paths.ts`. Two modes:
 | **Explicit** | `SOMA_CONFIG_DIR=/path` | `${SOMA_CONFIG_DIR}/config.json` | `${SOMA_CONFIG_DIR}/.env` |
 | **Branch-aware** | (no env var) | `<repo>/config.json` on `main`, `<repo>/config.dev.json` otherwise | `<repo>/.env` or `<repo>/.env.dev` |
 
-The legacy `mcp-servers.json` is still honored as a fallback for the `mcpServers` section only.
+Legacy `mcp-servers.json` was removed in PR #808 — operators with that file should move its contents under the `mcpServers` key in `config.json`.
 
 ## Environment variable substitution
 

@@ -10,7 +10,7 @@ import type { McpManager } from '../mcp-manager';
 describe('S1 — Agent Config Parsing', () => {
   // Trace: S1, Section 3a — raw.agents.{name} → AgentConfig
   it('AgentConfig_Parse_HappyPath — parses valid agents section', async () => {
-    const { parseAgentsConfig } = await import('../unified-config-loader');
+    const { parseAgentsConfig } = await import('../config-loader');
 
     const raw = {
       agents: {
@@ -37,7 +37,7 @@ describe('S1 — Agent Config Parsing', () => {
 
   // Trace: S1, Section 5, Row 1 — agents section missing → empty map
   it('AgentConfig_Parse_MissingSection — returns empty when no agents', async () => {
-    const { parseAgentsConfig } = await import('../unified-config-loader');
+    const { parseAgentsConfig } = await import('../config-loader');
     const raw = { mcpServers: {} };
     const result = parseAgentsConfig(raw);
     expect(result).toEqual({});
@@ -45,7 +45,7 @@ describe('S1 — Agent Config Parsing', () => {
 
   // Trace: S1, Section 5, Row 4 — invalid token format → skip agent
   it('AgentConfig_Parse_InvalidToken — skips agents with bad tokens', async () => {
-    const { parseAgentsConfig } = await import('../unified-config-loader');
+    const { parseAgentsConfig } = await import('../config-loader');
 
     const raw = {
       agents: {
@@ -63,7 +63,7 @@ describe('S1 — Agent Config Parsing', () => {
 
   // Trace: S1, Section 3a — promptDir/persona defaults
   it('AgentConfig_Parse_DefaultValues — applies defaults for optional fields', async () => {
-    const { parseAgentsConfig } = await import('../unified-config-loader');
+    const { parseAgentsConfig } = await import('../config-loader');
 
     const raw = {
       agents: {
@@ -83,7 +83,7 @@ describe('S1 — Agent Config Parsing', () => {
 
   // Codex review: boundary — signingSecret exactly 20 chars accepted, 19 rejected
   it('AgentConfig_Parse_SigningSecretBoundary — 20 chars accepted, 19 rejected', async () => {
-    const { parseAgentsConfig } = await import('../unified-config-loader');
+    const { parseAgentsConfig } = await import('../config-loader');
 
     const raw = {
       agents: {
@@ -99,7 +99,7 @@ describe('S1 — Agent Config Parsing', () => {
 
   // Codex review: mixed valid + invalid agents — valid passes, invalid skipped
   it('AgentConfig_Parse_MixedValidInvalid — valid agents survive alongside invalid', async () => {
-    const { parseAgentsConfig } = await import('../unified-config-loader');
+    const { parseAgentsConfig } = await import('../config-loader');
 
     const raw = {
       agents: {

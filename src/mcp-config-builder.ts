@@ -669,7 +669,7 @@ export class McpConfigBuilder {
         // Substitute ${VAR} placeholders so server-tools entries (DB
         // credentials etc.) honor the same env-var contract documented
         // for mcpServers headers. Missing-var warnings are deduped at
-        // the module level — already emitted by loadUnifiedConfig at
+        // the module level — already emitted by loadConfig at
         // boot, so we silence them here to avoid double-logs.
         this.rawConfigCache = substituteEnvVars(parsed).value;
       } catch {

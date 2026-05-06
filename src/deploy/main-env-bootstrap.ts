@@ -93,7 +93,6 @@ function validateSeedFiles(devSourceDir: string): void {
   assertDirectoryExists(devSourceDir, 'dev source');
   assertFileExists(path.join(devSourceDir, '.system.prompt'), 'seed .system.prompt');
   assertFileExists(path.join(devSourceDir, 'config.json'), 'seed config.json');
-  assertFileExists(path.join(devSourceDir, 'mcp-servers.json'), 'seed mcp-servers.json');
 }
 
 function assertTargetParentWritable(targetDir: string): void {
@@ -199,7 +198,6 @@ export async function bootstrapMainEnvironment(options: BootstrapOptions): Promi
 
   copyFile(path.join(devSourceDir, '.system.prompt'), path.join(targetDir, '.system.prompt'));
   copyFile(path.join(devSourceDir, 'config.json'), path.join(targetDir, 'config.json'));
-  copyFile(path.join(devSourceDir, 'mcp-servers.json'), path.join(targetDir, 'mcp-servers.json'));
 
   const devPluginsDir = path.join(devSourceDir, 'plugins');
   if (fs.existsSync(devPluginsDir) && fs.statSync(devPluginsDir).isDirectory()) {

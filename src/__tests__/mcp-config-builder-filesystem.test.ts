@@ -3,7 +3,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // Mock env-paths before any imports that use it
 vi.mock('../env-paths', () => ({
   DATA_DIR: '/tmp/mcp-config-fs-test',
-  MCP_CONFIG_FILE: '/tmp/mcp-config-fs-test/mcp-servers.json',
   CONFIG_FILE: '/tmp/mcp-config-fs-test/config.json',
   SYSTEM_PROMPT_FILE: '/tmp/mcp-config-fs-test/.system.prompt',
   PLUGINS_DIR: '/tmp/mcp-config-fs-test/plugins',

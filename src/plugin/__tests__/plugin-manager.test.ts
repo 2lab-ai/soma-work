@@ -15,10 +15,10 @@ vi.mock('../marketplace-fetcher', async (importOriginal) => {
   };
 });
 
-// Mock unified-config-loader
-vi.mock('../../unified-config-loader', () => ({
-  loadUnifiedConfig: vi.fn(),
-  saveUnifiedConfig: vi.fn(),
+// Mock config-loader
+vi.mock('../../config-loader', () => ({
+  loadConfig: vi.fn(),
+  saveConfig: vi.fn(),
 }));
 
 // Mock defaults — disable auto-merge of default plugins in tests
@@ -33,10 +33,10 @@ import { fetchPlugin } from '../marketplace-fetcher';
 
 const mockFetchPlugin = vi.mocked(fetchPlugin);
 
-import { loadUnifiedConfig, saveUnifiedConfig } from '../../unified-config-loader';
+import { loadConfig, saveConfig } from '../../config-loader';
 
-const mockLoadUnifiedConfig = vi.mocked(loadUnifiedConfig);
-const mockSaveUnifiedConfig = vi.mocked(saveUnifiedConfig);
+const mockLoadConfig = vi.mocked(loadConfig);
+const mockSaveConfig = vi.mocked(saveConfig);
 
 import { isDefaultMarketplace, isDefaultPlugin } from '../defaults';
 
@@ -217,7 +217,6 @@ describe('PluginManager', () => {
   // =========================================================================
   describe('CRUD methods', () => {
     const configFile = '/tmp/test-config.json';
-    const mcpFallback = '/tmp/test-mcp.json';
     const baseConfig: PluginConfig = {
       marketplace: [{ name: 'official', repo: 'org/plugins', ref: 'main' }],
       plugins: ['tool-a@official'],
@@ -227,9 +226,9 @@ describe('PluginManager', () => {
     let mgr: PluginManager;
 
     beforeEach(() => {
-      mgr = new PluginManager(baseConfig, tmpDir, configFile, mcpFallback);
-      // Mock loadUnifiedConfig to return a full config when saving
-      mockLoadUnifiedConfig.mockReturnValue({
+      mgr = new PluginManager(baseConfig, tmpDir, configFile);
+      // Mock loadConfig to return a full config when saving
+      mockLoadConfig.mockReturnValue({
         mcpServers: { 'test-server': { command: 'node', args: ['server.js'] } },
         plugin: baseConfig,
       });
@@ -243,7 +242,7 @@ describe('PluginManager', () => {
     });
 
     it('getMarketplaces returns empty array when no marketplaces configured', () => {
-      const emptyMgr = new PluginManager({}, tmpDir, configFile, mcpFallback);
+      const emptyMgr = new PluginManager({}, tmpDir, configFile);
       expect(emptyMgr.getMarketplaces()).toEqual([]);
     });
 
@@ -255,7 +254,7 @@ describe('PluginManager', () => {
     });
 
     it('getInstalledPlugins returns empty array when no plugins configured', () => {
-      const emptyMgr = new PluginManager({}, tmpDir, configFile, mcpFallback);
+      const emptyMgr = new PluginManager({}, tmpDir, configFile);
       expect(emptyMgr.getInstalledPlugins()).toEqual([]);
     });
 
@@ -267,9 +266,9 @@ describe('PluginManager', () => {
 
       expect(result).toEqual({ success: true });
       expect(mgr.getMarketplaces()).toContainEqual(entry);
-      expect(mockSaveUnifiedConfig).toHaveBeenCalledTimes(1);
+      expect(mockSaveConfig).toHaveBeenCalledTimes(1);
       // Verify the saved config includes mcpServers (preserved)
-      const savedConfig = mockSaveUnifiedConfig.mock.calls[0][1];
+      const savedConfig = mockSaveConfig.mock.calls[0][1];
       expect(savedConfig.mcpServers).toBeDefined();
       expect(savedConfig.plugin?.marketplace).toContainEqual(entry);
     });
@@ -280,7 +279,7 @@ describe('PluginManager', () => {
 
       expect(result.success).toBe(false);
       expect(result.error).toContain('already exists');
-      expect(mockSaveUnifiedConfig).not.toHaveBeenCalled();
+      expect(mockSaveConfig).not.toHaveBeenCalled();
     });
 
     it('addMarketplace validates entry format', () => {
@@ -288,14 +287,14 @@ describe('PluginManager', () => {
       const result = mgr.addMarketplace({ name: 'bad', repo: 'noslash' } as MarketplaceEntry);
       expect(result.success).toBe(false);
       expect(result.error).toContain('invalid');
-      expect(mockSaveUnifiedConfig).not.toHaveBeenCalled();
+      expect(mockSaveConfig).not.toHaveBeenCalled();
     });
 
     it('addMarketplace validates unsafe marketplace name', () => {
       const result = mgr.addMarketplace({ name: '../evil', repo: 'org/repo' } as MarketplaceEntry);
       expect(result.success).toBe(false);
       expect(result.error).toContain('invalid');
-      expect(mockSaveUnifiedConfig).not.toHaveBeenCalled();
+      expect(mockSaveConfig).not.toHaveBeenCalled();
     });
 
     it('addMarketplace does not save when no configFile', () => {
@@ -305,7 +304,7 @@ describe('PluginManager', () => {
 
       expect(result).toEqual({ success: true });
       expect(noConfigMgr.getMarketplaces()).toContainEqual(entry);
-      expect(mockSaveUnifiedConfig).not.toHaveBeenCalled();
+      expect(mockSaveConfig).not.toHaveBeenCalled();
     });
 
     // --- removeMarketplace ---
@@ -315,7 +314,7 @@ describe('PluginManager', () => {
 
       expect(result).toEqual({ success: true });
       expect(mgr.getMarketplaces()).toEqual([]);
-      expect(mockSaveUnifiedConfig).toHaveBeenCalledTimes(1);
+      expect(mockSaveConfig).toHaveBeenCalledTimes(1);
     });
 
     it('removeMarketplace returns error for non-existent marketplace', () => {
@@ -323,7 +322,7 @@ describe('PluginManager', () => {
 
       expect(result.success).toBe(false);
       expect(result.error).toContain('not found');
-      expect(mockSaveUnifiedConfig).not.toHaveBeenCalled();
+      expect(mockSaveConfig).not.toHaveBeenCalled();
     });
 
     // --- addPlugin ---
@@ -333,7 +332,7 @@ describe('PluginManager', () => {
 
       expect(result).toEqual({ success: true });
       expect(mgr.getInstalledPlugins()).toContain('tool-b@official');
-      expect(mockSaveUnifiedConfig).toHaveBeenCalledTimes(1);
+      expect(mockSaveConfig).toHaveBeenCalledTimes(1);
     });
 
     it('addPlugin rejects duplicate plugin ref', () => {
@@ -341,7 +340,7 @@ describe('PluginManager', () => {
 
       expect(result.success).toBe(false);
       expect(result.error).toContain('already installed');
-      expect(mockSaveUnifiedConfig).not.toHaveBeenCalled();
+      expect(mockSaveConfig).not.toHaveBeenCalled();
     });
 
     it('addPlugin validates plugin ref format', () => {
@@ -349,7 +348,7 @@ describe('PluginManager', () => {
 
       expect(result.success).toBe(false);
       expect(result.error).toContain('invalid');
-      expect(mockSaveUnifiedConfig).not.toHaveBeenCalled();
+      expect(mockSaveConfig).not.toHaveBeenCalled();
     });
 
     it('addPlugin validates unsafe plugin name', () => {
@@ -357,7 +356,7 @@ describe('PluginManager', () => {
 
       expect(result.success).toBe(false);
       expect(result.error).toContain('invalid');
-      expect(mockSaveUnifiedConfig).not.toHaveBeenCalled();
+      expect(mockSaveConfig).not.toHaveBeenCalled();
     });
 
     // --- removePlugin ---
@@ -367,7 +366,7 @@ describe('PluginManager', () => {
 
       expect(result).toEqual({ success: true });
       expect(mgr.getInstalledPlugins()).not.toContain('tool-a@official');
-      expect(mockSaveUnifiedConfig).toHaveBeenCalledTimes(1);
+      expect(mockSaveConfig).toHaveBeenCalledTimes(1);
     });
 
     it('removePlugin returns error for non-existent plugin ref', () => {
@@ -375,7 +374,7 @@ describe('PluginManager', () => {
 
       expect(result.success).toBe(false);
       expect(result.error).toContain('not found');
-      expect(mockSaveUnifiedConfig).not.toHaveBeenCalled();
+      expect(mockSaveConfig).not.toHaveBeenCalled();
     });
 
     it('removePlugin rejects default plugin removal', () => {
@@ -384,7 +383,7 @@ describe('PluginManager', () => {
 
       expect(result.success).toBe(false);
       expect(result.error).toContain('cannot be removed');
-      expect(mockSaveUnifiedConfig).not.toHaveBeenCalled();
+      expect(mockSaveConfig).not.toHaveBeenCalled();
     });
 
     // --- removeMarketplace default guard ---
@@ -395,7 +394,7 @@ describe('PluginManager', () => {
 
       expect(result.success).toBe(false);
       expect(result.error).toContain('cannot be removed');
-      expect(mockSaveUnifiedConfig).not.toHaveBeenCalled();
+      expect(mockSaveConfig).not.toHaveBeenCalled();
     });
 
     // --- Immutability checks ---
@@ -419,7 +418,7 @@ describe('PluginManager', () => {
     it('saves config preserving mcpServers section', () => {
       mgr.addPlugin('tool-b@official');
 
-      const savedConfig = mockSaveUnifiedConfig.mock.calls[0][1];
+      const savedConfig = mockSaveConfig.mock.calls[0][1];
       expect(savedConfig.mcpServers).toEqual({
         'test-server': { command: 'node', args: ['server.js'] },
       });
@@ -428,7 +427,7 @@ describe('PluginManager', () => {
     it('saves to the correct configFile path', () => {
       mgr.addPlugin('tool-b@official');
 
-      expect(mockSaveUnifiedConfig.mock.calls[0][0]).toBe(configFile);
+      expect(mockSaveConfig.mock.calls[0][0]).toBe(configFile);
     });
   });
 

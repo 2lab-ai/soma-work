@@ -26,7 +26,7 @@
  *     vars precisely because they don't want them in stdout; this module
  *     respects that.
  *   - Missing-var warnings are deduped per-process per-name to avoid log
- *     spam when `loadUnifiedConfig` is called repeatedly (boot + every
+ *     spam when `loadConfig` is called repeatedly (boot + every
  *     plugin-manager save).
  */
 
@@ -59,7 +59,7 @@ const ESCAPE_SENTINEL = '\u0000__SOMA_DOLLAR_LITERAL__\u0000';
 
 /**
  * Per-process dedupe of missing-var warnings. Module-scoped so repeated
- * `loadUnifiedConfig` calls (boot + every plugin-manager save) don't re-warn
+ * `loadConfig` calls (boot + every plugin-manager save) don't re-warn
  * for the same unset placeholder. Reset only via `vi.resetModules()` in tests.
  */
 const warnedMissing = new Set<string>();
@@ -75,7 +75,7 @@ const triedEnvFiles = new Set<string>();
 /**
  * Result type for substitution — returns the rewritten value plus the names
  * of variables that were missing (no default, no `?`). Caller decides how
- * to surface the misses — in `loadUnifiedConfig` we just warn; tests assert
+ * to surface the misses — in `loadConfig` we just warn; tests assert
  * on the array directly.
  */
 export interface SubstituteResult<T> {
@@ -173,7 +173,7 @@ function substituteString(input: string, missing: string[]): string {
  * Files that don't exist are silently skipped. Files we've already tried
  * (per-process) are skipped — important because `env-paths.ts` already
  * called `dotenv.config({ path: ENV_FILE })` at module load, and we don't
- * want to re-parse that file on every `loadUnifiedConfig` call.
+ * want to re-parse that file on every `loadConfig` call.
  *
  * Returns the absolute paths that contributed at least one variable (after
  * the dedupe), for logging.

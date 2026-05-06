@@ -33,7 +33,7 @@ load_state
 # --- Status command ---
 if [[ "${1:-}" == "--status" ]]; then
     header "Setup Wizard Status"
-    STEPS=(00 01 02 03 04 05 06 07 08 09 10 11 12)
+    STEPS=(00 01 02 03 04 05 07 08 09 10 11 12)
     STEP_NAMES=(
         "Welcome & Fork Check"
         "Prerequisites"
@@ -77,7 +77,7 @@ echo ""
 START_FROM="${1:-00}"
 
 # Step files to execute in order
-STEPS=(00 01 02 03 04 05 06 07 08 09 10 11 12)
+STEPS=(00 01 02 03 04 05 07 08 09 10 11 12)
 
 for step in "${STEPS[@]}"; do
     # Skip steps before the start point
