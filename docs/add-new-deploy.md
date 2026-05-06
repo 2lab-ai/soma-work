@@ -760,20 +760,9 @@ cat > "${DEPLOY_DIR}/config.json" << 'CONFIG_EOF'
 CONFIG_EOF
 ```
 
-### 8.4 mcp-servers.json 파일
+### 8.4 (제거됨) mcp-servers.json
 
-```bash
-cat > "${DEPLOY_DIR}/mcp-servers.json" << 'MCP_EOF'
-{
-  "mcpServers": {
-    "jira": {
-      "type": "sse",
-      "url": "https://mcp.atlassian.com/v1/sse"
-    }
-  }
-}
-MCP_EOF
-```
+`mcpServers` 섹션은 `config.json` 안에 통합됨 — 별도 파일 생성 불필요. PR #808 참조.
 
 ---
 
@@ -1069,7 +1058,7 @@ SLACK_SIGNING_SECRET=abc123 \
 **Phase 3: Unattended** (자동, 유저 입력 없음)
 1. 배포 디렉토리 생성 + 클론 + 빌드
 2. Slack CLI 초기화 + manifest.json 생성
-3. 설정 파일 생성 (.env, .system.prompt, mcp-servers.json, config.json)
+3. 설정 파일 생성 (.env, .system.prompt, config.json)
 4. GitHub Actions Runner 등록
 5. GitHub Environment 설정
 6. LaunchAgent 서비스 설치
@@ -1160,8 +1149,7 @@ optional:
 [ ] 13. .system.prompt 생성
        /opt/soma-work/${DEPLOY_ENV}/.system.prompt
 
-[ ] 14. mcp-servers.json 생성
-       /opt/soma-work/${DEPLOY_ENV}/mcp-servers.json
+
 
 [ ] 15. config.json 생성
        /opt/soma-work/${DEPLOY_ENV}/config.json

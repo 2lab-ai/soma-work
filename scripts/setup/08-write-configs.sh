@@ -1,6 +1,6 @@
 #!/bin/bash
 # Step 08: Write Configs to Deploy Directories
-# Copies .env, .system.prompt, mcp-servers.json to each deploy dir.
+# Copies .env, .system.prompt, config.json to each deploy dir.
 
 run_step() {
     step_header "08" "Write Configs to Deploy Directories"
@@ -18,7 +18,7 @@ run_step() {
         return 0
     fi
 
-    local config_files=(".env" ".system.prompt" "mcp-servers.json")
+    local config_files=(".env" ".system.prompt" "config.json")
 
     for env in $(echo "$deploy_envs" | tr ',' ' '); do
         local dir="/opt/soma-work/$env"

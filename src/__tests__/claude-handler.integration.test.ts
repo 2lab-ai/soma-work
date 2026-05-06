@@ -65,7 +65,9 @@ describeWithCredentials('ClaudeHandler Integration (real SDK)', () => {
   let handler: ClaudeHandler;
 
   beforeAll(() => {
-    const mcpManager = new McpManager();
+    // Empty path ⇒ no remote servers loaded; integration test only exercises
+    // ClaudeHandler's stream wiring, not MCP discovery.
+    const mcpManager = new McpManager('');
     handler = new ClaudeHandler(mcpManager);
   });
 

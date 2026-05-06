@@ -173,7 +173,7 @@ mcp reload
 /mcp reload
 ```
 
-**설명**: `mcp-servers.json` 파일에서 MCP 설정을 다시 로드합니다.
+**설명**: `config.json` 파일에서 MCP 설정을 다시 로드합니다.
 
 **응답**:
 ```

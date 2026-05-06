@@ -3,15 +3,9 @@ import * as os from 'os';
 import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RESERVED_LEASE_KEYS } from '../auth/query-env-builder';
-import {
-  loadUnifiedConfig,
-  parseAgentsConfig,
-  parseClaudeEnv,
-  saveUnifiedConfig,
-  type UnifiedConfig,
-} from '../unified-config-loader';
+import { type Config, loadConfig, parseAgentsConfig, parseClaudeEnv, saveConfig } from '../config-loader';
 
-describe('saveUnifiedConfig', () => {
+describe('saveConfig', () => {
   let tmpDir: string;
   let configFile: string;
 
@@ -26,7 +20,7 @@ describe('saveUnifiedConfig', () => {
   });
 
   it('saves config to file with correct JSON format (2-space indent, trailing newline)', () => {
-    const config: UnifiedConfig = {
+    const config: Config = {
       mcpServers: {
         'test-server': {
           command: 'node',
@@ -39,16 +33,16 @@ describe('saveUnifiedConfig', () => {
       } as any,
     };
 
-    saveUnifiedConfig(configFile, config);
+    saveConfig(configFile, config);
 
     const written = fs.readFileSync(configFile, 'utf-8');
     expect(written).toBe(JSON.stringify(config, null, 2) + '\n');
   });
 
   it('uses atomic write (no leftover .tmp file after success)', () => {
-    const config: UnifiedConfig = { mcpServers: {} };
+    const config: Config = { mcpServers: {} };
 
-    saveUnifiedConfig(configFile, config);
+    saveConfig(configFile, config);
 
     // After successful save, no .tmp file should remain
     const tmpFile = configFile + '.tmp';
@@ -60,8 +54,8 @@ describe('saveUnifiedConfig', () => {
     expect(parsed).toEqual(config);
   });
 
-  it('preserves UnifiedConfig structure through round-trip', () => {
-    const config: UnifiedConfig = {
+  it('preserves Config structure through round-trip', () => {
+    const config: Config = {
       mcpServers: {
         'server-a': { command: 'npx', args: ['-y', 'some-mcp'] } as any,
         'server-b': { command: 'python', args: ['serve.py'] } as any,
@@ -73,18 +67,18 @@ describe('saveUnifiedConfig', () => {
       } as any,
     };
 
-    saveUnifiedConfig(configFile, config);
+    saveConfig(configFile, config);
 
     const parsed = JSON.parse(fs.readFileSync(configFile, 'utf-8'));
     expect(parsed).toEqual(config);
   });
 
   it('overwrites existing config file', () => {
-    const initial: UnifiedConfig = { mcpServers: { old: { command: 'old' } as any } };
-    const updated: UnifiedConfig = { mcpServers: { new: { command: 'new' } as any } };
+    const initial: Config = { mcpServers: { old: { command: 'old' } as any } };
+    const updated: Config = { mcpServers: { new: { command: 'new' } as any } };
 
-    saveUnifiedConfig(configFile, initial);
-    saveUnifiedConfig(configFile, updated);
+    saveConfig(configFile, initial);
+    saveConfig(configFile, updated);
 
     const parsed = JSON.parse(fs.readFileSync(configFile, 'utf-8'));
     expect(parsed).toEqual(updated);
@@ -92,9 +86,9 @@ describe('saveUnifiedConfig', () => {
   });
 
   it('handles empty config', () => {
-    const config: UnifiedConfig = {};
+    const config: Config = {};
 
-    saveUnifiedConfig(configFile, config);
+    saveConfig(configFile, config);
 
     const parsed = JSON.parse(fs.readFileSync(configFile, 'utf-8'));
     expect(parsed).toEqual({});
@@ -105,25 +99,23 @@ describe('saveUnifiedConfig', () => {
  * PR #639 dropped the `llmChat` subsystem. Legacy configs keep loading but the
  * key is silently discarded on save. These tests pin down three guarantees
  * that must not regress:
- *   1. `loadUnifiedConfig` warns at most once per process for repeated loads.
+ *   1. `loadConfig` warns at most once per process for repeated loads.
  *   2. Absent `llmChat` key → no warn at all.
- *   3. `saveUnifiedConfig` round-trip drops the key (data-loss is explicit,
+ *   3. `saveConfig` round-trip drops the key (data-loss is explicit,
  *      not accidental — the warning is the only user-visible breadcrumb).
  *
  * `vi.resetModules()` is the linchpin: `warnedLegacyLlmChat` is a module-scope
  * `let`, so without a fresh import per test the "warn-once" assertion would
  * silently succeed only because of state leaked from a prior test.
  */
-describe('loadUnifiedConfig — legacy llmChat handling', () => {
+describe('loadConfig — legacy llmChat handling', () => {
   let tmpDir: string;
   let configFile: string;
-  let mcpFallback: string;
   let warnSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'unified-config-legacy-'));
     configFile = path.join(tmpDir, 'config.json');
-    mcpFallback = path.join(tmpDir, 'mcp-servers.json');
     // Force a fresh module instance so `warnedLegacyLlmChat` starts at false.
     vi.resetModules();
     // The Logger writes via console.warn; capture there rather than mocking
@@ -145,10 +137,10 @@ describe('loadUnifiedConfig — legacy llmChat handling', () => {
   it('warns exactly once per process for repeated loads with legacy llmChat', async () => {
     fs.writeFileSync(configFile, JSON.stringify({ mcpServers: {}, llmChat: { old: 'value' } }), 'utf-8');
 
-    const { loadUnifiedConfig } = await import('../unified-config-loader');
-    loadUnifiedConfig(configFile, mcpFallback);
-    loadUnifiedConfig(configFile, mcpFallback);
-    loadUnifiedConfig(configFile, mcpFallback);
+    const { loadConfig } = await import('../config-loader');
+    loadConfig(configFile);
+    loadConfig(configFile);
+    loadConfig(configFile);
 
     expect(legacyWarnCount()).toBe(1);
   });
@@ -156,27 +148,155 @@ describe('loadUnifiedConfig — legacy llmChat handling', () => {
   it('does not warn when llmChat key is absent', async () => {
     fs.writeFileSync(configFile, JSON.stringify({ mcpServers: {} }), 'utf-8');
 
-    const { loadUnifiedConfig } = await import('../unified-config-loader');
-    loadUnifiedConfig(configFile, mcpFallback);
-    loadUnifiedConfig(configFile, mcpFallback);
+    const { loadConfig } = await import('../config-loader');
+    loadConfig(configFile);
+    loadConfig(configFile);
 
     expect(legacyWarnCount()).toBe(0);
   });
 
-  it('saveUnifiedConfig round-trip drops llmChat (data-loss is by design)', async () => {
+  it('saveConfig round-trip drops llmChat (data-loss is by design)', async () => {
     // Legacy input carrying the removed key.
     const legacy = { mcpServers: {}, llmChat: { foo: 'bar' } };
     fs.writeFileSync(configFile, JSON.stringify(legacy), 'utf-8');
 
-    const { loadUnifiedConfig, saveUnifiedConfig: save } = await import('../unified-config-loader');
-    const loaded = loadUnifiedConfig(configFile, mcpFallback);
+    const { loadConfig, saveConfig: save } = await import('../config-loader');
+    const loaded = loadConfig(configFile);
 
-    // The loader never surfaces `llmChat` on UnifiedConfig — so saving it
+    // The loader never surfaces `llmChat` on Config — so saving it
     // back writes a config without the key.
     save(configFile, loaded);
 
     const written = JSON.parse(fs.readFileSync(configFile, 'utf-8'));
     expect(written).not.toHaveProperty('llmChat');
+  });
+});
+
+/**
+ * Integration test: `${VAR}` placeholders in `mcpServers` get substituted at
+ * load time. Pins the contract operators rely on for the documented config:
+ *
+ *     "Authorization": "Basic ${JIRA_PAT_TOKEN}"
+ *
+ * The substituted value must reach the in-memory `Config.mcpServers`
+ * structure so `McpManager.fromParsedServers` (the next hop) sees the real
+ * token, not the placeholder.
+ *
+ * `vi.resetModules()` is required because `config-env-substitution.ts`
+ * holds module-scoped dedupe sets for `.env` paths and missing-var warns —
+ * without a fresh import the second test would see stale state.
+ */
+describe('loadConfig — env-var substitution', () => {
+  let tmpDir: string;
+  let configFile: string;
+  const envSnapshot = { ...process.env };
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'unified-config-envsub-'));
+    configFile = path.join(tmpDir, 'config.json');
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    process.env = { ...envSnapshot };
+  });
+
+  it('substitutes ${VAR} in mcpServers headers from process.env', async () => {
+    process.env.JIRA_PAT_TOKEN = 'Basic-abcdef-ZmFrZQ==';
+    fs.writeFileSync(
+      configFile,
+      JSON.stringify({
+        mcpServers: {
+          atlassian: {
+            type: 'http',
+            url: 'https://mcp.atlassian.com/v1/mcp',
+            headers: { Authorization: 'Basic ${JIRA_PAT_TOKEN}' },
+          },
+        },
+      }),
+      'utf-8',
+    );
+
+    const { loadConfig } = await import('../config-loader');
+    const loaded = loadConfig(configFile);
+
+    expect(loaded.mcpServers?.atlassian).toMatchObject({
+      headers: { Authorization: 'Basic Basic-abcdef-ZmFrZQ==' },
+    });
+  });
+
+  it('reads .env adjacent to config.json when process.env is empty', async () => {
+    delete process.env.ENV_FILE_TOKEN;
+    fs.writeFileSync(path.join(tmpDir, '.env'), 'ENV_FILE_TOKEN=from-dotenv-file\n');
+    fs.writeFileSync(
+      configFile,
+      JSON.stringify({
+        mcpServers: {
+          srv: {
+            type: 'http',
+            url: 'https://example.com',
+            headers: { Authorization: '${ENV_FILE_TOKEN}' },
+          },
+        },
+      }),
+      'utf-8',
+    );
+
+    const { loadConfig } = await import('../config-loader');
+    const loaded = loadConfig(configFile);
+
+    expect(loaded.mcpServers?.srv).toMatchObject({
+      headers: { Authorization: 'from-dotenv-file' },
+    });
+  });
+
+  it('preserves the placeholder verbatim when var is unset (no silent empty)', async () => {
+    delete process.env.MISSING_TOKEN;
+    fs.writeFileSync(
+      configFile,
+      JSON.stringify({
+        mcpServers: {
+          srv: {
+            type: 'http',
+            url: 'https://example.com',
+            headers: { Authorization: 'Basic ${MISSING_TOKEN}' },
+          },
+        },
+      }),
+      'utf-8',
+    );
+
+    const { loadConfig } = await import('../config-loader');
+    const loaded = loadConfig(configFile);
+
+    // Verbatim placeholder makes the failure mode visible at the request
+    // layer (remote returns 401 with a recognizable string in logs)
+    // instead of silently producing `Authorization: Basic ` which would
+    // confuse the same operator a week later.
+    expect(loaded.mcpServers?.srv).toMatchObject({
+      headers: { Authorization: 'Basic ${MISSING_TOKEN}' },
+    });
+  });
+
+  it('respects ${VAR:-default} when var is unset', async () => {
+    delete process.env.SOMETHING;
+    fs.writeFileSync(
+      configFile,
+      JSON.stringify({
+        mcpServers: {
+          srv: {
+            type: 'http',
+            url: '${SOMETHING:-https://default.example.com}',
+          },
+        },
+      }),
+      'utf-8',
+    );
+
+    const { loadConfig } = await import('../config-loader');
+    const loaded = loadConfig(configFile);
+    expect(loaded.mcpServers?.srv).toMatchObject({ url: 'https://default.example.com' });
   });
 });
 
@@ -596,7 +716,7 @@ describe('parseClaudeEnv', () => {
   });
 });
 
-describe('loadUnifiedConfig (claude.env round-trip)', () => {
+describe('loadConfig (claude.env round-trip)', () => {
   let tmpDir: string;
   let configFile: string;
 
@@ -620,7 +740,7 @@ describe('loadUnifiedConfig (claude.env round-trip)', () => {
         },
       }),
     );
-    const cfg = loadUnifiedConfig(configFile, '');
+    const cfg = loadConfig(configFile);
     expect(cfg['claude.env']).toEqual({
       ENABLE_CLAUDEAI_MCP_SERVERS: 'false',
       MAX_TOKENS: '4096',
@@ -639,7 +759,7 @@ describe('loadUnifiedConfig (claude.env round-trip)', () => {
         },
       }),
     );
-    const cfg = loadUnifiedConfig(configFile, '');
+    const cfg = loadConfig(configFile);
     expect(cfg['claude.env']).toBeUndefined();
   });
 
@@ -653,11 +773,11 @@ describe('loadUnifiedConfig (claude.env round-trip)', () => {
         plugin: { marketplace: [], plugins: [], localOverrides: [] },
       }),
     );
-    const loaded = loadUnifiedConfig(configFile, '');
+    const loaded = loadConfig(configFile);
     const updated = { ...loaded, plugin: { ...loaded.plugin, plugins: ['some@plugin'] } };
-    saveUnifiedConfig(configFile, updated);
+    saveConfig(configFile, updated);
 
-    const reloaded = loadUnifiedConfig(configFile, '');
+    const reloaded = loadConfig(configFile);
     expect(reloaded['claude.env']).toEqual({ FOO: 'bar' });
   });
 });

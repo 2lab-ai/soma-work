@@ -316,7 +316,7 @@ soma-work/
 │   ├── architecture.md               # Architecture overview
 │   ├── slack-block-kit.md            # Slack Block Kit reference
 │   └── verbosity-matrix.md           # Verbosity flag matrix
-├── mcp-servers.json                  # MCP server config
+├── config.json                  # MCP server config
 └── claude-code-settings.json         # Claude SDK permissions
 ```
 

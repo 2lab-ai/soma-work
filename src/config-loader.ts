@@ -1,23 +1,26 @@
 /**
- * Unified config.json loader.
+ * config.json loader.
  *
- * Loads the new config.json format which combines:
- * - mcpServers (previously in mcp-servers.json)
- * - plugin (marketplace + local overrides)
+ * Reads the canonical config.json with all sections in one place:
+ *   - mcpServers, server-tools, agents, claude.env, plugin, a2t.
  *
- * Falls back to the legacy mcp-servers.json if config.json doesn't exist.
+ * Legacy `mcp-servers.json` is no longer supported — it was a transient
+ * format kept around during the merge into config.json (see git history).
+ * Operators with a leftover `mcp-servers.json` should move its contents
+ * under `mcpServers` in `config.json`.
  */
 
 import * as fs from 'fs';
 import type { A2tConfig } from './a2t/types';
 import { RESERVED_LEASE_KEYS } from './auth/query-env-builder';
+import { loadDotenvForConfig, substituteEnvVars, warnMissingPlaceholders } from './config-env-substitution';
 import { Logger } from './logger';
 import type { McpServerConfig } from './mcp/config-loader';
 import { validatePluginConfig } from './plugin/config-parser';
 import type { PluginConfig } from './plugin/types';
 import type { AgentConfig } from './types';
 
-const logger = new Logger('UnifiedConfigLoader');
+const logger = new Logger('ConfigLoader');
 
 /**
  * Identifier regex for `claude.env` keys. Matches POSIX env-var conventions
@@ -30,12 +33,12 @@ const RESERVED_LEASE_KEYS_SET = new Set<string>(RESERVED_LEASE_KEYS);
 
 /**
  * Process-scoped guard so the legacy `llmChat` warning fires at most once.
- * `loadUnifiedConfig` is called on boot *and* every plugin-manager save, which
+ * `loadConfig` is called on boot *and* every plugin-manager save, which
  * would otherwise double-log the same deprecation message within seconds.
  */
 let warnedLegacyLlmChat = false;
 
-export interface UnifiedConfig {
+export interface Config {
   mcpServers?: Record<string, McpServerConfig>;
   plugin?: PluginConfig;
   agents?: Record<string, AgentConfig>;
@@ -72,7 +75,7 @@ export interface UnifiedConfig {
  *
  * Logging contract: warnings include only the offending KEY name, never
  * the value. Operators may misconfigure secrets here; logs MUST NOT leak
- * them. `unified-config-loader.test.ts` enforces this with a regex.
+ * them. `config-loader.test.ts` enforces this with a regex.
  */
 export function parseClaudeEnv(raw: unknown): Record<string, string> | undefined {
   if (raw === undefined) return undefined;
@@ -162,7 +165,7 @@ type RequiredAgentStringKey = 'slackBotToken' | 'slackAppToken' | 'signingSecret
  *
  * The original `parseAgentsConfig` (cog 30) ran these checks inline; the
  * exact wording is part of the contract pinned by the characterization
- * tests in `src/__tests__/unified-config-loader.test.ts`.
+ * tests in `src/__tests__/config-loader.test.ts`.
  */
 function extractRequiredString(
   name: string,
@@ -205,7 +208,7 @@ function optionalStringWithFallback(agent: Record<string, unknown>, key: string,
  * `description` / `model`, which are allowed to be deliberately blank.
  *
  * The asymmetry vs. `optionalStringWithFallback` is intentional and pinned
- * by tests in `unified-config-loader.test.ts`.
+ * by tests in `config-loader.test.ts`.
  */
 function optionalString(agent: Record<string, unknown>, key: string): string | undefined {
   const value = agent[key];
@@ -281,18 +284,31 @@ export function parseAgentsConfig(raw: any): Record<string, AgentConfig> {
 }
 
 /**
- * Load unified config from config.json.
- * Falls back to legacy mcp-servers.json if the unified config doesn't exist.
+ * Load the application config from `config.json`.
  *
- * @param configFile   Path to the unified config.json
- * @param mcpFallback  Path to the legacy mcp-servers.json
+ * @param configFile  Absolute path to `config.json` (resolved by env-paths.ts).
+ *
+ * Returns an empty `Config` if the file is missing or unparseable — boot
+ * continues so a broken config doesn't bring the whole service down before
+ * the operator can see the warning.
  */
-export function loadUnifiedConfig(configFile: string, mcpFallback: string): UnifiedConfig {
-  // Try unified config first
+export function loadConfig(configFile: string): Config {
   if (fs.existsSync(configFile)) {
     try {
-      const raw = JSON.parse(fs.readFileSync(configFile, 'utf-8'));
-      const result: UnifiedConfig = {};
+      // .env discovery (per-call, deduped per-process):
+      //   cwd → dirname(configFile) → parent of dirname(configFile)
+      // dotenv default behavior is "first writer wins" so this priority
+      // order matches the docs/operator mental model.
+      loadDotenvForConfig(configFile);
+
+      const rawParsed = JSON.parse(fs.readFileSync(configFile, 'utf-8'));
+      // Substitute `${VAR}` placeholders in every string leaf BEFORE the
+      // structural validators run — so a placeholder for `slackBotToken`
+      // (which must start with `xoxb-`) is checked against the resolved
+      // value, not the literal `${SLACK_BOT_TOKEN}` text.
+      const { value: raw, missing } = substituteEnvVars(rawParsed);
+      warnMissingPlaceholders(missing, configFile);
+      const result: Config = {};
 
       if (raw.mcpServers && typeof raw.mcpServers === 'object') {
         result.mcpServers = raw.mcpServers;
@@ -324,7 +340,7 @@ export function loadUnifiedConfig(configFile: string, mcpFallback: string): Unif
       // PR #639 removed the `llmChat` subsystem (prompt-builder snippet,
       // llmChatConfigStore, Slack LlmChatHandler). Legacy configs still
       // carrying `llmChat` keep working but the key is silently dropped on
-      // the next saveUnifiedConfig round-trip; warn so upgraded users see a
+      // the next saveConfig round-trip; warn so upgraded users see a
       // trace rather than discovering the drop via vanished data. The flag
       // is process-scoped because this loader runs at boot *and* on every
       // plugin-manager save.
@@ -337,7 +353,7 @@ export function loadUnifiedConfig(configFile: string, mcpFallback: string): Unif
         );
       }
 
-      logger.info('Loaded unified config', {
+      logger.info('Loaded config', {
         path: configFile,
         mcpServers: result.mcpServers ? Object.keys(result.mcpServers).length : 0,
         hasPluginConfig: !!result.plugin,
@@ -349,46 +365,31 @@ export function loadUnifiedConfig(configFile: string, mcpFallback: string): Unif
 
       return result;
     } catch (error) {
-      logger.error('Failed to parse unified config, trying fallback', {
+      logger.error('Failed to parse config', {
         path: configFile,
         error: (error as Error).message,
       });
+      return {};
     }
   }
 
-  // Fallback to legacy mcp-servers.json
-  if (fs.existsSync(mcpFallback)) {
-    try {
-      const raw = JSON.parse(fs.readFileSync(mcpFallback, 'utf-8'));
-      logger.info('Using legacy mcp-servers.json fallback', { path: mcpFallback });
-      return {
-        mcpServers: raw.mcpServers || undefined,
-      };
-    } catch (error) {
-      logger.error('Failed to parse legacy MCP config', {
-        path: mcpFallback,
-        error: (error as Error).message,
-      });
-    }
-  }
-
-  logger.warn('No configuration file found', { configFile, mcpFallback });
+  logger.warn('config.json not found', { path: configFile });
   return {};
 }
 
 /**
- * Save unified config to config.json using atomic write.
+ * Save config to config.json using atomic write.
  *
  * Writes to a temporary file first, then renames to the target path.
  * This prevents corruption if the process crashes mid-write.
  *
- * @param configFile  Path to the unified config.json
- * @param config      The UnifiedConfig to persist
+ * @param configFile  Absolute path to config.json
+ * @param config      The Config to persist
  */
-export function saveUnifiedConfig(configFile: string, config: UnifiedConfig): void {
+export function saveConfig(configFile: string, config: Config): void {
   const tmpFile = configFile + '.tmp';
   const content = JSON.stringify(config, null, 2) + '\n';
   fs.writeFileSync(tmpFile, content, 'utf-8');
   fs.renameSync(tmpFile, configFile);
-  logger.info('Saved unified config', { path: configFile });
+  logger.info('Saved config', { path: configFile });
 }

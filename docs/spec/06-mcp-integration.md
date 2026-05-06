@@ -70,7 +70,7 @@ export type McpHttpServerConfig = {
 ### 3.1 Location
 
 ```typescript
-const configPath = path.resolve('./mcp-servers.json');
+const configPath = path.resolve('./config.json');
 ```
 
 ### 3.2 Structure
