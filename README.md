@@ -292,8 +292,10 @@ DEBUG=true
 
 ### 4. Configure MCP Servers (Optional)
 
+Edit the `mcpServers` section of `config.json`:
+
 ```bash
-cp mcp-servers.example.json mcp-servers.json
+cp config.example.json config.json
 ```
 
 ```json

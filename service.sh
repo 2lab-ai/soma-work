@@ -433,11 +433,11 @@ cmd_setup() {
         print_success ".system.prompt found"
     fi
 
-    if [[ ! -f "$PROJECT_DIR/mcp-servers.json" ]]; then
-        print_warning "mcp-servers.json missing! Copy from template:"
-        echo "  cp mcp-servers.example.json $PROJECT_DIR/mcp-servers.json"
+    if [[ ! -f "$PROJECT_DIR/config.json" ]]; then
+        print_warning "config.json missing! Copy from template:"
+        echo "  cp config.example.json $PROJECT_DIR/config.json"
     else
-        print_success "mcp-servers.json found"
+        print_success "config.json found"
     fi
 
     echo ""
@@ -445,7 +445,7 @@ cmd_setup() {
     echo "  $PROJECT_DIR/"
     echo "    .env               # config (manual)"
     echo "    .system.prompt     # config (manual)"
-    echo "    mcp-servers.json   # config (manual)"
+    echo "    config.json        # config (manual)"
     echo "    data/              # runtime data (auto)"
     echo "    logs/              # logs (auto)"
     echo "    dist/              # deployed by CI (auto)"
