@@ -312,7 +312,54 @@ cp mcp-servers.example.json mcp-servers.json
 }
 ```
 
-### 5. Run
+### 5. Inject env vars into the Claude Agent SDK (Optional)
+
+Sometimes you need to set env vars on the SDK subprocess only (not on the
+host process), for example to disable a built-in MCP server bundled with the
+SDK. Add a `claude.env` block to `config.json`:
+
+```json
+{
+  "claude.env": {
+    "ENABLE_CLAUDEAI_MCP_SERVERS": false,
+    "FOO": "bar",
+    "MAX_TOKENS": 4096
+  }
+}
+```
+
+This is equivalent to running `ENABLE_CLAUDEAI_MCP_SERVERS=false claude ...`
+as a shell prefix — the values are forwarded to every Claude Agent SDK
+`query()` call across the app. Internals: `setQueryEnvAdditional` in
+`src/auth/query-env-builder.ts` installs the map at boot; `buildQueryEnv`
+overlays it between the inherited `process.env` and the per-lease
+`CLAUDE_CODE_OAUTH_TOKEN` override.
+
+**Value coercion.** `boolean` and finite `number` JSON values are
+`String()`-coerced before injection (env-var values must be strings). Empty
+string is allowed — it's the explicit "clear an inherited var" form.
+
+**Reserved keys (denylist).** The following are dropped on load with a
+warning. They are owned by the lease/auth path and operator overrides
+would either re-route auth, redirect credential storage, or widen the TLS
+trust surface:
+
+- `CLAUDE_CODE_OAUTH_TOKEN` (lease token wins)
+- `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`
+- `CLAUDE_CONFIG_DIR`
+- `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`
+- `HTTP_PROXY`, `HTTPS_PROXY`, `NODE_EXTRA_CA_CERTS`
+
+**Restart required.** There is no hot reload — the operator must restart the
+process after editing `claude.env` for changes to take effect. The boot log
+prints the active key list (keys only — values are never logged) so
+misconfigurations are visible.
+
+**No `$VAR` expansion.** Values are passed verbatim. If you need shell-style
+interpolation, set the variable in the host environment before launch
+instead of in `claude.env`.
+
+### 6. Run
 
 ```bash
 npm run dev                        # Development (watch mode)
