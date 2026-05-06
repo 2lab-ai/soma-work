@@ -11,6 +11,7 @@
 import * as fs from 'fs';
 import type { A2tConfig } from './a2t/types';
 import { RESERVED_LEASE_KEYS } from './auth/query-env-builder';
+import { loadDotenvForConfig, substituteEnvVars, warnMissingPlaceholders } from './config-env-substitution';
 import { Logger } from './logger';
 import type { McpServerConfig } from './mcp/config-loader';
 import { validatePluginConfig } from './plugin/config-parser';
@@ -291,7 +292,19 @@ export function loadUnifiedConfig(configFile: string, mcpFallback: string): Unif
   // Try unified config first
   if (fs.existsSync(configFile)) {
     try {
-      const raw = JSON.parse(fs.readFileSync(configFile, 'utf-8'));
+      // .env discovery (per-call, deduped per-process):
+      //   cwd → dirname(configFile) → parent of dirname(configFile)
+      // dotenv default behavior is "first writer wins" so this priority
+      // order matches the docs/operator mental model.
+      loadDotenvForConfig(configFile);
+
+      const rawParsed = JSON.parse(fs.readFileSync(configFile, 'utf-8'));
+      // Substitute `${VAR}` placeholders in every string leaf BEFORE the
+      // structural validators run — so a placeholder for `slackBotToken`
+      // (which must start with `xoxb-`) is checked against the resolved
+      // value, not the literal `${SLACK_BOT_TOKEN}` text.
+      const { value: raw, missing } = substituteEnvVars(rawParsed);
+      warnMissingPlaceholders(missing, configFile);
       const result: UnifiedConfig = {};
 
       if (raw.mcpServers && typeof raw.mcpServers === 'object') {
@@ -359,7 +372,13 @@ export function loadUnifiedConfig(configFile: string, mcpFallback: string): Unif
   // Fallback to legacy mcp-servers.json
   if (fs.existsSync(mcpFallback)) {
     try {
-      const raw = JSON.parse(fs.readFileSync(mcpFallback, 'utf-8'));
+      // Same .env priority for the fallback path so legacy configs gain
+      // env-var substitution without requiring a config.json migration.
+      loadDotenvForConfig(mcpFallback);
+
+      const rawParsed = JSON.parse(fs.readFileSync(mcpFallback, 'utf-8'));
+      const { value: raw, missing } = substituteEnvVars(rawParsed);
+      warnMissingPlaceholders(missing, mcpFallback);
       logger.info('Using legacy mcp-servers.json fallback', { path: mcpFallback });
       return {
         mcpServers: raw.mcpServers || undefined,

@@ -181,6 +181,136 @@ describe('loadUnifiedConfig — legacy llmChat handling', () => {
 });
 
 /**
+ * Integration test: `${VAR}` placeholders in `mcpServers` get substituted at
+ * load time. Pins the contract operators rely on for the documented config:
+ *
+ *     "Authorization": "Basic ${JIRA_PAT_TOKEN}"
+ *
+ * The substituted value must reach the in-memory `UnifiedConfig.mcpServers`
+ * structure so `McpManager.fromParsedServers` (the next hop) sees the real
+ * token, not the placeholder.
+ *
+ * `vi.resetModules()` is required because `config-env-substitution.ts`
+ * holds module-scoped dedupe sets for `.env` paths and missing-var warns —
+ * without a fresh import the second test would see stale state.
+ */
+describe('loadUnifiedConfig — env-var substitution', () => {
+  let tmpDir: string;
+  let configFile: string;
+  let mcpFallback: string;
+  const envSnapshot = { ...process.env };
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'unified-config-envsub-'));
+    configFile = path.join(tmpDir, 'config.json');
+    mcpFallback = path.join(tmpDir, 'mcp-servers.json');
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    process.env = { ...envSnapshot };
+  });
+
+  it('substitutes ${VAR} in mcpServers headers from process.env', async () => {
+    process.env.JIRA_PAT_TOKEN = 'Basic-abcdef-ZmFrZQ==';
+    fs.writeFileSync(
+      configFile,
+      JSON.stringify({
+        mcpServers: {
+          atlassian: {
+            type: 'http',
+            url: 'https://mcp.atlassian.com/v1/mcp',
+            headers: { Authorization: 'Basic ${JIRA_PAT_TOKEN}' },
+          },
+        },
+      }),
+      'utf-8',
+    );
+
+    const { loadUnifiedConfig } = await import('../unified-config-loader');
+    const loaded = loadUnifiedConfig(configFile, mcpFallback);
+
+    expect(loaded.mcpServers?.atlassian).toMatchObject({
+      headers: { Authorization: 'Basic Basic-abcdef-ZmFrZQ==' },
+    });
+  });
+
+  it('reads .env adjacent to config.json when process.env is empty', async () => {
+    delete process.env.ENV_FILE_TOKEN;
+    fs.writeFileSync(path.join(tmpDir, '.env'), 'ENV_FILE_TOKEN=from-dotenv-file\n');
+    fs.writeFileSync(
+      configFile,
+      JSON.stringify({
+        mcpServers: {
+          srv: {
+            type: 'http',
+            url: 'https://example.com',
+            headers: { Authorization: '${ENV_FILE_TOKEN}' },
+          },
+        },
+      }),
+      'utf-8',
+    );
+
+    const { loadUnifiedConfig } = await import('../unified-config-loader');
+    const loaded = loadUnifiedConfig(configFile, mcpFallback);
+
+    expect(loaded.mcpServers?.srv).toMatchObject({
+      headers: { Authorization: 'from-dotenv-file' },
+    });
+  });
+
+  it('preserves the placeholder verbatim when var is unset (no silent empty)', async () => {
+    delete process.env.MISSING_TOKEN;
+    fs.writeFileSync(
+      configFile,
+      JSON.stringify({
+        mcpServers: {
+          srv: {
+            type: 'http',
+            url: 'https://example.com',
+            headers: { Authorization: 'Basic ${MISSING_TOKEN}' },
+          },
+        },
+      }),
+      'utf-8',
+    );
+
+    const { loadUnifiedConfig } = await import('../unified-config-loader');
+    const loaded = loadUnifiedConfig(configFile, mcpFallback);
+
+    // Verbatim placeholder makes the failure mode visible at the request
+    // layer (remote returns 401 with a recognizable string in logs)
+    // instead of silently producing `Authorization: Basic ` which would
+    // confuse the same operator a week later.
+    expect(loaded.mcpServers?.srv).toMatchObject({
+      headers: { Authorization: 'Basic ${MISSING_TOKEN}' },
+    });
+  });
+
+  it('respects ${VAR:-default} when var is unset', async () => {
+    delete process.env.SOMETHING;
+    fs.writeFileSync(
+      configFile,
+      JSON.stringify({
+        mcpServers: {
+          srv: {
+            type: 'http',
+            url: '${SOMETHING:-https://default.example.com}',
+          },
+        },
+      }),
+      'utf-8',
+    );
+
+    const { loadUnifiedConfig } = await import('../unified-config-loader');
+    const loaded = loadUnifiedConfig(configFile, mcpFallback);
+    expect(loaded.mcpServers?.srv).toMatchObject({ url: 'https://default.example.com' });
+  });
+});
+
+/**
  * Characterization tests for `parseAgentsConfig` (issue #793 PR 1/8 — fallow
  * complexity refactor). These pin down the contract before extraction so the
  * decomposition into validator helpers stays byte-equivalent.
