@@ -5,7 +5,7 @@ import { config } from '../../config';
 import { evaluateAndMaybeRotate, type RotationOutcome } from '../../oauth/auto-rotate';
 import { getTokenManager, type TokenSummary } from '../../token-manager';
 import { formatRateLimitedAt } from '../../util/format-rate-limited-at';
-import { formatUsageBar, formatUsageResetDelta } from '../cct/builder';
+import { formatRateLimitSource, formatUsageBar, formatUsageResetDelta } from '../cct/builder';
 import { CommandParser } from '../command-parser';
 import { renderCctCard } from '../z/topics/cct-topic';
 import type { CommandContext, CommandHandler, CommandResult } from './types';
@@ -208,7 +208,7 @@ async function buildStatusTextFallback(cardFallback: string | undefined): Promis
   const state = snap.state[active.keyId];
   if (!state?.rateLimitedAt) return header;
   const ts = formatRateLimitedAt(state.rateLimitedAt);
-  const source = state.rateLimitSource ? ` via ${state.rateLimitSource}` : '';
+  const source = formatRateLimitSource(state.rateLimitSource);
   return `${header}\nrate-limited ${ts}${source}`;
 }
 

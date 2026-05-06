@@ -572,14 +572,19 @@ function formatRefreshErrorSegment(state: SlotState | undefined, nowMs: number):
 function formatRateLimitedSegment(state: SlotState | undefined, userTz: string, nowMs: number): string | null {
   if (!state?.rateLimitedAt) return null;
   const ts = formatRateLimitedAt(state.rateLimitedAt, userTz, nowMs);
-  // `inferred_shared` is humanised so operators can tell apart "this slot
-  // itself 429d" from "we inferred this slot is in the same bucket as a
-  // recently-limited sibling"; the other arms keep their raw enum suffix.
   const source = formatRateLimitSource(state.rateLimitSource);
   return `rate-limited ${ts}${source}`;
 }
 
-function formatRateLimitSource(source: SlotState['rateLimitSource']): string {
+/**
+ * Render the ` via <source>` suffix for a `rate-limited <ts>` segment.
+ * `inferred_shared` is humanised so operators can tell apart "this slot
+ * itself 429d" from "we inferred this slot is in the same bucket as a
+ * recently-limited sibling"; the other arms keep their raw enum suffix.
+ * Returns `''` when the source is missing (legacy payloads predating
+ * `rateLimitSource`) so callers can concatenate unconditionally.
+ */
+export function formatRateLimitSource(source: SlotState['rateLimitSource']): string {
   if (!source) return '';
   if (source === 'inferred_shared') return ' via inferred shared bucket';
   return ` via ${source}`;
