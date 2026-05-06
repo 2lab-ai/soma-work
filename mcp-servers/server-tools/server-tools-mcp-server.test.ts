@@ -798,6 +798,25 @@ describe('handleListStack', () => {
 
     expect(() => handleListStack({ server: 'prod' })).toThrow(/Connection refused/i);
   });
+
+  it('handles string-typed stderr in swarm error mapping', () => {
+    mockConfig(PROD_CONFIG, 7950);
+
+    const err: any = new Error('Command failed');
+    err.stderr = 'Error response from daemon: This node is not a swarm manager.';
+    vi.mocked(child_process.execFileSync).mockImplementation(() => {
+      throw err;
+    });
+
+    expect(() => handleListStack({ server: 'prod' })).toThrow(/not a Docker Swarm manager/i);
+  });
+
+  it('throws labeled NDJSON parse error on malformed output', () => {
+    mockConfig(PROD_CONFIG, 7980);
+    vi.mocked(child_process.execFileSync).mockReturnValue('{"Name":"good"}\nthis is not json\n');
+
+    expect(() => handleListStack({ server: 'prod' })).toThrow(/Invalid NDJSON from docker stack ls/);
+  });
 });
 
 // ══════════════════════════════════════════════════════════════

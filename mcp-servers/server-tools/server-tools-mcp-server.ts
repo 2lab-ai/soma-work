@@ -341,11 +341,13 @@ function readStderr(err: unknown): string {
   return '';
 }
 
-// Detect "not a swarm manager" daemon errors. Re-throws non-matching errors as-is.
+// Always throws (`never`). Maps "not a swarm manager" daemon stderr to a typed
+// error; otherwise rethrows the original (preserving the original via `cause`
+// when wrapping so `execFileSync` exit code, signal, and full stderr survive).
 function rethrowAsSwarmError(err: unknown, server: string): never {
   const stderr = readStderr(err);
   if (/not a swarm manager/i.test(stderr)) {
-    throw new Error(`Server '${server}' is not a Docker Swarm manager`);
+    throw new Error(`Server '${server}' is not a Docker Swarm manager`, { cause: err });
   }
   throw err;
 }
@@ -358,11 +360,20 @@ function parseNdjson(output: string, source: string): unknown[] {
     .map((line) => {
       try {
         return JSON.parse(line);
-      } catch {
+      } catch (e) {
         const snippet = line.length > 100 ? `${line.slice(0, 100)}…` : line;
-        throw new Error(`Invalid NDJSON from ${source}: ${snippet}`);
+        throw new Error(`Invalid NDJSON from ${source}: ${snippet}`, { cause: e });
       }
     });
+}
+
+// Run `ssh <host> <dockerArgs>` with swarm-error mapping. Returns stdout.
+function runSshDocker(sshHost: string, dockerArgs: string[], server: string): string {
+  try {
+    return execFileSync('ssh', [sshHost, ...dockerArgs], { timeout: 30000, encoding: 'utf-8' });
+  } catch (err) {
+    rethrowAsSwarmError(err, server);
+  }
 }
 
 export function handleListService(args: Record<string, unknown>) {
@@ -377,19 +388,13 @@ export function handleListService(args: Record<string, unknown>) {
   const sshHost = config[server].ssh.host;
 
   let output: string;
+  let source: string;
   if (stack !== undefined) {
     validateDockerName(stack, 'stack');
-    try {
-      output = execFileSync(
-        'ssh',
-        [sshHost, 'docker', 'stack', 'services', stack, '--format', 'json'],
-        { timeout: 30000, encoding: 'utf-8' },
-      );
-    } catch (err) {
-      // rethrowAsSwarmError is `never`-returning; this catch never falls through.
-      rethrowAsSwarmError(err, server);
-    }
+    source = 'docker stack services';
+    output = runSshDocker(sshHost, ['docker', 'stack', 'services', stack, '--format', 'json'], server);
   } else {
+    source = 'docker ps';
     output = execFileSync(
       'ssh',
       [sshHost, 'docker', 'ps', '--format', 'json'],
@@ -397,8 +402,7 @@ export function handleListService(args: Record<string, unknown>) {
     );
   }
 
-  // Non-null: catch above either reassigns or throws via `never`-typed helper.
-  const services = parseNdjson(output!, 'docker stack services / ps');
+  const services = parseNdjson(output, source);
 
   return {
     content: [{ type: 'text' as const, text: JSON.stringify(services) }],
@@ -414,21 +418,8 @@ export function handleListStack(args: Record<string, unknown>) {
   }
 
   const sshHost = config[server].ssh.host;
-
-  let output: string;
-  try {
-    output = execFileSync(
-      'ssh',
-      [sshHost, 'docker', 'stack', 'ls', '--format', 'json'],
-      { timeout: 30000, encoding: 'utf-8' },
-    );
-  } catch (err) {
-    // rethrowAsSwarmError is `never`-returning; this catch never falls through.
-    rethrowAsSwarmError(err, server);
-  }
-
-  // Non-null: catch above either reassigns or throws via `never`-typed helper.
-  const stacks = parseNdjson(output!, 'docker stack ls');
+  const output = runSshDocker(sshHost, ['docker', 'stack', 'ls', '--format', 'json'], server);
+  const stacks = parseNdjson(output, 'docker stack ls');
 
   return {
     content: [{ type: 'text' as const, text: JSON.stringify(stacks) }],
@@ -460,7 +451,10 @@ export function handleLogs(args: Record<string, unknown>) {
   if (until) validateTimestamp(until, 'until');
 
   if (stack !== undefined && until !== undefined) {
-    throw new Error('--until is not supported when stack is set (docker service logs has no --until flag)');
+    throw new Error(
+      '--until is not supported when stack is set (docker service logs has no --until flag). ' +
+        'Remove "until" or unset "stack" to use docker logs mode.',
+    );
   }
 
   const sshHost = config[server].ssh.host;
