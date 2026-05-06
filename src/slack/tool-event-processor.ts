@@ -140,6 +140,14 @@ class BackgroundTaskRegistry {
     }
     return undefined;
   }
+
+  /** Total live entries across every turn bucket. Used by `cleanup()`'s
+   *  legacy-fallback warn — see ToolEventProcessor.cleanup JSDoc. */
+  get size(): number {
+    let total = 0;
+    for (const bucket of this.map.values()) total += bucket.size;
+    return total;
+  }
 }
 
 /**
@@ -668,6 +676,13 @@ export class ToolEventProcessor {
    * we fall back to a global sweep (same race exposure as pre-#794,
    * kept for legacy callers).
    *
+   * **Callers MUST pass `turnId` whenever bg Task entries may exist for
+   * the session.** The legacy `turnId`-less path drops the
+   * `backgroundTaskRegistry` drain entirely — entries indexed by
+   * `turnId` cannot be located without it, so they leak across turns.
+   * The legacy fallback only stays correct for paths that never spawn
+   * background Task tools (e.g. one-shot abort flows pre-#794).
+   *
    * Drain order:
    *   1. Background Bash counters (#688) — release before display close.
    *   2. Background Task entries (#794) — endMcpTracking each (parallel)
@@ -725,6 +740,16 @@ export class ToolEventProcessor {
       }
     } else {
       // Legacy fallback — same race exposure as before #794.
+      // If bg Task entries exist here we will leak them (the registry
+      // is keyed by turnId, which we don't have). Surface it so the
+      // misuse doesn't silently rot — see cleanup() JSDoc.
+      const bgTaskCount = this.backgroundTaskRegistry.size;
+      if (bgTaskCount > 0) {
+        this.logger.warn('cleanup() called without turnId — bg Task registry will leak', {
+          sessionKey,
+          registrySize: bgTaskCount,
+        });
+      }
       const activeMcpCallIds = this.toolTracker.getActiveMcpCallIds();
       for (const callId of activeMcpCallIds) {
         this.mcpStatusDisplay.completeCall(callId, null);

@@ -298,10 +298,21 @@ export function extractTaskIdFromResult(result: unknown): string | undefined {
     return match?.[1];
   }
 
-  // If result is an array (common SDK format), search text parts
+  // If result is an array (common SDK format), search text parts.
+  // Gate the object branch on `type === 'text'` — the Anthropic SDK also
+  // emits `{type:'image', source:{…}}` (and other non-text shapes) where
+  // the part's `.text` is undefined; without the gate we'd touch image
+  // parts harmlessly today, but a future shape with a same-named `text`
+  // metadata field could leak a false-positive task_id match.
   if (Array.isArray(result)) {
     for (const part of result) {
-      const text = typeof part === 'string' ? part : (part as { text?: unknown } | null | undefined)?.text;
+      let text: unknown;
+      if (typeof part === 'string') {
+        text = part;
+      } else {
+        const obj = part as { type?: unknown; text?: unknown } | null | undefined;
+        text = obj?.type === 'text' ? obj.text : undefined;
+      }
       if (typeof text === 'string') {
         const match = text.match(/task_id[:\s]+(\S+)/i);
         if (match) return match[1];

@@ -427,8 +427,8 @@ describe('ToolEventProcessor', () => {
       expect(mcpStatusDisplay.flushSession).toHaveBeenCalledWith('C123:thread_ts');
     });
 
-    it('should not throw without sessionKey', () => {
-      expect(() => processor.cleanup()).not.toThrow();
+    it('should not throw without sessionKey', async () => {
+      await expect(processor.cleanup()).resolves.not.toThrow();
     });
   });
 
@@ -512,7 +512,42 @@ describe('ToolEventProcessor', () => {
       expect(mcpCallTracker.endCall).not.toHaveBeenCalled();
       expect(mcpStatusDisplay.completeCall).not.toHaveBeenCalled();
       // Compact one-line still closes via onCompactDurationUpdate.
-      expect(compactCb).toHaveBeenCalledWith('tu_bg_ack', expect.any(Number), 'C123');
+      // Pin the elapsed value (mock returns 750) so a future drift of
+      // `getElapsedTime` plumbing can't silently zero/null this field.
+      expect(mcpCallTracker.getElapsedTime).toHaveBeenCalledWith('call_123');
+      expect(compactCb).toHaveBeenCalledWith('tu_bg_ack', 750, 'C123');
+    });
+
+    // S13b — same spawn-ack semantics, but with the SDK's array
+    // tool_result shape ([{type:'text', text:'…task_id: …'}]). The
+    // Anthropic SDK returns this shape from real Task calls; a string-
+    // only test would let an extractTaskIdFromResult regression on the
+    // array branch slip past. (Issue #794.)
+    it('S13b: bg Task spawn-ack tool_result (array shape) → endMcpTracking SKIPPED + compactCb fired', async () => {
+      const compactCb = vi.fn().mockResolvedValue(undefined);
+      processor.setCompactDurationCallback(compactCb);
+
+      const ctx: ToolEventContext = { ...mockContext, turnId: 'C123:1:turn-A' };
+      await processor.handleToolUse([{ id: 'tu_bg_ack_arr', name: 'Task', input: makeBgTaskInput() }], ctx);
+
+      mcpCallTracker.endCall.mockClear();
+      mcpStatusDisplay.completeCall.mockClear();
+
+      await processor.handleToolResult(
+        [
+          {
+            toolUseId: 'tu_bg_ack_arr',
+            toolName: 'Task',
+            result: [{ type: 'text', text: 'Task started in background. task_id: abc-123' }],
+            isError: false,
+          },
+        ],
+        ctx,
+      );
+
+      expect(mcpCallTracker.endCall).not.toHaveBeenCalled();
+      expect(mcpStatusDisplay.completeCall).not.toHaveBeenCalled();
+      expect(compactCb).toHaveBeenCalledWith('tu_bg_ack_arr', 750, 'C123');
     });
 
     // S14 — bg Task error result: normal close (no special-case).
@@ -569,6 +604,12 @@ describe('ToolEventProcessor', () => {
 
       expect(mcpCallTracker.endCall).toHaveBeenCalledWith('call_bg_task');
       expect(mcpStatusDisplay.flushSession).toHaveBeenCalledWith('C123:thread_ts');
+      // Ordering pin (issue #794) — flushSession MUST run AFTER endCall so
+      // the final render reflects the bg Task's `completed` flip. A drift
+      // here would re-introduce the "stuck running" symptom.
+      expect(mcpStatusDisplay.flushSession.mock.invocationCallOrder[0]).toBeGreaterThan(
+        mcpCallTracker.endCall.mock.invocationCallOrder[0],
+      );
     });
 
     // S15-bis — same-session, two turns: cleanup(turn1) leaves turn2 callIds alone.
@@ -766,7 +807,7 @@ describe('ToolEventProcessor', () => {
         mockContext,
       );
 
-      p.cleanup('C123:thread_ts');
+      await p.cleanup('C123:thread_ts');
       expect(status.unregister).toHaveBeenCalledTimes(1);
 
       // late tool_result — entry is already gone from the registry, so no
