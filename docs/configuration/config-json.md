@@ -169,6 +169,106 @@ Production overrides `ATLASSIAN_MCP_URL` to a regional endpoint; dev and CI use 
 - **Secrets in committed config.** Use `${VAR}` references and put the actual values in `.env` (gitignored).
 - **Plain `$VAR` (no braces).** Not substituted. Always wrap in `${...}`.
 
+## `server-tools` section
+
+The `server-tools` MCP server runs operational queries (DB read-only SQL, Docker `ps`/`logs`, Docker Swarm stack inspection) over SSH against named servers. Configuration lives under the `server-tools` key.
+
+### Shape
+
+```jsonc
+{
+  "server-tools": {
+    "permission": {
+      "list": "read",
+      "list_service": "read",
+      "list_stack": "read",
+      "logs": "read",
+      "db_query": "write"
+    },
+    "<server-name>": {
+      "ssh": { "host": "<sshHost or alias>" },
+      "databases": {
+        "<db-alias>": {
+          "type": "mysql" | "redis" | "mongodb" | "clickhouse",
+          "host": "...", "port": 0, "user": "...", "password": "..."
+        }
+      }
+    }
+  }
+}
+```
+
+`permission` is a reserved key — every other top-level key under `server-tools` is a server entry. Each server entry carries an `ssh.host` (resolved through your `~/.ssh/config`) and an optional `databases` map for DB-backed tools.
+
+### Permission map
+
+Per-tool levels follow the `read` / `write` convention from `mcp-tool-permission-config.ts`. `read` covers tools that only observe; `write` is required for anything that can mutate. The new `list_stack` tool is `read`-only — it just runs `docker stack ls`.
+
+| Tool | Default level | Notes |
+|---|---|---|
+| `list` | `read` | List configured servers + database types |
+| `list_service` | `read` | `docker ps` (default) or `docker stack services` (with `stack` arg) |
+| `list_stack` | `read` | `docker stack ls` — Swarm-only |
+| `logs` | `read` | `docker logs` (default) or `docker service logs` (with `stack` arg) |
+| `db_query` | `write` | Read-only SQL via SSH tunnel — but treated as `write` because the validator gating SQL is non-trivial |
+| `redis_query` / `mongodb_query` / `clickhouse_query` | `write` | Same rationale as `db_query` |
+
+### Docker Swarm stack support
+
+Standalone Docker (`docker ps` / `docker logs`) and Swarm-managed services (`docker stack ls` / `docker stack services` / `docker service logs`) share the same SSH host — there is **no per-mode config**. The same server entry handles both:
+
+```jsonc
+{
+  "server-tools": {
+    "permission": { "list_service": "read", "list_stack": "read", "logs": "read" },
+    "swarm-manager": {
+      "ssh": { "host": "swarm-manager.example.com" }
+    }
+  }
+}
+```
+
+Tool invocation (LLM side):
+
+```jsonc
+// List stacks deployed on the manager
+{ "tool": "list_stack", "args": { "server": "swarm-manager" } }
+
+// List services inside a specific stack
+{ "tool": "list_service", "args": { "server": "swarm-manager", "stack": "myapp" } }
+
+// Tail Swarm service logs (caller passes the full <stack>_<svc> name)
+{ "tool": "logs",
+  "args": { "server": "swarm-manager", "stack": "myapp", "service": "myapp_web", "tail": 200, "since": "10m" } }
+```
+
+Constraints worth knowing:
+
+- `--until` is **not supported** when `stack` is set (`docker service logs` has no `--until` flag). The tool throws with a remediation hint.
+- If the SSH host is not a Swarm manager, `list_stack` and `list_service` (with `stack`) throw `Server '<name>' is not a Docker Swarm manager` — typed error so the agent can suggest fixes immediately.
+- Output for `list_stack` and `list_service` (with `stack`) is **opaque NDJSON pass-through** — field names differ between modes (e.g. `Names` from `docker ps` vs `Name` from `docker stack services`).
+
+### Secrets
+
+Every string value above accepts `${VAR}` substitution. Keep DB passwords out of the file:
+
+```jsonc
+{
+  "server-tools": {
+    "prod": {
+      "ssh": { "host": "prod.example.com" },
+      "databases": {
+        "main": {
+          "type": "mysql", "host": "127.0.0.1", "port": 3306,
+          "user": "${PROD_DB_USER}",
+          "password": "${PROD_DB_PASSWORD:?set PROD_DB_PASSWORD in .env}"
+        }
+      }
+    }
+  }
+}
+```
+
 ## Where the substitution happens in code
 
 - `src/config-env-substitution.ts` — pure substitution + `.env` discovery

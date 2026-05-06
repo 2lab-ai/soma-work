@@ -18,7 +18,7 @@ describe('Session Workspace Isolation', () => {
 
   beforeEach(() => {
     for (const d of [TEST_DATA_DIR, TEST_WORKING_DIR]) {
-      if (fs.existsSync(d)) fs.rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+      if (fs.existsSync(d)) fs.rmSync(d, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
       fs.mkdirSync(d, { recursive: true });
     }
     manager = new WorkingDirectoryManager();
@@ -27,7 +27,7 @@ describe('Session Workspace Isolation', () => {
 
   afterEach(() => {
     for (const d of [TEST_DATA_DIR, TEST_WORKING_DIR]) {
-      if (fs.existsSync(d)) fs.rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+      if (fs.existsSync(d)) fs.rmSync(d, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
     }
   });
 
