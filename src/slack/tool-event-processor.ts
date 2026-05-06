@@ -739,10 +739,8 @@ export class ToolEventProcessor {
         this.callIdsByTurn.delete(turnId);
       }
     } else {
-      // Legacy fallback — same race exposure as before #794.
-      // If bg Task entries exist here we will leak them (the registry
-      // is keyed by turnId, which we don't have). Surface it so the
-      // misuse doesn't silently rot — see cleanup() JSDoc.
+      // Legacy fallback — same race exposure as before #794. The
+      // registry is keyed by turnId, so any bg Task entries leak here.
       const bgTaskCount = this.backgroundTaskRegistry.size;
       if (bgTaskCount > 0) {
         this.logger.warn('cleanup() called without turnId — bg Task registry will leak', {

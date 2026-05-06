@@ -272,55 +272,51 @@ export interface StreamResult {
 export type { EndTurnInfo };
 
 /**
+ * Single source of truth for the spawn-ack `task_id:` marker. Drift here
+ * would either suppress every `endMcpTracking` call (false-positive:
+ * leaks running state across turns) or kill the bg progress UI on real
+ * spawn-acks (false-negative: regresses #794). `ToolEventProcessor.isBackgroundTaskSpawnAck`
+ * reuses the same regex by going through `extractTaskIdFromResult`.
+ */
+const TASK_ID_RE = /task_id[:\s]+(\S+)/i;
+
+/**
  * Extract `task_id` from a Task tool result.
  *
  * The SDK returns spawn-ack text like
  *   `"Task started in background. output_file: /path task_id: abc123"`
  * either as a top-level string or as a `{ type: 'text', text: ... }` part
- * inside an array result. Returns the captured id, or `undefined` if no
- * marker is present.
- *
- * Issue #794 — exported as a module-level helper so
- * `ToolEventProcessor.isBackgroundTaskSpawnAck` can reuse the exact regex
- * (`/task_id[:\s]+(\S+)/i`) instead of hand-rolling its own. DRY across
- * the spawn-ack detection path eliminates the misdetection class where a
- * minor regex drift would either suppress every `endMcpTracking` call
- * (false-positive: leaks running state across turns) or kill the bg
- * progress UI on real spawn-acks (false-negative: regression of the
- * symptom this issue closes).
+ * inside an array result. The array branch gates on `part.type === 'text'`
+ * — the SDK also emits `{type:'image', source:{…}}` (and other non-text
+ * shapes); without the gate, a future shape with a same-named `text`
+ * metadata field could leak a false-positive `task_id` match.
  */
 export function extractTaskIdFromResult(result: unknown): string | undefined {
   if (!result) return undefined;
 
-  // If result is a string, search for task_id pattern
   if (typeof result === 'string') {
-    const match = result.match(/task_id[:\s]+(\S+)/i);
-    return match?.[1];
+    return result.match(TASK_ID_RE)?.[1];
   }
 
-  // If result is an array (common SDK format), search text parts.
-  // Gate the object branch on `type === 'text'` — the Anthropic SDK also
-  // emits `{type:'image', source:{…}}` (and other non-text shapes) where
-  // the part's `.text` is undefined; without the gate we'd touch image
-  // parts harmlessly today, but a future shape with a same-named `text`
-  // metadata field could leak a false-positive task_id match.
   if (Array.isArray(result)) {
     for (const part of result) {
-      let text: unknown;
-      if (typeof part === 'string') {
-        text = part;
-      } else {
-        const obj = part as { type?: unknown; text?: unknown } | null | undefined;
-        text = obj?.type === 'text' ? obj.text : undefined;
-      }
-      if (typeof text === 'string') {
-        const match = text.match(/task_id[:\s]+(\S+)/i);
-        if (match) return match[1];
-      }
+      const text = textOfPart(part);
+      if (text === undefined) continue;
+      const match = text.match(TASK_ID_RE);
+      if (match) return match[1];
     }
   }
 
   return undefined;
+}
+
+/** Narrow a content-array part to its text payload, gating on the
+ *  Anthropic schema's `type === 'text'` discriminant. */
+function textOfPart(part: unknown): string | undefined {
+  if (typeof part === 'string') return part;
+  const obj = part as { type?: unknown; text?: unknown } | null | undefined;
+  if (obj?.type !== 'text') return undefined;
+  return typeof obj.text === 'string' ? obj.text : undefined;
 }
 
 /**
