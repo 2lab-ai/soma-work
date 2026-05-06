@@ -651,6 +651,52 @@ describe('CctHandler — Wave 5', () => {
     expect(say.calls[0].text).toBe('⛔ Admin only command');
     expect(fetchAndStoreUsage).not.toHaveBeenCalled();
   });
+
+  // Codex P2 review (PR #805): empty-store informational message must
+  // not be reachable for non-admin mutating arms. Otherwise a non-admin
+  // running `cct next` against an empty fleet would learn the store is
+  // empty (configuration leak) instead of seeing `⛔ Admin only command`.
+  it('Codex P2: non-admin `cct next` against EMPTY store → "⛔ Admin only command", not "No CCT tokens configured"', async () => {
+    const rotateToNext = vi.fn(async () => null);
+    const { CctHandler } = await loadHandlerWithMockTm({
+      tokens: [], // empty store
+      rotateToNext,
+    });
+    const say = makeSay();
+    await new CctHandler().execute({ user: 'U_OTHER', channel: 'C', threadTs: 'T', text: 'cct next', say: say.fn });
+    expect(say.calls[0].text).toBe('⛔ Admin only command');
+    expect(say.calls[0].text).not.toMatch(/No CCT tokens configured/);
+    expect(rotateToNext).not.toHaveBeenCalled();
+  });
+
+  it('Codex P2: non-admin `cct usage` against EMPTY store → "⛔ Admin only command"', async () => {
+    const fetchAndStoreUsage = vi.fn(async () => null);
+    const { CctHandler } = await loadHandlerWithMockTm({
+      tokens: [],
+      fetchAndStoreUsage,
+    });
+    const say = makeSay();
+    await new CctHandler().execute({ user: 'U_OTHER', channel: 'C', threadTs: 'T', text: 'cct usage', say: say.fn });
+    expect(say.calls[0].text).toBe('⛔ Admin only command');
+    expect(fetchAndStoreUsage).not.toHaveBeenCalled();
+  });
+
+  it('Codex P2: non-admin `cct` (status) against EMPTY store still sees informational empty-store message (status is non-mutating)', async () => {
+    const { CctHandler } = await loadHandlerWithMockTm({ tokens: [] });
+    const say = makeSay();
+    await new CctHandler().execute({ user: 'U_OTHER', channel: 'C', threadTs: 'T', text: 'cct', say: say.fn });
+    // Status is still allowed for non-admin even on empty store.
+    expect(say.calls[0].text).toMatch(/No CCT tokens configured/);
+  });
+
+  it('Codex P2: admin `cct next` against EMPTY store → informational empty-store message (admin still gets actionable hint)', async () => {
+    const rotateToNext = vi.fn(async () => null);
+    const { CctHandler } = await loadHandlerWithMockTm({ tokens: [], rotateToNext });
+    const say = makeSay();
+    await new CctHandler().execute({ user: adminUser, channel: 'C', threadTs: 'T', text: 'cct next', say: say.fn });
+    expect(say.calls[0].text).toMatch(/No CCT tokens configured/);
+    expect(rotateToNext).not.toHaveBeenCalled();
+  });
 });
 
 describe('renderUsageLines', () => {

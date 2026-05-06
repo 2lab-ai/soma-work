@@ -78,10 +78,21 @@ export class CctHandler implements CommandHandler {
       return { handled: true };
     }
 
+    // #803 + Codex P2 review (PR #805): admin-gate mutating actions
+    // BEFORE the empty-store shortcut so a non-admin running
+    // `cct next` / `cct set` / `cct usage` / `cct auto` against an
+    // empty store still gets `⛔ Admin only command`, not the
+    // configuration-state leak "No CCT tokens configured".
+    const isMutatingAction =
+      action.action === 'next' || action.action === 'set' || action.action === 'usage' || action.action === 'auto';
+    if (isMutatingAction && !admin) return denyNonAdmin();
+
     if (tokens.length === 0) {
-      // Empty-store message is informational, not a mutation. Fine for
-      // every viewer — the renderCctCard path also tells non-admin the
-      // empty state.
+      // Empty-store message is informational. Reachable by:
+      //   - admin running any arm (including mutating ones — they still
+      //     deserve the actionable hint),
+      //   - non-admin running `status` (the only non-mutating arm).
+      // Mutating non-admin paths were already filtered above.
       await say({
         text: 'No CCT tokens configured. Set `CLAUDE_CODE_OAUTH_TOKEN_LIST` environment variable.',
         thread_ts: threadTs,

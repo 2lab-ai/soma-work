@@ -110,13 +110,21 @@ export type RenderInPlaceSurface = 'message' | 'ephemeral' | 'unknown';
 
 export function classifyRenderInPlaceSurface(body: RenderInPlaceBody): RenderInPlaceSurface {
   const containerType = body.container?.type;
+  // Ephemeral check FIRST. Slack/Bolt sometimes ship payloads where
+  // `container.type === 'message'` AND `container.is_ephemeral === true`
+  // for ephemeral messages — the `type` field describes the kind of
+  // surface (chat message, view, etc.) but `is_ephemeral` is what
+  // governs which API works. `chat.update` is illegal for ephemerals
+  // (no `message_ts` is ever surfaced), so any payload claiming
+  // `is_ephemeral` MUST go through `respond({ replace_original: true })`
+  // regardless of the `type` field's value. (Codex P2 review on PR #805.)
+  if (containerType === 'ephemeral' || body.container?.is_ephemeral === true) {
+    return 'ephemeral';
+  }
   if (containerType === 'message') {
     const { channel, ts } = extractMessageRef(body);
     if (channel && ts) return 'message';
     return 'unknown';
-  }
-  if (containerType === 'ephemeral' || body.container?.is_ephemeral === true) {
-    return 'ephemeral';
   }
   return 'unknown';
 }

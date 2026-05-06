@@ -56,6 +56,19 @@ describe('classifyRenderInPlaceSurface', () => {
     expect(classifyRenderInPlaceSurface({ container: { is_ephemeral: true } })).toBe('ephemeral');
   });
 
+  // Codex P2 review (PR #805): Slack/Bolt sometimes ship payloads where
+  // `container.type === 'message'` AND `container.is_ephemeral === true`.
+  // The classifier MUST treat this as ephemeral — `chat.update` is illegal
+  // for ephemeral surfaces, so falling through to the message branch
+  // would attempt an API call Slack rejects, leaving users on stale cards.
+  it('returns "ephemeral" when type=message but is_ephemeral=true (Codex P2)', () => {
+    expect(
+      classifyRenderInPlaceSurface({
+        container: { type: 'message', is_ephemeral: true, channel_id: 'C1', message_ts: '1.0' },
+      }),
+    ).toBe('ephemeral');
+  });
+
   it('returns "unknown" when no container present', () => {
     expect(classifyRenderInPlaceSurface({})).toBe('unknown');
   });
