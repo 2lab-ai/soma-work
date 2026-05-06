@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "jira": {
-      "type": "sse",
-      "url": "https://mcp.atlassian.com/v1/sse"
-    }
-  }
-}

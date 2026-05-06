@@ -11,8 +11,6 @@ node_modules/
 .env.*.local
 
 # Local config (not committed)
-mcp-servers.json
-mcp-servers.dev.json
 config.json
 config.dev.json
 .system.prompt

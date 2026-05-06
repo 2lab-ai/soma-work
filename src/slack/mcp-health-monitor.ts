@@ -97,7 +97,7 @@ export class McpHealthMonitor {
     errorCount: number,
   ): Promise<void> {
     const reloaded = this.mcpManager.reloadConfiguration();
-    const reloadText = reloaded ? 'MCP 구성 재로드 완료' : 'MCP 구성 재로드 실패 (mcp-servers.json 확인 필요)';
+    const reloadText = reloaded ? 'MCP 구성 재로드 완료' : 'MCP 구성 재로드 실패 (config.json#mcpServers 확인 필요)';
 
     const message = [
       `⚠️ MCP 서버 오류 증가: ${serverName}`,

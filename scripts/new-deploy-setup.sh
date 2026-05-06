@@ -559,23 +559,6 @@ PROMPT_EOF
         success "  .system.prompt 이미 존재 (보존)"
     fi
 
-    # mcp-servers.json
-    if [ ! -f "${DEPLOY_DIR}/mcp-servers.json" ]; then
-        cat > "${DEPLOY_DIR}/mcp-servers.json" << 'MCP_EOF'
-{
-  "mcpServers": {
-    "jira": {
-      "type": "sse",
-      "url": "https://mcp.atlassian.com/v1/sse"
-    }
-  }
-}
-MCP_EOF
-        success "  mcp-servers.json 생성됨"
-    else
-        success "  mcp-servers.json 이미 존재 (보존)"
-    fi
-
     # config.json (soma-work용)
     if [ ! -f "${DEPLOY_DIR}/config.json" ]; then
         cat > "${DEPLOY_DIR}/config.json" << 'CONFIG_EOF'
