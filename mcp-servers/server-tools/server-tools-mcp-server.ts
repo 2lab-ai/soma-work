@@ -331,7 +331,8 @@ export function handleList() {
   };
 }
 
-// Extract stderr text from an exec error regardless of Buffer/string typing.
+const NOT_SWARM_MANAGER_RE = /not a swarm manager/i;
+
 function readStderr(err: unknown): string {
   if (err && typeof err === 'object' && 'stderr' in err) {
     const v = (err as { stderr?: unknown }).stderr;
@@ -341,12 +342,9 @@ function readStderr(err: unknown): string {
   return '';
 }
 
-// Always throws (`never`). Maps "not a swarm manager" daemon stderr to a typed
-// error; otherwise rethrows the original (preserving the original via `cause`
-// when wrapping so `execFileSync` exit code, signal, and full stderr survive).
+// `cause: err` preserves execFileSync exit code / signal / stderr through the rewrite.
 function rethrowAsSwarmError(err: unknown, server: string): never {
-  const stderr = readStderr(err);
-  if (/not a swarm manager/i.test(stderr)) {
+  if (NOT_SWARM_MANAGER_RE.test(readStderr(err))) {
     throw new Error(`Server '${server}' is not a Docker Swarm manager`, { cause: err });
   }
   throw err;
@@ -367,7 +365,6 @@ function parseNdjson(output: string, source: string): unknown[] {
     });
 }
 
-// Run `ssh <host> <dockerArgs>` with swarm-error mapping. Returns stdout.
 function runSshDocker(sshHost: string, dockerArgs: string[], server: string): string {
   try {
     return execFileSync('ssh', [sshHost, ...dockerArgs], { timeout: 30000, encoding: 'utf-8' });
@@ -387,21 +384,18 @@ export function handleListService(args: Record<string, unknown>) {
 
   const sshHost = config[server].ssh.host;
 
-  let output: string;
+  let dockerArgs: string[];
   let source: string;
   if (stack !== undefined) {
     validateDockerName(stack, 'stack');
+    dockerArgs = ['docker', 'stack', 'services', stack, '--format', 'json'];
     source = 'docker stack services';
-    output = runSshDocker(sshHost, ['docker', 'stack', 'services', stack, '--format', 'json'], server);
   } else {
+    dockerArgs = ['docker', 'ps', '--format', 'json'];
     source = 'docker ps';
-    output = execFileSync(
-      'ssh',
-      [sshHost, 'docker', 'ps', '--format', 'json'],
-      { timeout: 30000, encoding: 'utf-8' },
-    );
   }
 
+  const output = runSshDocker(sshHost, dockerArgs, server);
   const services = parseNdjson(output, source);
 
   return {
