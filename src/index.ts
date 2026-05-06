@@ -31,6 +31,7 @@ import type { WebClient } from '@slack/web-api';
 import * as path from 'path';
 import { CronStorage } from 'somalib/cron/cron-storage';
 import { initA2tService, shutdownA2tService } from './a2t/a2t-service';
+import { setQueryEnvAdditional } from './auth/query-env-builder';
 import { scanChannels } from './channel-registry';
 import { ClaudeHandler } from './claude-handler';
 import { config, runPreflightChecks, validateConfig } from './config';
@@ -232,6 +233,20 @@ async function start() {
     // Load unified config (config.json → fallback mcp-servers.json)
     const unifiedConfig = loadUnifiedConfig(CONFIG_FILE, MCP_CONFIG_FILE);
     timing('Unified config loaded');
+
+    // Install operator-controlled additional env (config.json#claude.env)
+    // BEFORE any ClaudeHandler / SDK consumers are constructed, so every
+    // subsequent buildQueryEnv() call across all 7 callsites in the repo
+    // (claude-handler ×2, conversation/* ×3, slack/z/topics/*) sees the
+    // installed env. Hot reload is intentionally not supported — operators
+    // must restart after editing config.json#claude.env.
+    const claudeEnv = unifiedConfig['claude.env'] ?? {};
+    setQueryEnvAdditional(claudeEnv);
+    const claudeEnvKeys = Object.keys(claudeEnv);
+    if (claudeEnvKeys.length > 0) {
+      // Keys-only — values are operator-supplied and may be secrets.
+      timing(`claude.env applied (${claudeEnvKeys.length} vars): [${claudeEnvKeys.join(', ')}]`);
+    }
 
     // Initialize MCP manager (from unified config or legacy path)
     const mcpManager = unifiedConfig.mcpServers

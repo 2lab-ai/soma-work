@@ -2,7 +2,14 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { parseAgentsConfig, saveUnifiedConfig, type UnifiedConfig } from '../unified-config-loader';
+import { RESERVED_LEASE_KEYS } from '../auth/query-env-builder';
+import {
+  loadUnifiedConfig,
+  parseAgentsConfig,
+  parseClaudeEnv,
+  saveUnifiedConfig,
+  type UnifiedConfig,
+} from '../unified-config-loader';
 
 describe('saveUnifiedConfig', () => {
   let tmpDir: string;
@@ -463,5 +470,194 @@ describe('parseAgentsConfig — characterization (issue #793 PR1)', () => {
       const summary = infoMessages.find((m: string) => m.includes('agent configurations'));
       expect(summary).toBeUndefined();
     });
+  });
+});
+
+describe('parseClaudeEnv', () => {
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+  });
+
+  // Collect all string warn arguments emitted during a test, regardless of
+  // whether they are first-arg messages or contextual data passed alongside.
+  // The Logger formatter forwards both into console.warn; we want the union.
+  function collectWarnText(): string[] {
+    const out: string[] = [];
+    for (const call of warnSpy.mock.calls) {
+      for (const arg of call) {
+        if (typeof arg === 'string') out.push(arg);
+        else out.push(JSON.stringify(arg));
+      }
+    }
+    return out;
+  }
+
+  it('returns undefined when the field is absent', () => {
+    expect(parseClaudeEnv(undefined)).toBeUndefined();
+    // No warn for absence — that's the normal case for opted-out configs.
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('coerces mixed string / number / boolean values into strings', () => {
+    const out = parseClaudeEnv({
+      STR_VAR: 'hello',
+      INT_VAR: 4096,
+      FLOAT_VAR: 1.5,
+      BOOL_TRUE: true,
+      BOOL_FALSE: false,
+    });
+    expect(out).toEqual({
+      STR_VAR: 'hello',
+      INT_VAR: '4096',
+      FLOAT_VAR: '1.5',
+      BOOL_TRUE: 'true',
+      BOOL_FALSE: 'false',
+    });
+  });
+
+  it('preserves empty-string values (explicit "unset inherited" intent)', () => {
+    const out = parseClaudeEnv({ EMPTY: '' });
+    expect(out).toEqual({ EMPTY: '' });
+  });
+
+  it('drops keys that do not match the env-var identifier regex', () => {
+    const out = parseClaudeEnv({
+      VALID: 'ok',
+      '1INVALID': 'starts-with-digit',
+      'KEBAB-CASE': 'has-dash',
+      'with.dot': 'has-dot',
+      '': 'empty',
+    });
+    expect(out).toEqual({ VALID: 'ok' });
+    expect(warnSpy).toHaveBeenCalled();
+  });
+
+  it.each(RESERVED_LEASE_KEYS.map((k) => [k]))('drops reserved key %s with a warn', (reservedKey: string) => {
+    const out = parseClaudeEnv({ [reservedKey]: 'attempted-override' });
+    expect(out).toEqual({});
+    const warnText = collectWarnText().join('\n');
+    expect(warnText).toContain(reservedKey);
+    expect(warnText).toContain('reserved');
+  });
+
+  it('drops non-primitive values (object, array, null, undefined)', () => {
+    const out = parseClaudeEnv({
+      OBJ: { nested: 1 },
+      ARR: [1, 2, 3],
+      NUL: null,
+      UND: undefined,
+      OK: 'kept',
+    });
+    expect(out).toEqual({ OK: 'kept' });
+    expect(warnSpy).toHaveBeenCalled();
+  });
+
+  it('drops NaN, Infinity, and -Infinity number values', () => {
+    const out = parseClaudeEnv({
+      NAN: Number.NaN,
+      INF: Number.POSITIVE_INFINITY,
+      NEG_INF: Number.NEGATIVE_INFINITY,
+      OK: 42,
+    });
+    expect(out).toEqual({ OK: '42' });
+  });
+
+  it('ignores the entire field when the top-level value is not a plain object', () => {
+    expect(parseClaudeEnv(null)).toBeUndefined();
+    expect(parseClaudeEnv('string-value')).toBeUndefined();
+    expect(parseClaudeEnv(['arr'])).toBeUndefined();
+    expect(parseClaudeEnv(42)).toBeUndefined();
+    expect(warnSpy.mock.calls.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it('SECURITY: warn messages NEVER contain operator-supplied values (only keys)', () => {
+    const SECRET_VALUE = '__SECRET_TOKEN_12345__';
+    parseClaudeEnv({
+      // Various rejection paths:
+      OBJ_KEY: { secret: SECRET_VALUE },
+      'BAD-KEY': SECRET_VALUE, // invalid key
+      CLAUDE_CODE_OAUTH_TOKEN: SECRET_VALUE, // reserved
+      NAN_KEY: Number.NaN,
+      // For nested-object rejection, JSON.stringify of the contextual arg
+      // could leak; we ensure the warn arg list never stringifies into the
+      // secret.
+    });
+    const warnText = collectWarnText().join('\n');
+    expect(warnText).not.toContain(SECRET_VALUE);
+    // But the offending KEYS ARE expected — operators need to fix them.
+    expect(warnText).toContain('BAD-KEY');
+    expect(warnText).toContain('CLAUDE_CODE_OAUTH_TOKEN');
+  });
+});
+
+describe('loadUnifiedConfig (claude.env round-trip)', () => {
+  let tmpDir: string;
+  let configFile: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'unified-config-claude-env-'));
+    configFile = path.join(tmpDir, 'config.json');
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('parses a valid claude.env block end-to-end', () => {
+    fs.writeFileSync(
+      configFile,
+      JSON.stringify({
+        'claude.env': {
+          ENABLE_CLAUDEAI_MCP_SERVERS: false,
+          MAX_TOKENS: 4096,
+          FOO: 'bar',
+        },
+      }),
+    );
+    const cfg = loadUnifiedConfig(configFile, '');
+    expect(cfg['claude.env']).toEqual({
+      ENABLE_CLAUDEAI_MCP_SERVERS: 'false',
+      MAX_TOKENS: '4096',
+      FOO: 'bar',
+    });
+  });
+
+  it('omits the field entirely when the parsed result is empty', () => {
+    fs.writeFileSync(
+      configFile,
+      JSON.stringify({
+        'claude.env': {
+          // Every entry is rejected — load should not set the field at all.
+          'BAD-KEY': 'x',
+          CLAUDE_CODE_OAUTH_TOKEN: 'evil',
+        },
+      }),
+    );
+    const cfg = loadUnifiedConfig(configFile, '');
+    expect(cfg['claude.env']).toBeUndefined();
+  });
+
+  it('round-trips the dotted JSON key through plugin-manager-style spread', () => {
+    // plugin-manager.ts:saveConfig reads → spread-merges → saves. Confirm
+    // the dotted key survives that pattern unchanged.
+    fs.writeFileSync(
+      configFile,
+      JSON.stringify({
+        'claude.env': { FOO: 'bar' },
+        plugin: { marketplace: [], plugins: [], localOverrides: [] },
+      }),
+    );
+    const loaded = loadUnifiedConfig(configFile, '');
+    const updated = { ...loaded, plugin: { ...loaded.plugin, plugins: ['some@plugin'] } };
+    saveUnifiedConfig(configFile, updated);
+
+    const reloaded = loadUnifiedConfig(configFile, '');
+    expect(reloaded['claude.env']).toEqual({ FOO: 'bar' });
   });
 });
