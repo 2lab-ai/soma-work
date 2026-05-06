@@ -10,6 +10,7 @@ import type { AuthKey, AuthState, SlotState, UsageSnapshot } from '../../cct-sto
 import { isCctSlot } from '../../cct-store';
 import { formatRateLimitedAt } from '../../util/format-rate-limited-at';
 import type { ZBlock } from '../z/types';
+import { type CctCardMode, encodeCctActionValue } from './action-value';
 import {
   CCT_ACTION_IDS,
   CCT_BLOCK_IDS,
@@ -18,6 +19,26 @@ import {
   OAUTH_BLOB_HELP,
   SLACK_PLAIN_TEXT_INPUT_MAX,
 } from './views';
+
+/**
+ * Card render mode for the viewer of THIS render pass (#803).
+ *
+ *   - `'admin'`    — full mutating affordances (Activate, Attach, Detach,
+ *                    Remove, Add, Next-rotate, Refresh All OAuth Tokens,
+ *                    Refresh).
+ *   - `'readonly'` — every per-slot mutating action is stripped, the
+ *                    card-level Add / Next / Refresh-All are stripped,
+ *                    only a single card-level Refresh button remains.
+ *                    Used for the non-admin reveal of cached slot state
+ *                    (#803). The Refresh action is wired to non-force
+ *                    fetch on the handler side so the throttle is
+ *                    respected.
+ *
+ * The mode is also stamped into every emitted button's `value` via the
+ * `cm:<mode>|<payload>` codec so the action-dispatch handler can
+ * preserve the card mode across re-renders triggered by another viewer.
+ */
+export type CctCardViewerMode = CctCardMode;
 
 /** Shape used by the card renderer. */
 export interface CctCardInput {
@@ -29,6 +50,13 @@ export interface CctCardInput {
   nowMs?: number;
   /** IANA timezone for rate-limit timestamps. Default: Asia/Seoul. */
   userTz?: string;
+  /**
+   * Viewer-mode for this render pass. Default `'admin'` for backward
+   * compatibility — every existing call site that did not pass this
+   * field rendered the admin layout. Non-admin viewers must pass
+   * `'readonly'` explicitly.
+   */
+  viewerMode?: CctCardViewerMode;
 }
 
 /**
@@ -649,12 +677,18 @@ export function buildSlotRow(
   isActive: boolean,
   nowMs: number,
   userTz: string = 'Asia/Seoul',
+  viewerMode: CctCardViewerMode = 'admin',
 ): ZBlock[] {
   const blocks: ZBlock[] = [];
   // Line 1: identity (name · kind · tier · ToS-risk). Tier + active marker
   // are now emitted for EVERY slot — #653 M2 removes the prior isActive
   // gating so inactive rows carry the full signal (user specifically wants
   // tier + 5h + 7d always visible, not just on the currently-selected row).
+  //
+  // #803 — readonly viewers see the SAME identity / status / usage rows
+  // as admin viewers. Only the per-slot mutating actions are removed
+  // (a few lines below). The user explicitly requested
+  // "non-admin shows email/tier/usage too, no masking".
   const line1 = [
     ':key:',
     `*${escapeMrkdwn(slot.name)}*`,
@@ -683,44 +717,51 @@ export function buildSlotRow(
   // Per-slot Refresh / Rename buttons were removed in the card v2
   // follow-up: Refresh is now a card-level fan-out
   // (`CCT_ACTION_IDS.refresh_card`), and Rename was unused in practice.
-  const actionElements: ZBlock[] = [];
-  if (!isActive && slot.kind !== 'api_key') {
-    actionElements.push({
-      type: 'button',
-      action_id: CCT_ACTION_IDS.activate_slot,
-      style: 'primary',
-      text: { type: 'plain_text', text: ':arrow_forward: Activate', emoji: true },
-      value: slot.keyId,
-    });
-  }
-  if (isCctSlot(slot) && slot.source === 'setup') {
-    if (slot.oauthAttachment === undefined) {
+  //
+  // #803 — readonly viewers strip the entire per-slot mutating action
+  // row. We also OMIT the empty `actions` block instead of emitting an
+  // `actions` block with zero elements (which Slack rejects). The card-
+  // level Refresh button is still rendered by `buildCctCardBlocks`.
+  if (viewerMode === 'admin') {
+    const actionElements: ZBlock[] = [];
+    if (!isActive && slot.kind !== 'api_key') {
       actionElements.push({
         type: 'button',
-        action_id: CCT_ACTION_IDS.attach,
-        text: { type: 'plain_text', text: ':link: Attach OAuth', emoji: true },
-        value: slot.keyId,
-      });
-    } else {
-      actionElements.push({
-        type: 'button',
-        action_id: CCT_ACTION_IDS.detach,
-        text: { type: 'plain_text', text: ':unlock: Detach OAuth', emoji: true },
-        value: slot.keyId,
+        action_id: CCT_ACTION_IDS.activate_slot,
+        style: 'primary',
+        text: { type: 'plain_text', text: ':arrow_forward: Activate', emoji: true },
+        value: encodeCctActionValue({ mode: viewerMode, payload: slot.keyId }),
       });
     }
+    if (isCctSlot(slot) && slot.source === 'setup') {
+      if (slot.oauthAttachment === undefined) {
+        actionElements.push({
+          type: 'button',
+          action_id: CCT_ACTION_IDS.attach,
+          text: { type: 'plain_text', text: ':link: Attach OAuth', emoji: true },
+          value: encodeCctActionValue({ mode: viewerMode, payload: slot.keyId }),
+        });
+      } else {
+        actionElements.push({
+          type: 'button',
+          action_id: CCT_ACTION_IDS.detach,
+          text: { type: 'plain_text', text: ':unlock: Detach OAuth', emoji: true },
+          value: encodeCctActionValue({ mode: viewerMode, payload: slot.keyId }),
+        });
+      }
+    }
+    actionElements.push({
+      type: 'button',
+      action_id: CCT_ACTION_IDS.remove,
+      style: 'danger',
+      text: { type: 'plain_text', text: ':wastebasket: Remove', emoji: true },
+      value: encodeCctActionValue({ mode: viewerMode, payload: slot.keyId }),
+    });
+    blocks.push({
+      type: 'actions',
+      elements: actionElements,
+    });
   }
-  actionElements.push({
-    type: 'button',
-    action_id: CCT_ACTION_IDS.remove,
-    style: 'danger',
-    text: { type: 'plain_text', text: ':wastebasket: Remove', emoji: true },
-    value: slot.keyId,
-  });
-  blocks.push({
-    type: 'actions',
-    elements: actionElements,
-  });
 
   // Usage panel — only when the slot has a persisted usage snapshot. The
   // panel is emitted for EVERY attached slot (no longer isActive-gated);
@@ -798,10 +839,23 @@ function trimBlocksToSlackCap(blocks: ZBlock[]): ZBlock[] {
 
 /**
  * Build the full CCT card: header + per-slot rows + action row.
+ *
+ * #803 — `viewerMode='readonly'` strips every mutating affordance:
+ *   - per-slot Activate/Attach/Detach/Remove (inside `buildSlotRow`).
+ *   - card-level Add / Next-rotate / Refresh-All-OAuth.
+ *   - empty-slots prompt switches from "Click *Add* to create one" to
+ *     a neutral "(no slots cached)" so the readonly viewer isn't told to
+ *     do something they cannot do.
+ *
+ * Only the card-level Refresh button survives in readonly. The handler
+ * checks the encoded `cm:` mode + actor admin state to decide whether
+ * the underlying fetch goes force/non-force (admin-actor-on-admin-card
+ * is force, everything else is non-force).
  */
 export function buildCctCardBlocks(input: CctCardInput): ZBlock[] {
   const nowMs = input.nowMs ?? Date.now();
   const userTz = input.userTz ?? 'Asia/Seoul';
+  const viewerMode: CctCardViewerMode = input.viewerMode ?? 'admin';
   const blocks: ZBlock[] = [];
 
   blocks.push({
@@ -810,53 +864,76 @@ export function buildCctCardBlocks(input: CctCardInput): ZBlock[] {
   });
 
   if (input.slots.length === 0) {
+    // Empty-state copy diverges by viewerMode: admin sees the call-to-
+    // action, readonly sees a neutral "(no slots cached)" sentinel.
+    const text =
+      viewerMode === 'admin'
+        ? 'No CCT slots configured. Click *Add* to create one, or set `CLAUDE_CODE_OAUTH_TOKEN_LIST`.'
+        : '(no slots cached)';
     blocks.push({
       type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: 'No CCT slots configured. Click *Add* to create one, or set `CLAUDE_CODE_OAUTH_TOKEN_LIST`.',
-      },
+      text: { type: 'mrkdwn', text },
     });
   } else {
     for (const slot of input.slots) {
-      const rowBlocks = buildSlotRow(slot, input.states[slot.keyId], slot.keyId === input.activeKeyId, nowMs, userTz);
+      const rowBlocks = buildSlotRow(
+        slot,
+        input.states[slot.keyId],
+        slot.keyId === input.activeKeyId,
+        nowMs,
+        userTz,
+        viewerMode,
+      );
       for (const b of rowBlocks) blocks.push(b);
       blocks.push({ type: 'divider' });
     }
   }
 
-  // Card-level action row: Next rotate / Add / Refresh All OAuth Tokens. Per-slot
-  // [Activate] / [Remove] / [Attach|Detach] live on each slot row (see
-  // `buildSlotRow`). The per-slot inline [Activate] button is the only
-  // activation affordance; the legacy `set_active` fallback dropdown was
-  // dropped in the card v2 follow-up.
-  const actionElements: ZBlock[] = [
-    {
-      type: 'button',
-      action_id: CCT_ACTION_IDS.next,
-      text: { type: 'plain_text', text: ':arrows_counterclockwise: Next rotate', emoji: true },
-      value: 'next',
-    },
-    {
-      type: 'button',
-      action_id: CCT_ACTION_IDS.add,
-      style: 'primary',
-      text: { type: 'plain_text', text: ':heavy_plus_sign: Add', emoji: true },
-      value: 'add',
-    },
-    {
-      type: 'button',
-      action_id: CCT_ACTION_IDS.refresh_usage_all,
-      text: { type: 'plain_text', text: ':arrows_counterclockwise: Refresh All OAuth Tokens', emoji: true },
-      value: 'refresh_all',
-    },
-    {
-      type: 'button',
-      action_id: CCT_ACTION_IDS.refresh_card,
-      text: { type: 'plain_text', text: ':arrows_counterclockwise: Refresh', emoji: true },
-      value: 'refresh_card',
-    },
-  ];
+  // Card-level action row.
+  //
+  // Admin viewer:
+  //   Next rotate / Add / Refresh All OAuth Tokens / Refresh
+  // Readonly viewer:
+  //   Refresh (alone). The button label changes to make it clear this
+  //   is a non-force, throttle-respecting refresh.
+  //
+  // Per-slot [Activate] / [Remove] / [Attach|Detach] live on each slot
+  // row (see `buildSlotRow`). The per-slot inline [Activate] button is
+  // the only activation affordance; the legacy `set_active` fallback
+  // dropdown was dropped in the card v2 follow-up.
+  const actionElements: ZBlock[] = [];
+  if (viewerMode === 'admin') {
+    actionElements.push(
+      {
+        type: 'button',
+        action_id: CCT_ACTION_IDS.next,
+        text: { type: 'plain_text', text: ':arrows_counterclockwise: Next rotate', emoji: true },
+        value: encodeCctActionValue({ mode: viewerMode, payload: 'next' }),
+      },
+      {
+        type: 'button',
+        action_id: CCT_ACTION_IDS.add,
+        style: 'primary',
+        text: { type: 'plain_text', text: ':heavy_plus_sign: Add', emoji: true },
+        value: encodeCctActionValue({ mode: viewerMode, payload: 'add' }),
+      },
+      {
+        type: 'button',
+        action_id: CCT_ACTION_IDS.refresh_usage_all,
+        text: { type: 'plain_text', text: ':arrows_counterclockwise: Refresh All OAuth Tokens', emoji: true },
+        value: encodeCctActionValue({ mode: viewerMode, payload: 'refresh_all' }),
+      },
+    );
+  }
+  // Refresh button is rendered for BOTH viewer modes. The mode is
+  // encoded into the button's value so the handler can preserve the
+  // card mode + decide the force gate.
+  actionElements.push({
+    type: 'button',
+    action_id: CCT_ACTION_IDS.refresh_card,
+    text: { type: 'plain_text', text: ':arrows_counterclockwise: Refresh', emoji: true },
+    value: encodeCctActionValue({ mode: viewerMode, payload: 'refresh_card' }),
+  });
   blocks.push({ type: 'actions', elements: actionElements });
 
   // Apply the overflow guard AFTER chrome is added so dividers inside
