@@ -25,7 +25,22 @@ import type { AuthKey } from '../auth/auth-key';
 
 export type AuthState = 'healthy' | 'refresh_failed' | 'revoked';
 
-export type RateLimitSource = 'response_header' | 'error_string' | 'manual';
+/**
+ * Where the rate-limit signal came from.
+ *
+ * - `response_header` — direct upstream evidence (parsed from rate-limit headers).
+ * - `error_string`    — direct upstream evidence (parsed from a 429 error body).
+ * - `manual`          — operator-set bookkeeping (no upstream signal).
+ * - `inferred_shared` — propagated from a sibling slot that was directly
+ *                      rate-limited at the same wall-clock reset (the
+ *                      cross-account shared-bucket heuristic; see
+ *                      `docs/cct-shared-bucket-cooldown-propagation/`).
+ *
+ * Only the two "direct evidence" arms can anchor a shared-bucket match —
+ * `manual` and `inferred_shared` are deliberately excluded so a single
+ * inference cannot chain across the whole pool.
+ */
+export type RateLimitSource = 'response_header' | 'error_string' | 'manual' | 'inferred_shared';
 
 export interface Lease {
   leaseId: string;
