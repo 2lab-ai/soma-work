@@ -72,6 +72,11 @@ function getHeartbeatDir(): string {
   return path.join(os.homedir(), '.soma', 'instances');
 }
 
+// Module-scoped guard — the heartbeat directory only needs to be created
+// once per process per resolved path. Avoids one mkdir syscall per 5 s
+// tick × instance over the lifetime of the server.
+let _ensuredDir: string | null = null;
+
 /**
  * Atomically write `<dir>/<port>.json` with mode 0600.
  *
@@ -90,7 +95,10 @@ function getHeartbeatDir(): string {
  */
 export async function writeHeartbeat(payload: HeartbeatPayload): Promise<void> {
   const dir = getHeartbeatDir();
-  await fs.mkdir(dir, { recursive: true });
+  if (_ensuredDir !== dir) {
+    await fs.mkdir(dir, { recursive: true });
+    _ensuredDir = dir;
+  }
 
   const target = path.join(dir, `${payload.port}.json`);
   // Per-process random suffix keeps concurrent writers from clobbering each
@@ -136,50 +144,45 @@ export async function readAllInstances(): Promise<InstanceRecord[]> {
   }
 
   const now = Date.now();
-  const out: InstanceRecord[] = [];
-
-  for (const name of entries) {
-    // The atomic-write tmp files end in `.tmp` — the `.json` filter
-    // already excludes them; we'd only revisit if something started
-    // landing tmp suffixes inside `.json` filenames, which the writer
-    // contract forbids. Drop the redundant guard.
-    if (!name.endsWith('.json')) continue;
-    const full = path.join(dir, name);
-    let raw: string;
-    try {
-      raw = await fs.readFile(full, 'utf8');
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code;
-      // ENOENT is benign — the file vanished mid-readdir (heartbeat
-      // overwrite race). EACCES / EIO are real and must surface so an
-      // operator can fix permissions instead of seeing silently empty
-      // sibling discovery.
-      if (code !== 'ENOENT') {
-        logger.warn('Heartbeat file read failed', { name, code });
+  const jsonFiles = entries.filter((n) => n.endsWith('.json'));
+  const records = await Promise.all(
+    jsonFiles.map(async (name) => {
+      const full = path.join(dir, name);
+      let raw: string;
+      try {
+        raw = await fs.readFile(full, 'utf8');
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        // ENOENT is benign (file vanished mid-readdir, heartbeat
+        // overwrite race). EACCES / EIO are real and surface so an
+        // operator can fix permissions instead of seeing silently
+        // empty sibling discovery.
+        if (code !== 'ENOENT') {
+          logger.warn('Heartbeat file read failed', { name, code });
+        }
+        return null;
       }
-      continue;
-    }
-    let parsed: any;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      logger.warn('Skipping unparseable heartbeat file', { name });
-      continue;
-    }
-    if (!parsed || typeof parsed !== 'object') continue;
-    if (typeof parsed.port !== 'number') continue;
-    if (typeof parsed.lastSeen !== 'number') continue;
-    if (now - parsed.lastSeen > STALE_THRESHOLD_MS) continue;
-    out.push({
-      port: parsed.port,
-      instanceName: typeof parsed.instanceName === 'string' ? parsed.instanceName : '',
-      host: typeof parsed.host === 'string' ? parsed.host : '127.0.0.1',
-      pid: typeof parsed.pid === 'number' ? parsed.pid : 0,
-      lastSeen: parsed.lastSeen,
-    });
-  }
-
-  return out;
+      let parsed: any;
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        logger.warn('Skipping unparseable heartbeat file', { name });
+        return null;
+      }
+      if (!parsed || typeof parsed !== 'object') return null;
+      if (typeof parsed.port !== 'number') return null;
+      if (typeof parsed.lastSeen !== 'number') return null;
+      if (now - parsed.lastSeen > STALE_THRESHOLD_MS) return null;
+      return {
+        port: parsed.port,
+        instanceName: typeof parsed.instanceName === 'string' ? parsed.instanceName : '',
+        host: typeof parsed.host === 'string' ? parsed.host : '127.0.0.1',
+        pid: typeof parsed.pid === 'number' ? parsed.pid : 0,
+        lastSeen: parsed.lastSeen,
+      } satisfies InstanceRecord;
+    }),
+  );
+  return records.filter((r): r is InstanceRecord => r !== null);
 }
 
 /**

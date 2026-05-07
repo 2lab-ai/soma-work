@@ -27,9 +27,6 @@
  * malformed JSON is silently skipped (with one warn-log per process so
  * the operator notices but the page still renders self-only data).
  *
- * Lives in its own module — `dashboard.ts` is ~5k lines and its test file
- * is ~1.7k. Mixing aggregation into `dashboard.ts` would force every
- * existing dashboard test through the new code path.
  */
 
 import { Logger } from '../logger';
@@ -74,24 +71,17 @@ export interface FetchSiblingBoardsOptions {
 let _warnedAboutMissingToken = false;
 
 /**
- * Per-(port, class) warn rate-limit. PR #815 review caught the original
- * 1-shot-per-process flag eating distinct sibling failures: a flapping
- * port-A would silence a brand-new port-B failure for the lifetime of the
- * process. The map keyed on `${port}:${cls}` (status / parse / network /
- * board-shape) keeps each distinct failure mode visible while still
- * suppressing log floods.
- *
- * Default TTL is 60 s — long enough that a sibling failing on every poll
- * (every 30 s) only logs once per minute, short enough that a recovered-
- * then-flapping sibling re-surfaces in the operator's view.
+ * Per-(port, class) warn rate-limit. The map keys on `${port}:${cls}` so
+ * a flapping port doesn't silence a brand-new failure on a different
+ * port or with a different cause. 60 s TTL: a sibling failing every
+ * 30 s poll logs once per minute; a recovered-then-flapping sibling
+ * re-surfaces.
  */
 const SIBLING_WARN_TTL_MS = 60_000;
+type SiblingFailureClass = 'http_status' | 'parse_failed' | 'board_missing' | 'timeout' | 'network_error';
 const _siblingWarnedAt = new Map<string, number>();
 
-/**
- * Test hook — resets the warn-rate-limit state so each test observes a
- * clean call. Not used in production.
- */
+/** Test hook — clears warn rate-limit state. Not used in production. */
 export function __resetWarnFlagForTests(): void {
   _warnedAboutMissingToken = false;
   _siblingWarnedAt.clear();
@@ -210,7 +200,7 @@ export async function fetchSiblingBoards(options: FetchSiblingBoardsOptions): Pr
  * combinations each get their own throttle, so a flapping port-A doesn't
  * silence a brand-new port-B failure for the lifetime of the process.
  */
-function warnSiblingFailure(port: number, cls: string, extra: Record<string, unknown>): void {
+function warnSiblingFailure(port: number, cls: SiblingFailureClass, extra: Record<string, unknown>): void {
   const key = `${port}:${cls}`;
   const now = Date.now();
   const last = _siblingWarnedAt.get(key);

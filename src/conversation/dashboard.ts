@@ -212,27 +212,23 @@ export function __resetSelfInstanceEnvForTests(): void {
   _aggregatorCacheClear();
 }
 
-// #814 — Per-process TTL cache for sibling fan-out results. Multiple browser
-// tabs polling /api/dashboard/sessions every 30 s would otherwise each
-// trigger their own N×HTTP fan-out. 1500 ms is the longest cache that still
-// feels "live" against a 30 s poll cadence; shorter than the aggregator's
-// own 1500 ms per-sibling timeout so a stuck sibling can't pin a stale
-// answer here.
+// #814 — Per-process TTL cache for sibling fan-out. Collapses concurrent
+// /api/dashboard/sessions polls (multiple browser tabs) into one fan-out;
+// 1500 ms < 30 s poll cadence so a sibling that just came up surfaces on
+// the next tick.
 const AGGREGATOR_CACHE_TTL_MS = 1_500;
-let _aggregatorCacheValue: Awaited<ReturnType<typeof fetchSiblingBoards>> | null = null;
-let _aggregatorCacheStamp = 0;
-function _aggregatorCacheGet(): Awaited<ReturnType<typeof fetchSiblingBoards>> | null {
-  if (_aggregatorCacheValue === null) return null;
-  if (Date.now() - _aggregatorCacheStamp > AGGREGATOR_CACHE_TTL_MS) return null;
-  return _aggregatorCacheValue;
+type SiblingBoards = Awaited<ReturnType<typeof fetchSiblingBoards>>;
+let _aggregatorCache: { value: SiblingBoards; stamp: number } | null = null;
+function _aggregatorCacheGet(): SiblingBoards | null {
+  if (_aggregatorCache === null) return null;
+  if (Date.now() - _aggregatorCache.stamp > AGGREGATOR_CACHE_TTL_MS) return null;
+  return _aggregatorCache.value;
 }
-function _aggregatorCacheSet(siblings: Awaited<ReturnType<typeof fetchSiblingBoards>>): void {
-  _aggregatorCacheValue = siblings;
-  _aggregatorCacheStamp = Date.now();
+function _aggregatorCacheSet(siblings: SiblingBoards): void {
+  _aggregatorCache = { value: siblings, stamp: Date.now() };
 }
 function _aggregatorCacheClear(): void {
-  _aggregatorCacheValue = null;
-  _aggregatorCacheStamp = 0;
+  _aggregatorCache = null;
 }
 
 /**
@@ -297,6 +293,21 @@ function resolveSelfActionKey(wireKey: string, reply: any): string | null {
     return null;
   }
   return local;
+}
+
+/**
+ * Resolve the wire-format `:key` route param to a local session key AND
+ * gate on `requireSessionOwner` in one call. Centralizes the
+ * (cross-instance reject → owner gate) preamble that every action
+ * endpoint shares. Returns null if either check failed (the reply has
+ * already been sent).
+ */
+function resolveSelfActionKeyAndOwner(request: any, reply: any): { wireKey: string; originalKey: string } | null {
+  const wireKey: string = request.params?.key ?? '';
+  const originalKey = resolveSelfActionKey(wireKey, reply);
+  if (originalKey === null) return null;
+  if (!requireSessionOwner(request, reply, originalKey)) return null;
+  return { wireKey, originalKey };
 }
 
 // ── Session data accessor ──────────────────────────────────────────
@@ -1092,11 +1103,9 @@ export async function registerDashboardRoutes(
       }
 
       try {
-        // Pre-discover so `shouldAggregate` actually gates the fan-out
-        // (PR #815 review caught the original where the gate ran AFTER
-        // the fetch, making it dead code). `readAllInstances` is a
-        // single readdir + N tiny readFiles — cheap enough to run on
-        // every poll without caching.
+        // Pre-discover once and reuse the same records inside
+        // `fetchSiblingBoards` (via `discoverFn`) so the gate doesn't
+        // cost a second readdir+readFile sweep.
         const all = await readAllInstances();
         const selfPort = _selfInstanceEnv.port;
         const siblingCount = all.filter((r) => r.port !== selfPort && r.pid !== process.pid).length;
@@ -1112,8 +1121,8 @@ export async function registerDashboardRoutes(
         }
         // Per-poll TTL cache — multiple browser tabs polling /sessions
         // every 30 s shouldn't independently fan out N×HTTP each time.
-        // 1.5 s is short enough to feel "live" and long enough to
-        // collapse a burst of concurrent polls.
+        // 1.5 s collapses a burst of concurrent polls without going
+        // stale enough to mask a sibling that just came up.
         const cached = _aggregatorCacheGet();
         let siblings;
         if (cached) {
@@ -1123,6 +1132,7 @@ export async function registerDashboardRoutes(
             selfPort,
             selfPid: process.pid,
             viewerToken: config.conversation.viewerToken,
+            discoverFn: async () => all,
           });
           _aggregatorCacheSet(siblings);
         }
@@ -1410,12 +1420,9 @@ export async function registerDashboardRoutes(
     '/api/dashboard/session/:key/stop',
     { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
-      const { key } = request.params;
-      // #814 wire-format key carries the `${instanceName}::` prefix; strip
-      // it before resolving against the local session map.
-      const originalKey = resolveSelfActionKey(key, reply);
-      if (originalKey === null) return;
-      if (!requireSessionOwner(request, reply, originalKey)) return;
+      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      if (!resolved) return;
+      const { wireKey: key, originalKey } = resolved;
       try {
         if (_stopHandlerFn) {
           await _stopHandlerFn(originalKey);
@@ -1435,10 +1442,9 @@ export async function registerDashboardRoutes(
     '/api/dashboard/session/:key/close',
     { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
-      const { key } = request.params;
-      const originalKey = resolveSelfActionKey(key, reply);
-      if (originalKey === null) return;
-      if (!requireSessionOwner(request, reply, originalKey)) return;
+      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      if (!resolved) return;
+      const { wireKey: key, originalKey } = resolved;
       try {
         if (_closeHandlerFn) {
           await _closeHandlerFn(originalKey);
@@ -1457,10 +1463,9 @@ export async function registerDashboardRoutes(
     '/api/dashboard/session/:key/trash',
     { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
-      const { key } = request.params;
-      const originalKey = resolveSelfActionKey(key, reply);
-      if (originalKey === null) return;
-      if (!requireSessionOwner(request, reply, originalKey)) return;
+      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      if (!resolved) return;
+      const { wireKey: key, originalKey } = resolved;
       try {
         if (_trashHandlerFn) {
           await _trashHandlerFn(originalKey);
@@ -1479,7 +1484,6 @@ export async function registerDashboardRoutes(
     '/api/dashboard/session/:key/command',
     { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
-      const { key } = request.params;
       const { message } = request.body || {};
       if (!message || typeof message !== 'string') {
         reply.status(400).send({ error: 'message is required and must be a string' });
@@ -1489,9 +1493,9 @@ export async function registerDashboardRoutes(
         reply.status(400).send({ error: 'message exceeds max length (4000 chars)' });
         return;
       }
-      const originalKey = resolveSelfActionKey(key, reply);
-      if (originalKey === null) return;
-      if (!requireSessionOwner(request, reply, originalKey)) return;
+      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      if (!resolved) return;
+      const { originalKey } = resolved;
       try {
         if (_commandHandlerFn) {
           await _commandHandlerFn(originalKey, message);
@@ -1510,7 +1514,6 @@ export async function registerDashboardRoutes(
     '/api/dashboard/session/:key/answer-choice',
     { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
-      const { key } = request.params;
       const { choiceId, label, question } = request.body || {};
       if (
         !choiceId ||
@@ -1527,9 +1530,9 @@ export async function registerDashboardRoutes(
         reply.status(400).send({ error: 'Field length exceeded' });
         return;
       }
-      const originalKey = resolveSelfActionKey(key, reply);
-      if (originalKey === null) return;
-      if (!requireSessionOwner(request, reply, originalKey)) return;
+      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      if (!resolved) return;
+      const { originalKey } = resolved;
       try {
         if (_choiceAnswerHandlerFn) {
           await _choiceAnswerHandlerFn(originalKey, choiceId, label, question);
@@ -1563,7 +1566,6 @@ export async function registerDashboardRoutes(
     '/api/dashboard/session/:key/answer-multi-choice',
     { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
-      const { key } = request.params;
       const { selections } = request.body || {};
       if (
         !selections ||
@@ -1598,9 +1600,9 @@ export async function registerDashboardRoutes(
           return;
         }
       }
-      const originalKey = resolveSelfActionKey(key, reply);
-      if (originalKey === null) return;
-      if (!requireSessionOwner(request, reply, originalKey)) return;
+      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      if (!resolved) return;
+      const { originalKey } = resolved;
       try {
         if (_multiChoiceAnswerHandlerFn) {
           await _multiChoiceAnswerHandlerFn(originalKey, selections);
@@ -1635,10 +1637,9 @@ export async function registerDashboardRoutes(
     '/api/dashboard/session/:key/submit-recommended',
     { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
-      const { key } = request.params;
-      const originalKey = resolveSelfActionKey(key, reply);
-      if (originalKey === null) return;
-      if (!requireSessionOwner(request, reply, originalKey)) return;
+      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      if (!resolved) return;
+      const { wireKey: key, originalKey } = resolved;
       try {
         if (!_submitRecommendedHandlerFn) {
           reply.status(501).send({ error: 'Submit-recommended handler not configured' });
@@ -3726,10 +3727,9 @@ function _envCount() {
 // ── Kanban rendering ──
 function renderBoard(board) {
   _sessionCache = {}; // Clear stale cache each render cycle
-  _envIndex = null;   // Recompute env palette assignment from the new cache
-  // Pre-populate cache from full board so renderCard's env lookup sees the
-  // sibling cards too (renderCard runs per column and the pal-index pass
-  // reads the whole cache).
+  // Populate cache from the entire board first so the env-palette pass
+  // (which reads every card's environment) and per-column renderCard
+  // calls share one walk over the data.
   for (var col0 of ['working', 'waiting', 'idle', 'closed']) {
     var arr = board[col0] || [];
     for (var i0 = 0; i0 < arr.length; i0++) {
