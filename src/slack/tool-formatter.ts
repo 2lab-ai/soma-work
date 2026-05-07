@@ -23,7 +23,13 @@ export interface TaskToolSummary {
   subagentType?: string;
   subagentLabel?: string;
   model?: string;
-  runInBackground?: boolean;
+  /**
+   * Whether the Task tool_use carried `run_in_background: true`. Issue #794 —
+   * required field (default `false`) so every consumer can branch on it
+   * without an undefined check; `getTaskToolSummary` must populate it on
+   * every return path, including invalid/empty input.
+   */
+  runInBackground: boolean;
   promptLength?: number;
   promptPreview?: string;
 }
@@ -205,8 +211,11 @@ export class ToolFormatter {
    * Build Task tool summary from tool input
    */
   static getTaskToolSummary(input: unknown): TaskToolSummary {
+    // Issue #794 — `runInBackground` is now a required field so every caller
+    // can treat it as a boolean without an `=== true` guard. Default false on
+    // all return paths, including invalid/empty input.
     if (!input || typeof input !== 'object' || Array.isArray(input)) {
-      return {};
+      return { runInBackground: false };
     }
 
     const taskInput = input as {
@@ -216,7 +225,9 @@ export class ToolFormatter {
       prompt?: unknown;
     };
 
-    const summary: TaskToolSummary = {};
+    const summary: TaskToolSummary = {
+      runInBackground: typeof taskInput.run_in_background === 'boolean' ? taskInput.run_in_background === true : false,
+    };
 
     if (typeof taskInput.subagent_type === 'string' && taskInput.subagent_type.trim()) {
       summary.subagentType = taskInput.subagent_type.trim();
@@ -236,10 +247,6 @@ export class ToolFormatter {
 
     if (typeof taskInput.model === 'string' && taskInput.model.trim()) {
       summary.model = taskInput.model.trim();
-    }
-
-    if (typeof taskInput.run_in_background === 'boolean') {
-      summary.runInBackground = taskInput.run_in_background;
     }
 
     if (typeof taskInput.prompt === 'string') {

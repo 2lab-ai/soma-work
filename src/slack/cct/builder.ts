@@ -568,12 +568,31 @@ function formatRefreshErrorSegment(state: SlotState | undefined, nowMs: number):
  * Source suffix is omitted for legacy payloads that predate
  * `rateLimitSource` (raw enum matches the TokenManager classifier, same
  * shape both branches of `buildSlotStatusLine` emit).
+ *
+ * Exported so the `/cct` text-fallback in `cct-handler.ts` can render the
+ * exact same segment instead of hand-rolling the template.
+ * `userTz` / `nowMs` mirror `formatRateLimitedAt` defaults (Asia/Seoul,
+ * `Date.now()`) so non-Block-Kit callers can omit them.
  */
-function formatRateLimitedSegment(state: SlotState | undefined, userTz: string, nowMs: number): string | null {
+export function formatRateLimitedSegment(state: SlotState | undefined, userTz?: string, nowMs?: number): string | null {
   if (!state?.rateLimitedAt) return null;
-  const ts = formatRateLimitedAt(state.rateLimitedAt, userTz, nowMs);
-  const source = state.rateLimitSource ? ` via ${state.rateLimitSource}` : '';
+  const ts = formatRateLimitedAt(state.rateLimitedAt, userTz ?? 'Asia/Seoul', nowMs);
+  const source = formatRateLimitSource(state.rateLimitSource);
   return `rate-limited ${ts}${source}`;
+}
+
+/**
+ * Render the ` via <source>` suffix for a `rate-limited <ts>` segment.
+ * `inferred_shared` is humanised so operators can tell apart "this slot
+ * itself 429d" from "we inferred this slot is in the same bucket as a
+ * recently-limited sibling"; the other arms keep their raw enum suffix.
+ * Returns `''` when the source is missing (legacy payloads predating
+ * `rateLimitSource`) so callers can concatenate unconditionally.
+ */
+export function formatRateLimitSource(source: SlotState['rateLimitSource']): string {
+  if (!source) return '';
+  if (source === 'inferred_shared') return ' via inferred shared bucket';
+  return ` via ${source}`;
 }
 
 /**

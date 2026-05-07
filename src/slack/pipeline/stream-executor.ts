@@ -1520,7 +1520,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           error: (err as Error)?.message ?? String(err),
         });
       }
-      await this.cleanup(session, sessionKey, abortController);
+      await this.cleanup(session, sessionKey, abortController, turnId);
     }
   }
 
@@ -2024,9 +2024,19 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // Parse cooldown from both error message and stderr content.
     const errorText = `${error?.message || ''} ${error?.stderrContent || ''}`;
     const parsedCooldown = parseCooldownTime(errorText);
-    const cooldownMinutes = parsedCooldown
-      ? Math.max(1, Math.round((parsedCooldown.getTime() - Date.now()) / 60_000))
-      : 60; // default 1 hour
+    // `knownReset` distinguishes a parsed wall-clock (direct upstream evidence)
+    // from the 60-minute fallback; TokenManager gates shared-bucket cooldown
+    // propagation on it (see `docs/cct-shared-bucket-cooldown-propagation/spec.md`).
+    //
+    // We additionally reject parsed resets that are already in the past — a
+    // stale "resets 7pm" parsed at 8pm would otherwise be clamped to a 1-min
+    // cooldown by `Math.max(1, …)` and still report `knownReset: true`,
+    // letting the propagation gate fire across the whole pool with a synthetic
+    // 1-min cooldown (silent BLOCK from the audit). A stale reset is no
+    // better than the 60-min fallback, so degrade to that path.
+    const now = Date.now();
+    const knownReset = parsedCooldown !== null && parsedCooldown.getTime() > now;
+    const cooldownMinutes = knownReset ? Math.max(1, Math.round((parsedCooldown.getTime() - now) / 60_000)) : 60; // default 1 hour
 
     const reason = `stream-executor rate-limit${
       activeSlotAtQueryStart ? ` on slot=${activeSlotAtQueryStart.name}` : ''
@@ -2035,6 +2045,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     const rotated = await getTokenManager().rotateOnRateLimit(reason, {
       source: 'error_string',
       cooldownMinutes,
+      knownReset,
     });
 
     if (rotated) {
@@ -2151,6 +2162,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     session: ConversationSession,
     sessionKey: string,
     abortController?: AbortController,
+    turnId?: string,
   ): Promise<void> {
     // Ghost Session Fix #99: CAS guard — only remove if this request's controller is still registered
     this.deps.requestCoordinator.removeController(sessionKey, abortController);
@@ -2162,8 +2174,28 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       this.summaryAbortControllers.delete(sessionKey);
     }
 
-    // Cleanup active MCP status tracking to prevent stuck timers
-    this.deps.toolEventProcessor.cleanup(sessionKey);
+    // Issue #794 — `toolEventProcessor.cleanup` is now async because it
+    // awaits `mcpStatusDisplay.flushSession` (final render) and the bg
+    // Task drain (`endMcpTracking`). We `await` it here so the user
+    // sees the final progress line before the rest of cleanup runs;
+    // the try/catch isolates any failure so subsequent cleanup steps
+    // (threadPanel update, todo cleanup) are not skipped — losing the
+    // progress final line is bad, but losing the panel/todo cleanup is
+    // worse (stale UI / leaked timers).
+    //
+    // `turnId` is threaded through from `execute()` so the cleanup can
+    // do a turn-scoped sweep instead of the legacy global one
+    // (defends against same-session turn replacement; see
+    // `tool-event-processor.ts` `callIdsByTurn` field doc).
+    try {
+      await this.deps.toolEventProcessor.cleanup(sessionKey, turnId);
+    } catch (err) {
+      this.logger.warn('toolEventProcessor.cleanup threw — continuing', {
+        sessionKey,
+        turnId,
+        error: (err as Error)?.message ?? String(err),
+      });
+    }
 
     try {
       await this.deps.threadPanel?.updatePanel(session, sessionKey);
