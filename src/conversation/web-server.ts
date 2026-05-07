@@ -13,7 +13,8 @@ import { config } from '../config';
 import { IS_DEV } from '../env-paths';
 import { registerHookRoutes } from '../hooks';
 import { Logger } from '../logger';
-import { registerDashboardRoutes } from './dashboard';
+import { registerDashboardRoutes, setSelfInstanceEnv } from './dashboard';
+import { removeHeartbeat, startHeartbeatLoop } from './instance-registry';
 import {
   type AuthContext,
   generateCsrfToken,
@@ -301,6 +302,8 @@ export { requireWriteAccess };
 
 let server: FastifyInstance | null = null;
 let activePort: number | null = null;
+let heartbeatHandle: NodeJS.Timeout | null = null;
+let heartbeatPort: number | null = null;
 
 const DEFAULT_PORT_MAIN = 3000;
 const DEFAULT_PORT_DEV = 33000;
@@ -590,6 +593,33 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
       } else {
         logger.warn('Authentication disabled (CONVERSATION_VIEWER_TOKEN not set)');
       }
+
+      // #814 Multi-instance discovery: write a heartbeat so other soma-work
+      // instances on this host can find us. Resolve `instanceName` here
+      // (after `activePort` is final) because the fallback shape is
+      // `${hostname}:${port}` and the operator-supplied
+      // `INSTANCE_NAME` (config.conversation.instanceName) wins. The host
+      // label uses the same resolver as the viewer URL so siblings can
+      // reach us — `127.0.0.1` is fine for same-machine aggregation.
+      const resolvedInstanceName =
+        config.conversation.instanceName?.trim() || `${os.hostname() || 'localhost'}:${port}`;
+      const heartbeatHost = host && host !== '0.0.0.0' ? host : '127.0.0.1';
+      try {
+        heartbeatHandle = startHeartbeatLoop({
+          port,
+          instanceName: resolvedInstanceName,
+          host: heartbeatHost,
+          pid: process.pid,
+        });
+        heartbeatPort = port;
+      } catch (hbErr) {
+        // Heartbeat is best-effort — discovery just won't see us.
+        logger.warn('Failed to start instance heartbeat loop', hbErr);
+      }
+      // Hand the resolved env to the dashboard so the aggregator can stamp
+      // self cards and the handler can fan out to siblings.
+      setSelfInstanceEnv({ instanceName: resolvedInstanceName, port, host: heartbeatHost });
+
       return;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'EADDRINUSE' && attempt < MAX_PORT_RETRIES - 1) {
@@ -613,6 +643,21 @@ export async function stopWebServer(): Promise<void> {
       hookState.flushSync();
     } catch {
       // Hook module may not be loaded
+    }
+    // #814 Stop the heartbeat loop and remove our registry entry before
+    // tearing down the server so siblings stop trying to fan out to us
+    // mid-shutdown.
+    if (heartbeatHandle) {
+      clearInterval(heartbeatHandle);
+      heartbeatHandle = null;
+    }
+    if (heartbeatPort != null) {
+      try {
+        await removeHeartbeat(heartbeatPort);
+      } catch (err) {
+        logger.warn('Failed to remove heartbeat on shutdown', err);
+      }
+      heartbeatPort = null;
     }
     await server.close();
     server = null;
