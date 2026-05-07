@@ -19,6 +19,7 @@
  */
 
 import type { FastifyInstance } from 'fastify';
+import { config } from '../config';
 import { displayTitle } from '../format/display-title';
 import { Logger } from '../logger';
 import { MetricsEventStore } from '../metrics/event-store';
@@ -27,6 +28,8 @@ import { AggregatedMetrics, type MetricsEvent } from '../metrics/types';
 import { type ArchivedSession, getArchiveStore } from '../session-archive';
 import { buildThreadPermalink } from '../turn-notifier';
 import { coerceEffort, type EffortLevel, userSettingsStore } from '../user-settings-store';
+import { fetchSiblingBoards, type InstanceEnvironment, mergeBoards, shouldAggregate } from './aggregator';
+import { readAllInstances } from './instance-registry';
 import { getConversation, resummarizeTurn, updateConversationTitleSub } from './recorder';
 import { generateTitle } from './title-generator';
 
@@ -106,6 +109,21 @@ export interface KanbanSession {
   issueShortRef?: string;
   /** GitHub PR short ref like "PR-123" derived from prUrl */
   prShortRef?: string;
+  /**
+   * #814 — environment metadata identifying which soma-work instance owns
+   * this card. Self cards get the local instance's env; sibling cards
+   * get their owner's env after the aggregator stamps them on the merge
+   * path. The frontend renders an env badge from this and groups token
+   * stats by `instanceName`. Always present once `setSelfInstanceEnv()`
+   * has been called from `startWebServer` — defensive `?` because tests
+   * exercise paths that don't initialize the env (and the badge is
+   * suppressed when missing).
+   */
+  environment?: {
+    instanceName: string;
+    port: number;
+    host: string;
+  };
   /** Pending user choice question (present when activityState === 'waiting' and a question was asked) */
   pendingQuestion?: {
     type: 'user_choice' | 'user_choices';
@@ -164,6 +182,132 @@ export interface UserStats {
     mergeLinesDeleted: number;
     workflowCounts: Record<string, number>;
   };
+}
+
+// ── Self-instance environment (#814) ───────────────────────────────
+
+/**
+ * The local instance's environment metadata, set once by `web-server.ts`
+ * after `activePort` is finalized. Used to stamp self-owned cards with
+ * `environment` and to compose `${instanceName}::${originalKey}` keys
+ * so the client cache and the cross-instance aggregator can distinguish
+ * cards from sibling instances.
+ *
+ * Null until set — code paths that build cards before
+ * `setSelfInstanceEnv` runs (e.g. tests that exercise the dashboard
+ * without booting the server) emit raw keys and no environment, which
+ * keeps backward compat with the existing dashboard.test.ts snapshots
+ * that assert `key === 'C1:t1'` directly.
+ */
+let _selfInstanceEnv: InstanceEnvironment | null = null;
+
+/** Wire the local instance's env. Called by `startWebServer`. */
+export function setSelfInstanceEnv(env: InstanceEnvironment): void {
+  _selfInstanceEnv = env;
+}
+
+/** Test helper — clear the self env between cases. */
+export function __resetSelfInstanceEnvForTests(): void {
+  _selfInstanceEnv = null;
+  _aggregatorCacheClear();
+}
+
+// #814 — Per-process TTL cache for sibling fan-out. Collapses concurrent
+// /api/dashboard/sessions polls (multiple browser tabs) into one fan-out;
+// 1500 ms < 30 s poll cadence so a sibling that just came up surfaces on
+// the next tick.
+const AGGREGATOR_CACHE_TTL_MS = 1_500;
+type SiblingBoards = Awaited<ReturnType<typeof fetchSiblingBoards>>;
+let _aggregatorCache: { value: SiblingBoards; stamp: number } | null = null;
+function _aggregatorCacheGet(): SiblingBoards | null {
+  if (_aggregatorCache === null) return null;
+  if (Date.now() - _aggregatorCache.stamp > AGGREGATOR_CACHE_TTL_MS) return null;
+  return _aggregatorCache.value;
+}
+function _aggregatorCacheSet(siblings: SiblingBoards): void {
+  _aggregatorCache = { value: siblings, stamp: Date.now() };
+}
+function _aggregatorCacheClear(): void {
+  _aggregatorCache = null;
+}
+
+/**
+ * Build the wire-format key for a session. When the local env is wired
+ * (production), keys are `${instanceName}::${originalKey}` — collision-
+ * proof against sibling instances. When it's not wired (legacy tests),
+ * we return the original key untouched.
+ */
+function composeSessionKey(originalKey: string): string {
+  if (!_selfInstanceEnv) return originalKey;
+  if (originalKey.startsWith(`${_selfInstanceEnv.instanceName}::`)) return originalKey;
+  return `${_selfInstanceEnv.instanceName}::${originalKey}`;
+}
+
+/**
+ * Inverse of {@link composeSessionKey}: strip the `${selfInstance}::`
+ * prefix from an action endpoint's `:key` param.
+ *
+ * Three outcomes (#814 silent-failure-hunter audit):
+ *   - **No env wired** (legacy / single-instance): return `wireKey` unchanged.
+ *   - **No `::` separator**: return `wireKey` unchanged (legacy clients
+ *     that haven't seen a composite key yet, e.g. immediately after upgrade).
+ *   - **`foreign-instance::raw`**: return `null` — the action targets a
+ *     sibling instance that this server does not own. Callers must surface a
+ *     409 with a redirect hint, not silently pass through and 403/no-op.
+ *   - **`self::raw`**: strip and return `raw`.
+ */
+function stripSelfInstancePrefix(wireKey: string): string | null {
+  if (!_selfInstanceEnv) return wireKey;
+  // Only treat as composite when `::` is present — bare keys remain
+  // backward-compatible for clients that pre-date the composite wire format.
+  const sepIdx = wireKey.indexOf('::');
+  if (sepIdx < 0) return wireKey;
+  const prefix = wireKey.slice(0, sepIdx);
+  // The session storage layer uses `archived_<channel>:<thread>_<ts>` as a
+  // key shape — the prefix in that case is the literal string `archived_…`,
+  // not an instance name. We only treat the prefix as an instance routing
+  // hint when it matches the self instance; everything else is left alone.
+  if (prefix === _selfInstanceEnv.instanceName) {
+    return wireKey.slice(sepIdx + 2);
+  }
+  // Anything else with `::` is a foreign instance — refuse.
+  return null;
+}
+
+/**
+ * Helper for action endpoints — wrap `stripSelfInstancePrefix` and emit a
+ * uniform 409 reply when the wire key targets a sibling instance, so the
+ * caller's frontend can show "open this card on $sibling".
+ *
+ * Returns the resolved local key, or null if the request was rejected
+ * (in which case the reply has already been sent).
+ */
+function resolveSelfActionKey(wireKey: string, reply: any): string | null {
+  const local = stripSelfInstancePrefix(wireKey);
+  if (local === null) {
+    reply.status(409).send({
+      error:
+        'Cross-instance action not supported — this session belongs to another soma-work instance. Open that instance directly to act on it.',
+      wireKey,
+    });
+    return null;
+  }
+  return local;
+}
+
+/**
+ * Resolve the wire-format `:key` route param to a local session key AND
+ * gate on `requireSessionOwner` in one call. Centralizes the
+ * (cross-instance reject → owner gate) preamble that every action
+ * endpoint shares. Returns null if either check failed (the reply has
+ * already been sent).
+ */
+function resolveSelfActionKeyAndOwner(request: any, reply: any): { wireKey: string; originalKey: string } | null {
+  const wireKey: string = request.params?.key ?? '';
+  const originalKey = resolveSelfActionKey(wireKey, reply);
+  if (originalKey === null) return null;
+  if (!requireSessionOwner(request, reply, originalKey)) return null;
+  return { wireKey, originalKey };
 }
 
 // ── Session data accessor ──────────────────────────────────────────
@@ -380,7 +524,9 @@ function sessionToKanban(key: string, s: any): KanbanSession {
   const aggregate = computeThreadAggregate(s.channelId, s.threadTs, getAllSessions(), Date.now());
   const headline = displayTitle(s);
   return {
-    key,
+    // #814 Wire-format key includes the local instance prefix so sibling
+    // instances can never collide on the client cache.
+    key: composeSessionKey(key),
     title: headline,
     displayHeadline: headline,
     // Emit summaryTitle so initial board renders (and full-page refresh) match
@@ -438,6 +584,10 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     threadSessionCount: aggregate.sessionCount,
     threadCompactionCount: aggregate.compactionCount,
     ...cardDerivedFields({ effort: s.effort, ownerId: s.ownerId, links: s.links, persistedEffort: true }),
+    // #814 Stamp self env (when wired) so the frontend renders the env
+    // badge for self cards too — siblings get their env from the
+    // aggregator's mergeBoards stamp.
+    environment: _selfInstanceEnv ? { ..._selfInstanceEnv } : undefined,
     pendingQuestion: s.actionPanel?.pendingQuestion
       ? s.actionPanel.pendingQuestion.type === 'user_choice'
         ? {
@@ -486,7 +636,10 @@ const DASHBOARD_ARCHIVE_MAX_AGE_MS = 48 * 60 * 60 * 1000;
 function archivedToKanban(archived: ArchivedSession): KanbanSession {
   const headline = displayTitle(archived);
   return {
-    key: `archived_${archived.sessionKey}_${archived.archivedAt}`,
+    // #814 Same composite-key scheme as live cards. The original archive
+    // key already contains underscores and timestamps; the instance
+    // prefix simply nests on top via `::`.
+    key: composeSessionKey(`archived_${archived.sessionKey}_${archived.archivedAt}`),
     title: headline,
     displayHeadline: headline,
     summaryTitle:
@@ -535,6 +688,7 @@ function archivedToKanban(archived: ArchivedSession): KanbanSession {
     threadSessionCount: 1,
     threadCompactionCount: archived.compactionCount || 0,
     ...cardDerivedFields({ ownerId: archived.ownerId, links: archived.links, persistedEffort: false }),
+    environment: _selfInstanceEnv ? { ..._selfInstanceEnv } : undefined,
   };
 }
 
@@ -770,7 +924,11 @@ export function broadcastTaskUpdate(
 ): void {
   if (wsClients.size === 0) return;
   try {
-    const payload = JSON.stringify({ type: 'task_update', sessionKey, tasks });
+    // #814 External callers (e.g. Slack handler) pass the raw session key.
+    // Compose the wire-format key here so the client cache (keyed by
+    // composite `${instanceName}::${rawKey}`) finds the card.
+    const wireKey = composeSessionKey(sessionKey);
+    const payload = JSON.stringify({ type: 'task_update', sessionKey: wireKey, tasks });
     for (const client of wsClients) {
       try {
         client.send(payload);
@@ -846,9 +1004,11 @@ export function broadcastSummaryTitleChanged(sessionKey: string, summaryTitle: s
       logger.warn('broadcastSummaryTitleChanged: session not found', { sessionKey });
       return;
     }
+    // #814 — clients key their cache by composite. See broadcastTaskUpdate.
+    const wireKey = composeSessionKey(sessionKey);
     const payload = JSON.stringify({
       type: 'summaryTitleChanged',
-      sessionKey,
+      sessionKey: wireKey,
       summaryTitle,
       displayHeadline: displayTitle(session),
     });
@@ -922,13 +1082,74 @@ export async function registerDashboardRoutes(
   // ── JSON API ──
 
   // Kanban sessions
-  server.get<{ Querystring: { userId?: string } }>(
+  server.get<{ Querystring: { userId?: string; selfOnly?: string } }>(
     '/api/dashboard/sessions',
     { preHandler: [authMiddleware] },
     async (request, reply) => {
       const userId = request.query.userId || undefined;
+      const selfOnly = request.query.selfOnly === 'true';
       const board = buildKanbanBoard(userId);
-      reply.send({ board });
+
+      // #814 — when not the recursion-guarded selfOnly path, ask the
+      // aggregator to fan out to sibling instances on the same host.
+      // Skip pre-listen / single-instance.
+      if (!_selfInstanceEnv) {
+        reply.send({ board });
+        return;
+      }
+      if (selfOnly) {
+        reply.send({ board });
+        return;
+      }
+
+      try {
+        // Pre-discover once and reuse the same records inside
+        // `fetchSiblingBoards` (via `discoverFn`) so the gate doesn't
+        // cost a second readdir+readFile sweep.
+        const all = await readAllInstances();
+        const selfPort = _selfInstanceEnv.port;
+        const siblingCount = all.filter((r) => r.port !== selfPort && r.pid !== process.pid).length;
+        if (
+          !shouldAggregate({
+            selfOnly,
+            viewerToken: config.conversation.viewerToken,
+            siblingCount,
+          })
+        ) {
+          reply.send({ board });
+          return;
+        }
+        // Per-poll TTL cache — multiple browser tabs polling /sessions
+        // every 30 s shouldn't independently fan out N×HTTP each time.
+        // 1.5 s collapses a burst of concurrent polls without going
+        // stale enough to mask a sibling that just came up.
+        const cached = _aggregatorCacheGet();
+        let siblings;
+        if (cached) {
+          siblings = cached;
+        } else {
+          siblings = await fetchSiblingBoards({
+            selfPort,
+            selfPid: process.pid,
+            viewerToken: config.conversation.viewerToken,
+            discoverFn: async () => all,
+          });
+          _aggregatorCacheSet(siblings);
+        }
+        const merged = mergeBoards({
+          selfBoard: board,
+          selfEnv: _selfInstanceEnv,
+          siblings,
+        });
+        reply.send({ board: merged });
+      } catch (err) {
+        // Hard failure of the aggregator must never surface a 500 —
+        // fall back to self-only. Log at error (with stack) so a
+        // genuine bug in mergeBoards / fetch wiring is visible, not
+        // confused with the warn-throttled per-sibling failures.
+        logger.error('Aggregator failed; serving self-only board', err);
+        reply.send({ board });
+      }
     },
   );
 
@@ -1199,12 +1420,14 @@ export async function registerDashboardRoutes(
     '/api/dashboard/session/:key/stop',
     { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
-      const { key } = request.params;
-      if (!requireSessionOwner(request, reply, key)) return;
+      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      if (!resolved) return;
+      const { wireKey: key, originalKey } = resolved;
       try {
         if (_stopHandlerFn) {
-          await _stopHandlerFn(key);
+          await _stopHandlerFn(originalKey);
         }
+        // Broadcast uses wire-format so the client cache lookup matches.
         broadcastSessionAction(key, 'stop');
         broadcastSessionUpdate();
         reply.send({ ok: true });
@@ -1219,11 +1442,12 @@ export async function registerDashboardRoutes(
     '/api/dashboard/session/:key/close',
     { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
-      const { key } = request.params;
-      if (!requireSessionOwner(request, reply, key)) return;
+      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      if (!resolved) return;
+      const { wireKey: key, originalKey } = resolved;
       try {
         if (_closeHandlerFn) {
-          await _closeHandlerFn(key);
+          await _closeHandlerFn(originalKey);
         }
         broadcastSessionAction(key, 'close');
         broadcastSessionUpdate();
@@ -1239,11 +1463,12 @@ export async function registerDashboardRoutes(
     '/api/dashboard/session/:key/trash',
     { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
-      const { key } = request.params;
-      if (!requireSessionOwner(request, reply, key)) return;
+      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      if (!resolved) return;
+      const { wireKey: key, originalKey } = resolved;
       try {
         if (_trashHandlerFn) {
-          await _trashHandlerFn(key);
+          await _trashHandlerFn(originalKey);
         }
         broadcastSessionAction(key, 'trash');
         broadcastSessionUpdate();
@@ -1259,7 +1484,6 @@ export async function registerDashboardRoutes(
     '/api/dashboard/session/:key/command',
     { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
-      const { key } = request.params;
       const { message } = request.body || {};
       if (!message || typeof message !== 'string') {
         reply.status(400).send({ error: 'message is required and must be a string' });
@@ -1269,10 +1493,12 @@ export async function registerDashboardRoutes(
         reply.status(400).send({ error: 'message exceeds max length (4000 chars)' });
         return;
       }
-      if (!requireSessionOwner(request, reply, key)) return;
+      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      if (!resolved) return;
+      const { originalKey } = resolved;
       try {
         if (_commandHandlerFn) {
-          await _commandHandlerFn(key, message);
+          await _commandHandlerFn(originalKey, message);
         }
         reply.send({ ok: true });
       } catch (error) {
@@ -1288,7 +1514,6 @@ export async function registerDashboardRoutes(
     '/api/dashboard/session/:key/answer-choice',
     { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
-      const { key } = request.params;
       const { choiceId, label, question } = request.body || {};
       if (
         !choiceId ||
@@ -1305,10 +1530,12 @@ export async function registerDashboardRoutes(
         reply.status(400).send({ error: 'Field length exceeded' });
         return;
       }
-      if (!requireSessionOwner(request, reply, key)) return;
+      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      if (!resolved) return;
+      const { originalKey } = resolved;
       try {
         if (_choiceAnswerHandlerFn) {
-          await _choiceAnswerHandlerFn(key, choiceId, label, question);
+          await _choiceAnswerHandlerFn(originalKey, choiceId, label, question);
         } else {
           reply.status(501).send({ error: 'Choice answer handler not configured' });
           return;
@@ -1339,7 +1566,6 @@ export async function registerDashboardRoutes(
     '/api/dashboard/session/:key/answer-multi-choice',
     { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
-      const { key } = request.params;
       const { selections } = request.body || {};
       if (
         !selections ||
@@ -1374,10 +1600,12 @@ export async function registerDashboardRoutes(
           return;
         }
       }
-      if (!requireSessionOwner(request, reply, key)) return;
+      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      if (!resolved) return;
+      const { originalKey } = resolved;
       try {
         if (_multiChoiceAnswerHandlerFn) {
-          await _multiChoiceAnswerHandlerFn(key, selections);
+          await _multiChoiceAnswerHandlerFn(originalKey, selections);
         } else {
           reply.status(501).send({ error: 'Multi-choice answer handler not configured' });
           return;
@@ -1409,14 +1637,15 @@ export async function registerDashboardRoutes(
     '/api/dashboard/session/:key/submit-recommended',
     { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
-      const { key } = request.params;
-      if (!requireSessionOwner(request, reply, key)) return;
+      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      if (!resolved) return;
+      const { wireKey: key, originalKey } = resolved;
       try {
         if (!_submitRecommendedHandlerFn) {
           reply.status(501).send({ error: 'Submit-recommended handler not configured' });
           return;
         }
-        await _submitRecommendedHandlerFn(key);
+        await _submitRecommendedHandlerFn(originalKey);
         reply.send({ ok: true });
       } catch (error) {
         const errMsg = (error as Error).message || '';
@@ -1501,6 +1730,10 @@ export async function registerDashboardRoutes(
 
 function renderDashboardPage(userId?: string): string {
   const initUser = userId ? JSON.stringify(userId) : 'null';
+  // #814 — inject the local instance's name so the frontend can identify
+  // sibling cards (`environment.instanceName !== SELF_INSTANCE_NAME`) and
+  // hide actions that would silently 4xx if dispatched to the wrong port.
+  const initSelfInstance = _selfInstanceEnv ? JSON.stringify(_selfInstanceEnv.instanceName) : 'null';
   return `<!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -1932,6 +2165,52 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   color: var(--accent);
   font-weight: 700;
   text-transform: lowercase;
+}
+
+/* ── ENV BADGE — multi-instance origin tag (#814) ── */
+.card .card-meta .env-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 6px;
+  font-size: 0.78em;
+  font-weight: 600;
+  color: #fff;
+  letter-spacing: 0.02em;
+  vertical-align: baseline;
+  /* color is set inline via getEnvBadgeColor() because we hash the
+     instanceName at render time; the CSS just owns layout. */
+}
+/* Topbar tooltip — env-grouped token breakdown (#814) */
+#stat-tokens-wrap {
+  position: relative;
+  display: inline-block;
+}
+#stat-tokens-tooltip {
+  display: none;
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  margin-top: 4px;
+  background: var(--surface, #222);
+  color: var(--text, #eee);
+  border: 1px solid var(--border, rgba(255,255,255,0.1));
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 0.78em;
+  font-weight: 400;
+  white-space: nowrap;
+  z-index: 50;
+  pointer-events: none;
+}
+#stat-tokens-wrap.tooltip-open #stat-tokens-tooltip,
+#stat-tokens-wrap:hover #stat-tokens-tooltip { display: block; }
+@media (hover: none) {
+  /* On touch devices :hover is sticky after a tap and never closes —
+     gate visibility entirely on the explicit tooltip-open class
+     toggled by the tap handler in updateTokenStats(). */
+  #stat-tokens-wrap:hover #stat-tokens-tooltip { display: none; }
+  #stat-tokens-wrap.tooltip-open #stat-tokens-tooltip { display: block; }
 }
 
 /* ── CONTEXT USAGE BAR ── */
@@ -2774,7 +3053,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
       <div class="stat-card"><div class="label">PR &#xC0DD;&#xC131;</div><div class="value" id="stat-prs">-</div></div>
       <div class="stat-card"><div class="label">PR &#xBA38;&#xC9C0;</div><div class="value" id="stat-merged">-</div></div>
       <div class="stat-card"><div class="label">&#xBA38;&#xC9C0; &#xCF54;&#xB4DC;</div><div class="value" id="stat-merge-lines">-</div></div>
-      <div class="stat-card"><div class="label">&#xD1A0;&#xD070; &#xC0AC;&#xC6A9;</div><div class="value" id="stat-tokens">-</div></div>
+      <div class="stat-card"><div class="label">&#xD1A0;&#xD070; &#xC0AC;&#xC6A9;</div><div class="value" id="stat-tokens-wrap"><span id="stat-tokens">-</span><span id="stat-tokens-tooltip" role="tooltip"></span></div></div>
       <div class="stat-card"><div class="label">&#xBE44;&#xC6A9; (USD)</div><div class="value" id="stat-cost">-</div></div>
       <div class="stat-card"><div class="label">&#xC6CC;&#xD06C;&#xD50C;&#xB85C;&#xC6B0;</div><div class="value" id="stat-workflows" style="font-size:0.85em">-</div></div>
     </div>
@@ -2858,6 +3137,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 
 <script>
 const INIT_USER = ${initUser};
+// #814 — name of the dashboard's *home* instance (the one that served this
+// HTML). Used by renderCard() to detect sibling cards and suppress action
+// buttons that would post to the wrong instance. null when single-instance
+// (no env wired) or pre-listen tests; the suppression check tolerates null.
+const SELF_INSTANCE_NAME = ${initSelfInstance};
 let currentUserId = INIT_USER || '';
 // Displayed + placeholder copy when a non-owner views a session. Kept here so
 // wording edits only touch one place instead of four button sites + panel.
@@ -3361,9 +3645,98 @@ function setPeriod(period) {
 // ── Session cache ──
 let _sessionCache = {};
 
+// ── Env badge helpers (#814) ──
+// 4-color palette — kept in CSS-friendly order so the contrast against
+// dark/light themes is decent for any of the four. Index = hash of
+// instanceName mod 4. Two unrelated names hashing to the same slot is
+// noise we can live with on a 4-instance host (operators rarely run more
+// than 2-3 instances per box).
+var ENV_BADGE_PALETTE = ['#5DADE2', '#48C9B0', '#F4D03F', '#EC7063'];
+
+// _envIndex caches a deterministic palette-slot per instanceName so two
+// envs sharing a hash bucket fall back to a "first-come, first-coloured"
+// scheme based on the sorted set of envs in the current cache. Recomputed
+// any time the cache changes (cleared in renderBoard).
+var _envIndex = null;
+
+function _hashStr(s) {
+  // djb2 — small, deterministic, sufficient for a 4-bucket palette.
+  var h = 5381;
+  for (var i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+  return Math.abs(h);
+}
+
+function _buildEnvIndex() {
+  var envs = {};
+  for (var k in _sessionCache) {
+    var c = _sessionCache[k];
+    if (c && c.environment && c.environment.instanceName) {
+      envs[c.environment.instanceName] = true;
+    }
+  }
+  var sorted = Object.keys(envs).sort();
+  var assigned = {};
+  // First pass — try the hash bucket. If taken, mark conflict.
+  var occupied = {};
+  for (var i = 0; i < sorted.length; i++) {
+    var name = sorted[i];
+    var slot = _hashStr(name) % ENV_BADGE_PALETTE.length;
+    if (!occupied[slot]) {
+      assigned[name] = slot;
+      occupied[slot] = name;
+    } else {
+      assigned[name] = -1; // mark for fallback pass
+    }
+  }
+  // Second pass — fallback: walk sorted-order names that hashed into a
+  // taken slot and assign the next free slot in palette order. This
+  // keeps the assignment stable across renders so a card doesn't change
+  // colour when an unrelated card is added.
+  var nextSlot = 0;
+  for (var j = 0; j < sorted.length; j++) {
+    var name2 = sorted[j];
+    if (assigned[name2] !== -1) continue;
+    while (occupied[nextSlot] && nextSlot < ENV_BADGE_PALETTE.length) nextSlot++;
+    if (nextSlot < ENV_BADGE_PALETTE.length) {
+      assigned[name2] = nextSlot;
+      occupied[nextSlot] = name2;
+      nextSlot++;
+    } else {
+      // More envs than palette slots — wrap. Operators on a 5+ instance
+      // host accept that two badges may collide on colour.
+      assigned[name2] = _hashStr(name2) % ENV_BADGE_PALETTE.length;
+    }
+  }
+  return assigned;
+}
+
+function getEnvBadgeColor(instanceName) {
+  if (!_envIndex) _envIndex = _buildEnvIndex();
+  var slot = _envIndex[instanceName];
+  if (typeof slot !== 'number' || slot < 0) {
+    slot = _hashStr(instanceName || '') % ENV_BADGE_PALETTE.length;
+  }
+  return ENV_BADGE_PALETTE[slot];
+}
+
+function _envCount() {
+  if (!_envIndex) _envIndex = _buildEnvIndex();
+  return Object.keys(_envIndex).length;
+}
+
 // ── Kanban rendering ──
 function renderBoard(board) {
   _sessionCache = {}; // Clear stale cache each render cycle
+  // Populate cache from the entire board first so the env-palette pass
+  // (which reads every card's environment) and per-column renderCard
+  // calls share one walk over the data.
+  for (var col0 of ['working', 'waiting', 'idle', 'closed']) {
+    var arr = board[col0] || [];
+    for (var i0 = 0; i0 < arr.length; i0++) {
+      _sessionCache[arr[i0].key] = arr[i0];
+    }
+  }
+  _envIndex = _buildEnvIndex();
   var emptyHints = { working: 'No active sessions', waiting: 'No sessions awaiting input', idle: 'No idle sessions' };
   for (const col of ['working', 'waiting', 'idle']) {
     const container = document.getElementById('cards-' + col);
@@ -3506,9 +3879,23 @@ function renderCard(s, col) {
 
   // Action buttons — disabled for non-owners (server RBAC still rejects, but UI
   // shouldn't invite the click in the first place).
+  // #814 — sibling cards (env.instanceName !== self) get a "open on sibling"
+  // hint instead of action buttons. Posting Stop/Close/Trash to the local
+  // instance for a sibling-owned key would fail server-side
+  // (stripSelfInstancePrefix rejects foreign prefixes); rendering a clearly-
+  // disabled button with a redirect title is honest UX.
+  const isSibling = !!(SELF_INSTANCE_NAME && s.environment && s.environment.instanceName && s.environment.instanceName !== SELF_INSTANCE_NAME);
+  const siblingTitle = isSibling
+    ? ' title="' + escAttr('Open ' + s.environment.instanceName + ' (' + (s.environment.host || '') + ':' + (s.environment.port || '') + ') to act on this session') + '"'
+    : '';
   const readOnlyTitle = isOwner ? '' : ' title="' + escAttr(READ_ONLY_MSG) + '"';
   let actionBtn = '';
-  if (col === 'working') {
+  if (isSibling) {
+    // Sibling card — emit a disabled placeholder so the layout is consistent
+    // with same-instance cards but the click is impossible.
+    var label = (col === 'working') ? 'Stop' : (col === 'closed' && s.terminated ? 'Trash' : 'Close');
+    actionBtn = '<button class="btn-action btn-stop" disabled' + siblingTitle + '>' + label + ' \u2192 ' + esc(s.environment.instanceName) + '</button>';
+  } else if (col === 'working') {
     actionBtn = '<button class="btn-action btn-stop"' + readOnlyAttrs + readOnlyTitle + ' onclick="event.stopPropagation();doAction(\\'' + escJs(s.key) + '\\',\\'stop\\')">Stop</button>';
   } else if (col === 'waiting' || col === 'idle') {
     actionBtn = '<button class="btn-action btn-close"' + readOnlyAttrs + readOnlyTitle + ' onclick="event.stopPropagation();doAction(\\'' + escJs(s.key) + '\\',\\'close\\')">Close</button>';
@@ -3567,7 +3954,18 @@ function renderCard(s, col) {
   const effortHtml = s.effort
     ? '<span class="meta-effort" title="Power level">' + esc(s.effort) + '</span>'
     : '';
+  // #814 env badge — only shown when multiple distinct envs are present in
+  // the current cache. Single-env (sibling 0 + INSTANCE_NAME unset) suppresses
+  // the badge to keep the card chrome quiet for single-instance deploys.
+  var envHtml = '';
+  if (s.environment && s.environment.instanceName && _envCount() > 1) {
+    var instName = s.environment.instanceName;
+    var envColor = getEnvBadgeColor(instName);
+    var envHostPort = (s.environment.host || '') + ':' + (s.environment.port || '');
+    envHtml = '<span class="env-badge" style="background:' + envColor + '" title="' + escAttr(instName + ' (' + envHostPort + ')') + '">' + esc(instName) + '</span>';
+  }
   const metaHtml = '<div class="card-meta">'
+    + envHtml
     + '<span>' + esc(s.workflow) + '</span>'
     + '<span>' + modelShort + '</span>'
     + effortHtml
@@ -4241,17 +4639,62 @@ function connectWs() {
 
 // ── Token stats from session cache ──
 function updateTokenStats() {
+  // #814 — group token usage by environment.instanceName so the topbar
+  // tooltip can break down "oudwood-dev: 12K | mac-mini-dev: 8K | Total: 20K".
+  // Fallback bucket ('') is used for cards whose environment is missing
+  // (legacy WS payloads, tests). When all cards share one env we suppress
+  // the tooltip entirely — see _envCount() check below.
+  var byEnv = {};
   let totalTokens = 0, totalCost = 0;
   for (const key in _sessionCache) {
     const s = _sessionCache[key];
     if (currentUserId && s.ownerId !== currentUserId) continue;
-    if (s.tokenUsage) {
-      totalTokens += s.tokenUsage.totalInputTokens + s.tokenUsage.totalOutputTokens;
-      totalCost += s.tokenUsage.totalCostUsd;
-    }
+    if (!s.tokenUsage) continue;
+    var t = s.tokenUsage.totalInputTokens + s.tokenUsage.totalOutputTokens;
+    totalTokens += t;
+    totalCost += s.tokenUsage.totalCostUsd;
+    var envName = (s.environment && s.environment.instanceName) || '';
+    if (!byEnv[envName]) byEnv[envName] = { tokens: 0, cost: 0 };
+    byEnv[envName].tokens += t;
+    byEnv[envName].cost += s.tokenUsage.totalCostUsd;
   }
   document.getElementById('stat-tokens').textContent = formatTokens(totalTokens);
   document.getElementById('stat-cost').textContent = '$' + totalCost.toFixed(2);
+
+  // Tooltip: only show when there's actually a breakdown (≥2 envs in
+  // the cache). For the single-instance / empty-env case we leave the
+  // tooltip dark so the topbar stays the same shape it was before #814.
+  var tip = document.getElementById('stat-tokens-tooltip');
+  var wrap = document.getElementById('stat-tokens-wrap');
+  if (!tip || !wrap) return;
+  var envNames = Object.keys(byEnv).filter(function(n) { return n.length > 0; });
+  if (envNames.length < 2) {
+    tip.textContent = '';
+    wrap.classList.remove('tooltip-open');
+    wrap.removeAttribute('data-has-breakdown');
+    return;
+  }
+  // Stable order: sort so the same env always renders in the same position.
+  envNames.sort();
+  var parts = [];
+  for (var i = 0; i < envNames.length; i++) {
+    var n = envNames[i];
+    parts.push(esc(n) + ': ' + formatTokens(byEnv[n].tokens));
+  }
+  parts.push('Total: ' + formatTokens(totalTokens));
+  tip.innerHTML = parts.join(' &middot; ');
+  wrap.setAttribute('data-has-breakdown', 'true');
+  // Mobile (no-hover) tap-toggle wiring — attach once.
+  if (!wrap.hasAttribute('data-tap-bound')) {
+    wrap.setAttribute('data-tap-bound', 'true');
+    wrap.addEventListener('click', function() {
+      // Only toggle on touch-likely devices; on hover-capable devices the
+      // CSS :hover rule already handles it and a click adds noise.
+      if (window.matchMedia('(hover: none)').matches) {
+        wrap.classList.toggle('tooltip-open');
+      }
+    });
+  }
 }
 
 // ── Slide Panel ──

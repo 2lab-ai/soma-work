@@ -177,6 +177,15 @@ export const config = {
     viewerPort: process.env.CONVERSATION_VIEWER_PORT ? parseInt(process.env.CONVERSATION_VIEWER_PORT, 10) : 0,
     viewerUrl: process.env.CONVERSATION_VIEWER_URL || '',
     viewerToken: process.env.CONVERSATION_VIEWER_TOKEN || '',
+    /**
+     * Operator-supplied label for this instance — surfaced as the
+     * environment badge on dashboard cards (#814) and used as the
+     * key prefix for cross-instance session aggregation. Empty
+     * string is the "not configured" sentinel; `web-server.ts`
+     * falls back to `${hostname}:${port}` at startup so every
+     * heartbeat record has a non-empty `instanceName`.
+     */
+    instanceName: process.env.INSTANCE_NAME || '',
   },
   oauth: {
     google: {
