@@ -1520,7 +1520,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           error: (err as Error)?.message ?? String(err),
         });
       }
-      await this.cleanup(session, sessionKey, abortController);
+      await this.cleanup(session, sessionKey, abortController, turnId);
     }
   }
 
@@ -2151,6 +2151,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     session: ConversationSession,
     sessionKey: string,
     abortController?: AbortController,
+    turnId?: string,
   ): Promise<void> {
     // Ghost Session Fix #99: CAS guard — only remove if this request's controller is still registered
     this.deps.requestCoordinator.removeController(sessionKey, abortController);
@@ -2162,8 +2163,28 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       this.summaryAbortControllers.delete(sessionKey);
     }
 
-    // Cleanup active MCP status tracking to prevent stuck timers
-    this.deps.toolEventProcessor.cleanup(sessionKey);
+    // Issue #794 — `toolEventProcessor.cleanup` is now async because it
+    // awaits `mcpStatusDisplay.flushSession` (final render) and the bg
+    // Task drain (`endMcpTracking`). We `await` it here so the user
+    // sees the final progress line before the rest of cleanup runs;
+    // the try/catch isolates any failure so subsequent cleanup steps
+    // (threadPanel update, todo cleanup) are not skipped — losing the
+    // progress final line is bad, but losing the panel/todo cleanup is
+    // worse (stale UI / leaked timers).
+    //
+    // `turnId` is threaded through from `execute()` so the cleanup can
+    // do a turn-scoped sweep instead of the legacy global one
+    // (defends against same-session turn replacement; see
+    // `tool-event-processor.ts` `callIdsByTurn` field doc).
+    try {
+      await this.deps.toolEventProcessor.cleanup(sessionKey, turnId);
+    } catch (err) {
+      this.logger.warn('toolEventProcessor.cleanup threw — continuing', {
+        sessionKey,
+        turnId,
+        error: (err as Error)?.message ?? String(err),
+      });
+    }
 
     try {
       await this.deps.threadPanel?.updatePanel(session, sessionKey);

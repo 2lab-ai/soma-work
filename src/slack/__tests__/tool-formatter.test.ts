@@ -681,4 +681,68 @@ describe('ToolFormatter', () => {
       });
     });
   });
+
+  /**
+   * Issue #794 — `TaskToolSummary.runInBackground` is now a required
+   * boolean field (default false on every return path). Consumers
+   * (`startSubagentTracking`, `buildToolUseLogSummary`, formatter)
+   * branch on `summary.runInBackground` directly without an
+   * `=== true` guard, so an undefined return would regress every
+   * caller silently.
+   */
+  describe('getTaskToolSummary.runInBackground (issue #794)', () => {
+    it('returns runInBackground:true when input flags it explicitly', () => {
+      const summary = ToolFormatter.getTaskToolSummary({
+        subagent_type: 'general-purpose',
+        prompt: 'long task',
+        run_in_background: true,
+      });
+      expect(summary.runInBackground).toBe(true);
+    });
+
+    it('returns runInBackground:false by default when flag is omitted', () => {
+      const summary = ToolFormatter.getTaskToolSummary({
+        subagent_type: 'general-purpose',
+        prompt: 'fast task',
+      });
+      expect(summary.runInBackground).toBe(false);
+    });
+
+    it('returns runInBackground:false when flag is explicitly false', () => {
+      const summary = ToolFormatter.getTaskToolSummary({
+        subagent_type: 'general-purpose',
+        prompt: 'fast task',
+        run_in_background: false,
+      });
+      expect(summary.runInBackground).toBe(false);
+    });
+
+    it('returns runInBackground:false (not undefined) for invalid/empty input', () => {
+      // Field must be present even when input is unparseable, so callers
+      // can read it without an undefined check.
+      expect(ToolFormatter.getTaskToolSummary(null).runInBackground).toBe(false);
+      expect(ToolFormatter.getTaskToolSummary(undefined).runInBackground).toBe(false);
+      expect(ToolFormatter.getTaskToolSummary({}).runInBackground).toBe(false);
+      expect(ToolFormatter.getTaskToolSummary([] as unknown).runInBackground).toBe(false);
+    });
+
+    it('treats non-boolean run_in_background as false (string/number ignored)', () => {
+      // Defense: SDK shouldn't send these but we don't want to coerce
+      // truthy strings to true and silently change tracking behavior.
+      expect(
+        ToolFormatter.getTaskToolSummary({
+          subagent_type: 'general-purpose',
+          prompt: 'x',
+          run_in_background: 'true' as unknown as boolean,
+        }).runInBackground,
+      ).toBe(false);
+      expect(
+        ToolFormatter.getTaskToolSummary({
+          subagent_type: 'general-purpose',
+          prompt: 'x',
+          run_in_background: 1 as unknown as boolean,
+        }).runInBackground,
+      ).toBe(false);
+    });
+  });
 });
