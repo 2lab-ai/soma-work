@@ -63,6 +63,27 @@ describe('buildSlotRow', () => {
     expect(section.text.text).toContain('ToS-risk');
   });
 
+  // #801 — `inferred_shared` is the propagation arm of `RateLimitSource`.
+  // The /cct card surfaces it as `via inferred shared bucket` so operators
+  // can tell apart "this slot itself 429d" from "we inferred this slot is
+  // in the same bucket as a recently-limited sibling".
+  it('AC-7: rateLimitSource=inferred_shared renders via inferred shared bucket', () => {
+    const slot = setupSlot();
+    const state: SlotState = {
+      authState: 'healthy',
+      activeLeases: [],
+      rateLimitedAt: '2026-04-18T03:37:00Z',
+      rateLimitSource: 'inferred_shared',
+    };
+    const now = Date.parse('2026-04-18T03:42:00Z');
+    const blocks = buildSlotRow(slot, state, true, now, 'Asia/Seoul');
+    const text = (blocks[0] as any).text.text as string;
+    expect(text).toContain('rate-limited');
+    expect(text).toContain('via inferred shared bucket');
+    // Must NOT raw-leak the enum literal.
+    expect(text).not.toMatch(/via inferred_shared\b/);
+  });
+
   it('rate-limit timestamp + source render in the section multi-line body (always, not gated on isActive)', () => {
     const slot = setupSlot();
     const state: SlotState = {

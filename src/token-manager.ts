@@ -78,6 +78,122 @@ const DEFAULT_REAPER_INTERVAL_MS = 30 * 1000; // 30 seconds
 // stale and refresh on the next hint — prevents indefinite stickiness.
 const RATE_LIMIT_WINDOW_MS = 5 * 60 * 60 * 1000;
 
+// Shared-bucket cooldown propagation (#801).
+// `parseCooldownTime` rounds to the minute, so two cascade hits within the
+// same minute boundary land ≤60 000 ms apart; the 30 s slack covers network
+// jitter and clock skew. Override via `process.env.CCT_SHARED_BUCKET_WINDOW_MS`.
+const DEFAULT_SHARED_BUCKET_WINDOW_MS = 90_000;
+// Only direct upstream evidence may anchor a match — `manual` and
+// `inferred_shared` are excluded so a single inference cannot chain across
+// the whole pool (see `RateLimitSource` doc-comment).
+const DIRECT_EVIDENCE_SOURCES: ReadonlyArray<RateLimitSource> = ['error_string', 'response_header'];
+
+/**
+ * Read on each call so tests + ops can override without restart.
+ *
+ * Strict-integer parse: `Number.parseInt('90s', 10)` returns `90`, silently
+ * dropping the trailing unit and producing a 90 ms window — four orders of
+ * magnitude smaller than intended. We require the raw value to match
+ * `^\d+$` so a misconfigured `90s` / `1e9` / `5min` triggers the warn-and-
+ * fallback path instead of being silently accepted as a tiny window.
+ */
+function resolveSharedBucketWindowMs(): number {
+  const raw = process.env.CCT_SHARED_BUCKET_WINDOW_MS;
+  if (raw === undefined || raw === '') return DEFAULT_SHARED_BUCKET_WINDOW_MS;
+  if (/^\d+$/.test(raw)) {
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  logger.warn(
+    `CCT_SHARED_BUCKET_WINDOW_MS invalid (${raw}); falling back to default ${DEFAULT_SHARED_BUCKET_WINDOW_MS}ms`,
+  );
+  return DEFAULT_SHARED_BUCKET_WINDOW_MS;
+}
+
+/**
+ * #801 — Shared-bucket cooldown propagation helper.
+ *
+ * When a CCT slot is rate-limited and a sibling already carries a future
+ * `cooldownUntil` within ±`windowMs` (both sourced from direct upstream
+ * evidence — `error_string` / `response_header`), propagate the new
+ * `cooldownUntil` to every other eligible OAuth-attached CCT sibling that
+ * is not already in a future cooldown. Eliminates the N-1 wasted 429-spawn
+ * cycles that otherwise occur under a shared-bucket cascade.
+ *
+ * Runs INSIDE the existing `store.mutate(snap => …)` callback so direct
+ * `snap.state[...]` writes are safe — the surrounding CAS retry handles
+ * concurrent transactions.
+ */
+function propagateInferredSharedCooldownIfMatched(
+  snap: CctStoreSnapshot,
+  cooldownUntilIso: string,
+  nowMs: number,
+  nowIso: string,
+  windowMs: number,
+  currentId: string,
+): { matchedSiblingKeyId: string; propagatedCount: number } | null {
+  const anchorMs = new Date(cooldownUntilIso).getTime();
+  // Defence in depth: the caller computes `cooldownUntilIso` from
+  // `new Date(nowMs + cooldownMs).toISOString()`, which throws on a non-finite
+  // intermediate. If a future caller hands us a malformed ISO string anyway
+  // we'd silently match against `NaN` (and `Math.abs(NaN - x) <= W` is false),
+  // so propagation would just no-op. Bail explicitly with a warn so the
+  // misconfiguration is visible.
+  if (!Number.isFinite(anchorMs)) {
+    logger.warn(`shared-bucket propagation: non-finite anchor cooldownUntil=${cooldownUntilIso}; skipping`);
+    return null;
+  }
+
+  // Eligibility shared by both passes (match-anchor scan + propagation loop)
+  // so `disableRotation` / `api_key` / no-attachment / tombstoned siblings
+  // can neither anchor a match nor receive propagation. Iteration walks
+  // `registry.slots` (not `state` keys) so orphan state rows can't leak in.
+  function isEligibleSibling(slot: AuthKey): boolean {
+    if (slot.keyId === currentId) return false;
+    if (slot.kind === 'api_key') return false;
+    if (slot.kind === 'cct' && slot.oauthAttachment === undefined) return false;
+    if (slot.disableRotation) return false;
+    return !snap.state[slot.keyId]?.tombstoned;
+  }
+
+  let matchedSiblingKeyId: string | undefined;
+  for (const slot of snap.registry.slots) {
+    if (!isEligibleSibling(slot)) continue;
+    const stateK = snap.state[slot.keyId];
+    if (!stateK?.cooldownUntil) continue;
+    const existingMs = new Date(stateK.cooldownUntil).getTime();
+    if (!Number.isFinite(existingMs) || existingMs <= nowMs) continue;
+    const sourceK = stateK.rateLimitSource;
+    if (sourceK === undefined || !DIRECT_EVIDENCE_SOURCES.includes(sourceK)) continue;
+    if (Math.abs(existingMs - anchorMs) <= windowMs) {
+      matchedSiblingKeyId = slot.keyId;
+      break;
+    }
+  }
+
+  if (matchedSiblingKeyId === undefined) return null;
+
+  // AC-4 — never overwrite a sibling that already carries a future cooldown
+  // (preserves operator-set `manual`, earlier direct evidence, and any
+  // `inferred_shared` written by an earlier anchor in this same call).
+  let propagatedCount = 0;
+  for (const slot of snap.registry.slots) {
+    if (!isEligibleSibling(slot)) continue;
+    const stateK = snap.state[slot.keyId] ?? { authState: 'healthy' as AuthState, activeLeases: [] };
+    if (stateK.cooldownUntil) {
+      const existingMs = new Date(stateK.cooldownUntil).getTime();
+      if (Number.isFinite(existingMs) && existingMs > nowMs) continue;
+    }
+    stateK.cooldownUntil = cooldownUntilIso;
+    stateK.rateLimitedAt = nowIso;
+    stateK.rateLimitSource = 'inferred_shared';
+    snap.state[slot.keyId] = stateK;
+    propagatedCount += 1;
+  }
+
+  return { matchedSiblingKeyId, propagatedCount };
+}
+
 /** Month abbreviation → 0-based month index — preserved for legacy cooldown-string parsing. */
 const MONTH_MAP: Record<string, number> = {
   jan: 0,
@@ -188,6 +304,14 @@ export interface RotateOnRateLimitOptions {
   source: RateLimitSource;
   rateLimitedAt?: string;
   cooldownMinutes?: number;
+  /**
+   * `true` when the caller parsed an actual wall-clock reset (i.e.
+   * `parseCooldownTime` returned a `Date`); `false` when falling back to the
+   * 60-minute default. Gates shared-bucket cooldown propagation (#801) so two
+   * coincidental fallbacks cannot chain into a phantom shared bucket. Defaults
+   * to `false` for backward compat with non-stream-executor callers.
+   */
+  knownReset?: boolean;
 }
 
 export interface TokenManagerInitOptions {
@@ -739,10 +863,20 @@ export class TokenManager {
     const nowIso = new Date().toISOString();
     const nowMs = Date.now();
     const cooldownUntilIso = new Date(nowMs + cooldownMs).toISOString();
+    const sharedBucketWindowMs = resolveSharedBucketWindowMs();
 
-    const rotated = await this.store.mutate<{ keyId: string; name: string } | null>((snap) => {
+    // The propagation outcome rides back out of the mutate (rather than
+    // closure-captured) so each CAS retry produces a self-contained result —
+    // no stale-snapshot log can leak from a discarded retry, and TS doesn't
+    // narrow a captured `let` back to `null` across the await boundary.
+    type RotateMutateResult = {
+      rotated: { keyId: string; name: string } | null;
+      outcome: { matchedSiblingKeyId: string; propagatedCount: number } | null;
+    };
+
+    const result = await this.store.mutate<RotateMutateResult>((snap) => {
       const currentId = snap.registry.activeKeyId;
-      if (!currentId) return null;
+      if (!currentId) return { rotated: null, outcome: null };
       const state = snap.state[currentId] ?? { authState: 'healthy' as AuthState, activeLeases: [] };
       // rate-limit timestamp hygiene: overwrite if previous window has
       // expired (no cooldownUntil or cooldownUntil has passed), OR if the
@@ -762,6 +896,22 @@ export class TokenManager {
       state.cooldownUntil = cooldownUntilIso;
       snap.state[currentId] = state;
 
+      // Trigger gate — only fire propagation when the caller actually parsed
+      // a wall-clock reset AND the source is direct upstream evidence. Two
+      // coincidental 60-min fallbacks (`knownReset:false`) or operator/
+      // already-inferred sources cannot chain into a phantom shared bucket.
+      let outcome: RotateMutateResult['outcome'] = null;
+      if (effectiveOpts.knownReset === true && DIRECT_EVIDENCE_SOURCES.includes(source)) {
+        outcome = propagateInferredSharedCooldownIfMatched(
+          snap,
+          cooldownUntilIso,
+          nowMs,
+          nowIso,
+          sharedBucketWindowMs,
+          currentId,
+        );
+      }
+
       // rotate to next eligible
       if (snap.registry.slots.length > 1) {
         const currentIndex = snap.registry.slots.findIndex((s) => s.keyId === currentId);
@@ -774,17 +924,24 @@ export class TokenManager {
           if (candidate.kind === 'api_key') continue;
           if (isEligible(candidate, snap.state[candidate.keyId], nowMs)) {
             snap.registry.activeKeyId = candidate.keyId;
-            return { keyId: candidate.keyId, name: candidate.name };
+            return { rotated: { keyId: candidate.keyId, name: candidate.name }, outcome };
           }
         }
       }
-      return null;
+      return { rotated: null, outcome };
     });
+
+    const { rotated, outcome } = result;
 
     await this.refreshCache();
     logger.info(
       `rotateOnRateLimit: ${reason ?? '(no reason)'} source=${source} rotated=${rotated ? rotated.name : 'none'}`,
     );
+    if (outcome) {
+      logger.info(
+        `rotateOnRateLimit inferred_shared: matchedSibling=${outcome.matchedSiblingKeyId} propagated=${outcome.propagatedCount} windowMs=${sharedBucketWindowMs}`,
+      );
+    }
     return rotated;
   }
 
