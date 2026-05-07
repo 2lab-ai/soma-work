@@ -63,8 +63,8 @@ jobs:
             cat >> "$GITHUB_OUTPUT" <<'EOF'
           {"include":[
             {
-              "name":"mac-mini-dev",
-              "runner_label":"soma-work",
+              "name":"work-m16-dev",
+              "runner_label":"work-m16",
               "github_env":"development",
               "deploy_env":"dev",
               "target_dir":"/opt/soma-work/dev"
@@ -89,8 +89,8 @@ jobs:
             cat >> "$GITHUB_OUTPUT" <<'EOF'
           {"include":[
             {
-              "name":"mac-mini-main",
-              "runner_label":"soma-work",
+              "name":"work-m16-main",
+              "runner_label":"work-m16",
               "github_env":"production",
               "deploy_env":"main",
               "target_dir":"/opt/soma-work/main"
