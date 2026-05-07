@@ -3,7 +3,7 @@
 # Basic Rules
 - fast_fail: Check available space in the working folder. If it is 1024 MB or less, immediately ask the user to free up space.
 - fast_fail: If the user's email is unresolved or empty, instruct them to set it with `set email <your-email>` and stop all work.
-- working folder: Always create a new unique working folder and git clone the source into it (for example, `/tmp/{slackId}/{repoName}_{timestamp}_{prName}`) to avoid conflicts with other agents.
+- working folder: Always create a new unique working folder **inside `<cwd>`** and git clone the source into it (for example, `<cwd>/{repoName}_{timestamp}_{prName}`). Never create folders outside `<cwd>`.
 - tool usage: Use model-command-tool as the top priority. Use UIAskUserQuestion instead of AskUserQuestion.
 - commits and PRs: Add the current user as Co-Authored-By in all git commits and pull requests:
   `Co-Authored-By: {{user.displayName}} <{{user.email}}>`

@@ -356,6 +356,26 @@ describe('PromptBuilder', () => {
       // common.prompt is included in default prompt
       expect(prompt).toContain('system_prompt');
     });
+
+    it('common.prompt working-folder rule should anchor to <cwd>', () => {
+      // Issue #799: rule example must place the working folder INSIDE <cwd>,
+      // not as a sibling under /tmp/{slackId}/. Otherwise the model creates
+      // folders outside the runtime cwd injected by stream-executor.
+      const prompt = builder.loadWorkflowPrompt('default');
+
+      expect(prompt).toBeDefined();
+
+      // The working-folder rule must reference the <cwd> token so the model
+      // knows to nest its working folder inside the injected cwd.
+      const workingFolderLine = prompt!.split('\n').find((line) => line.includes('working folder:'));
+      expect(workingFolderLine, 'common.prompt must contain a working folder rule').toBeDefined();
+      expect(workingFolderLine).toContain('<cwd>');
+
+      // The example path must start with <cwd>/ — never /tmp/{slackId}/...
+      // (sibling-of-cwd patterns trigger the depth-mismatch bug from #799).
+      expect(workingFolderLine).toMatch(/`<cwd>\/[^`]+`/);
+      expect(workingFolderLine).not.toMatch(/`\/tmp\/\{slackId\}\//);
+    });
   });
 
   describe('variable escaping', () => {
