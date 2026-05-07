@@ -64,7 +64,7 @@ jobs:
           {"include":[
             {
               "name":"mac-mini-dev",
-              "runner_label":"soma-work",
+              "runner_label":"iq-macmini",
               "github_env":"development",
               "deploy_env":"dev",
               "target_dir":"/opt/soma-work/dev"
@@ -90,7 +90,7 @@ jobs:
           {"include":[
             {
               "name":"mac-mini-main",
-              "runner_label":"soma-work",
+              "runner_label":"iq-macmini",
               "github_env":"production",
               "deploy_env":"main",
               "target_dir":"/opt/soma-work/main"
