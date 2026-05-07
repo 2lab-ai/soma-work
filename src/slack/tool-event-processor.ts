@@ -505,11 +505,8 @@ export class ToolEventProcessor {
       // through to the normal endMcpTracking + sendToolResult path.
       this.backgroundTaskRegistry.removeAnyByToolUseId(toolResult.toolUseId);
 
-      // End MCP call tracking and get duration. Issue #816 — propagate
-      // `toolResult.isError` so the tracker can flip the entry to `failed`
-      // (🔴) instead of `completed` (🟢). Without this, the Slack render
-      // shows a happy path even when the SDK saw a real failure (e.g.
-      // "Not connected"), the split-brain reported in the issue.
+      // Issue #816 — propagate isError so the tracker entry flips to
+      // `failed` instead of `completed` when the SDK reports a failure.
       const duration = await this.endMcpTracking(toolResult.toolUseId, context.sessionKey, toolResult.isError === true);
 
       // Update compact tool call message with duration (in-place)
@@ -541,13 +538,9 @@ export class ToolEventProcessor {
 
   /**
    * End MCP or subagent tracking for a tool and return duration.
-   *
-   * Issue #816 — `isError` (default `false`) propagates the SDK-observed
-   * failure flag through to `McpStatusDisplay.completeCall`, where it
-   * flips the entry to `failed` (🔴) instead of `completed` (🟢). Cleanup
-   * sweeps in {@link cleanup} call `completeCall` directly with `null`
-   * duration and no isError — those keep their "treat-as-completed"
-   * semantics on purpose (turn-end abort path, no SDK signal available).
+   * `isError` propagates to {@link McpStatusDisplay.completeCall} (issue
+   * #816). Cleanup sweeps in {@link cleanup} call `completeCall` directly
+   * without isError — turn-end has no SDK signal to read.
    */
   private async endMcpTracking(toolUseId: string, sessionKey?: string, isError = false): Promise<number | null> {
     const callId = this.toolTracker.getMcpCallId(toolUseId);
@@ -568,7 +561,7 @@ export class ToolEventProcessor {
       this.subagentCallIds.delete(callId);
     }
 
-    // Mark call as completed/failed in session tick (issue #816).
+    // Mark call as completed (or failed when isError, issue #816).
     this.mcpStatusDisplay.completeCall(callId, duration, isError);
 
     return duration;

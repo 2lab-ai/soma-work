@@ -221,14 +221,9 @@ function toUsagePercentSnapshot(snap: UsageSnapshot | null | undefined): UsagePe
   return out;
 }
 
-/**
- * Issue #816 — coerce arbitrary tool-result payloads (string, object,
- * array, etc.) to a single-line preview string capped at `max` chars.
- * Used by the MCP failure-surfacing path so the user sees a fragment of
- * the raw response without overflowing the Slack message limit.
- */
+/** Issue #816 — single-line preview for the MCP parse-fail Slack post. */
 function stringifyAndTruncate(value: unknown, max: number): string {
-  if (value === null || value === undefined) return String(value);
+  if (value === null || value === undefined) return '(empty response)';
   let raw: string;
   if (typeof value === 'string') {
     raw = value;
@@ -239,9 +234,12 @@ function stringifyAndTruncate(value: unknown, max: number): string {
       raw = String(value);
     }
   }
-  // Collapse newlines so the preview stays single-line.
+  // Truncate before regex so a multi-MB garbled response doesn't pay the
+  // full whitespace-collapse cost.
+  const wasTruncated = raw.length > max;
+  if (wasTruncated) raw = raw.slice(0, max);
   raw = raw.replace(/\s+/g, ' ').trim();
-  return raw.length > max ? `${raw.slice(0, max)}…` : raw;
+  return wasTruncated ? `${raw}…` : raw;
 }
 
 /** Per-request tool call statistics */
@@ -2826,39 +2824,20 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         continue;
       }
 
-      // Issue #816 — track whether THIS toolResult's failure has already
-      // been surfaced to Slack inside one of the inner branches below.
-      // The outer `isError===true` guard at the bottom of the loop only
-      // fires when the parsed body looked successful (or failed silently),
-      // so we can detect the split-brain "isError=true but ok=true" case
-      // without double-posting on the regular ok=false path.
-      let mcpFailureSurfaced = false;
-
       const parsed = parseModelCommandRunResponse(toolResult.result);
       if (!parsed) {
         this.logger.warn('Failed to parse model-command tool result', {
           sessionKey: context.sessionKey,
           toolUseId: toolResult.toolUseId,
         });
-        // Issue #816 — surface the parse failure to Slack so the user
-        // sees something instead of a silently swallowed error. Truncate
-        // the raw payload so an enormous garbled response doesn't blow
-        // out the Slack message limit.
+        // Issue #816 — surface to Slack so a parse failure isn't a
+        // silent drop. Match the bare-await convention used by the
+        // UPDATE_SESSION warning branch below.
         const rawPreview = stringifyAndTruncate(toolResult.result, 200);
-        try {
-          await context.say({
-            text: `❌ MCP 응답 파싱 실패 (toolUseId: ${toolResult.toolUseId}). raw: ${rawPreview}`,
-            thread_ts: context.threadTs,
-          });
-        } catch (sayErr) {
-          // say() failure must not break the rest of the loop. Logging
-          // is enough — the parse-fail itself is already logged above.
-          this.logger.debug('Failed to post MCP parse-failure warning', {
-            sessionKey: context.sessionKey,
-            toolUseId: toolResult.toolUseId,
-            err: (sayErr as Error)?.message ?? String(sayErr),
-          });
-        }
+        await context.say({
+          text: `❌ MCP 응답 파싱 실패 (toolUseId: ${toolResult.toolUseId}). raw: ${rawPreview}`,
+          thread_ts: context.threadTs,
+        });
         continue;
       }
 
@@ -2870,58 +2849,30 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         });
         // Issue #42 S3: 에러도 수집
         modelCommandResults.push({ commandId: parsed.commandId, ok: false, error: parsed.error });
-        // Issue #816 — surface the structured error to Slack. The
-        // `commandId === 'ASK_USER_QUESTION'` branch adds a
-        // user-facing hint because that command's failure is the most
-        // visible split-brain symptom (the agent thinks it asked, the
-        // user sees nothing).
+        // Issue #816 — ASK_USER_QUESTION's failure is the loudest split-
+        // brain symptom (agent thinks it asked, user sees nothing), so
+        // it gets an explicit hint; other commands get the bare error.
         const errMessage = parsed.error?.message ?? 'unknown error';
         const errCode = parsed.error?.code ?? 'UNKNOWN';
         let text = `❌ MCP ${parsed.commandId} 실패: ${errCode} — ${errMessage}`;
         if (parsed.commandId === 'ASK_USER_QUESTION') {
           text += `\n❌ 사용자 선택 UI를 띄우지 못했습니다. 같은 질문을 다시 호출하시거나 MCP 연결 상태를 확인하세요.`;
         }
-        try {
-          await context.say({ text, thread_ts: context.threadTs });
-          mcpFailureSurfaced = true;
-        } catch (sayErr) {
-          this.logger.debug('Failed to post MCP ok=false warning', {
-            sessionKey: context.sessionKey,
-            commandId: parsed.commandId,
-            err: (sayErr as Error)?.message ?? String(sayErr),
-          });
-        }
-        // Outer guard below would otherwise re-fire on ok=false +
-        // isError=true; mark surfaced regardless of say() success so the
-        // user gets at most one warning per failure.
-        if (toolResult.isError === true) {
-          // Skip the outer guard for this toolResult.
-        }
+        await context.say({ text, thread_ts: context.threadTs });
         continue;
       }
 
-      // Issue #816 — outer guard for the split-brain "isError=true but
-      // parsed body looks successful" case. The model-command MCP can
-      // surface a wire-level isError=true even when the body parses to
-      // ok=true (e.g. a transport hiccup that still returned a JSON
-      // candidate). Without this, the user would see nothing at all.
-      if (toolResult.isError === true && !mcpFailureSurfaced) {
-        try {
-          await context.say({
-            text: `❌ MCP ${parsed.commandId} 호출 실패 (wire-level isError=true). MCP 연결 상태를 확인해주세요.`,
-            thread_ts: context.threadTs,
-          });
-          mcpFailureSurfaced = true;
-        } catch (sayErr) {
-          this.logger.debug('Failed to post MCP outer-guard warning', {
-            sessionKey: context.sessionKey,
-            commandId: parsed.commandId,
-            err: (sayErr as Error)?.message ?? String(sayErr),
-          });
-        }
-        // Continue processing — the body is parseable so downstream
-        // branches (e.g. SAVE_CONTEXT_RESULT) may still need the
-        // payload.
+      // Issue #816 — split-brain guard: the wire-level call was flagged
+      // isError=true but the parsed body still looked successful (e.g. a
+      // transport hiccup that returned a JSON candidate anyway). Without
+      // this branch the user would see no failure at all. Continue
+      // processing afterwards — the body is parseable so downstream
+      // branches (e.g. SAVE_CONTEXT_RESULT) may still need the payload.
+      if (toolResult.isError === true) {
+        await context.say({
+          text: `❌ MCP ${parsed.commandId} 호출 실패 (wire-level isError=true). MCP 연결 상태를 확인해주세요.`,
+          thread_ts: context.threadTs,
+        });
       }
 
       // Issue #42 S3: 성공 결과 수집

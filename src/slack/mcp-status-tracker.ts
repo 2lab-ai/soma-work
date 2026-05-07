@@ -10,6 +10,13 @@ export interface StatusUpdateConfig {
   paramsSummary?: string; // compact params e.g. "(prompt: hello world)"
 }
 
+/**
+ * Issue #816 — `failed` distinguishes a tool-result with `isError: true`
+ * (the SDK actually saw a failure) from a `completed` happy path so the
+ * Slack render can surface 🔴 instead of a misleading 🟢.
+ */
+type CallStatus = 'running' | 'completed' | 'failed' | 'timed_out';
+
 interface ActiveCallEntry {
   callId: string;
   sessionKey: string;
@@ -17,14 +24,7 @@ interface ActiveCallEntry {
   channel: string;
   threadTs: string;
   startTime: number;
-  /**
-   * Issue #816 — `failed` distinguishes a tool-result with `isError: true`
-   * (the SDK actually saw a failure) from a `completed` happy path. The
-   * Slack render must surface 🔴 for `failed` so the UI matches the
-   * SDK-observed state — closing the split-brain gap reported in the
-   * issue ("🟢 success" while the agent saw `Not connected`).
-   */
-  status: 'running' | 'completed' | 'failed' | 'timed_out';
+  status: CallStatus;
   duration?: number;
   predicted: number | null;
 }
@@ -125,11 +125,9 @@ export class McpStatusDisplay {
    * If duration is null (e.g. abort path or untracked call), fall back
    * to startTime so the final render still shows real elapsed time.
    *
-   * Issue #816 — `isError` is optional for backward compatibility (cleanup
-   * sweeps in `ToolEventProcessor.cleanup` pass it as `undefined` so the
-   * sweep semantics stay "treat as completed"). When `true`, the entry
-   * flips to `failed` so the consolidated render surfaces 🔴 + a "실패"
-   * header instead of a misleading "🟢 success".
+   * `isError` is optional so cleanup sweeps in `ToolEventProcessor.cleanup`
+   * (no SDK signal available at turn-end) keep their "treat as completed"
+   * semantics. When `true`, the entry flips to `failed` (issue #816).
    */
   completeCall(callId: string, duration: number | null, isError?: boolean): void {
     const entry = this.activeCalls.get(callId);
@@ -364,17 +362,14 @@ export class McpStatusDisplay {
     const completed = calls.filter((c) => c.status === 'completed').length;
     const failed = calls.filter((c) => c.status === 'failed').length;
     const timedOut = calls.filter((c) => c.status === 'timed_out').length;
-    // Issue #816 — `failed` counts toward "done" so the tick can stop, but
-    // it must NOT count toward the all-clean header below.
     const allDone = completed + failed + timedOut === total;
 
     let header: string;
     if (allDone && timedOut === 0 && failed === 0) {
-      // All-clean only when zero failures and zero timeouts.
       header = total === 1 ? `🟢 작업 완료` : `🟢 ${total}개 작업 완료`;
     } else if (allDone) {
-      // Mixed/all-bad termination — surface counts so the user sees how
-      // many tools actually failed vs. timed out vs. succeeded.
+      // Issue #816 — surface failed count separately so the all-clean
+      // 🟢 header can never silently hide an error.
       header = `📊 ${total}개 작업 종료 (${completed} 완료, ${failed} 실패, ${timedOut} 타임아웃)`;
     } else {
       header = `📊 ${total}개 작업 실행 중 (${completed}/${total} 완료)`;
@@ -405,19 +400,11 @@ export class McpStatusDisplay {
       return `⏳ Running in background — ${call.config.displayLabel} (${seconds}s)`;
     }
 
-    if (call.status === 'completed') {
-      let text = `🟢 *${call.config.displayType} 완료: ${call.config.displayLabel}*${params}`;
-      if (call.duration !== undefined) {
-        text += ` (${McpCallTracker.formatDuration(call.duration)})`;
-      }
-      return text;
-    }
-
-    // Issue #816 — `failed` mirrors the `completed` shape but with 🔴 +
-    // "실패" so the user immediately sees the SDK-reported failure
-    // instead of a misleading happy-path "🟢 완료".
-    if (call.status === 'failed') {
-      let text = `🔴 *${call.config.displayType} 실패: ${call.config.displayLabel}*${params}`;
+    if (call.status === 'completed' || call.status === 'failed') {
+      const isFail = call.status === 'failed';
+      const emoji = isFail ? '🔴' : '🟢';
+      const label = isFail ? '실패' : '완료';
+      let text = `${emoji} *${call.config.displayType} ${label}: ${call.config.displayLabel}*${params}`;
       if (call.duration !== undefined) {
         text += ` (${McpCallTracker.formatDuration(call.duration)})`;
       }
@@ -437,19 +424,9 @@ export class McpStatusDisplay {
   private renderCallLine(call: ActiveCallEntry): string {
     const params = call.config.paramsSummary ? ` ${call.config.paramsSummary}` : '';
 
-    if (call.status === 'completed') {
-      let line = `🟢 ${call.config.displayLabel}${params}`;
-      if (call.duration !== undefined) {
-        line += ` (${McpCallTracker.formatDuration(call.duration)})`;
-      }
-      return line;
-    }
-
-    // Issue #816 — `failed` per-line marker. Mirrors the completed branch
-    // so the multi-call rendering stays grid-aligned, only the leading
-    // emoji + (optional) tag flips.
-    if (call.status === 'failed') {
-      let line = `🔴 ${call.config.displayLabel}${params}`;
+    if (call.status === 'completed' || call.status === 'failed') {
+      const emoji = call.status === 'failed' ? '🔴' : '🟢';
+      let line = `${emoji} ${call.config.displayLabel}${params}`;
       if (call.duration !== undefined) {
         line += ` (${McpCallTracker.formatDuration(call.duration)})`;
       }
