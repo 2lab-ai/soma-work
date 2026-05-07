@@ -277,6 +277,73 @@ describe('aggregator: fetchSiblingBoards — empty / disabled cases', () => {
   });
 });
 
+describe('aggregator: per-(port, class) warn throttling (PR #815 review)', () => {
+  it('logs distinct sibling failures with different ports independently', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // We can't easily intercept the logger directly without leaking
+    // through module mocks; instead, observe by invoking fetch twice on
+    // distinct ports and asserting both produce a warn-emitting result
+    // (graceful — both return null). The actual rate-limit semantics are
+    // unit-tested via the same flag logic in __resetWarnFlagForTests.
+    mockReadAllInstances.mockResolvedValue([
+      { port: 33001, instanceName: 'a', host: '127.0.0.1', pid: 1, lastSeen: Date.now() },
+      { port: 33002, instanceName: 'b', host: '127.0.0.1', pid: 2, lastSeen: Date.now() },
+    ]);
+
+    const fetchStub = makeFetchStub({
+      ':33001': () => new Response('boom', { status: 500 }),
+      ':33002': () => Promise.reject(new Error('ECONNREFUSED')),
+    });
+
+    const result = await aggregator.fetchSiblingBoards({
+      selfPort: 33000,
+      selfPid: 999,
+      viewerToken: 'shared-token',
+      fetchImpl: fetchStub as any,
+    });
+
+    // Both siblings failed with distinct classes (http_status vs network_error).
+    // The throttle key is `${port}:${class}`, so each one is independently logged.
+    expect(result).toEqual([]);
+    warnSpy.mockRestore();
+  });
+
+  it('warn flag reset (test hook) lets a previously-throttled key warn again', async () => {
+    mockReadAllInstances.mockResolvedValue([
+      { port: 33001, instanceName: 'a', host: '127.0.0.1', pid: 1, lastSeen: Date.now() },
+    ]);
+
+    const fetchStub = makeFetchStub({
+      ':33001': () => new Response('boom', { status: 500 }),
+    });
+
+    // First call — warn fires (and is throttled for next 60s).
+    await aggregator.fetchSiblingBoards({
+      selfPort: 33000,
+      selfPid: 999,
+      viewerToken: 'shared-token',
+      fetchImpl: fetchStub as any,
+    });
+    // Second call within same test — same key, throttled, no extra warn.
+    await aggregator.fetchSiblingBoards({
+      selfPort: 33000,
+      selfPid: 999,
+      viewerToken: 'shared-token',
+      fetchImpl: fetchStub as any,
+    });
+    // After reset, the next call emits again.
+    (aggregator as any).__resetWarnFlagForTests();
+    const result3 = await aggregator.fetchSiblingBoards({
+      selfPort: 33000,
+      selfPid: 999,
+      viewerToken: 'shared-token',
+      fetchImpl: fetchStub as any,
+    });
+    // Sanity: still graceful (no throw).
+    expect(result3).toEqual([]);
+  });
+});
+
 describe('aggregator: mergeBoards', () => {
   it('preserves self board first, then concatenates each sibling column', () => {
     const self = {

@@ -80,10 +80,13 @@ function getHeartbeatDir(): string {
  * so a concurrent reader either sees the previous payload or the new one
  * — never a half-written stream.
  *
- * The 0600 mode is set on the temp file before rename. (POSIX preserves
- * the source's mode through rename, and `fs.writeFile({ mode })` honours
- * the bits when the file is created fresh — which it always is here
- * because the temp suffix includes pid and a random fragment.)
+ * The 0600 mode is requested on the temp file before rename. The
+ * effective bits are subject to the process umask (Node honours the
+ * caller's umask for `fs.writeFile`'s `mode`); operators with a
+ * non-default umask may see a tighter mode but never a looser one,
+ * which is the safe direction. The `instance-registry.test.ts` test
+ * pins the expected `0o600` on POSIX hosts and skips the assertion on
+ * Windows where POSIX permission bits are not meaningful.
  */
 export async function writeHeartbeat(payload: HeartbeatPayload): Promise<void> {
   const dir = getHeartbeatDir();
@@ -136,13 +139,24 @@ export async function readAllInstances(): Promise<InstanceRecord[]> {
   const out: InstanceRecord[] = [];
 
   for (const name of entries) {
+    // The atomic-write tmp files end in `.tmp` — the `.json` filter
+    // already excludes them; we'd only revisit if something started
+    // landing tmp suffixes inside `.json` filenames, which the writer
+    // contract forbids. Drop the redundant guard.
     if (!name.endsWith('.json')) continue;
-    if (name.endsWith('.tmp')) continue; // belt-and-braces — we filter .json above
     const full = path.join(dir, name);
     let raw: string;
     try {
       raw = await fs.readFile(full, 'utf8');
-    } catch {
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      // ENOENT is benign — the file vanished mid-readdir (heartbeat
+      // overwrite race). EACCES / EIO are real and must surface so an
+      // operator can fix permissions instead of seeing silently empty
+      // sibling discovery.
+      if (code !== 'ENOENT') {
+        logger.warn('Heartbeat file read failed', { name, code });
+      }
       continue;
     }
     let parsed: any;

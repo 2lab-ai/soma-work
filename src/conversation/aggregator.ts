@@ -28,7 +28,7 @@
  * the operator notices but the page still renders self-only data).
  *
  * Lives in its own module — `dashboard.ts` is ~5k lines and its test file
- * is ~1.6k. Mixing aggregation into `dashboard.ts` would force every
+ * is ~1.7k. Mixing aggregation into `dashboard.ts` would force every
  * existing dashboard test through the new code path.
  */
 
@@ -72,15 +72,29 @@ export interface FetchSiblingBoardsOptions {
 }
 
 let _warnedAboutMissingToken = false;
-let _warnedAboutSiblingFailure = false;
 
 /**
- * Test hook — resets the "already warned" flags so each test observes a
+ * Per-(port, class) warn rate-limit. PR #815 review caught the original
+ * 1-shot-per-process flag eating distinct sibling failures: a flapping
+ * port-A would silence a brand-new port-B failure for the lifetime of the
+ * process. The map keyed on `${port}:${cls}` (status / parse / network /
+ * board-shape) keeps each distinct failure mode visible while still
+ * suppressing log floods.
+ *
+ * Default TTL is 60 s — long enough that a sibling failing on every poll
+ * (every 30 s) only logs once per minute, short enough that a recovered-
+ * then-flapping sibling re-surfaces in the operator's view.
+ */
+const SIBLING_WARN_TTL_MS = 60_000;
+const _siblingWarnedAt = new Map<string, number>();
+
+/**
+ * Test hook — resets the warn-rate-limit state so each test observes a
  * clean call. Not used in production.
  */
 export function __resetWarnFlagForTests(): void {
   _warnedAboutMissingToken = false;
-  _warnedAboutSiblingFailure = false;
+  _siblingWarnedAt.clear();
 }
 
 /**
@@ -146,7 +160,7 @@ export async function fetchSiblingBoards(options: FetchSiblingBoardsOptions): Pr
         signal: controller.signal,
       });
       if (!res.ok) {
-        warnOnce({ port: sib.port, status: res.status });
+        warnSiblingFailure(sib.port, 'http_status', { status: res.status });
         return null;
       }
       const text = await res.text();
@@ -154,12 +168,12 @@ export async function fetchSiblingBoards(options: FetchSiblingBoardsOptions): Pr
       try {
         parsed = JSON.parse(text);
       } catch {
-        warnOnce({ port: sib.port, parse: 'failed' });
+        warnSiblingFailure(sib.port, 'parse_failed', {});
         return null;
       }
       const board = parsed?.board;
       if (!board || typeof board !== 'object') {
-        warnOnce({ port: sib.port, board: 'missing' });
+        warnSiblingFailure(sib.port, 'board_missing', {});
         return null;
       }
       return {
@@ -174,7 +188,9 @@ export async function fetchSiblingBoards(options: FetchSiblingBoardsOptions): Pr
         },
       } as SiblingBoardResult;
     } catch (err) {
-      warnOnce({ port: sib.port, err: (err as Error).message });
+      const e = err as Error;
+      const cls = e.name === 'AbortError' ? 'timeout' : 'network_error';
+      warnSiblingFailure(sib.port, cls, { msg: e.message });
       return null;
     } finally {
       clearTimeout(timer);
@@ -189,10 +205,18 @@ export async function fetchSiblingBoards(options: FetchSiblingBoardsOptions): Pr
   return out;
 }
 
-function warnOnce(detail: Record<string, unknown>): void {
-  if (_warnedAboutSiblingFailure) return;
-  logger.warn('Sibling dashboard fetch failed', detail);
-  _warnedAboutSiblingFailure = true;
+/**
+ * Rate-limited warn for sibling fan-out failures. Distinct (port, cls)
+ * combinations each get their own throttle, so a flapping port-A doesn't
+ * silence a brand-new port-B failure for the lifetime of the process.
+ */
+function warnSiblingFailure(port: number, cls: string, extra: Record<string, unknown>): void {
+  const key = `${port}:${cls}`;
+  const now = Date.now();
+  const last = _siblingWarnedAt.get(key);
+  if (last !== undefined && now - last < SIBLING_WARN_TTL_MS) return;
+  _siblingWarnedAt.set(key, now);
+  logger.warn('Sibling dashboard fetch failed', { port, cls, ...extra });
 }
 
 function buildSiblingUrl(sib: { host: string; port: number }): string {

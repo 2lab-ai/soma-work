@@ -604,18 +604,19 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
       const resolvedInstanceName =
         config.conversation.instanceName?.trim() || `${os.hostname() || 'localhost'}:${port}`;
       const heartbeatHost = host && host !== '0.0.0.0' ? host : '127.0.0.1';
-      try {
-        heartbeatHandle = startHeartbeatLoop({
-          port,
-          instanceName: resolvedInstanceName,
-          host: heartbeatHost,
-          pid: process.pid,
-        });
-        heartbeatPort = port;
-      } catch (hbErr) {
-        // Heartbeat is best-effort — discovery just won't see us.
-        logger.warn('Failed to start instance heartbeat loop', hbErr);
-      }
+      // `startHeartbeatLoop` returns synchronously — it kicks off the
+      // first write as a fire-and-forget promise (logged-and-eaten in
+      // instance-registry on failure). No try/catch needed here; a
+      // permanent fs problem surfaces as a per-tick warn from the loop
+      // itself, and `setSelfInstanceEnv` runs unconditionally so the
+      // dashboard handler can still serve the self board.
+      heartbeatHandle = startHeartbeatLoop({
+        port,
+        instanceName: resolvedInstanceName,
+        host: heartbeatHost,
+        pid: process.pid,
+      });
+      heartbeatPort = port;
       // Hand the resolved env to the dashboard so the aggregator can stamp
       // self cards and the handler can fan out to siblings.
       setSelfInstanceEnv({ instanceName: resolvedInstanceName, port, host: heartbeatHost });

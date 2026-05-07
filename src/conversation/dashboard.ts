@@ -29,6 +29,7 @@ import { type ArchivedSession, getArchiveStore } from '../session-archive';
 import { buildThreadPermalink } from '../turn-notifier';
 import { coerceEffort, type EffortLevel, userSettingsStore } from '../user-settings-store';
 import { fetchSiblingBoards, type InstanceEnvironment, mergeBoards, shouldAggregate } from './aggregator';
+import { readAllInstances } from './instance-registry';
 import { getConversation, resummarizeTurn, updateConversationTitleSub } from './recorder';
 import { generateTitle } from './title-generator';
 
@@ -208,6 +209,30 @@ export function setSelfInstanceEnv(env: InstanceEnvironment): void {
 /** Test helper — clear the self env between cases. */
 export function __resetSelfInstanceEnvForTests(): void {
   _selfInstanceEnv = null;
+  _aggregatorCacheClear();
+}
+
+// #814 — Per-process TTL cache for sibling fan-out results. Multiple browser
+// tabs polling /api/dashboard/sessions every 30 s would otherwise each
+// trigger their own N×HTTP fan-out. 1500 ms is the longest cache that still
+// feels "live" against a 30 s poll cadence; shorter than the aggregator's
+// own 1500 ms per-sibling timeout so a stuck sibling can't pin a stale
+// answer here.
+const AGGREGATOR_CACHE_TTL_MS = 1_500;
+let _aggregatorCacheValue: Awaited<ReturnType<typeof fetchSiblingBoards>> | null = null;
+let _aggregatorCacheStamp = 0;
+function _aggregatorCacheGet(): Awaited<ReturnType<typeof fetchSiblingBoards>> | null {
+  if (_aggregatorCacheValue === null) return null;
+  if (Date.now() - _aggregatorCacheStamp > AGGREGATOR_CACHE_TTL_MS) return null;
+  return _aggregatorCacheValue;
+}
+function _aggregatorCacheSet(siblings: Awaited<ReturnType<typeof fetchSiblingBoards>>): void {
+  _aggregatorCacheValue = siblings;
+  _aggregatorCacheStamp = Date.now();
+}
+function _aggregatorCacheClear(): void {
+  _aggregatorCacheValue = null;
+  _aggregatorCacheStamp = 0;
 }
 
 /**
@@ -224,14 +249,54 @@ function composeSessionKey(originalKey: string): string {
 
 /**
  * Inverse of {@link composeSessionKey}: strip the `${selfInstance}::`
- * prefix from an action endpoint's `:key` param so the underlying
- * session map (still keyed on the raw `channelId:threadTs`) can resolve
- * it.
+ * prefix from an action endpoint's `:key` param.
+ *
+ * Three outcomes (#814 silent-failure-hunter audit):
+ *   - **No env wired** (legacy / single-instance): return `wireKey` unchanged.
+ *   - **No `::` separator**: return `wireKey` unchanged (legacy clients
+ *     that haven't seen a composite key yet, e.g. immediately after upgrade).
+ *   - **`foreign-instance::raw`**: return `null` — the action targets a
+ *     sibling instance that this server does not own. Callers must surface a
+ *     409 with a redirect hint, not silently pass through and 403/no-op.
+ *   - **`self::raw`**: strip and return `raw`.
  */
-function stripSelfInstancePrefix(wireKey: string): string {
+function stripSelfInstancePrefix(wireKey: string): string | null {
   if (!_selfInstanceEnv) return wireKey;
-  const prefix = `${_selfInstanceEnv.instanceName}::`;
-  return wireKey.startsWith(prefix) ? wireKey.slice(prefix.length) : wireKey;
+  // Only treat as composite when `::` is present — bare keys remain
+  // backward-compatible for clients that pre-date the composite wire format.
+  const sepIdx = wireKey.indexOf('::');
+  if (sepIdx < 0) return wireKey;
+  const prefix = wireKey.slice(0, sepIdx);
+  // The session storage layer uses `archived_<channel>:<thread>_<ts>` as a
+  // key shape — the prefix in that case is the literal string `archived_…`,
+  // not an instance name. We only treat the prefix as an instance routing
+  // hint when it matches the self instance; everything else is left alone.
+  if (prefix === _selfInstanceEnv.instanceName) {
+    return wireKey.slice(sepIdx + 2);
+  }
+  // Anything else with `::` is a foreign instance — refuse.
+  return null;
+}
+
+/**
+ * Helper for action endpoints — wrap `stripSelfInstancePrefix` and emit a
+ * uniform 409 reply when the wire key targets a sibling instance, so the
+ * caller's frontend can show "open this card on $sibling".
+ *
+ * Returns the resolved local key, or null if the request was rejected
+ * (in which case the reply has already been sent).
+ */
+function resolveSelfActionKey(wireKey: string, reply: any): string | null {
+  const local = stripSelfInstancePrefix(wireKey);
+  if (local === null) {
+    reply.status(409).send({
+      error:
+        'Cross-instance action not supported — this session belongs to another soma-work instance. Open that instance directly to act on it.',
+      wireKey,
+    });
+    return null;
+  }
+  return local;
 }
 
 // ── Session data accessor ──────────────────────────────────────────
@@ -1016,13 +1081,8 @@ export async function registerDashboardRoutes(
 
       // #814 — when not the recursion-guarded selfOnly path, ask the
       // aggregator to fan out to sibling instances on the same host.
-      // Discovery + viewerToken are pre-checked by `shouldAggregate` so
-      // we don't pay the cost of `readAllInstances` on the hot self-only
-      // path. The aggregator stamps `environment` and composite keys on
-      // sibling cards.
+      // Skip pre-listen / single-instance.
       if (!_selfInstanceEnv) {
-        // Server is not yet wired (tests / pre-listen). Fall through to
-        // self-only — same shape as the current behaviour.
         reply.send({ board });
         return;
       }
@@ -1032,25 +1092,39 @@ export async function registerDashboardRoutes(
       }
 
       try {
-        // We need to know whether siblings exist *before* deciding to
-        // call the aggregator, because `shouldAggregate` short-circuits
-        // on zero siblings. The aggregator's discovery is cheap (it's
-        // already reading the same registry) and idempotent, so we let
-        // it run and use the result count as the gate.
-        const siblings = await fetchSiblingBoards({
-          selfPort: _selfInstanceEnv.port,
-          selfPid: process.pid,
-          viewerToken: config.conversation.viewerToken,
-        });
+        // Pre-discover so `shouldAggregate` actually gates the fan-out
+        // (PR #815 review caught the original where the gate ran AFTER
+        // the fetch, making it dead code). `readAllInstances` is a
+        // single readdir + N tiny readFiles — cheap enough to run on
+        // every poll without caching.
+        const all = await readAllInstances();
+        const selfPort = _selfInstanceEnv.port;
+        const siblingCount = all.filter((r) => r.port !== selfPort && r.pid !== process.pid).length;
         if (
           !shouldAggregate({
             selfOnly,
             viewerToken: config.conversation.viewerToken,
-            siblingCount: siblings.length,
+            siblingCount,
           })
         ) {
           reply.send({ board });
           return;
+        }
+        // Per-poll TTL cache — multiple browser tabs polling /sessions
+        // every 30 s shouldn't independently fan out N×HTTP each time.
+        // 1.5 s is short enough to feel "live" and long enough to
+        // collapse a burst of concurrent polls.
+        const cached = _aggregatorCacheGet();
+        let siblings;
+        if (cached) {
+          siblings = cached;
+        } else {
+          siblings = await fetchSiblingBoards({
+            selfPort,
+            selfPid: process.pid,
+            viewerToken: config.conversation.viewerToken,
+          });
+          _aggregatorCacheSet(siblings);
         }
         const merged = mergeBoards({
           selfBoard: board,
@@ -1059,9 +1133,11 @@ export async function registerDashboardRoutes(
         });
         reply.send({ board: merged });
       } catch (err) {
-        // Hard failure of the aggregator must never surface a 500 — fall
-        // back to self-only and let the operator see the warn log.
-        logger.warn('Aggregator failed; serving self-only board', err);
+        // Hard failure of the aggregator must never surface a 500 —
+        // fall back to self-only. Log at error (with stack) so a
+        // genuine bug in mergeBoards / fetch wiring is visible, not
+        // confused with the warn-throttled per-sibling failures.
+        logger.error('Aggregator failed; serving self-only board', err);
         reply.send({ board });
       }
     },
@@ -1337,7 +1413,8 @@ export async function registerDashboardRoutes(
       const { key } = request.params;
       // #814 wire-format key carries the `${instanceName}::` prefix; strip
       // it before resolving against the local session map.
-      const originalKey = stripSelfInstancePrefix(key);
+      const originalKey = resolveSelfActionKey(key, reply);
+      if (originalKey === null) return;
       if (!requireSessionOwner(request, reply, originalKey)) return;
       try {
         if (_stopHandlerFn) {
@@ -1359,7 +1436,8 @@ export async function registerDashboardRoutes(
     { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
       const { key } = request.params;
-      const originalKey = stripSelfInstancePrefix(key);
+      const originalKey = resolveSelfActionKey(key, reply);
+      if (originalKey === null) return;
       if (!requireSessionOwner(request, reply, originalKey)) return;
       try {
         if (_closeHandlerFn) {
@@ -1380,7 +1458,8 @@ export async function registerDashboardRoutes(
     { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
       const { key } = request.params;
-      const originalKey = stripSelfInstancePrefix(key);
+      const originalKey = resolveSelfActionKey(key, reply);
+      if (originalKey === null) return;
       if (!requireSessionOwner(request, reply, originalKey)) return;
       try {
         if (_trashHandlerFn) {
@@ -1410,7 +1489,8 @@ export async function registerDashboardRoutes(
         reply.status(400).send({ error: 'message exceeds max length (4000 chars)' });
         return;
       }
-      const originalKey = stripSelfInstancePrefix(key);
+      const originalKey = resolveSelfActionKey(key, reply);
+      if (originalKey === null) return;
       if (!requireSessionOwner(request, reply, originalKey)) return;
       try {
         if (_commandHandlerFn) {
@@ -1447,7 +1527,8 @@ export async function registerDashboardRoutes(
         reply.status(400).send({ error: 'Field length exceeded' });
         return;
       }
-      const originalKey = stripSelfInstancePrefix(key);
+      const originalKey = resolveSelfActionKey(key, reply);
+      if (originalKey === null) return;
       if (!requireSessionOwner(request, reply, originalKey)) return;
       try {
         if (_choiceAnswerHandlerFn) {
@@ -1517,7 +1598,8 @@ export async function registerDashboardRoutes(
           return;
         }
       }
-      const originalKey = stripSelfInstancePrefix(key);
+      const originalKey = resolveSelfActionKey(key, reply);
+      if (originalKey === null) return;
       if (!requireSessionOwner(request, reply, originalKey)) return;
       try {
         if (_multiChoiceAnswerHandlerFn) {
@@ -1554,7 +1636,8 @@ export async function registerDashboardRoutes(
     { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
       const { key } = request.params;
-      const originalKey = stripSelfInstancePrefix(key);
+      const originalKey = resolveSelfActionKey(key, reply);
+      if (originalKey === null) return;
       if (!requireSessionOwner(request, reply, originalKey)) return;
       try {
         if (!_submitRecommendedHandlerFn) {
@@ -1646,6 +1729,10 @@ export async function registerDashboardRoutes(
 
 function renderDashboardPage(userId?: string): string {
   const initUser = userId ? JSON.stringify(userId) : 'null';
+  // #814 — inject the local instance's name so the frontend can identify
+  // sibling cards (`environment.instanceName !== SELF_INSTANCE_NAME`) and
+  // hide actions that would silently 4xx if dispatched to the wrong port.
+  const initSelfInstance = _selfInstanceEnv ? JSON.stringify(_selfInstanceEnv.instanceName) : 'null';
   return `<!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -3049,6 +3136,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 
 <script>
 const INIT_USER = ${initUser};
+// #814 — name of the dashboard's *home* instance (the one that served this
+// HTML). Used by renderCard() to detect sibling cards and suppress action
+// buttons that would post to the wrong instance. null when single-instance
+// (no env wired) or pre-listen tests; the suppression check tolerates null.
+const SELF_INSTANCE_NAME = ${initSelfInstance};
 let currentUserId = INIT_USER || '';
 // Displayed + placeholder copy when a non-owner views a session. Kept here so
 // wording edits only touch one place instead of four button sites + panel.
@@ -3787,9 +3879,23 @@ function renderCard(s, col) {
 
   // Action buttons — disabled for non-owners (server RBAC still rejects, but UI
   // shouldn't invite the click in the first place).
+  // #814 — sibling cards (env.instanceName !== self) get a "open on sibling"
+  // hint instead of action buttons. Posting Stop/Close/Trash to the local
+  // instance for a sibling-owned key would fail server-side
+  // (stripSelfInstancePrefix rejects foreign prefixes); rendering a clearly-
+  // disabled button with a redirect title is honest UX.
+  const isSibling = !!(SELF_INSTANCE_NAME && s.environment && s.environment.instanceName && s.environment.instanceName !== SELF_INSTANCE_NAME);
+  const siblingTitle = isSibling
+    ? ' title="' + escAttr('Open ' + s.environment.instanceName + ' (' + (s.environment.host || '') + ':' + (s.environment.port || '') + ') to act on this session') + '"'
+    : '';
   const readOnlyTitle = isOwner ? '' : ' title="' + escAttr(READ_ONLY_MSG) + '"';
   let actionBtn = '';
-  if (col === 'working') {
+  if (isSibling) {
+    // Sibling card — emit a disabled placeholder so the layout is consistent
+    // with same-instance cards but the click is impossible.
+    var label = (col === 'working') ? 'Stop' : (col === 'closed' && s.terminated ? 'Trash' : 'Close');
+    actionBtn = '<button class="btn-action btn-stop" disabled' + siblingTitle + '>' + label + ' \u2192 ' + esc(s.environment.instanceName) + '</button>';
+  } else if (col === 'working') {
     actionBtn = '<button class="btn-action btn-stop"' + readOnlyAttrs + readOnlyTitle + ' onclick="event.stopPropagation();doAction(\\'' + escJs(s.key) + '\\',\\'stop\\')">Stop</button>';
   } else if (col === 'waiting' || col === 'idle') {
     actionBtn = '<button class="btn-action btn-close"' + readOnlyAttrs + readOnlyTitle + ' onclick="event.stopPropagation();doAction(\\'' + escJs(s.key) + '\\',\\'close\\')">Close</button>';

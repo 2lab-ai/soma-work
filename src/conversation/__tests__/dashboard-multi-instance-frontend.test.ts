@@ -53,4 +53,22 @@ describe('Dashboard multi-instance frontend (#814)', () => {
   it('CSS `.env-badge` rule is present in the inline style block', () => {
     expect(DASHBOARD_TS).toContain('.card .card-meta .env-badge');
   });
+
+  // PR #815 review #1 — sibling cards must not invite action clicks.
+  it('renderCard suppresses action buttons on sibling cards (env mismatch)', () => {
+    // The bundle must declare SELF_INSTANCE_NAME and the isSibling check.
+    expect(DASHBOARD_TS).toContain('SELF_INSTANCE_NAME');
+    expect(DASHBOARD_TS).toContain('s.environment.instanceName !== SELF_INSTANCE_NAME');
+    // The disabled placeholder uses the redirect arrow (\u2192) so the
+    // user sees `Stop -> mac-mini-dev` instead of a live button.
+    expect(DASHBOARD_TS).toContain('\\u2192');
+  });
+
+  it('renderDashboardPage injects SELF_INSTANCE_NAME from server config', () => {
+    // Source-line check that the constant comes from initSelfInstance,
+    // not a hardcoded null. Catches regressions where someone simplifies
+    // the template and drops the dynamic injection.
+    expect(DASHBOARD_TS).toContain('SELF_INSTANCE_NAME = ${initSelfInstance}');
+    expect(DASHBOARD_TS).toContain('initSelfInstance =');
+  });
 });

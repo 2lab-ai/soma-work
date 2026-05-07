@@ -39,10 +39,10 @@ instance writes its own heartbeat and discovers others independently.
 | Condition                                | Behaviour                                                   |
 | ---------------------------------------- | ----------------------------------------------------------- |
 | Sibling instance crashed (no heartbeat refresh for 30s) | Excluded from aggregation; treated as gone               |
-| Sibling instance returns 5xx / timeout    | Silently skipped; `Sibling dashboard fetch failed` warn (1×) |
-| `CONVERSATION_VIEWER_TOKEN` mismatched    | Self-only fallback; `… set` warn (1×)                       |
-| `CONVERSATION_VIEWER_TOKEN` empty everywhere | Self-only fallback; `…not set` warn (1×)                  |
-| Aggregator throws unexpectedly            | Self-only fallback; the `/api/dashboard/sessions` endpoint never 500s |
+| Sibling instance returns 5xx / timeout / parse error    | Silently skipped; one `Sibling dashboard fetch failed` warn per `(port, failure-class)` per 60 s — distinct ports and distinct causes are independently surfaced so a flapping port doesn't silence a brand-new failure on another port |
+| `CONVERSATION_VIEWER_TOKEN` empty (this instance) | Self-only fallback; `…not set` warn fires once per process  |
+| `CONVERSATION_VIEWER_TOKEN` mismatch with sibling   | Sibling 401s; treated like any other sibling failure (per-port warn) |
+| Aggregator throws unexpectedly (e.g. mergeBoards bug) | `/api/dashboard/sessions` falls back to self-only and **errors** (with stack) so the bug is visible — endpoint never 500s |
 
 ## Architecture
 
