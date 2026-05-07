@@ -63,8 +63,8 @@ jobs:
             cat >> "$GITHUB_OUTPUT" <<'EOF'
           {"include":[
             {
-              "name":"mac-mini-dev",
-              "runner_label":"iq-macmini",
+              "name":"iq-m16-dev",
+              "runner_label":"iq-m16",
               "github_env":"development",
               "deploy_env":"dev",
               "target_dir":"/opt/soma-work/dev"
@@ -77,8 +77,8 @@ jobs:
               "target_dir":"/opt/soma-work/dev"
             },
             {
-              "name":"iq-64-dev",
-              "runner_label":"iq-64",
+              "name":"iq-m64-dev",
+              "runner_label":"iq-m64",
               "github_env":"development",
               "deploy_env":"dev",
               "target_dir":"/opt/soma-work/dev"
@@ -89,8 +89,8 @@ jobs:
             cat >> "$GITHUB_OUTPUT" <<'EOF'
           {"include":[
             {
-              "name":"mac-mini-main",
-              "runner_label":"iq-macmini",
+              "name":"iq-m16-main",
+              "runner_label":"iq-m16",
               "github_env":"production",
               "deploy_env":"main",
               "target_dir":"/opt/soma-work/main"
