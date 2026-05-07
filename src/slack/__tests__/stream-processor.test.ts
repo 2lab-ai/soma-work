@@ -4,6 +4,7 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  extractTaskIdFromResult,
   PendingForm,
   type SayFunction,
   type StreamCallbacks,
@@ -811,5 +812,42 @@ describe('StreamProcessor', () => {
       // already routes through threadPanel.appendText (covered above).
       expect(mockSay).not.toHaveBeenCalled();
     });
+  });
+});
+
+// Issue #794 — `extractTaskIdFromResult` is the single source of truth
+// for spawn-ack detection (cf. `ToolEventProcessor.isBackgroundTaskSpawnAck`
+// reuses the exact same regex). The array-shape branch must gate on
+// `type === 'text'` so non-text parts (image, tool_use, …) cannot
+// false-positive when they happen to carry a `text` metadata field.
+describe('extractTaskIdFromResult', () => {
+  it('string result: extracts task_id', () => {
+    expect(extractTaskIdFromResult('Started bg. task_id: abc-123')).toBe('abc-123');
+  });
+
+  it('array result with {type:"text"} part: extracts task_id', () => {
+    expect(extractTaskIdFromResult([{ type: 'text', text: 'Started bg. task_id: zeta-9' }])).toBe('zeta-9');
+  });
+
+  it('array result with non-text part carrying a `text` field: returns undefined (no false-positive)', () => {
+    // A future SDK shape — e.g. an image part with a captioning `text`
+    // metadata field — must NOT be mined for `task_id`. The
+    // `type === 'text'` gate is what holds this invariant.
+    expect(
+      extractTaskIdFromResult([{ type: 'image', source: { data: 'b64' }, text: 'task_id: WRONG' }]),
+    ).toBeUndefined();
+  });
+
+  it('array result with bare-string parts (legacy shape): still extracts task_id', () => {
+    expect(extractTaskIdFromResult(['Started bg. task_id: legacy-1'])).toBe('legacy-1');
+  });
+
+  it('array result with no task_id marker: returns undefined', () => {
+    expect(extractTaskIdFromResult([{ type: 'text', text: 'no marker here' }])).toBeUndefined();
+  });
+
+  it('null/undefined result: returns undefined', () => {
+    expect(extractTaskIdFromResult(undefined)).toBeUndefined();
+    expect(extractTaskIdFromResult(null)).toBeUndefined();
   });
 });

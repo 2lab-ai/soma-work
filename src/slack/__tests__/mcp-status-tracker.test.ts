@@ -72,10 +72,12 @@ describe('McpStatusDisplay', () => {
       display.registerCall('session1', 'call1', mcpConfig('codex', 'search'), 'C123', '111.222');
       display.registerCall('session1', 'call2', mcpConfig('jira', 'search'), 'C123', '111.222');
 
-      // First tick should post a single consolidated message
-      await vi.advanceTimersByTimeAsync(10_000);
+      // Issue #794 — first registerCall fires an immediate enqueued tick;
+      // the second one joins the existing session and does NOT post again.
+      // Drain microtasks (no timer advance) so the immediate tick lands.
+      await vi.advanceTimersByTimeAsync(0);
 
-      // Only 1 postMessage (consolidated), not 2 separate ones
+      // Only 1 postMessage from the immediate render — second call joined.
       expect(mockSlackApi.postMessage).toHaveBeenCalledTimes(1);
     });
 
@@ -83,17 +85,21 @@ describe('McpStatusDisplay', () => {
       display.registerCall('session1', 'call1', mcpConfig('codex', 'search'), 'C123', '111.222');
       display.registerCall('session2', 'call2', mcpConfig('jira', 'search'), 'C456', '222.333');
 
-      await vi.advanceTimersByTimeAsync(10_000);
+      // Issue #794 — each session's first registerCall fires its own
+      // immediate render. Drain microtasks rather than waiting 10s.
+      await vi.advanceTimersByTimeAsync(0);
 
       // Each session gets its own message
       expect(mockSlackApi.postMessage).toHaveBeenCalledTimes(2);
     });
 
-    it('should post initial message on first tick', async () => {
+    it('should post initial message immediately on register (issue #794)', async () => {
       display.registerCall('session1', 'call1', mcpConfig('codex', 'search'), 'C123', '111.222');
 
-      await vi.advanceTimersByTimeAsync(10_000);
+      // Drain microtasks — no timer advance needed.
+      await vi.advanceTimersByTimeAsync(0);
 
+      expect(mockSlackApi.postMessage).toHaveBeenCalledTimes(1);
       expect(mockSlackApi.postMessage).toHaveBeenCalledWith('C123', expect.stringContaining('codex → search'), {
         threadTs: '111.222',
       });
@@ -102,13 +108,31 @@ describe('McpStatusDisplay', () => {
     it('should update message on subsequent ticks', async () => {
       display.registerCall('session1', 'call1', mcpConfig('codex', 'search'), 'C123', '111.222');
 
-      // First tick: post
-      await vi.advanceTimersByTimeAsync(10_000);
+      // First render is immediate (issue #794) — runs after microtasks drain.
+      await vi.advanceTimersByTimeAsync(0);
       expect(mockSlackApi.postMessage).toHaveBeenCalledTimes(1);
 
-      // Second tick: update
+      // Setinterval tick at +10s: update.
       await vi.advanceTimersByTimeAsync(10_000);
       expect(mockSlackApi.updateMessage).toHaveBeenCalled();
+    });
+
+    it('should NOT post twice when same session registers a second call (issue #794 S16)', async () => {
+      display.registerCall('session1', 'call1', mcpConfig('codex', 'search'), 'C123', '111.222');
+      // Allow the first immediate tick to land before the second register.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(mockSlackApi.postMessage).toHaveBeenCalledTimes(1);
+
+      // Second register on same session — should join existing tick.
+      display.registerCall('session1', 'call2', mcpConfig('jira', 'search'), 'C123', '111.222');
+      await vi.advanceTimersByTimeAsync(0);
+
+      // Still 1 post — the second register did NOT trigger an extra
+      // immediate render, it joined the live session.
+      expect(mockSlackApi.postMessage).toHaveBeenCalledTimes(1);
+      // updateMessage may or may not have fired depending on render
+      // ordering — what matters is no extra `postMessage` for the
+      // joined call.
     });
   });
 
@@ -154,18 +178,22 @@ describe('McpStatusDisplay', () => {
     it('should fall back to startTime-based elapsed when duration is null', async () => {
       display.registerCall('session1', 'call1', mcpConfig('codex', 'search'), 'C123', '111.222');
 
-      // 5s pass before completion (first tick is at 10s, so no tick fires yet)
+      // Issue #794 — first render is immediate (running state). Drain
+      // microtasks so the immediate tick lands, then sleep 5s before
+      // completion so the startTime-based fallback can resolve to 5s.
       await vi.advanceTimersByTimeAsync(5000);
 
       // Abort / untracked path: duration comes through as null
       display.completeCall('call1', null);
 
-      // Next tick renders the completed state
+      // setInterval fires at +10s → updateMessage with the completed state.
       await vi.advanceTimersByTimeAsync(10_000);
 
-      const postText = mockSlackApi.postMessage.mock.calls[0][1];
-      expect(postText).toContain('🟢');
-      expect(postText).toContain('5.0s');
+      // Final state lives on updateMessage (the immediate post showed
+      // the running state), so assert against the last update.
+      const updateText = mockSlackApi.updateMessage.mock.lastCall?.[2] ?? '';
+      expect(updateText).toContain('🟢');
+      expect(updateText).toContain('5.0s');
     });
 
     it('should preserve explicit duration=0 (do not fall back on 0)', async () => {
@@ -179,10 +207,11 @@ describe('McpStatusDisplay', () => {
 
       await vi.advanceTimersByTimeAsync(10_000);
 
-      const postText = mockSlackApi.postMessage.mock.calls[0][1];
-      // Expect 0ms-style formatting, not the 4s fallback.
-      expect(postText).toContain('0ms');
-      expect(postText).not.toContain('4.0s');
+      // Final completion render lands on updateMessage (issue #794:
+      // immediate first post already happened with the running state).
+      const updateText = mockSlackApi.updateMessage.mock.lastCall?.[2] ?? '';
+      expect(updateText).toContain('0ms');
+      expect(updateText).not.toContain('4.0s');
     });
 
     it('should show elapsed for every call in multi-call session even when one is null', async () => {
@@ -196,9 +225,11 @@ describe('McpStatusDisplay', () => {
 
       await vi.advanceTimersByTimeAsync(10_000);
 
-      const postText = mockSlackApi.postMessage.mock.calls[0][1];
-      expect(postText).toContain('3.0s'); // from startTime fallback
-      expect(postText).toContain('7.0s'); // from explicit duration
+      // Issue #794 — final completion text is on updateMessage (post #1
+      // was the immediate render at t=0).
+      const updateText = mockSlackApi.updateMessage.mock.lastCall?.[2] ?? '';
+      expect(updateText).toContain('3.0s'); // from startTime fallback
+      expect(updateText).toContain('7.0s'); // from explicit duration
     });
 
     it('should render mixed state (some complete, some running)', async () => {
@@ -220,6 +251,10 @@ describe('McpStatusDisplay', () => {
     it('should remove all calls and stop tick for a session', async () => {
       display.registerCall('session1', 'call1', mcpConfig('codex', 'search'), 'C123', '111.222');
       display.registerCall('session1', 'call2', mcpConfig('jira', 'search'), 'C123', '111.222');
+
+      // Drain immediate-tick microtasks first (issue #794 — first
+      // render is enqueued on registerCall).
+      await vi.advanceTimersByTimeAsync(0);
 
       display.cleanupSession('session1');
 
@@ -250,13 +285,16 @@ describe('McpStatusDisplay', () => {
       mockMcpCallTracker.getElapsedTime.mockReturnValue(30_000); // 30s
       display.registerCall('session1', 'call1', mcpConfig('codex', 'search'), 'C123', '111.222');
 
-      // First tick at 10s
+      // Immediate render is the first post (issue #794). setInterval
+      // ticks at +10s/+20s issue updates.
       await vi.advanceTimersByTimeAsync(10_000);
       expect(mockSlackApi.postMessage).toHaveBeenCalledTimes(1);
-
-      // Second tick at 20s
-      await vi.advanceTimersByTimeAsync(10_000);
       expect(mockSlackApi.updateMessage).toHaveBeenCalledTimes(1);
+
+      // Second setInterval tick at +20s — another update.
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(mockSlackApi.postMessage).toHaveBeenCalledTimes(1);
+      expect(mockSlackApi.updateMessage).toHaveBeenCalledTimes(2);
     });
 
     it('should use 30s interval for calls 1-10 minutes old', async () => {
@@ -460,6 +498,78 @@ describe('McpStatusDisplay', () => {
       // Canonical multi-line "실행 중" header from buildRunningText must
       // still appear for plain MCP
       expect(postText).toContain('실행 중:');
+    });
+  });
+
+  /**
+   * Issue #794 — `flushSession` is the awaitable final-render fence
+   * called by `ToolEventProcessor.cleanup`. Caller-side contract:
+   *   1. Mark every active callId as completed
+   *      (`completeCall(id, null)`) BEFORE invoking flushSession.
+   *   2. `await flushSession(sessionKey)` — drains the render chain
+   *      (so any in-flight tick lands first), enqueues a final tick,
+   *      tears the session down only when no `running` entries remain.
+   */
+  describe('flushSession (issue #794)', () => {
+    it('S17: flushSession after completeCall renders final state and tears session down', async () => {
+      display.registerCall('session1', 'call1', mcpConfig('codex', 'search'), 'C123', '111.222');
+      // Allow the immediate render to land before we mark completed.
+      await vi.advanceTimersByTimeAsync(0);
+      const postCallsBefore = mockSlackApi.postMessage.mock.calls.length;
+
+      display.completeCall('call1', 4321);
+      await display.flushSession('session1');
+
+      // After flushSession the active count is 0 — entries cleared.
+      expect(display.getActiveCount()).toBe(0);
+
+      // Final render must mention the completion marker. It lands on
+      // either postMessage (if the immediate render was the very first
+      // call) or updateMessage (subsequent flush). Combine both surfaces
+      // and check the last text reflects the completion.
+      const lastUpdate = mockSlackApi.updateMessage.mock.lastCall?.[2] ?? '';
+      const lastPost = mockSlackApi.postMessage.mock.calls[postCallsBefore]?.[1] ?? '';
+      const lastText = lastUpdate || lastPost;
+      expect(lastText).toContain('🟢');
+
+      // Session tick is gone — no further ticks after we advance time.
+      mockSlackApi.postMessage.mockClear();
+      mockSlackApi.updateMessage.mockClear();
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(mockSlackApi.postMessage).not.toHaveBeenCalled();
+      expect(mockSlackApi.updateMessage).not.toHaveBeenCalled();
+    });
+
+    it('S12: flushSession is idempotent — second call is a no-op', async () => {
+      display.registerCall('session1', 'call1', mcpConfig('codex', 'search'), 'C123', '111.222');
+      await vi.advanceTimersByTimeAsync(0);
+      display.completeCall('call1', 1000);
+
+      await display.flushSession('session1');
+      // Second flush — must not throw, must not re-post.
+      mockSlackApi.postMessage.mockClear();
+      mockSlackApi.updateMessage.mockClear();
+      await display.flushSession('session1');
+      expect(mockSlackApi.postMessage).not.toHaveBeenCalled();
+      expect(mockSlackApi.updateMessage).not.toHaveBeenCalled();
+    });
+
+    it('flushSession on unknown session is a no-op', async () => {
+      await expect(display.flushSession('does-not-exist')).resolves.toBeUndefined();
+      expect(mockSlackApi.postMessage).not.toHaveBeenCalled();
+      expect(mockSlackApi.updateMessage).not.toHaveBeenCalled();
+    });
+
+    it('flushSession leaves tick alive when running calls remain (turn-replacement guard)', async () => {
+      display.registerCall('session1', 'call1', mcpConfig('codex', 'search'), 'C123', '111.222');
+      await vi.advanceTimersByTimeAsync(0);
+
+      // Caller forgot to completeCall — flushSession should NOT tear the
+      // tick down because a running call remains. The next setInterval
+      // tick (or a later flush) cleans up.
+      await display.flushSession('session1');
+
+      expect(display.getActiveCount()).toBe(1);
     });
   });
 

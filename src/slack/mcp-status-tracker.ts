@@ -29,6 +29,14 @@ interface SessionTick {
   messageTs: string | null;
   interval: NodeJS.Timeout | null;
   currentIntervalMs: number;
+  /**
+   * Issue #794 — serialized render queue. Every render path
+   * (setInterval tick, immediate-on-register tick, `flushSession`)
+   * enqueues onto this chain so Slack never sees interleaved
+   * `postMessage`/`updateMessage` for the same session, and
+   * `flushSession` can `await tick(tick)` to drain pending renders.
+   */
+  renderChain: Promise<void>;
 }
 
 const MCP_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2 hours
@@ -91,9 +99,17 @@ export class McpStatusDisplay {
         messageTs: null,
         interval: null,
         currentIntervalMs: 10_000,
+        renderChain: Promise.resolve(),
       };
       this.sessionTicks.set(sessionKey, tick);
       this.startTick(tick);
+      // Issue #794 — fire the first render synchronously (enqueued on
+      // `renderChain`) so short-lived calls don't wait the full 10s
+      // until the next setInterval before the user sees a progress
+      // line. Subsequent `registerCall`s with the same `sessionKey`
+      // hit the `has(sessionKey)` guard above and join the existing
+      // tick — no extra `postMessage` round-trip.
+      void this.tick(tick);
     }
   }
 
@@ -144,11 +160,53 @@ export class McpStatusDisplay {
     return count;
   }
 
+  /**
+   * Issue #794 — flush a session: drain the render chain (so any
+   * in-flight tick has finished its `postMessage`/`updateMessage`),
+   * enqueue one final tick to render the latest state, then — if no
+   * `running` calls remain — tear the tick down. Idempotent: a second
+   * call on the same `sessionKey` is a no-op once the tick is gone.
+   *
+   * Called by `ToolEventProcessor.cleanup(sessionKey, turnId)` AFTER
+   * it has marked every active callId as completed. The order matters:
+   *   1. completeCall → entry.status = 'completed' for each call.
+   *   2. flushSession → tick reads the completed state and renders the
+   *      "🟢 N개 작업 완료" / final allDone branch, then stops itself.
+   *
+   * Race-safety: `await this.tick(tick)` chains onto the existing
+   * `renderChain`, so even if a `setInterval` tick fired moments
+   * earlier, our enqueued tick runs after it. No interleaving with
+   * Slack API calls.
+   *
+   * The final fallback `cleanupSession(sessionKey)` is gated on "no
+   * remaining running calls" so a brand-new turn that registered a
+   * call between our render and our fallback doesn't get its just-
+   * registered tracker silently torn down. If running calls remain,
+   * we leave the tick running — the next turn (or this one's later
+   * cleanup) will re-flush.
+   */
+  async flushSession(sessionKey: string): Promise<void> {
+    const tick = this.sessionTicks.get(sessionKey);
+    if (!tick) return;
+    // Drain the chain: in-flight tick (if any) → our enqueued tick →
+    // we resolve. `doTick` handles the allDone teardown itself when
+    // every entry is non-running.
+    await this.tick(tick);
+    if (this.sessionTicks.has(sessionKey)) {
+      const remainingRunning = this.getSessionCalls(sessionKey).some((c) => c.status === 'running');
+      if (!remainingRunning) {
+        this.cleanupSession(sessionKey);
+      }
+      // Otherwise the setInterval keeps running — a new turn already
+      // registered a call against the same session and owns the tick.
+    }
+  }
+
   // --- Private tick management ---
 
   private startTick(tick: SessionTick): void {
     tick.interval = setInterval(() => {
-      this.tick(tick);
+      void this.tick(tick);
     }, tick.currentIntervalMs);
   }
 
@@ -159,7 +217,20 @@ export class McpStatusDisplay {
     }
   }
 
-  private async tick(tick: SessionTick): Promise<void> {
+  /**
+   * Issue #794 — public render-chain entry point. Every external
+   * caller (setInterval, registerCall's immediate first tick,
+   * flushSession) goes through here so all renders for a session
+   * serialize. The `.catch(() => {})` swallows prior errors so a
+   * single failed `postMessage` cannot poison the chain and starve
+   * every subsequent render.
+   */
+  private tick(tick: SessionTick): Promise<void> {
+    tick.renderChain = tick.renderChain.catch(() => {}).then(() => this.doTick(tick));
+    return tick.renderChain;
+  }
+
+  private async doTick(tick: SessionTick): Promise<void> {
     const calls = this.getSessionCalls(tick.sessionKey);
     if (calls.length === 0) {
       this.stopTick(tick);
@@ -189,7 +260,7 @@ export class McpStatusDisplay {
         this.stopTick(tick);
         tick.currentIntervalMs = minInterval;
         tick.interval = setInterval(() => {
-          this.tick(tick);
+          void this.tick(tick);
         }, tick.currentIntervalMs);
       }
     }
