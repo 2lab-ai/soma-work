@@ -590,7 +590,191 @@ describe('attach/detach action routing (Z2)', () => {
     }
   });
 
-  it('T8d: attach view_submission validate→ack-first→attachOAuth (happy path)', async () => {
+  // ────────────────────────────────────────────────────────────────────
+  // #803 — in-place card update for activate / next / detach
+  // ────────────────────────────────────────────────────────────────────
+
+  it('#803: cct_activate_slot uses chat.update in-place (no fresh ephemeral stack-up)', async () => {
+    const { app, actionHandlers } = makeApp();
+    const applyToken = vi.fn(async () => undefined);
+    const tm = {
+      applyToken,
+      getSnapshot: async () => ({
+        version: 2 as const,
+        revision: 1,
+        registry: {
+          activeKeyId: 'slot-A',
+          slots: [
+            {
+              kind: 'cct' as const,
+              source: 'setup' as const,
+              keyId: 'slot-B',
+              name: 'cctB',
+              setupToken: 'sk-ant-oat01-xxxx',
+              createdAt: '',
+            },
+            {
+              kind: 'cct' as const,
+              source: 'setup' as const,
+              keyId: 'slot-A',
+              name: 'cctA',
+              setupToken: 'sk-ant-oat01-yyyy',
+              createdAt: '',
+            },
+          ],
+        },
+        state: {},
+      }),
+      listTokens: () => [],
+      getActiveToken: () => null,
+      fetchUsageForAllAttached: vi.fn(async () => ({})),
+    } as any;
+    const adminUtils = await import('../../../admin-utils');
+    const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(true);
+    const tmModule = await import('../../../token-manager');
+    const tmSpy = vi.spyOn(tmModule, 'getTokenManager').mockReturnValue(tm);
+    const update = vi.fn(async (_arg: any) => undefined);
+    const postEphemeral = vi.fn(async (_arg: any) => undefined);
+    const respond = vi.fn(async (_arg: any) => undefined);
+    try {
+      registerCctActions(app, tm);
+      const h = actionHandlers.get(CCT_ACTION_IDS.activate_slot);
+      await h?.({
+        ack: vi.fn(async () => undefined),
+        body: {
+          user: { id: 'admin' },
+          container: { type: 'message', channel_id: 'C1', message_ts: 'ts1' },
+          actions: [{ value: 'cm:admin|slot-B' }],
+        },
+        client: { chat: { update, postEphemeral } },
+        respond,
+      });
+      expect(applyToken).toHaveBeenCalledWith('slot-B');
+      // In-place chat.update on the originating message — NOT a fresh
+      // ephemeral stacked on top of the stale card.
+      expect(update).toHaveBeenCalledTimes(1);
+      expect(postEphemeral).not.toHaveBeenCalled();
+      expect(respond).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+      tmSpy.mockRestore();
+    }
+  });
+
+  it('#803: cct_next uses respond({replace_original:true}) on ephemeral surface', async () => {
+    const { app, actionHandlers } = makeApp();
+    const rotateToNext = vi.fn(async () => ({ keyId: 'slot-A', name: 'cctA' }));
+    const tm = {
+      rotateToNext,
+      getSnapshot: async () => ({
+        version: 2 as const,
+        revision: 1,
+        registry: { activeKeyId: 'slot-A', slots: [] },
+        state: {},
+      }),
+      listTokens: () => [],
+      getActiveToken: () => null,
+    } as any;
+    const adminUtils = await import('../../../admin-utils');
+    const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(true);
+    const update = vi.fn(async (_arg: any) => undefined);
+    const respond = vi.fn(async (_arg: any) => undefined);
+    try {
+      registerCctActions(app, tm);
+      const h = actionHandlers.get(CCT_ACTION_IDS.next);
+      await h?.({
+        ack: vi.fn(async () => undefined),
+        body: {
+          user: { id: 'admin' },
+          container: { type: 'ephemeral', channel_id: 'C1' },
+          actions: [{ value: 'cm:admin|next' }],
+        },
+        client: { chat: { update, postEphemeral: vi.fn() } },
+        respond,
+      });
+      expect(rotateToNext).toHaveBeenCalledTimes(1);
+      // Ephemeral surface uses respond replace_original — NOT chat.update.
+      expect(respond).toHaveBeenCalledTimes(1);
+      expect(respond).toHaveBeenCalledWith(
+        expect.objectContaining({ response_type: 'ephemeral', replace_original: true }),
+      );
+      expect(update).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('#803: cct_detach uses chat.update on message surface (no fresh ephemeral)', async () => {
+    const { app, actionHandlers } = makeApp();
+    const detachOAuth = vi.fn(async () => undefined);
+    const tm = {
+      detachOAuth,
+      getSnapshot: async () => ({
+        version: 2 as const,
+        revision: 1,
+        registry: { activeKeyId: 'slot-X', slots: [] },
+        state: {},
+      }),
+      listTokens: () => [],
+      getActiveToken: () => null,
+      fetchUsageForAllAttached: vi.fn(async () => ({})),
+    } as any;
+    const adminUtils = await import('../../../admin-utils');
+    const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(true);
+    const tmModule = await import('../../../token-manager');
+    const tmSpy = vi.spyOn(tmModule, 'getTokenManager').mockReturnValue(tm);
+    const update = vi.fn(async (_arg: any) => undefined);
+    const postEphemeral = vi.fn(async (_arg: any) => undefined);
+    const respond = vi.fn(async (_arg: any) => undefined);
+    try {
+      registerCctActions(app, tm);
+      const h = actionHandlers.get(CCT_ACTION_IDS.detach);
+      await h?.({
+        ack: vi.fn(async () => undefined),
+        body: {
+          user: { id: 'admin' },
+          container: { type: 'message', channel_id: 'C1', message_ts: 'ts1' },
+          actions: [{ value: 'cm:admin|slot-X' }],
+        },
+        client: { chat: { update, postEphemeral } },
+        respond,
+      });
+      expect(detachOAuth).toHaveBeenCalledWith('slot-X');
+      expect(update).toHaveBeenCalledTimes(1);
+      expect(postEphemeral).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+      tmSpy.mockRestore();
+    }
+  });
+
+  it('#803: cct_activate_slot rejects invalid action value (no applyToken call)', async () => {
+    const { app, actionHandlers } = makeApp();
+    const applyToken = vi.fn(async () => undefined);
+    const tm = { applyToken, getSnapshot: async () => ({}) as any } as any;
+    const adminUtils = await import('../../../admin-utils');
+    const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(true);
+    try {
+      registerCctActions(app, tm);
+      const h = actionHandlers.get(CCT_ACTION_IDS.activate_slot);
+      // 'cm:bad|x' — invalid mode triggers decoder rejection.
+      await h?.({
+        ack: vi.fn(async () => undefined),
+        body: {
+          user: { id: 'admin' },
+          container: { type: 'message', channel_id: 'C1', message_ts: 'ts1' },
+          actions: [{ value: 'cm:bad|x' }],
+        },
+        client: { chat: { update: vi.fn(), postEphemeral: vi.fn() } },
+        respond: vi.fn(),
+      });
+      expect(applyToken).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('T8d: attach view_submission validate→ack-first→attachOAuth (happy path) [admin gated #803]', async () => {
     const { app, viewHandlers } = makeApp();
     const attachOAuth = vi.fn(async () => undefined);
     const tm = {
@@ -604,40 +788,48 @@ describe('attach/detach action routing (Z2)', () => {
       listTokens: () => [],
       getActiveToken: () => null,
     } as any;
-    registerCctActions(app, tm);
-    const submit = viewHandlers.get('cct_attach_oauth');
-    expect(submit).toBeDefined();
-    const ack = vi.fn(async () => undefined);
-    await submit?.({
-      ack,
-      body: {
-        user: { id: 'admin' },
-        container: { channel_id: 'C1' },
-        view: {
-          private_metadata: 'slot-B',
-          state: {
-            values: {
-              [CCT_BLOCK_IDS.attach_oauth_blob]: {
-                [CCT_ACTION_IDS.attach_oauth_input]: { value: GOOD_OAUTH_BLOB },
-              },
-              [CCT_BLOCK_IDS.attach_tos_ack]: {
-                [CCT_ACTION_IDS.attach_tos_ack]: { selected_options: [{ value: 'ack' }] },
+    // #803 — view submission now has an admin gate. Spy isAdminUser so
+    // the test admin user actually flows past the gate.
+    const adminUtils = await import('../../../admin-utils');
+    const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(true);
+    try {
+      registerCctActions(app, tm);
+      const submit = viewHandlers.get('cct_attach_oauth');
+      expect(submit).toBeDefined();
+      const ack = vi.fn(async () => undefined);
+      await submit?.({
+        ack,
+        body: {
+          user: { id: 'admin' },
+          container: { channel_id: 'C1' },
+          view: {
+            private_metadata: 'slot-B',
+            state: {
+              values: {
+                [CCT_BLOCK_IDS.attach_oauth_blob]: {
+                  [CCT_ACTION_IDS.attach_oauth_input]: { value: GOOD_OAUTH_BLOB },
+                },
+                [CCT_BLOCK_IDS.attach_tos_ack]: {
+                  [CCT_ACTION_IDS.attach_tos_ack]: { selected_options: [{ value: 'ack' }] },
+                },
               },
             },
           },
         },
-      },
-      client: { chat: { postEphemeral: vi.fn(async () => undefined) } },
-    });
-    // Codex P0 fix #1 — plain ack (not an errors-ack) fires BEFORE the
-    // attach mutation so the 3s view_submission budget is never at risk of
-    // CAS retries on a slow disk. Ordering is asserted strictly in T8f.
-    expect(ack).toHaveBeenCalledWith();
-    expect(attachOAuth).toHaveBeenCalledWith(
-      'slot-B',
-      expect.objectContaining({ accessToken: expect.any(String) }),
-      true,
-    );
+        client: { chat: { postEphemeral: vi.fn(async () => undefined) } },
+      });
+      // Codex P0 fix #1 — plain ack (not an errors-ack) fires BEFORE the
+      // attach mutation so the 3s view_submission budget is never at risk of
+      // CAS retries on a slow disk. Ordering is asserted strictly in T8f.
+      expect(ack).toHaveBeenCalledWith();
+      expect(attachOAuth).toHaveBeenCalledWith(
+        'slot-B',
+        expect.objectContaining({ accessToken: expect.any(String) }),
+        true,
+      );
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('T8f: attach view_submission acks BEFORE attachOAuth is invoked (Codex P0 fix #1, 3s budget safety)', async () => {
@@ -679,6 +871,9 @@ describe('attach/detach action routing (Z2)', () => {
       listTokens: () => [],
       getActiveToken: () => null,
     } as any;
+    // #803 — view submission admin gate.
+    const adminUtils = await import('../../../admin-utils');
+    const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(true);
     registerCctActions(app, tm);
     const submit = viewHandlers.get('cct_attach_oauth');
     const handlerPromise = submit?.({
@@ -712,39 +907,163 @@ describe('attach/detach action routing (Z2)', () => {
     // Release attach so the handler can return cleanly.
     resolveAttach();
     await handlerPromise;
+    spy.mockRestore();
   });
 
   it('T8e: attach view_submission surfaces validation errors (no ack checkbox) as response_action:errors', async () => {
     const { app, viewHandlers } = makeApp();
     const attachOAuth = vi.fn(async () => undefined);
     const tm = { attachOAuth } as any;
-    registerCctActions(app, tm);
-    const submit = viewHandlers.get('cct_attach_oauth');
-    const ack = vi.fn(async () => undefined);
-    await submit?.({
-      ack,
-      body: {
-        user: { id: 'admin' },
-        view: {
-          private_metadata: 'slot-B',
-          state: {
-            values: {
-              [CCT_BLOCK_IDS.attach_oauth_blob]: {
-                [CCT_ACTION_IDS.attach_oauth_input]: { value: GOOD_OAUTH_BLOB },
+    // #803 — view submission admin gate must let this admin user past
+    // so the validation-error path is exercised (otherwise we'd ack
+    // with an `Admin only` error and miss the validation branch).
+    const adminUtils = await import('../../../admin-utils');
+    const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(true);
+    try {
+      registerCctActions(app, tm);
+      const submit = viewHandlers.get('cct_attach_oauth');
+      const ack = vi.fn(async () => undefined);
+      await submit?.({
+        ack,
+        body: {
+          user: { id: 'admin' },
+          view: {
+            private_metadata: 'slot-B',
+            state: {
+              values: {
+                [CCT_BLOCK_IDS.attach_oauth_blob]: {
+                  [CCT_ACTION_IDS.attach_oauth_input]: { value: GOOD_OAUTH_BLOB },
+                },
+                // Intentionally omit the tos_ack block so "ack" is missing.
               },
-              // Intentionally omit the tos_ack block so "ack" is missing.
             },
           },
         },
-      },
-      client: {},
-    });
-    expect(attachOAuth).not.toHaveBeenCalled();
-    // Single ack call with errors payload keyed by the tos block_id.
-    expect(ack).toHaveBeenCalledTimes(1);
-    const ackArg = (ack.mock.calls[0] as any[])[0];
-    expect(ackArg.response_action).toBe('errors');
-    expect(ackArg.errors).toHaveProperty(CCT_BLOCK_IDS.attach_tos_ack);
+        client: {},
+      });
+      expect(attachOAuth).not.toHaveBeenCalled();
+      // Single ack call with errors payload keyed by the tos block_id.
+      expect(ack).toHaveBeenCalledTimes(1);
+      const ackArg = (ack.mock.calls[0] as any[])[0];
+      expect(ackArg.response_action).toBe('errors');
+      expect(ackArg.errors).toHaveProperty(CCT_BLOCK_IDS.attach_tos_ack);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  // ────────────────────────────────────────────────────────────────────
+  // #803 — view-submission admin gate
+  // ────────────────────────────────────────────────────────────────────
+
+  it('#803: cct_add_slot view submit by non-admin → ack with errors, no addSlot called', async () => {
+    const { app, viewHandlers } = makeApp();
+    const addSlot = vi.fn(async () => undefined);
+    const tm = { addSlot, listTokens: () => [] } as any;
+    const adminUtils = await import('../../../admin-utils');
+    const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(false);
+    try {
+      registerCctActions(app, tm);
+      const submit = viewHandlers.get('cct_add_slot');
+      const ack = vi.fn(async () => undefined);
+      await submit?.({
+        ack,
+        body: {
+          user: { id: 'random' },
+          view: {
+            state: {
+              values: {
+                [CCT_BLOCK_IDS.add_name]: {
+                  [CCT_ACTION_IDS.name_input]: { value: 'cct1' },
+                },
+                [CCT_BLOCK_IDS.add_kind]: {
+                  [CCT_ACTION_IDS.kind_radio]: { selected_option: { value: 'setup_token' } },
+                },
+                [CCT_BLOCK_IDS.add_setup_token_value]: {
+                  [CCT_ACTION_IDS.setup_token_input]: { value: 'sk-ant-oat01-abc12345' },
+                },
+              },
+            },
+          },
+        },
+        client: {},
+      });
+      expect(addSlot).not.toHaveBeenCalled();
+      expect(ack).toHaveBeenCalledTimes(1);
+      const ackArg = (ack.mock.calls[0] as any[])[0];
+      expect(ackArg.response_action).toBe('errors');
+      expect(ackArg.errors).toHaveProperty(CCT_BLOCK_IDS.add_name);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('#803: cct_remove_slot view submit by non-admin → no removeSlot called', async () => {
+    const { app, viewHandlers } = makeApp();
+    const removeSlot = vi.fn(async () => ({ pendingDrain: false }));
+    const tm = { removeSlot } as any;
+    const adminUtils = await import('../../../admin-utils');
+    const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(false);
+    try {
+      registerCctActions(app, tm);
+      const submit = viewHandlers.get('cct_remove_slot');
+      const ack = vi.fn(async () => undefined);
+      await submit?.({
+        ack,
+        body: {
+          user: { id: 'random' },
+          view: { private_metadata: 'slot-B' },
+        },
+        client: { chat: { postMessage: vi.fn() }, conversations: { open: vi.fn() } },
+      });
+      expect(removeSlot).not.toHaveBeenCalled();
+      // Plain ack closes the modal silently for non-admin (defense-in-
+      // depth — the UI gate prevented opening this modal in the first
+      // place; the handler just refuses to mutate).
+      expect(ack).toHaveBeenCalledTimes(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('#803: cct_attach_oauth view submit by non-admin → ack with errors, no attachOAuth called', async () => {
+    const { app, viewHandlers } = makeApp();
+    const attachOAuth = vi.fn(async () => undefined);
+    const tm = { attachOAuth } as any;
+    const adminUtils = await import('../../../admin-utils');
+    const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(false);
+    try {
+      registerCctActions(app, tm);
+      const submit = viewHandlers.get('cct_attach_oauth');
+      const ack = vi.fn(async () => undefined);
+      await submit?.({
+        ack,
+        body: {
+          user: { id: 'random' },
+          view: {
+            private_metadata: 'slot-B',
+            state: {
+              values: {
+                [CCT_BLOCK_IDS.attach_oauth_blob]: {
+                  [CCT_ACTION_IDS.attach_oauth_input]: { value: GOOD_OAUTH_BLOB },
+                },
+                [CCT_BLOCK_IDS.attach_tos_ack]: {
+                  [CCT_ACTION_IDS.attach_tos_ack]: { selected_options: [{ value: 'ack' }] },
+                },
+              },
+            },
+          },
+        },
+        client: {},
+      });
+      expect(attachOAuth).not.toHaveBeenCalled();
+      expect(ack).toHaveBeenCalledTimes(1);
+      const ackArg = (ack.mock.calls[0] as any[])[0];
+      expect(ackArg.response_action).toBe('errors');
+      expect(ackArg.errors).toHaveProperty(CCT_BLOCK_IDS.attach_oauth_blob);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 
@@ -909,7 +1228,7 @@ describe('refresh_usage action handlers (M1-S4)', () => {
     }
   });
 
-  it('refresh_usage_all → when zero slots are attached, re-post the card normally (empty map is not "all failed")', async () => {
+  it('refresh_usage_all → when zero slots are attached, re-render card in-place [#803]', async () => {
     const { app, actionHandlers } = makeApp();
     const refreshAllAttachedOAuthTokens = vi.fn(async () => ({}) as Record<string, 'ok' | 'error'>);
     const tm = {
@@ -925,7 +1244,11 @@ describe('refresh_usage action handlers (M1-S4)', () => {
     } as any;
     const adminUtils = await import('../../../admin-utils');
     const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(true);
+    const tmModule = await import('../../../token-manager');
+    const tmSpy = vi.spyOn(tmModule, 'getTokenManager').mockReturnValue(tm);
+    const update = vi.fn(async (_arg: any) => undefined);
     const postEphemeral = vi.fn(async (_arg: any) => undefined);
+    const respond = vi.fn(async (_arg: any) => undefined);
     try {
       registerCctActions(app, tm);
       const h = actionHandlers.get(CCT_ACTION_IDS.refresh_usage_all);
@@ -933,16 +1256,22 @@ describe('refresh_usage action handlers (M1-S4)', () => {
         ack: vi.fn(async () => undefined),
         body: {
           user: { id: 'admin' },
-          container: { channel_id: 'C1' },
-          actions: [{ value: 'all' }],
+          // #803 — message-surface body so renderCardInPlace lands on chat.update.
+          container: { type: 'message', channel_id: 'C1', message_ts: 'ts1' },
+          actions: [{ value: 'cm:admin|refresh_all' }],
         },
-        client: { chat: { postEphemeral } },
+        client: { chat: { update, postEphemeral } },
+        respond,
       });
-      expect(postEphemeral).toHaveBeenCalledTimes(1);
-      const call = postEphemeral.mock.calls[0]?.[0] as any;
+      // Empty starting set → no failures → no banner; renderCardInPlace
+      // hits the message surface and chat.update is called.
+      expect(update).toHaveBeenCalledTimes(1);
+      expect(postEphemeral).not.toHaveBeenCalled();
+      const call = update.mock.calls[0]?.[0] as any;
       expect(Array.isArray(call.blocks)).toBe(true);
     } finally {
       spy.mockRestore();
+      tmSpy.mockRestore();
     }
   });
 
@@ -1083,7 +1412,7 @@ describe('refresh_card action handler (card v2 follow-up)', () => {
     };
   }
 
-  it('fans out fetchAndStoreUsage(force:true) for each attached cct slot; chat.update in-place on success (message surface)', async () => {
+  it('fans out fetchAndStoreUsage(force:true) for each attached cct slot; chat.update in-place on success (message surface) [#803 admin+admin-card]', async () => {
     const { app, actionHandlers } = makeApp();
     const fetchAndStoreUsage = vi.fn(async (keyId: string) => ({
       fetchedAt: new Date().toISOString(),
@@ -1095,6 +1424,7 @@ describe('refresh_card action handler (card v2 follow-up)', () => {
       ...tmWithAttachedSlots(['slot-A', 'slot-B']),
       fetchAndStoreUsage,
       refreshAllAttachedOAuthTokens,
+      fetchUsageForAllAttached: vi.fn(async () => ({})),
     } as any;
     const adminUtils = await import('../../../admin-utils');
     const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(true);
@@ -1111,7 +1441,9 @@ describe('refresh_card action handler (card v2 follow-up)', () => {
         body: {
           user: { id: 'admin' },
           container: { type: 'message', channel_id: 'C1', message_ts: 'ts1' },
-          actions: [{ value: 'refresh_card' }],
+          // #803 — `cm:admin|refresh_card` so the force path engages
+          // (admin actor + admin cardMode = force=true).
+          actions: [{ value: 'cm:admin|refresh_card' }],
         },
         client: { chat: { update, postEphemeral } },
         respond,
@@ -1131,7 +1463,13 @@ describe('refresh_card action handler (card v2 follow-up)', () => {
       // renderCctCard so the trailing z_setting_cct_cancel actions row
       // (built by cct-topic, not by buildCardFromManager) is preserved.
       expect(renderCctCard).toHaveBeenCalledTimes(1);
-      expect(renderCctCard).toHaveBeenCalledWith({ userId: 'admin', issuedAt: expect.any(Number) });
+      // #803 — renderCctCard now also receives viewerMode='admin'.
+      expect(renderCctCard).toHaveBeenCalledWith({
+        userId: 'admin',
+        issuedAt: expect.any(Number),
+        viewerMode: 'admin',
+        skipOnOpenFetch: true,
+      });
       const updateCall = update.mock.calls[0]?.[0] as any;
       const blockJson = JSON.stringify(updateCall.blocks);
       expect(blockJson).toContain('z_setting_cct_cancel');
@@ -1168,7 +1506,7 @@ describe('refresh_card action handler (card v2 follow-up)', () => {
         body: {
           user: { id: 'admin' },
           container: { type: 'message', channel_id: 'C1', message_ts: 'ts1' },
-          actions: [{ value: 'refresh_card' }],
+          actions: [{ value: 'cm:admin|refresh_card' }],
         },
         client: { chat: { update, postEphemeral } },
         respond,
@@ -1220,7 +1558,7 @@ describe('refresh_card action handler (card v2 follow-up)', () => {
         body: {
           user: { id: 'admin' },
           container: { type: 'ephemeral', channel_id: 'C1' },
-          actions: [{ value: 'refresh_card' }],
+          actions: [{ value: 'cm:admin|refresh_card' }],
         },
         client: { chat: { update, postEphemeral } },
         respond,
@@ -1252,7 +1590,7 @@ describe('refresh_card action handler (card v2 follow-up)', () => {
         body: {
           user: { id: 'admin' },
           container: { type: 'message', channel_id: 'C1', message_ts: 'ts1' },
-          actions: [{ value: 'refresh_card' }],
+          actions: [{ value: 'cm:admin|refresh_card' }],
         },
         client: { chat: { update, postEphemeral } },
         respond,
@@ -1287,7 +1625,7 @@ describe('refresh_card action handler (card v2 follow-up)', () => {
         body: {
           user: { id: 'admin' },
           container: { type: 'message', channel_id: 'C1', message_ts: 'ts1' },
-          actions: [{ value: 'refresh_card' }],
+          actions: [{ value: 'cm:admin|refresh_card' }],
         },
         client: { chat: { update, postEphemeral } },
         respond,
@@ -1325,7 +1663,7 @@ describe('refresh_card action handler (card v2 follow-up)', () => {
         body: {
           user: { id: 'admin' },
           container: { type: 'message', channel_id: 'C1', message_ts: 'ts1' },
-          actions: [{ value: 'refresh_card' }],
+          actions: [{ value: 'cm:admin|refresh_card' }],
         },
         client: { chat: { update, postEphemeral } },
         respond,
@@ -1356,7 +1694,7 @@ describe('refresh_card action handler (card v2 follow-up)', () => {
         body: {
           user: { id: 'admin' },
           container: { type: 'message', channel_id: 'C1', message_ts: 'ts1' },
-          actions: [{ value: 'refresh_card' }],
+          actions: [{ value: 'cm:admin|refresh_card' }],
         },
         client: { chat: { update, postEphemeral } },
         respond,
@@ -1373,13 +1711,24 @@ describe('refresh_card action handler (card v2 follow-up)', () => {
     }
   });
 
-  it('non-admin click → ack only, no TM call', async () => {
+  it('#803: non-admin click on admin-mode card → non-force fetch, in-place re-render preserves admin cardMode', async () => {
     const { app, actionHandlers } = makeApp();
     const fetchAndStoreUsage = vi.fn();
-    const getSnapshot = vi.fn();
-    const tm = { fetchAndStoreUsage, getSnapshot } as any;
+    const fetchUsageForAllAttached = vi.fn(async () => ({ 'slot-A': null }));
+    const tm = {
+      ...tmWithAttachedSlots(['slot-A']),
+      fetchAndStoreUsage,
+      fetchUsageForAllAttached,
+    } as any;
     const adminUtils = await import('../../../admin-utils');
+    // isAdminUser is called once for actor (non-admin = false). The
+    // renderCctCard mock factory in this file is wired so it doesn't
+    // call isAdminUser internally — we control the spy behavior.
     const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(false);
+    const update = vi.fn(async (_arg: any) => undefined);
+    const postEphemeral = vi.fn(async (_arg: any) => undefined);
+    const respond = vi.fn(async (_arg: any) => undefined);
+    (renderCctCard as any).mockClear();
     try {
       registerCctActions(app, tm);
       const h = actionHandlers.get(CCT_ACTION_IDS.refresh_card);
@@ -1389,16 +1738,175 @@ describe('refresh_card action handler (card v2 follow-up)', () => {
         body: {
           user: { id: 'random' },
           container: { type: 'message', channel_id: 'C1', message_ts: 'ts1' },
-          actions: [{ value: 'refresh_card' }],
+          // admin-mode card stamp → preserved across viewer (#803 spec Q1=A).
+          actions: [{ value: 'cm:admin|refresh_card' }],
         },
-        client: {
-          chat: { update: vi.fn(async () => undefined), postEphemeral: vi.fn(async () => undefined) },
-        },
-        respond: vi.fn(async () => undefined),
+        client: { chat: { update, postEphemeral } },
+        respond,
       });
       expect(ack).toHaveBeenCalled();
+      // Force fetch is gated to (admin actor) AND (admin cardMode).
+      // Non-admin actor on admin-mode card → non-force path (uses
+      // fetchUsageForAllAttached, not fetchAndStoreUsage{force:true}).
       expect(fetchAndStoreUsage).not.toHaveBeenCalled();
-      expect(getSnapshot).not.toHaveBeenCalled();
+      expect(fetchUsageForAllAttached).toHaveBeenCalledTimes(1);
+      // Card is re-rendered in place — preserving admin cardMode.
+      expect(update).toHaveBeenCalledTimes(1);
+      // renderCctCard called with viewerMode='admin' (from the
+      // tagged button value), NOT readonly (which would be the
+      // actor-derived fallback).
+      expect(renderCctCard).toHaveBeenCalledWith({
+        userId: 'random',
+        issuedAt: expect.any(Number),
+        viewerMode: 'admin',
+        skipOnOpenFetch: true,
+      });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('#803: non-admin click on readonly-mode card → non-force fetch, readonly re-render', async () => {
+    const { app, actionHandlers } = makeApp();
+    const fetchAndStoreUsage = vi.fn();
+    const fetchUsageForAllAttached = vi.fn(async () => ({ 'slot-A': null }));
+    const tm = {
+      ...tmWithAttachedSlots(['slot-A']),
+      fetchAndStoreUsage,
+      fetchUsageForAllAttached,
+    } as any;
+    const adminUtils = await import('../../../admin-utils');
+    const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(false);
+    const update = vi.fn(async (_arg: any) => undefined);
+    const respond = vi.fn(async (_arg: any) => undefined);
+    (renderCctCard as any).mockClear();
+    try {
+      registerCctActions(app, tm);
+      const h = actionHandlers.get(CCT_ACTION_IDS.refresh_card);
+      await h?.({
+        ack: vi.fn(async () => undefined),
+        body: {
+          user: { id: 'random' },
+          container: { type: 'message', channel_id: 'C1', message_ts: 'ts1' },
+          actions: [{ value: 'cm:readonly|refresh_card' }],
+        },
+        client: { chat: { update, postEphemeral: vi.fn() } },
+        respond,
+      });
+      expect(fetchAndStoreUsage).not.toHaveBeenCalled();
+      expect(fetchUsageForAllAttached).toHaveBeenCalledTimes(1);
+      expect(renderCctCard).toHaveBeenCalledWith({
+        userId: 'random',
+        issuedAt: expect.any(Number),
+        viewerMode: 'readonly',
+        skipOnOpenFetch: true,
+      });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('#803: admin click on readonly-mode card → non-force fetch (force-gate denies), admin actor cannot promote readonly card to force', async () => {
+    const { app, actionHandlers } = makeApp();
+    const fetchAndStoreUsage = vi.fn();
+    const fetchUsageForAllAttached = vi.fn(async () => ({ 'slot-A': null }));
+    const tm = {
+      ...tmWithAttachedSlots(['slot-A']),
+      fetchAndStoreUsage,
+      fetchUsageForAllAttached,
+    } as any;
+    const adminUtils = await import('../../../admin-utils');
+    const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(true);
+    const update = vi.fn(async (_arg: any) => undefined);
+    try {
+      registerCctActions(app, tm);
+      const h = actionHandlers.get(CCT_ACTION_IDS.refresh_card);
+      await h?.({
+        ack: vi.fn(async () => undefined),
+        body: {
+          user: { id: 'admin' },
+          container: { type: 'message', channel_id: 'C1', message_ts: 'ts1' },
+          actions: [{ value: 'cm:readonly|refresh_card' }],
+        },
+        client: { chat: { update, postEphemeral: vi.fn() } },
+        respond: vi.fn(),
+      });
+      // Force gate requires BOTH admin actor AND admin cardMode.
+      // Readonly cardMode → non-force path even when actor is admin.
+      expect(fetchAndStoreUsage).not.toHaveBeenCalled();
+      expect(fetchUsageForAllAttached).toHaveBeenCalledTimes(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('#803: legacy value (no cm: prefix) forces force=false even for admin actor', async () => {
+    const { app, actionHandlers } = makeApp();
+    const fetchAndStoreUsage = vi.fn();
+    const fetchUsageForAllAttached = vi.fn(async () => ({ 'slot-A': null }));
+    const tm = {
+      ...tmWithAttachedSlots(['slot-A']),
+      fetchAndStoreUsage,
+      fetchUsageForAllAttached,
+    } as any;
+    const adminUtils = await import('../../../admin-utils');
+    const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(true);
+    const update = vi.fn(async (_arg: any) => undefined);
+    try {
+      registerCctActions(app, tm);
+      const h = actionHandlers.get(CCT_ACTION_IDS.refresh_card);
+      await h?.({
+        ack: vi.fn(async () => undefined),
+        body: {
+          user: { id: 'admin' },
+          container: { type: 'message', channel_id: 'C1', message_ts: 'ts1' },
+          // legacy form — pre-#803 button. cardMode unknown → safer to throttle.
+          actions: [{ value: 'refresh_card' }],
+        },
+        client: { chat: { update, postEphemeral: vi.fn() } },
+        respond: vi.fn(),
+      });
+      expect(fetchAndStoreUsage).not.toHaveBeenCalled();
+      expect(fetchUsageForAllAttached).toHaveBeenCalledTimes(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('#803: throttle-all-null on non-force path → in-place card with "Cached usage · refresh limited" banner', async () => {
+    const { app, actionHandlers } = makeApp();
+    const fetchUsageForAllAttached = vi.fn(async () => ({ 'slot-A': null, 'slot-B': null }));
+    const tm = {
+      ...tmWithAttachedSlots(['slot-A', 'slot-B']),
+      fetchAndStoreUsage: vi.fn(),
+      fetchUsageForAllAttached,
+    } as any;
+    const adminUtils = await import('../../../admin-utils');
+    const spy = vi.spyOn(adminUtils, 'isAdminUser').mockReturnValue(false);
+    const update = vi.fn(async (_arg: any) => undefined);
+    const postEphemeral = vi.fn(async (_arg: any) => undefined);
+    try {
+      registerCctActions(app, tm);
+      const h = actionHandlers.get(CCT_ACTION_IDS.refresh_card);
+      await h?.({
+        ack: vi.fn(async () => undefined),
+        body: {
+          user: { id: 'random' },
+          container: { type: 'message', channel_id: 'C1', message_ts: 'ts1' },
+          actions: [{ value: 'cm:readonly|refresh_card' }],
+        },
+        client: { chat: { update, postEphemeral } },
+        respond: vi.fn(),
+      });
+      // Throttle-all-null on non-force path → still re-renders the
+      // card in place; throttle banner is prepended as the first
+      // section block (NOT a cardNull ephemeral fallback).
+      expect(update).toHaveBeenCalledTimes(1);
+      expect(postEphemeral).not.toHaveBeenCalled();
+      const call = update.mock.calls[0]?.[0] as any;
+      const banner = (call.blocks as Array<{ text?: { text?: string } }>)[0]?.text?.text ?? '';
+      expect(banner).toContain('Cached usage');
+      expect(banner).toContain('refresh limited');
     } finally {
       spy.mockRestore();
     }
@@ -1425,7 +1933,7 @@ describe('refresh_card action handler (card v2 follow-up)', () => {
         body: {
           user: { id: 'admin' },
           container: { type: 'ephemeral', channel_id: 'C1' },
-          actions: [{ value: 'refresh_card' }],
+          actions: [{ value: 'cm:admin|refresh_card' }],
         },
         client: { chat: { update, postEphemeral } },
         respond,
@@ -1468,7 +1976,7 @@ describe('refresh_card action handler (card v2 follow-up)', () => {
           user: { id: 'admin' },
           // Channel-only fallback so the banner has somewhere to land.
           channel: { id: 'C1' },
-          actions: [{ value: 'refresh_card' }],
+          actions: [{ value: 'cm:admin|refresh_card' }],
         },
         client: { chat: { update, postEphemeral } },
         respond,
@@ -1506,7 +2014,7 @@ describe('refresh_card action handler (card v2 follow-up)', () => {
         body: {
           user: { id: 'admin' },
           container: { type: 'message', channel_id: 'C1', message_ts: 'ts1' },
-          actions: [{ value: 'refresh_card' }],
+          actions: [{ value: 'cm:admin|refresh_card' }],
         },
         client: { chat: { update, postEphemeral } },
         respond,
@@ -1543,7 +2051,7 @@ describe('refresh_card action handler (card v2 follow-up)', () => {
         body: {
           user: { id: 'admin' },
           container: { type: 'ephemeral', channel_id: 'C1' },
-          actions: [{ value: 'refresh_card' }],
+          actions: [{ value: 'cm:admin|refresh_card' }],
         },
         client: { chat: { update, postEphemeral } },
         respond,

@@ -35,7 +35,7 @@ export class McpHandler implements CommandHandler {
         });
       } else {
         await say({
-          text: `❌ Failed to reload MCP configuration. Check the mcp-servers.json file.`,
+          text: `❌ Failed to reload MCP configuration. Check the \`mcpServers\` section in config.json.`,
           thread_ts: threadTs,
         });
       }

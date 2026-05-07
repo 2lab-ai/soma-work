@@ -202,8 +202,10 @@ DEBUG=true
 
 ### 4. MCP 서버 설정 (선택)
 
+`config.json`의 `mcpServers` 섹션을 수정:
+
 ```bash
-cp mcp-servers.example.json mcp-servers.json
+cp config.example.json config.json
 ```
 
 ```json
