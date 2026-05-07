@@ -14,8 +14,10 @@ describe('deploy config expectations', () => {
 
     expect(workflow).toContain('branches: [deploy/dev, deploy/prod]');
     expect(workflow).toContain('deploy/prod)');
-    expect(workflow).toContain('"name":"devbox-a-dev"');
+    expect(workflow).toContain('"name":"prod-host-dev"');
     expect(workflow).toContain('"name":"devbox-b-dev"');
+    expect(workflow).toContain('"name":"team-host-dev"');
+    expect(workflow).toContain('"name":"prod-host-main"');
     expect(workflow).toContain('"deploy_env":"dev"');
     expect(workflow).toContain('"target_dir":"/opt/soma-work/dev"');
     expect(workflow).toContain('"target_dir":"/opt/soma-work/main"');

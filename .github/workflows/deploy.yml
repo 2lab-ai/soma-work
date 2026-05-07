@@ -63,8 +63,8 @@ jobs:
             cat >> "$GITHUB_OUTPUT" <<'EOF'
           {"include":[
             {
-              "name":"devbox-a-dev",
-              "runner_label":"soma-work",
+              "name":"prod-host-dev",
+              "runner_label":"prod-host",
               "github_env":"development",
               "deploy_env":"dev",
               "target_dir":"/opt/soma-work/dev"
@@ -89,8 +89,8 @@ jobs:
             cat >> "$GITHUB_OUTPUT" <<'EOF'
           {"include":[
             {
-              "name":"devbox-a-main",
-              "runner_label":"soma-work",
+              "name":"prod-host-main",
+              "runner_label":"prod-host",
               "github_env":"production",
               "deploy_env":"main",
               "target_dir":"/opt/soma-work/main"
