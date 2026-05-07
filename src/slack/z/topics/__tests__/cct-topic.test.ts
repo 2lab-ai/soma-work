@@ -139,13 +139,30 @@ function blocksText(blocks: any[]): string {
 }
 
 describe('cct-topic.renderCctCard', () => {
-  it('non-admin card omits set/next buttons', async () => {
+  it('#803: non-admin card renders readonly slot list (no admin early return)', async () => {
+    // Pre-#803 behavior: non-admin saw a single "🚫 admin only" message.
+    // Post-#803: non-admin sees the FULL slot list with mutating actions
+    // stripped. Only the trailing `z_setting_cct_cancel` chrome button
+    // and the card-level `cct_refresh_card` button remain on the action
+    // surfaces — Activate/Attach/Detach/Remove/Add/Next/RefreshAll are
+    // all gone. The "admin only" copy is also gone.
     resetMockStore();
     vi.mocked(isAdminUser).mockReturnValue(false);
     const { blocks, text } = await renderCctCard({ userId: 'U1', issuedAt: 1 });
-    expect(text).toContain('admin only');
+    // No "admin only" sentinel anywhere.
+    expect((text ?? '').toLowerCase()).not.toContain('admin only');
     const ids = actionIds(blocks);
-    expect(ids).not.toContain('z_setting_cct_set_next');
+    // Mutating buttons and card-level admin-only buttons are absent.
+    expect(ids).not.toContain('cct_activate_slot');
+    expect(ids).not.toContain('cct_open_attach');
+    expect(ids).not.toContain('cct_detach');
+    expect(ids).not.toContain('cct_open_remove');
+    expect(ids).not.toContain('cct_open_add');
+    expect(ids).not.toContain('cct_next');
+    expect(ids).not.toContain('cct_refresh_usage_all');
+    // Card-level Refresh stays for non-admin (non-force, throttle-respecting).
+    expect(ids).toContain('cct_refresh_card');
+    // Trailing cancel chrome row is still emitted.
     expect(ids).toContain('z_setting_cct_cancel');
   });
 
@@ -168,6 +185,55 @@ describe('cct-topic.renderCctCard', () => {
     vi.mocked(isAdminUser).mockReturnValue(true);
     await renderCctCard({ userId: 'U1', issuedAt: 3 });
     expect(mockStore.fetchUsageForAllAttachedCalls).toBe(1);
+  });
+
+  it('#803: readonly viewer SKIPS on-open fetchUsageForAllAttached (admin-only side effect)', async () => {
+    resetMockStore();
+    vi.mocked(isAdminUser).mockReturnValue(false);
+    await renderCctCard({ userId: 'U1', issuedAt: 30 });
+    // Non-admin viewer must not trigger the on-open fan-out — the
+    // refresh button on the readonly card is the explicit fetch path
+    // and that one calls fetchUsageForAllAttached non-force itself.
+    expect(mockStore.fetchUsageForAllAttachedCalls).toBe(0);
+  });
+
+  it('#803: viewerMode override forces "admin" render even when actor is non-admin', async () => {
+    resetMockStore();
+    vi.mocked(isAdminUser).mockReturnValue(false);
+    const { blocks } = await renderCctCard({ userId: 'U1', issuedAt: 31, viewerMode: 'admin' });
+    const ids = actionIds(blocks);
+    // Override forces admin layout — the per-slot mutating actions
+    // are present even though the actor is non-admin.
+    expect(ids).toContain('cct_open_remove');
+    expect(ids).toContain('cct_open_add');
+    expect(ids).toContain('cct_next');
+    // On-open fan-out IS triggered when effective mode is admin.
+    expect(mockStore.fetchUsageForAllAttachedCalls).toBe(1);
+  });
+
+  it('#803: viewerMode override forces "readonly" render even when actor is admin', async () => {
+    resetMockStore();
+    vi.mocked(isAdminUser).mockReturnValue(true);
+    const { blocks } = await renderCctCard({ userId: 'U1', issuedAt: 32, viewerMode: 'readonly' });
+    const ids = actionIds(blocks);
+    expect(ids).not.toContain('cct_open_remove');
+    expect(ids).not.toContain('cct_open_add');
+    expect(ids).not.toContain('cct_next');
+    // Refresh stays.
+    expect(ids).toContain('cct_refresh_card');
+    // Readonly skips on-open fan-out even for admin actors.
+    expect(mockStore.fetchUsageForAllAttachedCalls).toBe(0);
+  });
+
+  it('#803: skipOnOpenFetch=true skips on-open fan-out even for admin viewer (avoids double-fetch from refresh handler)', async () => {
+    resetMockStore();
+    vi.mocked(isAdminUser).mockReturnValue(true);
+    // refresh_card path: actor is admin, viewerMode='admin', but the
+    // handler already performed the usage refetch — passing
+    // skipOnOpenFetch=true must prevent renderCctCard from firing a
+    // second redundant fan-out against Anthropic.
+    await renderCctCard({ userId: 'U1', issuedAt: 33, viewerMode: 'admin', skipOnOpenFetch: true });
+    expect(mockStore.fetchUsageForAllAttachedCalls).toBe(0);
   });
 
   it('T9-force: card-open fan-out never forwards force (local throttle must hold)', async () => {

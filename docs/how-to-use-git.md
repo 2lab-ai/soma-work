@@ -6,7 +6,7 @@
 
 ### 인증 방식
 - GitHub App Installation Token (`ghs_*`)
-- `mcp-servers.json`의 github 서버에서 사용
+- `config.json#mcpServers.github`에서 사용
 
 ### 용도
 - PR 생성, 리뷰, 코멘트
@@ -159,7 +159,7 @@ GitHub App 권한 제한으로 workflow 파일 push 불가.
 | `src/github/git-credentials-manager.ts` | Git 로컬 인증 관리 |
 | `src/github/token-refresh-scheduler.ts` | GitHub App 토큰 자동 갱신 |
 | `src/github/api-client.ts` | GitHub API 클라이언트 |
-| `mcp-servers.json` | MCP GitHub 서버 설정 |
+| `config.json#mcpServers.github` | MCP GitHub 서버 설정 |
 
 ---
 

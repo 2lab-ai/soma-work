@@ -17,7 +17,7 @@ import { config } from '../../../config';
 import { Logger } from '../../../logger';
 import { getTokenManager, type TokenSummary } from '../../../token-manager';
 import type { ApplyResult, RenderResult, ZTopicBinding } from '../../actions/z-settings-actions';
-import { appendStoreReadFailureBanner, buildCctCardBlocks } from '../../cct/builder';
+import { appendStoreReadFailureBanner, buildCctCardBlocks, type CctCardViewerMode } from '../../cct/builder';
 
 const logger = new Logger('CctTopic');
 
@@ -49,55 +49,53 @@ async function loadSnapshotOrEmpty(): Promise<{
   }
 }
 
-export async function renderCctCard(args: { userId: string; issuedAt: number }): Promise<RenderResult> {
-  const { userId } = args;
-  const admin = isAdminUser(userId);
-  if (!admin) {
-    return {
-      text: '🚫 CCT (admin only)',
-      blocks: [
-        {
-          type: 'header',
-          text: { type: 'plain_text', text: '🔑 CCT Tokens', emoji: true },
-        },
-        {
-          type: 'section',
-          text: {
-            type: 'mrkdwn',
-            text: '🚫 *CCT Token — admin only*\nOnly administrators may view or change CCT tokens.',
-          },
-        },
-        {
-          type: 'actions',
-          elements: [
-            {
-              type: 'button',
-              action_id: 'z_setting_cct_cancel',
-              text: { type: 'plain_text', text: '❌ 취소' },
-              style: 'danger',
-              value: 'cancel',
-            },
-          ],
-        },
-      ],
-    };
-  }
+/**
+ * Render the `/cct` Block Kit card.
+ *
+ * Render-mode rules:
+ *   - Pass an explicit `viewerMode` → use it verbatim. This is the
+ *     "preserve cardMode across viewers" path (#803 spec Q1=A) — used
+ *     by action handlers that decode the originating button's
+ *     `cm:<mode>|<payload>` value and want re-rendering to keep that
+ *     mode regardless of who clicked.
+ *   - Otherwise → derive from `isAdminUser(userId)` (admin↔'admin',
+ *     non-admin↔'readonly').
+ *
+ * Side effects:
+ *   - Admin viewer (effective mode = 'admin') triggers the on-open
+ *     `fetchUsageForAllAttached` fan-out so the card reflects fresh
+ *     usage on every open (Z1 contract).
+ *   - Readonly viewer SKIPS the fetch fan-out — live refetch is an
+ *     admin-only mutation against the Anthropic API; non-admin viewers
+ *     see the latest cached snapshot only.
+ *   - `skipOnOpenFetch: true` → caller has already performed the
+ *     relevant fetch (e.g. the `refresh_card` action handler) and
+ *     wants the card render to read snapshot only. Avoids double
+ *     fan-out against Anthropic on the same click.
+ */
+export async function renderCctCard(args: {
+  userId: string;
+  issuedAt: number;
+  viewerMode?: CctCardViewerMode;
+  skipOnOpenFetch?: boolean;
+}): Promise<RenderResult> {
+  const { userId, viewerMode: viewerModeOverride, skipOnOpenFetch } = args;
+  const effectiveViewerMode: CctCardViewerMode = viewerModeOverride ?? (isAdminUser(userId) ? 'admin' : 'readonly');
 
-  // Z1 — Card open fan-out: refresh usage for every CCT slot that
-  // currently carries an OAuthAttachment so inactive slots don't render
-  // with stale/empty usage. Await (not fire-and-forget) per plan §3.6 so
-  // "한눈에" semantics hold; fall back to `.catch()` and whatever is in
-  // the snapshot if the fan-out throws or hits the timeout.
-  try {
-    await getTokenManager()
-      .fetchUsageForAllAttached({ timeoutMs: config.usage.cardOpenTimeoutMs })
-      .catch((err: unknown) => {
-        logger.debug(`fetchUsageForAllAttached: ignored error on card open: ${(err as Error)?.message ?? err}`);
-      });
-  } catch (err) {
-    // Defensive: a non-async throw from the getTokenManager() accessor must
-    // not brick card rendering.
-    logger.debug(`fetchUsageForAllAttached accessor threw: ${(err as Error)?.message ?? err}`);
+  // Admin viewer triggers the on-open fan-out unless the caller has
+  // already settled the usage refresh.
+  if (effectiveViewerMode === 'admin' && !skipOnOpenFetch) {
+    try {
+      await getTokenManager()
+        .fetchUsageForAllAttached({ timeoutMs: config.usage.cardOpenTimeoutMs })
+        .catch((err: unknown) => {
+          logger.debug(`fetchUsageForAllAttached: ignored error on card open: ${(err as Error)?.message ?? err}`);
+        });
+    } catch (err) {
+      // Defensive: a non-async throw from the getTokenManager() accessor must
+      // not brick card rendering.
+      logger.debug(`fetchUsageForAllAttached accessor threw: ${(err as Error)?.message ?? err}`);
+    }
   }
 
   const { slots, states, activeKeyId, loadFailed } = await loadSnapshotOrEmpty();
@@ -112,6 +110,7 @@ export async function renderCctCard(args: { userId: string; issuedAt: number }):
     states,
     activeKeyId,
     nowMs: Date.now(),
+    viewerMode: effectiveViewerMode,
   });
 
   // #644 review P3 — surface store-read failures as a visible warning
@@ -209,6 +208,10 @@ export function createCctTopicBinding(): ZTopicBinding {
   return {
     topic: 'cct',
     apply: (args) => applyCct({ userId: args.userId, value: args.value }),
+    // #803 — `viewerMode` is decided by `renderCctCard` from
+    // `isAdminUser(userId)` when not explicitly overridden by an
+    // action-handler caller. The /z dispatcher does not know which
+    // mode to render in, so we let renderCctCard derive it.
     renderCard: (args) => renderCctCard({ userId: args.userId, issuedAt: args.issuedAt }),
   };
 }

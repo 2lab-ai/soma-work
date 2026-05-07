@@ -1,6 +1,5 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { MCP_CONFIG_FILE } from '../env-paths';
 import { Logger } from '../logger';
 import { formatMcpScanReport, scanMcpServerConfig } from '../plugin/security-scanner';
 
@@ -38,7 +37,7 @@ export class McpConfigLoader {
   private configPath: string;
   private inMemory = false;
 
-  constructor(configPath: string = MCP_CONFIG_FILE) {
+  constructor(configPath: string) {
     this.configPath = path.resolve(configPath);
   }
 
@@ -129,7 +128,7 @@ export class McpConfigLoader {
 
   /**
    * Create a McpConfigLoader from a pre-parsed mcpServers record.
-   * Used by unified-config-loader when config.json provides the MCP section.
+   * Used by config-loader when config.json provides the MCP section.
    * Note: reloadConfiguration() on such instances re-returns the parsed config
    * (no file to reload from).
    */
