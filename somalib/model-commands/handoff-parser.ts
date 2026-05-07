@@ -14,11 +14,13 @@
 
 import { randomUUID } from 'node:crypto';
 import type {
+  CodexReviewRecord,
   HandoffContext,
   HandoffKind,
   HandoffParseFailure,
   HandoffTier,
   ParseResult,
+  PerTaskDispatchPayload,
   WorkflowType,
   ZHandoffWorkflow,
 } from './session-types';
@@ -33,9 +35,23 @@ const VALID_TIERS: ReadonlySet<HandoffTier> = new Set([
 
 const VALID_KINDS: ReadonlySet<HandoffKind> = new Set(['plan-to-work', 'work-complete']);
 
-/** Required `##` heading set per sentinel type (grammar rule 4). */
+/**
+ * Required `##` heading set per sentinel type (grammar rule 4).
+ *
+ * `Dependency Groups` and `Per-Task Dispatch Payloads` are required for
+ * `plan-to-work` because the new session is a fresh controller and must not
+ * read `PLAN.md` from the working folder (z/SKILL.md §Hard Rules forbids the
+ * orchestrator from reading repo source). The handoff payload is the only
+ * carrier for the planner's structured output.
+ */
 const REQUIRED_FIELDS: Record<HandoffKind, readonly string[]> = {
-  'plan-to-work': ['Issue', 'Parent Epic', 'Task List'],
+  'plan-to-work': [
+    'Issue',
+    'Parent Epic',
+    'Task List',
+    'Dependency Groups',
+    'Per-Task Dispatch Payloads',
+  ],
   'work-complete': ['Completed Subissue', 'PR', 'Summary', 'Remaining Epic Checklist'],
 };
 
@@ -81,6 +97,14 @@ function findSentinelOpeningLine(lines: readonly string[]): number {
 }
 
 /**
+ * Strict opening-tag regex. Single space between `<z-handoff` and `type=`,
+ * exactly double-quoted attribute, no trailing whitespace, no other attributes.
+ * Matches `using-z` SKILL.md §Sentinel Grammar rule 1: "case-sensitive,
+ * double-quoted attribute. 변형(대소문자·홑따옴표·공백 변형) 불매칭."
+ */
+const STRICT_OPEN_RE = /^<z-handoff type="([^"]+)">$/;
+
+/**
  * Lightweight existence + type-extraction check for the validator layer.
  *
  * Returns the captured type if the prompt has a well-formed top-level
@@ -92,7 +116,7 @@ export function extractSentinelType(promptText: string): HandoffKind | null {
   const lines = promptText.split(/\r?\n/);
   const openIdx = findSentinelOpeningLine(lines);
   if (openIdx < 0) return null;
-  const openMatch = /^<z-handoff\s+type="([^"]+)">\s*$/.exec(lines[openIdx]);
+  const openMatch = STRICT_OPEN_RE.exec(lines[openIdx]);
   if (!openMatch) return null;
   const captured = openMatch[1];
   return VALID_KINDS.has(captured as HandoffKind) ? (captured as HandoffKind) : null;
@@ -108,7 +132,15 @@ export function hasHandoffSentinel(promptText: string): boolean {
  *
  * Failure precedence (returned in this order when multiple conditions apply):
  *   no-sentinel → sentinel-not-top-level → malformed-opening → unknown-type →
- *   missing-closing → duplicate-sentinel → missing-required-field
+ *   missing-closing → duplicate-sentinel → duplicate-field →
+ *   missing-required-field → invalid-plan-payload
+ *
+ * `duplicate-field` (same `## Heading` appearing twice in one sentinel body)
+ * fails before required-field detection so the error is "fix the duplicate"
+ * rather than the misleading "missing field" that the post-flush state
+ * would otherwise produce. `invalid-plan-payload` runs after required-field
+ * detection and only for `plan-to-work`; it covers fenced-payload + group ↔
+ * payload cross-validation failures (see HandoffParseFailure docs).
  *
  * On success, fills host-managed fields (`chainId` UUID, `hopBudget` = 1).
  */
@@ -135,8 +167,9 @@ export function parseHandoff(promptText: string): ParseResult {
     };
   }
 
-  // Strict opening: <z-handoff type="..."> with double quotes, no extra attrs.
-  const strictOpen = /^<z-handoff\s+type="([^"]+)">\s*$/.exec(openLine);
+  // Strict opening: <z-handoff type="..."> — single space, double quotes,
+  // no extra attrs, no trailing whitespace. See STRICT_OPEN_RE for the contract.
+  const strictOpen = STRICT_OPEN_RE.exec(openLine);
   if (!strictOpen) {
     return { ok: false, reason: 'malformed-opening', detail: openLine.trim() };
   }
@@ -172,7 +205,11 @@ export function parseHandoff(promptText: string): ParseResult {
   }
 
   const body = lines.slice(openLineIdx + 1, closeIdx);
-  const fields = parseFields(body);
+  const parseFieldsResult = parseFields(body);
+  if (!parseFieldsResult.ok) {
+    return { ok: false, reason: 'duplicate-field', detail: parseFieldsResult.detail };
+  }
+  const fields = parseFieldsResult.fields;
 
   for (const required of REQUIRED_FIELDS[handoffKind]) {
     if (!(required in fields)) {
@@ -180,7 +217,79 @@ export function parseHandoff(promptText: string): ParseResult {
     }
   }
 
-  return { ok: true, context: deriveContext(handoffKind, fields) };
+  if (handoffKind === 'plan-to-work') {
+    // Per-Task Dispatch Payloads parsing has its own failure channel
+    // (unclosed-payload-fence). Run it before deriveContext so the failure
+    // bubbles up as `invalid-plan-payload`.
+    const payloadParse = parsePerTaskDispatchPayloads(fields['Per-Task Dispatch Payloads'] ?? '');
+    if (!payloadParse.ok) {
+      return { ok: false, reason: 'invalid-plan-payload', detail: payloadParse.detail };
+    }
+    const context = deriveContext(handoffKind, fields, payloadParse.payloads);
+    const validation = validatePlanToWorkContext(context);
+    if (!validation.ok) {
+      return { ok: false, reason: 'invalid-plan-payload', detail: validation.detail };
+    }
+    return { ok: true, context };
+  }
+
+  return { ok: true, context: deriveContext(handoffKind, fields, []) };
+}
+
+/**
+ * Cross-validate a parsed plan-to-work `HandoffContext`. Required headings
+ * are already present at this point — this checks structural / semantic
+ * coherence between `dependencyGroups` and `perTaskDispatchPayloads`,
+ * including duplicate detection (sets would silently collapse duplicates).
+ *
+ * Returns a discriminated result so the caller can attach a precise `detail`
+ * to the `invalid-plan-payload` failure.
+ */
+function validatePlanToWorkContext(
+  ctx: HandoffContext,
+): { ok: true } | { ok: false; detail: string } {
+  if (ctx.dependencyGroups.length === 0) {
+    return { ok: false, detail: 'empty-dependency-groups' };
+  }
+  if (ctx.perTaskDispatchPayloads.length === 0) {
+    return { ok: false, detail: 'empty-per-task-payloads' };
+  }
+
+  // Duplicate detection — same taskId in two groups, or two payload entries
+  // with the same taskId. Each is a planner authoring bug; collapsing them
+  // silently into a set hides the mismatch.
+  const groupCounts = new Map<string, number>();
+  for (const group of ctx.dependencyGroups) {
+    for (const id of group) groupCounts.set(id, (groupCounts.get(id) ?? 0) + 1);
+  }
+  for (const [id, count] of groupCounts) {
+    if (count > 1) {
+      return { ok: false, detail: `duplicate-group-task:${id}` };
+    }
+  }
+
+  const payloadCounts = new Map<string, number>();
+  for (const p of ctx.perTaskDispatchPayloads) {
+    payloadCounts.set(p.taskId, (payloadCounts.get(p.taskId) ?? 0) + 1);
+  }
+  for (const [id, count] of payloadCounts) {
+    if (count > 1) {
+      return { ok: false, detail: `duplicate-payload-task:${id}` };
+    }
+  }
+
+  // Cross-membership: every grouped taskId must have a payload, and vice versa.
+  for (const id of groupCounts.keys()) {
+    if (!payloadCounts.has(id)) {
+      return { ok: false, detail: `group-task-without-payload:${id}` };
+    }
+  }
+  for (const id of payloadCounts.keys()) {
+    if (!groupCounts.has(id)) {
+      return { ok: false, detail: `payload-task-without-group:${id}` };
+    }
+  }
+  return { ok: true };
 }
 
 /**
@@ -213,14 +322,34 @@ export class HandoffAbortError extends Error {
 
 /**
  * Group a body (array of lines between opening and closing tags) into a
- * `{ heading → value }` map. Multi-line values accepted — a value continues
- * until the next `## Heading` line or end of body. Leading/trailing blank
- * lines in values are trimmed.
+ * `{ heading → value }` map.
+ *
+ * **Fence-aware**: lines inside ```` ``` ```` fenced code blocks are NOT
+ * scanned for `## Heading` markers. The planner-authored
+ * `## Per-Task Dispatch Payloads` value embeds full self-contained subagent
+ * prompts, which themselves contain `## ...` markdown headings (e.g.
+ * `## Work environment`, `## Sub-issue`). Without fence-awareness those inner
+ * headings would be misparsed as top-level handoff fields and clobber the
+ * payload value. The required convention is: each `### task-id` body inside
+ * the Per-Task Dispatch Payloads section is wrapped in a **4+-backtick**
+ * fenced block (` ```` … ```` `) so the parser preserves it verbatim — and
+ * any inner 3-backtick blocks (commit-message HEREDOC, PR body, code
+ * examples) are passed through as text. Closing fence must match the
+ * opening backtick count.
+ *
+ * Multi-line values accepted — a value continues until the next top-level
+ * `## Heading` line or end of body. Leading/trailing blank lines in values
+ * are trimmed.
  */
-function parseFields(body: readonly string[]): Record<string, string> {
+function parseFields(
+  body: readonly string[],
+): { ok: true; fields: Record<string, string> } | { ok: false; detail: string } {
   const fields: Record<string, string> = {};
+  const seenHeadings = new Set<string>();
   let currentHeading: string | null = null;
   let currentBuf: string[] = [];
+  let fenceMarker: string | null = null;
+  let duplicateDetail: string | null = null;
 
   const flush = () => {
     if (currentHeading !== null) {
@@ -234,17 +363,57 @@ function parseFields(body: readonly string[]): Record<string, string> {
   };
 
   for (const line of body) {
-    const headingMatch = /^## (.+?)\s*$/.exec(line);
-    if (headingMatch) {
-      flush();
-      currentHeading = headingMatch[1];
-      currentBuf = [];
-    } else if (currentHeading !== null) {
+    // Track fenced code blocks. Backtick fences only (matches `using-z`
+    // payload spec); tilde fences are not part of the contract.
+    //
+    // Fence matching is **count-aware**: a closing fence must have the same
+    // backtick count as the opening. So a 3-tick line inside a 4-tick fence
+    // is not a closer — it passes through. This is what lets the
+    // 4-backtick outer Per-Task Dispatch Payload wrapper survive inner
+    // 3-backtick code blocks. The opening line uses `^(`{3,})` because
+    // ANY 3+ run can open a fence; once open, only the same count closes.
+    const fenceMatch = /^(`{3,})/.exec(line);
+    if (fenceMatch) {
+      const ticks = fenceMatch[1];
+      if (fenceMarker === null) {
+        fenceMarker = ticks;
+      } else if (ticks === fenceMarker) {
+        fenceMarker = null;
+      }
+      // Higher- or lower-tick lines inside an open fence are passed through
+      // (they cannot close it). Either way the fence line itself is
+      // captured into the current value verbatim.
+      if (currentHeading !== null) currentBuf.push(line);
+      continue;
+    }
+
+    if (fenceMarker === null) {
+      const headingMatch = /^## (.+?)\s*$/.exec(line);
+      if (headingMatch) {
+        flush();
+        const heading = headingMatch[1];
+        if (seenHeadings.has(heading) && duplicateDetail === null) {
+          // Record the first duplicate seen and keep parsing so we can return
+          // a deterministic detail. Continuing past duplicates would let the
+          // later occurrence overwrite the earlier — strict parsing rejects.
+          duplicateDetail = heading;
+        }
+        seenHeadings.add(heading);
+        currentHeading = heading;
+        currentBuf = [];
+        continue;
+      }
+    }
+
+    if (currentHeading !== null) {
       currentBuf.push(line);
     }
   }
   flush();
-  return fields;
+  if (duplicateDetail !== null) {
+    return { ok: false, detail: duplicateDetail };
+  }
+  return { ok: true, fields };
 }
 
 /**
@@ -271,6 +440,7 @@ function parseBool(value: string | undefined): boolean | undefined {
 function deriveContext(
   kind: HandoffKind,
   fields: Record<string, string>,
+  perTaskDispatchPayloads: ReadonlyArray<PerTaskDispatchPayload>,
 ): HandoffContext {
   // Kind-specific source URL resolution.
   let sourceIssueUrl: string | null;
@@ -297,6 +467,25 @@ function deriveContext(
   // Default is true (conservative — require issue unless producer explicitly says otherwise).
   const issueRequiredByUser = issueRequiredParsed !== false;
 
+  const trimOrNull = (raw: string | undefined): string | null => {
+    if (raw === undefined) return null;
+    const trimmed = raw.trim();
+    return trimmed === '' ? null : trimmed;
+  };
+
+  // Plan-only optional metadata (carried for Case A escape re-verification).
+  // `work-complete` doesn't use these; null them for consistency.
+  const originalRequestExcerpt =
+    kind === 'plan-to-work' ? trimOrNull(fields['Original Request Excerpt']) : null;
+  const repositoryPolicy =
+    kind === 'plan-to-work' ? trimOrNull(fields['Repository Policy']) : null;
+  const codexReview =
+    kind === 'plan-to-work' ? parseCodexReview(fields['Codex Review']) : null;
+
+  // Plan-to-work-only structured fields. work-complete leaves these empty.
+  const dependencyGroups =
+    kind === 'plan-to-work' ? parseDependencyGroups(fields['Dependency Groups'] ?? '') : [];
+
   return {
     handoffKind: kind,
     sourceIssueUrl,
@@ -304,8 +493,161 @@ function deriveContext(
     escapeEligible,
     tier,
     issueRequiredByUser,
+    originalRequestExcerpt,
+    repositoryPolicy,
+    dependencyGroups,
+    perTaskDispatchPayloads,
+    codexReview,
     // UUID is a log-correlation id only; hopBudget seed is #697's starting point.
     chainId: randomUUID(),
     hopBudget: 1,
   };
+}
+
+/**
+ * Parse a `## Codex Review` field into a structured `{ score, verdict }`.
+ *
+ * Accepted shapes (all variants of the `using-z` Handoff #1 sample line):
+ *
+ *     score: 96/100 — APPROVE_FOR_EXECUTION
+ *     score: 96 — pass
+ *     96/100 — APPROVE
+ *     96/100
+ *
+ * The first form is the canonical one. The parser is permissive: any leading
+ * `score:` / `score =` is stripped, then the line is split on `—` / `-` (em
+ * dash or ascii hyphen with surrounding whitespace) into score + verdict.
+ * Returns null on empty input.
+ */
+function parseCodexReview(raw: string | undefined): CodexReviewRecord | null {
+  if (raw === undefined) return null;
+  const trimmed = raw.trim();
+  if (trimmed === '') return null;
+  // Strip leading "score:" / "score =" prefixes (case-insensitive).
+  const stripped = trimmed.replace(/^score\s*[:=]\s*/i, '');
+  // Split on em dash or ascii hyphen with surrounding whitespace.
+  const parts = stripped.split(/\s+(?:—|-)\s+/);
+  const score = parts[0]?.trim() ?? '';
+  const verdict = parts.slice(1).join(' — ').trim();
+  if (score === '') return null;
+  return { score, verdict };
+}
+
+/**
+ * Parse a `## Dependency Groups` block into ordered groups of taskIds.
+ *
+ * Expected line shape (one per group, in declared order):
+ *
+ *     Group 1: [task-id-A, task-id-B]
+ *     Group 2: [task-id-C]
+ *
+ * Permissive: leading whitespace, optional `Group N:` prefix, comma- or
+ * whitespace-separated taskIds inside the brackets. Empty / unparseable input
+ * returns `[]` (the schema check upstream already enforced presence; here
+ * we just extract structure).
+ */
+function parseDependencyGroups(value: string): ReadonlyArray<ReadonlyArray<string>> {
+  const groups: string[][] = [];
+  for (const rawLine of value.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (line === '') continue;
+    const bracketMatch = /\[([^\]]*)\]/.exec(line);
+    if (!bracketMatch) continue;
+    const inside = bracketMatch[1];
+    const ids = inside
+      .split(/[\s,]+/)
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    if (ids.length > 0) groups.push(ids);
+  }
+  return groups;
+}
+
+/**
+ * Parse a `## Per-Task Dispatch Payloads` block into per-taskId prompts.
+ *
+ * Required shape — each task starts with `### <taskId>` followed by a
+ * **4-or-more-backtick** fenced code block containing the self-contained
+ * subagent prompt:
+ *
+ *     ### task-id-A
+ *     ````
+ *     <self-contained subagent prompt — may itself contain triple-backtick
+ *      code blocks (commit message HEREDOC, PR body, language-tagged
+ *      examples), nested ## / ### markdown headings, etc>
+ *     ````
+ *     ### task-id-B
+ *     ````
+ *     <…>
+ *     ````
+ *
+ * The outer fence MUST be at least 4 backticks because real planner-authored
+ * payloads contain inner triple-backtick blocks (bash, language-tagged code,
+ * heredoc-style PR body). A 3-backtick outer fence would be terminated by
+ * the first inner triple-backtick and the rest of the payload would silently
+ * spill into adjacent fields. The closing fence must match the opening
+ * backtick count.
+ *
+ * Failure modes:
+ *   - taskId heading with no opening fence within the same `## Per-Task
+ *     Dispatch Payloads` block → silently skipped. The cross-validator in
+ *     `validatePlanToWorkContext` then catches the resulting group↔payload
+ *     mismatch as `group-task-without-payload:<id>`.
+ *   - Opening fence with fewer than 4 backticks → treated as "no fence"
+ *     (skipped) so the same cross-validation catches it.
+ *   - Opening fence with no matching closing fence before EOF →
+ *     `unclosed-payload-fence:<taskId>` (explicit hard failure — silently
+ *     consuming the rest of the block would mask the bug).
+ *
+ * Empty input returns `{ ok: true, payloads: [] }`.
+ */
+function parsePerTaskDispatchPayloads(
+  value: string,
+): { ok: true; payloads: ReadonlyArray<PerTaskDispatchPayload> } | { ok: false; detail: string } {
+  const payloads: PerTaskDispatchPayload[] = [];
+  const lines = value.split(/\r?\n/);
+  let i = 0;
+
+  while (i < lines.length) {
+    const headingMatch = /^### (.+?)\s*:?\s*$/.exec(lines[i]);
+    if (!headingMatch) {
+      i++;
+      continue;
+    }
+    const taskId = headingMatch[1].trim();
+    i++;
+
+    // Skip blank lines until the opening fence.
+    while (i < lines.length && lines[i].trim() === '') i++;
+    if (i >= lines.length) break;
+
+    // Outer fence must be 4+ backticks (so inner triple-backtick code blocks
+    // inside the payload are passed through verbatim).
+    const openMatch = /^(`{4,})/.exec(lines[i]);
+    if (!openMatch) {
+      // No 4+-backtick fence → skip; cross-validation catches the mismatch.
+      continue;
+    }
+    const ticks = openMatch[1];
+    i++;
+
+    const buf: string[] = [];
+    let foundClose = false;
+    while (i < lines.length) {
+      const closeMatch = /^(`{4,})\s*$/.exec(lines[i]);
+      if (closeMatch && closeMatch[1] === ticks) {
+        i++;
+        foundClose = true;
+        break;
+      }
+      buf.push(lines[i]);
+      i++;
+    }
+    if (!foundClose) {
+      return { ok: false, detail: `unclosed-payload-fence:${taskId}` };
+    }
+    payloads.push({ taskId, prompt: buf.join('\n') });
+  }
+
+  return { ok: true, payloads };
 }

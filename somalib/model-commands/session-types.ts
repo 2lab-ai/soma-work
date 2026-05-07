@@ -39,6 +39,42 @@ export type HandoffKind = 'plan-to-work' | 'work-complete';
 export type HandoffTier = 'tiny' | 'small' | 'medium' | 'large' | 'xlarge';
 
 /**
+ * One per-task dispatch payload extracted from a `plan-to-work` handoff.
+ *
+ * The planner authored it as a self-contained subagent prompt; the new
+ * session passes the `prompt` verbatim into an `Agent` dispatch in z phase 2.
+ * The body is delivered inside the handoff under `### <taskId>` wrapped in a
+ * **4+-backtick** fenced code block (the 4-tick wrap is mandatory because
+ * real planner-authored prompts contain inner triple-backtick code blocks
+ * for commit-message HEREDOC, PR body, language-tagged samples; a 3-tick
+ * outer fence would terminate at the first inner block and silently
+ * truncate the payload). The parser unwraps the outer fence; the `prompt`
+ * field carries the body verbatim including any inner 3-tick blocks.
+ *
+ * `taskId` is the matching id from the handoff's `## Dependency Groups` —
+ * e.g. `Group 1: [task-id-A, task-id-B]` and the corresponding
+ * `### task-id-A` / `### task-id-B` blocks under `## Per-Task Dispatch Payloads`.
+ */
+export interface PerTaskDispatchPayload {
+  taskId: string;
+  prompt: string;
+}
+
+/**
+ * Plan-time codex review record carried in the handoff for downstream
+ * reference. Persisted on `HandoffContext.codexReview` so the new session can
+ * reproduce or audit the score that gated phase 1.
+ *
+ * Free-form `score` (string) is preserved verbatim — common shapes are
+ * `"95/100"` or `"95"`. The numeric value is not cross-validated; the
+ * verdict text is the producer's APPROVE_FOR_EXECUTION line or equivalent.
+ */
+export interface CodexReviewRecord {
+  score: string;
+  verdict: string;
+}
+
+/**
  * Typed handoff context parsed from a `<z-handoff>` sentinel.
  * Persisted on `ConversationSession.handoffContext` so downstream guards
  * (issue-link precondition #696, hop budget #697, dispatch safe-stop #698)
@@ -51,6 +87,20 @@ export type HandoffTier = 'tiny' | 'small' | 'medium' | 'large' | 'xlarge';
  * - `tier` (from optional `## Tier` field; null when absent/unknown)
  * - `escapeEligible` (from optional `## Escape Eligible`; conservative default false)
  * - `issueRequiredByUser` (from optional `## Issue Required By User`; conservative default true)
+ * - `originalRequestExcerpt` (from optional `## Original Request Excerpt`;
+ *   the user's verbatim instruction excerpt — needed by the new session to
+ *   re-verify the Case A escape `no-issue-first` clause)
+ * - `repositoryPolicy` (from optional `## Repository Policy`; the area-B
+ *   explore report's verdict on whether repo policy requires an issue —
+ *   needed by the new session to re-verify Case A escape clause c)
+ * - `dependencyGroups` (from required `## Dependency Groups`, plan-to-work
+ *   only; the new session needs this to drive per-group parallel dispatch
+ *   without reading the working folder's `PLAN.md`)
+ * - `perTaskDispatchPayloads` (from required `## Per-Task Dispatch Payloads`,
+ *   plan-to-work only; the new session passes each payload verbatim to an
+ *   implementer `Agent` dispatch)
+ * - `codexReview` (from optional `## Codex Review`, plan-to-work only;
+ *   { score, verdict } parsed from the planner-loop's final review line)
  *
  * Host-managed fields:
  * - `chainId`: UUID minted by the host parser on each successful parse
@@ -63,6 +113,40 @@ export interface HandoffContext {
   tier: HandoffTier | null;
   issueRequiredByUser: boolean;
   parentEpicUrl: string | null;
+  /**
+   * Plan-to-work only. The user's original SSOT instruction (or an excerpt of
+   * it) — carried so the new session can re-verify Case A escape conditions
+   * without re-prompting the user. Null when absent or when handoffKind is
+   * `work-complete`.
+   */
+  originalRequestExcerpt: string | null;
+  /**
+   * Plan-to-work only. The area-B explore report's verdict on whether the
+   * repository's CONTRIBUTING / branch-protection / PR-template policy
+   * requires every PR to be linked to an issue. The new session uses this to
+   * re-verify Case A escape clause (c). Null when absent or when handoffKind
+   * is `work-complete`.
+   */
+  repositoryPolicy: string | null;
+  /**
+   * Plan-to-work only. Ordered list of dependency groups; each group is an
+   * array of `taskId`s that may run in parallel. Across groups is sequential.
+   * Empty array on `work-complete` handoffs.
+   */
+  dependencyGroups: ReadonlyArray<ReadonlyArray<string>>;
+  /**
+   * Plan-to-work only. Per-task self-contained subagent prompts authored by
+   * the planner. The new session looks up `taskId`s from `dependencyGroups`
+   * here. Empty array on `work-complete` handoffs.
+   */
+  perTaskDispatchPayloads: ReadonlyArray<PerTaskDispatchPayload>;
+  /**
+   * Plan-to-work only. The planner-loop's final codex review record (score +
+   * verdict) carried from phase 1.3 — persisted so the new session can
+   * surface or audit the gated score without re-running the review. Null
+   * when absent or when handoffKind is `work-complete`.
+   */
+  codexReview: CodexReviewRecord | null;
   chainId: string;
   hopBudget: number;
 }
@@ -76,7 +160,29 @@ export type HandoffParseFailure =
   | 'unknown-type'
   | 'missing-required-field'
   | 'sentinel-not-top-level'
-  | 'type-workflow-mismatch';
+  | 'type-workflow-mismatch'
+  /**
+   * `plan-to-work` payload structurally invalid even though all required
+   * headings are present. Triggered by:
+   *   - empty `## Dependency Groups` (no parseable groups)
+   *   - empty `## Per-Task Dispatch Payloads` (no parseable tasks)
+   *   - groups reference taskIds with no matching `### taskId` payload
+   *   - payloads define taskIds not referenced in any group
+   *   - a `### taskId` payload body is not wrapped in a **4+-backtick**
+   *     (`` ```` … ```` ``) fenced block — the only safe carrier for
+   *     self-contained subagent prompts that contain their own ## / ###
+   *     headings AND inner triple-backtick code blocks
+   * `detail` field carries the specific sub-reason.
+   */
+  | 'invalid-plan-payload'
+  /**
+   * The handoff body has the same `## Heading` declared twice (or more).
+   * Strict sentinel parsing rejects this rather than silently letting the
+   * later occurrence win — duplicate fields are an authoring bug whose
+   * silent acceptance would mask either the planner emitting two payloads
+   * or a copy-paste mistake. `detail` carries the duplicate heading name.
+   */
+  | 'duplicate-field';
 
 export type ParseResult =
   | { ok: true; context: HandoffContext }

@@ -1,6 +1,6 @@
 {
   "$schema": "https://github.com/2lab-ai/soma-work/blob/main/somalib/model-commands/types.ts",
-  "_comment": "Reference template for local:zcheck Step 4 PR approve request. 4 options matching zcheck/SKILL.md spec (RATE +1 / -2 / -3 / -5). Passes validateModelCommandRunArgs + checkAskUserQuestionQuality.",
+  "_comment": "Reference template for the post-impl gate PR approve request — used by local:z phase 4 (orchestrator-mode) and local:zcheck Step 4 (standalone). 4 options matching zcheck/SKILL.md + z/SKILL.md phase-4 spec (RATE +1 / -2 / -3 / -5). Passes validateModelCommandRunArgs + checkAskUserQuestionQuality.",
   "type": "user_choice",
   "question": "[small] PR #{pr_number} 머지 승인?",
   "context": "CI: {ci_status} (run {ci_run_id}, {ci_duration}). 리뷰 스레드: {unresolved_threads} unresolved. 머지 상태: {merge_state} · {mergeable}. 변경 범위: {files_changed} 파일, {loc_add}/{loc_del} LoC. 점수가 -10 이하로 떨어지면 너는 대체된다. Approve 선택 시 머지 후 local:es → 다음 phase 자동 진행.",
@@ -17,8 +17,8 @@
     },
     {
       "id": "c",
-      "label": "Option C: Re-run zcheck from Step 1",
-      "description": "local:zcheck를 다시 invoke하여 CI·리뷰·머지 재검증부터 다시. RATE -3."
+      "label": "Option C: Re-run post-impl gate from Step 1",
+      "description": "post-impl gate를 다시 invoke하여 CI·리뷰·머지 재검증부터 다시 (orchestrator-mode면 z phase 3 재dispatch, standalone이면 local:zcheck 재실행). RATE -3."
     },
     {
       "id": "d",
