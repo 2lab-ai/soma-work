@@ -609,11 +609,36 @@ export class ToolEventProcessor {
    * entry open (no `endMcpTracking` call). The compact one-line tool
    * call is closed separately via `onCompactDurationUpdate` so the user
    * still gets a `🟢 (Ns)` close on the inline tool bubble.
+   *
+   * **SDK shape-drift telemetry**: when the toolUseId IS registered as a
+   * bg Task but `extractTaskIdFromResult` cannot find a marker on a
+   * non-empty result, we log once. That state is the silent-regression
+   * footprint for #794 — if the Anthropic SDK ever ships a new content
+   * block shape (`{type:'output_text',…}`, structured `task_id` field,
+   * etc.) every spawn-ack would fall through to `endMcpTracking` and
+   * close the bg progress UI immediately on spawn, with zero log signal.
+   * Each bg Task emits one tool_result, so this warn is bounded to
+   * once per missed spawn-ack.
    */
   private isBackgroundTaskSpawnAck(toolResult: ToolResultEvent): boolean {
     if (toolResult.isError === true) return false;
     if (!this.backgroundTaskRegistry.hasAnyByToolUseId(toolResult.toolUseId)) return false;
-    return extractTaskIdFromResult(toolResult.result) !== undefined;
+    if (extractTaskIdFromResult(toolResult.result) !== undefined) return true;
+
+    const result = toolResult.result;
+    const hasContent =
+      (typeof result === 'string' && result.length > 0) || (Array.isArray(result) && result.length > 0);
+    if (hasContent) {
+      this.logger.warn(
+        'bg Task tool_result missing task_id marker — possible SDK content-block shape drift (#794 regression risk)',
+        {
+          toolUseId: toolResult.toolUseId,
+          resultType: Array.isArray(result) ? 'array' : typeof result,
+          resultLength: typeof result === 'string' ? result.length : Array.isArray(result) ? result.length : null,
+        },
+      );
+    }
+    return false;
   }
 
   /**

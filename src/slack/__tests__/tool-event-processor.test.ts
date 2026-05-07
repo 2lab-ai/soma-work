@@ -575,6 +575,51 @@ describe('ToolEventProcessor', () => {
       expect(mcpStatusDisplay.completeCall).toHaveBeenCalledWith('call_123', 1000);
     });
 
+    // S14c — bg Task non-empty result with NO task_id marker also emits a
+    // dev-warn surfacing the shape, so a silent SDK content-block schema
+    // drift (e.g. `{type:'output_text',…}`, structured task_id field)
+    // leaves an operator breadcrumb instead of silently regressing #794.
+    it('S14c: bg Task result missing task_id on non-empty payload → logger.warn shape-drift signal', async () => {
+      const warnSpy = vi.spyOn((processor as any).logger, 'warn');
+      const ctx: ToolEventContext = { ...mockContext, turnId: 'C123:1:turn-A' };
+      await processor.handleToolUse([{ id: 'tu_bg_drift', name: 'Task', input: makeBgTaskInput() }], ctx);
+      warnSpy.mockClear();
+
+      await processor.handleToolResult(
+        [{ toolUseId: 'tu_bg_drift', toolName: 'Task', result: 'unexpected shape, no marker', isError: false }],
+        ctx,
+      );
+
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('possible SDK content-block shape drift'),
+        expect.objectContaining({
+          toolUseId: 'tu_bg_drift',
+          resultType: 'string',
+          resultLength: 'unexpected shape, no marker'.length,
+        }),
+      );
+    });
+
+    // S14d — empty/null result must NOT emit the shape-drift warn (benign
+    // path — pin so a future "always-warn" regression doesn't spam logs
+    // on every empty bg Task result).
+    it('S14d: bg Task empty/null result → no shape-drift warn', async () => {
+      const warnSpy = vi.spyOn((processor as any).logger, 'warn');
+      const ctx: ToolEventContext = { ...mockContext, turnId: 'C123:1:turn-A' };
+      await processor.handleToolUse([{ id: 'tu_bg_empty', name: 'Task', input: makeBgTaskInput() }], ctx);
+      warnSpy.mockClear();
+
+      await processor.handleToolResult(
+        [{ toolUseId: 'tu_bg_empty', toolName: 'Task', result: '', isError: false }],
+        ctx,
+      );
+
+      const driftWarns = warnSpy.mock.calls.filter(
+        (args) => typeof args[0] === 'string' && args[0].includes('shape drift'),
+      );
+      expect(driftWarns).toHaveLength(0);
+    });
+
     // S14b — bg Task non-ack result without `task_id`: normal close too.
     it('S14b: bg Task result without task_id marker → endMcpTracking fires', async () => {
       const ctx: ToolEventContext = { ...mockContext, turnId: 'C123:1:turn-A' };
@@ -631,6 +676,47 @@ describe('ToolEventProcessor', () => {
 
       expect(mcpStatusDisplay.completeCall).toHaveBeenCalledWith('call_turn1', null);
       expect(mcpStatusDisplay.completeCall).not.toHaveBeenCalledWith('call_turn2', null);
+    });
+
+    // S15-quad — legacy cleanup() without turnId: must emit dev-warn so a
+    // misuse caller leaves a breadcrumb. Pins the warn so a future
+    // refactor that drops the legacy fallback (or its observability)
+    // can't silently regress the documented misuse-detection contract.
+    it('S15-quad: cleanup(sessionKey) WITHOUT turnId emits dev-warn when bg Task registry is non-empty', async () => {
+      const warnSpy = vi.spyOn((processor as any).logger, 'warn');
+
+      // Register a bg Task under turn-1 — entry indexed by turnId.
+      mcpCallTracker.startCall.mockReturnValueOnce('call_bg_leak');
+      const ctxTurn1: ToolEventContext = { ...mockContext, turnId: 'C123:1:turn-1' };
+      await processor.handleToolUse(
+        [{ id: 'tu_bg_leak', name: 'Task', input: makeBgTaskInput('leak probe') }],
+        ctxTurn1,
+      );
+
+      warnSpy.mockClear();
+
+      // Legacy caller — no turnId. The bg Task entry is keyed by turn-1
+      // and cannot be located from this fallback path → leaks.
+      await processor.cleanup('C123:thread_ts');
+
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('cleanup() called without turnId'),
+        expect.objectContaining({ sessionKey: 'C123:thread_ts', registrySize: 1 }),
+      );
+    });
+
+    // S15-quad-b — counterpart: turnId-less cleanup with an EMPTY bg Task
+    // registry must NOT warn. Prevents a future "always-warn" regression
+    // that would log on every legitimate one-shot abort flow.
+    it('S15-quad-b: cleanup(sessionKey) WITHOUT turnId is silent when bg Task registry is empty', async () => {
+      const warnSpy = vi.spyOn((processor as any).logger, 'warn');
+
+      await processor.cleanup('C123:thread_ts');
+
+      const leakWarns = warnSpy.mock.calls.filter(
+        (args) => typeof args[0] === 'string' && args[0].includes('cleanup() called without turnId'),
+      );
+      expect(leakWarns).toHaveLength(0);
     });
 
     // S15-tri — same-session, two turns: cleanup(turn1) leaves turn2 bg Task alone.
