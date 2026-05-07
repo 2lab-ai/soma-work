@@ -75,6 +75,13 @@ jobs:
               "github_env":"development",
               "deploy_env":"dev",
               "target_dir":"/opt/soma-work/dev"
+            },
+            {
+              "name":"iq-64-dev",
+              "runner_label":"iq-64",
+              "github_env":"development",
+              "deploy_env":"dev",
+              "target_dir":"/opt/soma-work/dev"
             }
           ]}
           EOF
@@ -180,13 +187,23 @@ jobs:
                 export PATH="$NVM_BIN:$PATH"
               fi
             fi
+            # Fallback for runners where node is installed via Homebrew
+            # rather than nvm. Apple Silicon: /opt/homebrew, Intel/Linux: /usr/local.
+            if ! command -v node >/dev/null 2>&1; then
+              for BREW_PREFIX in /opt/homebrew /usr/local; do
+                if [[ -x "$BREW_PREFIX/bin/node" ]]; then
+                  export PATH="$BREW_PREFIX/bin:$PATH"
+                  break
+                fi
+              done
+            fi
           fi
           command -v node >/dev/null 2>&1 || {
-            echo "::error::node not found on PATH after nvm sourcing — cannot deploy."
+            echo "::error::node not found on PATH after nvm/brew fallbacks — cannot deploy."
             exit 1
           }
           command -v npm >/dev/null 2>&1 || {
-            echo "::error::npm not found on PATH after nvm sourcing — cannot deploy."
+            echo "::error::npm not found on PATH after nvm/brew fallbacks — cannot deploy."
             exit 1
           }
           echo "Using node: $(node -v) at $(command -v node)"
