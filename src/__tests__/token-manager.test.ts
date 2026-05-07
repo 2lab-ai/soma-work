@@ -2527,12 +2527,13 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       // fire (one each). Bare setTimeout(20ms) raced under loaded CI runners
       // and let one of the addSlot profile calls land AFTER the reset, then
       // counted against the fan-out assertion (#737 PR observed 1 vs 2 expected).
-      // Poll up to 500ms for both calls to land before resetting.
-      for (let i = 0; i < 50; i++) {
+      // Poll up to 3000ms for both calls to land before resetting — bumped from
+      // 500ms because PR #810 CI saw the same race on a slower hosted runner.
+      for (let i = 0; i < 300; i++) {
         if ((fetchOAuthProfileMock.mock.calls.length ?? 0) >= 2) break;
         await new Promise((r) => setTimeout(r, 10));
       }
-      await new Promise((r) => setTimeout(r, 20));
+      await new Promise((r) => setTimeout(r, 50));
       fetchOAuthProfileMock.mockReset();
       fetchOAuthProfileMock.mockImplementation(async () => ({
         fetchedAt: Date.now(),

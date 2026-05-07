@@ -6,13 +6,13 @@
  *
  * CRUD methods (addMarketplace, removeMarketplace, addPlugin, removePlugin)
  * mutate the in-memory config using immutable patterns (new objects),
- * then persist to config.json via saveUnifiedConfig.
+ * then persist to config.json via saveConfig.
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { loadConfig, saveConfig } from '../config-loader';
 import { Logger } from '../logger';
-import { loadUnifiedConfig, saveUnifiedConfig } from '../unified-config-loader';
 import { parsePluginRef, validateMarketplaceEntry } from './config-parser';
 import { DEFAULT_MARKETPLACES, DEFAULT_PLUGINS, isDefaultMarketplace, isDefaultPlugin } from './defaults';
 import { type FetchOptions, fetchPlugin, isFetchFailure, resolveRemoteSha } from './marketplace-fetcher';
@@ -43,15 +43,13 @@ export class PluginManager {
   private pluginConfig: PluginConfig;
   private readonly pluginsDir: string;
   private readonly configFile: string | undefined;
-  private readonly mcpFallback: string | undefined;
   private resolved: readonly ResolvedPlugin[] = [];
   private initialized = false;
 
-  constructor(pluginConfig: PluginConfig, pluginsDir: string, configFile?: string, mcpFallback?: string) {
+  constructor(pluginConfig: PluginConfig, pluginsDir: string, configFile?: string) {
     this.pluginConfig = pluginConfig;
     this.pluginsDir = path.resolve(pluginsDir);
     this.configFile = configFile;
-    this.mcpFallback = mcpFallback;
   }
 
   /**
@@ -632,9 +630,9 @@ export class PluginManager {
   private saveConfig(): void {
     if (!this.configFile) return;
 
-    const full = loadUnifiedConfig(this.configFile, this.mcpFallback || '');
+    const full = loadConfig(this.configFile);
     const updated = { ...full, plugin: this.pluginConfig };
-    saveUnifiedConfig(this.configFile, updated);
+    saveConfig(this.configFile, updated);
   }
 
   // =========================================================================

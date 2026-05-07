@@ -1596,6 +1596,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   align-items: center;
   gap: 12px;
   height: 48px;
+  min-width: 0;
 }
 .topbar h1 {
   font-size: 14px;
@@ -1605,7 +1606,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   white-space: nowrap;
   flex-shrink: 0;
 }
-.topbar .nav { display: flex; gap: 6px; margin-left: auto; align-items: center; }
+.topbar .nav { display: flex; gap: 6px; margin-left: auto; align-items: center; min-width: 0; }
 .topbar .nav a,
 .topbar .nav select {
   background: var(--surface-raised);
@@ -1620,6 +1621,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   transition: border-color var(--speed) var(--ease), color var(--speed) var(--ease);
   min-height: 32px;
 }
+.topbar .nav select { min-width: 0; inline-size: clamp(72px, 24vw, 140px); }
 .topbar .nav a:hover,
 .topbar .nav select:hover { border-color: var(--accent); color: var(--text); }
 
@@ -1640,10 +1642,20 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   cursor: default;
   white-space: nowrap;
   max-width: 260px;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.topbar .user-pill b { color: var(--text); font-weight: 700; }
+.topbar .user-pill b {
+  color: var(--text);
+  font-weight: 700;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: inline-block;
+}
 .topbar .user-pill.is-admin b::before { content: '★ '; color: var(--accent); }
 .topbar .user-pill[data-clickable="true"] { cursor: pointer; transition: border-color var(--speed) var(--ease); }
 .topbar .user-pill[data-clickable="true"]:hover { border-color: var(--accent); color: var(--text); }
@@ -2654,6 +2666,42 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .topbar .nav a, .topbar .nav select { font-size: 11px; padding: 4px 8px; }
   .topbar .nav .nav-text { display: none; }
   .topbar .nav .nav-icon { display: inline !important; }
+  /* ws-badge → 10px round dot; aria-label preserved for SR */
+  .topbar .ws-badge {
+    display: inline-block;
+    inline-size: 10px;
+    block-size: 10px;
+    padding: 0;
+    border-radius: 50%;
+    text-indent: 100%;
+    white-space: nowrap;
+    overflow: hidden;
+    flex-shrink: 0;
+    min-width: 0;
+  }
+  .topbar .user-pill { max-width: 140px; padding: 4px 8px; }
+  .topbar .user-pill-prefix { display: none; }
+  .topbar .admin-toggle { padding: 4px 8px; font-size: 11px; }
+  #theme-toggle {
+    inline-size: 32px;
+    block-size: 32px;
+    padding: 0;
+    flex-shrink: 0;
+  }
+}
+@media (max-width: 480px) {
+  .topbar { padding: 0 8px; gap: 4px; }
+  .topbar h1 {
+    font-size: 11px;
+    flex-shrink: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .topbar .user-pill { max-width: 100px; }
+  .topbar .nav select { inline-size: clamp(60px, 22vw, 100px); }
+  .topbar .admin-mode-prefix { display: none; }
+  .topbar .admin-toggle { font-size: 10px; padding: 4px 6px; }
 }
 @media (prefers-reduced-motion: reduce) {
   *,*::before,*::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
@@ -2669,13 +2717,25 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .show-older-btn { min-height: 40px; padding: 8px 16px; }
   .card { padding: 12px 16px; }
 }
+/* ── #800: TOUCH x NARROW — restore tight padding so the coarse-pointer
+   tap-target (16px horizontal) does not push the topbar past mobile
+   widths. min-height stays at 40px for touch-target accessibility
+   (WCAG 2.5.5); only the inline padding shrinks. These blocks must
+   stay AFTER @media (pointer: coarse) in source order so the more
+   specific (combined) query wins the cascade. ── */
+@media (max-width: 680px) and (pointer: coarse) {
+  .topbar .nav a, .topbar .nav select { padding: 4px 8px; }
+}
+@media (max-width: 480px) and (pointer: coarse) {
+  .topbar .nav a, .topbar .nav select { padding: 4px 6px; }
+}
 </style>
 </head>
 <body>
 <div class="app">
   <div class="topbar">
     <h1>&#x26A1; soma-work</h1>
-    <span class="ws-badge" id="ws-status">Connecting...</span>
+    <span class="ws-badge" id="ws-status" role="status" aria-label="WebSocket: Connecting">Connecting...</span>
     <div class="nav">
       <select id="user-select" onchange="selectUser(this.value)">
         <option value="">All Users</option>
@@ -2689,14 +2749,14 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
         aria-pressed="false"
         title="Toggle admin write mode (#716)"
         onclick="toggleAdminMode()"
-      ><span id="admin-mode-label">Admin: OFF</span></button>
+      ><span id="admin-mode-label"><span class="admin-mode-prefix">Admin: </span><span class="admin-mode-state">OFF</span></span></button>
       <span
         class="user-pill"
         id="user-pill"
         title="Click to logout"
         data-clickable="false"
         onclick="handleUserPillClick()"
-      >Logged in as <b id="user-pill-name">…</b></span>
+      ><span class="user-pill-prefix">Logged in as </span><b id="user-pill-name">…</b></span>
       <button id="theme-toggle" onclick="toggleTheme()" aria-label="Toggle theme"></button>
     </div>
   </div>
@@ -3122,7 +3182,13 @@ function _renderAdminModeButton() {
   if (!btn || !lbl) return;
   const on = _isAdminModeOn();
   btn.setAttribute('aria-pressed', on ? 'true' : 'false');
-  lbl.textContent = on ? 'Admin: ON' : 'Admin: OFF';
+  // Prefer split-span structure (prefix + state) so CSS can hide the
+  // "Admin: " prefix at narrow viewports without losing the ON/OFF state.
+  // Falls back to flat textContent if the spans haven't been rendered yet
+  // (e.g. legacy template / unit test setup).
+  const stateEl = lbl.querySelector('.admin-mode-state');
+  if (stateEl) stateEl.textContent = on ? 'ON' : 'OFF';
+  else lbl.textContent = on ? 'Admin: ON' : 'Admin: OFF';
 }
 function toggleAdminMode() {
   _setAdminMode(!_isAdminModeOn());
@@ -4057,12 +4123,16 @@ function connectWs() {
 
   ws.onopen = function() {
     statusEl.textContent = 'Live';
+    statusEl.title = 'WebSocket: Live';
+    statusEl.setAttribute('aria-label', 'WebSocket: Live');
     statusEl.style.background = 'rgba(62,207,142,0.2)';
     statusEl.style.borderColor = 'var(--green)';
     statusEl.style.color = 'var(--green)';
   };
   ws.onclose = function() {
     statusEl.textContent = 'Reconnecting...';
+    statusEl.title = 'WebSocket: Reconnecting';
+    statusEl.setAttribute('aria-label', 'WebSocket: Reconnecting');
     statusEl.style.background = '';
     statusEl.style.borderColor = '';
     statusEl.style.color = 'var(--yellow)';

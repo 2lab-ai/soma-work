@@ -42,7 +42,6 @@ describe('main-env-bootstrap', () => {
 
     fs.writeFileSync(path.join(devSourceDir, '.system.prompt'), 'prompt', 'utf8');
     writeJson(path.join(devSourceDir, 'config.json'), { plugin: { enabled: true } });
-    writeJson(path.join(devSourceDir, 'mcp-servers.json'), { mcpServers: { github: { type: 'stdio' } } });
 
     fs.writeFileSync(path.join(legacyRootDir, '.env'), 'SLACK_BOT_TOKEN=xoxb-test\n', 'utf8');
     writeJson(path.join(legacyRootDir, 'data', 'user-settings.json'), {
@@ -108,7 +107,6 @@ describe('main-env-bootstrap', () => {
 
     fs.writeFileSync(path.join(devSourceDir, '.system.prompt'), 'prompt', 'utf8');
     writeJson(path.join(devSourceDir, 'config.json'), { plugin: { enabled: true } });
-    writeJson(path.join(devSourceDir, 'mcp-servers.json'), { mcpServers: { github: { type: 'stdio' } } });
     fs.writeFileSync(path.join(legacyRootDir, '.env'), 'SLACK_BOT_TOKEN=legacy\n', 'utf8');
     fs.mkdirSync(path.join(legacyRootDir, 'data'), { recursive: true });
     fs.writeFileSync(path.join(targetDir, 'unexpected.txt'), 'keep me', 'utf8');
@@ -134,7 +132,6 @@ describe('main-env-bootstrap', () => {
 
     fs.writeFileSync(path.join(devSourceDir, '.system.prompt'), 'prompt', 'utf8');
     writeJson(path.join(devSourceDir, 'config.json'), { plugin: { enabled: true } });
-    writeJson(path.join(devSourceDir, 'mcp-servers.json'), { mcpServers: { github: { type: 'stdio' } } });
     fs.writeFileSync(path.join(legacyRootDir, '.env'), 'SLACK_BOT_TOKEN=legacy\n', 'utf8');
     fs.mkdirSync(path.join(legacyRootDir, 'data'), { recursive: true });
 

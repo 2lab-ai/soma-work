@@ -122,7 +122,7 @@ export const config = {
 
 ## 4. Configuration Files
 
-### 4.1 MCP Servers (`mcp-servers.json`)
+### 4.1 MCP Servers (`config.json`)
 
 MCP 서버 설정 파일:
 
@@ -476,7 +476,7 @@ logger.info('Configuration:', {
 soma-work/
 ├── .env                           # 환경 변수 (gitignore)
 ├── .env.example                   # 환경 변수 템플릿
-├── mcp-servers.json               # MCP 서버 설정
+├── config.json               # MCP 서버 설정
 ├── claude-code-settings.json      # Claude SDK 권한
 ├── slack-app-manifest.json        # Slack 앱 매니페스트
 ├── data/                          # 런타임 데이터
