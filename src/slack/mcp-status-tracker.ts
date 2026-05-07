@@ -10,6 +10,13 @@ export interface StatusUpdateConfig {
   paramsSummary?: string; // compact params e.g. "(prompt: hello world)"
 }
 
+/**
+ * Issue #816 — `failed` distinguishes a tool-result with `isError: true`
+ * (the SDK actually saw a failure) from a `completed` happy path so the
+ * Slack render can surface 🔴 instead of a misleading 🟢.
+ */
+type CallStatus = 'running' | 'completed' | 'failed' | 'timed_out';
+
 interface ActiveCallEntry {
   callId: string;
   sessionKey: string;
@@ -17,7 +24,7 @@ interface ActiveCallEntry {
   channel: string;
   threadTs: string;
   startTime: number;
-  status: 'running' | 'completed' | 'timed_out';
+  status: CallStatus;
   duration?: number;
   predicted: number | null;
 }
@@ -117,15 +124,19 @@ export class McpStatusDisplay {
    * Mark a call as completed. Rendered on next tick.
    * If duration is null (e.g. abort path or untracked call), fall back
    * to startTime so the final render still shows real elapsed time.
+   *
+   * `isError` is optional so cleanup sweeps in `ToolEventProcessor.cleanup`
+   * (no SDK signal available at turn-end) keep their "treat as completed"
+   * semantics. When `true`, the entry flips to `failed` (issue #816).
    */
-  completeCall(callId: string, duration: number | null): void {
+  completeCall(callId: string, duration: number | null, isError?: boolean): void {
     const entry = this.activeCalls.get(callId);
     if (!entry) return;
 
     const finalDuration = duration ?? Math.max(0, Date.now() - entry.startTime);
     this.activeCalls.set(callId, {
       ...entry,
-      status: 'completed',
+      status: isError === true ? 'failed' : 'completed',
       duration: finalDuration,
     });
   }
@@ -349,14 +360,17 @@ export class McpStatusDisplay {
   private buildConsolidatedText(calls: ActiveCallEntry[]): string {
     const total = calls.length;
     const completed = calls.filter((c) => c.status === 'completed').length;
+    const failed = calls.filter((c) => c.status === 'failed').length;
     const timedOut = calls.filter((c) => c.status === 'timed_out').length;
-    const allDone = completed + timedOut === total;
+    const allDone = completed + failed + timedOut === total;
 
     let header: string;
-    if (allDone && timedOut === 0) {
+    if (allDone && timedOut === 0 && failed === 0) {
       header = total === 1 ? `🟢 작업 완료` : `🟢 ${total}개 작업 완료`;
     } else if (allDone) {
-      header = `📊 ${total}개 작업 종료 (${completed} 완료, ${timedOut} 타임아웃)`;
+      // Issue #816 — surface failed count separately so the all-clean
+      // 🟢 header can never silently hide an error.
+      header = `📊 ${total}개 작업 종료 (${completed} 완료, ${failed} 실패, ${timedOut} 타임아웃)`;
     } else {
       header = `📊 ${total}개 작업 실행 중 (${completed}/${total} 완료)`;
     }
@@ -386,8 +400,11 @@ export class McpStatusDisplay {
       return `⏳ Running in background — ${call.config.displayLabel} (${seconds}s)`;
     }
 
-    if (call.status === 'completed') {
-      let text = `🟢 *${call.config.displayType} 완료: ${call.config.displayLabel}*${params}`;
+    if (call.status === 'completed' || call.status === 'failed') {
+      const isFail = call.status === 'failed';
+      const emoji = isFail ? '🔴' : '🟢';
+      const label = isFail ? '실패' : '완료';
+      let text = `${emoji} *${call.config.displayType} ${label}: ${call.config.displayLabel}*${params}`;
       if (call.duration !== undefined) {
         text += ` (${McpCallTracker.formatDuration(call.duration)})`;
       }
@@ -407,8 +424,9 @@ export class McpStatusDisplay {
   private renderCallLine(call: ActiveCallEntry): string {
     const params = call.config.paramsSummary ? ` ${call.config.paramsSummary}` : '';
 
-    if (call.status === 'completed') {
-      let line = `🟢 ${call.config.displayLabel}${params}`;
+    if (call.status === 'completed' || call.status === 'failed') {
+      const emoji = call.status === 'failed' ? '🔴' : '🟢';
+      let line = `${emoji} ${call.config.displayLabel}${params}`;
       if (call.duration !== undefined) {
         line += ` (${McpCallTracker.formatDuration(call.duration)})`;
       }
