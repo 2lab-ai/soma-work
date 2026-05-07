@@ -134,6 +134,93 @@ describe('McpStatusDisplay', () => {
       // ordering — what matters is no extra `postMessage` for the
       // joined call.
     });
+
+    // S16-tri — `tick.renderChain` poison-pill catch contract: a
+    // synchronous throw inside `doTick` outside the inner Slack
+    // try/catches (e.g. `getElapsedTime` in the timeout-check loop)
+    // must be (a) caught synchronously on the same tick — never
+    // escape as an unhandled rejection — (b) logged with sessionKey,
+    // and (c) leave the chain alive so the next tick's render
+    // proceeds. Pin so a future "drop the inner try/catch" refactor
+    // would force a visible test failure rather than silently
+    // disabling the session's progress UI for the rest of its life.
+    it('S16-tri: synchronous throw inside doTick is logged and renderChain stays alive', async () => {
+      const warnSpy = vi.spyOn((display as any).logger, 'warn');
+      let throwOnce = true;
+      mockMcpCallTracker.getElapsedTime.mockImplementation(() => {
+        if (throwOnce) {
+          throwOnce = false;
+          throw new Error('synthetic doTick failure');
+        }
+        return 5000;
+      });
+
+      display.registerCall('session1', 'call1', mcpConfig('codex', 'search'), 'C123', '111.222');
+      // Immediate tick fires → throws inside doTick → caught by inner
+      // try/catch → logger.warn fires → renderChain stays resolved.
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(warnSpy).toHaveBeenCalledWith(
+        'mcp render tick failed (chain kept alive)',
+        expect.objectContaining({ sessionKey: 'session1', error: 'synthetic doTick failure' }),
+      );
+
+      // setInterval tick at +10s → fresh doTick runs and lands a
+      // postMessage, proving the chain is still accepting work.
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(mockSlackApi.postMessage).toHaveBeenCalled();
+    });
+
+    // S16-bis — direct serialization probe for `tick.renderChain`. The
+    // S16 test only counts calls; this one pins the contract that two
+    // back-to-back ticks NEVER overlap a Slack API call. A future
+    // refactor that drops `.then(() => this.doTick(tick))` chaining
+    // (e.g. `void this.doTick(tick)`) would pass S16 but fail this.
+    it('S16-bis: tick.renderChain serializes back-to-back ticks (no concurrent Slack calls)', async () => {
+      // Manually-controlled deferred for the FIRST postMessage. The
+      // chain must not invoke the second render path until this resolves.
+      let resolveFirstPost!: (v: { ts: string; channel: string }) => void;
+      const firstPost = new Promise<{ ts: string; channel: string }>((resolve) => {
+        resolveFirstPost = resolve;
+      });
+
+      let postCallCount = 0;
+      mockSlackApi.postMessage.mockImplementation(() => {
+        postCallCount++;
+        if (postCallCount === 1) return firstPost;
+        // Defensive: no test path should reach here — second render must
+        // hit `updateMessage` once `messageTs` is assigned by the first.
+        return Promise.resolve({ ts: 'unexpected', channel: 'C123' });
+      });
+
+      // Fire the first immediate tick via registerCall.
+      display.registerCall('session1', 'call1', mcpConfig('codex', 'search'), 'C123', '111.222');
+      // Drain microtasks but keep the first postMessage pending.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(postCallCount).toBe(1);
+      expect(mockSlackApi.updateMessage).not.toHaveBeenCalled();
+
+      // Race-attempt: complete the call mid-flight and advance the
+      // setInterval — the second render path is now enqueued but MUST
+      // wait for the first postMessage to resolve. Without renderChain
+      // chaining, `updateMessage` would fire here on the un-set messageTs.
+      display.completeCall('call1', 5000);
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      // Still only one Slack call in flight (the original post). No
+      // concurrent updateMessage interleaved.
+      expect(postCallCount).toBe(1);
+      expect(mockSlackApi.updateMessage).not.toHaveBeenCalled();
+
+      // Resolve the first postMessage; the chained tick can now run.
+      resolveFirstPost({ ts: '123.456', channel: 'C123' });
+      await vi.advanceTimersByTimeAsync(0);
+
+      // Second render landed via updateMessage (messageTs is now set).
+      // postCallCount must remain 1 — exactly one post per session.
+      expect(postCallCount).toBe(1);
+      expect(mockSlackApi.updateMessage).toHaveBeenCalled();
+    });
   });
 
   describe('completeCall', () => {
