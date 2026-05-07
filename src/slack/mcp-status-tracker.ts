@@ -218,15 +218,40 @@ export class McpStatusDisplay {
   }
 
   /**
-   * Issue #794 — public render-chain entry point. Every external
-   * caller (setInterval, registerCall's immediate first tick,
-   * flushSession) goes through here so all renders for a session
-   * serialize. The `.catch(() => {})` swallows prior errors so a
-   * single failed `postMessage` cannot poison the chain and starve
-   * every subsequent render.
+   * Issue #794 — public render-chain entry point. Every entry point
+   * within this class (setInterval, registerCall's immediate first
+   * tick, flushSession) goes through here so all renders for a
+   * session serialize. The structure has two safeguards:
+   *
+   * 1. **Inner try/catch** wraps `doTick(tick)` so this tick's
+   *    synchronous-or-async throw never escapes. Inner Slack I/O
+   *    already has its own try/catch+`logger.warn`, so the only
+   *    paths reaching here are unexpected throws inside `doTick`'s
+   *    pure-CPU code (`getSessionCalls`/`computeMinInterval`/
+   *    `buildConsolidatedText`). Logging-and-continuing here means
+   *    a regression that adds a throwing path won't silently
+   *    disable progress UI for the rest of the session, AND it
+   *    cannot escape as an unhandled rejection between this tick
+   *    and the next.
+   * 2. **Front `.catch(() => {})`** swallows any latent rejection
+   *    on the prior chain link (defense-in-depth — the inner
+   *    try/catch should make this unreachable, but a future edit
+   *    that reorders the chain shouldn't be able to break the
+   *    poison-pill contract).
    */
   private tick(tick: SessionTick): Promise<void> {
-    tick.renderChain = tick.renderChain.catch(() => {}).then(() => this.doTick(tick));
+    tick.renderChain = tick.renderChain
+      .catch(() => {})
+      .then(async () => {
+        try {
+          await this.doTick(tick);
+        } catch (err) {
+          this.logger.warn('mcp render tick failed (chain kept alive)', {
+            sessionKey: tick.sessionKey,
+            error: (err as Error)?.message ?? String(err),
+          });
+        }
+      });
     return tick.renderChain;
   }
 
