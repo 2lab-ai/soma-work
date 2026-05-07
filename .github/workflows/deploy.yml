@@ -75,6 +75,13 @@ jobs:
               "github_env":"development",
               "deploy_env":"dev",
               "target_dir":"/opt/soma-work/dev"
+            },
+            {
+              "name":"iq-64-dev",
+              "runner_label":"iq-64",
+              "github_env":"development",
+              "deploy_env":"dev",
+              "target_dir":"/opt/soma-work/dev"
             }
           ]}
           EOF
@@ -179,6 +186,15 @@ jobs:
               if [[ -n "$NVM_BIN" ]]; then
                 export PATH="$NVM_BIN:$PATH"
               fi
+            fi
+            # Homebrew fallback (iq-64 uses brew-installed node, no nvm).
+            if ! command -v node >/dev/null 2>&1; then
+              for BREW_PREFIX in /opt/homebrew /usr/local; do
+                if [[ -x "$BREW_PREFIX/bin/node" ]]; then
+                  export PATH="$BREW_PREFIX/bin:$PATH"
+                  break
+                fi
+              done
             fi
           fi
           command -v node >/dev/null 2>&1 || {
