@@ -1,215 +1,218 @@
 ---
 name: zkorean
-description: "AI가 쓴 티 나는 한글 글을 의미는 그대로 두고 문체만 자연스럽게 되돌린다. 번역투, 영어 인용 과다, 기계 병렬 구조, AI 특유 관용구, 종결 리듬 균일화를 탐지·수정. Triggered by: zkorean, 한글 자연스럽게, AI투, AI 티, 번역투, 번역투 제거, 윤문, 한글 윤문, humanize korean, naturalize korean, debot korean."
+version: "1.5.0"
+description: AI(ChatGPT·Claude·Gemini 등)가 쓴 한글 텍스트를 "사람이 쓴 글처럼" 윤문해주는 오케스트레이터 스킬. 번역투·영어 인용 과다·기계적 병렬·관용구·피동태 남용·접속사 남발·리듬 균일성·이모지/불릿 과다 등 10대 카테고리 40+ AI 티 패턴을 탐지·분류해 내용은 한 글자도 건드리지 않고 문체·리듬·표현만 자연스러운 한국어로 재작성한다. 트리거 — "zkorean", "AI 티 없애줘", "AI 같은 글 자연스럽게", "GPT/ChatGPT 문체", "AI 번역투 고쳐", "사람이 쓴 것처럼 윤문", "AI 윤문", "ChatGPT 티 제거", "한글 AI 탐지·윤문", "AI 글 사람처럼", "번역투 제거", "영어 인용 많은 글 윤문", "AI 글 티 안 나게", "휴머나이저", "humanize Korean", "naturalize Korean". 후속 작업 — "특정 카테고리만 다시", "윤문 강도 조정", "장르 바꿔서", "이 문단만", "2차 윤문" 도 모두 이 스킬. 단순 맞춤법·오탈자 교정은 직접 처리, 번역은 번역 스킬, 내용 추가·삭제를 동반한 재작성은 별도 집필 스킬.
 ---
 
-# zkorean — Humanize Korean
+# zkorean — AI 한글 티 제거 오케스트레이터 (v1.5)
 
-AI가 쓴 한글 글의 **AI 티(translationese / post-editese)** 만 제거한다. 내용·수치·고유명사·직접 인용은 손대지 않는다.
+> **출처:** 원본은 [`epoko77-ai/im-not-ai`](https://github.com/epoko77-ai/im-not-ai) v2.0 (MIT License). 본 스킬은 이름과 트리거만 `zkorean`으로 리브랜딩한 포팅이며, 원본 라이선스 전문은 `LICENSE.upstream`에 보존.
 
-근거: 한국 번역학계 8유형 + post-editese metric (simplification / normalisation / interference) 결합. (참조: `im-not-ai` v2.0)
+> **v1.5 변경 고지 (2026-04-26) — v1.1 베이스라인 + Monolith Fast Path**
+> v1.2(voice profile)·v1.3(candidate pool)·v1.4(역할별 모델 분산)는 모두 핫패스 비용을 잡지 못해 5,000자 입력에 25분이 걸렸습니다. v1.5는 **v1.1 단순 구조로 롤백한 뒤 단일 호출 monolith 에이전트만 추가**한 설계입니다.
+>
+> - **Fast 모드(디폴트)** — `humanize-monolith` 에이전트가 한 콜에서 탐지·윤문·자체검증 일괄 처리. 도구 호출 4~5회. 5,000자 이하 wall-clock 2~3분 목표.
+> - **Strict 모드(`--strict`)** — v1.1 5인 파이프라인 그대로(detector·rewriter·auditor·reviewer + taxonomist 분류 자산 유지). 정밀 검증·장문(8,000자+) 처리·etc.
+> - **삭제됨**: voice profile·candidate pool·promotion-checklist·sample-collection·권한 위계 §1~§6.
+> - **유지됨**: 분류 체계 본진(C-9·C-10·D-7·H-3·I-3·I-4 등 v1.2~v1.3.1 신규 패턴)·rewriting-playbook·5인 에이전트 정의(strict 모드 백본).
 
-## When to use
+## Phase 0: 컨텍스트 확인 및 모드 결정
 
-- 유저가 "이 글 AI 같다 / 자연스럽게 다듬어줘 / 번역투 빼줘" 라고 요청
-- AI가 생성한 한글 초안을 발행 전에 윤문
-- 영→한 번역물의 어색함 제거
-- 본인이 막 만든 한글 산출물(릴리즈 노트, 슬랙 메시지, 문서)이 AI 티 나는지 자가 점검
+작업 시작 시 가장 먼저 다음 한 줄을 사용자에게 출력한다.
 
-## When NOT to use
-
-- 코드·로그·터미널 출력 — 손대지 않는다
-- 수치·법조문·학술 용어·인용 — Do-NOT 리스트 (아래)
-- 글의 사실관계가 틀렸을 때 — 그건 윤문이 아니라 사실 수정. 별도 처리.
-- 한글이 아닌 언어의 글
-
-## 4 철칙 (Hard Rules)
-
-1. **의미 불변** — 사실·수치·고유명사·직접 인용·법조문은 한 글자도 안 바꾼다.
-2. **근거 기반** — 아래 카테고리에 매칭되는 부분만 수술적으로 수정. 매칭 안 되면 그대로 둔다.
-3. **장르 유지** — 원문이 격식체면 격식체로, 반말이면 반말로. 어조·청자·매체를 바꾸지 않는다.
-4. **과윤문 금지** — 변경률 30% 초과 시 경고, 50% 초과 시 중단하고 유저에게 확인.
-
-## Do-NOT 리스트 (절대 수정 금지)
-
-- 숫자·단위·날짜 (예: `3.4%`, `2025-11-08`, `512MB`)
-- 고유명사·인명·제품명·조직명
-- 큰따옴표 안의 직접 인용
-- 법령·규정 조문, API 시그니처, 코드 식별자
-- 학술 개념어 (예: "post-editese", "사역 동사")
-
-## 탐지 카테고리 (10대)
-
-심각도: **S1 결정적** (한 번만 나와도 AI 확신 → 무조건 제거) / **S2 강함** (1~2회 허용, 3회+ 반복 시 제거) / **S3 약함** (다른 패턴과 중첩 시만 문제).
-
-### A. 번역투 (translationese)
-
-영어 구문이 한국어 위에 그대로 얹힌 형태.
-
-| 패턴 | bad | good |
-|---|---|---|
-| `~를 통해` 남발 | "API를 통해 데이터를 가져온다" | "API로 데이터를 가져온다" |
-| `~에 있어서` | "성능에 있어서 차이가 크다" | "성능 차이가 크다" |
-| 피동태 강박 | "처리되어진다" / "수행되어진다" | "처리된다" / "수행한다" |
-| `그/그녀` 강박 사용 | "그는 함수를 호출한다" | "함수를 호출한다" (주어 생략) |
-| 관계대명사절 좌향 수식 | "내가 어제 만든, 그리고 아직 테스트하지 않은 함수" | "내가 어제 만든 함수 — 아직 테스트 안 했다" (분리) |
-| 이중 조사 | "에서의", "로의", "에로" | "에서", "로", "에" |
-| light verb 직역 | "결정을 내린다" | "결정한다" |
-| 사역·인지 동사 분리 | "그것이 나로 하여금 생각하게 만든다" | "그래서 생각하게 된다" |
-
-심각도: 대부분 **S2**, `~되어진다` 같은 이중 피동은 **S1**.
-
-### B. 영어 인용 과다
-
-| bad | good |
-|---|---|
-| "이 패턴(pattern)은 자주(frequently) 발생한다" | "이 패턴은 자주 발생한다" |
-| "병합(Merge) 전에 검토(Review)하라" | "병합 전에 검토해라" |
-
-규칙: **고유명사·전문용어·최초 등장 약어**만 영어 병기 허용. 일반 단어 영어 병기는 제거.
-
-### C. 구조적 AI 패턴
-
-- "첫째, ... 둘째, ... 셋째, ..." 강박적 나열 → 자연어로 풀거나 진짜 필요한 곳만 번호.
-- 모든 문단에 불릿 → 산문으로 통합 가능한 부분은 통합.
-- 연결어미 뒤 무조건 쉼표 ("했고, 그리고,") → 한국어 리듬에 맞춰 제거.
-
-심각도 **S2**.
-
-### D. AI 특유 관용구 (S1 — 한 번만 나와도 제거)
-
-`결론적으로`, `시사하는 바가 크다`, `혁신적인`, `획기적인`, `~라 할 수 있다`, `주목할 만하다`, `중요한 의미를 지닌다`, `~에 다름 아니다`, `~임을 알 수 있다`.
-
-→ 직설로 바꾸거나 통째로 삭제.
-
-예: "이는 중요한 의미를 지닌다" → 삭제하거나 "이게 핵심이다".
-
-### E. 리듬 균일성
-
-- 모든 문장이 비슷한 길이 → 짧은 문장과 긴 문장을 섞는다.
-- 모든 문장이 `~다.`로 끝남 → 일부를 명사형 종결, 의문, 감탄으로 변주.
-- 청자 경어법 일관성 손실 (한 문단 안에서 `~합니다` ↔ `~한다` 혼재) → 하나로 통일.
-
-심각도 **S2**.
-
-### F. 수식·중복
-
-- `매우`, `정말`, `아주`, `굉장히` 남발 → 대부분 삭제. 의미 안 바뀐다.
-- 동의어 이중 수식 ("빠르고 신속하게") → 하나만.
-
-심각도 **S2**.
-
-### G. Hedging 남용
-
-`~할 수 있을 것으로 보인다`, `~인 것으로 사료된다`, `~라고 판단된다` 다중 완곡.
-
-→ 직설로. "보인다" / "판단된다" 한 겹만 허용.
-
-심각도 **S2** (다중이면 **S1**).
-
-### H. 접속사 남발
-
-문두 `또한`, `따라서`, `즉`, `그러므로` 연속 등장.
-
-→ 첫 문단/단락 전환점에만. 같은 단락 안에서 두 번 이상 나오면 제거.
-
-심각도 **S2**.
-
-### I. 형식명사 과다
-
-`것이다`, `점`, `수`, `바` 남발.
-
-| bad | good |
-|---|---|
-| "이것이 핵심인 것이다" | "이게 핵심이다" |
-| "주목해야 할 점은" | "주목할 부분은" / 그냥 본론 |
-| "~할 수 있는 부분이다" | "~할 수 있다" |
-
-심각도 **S2**.
-
-### J. 시각 장식 남용
-
-과도한 **볼드**, "스마트 따옴표", em-dash `—` 연발, 모든 핵심어 볼드 처리.
-
-→ 진짜 강조 1~2 개만 남기고 평문화.
-
-심각도 **S3** (다른 패턴과 중첩 시 문제).
-
-## Process
-
-### 1. 탐지
-
-원문을 위 10 카테고리로 스캔. 각 매칭에 대해:
-- 인용 위치 (문장 또는 줄)
-- 카테고리 ID (A~J + 세부 패턴)
-- 심각도 (S1/S2/S3)
-
-### 2. 윤문
-
-매칭된 부분만 수정. 매칭 안 된 부분은 **건드리지 않는다**.
-
-### 3. 자가 검증
-
-- 변경률 계산: 변경 문자수 / 원문 문자수.
-  - 30% 초과: 경고하고 진행 여부 묻기.
-  - 50% 초과: 중단. "과윤문 위험. 원문이 AI투 외에 다른 문제도 있는 것 같다" 보고.
-- Do-NOT 리스트 위반 체크 (수치/고유명사/인용 변경 여부).
-- S1 잔존 0건인지 재스캔.
-
-### 4. 품질 등급 자체 평가
-
-- **A**: S1 0건, S2 ≤ 2건, 개선 70%+
-- **B**: S1 0건, S2 ≤ 4건, 개선 50%+
-- **C**: S1 1~2건 잔존 또는 과윤문 신호 → 2차 윤문 권고
-- **D**: S1 3건+ 또는 심각한 과윤문 → 사람 검토 필요
-
-## Output 포맷
-
-```markdown
-## 윤문 결과
-
-{윤문본 본문}
-
----
-
-### 변경 요약
-- 변경률: {N}%
-- 등급: {A/B/C/D}
-
-### 적용한 수정 (카테고리별)
-- A.번역투: {n}건 — 예: "~를 통해" → "~로"
-- D.AI 관용구: {n}건 — "결론적으로" 삭제, "시사하는 바가 크다" 삭제
-- ...
-
-### 손대지 않은 부분 (Do-NOT 보존)
-- 수치 {n}개, 고유명사 {n}개, 직접 인용 {n}건
-
-### 잔존 위험 (있다면)
-- ...
+```
+zkorean v1.5 — {fast|strict} 모드 / run_id: {YYYY-MM-DD-NNN}
 ```
 
-윤문본은 **메인 답변 본문**, 변경 요약은 **부록**. 유저가 글만 빠르게 복사할 수 있게.
+### 모드 결정
+- 사용자가 `--strict`·"정밀 모드"·"5인 파이프라인" 명시 → **strict**
+- 입력 8,000자 초과 → **strict** (자동 승급 + 사용자에 1줄 고지)
+- 그 외 모두 → **fast (디폴트)**
 
-## Re-run 명령 (자연어로 추가 요청 받기)
+### run_id 결정
+- 모든 경로는 **cwd 기준**. 새 폴더 생성도 cwd 기준 `_workspace/{YYYY-MM-DD-NNN}/`에 만든다.
+- 기존 시퀀스 확인은 **`Glob` 도구**로 표지 파일을 매칭해 간접 조회.
+  올바른 사용법: `Glob(pattern="_workspace/YYYY-MM-DD-*/01_input.txt")` → 결과에서 폴더명 추출 후 NNN 최댓값 + 1.
+  주의: Glob은 디렉토리 자체는 매칭하지 못한다. 반드시 그 안의 표지 파일(`01_input.txt`)을 매칭할 것.
+  `Bash ls`는 OS·셸 환경에 따라 경로 해석이 달라지므로 사용 금지.
+- 당일 폴더가 없으면 NNN = 001. 있으면 마지막 NNN + 1.
+- 부분 재실행 신호("이 카테고리만 다시"·"2차 윤문")일 경우 기존 run_id 재사용 + strict 모드로 자동 승급.
 
-- "이 문단만 다시 윤문해줘" → 지정 문단만
-- "번역투만 더 손봐줘" → A 카테고리 강도↑
-- "윤문 강도 낮춰줘" → S1만 처리, S2 보존
-- "2차 윤문해줘" → C 등급일 때 다시 한 번
+## Fast 모드 (디폴트)
 
-## Anti-patterns
+### Phase 1: 입력 저장
+1. cwd 기준 `_workspace/{run_id}/` 생성
+2. 입력 텍스트를 `01_input.txt`에 저장
+3. 첫 300자로 장르 자동 추정 (사용자 명시 시 우선)
 
-- 의미를 바꾼다 → 4 철칙 1번 위반. 즉시 중단.
-- "더 멋지게" 만들겠다고 형용사를 추가한다 → 윤문이 아니라 작문. 금지.
-- AI 탐지기 우회가 목적이다 → 이 스킬의 목표 아님. 한글 글쓰기 품질 개선이 목표.
-- 카테고리 매칭 없는 문장도 "어쩐지" 바꾼다 → 근거 기반 위반.
-- 격식체를 반말로, 반말을 격식체로 바꾼다 → 장르 유지 위반.
+### Phase 2: Monolith 호출
+`humanize-monolith` 에이전트를 `Agent` 도구로 1회 호출.
 
-## Hard Checklist (출력 전 자가 점검)
+입력:
+```
+input_path: <abs path>/_workspace/{run_id}/01_input.txt
+quick_rules_path: <plugin path>/skills/zkorean/references/quick-rules.md
+genre_hint: 칼럼 | 리포트 | 블로그 | 공적 | null
+```
 
-- [ ] 수치·고유명사·직접 인용 0개 변경
-- [ ] 변경률 30% 이하 (또는 유저 승인 받음)
-- [ ] S1 잔존 0건
-- [ ] 원문의 어조·청자·매체 유지
-- [ ] 카테고리 매칭 없는 문장은 그대로 둠
-- [ ] 새로운 정보·해석·주장 추가 0건
+출력 (에이전트가 직접 작성):
+- `_workspace/{run_id}/final.md` — 윤문본
+- `_workspace/{run_id}/summary.md` — 메트릭·자체검증·하이라이트
+
+monolith는 단일 호출 안에서 다음을 모두 수행 (자세히는 에이전트 정의 참조):
+1. quick-rules 룰북 로드 → 메모리에서 패턴 탐지 + 윤문 + 자체검증 6항 점검
+2. 변경률 50% 초과 시 자동 롤백
+3. 자체검증 위반 시 1회 부분 재실행
+4. final.md + summary.md 작성
+
+### Phase 3: 결과 전달
+사용자에게 다음 4개를 반환:
+1. 한 줄 상태: `완료. 변경률 X% / 등급 Y / 자체검증 N/6 통과`
+2. 윤문본 본문 (마크다운 블록)
+3. summary.md의 핵심 표 (메트릭 + 카테고리 탐지 + 자체검증)
+4. 등급 B 이하면 "정밀 검증이 필요하면 `--strict`로 5인 파이프라인" 안내
+
+**디폴트 wall-clock 목표:** 5,000자 이하 2~3분, 8,000자 5~7분.
+
+## Strict 모드 (`--strict` 또는 자동 승급)
+
+v1.1 5인 파이프라인 그대로. 검증 분리·재윤문 루프가 의미 있을 때만 사용.
+
+### Phase A: 탐지
+`ai-tell-detector` 호출 → `02_detection.json`
+
+### Phase B: 윤문 (최대 3회 루프)
+`korean-style-rewriter` 호출 → `03_rewrite.md` + `03_rewrite_diff.json`
+
+### Phase C: 병렬 검증 (에이전트 팀)
+`TeamCreate`로 `humanize-review-team` 구성:
+- `content-fidelity-auditor` → `04_fidelity_audit.json` (의미 동등성)
+- `naturalness-reviewer` → `05_naturalness_review.json` (잔존·과윤문)
+
+`TeamDelete` 후 종합 판정 매트릭스에 따라 분기:
+
+| fidelity | naturalness | 종합 | 후속 |
+|---|---|---|---|
+| full_pass | accept / accept_with_note | **최종 승인** | Phase D |
+| full_pass | rewrite_round_2 | **2차 윤문** | Phase B 재호출 (target finding) |
+| full_pass | rollback_and_rewrite | **롤백 후 재윤문** | 윤문가에 edit 롤백 지시 |
+| conditional_pass | - | **롤백된 edit만 재시도** | Phase B 재호출 |
+| fail | - | **전면 재작업** | Phase B 전면 재호출 |
+
+2차/3차 윤문 진입 시 `03_rewrite_v2.md`·`v3.md`로 버전 분리. **최대 3회 후 미해결이면 `hold_and_report`**로 사람 개입.
+
+### Phase D: 최종 출력
+1. `final.md`에 최종 윤문본 복사
+2. `summary.md` 생성 (fast 모드와 동일 포맷)
+3. 사용자에게 결과 + 등급 + 안내
+
+## 부분 재실행 / 후속 명령
+
+| 사용자 신호 | 처리 |
+|---|---|
+| "특정 카테고리만 다시" | strict 모드로 자동 전환, 해당 카테고리 finding만 Phase B 재실행 |
+| "이 문단만" | strict 모드, 해당 문단만 입력으로 새 run_id 생성 |
+| "2차 윤문"·"`/zkorean-redo`" | 기존 run_id의 `final.md`를 새 입력으로 strict Phase B 재실행 |
+| "윤문 강도 조정" | strict 모드, `min_severity` 옵션 변경 후 Phase A부터 재실행 |
+| "장르 바꿔서" | `genre_hint` 변경 후 Phase A부터 재실행 |
+
+## 옵션 (인자 끝에 자연어로)
+
+- `장르: 칼럼|리포트|블로그|공적` — 장르 명시 (생략 시 자동 추정)
+- `강도: 보수|기본|적극` — 윤문 강도 (기본값: 기본)
+- `최소심각도: S1|S2|S3` — 탐지 임계값 (기본값: S2)
+- `--strict` — 5인 파이프라인 강제 사용
+
+## 데이터 흐름 요약
+
+### Fast 모드 (디폴트)
+```
+01_input.txt
+    ↓ [humanize-monolith — 단일 호출]
+    ├ 메모리: quick-rules 로드 → 탐지 → 윤문 → 자체검증
+    └→ final.md + summary.md
+```
+
+### Strict 모드
+```
+01_input.txt
+    ↓ [ai-tell-detector]
+02_detection.json
+    ↓ [korean-style-rewriter]
+03_rewrite.md + 03_rewrite_diff.json
+    ↓ [병렬 팀]
+    ├→ [content-fidelity-auditor] → 04_fidelity_audit.json
+    └→ [naturalness-reviewer]      → 05_naturalness_review.json
+    ↓ [오케스트레이터 종합]
+    ├→ (재작업) Phase B로 복귀 (최대 3회)
+    └→ (승인) final.md + summary.md
+```
+
+## 정량 측정 (정적 체커)
+
+`references/metrics.py` (v1.6) + `references/metrics_v2.py` (v2.0) 는 표준 라이브러리만 사용하는 순수 Python 정적 체커다. 문체 메트릭과 post-editese 3축(simplification·normalisation·interference) + T1~T8 번역투 시그널을 정량화한다.
+
+직접 실행 (CLI):
+```bash
+python3 src/local/skills/zkorean/references/metrics_v2.py \
+    --input _workspace/{run_id}/01_input.txt \
+    --genre essay \
+    --output _workspace/{run_id}/00_metrics_v2.json
+```
+
+핵심 메트릭 (`metrics_v2.py`):
+- **simplification**: `lexical_diversity_ttr`, `lexical_density`, `ending_diversity`
+- **normalisation**: `normalisation_score`, `da_streak_rate`
+- **interference (T1~T8)**: `inanimate_subject_rate`, `by_passive_count`, `double_passive_count`, `pronoun_density`, `deul_overuse_rate`, `relative_clause_nesting`, `have_make_literal_count`, `double_particle_count`, `progressive_aspect_rate`
+- **composite**: `interference_index` (가중 합산)
+
+장르별 베이스라인은 `references/baseline.json`, `references/baseline_v2.json`에 있고, z-score로 위험 밴드(low/mid/high)를 분류한다.
+
+## 에이전트 호출 규칙
+
+**모델:** 모두 `model: opus` 통일 (v1.1 베이스라인). 모델 다운그레이드는 v1.4에서 시도했으나 도구 호출 chain이 진짜 병목이라 효과 미미했음.
+
+**에이전트 정의 위치:** Claude Code가 다음 우선순위로 자동 탐색.
+1. `<cwd>/.claude/agents/` (프로젝트 로컬)
+2. `~/.claude/agents/` (글로벌)
+3. soma-work omc 플러그인 디렉토리 `src/local/agents/` (포팅 위치)
+
+필요 에이전트 6종:
+- `humanize-monolith` (v1.5 신규, fast 전용)
+- `ai-tell-detector` · `korean-style-rewriter` · `content-fidelity-auditor` · `naturalness-reviewer` (strict 5인 중 4명)
+- `korean-ai-tell-taxonomist` (분류 체계 유지·확장 — 본 스킬 실행 중에는 호출 안 됨, 별도 명령으로만 트리거)
+
+## 테스트 시나리오
+
+### Fast 정상 흐름
+- 입력: ChatGPT가 생성한 AI 칼럼 초안 (2,000~5,000자, 번역투·결말 공식·hype 어휘 풍부)
+- 기대: monolith 1콜로 변경률 15~25%, 등급 A/B, wall-clock 2~3분, 자체검증 5~6/6
+
+### Strict 정밀 검증 흐름
+- 사용자 명시 `--strict` 또는 8,000자+ 입력
+- 5인 파이프라인 끝까지 실행, 변경률 18~22%, 검증팀 full_pass
+
+### 엣지 케이스 — 이미 사람이 쓴 글
+- monolith 자체 탐지에서 매치 거의 없음 → 변경률 5% 미만 + summary.md에 "윤문 불필요 가능성" 메모
+- 사용자가 `--strict`로 강제 검증 가능
+
+## 주의 사항
+
+- **의미 불변이 최상위 불문율.** monolith·strict 모두에서 위반 즉시 롤백.
+- **수치·고유명사·직접 인용은 탐지/윤문 대상 아님.** Do-NOT list 엄수.
+- **장르 이탈 금지.** 칼럼이 에세이로, 에세이가 문학으로 옮겨가지 않는다.
+- **register 보존.** 격식체 입력 → 격식체 출력. AI 티는 문법·수사이지 격식 자체가 아님.
+- **변경률 30% 초과 → 경고, 50% 초과 → 강제 중단.**
+- **자동 로드 금지.** 프로젝트 CLAUDE.md 등 다른 파일을 자동 파싱해 옵션을 추론하지 않는다.
+- **AI 탐지기 우회는 목표가 아니다.** 한글 글쓰기 품질 개선만.
+
+## 참고 자료
+
+- 슬림 룰북 (Fast 전용): [`references/quick-rules.md`](references/quick-rules.md) — S1·S2 핵심 패턴 + 자체검증 체크리스트
+- 분류 체계 본진 (Strict 전용): [`references/ai-tell-taxonomy.md`](references/ai-tell-taxonomy.md) — 10대분류 × 40+ 패턴 전수
+- 윤문 처방 (Strict 전용): [`references/rewriting-playbook.md`](references/rewriting-playbook.md) — 카테고리별 치환 레시피·장르별 허용 표
+- 학술 인용 본진: [`references/scholarship.md`](references/scholarship.md) — 8유형 × 분류 학술 anchor
+- 정적 체커: [`references/metrics.py`](references/metrics.py), [`references/metrics_v2.py`](references/metrics_v2.py) — 표준 라이브러리 only, post-editese 3축 + T1~T8
+- 베이스라인: [`references/baseline.json`](references/baseline.json), [`references/baseline_v2.json`](references/baseline_v2.json)
+- 웹 서비스 스펙 (옵션): [`references/web-service-spec.md`](references/web-service-spec.md)
+- 라이선스: [`LICENSE.upstream`](LICENSE.upstream) (MIT, im-not-ai 원본)
