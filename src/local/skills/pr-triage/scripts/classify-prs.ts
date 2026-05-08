@@ -26,12 +26,26 @@
  * Decision tree mirrors src/local/skills/pr-triage/SKILL.md §5 + §6.
  *
  * Usage:
- *   gh api graphql -f query='...' --paginate > prs.json
- *   gh run list --branch <H> --limit 1 --json status,conclusion,databaseId,createdAt -q '.[0]' > ci-<num>.json  (per PR, in parallel)
+ *   # 1. Fetch PR list (gh ≥ 2.40 for --slurp; pipe through `jq -s` on older gh).
+ *   gh api graphql --paginate --slurp -F endCursor=null -f query='...' > prs.json
+ *
+ *   # 2. Fan out CI lookups per PR (capped at 8 in parallel) into per-file JSON.
+ *   for n in <pr-numbers>; do
+ *     gh run list --branch "<head>" --limit 1 \
+ *       --json status,conclusion,databaseId,createdAt -q '.[0] // {}' > ci-$n.json &
+ *   done; wait
+ *
+ *   # 3. Fold per-PR files into one map keyed by PR-number string.
+ *   jq -n 'reduce inputs as $r ({};
+ *     . + ({(input_filename | capture("ci-(?<n>[0-9]+)\\.json").n): $r}))' \
+ *     ci-*.json > ci-by-num.json
+ *
+ *   # 4. Classify.
  *   npx tsx local/skills/pr-triage/scripts/classify-prs.ts \
  *     --prs prs.json [--ci ci-by-num.json] [--now 2026-05-08T06:00:00Z]
  *
  *   Output is JSON written to stdout.
+ *   The full pipeline lives in src/local/skills/pr-triage/SKILL.md §3-§5.
  *
  * Input shapes accepted (auto-detected):
  *   1) GraphQL: { data: { repository: { pullRequests: { nodes: [...] } } } }
@@ -182,7 +196,9 @@ const READY_MAP = {
 /**
  * Display labels for report rendering. The SKILL.md report format references these
  * names in section headers (🔴 Rotten, ⏳ Awaiting Review, etc.). Keep this map in
- * sync with SKILL.md §"Emit report".
+ * sync with SKILL.md §"Emit report". Exported for the threshold-drift snapshot test
+ * and for any future report-rendering helper that imports this module rather than
+ * shelling out to the CLI.
  */
 export const CATEGORY_LABELS: Record<Category, string> = {
   'approved-mergeable': 'Approved & Mergeable',
@@ -220,10 +236,14 @@ const REASON_BEARING: ReadonlySet<Category> = new Set<Category>([
   'approved-rotten',
   'awaiting-review-stale',
   'awaiting-review-rotten',
+  // changes-requested-active is actionable too: someone needs to address feedback.
+  'changes-requested-active',
   'changes-requested-stale',
   'changes-requested-rotten',
   'draft-stale',
   'draft-rotten',
+  // failing-ci-active is actionable: red CI even if young — surface the run id.
+  'failing-ci-active',
   'failing-ci-stale',
   'failing-ci-rotten',
   'behind-base',
@@ -326,6 +346,13 @@ function lastActivity(pr: RawPR): { iso: IsoString; ms: number } {
   // than NaN. Do NOT fall back to updatedAt (the very mutation we want to ignore).
   if (ts.length === 0) pushIso(pr.createdAt);
 
+  if (ts.length === 0) {
+    // Pathological: no parseable timestamps at all (corrupted input). Use
+    // epoch=0 so ageDays goes very high — surfaces the broken PR in the
+    // report without crashing. main() collects a warning for these.
+    return { iso: new Date(0).toISOString(), ms: 0 };
+  }
+
   const ms = Math.max(...ts);
   return { iso: new Date(ms).toISOString(), ms };
 }
@@ -359,11 +386,29 @@ function ciOutcome(ci?: CiStatus | null): CiOutcome {
 
 function pickTier(pr: RawPR, ci: CiOutcome): Tier {
   if (ci === 'red') return 'failing-CI';
-  if (pr.reviewDecision === 'APPROVED' && pr.mergeable === 'MERGEABLE' && (ci === 'green' || ci === 'no-run')) {
+  // GitHub returns mergeable=UNKNOWN for ~5–30s after a push while the merge
+  // engine recomputes — completely normal for a freshly-approved PR. Treating
+  // UNKNOWN as approved is risky (an unseen conflict could be hiding); falling
+  // through to ready/draft applies the wrong (looser) thresholds. Compromise:
+  // an APPROVED+UNKNOWN PR is treated as `approved` for tier selection so it
+  // gets the tighter thresholds, but the caller stamps it with a
+  // `pending-mergeability` reasonHint and skips destructive label suggestions.
+  // The CONFLICTING case never reaches `approved` — it'll be caught by the
+  // single-condition "conflicted" override.
+  if (
+    pr.reviewDecision === 'APPROVED' &&
+    (pr.mergeable === 'MERGEABLE' || pr.mergeable === 'UNKNOWN' || pr.mergeable === undefined) &&
+    (ci === 'green' || ci === 'no-run')
+  ) {
     return 'approved';
   }
   if (pr.isDraft) return 'draft';
   return 'ready';
+}
+
+/** A freshly-approved PR may have mergeable=UNKNOWN for tens of seconds; be conservative. */
+function isPendingMergeability(pr: RawPR): boolean {
+  return pr.reviewDecision === 'APPROVED' && (pr.mergeable === 'UNKNOWN' || pr.mergeable === undefined);
 }
 
 // ---------------------------------------------------------------------------
@@ -474,6 +519,16 @@ function classifyOne(pr: RawPR, now: number, ci: CiStatus | undefined): Classifi
     result.recommendedLabels = result.recommendedLabels.filter((l) => l !== 'stale' && l !== 'rotten');
   }
 
+  // 4b. Pending-mergeability override: APPROVED PR with mergeable=UNKNOWN
+  //     usually means the merge engine is still computing (post-push transient).
+  //     Strip stale/rotten label suggestions for this run — re-evaluation on
+  //     the next run will see MERGEABLE/CONFLICTING and classify accordingly.
+  //     Reason hint surfaces the situation in the report.
+  if (isPendingMergeability(pr)) {
+    result.recommendedLabels = result.recommendedLabels.filter((l) => l !== 'stale' && l !== 'rotten');
+    result.reasonHints.push('mergeable=UNKNOWN — merge engine still computing; re-evaluate next run');
+  }
+
   // 5. Idempotency: drop labels already on the PR.
   result.recommendedLabels = result.recommendedLabels.filter((l) => !labels.includes(l));
 
@@ -495,44 +550,93 @@ function classifyOne(pr: RawPR, now: number, ci: CiStatus | undefined): Classifi
 }
 
 /**
+/** True when the parent is itself stuck (stale, rotten, or already flipped to stack-stuck). */
+function isStuckParent(category: Category): boolean {
+  return category === 'stack-stuck' || category.endsWith('-rotten') || category.endsWith('-stale');
+}
+
+/**
  * Stack-PR escalation, second pass. Per SKILL.md §6:
  *  - parent healthy/active → child suppressed to "stack-dependent" (no labels)
- *  - parent stale/rotten → child surfaces in "stack-stuck" with parent linkage
+ *  - parent stale/rotten/stack-stuck → child surfaces in "stack-stuck" with parent linkage
  *    AND keeps its own labels (parent stuckness must NOT shield children
  *    indefinitely — that's how MVC phase 1-7 chains hide today).
  *  - parent merged/closed → no longer dependent (re-classify as solo, but we
  *    only see open PRs so this branch is effectively unreachable from the
  *    input data; default behavior is fine).
+ *
+ * Processes parents before children via topological order on the
+ * baseRefName→headRefName edges, so a grandchild C of a stack-stuck B (whose
+ * parent A is stale) inherits the stuckness in one pass. Without parent-first
+ * ordering, C would read B before B is flipped to stack-stuck and silently
+ * fall to stack-dependent — exactly the failure mode this function exists to
+ * prevent. Cycles (which GitHub doesn't allow but we defend anyway) terminate
+ * after one fixed-point retry.
  */
 function applyStackEscalation(classified: Map<number, ClassifiedPR>, headToNumber: Map<string, number>): void {
+  // Build parent number → list of immediate child numbers.
+  const childrenOf = new Map<number, number[]>();
+  const rootless: number[] = [];
   for (const pr of classified.values()) {
-    if (pr.baseRefName === 'main' || pr.baseRefName === 'master') continue;
-    const parentNum = headToNumber.get(pr.baseRefName);
-    if (parentNum === undefined) continue;
-    const parent = classified.get(parentNum);
-    if (!parent) continue;
-
-    const parentRotten = parent.category.endsWith('-rotten');
-    const parentStale = parent.category.endsWith('-stale');
-
-    pr.parent = {
-      number: parent.number,
-      headRefName: parent.headRefName,
-      category: parent.category,
-    };
-
-    if (parentRotten || parentStale) {
-      // Surface as stack-stuck, keep child labels.
-      const original = pr.category;
-      pr.category = 'stack-stuck';
-      pr.reasonHints.push(`parent #${parent.number} is ${parentRotten ? 'rotten' : 'stale'}; was ${original}`);
-    } else if (parent.category !== 'exempt') {
-      // Parent healthy/active — suppress child stale labeling.
-      pr.category = 'stack-dependent';
-      pr.recommendedLabels = pr.recommendedLabels.filter((l) => l !== 'stale' && l !== 'rotten');
-      // Note: needs-rebase / needs-ci-fix are still valid for stack children.
-      pr.reasonHints.push(`stack-dep on healthy parent #${parent.number}`);
+    if (pr.baseRefName === 'main' || pr.baseRefName === 'master') {
+      rootless.push(pr.number);
+      continue;
     }
+    const parentNum = headToNumber.get(pr.baseRefName);
+    if (parentNum === undefined || !classified.has(parentNum)) {
+      // Base is some other branch we don't see as a PR (e.g. release/* gone) —
+      // treat as rootless for stack purposes.
+      rootless.push(pr.number);
+      continue;
+    }
+    const arr = childrenOf.get(parentNum);
+    if (arr) arr.push(pr.number);
+    else childrenOf.set(parentNum, [pr.number]);
+  }
+
+  // BFS from rootless PRs so each parent is processed before its children.
+  // Visited guards against accidental cycles in malformed input.
+  const visited = new Set<number>();
+  const queue: number[] = [...rootless];
+  while (queue.length > 0) {
+    const num = queue.shift();
+    if (num === undefined || visited.has(num)) continue;
+    visited.add(num);
+
+    const pr = classified.get(num);
+    if (!pr) continue;
+
+    // For non-root PRs, look at parent (already processed).
+    if (pr.baseRefName !== 'main' && pr.baseRefName !== 'master') {
+      const parentNum = headToNumber.get(pr.baseRefName);
+      const parent = parentNum !== undefined ? classified.get(parentNum) : undefined;
+      if (parent) {
+        pr.parent = { number: parent.number, headRefName: parent.headRefName, category: parent.category };
+
+        if (isStuckParent(parent.category)) {
+          // Surface as stack-stuck, keep child labels.
+          const original = pr.category;
+          pr.category = 'stack-stuck';
+          const why =
+            parent.category === 'stack-stuck'
+              ? `parent #${parent.number} is itself stack-stuck`
+              : parent.category.endsWith('-rotten')
+                ? `parent #${parent.number} is rotten`
+                : `parent #${parent.number} is stale`;
+          pr.reasonHints.push(`${why}; was ${original}`);
+        } else if (parent.category !== 'exempt') {
+          // Parent healthy/active — suppress child stale labeling.
+          pr.category = 'stack-dependent';
+          pr.recommendedLabels = pr.recommendedLabels.filter((l) => l !== 'stale' && l !== 'rotten');
+          // Note: needs-rebase / needs-ci-fix are still valid for stack children.
+          pr.reasonHints.push(`stack-dep on healthy parent #${parent.number}`);
+        }
+      }
+    }
+
+    // Enqueue children for parent-first ordering.
+    const kids = childrenOf.get(num);
+    if (kids) queue.push(...kids);
   }
 }
 
@@ -552,8 +656,37 @@ function main(): void {
     );
   }
 
+  // Build head→PR map; warn (do NOT silently last-write-wins) on duplicates.
+  // GitHub allows the same head to back multiple open PRs targeting different
+  // bases (cherry-pick PRs, cross-fork PRs). When that happens, stack-PR
+  // detection becomes ambiguous, so we drop those entries from the map and
+  // warn — children of an ambiguous head simply won't be detected as
+  // stack-dependent (safer than picking the wrong parent).
   const headToNumber = new Map<string, number>();
-  for (const pr of rawPRs) headToNumber.set(pr.headRefName, pr.number);
+  const ambiguousHeads = new Set<string>();
+  for (const pr of rawPRs) {
+    if (headToNumber.has(pr.headRefName)) {
+      ambiguousHeads.add(pr.headRefName);
+    } else {
+      headToNumber.set(pr.headRefName, pr.number);
+    }
+  }
+  for (const head of ambiguousHeads) {
+    headToNumber.delete(head);
+    warnings.push(`Head ref "${head}" backs multiple open PRs; stack detection skipped for that ref.`);
+  }
+  // Track PRs that had no parsable timestamps so the report can surface them.
+  for (const pr of rawPRs) {
+    const hasAny =
+      (pr.commits?.nodes?.length ?? 0) +
+        (pr.comments?.nodes?.length ?? 0) +
+        (pr.reviews?.nodes?.length ?? 0) +
+        (pr.latestReviews?.nodes?.length ?? 0) >
+      0;
+    if (!hasAny && !pr.createdAt) {
+      warnings.push(`PR #${pr.number} has no parsable activity timestamp; classified at age ∞.`);
+    }
+  }
 
   const classified = new Map<number, ClassifiedPR>();
   for (const pr of rawPRs) {
