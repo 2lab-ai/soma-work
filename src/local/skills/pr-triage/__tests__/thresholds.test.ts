@@ -83,12 +83,23 @@ const TIER_NAME_MAP: Record<string, string> = {
   'failing-CI': 'failing-CI',
 };
 
+/**
+ * The regex parsers above are fragile by construction (markdown table format
+ * is not a stable contract). To defend against false confidence — a regex
+ * change that silently stops matching while the underlying drift goes
+ * uncaught — assert a sentinel that BOTH parsers find at least 4 tiers and
+ * that the script's regex returns matching numeric values for every key
+ * also present in the markdown.
+ */
 describe('pr-triage threshold drift guard', () => {
   it('SKILL.md "Tier policy" table matches THRESHOLDS in classify-prs.ts', () => {
     const md = parseSkillMdTable();
     const ts = parseScriptThresholds();
 
-    expect(md.length).toBeGreaterThan(0);
+    expect(md.length, 'SKILL.md table must have ≥1 row (regex fragility check)').toBeGreaterThanOrEqual(4);
+    expect(ts.length, 'classify-prs.ts THRESHOLDS must have ≥1 entry (regex fragility check)').toBeGreaterThanOrEqual(
+      4,
+    );
     expect(ts.length).toBe(md.length);
 
     const tsByKey = new Map(ts.map((r) => [r.tier, r]));
@@ -113,5 +124,14 @@ describe('pr-triage threshold drift guard', () => {
     for (const row of ts) {
       expect(row.stale, `tier ${row.tier}`).toBeLessThan(row.rotten);
     }
+  });
+
+  it('SKILL.md "Tier policy" header exists in expected form', () => {
+    // Regex-fragility tripwire: if the section header is renamed or removed,
+    // the parser returns 0 rows. The previous test catches that, but this
+    // one fails fast with a readable error pointing at the actual change.
+    const md = fs.readFileSync(SKILL_MD, 'utf8');
+    expect(md, 'SKILL.md must contain a "## Tier policy" h2 header').toMatch(/^##\s+Tier policy\b/m);
+    expect(md, 'SKILL.md table must use "Stale | Rotten" column headers').toMatch(/\|\s*Stale\s*\|\s*Rotten\s*\|/);
   });
 });
