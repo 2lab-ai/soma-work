@@ -88,7 +88,10 @@ interface RawPR {
   reviewDecision?: 'APPROVED' | 'CHANGES_REQUESTED' | 'REVIEW_REQUIRED' | null;
   author?: { login?: string } | { login: string } | null;
   createdAt: IsoString;
-  updatedAt: IsoString;
+  // Deliberately NOT modeling pr.updatedAt: it mutates on label/milestone/
+  // reviewer changes, which would let this skill self-reset its own stale
+  // clock the moment it labels a PR. lastActivity() pulls from commits,
+  // comments, and reviews instead.
   labels?: { nodes: { name: string }[] } | { name: string }[]; // graphql vs `gh pr list --json labels`
   commits?: { nodes: { commit: { committedDate: IsoString } }[] };
   comments?: { nodes: { createdAt: IsoString }[] };
@@ -141,6 +144,8 @@ interface ClassifyOutput {
 // Thresholds (must match SKILL.md §"Tier policy")
 // ---------------------------------------------------------------------------
 
+const MS_PER_DAY = 86_400_000;
+
 const THRESHOLDS = {
   draft: { stale: 7, rotten: 14 },
   ready: { stale: 14, rotten: 30 },
@@ -149,6 +154,83 @@ const THRESHOLDS = {
 } as const;
 
 const NEEDS_CI_FIX_AGE_D = 3;
+
+/**
+ * Tier → (rotten | stale | active) → Category.
+ * Replaces template-literal `as Category` casts: lookups are type-checked end-to-end.
+ * `ready` tier resolves via READY_MAP because reviewDecision splits it into two sub-tiers.
+ */
+const TIER_CATS = {
+  'failing-CI': { rotten: 'failing-ci-rotten', stale: 'failing-ci-stale', active: 'failing-ci-active' },
+  approved: { rotten: 'approved-rotten', stale: 'approved-stale', active: 'approved-mergeable' },
+  draft: { rotten: 'draft-rotten', stale: 'draft-stale', active: 'draft-active' },
+} as const satisfies Record<Exclude<Tier, 'ready'>, Record<'rotten' | 'stale' | 'active', Category>>;
+
+const READY_MAP = {
+  'awaiting-review': {
+    rotten: 'awaiting-review-rotten',
+    stale: 'awaiting-review-stale',
+    active: 'awaiting-review-active',
+  },
+  'changes-requested': {
+    rotten: 'changes-requested-rotten',
+    stale: 'changes-requested-stale',
+    active: 'changes-requested-active',
+  },
+} as const satisfies Record<string, Record<'rotten' | 'stale' | 'active', Category>>;
+
+/**
+ * Display labels for report rendering. The SKILL.md report format references these
+ * names in section headers (🔴 Rotten, ⏳ Awaiting Review, etc.). Keep this map in
+ * sync with SKILL.md §"Emit report".
+ */
+export const CATEGORY_LABELS: Record<Category, string> = {
+  'approved-mergeable': 'Approved & Mergeable',
+  'approved-stale': 'Approved Stale',
+  'approved-rotten': 'Approved Rotten',
+  'awaiting-review-active': 'Awaiting Review',
+  'awaiting-review-stale': 'Awaiting Review Stale',
+  'awaiting-review-rotten': 'Awaiting Review Rotten',
+  'changes-requested-active': 'Changes Requested',
+  'changes-requested-stale': 'Changes Requested Stale',
+  'changes-requested-rotten': 'Changes Requested Rotten',
+  'draft-active': 'Draft',
+  'draft-stale': 'Draft Stale',
+  'draft-rotten': 'Draft Rotten',
+  'failing-ci-active': 'Failing CI',
+  'failing-ci-stale': 'Failing CI Stale',
+  'failing-ci-rotten': 'Failing CI Rotten',
+  'behind-base': 'Behind Base',
+  conflicted: 'Conflicted',
+  'no-ci-yet': 'No CI yet',
+  'stack-dependent': 'Stack Dependent',
+  'stack-stuck': 'Stack-Stuck',
+  exempt: 'Exempt',
+  healthy: 'Healthy',
+};
+
+/**
+ * Categories whose report rows have a meaningful "Reason" cell. For all other
+ * categories (healthy, plain *-active, exempt) the reasonHints array is dropped
+ * before serialization to avoid bloating LLM input with text the report won't
+ * render anyway. (~30KB saved on a 200-PR repo.)
+ */
+const REASON_BEARING: ReadonlySet<Category> = new Set<Category>([
+  'approved-stale',
+  'approved-rotten',
+  'awaiting-review-stale',
+  'awaiting-review-rotten',
+  'changes-requested-stale',
+  'changes-requested-rotten',
+  'draft-stale',
+  'draft-rotten',
+  'failing-ci-stale',
+  'failing-ci-rotten',
+  'behind-base',
+  'conflicted',
+  'no-ci-yet',
+  'stack-stuck',
+]);
 
 // ---------------------------------------------------------------------------
 // CLI
@@ -226,7 +308,7 @@ function readAuthor(pr: RawPR): string {
 // Activity timestamp (NOT pr.updatedAt)
 // ---------------------------------------------------------------------------
 
-function lastActivity(pr: RawPR): IsoString {
+function lastActivity(pr: RawPR): { iso: IsoString; ms: number } {
   const ts: number[] = [];
 
   const pushIso = (s?: IsoString | null): void => {
@@ -235,11 +317,8 @@ function lastActivity(pr: RawPR): IsoString {
     if (!Number.isNaN(n)) ts.push(n);
   };
 
-  // Head commit
   for (const n of pr.commits?.nodes ?? []) pushIso(n.commit?.committedDate);
-  // Last issue/PR conversation comment
   for (const n of pr.comments?.nodes ?? []) pushIso(n.createdAt);
-  // Last review submission
   for (const n of pr.reviews?.nodes ?? []) pushIso(n.submittedAt);
   for (const n of pr.latestReviews?.nodes ?? []) pushIso(n.submittedAt);
 
@@ -247,7 +326,8 @@ function lastActivity(pr: RawPR): IsoString {
   // than NaN. Do NOT fall back to updatedAt (the very mutation we want to ignore).
   if (ts.length === 0) pushIso(pr.createdAt);
 
-  return new Date(Math.max(...ts)).toISOString();
+  const ms = Math.max(...ts);
+  return { iso: new Date(ms).toISOString(), ms };
 }
 
 // ---------------------------------------------------------------------------
@@ -290,34 +370,40 @@ function pickTier(pr: RawPR, ci: CiOutcome): Tier {
 // Classification
 // ---------------------------------------------------------------------------
 
-interface Ctx {
-  now: number;
-  // PR head -> PR number, used for stack-PR detection
-  headToNumber: Map<string, number>;
-  // PR number -> classification, populated in two passes
-  classified: Map<number, ClassifiedPR>;
+/** Tier age vs thresholds → which sub-bucket. Pure, single source. */
+function pickAgeBucket(tier: Tier, ageDays: number): 'rotten' | 'stale' | 'active' {
+  const t = THRESHOLDS[tier];
+  if (ageDays >= t.rotten) return 'rotten';
+  if (ageDays >= t.stale) return 'stale';
+  return 'active';
 }
 
-function classifyOne(pr: RawPR, ctx: Ctx, ci: CiStatus | undefined): ClassifiedPR {
+function pickTierCategory(pr: RawPR, tier: Tier, bucket: 'rotten' | 'stale' | 'active'): Category {
+  if (tier === 'ready') {
+    const sub = pr.reviewDecision === 'CHANGES_REQUESTED' ? 'changes-requested' : 'awaiting-review';
+    return READY_MAP[sub][bucket];
+  }
+  return TIER_CATS[tier][bucket];
+}
+
+function classifyOne(pr: RawPR, now: number, ci: CiStatus | undefined): ClassifiedPR {
   const labels = readLabels(pr);
   const isExempt = labels.includes('keep-open') || labels.includes('pinned');
   const lastAt = lastActivity(pr);
-  const ageDays = Math.floor((ctx.now - Date.parse(lastAt)) / 86_400_000);
+  const ageDays = Math.floor((now - lastAt.ms) / MS_PER_DAY);
   const outcome = ciOutcome(ci);
   const tier = pickTier(pr, outcome);
-  const reasons: string[] = [];
 
-  reasons.push(`age ${ageDays}d in ${tier} tier`);
+  const reasons: string[] = [`age ${ageDays}d in ${tier} tier`];
   if (outcome === 'red') reasons.push(`CI red (run ${ci?.databaseId ?? '?'})`);
-  if (outcome === 'green') reasons.push('CI green');
-  if (outcome === 'no-run') reasons.push('no CI run yet');
-  if (outcome === 'in-flight') reasons.push('CI in-flight');
+  else if (outcome === 'green') reasons.push('CI green');
+  else if (outcome === 'no-run') reasons.push('no CI run yet');
+  else if (outcome === 'in-flight') reasons.push('CI in-flight');
   if (pr.mergeable === 'CONFLICTING') reasons.push('merge conflict');
   if (pr.mergeStateStatus === 'BEHIND') reasons.push('base branch advanced');
   if (pr.reviewDecision === 'APPROVED') reasons.push('approved');
-  if (pr.reviewDecision === 'CHANGES_REQUESTED') reasons.push('changes requested');
-  if (pr.reviewDecision === 'REVIEW_REQUIRED' || pr.reviewDecision === null || pr.reviewDecision === undefined)
-    reasons.push('no reviewer feedback');
+  else if (pr.reviewDecision === 'CHANGES_REQUESTED') reasons.push('changes requested');
+  else reasons.push('no reviewer feedback');
 
   const result: ClassifiedPR = {
     number: pr.number,
@@ -330,7 +416,7 @@ function classifyOne(pr: RawPR, ctx: Ctx, ci: CiStatus | undefined): ClassifiedP
     mergeStateStatus: pr.mergeStateStatus ?? 'UNKNOWN',
     reviewDecision: pr.reviewDecision ?? null,
     labels,
-    lastActivityAt: lastAt,
+    lastActivityAt: lastAt.iso,
     ageDays,
     ciOutcome: outcome,
     ciDetail: {
@@ -352,81 +438,43 @@ function classifyOne(pr: RawPR, ctx: Ctx, ci: CiStatus | undefined): ClassifiedP
     return result;
   }
 
-  // Conflicted (early branch — independent of tier age, but require >3d to
-  // avoid spamming on freshly-conflicted PRs while their author is awake).
-  if (pr.mergeable === 'CONFLICTING' && ageDays >= 3) {
-    result.category = 'conflicted';
+  // 1. Tier-specific bucket (rotten / stale / active).
+  const bucket = pickAgeBucket(tier, ageDays);
+  result.category = pickTierCategory(pr, tier, bucket);
+  if (bucket === 'rotten') result.recommendedLabels.push('rotten');
+  else if (bucket === 'stale') result.recommendedLabels.push('stale');
+
+  // 2. Override with single-condition categories that take precedence over the
+  //    tier classification *only when the tier put the PR in `active`* (the
+  //    "no escalation needed" bucket). A stale or rotten PR keeps its tier
+  //    category — it's more informative than `behind-base` alone.
+  if (bucket === 'active') {
+    if (pr.mergeable === 'CONFLICTING' && ageDays >= 3) {
+      result.category = 'conflicted';
+    } else if (pr.mergeStateStatus === 'BEHIND') {
+      result.category = 'behind-base';
+    }
   }
 
-  // Behind base (orthogonal — can co-exist with other categories; assigned
-  // here only if not yet classified into a stale category. The needs-rebase
-  // label is suggested in either case.)
+  // 3. Orthogonal labels (independent of category): always recommend
+  //    needs-rebase for BEHIND, needs-ci-fix for ≥3d red CI.
   if (pr.mergeStateStatus === 'BEHIND') {
     result.recommendedLabels.push('needs-rebase');
-    if (result.category === 'healthy') result.category = 'behind-base';
   }
-
-  // CI status that isn't yet "red for tier days" still warrants needs-ci-fix
-  // once it has been red for ≥3 days.
   if (outcome === 'red' && ageDays >= NEEDS_CI_FIX_AGE_D) {
     result.recommendedLabels.push('needs-ci-fix');
   }
 
-  // Tier-specific rotten/stale classification.
-  const t = THRESHOLDS[tier];
-  if (tier === 'failing-CI') {
-    if (ageDays >= t.rotten) {
-      result.category = 'failing-ci-rotten';
-      result.recommendedLabels.push('rotten');
-    } else if (ageDays >= t.stale) {
-      result.category = 'failing-ci-stale';
-      result.recommendedLabels.push('stale');
-    } else if (result.category === 'healthy') {
-      result.category = 'failing-ci-active';
-    }
-  } else if (tier === 'approved') {
-    if (ageDays >= t.rotten) {
-      result.category = 'approved-rotten';
-      result.recommendedLabels.push('rotten');
-    } else if (ageDays >= t.stale) {
-      result.category = 'approved-stale';
-      result.recommendedLabels.push('stale');
-    } else {
-      result.category = 'approved-mergeable';
-    }
-  } else if (tier === 'draft') {
-    if (ageDays >= t.rotten) {
-      result.category = 'draft-rotten';
-      result.recommendedLabels.push('rotten');
-    } else if (ageDays >= t.stale) {
-      result.category = 'draft-stale';
-      result.recommendedLabels.push('stale');
-    } else if (result.category === 'healthy') {
-      result.category = 'draft-active';
-    }
-  } else {
-    // ready
-    const subTier = pr.reviewDecision === 'CHANGES_REQUESTED' ? 'changes-requested' : 'awaiting-review';
-    if (ageDays >= t.rotten) {
-      result.category = `${subTier}-rotten` as Category;
-      result.recommendedLabels.push('rotten');
-    } else if (ageDays >= t.stale) {
-      result.category = `${subTier}-stale` as Category;
-      result.recommendedLabels.push('stale');
-    } else if (result.category === 'healthy') {
-      result.category = `${subTier}-active` as Category;
-    }
-  }
-
-  // No-CI-yet override: if we have no CI signal AND the PR is older than 3d,
-  // flag it specifically rather than letting it slip through as approved-green
-  // or healthy. Do NOT auto-label — a PR with no CI run isn't safely classifiable.
+  // 4. No-CI-yet override: brand-new PRs / disabled workflows give an empty
+  //    `gh run list` array. We can't safely classify these as approved-green
+  //    or failing — surface them in their own bucket and DO NOT auto-label
+  //    stale/rotten (a PR with no CI run is not safely classifiable).
   if (outcome === 'no-run' && ageDays > 3 && tier !== 'failing-CI') {
     result.category = 'no-ci-yet';
     result.recommendedLabels = result.recommendedLabels.filter((l) => l !== 'stale' && l !== 'rotten');
   }
 
-  // Idempotency: drop labels already on the PR.
+  // 5. Idempotency: drop labels already on the PR.
   result.recommendedLabels = result.recommendedLabels.filter((l) => !labels.includes(l));
 
   // Un-stale: if currently labeled stale/rotten but the PR is no longer in
@@ -456,12 +504,12 @@ function classifyOne(pr: RawPR, ctx: Ctx, ci: CiStatus | undefined): ClassifiedP
  *    only see open PRs so this branch is effectively unreachable from the
  *    input data; default behavior is fine).
  */
-function applyStackEscalation(ctx: Ctx): void {
-  for (const pr of ctx.classified.values()) {
+function applyStackEscalation(classified: Map<number, ClassifiedPR>, headToNumber: Map<string, number>): void {
+  for (const pr of classified.values()) {
     if (pr.baseRefName === 'main' || pr.baseRefName === 'master') continue;
-    const parentNum = ctx.headToNumber.get(pr.baseRefName);
+    const parentNum = headToNumber.get(pr.baseRefName);
     if (parentNum === undefined) continue;
-    const parent = ctx.classified.get(parentNum);
+    const parent = classified.get(parentNum);
     if (!parent) continue;
 
     const parentRotten = parent.category.endsWith('-rotten');
@@ -507,21 +555,23 @@ function main(): void {
   const headToNumber = new Map<string, number>();
   for (const pr of rawPRs) headToNumber.set(pr.headRefName, pr.number);
 
-  const ctx: Ctx = {
-    now: args.now,
-    headToNumber,
-    classified: new Map(),
-  };
-
+  const classified = new Map<number, ClassifiedPR>();
   for (const pr of rawPRs) {
     const ci = ciByNum[String(pr.number)];
-    const classified = classifyOne(pr, ctx, ci);
-    ctx.classified.set(pr.number, classified);
+    classified.set(pr.number, classifyOne(pr, args.now, ci));
   }
 
-  applyStackEscalation(ctx);
+  applyStackEscalation(classified, headToNumber);
 
-  const prs = Array.from(ctx.classified.values()).sort((a, b) => b.ageDays - a.ageDays);
+  // Strip reasonHints for non-actionable categories: the report doesn't render
+  // a Reason cell for healthy / *-active / exempt / stack-dependent rows, so
+  // emitting ~5 hints × ~30 chars per row only bloats LLM input. Saves ~30KB
+  // (~7K tokens) on a 200-PR repo.
+  for (const pr of classified.values()) {
+    if (!REASON_BEARING.has(pr.category)) pr.reasonHints = [];
+  }
+
+  const prs = Array.from(classified.values()).sort((a, b) => b.ageDays - a.ageDays);
 
   const byCategory: Record<string, number> = {};
   for (const p of prs) byCategory[p.category] = (byCategory[p.category] ?? 0) + 1;

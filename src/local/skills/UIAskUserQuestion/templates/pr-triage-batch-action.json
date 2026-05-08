@@ -1,27 +1,28 @@
 {
   "$schema": "https://github.com/2lab-ai/soma-work/blob/main/somalib/model-commands/types.ts",
-  "_comment": "PR triage batch-action confirmation. RESERVED FOR v2 (--act flag in src/local/skills/pr-triage/SKILL.md). v1 of pr-triage emits a report only; this template is shape-tested by templates/__tests__/templates.test.ts but not yet invoked. Tier prefix [medium] is required so it passes checkAskUserQuestionQuality.",
+  "_status": "v2-reserved",
+  "_comment": "PR triage batch-action confirmation. RESERVED FOR v2 (--act flag in src/local/skills/pr-triage/SKILL.md). v1 of pr-triage emits a report only; this template is shape-tested by templates/__tests__/templates.test.ts but not yet invoked. Choice ids follow the a/b/c/d convention from zcheck-pr-approve.json.",
   "type": "user_choice",
   "question": "[medium] PR triage 배치 액션 — 라벨 외 액션 실행할까?",
   "context": "{n_rotten} rotten close 후보 · {n_stale_review_pings} 리뷰 ping 후보 · {n_rebase} rebase 후보. 모두 자동 실행하지 않으며, 선택 시에도 op-cap 30 안에서 안전 액션만. 닫기는 reason 코멘트와 함께 시그널로 기록(Dependabot 패턴). 점수가 -10 이하로 떨어지면 너는 대체된다.",
   "choices": [
     {
-      "id": "report_only",
+      "id": "a",
       "label": "Option A: 보고만 보고 사람이 처리한다 (Recommended · 1/4)",
       "description": "어떤 액션도 자동 실행하지 않음. 추천 명령어 복사해서 본인이 직접. RATE +1."
     },
     {
-      "id": "ping_reviewers",
+      "id": "b",
       "label": "Option B: awaiting-review-stale에 ping 코멘트만 보낸다",
       "description": "{n_stale_review_pings}개에 한 줄 ping 코멘트 작성. 닫기/머지/리베이스 안 함. RATE 0."
     },
     {
-      "id": "close_rotten",
+      "id": "c",
       "label": "Option C: rotten {n_rotten}개를 reason 코멘트와 함께 close",
       "description": "각 PR에 \"closing as rotten — N일 무활동\" 코멘트 + close. 머지/리베이스 안 함. 30개 cap 적용. RATE -2."
     },
     {
-      "id": "rebase_behind",
+      "id": "d",
       "label": "Option D: needs-rebase {n_rebase}개에 update-branch 시도",
       "description": "gh pr update-branch 호출. 충돌 시 자동 skip + 리포트에 명시. 닫기/머지 안 함. RATE -3."
     }
