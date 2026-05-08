@@ -27,7 +27,9 @@
  *
  * Usage:
  *   # 1. Fetch PR list (gh ≥ 2.40 for --slurp; pipe through `jq -s` on older gh).
- *   gh api graphql --paginate --slurp -F endCursor=null -f query='...' > prs.json
+ *   #    Do NOT pass -F endCursor=null — gh seeds the cursor itself when
+ *   #    --paginate sees $endCursor + pageInfo.endCursor in the response.
+ *   gh api graphql --paginate --slurp -f query='...' > prs.json
  *
  *   # 2. Fan out CI lookups per PR (capped at 8 in parallel) into per-file JSON.
  *   for n in <pr-numbers>; do
@@ -100,7 +102,12 @@ interface RawPR {
   baseRefName: string;
   headRefName: string;
   reviewDecision?: 'APPROVED' | 'CHANGES_REQUESTED' | 'REVIEW_REQUIRED' | null;
-  author?: { login?: string } | { login: string } | null;
+  // GraphQL returns the actor as User | Bot | Mannequin | EnterpriseUserAccount
+  // | Organization. We capture __typename so we can distinguish bot authors
+  // (~80% of PRs in soma-work are app/zhuge-liang-bot) from humans — bots
+  // can't be pinged via /cc and won't reopen closed PRs, so the recommended
+  // action track is different.
+  author?: { __typename?: string; login?: string } | { __typename?: string; login: string } | null;
   createdAt: IsoString;
   // Deliberately NOT modeling pr.updatedAt: it mutates on label/milestone/
   // reviewer changes, which would let this skill self-reset its own stale
@@ -122,10 +129,14 @@ interface CiStatus {
 
 type CiOutcome = 'green' | 'red' | 'in-flight' | 'no-run' | 'other'; // 'skipped' | 'neutral' etc — treated as no-signal
 
+type AuthorType = 'user' | 'bot' | 'ghost' | 'unknown';
+
 interface ClassifiedPR {
   number: number;
   title: string;
   author: string;
+  /** From GraphQL __typename: User / Bot / null author. Drives recommendation track. */
+  authorType: AuthorType;
   isDraft: boolean;
   baseRefName: string;
   headRefName: string;
@@ -194,11 +205,9 @@ const READY_MAP = {
 } as const satisfies Record<string, Record<'rotten' | 'stale' | 'active', Category>>;
 
 /**
- * Display labels for report rendering. The SKILL.md report format references these
- * names in section headers (🔴 Rotten, ⏳ Awaiting Review, etc.). Keep this map in
- * sync with SKILL.md §"Emit report". Exported for the threshold-drift snapshot test
- * and for any future report-rendering helper that imports this module rather than
- * shelling out to the CLI.
+ * Per-category display label (used in row entries / debug output).
+ * Distinct from REPORT_SECTIONS below: many categories collapse into one
+ * report section (e.g. all three failing-ci-* go to "Failing CI").
  */
 export const CATEGORY_LABELS: Record<Category, string> = {
   'approved-mergeable': 'Approved & Mergeable',
@@ -216,7 +225,7 @@ export const CATEGORY_LABELS: Record<Category, string> = {
   'failing-ci-active': 'Failing CI',
   'failing-ci-stale': 'Failing CI Stale',
   'failing-ci-rotten': 'Failing CI Rotten',
-  'behind-base': 'Behind Base',
+  'behind-base': 'Behind base',
   conflicted: 'Conflicted',
   'no-ci-yet': 'No CI yet',
   'stack-dependent': 'Stack Dependent',
@@ -224,6 +233,44 @@ export const CATEGORY_LABELS: Record<Category, string> = {
   exempt: 'Exempt',
   healthy: 'Healthy',
 };
+
+/**
+ * SKILL.md §8 report sections, with their exact emoji-prefixed headers
+ * and the categories that roll up into each. The LLM rendering the report
+ * MUST use this mapping verbatim — otherwise two invocations produce
+ * differently-headed reports. Keep in sync with SKILL.md §"Emit report".
+ */
+export const REPORT_SECTIONS: Array<{ heading: string; categories: Category[] }> = [
+  {
+    heading: '🔴 Rotten — close 추천',
+    categories: [
+      'approved-rotten',
+      'awaiting-review-rotten',
+      'changes-requested-rotten',
+      'draft-rotten',
+      'failing-ci-rotten',
+    ],
+  },
+  {
+    heading: '🟡 Stale',
+    categories: [
+      'approved-stale',
+      'awaiting-review-stale',
+      'changes-requested-stale',
+      'draft-stale',
+      'failing-ci-stale',
+    ],
+  },
+  { heading: '🚧 Failing CI', categories: ['failing-ci-active'] },
+  { heading: '🔧 Behind base', categories: ['behind-base'] },
+  { heading: '⛔ Conflicted', categories: ['conflicted'] },
+  { heading: '⏳ Awaiting Review', categories: ['awaiting-review-active', 'changes-requested-active'] },
+  { heading: '✅ Approved & Mergeable', categories: ['approved-mergeable'] },
+  { heading: '📦 Stack Dependent', categories: ['stack-dependent'] },
+  { heading: '⚠️ Stack-Stuck', categories: ['stack-stuck'] },
+  { heading: '❓ No CI yet', categories: ['no-ci-yet'] },
+  { heading: '🛡 Exempt', categories: ['exempt'] },
+];
 
 /**
  * Categories whose report rows have a meaningful "Reason" cell. For all other
@@ -317,11 +364,26 @@ function readLabels(pr: RawPR): string[] {
   return [];
 }
 
-function readAuthor(pr: RawPR): string {
+function readAuthor(pr: RawPR): { login: string; type: AuthorType } {
   const a = pr.author;
-  if (!a) return 'unknown';
-  if (typeof a === 'object' && 'login' in a && typeof a.login === 'string') return a.login;
-  return 'unknown';
+  if (!a) return { login: 'ghost', type: 'ghost' };
+  if (typeof a === 'object' && 'login' in a && typeof a.login === 'string') {
+    const login = a.login;
+    const t = a.__typename;
+    let type: AuthorType = 'unknown';
+    if (t === 'Bot') type = 'bot';
+    else if (t === 'User') type = 'user';
+    else if (t === 'Mannequin' || t === 'EnterpriseUserAccount' || t === 'Organization') type = 'user';
+    else if (login.startsWith('app/') || login.endsWith('[bot]') || login.endsWith('-bot')) {
+      // Fallback for inputs without __typename (e.g. `gh pr list --json author`
+      // returns `app/<name>` for App actors). Heuristic, not authoritative.
+      type = 'bot';
+    } else {
+      type = 'user';
+    }
+    return { login, type };
+  }
+  return { login: 'unknown', type: 'unknown' };
 }
 
 // ---------------------------------------------------------------------------
@@ -406,9 +468,21 @@ function pickTier(pr: RawPR, ci: CiOutcome): Tier {
   return 'ready';
 }
 
-/** A freshly-approved PR may have mergeable=UNKNOWN for tens of seconds; be conservative. */
-function isPendingMergeability(pr: RawPR): boolean {
-  return pr.reviewDecision === 'APPROVED' && (pr.mergeable === 'UNKNOWN' || pr.mergeable === undefined);
+/**
+ * A freshly-approved PR may have mergeable=UNKNOWN for tens of seconds; be
+ * conservative and skip stale/rotten labels for that transient. BUT: if the
+ * UNKNOWN persists past UNKNOWN_AGING_GRACE_D days, GitHub has effectively
+ * given up computing — base ref permission denied, repo migration cruft, or
+ * force-pushed base. In that case treat it as a real signal and let the
+ * normal classification proceed without label protection.
+ */
+const UNKNOWN_AGING_GRACE_D = 7;
+function isPendingMergeability(pr: RawPR, ageDays: number): boolean {
+  return (
+    pr.reviewDecision === 'APPROVED' &&
+    (pr.mergeable === 'UNKNOWN' || pr.mergeable === undefined) &&
+    ageDays < UNKNOWN_AGING_GRACE_D
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -450,10 +524,18 @@ function classifyOne(pr: RawPR, now: number, ci: CiStatus | undefined): Classifi
   else if (pr.reviewDecision === 'CHANGES_REQUESTED') reasons.push('changes requested');
   else reasons.push('no reviewer feedback');
 
+  const authorInfo = readAuthor(pr);
+  if (authorInfo.type === 'bot') {
+    reasons.push(`bot-author (${authorInfo.login}) — pings won't work; close-or-revive`);
+  } else if (authorInfo.type === 'ghost') {
+    reasons.push('author account deleted — ping impossible; close-or-reassign');
+  }
+
   const result: ClassifiedPR = {
     number: pr.number,
     title: pr.title,
-    author: readAuthor(pr),
+    author: authorInfo.login,
+    authorType: authorInfo.type,
     isDraft: pr.isDraft,
     baseRefName: pr.baseRefName,
     headRefName: pr.headRefName,
@@ -521,12 +603,20 @@ function classifyOne(pr: RawPR, now: number, ci: CiStatus | undefined): Classifi
 
   // 4b. Pending-mergeability override: APPROVED PR with mergeable=UNKNOWN
   //     usually means the merge engine is still computing (post-push transient).
-  //     Strip stale/rotten label suggestions for this run — re-evaluation on
-  //     the next run will see MERGEABLE/CONFLICTING and classify accordingly.
-  //     Reason hint surfaces the situation in the report.
-  if (isPendingMergeability(pr)) {
+  //     Strip stale/rotten label suggestions during the grace window — at
+  //     UNKNOWN_AGING_GRACE_D days, persistent UNKNOWN is a real signal
+  //     (base ref permission denied, etc.), and labels apply normally.
+  if (isPendingMergeability(pr, ageDays)) {
     result.recommendedLabels = result.recommendedLabels.filter((l) => l !== 'stale' && l !== 'rotten');
     result.reasonHints.push('mergeable=UNKNOWN — merge engine still computing; re-evaluate next run');
+  } else if (
+    pr.reviewDecision === 'APPROVED' &&
+    (pr.mergeable === 'UNKNOWN' || pr.mergeable === undefined) &&
+    ageDays >= UNKNOWN_AGING_GRACE_D
+  ) {
+    // Persistent UNKNOWN — note in the reason hints so the operator knows
+    // why this PR is showing up despite mergeable=UNKNOWN.
+    result.reasonHints.push(`mergeable=UNKNOWN persisted >${UNKNOWN_AGING_GRACE_D}d — labels applied`);
   }
 
   // 5. Idempotency: drop labels already on the PR.
@@ -546,10 +636,16 @@ function classifyOne(pr: RawPR, now: number, ci: CiStatus | undefined): Classifi
     result.removeLabels.push('needs-ci-fix');
   }
 
+  // Strip non-actionable reasonHints in-place so the contract is consistent
+  // whether classifyOne is consumed via the CLI (main()) or imported. See
+  // REASON_BEARING for the allowlist.
+  if (!REASON_BEARING.has(result.category)) {
+    result.reasonHints = [];
+  }
+
   return result;
 }
 
-/**
 /** True when the parent is itself stuck (stale, rotten, or already flipped to stack-stuck). */
 function isStuckParent(category: Category): boolean {
   return category === 'stack-stuck' || category.endsWith('-rotten') || category.endsWith('-stale');
@@ -628,8 +724,10 @@ function applyStackEscalation(classified: Map<number, ClassifiedPR>, headToNumbe
           // Parent healthy/active — suppress child stale labeling.
           pr.category = 'stack-dependent';
           pr.recommendedLabels = pr.recommendedLabels.filter((l) => l !== 'stale' && l !== 'rotten');
-          // Note: needs-rebase / needs-ci-fix are still valid for stack children.
-          pr.reasonHints.push(`stack-dep on healthy parent #${parent.number}`);
+          // stack-dependent is non-REASON_BEARING — drop pre-strip hints so we
+          // don't bloat the JSON with reasons the report won't render.
+          // needs-rebase / needs-ci-fix labels remain valid for stack children.
+          pr.reasonHints = [];
         }
       }
     }
@@ -695,14 +793,10 @@ function main(): void {
   }
 
   applyStackEscalation(classified, headToNumber);
-
-  // Strip reasonHints for non-actionable categories: the report doesn't render
-  // a Reason cell for healthy / *-active / exempt / stack-dependent rows, so
-  // emitting ~5 hints × ~30 chars per row only bloats LLM input. Saves ~30KB
-  // (~7K tokens) on a 200-PR repo.
-  for (const pr of classified.values()) {
-    if (!REASON_BEARING.has(pr.category)) pr.reasonHints = [];
-  }
+  // Note: classifyOne already strips reasonHints for non-REASON_BEARING
+  // categories. applyStackEscalation explicitly clears reasonHints when
+  // flipping to stack-dependent (also non-REASON_BEARING). stack-stuck is
+  // REASON_BEARING and gets a "was X" hint pushed during escalation.
 
   const prs = Array.from(classified.values()).sort((a, b) => b.ageDays - a.ageDays);
 
