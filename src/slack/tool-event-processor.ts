@@ -505,8 +505,9 @@ export class ToolEventProcessor {
       // through to the normal endMcpTracking + sendToolResult path.
       this.backgroundTaskRegistry.removeAnyByToolUseId(toolResult.toolUseId);
 
-      // End MCP call tracking and get duration
-      const duration = await this.endMcpTracking(toolResult.toolUseId, context.sessionKey);
+      // Issue #816 — propagate isError so the tracker entry flips to
+      // `failed` instead of `completed` when the SDK reports a failure.
+      const duration = await this.endMcpTracking(toolResult.toolUseId, context.sessionKey, toolResult.isError === true);
 
       // Update compact tool call message with duration (in-place)
       if (duration !== null && this.onCompactDurationUpdate) {
@@ -536,9 +537,12 @@ export class ToolEventProcessor {
   }
 
   /**
-   * End MCP or subagent tracking for a tool and return duration
+   * End MCP or subagent tracking for a tool and return duration.
+   * `isError` propagates to {@link McpStatusDisplay.completeCall} (issue
+   * #816). Cleanup sweeps in {@link cleanup} call `completeCall` directly
+   * without isError — turn-end has no SDK signal to read.
    */
-  private async endMcpTracking(toolUseId: string, sessionKey?: string): Promise<number | null> {
+  private async endMcpTracking(toolUseId: string, sessionKey?: string, isError = false): Promise<number | null> {
     const callId = this.toolTracker.getMcpCallId(toolUseId);
     if (!callId) return null;
 
@@ -557,8 +561,8 @@ export class ToolEventProcessor {
       this.subagentCallIds.delete(callId);
     }
 
-    // Mark call as completed in session tick
-    this.mcpStatusDisplay.completeCall(callId, duration);
+    // Mark call as completed (or failed when isError, issue #816).
+    this.mcpStatusDisplay.completeCall(callId, duration, isError);
 
     return duration;
   }

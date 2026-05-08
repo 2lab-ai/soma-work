@@ -172,7 +172,9 @@ describe('ToolEventProcessor', () => {
       await processor.handleToolResult(toolResults, mockContext);
 
       expect(mcpCallTracker.endCall).toHaveBeenCalledWith('call_123');
-      expect(mcpStatusDisplay.completeCall).toHaveBeenCalledWith('call_123', 1000);
+      // Issue #816 — completeCall now carries `isError` as the third arg.
+      // Successful path → false.
+      expect(mcpStatusDisplay.completeCall).toHaveBeenCalledWith('call_123', 1000, false);
       expect(toolTracker.getMcpCallId('tool_1')).toBeUndefined();
     });
 
@@ -232,6 +234,46 @@ describe('ToolEventProcessor', () => {
 
       // TodoWrite results are skipped
       expect(mockSay).not.toHaveBeenCalled();
+    });
+
+    /**
+     * Issue #816 — Bug 1: when the SDK reports a tool result with
+     * `isError === true` for an MCP/Subagent call, the tracker entry
+     * must flip to `failed` (not `completed`). The plumbing path is
+     * `handleToolResult → endMcpTracking → completeCall(callId, dur, true)`.
+     */
+    it('should propagate isError=true to completeCall (issue #816)', async () => {
+      toolTracker.trackToolUse('tool_1', 'mcp__model-command__run');
+      toolTracker.trackMcpCall('tool_1', 'call_123');
+
+      await processor.handleToolResult(
+        [
+          {
+            toolUseId: 'tool_1',
+            toolName: 'mcp__model-command__run',
+            result: 'Not connected',
+            isError: true,
+          },
+        ],
+        mockContext,
+      );
+
+      // Third positional arg is the new `isError` flag — must be true here.
+      expect(mcpStatusDisplay.completeCall).toHaveBeenCalledWith('call_123', 1000, true);
+    });
+
+    it('should propagate isError=false (or undefined) to completeCall when result succeeds (issue #816)', async () => {
+      toolTracker.trackToolUse('tool_1', 'mcp__jira__search_issues');
+      toolTracker.trackMcpCall('tool_1', 'call_123');
+
+      await processor.handleToolResult(
+        [{ toolUseId: 'tool_1', toolName: 'mcp__jira__search_issues', result: '[]' /* no isError */ }],
+        mockContext,
+      );
+
+      // Falsy → success path. Implementation passes `false` (boolean) so
+      // the tracker's signature is uniformly tri-state.
+      expect(mcpStatusDisplay.completeCall).toHaveBeenCalledWith('call_123', 1000, false);
     });
   });
 
@@ -572,7 +614,8 @@ describe('ToolEventProcessor', () => {
       );
 
       expect(mcpCallTracker.endCall).toHaveBeenCalledWith('call_123');
-      expect(mcpStatusDisplay.completeCall).toHaveBeenCalledWith('call_123', 1000);
+      // Issue #816 — error result: completeCall third arg flips to true.
+      expect(mcpStatusDisplay.completeCall).toHaveBeenCalledWith('call_123', 1000, true);
     });
 
     // S14c — bg Task non-empty result with NO task_id marker also emits a
@@ -851,7 +894,8 @@ describe('ToolEventProcessor', () => {
 
       expect(status.unregister).toHaveBeenCalledTimes(1);
       expect(mcpCallTracker.endCall).toHaveBeenCalledWith('call_bg_2');
-      expect(mcpStatusDisplay.completeCall).toHaveBeenCalledWith('call_bg_2', 1000);
+      // Issue #816 — third arg propagated through (success path → false).
+      expect(mcpStatusDisplay.completeCall).toHaveBeenCalledWith('call_bg_2', 1000, false);
     });
 
     it('S10: turn-end sweep via cleanup() drains live bg entries and unregisters each', async () => {

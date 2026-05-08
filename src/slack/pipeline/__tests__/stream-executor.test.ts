@@ -1579,6 +1579,170 @@ describe('model-command integration', () => {
     expect(say).toHaveBeenCalledTimes(2);
     expect(say.mock.calls[1]?.[0]?.text).toContain('버튼 UI 생성에 실패');
   });
+
+  /**
+   * Issue #816 — Bug 2: surface MCP-level failures to Slack instead of
+   * silently swallowing them. The bug appeared when `mcp__model-command__run`
+   * returned `isError=true` ("Not connected") and the model tried to invoke
+   * `ASK_USER_QUESTION` — the SDK saw the failure and the tracker stayed
+   * "🟢 success", but no message ever reached the user. These tests pin the
+   * three failure-surface paths the planner identified.
+   */
+  describe('MCP failure surfacing (issue #816)', () => {
+    it('posts a Slack warning when the MCP tool result fails to parse', async () => {
+      const deps = createExecutorDeps();
+      const executor = new StreamExecutor(deps);
+      const session = createSession();
+      const say = vi.fn().mockResolvedValue({ ts: 'warn_ts' });
+
+      // Garbage that doesn't match parseModelCommandRunResponse's contract.
+      await (executor as any).handleModelCommandToolResults(
+        [
+          {
+            toolUseId: 'tool_parse_fail',
+            toolName: 'mcp__model-command__run',
+            result: 'Not connected', // not JSON, not a model_command_result
+            isError: true,
+          },
+        ],
+        session,
+        {
+          channel: 'C1',
+          threadTs: '171.100',
+          sessionKey: 'C1-171.100',
+          say,
+        },
+      );
+
+      // The user must see something — silent drop is the bug.
+      expect(say).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: expect.stringContaining('MCP'),
+          thread_ts: '171.100',
+        }),
+      );
+      const text = say.mock.calls[0]?.[0]?.text ?? '';
+      expect(text).toMatch(/❌|⚠️/);
+    });
+
+    it('posts a Slack warning when ok=false on ASK_USER_QUESTION (with hint)', async () => {
+      const deps = createExecutorDeps();
+      const executor = new StreamExecutor(deps);
+      const session = createSession();
+      const say = vi.fn().mockResolvedValue({ ts: 'warn_ts' });
+
+      await (executor as any).handleModelCommandToolResults(
+        [
+          {
+            toolUseId: 'tool_ask_fail',
+            toolName: 'mcp__model-command__run',
+            result: JSON.stringify({
+              type: 'model_command_result',
+              commandId: 'ASK_USER_QUESTION',
+              ok: false,
+              error: { code: 'INVALID_ARGS', message: 'question payload missing' },
+            }),
+            isError: false,
+          },
+        ],
+        session,
+        {
+          channel: 'C1',
+          threadTs: '171.100',
+          sessionKey: 'C1-171.100',
+          say,
+        },
+      );
+
+      // Slack must surface the failure with the commandId AND the
+      // ASK_USER_QUESTION-specific hint so the user knows the choice UI
+      // didn't render and what to do about it.
+      const calls = say.mock.calls.map((c: any[]) => c?.[0]?.text as string);
+      const joined = calls.join('\n');
+      expect(joined).toContain('ASK_USER_QUESTION');
+      expect(joined).toContain('INVALID_ARGS');
+      expect(joined).toContain('question payload missing');
+      expect(joined).toContain('사용자 선택');
+    });
+
+    it('posts a Slack warning when ok=false on a non-ASK command (no hint)', async () => {
+      const deps = createExecutorDeps();
+      const executor = new StreamExecutor(deps);
+      const session = createSession();
+      const say = vi.fn().mockResolvedValue({ ts: 'warn_ts' });
+
+      await (executor as any).handleModelCommandToolResults(
+        [
+          {
+            toolUseId: 'tool_save_fail',
+            toolName: 'mcp__model-command__run',
+            result: JSON.stringify({
+              type: 'model_command_result',
+              commandId: 'SAVE_MEMORY',
+              ok: false,
+              error: { code: 'CONTEXT_ERROR', message: 'memory write failed' },
+            }),
+            isError: false,
+          },
+        ],
+        session,
+        {
+          channel: 'C1',
+          threadTs: '171.100',
+          sessionKey: 'C1-171.100',
+          say,
+        },
+      );
+
+      const text = say.mock.calls[0]?.[0]?.text ?? '';
+      expect(text).toContain('SAVE_MEMORY');
+      expect(text).toContain('CONTEXT_ERROR');
+      expect(text).toContain('memory write failed');
+      // ASK_USER_QUESTION-specific hint must NOT appear for non-ASK
+      // failures — keep the warning targeted.
+      expect(text).not.toContain('사용자 선택 UI');
+    });
+
+    it('posts a generic Slack warning when isError=true but parsed body is ok=true (outer guard)', async () => {
+      // Edge case: the SDK reports isError=true for the wire-level call
+      // but the parsed body looks successful. Without an outer guard the
+      // user sees nothing. With the guard, a single generic warning fires.
+      const deps = createExecutorDeps();
+      const executor = new StreamExecutor(deps);
+      const session = createSession();
+      const say = vi.fn().mockResolvedValue({ ts: 'warn_ts' });
+
+      await (executor as any).handleModelCommandToolResults(
+        [
+          {
+            toolUseId: 'tool_outer_fail',
+            toolName: 'mcp__model-command__run',
+            // GET_MEMORY succeeds at the model-command layer but the SDK
+            // still flagged the wire-level call as errored.
+            result: JSON.stringify({
+              type: 'model_command_result',
+              commandId: 'GET_MEMORY',
+              ok: true,
+              payload: { memory: '', userMemory: '' },
+            }),
+            isError: true,
+          },
+        ],
+        session,
+        {
+          channel: 'C1',
+          threadTs: '171.100',
+          sessionKey: 'C1-171.100',
+          say,
+        },
+      );
+
+      // Outer guard fires — at least one warning posted.
+      expect(say).toHaveBeenCalled();
+      const text = say.mock.calls[0]?.[0]?.text ?? '';
+      expect(text).toMatch(/❌|⚠️/);
+    });
+  });
 });
 
 // ── File Access Blocked Error Recovery ──────────────────────────────────

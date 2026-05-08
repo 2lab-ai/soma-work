@@ -660,6 +660,73 @@ describe('McpStatusDisplay', () => {
     });
   });
 
+  /**
+   * Issue #816 — `failed` status. Bug 1: when an MCP/Subagent tool result
+   * arrives with `isError === true`, `completeCall` must be called with
+   * `isError=true` so the tracker flips the entry to `failed` instead of
+   * `completed`. The render must surface 🔴 (not 🟢) so the Slack UI
+   * actually reflects the failure that the SDK saw — closing the
+   * "split-brain" gap reported in the issue.
+   */
+  describe('failed status (issue #816)', () => {
+    it('completeCall(callId, duration, true) → renders 🔴 in single-call text', async () => {
+      display.registerCall('session1', 'call1', mcpConfig('codex', 'search'), 'C123', '111.222');
+      // First (immediate) render is the running state — drain it so we
+      // can isolate the failed render on updateMessage.
+      await vi.advanceTimersByTimeAsync(0);
+
+      display.completeCall('call1', 4321, true);
+      await display.flushSession('session1');
+
+      const updateText = mockSlackApi.updateMessage.mock.lastCall?.[2] ?? '';
+      const lastPost = mockSlackApi.postMessage.mock.lastCall?.[1] ?? '';
+      const lastText = updateText || lastPost;
+      expect(lastText).toContain('🔴');
+      expect(lastText).toContain('실패');
+      expect(lastText).not.toContain('🟢');
+      expect(lastText).toContain('codex → search');
+      // Duration still shown.
+      expect(lastText).toContain('4.3s');
+    });
+
+    it('completeCall with isError=true is reflected in multi-call header (failed counter)', async () => {
+      display.registerCall('session1', 'call1', mcpConfig('codex', 'search'), 'C123', '111.222');
+      display.registerCall('session1', 'call2', mcpConfig('jira', 'search'), 'C123', '111.222');
+
+      display.completeCall('call1', 3000, true); // failed
+      display.completeCall('call2', 5000, false); // completed
+
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      const postText = mockSlackApi.postMessage.mock.calls[0][1];
+      // Header must enumerate failed separately from completed so the
+      // user can tell at a glance how many tools actually failed.
+      expect(postText).toContain('1 완료');
+      expect(postText).toContain('1 실패');
+      // Per-line markers preserved.
+      expect(postText).toContain('🔴'); // failed call
+      expect(postText).toContain('🟢'); // completed call
+      // Must NOT advertise the all-clean "N개 작업 완료" header when any
+      // call failed.
+      expect(postText).not.toContain('2개 작업 완료');
+    });
+
+    it('all-failed state suppresses the all-clean header and uses 종료', async () => {
+      display.registerCall('session1', 'call1', mcpConfig('codex', 'search'), 'C123', '111.222');
+      display.completeCall('call1', 1000, true);
+
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      const postText = mockSlackApi.postMessage.mock.calls[0][1];
+      expect(postText).toContain('🔴');
+      // single-call render does not surface the multi-call header text;
+      // the negative assertion targets the multi-call clean path so a
+      // future regression that re-adds "🟢 작업 완료" to the failure
+      // branch trips this guard.
+      expect(postText).not.toContain('🟢 작업 완료');
+    });
+  });
+
   describe('adaptive prediction rendering', () => {
     it('should show adaptive indicator when elapsed exceeds predicted', async () => {
       mockMcpCallTracker.getPredictedDuration.mockReturnValue(34800); // 34.8s

@@ -221,6 +221,27 @@ function toUsagePercentSnapshot(snap: UsageSnapshot | null | undefined): UsagePe
   return out;
 }
 
+/** Issue #816 — single-line preview for the MCP parse-fail Slack post. */
+function stringifyAndTruncate(value: unknown, max: number): string {
+  if (value === null || value === undefined) return '(empty response)';
+  let raw: string;
+  if (typeof value === 'string') {
+    raw = value;
+  } else {
+    try {
+      raw = JSON.stringify(value);
+    } catch {
+      raw = String(value);
+    }
+  }
+  // Truncate before regex so a multi-MB garbled response doesn't pay the
+  // full whitespace-collapse cost.
+  const wasTruncated = raw.length > max;
+  if (wasTruncated) raw = raw.slice(0, max);
+  raw = raw.replace(/\s+/g, ' ').trim();
+  return wasTruncated ? `${raw}…` : raw;
+}
+
 /** Per-request tool call statistics */
 interface ToolStatEntry {
   count: number;
@@ -2809,6 +2830,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           sessionKey: context.sessionKey,
           toolUseId: toolResult.toolUseId,
         });
+        // Issue #816 — surface to Slack so a parse failure isn't a
+        // silent drop. Match the bare-await convention used by the
+        // UPDATE_SESSION warning branch below.
+        const rawPreview = stringifyAndTruncate(toolResult.result, 200);
+        await context.say({
+          text: `❌ MCP 응답 파싱 실패 (toolUseId: ${toolResult.toolUseId}). raw: ${rawPreview}`,
+          thread_ts: context.threadTs,
+        });
         continue;
       }
 
@@ -2820,7 +2849,30 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         });
         // Issue #42 S3: 에러도 수집
         modelCommandResults.push({ commandId: parsed.commandId, ok: false, error: parsed.error });
+        // Issue #816 — ASK_USER_QUESTION's failure is the loudest split-
+        // brain symptom (agent thinks it asked, user sees nothing), so
+        // it gets an explicit hint; other commands get the bare error.
+        const errMessage = parsed.error?.message ?? 'unknown error';
+        const errCode = parsed.error?.code ?? 'UNKNOWN';
+        let text = `❌ MCP ${parsed.commandId} 실패: ${errCode} — ${errMessage}`;
+        if (parsed.commandId === 'ASK_USER_QUESTION') {
+          text += `\n❌ 사용자 선택 UI를 띄우지 못했습니다. 같은 질문을 다시 호출하시거나 MCP 연결 상태를 확인하세요.`;
+        }
+        await context.say({ text, thread_ts: context.threadTs });
         continue;
+      }
+
+      // Issue #816 — split-brain guard: the wire-level call was flagged
+      // isError=true but the parsed body still looked successful (e.g. a
+      // transport hiccup that returned a JSON candidate anyway). Without
+      // this branch the user would see no failure at all. Continue
+      // processing afterwards — the body is parseable so downstream
+      // branches (e.g. SAVE_CONTEXT_RESULT) may still need the payload.
+      if (toolResult.isError === true) {
+        await context.say({
+          text: `❌ MCP ${parsed.commandId} 호출 실패 (wire-level isError=true). MCP 연결 상태를 확인해주세요.`,
+          thread_ts: context.threadTs,
+        });
       }
 
       // Issue #42 S3: 성공 결과 수집
