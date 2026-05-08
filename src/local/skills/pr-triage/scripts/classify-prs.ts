@@ -88,6 +88,7 @@ type Category =
   | 'no-ci-yet'
   | 'stack-dependent'
   | 'stack-stuck'
+  | 'corrupt'
   | 'exempt'
   | 'healthy';
 
@@ -230,6 +231,7 @@ export const CATEGORY_LABELS: Record<Category, string> = {
   'no-ci-yet': 'No CI yet',
   'stack-dependent': 'Stack Dependent',
   'stack-stuck': 'Stack-Stuck',
+  corrupt: 'Corrupt — manual review required',
   exempt: 'Exempt',
   healthy: 'Healthy',
 };
@@ -269,6 +271,7 @@ export const REPORT_SECTIONS: Array<{ heading: string; categories: Category[] }>
   { heading: '📦 Stack Dependent', categories: ['stack-dependent'] },
   { heading: '⚠️ Stack-Stuck', categories: ['stack-stuck'] },
   { heading: '❓ No CI yet', categories: ['no-ci-yet'] },
+  { heading: '⚠️ Corrupt input — manual review', categories: ['corrupt'] },
   { heading: '🛡 Exempt', categories: ['exempt'] },
 ];
 
@@ -297,6 +300,7 @@ const REASON_BEARING: ReadonlySet<Category> = new Set<Category>([
   'conflicted',
   'no-ci-yet',
   'stack-stuck',
+  'corrupt',
 ]);
 
 // ---------------------------------------------------------------------------
@@ -315,8 +319,17 @@ function parseArgs(argv: string[]): Args {
     const a = argv[i];
     if (a === '--prs') args.prsPath = argv[++i];
     else if (a === '--ci') args.ciPath = argv[++i];
-    else if (a === '--now') args.now = Date.parse(argv[++i]);
-    else throw new Error(`Unknown arg: ${a}`);
+    else if (a === '--now') {
+      const raw = argv[++i];
+      const parsed = Date.parse(raw);
+      if (Number.isNaN(parsed)) {
+        throw new Error(`--now must be ISO-8601 (got: "${raw}")`);
+      }
+      args.now = parsed;
+    } else if (a === '--dry-run') {
+    } else {
+      throw new Error(`Unknown arg: ${a}`);
+    }
   }
   if (!args.prsPath) throw new Error('--prs <path> required');
   return {
@@ -565,6 +578,18 @@ function classifyOne(pr: RawPR, now: number, ci: CiStatus | undefined): Classifi
     return result;
   }
 
+  // 0. Corrupt-record short-circuit. lastActivity returns ms=0 only when no
+  //    timestamps were parsable from the input record (commits, comments,
+  //    reviews, AND createdAt all missing/unparseable). Such a PR can't be
+  //    safely aged — auto-labeling it `rotten` based on a synthetic 1970
+  //    epoch is wrong. Surface it for manual review and bail before any
+  //    age-based classification.
+  if (lastAt.ms === 0) {
+    result.category = 'corrupt';
+    result.reasonHints = ['no parsable timestamps in PR record — manual review required'];
+    return result;
+  }
+
   // 1. Tier-specific bucket (rotten / stale / active).
   const bucket = pickAgeBucket(tier, ageDays);
   result.category = pickTierCategory(pr, tier, bucket);
@@ -574,13 +599,20 @@ function classifyOne(pr: RawPR, now: number, ci: CiStatus | undefined): Classifi
   // 2. Override with single-condition categories that take precedence over the
   //    tier classification *only when the tier put the PR in `active`* (the
   //    "no escalation needed" bucket). A stale or rotten PR keeps its tier
-  //    category — it's more informative than `behind-base` alone.
+  //    category — it's more informative than `behind-base` alone, AND the
+  //    BEHIND signal is not lost: §3 still pushes the needs-rebase label and
+  //    a reasonHint surfaces the rebase requirement under the stale/rotten row.
   if (bucket === 'active') {
     if (pr.mergeable === 'CONFLICTING' && ageDays >= 3) {
       result.category = 'conflicted';
     } else if (pr.mergeStateStatus === 'BEHIND') {
       result.category = 'behind-base';
     }
+  } else if (pr.mergeStateStatus === 'BEHIND') {
+    // BEHIND is masked under the stale/rotten category but the report's
+    // "Behind base" section won't surface it, so make the reasonHint explicit:
+    // anyone reading the row knows rebase is required before merge.
+    result.reasonHints.push('rebase needed before merge (base advanced)');
   }
 
   // 3. Orthogonal labels (independent of category): always recommend
