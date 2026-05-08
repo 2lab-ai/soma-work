@@ -130,32 +130,21 @@ Run these CI lookups in parallel (xargs `-P` or background jobs); cap concurrenc
 
 ### 5. Classify each PR
 
-Apply this decision tree, in order:
+Canonical decision tree lives in `scripts/classify-prs.ts` (`classifyOne` + `pickAgeBucket` + `TIER_CATS` / `READY_MAP` / `CATEGORY_LABELS`). The TypeScript is the source of truth; this prose summary exists for human readers and stays at *summary* depth so the two cannot drift on details.
 
-1. Has `keep-open` or `pinned` label → **Exempt** (skip from all categories, do not label, do not surface).
-2. `mergeable=CONFLICTING` AND age > 3d → **Conflicted** (recommend `gh pr merge --rebase` by author or close).
-3. `mergeStateStatus=BEHIND` → **Behind base** (label `needs-rebase`; recommend `gh pr update-branch`). Continue evaluating other tiers in parallel.
-4. CI = red AND age in tier ≥ 3d → label `needs-ci-fix`.
-5. CI = red AND age in tier ≥ stale threshold (7d) → **Failing CI stale** → label `stale`.
-6. CI = red AND age ≥ rotten (14d) → **Failing CI rotten** → label `rotten`; recommend close.
-7. `reviewDecision=APPROVED`:
-   - age < 5d → **Approved & Mergeable** (recommend merge).
-   - 5d ≤ age < 10d → **Approved Stale** → label `stale` (recommend merge or ping merger).
-   - age ≥ 10d → **Approved Rotten** → label `rotten`; recommend close or revive owner.
-8. `isDraft=true`:
-   - age < 7d → **Draft Active** (no action).
-   - 7d ≤ age < 14d → **Draft Stale** → label `stale` (recommend ready or close).
-   - age ≥ 14d → **Draft Rotten** → label `rotten`; recommend close.
-9. Default ready (no approval, no changes-requested):
-   - age < 14d → **Awaiting Review** (no action; surface for visibility if age ≥ 7d).
-   - 14d ≤ age < 30d → **Awaiting Review Stale** → label `stale`; recommend ping reviewer.
-   - age ≥ 30d → **Awaiting Review Rotten** → label `rotten`; recommend close or assign owner.
-10. `reviewDecision=CHANGES_REQUESTED`:
-    - age < 14d → **Changes Requested** (no action).
-    - age ≥ 14d → **Changes Requested Stale** → label `stale`; recommend ping author.
-    - age ≥ 30d → **Rotten** → label `rotten`; recommend close.
+Summary of the decision flow (run in this order):
 
-CI = `null` (no run yet) AND age > 3d → **No CI yet** category — surface separately, do not auto-label (a PR with no CI run is not safely classifiable).
+1. **Exemption first.** `keep-open` / `pinned` label → category `exempt`. Skip everything else.
+2. **Tier selection** (most-specific wins): `failing-CI` (CI red) → `approved` (APPROVED + MERGEABLE + CI not red) → `draft` (`isDraft=true`) → `ready` (everything else; further split by `reviewDecision` into `awaiting-review` vs `changes-requested`).
+3. **Age bucket** for that tier: `rotten` (≥ rotten threshold) > `stale` (≥ stale threshold) > `active`. Thresholds per tier are in §"Tier policy".
+4. **Single-condition overrides** (only when the tier put the PR in `active`, never overriding stale/rotten — those are more informative): `mergeable=CONFLICTING` & age ≥ 3d → `conflicted`; `mergeStateStatus=BEHIND` → `behind-base`.
+5. **Orthogonal label suggestions** (independent of category): always `needs-rebase` for BEHIND; `needs-ci-fix` for CI red ≥3d.
+6. **No-CI-yet override**: CI run absent AND age > 3d AND tier ≠ `failing-CI` → `no-ci-yet`. Strip `stale`/`rotten` from recommended labels (a PR with no CI run is not safely classifiable).
+7. **Idempotency filter**: drop any recommended label already present on the PR.
+8. **Un-stale**: if the PR is no longer in a stale/rotten category but still carries those labels, recommend their removal. Same for `needs-rebase` / `needs-ci-fix` when the underlying condition has cleared.
+9. **Stack-PR escalation** (§6): runs as a second pass after individual classification.
+
+If you change any threshold, decision branch, or category name, update **both** `classify-prs.ts` and the report header strings (§8) in the same commit. The `CATEGORY_LABELS` export is the single shared mapping between machine names and report headings.
 
 ### 6. Stack-PR escalation
 
@@ -168,7 +157,7 @@ Stack rules:
 
 Compute the parent map in one pass before classification: `{baseRefName: parentPRnumber}` keyed on heads of all open PRs.
 
-### 7. Apply labels (idempotent, capped)
+### 7. Apply labels (idempotent, capped, parallel)
 
 Skip when `--dry-run`.
 
@@ -179,6 +168,8 @@ For each PR with a target label:
 Counter-rule (un-stale): if a PR currently carries `stale` or `rotten` and *no longer* meets the threshold (i.e. fresh activity restored), remove the label (`--remove-label`). This is the only reason this skill removes labels.
 
 **Cap mutations at 30 per run.** If the budget is hit, stop labeling and emit a warning at the report top so the user knows to re-run.
+
+**Parallelize at -P 4.** `gh pr edit --add-label` is server-side idempotent and the bot token's write rate-limit is the binding constraint, not concurrency. At ~600ms per round-trip × 30 sequential = ~18s; -P 4 brings that under 5s. Use `xargs -P 4` or shell job-control. Count completed mutations against the cap (not dispatched) to keep the budget honest under partial failure.
 
 Mutations are explicitly forbidden:
 - Posting comments (no warn comment, no rotten notice).
