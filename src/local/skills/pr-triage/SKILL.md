@@ -86,34 +86,40 @@ done
 Prefer one GraphQL query that fetches everything needed; falling back to `gh pr list --json` is acceptable but costs more roundtrips.
 
 ```bash
-gh api graphql -f query='
-  query($cursor: String) {
+# Requires gh ≥ 2.40 for --slurp. --paginate alone emits concatenated JSON
+# (NDJSON-ish) which JSON.parse rejects on >1 page; --slurp wraps the pages
+# into a real JSON array which classify-prs.ts auto-detects.
+gh api graphql --paginate --slurp -F endCursor=null -f query='
+  query($endCursor: String) {
     repository(owner: "2lab-ai", name: "soma-work") {
-      pullRequests(states: OPEN, first: 100, after: $cursor, orderBy: {field: UPDATED_AT, direction: DESC}) {
+      pullRequests(states: OPEN, first: 100, after: $endCursor, orderBy: {field: UPDATED_AT, direction: DESC}) {
         pageInfo { hasNextPage endCursor }
         nodes {
           number title isDraft mergeable mergeStateStatus
           baseRefName headRefName
           reviewDecision
           author { login ... on User { login } ... on Bot { login } }
-          createdAt updatedAt
+          createdAt
           labels(first: 30) { nodes { name } }
           commits(last: 1) { nodes { commit { committedDate } } }
           comments(last: 1) { nodes { createdAt } }
           reviews(last: 1) { nodes { submittedAt } }
-          # Most-recent line comment (review thread)
           latestReviews(last: 1) { nodes { submittedAt } }
         }
       }
     }
-  }' --paginate
+  }' > prs.json
 ```
 
-Note: GraphQL paginates at 100. Cap total processed at 200 PRs; if the repo ever exceeds that, stop and emit a warning (do not silently truncate).
+Notes:
+- `--paginate` requires the variable name to be exactly `$endCursor` and the query must expose `pageInfo { hasNextPage endCursor }`. Renaming either breaks pagination.
+- If the local `gh` is older than 2.40 (no `--slurp`), pipe through `jq -s` instead: `gh api graphql --paginate -f query='...' | jq -s '.' > prs.json`.
+- Cap total processed at 200 PRs; if the repo ever exceeds that, stop and emit a warning (do not silently truncate).
+- `pr.updatedAt` is intentionally NOT requested — its mutation behavior is incompatible with the stale-clock contract (see classify-prs.ts §"Activity timestamp").
 
 ### 4. Per-PR enrich: CI status
 
-`gh pr checks` is **forbidden** (the bot token lacks the GraphQL `statusCheckRollup` permission — confirmed in `zcheck/SKILL.md:22`). Use Actions API:
+`gh pr checks` is **forbidden** (the bot token lacks the GraphQL `statusCheckRollup` permission — confirmed in `zcheck/SKILL.md:22`). Use Actions API per PR:
 
 ```bash
 gh run list --branch "<head>" --repo 2lab-ai/soma-work --limit 1 \
@@ -127,6 +133,27 @@ Possible outcomes:
 - `status="completed", conclusion ∈ {"failure","cancelled","timed_out","action_required"}` → red
 
 Run these CI lookups in parallel (xargs `-P` or background jobs); cap concurrency at 8 to stay polite.
+
+**Assemble the per-PR CI map.** The `classify-prs.ts` script expects a single JSON object keyed by PR number string (`{ "383": {...}, "417": {...} }`), not N separate files. After fanning out the per-PR CI lookups, fold them into one map:
+
+```bash
+mkdir -p .pr-triage-tmp
+for n in $(jq -r '[.[].data.repository.pullRequests.nodes[].number] | .[]' prs.json); do
+  head=$(jq -r --argjson n "$n" '[.[].data.repository.pullRequests.nodes[]] | map(select(.number==$n)) | .[0].headRefName' prs.json)
+  gh run list --branch "$head" --repo 2lab-ai/soma-work --limit 1 \
+    --json status,conclusion,databaseId,createdAt -q '.[0] // {}' \
+    > ".pr-triage-tmp/ci-$n.json" &
+  # Throttle to 8 concurrent backgrounds (works in bash 4+).
+  while (( $(jobs -rp | wc -l) >= 8 )); do wait -n; done
+done
+wait
+jq -s 'reduce range(0; length) as $i ({}; . + {(($n[$i] // ""))})' .pr-triage-tmp/ci-*.json > /dev/null  # placeholder; see below
+# Simpler assembly using filenames:
+jq -n 'reduce inputs as $r ({}; . + ({(input_filename | capture("ci-(?<n>[0-9]+)\\.json").n): $r}))' \
+  .pr-triage-tmp/ci-*.json > ci-by-num.json
+```
+
+The `ci-by-num.json` shape is `{"<pr_number>": { status, conclusion, databaseId, createdAt }, ...}`. An empty per-PR object `{}` is treated by classify-prs.ts as "No CI yet"; do not omit the key entirely — keep the PR present with an empty value so the script can distinguish "queried, none found" from "not queried at all".
 
 ### 5. Classify each PR
 
