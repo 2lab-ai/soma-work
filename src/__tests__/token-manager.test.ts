@@ -3355,5 +3355,119 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       expect(snap.state[c.keyId].rateLimitSource).toBeUndefined();
       expect(snap.state[c.keyId].cooldownUntil).toBeUndefined();
     });
+
+    // ── #826 — self-cap exclusion ──────────────────────────────
+    //
+    // Original #801 propagation treats *any* direct-evidence sibling cooldown
+    // as a shared-bucket signal. In practice, when a slot hits its OWN 5h
+    // self-cap (utilization ≥ 95%) the wall-clock reset it parses back is
+    // the slot's self-cap reset, NOT a cross-account bucket signal. Letting
+    // such a saturated anchor seed propagation makes one exhausted slot
+    // contaminate every healthy sibling — the user-reported "쿨타임 하나
+    // 터지면 다 쿨타임 적용" behavior. Guard: an anchor candidate whose
+    // `usage.fiveHour.utilization >= CCT_SHARED_BUCKET_SELF_CAP_THRESHOLD`
+    // (default 95) is rejected from the match-anchor scan.
+    it('AC-13a: anchor with fiveHour utilization >= 95 (self-cap) blocks propagation', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const [a, b, c, d, e, f] = await addSixOauthSlots(tm);
+      // A is self-cap saturated BEFORE the cascade — utilization 100%.
+      await store.mutate((snap) => {
+        snap.state[a.keyId].usage = {
+          fetchedAt: new Date().toISOString(),
+          fiveHour: { utilization: 100, resetsAt: new Date(Date.now() + 60 * 60_000).toISOString() },
+        };
+      });
+      // 1st call: marks A normally (first call never propagates regardless).
+      await tm.rotateOnRateLimit('first', { source: 'error_string', cooldownMinutes: 60, knownReset: true });
+      // 2nd call: B is currentId. A's cooldownUntil is within ±90s window AND
+      // direct-evidence source — pre-fix this would propagate. With self-cap
+      // guard, A is rejected as anchor → no other anchor → no propagation.
+      await tm.rotateOnRateLimit('second', { source: 'error_string', cooldownMinutes: 60, knownReset: true });
+      const snap = await store.load();
+      // A and B keep their direct marks (call-site behavior unchanged).
+      expect(snap.state[a.keyId].rateLimitSource).toBe('error_string');
+      expect(snap.state[b.keyId].rateLimitSource).toBe('error_string');
+      // C, D, E, F must NOT be touched — this is the regression guard for the
+      // user-reported bug.
+      for (const sib of [c, d, e, f]) {
+        expect(snap.state[sib.keyId].rateLimitSource).toBeUndefined();
+        expect(snap.state[sib.keyId].cooldownUntil).toBeUndefined();
+      }
+    });
+
+    it('AC-13b: anchor with fiveHour utilization < threshold still propagates (regression guard)', async () => {
+      // Real shared-bucket cascade: both slots are far below self-cap but
+      // get 429s with the same wall-clock — that's the genuine cross-account
+      // bucket signal #801 is meant to catch. Propagation MUST still fire.
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const [a, b, c, d, e, f] = await addSixOauthSlots(tm);
+      await store.mutate((snap) => {
+        snap.state[a.keyId].usage = {
+          fetchedAt: new Date().toISOString(),
+          fiveHour: { utilization: 50, resetsAt: new Date(Date.now() + 60 * 60_000).toISOString() },
+        };
+      });
+      await tm.rotateOnRateLimit('first', { source: 'error_string', cooldownMinutes: 60, knownReset: true });
+      await tm.rotateOnRateLimit('second', { source: 'error_string', cooldownMinutes: 60, knownReset: true });
+      const snap = await store.load();
+      expect(snap.state[a.keyId].rateLimitSource).toBe('error_string');
+      expect(snap.state[b.keyId].rateLimitSource).toBe('error_string');
+      // C..F propagated.
+      for (const sib of [c, d, e, f]) {
+        expect(snap.state[sib.keyId].rateLimitSource).toBe('inferred_shared');
+        expect(snap.state[sib.keyId].cooldownUntil).toBeDefined();
+      }
+    });
+
+    it('AC-13c: anchor with no usage data (undefined fiveHour) does NOT trigger self-cap guard', async () => {
+      // Absence of evidence is not evidence of self-cap. A slot without a
+      // usage snapshot (e.g. fetch never succeeded yet) must still anchor —
+      // this preserves the original #801 behavior for the common path.
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const [, , c] = await addSixOauthSlots(tm);
+      // No `usage` field at all on any slot — default state from addOauthSlot.
+      await tm.rotateOnRateLimit('first', { source: 'error_string', cooldownMinutes: 60, knownReset: true });
+      await tm.rotateOnRateLimit('second', { source: 'error_string', cooldownMinutes: 60, knownReset: true });
+      const snap = await store.load();
+      expect(snap.state[c.keyId].rateLimitSource).toBe('inferred_shared');
+    });
+
+    it('AC-13d: env CCT_SHARED_BUCKET_SELF_CAP_THRESHOLD overrides default 95', async () => {
+      // Lowering the threshold to 40 makes a 50% utilization anchor count as
+      // self-capped → propagation suppressed. Verifies the env hook is wired
+      // (and that "moderate" utilization is not silently treated as self-cap
+      // under the default).
+      process.env.CCT_SHARED_BUCKET_SELF_CAP_THRESHOLD = '40';
+      try {
+        const { mod, storeMod } = await importSut();
+        const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+        const tm = new mod.TokenManager(store);
+        await tm.init();
+        const [a, , c] = await addSixOauthSlots(tm);
+        await store.mutate((snap) => {
+          snap.state[a.keyId].usage = {
+            fetchedAt: new Date().toISOString(),
+            fiveHour: { utilization: 50, resetsAt: new Date(Date.now() + 60 * 60_000).toISOString() },
+          };
+        });
+        await tm.rotateOnRateLimit('first', { source: 'error_string', cooldownMinutes: 60, knownReset: true });
+        await tm.rotateOnRateLimit('second', { source: 'error_string', cooldownMinutes: 60, knownReset: true });
+        const snap = await store.load();
+        // C must NOT be propagated — A is now treated as self-capped.
+        expect(snap.state[c.keyId].rateLimitSource).toBeUndefined();
+        expect(snap.state[c.keyId].cooldownUntil).toBeUndefined();
+      } finally {
+        delete process.env.CCT_SHARED_BUCKET_SELF_CAP_THRESHOLD;
+      }
+    });
   });
 });

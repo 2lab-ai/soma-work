@@ -83,6 +83,12 @@ const RATE_LIMIT_WINDOW_MS = 5 * 60 * 60 * 1000;
 // same minute boundary land ≤60 000 ms apart; the 30 s slack covers network
 // jitter and clock skew. Override via `process.env.CCT_SHARED_BUCKET_WINDOW_MS`.
 const DEFAULT_SHARED_BUCKET_WINDOW_MS = 90_000;
+// Self-cap exclusion threshold (#826) — see `resolveSelfCapThreshold` and
+// the anchor-scan body. A sibling whose `usage.fiveHour.utilization`
+// (percent, 0..100) is at-or-above this value is treated as having hit its
+// own 5h cap (NOT the shared cross-account bucket) and is rejected as an
+// anchor. Prevents one exhausted slot from contaminating healthy siblings.
+const DEFAULT_SHARED_BUCKET_SELF_CAP_THRESHOLD = 95;
 // Only direct upstream evidence may anchor a match — `manual` and
 // `inferred_shared` are excluded so a single inference cannot chain across
 // the whole pool (see `RateLimitSource` doc-comment).
@@ -111,6 +117,33 @@ function resolveSharedBucketWindowMs(): number {
 }
 
 /**
+ * #826 — Self-cap exclusion threshold.
+ *
+ * Read on each call so tests + ops can override without restart. Mirrors
+ * `resolveSharedBucketWindowMs`'s strict-integer guard so a misconfigured
+ * `95%` / `0.95` triggers warn-and-fallback rather than silently producing
+ * a degenerate threshold (e.g. `Number.parseInt('95%', 10) === 95` happens
+ * to be the default, but `Number.parseInt('0.95', 10) === 0` would silently
+ * disable every anchor since `fiveHour.utilization >= 0` is trivially true).
+ *
+ * Range guard: must be in `[0, 100]`. Out-of-range values fall back to the
+ * default 95 with a warn — utilization is a percent (0..100) per the
+ * `auto-rotate.ts` contract.
+ */
+function resolveSelfCapThreshold(): number {
+  const raw = process.env.CCT_SHARED_BUCKET_SELF_CAP_THRESHOLD;
+  if (raw === undefined || raw === '') return DEFAULT_SHARED_BUCKET_SELF_CAP_THRESHOLD;
+  if (/^\d+$/.test(raw)) {
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isFinite(parsed) && parsed >= 0 && parsed <= 100) return parsed;
+  }
+  logger.warn(
+    `CCT_SHARED_BUCKET_SELF_CAP_THRESHOLD invalid (${raw}); falling back to default ${DEFAULT_SHARED_BUCKET_SELF_CAP_THRESHOLD}`,
+  );
+  return DEFAULT_SHARED_BUCKET_SELF_CAP_THRESHOLD;
+}
+
+/**
  * #801 — Shared-bucket cooldown propagation helper.
  *
  * When a CCT slot is rate-limited and a sibling already carries a future
@@ -130,6 +163,7 @@ function propagateInferredSharedCooldownIfMatched(
   nowMs: number,
   nowIso: string,
   windowMs: number,
+  selfCapThreshold: number,
   currentId: string,
 ): { matchedSiblingKeyId: string; propagatedCount: number } | null {
   const anchorMs = new Date(cooldownUntilIso).getTime();
@@ -156,6 +190,26 @@ function propagateInferredSharedCooldownIfMatched(
     return !snap.state[slot.keyId]?.tombstoned;
   }
 
+  /**
+   * #826 — Self-cap exclusion.
+   *
+   * A direct-evidence sibling whose own `usage.fiveHour.utilization` is
+   * at-or-above `selfCapThreshold` is rejected as a match anchor. Rationale:
+   * its `cooldownUntil` was almost certainly its own 5h-cap reset (not a
+   * cross-account bucket signal), and we don't want one exhausted slot to
+   * contaminate every healthy sibling. Absent or sub-threshold utilization
+   * falls through to the original #801 behavior.
+   *
+   * `fiveHour` may be `undefined` on a fresh slot whose `fetchAndStoreUsage`
+   * never ran — absence of evidence is not evidence of self-cap, so we let
+   * such a sibling anchor normally.
+   */
+  function isSelfCapSaturated(stateK: SlotState | undefined): boolean {
+    const util = stateK?.usage?.fiveHour?.utilization;
+    if (typeof util !== 'number' || !Number.isFinite(util)) return false;
+    return util >= selfCapThreshold;
+  }
+
   let matchedSiblingKeyId: string | undefined;
   for (const slot of snap.registry.slots) {
     if (!isEligibleSibling(slot)) continue;
@@ -165,6 +219,10 @@ function propagateInferredSharedCooldownIfMatched(
     if (!Number.isFinite(existingMs) || existingMs <= nowMs) continue;
     const sourceK = stateK.rateLimitSource;
     if (sourceK === undefined || !DIRECT_EVIDENCE_SOURCES.includes(sourceK)) continue;
+    // #826 — reject self-cap saturated anchors; their cooldown is most
+    // likely their own 5h-cap reset, not a shared-bucket signal. Keep
+    // scanning for another (sub-threshold) eligible anchor.
+    if (isSelfCapSaturated(stateK)) continue;
     if (Math.abs(existingMs - anchorMs) <= windowMs) {
       matchedSiblingKeyId = slot.keyId;
       break;
@@ -864,6 +922,7 @@ export class TokenManager {
     const nowMs = Date.now();
     const cooldownUntilIso = new Date(nowMs + cooldownMs).toISOString();
     const sharedBucketWindowMs = resolveSharedBucketWindowMs();
+    const selfCapThreshold = resolveSelfCapThreshold();
 
     // The propagation outcome rides back out of the mutate (rather than
     // closure-captured) so each CAS retry produces a self-contained result —
@@ -908,6 +967,7 @@ export class TokenManager {
           nowMs,
           nowIso,
           sharedBucketWindowMs,
+          selfCapThreshold,
           currentId,
         );
       }
