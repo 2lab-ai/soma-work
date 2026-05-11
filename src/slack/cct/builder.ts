@@ -583,16 +583,19 @@ export function formatRateLimitedSegment(state: SlotState | undefined, userTz?: 
 
 /**
  * Render the ` via <source>` suffix for a `rate-limited <ts>` segment.
- * `inferred_shared` is humanised so operators can tell apart "this slot
- * itself 429d" from "we inferred this slot is in the same bucket as a
- * recently-limited sibling"; the other arms keep their raw enum suffix.
  * Returns `''` when the source is missing (legacy payloads predating
  * `rateLimitSource`) so callers can concatenate unconditionally.
+ *
+ * Legacy compat: snapshots written before #871 may still carry the removed
+ * `'inferred_shared'` enum value. Treat any source not in the current union
+ * as missing so the UI degrades to the bare `rate-limited <ts>` form.
  */
-export function formatRateLimitSource(source: SlotState['rateLimitSource']): string {
+export function formatRateLimitSource(source: SlotState['rateLimitSource'] | string | undefined): string {
   if (!source) return '';
-  if (source === 'inferred_shared') return ' via inferred shared bucket';
-  return ` via ${source}`;
+  if (source === 'response_header' || source === 'error_string' || source === 'manual') {
+    return ` via ${source}`;
+  }
+  return '';
 }
 
 /**
