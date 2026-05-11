@@ -770,6 +770,118 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       expect(snap.state[s.keyId].lastUsageFetchedAt).toBeDefined();
     });
 
+    // ── #876 — Usage refresh clears stale cooldown ──────────────
+    //
+    // Anthropic's /api/oauth/usage endpoint is ground truth: when fresh
+    // `fiveHour.utilization < 100` lands on a slot, the slot demonstrably has
+    // capacity left and is NOT actually in cooldown — any persisted
+    // `cooldownUntil` is stale (either a one-off 429 that's now reset, or a
+    // legacy `inferred_shared` mark from #804 that never matched a real
+    // upstream limit). Clear the cooldown fields so the slot becomes
+    // eligible again on the next pick.
+    it('#876: fresh usage with fiveHour.utilization < 100 clears stale cooldown fields', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const s = await tm.addSlot({
+        name: 'oauth',
+        kind: 'oauth_credentials',
+        credentials: makeOAuthCreds(),
+        acknowledgedConsumerTosRisk: true,
+      });
+      // Pre-seed a stale cooldown — matches the prod state we observed where
+      // siblings carry a future cooldownUntil but their actual utilization is
+      // single-digit (so they aren't really rate-limited).
+      const staleCooldown = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+      const staleRateLimitedAt = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+      await store.mutate((snap) => {
+        snap.state[s.keyId].cooldownUntil = staleCooldown;
+        snap.state[s.keyId].rateLimitedAt = staleRateLimitedAt;
+        snap.state[s.keyId].rateLimitSource = 'error_string';
+      });
+      fetchUsageMock.mockResolvedValueOnce({
+        snapshot: {
+          fetchedAt: new Date().toISOString(),
+          fiveHour: { utilization: 8, resetsAt: new Date(Date.now() + 3_600_000).toISOString() },
+        },
+        nextFetchAllowedAtMs: Date.now() + 2 * 60 * 1000,
+      });
+      const result = await tm.fetchAndStoreUsage(s.keyId);
+      expect(result).not.toBeNull();
+      const snap = await store.load();
+      // Cooldown cleared because the slot has 92% capacity remaining — it
+      // isn't actually rate-limited anymore.
+      expect(snap.state[s.keyId].cooldownUntil).toBeUndefined();
+      expect(snap.state[s.keyId].rateLimitedAt).toBeUndefined();
+      expect(snap.state[s.keyId].rateLimitSource).toBeUndefined();
+      // Usage snapshot still persisted.
+      expect(snap.state[s.keyId].usage?.fiveHour?.utilization).toBe(8);
+    });
+
+    it('#876: fresh usage with fiveHour.utilization === 100 preserves cooldown (slot really is capped)', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const s = await tm.addSlot({
+        name: 'oauth',
+        kind: 'oauth_credentials',
+        credentials: makeOAuthCreds(),
+        acknowledgedConsumerTosRisk: true,
+      });
+      const realCooldown = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+      await store.mutate((snap) => {
+        snap.state[s.keyId].cooldownUntil = realCooldown;
+        snap.state[s.keyId].rateLimitedAt = new Date().toISOString();
+        snap.state[s.keyId].rateLimitSource = 'error_string';
+      });
+      fetchUsageMock.mockResolvedValueOnce({
+        snapshot: {
+          fetchedAt: new Date().toISOString(),
+          fiveHour: { utilization: 100, resetsAt: new Date(Date.now() + 3_600_000).toISOString() },
+        },
+        nextFetchAllowedAtMs: Date.now() + 2 * 60 * 1000,
+      });
+      await tm.fetchAndStoreUsage(s.keyId);
+      const snap = await store.load();
+      expect(snap.state[s.keyId].cooldownUntil).toBe(realCooldown);
+      expect(snap.state[s.keyId].rateLimitSource).toBe('error_string');
+    });
+
+    it('#876: fresh usage without fiveHour data does NOT clear cooldown (no signal to act on)', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const s = await tm.addSlot({
+        name: 'oauth',
+        kind: 'oauth_credentials',
+        credentials: makeOAuthCreds(),
+        acknowledgedConsumerTosRisk: true,
+      });
+      const cooldown = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+      await store.mutate((snap) => {
+        snap.state[s.keyId].cooldownUntil = cooldown;
+        snap.state[s.keyId].rateLimitedAt = new Date().toISOString();
+        snap.state[s.keyId].rateLimitSource = 'error_string';
+      });
+      // Anthropic sometimes omits the five_hour window from the usage payload
+      // (observed in prod for several slots). Absence of evidence is not
+      // evidence — keep the cooldown intact.
+      fetchUsageMock.mockResolvedValueOnce({
+        snapshot: {
+          fetchedAt: new Date().toISOString(),
+          sevenDay: { utilization: 7, resetsAt: new Date(Date.now() + 7 * 24 * 3_600_000).toISOString() },
+        },
+        nextFetchAllowedAtMs: Date.now() + 2 * 60 * 1000,
+      });
+      await tm.fetchAndStoreUsage(s.keyId);
+      const snap = await store.load();
+      expect(snap.state[s.keyId].cooldownUntil).toBe(cooldown);
+      expect(snap.state[s.keyId].rateLimitSource).toBe('error_string');
+    });
+
     it('401 → refresh → retry once → success', async () => {
       const { mod, storeMod } = await importSut();
       const { UsageFetchError } = await import('../oauth/usage');
