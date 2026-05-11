@@ -31,16 +31,15 @@ export type AuthState = 'healthy' | 'refresh_failed' | 'revoked';
  * - `response_header` — direct upstream evidence (parsed from rate-limit headers).
  * - `error_string`    — direct upstream evidence (parsed from a 429 error body).
  * - `manual`          — operator-set bookkeeping (no upstream signal).
- * - `inferred_shared` — propagated from a sibling slot that was directly
- *                      rate-limited at the same wall-clock reset (the
- *                      cross-account shared-bucket heuristic; see
- *                      `docs/cct-shared-bucket-cooldown-propagation/`).
  *
- * Only the two "direct evidence" arms can anchor a shared-bucket match —
- * `manual` and `inferred_shared` are deliberately excluded so a single
- * inference cannot chain across the whole pool.
+ * NOTE: a former `inferred_shared` arm (the shared-bucket propagation heuristic
+ * from #804 / #869) was removed in #871. A 429 marks only the active slot;
+ * sibling state is never touched by inference. Legacy on-disk snapshots may
+ * still carry `'inferred_shared'` as a string; readers tolerate it and treat
+ * it as equivalent to no recognised source (UI falls through to the default
+ * "Cooldown" label).
  */
-export type RateLimitSource = 'response_header' | 'error_string' | 'manual' | 'inferred_shared';
+export type RateLimitSource = 'response_header' | 'error_string' | 'manual';
 
 export interface Lease {
   leaseId: string;
