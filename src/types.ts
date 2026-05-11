@@ -281,6 +281,40 @@ export interface ConversationSession {
   // Handle for pending auto-retry setTimeout — stored so session reset can cancel it (Issue #215).
   // Not serialized to disk (runtime-only).
   pendingRetryTimer?: ReturnType<typeof setTimeout>;
+  /**
+   * Pending personal-skill SKILL.md file roundtrip — set when the user clicks
+   * "✏️ 편집" on a skill whose body exceeds `MAX_INLINE_EDIT_CHARS`. The
+   * action handler uploads SKILL.md to the thread as an attachment and
+   * stashes this marker; the next inbound `file_share` event from the same
+   * user in the same thread is intercepted by `event-router.handleFileUpload`,
+   * which validates and applies the upload via `updateUserSkill`.
+   *
+   * `baselineHash` is `computeContentHash` over the SKILL.md bytes the bot
+   * uploaded — a stale-guard against the real concurrent-write race: the
+   * same user editing the same skill from two threads (or via
+   * `MANAGE_SKILL update` from a model turn) between upload-out and
+   * upload-in. Without the hash, the second roundtrip's upload would
+   * silently clobber the first write. With it, the second is rejected
+   * with a clear "skill changed since your edit" notice.
+   *
+   * Runtime-only (NOT persisted to disk) and explicitly cleared on
+   * `clearSessionId` / `resetSessionContext` so `/new` / `/renew` cannot
+   * resurrect a stale edit click from the previous logical session.
+   * Matches the `pendingRetryTimer` convention; a restart loses the
+   * marker and the user re-clicks 편집.
+   */
+  pendingSkillUpload?: {
+    skillName: string;
+    requesterId: string;
+    baselineHash: string;
+    /**
+     * Epoch ms; an inbound SKILL.md upload after this is rejected with a
+     * TTL-expired notice (NOT silently routed into Claude). TTL is set
+     * generously (~24h) since the marker is cheap and the silent-expiry
+     * UX is worse than the marker living a bit too long.
+     */
+    expiresAt: number;
+  };
   // Merge code change stats — accumulated from merged PRs in this session
   mergeStats?: {
     totalLinesAdded: number;

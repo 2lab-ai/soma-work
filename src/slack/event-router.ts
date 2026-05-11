@@ -1,10 +1,12 @@
 import type { App } from '@slack/bolt';
+import fetch from 'node-fetch';
 import { registerChannel, unregisterChannel } from '../channel-registry';
 import type { ClaudeHandler, SessionExpiryCallbacks } from '../claude-handler';
 import { config } from '../config';
 import { Logger } from '../logger';
 import type { ConversationSession } from '../types';
 import { userSettingsStore } from '../user-settings-store';
+import { MAX_SKILL_SIZE } from '../user-skill-store';
 import type { ActionHandlers, MessageEvent, MessageHandler, SayFn } from './action-handlers';
 import { CommandParser } from './command-parser';
 import { CommandRouter } from './commands/command-router';
@@ -12,6 +14,7 @@ import type { CommandDependencies } from './commands/types';
 import type { SessionUiManager } from './session-manager';
 import type { SlackApiHelper } from './slack-api-helper';
 import { SlashCommandAdapter } from './slash-command-adapter';
+import { type ConsumeUploadDeps, consumePendingSkillUpload, type FileDescriptor } from './user-skill-file-roundtrip';
 import { isSlashForbidden } from './z/capability';
 import { normalizeZInvocation, stripZPrefix } from './z/normalize';
 import { ChannelEphemeralZRespond, SlashZRespond } from './z/respond';
@@ -623,6 +626,20 @@ export class EventRouter {
     const { channel, thread_ts: threadTs, ts } = messageEvent;
     const isDM = channel.startsWith('D');
 
+    // Single session lookup reused by (a) the SKILL.md roundtrip pre-check
+    // below and (b) the existing "in-thread" branch further down.
+    const session = this.deps.claudeHandler.getSession(channel, threadTs);
+
+    // Personal-skill SKILL.md roundtrip — checked BEFORE the DM/session/
+    // mention routing so a long-body edit can complete even when the upload
+    // would otherwise route the file straight into Claude as a prompt
+    // attachment. Falls through (without consuming the event) for marker
+    // absent / uploader mismatch / non-`SKILL.md` upload.
+    if (session?.pendingSkillUpload) {
+      const consumed = await this.maybeConsumeSkillUpload(messageEvent, session);
+      if (consumed) return;
+    }
+
     // DM에서는 항상 처리
     if (isDM) {
       this.logger.info('Handling file upload event in DM');
@@ -632,8 +649,7 @@ export class EventRouter {
 
     // 채널에서는 기존 세션이 있을 때만 처리
     // NOTE: sessionId가 없어도 세션이 있으면 처리 (sessionId는 첫 응답 후에 설정됨)
-    const session = threadTs ? this.deps.claudeHandler.getSession(channel, threadTs) : undefined;
-    if (session) {
+    if (threadTs && session) {
       this.logger.info('Handling file upload event in existing session', {
         channel,
         threadTs,
@@ -671,6 +687,91 @@ export class EventRouter {
     if (ts) {
       await this.deps.slackApi.addReaction(channel, ts, 'no_entry');
     }
+  }
+
+  /**
+   * Inspect an inbound `file_share` event against a session's pending
+   * `pendingSkillUpload` marker. When the marker, requester, filename, and
+   * baseline-hash all line up, download the file with the bot's Slack
+   * token and apply the new SKILL.md bytes via `updateUserSkill`.
+   *
+   * Returns `true` iff the event was consumed — i.e. caller MUST NOT route
+   * the same event through the normal Claude pipeline. Returns `false` for
+   * marker absent / uploader mismatch / non-`SKILL.md` upload (so the file
+   * still reaches Claude as a normal prompt attachment) AND for expired
+   * markers (the marker is silently dropped but the event continues).
+   */
+  private async maybeConsumeSkillUpload(messageEvent: any, session: ConversationSession): Promise<boolean> {
+    const { channel, thread_ts: threadTs } = messageEvent;
+    const files = (messageEvent.files || []) as FileDescriptor[];
+    const deps: ConsumeUploadDeps = {
+      // Pre-cap at MAX_SKILL_SIZE so we don't decode bytes the persistence
+      // layer would just reject; the constant is shared so a bump in
+      // user-skill-store automatically tightens the wire too.
+      downloadFile: async (file) => {
+        try {
+          const url = file.url_private_download || file.url_private;
+          if (!url) return { ok: false, error: 'missing url_private_download' };
+          const response = await fetch(url, {
+            headers: { Authorization: `Bearer ${config.slack.botToken}` },
+            redirect: 'follow',
+          });
+          if (!response.ok) return { ok: false, error: `HTTP ${response.status}` };
+          const buf = Buffer.from(await response.arrayBuffer());
+          if (buf.length > MAX_SKILL_SIZE) {
+            return {
+              ok: false,
+              error: `SKILL.md too large (${buf.length} > ${MAX_SKILL_SIZE} bytes)`,
+            };
+          }
+          return { ok: true, content: buf.toString('utf-8') };
+        } catch (err) {
+          return { ok: false, error: (err as Error)?.message ?? String(err) };
+        }
+      },
+    };
+
+    const outcome = await consumePendingSkillUpload({
+      session,
+      uploaderId: messageEvent.user,
+      files,
+      deps,
+    });
+
+    if (outcome.clearMarker) {
+      session.pendingSkillUpload = undefined;
+      // Broadcast-only — `pendingSkillUpload` is runtime-only (types.ts)
+      // so the saveSessions half of persistAndBroadcast would be wasted IO.
+      this.deps.claudeHandler.broadcastSessionUpdate();
+    }
+
+    if (outcome.consumed) {
+      this.logger.info('maybeConsumeSkillUpload: consumed file_share event', {
+        channel,
+        threadTs,
+        uploader: messageEvent.user,
+        outcome: outcome.outcome,
+      });
+      if (outcome.message) {
+        try {
+          await this.deps.slackApi.postMessage(channel, outcome.message, { threadTs });
+        } catch (err) {
+          this.logger.warn('maybeConsumeSkillUpload: outcome postMessage failed', {
+            err: (err as Error)?.message ?? String(err),
+          });
+        }
+      }
+      return true;
+    }
+
+    if (outcome.reason && outcome.reason !== 'no_marker') {
+      this.logger.debug('maybeConsumeSkillUpload: fell through', {
+        channel,
+        threadTs,
+        reason: outcome.reason,
+      });
+    }
+    return false;
   }
 
   /**
