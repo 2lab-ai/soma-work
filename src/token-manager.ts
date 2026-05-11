@@ -1904,6 +1904,32 @@ export class TokenManager {
       st.lastUsageFetchedAt = settled.snapshot.fetchedAt;
       st.nextUsageFetchAllowedAt = new Date(settled.nextFetchAllowedAtMs).toISOString();
       st.consecutiveUsageFailures = 0;
+
+      // #876 — Usage refresh clears stale cooldown.
+      //
+      // Anthropic's /api/oauth/usage is the ground truth: when a fresh
+      // fiveHour.utilization < 100 lands, the slot demonstrably has capacity
+      // and is NOT actually rate-limited — any persisted cooldownUntil is
+      // stale (a one-off 429 whose wall-clock has already reset, or a legacy
+      // `inferred_shared` mark from #804 that never matched a real upstream
+      // limit). Clear the cooldown so the slot becomes eligible immediately.
+      //
+      // Guard: only act when `fiveHour.utilization` is a finite number below
+      // 100. Absent fiveHour (observed in prod when Anthropic omits the
+      // window from the payload) is no signal — leave the cooldown intact.
+      const fiveHourUtil = settled.snapshot.fiveHour?.utilization;
+      if (
+        typeof fiveHourUtil === 'number' &&
+        Number.isFinite(fiveHourUtil) &&
+        fiveHourUtil < 100 &&
+        st.cooldownUntil !== undefined
+      ) {
+        logger.info(`fetchAndStoreUsage: clearing stale cooldown on ${keyId} (fiveHour.utilization=${fiveHourUtil}%)`);
+        st.cooldownUntil = undefined;
+        st.rateLimitedAt = undefined;
+        st.rateLimitSource = undefined;
+      }
+
       snap2.state[keyId] = st;
     });
     return settled.snapshot;
