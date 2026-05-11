@@ -849,7 +849,14 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       expect(snap.state[s.keyId].rateLimitSource).toBe('error_string');
     });
 
-    it('#876: fresh usage without fiveHour data does NOT clear cooldown (no signal to act on)', async () => {
+    it('#878: fresh usage with fiveHour absent (sevenDay low) clears cooldown — absent window treated as 0%', async () => {
+      // Anthropic frequently omits the five_hour window from the /usage payload
+      // when the slot's recent activity is too sparse to register. Observed in
+      // prod for ai3 + dev1 + several siblings — they sat stuck in cooldown
+      // because #876 only acted on a present fiveHour. Treat an absent window
+      // as 0% utilization: the slot is demonstrably not saturated on that
+      // window. If at least one window proves capacity, clear the stale
+      // cooldown.
       const { mod, storeMod } = await importSut();
       const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
       const tm = new mod.TokenManager(store);
@@ -866,13 +873,80 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
         snap.state[s.keyId].rateLimitedAt = new Date().toISOString();
         snap.state[s.keyId].rateLimitSource = 'error_string';
       });
-      // Anthropic sometimes omits the five_hour window from the usage payload
-      // (observed in prod for several slots). Absence of evidence is not
-      // evidence — keep the cooldown intact.
       fetchUsageMock.mockResolvedValueOnce({
         snapshot: {
           fetchedAt: new Date().toISOString(),
           sevenDay: { utilization: 7, resetsAt: new Date(Date.now() + 7 * 24 * 3_600_000).toISOString() },
+        },
+        nextFetchAllowedAtMs: Date.now() + 2 * 60 * 1000,
+      });
+      await tm.fetchAndStoreUsage(s.keyId);
+      const snap = await store.load();
+      // Cooldown cleared — fiveHour absent treated as 0%, sevenDay 7% also
+      // below saturation → no window is capped → stale cooldown.
+      expect(snap.state[s.keyId].cooldownUntil).toBeUndefined();
+      expect(snap.state[s.keyId].rateLimitedAt).toBeUndefined();
+      expect(snap.state[s.keyId].rateLimitSource).toBeUndefined();
+    });
+
+    it('#878: fresh usage with both fiveHour and sevenDay absent clears cooldown', async () => {
+      // The other corner case: Anthropic returns a payload with no usage
+      // windows at all. We treat this as "no evidence of saturation" → clear.
+      // If the slot really is rate-limited it'll 429 again on the next call
+      // and rotateOnRateLimit will re-mark it.
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const s = await tm.addSlot({
+        name: 'oauth',
+        kind: 'oauth_credentials',
+        credentials: makeOAuthCreds(),
+        acknowledgedConsumerTosRisk: true,
+      });
+      const cooldown = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+      await store.mutate((snap) => {
+        snap.state[s.keyId].cooldownUntil = cooldown;
+        snap.state[s.keyId].rateLimitedAt = new Date().toISOString();
+        snap.state[s.keyId].rateLimitSource = 'error_string';
+      });
+      fetchUsageMock.mockResolvedValueOnce({
+        snapshot: { fetchedAt: new Date().toISOString() },
+        nextFetchAllowedAtMs: Date.now() + 2 * 60 * 1000,
+      });
+      await tm.fetchAndStoreUsage(s.keyId);
+      const snap = await store.load();
+      expect(snap.state[s.keyId].cooldownUntil).toBeUndefined();
+      expect(snap.state[s.keyId].rateLimitedAt).toBeUndefined();
+      expect(snap.state[s.keyId].rateLimitSource).toBeUndefined();
+    });
+
+    it('#878: fresh usage with sevenDay === 100 preserves cooldown (weekly cap is a real signal)', async () => {
+      // A slot that hit the 7-day cap really IS rate-limited even if fiveHour
+      // looks fine. Don't clear under that condition — the operator (or the
+      // upstream API) should see the cooldown stay until the weekly window
+      // resets.
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const s = await tm.addSlot({
+        name: 'oauth',
+        kind: 'oauth_credentials',
+        credentials: makeOAuthCreds(),
+        acknowledgedConsumerTosRisk: true,
+      });
+      const cooldown = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+      await store.mutate((snap) => {
+        snap.state[s.keyId].cooldownUntil = cooldown;
+        snap.state[s.keyId].rateLimitedAt = new Date().toISOString();
+        snap.state[s.keyId].rateLimitSource = 'error_string';
+      });
+      fetchUsageMock.mockResolvedValueOnce({
+        snapshot: {
+          fetchedAt: new Date().toISOString(),
+          fiveHour: { utilization: 30, resetsAt: new Date(Date.now() + 3_600_000).toISOString() },
+          sevenDay: { utilization: 100, resetsAt: new Date(Date.now() + 7 * 24 * 3_600_000).toISOString() },
         },
         nextFetchAllowedAtMs: Date.now() + 2 * 60 * 1000,
       });

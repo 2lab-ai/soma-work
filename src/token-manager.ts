@@ -1905,26 +1905,30 @@ export class TokenManager {
       st.nextUsageFetchAllowedAt = new Date(settled.nextFetchAllowedAtMs).toISOString();
       st.consecutiveUsageFailures = 0;
 
-      // #876 — Usage refresh clears stale cooldown.
+      // #878 — Usage refresh clears stale cooldown (extends #876).
       //
-      // Anthropic's /api/oauth/usage is the ground truth: when a fresh
-      // fiveHour.utilization < 100 lands, the slot demonstrably has capacity
-      // and is NOT actually rate-limited — any persisted cooldownUntil is
-      // stale (a one-off 429 whose wall-clock has already reset, or a legacy
-      // `inferred_shared` mark from #804 that never matched a real upstream
-      // limit). Clear the cooldown so the slot becomes eligible immediately.
+      // Anthropic's /api/oauth/usage is the ground truth. A slot is "really
+      // rate-limited" iff at least one of `fiveHour` / `sevenDay` reports
+      // `utilization >= 100`. Anything else — absent window, finite value
+      // below 100 — means the slot has capacity on that window. If NEITHER
+      // window is capped, any persisted `cooldownUntil` is stale (a one-off
+      // 429 whose reset has already happened, or a residual write from the
+      // now-reverted #804 propagation) and we clear it so the slot becomes
+      // eligible on the next pick.
       //
-      // Guard: only act when `fiveHour.utilization` is a finite number below
-      // 100. Absent fiveHour (observed in prod when Anthropic omits the
-      // window from the payload) is no signal — leave the cooldown intact.
-      const fiveHourUtil = settled.snapshot.fiveHour?.utilization;
-      if (
-        typeof fiveHourUtil === 'number' &&
-        Number.isFinite(fiveHourUtil) &&
-        fiveHourUtil < 100 &&
-        st.cooldownUntil !== undefined
-      ) {
-        logger.info(`fetchAndStoreUsage: clearing stale cooldown on ${keyId} (fiveHour.utilization=${fiveHourUtil}%)`);
+      // Absent-window semantics: Anthropic omits a window from the payload
+      // when there's no recent activity on it — that's effectively 0%, not
+      // "we don't know". Confirmed via prod where ai3/dev1 had no fiveHour
+      // data yet sat stuck in cooldown after #876 shipped.
+      const fiveHourUtil = settled.snapshot.fiveHour?.utilization ?? 0;
+      const sevenDayUtil = settled.snapshot.sevenDay?.utilization ?? 0;
+      const fiveHourCapped = Number.isFinite(fiveHourUtil) && fiveHourUtil >= 100;
+      const sevenDayCapped = Number.isFinite(sevenDayUtil) && sevenDayUtil >= 100;
+      const reallyCapped = fiveHourCapped || sevenDayCapped;
+      if (st.cooldownUntil !== undefined && !reallyCapped) {
+        logger.info(
+          `fetchAndStoreUsage: clearing stale cooldown on ${keyId} (fiveHour=${fiveHourUtil}% sevenDay=${sevenDayUtil}%)`,
+        );
         st.cooldownUntil = undefined;
         st.rateLimitedAt = undefined;
         st.rateLimitSource = undefined;
