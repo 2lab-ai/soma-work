@@ -10,13 +10,14 @@
 - **Capabilities**: New `RateLimitSource` arm `'inferred_shared'` distinguishes propagation marks from real 429s in logs and UI. The slack `/cct` card surfaces this as `via inferred shared bucket` so operators can tell apart "this slot itself was rate-limited" from "we inferred this slot is in the same bucket as a recently-limited slot".
 - **Impact**: Additive type union extension (no schema migration). One new private helper in `TokenManager`. One UI label arm. One caller-side flag added by `stream-executor` (`knownReset: parsedCooldown !== null`) — keeps the trigger gated on real wall-clock evidence. Behavior change is *limited to the active 429 path* (`stream-executor` → `tryRotateToken` → `rotateOnRateLimit`) — passive header-driven `recordRateLimitHint` is untouched. `parseCooldownTime` is untouched. Existing tests must still pass; cascade-related flows now collapse two cycles instead of N.
 
-The mechanism is the second-cascade-step heuristic with three guards:
+The mechanism is the second-cascade-step heuristic with four guards:
 
 1. **Trigger guard** — propagation only activates when the *current* call's source is direct-evidence (`'error_string' | 'response_header'`) AND `opts.knownReset === true` (the caller actually parsed a wall-clock, not the 60-minute fallback). Otherwise the helper is a no-op.
 2. **Match guard** — the matched sibling must itself be in the eligible-set (CCT + `oauthAttachment` + not tombstoned + not `disableRotation`) AND its `rateLimitSource` must be direct-evidence (`'error_string' | 'response_header'`). Sibling sources `'manual'` and `'inferred_shared'` cannot anchor a match — they don't represent direct upstream signal.
 3. **Window guard** — match radius ±W ms (default 90 000 = 90 s, env `CCT_SHARED_BUCKET_WINDOW_MS`). Wide enough to absorb minute-rounding from `parseCooldownTime`, narrow enough that two coincidental independent 429s 5+ minutes apart don't chain.
+4. **Self-cap guard (#826)** — the matched sibling's `usage.fiveHour.utilization` must be **below** `CCT_SHARED_BUCKET_SELF_CAP_THRESHOLD` (default 95, percent 0..100). A sibling whose own 5h utilization is at-or-above the threshold is treated as having hit its **own** 5h cap (not the shared cross-account bucket) and is rejected as anchor. This addresses the operator-reported failure mode where a single exhausted slot's wall-clock reset was contaminating every healthy sibling with `inferred_shared` cooldowns. Absent usage data (`usage` or `fiveHour` undefined) does NOT trigger the guard — absence of evidence is not evidence of self-cap.
 
-Together these guards eliminate the dominant false-positive vectors: (a) two independent saturations falling on the 60-minute default fallback within window, (b) cascading propagation through `'inferred_shared'` re-anchoring, (c) `'manual'` operator-set cooldowns being treated as direct evidence, (d) ineligible-set slots (api_key, no-attachment, tombstoned, disableRotation) participating as match anchors or propagation targets.
+Together these guards eliminate the dominant false-positive vectors: (a) two independent saturations falling on the 60-minute default fallback within window, (b) cascading propagation through `'inferred_shared'` re-anchoring, (c) `'manual'` operator-set cooldowns being treated as direct evidence, (d) ineligible-set slots (api_key, no-attachment, tombstoned, disableRotation) participating as match anchors or propagation targets, (e) **a self-capped sibling seeding contamination across the healthy pool**.
 
 ## 2. User Stories
 - **Operator with 6 keys** — As an operator who registered 6 separate Claude Max accounts, when one slot saturates the upstream's cross-account bucket I want the remaining slots marked immediately so my next user message doesn't sit through 4 more 429s before getting a "no slots available" answer.
@@ -36,6 +37,11 @@ Together these guards eliminate the dominant false-positive vectors: (a) two ind
 - [ ] **AC-10**: Trigger requires `opts.knownReset === true` AND `opts.source ∈ {'error_string', 'response_header'}`. When `knownReset === false` (caller's `parseCooldownTime` returned `null`, fallback to 60-minute default), propagation is a no-op even if a within-window match exists. Prevents two independent fallback-60m cooldowns from chaining.
 - [ ] **AC-11**: Sibling whose `rateLimitSource ∈ {'manual', 'inferred_shared'}` cannot anchor a match. Only direct-evidence siblings (`error_string` / `response_header`) qualify. Prevents `inferred_shared` from chaining itself.
 - [ ] **AC-12**: stream-executor's `tryRotateToken` (`src/slack/pipeline/stream-executor.ts:2023`) passes `knownReset: parsedCooldown !== null` to `rotateOnRateLimit`. The default-60m branch (`!parsedCooldown`) sets `knownReset: false`.
+- [ ] **AC-13** (added #826 — self-cap exclusion):
+  - **AC-13a**: An eligible direct-evidence sibling whose `usage.fiveHour.utilization >= CCT_SHARED_BUCKET_SELF_CAP_THRESHOLD` (default 95, percent 0..100) is **rejected as a match anchor**. Its `cooldownUntil` is treated as the sibling's own 5h-cap reset, not a cross-account bucket signal. When no other (sub-threshold) eligible anchor is found, propagation does NOT fire — preserves healthy siblings from being contaminated by one exhausted slot.
+  - **AC-13b**: An anchor with `usage.fiveHour.utilization < threshold` still propagates as before (#801 behavior preserved for the real shared-bucket case).
+  - **AC-13c**: An anchor with `usage` absent or `fiveHour` absent (no fetched usage yet) does NOT trigger the guard — absence of evidence is not evidence of self-cap. Original #801 path runs.
+  - **AC-13d**: `process.env.CCT_SHARED_BUCKET_SELF_CAP_THRESHOLD` overrides the default. Strict-integer parse with `[0, 100]` range check; invalid → warn + fall back to default 95.
 
 ## 4. Scope
 
@@ -165,6 +171,7 @@ None remaining for the spec phase. Implementation phase will need to choose:
 
 ## 9. Spec Changelog
 - 2026-04-30: Initial creation.
+- 2026-05-11 (#826): Added the self-cap guard (AC-13a..d) after operators reported `inferred_shared` contamination of healthy siblings when a single slot hit its own 5h cap. New env `CCT_SHARED_BUCKET_SELF_CAP_THRESHOLD` (default 95, range `[0, 100]`). Anchor scan now rejects siblings whose `usage.fiveHour.utilization >= threshold` — the original #801 trigger was over-eager because a self-cap reset reads back through the same `error_string` path as a true shared-bucket signal. Backward compatibility: a sibling with no fetched usage data (common pre-fetch state) still anchors, so #801's primary cascade-collapse path is preserved.
 
 ## 10. Next Step
 → Proceed with vertical trace via `stv:trace docs/cct-shared-bucket-cooldown-propagation/spec.md`.
