@@ -63,25 +63,26 @@ describe('buildSlotRow', () => {
     expect(section.text.text).toContain('ToS-risk');
   });
 
-  // #801 — `inferred_shared` is the propagation arm of `RateLimitSource`.
-  // The /cct card surfaces it as `via inferred shared bucket` so operators
-  // can tell apart "this slot itself 429d" from "we inferred this slot is
-  // in the same bucket as a recently-limited sibling".
-  it('AC-7: rateLimitSource=inferred_shared renders via inferred shared bucket', () => {
+  // #871 — Legacy snapshots may still carry the removed `'inferred_shared'`
+  // arm. `formatRateLimitSource` must tolerate it and fall through to the
+  // bare `rate-limited <ts>` form (no raw enum leak, no humanised label).
+  it('legacy rateLimitSource=inferred_shared degrades to bare rate-limited (no enum leak)', () => {
     const slot = setupSlot();
     const state: SlotState = {
       authState: 'healthy',
       activeLeases: [],
       rateLimitedAt: '2026-04-18T03:37:00Z',
-      rateLimitSource: 'inferred_shared',
+      // Cast: this string was a valid RateLimitSource arm before #871 and may
+      // still appear on disk in snapshots written by older binaries.
+      rateLimitSource: 'inferred_shared' as unknown as SlotState['rateLimitSource'],
     };
     const now = Date.parse('2026-04-18T03:42:00Z');
     const blocks = buildSlotRow(slot, state, true, now, 'Asia/Seoul');
     const text = (blocks[0] as any).text.text as string;
     expect(text).toContain('rate-limited');
-    expect(text).toContain('via inferred shared bucket');
-    // Must NOT raw-leak the enum literal.
+    // No "via" suffix at all — the removed arm is treated as missing source.
     expect(text).not.toMatch(/via inferred_shared\b/);
+    expect(text).not.toContain('via inferred shared bucket');
   });
 
   it('rate-limit timestamp + source render in the section multi-line body (always, not gated on isActive)', () => {
