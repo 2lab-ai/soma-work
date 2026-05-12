@@ -1,5 +1,5 @@
 import type { WebClient } from '@slack/web-api';
-import { SHARE_CONTENT_CHAR_LIMIT, shareOverLimitMessage } from 'somalib/model-commands/skill-share-errors';
+import { SHARE_CONTENT_CHAR_LIMIT } from 'somalib/model-commands/skill-share-errors';
 import type { ClaudeHandler } from '../../claude-handler';
 import { Logger } from '../../logger';
 import {
@@ -13,6 +13,7 @@ import {
   userSkillExists,
 } from '../../user-skill-store';
 import type { SlackApiHelper } from '../slack-api-helper';
+import { EDIT_UPLOAD_TTL_MS, uploadSkillFile } from '../user-skill-file-roundtrip';
 import type { MessageHandler, RespondFn, SayFn } from './types';
 // Action discriminators (`VALUE_KIND_*`) and action-id prefixes live in this
 // leaf so `commands/user-skills-list-handler.ts` can import them without
@@ -204,7 +205,7 @@ export class UserSkillMenuActionHandler {
           await this.handleRename(click, respond, client);
           return;
         case VALUE_KIND_SHARE:
-          await this.handleShare(click, respond);
+          await this.handleShare(click, respond, client);
           return;
         case VALUE_KIND_INVOKE:
         default:
@@ -353,14 +354,26 @@ export class UserSkillMenuActionHandler {
   }
 
   /**
-   * Post the SKILL.md as an ephemeral four-backtick code block. Read-only —
-   * does not fire the system-prompt invalidation hook. The 2500-char cap
-   * matches the wire-level dispatcher's `SHARE_CONTENT_CHAR_LIMIT` so a Slack-
-   * shared SKILL.md can also be installed via MANAGE_SKILL share without
-   * surprise truncation.
+   * Share the SKILL.md to the thread.
+   *
+   * Two transports, picked by length:
+   *
+   *   - Body ≤ `SHARE_CONTENT_CHAR_LIMIT` chars → ephemeral mrkdwn message
+   *     with a four-backtick fenced code block (the historical UX). Private
+   *     to the clicker — they copy/paste elsewhere to share.
+   *
+   *   - Body > `SHARE_CONTENT_CHAR_LIMIT` chars → `filesUploadV2` of a
+   *     `SKILL.md` attachment into the same thread + an ephemeral confirm
+   *     to the clicker. The file is visible to all thread participants;
+   *     this is intentional — share semantics imply visibility — and lifts
+   *     the previous over-cap "Trim the SKILL.md before sharing" failure
+   *     mode that blocked sharing legitimate skills (`autoz` is ~4 KB).
+   *
+   * Read-only either way: no system-prompt invalidation, no message update,
+   * no re-injection.
    */
-  private async handleShare(click: ResolvedClick, respond: RespondFn): Promise<void> {
-    const { value } = click;
+  private async handleShare(click: ResolvedClick, respond: RespondFn, client?: WebClient): Promise<void> {
+    const { value, channel, threadTs } = click;
 
     const result = shareUserSkill(value.requesterId, value.skillName);
     if (!result.ok || result.content === undefined) {
@@ -373,14 +386,46 @@ export class UserSkillMenuActionHandler {
     }
 
     if (result.content.length > SHARE_CONTENT_CHAR_LIMIT) {
-      // Same wire-level cap as the model-command dispatcher. Slack would
-      // accept the larger payload (the message limit is 40000 chars), but
-      // we want the share UX to match what a recipient model can install
-      // via MANAGE_SKILL action=create — that path enforces the same cap.
+      // Long body → upload as SKILL.md file instead of erroring.
+      if (!channel) {
+        await respond({
+          response_type: 'ephemeral',
+          text: '⚠️ 공유 파일 업로드에 채널 정보가 필요합니다.',
+          replace_original: false,
+        });
+        return;
+      }
+      const webClient = client ?? (this.ctx.slackApi.getClient() as unknown as WebClient);
+      const upload = await uploadSkillFile({
+        client: webClient,
+        channelId: channel,
+        threadTs,
+        skillName: value.skillName,
+        content: result.content,
+        title: `📤 $user:${value.skillName} — SKILL.md (${result.content.length} chars)`,
+        comment:
+          `📤 *Personal skill 공유:* \`$user:${value.skillName}\`\n` +
+          '다른 워크스페이스 / 다른 유저에게 이 SKILL.md 파일을 전달하면 됩니다. ' +
+          '받는 쪽은 동일한 이름으로 `MANAGE_SKILL action=create` 호출하거나 ' +
+          '`SKILL.md` 파일 그대로 첨부해서 설치하면 됩니다.',
+      });
+      if (!upload.ok) {
+        await respond({
+          response_type: 'ephemeral',
+          text: `⚠️ 공유 파일 업로드 실패: ${upload.error ?? 'unknown error'}`,
+          replace_original: false,
+        });
+        return;
+      }
       await respond({
         response_type: 'ephemeral',
-        text: `❌ ${shareOverLimitMessage(value.skillName, result.content.length)}`,
+        text: `📤 \`$user:${value.skillName}\` (${result.content.length} chars) 의 SKILL.md 파일을 이 스레드에 올렸습니다.`,
         replace_original: false,
+      });
+      this.logger.info('user_skill_menu: share via file upload', {
+        requesterId: value.requesterId,
+        skillName: value.skillName,
+        length: result.content.length,
       });
       return;
     }
@@ -497,16 +542,78 @@ export class UserSkillMenuActionHandler {
       return;
     }
 
-    // 3. Length fail-closed for the modal cap (Slack `plain_text_input`
-    //    `max_length` ≤ 3000 chars).
+    // 3. Long-body fallback — see `user-skill-file-roundtrip.ts` for the
+    //    full protocol. Requires a live bot session on (channel, threadTs)
+    //    to hold the marker; missing session is surfaced explicitly because
+    //    silently dropping a long-edit click is worse than asking for a
+    //    mention.
     if (detail.content.length > MAX_INLINE_EDIT_CHARS) {
+      if (!channel) {
+        await respond({
+          response_type: 'ephemeral',
+          text: '⚠️ 편집 파일 업로드에 채널 정보가 필요합니다.',
+          replace_original: false,
+        });
+        return;
+      }
+      const session = this.ctx.claudeHandler.getSession(channel, threadTs);
+      if (!session) {
+        await respond({
+          response_type: 'ephemeral',
+          text:
+            `📏 \`$user:${value.skillName}\` 본문이 너무 깁니다 ` +
+            `(${detail.content.length} > ${MAX_INLINE_EDIT_CHARS} chars). ` +
+            '이 스레드에 봇 세션이 없어 파일 라운드트립을 시작할 수 없습니다. ' +
+            '봇을 멘션해 세션을 연 뒤 다시 ✏️ 편집을 눌러주세요.',
+          replace_original: false,
+        });
+        return;
+      }
+      const webClient = client ?? (this.ctx.slackApi.getClient() as unknown as WebClient);
+      const upload = await uploadSkillFile({
+        client: webClient,
+        channelId: channel,
+        threadTs,
+        skillName: value.skillName,
+        content: detail.content,
+        title: `✏️ $user:${value.skillName} — SKILL.md (${detail.content.length} chars)`,
+        comment:
+          `✏️ *편집 파일 라운드트립:* \`$user:${value.skillName}\`\n` +
+          '이 SKILL.md 파일을 다운받아 수정한 뒤, 같은 이름(`SKILL.md`)으로 이 스레드에 ' +
+          '업로드하면 자동으로 반영됩니다 (frontmatter 포함 파일 전체가 그대로 저장됩니다). ' +
+          `*${Math.round(EDIT_UPLOAD_TTL_MS / 60000)}분 안에 업로드해주세요.*`,
+      });
+      if (!upload.ok) {
+        await respond({
+          response_type: 'ephemeral',
+          text: `⚠️ 편집 파일 업로드 실패: ${upload.error ?? 'unknown error'}`,
+          replace_original: false,
+        });
+        return;
+      }
+      session.pendingSkillUpload = {
+        skillName: value.skillName,
+        requesterId: value.requesterId,
+        baselineHash: computeContentHash(detail.content),
+        expiresAt: Date.now() + EDIT_UPLOAD_TTL_MS,
+      };
+      // `pendingSkillUpload` is runtime-only (see `types.ts`) — broadcast-only
+      // (no `saveSessions`) is the correct fan-out so the dashboard refreshes
+      // without paying a full-Map disk write for a field that won't survive
+      // a restart anyway.
+      this.ctx.claudeHandler.broadcastSessionUpdate();
       await respond({
         response_type: 'ephemeral',
         text:
-          `📏 \`$user:${value.skillName}\` 본문이 너무 깁니다 ` +
-          `(${detail.content.length} > ${MAX_INLINE_EDIT_CHARS} chars). ` +
-          '`MANAGE_SKILL update` 또는 zip 라운드트립(곧 도입)을 사용해주세요.',
+          `📤 \`$user:${value.skillName}\` 의 SKILL.md 파일을 올렸습니다. ` +
+          `수정한 뒤 같은 이름으로 이 스레드에 업로드하면 적용됩니다 ` +
+          `(TTL ${Math.round(EDIT_UPLOAD_TTL_MS / 60000)}분).`,
         replace_original: false,
+      });
+      this.logger.info('user_skill_menu: edit via file roundtrip — marker armed', {
+        requesterId: value.requesterId,
+        skillName: value.skillName,
+        length: detail.content.length,
       });
       return;
     }

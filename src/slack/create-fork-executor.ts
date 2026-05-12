@@ -15,12 +15,12 @@ import type { ForkExecutor } from './summary-service.js';
 const logger = new Logger('createForkExecutor');
 
 const FORK_SYSTEM_PROMPT =
-  'You are a concise assistant that generates executive summaries of engineering work sessions. ' +
-  'You have access to the full conversation history of this session — use it to understand what was discussed and accomplished. ' +
+  'You generate executive summaries of engineering work sessions from conversation history. ' +
+  'The session is forked from a live session — you have full access to all assistant messages, tool calls, tool outputs, and user messages from history. ' +
+  'Extract concrete work artifacts from history: file paths edited, commands run, commits made, PR/issue numbers, decisions, errors. Be specific. Never fabricate. Never hedge. ' +
   'You have NO tools or API access. Do NOT attempt to call any tools, fetch URLs, or access external services. ' +
-  'Summarize ONLY based on the conversation history you can see. ' +
-  'If the conversation history is empty or unavailable, state that briefly — do NOT ask the user for additional context. ' +
-  'Respond only with the summary — no preamble, no markdown fences.';
+  'If the conversation history is truly empty, say so in one sentence — do NOT ask the user for additional context. ' +
+  'Respond with the summary only — no preamble, no markdown fences wrapping the whole response.';
 
 /**
  * Creates a ForkExecutor that delegates to ClaudeHandler.dispatchOneShot().
@@ -65,32 +65,35 @@ export function createForkExecutor(claudeHandler: ClaudeHandler): ForkExecutor {
       try {
         response = await attempt(sessionId);
       } catch (firstError) {
-        // If the fork failed because the session no longer exists, retry without fork.
-        // Claude SDK returns "No conversation found with session ID: ..." for stale sessions.
+        // "No conversation found" from the SDK means our `resume + forkSession`
+        // call could not find the session file under `~/.claude/projects/
+        // <encoded-cwd>/<sessionId>.jsonl`. Two real causes:
+        //   1. cwd passed to dispatchOneShot does NOT match the cwd the
+        //      conversation was created under (caller wiring bug).
+        //   2. SDK truly expired/cleaned the session file.
+        //
+        // Issue #231 originally banned context-less summaries because they
+        // produce garbage output ("저에게 연결된 리포지토리/이슈가 없습니다…").
+        // We previously retried without `sessionId` here as a fallback, which
+        // silently resurrected that exact garbage path. Return null instead so
+        // the caller skips display and the underlying mismatch surfaces in
+        // logs instead of being masked by a misleading summary.
         const msg = firstError instanceof Error ? firstError.message : String(firstError);
         const isStaleSession = sessionId && msg.toLowerCase().includes('no conversation found');
 
         if (isStaleSession) {
-          // Short-circuit: if caller already aborted, don't waste a retry
-          if (abortSignal?.aborted) {
-            throw firstError;
-          }
-          logger.warn('Fork executor: stale sessionId, retrying without fork', {
-            sessionId,
-            error: msg,
-          });
-          try {
-            response = await attempt(undefined);
-          } catch (fallbackError) {
-            logger.error('Fork executor: fallback also failed', {
-              originalError: msg,
-              fallbackError: fallbackError instanceof Error ? fallbackError.message : String(fallbackError),
-            });
-            throw fallbackError;
-          }
-        } else {
-          throw firstError;
+          logger.error(
+            'Fork executor: SDK could not load conversation history — refusing to render context-less summary',
+            {
+              sessionId,
+              cwd: cwd ?? 'none',
+              error: msg,
+              hint: 'Check that cwd passed to fork matches sessionWorkingDir, or that the SDK session file still exists.',
+            },
+          );
+          return null;
         }
+        throw firstError;
       }
 
       const trimmed = response.trim();

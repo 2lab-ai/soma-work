@@ -5,19 +5,34 @@ const logger = new Logger('SummaryService');
 /**
  * Summary prompt template — fixed, not user-configurable.
  * Trace: docs/turn-summary-lifecycle/trace.md, S3, Section 2
+ *
+ * Design intent (revised after user feedback): the auto-summary must describe
+ * the **actual work performed**, not a high-level abstract recap. The previous
+ * template capped "Status" at 1–2 sentences and only referenced AS-IS/TO-BE
+ * for linked issue/PR, which forced generic output when neither was attached.
+ * The new template demands concrete artifacts (file paths, commands, commit
+ * hashes, PR/issue numbers) and explicitly tells the model to be specific.
  */
-export const SUMMARY_PROMPT = `Based on the conversation history in this session, generate an Executive Summary.
+export const SUMMARY_PROMPT = `Based on the conversation history in this session, generate an Executive Summary describing the **actual work performed** — not a generic recap.
 
-You MUST use ONLY the conversation history you already have — do NOT attempt to call any tools, APIs, or external services.
+You MUST use ONLY the conversation history you already have. Do NOT attempt to call any tools, APIs, or external services.
 
-Format:
-1. **Status**: What was accomplished in this session (1-2 sentences)
-2. **AS-IS → TO-BE**: For each active issue/PR, summarize the before/after state based on what was discussed
-3. **Key Decisions**: Any architectural or design decisions made
-4. **Next Actions**: 3 concrete next steps the user can take (each in a code block for easy copy)
+Required content (omit any section that has nothing concrete to report — do NOT fabricate or hedge):
 
-If the session has no meaningful work history, say so briefly — do NOT ask the user for additional context or tool access.
-Keep the summary concise and actionable. Write in the same language the conversation was conducted in.`;
+1. **What was done** — Concrete actions taken this session. List actual artifacts from the conversation: file paths edited or created (with full paths), commands run, commits made (hash + message if shown), PRs opened/updated/merged (with numbers and titles), issues touched (with numbers), tests or builds executed and their outcomes. List artifacts, not abstractions. Typically 3–10 bullets.
+
+2. **Decisions made** — Specific design, architectural, or scope choices that were settled, with the rationale when it was discussed. Skip if none.
+
+3. **Open threads** — Anything left unresolved: failing tests, pending reviews, unanswered questions, blocked work.
+
+4. **Suggested next actions** — Up to 3 concrete next steps the user can take. Each in its own code block for easy copy.
+
+Rules:
+- Be specific. "Refactored auth" is useless; "Edited src/auth/login.ts to add JWT refresh handling, ran npm test (passed)" is useful.
+- Reference real artifacts from the conversation: file paths, function names, PR numbers, error messages, command names. Never invent values you did not see in history.
+- If the session has truly no meaningful work history, say so in one sentence — do NOT ask the user for additional context or tool access.
+- Write in the same language the conversation was conducted in.
+- Respond with the summary only — no preamble, no markdown fences wrapping the whole response.`;
 
 /**
  * Minimal session interface for summary operations.
@@ -26,7 +41,21 @@ Keep the summary concise and actionable. Write in the same language the conversa
 export interface SummarySessionInfo {
   isActive: boolean;
   model?: string;
+  /**
+   * The user's base working directory (e.g. `/tmp/{userId}`). NOT what the SDK
+   * needs for `resume` — see `sessionWorkingDir`. Kept for backward compat
+   * with callers that only have this field.
+   */
   workingDirectory?: string;
+  /**
+   * The session-unique SDK cwd (`/tmp/{userId}/session_{ts}_{repo}`). The
+   * Claude Agent SDK stores conversation history under
+   * `~/.claude/projects/<encoded-cwd>/<sessionId>.jsonl`, so `resume` only
+   * loads history when the fork runs under the SAME cwd that produced the
+   * conversation. Always prefer this over `workingDirectory` when forking.
+   * Docs: docs/claude-agent-sdk/sessions.md L234-L235.
+   */
+  sessionWorkingDir?: string;
   /** Claude SDK session ID — used to resume conversation for context-aware summaries. */
   sessionId?: string;
   links?: {
@@ -119,23 +148,26 @@ export class SummaryService {
       return null;
     }
 
+    // SDK `resume` requires matching cwd — sessionWorkingDir is the SDK's
+    // actual cwd; workingDirectory is the user base dir. Without this, the
+    // fork looks under the wrong ~/.claude/projects path and silently loses
+    // all conversation history (then create-fork-executor used to fall back
+    // to a context-less retry that produced misleading output).
+    const forkCwd = session.sessionWorkingDir ?? session.workingDirectory;
+
     logger.info('Executing summary', {
       model: session.model,
       hasIssue: !!session.links?.issue,
       hasPR: !!session.links?.pr,
       hasSessionId: !!session.sessionId,
+      forkCwd,
+      usedSessionWorkingDir: !!session.sessionWorkingDir,
     });
 
     const fullPrompt = this.buildPrompt(session);
 
     try {
-      const response = await this.forkExecutor(
-        fullPrompt,
-        session.model,
-        session.sessionId,
-        session.workingDirectory,
-        abortSignal,
-      );
+      const response = await this.forkExecutor(fullPrompt, session.model, session.sessionId, forkCwd, abortSignal);
 
       // Check abort after await — the fork may have completed but user already sent new input
       if (abortSignal?.aborted) {
