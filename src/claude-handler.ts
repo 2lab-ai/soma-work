@@ -21,6 +21,7 @@ import {
   isSshCommand,
 } from './dangerous-command-filter';
 import { CONFIG_FILE } from './env-paths';
+import { buildBypassPermissionHookEntry } from './hooks/bypass-permission-guard';
 import { buildPrIssueHookEntries } from './hooks/pr-issue-guard';
 import { Logger } from './logger';
 import type { McpManager } from './mcp-manager';
@@ -925,6 +926,16 @@ export class ClaudeHandler {
               },
             ],
           });
+
+          // Native non-Bash tools (Write/Edit/Read/etc.) need an explicit
+          // 'allow' hook so the SDK does not route them through
+          // `permissionPromptToolName` and pop a Slack UI. The covered set is
+          // audited in `bypass-permission-guard.ts`. The SDK's hook output
+          // merger still honors deny from other matchers (sensitive-path,
+          // cross-user, ssh-ban, abort-guard) per the documented Claude Code
+          // hook behavior, so this only changes the default outcome from
+          // "fall through to prompt" to "explicit allow".
+          preToolUseHooks.push(buildBypassPermissionHookEntry());
         }
 
         // MCP tool permission enforcement: deny calls to permission-gated MCP tools
