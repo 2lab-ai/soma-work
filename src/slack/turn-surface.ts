@@ -134,6 +134,16 @@ interface TurnState {
    */
   planTs?: string;
   /**
+   * Latest todos snapshot handed to `renderTasks` for this turn. Used by
+   * `end()`/`fail()` to issue one last `chat.update` against `planTs` with
+   * `{ final: true }` — demoting any lingering `in_progress` task_cards to
+   * `pending` so the Slack-native loading indicator stops spinning after
+   * the turn has actually ended. Without this snapshot, an LLM that finishes
+   * a turn while leaving a todo in `in_progress` produces a persistent "hang
+   * state" — the planTs message looks like the bot is still working forever.
+   */
+  latestTodos?: Todo[];
+  /**
    * P3 single-choice ts. Set by askUser() on successful post. NON-AUTHORITATIVE
    * (the source of truth is session.actionPanel.pendingChoice.choiceTs, written
    * by ThreadPanel). Here purely for per-turn debug/observability.
@@ -448,6 +458,13 @@ export class TurnSurface {
       return false;
     }
 
+    // Capture the freshest todos snapshot synchronously, BEFORE scheduling
+    // the debouncer. end()/fail() rely on `state.latestTodos` to issue a
+    // terminal `{ final: true }` render — if a turn ends mid-debounce
+    // (rapid TodoWrite → end), the latest snapshot must still be available
+    // for finalization even if the debouncer's render never fires.
+    state.latestTodos = todos;
+
     // Schedule a trailing render. Each call replaces the closure so the
     // LATEST todos snapshot wins (matches TodoWrite's full-snapshot contract).
     this.renderDebouncer.schedule(turnId, async () => {
@@ -466,11 +483,15 @@ export class TurnSurface {
    * on Slack before cleanup. The cleanupTurn() handler cancels the
    * debouncer, so any later trigger that fires after cleanup finds
    * `state === undefined` below and skips on its own.
+   *
+   * `final` is the end-of-turn finalize signal — when true, the builder
+   * demotes any `in_progress` task_cards to `pending` so the persistent
+   * `planTs` message stops showing a Slack-native loading indicator.
    */
-  private async renderTasksNow(turnId: string, todos: Todo[]): Promise<void> {
+  private async renderTasksNow(turnId: string, todos: Todo[], final = false): Promise<void> {
     const state = this.turns.get(turnId);
     if (!state) return;
-    const { text, blocks } = TaskListBlockBuilder.buildPlanTasks(todos);
+    const { text, blocks } = TaskListBlockBuilder.buildPlanTasks(todos, { final });
     if (blocks.length === 0) return;
 
     const client = this.deps.slackApi.getClient();
@@ -686,6 +707,13 @@ export class TurnSurface {
     // errors — no need to wrap here.
     await this.renderDebouncer.flush(turnId);
 
+    // Demote any lingering `in_progress` task_cards to `pending` BEFORE we
+    // drop the TurnState. Slack natively renders `task_card.status='in_progress'`
+    // with a loading indicator; without this step, an LLM that ends a turn
+    // without marking its todo as completed leaves a persistent "still
+    // working" spinner on the planTs message (the user-reported hang state).
+    await this.finalizePlanIfNeeded(turnId, state);
+
     try {
       if (state.streamTs) {
         await this.closeStream(state, 'end', reason);
@@ -816,6 +844,12 @@ export class TurnSurface {
 
     this.logger.debug('turn fail()', { turnId, error: error.message });
 
+    // Same finalize step as end() — kills the persistent `in_progress`
+    // spinner on the planTs message. Critical for supersede: when a new
+    // turn replaces an in-flight one, the prior turn's plan must stop
+    // looking like it's still working before the user's eyes.
+    await this.finalizePlanIfNeeded(turnId, state);
+
     try {
       if (state.streamTs) {
         await this.closeStream(state, 'fail', 'aborted');
@@ -885,6 +919,37 @@ export class TurnSurface {
         error: describeSlackError(result.error),
       });
     }
+  }
+
+  /**
+   * Demote any lingering `in_progress` task_cards on the B2 plan message to
+   * `pending`. Called from `end()`/`fail()` AFTER the debouncer flush (so
+   * `latestTodos` is authoritative) but BEFORE `closeStream` / cleanup (so a
+   * throw cannot skip the demotion).
+   *
+   * Short-circuits when there's nothing to fix:
+   *   - no `planTs` → no message to update (also ensures the delegated
+   *     `renderTasksNow` stays on the `chat.update` branch and never falls
+   *     back to a stray `chat.postMessage` from this close-path call site)
+   *   - no `latestTodos` → state never captured a snapshot
+   *   - no `in_progress` todos → live render already showed a terminal
+   *     state; an extra Slack call would just burn rate budget without
+   *     changing the visible message
+   *
+   * The actual `chat.update` is delegated to `renderTasksNow(..., true)` so
+   * blocks/text/error-logging stay in one place. `renderTasksNow` swallows
+   * Slack errors at `warn`, matching the existing fail-open contract for
+   * the close path.
+   */
+  private async finalizePlanIfNeeded(turnId: string, state: TurnState): Promise<void> {
+    if (this.phase() < 2) return;
+    if (!state.planTs || !state.latestTodos || state.latestTodos.length === 0) return;
+    // `in_progress` is the only status Slack renders with a spinner — pending,
+    // blocked (rendered as pending), completed and error are all static. So
+    // we only pay a chat.update when there's actually a stuck spinner to kill.
+    if (!state.latestTodos.some((t) => t.status === 'in_progress')) return;
+
+    await this.renderTasksNow(turnId, state.latestTodos, true);
   }
 
   /**

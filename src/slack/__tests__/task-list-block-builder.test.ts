@@ -700,4 +700,88 @@ describe('TaskListBlockBuilder.buildPlanTasks (P2 plan/task_card)', () => {
     const planBlock = result.blocks.find((b: any) => b.type === 'plan');
     expect((planBlock.title as any).text).toBe('Tasks (1)');
   });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // `final: true` — terminal-state render for end-of-turn finalization.
+  //
+  // Bug context: the B2 plan message is persistent Slack history (see
+  // TurnSurface state.planTs commentary). If the LLM ends a turn without
+  // marking its in-progress todo as completed, the rendered task_card stays
+  // in `status: 'in_progress'` forever — Slack natively renders that state
+  // with a loading/spinner indicator, making the message look like the bot
+  // is still working long after the turn has ended ("hang state").
+  //
+  // The fix: `TurnSurface.end()` / `fail()` does one last render with
+  // `{ final: true }` so any lingering in-progress task_cards drop back to
+  // `pending`, killing the misleading native spinner. Honesty over UX
+  // theatre — we don't promote unfinished work to `complete`.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  describe('final: true (end-of-turn finalize)', () => {
+    it('maps in_progress task_cards to pending in the plan block', () => {
+      const todos: Todo[] = [
+        { id: '1', content: 'done', status: 'completed', priority: 'high' },
+        { id: '2', content: 'still running', status: 'in_progress', priority: 'high' },
+        { id: '3', content: 'waiting', status: 'pending', priority: 'medium' },
+      ];
+      const result = TaskListBlockBuilder.buildPlanTasks(todos, { final: true });
+
+      const planBlock = result.blocks.find((b: any) => b.type === 'plan');
+      expect(planBlock).toBeDefined();
+      const statuses = planBlock.tasks.map((tc: any) => tc.status);
+      // 'complete' stays; 'in_progress' demoted to 'pending'; 'pending' stays.
+      expect(statuses).toEqual(['complete', 'pending', 'pending']);
+      // Title text on the demoted card is preserved so the user can still
+      // see WHAT was left unfinished.
+      const demoted = planBlock.tasks.find((tc: any) => tc.title === 'still running');
+      expect(demoted).toBeDefined();
+      expect(demoted.status).toBe('pending');
+    });
+
+    it('top-level text replaces ⏳ (in_progress) with ⬜ (pending) icons on final', () => {
+      const todos: Todo[] = [
+        { id: '1', content: 'running A', status: 'in_progress', priority: 'high' },
+        { id: '2', content: 'running B', status: 'in_progress', priority: 'high' },
+      ];
+      const result = TaskListBlockBuilder.buildPlanTasks(todos, { final: true });
+      // No ⏳ markers in final-rendered text — every line falls back to ⬜.
+      expect(result.text).not.toContain('⏳');
+      expect(result.text).toContain('⬜ running A');
+      expect(result.text).toContain('⬜ running B');
+    });
+
+    it('fallback section mrkdwn drops ⏳ icon for in_progress on final', () => {
+      const todos: Todo[] = [{ id: '1', content: 'running solo', status: 'in_progress', priority: 'high' }];
+      const result = TaskListBlockBuilder.buildPlanTasks(todos, { final: true });
+      const sectionFallback = result.blocks.find((b: any) => b.type === 'section' && b.text?.type === 'mrkdwn');
+      expect(sectionFallback).toBeDefined();
+      expect(sectionFallback.text.text).not.toContain('⏳');
+      expect(sectionFallback.text.text).toContain('⬜');
+      // Title still present so users see WHICH task was abandoned.
+      expect(sectionFallback.text.text).toContain('running solo');
+    });
+
+    it('without `final` option (default), in_progress task_cards keep their in_progress status', () => {
+      // Regression guard — final-flag must not leak into the default code path.
+      const todos: Todo[] = [{ id: '1', content: 'running', status: 'in_progress', priority: 'high' }];
+      const result = TaskListBlockBuilder.buildPlanTasks(todos);
+      const planBlock = result.blocks.find((b: any) => b.type === 'plan');
+      expect(planBlock.tasks[0].status).toBe('in_progress');
+      expect(result.text).toContain('⏳ running');
+    });
+
+    it('final: true is a no-op when no in_progress todos exist (idempotent)', () => {
+      const todos: Todo[] = [
+        { id: '1', content: 'done', status: 'completed', priority: 'high' },
+        { id: '2', content: 'waiting', status: 'pending', priority: 'medium' },
+      ];
+      const final = TaskListBlockBuilder.buildPlanTasks(todos, { final: true });
+      const live = TaskListBlockBuilder.buildPlanTasks(todos);
+      // Same statuses, same icons — nothing to demote.
+      const finalStatuses = final.blocks.find((b: any) => b.type === 'plan').tasks.map((tc: any) => tc.status);
+      const liveStatuses = live.blocks.find((b: any) => b.type === 'plan').tasks.map((tc: any) => tc.status);
+      expect(finalStatuses).toEqual(liveStatuses);
+      expect(final.text).toBe(live.text);
+    });
+  });
 });
