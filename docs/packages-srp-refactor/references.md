@@ -29,14 +29,42 @@
 
 ## 3. Codex consult — 결정 트랜스크립트
 
-플랜의 §2 (target packages), §3 (DAG), §6 (lint enforcement), §7 (build pipeline)는 codex(`mcp__llm__chat`)와의 협의로 결정. autoz 규칙상 사용자 질의 없이 진행했으므로 audit trail을 남김.
+플랜의 §2 (target packages), §3 (DAG), §9 (lint), §5 (deploy contract), §4 (process boundary)는 codex와의 협의로 결정. autoz 규칙상 사용자 질의 없이 진행했으므로 audit trail을 남김.
 
-### Round 1: Target package list
+### Round 1 (v1 draft): Target package list
 
 - Session: `28e28a27-8b82-4bb5-844f-981279995453` (codex / gpt-5.5)
-- 결정: 9 + 1(test-utils) 패키지 구조. `@soma/common`, `extensions`, `integrations`, `mcp`, `metrics`, `core`, `sdk`, `slack`, `app`, `test-utils`.
-- 첫 페이즈 결정: `@soma/slack` 카브아웃. 이유 — Slack surface는 이미 응집도 높음 → mechanical move 가능, @slack/bolt가 core에 leak되던 라인이 컴파일 에러로 폭로됨, 이후 페이즈의 의존 방향이 한 PR로 못박힘.
-- 위 결정은 §1, §2, §4 Phase 1, §10에 반영.
+- 결정: 9 + 1(test-utils) 패키지 구조 (이후 v2에서 보강됨).
+- 첫 페이즈 결정 (v1): `@soma/slack` 카브아웃.
+
+### Round 2 (v1 draft): Lint enforcement + build pipeline
+
+- 같은 세션 resume.
+- 결정 1 (lint): biome `noRestrictedImports`는 패키지 경계 그래프 룰에 부적합 — gitignore 스타일 specifier 패턴만 지원. **dependency-cruiser**를 채택.
+- 결정 2 (build): 루트의 `cp -r src/... dist/...` 파이프라인 폐기. 각 패키지가 자기 `build`에서 자기 에셋을 자기 `dist/`로 emit.
+
+### Round 3 (v2 hard review): 펀치리스트 7개
+
+- Session: `7b7e0b02-f189-4713-8d10-c4b6935a2c9b` (codex / gpt-5.5, 2026-05-12)
+- 입력: v1 plan + 사용자가 추가로 준 컨텍스트(mcp-servers는 stdio child process, deploy.yml의 3-rsync, somalib의 진짜 역할, src/local + src/prompt는 임베디드 콘텐츠).
+- **점수: 42/100.** "decent generic src/ workspace split, but it misses the actual failure mode."
+- 펀치리스트 (각 항목 v2 plan에 반영):
+
+| # | Gap | v2 반영 위치 |
+|---|---|---|
+| 1 | "9 + 1" 숫자 목표화는 over-translation. 패키지 경계 = 실제 runtime 경계여야. | README.md "한 줄 요약 (v2)", plan.md §1 |
+| 2 | `@soma/mcp` 단일 흡수는 틀림. mcp-servers는 import가 아니라 stdio 자식 프로세스. 각자 `bin` 패키지. | plan.md §1 (12 + 8 구조), §4 process boundary reality |
+| 3 | `path.resolve(__dirname, '..')/mcp-servers` crash vector 유지됨. `require.resolve('@soma/mcp-server-*/bin/*')`로 교체 명시. | plan.md §4 마지막, §10 landmines, Phase 0 작업 #3 |
+| 4 | somalib 흡수는 오분류. cross-process shared 패키지로 승격(`@soma/process-shared`), `_shared/` src-복사물 흡수. ESM/CJS dual emit. | plan.md §1, §2 (process-shared 행), §3 (양방향 화살표 노드), §10 landmines |
+| 5 | Deploy fragility 미해결. `Deploy & install contract` 절을 Landmines 앞에 추가, 3-rsync → 1-rsync + `npm prune --omit=dev`. | plan.md §5 신설 |
+| 6 | Asset 처리가 blunt. 패키지 안 `assets/` 루트 분리, exec bit 보존, smoke test. | plan.md §7 신설 |
+| 7 | Phase 1 = Slack은 운영 리스크 무시. Phase 0 = deploy contract + MCP bin + process-shared가 먼저. | plan.md §6 reorder, §13 one-phase 권장 변경 |
+| (보너스) | depcruise 룰에 "in-proc → mcp-server bin import 금지" + "mcp-server bin → in-proc 앱 internals import 금지" 추가. | plan.md §9 룰 3, 4 |
+
+### Failed attempts (성실성 기록)
+
+- v1 작업 시: 1차 codex large prompt(900 단어) 600s timeout → 2차 prompt 300단어로 축소해 성공. gemini fallback "Backend returned empty session ID" 실패.
+- v2 hard review: 1회 만에 punch list 산출 성공.
 
 ### Round 2: Lint enforcement + build pipeline
 
