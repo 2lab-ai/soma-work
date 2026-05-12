@@ -56,8 +56,15 @@ const invalidator = createPromptInvalidator(logger, 'Skill');
 export const setSkillPromptInvalidationHook = invalidator.setHook;
 const fireInvalidate = invalidator.fire;
 
-/** Max SKILL.md file size in bytes (post-trim length used for the check). */
-const MAX_SKILL_SIZE = 10 * 1024; // 10KB
+/**
+ * Max SKILL.md file size in bytes (post-trim length used for the check).
+ *
+ * Exported so the SKILL.md file-roundtrip transport (`user-skill-file-roundtrip`,
+ * `event-router.maybeConsumeSkillUpload`) can reject oversize uploads at the
+ * wire layer using the exact same byte budget the persistence layer would
+ * apply — preventing a re-cap that silently drifts on a future bump.
+ */
+export const MAX_SKILL_SIZE = 10 * 1024; // 10KB
 /** Max skills per user (enforced on create only). */
 const MAX_SKILLS_PER_USER = 50;
 /**
