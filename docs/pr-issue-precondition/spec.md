@@ -8,6 +8,14 @@
 > without HTTP plumbing or session-id reverse lookup. This v2 revision moves to that seam, hardens
 > the body-marker check against title-substring adversarial inputs, adds MCP PR-creation coverage,
 > replaces silent fail-open with structured logging, and expands the test matrix.
+>
+> **v2.2 (#885)**: extend the source-URL recognizer to accept Atlassian Cloud Jira
+> `/browse/<KEY>-<NUM>` URLs alongside GitHub `/issues/<n>`. Triggered by a production handoff
+> with `sourceIssueUrl=https://insightquest.atlassian.net/browse/PTN-4217` falling through to
+> `malformed-source-issue-url` and blocking PR creation despite a valid linked ticket. Adds two
+> reason codes (`missing-jira-key`, `wrong-jira-key`); preserves all existing GitHub reason
+> codes and error message shapes. Self-hosted Jira is explicitly out of scope. See
+> [AD-12: Jira source provider](#ad-12-jira-source-provider-885).
 
 ## Why
 
@@ -282,6 +290,52 @@ Same as v1 AD-11. Four prompt locations get status flips:
 - `src/local/skills/using-z/SKILL.md:38, 65, 156, 162`
 
 See trace S5 for exact diffs.
+
+### AD-12: Jira source provider (#885)
+
+The guard accepts a second source-URL shape: Atlassian Cloud Jira `/browse/<KEY>-<NUM>` URLs.
+
+**URL recognizer** (anchored, source-side only):
+```
+/^https:\/\/[A-Za-z0-9][A-Za-z0-9-]*\.atlassian\.net\/browse\/([A-Z][A-Z0-9_]*-\d+)(?:[/?#]|$)/
+```
+Recognized: `https://insightquest.atlassian.net/browse/PTN-4217`.
+Explicitly NOT recognized → `malformed-source-issue-url`:
+- self-hosted (`https://jira.example.com/jira/browse/PTN-4217`)
+- board views with query-param ticket reference (`...?selectedIssue=PTN-4217`)
+- lowercase keys (`/browse/ptn-4217`)
+- keys with a leading digit (`4PTN-4217`)
+
+**Body marker** — case-insensitive `Closes <KEY>` (parallel to GitHub `Closes #N`), OR the
+matching Jira URL anywhere in the body. Bare key mentions (`Related: PTN-4217`, no `Closes`
+prefix and no URL) **do not** satisfy — accidental commentary references would false-pass.
+Comparison is upper-cased so `closes ptn-4217` matches `PTN-4217`. The URL-evidence path
+extracts the key from any Atlassian Cloud `/browse/...` URL in the body using the strict
+upper-case shape; user-typed lowercase URLs must use `Closes <KEY>` instead.
+
+**New reason codes**:
+- `missing-jira-key` — no `Closes <KEY>` and no Jira URL in body (mirrors `missing-closes-issue`).
+- `wrong-jira-key` — body contains a `Closes <KEY>` or Jira URL whose key differs from the
+  handoff source (mirrors `wrong-issue-number`).
+Existing GitHub reason codes (`missing-closes-issue`, `wrong-issue-number`,
+`malformed-source-issue-url`) keep their meaning and message shape.
+
+**Cross-provider rejection** — `Closes #N` against a Jira source blocks as `missing-jira-key`;
+`Closes PTN-N` against a GitHub source blocks as `missing-closes-issue`. The guard validates
+against the *source* provider, not any issue-like reference.
+
+**Diff size** — `src/hooks/pr-issue-guard.ts` gains ~60 lines (helpers + branch); test file
+gains ~22 cases mirroring the GitHub matrix. No changes to `handoff-parser.ts`
+(`extractUrlOrNull` already stores arbitrary URLs verbatim) or to `SessionLink.provider`
+(`'jira'` was pre-existing).
+
+**Rejected alternatives**:
+- Accepting bare keys (`PTN-4217` anywhere). Too loose; commentary like `Related: PTN-4217`
+  or copy-pasted error logs containing keys would false-pass.
+- Renaming `wrong-issue-number` → `wrong-issue-reference`. Existing reason strings are
+  embedded in logs/tests/messages — backward-incompat for negligible clarity gain.
+- Touching the `handoff-parser` to canonicalize URLs. Parser already stores any URL
+  verbatim; provider validation belongs in the guard where the body-side check lives.
 
 ## Out of Scope
 
