@@ -242,6 +242,19 @@ export class ClaudeHandler {
     return this.sessionRegistry;
   }
 
+  /**
+   * Broadcast-only dashboard refresh — no disk write.
+   *
+   * Use this instead of `getSessionRegistry().persistAndBroadcast(...)` when
+   * mutating runtime-only session fields (`pendingSkillUpload`,
+   * `pendingRetryTimer`, etc.) — those are intentionally NOT serialized to
+   * disk (see `types.ts` for the runtime-only convention), so the
+   * `saveSessions` half of `persistAndBroadcast` is wasted IO.
+   */
+  broadcastSessionUpdate(): void {
+    this.sessionRegistry.broadcastSessionUpdate();
+  }
+
   setExpiryCallbacks(callbacks: SessionExpiryCallbacks): void {
     this.sessionRegistry.setExpiryCallbacks(callbacks);
   }

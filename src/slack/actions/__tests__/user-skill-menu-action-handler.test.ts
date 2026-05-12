@@ -10,20 +10,34 @@ describe('UserSkillMenuActionHandler', () => {
   let messageHandler: any;
   let respond: any;
   let viewsOpen: any;
+  let filesUploadV2: any;
+  let broadcastSessionUpdate: any;
+  let fakeSession: any;
+  let getSession: any;
   let client: any;
   let handler: UserSkillMenuActionHandler;
 
   beforeEach(() => {
     vi.clearAllMocks();
+    filesUploadV2 = vi.fn().mockResolvedValue({ ok: true });
     slackApi = {
       updateMessage: vi.fn().mockResolvedValue(undefined),
       postMessage: vi.fn().mockResolvedValue({ ts: 'posted' }),
+      // Returned via `slackApi.getClient()` — exposes the WebClient used by
+      // the file-roundtrip share/edit branches.
+      getClient: vi.fn().mockReturnValue({ filesUploadV2 }),
     };
-    claudeHandler = {};
+    fakeSession = {};
+    getSession = vi.fn().mockReturnValue(fakeSession);
+    broadcastSessionUpdate = vi.fn();
+    claudeHandler = {
+      getSession,
+      broadcastSessionUpdate,
+    };
     messageHandler = vi.fn().mockResolvedValue(undefined);
     respond = vi.fn().mockResolvedValue(undefined);
     viewsOpen = vi.fn().mockResolvedValue({ ok: true });
-    client = { views: { open: viewsOpen } };
+    client = { views: { open: viewsOpen }, filesUploadV2 };
 
     handler = new UserSkillMenuActionHandler({
       slackApi,
@@ -239,18 +253,79 @@ describe('UserSkillMenuActionHandler', () => {
       expect(respond.mock.calls[0][0].text).toMatch(/multi.file|멀티 파일/i);
     });
 
-    it('fails closed with an ephemeral when the body exceeds MAX_INLINE_EDIT_CHARS', async () => {
+    it('over MAX_INLINE_EDIT_CHARS: uploads SKILL.md to the thread and arms a pendingSkillUpload marker', async () => {
+      // Long-body fallback: the inline modal can't carry >3000 chars (Slack
+      // `plain_text_input.max_length` cap), so we upload SKILL.md as a file
+      // and arm a session marker. The next file_share with `SKILL.md` from
+      // the same user in the same thread completes the round-trip.
+      const longBody = 'x'.repeat(3001);
+      vi.mocked(userSkillStore.getUserSkill).mockReturnValue({
+        name: 'a',
+        description: '',
+        content: longBody,
+      });
+      vi.mocked(userSkillStore.computeContentHash).mockReturnValue('b'.repeat(32));
+
+      await handler.handleAction(makeOverflowBody({ kind: 'user_skill_edit' }), respond, client);
+
+      // No modal — file roundtrip path.
+      expect(viewsOpen).not.toHaveBeenCalled();
+      expect(filesUploadV2).toHaveBeenCalledTimes(1);
+      const uploadCall = filesUploadV2.mock.calls[0][0];
+      expect(uploadCall.filename).toBe('SKILL.md');
+      expect(uploadCall.content).toBe(longBody);
+      expect(uploadCall.channel_id).toBe('C1');
+      expect(uploadCall.thread_ts).toBe('thread-ts');
+
+      // Marker armed on the session, with the bot's content hash as baseline.
+      expect(fakeSession.pendingSkillUpload).toBeDefined();
+      expect(fakeSession.pendingSkillUpload.skillName).toBe('a');
+      expect(fakeSession.pendingSkillUpload.requesterId).toBe('U1');
+      expect(fakeSession.pendingSkillUpload.baselineHash).toBe('b'.repeat(32));
+      expect(fakeSession.pendingSkillUpload.expiresAt).toBeGreaterThan(Date.now());
+
+      // Broadcast-only (runtime-only field — no disk write).
+      expect(broadcastSessionUpdate).toHaveBeenCalledTimes(1);
+
+      // User-facing ephemeral confirms the upload.
+      expect(respond).toHaveBeenCalledTimes(1);
+      expect(respond.mock.calls[0][0].text).toMatch(/SKILL\.md.*올렸|upload/i);
+    });
+
+    it('over MAX_INLINE_EDIT_CHARS: surfaces an ephemeral error when no bot session exists in the thread', async () => {
+      // Marker needs a session to live on. Without one we can't accept the
+      // user's eventual upload, so fail closed visibly instead of silently
+      // dropping the click.
       vi.mocked(userSkillStore.getUserSkill).mockReturnValue({
         name: 'a',
         description: '',
         content: 'x'.repeat(3001),
       });
+      getSession.mockReturnValue(undefined);
 
       await handler.handleAction(makeOverflowBody({ kind: 'user_skill_edit' }), respond, client);
 
       expect(viewsOpen).not.toHaveBeenCalled();
+      expect(filesUploadV2).not.toHaveBeenCalled();
       expect(respond).toHaveBeenCalledTimes(1);
-      expect(respond.mock.calls[0][0].text).toMatch(/너무 깁니다|too long/i);
+      expect(respond.mock.calls[0][0].text).toMatch(/세션|session/i);
+    });
+
+    it('over MAX_INLINE_EDIT_CHARS: surfaces an ephemeral when filesUploadV2 throws (no marker armed)', async () => {
+      vi.mocked(userSkillStore.getUserSkill).mockReturnValue({
+        name: 'a',
+        description: '',
+        content: 'x'.repeat(3001),
+      });
+      filesUploadV2.mockRejectedValueOnce(new Error('files.upload 500'));
+
+      await handler.handleAction(makeOverflowBody({ kind: 'user_skill_edit' }), respond, client);
+
+      // No marker — we must not arm a roundtrip we can't deliver.
+      expect(fakeSession.pendingSkillUpload).toBeUndefined();
+      expect(broadcastSessionUpdate).not.toHaveBeenCalled();
+      expect(respond).toHaveBeenCalledTimes(1);
+      expect(respond.mock.calls[0][0].text).toMatch(/실패|fail/i);
     });
 
     it('fails closed with an ephemeral when trigger_id is missing', async () => {
@@ -474,7 +549,11 @@ describe('UserSkillMenuActionHandler', () => {
       expect(respond.mock.calls[0][0].text).toContain('not found');
     });
 
-    it('reports an over-limit ephemeral when SKILL.md exceeds the share cap', async () => {
+    it('over SHARE_CONTENT_CHAR_LIMIT: uploads SKILL.md as a thread attachment instead of erroring', async () => {
+      // Previously the over-cap branch returned `Trim the SKILL.md before
+      // sharing.` and the user was stuck. New behavior: upload the body as
+      // a SKILL.md file via `filesUploadV2` so the cap is no longer a hard
+      // wall — recipients can pick it up from the thread.
       // SHARE_CONTENT_CHAR_LIMIT === 2500 (skill-share-errors.ts).
       const oversized = 'x'.repeat(2501);
       vi.mocked(userSkillStore.shareUserSkill).mockReturnValue({
@@ -485,11 +564,36 @@ describe('UserSkillMenuActionHandler', () => {
 
       await handler.handleAction(makeShareBody(), respond, client);
 
+      expect(filesUploadV2).toHaveBeenCalledTimes(1);
+      const uploadCall = filesUploadV2.mock.calls[0][0];
+      expect(uploadCall.filename).toBe('SKILL.md');
+      expect(uploadCall.content).toBe(oversized);
+      expect(uploadCall.channel_id).toBe('C1');
+      expect(uploadCall.thread_ts).toBe('thread-ts');
+
+      // Read-only — share never sets a pending marker.
+      expect(fakeSession.pendingSkillUpload).toBeUndefined();
+
+      // Ephemeral confirms to the clicker without leaking the body.
       expect(respond).toHaveBeenCalledTimes(1);
-      expect(respond.mock.calls[0][0].text).toMatch(/exceeds share limit|2500/);
-      // The over-limit branch must NOT leak the body — ephemeral text should
-      // not contain the giant payload.
       expect(respond.mock.calls[0][0].text).not.toContain('xxxxx'.repeat(100));
+      expect(respond.mock.calls[0][0].text).toMatch(/SKILL\.md|올렸/i);
+    });
+
+    it('over SHARE_CONTENT_CHAR_LIMIT: surfaces ephemeral error on upload failure (no marker side-effect)', async () => {
+      const oversized = 'x'.repeat(2501);
+      vi.mocked(userSkillStore.shareUserSkill).mockReturnValue({
+        ok: true,
+        message: 'ok',
+        content: oversized,
+      });
+      filesUploadV2.mockRejectedValueOnce(new Error('files.upload 500'));
+
+      await handler.handleAction(makeShareBody(), respond, client);
+
+      expect(fakeSession.pendingSkillUpload).toBeUndefined();
+      expect(respond).toHaveBeenCalledTimes(1);
+      expect(respond.mock.calls[0][0].text).toMatch(/실패|fail/i);
     });
 
     it('rejects share when clicker !== requester', async () => {
