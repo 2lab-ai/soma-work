@@ -21,6 +21,7 @@ import {
   isSshCommand,
 } from './dangerous-command-filter';
 import { CONFIG_FILE } from './env-paths';
+import { buildBypassPermissionHookEntries } from './hooks/bypass-permission-guard';
 import { buildPrIssueHookEntries } from './hooks/pr-issue-guard';
 import { Logger } from './logger';
 import type { McpManager } from './mcp-manager';
@@ -912,6 +913,14 @@ export class ClaudeHandler {
               },
             ],
           });
+
+          // Native non-Bash tools (Write/Edit/MultiEdit/NotebookEdit/TodoWrite/
+          // Read/Glob/Grep) need an explicit 'allow' hook so the SDK does not
+          // route them through `permissionPromptToolName` and pop a Slack UI.
+          // SDK merge precedence is `deny > defer > ask > allow > undefined`,
+          // so the existing sensitive-path / cross-user deny hooks still win.
+          // Trace: docs/bypass-native-tool-prompts/trace.md (this PR).
+          preToolUseHooks.push(...buildBypassPermissionHookEntries({ userBypass: true }));
         }
 
         // MCP tool permission enforcement: deny calls to permission-gated MCP tools
