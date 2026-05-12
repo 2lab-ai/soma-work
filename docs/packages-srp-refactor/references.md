@@ -18,12 +18,15 @@
 
 | Fact | Source |
 |---|---|
-| `src/` = 574 파일, 88,550 LOC | `find src -name "*.ts" \| wc -l` + `wc -l` 결과 (2026-05-11 main HEAD) |
-| Hot files: `session-registry.ts` 76K, `token-manager.ts` 96K, `slack-handler.ts` 60K, `claude-handler.ts` 52K | `du -sh src/*` |
+| `src/` = 302 production TS files / 88,550 LOC, 579 TS files including tests | `find src -name "*.ts" ! -path "*/__tests__/*" ! -name "*.test.ts" \| wc -l`, matching `wc -l`; plus all-TS count (2026-05-12 current main after fetch/pull) |
+| Hot files: `session-registry.ts` 76K, `token-manager.ts` 88K, `slack-handler.ts` 60K, `claude-handler.ts` 56K | `du -sh src/{session-registry,token-manager,slack-handler,claude-handler}.ts` |
 | 기존 workspace는 `somalib/` 단 하나 | 루트 `package.json` L23: `"workspaces": ["somalib"]` |
 | `somalib/`는 `cron/`, `model-commands/`, `permission/`, `stderr-logger.ts` 보유 | `find somalib -name "*.ts"` |
 | `mcp-servers/`는 workspace 아님, 별도 디렉토리 | 루트 `package.json`에 workspaces 등록 안 됨 |
 | 기존 build가 `cp -r src/{prompt,persona,local,metrics/usage-render/assets} dist/`로 정적 에셋 옮김 | 루트 `package.json#scripts.build` |
+| 현재 TS 빌드는 CommonJS | root `tsconfig.json#compilerOptions.module = "commonjs"` |
+| `mcp-tool-permission` MCP server가 부모 `src/`를 직접 import | `mcp-servers/mcp-tool-permission/mcp-tool-permission-mcp-server.ts` imports `../../src/mcp-tool-grant-store.js`, `../../src/mcp-tool-permission-config.js`, `../../src/admin-utils.js` |
+| deploy workflow는 `service.sh`와 target-side `npm ci --omit=dev --no-audit --no-fund`도 배포 계약 일부 | `.github/workflows/deploy.yml` deploy step |
 | facade 분해가 이미 진행 중 (SlackHandler ~600 LOC, ClaudeHandler ~610 LOC, McpManager) | `docs/architecture.md` |
 | MCP 분리 작업이 3 갈래로 동시 진행 중 | `docs/mcp-refactor/`, `docs/mcp-server-independence/`, `docs/mcp-extraction/` |
 
@@ -66,18 +69,19 @@
 - v1 작업 시: 1차 codex large prompt(900 단어) 600s timeout → 2차 prompt 300단어로 축소해 성공. gemini fallback "Backend returned empty session ID" 실패.
 - v2 hard review: 1회 만에 punch list 산출 성공.
 
-### Round 2: Lint enforcement + build pipeline
+### Round 4 (v3 hardening): current repo audit
 
-- 같은 세션 resume.
-- 결정 1 (lint): biome `noRestrictedImports`는 패키지 경계 그래프 룰에 부적합 — gitignore 스타일 specifier 패턴만 지원. **dependency-cruiser**를 채택. 이유 — resolved path matching + capture group + dependency-type 필터로 "형제 패키지의 src/를 상대경로로 import 금지" 룰 표현 가능.
-- 결정 2 (build): 루트의 `cp -r src/... dist/...` 파이프라인 폐기. 각 패키지가 자기 `package.json#scripts.build`에서 자기 에셋을 자기 `dist/`로 emit. 루트 build는 `npm run build --workspaces`로 단순화.
-- 위 결정은 §6, §7에 반영.
+- 입력: PR #871 v2 docs + current repo files (`package.json`, `tsconfig.json`, `src/mcp-config-builder.ts`, `.github/workflows/deploy.yml`, `service.sh`, `mcp-servers/*`, `somalib/*`).
+- 추가 반영:
 
-### Failed attempts (성실성 기록)
-
-- 1차 큰 prompt(~900 단어 input, full A-G 결정 요청)는 codex 600s timeout. → 2차 codex prompt를 300단어로 축소했더니 성공.
-- gemini fallback 시도는 "Backend returned empty session ID"로 실패.
-- autoz 규칙: 5 retry strategy. 여기선 prompt 축소가 1번째 우회로 성공했으므로 다음 단계로 진행.
+| # | Gap | v3 반영 위치 |
+|---|---|---|
+| 1 | target state가 12 in-proc이라고 쓰지만 실제 목록은 11 first-class packages | README, plan.md §1 |
+| 2 | Phase 0에서 `mcp-tool-permission`의 `../../src/*` imports를 제거하지 않으면 bin 패키지화 직후 깨짐 | plan.md §2, §4, Phase 0, Landmines |
+| 3 | 현재 root TS module은 CommonJS인데 v2 package example이 `type: "module"`을 섞음 | plan.md §4, §7, Landmines |
+| 4 | `@soma/mcp-config`가 MCP bin packages를 resolve해야 하는데 depcruise rule이 모든 in-proc→mcp-bin edge를 금지 | plan.md §3, §9 |
+| 5 | deploy YAML/package scripts에 inline shell과 escaped `node -e`가 많아 repo instruction의 escaping guardrail과 충돌 | README, plan.md §5, Phase 0, Landmines |
+| 6 | bundle staging 예시는 `service.sh`/bootstrap script contract와 rsync filter-order risk를 충분히 다루지 않음 | plan.md §5 |
 
 ## 4. Why not these alternatives
 
