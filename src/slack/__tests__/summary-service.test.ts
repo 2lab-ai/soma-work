@@ -97,6 +97,55 @@ describe('SummaryService', () => {
       );
     });
 
+    // Regression: #231 fixed sessionId wiring. This test pins the OTHER half of
+    // the SDK resume contract: `cwd` must match the cwd under which the SDK
+    // conversation was created (= `sessionWorkingDir`), otherwise resume looks
+    // in the wrong `~/.claude/projects/<encoded-cwd>` directory and falls back
+    // to a context-less summary that does not reflect actual work content.
+    // Docs: docs/claude-agent-sdk/sessions.md L234-L235.
+    it('execute() prefers sessionWorkingDir over workingDirectory as fork cwd', async () => {
+      const mockFork: ForkExecutor = vi.fn().mockResolvedValue('summary');
+      const service = new SummaryService(mockFork);
+
+      const session = makeSession({
+        model: 'claude-opus-4-6',
+        sessionId: 'sdk-session-xyz',
+        // workingDirectory is the user's base dir (~/tmp/{userId}) — NOT where
+        // the SDK conversation file lives. sessionWorkingDir is.
+        workingDirectory: '/tmp/userId',
+        sessionWorkingDir: '/tmp/userId/session_1711111111111_repo',
+      });
+      await service.execute(session);
+
+      expect(mockFork).toHaveBeenCalledWith(
+        expect.any(String),
+        'claude-opus-4-6',
+        'sdk-session-xyz',
+        '/tmp/userId/session_1711111111111_repo', // sessionWorkingDir wins
+        undefined,
+      );
+    });
+
+    it('execute() falls back to workingDirectory when sessionWorkingDir is missing', async () => {
+      const mockFork: ForkExecutor = vi.fn().mockResolvedValue('summary');
+      const service = new SummaryService(mockFork);
+
+      const session = makeSession({
+        sessionId: 'sdk-session-xyz',
+        workingDirectory: '/tmp/fallback',
+        // sessionWorkingDir intentionally undefined
+      });
+      await service.execute(session);
+
+      expect(mockFork).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.anything(),
+        'sdk-session-xyz',
+        '/tmp/fallback',
+        undefined,
+      );
+    });
+
     it('execute() passes abortSignal to forkExecutor', async () => {
       const mockFork: ForkExecutor = vi.fn().mockResolvedValue('summary');
       const service = new SummaryService(mockFork);
@@ -223,6 +272,44 @@ describe('SummaryService', () => {
       const result = await service.execute(session);
 
       expect(result).toContain(SUMMARY_PROMPT);
+    });
+
+    // Pins the user-facing fix: the prompt must demand *concrete* work
+    // artifacts (file paths, commands, commit/PR/issue numbers) instead of a
+    // 1–2-sentence abstract recap. Without this, even a correctly-forked
+    // session produces generic output that does not reflect actual work.
+    describe('SUMMARY_PROMPT content shape', () => {
+      it('demands concrete work artifacts, not abstract recap', () => {
+        // The prompt must explicitly call out artifacts beyond "issue/PR". The
+        // pre-fix prompt only mentioned issue/PR, leaving the model to recap
+        // abstractly when neither was linked. The post-fix prompt must also
+        // demand file paths and either commands or commits — i.e. *what the
+        // assistant actually did*, not just *what was linked*.
+        const lower = SUMMARY_PROMPT.toLowerCase();
+        expect(lower).toMatch(/file/); // file paths
+        expect(lower).toMatch(/command|commit/); // commands run or commits made
+        // And it must explicitly tell the model to be specific/concrete.
+        expect(lower).toMatch(/specific|concrete/);
+      });
+
+      it('does NOT cap the work-summary section at 1-2 sentences', () => {
+        // The previous prompt said "Status: ... (1-2 sentences)" which forced
+        // a generic abstract status. The new prompt must not cap the work
+        // recap that tightly.
+        expect(SUMMARY_PROMPT).not.toMatch(/1-?2 sentences?/i);
+      });
+
+      it('keeps the no-tools / no-external-calls guard', () => {
+        // dispatchOneShot runs with tools: [] — the prompt must not invite the
+        // model to try fetching git/PR state at runtime.
+        expect(SUMMARY_PROMPT.toLowerCase()).toContain('not');
+        expect(SUMMARY_PROMPT.toLowerCase()).toMatch(/tool|api|external/);
+      });
+
+      it('keeps the conversation-language directive', () => {
+        // We never want a Korean session summarized in English or vice versa.
+        expect(SUMMARY_PROMPT.toLowerCase()).toMatch(/same language|conversation.+language|language.+conversation/);
+      });
     });
   });
 
