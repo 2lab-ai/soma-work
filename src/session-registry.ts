@@ -1217,6 +1217,11 @@ export class SessionRegistry {
         clearTimeout(session.pendingRetryTimer);
         session.pendingRetryTimer = undefined;
       }
+      // Drop any armed SKILL.md edit-roundtrip marker — the user is starting
+      // a fresh logical session, an inbound `SKILL.md` upload should NOT
+      // silently apply to a skill the user clicked 편집 on in the previous
+      // logical session.
+      session.pendingSkillUpload = undefined;
       // #617 followup v2: cancel any orphan compact-starting ticker — safe
       // hygiene even though the ticker has its own 10-min safety ceiling.
       if (session.compactTickInterval) {
@@ -1311,6 +1316,10 @@ export class SessionRegistry {
       clearTimeout(session.pendingRetryTimer);
       session.pendingRetryTimer = undefined;
     }
+    // Drop any armed SKILL.md edit-roundtrip marker — `/new` / `/renew` starts
+    // a fresh logical session and an inbound `SKILL.md` upload should not
+    // resurrect an edit click from the previous one.
+    session.pendingSkillUpload = undefined;
     // #617 followup v2: cancel any orphan compact-starting ticker so /new
     // /renew doesn't leak an interval into the fresh logical session.
     if (session.compactTickInterval) {
