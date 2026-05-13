@@ -67,7 +67,15 @@ vi.mock('../../../session/compaction-context-builder', () => ({
 // W3-B: token-manager now exposes `getTokenManager()` returning a
 // TokenManager instance with slotId-keyed APIs. We stub only the subset
 // that stream-executor actually calls.
-const rotateOnRateLimitMock = vi.fn().mockResolvedValue(null);
+//
+// rotateOnRateLimit's contract returns `RotateOnRateLimitResult`
+// (`{ rotated, skipReason? }`), so the mock must default to a discriminated
+// no-op rather than a bare `null` — `tryRotateToken` reads `result.rotated`
+// and would NPE on a null return.
+const rotateOnRateLimitMock = vi.fn().mockResolvedValue({
+  rotated: null,
+  skipReason: 'no-eligible',
+});
 const fetchAndStoreUsageMock = vi.fn().mockResolvedValue(null);
 const getActiveTokenMock = vi.fn().mockReturnValue(null);
 const listTokensMock = vi.fn().mockReturnValue([]);
@@ -2946,7 +2954,10 @@ describe('W3-B rate-limit rotation wiring', () => {
 
   afterEach(() => {
     rotateOnRateLimitMock.mockClear();
-    rotateOnRateLimitMock.mockResolvedValue(null);
+    rotateOnRateLimitMock.mockResolvedValue({
+      rotated: null,
+      skipReason: 'no-eligible',
+    });
     getActiveTokenMock.mockClear();
     getActiveTokenMock.mockReturnValue(null);
     listTokensMock.mockClear();
@@ -3074,6 +3085,71 @@ describe('W3-B rate-limit rotation wiring', () => {
       }),
     );
     expect(opts).not.toHaveProperty('knownReset');
+  });
+
+  // Atomic-rotation regression guard: the query-start snapshot's `keyId` MUST
+  // be forwarded as `expectedFromKeyId` so the token-manager CAS layer can
+  // collapse N concurrent rate-limit calls into a single ring advance. The
+  // pre-fix version of `tryRotateToken` accepted the snapshot but only used
+  // it for log formatting — concurrent sessions would each rotate one step,
+  // looping back to the originally-capped slot for N >= ring length.
+  it('forwards activeSlotAtQueryStart.keyId as expectedFromKeyId (CAS guard wiring)', async () => {
+    const executor = new StreamExecutor(createMinimalDeps());
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = new Error("You've hit your limit · resets 8pm (Asia/Seoul). Claude Code process exited with code 1");
+    // ActiveTokenInfo's CAS-relevant field is `keyId`, not `slotId`.
+    const activeSlot = { keyId: 'cct_key_A', name: 'cct1', kind: 'setup_token' as const };
+
+    await (executor as any).handleError(
+      error,
+      {} as any,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say,
+      false,
+      activeSlot,
+    );
+
+    expect(rotateOnRateLimitMock).toHaveBeenCalledTimes(1);
+    const [, opts] = rotateOnRateLimitMock.mock.calls[0];
+    expect(opts).toEqual(
+      expect.objectContaining({
+        source: 'error_string',
+        expectedFromKeyId: 'cct_key_A',
+      }),
+    );
+  });
+
+  // The pre-fix `tryRotateToken` did `if (rotated)` against the old
+  // `{ keyId, name } | null` return. With the new `{ rotated, skipReason? }`
+  // shape, a `null` mock return would NPE on `result.rotated`. This test
+  // pins that the mock default and consumer match the contract — protects
+  // against silent regressions where someone reverts the mock shape.
+  it('handles cas-skipped result without throwing (concurrent-rotation no-op)', async () => {
+    rotateOnRateLimitMock.mockResolvedValueOnce({
+      rotated: null,
+      skipReason: 'cas-skipped',
+    });
+    const executor = new StreamExecutor(createMinimalDeps());
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = new Error('rate limit exceeded');
+    const activeSlot = { keyId: 'cct_key_A', name: 'cct1', kind: 'setup_token' as const };
+
+    await expect(
+      (executor as any).handleError(
+        error,
+        {} as any,
+        'C123:thread123',
+        'C123',
+        'thread123',
+        [],
+        say,
+        false,
+        activeSlot,
+      ),
+    ).resolves.not.toThrow();
   });
 });
 
