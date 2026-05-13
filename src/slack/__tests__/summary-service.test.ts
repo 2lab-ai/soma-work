@@ -238,6 +238,62 @@ describe('SummaryService', () => {
       }
     });
 
+    // Regression: the LLM emits github-flavored markdown (`**bold**`, `## H2`,
+    // `__italic__`). Slack mrkdwn uses `*bold*`, `_italic_`, and has no native
+    // heading syntax. Without conversion, the thread surface renders the raw
+    // `##` and `**` characters verbatim. Pinning the conversion here is the
+    // smallest signal that prevents that regression from returning.
+    describe('displayOnThread() — markdown → Slack mrkdwn conversion', () => {
+      it('converts **bold** to *bold*', () => {
+        const service = new SummaryService();
+        const session = makeSession();
+        service.displayOnThread(session, 'a **bold** word and __italic__ word');
+        const text = (session.actionPanel!.summaryBlocks![1] as any).text.text as string;
+        expect(text).toContain('*bold*');
+        expect(text).not.toContain('**bold**');
+        expect(text).toContain('_italic_');
+        expect(text).not.toContain('__italic__');
+      });
+
+      it('converts ## / ### headers to *bold* lines (Slack has no native headings)', () => {
+        const service = new SummaryService();
+        const session = makeSession();
+        const input = '## Executive Summary\n### 1. What was done\n- did stuff';
+        service.displayOnThread(session, input);
+        const text = (session.actionPanel!.summaryBlocks![1] as any).text.text as string;
+        // Raw `##` / `###` must not leak into the rendered text body.
+        expect(text).not.toMatch(/^##\s|\n##\s/);
+        expect(text).not.toMatch(/^###\s|\n###\s/);
+        expect(text).toContain('*Executive Summary*');
+        expect(text).toContain('*1. What was done*');
+      });
+
+      it('preserves code fences (does not touch ** inside ```code``` blocks)', () => {
+        const service = new SummaryService();
+        const session = makeSession();
+        const input = 'before\n```ts\nconst x = "**not bold**";\n```\nafter';
+        service.displayOnThread(session, input);
+        const text = (session.actionPanel!.summaryBlocks![1] as any).text.text as string;
+        // The triple-fence must still wrap the code, and ** inside the fence
+        // must NOT be rewritten to *.
+        expect(text).toContain('```');
+        expect(text).toContain('**not bold**');
+      });
+
+      it('strips the language tag from fenced code blocks (```ts → ```)', () => {
+        const service = new SummaryService();
+        const session = makeSession();
+        const input = '```bash\necho hi\n```';
+        service.displayOnThread(session, input);
+        const text = (session.actionPanel!.summaryBlocks![1] as any).text.text as string;
+        // Slack mrkdwn fenced blocks have no language; the `bash` tag must be
+        // stripped so it doesn't appear as plain text on the first fence line.
+        expect(text).not.toContain('```bash');
+        expect(text).toContain('```');
+        expect(text).toContain('echo hi');
+      });
+    });
+
     // Trace: S3, Section 3a→3b — Contract
     it('buildPrompt() includes session link context', () => {
       const service = new SummaryService();
