@@ -126,6 +126,19 @@ Forbidden at epic mode: file paths, function names, commit hashes, long multi-li
 
 const MODE_RANK: Record<ExecutiveSummaryMode, number> = { brief: 0, issue: 1, epic: 2 };
 
+/**
+ * Format a remaining-time duration as `{m}m {s}s` / `{m}m` / `{s}s`.
+ * Used for the countdown indicator. Negative inputs clamp to "0s".
+ */
+function formatRemaining(ms: number): string {
+  const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes > 0 && seconds > 0) return `${minutes}m ${seconds}s`;
+  if (minutes > 0) return `${minutes}m`;
+  return `${seconds}s`;
+}
+
 /** Plain-text link line for the prompt body: `Title (url) — status` with sensible fallbacks. */
 function formatLink(link: SessionLink): string {
   const name = link.title || link.label || 'untitled';
@@ -406,6 +419,43 @@ export class SummaryService {
       blockCount: summaryBlocks.length,
       mode: session.lastSummaryMode,
     });
+  }
+
+  /**
+   * Render a "Executive Summary in {N}m {S}s" countdown block to the thread
+   * surface during the pre-summary wait window. Mirrors `displayOnThread`'s
+   * field layout (same `actionPanel.summaryBlocks` field) so the final
+   * summary cleanly overwrites the countdown when the timer fires, and a
+   * single `clearDisplay()` wipes either state on new user input.
+   *
+   * The block also carries a short prompt-cache-reset notice — the 5-minute
+   * default wait window aligns with the Anthropic prompt-cache TTL, so by
+   * the time the summary lands the cache has already expired. Telling the
+   * user up front prevents the "why did my next turn get expensive?"
+   * surprise.
+   *
+   * Tick text MUST differ across calls (the thread surface short-circuits
+   * identical render keys), which is why the formatted remaining time
+   * appears in the block text — every interval naturally produces a new
+   * string.
+   */
+  displayCountdownOnThread(session: SummarySessionInfo, remainingMs: number): void {
+    if (!session.actionPanel) return;
+
+    const remainingText = formatRemaining(remainingMs);
+    const blocks = [
+      { type: 'divider' },
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `⏳ *Executive Summary in ${remainingText}*\n_Prompt cache will reset when this fires._`,
+        },
+      },
+    ];
+    session.actionPanel.summaryBlocks = blocks;
+
+    logger.info('Countdown displayed on thread', { remainingMs, remainingText });
   }
 
   /**
