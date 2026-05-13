@@ -93,6 +93,10 @@ interface SerializedSession {
   sleepStartedAt?: string; // ISO date string
   // Activity state
   activityState?: ActivityState;
+  // Restart-notification symmetry marker — see ConversationSession docs.
+  shutdownNotificationSent?: boolean;
+  shutdownNotifiedAt?: number;
+  wasWorkingAtShutdown?: boolean;
   // Log verbosity bitmask
   logVerbosity?: number;
   // Effort level for Claude thinking
@@ -187,6 +191,16 @@ export interface CrashRecoveredSession {
   title?: string;
   /** Workflow type (default, jira-create-pr, pr-review, etc.) */
   workflow?: string;
+  /**
+   * Authoritative auto-resume decision for the recovery batch. Set by
+   * `loadSessions()` from the `wasWorkingAtShutdown` marker when graceful
+   * shutdown happened, or derived from `activityState === 'working'` when
+   * falling back to the crash-recovery heuristic. `notifyCrashRecovery`
+   * uses this flag (rather than the raw `activityState`) so a stale-but-
+   * persisted `idle` doesn't suppress auto-resume for a session that was
+   * actually mid-work.
+   */
+  shouldAutoResume: boolean;
 }
 
 export class SessionRegistry {
@@ -1677,6 +1691,13 @@ export class SessionRegistry {
             linkRefreshGeneration: session.linkRefreshGeneration,
             sleepStartedAt: session.sleepStartedAt?.toISOString(),
             activityState: session.activityState,
+            // Restart-notification symmetry markers: only meaningful between a
+            // graceful shutdown and the next loadSessions+notifyCrashRecovery,
+            // but cheap to persist always so we don't lose them on the
+            // intermediate save that happens immediately after notifyShutdown.
+            shutdownNotificationSent: session.shutdownNotificationSent,
+            shutdownNotifiedAt: session.shutdownNotifiedAt,
+            wasWorkingAtShutdown: session.wasWorkingAtShutdown,
             logVerbosity: session.logVerbosity,
             effort: session.effort,
             thinkingEnabled: session.thinkingEnabled,
@@ -1834,6 +1855,12 @@ export class SessionRegistry {
           linkRefreshGeneration: serialized.linkRefreshGeneration,
           sleepStartedAt,
           activityState: serialized.activityState || 'idle', // Preserve saved state for correct dashboard display; crash recovery handles auto-resume
+          // Restore restart-notification markers so we can still drive the
+          // symmetric restart message (and the correct auto-resume decision)
+          // even if a save happened after notifyShutdown but before exit.
+          shutdownNotificationSent: serialized.shutdownNotificationSent,
+          shutdownNotifiedAt: serialized.shutdownNotifiedAt,
+          wasWorkingAtShutdown: serialized.wasWorkingAtShutdown,
           logVerbosity: serialized.logVerbosity,
           // Backfill effort on legacy sessions so resume uses DEFAULT_EFFORT
           // rather than the SDK default.
@@ -1937,8 +1964,34 @@ export class SessionRegistry {
         this.sessions.set(serialized.key, session);
         loaded++;
 
-        // Track sessions that were active when process crashed
-        if (serialized.activityState && serialized.activityState !== 'idle') {
+        // Decide whether to enqueue this session for restart/crash recovery.
+        //
+        // Priority 1 — graceful-shutdown marker (`shutdownNotificationSent`).
+        //   notifyShutdown stamped this on every session that was successfully
+        //   told the service was going down. We MUST send a matching restart
+        //   notification to the same set — that's the user-visible symmetry
+        //   contract. The auto-resume decision uses `wasWorkingAtShutdown`,
+        //   which is authoritative (captured from in-memory state at shutdown,
+        //   independent of whatever stale `activityState` is on disk).
+        //
+        // Priority 2 — uncaughtException / hard-crash fallback.
+        //   No marker means the process died without running notifyShutdown
+        //   (uncaughtException path saves but doesn't notify). Fall back to
+        //   the persisted `activityState`: if non-idle, the session was
+        //   actively processing and the user is still waiting for output.
+        if (serialized.shutdownNotificationSent) {
+          this._crashRecoveredSessions.push({
+            channelId: serialized.channelId,
+            threadTs: serialized.threadTs,
+            ownerId: serialized.ownerId || serialized.userId,
+            ownerName: serialized.ownerName,
+            activityState: serialized.activityState || 'idle',
+            sessionKey: serialized.key,
+            title: serialized.title,
+            workflow: serialized.workflow,
+            shouldAutoResume: serialized.wasWorkingAtShutdown === true,
+          });
+        } else if (serialized.activityState && serialized.activityState !== 'idle') {
           this._crashRecoveredSessions.push({
             channelId: serialized.channelId,
             threadTs: serialized.threadTs,
@@ -1948,6 +2001,7 @@ export class SessionRegistry {
             sessionKey: serialized.key,
             title: serialized.title,
             workflow: serialized.workflow,
+            shouldAutoResume: serialized.activityState === 'working',
           });
         }
       }
