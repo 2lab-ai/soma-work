@@ -446,8 +446,10 @@ describe('SessionInitializer - channel routing advisory', () => {
       session,
     );
 
-    // Aborted, then epoch bumped, and concurrency returns a fresh AbortController.
-    expect(mockRequestCoordinator.abortSession).toHaveBeenCalledWith('C123:thread123');
+    // Aborted with the 'supersede' reason so handleError can surface a
+    // turn-completion card for the displaced (often stalled) prior turn;
+    // epoch bumped; concurrency returns a fresh AbortController.
+    expect(mockRequestCoordinator.abortSession).toHaveBeenCalledWith('C123:thread123', 'supersede');
     expect(mockAssistantStatusManager.bumpEpoch).toHaveBeenCalledWith('C123', 'thread123');
     expect(ctl).toBeInstanceOf(AbortController);
   });

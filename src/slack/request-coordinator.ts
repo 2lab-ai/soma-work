@@ -1,6 +1,29 @@
 import { Logger } from '../logger';
 
 /**
+ * Why an in-flight request was aborted. Plumbed through
+ * `AbortController.abort(reason)` so downstream consumers (StreamExecutor
+ * error handling) can distinguish a passive "new message displaced an
+ * idle/stalled turn" from an explicit user cancel.
+ *
+ *   `supersede`     — new message in the same session displaces the prior
+ *                     (often stalled) turn. The user is waiting for *some*
+ *                     turn-end signal — surface a completion card.
+ *   `user-stop`     — explicit Stop button / dashboard stop / `!`. The user
+ *                     already knows the turn ended; stay quiet.
+ *   `session-close` — Close button / session expiry. Same: quiet.
+ *   `shutdown`      — process-wide shutdown of all in-flight requests.
+ *   `stall-timeout` — (reserved) future stall watchdog will use this when
+ *                     no SDK event has arrived for N minutes. Treated the
+ *                     same as `supersede` by the notification gate.
+ *
+ * NOTE: extending this union has fan-out — every consumer that switches on
+ * the reason (`stream-executor.handleError` notify gate, supersede card
+ * messaging, future telemetry) must be updated together with the type.
+ */
+export type RequestAbortReason = 'supersede' | 'user-stop' | 'session-close' | 'shutdown' | 'stall-timeout';
+
+/**
  * Manages request concurrency for sessions.
  *
  * Responsibilities:
@@ -46,14 +69,24 @@ export class RequestCoordinator {
   }
 
   /**
-   * Abort the active request for a session
+   * Abort the active request for a session.
+   *
+   * The `reason` is forwarded to `controller.abort(reason)` so it surfaces
+   * as `signal.reason` in the catch handler — that's how
+   * `StreamExecutor.handleError` decides whether to post a "🔴 오류 발생"
+   * card for the aborted turn (supersede / stall-timeout) or stay quiet
+   * (user-stop / session-close / shutdown).
+   *
+   * Defaults to `'user-stop'` to preserve the historical "explicit cancel"
+   * semantics of the unparameterized call.
+   *
    * @returns true if a request was aborted, false if no active request
    */
-  abortSession(sessionKey: string): boolean {
+  abortSession(sessionKey: string, reason: RequestAbortReason = 'user-stop'): boolean {
     const controller = this.activeControllers.get(sessionKey);
     if (controller) {
-      controller.abort();
-      this.logger.debug('Aborted session', { sessionKey });
+      controller.abort(reason);
+      this.logger.debug('Aborted session', { sessionKey, reason });
       return true;
     }
     return false;
@@ -83,11 +116,14 @@ export class RequestCoordinator {
   }
 
   /**
-   * Clear all controllers (for shutdown)
+   * Clear all controllers (for shutdown).
+   *
+   * Tags every abort with `'shutdown'` so the notification gate stays
+   * quiet — a process-wide shutdown is not user-relevant feedback.
    */
   clearAll(): void {
     for (const [sessionKey, controller] of this.activeControllers) {
-      controller.abort();
+      controller.abort('shutdown' satisfies RequestAbortReason);
       this.logger.debug('Cleared controller on shutdown', { sessionKey });
     }
     this.activeControllers.clear();
