@@ -35,8 +35,7 @@
     "vitest": "^4.0.15"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.111",
-    "ulid": "^3.0.2",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.140",
     "@clickhouse/client": "^1.18.2",
     "@fastify/formbody": "^8.0.2",
     "@fastify/websocket": "^11.2.0",
@@ -55,6 +54,7 @@
     "mongodb": "^7.1.1",
     "mysql2": "^3.20.0",
     "node-fetch": "=3.3.2",
-    "proper-lockfile": "^4.1.2"
+    "proper-lockfile": "^4.1.2",
+    "ulid": "^3.0.2"
   }
 }
