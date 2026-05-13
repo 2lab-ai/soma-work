@@ -43,7 +43,8 @@ export class SessionActionHandler {
       await this.ctx.reactionManager?.setSessionExpired(sessionKey, session.channelId, session.threadTs);
     }
     session.isActive = false;
-    this.ctx.requestCoordinator?.abortSession(sessionKey);
+    // Session is being closed (expiry / /close confirm) — quiet abort.
+    this.ctx.requestCoordinator?.abortSession(sessionKey, 'session-close');
     await this.updateSessionUiAsClosed(session);
   }
 
