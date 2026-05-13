@@ -226,20 +226,27 @@ export class SummaryService {
   /**
    * Convert summary text to Slack Block Kit blocks.
    * Long text is split across multiple section blocks to respect Slack's 3000-char limit.
+   *
+   * The LLM emits github-flavored markdown (`**bold**`, `## H2`, `__italic__`,
+   * ```ts fenced blocks). Slack mrkdwn uses `*bold*`, `_italic_`, and has no
+   * native heading syntax, so we normalize before emitting the mrkdwn section.
+   * See `formatSummaryForSlack` for the line-by-line, fence-aware rewrite.
    */
   private buildSummaryBlocks(summaryText: string): any[] {
     const blocks: any[] = [{ type: 'divider' }];
     const header = '*Executive Summary*\n';
     const maxChunkSize = SummaryService.SLACK_SECTION_TEXT_LIMIT - header.length;
 
-    if (summaryText.length <= maxChunkSize) {
+    const mrkdwnText = SummaryService.formatSummaryForSlack(summaryText);
+
+    if (mrkdwnText.length <= maxChunkSize) {
       blocks.push({
         type: 'section',
-        text: { type: 'mrkdwn', text: `${header}${summaryText}` },
+        text: { type: 'mrkdwn', text: `${header}${mrkdwnText}` },
       });
     } else {
       // Split on newline boundaries to avoid mid-word breaks
-      const chunks = this.chunkText(summaryText, maxChunkSize);
+      const chunks = this.chunkText(mrkdwnText, maxChunkSize);
       chunks.forEach((chunk, i) => {
         const prefix = i === 0 ? header : '';
         blocks.push({
@@ -250,6 +257,44 @@ export class SummaryService {
     }
 
     return blocks;
+  }
+
+  /**
+   * Rewrite github-flavored markdown to Slack mrkdwn line by line, leaving
+   * fenced code blocks verbatim:
+   * - Opening fence: strip the language tag (```ts → ```).
+   * - Inside a fence: pass through unchanged.
+   * - Outside: ATX headings → `*…*`, `**bold**` → `*bold*`, `__italic__` → `_italic_`.
+   *
+   * Single-`*` emphasis (`*x*`) is deliberately *not* rewritten — in Slack
+   * mrkdwn `*x*` is bold, so converting GFM italic to Slack `_x_` would have
+   * to first distinguish it from already-bold text, which a line-level
+   * regex pass can't do safely. Leaving it alone keeps both meanings legible
+   * (Slack renders `*x*` as bold either way).
+   */
+  static formatSummaryForSlack(text: string): string {
+    let inFence = false;
+    return text
+      .split('\n')
+      .map((line) => {
+        if (/^\s*```/.test(line)) {
+          const wasInFence = inFence;
+          inFence = !inFence;
+          if (!wasInFence) {
+            // Opening fence — strip the language tag (```ts → ```).
+            return line.replace(/^(\s*)```[^\s`]*\s*$/, '$1```');
+          }
+          return line;
+        }
+        if (inFence) return line;
+        // ATX headings: leading 1–6 `#` then space then content. The trailing
+        // `#*` strips an optional closing-hash run so `## Foo ##` folds to `*Foo*`.
+        return line
+          .replace(/^(\s*)#{1,6}\s+(.+?)\s*#*\s*$/, (_m, indent: string, content: string) => `${indent}*${content}*`)
+          .replace(/\*\*([^*]+)\*\*/g, '*$1*')
+          .replace(/__([^_]+)__/g, '_$1_');
+      })
+      .join('\n');
   }
 
   /**
