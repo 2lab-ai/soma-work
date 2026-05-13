@@ -234,6 +234,32 @@ export interface ConversationSession {
   // Bot activity state (working/waiting/idle)
   activityState?: ActivityState;
   activityStateChangedAt?: number;
+  /**
+   * Restart-notification symmetry marker (#XXX).
+   *
+   * Set to `true` by `SessionUiManager.notifyShutdown()` after a shutdown
+   * notification was successfully posted to this session's Slack thread.
+   * The marker is persisted (via `saveSessions`) so that on the next
+   * `loadSessions()` we know exactly which sessions were told the service
+   * was going down — and can therefore tell the SAME set that the service
+   * came back up. Cleared by `notifyCrashRecovery` after the matching
+   * restart message is sent.
+   *
+   * This decouples the "who gets the restart message" decision from the
+   * possibly-stale persisted `activityState` (which is intentionally only
+   * saved on `idle` transitions to minimize disk I/O).
+   */
+  shutdownNotificationSent?: boolean;
+  /** Epoch ms when `notifyShutdown` recorded the marker. Diagnostic only. */
+  shutdownNotifiedAt?: number;
+  /**
+   * Authoritative auto-resume decision captured at shutdown time.
+   * `activityState === 'working'` at the moment of `notifyShutdown` —
+   * stored separately because the persisted `activityState` may be stale.
+   * Consumed by `notifyCrashRecovery` to decide whether to fire the
+   * synthetic auto-resume turn.
+   */
+  wasWorkingAtShutdown?: boolean;
   actionPanel?: ActionPanelState;
   // Log verbosity bitmask (controls which output types are shown in Slack)
   logVerbosity?: number;
