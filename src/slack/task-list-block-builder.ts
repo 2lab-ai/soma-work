@@ -53,6 +53,23 @@ function computeEffectiveStatus(todo: Todo, allTodos: Todo[]): EffectiveStatus {
   return blocked ? 'blocked' : 'pending';
 }
 
+/** Options for the static `buildPlanTasks` path. */
+export interface BuildPlanTasksOptions {
+  /**
+   * End-of-turn terminal-state render. When `true`, any effective
+   * `in_progress` is demoted to `pending` across all three output forms
+   * (top-level text, task_card, fallback section). This kills the stuck
+   * Slack-native loading indicator that lingers when an LLM ends a turn
+   * without marking its in-progress todo as completed — the persistent
+   * `planTs` Slack message otherwise keeps the spinner spinning forever.
+   *
+   * Honesty rule: demote to `pending`, NEVER promote to `complete`.
+   * Unfinished work stays visibly unfinished; only the misleading "still
+   * running" UI signal is removed.
+   */
+  final?: boolean;
+}
+
 /** Icon prefix for the top-level plain-text fallback view. */
 const STATUS_ICON: Record<EffectiveStatus, string> = {
   completed: '✅',
@@ -110,10 +127,12 @@ export class TaskListBlockBuilder {
    * Empty / undefined input returns `{ text: '', blocks: [] }` so callers
    * can short-circuit without a special-case branch.
    */
-  static buildPlanTasks(todos: Todo[]): { text: string; blocks: any[] } {
+  static buildPlanTasks(todos: Todo[], options?: BuildPlanTasksOptions): { text: string; blocks: any[] } {
     if (!todos || todos.length === 0) {
       return { text: '', blocks: [] };
     }
+
+    const finalize = options?.final === true;
 
     // ── 1. Top-level text (plain, unescaped — Slack renders verbatim) ──
     const textLines: string[] = [];
@@ -122,7 +141,11 @@ export class TaskListBlockBuilder {
 
     for (let i = 0; i < todos.length; i++) {
       const todo = todos[i];
-      const effective = computeEffectiveStatus(todo, todos);
+      const rawEffective = computeEffectiveStatus(todo, todos);
+      // Terminal-state demotion: `in_progress` → `pending`. We never promote
+      // to `completed` — unfinished work must stay visibly unfinished. The
+      // demotion is purely UI-side; the underlying todo array is not mutated.
+      const effective: EffectiveStatus = finalize && rawEffective === 'in_progress' ? 'pending' : rawEffective;
       const icon = STATUS_ICON[effective];
       const num = i + 1;
 

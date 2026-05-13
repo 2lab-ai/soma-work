@@ -328,7 +328,9 @@ export class ActionPanelActionHandler {
       return;
     }
 
-    const aborted = this.ctx.requestCoordinator.abortSession(sessionKey);
+    // Explicit Stop button — user already knows the turn ended, so the
+    // notification gate stays quiet (no "🔴 오류 발생" card).
+    const aborted = this.ctx.requestCoordinator.abortSession(sessionKey, 'user-stop');
     if (aborted) {
       await respond({
         response_type: 'ephemeral',
@@ -350,8 +352,10 @@ export class ActionPanelActionHandler {
     // ensures buildCombinedBlocks treats it as closed even without the override.
     session.isActive = false;
 
-    // Abort active AI request BEFORE rendering closed state.
-    this.ctx.requestCoordinator?.abortSession(sessionKey);
+    // Abort active AI request BEFORE rendering closed state. Tag as
+    // `session-close` so the notification gate stays quiet — closing the
+    // session is itself a terminal UI action.
+    this.ctx.requestCoordinator?.abortSession(sessionKey, 'session-close');
 
     // Update surface to closed state BEFORE terminating (session is deleted on terminate).
     // Delegate to ThreadPanel (single-writer) which renders combined header + panel blocks.

@@ -682,12 +682,18 @@ describe('TurnSurface', () => {
       await surface.end(ctx.turnId, 'completed');
     });
 
-    it('supersede: planTs on the old turn is intentionally orphaned (Slack message survives)', async () => {
+    it('supersede: planTs on the old turn survives but is finalized (in_progress demoted) so no stale spinner', async () => {
       // Under PHASE>=2, the B2 plan message is a separate ts from B1 streamTs.
-      // Supersede closes B1 (stream) but leaves B2 (plan) untouched — the
-      // Slack message history keeps the final plan state visible to users.
+      // Supersede closes B1 (stream); the planTs Slack message is preserved
+      // in history but receives ONE final `chat.update` that demotes any
+      // lingering `in_progress` task_cards to `pending`. Without that step,
+      // Slack's native loading indicator on `task_card.status='in_progress'`
+      // would keep spinning forever on the orphaned plan message ("hang
+      // state"). The message itself is intentionally NOT deleted — users
+      // still see the final plan, just without the misleading spinner.
       const client = makeClient({
         postMessage: vi.fn().mockResolvedValue({ ts: 'plan-ts-A' }),
+        update: vi.fn().mockResolvedValue(undefined),
       });
       const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
 
@@ -700,13 +706,20 @@ describe('TurnSurface', () => {
       await vi.advanceTimersByTimeAsync(500);
       expect(client.chat.postMessage).toHaveBeenCalledTimes(1);
 
-      // Supersede — new turn opens; old plan message is not updated or deleted.
+      // Supersede — fail(A) runs synchronously inside begin(B).
       await surface.begin(ctxB);
 
-      // B1 stream for A was stopped (supersede), but B2 plan was NOT touched.
+      // B1 stream for A was stopped (supersede).
       expect(client.chat.stopStream).toHaveBeenCalledTimes(1);
-      // chat.update against plan-ts-A did NOT fire.
-      expect((client.chat.update?.mock.calls ?? []).some((call: any[]) => call[0]?.ts === 'plan-ts-A')).toBe(false);
+      // B2 plan for A received exactly one finalize update — same channel +
+      // ts, with no `in_progress` task_cards in the rendered blocks.
+      const updatesAgainstA = (client.chat.update?.mock.calls ?? []).filter(
+        (call: any[]) => call[0]?.ts === 'plan-ts-A',
+      );
+      expect(updatesAgainstA.length).toBe(1);
+      const finalPlanBlock = updatesAgainstA[0][0].blocks?.find((b: any) => b.type === 'plan');
+      expect(finalPlanBlock).toBeDefined();
+      expect(finalPlanBlock.tasks.filter((tc: any) => tc.status === 'in_progress')).toEqual([]);
 
       await surface.end(ctxB.turnId, 'completed');
     });
@@ -734,6 +747,142 @@ describe('TurnSurface', () => {
         surface.renderTasks('t', todos as any, { channelId: 'C', threadTs: 't', sessionKey: 'C:t' }),
       ).resolves.toBe(false);
       expect(client.chat.postMessage).not.toHaveBeenCalled();
+    });
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // End-of-turn finalize — kills the stuck `task_card.status='in_progress'`
+    // spinner that lingers when the LLM ends a turn without marking its
+    // in-progress todo as completed.
+    //
+    // Reproduces the user-visible "hang state": Slack renders an in_progress
+    // task_card with a built-in loading indicator. Because the B2 plan
+    // message ts is intentionally preserved across end()/fail() (see
+    // turn-surface.ts state.planTs commentary), the loading indicator stays
+    // visible forever unless we explicitly demote the card on close.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    describe('end-of-turn plan finalize (demotes lingering in_progress task_cards)', () => {
+      it('end("completed") with a lingering in_progress todo issues a final chat.update against planTs with demoted statuses', async () => {
+        const client = makeClient({
+          postMessage: vi.fn().mockResolvedValue({ ts: 'plan-ts-fin' }),
+          update: vi.fn().mockResolvedValue(undefined),
+        });
+        const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
+
+        const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:fin' };
+        await surface.begin(ctx);
+
+        // Initial render — postMessage commits planTs.
+        await surface.renderTasks(ctx.turnId, todos as any);
+        await vi.advanceTimersByTimeAsync(500);
+        expect(client.chat.postMessage).toHaveBeenCalledTimes(1);
+        expect(client.chat.update).not.toHaveBeenCalled();
+
+        // Turn ends WITHOUT marking the in_progress todo as completed.
+        await surface.end(ctx.turnId, 'completed');
+
+        // Exactly ONE final chat.update against planTs.
+        const planUpdates = client.chat.update.mock.calls.filter((call: any[]) => call[0]?.ts === 'plan-ts-fin');
+        expect(planUpdates.length).toBe(1);
+
+        const finalArgs = planUpdates[0][0];
+        expect(finalArgs.channel).toBe('C1');
+        const finalPlanBlock = finalArgs.blocks?.find((b: any) => b.type === 'plan');
+        expect(finalPlanBlock).toBeDefined();
+        // Every in_progress arm of `todos` should be demoted to `pending`.
+        const inProgressInFinal = finalPlanBlock.tasks.filter((tc: any) => tc.status === 'in_progress');
+        expect(inProgressInFinal).toEqual([]);
+        // The lingering todo's title is preserved as `pending` so users see WHAT
+        // was left unfinished — no ghost spinner, no silent loss of context.
+        const demoted = finalPlanBlock.tasks.find((tc: any) => tc.title === 'running task');
+        expect(demoted).toBeDefined();
+        expect(demoted.status).toBe('pending');
+      });
+
+      it('end("completed") with all-completed todos does NOT issue an extra chat.update (idempotent)', async () => {
+        const allDoneTodos = todos.map((t) => ({ ...t, status: 'completed' }));
+        const client = makeClient({
+          postMessage: vi.fn().mockResolvedValue({ ts: 'plan-ts-alldone' }),
+          update: vi.fn().mockResolvedValue(undefined),
+        });
+        const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
+
+        const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:alldone' };
+        await surface.begin(ctx);
+        await surface.renderTasks(ctx.turnId, allDoneTodos as any);
+        await vi.advanceTimersByTimeAsync(500);
+        expect(client.chat.postMessage).toHaveBeenCalledTimes(1);
+
+        await surface.end(ctx.turnId, 'completed');
+
+        // No final demotion render needed when nothing was in_progress.
+        const planUpdates = client.chat.update.mock.calls.filter((call: any[]) => call[0]?.ts === 'plan-ts-alldone');
+        expect(planUpdates.length).toBe(0);
+      });
+
+      it('fail() with a lingering in_progress todo also demotes the plan block to pending', async () => {
+        const client = makeClient({
+          postMessage: vi.fn().mockResolvedValue({ ts: 'plan-ts-fail' }),
+          update: vi.fn().mockResolvedValue(undefined),
+        });
+        const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
+
+        const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:fail' };
+        await surface.begin(ctx);
+        await surface.renderTasks(ctx.turnId, todos as any);
+        await vi.advanceTimersByTimeAsync(500);
+
+        await surface.fail(ctx.turnId, new Error('aborted'));
+
+        const planUpdates = client.chat.update.mock.calls.filter((call: any[]) => call[0]?.ts === 'plan-ts-fail');
+        expect(planUpdates.length).toBe(1);
+        const finalPlanBlock = planUpdates[0][0].blocks?.find((b: any) => b.type === 'plan');
+        const inProgressInFinal = finalPlanBlock.tasks.filter((tc: any) => tc.status === 'in_progress');
+        expect(inProgressInFinal).toEqual([]);
+      });
+
+      it('end() without renderTasks ever called → no chat.update (nothing to finalize)', async () => {
+        const client = makeClient();
+        const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
+
+        const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:bare' };
+        await surface.begin(ctx);
+        // No renderTasks call — no plan message exists.
+        await surface.end(ctx.turnId, 'completed');
+
+        expect(client.chat.update).not.toHaveBeenCalled();
+      });
+
+      it('supersede (begin B over A with A still in_progress) finalizes A’s plan before B opens', async () => {
+        // Supersede routes through fail(A) — A's plan must still get its
+        // demotion render so the old plan-ts message stops showing a spinner
+        // before the new turn's plan posts.
+        const client = makeClient({
+          postMessage: vi.fn().mockResolvedValue({ ts: 'plan-ts-A' }),
+          update: vi.fn().mockResolvedValue(undefined),
+        });
+        const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
+
+        const sessionKey = 'C1:t1';
+        const ctxA = { channelId: 'C1', threadTs: 't1', sessionKey, turnId: 'C1:t1:A2' };
+        const ctxB = { channelId: 'C1', threadTs: 't1', sessionKey, turnId: 'C1:t1:B2' };
+
+        await surface.begin(ctxA);
+        await surface.renderTasks(ctxA.turnId, todos as any);
+        await vi.advanceTimersByTimeAsync(500);
+
+        // Supersede — fail(A) runs synchronously inside begin(B).
+        await surface.begin(ctxB);
+
+        const planUpdatesA = client.chat.update.mock.calls.filter((call: any[]) => call[0]?.ts === 'plan-ts-A');
+        expect(planUpdatesA.length).toBe(1);
+        const finalPlanBlock = planUpdatesA[0][0].blocks?.find((b: any) => b.type === 'plan');
+        const inProgressInFinal = finalPlanBlock.tasks.filter((tc: any) => tc.status === 'in_progress');
+        expect(inProgressInFinal).toEqual([]);
+
+        // Clean up B so the test does not leak state.
+        await surface.end(ctxB.turnId, 'completed');
+      });
     });
   });
 
