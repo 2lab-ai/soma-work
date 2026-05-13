@@ -1,35 +1,90 @@
 ---
 name: es
-description: "Trigger: when local:zwork completed."
+description: "Trigger: when local:zwork completes, or at turn-end via the harness. Routes to a tiered (brief / issue / epic) Executive Summary by work volume, mirroring using-epic-tasks Case A/B/C but for the report layer."
 ---
 
-# Executive Summary
+# Executive Summary (`local:es`) — tiered router
 
-After work completion, produce a 7-section summary document that allows stakeholders to **make decisions based on this single document**. (Write with readable formatting using Slack markdownfmt + Slack Block Kit)
+After work completion (or at turn-end), produce an Executive Summary that lets stakeholders **make their next decision from this single document**.
 
-## Writing Procedure
+This skill is tiered. Three modes, picked by **actual artifact scope of this session**, not by request size:
 
-1. Read `./reference/executive-summary-template.md` and understand the structure.
-2. Read `./reference/executive-summary-example.md` and understand the tone and depth.
-3. Collect the current session's work history (issues, PRs, commits, reviews).
-4. Write the Executive Summary following the template structure.
+| Mode | When | Equivalent in `using-epic-tasks` | Implementation detail allowed? |
+|---|---|---|---|
+| `brief` | No PR/issue produced this turn. Q&A, exploration, single-file edits, clarification. | (none — under Case A escape) | Yes, lightly (in "Key Details") |
+| `issue` | One durable unit: 1 issue, 1 PR, 1 branch. Sub-issue of an epic counts here. | Case A | **Yes — encouraged** |
+| `epic` | Multiple PRs, multi-issue work, root-cause analysis, STV verify cycle. | Case B | **No — link out to sub-issues/PRs** (HA discipline) |
 
-## 7-Section Required Structure
+The **top of every mode** carries the same invariant: SSOT (user's request verbatim) → Status (issue/PR links + state changes). The user's hard requirement that "what was done — issue handling, PR links, status changes — sits at the very top" is satisfied by this two-line top of document.
 
-| # | Section | Key Focus |
-|---|---------|-----------|
-| 0 | SSOT | User's original instruction verbatim + issue/PR links with current status |
-| 1 | Problem Background | Impact Chain + business impact |
-| 2 | Root Cause Analysis | Failure point table + code defect AS-IS/TO-BE |
-| 3 | Fix History | Per-PR table of changes/files/effects/reviews |
-| 4 | STV Verify Results | Per-spec item verification + Verdict |
-| 5 | Timeline | Events by UTC time |
-| 6 | Risks and Follow-up Actions | Status icons (✅/⚠️/🔶) + actions |
-| 7 | AS-IS → TO-BE Summary | Before/after comparison by item |
+## Mode resolution
 
-## Writing Rules
+### Path B — invoked by the harness at turn-end
 
-- **No table-only listings** — each section must be connected with narrative.
-- **Include all issue/PR links** — specify the current status of each (Open/Merged/QA, etc.).
-- **Minimize user friction** — the reader should be able to determine their next action immediately after reading this document.
-- **Never summarize** the user's original text in the SSOT section — quote it verbatim.
+The harness (`src/slack/summary-service.ts`) computes the mode from session state via `selectExecutiveSummaryMode(session)` and injects it into the prompt as
+
+```
+Active ES mode: <brief|issue|epic> (host-selected; do not reclassify)
+```
+
+When you (the LLM) see this header, **trust it**. Do not second-guess. The host knows `links.pr`, `linkHistory.prs`, `linkHistory.issues`, `workflow`, and `handoffContext.parentEpicUrl` directly — the conversation transcript does not.
+
+### Path A — invoked manually after `local:zwork` or by `$es`
+
+You don't have a host hint. Self-classify using this discovery procedure:
+
+1. `git status --porcelain` and `git log --oneline @{upstream}..HEAD` (if upstream exists) — count session-local commits.
+2. `gh pr status --json url,state,title,number` — count PRs touched.
+3. `gh issue list --search "involves:@me updated:>=YYYY-MM-DD" --json url,state,title,number` (scoped to this session window) — count issues.
+4. Look for STV verify or root-cause language anywhere in the conversation (`stv:verify`, "root cause", "fix history") — any hit upgrades toward `epic`.
+
+Decision rule (apply top to bottom, first match wins):
+
+- `≥2 PRs touched` **or** `≥2 issues touched` **or** STV verify ran **or** workflow was `z-epic-update` → **`epic`**
+- `1 PR touched` **or** `1 issue touched` → **`issue`**
+- otherwise → **`brief`**
+
+**Default-down**: when commands fail or evidence is ambiguous, pick the lower mode. An over-padded `epic` document is worse than a clean `issue` one.
+
+## Writing procedure
+
+1. Determine mode (Path B: read the host header; Path A: run discovery).
+2. Read `reference/templates/<mode>.md` — that is the mode's section spec.
+3. Read the legacy reference `reference/executive-summary-template.md` + `reference/executive-summary-example.md` if more detail is needed for the `epic` tier — they remain as conceptual reference, not as canonical templates.
+4. Collect concrete artifacts from the conversation (links + state + files + commands + commits + outcomes).
+5. Write the summary following the mode template. Respect the language of the conversation.
+
+## Global rules (apply at every mode)
+
+- **No table-only listings** — every section is connected with narrative, even at `brief`.
+- **Include all issue/PR links with current state** — `Open / Draft / Merged / Closed / QA / etc.`.
+- **Quote the user verbatim** in SSOT — never paraphrase, summarize, or "clean up".
+- **Concrete artifacts, no abstractions** — `src/foo.ts:42`, command names, PR numbers, commit hashes. Never invent values you did not see.
+- **Omit sections that have nothing to report** — do not fabricate, do not hedge.
+- **Same language as the conversation** — Korean session ⇒ Korean ES.
+- **No tool calls when run as one-shot fork** (Path B). When run manually as Path A you may use `git` / `gh` for discovery only.
+
+## HA discipline (binding from `using-ha-thinking`)
+
+A sentence at one mode must close without using terms from the mode below.
+
+- `epic` body talks about issues, PRs, statuses, architectural outcomes — never file paths or function names.
+- `issue` body talks about files, commands, commits, tests — never inflates into multi-PR / workstream tables.
+- `brief` body talks about answers / outcomes — never invents the artifacts of a higher mode.
+
+Violating this is the most common reason an `epic` ES degenerates into a 4-page `issue` ES with the wrong wrapper.
+
+## Anti-patterns
+
+- Empty Status section at `brief` (codex round 3: empty Status trains readers to skip the top).
+- File paths inside `epic` body (HA leak).
+- "Decisions Made" inferred from descriptive language (fabrication).
+- Mode downgrade on a quiet turn (`brief` after `issue` overwriting the prior summary — host stickiness must prevent this, but the LLM must also not request a downgrade).
+- Restating SSOT in your own words.
+
+## Integration
+
+- **Path A entry**: `local:zwork` exit → `local:es` (this skill) → `local:zcheck` post-gate.
+- **Path B entry**: `src/slack/pipeline/stream-executor.ts` `onSummaryTimerFire` → `SummaryService.execute` → forked one-shot using this skill's templates inlined in the prompt.
+- **Sister skills**: `using-ha-thinking` (layer discipline), `using-epic-tasks` (planning-side Case A/B/C), `decision-gate` (switching-cost tiers).
+- **Legacy references** (kept, not deleted): `reference/executive-summary-template.md`, `reference/executive-summary-example.md`. These cover the previous fixed 8-section format and serve as the conceptual ancestor of the current `epic` template.

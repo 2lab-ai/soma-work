@@ -22,8 +22,8 @@ describe('SummaryService', () => {
 
       const session = makeSession({
         links: {
-          issue: { url: 'https://jira.example.com/ISSUE-1', title: 'Test Issue' },
-          pr: { url: 'https://github.com/org/repo/pull/1', title: 'Test PR' },
+          issue: { url: 'https://jira.example.com/ISSUE-1', type: 'issue', provider: 'jira', title: 'Test Issue' },
+          pr: { url: 'https://github.com/org/repo/pull/1', type: 'pr', provider: 'github', title: 'Test PR' },
         },
       });
 
@@ -299,7 +299,7 @@ describe('SummaryService', () => {
       const service = new SummaryService();
       const session = makeSession({
         links: {
-          issue: { url: 'https://jira.example.com/BUG-42', title: 'Critical Bug' },
+          issue: { url: 'https://jira.example.com/BUG-42', type: 'issue', provider: 'jira', title: 'Critical Bug' },
         },
       });
 
