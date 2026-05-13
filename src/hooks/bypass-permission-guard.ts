@@ -53,7 +53,7 @@ export interface PreToolUseHookEntry {
  * literals). Adding/removing a tool requires deliberate review of this
  * comment and the lists it references.
  */
-const NATIVE_BYPASS_TOOLS: ReadonlyArray<string> = [
+export const NATIVE_BYPASS_TOOLS: ReadonlyArray<string> = [
   'Write',
   'Edit',
   'NotebookEdit',
@@ -99,8 +99,8 @@ export function buildBypassPermissionHookEntry(): PreToolUseHookEntry {
 export const BYPASS_ALLOW_MATCHER_FOR_TEST = BYPASS_ALLOW_MATCHER;
 
 /**
- * Test-only: the read-only list of tool names covered by the entry.
- * Exposed so tests fail loudly when the audited set changes without an
- * accompanying comment update above.
+ * Test-only re-export. Kept for backward-compat with the existing test that
+ * imports `NATIVE_BYPASS_TOOLS_FOR_TEST`. New consumers should import
+ * `NATIVE_BYPASS_TOOLS` directly.
  */
 export const NATIVE_BYPASS_TOOLS_FOR_TEST: ReadonlyArray<string> = NATIVE_BYPASS_TOOLS;
