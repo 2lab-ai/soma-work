@@ -9,6 +9,7 @@ import type { ModelCommandContext } from 'somalib/model-commands/types';
 import { isAdminUser } from './admin-utils';
 import { substituteEnvVars } from './config-env-substitution';
 import { CONFIG_FILE, DATA_DIR } from './env-paths';
+import { NATIVE_BYPASS_TOOLS } from './hooks/bypass-permission-guard';
 import { Logger } from './logger';
 import type { McpManager } from './mcp-manager';
 import { mcpToolGrantStore } from './mcp-tool-grant-store';
@@ -589,19 +590,7 @@ export class McpConfigBuilder {
     // `'ask'` for dangerous commands, which would be defeated by an
     // unconditional allowlist entry.
     if (slackContext && userBypass) {
-      allowedTools.push(
-        'Write',
-        'Edit',
-        'NotebookEdit',
-        'TodoWrite',
-        'Read',
-        'Glob',
-        'Grep',
-        'Task',
-        'WebFetch',
-        'WebSearch',
-        'KillShell',
-      );
+      allowedTools.push(...NATIVE_BYPASS_TOOLS);
     }
 
     return allowedTools;

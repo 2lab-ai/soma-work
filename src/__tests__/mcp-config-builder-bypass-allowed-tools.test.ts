@@ -39,6 +39,7 @@ vi.mock('../user-settings-store', () => ({
   },
 }));
 
+import { NATIVE_BYPASS_TOOLS } from '../hooks/bypass-permission-guard';
 import { McpConfigBuilder } from '../mcp-config-builder';
 
 function createMockMcpManager() {
@@ -47,20 +48,6 @@ function createMockMcpManager() {
     getDefaultAllowedTools: vi.fn().mockReturnValue([]),
   } as any;
 }
-
-const NATIVE_BYPASS_TOOLS = [
-  'Write',
-  'Edit',
-  'NotebookEdit',
-  'TodoWrite',
-  'Read',
-  'Glob',
-  'Grep',
-  'Task',
-  'WebFetch',
-  'WebSearch',
-  'KillShell',
-];
 
 describe('McpConfigBuilder — bypass allowedTools coverage', () => {
   beforeEach(() => {
@@ -96,17 +83,6 @@ describe('McpConfigBuilder — bypass allowedTools coverage', () => {
     expect(config.userBypass).toBe(false);
     for (const tool of NATIVE_BYPASS_TOOLS) {
       expect(config.allowedTools).not.toContain(tool);
-    }
-  });
-
-  it('does NOT add the native non-Bash tools without slackContext (no Slack UI to suppress)', async () => {
-    bypassMock.mockReturnValue(true);
-    const builder = new McpConfigBuilder(createMockMcpManager());
-    const config = await builder.buildConfig();
-
-    expect(config.userBypass).toBe(false);
-    for (const tool of NATIVE_BYPASS_TOOLS) {
-      expect(config.allowedTools ?? []).not.toContain(tool);
     }
   });
 
