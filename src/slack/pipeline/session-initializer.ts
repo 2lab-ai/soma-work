@@ -1138,7 +1138,11 @@ export class SessionInitializer {
     if (isRequestActive) {
       if (canInterrupt) {
         this.logger.debug('Cancelling existing request for session', { sessionKey, interruptedBy: userName });
-        this.deps.requestCoordinator.abortSession(sessionKey);
+        // A new message in the same session displaced the previous turn —
+        // tag as `supersede` so handleError surfaces a "🔴 오류 발생" card
+        // for the displaced turn (otherwise the user sees no terminal
+        // marker when the prior turn had stalled silently).
+        this.deps.requestCoordinator.abortSession(sessionKey, 'supersede');
         // Issue #688 — per-(channel, threadTs) epoch bump so any stale
         // clearStatus from the aborted turn (arriving after the new turn
         // has set its spinner) becomes a no-op via expectedEpoch guard.

@@ -404,9 +404,11 @@ async function start() {
       }));
     });
 
-    // Connect dashboard: stop handler (abort running session)
+    // Connect dashboard: stop handler (abort running session). Dashboard
+    // stop is an explicit user action, so tag `user-stop` to keep the
+    // notification gate quiet (the dashboard itself shows the result).
     setDashboardStopHandler(async (sessionKey: string) => {
-      slackHandler.getRequestCoordinator().abortSession(sessionKey);
+      slackHandler.getRequestCoordinator().abortSession(sessionKey, 'user-stop');
       logger.info('Dashboard: stopped session', { sessionKey });
     });
 

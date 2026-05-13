@@ -78,7 +78,7 @@ import {
   buildInstructionSupersededBlocks,
 } from '../instruction-confirm-blocks';
 import { LOG_DETAIL, OutputFlag, shouldOutput, verboseTag } from '../output-flags';
-import type { RequestCoordinator } from '../request-coordinator';
+import { type RequestAbortReason, type RequestCoordinator } from '../request-coordinator';
 import type { SummaryService } from '../summary-service';
 import type { SummaryTimer } from '../summary-timer.js';
 import type { ThreadPanel, TurnAddress, TurnContext } from '../thread-panel';
@@ -219,6 +219,26 @@ function toUsagePercentSnapshot(snap: UsageSnapshot | null | undefined): UsagePe
   if (fiveHour !== undefined) out.fiveHour = fiveHour;
   if (sevenDay !== undefined) out.sevenDay = sevenDay;
   return out;
+}
+
+/**
+ * The set of {@link RequestAbortReason} strings we will trust when read off
+ * an `AbortSignal.reason`. Anything else — DOMException defaults, foreign
+ * code paths calling `controller.abort()` with no argument or with a
+ * non-string sentinel — collapses to `undefined` so `handleError` falls
+ * through to its conservative "stay quiet" branch.
+ */
+const KNOWN_ABORT_REASONS: ReadonlySet<RequestAbortReason> = new Set([
+  'supersede',
+  'user-stop',
+  'session-close',
+  'shutdown',
+  'stall-timeout',
+]);
+
+function coerceAbortReason(raw: unknown): RequestAbortReason | undefined {
+  if (typeof raw !== 'string') return undefined;
+  return KNOWN_ABORT_REASONS.has(raw as RequestAbortReason) ? (raw as RequestAbortReason) : undefined;
 }
 
 /** Issue #816 — single-line preview for the MCP parse-fail Slack post. */
@@ -1434,6 +1454,16 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       return { success: true, messageCount: streamResult.messageCount, turnCollector };
     } catch (error: any) {
       const requestAborted = abortController.signal.aborted;
+      // The reason was set by `RequestCoordinator.abortSession(reason)` —
+      // `controller.abort(reason)` surfaces it on `signal.reason`. Used by
+      // `handleError` to decide whether to post a "🔴 오류 발생" card for
+      // the aborted turn (supersede / stall-timeout) or stay quiet
+      // (user-stop / session-close / shutdown).
+      //
+      // `signal.reason` is typed `any` by the DOM lib because untagged
+      // `controller.abort()` yields a DOMException ("AbortError"); we only
+      // trust it when it matches our known reason union.
+      const abortReason = requestAborted ? coerceAbortReason(abortController.signal.reason) : undefined;
       // Issue #525 P1: close the B1 stream before handleError posts the
       // error block — otherwise the stream would linger until finally and
       // race with the error message rendering. PHASE=0 → no-op.
@@ -1477,6 +1507,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         requestAborted,
         activeSlotSnapshot,
         epoch,
+        abortReason,
       );
       return { success: false, messageCount: 0, retryAfterMs };
     } finally {
@@ -1572,6 +1603,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     requestAborted: boolean = false,
     activeSlotAtQueryStart: ActiveTokenInfo | null = null,
     expectedEpoch?: number,
+    abortReason?: RequestAbortReason,
   ): Promise<number | undefined> {
     // Clear native spinner on any error and reset activity state.
     // Issue #688 — guard with the caller's captured epoch so a stale
@@ -1595,11 +1627,43 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
 
     const isAbort = requestAborted || this.isAbortLikeError(error);
 
-    // Fire Exception notification only for real errors, not abort/cancel.
-    // Issue #661 — suppress on 1M-unavailable fallback: the turn is auto-
-    // recoverable, not a user-facing exception.
+    // Decide whether the aborted turn should surface a "🔴 오류 발생" card.
+    //
+    // Pre-fix behaviour: every abort was silent (`!isAbort` gate), so a
+    // stalled turn displaced by a new user message left the thread without
+    // any terminal marker — the user couldn't tell whether the previous
+    // turn was done, hanging, or still running. The observed PTN-4238
+    // autoz symptom (1h43m of dead air between final assistant text and
+    // the displacing message) traces straight to this gap.
+    //
+    // Post-fix: classify the abort by `abortReason` (plumbed through
+    // `controller.abort(reason)` from RequestCoordinator). Two reasons
+    // need a user-facing card; the rest stay silent.
+    //
+    //   `supersede`      — new message displaced the prior turn. The user
+    //                      is *waiting* for a terminal signal; show it.
+    //   `stall-timeout`  — (reserved) future watchdog will tag aborts
+    //                      this way when no SDK event has arrived for N
+    //                      minutes. Same UX as supersede.
+    //   `user-stop` / `session-close` / `shutdown` — user already knows
+    //                      the turn is over (button click / shutdown).
+    //                      Stay quiet to avoid noise on every interrupt.
+    //
+    // An untagged abort (`abortReason === undefined`) means a code path
+    // raised AbortError without going through RequestCoordinator. Treat
+    // it conservatively as "explicit cancel" and stay quiet — matches
+    // pre-fix behaviour.
+    const supersedeLikeAbort = isAbort && (abortReason === 'supersede' || abortReason === 'stall-timeout');
+    const shouldNotifyException =
+      !!this.deps.turnNotifier && (!isAbort || supersedeLikeAbort) && !this.isOneMContextUnavailableError(error);
+
     // Trace: docs/turn-notification/trace.md, Scenario 1, Section 3a — Exception path
-    if (this.deps.turnNotifier && !isAbort && !this.isOneMContextUnavailableError(error)) {
+    if (shouldNotifyException && this.deps.turnNotifier) {
+      const message = supersedeLikeAbort
+        ? abortReason === 'stall-timeout'
+          ? '이전 턴이 일정 시간 응답이 없어 중단되었습니다.'
+          : '이전 턴이 새 메시지로 인해 중단되었습니다.'
+        : error?.message;
       this.deps.turnNotifier
         .notify({
           category: 'Exception',
@@ -1607,7 +1671,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           channel,
           threadTs,
           sessionTitle: session.title,
-          message: error?.message,
+          message,
           durationMs: 0,
         })
         .catch((err) => this.logger.warn('Exception notification failed', { error: err?.message }));

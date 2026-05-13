@@ -1,5 +1,5 @@
 /**
- * PR-issue precondition guard (#696).
+ * PR-issue precondition guard (#696, Jira-extension #885).
  *
  * Pure function called by the in-process SDK PreToolUse hook in
  * `src/claude-handler.ts`. Enforces the issue-link precondition documented in
@@ -7,13 +7,20 @@
  * tool calls (`Bash gh pr create` and `mcp__github__create_pull_request`)
  * for sessions started via z handoff.
  *
- * Spec: docs/pr-issue-precondition/spec.md (v2.1)
+ * Spec: docs/pr-issue-precondition/spec.md (v2.1; #885 adds Jira branch)
  * Trace: docs/pr-issue-precondition/trace.md (v2.1)
  *
  * Activation: caller (the hook closure) only invokes this guard when
  * `session.handoffContext` is set — guard takes it as a REQUIRED arg.
  * Sessions without handoffContext (legacy / non-z) bypass enforcement
  * entirely (out of scope for #696).
+ *
+ * Source URL providers (#885):
+ *   - GitHub  — `https://.../issues/<number>` → expects `Closes #<n>` in body
+ *   - Jira    — `https://<tenant>.atlassian.net/browse/<KEY>-<NUM>` → expects
+ *               `Closes <KEY>` (case-insensitive) OR the full matching Jira URL
+ *   Anything else → `malformed-source-issue-url`. Self-hosted Jira is out of
+ *   scope: only Atlassian Cloud `/browse` is recognized.
  */
 
 import type { HookInput, HookJSONOutput } from '@anthropic-ai/claude-agent-sdk';
@@ -36,6 +43,8 @@ export type PrIssueGuardReason =
   | 'no-issue-no-escape'
   | 'missing-closes-issue'
   | 'wrong-issue-number'
+  | 'missing-jira-key'
+  | 'wrong-jira-key'
   | 'missing-escape-marker'
   | 'malformed-source-issue-url'
   | 'unknown-tool-shape';
@@ -101,6 +110,62 @@ function extractIssueNumber(url: string): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+/**
+ * Atlassian Cloud `/browse/<KEY>-<NUM>` recognizer (#885).
+ *
+ * Anchored at start: the source URL must BE a `/browse/...` URL, not contain
+ * one. Self-hosted (`/jira/browse/...`) and board views with `selectedIssue=`
+ * query params are explicitly NOT recognized — they would extract through a
+ * looser regex but cause false-positive coverage of unintended URL shapes.
+ *
+ * Key shape `[A-Z][A-Z0-9_]*` matches Jira's canonical project-key
+ * constraints (upper-case letter prefix, allowed letters/digits/underscore).
+ * Lowercase keys (`ptn-4217`) are NOT valid Jira keys and indicate a
+ * producer bug — block with `malformed-source-issue-url`.
+ */
+const JIRA_SOURCE_URL_RE =
+  /^https:\/\/[A-Za-z0-9][A-Za-z0-9-]*\.atlassian\.net\/browse\/([A-Z][A-Z0-9_]*-\d+)(?:[/?#]|$)/;
+
+/** Extract the canonical Jira key from a `/browse/<KEY>-<NUM>` source URL. */
+function extractJiraKey(url: string): string | null {
+  const match = JIRA_SOURCE_URL_RE.exec(url);
+  return match ? match[1] : null;
+}
+
+/**
+ * Body-scan: any `Closes <KEY>` reference (case-insensitive). KEY here uses
+ * a looser char class than the source-URL regex so a body like
+ * `Closes ptn-4217` (user-typed lowercase) is detected and compared against
+ * the upper-cased source key. Returned via fresh RegExp because `g` flag
+ * regexes carry mutable `lastIndex` state across calls.
+ */
+function jiraClosesKeyGlobal(): RegExp {
+  return /\bcloses\s+([A-Za-z][A-Za-z0-9_]*-\d+)\b/gi;
+}
+
+/**
+ * Body-scan: any Atlassian Cloud `/browse/<KEY>-<NUM>` URL, regardless of
+ * surrounding context. Used for the "full URL in body" evidence path. Key
+ * shape is the strict upper-case form to match real Atlassian URLs (user-typed
+ * lowercase URLs won't satisfy this branch — use `Closes <KEY>` instead).
+ */
+function jiraUrlInBodyGlobal(): RegExp {
+  return /https:\/\/[A-Za-z0-9][A-Za-z0-9-]*\.atlassian\.net\/browse\/([A-Z][A-Z0-9_]*-\d+)/g;
+}
+
+/**
+ * Collect every Jira key referenced in the body (upper-cased for comparison).
+ * Aggregates `Closes <KEY>` markers + bare Jira URLs. Bare key mentions
+ * (e.g. `Related: PTN-4217` without `Closes` and without a URL) are
+ * deliberately NOT collected — false-pass risk per spec (#885 AD).
+ */
+function collectJiraKeysFromBody(body: string): string[] {
+  const keys: string[] = [];
+  for (const m of body.matchAll(jiraClosesKeyGlobal())) keys.push(m[1].toUpperCase());
+  for (const m of body.matchAll(jiraUrlInBodyGlobal())) keys.push(m[1]);
+  return keys;
+}
+
 /** Case-insensitive `Closes #N` (whitespace-tolerant). */
 function makeClosesIssueRegex(issueNumber: number): RegExp {
   return new RegExp(`\\bcloses\\s+#${issueNumber}\\b`, 'i');
@@ -115,7 +180,10 @@ const CASE_A_ESCAPE_MARKER = /Case A escape/;
 function formatBlockMessage(reason: PrIssueGuardReason, ctx: HandoffContext, toolName: string): string {
   const sourceIssueUrl = ctx.sourceIssueUrl ?? 'null';
   const issueNum = ctx.sourceIssueUrl ? extractIssueNumber(ctx.sourceIssueUrl) : null;
-  const issueRef = `Closes #${issueNum ?? '<n>'}`;
+  const jiraKey = ctx.sourceIssueUrl ? extractJiraKey(ctx.sourceIssueUrl) : null;
+  // Provider-aware reference shown in user-facing message.
+  // GitHub → `Closes #N`; Jira → `Closes <KEY>`; unknown → `Closes <n>` fallback.
+  const issueRef = issueNum !== null ? `Closes #${issueNum}` : jiraKey !== null ? `Closes ${jiraKey}` : 'Closes <n>';
 
   const header = `🚫 PR creation blocked: handoff session lacks linked-issue evidence.`;
   const toolLine = `Tool: ${toolName}`;
@@ -157,6 +225,26 @@ function formatBlockMessage(reason: PrIssueGuardReason, ctx: HandoffContext, too
           ``,
           `Fix: change the body to reference \`${issueRef}\`. If you intended a different issue,`,
           `restart the workflow from that issue with \`$z <issue_url>\`.`,
+        ].join('\n');
+      case 'missing-jira-key':
+        return [
+          `Cause: handoff session has \`sourceIssueUrl=${sourceIssueUrl}\` (Atlassian Cloud Jira)`,
+          `but the PR body does not contain \`${issueRef}\` (case-insensitive) or the matching`,
+          `Jira URL.`,
+          ``,
+          `Fix: include \`${issueRef}\` in the PR body, OR paste the full URL`,
+          `\`${sourceIssueUrl}\`. Bare key mentions (e.g. \`Related: ${jiraKey ?? '<KEY>'}\`)`,
+          `do not satisfy — accidental references would false-pass. Use inline content (literal`,
+          `string or heredoc) — shell variable indirection (\`--body "$VAR"\`) is not visible to`,
+          `the static check. GitHub closure markers (\`Closes #N\`) never satisfy a Jira source.`,
+        ].join('\n');
+      case 'wrong-jira-key':
+        return [
+          `Cause: PR body references a \`Closes <KEY>\` or Jira URL whose key does not match`,
+          `this handoff's \`sourceIssueUrl=${sourceIssueUrl}\` (expected \`${issueRef}\`).`,
+          ``,
+          `Fix: change the body to reference \`${issueRef}\`. If you intended a different ticket,`,
+          `restart the workflow from that ticket with \`$z <ticket_url>\`.`,
         ].join('\n');
       case 'missing-escape-marker':
         return [
@@ -238,30 +326,63 @@ export function handlePrIssuePrecondition(input: PrIssueGuardInput): PrIssueGuar
 
   // 2. Apply precedence: sourceIssueUrl > escapeEligible > deny
   if (ctx.sourceIssueUrl !== null) {
+    // Detect source provider: GitHub /issues/<n> OR Atlassian Cloud /browse/<KEY>-<N>.
+    // Mutually exclusive — a URL cannot satisfy both patterns.
     const issueNum = extractIssueNumber(ctx.sourceIssueUrl);
-    if (issueNum === null) {
+    const jiraKey = extractJiraKey(ctx.sourceIssueUrl);
+
+    if (issueNum !== null) {
+      // GitHub path (unchanged behavior)
+      const closesRegex = makeClosesIssueRegex(issueNum);
+      if (closesRegex.test(bodyContent)) {
+        return { blocked: false };
+      }
+      // Distinguish wrong-number vs missing-entirely for clearer messages.
+      // Note: Jira-style `Closes PTN-N` against a GitHub source does NOT
+      // match `CLOSES_ANY_ISSUE` (which requires `#<digits>`) — it falls
+      // through to `missing-closes-issue`, preserving the existing semantic
+      // that "no GitHub-style marker present" is distinct from "wrong number".
+      if (CLOSES_ANY_ISSUE.test(bodyContent)) {
+        return {
+          blocked: true,
+          reason: 'wrong-issue-number',
+          message: formatBlockMessage('wrong-issue-number', ctx, toolName),
+        };
+      }
       return {
         blocked: true,
-        reason: 'malformed-source-issue-url',
-        message: formatBlockMessage('malformed-source-issue-url', ctx, toolName),
+        reason: 'missing-closes-issue',
+        message: formatBlockMessage('missing-closes-issue', ctx, toolName),
       };
     }
-    const closesRegex = makeClosesIssueRegex(issueNum);
-    if (closesRegex.test(bodyContent)) {
-      return { blocked: false };
-    }
-    // Distinguish wrong-number vs missing-entirely for clearer messages
-    if (CLOSES_ANY_ISSUE.test(bodyContent)) {
+
+    if (jiraKey !== null) {
+      // Jira path (#885)
+      const expectedKey = jiraKey.toUpperCase();
+      const referencedKeys = collectJiraKeysFromBody(bodyContent);
+      if (referencedKeys.includes(expectedKey)) {
+        return { blocked: false };
+      }
+      if (referencedKeys.length > 0) {
+        // Some Jira-shaped marker/URL is present, but the key doesn't match.
+        return {
+          blocked: true,
+          reason: 'wrong-jira-key',
+          message: formatBlockMessage('wrong-jira-key', ctx, toolName),
+        };
+      }
       return {
         blocked: true,
-        reason: 'wrong-issue-number',
-        message: formatBlockMessage('wrong-issue-number', ctx, toolName),
+        reason: 'missing-jira-key',
+        message: formatBlockMessage('missing-jira-key', ctx, toolName),
       };
     }
+
+    // Neither GitHub nor Atlassian Cloud Jira recognized → producer-side bug.
     return {
       blocked: true,
-      reason: 'missing-closes-issue',
-      message: formatBlockMessage('missing-closes-issue', ctx, toolName),
+      reason: 'malformed-source-issue-url',
+      message: formatBlockMessage('malformed-source-issue-url', ctx, toolName),
     };
   }
 
