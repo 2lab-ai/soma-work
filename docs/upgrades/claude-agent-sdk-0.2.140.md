@@ -10,7 +10,7 @@
 ## Executive Summary
 
 29개 패치 버전 범위. 메이저/마이너 변경 없음. 신규 기능 9개, 비파괴 deprecation 4개,
-**소위 "breaking" 1개 (`options.env` 시멘틱 복원)**.
+SDK CHANGELOG에 **BREAKING으로 명시된 변경 1개**(`options.env` 시멘틱 — 우리 호출 패턴에는 영향 없음).
 
 | 축 | 요약 | soma-work 영향도 |
 |---|---|---|
@@ -30,7 +30,10 @@
 
 ## soma-work 사용처 매핑
 
-`@anthropic-ai/claude-agent-sdk`를 직접 import하는 모듈은 9개 + 테스트 6개:
+`@anthropic-ai/claude-agent-sdk`를 **직접 import하는 모듈은 9개 (src) + 7개 (테스트)**.
+추가로 SDK를 import하지 않고 **도구 이름 문자열만 참조하는 결합점** 1곳.
+
+### Import 결합 (TypeScript)
 
 | 파일 | 사용 심볼 | 영향 |
 |---|---|---|
@@ -43,7 +46,18 @@
 | `src/slack/hooks/compact-hooks.ts` | `PostCompactHookInput`, `PreCompactHookInput`, `SessionStartHookInput` | 영향 없음 |
 | `src/hooks/pr-issue-guard.ts` | `HookInput`, `HookJSONOutput` | 영향 없음 |
 | `src/hooks/bypass-permission-guard.ts` | `HookInput`, `HookJSONOutput` | 영향 없음 |
-| `src/mcp-config-builder.ts` | `allowedTools.push('Skill')` | ⚠️ **deprecated 경고** (0.2.133) — 별도 PR 권장 |
+
+테스트 import 7개: `claude-handler.integration`, `bypass-permission-guard`, `compact-hooks`,
+`compact-fallback`, `stream-executor-compact`, `summarizer-thinking` (vi.mock), `session-summary-title` (vi.mock).
+
+### 문자열 결합 (SDK import 없음, 런타임 surface)
+
+| 파일 | 결합 | 영향 |
+|---|---|---|
+| `src/mcp-config-builder.ts:526` | `allowedTools.push('Skill')` — 도구 이름 문자열 | ⚠️ **deprecated 경고** (0.2.133) — 별도 PR 권장 |
+
+이 모듈은 `@anthropic-ai/claude-agent-sdk`를 import하지 않으며, deprecation은 SDK
+런타임이 옵션을 검사할 때만 발생한다 (TypeScript 빌드 단계에서는 감지 불가).
 
 ---
 
@@ -57,7 +71,7 @@
 
 ### soma-work 영향
 
-소마-work는 이미 이 패턴을 **선제적으로** 적용해 둔 상태다. `src/auth/query-env-builder.ts:122`:
+soma-work는 이미 이 패턴을 **선제적으로** 적용해 둔 상태다. `src/auth/query-env-builder.ts:122-144`:
 
 ```ts
 export function buildQueryEnv(lease: SlotAuthLease): QueryEnvResult {
@@ -308,6 +322,22 @@ $ npm ls @anthropic-ai/claude-agent-sdk --depth=0
 soma-work@1.0.0
 └── @anthropic-ai/claude-agent-sdk@0.2.140
 ```
+
+`peerDependencies.zod ^4.0.0` 호환성 확인:
+
+```bash
+$ npm ls zod
+soma-work@1.0.0
+├── @anthropic-ai/claude-agent-sdk@0.2.140
+│   ├── @anthropic-ai/sdk@0.81.0 → zod@4.3.6 (deduped)
+│   └── zod@4.3.6
+└── @modelcontextprotocol/sdk@1.29.0 → zod@4.3.6 (deduped)
+```
+
+soma-work는 `zod`를 직접 선언하지 않고, MCP SDK와 Agent SDK가 동일한 `zod@4.3.6`로
+deduplication 됨. v3/v4 split 없음.
+
+SDK의 `engines.node`는 `>=18.0.0`. soma-work는 `engines` 미지정 → 운영 환경(Node 20+)에서 충족.
 
 ### 6.2 Typecheck
 
