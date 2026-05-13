@@ -33,9 +33,16 @@ function createTestHandler() {
 
   const mockGetCrashRecoveredSessions = vi.fn().mockReturnValue([]);
   const mockClearCrashRecoveredSessions = vi.fn();
+  const mockGetSessionByKey = vi.fn().mockReturnValue(undefined);
+  const mockSaveSessions = vi.fn();
   const claudeHandler = {
     getCrashRecoveredSessions: mockGetCrashRecoveredSessions,
     clearCrashRecoveredSessions: mockClearCrashRecoveredSessions,
+    // Required by notifyCrashRecovery for clearing the
+    // `shutdownNotificationSent` marker on live sessions after sending the
+    // matching restart notification — see slack-handler.ts.
+    getSessionByKey: mockGetSessionByKey,
+    saveSessions: mockSaveSessions,
   } as any;
 
   const mcpManager = {} as any;
