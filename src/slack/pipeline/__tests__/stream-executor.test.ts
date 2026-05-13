@@ -365,6 +365,9 @@ describe('Abort handling', () => {
       actionHandlers: {},
       requestCoordinator: {},
       slackApi: {},
+      turnNotifier: {
+        notify: vi.fn().mockResolvedValue(undefined),
+      },
       assistantStatusManager: {
         clearStatus: vi.fn().mockResolvedValue(undefined),
         setStatus: vi.fn().mockResolvedValue(undefined),
@@ -387,6 +390,91 @@ describe('Abort handling', () => {
 
     expect(deps.claudeHandler.clearSessionId).not.toHaveBeenCalled();
     expect(say).not.toHaveBeenCalled();
+  });
+
+  // Bug fix: a stalled turn that is displaced by a new user message
+  // ("supersede") must surface a turn-completion card so the user can
+  // tell the previous turn is done — even if it's a 🔴 "오류 발생" card.
+  // Before this fix the !isAbort gate in handleError silently swallowed
+  // every abort path, so the thread looked half-finished forever (the
+  // observed PTN-4238 autoz symptom — assistant text posted but no
+  // green/red marker followed for 1h43m).
+  it('posts a turn-completion card when abort reason is "supersede"', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = new Error('Request was aborted');
+    error.name = 'AbortError';
+
+    const session = { ownerId: 'U_OWNER', title: 'autoz turn' } as any;
+
+    await (executor as any).handleError(
+      error,
+      session,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say,
+      /* requestAborted */ true,
+      /* activeSlotAtQueryStart */ null,
+      /* expectedEpoch */ undefined,
+      /* abortReason */ 'supersede',
+    );
+
+    expect(deps.turnNotifier.notify).toHaveBeenCalledTimes(1);
+    const event = deps.turnNotifier.notify.mock.calls[0][0];
+    expect(event.category).toBe('Exception');
+    expect(event.channel).toBe('C123');
+    expect(event.threadTs).toBe('thread123');
+  });
+
+  it('stays silent on explicit user-stop aborts (Stop button / dashboard stop)', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = new Error('Request was aborted');
+    error.name = 'AbortError';
+
+    await (executor as any).handleError(
+      error,
+      { ownerId: 'U_OWNER', title: 'user stop' } as any,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say,
+      /* requestAborted */ true,
+      /* activeSlotAtQueryStart */ null,
+      /* expectedEpoch */ undefined,
+      /* abortReason */ 'user-stop',
+    );
+
+    expect(deps.turnNotifier.notify).not.toHaveBeenCalled();
+  });
+
+  it('stays silent on session-close aborts (Close button)', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = new Error('Request was aborted');
+    error.name = 'AbortError';
+
+    await (executor as any).handleError(
+      error,
+      { ownerId: 'U_OWNER', title: 'close session' } as any,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say,
+      true,
+      null,
+      undefined,
+      'session-close',
+    );
+
+    expect(deps.turnNotifier.notify).not.toHaveBeenCalled();
   });
 
   it('preserves session for Claude SDK rate-limit/process-exit errors', async () => {
