@@ -290,10 +290,7 @@ export class SummaryService {
         // ATX headings: leading 1–6 `#` then space then content. The trailing
         // `#*` strips an optional closing-hash run so `## Foo ##` folds to `*Foo*`.
         return line
-          .replace(
-            /^(\s*)#{1,6}\s+(.+?)\s*#*\s*$/,
-            (_m, indent: string, content: string) => `${indent}*${content}*`,
-          )
+          .replace(/^(\s*)#{1,6}\s+(.+?)\s*#*\s*$/, (_m, indent: string, content: string) => `${indent}*${content}*`)
           .replace(/\*\*([^*]+)\*\*/g, '*$1*')
           .replace(/__([^_]+)__/g, '_$1_');
       })
