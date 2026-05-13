@@ -260,28 +260,17 @@ export class SummaryService {
   }
 
   /**
-   * Rewrite github-flavored markdown to Slack mrkdwn, line by line, skipping
-   * the bodies of fenced code blocks so the syntax inside ```...``` stays
-   * verbatim.
+   * Rewrite github-flavored markdown to Slack mrkdwn line by line, leaving
+   * fenced code blocks verbatim:
+   * - Opening fence: strip the language tag (```ts → ```).
+   * - Inside a fence: pass through unchanged.
+   * - Outside: ATX headings → `*…*`, `**bold**` → `*bold*`, `__italic__` → `_italic_`.
    *
-   * Rules:
-   * - Opening fence `~~~lang` / ```lang has its language tag stripped (Slack
-   *   mrkdwn fences don't support a language hint).
-   * - Inside a fence: line is emitted unchanged (no bold/italic/header
-   *   substitutions on code samples).
-   * - Outside a fence:
-   *   - ATX headings `# … ######` become `*…*` (Slack has no native heading
-   *     block in a mrkdwn section, so bold is the closest visual approximation).
-   *   - `**bold**` → `*bold*`
-   *   - `__italic__` → `_italic_`
-   *
-   * Note: emphasis inside inline code (`...`) is not protected here. Slack
-   * already renders inline-code spans correctly because Slack mrkdwn treats
-   * backticks as literal code, so the marginal gain of a tokenizer doesn't
-   * justify the complexity for the executive-summary surface.
-   *
-   * Marked `static` so tests can validate the converter directly without
-   * constructing a service.
+   * Single-`*` emphasis (`*x*`) is deliberately *not* rewritten — in Slack
+   * mrkdwn `*x*` is bold, so converting GFM italic to Slack `_x_` would have
+   * to first distinguish it from already-bold text, which a line-level
+   * regex pass can't do safely. Leaving it alone keeps both meanings legible
+   * (Slack renders `*x*` as bold either way).
    */
   static formatSummaryForSlack(text: string): string {
     let inFence = false;
@@ -295,27 +284,18 @@ export class SummaryService {
             // Opening fence — strip the language tag (```ts → ```).
             return line.replace(/^(\s*)```[^\s`]*\s*$/, '$1```');
           }
-          // Closing fence — emit verbatim.
           return line;
         }
-        if (inFence) {
-          // Inside a fenced code block — never touch.
-          return line;
-        }
-        let out = line;
-        // ATX headings: leading 1–6 `#` then space then content. Strip an
-        // optional trailing `#` run + whitespace so `## Foo ##` also folds
-        // cleanly to `*Foo*`.
-        out = out.replace(
-          /^(\s*)#{1,6}\s+(.+?)\s*#*\s*$/,
-          (_m, indent: string, content: string) => `${indent}*${content}*`,
-        );
-        // Bold: `**x**` → `*x*`. Non-greedy match on non-`*` runs keeps
-        // adjacent bold spans separate.
-        out = out.replace(/\*\*([^*]+)\*\*/g, '*$1*');
-        // Italic: `__x__` → `_x_`.
-        out = out.replace(/__([^_]+)__/g, '_$1_');
-        return out;
+        if (inFence) return line;
+        // ATX headings: leading 1–6 `#` then space then content. The trailing
+        // `#*` strips an optional closing-hash run so `## Foo ##` folds to `*Foo*`.
+        return line
+          .replace(
+            /^(\s*)#{1,6}\s+(.+?)\s*#*\s*$/,
+            (_m, indent: string, content: string) => `${indent}*${content}*`,
+          )
+          .replace(/\*\*([^*]+)\*\*/g, '*$1*')
+          .replace(/__([^_]+)__/g, '_$1_');
       })
       .join('\n');
   }
