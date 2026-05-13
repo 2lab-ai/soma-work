@@ -566,6 +566,44 @@ export class McpConfigBuilder {
     allowedTools.push('EnterPlanMode');
     allowedTools.push('ExitPlanMode');
 
+    // Bypass-mode short-circuit for native non-Bash tools.
+    //
+    // PR #880 installs an explicit `'allow'` PreToolUse hook for these tools
+    // when bypass=ON. That hook can silently lose its decision when the SDK's
+    // hook-callback transport stream closes (cli.js:8643 `BY8.sendRequest`
+    // throws on `inputClosed`; `createHookCallback` catches and returns `{}`;
+    // merge then has no `permissionBehavior` to act on). The hook layer is
+    // necessary for `'ask'` semantics (dangerous-rule escalation lives in
+    // bypass-Bash-gate for Bash only), but the auto-allow path for the
+    // non-Bash native tools must NOT depend on the hook transport.
+    //
+    // Adding these names to `allowedTools` makes the SDK short-circuit at
+    // the `alwaysAllowRules` layer (cli.js:5172 `CkY` → `hkY` →
+    // `behavior:"allow"`, evaluated before the prompt-tool wrapper at
+    // cli.js:18223). PreToolUse deny hooks (sensitive-path, cross-user,
+    // ssh-ban, abort-guard, mcp-grant, pr-issue) still run first; SDK
+    // precedence keeps deny > allow, so adding the names here does not
+    // weaken any existing block.
+    //
+    // `Bash` is intentionally excluded — its bypass-Bash-gate hook emits
+    // `'ask'` for dangerous commands, which would be defeated by an
+    // unconditional allowlist entry.
+    if (slackContext && userBypass) {
+      allowedTools.push(
+        'Write',
+        'Edit',
+        'NotebookEdit',
+        'TodoWrite',
+        'Read',
+        'Glob',
+        'Grep',
+        'Task',
+        'WebFetch',
+        'WebSearch',
+        'KillShell',
+      );
+    }
+
     return allowedTools;
   }
 
