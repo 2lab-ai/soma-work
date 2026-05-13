@@ -1200,7 +1200,16 @@ export class SlackHandler {
     let autoResumed = 0;
     for (let i = 0; i < recovered.length; i++) {
       const session = recovered[i];
-      const isWorking = session.activityState === 'working';
+      // Use the authoritative auto-resume decision captured at shutdown
+      // (`wasWorkingAtShutdown`, surfaced as `shouldAutoResume` by
+      // `loadSessions`) instead of the persisted `activityState`, which can
+      // be stale because the working-state transition does not always reach
+      // disk. `shouldAutoResume` is set on every `CrashRecoveredSession`
+      // record produced by `loadSessions` — for legacy callers that omit it
+      // (the marker is non-typed `unknown` from arbitrary disk JSON) we fall
+      // back to `activityState === 'working'`.
+      const isWorking =
+        typeof session.shouldAutoResume === 'boolean' ? session.shouldAutoResume : session.activityState === 'working';
 
       // Post notification message and capture its ts for use as synthetic event anchor
       let notificationTs: string | undefined;
@@ -1263,6 +1272,24 @@ export class SlackHandler {
     }
 
     this.claudeHandler.clearCrashRecoveredSessions();
+    // Clear shutdown-recovery markers from live sessions so we don't replay
+    // the restart notification on the NEXT restart. We do this once, after
+    // the batch, instead of per-session, to keep the per-session loop hot.
+    let cleared = 0;
+    for (const r of recovered) {
+      const live = this.claudeHandler.getSessionByKey(r.sessionKey);
+      if (live?.shutdownNotificationSent) {
+        live.shutdownNotificationSent = false;
+        live.wasWorkingAtShutdown = false;
+        live.shutdownNotifiedAt = undefined;
+        cleared++;
+      }
+    }
+    if (cleared > 0) {
+      // Persist the cleared markers so a fast follow-up restart (no new
+      // session activity in between) doesn't resurrect them.
+      this.claudeHandler.saveSessions();
+    }
     this.logger.info(
       `Sent crash recovery notifications to ${notified}/${recovered.length} sessions, auto-resumed ${autoResumed}`,
     );

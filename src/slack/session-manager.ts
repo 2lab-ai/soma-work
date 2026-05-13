@@ -931,7 +931,17 @@ export class SessionUiManager {
   }
 
   /**
-   * 서버 종료 시 모든 세션에 알림
+   * 서버 종료 시 모든 세션에 알림.
+   *
+   * For every session this method successfully notifies, it also stamps
+   * `shutdownNotificationSent=true` and `wasWorkingAtShutdown=(activityState
+   * === 'working')` on the in-memory session. The caller (`index.ts`
+   * cleanup handler) runs `saveSessions()` immediately afterwards, so
+   * these markers reach disk. On the next startup, `loadSessions()`
+   * uses them to send a symmetric restart notification to the same set
+   * (and to fire auto-resume only for sessions that were truly working
+   * — independent of whatever `activityState` got persisted, which can
+   * be stale because `setActivityState('working')` does NOT save).
    */
   async notifyShutdown(): Promise<void> {
     const shutdownText = `🔄 *서버 재시작 중*\n\n서버가 재시작됩니다. 잠시 후 다시 대화를 이어갈 수 있습니다.\n세션이 저장되었으므로 서버 재시작 후에도 대화 내용이 유지됩니다.`;
@@ -946,9 +956,19 @@ export class SessionUiManager {
             await this.slackApi.postMessage(session.channelId, shutdownText, {
               threadTs: session.threadTs,
             });
+            // Only mark the session after a successful postMessage — a failed
+            // post means the user didn't actually see the shutdown notice, so
+            // sending them a "we came back" message at restart would be
+            // confusing (Slack also commonly fails this when the channel was
+            // deleted; in that case the session shouldn't be auto-resumed
+            // anyway since the channel is gone).
+            session.shutdownNotificationSent = true;
+            session.shutdownNotifiedAt = Date.now();
+            session.wasWorkingAtShutdown = session.activityState === 'working';
             this.logger.debug('Sent shutdown notification', {
               sessionKey: key,
               channel: session.channelId,
+              wasWorking: session.wasWorkingAtShutdown,
             });
           } catch (error) {
             this.logger.error('Failed to send shutdown notification', {
