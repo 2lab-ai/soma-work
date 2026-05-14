@@ -188,6 +188,39 @@ export interface RotateOnRateLimitOptions {
   source: RateLimitSource;
   rateLimitedAt?: string;
   cooldownMinutes?: number;
+  /**
+   * Compare-and-swap guard: the keyId the caller observed rate-limited at
+   * query-start. When provided, the rotation no-ops if the active slot at
+   * mutate-time no longer matches — this prevents the "N concurrent sessions
+   * rotate N times" failure mode where each session sees the same slot
+   * rate-limited and would otherwise advance the ring once per session
+   * (looping all the way back to the capped slot for N≥len).
+   *
+   * Omit for legacy / manual rotation paths (CLI, dashboard "rotate now"),
+   * which retain the historical behavior of operating on whichever slot is
+   * active at the moment of the call.
+   */
+  expectedFromKeyId?: string;
+}
+
+/**
+ * Outcome of a single `rotateOnRateLimit` call. The discriminator lets callers
+ * distinguish a successful rotation from each no-op reason — useful both for
+ * accurate logging (info vs warn) and for unit tests asserting the CAS path.
+ */
+export interface RotateOnRateLimitResult {
+  /** The slot we rotated to, or null when no rotation occurred. */
+  rotated: { keyId: string; name: string } | null;
+  /**
+   * Present only when `rotated === null`. Disambiguates the no-op cause:
+   *  - `cas-skipped`     : `expectedFromKeyId` provided but no longer matches
+   *                        the active slot — another session already rotated.
+   *  - `no-active-slot`  : the registry has no active slot to rotate from.
+   *  - `no-eligible`     : the CAS matched (or was absent) and the active slot
+   *                        was stamped cooled, but no eligible replacement
+   *                        exists in the ring.
+   */
+  skipReason?: 'cas-skipped' | 'no-active-slot' | 'no-eligible';
 }
 
 export interface TokenManagerInitOptions {
@@ -729,20 +762,30 @@ export class TokenManager {
     return result;
   }
 
-  async rotateOnRateLimit(
-    reason?: string,
-    opts?: RotateOnRateLimitOptions,
-  ): Promise<{ keyId: string; name: string } | null> {
+  async rotateOnRateLimit(reason?: string, opts?: RotateOnRateLimitOptions): Promise<RotateOnRateLimitResult> {
     const effectiveOpts: RotateOnRateLimitOptions = opts ?? { source: 'manual' };
     const source = effectiveOpts.source;
+    const expectedFromKeyId = effectiveOpts.expectedFromKeyId;
     const cooldownMs = (effectiveOpts.cooldownMinutes ?? DEFAULT_COOLDOWN_MS / 60_000) * 60_000;
     const nowIso = new Date().toISOString();
     const nowMs = Date.now();
     const cooldownUntilIso = new Date(nowMs + cooldownMs).toISOString();
 
-    const rotated = await this.store.mutate<{ keyId: string; name: string } | null>((snap) => {
+    const result = await this.store.mutate<RotateOnRateLimitResult>((snap) => {
       const currentId = snap.registry.activeKeyId;
-      if (!currentId) return null;
+      if (!currentId) return { rotated: null, skipReason: 'no-active-slot' };
+
+      // CAS guard: when the caller passes the slot they observed rate-limited
+      // (`expectedFromKeyId`), no-op if a concurrent caller already rotated
+      // the active pointer to a different slot. This is the fix for the
+      // "N sessions rotate N times" regression: without this check, each
+      // concurrently-failing session would advance the ring one step,
+      // stamping spurious cooldowns on uninvolved siblings and eventually
+      // looping back to the originally-capped slot.
+      if (expectedFromKeyId && currentId !== expectedFromKeyId) {
+        return { rotated: null, skipReason: 'cas-skipped' };
+      }
+
       const state = snap.state[currentId] ?? { authState: 'healthy' as AuthState, activeLeases: [] };
       // rate-limit timestamp hygiene: overwrite if previous window has
       // expired (no cooldownUntil or cooldownUntil has passed), OR if the
@@ -774,18 +817,28 @@ export class TokenManager {
           if (candidate.kind === 'api_key') continue;
           if (isEligible(candidate, snap.state[candidate.keyId], nowMs)) {
             snap.registry.activeKeyId = candidate.keyId;
-            return { keyId: candidate.keyId, name: candidate.name };
+            return { rotated: { keyId: candidate.keyId, name: candidate.name } };
           }
         }
       }
-      return null;
+      return { rotated: null, skipReason: 'no-eligible' };
     });
 
-    await this.refreshCache();
+    // Only refresh the in-process cache when the active pointer actually
+    // moved. CAS-skipped / no-active-slot paths leave the registry untouched,
+    // so we save the synchronous file read.
+    if (result.rotated) {
+      await this.refreshCache();
+    }
+    const outcome = result.rotated
+      ? `rotated=${result.rotated.name}`
+      : `rotated=none reason=${result.skipReason ?? 'unknown'}`;
     logger.info(
-      `rotateOnRateLimit: ${reason ?? '(no reason)'} source=${source} rotated=${rotated ? rotated.name : 'none'}`,
+      `rotateOnRateLimit: ${reason ?? '(no reason)'} source=${source} ${outcome}${
+        expectedFromKeyId ? ` expectedFromKeyId=${expectedFromKeyId}` : ''
+      }`,
     );
-    return rotated;
+    return result;
   }
 
   async recordRateLimitHint(keyId: string, source: RateLimitSource, cooldownUntil?: string): Promise<void> {
