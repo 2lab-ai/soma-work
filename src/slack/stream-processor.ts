@@ -244,6 +244,12 @@ export interface StreamCallbacks {
   onCompactBoundary?: (metadata?: Record<string, unknown>) => void;
   /** Called before sending the final assistant message to append footer text */
   buildFinalResponseFooter?: (params: FinalResponseFooterParams) => Promise<string | undefined> | string | undefined;
+  /**
+   * Called for every SDK message the dispatcher forwards — a "sign of life"
+   * signal for stall-detection heuristics. Must be cheap; throws are
+   * swallowed by the caller so a callback bug cannot abort the stream loop.
+   */
+  onSdkActivity?: () => void;
 }
 
 /**
@@ -385,6 +391,20 @@ export class StreamProcessor {
       for await (const message of stream) {
         if (abortSignal.aborted) {
           return { success: true, messageCount: currentMessages.length, aborted: true };
+        }
+
+        // Fire *before* per-type handlers so the activity clock reflects
+        // when the SDK emitted the message, not when a slow handler returned.
+        // Swallow throws — the clock is a UX heuristic; a handler bug here
+        // must not abort the stream loop.
+        if (this.callbacks.onSdkActivity) {
+          try {
+            this.callbacks.onSdkActivity();
+          } catch (err) {
+            this.logger.debug('onSdkActivity callback threw — ignored', {
+              error: (err as Error)?.message ?? String(err),
+            });
+          }
         }
 
         this.logger.debug('Received message from Claude SDK', {
