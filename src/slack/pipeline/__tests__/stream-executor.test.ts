@@ -463,6 +463,12 @@ describe('Abort handling', () => {
     expect(event.category).toBe('Exception');
     expect(event.channel).toBe('C123');
     expect(event.threadTs).toBe('thread123');
+    // Contract lock-in: stall-timeout must pass the friendly human-readable
+    // reason via `event.message`. The block-kit renderer prefers this over
+    // `event.sessionTitle` for Exception cards, so users see the real reason
+    // instead of a stale workflow title (e.g. "Session Reset" left over from
+    // an earlier /z reset). See slack-block-kit-channel.pickHeaderSuffix.
+    expect(event.message).toBe('이전 턴이 일정 시간 응답이 없어 중단되었습니다.');
   });
 
   it('stays silent on explicit user-stop aborts (Stop button / dashboard stop)', async () => {
