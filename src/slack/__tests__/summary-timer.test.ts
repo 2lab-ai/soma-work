@@ -43,13 +43,13 @@ describe('SummaryTimer', () => {
       // Reset with a new callback
       timer.start('session-1', callback2);
 
-      // The full original delay passes — first callback should NOT fire
+      // 100k of the SECOND timer's delay — still not fired
       vi.advanceTimersByTime(100_000);
       expect(callback1).not.toHaveBeenCalled();
       expect(callback2).not.toHaveBeenCalled();
 
-      // Complete the second timer's full delay
-      vi.advanceTimersByTime(80_000);
+      // Complete the second timer's full delay (resilient to DELAY_MS changes)
+      vi.advanceTimersByTime(SummaryTimer.DELAY_MS - 100_000);
       expect(callback1).not.toHaveBeenCalled();
       expect(callback2).toHaveBeenCalledOnce();
     });
