@@ -1,0 +1,130 @@
+/**
+ * Per-stream watchdog that fires a single `abort()` call after a configurable
+ * window of no `touch()` activity. Used by StreamExecutor to auto-abort a hung
+ * SDK stream with the `'stall-timeout'` reason so handleError surfaces the
+ * 🔴 "오류 발생" terminal card instead of the thread reading half-finished
+ * forever.
+ *
+ * Companion to:
+ *  - PR #912: `RequestAbortReason` union + abort-reason plumbing.
+ *  - PR #923: enrichment-rail terminal card guarantee.
+ *  - PR #924: dispatcher-level stall heuristic on next-message arrival.
+ *
+ * Codex decision (session `2a332a29-23ae-4fda-933f-b33ebd365ddc`, 2026-05-14):
+ * default 10 minutes, configurable via `SOMA_STREAM_STALL_TIMEOUT_MS`, `<= 0`
+ * disables; invalid env values fall back to the default. The watchdog must
+ * `unref()` its timer so it can never keep the Node process alive at
+ * shutdown.
+ *
+ * Trace: docs/turn-end-surface-guarantee/trace.md, S4 (stall-timeout arm).
+ */
+
+/** Default stall window — 10 min. Long-running tools (Playwright sweep,
+ *  big grep, Docker pull) routinely stay quiet for several minutes; 10
+ *  minutes only trips on genuine hangs. */
+export const DEFAULT_STALL_TIMEOUT_MS = 600_000;
+
+/** Env var operators can use to tune or disable the watchdog without a
+ *  redeploy. `0` disables; invalid/non-finite values fall back to the
+ *  default. */
+export const STALL_TIMEOUT_ENV_VAR = 'SOMA_STREAM_STALL_TIMEOUT_MS';
+
+/**
+ * Read the configured stall timeout from `process.env`.
+ *
+ * Operator contract:
+ *  - unset → `DEFAULT_STALL_TIMEOUT_MS`
+ *  - `0` (or any non-positive number) → disables the watchdog
+ *  - invalid/non-finite → falls back to `DEFAULT_STALL_TIMEOUT_MS`
+ *  - positive integer → that many ms
+ *
+ * The "invalid → default" branch is deliberate: a typo'd env var should
+ * not silently disable the safety net. A typo'd `0` (with zero) is
+ * unlikely; operators who want it off can set exactly `0`.
+ */
+export function readStallTimeoutMs(env: Record<string, string | undefined> = process.env): number {
+  const raw = env[STALL_TIMEOUT_ENV_VAR];
+  if (raw === undefined || raw === '') return DEFAULT_STALL_TIMEOUT_MS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return DEFAULT_STALL_TIMEOUT_MS;
+  if (parsed <= 0) return 0; // explicit disable
+  return Math.floor(parsed);
+}
+
+interface WatchdogLogger {
+  warn: (msg: string, meta?: Record<string, unknown>) => void;
+}
+
+export class StreamStallWatchdog {
+  private timer: ReturnType<typeof setTimeout> | undefined;
+  private fired = false;
+
+  constructor(
+    /** Window of no `touch()` after which `abort` fires. `<= 0` disables. */
+    private readonly timeoutMs: number,
+    /** Single-shot abort. Codex P4: must target the local turn controller,
+     *  NOT route through RequestCoordinator, so a stale watchdog firing
+     *  after the turn moved on doesn't abort a newer controller. */
+    private readonly abort: () => void,
+    private readonly logger?: WatchdogLogger,
+  ) {}
+
+  /**
+   * Start (or restart) the silence timer. Called once at turn start and
+   * again from every `touch()`. No-op after the watchdog has already fired
+   * — first abort wins, defense-in-depth against a re-arm-after-fire bug
+   * spawning a second abort.
+   */
+  arm(): void {
+    if (this.fired) return;
+    if (this.timeoutMs <= 0) return; // disabled
+    this.clear();
+    this.timer = setTimeout(() => this.fire(), this.timeoutMs);
+    // Watchdog is a fail-safe; it must not keep Node alive at shutdown.
+    // `unref` is missing on browser/jsdom timers and on the stub object
+    // some tests return — guard with a typeof check rather than `unref?.()`
+    // (the object lookup itself is fine, but linters tend to flag the
+    // optional-chained call form as unnecessary).
+    if (typeof (this.timer as { unref?: () => void } | undefined)?.unref === 'function') {
+      (this.timer as unknown as { unref: () => void }).unref();
+    }
+  }
+
+  /**
+   * Reset the silence timer. Call on every SDK stream event (assistant
+   * delta, tool_use, tool_result, system message, etc). After firing,
+   * `touch()` is a no-op so a late event doesn't extend a dead turn.
+   */
+  touch(): void {
+    if (this.fired) return;
+    this.arm();
+  }
+
+  /**
+   * Cancel the watchdog (turn completed / errored / aborted via a different
+   * path). Safe to call multiple times.
+   */
+  clear(): void {
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = undefined;
+    }
+  }
+
+  private fire(): void {
+    if (this.fired) return;
+    this.fired = true;
+    this.timer = undefined;
+    this.logger?.warn('Stream stall watchdog fired', { timeoutMs: this.timeoutMs });
+    try {
+      this.abort();
+    } catch (err) {
+      // Abort closure throws should NOT crash the timer callback; log so
+      // operators can triage abort-side failures separately from the
+      // trigger.
+      this.logger?.warn('Stream stall watchdog abort threw', {
+        error: (err as { message?: string })?.message ?? String(err),
+      });
+    }
+  }
+}
