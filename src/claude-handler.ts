@@ -169,52 +169,36 @@ export function maybeThrowOneMUnavailable(message: SDKMessage, model: string | u
 
 /**
  * Classification result for an incoming chunk of Claude Code CLI stderr.
- *
- * `level` is the desired logger level for this chunk. `reason` is a short
- * human-readable note for why we downgraded (only set when `level !== 'warn'`).
+ * `reason` is set only when `level !== 'warn'`.
  */
 export type ClaudeStderrClassification = {
-  level: 'warn' | 'info' | 'debug';
+  level: 'warn' | 'info';
   reason?: string;
 };
 
 /**
- * Match the Claude Code CLI's "hook_callback Stream closed" frame.
- *
- * Concrete signature observed in the wild (bun-bundled CLI, ≥ 0.2.140 era):
- *   `Error in hook callback hook_3: <bun source context lines>...error: Stream closed`
- *
- * The CLI prints this when our `options.abortController.abort()` tears down
- * the SDK ↔ CLI transport while the CLI still has a PreToolUse `hook_callback`
- * control_request in flight. From the CLI's perspective the inputClosed flag
- * trips and `sendRequest` throws "Stream closed". This is EXPECTED noise during
- * abort and harmless — the abort already short-circuited the tool.
- *
- * The pattern is intentionally permissive about whitespace and intervening
- * source-context lines between the leading "Error in hook callback hook_N:"
- * header and the "Stream closed" tail; bun's stack formatter wedges the
- * surrounding cli.js source between them.
+ * The CLI prints this frame to its own stderr when our
+ * `options.abortController.abort()` tears down the SDK ↔ CLI transport while
+ * the CLI still has a PreToolUse `hook_callback` control_request in flight:
+ * inputClosed=true → `sendRequest` throws "Stream closed". Permissive about
+ * the bun-formatted source-context lines that wedge between the leading
+ * "Error in hook callback hook_N:" header and the "Stream closed" tail.
  */
 const HOOK_CALLBACK_STREAM_CLOSED_PATTERN = /Error in hook callback hook_\d+:[\s\S]*?Stream closed/;
 
 /**
- * Classify a Claude Code CLI stderr chunk for logging.
- *
- * Returns `{ level: 'warn' }` by default. Downgrades to `'info'` only when
- * BOTH conditions hold:
- *   - the chunk matches the post-abort hook_callback Stream-closed signature
- *   - the host-side abort signal is set (i.e. WE asked for shutdown)
- *
- * The gate matters: an unrelated "Stream closed" during a healthy turn would
- * mean the SDK ↔ CLI transport died unexpectedly, which we want to surface
- * loudly so it's not silently masked.
+ * Classify a Claude Code CLI stderr chunk for logging. Downgrades the
+ * post-abort hook_callback Stream-closed frame from warn to info, but ONLY
+ * when the host-side abort signal is set — an unrelated "Stream closed"
+ * during a healthy turn means the transport died unexpectedly, and we want
+ * that to surface loudly.
  *
  * Decision rationale: codex transcript a79ba0ea-b576-4053-972d-5b243bc1a9b0.
- * D1 chose option (b) (stderr-level filter, not streaming-input refactor).
- * D2 confirmed matching the leading header line. D3 confirmed gating on the
- * abort signal rather than unconditional downgrade.
+ * D1 picked option (b) (stderr-level filter, not a streaming-input refactor
+ * via `query.interrupt()`); D2 matches the leading header line; D3 gates on
+ * the abort signal rather than unconditional downgrade.
  *
- * Exported for direct unit testing — the active stderr callback is built inline
+ * Exported for direct unit testing — the stderr callback is built inline
  * inside `streamQuery` and threading a logger spy through there is impractical.
  */
 export function classifyClaudeStderr(data: string, aborted: boolean): ClaudeStderrClassification {
@@ -1265,16 +1249,9 @@ export class ClaudeHandler {
       }
 
       // Capture Claude process stderr for debugging exit code 1 etc.
-      // Also buffer stderr content so rate limit messages can be extracted on error.
-      //
-      // Gated noise filter: post-abort "Error in hook callback hook_N: Stream
-      // closed" frames are EXPECTED — when abortController.abort() tears down
-      // the SDK ↔ CLI transport mid-callback, the CLI loudly logs the failed
-      // sendRequest to its own stderr. We downgrade these to info when we know
-      // we asked for shutdown; we keep them at warn during a healthy turn so
-      // an unexpected transport teardown still surfaces in monitoring. See
-      // `classifyClaudeStderr` JSDoc and codex transcript
-      // a79ba0ea-b576-4053-972d-5b243bc1a9b0 for the decision trail.
+      // Also buffer stderr content so rate limit messages can be extracted on
+      // error — `stderrBuffer` always sees every chunk; `classifyClaudeStderr`
+      // only affects the log level.
       let stderrBuffer = '';
       options.stderr = (data: string) => {
         stderrBuffer += data;

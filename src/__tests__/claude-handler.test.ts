@@ -120,24 +120,8 @@ describe('maybeThrowOneMUnavailable', () => {
   });
 });
 
-// Issue: post-abort "Error in hook callback hook_N: Stream closed" stderr noise.
-//
-// When `options.abortController.abort()` fires (stall watchdog, supersede,
-// `session.terminated`), the SDK tears down its transport to the Claude Code
-// CLI subprocess. The CLI may still have an in-flight PreToolUse hook_callback
-// it was about to dispatch; its internal `sendRequest` sees `inputClosed=true`
-// and throws "Stream closed". The CLI prints
-//   `Error in hook callback hook_3: ...Stream closed...`
-// to its stderr, which our `options.stderr` handler captures as `logger.warn`.
-//
-// This is EXPECTED noise during SDK shutdown — abort means "stop everything"
-// and the CLI's loudness about not finishing the callback is cosmetic. But
-// the same pattern during a healthy (non-aborted) turn would indicate a real
-// transport teardown bug and must still surface as a warning.
-//
-// `classifyClaudeStderr` is the gated classifier used by claude-handler's
-// stderr callback. See codex transcript a79ba0ea-b576-4053-972d-5b243bc1a9b0
-// for the decision (D1=b, D2=match-leading-line, D3=gate-on-aborted).
+// Gated downgrade of the post-abort "Error in hook callback hook_N: Stream
+// closed" stderr frame. Full rationale lives in `classifyClaudeStderr` JSDoc.
 describe('classifyClaudeStderr — post-abort hook_callback Stream closed noise', () => {
   // Real-world payload captured from a Claude Code CLI bun-format error frame.
   // The leading "Error in hook callback hook_N:" line is followed by bun's
