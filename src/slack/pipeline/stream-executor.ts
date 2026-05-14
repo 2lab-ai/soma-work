@@ -1514,10 +1514,18 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         })
         .catch((err: unknown) => this.handleEnrichmentFailure(err, fallbackArgs, resolveSnapshot));
 
-      // Start summary timer for non-error completions (fire-and-forget)
+      // Start summary timer for non-error completions (fire-and-forget).
+      // The countdown tick mirrors MCP-completion's per-session interval: a
+      // visible "Executive Summary in Xm Ys" indicator on the thread surface
+      // so the user can see the wait window expire instead of guessing why
+      // a summary suddenly appeared after silence.
       // Trace: docs/turn-summary-lifecycle/trace.md, S1
       if (this.deps.turnNotifier && this.deps.summaryTimer && category !== 'Exception') {
-        this.deps.summaryTimer.start(sessionKey, () => this.onSummaryTimerFire(session, sessionKey));
+        this.deps.summaryTimer.start(
+          sessionKey,
+          () => this.onSummaryTimerFire(session, sessionKey),
+          (remainingMs) => this.onSummaryCountdownTick(session, sessionKey, remainingMs),
+        );
       }
 
       // Completion message tracking moved to SlackBlockKitChannel.send()
@@ -2187,10 +2195,13 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
 
   /**
    * Attempt to rotate to the next available slot on rate limit.
-   * Uses the CCT-store's CAS-safe `rotateOnRateLimit` which records the
-   * cooldown on the slot that was active at the time the rate-limit was
-   * observed (which is why we pin the slot at query-start rather than
-   * reading the active slot at error time).
+   *
+   * Uses the CCT-store's CAS-guarded `rotateOnRateLimit`: we pass
+   * `expectedFromKeyId = activeSlotAtQueryStart.keyId` so concurrent sessions
+   * that all hit the limit on the SAME slot collapse to a single rotation.
+   * Without this guard, N parallel error returns would walk the ring N steps
+   * and eventually loop back to the original capped slot — stamping bogus
+   * cooldowns on uninvolved siblings on the way.
    *
    * NOTE: This is the FALLBACK path — triggered only by stderr/error-string
    * pattern match (`isRateLimitError`). The Claude CLI spawns a subprocess
@@ -2205,7 +2216,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
    * the string-match catch-block sees the error.
    *
    * @param error The error object (may contain stderrContent with rate limit details)
-   * @param activeSlotAtQueryStart Slot captured at query-start for CAS safety
+   * @param activeSlotAtQueryStart Slot captured at query-start; supplied as
+   *   the CAS expected-from key so concurrent sessions don't multi-rotate.
    */
   private async tryRotateToken(error: any, activeSlotAtQueryStart: ActiveTokenInfo | null): Promise<void> {
     // Parse cooldown from both error message and stderr content. If parsing
@@ -2223,20 +2235,37 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       activeSlotAtQueryStart ? ` on slot=${activeSlotAtQueryStart.name}` : ''
     }`;
 
-    const rotated = await getTokenManager().rotateOnRateLimit(reason, {
+    const result = await getTokenManager().rotateOnRateLimit(reason, {
       source: 'error_string',
       cooldownMinutes,
+      // CAS guard: only rotate if the active slot is still the one this
+      // session observed rate-limited. Concurrent sessions that already
+      // saw a rotation race ahead of us will land on `skipReason:
+      // 'cas-skipped'` and not re-advance the ring.
+      expectedFromKeyId: activeSlotAtQueryStart?.keyId,
     });
 
-    if (rotated) {
+    if (result.rotated) {
       this.logger.info(
         'CCT slot auto-rotated',
-        redactAnthropicSecrets({ newSlot: rotated.name, newKeyId: rotated.keyId }) as Record<string, unknown>,
+        redactAnthropicSecrets({
+          newSlot: result.rotated.name,
+          newKeyId: result.rotated.keyId,
+        }) as Record<string, unknown>,
       );
+    } else if (result.skipReason === 'cas-skipped') {
+      // Expected during concurrent-rate-limit cascades — another session
+      // already rotated us off the capped slot, so this is a healthy no-op.
+      // Logging at `info` (not `warn`) so it doesn't pollute the alert path.
+      this.logger.info('CCT rotateOnRateLimit: skipped (another session already rotated)', {
+        rateLimitedSlot: activeSlotAtQueryStart?.name,
+        cooldownMinutes,
+      });
     } else {
       this.logger.warn('CCT rotateOnRateLimit: no eligible replacement slot', {
         rateLimitedSlot: activeSlotAtQueryStart?.name,
         cooldownMinutes,
+        skipReason: result.skipReason,
       });
     }
   }
@@ -2325,6 +2354,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         // Trigger re-render so the summary blocks appear in the Slack thread header.
         // Without this, summaryBlocks sit in memory but the message is never updated.
         await this.deps.threadPanel?.updatePanel(session, sessionKey);
+
+        // ALSO post the summary as a permanent in-thread message. The header
+        // render above is volatile (next user message clears it); this post
+        // makes the summary part of the conversation log. Deliberately NOT
+        // tracked via `completionMessageTracker` so it survives subsequent
+        // turns. Errors are swallowed inside `postInThread` — a failed post
+        // must not crash the summary fork.
+        await this.deps.summaryService.postInThread(session as any, summaryText);
       }
     } catch (err: any) {
       if (this.summaryAbortControllers.get(sessionKey) === abortController) {
@@ -2335,6 +2372,28 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         return;
       }
       this.logger.warn('Summary timer callback failed', { error: err?.message });
+    }
+  }
+
+  /**
+   * Countdown tick callback — renders an "Executive Summary in Xm Ys"
+   * indicator to the thread surface so the user can see the wait window
+   * expire. Mirrors `onSummaryTimerFire`'s render path but is cheap
+   * (no fork — just block write + debounced surface update).
+   */
+  private async onSummaryCountdownTick(
+    session: ConversationSession,
+    sessionKey: string,
+    remainingMs: number,
+  ): Promise<void> {
+    if (!this.deps.summaryService) return;
+    try {
+      this.deps.summaryService.displayCountdownOnThread(session as any, remainingMs);
+      // Non-force render → debounced (3s window per thread-surface RENDER_DEBOUNCE_MS),
+      // safe under a 1-minute tick cadence.
+      await this.deps.threadPanel?.updatePanel(session, sessionKey);
+    } catch (err: any) {
+      this.logger.warn('Summary countdown tick failed', { sessionKey, error: err?.message });
     }
   }
 
