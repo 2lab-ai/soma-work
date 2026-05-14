@@ -1805,7 +1805,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       await tm.addSlot({ name: 'api', kind: 'api_key', value: 'sk-ant-api03-yyyyyyyyyyy' });
       const cctB = await tm.addSlot({ name: 'b', kind: 'setup_token', value: 'vB' });
       const result = await tm.rotateOnRateLimit('hit', { source: 'response_header', cooldownMinutes: 60 });
-      expect(result?.keyId).toBe(cctB.keyId);
+      expect(result.rotated?.keyId).toBe(cctB.keyId);
       const snap = await store.load();
       expect(snap.registry.activeKeyId).toBe(cctB.keyId);
       void cctA;
@@ -2131,7 +2131,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       await setDisable(store, parked.keyId, true);
       await tm.applyToken(a.keyId);
       const rotated = await tm.rotateOnRateLimit('test', { source: 'manual' });
-      expect(rotated?.keyId).toBe(c.keyId);
+      expect(rotated.rotated?.keyId).toBe(c.keyId);
     });
 
     it('disableRotation=false (or absent) does not affect eligibility', async () => {
@@ -3118,6 +3118,154 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
         expect(snap.state[sib.keyId].rateLimitSource).toBeUndefined();
         expect(snap.state[sib.keyId].cooldownUntil).toBeUndefined();
       }
+    });
+  });
+
+  // ── rotateOnRateLimit > atomic CAS guard (concurrent sessions) ──────────────
+  //
+  // Regression: when N concurrent Slack sessions all hit rate-limit on the same
+  // active slot A and each calls `rotateOnRateLimit` independently, the active
+  // slot used to advance the ring N times — eventually looping back to A (the
+  // capped slot) and stamping bogus cooldowns on B/C/D/E along the way. The fix
+  // is a CAS guard: each caller passes `expectedFromKeyId` (the slot it saw at
+  // query-start). Calls observing a stale `from` slot no-op so the ring
+  // advances exactly once per real rate-limit observation, atomically.
+  describe('rotateOnRateLimit > atomic CAS guard (concurrent sessions)', () => {
+    async function addFiveSetupSlots(
+      tm: import('../token-manager').TokenManager,
+    ): Promise<Array<{ keyId: string; name: string }>> {
+      const out: Array<{ keyId: string; name: string }> = [];
+      for (const n of ['A', 'B', 'C', 'D', 'E']) {
+        out.push(await tm.addSlot({ name: n, kind: 'setup_token', value: `sk-ant-oat01-${n}` }));
+      }
+      return out;
+    }
+
+    it('sequential calls with stale expectedFromKeyId no-op after the first rotation', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const [a, b, c, d, e] = await addFiveSetupSlots(tm);
+
+      // 1st call: currentId=A, expectedFromKeyId=A → match, rotate A→B, stamp A.cooldown.
+      const r1 = await tm.rotateOnRateLimit('s1', {
+        source: 'error_string',
+        cooldownMinutes: 60,
+        expectedFromKeyId: a.keyId,
+      });
+      expect(r1.rotated?.keyId).toBe(b.keyId);
+      expect(r1.skipReason).toBeUndefined();
+
+      // Calls 2..5: currentId=B (already advanced), expectedFromKeyId=A → mismatch, CAS skip.
+      for (const tag of ['s2', 's3', 's4', 's5']) {
+        const r = await tm.rotateOnRateLimit(tag, {
+          source: 'error_string',
+          cooldownMinutes: 60,
+          expectedFromKeyId: a.keyId,
+        });
+        expect(r.rotated).toBeNull();
+        expect(r.skipReason).toBe('cas-skipped');
+      }
+
+      const snap = await store.load();
+      // Final: active=B (single rotation), only A capped, B..E pristine.
+      expect(snap.registry.activeKeyId).toBe(b.keyId);
+      expect(snap.state[a.keyId].cooldownUntil).toBeDefined();
+      expect(snap.state[a.keyId].rateLimitSource).toBe('error_string');
+      for (const sib of [b, c, d, e]) {
+        expect(snap.state[sib.keyId]?.cooldownUntil).toBeUndefined();
+        expect(snap.state[sib.keyId]?.rateLimitSource).toBeUndefined();
+      }
+    });
+
+    it('concurrent calls with same expectedFromKeyId rotate exactly once', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const [a, b, c, d, e] = await addFiveSetupSlots(tm);
+
+      // Five sessions race rotateOnRateLimit; each saw slot A rate-limited.
+      // proper-lockfile inside CctStore.mutate serializes them; CAS guard ensures
+      // only the first matches and advances.
+      const results = await Promise.all([
+        tm.rotateOnRateLimit('s1', {
+          source: 'error_string',
+          cooldownMinutes: 60,
+          expectedFromKeyId: a.keyId,
+        }),
+        tm.rotateOnRateLimit('s2', {
+          source: 'error_string',
+          cooldownMinutes: 60,
+          expectedFromKeyId: a.keyId,
+        }),
+        tm.rotateOnRateLimit('s3', {
+          source: 'error_string',
+          cooldownMinutes: 60,
+          expectedFromKeyId: a.keyId,
+        }),
+        tm.rotateOnRateLimit('s4', {
+          source: 'error_string',
+          cooldownMinutes: 60,
+          expectedFromKeyId: a.keyId,
+        }),
+        tm.rotateOnRateLimit('s5', {
+          source: 'error_string',
+          cooldownMinutes: 60,
+          expectedFromKeyId: a.keyId,
+        }),
+      ]);
+
+      // Exactly one rotation succeeded; the other four CAS-skipped.
+      const rotated = results.filter((r) => r.rotated !== null);
+      const skipped = results.filter((r) => r.skipReason === 'cas-skipped');
+      expect(rotated).toHaveLength(1);
+      expect(skipped).toHaveLength(4);
+      expect(rotated[0].rotated?.keyId).toBe(b.keyId);
+
+      // Final state: active landed on B once and stayed there. B..E remain pristine —
+      // critically NOT spuriously cooled-down as in the pre-fix bug.
+      const snap = await store.load();
+      expect(snap.registry.activeKeyId).toBe(b.keyId);
+      expect(snap.state[a.keyId].cooldownUntil).toBeDefined();
+      for (const sib of [b, c, d, e]) {
+        expect(snap.state[sib.keyId]?.cooldownUntil).toBeUndefined();
+        expect(snap.state[sib.keyId]?.rateLimitSource).toBeUndefined();
+      }
+    });
+
+    it('omitting expectedFromKeyId preserves legacy behavior (no CAS guard)', async () => {
+      // Manual rotation paths (CLI / dashboard "rotate now" button) don't carry
+      // a query-start snapshot. Backward-compat: omit `expectedFromKeyId` and
+      // the call always operates on whichever slot is active right now.
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const [, b] = await addFiveSetupSlots(tm);
+
+      const r = await tm.rotateOnRateLimit('manual', { source: 'manual' });
+      expect(r.rotated?.keyId).toBe(b.keyId);
+      expect(r.skipReason).toBeUndefined();
+    });
+
+    it('expectedFromKeyId matching but no eligible replacement → no-eligible', async () => {
+      // Single eligible slot; mark it active. The CAS matches but there is
+      // nothing to rotate to.
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const a = await tm.addSlot({ name: 'A', kind: 'setup_token', value: 'sk-ant-oat01-only' });
+
+      const r = await tm.rotateOnRateLimit('s1', {
+        source: 'error_string',
+        cooldownMinutes: 60,
+        expectedFromKeyId: a.keyId,
+      });
+      expect(r.rotated).toBeNull();
+      expect(r.skipReason).toBe('no-eligible');
     });
   });
 });
