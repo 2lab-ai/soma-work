@@ -38,6 +38,7 @@ import { buildCompactionContext, snapshotFromSession } from '../../session/compa
 import { type ActiveTokenInfo, getTokenManager, parseCooldownTime } from '../../token-manager';
 import {
   determineTurnCategory,
+  type TurnCategory,
   type TurnCompletionEvent,
   type TurnNotifier,
   type TurnNotifierNotifyOpts,
@@ -320,6 +321,88 @@ export class StreamExecutor {
       return { excludeChannelNames: [SLACK_BLOCK_KIT_CHANNEL_NAME] };
     }
     return undefined;
+  }
+
+  /**
+   * Catch rail of the post-turn enrich-then-notify chain.
+   *
+   * Contract: every model-turn end state (WorkflowComplete / UIUserAskQuestion
+   * / Exception) MUST surface a terminal Block Kit card to Slack. The success
+   * rail builds a fully enriched event; this rail handles every way that
+   * enrichment can fail (usage HTTP, property reads on a partially-hydrated
+   * session, transient state-store hiccups) without dropping the user-facing
+   * terminal marker.
+   *
+   * Two outputs:
+   *  1. `resolveSnapshot(fallback)` — at Phase 5 `TurnSurface.end` awaits the
+   *     snapshot and emits B5 from it. If we resolved with `undefined` (the
+   *     pre-fix behaviour), the B5 path skipped silently and the user saw
+   *     no terminal card.
+   *  2. `turnNotifier.notify(fallback, buildCompletionNotifyOpts())` — at
+   *     Phase <5 deployments this is the path that posts the Block Kit
+   *     message; at Phase 5 it still fans out to non-block-kit channels
+   *     (slack-dm / telegram / webhook).
+   *
+   * The fallback event reuses the originally computed `category` (codex
+   * P1: degraded enrichment is not a fourth terminal state — it is the
+   * same terminal state with reduced fidelity). Rich fields (usage %,
+   * token stats, persona) are omitted; the optional-field model in
+   * `TurnCompletionEvent` already handles their absence cleanly.
+   *
+   * Trace: docs/turn-end-surface-guarantee/trace.md, S3.
+   */
+  private handleEnrichmentFailure(
+    err: unknown,
+    args: {
+      category: TurnCategory;
+      userId: string;
+      channel: string;
+      threadTs: string;
+      sessionTitle: string | undefined;
+      durationMs: number;
+      sessionKey: string;
+      turnId: string;
+    },
+    resolveSnapshot: (evt: TurnCompletionEvent | undefined) => void,
+  ): void {
+    this.logger.warn('Turn completion enrichment failed', {
+      sessionKey: args.sessionKey,
+      turnId: args.turnId,
+      stage: 'enrich',
+      error: (err as { message?: string })?.message ?? String(err),
+    });
+
+    const fallback: TurnCompletionEvent = {
+      category: args.category,
+      userId: args.userId,
+      channel: args.channel,
+      threadTs: args.threadTs,
+      sessionTitle: args.sessionTitle,
+      durationMs: args.durationMs,
+      message: 'turn-completion enrichment failed',
+    };
+
+    // Resolve the snapshot with the fallback (NOT undefined) so the Phase-5
+    // TurnSurface.end → B5 emit still runs.
+    resolveSnapshot(fallback);
+
+    if (!this.deps.turnNotifier) {
+      // Production wiring precondition. Harness/test/misconfigured DI runs
+      // still get the snapshot resolution above — the codex P1 decoupling
+      // requirement means snapshot emission cannot be gated on turnNotifier.
+      return;
+    }
+
+    try {
+      const notifyOpts = this.buildCompletionNotifyOpts();
+      this.deps.turnNotifier.notify(fallback, notifyOpts);
+    } catch (notifyErr: unknown) {
+      this.logger.warn('Fallback TurnNotifier.notify threw', {
+        sessionKey: args.sessionKey,
+        turnId: args.turnId,
+        error: (notifyErr as { message?: string })?.message ?? String(notifyErr),
+      });
+    }
   }
 
   /**
@@ -1353,16 +1436,28 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       //     conditionally calls turnNotifier.notify. Notify is wrapped in
       //     its own try/catch so a notifier throw stays on the enrich-
       //     success side — it cannot propagate into the outer `.catch` and
-      //     produce a second `resolveSnapshot(undefined)` call that races
-      //     the first. The second resolve would be a Promise no-op, but
-      //     the log would be misleading ("Turn completion enrichment
-      //     failed" when enrichment had succeeded).
-      //   `.catch` — enrichment-only failures (usageBefore / fetchAndStoreUsage
-      //     HTTP failures, etc.). Resolves the snapshot with `undefined` so
-      //     TurnSurface.end's `await` unblocks with no B5 emit.
+      //     produce a second resolveSnapshot call that races the first.
+      //   `.catch` — enrichment failures (usageBefore / fetchAndStoreUsage
+      //     HTTP failures, property reads on a partially-hydrated session,
+      //     etc.). Hands off to `handleEnrichmentFailure` which builds a
+      //     degraded-but-valid TurnCompletionEvent: snapshot resolves with
+      //     it (so TurnSurface.end's B5 emit still fires) AND turnNotifier
+      //     fires (so Phase<5 deployments / non-block-kit channels also
+      //     surface the terminal card). Trace:
+      //     docs/turn-end-surface-guarantee/trace.md, S3.
       // resolveSnapshot fires exactly once either way. No `finally` safety-
       // net resolve — that would race the `.then` rail and lock in a
       // `undefined` snapshot (codex P1-1).
+      const fallbackArgs = {
+        category,
+        userId: session.ownerId || user,
+        channel,
+        threadTs,
+        sessionTitle: session.title,
+        durationMs,
+        sessionKey,
+        turnId,
+      };
       enrichAndResolve()
         .then((evt) => {
           resolveSnapshot(evt);
@@ -1385,15 +1480,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             }
           }
         })
-        .catch((err: unknown) => {
-          resolveSnapshot(undefined);
-          this.logger.warn('Turn completion enrichment failed', {
-            sessionKey,
-            turnId,
-            stage: 'enrich',
-            error: (err as { message?: string })?.message ?? String(err),
-          });
-        });
+        .catch((err: unknown) => this.handleEnrichmentFailure(err, fallbackArgs, resolveSnapshot));
 
       // Start summary timer for non-error completions (fire-and-forget)
       // Trace: docs/turn-summary-lifecycle/trace.md, S1
