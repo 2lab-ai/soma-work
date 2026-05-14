@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { buildThinkingOption, maybeThrowOneMUnavailable, resolveShowSummary } from '../claude-handler';
+import {
+  buildThinkingOption,
+  classifyClaudeStderr,
+  maybeThrowOneMUnavailable,
+  resolveShowSummary,
+} from '../claude-handler';
 import { DEFAULT_SHOW_THINKING, DEFAULT_THINKING_ENABLED } from '../user-settings-store';
 
 describe('buildThinkingOption', () => {
@@ -112,5 +117,69 @@ describe('maybeThrowOneMUnavailable', () => {
   it('does NOT throw when signal text does not match (different 1m-suffix error)', () => {
     const message = buildApiErrorMessage('API Error: 500 server error');
     expect(() => maybeThrowOneMUnavailable(message as any, 'claude-opus-4-7[1m]')).not.toThrow();
+  });
+});
+
+// Gated downgrade of the post-abort "Error in hook callback hook_N: Stream
+// closed" stderr frame. Full rationale lives in `classifyClaudeStderr` JSDoc.
+describe('classifyClaudeStderr — post-abort hook_callback Stream closed noise', () => {
+  // Real-world payload captured from a Claude Code CLI bun-format error frame.
+  // The leading "Error in hook callback hook_N:" line is followed by bun's
+  // source-context lines and the final "error: Stream closed" + stack.
+  const HOOK_STREAM_CLOSED_STDERR = [
+    'Error in hook callback hook_3: 9409 | ${H.map((q)=>`- ${q.description||"(no description)"} (task ${q.task_id})`).join(`',
+    '9410 | `)}',
+    '9411 | Re-create them if still needed.',
+    '9412 | </system-reminder>`}',
+    '',
+    'error: Stream closed',
+    '      at sendRequest (/$bunfs/root/src/entrypoints/cli.js:9414:133)',
+    '      at <anonymous> (/$bunfs/root/src/entrypoints/cli.js:9414:2667)',
+    '      at KC3 (/$bunfs/root/src/entrypoints/cli.js:8904:1258)',
+  ].join('\n');
+
+  it('downgrades hook_callback Stream-closed stderr to info when aborted', () => {
+    const result = classifyClaudeStderr(HOOK_STREAM_CLOSED_STDERR, true);
+    expect(result.level).toBe('info');
+    expect(result.reason).toBeDefined();
+  });
+
+  it('keeps hook_callback Stream-closed stderr at warn when NOT aborted', () => {
+    // Same message but no abort signal — must stay loud so a real transport
+    // teardown during a healthy turn surfaces in monitoring.
+    const result = classifyClaudeStderr(HOOK_STREAM_CLOSED_STDERR, false);
+    expect(result.level).toBe('warn');
+  });
+
+  it('matches hook_callback Stream-closed regardless of hook index', () => {
+    const variants = [
+      'Error in hook callback hook_0: ...Stream closed',
+      'Error in hook callback hook_1: ...Stream closed',
+      'Error in hook callback hook_42: ...Stream closed',
+    ];
+    for (const data of variants) {
+      expect(classifyClaudeStderr(data, true).level).toBe('info');
+      expect(classifyClaudeStderr(data, false).level).toBe('warn');
+    }
+  });
+
+  it('does NOT downgrade unrelated stderr even when aborted', () => {
+    // Generic CLI error during abort must still surface so we can spot
+    // unexpected teardown problems.
+    const unrelated = 'Error: ENOENT: no such file or directory';
+    expect(classifyClaudeStderr(unrelated, true).level).toBe('warn');
+    expect(classifyClaudeStderr(unrelated, false).level).toBe('warn');
+  });
+
+  it('does NOT downgrade hook_callback errors without Stream closed signal', () => {
+    // A hook callback that crashed for a different reason — surface it.
+    const hookCrash = 'Error in hook callback hook_3: TypeError: cannot read foo';
+    expect(classifyClaudeStderr(hookCrash, true).level).toBe('warn');
+    expect(classifyClaudeStderr(hookCrash, false).level).toBe('warn');
+  });
+
+  it('handles empty / whitespace-only stderr without throwing', () => {
+    expect(classifyClaudeStderr('', true).level).toBe('warn');
+    expect(classifyClaudeStderr('   \n  ', false).level).toBe('warn');
   });
 });

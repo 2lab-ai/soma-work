@@ -168,6 +168,50 @@ export function maybeThrowOneMUnavailable(message: SDKMessage, model: string | u
 }
 
 /**
+ * Classification result for an incoming chunk of Claude Code CLI stderr.
+ * `reason` is set only when `level !== 'warn'`.
+ */
+export type ClaudeStderrClassification = {
+  level: 'warn' | 'info';
+  reason?: string;
+};
+
+/**
+ * The CLI prints this frame to its own stderr when our
+ * `options.abortController.abort()` tears down the SDK ↔ CLI transport while
+ * the CLI still has a PreToolUse `hook_callback` control_request in flight:
+ * inputClosed=true → `sendRequest` throws "Stream closed". Permissive about
+ * the bun-formatted source-context lines that wedge between the leading
+ * "Error in hook callback hook_N:" header and the "Stream closed" tail.
+ */
+const HOOK_CALLBACK_STREAM_CLOSED_PATTERN = /Error in hook callback hook_\d+:[\s\S]*?Stream closed/;
+
+/**
+ * Classify a Claude Code CLI stderr chunk for logging. Downgrades the
+ * post-abort hook_callback Stream-closed frame from warn to info, but ONLY
+ * when the host-side abort signal is set — an unrelated "Stream closed"
+ * during a healthy turn means the transport died unexpectedly, and we want
+ * that to surface loudly.
+ *
+ * Decision rationale: codex transcript a79ba0ea-b576-4053-972d-5b243bc1a9b0.
+ * D1 picked option (b) (stderr-level filter, not a streaming-input refactor
+ * via `query.interrupt()`); D2 matches the leading header line; D3 gates on
+ * the abort signal rather than unconditional downgrade.
+ *
+ * Exported for direct unit testing — the stderr callback is built inline
+ * inside `streamQuery` and threading a logger spy through there is impractical.
+ */
+export function classifyClaudeStderr(data: string, aborted: boolean): ClaudeStderrClassification {
+  if (aborted && HOOK_CALLBACK_STREAM_CLOSED_PATTERN.test(data)) {
+    return {
+      level: 'info',
+      reason: 'post-abort hook_callback stream-closed (expected during SDK shutdown)',
+    };
+  }
+  return { level: 'warn' };
+}
+
+/**
  * Compaction Tracking (#617): late-bound factory that returns the 3-hook
  * set for the current query. ClaudeHandler calls this when building the
  * Options.hooks payload — decoupled from concrete `EventRouter` /
@@ -1205,11 +1249,22 @@ export class ClaudeHandler {
       }
 
       // Capture Claude process stderr for debugging exit code 1 etc.
-      // Also buffer stderr content so rate limit messages can be extracted on error
+      // Also buffer stderr content so rate limit messages can be extracted on
+      // error — `stderrBuffer` always sees every chunk; `classifyClaudeStderr`
+      // only affects the log level.
       let stderrBuffer = '';
       options.stderr = (data: string) => {
         stderrBuffer += data;
-        this.logger.warn('Claude stderr', { data: data.trimEnd() });
+        const classification = classifyClaudeStderr(data, abortController?.signal.aborted ?? false);
+        const trimmed = data.trimEnd();
+        if (classification.level === 'info') {
+          this.logger.info('Claude stderr (expected post-abort)', {
+            data: trimmed,
+            reason: classification.reason,
+          });
+        } else {
+          this.logger.warn('Claude stderr', { data: trimmed });
+        }
       };
 
       this.logger.debug('Claude query options', options);
