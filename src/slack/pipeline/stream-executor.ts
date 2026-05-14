@@ -79,13 +79,14 @@ import {
   buildInstructionSupersededBlocks,
 } from '../instruction-confirm-blocks';
 import { LOG_DETAIL, OutputFlag, shouldOutput, verboseTag } from '../output-flags';
-import { type RequestAbortReason, type RequestCoordinator } from '../request-coordinator';
+import type { RequestAbortReason, RequestCoordinator } from '../request-coordinator';
 import type { SummaryService } from '../summary-service';
 import type { SummaryTimer } from '../summary-timer.js';
 import type { ThreadPanel, TurnAddress, TurnContext } from '../thread-panel';
 import { shouldRunLegacyB4Path } from './effective-phase';
 import { isLocalSlashCommand } from './local-slash-command';
-import { MessageEvent, type SayFn } from './types';
+import { readStallTimeoutMs, StreamStallWatchdog } from './stream-stall-watchdog';
+import type { SayFn } from './types';
 
 /**
  * Result of stream execution
@@ -640,6 +641,24 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       waitingForChoice: false,
     });
 
+    // Stream stall watchdog — auto-aborts the SDK call after N ms of no
+    // SDK activity so a hung turn surfaces a 🔴 "오류 발생" terminal card
+    // instead of leaving the thread silent. `arm()` runs just before
+    // `processor.process(...)`; `touch()` runs from `onSdkActivity` on
+    // every SDK event; `clear()` runs in the outer `finally`.
+    //
+    // Codex P4: abort is bound to THIS turn's local `abortController` —
+    // not routed through `requestCoordinator.abortSession`, so a late
+    // watchdog fire after the turn moved on cannot abort a newer
+    // controller (CAS-guarded by `removeController(sessionKey, ac)`).
+    // First abort reason wins on AbortController; if `supersede` already
+    // fired, `stall-timeout` here is a no-op.
+    const stallWatchdog = new StreamStallWatchdog(
+      readStallTimeoutMs(),
+      () => abortController.abort('stall-timeout' satisfies RequestAbortReason),
+      this.logger,
+    );
+
     try {
       // #617 followup: Claude Agent SDK only recognizes local slash commands
       // (/compact, /clear, /model, etc.) when the prompt STARTS with the /cmd
@@ -851,6 +870,10 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       const streamCallbacks: StreamCallbacks = {
         onSdkActivity: () => {
           this.deps.requestCoordinator.touchSession(sessionKey);
+          // Reset stall watchdog on every SDK event so a healthy
+          // long-running tool (Playwright sweep / big grep / Docker
+          // pull) doesn't trip the auto-abort.
+          stallWatchdog.touch();
         },
         onToolUse: async (toolUses, ctx) => {
           // Ghost Session Fix #99: self-terminate if session was terminated while streaming
@@ -968,7 +991,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           // duration은 위 루프(367-377)에서 이미 계산·삭제되었으므로 toolStats에서 역산
           for (const tr of toolResults) {
             const name = tr.toolName || 'unknown';
-            const stats = toolStats[name];
+            const _stats = toolStats[name];
             // 직전 루프에서 계산된 duration을 collector의 자체 startTime fallback으로 위임
             turnCollector.onToolEnd(name, tr.toolUseId);
           }
@@ -1266,6 +1289,12 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       this.deps.toolEventProcessor.setCompactDurationCallback((toolUseId, duration, ch) =>
         processor.updateToolCallDuration(toolUseId, duration, ch),
       );
+
+      // Arm the stall watchdog immediately before handing the iterable
+      // to the processor. Any cold-start latency before the first SDK
+      // event still has the full stall window — the first `touch()`
+      // from `onSdkActivity` will reset it.
+      stallWatchdog.arm();
 
       const streamResult = await processor.process(
         this.deps.claudeHandler.streamQuery(finalPrompt, session, abortController, workingDirectory, slackContext),
@@ -1601,6 +1630,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       );
       return { success: false, messageCount: 0, retryAfterMs };
     } finally {
+      // Cancel the stall watchdog on every exit path (success, error, or
+      // an in-flight abort that the catch branch already handled).
+      // `clear()` is idempotent and safe after a fire — a fired watchdog
+      // is already stopped.
+      stallWatchdog.clear();
       // Issue #688 — defense-in-depth status clear on every exit path.
       // The success and error branches above already clear with the
       // same epoch guard; the manager is idempotent, and the guard
@@ -3685,8 +3719,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       this.logger.info('Renew save completed, attempting file read fallback', { id, savePath });
 
       try {
-        const fs = await import('fs');
-        const pathModule = await import('path');
+        const fs = await import('node:fs');
+        const pathModule = await import('node:path');
 
         // Resolve relative paths against session working directory
         const sessionDir = session.sessionWorkingDir || session.workingDirectory;
@@ -3861,7 +3895,7 @@ ${userInstruction}`;
       const idMatch = savedPath.match(/save\/(\d{8}_\d{6})/);
       const id = idMatch ? idMatch[1] : undefined;
       // Determine dir from path (strip filename if it ends with .md)
-      const pathModule = require('path') as typeof import('path');
+      const pathModule = require('node:path') as typeof import('path');
       const dir = savedPath.endsWith('.md') ? pathModule.dirname(savedPath) : savedPath;
 
       this.logger.info('Parsed save result from text output', { savedPath, id, dir });
@@ -3910,8 +3944,8 @@ ${userInstruction}`;
    */
   private scanForLatestSave(sessionDir: string, saveId?: string): string | null {
     try {
-      const fs = require('fs') as typeof import('fs');
-      const pathModule = require('path') as typeof import('path');
+      const fs = require('node:fs') as typeof import('fs');
+      const pathModule = require('node:path') as typeof import('path');
 
       const saveRoot = pathModule.join(sessionDir, '.claude', 'omc', 'tasks', 'save');
       if (!fs.existsSync(saveRoot)) {
@@ -3964,8 +3998,8 @@ ${userInstruction}`;
     collectedText: string,
     userId: string,
     userName: string,
-    threadTs: string,
-    say: SayFn,
+    _threadTs: string,
+    _say: SayFn,
   ): Continuation | undefined {
     // Parse onboarding_complete JSON from output
     const result = this.parseOnboardingComplete(collectedText);
