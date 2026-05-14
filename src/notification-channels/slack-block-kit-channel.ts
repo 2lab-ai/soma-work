@@ -8,6 +8,7 @@
 import { Logger } from '../logger.js';
 import type { CompletionMessageTracker } from '../slack/completion-message-tracker.js';
 import {
+  buildThreadPermalink,
   getCategoryColor,
   getCategoryEmoji,
   getCategoryLabel,
@@ -90,10 +91,22 @@ export class SlackBlockKitChannel implements NotificationChannel {
   // --- Theme: Default (Dashboard — richest) ---
 
   private buildDefaultBlocks(event: TurnCompletionEvent, emoji: string, label: string): any[] {
+    // Thread permalink hop-back. The "최신 응답" deeplink on the surface
+    // only jumps to the last model response — landing on the floating
+    // surface (and the whole thread context) from a notification, search
+    // hit, or pasted permalink was awkward. Appended to the header section
+    // so it stays above the fold. Falls back to no link when the workspace
+    // URL hasn't been initialized yet (startup window).
+    const threadPermalink = buildThreadPermalink(event.channel, event.threadTs);
+    const threadLinkSuffix = threadPermalink ? ` · <${threadPermalink}|🧵 스레드 열기>` : '';
+
     const blocks: any[] = [
       {
         type: 'section',
-        text: { type: 'mrkdwn', text: `${emoji} *${label}*${event.sessionTitle ? ` — ${event.sessionTitle}` : ''}` },
+        text: {
+          type: 'mrkdwn',
+          text: `${emoji} *${label}*${event.sessionTitle ? ` — ${event.sessionTitle}` : ''}${threadLinkSuffix}`,
+        },
       },
     ];
 
@@ -155,10 +168,16 @@ export class SlackBlockKitChannel implements NotificationChannel {
   // --- Theme: Compact ---
 
   private buildCompactBlocks(event: TurnCompletionEvent, emoji: string, label: string): any[] {
+    const threadPermalink = buildThreadPermalink(event.channel, event.threadTs);
+    const threadLinkSuffix = threadPermalink ? ` · <${threadPermalink}|🧵 스레드 열기>` : '';
+
     const blocks: any[] = [
       {
         type: 'section',
-        text: { type: 'mrkdwn', text: `${emoji} *${label}*${event.sessionTitle ? ` — ${event.sessionTitle}` : ''}` },
+        text: {
+          type: 'mrkdwn',
+          text: `${emoji} *${label}*${event.sessionTitle ? ` — ${event.sessionTitle}` : ''}${threadLinkSuffix}`,
+        },
       },
     ];
 

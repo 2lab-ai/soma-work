@@ -265,7 +265,9 @@ export class SlackHandler {
 
     const summaryTimer = new SummaryTimer();
     const forkExecutor = createForkExecutor(this.claudeHandler);
-    const summaryService = new SummaryService(forkExecutor);
+    // Inject slackApi so SummaryService can post the summary as a permanent
+    // in-thread message (in addition to editing the volatile surface header).
+    const summaryService = new SummaryService(forkExecutor, this.slackApi);
 
     this.streamExecutor = new StreamExecutor({
       claudeHandler: this.claudeHandler,
