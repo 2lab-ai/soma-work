@@ -156,6 +156,8 @@ describe('SessionInitializer - channel routing advisory', () => {
       isRequestActive: vi.fn().mockReturnValue(false),
       setController: vi.fn(),
       abortSession: vi.fn(),
+      getLastActivityAt: vi.fn().mockReturnValue(undefined),
+      touchSession: vi.fn(),
     };
 
     mockAssistantStatusManager = {
@@ -432,9 +434,15 @@ describe('SessionInitializer - channel routing advisory', () => {
 
   // S6: handleConcurrency abort branch → bumpEpoch called so a stale
   // clearStatus from the aborted turn cannot kill the newer spinner.
-  it('handleConcurrency bumps status epoch when aborting an active request (S6)', () => {
+  //
+  // Abort reason depends on whether the displaced turn was healthy
+  // (active steering — silent supersede) or stalled (no SDK event for
+  // >= STALL_THRESHOLD_MS — stall-timeout notify).
+  it('handleConcurrency tags abort "supersede" when the displaced turn is healthy', () => {
     mockRequestCoordinator.isRequestActive.mockReturnValue(true);
     mockClaudeHandler.canInterrupt.mockReturnValue(true);
+    // Recent activity → healthy turn → silent supersede.
+    mockRequestCoordinator.getLastActivityAt = vi.fn().mockReturnValue(Date.now() - 1_000);
 
     const session = { ownerId: 'U123', ownerName: 'Owner', currentInitiatorName: 'Owner' };
     const ctl = (sessionInitializer as any).handleConcurrency(
@@ -446,12 +454,36 @@ describe('SessionInitializer - channel routing advisory', () => {
       session,
     );
 
-    // Aborted with the 'supersede' reason so handleError can surface a
-    // turn-completion card for the displaced (often stalled) prior turn;
-    // epoch bumped; concurrency returns a fresh AbortController.
     expect(mockRequestCoordinator.abortSession).toHaveBeenCalledWith('C123:thread123', 'supersede');
     expect(mockAssistantStatusManager.bumpEpoch).toHaveBeenCalledWith('C123', 'thread123');
     expect(ctl).toBeInstanceOf(AbortController);
+  });
+
+  it('handleConcurrency tags abort "stall-timeout" when the displaced turn has been silent past the stall window', () => {
+    mockRequestCoordinator.isRequestActive.mockReturnValue(true);
+    mockClaudeHandler.canInterrupt.mockReturnValue(true);
+    // No SDK activity for 10 minutes → stalled.
+    mockRequestCoordinator.getLastActivityAt = vi.fn().mockReturnValue(Date.now() - 10 * 60 * 1000);
+
+    const session = { ownerId: 'U123', ownerName: 'Owner', currentInitiatorName: 'Owner' };
+    (sessionInitializer as any).handleConcurrency('C123:thread123', 'C123', 'thread123', 'U123', 'Test User', session);
+
+    expect(mockRequestCoordinator.abortSession).toHaveBeenCalledWith('C123:thread123', 'stall-timeout');
+    expect(mockAssistantStatusManager.bumpEpoch).toHaveBeenCalledWith('C123', 'thread123');
+  });
+
+  it('handleConcurrency falls back to "supersede" when activity timestamp is unknown (defensive)', () => {
+    mockRequestCoordinator.isRequestActive.mockReturnValue(true);
+    mockClaudeHandler.canInterrupt.mockReturnValue(true);
+    // No timestamp → assume healthy. Wrong direction here would re-surface
+    // a red card on every steering message during normal traffic, so the
+    // conservative default is silent.
+    mockRequestCoordinator.getLastActivityAt = vi.fn().mockReturnValue(undefined);
+
+    const session = { ownerId: 'U123', ownerName: 'Owner', currentInitiatorName: 'Owner' };
+    (sessionInitializer as any).handleConcurrency('C123:thread123', 'C123', 'thread123', 'U123', 'Test User', session);
+
+    expect(mockRequestCoordinator.abortSession).toHaveBeenCalledWith('C123:thread123', 'supersede');
   });
 
   it('handleConcurrency does NOT bump epoch when no active request (S6 negative)', () => {
