@@ -171,7 +171,7 @@ const shouldNotifyException =
 | :--- | :--- | :--- |
 | Real SDK error (network, ResultMessage error subtype, throw) | true | Not an abort. Always surface. |
 | `supersede` abort (new message displaced stalled turn) | true | User is waiting for *some* terminal signal. PR #912. |
-| `stall-timeout` abort (reserved, future watchdog) | true | Same UX as supersede. |
+| `stall-timeout` abort — dispatcher heuristic (PR #924) OR auto-watchdog (this PR) | true | Same UX as supersede red card. |
 | `user-stop` / `session-close` / `shutdown` abort | false | User already knows the turn ended. |
 | `1M-context-unavailable` | false | Transparent retry on bare model (Issue #661). |
 | Foreign abort (`signal.reason` not in known union) | false | Out-of-band; explicitly out of guarantee scope. |
@@ -198,11 +198,22 @@ These paths are silent **by design** and do not violate the invariant.
 
 ---
 
+## Stall watchdog (auto-abort) — installed in the PR that adds this section
+
+Codex Option 3 deferred from PR #912/#923 is now wired in `StreamExecutor.processMessage`:
+
+- Helper: `src/slack/pipeline/stream-stall-watchdog.ts` exposes `StreamStallWatchdog` and `readStallTimeoutMs()`.
+- Default window: 10 minutes (`DEFAULT_STALL_TIMEOUT_MS = 600_000`).
+- Env override: `SOMA_STREAM_STALL_TIMEOUT_MS` (positive int → ms; `0` or non-positive → disable; invalid/non-finite → fall back to default).
+- Wiring: `arm()` runs just before `processor.process(...)`, `touch()` runs from every `onSdkActivity` callback, `clear()` runs in the outer `finally`.
+- Abort target: the LOCAL `abortController` for this turn (codex `2a332a29` P4), NOT `requestCoordinator.abortSession` — a stale watchdog firing after the turn moved on cannot abort a newer controller because the local controller is CAS-guarded via `removeController(sessionKey, controller)`.
+- First-reason-wins: if `supersede` (or any other reason) already fired on the controller, the late `stall-timeout` call is a no-op (DOM `AbortController.abort` semantics). The S4 notify gate continues to see the original reason.
+- `unref()` on the underlying timer so the watchdog can never keep Node alive at shutdown.
+
+Observed failure that motivated the install: dev session `C0ACK3US1D4-1778569028.139949` on 2026-05-14 — Turn 1 of PTN-4311 completed cleanly at 07:09:51, Turn 2 started at 07:11:57, sent SDK query, received tool_use events until 07:14:15, then the stream went silent. No `Received result`, no `Completed processing`, no enrichment-failed log. User screenshot at 08:23 KST showed `Last Activity: 1h 9m ago` — turn permanently dead, no terminal marker. PR #924's dispatcher heuristic doesn't help because the user is waiting on the card before sending a new message.
+
 ## Decision log
 
 - **2026-05-13 codex session `5c0429b8-108e-49ea-8074-5a4535378cfd`** (PR #912): Option 4 — Option 2 (supersede notify) shipped, Option 3 (stall watchdog) wired as `stall-timeout` reason for follow-up.
-- **2026-05-14 codex session `e294db6b-b322-4ec5-aed4-e05cf9a07d0b`** (this PR): degraded enrichment is not a fourth terminal state; reuse computed category, omit rich fields. `resolveSnapshot(fallback)` not `undefined` (else Phase-5 B5 path skips).
-
-## Open follow-up
-
-- Install the actual stall watchdog inside `StreamExecutor.processMessage` so a silent SDK stream is auto-aborted with `'stall-timeout'` after N minutes (default 10 min, `SOMA_STREAM_STALL_TIMEOUT_MS` override). All downstream wiring (reason union, message text branch, S4 notify path) already exists.
+- **2026-05-14 codex session `e294db6b-b322-4ec5-aed4-e05cf9a07d0b`** (PR #923): degraded enrichment is not a fourth terminal state; reuse computed category, omit rich fields. `resolveSnapshot(fallback)` not `undefined` (else Phase-5 B5 path skips).
+- **2026-05-14 codex session `2a332a29-23ae-4fda-933f-b33ebd365ddc`** (this PR): default 10 min, `SOMA_STREAM_STALL_TIMEOUT_MS` override, `<= 0` disables, invalid falls back to default. Abort the LOCAL controller (not the coordinator) so a late fire cannot hit a newer turn. `unref()` the timer. Add the supersede-wins regression test (#3) alongside the basic fire and unit-watchdog tests.

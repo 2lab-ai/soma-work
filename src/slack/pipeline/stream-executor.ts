@@ -33,6 +33,7 @@ import {
 } from '../../metrics/model-registry';
 import { interceptToolResults } from '../../metrics/tool-result-interceptor';
 import { SLACK_BLOCK_KIT_CHANNEL_NAME } from '../../notification-channels/slack-block-kit-channel';
+import { readStallTimeoutMs, StreamStallWatchdog } from './stream-stall-watchdog';
 import { checkAndSchedulePendingCompact } from '../../session/compact-threshold-checker';
 import { buildCompactionContext, snapshotFromSession } from '../../session/compaction-context-builder';
 import { type ActiveTokenInfo, getTokenManager, parseCooldownTime } from '../../token-manager';
@@ -640,6 +641,24 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       waitingForChoice: false,
     });
 
+    // Stream stall watchdog — auto-aborts the SDK call after N ms of no
+    // SDK activity so a hung turn surfaces a 🔴 "오류 발생" terminal card
+    // instead of leaving the thread silent. `arm()` runs just before
+    // `processor.process(...)`; `touch()` runs from `onSdkActivity` on
+    // every SDK event; `clear()` runs in the outer `finally`.
+    //
+    // Codex P4: abort is bound to THIS turn's local `abortController` —
+    // not routed through `requestCoordinator.abortSession`, so a late
+    // watchdog fire after the turn moved on cannot abort a newer
+    // controller (CAS-guarded by `removeController(sessionKey, ac)`).
+    // First abort reason wins on AbortController; if `supersede` already
+    // fired, `stall-timeout` here is a no-op.
+    const stallWatchdog = new StreamStallWatchdog(
+      readStallTimeoutMs(),
+      () => abortController.abort('stall-timeout' satisfies RequestAbortReason),
+      this.logger,
+    );
+
     try {
       // #617 followup: Claude Agent SDK only recognizes local slash commands
       // (/compact, /clear, /model, etc.) when the prompt STARTS with the /cmd
@@ -851,6 +870,10 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       const streamCallbacks: StreamCallbacks = {
         onSdkActivity: () => {
           this.deps.requestCoordinator.touchSession(sessionKey);
+          // Reset stall watchdog on every SDK event so a healthy
+          // long-running tool (Playwright sweep / big grep / Docker
+          // pull) doesn't trip the auto-abort.
+          stallWatchdog.touch();
         },
         onToolUse: async (toolUses, ctx) => {
           // Ghost Session Fix #99: self-terminate if session was terminated while streaming
@@ -1267,6 +1290,12 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         processor.updateToolCallDuration(toolUseId, duration, ch),
       );
 
+      // Arm the stall watchdog immediately before handing the iterable
+      // to the processor. Any cold-start latency before the first SDK
+      // event still has the full stall window — the first `touch()`
+      // from `onSdkActivity` will reset it.
+      stallWatchdog.arm();
+
       const streamResult = await processor.process(
         this.deps.claudeHandler.streamQuery(finalPrompt, session, abortController, workingDirectory, slackContext),
         streamContext,
@@ -1601,6 +1630,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       );
       return { success: false, messageCount: 0, retryAfterMs };
     } finally {
+      // Cancel the stall watchdog on every exit path (success, error, or
+      // an in-flight abort that the catch branch already handled).
+      // `clear()` is idempotent and safe after a fire — a fired watchdog
+      // is already stopped.
+      stallWatchdog.clear();
       // Issue #688 — defense-in-depth status clear on every exit path.
       // The success and error branches above already clear with the
       // same epoch guard; the manager is idempotent, and the guard
