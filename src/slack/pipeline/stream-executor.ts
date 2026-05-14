@@ -38,6 +38,7 @@ import { buildCompactionContext, snapshotFromSession } from '../../session/compa
 import { type ActiveTokenInfo, getTokenManager, parseCooldownTime } from '../../token-manager';
 import {
   determineTurnCategory,
+  type TurnCategory,
   type TurnCompletionEvent,
   type TurnNotifier,
   type TurnNotifierNotifyOpts,
@@ -320,6 +321,88 @@ export class StreamExecutor {
       return { excludeChannelNames: [SLACK_BLOCK_KIT_CHANNEL_NAME] };
     }
     return undefined;
+  }
+
+  /**
+   * Catch rail of the post-turn enrich-then-notify chain.
+   *
+   * Contract: every model-turn end state (WorkflowComplete / UIUserAskQuestion
+   * / Exception) MUST surface a terminal Block Kit card to Slack. The success
+   * rail builds a fully enriched event; this rail handles every way that
+   * enrichment can fail (usage HTTP, property reads on a partially-hydrated
+   * session, transient state-store hiccups) without dropping the user-facing
+   * terminal marker.
+   *
+   * Two outputs:
+   *  1. `resolveSnapshot(fallback)` — at Phase 5 `TurnSurface.end` awaits the
+   *     snapshot and emits B5 from it. If we resolved with `undefined` (the
+   *     pre-fix behaviour), the B5 path skipped silently and the user saw
+   *     no terminal card.
+   *  2. `turnNotifier.notify(fallback, buildCompletionNotifyOpts())` — at
+   *     Phase <5 deployments this is the path that posts the Block Kit
+   *     message; at Phase 5 it still fans out to non-block-kit channels
+   *     (slack-dm / telegram / webhook).
+   *
+   * The fallback event reuses the originally computed `category` (codex
+   * P1: degraded enrichment is not a fourth terminal state — it is the
+   * same terminal state with reduced fidelity). Rich fields (usage %,
+   * token stats, persona) are omitted; the optional-field model in
+   * `TurnCompletionEvent` already handles their absence cleanly.
+   *
+   * Trace: docs/turn-end-surface-guarantee/trace.md, S3.
+   */
+  private handleEnrichmentFailure(
+    err: unknown,
+    args: {
+      category: TurnCategory;
+      userId: string;
+      channel: string;
+      threadTs: string;
+      sessionTitle: string | undefined;
+      durationMs: number;
+      sessionKey: string;
+      turnId: string;
+    },
+    resolveSnapshot: (evt: TurnCompletionEvent | undefined) => void,
+  ): void {
+    this.logger.warn('Turn completion enrichment failed', {
+      sessionKey: args.sessionKey,
+      turnId: args.turnId,
+      stage: 'enrich',
+      error: (err as { message?: string })?.message ?? String(err),
+    });
+
+    const fallback: TurnCompletionEvent = {
+      category: args.category,
+      userId: args.userId,
+      channel: args.channel,
+      threadTs: args.threadTs,
+      sessionTitle: args.sessionTitle,
+      durationMs: args.durationMs,
+      message: 'turn-completion enrichment failed',
+    };
+
+    // Resolve the snapshot with the fallback (NOT undefined) so the Phase-5
+    // TurnSurface.end → B5 emit still runs.
+    resolveSnapshot(fallback);
+
+    if (!this.deps.turnNotifier) {
+      // Production wiring precondition. Harness/test/misconfigured DI runs
+      // still get the snapshot resolution above — the codex P1 decoupling
+      // requirement means snapshot emission cannot be gated on turnNotifier.
+      return;
+    }
+
+    try {
+      const notifyOpts = this.buildCompletionNotifyOpts();
+      this.deps.turnNotifier.notify(fallback, notifyOpts);
+    } catch (notifyErr: unknown) {
+      this.logger.warn('Fallback TurnNotifier.notify threw', {
+        sessionKey: args.sessionKey,
+        turnId: args.turnId,
+        error: (notifyErr as { message?: string })?.message ?? String(notifyErr),
+      });
+    }
   }
 
   /**
@@ -766,6 +849,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
 
       // Create stream callbacks
       const streamCallbacks: StreamCallbacks = {
+        onSdkActivity: () => {
+          this.deps.requestCoordinator.touchSession(sessionKey);
+        },
         onToolUse: async (toolUses, ctx) => {
           // Ghost Session Fix #99: self-terminate if session was terminated while streaming
           if (session.terminated) {
@@ -1353,16 +1439,28 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       //     conditionally calls turnNotifier.notify. Notify is wrapped in
       //     its own try/catch so a notifier throw stays on the enrich-
       //     success side — it cannot propagate into the outer `.catch` and
-      //     produce a second `resolveSnapshot(undefined)` call that races
-      //     the first. The second resolve would be a Promise no-op, but
-      //     the log would be misleading ("Turn completion enrichment
-      //     failed" when enrichment had succeeded).
-      //   `.catch` — enrichment-only failures (usageBefore / fetchAndStoreUsage
-      //     HTTP failures, etc.). Resolves the snapshot with `undefined` so
-      //     TurnSurface.end's `await` unblocks with no B5 emit.
+      //     produce a second resolveSnapshot call that races the first.
+      //   `.catch` — enrichment failures (usageBefore / fetchAndStoreUsage
+      //     HTTP failures, property reads on a partially-hydrated session,
+      //     etc.). Hands off to `handleEnrichmentFailure` which builds a
+      //     degraded-but-valid TurnCompletionEvent: snapshot resolves with
+      //     it (so TurnSurface.end's B5 emit still fires) AND turnNotifier
+      //     fires (so Phase<5 deployments / non-block-kit channels also
+      //     surface the terminal card). Trace:
+      //     docs/turn-end-surface-guarantee/trace.md, S3.
       // resolveSnapshot fires exactly once either way. No `finally` safety-
       // net resolve — that would race the `.then` rail and lock in a
       // `undefined` snapshot (codex P1-1).
+      const fallbackArgs = {
+        category,
+        userId: session.ownerId || user,
+        channel,
+        threadTs,
+        sessionTitle: session.title,
+        durationMs,
+        sessionKey,
+        turnId,
+      };
       enrichAndResolve()
         .then((evt) => {
           resolveSnapshot(evt);
@@ -1385,15 +1483,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             }
           }
         })
-        .catch((err: unknown) => {
-          resolveSnapshot(undefined);
-          this.logger.warn('Turn completion enrichment failed', {
-            sessionKey,
-            turnId,
-            stage: 'enrich',
-            error: (err as { message?: string })?.message ?? String(err),
-          });
-        });
+        .catch((err: unknown) => this.handleEnrichmentFailure(err, fallbackArgs, resolveSnapshot));
 
       // Start summary timer for non-error completions (fire-and-forget)
       // Trace: docs/turn-summary-lifecycle/trace.md, S1
@@ -1628,42 +1718,20 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     const isAbort = requestAborted || this.isAbortLikeError(error);
 
     // Decide whether the aborted turn should surface a "🔴 오류 발생" card.
-    //
-    // Pre-fix behaviour: every abort was silent (`!isAbort` gate), so a
-    // stalled turn displaced by a new user message left the thread without
-    // any terminal marker — the user couldn't tell whether the previous
-    // turn was done, hanging, or still running. The observed PTN-4238
-    // autoz symptom (1h43m of dead air between final assistant text and
-    // the displacing message) traces straight to this gap.
-    //
-    // Post-fix: classify the abort by `abortReason` (plumbed through
-    // `controller.abort(reason)` from RequestCoordinator). Two reasons
-    // need a user-facing card; the rest stay silent.
-    //
-    //   `supersede`      — new message displaced the prior turn. The user
-    //                      is *waiting* for a terminal signal; show it.
-    //   `stall-timeout`  — (reserved) future watchdog will tag aborts
-    //                      this way when no SDK event has arrived for N
-    //                      minutes. Same UX as supersede.
-    //   `user-stop` / `session-close` / `shutdown` — user already knows
-    //                      the turn is over (button click / shutdown).
-    //                      Stay quiet to avoid noise on every interrupt.
-    //
-    // An untagged abort (`abortReason === undefined`) means a code path
-    // raised AbortError without going through RequestCoordinator. Treat
-    // it conservatively as "explicit cancel" and stay quiet — matches
-    // pre-fix behaviour.
-    const supersedeLikeAbort = isAbort && (abortReason === 'supersede' || abortReason === 'stall-timeout');
+    // Only `stall-timeout` is notify-worthy: a genuinely silent turn that
+    // got displaced needs a terminal marker. `supersede` (active steering),
+    // `user-stop`, `session-close`, `shutdown` stay quiet — the user
+    // already knows the turn is ending. The stall vs steering split is
+    // decided upstream in `session-initializer.handleConcurrency`; here
+    // we just trust the reason on `signal.reason`. An untagged abort
+    // (raised outside RequestCoordinator) defaults to quiet.
+    const stallTimeoutAbort = isAbort && abortReason === 'stall-timeout';
     const shouldNotifyException =
-      !!this.deps.turnNotifier && (!isAbort || supersedeLikeAbort) && !this.isOneMContextUnavailableError(error);
+      !!this.deps.turnNotifier && (!isAbort || stallTimeoutAbort) && !this.isOneMContextUnavailableError(error);
 
     // Trace: docs/turn-notification/trace.md, Scenario 1, Section 3a — Exception path
     if (shouldNotifyException && this.deps.turnNotifier) {
-      const message = supersedeLikeAbort
-        ? abortReason === 'stall-timeout'
-          ? '이전 턴이 일정 시간 응답이 없어 중단되었습니다.'
-          : '이전 턴이 새 메시지로 인해 중단되었습니다.'
-        : error?.message;
+      const message = stallTimeoutAbort ? '이전 턴이 일정 시간 응답이 없어 중단되었습니다.' : error?.message;
       this.deps.turnNotifier
         .notify({
           category: 'Exception',

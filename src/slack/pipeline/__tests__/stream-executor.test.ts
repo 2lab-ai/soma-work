@@ -392,14 +392,11 @@ describe('Abort handling', () => {
     expect(say).not.toHaveBeenCalled();
   });
 
-  // Bug fix: a stalled turn that is displaced by a new user message
-  // ("supersede") must surface a turn-completion card so the user can
-  // tell the previous turn is done — even if it's a 🔴 "오류 발생" card.
-  // Before this fix the !isAbort gate in handleError silently swallowed
-  // every abort path, so the thread looked half-finished forever (the
-  // observed PTN-4238 autoz symptom — assistant text posted but no
-  // green/red marker followed for 1h43m).
-  it('posts a turn-completion card when abort reason is "supersede"', async () => {
+  // Active user steering must NOT emit "🔴 오류 발생". Mid-turn follow-up
+  // messages interrupt the current turn and proceed with the new input —
+  // that's normal control flow, not an error. The displaced turn stays
+  // silent. See request-coordinator.ts RequestAbortReason for taxonomy.
+  it('stays silent on "supersede" aborts (active user steering of healthy turn)', async () => {
     const deps = createExecutorDeps();
     const executor = new StreamExecutor(deps);
     const say = vi.fn().mockResolvedValue(undefined);
@@ -420,6 +417,37 @@ describe('Abort handling', () => {
       /* activeSlotAtQueryStart */ null,
       /* expectedEpoch */ undefined,
       /* abortReason */ 'supersede',
+    );
+
+    expect(deps.turnNotifier.notify).not.toHaveBeenCalled();
+  });
+
+  // A genuinely stalled turn (no SDK activity for the configured stall
+  // window) is tagged `stall-timeout` by the dispatcher's stall heuristic
+  // before abort. handleError surfaces a terminal card so the user gets
+  // *some* turn-end signal even if the displacing message arrives later —
+  // without this the thread looks half-finished forever.
+  it('emits a terminal card on "stall-timeout" aborts (stalled turn displaced)', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = new Error('Request was aborted');
+    error.name = 'AbortError';
+
+    const session = { ownerId: 'U_OWNER', title: 'stalled turn' } as any;
+
+    await (executor as any).handleError(
+      error,
+      session,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say,
+      /* requestAborted */ true,
+      /* activeSlotAtQueryStart */ null,
+      /* expectedEpoch */ undefined,
+      /* abortReason */ 'stall-timeout',
     );
 
     expect(deps.turnNotifier.notify).toHaveBeenCalledTimes(1);
@@ -475,6 +503,135 @@ describe('Abort handling', () => {
     );
 
     expect(deps.turnNotifier.notify).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------------
+  // Turn-end surface guarantee — enrichment failure rail
+  // -------------------------------------------------------------------------
+  //
+  // Contract under audit (docs/turn-end-surface-guarantee/trace.md, S3):
+  // every model-turn end state (WorkflowComplete / UIUserAskQuestion /
+  // Exception) MUST surface a Slack Block Kit completion card. The success
+  // rail builds an enriched event then fires `turnNotifier.notify`; the
+  // enrichment can throw (usage HTTP / userSettingsStore property reads /
+  // any property access on a partially-hydrated session). The historical
+  // `.catch` rail resolved the snapshot with `undefined` AND skipped the
+  // notify call — so a transient enrichment failure silently dropped the
+  // terminal card, leaving the thread without any green/orange/red marker.
+  //
+  // Fix: extract `handleEnrichmentFailure` so the catch rail builds a
+  // *fallback* TurnCompletionEvent (no rich fields, reuses the originally
+  // computed category) and forwards it to BOTH `resolveSnapshot` (so
+  // TurnSurface.end's awaited snapshot path emits B5) and
+  // `turnNotifier.notify` (so the legacy / non-block-kit channels fire).
+  it('handleEnrichmentFailure: builds fallback event, resolves snapshot with it, and notifies turnNotifier', () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+
+    const resolved: Array<{ category?: string; userId?: string } | undefined> = [];
+    const resolveSnapshot = (evt: unknown) => {
+      resolved.push(evt as any);
+    };
+
+    (executor as any).handleEnrichmentFailure(
+      new Error('usage HTTP exploded'),
+      {
+        category: 'WorkflowComplete',
+        userId: 'U_OWNER',
+        channel: 'C123',
+        threadTs: 'thread123',
+        sessionTitle: 'autoz turn',
+        durationMs: 12345,
+        sessionKey: 'C123:thread123',
+        turnId: 'C123:thread123:42',
+      },
+      resolveSnapshot,
+    );
+
+    // Snapshot receives a fallback event (NOT undefined) so TurnSurface.end's
+    // awaited snapshot path can still emit the B5 Block Kit card.
+    expect(resolved).toHaveLength(1);
+    expect(resolved[0]).toMatchObject({
+      category: 'WorkflowComplete',
+      userId: 'U_OWNER',
+      channel: 'C123',
+      threadTs: 'thread123',
+      sessionTitle: 'autoz turn',
+      durationMs: 12345,
+    });
+
+    // Legacy notify rail also fires with the same fallback event — so
+    // Phase<5 deployments (where TurnNotifier.notify owns the Slack post)
+    // ALSO surface the terminal card.
+    expect(deps.turnNotifier.notify).toHaveBeenCalledTimes(1);
+    const evt = deps.turnNotifier.notify.mock.calls[0][0];
+    expect(evt).toMatchObject({
+      category: 'WorkflowComplete',
+      userId: 'U_OWNER',
+      channel: 'C123',
+      threadTs: 'thread123',
+    });
+  });
+
+  it('handleEnrichmentFailure: preserves the originally-computed category (UIUserAskQuestion)', () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+
+    const resolved: Array<{ category?: string } | undefined> = [];
+    (executor as any).handleEnrichmentFailure(
+      new Error('boom'),
+      {
+        category: 'UIUserAskQuestion',
+        userId: 'U_OWNER',
+        channel: 'C123',
+        threadTs: 'thread123',
+        sessionTitle: 'choice turn',
+        durationMs: 100,
+        sessionKey: 'C123:thread123',
+        turnId: 'C123:thread123:43',
+      },
+      (evt: unknown) => {
+        resolved.push(evt as any);
+      },
+    );
+
+    // Codex P1: degraded enrichment is NOT a fourth terminal state; reuse
+    // the originally-computed category so the user sees the right
+    // emoji/color (orange "유저 입력 대기" stays orange).
+    expect(resolved[0]?.category).toBe('UIUserAskQuestion');
+    expect(deps.turnNotifier.notify.mock.calls[0][0].category).toBe('UIUserAskQuestion');
+  });
+
+  it('handleEnrichmentFailure: tolerates missing turnNotifier (still resolves snapshot)', () => {
+    const deps = createExecutorDeps();
+    deps.turnNotifier = undefined; // simulate harness / test / misconfigured DI
+    const executor = new StreamExecutor(deps);
+
+    const resolved: Array<unknown> = [];
+    expect(() =>
+      (executor as any).handleEnrichmentFailure(
+        new Error('boom'),
+        {
+          category: 'Exception',
+          userId: 'U_OWNER',
+          channel: 'C123',
+          threadTs: 'thread123',
+          sessionTitle: 'errored turn',
+          durationMs: 99,
+          sessionKey: 'C123:thread123',
+          turnId: 'C123:thread123:44',
+        },
+        (evt: unknown) => {
+          resolved.push(evt);
+        },
+      ),
+    ).not.toThrow();
+
+    // Without a turnNotifier the snapshot path still gets the fallback —
+    // codex P1 decoupling: snapshot emission cannot be gated on
+    // turnNotifier presence.
+    expect(resolved).toHaveLength(1);
+    expect((resolved[0] as any)?.category).toBe('Exception');
   });
 
   it('preserves session for Claude SDK rate-limit/process-exit errors', async () => {
