@@ -148,6 +148,45 @@ describe('RequestCoordinator', () => {
     });
   });
 
+  describe('activity tracking', () => {
+    it('records last activity timestamp when a controller is set', () => {
+      const sessionKey = 'C123:T456';
+      const before = Date.now();
+      coordinator.setController(sessionKey, new AbortController());
+      const after = Date.now();
+      const lastAt = coordinator.getLastActivityAt(sessionKey);
+      expect(lastAt).toBeDefined();
+      expect(lastAt!).toBeGreaterThanOrEqual(before);
+      expect(lastAt!).toBeLessThanOrEqual(after);
+    });
+
+    it('updates last activity timestamp via touchSession', async () => {
+      const sessionKey = 'C123:T456';
+      coordinator.setController(sessionKey, new AbortController());
+      const initial = coordinator.getLastActivityAt(sessionKey);
+      expect(initial).toBeDefined();
+      // Wait long enough that Date.now() advances reliably across hosts.
+      await new Promise((r) => setTimeout(r, 5));
+      coordinator.touchSession(sessionKey);
+      const updated = coordinator.getLastActivityAt(sessionKey);
+      expect(updated).toBeDefined();
+      expect(updated!).toBeGreaterThan(initial!);
+    });
+
+    it('touchSession is a no-op for sessions without an active controller', () => {
+      coordinator.touchSession('nonexistent');
+      expect(coordinator.getLastActivityAt('nonexistent')).toBeUndefined();
+    });
+
+    it('clears activity timestamp when controller is removed', () => {
+      const sessionKey = 'C123:T456';
+      coordinator.setController(sessionKey, new AbortController());
+      expect(coordinator.getLastActivityAt(sessionKey)).toBeDefined();
+      coordinator.removeController(sessionKey);
+      expect(coordinator.getLastActivityAt(sessionKey)).toBeUndefined();
+    });
+  });
+
   describe('clearAll', () => {
     it('should abort and clear all controllers', () => {
       const controller1 = new AbortController();

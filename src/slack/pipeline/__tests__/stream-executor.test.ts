@@ -392,14 +392,11 @@ describe('Abort handling', () => {
     expect(say).not.toHaveBeenCalled();
   });
 
-  // Bug fix: a stalled turn that is displaced by a new user message
-  // ("supersede") must surface a turn-completion card so the user can
-  // tell the previous turn is done — even if it's a 🔴 "오류 발생" card.
-  // Before this fix the !isAbort gate in handleError silently swallowed
-  // every abort path, so the thread looked half-finished forever (the
-  // observed PTN-4238 autoz symptom — assistant text posted but no
-  // green/red marker followed for 1h43m).
-  it('posts a turn-completion card when abort reason is "supersede"', async () => {
+  // Active user steering must NOT emit "🔴 오류 발생". Mid-turn follow-up
+  // messages interrupt the current turn and proceed with the new input —
+  // that's normal control flow, not an error. The displaced turn stays
+  // silent. See request-coordinator.ts RequestAbortReason for taxonomy.
+  it('stays silent on "supersede" aborts (active user steering of healthy turn)', async () => {
     const deps = createExecutorDeps();
     const executor = new StreamExecutor(deps);
     const say = vi.fn().mockResolvedValue(undefined);
@@ -420,6 +417,37 @@ describe('Abort handling', () => {
       /* activeSlotAtQueryStart */ null,
       /* expectedEpoch */ undefined,
       /* abortReason */ 'supersede',
+    );
+
+    expect(deps.turnNotifier.notify).not.toHaveBeenCalled();
+  });
+
+  // A genuinely stalled turn (no SDK activity for the configured stall
+  // window) is tagged `stall-timeout` by the dispatcher's stall heuristic
+  // before abort. handleError surfaces a terminal card so the user gets
+  // *some* turn-end signal even if the displacing message arrives later —
+  // without this the thread looks half-finished forever.
+  it('emits a terminal card on "stall-timeout" aborts (stalled turn displaced)', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = new Error('Request was aborted');
+    error.name = 'AbortError';
+
+    const session = { ownerId: 'U_OWNER', title: 'stalled turn' } as any;
+
+    await (executor as any).handleError(
+      error,
+      session,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say,
+      /* requestAborted */ true,
+      /* activeSlotAtQueryStart */ null,
+      /* expectedEpoch */ undefined,
+      /* abortReason */ 'stall-timeout',
     );
 
     expect(deps.turnNotifier.notify).toHaveBeenCalledTimes(1);

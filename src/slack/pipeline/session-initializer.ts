@@ -24,7 +24,7 @@ import { MessageFormatter } from '../message-formatter';
 import type { MessageValidator } from '../message-validator';
 import { LOG_DETAIL, OutputFlag, shouldOutput } from '../output-flags';
 import type { ReactionManager } from '../reaction-manager';
-import type { RequestCoordinator } from '../request-coordinator';
+import type { RequestAbortReason, RequestCoordinator } from '../request-coordinator';
 import type { SlackApiHelper } from '../slack-api-helper';
 import { ThreadHeaderBuilder } from '../thread-header-builder';
 import type { ThreadPanel } from '../thread-panel';
@@ -33,6 +33,22 @@ import type { MessageEvent, SayFn, SessionInitResult } from './types';
 
 // Timeout for dispatch API call (30 seconds - Agent SDK needs time to start)
 const DISPATCH_TIMEOUT_MS = 30000;
+
+/**
+ * Stall heuristic threshold for handleConcurrency.
+ *
+ * If a new user message arrives ≥ this many ms after the displaced turn's
+ * last SDK event, the abort is tagged `stall-timeout` and surfaces a
+ * terminal card. Below the threshold it stays silent (`supersede` — the
+ * "user is steering a healthy turn" path).
+ *
+ * 90 s is intentionally larger than typical tool/network round-trips
+ * (Bash, Read, Slack API) so a momentarily silent-but-healthy turn still
+ * reads as healthy. A genuine stall (model hang / dead worker / network
+ * black hole) goes minutes without a heartbeat. Only affects UX, not
+ * correctness of the displace itself.
+ */
+const STALL_THRESHOLD_MS = 90_000;
 
 /** Session title surface shown when entering via a z handoff entrypoint (#695). */
 const HANDOFF_ENTRY_TITLES: Record<ZHandoffWorkflow, string> = {
@@ -1138,11 +1154,14 @@ export class SessionInitializer {
     if (isRequestActive) {
       if (canInterrupt) {
         this.logger.debug('Cancelling existing request for session', { sessionKey, interruptedBy: userName });
-        // A new message in the same session displaced the previous turn —
-        // tag as `supersede` so handleError surfaces a "🔴 오류 발생" card
-        // for the displaced turn (otherwise the user sees no terminal
-        // marker when the prior turn had stalled silently).
-        this.deps.requestCoordinator.abortSession(sessionKey, 'supersede');
+        // Tag the abort by whether the prior turn was healthy (silent
+        // supersede, normal mid-turn steering) or stalled (stall-timeout
+        // surfaces a terminal card). An unknown timestamp is treated as
+        // healthy — the conservative default for the displaced-turn UX.
+        const lastActivityAt = this.deps.requestCoordinator.getLastActivityAt(sessionKey);
+        const stalled = typeof lastActivityAt === 'number' && Date.now() - lastActivityAt >= STALL_THRESHOLD_MS;
+        const abortReason: RequestAbortReason = stalled ? 'stall-timeout' : 'supersede';
+        this.deps.requestCoordinator.abortSession(sessionKey, abortReason);
         // Issue #688 — per-(channel, threadTs) epoch bump so any stale
         // clearStatus from the aborted turn (arriving after the new turn
         // has set its spinner) becomes a no-op via expectedEpoch guard.

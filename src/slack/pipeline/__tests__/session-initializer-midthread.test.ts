@@ -153,6 +153,8 @@ beforeEach(() => {
     isRequestActive: vi.fn().mockReturnValue(false),
     setController: vi.fn(),
     abortSession: vi.fn(),
+    getLastActivityAt: vi.fn().mockReturnValue(undefined),
+    touchSession: vi.fn(),
   };
 
   mockAssistantStatusManager = {
