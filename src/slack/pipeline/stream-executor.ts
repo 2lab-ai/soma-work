@@ -2354,6 +2354,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         // Trigger re-render so the summary blocks appear in the Slack thread header.
         // Without this, summaryBlocks sit in memory but the message is never updated.
         await this.deps.threadPanel?.updatePanel(session, sessionKey);
+
+        // ALSO post the summary as a permanent in-thread message. The header
+        // render above is volatile (next user message clears it); this post
+        // makes the summary part of the conversation log. Deliberately NOT
+        // tracked via `completionMessageTracker` so it survives subsequent
+        // turns. Errors are swallowed inside `postInThread` — a failed post
+        // must not crash the summary fork.
+        await this.deps.summaryService.postInThread(session as any, summaryText);
       }
     } catch (err: any) {
       if (this.summaryAbortControllers.get(sessionKey) === abortController) {
