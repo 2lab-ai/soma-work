@@ -99,6 +99,15 @@ export interface ExecuteResult {
   turnCollector?: TurnResultCollector;
   /** If set, caller should auto-retry after this many ms (recoverable error). */
   retryAfterMs?: number;
+  /**
+   * `true` when the catch branch already surfaced the failure to the user
+   * (Exception card via `turnNotifier`, status reset, thread-panel close).
+   * V1QueryAdapter resolves instead of throwing when this is set — re-throwing
+   * would only generate a duplicate Bolt `slack_bolt_unknown_error` log line
+   * because the user has already seen the 🔴 card. Stall-timeout abort is the
+   * primary trigger; other `handleError` paths inherit this guarantee.
+   */
+  handled?: boolean;
 }
 
 interface StreamExecutorDeps {
@@ -1636,7 +1645,22 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         epoch,
         abortReason,
       );
-      return { success: false, messageCount: 0, retryAfterMs };
+      // `handleError()` ran to completion — it either dispatched a user-facing
+      // Exception card (turnNotifier), reset status/reaction, or both.
+      //
+      // Mark `handled: true` ONLY when no retry is scheduled. With retry
+      // pending, slack-handler still needs to enter its catch branch to read
+      // `getRetryAfterMs()` and arm the auto-resume timer, so the adapter
+      // must throw on the retry path. When no retry is intended (stall-timeout,
+      // quiet aborts, exhausted-budget terminal errors), `handled: true`
+      // lets V1QueryAdapter resolve cleanly — preventing the duplicate Bolt
+      // `slack_bolt_unknown_error` log line that the user complained about.
+      return {
+        success: false,
+        messageCount: 0,
+        retryAfterMs,
+        handled: retryAfterMs === undefined,
+      };
     } finally {
       // Cancel the stall watchdog on every exit path (success, error, or
       // an in-flight abort that the catch branch already handled).

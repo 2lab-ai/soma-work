@@ -400,4 +400,96 @@ describe('SlackBlockKitChannel — Rich Turn Notification', () => {
       expect(text.length).toBeGreaterThan(0);
     });
   });
+
+  // -------------------------------------------------------------------------
+  // Exception card — event.message must take precedence over event.sessionTitle.
+  //
+  // Bug: when a stream-stall-watchdog (or any handled error path) fires,
+  // handleError() dispatches a turnNotifier.notify({ category: 'Exception',
+  // message: '이전 턴이 일정 시간 응답이 없어 중단되었습니다.', sessionTitle })
+  // event. The previous renderer printed only `sessionTitle`, so the user saw
+  // the stale workflow title (e.g. "Session Reset") as the error reason. The
+  // actual cause was hidden. Now Exception cards must render `event.message`
+  // in the header suffix when present, falling back to sessionTitle only when
+  // message is absent.
+  // -------------------------------------------------------------------------
+  describe('Exception card renders event.message (regression: stale sessionTitle bug)', () => {
+    const STALL_MESSAGE = '이전 턴이 일정 시간 응답이 없어 중단되었습니다.';
+    const STALE_TITLE = 'Session Reset';
+
+    function makeExceptionEvent(overrides: Partial<TurnCompletionEvent> = {}): TurnCompletionEvent {
+      return makeEvent({
+        category: 'Exception',
+        sessionTitle: STALE_TITLE,
+        message: STALL_MESSAGE,
+        ...overrides,
+      });
+    }
+
+    function headerText(api: { postMessage: any }): string {
+      const blocks = api.postMessage.mock.calls[0][2].attachments[0].blocks;
+      return blocks[0].text.text as string;
+    }
+
+    it('default theme: header shows message, not sessionTitle, when both are present', async () => {
+      const api = createMockSlackApi();
+      const channel = new SlackBlockKitChannel(api);
+      await channel.send(makeExceptionEvent());
+
+      const text = headerText(api);
+      expect(text).toContain('오류 발생');
+      expect(text).toContain(STALL_MESSAGE);
+      // Stale sessionTitle must NOT appear in the header for Exception cards.
+      expect(text).not.toContain(STALE_TITLE);
+    });
+
+    it('default theme: header falls back to sessionTitle when message is absent', async () => {
+      const api = createMockSlackApi();
+      const channel = new SlackBlockKitChannel(api);
+      await channel.send(makeExceptionEvent({ message: undefined }));
+
+      const text = headerText(api);
+      expect(text).toContain(STALE_TITLE);
+    });
+
+    it('compact theme: header shows message instead of sessionTitle', async () => {
+      const api = createMockSlackApi();
+      const channel = new SlackBlockKitChannel(api);
+      // Force compact theme via mock from the top of the file.
+      const settings = await import('../../user-settings-store');
+      (settings.userSettingsStore.getUserSessionTheme as any).mockReturnValueOnce('compact');
+      await channel.send(makeExceptionEvent());
+
+      const text = headerText(api);
+      expect(text).toContain(STALL_MESSAGE);
+      expect(text).not.toContain(STALE_TITLE);
+    });
+
+    it('non-Exception categories still render sessionTitle (no behavior change)', async () => {
+      const api = createMockSlackApi();
+      const channel = new SlackBlockKitChannel(api);
+      await channel.send(
+        makeEvent({
+          category: 'WorkflowComplete',
+          sessionTitle: 'PR #77 리뷰',
+          message: 'should-not-render',
+        }),
+      );
+
+      const text = headerText(api);
+      expect(text).toContain('PR #77 리뷰');
+      expect(text).not.toContain('should-not-render');
+    });
+
+    it('Exception with neither message nor sessionTitle: header has no suffix dash', async () => {
+      const api = createMockSlackApi();
+      const channel = new SlackBlockKitChannel(api);
+      await channel.send(makeEvent({ category: 'Exception', sessionTitle: undefined, message: undefined }));
+
+      const text = headerText(api);
+      // The dash separator is only added when a suffix is rendered.
+      expect(text).toContain('오류 발생');
+      expect(text).not.toContain(' — ');
+    });
+  });
 });

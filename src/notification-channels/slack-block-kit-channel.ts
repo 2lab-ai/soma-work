@@ -45,7 +45,10 @@ export class SlackBlockKitChannel implements NotificationChannel {
 
     // Slack requires a non-empty `text` fallback when blocks/attachments are present
     // (empty text silently drops the message on some clients and breaks accessibility).
-    const fallbackText = event.sessionTitle || event.category;
+    // For Exception cards, prefer the actual error message so the fallback
+    // text (used in notification previews) reflects the real reason rather
+    // than a stale workflow title.
+    const fallbackText = this.pickHeaderSuffix(event) || event.sessionTitle || event.category;
 
     try {
       const result = await this.slackApi.postMessage(event.channel, fallbackText, {
@@ -88,6 +91,29 @@ export class SlackBlockKitChannel implements NotificationChannel {
     }
   }
 
+  /**
+   * Choose the suffix that follows the "{emoji} *{label}*" header.
+   *
+   * Bug fix: Exception cards used to show `event.sessionTitle` in the header,
+   * but `sessionTitle` reflects the workflow that was running (e.g. "Session
+   * Reset" left over from an earlier `/z reset`) — NOT the error reason.
+   * `handleError()` in `stream-executor.ts` already passes a friendly error
+   * reason via `event.message` (e.g. `이전 턴이 일정 시간 응답이 없어 중단되었습니다.`),
+   * but the renderer was silently dropping it. For Exception, prefer
+   * `event.message` and only fall back to `sessionTitle` when message is
+   * absent. Non-Exception categories keep the existing sessionTitle-only
+   * behavior so success/UIUserAskQuestion cards are unchanged.
+   *
+   * Returns the empty string when no suffix is available — callers conditionally
+   * insert the " — " separator only when this returns a non-empty value.
+   */
+  private pickHeaderSuffix(event: TurnCompletionEvent): string {
+    if (event.category === 'Exception') {
+      return event.message?.trim() || event.sessionTitle?.trim() || '';
+    }
+    return event.sessionTitle?.trim() || '';
+  }
+
   // --- Theme: Default (Dashboard — richest) ---
 
   private buildDefaultBlocks(event: TurnCompletionEvent, emoji: string, label: string): any[] {
@@ -100,12 +126,13 @@ export class SlackBlockKitChannel implements NotificationChannel {
     const threadPermalink = buildThreadPermalink(event.channel, event.threadTs);
     const threadLinkSuffix = threadPermalink ? ` · <${threadPermalink}|🧵 스레드 열기>` : '';
 
+    const headerSuffix = this.pickHeaderSuffix(event);
     const blocks: any[] = [
       {
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: `${emoji} *${label}*${event.sessionTitle ? ` — ${event.sessionTitle}` : ''}${threadLinkSuffix}`,
+          text: `${emoji} *${label}*${headerSuffix ? ` — ${headerSuffix}` : ''}${threadLinkSuffix}`,
         },
       },
     ];
@@ -171,12 +198,13 @@ export class SlackBlockKitChannel implements NotificationChannel {
     const threadPermalink = buildThreadPermalink(event.channel, event.threadTs);
     const threadLinkSuffix = threadPermalink ? ` · <${threadPermalink}|🧵 스레드 열기>` : '';
 
+    const headerSuffix = this.pickHeaderSuffix(event);
     const blocks: any[] = [
       {
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: `${emoji} *${label}*${event.sessionTitle ? ` — ${event.sessionTitle}` : ''}${threadLinkSuffix}`,
+          text: `${emoji} *${label}*${headerSuffix ? ` — ${headerSuffix}` : ''}${threadLinkSuffix}`,
         },
       },
     ];
