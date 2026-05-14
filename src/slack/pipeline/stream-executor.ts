@@ -1514,10 +1514,18 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         })
         .catch((err: unknown) => this.handleEnrichmentFailure(err, fallbackArgs, resolveSnapshot));
 
-      // Start summary timer for non-error completions (fire-and-forget)
+      // Start summary timer for non-error completions (fire-and-forget).
+      // The countdown tick mirrors MCP-completion's per-session interval: a
+      // visible "Executive Summary in Xm Ys" indicator on the thread surface
+      // so the user can see the wait window expire instead of guessing why
+      // a summary suddenly appeared after silence.
       // Trace: docs/turn-summary-lifecycle/trace.md, S1
       if (this.deps.turnNotifier && this.deps.summaryTimer && category !== 'Exception') {
-        this.deps.summaryTimer.start(sessionKey, () => this.onSummaryTimerFire(session, sessionKey));
+        this.deps.summaryTimer.start(
+          sessionKey,
+          () => this.onSummaryTimerFire(session, sessionKey),
+          (remainingMs) => this.onSummaryCountdownTick(session, sessionKey, remainingMs),
+        );
       }
 
       // Completion message tracking moved to SlackBlockKitChannel.send()
@@ -2356,6 +2364,28 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         return;
       }
       this.logger.warn('Summary timer callback failed', { error: err?.message });
+    }
+  }
+
+  /**
+   * Countdown tick callback — renders an "Executive Summary in Xm Ys"
+   * indicator to the thread surface so the user can see the wait window
+   * expire. Mirrors `onSummaryTimerFire`'s render path but is cheap
+   * (no fork — just block write + debounced surface update).
+   */
+  private async onSummaryCountdownTick(
+    session: ConversationSession,
+    sessionKey: string,
+    remainingMs: number,
+  ): Promise<void> {
+    if (!this.deps.summaryService) return;
+    try {
+      this.deps.summaryService.displayCountdownOnThread(session as any, remainingMs);
+      // Non-force render → debounced (3s window per thread-surface RENDER_DEBOUNCE_MS),
+      // safe under a 1-minute tick cadence.
+      await this.deps.threadPanel?.updatePanel(session, sessionKey);
+    } catch (err: any) {
+      this.logger.warn('Summary countdown tick failed', { sessionKey, error: err?.message });
     }
   }
 
