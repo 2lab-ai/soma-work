@@ -23,6 +23,17 @@ function planToWorkMinimal(): string {
     '## Task List',
     '- [ ] first task',
     '- [ ] second task',
+    '## Dependency Groups',
+    'Group 1: [first-task, second-task]',
+    '## Per-Task Dispatch Payloads',
+    '### first-task',
+    '````',
+    'Implement first thing per planner spec.',
+    '````',
+    '### second-task',
+    '````',
+    'Implement second thing per planner spec.',
+    '````',
     '</z-handoff>',
   ].join('\n');
 }
@@ -44,6 +55,13 @@ function planToWorkCaseAEscape(): string {
     'false',
     '## Task List',
     '- [ ] inline rename',
+    '## Dependency Groups',
+    'Group 1: [inline-rename]',
+    '## Per-Task Dispatch Payloads',
+    '### inline-rename',
+    '````',
+    'Rename foo -> bar across src/.',
+    '````',
     '</z-handoff>',
   ].join('\n');
 }
@@ -66,6 +84,18 @@ function planToWorkFullTyped(): string {
     '## Task List',
     '- [ ] step a',
     '- [ ] step b',
+    '## Dependency Groups',
+    'Group 1: [step-a]',
+    'Group 2: [step-b]',
+    '## Per-Task Dispatch Payloads',
+    '### step-a',
+    '````',
+    'Step A subagent prompt.',
+    '````',
+    '### step-b',
+    '````',
+    'Step B subagent prompt.',
+    '````',
     '</z-handoff>',
   ].join('\n');
 }
@@ -106,6 +136,12 @@ describe('parseHandoff — happy paths', () => {
     expect(result.context.hopBudget).toBe(1);
     expect(typeof result.context.chainId).toBe('string');
     expect(result.context.chainId.length).toBeGreaterThan(0);
+    // Required structured fields are now persisted.
+    expect(result.context.dependencyGroups).toEqual([['first-task', 'second-task']]);
+    expect(result.context.perTaskDispatchPayloads).toEqual([
+      { taskId: 'first-task', prompt: 'Implement first thing per planner spec.' },
+      { taskId: 'second-task', prompt: 'Implement second thing per planner spec.' },
+    ]);
   });
 
   it('parses plan-to-work Case A escape with typed fields', () => {
@@ -117,17 +153,27 @@ describe('parseHandoff — happy paths', () => {
     expect(result.context.tier).toBe('tiny');
     expect(result.context.escapeEligible).toBe(true);
     expect(result.context.issueRequiredByUser).toBe(false);
+    expect(result.context.dependencyGroups).toEqual([['inline-rename']]);
+    expect(result.context.perTaskDispatchPayloads).toEqual([
+      { taskId: 'inline-rename', prompt: 'Rename foo -> bar across src/.' },
+    ]);
   });
 
-  it('parses plan-to-work Case B with tier=medium', () => {
+  it('parses plan-to-work Case B with tier=medium and multiple dependency groups', () => {
     const result = parseHandoff(planToWorkFullTyped());
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error('unreachable');
     expect(result.context.tier).toBe('medium');
     expect(result.context.sourceIssueUrl).toBe('https://github.com/owner/repo/issues/99');
+    // Across-group sequencing is preserved by parse order.
+    expect(result.context.dependencyGroups).toEqual([['step-a'], ['step-b']]);
+    expect(result.context.perTaskDispatchPayloads.map((p) => p.taskId)).toEqual([
+      'step-a',
+      'step-b',
+    ]);
   });
 
-  it('parses work-complete minimal', () => {
+  it('parses work-complete minimal — plan-only fields are empty', () => {
     const result = parseHandoff(workCompleteMinimal());
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error('unreachable');
@@ -137,6 +183,8 @@ describe('parseHandoff — happy paths', () => {
     expect(result.context.escapeEligible).toBe(false);
     expect(result.context.issueRequiredByUser).toBe(true);
     expect(result.context.hopBudget).toBe(1);
+    expect(result.context.dependencyGroups).toEqual([]);
+    expect(result.context.perTaskDispatchPayloads).toEqual([]);
   });
 
   it('accepts prompt with no $z prefix — sentinel directly at top', () => {
@@ -254,6 +302,13 @@ describe('parseHandoff — malformed inputs', () => {
       'none',
       '## Task List',
       '- [ ] foo',
+      '## Dependency Groups',
+      'Group 1: [foo]',
+      '## Per-Task Dispatch Payloads',
+      '### foo',
+      '````',
+      'do foo',
+      '````',
       '</z-handoff>',
     ].join('\n');
     const result = parseHandoff(text);
@@ -261,6 +316,52 @@ describe('parseHandoff — malformed inputs', () => {
     if (result.ok) throw new Error('unreachable');
     expect(result.reason).toBe('missing-required-field');
     expect(result.detail).toBe('Issue');
+  });
+
+  it('reports missing-required-field when plan-to-work has no ## Dependency Groups', () => {
+    // Phase-2 controller cannot dispatch without the planner's dependency
+    // groups in the handoff payload (z/SKILL.md §Hard Rules forbids reading
+    // PLAN.md from the working folder).
+    const text = [
+      '<z-handoff type="plan-to-work">',
+      '## Issue',
+      'https://example.com/1',
+      '## Parent Epic',
+      'none',
+      '## Task List',
+      '- [ ] foo',
+      '## Per-Task Dispatch Payloads',
+      '### foo',
+      '````',
+      'do foo',
+      '````',
+      '</z-handoff>',
+    ].join('\n');
+    const result = parseHandoff(text);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.reason).toBe('missing-required-field');
+    expect(result.detail).toBe('Dependency Groups');
+  });
+
+  it('reports missing-required-field when plan-to-work has no ## Per-Task Dispatch Payloads', () => {
+    const text = [
+      '<z-handoff type="plan-to-work">',
+      '## Issue',
+      'https://example.com/1',
+      '## Parent Epic',
+      'none',
+      '## Task List',
+      '- [ ] foo',
+      '## Dependency Groups',
+      'Group 1: [foo]',
+      '</z-handoff>',
+    ].join('\n');
+    const result = parseHandoff(text);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.reason).toBe('missing-required-field');
+    expect(result.detail).toBe('Per-Task Dispatch Payloads');
   });
 
   it('reports sentinel-not-top-level when other content precedes the sentinel', () => {
@@ -282,6 +383,62 @@ describe('parseHandoff — malformed inputs', () => {
     expect(result.reason).toBe('sentinel-not-top-level');
   });
 
+  it('reports duplicate-field when the same ## Heading appears twice', () => {
+    // Strict parsing: silent overwrite would mask either a planner emitting
+    // two payloads or a copy-paste bug. The parser must reject.
+    const text = [
+      '<z-handoff type="plan-to-work">',
+      '## Issue',
+      'https://example.com/1',
+      '## Issue',
+      'https://example.com/2',
+      '## Parent Epic',
+      'none',
+      '## Task List',
+      '- [ ] foo',
+      '## Dependency Groups',
+      'Group 1: [foo]',
+      '## Per-Task Dispatch Payloads',
+      '### foo',
+      '````',
+      'do foo',
+      '````',
+      '</z-handoff>',
+    ].join('\n');
+    const result = parseHandoff(text);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.reason).toBe('duplicate-field');
+    expect(result.detail).toBe('Issue');
+  });
+
+  it('reports duplicate-field for repeated ## Dependency Groups', () => {
+    const text = [
+      '<z-handoff type="plan-to-work">',
+      '## Issue',
+      'https://example.com/1',
+      '## Parent Epic',
+      'none',
+      '## Task List',
+      '- [ ] foo',
+      '## Dependency Groups',
+      'Group 1: [foo]',
+      '## Per-Task Dispatch Payloads',
+      '### foo',
+      '````',
+      'do foo',
+      '````',
+      '## Dependency Groups',
+      'Group 99: [foo]',
+      '</z-handoff>',
+    ].join('\n');
+    const result = parseHandoff(text);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.reason).toBe('duplicate-field');
+    expect(result.detail).toBe('Dependency Groups');
+  });
+
   it('reports malformed-opening for missing quotes in type attribute', () => {
     const text = [
       '<z-handoff type=plan-to-work>',
@@ -291,6 +448,64 @@ describe('parseHandoff — malformed inputs', () => {
       'none',
       '## Task List',
       '- [ ] work',
+      '## Dependency Groups',
+      'Group 1: [work]',
+      '## Per-Task Dispatch Payloads',
+      '### work',
+      '````',
+      'do work',
+      '````',
+      '</z-handoff>',
+    ].join('\n');
+    const result = parseHandoff(text);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.reason).toBe('malformed-opening');
+  });
+
+  it('reports malformed-opening for double-space variant in opening tag', () => {
+    // Grammar rule 1: "변형(대소문자·홑따옴표·공백 변형) 불매칭". Strict regex
+    // is the contract — multi-space between `<z-handoff` and `type=` is a
+    // whitespace variant.
+    const text = [
+      '<z-handoff  type="plan-to-work">',
+      '## Issue',
+      'https://example.com/1',
+      '## Parent Epic',
+      'none',
+      '## Task List',
+      '- [ ] work',
+      '## Dependency Groups',
+      'Group 1: [work]',
+      '## Per-Task Dispatch Payloads',
+      '### work',
+      '````',
+      'do work',
+      '````',
+      '</z-handoff>',
+    ].join('\n');
+    const result = parseHandoff(text);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.reason).toBe('malformed-opening');
+  });
+
+  it('reports malformed-opening for trailing whitespace in opening tag', () => {
+    const text = [
+      '<z-handoff type="plan-to-work"> ',
+      '## Issue',
+      'https://example.com/1',
+      '## Parent Epic',
+      'none',
+      '## Task List',
+      '- [ ] work',
+      '## Dependency Groups',
+      'Group 1: [work]',
+      '## Per-Task Dispatch Payloads',
+      '### work',
+      '````',
+      'do work',
+      '````',
       '</z-handoff>',
     ].join('\n');
     const result = parseHandoff(text);
@@ -317,6 +532,21 @@ describe('parseHandoff — edge cases', () => {
       '- [ ] step 2',
       '  - sub step',
       '- [ ] step 3',
+      '## Dependency Groups',
+      'Group 1: [s1, s2, s3]',
+      '## Per-Task Dispatch Payloads',
+      '### s1',
+      '````',
+      'step 1 prompt',
+      '````',
+      '### s2',
+      '````',
+      'step 2 prompt',
+      '````',
+      '### s3',
+      '````',
+      'step 3 prompt',
+      '````',
       '</z-handoff>',
     ].join('\n');
     const result = parseHandoff(text);
@@ -350,12 +580,531 @@ describe('parseHandoff — edge cases', () => {
       'gigantic',
       '## Task List',
       '- [ ] work',
+      '## Dependency Groups',
+      'Group 1: [work]',
+      '## Per-Task Dispatch Payloads',
+      '### work',
+      '````',
+      'work prompt',
+      '````',
       '</z-handoff>',
     ].join('\n');
     const result = parseHandoff(text);
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error('unreachable');
     expect(result.context.tier).toBeNull();
+  });
+
+  it('parses comma- or whitespace-separated taskIds inside group brackets', () => {
+    const text = [
+      '<z-handoff type="plan-to-work">',
+      '## Issue',
+      'https://example.com/1',
+      '## Parent Epic',
+      'none',
+      '## Task List',
+      '- [ ] a',
+      '- [ ] b',
+      '- [ ] c',
+      '## Dependency Groups',
+      'Group 1: [a, b]',
+      'Group 2: [c]',
+      '## Per-Task Dispatch Payloads',
+      '### a',
+      '````',
+      'do a',
+      '````',
+      '### b',
+      '````',
+      'do b',
+      '````',
+      '### c',
+      '````',
+      'do c',
+      '````',
+      '</z-handoff>',
+    ].join('\n');
+    const result = parseHandoff(text);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    expect(result.context.dependencyGroups).toEqual([['a', 'b'], ['c']]);
+  });
+
+  it('preserves multi-line dispatch payload bodies verbatim across fenced block', () => {
+    const text = [
+      '<z-handoff type="plan-to-work">',
+      '## Issue',
+      'https://example.com/1',
+      '## Parent Epic',
+      'none',
+      '## Task List',
+      '- [ ] alpha',
+      '## Dependency Groups',
+      'Group 1: [alpha]',
+      '## Per-Task Dispatch Payloads',
+      '### alpha',
+      '````',
+      'Line one of alpha prompt.',
+      '',
+      'Line two with more detail:',
+      '- bullet 1',
+      '- bullet 2',
+      '````',
+      '</z-handoff>',
+    ].join('\n');
+    const result = parseHandoff(text);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    expect(result.context.perTaskDispatchPayloads).toEqual([
+      {
+        taskId: 'alpha',
+        prompt: [
+          'Line one of alpha prompt.',
+          '',
+          'Line two with more detail:',
+          '- bullet 1',
+          '- bullet 2',
+        ].join('\n'),
+      },
+    ]);
+  });
+
+  it('preserves nested ## and ### markdown headings inside a fenced payload (the round-3 P0 regression)', () => {
+    // Real planner-authored payloads contain their own markdown structure
+    // (## Work environment, ## Sub-issue, ### 1. <file/path/A.ext>, etc).
+    // Without fence-awareness, the outer parser would split on the inner
+    // `## Work environment` and clobber the payload value with separate
+    // top-level fields. Fence-awareness is the contract.
+    const innerPrompt = [
+      'You will complete sub-task `<SUB_KEY>` end-to-end.',
+      '',
+      '## Work environment',
+      '- cwd: /tmp/work/sub-a',
+      '- branch: feature-branch',
+      '',
+      '## Sub-issue',
+      '- URL: https://example.com/issue/42',
+      '',
+      '## Changes (exact)',
+      '',
+      '### 1. `<file/path/A.ext>`',
+      '- function `foo` (line 12-30): rewrite as bar.',
+      '',
+      '### 2. Tests',
+      '- Add `TestName_1` covering edge case.',
+    ].join('\n');
+    const text = [
+      '<z-handoff type="plan-to-work">',
+      '## Issue',
+      'https://example.com/1',
+      '## Parent Epic',
+      'none',
+      '## Task List',
+      '- [ ] sub-a',
+      '## Dependency Groups',
+      'Group 1: [sub-a]',
+      '## Per-Task Dispatch Payloads',
+      '### sub-a',
+      '````',
+      innerPrompt,
+      '````',
+      '</z-handoff>',
+    ].join('\n');
+    const result = parseHandoff(text);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    expect(result.context.perTaskDispatchPayloads).toEqual([
+      { taskId: 'sub-a', prompt: innerPrompt },
+    ]);
+  });
+});
+
+// -------------------------------------------------------------------
+// parseHandoff — invalid-plan-payload cross-validation
+// -------------------------------------------------------------------
+
+describe('parseHandoff — invalid-plan-payload (cross-validation)', () => {
+  it('reports invalid-plan-payload when ## Dependency Groups parses to empty', () => {
+    const text = [
+      '<z-handoff type="plan-to-work">',
+      '## Issue',
+      'https://example.com/1',
+      '## Parent Epic',
+      'none',
+      '## Task List',
+      '- [ ] foo',
+      '## Dependency Groups',
+      '(no groups here, just narrative text)',
+      '## Per-Task Dispatch Payloads',
+      '### foo',
+      '````',
+      'do foo',
+      '````',
+      '</z-handoff>',
+    ].join('\n');
+    const result = parseHandoff(text);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.reason).toBe('invalid-plan-payload');
+    expect(result.detail).toBe('empty-dependency-groups');
+  });
+
+  it('reports invalid-plan-payload when ## Per-Task Dispatch Payloads has no fenced bodies', () => {
+    const text = [
+      '<z-handoff type="plan-to-work">',
+      '## Issue',
+      'https://example.com/1',
+      '## Parent Epic',
+      'none',
+      '## Task List',
+      '- [ ] foo',
+      '## Dependency Groups',
+      'Group 1: [foo]',
+      '## Per-Task Dispatch Payloads',
+      '### foo',
+      'do foo (no fenced block — invalid)',
+      '</z-handoff>',
+    ].join('\n');
+    const result = parseHandoff(text);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.reason).toBe('invalid-plan-payload');
+    expect(result.detail).toBe('empty-per-task-payloads');
+  });
+
+  it('reports invalid-plan-payload when a group references a taskId without a payload', () => {
+    const text = [
+      '<z-handoff type="plan-to-work">',
+      '## Issue',
+      'https://example.com/1',
+      '## Parent Epic',
+      'none',
+      '## Task List',
+      '- [ ] foo',
+      '- [ ] bar',
+      '## Dependency Groups',
+      'Group 1: [foo, bar]',
+      '## Per-Task Dispatch Payloads',
+      '### foo',
+      '````',
+      'do foo',
+      '````',
+      '</z-handoff>',
+    ].join('\n');
+    const result = parseHandoff(text);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.reason).toBe('invalid-plan-payload');
+    expect(result.detail).toBe('group-task-without-payload:bar');
+  });
+
+  it('reports invalid-plan-payload when a payload defines a taskId not in any group', () => {
+    const text = [
+      '<z-handoff type="plan-to-work">',
+      '## Issue',
+      'https://example.com/1',
+      '## Parent Epic',
+      'none',
+      '## Task List',
+      '- [ ] foo',
+      '## Dependency Groups',
+      'Group 1: [foo]',
+      '## Per-Task Dispatch Payloads',
+      '### foo',
+      '````',
+      'do foo',
+      '````',
+      '### orphan',
+      '````',
+      'do orphan',
+      '````',
+      '</z-handoff>',
+    ].join('\n');
+    const result = parseHandoff(text);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.reason).toBe('invalid-plan-payload');
+    expect(result.detail).toBe('payload-task-without-group:orphan');
+  });
+
+  it('reports invalid-plan-payload:duplicate-group-task:<id> for duplicate group taskIds', () => {
+    const text = [
+      '<z-handoff type="plan-to-work">',
+      '## Issue',
+      'https://example.com/1',
+      '## Parent Epic',
+      'none',
+      '## Task List',
+      '- [ ] foo',
+      '## Dependency Groups',
+      'Group 1: [foo]',
+      'Group 2: [foo]',
+      '## Per-Task Dispatch Payloads',
+      '### foo',
+      '````',
+      'do foo',
+      '````',
+      '</z-handoff>',
+    ].join('\n');
+    const result = parseHandoff(text);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.reason).toBe('invalid-plan-payload');
+    expect(result.detail).toBe('duplicate-group-task:foo');
+  });
+
+  it('reports invalid-plan-payload:duplicate-payload-task:<id> for duplicate payload taskIds', () => {
+    const text = [
+      '<z-handoff type="plan-to-work">',
+      '## Issue',
+      'https://example.com/1',
+      '## Parent Epic',
+      'none',
+      '## Task List',
+      '- [ ] foo',
+      '## Dependency Groups',
+      'Group 1: [foo]',
+      '## Per-Task Dispatch Payloads',
+      '### foo',
+      '````',
+      'first body',
+      '````',
+      '### foo',
+      '````',
+      'duplicate body',
+      '````',
+      '</z-handoff>',
+    ].join('\n');
+    const result = parseHandoff(text);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.reason).toBe('invalid-plan-payload');
+    expect(result.detail).toBe('duplicate-payload-task:foo');
+  });
+
+  it('reports invalid-plan-payload:unclosed-payload-fence:<id> when opening fence has no closer', () => {
+    const text = [
+      '<z-handoff type="plan-to-work">',
+      '## Issue',
+      'https://example.com/1',
+      '## Parent Epic',
+      'none',
+      '## Task List',
+      '- [ ] foo',
+      '## Dependency Groups',
+      'Group 1: [foo]',
+      '## Per-Task Dispatch Payloads',
+      '### foo',
+      '````',
+      'no closing fence below',
+      '</z-handoff>',
+    ].join('\n');
+    const result = parseHandoff(text);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.reason).toBe('invalid-plan-payload');
+    expect(result.detail).toBe('unclosed-payload-fence:foo');
+  });
+
+  it('rejects 3-backtick outer payload fence (treated as no-fence → empty-per-task-payloads)', () => {
+    // 3-backtick outer fences are not a valid carrier because real payloads
+    // contain inner 3-backtick code blocks. The parser only accepts 4+
+    // backticks for the outer wrap; a 3-backtick "wrap" is treated as
+    // no-fence and the task entry is silently skipped, leaving the section
+    // with zero parseable payloads.
+    const text = [
+      '<z-handoff type="plan-to-work">',
+      '## Issue',
+      'https://example.com/1',
+      '## Parent Epic',
+      'none',
+      '## Task List',
+      '- [ ] foo',
+      '## Dependency Groups',
+      'Group 1: [foo]',
+      '## Per-Task Dispatch Payloads',
+      '### foo',
+      '```',
+      'do foo',
+      '```',
+      '</z-handoff>',
+    ].join('\n');
+    const result = parseHandoff(text);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.reason).toBe('invalid-plan-payload');
+    expect(result.detail).toBe('empty-per-task-payloads');
+  });
+
+  it('preserves inner 3-backtick code blocks inside a 4-backtick outer payload fence (real-sample shape)', () => {
+    // This is the round-5 P0 regression test. The planner-authored payload
+    // for sample-01-style tasks contains:
+    //   - a commit-message HEREDOC inside ```bash … ```
+    //   - a `gh pr create --body "$(cat <<'EOF' … EOF)"` block
+    // A 3-tick outer fence would terminate at the first inner ```; the 4-tick
+    // wrapper survives both and the entire prompt is preserved verbatim.
+    const innerPrompt = [
+      'You will complete sub-task end-to-end.',
+      '',
+      '## Procedure',
+      '',
+      '5. `git commit` (HEREDOC):',
+      '',
+      '```bash',
+      'git commit -m "$(cat <<EOF',
+      '[TICKET] Sub-A: title',
+      '',
+      'Body line.',
+      '',
+      'Closes #42',
+      'EOF',
+      ')"',
+      '```',
+      '',
+      '7. PR creation:',
+      '',
+      '```bash',
+      'gh pr create --body "$(cat <<EOF',
+      '## Summary',
+      '- bullet',
+      'EOF',
+      ')"',
+      '```',
+    ].join('\n');
+    const text = [
+      '<z-handoff type="plan-to-work">',
+      '## Issue',
+      'https://example.com/1',
+      '## Parent Epic',
+      'none',
+      '## Task List',
+      '- [ ] sub-a',
+      '## Dependency Groups',
+      'Group 1: [sub-a]',
+      '## Per-Task Dispatch Payloads',
+      '### sub-a',
+      '````',
+      innerPrompt,
+      '````',
+      '</z-handoff>',
+    ].join('\n');
+    const result = parseHandoff(text);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    expect(result.context.perTaskDispatchPayloads).toEqual([
+      { taskId: 'sub-a', prompt: innerPrompt },
+    ]);
+  });
+
+  it('persists Original Request Excerpt and Repository Policy when present', () => {
+    const text = [
+      '<z-handoff type="plan-to-work">',
+      '## Issue',
+      'https://example.com/1',
+      '## Parent Epic',
+      'none',
+      '## Original Request Excerpt',
+      "user's original instruction line 1",
+      "user's original instruction line 2",
+      '## Repository Policy',
+      'issue-required: true',
+      '## Task List',
+      '- [ ] foo',
+      '## Dependency Groups',
+      'Group 1: [foo]',
+      '## Per-Task Dispatch Payloads',
+      '### foo',
+      '````',
+      'do foo',
+      '````',
+      '</z-handoff>',
+    ].join('\n');
+    const result = parseHandoff(text);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    expect(result.context.originalRequestExcerpt).toBe(
+      ["user's original instruction line 1", "user's original instruction line 2"].join('\n'),
+    );
+    expect(result.context.repositoryPolicy).toBe('issue-required: true');
+  });
+
+  it('leaves Original Request Excerpt and Repository Policy as null when absent (conservative defaults)', () => {
+    const result = parseHandoff(planToWorkMinimal());
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    expect(result.context.originalRequestExcerpt).toBeNull();
+    expect(result.context.repositoryPolicy).toBeNull();
+  });
+
+  it('leaves Original Request Excerpt and Repository Policy as null on work-complete handoffs', () => {
+    const result = parseHandoff(workCompleteMinimal());
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    expect(result.context.originalRequestExcerpt).toBeNull();
+    expect(result.context.repositoryPolicy).toBeNull();
+    expect(result.context.codexReview).toBeNull();
+  });
+
+  it('persists Codex Review record (score + verdict) when present', () => {
+    const text = [
+      '<z-handoff type="plan-to-work">',
+      '## Issue',
+      'https://example.com/1',
+      '## Parent Epic',
+      'none',
+      '## Task List',
+      '- [ ] foo',
+      '## Dependency Groups',
+      'Group 1: [foo]',
+      '## Per-Task Dispatch Payloads',
+      '### foo',
+      '````',
+      'do foo',
+      '````',
+      '## Codex Review',
+      'score: 96/100 — APPROVE_FOR_EXECUTION',
+      '</z-handoff>',
+    ].join('\n');
+    const result = parseHandoff(text);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    expect(result.context.codexReview).toEqual({
+      score: '96/100',
+      verdict: 'APPROVE_FOR_EXECUTION',
+    });
+  });
+
+  it('parses Codex Review without "score:" prefix and without verdict', () => {
+    const text = [
+      '<z-handoff type="plan-to-work">',
+      '## Issue',
+      'https://example.com/1',
+      '## Parent Epic',
+      'none',
+      '## Task List',
+      '- [ ] foo',
+      '## Dependency Groups',
+      'Group 1: [foo]',
+      '## Per-Task Dispatch Payloads',
+      '### foo',
+      '````',
+      'do foo',
+      '````',
+      '## Codex Review',
+      '99/100',
+      '</z-handoff>',
+    ].join('\n');
+    const result = parseHandoff(text);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    expect(result.context.codexReview).toEqual({ score: '99/100', verdict: '' });
+  });
+
+  it('leaves codexReview as null when ## Codex Review heading is absent', () => {
+    const result = parseHandoff(planToWorkMinimal());
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    expect(result.context.codexReview).toBeNull();
   });
 });
 

@@ -94,9 +94,13 @@ describe('UIAskUserQuestion caller templates', () => {
     expect(raw.choices).toHaveLength(4);
   });
 
-  it('other approval templates have 2 options (z-phase1, z-phase2.9, decision-gate)', () => {
+  it('z-phase1-plan-approval has 3 options (Approve / Modify / Halt per z/SKILL.md §1.4)', () => {
+    const raw = loadTemplate('z-phase1-plan-approval');
+    expect(raw.choices).toHaveLength(3);
+  });
+
+  it('other approval templates have 2 options (z-phase2.9, decision-gate)', () => {
     const twoOptionTemplates: TemplateName[] = [
-      'z-phase1-plan-approval',
       'z-phase2.9-pr-approval',
       'decision-gate-tier-medium',
     ];

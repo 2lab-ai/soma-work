@@ -1,20 +1,15 @@
 # 🎯 {ISSUE_KEY} Executive Summary
 
+> **This is a placeholder template only.** All slots use `{…}` form. For a worked example with concrete content, see `executive-summary-example.md`.
+
 ## 0. SSOT
 - SSOT
 ```
-@Z [2026/03/30 11:52 AM] @사마중달 (Beta) Research job
-Intent:
-- Service separation work for tasks that can run in parallel, such as bonus scan and vsports polling. Providing a db read-only context for most of them would be ideal
-- Thoughts
-  - Separate bg worker jobs executors
-  - Periodically execute scheduled tasks and finalize by calling the settlements_service API
-  - Can only directly access the replicated ro db
-@Z [2026/03/30 12:49 PM] I approved it, so you wrap it up
+{Original user instruction — verbatim, no summary. Multiple lines OK.}
 ```
-- PTN-3231: https://insightquest.atlassian.net/browse/PTN-3231 - QA
-- PR #1462: https://github.com/devinsightquest/Gucci/pull/1462 - Merged
-- PR #1455: https://github.com/devinsightquest/Gucci/pull/1455 - Merged
+- {ISSUE_KEY}: {issue tracker URL} - {status}
+- PR #{number}: {PR URL} - {Merged | Open | Draft}
+- PR #{number}: {PR URL} - {Merged | Open | Draft}
 
 ## 1. Problem Background
 

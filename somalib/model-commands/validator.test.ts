@@ -974,6 +974,13 @@ describe('Rule 5 × recommendedChoiceId — explicit id satisfies invariant', ()
 // ---------------------------------------------------------------------------
 
 describe('CONTINUE_SESSION forceWorkflow — z handoff entrypoints (#695)', () => {
+  // NOTE: validator.ts only runs the lightweight `extractSentinelType` check
+  // (sentinel presence + type↔workflow mapping). Full schema validation
+  // (required fields, dependency-group / per-task cross-validation, etc.)
+  // is `parseHandoff`'s job at runtime in SessionInitializer.runDispatch.
+  // The fixture below is intentionally a *sentinel-type-only* fixture and
+  // does not include `## Dependency Groups` / `## Per-Task Dispatch
+  // Payloads` — those are exercised in handoff-parser.test.ts.
   function planToWorkPrompt(): string {
     return [
       '$z phase2 https://example.com/issue/1',

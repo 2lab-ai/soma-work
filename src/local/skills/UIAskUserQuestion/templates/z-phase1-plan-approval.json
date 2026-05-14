@@ -1,19 +1,24 @@
 {
   "$schema": "https://github.com/2lab-ai/soma-work/blob/main/somalib/model-commands/types.ts",
-  "_comment": "Reference template for local:z phase1 plan confirmation. Passes validateModelCommandRunArgs + checkAskUserQuestionQuality (0 warnings). Placeholders in {braces} to be substituted by caller. Size ~small.",
+  "_comment": "Reference template for local:z phase 1 plan confirmation. 3 options matching z/SKILL.md §1.4 (Approve / Modify / Halt). Passes validateModelCommandRunArgs + checkAskUserQuestionQuality (0 warnings). Placeholders in {braces} to be substituted by caller. Size ~small.",
   "type": "user_choice",
-  "question": "[small] 이 계획으로 phase2 zwork 진행할까?",
-  "context": "계획 요약: {plan_summary}. 변경 범위: {files_changed} ({loc_estimate} LoC). 테스트 전략: {test_plan}. 리뷰 합의: codex {codex_score}/100 APPROVE_FOR_EXECUTION. 다음 단계: local:zwork 디스패치하여 subagent 기반 구현 → PR → zcheck → phase2.9 approve 연쇄 진행. 계획에서 빠진 부분이나 수정 필요 사항이 있으면 Option B로 지시하여 phase1 재작업.",
+  "question": "[small] 이 계획으로 phase 2 implementation 진행할까?",
+  "context": "계획 요약: {plan_summary}. 변경 범위: {files_changed} ({loc_estimate} LoC). 테스트 전략: {test_plan}. Dependency Groups: {dependency_groups}. 리뷰 합의: codex {codex_score}/100 APPROVE_FOR_EXECUTION. 다음 단계: z phase 2 controller가 그룹 단위로 implementer subagent 병렬 dispatch → 각 PR에 phase 3 post-impl gate → phase 4 approve 연쇄. 수정 필요 시 Option B로 어디를 바꿀지 지시. 중단할 거면 Option C.",
   "choices": [
     {
       "id": "a",
-      "label": "Option A: Start zwork with this plan (Recommended · 1/2)",
-      "description": "계획대로 local:zwork 디스패치. 변경 범위·테스트 전략·엔트리포인트 와이어링 모두 확정."
+      "label": "Option A: Approve — start phase 2 (Recommended · 1/3)",
+      "description": "계획대로 phase 2 dispatch. 변경 범위·테스트 전략·dependency groups 모두 확정."
     },
     {
       "id": "b",
-      "label": "Option B: Revise plan — specify what to change",
-      "description": "계획 수정 필요. 구체적으로 어떤 부분을 바꿀지 지시하면 phase1부터 다시 수립."
+      "label": "Option B: Modify — specify what to change",
+      "description": "계획 수정 필요. 구체적으로 어떤 부분을 바꿀지 지시하면 planner subagent에 delta로 재dispatch."
+    },
+    {
+      "id": "c",
+      "label": "Option C: Halt — stop here",
+      "description": "계획 자체를 중단. 세션 종료 — 추후 재시작 시 새로 $z 입력."
     }
   ]
 }
