@@ -281,23 +281,42 @@ export type ForkExecutor = (
 ) => Promise<string | null>;
 
 /**
+ * Minimal Slack API surface needed for posting an in-thread summary message.
+ * Keeps `SummaryService` from depending on the full `SlackApiHelper`.
+ */
+export interface SummarySlackApi {
+  postMessage: (
+    channel: string,
+    text: string,
+    options?: { threadTs?: string; blocks?: any[]; [key: string]: any },
+  ) => Promise<any>;
+}
+
+/**
  * Handles executive summary generation and display.
  *
  * - execute(): builds prompt from session context, calls forkExecutor, returns response
  * - displayOnThread(): sets summaryBlocks on actionPanel for ThreadSurface rendering
+ * - displayCountdownOnThread(): renders a "X minutes remaining" indicator
+ * - postInThread(): posts the summary as a permanent in-thread message
  * - clearDisplay(): removes summaryBlocks, triggers re-render
  *
  * Trace: docs/turn-summary-lifecycle/trace.md, S3 + S5
  */
 export class SummaryService {
   private forkExecutor: ForkExecutor;
+  private slackApi?: SummarySlackApi;
 
   /**
    * @param forkExecutor - Injected function that executes prompt via forked session.
    *   If not provided, falls back to returning the prompt text (stub behavior for testing).
+   * @param slackApi - Injected Slack API for in-thread posting. Optional —
+   *   when absent, `postInThread` becomes a no-op (tests and host-fork
+   *   configurations without Slack credentials still work).
    */
-  constructor(forkExecutor?: ForkExecutor) {
+  constructor(forkExecutor?: ForkExecutor, slackApi?: SummarySlackApi) {
     this.forkExecutor = forkExecutor ?? (async (prompt) => prompt);
+    this.slackApi = slackApi;
   }
 
   /**
@@ -470,6 +489,61 @@ export class SummaryService {
     logger.info('Summary cleared from thread');
   }
 
+  /**
+   * Post the Executive Summary as a permanent message in the thread, in
+   * addition to the floating header surface. The header is volatile (next
+   * user message wipes it via `clearDisplay`); this message is durable so
+   * the summary becomes part of the conversation history.
+   *
+   * Deliberately NOT registered with `completionMessageTracker` — that would
+   * make the next user message delete the summary along with the
+   * "작업 완료" notification. The host caller (stream-executor) must skip
+   * tracking too.
+   *
+   * No-op when:
+   * - no `slackApi` was injected (test fixtures / fork-only environments);
+   * - the session has no `threadTs` (otherwise we'd accidentally post to the
+   *   channel root, which is never what we want);
+   * - the Slack API throws (errors are logged and swallowed — the summary
+   *   surface render already succeeded, and a missing in-thread post must
+   *   not crash the host fork).
+   */
+  async postInThread(
+    session: SummarySessionInfo & { channelId?: string; threadTs?: string; sessionTitle?: string },
+    summaryText: string,
+  ): Promise<void> {
+    if (!this.slackApi) return;
+    if (!session.threadTs) {
+      logger.debug('Skipping in-thread summary post — no threadTs');
+      return;
+    }
+    if (!session.channelId) {
+      logger.debug('Skipping in-thread summary post — no channelId');
+      return;
+    }
+
+    const blocks = this.buildSummaryBlocks(summaryText);
+    const fallbackText = session.sessionTitle ? `Executive Summary — ${session.sessionTitle}` : 'Executive Summary';
+
+    try {
+      await this.slackApi.postMessage(session.channelId, fallbackText, {
+        threadTs: session.threadTs,
+        blocks,
+      });
+      logger.info('Summary posted in-thread', {
+        channelId: session.channelId,
+        threadTs: session.threadTs,
+        blockCount: blocks.length,
+      });
+    } catch (err: any) {
+      logger.warn('Failed to post in-thread summary', {
+        channelId: session.channelId,
+        threadTs: session.threadTs,
+        error: err?.message || String(err),
+      });
+    }
+  }
+
   /** Slack section block text limit (mrkdwn) */
   private static readonly SLACK_SECTION_TEXT_LIMIT = 3000;
 
@@ -482,7 +556,7 @@ export class SummaryService {
    * native heading syntax, so we normalize before emitting the mrkdwn section.
    * See `formatSummaryForSlack` for the line-by-line, fence-aware rewrite.
    */
-  private buildSummaryBlocks(summaryText: string): any[] {
+  buildSummaryBlocks(summaryText: string): any[] {
     const blocks: any[] = [{ type: 'divider' }];
     const header = '*Executive Summary*\n';
     const maxChunkSize = SummaryService.SLACK_SECTION_TEXT_LIMIT - header.length;
