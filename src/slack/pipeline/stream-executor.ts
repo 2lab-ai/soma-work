@@ -33,7 +33,6 @@ import {
 } from '../../metrics/model-registry';
 import { interceptToolResults } from '../../metrics/tool-result-interceptor';
 import { SLACK_BLOCK_KIT_CHANNEL_NAME } from '../../notification-channels/slack-block-kit-channel';
-import { readStallTimeoutMs, StreamStallWatchdog } from './stream-stall-watchdog';
 import { checkAndSchedulePendingCompact } from '../../session/compact-threshold-checker';
 import { buildCompactionContext, snapshotFromSession } from '../../session/compaction-context-builder';
 import { type ActiveTokenInfo, getTokenManager, parseCooldownTime } from '../../token-manager';
@@ -80,13 +79,14 @@ import {
   buildInstructionSupersededBlocks,
 } from '../instruction-confirm-blocks';
 import { LOG_DETAIL, OutputFlag, shouldOutput, verboseTag } from '../output-flags';
-import { type RequestAbortReason, type RequestCoordinator } from '../request-coordinator';
+import type { RequestAbortReason, RequestCoordinator } from '../request-coordinator';
 import type { SummaryService } from '../summary-service';
 import type { SummaryTimer } from '../summary-timer.js';
 import type { ThreadPanel, TurnAddress, TurnContext } from '../thread-panel';
 import { shouldRunLegacyB4Path } from './effective-phase';
 import { isLocalSlashCommand } from './local-slash-command';
-import { MessageEvent, type SayFn } from './types';
+import { readStallTimeoutMs, StreamStallWatchdog } from './stream-stall-watchdog';
+import type { SayFn } from './types';
 
 /**
  * Result of stream execution
@@ -991,7 +991,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           // duration은 위 루프(367-377)에서 이미 계산·삭제되었으므로 toolStats에서 역산
           for (const tr of toolResults) {
             const name = tr.toolName || 'unknown';
-            const stats = toolStats[name];
+            const _stats = toolStats[name];
             // 직전 루프에서 계산된 duration을 collector의 자체 startTime fallback으로 위임
             turnCollector.onToolEnd(name, tr.toolUseId);
           }
@@ -3719,8 +3719,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       this.logger.info('Renew save completed, attempting file read fallback', { id, savePath });
 
       try {
-        const fs = await import('fs');
-        const pathModule = await import('path');
+        const fs = await import('node:fs');
+        const pathModule = await import('node:path');
 
         // Resolve relative paths against session working directory
         const sessionDir = session.sessionWorkingDir || session.workingDirectory;
@@ -3895,7 +3895,7 @@ ${userInstruction}`;
       const idMatch = savedPath.match(/save\/(\d{8}_\d{6})/);
       const id = idMatch ? idMatch[1] : undefined;
       // Determine dir from path (strip filename if it ends with .md)
-      const pathModule = require('path') as typeof import('path');
+      const pathModule = require('node:path') as typeof import('path');
       const dir = savedPath.endsWith('.md') ? pathModule.dirname(savedPath) : savedPath;
 
       this.logger.info('Parsed save result from text output', { savedPath, id, dir });
@@ -3944,8 +3944,8 @@ ${userInstruction}`;
    */
   private scanForLatestSave(sessionDir: string, saveId?: string): string | null {
     try {
-      const fs = require('fs') as typeof import('fs');
-      const pathModule = require('path') as typeof import('path');
+      const fs = require('node:fs') as typeof import('fs');
+      const pathModule = require('node:path') as typeof import('path');
 
       const saveRoot = pathModule.join(sessionDir, '.claude', 'omc', 'tasks', 'save');
       if (!fs.existsSync(saveRoot)) {
@@ -3998,8 +3998,8 @@ ${userInstruction}`;
     collectedText: string,
     userId: string,
     userName: string,
-    threadTs: string,
-    say: SayFn,
+    _threadTs: string,
+    _say: SayFn,
   ): Continuation | undefined {
     // Parse onboarding_complete JSON from output
     const result = this.parseOnboardingComplete(collectedText);
