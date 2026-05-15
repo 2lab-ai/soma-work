@@ -753,11 +753,15 @@ JSON
     echo ""
     info "Slack 연결 확인 중..."
     sleep 5
-    if grep -qi "connected\|socket.*open\|ready" "${DEPLOY_DIR}/logs/stderr.log" 2>/dev/null; then
+    # Logs are date-rotated. Grep all dated stderr files (only today's
+    # should exist on a fresh deploy, but the glob is robust to clock skew).
+    local stderr_glob="${DEPLOY_DIR}/logs/stderr-*.log"
+    if compgen -G "$stderr_glob" > /dev/null 2>&1 && \
+       grep -qi "connected\|socket.*open\|ready" $stderr_glob 2>/dev/null; then
         success "Slack 연결 확인됨!"
     else
         warn "Slack 연결 로그를 찾지 못했습니다."
-        info "로그 확인: tail -f ${DEPLOY_DIR}/logs/stderr.log"
+        info "로그 확인: ./service.sh ${DEPLOY_ENV:-dev} logs follow"
     fi
 
     mark_done "phase3"

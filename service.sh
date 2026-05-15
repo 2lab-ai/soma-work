@@ -96,6 +96,27 @@ is_running() {
     launchctl list 2>/dev/null | grep -q "$SERVICE_NAME"
 }
 
+# Resolve today's date-rotated log file path for stdout/stderr. Falls back
+# to the newest existing dated file when today's has not been opened yet.
+# Returns empty string if no rotated file exists at all (caller decides).
+resolve_log_file() {
+    local stream="$1"  # "stdout" or "stderr"
+    local today
+    today="$(date +%Y-%m-%d)"
+    local today_file="$LOGS_DIR/${stream}-${today}.log"
+    if [[ -f "$today_file" ]]; then
+        echo "$today_file"
+        return 0
+    fi
+    # Lexical sort works because the suffix is YYYY-MM-DD. Avoid `ls -t`
+    # because mtime can lie (touch, rsync, etc.).
+    local newest
+    newest="$(printf '%s\n' "$LOGS_DIR/${stream}"-*.log 2>/dev/null | sort | tail -n 1)"
+    if [[ -f "$newest" ]]; then
+        echo "$newest"
+    fi
+}
+
 get_pid() {
     launchctl list 2>/dev/null | grep "$SERVICE_NAME" | awk '{print $1}'
 }
@@ -127,6 +148,10 @@ generate_plist() {
         <string>$USER_HOME</string>
         <key>SOMA_CONFIG_DIR</key>
         <string>$PROJECT_DIR</string>
+        <!-- Date-rotated logs handle stdout/stderr in-process; do not also -->
+        <!-- duplicate the firehose into the launchd fallback files below.  -->
+        <key>SOMA_LOG_PASSTHROUGH</key>
+        <string>0</string>
     </dict>
 
     <key>RunAtLoad</key>
@@ -135,11 +160,14 @@ generate_plist() {
     <key>KeepAlive</key>
     <true/>
 
+    <!-- Bootstrap fallback only: captures any output emitted before the -->
+    <!-- in-process date-rotated logger installs (very early crashes,    -->
+    <!-- module-load errors). Under normal operation these stay empty.   -->
     <key>StandardOutPath</key>
-    <string>$LOGS_DIR/stdout.log</string>
+    <string>$LOGS_DIR/launchd-bootstrap-stdout.log</string>
 
     <key>StandardErrorPath</key>
-    <string>$LOGS_DIR/stderr.log</string>
+    <string>$LOGS_DIR/launchd-bootstrap-stderr.log</string>
 
     <key>ThrottleInterval</key>
     <integer>10</integer>
@@ -184,7 +212,13 @@ cmd_status() {
     echo ""
     echo "Recent stderr (last 5 lines):"
     echo "---"
-    tail -5 "$LOGS_DIR/stderr.log" 2>/dev/null || echo "  (no logs)"
+    local stderr_file
+    stderr_file="$(resolve_log_file stderr)"
+    if [[ -n "$stderr_file" && -f "$stderr_file" ]]; then
+        tail -5 "$stderr_file"
+    else
+        echo "  (no logs)"
+    fi
 }
 
 cmd_start() {
@@ -206,7 +240,7 @@ cmd_start() {
     if is_running; then
         print_success "Service started (PID: $(get_pid))"
     else
-        print_error "Failed to start. Check: tail -f $LOGS_DIR/stderr.log"
+        print_error "Failed to start. Check: ./service.sh ${ENV_ARG:+$ENV_ARG }logs stderr"
         return 1
     fi
 }
@@ -320,28 +354,76 @@ cmd_logs() {
     local log_type="${1:-stderr}"
     local lines="${2:-50}"
 
+    # Resolve today's dated log file (or newest existing). Empty string
+    # when nothing has been written yet.
+    local stdout_file stderr_file
+    stdout_file="$(resolve_log_file stdout)"
+    stderr_file="$(resolve_log_file stderr)"
+
+    tail_file() {
+        local label="$1" file="$2"
+        if [[ -n "$file" && -f "$file" ]]; then
+            echo "=== $SERVICE_NAME $label ($(basename "$file"), last $lines lines) ==="
+            tail -n "$lines" "$file"
+        else
+            echo "=== $SERVICE_NAME $label (no rotated log yet in $LOGS_DIR) ==="
+        fi
+    }
+
     case "$log_type" in
         stdout|out)
-            echo "=== $SERVICE_NAME stdout.log (last $lines lines) ==="
-            tail -n "$lines" "$LOGS_DIR/stdout.log"
+            tail_file stdout "$stdout_file"
             ;;
         stderr|err)
-            echo "=== $SERVICE_NAME stderr.log (last $lines lines) ==="
-            tail -n "$lines" "$LOGS_DIR/stderr.log"
+            tail_file stderr "$stderr_file"
             ;;
         follow|f)
-            echo "=== Following $SERVICE_NAME stderr.log (Ctrl+C to stop) ==="
-            tail -f "$LOGS_DIR/stderr.log"
+            if [[ -n "$stderr_file" && -f "$stderr_file" ]]; then
+                echo "=== Following $SERVICE_NAME stderr ($(basename "$stderr_file"), Ctrl+C to stop) ==="
+                # NOTE: tail -f tracks the current dated file. When the date
+                # rolls over the runtime opens a NEW stderr-YYYY-MM-DD.log
+                # — re-run `logs follow` to switch to it.
+                tail -f "$stderr_file"
+            else
+                echo "=== $SERVICE_NAME stderr (no rotated log yet in $LOGS_DIR) ==="
+            fi
             ;;
         all)
-            echo "=== $SERVICE_NAME stdout.log (last $lines lines) ==="
-            tail -n "$lines" "$LOGS_DIR/stdout.log"
+            tail_file stdout "$stdout_file"
             echo ""
-            echo "=== $SERVICE_NAME stderr.log (last $lines lines) ==="
-            tail -n "$lines" "$LOGS_DIR/stderr.log"
+            tail_file stderr "$stderr_file"
+            ;;
+        list|ls)
+            echo "=== $SERVICE_NAME rotated logs in $LOGS_DIR ==="
+            local found=0
+            for f in "$LOGS_DIR"/stdout-*.log "$LOGS_DIR"/stderr-*.log; do
+                if [[ -f "$f" ]]; then
+                    found=1
+                    printf '  %s\n' "$(basename "$f")"
+                fi
+            done
+            if [[ "$found" -eq 0 ]]; then
+                echo "  (no rotated logs yet)"
+            fi
+            ;;
+        bootstrap)
+            # Pre-handler-install fallback files (normally empty).
+            local boot_out="$LOGS_DIR/launchd-bootstrap-stdout.log"
+            local boot_err="$LOGS_DIR/launchd-bootstrap-stderr.log"
+            for label_file in "stdout:$boot_out" "stderr:$boot_err"; do
+                local label="${label_file%%:*}"
+                local file="${label_file#*:}"
+                if [[ -f "$file" ]]; then
+                    echo "=== $SERVICE_NAME launchd-bootstrap $label (last $lines lines) ==="
+                    tail -n "$lines" "$file"
+                else
+                    echo "=== $SERVICE_NAME launchd-bootstrap $label (no file) ==="
+                fi
+                echo ""
+            done
             ;;
         *)
-            echo "Usage: ./service.sh [env] logs [stdout|stderr|follow|all] [lines]"
+            echo "Usage: ./service.sh [env] logs [stdout|stderr|follow|all|list|bootstrap] [lines]"
             ;;
     esac
 }
@@ -393,7 +475,7 @@ cmd_reinstall() {
         print_success "Reinstall completed! (PID: $(get_pid))"
         echo "  Check logs: ./service.sh ${ENV_ARG:+$ENV_ARG }logs follow"
     else
-        print_error "Service failed to start. Check: tail -f $LOGS_DIR/stderr.log"
+        print_error "Service failed to start. Check: ./service.sh ${ENV_ARG:+$ENV_ARG }logs stderr"
         return 1
     fi
 }
@@ -598,7 +680,7 @@ case "$COMMAND" in
         echo "  uninstall    Remove LaunchAgent"
         echo "  setup        Initialize deployment directory (config only)"
         echo "  check-env    Verify CLI tools and offer to install missing ones"
-        echo "  logs         View logs [stdout|stderr|follow|all] [lines]"
+        echo "  logs         View date-rotated logs [stdout|stderr|follow|all|list|bootstrap] [lines]"
         echo ""
         echo "Examples:"
         echo "  ./service.sh status              # Local status"

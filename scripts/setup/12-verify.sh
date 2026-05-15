@@ -60,10 +60,18 @@ run_step() {
             pid=$(launchctl list 2>/dev/null | grep "ai.2lab.soma-work.${env}" | awk '{print $1}')
             success "  Service running (PID: $pid)"
 
-            # Check recent logs for errors
+            # Check recent logs for errors. Logs are date-rotated as
+            # stderr-YYYY-MM-DD.log; today's file is preferred, otherwise
+            # fall back to the newest dated file by lexical sort.
             local error_count=0
-            if [[ -f "$dir/logs/stderr.log" ]]; then
-                error_count=$(tail -20 "$dir/logs/stderr.log" 2>/dev/null | grep -c "ERROR" || echo "0")
+            local today stderr_file
+            today="$(date +%Y-%m-%d)"
+            stderr_file="$dir/logs/stderr-${today}.log"
+            if [[ ! -f "$stderr_file" ]]; then
+                stderr_file="$(printf '%s\n' "$dir/logs/stderr"-*.log 2>/dev/null | sort | tail -n 1)"
+            fi
+            if [[ -f "$stderr_file" ]]; then
+                error_count=$(tail -20 "$stderr_file" 2>/dev/null | grep -c "ERROR" || echo "0")
             fi
             if [[ "$error_count" -gt 0 ]]; then
                 warn "  $error_count errors in recent logs"

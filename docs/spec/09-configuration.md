@@ -341,13 +341,19 @@ You are a 400-yr full stack software engineer...
 
 ## 7. Log Files
 
-### 7.1 Location
+### 7.1 Location (date-rotated)
 
 ```
 logs/
-├── stdout.log    # 표준 출력
-└── stderr.log    # 표준 에러 (메인 로그)
+├── stdout-2026-05-15.log               # 표준 출력 (오늘 분)
+├── stderr-2026-05-15.log               # 표준 에러 (오늘 분, 메인 로그)
+├── stdout-2026-05-14.log               # 어제 분 (자동 보존)
+├── stderr-2026-05-14.log
+├── launchd-bootstrap-stdout.log        # 부트스트랩 fallback (보통 빈 파일)
+└── launchd-bootstrap-stderr.log        # 부트스트랩 fallback (보통 빈 파일)
 ```
+
+런타임 시작 시 in-process로 `process.stdout/stderr.write`를 가로채 날짜별 파일에 append 한다. 자정을 넘기면 새 파일이 자동으로 열린다. 보존 기간은 `LOG_RETENTION_DAYS` (기본 30일). `SOMA_LOG_PASSTHROUGH=0` 환경에서는 launchd 캡처가 비활성화되어 부트스트랩 fallback 파일이 자라지 않는다.
 
 ### 7.2 Log Format
 
@@ -385,10 +391,13 @@ macOS 서비스 설정 (현행: `/Library/LaunchDaemons/ai.2lab.soma-work.{main,
         <key>PATH</key>
         <string>/usr/local/bin:/usr/bin:/bin</string>
     </dict>
+    <!-- Bootstrap fallback only — pre-handler-install output. The      -->
+    <!-- in-process date-rotated logger handles the firehose, while     -->
+    <!-- SOMA_LOG_PASSTHROUGH=0 keeps these files near-empty.           -->
     <key>StandardOutPath</key>
-    <string>/opt/soma-work/dev/logs/stdout.log</string>
+    <string>/opt/soma-work/dev/logs/launchd-bootstrap-stdout.log</string>
     <key>StandardErrorPath</key>
-    <string>/opt/soma-work/dev/logs/stderr.log</string>
+    <string>/opt/soma-work/dev/logs/launchd-bootstrap-stderr.log</string>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
@@ -484,9 +493,11 @@ soma-work/
 │   ├── sessions.json
 │   ├── mcp-call-stats.json
 │   └── slack_jira_mapping.json
-├── logs/                          # 로그 파일
-│   ├── stdout.log
-│   └── stderr.log
+├── logs/                          # 로그 파일 (날짜별 rotate)
+│   ├── stdout-YYYY-MM-DD.log
+│   ├── stderr-YYYY-MM-DD.log
+│   ├── launchd-bootstrap-stdout.log   # 부트스트랩 fallback
+│   └── launchd-bootstrap-stderr.log
 ├── src/
 │   ├── config.ts                  # 설정 모듈
 │   ├── prompt/

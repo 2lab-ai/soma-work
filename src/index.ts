@@ -1,6 +1,23 @@
+import * as path from 'path';
 import { installConsoleRedaction } from './logger';
+import {
+  getInstalledDateRotatedStdio,
+  installDateRotatedStdio,
+  readEnvOptions as readLogEnv,
+} from './logging/date-rotated-stdio';
 
 installConsoleRedaction();
+
+// Route stdout/stderr into date-stamped files under <PROJECT_DIR>/logs.
+// Done before any other side-effecting import so all subsequent console
+// output lands in today's file. Under launchd, SOMA_LOG_PASSTHROUGH=0
+// prevents duplicating the firehose into the bootstrap fallback files.
+{
+  const projectDir = process.env.SOMA_CONFIG_DIR || process.cwd();
+  const logsDir = path.join(projectDir, 'logs');
+  const { passthrough, retentionDays } = readLogEnv();
+  installDateRotatedStdio({ logsDir, passthrough, retentionDays });
+}
 
 import './env-paths';
 import { registerMemoryStore, registerSkillStore } from 'somalib/model-commands/catalog';
@@ -28,7 +45,6 @@ registerSkillStore({
 
 import { App } from '@slack/bolt';
 import type { WebClient } from '@slack/web-api';
-import * as path from 'path';
 import { CronStorage } from 'somalib/cron/cron-storage';
 import { initA2tService, shutdownA2tService } from './a2t/a2t-service';
 import { setQueryEnvAdditional } from './auth/query-env-builder';
@@ -886,6 +902,15 @@ async function start() {
       // Release PID lock last — after all connections are torn down
       releasePidLock(DATA_DIR);
 
+      // Flush any buffered date-rotated log writes to disk before exit.
+      // fs.writeSync() is synchronous so this is mostly fsyncSync nudging
+      // the kernel; cheap insurance against losing the final shutdown line.
+      try {
+        getInstalledDateRotatedStdio()?.flush();
+      } catch {
+        // Best-effort — never block shutdown on log flush.
+      }
+
       process.exit(0);
     };
 
@@ -904,6 +929,11 @@ async function start() {
       } catch (saveError) {
         console.error('CRASH: failed to save sessions', saveError);
       }
+      try {
+        getInstalledDateRotatedStdio()?.flush();
+      } catch {
+        // Best-effort flush before crash exit.
+      }
       process.exit(1);
     });
 
@@ -915,6 +945,11 @@ async function start() {
         console.error('CRASH: sessions saved successfully');
       } catch (saveError) {
         console.error('CRASH: failed to save sessions', saveError);
+      }
+      try {
+        getInstalledDateRotatedStdio()?.flush();
+      } catch {
+        // Best-effort flush before crash exit.
       }
       process.exit(1);
     });
