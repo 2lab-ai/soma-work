@@ -665,3 +665,176 @@ describe('Compact follow-up fixes (#617 v2 bugs 1/2/3)', () => {
     expect(session.compactTrigger).toBe('auto');
   });
 });
+
+/**
+ * Stale "now %" bug — user-reported (auto-compact 후 남은 컨텍스트량 계산 오류).
+ *
+ * Reproduces the actual Slack output Zhuge saw:
+ *   `Compaction completed · trigger=manual`
+ *   `Context: now ~83% ← was ~83% (edited)`
+ *
+ * Root cause: `postCompactStartingIfNeeded` snapshots `preCompactUsagePct =
+ * lastKnownUsagePct` but leaves `lastKnownUsagePct` untouched. When the SDK
+ * doesn't fire `onCompactBoundary` with `post_tokens` (or fires it without
+ * the field), `buildCompactCompleteMessage` falls into the
+ * `now ~${lastKnownUsagePct}%` branch — which is now the SAME value as
+ * `preCompactUsagePct`. Result: both segments print 83, which lies to the
+ * user about what compaction did.
+ *
+ * Fix: invalidate `lastKnownUsagePct` at PreCompact time. The next
+ * authoritative source (`onCompactBoundary` post_tokens, or a fresh turn-end
+ * usage sample) repopulates it. Until then, the completion message honestly
+ * shows `now ~?%`.
+ */
+describe('Stale lastKnownUsagePct after PreCompact (user-reported)', () => {
+  let slackApi: {
+    postSystemMessage: ReturnType<typeof vi.fn>;
+    updateMessage: ReturnType<typeof vi.fn>;
+  };
+  let session: ConversationSession;
+
+  beforeEach(() => {
+    slackApi = {
+      postSystemMessage: vi.fn().mockResolvedValue({ ts: '1700000000.000100', channel: 'C1' }),
+      updateMessage: vi.fn().mockResolvedValue(undefined),
+    };
+    // Pre-compact heuristic at 83% (matches user's transcript).
+    session = makeSession({ lastKnownUsagePct: 83 });
+  });
+
+  afterEach(() => {
+    clearStartingTicker(session);
+  });
+
+  const preCompactPayload = (): PreCompactHookInput =>
+    ({
+      session_id: 'sess-1',
+      transcript_path: '/tmp/t',
+      cwd: '/tmp',
+      hook_event_name: 'PreCompact',
+      trigger: 'manual',
+      custom_instructions: null,
+    }) as unknown as PreCompactHookInput;
+
+  const postCompactPayload = (): PostCompactHookInput =>
+    ({
+      session_id: 'sess-1',
+      transcript_path: '/tmp/t',
+      cwd: '/tmp',
+      hook_event_name: 'PostCompact',
+      trigger: 'manual',
+      compact_summary: 'summary',
+    }) as unknown as PostCompactHookInput;
+
+  it('PreCompact captures preCompactUsagePct AND invalidates lastKnownUsagePct', async () => {
+    const hooks = buildCompactHooks({
+      session,
+      channel: 'C1',
+      threadTs: 'T1',
+      slackApi: slackApi as unknown as SlackApiHelper,
+    });
+    await hooks.PreCompact(preCompactPayload() as any);
+
+    expect(session.preCompactUsagePct).toBe(83);
+    // Critical: lastKnownUsagePct must NOT remain at 83 — that's the value
+    // we just promoted to "was". Leaving it would cause the completion
+    // message to print "now ~83% ← was ~83%" if no fresh sample arrives.
+    expect(session.lastKnownUsagePct).toBeNull();
+  });
+
+  it('user-reported scenario: PreCompact → no boundary metadata → PostCompact prints "now ~?% ← was ~83%"', async () => {
+    const hooks = buildCompactHooks({
+      session,
+      channel: 'C1',
+      threadTs: 'T1',
+      slackApi: slackApi as unknown as SlackApiHelper,
+    });
+
+    // Full lifecycle: PreCompact then PostCompact, with NO `onCompactBoundary`
+    // metadata in between (the missing-tokens case from the user's report).
+    await hooks.PreCompact(preCompactPayload() as any);
+    await hooks.PostCompact(postCompactPayload() as any);
+
+    expect(slackApi.updateMessage).toHaveBeenCalledWith(
+      'C1',
+      '1700000000.000100',
+      '🟢 🗜️ Compaction completed · trigger=manual\nContext: now ~?% ← was ~83%',
+    );
+  });
+
+  it('boundary metadata still works: post_tokens repopulates lastKnownUsagePct → real now %', async () => {
+    const hooks = buildCompactHooks({
+      session,
+      channel: 'C1',
+      threadTs: 'T1',
+      slackApi: slackApi as unknown as SlackApiHelper,
+    });
+    await hooks.PreCompact(preCompactPayload() as any);
+
+    // Simulate stream-executor's onCompactBoundary firing with full metadata
+    // between PreCompact and PostCompact (the happy path that already worked).
+    session.compactPreTokens = 160_000;
+    session.compactPostTokens = 35_000;
+    // stream-executor.ts:1167-1178 also overwrites the usagePct fields:
+    session.preCompactUsagePct = 80;
+    session.lastKnownUsagePct = 16;
+
+    await hooks.PostCompact(postCompactPayload() as any);
+
+    expect(slackApi.updateMessage).toHaveBeenCalledWith(
+      'C1',
+      '1700000000.000100',
+      expect.stringContaining('Context: now 16% (35k/200k) ← was 80% (160k/200k)'),
+    );
+  });
+
+  it('PostCompact sets skipThresholdCheckOnce so the threshold checker skips the very next turn', async () => {
+    const hooks = buildCompactHooks({
+      session,
+      channel: 'C1',
+      threadTs: 'T1',
+      slackApi: slackApi as unknown as SlackApiHelper,
+    });
+    await hooks.PreCompact(preCompactPayload() as any);
+    await hooks.PostCompact(postCompactPayload() as any);
+
+    // After a successful completion post the next threshold check must
+    // be suppressed once. Without this, the immediately-following turn
+    // re-trips the threshold (user reported "Context usage 83% ≥ threshold
+    // 80%" firing right after the completion message — auto-compact loop).
+    expect(session.skipThresholdCheckOnce).toBe(true);
+  });
+
+  it('second PostCompact in same cycle does NOT re-arm skipThresholdCheckOnce after consume', async () => {
+    // Lifecycle guard: when both PostCompact hook and onCompactBoundary fire
+    // (race observed in production), `postCompactCompleteIfNeeded` re-enters
+    // with marker.post=true and takes the no-post branch. The suppression
+    // flag must NOT re-arm — otherwise a legitimate threshold check on a
+    // later turn (after the first one consumed the flag) would be wrongly
+    // skipped.
+    const hooks = buildCompactHooks({
+      session,
+      channel: 'C1',
+      threadTs: 'T1',
+      slackApi: slackApi as unknown as SlackApiHelper,
+    });
+    await hooks.PreCompact(preCompactPayload() as any);
+    await hooks.PostCompact(postCompactPayload() as any);
+
+    // Simulate the next turn-end consuming the flag (as the threshold
+    // checker does at compact-threshold-checker.ts:78-81).
+    expect(session.skipThresholdCheckOnce).toBe(true);
+    session.skipThresholdCheckOnce = false;
+
+    // Now a second END signal fires — e.g. onCompactBoundary arrives after
+    // the PostCompact hook already sealed the cycle. The function re-enters
+    // with marker.post=true.
+    await hooks.PostCompact(postCompactPayload() as any);
+
+    // Must remain false — re-arming would silently suppress a legitimate
+    // threshold check on a future turn.
+    expect(session.skipThresholdCheckOnce).toBe(false);
+    // Sanity: only one Slack post for the whole cycle.
+    expect(slackApi.updateMessage).toHaveBeenCalledTimes(1);
+  });
+});

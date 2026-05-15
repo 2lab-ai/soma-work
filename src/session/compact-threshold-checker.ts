@@ -69,6 +69,17 @@ export async function checkAndSchedulePendingCompact(args: CheckAndSchedulePendi
   // data is unavailable.
   session.lastKnownUsagePct = pct;
 
+  // One-shot post-compact suppression. `postCompactCompleteIfNeeded` sets
+  // this flag when sealing a compaction cycle. The first turn after
+  // compaction often reports inflated `session.usage` (cache_read still
+  // holds the pre-compact prefix), which would otherwise re-trip the
+  // threshold and produce a confusing "Compaction completed → Context usage
+  // 83% ≥ threshold 80%" loop. Consume the flag and skip exactly one check.
+  if (session.skipThresholdCheckOnce) {
+    session.skipThresholdCheckOnce = false;
+    return false;
+  }
+
   const threshold = userSettings.getUserCompactThreshold(userId);
   if (pct < threshold) return false;
 
