@@ -169,10 +169,13 @@ export function maybeThrowOneMUnavailable(message: SDKMessage, model: string | u
 
 /**
  * Classification result for an incoming chunk of Claude Code CLI stderr.
- * `reason` is set only when `level !== 'warn'`.
+ *
+ * `'silent'` means the wiring must skip the logger entirely — used for the
+ * post-abort hook_callback Stream-closed cosmetic frame (see
+ * `classifyClaudeStderr`). `reason` is set only when `level !== 'warn'`.
  */
 export type ClaudeStderrClassification = {
-  level: 'warn' | 'info';
+  level: 'warn' | 'silent';
   reason?: string;
 };
 
@@ -187,16 +190,30 @@ export type ClaudeStderrClassification = {
 const HOOK_CALLBACK_STREAM_CLOSED_PATTERN = /Error in hook callback hook_\d+:[\s\S]*?Stream closed/;
 
 /**
- * Classify a Claude Code CLI stderr chunk for logging. Downgrades the
- * post-abort hook_callback Stream-closed frame from warn to info, but ONLY
- * when the host-side abort signal is set — an unrelated "Stream closed"
- * during a healthy turn means the transport died unexpectedly, and we want
- * that to surface loudly.
+ * Classify a Claude Code CLI stderr chunk for logging. The post-abort
+ * hook_callback Stream-closed frame is the cosmetic last-gasp the CLI prints
+ * when the SDK closes the IPC transport while a PreToolUse callback is in
+ * flight; it has no actionable signal and was floods the disk in production
+ * (8 days × ~150 aborts × ~3 frames/abort × multi-KB bun stack each =
+ * ~450+ multi-KB lines). When we know our own abort signal is set, classify
+ * as `'silent'` so the wiring drops it entirely — no `logger.warn`, no
+ * `logger.info`, no disk write. `stderrBuffer` is unaffected: it still sees
+ * every chunk for downstream rate-limit extraction on error paths.
  *
- * Decision rationale: codex transcript a79ba0ea-b576-4053-972d-5b243bc1a9b0.
- * D1 picked option (b) (stderr-level filter, not a streaming-input refactor
- * via `query.interrupt()`); D2 matches the leading header line; D3 gates on
- * the abort signal rather than unconditional downgrade.
+ * Healthy-turn (non-aborted) occurrences stay at `'warn'` because they would
+ * indicate an unexpected transport teardown and must surface in monitoring.
+ *
+ * Decision history:
+ *   - PR #928 introduced this classifier returning `'info'` for matched +
+ *     aborted, on codex consult a79ba0ea-b576-4053-972d-5b243bc1a9b0 (D2 +
+ *     D3 still apply — match the leading header, gate on aborted).
+ *   - Follow-up codex consult ba315791-dfe5-4c5b-a74b-4eab43b0917a flipped
+ *     the aborted branch from `'info'` to `'silent'` after the user pointed
+ *     out the info-level frames still hit stdout.log and continue to fill
+ *     the disk. Codex confirmed `(d)` is the only practical fix at the host
+ *     level: the SDK 0.2.140 single-prompt API has no `query.interrupt()`,
+ *     so we can't drain pending hooks before transport teardown, and forking
+ *     the SDK is too invasive for a cosmetic frame.
  *
  * Exported for direct unit testing — the stderr callback is built inline
  * inside `streamQuery` and threading a logger spy through there is impractical.
@@ -204,11 +221,45 @@ const HOOK_CALLBACK_STREAM_CLOSED_PATTERN = /Error in hook callback hook_\d+:[\s
 export function classifyClaudeStderr(data: string, aborted: boolean): ClaudeStderrClassification {
   if (aborted && HOOK_CALLBACK_STREAM_CLOSED_PATTERN.test(data)) {
     return {
-      level: 'info',
+      level: 'silent',
       reason: 'post-abort hook_callback stream-closed (expected during SDK shutdown)',
     };
   }
   return { level: 'warn' };
+}
+
+/**
+ * Minimal logger surface the stderr wiring needs. Lets the chunk handler stay
+ * testable without pulling in the full `Logger` class. `streamQuery` passes
+ * `this.logger` (which satisfies this shape).
+ */
+export interface StderrLogger {
+  warn(message: string, meta?: unknown): void;
+}
+
+/**
+ * Wiring used by `streamQuery`'s `options.stderr` callback: apply
+ * `classifyClaudeStderr` and dispatch. The dispatch is intentionally a binary
+ * switch — `'warn'` logs, `'silent'` does nothing. This is the disk-write
+ * elimination point; keep it tight.
+ *
+ * `aborted` matches `classifyClaudeStderr`'s parameter shape so callers own
+ * the source-of-truth for "are we tearing down" (which may not always be an
+ * `AbortController` — `tools:[]` callsites we may unify later don't have one).
+ *
+ * `stderrBuffer` accumulation lives at the caller because it's part of the
+ * Claude query's error-recovery pathway, not part of logging policy. Don't
+ * inline buffering here.
+ *
+ * Exported so tests can spy on the dispatch directly without rebuilding the
+ * full `streamQuery` harness.
+ */
+export function handleClaudeStderrChunk(logger: StderrLogger, data: string, aborted: boolean): void {
+  const classification = classifyClaudeStderr(data, aborted);
+  if (classification.level === 'silent') {
+    return;
+  }
+  logger.warn('Claude stderr', { data: data.trimEnd() });
 }
 
 /**
@@ -1248,23 +1299,14 @@ export class ClaudeHandler {
         options.abortController = abortController;
       }
 
-      // Capture Claude process stderr for debugging exit code 1 etc.
-      // Also buffer stderr content so rate limit messages can be extracted on
-      // error — `stderrBuffer` always sees every chunk; `classifyClaudeStderr`
-      // only affects the log level.
+      // Capture Claude process stderr for debugging exit code 1 etc. Buffer
+      // every chunk in `stderrBuffer` so rate-limit messages can be extracted
+      // on the error path — `handleClaudeStderrChunk` is logging-policy only
+      // and does NOT participate in buffering.
       let stderrBuffer = '';
       options.stderr = (data: string) => {
         stderrBuffer += data;
-        const classification = classifyClaudeStderr(data, abortController?.signal.aborted ?? false);
-        const trimmed = data.trimEnd();
-        if (classification.level === 'info') {
-          this.logger.info('Claude stderr (expected post-abort)', {
-            data: trimmed,
-            reason: classification.reason,
-          });
-        } else {
-          this.logger.warn('Claude stderr', { data: trimmed });
-        }
+        handleClaudeStderrChunk(this.logger, data, abortController?.signal.aborted ?? false);
       };
 
       this.logger.debug('Claude query options', options);
