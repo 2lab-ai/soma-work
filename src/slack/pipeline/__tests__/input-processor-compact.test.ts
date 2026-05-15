@@ -171,12 +171,12 @@ describe('InputProcessor auto-compact interception (#617 AC3)', () => {
   // delays the session reset by an entire turn.
   describe('new command preempts auto-compact (#952)', () => {
     it.each([
-      ['new'],
-      ['/new'],
-      ['NEW'],
-      ['/NEW'],
-      ['new some prompt'],
-      ['/new with args'],
+      'new',
+      '/new',
+      'NEW',
+      '/NEW',
+      'new some prompt',
+      '/new with args',
     ])('autoCompactPending=true + text=%s → bypasses compact, clears pending, routes new normally', async (text) => {
       session.autoCompactPending = true;
       commandRouterRoute.mockResolvedValueOnce({ handled: true });
@@ -195,6 +195,8 @@ describe('InputProcessor auto-compact interception (#617 AC3)', () => {
       // Notice is NOT posted — compaction isn't happening.
       expect(postSystemMessage).not.toHaveBeenCalled();
       // Command router IS invoked so the `new` handler runs.
+      // The raw text (including leading `/`) is forwarded verbatim so
+      // NewHandler.canHandle / parseNewCommand still see the original.
       expect(commandRouterRoute).toHaveBeenCalledTimes(1);
       expect(commandRouterRoute).toHaveBeenCalledWith(expect.objectContaining({ text }));
     });
@@ -212,16 +214,22 @@ describe('InputProcessor auto-compact interception (#617 AC3)', () => {
       expect(commandRouterRoute).toHaveBeenCalledTimes(1);
     });
 
-    it('text like "newline" or "renew" does NOT preempt — not a /new command', async () => {
+    // Substrings that contain "new" but are NOT the /new command — must follow
+    // the standard interception path and get /compact-stashed like any other
+    // message text.
+    it.each([
+      'newline thoughts',
+      'renew',
+      'renew the cert',
+    ])('text=%s does NOT preempt — standard /compact interception still fires', async (text) => {
       session.autoCompactPending = true;
-      const event = makeEvent('newline thoughts');
+      const event = makeEvent(text);
       const say = vi.fn();
       const result = await processor.routeCommand(event, say as any);
 
-      // Standard interception path still fires.
       expect(result.handled).toBe(true);
       expect(result.continueWithPrompt).toBe('/compact');
-      expect(session.pendingUserText).toBe('newline thoughts');
+      expect(session.pendingUserText).toBe(text);
     });
   });
 });

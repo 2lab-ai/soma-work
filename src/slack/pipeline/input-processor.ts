@@ -76,21 +76,23 @@ export class InputProcessor {
     const threadTs = thread_ts || ts;
     const session = this.deps.claudeHandler?.getSession(channel, threadTs);
     if (session?.autoCompactPending) {
+      // Atomically consume the pending flag — both branches below treat the
+      // pending state as resolved (compaction either runs or is bypassed),
+      // and the threshold-checker is idempotent on re-set.
+      session.autoCompactPending = false;
+
       // #952: `new` / `/new` preempts auto-compact. The user is explicitly
       // discarding the conversation, so compacting it first is wasted work
       // (compact output is thrown away on session reset) AND delays the
-      // reset by an entire turn. Clear the pending flag and let the command
-      // router handle `new` normally. We do NOT stash pendingUserText —
-      // there's no conversation to replay after reset.
+      // reset by an entire turn. We do NOT stash pendingUserText — there's
+      // no conversation to replay after reset.
       if (CommandParser.isNewCommand(text)) {
-        session.autoCompactPending = false;
         this.logger.info('input-processor: new command preempts pending auto-compact', {
           channel,
           threadTs,
+          user,
         });
-        // Fall through to standard CommandRouter routing below.
       } else {
-        session.autoCompactPending = false;
         session.pendingUserText = text;
         session.pendingEventContext = { channel, threadTs, user, ts };
 
