@@ -138,6 +138,116 @@ describe('Restart symmetry: notifyShutdown stamps recovery markers', () => {
     await manager.notifyShutdown();
 
     expect(s1.shutdownNotificationSent).toBeFalsy();
+    // wasWorkingAtShutdown must also be cleared so the disk record doesn't
+    // later trick loadSessions into a spurious recovery.
+    expect(s1.wasWorkingAtShutdown).toBeFalsy();
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Race-1: activityState flips to 'idle' DURING the awaited postMessage
+  //
+  // Observed at iq-64 2026-05-15T07:31:14Z. Every "Sent shutdown
+  // notification" log line printed `wasWorking:false`, including for the
+  // session that was actively running tools (creating PR #2590). Cause:
+  // notifyShutdown read `session.activityState === 'working'` AFTER
+  // awaiting postMessage. During that await, the Node event loop drained
+  // pending Claude SDK stream-completion callbacks for in-flight turns,
+  // which call setActivityState('idle'). By the time the marker capture
+  // ran, the state had already flipped.
+  //
+  // The fix snapshots wasWorking BEFORE the await.
+  // ─────────────────────────────────────────────────────────────────────
+  it('captures wasWorking from a pre-await snapshot when activityState flips during postMessage', async () => {
+    const { manager, sessions, postMessage } = buildManager();
+    const working: ConversationSession = {
+      ownerId: 'U1',
+      userId: 'U1',
+      channelId: 'C1',
+      threadTs: 't1',
+      sessionId: 'sid-1',
+      isActive: true,
+      lastActivity: new Date(),
+      activityState: 'working',
+    } as ConversationSession;
+    sessions.set('k1', working);
+
+    // Simulate the prod race: during the awaited postMessage, an
+    // unrelated event-loop turn flips activityState to 'idle' (the
+    // in-flight Claude SDK turn happens to complete). The fix must
+    // capture wasWorking BEFORE this flip.
+    postMessage.mockImplementationOnce(async () => {
+      working.activityState = 'idle';
+      return { ts: '1.1', channel: 'C1' };
+    });
+
+    await manager.notifyShutdown();
+
+    expect(working.shutdownNotificationSent).toBe(true);
+    expect(working.wasWorkingAtShutdown).toBe(true);
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Race-2: process.exit beats slow postMessage
+  //
+  // Same iq-64 incident: notifyShutdown is bounded by a 5s
+  // `Promise.race` and the parent cleanup runs `saveSessions()` +
+  // `process.exit(0)` immediately after. With 60 sessions at ~300ms
+  // Slack roundtrip each, ~49 sessions' postMessage never returns
+  // before exit. Those sessions never had `shutdownNotificationSent`
+  // stamped under the old "stamp after await" ordering, so on the
+  // next start `loadSessions` saw a stale `activityState: 'idle'` and
+  // dropped them from `_crashRecoveredSessions`. The user's session
+  // (creating PR #2590) was one of these — it stayed frozen with no
+  // recovery message and no auto-resume.
+  //
+  // Fix: stamp the marker BEFORE awaiting postMessage. The
+  // optimistic stamp is cleared in the catch branch on hard failures
+  // (channel deleted etc.) so the prior "do not mark on failure"
+  // invariant still holds, but a still-pending postMessage at
+  // process.exit time leaves the marker persisted, which is correct
+  // — the session WAS active when shutdown began.
+  // ─────────────────────────────────────────────────────────────────────
+  it('stamps the recovery marker before awaiting postMessage so a hung post does not erase the recovery record', async () => {
+    const { manager, sessions, postMessage } = buildManager();
+    const working: ConversationSession = {
+      ownerId: 'U1',
+      userId: 'U1',
+      channelId: 'C1',
+      threadTs: 't1',
+      sessionId: 'sid-1',
+      isActive: true,
+      lastActivity: new Date(),
+      activityState: 'working',
+    } as ConversationSession;
+    sessions.set('k1', working);
+
+    // postMessage never resolves — simulates a hung Slack call that
+    // the cleanup-level Promise.race timeout will abandon before exit.
+    let resolveHung: (v: { ts: string; channel: string }) => void = () => {};
+    postMessage.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveHung = resolve;
+        }),
+    );
+
+    // Kick off but do NOT await — mirror cleanup() which races against
+    // a 5s deadline and then proceeds to saveSessions/process.exit.
+    const shutdownPromise = manager.notifyShutdown();
+
+    // Yield once so the loop has a chance to push the per-session
+    // promise and synchronously stamp the marker before awaiting.
+    await new Promise<void>((r) => setImmediate(r));
+
+    // The marker must already be on disk-shape (in-memory ready for
+    // saveSessions) even though postMessage is still pending.
+    expect(working.shutdownNotificationSent).toBe(true);
+    expect(working.wasWorkingAtShutdown).toBe(true);
+    expect(working.shutdownNotifiedAt).toBeTypeOf('number');
+
+    // Drain so the test doesn't leak the pending promise.
+    resolveHung({ ts: '1.1', channel: 'C1' });
+    await shutdownPromise;
   });
 });
 

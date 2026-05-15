@@ -933,15 +933,39 @@ export class SessionUiManager {
   /**
    * 서버 종료 시 모든 세션에 알림.
    *
-   * For every session this method successfully notifies, it also stamps
-   * `shutdownNotificationSent=true` and `wasWorkingAtShutdown=(activityState
-   * === 'working')` on the in-memory session. The caller (`index.ts`
-   * cleanup handler) runs `saveSessions()` immediately afterwards, so
-   * these markers reach disk. On the next startup, `loadSessions()`
-   * uses them to send a symmetric restart notification to the same set
-   * (and to fire auto-resume only for sessions that were truly working
-   * — independent of whatever `activityState` got persisted, which can
-   * be stale because `setActivityState('working')` does NOT save).
+   * For every session this method touches, it stamps
+   * `shutdownNotificationSent=true`, `wasWorkingAtShutdown` (snapshot of
+   * `activityState === 'working'` at shutdown start) and
+   * `shutdownNotifiedAt` on the in-memory session BEFORE awaiting the
+   * Slack postMessage. The caller (`index.ts` cleanup handler) runs
+   * `saveSessions()` immediately afterwards, so these markers reach
+   * disk. On the next startup, `loadSessions()` uses them to send a
+   * symmetric restart notification to the same set (and to fire
+   * auto-resume only for sessions that were truly working — independent
+   * of whatever `activityState` got persisted, which can be stale
+   * because `setActivityState('working')` does NOT save).
+   *
+   * The pre-await stamp closes two races that bit a real incident
+   * (iq-64 2026-05-15T07:31:14Z, see PR description for log evidence):
+   *
+   *   1. *activityState flip during await.* While `await postMessage`
+   *      yielded to the event loop, in-flight Claude SDK turns
+   *      delivered their final result and transitioned `activityState`
+   *      to `'idle'`. The old code captured `wasWorking` AFTER the
+   *      await, so every notified session ended up with
+   *      `wasWorking:false` even when it was demonstrably running
+   *      tools at shutdown time.
+   *   2. *5-second `Promise.race` cutoff in cleanup().* With ~60
+   *      sessions and ~300ms Slack roundtrip each, the parent cleanup
+   *      timer fires before the bulk of postMessage promises resolve.
+   *      The old "stamp on success" ordering meant ~49 sessions never
+   *      got marked, then `loadSessions` saw stale
+   *      `activityState:'idle'` and silently dropped them from the
+   *      recovery batch.
+   *
+   * Failures (channel deleted, etc.) clear the optimistic stamp in the
+   * catch branch so the prior "do not mark on failure" invariant
+   * (covered by `restart-notification-symmetry.test.ts`) still holds.
    */
   async notifyShutdown(): Promise<void> {
     const shutdownText = `🔄 *서버 재시작 중*\n\n서버가 재시작됩니다. 잠시 후 다시 대화를 이어갈 수 있습니다.\n세션이 저장되었으므로 서버 재시작 후에도 대화 내용이 유지됩니다.`;
@@ -951,26 +975,42 @@ export class SessionUiManager {
 
     for (const [key, session] of sessions.entries()) {
       if (session.sessionId) {
+        // Snapshot wasWorking BEFORE any await. The event loop will run
+        // many other turns between here and when postMessage resolves;
+        // reading `session.activityState` after the await would see a
+        // (very likely) post-completion 'idle' state.
+        const wasWorkingSnapshot = session.activityState === 'working';
+        const stampedAt = Date.now();
+
+        // Stamp the recovery marker optimistically. saveSessions() in
+        // the parent cleanup runs synchronously right after our
+        // Promise.race deadline, so if our postMessage is still
+        // in-flight at that point, the marker is already on disk and
+        // the restart side can recover the session. Synchronous
+        // failures (channel_not_found) clear the marker in the catch
+        // branch below before the function returns.
+        session.shutdownNotificationSent = true;
+        session.shutdownNotifiedAt = stampedAt;
+        session.wasWorkingAtShutdown = wasWorkingSnapshot;
+
         const promise = (async () => {
           try {
             await this.slackApi.postMessage(session.channelId, shutdownText, {
               threadTs: session.threadTs,
             });
-            // Only mark the session after a successful postMessage — a failed
-            // post means the user didn't actually see the shutdown notice, so
-            // sending them a "we came back" message at restart would be
-            // confusing (Slack also commonly fails this when the channel was
-            // deleted; in that case the session shouldn't be auto-resumed
-            // anyway since the channel is gone).
-            session.shutdownNotificationSent = true;
-            session.shutdownNotifiedAt = Date.now();
-            session.wasWorkingAtShutdown = session.activityState === 'working';
             this.logger.debug('Sent shutdown notification', {
               sessionKey: key,
               channel: session.channelId,
-              wasWorking: session.wasWorkingAtShutdown,
+              wasWorking: wasWorkingSnapshot,
             });
           } catch (error) {
+            // Channel inaccessible (deleted, restricted, etc.). Clear
+            // the optimistic stamp so loadSessions doesn't send a
+            // restart message the user can't see, and so auto-resume
+            // doesn't fire into a dead channel.
+            session.shutdownNotificationSent = false;
+            session.shutdownNotifiedAt = undefined;
+            session.wasWorkingAtShutdown = false;
             this.logger.error('Failed to send shutdown notification', {
               sessionKey: key,
               error,
