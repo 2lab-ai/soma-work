@@ -163,6 +163,63 @@ describe('checkAndSchedulePendingCompact (#617 AC3)', () => {
     expect(slackApi.postSystemMessage).not.toHaveBeenCalled();
   });
 
+  it('deferred completion update: rebuilds and chat.updates compactCompletionMessageTs once fresh usage arrives', async () => {
+    // Reproduces user-reported followup (PR #932 wasn't enough): after
+    // compaction without boundary metadata, the completion message shows
+    // `now ~?% ← was ~80%`. The user wants a real "now %" — so the next
+    // turn-end usage sample must chat.update the message with the real value.
+    const slackApiWithUpdate = {
+      postSystemMessage: vi.fn().mockResolvedValue(undefined),
+      updateMessage: vi.fn().mockResolvedValue(undefined),
+    };
+
+    session.usage = makeUsage(25_000, 100_000); // post-compact context = 25%
+    session.preCompactUsagePct = 80;
+    session.lastKnownUsagePct = null;
+    session.compactCompletionMessageTs = '1700000000.000100';
+    session.skipThresholdCheckOnce = true; // first post-compact turn
+
+    await checkAndSchedulePendingCompact({
+      session,
+      userId: 'U1',
+      channel: 'C1',
+      threadTs: 'T1',
+      userSettings: userSettings as unknown as UserSettingsStore,
+      slackApi: slackApiWithUpdate as unknown as SlackApiHelper,
+    });
+
+    // The deferred update fires with the new % filled in.
+    expect(slackApiWithUpdate.updateMessage).toHaveBeenCalledWith(
+      'C1',
+      '1700000000.000100',
+      expect.stringContaining('Context: now ~25% ← was ~80%'),
+    );
+    // One-shot: the ts is cleared so subsequent turns don't re-update.
+    expect(session.compactCompletionMessageTs).toBeNull();
+    // Heuristic also recorded for downstream consumers.
+    expect(session.lastKnownUsagePct).toBe(25);
+  });
+
+  it('deferred completion update: no-op when compactCompletionMessageTs is null', async () => {
+    const slackApiWithUpdate = {
+      postSystemMessage: vi.fn().mockResolvedValue(undefined),
+      updateMessage: vi.fn().mockResolvedValue(undefined),
+    };
+    session.usage = makeUsage(50_000, 100_000);
+    session.compactCompletionMessageTs = null;
+
+    await checkAndSchedulePendingCompact({
+      session,
+      userId: 'U1',
+      channel: 'C1',
+      threadTs: 'T1',
+      userSettings: userSettings as unknown as UserSettingsStore,
+      slackApi: slackApiWithUpdate as unknown as SlackApiHelper,
+    });
+
+    expect(slackApiWithUpdate.updateMessage).not.toHaveBeenCalled();
+  });
+
   it('post-compact suppression: skipThresholdCheckOnce skips the call once and clears the flag', async () => {
     // Reproduces user-reported behavior: "Compaction completed" immediately
     // followed by "Context usage 83% ≥ threshold 80%" on the very next turn,

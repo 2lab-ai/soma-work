@@ -15,6 +15,7 @@
 import type { Logger } from '../logger';
 import { resolveContextWindow } from '../metrics/model-registry';
 import { ContextWindowManager } from '../slack/context-window-manager';
+import { updateDeferredCompactCompletionIfPending } from '../slack/hooks/compact-hooks';
 import type { SlackApiHelper } from '../slack/slack-api-helper';
 import type { ConversationSession } from '../types';
 import type { UserSettingsStore } from '../user-settings-store';
@@ -68,6 +69,15 @@ export async function checkAndSchedulePendingCompact(args: CheckAndSchedulePendi
   // fallback by the PostCompact "complete" post when the SDK-provided usage
   // data is unavailable.
   session.lastKnownUsagePct = pct;
+
+  // Deferred "now %" recovery for compact-completion messages that rendered
+  // `now ~?% ← was ~80%` (no SDK boundary post_tokens). Now that
+  // lastKnownUsagePct is fresh, chat.update the saved completion message
+  // in-place with the real percentage. One-shot — clears the field. Runs
+  // BEFORE the suppression return below because the user's complaint is
+  // exactly that this update never happens; we want it to fire on the very
+  // first post-compact turn (which is also the suppressed turn).
+  await updateDeferredCompactCompletionIfPending({ session, channel, slackApi });
 
   // One-shot post-compact suppression. `postCompactCompleteIfNeeded` sets
   // this flag when sealing a compaction cycle. The first turn after
