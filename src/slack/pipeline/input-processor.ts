@@ -3,6 +3,7 @@ import type { FileHandler, ProcessedFile } from '../../file-handler';
 import { Logger } from '../../logger';
 import type { WorkflowType } from '../../types';
 import { userSettingsStore } from '../../user-settings-store';
+import { CommandParser } from '../command-parser';
 import type { CommandRouter } from '../commands';
 import type { SlackApiHelper } from '../slack-api-helper';
 import { InputProcessResult, type MessageEvent, type SayFn } from './types';
@@ -75,21 +76,38 @@ export class InputProcessor {
     const threadTs = thread_ts || ts;
     const session = this.deps.claudeHandler?.getSession(channel, threadTs);
     if (session?.autoCompactPending) {
+      // Atomically consume the pending flag — both branches below treat the
+      // pending state as resolved (compaction either runs or is bypassed),
+      // and the threshold-checker is idempotent on re-set.
       session.autoCompactPending = false;
-      session.pendingUserText = text;
-      session.pendingEventContext = { channel, threadTs, user, ts };
 
-      // Notice post is decorative — fire-and-forget so Slack latency cannot
-      // delay the `/compact` injection that the pipeline is about to run.
-      this.deps.slackApi
-        ?.postSystemMessage(channel, '🗜️ Auto-compact 실행 — 원 메시지는 compact 완료 후 재처리됩니다', { threadTs })
-        .catch((err) => {
-          this.logger.warn('input-processor: pending-compact notice post failed', {
-            error: (err as Error)?.message ?? String(err),
-          });
+      // #952: `new` / `/new` preempts auto-compact. The user is explicitly
+      // discarding the conversation, so compacting it first is wasted work
+      // (compact output is thrown away on session reset) AND delays the
+      // reset by an entire turn. We do NOT stash pendingUserText — there's
+      // no conversation to replay after reset.
+      if (CommandParser.isNewCommand(text)) {
+        this.logger.info('input-processor: new command preempts pending auto-compact', {
+          channel,
+          threadTs,
+          user,
         });
+      } else {
+        session.pendingUserText = text;
+        session.pendingEventContext = { channel, threadTs, user, ts };
 
-      return { handled: true, continueWithPrompt: '/compact' };
+        // Notice post is decorative — fire-and-forget so Slack latency cannot
+        // delay the `/compact` injection that the pipeline is about to run.
+        this.deps.slackApi
+          ?.postSystemMessage(channel, '🗜️ Auto-compact 실행 — 원 메시지는 compact 완료 후 재처리됩니다', { threadTs })
+          .catch((err) => {
+            this.logger.warn('input-processor: pending-compact notice post failed', {
+              error: (err as Error)?.message ?? String(err),
+            });
+          });
+
+        return { handled: true, continueWithPrompt: '/compact' };
+      }
     }
 
     // #716: provide a closed-over postEphemeral so handlers like

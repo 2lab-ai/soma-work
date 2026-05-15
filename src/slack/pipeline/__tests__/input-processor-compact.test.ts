@@ -165,4 +165,71 @@ describe('InputProcessor auto-compact interception (#617 AC3)', () => {
     expect(result2.handled).toBe(false); // normal routing
     expect(session.pendingUserText).toBe('first message'); // not overwritten
   });
+
+  // #952: `new` / `/new` must preempt auto-compact. The user is explicitly
+  // discarding the conversation, so compacting it first is wasted work AND
+  // delays the session reset by an entire turn.
+  describe('new command preempts auto-compact (#952)', () => {
+    it.each([
+      'new',
+      '/new',
+      'NEW',
+      '/NEW',
+      'new some prompt',
+      '/new with args',
+    ])('autoCompactPending=true + text=%s → bypasses compact, clears pending, routes new normally', async (text) => {
+      session.autoCompactPending = true;
+      commandRouterRoute.mockResolvedValueOnce({ handled: true });
+
+      const event = makeEvent(text);
+      const say = vi.fn();
+      const result = await processor.routeCommand(event, say as any);
+
+      // /compact must NOT be injected.
+      expect(result.continueWithPrompt).not.toBe('/compact');
+      // Pending flag is cleared so the next turn isn't intercepted either.
+      expect(session.autoCompactPending).toBe(false);
+      // Original text is NOT stashed — `new` discards context, no replay.
+      expect(session.pendingUserText).toBeNull();
+      expect(session.pendingEventContext).toBeNull();
+      // Notice is NOT posted — compaction isn't happening.
+      expect(postSystemMessage).not.toHaveBeenCalled();
+      // Command router IS invoked so the `new` handler runs.
+      // The raw text (including leading `/`) is forwarded verbatim so
+      // NewHandler.canHandle / parseNewCommand still see the original.
+      expect(commandRouterRoute).toHaveBeenCalledTimes(1);
+      expect(commandRouterRoute).toHaveBeenCalledWith(expect.objectContaining({ text }));
+    });
+
+    it('autoCompactPending=false + text=new → normal routing (no regression)', async () => {
+      session.autoCompactPending = false;
+      commandRouterRoute.mockResolvedValueOnce({ handled: true });
+
+      const event = makeEvent('new');
+      const say = vi.fn();
+      const result = await processor.routeCommand(event, say as any);
+
+      expect(result.handled).toBe(true);
+      expect(result.continueWithPrompt).toBeUndefined();
+      expect(commandRouterRoute).toHaveBeenCalledTimes(1);
+    });
+
+    // Substrings that contain "new" but are NOT the /new command — must follow
+    // the standard interception path and get /compact-stashed like any other
+    // message text.
+    it.each([
+      'newline thoughts',
+      'renew',
+      'renew the cert',
+    ])('text=%s does NOT preempt — standard /compact interception still fires', async (text) => {
+      session.autoCompactPending = true;
+      const event = makeEvent(text);
+      const say = vi.fn();
+      const result = await processor.routeCommand(event, say as any);
+
+      expect(result.handled).toBe(true);
+      expect(result.continueWithPrompt).toBe('/compact');
+      expect(session.pendingUserText).toBe(text);
+    });
+  });
 });
