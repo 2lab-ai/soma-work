@@ -903,8 +903,8 @@ launchctl list | grep soma-work
 ### 11.2 Slack 연결 확인
 
 ```bash
-# 로그에서 Slack 연결 메시지 확인
-grep -i "connected\|socket\|ready" /opt/soma-work/${DEPLOY_ENV}/logs/stderr.log | tail -5
+# 로그에서 Slack 연결 메시지 확인 (날짜별 rotate)
+grep -i "connected\|socket\|ready" /opt/soma-work/${DEPLOY_ENV}/logs/stderr-*.log | tail -5
 ```
 
 ### 11.3 봇 응답 테스트

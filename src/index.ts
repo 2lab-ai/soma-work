@@ -1,6 +1,19 @@
+import * as path from 'path';
 import { installConsoleRedaction } from './logger';
+import { installDateRotatedStdio, readEnvOptions as readLogEnv } from './logging/date-rotated-stdio';
 
 installConsoleRedaction();
+
+// Route stdout/stderr into date-stamped files under <PROJECT_DIR>/logs.
+// Done before any other side-effecting import so all subsequent console
+// output lands in today's file. Under launchd, SOMA_LOG_PASSTHROUGH=0
+// prevents duplicating the firehose into the bootstrap fallback files.
+{
+  const projectDir = process.env.SOMA_CONFIG_DIR || process.cwd();
+  const logsDir = path.join(projectDir, 'logs');
+  const { passthrough, retentionDays } = readLogEnv();
+  installDateRotatedStdio({ logsDir, passthrough, retentionDays });
+}
 
 import './env-paths';
 import { registerMemoryStore, registerSkillStore } from 'somalib/model-commands/catalog';
@@ -28,7 +41,6 @@ registerSkillStore({
 
 import { App } from '@slack/bolt';
 import type { WebClient } from '@slack/web-api';
-import * as path from 'path';
 import { CronStorage } from 'somalib/cron/cron-storage';
 import { initA2tService, shutdownA2tService } from './a2t/a2t-service';
 import { setQueryEnvAdditional } from './auth/query-env-builder';
