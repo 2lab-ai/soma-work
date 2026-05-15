@@ -840,6 +840,47 @@ describe('Stale lastKnownUsagePct after PreCompact (user-reported)', () => {
     );
   });
 
+  it('captures completion message ts on session for deferred update when boundary metadata is missing', async () => {
+    // After PR #932 the user still saw `now ~?% ← was ~80%` because
+    // onCompactBoundary doesn't always provide post_tokens. The product fix
+    // is to remember the completion message ts so the next turn-end usage
+    // sample can chat.update it in-place with a real post-compact %.
+    const hooks = buildCompactHooks({
+      session,
+      channel: 'C1',
+      threadTs: 'T1',
+      slackApi: slackApi as unknown as SlackApiHelper,
+    });
+    await hooks.PreCompact(preCompactPayload() as any);
+    await hooks.PostCompact(postCompactPayload() as any);
+
+    // Must capture the just-posted completion message ts so the deferred
+    // update path (compact-threshold-checker on next turn-end) can find it.
+    expect(session.compactCompletionMessageTs).toBe('1700000000.000100');
+  });
+
+  it('does NOT capture completion message ts when boundary metadata IS present (no deferral needed)', async () => {
+    const hooks = buildCompactHooks({
+      session,
+      channel: 'C1',
+      threadTs: 'T1',
+      slackApi: slackApi as unknown as SlackApiHelper,
+    });
+    await hooks.PreCompact(preCompactPayload() as any);
+
+    // Simulate onCompactBoundary supplying authoritative post_tokens BEFORE
+    // PostCompact fires (the happy path).
+    session.compactPreTokens = 160_000;
+    session.compactPostTokens = 35_000;
+    session.preCompactUsagePct = 80;
+    session.lastKnownUsagePct = 16;
+
+    await hooks.PostCompact(postCompactPayload() as any);
+
+    // No deferral: the completion message already shows real numbers.
+    expect(session.compactCompletionMessageTs).toBeFalsy();
+  });
+
   it('second PostCompact in same cycle does NOT re-arm skipThresholdCheckOnce after consume', async () => {
     // Lifecycle guard: when both PostCompact hook and onCompactBoundary fire
     // (race observed in production), `postCompactCompleteIfNeeded` re-enters

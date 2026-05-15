@@ -522,28 +522,47 @@ export async function postCompactCompleteIfNeeded(
       ? Promise.resolve()
       : (async () => {
           const text = buildCompactCompleteMessage(session);
-          const ts = session.compactStartingMessageTs;
-          if (ts) {
+          const startingTs = session.compactStartingMessageTs;
+          // Track the ts of the message that actually carries the completion
+          // text — chat.update keeps the original ts; the postSystemMessage
+          // fallback creates a new one. We capture it for the deferred
+          // "now %" update path below.
+          let completionTs: string | null = null;
+          if (startingTs) {
             // Replace the live "starting" message in-place. If the update
             // fails (message deleted, edit window expired, etc.) fall back
             // to posting a fresh system message so the user still sees the
             // completion signal.
             try {
-              await slackApi.updateMessage(channel, ts, text);
+              await slackApi.updateMessage(channel, startingTs, text);
+              completionTs = startingTs;
             } catch (err) {
               logger.warn('compact complete: chat.update failed, falling back to new message', {
                 error: (err as Error)?.message ?? String(err),
               });
-              await slackApi.postSystemMessage(channel, text, { threadTs });
+              const fallback = await slackApi.postSystemMessage(channel, text, { threadTs });
+              completionTs = fallback?.ts ?? null;
             }
           } else {
             // No starting ts (fallback-only path) → post a fresh message.
-            await slackApi.postSystemMessage(channel, text, { threadTs });
+            const fallback = await slackApi.postSystemMessage(channel, text, { threadTs });
+            completionTs = fallback?.ts ?? null;
           }
           marker.post = true;
           // Clear runtime-only START tracking now that the cycle is sealed.
           session.compactStartingMessageTs = null;
           session.compactStartedAtMs = null;
+          // Deferred "now %" update path. The just-posted completion message
+          // shows `now ~?% ← was ~80%` whenever the SDK didn't supply
+          // `post_tokens` via onCompactBoundary (observed in production).
+          // The literal `?` is honest but useless to the user — they want a
+          // real number. Save the ts so the next turn-end usage sample (in
+          // `checkAndSchedulePendingCompact`) can chat.update this message
+          // in-place with `now ~25% ← was ~80%`. Skip the deferral when we
+          // already rendered real numbers (compactPostTokens populated).
+          if (completionTs && session.compactPostTokens === null) {
+            session.compactCompletionMessageTs = completionTs;
+          }
           // One-shot threshold-check suppression. The very first post-compact
           // turn's `session.usage` often still carries large cache_read tokens
           // from the pre-compact prefix (the SDK doesn't reset usage atomically
@@ -584,6 +603,45 @@ export async function postCompactCompleteIfNeeded(
   }
 
   await Promise.all([postPromise, dispatchPromise]);
+}
+
+/**
+ * Deferred "now %" recovery for compact-completion messages that rendered
+ * `now ~?%` because no SDK-authoritative `post_tokens` arrived in time.
+ *
+ * Called by `compact-threshold-checker.ts` after it writes a fresh
+ * `session.lastKnownUsagePct` from the next turn-end usage sample. If the
+ * prior compact cycle saved a `compactCompletionMessageTs`, rebuild the
+ * completion text with the now-populated `lastKnownUsagePct` and chat.update
+ * the message in-place. One-shot — clears the field on first call.
+ *
+ * Failure mode: chat.update can fail (message deleted, edit window expired).
+ * We log and clear the field anyway — there's no retry budget for an
+ * already-stale message, and re-attempting next turn just risks looping.
+ *
+ * Keeps Slack-message construction in this module so `compact-threshold-checker`
+ * doesn't have to import `buildCompactCompleteMessage`.
+ */
+export async function updateDeferredCompactCompletionIfPending(
+  deps: Pick<CompactHookDeps, 'session' | 'channel' | 'slackApi'>,
+): Promise<void> {
+  const { session, channel, slackApi } = deps;
+  const ts = session.compactCompletionMessageTs;
+  if (!ts) return;
+
+  // Clear synchronously BEFORE the await so a concurrent caller (unlikely —
+  // this runs from the threshold checker which is per-turn-end serialized,
+  // but defensive) can't double-fire.
+  session.compactCompletionMessageTs = null;
+
+  const text = buildCompactCompleteMessage(session);
+  try {
+    await slackApi.updateMessage(channel, ts, text);
+  } catch (err) {
+    logger.warn('compact complete deferred update: chat.update failed', {
+      error: (err as Error)?.message ?? String(err),
+    });
+  }
 }
 
 async function handlePreCompact(deps: CompactHookDeps, payload: PreCompactHookInput): Promise<void> {

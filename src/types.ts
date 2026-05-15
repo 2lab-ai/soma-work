@@ -432,6 +432,14 @@ export interface ConversationSession {
   // carries inflated cache-read tokens that re-trip the threshold even
   // though the SDK has actually shrunk the conversation.
   skipThresholdCheckOnce?: boolean;
+  // Slack ts of the just-posted "Compaction completed" message — set ONLY
+  // when the message rendered with `now ~?%` because no SDK-authoritative
+  // post-compact tokens were available at PostCompact time. The next
+  // turn-end usage sample (in `checkAndSchedulePendingCompact`) consumes
+  // this ts to chat.update the message in-place with the real post-compact
+  // %, then nulls it (one-shot). Honest user-facing recovery for the case
+  // where `onCompactBoundary` doesn't supply `post_tokens`.
+  compactCompletionMessageTs?: string | null;
   // User message text captured when auto-compact intercepts the turn; re-dispatched after PostCompact.
   pendingUserText?: string | null;
   // Slack event context captured alongside `pendingUserText` for synthetic re-dispatch via event-router.
