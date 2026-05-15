@@ -668,6 +668,16 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // `processor.process(...)`; `touch()` runs from `onSdkActivity` on
     // every SDK event; `clear()` runs in the outer `finally`.
     //
+    // The SDK is silent between `tool_use` and the matching `tool_result`
+    // (it's blocked waiting for the tool to return), so we additionally
+    // `beginToolCall(id)` in `onToolUse` and `endToolCall(id)` in
+    // `onToolResult`. This suspends the silence timer for the duration of
+    // each pending tool — a single long-running MCP call (`mcp__llm__chat`
+    // with `timeoutMs: 600_000`, codex / gemini deep-research) used to
+    // trip the watchdog at exactly the stall window even though the turn
+    // was healthy. Each tool owns its own timeout; the stall watchdog only
+    // guards SDK-level silence with nothing pending.
+    //
     // Codex P4: abort is bound to THIS turn's local `abortController` —
     // not routed through `requestCoordinator.abortSession`, so a late
     // watchdog fire after the turn moved on cannot abort a newer
@@ -897,6 +907,15 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           stallWatchdog.touch();
         },
         onToolUse: async (toolUses, ctx) => {
+          // Suspend the stall watchdog for every tool that's about to run.
+          // Do this BEFORE any `await` so the suspension is in effect even
+          // if a downstream reaction-update / status write hangs. The SDK
+          // emits no events until `tool_result`, so without this a single
+          // long tool call would trip the watchdog at the stall window.
+          // `beginToolCall` is idempotent on duplicate ids.
+          for (const tu of toolUses) {
+            stallWatchdog.beginToolCall(tu.id);
+          }
           // Ghost Session Fix #99: self-terminate if session was terminated while streaming
           if (session.terminated) {
             abortController.abort();
@@ -959,6 +978,15 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           turnCollector.onPhaseChange('도구 실행 중');
         },
         onToolResult: async (toolResults, ctx) => {
+          // Resume the stall watchdog as soon as the matching `tool_result`
+          // arrives. Mirror the `beginToolCall` placement: BEFORE any
+          // `await`, so even a self-terminate / stats hiccup below cannot
+          // leave the watchdog stuck in the suspended state. `endToolCall`
+          // is a no-op for unknown ids, so a duplicated / stale result
+          // cannot accidentally re-arm.
+          for (const tr of toolResults) {
+            stallWatchdog.endToolCall(tr.toolUseId);
+          }
           // Ghost Session Fix #99: self-terminate if session was terminated while streaming
           if (session.terminated) {
             abortController.abort();
