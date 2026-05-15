@@ -344,9 +344,6 @@ export async function postCompactStartingIfNeeded(deps: CompactHookDeps, trigger
   const { session, channel, threadTs, slackApi } = deps;
   const epoch = beginCompactionCycleIfNeeded(session);
 
-  // Snapshot usage% at pre-compact for the "was ~X%" end-of-cycle message.
-  session.preCompactUsagePct = session.lastKnownUsagePct ?? null;
-
   const marker = ensurePostedMap(session)[epoch];
   if (!marker || marker.pre) return;
 
@@ -354,6 +351,36 @@ export async function postCompactStartingIfNeeded(deps: CompactHookDeps, trigger
   // only correct position — setting it after the Slack round-trip leaves a
   // race window where a parallel caller passes the guard and double-posts.
   marker.pre = true;
+
+  // Snapshot usage% at pre-compact for the "was ~X%" end-of-cycle message,
+  // then INVALIDATE the heuristic so we never present it as "now ~X%".
+  //
+  // Why null: `lastKnownUsagePct` is the last turn-end sample. Once we promote
+  // it to `preCompactUsagePct`, the heuristic value is by definition a
+  // pre-compact reading. If we leave it in place and `onCompactBoundary`
+  // never fires with `post_tokens` (SDK doesn't always provide it),
+  // `buildCompactCompleteMessage` falls into the `now ~${lastKnownUsagePct}%`
+  // branch and prints the SAME number for both segments — e.g.
+  // `now ~83% ← was ~83%`, the user-reported "auto-compact 후 남은
+  // 컨텍스트량 계산 잘못" bug.
+  //
+  // Repopulation paths (any one is sufficient before the completion message):
+  //   1. stream-executor.ts:1174 — onCompactBoundary post_tokens → real %.
+  //   2. compact-threshold-checker.ts:70 — next turn-end usage sample.
+  //
+  // If neither runs in time, `nowSeg` honestly renders `now ~?%` instead of
+  // regurgitating the pre-compact value as if it described post-compact state.
+  //
+  // CRITICAL: must run AFTER the marker.pre dedupe guard above, not before.
+  // Two START paths exist (PreCompact hook + `status === 'compacting'`
+  // fallback in stream-executor) and may both fire in the same cycle. If the
+  // snapshot/invalidate ran before the guard, the second caller would read
+  // `lastKnownUsagePct === null` (already invalidated by the first caller)
+  // and overwrite `preCompactUsagePct` with null — destroying the captured
+  // pre-compact value. The "was ~83%" segment would degrade to "was ~?%".
+  // Caught by Codex review on PR #932.
+  session.preCompactUsagePct = session.lastKnownUsagePct ?? null;
+  session.lastKnownUsagePct = null;
 
   // Defensive: clear any pre-existing interval before we create a new one.
   // A prior cycle's ticker *should* have been stopped by
@@ -517,13 +544,32 @@ export async function postCompactCompleteIfNeeded(
           // Clear runtime-only START tracking now that the cycle is sealed.
           session.compactStartingMessageTs = null;
           session.compactStartedAtMs = null;
+          // One-shot threshold-check suppression. The very first post-compact
+          // turn's `session.usage` often still carries large cache_read tokens
+          // from the pre-compact prefix (the SDK doesn't reset usage atomically
+          // with the boundary), so `checkAndSchedulePendingCompact` would
+          // immediately re-trip the threshold and post `Context usage 83% ≥
+          // threshold 80%` right after we just announced "Compaction
+          // completed". User-reported as a confusing auto-compact loop.
+          // Skipping ONE check gives the next turn a chance to produce a
+          // fresh, post-compact `session.usage` sample before we decide.
+          //
+          // CRITICAL: must be inside the IIFE (not after it). A second END
+          // signal in the same cycle (PostCompact hook + onCompactBoundary
+          // race) re-enters this function with `marker.post === true`, taking
+          // the `Promise.resolve()` branch above. If suppression were set
+          // outside the IIFE it would re-arm AFTER the next-turn threshold
+          // check already consumed it, suppressing a legitimate later check.
+          session.skipThresholdCheckOnce = true;
         })();
 
   // Rehydration dedupe: whichever END signal fires first marks the epoch so
   // the SessionStart(source=compact) hook doesn't double-rebuild.
+  // Idempotent (set to the same value on re-entry), so safe outside the IIFE.
   ensureRehydratedMap(session)[epoch] = true;
 
   // Clear the "pending" flag so InputProcessor stops intercepting.
+  // Idempotent (already false on re-entry), so safe outside the IIFE.
   session.autoCompactPending = false;
 
   // Consume pending atomically so a second END signal in the same cycle

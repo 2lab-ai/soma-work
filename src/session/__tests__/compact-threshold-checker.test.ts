@@ -163,6 +163,30 @@ describe('checkAndSchedulePendingCompact (#617 AC3)', () => {
     expect(slackApi.postSystemMessage).not.toHaveBeenCalled();
   });
 
+  it('post-compact suppression: skipThresholdCheckOnce skips the call once and clears the flag', async () => {
+    // Reproduces user-reported behavior: "Compaction completed" immediately
+    // followed by "Context usage 83% ≥ threshold 80%" on the very next turn,
+    // because session.usage hadn't refreshed (large cache_read on the first
+    // post-compact turn). The completion path sets skipThresholdCheckOnce so
+    // that single check returns false. Subsequent turns are not affected.
+    session.usage = makeUsage(95_000, 100_000); // would normally fire
+    session.skipThresholdCheckOnce = true;
+
+    const result1 = await run();
+    expect(result1).toBe(false);
+    expect(session.autoCompactPending).toBe(false);
+    expect(slackApi.postSystemMessage).not.toHaveBeenCalled();
+    // Flag must be one-shot — cleared after the suppressed check.
+    expect(session.skipThresholdCheckOnce).toBeFalsy();
+    // Still record latestKnownUsagePct so the fallback Y% has data.
+    expect(session.lastKnownUsagePct).toBe(95);
+
+    // Next call (no flag) fires normally.
+    const result2 = await run();
+    expect(result2).toBe(true);
+    expect(session.autoCompactPending).toBe(true);
+  });
+
   it('AC3: slackPost failure does NOT revert autoCompactPending — next turn still compacts', async () => {
     session.usage = makeUsage(90_000, 100_000);
     slackApi.postSystemMessage.mockRejectedValueOnce(new Error('slack 503'));
