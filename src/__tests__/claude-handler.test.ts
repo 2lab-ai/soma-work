@@ -122,13 +122,7 @@ describe('maybeThrowOneMUnavailable', () => {
   });
 });
 
-// Silent suppression of the post-abort "Error in hook callback hook_N: Stream
-// closed" stderr frame. PR #928 downgraded warn → info, which still flooded
-// stdout.log with the full bun stack on every abort (~3 frames per abort ×
-// ~150 aborts in 8 days of dev = ~450 multi-KB info lines). Real fix: classify
-// as 'silent' and skip the logger call entirely. `stderrBuffer` still accumulates
-// every chunk so rate-limit extraction on error keeps working. Full rationale
-// in `classifyClaudeStderr` JSDoc.
+// Rationale (PR #928 → this PR's 'silent' flip) lives in `classifyClaudeStderr` JSDoc.
 describe('classifyClaudeStderr — post-abort hook_callback Stream closed noise', () => {
   // Real-world payload captured from a Claude Code CLI bun-format error frame.
   // The leading "Error in hook callback hook_N:" line is followed by bun's
@@ -201,6 +195,9 @@ describe('classifyClaudeStderr — post-abort hook_callback Stream closed noise'
 // silent classification must result in ZERO logger calls — that's the disk-write
 // reduction the user is asking for.
 describe('handleClaudeStderrChunk — wiring respects silent classification', () => {
+  // Minimal stand-in payload — regex correctness against real bun-format frames
+  // is covered in the `classifyClaudeStderr` block above. Here we only assert
+  // dispatch behaviour, so the payload shape doesn't need to be authentic.
   const HOOK_STREAM_CLOSED_STDERR =
     'Error in hook callback hook_3: <bun ctx>\nerror: Stream closed\n  at sendRequest (cli.js:9414:133)';
 
@@ -217,19 +214,16 @@ describe('handleClaudeStderrChunk — wiring respects silent classification', ()
 
   it('makes ZERO logger calls when matched stderr arrives after abort', () => {
     const { logger, calls } = makeRecordingLogger();
-    const abortController = new AbortController();
-    abortController.abort();
 
-    handleClaudeStderrChunk(logger, HOOK_STREAM_CLOSED_STDERR, abortController);
+    handleClaudeStderrChunk(logger, HOOK_STREAM_CLOSED_STDERR, true);
 
     expect(calls).toHaveLength(0);
   });
 
   it('warns as before on matched stderr when NOT aborted', () => {
     const { logger, calls } = makeRecordingLogger();
-    const abortController = new AbortController();
 
-    handleClaudeStderrChunk(logger, HOOK_STREAM_CLOSED_STDERR, abortController);
+    handleClaudeStderrChunk(logger, HOOK_STREAM_CLOSED_STDERR, false);
 
     expect(calls).toHaveLength(1);
     expect(calls[0]?.message).toBe('Claude stderr');
@@ -237,22 +231,11 @@ describe('handleClaudeStderrChunk — wiring respects silent classification', ()
 
   it('warns on unrelated stderr regardless of abort state', () => {
     const { logger: logger1, calls: calls1 } = makeRecordingLogger();
-    const aborted = new AbortController();
-    aborted.abort();
-    handleClaudeStderrChunk(logger1, 'Error: ENOENT', aborted);
+    handleClaudeStderrChunk(logger1, 'Error: ENOENT', true);
     expect(calls1).toEqual([{ message: 'Claude stderr', meta: { data: 'Error: ENOENT' } }]);
 
     const { logger: logger2, calls: calls2 } = makeRecordingLogger();
-    handleClaudeStderrChunk(logger2, 'Error: ENOENT', new AbortController());
+    handleClaudeStderrChunk(logger2, 'Error: ENOENT', false);
     expect(calls2).toEqual([{ message: 'Claude stderr', meta: { data: 'Error: ENOENT' } }]);
-  });
-
-  it('tolerates undefined abortController (treats as not aborted)', () => {
-    const { logger, calls } = makeRecordingLogger();
-    handleClaudeStderrChunk(logger, HOOK_STREAM_CLOSED_STDERR, undefined);
-    // Without an abort signal the gate is closed → frame surfaces at warn
-    // because it could indicate an unexpected transport teardown.
-    expect(calls).toHaveLength(1);
-    expect(calls[0]?.message).toBe('Claude stderr');
   });
 });

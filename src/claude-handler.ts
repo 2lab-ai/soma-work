@@ -243,6 +243,10 @@ export interface StderrLogger {
  * switch — `'warn'` logs, `'silent'` does nothing. This is the disk-write
  * elimination point; keep it tight.
  *
+ * `aborted` matches `classifyClaudeStderr`'s parameter shape so callers own
+ * the source-of-truth for "are we tearing down" (which may not always be an
+ * `AbortController` — `tools:[]` callsites we may unify later don't have one).
+ *
  * `stderrBuffer` accumulation lives at the caller because it's part of the
  * Claude query's error-recovery pathway, not part of logging policy. Don't
  * inline buffering here.
@@ -250,12 +254,8 @@ export interface StderrLogger {
  * Exported so tests can spy on the dispatch directly without rebuilding the
  * full `streamQuery` harness.
  */
-export function handleClaudeStderrChunk(
-  logger: StderrLogger,
-  data: string,
-  abortController: AbortController | undefined,
-): void {
-  const classification = classifyClaudeStderr(data, abortController?.signal.aborted ?? false);
+export function handleClaudeStderrChunk(logger: StderrLogger, data: string, aborted: boolean): void {
+  const classification = classifyClaudeStderr(data, aborted);
   if (classification.level === 'silent') {
     return;
   }
@@ -1306,7 +1306,7 @@ export class ClaudeHandler {
       let stderrBuffer = '';
       options.stderr = (data: string) => {
         stderrBuffer += data;
-        handleClaudeStderrChunk(this.logger, data, abortController);
+        handleClaudeStderrChunk(this.logger, data, abortController?.signal.aborted ?? false);
       };
 
       this.logger.debug('Claude query options', options);
