@@ -21,6 +21,15 @@ export interface StreamExecutorLike {
     turnCollector?: {
       getResult(): AgentTurnResult;
     };
+    /**
+     * `true` when StreamExecutor's catch branch already surfaced the failure
+     * to the user (Exception card via `turnNotifier`, status/reaction updates,
+     * thread-panel close). The adapter treats this as a graceful turn end
+     * instead of throwing — re-throwing would only generate a duplicate Bolt
+     * `slack_bolt_unknown_error` log line because the user already saw the
+     * 🔴 카드. Stall-timeout abort is the primary trigger.
+     */
+    handled?: boolean;
   }>;
 }
 
@@ -171,9 +180,20 @@ export class V1QueryAdapter implements IAgentSession {
       // success=false without collector → 실패 (Review: Gemini P0 → P2)
       // catch block이 runner.fail()을 호출하므로 여기선 throw만
       // retryAfterMs 보존: handleMessage에서 auto-retry 스케줄링에 사용
+      //
+      // Bug fix: when `handled === true`, StreamExecutor's catch branch
+      // already surfaced the failure to the user (Exception card +
+      // status/reaction). Throwing here would propagate to slack-handler's
+      // catch and out to Bolt as `slack_bolt_unknown_error`, polluting logs
+      // without any added UX. Resolve with a degraded-but-valid AgentTurnResult
+      // and let the normal turn-end path run (runner.finish below). Stall-
+      // timeout abort is the primary trigger — see `stream-executor.ts`
+      // `handleError()` and PR fix/exception-card-render-message-not-sessiontitle.
       if (!executeResult.success && !executeResult.turnCollector) {
         this._lastRetryAfterMs = (executeResult as any).retryAfterMs;
-        throw new Error('StreamExecutor returned success=false');
+        if (!executeResult.handled) {
+          throw new Error('StreamExecutor returned success=false');
+        }
       }
 
       // turnCollector에서 AgentTurnResult 추출
