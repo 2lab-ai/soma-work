@@ -1814,7 +1814,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // (PTN-4318 / soma-work#933). Coalesce through `.message` → `.code` →
       // `.name` → `JSON.stringify` so non-Error throws (raw strings, plain
       // objects from net layer) still leave a visible trace.
-      const message = stallTimeoutAbort ? '이전 턴이 일정 시간 응답이 없어 중단되었습니다.' : coalesceErrorMessage(error);
+      const message = stallTimeoutAbort
+        ? '이전 턴이 일정 시간 응답이 없어 중단되었습니다.'
+        : coalesceErrorMessage(error);
       this.deps.turnNotifier
         .notify({
           category: 'Exception',

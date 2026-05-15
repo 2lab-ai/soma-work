@@ -516,7 +516,9 @@ describe('SlackBlockKitChannel — Rich Turn Notification', () => {
       // full message body in its text payload.
       return blocks
         .slice(1)
-        .find((b: any) => b.type === 'section' && typeof b.text?.text === 'string' && b.text.text.includes(fullMessage));
+        .find(
+          (b: any) => b.type === 'section' && typeof b.text?.text === 'string' && b.text.text.includes(fullMessage),
+        );
     }
 
     it('renders a section block with the full multi-line error message', async () => {
