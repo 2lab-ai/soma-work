@@ -79,14 +79,12 @@ export function parseDateFromLogFilename(name: string): string | null {
 }
 
 interface StreamState {
-  prefix: LogStreamName;
   currentDate: string;
   fd: number;
 }
 
 function openForDate(logsDir: string, prefix: LogStreamName, dateStamp: string): number {
   fs.mkdirSync(logsDir, { recursive: true });
-  // 'a' opens for append; new file is created if missing.
   return fs.openSync(buildLogPath(logsDir, prefix, dateStamp), 'a');
 }
 
@@ -121,16 +119,48 @@ type WriteFn = typeof process.stdout.write;
  * Install date-rotated logging for stdout and stderr. Idempotent — calling
  * twice returns the same handle (the second call's options are ignored).
  */
+interface InstalledRecord {
+  handle: DateRotatedStdioHandle;
+  effective: { logsDir: string; retentionDays: number; passthrough: boolean };
+}
+const INSTALLED_REC: { current: InstalledRecord | null } = { current: null };
+
+/** Return the active handle for graceful shutdown (flush). Null if not installed. */
+export function getInstalledDateRotatedStdio(): DateRotatedStdioHandle | null {
+  return INSTALLED_REC.current?.handle ?? null;
+}
+
 export function installDateRotatedStdio(options: DateRotatedStdioOptions): DateRotatedStdioHandle {
   const globalState = global as unknown as GlobalState;
   const existing = globalState[INSTALL_BRAND];
-  if (existing) return existing;
 
   const logsDir = options.logsDir;
   const clock = options.clock ?? (() => new Date());
   const retentionDays = options.retentionDays ?? 30;
   const passthrough = options.passthrough ?? true;
   const scheduleRetention = options.scheduleRetention ?? true;
+
+  if (existing) {
+    // Re-install with mismatched options is almost always a wiring bug:
+    // two call sites disagreeing on logsDir/retention/passthrough. Surface
+    // it via process.stderr.write (already patched by the first install,
+    // so the warning lands in the rotated stderr file) but do not throw —
+    // preserves back-compat for idempotent re-install with same options.
+    const eff = INSTALLED_REC.current?.effective;
+    if (eff && (eff.logsDir !== logsDir || eff.retentionDays !== retentionDays || eff.passthrough !== passthrough)) {
+      const msg =
+        `[date-rotated-stdio] second install attempted with different options ` +
+        `(active: logsDir=${eff.logsDir} retentionDays=${eff.retentionDays} passthrough=${eff.passthrough}; ` +
+        `requested: logsDir=${logsDir} retentionDays=${retentionDays} passthrough=${passthrough}). ` +
+        `Keeping active install.\n`;
+      try {
+        process.stderr.write(msg);
+      } catch {
+        // stderr unavailable; nothing we can do.
+      }
+    }
+    return existing;
+  }
 
   fs.mkdirSync(logsDir, { recursive: true });
 
@@ -155,9 +185,24 @@ export function installDateRotatedStdio(options: DateRotatedStdioOptions): DateR
       }
     }
     const fd = openForDate(logsDir, prefix, dateStamp);
-    const next: StreamState = { prefix, currentDate: dateStamp, fd };
+    const next: StreamState = { currentDate: dateStamp, fd };
     states[prefix] = next;
     return next;
+  };
+
+  // Date-stamp cache. The hot path computes today's stamp on every write;
+  // we cheaply detect day rollover via Date#getDate() and only rebuild the
+  // string on a different day. Survives clock backflow (same getDate() →
+  // cached stamp is reused; tests pin this behavior).
+  let cachedDay = -1;
+  let cachedStamp = '';
+  const computeDateStamp = (): string => {
+    const now = clock();
+    const day = now.getDate();
+    if (day === cachedDay) return cachedStamp;
+    cachedStamp = formatLocalDateStamp(now);
+    cachedDay = day;
+    return cachedStamp;
   };
 
   const routeWrite = (
@@ -180,7 +225,7 @@ export function installDateRotatedStdio(options: DateRotatedStdioOptions): DateR
     let writeErr: Error | null = null;
     try {
       const buf = toBuffer(chunk, encoding);
-      const dateStamp = formatLocalDateStamp(clock());
+      const dateStamp = computeDateStamp();
       const state = ensureState(prefix, dateStamp);
       writeAll(state.fd, buf);
     } catch (err) {
@@ -210,12 +255,8 @@ export function installDateRotatedStdio(options: DateRotatedStdioOptions): DateR
     // Reflect.apply keeps the overload union intact (the TS narrowing of
     // encodingOrCb cannot reach overload selection on a bound .call).
     const args: unknown[] = [chunk];
-    if (typeof encodingOrCb === 'function') {
-      args.push(encodingOrCb);
-    } else {
-      if (encoding !== undefined) args.push(encoding);
-      if (callback) args.push(callback);
-    }
+    if (encoding !== undefined) args.push(encoding);
+    if (callback) args.push(callback);
     return Reflect.apply(original, stream, args) as boolean;
   };
 
@@ -231,10 +272,21 @@ export function installDateRotatedStdio(options: DateRotatedStdioOptions): DateR
     cb?: (err?: Error | null) => void,
   ): boolean => routeWrite('stderr', process.stderr, originalStderrWrite, chunk, encodingOrCb, cb)) as WriteFn;
 
+  let retentionTimer: NodeJS.Timeout | null = null;
+
+  // Restore writes on any failure during retention/handle setup so a
+  // throw between patching and brand-set cannot leave the process with
+  // patched writes but no install record (which would let a subsequent
+  // install double-patch).
+  const restoreOnFailure = (err: unknown): never => {
+    if (process.stdout.write === patchedStdout) process.stdout.write = originalStdoutWrite;
+    if (process.stderr.write === patchedStderr) process.stderr.write = originalStderrWrite;
+    throw err;
+  };
+
   process.stdout.write = patchedStdout;
   process.stderr.write = patchedStderr;
 
-  let retentionTimer: NodeJS.Timeout | null = null;
   const pruneNow = (): number => {
     if (retentionDays <= 0) return 0;
     const nowDate = clock();
@@ -263,54 +315,60 @@ export function installDateRotatedStdio(options: DateRotatedStdioOptions): DateR
     return deleted;
   };
 
-  if (scheduleRetention && retentionDays > 0) {
-    pruneNow();
-    retentionTimer = setInterval(pruneNow, DAY_MS);
-    retentionTimer.unref();
+  try {
+    if (scheduleRetention && retentionDays > 0) {
+      pruneNow();
+      retentionTimer = setInterval(pruneNow, DAY_MS);
+      retentionTimer.unref();
+    }
+
+    const handle: DateRotatedStdioHandle = {
+      uninstall() {
+        if (process.stdout.write === patchedStdout) {
+          process.stdout.write = originalStdoutWrite;
+        }
+        if (process.stderr.write === patchedStderr) {
+          process.stderr.write = originalStderrWrite;
+        }
+        for (const key of ['stdout', 'stderr'] as const) {
+          const s = states[key];
+          if (s) {
+            try {
+              fs.closeSync(s.fd);
+            } catch {
+              // Best-effort.
+            }
+            states[key] = null;
+          }
+        }
+        if (retentionTimer) {
+          clearInterval(retentionTimer);
+          retentionTimer = null;
+        }
+        delete globalState[INSTALL_BRAND];
+        INSTALLED_REC.current = null;
+      },
+      flush() {
+        for (const key of ['stdout', 'stderr'] as const) {
+          const s = states[key];
+          if (s) {
+            try {
+              fs.fsyncSync(s.fd);
+            } catch {
+              // Best-effort.
+            }
+          }
+        }
+      },
+      pruneNow,
+    };
+
+    globalState[INSTALL_BRAND] = handle;
+    INSTALLED_REC.current = { handle, effective: { logsDir, retentionDays, passthrough } };
+    return handle;
+  } catch (err) {
+    return restoreOnFailure(err);
   }
-
-  const handle: DateRotatedStdioHandle = {
-    uninstall() {
-      if (process.stdout.write === patchedStdout) {
-        process.stdout.write = originalStdoutWrite;
-      }
-      if (process.stderr.write === patchedStderr) {
-        process.stderr.write = originalStderrWrite;
-      }
-      for (const key of ['stdout', 'stderr'] as const) {
-        const s = states[key];
-        if (s) {
-          try {
-            fs.closeSync(s.fd);
-          } catch {
-            // Best-effort.
-          }
-          states[key] = null;
-        }
-      }
-      if (retentionTimer) {
-        clearInterval(retentionTimer);
-        retentionTimer = null;
-      }
-      delete globalState[INSTALL_BRAND];
-    },
-    flush() {
-      for (const key of ['stdout', 'stderr'] as const) {
-        const s = states[key];
-        if (s) {
-          try {
-            fs.fsyncSync(s.fd);
-          } catch {
-            // Best-effort.
-          }
-        }
-      }
-    },
-    pruneNow,
-  };
-
-  globalState[INSTALL_BRAND] = handle;
-  return handle;
 }
 
 /**

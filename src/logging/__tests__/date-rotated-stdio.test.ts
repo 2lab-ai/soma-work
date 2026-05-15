@@ -6,6 +6,7 @@ import {
   buildLogPath,
   type DateRotatedStdioHandle,
   formatLocalDateStamp,
+  getInstalledDateRotatedStdio,
   installDateRotatedStdio,
   parseDateFromLogFilename,
 } from '../date-rotated-stdio';
@@ -228,6 +229,160 @@ describe('installDateRotatedStdio', () => {
       process.stdout.write = original;
     }
     expect(calls).toBe(1);
+  });
+
+  it('passthrough preserves `this` so Writable internals see process.stdout', () => {
+    const now = new Date(2026, 4, 15, 10, 0, 0);
+    const original = process.stdout.write.bind(process.stdout);
+    let receivedThis: unknown = null;
+    const capturing = function (this: unknown, _chunk: unknown) {
+      receivedThis = this;
+      return true;
+    } as typeof process.stdout.write;
+    process.stdout.write = capturing;
+    try {
+      handle = installDateRotatedStdio({
+        logsDir: tmpDir,
+        clock: () => now,
+        passthrough: true,
+        scheduleRetention: false,
+      });
+      process.stdout.write('hi');
+    } finally {
+      handle?.uninstall();
+      handle = null;
+      process.stdout.write = original;
+    }
+    expect(receivedThis).toBe(process.stdout);
+  });
+
+  it('stderr passthrough mirrors stdout: original called once, `this` preserved', () => {
+    const now = new Date(2026, 4, 15, 10, 0, 0);
+    const original = process.stderr.write.bind(process.stderr);
+    let calls = 0;
+    let receivedThis: unknown = null;
+    const capturing = function (this: unknown, _chunk: unknown) {
+      calls++;
+      receivedThis = this;
+      return true;
+    } as typeof process.stderr.write;
+    process.stderr.write = capturing;
+    try {
+      handle = installDateRotatedStdio({
+        logsDir: tmpDir,
+        clock: () => now,
+        passthrough: true,
+        scheduleRetention: false,
+      });
+      process.stderr.write('echo-err\n');
+    } finally {
+      handle?.uninstall();
+      handle = null;
+      process.stderr.write = original;
+    }
+    expect(calls).toBe(1);
+    expect(receivedThis).toBe(process.stderr);
+  });
+
+  it('callback-form write(chunk, cb) fires the callback after write completes', () => {
+    const now = new Date(2026, 4, 15, 10, 0, 0);
+    handle = installDateRotatedStdio({
+      logsDir: tmpDir,
+      clock: () => now,
+      passthrough: false,
+      scheduleRetention: false,
+    });
+    let calledWith: Error | null | undefined;
+    process.stdout.write('cb\n', (err) => {
+      calledWith = err ?? null;
+    });
+    handle.flush();
+    expect(calledWith).toBeNull();
+    expect(fs.readFileSync(path.join(tmpDir, 'stdout-2026-05-15.log'), 'utf-8')).toBe('cb\n');
+  });
+
+  it('three-arg form write(chunk, encoding, cb) is supported', () => {
+    const now = new Date(2026, 4, 15, 10, 0, 0);
+    handle = installDateRotatedStdio({
+      logsDir: tmpDir,
+      clock: () => now,
+      passthrough: false,
+      scheduleRetention: false,
+    });
+    let calledWith: Error | null | undefined;
+    // 'hello' base64
+    process.stdout.write('aGVsbG8=', 'base64', (err) => {
+      calledWith = err ?? null;
+    });
+    handle.flush();
+    expect(calledWith).toBeNull();
+    expect(fs.readFileSync(path.join(tmpDir, 'stdout-2026-05-15.log'), 'utf-8')).toBe('hello');
+  });
+
+  it('second install with mismatched options writes a warning to the rotated stderr file', () => {
+    const now = new Date(2026, 4, 15, 10, 0, 0);
+    handle = installDateRotatedStdio({
+      logsDir: tmpDir,
+      clock: () => now,
+      passthrough: false,
+      retentionDays: 7,
+      scheduleRetention: false,
+    });
+    const second = installDateRotatedStdio({
+      logsDir: tmpDir,
+      clock: () => now,
+      passthrough: true, // mismatched
+      retentionDays: 30, // mismatched
+      scheduleRetention: false,
+    });
+    expect(second).toBe(handle);
+    handle.flush();
+    const stderrLog = fs.readFileSync(path.join(tmpDir, 'stderr-2026-05-15.log'), 'utf-8');
+    expect(stderrLog).toContain('second install attempted with different options');
+    expect(stderrLog).toContain('passthrough=false');
+    expect(stderrLog).toContain('passthrough=true');
+    expect(stderrLog).toContain('retentionDays=7');
+    expect(stderrLog).toContain('retentionDays=30');
+  });
+
+  it('second install with IDENTICAL options is a silent no-op (no warning emitted)', () => {
+    const now = new Date(2026, 4, 15, 10, 0, 0);
+    handle = installDateRotatedStdio({
+      logsDir: tmpDir,
+      clock: () => now,
+      passthrough: false,
+      retentionDays: 7,
+      scheduleRetention: false,
+    });
+    const second = installDateRotatedStdio({
+      logsDir: tmpDir,
+      clock: () => now,
+      passthrough: false,
+      retentionDays: 7,
+      scheduleRetention: false,
+    });
+    expect(second).toBe(handle);
+    handle.flush();
+    // No stderr file should exist (or if it does, it must be empty).
+    const stderrPath = path.join(tmpDir, 'stderr-2026-05-15.log');
+    if (fs.existsSync(stderrPath)) {
+      expect(fs.readFileSync(stderrPath, 'utf-8')).toBe('');
+    }
+  });
+
+  it('getInstalledDateRotatedStdio returns the active handle and null after uninstall', () => {
+    expect(getInstalledDateRotatedStdio()).toBeNull();
+    const now = new Date(2026, 4, 15, 10, 0, 0);
+    handle = installDateRotatedStdio({
+      logsDir: tmpDir,
+      clock: () => now,
+      passthrough: false,
+      scheduleRetention: false,
+    });
+    expect(getInstalledDateRotatedStdio()).toBe(handle);
+    handle.uninstall();
+    handle = null;
+    expect(getInstalledDateRotatedStdio()).toBeNull();
   });
 
   it('prunes files older than retentionDays based on filename date, keeps today and unrelated files', () => {

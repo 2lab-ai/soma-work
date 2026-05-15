@@ -1,6 +1,10 @@
 import * as path from 'path';
 import { installConsoleRedaction } from './logger';
-import { installDateRotatedStdio, readEnvOptions as readLogEnv } from './logging/date-rotated-stdio';
+import {
+  getInstalledDateRotatedStdio,
+  installDateRotatedStdio,
+  readEnvOptions as readLogEnv,
+} from './logging/date-rotated-stdio';
 
 installConsoleRedaction();
 
@@ -898,6 +902,15 @@ async function start() {
       // Release PID lock last — after all connections are torn down
       releasePidLock(DATA_DIR);
 
+      // Flush any buffered date-rotated log writes to disk before exit.
+      // fs.writeSync() is synchronous so this is mostly fsyncSync nudging
+      // the kernel; cheap insurance against losing the final shutdown line.
+      try {
+        getInstalledDateRotatedStdio()?.flush();
+      } catch {
+        // Best-effort — never block shutdown on log flush.
+      }
+
       process.exit(0);
     };
 
@@ -916,6 +929,11 @@ async function start() {
       } catch (saveError) {
         console.error('CRASH: failed to save sessions', saveError);
       }
+      try {
+        getInstalledDateRotatedStdio()?.flush();
+      } catch {
+        // Best-effort flush before crash exit.
+      }
       process.exit(1);
     });
 
@@ -927,6 +945,11 @@ async function start() {
         console.error('CRASH: sessions saved successfully');
       } catch (saveError) {
         console.error('CRASH: failed to save sessions', saveError);
+      }
+      try {
+        getInstalledDateRotatedStdio()?.flush();
+      } catch {
+        // Best-effort flush before crash exit.
       }
       process.exit(1);
     });
