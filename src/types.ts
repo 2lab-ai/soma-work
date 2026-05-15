@@ -424,6 +424,14 @@ export interface ConversationSession {
   compactTickInterval?: ReturnType<typeof setInterval>;
   // Threshold-checker → input-processor signal that next /compact-threshold-violating user turn must be compacted.
   autoCompactPending?: boolean;
+  // One-shot suppression for `checkAndSchedulePendingCompact`. Set to `true`
+  // by `postCompactCompleteIfNeeded` when a compact cycle seals; cleared by
+  // the very next threshold check. Prevents the "Compaction completed →
+  // Context usage 83% ≥ threshold 80% (auto-compact loop)" sequence the user
+  // reported, where the first post-compact turn's `session.usage` still
+  // carries inflated cache-read tokens that re-trip the threshold even
+  // though the SDK has actually shrunk the conversation.
+  skipThresholdCheckOnce?: boolean;
   // User message text captured when auto-compact intercepts the turn; re-dispatched after PostCompact.
   pendingUserText?: string | null;
   // Slack event context captured alongside `pendingUserText` for synthetic re-dispatch via event-router.
