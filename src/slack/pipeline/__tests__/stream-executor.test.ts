@@ -785,6 +785,32 @@ describe('Abort handling', () => {
     expect(abortController.signal.reason).toBe('supersede');
   });
 
+  // Regression guard for the stall-watchdog false-positive on long tools.
+  // A single MCP call (codex / gemini) can legitimately block the SDK for
+  // up to its own `timeoutMs` (10 min default for `mcp__llm__chat`). With
+  // the previous wiring, the watchdog fired at the stall window even though
+  // work was healthy. `beginToolCall` on tool_use must suspend the timer;
+  // `endToolCall` on the matching tool_result must resume it.
+  it('stall watchdog: pending tool call suspends the timer across the gap', async () => {
+    const { StreamStallWatchdog } = await import('../stream-stall-watchdog');
+    const abortController = new AbortController();
+
+    // Short window so the test stays fast.
+    const wd = new StreamStallWatchdog(50, () => abortController.abort('stall-timeout'));
+    wd.arm();
+    wd.beginToolCall('mcp__llm__chat:abc'); // SDK now waiting for tool_result
+
+    // Way past the stall window — the watchdog must NOT fire.
+    await new Promise((r) => setTimeout(r, 120));
+    expect(abortController.signal.aborted).toBe(false);
+
+    // tool_result arrives — re-arm with a fresh window.
+    wd.endToolCall('mcp__llm__chat:abc');
+    await new Promise((r) => setTimeout(r, 80));
+    expect(abortController.signal.aborted).toBe(true);
+    expect(abortController.signal.reason).toBe('stall-timeout');
+  });
+
   it('preserves session for Claude SDK rate-limit/process-exit errors', async () => {
     const deps = createExecutorDeps();
     const executor = new StreamExecutor(deps);
