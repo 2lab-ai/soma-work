@@ -492,4 +492,120 @@ describe('SlackBlockKitChannel — Rich Turn Notification', () => {
       expect(text).not.toContain(' — ');
     });
   });
+
+  // -------------------------------------------------------------------------
+  // Exception card — full error body block.
+  //
+  // Bug fix: when an error reason is longer than what fits cleanly in the
+  // header suffix line (e.g. `Claude Code returned an error result: You've
+  // hit your limit · resets 10:50pm (Asia/Seoul)`), users still need to see
+  // the *full* body, not a one-line summary. Exception cards now include a
+  // dedicated section block under the header that renders the entire
+  // `event.message` content in a markdown code fence.
+  //
+  // Header suffix stays the short, one-line summary (first line / first
+  // sentence) so the notification preview remains readable. Long bodies,
+  // stack traces, multi-line API errors → second section block.
+  //
+  // Trace: PTN-4318 / soma-work#933 / autoz issue thread 1778565834.813169
+  // -------------------------------------------------------------------------
+  describe('Exception card includes full error body block (regression: hidden error detail)', () => {
+    function findBodyBlock(api: { postMessage: any }, fullMessage: string): any | undefined {
+      const blocks = api.postMessage.mock.calls[0][2].attachments[0].blocks;
+      // Skip the header (index 0) — search for a section that contains the
+      // full message body in its text payload.
+      return blocks
+        .slice(1)
+        .find((b: any) => b.type === 'section' && typeof b.text?.text === 'string' && b.text.text.includes(fullMessage));
+    }
+
+    it('renders a section block with the full multi-line error message', async () => {
+      const api = createMockSlackApi();
+      const channel = new SlackBlockKitChannel(api);
+      const fullMessage = [
+        "Claude Code returned an error result: You've hit your limit · resets 10:50pm (Asia/Seoul)",
+        'API Error: Server is temporarily limiting requests (not your usage limit) · Rate limited',
+        'Claude Code process aborted by user',
+      ].join('\n');
+
+      await channel.send(
+        makeEvent({
+          category: 'Exception',
+          sessionTitle: 'PTN-4318 완수',
+          message: fullMessage,
+        }),
+      );
+
+      const bodyBlock = findBodyBlock(api, fullMessage);
+      expect(bodyBlock).toBeDefined();
+      // The full body must be in a code fence so newlines render and the
+      // model output isn't markdown-interpreted as Slack lists / headers.
+      expect(bodyBlock.text.text).toContain('```');
+      expect(bodyBlock.text.text).toContain(fullMessage);
+    });
+
+    it('does NOT render a body block for non-Exception categories', async () => {
+      const api = createMockSlackApi();
+      const channel = new SlackBlockKitChannel(api);
+      await channel.send(
+        makeEvent({
+          category: 'WorkflowComplete',
+          sessionTitle: 'PR #77 리뷰',
+          message: 'should-not-render-as-body',
+        }),
+      );
+
+      const blocks = api.postMessage.mock.calls[0][2].attachments[0].blocks;
+      const bodyMatch = blocks.find(
+        (b: any) =>
+          b.type === 'section' && typeof b.text?.text === 'string' && b.text.text.includes('should-not-render-as-body'),
+      );
+      expect(bodyMatch).toBeUndefined();
+    });
+
+    it('skips body block when Exception has no message (only sessionTitle fallback)', async () => {
+      const api = createMockSlackApi();
+      const channel = new SlackBlockKitChannel(api);
+      await channel.send(
+        makeEvent({
+          category: 'Exception',
+          sessionTitle: 'Some Title',
+          message: undefined,
+        }),
+      );
+
+      const blocks = api.postMessage.mock.calls[0][2].attachments[0].blocks;
+      // Only the header (and possibly other rich context blocks) — no
+      // markdown code fence body block.
+      const fenceCount = blocks.filter(
+        (b: any) => b.type === 'section' && typeof b.text?.text === 'string' && b.text.text.includes('```'),
+      ).length;
+      expect(fenceCount).toBe(0);
+    });
+
+    it('truncates extremely long messages to keep blocks under Slack limits', async () => {
+      const api = createMockSlackApi();
+      const channel = new SlackBlockKitChannel(api);
+      // Slack section text hard limit is 3000 chars. Construct 6000 char body.
+      const longMessage = 'X'.repeat(6000);
+
+      await channel.send(
+        makeEvent({
+          category: 'Exception',
+          sessionTitle: 'whatever',
+          message: longMessage,
+        }),
+      );
+
+      const blocks = api.postMessage.mock.calls[0][2].attachments[0].blocks;
+      const bodyBlock = blocks
+        .slice(1)
+        .find((b: any) => b.type === 'section' && typeof b.text?.text === 'string' && b.text.text.includes('XXX'));
+      expect(bodyBlock).toBeDefined();
+      // Section text capped well under Slack's 3000-char block limit.
+      expect(bodyBlock.text.text.length).toBeLessThanOrEqual(3000);
+      // Truncation marker present so users know the body was clipped.
+      expect(bodyBlock.text.text).toMatch(/truncated|…|\.{3}/);
+    });
+  });
 });
