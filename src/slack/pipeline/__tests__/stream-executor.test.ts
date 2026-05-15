@@ -463,6 +463,103 @@ describe('Abort handling', () => {
     expect(event.category).toBe('Exception');
     expect(event.channel).toBe('C123');
     expect(event.threadTs).toBe('thread123');
+    // Contract lock-in: stall-timeout must pass the friendly human-readable
+    // reason via `event.message`. The block-kit renderer prefers this over
+    // `event.sessionTitle` for Exception cards, so users see the real reason
+    // instead of a stale workflow title (e.g. "Session Reset" left over from
+    // an earlier /z reset). See slack-block-kit-channel.pickHeaderSuffix.
+    expect(event.message).toBe('이전 턴이 일정 시간 응답이 없어 중단되었습니다.');
+  });
+
+  // -------------------------------------------------------------------------
+  // event.message normalization — see PTN-4318 / soma-work#933.
+  //
+  // When the underlying error has no `.message` (or the thrown value is not
+  // a real Error — a string, a `{ code }` object, etc.), `event.message`
+  // used to fall through to `undefined`, then the renderer fell back to the
+  // stale `event.sessionTitle`, and the user saw the workflow name as the
+  // "오류" reason. Producer must coalesce: `.message ?? .code ?? .name ??
+  // String(error)` so something meaningful always reaches the renderer.
+  // -------------------------------------------------------------------------
+  it('event.message coalesces from .code when .message is missing', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    // A thrown object with `.code` only — common shape for OAuth refresh
+    // errors and net-layer failures.
+    const error = { code: 'ETIMEDOUT' } as any;
+
+    await (executor as any).handleError(
+      error,
+      { ownerId: 'U_OWNER', title: 'PTN-4318 완수' } as any,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say,
+    );
+
+    expect(deps.turnNotifier.notify).toHaveBeenCalledTimes(1);
+    const event = deps.turnNotifier.notify.mock.calls[0][0];
+    expect(event.category).toBe('Exception');
+    // Renderer must not see undefined — otherwise the header falls back to
+    // sessionTitle and the real reason is hidden.
+    expect(typeof event.message).toBe('string');
+    expect(event.message.length).toBeGreaterThan(0);
+    expect(event.message).toContain('ETIMEDOUT');
+  });
+
+  it('event.message coalesces to String(error) when thrown value is a plain string', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = 'raw string error' as any;
+
+    await (executor as any).handleError(
+      error,
+      { ownerId: 'U_OWNER', title: 'autoz turn' } as any,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say,
+    );
+
+    expect(deps.turnNotifier.notify).toHaveBeenCalledTimes(1);
+    expect(deps.turnNotifier.notify.mock.calls[0][0].message).toContain('raw string error');
+  });
+
+  // -------------------------------------------------------------------------
+  // handleEnrichmentFailure must preserve the ORIGINAL caller error in the
+  // fallback `event.message`, not overwrite it with the static
+  // "turn-completion enrichment failed" string. The original error is the
+  // one the user wants to see; the enrichment failure is bookkeeping.
+  // -------------------------------------------------------------------------
+  it('handleEnrichmentFailure: fallback event.message includes the original error reason', () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+
+    const resolved: Array<{ message?: string } | undefined> = [];
+    (executor as any).handleEnrichmentFailure(
+      new Error("Claude Code returned an error result: You've hit your limit · resets 10:50pm (Asia/Seoul)"),
+      {
+        category: 'Exception',
+        userId: 'U_OWNER',
+        channel: 'C123',
+        threadTs: 'thread123',
+        sessionTitle: 'PTN-4318 완수',
+        durationMs: 12345,
+        sessionKey: 'C123:thread123',
+        turnId: 'C123:thread123:42',
+      },
+      (evt: unknown) => {
+        resolved.push(evt as any);
+      },
+    );
+
+    expect(resolved).toHaveLength(1);
+    expect(resolved[0]?.message).toBeDefined();
+    expect(resolved[0]?.message).toContain("You've hit your limit");
   });
 
   it('stays silent on explicit user-stop aborts (Stop button / dashboard stop)', async () => {

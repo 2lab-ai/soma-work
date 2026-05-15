@@ -186,6 +186,35 @@ describe('V1QueryAdapter', () => {
     expect(mockRunner.finish).not.toHaveBeenCalled();
   });
 
+  // Bug fix: stall-timeout / handled aborts already surfaced an Exception card
+  // via turnNotifier. Re-throwing `StreamExecutor returned success=false` only
+  // makes Bolt log an unhandled 'slack_bolt_unknown_error' that pollutes the
+  // service logs (user already saw the card). When StreamExecutor sets
+  // `handled: true`, the adapter must resolve instead of throwing.
+  it('start() with success=false but handled=true resolves (no throw)', async () => {
+    mockExecutor.execute.mockResolvedValue({
+      success: false,
+      messageCount: 0,
+      handled: true,
+    });
+
+    const adapter = new V1QueryAdapter({
+      streamExecutor: mockExecutor as any,
+      executeParams: createMockExecuteParams(),
+      turnRunner: mockRunner as any,
+    });
+
+    const result = await adapter.start('Hello');
+    // The adapter returns a degraded-but-valid AgentTurnResult so the caller
+    // (slack-handler / startWithContinuation) can finish the turn cleanly.
+    expect(result).toBeDefined();
+    expect(result.endTurn.reason).toBe('end_turn');
+    // TurnRunner.finish must be called on the handled-success path so any
+    // lifecycle subscribers see a normal turn closure.
+    expect(mockRunner.fail).not.toHaveBeenCalled();
+    expect(mockRunner.finish).toHaveBeenCalledTimes(1);
+  });
+
   // Review Fix: start() after cancel() should work with fresh AbortController
   it('start() after cancel() uses fresh AbortController', async () => {
     const adapter = new V1QueryAdapter({

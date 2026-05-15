@@ -37,6 +37,7 @@ import { checkAndSchedulePendingCompact } from '../../session/compact-threshold-
 import { buildCompactionContext, snapshotFromSession } from '../../session/compaction-context-builder';
 import { type ActiveTokenInfo, getTokenManager, parseCooldownTime } from '../../token-manager';
 import {
+  coalesceErrorMessage,
   determineTurnCategory,
   type TurnCategory,
   type TurnCompletionEvent,
@@ -99,6 +100,15 @@ export interface ExecuteResult {
   turnCollector?: TurnResultCollector;
   /** If set, caller should auto-retry after this many ms (recoverable error). */
   retryAfterMs?: number;
+  /**
+   * `true` when the catch branch already surfaced the failure to the user
+   * (Exception card via `turnNotifier`, status reset, thread-panel close).
+   * V1QueryAdapter resolves instead of throwing when this is set — re-throwing
+   * would only generate a duplicate Bolt `slack_bolt_unknown_error` log line
+   * because the user has already seen the 🔴 card. Stall-timeout abort is the
+   * primary trigger; other `handleError` paths inherit this guarantee.
+   */
+  handled?: boolean;
 }
 
 interface StreamExecutorDeps {
@@ -373,6 +383,17 @@ export class StreamExecutor {
       error: (err as { message?: string })?.message ?? String(err),
     });
 
+    // Preserve the ORIGINAL caller error reason if available so the user-facing
+    // card surfaces the real cause (e.g. "You've hit your limit · resets 10:50pm"),
+    // not just the bookkeeping label "turn-completion enrichment failed". The
+    // enrichment failure is interesting to operators (see the warn log above) —
+    // but for users we prepend the enrichment status, then keep the actual
+    // reason. PTN-4318 / soma-work#933.
+    const originalReason = coalesceErrorMessage(err);
+    const fallbackMessage = originalReason
+      ? `turn-completion enrichment failed: ${originalReason}`
+      : 'turn-completion enrichment failed';
+
     const fallback: TurnCompletionEvent = {
       category: args.category,
       userId: args.userId,
@@ -380,7 +401,7 @@ export class StreamExecutor {
       threadTs: args.threadTs,
       sessionTitle: args.sessionTitle,
       durationMs: args.durationMs,
-      message: 'turn-completion enrichment failed',
+      message: fallbackMessage,
     };
 
     // Resolve the snapshot with the fallback (NOT undefined) so the Phase-5
@@ -1636,7 +1657,22 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         epoch,
         abortReason,
       );
-      return { success: false, messageCount: 0, retryAfterMs };
+      // `handleError()` ran to completion — it either dispatched a user-facing
+      // Exception card (turnNotifier), reset status/reaction, or both.
+      //
+      // Mark `handled: true` ONLY when no retry is scheduled. With retry
+      // pending, slack-handler still needs to enter its catch branch to read
+      // `getRetryAfterMs()` and arm the auto-resume timer, so the adapter
+      // must throw on the retry path. When no retry is intended (stall-timeout,
+      // quiet aborts, exhausted-budget terminal errors), `handled: true`
+      // lets V1QueryAdapter resolve cleanly — preventing the duplicate Bolt
+      // `slack_bolt_unknown_error` log line that the user complained about.
+      return {
+        success: false,
+        messageCount: 0,
+        retryAfterMs,
+        handled: retryAfterMs === undefined,
+      };
     } finally {
       // Cancel the stall watchdog on every exit path (success, error, or
       // an in-flight abort that the catch branch already handled).
@@ -1773,7 +1809,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
 
     // Trace: docs/turn-notification/trace.md, Scenario 1, Section 3a — Exception path
     if (shouldNotifyException && this.deps.turnNotifier) {
-      const message = stallTimeoutAbort ? '이전 턴이 일정 시간 응답이 없어 중단되었습니다.' : error?.message;
+      // `event.message` must always be a meaningful, non-empty string so the
+      // block-kit renderer can show the full reason in a dedicated body block
+      // (PTN-4318 / soma-work#933). Coalesce through `.message` → `.code` →
+      // `.name` → `JSON.stringify` so non-Error throws (raw strings, plain
+      // objects from net layer) still leave a visible trace.
+      const message = stallTimeoutAbort
+        ? '이전 턴이 일정 시간 응답이 없어 중단되었습니다.'
+        : coalesceErrorMessage(error);
       this.deps.turnNotifier
         .notify({
           category: 'Exception',

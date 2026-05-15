@@ -22,6 +22,14 @@ const logger = new Logger('SlackBlockKitChannel');
 /** Stable identifier for `TurnNotifier.notify({ excludeChannelNames: [...] })` and future filters. */
 export const SLACK_BLOCK_KIT_CHANNEL_NAME = 'slack-block-kit';
 
+/**
+ * Slack `section.text` hard limit is 3000 chars. We cap below that to leave
+ * room for the markdown code fence (```\n + \n```) plus a "truncated"
+ * marker so callers can tell the body was clipped. PTN-4318 / soma-work#933.
+ */
+const EXCEPTION_BODY_MAX_CHARS = 2900;
+const EXCEPTION_HEADER_SUFFIX_MAX_CHARS = 200;
+
 export class SlackBlockKitChannel implements NotificationChannel {
   name = SLACK_BLOCK_KIT_CHANNEL_NAME;
 
@@ -45,7 +53,10 @@ export class SlackBlockKitChannel implements NotificationChannel {
 
     // Slack requires a non-empty `text` fallback when blocks/attachments are present
     // (empty text silently drops the message on some clients and breaks accessibility).
-    const fallbackText = event.sessionTitle || event.category;
+    // For Exception cards, prefer the actual error message so the fallback
+    // text (used in notification previews) reflects the real reason rather
+    // than a stale workflow title.
+    const fallbackText = this.pickHeaderSuffix(event) || event.sessionTitle || event.category;
 
     try {
       const result = await this.slackApi.postMessage(event.channel, fallbackText, {
@@ -88,6 +99,81 @@ export class SlackBlockKitChannel implements NotificationChannel {
     }
   }
 
+  /**
+   * Choose the suffix that follows the "{emoji} *{label}*" header.
+   *
+   * Bug fix: Exception cards used to show `event.sessionTitle` in the header,
+   * but `sessionTitle` reflects the workflow that was running (e.g. "Session
+   * Reset" left over from an earlier `/z reset`) — NOT the error reason.
+   * `handleError()` in `stream-executor.ts` already passes a friendly error
+   * reason via `event.message` (e.g. `이전 턴이 일정 시간 응답이 없어 중단되었습니다.`),
+   * but the renderer was silently dropping it. For Exception, prefer
+   * `event.message` and only fall back to `sessionTitle` when message is
+   * absent. Non-Exception categories keep the existing sessionTitle-only
+   * behavior so success/UIUserAskQuestion cards are unchanged.
+   *
+   * Returns the empty string when no suffix is available — callers conditionally
+   * insert the " — " separator only when this returns a non-empty value.
+   *
+   * PTN-4318 / soma-work#933: the header suffix is now intentionally short
+   * (first line of the error reason, capped at {@link EXCEPTION_HEADER_SUFFIX_MAX_CHARS}).
+   * The full message body — multi-line API errors, stack traces, etc. —
+   * goes into a separate section block built by {@link buildExceptionBodyBlock}.
+   */
+  private pickHeaderSuffix(event: TurnCompletionEvent): string {
+    if (event.category === 'Exception') {
+      const message = event.message?.trim();
+      if (message) {
+        // First line / first sentence so Slack notification previews stay
+        // readable. The full body is rendered separately.
+        const firstLine = message.split(/\r?\n/, 1)[0] ?? message;
+        return firstLine.length > EXCEPTION_HEADER_SUFFIX_MAX_CHARS
+          ? `${firstLine.slice(0, EXCEPTION_HEADER_SUFFIX_MAX_CHARS - 1)}…`
+          : firstLine;
+      }
+      return event.sessionTitle?.trim() || '';
+    }
+    return event.sessionTitle?.trim() || '';
+  }
+
+  /**
+   * Build the Exception-only error-body section block. Returns `null` when
+   * the event has no usable message (so the caller can skip the spread
+   * without conditional logic at the call site).
+   *
+   * The body is wrapped in a markdown code fence so:
+   *  - newlines render verbatim (so multi-line API errors stay multi-line)
+   *  - model-generated `*`/`_`/`>` characters in the error don't accidentally
+   *    trigger Slack mrkdwn formatting
+   *  - long bodies are visually distinct from the rich-context blocks above
+   *
+   * Capped at {@link EXCEPTION_BODY_MAX_CHARS} chars (well under Slack's
+   * 3000-char `section.text` limit) with an explicit `…(truncated)` marker
+   * so users know when the body was clipped.
+   *
+   * PTN-4318 / soma-work#933 — the full error text was previously dropped
+   * by the renderer, leaving users with only the stale `sessionTitle` in
+   * the header. This block restores end-to-end visibility.
+   */
+  private buildExceptionBodyBlock(event: TurnCompletionEvent): any | null {
+    if (event.category !== 'Exception') return null;
+    const message = event.message?.trim();
+    if (!message) return null;
+
+    let body = message;
+    if (body.length > EXCEPTION_BODY_MAX_CHARS) {
+      body = `${body.slice(0, EXCEPTION_BODY_MAX_CHARS)}\n…(truncated)`;
+    }
+
+    return {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `\`\`\`\n${body}\n\`\`\``,
+      },
+    };
+  }
+
   // --- Theme: Default (Dashboard — richest) ---
 
   private buildDefaultBlocks(event: TurnCompletionEvent, emoji: string, label: string): any[] {
@@ -100,15 +186,22 @@ export class SlackBlockKitChannel implements NotificationChannel {
     const threadPermalink = buildThreadPermalink(event.channel, event.threadTs);
     const threadLinkSuffix = threadPermalink ? ` · <${threadPermalink}|🧵 스레드 열기>` : '';
 
+    const headerSuffix = this.pickHeaderSuffix(event);
     const blocks: any[] = [
       {
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: `${emoji} *${label}*${event.sessionTitle ? ` — ${event.sessionTitle}` : ''}${threadLinkSuffix}`,
+          text: `${emoji} *${label}*${headerSuffix ? ` — ${headerSuffix}` : ''}${threadLinkSuffix}`,
         },
       },
     ];
+
+    // Exception body block — full error reason in a code fence. Sits
+    // immediately under the header so users see the cause before any
+    // rich-context (model/usage/tools) lines. PTN-4318 / soma-work#933.
+    const bodyBlock = this.buildExceptionBodyBlock(event);
+    if (bodyBlock) blocks.push(bodyBlock);
 
     // context1: persona | model | effort | startedAt
     const identParts: string[] = [];
@@ -171,15 +264,21 @@ export class SlackBlockKitChannel implements NotificationChannel {
     const threadPermalink = buildThreadPermalink(event.channel, event.threadTs);
     const threadLinkSuffix = threadPermalink ? ` · <${threadPermalink}|🧵 스레드 열기>` : '';
 
+    const headerSuffix = this.pickHeaderSuffix(event);
     const blocks: any[] = [
       {
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: `${emoji} *${label}*${event.sessionTitle ? ` — ${event.sessionTitle}` : ''}${threadLinkSuffix}`,
+          text: `${emoji} *${label}*${headerSuffix ? ` — ${headerSuffix}` : ''}${threadLinkSuffix}`,
         },
       },
     ];
+
+    // Exception body block — same body shown across themes; compact still
+    // benefits from seeing the multi-line reason. PTN-4318 / soma-work#933.
+    const bodyBlock = this.buildExceptionBodyBlock(event);
+    if (bodyBlock) blocks.push(bodyBlock);
 
     const parts: string[] = [];
     if (event.model) {
@@ -204,7 +303,13 @@ export class SlackBlockKitChannel implements NotificationChannel {
   // --- Theme: Minimal ---
 
   private buildMinimalBlocks(event: TurnCompletionEvent, emoji: string, label: string): any[] {
-    const parts: string[] = [`${emoji} ${label}`];
+    // Header summary line — for Exception, append the short first-line of
+    // the error reason so even minimal-theme users see *something* concrete.
+    // The full body still goes into a code-fenced section block below.
+    // PTN-4318 / soma-work#933.
+    const headerSuffix = this.pickHeaderSuffix(event);
+    const headerText = `${emoji} ${label}${headerSuffix && event.category === 'Exception' ? ` — ${headerSuffix}` : ''}`;
+    const parts: string[] = [headerText];
     if (event.model) {
       const modelStr = event.effort ? `${event.model} | ${event.effort}` : event.model;
       parts.push(modelStr);
@@ -212,7 +317,10 @@ export class SlackBlockKitChannel implements NotificationChannel {
     if (typeof event.contextUsagePercent === 'number') parts.push(`${event.contextUsagePercent.toFixed(1)}%`);
     if (event.durationMs) parts.push(this.formatElapsed(event.durationMs));
 
-    return [{ type: 'context', elements: [{ type: 'mrkdwn', text: parts.join(' · ') }] }];
+    const blocks: any[] = [{ type: 'context', elements: [{ type: 'mrkdwn', text: parts.join(' · ') }] }];
+    const bodyBlock = this.buildExceptionBodyBlock(event);
+    if (bodyBlock) blocks.push(bodyBlock);
+    return blocks;
   }
 
   // --- Utility functions ---
