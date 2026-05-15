@@ -113,6 +113,54 @@ export function resetSlackWorkspaceUrl(): void {
 
 // --- Shared helpers ---
 
+/**
+ * Coalesce any thrown value into a human-readable string suitable for
+ * `TurnCompletionEvent.message`. The Slack block-kit Exception card uses
+ * this directly as the visible body; the renderer separately picks a short
+ * first-line summary for the header suffix.
+ *
+ * Priority:
+ *  1. `Error.message` (the common path)
+ *  2. `error.code` (OAuth refresh, net-layer `{ code: 'ETIMEDOUT' }`)
+ *  3. `error.name` (subclassed Errors with empty message)
+ *  4. `String(error)` (plain strings, JSON-shaped throws)
+ *
+ * Returns the empty string for `null` / `undefined` / objects that
+ * stringify to `[object Object]` and have no useful fields — callers can
+ * then fall back to a generic reason.
+ */
+export function coalesceErrorMessage(error: unknown): string {
+  if (error === null || error === undefined) return '';
+
+  if (typeof error === 'string') return error;
+
+  if (typeof error === 'object') {
+    const err = error as { message?: unknown; code?: unknown; name?: unknown };
+    if (typeof err.message === 'string' && err.message.trim().length > 0) {
+      return err.message;
+    }
+    if (typeof err.code === 'string' && err.code.trim().length > 0) {
+      return err.code;
+    }
+    if (typeof err.name === 'string' && err.name.trim().length > 0 && err.name !== 'Error') {
+      return err.name;
+    }
+    // Fall through to String(error) — which is "[object Object]" for plain
+    // objects. We replace that uninformative default with JSON.stringify so
+    // shaped throws like `{ statusCode: 429, retryAfter: 10 }` still leave
+    // a trace.
+    try {
+      const stringified = JSON.stringify(error);
+      if (stringified && stringified !== '{}') return stringified;
+    } catch {
+      // circular ref or non-serializable — fall through
+    }
+    return '';
+  }
+
+  return String(error);
+}
+
 /** Build a Slack thread permalink from channel ID and thread timestamp. */
 export function buildThreadPermalink(channel: string, threadTs: string): string | null {
   if (!_workspaceUrl) {
