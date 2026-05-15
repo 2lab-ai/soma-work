@@ -805,6 +805,41 @@ describe('Stale lastKnownUsagePct after PreCompact (user-reported)', () => {
     expect(session.skipThresholdCheckOnce).toBe(true);
   });
 
+  it('duplicate START path does NOT clobber preCompactUsagePct with null (PR #932 codex review)', async () => {
+    // Two START paths exist for the same cycle: PreCompact hook AND the
+    // `status === 'compacting'` fallback in stream-executor.ts:777. If the
+    // snapshot/invalidate ran BEFORE the marker.pre dedupe guard, the second
+    // caller would read lastKnownUsagePct === null (already invalidated by
+    // the first caller) and overwrite preCompactUsagePct with null. The
+    // completion message would then print "was ~?%" instead of "was ~83%".
+    const hooks = buildCompactHooks({
+      session,
+      channel: 'C1',
+      threadTs: 'T1',
+      slackApi: slackApi as unknown as SlackApiHelper,
+    });
+
+    // First PreCompact: snapshots 83 → preCompactUsagePct=83, lastKnown=null
+    await hooks.PreCompact(preCompactPayload() as any);
+    expect(session.preCompactUsagePct).toBe(83);
+    expect(session.lastKnownUsagePct).toBeNull();
+
+    // Second START in the same cycle (e.g. compacting-status fallback fires
+    // after PreCompact). Must be a no-op for snapshot — preCompactUsagePct
+    // must remain 83, NOT get overwritten to null.
+    await hooks.PreCompact(preCompactPayload() as any);
+    expect(session.preCompactUsagePct).toBe(83);
+    expect(session.lastKnownUsagePct).toBeNull();
+
+    // And the completion message still has the pre-compact value to render.
+    await hooks.PostCompact(postCompactPayload() as any);
+    expect(slackApi.updateMessage).toHaveBeenCalledWith(
+      'C1',
+      '1700000000.000100',
+      '🟢 🗜️ Compaction completed · trigger=manual\nContext: now ~?% ← was ~83%',
+    );
+  });
+
   it('second PostCompact in same cycle does NOT re-arm skipThresholdCheckOnce after consume', async () => {
     // Lifecycle guard: when both PostCompact hook and onCompactBoundary fire
     // (race observed in production), `postCompactCompleteIfNeeded` re-enters

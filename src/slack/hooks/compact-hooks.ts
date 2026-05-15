@@ -344,6 +344,14 @@ export async function postCompactStartingIfNeeded(deps: CompactHookDeps, trigger
   const { session, channel, threadTs, slackApi } = deps;
   const epoch = beginCompactionCycleIfNeeded(session);
 
+  const marker = ensurePostedMap(session)[epoch];
+  if (!marker || marker.pre) return;
+
+  // ATOMIC: claim the cycle synchronously BEFORE any await. This is the
+  // only correct position — setting it after the Slack round-trip leaves a
+  // race window where a parallel caller passes the guard and double-posts.
+  marker.pre = true;
+
   // Snapshot usage% at pre-compact for the "was ~X%" end-of-cycle message,
   // then INVALIDATE the heuristic so we never present it as "now ~X%".
   //
@@ -362,16 +370,17 @@ export async function postCompactStartingIfNeeded(deps: CompactHookDeps, trigger
   //
   // If neither runs in time, `nowSeg` honestly renders `now ~?%` instead of
   // regurgitating the pre-compact value as if it described post-compact state.
+  //
+  // CRITICAL: must run AFTER the marker.pre dedupe guard above, not before.
+  // Two START paths exist (PreCompact hook + `status === 'compacting'`
+  // fallback in stream-executor) and may both fire in the same cycle. If the
+  // snapshot/invalidate ran before the guard, the second caller would read
+  // `lastKnownUsagePct === null` (already invalidated by the first caller)
+  // and overwrite `preCompactUsagePct` with null — destroying the captured
+  // pre-compact value. The "was ~83%" segment would degrade to "was ~?%".
+  // Caught by Codex review on PR #932.
   session.preCompactUsagePct = session.lastKnownUsagePct ?? null;
   session.lastKnownUsagePct = null;
-
-  const marker = ensurePostedMap(session)[epoch];
-  if (!marker || marker.pre) return;
-
-  // ATOMIC: claim the cycle synchronously BEFORE any await. This is the
-  // only correct position — setting it after the Slack round-trip leaves a
-  // race window where a parallel caller passes the guard and double-posts.
-  marker.pre = true;
 
   // Defensive: clear any pre-existing interval before we create a new one.
   // A prior cycle's ticker *should* have been stopped by
