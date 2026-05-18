@@ -3,7 +3,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-// Contract tests derived from docs/pid-lock/trace.md
+// Contract tests derived from docs/current/plans/pid-lock/trace.md
 // Tests the atomic O_EXCL-based PID lock with PID:timestamp format
 
 describe('PID Lock — Single Instance Guard', () => {

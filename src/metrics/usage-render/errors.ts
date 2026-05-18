@@ -1,7 +1,7 @@
 /**
  * Error taxonomy for `/usage card` pipeline.
  * Only these 5 subclasses are whitelisted for text fallback; all other errors re-throw.
- * Trace: docs/usage-card-dark/trace.md, Scenario 13 (SafeOperationalError whitelist)
+ * Trace: docs/current/plans/usage-card-dark/trace.md, Scenario 13 (SafeOperationalError whitelist)
  */
 
 export class SafeOperationalError extends Error {

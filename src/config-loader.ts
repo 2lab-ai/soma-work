@@ -146,7 +146,7 @@ function describeKind(value: unknown): string {
  * Tagged-union return for validators below. Surfacing the failure as data
  * (rather than throwing) lets `parseAgentsConfig` apply the skip-on-warn
  * rule without try/catch noise: one bad agent must not poison sibling
- * agents — Trace: docs/multi-agent/trace.md, Scenario 1.
+ * agents — Trace: docs/current/plans/multi-agent/trace.md, Scenario 1.
  */
 type Result<T, E> = { ok: true; value: T } | { ok: false; error: E };
 
@@ -257,7 +257,7 @@ function validateAgentConfig(name: string, raw: unknown): Result<AgentConfig, st
 /**
  * Parse and validate the agents section from raw config JSON.
  * Invalid agents are skipped with a warning (not fatal).
- * Trace: docs/multi-agent/trace.md, Scenario 1
+ * Trace: docs/current/plans/multi-agent/trace.md, Scenario 1
  */
 export function parseAgentsConfig(raw: any): Record<string, AgentConfig> {
   const result: Record<string, AgentConfig> = {};
@@ -318,7 +318,7 @@ export function loadConfig(configFile: string): Config {
         result.plugin = validatePluginConfig(raw.plugin);
       }
 
-      // Parse agents section (Trace: docs/multi-agent/trace.md, S1)
+      // Parse agents section (Trace: docs/current/plans/multi-agent/trace.md, S1)
       const agents = parseAgentsConfig(raw);
       if (Object.keys(agents).length > 0) {
         result.agents = agents;

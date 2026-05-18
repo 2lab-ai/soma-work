@@ -1,6 +1,6 @@
 #!/bin/bash
 # Step 11: Service Install
-# Installs LaunchAgents for main/dev environments via service.sh.
+# Installs LaunchAgents for main/dev environments via scripts/service.sh.
 
 run_step() {
     step_header "11" "Service Install"
@@ -14,12 +14,12 @@ run_step() {
 
     if [[ -z "$deploy_envs" ]]; then
         warn "No deploy environments configured. Skipping service install."
-        echo -e "  ${DIM}Install manually: ./service.sh main install${NC}"
+        echo -e "  ${DIM}Install manually: ./scripts/service.sh main install${NC}"
         mark_step_done "11"
         return 0
     fi
 
-    local service_sh="$REPO_DIR/service.sh"
+    local service_sh="$REPO_DIR/scripts/service.sh"
 
     for env in $(echo "$deploy_envs" | tr ',' ' '); do
         local dir="/opt/soma-work/$env"
@@ -47,7 +47,7 @@ run_step() {
             sleep 1
         fi
 
-        # Use service.sh to install
+        # Use scripts/service.sh to install
         bash "$service_sh" "$env" install
         sleep 2
 
@@ -58,7 +58,7 @@ run_step() {
             success "  $env service running (PID: $pid)"
         else
             warn "  $env service installed but not running. Check logs:"
-            echo -e "    ${CYAN}./service.sh $env logs stderr${NC}"
+            echo -e "    ${CYAN}./scripts/service.sh $env logs stderr${NC}"
         fi
 
         set_state "service_${env}" "installed"

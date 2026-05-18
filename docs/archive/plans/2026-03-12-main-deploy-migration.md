@@ -4,7 +4,7 @@
 
 **Goal:** Keep the current `dev` deployment intact while making `main` deploy safely to `/opt/soma-work/main` with one-time legacy bootstrap on macmini.
 
-**Architecture:** Add a tested bootstrap module that runs only for `main` deployments, copies seed config/runtime files from known macmini paths, normalizes legacy data with current compatibility logic, and then falls back to the existing rsync + `service.sh install` deploy path. Update setup scripts/docs so all operator-facing branch references align to `dev`.
+**Architecture:** Add a tested bootstrap module that runs only for `main` deployments, copies seed config/runtime files from known macmini paths, normalizes legacy data with current compatibility logic, and then falls back to the existing rsync + `scripts/service.sh install` deploy path. Update setup scripts/docs so all operator-facing branch references align to `dev`.
 
 **Tech Stack:** GitHub Actions, TypeScript, Vitest, bash setup scripts, macOS LaunchAgents
 
@@ -69,7 +69,7 @@ Expected: bootstrap tests pass; config tests still fail until setup/docs are ali
 - Modify: `scripts/setup/07-deploy-dirs.sh`
 - Modify: `scripts/setup/09-github-environments.sh`
 - Modify: `scripts/new-deploy-setup.sh`
-- Modify: `docs/add-new-deploy.md`
+- Modify: `docs/runbook/add-new-deploy.md`
 
 **Step 1: Make the smallest possible text/script changes**
 

@@ -1,7 +1,7 @@
 /**
  * Integration tests for safe-stop on dispatch failure (#698).
  *
- * Trace: docs/dispatch-safe-stop/trace.md (v3) §S2 — 8 tests covering
+ * Trace: docs/archive/features/dispatch-safe-stop/trace.md (v3) §S2 — 8 tests covering
  * 4 drift sites + cleanup robustness + activation predicate.
  *
  * Focuses on the surfaces that can be tested without a full dispatch-service

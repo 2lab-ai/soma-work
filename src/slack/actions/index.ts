@@ -178,7 +178,7 @@ export class ActionHandlers {
       slackApi: ctx.slackApi,
     });
 
-    // Usage card carousel tab click handler — Trace: docs/usage-card-dark/trace.md, Scenarios 8/9/11
+    // Usage card carousel tab click handler — Trace: docs/current/plans/usage-card-dark/trace.md, Scenarios 8/9/11
     this.usageCardHandler = new UsageCardActionHandler({
       tabCache: defaultTabCache,
     });
@@ -296,7 +296,7 @@ export class ActionHandlers {
       await this.sessionHandler.handleIdleKeep(body, respond);
     });
 
-    // Usage card carousel tab click — Trace: docs/usage-card-dark/trace.md, Scenario 8
+    // Usage card carousel tab click — Trace: docs/current/plans/usage-card-dark/trace.md, Scenario 8
     app.action(/^usage_card_tab:/, async ({ ack, body, client, respond }) => {
       await ack();
       await this.usageCardHandler.handleTabClick(body, client, respond);
@@ -420,7 +420,7 @@ export class ActionHandlers {
     });
 
     // MCP tool permission actions (approve/deny grant requests)
-    // Trace: docs/mcp-tool-permission/trace.md, S4
+    // Trace: docs/current/plans/mcp-tool-permission/trace.md, S4
     app.action(/^mcp_tool_perm_approve_/, async ({ ack, body, respond }) => {
       await ack();
       await this.mcpToolPermissionHandler.handleApprove(body, respond);

@@ -5,8 +5,8 @@
  * enforce the one-auto-handoff-per-session ceiling documented in
  * `src/local/skills/using-z/SKILL.md` §Session Handoff Protocol Rule #3.
  *
- * Spec: docs/handoff-budget/spec.md (v4)
- * Trace: docs/handoff-budget/trace.md (v4)
+ * Spec: docs/archive/features/handoff-budget/spec.md (v4)
+ * Trace: docs/archive/features/handoff-budget/trace.md (v4)
  *
  * Invariants:
  *   - Budget is stored on `ConversationSession.autoHandoffBudget` (default 1).

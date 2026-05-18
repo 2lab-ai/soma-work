@@ -363,7 +363,7 @@ describe('Scenario 3: sourceThread storage on session', () => {
 
 // ============================================================
 // Issue #64 Fix v2 — Scenarios 3-5 (delete-then-retain ordering)
-// Trace: docs/issue64-midthread-fix-v2/trace.md
+// Trace: docs/archive/features/issue64-midthread-fix-v2/trace.md
 // ============================================================
 
 // ============================================================

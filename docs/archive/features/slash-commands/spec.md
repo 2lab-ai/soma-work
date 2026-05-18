@@ -86,7 +86,7 @@ Individual CommandHandlers         ← EXISTING: 기존 핸들러 그대로
 
 4. **Manifest 수정**
    - `slack-app-manifest.yaml`: `slash_commands` 섹션 + `commands` scope
-   - `slack-app-manifest.json`: 동일
+   - `infra/slack/slack-app-manifest.json`: 동일
 
 ### 5.4 Slash Command Payload → CommandContext 매핑
 

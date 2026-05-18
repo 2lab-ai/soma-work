@@ -647,9 +647,9 @@ JSON
     step=$((step + 1))
     info "[${step}/${total}] LaunchAgent 서비스 설치..."
 
-    local service_sh="${DEPLOY_DIR}/service.sh"
+    local service_sh="${DEPLOY_DIR}/scripts/service.sh"
     if [ -f "$service_sh" ]; then
-        # service.sh가 인식하는 환경인지 확인
+        # scripts/service.sh가 인식하는 환경인지 확인
         if [[ "$DEPLOY_ENV" == "main" || "$DEPLOY_ENV" == "dev" ]]; then
             bash "$service_sh" "${DEPLOY_ENV}" install 2>/dev/null || true
             success "  서비스 설치됨: ai.2lab.soma-work.${DEPLOY_ENV}"
@@ -660,7 +660,7 @@ JSON
             success "  서비스 설치됨 (현재 디렉토리 모드)"
         fi
     else
-        warn "  service.sh 없음 — 수동 서비스 설정 필요"
+        warn "  scripts/service.sh 없음 — 수동 서비스 설정 필요"
     fi
 
     # ── 3.7 Slack 앱 토큰 수집 (토큰이 없는 경우) ──
@@ -780,9 +780,9 @@ print_summary() {
     echo -e "  ${BOLD}Bot Name:${NC}     ${BOT_DISPLAY_NAME}"
     echo ""
     echo -e "  ${BOLD}유용한 명령어:${NC}"
-    echo -e "    ${CYAN}./service.sh ${DEPLOY_ENV} status${NC}      서비스 상태"
-    echo -e "    ${CYAN}./service.sh ${DEPLOY_ENV} logs follow${NC} 실시간 로그"
-    echo -e "    ${CYAN}./service.sh ${DEPLOY_ENV} restart${NC}     재시작"
+    echo -e "    ${CYAN}./scripts/service.sh ${DEPLOY_ENV} status${NC}      서비스 상태"
+    echo -e "    ${CYAN}./scripts/service.sh ${DEPLOY_ENV} logs follow${NC} 실시간 로그"
+    echo -e "    ${CYAN}./scripts/service.sh ${DEPLOY_ENV} restart${NC}     재시작"
     echo ""
     echo -e "  ${BOLD}다음 단계:${NC}"
     echo -e "    1. Slack에서 봇에게 DM: \"안녕\""
