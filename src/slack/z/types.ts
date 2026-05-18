@@ -1,7 +1,7 @@
 /**
  * Shared types for the `/z` unified command infrastructure.
  *
- * See: plan/MASTER-SPEC.md §5 for full architecture.
+ * See: docs/current/spec/z-command-master-spec.md §5 for full architecture.
  */
 
 /**

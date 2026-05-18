@@ -4,8 +4,15 @@ Slack에서 Claude Code SDK를 통해 AI 코딩 어시스턴트를 제공하는 
 
 ## Slack Reference
 
-- Slack UI/API/AI 앱 구현 기준 문서는 `docs/slack-block-kit.md`.
-- Slack Block Kit payload 필드를 추가하거나 변경할 때는 `docs/slack-block-kit.md`의 제약과 공식 링크를 먼저 확인.
+- Slack UI/API/AI 앱 구현 기준 문서는 `docs/misc/reference/slack-block-kit.md`.
+- Slack Block Kit payload 필드를 추가하거나 변경할 때는 `docs/misc/reference/slack-block-kit.md`의 제약과 공식 링크를 먼저 확인.
+
+## Documentation Reference
+
+- 문서 라우팅의 시작점은 `docs/README.md`.
+- 완료/아카이브된 작업은 `docs/archive/completed-work.md`에 증거 링크 중심으로 정리.
+- repo-wide architecture decision은 `docs/adr/README.md`와 `docs/adr/000N-*.md`에 기록.
+- `CLAUDE.md`에는 반복적으로 필요한 agent 행동 규칙만 둔다. 완료 이력, 긴 조사 내용, changelog는 `docs/`로 보낸다.
 
 ## Architecture
 

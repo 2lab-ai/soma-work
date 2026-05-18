@@ -7,7 +7,7 @@
  * `message.im`-within-assistant-thread events through Bolt's Assistant
  * middleware chain.
  *
- * Scope boundary (see docs/slack-ui-phase4.md):
+ * Scope boundary (see docs/archive/features/slack-ui/phase4.md):
  *   - Part 1 (this file): threadStarted presents 4 placeholder prompts;
  *     userMessage delegates to the existing DM `handleMessage` so assistant
  *     threads behave identically to a regular DM. Native `setStatus` spinner
@@ -36,7 +36,7 @@ export const SUGGESTED_PROMPTS_PLACEHOLDER: ReadonlyArray<{ title: string; messa
 
 /**
  * Title shown above the suggested prompts in the Assistant sidebar.
- * Keep in sync with `slack-app-manifest.json#features.assistant_view.assistant_description`.
+ * Keep in sync with `infra/slack/slack-app-manifest.json#features.assistant_view.assistant_description`.
  */
 export const ASSISTANT_VIEW_TITLE = 'What can I help with?';
 

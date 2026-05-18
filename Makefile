@@ -20,8 +20,8 @@ test:
 
 # Setup /opt directories (first-time only)
 setup:
-	./service.sh main setup
-	./service.sh dev setup
+	./scripts/service.sh main setup
+	./scripts/service.sh dev setup
 
 # Build a sandbox-safe gh CLI with Mozilla NSS fallback CA roots.
 # Fixes: tls: failed to verify certificate: x509: OSStatus -26276

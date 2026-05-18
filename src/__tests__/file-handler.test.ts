@@ -92,7 +92,7 @@ describe('FileHandler.formatFilePrompt — image path included for viewing', () 
   });
 });
 
-// ── Scenario 1 — Media file support (Trace: docs/media-file-support/trace.md) ──
+// ── Scenario 1 — Media file support (Trace: docs/archive/features/media-file-support/trace.md) ──
 
 describe('FileHandler.formatFilePrompt — video/audio media support', () => {
   const handler = new FileHandler();

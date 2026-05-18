@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { TabId } from '../../../metrics/usage-render/types';
 import { buildCarouselBlocks } from '../usage-carousel-blocks';
 
-// Trace: docs/usage-card-dark/trace.md — Scenario 1 (lines 60–61) + Scenario 8 (line 232).
+// Trace: docs/current/plans/usage-card-dark/trace.md — Scenario 1 (lines 60–61) + Scenario 8 (line 232).
 // Asserts option/value shape only. SVG DOM / visual assertions forbidden.
 
 const FILE_IDS: Record<TabId, string> = {

@@ -17,7 +17,7 @@ import {
   UsageHandler,
 } from '../usage-handler';
 
-// Trace: docs/usage-card-dark/trace.md, Scenarios 1, 9, 12, 13, 15
+// Trace: docs/current/plans/usage-card-dark/trace.md, Scenarios 1, 9, 12, 13, 15
 
 // ─── Test-support helpers ──────────────────────────────────────────────
 
@@ -241,7 +241,7 @@ describe('UsageHandler.handleCard — strict param gate (spec §3)', () => {
 });
 
 // ─── Carousel path ─────────────────────────────────────────────────────
-// Trace: docs/usage-card-dark/trace.md, Scenario 1 (+ 12 all-empty, 13 errors).
+// Trace: docs/current/plans/usage-card-dark/trace.md, Scenario 1 (+ 12 all-empty, 13 errors).
 
 describe('UsageHandler.handleCard — carousel', () => {
   beforeEach(() => {

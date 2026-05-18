@@ -43,7 +43,7 @@ const NATIVE_INTERACTIVE_TOOLS = ['AskUserQuestion'];
 
 /**
  * Native SDK cron tools — disallowed to prevent conflict with soma's managed CronScheduler.
- * Trace: docs/cron-scheduler/trace.md, Scenario 1
+ * Trace: docs/current/plans/cron-scheduler/trace.md, Scenario 1
  */
 const NATIVE_CRON_TOOLS = ['CronCreate', 'CronDelete', 'CronList'];
 
@@ -140,7 +140,7 @@ export interface McpConfig {
 export class McpConfigBuilder {
   private logger = new Logger('McpConfigBuilder');
   private mcpManager: McpManager;
-  /** Agent configs for agent MCP server (Trace: docs/multi-agent/trace.md, S4) */
+  /** Agent configs for agent MCP server (Trace: docs/current/plans/multi-agent/trace.md, S4) */
   private agentConfigs?: Record<string, any>;
 
   constructor(mcpManager: McpManager) {
@@ -149,7 +149,7 @@ export class McpConfigBuilder {
 
   /**
    * Set agent configurations (called from index.ts after loading config).
-   * Trace: docs/multi-agent/trace.md, Scenario 4
+   * Trace: docs/current/plans/multi-agent/trace.md, Scenario 4
    */
   setAgentConfigs(configs: Record<string, any>): void {
     this.agentConfigs = configs;
@@ -176,7 +176,7 @@ export class McpConfigBuilder {
     // Always add LLM aggregate server (wraps codex + gemini)
     internalServers['llm'] = this.buildLlmServer();
 
-    // Add agent MCP server when agents are configured (Trace: docs/multi-agent/trace.md, S4)
+    // Add agent MCP server when agents are configured (Trace: docs/current/plans/multi-agent/trace.md, S4)
     if (this.agentConfigs && Object.keys(this.agentConfigs).length > 0) {
       internalServers['agent'] = this.buildAgentServer();
     }
@@ -191,7 +191,7 @@ export class McpConfigBuilder {
       internalServers['slack-mcp'] = this.buildSlackMcpServer(slackContext!);
     }
 
-    // Add cron MCP server for cron CRUD (Trace: docs/cron-scheduler/trace.md, S2-S3)
+    // Add cron MCP server for cron CRUD (Trace: docs/current/plans/cron-scheduler/trace.md, S2-S3)
     if (slackContext) {
       internalServers['cron'] = this.buildCronServer(slackContext);
     }
@@ -202,7 +202,7 @@ export class McpConfigBuilder {
     }
 
     // Add mcp-tool-permission server for permission request/check/revoke
-    // Trace: docs/mcp-tool-permission/trace.md, S4/S7/S8
+    // Trace: docs/current/plans/mcp-tool-permission/trace.md, S4/S7/S8
     if (slackContext) {
       internalServers['mcp-tool-permission'] = this.buildMcpToolPermissionServer(slackContext);
     }
@@ -278,7 +278,7 @@ export class McpConfigBuilder {
 
     // Disallow native interactive tools and SDK cron tools in Slack context
     // Interactive tools expect terminal input; cron tools conflict with soma's CronScheduler
-    // Trace: docs/cron-scheduler/trace.md, Scenario 1
+    // Trace: docs/current/plans/cron-scheduler/trace.md, Scenario 1
     if (slackContext) {
       config.disallowedTools = [...NATIVE_INTERACTIVE_TOOLS, ...NATIVE_CRON_TOOLS];
     }
@@ -335,7 +335,7 @@ export class McpConfigBuilder {
 
   /**
    * Build cron MCP server configuration.
-   * Trace: docs/cron-scheduler/trace.md, Scenarios 2-3
+   * Trace: docs/current/plans/cron-scheduler/trace.md, Scenarios 2-3
    */
   private buildCronServer(slackContext: SlackContext): Record<string, any> {
     const cronServerPath = this.getCronServerPath();
@@ -484,7 +484,7 @@ export class McpConfigBuilder {
   /**
    * Build agent MCP server configuration.
    * Passes agent configs via env so the MCP server can validate agent names.
-   * Trace: docs/multi-agent/trace.md, Scenario 4
+   * Trace: docs/current/plans/multi-agent/trace.md, Scenario 4
    */
   private buildAgentServer(): Record<string, any> {
     const agentServerPath = this.getAgentServerPath();
@@ -517,7 +517,7 @@ export class McpConfigBuilder {
    * Build the list of allowed tools.
    * Filters permission-gated MCP servers based on user's active grants.
    * Admin users bypass all permission checks.
-   * Trace: docs/mcp-tool-permission/trace.md, S2/S3/S5
+   * Trace: docs/current/plans/mcp-tool-permission/trace.md, S2/S3/S5
    */
   private buildAllowedTools(slackContext?: SlackContext, userBypass?: boolean): string[] {
     const allowedTools = this.mcpManager.getDefaultAllowedTools();
@@ -560,7 +560,7 @@ export class McpConfigBuilder {
     // Generic per-tool permission gating for ALL MCP servers with a `permission` key in config.json.
     // Iterates every gated server (not just server-tools) and applies the same logic:
     //   admin → blanket allow | non-admin with grant → per-tool filter | no grant → blocked
-    // Trace: docs/mcp-tool-permission/trace.md, S2/S3/S5
+    // Trace: docs/current/plans/mcp-tool-permission/trace.md, S2/S3/S5
     this.applyPermissionGating(allowedTools, slackContext);
 
     // Auto-approve plan mode tools (no terminal interaction needed)
@@ -736,7 +736,7 @@ export class McpConfigBuilder {
   /**
    * Build mcp-tool-permission MCP server configuration.
    * Provides tools for requesting, checking, and revoking MCP tool permissions.
-   * Trace: docs/mcp-tool-permission/trace.md, S4/S7/S8
+   * Trace: docs/current/plans/mcp-tool-permission/trace.md, S4/S7/S8
    */
   private buildMcpToolPermissionServer(slackContext: SlackContext): Record<string, any> {
     const serverPath = this.getMcpToolPermissionServerPath();

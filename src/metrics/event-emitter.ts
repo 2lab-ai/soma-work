@@ -1,6 +1,6 @@
 /**
  * MetricsEventEmitter — Emits metrics events for session lifecycle, turns, and GitHub operations.
- * Trace: docs/daily-weekly-report/trace.md, Scenarios 2 & 3
+ * Trace: docs/archive/features/daily-weekly-report/trace.md, Scenarios 2 & 3
  */
 
 import { randomUUID } from 'crypto';

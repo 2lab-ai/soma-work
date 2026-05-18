@@ -1,7 +1,7 @@
 /**
  * SessionArchiveStore — Persists session metadata to disk on terminate/expire.
  *
- * Trace: docs/session-archive/trace.md
+ * Trace: docs/current/plans/session-archive/trace.md
  * Issue: #401
  *
  * Sessions are archived as individual JSON files in {DATA_DIR}/archives/.

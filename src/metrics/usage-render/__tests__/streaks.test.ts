@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { activeDays, currentStreak, longestStreak } from '../streaks';
 
-// Trace: docs/usage-card-dark/trace.md, Scenarios 4/5/6
+// Trace: docs/current/plans/usage-card-dark/trace.md, Scenarios 4/5/6
 describe('activeDays', () => {
   const windowStart = new Date('2026-04-01T00:00:00+09:00');
   const windowEnd = new Date('2026-04-30T23:59:59+09:00');

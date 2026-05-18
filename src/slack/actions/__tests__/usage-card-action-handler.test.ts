@@ -1,5 +1,5 @@
 /**
- * Trace: docs/usage-card-dark/trace.md
+ * Trace: docs/current/plans/usage-card-dark/trace.md
  *   - Scenario 8  (happy path — owner click, chat.update)
  *   - Scenario 9  (non-owner click — ephemeral reject)
  *   - Scenario 11 (TabCache miss — ephemeral "session expired")

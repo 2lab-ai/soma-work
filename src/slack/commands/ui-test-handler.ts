@@ -40,7 +40,7 @@ const UI_TEST_RE = /^ui-test(?:\s+(stream|plan|task_card|work))?$/i;
  * `chunks` array — passing a top-level `markdown_text` after chunked appends will
  * raise `streaming_mode_mismatch`. Both runners below honor that invariant.
  *
- * See issue #525 and docs/slack-ui-phase0.md for go/no-go checklist.
+ * See issue #525 and docs/archive/features/slack-ui/phase0.md for go/no-go checklist.
  */
 export class UITestHandler implements CommandHandler {
   private logger = new Logger('UITestHandler');

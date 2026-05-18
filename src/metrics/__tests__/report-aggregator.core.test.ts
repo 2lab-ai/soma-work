@@ -5,7 +5,7 @@ import type { AggregatedMetrics, MetricsEvent, MetricsEventType } from '../types
 import { OTHER_MODEL_ID, rowTotalTokens } from '../usage-render/types';
 
 // Contract tests — Scenario 4: ReportAggregator
-// Trace: docs/daily-weekly-report/trace.md
+// Trace: docs/archive/features/daily-weekly-report/trace.md
 
 function makeEvent(
   type: MetricsEventType,
@@ -298,7 +298,7 @@ describe('ReportAggregator', () => {
 });
 
 // === Carousel (v2) aggregation tests ===
-// Trace: docs/usage-card-dark/trace.md — Scenario 2
+// Trace: docs/current/plans/usage-card-dark/trace.md — Scenario 2
 
 describe('aggregateCarousel', () => {
   /** Build a token_usage event in KST. */

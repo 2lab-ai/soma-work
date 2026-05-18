@@ -33,6 +33,14 @@ You:   이 함수 성능 개선해줘 [파일 첨부]
 Bot:   [업로드된 코드 분석, 병목 지점 식별, 최적화된 버전 제안]
 ```
 
+## 문서
+
+- 현재 아키텍처, 스펙, trace, archive, 문서 라우팅 규칙은 [docs map](./docs/README.md)에서 시작합니다.
+- 장기 유지할 결정은 [ADR index](./docs/adr/README.md)에 정리합니다.
+- 완료/아카이브된 작업은 [completed work ledger](./docs/archive/completed-work.md)에서 추적합니다.
+- AI agent 친화적인 프로젝트 문서 정리 리서치는 [docs/research](./docs/misc/research/2026-05-18-ai-agent-docs-organization.md)에 있습니다.
+- Slack Block Kit/API 제약은 [docs/misc/reference/slack-block-kit.md](./docs/misc/reference/slack-block-kit.md)에 유지합니다.
+
 ---
 
 ## ✨ 주요 기능
@@ -170,7 +178,7 @@ npm install
 ### 2. Slack App 생성
 
 1. [api.slack.com/apps](https://api.slack.com/apps) → **Create New App** → **From an app manifest**
-2. [`slack-app-manifest.json`](./slack-app-manifest.json) 내용 붙여넣기
+2. [`infra/slack/slack-app-manifest.json`](./infra/slack/slack-app-manifest.json) 내용 붙여넣기
 3. 앱 생성 후:
    - **OAuth & Permissions** → Bot User OAuth Token 복사 (`xoxb-...`)
    - **Basic Information** → `connections:write` 스코프로 App-Level Token 생성 (`xapp-...`)
@@ -246,14 +254,14 @@ docker-compose logs -f
 ### macOS LaunchAgent
 
 ```bash
-./service.sh install     # LaunchAgent 설치
-./service.sh start       # 서비스 시작
-./service.sh logs follow # 실시간 로그
+./scripts/service.sh install     # LaunchAgent 설치
+./scripts/service.sh start       # 서비스 시작
+./scripts/service.sh logs follow # 실시간 로그
 ```
 
 서비스 식별자: `ai.2lab.soma-work` — 크래시 시 자동 재시작.
 
-> ⚠️ **개발 중에는 `service.sh`를 사용하지 마세요.** 같은 Slack 토큰으로 여러 인스턴스가 실행되면 메시지 충돌이 발생합니다.
+> ⚠️ **개발 중에는 `scripts/service.sh`를 사용하지 마세요.** 같은 Slack 토큰으로 여러 인스턴스가 실행되면 메시지 충돌이 발생합니다.
 
 ---
 

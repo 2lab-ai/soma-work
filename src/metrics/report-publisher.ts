@@ -1,6 +1,6 @@
 /**
  * ReportPublisher — Posts formatted reports to Slack channels.
- * Trace: docs/daily-weekly-report/trace.md, Scenario 5
+ * Trace: docs/archive/features/daily-weekly-report/trace.md, Scenario 5
  */
 
 import { Logger } from '../logger';
