@@ -146,4 +146,4 @@ Persistence: `${DATA_DIR}/cron-jobs.json` (atomic tmp+rename write)
 
 ## 11. Next Step
 
-→ Proceed with Vertical Trace via `stv:trace docs/current/plans/cron-scheduler/spec.md`
+→ Proceed with Vertical Trace via `stv:trace docs/archive/features/cron-scheduler/spec.md`

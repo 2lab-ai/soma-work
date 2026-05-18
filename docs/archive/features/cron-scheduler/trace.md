@@ -1,7 +1,7 @@
 # Cron Scheduler System — Vertical Trace
 
 > STV Trace | Created: 2026-03-28
-> Spec: docs/current/plans/cron-scheduler/spec.md
+> Spec: docs/archive/features/cron-scheduler/spec.md
 
 ## Table of Contents
 1. [Scenario 1 — SDK Cron Tool Blocking](#scenario-1)

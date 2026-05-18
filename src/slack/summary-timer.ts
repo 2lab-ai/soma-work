@@ -35,7 +35,7 @@ interface TimerEntry {
  *
  * Both overridable via env (`SUMMARY_DELAY_MS`, `SUMMARY_COUNTDOWN_INTERVAL_MS`).
  *
- * Trace: docs/current/plans/turn-summary-lifecycle/trace.md, S1 + S2.
+ * Trace: docs/archive/features/turn-summary-lifecycle/trace.md, S1 + S2.
  */
 export class SummaryTimer {
   private timers = new Map<string, TimerEntry>();

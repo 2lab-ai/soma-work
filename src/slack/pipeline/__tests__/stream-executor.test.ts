@@ -2750,7 +2750,7 @@ describe('File access blocked error recovery', () => {
   });
 });
 
-// ── Trace: docs/current/plans/fix-thread-header-files/trace.md ──
+// ── Trace: docs/archive/features/fix-thread-header-files/trace.md ──
 // S2: Thread-awareness hint guides array mode + root file check
 describe('getThreadContextHint — array mode guidance', () => {
   it('threadHint_guidesArrayMode: hint mentions array mode and root file check', () => {

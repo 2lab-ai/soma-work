@@ -188,5 +188,5 @@ Context prefix: active issue URL + active PR URL (from session.links)
 
 ## 11. Next Step
 
-→ Proceed with Vertical Trace via `stv:trace docs/current/plans/turn-summary-lifecycle/spec.md`
+→ Proceed with Vertical Trace via `stv:trace docs/archive/features/turn-summary-lifecycle/spec.md`
 → Day Pipeline은 별도 spec이 필요하면 재설계 후 추가

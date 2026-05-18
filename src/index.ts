@@ -712,7 +712,7 @@ async function start() {
     }
 
     // Start cron scheduler (non-blocking, non-critical)
-    // Trace: docs/current/plans/cron-scheduler/spec.md §5.4 — Scheduler lifecycle
+    // Trace: docs/archive/features/cron-scheduler/spec.md §5.4 — Scheduler lifecycle
     let cronScheduler: CronScheduler | null = null;
     try {
       const cronStorage = new CronStorage(path.join(DATA_DIR, 'cron-jobs.json'));

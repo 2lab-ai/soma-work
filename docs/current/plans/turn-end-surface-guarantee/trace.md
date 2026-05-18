@@ -1,7 +1,7 @@
 # Turn-End Surface Guarantee — Vertical Trace
 
 > STV Trace | Created: 2026-05-14
-> Related: docs/turn-notification/trace.md, docs/current/plans/turn-summary-lifecycle/trace.md, docs/rich-turn-notification/trace.md
+> Related: docs/turn-notification/trace.md, docs/archive/features/turn-summary-lifecycle/trace.md, docs/rich-turn-notification/trace.md
 > Anthropic SDK doc: https://code.claude.com/docs/en/agent-sdk/streaming-output.md
 
 ## Invariant

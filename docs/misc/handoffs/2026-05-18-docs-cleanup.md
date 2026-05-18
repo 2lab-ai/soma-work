@@ -73,7 +73,24 @@ docs/handoff-entrypoints/ | docs/archive/features/handoff-entrypoints/ | complet
 docs/pr-issue-precondition/ | docs/archive/features/pr-issue-precondition/ | completed PR precondition guard feature | docs/archive/features/pr-issue-precondition/trace.md:340 marks the enforcement row as 구현 완료 (#696)
 docs/handoff-budget/ | docs/archive/features/handoff-budget/ | completed handoff budget and recursion guard feature | docs/archive/features/handoff-budget/trace.md:556-557 marks both rows as 구현 완료 (#697)
 docs/dispatch-safe-stop/ | docs/archive/features/dispatch-safe-stop/ | completed dispatch safe-stop feature | docs/archive/features/dispatch-safe-stop/trace.md:563 says the row flipped to 구현 완료 (#698)
+docs/current/plans/a2t/ | docs/archive/features/a2t/ | implemented A2T service spec | docs/archive/features/a2t/spec.md:22-29 marks all acceptance criteria checked
+docs/current/plans/cron-scheduler/ | docs/archive/features/cron-scheduler/ | implemented cron scheduler feature | docs/archive/features/cron-scheduler/spec.md:3 marks Status: Implemented and lines 20-31 check acceptance criteria
+docs/current/plans/disallow-native-interactive-tools/ | docs/archive/features/disallow-native-interactive-tools/ | implemented Slack-context SDK tool blocking | docs/archive/features/disallow-native-interactive-tools/trace.md:7-10 marks all scenarios GREEN
+docs/current/plans/fix-thread-header-files/ | docs/archive/features/fix-thread-header-files/ | implemented mid-thread root file visibility fix | docs/archive/features/fix-thread-header-files/trace.md:7-9 marks all scenarios GREEN
+docs/current/plans/sdk-abort-crash-defense/ | docs/archive/features/sdk-abort-crash-defense/ | implemented SDK abort crash defense | docs/archive/features/sdk-abort-crash-defense/trace.md:7-10 marks all scenarios GREEN
+docs/current/plans/sdk-abort-crash-guard/ | docs/archive/features/sdk-abort-crash-guard/ | implemented SDK abort crash guard | docs/archive/features/sdk-abort-crash-guard/trace.md:7-9 marks all scenarios GREEN
+docs/current/plans/session-restore-pattern-fix/ | docs/archive/features/session-restore-pattern-fix/ | implemented session restore error pattern fix | docs/archive/features/session-restore-pattern-fix/trace.md:7-10 marks all scenarios GREEN
+docs/current/plans/slack-api-helper-hotpath/ | docs/archive/features/slack-api-helper-hotpath/ | completed SlackApiHelper hot path integration | docs/archive/features/slack-api-helper-hotpath/trace.md:246-248 marks all scenarios Complete/GREEN
+docs/current/plans/turn-summary-lifecycle/ | docs/archive/features/turn-summary-lifecycle/ | implemented turn summary lifecycle feature | docs/archive/features/turn-summary-lifecycle/spec.md:3 marks Status: Implemented and lines 23-32 check acceptance criteria
 ```
+
+Second audit notes:
+
+- `docs/current/plans/session-archive/` stayed current because its acceptance criteria are unchecked and its trace still says `Ready for stv:work`.
+- `docs/current/plans/z-memory-ui-improve/` stayed current because the trace table still marks scenarios `RED`; the later integration checklist is not enough to prove the whole feature closed.
+- `docs/stale-plans/review-needed/cct-redesign/` stayed under review-needed because the trace says only PR#1 is scoped and M1-S5/M2/M3 remain backlog.
+- `docs/stale-plans/review-needed/dashboard-conversation/` stayed under review-needed because it is mixed `[LIVE]`, `[WIRED]`, `[PARTIAL]`, and `[PLANNED]`, not a clean completed-feature artifact.
+- Rows that only say `done | RED | Ready for stv:work` were treated as trace-writing complete, not implementation complete.
 
 ## Root Retention Decisions
 

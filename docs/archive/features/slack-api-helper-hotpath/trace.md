@@ -1,7 +1,7 @@
 # SlackApiHelper Hot Path Integration — Vertical Trace
 
 > STV Trace | Created: 2026-03-06
-> Spec: docs/current/plans/slack-api-helper-hotpath/spec.md
+> Spec: docs/archive/features/slack-api-helper-hotpath/spec.md
 
 ## Table of Contents
 1. [Scenario 1 — StatusReporter uses SlackApiHelper for status lifecycle](#scenario-1)
