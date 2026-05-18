@@ -1260,8 +1260,13 @@ export class SessionRegistry {
    */
   resetSessionContext(channelId: string, threadTs: string | undefined): boolean {
     const session = this.getSession(channelId, threadTs);
-    // Only return true if there was actually something to reset (had an active conversation)
-    if (!session || !session.sessionId) {
+    // Only return true if there was actually something to reset. A logical
+    // session also needs reset when a persisted goal exists without a
+    // sessionId yet — otherwise `goal set <objective>` followed by `/new`
+    // would leak the previous goal into the fresh conversation. Mirrors the
+    // saveSessions() guard which now persists `sessionId || handoffContext
+    // || goal` (#959).
+    if (!session || (!session.sessionId && !session.goal)) {
       return false;
     }
 

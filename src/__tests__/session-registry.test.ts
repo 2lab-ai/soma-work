@@ -457,6 +457,39 @@ describe('SessionRegistry persistence', () => {
     expect(session.goal).toBeUndefined();
   });
 
+  it('resetSessionContext clears a goal-only session even without a sessionId', () => {
+    // Regression: `goal set <objective>` creates/updates `session.goal` BEFORE
+    // the first Claude turn (so no sessionId yet) and the new saveSessions
+    // path persists it. Without this guard, `/new` would return false and the
+    // stale goal would leak into the next conversation in the same thread.
+    const registry = new SessionRegistry();
+    const session = registry.createSession('U123', 'Tester', 'C_GOAL_ONLY', '171.GO1');
+    session.goal = {
+      objective: 'pre-first-turn objective',
+      status: 'active',
+      createdAt: 1,
+      updatedAt: 1,
+      createdBy: 'U123',
+    };
+    expect(session.sessionId).toBeUndefined();
+
+    const result = registry.resetSessionContext('C_GOAL_ONLY', '171.GO1');
+
+    expect(result).toBe(true);
+    expect(session.goal).toBeUndefined();
+  });
+
+  it('resetSessionContext is a no-op when there is no sessionId AND no goal', () => {
+    const registry = new SessionRegistry();
+    const session = registry.createSession('U123', 'Tester', 'C_NOOP', '171.NO1');
+    expect(session.sessionId).toBeUndefined();
+    expect(session.goal).toBeUndefined();
+
+    const result = registry.resetSessionContext('C_NOOP', '171.NO1');
+
+    expect(result).toBe(false);
+  });
+
   // === Issue #214: clearSessionId persists retry state cleanup to disk ===
 
   it('clearSessionId calls saveSessions to persist cleanup', () => {
