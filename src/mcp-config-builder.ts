@@ -43,7 +43,7 @@ const NATIVE_INTERACTIVE_TOOLS = ['AskUserQuestion'];
 
 /**
  * Native SDK cron tools — disallowed to prevent conflict with soma's managed CronScheduler.
- * Trace: docs/current/plans/cron-scheduler/trace.md, Scenario 1
+ * Trace: docs/archive/features/cron-scheduler/trace.md, Scenario 1
  */
 const NATIVE_CRON_TOOLS = ['CronCreate', 'CronDelete', 'CronList'];
 
@@ -191,7 +191,7 @@ export class McpConfigBuilder {
       internalServers['slack-mcp'] = this.buildSlackMcpServer(slackContext!);
     }
 
-    // Add cron MCP server for cron CRUD (Trace: docs/current/plans/cron-scheduler/trace.md, S2-S3)
+    // Add cron MCP server for cron CRUD (Trace: docs/archive/features/cron-scheduler/trace.md, S2-S3)
     if (slackContext) {
       internalServers['cron'] = this.buildCronServer(slackContext);
     }
@@ -278,7 +278,7 @@ export class McpConfigBuilder {
 
     // Disallow native interactive tools and SDK cron tools in Slack context
     // Interactive tools expect terminal input; cron tools conflict with soma's CronScheduler
-    // Trace: docs/current/plans/cron-scheduler/trace.md, Scenario 1
+    // Trace: docs/archive/features/cron-scheduler/trace.md, Scenario 1
     if (slackContext) {
       config.disallowedTools = [...NATIVE_INTERACTIVE_TOOLS, ...NATIVE_CRON_TOOLS];
     }
@@ -335,7 +335,7 @@ export class McpConfigBuilder {
 
   /**
    * Build cron MCP server configuration.
-   * Trace: docs/current/plans/cron-scheduler/trace.md, Scenarios 2-3
+   * Trace: docs/archive/features/cron-scheduler/trace.md, Scenarios 2-3
    */
   private buildCronServer(slackContext: SlackContext): Record<string, any> {
     const cronServerPath = this.getCronServerPath();

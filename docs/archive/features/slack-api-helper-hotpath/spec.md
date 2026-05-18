@@ -101,4 +101,4 @@ None — 현재 작업은 기존 helper 사용 강제에 한정되어 있고, me
 
 ## 9. Next Step
 
-→ `docs/current/plans/slack-api-helper-hotpath/trace.md`에 시나리오를 세분화하고 RED 테스트를 만든다.
+→ `docs/archive/features/slack-api-helper-hotpath/trace.md`에 시나리오를 세분화하고 RED 테스트를 만든다.

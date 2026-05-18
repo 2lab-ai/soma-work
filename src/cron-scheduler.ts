@@ -1,6 +1,6 @@
 /**
  * CronScheduler — Polls every 60s, matches cron expressions, injects synthetic messages.
- * Trace: docs/current/plans/cron-scheduler/trace.md, Scenarios 4-6
+ * Trace: docs/archive/features/cron-scheduler/trace.md, Scenarios 4-6
  *
  * Pattern: src/metrics/report-scheduler.ts (setInterval polling)
  * Pattern: src/slack-handler.ts:745-762 (autoResumeSession synthetic message)
@@ -114,7 +114,7 @@ export class CronScheduler {
 
   /**
    * Main tick: evaluate all cron jobs against current time.
-   * Trace: docs/current/plans/cron-scheduler/trace.md, Scenario 4, Section 3a
+   * Trace: docs/archive/features/cron-scheduler/trace.md, Scenario 4, Section 3a
    */
   async tick(): Promise<void> {
     // Guard against overlapping ticks (setInterval can fire while previous tick is still running)
@@ -208,7 +208,7 @@ export class CronScheduler {
 
   /**
    * Find an active session for the given owner+channel.
-   * Trace: docs/current/plans/cron-scheduler/trace.md, Scenario 4, Section 3b
+   * Trace: docs/archive/features/cron-scheduler/trace.md, Scenario 4, Section 3b
    */
   private findSession(owner: string, channel: string, threadTs?: string | null): ConversationSession | undefined {
     const sessions = this.deps.sessionRegistry.getAllSessions();
@@ -236,7 +236,7 @@ export class CronScheduler {
 
   /**
    * Inject a synthetic message into an idle session.
-   * Trace: docs/current/plans/cron-scheduler/trace.md, Scenario 4, Section 3c
+   * Trace: docs/archive/features/cron-scheduler/trace.md, Scenario 4, Section 3c
    * Pattern: src/slack-handler.ts:745-762 (autoResumeSession)
    */
   private async injectMessage(job: CronJob, session: ConversationSession, now: Date): Promise<void> {
@@ -264,7 +264,7 @@ export class CronScheduler {
 
   /**
    * Queue a cron job for later execution when session becomes idle.
-   * Trace: docs/current/plans/cron-scheduler/trace.md, Scenario 5, Section 3a
+   * Trace: docs/archive/features/cron-scheduler/trace.md, Scenario 5, Section 3a
    */
   private enqueueForIdle(job: CronJob, session: ConversationSession, now: Date): void {
     const sessionKey = `${session.channelId}-${session.threadTs || 'direct'}`;
@@ -296,7 +296,7 @@ export class CronScheduler {
   /**
    * Drain one job from the pending queue for a session.
    * If more remain, re-register for next idle.
-   * Trace: docs/current/plans/cron-scheduler/trace.md, Scenario 5, Section 3d
+   * Trace: docs/archive/features/cron-scheduler/trace.md, Scenario 5, Section 3d
    */
   private drainQueue(sessionKey: string, now: Date): void {
     const queue = this.pendingCronQueue.get(sessionKey);
@@ -345,7 +345,7 @@ export class CronScheduler {
 
   /**
    * Create a new bot-initiated thread and inject the cron message.
-   * Trace: docs/current/plans/cron-scheduler/trace.md, Scenario 6, Section 3b-3c
+   * Trace: docs/archive/features/cron-scheduler/trace.md, Scenario 6, Section 3b-3c
    */
   private async executeWithNewThread(job: CronJob, now: Date): Promise<void> {
     logger.info('No session found, creating new thread', { name: job.name, channel: job.channel });
@@ -430,7 +430,7 @@ export class CronScheduler {
 
   /**
    * Clear pending queue for a session (cleanup on session removal).
-   * Trace: docs/current/plans/cron-scheduler/trace.md, Scenario 5, Section 5
+   * Trace: docs/archive/features/cron-scheduler/trace.md, Scenario 5, Section 5
    */
   clearPendingQueue(sessionKey: string): void {
     this.pendingCronQueue.delete(sessionKey);

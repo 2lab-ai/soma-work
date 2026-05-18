@@ -1,7 +1,7 @@
 # Turn Summary & Lifecycle — Vertical Trace
 
 > STV Trace | Created: 2026-03-28
-> Spec: docs/current/plans/turn-summary-lifecycle/spec.md
+> Spec: docs/archive/features/turn-summary-lifecycle/spec.md
 
 ## Table of Contents
 1. [S1 — Timer Start on Turn Completion](#s1)
@@ -547,4 +547,4 @@
 | S10 — Day Pipeline | done | RED | xlarge | Ready |
 
 ## Next Step
-→ Proceed with implementation via `stv:do-work` or `stv:work docs/current/plans/turn-summary-lifecycle/trace.md`
+→ Proceed with implementation via `stv:do-work` or `stv:work docs/archive/features/turn-summary-lifecycle/trace.md`

@@ -1,6 +1,6 @@
 /**
  * CronScheduler — Contract tests
- * Trace: docs/current/plans/cron-scheduler/trace.md, Scenarios 4-6
+ * Trace: docs/archive/features/cron-scheduler/trace.md, Scenarios 4-6
  */
 
 import * as fs from 'fs';

@@ -43,7 +43,7 @@ export type ExecutiveSummaryMode = 'brief' | 'issue' | 'epic';
  *    NOT want to fork them per mode. The mode template owns the *section
  *    shape*; SUMMARY_PROMPT owns the *truthfulness/format* contract.
  *
- * Trace: docs/current/plans/turn-summary-lifecycle/trace.md, S3, Section 2.
+ * Trace: docs/archive/features/turn-summary-lifecycle/trace.md, S3, Section 2.
  */
 export const SUMMARY_PROMPT = `Based on the conversation history in this session, generate an Executive Summary describing the **actual work performed** — not a generic recap.
 
@@ -301,7 +301,7 @@ export interface SummarySlackApi {
  * - postInThread(): posts the summary as a permanent in-thread message
  * - clearDisplay(): removes summaryBlocks, triggers re-render
  *
- * Trace: docs/current/plans/turn-summary-lifecycle/trace.md, S3 + S5
+ * Trace: docs/archive/features/turn-summary-lifecycle/trace.md, S3 + S5
  */
 export class SummaryService {
   private forkExecutor: ForkExecutor;
