@@ -54,6 +54,7 @@ import { BypassHandler } from '../bypass-handler';
 import { CommandRouter } from '../command-router';
 import { EffortHandler } from '../effort-handler';
 import { EmailHandler } from '../email-handler';
+import { GoalHandler } from '../goal-handler';
 import { HelpHandler } from '../help-handler';
 import { ModelHandler } from '../model-handler';
 import { NewHandler } from '../new-handler';
@@ -148,6 +149,27 @@ describe('CommandRouter — /z → translated text is routed to handler', () => 
 
     // ctx.text is left in the rewritten form for downstream handlers
     expect(ctx.text).toBe('persona set linus');
+  });
+
+  it('`/z goal set ...` reaches GoalHandler with translated text', async () => {
+    const executeSpy = vi.spyOn(GoalHandler.prototype, 'execute').mockResolvedValue({ handled: true });
+
+    const say = vi.fn().mockResolvedValue(undefined);
+    const deps = buildDeps();
+    const router = new CommandRouter(deps);
+    const ctx: any = {
+      text: '/z goal set ship the feature',
+      user: 'U1',
+      channel: 'C1',
+      threadTs: 'T1',
+      say,
+    };
+
+    const result = await router.route(ctx);
+
+    expect(executeSpy).toHaveBeenCalledTimes(1);
+    expect(ctx.text).toBe('goal set ship the feature');
+    expect(result.handled).toBe(true);
   });
 });
 

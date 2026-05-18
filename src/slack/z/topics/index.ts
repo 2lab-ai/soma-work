@@ -14,6 +14,7 @@ import { createBypassTopicBinding } from './bypass-topic';
 import { createCctTopicBinding } from './cct-topic';
 import { createCwdTopicBinding } from './cwd-topic';
 import { createEmailTopicBinding } from './email-topic';
+import { createGoalTopicBinding } from './goal-topic';
 import { createMemoryTopicBinding } from './memory-topic';
 import { createModelTopicBinding } from './model-topic';
 import { createNotifyTopicBinding } from './notify-topic';
@@ -34,6 +35,7 @@ export function registerAllTopics(registry: ZTopicRegistry): void {
   registry.register(createCctTopicBinding());
   registry.register(createCwdTopicBinding());
   registry.register(createEmailTopicBinding());
+  registry.register(createGoalTopicBinding());
   registry.register(createMemoryTopicBinding());
   registry.register(createModelTopicBinding());
   registry.register(createNotifyTopicBinding());
