@@ -27,7 +27,11 @@ These are not the default starting point for current implementation work. Use th
 | Feature | Location |
 |---------|----------|
 | Admin commands | [archive/features/admin-commands/](./features/admin-commands/) |
+| A2T audio-to-text service | [archive/features/a2t/](./features/a2t/) |
+| Cron scheduler | [archive/features/cron-scheduler/](./features/cron-scheduler/) |
+| Disallow native interactive tools | [archive/features/disallow-native-interactive-tools/](./features/disallow-native-interactive-tools/) |
 | Docs cleanup | [archive/features/docs-cleanup/](./features/docs-cleanup/) |
+| Fix thread header files | [archive/features/fix-thread-header-files/](./features/fix-thread-header-files/) |
 | Ghost session fix | [archive/features/ghost-session-fix/](./features/ghost-session-fix/) |
 | Issue 64 mid-thread fix v2 | [archive/features/issue64-midthread-fix-v2/](./features/issue64-midthread-fix-v2/) |
 | Main deploy migration | [archive/features/main-deploy-migration/](./features/main-deploy-migration/) |
@@ -43,10 +47,15 @@ These are not the default starting point for current implementation work. Use th
 | PR issue precondition | [archive/features/pr-issue-precondition/](./features/pr-issue-precondition/) |
 | PR workflow transition command | [archive/features/pr-workflow-transition-command/](./features/pr-workflow-transition-command/) |
 | Rich turn notification | [archive/features/rich-turn-notification/](./features/rich-turn-notification/) |
+| SDK abort crash defense | [archive/features/sdk-abort-crash-defense/](./features/sdk-abort-crash-defense/) |
+| SDK abort crash guard | [archive/features/sdk-abort-crash-guard/](./features/sdk-abort-crash-guard/) |
+| Session restore pattern fix | [archive/features/session-restore-pattern-fix/](./features/session-restore-pattern-fix/) |
 | Session workspace isolation | [archive/features/session-workspace-isolation/](./features/session-workspace-isolation/) |
 | Slash commands | [archive/features/slash-commands/](./features/slash-commands/) |
+| Slack API helper hot path | [archive/features/slack-api-helper-hotpath/](./features/slack-api-helper-hotpath/) |
 | Slack MCP cross-thread | [archive/features/slack-mcp-cross-thread/](./features/slack-mcp-cross-thread/) |
 | Slack UI phase docs | [archive/features/slack-ui/](./features/slack-ui/) |
+| Turn summary lifecycle | [archive/features/turn-summary-lifecycle/](./features/turn-summary-lifecycle/) |
 | Turn notification | [archive/features/turn-notification/](./features/turn-notification/) |
 | User profile variables | [archive/features/user-profile-variables/](./features/user-profile-variables/) |
 
@@ -56,14 +65,13 @@ These are not the default starting point for current implementation work. Use th
 |------|----------|
 | Issue #617 compact tracking plan | [archive/plans/617-compact-tracking-plan.md](./plans/617-compact-tracking-plan.md) |
 
-## Evidence-Backed Implemented / Completed Active Docs
+## Evidence-Backed Current Docs
 
-These docs remain outside archive because they are still useful as current architecture or operational references.
+These docs remain outside archive because completion evidence is partial, mixed,
+or the document is still an authoritative current reference.
 
 | Work | Status | Evidence |
 |------|--------|----------|
-| Cron scheduler | Implemented | [cron-scheduler/spec.md](../current/plans/cron-scheduler/spec.md), [trace.md](../current/plans/cron-scheduler/trace.md) |
-| Turn summary lifecycle | Implemented | [turn-summary-lifecycle/spec.md](../current/plans/turn-summary-lifecycle/spec.md), [trace.md](../current/plans/turn-summary-lifecycle/trace.md) |
 | AuthKey v2 / CCT token rotation | Authoritative current trace | [cct-token-rotation/trace-v2.md](../current/plans/cct-token-rotation/trace-v2.md), [spec.md](../current/plans/cct-token-rotation/spec.md) |
 
 ## Partial Completion Evidence

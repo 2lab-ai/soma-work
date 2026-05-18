@@ -227,7 +227,7 @@ export class FormActionHandler {
     if (session) {
       await this.ctx.threadPanel?.clearChoice(sessionKey);
       // TODO: Delete tracked completion messages on custom input submission
-      // Trace: docs/current/plans/turn-summary-lifecycle/trace.md, S8
+      // Trace: docs/archive/features/turn-summary-lifecycle/trace.md, S8
       // CompletionMessageTracker.deleteAll(sessionKey, ...) should be called here.
       // Wiring requires passing the tracker through FormActionContext,
       // which is a larger change.

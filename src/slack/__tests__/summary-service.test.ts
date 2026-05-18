@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { type ForkExecutor, SUMMARY_PROMPT, SummaryService, type SummarySessionInfo } from '../summary-service.js';
 
-// Trace: docs/current/plans/turn-summary-lifecycle/trace.md
+// Trace: docs/archive/features/turn-summary-lifecycle/trace.md
 
 describe('SummaryService', () => {
   function makeSession(overrides: Partial<SummarySessionInfo> = {}): SummarySessionInfo {

@@ -9,7 +9,7 @@ type TurnCategory = 'UIUserAskQuestion' | 'WorkflowComplete' | 'Exception';
  * Tracks turn completion message timestamps for later bulk deletion.
  * Error (Exception) messages are NOT tracked — they persist.
  * Protected timestamps (e.g. thread root / header) are never tracked or deleted.
- * Trace: docs/current/plans/turn-summary-lifecycle/trace.md, S6-S9
+ * Trace: docs/archive/features/turn-summary-lifecycle/trace.md, S6-S9
  */
 export class CompletionMessageTracker {
   private tracked = new Map<string, Set<string>>();
