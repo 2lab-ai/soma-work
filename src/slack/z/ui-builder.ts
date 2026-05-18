@@ -73,6 +73,7 @@ export const DEFAULT_HELP_CATEGORIES: HelpCategory[] = [
       { id: 'restore', label: 'restore' },
       { id: 'link', label: 'link' },
       { id: 'compact', label: 'compact' },
+      { id: 'goal', label: 'goal' },
       { id: 'session', label: 'session' },
       { id: 'theme', label: 'theme' },
     ],

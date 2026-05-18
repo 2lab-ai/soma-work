@@ -18,6 +18,7 @@ import type {
   ActivityState,
   ConversationSession,
   HandoffContext,
+  SessionGoal,
   SessionInstruction,
   SessionLink,
   SessionLinkHistory,
@@ -133,6 +134,8 @@ interface SerializedSession {
   };
   // User SSOT instructions (persisted)
   instructions?: SessionInstruction[];
+  // Host-managed session goal (persisted)
+  goal?: SessionGoal;
   /**
    * Cached summary of completed instructions. Persisted so that
    * restart after a long session doesn't force a fresh summary re-build
@@ -1257,8 +1260,13 @@ export class SessionRegistry {
    */
   resetSessionContext(channelId: string, threadTs: string | undefined): boolean {
     const session = this.getSession(channelId, threadTs);
-    // Only return true if there was actually something to reset (had an active conversation)
-    if (!session || !session.sessionId) {
+    // Only return true if there was actually something to reset. A logical
+    // session also needs reset when a persisted goal exists without a
+    // sessionId yet — otherwise `goal set <objective>` followed by `/new`
+    // would leak the previous goal into the fresh conversation. Mirrors the
+    // saveSessions() guard which now persists `sessionId || handoffContext
+    // || goal` (#959).
+    if (!session || (!session.sessionId && !session.goal)) {
       return false;
     }
 
@@ -1317,6 +1325,10 @@ export class SessionRegistry {
     // survive `/new` and CONTINUE_SESSION resets (they represent durable
     // intent, not per-turn conversation state). The systemPrompt clear above
     // forces the next turn to rebuild the prompt with the preserved SSOT.
+    // Goals are intentionally cleared: `/new` / `/renew` starts a fresh
+    // logical conversation in the same Slack thread, and stale goal steering
+    // would otherwise leak into the new task.
+    session.goal = undefined;
 
     // Reset activity state
     session.activityState = 'idle';
@@ -1665,7 +1677,7 @@ export class SessionRegistry {
         // sessionId) and the first model turn after a forced handoff entrypoint,
         // where the typed metadata must survive a crash/restart so downstream
         // guards (#696/#697/#698) can consume it.
-        if (session.sessionId || session.handoffContext) {
+        if (session.sessionId || session.handoffContext || session.goal) {
           this.ensureSessionLinkState(session);
           sessionsArray.push({
             key,
@@ -1717,6 +1729,8 @@ export class SessionRegistry {
             mergeStats: session.mergeStats,
             // User SSOT instructions (persisted)
             instructions: session.instructions,
+            // Host-managed session goal (persisted)
+            goal: session.goal,
             // Cached completed-summary (persisted so the next turn after restart
             // doesn't pay a cold summary rebuild). Safe to omit — the block
             // builder falls back to a placeholder and the async regen kicks in.
@@ -1778,6 +1792,7 @@ export class SessionRegistry {
         conversationId: serialized.conversationId,
         mergeStats: serialized.mergeStats,
         instructions: serialized.instructions,
+        goal: serialized.goal,
         activityState: serialized.activityState || 'idle',
         // Preserve handoff metadata for diagnostic parity when archiving.
         handoffContext: serialized.handoffContext,
@@ -1918,6 +1933,8 @@ export class SessionRegistry {
                 status: i.status ?? 'active',
               }))
             : [],
+          // Host-managed session goal (restored from disk).
+          goal: serialized.goal,
           // Cached completed-summary (may be stale — block builder validates via hash).
           instructionsCompletedSummary: serialized.instructionsCompletedSummary,
           // Dashboard v2.1 — restore aggregate snapshot
