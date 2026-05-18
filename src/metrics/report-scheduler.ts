@@ -1,6 +1,6 @@
 /**
  * ReportScheduler — Automatic daily/weekly report scheduling via setInterval polling.
- * Trace: docs/daily-weekly-report/trace.md, Scenario 6
+ * Trace: docs/archive/features/daily-weekly-report/trace.md, Scenario 6
  */
 
 import * as fs from 'fs';

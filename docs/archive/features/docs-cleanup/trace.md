@@ -47,13 +47,13 @@ git mv REFACTORING_PLAN.md         → docs/archive/REFACTORING_PLAN.md
 
 | File | Old | New |
 |------|-----|-----|
-| `docs/spec/07-permission-system.md:248,253-254` | `claude-code-slack-bot-store` | `soma-work-store` |
-| `docs/spec/09-configuration.md:365` | `com.dd.claude-slack-bot` | `ai.2lab.soma-work.{main,dev}` |
-| `docs/spec/09-configuration.md:375` | `com.dd.claude-slack-bot` | `ai.2lab.soma-work.{main,dev}` |
-| `docs/spec/09-configuration.md:379` | `/Users/dd/claude-code-slack-bot/dist/index.js` | `/opt/soma-work/{main,dev}/dist/index.js` |
-| `docs/spec/09-configuration.md:382` | `/Users/dd/claude-code-slack-bot` | `/opt/soma-work/{main,dev}` |
-| `docs/spec/09-configuration.md:389-390` | `/Users/dd/claude-code-slack-bot/logs/` | `/opt/soma-work/{main,dev}/logs/` |
-| `docs/spec/09-configuration.md:476` | `claude-code-slack-bot/` | `soma-work/` |
+| `docs/current/spec/07-permission-system.md:248,253-254` | `claude-code-slack-bot-store` | `soma-work-store` |
+| `docs/current/spec/09-configuration.md:365` | `com.dd.claude-slack-bot` | `ai.2lab.soma-work.{main,dev}` |
+| `docs/current/spec/09-configuration.md:375` | `com.dd.claude-slack-bot` | `ai.2lab.soma-work.{main,dev}` |
+| `docs/current/spec/09-configuration.md:379` | `/Users/dd/claude-code-slack-bot/dist/index.js` | `/opt/soma-work/{main,dev}/dist/index.js` |
+| `docs/current/spec/09-configuration.md:382` | `/Users/dd/claude-code-slack-bot` | `/opt/soma-work/{main,dev}` |
+| `docs/current/spec/09-configuration.md:389-390` | `/Users/dd/claude-code-slack-bot/logs/` | `/opt/soma-work/{main,dev}/logs/` |
+| `docs/current/spec/09-configuration.md:476` | `claude-code-slack-bot/` | `soma-work/` |
 
 ### 2.2 검색 패턴
 ```
@@ -71,7 +71,7 @@ grep -r "/Users/dd/" docs/             → 09-configuration.md, github-auth-repo
 
 **Size**: medium (~50 lines)
 
-### 3.1 docs/spec/03-session-management.md
+### 3.1 docs/current/spec/03-session-management.md
 
 | Line | Old | New |
 |------|-----|-----|
@@ -80,7 +80,7 @@ grep -r "/Users/dd/" docs/             → 09-configuration.md, github-auth-repo
 
 세션 관리 로직은 `session-registry.ts`로 추출 완료.
 
-### 3.2 docs/spec/07-permission-system.md
+### 3.2 docs/current/spec/07-permission-system.md
 
 | Line | Old | New |
 |------|-----|-----|
@@ -88,7 +88,7 @@ grep -r "/Users/dd/" docs/             → 09-configuration.md, github-auth-repo
 | 253-254 | `/tmp/claude-code-slack-bot-store/` | `/tmp/soma-work-store/` |
 | 6 | `Last Updated: 2025-12-13` | `Last Updated: 2026-03-06` |
 
-### 3.3 docs/spec/08-user-settings.md
+### 3.3 docs/current/spec/08-user-settings.md
 
 UserSettings 인터페이스에 누락된 필드 추가:
 
@@ -111,7 +111,7 @@ export interface UserSettings {
 }
 ```
 
-### 3.4 docs/spec/13-slack-ui-action-panel.md
+### 3.4 docs/current/spec/13-slack-ui-action-panel.md
 
 | Line | Old | New |
 |------|-----|-----|
@@ -132,7 +132,7 @@ export interface UserSettings {
 ### 4.1 현행 커맨드 목록 (command-router.ts 기준, 20개 핸들러)
 
 ```
-Current (docs/spec/10-commands.md):        Missing:
+Current (docs/current/spec/10-commands.md):        Missing:
 ─────────────────────────────               ──────────
 cwd, bypass, mcp, persona,                 admin (accept/deny/users/config)
 sessions, all_sessions, help,              cct / set_cct (token management)
@@ -234,7 +234,7 @@ src/
 | spec 파일 버전을 2.0으로 올리지 않고 날짜만 갱신 | tiny | 버전 bumping은 컨벤션이 없음, 날짜로 충분 |
 | 10-commands.md를 전면 재작성 대신 테이블 업데이트만 | small | 기존 상세 설명은 유효, 누락분만 추가 |
 | architecture.md에 LOC를 정확한 값 대신 근사치 사용 | tiny | LOC는 지속 변동, 근사치로 충분 |
-| docs/spec/00-overview.md ~ 06, 11, 12는 수정 불필요 | small | 탐색 결과 major stale 없음 |
+| docs/current/spec/00-overview.md ~ 06, 11, 12는 수정 불필요 | small | 탐색 결과 major stale 없음 |
 
 ## Implementation Status
 

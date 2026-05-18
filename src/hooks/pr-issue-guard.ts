@@ -7,8 +7,8 @@
  * tool calls (`Bash gh pr create` and `mcp__github__create_pull_request`)
  * for sessions started via z handoff.
  *
- * Spec: docs/pr-issue-precondition/spec.md (v2.1; #885 adds Jira branch)
- * Trace: docs/pr-issue-precondition/trace.md (v2.1)
+ * Spec: docs/archive/features/pr-issue-precondition/spec.md (v2.1; #885 adds Jira branch)
+ * Trace: docs/archive/features/pr-issue-precondition/trace.md (v2.1)
  *
  * Activation: caller (the hook closure) only invokes this guard when
  * `session.handoffContext` is set — guard takes it as a REQUIRED arg.

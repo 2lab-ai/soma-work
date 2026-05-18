@@ -33,6 +33,14 @@ You:   Optimize this function [attaches file]
 Bot:   [Analyzes uploaded code, identifies bottlenecks, proposes optimized version]
 ```
 
+## Documentation
+
+- Start with the [docs map](./docs/README.md) for current architecture, specs, traces, archives, and routing rules.
+- Durable decisions live in the [ADR index](./docs/adr/README.md).
+- Completed or archived work is tracked in the [completed work ledger](./docs/archive/completed-work.md).
+- The 2026-05-18 research note on AI-agent-friendly project documentation is in [docs/research](./docs/misc/research/2026-05-18-ai-agent-docs-organization.md).
+- Slack Block Kit/API constraints are maintained in [docs/misc/reference/slack-block-kit.md](./docs/misc/reference/slack-block-kit.md).
+
 ---
 
 ## ✨ Key Features
@@ -100,7 +108,7 @@ Run multiple independent AI agents within a single process. Each sub-agent is a 
 
 > **Note**: Direct @mention/DM handling and `agent_chat` query integration are being wired up (Phase 2). Agents currently connect via Socket Mode and receive events, but full ClaudeHandler integration is in progress.
 
-See [How to Add a New Agent](./docs/how-to-new-agent.md) for setup instructions.
+See [How to Add a New Agent](./docs/misc/guides/how-to-new-agent.md) for setup instructions.
 
 ---
 
@@ -172,7 +180,7 @@ Four prefix families — each with a clear, non-overlapping purpose:
 
 ### `/z` — primary surface
 
-Grammar: `/z <topic> [verb] [args...]`. See `docs/spec/01-slack-integration.md` for the full surface, `docs/ops/rollback-z-refactor.md` for emergency rollback.
+Grammar: `/z <topic> [verb] [args...]`. See `docs/current/spec/01-slack-integration.md` for the full surface, `docs/runbook/rollback-z-refactor.md` for emergency rollback.
 
 | Command | Description |
 |---------|-------------|
@@ -260,7 +268,7 @@ npm install
 ### 2. Create Slack App
 
 1. Go to [api.slack.com/apps](https://api.slack.com/apps) → **Create New App** → **From an app manifest**
-2. Paste the contents of [`slack-app-manifest.json`](./slack-app-manifest.json)
+2. Paste the contents of [`infra/slack/slack-app-manifest.json`](./infra/slack/slack-app-manifest.json)
 3. After creation:
    - **OAuth & Permissions** → copy Bot User OAuth Token (`xoxb-...`)
    - **Basic Information** → generate App-Level Token with `connections:write` scope (`xapp-...`)
@@ -383,14 +391,14 @@ docker-compose logs -f
 ### macOS LaunchAgent
 
 ```bash
-./service.sh install     # Install as LaunchAgent
-./service.sh start       # Start service
-./service.sh logs follow # Stream logs
+./scripts/service.sh install     # Install as LaunchAgent
+./scripts/service.sh start       # Start service
+./scripts/service.sh logs follow # Stream logs
 ```
 
 Service identifier: `ai.2lab.soma-work` — auto-restarts on crash.
 
-> ⚠️ **Do not run `service.sh` during development.** Multiple instances with the same Slack token cause message conflicts.
+> ⚠️ **Do not run `scripts/service.sh` during development.** Multiple instances with the same Slack token cause message conflicts.
 
 ---
 
@@ -501,7 +509,7 @@ Automated provisioning:
 npx tsx scripts/provision-agent.ts jangbi "코드 리뷰 전문 에이전트"
 ```
 
-Full guide: [docs/how-to-new-agent.md](./docs/how-to-new-agent.md)
+Full guide: [docs/misc/guides/how-to-new-agent.md](./docs/misc/guides/how-to-new-agent.md)
 
 ---
 

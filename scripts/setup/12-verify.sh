@@ -9,17 +9,17 @@ run_step() {
 
     local all_ok=true
 
-    # --- Node.js path in service.sh ---
+    # --- Node.js path in scripts/service.sh ---
     local node_path
     node_path=$(detect_node_path)
-    local service_sh="$REPO_DIR/service.sh"
+    local service_sh="$REPO_DIR/scripts/service.sh"
 
     if [[ -n "$node_path" ]]; then
         local current_node_path
         current_node_path=$(grep 'NODE_PATH=' "$service_sh" | head -1 | sed 's/.*NODE_PATH="//' | sed 's/".*//' | sed "s|.*=||" | sed "s|\$HOME|$HOME|g")
 
         if [[ "$current_node_path" != *"$node_path"* ]]; then
-            info "Updating Node.js path in service.sh..."
+            info "Updating Node.js path in scripts/service.sh..."
             # Update the NODE_PATH line
             sed -i '' "s|NODE_PATH=.*|NODE_PATH=\"$node_path\"|" "$service_sh"
             success "Node path updated: $node_path"
@@ -67,13 +67,13 @@ run_step() {
             fi
             if [[ "$error_count" -gt 0 ]]; then
                 warn "  $error_count errors in recent logs"
-                echo -e "    ${DIM}Check: ./service.sh $env logs stderr 20${NC}"
+                echo -e "    ${DIM}Check: ./scripts/service.sh $env logs stderr 20${NC}"
             else
                 success "  No recent errors in logs"
             fi
         else
             warn "  Service not running"
-            echo -e "    ${DIM}Start: ./service.sh $env start${NC}"
+            echo -e "    ${DIM}Start: ./scripts/service.sh $env start${NC}"
         fi
     done
 

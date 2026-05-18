@@ -681,7 +681,7 @@ export class ThreadSurface {
     }
 
     // Append executive summary blocks if present
-    // Trace: docs/turn-summary-lifecycle/trace.md, S3
+    // Trace: docs/archive/features/turn-summary-lifecycle/trace.md, S3
     if (summaryBlocks.length > 0) {
       blocks.push(...summaryBlocks);
     }

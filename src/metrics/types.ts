@@ -1,6 +1,6 @@
 /**
  * Metrics types for daily/weekly report feature.
- * Trace: docs/daily-weekly-report/spec.md, Section 5.3-5.6
+ * Trace: docs/archive/features/daily-weekly-report/spec.md, Section 5.3-5.6
  */
 
 export type MetricsEventType =
