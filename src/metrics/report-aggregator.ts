@@ -1,6 +1,6 @@
 /**
  * ReportAggregator — Aggregates metrics events into daily/weekly reports.
- * Trace: docs/daily-weekly-report/trace.md, Scenario 4
+ * Trace: docs/archive/features/daily-weekly-report/trace.md, Scenario 4
  */
 
 import { Logger } from '../logger';
@@ -376,7 +376,7 @@ export class ReportAggregator {
    * Aggregate carousel stats for a single target user across 4 windows in a
    * single scan over events.
    *
-   * Trace: docs/usage-card-dark/trace.md — Scenario 2.
+   * Trace: docs/current/plans/usage-card-dark/trace.md — Scenario 2.
    *
    * Windows:
    * - `24h`: [now - 24h, now]

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { type ForkExecutor, SUMMARY_PROMPT, SummaryService, type SummarySessionInfo } from '../summary-service.js';
 
-// Trace: docs/turn-summary-lifecycle/trace.md
+// Trace: docs/current/plans/turn-summary-lifecycle/trace.md
 
 describe('SummaryService', () => {
   function makeSession(overrides: Partial<SummarySessionInfo> = {}): SummarySessionInfo {
@@ -102,7 +102,7 @@ describe('SummaryService', () => {
     // conversation was created (= `sessionWorkingDir`), otherwise resume looks
     // in the wrong `~/.claude/projects/<encoded-cwd>` directory and falls back
     // to a context-less summary that does not reflect actual work content.
-    // Docs: docs/claude-agent-sdk/sessions.md L234-L235.
+    // Docs: docs/stale-plans/review-needed/claude-agent-sdk/sessions.md L234-L235.
     it('execute() prefers sessionWorkingDir over workingDirectory as fork cwd', async () => {
       const mockFork: ForkExecutor = vi.fn().mockResolvedValue('summary');
       const service = new SummaryService(mockFork);

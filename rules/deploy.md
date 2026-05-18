@@ -29,9 +29,9 @@ DEBUG=true
 ## macOS LaunchDaemon
 
 ```bash
-./service.sh status|start|stop|restart|install|uninstall
-./service.sh logs stderr 100    # stderr 로그
-./service.sh logs follow        # 실시간 로그
+./scripts/service.sh status|start|stop|restart|install|uninstall
+./scripts/service.sh logs stderr 100    # stderr 로그
+./scripts/service.sh logs follow        # 실시간 로그
 ```
 
 - Service: `ai.2lab.soma-work.{main,dev}`

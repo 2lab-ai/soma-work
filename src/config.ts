@@ -16,7 +16,7 @@ export interface PreflightResult {
  * refactor (Issue #525). Out-of-range, non-integer, or missing values fall
  * back to 0 (all legacy) with a warn log. This is the single rollout variable
  * for the whole refactor; cumulative prefix semantics (see
- * docs/slack-ui-phase1.md §Rollout).
+ * docs/archive/features/slack-ui/phase1.md §Rollout).
  *
  * @internal exported for unit tests; runtime consumers should read
  *           `config.ui.fiveBlockPhase` instead.
@@ -146,7 +146,7 @@ export const config = {
      * `client.assistant.threads.setStatus` call is a no-op even if the Bolt
      * Assistant container has been registered and `assistant:write` is
      * installed. Flip to `true` only once Part 2 (PHASE>=4 turn-surface
-     * wiring + legacy suppression) has merged. See docs/slack-ui-phase4.md.
+     * wiring + legacy suppression) has merged. See docs/archive/features/slack-ui/phase4.md.
      */
     b4NativeStatusEnabled: parseBool(process.env.SOMA_UI_B4_NATIVE_STATUS, false),
   },

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ReportScheduler } from '../report-scheduler';
 
 // Contract tests — Scenario 6: ReportScheduler + ReportHandler
-// Trace: docs/daily-weekly-report/trace.md
+// Trace: docs/archive/features/daily-weekly-report/trace.md
 
 describe('ReportScheduler', () => {
   let scheduler: ReportScheduler;

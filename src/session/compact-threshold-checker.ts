@@ -54,7 +54,7 @@ export interface CheckAndSchedulePendingCompactArgs {
  * session is still under threshold, when `autoCompactPending` was already
  * scheduled, or when usage data is unavailable.
  *
- * Trace: docs/issues/compact-tracking.md AC3.
+ * Trace: docs/misc/issues/current/compact-tracking.md AC3.
  */
 export async function checkAndSchedulePendingCompact(args: CheckAndSchedulePendingCompactArgs): Promise<boolean> {
   const { session, userId, channel, threadTs, userSettings, slackApi, logger } = args;

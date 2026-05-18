@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-// Contract tests for CctHandler — derived from docs/cct-token-rotation/trace.md
+// Contract tests for CctHandler — derived from docs/current/plans/cct-token-rotation/trace.md
 // Scenarios 2 & 3
 
 describe('CommandParser CCT', () => {

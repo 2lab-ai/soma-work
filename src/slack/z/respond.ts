@@ -1,7 +1,7 @@
 /**
  * `ZRespond` implementations — 3 response strategies for the `/z` entry points.
  *
- * Invariants (see plan/MASTER-SPEC.md §5-3, §10):
+ * Invariants (see docs/current/spec/z-command-master-spec.md §5-3, §10):
  *  - Ephemeral (slash / channel) NEVER uses `chat.update`.
  *  - `SlashZRespond.replace` uses `response_url + replace_original:true`.
  *  - `ChannelEphemeralZRespond.replace` requires a per-action `response_url`.

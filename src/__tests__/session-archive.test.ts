@@ -1,6 +1,6 @@
 /**
  * Session Archive Store — Contract Tests
- * Trace: docs/session-archive/trace.md
+ * Trace: docs/current/plans/session-archive/trace.md
  * Issue: #401
  */
 

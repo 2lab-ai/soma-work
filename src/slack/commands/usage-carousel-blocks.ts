@@ -5,7 +5,7 @@
  *   [1] image      — slack_file.id === fileIds[selectedTab]
  *   [2] actions    — 4 tab buttons (24h / 7d / 30d / all), selected → primary
  *
- * Trace: docs/usage-card-dark/trace.md, Scenario 1 (lines 60–61),
+ * Trace: docs/current/plans/usage-card-dark/trace.md, Scenario 1 (lines 60–61),
  *        Scenario 8 (line 232 — `block_id` must be static).
  *
  * Pure function — no I/O, no side effects. Block union uses loose typing

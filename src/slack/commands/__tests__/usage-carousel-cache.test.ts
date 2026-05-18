@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { defaultTabCache, TabCache, type TabCacheEntry } from '../usage-carousel-cache';
 
-// Trace: docs/usage-card-dark/trace.md, Scenario 7
+// Trace: docs/current/plans/usage-card-dark/trace.md, Scenario 7
 
 function makeEntry(expiresAt: number, userId = 'U_ALICE'): TabCacheEntry {
   return {

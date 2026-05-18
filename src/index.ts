@@ -301,7 +301,7 @@ async function start() {
       logger.warn('Failed to start A2T service (non-critical)', error);
     }
 
-    // Initialize AgentManager if agents are configured (Trace: docs/multi-agent/trace.md, S2)
+    // Initialize AgentManager if agents are configured (Trace: docs/current/plans/multi-agent/trace.md, S2)
     let agentManager: import('./agent-manager').AgentManager | undefined;
     if (appConfig.agents && Object.keys(appConfig.agents).length > 0) {
       const { AgentManager } = await import('./agent-manager');
@@ -676,7 +676,7 @@ async function start() {
     await app.start();
     timing('Slack socket connected');
 
-    // Start sub-agent instances after main bot (Trace: docs/multi-agent/trace.md, S2)
+    // Start sub-agent instances after main bot (Trace: docs/current/plans/multi-agent/trace.md, S2)
     if (agentManager) {
       try {
         await agentManager.startAll();
@@ -712,7 +712,7 @@ async function start() {
     }
 
     // Start cron scheduler (non-blocking, non-critical)
-    // Trace: docs/cron-scheduler/spec.md §5.4 — Scheduler lifecycle
+    // Trace: docs/current/plans/cron-scheduler/spec.md §5.4 — Scheduler lifecycle
     let cronScheduler: CronScheduler | null = null;
     try {
       const cronStorage = new CronStorage(path.join(DATA_DIR, 'cron-jobs.json'));
@@ -860,7 +860,7 @@ async function start() {
         // Stop A2T service
         await shutdownA2tService();
 
-        // Stop sub-agents (Trace: docs/multi-agent/trace.md, S7)
+        // Stop sub-agents (Trace: docs/current/plans/multi-agent/trace.md, S7)
         if (agentManager) {
           await agentManager.stopAll();
           logger.info('Sub-agents stopped');

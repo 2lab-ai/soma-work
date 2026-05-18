@@ -9,7 +9,7 @@
  * - Issue 4: Race condition guard — check if response already exists
  * - Issue 5: Recompute expiresAt at approval time from duration, not request time
  *
- * Trace: docs/mcp-tool-permission/trace.md, S4
+ * Trace: docs/current/plans/mcp-tool-permission/trace.md, S4
  */
 
 import * as fs from 'fs';

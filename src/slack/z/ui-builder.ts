@@ -6,14 +6,14 @@
  * All block_ids are generated deterministically via `zBlockId()`:
  *   `z_<topic>_<issuedAt>_<index>`
  *
- * Action ID conventions (see docs/slack-block-kit.md):
+ * Action ID conventions (see docs/misc/reference/slack-block-kit.md):
  *   - `z_setting_<topic>_set_<value>` — apply value
  *   - `z_setting_<topic>_cancel`      — dismiss the card
  *   - `z_setting_<topic>_open_modal`  — open a text-input modal
  *   - `z_setting_<topic>_modal_submit` — view_submission callback
  *   - `z_help_nav_<topic>`             — navigate help → topic card
  *
- * See: plan/MASTER-SPEC.md §8 / §15.
+ * See: docs/current/spec/z-command-master-spec.md §8 / §15.
  */
 
 import type { TombstoneHint } from './tombstone';

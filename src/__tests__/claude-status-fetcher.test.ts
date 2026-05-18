@@ -1,6 +1,6 @@
 /**
  * Contract Tests (RED) for claude-status-fetcher
- * Trace: docs/api-error-status/trace.md
+ * Trace: docs/current/plans/api-error-status/trace.md
  *
  * All tests must FAIL (RED) until implementation exists.
  */

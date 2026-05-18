@@ -614,7 +614,7 @@ describe('Abort handling', () => {
   // Turn-end surface guarantee — enrichment failure rail
   // -------------------------------------------------------------------------
   //
-  // Contract under audit (docs/turn-end-surface-guarantee/trace.md, S3):
+  // Contract under audit (docs/current/plans/turn-end-surface-guarantee/trace.md, S3):
   // every model-turn end state (WorkflowComplete / UIUserAskQuestion /
   // Exception) MUST surface a Slack Block Kit completion card. The success
   // rail builds an enriched event then fires `turnNotifier.notify`; the
@@ -2750,7 +2750,7 @@ describe('File access blocked error recovery', () => {
   });
 });
 
-// ── Trace: docs/fix-thread-header-files/trace.md ──
+// ── Trace: docs/current/plans/fix-thread-header-files/trace.md ──
 // S2: Thread-awareness hint guides array mode + root file check
 describe('getThreadContextHint — array mode guidance', () => {
   it('threadHint_guidesArrayMode: hint mentions array mode and root file check', () => {

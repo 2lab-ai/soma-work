@@ -1,6 +1,6 @@
 /**
  * MetricsEventStore — JSONL-based event storage with daily file rotation.
- * Trace: docs/daily-weekly-report/trace.md, Scenario 1
+ * Trace: docs/archive/features/daily-weekly-report/trace.md, Scenario 1
  *
  * Files live under `{DATA_DIR}/metrics/metrics-events-YYYY-MM-DD.jsonl`.
  * On first use per process, any legacy files at `{DATA_DIR}/metrics-events-*.jsonl`

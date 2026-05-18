@@ -3,7 +3,7 @@
  * aborts an SDK stream after N ms of silence so a hung turn surfaces a
  * 🔴 "오류 발생" terminal card instead of leaving the thread half-finished.
  *
- * Trace: docs/turn-end-surface-guarantee/trace.md, S4 (stall-timeout arm).
+ * Trace: docs/current/plans/turn-end-surface-guarantee/trace.md, S4 (stall-timeout arm).
  * Companion to PR #924 (dispatcher heuristic on next-message arrival) —
  * this watchdog fires WITHOUT waiting for the user to displace the turn.
  */
