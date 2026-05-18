@@ -77,6 +77,8 @@ export function isWhitelistedNaked(text: string): boolean {
  *    sessions via the `/z` surface.
  *  - topics that don't exist as first-class `/z` verbs: `thinking`,
  *    `thinking_summary`.
+ *  - `goal`, because `goal set <objective>` can continue into model
+ *    execution and is therefore not a non-admin DM safe command.
  *
  * Note: topics in the list (persona, model, verbosity, effort, theme, cwd,
  * email, memory, notify, sandbox, cct, bypass) configure user/session

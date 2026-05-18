@@ -416,6 +416,38 @@ describe('CommandParser', () => {
     });
   });
 
+  describe('goal command parsing', () => {
+    it('matches goal command forms', () => {
+      expect(CommandParser.isGoalCommand('goal')).toBe(true);
+      expect(CommandParser.isGoalCommand('/goal')).toBe(true);
+      expect(CommandParser.isGoalCommand('goal status')).toBe(true);
+      expect(CommandParser.isGoalCommand('/goal set ship it')).toBe(true);
+      expect(CommandParser.isGoalCommand('goal ship it\nwith tests')).toBe(true);
+    });
+
+    it('does not match unrelated or misspelled goal-like text', () => {
+      expect(CommandParser.isGoalCommand('goals')).toBe(false);
+      expect(CommandParser.isGoalCommand('goalkeeper')).toBe(false);
+      expect(CommandParser.isGoalCommand('gooal ship it')).toBe(false);
+      expect(CommandParser.isGoalCommand('please goal ship it')).toBe(false);
+    });
+
+    it('parses status, set, lifecycle, and missing-objective actions', () => {
+      expect(CommandParser.parseGoalCommand('goal')).toEqual({ action: 'status' });
+      expect(CommandParser.parseGoalCommand('goal status')).toEqual({ action: 'status' });
+      expect(CommandParser.parseGoalCommand('goal set ship it')).toEqual({ action: 'set', objective: 'ship it' });
+      expect(CommandParser.parseGoalCommand('goal ship it')).toEqual({ action: 'set', objective: 'ship it' });
+      expect(CommandParser.parseGoalCommand('goal pause')).toEqual({ action: 'pause' });
+      expect(CommandParser.parseGoalCommand('goal resume')).toEqual({ action: 'resume' });
+      expect(CommandParser.parseGoalCommand('goal done')).toEqual({ action: 'complete' });
+      expect(CommandParser.parseGoalCommand('goal clear')).toEqual({ action: 'clear' });
+      expect(CommandParser.parseGoalCommand('goal set')).toEqual({
+        action: 'invalid',
+        reason: 'missing_objective',
+      });
+    });
+  });
+
   describe('isOnboardingCommand', () => {
     it('should match "onboarding"', () => {
       expect(CommandParser.isOnboardingCommand('onboarding')).toBe(true);
@@ -463,6 +495,12 @@ describe('CommandParser', () => {
       const help = CommandParser.getHelpMessage();
       expect(help).toContain('new');
       expect(help).toContain('Reset session context');
+    });
+
+    it('should include goal command in help', () => {
+      const help = CommandParser.getHelpMessage();
+      expect(help).toContain('goal');
+      expect(help).toContain('Set or view the active session goal');
     });
 
     it('should include onboarding command in help', () => {
@@ -695,6 +733,11 @@ describe('CommandParser', () => {
     // Should return isPotential: true
     it('should recognize "help" as a potential command', () => {
       expect(CommandParser.isPotentialCommand('help').isPotential).toBe(true);
+    });
+
+    it('should recognize "goal" and "/goal" as potential commands', () => {
+      expect(CommandParser.isPotentialCommand('goal')).toEqual({ isPotential: true, keyword: 'goal' });
+      expect(CommandParser.isPotentialCommand('/goal')).toEqual({ isPotential: true, keyword: 'goal' });
     });
 
     it('should recognize "sessions" as a potential command', () => {
