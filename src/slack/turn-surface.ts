@@ -34,7 +34,7 @@ import { TurnRenderDebouncer } from './turn-render-debouncer';
  *   stream closes cleanly before the new one opens. This protects against
  *   rapid user re-submissions and orphaned stream handles.
  *
- * See: docs/slack-ui-phase1.md, docs/slack-ui-phase0.md §Streaming mode
+ * See: docs/archive/features/slack-ui/phase1.md, docs/archive/features/slack-ui/phase0.md §Streaming mode
  * invariant, issue #525 §5.1.
  */
 
@@ -96,7 +96,7 @@ export interface TurnContext {
    * so `end()` posts nothing.
    *
    * MUST be awaited — a sync read races `stopStream` vs enrichment HTTP and
-   * silently drops B5 (issue #720). See `docs/slack-ui-phase5.md` §"Race
+   * silently drops B5 (issue #720). See `docs/archive/features/slack-ui/phase5.md` §"Race
    * fix (#720)" for the full rationale.
    */
   readonly buildCompletionEvent?: () => Promise<TurnCompletionEvent | undefined>;
@@ -881,7 +881,7 @@ export class TurnSurface {
    * Raw `chat.stopStream` with chunks-mode symmetry. Returns a discriminated
    * result so callers can log the Slack error code (`streaming_mode_mismatch`,
    * `channel_not_found`, rate limits, etc.) — operators need this to diagnose
-   * stream-close failures that the rollout plan (docs/slack-ui-phase1.md
+   * stream-close failures that the rollout plan (docs/archive/features/slack-ui/phase1.md
    * §Monitoring) explicitly expects to track.
    *
    * Chunks-mode symmetry: an empty chunks array closes without inserting a

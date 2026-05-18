@@ -1,6 +1,6 @@
 /**
  * RED tests for carousel renderer (v2).
- * Trace: docs/usage-card-dark/trace.md — Scenario 10.
+ * Trace: docs/current/plans/usage-card-dark/trace.md — Scenario 10.
  *
  * All tests use DI mocks — real echarts + resvg are NOT invoked here.
  */

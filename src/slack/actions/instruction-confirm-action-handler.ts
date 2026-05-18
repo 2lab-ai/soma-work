@@ -104,7 +104,7 @@ export class InstructionConfirmActionHandler {
 
     // Terminal message — no buttons, just the applied summary. `block_id`
     // left unset so Slack assigns fresh ids (update requires unique ids —
-    // docs/slack-block-kit.md §1.2).
+    // docs/misc/reference/slack-block-kit.md §1.2).
     if (entry.messageTs) {
       try {
         await this.ctx.slackApi.updateMessage(

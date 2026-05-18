@@ -273,7 +273,7 @@ describe('TurnSurface', () => {
       // the `state.closing` fence and silently no-op, so "retry later" never
       // actually happens. Instead we clear the state (no memory leak) and
       // emit enough forensics for an operator to chase the orphaned stream
-      // manually. The rollout plan (docs/slack-ui-phase1.md §Rollout
+      // manually. The rollout plan (docs/archive/features/slack-ui/phase1.md §Rollout
       // sequence) monitors `chat.stopStream` errors via these warn fields.
       const warnSpy = vi.fn();
       const slackErr = Object.assign(new Error('slack down'), {

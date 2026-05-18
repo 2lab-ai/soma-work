@@ -1,6 +1,6 @@
 /**
  * RED tests for per-tab ECharts option builder (v2 carousel).
- * Trace: docs/usage-card-dark/trace.md — Scenario 3.
+ * Trace: docs/current/plans/usage-card-dark/trace.md — Scenario 3.
  *
  * Tests assert ECharts option object shape (values), NOT SVG output.
  */

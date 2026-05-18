@@ -211,7 +211,7 @@ export class SessionRegistry {
 
   /**
    * onIdle callback registry — fired when session transitions to idle.
-   * Trace: docs/cron-scheduler/trace.md, Scenario 5, Section 3b-3c
+   * Trace: docs/archive/features/cron-scheduler/trace.md, Scenario 5, Section 3b-3c
    */
   private onIdleCallbacks: Map<string, Array<() => void>> = new Map();
 
@@ -611,7 +611,7 @@ export class SessionRegistry {
     if (state === 'idle') {
       this.saveSessions();
       // Drain onIdle callbacks (e.g., pending cron jobs)
-      // Trace: docs/cron-scheduler/trace.md, Scenario 5, Section 3b
+      // Trace: docs/archive/features/cron-scheduler/trace.md, Scenario 5, Section 3b
       const sessionKey = this.getSessionKey(channelId, threadTs);
       this.drainOnIdleCallbacks(sessionKey);
     }
@@ -661,7 +661,7 @@ export class SessionRegistry {
 
   /**
    * Register a callback to be fired when a session transitions to idle.
-   * Trace: docs/cron-scheduler/trace.md, Scenario 5, Section 3c
+   * Trace: docs/archive/features/cron-scheduler/trace.md, Scenario 5, Section 3c
    */
   registerOnIdle(sessionKey: string, callback: () => void): void {
     const existing = this.onIdleCallbacks.get(sessionKey) || [];
@@ -673,7 +673,7 @@ export class SessionRegistry {
   /**
    * Drain and execute all onIdle callbacks for a session.
    * Fire-and-forget: each callback wrapped in try/catch.
-   * Trace: docs/cron-scheduler/trace.md, Scenario 5, Section 3b
+   * Trace: docs/archive/features/cron-scheduler/trace.md, Scenario 5, Section 3b
    */
   private drainOnIdleCallbacks(sessionKey: string): void {
     const callbacks = this.onIdleCallbacks.get(sessionKey);
@@ -693,7 +693,7 @@ export class SessionRegistry {
 
   /**
    * Clear onIdle callbacks for a session (e.g., on session removal).
-   * Trace: docs/cron-scheduler/trace.md, Scenario 5, Section 5
+   * Trace: docs/archive/features/cron-scheduler/trace.md, Scenario 5, Section 5
    */
   clearOnIdleCallbacks(sessionKey: string): void {
     this.onIdleCallbacks.delete(sessionKey);

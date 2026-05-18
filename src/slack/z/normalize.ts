@@ -1,7 +1,7 @@
 /**
  * `normalizeZInvocation()` — common normalization across the 3 entry points.
  *
- * See: plan/MASTER-SPEC.md §5-2.
+ * See: docs/current/spec/z-command-master-spec.md §5-2.
  *
  * Entry points produce a `ZInvocation`:
  *  - `source: 'slash'` — `/z` Slack slash command. `text` is already

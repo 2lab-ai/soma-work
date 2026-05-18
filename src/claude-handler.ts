@@ -324,7 +324,7 @@ export class ClaudeHandler {
 
   /**
    * Set agent configurations for the MCP config builder.
-   * Trace: docs/multi-agent/trace.md, Scenario 4
+   * Trace: docs/current/plans/multi-agent/trace.md, Scenario 4
    */
   setAgentConfigs(configs: Record<string, any>): void {
     this.mcpConfigBuilder.setAgentConfigs(configs);
@@ -1036,7 +1036,7 @@ export class ClaudeHandler {
         // MCP tool permission enforcement: deny calls to permission-gated MCP tools
         // when the user lacks an active grant. Catches mid-session grant expiry that
         // allowedTools (computed once at query start) cannot detect.
-        // Trace: docs/mcp-tool-permission/trace.md, S3/S5
+        // Trace: docs/current/plans/mcp-tool-permission/trace.md, S3/S5
         if (!isAdminUser(slackContext.user)) {
           // Cache permission config once per query \u2014 it's static deployment config,
           // unlike grants which must be re-checked from disk each call.
@@ -1085,7 +1085,7 @@ export class ClaudeHandler {
         // in @anthropic-ai/claude-agent-sdk@0.2.111), so this deny wins over the
         // bypass-mode Bash hook's allow regardless of array order.
         //
-        // Spec / trace: docs/pr-issue-precondition/{spec,trace}.md
+        // Spec / trace: docs/archive/features/pr-issue-precondition/{spec,trace}.md
         preToolUseHooks.push(
           ...buildPrIssueHookEntries({
             getHandoffContext: () =>

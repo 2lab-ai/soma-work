@@ -57,7 +57,7 @@ Infrastructure: slash command 등록 및 라우팅 파이프라인 구축.
 
 #### 3a. Manifest Files
 - `slack-app-manifest.yaml`: `slash_commands` 섹션 추가, `commands` scope 추가, `interactivity.is_enabled: true`
-- `slack-app-manifest.json`: 동일 내용 JSON 형식
+- `infra/slack/slack-app-manifest.json`: 동일 내용 JSON 형식
 
 #### 3b. EventRouter (`src/slack/event-router.ts`)
 - `setup()` 메서드에 `this.setupSlashCommands()` 추가

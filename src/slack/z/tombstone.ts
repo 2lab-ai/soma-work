@@ -1,7 +1,7 @@
 /**
  * Legacy naked command detection + tombstone hint state.
  *
- * See: plan/MASTER-SPEC.md §3-6, §7, §8-3.
+ * See: docs/current/spec/z-command-master-spec.md §3-6, §7, §8-3.
  *
  * Behaviour:
  *  - Multi-word "legacy" naked commands (e.g. `persona set linus`, `show prompt`)

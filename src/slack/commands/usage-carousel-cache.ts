@@ -1,4 +1,4 @@
-// Trace: docs/usage-card-dark/trace.md, Scenario 7
+// Trace: docs/current/plans/usage-card-dark/trace.md, Scenario 7
 //
 // TabCache — in-memory LRU cache for the usage-card carousel's per-message
 // tab file IDs. One entry per posted card message (keyed by `messageTs`),

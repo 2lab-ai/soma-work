@@ -1,7 +1,7 @@
 /**
  * KST (Korea Standard Time) streak utilities.
  *
- * Trace: docs/usage-card-dark/trace.md — Scenarios 4, 5, 6.
+ * Trace: docs/current/plans/usage-card-dark/trace.md — Scenarios 4, 5, 6.
  *
  * All day keys are 'YYYY-MM-DD' strings computed in KST (UTC+9).
  * Pure functions — no clock, no I/O.

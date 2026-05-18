@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ReportPublisher } from '../report-publisher';
 
 // Contract tests — Scenario 5: ReportPublisher
-// Trace: docs/daily-weekly-report/trace.md
+// Trace: docs/archive/features/daily-weekly-report/trace.md
 
 describe('ReportPublisher', () => {
   let publisher: ReportPublisher;

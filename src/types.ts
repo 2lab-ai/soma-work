@@ -122,7 +122,7 @@ export interface ActionPanelState {
   /**
    * P3 (PHASE>=3) — pending B3 choice lifecycle record. Authoritative session
    * state for an outstanding user-choice question. Survives turn end and
-   * restart (persisted via session-registry). See docs/slack-ui-phase3.md.
+   * restart (persisted via session-registry). See docs/archive/features/slack-ui/phase3.md.
    */
   pendingChoice?: {
     turnId: string;
@@ -475,7 +475,7 @@ export interface ConversationSession {
 
 /**
  * Configuration for a sub-agent (independent Slack Bot).
- * Trace: docs/multi-agent/trace.md, Scenario 1
+ * Trace: docs/current/plans/multi-agent/trace.md, Scenario 1
  */
 export interface AgentConfig {
   slackBotToken: string;
