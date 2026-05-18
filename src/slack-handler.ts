@@ -184,7 +184,7 @@ export class SlackHandler {
     this.todoDisplayManager = new TodoDisplayManager(this.slackApi, this.todoManager, this.reactionManager);
     // Wire todo updates to trigger thread header re-render + plan block render.
     this.todoDisplayManager.setRenderRequestCallback(async (session, sessionKey) => {
-      await this.threadPanel?.updatePanel(session, sessionKey);
+      await this.threadPanel?.updatePanel(session as ConversationSession, sessionKey);
     });
     this.todoDisplayManager.setPlanRenderCallback(async (turnId, todos, ctx) => {
       return (await this.threadPanel?.renderTasks(turnId, todos, ctx)) ?? false;

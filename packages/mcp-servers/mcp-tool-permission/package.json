@@ -1,0 +1,22 @@
+{
+  "name": "@soma/mcp-server-mcp-tool-permission",
+  "version": "1.0.0",
+  "private": true,
+  "main": "./dist/mcp-tool-permission-mcp-server.js",
+  "types": "./dist/mcp-tool-permission-mcp-server.d.ts",
+  "exports": {
+    "./bin": "./dist/mcp-tool-permission-mcp-server.js"
+  },
+  "bin": {
+    "mcp-tool-permission-mcp-server": "./dist/mcp-tool-permission-mcp-server.js"
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.0",
+    "@slack/web-api": "^7.15.1",
+    "@soma/process-shared": "*"
+  }
+}

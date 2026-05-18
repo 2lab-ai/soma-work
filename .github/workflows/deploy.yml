@@ -107,6 +107,12 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Smoke MCP bin package exports
+        run: npm run smoke:mcp-bins
+
+      - name: Smoke package assets
+        run: npm run smoke:assets
+
       - name: Configure git identity
         run: |
           git config user.email "z@2lab.ai"
@@ -122,20 +128,14 @@ jobs:
           esac
           ./scripts/version-bump.sh "$REF"
 
+      - name: Stage deploy bundle
+        run: bash scripts/deploy/stage-bundle.sh
+
+      - name: Smoke deploy bundle
+        run: npm run smoke:deploy-bundle
+
       - name: Pack deploy bundle
-        run: |
-          # NOTE: node_modules is intentionally NOT packed.
-          # Native-optional deps (e.g. @resvg/resvg-js) ship per-platform
-          # binaries; the prepare runner (oudwood-512 / linux-x64) binary
-          # would crash when rsync'd to mac-mini-dev (darwin-arm64).
-          # Each deploy target runs `npm ci --omit=dev` below.
-          tar -czf deploy-bundle.tar.gz \
-            dist \
-            mcp-servers \
-            somalib \
-            scripts/service.sh \
-            package.json \
-            package-lock.json
+        run: tar -czf deploy-bundle.tar.gz -C .deploy-bundle .
 
       - name: Upload deploy bundle
         uses: actions/upload-artifact@v4
@@ -162,13 +162,15 @@ jobs:
 
       - name: Extract deploy bundle
         run: |
-          tar -xzf bundle/deploy-bundle.tar.gz
+          mkdir -p bundle/root
+          tar -xzf bundle/deploy-bundle.tar.gz -C bundle/root
 
       - name: Deploy
         env:
           ENV: ${{ matrix.deploy_env }}
           TARGET: ${{ matrix.target_dir }}
         run: |
+          cd bundle/root
           echo "Deploying ${{ matrix.name }} to $TARGET..."
 
           # Self-hosted runners launch non-login shells; nvm-installed node
@@ -216,36 +218,8 @@ jobs:
           fi
 
           bash scripts/service.sh "$ENV" stop || true
-
-          rsync -a --delete \
-            --exclude='.env' \
-            --exclude='.system.prompt' \
-            --exclude='mcp-servers.json' \
-            --exclude='config.json' \
-            --exclude='data/' \
-            --exclude='logs/' \
-            --exclude='.claude/' \
-            dist/ "$TARGET/dist/"
-
-          rsync -a --delete mcp-servers/ "$TARGET/mcp-servers/"
-          rsync -a --delete somalib/ "$TARGET/somalib/"
-          rsync -a \
-            package.json \
-            package-lock.json \
-            "$TARGET/"
-          mkdir -p "$TARGET/scripts"
-          rsync -a scripts/service.sh "$TARGET/scripts/"
-
-          # Install runtime deps on the target host so native-optional
-          # packages (e.g. @resvg/resvg-js) resolve to the correct arch.
-          (cd "$TARGET" && npm ci --omit=dev --no-audit --no-fund)
-
-          # Smoke test: confirm the native binary loaded for this arch.
-          # Fails the deploy fast instead of crashing the /usage card
-          # handler in production.
-          (cd "$TARGET" && node -e "require('@resvg/resvg-js'); console.log('resvg native binary OK on ${{ matrix.name }}')")
-
-          bash scripts/service.sh "$ENV" install
+          bash scripts/deploy/sync-bundle.sh "$TARGET" "."
+          bash scripts/deploy/install-target.sh "$TARGET" "$ENV" "${{ matrix.name }}"
 
       - name: Verify
         env:
