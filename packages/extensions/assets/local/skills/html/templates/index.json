@@ -1,0 +1,79 @@
+{
+  "$schema": "./index.schema.json",
+  "version": 1,
+  "default_viewport": {
+    "width": 1200,
+    "height": 1600,
+    "fullPage": true,
+    "deviceScaleFactor": 1
+  },
+  "templates": [
+    {
+      "name": "doc-kami-parchment",
+      "surface": "doc",
+      "category": "prose",
+      "description": "Warm-parchment editorial document — calm reading surface for essays, memos, letters, raw notes. Default fallback for prose content.",
+      "picks_when": "Long-form prose, essay, memo, letter, report, or unclassified text — the safest generic default.",
+      "spec": "./skills/doc-kami-parchment/SKILL.md"
+    },
+    {
+      "name": "data-report",
+      "surface": "report",
+      "category": "data",
+      "description": "Visual data report — converts CSV / JSON / SQL result sets into a single-page report with charts and headline KPIs.",
+      "picks_when": "Input is tabular: CSV, TSV, markdown table, JSON array of records, SQL result set, or numeric metric stream.",
+      "spec": "./skills/data-report/SKILL.md",
+      "viewport": { "width": 1440, "height": 1200, "fullPage": true }
+    },
+    {
+      "name": "meeting-notes",
+      "surface": "doc",
+      "category": "operations",
+      "description": "Meeting decision log — agenda, decisions, action items, attendees.",
+      "picks_when": "Transcript, agenda, decisions, action items, attendee list — meeting-shaped content.",
+      "spec": "./skills/meeting-notes/SKILL.md"
+    },
+    {
+      "name": "resume-modern",
+      "surface": "doc",
+      "category": "personal",
+      "description": "Minimal A4 résumé — single column, clear hierarchy, print-safe.",
+      "picks_when": "Résumé, CV, portfolio bio, work history, education + experience structure.",
+      "spec": "./skills/resume-modern/SKILL.md"
+    },
+    {
+      "name": "deck-simple",
+      "surface": "deck",
+      "category": "presentation",
+      "description": "Horizontal-swipe slide deck — cover + content slides + closing, keyboard nav.",
+      "picks_when": "Slide outline, pitch outline, study session, or the user explicitly says 'make a deck'.",
+      "spec": "./skills/deck-simple/SKILL.md",
+      "viewport": { "width": 1920, "height": 1080, "fullPage": false, "selector": ".slide, .deck-cover, body" }
+    },
+    {
+      "name": "eng-runbook",
+      "surface": "doc",
+      "category": "engineering",
+      "description": "Incident / engineering runbook — procedure steps, rollback, on-call hand-off.",
+      "picks_when": "SQL queries without results, API call notes, incident notes, deploy procedure, on-call runbook, ops checklist.",
+      "spec": "./skills/eng-runbook/SKILL.md"
+    },
+    {
+      "name": "saas-landing",
+      "surface": "web",
+      "category": "marketing",
+      "description": "SaaS landing page — hero, features, social proof, pricing, FAQ, footer.",
+      "picks_when": "Product feature list, launch copy, pricing tiers, waitlist sign-up, marketing one-pager.",
+      "spec": "./skills/saas-landing/SKILL.md"
+    },
+    {
+      "name": "social-x-post-card",
+      "surface": "social",
+      "category": "share-card",
+      "description": "X / Twitter quote card — 1600×900 single quote with byline.",
+      "picks_when": "Single quote, announcement, sharp claim, very short post (< 280 chars effective body).",
+      "spec": "./skills/social-x-post-card/SKILL.md",
+      "viewport": { "width": 1600, "height": 900, "fullPage": false }
+    }
+  ]
+}

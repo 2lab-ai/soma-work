@@ -1,0 +1,38 @@
+{{include:./common.prompt}}
+
+# z Skill — Handoff Entrypoint: epic-update
+
+This session was started via `CONTINUE_SESSION` with `forceWorkflow="z-epic-update"`.
+The host has **already** validated the `<z-handoff type="work-complete">`
+sentinel at the top of this prompt and parsed its typed metadata into
+`session.handoffContext` (issue #695).
+
+## Your task
+
+1. Treat the `<z-handoff type="work-complete">` block in this prompt body as
+   the session SSOT. The host verified its structure — you do not re-parse.
+2. **Skip `local:z` phases 0–4** — the implementation session already shipped
+   the PR. Your only job is to reflect that completion back into the parent
+   epic.
+3. Post the block's `## Summary` (1–3 lines of behavior-level description) plus
+   `## PR` link as a comment on the parent epic issue.
+4. Update the parent epic's body checklist: flip the line for the just-merged
+   subissue from `[ ]` to `[x]`.
+5. Inspect `## Remaining Epic Checklist`:
+   - If all subissues are complete AND the Epic Done gate (see
+     `using-epic-tasks/reference/github.md` or `reference/jira.md`) passes,
+     close the epic.
+   - Otherwise, print the remaining subissue list to the user and stop. **Do
+     not** automatically emit Handoff #1 for the next subissue
+     (using-z §Protocol Rules #3 — no auto-chain).
+
+## Forbidden
+
+- Re-examining the epic spec or redesigning scope — that was settled when the
+  epic was created.
+- Marking an incomplete subissue as done.
+- Automatically chaining into the next subissue's Handoff #1. The user must
+  manually kick off the next subissue with `$z <subissue-url>`.
+
+> Hop-budget enforcement (per-session limit of 1 auto-handoff) is issue #697
+> scope — this prompt only guides the default, non-chained behavior.

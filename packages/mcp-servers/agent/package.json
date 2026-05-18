@@ -1,0 +1,21 @@
+{
+  "name": "@soma/mcp-server-agent",
+  "version": "1.0.0",
+  "private": true,
+  "main": "./dist/agent-mcp-server.js",
+  "types": "./dist/agent-mcp-server.d.ts",
+  "exports": {
+    "./bin": "./dist/agent-mcp-server.js"
+  },
+  "bin": {
+    "agent-mcp-server": "./dist/agent-mcp-server.js"
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.0",
+    "@soma/process-shared": "*"
+  }
+}

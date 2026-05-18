@@ -1,0 +1,9 @@
+{
+  "extends": "../../../tsconfig.mcp-server.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "."
+  },
+  "include": ["cron-mcp-server.ts"],
+  "exclude": ["**/*.test.ts", "dist"]
+}

@@ -1,0 +1,22 @@
+{
+  "name": "@soma/mcp-server-server-tools",
+  "version": "1.0.0",
+  "private": true,
+  "main": "./dist/server-tools-mcp-server.js",
+  "types": "./dist/server-tools-mcp-server.d.ts",
+  "exports": {
+    "./bin": "./dist/server-tools-mcp-server.js"
+  },
+  "bin": {
+    "server-tools-mcp-server": "./dist/server-tools-mcp-server.js"
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.0",
+    "@soma/process-shared": "*",
+    "mysql2": "^3.20.0"
+  }
+}
