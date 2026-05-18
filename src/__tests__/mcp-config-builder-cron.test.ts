@@ -1,6 +1,6 @@
 /**
  * McpConfigBuilder — SDK Cron blocking tests
- * Trace: docs/cron-scheduler/trace.md, Scenario 1
+ * Trace: docs/current/plans/cron-scheduler/trace.md, Scenario 1
  */
 import { describe, expect, it, vi } from 'vitest';
 

@@ -5,9 +5,9 @@
 # soma-work on a macOS machine after forking the repository.
 #
 # Usage:
-#   ./setup-wizard-macos.sh           # Run all steps
-#   ./setup-wizard-macos.sh 07        # Resume from step 07
-#   ./setup-wizard-macos.sh --status  # Show completion status
+#   ./scripts/setup-wizard-macos.sh           # Run all steps
+#   ./scripts/setup-wizard-macos.sh 07        # Resume from step 07
+#   ./scripts/setup-wizard-macos.sh --status  # Show completion status
 #
 # Idempotent: re-running skips completed steps (press Enter to keep defaults).
 # State saved to .setup-state (add to .gitignore).
@@ -97,7 +97,7 @@ for step in "${STEPS[@]}"; do
     if ! run_step; then
         echo ""
         error "Step $step failed."
-        echo -e "  Re-run with: ${BOLD}./setup-wizard-macos.sh $step${NC}"
+        echo -e "  Re-run with: ${BOLD}./scripts/setup-wizard-macos.sh $step${NC}"
         exit 1
     fi
 done
@@ -108,10 +108,10 @@ header "Setup Complete!"
 echo -e "All steps completed. Your soma-work deployment is ready."
 echo ""
 echo -e "Useful commands:"
-echo -e "  ${CYAN}./service.sh main status${NC}    Check production service"
-echo -e "  ${CYAN}./service.sh dev status${NC}     Check development service"
-echo -e "  ${CYAN}./service.sh status-all${NC}     Check all environments"
-echo -e "  ${CYAN}./service.sh main logs f${NC}    Stream production logs"
+echo -e "  ${CYAN}./scripts/service.sh main status${NC}    Check production service"
+echo -e "  ${CYAN}./scripts/service.sh dev status${NC}     Check development service"
+echo -e "  ${CYAN}./scripts/service.sh status-all${NC}     Check all environments"
+echo -e "  ${CYAN}./scripts/service.sh main logs f${NC}    Stream production logs"
 echo ""
-echo -e "To reconfigure: ${BOLD}./setup-wizard-macos.sh${NC}"
-echo -e "To check status: ${BOLD}./setup-wizard-macos.sh --status${NC}"
+echo -e "To reconfigure: ${BOLD}./scripts/setup-wizard-macos.sh${NC}"
+echo -e "To check status: ${BOLD}./scripts/setup-wizard-macos.sh --status${NC}"

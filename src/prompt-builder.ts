@@ -31,7 +31,7 @@ const VARIABLE_PATTERN = /(?<!\\)\{\{([\w.]+)\}\}/g;
  * Options for constructing a PromptBuilder.
  * When agentName is set, prompts are loaded from the agent-specific directory
  * with fallback to the main prompt directory.
- * Trace: docs/multi-agent/trace.md, Scenario 6
+ * Trace: docs/current/plans/multi-agent/trace.md, Scenario 6
  */
 export interface PromptBuilderOptions {
   agentName?: string;
@@ -91,7 +91,7 @@ export class PromptBuilder {
   /**
    * Load the default system prompt from files.
    * For agents: tries agent dir first, falls back to main dir.
-   * Trace: docs/multi-agent/trace.md, Scenario 6, Section 3a
+   * Trace: docs/current/plans/multi-agent/trace.md, Scenario 6, Section 3a
    */
   private loadDefaultPrompt(): void {
     try {
@@ -163,7 +163,7 @@ export class PromptBuilder {
       }
 
       // Try agent dir first, then fallback to main dir
-      // Trace: docs/multi-agent/trace.md, Scenario 6, Section 3b
+      // Trace: docs/current/plans/multi-agent/trace.md, Scenario 6, Section 3b
       let includePath = path.resolve(this.promptDir, trimmedFilename);
       if (!fs.existsSync(includePath) && this.promptDir !== this.fallbackPromptDir) {
         includePath = path.resolve(this.fallbackPromptDir, trimmedFilename);

@@ -133,9 +133,9 @@ jobs:
             dist \
             mcp-servers \
             somalib \
+            scripts/service.sh \
             package.json \
-            package-lock.json \
-            service.sh
+            package-lock.json
 
       - name: Upload deploy bundle
         uses: actions/upload-artifact@v4
@@ -215,7 +215,7 @@ jobs:
             node dist/deploy/main-env-bootstrap.js
           fi
 
-          bash service.sh "$ENV" stop || true
+          bash scripts/service.sh "$ENV" stop || true
 
           rsync -a --delete \
             --exclude='.env' \
@@ -232,8 +232,9 @@ jobs:
           rsync -a \
             package.json \
             package-lock.json \
-            service.sh \
             "$TARGET/"
+          mkdir -p "$TARGET/scripts"
+          rsync -a scripts/service.sh "$TARGET/scripts/"
 
           # Install runtime deps on the target host so native-optional
           # packages (e.g. @resvg/resvg-js) resolve to the correct arch.
@@ -244,11 +245,11 @@ jobs:
           # handler in production.
           (cd "$TARGET" && node -e "require('@resvg/resvg-js'); console.log('resvg native binary OK on ${{ matrix.name }}')")
 
-          bash service.sh "$ENV" install
+          bash scripts/service.sh "$ENV" install
 
       - name: Verify
         env:
           ENV: ${{ matrix.deploy_env }}
         run: |
           sleep 3
-          bash service.sh "$ENV" status
+          bash scripts/service.sh "$ENV" status

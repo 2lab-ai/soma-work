@@ -6,7 +6,7 @@
  *   tsx scripts/soma-cli.ts sessions list [--user <id>] [--model <name>] [--since <date>] [--until <date>] [--limit N] [--json]
  *   tsx scripts/soma-cli.ts sessions show <sessionKey> [--conversation] [--json]
  *
- * Trace: docs/session-archive/trace.md, Scenarios 4 & 5
+ * Trace: docs/current/plans/session-archive/trace.md, Scenarios 4 & 5
  * Issue: #401
  */
 

@@ -7,7 +7,7 @@ import {
 } from '../tool-result-interceptor';
 
 // Contract tests — Scenario 3 (extended): ToolResultInterceptor
-// Trace: docs/daily-weekly-report/trace.md
+// Trace: docs/archive/features/daily-weekly-report/trace.md
 
 // Mock the metrics emitter
 vi.mock('../event-emitter', () => {

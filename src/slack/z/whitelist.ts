@@ -5,7 +5,7 @@
  * their `/z` counterparts. Anything not on this list is cut off and shown a
  * tombstone hint once per user.
  *
- * See: plan/MASTER-SPEC.md §4 (Naked whitelist — user-modified exception).
+ * See: docs/current/spec/z-command-master-spec.md §4 (Naked whitelist — user-modified exception).
  */
 
 import { stripZPrefix } from './strip-z-prefix';

@@ -1,6 +1,6 @@
 /**
  * Claude Status Page Fetcher
- * Trace: docs/api-error-status/trace.md
+ * Trace: docs/current/plans/api-error-status/trace.md
  *
  * Fetches and parses https://status.claude.com to provide service status
  * context when API errors occur. Follows link-metadata-fetcher.ts pattern:

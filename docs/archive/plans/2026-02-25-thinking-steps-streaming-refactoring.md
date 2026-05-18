@@ -2,7 +2,7 @@
 
 Date: 2026-02-25
 Status: Draft
-Related: `docs/slack-block-kit.md` §5
+Related: `docs/misc/reference/slack-block-kit.md` §5
 
 ## 배경
 

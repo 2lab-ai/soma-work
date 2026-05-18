@@ -4,7 +4,7 @@
  *
  * DM and channel-mention entry points ARE allowed for these commands.
  *
- * See: plan/MASTER-SPEC.md §5-4.
+ * See: docs/current/spec/z-command-master-spec.md §5-4.
  *
  * Key format: `topic` OR `topic:verb` OR `topic:verb:arg` (all lowercase).
  */

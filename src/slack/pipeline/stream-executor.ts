@@ -360,7 +360,7 @@ export class StreamExecutor {
    * token stats, persona) are omitted; the optional-field model in
    * `TurnCompletionEvent` already handles their absence cleanly.
    *
-   * Trace: docs/turn-end-surface-guarantee/trace.md, S3.
+   * Trace: docs/current/plans/turn-end-surface-guarantee/trace.md, S3.
    */
   private handleEnrichmentFailure(
     err: unknown,
@@ -511,7 +511,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     const epoch = this.deps.assistantStatusManager.bumpEpoch(channel, threadTs);
 
     // Cancel summary timer on new user input
-    // Trace: docs/turn-summary-lifecycle/trace.md, S2
+    // Trace: docs/current/plans/turn-summary-lifecycle/trace.md, S2
     if (this.deps.summaryTimer) {
       this.deps.summaryTimer.cancel(params.sessionKey);
     }
@@ -531,7 +531,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     }
 
     // Delete tracked completion messages on new user input
-    // Trace: docs/turn-summary-lifecycle/trace.md, S7
+    // Trace: docs/current/plans/turn-summary-lifecycle/trace.md, S7
     if (this.deps.completionMessageTracker) {
       const threadRootTs = session.threadRootTs;
       this.deps.completionMessageTracker
@@ -1497,7 +1497,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       //     it (so TurnSurface.end's B5 emit still fires) AND turnNotifier
       //     fires (so Phase<5 deployments / non-block-kit channels also
       //     surface the terminal card). Trace:
-      //     docs/turn-end-surface-guarantee/trace.md, S3.
+      //     docs/current/plans/turn-end-surface-guarantee/trace.md, S3.
       // resolveSnapshot fires exactly once either way. No `finally` safety-
       // net resolve — that would race the `.then` rail and lock in a
       // `undefined` snapshot (codex P1-1).
@@ -1540,7 +1540,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // visible "Executive Summary in Xm Ys" indicator on the thread surface
       // so the user can see the wait window expire instead of guessing why
       // a summary suddenly appeared after silence.
-      // Trace: docs/turn-summary-lifecycle/trace.md, S1
+      // Trace: docs/current/plans/turn-summary-lifecycle/trace.md, S1
       if (this.deps.turnNotifier && this.deps.summaryTimer && category !== 'Exception') {
         this.deps.summaryTimer.start(
           sessionKey,
@@ -1836,7 +1836,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       this.logger.error('Error handling message', error);
 
       // Start status page fetch in parallel (non-blocking, 3s timeout)
-      // Trace: docs/api-error-status/trace.md, Scenario 5, Section 3a
+      // Trace: docs/current/plans/api-error-status/trace.md, Scenario 5, Section 3a
       const statusPromise = isApiLikeError(error) ? fetchClaudeStatus().catch(() => null) : Promise.resolve(null);
 
       await this.updateRuntimeStatus(session, sessionKey, {
@@ -2026,7 +2026,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       await this.deps.reactionManager.updateReaction(sessionKey, this.deps.statusReporter.getStatusEmoji('error'));
 
       // Notify user with detailed error info + Claude service status
-      // Trace: docs/api-error-status/trace.md, Scenario 5, Section 3c
+      // Trace: docs/current/plans/api-error-status/trace.md, Scenario 5, Section 3c
       const statusInfo = await statusPromise;
       const retryAttempt = retryAfterMs
         ? this.isFileAccessBlockedError(error)
@@ -2692,7 +2692,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
 
     // Append Claude service status when there's an actual issue OR active incidents
     // Fix: Bug 5 — extracted to shouldShowStatusBlock() for testability
-    // Trace: docs/status-fetcher-hardening/trace.md, S3
+    // Trace: docs/current/plans/status-fetcher-hardening/trace.md, S3
     if (shouldShowStatusBlock(statusInfo ?? null)) {
       lines.push('');
       lines.push(formatStatusForSlack(statusInfo ?? null));
