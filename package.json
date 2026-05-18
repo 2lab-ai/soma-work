@@ -6,8 +6,9 @@
   "scripts": {
     "start": "tsx src/index.ts",
     "dev": "tsx watch src/index.ts",
-    "build": "npm run check && npm run build:somalib && tsc && cp -r src/prompt dist/ && cp -r src/persona dist/ && cp -r src/local dist/ && mkdir -p dist/metrics/usage-render && cp -r src/metrics/usage-render/assets dist/metrics/usage-render/",
+    "build": "npm run check && npm run build:somalib && npm run build:packages && tsc && cp -r src/prompt dist/ && cp -r src/persona dist/ && cp -r src/local dist/ && mkdir -p dist/metrics/usage-render && cp -r src/metrics/usage-render/assets dist/metrics/usage-render/",
     "build:somalib": "tsc -p somalib/tsconfig.json",
+    "build:packages": "npm run build --workspaces --if-present",
     "prod": "node dist/index.js",
     "check": "biome check src/ somalib/ scripts/",
     "lint": "tsc --noEmit && biome check src/ somalib/ scripts/",
@@ -15,12 +16,17 @@
     "format:check": "biome format src/ somalib/ scripts/",
     "test": "vitest run",
     "test:watch": "vitest",
+    "smoke:mcp-bins": "node scripts/smoke/mcp-bins.js",
+    "smoke:assets": "npm run smoke:assets --workspaces --if-present",
+    "smoke:deploy-bundle": "node scripts/smoke/deploy-bundle.js",
     "mapping:list": "tsx scripts/update-slack-jira-mapping.ts list",
     "mapping:sync": "tsx scripts/update-slack-jira-mapping.ts sync",
     "mapping:add": "tsx scripts/update-slack-jira-mapping.ts add"
   },
   "workspaces": [
-    "somalib"
+    "somalib",
+    "packages/*",
+    "packages/mcp-servers/*"
   ],
   "keywords": [],
   "author": "",

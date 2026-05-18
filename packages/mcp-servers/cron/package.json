@@ -1,0 +1,21 @@
+{
+  "name": "@soma/mcp-server-cron",
+  "version": "1.0.0",
+  "private": true,
+  "main": "./dist/cron-mcp-server.js",
+  "types": "./dist/cron-mcp-server.d.ts",
+  "exports": {
+    "./bin": "./dist/cron-mcp-server.js"
+  },
+  "bin": {
+    "cron-mcp-server": "./dist/cron-mcp-server.js"
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.0",
+    "@soma/process-shared": "*"
+  }
+}
