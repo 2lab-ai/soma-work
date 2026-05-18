@@ -17,6 +17,7 @@ export const SLASH_FORBIDDEN: ReadonlySet<string> = new Set<string>([
   'restore',
   'link',
   'compact',
+  'goal',
   'session:set:model',
   'session:set:verbosity',
   'session:set:effort',

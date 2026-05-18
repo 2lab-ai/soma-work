@@ -142,6 +142,18 @@ export interface ActionPanelState {
   summaryBlocks?: any[];
 }
 
+export type SessionGoalStatus = 'active' | 'paused' | 'complete';
+
+export interface SessionGoal {
+  objective: string;
+  status: SessionGoalStatus;
+  createdAt: number;
+  updatedAt: number;
+  createdBy: string;
+  completedAt?: number;
+  completedBy?: string;
+}
+
 export interface ConversationSession {
   ownerId: string; // User who started the session
   ownerName?: string; // Display name of owner
@@ -367,6 +379,11 @@ export interface ConversationSession {
   // User SSOT instructions: structured, model-readable, persisted to disk.
   // Exposed to the model via GET_SESSION and managed via UPDATE_SESSION instructionOperations.
   instructions?: SessionInstruction[];
+
+  // Host-managed long-running objective for this Slack session.
+  // Active goals are injected into the system prompt; paused/complete goals
+  // remain visible through the `goal` command but do not steer the model.
+  goal?: SessionGoal;
 
   /**
    * Cached summary of `completed`-status instructions — used by the

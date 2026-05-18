@@ -48,6 +48,8 @@ describe('isLocalSlashCommand — SDK local command matcher', () => {
       // Unknown commands — must NOT be passed raw. Safer to wrap and let the
       // SDK treat them as LLM input.
       ['/foo'],
+      ['/goal'],
+      ['/goal ship it'],
       ['/compacts'],
       ['/compacta'],
       ['/compactx arg'],

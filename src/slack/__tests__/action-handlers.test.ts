@@ -126,6 +126,7 @@ describe('ActionHandlers', () => {
           'cct',
           'cwd',
           'email',
+          'goal',
           'memory',
           'model',
           'notify',
