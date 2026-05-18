@@ -24,6 +24,14 @@ export type MemoryAction =
   | { action: 'save'; target: 'memory' | 'user'; content: string };
 export type ModelAction = { action: 'list' | 'status' | 'set'; model?: string };
 export type NewCommandResult = { prompt?: string };
+export type GoalAction =
+  | { action: 'status' }
+  | { action: 'set'; objective: string }
+  | { action: 'pause' }
+  | { action: 'resume' }
+  | { action: 'complete' }
+  | { action: 'clear' }
+  | { action: 'invalid'; reason: 'missing_objective' };
 export type OnboardingCommandResult = { prompt?: string };
 export type SessionsCommandResult = { isPublic: boolean };
 export type SessionThemeCommandResult = { theme: string | null } | null;
@@ -578,6 +586,38 @@ export class CommandParser {
   }
 
   /**
+   * Check if text is a goal command.
+   */
+  static isGoalCommand(text: string): boolean {
+    return /^\/?goal(?:\s+[\s\S]*)?$/i.test(text.trim());
+  }
+
+  /**
+   * Parse goal command variants.
+   */
+  static parseGoalCommand(text: string): GoalAction {
+    const match = text.trim().match(/^\/?goal(?:\s+([\s\S]*))?$/i);
+    const rest = match?.[1]?.trim();
+    if (!rest || /^(?:status|show)$/i.test(rest)) {
+      return { action: 'status' };
+    }
+
+    if (/^pause$/i.test(rest)) return { action: 'pause' };
+    if (/^resume$/i.test(rest)) return { action: 'resume' };
+    if (/^(?:done|complete|completed)$/i.test(rest)) return { action: 'complete' };
+    if (/^(?:clear|remove|delete)$/i.test(rest)) return { action: 'clear' };
+
+    const setMatch = rest.match(/^set(?:\s+([\s\S]+))?$/i);
+    if (setMatch) {
+      const objective = setMatch[1]?.trim();
+      if (!objective) return { action: 'invalid', reason: 'missing_objective' };
+      return { action: 'set', objective };
+    }
+
+    return { action: 'set', objective: rest };
+  }
+
+  /**
    * Parse /onboarding command to extract optional prompt
    */
   static parseOnboardingCommand(text: string): OnboardingCommandResult {
@@ -939,6 +979,7 @@ export class CommandParser {
     'context',
     'renew',
     'compact',
+    'goal',
     'close',
     'link',
     // Credentials
@@ -1048,6 +1089,9 @@ export class CommandParser {
       '• `context` or `/context` - Show current session token usage and cost',
       '• `renew` or `/renew` - Save context, reset session, and reload (for long sessions)',
       '• `compact` or `/compact` - Force context compaction (for testing compression)',
+      '• `goal` or `/goal` - Set or view the active session goal',
+      '• `goal <objective>` - Set/replace the active goal and continue working',
+      '• `goal pause|resume|done|clear` - Manage the active goal state',
       '',
       '*Links:*',
       '• `link issue <url>` - Attach issue link to current session',

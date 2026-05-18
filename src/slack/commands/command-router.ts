@@ -15,6 +15,7 @@ import { CwdHandler } from './cwd-handler';
 import { DashboardHandler } from './dashboard-handler';
 import { EffortHandler } from './effort-handler';
 import { EmailHandler } from './email-handler';
+import { GoalHandler } from './goal-handler';
 import { HelpHandler } from './help-handler';
 import { InstructionsHandler } from './instructions-handler';
 import { LinkHandler } from './link-handler';
@@ -105,6 +106,7 @@ export class CommandRouter {
       // handler instead of being swallowed by the bare-`/compact` matcher.
       new CompactThresholdHandler(deps),
       new CompactHandler(deps),
+      new GoalHandler(deps),
       new LinkHandler(deps),
       new CloseHandler(deps),
       new ReportHandler(getReportDeps()),

@@ -8,6 +8,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { SYSTEM_PROMPT_FILE } from './env-paths';
 import { Logger } from './logger';
+import { buildSessionGoalBlock } from './prompt/session-goal-block';
 import { buildUserInstructionsBlock } from './prompt/user-instructions-block';
 import type { ConversationSession, WorkflowType } from './types';
 import { formatMemoryForPrompt } from './user-memory-store';
@@ -382,6 +383,7 @@ export class PromptBuilder {
     systemPrompt = this.applyUserPersona(systemPrompt, userId, workflow);
     systemPrompt = this.applyPersistentMemory(systemPrompt, userId);
     systemPrompt = this.applyPersonalSkills(systemPrompt, userId);
+    systemPrompt = this.applySessionGoal(systemPrompt, session);
     systemPrompt = this.applyUserInstructions(systemPrompt, session);
 
     // Process runtime variables (e.g., {{user.email}})
@@ -450,6 +452,15 @@ export class PromptBuilder {
       // Skills dir may not exist — that's fine, no skills to inject
       return prompt;
     }
+  }
+
+  /**
+   * Inject active session goal state just above user instructions.
+   */
+  private applySessionGoal(prompt: string, session?: ConversationSession): string {
+    const goalBlock = buildSessionGoalBlock(session);
+    if (!goalBlock) return prompt;
+    return prompt ? `${prompt}\n\n${goalBlock}` : goalBlock;
   }
 
   /**
