@@ -1,0 +1,346 @@
+{
+  "name": "@soma/slack",
+  "version": "1.0.0",
+  "private": true,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js",
+    "./action-panel-builder": "./dist/action-panel-builder.js",
+    "./actions": "./dist/actions/index.js",
+    "./actions/click-classifier": "./dist/actions/click-classifier.js",
+    "./actions/pending-form-store": "./dist/actions/pending-form-store.js",
+    "./actions/pending-instruction-confirm-store": "./dist/actions/pending-instruction-confirm-store.js",
+    "./actions/user-skill-action-kinds": "./dist/actions/user-skill-action-kinds.js",
+    "./assistant-container": "./dist/assistant-container.js",
+    "./assistant-status-manager": "./dist/assistant-status-manager.js",
+    "./channel-description-cache": "./dist/channel-description-cache.js",
+    "./channel-registry": "./dist/channel-registry.js",
+    "./choice-message-builder": "./dist/choice-message-builder.js",
+    "./command-parser": "./dist/command-parser.js",
+    "./commands/command-router": "./dist/commands/command-router.js",
+    "./completion-message-tracker": "./dist/completion-message-tracker.js",
+    "./create-fork-executor": "./dist/create-fork-executor.js",
+    "./cct/action-value": "./dist/cct/action-value.js",
+    "./cct/render-in-place": "./dist/cct/render-in-place.js",
+    "./cct/views": "./dist/cct/views.js",
+    "./directives": "./dist/directives/index.js",
+    "./directives/channel-message-directive": "./dist/directives/channel-message-directive.js",
+    "./directives/session-link-directive": "./dist/directives/session-link-directive.js",
+    "./context-window-manager": "./dist/context-window-manager.js",
+    "./directives/source-working-dir-directive": "./dist/directives/source-working-dir-directive.js",
+    "./dispatch-abort": "./dist/dispatch-abort.js",
+    "./event-router": "./dist/event-router.js",
+    "./formatters": "./dist/formatters/index.js",
+    "./formatters/directory-formatter": "./dist/formatters/directory-formatter.js",
+    "./formatters/markdown-to-blocks": "./dist/formatters/markdown-to-blocks.js",
+    "./handoff-budget": "./dist/handoff-budget.js",
+    "./instruction-confirm-blocks": "./dist/instruction-confirm-blocks.js",
+    "./message-formatter": "./dist/message-formatter.js",
+    "./message-validator": "./dist/message-validator.js",
+    "./mcp-health-monitor": "./dist/mcp-health-monitor.js",
+    "./mcp-status-tracker": "./dist/mcp-status-tracker.js",
+    "./mrkdwn-escape": "./dist/mrkdwn-escape.js",
+    "./output-flags": "./dist/output-flags.js",
+    "./pipeline": "./dist/pipeline/index.js",
+    "./pipeline/effective-phase": "./dist/pipeline/effective-phase.js",
+    "./pipeline/input-processor": "./dist/pipeline/input-processor.js",
+    "./pipeline/session-initializer": "./dist/pipeline/session-initializer.js",
+    "./pipeline/stream-executor": "./dist/pipeline/stream-executor.js",
+    "./pipeline/local-slash-command": "./dist/pipeline/local-slash-command.js",
+    "./pipeline/stream-stall-watchdog": "./dist/pipeline/stream-stall-watchdog.js",
+    "./pipeline/types": "./dist/pipeline/types.js",
+    "./reaction-manager": "./dist/reaction-manager.js",
+    "./release-notifier": "./dist/release-notifier.js",
+    "./request-coordinator": "./dist/request-coordinator.js",
+    "./session-manager": "./dist/session-manager.js",
+    "./slash-command-adapter": "./dist/slash-command-adapter.js",
+    "./slack-api-helper": "./dist/slack-api-helper.js",
+    "./source-thread-summary": "./dist/source-thread-summary.js",
+    "./startup-notifier": "./dist/startup-notifier.js",
+    "./status-reporter": "./dist/status-reporter.js",
+    "./stream-processor": "./dist/stream-processor.js",
+    "./summary-service": "./dist/summary-service.js",
+    "./summary-timer": "./dist/summary-timer.js",
+    "./task-list-block-builder": "./dist/task-list-block-builder.js",
+    "./thread-panel": "./dist/thread-panel.js",
+    "./thread-header-builder": "./dist/thread-header-builder.js",
+    "./thread-surface": "./dist/thread-surface.js",
+    "./todo-display-manager": "./dist/todo-display-manager.js",
+    "./tool-event-processor": "./dist/tool-event-processor.js",
+    "./tool-formatter": "./dist/tool-formatter.js",
+    "./tool-tracker": "./dist/tool-tracker.js",
+    "./turn-notifier": "./dist/turn-notifier.js",
+    "./turn-render-debouncer": "./dist/turn-render-debouncer.js",
+    "./turn-surface": "./dist/turn-surface.js",
+    "./user-choice-handler": "./dist/user-choice-handler.js",
+    "./user-choice-extractor": "./dist/user-choice-extractor.js",
+    "./user-skill-file-roundtrip": "./dist/user-skill-file-roundtrip.js",
+    "./z/capability": "./dist/z/capability.js",
+    "./z/normalize": "./dist/z/normalize.js",
+    "./z/respond": "./dist/z/respond.js",
+    "./z/router": "./dist/z/router.js",
+    "./z/strip-z-prefix": "./dist/z/strip-z-prefix.js",
+    "./z/tombstone": "./dist/z/tombstone.js",
+    "./z/types": "./dist/z/types.js",
+    "./z/ui-builder": "./dist/z/ui-builder.js",
+    "./z/whitelist": "./dist/z/whitelist.js",
+    "./*": "./dist/*.js"
+  },
+  "typesVersions": {
+    "*": {
+      "completion-message-tracker": [
+        "dist/completion-message-tracker.d.ts"
+      ],
+      "create-fork-executor": [
+        "dist/create-fork-executor.d.ts"
+      ],
+      "action-panel-builder": [
+        "dist/action-panel-builder.d.ts"
+      ],
+      "actions": [
+        "dist/actions/index.d.ts"
+      ],
+      "actions/click-classifier": [
+        "dist/actions/click-classifier.d.ts"
+      ],
+      "actions/pending-form-store": [
+        "dist/actions/pending-form-store.d.ts"
+      ],
+      "actions/pending-instruction-confirm-store": [
+        "dist/actions/pending-instruction-confirm-store.d.ts"
+      ],
+      "actions/user-skill-action-kinds": [
+        "dist/actions/user-skill-action-kinds.d.ts"
+      ],
+      "assistant-container": [
+        "dist/assistant-container.d.ts"
+      ],
+      "assistant-status-manager": [
+        "dist/assistant-status-manager.d.ts"
+      ],
+      "channel-description-cache": [
+        "dist/channel-description-cache.d.ts"
+      ],
+      "channel-registry": [
+        "dist/channel-registry.d.ts"
+      ],
+      "choice-message-builder": [
+        "dist/choice-message-builder.d.ts"
+      ],
+      "command-parser": [
+        "dist/command-parser.d.ts"
+      ],
+      "commands/command-router": [
+        "dist/commands/command-router.d.ts"
+      ],
+      "cct/action-value": [
+        "dist/cct/action-value.d.ts"
+      ],
+      "cct/render-in-place": [
+        "dist/cct/render-in-place.d.ts"
+      ],
+      "cct/views": [
+        "dist/cct/views.d.ts"
+      ],
+      "context-window-manager": [
+        "dist/context-window-manager.d.ts"
+      ],
+      "directives": [
+        "dist/directives/index.d.ts"
+      ],
+      "directives/channel-message-directive": [
+        "dist/directives/channel-message-directive.d.ts"
+      ],
+      "directives/session-link-directive": [
+        "dist/directives/session-link-directive.d.ts"
+      ],
+      "directives/source-working-dir-directive": [
+        "dist/directives/source-working-dir-directive.d.ts"
+      ],
+      "dispatch-abort": [
+        "dist/dispatch-abort.d.ts"
+      ],
+      "event-router": [
+        "dist/event-router.d.ts"
+      ],
+      "formatters": [
+        "dist/formatters/index.d.ts"
+      ],
+      "formatters/directory-formatter": [
+        "dist/formatters/directory-formatter.d.ts"
+      ],
+      "formatters/markdown-to-blocks": [
+        "dist/formatters/markdown-to-blocks.d.ts"
+      ],
+      "handoff-budget": [
+        "dist/handoff-budget.d.ts"
+      ],
+      "instruction-confirm-blocks": [
+        "dist/instruction-confirm-blocks.d.ts"
+      ],
+      "message-formatter": [
+        "dist/message-formatter.d.ts"
+      ],
+      "message-validator": [
+        "dist/message-validator.d.ts"
+      ],
+      "mcp-health-monitor": [
+        "dist/mcp-health-monitor.d.ts"
+      ],
+      "mcp-status-tracker": [
+        "dist/mcp-status-tracker.d.ts"
+      ],
+      "mrkdwn-escape": [
+        "dist/mrkdwn-escape.d.ts"
+      ],
+      "output-flags": [
+        "dist/output-flags.d.ts"
+      ],
+      "pipeline": [
+        "dist/pipeline/index.d.ts"
+      ],
+      "pipeline/effective-phase": [
+        "dist/pipeline/effective-phase.d.ts"
+      ],
+      "pipeline/input-processor": [
+        "dist/pipeline/input-processor.d.ts"
+      ],
+      "pipeline/session-initializer": [
+        "dist/pipeline/session-initializer.d.ts"
+      ],
+      "pipeline/stream-executor": [
+        "dist/pipeline/stream-executor.d.ts"
+      ],
+      "pipeline/local-slash-command": [
+        "dist/pipeline/local-slash-command.d.ts"
+      ],
+      "pipeline/stream-stall-watchdog": [
+        "dist/pipeline/stream-stall-watchdog.d.ts"
+      ],
+      "pipeline/types": [
+        "dist/pipeline/types.d.ts"
+      ],
+      "reaction-manager": [
+        "dist/reaction-manager.d.ts"
+      ],
+      "release-notifier": [
+        "dist/release-notifier.d.ts"
+      ],
+      "request-coordinator": [
+        "dist/request-coordinator.d.ts"
+      ],
+      "session-manager": [
+        "dist/session-manager.d.ts"
+      ],
+      "slash-command-adapter": [
+        "dist/slash-command-adapter.d.ts"
+      ],
+      "slack-api-helper": [
+        "dist/slack-api-helper.d.ts"
+      ],
+      "source-thread-summary": [
+        "dist/source-thread-summary.d.ts"
+      ],
+      "startup-notifier": [
+        "dist/startup-notifier.d.ts"
+      ],
+      "status-reporter": [
+        "dist/status-reporter.d.ts"
+      ],
+      "stream-processor": [
+        "dist/stream-processor.d.ts"
+      ],
+      "summary-service": [
+        "dist/summary-service.d.ts"
+      ],
+      "summary-timer": [
+        "dist/summary-timer.d.ts"
+      ],
+      "task-list-block-builder": [
+        "dist/task-list-block-builder.d.ts"
+      ],
+      "thread-panel": [
+        "dist/thread-panel.d.ts"
+      ],
+      "thread-header-builder": [
+        "dist/thread-header-builder.d.ts"
+      ],
+      "thread-surface": [
+        "dist/thread-surface.d.ts"
+      ],
+      "todo-display-manager": [
+        "dist/todo-display-manager.d.ts"
+      ],
+      "tool-event-processor": [
+        "dist/tool-event-processor.d.ts"
+      ],
+      "tool-formatter": [
+        "dist/tool-formatter.d.ts"
+      ],
+      "tool-tracker": [
+        "dist/tool-tracker.d.ts"
+      ],
+      "turn-notifier": [
+        "dist/turn-notifier.d.ts"
+      ],
+      "turn-render-debouncer": [
+        "dist/turn-render-debouncer.d.ts"
+      ],
+      "turn-surface": [
+        "dist/turn-surface.d.ts"
+      ],
+      "user-choice-handler": [
+        "dist/user-choice-handler.d.ts"
+      ],
+      "user-choice-extractor": [
+        "dist/user-choice-extractor.d.ts"
+      ],
+      "user-skill-file-roundtrip": [
+        "dist/user-skill-file-roundtrip.d.ts"
+      ],
+      "z/capability": [
+        "dist/z/capability.d.ts"
+      ],
+      "z/normalize": [
+        "dist/z/normalize.d.ts"
+      ],
+      "z/respond": [
+        "dist/z/respond.d.ts"
+      ],
+      "z/router": [
+        "dist/z/router.d.ts"
+      ],
+      "z/strip-z-prefix": [
+        "dist/z/strip-z-prefix.d.ts"
+      ],
+      "z/tombstone": [
+        "dist/z/tombstone.d.ts"
+      ],
+      "z/types": [
+        "dist/z/types.d.ts"
+      ],
+      "z/ui-builder": [
+        "dist/z/ui-builder.d.ts"
+      ],
+      "z/whitelist": [
+        "dist/z/whitelist.d.ts"
+      ],
+      "*": [
+        "dist/*"
+      ]
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@soma/common": "*",
+    "@slack/bolt": "=4.7.0",
+    "@slack/web-api": "^7.15.1",
+    "markdown-to-slack-blocks": "^1.4.1"
+  }
+}

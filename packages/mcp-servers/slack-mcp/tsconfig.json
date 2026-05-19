@@ -1,0 +1,9 @@
+{
+  "extends": "../../../tsconfig.mcp-server.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "."
+  },
+  "include": ["slack-mcp-server.ts", "helpers/**/*.ts"],
+  "exclude": ["**/*.test.ts", "dist"]
+}

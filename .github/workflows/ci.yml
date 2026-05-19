@@ -28,6 +28,15 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Workspace packages must be compiled to dist/ before root tsc can
+      # resolve `@soma/*` imports (each package.json points main/types at
+      # ./dist/...). The Type Check step below relies on these via the
+      # workspace symlinks under node_modules/@soma/*.
+      - name: Build workspace packages
+        run: |
+          npm run build:somalib
+          npm run build:packages
+
       - name: Format & Lint (Biome)
         run: npm run check
 
