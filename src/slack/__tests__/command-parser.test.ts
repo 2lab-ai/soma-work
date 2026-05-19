@@ -446,6 +446,27 @@ describe('CommandParser', () => {
         reason: 'missing_objective',
       });
     });
+
+    it('parses every "check goal" alias to the status action', () => {
+      // The spec lists `goal status` as the canonical check verb but `goal`
+      // (bare) and `goal show` are both reachable from the user — every check
+      // surface MUST land on the same action.
+      expect(CommandParser.parseGoalCommand('goal')).toEqual({ action: 'status' });
+      expect(CommandParser.parseGoalCommand('/goal')).toEqual({ action: 'status' });
+      expect(CommandParser.parseGoalCommand('goal status')).toEqual({ action: 'status' });
+      expect(CommandParser.parseGoalCommand('goal show')).toEqual({ action: 'status' });
+      expect(CommandParser.parseGoalCommand('goal SHOW')).toEqual({ action: 'status' });
+      expect(CommandParser.parseGoalCommand('/goal status')).toEqual({ action: 'status' });
+    });
+
+    it('parses every "complete" and "clear" lifecycle alias', () => {
+      expect(CommandParser.parseGoalCommand('goal done')).toEqual({ action: 'complete' });
+      expect(CommandParser.parseGoalCommand('goal complete')).toEqual({ action: 'complete' });
+      expect(CommandParser.parseGoalCommand('goal completed')).toEqual({ action: 'complete' });
+      expect(CommandParser.parseGoalCommand('goal clear')).toEqual({ action: 'clear' });
+      expect(CommandParser.parseGoalCommand('goal remove')).toEqual({ action: 'clear' });
+      expect(CommandParser.parseGoalCommand('goal delete')).toEqual({ action: 'clear' });
+    });
   });
 
   describe('isOnboardingCommand', () => {
