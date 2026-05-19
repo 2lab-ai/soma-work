@@ -229,20 +229,20 @@ export class CommandRouter {
     // bare `goal set X` / `goal status` / `goal pause` keep working unchanged.
     if (CommandParser.isGoalCommand(routedText)) {
       const skillRefPattern = /\$[\w-]+(?::[\w-]+)?/g;
-      let skillMatch: RegExpExecArray | null;
       let split: { goalText: string; skillText: string } | null = null;
       // Iterate every `$token` in order — `$20` / `$unknown` may not resolve.
       // We stop at the first token that `SkillForceHandler.canHandle` confirms
       // is a real skill, so the split point isn't accidentally a price tag.
-      while ((skillMatch = skillRefPattern.exec(routedText)) !== null) {
-        if (!this.skillForceHandler.canHandle(skillMatch[0], ctx.user)) {
-          continue;
+      let skillMatch = skillRefPattern.exec(routedText);
+      while (skillMatch !== null) {
+        if (this.skillForceHandler.canHandle(skillMatch[0], ctx.user)) {
+          split = {
+            goalText: routedText.slice(0, skillMatch.index).trim(),
+            skillText: routedText.slice(skillMatch.index).trim(),
+          };
+          break;
         }
-        split = {
-          goalText: routedText.slice(0, skillMatch.index).trim(),
-          skillText: routedText.slice(skillMatch.index).trim(),
-        };
-        break;
+        skillMatch = skillRefPattern.exec(routedText);
       }
 
       if (split) {
