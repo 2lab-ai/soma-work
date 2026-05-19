@@ -1,0 +1,90 @@
+/**
+ * Shared types for MCP servers.
+ * Extracted from src/types.ts to allow mcp-servers/ to be independent of src/.
+ */
+
+export type WorkflowType =
+  | 'onboarding'
+  | 'jira-executive-summary'
+  | 'jira-brainstorming'
+  | 'jira-planning'
+  | 'jira-create-pr'
+  | 'pr-review'
+  | 'pr-fix-and-update'
+  | 'pr-docs-confluence'
+  | 'deploy'
+  | 'default';
+
+export type RenewState = 'pending_save' | 'pending_load' | null;
+
+export interface Continuation {
+  prompt: string;
+  resetSession?: boolean;
+  dispatchText?: string;
+  forceWorkflow?: WorkflowType;
+}
+
+export interface SessionLink {
+  url: string;
+  type: 'issue' | 'pr' | 'doc';
+  provider: 'github' | 'jira' | 'confluence' | 'linear' | 'unknown';
+  label?: string;
+  title?: string;
+  status?: string;
+  statusCheckedAt?: number;
+}
+
+export interface SessionLinks {
+  issue?: SessionLink;
+  pr?: SessionLink;
+  doc?: SessionLink;
+}
+
+export type SessionResourceType = 'issue' | 'pr' | 'doc';
+
+export interface SessionResourceSnapshot {
+  issues: SessionLink[];
+  prs: SessionLink[];
+  docs: SessionLink[];
+  active: SessionLinks;
+  sequence: number;
+}
+
+export interface SessionResourceAddOperation {
+  action: 'add';
+  resourceType: SessionResourceType;
+  link: SessionLink;
+}
+
+export interface SessionResourceRemoveOperation {
+  action: 'remove';
+  resourceType: SessionResourceType;
+  url: string;
+}
+
+export interface SessionResourceSetActiveOperation {
+  action: 'set_active';
+  resourceType: SessionResourceType;
+  url?: string;
+}
+
+export type SessionResourceOperation =
+  | SessionResourceAddOperation
+  | SessionResourceRemoveOperation
+  | SessionResourceSetActiveOperation;
+
+export interface SessionResourceUpdateRequest {
+  expectedSequence?: number;
+  operations?: SessionResourceOperation[];
+  title?: string;
+}
+
+// Re-exported from somalib so harness and mcp-servers share one definition.
+export type {
+  SaveContextResultFile,
+  SaveContextResultPayload,
+  UserChoiceOption,
+  UserChoiceQuestion,
+  UserChoice,
+  UserChoices,
+} from '../model-commands/session-types.js';

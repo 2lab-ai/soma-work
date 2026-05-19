@@ -1,40 +1,37 @@
-import * as fs from 'fs';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('fs', async () => {
-  const actual = await vi.importActual<typeof import('fs')>('fs');
-  return {
-    ...actual,
-    existsSync: vi.fn(),
-    readFileSync: vi.fn(),
-  };
-});
-
-vi.mock('../env-paths', () => ({
-  ENV_FILE: '/tmp/test.env',
-}));
-
 describe('getConfiguredUpdateChannel', () => {
+  let tempConfigDir: string | undefined;
+
   beforeEach(() => {
     vi.resetModules();
-    vi.mocked(fs.existsSync).mockReset();
-    vi.mocked(fs.readFileSync).mockReset();
     delete process.env.DEFAULT_UPDATE_CHANNEL;
+    delete process.env.SOMA_CONFIG_DIR;
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
+    if (tempConfigDir) {
+      fs.rmSync(tempConfigDir, { recursive: true, force: true });
+      tempConfigDir = undefined;
+    }
     delete process.env.DEFAULT_UPDATE_CHANNEL;
+    delete process.env.SOMA_CONFIG_DIR;
   });
 
   it('recovers an unquoted Slack channel name from the env file when dotenv parsed it as empty', async () => {
+    tempConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), 'soma-release-notifier-'));
+    fs.writeFileSync(path.join(tempConfigDir, '.env'), 'DEFAULT_UPDATE_CHANNEL=#soma-work-dev\nDEBUG=true\n');
+
+    process.env.SOMA_CONFIG_DIR = tempConfigDir;
     process.env.DEFAULT_UPDATE_CHANNEL = '';
-    vi.mocked(fs.existsSync).mockReturnValue(true);
-    vi.mocked(fs.readFileSync).mockReturnValue('DEFAULT_UPDATE_CHANNEL=#soma-work-dev\nDEBUG=true\n' as any);
 
     const module = await import('../release-notifier');
 
-    expect((module as any).getConfiguredUpdateChannel()).toBe('#soma-work-dev');
+    expect(module.getConfiguredUpdateChannel()).toBe('#soma-work-dev');
   });
 });
 
@@ -55,6 +52,8 @@ describe('resolveChannel', () => {
       },
     };
 
-    await expect(module.resolveChannel(client as any, '#soma-work-dev')).resolves.toBe('#soma-work-dev');
+    const typedClient = client as unknown as Parameters<typeof module.resolveChannel>[0];
+
+    await expect(module.resolveChannel(typedClient, '#soma-work-dev')).resolves.toBe('#soma-work-dev');
   });
 });

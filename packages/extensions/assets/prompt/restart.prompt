@@ -1,0 +1,8 @@
+The service was restarted and the previous task was interrupted. Resume work in the following order:
+0. If you clearly remember what you were doing, check the last 3 or so messages and immediately continue the task.
+1. Use the tool:
+  - mcp__slack-mcp__get_thread_messages
+2. Determine what the user last requested.
+3. Check where you last left off.
+4. Continue and complete the work from the point of interruption.
+5. If you cannot determine the work status, explain the current situation to the user and ask about the next steps.

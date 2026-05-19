@@ -1,0 +1,21 @@
+{{include:./common.prompt}}
+
+# zwork Workflow
+
+Use the `local:zwork` skill. Never skip anything based on your own judgment — follow the `local:zwork` procedure exactly as specified.
+
+- If the user sends `zwork` again or requests to proceed according to `zwork`, re-read the local:zwork skill and restart the procedure from the beginning. Skipping steps on your own will have serious consequences, so make sure you clearly understand the user's intent and follow the procedure step by step.
+
+
+## Skills Used
+
+- stv:new-task
+- stv:debug
+- stv:do-work
+- stv:verify
+- local:github-pr
+- local:decision-gate
+- superpowers:using-superpowers
+- superpowers:using-git-worktrees
+- superpowers:subagent-driven-development
+- superpowers:dispatching-parallel-agents

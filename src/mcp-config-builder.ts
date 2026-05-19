@@ -10,6 +10,11 @@ import { isAdminUser } from './admin-utils';
 import { substituteEnvVars } from './config-env-substitution';
 import { CONFIG_FILE, DATA_DIR } from './env-paths';
 import { NATIVE_BYPASS_TOOLS } from './hooks/bypass-permission-guard';
+import {
+  type InternalMcpServerCommand,
+  type InternalMcpServerName,
+  resolveInternalMcpServerCommand,
+} from './internal-mcp-server-resolver';
 import { Logger } from './logger';
 import type { McpManager } from './mcp-manager';
 import { mcpToolGrantStore } from './mcp-tool-grant-store';
@@ -36,7 +41,7 @@ const AGENT_SERVER_BASENAME = 'agent-mcp-server';
 /** Root of the project (one level up from src/) */
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 /** Directory containing extracted MCP servers */
-const MCP_SERVERS_DIR = path.join(PROJECT_ROOT, 'mcp-servers');
+const MCP_SERVERS_DIR = path.join(PROJECT_ROOT, 'packages', 'mcp-servers');
 
 /** Native SDK tools that require terminal interaction — disallowed in Slack context */
 const NATIVE_INTERACTIVE_TOOLS = ['AskUserQuestion'];
@@ -142,6 +147,7 @@ export class McpConfigBuilder {
   private mcpManager: McpManager;
   /** Agent configs for agent MCP server (Trace: docs/current/plans/multi-agent/trace.md, S4) */
   private agentConfigs?: Record<string, any>;
+  private serverCommandRegistry = new Map<InternalMcpServerName, InternalMcpServerCommand>();
 
   constructor(mcpManager: McpManager) {
     this.mcpManager = mcpManager;
@@ -296,11 +302,11 @@ export class McpConfigBuilder {
    * Build the permission prompt MCP server configuration
    */
   private buildPermissionServer(slackContext: SlackContext): Record<string, any> {
-    const permissionServerPath = this.getPermissionServerPath();
+    const command = this.getInternalServerCommand('permission');
     return {
       'permission-prompt': {
-        command: 'npx',
-        args: ['tsx', permissionServerPath],
+        command: command.command,
+        args: command.args,
         env: {
           SLACK_BOT_TOKEN: process.env.SLACK_BOT_TOKEN,
           SLACK_CONTEXT: JSON.stringify(slackContext),
@@ -316,7 +322,7 @@ export class McpConfigBuilder {
     slackContext: SlackContext,
     modelCommandContext?: ModelCommandContext,
   ): Record<string, any> {
-    const modelCommandServerPath = this.getModelCommandServerPath();
+    const command = this.getInternalServerCommand('model-command');
     const context: ModelCommandContext = modelCommandContext || {
       channel: slackContext.channel,
       threadTs: slackContext.threadTs,
@@ -324,8 +330,8 @@ export class McpConfigBuilder {
     };
 
     return {
-      command: 'npx',
-      args: ['tsx', modelCommandServerPath],
+      command: command.command,
+      args: command.args,
       env: {
         SOMA_COMMAND_CONTEXT: JSON.stringify(context),
         SOMA_DATA_DIR: DATA_DIR,
@@ -338,7 +344,7 @@ export class McpConfigBuilder {
    * Trace: docs/archive/features/cron-scheduler/trace.md, Scenarios 2-3
    */
   private buildCronServer(slackContext: SlackContext): Record<string, any> {
-    const cronServerPath = this.getCronServerPath();
+    const command = this.getInternalServerCommand('cron');
     const context = {
       user: slackContext.user,
       channel: slackContext.channel,
@@ -346,8 +352,8 @@ export class McpConfigBuilder {
     };
 
     return {
-      command: 'npx',
-      args: ['tsx', cronServerPath],
+      command: command.command,
+      args: command.args,
       env: {
         SOMA_CRON_CONTEXT: JSON.stringify(context),
         SOMA_DATA_DIR: DATA_DIR,
@@ -440,7 +446,7 @@ export class McpConfigBuilder {
    * Build slack-mcp server configuration (thread context + file upload)
    */
   private buildSlackMcpServer(slackContext: SlackContext): Record<string, any> {
-    const serverPath = this.getSlackMcpServerPath();
+    const command = this.getInternalServerCommand('slack-mcp');
     if (!slackContext.threadTs) {
       throw new Error('Cannot build slack-mcp server without threadTs');
     }
@@ -461,8 +467,8 @@ export class McpConfigBuilder {
     }
 
     return {
-      command: 'npx',
-      args: ['tsx', serverPath],
+      command: command.command,
+      args: command.args,
       env: {
         SLACK_BOT_TOKEN: process.env.SLACK_BOT_TOKEN || '',
         SLACK_MCP_CONTEXT: JSON.stringify(threadContext),
@@ -471,10 +477,10 @@ export class McpConfigBuilder {
   }
 
   private buildLlmServer(): Record<string, any> {
-    const llmServerPath = this.getLlmServerPath();
+    const command = this.getInternalServerCommand('llm');
     return {
-      command: 'npx',
-      args: ['tsx', llmServerPath],
+      command: command.command,
+      args: command.args,
       env: {
         SOMA_CONFIG_FILE: CONFIG_FILE,
       },
@@ -487,7 +493,7 @@ export class McpConfigBuilder {
    * Trace: docs/current/plans/multi-agent/trace.md, Scenario 4
    */
   private buildAgentServer(): Record<string, any> {
-    const agentServerPath = this.getAgentServerPath();
+    const command = this.getInternalServerCommand('agent');
     // Strip sensitive tokens — only pass metadata needed for MCP tool validation
     const safeConfigs: Record<string, any> = {};
     if (this.agentConfigs) {
@@ -501,8 +507,8 @@ export class McpConfigBuilder {
       }
     }
     return {
-      command: 'npx',
-      args: ['tsx', agentServerPath],
+      command: command.command,
+      args: command.args,
       env: {
         SOMA_AGENT_CONFIGS: JSON.stringify(safeConfigs),
       },
@@ -719,10 +725,10 @@ export class McpConfigBuilder {
    * Build server-tools MCP server configuration
    */
   private buildServerToolsServer(): Record<string, any> {
-    const serverPath = this.getServerToolsServerPath();
+    const command = this.getInternalServerCommand('server-tools');
     return {
-      command: 'npx',
-      args: ['tsx', serverPath],
+      command: command.command,
+      args: command.args,
       env: {
         SOMA_CONFIG_FILE: CONFIG_FILE,
       },
@@ -739,15 +745,24 @@ export class McpConfigBuilder {
    * Trace: docs/current/plans/mcp-tool-permission/trace.md, S4/S7/S8
    */
   private buildMcpToolPermissionServer(slackContext: SlackContext): Record<string, any> {
-    const serverPath = this.getMcpToolPermissionServerPath();
+    const command = this.getInternalServerCommand('mcp-tool-permission');
     return {
-      command: 'npx',
-      args: ['tsx', serverPath],
+      command: command.command,
+      args: command.args,
       env: {
         SLACK_BOT_TOKEN: process.env.SLACK_BOT_TOKEN || '',
         SLACK_CONTEXT: JSON.stringify(slackContext),
         SOMA_CONFIG_FILE: CONFIG_FILE,
       },
     };
+  }
+
+  private getInternalServerCommand(serverName: InternalMcpServerName): InternalMcpServerCommand {
+    const cached = this.serverCommandRegistry.get(serverName);
+    if (cached) return cached;
+
+    const command = resolveInternalMcpServerCommand(serverName);
+    this.serverCommandRegistry.set(serverName, command);
+    return command;
   }
 }
