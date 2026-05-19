@@ -697,3 +697,225 @@ describe('CommandRouter — `new` + `$skill` composition (preprocessor)', () => 
     expect(result.continueWithPrompt).toContain('<local:z>');
   });
 });
+
+/**
+ * `goal` + `$skill` composition (preprocessor).
+ *
+ * Bug: when a message starts with `goal set <objective>` AND contains a
+ * `$skill` force trigger (e.g. `goal set ship X\n$z proceed`), the
+ * first-match-wins handler loop lets `SkillForceHandler` match the bare
+ * `$z` and return `handled:true`, so `GoalHandler` never runs and the
+ * session goal is silently NOT set. Reordering the handler list alone
+ * does not help: the user wants BOTH side effects (goal set AND skill
+ * invoked), so we need the same preprocessor pattern that `new` uses for
+ * `new $z foo`.
+ *
+ * The preprocessor must split at the first `$skill` token so:
+ *   - `session.goal.objective` is the CLEAN prefix (no `$z proceed` text
+ *     leaking into the persisted-and-re-injected goal block).
+ *   - The `<invoked_skills>` block reaches Claude on the same turn.
+ */
+describe('CommandRouter — `goal` + `$skill` composition (preprocessor)', () => {
+  function stubSkillFs(options: { localSkills?: string[]; pluginSkills?: Record<string, string[]> } = {}): void {
+    const localSkills = new Set(options.localSkills ?? ['z']);
+    const pluginSkills = new Map<string, Set<string>>();
+    for (const [plugin, skills] of Object.entries(options.pluginSkills ?? {})) {
+      pluginSkills.set(plugin, new Set(skills));
+    }
+    vi.mocked(fs.existsSync).mockImplementation((p) => {
+      const s = String(p);
+      const localMatch = s.match(/local\/skills\/([\w-]+)\/SKILL\.md$/);
+      if (localMatch) return localSkills.has(localMatch[1]);
+      const pluginMatch = s.match(/\/mock\/plugins\/([\w-]+)\/skills\/([\w-]+)\/SKILL\.md$/);
+      if (pluginMatch) return pluginSkills.get(pluginMatch[1])?.has(pluginMatch[2]) ?? false;
+      return false;
+    });
+    vi.mocked(fs.readFileSync).mockImplementation((p) => {
+      const s = String(p);
+      const localMatch = s.match(/local\/skills\/([\w-]+)\/SKILL\.md$/);
+      if (localMatch) return `# ${localMatch[1]} skill body\nDo the ${localMatch[1]} thing.`;
+      const pluginMatch = s.match(/\/mock\/plugins\/([\w-]+)\/skills\/([\w-]+)\/SKILL\.md$/);
+      if (pluginMatch) return `# ${pluginMatch[1]}:${pluginMatch[2]} skill body\nDo it.`;
+      return '';
+    });
+  }
+
+  function makeCtx(
+    text: string,
+    say: ReturnType<typeof vi.fn>,
+    session: { goal?: any; systemPrompt?: string } | undefined = { systemPrompt: 'cached' },
+  ): any {
+    return {
+      text,
+      user: 'U1',
+      channel: 'C1',
+      threadTs: 'T1',
+      say,
+      _testSession: session,
+    };
+  }
+
+  function makeRouterWithSession(): {
+    router: CommandRouter;
+    deps: any;
+    say: ReturnType<typeof vi.fn>;
+    session: { goal?: any; systemPrompt?: string };
+  } {
+    const say = vi.fn().mockResolvedValue(undefined);
+    const session: { goal?: any; systemPrompt?: string } = { systemPrompt: 'cached' };
+    const deps = buildDeps({
+      claudeHandler: {
+        getSession: vi.fn().mockReturnValue(session),
+        getSessionKey: vi.fn().mockImplementation((c: string, t: string) => `${c}:${t}`),
+        resetSessionContext: vi.fn().mockReturnValue(false),
+        saveSessions: vi.fn(),
+      },
+    });
+    const router = new CommandRouter(deps);
+    return { router, deps, say, session };
+  }
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('1. `goal set ship the feature $z proceed` → goal IS set with CLEAN objective AND <invoked_skills> injected', async () => {
+    stubSkillFs({ localSkills: ['z'] });
+    const skillExec = vi.spyOn(SkillForceHandler.prototype, 'execute');
+
+    const { router, say, session } = makeRouterWithSession();
+    const result = await router.route(makeCtx('goal set ship the feature $z proceed', say));
+
+    // Goal was persisted — bug fix verified.
+    expect(session.goal).toBeDefined();
+    expect(session.goal.objective).toBe('ship the feature');
+    expect(session.goal.status).toBe('active');
+    expect(session.systemPrompt).toBeUndefined();
+
+    // Skill was force-invoked on the suffix only.
+    expect(skillExec).toHaveBeenCalledTimes(1);
+    const skillCallText = skillExec.mock.calls[0][0].text;
+    expect(skillCallText).toBe('$z proceed');
+
+    // Final continuation carries the skill block (skillResult supersedes goalResult).
+    expect(result.handled).toBe(true);
+    expect(result.continueWithPrompt).toContain('<invoked_skills>');
+    expect(result.continueWithPrompt).toContain('<local:z>');
+    expect(result.continueWithPrompt).toContain('$z proceed');
+    // CRITICAL: the durable goal objective must NOT leak `$z proceed` into
+    // future system-prompt rebuilds.
+    expect(session.goal.objective).not.toContain('$z');
+    expect(session.goal.objective).not.toContain('proceed');
+  });
+
+  it('2. multi-line `goal set ship X\\n$z proceed` → same composition (newline split)', async () => {
+    stubSkillFs({ localSkills: ['z'] });
+    const { router, say, session } = makeRouterWithSession();
+
+    const result = await router.route(makeCtx('goal set ship X\n$z proceed', say));
+
+    expect(session.goal?.objective).toBe('ship X');
+    expect(result.continueWithPrompt).toContain('<local:z>');
+    expect(result.continueWithPrompt).toContain('$z proceed');
+  });
+
+  it('3. shorthand `goal ship X $z proceed` (no `set`) → goal set + skill invoked', async () => {
+    // `parseGoalCommand` treats unrecognized rest as `{action:'set', objective:rest}`.
+    // The preprocessor must hand only the clean prefix "goal ship X" to GoalHandler.
+    stubSkillFs({ localSkills: ['z'] });
+    const { router, say, session } = makeRouterWithSession();
+
+    const result = await router.route(makeCtx('goal ship X $z proceed', say));
+
+    expect(session.goal?.objective).toBe('ship X');
+    expect(result.continueWithPrompt).toContain('<local:z>');
+  });
+
+  it('4. `goal set X $stv:new-task implement Y` → plugin-qualified skill is split on the qualified token', async () => {
+    stubSkillFs({ localSkills: [], pluginSkills: { stv: ['new-task'] } });
+    const skillExec = vi.spyOn(SkillForceHandler.prototype, 'execute');
+
+    const { router, say, session } = makeRouterWithSession();
+    const result = await router.route(makeCtx('goal set ship X $stv:new-task implement Y', say));
+
+    expect(session.goal?.objective).toBe('ship X');
+    expect(skillExec).toHaveBeenCalledTimes(1);
+    expect(skillExec.mock.calls[0][0].text).toBe('$stv:new-task implement Y');
+    expect(result.continueWithPrompt).toContain('<stv:new-task>');
+  });
+
+  it('5. `goal set buy 5 items for $20` → `$20` does NOT resolve as a skill, falls through to normal goal flow', async () => {
+    stubSkillFs({ localSkills: ['z'] });
+    const skillExec = vi.spyOn(SkillForceHandler.prototype, 'execute');
+
+    const { router, say, session } = makeRouterWithSession();
+    const result = await router.route(makeCtx('goal set buy 5 items for $20', say));
+
+    // `$20` is not a skill → no split, no SkillForce invocation.
+    expect(skillExec).not.toHaveBeenCalled();
+    // Goal is set with the full literal objective.
+    expect(session.goal?.objective).toBe('buy 5 items for $20');
+    expect(result.handled).toBe(true);
+    expect(result.continueWithPrompt).toContain('Continue working toward the active session goal');
+  });
+
+  it('6. `goal set ship X $unknown_skill_name proceed` → no resolvable skill, falls through', async () => {
+    stubSkillFs({ localSkills: ['z'] }); // unknown_skill_name is NOT in localSkills
+    const skillExec = vi.spyOn(SkillForceHandler.prototype, 'execute');
+
+    const { router, say, session } = makeRouterWithSession();
+    const result = await router.route(makeCtx('goal set ship X $unknown_skill_name proceed', say));
+
+    expect(skillExec).not.toHaveBeenCalled();
+    // Whole text is objective (no clean split because no skill matched).
+    expect(session.goal?.objective).toBe('ship X $unknown_skill_name proceed');
+    expect(result.handled).toBe(true);
+  });
+
+  it('7. bare `goal` (status check) → unchanged, no SkillForce invoked', async () => {
+    stubSkillFs({ localSkills: ['z'] });
+    const skillExec = vi.spyOn(SkillForceHandler.prototype, 'execute');
+
+    const { router, say, session } = makeRouterWithSession();
+    session.goal = {
+      objective: 'finish migration',
+      status: 'active',
+      createdAt: 1,
+      updatedAt: 1,
+      createdBy: 'U1',
+    };
+
+    const result = await router.route(makeCtx('goal', say));
+
+    expect(skillExec).not.toHaveBeenCalled();
+    expect(result.handled).toBe(true);
+    // Status check returns no continuation.
+    expect(result.continueWithPrompt).toBeUndefined();
+  });
+
+  it('8. `goal pause $z proceed` → lifecycle verb runs first, NO skill invocation (verb has no continuation)', async () => {
+    stubSkillFs({ localSkills: ['z'] });
+    const skillExec = vi.spyOn(SkillForceHandler.prototype, 'execute');
+
+    const { router, say, session } = makeRouterWithSession();
+    session.goal = {
+      objective: 'finish migration',
+      status: 'active',
+      createdAt: 1,
+      updatedAt: 1,
+      createdBy: 'U1',
+    };
+
+    // `goal pause` does not produce a continueWithPrompt — splitting on the
+    // skill token would route only "goal pause" to GoalHandler (no `$z`),
+    // which still produces no continuation, and the preprocessor must NOT
+    // then run SkillForce. Verifies the early-return guard.
+    const result = await router.route(makeCtx('goal pause $z proceed', say));
+
+    // `goal pause` (with no `$z` in the cleaned goalText) flips status to paused.
+    expect(session.goal?.status).toBe('paused');
+    expect(skillExec).not.toHaveBeenCalled();
+    expect(result.handled).toBe(true);
+    expect(result.continueWithPrompt).toBeUndefined();
+  });
+});
