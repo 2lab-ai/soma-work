@@ -50,7 +50,7 @@ while IFS= read -r package_json; do
   cp "$package_json" "$STAGE_DIR/$package_json"
   copy_dir "$package_dir/dist"
   copy_dir "$package_dir/assets"
-done < <(find packages -name package.json -type f | sort)
+done < <(find packages -mindepth 2 -maxdepth 3 -name package.json -type f -not -path '*/node_modules/*' | sort)
 
 prune_non_runtime_artifacts
 

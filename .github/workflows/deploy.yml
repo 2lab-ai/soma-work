@@ -225,5 +225,11 @@ jobs:
         env:
           ENV: ${{ matrix.deploy_env }}
         run: |
+          # The Deploy step's `cd bundle/root` does not persist across steps;
+          # scripts/service.sh lives at bundle/root/scripts/service.sh after
+          # the Extract step. Without this cd the Verify step would fail with
+          # "scripts/service.sh: No such file or directory". See PR #960
+          # review (P1 finding #2).
+          cd bundle/root
           sleep 3
           bash scripts/service.sh "$ENV" status
