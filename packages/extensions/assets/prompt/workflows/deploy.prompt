@@ -1,0 +1,196 @@
+{{include:./common.prompt}}
+
+# Deploy Workflow
+
+This session automatically performs deployment from `source branch -> target environment branch`.
+The four core objectives are:
+
+1. Accurately parse the deployment target (repo/source/target) from user input
+2. Safely execute the clone -> PR creation -> merge flow for each repo
+3. Detect conflicts/risks and handle them safely with branching logic
+4. Post release notes separately to the channel root after deployment completes
+
+## Trigger Input Parsing Rules
+
+The following formats are supported as primary inputs.
+
+- `Gucci develop -> dev2`
+- `deploy Gucci develop -> dev2`
+- `Gucci,Prada develop -> dev2`
+- `owner/gucci develop -> dev2`
+- `gucci deploy/develop -> dev2` (`deploy/` prefix automatically removed)
+
+### Parsing Algorithm
+
+1. Split source/target using `->` as the delimiter.
+2. Extract the repo list + source from the left-side tokens.
+3. Parse multiple repos using comma (,) as the delimiter.
+4. If the source starts with `deploy/`, remove the prefix.
+5. Normalize the repo name using the following priority:
+   - If already in `owner/repo` format, use as-is
+   - Otherwise, match `owner/repo` candidates from the channel context/session links/conversation context
+   - If no match is found, ask the user for confirmation
+
+### Channel Context Usage Rules
+
+Find repo full name candidates from the channel description, recent conversations, and session links (issue/pr/doc).
+
+- e.g.: If the channel description contains `2lab-ai/gucci`, map `Gucci` -> `2lab-ai/gucci`
+- If multiple candidates are found, ask rather than auto-selecting
+
+## Pre-Execution Confirmation (Required)
+
+A confirmation must be obtained via `local:UIAskUserQuestion` before execution.
+
+The question must include the following information:
+
+- Repo list (normalized full names)
+- Source branch
+- Target branch
+- Execution order (if multiple repos)
+
+Example options:
+
+1. `Proceed with deployment`
+2. `Modify target`
+3. `Cancel`
+
+If `Modify target` or `Cancel` is selected, never proceed with the deployment.
+
+## Execution Process
+
+For multiple repos, execute **sequentially** (no concurrent execution).
+
+### 1) Pre-Validation
+
+- Verify access to each repo
+- Verify that source/target branches exist
+- Check target branch protection/merge policies
+
+If validation fails, stop immediately and clearly report the cause.
+
+### 2) Prepare Working Branch
+
+Proceed with the following flow for each repo:
+
+1. Clone or update existing clone
+2. Fetch latest `target`
+3. Fetch latest `source`
+4. Create a deploy working branch based on `target`
+   - e.g.: `deploy/{source}-to-{target}-{YYYYMMDDHHmm}`
+
+### 3) Merge Changes + Create PR
+
+1. Merge `source` into the working branch
+2. If no conflicts, push
+3. Create a PR with `base=target`, `head=deploy branch`
+4. Include purpose/scope/verification items in the PR body
+
+Leave a session link immediately after PR creation.
+
+```json
+{
+  "type": "session_links",
+  "pr": "https://github.com/org/repo/pull/123"
+}
+```
+
+### 4) Verify and Merge
+
+Check at least the following before merging:
+
+- CI/check status
+- Merge eligibility (conflict, policy)
+- Whether the deployment target branch (base) is correct
+
+If there are no issues, proceed with the PR merge.
+
+## Conflict Handling Policy
+
+### Trivial Conflict (Auto-Resolution Allowed)
+
+The following can be auto-resolved:
+
+- Simple lockfile regeneration conflicts
+- Simple append conflicts in changelog/release note files
+- Version bump conflicts where only the number differs (when the intent is clear)
+
+After auto-resolution, always report a summary of the changes.
+
+### Complex Conflict (Auto-Resolution Prohibited)
+
+The following must not be auto-resolved:
+
+- Logic code conflicts
+- Configuration/infrastructure policy conflicts
+- Context-dependent conflicts where the correct choice is ambiguous
+
+In this case:
+
+1. Summarize the conflict cause and present 2-3 options
+2. Explain the risks of each option
+3. Request user decision via `local:UIAskUserQuestion`
+4. Halt the merge until a response is received
+
+## Prohibited Commands
+
+The following commands must never be used:
+
+- `git push --force`
+- `git push --force-with-lease`
+- `git reset --hard`
+- `git checkout -- <path>`
+- Forced rebase strategies that destroy history
+
+## Output Rules
+
+Summarize the results for each repo in the following format:
+
+- Repo
+- Source -> target
+- PR URL
+- Merge result (success/fail)
+- Cause of failure / next action (if failed)
+
+For multiple repos, present results as a table or list for readability.
+
+---
+
+## Post-Merge Steps (Required)
+
+After the deployment merge is complete, follow the steps below.
+
+For multi-repo deployments, repeat steps 5)–6) for each repo.
+
+### 5) Server Healthcheck (only when a server-tools target exists)
+
+If the target branch name matches a server registered in server-tools, perform a healthcheck.
+(e.g., if target is `dev2` and server-tools has a `dev2` server registered)
+
+1. Wait for the CD pipeline to finish deploying the new code before checking. If no CI/CD signal is available, wait at least 60 seconds after merge.
+2. Query the Docker container list on the target server using `mcp__server-tools__list_service`
+3. Verify that key services are in Running state and ports are open
+4. If healthy, proceed to the next step; if issues are found, report a warning in the thread and wait for user decision
+
+> **Caveat**: `list_service` internally runs `docker ps`, which only returns currently running containers. Services that crashed or failed to start after deployment will **not** appear in the results. If the number of returned services is fewer than previously observed, treat it as a warning and investigate before proceeding.
+
+If no matching server exists in server-tools, skip this step.
+
+### 6) Release Notes Generation/Posting
+
+**You must use only the `local:release-notes` skill. Do not write release notes inline.**
+
+1. Identify the target's SHA before and after the merge.
+2. Invoke the `local:release-notes` skill with `<before_sha> <after_sha>` arguments.
+3. Post the generated release notes to the channel root using the `channel_message` directive.
+
+```json
+{
+  "type": "channel_message",
+  "text": "Release notes body (verbatim EN/KO bilingual output from local:release-notes skill)"
+}
+```
+
+4. After posting to the channel, briefly report "Release notes posted" in the thread.
+
+**Prohibited**: Do not generate release notes by any other means. Each repo gets exactly one `channel_message` per invocation of this skill — do not issue additional duplicate directives.

@@ -1,0 +1,31 @@
+{
+  "name": "@soma/common",
+  "version": "1.0.0",
+  "private": true,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js",
+    "./asset-path": "./dist/asset-path.js",
+    "./*": "./dist/*.js"
+  },
+  "typesVersions": {
+    "*": {
+      "asset-path": [
+        "dist/asset-path.d.ts"
+      ],
+      "*": [
+        "dist/*"
+      ]
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "dotenv": "=16.6.0"
+  }
+}
