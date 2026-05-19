@@ -15,8 +15,11 @@
     "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@clickhouse/client": "^1.18.2",
     "@modelcontextprotocol/sdk": "^1.27.0",
     "@soma/process-shared": "*",
+    "ioredis": "^5.10.1",
+    "mongodb": "^7.1.1",
     "mysql2": "^3.20.0"
   }
 }

@@ -246,7 +246,9 @@ describe('packages-srp Phase 2 slack contract', () => {
       const legacyText = fs.readFileSync(legacySource, 'utf8');
       expect(legacyText, legacySource).toContain(`@soma/slack/${moduleName}`);
       expect(legacyText, legacySource).toMatch(/\bexport\s/);
-      expect(legacyText, legacySource).not.toMatch(/class ActionHandlers|class DirectoryFormatter|class InputProcessor/);
+      expect(legacyText, legacySource).not.toMatch(
+        /class ActionHandlers|class DirectoryFormatter|class InputProcessor/,
+      );
     }
 
     const sourceFiles = listFiles(path.join(repoRoot, 'packages/slack/src')).filter((file) => file.endsWith('.ts'));

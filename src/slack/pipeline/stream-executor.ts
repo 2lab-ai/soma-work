@@ -1,4 +1,5 @@
 import './effective-phase';
+import { setStreamExecutorProviders } from '@soma/slack/pipeline/stream-executor';
 import { parseModelCommandRunResponse } from 'somalib/model-commands/result-parser';
 import { TurnResultCollector } from '../../agent-session/turn-result-collector.js';
 import { getChannelDescription } from '../../channel-description-cache';
@@ -28,7 +29,6 @@ import { getTokenManager, parseCooldownTime } from '../../token-manager';
 import { coerceToAvailableModel, userSettingsStore } from '../../user-settings-store';
 import { postCompactCompleteIfNeeded, postCompactStartingIfNeeded } from '../hooks/compact-hooks';
 import { getEffectiveFiveBlockPhase } from './effective-phase';
-import { setStreamExecutorProviders } from '@soma/slack/pipeline/stream-executor';
 
 setStreamExecutorProviders({
   parseModelCommandRunResponse,
