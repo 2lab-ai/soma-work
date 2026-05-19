@@ -189,4 +189,69 @@ describe('GoalHandler', () => {
 
     expect(deps.claudeHandler.saveSessions).toHaveBeenCalledTimes(4);
   });
+
+  it('shows "No goal" message when the session exists but no goal is set (bare `goal`)', async () => {
+    // Pinning the `postNoGoal` path that fires for bare `goal` / `goal status`
+    // / `goal show` on a session that has not had `goal set` run yet. The
+    // existing "no active session" test covers the `undefined` session path;
+    // this one covers session-exists-but-goal-undefined, which is the more
+    // common state after `/new` or after the user types `goal clear`.
+    const session = makeSession({ goal: undefined });
+    const deps = makeDeps(session);
+    const handler = new GoalHandler(deps);
+
+    const result = await handler.execute(makeCtx({ text: 'goal' }));
+
+    expect(result).toEqual({ handled: true });
+    expect(deps.slackApi.postSystemMessage).toHaveBeenCalledWith(
+      'C123',
+      expect.stringContaining('No goal is set for this session'),
+      expect.objectContaining({ threadTs: '171.001' }),
+    );
+    expect(deps.claudeHandler.saveSessions).not.toHaveBeenCalled();
+  });
+
+  it('refuses to pause/resume/done/clear when no goal exists, no state mutation', async () => {
+    // Hardens the "no goal" branch on every lifecycle verb. Regression guard
+    // for accidental future refactors that route a lifecycle verb through
+    // `setGoal` (which would silently create a goal named "pause", etc).
+    const verbs = ['goal pause', 'goal resume', 'goal done', 'goal clear'];
+    for (const verb of verbs) {
+      const session = makeSession({ goal: undefined });
+      const deps = makeDeps(session);
+      const handler = new GoalHandler(deps);
+
+      const result = await handler.execute(makeCtx({ text: verb }));
+
+      expect(result).toEqual({ handled: true });
+      expect(session.goal).toBeUndefined();
+      // postNoGoal is the only Slack call.
+      expect(deps.slackApi.postSystemMessage).toHaveBeenCalledWith(
+        'C123',
+        expect.stringContaining('No goal is set for this session'),
+        expect.objectContaining({ threadTs: '171.001' }),
+      );
+      // No persistence required since state did not change.
+      expect(deps.claudeHandler.saveSessions).not.toHaveBeenCalled();
+    }
+  });
+
+  it('refuses an empty / whitespace objective on `goal set`', async () => {
+    // `parseGoalCommand` returns `{action: 'invalid', reason:
+    // 'missing_objective'}` for `goal set` with no trailing text; the handler
+    // surfaces usage hints instead of creating a goal with an empty objective.
+    const session = makeSession();
+    const deps = makeDeps(session);
+    const handler = new GoalHandler(deps);
+
+    await handler.execute(makeCtx({ text: 'goal set' }));
+
+    expect(session.goal).toBeUndefined();
+    // Usage hint includes the canonical form.
+    expect(deps.slackApi.postSystemMessage).toHaveBeenCalledWith(
+      'C123',
+      expect.stringContaining('goal <objective>'),
+      expect.objectContaining({ threadTs: '171.001' }),
+    );
+  });
 });
