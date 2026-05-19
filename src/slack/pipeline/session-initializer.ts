@@ -818,7 +818,7 @@ export class SessionInitializer {
 
       // Set thread title in DM history — legacy-only; at effective PHASE>=4
       // the native Assistant UI owns thread titles (TurnSurface title-write
-      // is tracked for a follow-up — docs/slack-ui-phase4.md §Out of scope).
+      // is tracked for a follow-up — docs/archive/features/slack-ui/phase4.md §Out of scope).
       if (shouldRunLegacyB4Path(this.deps.assistantStatusManager)) {
         await this.deps.assistantStatusManager?.setTitle(channel, threadTs, result.title);
       }

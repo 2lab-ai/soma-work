@@ -30,7 +30,7 @@ describe('deploy config expectations', () => {
     const deployDirs = read('scripts/setup/07-deploy-dirs.sh');
     const environments = read('scripts/setup/09-github-environments.sh');
     const newDeploySetup = read('scripts/new-deploy-setup.sh');
-    const deployDoc = read('docs/add-new-deploy.md');
+    const deployDoc = read('docs/runbook/add-new-deploy.md');
     const prFixWorkflow = read('src/prompt/workflows/pr-fix-and-update.prompt');
     const versionBump = read('scripts/version-bump.sh');
 

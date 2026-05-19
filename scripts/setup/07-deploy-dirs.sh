@@ -26,13 +26,13 @@ run_step() {
 
     if [[ ${#envs_to_setup[@]} -eq 0 ]]; then
         warn "No environments selected. You can set them up later with:"
-        echo -e "  ${CYAN}./service.sh main setup${NC}"
-        echo -e "  ${CYAN}./service.sh dev setup${NC}"
+        echo -e "  ${CYAN}./scripts/service.sh main setup${NC}"
+        echo -e "  ${CYAN}./scripts/service.sh dev setup${NC}"
         mark_step_done "07"
         return 0
     fi
 
-    local service_sh="$REPO_DIR/service.sh"
+    local service_sh="$REPO_DIR/scripts/service.sh"
 
     for env in "${envs_to_setup[@]}"; do
         local dir="/opt/soma-work/$env"

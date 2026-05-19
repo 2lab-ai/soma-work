@@ -13,7 +13,7 @@ import { defaultTabCache, type TabCache } from './usage-carousel-cache';
 /**
  * Injection seam for /usage card pipeline — allows tests to fake out
  * aggregator / renderer / slack-api / clock.
- * Trace: docs/usage-card-dark/trace.md, Scenario 1.
+ * Trace: docs/current/plans/usage-card-dark/trace.md, Scenario 1.
  */
 export interface UsageCardOverrides {
   aggregator?: {
@@ -123,7 +123,7 @@ export class UsageHandler implements CommandHandler {
 
   /**
    * Handle `/usage card` — personal 4-tab carousel (24h / 7d / 30d / all).
-   * Trace: docs/usage-card-dark/trace.md, Scenario 1 (+ 9 privacy, 12 all-empty, 13 errors, 15 regression).
+   * Trace: docs/current/plans/usage-card-dark/trace.md, Scenario 1 (+ 9 privacy, 12 all-empty, 13 errors, 15 regression).
    */
   async handleCard(ctx: CommandContext): Promise<CommandResult> {
     const { channel, text, threadTs, user } = ctx;

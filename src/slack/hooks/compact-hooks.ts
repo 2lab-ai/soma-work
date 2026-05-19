@@ -53,7 +53,7 @@ const logger = new Logger('CompactHooks');
  * cycle N+1 inherits cycle N's values: `hasBoundaryMetadata` returns true
  * immediately, skipping the 500ms grace window in `postCompactCompleteIfNeeded`,
  * and the completion message renders cycle N's pre/post tokens on cycle N+1's
- * announcement (see docs/issues/compact-bugs-trace — stale-metadata P1).
+ * announcement (see docs/misc/issues/current/compact-bugs-trace — stale-metadata P1).
  *
  * Returns the current epoch — callers store per-cycle dedupe state under
  * `session.compactPostedByEpoch[epoch]`.
@@ -338,7 +338,7 @@ function stopStartingTicker(session: ConversationSession): void {
  * never both slip past the guard. Previously the assignment happened after
  * `await slackApi.postSystemMessage(...)`, which produced two posts + two
  * tickers; the first ticker's handle was overwritten and leaked (see
- * docs/issues/compact-bugs-trace/trace.md Hypothesis 1).
+ * docs/misc/issues/current/compact-bugs-trace/trace.md Hypothesis 1).
  */
 export async function postCompactStartingIfNeeded(deps: CompactHookDeps, trigger: string): Promise<void> {
   const { session, channel, threadTs, slackApi } = deps;
@@ -442,7 +442,7 @@ export async function postCompactStartingIfNeeded(deps: CompactHookDeps, trigger
  * duration). The SDK emits `compact_boundary` as a system message AND fires
  * the PostCompact hook with no guaranteed ordering. Only the system message
  * carries token counts — so if PostCompact arrives first we'd render
- * `Context: now ~?% ← was ~?%` (see docs/issues/compact-bugs-trace Hypothesis
+ * `Context: now ~?% ← was ~?%` (see docs/misc/issues/current/compact-bugs-trace Hypothesis
  * 2). 500 ms is generous vs. the microsecond-scale gap observed in practice
  * while short enough to stay invisible to users.
  */
@@ -496,7 +496,7 @@ export async function postCompactCompleteIfNeeded(
   const marker = ensurePostedMap(session)[epoch];
   if (!marker) return;
 
-  // PostCompact-hook-first ordering guard (see docs/issues/compact-bugs-trace
+  // PostCompact-hook-first ordering guard (see docs/misc/issues/current/compact-bugs-trace
   // Hypothesis 2). When the SDK fires the PostCompact hook before the
   // `compact_boundary` system message, session.compactPreTokens/PostTokens/
   // DurationMs are still null and the completion message would render
@@ -655,7 +655,7 @@ async function handlePostCompact(deps: CompactHookDeps, payload: PostCompactHook
   // (it also carries token counts/duration), so if it raced in first we
   // keep its value verbatim. This guarantees the "trigger=manual|auto"
   // segment on the completion message regardless of ordering
-  // (see docs/issues/compact-bugs-trace Hypothesis 2).
+  // (see docs/misc/issues/current/compact-bugs-trace Hypothesis 2).
   if (!deps.session.compactTrigger && (payload?.trigger === 'manual' || payload?.trigger === 'auto')) {
     deps.session.compactTrigger = payload.trigger;
   }

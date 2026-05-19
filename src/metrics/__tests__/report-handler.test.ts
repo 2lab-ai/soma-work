@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ReportHandler } from '../../slack/commands/report-handler';
 
 // Contract tests — Scenario 6: ReportHandler (slash command)
-// Trace: docs/daily-weekly-report/trace.md
+// Trace: docs/archive/features/daily-weekly-report/trace.md
 
 describe('ReportHandler', () => {
   let handler: ReportHandler;

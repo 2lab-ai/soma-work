@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { CompletionMessageTracker } from '../completion-message-tracker.js';
 
-// Trace: docs/turn-summary-lifecycle/trace.md
+// Trace: docs/archive/features/turn-summary-lifecycle/trace.md
 
 describe('CompletionMessageTracker', () => {
   // S6: Completion Message Track

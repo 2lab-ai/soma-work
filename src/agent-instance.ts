@@ -6,7 +6,7 @@
  *  - A ClaudeHandler with agent-specific PromptBuilder
  *  - An isolated SessionRegistry
  *
- * Trace: docs/multi-agent/trace.md, Scenarios 2, 3
+ * Trace: docs/current/plans/multi-agent/trace.md, Scenarios 2, 3
  */
 
 import { App } from '@slack/bolt';
@@ -72,7 +72,7 @@ export class AgentInstance {
 
   /**
    * Start the agent's Slack App and set up event handlers.
-   * Trace: docs/multi-agent/trace.md, Scenario 2, Section 3b
+   * Trace: docs/current/plans/multi-agent/trace.md, Scenario 2, Section 3b
    */
   async start(): Promise<void> {
     if (this._running) {
@@ -123,7 +123,7 @@ export class AgentInstance {
 
   /**
    * Stop the agent's Slack App and clean up.
-   * Trace: docs/multi-agent/trace.md, Scenario 7, Section 3b
+   * Trace: docs/current/plans/multi-agent/trace.md, Scenario 7, Section 3b
    */
   async stop(): Promise<void> {
     this.logger.info(`Stopping agent '${this.name}'...`);

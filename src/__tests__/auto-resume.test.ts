@@ -1,7 +1,7 @@
 /**
  * Auto-Resume Interrupted Sessions — Contract Tests (RED)
  *
- * Trace: docs/auto-resume/trace.md
+ * Trace: docs/current/plans/auto-resume/trace.md
  * These tests verify the auto-resume behavior after server restart.
  * All tests should be RED (failing) until implementation is complete.
  */

@@ -16,7 +16,7 @@
  *   - Channel/Slash (has body.response_url)
  *             → ChannelEphemeralZRespond with responseUrl bound
  *
- * Invariants (see plan/MASTER-SPEC.md §10 + §15):
+ * Invariants (see docs/current/spec/z-command-master-spec.md §10 + §15):
  *   - ephemeral (slash/channel) replace → response_url + replace_original
  *     (NEVER chat.update)
  *   - DM replace → chat.update({ts: botMessageTs}) with branded ts

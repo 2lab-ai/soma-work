@@ -122,7 +122,7 @@ export interface ActionPanelState {
   /**
    * P3 (PHASE>=3) — pending B3 choice lifecycle record. Authoritative session
    * state for an outstanding user-choice question. Survives turn end and
-   * restart (persisted via session-registry). See docs/slack-ui-phase3.md.
+   * restart (persisted via session-registry). See docs/archive/features/slack-ui/phase3.md.
    */
   pendingChoice?: {
     turnId: string;
@@ -140,6 +140,18 @@ export interface ActionPanelState {
   lastRenderedAt?: number;
   prStatus?: ActionPanelPRStatus;
   summaryBlocks?: any[];
+}
+
+export type SessionGoalStatus = 'active' | 'paused' | 'complete';
+
+export interface SessionGoal {
+  objective: string;
+  status: SessionGoalStatus;
+  createdAt: number;
+  updatedAt: number;
+  createdBy: string;
+  completedAt?: number;
+  completedBy?: string;
 }
 
 export interface ConversationSession {
@@ -368,6 +380,11 @@ export interface ConversationSession {
   // Exposed to the model via GET_SESSION and managed via UPDATE_SESSION instructionOperations.
   instructions?: SessionInstruction[];
 
+  // Host-managed long-running objective for this Slack session.
+  // Active goals are injected into the system prompt; paused/complete goals
+  // remain visible through the `goal` command but do not steer the model.
+  goal?: SessionGoal;
+
   /**
    * Cached summary of `completed`-status instructions — used by the
    * user-instructions block builder when there are ≥ 2 completed entries so
@@ -475,7 +492,7 @@ export interface ConversationSession {
 
 /**
  * Configuration for a sub-agent (independent Slack Bot).
- * Trace: docs/multi-agent/trace.md, Scenario 1
+ * Trace: docs/current/plans/multi-agent/trace.md, Scenario 1
  */
 export interface AgentConfig {
   slackBotToken: string;

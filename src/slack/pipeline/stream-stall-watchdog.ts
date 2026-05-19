@@ -16,7 +16,7 @@
  * `unref()` its timer so it can never keep the Node process alive at
  * shutdown.
  *
- * Trace: docs/turn-end-surface-guarantee/trace.md, S4 (stall-timeout arm).
+ * Trace: docs/current/plans/turn-end-surface-guarantee/trace.md, S4 (stall-timeout arm).
  */
 
 /** Default stall window — 10 min. Long-running tools (Playwright sweep,

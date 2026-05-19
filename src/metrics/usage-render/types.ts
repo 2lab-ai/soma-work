@@ -1,6 +1,6 @@
 /**
  * Types for `/usage card` — personal usage stats carousel.
- * Trace: docs/usage-card-dark/trace.md — Scenario 2
+ * Trace: docs/current/plans/usage-card-dark/trace.md — Scenario 2
  */
 
 /**

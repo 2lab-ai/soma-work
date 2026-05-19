@@ -4,7 +4,7 @@ import { MetricsEventEmitter } from '../event-emitter';
 import { MetricsEventStore } from '../event-store';
 
 // Contract tests — Scenario 2 & 3: MetricsEventEmitter + Hooks
-// Trace: docs/daily-weekly-report/trace.md
+// Trace: docs/archive/features/daily-weekly-report/trace.md
 
 // Mock EventStore
 vi.mock('../event-store', () => ({

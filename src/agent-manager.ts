@@ -6,7 +6,7 @@
  *  - Provide agent lookup for agent_chat/agent_reply MCP
  *  - Error isolation: one agent failure doesn't affect others
  *
- * Trace: docs/multi-agent/trace.md, Scenarios 2, 4, 5, 7
+ * Trace: docs/current/plans/multi-agent/trace.md, Scenarios 2, 4, 5, 7
  */
 
 import { type AgentInfo, AgentInstance } from './agent-instance';
@@ -38,7 +38,7 @@ export class AgentManager {
   /**
    * Start all configured agents.
    * Failures are isolated — one agent failing doesn't block others.
-   * Trace: docs/multi-agent/trace.md, Scenario 2
+   * Trace: docs/current/plans/multi-agent/trace.md, Scenario 2
    */
   async startAll(): Promise<void> {
     const total = this.agents.size;
@@ -77,7 +77,7 @@ export class AgentManager {
   /**
    * Stop all running agents.
    * Failures are isolated.
-   * Trace: docs/multi-agent/trace.md, Scenario 7
+   * Trace: docs/current/plans/multi-agent/trace.md, Scenario 7
    */
   async stopAll(): Promise<void> {
     for (const [name, instance] of this.agents) {

@@ -6,8 +6,8 @@
  * an explicit safe-stop when the session has declared workflow intent
  * (handoffContext from #695, or caller-passed forcedWorkflowHint).
  *
- * Spec: docs/dispatch-safe-stop/spec.md (v3)
- * Trace: docs/dispatch-safe-stop/trace.md (v3)
+ * Spec: docs/archive/features/dispatch-safe-stop/spec.md (v3)
+ * Trace: docs/archive/features/dispatch-safe-stop/trace.md (v3)
  *
  * Pattern parity:
  *   - `HandoffAbortError` (#695): structural failure at handoff entry; terminates.
