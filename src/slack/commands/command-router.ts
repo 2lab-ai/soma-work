@@ -60,12 +60,14 @@ export class CommandRouter {
    */
   private newHandler: NewHandler;
   private skillForceHandler: SkillForceHandler;
+  private goalHandler: GoalHandler;
 
   constructor(deps: CommandDependencies) {
     // Register all command handlers in priority order
     // Order matters - more specific handlers should come first
     this.newHandler = new NewHandler(deps);
     this.skillForceHandler = new SkillForceHandler();
+    this.goalHandler = new GoalHandler(deps);
     this.handlers = [
       new AdminHandler(),
       new PromptHandler(deps),
@@ -106,7 +108,7 @@ export class CommandRouter {
       // handler instead of being swallowed by the bare-`/compact` matcher.
       new CompactThresholdHandler(deps),
       new CompactHandler(deps),
-      new GoalHandler(deps),
+      this.goalHandler,
       new LinkHandler(deps),
       new CloseHandler(deps),
       new ReportHandler(getReportDeps()),
@@ -204,6 +206,72 @@ export class CommandRouter {
         }
       }
       return newResult;
+    }
+
+    // `goal` + `$skill` preprocessor — mirrors the `new` preprocessor above.
+    //
+    // Bug: when a message starts with `goal set <objective>` AND contains a
+    // `$skill` force trigger (e.g. `goal set ship X\n$z proceed`), the
+    // first-match-wins handler loop lets `SkillForceHandler` match the bare
+    // `$z` and return `handled:true`, so `GoalHandler` never runs and the
+    // session goal is silently NOT set. Reordering alone does not help: the
+    // user wants BOTH effects (goal persisted AND skill invoked).
+    //
+    // Fix: scan the text for the first `$plugin:skill` or bare `$skill` that
+    // `SkillForceHandler.canHandle` actually resolves. If one exists, split
+    // the text at that token. The clean prefix goes to `GoalHandler` (so
+    // `session.goal.objective` is exactly what the user typed for the goal,
+    // with no `$z proceed` leaking into the durable, re-injected goal block
+    // at src/prompt/session-goal-block.ts). The skill suffix is then handed
+    // verbatim to `SkillForceHandler`, mirroring how `new <URL>\n$z proceed`
+    // produces a URL-preserving, skill-enriched continuation. If no resolvable
+    // `$skill` token is present, fall through to the normal handler loop so
+    // bare `goal set X` / `goal status` / `goal pause` keep working unchanged.
+    if (CommandParser.isGoalCommand(routedText)) {
+      const skillRefPattern = /\$[\w-]+(?::[\w-]+)?/g;
+      let split: { goalText: string; skillText: string } | null = null;
+      // Iterate every `$token` in order — `$20` / `$unknown` may not resolve.
+      // We stop at the first token that `SkillForceHandler.canHandle` confirms
+      // is a real skill, so the split point isn't accidentally a price tag.
+      let skillMatch = skillRefPattern.exec(routedText);
+      while (skillMatch !== null) {
+        if (this.skillForceHandler.canHandle(skillMatch[0], ctx.user)) {
+          split = {
+            goalText: routedText.slice(0, skillMatch.index).trim(),
+            skillText: routedText.slice(skillMatch.index).trim(),
+          };
+          break;
+        }
+        skillMatch = skillRefPattern.exec(routedText);
+      }
+
+      if (split) {
+        const goalResult = await this.goalHandler.execute({ ...ctx, text: split.goalText });
+        if (goalResult.continueWithPrompt === undefined) {
+          // Goal lifecycle verb (status/pause/resume/done/clear/invalid/
+          // no-session) — already-handled, no model continuation. Do NOT
+          // run the skill: the user split a non-set command across a skill
+          // token, which is ambiguous; the goal-state side effect alone
+          // is the safe outcome.
+          return goalResult;
+        }
+        // IMPORTANT: skillResult INTENTIONALLY supersedes goalResult's
+        // continuation. `GoalHandler.setGoal` already persisted the clean
+        // objective on the session above; the goal block will be re-injected
+        // into the system prompt on the NEXT turn regardless of which
+        // continuation we hand back here. We replace the goal-continuation
+        // prompt with the SkillForce-enriched prompt so this same turn
+        // already carries the `<invoked_skills>` block.
+        if (this.skillForceHandler.canHandle(split.skillText, ctx.user)) {
+          const skillResult = await this.skillForceHandler.execute({ ...ctx, text: split.skillText });
+          if (skillResult.handled) {
+            return skillResult;
+          }
+        }
+        return goalResult;
+      }
+      // No resolvable `$skill` token → fall through to the normal handler
+      // loop. `GoalHandler` matches there and runs with the full text.
     }
 
     for (const handler of this.handlers) {
