@@ -1,4 +1,5 @@
 import './effective-phase';
+import { setSessionInitializerProviders } from '@soma/slack/pipeline/session-initializer';
 import {
   expectedHandoffKind,
   HandoffAbortError,
@@ -14,7 +15,6 @@ import { userSettingsStore } from '../../user-settings-store';
 import { buildChannelRouteBlocks } from '../actions/channel-route-action-handler';
 import { DispatchAbortError } from '../dispatch-abort';
 import { getEffectiveFiveBlockPhase } from './effective-phase';
-import { setSessionInitializerProviders } from '@soma/slack/pipeline/session-initializer';
 
 setSessionInitializerProviders({
   expectedHandoffKind: (workflow) => expectedHandoffKind(workflow as any),

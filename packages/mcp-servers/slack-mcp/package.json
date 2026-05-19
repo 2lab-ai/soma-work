@@ -17,6 +17,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.0",
     "@slack/web-api": "^7.15.1",
-    "@soma/process-shared": "*"
+    "@soma/process-shared": "*",
+    "markdown-to-slack-blocks": "^1.4.1"
   }
 }

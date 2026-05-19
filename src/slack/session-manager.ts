@@ -11,7 +11,7 @@ setSessionUiManagerProviders({
   },
   extractJiraKey: (url) => {
     const extractJiraKey = (linkMetadataFetcher as any).extractJiraKey;
-    return typeof extractJiraKey === 'function' ? extractJiraKey(url) ?? null : null;
+    return typeof extractJiraKey === 'function' ? (extractJiraKey(url) ?? null) : null;
   },
   fetchGitHubPRDetails: (link) => {
     const fetchGitHubPRDetails = (linkMetadataFetcher as any).fetchGitHubPRDetails;
