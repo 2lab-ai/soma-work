@@ -1,0 +1,24 @@
+{
+  "$schema": "https://github.com/2lab-ai/soma-work/blob/main/somalib/model-commands/types.ts",
+  "_comment": "Reference template for local:zexplore research scope confirmation before parallel dispatch. Passes validateModelCommandRunArgs + checkAskUserQuestionQuality. 3 options for scope width control.",
+  "type": "user_choice",
+  "question": "[small] 연구 범위 이걸로 착수?",
+  "context": "연구 범위: {scope_summary}. 예상 소스: {sources_list} (공식 docs + GitHub permalinks + best practices). 깊이: {depth_level}. 시간 예산: {time_budget}분. 범위 확정 후 Librarian + WebFetch + Explore 병렬 디스패치하여 external + internal 정보 수집 후 종합 보고서 작성.",
+  "choices": [
+    {
+      "id": "a",
+      "label": "Option A: Start research with this scope (Recommended · 1/3)",
+      "description": "이 범위로 zexplore 병렬 디스패치 착수. Librarian + WebFetch + Explore 동시 실행."
+    },
+    {
+      "id": "b",
+      "label": "Option B: Narrow scope — focus on specific subtopic",
+      "description": "범위 축소. 어떤 subtopic에 집중할지 지시하면 타이트하게 재정의."
+    },
+    {
+      "id": "c",
+      "label": "Option C: Broaden scope — add adjacent topics",
+      "description": "범위 확장. 어떤 인접 주제를 추가할지 지시하면 포괄적으로 재정의."
+    }
+  ]
+}

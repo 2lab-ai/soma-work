@@ -1,0 +1,7 @@
+.env
+.system.prompt
+config.json
+mcp-servers.json
+data/
+logs/
+.claude/

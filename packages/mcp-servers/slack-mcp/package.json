@@ -1,0 +1,23 @@
+{
+  "name": "@soma/mcp-server-slack-mcp",
+  "version": "1.0.0",
+  "private": true,
+  "main": "./dist/slack-mcp-server.js",
+  "types": "./dist/slack-mcp-server.d.ts",
+  "exports": {
+    "./bin": "./dist/slack-mcp-server.js"
+  },
+  "bin": {
+    "slack-mcp-server": "./dist/slack-mcp-server.js"
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.0",
+    "@slack/web-api": "^7.15.1",
+    "@soma/process-shared": "*",
+    "markdown-to-slack-blocks": "^1.4.1"
+  }
+}
