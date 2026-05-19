@@ -224,6 +224,84 @@ describe('PromptBuilder', () => {
       expect(builder.buildSystemPrompt(undefined, 'default', paused)).not.toContain('paused objective');
       expect(builder.buildSystemPrompt(undefined, 'default', complete)).not.toContain('complete objective');
     });
+
+    // Goal continuity contract: while `goal.status === 'active'`, every fresh
+    // system-prompt build must re-include the goal block. This is the
+    // mechanism that "keeps the model running on the goal until done" — the
+    // host clears `session.systemPrompt` on every goal state change (see
+    // GoalHandler.persistGoalChange), so the next call to buildSystemPrompt
+    // rebuilds from scratch and re-reads `session.goal`.
+    it('re-injects the active goal block on every consecutive system-prompt build (continuity)', () => {
+      const session: any = {
+        goal: {
+          objective: 'finish migration',
+          status: 'active',
+          createdAt: 1,
+          updatedAt: 1,
+          createdBy: 'U123',
+        },
+      };
+
+      const turn1 = builder.buildSystemPrompt(undefined, 'default', session);
+      const turn2 = builder.buildSystemPrompt(undefined, 'default', session);
+      const turn3 = builder.buildSystemPrompt(undefined, 'default', session);
+
+      for (const prompt of [turn1, turn2, turn3]) {
+        expect(prompt).toContain('<session-goal status="active">');
+        expect(prompt).toContain('finish migration');
+      }
+    });
+
+    it('stops re-injecting the goal block once status flips to complete (single-session transition)', () => {
+      const session: any = {
+        goal: {
+          objective: 'finish migration',
+          status: 'active',
+          createdAt: 1,
+          updatedAt: 1,
+          createdBy: 'U123',
+        },
+      };
+
+      // turn 1 — active → injected
+      const active = builder.buildSystemPrompt(undefined, 'default', session);
+      expect(active).toContain('<session-goal status="active">');
+      expect(active).toContain('finish migration');
+
+      // Host transitions the goal to complete.
+      session.goal.status = 'complete';
+      session.goal.completedAt = 2;
+      session.goal.completedBy = 'U123';
+
+      // turn 2 — complete → NOT injected. This is the contract that lets the
+      // model stop steering once the goal is done.
+      const after = builder.buildSystemPrompt(undefined, 'default', session);
+      expect(after).not.toContain('<session-goal');
+      expect(after).not.toContain('finish migration');
+    });
+
+    it('pause/resume toggles goal-block injection within a single session', () => {
+      const session: any = {
+        goal: {
+          objective: 'finish migration',
+          status: 'active',
+          createdAt: 1,
+          updatedAt: 1,
+          createdBy: 'U123',
+        },
+      };
+
+      // active → injected
+      expect(builder.buildSystemPrompt(undefined, 'default', session)).toContain('finish migration');
+
+      // pause → NOT injected
+      session.goal.status = 'paused';
+      expect(builder.buildSystemPrompt(undefined, 'default', session)).not.toContain('finish migration');
+
+      // resume → injected again
+      session.goal.status = 'active';
+      expect(builder.buildSystemPrompt(undefined, 'default', session)).toContain('finish migration');
+    });
   });
 
   describe('user variable substitution', () => {
