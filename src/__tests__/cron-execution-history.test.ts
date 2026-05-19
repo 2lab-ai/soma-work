@@ -1,6 +1,6 @@
 /**
  * Cron Execution History — Contract tests
- * Trace: docs/cron-execution-history/trace.md, S1-S3
+ * Trace: docs/current/plans/cron-execution-history/trace.md, S1-S3
  */
 
 import * as fs from 'fs';

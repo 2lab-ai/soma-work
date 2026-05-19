@@ -8,7 +8,7 @@
  *
  * `/z` refactor (#506): `report help` removed — use `/z help` instead.
  *
- * Trace: docs/daily-weekly-report/trace.md, Scenario 6
+ * Trace: docs/archive/features/daily-weekly-report/trace.md, Scenario 6
  */
 
 import { Logger } from '../../logger';

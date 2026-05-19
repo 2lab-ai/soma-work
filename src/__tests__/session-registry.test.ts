@@ -73,6 +73,29 @@ describe('SessionRegistry persistence', () => {
     expect(restored?.threadRootTs).toBe('777.888');
   });
 
+  it('persists goal-only sessions before the first Claude sessionId exists', () => {
+    const writer = new SessionRegistry();
+    const session = writer.createSession('U123', 'Tester', 'C_GOAL', '171.G1');
+    session.goal = {
+      objective: 'ship the goal command',
+      status: 'active',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      createdBy: 'U123',
+    };
+
+    writer.saveSessions();
+
+    const reader = new SessionRegistry();
+    const loaded = reader.loadSessions();
+    const restored = reader.getSession('C_GOAL', '171.G1');
+
+    expect(loaded).toBe(1);
+    expect(restored?.sessionId).toBeUndefined();
+    expect(restored?.goal?.objective).toBe('ship the goal command');
+    expect(restored?.goal?.status).toBe('active');
+  });
+
   it('backfills effort from user default on legacy sessions without effort field', () => {
     // Simulate a sessions.json written before the effort field existed. Without
     // backfill, the restored session would have effort=undefined and the handler
@@ -414,6 +437,57 @@ describe('SessionRegistry persistence', () => {
     expect(result).toBe(true);
     expect(session.fileAccessRetryCount).toBe(0);
     expect(session.lastErrorContext).toBeUndefined();
+  });
+
+  it('resetSessionContext clears the active goal for the fresh logical session', () => {
+    const registry = new SessionRegistry();
+    const session = registry.createSession('U123', 'Tester', 'C_GOAL_RESET', '171.GR1');
+    session.sessionId = 'session-goal-reset';
+    session.goal = {
+      objective: 'old objective',
+      status: 'active',
+      createdAt: 1,
+      updatedAt: 1,
+      createdBy: 'U123',
+    };
+
+    const result = registry.resetSessionContext('C_GOAL_RESET', '171.GR1');
+
+    expect(result).toBe(true);
+    expect(session.goal).toBeUndefined();
+  });
+
+  it('resetSessionContext clears a goal-only session even without a sessionId', () => {
+    // Regression: `goal set <objective>` creates/updates `session.goal` BEFORE
+    // the first Claude turn (so no sessionId yet) and the new saveSessions
+    // path persists it. Without this guard, `/new` would return false and the
+    // stale goal would leak into the next conversation in the same thread.
+    const registry = new SessionRegistry();
+    const session = registry.createSession('U123', 'Tester', 'C_GOAL_ONLY', '171.GO1');
+    session.goal = {
+      objective: 'pre-first-turn objective',
+      status: 'active',
+      createdAt: 1,
+      updatedAt: 1,
+      createdBy: 'U123',
+    };
+    expect(session.sessionId).toBeUndefined();
+
+    const result = registry.resetSessionContext('C_GOAL_ONLY', '171.GO1');
+
+    expect(result).toBe(true);
+    expect(session.goal).toBeUndefined();
+  });
+
+  it('resetSessionContext is a no-op when there is no sessionId AND no goal', () => {
+    const registry = new SessionRegistry();
+    const session = registry.createSession('U123', 'Tester', 'C_NOOP', '171.NO1');
+    expect(session.sessionId).toBeUndefined();
+    expect(session.goal).toBeUndefined();
+
+    const result = registry.resetSessionContext('C_NOOP', '171.NO1');
+
+    expect(result).toBe(false);
   });
 
   // === Issue #214: clearSessionId persists retry state cleanup to disk ===

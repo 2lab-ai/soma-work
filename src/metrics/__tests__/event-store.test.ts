@@ -5,7 +5,7 @@ import { __resetMetricsEnsureCache, MetricsEventStore, mergeJsonl } from '../eve
 import type { MetricsEvent } from '../types';
 
 // Contract tests — Scenario 1: MetricsEventStore (JSONL Storage Layer)
-// Trace: docs/daily-weekly-report/trace.md
+// Trace: docs/archive/features/daily-weekly-report/trace.md
 
 const TEST_DATA_DIR = path.join(__dirname, '../../../.test-data-metrics');
 const TEST_METRICS_DIR = path.join(TEST_DATA_DIR, 'metrics');

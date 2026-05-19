@@ -79,6 +79,7 @@ describe('translateToLegacy', () => {
     { input: 'plugin', expected: 'plugins' },
     { input: 'plugins update', expected: 'plugins update' },
     { input: 'skill list', expected: 'skills list' },
+    { input: 'goal set ship it', expected: 'goal set ship it' },
     { input: 'cwd set /tmp', expected: 'cwd /tmp' },
     { input: 'cct', expected: 'cct' },
     { input: 'cct next', expected: 'cct next' },
@@ -177,6 +178,17 @@ describe('ZRouter.dispatch', () => {
     const router = new ZRouter({ legacyRouter, tombstoneStore });
     const send = vi.fn().mockResolvedValue({});
     const inv = makeInv({ source: 'slash', remainder: 'new hello', respond: makeRespond({ send }) });
+
+    await router.dispatch(inv);
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ text: expect.stringContaining('스레드 컨텍스트') }));
+    expect(legacyRouter.route).not.toHaveBeenCalled();
+  });
+
+  it('slash + goal topic → rejects because goal needs thread context', async () => {
+    const { legacyRouter, tombstoneStore } = makeDeps();
+    const router = new ZRouter({ legacyRouter, tombstoneStore });
+    const send = vi.fn().mockResolvedValue({});
+    const inv = makeInv({ source: 'slash', remainder: 'goal set ship it', respond: makeRespond({ send }) });
 
     await router.dispatch(inv);
     expect(send).toHaveBeenCalledWith(expect.objectContaining({ text: expect.stringContaining('스레드 컨텍스트') }));

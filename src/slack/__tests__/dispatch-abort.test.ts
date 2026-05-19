@@ -1,7 +1,7 @@
 /**
  * Unit tests for safe-stop on dispatch failure (#698).
  *
- * Trace: docs/dispatch-safe-stop/trace.md (v3) §S1 — 6 tests covering
+ * Trace: docs/archive/features/dispatch-safe-stop/trace.md (v3) §S1 — 6 tests covering
  * DispatchAbortError construction + formatDispatchAbortMessage branch matrix.
  */
 

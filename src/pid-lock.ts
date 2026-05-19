@@ -8,7 +8,7 @@
  * Uses O_EXCL (exclusive create) for atomic lock acquisition to prevent
  * TOCTOU race conditions between concurrent process starts.
  *
- * @see docs/pid-lock/spec.md
+ * @see docs/current/plans/pid-lock/spec.md
  * @see https://github.com/2lab-ai/soma-work/issues/152
  */
 

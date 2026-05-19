@@ -1,7 +1,7 @@
 /**
  * Unit tests for per-session auto-handoff budget (#697).
  *
- * Trace: docs/handoff-budget/trace.md (v4) §S1 — 10 tests covering
+ * Trace: docs/archive/features/handoff-budget/trace.md (v4) §S1 — 10 tests covering
  * `checkAndConsumeBudget` branch matrix, `formatBudgetExhaustedMessage`
  * reason branches, and `HandoffBudgetExhaustedError` class contract.
  */

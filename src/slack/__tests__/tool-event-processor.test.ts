@@ -818,7 +818,7 @@ describe('ToolEventProcessor', () => {
    * pipeline via the `_bash_bg` virtual server, plus an
    * AssistantStatusManager bg-counter increment so the native spinner
    * can flip to "waiting on background shell". These tests cover the
-   * S7/S8/S10 acceptance rows from docs/agent-status-visibility/plan.md.
+   * S7/S8/S10 acceptance rows from docs/stale-plans/review-needed/agent-status-visibility/plan.md.
    */
   describe('Background Bash tracking (issue #688)', () => {
     function makeStatusManager() {

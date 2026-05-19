@@ -8,6 +8,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { SYSTEM_PROMPT_FILE } from './env-paths';
 import { Logger } from './logger';
+import { buildSessionGoalBlock } from './prompt/session-goal-block';
 import { buildUserInstructionsBlock } from './prompt/user-instructions-block';
 import type { ConversationSession, WorkflowType } from './types';
 import { formatMemoryForPrompt } from './user-memory-store';
@@ -31,7 +32,7 @@ const VARIABLE_PATTERN = /(?<!\\)\{\{([\w.]+)\}\}/g;
  * Options for constructing a PromptBuilder.
  * When agentName is set, prompts are loaded from the agent-specific directory
  * with fallback to the main prompt directory.
- * Trace: docs/multi-agent/trace.md, Scenario 6
+ * Trace: docs/current/plans/multi-agent/trace.md, Scenario 6
  */
 export interface PromptBuilderOptions {
   agentName?: string;
@@ -91,7 +92,7 @@ export class PromptBuilder {
   /**
    * Load the default system prompt from files.
    * For agents: tries agent dir first, falls back to main dir.
-   * Trace: docs/multi-agent/trace.md, Scenario 6, Section 3a
+   * Trace: docs/current/plans/multi-agent/trace.md, Scenario 6, Section 3a
    */
   private loadDefaultPrompt(): void {
     try {
@@ -163,7 +164,7 @@ export class PromptBuilder {
       }
 
       // Try agent dir first, then fallback to main dir
-      // Trace: docs/multi-agent/trace.md, Scenario 6, Section 3b
+      // Trace: docs/current/plans/multi-agent/trace.md, Scenario 6, Section 3b
       let includePath = path.resolve(this.promptDir, trimmedFilename);
       if (!fs.existsSync(includePath) && this.promptDir !== this.fallbackPromptDir) {
         includePath = path.resolve(this.fallbackPromptDir, trimmedFilename);
@@ -382,6 +383,7 @@ export class PromptBuilder {
     systemPrompt = this.applyUserPersona(systemPrompt, userId, workflow);
     systemPrompt = this.applyPersistentMemory(systemPrompt, userId);
     systemPrompt = this.applyPersonalSkills(systemPrompt, userId);
+    systemPrompt = this.applySessionGoal(systemPrompt, session);
     systemPrompt = this.applyUserInstructions(systemPrompt, session);
 
     // Process runtime variables (e.g., {{user.email}})
@@ -450,6 +452,15 @@ export class PromptBuilder {
       // Skills dir may not exist — that's fine, no skills to inject
       return prompt;
     }
+  }
+
+  /**
+   * Inject active session goal state just above user instructions.
+   */
+  private applySessionGoal(prompt: string, session?: ConversationSession): string {
+    const goalBlock = buildSessionGoalBlock(session);
+    if (!goalBlock) return prompt;
+    return prompt ? `${prompt}\n\n${goalBlock}` : goalBlock;
   }
 
   /**

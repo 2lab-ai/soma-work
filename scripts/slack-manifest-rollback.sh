@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # slack-manifest-rollback.sh — Tier 3 rollback for the /z unified command refactor.
 #
-# Restores slack-app-manifest.json to the pre-#506 state captured in
-# slack-app-manifest.prev.json. Print instructions for the operator to upload
+# Restores infra/slack/slack-app-manifest.json to the pre-#506 state captured in
+# docs/archive/manifests/slack-app-manifest.prev.json. Print instructions for the operator to upload
 # the restored manifest to Slack.
 #
 # USAGE:
@@ -10,7 +10,7 @@
 #   bash scripts/slack-manifest-rollback.sh --yes     # non-interactive
 #   bash scripts/slack-manifest-rollback.sh --dry-run # show diff only, no write
 #
-# Related: docs/ops/rollback-z-refactor.md
+# Related: docs/runbook/rollback-z-refactor.md
 # Tier hierarchy (fastest → slowest to revert):
 #   Tier 1: SOMA_ENABLE_LEGACY_SLASH=true  (env flag, instant, no redeploy)
 #   Tier 2: git revert <z-refactor commits> + redeploy
@@ -21,8 +21,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-CURRENT="$REPO_ROOT/slack-app-manifest.json"
-SNAPSHOT="$REPO_ROOT/slack-app-manifest.prev.json"
+CURRENT="$REPO_ROOT/infra/slack/slack-app-manifest.json"
+SNAPSHOT="$REPO_ROOT/docs/archive/manifests/slack-app-manifest.prev.json"
 
 DRY_RUN=0
 ASSUME_YES=0
@@ -44,7 +44,7 @@ done
 
 if [[ ! -f "$SNAPSHOT" ]]; then
   echo "ERROR: snapshot not found: $SNAPSHOT" >&2
-  echo "Cannot rollback. Check docs/ops/rollback-z-refactor.md for manual recovery." >&2
+  echo "Cannot rollback. Check docs/runbook/rollback-z-refactor.md for manual recovery." >&2
   exit 1
 fi
 
@@ -94,4 +94,4 @@ echo "  2. Upload the restored manifest to Slack:"
 echo "     https://api.slack.com/apps → your app → App Manifest → paste → save"
 echo "  3. (Optional) Also set SOMA_ENABLE_LEGACY_SLASH=true on running instances"
 echo "     to immediately disable /z prefix handling in the bot (Tier 1)."
-echo "  4. Commit the rollback: git add slack-app-manifest.json && git commit -m 'rollback(slack): restore pre-/z manifest'"
+echo "  4. Commit the rollback: git add infra/slack/slack-app-manifest.json && git commit -m 'rollback(slack): restore pre-/z manifest'"
