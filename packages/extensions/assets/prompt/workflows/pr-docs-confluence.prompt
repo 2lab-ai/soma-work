@@ -1,0 +1,149 @@
+{{include:./common.prompt}}
+
+# PR Documentation to Confluence Workflow
+
+A workflow for documenting PR changes to Confluence. Generates tailored documentation for various stakeholder groups.
+
+## Trigger Pattern
+```
+<Confluence_Parent_URL> <PR_URL>
+```
+
+Example:
+```
+https://example.atlassian.net/wiki/spaces/TEAM/pages/123456/ChangeLogs https://github.com/org/repo/pull/123
+```
+
+## Automatic Steps
+
+### 1. Input Parsing
+- Extract owner, repo, pull_number from the PR URL
+- Extract cloudId, spaceId, parentPageId from the Confluence URL
+
+### 2. PR Information Gathering
+```
+/github-pr <PR_URL>  # PR metadata, reviews, comments, changed files included (token-efficient)
+gh pr diff <PR_NUM>  # Detailed diff (for code-level analysis)
+```
+
+### 3. Stakeholder Classification
+Use UIAskUserQuestion to confirm the target stakeholder groups for documentation:
+- **API Consumer**: API users (external developers, frontend team, etc.)
+- **Implementation**: Implementation owners (backend team, code reviewers, etc.)
+- **Business**: Business stakeholders (PM, product planners, etc.)
+- **Operations**: Operations team (DevOps, SRE, etc.)
+
+### 4. Document Structure Generation
+Create a Confluence page with sections divided by stakeholder group:
+
+```markdown
+# [PR #{number}] {PR Title}
+
+## Overview
+- **PR**: {PR URL}
+- **Date**: {date}
+- **Author**: {author}
+
+---
+
+## Part 1: {Stakeholder Group 1 Name}
+
+{Include only content relevant to this group}
+
+---
+
+## Part 2: {Stakeholder Group 2 Name}
+
+{Include only content relevant to this group}
+```
+
+### 5. Confluence Page Creation
+```
+mcp__jira__createConfluencePage
+- cloudId: {extracted from URL}
+- spaceId: {extracted from parent page}
+- parentId: {parent page ID}
+- title: "[PR #{number}] {title}"
+- body: {generated content}
+- contentFormat: "markdown"
+```
+
+## Document Template Guide
+
+### API Consumer Template
+```markdown
+## API Changes
+
+### New APIs
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| /api/v1/xxx | POST | Description |
+
+### Request/Response Examples
+```json
+// Request
+{ ... }
+
+// Response
+{ ... }
+```
+
+### Breaking Changes
+- None / Yes (detailed description)
+
+### Migration Guide
+1. Step 1
+2. Step 2
+```
+
+### Implementation Template
+```markdown
+## Implementation Details
+
+### Changed Files
+| File | Change Type | Summary |
+|------|------------|---------|
+| path/to/file | Added/Modified | Description |
+
+### Architecture Changes
+- New components/services added
+- Dependency changes
+
+### Key Logic Changes
+1. Change point 1
+2. Change point 2
+
+### Tests
+- Unit tests: Yes/No
+- Integration tests: Yes/No
+```
+
+## Output Format
+
+### 📄 Documentation Complete
+
+**Confluence page**: {created page URL}
+
+#### Document Structure
+- Part 1: {group name} - {summary}
+- Part 2: {group name} - {summary}
+
+#### Next Steps
+Use UIAskUserQuestion to confirm additional actions:
+- Revise documentation
+- Add another stakeholder group
+- Done
+
+---
+
+## Example Document Format
+
+```
+{{include:./workflows/examples/PTN-1978-summary.md}}
+```
+
+## 🔄 Next Steps
+
+After documentation is complete:
+- Link the document to the session: "You can link the Confluence document to the session using the `link doc <url>` command."
+- If the work is complete: "You can close the session using the `close` command."

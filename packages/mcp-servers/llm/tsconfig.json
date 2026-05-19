@@ -1,0 +1,9 @@
+{
+  "extends": "../../../tsconfig.mcp-server.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "."
+  },
+  "include": ["llm-mcp-server.ts", "runtime/**/*.ts"],
+  "exclude": ["**/*.test.ts", "dist"]
+}

@@ -1,0 +1,712 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.registerMemoryStore = registerMemoryStore;
+exports.registerSkillStore = registerSkillStore;
+exports.registerRatingStore = registerRatingStore;
+exports.getDefaultSessionSnapshot = getDefaultSessionSnapshot;
+exports.normalizeSessionSnapshot = normalizeSessionSnapshot;
+exports.listModelCommands = listModelCommands;
+exports.applySessionUpdateToSnapshot = applySessionUpdateToSnapshot;
+exports.runModelCommand = runModelCommand;
+exports.applyInstructionOperations = applyInstructionOperations;
+let _memoryStore = null;
+/** Register the memory store implementation. Must be called before SAVE_MEMORY/GET_MEMORY commands. */
+function registerMemoryStore(store) {
+    _memoryStore = store;
+}
+function getMemoryStore() {
+    if (!_memoryStore) {
+        throw new Error('Memory store not registered. Call registerMemoryStore() before using SAVE_MEMORY/GET_MEMORY.');
+    }
+    return _memoryStore;
+}
+let _skillStore = null;
+/** Register the skill store implementation. Must be called before MANAGE_SKILL commands. */
+function registerSkillStore(store) {
+    _skillStore = store;
+}
+function getSkillStore() {
+    if (!_skillStore) {
+        throw new Error('Skill store not registered. Call registerSkillStore() before using MANAGE_SKILL.');
+    }
+    return _skillStore;
+}
+let _ratingStore = null;
+/** Register the rating store implementation. Must be called before RATE command. */
+function registerRatingStore(store) {
+    _ratingStore = store;
+}
+function getRatingStore() {
+    return _ratingStore;
+}
+const validator_1 = require("./validator");
+const HISTORY_KEY_BY_RESOURCE = {
+    issue: 'issues',
+    pr: 'prs',
+    doc: 'docs',
+};
+const ACTIVE_KEY_BY_RESOURCE = {
+    issue: 'issue',
+    pr: 'pr',
+    doc: 'doc',
+};
+const UPDATE_SESSION_SCHEMA = {
+    type: 'object',
+    properties: {
+        expectedSequence: {
+            type: 'number',
+            description: 'Optional optimistic lock sequence from GET_SESSION',
+        },
+        title: {
+            type: 'string',
+            maxLength: 100,
+            description: 'Update session title (e.g. after linking issue or merging PR)',
+        },
+        operations: {
+            type: 'array',
+            items: {
+                type: 'object',
+                properties: {
+                    action: {
+                        type: 'string',
+                        enum: ['add', 'remove', 'set_active'],
+                    },
+                    resourceType: {
+                        type: 'string',
+                        enum: ['issue', 'pr', 'doc'],
+                    },
+                    link: { type: 'object' },
+                    url: { type: 'string' },
+                },
+                required: ['action', 'resourceType'],
+            },
+        },
+        instructionOperations: {
+            type: 'array',
+            description: 'Operations on user SSOT instructions (add/remove/clear)',
+            items: {
+                type: 'object',
+                properties: {
+                    action: {
+                        type: 'string',
+                        enum: ['add', 'remove', 'clear'],
+                    },
+                    text: {
+                        type: 'string',
+                        description: 'Instruction text (required for add)',
+                    },
+                    source: {
+                        type: 'string',
+                        description: 'Who added this instruction (default: "user")',
+                    },
+                    id: {
+                        type: 'string',
+                        description: 'Instruction ID (required for remove)',
+                    },
+                },
+                required: ['action'],
+            },
+        },
+    },
+    // operations OR title OR instructionOperations must be present
+    additionalProperties: false,
+};
+const ASK_USER_QUESTION_SCHEMA = {
+    type: 'object',
+    properties: {
+        payload: {
+            oneOf: [
+                {
+                    type: 'object',
+                    properties: {
+                        type: { type: 'string', enum: ['user_choice'] },
+                        question: { type: 'string' },
+                        context: { type: 'string' },
+                        recommendedChoiceId: {
+                            type: 'string',
+                            description: 'ID of the recommended choice option (must match one of choices[].id)',
+                        },
+                        choices: {
+                            type: 'array',
+                            minItems: 1,
+                            items: {
+                                type: 'object',
+                                properties: {
+                                    id: { type: 'string' },
+                                    label: { type: 'string' },
+                                    description: { type: 'string' },
+                                },
+                                required: ['label'],
+                            },
+                        },
+                    },
+                    required: ['type', 'question', 'choices'],
+                },
+                {
+                    type: 'object',
+                    properties: {
+                        type: { type: 'string', enum: ['user_choice_group'] },
+                        question: { type: 'string' },
+                        context: { type: 'string' },
+                        choices: {
+                            type: 'array',
+                            minItems: 1,
+                            items: {
+                                type: 'object',
+                                properties: {
+                                    question: { type: 'string' },
+                                    context: { type: 'string' },
+                                    recommendedChoiceId: {
+                                        type: 'string',
+                                        description: 'ID of the recommended option for this question',
+                                    },
+                                    options: {
+                                        type: 'array',
+                                        minItems: 1,
+                                        items: {
+                                            type: 'object',
+                                            properties: {
+                                                id: { type: 'string' },
+                                                label: { type: 'string' },
+                                                description: { type: 'string' },
+                                            },
+                                            required: ['label'],
+                                        },
+                                    },
+                                    choices: {
+                                        type: 'array',
+                                        minItems: 1,
+                                        items: {
+                                            type: 'object',
+                                            properties: {
+                                                id: { type: 'string' },
+                                                label: { type: 'string' },
+                                                description: { type: 'string' },
+                                            },
+                                            required: ['label'],
+                                        },
+                                    },
+                                },
+                                required: ['question'],
+                            },
+                        },
+                    },
+                    required: ['type', 'question', 'choices'],
+                },
+            ],
+            description: 'Strict payload: user_choice or user_choice_group',
+        },
+    },
+    required: ['payload'],
+};
+const SAVE_CONTEXT_RESULT_SCHEMA = {
+    type: 'object',
+    properties: {
+        result: {
+            type: 'object',
+            description: 'save_result payload (success/id/path/files/error)',
+        },
+    },
+    required: ['result'],
+};
+const SAVE_MEMORY_SCHEMA = {
+    type: 'object',
+    properties: {
+        action: {
+            type: 'string',
+            enum: ['add', 'replace', 'remove'],
+            description: 'add: append new entry, replace: update existing, remove: delete entry',
+        },
+        target: {
+            type: 'string',
+            enum: ['memory', 'user'],
+            description: 'memory: agent notes (env facts, conventions), user: user profile (preferences, style)',
+        },
+        content: {
+            type: 'string',
+            description: 'Text to save (required for add/replace)',
+        },
+        old_text: {
+            type: 'string',
+            description: 'Substring to match existing entry (required for replace/remove)',
+        },
+    },
+    required: ['action', 'target'],
+};
+const MANAGE_SKILL_SCHEMA = {
+    type: 'object',
+    properties: {
+        action: {
+            type: 'string',
+            enum: ['create', 'update', 'delete', 'list'],
+            description: 'create: new skill, update: overwrite existing, delete: remove, list: show all',
+        },
+        name: {
+            type: 'string',
+            description: 'Skill name in kebab-case (e.g. my-deploy). Required for create/update/delete.',
+        },
+        content: {
+            type: 'string',
+            description: 'Full SKILL.md content with YAML frontmatter. Required for create/update.',
+        },
+    },
+    required: ['action'],
+};
+const CONTINUE_SESSION_SCHEMA = {
+    type: 'object',
+    properties: {
+        prompt: {
+            type: 'string',
+            description: 'Prompt to send into the next execution turn',
+        },
+        resetSession: {
+            type: 'boolean',
+            description: 'Reset session context before continuing',
+        },
+        dispatchText: {
+            type: 'string',
+            description: 'Optional dispatch text used for workflow routing',
+        },
+        forceWorkflow: {
+            type: 'string',
+            enum: [
+                'onboarding',
+                'jira-executive-summary',
+                'jira-brainstorming',
+                'jira-planning',
+                'jira-create-pr',
+                'pr-review',
+                'pr-fix-and-update',
+                'pr-docs-confluence',
+                'deploy',
+                'default',
+            ],
+            description: 'Optional explicit workflow to enter after reset',
+        },
+    },
+    required: ['prompt'],
+};
+function getDefaultSessionSnapshot() {
+    return {
+        issues: [],
+        prs: [],
+        docs: [],
+        active: {},
+        instructions: [],
+        sequence: 0,
+    };
+}
+function normalizeSessionSnapshot(snapshot) {
+    if (!snapshot) {
+        return getDefaultSessionSnapshot();
+    }
+    return {
+        issues: (snapshot.issues || []).map((link) => normalizeLink(link, 'issue')),
+        prs: (snapshot.prs || []).map((link) => normalizeLink(link, 'pr')),
+        docs: (snapshot.docs || []).map((link) => normalizeLink(link, 'doc')),
+        active: {
+            issue: snapshot.active?.issue ? normalizeLink(snapshot.active.issue, 'issue') : undefined,
+            pr: snapshot.active?.pr ? normalizeLink(snapshot.active.pr, 'pr') : undefined,
+            doc: snapshot.active?.doc ? normalizeLink(snapshot.active.doc, 'doc') : undefined,
+        },
+        instructions: Array.isArray(snapshot.instructions) ? snapshot.instructions : [],
+        sequence: Number.isFinite(snapshot.sequence) ? snapshot.sequence : 0,
+    };
+}
+function listModelCommands(context) {
+    const commands = [
+        {
+            id: 'GET_SESSION',
+            description: 'Read current session resources (issues/prs/docs + active + instructions + sequence)',
+            paramsSchema: {
+                type: 'object',
+                properties: {},
+                additionalProperties: false,
+            },
+        },
+        {
+            id: 'UPDATE_SESSION',
+            description: 'Update session resources with add/remove/set_active operations, and manage user SSOT instructions with instructionOperations (add/remove/clear)',
+            paramsSchema: UPDATE_SESSION_SCHEMA,
+        },
+        {
+            id: 'ASK_USER_QUESTION',
+            description: 'Render user-choice UI in Slack thread',
+            paramsSchema: ASK_USER_QUESTION_SCHEMA,
+        },
+        {
+            id: 'CONTINUE_SESSION',
+            description: 'Return a typed continuation so the host can continue or re-dispatch the workflow',
+            paramsSchema: CONTINUE_SESSION_SCHEMA,
+        },
+    ];
+    if (context.user) {
+        commands.push({
+            id: 'SAVE_MEMORY',
+            description: 'Save persistent memory across sessions. Use for: user preferences, environment details, tool quirks, stable conventions. Do NOT save: task progress, session outcomes, temporary state.',
+            paramsSchema: SAVE_MEMORY_SCHEMA,
+        }, {
+            id: 'GET_MEMORY',
+            description: 'Read current persistent memory and user profile entries',
+            paramsSchema: { type: 'object', properties: {}, additionalProperties: false },
+        }, {
+            id: 'MANAGE_SKILL',
+            description: 'Create, update, delete, or list user personal skills. Skills are SKILL.md files with YAML frontmatter. Invoke via $user:skill-name. Immediately available after creation.',
+            paramsSchema: MANAGE_SKILL_SCHEMA,
+        }, {
+            id: 'RATE',
+            description: 'Get the current user rating for this model (0-10). The rating reflects user satisfaction and is also visible in <your_rating> context tag.',
+            paramsSchema: { type: 'object', properties: {}, additionalProperties: false },
+        });
+    }
+    if (context.renewState === 'pending_save') {
+        commands.push({
+            id: 'SAVE_CONTEXT_RESULT',
+            description: 'Store save result payload for renew continuation',
+            paramsSchema: SAVE_CONTEXT_RESULT_SCHEMA,
+        });
+    }
+    return commands;
+}
+function toRunError(commandId, error) {
+    return {
+        type: 'model_command_result',
+        commandId,
+        ok: false,
+        error,
+    };
+}
+function updateActiveFromArray(snapshot, resourceType) {
+    const historyKey = HISTORY_KEY_BY_RESOURCE[resourceType];
+    const activeKey = ACTIVE_KEY_BY_RESOURCE[resourceType];
+    const links = snapshot[historyKey];
+    snapshot.active[activeKey] = links.length > 0 ? links[links.length - 1] : undefined;
+}
+function applySessionUpdateToSnapshot(snapshot, request) {
+    if (typeof request.expectedSequence === 'number' && request.expectedSequence !== snapshot.sequence) {
+        return {
+            ok: false,
+            error: {
+                code: 'SEQUENCE_MISMATCH',
+                message: 'Session sequence mismatch',
+                details: {
+                    expected: request.expectedSequence,
+                    actual: snapshot.sequence,
+                },
+            },
+        };
+    }
+    let changed = false;
+    for (const operation of request.operations ?? []) {
+        const historyKey = HISTORY_KEY_BY_RESOURCE[operation.resourceType];
+        const activeKey = ACTIVE_KEY_BY_RESOURCE[operation.resourceType];
+        const links = snapshot[historyKey];
+        if (operation.action === 'add') {
+            const normalized = normalizeLink(operation.link, operation.resourceType);
+            const existingIndex = links.findIndex((link) => link.url === normalized.url);
+            if (existingIndex >= 0) {
+                links.splice(existingIndex, 1);
+            }
+            links.push(normalized);
+            snapshot.active[activeKey] = normalized;
+            changed = true;
+            continue;
+        }
+        if (operation.action === 'remove') {
+            const existingIndex = links.findIndex((link) => link.url === operation.url);
+            if (existingIndex >= 0) {
+                links.splice(existingIndex, 1);
+                changed = true;
+            }
+            if (snapshot.active[activeKey]?.url === operation.url) {
+                updateActiveFromArray(snapshot, operation.resourceType);
+                changed = true;
+            }
+            continue;
+        }
+        if (!operation.url) {
+            if (snapshot.active[activeKey]) {
+                snapshot.active[activeKey] = undefined;
+                changed = true;
+            }
+            continue;
+        }
+        const found = links.find((link) => link.url === operation.url);
+        if (!found) {
+            return {
+                ok: false,
+                error: {
+                    code: 'INVALID_OPERATION',
+                    message: `Cannot set active ${operation.resourceType}: url not found in history`,
+                    details: operation,
+                },
+            };
+        }
+        if (snapshot.active[activeKey]?.url !== found.url) {
+            snapshot.active[activeKey] = found;
+            changed = true;
+        }
+    }
+    // NOTE: Instruction operations are NOT applied here.
+    // They are applied host-side only (session-registry) to ensure
+    // a single source of truth for generated IDs/timestamps.
+    if (changed) {
+        snapshot.sequence += 1;
+    }
+    return { ok: true, snapshot };
+}
+function runModelCommand(request, context) {
+    const session = normalizeSessionSnapshot(context.session);
+    if (request.commandId === 'GET_SESSION') {
+        return {
+            type: 'model_command_result',
+            commandId: 'GET_SESSION',
+            ok: true,
+            payload: {
+                session,
+                title: context.sessionTitle ?? null,
+            },
+        };
+    }
+    if (request.commandId === 'UPDATE_SESSION') {
+        // Apply resource operations (model-side preview)
+        const operations = request.params.operations ?? [];
+        const updateResult = applySessionUpdateToSnapshot(session, { ...request.params, operations });
+        if (!updateResult.ok) {
+            return toRunError('UPDATE_SESSION', updateResult.error);
+        }
+        const instructionOps = request.params.instructionOperations ?? [];
+        return {
+            type: 'model_command_result',
+            commandId: 'UPDATE_SESSION',
+            ok: true,
+            payload: {
+                session: updateResult.snapshot,
+                appliedOperations: operations.length,
+                appliedInstructionOperations: instructionOps.length,
+                request: request.params,
+                // title is passed through for host to apply
+                ...(request.params.title ? { title: request.params.title } : {}),
+            },
+        };
+    }
+    if (request.commandId === 'ASK_USER_QUESTION') {
+        const warnings = (0, validator_1.checkAskUserQuestionQuality)(request.params);
+        return {
+            type: 'model_command_result',
+            commandId: 'ASK_USER_QUESTION',
+            ok: true,
+            payload: {
+                question: request.params.question,
+                ...(warnings.length > 0 ? { warnings } : {}),
+            },
+        };
+    }
+    if (request.commandId === 'CONTINUE_SESSION') {
+        return {
+            type: 'model_command_result',
+            commandId: 'CONTINUE_SESSION',
+            ok: true,
+            payload: {
+                continuation: normalizeContinuation(request.params),
+            },
+        };
+    }
+    if (request.commandId === 'SAVE_MEMORY') {
+        if (!context.user) {
+            return toRunError('SAVE_MEMORY', { code: 'CONTEXT_ERROR', message: 'No user context available' });
+        }
+        const params = request.params;
+        let result;
+        if (params.action === 'add') {
+            if (!params.content) {
+                return toRunError('SAVE_MEMORY', { code: 'INVALID_ARGS', message: 'content is required for add' });
+            }
+            result = getMemoryStore().addMemory(context.user, params.target, params.content);
+        }
+        else if (params.action === 'replace') {
+            if (!params.old_text || !params.content) {
+                return toRunError('SAVE_MEMORY', {
+                    code: 'INVALID_ARGS',
+                    message: 'old_text and content are required for replace',
+                });
+            }
+            result = getMemoryStore().replaceMemory(context.user, params.target, params.old_text, params.content);
+        }
+        else if (params.action === 'remove') {
+            if (!params.old_text) {
+                return toRunError('SAVE_MEMORY', { code: 'INVALID_ARGS', message: 'old_text is required for remove' });
+            }
+            result = getMemoryStore().removeMemory(context.user, params.target, params.old_text);
+        }
+        else {
+            return toRunError('SAVE_MEMORY', { code: 'INVALID_ARGS', message: `Unknown action: ${params.action}` });
+        }
+        return {
+            type: 'model_command_result',
+            commandId: 'SAVE_MEMORY',
+            ok: true,
+            payload: { ok: result.ok, message: result.message },
+        };
+    }
+    if (request.commandId === 'GET_MEMORY') {
+        if (!context.user) {
+            return toRunError('GET_MEMORY', { code: 'CONTEXT_ERROR', message: 'No user context available' });
+        }
+        const store = getMemoryStore();
+        const mem = store.loadMemory(context.user, 'memory');
+        const usr = store.loadMemory(context.user, 'user');
+        return {
+            type: 'model_command_result',
+            commandId: 'GET_MEMORY',
+            ok: true,
+            payload: {
+                memory: mem.entries,
+                user: usr.entries,
+                memoryChars: mem.totalChars,
+                memoryLimit: mem.charLimit,
+                userChars: usr.totalChars,
+                userLimit: usr.charLimit,
+            },
+        };
+    }
+    if (request.commandId === 'MANAGE_SKILL') {
+        if (!context.user) {
+            return toRunError('MANAGE_SKILL', { code: 'CONTEXT_ERROR', message: 'No user context available' });
+        }
+        const params = request.params;
+        const store = getSkillStore();
+        if (params.action === 'list') {
+            const skills = store.listSkills(context.user);
+            return {
+                type: 'model_command_result',
+                commandId: 'MANAGE_SKILL',
+                ok: true,
+                payload: { ok: true, message: `${skills.length} skills found`, skills },
+            };
+        }
+        if (params.action === 'create') {
+            if (!params.name || !params.content) {
+                return toRunError('MANAGE_SKILL', { code: 'INVALID_ARGS', message: 'name and content required for create' });
+            }
+            const result = store.createSkill(context.user, params.name, params.content);
+            return {
+                type: 'model_command_result',
+                commandId: 'MANAGE_SKILL',
+                ok: true,
+                payload: { ok: result.ok, message: result.message },
+            };
+        }
+        if (params.action === 'update') {
+            if (!params.name || !params.content) {
+                return toRunError('MANAGE_SKILL', { code: 'INVALID_ARGS', message: 'name and content required for update' });
+            }
+            const result = store.updateSkill(context.user, params.name, params.content);
+            return {
+                type: 'model_command_result',
+                commandId: 'MANAGE_SKILL',
+                ok: true,
+                payload: { ok: result.ok, message: result.message },
+            };
+        }
+        if (params.action === 'delete') {
+            if (!params.name) {
+                return toRunError('MANAGE_SKILL', { code: 'INVALID_ARGS', message: 'name required for delete' });
+            }
+            const result = store.deleteSkill(context.user, params.name);
+            return {
+                type: 'model_command_result',
+                commandId: 'MANAGE_SKILL',
+                ok: true,
+                payload: { ok: result.ok, message: result.message },
+            };
+        }
+        return toRunError('MANAGE_SKILL', { code: 'INVALID_ARGS', message: `Unknown action: ${params.action}` });
+    }
+    if (request.commandId === 'RATE') {
+        if (!context.user) {
+            return toRunError('RATE', { code: 'CONTEXT_ERROR', message: 'No user context available' });
+        }
+        const store = getRatingStore();
+        const rating = store ? store.getUserRating(context.user) : 5;
+        return {
+            type: 'model_command_result',
+            commandId: 'RATE',
+            ok: true,
+            payload: { rating },
+        };
+    }
+    if (request.commandId === 'SAVE_CONTEXT_RESULT') {
+        return {
+            type: 'model_command_result',
+            commandId: 'SAVE_CONTEXT_RESULT',
+            ok: true,
+            payload: {
+                saveResult: request.params.result,
+            },
+        };
+    }
+    const unreachable = request;
+    throw new Error(`Unknown command: ${unreachable.commandId}`);
+}
+function normalizeLink(link, resourceType) {
+    return {
+        ...link,
+        type: resourceType,
+        provider: link.provider || 'unknown',
+    };
+}
+function normalizeContinuation(params) {
+    return {
+        prompt: params.prompt,
+        resetSession: params.resetSession,
+        dispatchText: params.dispatchText,
+        forceWorkflow: params.forceWorkflow,
+    };
+}
+/** Maximum number of instructions per session to prevent unbounded growth. */
+const MAX_INSTRUCTIONS = 50;
+let _instrCounter = 0;
+/**
+ * Apply instruction operations (add/remove/clear) to a mutable instructions array.
+ * Shared between catalog (snapshot) and session-registry (host-side).
+ * Returns true if any mutation occurred.
+ */
+function applyInstructionOperations(instructions, ops) {
+    if (!ops || ops.length === 0)
+        return false;
+    let changed = false;
+    for (const op of ops) {
+        if (op.action === 'add') {
+            if (!op.text || op.text.trim().length === 0)
+                continue;
+            if (instructions.length >= MAX_INSTRUCTIONS)
+                continue;
+            const now = Date.now();
+            instructions.push({
+                id: `instr_${now}_${++_instrCounter}`,
+                text: op.text.trim(),
+                addedAt: now,
+                source: op.source || 'user',
+            });
+            changed = true;
+            continue;
+        }
+        if (op.action === 'remove') {
+            const idx = instructions.findIndex((i) => i.id === op.id);
+            if (idx >= 0) {
+                instructions.splice(idx, 1);
+                changed = true;
+            }
+            continue;
+        }
+        if (op.action === 'clear') {
+            if (instructions.length > 0) {
+                instructions.length = 0;
+                changed = true;
+            }
+        }
+    }
+    return changed;
+}
+//# sourceMappingURL=catalog.js.map

@@ -1,0 +1,86 @@
+{{include:./common.prompt}}
+
+# Jira Planning Workflow
+
+This session is dedicated to **creating an implementation plan for a Jira issue**. The goal is to draft an Implementation Spec and obtain user approval.
+
+## Automatic Steps
+1. Extract the issue key from the Jira issue link
+2. Retrieve and analyze issue details
+3. Analyze the relevant repo
+4. Draft the Implementation Spec
+5. Record it in Jira after user approval
+
+## Work Process
+
+### 1. Issue Analysis
+- Analyze the issue content in detail
+- Check if an existing Spec has already been written (if so, use it)
+
+### 2. Codebase Analysis
+- Identify the relevant repo (ask the user if unknown)
+- Understand the current code structure
+- Analyze the scope of impact
+
+### 3. Draft Implementation Spec
+- Write according to the format below
+- Include the **[DRAFT]** tag
+
+### 4. User Approval Process
+- Present the Spec to the user
+- Incorporate any requested changes
+- Once approved, finalize the record in Jira (remove the Draft tag)
+
+## Implementation Spec Format
+
+```markdown
+## Implementation Spec [DRAFT]
+
+### Objective
+- The problem this issue aims to solve
+- Completion criteria
+
+### Scope of Changes
+| File | Change Description |
+|------|-------------------|
+| `path/to/file.ts` | Add XXX logic |
+| `path/to/new-file.ts` | New file |
+
+### Implementation Steps
+1. **Step 1**: [Specific task]
+   - Related files: ...
+   - Estimated effort: ...
+2. **Step 2**: [Specific task]
+   ...
+
+### Test Plan
+- **Unit tests**: Functions/modules to test
+- **Integration tests**: Scenarios to test
+- **Manual tests**: Behaviors to verify
+
+### Expected Impact
+- Impact on existing functionality
+- Whether there are breaking changes
+- Whether migration is needed
+
+### Risks
+- Identified risks and mitigation strategies
+```
+
+## Jira Comment Format After User Approval
+
+```
+✅ Implementation Spec Finalized (User Approved)
+
+[Spec content - DRAFT tag removed]
+
+---
+Approved by: @username
+Date: YYYY-MM-DD
+```
+
+## 🔄 Next Steps
+
+After the Spec is approved, guide the user on the next steps:
+- **Create PR**: "The Spec has been approved. To create a PR, enter `fix` + the issue link in a new session."
+- If the issue link is not connected to the session: "You can link the issue to the session using the `link issue <url>` command."

@@ -1,0 +1,155 @@
+{{include:./common.prompt}}
+
+# Jira Create PR Workflow
+
+This session is dedicated to **creating a PR based on a Jira issue**. It sequentially executes the `Red -> Green -> Refactor` phases based on the Implementation Spec.
+
+## Prerequisites
+- The Jira issue must have an **approved Implementation Spec**
+- If no Spec exists, direct the user to proceed with the `jira-planning` workflow first
+
+## Automatic Steps
+1. Verify the Implementation Spec on the Jira issue
+2. Clone the relevant repo
+3. Create a new branch using the issue key
+4. Proceed with the Red phase (failing tests + minimal skeleton)
+5. Confirm whether to proceed with the Green phase via `user_choice`
+6. If Green proceeds, complete implementation and pass tests
+7. Confirm whether to proceed with the Refactor phase via `user_choice`
+8. If Refactor proceeds, clean up code + finalize the PR
+
+## Branch Naming
+```
+feature/[ISSUE-KEY]-short-description
+e.g.: feature/PTN-123-add-user-auth
+```
+
+## Phase Definitions
+
+### Red Phase (Scaffold)
+- Write failing tests first.
+- Add a minimal implementation skeleton, but keep tests in a failing state.
+- Submit the PR in `WIP` or `Draft` status.
+- Natural stopping point: "PR skeleton created"
+
+### Green Phase (Implementation Complete)
+- Complete the minimal implementation to pass all failing tests from the Red phase.
+- Run `test` and `build` to confirm everything passes without regressions.
+- Natural stopping point: "Feature implementation complete, before refactoring"
+
+### Refactor Phase (Cleanup/Release Prep)
+- Remove duplication, improve naming, restructure code, and improve test readability.
+- Update the PR body/checklist/change summary to its final state.
+- Natural stopping point: "Ready for review"
+
+## Work Process
+
+### 1. Verify Spec
+- Retrieve the Jira issue
+- Check whether an Implementation Spec exists
+- If no Spec: "No Implementation Spec found. Please create a Spec first using `/plan` or the jira-planning workflow."
+
+### 2. Create Branch
+```bash
+git checkout -b feature/[ISSUE-KEY]-description
+```
+
+### 3. Execute Red Phase
+- Write failing tests (Red)
+- Write the minimal implementation skeleton (keep tests failing)
+
+```bash
+git add .
+git commit -m "feat([scope]): [ISSUE-KEY] scaffold implementation
+
+- Add failing tests for [feature]
+- Add implementation skeleton
+- WIP: actual implementation needed
+
+Co-Authored-By: {{user.displayName}} <{{user.email}}>"
+git push -u origin feature/[ISSUE-KEY]-description
+```
+
+### 4. Create PR (Reflecting Red Results)
+Use `gh pr create` or `mcp__github__create_pull_request`. `Draft` status is recommended by default.
+
+Automatically update session links immediately after PR creation (not displayed to user):
+```json
+{
+  "type": "session_links",
+  "jira": "Jira issue URL",
+  "pr": "Created PR URL"
+}
+```
+
+After the Red phase is complete, confirm with the user whether to proceed with Green:
+```json
+{
+  "type": "user_choice",
+  "question": "The Red phase (PR skeleton) is complete. Would you like to continue with the Green phase?",
+  "options": [
+    {"id": "1", "label": "Proceed with Green", "description": "Implement actual logic and pass all tests"},
+    {"id": "2", "label": "Stop here", "description": "End with current Draft PR status"}
+  ]
+}
+```
+
+### 5. Execute Green Phase (If User Chooses to Proceed)
+- Implement actual logic
+- Verify failing tests now pass
+- Run build/tests
+
+```bash
+npm test
+npm run build
+git add .
+git commit -m "feat([scope]): [ISSUE-KEY] implement green phase
+
+Co-Authored-By: {{user.displayName}} <{{user.email}}>"
+git push
+```
+
+After the Green phase is complete, confirm whether to proceed with Refactor:
+```json
+{
+  "type": "user_choice",
+  "question": "The Green phase is complete. Would you like to proceed with the Refactor phase?",
+  "options": [
+    {"id": "1", "label": "Proceed with Refactor", "description": "Clean up structure/improve readability and finalize PR"},
+    {"id": "2", "label": "Stop here", "description": "End with implementation complete status"}
+  ]
+}
+```
+
+### 6. Execute Refactor Phase (If User Chooses to Proceed)
+- Simplify code/remove duplication/improve naming
+- Re-run tests
+- Update PR body status from `WIP` to complete
+
+```bash
+npm test
+npm run build
+git add .
+git commit -m "refactor([scope]): [ISSUE-KEY] cleanup after green phase
+
+Co-Authored-By: {{user.displayName}} <{{user.email}}>"
+git push
+```
+
+## PR Body Status Guide
+
+### Red Only Completed
+- Status: `WIP (Red complete, Green pending)`
+
+### Green Completed
+- Status: `Implementation complete (Refactor optional)`
+
+### Refactor Completed
+- Status: `Ready for review`
+
+## 🔄 Next Steps
+
+When the phase progression ends, guide the user on the next steps:
+- **Request PR review**: "To get a review, enter the PR link in a new session."
+- **Write documentation**: "If API changes are included, to write Confluence documentation, enter the Confluence link + PR link in a new session."
+- The PR link is automatically connected via the `session_links` JSON directive

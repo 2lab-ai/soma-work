@@ -1,0 +1,19 @@
+{
+  "$schema": "https://github.com/2lab-ai/soma-work/blob/main/somalib/model-commands/types.ts",
+  "_comment": "Reference template for local:ztrace Phase 0 scenario confirmation when user did not provide scenarios. Passes validateModelCommandRunArgs + checkAskUserQuestionQuality.",
+  "type": "user_choice",
+  "question": "[small] ztrace 시나리오 이걸로 확정?",
+  "context": "자동 도출 시나리오: {scenarios_list}. 엔트리포인트: {entry_points}. 추적 깊이: 콜스택 + SQL 쿼리 원문 + HTTP method·URL + 조건 분기 + 에러 경로. 확정 후 Phase 1 소스 전수 탐색 → Phase 2 시나리오별 추적 → Phase 3 상태머신 종합 → Phase 4 설계 원칙 요약 순으로 진행. 시나리오 수정 필요시 Option B.",
+  "choices": [
+    {
+      "id": "a",
+      "label": "Option A: Confirm scenarios and start Phase 1 trace (Recommended · 1/2)",
+      "description": "시나리오 확정 → Phase 1 소스 전수 탐색 + 메서드 시그니처 수집 시작."
+    },
+    {
+      "id": "b",
+      "label": "Option B: Revise scenarios — add or remove entries",
+      "description": "시나리오 목록 보정. 구체적으로 어떤 것을 추가/제거할지 지시."
+    }
+  ]
+}

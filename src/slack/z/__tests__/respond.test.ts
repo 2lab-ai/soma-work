@@ -128,20 +128,15 @@ describe('ChannelEphemeralZRespond', () => {
     // ZRESPOND_DISMISS_NOOP tag for ops visibility.
     const client = makeClient();
     const r = new ChannelEphemeralZRespond({ client: client as any, channel: 'C1', user: 'U1' });
-    // Spy on the internal logger imported by respond.ts via console path.
-    const { Logger } = await import('../../../logger');
-    const infoSpy = vi.spyOn(Logger.prototype, 'info').mockImplementation(() => {});
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
     await expect(r.dismiss()).resolves.toBeUndefined();
 
     // Must not have posted any user-facing fallback (no postEphemeral call).
     expect(client.chat.postEphemeral as any).not.toHaveBeenCalled();
     // Must have emitted the ops-visible info log with the standard tag.
-    expect(infoSpy).toHaveBeenCalledWith(
-      expect.stringContaining('dismiss'),
-      expect.objectContaining({ tag: 'ZRESPOND_DISMISS_NOOP' }),
-    );
-    infoSpy.mockRestore();
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('ZRESPOND_DISMISS_NOOP'));
+    logSpy.mockRestore();
   });
 });
 
@@ -213,17 +208,13 @@ describe('DmZRespond', () => {
     // ZRESPOND_DISMISS_NOOP tag. No user-facing message, no chat.delete.
     const client = makeClient();
     const r = new DmZRespond({ client: client as any, channel: 'D1' });
-    const { Logger } = await import('../../../logger');
-    const infoSpy = vi.spyOn(Logger.prototype, 'info').mockImplementation(() => {});
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
     await expect(r.dismiss()).resolves.toBeUndefined();
 
     expect(client.chat.delete).not.toHaveBeenCalled();
     expect(client.chat.postMessage).not.toHaveBeenCalled();
-    expect(infoSpy).toHaveBeenCalledWith(
-      expect.stringContaining('dismiss'),
-      expect.objectContaining({ tag: 'ZRESPOND_DISMISS_NOOP' }),
-    );
-    infoSpy.mockRestore();
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('ZRESPOND_DISMISS_NOOP'));
+    logSpy.mockRestore();
   });
 });
