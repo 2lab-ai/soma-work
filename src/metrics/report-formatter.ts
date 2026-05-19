@@ -1,6 +1,6 @@
 /**
  * ReportFormatter — Formats aggregated reports into Slack Block Kit messages.
- * Trace: docs/daily-weekly-report/trace.md, Scenario 5
+ * Trace: docs/archive/features/daily-weekly-report/trace.md, Scenario 5
  *
  * Supports both basic (DailyReport/WeeklyReport) and enriched formats.
  * Enriched format: Bauhaus-inspired — form follows function, grid-based KPI layout,

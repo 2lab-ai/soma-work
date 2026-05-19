@@ -68,7 +68,7 @@ export class SlackBlockKitChannel implements NotificationChannel {
       // Previously tracked in stream-executor using threadTs (thread root),
       // which for bot-initiated threads IS the surface/header message —
       // causing header deletion on next user input.
-      // Trace: docs/turn-summary-lifecycle/trace.md, S6
+      // Trace: docs/archive/features/turn-summary-lifecycle/trace.md, S6
       if (this.completionMessageTracker && result?.ts && event.category !== 'Exception') {
         const sessionKey = `${event.channel}-${event.threadTs}`;
         this.completionMessageTracker.track(sessionKey, result.ts, event.category);

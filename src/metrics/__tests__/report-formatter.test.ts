@@ -3,7 +3,7 @@ import { ReportFormatter } from '../report-formatter';
 import type { AggregatedMetrics, DailyReport, UserRanking, WeeklyReport } from '../types';
 
 // Contract tests — Scenario 5: ReportFormatter + Publisher
-// Trace: docs/daily-weekly-report/trace.md
+// Trace: docs/archive/features/daily-weekly-report/trace.md
 
 function makeMetrics(overrides: Partial<AggregatedMetrics> = {}): AggregatedMetrics {
   return {

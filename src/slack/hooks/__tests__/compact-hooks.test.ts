@@ -489,7 +489,7 @@ describe('buildCompactHooks — SessionStart (#617 AC6)', () => {
  *          `session.compactTickInterval`, leaking the first setInterval.
  *   Bug 3: auto-compact completion shows `~?% ← was ~?%` when PostCompact
  *          races onCompactBoundary.
- * See docs/issues/compact-bugs-trace/trace.md.
+ * See docs/misc/issues/current/compact-bugs-trace/trace.md.
  */
 describe('Compact follow-up fixes (#617 v2 bugs 1/2/3)', () => {
   let slackApi: {

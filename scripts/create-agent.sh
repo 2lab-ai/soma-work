@@ -252,7 +252,7 @@ echo -e "${BOLD}${GREEN}══════════════════�
 echo ""
 echo "  Next steps:"
 echo "  1. Edit the agent prompt: ${PROMPT_DIR}/default.prompt"
-echo "  2. Restart soma-work:     service.sh restart"
+echo "  2. Restart soma-work:     scripts/service.sh restart"
 echo "  3. Test: @${DISPLAY_NAME} 안녕!"
 echo ""
 echo "  To add more agents, run this script again with a different name."

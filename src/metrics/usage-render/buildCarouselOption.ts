@@ -1,6 +1,6 @@
 /**
  * ECharts option builder for `/usage card` v2 — per-tab carousel.
- * Trace: docs/usage-card-dark/trace.md — Scenario 3.
+ * Trace: docs/current/plans/usage-card-dark/trace.md — Scenario 3.
  *
  * Pure, deterministic. Returns option shape only — NOT SVG — so tests can
  * assert on object values instead of string-matching rendered DOM.

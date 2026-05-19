@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
  * slash and DM. Bare `[cmd] [args]` (restored in #530) falls through to the
  * legacy pipeline instead. This test file exercises that contract.
  *
- * See: plan/MASTER-SPEC.md §5-1 "3 entry points common normalizeZInvocation".
+ * See: docs/current/spec/z-command-master-spec.md §5-1 "3 entry points common normalizeZInvocation".
  */
 
 vi.mock('../../channel-registry', () => ({

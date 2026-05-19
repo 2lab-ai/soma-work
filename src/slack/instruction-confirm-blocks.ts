@@ -1,7 +1,7 @@
 /**
  * Block Kit builders for the user-instruction y/n confirmation flow.
  *
- * Critical constraints (docs/slack-block-kit.md):
+ * Critical constraints (docs/misc/reference/slack-block-kit.md):
  *   - `button.disabled` is NOT supported by Slack — attempting to render
  *     `{ disabled: true }` triggers `invalid_blocks`. Instead we model the
  *     "resolved" state by rebuilding the message WITHOUT the actions block.

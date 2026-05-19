@@ -3,7 +3,7 @@
  *
  * Tests exercise `buildAssistantConfig(deps)` directly against the raw
  * `AssistantConfig` object so we do not need to mock the `Assistant`
- * constructor. See docs/slack-ui-phase4.md (§Tests) for rationale.
+ * constructor. See docs/archive/features/slack-ui/phase4.md (§Tests) for rationale.
  */
 import { Assistant } from '@slack/bolt';
 import { beforeEach, describe, expect, it, vi } from 'vitest';

@@ -57,7 +57,7 @@ Expected: FAIL because current workflow still depends on `dev`
 ### Task 3: Update operator docs
 
 **Files:**
-- Modify: `docs/add-new-deploy.md`
+- Modify: `docs/runbook/add-new-deploy.md`
 
 **Step 1: Update workflow examples and branch descriptions**
 

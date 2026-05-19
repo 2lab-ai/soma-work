@@ -2,7 +2,7 @@
  * ToolResultInterceptor — Detects git/gh commands in Bash tool results
  * and emits corresponding metrics events.
  *
- * Trace: docs/daily-weekly-report/trace.md, Scenario 3
+ * Trace: docs/archive/features/daily-weekly-report/trace.md, Scenario 3
  */
 
 import { Logger } from '../logger';

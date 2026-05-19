@@ -110,7 +110,7 @@ export class EventRouter {
   /**
    * Returns true when the `SOMA_ENABLE_LEGACY_SLASH` env var is set.
    * When enabled the old `/soma`, `/session`, `/new` handlers remain active
-   * (rollback path — Tier 2 in plan/MASTER-SPEC.md §12).
+   * (rollback path — Tier 2 in docs/current/spec/z-command-master-spec.md §12).
    */
   private legacySlashEnabled(): boolean {
     const v = process.env.SOMA_ENABLE_LEGACY_SLASH;
@@ -375,7 +375,7 @@ export class EventRouter {
    * `/soma`, `/session`, `/new` — legacy. Release N: manifest keeps them
    * alongside `/z`, but at runtime they are tombstone-redirected to `/z`.
    * Set `SOMA_ENABLE_LEGACY_SLASH=true` to restore the old behaviour
-   * (rollback Tier 2 in plan/MASTER-SPEC.md §12).
+   * (rollback Tier 2 in docs/current/spec/z-command-master-spec.md §12).
    */
   private setupSlashCommands(): void {
     const legacyEnabled = this.legacySlashEnabled();

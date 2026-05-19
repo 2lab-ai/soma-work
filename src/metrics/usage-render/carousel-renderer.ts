@@ -1,6 +1,6 @@
 /**
  * Carousel renderer — produces 4 tab PNGs in parallel.
- * Trace: docs/usage-card-dark/trace.md — Scenario 10.
+ * Trace: docs/current/plans/usage-card-dark/trace.md — Scenario 10.
  *
  * Delegates the ECharts option shape to `buildCarouselOption.buildCardOption`
  * and reuses the shared `svg-to-png` + font cache. Each tab is rendered

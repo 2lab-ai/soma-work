@@ -204,7 +204,7 @@ mask_secret() {
     fi
 }
 
-# Detect Node.js path (for service.sh)
+# Detect Node.js path (for scripts/service.sh)
 detect_node_path() {
     local node_bin
     node_bin="$(which node 2>/dev/null)"

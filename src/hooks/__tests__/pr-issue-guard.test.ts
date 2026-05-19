@@ -1,7 +1,7 @@
 /**
  * Unit tests for PR-issue precondition guard (#696).
  *
- * Trace: docs/pr-issue-precondition/trace.md (v2.1) §S1 — 19 tests covering
+ * Trace: docs/archive/features/pr-issue-precondition/trace.md (v2.1) §S1 — 19 tests covering
  * tool-shape detection, sourceIssueUrl path, escapeEligible path, MCP path,
  * adversarial inputs (codex-flagged), and precedence.
  */
