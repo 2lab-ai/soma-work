@@ -4,6 +4,7 @@ import type { AssistantStatusManager } from './assistant-status-manager';
 import type { CompletionMessageTracker } from './completion-message-tracker';
 import type { RequestCoordinator } from './request-coordinator';
 import type { SlackApiHelper } from './slack-api-helper';
+import type { Todo } from './task-list-block-builder';
 import {
   type ConversationSession,
   type EndTurnInfo,
@@ -11,7 +12,6 @@ import {
   ThreadSurface,
   type ThreadSurfaceTodoManager,
 } from './thread-surface';
-import type { Todo } from './task-list-block-builder';
 import type { TurnCompletionEvent } from './turn-notifier';
 import {
   setTurnSurfaceFiveBlockPhaseProvider,

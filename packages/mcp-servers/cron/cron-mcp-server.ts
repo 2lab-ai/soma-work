@@ -10,13 +10,9 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import * as path from 'path';
+import { CronStorage, isValidCronExpression, isValidCronName } from '@soma/process-shared/cron/cron-storage.js';
 import { StderrLogger } from '@soma/process-shared/stderr-logger.js';
-import {
-  CronStorage,
-  isValidCronExpression,
-  isValidCronName,
-} from '@soma/process-shared/cron/cron-storage.js';
+import * as path from 'path';
 
 const logger = new StderrLogger('CronMcpServer');
 
@@ -55,13 +51,9 @@ interface ValidatedCreateInput {
   effectiveTarget: 'channel' | 'thread' | 'dm';
 }
 
-type ValidationResult =
-  | { ok: true; parsed: ValidatedCreateInput }
-  | { ok: false; errorText: string };
+type ValidationResult = { ok: true; parsed: ValidatedCreateInput } | { ok: false; errorText: string };
 
-type ModelConfigResult =
-  | { ok: true; modelConfig: CronModelConfig | undefined }
-  | { ok: false; errorText: string };
+type ModelConfigResult = { ok: true; modelConfig: CronModelConfig | undefined } | { ok: false; errorText: string };
 
 function validateRequiredArgs(args: Record<string, any>): string | null {
   const { name, expression, prompt } = args;
@@ -82,7 +74,9 @@ function validateRequiredArgs(args: Record<string, any>): string | null {
 
 function validateModeAndTarget(
   args: Record<string, any>,
-): { ok: true; effectiveMode: 'default' | 'fastlane'; effectiveTarget: 'channel' | 'thread' | 'dm' } | { ok: false; errorText: string } {
+):
+  | { ok: true; effectiveMode: 'default' | 'fastlane'; effectiveTarget: 'channel' | 'thread' | 'dm' }
+  | { ok: false; errorText: string } {
   const { threadTs, mode, target } = args;
 
   const effectiveMode = mode || 'default';
@@ -167,7 +161,11 @@ function formatCreateSuccess(
   return `Cron job '${job.name}' created.\nID: ${job.id}\nExpression: ${job.expression}\nChannel: ${job.channel}${modeStr}${modelStr}${targetStr}\nPrompt: ${job.prompt}`;
 }
 
-export function handleCreate(args: Record<string, any>, context: CronContext, storage: CronStorage): { text: string; isError: boolean } {
+export function handleCreate(
+  args: Record<string, any>,
+  context: CronContext,
+  storage: CronStorage,
+): { text: string; isError: boolean } {
   const validation = validateCreateInput(args, context);
   if (!validation.ok) {
     return { text: validation.errorText, isError: true };
@@ -201,7 +199,11 @@ export function handleCreate(args: Record<string, any>, context: CronContext, st
   }
 }
 
-function handleDelete(args: Record<string, any>, context: CronContext, storage: CronStorage): { text: string; isError: boolean } {
+function handleDelete(
+  args: Record<string, any>,
+  context: CronContext,
+  storage: CronStorage,
+): { text: string; isError: boolean } {
   const { name } = args;
   if (!name) {
     return { text: 'Error: name is required', isError: true };
@@ -215,21 +217,21 @@ function handleDelete(args: Record<string, any>, context: CronContext, storage: 
   return { text: `Cron job '${name}' deleted`, isError: false };
 }
 
-function handleHistory(args: Record<string, any>, context: CronContext, storage: CronStorage): { text: string; isError: boolean } {
+function handleHistory(
+  args: Record<string, any>,
+  context: CronContext,
+  storage: CronStorage,
+): { text: string; isError: boolean } {
   const { name, limit } = args;
   const effectiveLimit = typeof limit === 'number' && limit > 0 ? limit : 10;
 
-  const history = storage.getExecutionHistory(
-    name || undefined,
-    context.user,
-    effectiveLimit,
-  );
+  const history = storage.getExecutionHistory(name || undefined, context.user, effectiveLimit);
 
   if (history.length === 0) {
     return { text: name ? `No execution history for '${name}'.` : 'No cron execution history.', isError: false };
   }
 
-  const lines = history.map(r => {
+  const lines = history.map((r) => {
     const status = r.status === 'success' ? '✅' : r.status === 'failed' ? '❌' : '⏳';
     const time = r.executedAt.slice(0, 19).replace('T', ' ');
     const errPart = r.error ? ` | err: ${r.error.substring(0, 80)}` : '';
@@ -247,9 +249,11 @@ function handleList(context: CronContext, storage: CronStorage): { text: string;
     return { text: 'No cron jobs registered.', isError: false };
   }
 
-  const lines = jobs.map(j => {
+  const lines = jobs.map((j) => {
     const modeStr = j.mode === 'fastlane' ? ' | ⚡fastlane' : '';
-    const modelStr = j.modelConfig ? ` | model:${j.modelConfig.type}${j.modelConfig.model ? `(${j.modelConfig.model})` : ''}` : '';
+    const modelStr = j.modelConfig
+      ? ` | model:${j.modelConfig.type}${j.modelConfig.model ? `(${j.modelConfig.model})` : ''}`
+      : '';
     const targetStr = j.target ? ` | 🎯${j.target}` : '';
     return `- **${j.name}** | \`${j.expression}\` | ch:${j.channel}${modeStr}${modelStr}${targetStr} | last: ${j.lastRunMinute || 'never'}\n  prompt: ${j.prompt.substring(0, 100)}`;
   });
@@ -273,10 +277,7 @@ class CronMcpServer {
       ? path.join(dataDir, 'cron-jobs.json')
       : path.join(process.cwd(), 'data', 'cron-jobs.json');
     this.storage = new CronStorage(cronFilePath);
-    this.server = new Server(
-      { name: 'cron', version: '1.0.0' },
-      { capabilities: { tools: {} } }
-    );
+    this.server = new Server({ name: 'cron', version: '1.0.0' }, { capabilities: { tools: {} } });
     this.setupHandlers();
   }
 
@@ -285,20 +286,52 @@ class CronMcpServer {
       tools: [
         {
           name: 'cron_create',
-          description: 'Register a recurring cron job. When the cron fires, the prompt is injected as a user message into the target session.',
+          description:
+            'Register a recurring cron job. When the cron fires, the prompt is injected as a user message into the target session.',
           inputSchema: {
             type: 'object',
             properties: {
-              name: { type: 'string', description: 'Unique name for the cron job (alphanumeric, hyphens, underscores, 1-64 chars)' },
-              expression: { type: 'string', description: '5-field cron expression: min hour dom mon dow. Example: "0 9 * * 1-5" (weekdays at 9am)' },
+              name: {
+                type: 'string',
+                description: 'Unique name for the cron job (alphanumeric, hyphens, underscores, 1-64 chars)',
+              },
+              expression: {
+                type: 'string',
+                description: '5-field cron expression: min hour dom mon dow. Example: "0 9 * * 1-5" (weekdays at 9am)',
+              },
               prompt: { type: 'string', description: 'Message to inject when cron fires (max 4000 chars)' },
               channel: { type: 'string', description: 'Target Slack channel ID. Defaults to current channel.' },
-              threadTs: { type: 'string', description: 'Target thread timestamp. If omitted, uses active session or creates new thread.' },
-              mode: { type: 'string', enum: ['default', 'fastlane'], description: 'Execution mode. default: queue behind busy sessions. fastlane: always create new thread immediately.' },
-              target: { type: 'string', enum: ['channel', 'thread', 'dm'], description: 'Delivery target. channel: new message in channel (default). thread: reply in existing thread (requires threadTs). dm: direct message to cron owner.' },
-              model_type: { type: 'string', enum: ['default', 'fast', 'custom'], description: 'Model selection. default: use session model. fast: use sonnet. custom: specify model_name.' },
-              model_name: { type: 'string', description: 'Model identifier when model_type=custom (e.g. "claude-sonnet-4-20250514")' },
-              reasoning_effort: { type: 'string', enum: ['low', 'medium', 'high'], description: 'Reasoning effort for custom model' },
+              threadTs: {
+                type: 'string',
+                description: 'Target thread timestamp. If omitted, uses active session or creates new thread.',
+              },
+              mode: {
+                type: 'string',
+                enum: ['default', 'fastlane'],
+                description:
+                  'Execution mode. default: queue behind busy sessions. fastlane: always create new thread immediately.',
+              },
+              target: {
+                type: 'string',
+                enum: ['channel', 'thread', 'dm'],
+                description:
+                  'Delivery target. channel: new message in channel (default). thread: reply in existing thread (requires threadTs). dm: direct message to cron owner.',
+              },
+              model_type: {
+                type: 'string',
+                enum: ['default', 'fast', 'custom'],
+                description:
+                  'Model selection. default: use session model. fast: use sonnet. custom: specify model_name.',
+              },
+              model_name: {
+                type: 'string',
+                description: 'Model identifier when model_type=custom (e.g. "claude-sonnet-4-20250514")',
+              },
+              reasoning_effort: {
+                type: 'string',
+                enum: ['low', 'medium', 'high'],
+                description: 'Reasoning effort for custom model',
+              },
               fast_mode: { type: 'boolean', description: 'Enable fast mode for custom model' },
             },
             required: ['name', 'expression', 'prompt'],
@@ -325,7 +358,8 @@ class CronMcpServer {
         },
         {
           name: 'cron_history',
-          description: 'Show execution history for cron jobs. Shows when jobs ran, whether they succeeded or failed, and the execution path (idle inject, busy queue, new thread).',
+          description:
+            'Show execution history for cron jobs. Shows when jobs ran, whether they succeeded or failed, and the execution path (idle inject, busy queue, new thread).',
           inputSchema: {
             type: 'object',
             properties: {

@@ -1,10 +1,5 @@
 import { Logger } from '@soma/common/logger';
-import {
-  ActionPanelBuilder,
-  type ActivityState,
-  type PRStatusInfo,
-  type WorkflowType,
-} from './action-panel-builder';
+import { ActionPanelBuilder, type ActivityState, type PRStatusInfo, type WorkflowType } from './action-panel-builder';
 import type { AssistantStatusManager } from './assistant-status-manager';
 import type { CompletionMessageTracker } from './completion-message-tracker';
 import { ContextWindowManager, type SessionUsage } from './context-window-manager';
@@ -12,7 +7,7 @@ import { configureEffectivePhase, getEffectiveFiveBlockPhase } from './pipeline/
 import type { RequestCoordinator } from './request-coordinator';
 import type { SlackApiHelper } from './slack-api-helper';
 import { type SessionTheme, TaskListBlockBuilder, type Todo, type TodoStatusReader } from './task-list-block-builder';
-import { ThreadHeaderBuilder, type SessionLinkHistory, type SessionLinks } from './thread-header-builder';
+import { type SessionLinkHistory, type SessionLinks, ThreadHeaderBuilder } from './thread-header-builder';
 import type { SlackMessagePayload } from './user-choice-handler';
 
 export interface EndTurnInfo {

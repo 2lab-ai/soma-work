@@ -131,6 +131,8 @@ describe('SessionInitializer — workspace wiring integration', () => {
         getToolStatusText: vi.fn().mockReturnValue('running...'),
         buildBashStatus: vi.fn().mockReturnValue('is running commands...'),
         registerBackgroundBashActive: vi.fn().mockReturnValue(() => {}),
+        // Required by @soma/slack/pipeline/effective-phase getEffectiveFiveBlockPhase.
+        isEnabled: vi.fn().mockReturnValue(true),
       } as any,
     });
   });

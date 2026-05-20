@@ -3,8 +3,8 @@ export {
   type ChannelMessageExtractResult,
 } from './channel-message-directive';
 export {
-  SessionLinkDirectiveHandler,
   type SessionLink,
+  SessionLinkDirectiveHandler,
   type SessionLinkExtractResult,
   type SessionLinks,
 } from './session-link-directive';

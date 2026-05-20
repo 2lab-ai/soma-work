@@ -32,10 +32,7 @@ export interface WatchdogOptions {
 const DEFAULT_TIMEOUT_MS = 300_000;
 const DEFAULT_KILL_GRACE_MS = 5_000;
 
-export async function runWithWatchdog<T>(
-  waitForResult: Promise<T>,
-  opts: WatchdogOptions,
-): Promise<T> {
+export async function runWithWatchdog<T>(waitForResult: Promise<T>, opts: WatchdogOptions): Promise<T> {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const graceMs = opts.killGraceMs ?? DEFAULT_KILL_GRACE_MS;
 
@@ -44,9 +41,17 @@ export async function runWithWatchdog<T>(
   let abortListener: (() => void) | undefined;
 
   const scheduleKill = (): void => {
-    try { opts.killChild('SIGTERM'); } catch { /* ignore */ }
+    try {
+      opts.killChild('SIGTERM');
+    } catch {
+      /* ignore */
+    }
     killFollowup = setTimeout(() => {
-      try { opts.killChild('SIGKILL'); } catch { /* ignore */ }
+      try {
+        opts.killChild('SIGKILL');
+      } catch {
+        /* ignore */
+      }
     }, graceMs);
     killFollowup.unref?.();
   };

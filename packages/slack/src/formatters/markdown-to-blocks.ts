@@ -19,8 +19,8 @@
  * - Fallback to plain text on conversion failure
  */
 
-import { markdownToBlocks as libMarkdownToBlocks } from 'markdown-to-slack-blocks';
 import { Logger } from '@soma/common/logger';
+import { markdownToBlocks as libMarkdownToBlocks } from 'markdown-to-slack-blocks';
 import { MessageFormatter } from '../message-formatter';
 
 const logger = new Logger('MarkdownToBlocks');
