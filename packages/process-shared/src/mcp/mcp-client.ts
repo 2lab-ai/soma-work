@@ -1,4 +1,4 @@
-import { spawn, ChildProcess } from 'child_process';
+import { type ChildProcess, spawn } from 'child_process';
 import { EventEmitter } from 'events';
 import { StderrLogger } from '../stderr-logger.js';
 
@@ -212,10 +212,14 @@ export class McpClient extends EventEmitter {
       throw new Error('MCP client not ready');
     }
 
-    const result = await this.sendRequest('tools/call', {
-      name,
-      arguments: args,
-    }, timeout);
+    const result = await this.sendRequest(
+      'tools/call',
+      {
+        name,
+        arguments: args,
+      },
+      timeout,
+    );
 
     return result as McpToolResult;
   }
@@ -249,7 +253,7 @@ export class McpClient extends EventEmitter {
     this.tools = toolsResult?.tools || [];
     this.logger.debug('MCP tools loaded', {
       count: this.tools.length,
-      tools: this.tools.map(t => t.name),
+      tools: this.tools.map((t) => t.name),
     });
 
     this.initialized = true;
@@ -402,19 +406,19 @@ export class McpClient extends EventEmitter {
 /**
  * Convenience function to create a Codex MCP client
  */
-function createCodexClient(options?: {
-  cwd?: string;
-  model?: string;
-}): McpClient {
+function createCodexClient(options?: { cwd?: string; model?: string }): McpClient {
   const args = ['mcp-server'];
 
   if (options?.model) {
     args.push('-c', `model="${options.model}"`);
   }
 
-  return new McpClient({
-    command: 'codex',
-    args,
-    cwd: options?.cwd,
-  }, 'CodexMcpClient');
+  return new McpClient(
+    {
+      command: 'codex',
+      args,
+      cwd: options?.cwd,
+    },
+    'CodexMcpClient',
+  );
 }

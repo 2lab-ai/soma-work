@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+
 /**
  * LLM MCP Server — single `chat` tool with optional `resumeSessionId`.
  *
@@ -12,13 +13,13 @@
  * graceful-drain machinery here: the MCP runtime owns the process lifecycle.
  */
 
-import { BaseMcpServer } from '@soma/process-shared/mcp/base-mcp-server.js';
-import type { ToolDefinition, ToolResult } from '@soma/process-shared/mcp/base-mcp-server.js';
-import type { Backend, LlmRuntime } from './runtime/types.js';
-import { CodexRuntime } from './runtime/codex-runtime.js';
-import { GeminiRuntime } from './runtime/gemini-runtime.js';
-import { ErrorCode, LlmChatError } from './runtime/errors.js';
 import { randomUUID } from 'node:crypto';
+import type { ToolDefinition, ToolResult } from '@soma/process-shared/mcp/base-mcp-server.js';
+import { BaseMcpServer } from '@soma/process-shared/mcp/base-mcp-server.js';
+import { CodexRuntime } from './runtime/codex-runtime.js';
+import { ErrorCode, LlmChatError } from './runtime/errors.js';
+import { GeminiRuntime } from './runtime/gemini-runtime.js';
+import type { Backend, LlmRuntime } from './runtime/types.js';
 
 // ── Model Routing ──────────────────────────────────────────
 
@@ -198,10 +199,7 @@ export class LlmMCPServer extends BaseMcpServer {
     const timeoutMs = args.timeoutMs as number | undefined;
 
     if (resumeSessionId && model !== undefined) {
-      throw new LlmChatError(
-        ErrorCode.MUTUAL_EXCLUSION,
-        'resumeSessionId cannot be combined with model',
-      );
+      throw new LlmChatError(ErrorCode.MUTUAL_EXCLUSION, 'resumeSessionId cannot be combined with model');
     }
 
     if (resumeSessionId) {
@@ -234,8 +232,7 @@ export class LlmMCPServer extends BaseMcpServer {
       timeoutMs: opts.timeoutMs,
     });
 
-    const backendSessionId =
-      typeof result.backendSessionId === 'string' ? result.backendSessionId.trim() : '';
+    const backendSessionId = typeof result.backendSessionId === 'string' ? result.backendSessionId.trim() : '';
     if (!backendSessionId) {
       // Ops-facing context: which backend+model silently returned nothing.
       // The caller only sees `BACKEND_FAILED`; without this log, routing bugs
@@ -273,10 +270,7 @@ export class LlmMCPServer extends BaseMcpServer {
   ): Promise<ToolResult> {
     const session = this.sessions.get(resumeSessionId);
     if (!session) {
-      throw new LlmChatError(
-        ErrorCode.SESSION_NOT_FOUND,
-        `Session ${resumeSessionId} not found`,
-      );
+      throw new LlmChatError(ErrorCode.SESSION_NOT_FOUND, `Session ${resumeSessionId} not found`);
     }
 
     if (this.inflight.has(resumeSessionId)) {

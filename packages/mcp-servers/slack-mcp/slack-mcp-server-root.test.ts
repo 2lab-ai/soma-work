@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
  * Contract tests for GetThreadMessagesResult interface — updated for v2 (array mode).
@@ -70,9 +70,39 @@ describe('Scenario 1: thread root accessible at offset=0 in array mode', () => {
       offset: 0,
       returned: 3,
       messages: [
-        { ts: '1700000000.000000', user: 'U_AUTHOR', user_name: 'Author', text: 'Root', timestamp: '', files: [], reactions: [], is_bot: false, subtype: null },
-        { ts: '1', user: 'U1', user_name: 'A', text: 'a', timestamp: '', files: [], reactions: [], is_bot: false, subtype: null },
-        { ts: '2', user: 'U2', user_name: 'B', text: 'b', timestamp: '', files: [], reactions: [], is_bot: false, subtype: null },
+        {
+          ts: '1700000000.000000',
+          user: 'U_AUTHOR',
+          user_name: 'Author',
+          text: 'Root',
+          timestamp: '',
+          files: [],
+          reactions: [],
+          is_bot: false,
+          subtype: null,
+        },
+        {
+          ts: '1',
+          user: 'U1',
+          user_name: 'A',
+          text: 'a',
+          timestamp: '',
+          files: [],
+          reactions: [],
+          is_bot: false,
+          subtype: null,
+        },
+        {
+          ts: '2',
+          user: 'U2',
+          user_name: 'B',
+          text: 'b',
+          timestamp: '',
+          files: [],
+          reactions: [],
+          is_bot: false,
+          subtype: null,
+        },
       ],
       has_more: true,
     };
@@ -82,7 +112,15 @@ describe('Scenario 1: thread root accessible at offset=0 in array mode', () => {
 
   it('root has same ThreadMessage shape as replies', () => {
     const requiredFields: (keyof ExpectedThreadMessage)[] = [
-      'ts', 'user', 'user_name', 'text', 'timestamp', 'files', 'reactions', 'is_bot', 'subtype',
+      'ts',
+      'user',
+      'user_name',
+      'text',
+      'timestamp',
+      'files',
+      'reactions',
+      'is_bot',
+      'subtype',
     ];
 
     const sampleRoot: ExpectedThreadMessage = {

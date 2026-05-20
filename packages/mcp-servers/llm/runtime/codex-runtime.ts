@@ -6,17 +6,12 @@
  * child; the next call re-spawns it via ensureReady.
  */
 
-import { execFileSync } from 'child_process';
-import { McpClient } from '@soma/process-shared/mcp/mcp-client.js';
 import type { McpClientConfig } from '@soma/process-shared/mcp/mcp-client.js';
-import type {
-  LlmRuntime,
-  RuntimeCallOptions,
-  StartSessionResult,
-  ResumeSessionResult,
-} from './types.js';
-import { runWithWatchdog } from './watchdog.js';
+import { McpClient } from '@soma/process-shared/mcp/mcp-client.js';
+import { execFileSync } from 'child_process';
 import { ErrorCode, LlmChatError } from './errors.js';
+import type { LlmRuntime, ResumeSessionResult, RuntimeCallOptions, StartSessionResult } from './types.js';
+import { runWithWatchdog } from './watchdog.js';
 
 // ── Session ID / response helpers ─────────────────────────
 
@@ -35,7 +30,11 @@ function extractThreadId(parsed: any, rawResult?: any): string {
 function parseResponse(result: any): { parsed: any; text: string } {
   const text = result?.content?.find((c: any) => c.type === 'text')?.text || '';
   let parsed: any = {};
-  try { parsed = JSON.parse(text); } catch { parsed = { content: text }; }
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    parsed = { content: text };
+  }
   return { parsed, text };
 }
 
@@ -76,15 +75,13 @@ export class CodexRuntime implements LlmRuntime {
   async ensureReady(): Promise<void> {
     if (this.client?.isReady()) return;
     if (this.readyPromise) return this.readyPromise;
-    this.readyPromise = this.doInitialize().finally(() => { this.readyPromise = null; });
+    this.readyPromise = this.doInitialize().finally(() => {
+      this.readyPromise = null;
+    });
     return this.readyPromise;
   }
 
-  async startSession(
-    model: string,
-    prompt: string,
-    opts: RuntimeCallOptions,
-  ): Promise<StartSessionResult> {
+  async startSession(model: string, prompt: string, opts: RuntimeCallOptions): Promise<StartSessionResult> {
     await this.ensureReady();
 
     const backendArgs: Record<string, unknown> = {
@@ -123,17 +120,17 @@ export class CodexRuntime implements LlmRuntime {
 
   async shutdown(): Promise<void> {
     if (!this.client) return;
-    try { await this.client.stop(); } catch { /* ignore */ }
+    try {
+      await this.client.stop();
+    } catch {
+      /* ignore */
+    }
     this.client = null;
   }
 
   // ── Internal ────────────────────────────────────────────
 
-  private async invoke(
-    tool: string,
-    args: Record<string, unknown>,
-    opts: RuntimeCallOptions,
-  ): Promise<any> {
+  private async invoke(tool: string, args: Record<string, unknown>, opts: RuntimeCallOptions): Promise<any> {
     const client = this.client;
     if (!client) throw new LlmChatError(ErrorCode.BACKEND_FAILED, 'Codex client not initialized');
 
@@ -146,7 +143,9 @@ export class CodexRuntime implements LlmRuntime {
     return runWithWatchdog(work, {
       timeoutMs,
       signal: opts.signal,
-      killChild: (sig) => { client.killProcess(sig); },
+      killChild: (sig) => {
+        client.killProcess(sig);
+      },
     });
   }
 
@@ -156,7 +155,11 @@ export class CodexRuntime implements LlmRuntime {
     }
 
     if (this.client) {
-      try { await this.client.stop(); } catch { /* ignore */ }
+      try {
+        await this.client.stop();
+      } catch {
+        /* ignore */
+      }
       this.client = null;
     }
 

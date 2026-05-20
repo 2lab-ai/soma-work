@@ -12,12 +12,24 @@
  */
 
 import { WebClient } from '@slack/web-api';
-import { BaseMcpServer } from '@soma/process-shared/mcp/base-mcp-server.js';
+import { getAdminUsers, isAdminUser } from '@soma/process-shared/admin-utils.js';
 import type { ToolDefinition, ToolResult } from '@soma/process-shared/mcp/base-mcp-server.js';
-import { sharedStore, type PendingApproval, type PermissionResponse } from '@soma/process-shared/permission/shared-store.js';
-import { McpToolGrantStore, parseDuration, MAX_GRANT_DURATION_MS, type PermissionLevel } from '@soma/process-shared/mcp-tool-grant-store.js';
-import { loadMcpToolPermissions, type McpToolPermissionConfig } from '@soma/process-shared/mcp-tool-permission-config.js';
-import { isAdminUser, getAdminUsers } from '@soma/process-shared/admin-utils.js';
+import { BaseMcpServer } from '@soma/process-shared/mcp/base-mcp-server.js';
+import {
+  MAX_GRANT_DURATION_MS,
+  McpToolGrantStore,
+  type PermissionLevel,
+  parseDuration,
+} from '@soma/process-shared/mcp-tool-grant-store.js';
+import {
+  loadMcpToolPermissions,
+  type McpToolPermissionConfig,
+} from '@soma/process-shared/mcp-tool-permission-config.js';
+import {
+  type PendingApproval,
+  type PermissionResponse,
+  sharedStore,
+} from '@soma/process-shared/permission/shared-store.js';
 
 interface SlackContext {
   channel: string;
@@ -70,9 +82,7 @@ class McpToolPermissionMCPServer extends BaseMcpServer {
       },
       {
         name: 'check_permission',
-        description:
-          'Check current permission grants for the requesting user. ' +
-          'Optionally filter by server name.',
+        description: 'Check current permission grants for the requesting user. ' + 'Optionally filter by server name.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -86,8 +96,7 @@ class McpToolPermissionMCPServer extends BaseMcpServer {
       },
       {
         name: 'revoke_permission',
-        description:
-          'Admin-only: Revoke a user\'s permission grant.',
+        description: "Admin-only: Revoke a user's permission grant.",
         inputSchema: {
           type: 'object',
           properties: {
@@ -132,10 +141,12 @@ class McpToolPermissionMCPServer extends BaseMcpServer {
 
     // Validate: admin doesn't need to request
     if (isAdminUser(userId)) {
-      return this.textResult(JSON.stringify({
-        status: 'unnecessary',
-        message: 'Admin users have all permissions. No request needed.',
-      }));
+      return this.textResult(
+        JSON.stringify({
+          status: 'unnecessary',
+          message: 'Admin users have all permissions. No request needed.',
+        }),
+      );
     }
 
     // Validate: server must have permission config
@@ -231,7 +242,7 @@ class McpToolPermissionMCPServer extends BaseMcpServer {
     if (deliveredCount === 0) {
       throw new Error(
         'Could not deliver permission request to any admin. ' +
-        'Please contact an admin directly or check the Slack bot configuration.'
+          'Please contact an admin directly or check the Slack bot configuration.',
       );
     }
 
@@ -254,21 +265,31 @@ class McpToolPermissionMCPServer extends BaseMcpServer {
     if (response.behavior === 'allow') {
       // Parse the grant info from updatedInput if available
       const grantInfo = response.updatedInput || { expiresAt: estimatedExpiry, grantedBy: 'admin' };
-      this.grantStore.setGrant(userId, server, level, grantInfo.expiresAt || estimatedExpiry, grantInfo.grantedBy || 'admin');
-
-      return this.textResult(JSON.stringify({
-        status: 'approved',
+      this.grantStore.setGrant(
+        userId,
         server,
         level,
-        expiresAt: grantInfo.expiresAt || estimatedExpiry,
-        grantedBy: grantInfo.grantedBy || 'admin',
-      }));
+        grantInfo.expiresAt || estimatedExpiry,
+        grantInfo.grantedBy || 'admin',
+      );
+
+      return this.textResult(
+        JSON.stringify({
+          status: 'approved',
+          server,
+          level,
+          expiresAt: grantInfo.expiresAt || estimatedExpiry,
+          grantedBy: grantInfo.grantedBy || 'admin',
+        }),
+      );
     }
 
-    return this.textResult(JSON.stringify({
-      status: 'denied',
-      message: response.message || 'Permission request denied by admin',
-    }));
+    return this.textResult(
+      JSON.stringify({
+        status: 'denied',
+        message: response.message || 'Permission request denied by admin',
+      }),
+    );
   }
 
   private async handleCheckPermission(args: Record<string, unknown>): Promise<ToolResult> {
@@ -300,12 +321,14 @@ class McpToolPermissionMCPServer extends BaseMcpServer {
       }
     }
 
-    return this.textResult(JSON.stringify({
-      userId,
-      isAdmin: isAdminUser(userId),
-      grants: grantsStatus,
-      toolPermissions: server ? { [server]: this.permConfig[server] } : this.permConfig,
-    }));
+    return this.textResult(
+      JSON.stringify({
+        userId,
+        isAdmin: isAdminUser(userId),
+        grants: grantsStatus,
+        toolPermissions: server ? { [server]: this.permConfig[server] } : this.permConfig,
+      }),
+    );
   }
 
   private async handleRevokePermission(args: Record<string, unknown>): Promise<ToolResult> {
@@ -321,12 +344,14 @@ class McpToolPermissionMCPServer extends BaseMcpServer {
 
     this.grantStore.revokeGrant(targetUser, server, level as PermissionLevel | 'all');
 
-    return this.textResult(JSON.stringify({
-      status: 'revoked',
-      user: targetUser,
-      server,
-      level,
-    }));
+    return this.textResult(
+      JSON.stringify({
+        status: 'revoked',
+        user: targetUser,
+        server,
+        level,
+      }),
+    );
   }
 
   private textResult(text: string): ToolResult {

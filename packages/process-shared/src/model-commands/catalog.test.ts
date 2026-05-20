@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { SessionInstruction, SessionInstructionOperation } from './session-types';
 import {
   applyInstructionOperations,
   getDefaultSessionSnapshot,
@@ -7,11 +6,8 @@ import {
   runModelCommand,
   type SkillStore,
 } from './catalog';
-import {
-  SHARE_CONTENT_CHAR_LIMIT,
-  invalidSkillNameMessage,
-  shareOverLimitMessage,
-} from './skill-share-errors';
+import type { SessionInstruction, SessionInstructionOperation } from './session-types';
+import { invalidSkillNameMessage, SHARE_CONTENT_CHAR_LIMIT, shareOverLimitMessage } from './skill-share-errors';
 import type { ModelCommandContext, ModelCommandRunRequest } from './types';
 
 function makeContext(overrides?: Partial<ModelCommandContext>): ModelCommandContext {
@@ -558,10 +554,7 @@ describe('MANAGE_SKILL rename dispatcher + mutation signal', () => {
       { params: { action: 'delete', name: 'a' }, expected: 'delete' },
     ];
     for (const tc of cActions) {
-      const result = runModelCommand(
-        { commandId: 'MANAGE_SKILL', params: tc.params } as ModelCommandRunRequest,
-        ctx(),
-      );
+      const result = runModelCommand({ commandId: 'MANAGE_SKILL', params: tc.params } as ModelCommandRunRequest, ctx());
       expect(result.ok).toBe(true);
       if (!result.ok) continue;
       const payload = result.payload as Record<string, unknown>;
