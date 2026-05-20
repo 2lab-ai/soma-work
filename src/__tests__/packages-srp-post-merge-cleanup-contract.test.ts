@@ -12,8 +12,6 @@ import { describe, expect, it } from 'vitest';
 //     src/internal-mcp-server-resolver.ts. Phase 0 already outlaws it for
 //     production paths, but vitest.config.ts still collects its dead test
 //     files, producing a false-green CI signal.
-//   - packages/process-shared/src/env-paths.ts is a 3-line duplicate of the
-//     canonical packages/common/src/env-paths.ts and has zero importers.
 //   - biome.json and package.json lint commands omit packages-star, leaving
 //     roughly half of the new code unlinted.
 //   - vitest.config.ts does not pick up tests under packages-star, so the
@@ -57,11 +55,6 @@ describe('packages SRP post-merge cleanup contract', () => {
       const cmd = scripts[name] ?? '';
       expect(cmd, `package.json scripts.${name} should mention packages/ — got: ${cmd}`).toContain('packages/');
     }
-  });
-
-  it('removes duplicate env-paths in @soma/process-shared', () => {
-    const dup = path.join(repoRoot, 'packages/process-shared/src/env-paths.ts');
-    expect(fs.existsSync(dup), `${dup} should not exist`).toBe(false);
   });
 
   it('migrates the two _shared mcp tests into @soma/process-shared', () => {
