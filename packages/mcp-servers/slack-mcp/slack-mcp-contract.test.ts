@@ -1,6 +1,6 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest';
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
  * RED Contract Tests for slack-mcp rename + send_file/send_media tools
@@ -25,7 +25,7 @@ describe('Scenario 1: Rename slack-thread → slack-mcp', () => {
   it('mcp-config-builder uses SLACK_MCP_SERVER_BASENAME', async () => {
     const configBuilder = await fs.readFile(
       path.resolve(__dirname, '..', '..', 'src', 'mcp-config-builder.ts'),
-      'utf-8'
+      'utf-8',
     );
     expect(configBuilder).toContain("SLACK_MCP_SERVER_BASENAME = 'slack-mcp-server'");
   });
@@ -34,7 +34,7 @@ describe('Scenario 1: Rename slack-thread → slack-mcp', () => {
   it('mcp-config-builder registers server as slack-mcp key', async () => {
     const configBuilder = await fs.readFile(
       path.resolve(__dirname, '..', '..', 'src', 'mcp-config-builder.ts'),
-      'utf-8'
+      'utf-8',
     );
     expect(configBuilder).toContain("internalServers['slack-mcp']");
     expect(configBuilder).not.toContain("internalServers['slack-thread']");
@@ -44,7 +44,7 @@ describe('Scenario 1: Rename slack-thread → slack-mcp', () => {
   it('allowed tools uses mcp__slack-mcp prefix', async () => {
     const configBuilder = await fs.readFile(
       path.resolve(__dirname, '..', '..', 'src', 'mcp-config-builder.ts'),
-      'utf-8'
+      'utf-8',
     );
     expect(configBuilder).toContain("'mcp__slack-mcp'");
     expect(configBuilder).not.toContain("'mcp__slack-thread'");
@@ -54,7 +54,7 @@ describe('Scenario 1: Rename slack-thread → slack-mcp', () => {
   it('passes SLACK_MCP_CONTEXT env var', async () => {
     const configBuilder = await fs.readFile(
       path.resolve(__dirname, '..', '..', 'src', 'mcp-config-builder.ts'),
-      'utf-8'
+      'utf-8',
     );
     expect(configBuilder).toContain('SLACK_MCP_CONTEXT');
     expect(configBuilder).not.toContain('SLACK_THREAD_CONTEXT');
@@ -62,10 +62,7 @@ describe('Scenario 1: Rename slack-thread → slack-mcp', () => {
 
   // Trace: Scenario 1, Section 3b — auto-resume prompt
   it('auto-resume prompt references slack-mcp', async () => {
-    const handler = await fs.readFile(
-      path.resolve(__dirname, '..', '..', 'src', 'slack-handler.ts'),
-      'utf-8'
-    );
+    const handler = await fs.readFile(path.resolve(__dirname, '..', '..', 'src', 'slack-handler.ts'), 'utf-8');
     // Auto-resume prompt must reference the slack-mcp MCP tool (not legacy slack-thread)
     expect(handler).toContain('slack-mcp__get_thread_messages');
     expect(handler).not.toContain('slack-thread');
@@ -188,7 +185,7 @@ describe('Scenario 4: Security validation', () => {
   it('rejects upload when Slack returns no file metadata', async () => {
     const serverPath = path.resolve(__dirname, 'slack-mcp-server.ts');
     const source = await fs.readFile(serverPath, 'utf-8');
-    expect(source).toContain("if (!uploadedFile?.id)");
+    expect(source).toContain('if (!uploadedFile?.id)');
   });
 });
 

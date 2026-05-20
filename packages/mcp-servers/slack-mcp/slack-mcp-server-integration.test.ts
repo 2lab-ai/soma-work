@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
  * Integration tests for get_thread_messages with mocked Slack API.
@@ -44,8 +44,12 @@ async function getTotalCount(slack: MockSlackClient, channel: string, threadTs: 
 
 // Mirrors fetchThreadSlice from the server
 async function fetchThreadSlice(
-  slack: MockSlackClient, channel: string, threadTs: string,
-  offset: number, limit: number, totalCount: number
+  slack: MockSlackClient,
+  channel: string,
+  threadTs: string,
+  offset: number,
+  limit: number,
+  totalCount: number,
 ): Promise<any[]> {
   if (totalCount === 0 || offset >= totalCount) return [];
   const collected: any[] = [];
@@ -54,7 +58,10 @@ async function fetchThreadSlice(
 
   do {
     const response = await slack.conversations.replies({
-      channel, ts: threadTs, limit: 200, cursor,
+      channel,
+      ts: threadTs,
+      limit: 200,
+      cursor,
     });
     const msgs = response.messages || [];
     for (const m of msgs) {
@@ -74,8 +81,10 @@ async function fetchThreadSlice(
 
 // Mirrors handleArrayMode from the server
 async function handleArrayMode(
-  slack: MockSlackClient, channel: string, threadTs: string,
-  args: { offset?: number; limit?: number }
+  slack: MockSlackClient,
+  channel: string,
+  threadTs: string,
+  args: { offset?: number; limit?: number },
 ) {
   const offset = Math.max(args.offset ?? 0, 0);
   const limit = Math.min(Math.max(args.limit ?? 10, 1), 50);
@@ -97,8 +106,11 @@ async function handleArrayMode(
 
 // Mirrors fetchMessagesBefore (legacy) from the server
 async function fetchMessagesBefore(
-  slack: MockSlackClient, channel: string, threadTs: string,
-  anchorTs: string, count: number
+  slack: MockSlackClient,
+  channel: string,
+  threadTs: string,
+  anchorTs: string,
+  count: number,
 ): Promise<{ messages: any[]; rootWasInjected: boolean }> {
   if (count === 0) return { messages: [], rootWasInjected: false };
   let rootMessage: any | null = null;
@@ -107,12 +119,17 @@ async function fetchMessagesBefore(
 
   do {
     const response = await slack.conversations.replies({
-      channel, ts: threadTs, limit: 200, cursor,
+      channel,
+      ts: threadTs,
+      limit: 200,
+      cursor,
     });
     const msgs = response.messages || [];
     for (const m of msgs) {
       if (m.ts > anchorTs) break;
-      if (m.ts === threadTs) { rootMessage = m; }
+      if (m.ts === threadTs) {
+        rootMessage = m;
+      }
       collected.push(m);
     }
     cursor = extractCursor(response);
@@ -180,7 +197,9 @@ describe('getTotalCount', () => {
   it('returns 0 when Slack API throws', async () => {
     const slack: MockSlackClient = {
       conversations: {
-        replies: vi.fn(async () => { throw new Error('Slack API error'); }),
+        replies: vi.fn(async () => {
+          throw new Error('Slack API error');
+        }),
       },
     };
     const count = await getTotalCount(slack, 'C123', '1700000000.000000');
@@ -347,7 +366,9 @@ describe('handleArrayMode — full integration', () => {
   it('getTotalCount failure returns empty result gracefully', async () => {
     const slack: MockSlackClient = {
       conversations: {
-        replies: vi.fn(async () => { throw new Error('Slack down'); }),
+        replies: vi.fn(async () => {
+          throw new Error('Slack down');
+        }),
       },
     };
     const result = await handleArrayMode(slack, 'C123', '1700000000.000000', { offset: 0, limit: 10 });
@@ -396,7 +417,13 @@ describe('fetchMessagesBefore — legacy mode', () => {
   it('deep thread: root survives .slice(-count)', async () => {
     const thread = makeThread(25);
     const slack = createMockSlack(thread);
-    const { messages, rootWasInjected } = await fetchMessagesBefore(slack, 'C123', '1700000000.000000', '1700000025.000000', 20);
+    const { messages, rootWasInjected } = await fetchMessagesBefore(
+      slack,
+      'C123',
+      '1700000000.000000',
+      '1700000025.000000',
+      20,
+    );
     expect(messages[0].ts).toBe('1700000000.000000');
     expect(rootWasInjected).toBe(true);
     // 20 sliced + 1 injected root = 21
@@ -413,7 +440,13 @@ describe('fetchMessagesBefore — legacy mode', () => {
   it('returns all available if count > available (no false rootWasInjected)', async () => {
     const thread = makeThread(3);
     const slack = createMockSlack(thread);
-    const { messages, rootWasInjected } = await fetchMessagesBefore(slack, 'C123', '1700000000.000000', '1700000003.000000', 50);
+    const { messages, rootWasInjected } = await fetchMessagesBefore(
+      slack,
+      'C123',
+      '1700000000.000000',
+      '1700000003.000000',
+      50,
+    );
     // root + 3 replies = 4 total, all fit in count=50
     expect(messages).toHaveLength(4);
     expect(rootWasInjected).toBe(false);
@@ -424,7 +457,13 @@ describe('fetchMessagesBefore — legacy mode', () => {
     // But effective length (3-1=2) === before(2), so hasMore should correctly detect boundary.
     const thread = makeThread(2);
     const slack = createMockSlack(thread);
-    const { messages, rootWasInjected } = await fetchMessagesBefore(slack, 'C123', '1700000000.000000', '1700000002.000000', 2);
+    const { messages, rootWasInjected } = await fetchMessagesBefore(
+      slack,
+      'C123',
+      '1700000000.000000',
+      '1700000002.000000',
+      2,
+    );
     const effectiveLen = rootWasInjected ? messages.length - 1 : messages.length;
     // effectiveLen === before → hasMore should be true (could be more before)
     // In this case there genuinely aren't more, but the heuristic conservatively says true at boundary.
@@ -437,12 +476,13 @@ describe('fetchMessagesBefore — legacy mode', () => {
 
 describe('Mode detection logic', () => {
   function detectMode(args: {
-    offset?: number; limit?: number;
-    anchor_ts?: string; before?: number; after?: number;
+    offset?: number;
+    limit?: number;
+    anchor_ts?: string;
+    before?: number;
+    after?: number;
   }): 'array' | 'legacy' {
-    const isLegacy = args.anchor_ts !== undefined
-      || args.before !== undefined
-      || args.after !== undefined;
+    const isLegacy = args.anchor_ts !== undefined || args.before !== undefined || args.after !== undefined;
     return isLegacy ? 'legacy' : 'array';
   }
 

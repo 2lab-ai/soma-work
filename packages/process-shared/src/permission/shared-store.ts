@@ -123,10 +123,7 @@ class SharedStore {
   /**
    * Wait for a permission response with polling
    */
-  async waitForPermissionResponse(
-    approvalId: string,
-    timeoutMs: number = 5 * 60 * 1000
-  ): Promise<PermissionResponse> {
+  async waitForPermissionResponse(approvalId: string, timeoutMs: number = 5 * 60 * 1000): Promise<PermissionResponse> {
     const filePath = path.join(this.responseDir, `${approvalId}.json`);
     const startTime = Date.now();
     const pollInterval = 500; // 500ms polling interval

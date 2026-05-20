@@ -17,7 +17,11 @@ export interface ToolDefinition {
  */
 export interface ToolResult {
   [key: string]: unknown;
-  content: Array<{ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string } | { type: 'resource'; resource: unknown }>;
+  content: Array<
+    | { type: 'text'; text: string }
+    | { type: 'image'; data: string; mimeType: string }
+    | { type: 'resource'; resource: unknown }
+  >;
   isError?: boolean;
 }
 
@@ -37,10 +41,7 @@ export abstract class BaseMcpServer {
 
   constructor(name: string, version: string = '1.0.0') {
     this.logger = new StderrLogger(name);
-    this.server = new Server(
-      { name, version },
-      { capabilities: { tools: {} } },
-    );
+    this.server = new Server({ name, version }, { capabilities: { tools: {} } });
     this.setupHandlers();
   }
 

@@ -31,8 +31,8 @@ import {
   type TurnNotifier,
   type TurnNotifierNotifyOpts,
 } from '../turn-notifier';
-import { UserChoiceHandler } from '../user-choice-handler';
 import type { UserChoice, UserChoices } from '../user-choice-extractor';
+import { UserChoiceHandler } from '../user-choice-handler';
 import { shouldRunLegacyB4Path as defaultShouldRunLegacyB4Path } from './effective-phase';
 import { isLocalSlashCommand } from './local-slash-command';
 import { readStallTimeoutMs, StreamStallWatchdog } from './stream-stall-watchdog';
@@ -173,7 +173,8 @@ let streamExecutorProviders: Required<StreamExecutorProviders> = {
   },
   hasOneMSuffix: (model) => /\[1m\]$/i.test(model),
   isOneMContextUnavailableSignal: (text) => streamExecutorProviders.classifyOneMUnavailable(text) !== 'none',
-  resolveContextWindow: (modelName) => (modelName && streamExecutorProviders.hasOneMSuffix(modelName) ? 1_000_000 : FALLBACK_CONTEXT_WINDOW),
+  resolveContextWindow: (modelName) =>
+    modelName && streamExecutorProviders.hasOneMSuffix(modelName) ? 1_000_000 : FALLBACK_CONTEXT_WINDOW,
   stripOneMSuffix: (model) => model.replace(/\[1m\]$/i, ''),
   interceptToolResults: () => {},
   checkAndSchedulePendingCompact: async () => undefined,
@@ -215,7 +216,8 @@ const userSettingsStore: any = new Proxy(defaultUserSettingsStore, {
   },
 });
 const parseModelCommandRunResponse = (result: unknown) => streamExecutorProviders.parseModelCommandRunResponse(result);
-const getChannelDescription = (client: any, channel: string) => streamExecutorProviders.getChannelDescription(client, channel);
+const getChannelDescription = (client: any, channel: string) =>
+  streamExecutorProviders.getChannelDescription(client, channel);
 const getChannel = (channel: string) => streamExecutorProviders.getChannel(channel);
 const fetchClaudeStatus = () => streamExecutorProviders.fetchClaudeStatus();
 const formatStatusForSlack = (status: any) => streamExecutorProviders.formatStatusForSlack(status);
@@ -2722,12 +2724,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
    * Format error message for user with detailed info
    * Distinguishes between bot system errors and model errors
    */
-  private formatErrorForUser(
-    error: any,
-    sessionCleared: boolean,
-    statusInfo?: any,
-    retryAttempt?: number,
-  ): string {
+  private formatErrorForUser(error: any, sessionCleared: boolean, statusInfo?: any, retryAttempt?: number): string {
     // Issue #661 — top-priority branch for 1M-context auto-fallback.
     // Reads `oneMFallbackInfo` (set by the handleError 1M branch) so the
     // wording matches what actually happened on this turn:

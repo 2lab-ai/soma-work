@@ -25,9 +25,9 @@ import {
   OutputFlag,
   verboseTag,
 } from './output-flags';
-import { ToolFormatter } from './tool-formatter';
 import type { SessionLinks } from './thread-header-builder';
 import type { EndTurnInfo } from './thread-surface';
+import { ToolFormatter } from './tool-formatter';
 import { UserChoiceHandler } from './user-choice-handler';
 
 export interface StreamProcessorProviders {

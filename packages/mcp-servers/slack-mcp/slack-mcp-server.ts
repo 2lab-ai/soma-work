@@ -17,27 +17,30 @@
  *   - SLACK_MCP_CONTEXT: JSON { channel, threadTs, mentionTs }
  */
 
-import * as fs from 'fs/promises';
-import * as os from 'os';
-import * as path from 'path';
 import { WebClient } from '@slack/web-api';
+import type { ToolDefinition, ToolResult } from '@soma/process-shared/mcp/base-mcp-server.js';
+import { BaseMcpServer } from '@soma/process-shared/mcp/base-mcp-server.js';
+import * as fs from 'fs/promises';
 
 import { markdownToBlocks as libMarkdownToBlocks } from 'markdown-to-slack-blocks';
-import { BaseMcpServer } from '@soma/process-shared/mcp/base-mcp-server.js';
-import type { ToolDefinition, ToolResult } from '@soma/process-shared/mcp/base-mcp-server.js';
-import type { SlackMcpContext, GetThreadMessagesResult } from './types.js';
-import { validateFilePath, isImageFile, isMediaFile, isNonVisualMedia, getMediaType, ALLOWED_MEDIA_EXTENSIONS } from './helpers/file-validator.js';
+import * as os from 'os';
+import * as path from 'path';
+import {
+  ALLOWED_MEDIA_EXTENSIONS,
+  getMediaType,
+  isImageFile,
+  isMediaFile,
+  isNonVisualMedia,
+  validateFilePath,
+} from './helpers/file-validator.js';
 import { formatSingleMessage } from './helpers/message-formatter.js';
-import { getTotalCount, fetchThreadSlice, fetchMessagesBefore, fetchMessagesAfter } from './helpers/thread-fetcher.js';
+import { fetchMessagesAfter, fetchMessagesBefore, fetchThreadSlice, getTotalCount } from './helpers/thread-fetcher.js';
+import type { GetThreadMessagesResult, SlackMcpContext } from './types.js';
 
 // ── Constants ────────────────────────────────────────────
 
 /** Allowed Slack file URL hosts — prevents token exfiltration to attacker-controlled domains */
-const ALLOWED_FILE_HOSTS = new Set([
-  'files.slack.com',
-  'files-pri.slack.com',
-  'files-tmb.slack.com',
-]);
+const ALLOWED_FILE_HOSTS = new Set(['files.slack.com', 'files-pri.slack.com', 'files-tmb.slack.com']);
 
 // ── Server ───────────────────────────────────────────────
 
@@ -65,7 +68,7 @@ class SlackMcpServer extends BaseMcpServer {
       this.context = JSON.parse(contextStr);
     } catch (err) {
       throw new Error(
-        `Failed to parse SLACK_MCP_CONTEXT: ${(err as Error).message}. Raw: ${contextStr.substring(0, 200)}`
+        `Failed to parse SLACK_MCP_CONTEXT: ${(err as Error).message}. Raw: ${contextStr.substring(0, 200)}`,
       );
     }
 
@@ -88,7 +91,9 @@ class SlackMcpServer extends BaseMcpServer {
           '',
           `Work thread: channel=${this.context.channel}, thread_ts=${this.context.threadTs}`,
           ...(this.context.sourceThreadTs
-            ? [`Source thread: channel=${this.context.sourceChannel || this.context.channel}, thread_ts=${this.context.sourceThreadTs}`]
+            ? [
+                `Source thread: channel=${this.context.sourceChannel || this.context.channel}, thread_ts=${this.context.sourceThreadTs}`,
+              ]
             : []),
           `The mention that triggered this session: ts=${this.context.mentionTs}`,
           '',
@@ -106,10 +111,20 @@ class SlackMcpServer extends BaseMcpServer {
         inputSchema: {
           type: 'object' as const,
           properties: {
-            thread: { type: 'string', description: 'Which thread to read: "work" (default) or "source" (original thread before migration)' },
-            offset: { type: 'number', description: 'Array mode: 0-based index to start from (0=root, 1=first reply). Default: 0' },
+            thread: {
+              type: 'string',
+              description: 'Which thread to read: "work" (default) or "source" (original thread before migration)',
+            },
+            offset: {
+              type: 'number',
+              description: 'Array mode: 0-based index to start from (0=root, 1=first reply). Default: 0',
+            },
             limit: { type: 'number', description: 'Array mode: max messages to return (default: 10, max: 50)' },
-            anchor_ts: { type: 'string', description: 'Legacy mode: reference message timestamp. Presence of anchor_ts/before/after triggers legacy mode.' },
+            anchor_ts: {
+              type: 'string',
+              description:
+                'Legacy mode: reference message timestamp. Presence of anchor_ts/before/after triggers legacy mode.',
+            },
             before: { type: 'number', description: 'Legacy mode: messages before anchor_ts (default: 10, max: 50)' },
             after: { type: 'number', description: 'Legacy mode: messages after anchor_ts (default: 0, max: 50)' },
           },
@@ -117,7 +132,8 @@ class SlackMcpServer extends BaseMcpServer {
       },
       {
         name: 'download_thread_file',
-        description: 'Download a file attached to a thread message. Returns the local temp path so you can use the Read tool to examine it. Supports PDFs, text files, code files, archives, AND images (png, jpg, gif, webp, etc — Claude can read images natively). WARNING: Do NOT use this for audio/video files — they cannot be read by the Read tool.',
+        description:
+          'Download a file attached to a thread message. Returns the local temp path so you can use the Read tool to examine it. Supports PDFs, text files, code files, archives, AND images (png, jpg, gif, webp, etc — Claude can read images natively). WARNING: Do NOT use this for audio/video files — they cannot be read by the Read tool.',
         inputSchema: {
           type: 'object' as const,
           properties: {
@@ -129,11 +145,15 @@ class SlackMcpServer extends BaseMcpServer {
       },
       {
         name: 'send_thread_message',
-        description: 'Reply to the current conversation thread. Supports markdown formatting (bold, italic, code, links, headings).',
+        description:
+          'Reply to the current conversation thread. Supports markdown formatting (bold, italic, code, links, headings).',
         inputSchema: {
           type: 'object' as const,
           properties: {
-            text: { type: 'string', description: 'Message text (markdown supported — converted to Slack mrkdwn automatically)' },
+            text: {
+              type: 'string',
+              description: 'Message text (markdown supported — converted to Slack mrkdwn automatically)',
+            },
             thread: { type: 'string', description: '"work" (default) or "source" (original thread before migration)' },
           },
           required: ['text'],
@@ -214,15 +234,17 @@ class SlackMcpServer extends BaseMcpServer {
     const message = error instanceof Error ? error.message : String(error);
 
     return {
-      content: [{
-        type: 'text' as const,
-        text: JSON.stringify({
-          error: message,
-          ...(slackErrorCode ? { slack_error: slackErrorCode } : {}),
-          retryable: isRateLimited,
-          ...(isAuthError ? { hint: 'Bot token may be invalid or expired' } : {}),
-        }),
-      }],
+      content: [
+        {
+          type: 'text' as const,
+          text: JSON.stringify({
+            error: message,
+            ...(slackErrorCode ? { slack_error: slackErrorCode } : {}),
+            retryable: isRateLimited,
+            ...(isAuthError ? { hint: 'Bot token may be invalid or expired' } : {}),
+          }),
+        },
+      ],
       isError: true,
     };
   }
@@ -239,7 +261,9 @@ class SlackMcpServer extends BaseMcpServer {
     }
     if (thread === 'source') {
       if (!this.context.sourceThreadTs) {
-        throw new Error('No source thread available — this session was not created from a mid-thread mention with thread migration');
+        throw new Error(
+          'No source thread available — this session was not created from a mid-thread mention with thread migration',
+        );
       }
       return {
         channel: this.context.sourceChannel || this.context.channel,
@@ -254,14 +278,15 @@ class SlackMcpServer extends BaseMcpServer {
 
   private async handleGetThreadMessages(args: {
     thread?: string;
-    offset?: number; limit?: number;
-    anchor_ts?: string; before?: number; after?: number;
+    offset?: number;
+    limit?: number;
+    anchor_ts?: string;
+    before?: number;
+    after?: number;
   }): Promise<ToolResult> {
     const resolved = this.resolveThread(args.thread);
 
-    const isLegacyMode = args.anchor_ts !== undefined
-      || args.before !== undefined
-      || args.after !== undefined;
+    const isLegacyMode = args.anchor_ts !== undefined || args.before !== undefined || args.after !== undefined;
 
     if (isLegacyMode) {
       return this.handleLegacyMode(args, resolved);
@@ -279,7 +304,14 @@ class SlackMcpServer extends BaseMcpServer {
     const totalCount = await getTotalCount(this.slack, resolved.channel, resolved.threadTs, this.logger);
     const clampedOffset = Math.min(offset, Math.max(totalCount - 1, 0));
 
-    const messages = await fetchThreadSlice(this.slack, resolved.channel, resolved.threadTs, clampedOffset, limit, totalCount);
+    const messages = await fetchThreadSlice(
+      this.slack,
+      resolved.channel,
+      resolved.threadTs,
+      clampedOffset,
+      limit,
+      totalCount,
+    );
     const formatted = messages.map((m: any) => formatSingleMessage(m));
     const hasMore = clampedOffset + formatted.length < totalCount;
 
@@ -304,22 +336,25 @@ class SlackMcpServer extends BaseMcpServer {
     const before = Math.min(Math.max(args.before ?? 10, 0), 50);
     const after = Math.min(Math.max(args.after ?? 0, 0), 50);
 
-    const { messages: beforeMessages, rootWasInjected } = await fetchMessagesBefore(this.slack, resolved.channel, resolved.threadTs, anchorTs, before);
-    const afterMessages = after > 0
-      ? await fetchMessagesAfter(this.slack, resolved.channel, resolved.threadTs, anchorTs, after)
-      : [];
+    const { messages: beforeMessages, rootWasInjected } = await fetchMessagesBefore(
+      this.slack,
+      resolved.channel,
+      resolved.threadTs,
+      anchorTs,
+      before,
+    );
+    const afterMessages =
+      after > 0 ? await fetchMessagesAfter(this.slack, resolved.channel, resolved.threadTs, anchorTs, after) : [];
 
     const allMessages = [...beforeMessages, ...afterMessages];
-    const formatted = allMessages.map(m => formatSingleMessage(m));
+    const formatted = allMessages.map((m) => formatSingleMessage(m));
     const totalCount = await getTotalCount(this.slack, resolved.channel, resolved.threadTs, this.logger);
 
     const approxOffset = formatted.length > 0 ? Math.max(totalCount - before - after, 0) : 0;
     // Subtract injected root from length comparison to avoid false positive:
     // when root is prepended beyond count, length > before even if no unseen messages exist.
     const effectiveBeforeLen = rootWasInjected ? beforeMessages.length - 1 : beforeMessages.length;
-    const hasMore = before > 0
-      ? effectiveBeforeLen >= before
-      : after > 0 ? afterMessages.length === after : false;
+    const hasMore = before > 0 ? effectiveBeforeLen >= before : after > 0 ? afterMessages.length === after : false;
 
     const result: GetThreadMessagesResult = {
       thread_ts: resolved.threadTs,
@@ -364,10 +399,10 @@ class SlackMcpServer extends BaseMcpServer {
 
     // Markdown → Slack mrkdwn conversions
     processed = processed
-      .replace(/\*\*(.+?)\*\*/g, '*$1*')              // **bold** → *bold*
-      .replace(/__(.+?)__/g, '*$1*')                    // __bold__ → *bold* (md bold, not italic)
-      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<$2|$1>')   // [text](url) → <url|text>
-      .replace(/^#{1,6}\s+(.+)$/gm, '*$1*');            // # heading → *heading*
+      .replace(/\*\*(.+?)\*\*/g, '*$1*') // **bold** → *bold*
+      .replace(/__(.+?)__/g, '*$1*') // __bold__ → *bold* (md bold, not italic)
+      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<$2|$1>') // [text](url) → <url|text>
+      .replace(/^#{1,6}\s+(.+)$/gm, '*$1*'); // # heading → *heading*
 
     // Restore preserved code
     for (let i = 0; i < preserved.length; i++) {
@@ -437,12 +472,7 @@ class SlackMcpServer extends BaseMcpServer {
   }
 
   /** Hard-split text that exceeds maxLen on newline boundaries, never truncating. */
-  private pushHardSplit(
-    text: string,
-    blocks: Array<Record<string, unknown>>,
-    maxLen: number,
-    maxBlocks: number,
-  ): void {
+  private pushHardSplit(text: string, blocks: Array<Record<string, unknown>>, maxLen: number, maxBlocks: number): void {
     let remaining = text;
     while (remaining.length > 0 && blocks.length < maxBlocks) {
       if (remaining.length <= maxLen) {
@@ -459,9 +489,7 @@ class SlackMcpServer extends BaseMcpServer {
 
   // ── send_thread_message ────────────────────────────────
 
-  private async handleSendThreadMessage(args: {
-    text: string; thread?: string;
-  }): Promise<ToolResult> {
+  private async handleSendThreadMessage(args: { text: string; thread?: string }): Promise<ToolResult> {
     if (!args.text) throw new Error('text is required');
 
     const resolved = this.resolveThread(args.thread);
@@ -531,16 +559,18 @@ class SlackMcpServer extends BaseMcpServer {
     }
 
     return {
-      content: [{
-        type: 'text' as const,
-        text: JSON.stringify({
-          sent: true,
-          channel: resolved.channel,
-          thread_ts: resolved.threadTs,
-          message_ts: result.ts || '',
-          ...(overflowTs.length > 0 ? { overflow_ts: overflowTs } : {}),
-        }),
-      }],
+      content: [
+        {
+          type: 'text' as const,
+          text: JSON.stringify({
+            sent: true,
+            channel: resolved.channel,
+            thread_ts: resolved.threadTs,
+            message_ts: result.ts || '',
+            ...(overflowTs.length > 0 ? { overflow_ts: overflowTs } : {}),
+          }),
+        },
+      ],
     };
   }
 
@@ -576,8 +606,10 @@ class SlackMcpServer extends BaseMcpServer {
         if (!rows || rows.length === 0) return block;
         if (rows.length > MAX_TABLE_ROWS || (rows[0] && rows[0].length > MAX_TABLE_COLS)) {
           this.logger.warn('Table truncated to Slack limits', {
-            originalRows: rows.length, maxRows: MAX_TABLE_ROWS,
-            originalCols: rows[0]?.length ?? 0, maxCols: MAX_TABLE_COLS,
+            originalRows: rows.length,
+            maxRows: MAX_TABLE_ROWS,
+            originalCols: rows[0]?.length ?? 0,
+            maxCols: MAX_TABLE_COLS,
           });
         }
         const truncRows = rows.slice(0, MAX_TABLE_ROWS).map((r) => (r as any[]).slice(0, MAX_TABLE_COLS));
@@ -604,7 +636,7 @@ class SlackMcpServer extends BaseMcpServer {
 
     for (const block of sanitized) {
       const isTable = block.type === 'table';
-      if ((current.length >= MAX_BLOCKS) || (isTable && curTables >= 1)) {
+      if (current.length >= MAX_BLOCKS || (isTable && curTables >= 1)) {
         if (current.length > 0) messages.push(current);
         current = [];
         curTables = 0;
@@ -630,23 +662,33 @@ class SlackMcpServer extends BaseMcpServer {
     if (isNonVisualMedia(undefined, file_name)) {
       this.logger.warn('Blocked non-visual media file download', { name: file_name });
       return {
-        content: [{
-          type: 'text' as const,
-          text: JSON.stringify({
-            blocked: true, name: file_name,
-            reason: 'Audio/video files cannot be read. Reference by name and metadata only. (Images ARE allowed — use download_thread_file for those.)',
-          }),
-        }],
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              blocked: true,
+              name: file_name,
+              reason:
+                'Audio/video files cannot be read. Reference by name and metadata only. (Images ARE allowed — use download_thread_file for those.)',
+            }),
+          },
+        ],
       };
     }
 
     let parsedUrl: URL;
-    try { parsedUrl = new URL(file_url); } catch { throw new Error(`Invalid file URL: ${file_url}`); }
+    try {
+      parsedUrl = new URL(file_url);
+    } catch {
+      throw new Error(`Invalid file URL: ${file_url}`);
+    }
     if (parsedUrl.protocol !== 'https:') {
       throw new Error(`Refused to download over insecure protocol: ${parsedUrl.protocol}`);
     }
     if (!ALLOWED_FILE_HOSTS.has(parsedUrl.hostname)) {
-      throw new Error(`Refused to send auth token to untrusted host: ${parsedUrl.hostname}. Allowed: ${[...ALLOWED_FILE_HOSTS].join(', ')}`);
+      throw new Error(
+        `Refused to send auth token to untrusted host: ${parsedUrl.hostname}. Allowed: ${[...ALLOWED_FILE_HOSTS].join(', ')}`,
+      );
     }
 
     const response = await fetch(file_url, { headers: { Authorization: `Bearer ${this.token}` } });
@@ -662,20 +704,28 @@ class SlackMcpServer extends BaseMcpServer {
     this.logger.info('Downloaded file', { name: file_name, path: tempPath, size: buffer.length });
 
     return {
-      content: [{
-        type: 'text' as const,
-        text: JSON.stringify({
-          path: tempPath, name: file_name, size: buffer.length,
-          hint: 'Use the Read tool to examine this file. Claude can read both text files and images natively.',
-        }),
-      }],
+      content: [
+        {
+          type: 'text' as const,
+          text: JSON.stringify({
+            path: tempPath,
+            name: file_name,
+            size: buffer.length,
+            hint: 'Use the Read tool to examine this file. Claude can read both text files and images natively.',
+          }),
+        },
+      ],
     };
   }
 
   // ── send_file ──────────────────────────────────────────
 
   private async handleSendFile(args: {
-    file_path: string; filename?: string; title?: string; initial_comment?: string; thread?: string;
+    file_path: string;
+    filename?: string;
+    title?: string;
+    initial_comment?: string;
+    thread?: string;
   }): Promise<ToolResult> {
     const { resolvedPath, size } = await validateFilePath(args.file_path);
     const displayName = args.filename || path.basename(resolvedPath);
@@ -684,8 +734,10 @@ class SlackMcpServer extends BaseMcpServer {
     this.logger.info('Uploading file', { name: displayName, size, path: resolvedPath, thread: args.thread || 'work' });
 
     const uploadArgs: any = {
-      file: resolvedPath, filename: displayName,
-      channel_id: resolved.channel, thread_ts: resolved.threadTs,
+      file: resolvedPath,
+      filename: displayName,
+      channel_id: resolved.channel,
+      thread_ts: resolved.threadTs,
     };
     if (args.title) uploadArgs.title = args.title;
     if (args.initial_comment) uploadArgs.initial_comment = args.initial_comment;
@@ -694,28 +746,44 @@ class SlackMcpServer extends BaseMcpServer {
     const uploadedFile = (result as any).files?.[0]?.files?.[0] || (result as any).files?.[0] || null;
 
     if (!uploadedFile?.id) {
-      this.logger.error('Slack filesUploadV2 returned unexpected response shape', { name: displayName, resultKeys: Object.keys(result || {}) });
-      throw new Error(`File upload succeeded but Slack returned no file metadata. Response keys: ${Object.keys(result || {}).join(', ')}`);
+      this.logger.error('Slack filesUploadV2 returned unexpected response shape', {
+        name: displayName,
+        resultKeys: Object.keys(result || {}),
+      });
+      throw new Error(
+        `File upload succeeded but Slack returned no file metadata. Response keys: ${Object.keys(result || {}).join(', ')}`,
+      );
     }
 
     this.logger.info('File uploaded', { name: displayName, size, file_id: uploadedFile.id });
 
     return {
-      content: [{
-        type: 'text' as const,
-        text: JSON.stringify({
-          uploaded: true, file_id: uploadedFile.id, filename: displayName, size,
-          permalink: uploadedFile.permalink || '',
-          channel: resolved.channel, thread_ts: resolved.threadTs,
-        }),
-      }],
+      content: [
+        {
+          type: 'text' as const,
+          text: JSON.stringify({
+            uploaded: true,
+            file_id: uploadedFile.id,
+            filename: displayName,
+            size,
+            permalink: uploadedFile.permalink || '',
+            channel: resolved.channel,
+            thread_ts: resolved.threadTs,
+          }),
+        },
+      ],
     };
   }
 
   // ── send_media ─────────────────────────────────────────
 
   private async handleSendMedia(args: {
-    file_path: string; filename?: string; title?: string; alt_text?: string; initial_comment?: string; thread?: string;
+    file_path: string;
+    filename?: string;
+    title?: string;
+    alt_text?: string;
+    initial_comment?: string;
+    thread?: string;
   }): Promise<ToolResult> {
     const { resolvedPath, size } = await validateFilePath(args.file_path);
     const displayName = args.filename || path.basename(resolvedPath);
@@ -727,11 +795,19 @@ class SlackMcpServer extends BaseMcpServer {
     }
 
     const media_type = getMediaType(ext);
-    this.logger.info('Uploading media', { name: displayName, size, media_type, path: resolvedPath, thread: args.thread || 'work' });
+    this.logger.info('Uploading media', {
+      name: displayName,
+      size,
+      media_type,
+      path: resolvedPath,
+      thread: args.thread || 'work',
+    });
 
     const uploadArgs: any = {
-      file: resolvedPath, filename: displayName,
-      channel_id: resolved.channel, thread_ts: resolved.threadTs,
+      file: resolvedPath,
+      filename: displayName,
+      channel_id: resolved.channel,
+      thread_ts: resolved.threadTs,
     };
     if (args.title) uploadArgs.title = args.title;
     if (args.alt_text) uploadArgs.alt_text = args.alt_text;
@@ -741,21 +817,34 @@ class SlackMcpServer extends BaseMcpServer {
     const uploadedFile = (result as any).files?.[0]?.files?.[0] || (result as any).files?.[0] || null;
 
     if (!uploadedFile?.id) {
-      this.logger.error('Slack filesUploadV2 returned unexpected response shape', { name: displayName, media_type, resultKeys: Object.keys(result || {}) });
-      throw new Error(`Media upload succeeded but Slack returned no file metadata. Response keys: ${Object.keys(result || {}).join(', ')}`);
+      this.logger.error('Slack filesUploadV2 returned unexpected response shape', {
+        name: displayName,
+        media_type,
+        resultKeys: Object.keys(result || {}),
+      });
+      throw new Error(
+        `Media upload succeeded but Slack returned no file metadata. Response keys: ${Object.keys(result || {}).join(', ')}`,
+      );
     }
 
     this.logger.info('Media uploaded', { name: displayName, size, file_id: uploadedFile.id, media_type });
 
     return {
-      content: [{
-        type: 'text' as const,
-        text: JSON.stringify({
-          uploaded: true, file_id: uploadedFile.id, filename: displayName, size, media_type,
-          permalink: uploadedFile.permalink || '',
-          channel: resolved.channel, thread_ts: resolved.threadTs,
-        }),
-      }],
+      content: [
+        {
+          type: 'text' as const,
+          text: JSON.stringify({
+            uploaded: true,
+            file_id: uploadedFile.id,
+            filename: displayName,
+            size,
+            media_type,
+            permalink: uploadedFile.permalink || '',
+            channel: resolved.channel,
+            thread_ts: resolved.threadTs,
+          }),
+        },
+      ],
     };
   }
 }

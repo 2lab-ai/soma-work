@@ -1,14 +1,11 @@
 import type { App } from '@slack/bolt';
 import { Logger } from '@soma/common/logger';
-import {
-  PendingFormStore,
-  type PendingChoiceFormData,
-} from './pending-form-store';
+import { type PendingChoiceFormData, PendingFormStore } from './pending-form-store';
 import { PendingInstructionConfirmStore } from './pending-instruction-confirm-store';
 
+export type { PendingChoiceFormData } from './pending-form-store';
 export { PendingFormStore } from './pending-form-store';
 export { PendingInstructionConfirmStore } from './pending-instruction-confirm-store';
-export type { PendingChoiceFormData } from './pending-form-store';
 
 export interface MessageEvent {
   user: string;

@@ -12,7 +12,10 @@ export interface MemoryStore {
   addMemory(user: string, target: string, content: string): { ok: boolean; message: string };
   replaceMemory(user: string, target: string, oldText: string, content: string): { ok: boolean; message: string };
   removeMemory(user: string, target: string, oldText: string): { ok: boolean; message: string };
-  loadMemory(user: string, target: string): { entries: string[]; charLimit: number; totalChars: number; percentUsed: number };
+  loadMemory(
+    user: string,
+    target: string,
+  ): { entries: string[]; charLimit: number; totalChars: number; percentUsed: number };
 }
 
 let _memoryStore: MemoryStore | null = null;
@@ -47,10 +50,7 @@ export interface SkillStore {
    * Both implementations import their messages from `skill-share-errors.ts`
    * so the two layers cannot drift on user-facing wording.
    */
-  shareSkill(
-    user: string,
-    name: string,
-  ): { ok: boolean; message: string; content?: string };
+  shareSkill(user: string, name: string): { ok: boolean; message: string; content?: string };
   /**
    * Rename a skill directory in place: `skills/{name}/` → `skills/{newName}/`.
    *
@@ -106,6 +106,7 @@ function getRatingStore(): RatingStore | null {
   return _ratingStore;
 }
 
+import { SHARE_CONTENT_CHAR_LIMIT, shareOverLimitMessage, shareSuccessMessage } from './skill-share-errors';
 import type {
   ContinueSessionParams,
   ManageSkillParams,
@@ -116,11 +117,6 @@ import type {
   ModelCommandRunResponse,
   SaveMemoryParams,
 } from './types';
-import {
-  SHARE_CONTENT_CHAR_LIMIT,
-  shareOverLimitMessage,
-  shareSuccessMessage,
-} from './skill-share-errors';
 import { checkAskUserQuestionQuality } from './validator';
 
 const HISTORY_KEY_BY_RESOURCE: Record<SessionResourceType, 'issues' | 'prs' | 'docs'> = {
@@ -347,13 +343,11 @@ const MANAGE_SKILL_SCHEMA = {
     },
     name: {
       type: 'string',
-      description:
-        'Skill name in kebab-case (e.g. my-deploy). Required for create/update/delete/share/rename.',
+      description: 'Skill name in kebab-case (e.g. my-deploy). Required for create/update/delete/share/rename.',
     },
     newName: {
       type: 'string',
-      description:
-        'New skill name (kebab-case). Required for rename only — must differ from `name`.',
+      description: 'New skill name (kebab-case). Required for rename only — must differ from `name`.',
     },
     content: {
       type: 'string',
@@ -493,14 +487,15 @@ export function listModelCommands(context: ModelCommandContext): ModelCommandDes
           'render the returned content verbatim inside a fenced code block in the Slack ' +
           'thread, then append a single line instructing any reader to invoke MANAGE_SKILL ' +
           'with action=create using the same name and content to install the skill on ' +
-          "their own account. Maximum shareable content is " +
+          'their own account. Maximum shareable content is ' +
           `${SHARE_CONTENT_CHAR_LIMIT} characters; over-cap returns ok=false and the ` +
           'caller must trim the SKILL.md before retrying.',
         paramsSchema: MANAGE_SKILL_SCHEMA,
       },
       {
         id: 'RATE',
-        description: 'Get the current user rating for this model (0-10). The rating reflects user satisfaction and is also visible in <your_rating> context tag.',
+        description:
+          'Get the current user rating for this model (0-10). The rating reflects user satisfaction and is also visible in <your_rating> context tag.',
         paramsSchema: { type: 'object', properties: {}, additionalProperties: false },
       },
     );
@@ -783,9 +778,7 @@ export function runModelCommand(
           // (over cap, name collision, validation error) hasn't changed disk
           // state, so emitting `mutated` would falsely invalidate the cached
           // system prompt and trigger a wasted rebuild.
-          ...(result.ok
-            ? { mutated: { kind: 'skill' as const, user: context.user, action: 'create' as const } }
-            : {}),
+          ...(result.ok ? { mutated: { kind: 'skill' as const, user: context.user, action: 'create' as const } } : {}),
         },
       };
     }
@@ -801,9 +794,7 @@ export function runModelCommand(
         payload: {
           ok: result.ok,
           message: result.message,
-          ...(result.ok
-            ? { mutated: { kind: 'skill' as const, user: context.user, action: 'update' as const } }
-            : {}),
+          ...(result.ok ? { mutated: { kind: 'skill' as const, user: context.user, action: 'update' as const } } : {}),
         },
       };
     }
@@ -819,9 +810,7 @@ export function runModelCommand(
         payload: {
           ok: result.ok,
           message: result.message,
-          ...(result.ok
-            ? { mutated: { kind: 'skill' as const, user: context.user, action: 'delete' as const } }
-            : {}),
+          ...(result.ok ? { mutated: { kind: 'skill' as const, user: context.user, action: 'delete' as const } } : {}),
         },
       };
     }
@@ -845,9 +834,7 @@ export function runModelCommand(
           // discriminant from storage is intentionally NOT exposed on the
           // wire — Slack rename modal consumes it via the in-process call,
           // and remote callers only need ok/message.
-          ...(result.ok
-            ? { mutated: { kind: 'skill' as const, user: context.user, action: 'rename' as const } }
-            : {}),
+          ...(result.ok ? { mutated: { kind: 'skill' as const, user: context.user, action: 'rename' as const } } : {}),
         },
       };
     }

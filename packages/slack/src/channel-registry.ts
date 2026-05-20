@@ -10,8 +10,8 @@
  */
 
 import type { WebClient } from '@slack/web-api';
-import { getChannelDescription, invalidateChannelCache } from './channel-description-cache';
 import { Logger } from '@soma/common/logger';
+import { getChannelDescription, invalidateChannelCache } from './channel-description-cache';
 
 const logger = new Logger('ChannelRegistry');
 

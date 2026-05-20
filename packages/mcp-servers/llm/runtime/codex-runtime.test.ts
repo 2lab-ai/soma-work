@@ -1,7 +1,7 @@
 /**
  * Unit Tests — CodexRuntime (slim surface; no resolvedConfig, no child-registry).
  */
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { CodexRuntime } from './codex-runtime.js';
 import { ErrorCode, LlmChatError } from './errors.js';
 
@@ -28,13 +28,27 @@ vi.mock('@soma/process-shared/mcp/mcp-client.js', () => {
   let mockInstance: any = null;
   return {
     McpClient: class MockMcpClient {
-      static __setMockInstance(inst: any) { mockInstance = inst; }
-      isReady() { return mockInstance?.isReady() ?? false; }
-      start() { return mockInstance?.start() ?? Promise.resolve(); }
-      stop() { return mockInstance?.stop() ?? Promise.resolve(); }
-      getPid() { return mockInstance?.getPid?.(); }
-      killProcess(sig?: any) { return mockInstance?.killProcess?.(sig) ?? true; }
-      callTool(...args: any[]) { return mockInstance?.callTool(...args) ?? Promise.resolve({}); }
+      static __setMockInstance(inst: any) {
+        mockInstance = inst;
+      }
+      isReady() {
+        return mockInstance?.isReady() ?? false;
+      }
+      start() {
+        return mockInstance?.start() ?? Promise.resolve();
+      }
+      stop() {
+        return mockInstance?.stop() ?? Promise.resolve();
+      }
+      getPid() {
+        return mockInstance?.getPid?.();
+      }
+      killProcess(sig?: any) {
+        return mockInstance?.killProcess?.(sig) ?? true;
+      }
+      callTool(...args: any[]) {
+        return mockInstance?.callTool(...args) ?? Promise.resolve({});
+      }
     },
   };
 });
@@ -131,9 +145,7 @@ describe('CodexRuntime', () => {
   describe('watchdog integration', () => {
     it('kills child on backend timeout', async () => {
       mockClient.callTool.mockImplementation(() => new Promise(() => {})); // never resolves
-      await expect(
-        runtime.startSession('gpt-5.4', 'x', { timeoutMs: 50 }),
-      ).rejects.toBeInstanceOf(LlmChatError);
+      await expect(runtime.startSession('gpt-5.4', 'x', { timeoutMs: 50 })).rejects.toBeInstanceOf(LlmChatError);
       expect(mockClient.killProcess).toHaveBeenCalledWith('SIGTERM');
     }, 10_000);
 

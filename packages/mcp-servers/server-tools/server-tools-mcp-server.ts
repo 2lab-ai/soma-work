@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
-import { execFileSync, spawn, type ChildProcess } from 'child_process';
+import type { ToolDefinition, ToolResult } from '@soma/process-shared/mcp/base-mcp-server.js';
 import { BaseMcpServer } from '@soma/process-shared/mcp/base-mcp-server.js';
 import { ConfigCache } from '@soma/process-shared/mcp/config-cache.js';
-import type { ToolDefinition, ToolResult } from '@soma/process-shared/mcp/base-mcp-server.js';
+import { type ChildProcess, execFileSync, spawn } from 'child_process';
 
 // ── Constants ─────────────────────────────────────────────
 
@@ -61,17 +61,20 @@ type ServerToolsConfig = Record<string, ServerConfig>;
 
 // ── Config Loading (via ConfigCache) ───────────────────────
 
-const configCache = new ConfigCache<ServerToolsConfig>({}, {
-  section: 'server-tools',
-  loader: (raw: any) => {
-    if (raw && typeof raw === 'object') {
-      // Exclude "permission" reserved key — it's tool-level permission config, not a server entry
-      const { permission, ...servers } = raw;
-      return servers as ServerToolsConfig;
-    }
-    return {} as ServerToolsConfig; // Section removed/invalid → clear config
+const configCache = new ConfigCache<ServerToolsConfig>(
+  {},
+  {
+    section: 'server-tools',
+    loader: (raw: any) => {
+      if (raw && typeof raw === 'object') {
+        // Exclude "permission" reserved key — it's tool-level permission config, not a server entry
+        const { permission, ...servers } = raw;
+        return servers as ServerToolsConfig;
+      }
+      return {} as ServerToolsConfig; // Section removed/invalid → clear config
+    },
   },
-});
+);
 
 export function loadConfig(): ServerToolsConfig {
   return configCache.get();
@@ -99,7 +102,12 @@ function buildToolResult(response: QueryResponse): ToolResult {
     // Re-serialize with truncation note
     text = JSON.stringify({ ...response, truncated, note: 'Response truncated due to size limit (1MB)' });
     if (Buffer.byteLength(text, 'utf-8') > MAX_RESPONSE_BYTES) {
-      text = JSON.stringify({ backend: response.backend, truncated: true, rowCount: response.rowCount, error: 'Response too large even after truncation' });
+      text = JSON.stringify({
+        backend: response.backend,
+        truncated: true,
+        rowCount: response.rowCount,
+        error: 'Response too large even after truncation',
+      });
     }
   }
 
@@ -118,28 +126,37 @@ async function withSshTunnel<T>(
   let sshTunnel: ChildProcess | null = null;
 
   try {
-    sshTunnel = spawn(
-      'ssh',
-      ['-L', `${localPort}:${remoteHost}:${remotePort}`, sshHost, '-N'],
-      { stdio: 'pipe' },
-    );
+    sshTunnel = spawn('ssh', ['-L', `${localPort}:${remoteHost}:${remotePort}`, sshHost, '-N'], { stdio: 'pipe' });
 
     await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => { reject(new Error('SSH tunnel timeout')); }, SSH_TUNNEL_TIMEOUT_MS);
+      const timeout = setTimeout(() => {
+        reject(new Error('SSH tunnel timeout'));
+      }, SSH_TUNNEL_TIMEOUT_MS);
 
       sshTunnel!.stderr!.on('data', () => {});
 
-      setTimeout(() => { clearTimeout(timeout); resolve(); }, SSH_TUNNEL_WAIT_MS);
+      setTimeout(() => {
+        clearTimeout(timeout);
+        resolve();
+      }, SSH_TUNNEL_WAIT_MS);
 
-      sshTunnel!.on('error', (err) => { clearTimeout(timeout); reject(err); });
+      sshTunnel!.on('error', (err) => {
+        clearTimeout(timeout);
+        reject(err);
+      });
       sshTunnel!.on('exit', (code) => {
-        if (code !== null && code !== 0) { clearTimeout(timeout); reject(new Error(`SSH tunnel exited with code ${code}`)); }
+        if (code !== null && code !== 0) {
+          clearTimeout(timeout);
+          reject(new Error(`SSH tunnel exited with code ${code}`));
+        }
       });
     });
 
     return await fn(localPort);
   } finally {
-    if (sshTunnel) { sshTunnel.kill(); }
+    if (sshTunnel) {
+      sshTunnel.kill();
+    }
   }
 }
 
@@ -162,7 +179,11 @@ function resolveServerAndDb(server: string, database: string): { sshHost: string
   };
 }
 
-function assertDbType<T extends DatabaseConfig>(dbConfig: DatabaseConfig, expectedType: T['type'], database: string): asserts dbConfig is T {
+function assertDbType<T extends DatabaseConfig>(
+  dbConfig: DatabaseConfig,
+  expectedType: T['type'],
+  database: string,
+): asserts dbConfig is T {
   if (dbConfig.type !== expectedType) {
     throw new Error(`Database "${database}" is type "${dbConfig.type}", not "${expectedType}"`);
   }
@@ -198,8 +219,10 @@ export function validateReadOnlyQuery(query: string): boolean {
 
 // ── ClickHouse SQL Validation ─────────────────────────────
 
-const CH_DANGEROUS_TABLE_FUNCTIONS = /\b(url|s3|file|remote|remoteSecure|cluster|clusterAllReplicas|mysql|postgresql|jdbc|hdfs|input|generateRandom|numbers|zeros)\s*\(/i;
-const CH_DANGEROUS_STATEMENTS = /\b(SYSTEM|KILL|ATTACH|DETACH|OPTIMIZE|RENAME|GRANT|REVOKE|CREATE|DROP|ALTER|INSERT|DELETE|UPDATE|TRUNCATE|SET|USE)\b/i;
+const CH_DANGEROUS_TABLE_FUNCTIONS =
+  /\b(url|s3|file|remote|remoteSecure|cluster|clusterAllReplicas|mysql|postgresql|jdbc|hdfs|input|generateRandom|numbers|zeros)\s*\(/i;
+const CH_DANGEROUS_STATEMENTS =
+  /\b(SYSTEM|KILL|ATTACH|DETACH|OPTIMIZE|RENAME|GRANT|REVOKE|CREATE|DROP|ALTER|INSERT|DELETE|UPDATE|TRUNCATE|SET|USE)\b/i;
 const CH_FORMAT_TO_FILE = /\bINTO\s+OUTFILE\b/i;
 
 export function validateClickHouseQuery(query: string): boolean {
@@ -231,18 +254,60 @@ export function validateClickHouseQuery(query: string): boolean {
 // ── Redis Command Validation ──────────────────────────────
 
 const REDIS_READ_COMMANDS = new Set([
-  'GET', 'MGET', 'HGET', 'HGETALL', 'HMGET', 'HKEYS', 'HVALS', 'HLEN', 'HEXISTS',
-  'LRANGE', 'LLEN', 'LINDEX',
-  'SMEMBERS', 'SCARD', 'SISMEMBER', 'SRANDMEMBER',
-  'ZRANGE', 'ZRANGEBYSCORE', 'ZRANGEBYLEX', 'ZREVRANGE', 'ZCARD', 'ZSCORE', 'ZCOUNT', 'ZRANK',
-  'SCAN', 'HSCAN', 'SSCAN', 'ZSCAN',
-  'TYPE', 'TTL', 'PTTL', 'EXISTS', 'STRLEN', 'DBSIZE',
-  'INFO', 'PING', 'ECHO', 'TIME',
-  'OBJECT', 'MEMORY',
-  'XLEN', 'XRANGE', 'XREVRANGE', 'XINFO',
-  'GEORADIUS', 'GEODIST', 'GEOPOS', 'GEOHASH', 'GEOMEMBERS', 'GEOSEARCH',
+  'GET',
+  'MGET',
+  'HGET',
+  'HGETALL',
+  'HMGET',
+  'HKEYS',
+  'HVALS',
+  'HLEN',
+  'HEXISTS',
+  'LRANGE',
+  'LLEN',
+  'LINDEX',
+  'SMEMBERS',
+  'SCARD',
+  'SISMEMBER',
+  'SRANDMEMBER',
+  'ZRANGE',
+  'ZRANGEBYSCORE',
+  'ZRANGEBYLEX',
+  'ZREVRANGE',
+  'ZCARD',
+  'ZSCORE',
+  'ZCOUNT',
+  'ZRANK',
+  'SCAN',
+  'HSCAN',
+  'SSCAN',
+  'ZSCAN',
+  'TYPE',
+  'TTL',
+  'PTTL',
+  'EXISTS',
+  'STRLEN',
+  'DBSIZE',
+  'INFO',
+  'PING',
+  'ECHO',
+  'TIME',
+  'OBJECT',
+  'MEMORY',
+  'XLEN',
+  'XRANGE',
+  'XREVRANGE',
+  'XINFO',
+  'GEORADIUS',
+  'GEODIST',
+  'GEOPOS',
+  'GEOHASH',
+  'GEOMEMBERS',
+  'GEOSEARCH',
   'PFCOUNT',
-  'BITCOUNT', 'BITPOS', 'GETBIT',
+  'BITCOUNT',
+  'BITPOS',
+  'GETBIT',
 ]);
 
 const SCAN_MAX_COUNT = 100;
@@ -269,15 +334,22 @@ export function validateRedisCommand(command: string, args: string[]): void {
 // ── MongoDB Query Validation ──────────────────────────────
 
 const MONGO_ALLOWED_OPERATIONS = new Set([
-  'find', 'aggregate', 'countDocuments', 'estimatedDocumentCount',
-  'distinct', 'listCollections', 'listIndexes',
+  'find',
+  'aggregate',
+  'countDocuments',
+  'estimatedDocumentCount',
+  'distinct',
+  'listCollections',
+  'listIndexes',
 ]);
 
 const MONGO_BLOCKED_OPERATORS = /\$(where|function|accumulator|out|merge|lookup\b.*\bpipelineFrom)/;
 
 export function validateMongoOperation(operation: string): void {
   if (!MONGO_ALLOWED_OPERATIONS.has(operation)) {
-    throw new Error(`MongoDB operation "${operation}" is not allowed. Allowed: ${[...MONGO_ALLOWED_OPERATIONS].join(', ')}`);
+    throw new Error(
+      `MongoDB operation "${operation}" is not allowed. Allowed: ${[...MONGO_ALLOWED_OPERATIONS].join(', ')}`,
+    );
   }
 }
 
@@ -496,9 +568,12 @@ export async function handleDbQuery(args: Record<string, unknown>) {
     try {
       const mysql2 = await import('mysql2/promise');
       connection = await mysql2.createConnection({
-        host: '127.0.0.1', port: localPort,
-        user: dbConfig.user, password: dbConfig.password,
-        database, connectTimeout: 10000,
+        host: '127.0.0.1',
+        port: localPort,
+        user: dbConfig.user,
+        password: dbConfig.password,
+        database,
+        connectTimeout: 10000,
         multipleStatements: false,
       });
 
@@ -516,7 +591,13 @@ export async function handleDbQuery(args: Record<string, unknown>) {
         truncated,
       });
     } finally {
-      if (connection) { try { await connection.end(); } catch { /* ignore */ } }
+      if (connection) {
+        try {
+          await connection.end();
+        } catch {
+          /* ignore */
+        }
+      }
     }
   });
 }
@@ -559,7 +640,7 @@ export async function handleRedisQuery(args: Record<string, unknown>) {
 
       const data = result;
       const isArray = Array.isArray(result);
-      const rowCount = isArray ? result.length : (result !== null && result !== undefined ? 1 : 0);
+      const rowCount = isArray ? result.length : result !== null && result !== undefined ? 1 : 0;
       const truncated = isArray && result.length > MAX_ROWS;
 
       return buildToolResult({
@@ -569,7 +650,11 @@ export async function handleRedisQuery(args: Record<string, unknown>) {
         truncated,
       });
     } finally {
-      try { client.disconnect(); } catch { /* ignore */ }
+      try {
+        client.disconnect();
+      } catch {
+        /* ignore */
+      }
     }
   });
 }
@@ -621,7 +706,8 @@ export async function handleMongoDBQuery(args: Record<string, unknown>) {
       switch (operation) {
         case 'find': {
           const limit = Math.min(Number(options.limit) || MAX_ROWS, MAX_ROWS);
-          const docs = await db.collection(collection)
+          const docs = await db
+            .collection(collection)
             .find(filter, { maxTimeMS: QUERY_TIMEOUT_MS, allowDiskUse: false } as any)
             .sort((options.sort as any) || {})
             .project((options.projection as any) || {})
@@ -639,7 +725,8 @@ export async function handleMongoDBQuery(args: Record<string, unknown>) {
           // Inject $limit if not present at end
           const hasLimit = pipeline.some((s: any) => '$limit' in s);
           const safePipeline = hasLimit ? pipeline : [...pipeline, { $limit: MAX_ROWS }];
-          const docs = await db.collection(collection)
+          const docs = await db
+            .collection(collection)
             .aggregate(safePipeline as any[], { maxTimeMS: QUERY_TIMEOUT_MS, allowDiskUse: false })
             .toArray();
           result = docs;
@@ -692,7 +779,11 @@ export async function handleMongoDBQuery(args: Record<string, unknown>) {
         truncated,
       });
     } finally {
-      try { await client.close(); } catch { /* ignore */ }
+      try {
+        await client.close();
+      } catch {
+        /* ignore */
+      }
     }
   });
 }
@@ -730,7 +821,7 @@ export async function handleClickHouseQuery(args: Record<string, unknown>) {
 
     try {
       const resultSet = await client.query({ query, format: 'JSONEachRow' });
-      const rows = await resultSet.json() as any[];
+      const rows = (await resultSet.json()) as any[];
 
       const truncated = rows.length >= MAX_ROWS;
       const limitedRows = truncated ? rows.slice(0, MAX_ROWS) : rows;
@@ -743,7 +834,11 @@ export async function handleClickHouseQuery(args: Record<string, unknown>) {
         truncated,
       });
     } finally {
-      try { await client.close(); } catch { /* ignore */ }
+      try {
+        await client.close();
+      } catch {
+        /* ignore */
+      }
     }
   });
 }
@@ -759,19 +854,22 @@ class ServerToolsMCPServer extends BaseMcpServer {
     return [
       {
         name: 'list',
-        description: 'List all configured servers with their SSH hosts and available databases (including type: mysql/redis/mongodb/clickhouse).',
+        description:
+          'List all configured servers with their SSH hosts and available databases (including type: mysql/redis/mongodb/clickhouse).',
         inputSchema: { type: 'object', properties: {}, required: [] },
       },
       {
         name: 'list_service',
-        description: 'List running Docker containers (or Swarm services when stack is set) on a server via SSH. Default mode: docker ps. With stack: docker stack services <stack> --format json. Output is opaque NDJSON pass-through; field names differ between modes.',
+        description:
+          'List running Docker containers (or Swarm services when stack is set) on a server via SSH. Default mode: docker ps. With stack: docker stack services <stack> --format json. Output is opaque NDJSON pass-through; field names differ between modes.',
         inputSchema: {
           type: 'object',
           properties: {
             server: { type: 'string', description: 'Server name from config.' },
             stack: {
               type: 'string',
-              description: 'Optional Docker Swarm stack name. When set, lists services of the stack via "docker stack services" instead of "docker ps".',
+              description:
+                'Optional Docker Swarm stack name. When set, lists services of the stack via "docker stack services" instead of "docker ps".',
             },
           },
           required: ['server'],
@@ -779,7 +877,8 @@ class ServerToolsMCPServer extends BaseMcpServer {
       },
       {
         name: 'list_stack',
-        description: 'List Docker Swarm stacks on a server via SSH. Calls "docker stack ls --format json" and returns NDJSON-parsed array. Errors if the host is not a Swarm manager.',
+        description:
+          'List Docker Swarm stacks on a server via SSH. Calls "docker stack ls --format json" and returns NDJSON-parsed array. Errors if the host is not a Swarm manager.',
         inputSchema: {
           type: 'object',
           properties: { server: { type: 'string', description: 'Server name from config.' } },
@@ -788,15 +887,20 @@ class ServerToolsMCPServer extends BaseMcpServer {
       },
       {
         name: 'logs',
-        description: 'Fetch Docker container logs (or Swarm service logs when stack is set) from a server via SSH. Default mode: docker logs. With stack: docker service logs (caller must pass the full <stack>_<svc> name in service). NOTE: --until is not supported in stack mode.',
+        description:
+          'Fetch Docker container logs (or Swarm service logs when stack is set) from a server via SSH. Default mode: docker logs. With stack: docker service logs (caller must pass the full <stack>_<svc> name in service). NOTE: --until is not supported in stack mode.',
         inputSchema: {
           type: 'object',
           properties: {
             server: { type: 'string', description: 'Server name from config.' },
-            service: { type: 'string', description: 'Docker container/service name. In stack mode, pass the full <stack>_<svc> name.' },
+            service: {
+              type: 'string',
+              description: 'Docker container/service name. In stack mode, pass the full <stack>_<svc> name.',
+            },
             stack: {
               type: 'string',
-              description: 'Optional Docker Swarm stack name. When set, fetches logs via "docker service logs" (Swarm mode). --until is not supported in this mode.',
+              description:
+                'Optional Docker Swarm stack name. When set, fetches logs via "docker service logs" (Swarm mode). --until is not supported in this mode.',
             },
             tail: { type: 'number', description: 'Number of lines to tail (default: 100).' },
             since: { type: 'string', description: 'Show logs since timestamp (e.g., "2024-01-01T00:00:00").' },
@@ -808,7 +912,8 @@ class ServerToolsMCPServer extends BaseMcpServer {
       },
       {
         name: 'db_query',
-        description: 'Execute a read-only SQL query on a MySQL database via SSH tunnel. Only SELECT, SHOW, DESCRIBE, EXPLAIN, DESC are allowed.',
+        description:
+          'Execute a read-only SQL query on a MySQL database via SSH tunnel. Only SELECT, SHOW, DESCRIBE, EXPLAIN, DESC are allowed.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -821,7 +926,8 @@ class ServerToolsMCPServer extends BaseMcpServer {
       },
       {
         name: 'redis_query',
-        description: 'Execute a read-only Redis command via SSH tunnel. Only read commands are allowed (GET, HGETALL, LRANGE, SCAN, INFO, etc.).',
+        description:
+          'Execute a read-only Redis command via SSH tunnel. Only read commands are allowed (GET, HGETALL, LRANGE, SCAN, INFO, etc.).',
         inputSchema: {
           type: 'object',
           properties: {
@@ -839,19 +945,25 @@ class ServerToolsMCPServer extends BaseMcpServer {
       },
       {
         name: 'mongodb_query',
-        description: 'Execute a read-only MongoDB query via SSH tunnel. Supported operations: find, aggregate, countDocuments, distinct, listCollections, listIndexes.',
+        description:
+          'Execute a read-only MongoDB query via SSH tunnel. Supported operations: find, aggregate, countDocuments, distinct, listCollections, listIndexes.',
         inputSchema: {
           type: 'object',
           properties: {
             server: { type: 'string', description: 'Server name from config.' },
             database: { type: 'string', description: 'Database name from config (must be type: mongodb).' },
             collection: { type: 'string', description: 'Collection name.' },
-            operation: { type: 'string', description: 'Operation: find, aggregate, countDocuments, estimatedDocumentCount, distinct, listCollections, listIndexes.' },
+            operation: {
+              type: 'string',
+              description:
+                'Operation: find, aggregate, countDocuments, estimatedDocumentCount, distinct, listCollections, listIndexes.',
+            },
             filter: { type: 'object', description: 'Query filter (for find, countDocuments, distinct).' },
             pipeline: { type: 'array', description: 'Aggregation pipeline stages (for aggregate).' },
             options: {
               type: 'object',
-              description: 'Query options: { limit?: number, sort?: object, projection?: object, field?: string (for distinct) }.',
+              description:
+                'Query options: { limit?: number, sort?: object, projection?: object, field?: string (for distinct) }.',
             },
           },
           required: ['server', 'database', 'operation'],
@@ -859,7 +971,8 @@ class ServerToolsMCPServer extends BaseMcpServer {
       },
       {
         name: 'clickhouse_query',
-        description: 'Execute a read-only SQL query on a ClickHouse database via SSH tunnel. Only SELECT, SHOW, DESCRIBE, EXPLAIN, EXISTS are allowed.',
+        description:
+          'Execute a read-only SQL query on a ClickHouse database via SSH tunnel. Only SELECT, SHOW, DESCRIBE, EXPLAIN, EXISTS are allowed.',
         inputSchema: {
           type: 'object',
           properties: {

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
  * RED tests for Issue #112: Array-style pagination (offset/limit) for get_thread_messages
@@ -170,9 +170,7 @@ describe('S7: Behavioral contracts for array mode', () => {
       total_count: 50,
       offset: 0,
       returned: 1,
-      messages: [
-        { ts: '1700000000.000000', user: 'U1', text: 'Root message' },
-      ],
+      messages: [{ ts: '1700000000.000000', user: 'U1', text: 'Root message' }],
       has_more: true,
     };
 
@@ -202,7 +200,7 @@ describe('S7: Behavioral contracts for array mode', () => {
     expect(result.returned).toBe(10);
     expect(result.offset).toBe(1);
     // No root message in the results
-    expect(result.messages.every(m => m.ts !== result.thread_ts)).toBe(true);
+    expect(result.messages.every((m) => m.ts !== result.thread_ts)).toBe(true);
     // has_more: offset(1) + returned(10) = 11 < total_count(50)
     expect(result.offset + result.returned < result.total_count).toBe(true);
     expect(result.has_more).toBe(true);

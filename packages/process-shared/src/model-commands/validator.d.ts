@@ -1,11 +1,13 @@
 import type { AskUserQuestionParams, ModelCommandError, ModelCommandRunRequest } from './types';
-type ValidationResult = {
-    ok: true;
-    request: ModelCommandRunRequest;
-} | {
-    ok: false;
-    error: ModelCommandError;
-};
+type ValidationResult =
+  | {
+      ok: true;
+      request: ModelCommandRunRequest;
+    }
+  | {
+      ok: false;
+      error: ModelCommandError;
+    };
 export declare function validateModelCommandRunArgs(args: unknown): ValidationResult;
 /**
  * Soft quality rules for ASK_USER_QUESTION payloads.
@@ -33,5 +35,4 @@ export declare function checkAskUserQuestionQuality(params: AskUserQuestionParam
  * `"Option A (Recommended for staging only)"` do NOT match.
  */
 export declare const LEGACY_RECOMMENDED_SUFFIX_RE: RegExp;
-export {};
 //# sourceMappingURL=validator.d.ts.map
