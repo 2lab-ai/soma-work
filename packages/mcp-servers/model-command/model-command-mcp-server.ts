@@ -1,10 +1,8 @@
 #!/usr/bin/env node
 
-import fs from 'fs';
-import path from 'path';
-import { BaseMcpServer } from '@soma/process-shared/mcp/base-mcp-server.js';
 import type { ToolDefinition, ToolResult } from '@soma/process-shared/mcp/base-mcp-server.js';
-import { StderrLogger } from '@soma/process-shared/stderr-logger.js';
+import { BaseMcpServer } from '@soma/process-shared/mcp/base-mcp-server.js';
+import type { WorkflowType } from '@soma/process-shared/mcp/types.js';
 import {
   getDefaultSessionSnapshot,
   listModelCommands,
@@ -16,13 +14,15 @@ import {
 } from '@soma/process-shared/model-commands/catalog.js';
 import { MemoryFileStore } from '@soma/process-shared/model-commands/memory-file-store.js';
 import { SkillFileStore } from '@soma/process-shared/model-commands/skill-file-store.js';
-import { validateModelCommandRunArgs } from '@soma/process-shared/model-commands/validator.js';
-import {
+import type {
   ModelCommandContext,
   ModelCommandListResponse,
   ModelCommandRunResponse,
 } from '@soma/process-shared/model-commands/types.js';
-import { WorkflowType } from '@soma/process-shared/mcp/types.js';
+import { validateModelCommandRunArgs } from '@soma/process-shared/model-commands/validator.js';
+import { StderrLogger } from '@soma/process-shared/stderr-logger.js';
+import fs from 'fs';
+import path from 'path';
 
 const logger = new StderrLogger('ModelCommandMCP');
 
@@ -33,9 +33,7 @@ function createDefaultContext(): ModelCommandContext {
   };
 }
 
-export function parseModelCommandContext(
-  rawContext: string | undefined
-): ModelCommandContext {
+export function parseModelCommandContext(rawContext: string | undefined): ModelCommandContext {
   if (!rawContext) {
     return createDefaultContext();
   }
@@ -51,12 +49,9 @@ export function parseModelCommandContext(
       threadTs: typeof parsed.threadTs === 'string' ? parsed.threadTs : undefined,
       user: typeof parsed.user === 'string' ? parsed.user : undefined,
       workflow: parseWorkflowType(parsed.workflow),
-      renewState: parsed.renewState === 'pending_save' || parsed.renewState === 'pending_load'
-        ? parsed.renewState
-        : null,
-      session: normalizeSessionSnapshot(
-        isRecord(parsed.session) ? parsed.session as any : undefined
-      ),
+      renewState:
+        parsed.renewState === 'pending_save' || parsed.renewState === 'pending_load' ? parsed.renewState : null,
+      session: normalizeSessionSnapshot(isRecord(parsed.session) ? (parsed.session as any) : undefined),
     };
   } catch (error) {
     logger.warn('Failed to parse SOMA_COMMAND_CONTEXT, using default context', {
@@ -66,19 +61,14 @@ export function parseModelCommandContext(
   }
 }
 
-export function buildModelCommandListResponse(
-  context: ModelCommandContext
-): ModelCommandListResponse {
+export function buildModelCommandListResponse(context: ModelCommandContext): ModelCommandListResponse {
   return {
     type: 'model_command_list',
     commands: listModelCommands(context),
   };
 }
 
-export function buildModelCommandRunResponse(
-  args: unknown,
-  context: ModelCommandContext
-): ModelCommandRunResponse {
+export function buildModelCommandRunResponse(args: unknown, context: ModelCommandContext): ModelCommandRunResponse {
   const validated = validateModelCommandRunArgs(args);
   if (!validated.ok) {
     return {
@@ -89,10 +79,7 @@ export function buildModelCommandRunResponse(
     };
   }
 
-  if (
-    validated.request.commandId === 'SAVE_CONTEXT_RESULT'
-    && context.renewState !== 'pending_save'
-  ) {
+  if (validated.request.commandId === 'SAVE_CONTEXT_RESULT' && context.renewState !== 'pending_save') {
     return {
       type: 'model_command_result',
       commandId: 'SAVE_CONTEXT_RESULT',
@@ -221,16 +208,16 @@ function isRecord(value: unknown): value is Record<string, any> {
 
 function parseWorkflowType(raw: unknown): WorkflowType | undefined {
   if (
-    raw === 'onboarding'
-    || raw === 'jira-executive-summary'
-    || raw === 'jira-brainstorming'
-    || raw === 'jira-planning'
-    || raw === 'jira-create-pr'
-    || raw === 'pr-review'
-    || raw === 'pr-fix-and-update'
-    || raw === 'pr-docs-confluence'
-    || raw === 'deploy'
-    || raw === 'default'
+    raw === 'onboarding' ||
+    raw === 'jira-executive-summary' ||
+    raw === 'jira-brainstorming' ||
+    raw === 'jira-planning' ||
+    raw === 'jira-create-pr' ||
+    raw === 'pr-review' ||
+    raw === 'pr-fix-and-update' ||
+    raw === 'pr-docs-confluence' ||
+    raw === 'deploy' ||
+    raw === 'default'
   ) {
     return raw;
   }

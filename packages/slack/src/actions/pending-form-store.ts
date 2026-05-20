@@ -1,7 +1,7 @@
-import * as fs from 'fs';
-import * as path from 'path';
 import { DATA_DIR } from '@soma/common/env-paths';
 import { Logger } from '@soma/common/logger';
+import * as fs from 'fs';
+import * as path from 'path';
 import type { UserChoiceQuestion } from '../user-choice-extractor';
 
 export interface PendingChoiceFormData {

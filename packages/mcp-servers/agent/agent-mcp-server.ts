@@ -13,8 +13,8 @@
  * Trace: docs/multi-agent/trace.md, Scenarios 4, 5
  */
 
-import { BaseMcpServer } from '@soma/process-shared/mcp/base-mcp-server.js';
 import type { ToolDefinition, ToolResult } from '@soma/process-shared/mcp/base-mcp-server.js';
+import { BaseMcpServer } from '@soma/process-shared/mcp/base-mcp-server.js';
 import { randomUUID } from 'crypto';
 
 // ── Types ──────────────────────────────────────────────────
@@ -42,7 +42,10 @@ function loadAgentConfigs(): Record<string, AgentConfigEntry> {
   try {
     return JSON.parse(raw);
   } catch (error) {
-    console.error('[agent-mcp-server] Failed to parse SOMA_AGENT_CONFIGS:', error instanceof Error ? error.message : String(error));
+    console.error(
+      '[agent-mcp-server] Failed to parse SOMA_AGENT_CONFIGS:',
+      error instanceof Error ? error.message : String(error),
+    );
     return {};
   }
 }
@@ -62,7 +65,8 @@ export class AgentMCPServer extends BaseMcpServer {
     return [
       {
         name: 'chat',
-        description: 'Start a new chat session with a named sub-agent. The agent has its own system prompt and persona.',
+        description:
+          'Start a new chat session with a named sub-agent. The agent has its own system prompt and persona.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -125,7 +129,9 @@ export class AgentMCPServer extends BaseMcpServer {
 
     // Validate agent exists
     if (!agentName || !this.agentConfigs[agentName]) {
-      throw new Error(`Unknown agent: '${agentName}'. Available agents: [${Object.keys(this.agentConfigs).join(', ')}]`);
+      throw new Error(
+        `Unknown agent: '${agentName}'. Available agents: [${Object.keys(this.agentConfigs).join(', ')}]`,
+      );
     }
 
     // Validate prompt
@@ -158,15 +164,17 @@ export class AgentMCPServer extends BaseMcpServer {
     this.logger.info(`agent_chat: query complete`, { sessionId, agentName });
 
     return {
-      content: [{
-        type: 'text',
-        text: JSON.stringify({
-          sessionId,
-          content,
-          agentName,
-          model,
-        }),
-      }],
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            sessionId,
+            content,
+            agentName,
+            model,
+          }),
+        },
+      ],
     };
   }
 
@@ -195,14 +203,16 @@ export class AgentMCPServer extends BaseMcpServer {
     const content = `[Agent '${session.agentName}'] Reply received. Continuation integration pending.`;
 
     return {
-      content: [{
-        type: 'text',
-        text: JSON.stringify({
-          sessionId,
-          content,
-          agentName: session.agentName,
-        }),
-      }],
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            sessionId,
+            content,
+            agentName: session.agentName,
+          }),
+        },
+      ],
     };
   }
 }

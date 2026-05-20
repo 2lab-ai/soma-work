@@ -7,15 +7,21 @@ vi.mock('@modelcontextprotocol/sdk/server/index.js', () => {
   return {
     Server: class MockServer {
       name: string;
-      constructor(info: { name: string }) { this.name = info.name; }
+      constructor(info: { name: string }) {
+        this.name = info.name;
+      }
       setRequestHandler(schema: any, handler: any) {
         if (schema === 'ListToolsRequestSchema') listHandler = handler;
         if (schema === 'CallToolRequestSchema') callHandler = handler;
       }
       connect() {}
       // Expose handlers for testing
-      static getListHandler() { return listHandler; }
-      static getCallHandler() { return callHandler; }
+      static getListHandler() {
+        return listHandler;
+      }
+      static getCallHandler() {
+        return callHandler;
+      }
     },
   };
 });
@@ -29,7 +35,7 @@ vi.mock('@modelcontextprotocol/sdk/types.js', () => ({
   ListToolsRequestSchema: 'ListToolsRequestSchema',
 }));
 
-vi.mock('somalib/stderr-logger.js', () => ({
+vi.mock('@soma/process-shared/stderr-logger.js', () => ({
   StderrLogger: class {
     debug() {}
     info() {}
@@ -84,8 +90,12 @@ describe('BaseMcpServer', () => {
     const { BaseMcpServer } = await import('./base-mcp-server.js');
 
     class TestServer extends BaseMcpServer {
-      defineTools() { return []; }
-      async handleTool() { return { content: [] }; }
+      defineTools() {
+        return [];
+      }
+      async handleTool() {
+        return { content: [] };
+      }
       // Expose protected method for testing
       testFormatError(tool: string, error: unknown) {
         return this.formatError(tool, error);
@@ -129,8 +139,12 @@ describe('formatError standardization', () => {
     const { BaseMcpServer } = await import('./base-mcp-server.js');
 
     class TestServer extends BaseMcpServer {
-      defineTools() { return []; }
-      async handleTool() { return { content: [] }; }
+      defineTools() {
+        return [];
+      }
+      async handleTool() {
+        return { content: [] };
+      }
       testFormatError(tool: string, error: unknown) {
         return this.formatError(tool, error);
       }
@@ -150,8 +164,12 @@ describe('formatError standardization', () => {
 
     // Simulating what slack-mcp's override should produce
     class SlackServer extends BaseMcpServer {
-      defineTools() { return []; }
-      async handleTool() { return { content: [] }; }
+      defineTools() {
+        return [];
+      }
+      async handleTool() {
+        return { content: [] };
+      }
 
       protected override formatError(toolName: string, error: unknown) {
         const slackErrorCode = (error as any)?.data?.error as string | undefined;
@@ -159,14 +177,16 @@ describe('formatError standardization', () => {
         const message = error instanceof Error ? error.message : String(error);
 
         return {
-          content: [{
-            type: 'text' as const,
-            text: JSON.stringify({
-              error: message,
-              ...(slackErrorCode ? { slack_error: slackErrorCode } : {}),
-              retryable: isRateLimited,
-            }),
-          }],
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                error: message,
+                ...(slackErrorCode ? { slack_error: slackErrorCode } : {}),
+                retryable: isRateLimited,
+              }),
+            },
+          ],
           isError: true,
         };
       }

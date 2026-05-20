@@ -1,10 +1,10 @@
+import { validateModelCommandRunArgs } from '@soma/process-shared/model-commands/validator.js';
 import { describe, expect, it } from 'vitest';
 import {
   buildModelCommandListResponse,
   buildModelCommandRunResponse,
   parseModelCommandContext,
 } from './model-command-mcp-server';
-import { validateModelCommandRunArgs } from '@soma/process-shared/model-commands/validator.js';
 
 describe('model-command MCP server helpers', () => {
   it('returns safe defaults when SOMA_COMMAND_CONTEXT is invalid', () => {
@@ -55,7 +55,7 @@ describe('model-command MCP server helpers', () => {
           },
           sequence: 3,
         },
-      }
+      },
     );
 
     expect(result.ok).toBe(true);
@@ -93,7 +93,7 @@ describe('model-command MCP server helpers', () => {
           active: {},
           sequence: 1,
         },
-      }
+      },
     );
 
     expect(mismatch.ok).toBe(false);
@@ -121,7 +121,7 @@ describe('model-command MCP server helpers', () => {
           },
         },
       },
-      { session: { issues: [], prs: [], docs: [], active: {}, sequence: 0 } }
+      { session: { issues: [], prs: [], docs: [], active: {}, sequence: 0 } },
     );
 
     expect(result.ok).toBe(true);
@@ -137,7 +137,7 @@ describe('model-command MCP server helpers', () => {
         commandId: 'UPDATE_SESSION',
         params: { operations: [] },
       },
-      { session: { issues: [], prs: [], docs: [], active: {}, sequence: 0 } }
+      { session: { issues: [], prs: [], docs: [], active: {}, sequence: 0 } },
     );
 
     expect(result.ok).toBe(false);
@@ -156,7 +156,7 @@ describe('model-command MCP server helpers', () => {
           forceWorkflow: 'pr-review',
         },
       },
-      { session: { issues: [], prs: [], docs: [], active: {}, sequence: 0 } }
+      { session: { issues: [], prs: [], docs: [], active: {}, sequence: 0 } },
     );
 
     expect(result.ok).toBe(true);
@@ -178,7 +178,7 @@ describe('model-command MCP server helpers', () => {
           forceWorkflow: 'pr-review',
         },
       },
-      { session: { issues: [], prs: [], docs: [], active: {}, sequence: 0 } }
+      { session: { issues: [], prs: [], docs: [], active: {}, sequence: 0 } },
     );
 
     expect(result.ok).toBe(false);
@@ -196,7 +196,7 @@ describe('model-command MCP server helpers', () => {
           options: ['A', 'B'],
         },
       },
-      { session: { issues: [], prs: [], docs: [], active: {}, sequence: 0 } }
+      { session: { issues: [], prs: [], docs: [], active: {}, sequence: 0 } },
     );
 
     expect(result.ok).toBe(false);
@@ -229,7 +229,7 @@ describe('model-command MCP server helpers', () => {
           },
         },
       },
-      { session: { issues: [], prs: [], docs: [], active: {}, sequence: 0 } }
+      { session: { issues: [], prs: [], docs: [], active: {}, sequence: 0 } },
     );
 
     expect(result.ok).toBe(false);
@@ -244,13 +244,10 @@ describe('model-command MCP server helpers', () => {
         commandId: 'ASK_USER_QUESTION',
         params: {
           question: 'MIN-63 브레인스토밍 완료. 다음 단계로 무엇을 진행할까요?',
-          options: [
-            { label: 'Implementation Spec 작성 (권장)' },
-            { label: '바로 구현 시작' },
-          ],
+          options: [{ label: 'Implementation Spec 작성 (권장)' }, { label: '바로 구현 시작' }],
         },
       },
-      { session: { issues: [], prs: [], docs: [], active: {}, sequence: 0 } }
+      { session: { issues: [], prs: [], docs: [], active: {}, sequence: 0 } },
     );
 
     expect(result.ok).toBe(true);
@@ -265,13 +262,10 @@ describe('model-command MCP server helpers', () => {
         commandId: 'ASK_USER_QUESTION',
         params: {
           question: '어떤 방식으로 진행할까요?',
-          choices: [
-            { label: 'Option A' },
-            { label: 'Option B' },
-          ],
+          choices: [{ label: 'Option A' }, { label: 'Option B' }],
         },
       },
-      { session: { issues: [], prs: [], docs: [], active: {}, sequence: 0 } }
+      { session: { issues: [], prs: [], docs: [], active: {}, sequence: 0 } },
     );
 
     expect(result.ok).toBe(true);
@@ -290,12 +284,15 @@ describe('model-command MCP server helpers', () => {
           choices: [
             {
               question: '첫 번째 결정',
-              options: [{ id: '1', label: 'A' }, { id: '2', label: 'B' }],
+              options: [
+                { id: '1', label: 'A' },
+                { id: '2', label: 'B' },
+              ],
             },
           ],
         },
       },
-      { session: { issues: [], prs: [], docs: [], active: {}, sequence: 0 } }
+      { session: { issues: [], prs: [], docs: [], active: {}, sequence: 0 } },
     );
 
     expect(result.ok).toBe(true);
@@ -319,7 +316,7 @@ describe('model-command MCP server helpers', () => {
           },
         },
       },
-      { session: { issues: [], prs: [], docs: [], active: {}, sequence: 0 } }
+      { session: { issues: [], prs: [], docs: [], active: {}, sequence: 0 } },
     );
 
     expect(result.ok).toBe(true);
@@ -351,7 +348,7 @@ describe('model-command MCP server helpers', () => {
           active: {},
           sequence: 0,
         },
-      }
+      },
     );
 
     expect(result.ok).toBe(false);
@@ -382,7 +379,7 @@ describe('model-command MCP server helpers', () => {
           active: {},
           sequence: 0,
         },
-      }
+      },
     );
 
     expect(result.ok).toBe(true);
@@ -412,7 +409,7 @@ describe('model-command MCP server helpers', () => {
           active: {},
           sequence: 0,
         },
-      }
+      },
     );
 
     expect(result.ok).toBe(true);
@@ -452,7 +449,7 @@ describe('model-command MCP server helpers', () => {
           ],
         },
       },
-      context
+      context,
     );
 
     expect(update.ok).toBe(true);
@@ -461,7 +458,7 @@ describe('model-command MCP server helpers', () => {
       {
         commandId: 'GET_SESSION',
       },
-      context
+      context,
     );
 
     expect(readBack.ok).toBe(true);

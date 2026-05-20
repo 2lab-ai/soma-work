@@ -1,6 +1,6 @@
-import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import * as fs from 'fs';
 import * as child_process from 'child_process';
+import * as fs from 'fs';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Mock child_process BEFORE importing the module under test
 vi.mock('child_process', async () => {
@@ -50,23 +50,23 @@ vi.mock('@soma/process-shared/stderr-logger.js', () => ({
 }));
 
 import {
-  validateReadOnlyQuery,
-  validateClickHouseQuery,
-  validateRedisCommand,
-  validateMongoOperation,
-  validateMongoQuery,
-  validateDockerName,
-  validateTimestamp,
-  loadConfig,
-  resetConfigCache,
+  handleClickHouseQuery,
+  handleDbQuery,
   handleList,
   handleListService,
   handleListStack,
   handleLogs,
-  handleDbQuery,
-  handleRedisQuery,
   handleMongoDBQuery,
-  handleClickHouseQuery,
+  handleRedisQuery,
+  loadConfig,
+  resetConfigCache,
+  validateClickHouseQuery,
+  validateDockerName,
+  validateMongoOperation,
+  validateMongoQuery,
+  validateReadOnlyQuery,
+  validateRedisCommand,
+  validateTimestamp,
 } from './server-tools-mcp-server.js';
 
 // ── Helper: set up config mock ──────────────────────────────
@@ -86,8 +86,23 @@ const PROD_CONFIG = {
       databases: {
         app_db: { type: 'mysql', host: 'db.internal', port: 3306, user: 'root', password: 'pw' },
         cache: { type: 'redis', host: 'redis.internal', port: 6379, password: 'redis-pw', db: 0 },
-        docs: { type: 'mongodb', host: 'mongo.internal', port: 27017, user: 'admin', password: 'mongo-pw', authSource: 'admin', database: 'docs' },
-        analytics: { type: 'clickhouse', host: 'ch.internal', port: 8123, user: 'default', password: 'ch-pw', database: 'analytics' },
+        docs: {
+          type: 'mongodb',
+          host: 'mongo.internal',
+          port: 27017,
+          user: 'admin',
+          password: 'mongo-pw',
+          authSource: 'admin',
+          database: 'docs',
+        },
+        analytics: {
+          type: 'clickhouse',
+          host: 'ch.internal',
+          port: 8123,
+          user: 'default',
+          password: 'ch-pw',
+          database: 'analytics',
+        },
       },
     },
     staging: {
@@ -379,8 +394,13 @@ describe('validateRedisCommand', () => {
 describe('validateMongoOperation', () => {
   describe('allows read-only operations', () => {
     it.each([
-      'find', 'aggregate', 'countDocuments', 'estimatedDocumentCount',
-      'distinct', 'listCollections', 'listIndexes',
+      'find',
+      'aggregate',
+      'countDocuments',
+      'estimatedDocumentCount',
+      'distinct',
+      'listCollections',
+      'listIndexes',
     ])('allows: %s', (op) => {
       expect(() => validateMongoOperation(op)).not.toThrow();
     });
@@ -388,9 +408,18 @@ describe('validateMongoOperation', () => {
 
   describe('blocks write operations', () => {
     it.each([
-      'insertOne', 'insertMany', 'updateOne', 'updateMany',
-      'deleteOne', 'deleteMany', 'replaceOne', 'drop',
-      'createIndex', 'dropIndex', 'rename', 'bulkWrite',
+      'insertOne',
+      'insertMany',
+      'updateOne',
+      'updateMany',
+      'deleteOne',
+      'deleteMany',
+      'replaceOne',
+      'drop',
+      'createIndex',
+      'dropIndex',
+      'rename',
+      'bulkWrite',
     ])('blocks: %s', (op) => {
       expect(() => validateMongoOperation(op)).toThrow(/not allowed/);
     });
@@ -409,12 +438,14 @@ describe('validateMongoQuery', () => {
     });
 
     it('allows aggregation pipeline stages', () => {
-      expect(() => validateMongoQuery([
-        { $match: { status: 'active' } },
-        { $group: { _id: '$type', count: { $sum: 1 } } },
-        { $sort: { count: -1 } },
-        { $limit: 10 },
-      ])).not.toThrow();
+      expect(() =>
+        validateMongoQuery([
+          { $match: { status: 'active' } },
+          { $group: { _id: '$type', count: { $sum: 1 } } },
+          { $sort: { count: -1 } },
+          { $limit: 10 },
+        ]),
+      ).not.toThrow();
     });
   });
 
@@ -424,35 +455,37 @@ describe('validateMongoQuery', () => {
     });
 
     it('blocks $function', () => {
-      expect(() => validateMongoQuery({
-        $expr: { $function: { body: 'return true', args: [], lang: 'js' } },
-      })).toThrow(/\$function.*blocked/);
+      expect(() =>
+        validateMongoQuery({
+          $expr: { $function: { body: 'return true', args: [], lang: 'js' } },
+        }),
+      ).toThrow(/\$function.*blocked/);
     });
 
     it('blocks $accumulator', () => {
-      expect(() => validateMongoQuery([
-        { $group: { _id: null, sum: { $accumulator: { init: 'function(){return 0}' } } } },
-      ])).toThrow(/\$accumulator.*blocked/);
+      expect(() =>
+        validateMongoQuery([{ $group: { _id: null, sum: { $accumulator: { init: 'function(){return 0}' } } } }]),
+      ).toThrow(/\$accumulator.*blocked/);
     });
 
     it('blocks $out in pipeline', () => {
-      expect(() => validateMongoQuery([
-        { $match: { status: 'active' } },
-        { $out: 'other_collection' },
-      ])).toThrow(/\$out.*blocked/);
+      expect(() => validateMongoQuery([{ $match: { status: 'active' } }, { $out: 'other_collection' }])).toThrow(
+        /\$out.*blocked/,
+      );
     });
 
     it('blocks $merge in pipeline', () => {
-      expect(() => validateMongoQuery([
-        { $match: { status: 'active' } },
-        { $merge: { into: 'other_collection' } },
-      ])).toThrow(/\$merge.*blocked/);
+      expect(() =>
+        validateMongoQuery([{ $match: { status: 'active' } }, { $merge: { into: 'other_collection' } }]),
+      ).toThrow(/\$merge.*blocked/);
     });
 
     it('blocks nested dangerous operators', () => {
-      expect(() => validateMongoQuery({
-        a: { b: { c: { $where: 'true' } } },
-      })).toThrow(/\$where.*blocked/);
+      expect(() =>
+        validateMongoQuery({
+          a: { b: { c: { $where: 'true' } } },
+        }),
+      ).toThrow(/\$where.*blocked/);
     });
   });
 
@@ -713,9 +746,7 @@ describe('handleListService', () => {
         throw err;
       });
 
-      expect(() => handleListService({ server: 'prod', stack: 'mystack' })).toThrow(
-        /not a Docker Swarm manager/i,
-      );
+      expect(() => handleListService({ server: 'prod', stack: 'mystack' })).toThrow(/not a Docker Swarm manager/i);
     });
 
     it('throws for unknown server even when stack is set', () => {
@@ -853,10 +884,14 @@ describe('handleLogs', () => {
       'ssh',
       [
         'prod.example.com',
-        'docker', 'logs',
-        '--tail', '50',
-        '--since', '2024-01-01T00:00:00',
-        '--until', '2024-01-02T00:00:00',
+        'docker',
+        'logs',
+        '--tail',
+        '50',
+        '--since',
+        '2024-01-01T00:00:00',
+        '--until',
+        '2024-01-02T00:00:00',
         '--timestamps',
         'nginx',
       ],
@@ -918,12 +953,8 @@ describe('handleLogs', () => {
 
   it('rejects since/until with shell metacharacters', () => {
     mockConfig(PROD_CONFIG, 10200);
-    expect(() => handleLogs({ server: 'prod', service: 'nginx', since: '1h; rm -rf /' })).toThrow(
-      /invalid.*since/i,
-    );
-    expect(() => handleLogs({ server: 'prod', service: 'nginx', until: '$(date)' })).toThrow(
-      /invalid.*until/i,
-    );
+    expect(() => handleLogs({ server: 'prod', service: 'nginx', since: '1h; rm -rf /' })).toThrow(/invalid.*since/i);
+    expect(() => handleLogs({ server: 'prod', service: 'nginx', until: '$(date)' })).toThrow(/invalid.*until/i);
   });
 
   it('returns log output as text content', () => {
@@ -954,9 +985,13 @@ describe('handleLogs', () => {
         'ssh',
         [
           'prod.example.com',
-          'docker', 'service', 'logs',
-          '--tail', '50',
-          '--since', '10m',
+          'docker',
+          'service',
+          'logs',
+          '--tail',
+          '50',
+          '--since',
+          '10m',
           '--timestamps',
           'mystack_web',
         ],
@@ -991,26 +1026,26 @@ describe('handleLogs', () => {
 
     it('rejects invalid stack name', () => {
       mockConfig(PROD_CONFIG, 10700);
-      expect(() =>
-        handleLogs({ server: 'prod', stack: 'mystack;rm', service: 'mystack_web' }),
-      ).toThrow(/invalid.*stack/i);
-      expect(() =>
-        handleLogs({ server: 'prod', stack: 'mystack$(whoami)', service: 'mystack_web' }),
-      ).toThrow(/invalid.*stack/i);
+      expect(() => handleLogs({ server: 'prod', stack: 'mystack;rm', service: 'mystack_web' })).toThrow(
+        /invalid.*stack/i,
+      );
+      expect(() => handleLogs({ server: 'prod', stack: 'mystack$(whoami)', service: 'mystack_web' })).toThrow(
+        /invalid.*stack/i,
+      );
     });
 
     it('still validates service name when stack is set', () => {
       mockConfig(PROD_CONFIG, 10800);
-      expect(() =>
-        handleLogs({ server: 'prod', stack: 'mystack', service: 'mystack_web; rm -rf /' }),
-      ).toThrow(/invalid.*service/i);
+      expect(() => handleLogs({ server: 'prod', stack: 'mystack', service: 'mystack_web; rm -rf /' })).toThrow(
+        /invalid.*service/i,
+      );
     });
 
     it('throws for unknown server in stack mode', () => {
       mockConfig(PROD_CONFIG, 10900);
-      expect(() =>
-        handleLogs({ server: 'nope', stack: 'mystack', service: 'mystack_web' }),
-      ).toThrow('Unknown server: nope');
+      expect(() => handleLogs({ server: 'nope', stack: 'mystack', service: 'mystack_web' })).toThrow(
+        'Unknown server: nope',
+      );
     });
   });
 });
@@ -1069,9 +1104,9 @@ describe('handleDbQuery', () => {
 
   it('rejects when database is wrong type', async () => {
     mockConfig(PROD_CONFIG, 11500);
-    await expect(
-      handleDbQuery({ server: 'prod', database: 'cache', query: 'SELECT 1' }),
-    ).rejects.toThrow('Database "cache" is type "redis", not "mysql"');
+    await expect(handleDbQuery({ server: 'prod', database: 'cache', query: 'SELECT 1' })).rejects.toThrow(
+      'Database "cache" is type "redis", not "mysql"',
+    );
   });
 });
 
@@ -1094,16 +1129,16 @@ describe('handleRedisQuery', () => {
 
   it('throws for unknown server', async () => {
     mockConfig(PROD_CONFIG, 12000);
-    await expect(handleRedisQuery({ server: 'nonexistent', database: 'cache', command: 'GET', args: ['key'] })).rejects.toThrow(
-      'Unknown server: nonexistent',
-    );
+    await expect(
+      handleRedisQuery({ server: 'nonexistent', database: 'cache', command: 'GET', args: ['key'] }),
+    ).rejects.toThrow('Unknown server: nonexistent');
   });
 
   it('throws for unknown database', async () => {
     mockConfig(PROD_CONFIG, 12100);
-    await expect(handleRedisQuery({ server: 'prod', database: 'no_such_db', command: 'GET', args: ['key'] })).rejects.toThrow(
-      'Unknown database: no_such_db',
-    );
+    await expect(
+      handleRedisQuery({ server: 'prod', database: 'no_such_db', command: 'GET', args: ['key'] }),
+    ).rejects.toThrow('Unknown database: no_such_db');
   });
 
   it('rejects write commands', async () => {
@@ -1136,9 +1171,9 @@ describe('handleRedisQuery', () => {
 
   it('rejects missing command', async () => {
     mockConfig(PROD_CONFIG, 12600);
-    await expect(
-      handleRedisQuery({ server: 'prod', database: 'cache', command: '', args: [] }),
-    ).rejects.toThrow('Redis command is required');
+    await expect(handleRedisQuery({ server: 'prod', database: 'cache', command: '', args: [] })).rejects.toThrow(
+      'Redis command is required',
+    );
   });
 });
 
@@ -1191,7 +1226,10 @@ describe('handleMongoDBQuery', () => {
     mockConfig(PROD_CONFIG, 13400);
     await expect(
       handleMongoDBQuery({
-        server: 'prod', database: 'docs', collection: 'users', operation: 'find',
+        server: 'prod',
+        database: 'docs',
+        collection: 'users',
+        operation: 'find',
         filter: { $where: 'this.a > 1' },
       }),
     ).rejects.toThrow(/\$where.*blocked/);
@@ -1201,7 +1239,10 @@ describe('handleMongoDBQuery', () => {
     mockConfig(PROD_CONFIG, 13500);
     await expect(
       handleMongoDBQuery({
-        server: 'prod', database: 'docs', collection: 'users', operation: 'aggregate',
+        server: 'prod',
+        database: 'docs',
+        collection: 'users',
+        operation: 'aggregate',
         pipeline: [{ $match: {} }, { $out: 'evil_collection' }],
       }),
     ).rejects.toThrow(/\$out.*blocked/);
@@ -1241,9 +1282,9 @@ describe('handleClickHouseQuery', () => {
 
   it('throws for unknown database', async () => {
     mockConfig(PROD_CONFIG, 14100);
-    await expect(
-      handleClickHouseQuery({ server: 'prod', database: 'no_such_db', query: 'SELECT 1' }),
-    ).rejects.toThrow('Unknown database: no_such_db');
+    await expect(handleClickHouseQuery({ server: 'prod', database: 'no_such_db', query: 'SELECT 1' })).rejects.toThrow(
+      'Unknown database: no_such_db',
+    );
   });
 
   it('rejects write queries', async () => {
@@ -1256,7 +1297,11 @@ describe('handleClickHouseQuery', () => {
   it('rejects dangerous table functions', async () => {
     mockConfig(PROD_CONFIG, 14300);
     await expect(
-      handleClickHouseQuery({ server: 'prod', database: 'analytics', query: "SELECT * FROM url('http://evil.com/data.csv', CSV)" }),
+      handleClickHouseQuery({
+        server: 'prod',
+        database: 'analytics',
+        query: "SELECT * FROM url('http://evil.com/data.csv', CSV)",
+      }),
     ).rejects.toThrow('Only read-only queries are allowed');
   });
 
@@ -1269,8 +1314,8 @@ describe('handleClickHouseQuery', () => {
 
   it('rejects when database is wrong type', async () => {
     mockConfig(PROD_CONFIG, 14500);
-    await expect(
-      handleClickHouseQuery({ server: 'prod', database: 'app_db', query: 'SELECT 1' }),
-    ).rejects.toThrow('Database "app_db" is type "mysql", not "clickhouse"');
+    await expect(handleClickHouseQuery({ server: 'prod', database: 'app_db', query: 'SELECT 1' })).rejects.toThrow(
+      'Database "app_db" is type "mysql", not "clickhouse"',
+    );
   });
 });
