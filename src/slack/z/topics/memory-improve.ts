@@ -1,4 +1,4 @@
-import { type AgentRunOptions, runOneShotText } from '../../../agent-runtime';
+import { buildOneShotOptions, runOneShotText } from '../../../agent-runtime';
 import { buildQueryEnv } from '../../../auth/query-env-builder';
 import { config } from '../../../config';
 import { ensureActiveSlotAuth, NoHealthySlotError, type SlotAuthLease } from '../../../credentials-manager';
@@ -29,26 +29,22 @@ async function runQuery(prompt: string, systemPrompt: string): Promise<string> {
       throw credErr;
     }
 
-    // Pass the fresh lease token via options.env (built by `buildQueryEnv`)
-    // so this call and any concurrent Claude spawn each use their own
-    // lease's token.
+    // Use options.env (not process.env) so concurrent leases don't
+    // clobber the shared CLAUDE_CODE_OAUTH_TOKEN.
     const { env } = buildQueryEnv(lease);
-    const options: AgentRunOptions = {
+    // `disableThinking: false` preserves the pre-refactor behaviour —
+    // memory-improve is the only one-shot helper that does NOT pass
+    // `thinking: { type: 'disabled' }` and lets the SDK default apply.
+    // The explicit flag surfaces the divergence; a separate behaviour PR
+    // can decide whether this is intentional or a latent #762-class risk.
+    const options = buildOneShotOptions({
       model: config.conversation.summaryModel,
-      maxTurns: 1,
-      tools: [],
       systemPrompt,
-      extensions: {
-        claudeCode: {
-          env,
-          settingSources: [],
-          plugins: [],
-          stderr: (data: string) => {
-            logger.warn('MemoryImprove stderr', { data: data.trimEnd() });
-          },
-        },
-      },
-    };
+      env,
+      logger,
+      stderrLabel: 'MemoryImprove',
+      disableThinking: false,
+    });
 
     return await runOneShotText(prompt, options);
   } finally {

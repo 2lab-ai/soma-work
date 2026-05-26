@@ -1,4 +1,4 @@
-import { type AgentRunOptions, runOneShotText } from '../agent-runtime';
+import { buildOneShotOptions, runOneShotText } from '../agent-runtime';
 import { buildQueryEnv } from '../auth/query-env-builder';
 import { config } from '../config';
 import { ensureActiveSlotAuth, NoHealthySlotError, type SlotAuthLease } from '../credentials-manager';
@@ -32,29 +32,16 @@ export async function generateTitle(conversationContent: string): Promise<string
 
     const prompt = `Generate a concise, descriptive Korean title (max 40 chars) for this conversation. Output ONLY the title text, nothing else.\n\nConversation:\n${truncated}`;
 
-    // Pass the fresh lease token via options.env (built by `buildQueryEnv`)
-    // so concurrent spawns each see their own token — mutating
-    // `process.env.CLAUDE_CODE_OAUTH_TOKEN` globally would race against
-    // other in-flight dispatches holding leases on different slots.
+    // Use options.env (not process.env) so concurrent leases don't
+    // clobber the shared CLAUDE_CODE_OAUTH_TOKEN.
     const { env } = buildQueryEnv(lease);
-    const options: AgentRunOptions = {
+    const options = buildOneShotOptions({
       model: config.conversation.summaryModel,
-      maxTurns: 1,
-      tools: [],
       systemPrompt: 'You generate concise conversation titles. Output only the title text.',
-      extensions: {
-        claudeCode: {
-          env,
-          settingSources: [],
-          plugins: [],
-          // Disable thinking — see #762 rationale on `ClaudeCodeExtensionOptions.thinking`.
-          thinking: { type: 'disabled' },
-          stderr: (data: string) => {
-            logger.warn('TitleGenerator stderr', { data: data.trimEnd() });
-          },
-        },
-      },
-    };
+      env,
+      logger,
+      stderrLabel: 'TitleGenerator',
+    });
 
     try {
       const assistantText = await runOneShotText(prompt, options);
