@@ -1,10 +1,14 @@
 #!/usr/bin/env node
 
 import { WebClient } from '@slack/web-api';
-import { BaseMcpServer } from '@soma/process-shared/mcp/base-mcp-server.js';
 import type { ToolDefinition, ToolResult } from '@soma/process-shared/mcp/base-mcp-server.js';
+import { BaseMcpServer } from '@soma/process-shared/mcp/base-mcp-server.js';
 import { overridableMatchedRuleIds, overridableRulesByIds } from '@soma/process-shared/permission/dangerous-rules.js';
-import { sharedStore, PendingApproval, PermissionResponse } from '@soma/process-shared/permission/shared-store.js';
+import {
+  type PendingApproval,
+  type PermissionResponse,
+  sharedStore,
+} from '@soma/process-shared/permission/shared-store.js';
 import { SlackPermissionMessenger } from '@soma/process-shared/permission/slack-messenger.js';
 
 interface PermissionRequest {
@@ -75,23 +79,21 @@ class PermissionMCPServer extends BaseMcpServer {
     // @soma/process-shared/permission/dangerous-rules.ts for the lockdown isolation invariant.
     const overridableRules = overridableRulesByIds(ruleIds);
 
-    const blocks = this.messenger.buildRequestBlocks(
-      tool_name,
-      input,
-      approvalId,
-      user,
-      overridableRules,
-    );
+    const blocks = this.messenger.buildRequestBlocks(tool_name, input, approvalId, user, overridableRules);
 
     try {
       const result = await this.messenger.sendPermissionRequest(
         { channel, threadTs: thread_ts, user },
         blocks,
-        tool_name
+        tool_name,
       );
 
       const pendingApproval: PendingApproval = {
-        tool_name, input, channel, thread_ts, user,
+        tool_name,
+        input,
+        channel,
+        thread_ts,
+        user,
         created_at: Date.now(),
         expires_at: Date.now() + 5 * 60 * 1000,
         rule_ids: ruleIds.length > 0 ? ruleIds : undefined,

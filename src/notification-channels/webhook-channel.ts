@@ -61,7 +61,8 @@ export class WebhookChannel implements NotificationChannel {
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
       try {
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
+        // B-2: fetch timeout — descriptive string, not RequestAbortReason.
+        const timeoutId = setTimeout(() => controller.abort('fetch-timeout'), TIMEOUT_MS);
 
         const response = await this.fetchFn(url, {
           method: 'POST',

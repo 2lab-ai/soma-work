@@ -10,7 +10,21 @@ const MAX_FILE_SIZE = 1_073_741_824;
 /** Allowlisted root directories for file uploads */
 const ALLOWED_UPLOAD_ROOTS = ['/tmp', '/private/tmp'];
 
-const IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico', 'tiff', 'tif', 'heic', 'heif', 'avif']);
+const IMAGE_EXTENSIONS = new Set([
+  'jpg',
+  'jpeg',
+  'png',
+  'gif',
+  'webp',
+  'svg',
+  'bmp',
+  'ico',
+  'tiff',
+  'tif',
+  'heic',
+  'heif',
+  'avif',
+]);
 const AUDIO_EXTENSIONS = new Set(['mp3', 'wav', 'ogg', 'flac', 'm4a', 'aac', 'wma']);
 const VIDEO_EXTENSIONS = new Set(['mp4', 'mov', 'avi', 'mkv', 'webm', 'wmv', 'm4v', 'mpg', 'mpeg', '3gp']);
 export const ALLOWED_MEDIA_EXTENSIONS = new Set([...IMAGE_EXTENSIONS, ...AUDIO_EXTENSIONS, ...VIDEO_EXTENSIONS]);
@@ -25,7 +39,8 @@ export function isImageFile(mimetype?: string, filename?: string): boolean {
 }
 
 export function isMediaFile(mimetype?: string, filename?: string): boolean {
-  if (mimetype && (mimetype.startsWith('image/') || mimetype.startsWith('video/') || mimetype.startsWith('audio/'))) return true;
+  if (mimetype && (mimetype.startsWith('image/') || mimetype.startsWith('video/') || mimetype.startsWith('audio/')))
+    return true;
   if (filename) {
     const ext = filename.split('.').pop()?.toLowerCase() || '';
     return IMAGE_EXTENSIONS.has(ext) || VIDEO_EXTENSIONS.has(ext) || AUDIO_EXTENSIONS.has(ext);
@@ -77,11 +92,11 @@ export async function validateFilePath(filePath: string): Promise<{ resolvedPath
   }
 
   const segments = resolvedPath.split(path.sep);
-  if (segments.some(seg => seg === '..')) {
+  if (segments.some((seg) => seg === '..')) {
     throw new Error(`Path traversal not allowed: ${filePath}`);
   }
 
-  const underAllowedRoot = ALLOWED_UPLOAD_ROOTS.some(root => resolvedPath.startsWith(root + path.sep));
+  const underAllowedRoot = ALLOWED_UPLOAD_ROOTS.some((root) => resolvedPath.startsWith(root + path.sep));
   if (!underAllowedRoot) {
     throw new Error(`Upload restricted to /tmp directory. Rejected: ${resolvedPath}`);
   }

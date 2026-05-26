@@ -1,7 +1,7 @@
-import { describe, it, expect } from 'vitest';
-import { markdownToBlocks as libMarkdownToBlocks } from 'markdown-to-slack-blocks';
 import * as fs from 'fs/promises';
+import { markdownToBlocks as libMarkdownToBlocks } from 'markdown-to-slack-blocks';
 import * as path from 'path';
+import { describe, expect, it } from 'vitest';
 
 /**
  * Tests for send_thread_message Block Kit conversion pipeline.
@@ -59,7 +59,7 @@ function convertMarkdownToBlocks(markdown: string) {
 
   for (const block of sanitized) {
     const isTable = block.type === 'table';
-    if ((current.length >= MAX_BLOCKS) || (isTable && curTables >= 1)) {
+    if (current.length >= MAX_BLOCKS || (isTable && curTables >= 1)) {
       if (current.length > 0) messages.push(current);
       current = [];
       curTables = 0;

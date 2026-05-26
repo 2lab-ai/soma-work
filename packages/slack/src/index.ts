@@ -1,16 +1,15 @@
 export {
-  type ActionPanelBuildParams,
   ActionPanelBuilder,
+  type ActionPanelBuildParams,
   type ActionPanelPayload,
   type ActivityState,
   type PRStatusInfo,
   type WorkflowType,
 } from './action-panel-builder';
 export {
-  ActionHandlers,
-  setActionHandlersProviders,
   type ActionHandlerContext,
   type ActionHandlerDelegates,
+  ActionHandlers,
   type ActionHandlersProviders,
   type ActionHandlersStores,
   type MessageEvent as ActionMessageEvent,
@@ -18,25 +17,26 @@ export {
   type RespondFn as ActionRespondFn,
   type SayFn as ActionSayFn,
   type SlackApiForActions,
+  setActionHandlersProviders,
   type ViewAck as ActionViewAck,
   type ZTopicRegistryLike,
 } from './actions';
 export {
   buildMarkerBlocks,
-  classifyClick,
   type ClickBranch,
+  type ClickSessionReader,
+  classifyClick,
   FORM_BUILD_FAILED_TEXT,
   markClickAsStale,
-  setClickClassifierFiveBlockPhaseProvider,
-  SUPERSEDED_TEXT,
-  type ClickSessionReader,
   type PendingChoiceForClick,
   type SlackApiStaleMarkerWriter,
+  SUPERSEDED_TEXT,
+  setClickClassifierFiveBlockPhaseProvider,
   type WarnLogger,
 } from './actions/click-classifier';
 export {
-  PendingFormStore,
   type PendingChoiceFormData,
+  PendingFormStore,
   setPendingFormStoreDataDirProvider,
 } from './actions/pending-form-store';
 export {
@@ -55,39 +55,67 @@ export {
 } from './actions/user-skill-action-kinds';
 export {
   ASSISTANT_VIEW_TITLE,
+  type AssistantContainerDeps,
   buildAssistantConfig,
   createAssistantContainer,
-  type AssistantContainerDeps,
   type MessageEvent as AssistantMessageEvent,
   SUGGESTED_PROMPTS_PLACEHOLDER,
 } from './assistant-container';
 export {
   AssistantStatusManager,
   type AssistantStatusSlackApi,
-  setAssistantStatusB4NativeStatusEnabledProvider,
   type StatusDescriptor,
+  setAssistantStatusB4NativeStatusEnabledProvider,
 } from './assistant-status-manager';
 export {
-  ChoiceMessageBuilder,
-  type SessionTheme,
-  type SlackMessagePayload as ChoiceSlackMessagePayload,
-} from './choice-message-builder';
+  type CctCardMode,
+  type DecodedCctActionValue,
+  decodeCctActionValue,
+  encodeCctActionValue,
+  readCctActionPayload,
+} from './cct/action-value';
+export {
+  classifyRenderInPlaceSurface,
+  type RenderInPlaceBody,
+  type RenderInPlaceOpts,
+  type RenderInPlaceResult,
+  type RenderInPlaceSurface,
+  type RespondFn,
+  renderInPlace,
+} from './cct/render-in-place';
+export {
+  CCT_ACTION_IDS,
+  CCT_BLOCK_IDS,
+  CCT_CARD_BLOCK_ID_PREFIX,
+  CCT_VIEW_IDS,
+  type CctActionId,
+  type CctBlockId,
+  type CctViewId,
+  OAUTH_BLOB_HELP,
+  OAUTH_BLOB_WARN_THRESHOLD,
+  SLACK_PLAIN_TEXT_INPUT_MAX,
+} from './cct/views';
 export {
   getChannelDescription,
   invalidateChannelCache,
 } from './channel-description-cache';
 export {
+  type ChannelInfo,
   checkRepoChannelMatch,
   getAllChannels,
   getChannel,
   getChannelConfluenceUrl,
-  type ChannelInfo,
   type RepoChannelMatchReason,
   type RepoChannelMatchResult,
   registerChannel,
   scanChannels,
   unregisterChannel,
 } from './channel-registry';
+export {
+  ChoiceMessageBuilder,
+  type SessionTheme,
+  type SlackMessagePayload as ChoiceSlackMessagePayload,
+} from './choice-message-builder';
 export {
   type AdminAction,
   type BypassAction,
@@ -108,62 +136,34 @@ export {
   type SandboxCommand,
   type SandboxTarget,
   type SessionCommandAction,
-  type SessionThemeCommandResult,
   type SessionsCommandResult,
+  type SessionThemeCommandResult,
 } from './command-parser';
 export {
-  CommandRouter,
-  setCommandRouterProviders,
   type CommandContext,
   type CommandDependencies,
   type CommandHandler,
   type CommandResult,
+  CommandRouter,
   type CommandRouterHandlers,
   type CommandRouterProviders,
   type PostEphemeralFn,
   type SayFn as CommandSayFn,
+  setCommandRouterProviders,
 } from './commands/command-router';
 export { CompletionMessageTracker } from './completion-message-tracker';
+export { ContextWindowManager, type SessionUsage } from './context-window-manager';
 export {
   createForkExecutor,
   type ForkDispatchHandler,
 } from './create-fork-executor';
 export {
-  decodeCctActionValue,
-  encodeCctActionValue,
-  readCctActionPayload,
-  type CctCardMode,
-  type DecodedCctActionValue,
-} from './cct/action-value';
-export {
-  classifyRenderInPlaceSurface,
-  renderInPlace,
-  type RenderInPlaceBody,
-  type RenderInPlaceOpts,
-  type RenderInPlaceResult,
-  type RenderInPlaceSurface,
-  type RespondFn,
-} from './cct/render-in-place';
-export {
-  CCT_ACTION_IDS,
-  CCT_BLOCK_IDS,
-  CCT_CARD_BLOCK_ID_PREFIX,
-  CCT_VIEW_IDS,
-  OAUTH_BLOB_HELP,
-  OAUTH_BLOB_WARN_THRESHOLD,
-  SLACK_PLAIN_TEXT_INPUT_MAX,
-  type CctActionId,
-  type CctBlockId,
-  type CctViewId,
-} from './cct/views';
-export { ContextWindowManager, type SessionUsage } from './context-window-manager';
-export {
   ChannelMessageDirectiveHandler,
   type ChannelMessageExtractResult,
 } from './directives/channel-message-directive';
 export {
-  SessionLinkDirectiveHandler,
   type SessionLink,
+  SessionLinkDirectiveHandler,
   type SessionLinkExtractResult,
   type SessionLinks,
 } from './directives/session-link-directive';
@@ -172,19 +172,18 @@ export {
   type SourceWorkingDirExtractResult,
 } from './directives/source-working-dir-directive';
 export {
-  DispatchAbortError,
-  formatDispatchAbortMessage,
   type DispatchAbortContext,
+  DispatchAbortError,
   type DispatchAbortReason,
+  formatDispatchAbortMessage,
   type HandoffContext as DispatchHandoffContext,
   type WorkflowType as DispatchWorkflowType,
 } from './dispatch-abort';
 export {
-  EventRouter,
-  setEventRouterProviders,
   type ActionHandlers as EventActionHandlers,
   type ClaudeSessionEventRouter,
   type EventConversationSession,
+  EventRouter,
   type EventRouterDeps,
   type EventRouterProviders,
   type EventSessionLink,
@@ -193,27 +192,28 @@ export {
   type SayFn as EventSayFn,
   type SessionExpiryCallbacks as EventSessionExpiryCallbacks,
   type SessionUiEventManager,
+  setEventRouterProviders,
 } from './event-router';
 export {
   DirectoryFormatter,
   setDirectoryFormatterBaseDirectoryProvider,
 } from './formatters/directory-formatter';
 export {
+  type ConvertResult,
   estimatePayloadSize,
   markdownToBlocks,
-  thinkingToQuoteBlock,
-  type ConvertResult,
   type SlackBlock,
+  thinkingToQuoteBlock,
 } from './formatters/markdown-to-blocks';
 export {
-  checkAndConsumeBudget,
-  DEFAULT_AUTO_HANDOFF_BUDGET,
-  formatBudgetExhaustedMessage,
-  HandoffBudgetExhaustedError,
   type BudgetCheckResult,
   type BudgetRejectionContext,
   type BudgetRejectionReason,
   type ConversationSession as HandoffBudgetSession,
+  checkAndConsumeBudget,
+  DEFAULT_AUTO_HANDOFF_BUDGET,
+  formatBudgetExhaustedMessage,
+  HandoffBudgetExhaustedError,
   type HandoffContext as HandoffBudgetContext,
   type WorkflowType as HandoffBudgetWorkflowType,
 } from './handoff-budget';
@@ -229,16 +229,6 @@ export {
   type SessionInstructionStatus,
   type SessionResourceUpdateRequest,
 } from './instruction-confirm-blocks';
-export { MessageFormatter } from './message-formatter';
-export {
-  type InterruptCheckResult,
-  type InterruptSession,
-  type InterruptSessionReader,
-  MessageValidator,
-  setMessageValidatorBaseDirectoryProvider,
-  type ValidationResult,
-  type WorkingDirectoryReader,
-} from './message-validator';
 export {
   type McpHealthManager,
   McpHealthMonitor,
@@ -249,6 +239,16 @@ export {
   McpStatusDisplay,
   type StatusUpdateConfig,
 } from './mcp-status-tracker';
+export { MessageFormatter } from './message-formatter';
+export {
+  type InterruptCheckResult,
+  type InterruptSession,
+  type InterruptSessionReader,
+  MessageValidator,
+  setMessageValidatorBaseDirectoryProvider,
+  type ValidationResult,
+  type WorkingDirectoryReader,
+} from './message-validator';
 export { escapeSlackMrkdwn } from './mrkdwn-escape';
 export {
   DEFAULT_LOG_VERBOSITY,
@@ -258,62 +258,56 @@ export {
   getVerbosityFlags,
   getVerbosityName,
   LOG_DETAIL,
-  OutputFlag,
-  shouldOutput,
-  VERBOSITY_NAMES,
   type LogVerbosity,
+  OutputFlag,
   type OutputFlagValue,
   type RenderMode,
+  shouldOutput,
+  VERBOSITY_NAMES,
   verboseTag,
 } from './output-flags';
 export {
   __resetClampEmitted,
+  type AssistantStatusReader,
   configureEffectivePhase,
   getEffectiveFiveBlockPhase,
   shouldRunLegacyB4Path,
-  type AssistantStatusReader,
   type UiPhaseClampedEvent,
 } from './pipeline/effective-phase';
 export {
-  InputProcessor,
-  setInputProcessorProviders,
   type AutoCompactSession,
   type ClaudeSessionReader,
   type CommandRouteResult,
   type CommandRouterReader,
   type FileHandlerReader,
+  InputProcessor,
   type InputProcessorDeps,
   type InputProcessorProviders,
   type SlackApiInputProcessor,
+  setInputProcessorProviders,
 } from './pipeline/input-processor';
+export { isLocalSlashCommand } from './pipeline/local-slash-command';
 export {
   SessionInitializer,
-  setSessionInitializerProviders,
   type SessionInitializerProviders,
+  setSessionInitializerProviders,
   type WorkflowType as SessionInitializerWorkflowType,
 } from './pipeline/session-initializer';
 export {
+  type ExecuteResult,
   normalizeUtilizationToPercent,
   StreamExecutor,
-  setStreamExecutorProviders,
-  type ExecuteResult,
   type StreamExecutorProviders,
+  setStreamExecutorProviders,
 } from './pipeline/stream-executor';
-export { isLocalSlashCommand } from './pipeline/local-slash-command';
-export {
-  DEFAULT_STALL_TIMEOUT_MS,
-  readStallTimeoutMs,
-  STALL_TIMEOUT_ENV_VAR,
-  StreamStallWatchdog,
-} from './pipeline/stream-stall-watchdog';
-export {
-  type ConversationSession as PipelineConversationSession,
-  type InputProcessResult,
-  type MessageEvent as PipelineMessageEvent,
-  type ProcessedFile as PipelineProcessedFile,
-  type SayFn as PipelineSayFn,
-  type SessionInitResult,
-  type StreamExecuteResult,
+export type {
+  ConversationSession as PipelineConversationSession,
+  InputProcessResult,
+  MessageEvent as PipelineMessageEvent,
+  ProcessedFile as PipelineProcessedFile,
+  SayFn as PipelineSayFn,
+  SessionInitResult,
+  StreamExecuteResult,
 } from './pipeline/types';
 export { ReactionManager, type ReactionTodo } from './reaction-manager';
 export {
@@ -324,10 +318,8 @@ export {
   resolveChannel,
   type VersionInfo,
 } from './release-notifier';
-export { RequestCoordinator, type RequestAbortReason } from './request-coordinator';
+export { type RequestAbortReason, RequestCoordinator } from './request-coordinator';
 export {
-  SessionUiManager,
-  setSessionUiManagerProviders,
   type ActivityState as SessionUiActivityState,
   type ClaudeSessionUiReader,
   type ConversationSession as SessionUiConversationSession,
@@ -336,18 +328,20 @@ export {
   type JiraTransition as SessionUiJiraTransition,
   type LinkMetadata as SessionUiLinkMetadata,
   type SayFn as SessionUiSayFn,
+  SessionUiManager,
   type SessionUiManagerProviders,
+  setSessionUiManagerProviders,
 } from './session-manager';
 export {
-  SlashCommandAdapter,
-  type CommandContext as SlashCommandContext,
-  type SayFn as SlashCommandSayFn,
-} from './slash-command-adapter';
-export {
-  SlackApiHelper,
   type MessageOptions,
+  SlackApiHelper,
   type SlackAuthContext,
 } from './slack-api-helper';
+export {
+  type CommandContext as SlashCommandContext,
+  type SayFn as SlashCommandSayFn,
+  SlashCommandAdapter,
+} from './slash-command-adapter';
 export {
   _buildLinkSection,
   _safeText,
@@ -363,21 +357,21 @@ export {
   notifyStartup,
   type StartupNotificationOptions,
 } from './startup-notifier';
-export { StatusReporter, type StatusMessage, type StatusType } from './status-reporter';
+export { type StatusMessage, StatusReporter, type StatusType } from './status-reporter';
 export {
-  extractTaskIdFromResult,
-  setStreamProcessorProviders,
   type AssistantTextHandler,
   type CompactToolCallEntry,
+  extractTaskIdFromResult,
   type FinalResponseFooterParams,
   type PendingForm,
   type ResultHandler,
   type SayFunction as StreamSayFunction,
-  StreamProcessor,
   type StreamCallbacks,
   type StreamContext,
+  StreamProcessor,
   type StreamProcessorProviders,
   type StreamResult,
+  setStreamProcessorProviders,
   type ThreadPanelFacade,
   type TodoUpdateHandler,
   type ToolResultEvent,
@@ -387,34 +381,24 @@ export {
   type UsageData,
 } from './stream-processor';
 export {
-  selectExecutiveSummaryMode,
-  SUMMARY_PROMPT,
-  SummaryService,
   type ExecutiveSummaryMode,
   type ForkExecutor,
   type SessionLinkHistory,
+  SUMMARY_PROMPT,
+  SummaryService,
   type SummarySessionInfo,
   type SummarySlackApi,
+  selectExecutiveSummaryMode,
 } from './summary-service';
 export { SummaryTimer } from './summary-timer';
 export {
-  TaskListBlockBuilder,
   type BuildPlanTasksOptions,
   type SessionTheme as TaskListSessionTheme,
+  TaskListBlockBuilder,
   type TaskListBuildOptions,
   type Todo,
   type TodoStatusReader,
 } from './task-list-block-builder';
-export {
-  setThreadPanelFiveBlockPhaseProvider,
-  ThreadPanel,
-  type ThreadPanelClaudeHandler,
-  type ThreadPanelCompletionChannel,
-  type ThreadPanelDeps,
-  type ThreadPanelSessionRegistry,
-  type UserChoice as ThreadPanelUserChoice,
-  type UserChoices as ThreadPanelUserChoices,
-} from './thread-panel';
 export {
   type ConversationSession as ThreadHeaderConversationSession,
   type SessionLink as ThreadHeaderSessionLink,
@@ -427,6 +411,16 @@ export {
   type ThreadHeaderPayload,
   type WorkflowType as ThreadHeaderWorkflowType,
 } from './thread-header-builder';
+export {
+  setThreadPanelFiveBlockPhaseProvider,
+  ThreadPanel,
+  type ThreadPanelClaudeHandler,
+  type ThreadPanelCompletionChannel,
+  type ThreadPanelDeps,
+  type ThreadPanelSessionRegistry,
+  type UserChoice as ThreadPanelUserChoice,
+  type UserChoices as ThreadPanelUserChoices,
+} from './thread-panel';
 export {
   type ActionPanelState,
   type ConversationSession as ThreadSurfaceConversationSession,
@@ -444,6 +438,7 @@ export {
   type PlanRenderCallback,
   type RenderRequestCallback,
   type SayFunction as TodoSayFunction,
+  setTodoDisplayFiveBlockPhaseProvider,
   type TodoConversationSession,
   TodoDisplayManager,
   type TodoManagerReader,
@@ -451,27 +446,26 @@ export {
   type TodoSlackApi,
   type TodoUpdateInput,
   type TurnAddress as TodoTurnAddress,
-  setTodoDisplayFiveBlockPhaseProvider,
 } from './todo-display-manager';
 export {
-  setToolEventProcessorProviders,
-  ToolEventProcessor,
   type McpCallStats as ToolEventMcpCallStats,
   type McpCallTracker as ToolEventMcpCallTracker,
   type SayFunction as ToolEventSayFunction,
+  setToolEventProcessorProviders,
   type ToolEventContext,
+  ToolEventProcessor,
   type ToolEventProcessorProviders,
   type ToolResultEvent as ToolEventResultEvent,
   type ToolResultSink,
   type ToolUseEvent as ToolEventUseEvent,
 } from './tool-event-processor';
 export {
-  setBotDisplayName,
   type McpCallStats,
   type McpCallStatsReader,
+  setBotDisplayName,
   type TaskToolSummary,
-  type ToolResult,
   ToolFormatter,
+  type ToolResult,
   type ToolUseLogSummary,
 } from './tool-formatter';
 export { ToolTracker } from './tool-tracker';
@@ -479,12 +473,12 @@ export {
   buildThreadPermalink,
   coalesceErrorMessage,
   determineTurnCategory,
+  type EffortLevel,
   getCategoryColor,
   getCategoryEmoji,
   getCategoryLabel,
   getSlackWorkspaceUrl,
   maskUrl,
-  type EffortLevel,
   type NotificationChannel,
   resetSlackWorkspaceUrl,
   setSlackWorkspaceUrl,
@@ -503,37 +497,37 @@ export {
   TurnSurface,
   type TurnSurfaceDeps,
 } from './turn-surface';
-export { type SlackMessagePayload, UserChoiceHandler } from './user-choice-handler';
 export {
   type ExtractedChoice,
   type UserChoice,
+  UserChoiceExtractor,
   type UserChoiceOption,
   type UserChoiceQuestion,
   type UserChoices,
-  UserChoiceExtractor,
 } from './user-choice-extractor';
+export { type SlackMessagePayload, UserChoiceHandler } from './user-choice-handler';
 export {
   type ConsumePendingSkillUploadArgs,
   type ConsumeUploadDeps,
   type ConsumeUploadOutcome,
+  consumePendingSkillUpload,
   type DownloadFileResult,
   EDIT_UPLOAD_TTL_MS,
   type FileDescriptor,
   type PendingSkillUploadMarker,
   SKILL_FILE_NAME,
   type SkillUploadConversationSession,
+  setUserSkillRoundtripProviders,
   type UploadSkillFileArgs,
   type UploadSkillFileResult,
   type UserSkillRoundtripProviders,
-  consumePendingSkillUpload,
-  setUserSkillRoundtripProviders,
   uploadSkillFile,
 } from './user-skill-file-roundtrip';
 export { isSlashForbidden, SLASH_FORBIDDEN, SLASH_FORBIDDEN_MESSAGE } from './z/capability';
-export { normalizeZInvocation, stripZPrefix, type NormalizeInput } from './z/normalize';
+export { type NormalizeInput, normalizeZInvocation, stripZPrefix } from './z/normalize';
 export {
-  ChannelEphemeralZRespond,
   type ChannelEphemeralDeps,
+  ChannelEphemeralZRespond,
   DmZRespond,
   type DmZRespondDeps,
   SlashZRespond,
@@ -551,20 +545,27 @@ export {
 } from './z/router';
 export { stripZPrefix as stripZPrefixDirect } from './z/strip-z-prefix';
 export { detectLegacyNaked, isLegacyNaked, TOMBSTONE_HINTS, type TombstoneHint } from './z/tombstone';
-export { markBotMessageTs, type BotMessageTs, type ZBlock, type ZInvocation, type ZRespond, type ZSource } from './z/types';
+export {
+  type BotMessageTs,
+  markBotMessageTs,
+  type ZBlock,
+  type ZInvocation,
+  type ZRespond,
+  type ZSource,
+} from './z/types';
 export {
   buildConfirmationCard,
   buildHelpCard,
   buildSettingCard,
   buildTombstoneCard,
-  DEFAULT_HELP_CATEGORIES,
-  zBlockId,
   type ConfirmationCardOptions,
+  DEFAULT_HELP_CATEGORIES,
   type HelpCardOptions,
   type HelpCategory,
   type SettingCardExtraAction,
   type SettingCardOption,
   type SettingCardOptions,
   type TombstoneCardOptions,
+  zBlockId,
 } from './z/ui-builder';
 export { isDmAllowedForNonAdmin, isWhitelistedNaked } from './z/whitelist';

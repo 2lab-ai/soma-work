@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
  * Unit tests for SlackMcpServer internals.
@@ -56,7 +56,7 @@ describe('SlackMcpServer constructor validation', () => {
         JSON.parse(process.env.SLACK_MCP_CONTEXT!);
       } catch (err) {
         throw new Error(
-          `Failed to parse SLACK_MCP_CONTEXT: ${(err as Error).message}. Raw: ${process.env.SLACK_MCP_CONTEXT!.substring(0, 200)}`
+          `Failed to parse SLACK_MCP_CONTEXT: ${(err as Error).message}. Raw: ${process.env.SLACK_MCP_CONTEXT!.substring(0, 200)}`,
         );
       }
     }).toThrow('Failed to parse SLACK_MCP_CONTEXT');
@@ -97,11 +97,7 @@ describe('SlackMcpServer constructor validation', () => {
 });
 
 describe('ALLOWED_FILE_HOSTS validation', () => {
-  const ALLOWED_FILE_HOSTS = new Set([
-    'files.slack.com',
-    'files-pri.slack.com',
-    'files-tmb.slack.com',
-  ]);
+  const ALLOWED_FILE_HOSTS = new Set(['files.slack.com', 'files-pri.slack.com', 'files-tmb.slack.com']);
 
   it('allows valid Slack file hosts', () => {
     expect(ALLOWED_FILE_HOSTS.has('files.slack.com')).toBe(true);
@@ -178,7 +174,21 @@ describe('error classification logic', () => {
 });
 
 describe('isImageFile helper', () => {
-  const IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico', 'tiff', 'tif', 'heic', 'heif', 'avif']);
+  const IMAGE_EXTENSIONS = new Set([
+    'jpg',
+    'jpeg',
+    'png',
+    'gif',
+    'webp',
+    'svg',
+    'bmp',
+    'ico',
+    'tiff',
+    'tif',
+    'heic',
+    'heif',
+    'avif',
+  ]);
 
   function isImageFile(mimetype?: string, filename?: string): boolean {
     if (mimetype && mimetype.startsWith('image/')) return true;
@@ -278,7 +288,21 @@ describe('isNonVisualMedia helper', () => {
 });
 
 describe('download_thread_file allows images, blocks non-visual media', () => {
-  const IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico', 'tiff', 'tif', 'heic', 'heif', 'avif']);
+  const IMAGE_EXTENSIONS = new Set([
+    'jpg',
+    'jpeg',
+    'png',
+    'gif',
+    'webp',
+    'svg',
+    'bmp',
+    'ico',
+    'tiff',
+    'tif',
+    'heic',
+    'heif',
+    'avif',
+  ]);
   const VIDEO_EXTENSIONS = new Set(['mp4', 'mov', 'avi', 'mkv', 'webm', 'wmv', 'm4v', 'mpg', 'mpeg', '3gp']);
   const AUDIO_EXTENSIONS = new Set(['mp3', 'wav', 'ogg', 'flac', 'm4a', 'aac', 'wma']);
 
@@ -351,12 +375,27 @@ describe('download_thread_file allows images, blocks non-visual media', () => {
 // ── Scenario 2 — download_thread_file media blocking (Trace: docs/media-file-support/trace.md) ──
 
 describe('download_thread_file media blocking (video/audio)', () => {
-  const IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico', 'tiff', 'tif', 'heic', 'heif', 'avif']);
+  const IMAGE_EXTENSIONS = new Set([
+    'jpg',
+    'jpeg',
+    'png',
+    'gif',
+    'webp',
+    'svg',
+    'bmp',
+    'ico',
+    'tiff',
+    'tif',
+    'heic',
+    'heif',
+    'avif',
+  ]);
   const VIDEO_EXTENSIONS = new Set(['mp4', 'mov', 'avi', 'mkv', 'webm', 'wmv', 'm4v', 'mpg', 'mpeg', '3gp']);
   const AUDIO_EXTENSIONS = new Set(['mp3', 'wav', 'ogg', 'flac', 'm4a', 'aac', 'wma']);
 
   function isMediaFile(mimetype?: string, filename?: string): boolean {
-    if (mimetype && (mimetype.startsWith('image/') || mimetype.startsWith('video/') || mimetype.startsWith('audio/'))) return true;
+    if (mimetype && (mimetype.startsWith('image/') || mimetype.startsWith('video/') || mimetype.startsWith('audio/')))
+      return true;
     if (filename) {
       const ext = filename.split('.').pop()?.toLowerCase() || '';
       return IMAGE_EXTENSIONS.has(ext) || VIDEO_EXTENSIONS.has(ext) || AUDIO_EXTENSIONS.has(ext);
@@ -416,7 +455,8 @@ describe('download_thread_file media blocking (video/audio)', () => {
     const response = {
       blocked: true,
       name: fileName,
-      reason: 'Media files (image/video/audio) cannot be downloaded and read. Reference the file by name and metadata only.',
+      reason:
+        'Media files (image/video/audio) cannot be downloaded and read. Reference the file by name and metadata only.',
     };
     expect(response.blocked).toBe(true);
     expect(response.reason).toContain('Media files');
@@ -429,7 +469,8 @@ describe('download_thread_file media blocking (video/audio)', () => {
     const response = {
       blocked: true,
       name: fileName,
-      reason: 'Media files (image/video/audio) cannot be downloaded and read. Reference the file by name and metadata only.',
+      reason:
+        'Media files (image/video/audio) cannot be downloaded and read. Reference the file by name and metadata only.',
     };
     expect(response.blocked).toBe(true);
   });
@@ -442,7 +483,21 @@ describe('download_thread_file media blocking (video/audio)', () => {
 });
 
 describe('thread message formatting', () => {
-  const IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico', 'tiff', 'tif', 'heic', 'heif', 'avif']);
+  const IMAGE_EXTENSIONS = new Set([
+    'jpg',
+    'jpeg',
+    'png',
+    'gif',
+    'webp',
+    'svg',
+    'bmp',
+    'ico',
+    'tiff',
+    'tif',
+    'heic',
+    'heif',
+    'avif',
+  ]);
   const VIDEO_EXTENSIONS = new Set(['mp4', 'mov', 'avi', 'mkv', 'webm', 'wmv', 'm4v', 'mpg', 'mpeg', '3gp']);
   const AUDIO_EXTENSIONS = new Set(['mp3', 'wav', 'ogg', 'flac', 'm4a', 'aac', 'wma']);
 
@@ -456,7 +511,8 @@ describe('thread message formatting', () => {
   }
 
   function isMediaFile(mimetype?: string, filename?: string): boolean {
-    if (mimetype && (mimetype.startsWith('image/') || mimetype.startsWith('video/') || mimetype.startsWith('audio/'))) return true;
+    if (mimetype && (mimetype.startsWith('image/') || mimetype.startsWith('video/') || mimetype.startsWith('audio/')))
+      return true;
     if (filename) {
       const ext = filename.split('.').pop()?.toLowerCase() || '';
       return IMAGE_EXTENSIONS.has(ext) || VIDEO_EXTENSIONS.has(ext) || AUDIO_EXTENSIONS.has(ext);
@@ -468,16 +524,9 @@ describe('thread message formatting', () => {
     return {
       ts: m.ts,
       user: m.user || m.bot_id || 'unknown',
-      user_name:
-        m.user_profile?.display_name ||
-        m.user_profile?.real_name ||
-        m.username ||
-        m.user ||
-        'unknown',
+      user_name: m.user_profile?.display_name || m.user_profile?.real_name || m.username || m.user || 'unknown',
       text: m.text || '',
-      timestamp: m.ts
-        ? new Date(parseFloat(m.ts) * 1000).toISOString()
-        : new Date().toISOString(),
+      timestamp: m.ts ? new Date(parseFloat(m.ts) * 1000).toISOString() : new Date().toISOString(),
       files: (m.files || []).map((f: any) => {
         const fileIsImage = isImageFile(f.mimetype, f.name);
         const fileIsMedia = fileIsImage || isMediaFile(f.mimetype, f.name || '');
@@ -488,14 +537,19 @@ describe('thread message formatting', () => {
           size: f.size,
           ...(!fileIsMedia && f.url_private_download ? { url_private_download: f.url_private_download } : {}),
           ...(f.thumb_360 ? { thumb_360: f.thumb_360 } : {}),
-          ...(fileIsImage ? {
-            is_image: true,
-            image_note: 'Image file — do NOT download or Read. Reference by name only. Ask the user to describe contents if needed.',
-          } : {}),
-          ...(!fileIsImage && fileIsMedia ? {
-            is_media: true,
-            media_note: 'Media file — do NOT download or Read. Reference by name only.',
-          } : {}),
+          ...(fileIsImage
+            ? {
+                is_image: true,
+                image_note:
+                  'Image file — do NOT download or Read. Reference by name only. Ask the user to describe contents if needed.',
+              }
+            : {}),
+          ...(!fileIsImage && fileIsMedia
+            ? {
+                is_media: true,
+                media_note: 'Media file — do NOT download or Read. Reference by name only.',
+              }
+            : {}),
         };
       }),
       reactions: (m.reactions || []).map((r: any) => ({
@@ -786,7 +840,7 @@ describe('fetchMessagesBefore — root message inclusion', () => {
   function fetchMessagesBefore(
     messages: { ts: string; files?: any[] }[],
     anchorTs: string,
-    count: number
+    count: number,
   ): { ts: string; files?: any[] }[] {
     if (count === 0) return [];
     let rootMessage: { ts: string; files?: any[] } | null = null;
@@ -798,7 +852,7 @@ describe('fetchMessagesBefore — root message inclusion', () => {
     }
     const sliced = collected.slice(-count);
     // Ensure root is always present
-    if (rootMessage && !sliced.some(m => m.ts === threadTs)) {
+    if (rootMessage && !sliced.some((m) => m.ts === threadTs)) {
       sliced.unshift(rootMessage);
     }
     return sliced;
@@ -816,9 +870,9 @@ describe('fetchMessagesBefore — root message inclusion', () => {
     const result = fetchMessagesBefore(messages, anchorTs, 10);
 
     // Root message MUST be in results
-    expect(result.some(m => m.ts === threadTs)).toBe(true);
+    expect(result.some((m) => m.ts === threadTs)).toBe(true);
     // Root message files MUST be present
-    const rootMsg = result.find(m => m.ts === threadTs);
+    const rootMsg = result.find((m) => m.ts === threadTs);
     expect(rootMsg?.files).toHaveLength(1);
     expect(rootMsg?.files?.[0].name).toBe('screenshot.png');
   });
@@ -837,8 +891,8 @@ describe('fetchMessagesBefore — root message inclusion', () => {
     const result = fetchMessagesBefore(messages, anchorTs, 20);
 
     // Root MUST be present even though slice(-20) would normally exclude it
-    expect(result.some(m => m.ts === threadTs)).toBe(true);
-    const rootMsg = result.find(m => m.ts === threadTs);
+    expect(result.some((m) => m.ts === threadTs)).toBe(true);
+    const rootMsg = result.find((m) => m.ts === threadTs);
     expect(rootMsg?.files?.[0].name).toBe('header-image.png');
     // Result is count + 1 (root injected beyond count)
     expect(result.length).toBe(21);
@@ -858,13 +912,27 @@ describe('fetchMessagesBefore — root message inclusion', () => {
     const result = fetchMessagesBefore(messages, anchorTs, 2);
     // Root injected + 2 sliced = 3
     expect(result[0].ts).toBe(threadTs);
-    expect(result.some(m => m.ts === threadTs)).toBe(true);
+    expect(result.some((m) => m.ts === threadTs)).toBe(true);
   });
 });
 
 // S3: Array mode root message files regression guard
 describe('formatSingleMessage — root message file metadata', () => {
-  const IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico', 'tiff', 'tif', 'heic', 'heif', 'avif']);
+  const IMAGE_EXTENSIONS = new Set([
+    'jpg',
+    'jpeg',
+    'png',
+    'gif',
+    'webp',
+    'svg',
+    'bmp',
+    'ico',
+    'tiff',
+    'tif',
+    'heic',
+    'heif',
+    'avif',
+  ]);
 
   function isImageFile(mimetype?: string, filename?: string): boolean {
     if (mimetype && mimetype.startsWith('image/')) return true;
@@ -876,7 +944,8 @@ describe('formatSingleMessage — root message file metadata', () => {
   }
 
   function isMediaFile(mimetype?: string, filename?: string): boolean {
-    if (mimetype && (mimetype.startsWith('image/') || mimetype.startsWith('video/') || mimetype.startsWith('audio/'))) return true;
+    if (mimetype && (mimetype.startsWith('image/') || mimetype.startsWith('video/') || mimetype.startsWith('audio/')))
+      return true;
     if (filename) {
       const ext = filename.split('.').pop()?.toLowerCase() || '';
       return IMAGE_EXTENSIONS.has(ext);
@@ -894,10 +963,13 @@ describe('formatSingleMessage — root message file metadata', () => {
       size: f.size,
       ...(!fileIsMedia && f.url_private_download ? { url_private_download: f.url_private_download } : {}),
       ...(f.thumb_360 ? { thumb_360: f.thumb_360 } : {}),
-      ...(fileIsImage ? {
-        is_image: true,
-        image_note: 'Image file — do NOT download or Read. Reference by name only. Ask the user to describe contents if needed.',
-      } : {}),
+      ...(fileIsImage
+        ? {
+            is_image: true,
+            image_note:
+              'Image file — do NOT download or Read. Reference by name only. Ask the user to describe contents if needed.',
+          }
+        : {}),
     };
   }
 

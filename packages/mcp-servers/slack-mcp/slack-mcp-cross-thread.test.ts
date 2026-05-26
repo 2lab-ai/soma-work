@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest';
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import { describe, expect, it } from 'vitest';
 
 /**
  * RED Contract Tests for slack-mcp cross-thread access
@@ -16,13 +16,13 @@ describe('Scenario 1: Context passes both threads', () => {
   it('SLACK_MCP_CONTEXT includes work threadTs as primary (not sourceThreadTs)', async () => {
     const configBuilder = await fs.readFile(
       path.resolve(__dirname, '..', '..', 'src', 'mcp-config-builder.ts'),
-      'utf-8'
+      'utf-8',
     );
     // After change: threadTs should be slackContext.threadTs (work thread),
     // NOT sourceThreadTs || threadTs (which collapses to source)
     // The buildSlackMcpServer should NOT collapse source into threadTs
     expect(configBuilder).not.toMatch(
-      /const threadTs\s*=\s*slackContext\.sourceThreadTs\s*\|\|\s*slackContext\.threadTs/
+      /const threadTs\s*=\s*slackContext\.sourceThreadTs\s*\|\|\s*slackContext\.threadTs/,
     );
   });
 
@@ -30,7 +30,7 @@ describe('Scenario 1: Context passes both threads', () => {
   it('SLACK_MCP_CONTEXT passes sourceThreadTs to MCP server', async () => {
     const configBuilder = await fs.readFile(
       path.resolve(__dirname, '..', '..', 'src', 'mcp-config-builder.ts'),
-      'utf-8'
+      'utf-8',
     );
     // threadContext object must include sourceThreadTs
     expect(configBuilder).toMatch(/sourceThreadTs.*slackContext\.sourceThreadTs/);
@@ -40,7 +40,7 @@ describe('Scenario 1: Context passes both threads', () => {
   it('SLACK_MCP_CONTEXT passes sourceChannel to MCP server', async () => {
     const configBuilder = await fs.readFile(
       path.resolve(__dirname, '..', '..', 'src', 'mcp-config-builder.ts'),
-      'utf-8'
+      'utf-8',
     );
     expect(configBuilder).toMatch(/sourceChannel.*slackContext\.sourceChannel/);
   });

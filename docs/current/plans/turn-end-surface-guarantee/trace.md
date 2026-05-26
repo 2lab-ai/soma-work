@@ -160,10 +160,12 @@ All three failed pre-fix (`handleEnrichmentFailure is not a function`), pass pos
 
 ```ts
 const isAbort = requestAborted || this.isAbortLikeError(error);
-const supersedeLikeAbort = isAbort && (abortReason === 'supersede' || abortReason === 'stall-timeout');
+const stallTimeoutAbort = isAbort && abortReason === 'stall-timeout';
+const ghostSessionAbort = isAbort && abortReason === 'ghost-session';
+const notifyWorthyAbort = stallTimeoutAbort || ghostSessionAbort;
 const shouldNotifyException =
   !!this.deps.turnNotifier
-  && (!isAbort || supersedeLikeAbort)
+  && (!isAbort || notifyWorthyAbort)
   && !this.isOneMContextUnavailableError(error);
 ```
 
@@ -172,6 +174,7 @@ const shouldNotifyException =
 | Real SDK error (network, ResultMessage error subtype, throw) | true | Not an abort. Always surface. |
 | `supersede` abort (new message displaced stalled turn) | true | User is waiting for *some* terminal signal. PR #912. |
 | `stall-timeout` abort — dispatcher heuristic (PR #924) OR auto-watchdog (this PR) | true | Same UX as supersede red card. |
+| `ghost-session` abort — `onToolUse`/`onToolResult` saw `session.terminated` mid-stream (this PR) | true | Session died out-of-band; user has no other terminal signal. Trace: `exhaustive-paths.md` §B-1. |
 | `user-stop` / `session-close` / `shutdown` abort | false | User already knows the turn ended. |
 | `1M-context-unavailable` | false | Transparent retry on bare model (Issue #661). |
 | Foreign abort (`signal.reason` not in known union) | false | Out-of-band; explicitly out of guarantee scope. |
@@ -198,22 +201,119 @@ These paths are silent **by design** and do not violate the invariant.
 
 ---
 
-## Stall watchdog (auto-abort) — installed in the PR that adds this section
+## SDK idle timeout (auto-abort) — Phase 2 wiring (replaces PR #926 watchdog)
 
-Codex Option 3 deferred from PR #912/#923 is now wired in `StreamExecutor.processMessage`:
+The external `StreamStallWatchdog` (PR #926) is REMOVED. Its role —
+auto-abort a turn whose SDK stream goes silent for too long so a 🔴
+terminal card still surfaces — now lives INSIDE
+`StreamProcessor.process` via a `Promise.race` around every
+`iterator.next()` (see `raceNextStep` and the `onIdleTimeout` callback
+wired in `stream-executor.ts`).
 
-- Helper: `src/slack/pipeline/stream-stall-watchdog.ts` exposes `StreamStallWatchdog` and `readStallTimeoutMs()`.
-- Default window: 10 minutes (`DEFAULT_STALL_TIMEOUT_MS = 600_000`).
-- Env override: `SOMA_STREAM_STALL_TIMEOUT_MS` (positive int → ms; `0` or non-positive → disable; invalid/non-finite → fall back to default).
-- Wiring: `arm()` runs just before `processor.process(...)`, `touch()` runs from every `onSdkActivity` callback, `clear()` runs in the outer `finally`.
-- Abort target: the LOCAL `abortController` for this turn (codex `2a332a29` P4), NOT `requestCoordinator.abortSession` — a stale watchdog firing after the turn moved on cannot abort a newer controller because the local controller is CAS-guarded via `removeController(sessionKey, controller)`.
-- First-reason-wins: if `supersede` (or any other reason) already fired on the controller, the late `stall-timeout` call is a no-op (DOM `AbortController.abort` semantics). The S4 notify gate continues to see the original reason.
-- `unref()` on the underlying timer so the watchdog can never keep Node alive at shutdown.
+- Owner: `packages/slack/src/stream-processor.ts` (`StreamProcessor`,
+  `readIdleTimeoutMs`, `DEFAULT_IDLE_TIMEOUT_MS`, `IDLE_TIMEOUT_ENV_VAR`).
+- Default window: **30 minutes** (`DEFAULT_IDLE_TIMEOUT_MS =
+  30 * 60 * 1000`). Codex binding `5e6ab801` Q2: 10 min (PR #926
+  default) caused false positives on legitimate long-running tools
+  (`user:dev` deploy, big test runs, npm install) that emit no SDK
+  events for >10 min; 30 min preserves the safety net while leaving
+  room for real long tools.
+- Env override: `SOMA_STREAM_STALL_TIMEOUT_MS` — name kept from PR #926
+  so operator config carries forward unchanged. Positive int → ms;
+  `0` or non-positive → disable; invalid/non-finite → fall back to
+  default.
+- Wiring: `StreamProcessor` constructor takes
+  `{ idleTimeoutMs }`; the per-iteration race resolves with
+  `kind: 'idleTimeout'` after the window elapses, calls
+  `callbacks.onIdleTimeout()`, and returns
+  `{ success: true, aborted: true }`. `stream-executor.ts`'s
+  `onIdleTimeout` wires `abortController.abort('stall-timeout' satisfies
+  RequestAbortReason)` so the existing `handleError`
+  `notifyWorthyAbort` gate surfaces the same Korean 🔴 card.
+- Abort target: still the LOCAL `abortController` (codex `2a332a29`
+  P4 carries over), NOT `requestCoordinator.abortSession`.
+  First-reason-wins on `AbortController` continues to protect a
+  healthy `supersede` from being overwritten by a late stall fire.
+- `unref()` on the underlying timer so the safety-net cannot keep
+  Node alive at shutdown — defense-in-depth retained from PR #926.
+- Why moving INTO the consumption loop matters (codex `5e6ab801` Q1):
+  the previous external watchdog called
+  `abortController.abort('stall-timeout')` but the `for await` was
+  still suspended in the hung `.next()`. If the SDK transport did
+  not honor the abort signal, the loop never unblocked even though
+  the controller was aborted. Racing each `.next()` from inside the
+  loop sidesteps that — when the timer wins, we abandon the pending
+  promise and return immediately.
 
-Observed failure that motivated the install: dev session `C0ACK3US1D4-1778569028.139949` on 2026-05-14 — Turn 1 of PTN-4311 completed cleanly at 07:09:51, Turn 2 started at 07:11:57, sent SDK query, received tool_use events until 07:14:15, then the stream went silent. No `Received result`, no `Completed processing`, no enrichment-failed log. User screenshot at 08:23 KST showed `Last Activity: 1h 9m ago` — turn permanently dead, no terminal marker. PR #924's dispatcher heuristic doesn't help because the user is waiting on the card before sending a new message.
+Observed failure that motivated the original watchdog (kept here for
+context, now handled by the in-process idle timeout): dev session
+`C0ACK3US1D4-1778569028.139949` on 2026-05-14 — Turn 1 of PTN-4311
+completed cleanly at 07:09:51, Turn 2 started at 07:11:57, sent SDK
+query, received tool_use events until 07:14:15, then the stream went
+silent. No `Received result`, no `Completed processing`, no
+enrichment-failed log. User screenshot at 08:23 KST showed
+`Last Activity: 1h 9m ago` — turn permanently dead, no terminal
+marker. PR #924's dispatcher heuristic doesn't help because the user
+is waiting on the card before sending a new message.
+
+## P0 holes plugged (turn-end surface guarantee Phase 1 — PR #969)
+
+PR #969 plugged four P0 holes documented in `exhaustive-paths.md` §B/§C.
+The 10-min stall watchdog (`stream-stall-watchdog.ts`) was kept in
+PR #969 and is REMOVED in this Phase 2 PR (see preceding section for
+the in-process idle-timeout replacement).
+
+### B-1 — ghost-session self-abort tagged
+
+`StreamCallbacks.onToolUse` and `onToolResult` previously emitted
+`abortController.abort()` with NO reason when `session.terminated`
+flipped mid-stream. `coerceAbortReason` mapped the resulting
+DOMException to `undefined` → silent abort branch in `handleError` →
+turn vanished without any card.
+
+Fix: new `RequestAbortReason` value `'ghost-session'` (notify-worthy).
+Both callback sites tag the abort explicitly. `handleError`'s gate
+treats it like `'stall-timeout'` and surfaces a 🔴 card with message
+`'세션이 종료되어 턴이 중단되었습니다.'`.
+
+### B-3 — TurnNotifier zero-channels warn
+
+`TurnNotifier.notify()` used to return silently when zero channels were
+enabled (`active.length === 0`). Operators triaging missing cards had
+no log breadcrumb. Fix: emit `logger.warn` with userId + category
+before the early return. Observability-only — no behavior change for
+healthy deployments.
+
+### C-2 — TurnSurface.end snapshot timeout surfaced to caller
+
+`TurnSurface.end()` returned `Promise<void>`, so a 3s B5 snapshot
+timeout was indistinguishable from a normal completion. Caller
+(`StreamExecutor`) couldn't post a fallback notify when the snapshot
+missed — the turn ended with NO card.
+
+Fix: `end()` now returns `Promise<TurnEndResult>` with a
+`snapshotResolved: boolean` field. StreamExecutor's finally block
+posts `turnNotifier.notify(fallbackArgs)` when the signal is `false`.
+A once-guard (`terminalNotified` outer-scope flag) ensures the
+late `enrichAndResolve().then` rail does NOT double-post if it
+resolves after the fallback already fired.
+
+### C-5 — cleanupTempFiles bounded + moved after endTurn
+
+`cleanupTempFiles` was awaited at `~L1721-1722` (try-block, BEFORE
+`finally`'s `endTurn`). A hung file handler blocked the terminal card.
+
+Fix: new helper `cleanupWithTimeout` (`packages/slack/src/pipeline/
+stream-executor-cleanup-helpers.ts`) wraps cleanup in a 3s race.
+The success-rail call is moved into the finally block AFTER
+`endTurn()` so even a permanent hang cannot block card emission.
+The error-rail call in `handleError` is also wrapped.
 
 ## Decision log
 
 - **2026-05-13 codex session `5c0429b8-108e-49ea-8074-5a4535378cfd`** (PR #912): Option 4 — Option 2 (supersede notify) shipped, Option 3 (stall watchdog) wired as `stall-timeout` reason for follow-up.
 - **2026-05-14 codex session `e294db6b-b322-4ec5-aed4-e05cf9a07d0b`** (PR #923): degraded enrichment is not a fourth terminal state; reuse computed category, omit rich fields. `resolveSnapshot(fallback)` not `undefined` (else Phase-5 B5 path skips).
-- **2026-05-14 codex session `2a332a29-23ae-4fda-933f-b33ebd365ddc`** (this PR): default 10 min, `SOMA_STREAM_STALL_TIMEOUT_MS` override, `<= 0` disables, invalid falls back to default. Abort the LOCAL controller (not the coordinator) so a late fire cannot hit a newer turn. `unref()` the timer. Add the supersede-wins regression test (#3) alongside the basic fire and unit-watchdog tests.
+- **2026-05-14 codex session `2a332a29-23ae-4fda-933f-b33ebd365ddc`** (PR #926): default 10 min, `SOMA_STREAM_STALL_TIMEOUT_MS` override, `<= 0` disables, invalid falls back to default. Abort the LOCAL controller (not the coordinator) so a late fire cannot hit a newer turn. `unref()` the timer. Add the supersede-wins regression test (#3) alongside the basic fire and unit-watchdog tests.
+- **2026-05-26 codex session `eeecfada-18b3-4fd6-9587-3dc2fa1baec8`** (this PR audit): exhaustive 10/6/6 path enumeration. Confirmed B-1/B-3/C-2/C-5 are real silent-fail holes the watchdog was papering over.
+- **2026-05-26 codex session `7bc8a74d-ad7e-4170-8f7f-747c58a066bf`** (PR #969 plan, Phase 1): split Phase 1 (card-hole fixes, watchdog KEPT) from Phase 2 (watchdog removal + C-1 idle-timeout). Use `'ghost-session'` not `'session-close'` for the callback self-abort. C-2 fallback lives in StreamExecutor (not TurnSurface) because `turnNotifier` is not in `TurnSurfaceDeps`. C-5 test uses fake timers + endTurn-call assertion, not vitest test-level timeout.
+- **2026-05-26 codex session `5e6ab801-3d1a-4651-a406-f0d6c994e7db`** (this PR — Phase 2): bindings — (Q1) wire idle timeout INSIDE `StreamProcessor.process` via per-`.next()` race; the external `StreamStallWatchdog` was cosmetically equivalent but sat outside the stuck `.next()` and couldn't unblock it when the SDK ignored abort. (Q2) raise default to **30 min** to stop killing legitimate long-running tools that the 10-min default hit. (Q4) reuse `'stall-timeout'` `RequestAbortReason` rather than coining `'sdk-idle-timeout'` — `handleError` already routes that reason to the Korean 🔴 card. (Q6) revert + replace in a single PR (PR #969 promised both). (Q7) keep `SOMA_STREAM_STALL_TIMEOUT_MS` env var name for operator backward-compat — only the implementation owner changes.

@@ -83,8 +83,8 @@ export interface SessionResourceUpdateRequest {
 export type {
   SaveContextResultFile,
   SaveContextResultPayload,
+  UserChoice,
   UserChoiceOption,
   UserChoiceQuestion,
-  UserChoice,
   UserChoices,
 } from '../model-commands/session-types.js';

@@ -41,18 +41,10 @@ export interface LlmRuntime {
   ensureReady(): Promise<void>;
 
   /** Start a new chat session. */
-  startSession(
-    model: string,
-    prompt: string,
-    opts: RuntimeCallOptions,
-  ): Promise<StartSessionResult>;
+  startSession(model: string, prompt: string, opts: RuntimeCallOptions): Promise<StartSessionResult>;
 
   /** Continue an existing backend session. */
-  resumeSession(
-    backendSessionId: string,
-    prompt: string,
-    opts: RuntimeCallOptions,
-  ): Promise<ResumeSessionResult>;
+  resumeSession(backendSessionId: string, prompt: string, opts: RuntimeCallOptions): Promise<ResumeSessionResult>;
 
   /** Clean shutdown — stop the underlying MCP client process. */
   shutdown(): Promise<void>;

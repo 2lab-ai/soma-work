@@ -23,7 +23,12 @@ vi.mock('@modelcontextprotocol/sdk/types.js', () => ({
 vi.mock('./runtime/codex-runtime.js', () => ({
   CodexRuntime: class {
     name = 'codex';
-    capabilities = { supportsReview: false, supportsInterrupt: false, supportsResume: true, supportsEventStream: false };
+    capabilities = {
+      supportsReview: false,
+      supportsInterrupt: false,
+      supportsResume: true,
+      supportsEventStream: false,
+    };
     ensureReady = vi.fn();
     startSession = vi.fn();
     resumeSession = vi.fn();
@@ -33,7 +38,12 @@ vi.mock('./runtime/codex-runtime.js', () => ({
 vi.mock('./runtime/gemini-runtime.js', () => ({
   GeminiRuntime: class {
     name = 'gemini';
-    capabilities = { supportsReview: false, supportsInterrupt: false, supportsResume: true, supportsEventStream: false };
+    capabilities = {
+      supportsReview: false,
+      supportsInterrupt: false,
+      supportsResume: true,
+      supportsEventStream: false,
+    };
     ensureReady = vi.fn();
     startSession = vi.fn();
     resumeSession = vi.fn();

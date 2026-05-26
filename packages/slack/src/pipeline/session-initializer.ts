@@ -2,7 +2,12 @@ import * as fs from 'node:fs';
 import { Logger } from '@soma/common/logger';
 import type { AssistantStatusManager } from '../assistant-status-manager';
 import type { ContextWindowManager } from '../context-window-manager';
-import { DispatchAbortError, type DispatchAbortReason, type HandoffContext, type WorkflowType } from '../dispatch-abort';
+import {
+  DispatchAbortError,
+  type DispatchAbortReason,
+  type HandoffContext,
+  type WorkflowType,
+} from '../dispatch-abort';
 import { MessageFormatter } from '../message-formatter';
 import type { MessageValidator } from '../message-validator';
 import { LOG_DETAIL, OutputFlag, shouldOutput } from '../output-flags';
@@ -15,11 +20,10 @@ import { shouldRunLegacyB4Path as defaultShouldRunLegacyB4Path } from './effecti
 import type { ConversationSession, MessageEvent, SayFn, SessionInitResult } from './types';
 
 export type { WorkflowType } from '../dispatch-abort';
+
 type ZHandoffWorkflow = 'z-plan-to-work' | 'z-epic-update';
 
-type HandoffParseResult =
-  | { ok: true; context: any }
-  | { ok: false; reason: string; detail?: string };
+type HandoffParseResult = { ok: true; context: any } | { ok: false; reason: string; detail?: string };
 
 type ChannelRouteBlockParams = {
   prUrl: string;
@@ -133,7 +137,8 @@ export function setSessionInitializerProviders(next: SessionInitializerProviders
   if (next.registerChannel) providers.registerChannel = next.registerChannel;
   if (next.createConversation) providers.createConversation = next.createConversation;
   if (next.getConversationUrl) providers.getConversationUrl = next.getConversationUrl;
-  if (next.scheduleLinkDerivedTitleRefresh) providers.scheduleLinkDerivedTitleRefresh = next.scheduleLinkDerivedTitleRefresh;
+  if (next.scheduleLinkDerivedTitleRefresh)
+    providers.scheduleLinkDerivedTitleRefresh = next.scheduleLinkDerivedTitleRefresh;
   if (next.getDispatchService) providers.getDispatchService = next.getDispatchService;
   if (next.getUserSettings) providers.getUserSettings = next.getUserSettings;
   if (next.createPendingUser) providers.createPendingUser = next.createPendingUser;
@@ -842,7 +847,9 @@ export class SessionInitializer {
         threadTs,
         textPreview: text.substring(0, 50),
       });
-      abortController.abort();
+      // B-2: dispatch-level timeout — semantically a stall on this turn,
+      // surface the 🔴 stall card via handleError's existing routing.
+      abortController.abort('stall-timeout');
     }, DISPATCH_TIMEOUT_MS);
 
     // Track dispatch status message for updating

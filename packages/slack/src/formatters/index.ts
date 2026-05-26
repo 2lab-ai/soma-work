@@ -3,9 +3,9 @@ export {
   setDirectoryFormatterBaseDirectoryProvider,
 } from './directory-formatter';
 export {
+  type ConvertResult,
   estimatePayloadSize,
   markdownToBlocks,
-  thinkingToQuoteBlock,
-  type ConvertResult,
   type SlackBlock,
+  thinkingToQuoteBlock,
 } from './markdown-to-blocks';

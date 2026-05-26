@@ -16,7 +16,13 @@ import type { ReactionManager } from '../reaction-manager';
 import type { RequestAbortReason, RequestCoordinator } from '../request-coordinator';
 import type { SlackApiHelper } from '../slack-api-helper';
 import type { StatusReporter } from '../status-reporter';
-import { type StreamCallbacks, type StreamContext, StreamProcessor, type UsageData } from '../stream-processor';
+import {
+  readIdleTimeoutMs,
+  type StreamCallbacks,
+  type StreamContext,
+  StreamProcessor,
+  type UsageData,
+} from '../stream-processor';
 import type { SummaryService } from '../summary-service';
 import type { SummaryTimer } from '../summary-timer';
 import type { ThreadPanel, TurnAddress, TurnContext } from '../thread-panel';
@@ -31,11 +37,11 @@ import {
   type TurnNotifier,
   type TurnNotifierNotifyOpts,
 } from '../turn-notifier';
-import { UserChoiceHandler } from '../user-choice-handler';
 import type { UserChoice, UserChoices } from '../user-choice-extractor';
+import { UserChoiceHandler } from '../user-choice-handler';
 import { shouldRunLegacyB4Path as defaultShouldRunLegacyB4Path } from './effective-phase';
 import { isLocalSlashCommand } from './local-slash-command';
-import { readStallTimeoutMs, StreamStallWatchdog } from './stream-stall-watchdog';
+import { cleanupWithTimeout, DEFAULT_CLEANUP_TIMEOUT_MS, runWithTimeout } from './stream-executor-cleanup-helpers';
 import type { ConversationSession, ProcessedFile, SayFn } from './types';
 
 type ClaudeHandler = any;
@@ -173,7 +179,8 @@ let streamExecutorProviders: Required<StreamExecutorProviders> = {
   },
   hasOneMSuffix: (model) => /\[1m\]$/i.test(model),
   isOneMContextUnavailableSignal: (text) => streamExecutorProviders.classifyOneMUnavailable(text) !== 'none',
-  resolveContextWindow: (modelName) => (modelName && streamExecutorProviders.hasOneMSuffix(modelName) ? 1_000_000 : FALLBACK_CONTEXT_WINDOW),
+  resolveContextWindow: (modelName) =>
+    modelName && streamExecutorProviders.hasOneMSuffix(modelName) ? 1_000_000 : FALLBACK_CONTEXT_WINDOW,
   stripOneMSuffix: (model) => model.replace(/\[1m\]$/i, ''),
   interceptToolResults: () => {},
   checkAndSchedulePendingCompact: async () => undefined,
@@ -215,7 +222,8 @@ const userSettingsStore: any = new Proxy(defaultUserSettingsStore, {
   },
 });
 const parseModelCommandRunResponse = (result: unknown) => streamExecutorProviders.parseModelCommandRunResponse(result);
-const getChannelDescription = (client: any, channel: string) => streamExecutorProviders.getChannelDescription(client, channel);
+const getChannelDescription = (client: any, channel: string) =>
+  streamExecutorProviders.getChannelDescription(client, channel);
 const getChannel = (channel: string) => streamExecutorProviders.getChannel(channel);
 const fetchClaudeStatus = () => streamExecutorProviders.fetchClaudeStatus();
 const formatStatusForSlack = (status: any) => streamExecutorProviders.formatStatusForSlack(status);
@@ -397,8 +405,11 @@ function toUsagePercentSnapshot(snap: UsageSnapshot | null | undefined): UsagePe
  * The set of {@link RequestAbortReason} strings we will trust when read off
  * an `AbortSignal.reason`. Anything else — DOMException defaults, foreign
  * code paths calling `controller.abort()` with no argument or with a
- * non-string sentinel — collapses to `undefined` so `handleError` falls
- * through to its conservative "stay quiet" branch.
+ * non-RequestAbortReason string (e.g. the `'fetch-timeout'` /
+ * `'summary-superseded'` / etc. tags used by non-turn controllers) —
+ * collapses to {@link UNKNOWN_ABORT_REASON} so `handleError`'s
+ * defense-in-depth branch can surface a generic 🔴 card rather than
+ * silently swallowing the turn.
  */
 const KNOWN_ABORT_REASONS: ReadonlySet<RequestAbortReason> = new Set([
   'supersede',
@@ -406,11 +417,33 @@ const KNOWN_ABORT_REASONS: ReadonlySet<RequestAbortReason> = new Set([
   'session-close',
   'shutdown',
   'stall-timeout',
+  // ghost-session — onToolUse / onToolResult observed `session.terminated`
+  // mid-stream and aborted the local controller. Surface a terminal card
+  // because the session died out-of-band; the user has no other signal.
+  // Trace: docs/current/plans/turn-end-surface-guarantee/exhaustive-paths.md §B-1.
+  'ghost-session',
 ]);
 
-function coerceAbortReason(raw: unknown): RequestAbortReason | undefined {
-  if (typeof raw !== 'string') return undefined;
-  return KNOWN_ABORT_REASONS.has(raw as RequestAbortReason) ? (raw as RequestAbortReason) : undefined;
+/**
+ * Internal sentinel for the B-2 defense-in-depth path. NOT exported and NOT
+ * added to {@link RequestAbortReason} — pollution of the producer-side union
+ * would force every consumer to handle a value that should never originate
+ * from `RequestCoordinator`. Instead, when `coerceAbortReason` sees an
+ * unknown / unexpected reason it returns this sentinel and `handleError`'s
+ * `notifyWorthyAbort` gate maps it to a generic 🔴 card.
+ *
+ * Trace: docs/current/plans/turn-end-surface-guarantee/exhaustive-paths.md §B-2.
+ */
+const UNKNOWN_ABORT_REASON = '__unknown' as const;
+
+/** Coerced reason type — either a known RequestAbortReason or the internal sentinel. */
+type CoercedAbortReason = RequestAbortReason | typeof UNKNOWN_ABORT_REASON;
+
+function coerceAbortReason(raw: unknown): CoercedAbortReason {
+  if (typeof raw === 'string' && KNOWN_ABORT_REASONS.has(raw as RequestAbortReason)) {
+    return raw as RequestAbortReason;
+  }
+  return UNKNOWN_ABORT_REASON;
 }
 
 /** Issue #816 — single-line preview for the MCP parse-fail Slack post. */
@@ -588,6 +621,45 @@ export class StreamExecutor {
   }
 
   /**
+   * Turn-end surface guarantee §C-2 — fallback notify rail.
+   *
+   * Called from `execute()`'s finally block after `threadPanel.endTurn()`
+   * returns its `TurnEndResult`. When `snapshotResolved === false`, the
+   * B5 completion snapshot did not land within `TurnSurface.end`'s 3s
+   * race window — that means no terminal card has been posted on any
+   * channel for this turn. Post the fallback so the user sees a 🟢/🟠/🔴
+   * marker instead of a half-finished thread.
+   *
+   * Once-guard is the CALLER's responsibility (see `terminalNotified` in
+   * `execute()`): this method posts unconditionally when
+   * `snapshotResolved === false`, so the caller must skip it when the
+   * enrichment `.then` already won the race.
+   *
+   * Pre-fix: `TurnSurface.end` returned `Promise<void>`, so StreamExecutor
+   * had no way to detect the missed snapshot. The 10-minute stall watchdog
+   * (PR #926, since deleted) was a blunt fail-safe for exactly this hole.
+   * Trace: `docs/current/plans/turn-end-surface-guarantee/exhaustive-paths.md` §C-2.
+   */
+  private maybeFallbackNotifyAfterTurnSurface(args: {
+    snapshotResolved: boolean;
+    fallbackArgs: TurnCompletionEvent & { sessionKey?: string; turnId?: string };
+  }): void {
+    if (args.snapshotResolved) return;
+    if (!this.deps.turnNotifier) return;
+
+    try {
+      const notifyOpts = this.buildCompletionNotifyOpts();
+      this.deps.turnNotifier.notify(args.fallbackArgs, notifyOpts);
+    } catch (err: unknown) {
+      this.logger.warn('Fallback TurnNotifier.notify threw (turn-surface timeout path)', {
+        sessionKey: args.fallbackArgs.sessionKey,
+        turnId: args.fallbackArgs.turnId,
+        error: (err as { message?: string })?.message ?? String(err),
+      });
+    }
+  }
+
+  /**
    * 프롬프트 준비
    */
   async preparePrompt(
@@ -679,9 +751,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // Abort any in-flight summary fork to prevent stale summary from repopulating after clearDisplay.
     // This is the key fix for the race: timer cancel only prevents new fires, but an already-running
     // fork must be explicitly aborted so its result is discarded.
+    // B-2: summary forks are auxiliary jobs (not turn controllers), tag with
+    // a descriptive non-RequestAbortReason string for debug visibility.
     const pendingAbort = this.summaryAbortControllers.get(params.sessionKey);
     if (pendingAbort) {
-      pendingAbort.abort();
+      pendingAbort.abort('summary-superseded');
       this.summaryAbortControllers.delete(params.sessionKey);
     }
 
@@ -762,6 +836,20 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     });
     const buildCompletionEvent = (): Promise<TurnCompletionEvent | undefined> => snapshotPromise;
 
+    // Turn-end surface guarantee §C-2: once-guard for the terminal card.
+    // Three rails can produce a terminal card for the same turn:
+    //   1. `enrichAndResolve().then` — the success path.
+    //   2. `handleEnrichmentFailure` — enrichment threw, post a fallback.
+    //   3. `maybeFallbackNotifyAfterTurnSurface` — TurnSurface.end's 3s
+    //      snapshot timeout fired; nothing else has posted a card yet.
+    // Pre-fix only rails 1 and 2 existed, and rail 3 was the silent drop
+    // that PR #926's watchdog tried to paper over. `terminalNotified` is
+    // set by whichever rail wins so a later rail does NOT double-post.
+    // `fallbackArgsForTurnSurface` is exposed to the finally block so it
+    // can hand the fallback shape to rail 3.
+    let terminalNotified = false;
+    let fallbackArgsForTurnSurface: (TurnCompletionEvent & { sessionKey?: string; turnId?: string }) | undefined;
+
     const turnContext: TurnContext = {
       channelId: channel,
       threadTs: threadTs || undefined,
@@ -780,7 +868,19 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       recipientTeamId: params.teamId || undefined,
       buildCompletionEvent,
     };
-    await this.deps.threadPanel?.beginTurn(turnContext);
+    // C-3: bound `beginTurn` so a hung thread-panel implementation cannot
+    // block the outer try-block entry — pre-fix, a `beginTurn` hang meant
+    // catch + finally never ran and the turn vanished with no card.
+    // Proceed on timeout (per codex `9f9d4382` Q3 Option A): beginTurn is
+    // surface setup, not a hard precondition; the rest of the turn can
+    // still run and emit a terminal card via the normal rails.
+    // Trace: docs/current/plans/turn-end-surface-guarantee/exhaustive-paths.md §C-3.
+    if (this.deps.threadPanel) {
+      await runWithTimeout(() => this.deps.threadPanel!.beginTurn(turnContext), 5_000, {
+        what: 'threadPanel.beginTurn',
+        logger: this.logger,
+      });
+    }
 
     // Dashboard v2.1 — turn timer: mark active-leg start and broadcast so
     // the live 1s tick picks up the new leg without waiting for any other
@@ -822,23 +922,27 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       waitingForChoice: false,
     });
 
-    // Stream stall watchdog — auto-aborts the SDK call after N ms of no
-    // SDK activity so a hung turn surfaces a 🔴 "오류 발생" terminal card
-    // instead of leaving the thread silent. `arm()` runs just before
-    // `processor.process(...)`; `touch()` runs from `onSdkActivity` on
-    // every SDK event; `clear()` runs in the outer `finally`.
+    // Idle-timeout is enforced inside `StreamProcessor.process` via a
+    // `Promise.race` around each `iterator.next()`; on expiry the
+    // processor invokes `onIdleTimeout` (wired below to abort the LOCAL
+    // controller with `'stall-timeout'`) and returns `aborted: true`,
+    // so `handleError` surfaces the 🔴 "이전 턴이 일정 시간 응답이
+    // 없어 중단되었습니다." card.
     //
-    // Codex P4: abort is bound to THIS turn's local `abortController` —
-    // not routed through `requestCoordinator.abortSession`, so a late
-    // watchdog fire after the turn moved on cannot abort a newer
-    // controller (CAS-guarded by `removeController(sessionKey, ac)`).
-    // First abort reason wins on AbortController; if `supersede` already
-    // fired, `stall-timeout` here is a no-op.
-    const stallWatchdog = new StreamStallWatchdog(
-      readStallTimeoutMs(),
-      () => abortController.abort('stall-timeout' satisfies RequestAbortReason),
-      this.logger,
-    );
+    // Why the LOCAL `abortController` (not `requestCoordinator
+    // .abortSession`): the coordinator may already point at a newer
+    // controller for a follow-up turn; aborting through it could kill
+    // the wrong turn. The local controller is CAS-guarded via
+    // `removeController(sessionKey, ac)`. `AbortController`'s
+    // first-reason-wins semantics make a late stall fire a no-op if
+    // `supersede` already ran.
+    //
+    // Operator config: `SOMA_STREAM_STALL_TIMEOUT_MS` env var. `<= 0`
+    // disables; default 30 min leaves headroom for legitimate
+    // long-running tools that emit no SDK events for several minutes.
+    //
+    // Trace: docs/current/plans/turn-end-surface-guarantee/exhaustive-paths.md §C-1.
+    const idleTimeoutMs = readIdleTimeoutMs();
 
     try {
       // #617 followup: Claude Agent SDK only recognizes local slash commands
@@ -976,12 +1080,65 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
 
       // Fast-fail: block model invocation when user email is not configured.
       // Placed BEFORE spinner/reaction to avoid dangling UI state on early return.
+      //
+      // B-5: surface as an Exception turn-end card (uniform with the rest of
+      // the terminal-card invariant) instead of a plain ⚠️ text. When
+      // `turnNotifier` is wired (production), fire the standard event so
+      // the block-kit channel renders the 🔴 card. When it's not (test
+      // harness / misconfigured DI), fall back to a `say()` with Block Kit
+      // blocks so the visual parity holds.
+      //
+      // Also resolve the B5 snapshot with `undefined` — `threadPanel.beginTurn`
+      // already ran at L871, so P5 would wait 3s on a snapshot that the
+      // short-circuit return guarantees will never arrive.
+      // Trace: docs/current/plans/turn-end-surface-guarantee/exhaustive-paths.md §B-5.
       const resolvedEmail = userSettingsStore.getUserEmail(user);
       if (!resolvedEmail) {
-        await say({
-          text: `⚠️ *이메일이 설정되지 않았습니다.*\n\n이 기능을 사용하려면 이메일 설정이 필요합니다.\n\`set email <your-email>\` 명령으로 이메일을 설정해주세요.\n\n예시: \`set email you@company.com\``,
-          thread_ts: threadTs,
-        });
+        const emailFailMessage =
+          '이메일이 설정되지 않았습니다. `set email <your-email>` 명령으로 이메일을 설정해주세요. 예: `set email you@company.com`';
+        const emailFailBlocks = [
+          {
+            type: 'section',
+            text: { type: 'mrkdwn', text: `🔴 *이메일이 설정되지 않았습니다.*` },
+          },
+          {
+            type: 'section',
+            text: {
+              type: 'mrkdwn',
+              text:
+                '이 기능을 사용하려면 이메일 설정이 필요합니다.\n' +
+                '`set email <your-email>` 명령으로 이메일을 설정해주세요.\n\n' +
+                '예: `set email you@company.com`',
+            },
+          },
+        ];
+
+        // Release the B5 snapshot before short-circuit return so P5's
+        // `TurnSurface.end` doesn't wait 3s on a snapshot that will never
+        // be enriched.
+        resolveSnapshot(undefined);
+
+        if (this.deps.turnNotifier) {
+          this.deps.turnNotifier
+            .notify({
+              category: 'Exception',
+              userId: session.ownerId || user || '',
+              channel,
+              threadTs,
+              sessionTitle: session.title,
+              message: emailFailMessage,
+              durationMs: 0,
+            })
+            .catch((err: any) => this.logger.warn('B-5 email-fast-fail notification failed', { error: err?.message }));
+        } else {
+          // Fallback when DI omits the notifier (test harness or misconfig).
+          await say({
+            text: `🔴 ${emailFailMessage}`,
+            blocks: emailFailBlocks,
+            thread_ts: threadTs,
+          });
+        }
+
         this.logger.warn('Blocked model invocation: user email not configured', { user });
         return { success: false, messageCount: 0 };
       }
@@ -1051,15 +1208,25 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       const streamCallbacks: StreamCallbacks = {
         onSdkActivity: () => {
           this.deps.requestCoordinator.touchSession(sessionKey);
-          // Reset stall watchdog on every SDK event so a healthy
-          // long-running tool (Playwright sweep / big grep / Docker
-          // pull) doesn't trip the auto-abort.
-          stallWatchdog.touch();
+        },
+        // Fires from inside `StreamProcessor.process` when the SDK
+        // iterator has been silent for `idleTimeoutMs`. Tag the LOCAL
+        // turn controller (not the coordinator) so a stale fire after
+        // the turn moved on cannot abort a newer controller. The
+        // `handleError` `notifyWorthyAbort` gate routes
+        // `'stall-timeout'` to the 🔴 card.
+        onIdleTimeout: () => {
+          abortController.abort('stall-timeout' satisfies RequestAbortReason);
         },
         onToolUse: async (toolUses, ctx) => {
-          // Ghost Session Fix #99: self-terminate if session was terminated while streaming
+          // Ghost Session Fix #99: self-terminate if session was terminated while streaming.
+          // Tag the abort with `'ghost-session'` so handleError surfaces a
+          // 🔴 terminal card. An untagged abort here previously fell
+          // through to the silent abort branch (DOMException → coerceAbortReason
+          // → undefined → quiet) and the turn vanished without any user signal.
+          // Trace: docs/current/plans/turn-end-surface-guarantee/exhaustive-paths.md §B-1.
           if (session.terminated) {
-            abortController.abort();
+            abortController.abort('ghost-session' satisfies RequestAbortReason);
             return;
           }
           if (isOutputEnabled(OutputFlag.STATUS_REACTION)) {
@@ -1119,9 +1286,10 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           turnCollector.onPhaseChange('도구 실행 중');
         },
         onToolResult: async (toolResults, ctx) => {
-          // Ghost Session Fix #99: self-terminate if session was terminated while streaming
+          // Ghost Session Fix #99: self-terminate if session was terminated while streaming.
+          // Same tagging rationale as onToolUse above — see §B-1.
           if (session.terminated) {
-            abortController.abort();
+            abortController.abort('ghost-session' satisfies RequestAbortReason);
             return;
           }
           // Accumulate per-request tool stats
@@ -1463,19 +1631,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         },
       };
 
-      // Create and run stream processor
-      const processor = new StreamProcessor(streamCallbacks);
+      // Create and run stream processor. `idleTimeoutMs` arms the
+      // per-`.next()` race documented at the construct site above.
+      const processor = new StreamProcessor(streamCallbacks, { idleTimeoutMs });
 
       // Wire compact duration callback: tool-event-processor → stream-processor
       this.deps.toolEventProcessor.setCompactDurationCallback((toolUseId, duration, ch) =>
         processor.updateToolCallDuration(toolUseId, duration, ch),
       );
-
-      // Arm the stall watchdog immediately before handing the iterable
-      // to the processor. Any cold-start latency before the first SDK
-      // event still has the full stall window — the first `touch()`
-      // from `onSdkActivity` will reset it.
-      stallWatchdog.arm();
 
       const streamResult = await processor.process(
         this.deps.claudeHandler.streamQuery(finalPrompt, session, abortController, workingDirectory, slackContext),
@@ -1583,10 +1746,32 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // turnNotifier is wired (harness / tests / misconfigured DI).
       // Codex P1-2 decoupling requirement: event construction is independent
       // of turnNotifier presence.
-      const category = determineTurnCategory({
+      // B-6: settle the renew outcome BEFORE the enrichment-notify rail
+      // fires. Previously `buildRenewContinuation` ran AFTER `.then(notify)`
+      // had already posted the 🟢 WorkflowComplete card — so a renew failure
+      // produced a misleading 🟢 followed only by a plain ⚠️ text. By
+      // resolving the continuation here we can compute the final category
+      // (`'Exception'` on renew failure) once, and the success rail posts
+      // exactly one card with the truthful outcome.
+      // Trace: docs/current/plans/turn-end-surface-guarantee/exhaustive-paths.md §B-6.
+      let renewContinuation: Continuation | undefined;
+      let renewFailed = false;
+      if (session.renewState === 'pending_save') {
+        renewContinuation = await this.buildRenewContinuation(session, streamResult.collectedText || '', threadTs, say);
+        renewFailed = !renewContinuation;
+      }
+
+      const baseCategory = determineTurnCategory({
         hasPendingChoice,
         isError: hasSdkError,
       });
+      const category: TurnCategory = renewFailed ? 'Exception' : baseCategory;
+      // Renew-failure surfaces a specific Korean message instead of the
+      // generic stream-error coalesce — `buildRenewContinuation` already
+      // posted the detailed `⚠️ Save failed: …` text inline (kept for
+      // backward compat / log breadcrumbs), so this card just needs a
+      // crisp summary line for the block-kit body.
+      const renewFailureMessage = renewFailed ? 'Renew 작업이 실패했습니다.' : undefined;
       const durationMs = Date.now() - requestStartedAt.getTime();
 
       // Build the enriched event. Returns the event on success; throws on
@@ -1614,6 +1799,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           channel,
           threadTs,
           sessionTitle: session.title,
+          // B-6: when the renew rail failed, surface the crisp failure
+          // summary in the card body alongside the standard enrichment.
+          ...(renewFailureMessage ? { message: renewFailureMessage } : {}),
           durationMs,
           // Rich fields
           persona: userSettingsStore.getUserPersona(session.ownerId || user),
@@ -1671,9 +1859,15 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         sessionKey,
         turnId,
       };
+      // Surface §C-2: expose fallback shape to the finally block so it can
+      // post the fallback notify if TurnSurface.end reports a missed snapshot.
+      fallbackArgsForTurnSurface = fallbackArgs;
       enrichAndResolve()
         .then((evt) => {
           resolveSnapshot(evt);
+          // §C-2 once-guard — skip if the finally fallback already posted
+          // (e.g. enrichment was slow, TurnSurface.end timeout fired first).
+          if (terminalNotified) return;
           if (this.deps.turnNotifier) {
             try {
               // P5 exclusion — `buildCompletionNotifyOpts()` returns undefined
@@ -1681,6 +1875,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
               // identical to pre-P5 on the legacy path.
               const notifyOpts = this.buildCompletionNotifyOpts();
               this.deps.turnNotifier.notify(evt, notifyOpts);
+              terminalNotified = true;
             } catch (err: unknown) {
               // Notifier throws are their own failure mode — logged with a
               // distinct message so operators can triage "enrich failed" vs
@@ -1693,7 +1888,33 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             }
           }
         })
-        .catch((err: unknown) => this.handleEnrichmentFailure(err, fallbackArgs, resolveSnapshot));
+        .catch((err: unknown) => {
+          // §C-2 once-guard: if the finally fallback already won the race
+          // (TurnSurface.end timeout fired first), don't double-post here.
+          // Resolve the snapshot with `undefined` so any non-racy consumer
+          // (analytics chained to `snapshotPromise`) sees a stable shape
+          // rather than the malformed `fallbackArgs` partial (it lacks
+          // `message` — codex review CRIT-2). By this point
+          // TurnSurface.end has already lost the race so the value is
+          // observationally irrelevant, but `undefined` is the cleaner
+          // sentinel and matches the pre-fix contract for non-race
+          // consumers.
+          if (terminalNotified) {
+            resolveSnapshot(undefined);
+            return;
+          }
+          // Codex review CRIT-1: flip `terminalNotified` AFTER the helper
+          // returns. If the helper itself throws synchronously (`logger.warn`
+          // backend pathological, `coalesceErrorMessage` on a Proxy err that
+          // throws on `.message` read), the catch handler rejects, the
+          // snapshot stays pending forever, AND a pre-flag flip would poison
+          // the finally once-guard — silencing every rail. By flipping the
+          // flag AFTER the helper, a throw is recoverable by the finally
+          // fallback (terminalNotified stays false →
+          // maybeFallbackNotifyAfterTurnSurface runs).
+          this.handleEnrichmentFailure(err, fallbackArgs, resolveSnapshot);
+          terminalNotified = true;
+        });
 
       // Start summary timer for non-error completions (fire-and-forget).
       // The countdown tick mirrors MCP-completion's per-session interval: a
@@ -1715,23 +1936,30 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // surface/header message — causing header deletion on next input.
 
       // Update bot-initiated thread root with status
-      // Clean up temporary files
-      if (processedFiles.length > 0) {
-        await this.deps.fileHandler.cleanupTempFiles(processedFiles);
-      }
+      //
+      // Turn-end surface guarantee §C-5: temp-file cleanup is now handled
+      // by the `finally` block AFTER `threadPanel.endTurn()` runs, wrapped
+      // in `cleanupWithTimeout`. Pre-fix this awaited cleanup HERE, before
+      // finally — a hung file handler blocked endTurn → no B5 card emitted
+      // → no fallback notify path either. Moving it post-endTurn means a
+      // hang can never block the terminal card.
+      // Trace: docs/current/plans/turn-end-surface-guarantee/exhaustive-paths.md §C-5.
 
-      // Handle renew flow if in pending_save state - return continuation instead of recursing
-      if (session.renewState === 'pending_save') {
-        const continuation = await this.buildRenewContinuation(
-          session,
-          streamResult.collectedText || '',
-          threadTs,
-          say,
-        );
-        if (continuation) {
-          turnCollector.setContinuation(continuation);
-          return { success: true, messageCount: streamResult.messageCount, continuation, turnCollector };
-        }
+      // B-6: renew continuation already settled before the notify rail (see
+      // the `renewContinuation` / `renewFailed` computation above
+      // `determineTurnCategory`). If renew succeeded, return the
+      // continuation so the outer caller schedules the next turn; if it
+      // failed, the Exception category was already emitted by the
+      // `.then` rail above — fall through to the standard success-rail
+      // return so the lifecycle (status clear, cleanup) still runs.
+      if (renewContinuation) {
+        turnCollector.setContinuation(renewContinuation);
+        return {
+          success: true,
+          messageCount: streamResult.messageCount,
+          continuation: renewContinuation,
+          turnCollector,
+        };
       }
 
       // Handle onboarding completion/skip - transition to real workflow
@@ -1834,11 +2062,6 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         handled: retryAfterMs === undefined,
       };
     } finally {
-      // Cancel the stall watchdog on every exit path (success, error, or
-      // an in-flight abort that the catch branch already handled).
-      // `clear()` is idempotent and safe after a fire — a fired watchdog
-      // is already stopped.
-      stallWatchdog.clear();
       // Issue #688 — defense-in-depth status clear on every exit path.
       // The success and error branches above already clear with the
       // same epoch guard; the manager is idempotent, and the guard
@@ -1861,13 +2084,56 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       //
       // Swallow any throw so `cleanup()` below still runs — session cleanup
       // is critical for correctness (stale per-session state would leak).
+      //
+      // §C-2: capture the snapshot-resolved signal so we can post a fallback
+      // `turnNotifier.notify()` when the B5 snapshot missed its 3s window.
+      // The `?? { snapshotResolved: true }` branch covers PHASE=0 (no
+      // ThreadPanel wired) and the catch-branch path where the catch
+      // already called endTurn — in both cases we don't expect a snapshot
+      // and there's nothing to fall back on.
+      //
+      // Codex review [2b/6a]: when `endTurn()` itself THROWS (closeStream,
+      // B4 spinner clear, etc.), bias the default toward
+      // `snapshotResolved: false` so the finally fallback fires. The
+      // once-guard (`terminalNotified`) prevents a double-post if the
+      // `.then` rail eventually wins — worst case is one extra card when
+      // both rails fail catastrophically, which is preferable to silently
+      // dropping every card on a throwing endTurn.
+      let turnEndResult: { snapshotResolved: boolean } = { snapshotResolved: true };
       try {
-        await this.deps.threadPanel?.endTurn(turnId, 'completed');
+        turnEndResult = (await this.deps.threadPanel?.endTurn(turnId, 'completed')) ?? { snapshotResolved: true };
       } catch (cleanupErr) {
         this.logger.warn('stream-executor: B1 close in finally failed', {
           turnId,
           cleanupError: (cleanupErr as Error)?.message ?? String(cleanupErr),
         });
+        // Bias toward posting the fallback — a thrown endTurn means we
+        // CANNOT trust that the terminal card reached the user.
+        turnEndResult = { snapshotResolved: false };
+      }
+      // §C-2: TurnSurface.end reported the snapshot did NOT land in time
+      // (or the builder threw). Post a fallback terminal card so the user
+      // sees a 🟢/🟠/🔴 marker on every channel instead of a half-finished
+      // thread. Once-guard via `terminalNotified` ensures we don't
+      // double-post if the enrichment `.then` later races in.
+      if (!turnEndResult.snapshotResolved && !terminalNotified && fallbackArgsForTurnSurface) {
+        this.maybeFallbackNotifyAfterTurnSurface({
+          snapshotResolved: turnEndResult.snapshotResolved,
+          fallbackArgs: fallbackArgsForTurnSurface,
+        });
+        terminalNotified = true;
+      }
+      // §C-5: temp-file cleanup runs AFTER the terminal-card emit so a
+      // hung file handler can never block the card. Wrapped in
+      // `cleanupWithTimeout` so even a permanent hang resolves within
+      // the bounded window; the inner cleanup keeps running in the
+      // background and any late rejection is logged-and-swallowed.
+      if (processedFiles.length > 0) {
+        await cleanupWithTimeout(
+          () => this.deps.fileHandler.cleanupTempFiles(processedFiles),
+          DEFAULT_CLEANUP_TIMEOUT_MS,
+          this.logger,
+        );
       }
       // #617 AC3: threshold check at turn-end. Must run AFTER endTurn so
       // session.usage reflects the just-completed turn. Fire-and-forget —
@@ -1931,7 +2197,12 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     requestAborted: boolean = false,
     activeSlotAtQueryStart: ActiveTokenInfo | null = null,
     expectedEpoch?: number,
-    abortReason?: RequestAbortReason,
+    // B-2: callers now pass the {@link CoercedAbortReason} (known
+    // RequestAbortReason | `'__unknown'` sentinel) rather than just a
+    // `RequestAbortReason | undefined`. `undefined` is preserved for the
+    // non-abort error path; `'__unknown'` triggers the defense-in-depth
+    // notify-worthy branch below.
+    abortReason?: CoercedAbortReason,
   ): Promise<number | undefined> {
     // Clear native spinner on any error and reset activity state.
     // Issue #688 — guard with the caller's captured epoch so a stale
@@ -1956,27 +2227,47 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     const isAbort = requestAborted || this.isAbortLikeError(error);
 
     // Decide whether the aborted turn should surface a "🔴 오류 발생" card.
-    // Only `stall-timeout` is notify-worthy: a genuinely silent turn that
-    // got displaced needs a terminal marker. `supersede` (active steering),
-    // `user-stop`, `session-close`, `shutdown` stay quiet — the user
-    // already knows the turn is ending. The stall vs steering split is
-    // decided upstream in `session-initializer.handleConcurrency`; here
-    // we just trust the reason on `signal.reason`. An untagged abort
-    // (raised outside RequestCoordinator) defaults to quiet.
+    // Notify-worthy abort reasons: turn ended without any other user signal.
+    //   - `stall-timeout`: dispatcher's stall heuristic displaced a silent turn.
+    //   - `ghost-session`: callback observed session.terminated mid-stream;
+    //     session died out-of-band and the user has no other terminal signal.
+    //     Trace: docs/current/plans/turn-end-surface-guarantee/exhaustive-paths.md §B-1.
+    //   - unknown-abort (B-2 defense-in-depth): producer-side enforcement
+    //     should make this unreachable in production, but if a future
+    //     caller or third-party `AbortController.abort()` defaults reach
+    //     here with `'__unknown'` (or `undefined` from an
+    //     isAbortLikeError-detected stray AbortError), surface a generic
+    //     card so the turn doesn't vanish silently. Trace: §B-2.
+    // Silent abort reasons (user already knows the turn ended):
+    //   - `supersede` (active mid-turn steering), `user-stop`,
+    //   - `session-close` (explicit Close action), `shutdown`.
     const stallTimeoutAbort = isAbort && abortReason === 'stall-timeout';
+    const ghostSessionAbort = isAbort && abortReason === 'ghost-session';
+    const knownSilentAbort =
+      isAbort &&
+      (abortReason === 'supersede' ||
+        abortReason === 'user-stop' ||
+        abortReason === 'session-close' ||
+        abortReason === 'shutdown');
+    const unknownAbort = isAbort && !stallTimeoutAbort && !ghostSessionAbort && !knownSilentAbort;
+    const notifyWorthyAbort = stallTimeoutAbort || ghostSessionAbort || unknownAbort;
     const shouldNotifyException =
-      !!this.deps.turnNotifier && (!isAbort || stallTimeoutAbort) && !this.isOneMContextUnavailableError(error);
+      !!this.deps.turnNotifier && (!isAbort || notifyWorthyAbort) && !this.isOneMContextUnavailableError(error);
+
+    // Composed once so both rails (turnNotifier event AND B-4 say() fallback
+    // when DI is missing) use the same Korean text. Coalesce through
+    // `.message` → `.code` → `.name` → `JSON.stringify` so non-Error throws
+    // (raw strings, plain objects from net layer) still leave a visible trace.
+    const abortDisplayMessage = stallTimeoutAbort
+      ? '이전 턴이 일정 시간 응답이 없어 중단되었습니다.'
+      : ghostSessionAbort
+        ? '세션이 종료되어 턴이 중단되었습니다.'
+        : unknownAbort
+          ? '턴이 알 수 없는 이유로 중단되었습니다.'
+          : coalesceErrorMessage(error);
 
     // Trace: docs/turn-notification/trace.md, Scenario 1, Section 3a — Exception path
     if (shouldNotifyException && this.deps.turnNotifier) {
-      // `event.message` must always be a meaningful, non-empty string so the
-      // block-kit renderer can show the full reason in a dedicated body block
-      // (PTN-4318 / soma-work#933). Coalesce through `.message` → `.code` →
-      // `.name` → `JSON.stringify` so non-Error throws (raw strings, plain
-      // objects from net layer) still leave a visible trace.
-      const message = stallTimeoutAbort
-        ? '이전 턴이 일정 시간 응답이 없어 중단되었습니다.'
-        : coalesceErrorMessage(error);
       this.deps.turnNotifier
         .notify({
           category: 'Exception',
@@ -1984,10 +2275,25 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           channel,
           threadTs,
           sessionTitle: session.title,
-          message,
+          message: abortDisplayMessage,
           durationMs: 0,
         })
         .catch((err: any) => this.logger.warn('Exception notification failed', { error: err?.message }));
+    } else if (notifyWorthyAbort && !this.deps.turnNotifier && !this.isOneMContextUnavailableError(error)) {
+      // B-4: turnNotifier DI missing AND the abort is notify-worthy. Fall
+      // back to plain say() so the user still gets a terminal signal — the
+      // existing non-abort fallback at the bottom of handleError covers the
+      // `!isAbort` case, but abort branches previously fell into the silent
+      // gap when DI was misconfigured.
+      // Trace: docs/current/plans/turn-end-surface-guarantee/exhaustive-paths.md §B-4.
+      try {
+        await say({ text: `🔴 ${abortDisplayMessage}`, thread_ts: threadTs });
+      } catch (sayErr) {
+        this.logger.warn('B-4 abort fallback say() failed', {
+          sessionKey,
+          error: (sayErr as Error)?.message ?? String(sayErr),
+        });
+      }
     }
 
     let retryAfterMs: number | undefined;
@@ -2194,9 +2500,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           : (session.errorRetryCount ?? 0)
         : undefined;
       const errorDetails = this.formatErrorForUser(error, sessionCleared, statusInfo, retryAttempt);
-      await say({
-        text: errorDetails,
-        thread_ts: threadTs,
+      // C-4: bound the user-facing error post so a hung Slack API call
+      // cannot block handleError's downstream lifecycle (status clear,
+      // cleanup). The Exception card already fired above via
+      // `turnNotifier.notify`, so a missing detail text is acceptable.
+      // Trace: docs/current/plans/turn-end-surface-guarantee/exhaustive-paths.md §C-4.
+      await runWithTimeout(() => say({ text: errorDetails, thread_ts: threadTs }), DEFAULT_CLEANUP_TIMEOUT_MS, {
+        what: 'handleError say(errorDetails)',
+        logger: this.logger,
       });
     } else {
       // AbortError - preserve session history for conversation continuity
@@ -2210,9 +2521,16 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       await this.deps.reactionManager.updateReaction(sessionKey, this.deps.statusReporter.getStatusEmoji('cancelled'));
     }
 
-    // Clean up temporary files
+    // Clean up temporary files. §C-5: bounded so a hung file handler
+    // cannot block the error-rail return (`retryAfterMs`) — the caller
+    // (V1QueryAdapter) needs that value to decide whether to schedule
+    // an auto-resume.
     if (processedFiles.length > 0) {
-      await this.deps.fileHandler.cleanupTempFiles(processedFiles);
+      await cleanupWithTimeout(
+        () => this.deps.fileHandler.cleanupTempFiles(processedFiles),
+        DEFAULT_CLEANUP_TIMEOUT_MS,
+        this.logger,
+      );
     }
 
     return retryAfterMs;
@@ -2544,7 +2862,25 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     this.summaryAbortControllers.set(sessionKey, abortController);
 
     try {
-      const summaryText = await this.deps.summaryService.execute(session as any, abortController.signal);
+      // C-6: bound `summaryService.execute` so a hung summary fork cannot
+      // leak the controller entry in `summaryAbortControllers`. On timeout
+      // we tag the controller with `'summary-timeout'` (descriptive,
+      // non-RequestAbortReason — the summary controller is an aux job
+      // controller, not a turn controller), then CAS-clean below. The
+      // 60s window is generous because summary forks are background and
+      // can legitimately take a while; the goal is to bound rather than
+      // hurry.
+      // Trace: docs/current/plans/turn-end-surface-guarantee/exhaustive-paths.md §C-6.
+      const summaryService = this.deps.summaryService;
+      const outcome = await runWithTimeout(
+        () => summaryService.execute(session as any, abortController.signal),
+        60_000,
+        {
+          what: 'summaryService.execute',
+          logger: this.logger,
+          onTimeout: () => abortController.abort('summary-timeout'),
+        },
+      );
 
       // CAS cleanup: only remove if this controller is still the active one for this session.
       // Prevents a slow summary A from deleting a newer summary B's controller.
@@ -2552,8 +2888,15 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         this.summaryAbortControllers.delete(sessionKey);
       }
 
+      if (outcome.kind === 'timedOut') {
+        // The abort signal was sent inside `onTimeout`; the underlying
+        // SDK call may resolve/reject later but its result is ignored.
+        return;
+      }
+
+      const summaryText = outcome.value;
       if (summaryText) {
-        this.deps.summaryService.displayOnThread(session as any, summaryText);
+        summaryService.displayOnThread(session as any, summaryText);
         // Trigger re-render so the summary blocks appear in the Slack thread header.
         // Without this, summaryBlocks sit in memory but the message is never updated.
         await this.deps.threadPanel?.updatePanel(session, sessionKey);
@@ -2564,7 +2907,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         // tracked via `completionMessageTracker` so it survives subsequent
         // turns. Errors are swallowed inside `postInThread` — a failed post
         // must not crash the summary fork.
-        await this.deps.summaryService.postInThread(session as any, summaryText);
+        await summaryService.postInThread(session as any, summaryText);
       }
     } catch (err: any) {
       if (this.summaryAbortControllers.get(sessionKey) === abortController) {
@@ -2609,10 +2952,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // Ghost Session Fix #99: CAS guard — only remove if this request's controller is still registered
     this.deps.requestCoordinator.removeController(sessionKey, abortController);
 
-    // Abort and clean up any in-flight summary fork for this session
+    // Abort and clean up any in-flight summary fork for this session.
+    // B-2: descriptive non-RequestAbortReason tag for the auxiliary job.
     const pendingSummaryAbort = this.summaryAbortControllers.get(sessionKey);
     if (pendingSummaryAbort) {
-      pendingSummaryAbort.abort();
+      pendingSummaryAbort.abort('summary-cleanup');
       this.summaryAbortControllers.delete(sessionKey);
     }
 
@@ -2722,12 +3066,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
    * Format error message for user with detailed info
    * Distinguishes between bot system errors and model errors
    */
-  private formatErrorForUser(
-    error: any,
-    sessionCleared: boolean,
-    statusInfo?: any,
-    retryAttempt?: number,
-  ): string {
+  private formatErrorForUser(error: any, sessionCleared: boolean, statusInfo?: any, retryAttempt?: number): string {
     // Issue #661 — top-priority branch for 1M-context auto-fallback.
     // Reads `oneMFallbackInfo` (set by the handleError 1M branch) so the
     // wording matches what actually happened on this turn:
