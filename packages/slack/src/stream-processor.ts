@@ -627,12 +627,7 @@ export class StreamProcessor {
   private async raceNextStep(
     iterator: AsyncIterator<SDKMessage>,
     abortSignal: AbortSignal,
-  ): Promise<
-    | { kind: 'value'; value: SDKMessage }
-    | { kind: 'done' }
-    | { kind: 'aborted' }
-    | { kind: 'idleTimeout' }
-  > {
+  ): Promise<{ kind: 'value'; value: SDKMessage } | { kind: 'done' } | { kind: 'aborted' } | { kind: 'idleTimeout' }> {
     if (abortSignal.aborted) {
       return { kind: 'aborted' };
     }
@@ -641,24 +636,23 @@ export class StreamProcessor {
     let abortListener: (() => void) | undefined;
 
     try {
-      const nextPromise: Promise<
-        { kind: 'value'; value: SDKMessage } | { kind: 'done' } | { kind: 'aborted' }
-      > = iterator
-        .next()
-        .then((r) => (r.done ? ({ kind: 'done' } as const) : ({ kind: 'value' as const, value: r.value })))
-        // An AbortError thrown by the iterator (SDK honors the abort signal,
-        // OR our `iterator.return()` after a timeout) normalizes to the
-        // `aborted` outcome — the outer loop returns `aborted: true` from
-        // here, matching the pre-Phase-2 behavior where AbortError was
-        // caught by the outer try and returned `aborted: true`.
-        // Other errors rethrow so the outer try/catch can deal with them
-        // (or re-raise to the executor).
-        .catch((err: unknown) => {
-          if ((err as { name?: string })?.name === 'AbortError') {
-            return { kind: 'aborted' as const };
-          }
-          throw err;
-        });
+      const nextPromise: Promise<{ kind: 'value'; value: SDKMessage } | { kind: 'done' } | { kind: 'aborted' }> =
+        iterator
+          .next()
+          .then((r) => (r.done ? ({ kind: 'done' } as const) : { kind: 'value' as const, value: r.value }))
+          // An AbortError thrown by the iterator (SDK honors the abort signal,
+          // OR our `iterator.return()` after a timeout) normalizes to the
+          // `aborted` outcome — the outer loop returns `aborted: true` from
+          // here, matching the pre-Phase-2 behavior where AbortError was
+          // caught by the outer try and returned `aborted: true`.
+          // Other errors rethrow so the outer try/catch can deal with them
+          // (or re-raise to the executor).
+          .catch((err: unknown) => {
+            if ((err as { name?: string })?.name === 'AbortError') {
+              return { kind: 'aborted' as const };
+            }
+            throw err;
+          });
 
       const racers: Array<
         Promise<{ kind: 'value'; value: SDKMessage } | { kind: 'done' } | { kind: 'aborted' } | { kind: 'idleTimeout' }>
