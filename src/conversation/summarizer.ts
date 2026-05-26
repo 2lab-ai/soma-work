@@ -1,4 +1,4 @@
-import { type AgentRunOptions, runOneShotText } from '../agent-runtime';
+import { buildOneShotOptions, runOneShotText } from '../agent-runtime';
 import { buildQueryEnv } from '../auth/query-env-builder';
 import { config } from '../config';
 import { ensureActiveSlotAuth, NoHealthySlotError, type SlotAuthLease } from '../credentials-manager';
@@ -55,24 +55,13 @@ ${truncatedContent}`;
     // clobber each other's token on the shared
     // `process.env.CLAUDE_CODE_OAUTH_TOKEN` variable.
     const { env } = buildQueryEnv(lease);
-    const options: AgentRunOptions = {
+    const options = buildOneShotOptions({
       model: getSummaryModel(),
-      maxTurns: 1,
-      tools: [],
       systemPrompt: 'You are a concise summarizer. Output only what is requested.',
-      extensions: {
-        claudeCode: {
-          env,
-          settingSources: [],
-          plugins: [],
-          // Disable thinking — see #762 rationale on `ClaudeCodeExtensionOptions.thinking`.
-          thinking: { type: 'disabled' },
-          stderr: (data: string) => {
-            logger.warn('Summarizer stderr', { data: data.trimEnd() });
-          },
-        },
-      },
-    };
+      env,
+      logger,
+      stderrLabel: 'Summarizer',
+    });
 
     try {
       const assistantText = await runOneShotText(prompt, options);
@@ -179,24 +168,13 @@ async function runTitleQuery(
   lease: SlotAuthLease,
 ): Promise<string | null> {
   const { env } = buildQueryEnv(lease);
-  const options: AgentRunOptions = {
+  const options = buildOneShotOptions({
     model,
-    maxTurns: 1,
-    tools: [],
     systemPrompt: system,
-    extensions: {
-      claudeCode: {
-        env,
-        settingSources: [],
-        plugins: [],
-        // Disable thinking — see #762 rationale on `ClaudeCodeExtensionOptions.thinking`.
-        thinking: { type: 'disabled' },
-        stderr: (data: string) => {
-          logger.warn('SessionSummaryTitle stderr', { data: data.trimEnd() });
-        },
-      },
-    },
-  };
+    env,
+    logger,
+    stderrLabel: 'SessionSummaryTitle',
+  });
   const assistantText = await runOneShotText(prompt, options);
   let cleanText = assistantText.trim();
   if (cleanText.startsWith('```')) {
