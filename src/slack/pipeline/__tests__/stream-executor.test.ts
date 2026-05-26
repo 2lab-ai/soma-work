@@ -3200,6 +3200,50 @@ describe('Email guard in execute()', () => {
       }),
     );
   });
+
+  // B-5: when turnNotifier is wired (production), the email fast-fail must
+  // surface as an Exception turn-end card via turnNotifier.notify — same
+  // shape as every other terminal-card path. Trace: exhaustive-paths.md §B-5.
+  it('B-5: surfaces an Exception turn-end card via turnNotifier when email is unconfigured', async () => {
+    vi.mocked(userSettingsStore.getUserEmail).mockReturnValue('');
+
+    const deps = createFullDeps();
+    const notify = vi.fn().mockResolvedValue(undefined);
+    deps.turnNotifier = { notify };
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    const params = createMinimalParams(say);
+
+    const result = await executor.execute(params);
+
+    expect(result.success).toBe(false);
+    expect(notify).toHaveBeenCalledTimes(1);
+    const event = notify.mock.calls[0][0];
+    expect(event.category).toBe('Exception');
+    expect(event.message).toContain('이메일이 설정되지 않았습니다');
+    expect(event.channel).toBe('C123');
+    expect(event.threadTs).toBe('thread123');
+  });
+
+  // B-5: when turnNotifier is missing (test harness / misconfigured DI),
+  // the email fast-fail still posts a say() carrying Block Kit blocks so
+  // the visual parity with other turn-end cards holds.
+  it('B-5: falls back to Block Kit say() when turnNotifier is absent', async () => {
+    vi.mocked(userSettingsStore.getUserEmail).mockReturnValue('');
+
+    const deps = createFullDeps();
+    (deps as { turnNotifier?: unknown }).turnNotifier = undefined;
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    const params = createMinimalParams(say);
+
+    const result = await executor.execute(params);
+
+    expect(result.success).toBe(false);
+    const blockKitCall = say.mock.calls.find((c) => Array.isArray(c[0]?.blocks) && c[0].blocks.length > 0);
+    expect(blockKitCall).toBeDefined();
+    expect(blockKitCall![0].text).toContain('이메일이 설정되지 않았습니다');
+  });
 });
 
 describe('W3-B rate-limit rotation wiring', () => {
@@ -5034,6 +5078,164 @@ describe('turn-end surface guarantee — P0 holes', () => {
     const event = deps.turnNotifier.notify.mock.calls[0][0];
     expect(event.category).toBe('Exception');
     expect(event.message).toBe('턴이 알 수 없는 이유로 중단되었습니다.');
+  });
+
+  // -------------------------------------------------------------------------
+  // B-4: turnNotifier DI missing → say() fallback on notify-worthy aborts.
+  //
+  // When the harness/misconfigured-DI path leaves `deps.turnNotifier` undefined,
+  // notify-worthy aborts (stall-timeout, ghost-session, unknown) previously
+  // fell into the silent quiet branch — turn vanished without any text or
+  // card. The fix posts a plain `say()` with the same Korean message that
+  // turnNotifier would have surfaced.
+  // -------------------------------------------------------------------------
+
+  it('B-4: emits say() fallback when turnNotifier is missing and abort is stall-timeout', async () => {
+    const deps = createExecutorDeps();
+    // Drop the notifier to simulate test/harness/misconfigured DI.
+    (deps as { turnNotifier?: unknown }).turnNotifier = undefined;
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = new Error('Request was aborted');
+    error.name = 'AbortError';
+
+    const session = { ownerId: 'U_OWNER', title: 'stalled turn' } as any;
+
+    await (executor as any).handleError(
+      error,
+      session,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say,
+      /* requestAborted */ true,
+      /* activeSlotAtQueryStart */ null,
+      /* expectedEpoch */ undefined,
+      /* abortReason */ 'stall-timeout',
+    );
+
+    // Exactly one say() call carrying the abort message.
+    const stallCalls = say.mock.calls.filter(
+      (c) => typeof c[0]?.text === 'string' && c[0].text.includes('이전 턴이 일정 시간 응답이 없어 중단되었습니다.'),
+    );
+    expect(stallCalls).toHaveLength(1);
+    expect(stallCalls[0][0].thread_ts).toBe('thread123');
+  });
+
+  it('B-4: emits say() fallback when turnNotifier is missing and abort is ghost-session', async () => {
+    const deps = createExecutorDeps();
+    (deps as { turnNotifier?: unknown }).turnNotifier = undefined;
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = new Error('Request was aborted');
+    error.name = 'AbortError';
+
+    await (executor as any).handleError(
+      error,
+      { ownerId: 'U_OWNER', title: 'ghost' } as any,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say,
+      true,
+      null,
+      undefined,
+      'ghost-session',
+    );
+
+    const ghostCalls = say.mock.calls.filter(
+      (c) => typeof c[0]?.text === 'string' && c[0].text.includes('세션이 종료되어 턴이 중단되었습니다.'),
+    );
+    expect(ghostCalls).toHaveLength(1);
+  });
+
+  // -------------------------------------------------------------------------
+  // B-6: renew failure must surface as `category: 'Exception'`, not the
+  // misleading 🟢 `WorkflowComplete`. Pre-fix: the `.then(notify)` rail
+  // fired BEFORE buildRenewContinuation ran, so a renew failure produced
+  // 🟢 + a plain ⚠️ text reading half-finished. Post-fix: the renew
+  // outcome is settled BEFORE the category is computed; on failure the
+  // single terminal card is the Exception. Trace: exhaustive-paths.md §B-6.
+  //
+  // Source-level invariant test — the runtime path requires a full SDK
+  // mock that the rest of this suite avoids. The structural guarantee
+  // we depend on is: the `renewFailed` decision lives in the
+  // category-computation block, not downstream of `.then(notify)`.
+  // -------------------------------------------------------------------------
+
+  it('B-6 source: renewFailed override sits BEFORE determineTurnCategory', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const path = await import('node:path');
+    const src = await readFile(
+      path.resolve(__dirname, '../../../../packages/slack/src/pipeline/stream-executor.ts'),
+      'utf8',
+    );
+
+    // The `renewFailed` flag must be declared before the category const.
+    const renewFailedIdx = src.indexOf('renewFailed = !renewContinuation');
+    const categoryIdx = src.indexOf("category: TurnCategory = renewFailed ? 'Exception'");
+    const determineIdx = src.indexOf('determineTurnCategory({');
+
+    expect(renewFailedIdx).toBeGreaterThan(0);
+    expect(categoryIdx).toBeGreaterThan(0);
+    expect(determineIdx).toBeGreaterThan(0);
+
+    // Renew settles first, then determineTurnCategory(...), then the
+    // override line assembles them. If a future refactor moves the
+    // renew block back below the notify rail, this test fails.
+    expect(renewFailedIdx).toBeLessThan(determineIdx);
+    expect(determineIdx).toBeLessThan(categoryIdx);
+  });
+
+  it('B-6 source: legacy renew block downstream of notify rail is removed', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const path = await import('node:path');
+    const src = await readFile(
+      path.resolve(__dirname, '../../../../packages/slack/src/pipeline/stream-executor.ts'),
+      'utf8',
+    );
+
+    // The legacy pattern that fired buildRenewContinuation AFTER the
+    // notify rail must NOT reappear. The replacement uses the
+    // pre-computed `renewContinuation` local instead.
+    const legacy = src.match(
+      /if \(session\.renewState === 'pending_save'\) \{\s*const continuation = await this\.buildRenewContinuation\(/g,
+    );
+    expect(legacy).toBeNull();
+
+    // The new downstream block uses the pre-computed `renewContinuation`.
+    expect(src.includes('if (renewContinuation) {')).toBe(true);
+  });
+
+  it('B-4: silent-abort reasons (supersede / user-stop) do NOT trigger say() fallback', async () => {
+    const deps = createExecutorDeps();
+    (deps as { turnNotifier?: unknown }).turnNotifier = undefined;
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = new Error('Request was aborted');
+    error.name = 'AbortError';
+
+    await (executor as any).handleError(
+      error,
+      { ownerId: 'U_OWNER', title: 'silent' } as any,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say,
+      true,
+      null,
+      undefined,
+      'supersede',
+    );
+
+    // No abort-message say() — supersede is intentionally silent.
+    const abortishCalls = say.mock.calls.filter(
+      (c) => typeof c[0]?.text === 'string' && /중단되었습니다|알 수 없는 이유/.test(c[0].text),
+    );
+    expect(abortishCalls).toEqual([]);
   });
 
   // -------------------------------------------------------------------------
