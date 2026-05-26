@@ -300,12 +300,6 @@ export {
   type StreamExecutorProviders,
   setStreamExecutorProviders,
 } from './pipeline/stream-executor';
-export {
-  DEFAULT_STALL_TIMEOUT_MS,
-  readStallTimeoutMs,
-  STALL_TIMEOUT_ENV_VAR,
-  StreamStallWatchdog,
-} from './pipeline/stream-stall-watchdog';
 export type {
   ConversationSession as PipelineConversationSession,
   InputProcessResult,
