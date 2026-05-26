@@ -14,7 +14,7 @@
  *     `session.systemPrompt` so the next rebuild picks up the new text.
  */
 
-import { type AgentRunOptions, runOneShotText } from '../agent-runtime';
+import { buildOneShotOptions, runOneShotText } from '../agent-runtime';
 import { buildQueryEnv } from '../auth/query-env-builder';
 import { ensureActiveSlotAuth, NoHealthySlotError, type SlotAuthLease } from '../credentials-manager';
 import { Logger } from '../logger';
@@ -73,25 +73,14 @@ Completed instructions:
 ${truncatedLines}`;
 
     const { env } = buildQueryEnv(lease);
-    const options: AgentRunOptions = {
+    const options = buildOneShotOptions({
       model: SONNET_MODEL,
-      maxTurns: 1,
-      tools: [],
       systemPrompt:
         'You compress completed-instruction logs into a compact prose summary. Output only the summary text.',
-      extensions: {
-        claudeCode: {
-          env,
-          settingSources: [],
-          plugins: [],
-          // Disable thinking — see #762 rationale on `ClaudeCodeExtensionOptions.thinking`.
-          thinking: { type: 'disabled' },
-          stderr: (data: string) => {
-            logger.warn('InstructionsSummarizer stderr', { data: data.trimEnd() });
-          },
-        },
-      },
-    };
+      env,
+      logger,
+      stderrLabel: 'InstructionsSummarizer',
+    });
 
     const assistantText = await runOneShotText(prompt, options);
 
