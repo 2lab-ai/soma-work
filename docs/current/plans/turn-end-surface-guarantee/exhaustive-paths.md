@@ -235,13 +235,13 @@ return { success: true, ... };                                                  
 
 이 경로들은 코드가 `try`/`catch`/`finally` 어디에도 도달하지 못함. **이게 정확히 10분 watchdog이 paper over했던 것**. watchdog 없이 잡으려면 각 await에 명시적 timeout이 필요.
 
-### C-1. ★ `await processor.process(...)` 영원 hang
+### C-1. ★ `await processor.process(...)` 영원 hang — **Phase 2에서 fix됨**
 ```
 const streamResult = await processor.process(streamQuery(...), streamContext, ...);    [L1482]
 ```
 - 시나리오: SDK iterator가 `yield`도 안 하고 `throw`도 안 하고 abort signal도 안 트립.
 - 결과: `await` 영원. catch 도달 못 함. finally 도달 못 함. 카드 없음.
-- **현재 watchdog이 막던 유일한 케이스**. SDK 자체 keep-alive heartbeat 또는 process 단의 outer timeout 없이는 못 잡음.
+- **Phase 2 (PR #969 followup)**: `StreamProcessor.process`가 `for await`를 manual iterator + `Promise.race`로 교체. 각 `iterator.next()`를 (a) external abort signal, (b) `idleTimeoutMs` 타이머와 race. 타이머가 winner면 `onIdleTimeout` 콜백이 발화하고 (`stream-executor`가 이를 `abortController.abort('stall-timeout')`로 와이어), `aborted: true`를 즉시 리턴. 기존 `handleError` `notifyWorthyAbort` 게이트가 🔴 stall-timeout 카드를 띄움. SDK가 abort를 honor하지 않아도 `await`가 풀린다는 것이 핵심. (`packages/slack/src/stream-processor.ts` `raceNextStep`, `readIdleTimeoutMs`, `DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000`.) PR #926 외부 `StreamStallWatchdog`는 Phase 2에서 삭제됨 — 같은 abort 신호를 만들어도 hung `.next()` 자체를 풀지 못해서 효과가 없었음.
 
 ### C-2. `enrichAndResolve().then(...)` fire-and-forget — 안전망 부분적 (codex 검증으로 갱신)
 ```
@@ -301,7 +301,7 @@ await this.deps.summaryService.execute(session, signal);                        
 | B-4 | turnNotifier DI 누락 + abort 분기 fallback 부재 | ❌ silent | P1 |
 | B-5 | 이메일 fast-fail 카드 부재 | ⚠️ 텍스트만 | P1 |
 | B-6 | renew 실패 카테고리 misclassification | ⚠️ 🟢 거짓 | P1 |
-| C-1 | `processor.process` 영원 hang | 🚫 카테고리 도달 안 됨 | **P0** (별도) |
+| C-1 | `processor.process` 영원 hang | ✅ Phase 2 fix — `StreamProcessor.raceNextStep` 30분 idle timeout, `onIdleTimeout` → `abort('stall-timeout')` → 🔴 카드 | **fixed** |
 | C-2 | enrichAndResolve hang — 3s timeout 존재하나 timeout 시 카드 skip | ❌ 카드 누락 | **P0** |
 | C-3 | `beginTurn` hang | 🚫 도달 안 됨 | P1 |
 | C-4 | `say(errorDetails)` hang | 부분 누수 | P2 |
@@ -329,7 +329,7 @@ await this.deps.summaryService.execute(session, signal);                        
 7. **C-2 수정 (검증 완료)**: `TurnSurface.end`의 3s timeout은 존재하나(`turn-surface.ts:771-791`), timeout 분기에서 B5 emit이 skip됨(`:817-825`) → **timeout 분기에 fallback `turnNotifier.notify` 추가**.
 8. **C-3 수정**: `threadPanel?.beginTurn` 호출을 `Promise.race([beginTurn, sleep(5s)])`로 감싸기.
 9. **C-5 수정**: `cleanupTempFiles` 호출을 timeout-wrap (3s) 또는 finally로 이동. 카드 발사 보장.
-10. **PR #926 revert**: `src/slack/pipeline/stream-stall-watchdog.ts` 삭제, `stream-executor.ts`의 arm/touch/clear 와이어 3곳 제거(L838~843, L1059, L1480, L1860 근처), 테스트 2개 (`stream-stall-watchdog.test.ts`, `stream-executor.test.ts`의 2 케이스) 제거, `trace.md` 갱신.
+10. **PR #926 revert** — **Phase 2에서 완료**: `packages/slack/src/pipeline/stream-stall-watchdog.ts` + provider shim (`src/slack/pipeline/stream-stall-watchdog.ts`) + 단위테스트 (`src/slack/pipeline/__tests__/stream-stall-watchdog.test.ts`) 삭제. `stream-executor.ts`의 arm/touch/clear 와이어 3곳 제거. `packages/slack/src/{index,pipeline/index}.ts` + `packages/slack/package.json` + `packages-srp-phase2-slack-contract.test.ts`에서 export 정리. C-1 fix는 `StreamProcessor.process` 내부 `raceNextStep` (Promise.race + per-`.next()` idle timer)로 대체.
 
 **Codex가 지적한 추가 audit 대상 (별도 또는 동일 PR)**:
 
@@ -343,7 +343,7 @@ await this.deps.summaryService.execute(session, signal);                        
   - `src/slack/actions/session-action-handler.ts:45-48`
   - 관련 테스트 전체
 
-**C-1은 별도 작업.** Codex 확인: Claude Agent SDK는 `includePartialMessages` 미사용 상태에서 keep-alive heartbeat을 emit하지 않음(SDK doc 기준). outer wall-clock보다는 **`processor.process` wrapper에 idle-timeout**(예: `Promise.race` + `AbortController`)이 옳은 위치. 다만 watchdog 삭제 후 실제 빈도 측정부터 (PR #926 본문 외 데이터 없음).
+**C-1 — Phase 2에서 fix 완료.** Codex `5e6ab801-3d1a-4651-a406-f0d6c994e7db` 바인딩: `Promise.race`를 `processor.process`의 `for await` 안에 넣어 각 `iterator.next()`를 idle-timer + abort signal과 race. 기본 30분 (`SOMA_STREAM_STALL_TIMEOUT_MS` 환경변수로 유지보수, `0`은 비활성화). `'stall-timeout'` reason 재사용으로 downstream handleError 라우팅 무변경. `includePartialMessages`는 별 backlog — partials는 SDK가 emit해야 효과가 있고, 또 pending `.next()`를 직접 풀어주지는 않음. PR #926 외부 watchdog은 동일 abort 신호를 만들지만 hung `.next()` 자체를 풀지 못해서 효과가 없어서 삭제.
 
 ---
 

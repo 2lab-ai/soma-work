@@ -276,6 +276,66 @@ export interface StreamCallbacks {
    * swallowed by the caller so a callback bug cannot abort the stream loop.
    */
   onSdkActivity?: () => void;
+  /**
+   * Called when the SDK iterator's `.next()` has not resolved within
+   * {@link StreamProcessorOptions.idleTimeoutMs}. Wired by the stream
+   * executor to `() => abortController.abort('stall-timeout' satisfies
+   * RequestAbortReason)`; `handleError` then surfaces the 🔴 stall card.
+   * The processor exits with `aborted: true` immediately after invoking
+   * this callback — racing INSIDE the consumption loop is necessary
+   * because a hung SDK transport that ignores its own abort signal cannot
+   * be unblocked by aborting from outside the pending `.next()`.
+   *
+   * Trace: docs/current/plans/turn-end-surface-guarantee/exhaustive-paths.md §C-1.
+   */
+  onIdleTimeout?: () => void;
+}
+
+/**
+ * Default idle window between SDK `.next()` resolutions before
+ * {@link StreamCallbacks.onIdleTimeout} fires. 30 min leaves headroom for
+ * legitimate long-running tools (deploy steps, large test runs, npm
+ * install) that emit no SDK events for several minutes while still
+ * eventually surfacing a terminal card on a true hang.
+ */
+export const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
+
+/**
+ * Env var operators use to tune or disable the idle timeout without a
+ * redeploy. `0` disables; invalid/non-finite falls back to the default —
+ * a typo'd env var must not silently disable the safety net.
+ */
+export const IDLE_TIMEOUT_ENV_VAR = 'SOMA_STREAM_STALL_TIMEOUT_MS';
+
+/**
+ * Read the configured idle timeout from `process.env`. Operator contract:
+ *  - unset → {@link DEFAULT_IDLE_TIMEOUT_MS}
+ *  - `0` or any non-positive number → disables the idle timeout
+ *  - invalid/non-finite → falls back to {@link DEFAULT_IDLE_TIMEOUT_MS}
+ *  - positive integer → that many ms
+ */
+export function readIdleTimeoutMs(env: Record<string, string | undefined> = process.env): number {
+  const raw = env[IDLE_TIMEOUT_ENV_VAR];
+  if (raw === undefined || raw === '') return DEFAULT_IDLE_TIMEOUT_MS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return DEFAULT_IDLE_TIMEOUT_MS;
+  if (parsed <= 0) return 0;
+  return Math.floor(parsed);
+}
+
+/**
+ * Constructor-time options for {@link StreamProcessor}. Kept on a separate
+ * object (not on `StreamCallbacks`) because these are processor-wide knobs,
+ * not per-event callbacks.
+ */
+export interface StreamProcessorOptions {
+  /**
+   * Maximum gap (ms) between SDK `.next()` resolutions before
+   * {@link StreamCallbacks.onIdleTimeout} fires and the loop returns with
+   * `aborted: true`. `<= 0` disables. Default `0` so existing callers
+   * (mostly tests) opt in explicitly via {@link readIdleTimeoutMs}.
+   */
+  idleTimeoutMs?: number;
 }
 
 /**
@@ -352,6 +412,33 @@ function textOfPart(part: unknown): string | undefined {
 }
 
 /**
+ * Coerce a sync or async iterable into an `AsyncIterator`. `for await (… of)`
+ * accepts both shapes natively, but the explicit-iterator form used by
+ * {@link StreamProcessor.process} (so it can race `.next()` against an
+ * idle-timeout) does not. Wrap sync iterators so their `.next()` results
+ * are returned via `Promise.resolve` while keeping `iterator.return` /
+ * `iterator.throw` reachable for cleanup.
+ */
+function asyncIteratorOf<T>(stream: AsyncIterable<T> | Iterable<T>): AsyncIterator<T> {
+  const asAsync = (stream as AsyncIterable<T>)[Symbol.asyncIterator];
+  if (typeof asAsync === 'function') {
+    return asAsync.call(stream);
+  }
+  const inner = (stream as Iterable<T>)[Symbol.iterator]();
+  return {
+    next() {
+      return Promise.resolve(inner.next());
+    },
+    return(value?: T) {
+      return Promise.resolve(inner.return ? inner.return(value) : { value, done: true });
+    },
+    throw(err?: unknown) {
+      return Promise.resolve(inner.throw ? inner.throw(err) : { value: undefined, done: true });
+    },
+  } as AsyncIterator<T>;
+}
+
+/**
  * StreamProcessor handles the for-await loop over Claude SDK messages
  */
 export class StreamProcessor {
@@ -386,9 +473,16 @@ export class StreamProcessor {
   private _lastToolName: string | undefined;
   /** SDK result error details from SDKResultError (Issue #122) */
   private _sdkResultError: StreamResult['sdkResultError'] | undefined;
+  /**
+   * Max ms between iterator `.next()` resolutions before
+   * {@link StreamCallbacks.onIdleTimeout} fires and the loop returns
+   * `aborted: true`. `0` disables — see {@link readIdleTimeoutMs}.
+   */
+  private readonly idleTimeoutMs: number;
 
-  constructor(callbacks: StreamCallbacks = {}) {
+  constructor(callbacks: StreamCallbacks = {}, options: StreamProcessorOptions = {}) {
     this.callbacks = callbacks;
+    this.idleTimeoutMs = options.idleTimeoutMs ?? 0;
   }
 
   /** Check whether a given output flag is enabled for the stream's verbosity */
@@ -413,11 +507,52 @@ export class StreamProcessor {
     let lastUsage: UsageData | undefined;
     this._hasUserChoice = false;
 
+    // Drive the iterator manually so each `.next()` can race against the
+    // external abort signal AND the idle timeout. A `for await` blocks
+    // indefinitely on a hung `.next()` even when the controller is
+    // aborted, because the SDK transport doesn't unblock the pending
+    // promise — racing INSIDE the loop sidesteps that and lets the
+    // executor's catch + handleError surface the 🔴 stall card.
+    // Trace: docs/current/plans/turn-end-surface-guarantee/exhaustive-paths.md §C-1.
+    //
+    // `asyncIteratorOf` adapts sync iterables (tests pass `function*`
+    // generators); the explicit-iterator form here does not auto-promote.
+    const iterator: AsyncIterator<SDKMessage> = asyncIteratorOf<SDKMessage>(stream);
     try {
-      for await (const message of stream) {
+      while (true) {
         if (abortSignal.aborted) {
           return { success: true, messageCount: currentMessages.length, aborted: true };
         }
+
+        const step = await this.raceNextStep(iterator, abortSignal);
+        if (step.kind === 'done') break;
+        if (step.kind === 'aborted') {
+          // Mirror the idleTimeout branch: best-effort tell the abandoned
+          // iterator we're done so the underlying generator can release
+          // any sockets it holds, in case the SDK didn't honor the abort
+          // signal on its own. Throws are harmless here.
+          await this.tryReturnIterator(iterator, 'abort');
+          return { success: true, messageCount: currentMessages.length, aborted: true };
+        }
+        if (step.kind === 'idleTimeout') {
+          // Notify the executor so it can tag the local controller with
+          // `'stall-timeout'` (handleError already routes that reason to
+          // the Korean stall-timeout Exception card). Swallow throws —
+          // the callback must not crash the loop.
+          if (this.callbacks.onIdleTimeout) {
+            try {
+              this.callbacks.onIdleTimeout();
+            } catch (err) {
+              this.logger.debug('onIdleTimeout callback threw — ignored', {
+                error: (err as Error)?.message ?? String(err),
+              });
+            }
+          }
+          await this.tryReturnIterator(iterator, 'idle timeout');
+          return { success: true, messageCount: currentMessages.length, aborted: true };
+        }
+
+        const message = step.value;
 
         // Fire *before* per-type handlers so the activity clock reflects
         // when the SDK emitted the message, not when a slow handler returned.
@@ -479,6 +614,105 @@ export class StreamProcessor {
         return { success: true, messageCount: currentMessages.length, aborted: true };
       }
       throw error;
+    }
+  }
+
+  /**
+   * Race the next iterator step against (a) external abort and (b) idle
+   * timeout. Resolves with a discriminated union describing which racer
+   * won. Always cleans up the timer and abort listener so a slow handler
+   * downstream cannot accidentally trip a stale timer on the next
+   * iteration.
+   */
+  private async raceNextStep(
+    iterator: AsyncIterator<SDKMessage>,
+    abortSignal: AbortSignal,
+  ): Promise<
+    | { kind: 'value'; value: SDKMessage }
+    | { kind: 'done' }
+    | { kind: 'aborted' }
+    | { kind: 'idleTimeout' }
+  > {
+    if (abortSignal.aborted) {
+      return { kind: 'aborted' };
+    }
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let abortListener: (() => void) | undefined;
+
+    try {
+      const nextPromise: Promise<
+        { kind: 'value'; value: SDKMessage } | { kind: 'done' } | { kind: 'aborted' }
+      > = iterator
+        .next()
+        .then((r) => (r.done ? ({ kind: 'done' } as const) : ({ kind: 'value' as const, value: r.value })))
+        // An AbortError thrown by the iterator (SDK honors the abort signal,
+        // OR our `iterator.return()` after a timeout) normalizes to the
+        // `aborted` outcome — the outer loop returns `aborted: true` from
+        // here, matching the pre-Phase-2 behavior where AbortError was
+        // caught by the outer try and returned `aborted: true`.
+        // Other errors rethrow so the outer try/catch can deal with them
+        // (or re-raise to the executor).
+        .catch((err: unknown) => {
+          if ((err as { name?: string })?.name === 'AbortError') {
+            return { kind: 'aborted' as const };
+          }
+          throw err;
+        });
+
+      const racers: Array<
+        Promise<{ kind: 'value'; value: SDKMessage } | { kind: 'done' } | { kind: 'aborted' } | { kind: 'idleTimeout' }>
+      > = [nextPromise];
+
+      if (this.idleTimeoutMs > 0) {
+        racers.push(
+          new Promise<{ kind: 'idleTimeout' }>((resolve) => {
+            timer = setTimeout(() => resolve({ kind: 'idleTimeout' }), this.idleTimeoutMs);
+            // Fail-safe must never keep Node alive at shutdown.
+            // `unref` is missing on browser/jsdom timer stubs — optional-call.
+            (timer as { unref?: () => void } | undefined)?.unref?.();
+          }),
+        );
+      }
+
+      racers.push(
+        new Promise<{ kind: 'aborted' }>((resolve) => {
+          if (abortSignal.aborted) {
+            resolve({ kind: 'aborted' });
+            return;
+          }
+          abortListener = () => resolve({ kind: 'aborted' });
+          abortSignal.addEventListener('abort', abortListener, { once: true });
+        }),
+      );
+
+      const winner = await Promise.race(racers);
+      // If `next()` lost the race (timeout or external abort won), it is
+      // still pending in the background. Attach a no-op catch so that a
+      // later rejection (e.g. from `iterator.return()` triggering an
+      // AbortError on the in-flight call) cannot become an unhandled
+      // rejection. The `aborted`-mapped catch above handles the value
+      // shape we care about; this is purely defense-in-depth.
+      nextPromise.catch(() => undefined);
+      return winner;
+    } finally {
+      if (timer) clearTimeout(timer);
+      if (abortListener) abortSignal.removeEventListener('abort', abortListener);
+    }
+  }
+
+  /**
+   * Best-effort `iterator.return()` to release any resources (sockets,
+   * generator frames) held by the SDK transport when we abandon the
+   * stream early (abort or idle timeout). `reason` is debug-only.
+   */
+  private async tryReturnIterator(iterator: AsyncIterator<SDKMessage>, reason: string): Promise<void> {
+    try {
+      await iterator.return?.();
+    } catch (err) {
+      this.logger.debug(`iterator.return() after ${reason} threw — ignored`, {
+        error: (err as Error)?.message ?? String(err),
+      });
     }
   }
 
