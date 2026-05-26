@@ -88,7 +88,8 @@ function parseScopeString(scope: string | undefined, fallback: string[]): string
  */
 export async function refreshClaudeCredentials(current: OAuthCredentials): Promise<OAuthCredentials> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), REFRESH_TIMEOUT_MS);
+  // B-2: fetch timeout — descriptive string, not RequestAbortReason.
+  const timeout = setTimeout(() => controller.abort('fetch-timeout'), REFRESH_TIMEOUT_MS);
 
   let response: Response;
   try {

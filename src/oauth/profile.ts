@@ -82,12 +82,16 @@ export async function fetchOAuthProfile(
   // timeout-driven abort locally.
   if (opts?.signal) {
     if (opts.signal.aborted) {
-      controller.abort();
+      // B-2: forward upstream reason if tagged, else descriptive default.
+      controller.abort(opts.signal.reason ?? 'caller-aborted');
     } else {
-      opts.signal.addEventListener('abort', () => controller.abort(), { once: true });
+      opts.signal.addEventListener('abort', () => controller.abort(opts.signal?.reason ?? 'caller-aborted'), {
+        once: true,
+      });
     }
   }
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  // B-2: fetch timeout — descriptive string, not RequestAbortReason.
+  const timeout = setTimeout(() => controller.abort('fetch-timeout'), timeoutMs);
 
   let response: Response;
   try {

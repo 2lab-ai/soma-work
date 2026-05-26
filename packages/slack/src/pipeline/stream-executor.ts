@@ -405,8 +405,11 @@ function toUsagePercentSnapshot(snap: UsageSnapshot | null | undefined): UsagePe
  * The set of {@link RequestAbortReason} strings we will trust when read off
  * an `AbortSignal.reason`. Anything else — DOMException defaults, foreign
  * code paths calling `controller.abort()` with no argument or with a
- * non-string sentinel — collapses to `undefined` so `handleError` falls
- * through to its conservative "stay quiet" branch.
+ * non-RequestAbortReason string (e.g. the `'fetch-timeout'` /
+ * `'summary-superseded'` / etc. tags used by non-turn controllers) —
+ * collapses to {@link UNKNOWN_ABORT_REASON} so `handleError`'s
+ * defense-in-depth branch can surface a generic 🔴 card rather than
+ * silently swallowing the turn.
  */
 const KNOWN_ABORT_REASONS: ReadonlySet<RequestAbortReason> = new Set([
   'supersede',
@@ -421,9 +424,26 @@ const KNOWN_ABORT_REASONS: ReadonlySet<RequestAbortReason> = new Set([
   'ghost-session',
 ]);
 
-function coerceAbortReason(raw: unknown): RequestAbortReason | undefined {
-  if (typeof raw !== 'string') return undefined;
-  return KNOWN_ABORT_REASONS.has(raw as RequestAbortReason) ? (raw as RequestAbortReason) : undefined;
+/**
+ * Internal sentinel for the B-2 defense-in-depth path. NOT exported and NOT
+ * added to {@link RequestAbortReason} — pollution of the producer-side union
+ * would force every consumer to handle a value that should never originate
+ * from `RequestCoordinator`. Instead, when `coerceAbortReason` sees an
+ * unknown / unexpected reason it returns this sentinel and `handleError`'s
+ * `notifyWorthyAbort` gate maps it to a generic 🔴 card.
+ *
+ * Trace: docs/current/plans/turn-end-surface-guarantee/exhaustive-paths.md §B-2.
+ */
+const UNKNOWN_ABORT_REASON = '__unknown' as const;
+
+/** Coerced reason type — either a known RequestAbortReason or the internal sentinel. */
+type CoercedAbortReason = RequestAbortReason | typeof UNKNOWN_ABORT_REASON;
+
+function coerceAbortReason(raw: unknown): CoercedAbortReason {
+  if (typeof raw === 'string' && KNOWN_ABORT_REASONS.has(raw as RequestAbortReason)) {
+    return raw as RequestAbortReason;
+  }
+  return UNKNOWN_ABORT_REASON;
 }
 
 /** Issue #816 — single-line preview for the MCP parse-fail Slack post. */
@@ -731,9 +751,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // Abort any in-flight summary fork to prevent stale summary from repopulating after clearDisplay.
     // This is the key fix for the race: timer cancel only prevents new fires, but an already-running
     // fork must be explicitly aborted so its result is discarded.
+    // B-2: summary forks are auxiliary jobs (not turn controllers), tag with
+    // a descriptive non-RequestAbortReason string for debug visibility.
     const pendingAbort = this.summaryAbortControllers.get(params.sessionKey);
     if (pendingAbort) {
-      pendingAbort.abort();
+      pendingAbort.abort('summary-superseded');
       this.summaryAbortControllers.delete(params.sessionKey);
     }
 
@@ -2082,7 +2104,12 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     requestAborted: boolean = false,
     activeSlotAtQueryStart: ActiveTokenInfo | null = null,
     expectedEpoch?: number,
-    abortReason?: RequestAbortReason,
+    // B-2: callers now pass the {@link CoercedAbortReason} (known
+    // RequestAbortReason | `'__unknown'` sentinel) rather than just a
+    // `RequestAbortReason | undefined`. `undefined` is preserved for the
+    // non-abort error path; `'__unknown'` triggers the defense-in-depth
+    // notify-worthy branch below.
+    abortReason?: CoercedAbortReason,
   ): Promise<number | undefined> {
     // Clear native spinner on any error and reset activity state.
     // Issue #688 — guard with the caller's captured epoch so a stale
@@ -2112,15 +2139,25 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     //   - `ghost-session`: callback observed session.terminated mid-stream;
     //     session died out-of-band and the user has no other terminal signal.
     //     Trace: docs/current/plans/turn-end-surface-guarantee/exhaustive-paths.md §B-1.
+    //   - unknown-abort (B-2 defense-in-depth): producer-side enforcement
+    //     should make this unreachable in production, but if a future
+    //     caller or third-party `AbortController.abort()` defaults reach
+    //     here with `'__unknown'` (or `undefined` from an
+    //     isAbortLikeError-detected stray AbortError), surface a generic
+    //     card so the turn doesn't vanish silently. Trace: §B-2.
     // Silent abort reasons (user already knows the turn ended):
     //   - `supersede` (active mid-turn steering), `user-stop`,
     //   - `session-close` (explicit Close action), `shutdown`.
-    // An untagged abort (raised outside RequestCoordinator with no reason)
-    // defaults to quiet — codex-binding policy decision: the proper fix is
-    // to tag the producer (lint enforcement is a follow-up B-2 PR).
     const stallTimeoutAbort = isAbort && abortReason === 'stall-timeout';
     const ghostSessionAbort = isAbort && abortReason === 'ghost-session';
-    const notifyWorthyAbort = stallTimeoutAbort || ghostSessionAbort;
+    const knownSilentAbort =
+      isAbort &&
+      (abortReason === 'supersede' ||
+        abortReason === 'user-stop' ||
+        abortReason === 'session-close' ||
+        abortReason === 'shutdown');
+    const unknownAbort = isAbort && !stallTimeoutAbort && !ghostSessionAbort && !knownSilentAbort;
+    const notifyWorthyAbort = stallTimeoutAbort || ghostSessionAbort || unknownAbort;
     const shouldNotifyException =
       !!this.deps.turnNotifier && (!isAbort || notifyWorthyAbort) && !this.isOneMContextUnavailableError(error);
 
@@ -2135,7 +2172,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         ? '이전 턴이 일정 시간 응답이 없어 중단되었습니다.'
         : ghostSessionAbort
           ? '세션이 종료되어 턴이 중단되었습니다.'
-          : coalesceErrorMessage(error);
+          : unknownAbort
+            ? '턴이 알 수 없는 이유로 중단되었습니다.'
+            : coalesceErrorMessage(error);
       this.deps.turnNotifier
         .notify({
           category: 'Exception',
@@ -2775,10 +2814,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // Ghost Session Fix #99: CAS guard — only remove if this request's controller is still registered
     this.deps.requestCoordinator.removeController(sessionKey, abortController);
 
-    // Abort and clean up any in-flight summary fork for this session
+    // Abort and clean up any in-flight summary fork for this session.
+    // B-2: descriptive non-RequestAbortReason tag for the auxiliary job.
     const pendingSummaryAbort = this.summaryAbortControllers.get(sessionKey);
     if (pendingSummaryAbort) {
-      pendingSummaryAbort.abort();
+      pendingSummaryAbort.abort('summary-cleanup');
       this.summaryAbortControllers.delete(sessionKey);
     }
 
