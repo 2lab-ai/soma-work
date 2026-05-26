@@ -5189,6 +5189,58 @@ describe('turn-end surface guarantee — P0 holes', () => {
     expect(determineIdx).toBeLessThan(categoryIdx);
   });
 
+  // -------------------------------------------------------------------------
+  // C-3 / C-4 / C-6 — hang-path timeouts.
+  //
+  // Behavioral coverage for the runWithTimeout helper itself lives in
+  // src/slack/pipeline/__tests__/run-with-timeout.test.ts. Here we pin
+  // the source-level invariant that the executor wires runWithTimeout
+  // at the three audited hang sites — beginTurn, say(errorDetails), and
+  // summaryService.execute. A future refactor that drops one of these
+  // wrappers fails this test.
+  // -------------------------------------------------------------------------
+
+  it('C-3 source: threadPanel.beginTurn is wrapped in runWithTimeout (5s)', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const path = await import('node:path');
+    const src = await readFile(
+      path.resolve(__dirname, '../../../../packages/slack/src/pipeline/stream-executor.ts'),
+      'utf8',
+    );
+
+    // The pre-fix shape was `await this.deps.threadPanel?.beginTurn(turnContext);` —
+    // that exact unwrapped pattern must NOT reappear.
+    expect(src).not.toMatch(/await\s+this\.deps\.threadPanel\?\.beginTurn\(turnContext\)\s*;/);
+
+    // The new shape calls runWithTimeout with the canonical label.
+    expect(src).toMatch(/what: 'threadPanel\.beginTurn'/);
+    expect(src).toMatch(/runWithTimeout\(/);
+  });
+
+  it('C-4 source: handleError say(errorDetails) is wrapped in runWithTimeout', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const path = await import('node:path');
+    const src = await readFile(
+      path.resolve(__dirname, '../../../../packages/slack/src/pipeline/stream-executor.ts'),
+      'utf8',
+    );
+
+    expect(src).toMatch(/what: 'handleError say\(errorDetails\)'/);
+  });
+
+  it('C-6 source: summaryService.execute is wrapped in runWithTimeout with abort onTimeout', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const path = await import('node:path');
+    const src = await readFile(
+      path.resolve(__dirname, '../../../../packages/slack/src/pipeline/stream-executor.ts'),
+      'utf8',
+    );
+
+    expect(src).toMatch(/what: 'summaryService\.execute'/);
+    // The onTimeout callback aborts the controller with the dedicated tag.
+    expect(src).toMatch(/abortController\.abort\('summary-timeout'\)/);
+  });
+
   it('B-6 source: legacy renew block downstream of notify rail is removed', async () => {
     const { readFile } = await import('node:fs/promises');
     const path = await import('node:path');

@@ -295,18 +295,18 @@ await this.deps.summaryService.execute(session, signal);                        
 | ID | 종류 | 카드 보장? | 우선순위 |
 |---|---|---|---|
 | A-1 ~ A-10 | 정상 종료 10개 | ✅ 모두 보장 (의도된 침묵 포함) | — |
-| B-1 | onToolUse/onToolResult ghost-session abort untagged | ❌ silent | **P0** |
-| B-2 | unknown-reason abort 정책 silent fallback | ❌ silent | **P0** |
-| B-3 | TurnNotifier 0-enabled-channels | ❌ silent | **P0** |
-| B-4 | turnNotifier DI 누락 + abort 분기 fallback 부재 | ❌ silent | P1 |
-| B-5 | 이메일 fast-fail 카드 부재 | ⚠️ 텍스트만 | P1 |
-| B-6 | renew 실패 카테고리 misclassification | ⚠️ 🟢 거짓 | P1 |
-| C-1 | `processor.process` 영원 hang | ✅ Phase 2 fix — `StreamProcessor.raceNextStep` 30분 idle timeout, `onIdleTimeout` → `abort('stall-timeout')` → 🔴 카드 | **fixed** |
-| C-2 | enrichAndResolve hang — 3s timeout 존재하나 timeout 시 카드 skip | ❌ 카드 누락 | **P0** |
-| C-3 | `beginTurn` hang | 🚫 도달 안 됨 | P1 |
-| C-4 | `say(errorDetails)` hang | 부분 누수 | P2 |
-| C-5 | `cleanupTempFiles` hang — P5 endTurn 호출 차단 | ❌ 카드 누락 가능 | P1 |
-| C-6 | `summaryService.execute` hang | 누수 (main 흐름 무관) | P3 |
+| B-1 | onToolUse/onToolResult ghost-session abort untagged | ✅ Phase 1 fix (PR #969) — `'ghost-session'` reason 신설 + 태깅 + handleError notify-worthy 분기 + 🔴 카드 | **fixed** |
+| B-2 | unknown-reason abort 정책 silent fallback | ✅ Phase 3 fix (PR #971) — 12개 producer 사이트 태깅 + 소스 스캔 테스트 + `coerceAbortReason` `'__unknown'` 센티넬 + handleError unknownAbort 분기 + 🔴 카드 | **fixed** |
+| B-3 | TurnNotifier 0-enabled-channels | ✅ Phase 1 fix (PR #969) | **fixed** |
+| B-4 | turnNotifier DI 누락 + abort 분기 fallback 부재 | ✅ Phase 3 fix (PR #972) — handleError abort 분기에 `say()` fallback | **fixed** |
+| B-5 | 이메일 fast-fail 카드 부재 | ✅ Phase 3 fix (PR #972) — `turnNotifier.notify(Exception)` + Block Kit `say()` fallback + snapshot release | **fixed** |
+| B-6 | renew 실패 카테고리 misclassification | ✅ Phase 3 fix (PR #972) — renew 결정을 `determineTurnCategory` 이전으로 이동, 실패 시 category=Exception | **fixed** |
+| C-1 | `processor.process` 영원 hang | ✅ Phase 2 fix (PR #970) — `StreamProcessor.raceNextStep` 30분 idle timeout, `onIdleTimeout` → `abort('stall-timeout')` → 🔴 카드 | **fixed** |
+| C-2 | enrichAndResolve hang — 3s timeout 존재하나 timeout 시 카드 skip | ✅ Phase 1 fix (PR #969) | **fixed** |
+| C-3 | `beginTurn` hang | ✅ Phase 4 fix (this PR) — `runWithTimeout(5s)` 래핑, timeout 시 warn + proceed | **fixed** |
+| C-4 | `say(errorDetails)` hang | ✅ Phase 4 fix (this PR) — `runWithTimeout(3s)` 래핑, timeout 시 warn + proceed (Exception 카드는 이미 turnNotifier로 발사됨) | **fixed** |
+| C-5 | `cleanupTempFiles` hang — P5 endTurn 호출 차단 | ✅ Phase 1 fix (PR #969) | **fixed** |
+| C-6 | `summaryService.execute` hang | ✅ Phase 4 fix (this PR) — `runWithTimeout(60s)` + `onTimeout`에서 `abort('summary-timeout')` + CAS cleanup | **fixed** |
 
 ---
 
