@@ -76,6 +76,27 @@ review surface tight:
   details, not protocol concerns.
 - **Slack-specific persona / routing / directives**: never portable.
 
+## Relationship to `src/agent-session/`
+
+`src/agent-session/` already exists and wraps `StreamExecutor.execute()` for
+**multi-turn Slack-conversation** sessions (`IAgentSession`, `TurnRunner`,
+`v1-query-adapter.ts`; see #42 / #84). It owns start / continue / cancel /
+dispose lifecycle, turn-collection state, abort tagging, and Slack-specific
+plumbing.
+
+`src/agent-runtime/` (this ADR) is **deliberately a different layer**:
+
+| Layer | Scope | Backend coupling |
+|-------|-------|------------------|
+| `src/agent-session/` | Multi-turn Slack conversation lifecycle (turns, abort, cancellation). | Calls into `claude-handler.ts` / `StreamExecutor`. Pass 2+ will route through `agent-runtime`. |
+| `src/agent-runtime/` | Single agent invocation seam (SDK boundary). | Adapter is the only file that imports `@anthropic-ai/claude-agent-sdk` runtime values for one-shots. |
+
+Plugging the 4 one-shot helpers into `agent-session` would be a category
+error — they need a stateless text completion, not a Slack-turn lifecycle.
+The two layers stay separate; pass 2+ will introduce `streamConversation`
+on `agent-runtime` and have `agent-session` call it instead of the SDK
+directly.
+
 ## ACP-Applicable vs Extension Surface
 
 This is the inventory pass-2+ will use to decide what becomes a real

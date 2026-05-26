@@ -47,10 +47,7 @@ export async function generateTitle(conversationContent: string): Promise<string
           env,
           settingSources: [],
           plugins: [],
-          // Adaptive thinking on Haiku/Sonnet 4.5 silently consumes the entire
-          // output budget on these tiny prompts, leaving an empty response that
-          // truncates the title text to "". Disable thinking — title generation
-          // is a 1-shot text task where reasoning is unnecessary. (#762)
+          // Disable thinking — see #762 rationale on `ClaudeCodeExtensionOptions.thinking`.
           thinking: { type: 'disabled' },
           stderr: (data: string) => {
             logger.warn('TitleGenerator stderr', { data: data.trimEnd() });

@@ -26,7 +26,14 @@
 export interface ClaudeCodeExtensionOptions {
   /** Environment variables forwarded to the SDK child process (OAuth token, etc.). */
   env?: Record<string, string | undefined>;
-  /** Adaptive-thinking config; see `buildThinkingOption` in `claude-handler.ts`. */
+  /**
+   * Adaptive-thinking config; see `buildThinkingOption` in `claude-handler.ts`.
+   *
+   * One-shot title/summary callers MUST pass `{ type: 'disabled' }`:
+   * adaptive thinking on Haiku/Sonnet 4.5 silently consumes the entire
+   * output budget on tiny prompts, leaving an empty response that
+   * truncates titles to "" or breaks `JSON.parse`. (#762)
+   */
   thinking?: unknown;
   /** Claude Code "setting sources" — local plugin directory layering. */
   settingSources?: unknown[];

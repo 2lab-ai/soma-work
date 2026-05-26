@@ -38,18 +38,34 @@ function readRepoFile(relPath: string): string {
  * `import { type Options, query } from '...'` are runtime imports (the
  * `query` symbol is brought in at runtime) and therefore count as
  * boundary violations.
+ *
+ * Matches multi-line imports too:
+ *   import {
+ *     type Options,
+ *     query,
+ *   } from '@anthropic-ai/claude-agent-sdk';
+ * by anchoring on the `from '...'` end of the statement and walking back
+ * to the preceding `import` / `export` keyword.
  */
 function findRuntimeSdkImports(src: string): string[] {
-  const lines = src.split('\n');
+  // Greedy match: an `import` or `export` keyword, then any chars (including
+  // newlines) up to `from '@anthropic-ai/claude-agent-sdk'`. `[\s\S]*?` is
+  // non-greedy so adjacent statements don't collapse.
+  const stmtRe = new RegExp(
+    `(^|\\n)\\s*(import|export)\\b([\\s\\S]*?)from\\s+['"]${SDK_PKG.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&')}['"]`,
+    'g',
+  );
   const offenders: string[] = [];
-  for (const line of lines) {
-    if (!line.includes(SDK_PKG)) continue;
-    // Skip pure `import type ... from '...'` and `export type ... from '...'`.
-    if (/^\s*import\s+type\b/.test(line)) continue;
-    if (/^\s*export\s+type\b/.test(line)) continue;
-    if (/from\s+['"]@anthropic-ai\/claude-agent-sdk['"]/.test(line)) {
-      offenders.push(line.trim());
-    }
+  for (const m of src.matchAll(stmtRe)) {
+    // Capture the keyword and the bindings-block in between.
+    const keyword = m[2];
+    const bindings = m[3] ?? '';
+    // Pure `import type {...}` / `export type {...}` is a type-only import →
+    // erased at runtime, not a boundary violation. Anything else (including
+    // `import { type X, runtimeSymbol }`) is a runtime import.
+    const isPureTypeOnly = /^\s*type\b/.test(bindings);
+    if (isPureTypeOnly) continue;
+    offenders.push(`${keyword}${bindings}from '${SDK_PKG}'`.replace(/\s+/g, ' ').trim());
   }
   return offenders;
 }
@@ -70,5 +86,32 @@ describe('agent-runtime boundary (ADR 0002, pass 1)', () => {
     const src = readRepoFile('src/agent-runtime/claude-code-runner.ts');
     const offenders = findRuntimeSdkImports(src);
     expect(offenders.length).toBeGreaterThan(0);
+  });
+
+  // Inline fixture coverage for the matcher itself — guards against
+  // reformatting false-positives (e.g. someone runs Prettier and the SDK
+  // import wraps onto three lines).
+  describe('findRuntimeSdkImports (matcher)', () => {
+    it('treats a multi-line `import type {…}` block as type-only (no offender)', () => {
+      const src = ['import type {', '  Options,', '  SDKMessage,', "} from '@anthropic-ai/claude-agent-sdk';"].join(
+        '\n',
+      );
+      expect(findRuntimeSdkImports(src)).toEqual([]);
+    });
+
+    it('flags a multi-line mixed import (runtime + type)', () => {
+      const src = ['import {', '  type Options,', '  query,', "} from '@anthropic-ai/claude-agent-sdk';"].join('\n');
+      expect(findRuntimeSdkImports(src).length).toBe(1);
+    });
+
+    it('flags a single-line mixed `import { type X, runtimeY }`', () => {
+      const src = "import { type Options, query } from '@anthropic-ai/claude-agent-sdk';";
+      expect(findRuntimeSdkImports(src).length).toBe(1);
+    });
+
+    it('treats `import type {…}` (single-line) as type-only', () => {
+      const src = "import type { Options } from '@anthropic-ai/claude-agent-sdk';";
+      expect(findRuntimeSdkImports(src)).toEqual([]);
+    });
   });
 });
