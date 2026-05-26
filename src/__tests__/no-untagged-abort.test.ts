@@ -12,7 +12,7 @@
  * many docstring references to `controller.abort()`.
  */
 
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { type Dirent, readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -115,9 +115,12 @@ function stripCommentsAndStrings(src: string): string {
 function collectProductionFiles(): string[] {
   const files: string[] = [];
   const visit = (dir: string): void => {
-    let entries: ReturnType<typeof readdirSync>;
+    let entries: Dirent[];
     try {
-      entries = readdirSync(dir, { withFileTypes: true });
+      // The `Dirent[]` overload requires `withFileTypes: true` AND a string path;
+      // the explicit cast pins the overload TS picks (the buffer overload is
+      // picked by default for the generic `readdirSync` signature).
+      entries = readdirSync(dir, { withFileTypes: true }) as Dirent[];
     } catch {
       return;
     }
