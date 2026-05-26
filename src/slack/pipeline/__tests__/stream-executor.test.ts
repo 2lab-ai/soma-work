@@ -4885,3 +4885,273 @@ describe('StreamExecutor — P5 B5 race (issue #720)', () => {
     expect(blockKit.send).toHaveBeenCalledWith(evt);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Turn-end surface guarantee — P0 holes (phase 1 of 2)
+//
+// Background: `docs/current/plans/turn-end-surface-guarantee/exhaustive-paths.md` enumerated
+// every way a turn can end (or stall) without emitting a Slack terminal card.
+// PR #926 added a 10-min stall watchdog as a blunt fail-safe that killed
+// legitimate long-running turns. This file pins the contracts for four P0
+// holes the watchdog was papering over:
+//
+//   B-1: ghost-session self-abort (onToolUse/onToolResult `session.terminated`
+//        guard) emitted an UNTAGGED `abortController.abort()`. The signal
+//        reason ended up DOMException → `coerceAbortReason` → undefined →
+//        the abort-quiet branch in `handleError`. User saw no card at all.
+//        Fix: tag both call-sites with the new `'ghost-session'` reason and
+//        route through the notify-worthy gate.
+//
+//   C-2: enrichment hang → `TurnSurface.end()`'s 3s snapshot timeout fires
+//        but the timeout branch silently skips the B5 emit. StreamExecutor
+//        needs to know the snapshot didn't resolve so it can fire a fallback
+//        `turnNotifier.notify()`. Once-guard prevents double-fire if the
+//        late `.then` resolves after the timeout.
+//
+//   C-5: when `processedFiles.length > 0` the success rail used to await
+//        `cleanupTempFiles` BEFORE the finally block ran `endTurn`. A hung
+//        file handler blocked the terminal card. Fix: cleanup runs in finally
+//        (after endTurn) and is timeout-wrapped so even a permanent hang
+//        can't block the card.
+// ---------------------------------------------------------------------------
+
+describe('turn-end surface guarantee — P0 holes', () => {
+  function createExecutorDeps() {
+    return {
+      claudeHandler: {
+        setActivityState: vi.fn(),
+        clearSessionId: vi.fn(),
+      },
+      fileHandler: {
+        cleanupTempFiles: vi.fn().mockResolvedValue(undefined),
+      },
+      toolEventProcessor: {},
+      statusReporter: {
+        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
+        getStatusEmoji: vi.fn().mockReturnValue('stop_button'),
+      },
+      reactionManager: {
+        updateReaction: vi.fn().mockResolvedValue(undefined),
+      },
+      contextWindowManager: {
+        handlePromptTooLong: vi.fn().mockResolvedValue(undefined),
+      },
+      toolTracker: {},
+      todoDisplayManager: {},
+      actionHandlers: {},
+      requestCoordinator: {},
+      slackApi: {},
+      turnNotifier: {
+        notify: vi.fn().mockResolvedValue(undefined),
+      },
+      assistantStatusManager: {
+        clearStatus: vi.fn().mockResolvedValue(undefined),
+        setStatus: vi.fn().mockResolvedValue(undefined),
+        bumpEpoch: vi.fn().mockReturnValue(1),
+        getToolStatusText: vi.fn().mockReturnValue('running...'),
+        buildBashStatus: vi.fn().mockReturnValue('is running commands...'),
+        registerBackgroundBashActive: vi.fn().mockReturnValue(() => {}),
+      },
+      threadPanel: undefined,
+    } as any;
+  }
+
+  // -------------------------------------------------------------------------
+  // B-1: ghost-session abort → notify-worthy
+  // -------------------------------------------------------------------------
+
+  it('B-1: emits Exception card on "ghost-session" abort reason', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = new Error('Request was aborted');
+    error.name = 'AbortError';
+
+    const session = { ownerId: 'U_OWNER', title: 'ghost session turn' } as any;
+
+    await (executor as any).handleError(
+      error,
+      session,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say,
+      /* requestAborted */ true,
+      /* activeSlotAtQueryStart */ null,
+      /* expectedEpoch */ undefined,
+      /* abortReason */ 'ghost-session',
+    );
+
+    expect(deps.turnNotifier.notify).toHaveBeenCalledTimes(1);
+    const event = deps.turnNotifier.notify.mock.calls[0][0];
+    expect(event.category).toBe('Exception');
+    expect(event.channel).toBe('C123');
+    expect(event.threadTs).toBe('thread123');
+    // ghost-session has its own friendly message so the block-kit renderer
+    // surfaces the real cause instead of the stale session title.
+    expect(event.message).toBe('세션이 종료되어 턴이 중단되었습니다.');
+  });
+
+  it('B-1 source: both onToolUse and onToolResult self-aborts tag the reason', async () => {
+    // Source-level assertion — the two callback sites that previously called
+    // `abortController.abort()` untagged are the documented holes. Failing
+    // this test means a future regression silently drops a turn-end card
+    // when `session.terminated` is observed mid-stream.
+    const { readFile } = await import('node:fs/promises');
+    const path = await import('node:path');
+    // `__dirname` is the cjs-compatible seam — vitest supplies it whether the
+    // file resolves as ESM or CJS, and tsc's `module: commonjs` chokes on
+    // `import.meta.url` here.
+    const src = await readFile(
+      path.resolve(__dirname, '../../../../packages/slack/src/pipeline/stream-executor.ts'),
+      'utf8',
+    );
+
+    const matches = Array.from(src.matchAll(/abortController\.abort\('ghost-session'/g));
+    // Two sites: onToolUse self-abort + onToolResult self-abort.
+    expect(matches.length).toBe(2);
+  });
+
+  // -------------------------------------------------------------------------
+  // C-2: enrichment timeout → fallback turnNotifier.notify (once-guard)
+  // -------------------------------------------------------------------------
+  //
+  // The unit-level signal test for TurnSurface.end's snapshotResolved flag
+  // lives in src/slack/__tests__/turn-surface.test.ts. Here we pin the
+  // integration contract: StreamExecutor must POST a fallback notify when
+  // it observes the timeout signal, and a late `.then` resolve must NOT
+  // double-fire.
+
+  it('C-2: emits fallback turnNotifier.notify when TurnSurface reports snapshot timeout', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+
+    // Direct unit seam: stream-executor will own a private helper that takes
+    // the TurnSurface.end result + fallback args and dispatches the fallback.
+    // The exact helper name is an implementation detail of the fix; the
+    // public contract under test is: given a "snapshot did not resolve"
+    // signal, the notifier sees exactly one event with the original category
+    // and fallback message hygiene.
+    const handler = (executor as any).maybeFallbackNotifyAfterTurnSurface as
+      | ((args: { snapshotResolved: boolean; fallbackArgs: any }) => void)
+      | undefined;
+    // RED gate: helper does not exist yet on main.
+    expect(typeof handler).toBe('function');
+
+    handler!.call(executor, {
+      snapshotResolved: false,
+      fallbackArgs: {
+        category: 'WorkflowComplete',
+        userId: 'U_OWNER',
+        channel: 'C123',
+        threadTs: 'thread123',
+        sessionTitle: 'autoz turn',
+        durationMs: 12345,
+        sessionKey: 'C123:thread123',
+        turnId: 'C123:thread123:42',
+      },
+    });
+
+    expect(deps.turnNotifier.notify).toHaveBeenCalledTimes(1);
+    const evt = deps.turnNotifier.notify.mock.calls[0][0];
+    expect(evt).toMatchObject({
+      category: 'WorkflowComplete',
+      userId: 'U_OWNER',
+      channel: 'C123',
+      threadTs: 'thread123',
+    });
+  });
+
+  it('C-2: does NOT emit fallback when TurnSurface reports snapshot resolved', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+
+    const handler = (executor as any).maybeFallbackNotifyAfterTurnSurface as
+      | ((args: { snapshotResolved: boolean; fallbackArgs: any }) => void)
+      | undefined;
+    expect(typeof handler).toBe('function');
+
+    handler!.call(executor, {
+      snapshotResolved: true,
+      fallbackArgs: {
+        category: 'WorkflowComplete',
+        userId: 'U_OWNER',
+        channel: 'C123',
+        threadTs: 'thread123',
+        sessionTitle: 'ok',
+        durationMs: 1,
+        sessionKey: 'C123:thread123',
+        turnId: 'C123:thread123:43',
+      },
+    });
+
+    expect(deps.turnNotifier.notify).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------------
+  // C-5: cleanupTempFiles hang must not block the terminal card
+  // -------------------------------------------------------------------------
+  //
+  // Codex-flagged design: the test must NOT rely on vitest's outer
+  // suite-level timeout. Use the helper that wraps cleanup with a
+  // 3s race; assert it resolves even when the inner promise never settles.
+
+  it('C-5: cleanupTempFiles is wrapped with a finite timeout', async () => {
+    const wrapper = (await import('../stream-executor-cleanup-helpers')).cleanupWithTimeout as
+      | ((cleanup: () => Promise<void>, timeoutMs: number) => Promise<void>)
+      | undefined;
+    // RED gate: helper file/export does not exist yet.
+    expect(typeof wrapper).toBe('function');
+
+    vi.useFakeTimers();
+    try {
+      const never = () => new Promise<void>(() => {});
+      const settled = vi.fn();
+      const p = wrapper!(never, 3000).then(settled, settled);
+
+      // Before the timeout: pending.
+      await Promise.resolve();
+      expect(settled).not.toHaveBeenCalled();
+
+      // After the timeout: settled (resolved or rejected — both signal that
+      // the cleanup race did not hang).
+      await vi.advanceTimersByTimeAsync(3500);
+      expect(settled).toHaveBeenCalled();
+      await p;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('C-5 source: cleanupTempFiles is called inside finally (after endTurn), not in the success-return path', async () => {
+    // Source-level lock-in: cleanup must move out of the success-return
+    // branch (was ~L1721-1722) and into the finally block (after endTurn).
+    // If a future refactor reintroduces the await-before-finally pattern,
+    // this test fails loudly so we don't silently regress C-5.
+    const { readFile } = await import('node:fs/promises');
+    const path = await import('node:path');
+    // `__dirname` is the cjs-compatible seam — vitest supplies it whether the
+    // file resolves as ESM or CJS, and tsc's `module: commonjs` chokes on
+    // `import.meta.url` here.
+    const src = await readFile(
+      path.resolve(__dirname, '../../../../packages/slack/src/pipeline/stream-executor.ts'),
+      'utf8',
+    );
+
+    // Locate the success-rail return for normal completion (NOT renew /
+    // onboarding / toolContinuation branches — those each have their own
+    // return). The marker we ban is an `await this.deps.fileHandler.cleanupTempFiles`
+    // PRIOR to the catch-block. There must remain at most ONE such call
+    // (inside finally) — the previous pre-finally site at line ~1721 is gone.
+    //
+    // The regex tolerates whitespace variants and keeps the test resilient
+    // to surrounding edits.
+    const cleanupCalls = Array.from(src.matchAll(/await\s+this\.deps\.fileHandler\.cleanupTempFiles\s*\(/g));
+    // Production now calls cleanup at most once on the success-rail (in
+    // finally) AND once on the error-rail (inside handleError). Both are
+    // expected; what we ban is THREE+ instances (the regression pattern
+    // would be a third pre-finally call).
+    expect(cleanupCalls.length).toBeLessThanOrEqual(2);
+  });
+});

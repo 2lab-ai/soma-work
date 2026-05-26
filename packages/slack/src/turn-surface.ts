@@ -127,6 +127,27 @@ export type TurnAddress = Omit<TurnContext, 'turnId'>;
  */
 export type TurnEndReason = 'completed' | 'aborted';
 
+/**
+ * Result of {@link TurnSurface.end}.
+ *
+ * Turn-end surface guarantee §C-2: when `reason === 'completed'` and the
+ * B5 capability is active, `end()` awaits the snapshot Promise inside a
+ * 3s race. If the snapshot fails to resolve in time, the B5 emit is
+ * skipped — but the caller (`StreamExecutor`) needs to know so it can
+ * post a fallback `turnNotifier.notify()` with the originally-computed
+ * category. Without this signal the turn ends with NO terminal card on
+ * any channel.
+ *
+ * For non-completed reasons (`'aborted'`) or when B5 capability is
+ * inactive, this returns `{ snapshotResolved: true }` — there is no
+ * expected snapshot, so the caller should NOT post a fallback. Trace:
+ * `docs/current/plans/turn-end-surface-guarantee/exhaustive-paths.md` §C-2.
+ */
+export interface TurnEndResult {
+  /** True when no B5 fallback is needed (snapshot landed, or B5 wasn't expected). */
+  snapshotResolved: boolean;
+}
+
 interface TurnState {
   ctx: TurnContext;
   /** ts returned by `chat.startStream` — identifies the B1 stream message. */
@@ -695,14 +716,17 @@ export class TurnSurface {
    * multiple times, and safe to call on a turn that never successfully
    * opened a stream.
    */
-  async end(turnId: string, reason: TurnEndReason): Promise<void> {
-    if (this.phase() < 1) return;
+  async end(turnId: string, reason: TurnEndReason): Promise<TurnEndResult> {
+    // PHASE=0 / unknown-turn / already-closing → no-op. Report
+    // `snapshotResolved: true` because there is no expected B5 snapshot on
+    // these paths and the caller MUST NOT post a fallback notify.
+    if (this.phase() < 1) return { snapshotResolved: true };
 
     const state = this.turns.get(turnId);
     // Idempotent: already closing (another end()/fail() in flight) or already
     // closed (state cleaned up) → no-op. Check-and-set is synchronous so
     // concurrent callers cannot both pass this gate.
-    if (!state || state.closing) return;
+    if (!state || state.closing) return { snapshotResolved: true };
 
     // Mark closing synchronously FIRST so a concurrent appendText() call
     // during the debouncer flush / stopStream await is dropped rather than
@@ -722,6 +746,13 @@ export class TurnSurface {
     // without marking its todo as completed leaves a persistent "still
     // working" spinner on the planTs message (the user-reported hang state).
     await this.finalizePlanIfNeeded(turnId, state);
+
+    // Turn-end surface guarantee §C-2: track whether the snapshot landed
+    // so we can return it to the caller after `finally` runs cleanup.
+    // Declared in the outer scope (not inside finally) so a `return`
+    // statement at the end can read it without nesting return-in-finally
+    // (which would swallow any throw from the try block).
+    let snapshotResolved = true;
 
     try {
       if (state.streamTs) {
@@ -761,6 +792,14 @@ export class TurnSurface {
       // synchronous with close.
       const capActive =
         typeof this.deps.isCompletionMarkerActive === 'function' ? this.deps.isCompletionMarkerActive() : false;
+
+      // Turn-end surface guarantee §C-2: the outer `snapshotResolved` flag
+      // (declared before the try block) stays `true` when `reason !==
+      // 'completed'` OR B5 is inactive — no snapshot is expected so the
+      // caller MUST NOT post a fallback. When B5 IS expected but the race
+      // hits the timeout (or the builder throws), the block below flips
+      // it to `false` and lets StreamExecutor decide whether to fall back
+      // through `turnNotifier.notify`.
       if (reason === 'completed' && capActive && state.ctx.buildCompletionEvent && this.deps.slackBlockKitChannel) {
         let evt: TurnCompletionEvent | undefined;
         let timeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -814,20 +853,29 @@ export class TurnSurface {
               error: describeSlackError(err),
             });
           });
-        } else if (!warnEmitted) {
-          // Distinguish timeout / undefined-snapshot from the explicit
-          // `reason !== 'completed'` skip — operators need this signal to
-          // diagnose enrichment regressions (issue #720's symptom was
-          // silent B5 drop with no log breadcrumb). Skipped when the
-          // sync-throw catch already logged, so one event → one warn.
-          this.logger.warn('B5 snapshot unavailable — completion marker not emitted', {
-            turnId,
-          });
+        } else {
+          // §C-2: the snapshot did not land. Mark unresolved so the caller
+          // can post a fallback `turnNotifier.notify()` — without this
+          // signal the turn would end with NO terminal card on any channel.
+          snapshotResolved = false;
+
+          if (!warnEmitted) {
+            // Distinguish timeout / undefined-snapshot from the explicit
+            // `reason !== 'completed'` skip — operators need this signal to
+            // diagnose enrichment regressions (issue #720's symptom was
+            // silent B5 drop with no log breadcrumb). Skipped when the
+            // sync-throw catch already logged, so one event → one warn.
+            this.logger.warn('B5 snapshot unavailable — completion marker not emitted', {
+              turnId,
+            });
+          }
         }
       }
 
       this.cleanupTurn(turnId, state);
     }
+
+    return { snapshotResolved };
   }
 
   /**
