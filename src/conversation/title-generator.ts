@@ -32,10 +32,8 @@ export async function generateTitle(conversationContent: string): Promise<string
 
     const prompt = `Generate a concise, descriptive Korean title (max 40 chars) for this conversation. Output ONLY the title text, nothing else.\n\nConversation:\n${truncated}`;
 
-    // Pass the fresh lease token via options.env (built by `buildQueryEnv`)
-    // so concurrent spawns each see their own token — mutating
-    // `process.env.CLAUDE_CODE_OAUTH_TOKEN` globally would race against
-    // other in-flight dispatches holding leases on different slots.
+    // Use options.env (not process.env) so concurrent leases don't
+    // clobber the shared CLAUDE_CODE_OAUTH_TOKEN.
     const { env } = buildQueryEnv(lease);
     const options = buildOneShotOptions({
       model: config.conversation.summaryModel,

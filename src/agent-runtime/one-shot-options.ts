@@ -24,6 +24,14 @@ import type { AgentRunOptions } from './agent-runner';
  * Structural logger interface — the project's `Logger` (in
  * `packages/common/src/logger.ts`) satisfies this. Kept local so the
  * agent-runtime package doesn't import the concrete `Logger` class.
+ *
+ * Note: `packages/process-shared/src/stderr-logger.ts` ships a wider
+ * `LoggerInterface` (debug/info/warn/error). We deliberately narrow to
+ * `warn` here because that's the only method the builder uses, and
+ * `src/` has no other runtime imports from `@soma/process-shared`. A
+ * future consolidation PR could promote a single shared logger interface
+ * to `@soma/common`; this is one of ~5 structural logger duplicates
+ * across the repo.
  */
 export interface LoggerLike {
   warn(message: string, data?: Record<string, unknown>): void;
@@ -71,7 +79,7 @@ export function buildOneShotOptions(input: BuildOneShotOptionsInput): AgentRunOp
         env,
         settingSources: [],
         plugins: [],
-        ...(disableThinking ? { thinking: { type: 'disabled' } } : {}),
+        thinking: disableThinking ? { type: 'disabled' } : undefined,
         stderr: (data: string) => {
           logger.warn(`${stderrLabel} stderr`, { data: data.trimEnd() });
         },

@@ -50,10 +50,8 @@ export async function summarizeResponse(content: string): Promise<SummaryResult 
 Response to summarize:
 ${truncatedContent}`;
 
-    // Pass the fresh lease token via options.env (built by `buildQueryEnv`)
-    // so concurrent summariser / title-generator / dispatch calls don't
-    // clobber each other's token on the shared
-    // `process.env.CLAUDE_CODE_OAUTH_TOKEN` variable.
+    // Use options.env (not process.env) so concurrent leases don't
+    // clobber the shared CLAUDE_CODE_OAUTH_TOKEN.
     const { env } = buildQueryEnv(lease);
     const options = buildOneShotOptions({
       model: getSummaryModel(),

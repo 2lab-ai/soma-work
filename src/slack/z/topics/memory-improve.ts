@@ -29,9 +29,8 @@ async function runQuery(prompt: string, systemPrompt: string): Promise<string> {
       throw credErr;
     }
 
-    // Pass the fresh lease token via options.env (built by `buildQueryEnv`)
-    // so this call and any concurrent Claude spawn each use their own
-    // lease's token.
+    // Use options.env (not process.env) so concurrent leases don't
+    // clobber the shared CLAUDE_CODE_OAUTH_TOKEN.
     const { env } = buildQueryEnv(lease);
     // `disableThinking: false` preserves the pre-refactor behaviour —
     // memory-improve is the only one-shot helper that does NOT pass
