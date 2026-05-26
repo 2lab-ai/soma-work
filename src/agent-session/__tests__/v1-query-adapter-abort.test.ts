@@ -119,4 +119,39 @@ describe('V1QueryAdapter — AbortController Unification (Ghost Session Fix #99)
     adapter.cancel();
     expect(executedParams.abortController.signal.aborted).toBe(true);
   });
+
+  // B-2 — abort reasons must be tagged so handleError's notifyWorthyAbort
+  // gate can distinguish user-driven cancel from session lifecycle teardown.
+  // Untagged `.abort()` previously left `signal.reason` as a DOMException,
+  // which `coerceAbortReason` mapped to undefined → silent quiet branch.
+  // Trace: docs/current/plans/turn-end-surface-guarantee/exhaustive-paths.md §B-2.
+  it('cancel() tags the controller with "user-stop"', async () => {
+    const params = createMockExecuteParams();
+    const controller = params.abortController;
+
+    const adapter = new V1QueryAdapter({
+      streamExecutor: mockExecutor as StreamExecutorLike,
+      executeParams: params,
+    });
+
+    adapter.cancel();
+
+    expect(controller.signal.aborted).toBe(true);
+    expect(controller.signal.reason).toBe('user-stop');
+  });
+
+  it('dispose() tags the controller with "session-close"', async () => {
+    const params = createMockExecuteParams();
+    const controller = params.abortController;
+
+    const adapter = new V1QueryAdapter({
+      streamExecutor: mockExecutor as StreamExecutorLike,
+      executeParams: params,
+    });
+
+    adapter.dispose();
+
+    expect(controller.signal.aborted).toBe(true);
+    expect(controller.signal.reason).toBe('session-close');
+  });
 });

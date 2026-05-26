@@ -847,7 +847,9 @@ export class SessionInitializer {
         threadTs,
         textPreview: text.substring(0, 50),
       });
-      abortController.abort();
+      // B-2: dispatch-level timeout — semantically a stall on this turn,
+      // surface the 🔴 stall card via handleError's existing routing.
+      abortController.abort('stall-timeout');
     }, DISPATCH_TIMEOUT_MS);
 
     // Track dispatch status message for updating
