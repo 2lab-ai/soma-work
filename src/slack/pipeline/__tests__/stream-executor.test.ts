@@ -740,47 +740,26 @@ describe('Abort handling', () => {
   });
 
   // -------------------------------------------------------------------------
-  // Stall watchdog integration — locks in the contract that the watchdog
-  // binds to the LOCAL turn controller (codex 2a332a29 P4) and that
-  // AbortController's "first reason wins" semantics protect a healthy
-  // supersede from being overwritten by a late stall fire.
-  //
-  // The watchdog class itself is unit-tested in
-  // src/slack/pipeline/__tests__/stream-stall-watchdog.test.ts; these
-  // tests assert the wiring surface stream-executor expects.
+  // Idle-timeout integration (Phase 2 — replaces PR #926 watchdog) —
+  // locks in the contract that AbortController's "first reason wins"
+  // semantics protect a healthy supersede from being overwritten by a
+  // late stall fire. The idle-timeout race itself is unit-tested in
+  // src/slack/__tests__/stream-processor-idle-timeout.test.ts; this
+  // test asserts only the abort-reason precedence we depend on.
   // -------------------------------------------------------------------------
-  it('stall watchdog: abort closure tags the local controller with stall-timeout', async () => {
-    const { StreamStallWatchdog } = await import('../stream-stall-watchdog');
-    const abortController = new AbortController();
-
-    // Mirror stream-executor.ts wire-up: `() => abortController.abort('stall-timeout' satisfies RequestAbortReason)`
-    const wd = new StreamStallWatchdog(50, () => abortController.abort('stall-timeout'));
-    wd.arm();
-
-    // Wait past the stall window. Real timers here — the watchdog uses
-    // setTimeout natively, so a short 50ms window keeps the test fast.
-    await new Promise((r) => setTimeout(r, 80));
-
-    expect(abortController.signal.aborted).toBe(true);
-    expect(abortController.signal.reason).toBe('stall-timeout');
-  });
-
-  it('stall watchdog: prior supersede abort wins over a late stall fire', async () => {
-    const { StreamStallWatchdog } = await import('../stream-stall-watchdog');
+  it('idle timeout: prior supersede abort wins over a late stall-timeout fire', () => {
     const abortController = new AbortController();
 
     // Healthy mid-turn steering: dispatcher fires supersede FIRST.
     abortController.abort('supersede');
     expect(abortController.signal.reason).toBe('supersede');
 
-    // Later, a stale watchdog fires. AbortController's first-reason-wins
-    // semantics protect us from accidentally re-tagging the abort as
-    // 'stall-timeout' — handleError must continue to see 'supersede' (the
-    // silent branch) instead of switching to 'stall-timeout' (the red card
-    // branch).
-    const wd = new StreamStallWatchdog(50, () => abortController.abort('stall-timeout'));
-    wd.arm();
-    await new Promise((r) => setTimeout(r, 80));
+    // Later, the StreamProcessor's `onIdleTimeout` wiring tries to tag
+    // 'stall-timeout'. AbortController's first-reason-wins semantics
+    // protect us from accidentally re-tagging the abort —
+    // handleError must continue to see 'supersede' (the silent branch)
+    // instead of switching to 'stall-timeout' (the red card branch).
+    abortController.abort('stall-timeout');
 
     expect(abortController.signal.reason).toBe('supersede');
   });
