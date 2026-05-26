@@ -1068,12 +1068,65 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
 
       // Fast-fail: block model invocation when user email is not configured.
       // Placed BEFORE spinner/reaction to avoid dangling UI state on early return.
+      //
+      // B-5: surface as an Exception turn-end card (uniform with the rest of
+      // the terminal-card invariant) instead of a plain ⚠️ text. When
+      // `turnNotifier` is wired (production), fire the standard event so
+      // the block-kit channel renders the 🔴 card. When it's not (test
+      // harness / misconfigured DI), fall back to a `say()` with Block Kit
+      // blocks so the visual parity holds.
+      //
+      // Also resolve the B5 snapshot with `undefined` — `threadPanel.beginTurn`
+      // already ran at L871, so P5 would wait 3s on a snapshot that the
+      // short-circuit return guarantees will never arrive.
+      // Trace: docs/current/plans/turn-end-surface-guarantee/exhaustive-paths.md §B-5.
       const resolvedEmail = userSettingsStore.getUserEmail(user);
       if (!resolvedEmail) {
-        await say({
-          text: `⚠️ *이메일이 설정되지 않았습니다.*\n\n이 기능을 사용하려면 이메일 설정이 필요합니다.\n\`set email <your-email>\` 명령으로 이메일을 설정해주세요.\n\n예시: \`set email you@company.com\``,
-          thread_ts: threadTs,
-        });
+        const emailFailMessage =
+          '이메일이 설정되지 않았습니다. `set email <your-email>` 명령으로 이메일을 설정해주세요. 예: `set email you@company.com`';
+        const emailFailBlocks = [
+          {
+            type: 'section',
+            text: { type: 'mrkdwn', text: `🔴 *이메일이 설정되지 않았습니다.*` },
+          },
+          {
+            type: 'section',
+            text: {
+              type: 'mrkdwn',
+              text:
+                '이 기능을 사용하려면 이메일 설정이 필요합니다.\n' +
+                '`set email <your-email>` 명령으로 이메일을 설정해주세요.\n\n' +
+                '예: `set email you@company.com`',
+            },
+          },
+        ];
+
+        // Release the B5 snapshot before short-circuit return so P5's
+        // `TurnSurface.end` doesn't wait 3s on a snapshot that will never
+        // be enriched.
+        resolveSnapshot(undefined);
+
+        if (this.deps.turnNotifier) {
+          this.deps.turnNotifier
+            .notify({
+              category: 'Exception',
+              userId: session.ownerId || user || '',
+              channel,
+              threadTs,
+              sessionTitle: session.title,
+              message: emailFailMessage,
+              durationMs: 0,
+            })
+            .catch((err: any) => this.logger.warn('B-5 email-fast-fail notification failed', { error: err?.message }));
+        } else {
+          // Fallback when DI omits the notifier (test harness or misconfig).
+          await say({
+            text: `🔴 ${emailFailMessage}`,
+            blocks: emailFailBlocks,
+            thread_ts: threadTs,
+          });
+        }
+
         this.logger.warn('Blocked model invocation: user email not configured', { user });
         return { success: false, messageCount: 0 };
       }
@@ -1681,10 +1734,32 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // turnNotifier is wired (harness / tests / misconfigured DI).
       // Codex P1-2 decoupling requirement: event construction is independent
       // of turnNotifier presence.
-      const category = determineTurnCategory({
+      // B-6: settle the renew outcome BEFORE the enrichment-notify rail
+      // fires. Previously `buildRenewContinuation` ran AFTER `.then(notify)`
+      // had already posted the 🟢 WorkflowComplete card — so a renew failure
+      // produced a misleading 🟢 followed only by a plain ⚠️ text. By
+      // resolving the continuation here we can compute the final category
+      // (`'Exception'` on renew failure) once, and the success rail posts
+      // exactly one card with the truthful outcome.
+      // Trace: docs/current/plans/turn-end-surface-guarantee/exhaustive-paths.md §B-6.
+      let renewContinuation: Continuation | undefined;
+      let renewFailed = false;
+      if (session.renewState === 'pending_save') {
+        renewContinuation = await this.buildRenewContinuation(session, streamResult.collectedText || '', threadTs, say);
+        renewFailed = !renewContinuation;
+      }
+
+      const baseCategory = determineTurnCategory({
         hasPendingChoice,
         isError: hasSdkError,
       });
+      const category: TurnCategory = renewFailed ? 'Exception' : baseCategory;
+      // Renew-failure surfaces a specific Korean message instead of the
+      // generic stream-error coalesce — `buildRenewContinuation` already
+      // posted the detailed `⚠️ Save failed: …` text inline (kept for
+      // backward compat / log breadcrumbs), so this card just needs a
+      // crisp summary line for the block-kit body.
+      const renewFailureMessage = renewFailed ? 'Renew 작업이 실패했습니다.' : undefined;
       const durationMs = Date.now() - requestStartedAt.getTime();
 
       // Build the enriched event. Returns the event on success; throws on
@@ -1712,6 +1787,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           channel,
           threadTs,
           sessionTitle: session.title,
+          // B-6: when the renew rail failed, surface the crisp failure
+          // summary in the card body alongside the standard enrichment.
+          ...(renewFailureMessage ? { message: renewFailureMessage } : {}),
           durationMs,
           // Rich fields
           persona: userSettingsStore.getUserPersona(session.ownerId || user),
@@ -1855,18 +1933,21 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // hang can never block the terminal card.
       // Trace: docs/current/plans/turn-end-surface-guarantee/exhaustive-paths.md §C-5.
 
-      // Handle renew flow if in pending_save state - return continuation instead of recursing
-      if (session.renewState === 'pending_save') {
-        const continuation = await this.buildRenewContinuation(
-          session,
-          streamResult.collectedText || '',
-          threadTs,
-          say,
-        );
-        if (continuation) {
-          turnCollector.setContinuation(continuation);
-          return { success: true, messageCount: streamResult.messageCount, continuation, turnCollector };
-        }
+      // B-6: renew continuation already settled before the notify rail (see
+      // the `renewContinuation` / `renewFailed` computation above
+      // `determineTurnCategory`). If renew succeeded, return the
+      // continuation so the outer caller schedules the next turn; if it
+      // failed, the Exception category was already emitted by the
+      // `.then` rail above — fall through to the standard success-rail
+      // return so the lifecycle (status clear, cleanup) still runs.
+      if (renewContinuation) {
+        turnCollector.setContinuation(renewContinuation);
+        return {
+          success: true,
+          messageCount: streamResult.messageCount,
+          continuation: renewContinuation,
+          turnCollector,
+        };
       }
 
       // Handle onboarding completion/skip - transition to real workflow
@@ -2161,20 +2242,20 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     const shouldNotifyException =
       !!this.deps.turnNotifier && (!isAbort || notifyWorthyAbort) && !this.isOneMContextUnavailableError(error);
 
+    // Composed once so both rails (turnNotifier event AND B-4 say() fallback
+    // when DI is missing) use the same Korean text. Coalesce through
+    // `.message` → `.code` → `.name` → `JSON.stringify` so non-Error throws
+    // (raw strings, plain objects from net layer) still leave a visible trace.
+    const abortDisplayMessage = stallTimeoutAbort
+      ? '이전 턴이 일정 시간 응답이 없어 중단되었습니다.'
+      : ghostSessionAbort
+        ? '세션이 종료되어 턴이 중단되었습니다.'
+        : unknownAbort
+          ? '턴이 알 수 없는 이유로 중단되었습니다.'
+          : coalesceErrorMessage(error);
+
     // Trace: docs/turn-notification/trace.md, Scenario 1, Section 3a — Exception path
     if (shouldNotifyException && this.deps.turnNotifier) {
-      // `event.message` must always be a meaningful, non-empty string so the
-      // block-kit renderer can show the full reason in a dedicated body block
-      // (PTN-4318 / soma-work#933). Coalesce through `.message` → `.code` →
-      // `.name` → `JSON.stringify` so non-Error throws (raw strings, plain
-      // objects from net layer) still leave a visible trace.
-      const message = stallTimeoutAbort
-        ? '이전 턴이 일정 시간 응답이 없어 중단되었습니다.'
-        : ghostSessionAbort
-          ? '세션이 종료되어 턴이 중단되었습니다.'
-          : unknownAbort
-            ? '턴이 알 수 없는 이유로 중단되었습니다.'
-            : coalesceErrorMessage(error);
       this.deps.turnNotifier
         .notify({
           category: 'Exception',
@@ -2182,10 +2263,25 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           channel,
           threadTs,
           sessionTitle: session.title,
-          message,
+          message: abortDisplayMessage,
           durationMs: 0,
         })
         .catch((err: any) => this.logger.warn('Exception notification failed', { error: err?.message }));
+    } else if (notifyWorthyAbort && !this.deps.turnNotifier && !this.isOneMContextUnavailableError(error)) {
+      // B-4: turnNotifier DI missing AND the abort is notify-worthy. Fall
+      // back to plain say() so the user still gets a terminal signal — the
+      // existing non-abort fallback at the bottom of handleError covers the
+      // `!isAbort` case, but abort branches previously fell into the silent
+      // gap when DI was misconfigured.
+      // Trace: docs/current/plans/turn-end-surface-guarantee/exhaustive-paths.md §B-4.
+      try {
+        await say({ text: `🔴 ${abortDisplayMessage}`, thread_ts: threadTs });
+      } catch (sayErr) {
+        this.logger.warn('B-4 abort fallback say() failed', {
+          sessionKey,
+          error: (sayErr as Error)?.message ?? String(sayErr),
+        });
+      }
     }
 
     let retryAfterMs: number | undefined;
