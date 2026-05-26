@@ -4993,6 +4993,50 @@ describe('turn-end surface guarantee — P0 holes', () => {
   });
 
   // -------------------------------------------------------------------------
+  // B-2: unknown-reason abort → defense-in-depth notify
+  //
+  // Producer-side enforcement (the no-untagged-abort.test.ts source scan)
+  // makes untagged `.abort()` calls impossible in production code. But a
+  // future caller — third-party SDK, DOM `AbortController.abort()` default,
+  // a brand-new RequestAbortReason arm that handleError doesn't know about
+  // yet — can still surface an unknown reason at handleError. Without this
+  // fallback the turn vanishes silently. Trace: exhaustive-paths.md §B-2.
+  // -------------------------------------------------------------------------
+
+  it('B-2: emits Exception card on unknown / untagged abort reason (DOMException default)', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = new Error('Request was aborted');
+    error.name = 'AbortError';
+
+    const session = { ownerId: 'U_OWNER', title: 'untagged abort turn' } as any;
+
+    // abortReason=undefined simulates `coerceAbortReason` returning undefined
+    // (foreign / untagged abort that the producer-side guard missed). The
+    // gate must still surface a 🔴 card with a generic Korean message so the
+    // user gets some terminal signal.
+    await (executor as any).handleError(
+      error,
+      session,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say,
+      /* requestAborted */ true,
+      /* activeSlotAtQueryStart */ null,
+      /* expectedEpoch */ undefined,
+      /* abortReason */ undefined,
+    );
+
+    expect(deps.turnNotifier.notify).toHaveBeenCalledTimes(1);
+    const event = deps.turnNotifier.notify.mock.calls[0][0];
+    expect(event.category).toBe('Exception');
+    expect(event.message).toBe('턴이 알 수 없는 이유로 중단되었습니다.');
+  });
+
+  // -------------------------------------------------------------------------
   // C-2: enrichment timeout → fallback turnNotifier.notify (once-guard)
   // -------------------------------------------------------------------------
   //

@@ -63,7 +63,9 @@ function parseWindow(raw: UsageWindowRaw | null | undefined): UsageSnapshot['fiv
  */
 export async function fetchUsage(accessToken: string): Promise<UsageFetchResult> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), USAGE_TIMEOUT_MS);
+  // B-2: fetch timeouts carry a descriptive string (not RequestAbortReason —
+  // this signal feeds fetch(), not handleError).
+  const timeout = setTimeout(() => controller.abort('fetch-timeout'), USAGE_TIMEOUT_MS);
 
   let response: Response;
   try {
