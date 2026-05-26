@@ -1,4 +1,4 @@
-import { type Options, query } from '@anthropic-ai/claude-agent-sdk';
+import { type AgentRunOptions, runOneShotText } from '../../../agent-runtime';
 import { buildQueryEnv } from '../../../auth/query-env-builder';
 import { config } from '../../../config';
 import { ensureActiveSlotAuth, NoHealthySlotError, type SlotAuthLease } from '../../../credentials-manager';
@@ -33,31 +33,24 @@ async function runQuery(prompt: string, systemPrompt: string): Promise<string> {
     // so this call and any concurrent Claude spawn each use their own
     // lease's token.
     const { env } = buildQueryEnv(lease);
-    const options: Options = {
+    const options: AgentRunOptions = {
       model: config.conversation.summaryModel,
       maxTurns: 1,
       tools: [],
       systemPrompt,
-      settingSources: [],
-      plugins: [],
-      env,
-      stderr: (data: string) => {
-        logger.warn('MemoryImprove stderr', { data: data.trimEnd() });
+      extensions: {
+        claudeCode: {
+          env,
+          settingSources: [],
+          plugins: [],
+          stderr: (data: string) => {
+            logger.warn('MemoryImprove stderr', { data: data.trimEnd() });
+          },
+        },
       },
     };
 
-    let assistantText = '';
-    for await (const message of query({ prompt, options })) {
-      if (message.type === 'assistant' && message.message?.content) {
-        for (const block of message.message.content) {
-          if (block.type === 'text') {
-            assistantText += block.text;
-          }
-        }
-      }
-    }
-
-    return assistantText;
+    return await runOneShotText(prompt, options);
   } finally {
     if (lease) await lease.release();
   }
