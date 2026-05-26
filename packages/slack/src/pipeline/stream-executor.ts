@@ -41,7 +41,7 @@ import type { UserChoice, UserChoices } from '../user-choice-extractor';
 import { UserChoiceHandler } from '../user-choice-handler';
 import { shouldRunLegacyB4Path as defaultShouldRunLegacyB4Path } from './effective-phase';
 import { isLocalSlashCommand } from './local-slash-command';
-import { cleanupWithTimeout, DEFAULT_CLEANUP_TIMEOUT_MS } from './stream-executor-cleanup-helpers';
+import { cleanupWithTimeout, DEFAULT_CLEANUP_TIMEOUT_MS, runWithTimeout } from './stream-executor-cleanup-helpers';
 import type { ConversationSession, ProcessedFile, SayFn } from './types';
 
 type ClaudeHandler = any;
@@ -868,7 +868,19 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       recipientTeamId: params.teamId || undefined,
       buildCompletionEvent,
     };
-    await this.deps.threadPanel?.beginTurn(turnContext);
+    // C-3: bound `beginTurn` so a hung thread-panel implementation cannot
+    // block the outer try-block entry — pre-fix, a `beginTurn` hang meant
+    // catch + finally never ran and the turn vanished with no card.
+    // Proceed on timeout (per codex `9f9d4382` Q3 Option A): beginTurn is
+    // surface setup, not a hard precondition; the rest of the turn can
+    // still run and emit a terminal card via the normal rails.
+    // Trace: docs/current/plans/turn-end-surface-guarantee/exhaustive-paths.md §C-3.
+    if (this.deps.threadPanel) {
+      await runWithTimeout(() => this.deps.threadPanel!.beginTurn(turnContext), 5_000, {
+        what: 'threadPanel.beginTurn',
+        logger: this.logger,
+      });
+    }
 
     // Dashboard v2.1 — turn timer: mark active-leg start and broadcast so
     // the live 1s tick picks up the new leg without waiting for any other
@@ -2488,9 +2500,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           : (session.errorRetryCount ?? 0)
         : undefined;
       const errorDetails = this.formatErrorForUser(error, sessionCleared, statusInfo, retryAttempt);
-      await say({
-        text: errorDetails,
-        thread_ts: threadTs,
+      // C-4: bound the user-facing error post so a hung Slack API call
+      // cannot block handleError's downstream lifecycle (status clear,
+      // cleanup). The Exception card already fired above via
+      // `turnNotifier.notify`, so a missing detail text is acceptable.
+      // Trace: docs/current/plans/turn-end-surface-guarantee/exhaustive-paths.md §C-4.
+      await runWithTimeout(() => say({ text: errorDetails, thread_ts: threadTs }), DEFAULT_CLEANUP_TIMEOUT_MS, {
+        what: 'handleError say(errorDetails)',
+        logger: this.logger,
       });
     } else {
       // AbortError - preserve session history for conversation continuity
@@ -2845,7 +2862,25 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     this.summaryAbortControllers.set(sessionKey, abortController);
 
     try {
-      const summaryText = await this.deps.summaryService.execute(session as any, abortController.signal);
+      // C-6: bound `summaryService.execute` so a hung summary fork cannot
+      // leak the controller entry in `summaryAbortControllers`. On timeout
+      // we tag the controller with `'summary-timeout'` (descriptive,
+      // non-RequestAbortReason — the summary controller is an aux job
+      // controller, not a turn controller), then CAS-clean below. The
+      // 60s window is generous because summary forks are background and
+      // can legitimately take a while; the goal is to bound rather than
+      // hurry.
+      // Trace: docs/current/plans/turn-end-surface-guarantee/exhaustive-paths.md §C-6.
+      const summaryService = this.deps.summaryService;
+      const outcome = await runWithTimeout(
+        () => summaryService.execute(session as any, abortController.signal),
+        60_000,
+        {
+          what: 'summaryService.execute',
+          logger: this.logger,
+          onTimeout: () => abortController.abort('summary-timeout'),
+        },
+      );
 
       // CAS cleanup: only remove if this controller is still the active one for this session.
       // Prevents a slow summary A from deleting a newer summary B's controller.
@@ -2853,8 +2888,15 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         this.summaryAbortControllers.delete(sessionKey);
       }
 
+      if (outcome.kind === 'timedOut') {
+        // The abort signal was sent inside `onTimeout`; the underlying
+        // SDK call may resolve/reject later but its result is ignored.
+        return;
+      }
+
+      const summaryText = outcome.value;
       if (summaryText) {
-        this.deps.summaryService.displayOnThread(session as any, summaryText);
+        summaryService.displayOnThread(session as any, summaryText);
         // Trigger re-render so the summary blocks appear in the Slack thread header.
         // Without this, summaryBlocks sit in memory but the message is never updated.
         await this.deps.threadPanel?.updatePanel(session, sessionKey);
@@ -2865,7 +2907,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         // tracked via `completionMessageTracker` so it survives subsequent
         // turns. Errors are swallowed inside `postInThread` — a failed post
         // must not crash the summary fork.
-        await this.deps.summaryService.postInThread(session as any, summaryText);
+        await summaryService.postInThread(session as any, summaryText);
       }
     } catch (err: any) {
       if (this.summaryAbortControllers.get(sessionKey) === abortController) {
