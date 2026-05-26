@@ -12,17 +12,21 @@
  * many docstring references to `controller.abort()`.
  */
 
-import { readFileSync } from 'node:fs';
-import { glob } from 'node:fs/promises';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const REPO_ROOT = path.resolve(__dirname, '../..');
 
-/** Patterns we scan — production TS only (tests, dist, node_modules excluded). */
-const SCAN_GLOBS = ['packages/**/*.ts', 'src/**/*.ts', 'somalib/**/*.ts', 'scripts/**/*.ts'];
+/** Top-level directories we scan — production TS only (tests, dist, node_modules excluded). */
+const SCAN_ROOTS = ['packages', 'src', 'somalib', 'scripts'];
 
-const EXCLUDE_FRAGMENTS = ['/__tests__/', '/dist/', '/node_modules/', '/.trash/'];
+const EXCLUDE_FRAGMENTS = [
+  `${path.sep}__tests__${path.sep}`,
+  `${path.sep}dist${path.sep}`,
+  `${path.sep}node_modules${path.sep}`,
+  `${path.sep}.trash${path.sep}`,
+];
 
 /**
  * `.abort()` with NO arguments (whitespace tolerated). Matches:
@@ -104,22 +108,57 @@ function stripCommentsAndStrings(src: string): string {
   return out;
 }
 
-async function collectProductionFiles(): Promise<string[]> {
+/**
+ * Manual recursive walker — `node:fs/promises` `glob` is Node 22+. CI runs
+ * on Node 20, so use plain `readdirSync` instead.
+ */
+function collectProductionFiles(): string[] {
   const files: string[] = [];
-  for (const pattern of SCAN_GLOBS) {
-    for await (const entry of glob(pattern, { cwd: REPO_ROOT })) {
-      const abs = path.join(REPO_ROOT, entry);
-      if (EXCLUDE_FRAGMENTS.some((frag) => abs.includes(frag))) continue;
-      if (abs.endsWith('.test.ts') || abs.endsWith('.test.tsx')) continue;
-      files.push(abs);
+  const visit = (dir: string): void => {
+    let entries: ReturnType<typeof readdirSync>;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      const isDir = entry.isDirectory();
+      const isFile = entry.isFile();
+      if (isDir) {
+        // Skip excluded directories cheaply before descending.
+        if (
+          entry.name === '__tests__' ||
+          entry.name === 'dist' ||
+          entry.name === 'node_modules' ||
+          entry.name === '.trash'
+        ) {
+          continue;
+        }
+        visit(full);
+        continue;
+      }
+      if (!isFile) continue;
+      if (!full.endsWith('.ts') && !full.endsWith('.tsx')) continue;
+      if (full.endsWith('.test.ts') || full.endsWith('.test.tsx')) continue;
+      if (EXCLUDE_FRAGMENTS.some((frag) => full.includes(frag))) continue;
+      files.push(full);
+    }
+  };
+  for (const root of SCAN_ROOTS) {
+    const abs = path.join(REPO_ROOT, root);
+    try {
+      if (statSync(abs).isDirectory()) visit(abs);
+    } catch {
+      // Missing root is fine — skip silently.
     }
   }
   return files;
 }
 
 describe('B-2 — no untagged abort() in production source', () => {
-  it('every `.abort()` call in production code MUST pass a reason argument', async () => {
-    const files = await collectProductionFiles();
+  it('every `.abort()` call in production code MUST pass a reason argument', () => {
+    const files = collectProductionFiles();
     expect(files.length).toBeGreaterThan(50); // sanity — we are scanning a real codebase
 
     const violations: Array<{ file: string; line: number; preview: string }> = [];
