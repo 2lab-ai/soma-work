@@ -220,4 +220,76 @@ describe('TurnNotifier', () => {
       expect(dm.send).not.toHaveBeenCalled();
     });
   });
+
+  // -------------------------------------------------------------------------
+  // Turn-end surface guarantee — B-3 (zero-enabled-channels visibility)
+  //
+  // Pre-fix behavior: when every registered channel returned
+  // `isEnabled() === false` (or no channels were registered), `notify()`
+  // returned silently with NO log line. Operators triaging "where did my
+  // turn-end card go?" had no breadcrumb at all. The hole bit production
+  // when a misconfigured workspace ended up with all channels disabled —
+  // the turn ended cleanly, the user saw nothing.
+  //
+  // Fix: emit a `logger.warn` with the userId + category before the silent
+  // return so the gap is at least observable in logs.
+  // -------------------------------------------------------------------------
+  describe('Zero-enabled-channels visibility (B-3)', () => {
+    // The Logger emits warn via `console.warn`. Spying on console.warn is the
+    // most robust seam — it avoids vite/cjs module-identity quirks where
+    // `vi.spyOn(Logger.prototype, 'warn')` may target a different prototype
+    // than the one the dist bundle ends up using.
+    it('logs a warn when no channels are enabled (empty channels list)', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      try {
+        const notifier = new TurnNotifier([]);
+        await notifier.notify({
+          category: 'Exception',
+          userId: 'U_OWNER',
+          channel: 'C123',
+          threadTs: 't1',
+          durationMs: 0,
+        });
+
+        // RED gate: pre-fix code returns silently with no warn.
+        expect(warnSpy).toHaveBeenCalled();
+        const call = warnSpy.mock.calls.find((c) => typeof c[0] === 'string' && /no enabled channels/i.test(c[0]));
+        expect(call).toBeDefined();
+        // Operator-triage context (userId + category) must appear in the
+        // formatted output. We check the rendered string rather than a
+        // structured arg because Logger formats data into the message body.
+        expect(String(call?.[0])).toMatch(/U_OWNER/);
+        expect(String(call?.[0])).toMatch(/Exception/);
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it('logs a warn when all channels report isEnabled=false', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      try {
+        const disabled = {
+          name: 'slack-disabled',
+          isEnabled: vi.fn().mockResolvedValue(false),
+          send: vi.fn(),
+        };
+        const notifier = new TurnNotifier([disabled]);
+        await notifier.notify({
+          category: 'WorkflowComplete',
+          userId: 'U_OWNER',
+          channel: 'C123',
+          threadTs: 't1',
+          durationMs: 0,
+        });
+
+        expect(disabled.send).not.toHaveBeenCalled();
+        const call = warnSpy.mock.calls.find((c) => typeof c[0] === 'string' && /no enabled channels/i.test(c[0]));
+        expect(call).toBeDefined();
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+  });
 });

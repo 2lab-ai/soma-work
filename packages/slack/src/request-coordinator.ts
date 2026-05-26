@@ -19,12 +19,27 @@ import { Logger } from '@soma/common/logger';
  *                     configured stall window before aborting. The user
  *                     was waiting on a dead turn — surface a terminal
  *                     card so the thread doesn't read as half-finished.
+ *   `ghost-session`  — `StreamCallbacks.onToolUse` / `onToolResult` observed
+ *                     `session.terminated === true` mid-stream and aborted
+ *                     the local controller. Distinct from the explicit
+ *                     `session-close` action (Close button / dashboard /
+ *                     expiry): the session died out-of-band while a turn
+ *                     was running, so the user has no other terminal
+ *                     signal. Surface a terminal card. Trace:
+ *                     `docs/current/plans/turn-end-surface-guarantee/exhaustive-paths.md`
+ *                     §B-1.
  *
  * NOTE: extending this union has fan-out — every consumer that switches on
  * the reason (`stream-executor.handleError` notify gate, supersede card
  * messaging, future telemetry) must be updated together with the type.
  */
-export type RequestAbortReason = 'supersede' | 'user-stop' | 'session-close' | 'shutdown' | 'stall-timeout';
+export type RequestAbortReason =
+  | 'supersede'
+  | 'user-stop'
+  | 'session-close'
+  | 'shutdown'
+  | 'stall-timeout'
+  | 'ghost-session';
 
 /**
  * Manages request concurrency for sessions.
