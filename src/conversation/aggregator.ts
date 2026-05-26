@@ -142,7 +142,8 @@ export async function fetchSiblingBoards(options: FetchSiblingBoardsOptions): Pr
   const calls = siblings.map(async (sib) => {
     const url = buildSiblingUrl(sib);
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    // B-2: fetch timeout — descriptive string, not RequestAbortReason.
+    const timer = setTimeout(() => controller.abort('fetch-timeout'), timeoutMs);
     try {
       const res = await fetchImpl(url, {
         method: 'GET',

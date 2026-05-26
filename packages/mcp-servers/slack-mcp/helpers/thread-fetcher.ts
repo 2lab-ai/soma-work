@@ -16,7 +16,7 @@ export async function getTotalCount(
   slack: WebClient,
   channel: string,
   threadTs: string,
-  logger: { warn(msg: string, data?: any): void }
+  logger: { warn(msg: string, data?: any): void },
 ): Promise<number> {
   try {
     const response = await slack.conversations.replies({
@@ -45,7 +45,7 @@ export async function fetchThreadSlice(
   threadTs: string,
   offset: number,
   limit: number,
-  totalCount: number
+  totalCount: number,
 ): Promise<any[]> {
   if (totalCount === 0 || offset >= totalCount) return [];
 
@@ -91,7 +91,7 @@ export async function fetchMessagesBefore(
   channel: string,
   threadTs: string,
   anchorTs: string,
-  count: number
+  count: number,
 ): Promise<{ messages: any[]; rootWasInjected: boolean }> {
   if (count === 0) return { messages: [], rootWasInjected: false };
 
@@ -141,7 +141,7 @@ export async function fetchMessagesAfter(
   channel: string,
   threadTs: string,
   anchorTs: string,
-  count: number
+  count: number,
 ): Promise<any[]> {
   const collected: any[] = [];
   let cursor: string | undefined;

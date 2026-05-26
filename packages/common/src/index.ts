@@ -1,6 +1,6 @@
 export { assetPath } from './asset-path';
-export { DATA_DIR, ENV_FILE, IS_DEV, PLUGINS_DIR, CONFIG_FILE, SYSTEM_PROMPT_FILE } from './env-paths';
-export { displayTitle, nonBlank, type DisplayTitleSource } from './format/display-title';
+export { CONFIG_FILE, DATA_DIR, ENV_FILE, IS_DEV, PLUGINS_DIR, SYSTEM_PROMPT_FILE } from './env-paths';
+export { type DisplayTitleSource, displayTitle, nonBlank } from './format/display-title';
 export { formatNmSSs } from './format/duration';
 export { installConsoleRedaction, Logger, redactAnthropicSecrets } from './logger';
 export { isSafePathSegment, normalizeTmpPath } from './path-utils';

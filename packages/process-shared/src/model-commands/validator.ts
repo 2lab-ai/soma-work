@@ -1,3 +1,4 @@
+import { expectedHandoffKind, extractSentinelType, isZHandoffWorkflow } from './handoff-parser';
 import type {
   SaveContextResultPayload,
   SessionLink,
@@ -10,7 +11,6 @@ import type {
   UserChoices,
   WorkflowType,
 } from './session-types';
-import { expectedHandoffKind, extractSentinelType, isZHandoffWorkflow } from './handoff-parser';
 import type {
   AskUserQuestionParams,
   ContinueSessionParams,
@@ -269,7 +269,6 @@ export function validateModelCommandRunArgs(args: unknown): ValidationResult {
       },
     };
   }
-
 
   // SAVE_CONTEXT_RESULT fallback — last remaining commandId
   const saveParams = params !== undefined ? params : buildSaveContextFallbackParams(args);
@@ -590,9 +589,7 @@ function pushContextWarnings(context: string | undefined, prefix: string, warnin
     return;
   }
   if (trimmed.length < MIN_CONTEXT_LENGTH) {
-    warnings.push(
-      `${prefix}context too short (${trimmed.length} chars, min ${MIN_CONTEXT_LENGTH}) — expand rationale`,
-    );
+    warnings.push(`${prefix}context too short (${trimmed.length} chars, min ${MIN_CONTEXT_LENGTH}) — expand rationale`);
   }
 }
 
@@ -615,9 +612,7 @@ function pushRecommendedWarnings(
   // the recommended option is expressed at the question level.
   for (const choice of choices) {
     if (typeof choice.description === 'string' && RECOMMENDED_MARKER_RE.test(choice.description)) {
-      warnings.push(
-        `${prefix}Recommended marker in description (option [${choice.id}]) — must be in label only`,
-      );
+      warnings.push(`${prefix}Recommended marker in description (option [${choice.id}]) — must be in label only`);
     }
   }
 
@@ -627,10 +622,7 @@ function pushRecommendedWarnings(
 
   // New API: explicit recommendedChoiceId satisfies the "Recommended" invariant.
   // Only nudge toward the legacy label suffix when no valid id is provided.
-  if (
-    typeof recommendedChoiceId === 'string' &&
-    choices.some((c) => c.id === recommendedChoiceId)
-  ) {
+  if (typeof recommendedChoiceId === 'string' && choices.some((c) => c.id === recommendedChoiceId)) {
     return;
   }
 
@@ -663,7 +655,10 @@ function isForbiddenMetaLabel(label: string): boolean {
   // Normalize: trim, strip leading/trailing non-word characters, lowercase.
   // Exact match against the forbidden set — substring match would incorrectly
   // flag valid domain labels like "Proceed to zwork".
-  const normalized = label.trim().replace(/^[^\w]+|[^\w]+$/g, '').toLowerCase();
+  const normalized = label
+    .trim()
+    .replace(/^[^\w]+|[^\w]+$/g, '')
+    .toLowerCase();
   if (normalized.length === 0) return false;
   return FORBIDDEN_META_LABELS.has(normalized);
 }
@@ -729,9 +724,7 @@ function parseContinueSessionParams(
     if (isZHandoffWorkflow(forceWorkflow as WorkflowType)) {
       const sentinelType = extractSentinelType(prompt);
       if (!sentinelType) {
-        return invalidArgs(
-          `CONTINUE_SESSION forceWorkflow '${forceWorkflow}' requires <z-handoff> sentinel in prompt`,
-        );
+        return invalidArgs(`CONTINUE_SESSION forceWorkflow '${forceWorkflow}' requires <z-handoff> sentinel in prompt`);
       }
       const expected = expectedHandoffKind(forceWorkflow as 'z-plan-to-work' | 'z-epic-update');
       if (sentinelType !== expected) {
@@ -904,10 +897,7 @@ function normalizeUserChoice(raw: Record<string, unknown>): UserChoice | null {
  * - If explicit id is provided but doesn't match, drop silently.
  * - If missing/invalid, scan options[].label for a legacy "(Recommended...)" marker; first match becomes implicit id.
  */
-function resolveRecommendedChoiceId(
-  explicitId: unknown,
-  options: UserChoiceOption[],
-): string | undefined {
+function resolveRecommendedChoiceId(explicitId: unknown, options: UserChoiceOption[]): string | undefined {
   if (typeof explicitId === 'string' && explicitId.trim() !== '') {
     if (options.some((o) => o.id === explicitId)) {
       return explicitId;

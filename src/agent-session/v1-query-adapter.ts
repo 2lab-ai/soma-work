@@ -77,15 +77,22 @@ export class V1QueryAdapter implements IAgentSession {
   }
 
   cancel(): void {
-    // Ghost Session Fix #99: abort the current baseParams controller
+    // Ghost Session Fix #99: abort the current baseParams controller.
+    // B-2: tag the reason so handleError's notifyWorthyAbort gate routes
+    // the resulting AbortError to the silent `'user-stop'` branch (the
+    // user already knows they hit cancel — no card needed) rather than
+    // the unknown-abort fallback card.
     const controller = (this.baseParams as any).abortController ?? this._abortController;
-    controller.abort();
+    controller.abort('user-stop');
   }
 
   dispose(): void {
-    // v1 query 기반이라 연결 유지 없음 — abort and cleanup
+    // v1 query 기반이라 연결 유지 없음 — abort and cleanup.
+    // B-2: tag with `'session-close'` (per-session lifecycle teardown,
+    // distinct from `'shutdown'` which is reserved for process-wide
+    // `RequestCoordinator.clearAll`).
     const controller = (this.baseParams as any).abortController ?? this._abortController;
-    controller.abort();
+    controller.abort('session-close');
   }
 
   /** 마지막 실행의 ExecuteResult 호환 반환 */

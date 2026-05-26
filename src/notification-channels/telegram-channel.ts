@@ -63,7 +63,8 @@ export class TelegramChannel implements NotificationChannel {
     });
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
+    // B-2: fetch timeout — descriptive string, not RequestAbortReason.
+    const timeoutId = setTimeout(() => controller.abort('fetch-timeout'), TIMEOUT_MS);
     try {
       const response = await this.fetchFn(url, {
         method: 'POST',

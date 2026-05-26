@@ -2,8 +2,8 @@
  * Watchdog tests — plan v8 tests 48-52.
  */
 import { describe, expect, it, vi } from 'vitest';
-import { runWithWatchdog } from './watchdog.js';
 import { ErrorCode, LlmChatError } from './errors.js';
+import { runWithWatchdog } from './watchdog.js';
 
 describe('runWithWatchdog', () => {
   it('timeout fires and calls killChild with SIGTERM (test 48)', async () => {
@@ -28,7 +28,10 @@ describe('runWithWatchdog', () => {
       killChild: (sig) => kills.push({ sig, at: Date.now() - start }),
     }).catch(() => {});
     // Wait for the followup SIGKILL
-    await new Promise<void>((r) => { const t = setTimeout(r, 200); t.unref?.(); });
+    await new Promise<void>((r) => {
+      const t = setTimeout(r, 200);
+      t.unref?.();
+    });
     expect(kills.map((k) => k.sig)).toEqual(['SIGTERM', 'SIGKILL']);
     expect(kills[1].at - kills[0].at).toBeGreaterThanOrEqual(80);
   });
@@ -43,13 +46,19 @@ describe('runWithWatchdog', () => {
       killGraceMs: 30,
       killChild: (sig) => kills.push(sig),
     });
-    await new Promise<void>((r) => { const t = setTimeout(r, 5); t.unref?.(); });
+    await new Promise<void>((r) => {
+      const t = setTimeout(r, 5);
+      t.unref?.();
+    });
     controller.abort();
     const err = await p.catch((e) => e);
     expect(err).toBeInstanceOf(LlmChatError);
     expect((err as LlmChatError).code).toBe(ErrorCode.ABORTED);
     expect(kills[0]).toBe('SIGTERM');
-    await new Promise<void>((r) => { const t = setTimeout(r, 60); t.unref?.(); });
+    await new Promise<void>((r) => {
+      const t = setTimeout(r, 60);
+      t.unref?.();
+    });
     expect(kills).toContain('SIGKILL');
   });
 

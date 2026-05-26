@@ -28,9 +28,7 @@ describe('applyInstructionOperations — lifecycle ops', () => {
 
   it('complete stamps completedAt + evidence on the target entry', () => {
     const arr = seed();
-    const changed = applyInstructionOperations(arr, [
-      { action: 'complete', id: 'i1', evidence: 'merged PR #42' },
-    ]);
+    const changed = applyInstructionOperations(arr, [{ action: 'complete', id: 'i1', evidence: 'merged PR #42' }]);
     expect(changed).toBe(true);
     expect(arr[0].status).toBe('completed');
     expect(arr[0].evidence).toBe('merged PR #42');

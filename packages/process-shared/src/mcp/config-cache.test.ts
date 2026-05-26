@@ -1,5 +1,5 @@
-import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Mock fs
 vi.mock('fs', async () => {
@@ -12,7 +12,7 @@ vi.mock('fs', async () => {
 });
 
 // Mock stderr-logger
-vi.mock('somalib/stderr-logger.js', () => ({
+vi.mock('@soma/process-shared/stderr-logger.js', () => ({
   StderrLogger: class {
     debug() {}
     info() {}
@@ -44,10 +44,7 @@ describe('ConfigCache', () => {
   it('returns default value when SOMA_CONFIG_FILE is not set', () => {
     delete process.env.SOMA_CONFIG_FILE;
 
-    const cache = new ConfigCache(
-      { fallback: true },
-      { section: 'test', loader: (raw: any) => raw || null }
-    );
+    const cache = new ConfigCache({ fallback: true }, { section: 'test', loader: (raw: any) => raw || null });
 
     expect(cache.get()).toEqual({ fallback: true });
   });
@@ -58,10 +55,7 @@ describe('ConfigCache', () => {
     vi.mocked(fs.statSync).mockReturnValue({ mtimeMs: 1000, size: 100 } as fs.Stats);
     vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({ test: { loaded: true } }));
 
-    const cache = new ConfigCache(
-      { loaded: false },
-      { section: 'test', loader: (raw: any) => raw || null }
-    );
+    const cache = new ConfigCache({ loaded: false }, { section: 'test', loader: (raw: any) => raw || null });
 
     expect(cache.get()).toEqual({ loaded: true });
   });
@@ -72,10 +66,7 @@ describe('ConfigCache', () => {
     vi.mocked(fs.statSync).mockReturnValue({ mtimeMs: 2000, size: 200 } as fs.Stats);
     vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({ test: { value: 1 } }));
 
-    const cache = new ConfigCache(
-      { value: 0 },
-      { section: 'test', loader: (raw: any) => raw || null }
-    );
+    const cache = new ConfigCache({ value: 0 }, { section: 'test', loader: (raw: any) => raw || null });
 
     cache.get(); // first read
     cache.get(); // should be cached
@@ -88,10 +79,7 @@ describe('ConfigCache', () => {
     vi.mocked(fs.statSync).mockReturnValue({ mtimeMs: 3000, size: 200 } as fs.Stats);
     vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({ test: { v: 1 } }));
 
-    const cache = new ConfigCache(
-      { v: 0 },
-      { section: 'test', loader: (raw: any) => raw || null }
-    );
+    const cache = new ConfigCache({ v: 0 }, { section: 'test', loader: (raw: any) => raw || null });
 
     cache.get();
     expect(fs.readFileSync).toHaveBeenCalledTimes(1);
@@ -111,10 +99,7 @@ describe('ConfigCache', () => {
     vi.mocked(fs.statSync).mockReturnValue({ mtimeMs: 5000, size: 300 } as fs.Stats);
     vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({ test: { x: 1 } }));
 
-    const cache = new ConfigCache(
-      { x: 0 },
-      { section: 'test', loader: (raw: any) => raw || null }
-    );
+    const cache = new ConfigCache({ x: 0 }, { section: 'test', loader: (raw: any) => raw || null });
 
     cache.get();
     expect(fs.readFileSync).toHaveBeenCalledTimes(1);
@@ -132,10 +117,7 @@ describe('ConfigCache', () => {
     vi.mocked(fs.statSync).mockReturnValue({ mtimeMs: 6000, size: 10 } as fs.Stats);
     vi.mocked(fs.readFileSync).mockReturnValue('not valid json!!!');
 
-    const cache = new ConfigCache(
-      { safe: true },
-      { section: 'test', loader: (raw: any) => raw || null }
-    );
+    const cache = new ConfigCache({ safe: true }, { section: 'test', loader: (raw: any) => raw || null });
 
     expect(cache.get()).toEqual({ safe: true });
   });

@@ -218,7 +218,23 @@ export class TurnNotifier {
 
     const active = enabledChannels.filter((ch): ch is NotificationChannel => ch !== null);
 
-    if (active.length === 0) return;
+    if (active.length === 0) {
+      // Turn-end surface guarantee §B-3: zero enabled channels means the
+      // turn just ended with NO terminal signal anywhere. Pre-fix this
+      // returned silently — operators triaging "where did the card go?"
+      // had no breadcrumb. The warn is observability-only; we don't fall
+      // back to a default channel here because misconfigured workspaces
+      // (no enabled channels at all) are an operator concern, not a
+      // runtime hot path.
+      // Trace: docs/current/plans/turn-end-surface-guarantee/exhaustive-paths.md §B-3.
+      logger.warn('TurnNotifier: no enabled channels — terminal card not surfaced', {
+        userId: event.userId,
+        category: event.category,
+        channel: event.channel,
+        threadTs: event.threadTs,
+      });
+      return;
+    }
 
     const results = await Promise.allSettled(active.map((ch) => ch.send(event)));
 

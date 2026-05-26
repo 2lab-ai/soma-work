@@ -91,39 +91,23 @@ describe('handleCreate', () => {
   // --- Validation: name ---
 
   it('rejects invalid cron name', () => {
-    const r = handleCreate(
-      { name: 'bad name!', expression: '* * * * *', prompt: 'hi' },
-      baseContext,
-      storage,
-    );
+    const r = handleCreate({ name: 'bad name!', expression: '* * * * *', prompt: 'hi' }, baseContext, storage);
     expect(r.isError).toBe(true);
-    expect(r.text).toBe(
-      "Error: Invalid cron name 'bad name!'. Use alphanumeric, hyphens, underscores (1-64 chars)",
-    );
+    expect(r.text).toBe("Error: Invalid cron name 'bad name!'. Use alphanumeric, hyphens, underscores (1-64 chars)");
   });
 
   // --- Validation: expression ---
 
   it('rejects invalid cron expression', () => {
-    const r = handleCreate(
-      { name: 'job', expression: 'not-a-cron', prompt: 'hi' },
-      baseContext,
-      storage,
-    );
+    const r = handleCreate({ name: 'job', expression: 'not-a-cron', prompt: 'hi' }, baseContext, storage);
     expect(r.isError).toBe(true);
-    expect(r.text).toBe(
-      "Error: Invalid cron expression 'not-a-cron'. Use 5-field format: min hour dom mon dow",
-    );
+    expect(r.text).toBe("Error: Invalid cron expression 'not-a-cron'. Use 5-field format: min hour dom mon dow");
   });
 
   // --- Validation: prompt ---
 
   it('rejects empty prompt', () => {
-    const r = handleCreate(
-      { name: 'job', expression: '* * * * *', prompt: '' },
-      baseContext,
-      storage,
-    );
+    const r = handleCreate({ name: 'job', expression: '* * * * *', prompt: '' }, baseContext, storage);
     // Empty string is falsy — caught by the missing-required check first.
     expect(r.isError).toBe(true);
     expect(r.text).toBe('Error: name, expression, and prompt are required');
@@ -131,21 +115,13 @@ describe('handleCreate', () => {
 
   it('rejects oversize prompt (>4000 chars)', () => {
     const big = 'x'.repeat(4001);
-    const r = handleCreate(
-      { name: 'job', expression: '* * * * *', prompt: big },
-      baseContext,
-      storage,
-    );
+    const r = handleCreate({ name: 'job', expression: '* * * * *', prompt: big }, baseContext, storage);
     expect(r.isError).toBe(true);
     expect(r.text).toBe('Error: prompt must be a non-empty string (max 4000 chars)');
   });
 
   it('rejects non-string prompt', () => {
-    const r = handleCreate(
-      { name: 'job', expression: '* * * * *', prompt: 12345 },
-      baseContext,
-      storage,
-    );
+    const r = handleCreate({ name: 'job', expression: '* * * * *', prompt: 12345 }, baseContext, storage);
     expect(r.isError).toBe(true);
     expect(r.text).toBe('Error: prompt must be a non-empty string (max 4000 chars)');
   });
@@ -272,7 +248,9 @@ describe('handleCreate', () => {
     );
     expect(r.isError).toBe(false);
     // Format: Cron job '${name}' created.\nID: ...\nExpression: ...\nChannel: ...${modeStr}${modelStr}${targetStr}\nPrompt: ...
-    expect(r.text).toMatch(/^Cron job 'simple' created\.\nID: [^\n]+\nExpression: 0 9 \* \* 1-5\nChannel: C100\nPrompt: standup$/);
+    expect(r.text).toMatch(
+      /^Cron job 'simple' created\.\nID: [^\n]+\nExpression: 0 9 \* \* 1-5\nChannel: C100\nPrompt: standup$/,
+    );
   });
 
   it('creates job with mode=fastlane (modeStr appears)', () => {

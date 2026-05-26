@@ -22,6 +22,7 @@ config.dev.json
 
 # Build output
 dist/
+.deploy-bundle/
 
 # IDE
 .vscode/

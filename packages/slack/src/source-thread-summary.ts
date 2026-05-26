@@ -438,8 +438,6 @@ export function formatModelName(model: string): string {
   const has1m = hasOneMSuffix(model);
   const base = has1m ? stripOneMSuffix(model) : model;
   const match = base.match(/claude-(\w+)-(\d+)-(\d+)/);
-  const formatted = match
-    ? `${match[1]}-${match[2]}.${match[3]}`
-    : base.replace(/^claude-/, '').replace(/-\d{8}$/, '');
+  const formatted = match ? `${match[1]}-${match[2]}.${match[3]}` : base.replace(/^claude-/, '').replace(/-\d{8}$/, '');
   return has1m ? `${formatted} (1M)` : formatted;
 }

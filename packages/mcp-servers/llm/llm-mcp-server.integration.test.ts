@@ -7,11 +7,16 @@
  *   - new → resume flow round-trip
  *   - watchdog wired through real child process kill signal
  */
-import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+
+import { type ChildProcess, spawn, spawnSync } from 'node:child_process';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@modelcontextprotocol/sdk/server/index.js', () => ({
-  Server: class { constructor() {} setRequestHandler() {} connect() {} },
+  Server: class {
+    constructor() {}
+    setRequestHandler() {}
+    connect() {}
+  },
 }));
 vi.mock('@modelcontextprotocol/sdk/server/stdio.js', () => ({
   StdioServerTransport: class {},
@@ -21,11 +26,11 @@ vi.mock('@modelcontextprotocol/sdk/types.js', () => ({
   ListToolsRequestSchema: 'ListToolsRequestSchema',
 }));
 
+import type { ToolResult } from '@soma/process-shared/mcp/base-mcp-server.js';
 import { LlmMCPServer } from './llm-mcp-server.js';
-import { runWithWatchdog } from './runtime/watchdog.js';
 import { ErrorCode } from './runtime/errors.js';
 import type { Backend, LlmRuntime } from './runtime/types.js';
-import type { ToolResult } from '@soma/process-shared/mcp/base-mcp-server.js';
+import { runWithWatchdog } from './runtime/watchdog.js';
 
 function parseStructured(r: ToolResult): any {
   return (r as unknown as { structuredContent: any }).structuredContent;
@@ -62,8 +67,12 @@ function buildServer(overrides: Partial<Record<Backend, LlmRuntime>> = {}) {
 }
 
 describe('Integration — end-to-end in-process', () => {
-  beforeEach(() => { /* no-op */ });
-  afterEach(() => { vi.restoreAllMocks(); });
+  beforeEach(() => {
+    /* no-op */
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
 
   it('tools/list length=1 named "chat"; new → resume flow', async () => {
     const { server } = buildServer();
@@ -99,7 +108,11 @@ describe('Integration — end-to-end in-process', () => {
         timeoutMs: 500,
         killGraceMs: 500,
         killChild: (sig) => {
-          try { child.kill(sig); } catch { /* best-effort */ }
+          try {
+            child.kill(sig);
+          } catch {
+            /* best-effort */
+          }
         },
       }).catch((e) => e);
       const elapsed = Date.now() - t0;
@@ -113,7 +126,11 @@ describe('Integration — end-to-end in-process', () => {
       });
       expect(pidAlive(pid)).toBe(false);
     } finally {
-      try { child.kill('SIGKILL'); } catch { /* ignore */ }
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        /* ignore */
+      }
     }
   }, 10_000);
 });

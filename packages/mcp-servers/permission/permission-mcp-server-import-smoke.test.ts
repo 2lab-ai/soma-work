@@ -25,9 +25,7 @@ describe('permission-mcp-server import smoke', () => {
       type: 'actions';
       elements: ReadonlyArray<{ action_id: string }>;
     }
-    const actions = blocks.find(
-      (b: { type: string }): b is ActionsBlock => b.type === 'actions',
-    );
+    const actions = blocks.find((b: { type: string }): b is ActionsBlock => b.type === 'actions');
     expect(actions).toBeDefined();
     if (!actions) return;
     // 3 base buttons + override button when overridableRules is non-empty
