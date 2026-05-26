@@ -47,8 +47,8 @@
     "./pipeline/input-processor": "./dist/pipeline/input-processor.js",
     "./pipeline/session-initializer": "./dist/pipeline/session-initializer.js",
     "./pipeline/stream-executor": "./dist/pipeline/stream-executor.js",
+    "./pipeline/stream-executor-cleanup-helpers": "./dist/pipeline/stream-executor-cleanup-helpers.js",
     "./pipeline/local-slash-command": "./dist/pipeline/local-slash-command.js",
-    "./pipeline/stream-stall-watchdog": "./dist/pipeline/stream-stall-watchdog.js",
     "./pipeline/types": "./dist/pipeline/types.js",
     "./reaction-manager": "./dist/reaction-manager.js",
     "./release-notifier": "./dist/release-notifier.js",
@@ -212,11 +212,11 @@
       "pipeline/stream-executor": [
         "dist/pipeline/stream-executor.d.ts"
       ],
+      "pipeline/stream-executor-cleanup-helpers": [
+        "dist/pipeline/stream-executor-cleanup-helpers.d.ts"
+      ],
       "pipeline/local-slash-command": [
         "dist/pipeline/local-slash-command.d.ts"
-      ],
-      "pipeline/stream-stall-watchdog": [
-        "dist/pipeline/stream-stall-watchdog.d.ts"
       ],
       "pipeline/types": [
         "dist/pipeline/types.d.ts"

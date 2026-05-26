@@ -2,7 +2,7 @@
  * RED → GREEN Contract Tests — Agent MCP Server
  * Scenarios: S4 (agent_chat), S5 (agent_reply)
  */
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Mock MCP SDK (same pattern as base-mcp-server.test.ts)
 vi.mock('@modelcontextprotocol/sdk/server/index.js', () => ({
@@ -22,7 +22,12 @@ vi.mock('@modelcontextprotocol/sdk/types.js', () => ({
 
 // Set agent configs via env before import
 process.env.SOMA_AGENT_CONFIGS = JSON.stringify({
-  jangbi: { promptDir: 'src/prompt/jangbi', persona: 'default', description: 'Code reviewer', model: 'claude-sonnet-4' },
+  jangbi: {
+    promptDir: 'src/prompt/jangbi',
+    persona: 'default',
+    description: 'Code reviewer',
+    model: 'claude-sonnet-4',
+  },
   gwanu: { promptDir: 'src/prompt/gwanu', persona: 'default', description: 'Infra agent' },
 });
 
@@ -56,16 +61,14 @@ describe('S4 — agent_chat MCP Tool', () => {
 
   // Trace: S4, Section 5, Row 1 — unknown agent
   it('AgentChat_UnknownAgent — throws error for non-existent agent', async () => {
-    await expect(
-      server.handleTool('chat', { agent: 'nonexistent', prompt: 'hello' })
-    ).rejects.toThrow(/unknown agent/i);
+    await expect(server.handleTool('chat', { agent: 'nonexistent', prompt: 'hello' })).rejects.toThrow(
+      /unknown agent/i,
+    );
   });
 
   // Trace: S4, Section 5, Row 2 — empty prompt
   it('AgentChat_EmptyPrompt — throws error for empty prompt', async () => {
-    await expect(
-      server.handleTool('chat', { agent: 'jangbi', prompt: '' })
-    ).rejects.toThrow(/prompt.*required/i);
+    await expect(server.handleTool('chat', { agent: 'jangbi', prompt: '' })).rejects.toThrow(/prompt.*required/i);
   });
 
   // Trace: S4, Section 4 — session creation (verified via chat-reply)
@@ -145,7 +148,7 @@ describe('S5 — agent_reply MCP Tool', () => {
       server.handleTool('chat-reply', {
         sessionId: 'nonexistent-session-id',
         prompt: 'hello',
-      })
+      }),
     ).rejects.toThrow(/unknown session/i);
   });
 
@@ -176,9 +179,9 @@ describe('S5 — agent_reply MCP Tool', () => {
     });
     const sid = JSON.parse(chatResult.content[0].text).sessionId;
 
-    await expect(
-      server.handleTool('chat-reply', { sessionId: sid, prompt: '   ' })
-    ).rejects.toThrow(/prompt.*required/i);
+    await expect(server.handleTool('chat-reply', { sessionId: sid, prompt: '   ' })).rejects.toThrow(
+      /prompt.*required/i,
+    );
   });
 });
 
@@ -193,16 +196,14 @@ describe('Agent MCP Server — Edge Cases', () => {
 
   // Codex review: unknown tool name
   it('UnknownTool — throws for unregistered tool name', async () => {
-    await expect(
-      server.handleTool('nonexistent', { prompt: 'hello' })
-    ).rejects.toThrow(/unknown tool/i);
+    await expect(server.handleTool('nonexistent', { prompt: 'hello' })).rejects.toThrow(/unknown tool/i);
   });
 
   // Codex review: whitespace-only prompt on chat
   it('AgentChat_WhitespacePrompt — rejects whitespace-only prompt', async () => {
-    await expect(
-      server.handleTool('chat', { agent: 'jangbi', prompt: '   \t\n  ' })
-    ).rejects.toThrow(/prompt.*required/i);
+    await expect(server.handleTool('chat', { agent: 'jangbi', prompt: '   \t\n  ' })).rejects.toThrow(
+      /prompt.*required/i,
+    );
   });
 
   // Codex review: default model fallback
@@ -222,7 +223,7 @@ describe('Agent MCP Server — Edge Cases', () => {
       server.handleTool('chat', { agent: 'jangbi', prompt: 'b' }),
       server.handleTool('chat', { agent: 'gwanu', prompt: 'c' }),
     ]);
-    const ids = [r1, r2, r3].map(r => JSON.parse(r.content[0].text).sessionId);
+    const ids = [r1, r2, r3].map((r) => JSON.parse(r.content[0].text).sessionId);
     const uniqueIds = new Set(ids);
     expect(uniqueIds.size).toBe(3);
   });
@@ -237,7 +238,7 @@ describe('Agent MCP Server — Tool Definitions', () => {
 
     expect(tools).toHaveLength(2);
 
-    const chatTool = tools.find(t => t.name === 'chat');
+    const chatTool = tools.find((t) => t.name === 'chat');
     expect(chatTool).toBeDefined();
     expect(chatTool!.inputSchema).toHaveProperty('properties');
     expect((chatTool!.inputSchema as any).properties).toHaveProperty('agent');
@@ -245,7 +246,7 @@ describe('Agent MCP Server — Tool Definitions', () => {
     expect((chatTool!.inputSchema as any).required).toContain('agent');
     expect((chatTool!.inputSchema as any).required).toContain('prompt');
 
-    const replyTool = tools.find(t => t.name === 'chat-reply');
+    const replyTool = tools.find((t) => t.name === 'chat-reply');
     expect(replyTool).toBeDefined();
     expect((replyTool!.inputSchema as any).properties).toHaveProperty('sessionId');
     expect((replyTool!.inputSchema as any).properties).toHaveProperty('prompt');

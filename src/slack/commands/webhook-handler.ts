@@ -108,7 +108,8 @@ export class WebhookHandler implements CommandHandler {
         };
 
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 5000);
+        // B-2: fetch timeout — descriptive string, not RequestAbortReason.
+        const timeoutId = setTimeout(() => controller.abort('fetch-timeout'), 5000);
         try {
           const response = await fetch(webhookUrl, {
             method: 'POST',

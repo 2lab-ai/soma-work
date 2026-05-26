@@ -5,11 +5,11 @@
  * handler logic with mocked Slack API.
  */
 
-import { describe, expect, it, vi, beforeEach, afterEach, afterAll, beforeAll } from 'vitest';
-import * as fs from 'fs/promises';
 import * as fsSyncModule from 'fs';
-import * as path from 'path';
+import * as fs from 'fs/promises';
 import * as os from 'os';
+import * as path from 'path';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // ── validateFilePath tests (real filesystem) ──────────────────
 
@@ -34,11 +34,11 @@ async function validateFilePath(filePath: string): Promise<{ resolvedPath: strin
   }
 
   const segments = resolvedPath.split(path.sep);
-  if (segments.some(seg => seg === '..')) {
+  if (segments.some((seg) => seg === '..')) {
     throw new Error(`Path traversal not allowed: ${filePath}`);
   }
 
-  const underAllowedRoot = ALLOWED_UPLOAD_ROOTS.some(root => resolvedPath.startsWith(root + path.sep));
+  const underAllowedRoot = ALLOWED_UPLOAD_ROOTS.some((root) => resolvedPath.startsWith(root + path.sep));
   if (!underAllowedRoot) {
     throw new Error(`Upload restricted to /tmp directory. Rejected: ${resolvedPath}`);
   }
@@ -144,9 +144,7 @@ describe('Upload response parsing', () => {
     const result = {
       files: [{ files: [{ id: 'F12345', permalink: 'https://slack.com/files/F12345' }] }],
     };
-    const uploadedFile = (result as any).files?.[0]?.files?.[0]
-      || (result as any).files?.[0]
-      || null;
+    const uploadedFile = (result as any).files?.[0]?.files?.[0] || (result as any).files?.[0] || null;
     expect(uploadedFile?.id).toBe('F12345');
   });
 
@@ -155,17 +153,13 @@ describe('Upload response parsing', () => {
     const result = {
       files: [{ id: 'F67890', permalink: 'https://slack.com/files/F67890' }],
     };
-    const uploadedFile = (result as any).files?.[0]?.files?.[0]
-      || (result as any).files?.[0]
-      || null;
+    const uploadedFile = (result as any).files?.[0]?.files?.[0] || (result as any).files?.[0] || null;
     expect(uploadedFile?.id).toBe('F67890');
   });
 
   it('returns null for empty response (triggers error)', () => {
     const result = { ok: true };
-    const uploadedFile = (result as any).files?.[0]?.files?.[0]
-      || (result as any).files?.[0]
-      || null;
+    const uploadedFile = (result as any).files?.[0]?.files?.[0] || (result as any).files?.[0] || null;
     expect(uploadedFile?.id).toBeUndefined();
     // This should trigger the "no file metadata" error in production code
     expect(!uploadedFile?.id).toBe(true);
@@ -173,9 +167,7 @@ describe('Upload response parsing', () => {
 
   it('returns null for empty files array', () => {
     const result = { files: [] };
-    const uploadedFile = (result as any).files?.[0]?.files?.[0]
-      || (result as any).files?.[0]
-      || null;
+    const uploadedFile = (result as any).files?.[0]?.files?.[0] || (result as any).files?.[0] || null;
     // undefined || null falls through to null — no file_id available
     expect(!uploadedFile?.id).toBe(true);
   });
@@ -185,7 +177,21 @@ describe('Upload response parsing', () => {
 
 describe('Media type classification', () => {
   // Replicated from server for behavioral testing
-  const IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico', 'tiff', 'tif', 'heic', 'heif', 'avif']);
+  const IMAGE_EXTENSIONS = new Set([
+    'jpg',
+    'jpeg',
+    'png',
+    'gif',
+    'webp',
+    'svg',
+    'bmp',
+    'ico',
+    'tiff',
+    'tif',
+    'heic',
+    'heif',
+    'avif',
+  ]);
   const AUDIO_EXTENSIONS = new Set(['mp3', 'wav', 'ogg', 'flac', 'm4a', 'aac', 'wma']);
   const VIDEO_EXTENSIONS = new Set(['mp4', 'mov', 'avi', 'mkv', 'webm', 'wmv', 'm4v', 'mpg', 'mpeg', '3gp']);
   const ALLOWED_MEDIA_EXTENSIONS = new Set([...IMAGE_EXTENSIONS, ...AUDIO_EXTENSIONS, ...VIDEO_EXTENSIONS]);
@@ -229,9 +235,38 @@ describe('Media type classification', () => {
   });
 
   it('accepts all specified media extensions', () => {
-    const allMedia = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico', 'tiff', 'tif',
-      'heic', 'heif', 'avif', 'mp3', 'wav', 'ogg', 'flac', 'm4a', 'aac', 'wma',
-      'mp4', 'mov', 'avi', 'mkv', 'webm', 'wmv', 'm4v', 'mpg', 'mpeg', '3gp'];
+    const allMedia = [
+      'jpg',
+      'jpeg',
+      'png',
+      'gif',
+      'webp',
+      'svg',
+      'bmp',
+      'ico',
+      'tiff',
+      'tif',
+      'heic',
+      'heif',
+      'avif',
+      'mp3',
+      'wav',
+      'ogg',
+      'flac',
+      'm4a',
+      'aac',
+      'wma',
+      'mp4',
+      'mov',
+      'avi',
+      'mkv',
+      'webm',
+      'wmv',
+      'm4v',
+      'mpg',
+      'mpeg',
+      '3gp',
+    ];
     for (const ext of allMedia) {
       expect(ALLOWED_MEDIA_EXTENSIONS.has(ext)).toBe(true);
     }

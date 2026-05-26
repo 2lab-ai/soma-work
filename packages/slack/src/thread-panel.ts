@@ -4,6 +4,7 @@ import type { AssistantStatusManager } from './assistant-status-manager';
 import type { CompletionMessageTracker } from './completion-message-tracker';
 import type { RequestCoordinator } from './request-coordinator';
 import type { SlackApiHelper } from './slack-api-helper';
+import type { Todo } from './task-list-block-builder';
 import {
   type ConversationSession,
   type EndTurnInfo,
@@ -11,13 +12,13 @@ import {
   ThreadSurface,
   type ThreadSurfaceTodoManager,
 } from './thread-surface';
-import type { Todo } from './task-list-block-builder';
 import type { TurnCompletionEvent } from './turn-notifier';
 import {
   setTurnSurfaceFiveBlockPhaseProvider,
   type TurnAddress,
   type TurnContext,
   type TurnEndReason,
+  type TurnEndResult,
   TurnSurface,
 } from './turn-surface';
 import type { SlackMessagePayload } from './user-choice-handler';
@@ -79,7 +80,7 @@ export interface ThreadPanelDeps {
 }
 
 // Keeps TurnSurface `@internal` while exposing the public type contract.
-export type { TurnAddress, TurnContext, TurnEndReason } from './turn-surface';
+export type { TurnAddress, TurnContext, TurnEndReason, TurnEndResult } from './turn-surface';
 
 /**
  * ThreadPanel — combined header+panel rendering (legacy) + per-turn B1 stream
@@ -213,10 +214,20 @@ export class ThreadPanel {
     return this.turnSurface.appendText(turnId, text);
   }
 
-  /** Close the B1 stream for a turn. PHASE=0 no-ops. Idempotent. */
-  async endTurn(turnId: string, reason: TurnEndReason): Promise<void> {
-    if (getFiveBlockPhase() < 1) return;
-    await this.turnSurface.end(turnId, reason);
+  /**
+   * Close the B1 stream for a turn. PHASE=0 no-ops. Idempotent.
+   *
+   * Returns the {@link TurnEndResult} surfaced by `TurnSurface.end` so the
+   * caller (typically `StreamExecutor`) can observe whether the B5
+   * completion snapshot resolved in time. See turn-end surface guarantee
+   * §C-2 — when `snapshotResolved` is `false`, the caller is expected to
+   * post a fallback `turnNotifier.notify()`.
+   */
+  async endTurn(turnId: string, reason: TurnEndReason): Promise<TurnEndResult> {
+    // PHASE=0 — no B5 expected, so report `snapshotResolved: true` to
+    // suppress any fallback notify on the caller side.
+    if (getFiveBlockPhase() < 1) return { snapshotResolved: true };
+    return this.turnSurface.end(turnId, reason);
   }
 
   /** Defensive close on error — always attempts stopStream. PHASE=0 no-ops. */

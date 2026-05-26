@@ -2,8 +2,8 @@ import { Logger } from '@soma/common/logger';
 import { MessageFormatter } from './message-formatter';
 import type { ReactionManager } from './reaction-manager';
 import type { SlackApiHelper } from './slack-api-helper';
-import type { SessionLink, SessionLinkHistory, SessionLinks } from './thread-header-builder';
 import type { SessionTheme } from './task-list-block-builder';
+import type { SessionLink, SessionLinkHistory, SessionLinks } from './thread-header-builder';
 
 export type ActivityState = 'working' | 'waiting' | 'idle';
 
@@ -535,7 +535,9 @@ export class SessionUiManager {
     const contextParts: string[] = [];
     if (session.links?.issue) {
       const issue = session.links.issue;
-      const issueStatus = data.issueMeta?.status ? ` ${sessionUiManagerProviders.getStatusEmoji(data.issueMeta.status)}` : '';
+      const issueStatus = data.issueMeta?.status
+        ? ` ${sessionUiManagerProviders.getStatusEmoji(data.issueMeta.status)}`
+        : '';
       const issueTitle = issue.title ? `: ${truncate(issue.title, 40)}` : '';
       contextParts.push(`📋 <${issue.url}|${issue.label || '이슈'}>${issueTitle}${issueStatus}`);
     }
@@ -599,7 +601,9 @@ export class SessionUiManager {
     // Show the most relevant active link (issue first, then PR)
     if (session.links?.issue) {
       const issue = session.links.issue;
-      const issueStatus = data.issueMeta?.status ? `${sessionUiManagerProviders.getStatusEmoji(data.issueMeta.status)}` : '';
+      const issueStatus = data.issueMeta?.status
+        ? `${sessionUiManagerProviders.getStatusEmoji(data.issueMeta.status)}`
+        : '';
       parts.push(`<${issue.url}|${issue.label || '이슈'}>${issueStatus}`);
     } else if (session.links?.pr) {
       const pr = session.links.pr;
@@ -831,7 +835,9 @@ export class SessionUiManager {
       // Jira transition buttons (max 3 to leave room for merge button)
       if (jiraTransitions.length > 0) {
         const issueKey =
-          session.links?.issue?.label || sessionUiManagerProviders.extractJiraKey(session.links?.issue?.url || '') || '';
+          session.links?.issue?.label ||
+          sessionUiManagerProviders.extractJiraKey(session.links?.issue?.url || '') ||
+          '';
         const maxTransitions = prDetails && sessionUiManagerProviders.isPRMergeable(prDetails) ? 3 : 4;
 
         for (const transition of jiraTransitions.slice(0, maxTransitions)) {
@@ -907,7 +913,8 @@ export class SessionUiManager {
 
   private async fetchJiraTransitionsForSession(session: ConversationSession): Promise<JiraTransition[]> {
     if (!session.links?.issue || session.links.issue.provider !== 'jira') return [];
-    const issueKey = session.links.issue.label || sessionUiManagerProviders.extractJiraKey(session.links.issue.url || '');
+    const issueKey =
+      session.links.issue.label || sessionUiManagerProviders.extractJiraKey(session.links.issue.url || '');
     if (!issueKey) return [];
     return sessionUiManagerProviders.fetchJiraTransitions(issueKey);
   }

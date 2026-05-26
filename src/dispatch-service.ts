@@ -157,7 +157,11 @@ class DispatchService {
         messagePreview: userMessage.substring(0, 100),
       });
 
-      // Bridge AbortSignal to AbortController for SDK
+      // Bridge AbortSignal to AbortController for SDK.
+      // B-2: forward the upstream reason if available so the SDK sees the
+      // same tagged signal we received; otherwise tag `'dispatch-forward'`
+      // (descriptive, non-RequestAbortReason — the dispatch service does
+      // not own the turn surface).
       const abortController = new AbortController();
       if (abortSignal) {
         abortSignal.addEventListener(
@@ -165,7 +169,7 @@ class DispatchService {
           () => {
             const elapsed = Date.now() - startTime;
             this.logger.warn(`⏱️ DISPATCH: Abort signal received after ${elapsed}ms`);
-            abortController.abort();
+            abortController.abort(abortSignal.reason ?? 'dispatch-forward');
           },
           { once: true },
         );

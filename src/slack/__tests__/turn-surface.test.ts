@@ -1590,5 +1590,115 @@ describe('TurnSurface', () => {
         vi.useRealTimers();
       }
     });
+
+    // -------------------------------------------------------------------------
+    // Turn-end surface guarantee — C-2 (snapshot-resolved signal)
+    //
+    // Pre-fix behavior: `end()` returned `Promise<void>`, so a snapshot
+    // timeout was indistinguishable from a normal completion to the caller
+    // (StreamExecutor). With no signal, StreamExecutor couldn't fire a
+    // fallback `turnNotifier.notify()` — the turn ended with no card on
+    // any channel (the silent B5 drop).
+    //
+    // Fix: `end()` returns `{ snapshotResolved: boolean }` so the caller
+    // can react to a missed B5 by posting a fallback notify.
+    // -------------------------------------------------------------------------
+
+    it('C-2: end() reports snapshotResolved=false when buildCompletionEvent times out', async () => {
+      vi.useFakeTimers();
+      try {
+        const client = makeClient();
+        const channel = makeBlockKitChannel();
+        const surface = new TurnSurface({
+          slackApi: makeSlackApi(client),
+          slackBlockKitChannel: channel as any,
+          isCompletionMarkerActive: () => true,
+        } as any);
+
+        const snapshotPromise = new Promise<ReturnType<typeof makeEvent> | undefined>(() => {
+          /* never settle */
+        });
+
+        const ctx = {
+          channelId: 'C1',
+          threadTs: 't1.0',
+          sessionKey: 'C1:t1.0',
+          turnId: 'C1:t1.0:c2-signal',
+          buildCompletionEvent: () => snapshotPromise,
+        };
+        await surface.begin(ctx as any);
+
+        const endPromise = surface.end(ctx.turnId, 'completed') as unknown as Promise<{
+          snapshotResolved: boolean;
+        } | void>;
+
+        await vi.advanceTimersByTimeAsync(3000);
+        const result = await endPromise;
+
+        // RED gate: pre-fix end() returns `void`.
+        expect(result).toBeDefined();
+        expect((result as any).snapshotResolved).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('C-2: end() reports snapshotResolved=true when buildCompletionEvent resolves in time', async () => {
+      const client = makeClient();
+      const channel = makeBlockKitChannel();
+      const surface = new TurnSurface({
+        slackApi: makeSlackApi(client),
+        slackBlockKitChannel: channel as any,
+        isCompletionMarkerActive: () => true,
+      } as any);
+
+      const evt = makeEvent();
+      const ctx = {
+        channelId: 'C1',
+        threadTs: 't1.0',
+        sessionKey: 'C1:t1.0',
+        turnId: 'C1:t1.0:c2-resolved',
+        buildCompletionEvent: () => Promise.resolve(evt),
+      };
+      await surface.begin(ctx as any);
+
+      const result = (await surface.end(ctx.turnId, 'completed')) as unknown as {
+        snapshotResolved: boolean;
+      } | void;
+
+      // RED gate: pre-fix end() returns `void`.
+      expect(result).toBeDefined();
+      expect((result as any).snapshotResolved).toBe(true);
+    });
+
+    it('C-2: end() reports snapshotResolved=true for non-completed reasons (no B5 expected)', async () => {
+      // For `reason !== 'completed'`, B5 emit is deliberately skipped. The
+      // signal should still resolve to `true` (not a "missed snapshot") so
+      // StreamExecutor does NOT post a spurious fallback notify on an
+      // aborted turn.
+      const client = makeClient();
+      const channel = makeBlockKitChannel();
+      const surface = new TurnSurface({
+        slackApi: makeSlackApi(client),
+        slackBlockKitChannel: channel as any,
+        isCompletionMarkerActive: () => true,
+      } as any);
+
+      const ctx = {
+        channelId: 'C1',
+        threadTs: 't1.0',
+        sessionKey: 'C1:t1.0',
+        turnId: 'C1:t1.0:c2-aborted',
+        buildCompletionEvent: () => Promise.resolve(makeEvent()),
+      };
+      await surface.begin(ctx as any);
+
+      const result = (await surface.end(ctx.turnId, 'aborted')) as unknown as {
+        snapshotResolved: boolean;
+      } | void;
+
+      expect(result).toBeDefined();
+      expect((result as any).snapshotResolved).toBe(true);
+    });
   });
 });

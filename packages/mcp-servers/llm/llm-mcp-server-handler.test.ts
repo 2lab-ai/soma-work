@@ -8,7 +8,7 @@
  *
  * Sessions are in-memory; runtimes are mocked.
  */
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@modelcontextprotocol/sdk/server/index.js', () => ({
   Server: class {
@@ -25,10 +25,10 @@ vi.mock('@modelcontextprotocol/sdk/types.js', () => ({
   ListToolsRequestSchema: 'ListToolsRequestSchema',
 }));
 
+import type { ToolResult } from '@soma/process-shared/mcp/base-mcp-server.js';
 import { LlmMCPServer } from './llm-mcp-server.js';
 import { ErrorCode, LlmChatError } from './runtime/errors.js';
 import type { Backend, LlmRuntime, ResumeSessionResult, StartSessionResult } from './runtime/types.js';
-import type { ToolResult } from '@soma/process-shared/mcp/base-mcp-server.js';
 
 type RuntimeMock = LlmRuntime & {
   startSession: ReturnType<typeof vi.fn>;
@@ -259,9 +259,7 @@ describe('LlmMCPServer.handleTool — chat new/resume', () => {
 
   it('resume watchdog timeout → BACKEND_TIMEOUT; inflight released for retry', async () => {
     const id = await seedSession();
-    deps.runtimes.codex.resumeSession.mockRejectedValueOnce(
-      new LlmChatError(ErrorCode.BACKEND_TIMEOUT, 'slow'),
-    );
+    deps.runtimes.codex.resumeSession.mockRejectedValueOnce(new LlmChatError(ErrorCode.BACKEND_TIMEOUT, 'slow'));
     const result = await deps.server.handleTool('chat', { prompt: 'x', resumeSessionId: id });
     expect(parseStructured(result).error.code).toBe(ErrorCode.BACKEND_TIMEOUT);
 
@@ -383,11 +381,7 @@ describe('LlmMCPServer.handleTool — chat new/resume', () => {
     const result = await deps.server.handleTool('chat', { prompt: 'x', model: 'frobnicate' });
     // No error; request routed to codex with the alias as the `model`.
     expect(parseStructured(result).error).toBeUndefined();
-    expect(deps.runtimes.codex.startSession).toHaveBeenCalledWith(
-      'frobnicate',
-      'x',
-      expect.any(Object),
-    );
+    expect(deps.runtimes.codex.startSession).toHaveBeenCalledWith('frobnicate', 'x', expect.any(Object));
     // Pin the payload — a regression that emits the event with an empty
     // alias or the wrong fallback backend still passes a name-only check.
     expect(warnSpy).toHaveBeenCalledWith(
@@ -415,9 +409,6 @@ describe('LlmMCPServer.handleTool — chat new/resume', () => {
     // wrong runtime's name (or drops it entirely) still passes a name-only
     // `toContain` check and ops would lose the ability to identify which
     // runtime hung during teardown.
-    expect(warnSpy).toHaveBeenCalledWith(
-      'llm.runtime.shutdown-failed',
-      expect.objectContaining({ runtime: 'gemini' }),
-    );
+    expect(warnSpy).toHaveBeenCalledWith('llm.runtime.shutdown-failed', expect.objectContaining({ runtime: 'gemini' }));
   });
 });
