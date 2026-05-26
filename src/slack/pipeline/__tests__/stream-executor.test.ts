@@ -5124,34 +5124,49 @@ describe('turn-end surface guarantee — P0 holes', () => {
     }
   });
 
-  it('C-5 source: cleanupTempFiles is called inside finally (after endTurn), not in the success-return path', async () => {
-    // Source-level lock-in: cleanup must move out of the success-return
-    // branch (was ~L1721-1722) and into the finally block (after endTurn).
-    // If a future refactor reintroduces the await-before-finally pattern,
-    // this test fails loudly so we don't silently regress C-5.
+  it('C-5 source: cleanupTempFiles is invoked via cleanupWithTimeout, not awaited directly', async () => {
+    // Codex review [5a/5c]: the prior version of this test counted raw
+    // `await ... cleanupTempFiles(` sites — pre-fix and post-fix both had 2,
+    // so the test was a no-op guard. Updated guard: production code must
+    // have ZERO direct awaits on cleanupTempFiles; every call site must go
+    // through `cleanupWithTimeout` so a hung handler cannot block the
+    // terminal card.
     const { readFile } = await import('node:fs/promises');
     const path = await import('node:path');
-    // `__dirname` is the cjs-compatible seam — vitest supplies it whether the
-    // file resolves as ESM or CJS, and tsc's `module: commonjs` chokes on
-    // `import.meta.url` here.
     const src = await readFile(
       path.resolve(__dirname, '../../../../packages/slack/src/pipeline/stream-executor.ts'),
       'utf8',
     );
 
-    // Locate the success-rail return for normal completion (NOT renew /
-    // onboarding / toolContinuation branches — those each have their own
-    // return). The marker we ban is an `await this.deps.fileHandler.cleanupTempFiles`
-    // PRIOR to the catch-block. There must remain at most ONE such call
-    // (inside finally) — the previous pre-finally site at line ~1721 is gone.
-    //
-    // The regex tolerates whitespace variants and keeps the test resilient
-    // to surrounding edits.
-    const cleanupCalls = Array.from(src.matchAll(/await\s+this\.deps\.fileHandler\.cleanupTempFiles\s*\(/g));
-    // Production now calls cleanup at most once on the success-rail (in
-    // finally) AND once on the error-rail (inside handleError). Both are
-    // expected; what we ban is THREE+ instances (the regression pattern
-    // would be a third pre-finally call).
-    expect(cleanupCalls.length).toBeLessThanOrEqual(2);
+    const directAwaits = Array.from(src.matchAll(/await\s+this\.deps\.fileHandler\.cleanupTempFiles\s*\(/g));
+    expect(directAwaits.length).toBe(0);
+
+    // Require both wrappers: success rail + error rail.
+    const wrapped = Array.from(
+      src.matchAll(/cleanupWithTimeout\s*\(\s*\(\s*\)\s*=>\s*this\.deps\.fileHandler\.cleanupTempFiles\s*\(/g),
+    );
+    expect(wrapped.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('C-5 source: success-rail cleanup runs AFTER endTurn (in finally), not before', async () => {
+    // Codex review [5a]: lexical-position check. Pre-fix the cleanup was at
+    // ~L1721 — well before the finally's endTurn at ~L1867. Post-fix the
+    // first cleanupWithTimeout wrapper must appear AFTER the endTurn call
+    // for `'completed'` so a hung file handler can't block the B5 terminal
+    // card.
+    const { readFile } = await import('node:fs/promises');
+    const path = await import('node:path');
+    const src = await readFile(
+      path.resolve(__dirname, '../../../../packages/slack/src/pipeline/stream-executor.ts'),
+      'utf8',
+    );
+
+    const endTurnCompletedIdx = src.indexOf(`threadPanel?.endTurn(turnId, 'completed')`);
+    expect(endTurnCompletedIdx).toBeGreaterThan(-1);
+
+    const firstCleanupWrapIdx = src.search(
+      /cleanupWithTimeout\s*\(\s*\(\s*\)\s*=>\s*this\.deps\.fileHandler\.cleanupTempFiles/,
+    );
+    expect(firstCleanupWrapIdx).toBeGreaterThan(endTurnCompletedIdx);
   });
 });

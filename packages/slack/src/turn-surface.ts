@@ -758,6 +758,17 @@ export class TurnSurface {
       if (state.streamTs) {
         await this.closeStream(state, 'end', reason);
       }
+    } catch (closeErr) {
+      // Codex review [2b]: pre-fix this throw skipped the `return { snapshotResolved }`
+      // at the bottom of `end()` — the caller's outer try/catch then collapsed
+      // the missed return into a `{ snapshotResolved: true }` default,
+      // silently suppressing the §C-2 fallback notify. Log and continue
+      // so the finally B5 logic + `return` still run; the caller can
+      // observe `snapshotResolved` correctly even if `closeStream` failed.
+      this.logger.warn('TurnSurface.end: closeStream threw — continuing to B5 + cleanup', {
+        turnId,
+        error: (closeErr as Error)?.message ?? String(closeErr),
+      });
     } finally {
       // #689 P4 Part 2/2 — B4 native spinner clear. Wrapped: although
       // `clearStatus` swallows its own Slack errors, `effectivePhase()`
@@ -839,7 +850,10 @@ export class TurnSurface {
           if (timeoutId) clearTimeout(timeoutId);
         }
 
-        if (evt) {
+        // Codex review [6c]: explicit `!== undefined` so a future
+        // falsy-but-valid event shape doesn't get collapsed into the
+        // "snapshot unavailable" branch.
+        if (evt !== undefined) {
           // send() fire-and-forget with structured-error logging. Operators
           // triaging B5 drops need the Slack error code (`rate_limited`,
           // `channel_not_found`, `streaming_mode_mismatch`, etc.) plus the

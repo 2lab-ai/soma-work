@@ -1768,18 +1768,31 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           }
         })
         .catch((err: unknown) => {
-          // handleEnrichmentFailure posts via turnNotifier internally. Mark
-          // the turn as notified BEFORE calling it so a late finally fallback
-          // can't race in and double-post. Same once-guard rationale as the
-          // .then branch above. Trace: §C-2.
+          // §C-2 once-guard: if the finally fallback already won the race
+          // (TurnSurface.end timeout fired first), don't double-post here.
+          // Resolve the snapshot with `undefined` so any non-racy consumer
+          // (analytics chained to `snapshotPromise`) sees a stable shape
+          // rather than the malformed `fallbackArgs` partial (it lacks
+          // `message` — codex review CRIT-2). By this point
+          // TurnSurface.end has already lost the race so the value is
+          // observationally irrelevant, but `undefined` is the cleaner
+          // sentinel and matches the pre-fix contract for non-race
+          // consumers.
           if (terminalNotified) {
-            // Snapshot would still need resolving so TurnSurface.end can
-            // finalize, but we don't want another notify.
-            resolveSnapshot(fallbackArgs);
+            resolveSnapshot(undefined);
             return;
           }
-          terminalNotified = true;
+          // Codex review CRIT-1: flip `terminalNotified` AFTER the helper
+          // returns. If the helper itself throws synchronously (`logger.warn`
+          // backend pathological, `coalesceErrorMessage` on a Proxy err that
+          // throws on `.message` read), the catch handler rejects, the
+          // snapshot stays pending forever, AND a pre-flag flip would poison
+          // the finally once-guard — silencing every rail. By flipping the
+          // flag AFTER the helper, a throw is recoverable by the finally
+          // fallback (terminalNotified stays false →
+          // maybeFallbackNotifyAfterTurnSurface runs).
           this.handleEnrichmentFailure(err, fallbackArgs, resolveSnapshot);
+          terminalNotified = true;
         });
 
       // Start summary timer for non-error completions (fire-and-forget).
@@ -1959,6 +1972,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // ThreadPanel wired) and the catch-branch path where the catch
       // already called endTurn — in both cases we don't expect a snapshot
       // and there's nothing to fall back on.
+      //
+      // Codex review [2b/6a]: when `endTurn()` itself THROWS (closeStream,
+      // B4 spinner clear, etc.), bias the default toward
+      // `snapshotResolved: false` so the finally fallback fires. The
+      // once-guard (`terminalNotified`) prevents a double-post if the
+      // `.then` rail eventually wins — worst case is one extra card when
+      // both rails fail catastrophically, which is preferable to silently
+      // dropping every card on a throwing endTurn.
       let turnEndResult: { snapshotResolved: boolean } = { snapshotResolved: true };
       try {
         turnEndResult = (await this.deps.threadPanel?.endTurn(turnId, 'completed')) ?? { snapshotResolved: true };
@@ -1967,6 +1988,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           turnId,
           cleanupError: (cleanupErr as Error)?.message ?? String(cleanupErr),
         });
+        // Bias toward posting the fallback — a thrown endTurn means we
+        // CANNOT trust that the terminal card reached the user.
+        turnEndResult = { snapshotResolved: false };
       }
       // §C-2: TurnSurface.end reported the snapshot did NOT land in time
       // (or the builder threw). Post a fallback terminal card so the user
