@@ -6,4 +6,5 @@
  */
 
 export type { AgentRunOptions, ClaudeCodeExtensionOptions } from './agent-runner';
+export { type BuildOneShotOptionsInput, buildOneShotOptions, type LoggerLike } from './one-shot-options';
 export { runOneShotText } from './runner';
