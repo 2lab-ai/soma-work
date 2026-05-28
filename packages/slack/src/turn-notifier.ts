@@ -14,7 +14,21 @@ const logger = new Logger('TurnNotifier');
 
 // --- Types ---
 
-export type TurnCategory = 'UIUserAskQuestion' | 'WorkflowComplete' | 'Exception';
+/**
+ * Turn completion category — user-defined invariant:
+ *  - `WorkflowComplete` 🟢 — model emitted end_turn; turn finished normally.
+ *  - `UIUserAskQuestion` 🟠 — model emitted a formal ASK / pending-form;
+ *    turn paused waiting on user input.
+ *  - `Exception` 🔴 — IMMEDIATE model or code error (SDK throw, max_turns,
+ *    parse failure, etc.). NOT for timeouts — those are `Stalled`.
+ *  - `Stalled` ⚫ — idle-timeout fired without seeing end_turn or ASK from
+ *    the model. This is a CODE BUG signal: somewhere in our pipeline, the
+ *    model produced a turn that did not surface a terminal signal in time.
+ *    Operators investigating these cards should treat them as TODO items
+ *    to remove the offending code path (per user invariant: "타임아웃나는
+ *    경우를 모두 제거하라"). NOT a model/SDK runtime error.
+ */
+export type TurnCategory = 'UIUserAskQuestion' | 'WorkflowComplete' | 'Exception' | 'Stalled';
 
 /** Per-tool call statistics for rich notification */
 export interface ToolStatEntry {
@@ -55,7 +69,21 @@ export interface NotificationChannel {
 
 // --- Category determination ---
 
-export function determineTurnCategory(input: { hasPendingChoice: boolean; isError: boolean }): TurnCategory {
+export function determineTurnCategory(input: {
+  hasPendingChoice: boolean;
+  isError: boolean;
+  /**
+   * `true` when the turn ended because the idle-timeout watchdog fired
+   * (no SDK activity for `SOMA_STREAM_STALL_TIMEOUT_MS`) — distinct from
+   * an immediate SDK/model error. Optional for back-compat with callers
+   * that don't yet thread the signal through.
+   */
+  isStalled?: boolean;
+}): TurnCategory {
+  // Order matters. Stalled takes precedence over Error because a stall
+  // surfaces as an AbortError (looks like an error at the catch site)
+  // but should NOT be classified red — see TurnCategory JSDoc.
+  if (input.isStalled) return 'Stalled';
   if (input.isError) return 'Exception';
   if (input.hasPendingChoice) return 'UIUserAskQuestion';
   return 'WorkflowComplete';
@@ -67,6 +95,11 @@ const CATEGORY_COLORS: Record<TurnCategory, string> = {
   UIUserAskQuestion: '#FF9500',
   WorkflowComplete: '#36B37E',
   Exception: '#FF5630',
+  // Near-black, visually distinct from Exception's red so operators
+  // immediately recognize "this is the investigation queue, not a
+  // model/API failure". Pure #000 reads as missing-style in Slack
+  // attachments — `#1F1F1F` is the safest dark.
+  Stalled: '#1F1F1F',
 };
 
 export function getCategoryColor(category: TurnCategory): string {
@@ -77,6 +110,7 @@ const CATEGORY_EMOJI: Record<TurnCategory, string> = {
   UIUserAskQuestion: '🟠',
   WorkflowComplete: '🟢',
   Exception: '🔴',
+  Stalled: '⚫',
 };
 
 export function getCategoryEmoji(category: TurnCategory): string {
@@ -87,6 +121,11 @@ const CATEGORY_LABEL: Record<TurnCategory, string> = {
   UIUserAskQuestion: '유저 입력 대기',
   WorkflowComplete: '작업 완료',
   Exception: '오류 발생',
+  // Intentionally distinct phrasing — this is NOT an error in the
+  // model/SDK sense; it is a missed `end_turn`/`ASK` signal that
+  // pipeline code should have produced. Wording invites operator
+  // investigation rather than implying a model failure.
+  Stalled: '응답 없음 — 코드 버그 의심',
 };
 
 export function getCategoryLabel(category: TurnCategory): string {

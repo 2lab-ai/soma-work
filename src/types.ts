@@ -142,7 +142,29 @@ export interface ActionPanelState {
   summaryBlocks?: any[];
 }
 
-export type SessionGoalStatus = 'active' | 'paused' | 'complete';
+export type SessionGoalStatus = 'active' | 'paused' | 'complete' | 'blocked';
+
+/**
+ * Default cap for `maxContinuations`. Each user-driven turn resets
+ * `continuationCount` to 0, so the loop only stops if the model itself
+ * keeps the goal active across N synthetic continuation turns in a row
+ * without the user intervening. See `docs/goal-command/spec.md`
+ * §Auto-Continuation Loop.
+ */
+export const DEFAULT_GOAL_MAX_CONTINUATIONS = 10;
+
+export type GoalCompletedVia = 'user' | 'eval-model';
+
+export interface SessionGoalPendingEval {
+  /** ms epoch when the work model emitted the completion sentinel. */
+  requestedAt: number;
+  /**
+   * Turn-identifying timestamp (typically the synthetic event ts or
+   * Slack ts that produced the sentinel). Used for log correlation and
+   * to dedupe simultaneous eval triggers from the same turn.
+   */
+  turnId: string;
+}
 
 export interface SessionGoal {
   objective: string;
@@ -151,7 +173,41 @@ export interface SessionGoal {
   updatedAt: number;
   createdBy: string;
   completedAt?: number;
+  /** Slack userId for user-driven completion, the literal `eval-model` for eval-driven. */
   completedBy?: string;
+  /** Audit trail — which path closed this goal. */
+  completedVia?: GoalCompletedVia;
+
+  // ── Ralph loop (auto-continuation) control ─────────────────────────────
+  /** How many synthetic continuation turns have fired since the last user message. */
+  continuationCount: number;
+  /** Cap on `continuationCount` before the host stops auto-firing. */
+  maxContinuations: number;
+  /** ms epoch of the last continuation injection. */
+  lastContinuationAt?: number;
+  /**
+   * Codex `Blocked audit` rule: only mark `blocked` after the model
+   * reports the SAME blocker for 3 consecutive turns.
+   */
+  consecutiveBlockedSignals?: number;
+
+  // ── Host-side completion evaluation ────────────────────────────────────
+  /**
+   * Set when the work model emits `<goal-complete-request reason="..."/>`
+   * (or a safety-net natural-language equivalent). While `pendingEval`
+   * is set, the ralph loop is paused — the next state change comes from
+   * the eval model, not from a continuation turn.
+   */
+  pendingEval?: SessionGoalPendingEval;
+  /**
+   * Most recent eval `completed=false` reason. Injected into the next
+   * continuation prompt so the work model knows what gap to close.
+   * Cleared when the model next emits a completion sentinel (and a new
+   * eval cycle starts) or when the user resets the goal.
+   */
+  lastEvalReason?: string;
+  /** Counts how many eval cycles have run for this goal. */
+  evalAttemptCount?: number;
 }
 
 export interface ConversationSession {

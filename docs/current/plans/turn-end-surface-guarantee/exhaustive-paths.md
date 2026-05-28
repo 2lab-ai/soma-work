@@ -301,7 +301,7 @@ await this.deps.summaryService.execute(session, signal);                        
 | B-4 | turnNotifier DI 누락 + abort 분기 fallback 부재 | ✅ Phase 3 fix (PR #972) — handleError abort 분기에 `say()` fallback | **fixed** |
 | B-5 | 이메일 fast-fail 카드 부재 | ✅ Phase 3 fix (PR #972) — `turnNotifier.notify(Exception)` + Block Kit `say()` fallback + snapshot release | **fixed** |
 | B-6 | renew 실패 카테고리 misclassification | ✅ Phase 3 fix (PR #972) — renew 결정을 `determineTurnCategory` 이전으로 이동, 실패 시 category=Exception | **fixed** |
-| C-1 | `processor.process` 영원 hang | ✅ Phase 2 fix (PR #970) + Phase 5 default tune — `StreamProcessor.raceNextStep` idle timeout (default **2h** after 2026-05-28 false-positive on textual "응답 대기 중" pattern; was 30분 PR #970 → 10분 PR #926; codex `46116ba1`), `onIdleTimeout` → `abort('stall-timeout')` → 🔴 카드 | **fixed** |
+| C-1 | `processor.process` 영원 hang | ⚠️ Phase 2 (PR #970) detection only, Phase 6 (this PR) **recategorized**: stall-timeout → `Stalled` (⚫) 카드 + "코드 버그 의심" 라벨. detection은 유지 (default 2h, env `SOMA_STREAM_STALL_TIMEOUT_MS`), 매 ⚫ 카드 = T4 백로그 항목. 진짜 fix는 T4 (timeout 발화 경로 모두 제거). | **detection only; T4 backlog** |
 | C-2 | enrichAndResolve hang — 3s timeout 존재하나 timeout 시 카드 skip | ✅ Phase 1 fix (PR #969) | **fixed** |
 | C-3 | `beginTurn` hang | ✅ Phase 4 fix (this PR) — `runWithTimeout(5s)` 래핑, timeout 시 warn + proceed | **fixed** |
 | C-4 | `say(errorDetails)` hang | ✅ Phase 4 fix (this PR) — `runWithTimeout(3s)` 래핑, timeout 시 warn + proceed (Exception 카드는 이미 turnNotifier로 발사됨) | **fixed** |
