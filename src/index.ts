@@ -26,7 +26,7 @@ registerSkillStore({
   renameSkill: renameUserSkill,
 });
 
-import { App, LogLevel } from '@slack/bolt';
+import { App, LogLevel, SocketModeReceiver } from '@slack/bolt';
 import type { WebClient } from '@slack/web-api';
 import * as path from 'path';
 import { CronStorage } from 'somalib/cron/cron-storage';
@@ -84,6 +84,7 @@ import {
 } from './slack/goal-completion-evaluator';
 import { maybeScheduleGoalContinuation } from './slack/goal-continuation';
 import { SlackHandler } from './slack-handler';
+import { type SocketWatchdogUnhealthyReason, startSlackSocketWatchdog } from './slack-socket-watchdog';
 import { notifyStartup } from './startup-notifier';
 import { getTokenManager } from './token-manager';
 
@@ -149,67 +150,62 @@ async function start() {
       useVertex: config.claude.useVertex,
     });
 
-    // Initialize Slack app
-    //
-    // PR #989 diagnostics: the iq-m64-dev incident on 2026-05-28 (worker
-    // logs `[Main] Slack socket connected` at startup, then `SLACK EVENT
-    // RECEIVED` count stays at 0 for tens of minutes) is a silent Bolt
-    // SocketMode disconnect. The default `logLevel` is `info`, which
-    // suppresses every wss lifecycle transition after the initial connect
-    // — there's no observable signal when the socket goes down.
-    //
-    // 1. Honor `SLACK_LOG_LEVEL=debug` to opt into full Bolt debug logging
-    //    per-host (set on the misbehaving worker only; the chatty hosts
-    //    keep `info`).
-    // 2. Always attach lifecycle listeners on the SocketModeClient so
-    //    `disconnected` / `reconnecting` / `unable_to_socket_mode_start` /
-    //    `error` events surface in the app logger regardless of log level.
-    //    Receiver-internal API is reached via a typed-as-any cast — Bolt
-    //    does not expose the client on the App surface, but
-    //    SocketModeReceiver.client is stable across the v3 line.
+    // Construct the SocketMode receiver explicitly (instead of `App({
+    // socketMode: true })`) for three reasons:
+    //   1. Raise `clientPingTimeout` above the 5s default — that default
+    //      was producing false-positive disconnects that wedged the
+    //      internal reconnect loop on iq-64 dev (PR #992).
+    //   2. Honor `SLACK_LOG_LEVEL=debug` per-host (PR #990) and propagate
+    //      it to the SocketMode receiver so wss lifecycle transitions are
+    //      observable when the next incident hits.
+    //   3. Expose `receiver.client` directly for the lifecycle observer
+    //      below and the watchdog wired after `app.start()`.
+    // `pingPongLoggingEnabled` keeps ping/pong visible in stderr.
+    const slackLogLevel = process.env.SLACK_LOG_LEVEL === 'debug' ? LogLevel.DEBUG : LogLevel.INFO;
+    const slackReceiver = new SocketModeReceiver({
+      appToken: config.slack.appToken,
+      clientPingTimeout: 30_000,
+      pingPongLoggingEnabled: true,
+      logLevel: slackLogLevel,
+    });
     const app = new App({
       token: config.slack.botToken,
       signingSecret: config.slack.signingSecret,
-      socketMode: true,
-      appToken: config.slack.appToken,
-      logLevel: process.env.SLACK_LOG_LEVEL === 'debug' ? LogLevel.DEBUG : LogLevel.INFO,
+      receiver: slackReceiver,
+      logLevel: slackLogLevel,
     });
 
+    // Diagnostic lifecycle observer (PR #990). Surfaces wss transitions
+    // regardless of log level so the next incident has a paper trail.
+    // Direct reference to `slackReceiver.client` — no internal-API cast
+    // needed since we own the receiver.
     {
-      const receiver = (
-        app as unknown as { receiver?: { client?: { on?: (e: string, fn: (...a: unknown[]) => void) => void } } }
-      ).receiver;
-      const smClient = receiver?.client;
-      if (smClient && typeof smClient.on === 'function') {
-        const events = [
-          'connecting',
-          'authenticated',
-          'connected',
-          'disconnecting',
-          'disconnected',
-          'reconnecting',
-          'unable_to_socket_mode_start',
-          'error',
-        ];
-        for (const evt of events) {
-          smClient.on(evt, (...args: unknown[]) => {
-            // Only payload[0] is dumped when it looks like a plain object.
-            // The error path can carry an Error instance; coerce so we get
-            // message + code + stack instead of `{}`.
-            const first = args[0];
-            const payload =
-              first instanceof Error
-                ? { name: first.name, message: first.message, code: (first as unknown as { code?: string }).code }
-                : first && typeof first === 'object'
-                  ? first
-                  : { value: first };
-            logger.info(`[socket-mode-diag] ${evt}`, payload as Record<string, unknown>);
-          });
-        }
-        logger.info('[socket-mode-diag] lifecycle listeners attached');
-      } else {
-        logger.warn('[socket-mode-diag] could not access SocketModeClient — receiver shape unexpected');
+      const smClient = slackReceiver.client;
+      const events = [
+        'connecting',
+        'authenticated',
+        'connected',
+        'disconnecting',
+        'disconnected',
+        'reconnecting',
+        'unable_to_socket_mode_start',
+        'error',
+      ];
+      for (const evt of events) {
+        smClient.on(evt, (...args: unknown[]) => {
+          // The error path can carry an Error instance; coerce so we get
+          // message + code instead of `{}`.
+          const first = args[0];
+          const payload =
+            first instanceof Error
+              ? { name: first.name, message: first.message, code: (first as unknown as { code?: string }).code }
+              : first && typeof first === 'object'
+                ? first
+                : { value: first };
+          logger.info(`[socket-mode-diag] ${evt}`, payload as Record<string, unknown>);
+        });
       }
+      logger.info('[socket-mode-diag] lifecycle listeners attached');
     }
 
     // #653 M2 — Start CCT OAuth-token refresh scheduler. Hourly fan-out
@@ -742,6 +738,22 @@ async function start() {
     // Start the app
     await app.start();
     timing('Slack socket connected');
+
+    // Wire AFTER app.start() so boot-time reconnects don't count against
+    // the storm threshold. exit(1) → supervisor (launchd/systemd) recycles.
+    startSlackSocketWatchdog({
+      client: slackReceiver.client,
+      reconnectStormThreshold: 5,
+      stalenessMs: 5 * 60_000,
+      checkIntervalMs: 30_000,
+      onUnhealthy: (reason: SocketWatchdogUnhealthyReason, detail) => {
+        logger.error('Slack socket watchdog tripped — exiting for supervisor restart', {
+          reason,
+          detail,
+        });
+        process.exit(1);
+      },
+    });
 
     // Start sub-agent instances after main bot (Trace: docs/current/plans/multi-agent/trace.md, S2)
     if (agentManager) {
