@@ -26,7 +26,7 @@ registerSkillStore({
   renameSkill: renameUserSkill,
 });
 
-import { App } from '@slack/bolt';
+import { App, LogLevel } from '@slack/bolt';
 import type { WebClient } from '@slack/web-api';
 import * as path from 'path';
 import { CronStorage } from 'somalib/cron/cron-storage';
@@ -150,12 +150,67 @@ async function start() {
     });
 
     // Initialize Slack app
+    //
+    // PR #989 diagnostics: the iq-m64-dev incident on 2026-05-28 (worker
+    // logs `[Main] Slack socket connected` at startup, then `SLACK EVENT
+    // RECEIVED` count stays at 0 for tens of minutes) is a silent Bolt
+    // SocketMode disconnect. The default `logLevel` is `info`, which
+    // suppresses every wss lifecycle transition after the initial connect
+    // — there's no observable signal when the socket goes down.
+    //
+    // 1. Honor `SLACK_LOG_LEVEL=debug` to opt into full Bolt debug logging
+    //    per-host (set on the misbehaving worker only; the chatty hosts
+    //    keep `info`).
+    // 2. Always attach lifecycle listeners on the SocketModeClient so
+    //    `disconnected` / `reconnecting` / `unable_to_socket_mode_start` /
+    //    `error` events surface in the app logger regardless of log level.
+    //    Receiver-internal API is reached via a typed-as-any cast — Bolt
+    //    does not expose the client on the App surface, but
+    //    SocketModeReceiver.client is stable across the v3 line.
     const app = new App({
       token: config.slack.botToken,
       signingSecret: config.slack.signingSecret,
       socketMode: true,
       appToken: config.slack.appToken,
+      logLevel: process.env.SLACK_LOG_LEVEL === 'debug' ? LogLevel.DEBUG : LogLevel.INFO,
     });
+
+    {
+      const receiver = (
+        app as unknown as { receiver?: { client?: { on?: (e: string, fn: (...a: unknown[]) => void) => void } } }
+      ).receiver;
+      const smClient = receiver?.client;
+      if (smClient && typeof smClient.on === 'function') {
+        const events = [
+          'connecting',
+          'authenticated',
+          'connected',
+          'disconnecting',
+          'disconnected',
+          'reconnecting',
+          'unable_to_socket_mode_start',
+          'error',
+        ];
+        for (const evt of events) {
+          smClient.on(evt, (...args: unknown[]) => {
+            // Only payload[0] is dumped when it looks like a plain object.
+            // The error path can carry an Error instance; coerce so we get
+            // message + code + stack instead of `{}`.
+            const first = args[0];
+            const payload =
+              first instanceof Error
+                ? { name: first.name, message: first.message, code: (first as unknown as { code?: string }).code }
+                : first && typeof first === 'object'
+                  ? first
+                  : { value: first };
+            logger.info(`[socket-mode-diag] ${evt}`, payload as Record<string, unknown>);
+          });
+        }
+        logger.info('[socket-mode-diag] lifecycle listeners attached');
+      } else {
+        logger.warn('[socket-mode-diag] could not access SocketModeClient — receiver shape unexpected');
+      }
+    }
 
     // #653 M2 — Start CCT OAuth-token refresh scheduler. Hourly fan-out
     // force-refreshes every attached slot's access_token via
@@ -220,17 +275,22 @@ async function start() {
     timing('OAuth refresh scheduler wired');
 
     // Log ALL incoming events (before any handler)
+    type SlackEventBody = {
+      type?: string;
+      event?: { type?: string; channel?: string; user?: string };
+    };
+    type SlackEventPayload = { type?: string; channel?: string; user?: string };
     app.use(async ({ payload, body, next }) => {
-      const bodyAny = body as any;
-      const payloadAny = payload as any;
-      const eventType = bodyAny?.type || 'unknown';
-      const eventSubtype = bodyAny?.event?.type || payloadAny?.type || 'unknown';
+      const bodyShape = body as SlackEventBody;
+      const payloadShape = payload as SlackEventPayload;
+      const eventType = bodyShape?.type || 'unknown';
+      const eventSubtype = bodyShape?.event?.type || payloadShape?.type || 'unknown';
       logger.debug(`🔔 SLACK EVENT RECEIVED: ${eventType}/${eventSubtype}`, {
-        bodyType: bodyAny?.type,
-        eventType: bodyAny?.event?.type,
-        payloadType: payloadAny?.type,
-        channel: bodyAny?.event?.channel || payloadAny?.channel,
-        user: bodyAny?.event?.user || payloadAny?.user,
+        bodyType: bodyShape?.type,
+        eventType: bodyShape?.event?.type,
+        payloadType: payloadShape?.type,
+        channel: bodyShape?.event?.channel || payloadShape?.channel,
+        user: bodyShape?.event?.user || payloadShape?.user,
       });
       await next();
     });

@@ -122,11 +122,8 @@ describe('maybeThrowOneMUnavailable', () => {
   });
 });
 
-// Rationale (PR #928 → this PR's 'silent' flip) lives in `classifyClaudeStderr` JSDoc.
-describe('classifyClaudeStderr — post-abort hook_callback Stream closed noise', () => {
+describe('classifyClaudeStderr — hook_callback Stream-closed cosmetic noise', () => {
   // Real-world payload captured from a Claude Code CLI bun-format error frame.
-  // The leading "Error in hook callback hook_N:" line is followed by bun's
-  // source-context lines and the final "error: Stream closed" + stack.
   const HOOK_STREAM_CLOSED_STDERR = [
     'Error in hook callback hook_3: 9409 | ${H.map((q)=>`- ${q.description||"(no description)"} (task ${q.task_id})`).join(`',
     '9410 | `)}',
@@ -139,22 +136,10 @@ describe('classifyClaudeStderr — post-abort hook_callback Stream closed noise'
     '      at KC3 (/$bunfs/root/src/entrypoints/cli.js:8904:1258)',
   ].join('\n');
 
-  it('classifies hook_callback Stream-closed stderr as SILENT when aborted', () => {
-    // The whole point of this fix: NO logger call, NO disk write. The
-    // 'silent' classification is the signal to the stderr callback to skip
-    // logging entirely.
-    const result = classifyClaudeStderr(HOOK_STREAM_CLOSED_STDERR, true);
+  it('silences the real bun-format hook_callback Stream-closed frame', () => {
+    const result = classifyClaudeStderr(HOOK_STREAM_CLOSED_STDERR);
     expect(result.level).toBe('silent');
     expect(result.reason).toBeDefined();
-  });
-
-  it('keeps hook_callback Stream-closed stderr at warn when NOT aborted', () => {
-    // Same message but no abort signal — must stay loud so a real transport
-    // teardown during a healthy turn surfaces in monitoring. The gate-on-aborted
-    // discipline from PR #928 still holds; only the aborted branch changed
-    // from 'info' to 'silent'.
-    const result = classifyClaudeStderr(HOOK_STREAM_CLOSED_STDERR, false);
-    expect(result.level).toBe('warn');
   });
 
   it('matches hook_callback Stream-closed regardless of hook index', () => {
@@ -164,40 +149,26 @@ describe('classifyClaudeStderr — post-abort hook_callback Stream closed noise'
       'Error in hook callback hook_42: ...Stream closed',
     ];
     for (const data of variants) {
-      expect(classifyClaudeStderr(data, true).level).toBe('silent');
-      expect(classifyClaudeStderr(data, false).level).toBe('warn');
+      expect(classifyClaudeStderr(data).level).toBe('silent');
     }
   });
 
-  it('does NOT silence unrelated stderr even when aborted', () => {
-    // Generic CLI error during abort must still surface at warn so we can
-    // spot unexpected teardown problems.
-    const unrelated = 'Error: ENOENT: no such file or directory';
-    expect(classifyClaudeStderr(unrelated, true).level).toBe('warn');
-    expect(classifyClaudeStderr(unrelated, false).level).toBe('warn');
+  it('does NOT silence unrelated stderr', () => {
+    expect(classifyClaudeStderr('Error: ENOENT: no such file or directory').level).toBe('warn');
   });
 
-  it('does NOT silence hook_callback errors without Stream closed signal', () => {
+  it('does NOT silence hook_callback errors without the Stream-closed signal', () => {
     // A hook callback that crashed for a different reason — surface it.
-    const hookCrash = 'Error in hook callback hook_3: TypeError: cannot read foo';
-    expect(classifyClaudeStderr(hookCrash, true).level).toBe('warn');
-    expect(classifyClaudeStderr(hookCrash, false).level).toBe('warn');
+    expect(classifyClaudeStderr('Error in hook callback hook_3: TypeError: cannot read foo').level).toBe('warn');
   });
 
   it('handles empty / whitespace-only stderr without throwing', () => {
-    expect(classifyClaudeStderr('', true).level).toBe('warn');
-    expect(classifyClaudeStderr('   \n  ', false).level).toBe('warn');
+    expect(classifyClaudeStderr('').level).toBe('warn');
+    expect(classifyClaudeStderr('   \n  ').level).toBe('warn');
   });
 });
 
-// `handleClaudeStderrChunk` is the wiring used by `streamQuery`'s `options.stderr`
-// callback. It composes the classifier with the actual logger calls. The
-// silent classification must result in ZERO logger calls — that's the disk-write
-// reduction the user is asking for.
 describe('handleClaudeStderrChunk — wiring respects silent classification', () => {
-  // Minimal stand-in payload — regex correctness against real bun-format frames
-  // is covered in the `classifyClaudeStderr` block above. Here we only assert
-  // dispatch behaviour, so the payload shape doesn't need to be authentic.
   const HOOK_STREAM_CLOSED_STDERR =
     'Error in hook callback hook_3: <bun ctx>\nerror: Stream closed\n  at sendRequest (cli.js:9414:133)';
 
@@ -212,30 +183,15 @@ describe('handleClaudeStderrChunk — wiring respects silent classification', ()
     return { logger, calls };
   };
 
-  it('makes ZERO logger calls when matched stderr arrives after abort', () => {
+  it('makes zero logger calls on matched hook_callback Stream-closed frames', () => {
     const { logger, calls } = makeRecordingLogger();
-
-    handleClaudeStderrChunk(logger, HOOK_STREAM_CLOSED_STDERR, true);
-
+    handleClaudeStderrChunk(logger, HOOK_STREAM_CLOSED_STDERR);
     expect(calls).toHaveLength(0);
   });
 
-  it('warns as before on matched stderr when NOT aborted', () => {
+  it('warns on unrelated stderr', () => {
     const { logger, calls } = makeRecordingLogger();
-
-    handleClaudeStderrChunk(logger, HOOK_STREAM_CLOSED_STDERR, false);
-
-    expect(calls).toHaveLength(1);
-    expect(calls[0]?.message).toBe('Claude stderr');
-  });
-
-  it('warns on unrelated stderr regardless of abort state', () => {
-    const { logger: logger1, calls: calls1 } = makeRecordingLogger();
-    handleClaudeStderrChunk(logger1, 'Error: ENOENT', true);
-    expect(calls1).toEqual([{ message: 'Claude stderr', meta: { data: 'Error: ENOENT' } }]);
-
-    const { logger: logger2, calls: calls2 } = makeRecordingLogger();
-    handleClaudeStderrChunk(logger2, 'Error: ENOENT', false);
-    expect(calls2).toEqual([{ message: 'Claude stderr', meta: { data: 'Error: ENOENT' } }]);
+    handleClaudeStderrChunk(logger, 'Error: ENOENT');
+    expect(calls).toEqual([{ message: 'Claude stderr', meta: { data: 'Error: ENOENT' } }]);
   });
 });
