@@ -238,19 +238,27 @@ describe('Agent MCP Server — Tool Definitions', () => {
 
     expect(tools).toHaveLength(2);
 
+    // JSON-Schema for an MCP input schema — narrow enough to drop the
+    // hand-rolled `as any` casts that biome flags as
+    // `noExplicitAny`/`noNonNullAssertion`. Picked over `as any` because
+    // the schema shape is stable across MCP tool definitions.
+    type InputSchema = { properties: Record<string, unknown>; required: string[] };
+
     const chatTool = tools.find((t) => t.name === 'chat');
     expect(chatTool).toBeDefined();
-    expect(chatTool!.inputSchema).toHaveProperty('properties');
-    expect((chatTool!.inputSchema as any).properties).toHaveProperty('agent');
-    expect((chatTool!.inputSchema as any).properties).toHaveProperty('prompt');
-    expect((chatTool!.inputSchema as any).required).toContain('agent');
-    expect((chatTool!.inputSchema as any).required).toContain('prompt');
+    expect(chatTool?.inputSchema).toHaveProperty('properties');
+    const chatSchema = chatTool?.inputSchema as InputSchema;
+    expect(chatSchema.properties).toHaveProperty('agent');
+    expect(chatSchema.properties).toHaveProperty('prompt');
+    expect(chatSchema.required).toContain('agent');
+    expect(chatSchema.required).toContain('prompt');
 
     const replyTool = tools.find((t) => t.name === 'chat-reply');
     expect(replyTool).toBeDefined();
-    expect((replyTool!.inputSchema as any).properties).toHaveProperty('sessionId');
-    expect((replyTool!.inputSchema as any).properties).toHaveProperty('prompt');
-    expect((replyTool!.inputSchema as any).required).toContain('sessionId');
-    expect((replyTool!.inputSchema as any).required).toContain('prompt');
+    const replySchema = replyTool?.inputSchema as InputSchema;
+    expect(replySchema.properties).toHaveProperty('sessionId');
+    expect(replySchema.properties).toHaveProperty('prompt');
+    expect(replySchema.required).toContain('sessionId');
+    expect(replySchema.required).toContain('prompt');
   });
 });
