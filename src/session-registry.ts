@@ -44,6 +44,16 @@ import { DEFAULT_GOAL_MAX_CONTINUATIONS, type SessionGoal } from './types';
  */
 function migrateLegacyGoal(goal: SessionGoal | undefined): SessionGoal | undefined {
   if (!goal) return goal;
+  // Fast path — goal already has all post-followup fields.
+  if (
+    typeof goal.continuationCount === 'number' &&
+    typeof goal.maxContinuations === 'number' &&
+    goal.maxContinuations > 0 &&
+    typeof goal.consecutiveBlockedSignals === 'number' &&
+    typeof goal.evalAttemptCount === 'number'
+  ) {
+    return goal;
+  }
   return {
     ...goal,
     continuationCount: typeof goal.continuationCount === 'number' ? goal.continuationCount : 0,

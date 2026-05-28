@@ -140,14 +140,17 @@ describe('evaluateGoalCompletion', () => {
 describe('apply* — verdict-to-goal mutations', () => {
   it('11. applyGoalEvalSuccess flips status, stamps audit fields, clears eval state', () => {
     const goal = makeGoal();
-    applyGoalEvalSuccess(goal, 'every requirement covered by tests + green CI', 1_234_000);
+    applyGoalEvalSuccess(goal, 1_234_000);
     expect(goal.status).toBe('complete');
     expect(goal.completedAt).toBe(1_234_000);
-    expect(goal.completedBy).toBe('eval-model');
+    // completedBy stays undefined on the eval path — completedVia is
+    // the discriminator. completedBy means "the Slack userId who
+    // closed the goal via `goal done`" and that path is the only one
+    // that stamps it.
+    expect(goal.completedBy).toBeUndefined();
     expect(goal.completedVia).toBe('eval-model');
     expect(goal.pendingEval).toBeUndefined();
     expect(goal.lastEvalReason).toBeUndefined();
-    // evalAttemptCount bumped for audit traceability.
     expect(goal.evalAttemptCount).toBe(2);
     expect(goal.updatedAt).toBe(1_234_000);
   });

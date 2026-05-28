@@ -217,25 +217,21 @@ export async function evaluateGoalCompletion(
  * `completedVia`), clears all eval state, and bumps the
  * `evalAttemptCount` for audit traceability.
  */
-export function applyGoalEvalSuccess(
-  goal: import('../types').SessionGoal,
-  reason: string,
-  now: number = Date.now(),
-): void {
+export function applyGoalEvalSuccess(goal: import('../types').SessionGoal, now: number = Date.now()): void {
+  // `completedVia: 'eval-model'` is the discriminator; `completedBy`
+  // stays undefined on this path so it can keep meaning "the Slack
+  // userId who closed the goal" for `goal done`. The eval reason is
+  // surfaced in the Slack notice by the orchestrator — pinning it
+  // on the goal would re-inject the approval text if the goal were
+  // ever re-opened.
   goal.status = 'complete';
   goal.completedAt = now;
-  goal.completedBy = 'eval-model';
+  goal.completedBy = undefined;
   goal.completedVia = 'eval-model';
   goal.pendingEval = undefined;
   goal.lastEvalReason = undefined;
   goal.evalAttemptCount = (goal.evalAttemptCount ?? 0) + 1;
   goal.updatedAt = now;
-  // `reason` is surfaced in the Slack notice by the orchestrator; we
-  // intentionally do NOT stamp it into the goal because it's an
-  // approval, not a remediation. Pinning it on `lastEvalReason`
-  // would re-inject the approval text into a future continuation
-  // prompt if the goal is ever re-opened.
-  void reason;
 }
 
 /**

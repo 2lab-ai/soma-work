@@ -106,43 +106,29 @@ export async function maybeScheduleGoalContinuation(
   sessionKey: string,
   deps: GoalContinuationDeps,
 ): Promise<GoalContinuationOutcome> {
-  // Guard 1: session resolvable
   const session = deps.getSession(sessionKey);
-  if (!session) {
-    return { fired: false, reason: 'no-session' };
-  }
+  if (!session) return { fired: false, reason: 'no-session' };
 
-  // Guard 2: goal exists and is active
   const goal = session.goal;
   if (!goal) return { fired: false, reason: 'no-goal' };
   if (goal.status === 'blocked') return { fired: false, reason: 'blocked' };
   if (goal.status !== 'active') return { fired: false, reason: 'goal-not-active' };
 
-  // Guard 3: no eval in flight. While the eval model is judging a
-  // completion claim, the ralph loop must stay silent — otherwise
-  // we inject a continuation that the work model writes against
-  // stale evidence and the evaluator just races itself.
-  if (goal.pendingEval) {
-    return { fired: false, reason: 'pending-eval' };
-  }
+  // Eval cycle owns transitions until it resolves — otherwise we'd
+  // inject a continuation the work model writes against stale
+  // evidence and the evaluator races itself.
+  if (goal.pendingEval) return { fired: false, reason: 'pending-eval' };
 
-  // Guard 4: re-check idle (codex L1370: "skipping because a turn is
-  // already active"). Without this, an injector queued before the
-  // user typed could fire after the fresh user turn started.
+  // Re-check idle: an injector queued before a user typed could
+  // otherwise fire after the user's fresh turn started.
   const state = deps.getActivityState(sessionKey);
-  if (state !== 'idle') {
-    return { fired: false, reason: 'not-idle' };
-  }
+  if (state !== 'idle') return { fired: false, reason: 'not-idle' };
 
-  // Guard 5: module-level single-permit lock. Mirrors codex
-  // `continuation_lock: Semaphore::new(1)` (L190). The lock is
-  // released in the finally below; if the injector throws we still
-  // release so subsequent idle hooks aren't permanently masked.
-  if (inFlightContinuations.has(sessionKey)) {
-    return { fired: false, reason: 'lock-held' };
-  }
+  // Single-permit lock — codex `continuation_lock: Semaphore::new(1)`.
+  // Released in the finally below so an injector failure cannot
+  // permanently mask future continuations.
+  if (inFlightContinuations.has(sessionKey)) return { fired: false, reason: 'lock-held' };
 
-  // Guard 6: cap.
   if (goal.continuationCount >= goal.maxContinuations) {
     logger.info('Goal continuation cap reached', {
       sessionKey,
@@ -156,16 +142,17 @@ export async function maybeScheduleGoalContinuation(
           session.threadTs,
           `⏹️ Goal auto-continuation paused after ${goal.maxContinuations} synthetic turns. Send a message in this thread to resume.`,
         );
-      } catch (err: any) {
-        logger.warn('Failed to post cap-reached notice', { sessionKey, error: err?.message });
+      } catch (err: unknown) {
+        logger.warn('Failed to post cap-reached notice', {
+          sessionKey,
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
     }
     return { fired: false, reason: 'cap-reached' };
   }
 
-  // Acquire lock. From here on, every exit path MUST release.
   inFlightContinuations.add(sessionKey);
-
   try {
     const now = deps.now ? deps.now() : Date.now();
     goal.continuationCount = goal.continuationCount + 1;
@@ -196,8 +183,11 @@ export async function maybeScheduleGoalContinuation(
     await deps.messageInjector(syntheticEvent);
 
     return { fired: true, reason: 'injected', continuationCount: goal.continuationCount };
-  } catch (err: any) {
-    logger.error('Goal continuation injection failed', { sessionKey, error: err?.message });
+  } catch (err: unknown) {
+    logger.error('Goal continuation injection failed', {
+      sessionKey,
+      error: err instanceof Error ? err.message : String(err),
+    });
     throw err;
   } finally {
     inFlightContinuations.delete(sessionKey);

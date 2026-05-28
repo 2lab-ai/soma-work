@@ -21,14 +21,25 @@ export interface GoalCompletionSignal {
   via: 'sentinel' | 'natural-language';
 }
 
-const SENTINEL_RE = /<goal-complete-request\b[^>]*\breason\s*=\s*"([^"]*)"[^>]*\/>/i;
-const SENTINEL_NO_REASON_RE = /<goal-complete-request\b[^>]*\/>/i;
+// Single regex covering both the canonical sentinel and the
+// reason-omitted variant. `reason` accepts single or double quotes;
+// the attribute is optional. `[\s\S]` (not `[^>]`) lets the tag
+// span line breaks — the prompt mandates "on its own line" but
+// assistants reflow. Capture group 1 = double-quoted reason,
+// group 2 = single-quoted reason; both empty when the attribute
+// is absent.
+const SENTINEL_RE = /<goal-complete-request\b(?:[\s\S]*?\breason\s*=\s*(?:"([^"]*)"|'([^']*)'))?[\s\S]*?\/>/i;
 
-/** Heuristic natural-language patterns. Each pattern must imply the
- *  ASSISTANT is asserting completion (subject = "the goal" / "the
- *  objective" + verb = "appears complete" / "is complete" /
- *  "is achieved" / "has been achieved"). Avoid false positives on
- *  "the goal is to X" or "I need to make the goal complete". */
+// Cheap prefix gate for the NL safety net. Skips the six-regex
+// sweep below for any turn that mentions neither "goal" nor
+// "objective" — the overwhelming majority of assistant turns.
+const NL_GATE_RE = /\b(?:goal|objective)\b/i;
+
+/** Natural-language patterns. Each must imply the ASSISTANT is
+ *  asserting completion (subject = "the goal" / "the objective" +
+ *  verb = "appears complete" / "is complete" / "is achieved" /
+ *  "has been achieved"). Narrow enough to reject "the goal is to X"
+ *  and "I need to make the goal complete". */
 const NL_PATTERNS: RegExp[] = [
   /\bthe\s+goal\s+appears\s+complete\b/i,
   /\bthe\s+goal\s+is\s+(?:now\s+)?complete\b/i,
@@ -43,16 +54,14 @@ export function detectGoalCompletionSignal(assistantText: string): GoalCompletio
 
   const sentinelMatch = assistantText.match(SENTINEL_RE);
   if (sentinelMatch) {
+    const reason = (sentinelMatch[1] ?? sentinelMatch[2] ?? '').trim();
     return {
-      reason: sentinelMatch[1].trim() || 'sentinel-emitted',
+      reason: reason || 'sentinel-emitted (reason omitted)',
       via: 'sentinel',
     };
   }
 
-  // Sentinel-shaped but missing reason= attribute — still honor it.
-  if (SENTINEL_NO_REASON_RE.test(assistantText)) {
-    return { reason: 'sentinel-emitted (reason omitted)', via: 'sentinel' };
-  }
+  if (!NL_GATE_RE.test(assistantText)) return undefined;
 
   for (const re of NL_PATTERNS) {
     const m = assistantText.match(re);

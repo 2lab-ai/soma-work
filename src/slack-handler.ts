@@ -128,7 +128,7 @@ export class SlackHandler {
     session: ConversationSession,
     sessionKey: string,
     signal: { reason: string; via: 'sentinel' | 'natural-language' },
-    assistantMessages: string[],
+    workSummary: string,
   ) => Promise<void>;
 
   constructor(app: App, claudeHandler: ClaudeHandler, mcpManager: McpManager) {
@@ -547,9 +547,10 @@ export class SlackHandler {
       // turns and self-incrementing the counter inside the
       // continuation driver is the source of truth.
       if (!event.synthetic) {
-        const fullSession = (this.claudeHandler as any)
-          .getSessionRegistry?.()
-          ?.getSessionByKey?.(sessionResult.sessionKey) as ConversationSession | undefined;
+        // Optional chain: many slack-handler unit tests pass a bare
+        // `{}` for claudeHandler, so this method may be missing in
+        // mocks. Real ClaudeHandler always exports it (claude-handler.ts:374).
+        const fullSession = this.claudeHandler.getSessionByKey?.(sessionResult.sessionKey);
         if (fullSession?.goal) {
           resetGoalContinuationOnUserMessage(fullSession);
           this.claudeHandler.saveSessions();
@@ -923,7 +924,7 @@ export class SlackHandler {
       session: ConversationSession,
       sessionKey: string,
       signal: { reason: string; via: 'sentinel' | 'natural-language' },
-      assistantMessages: string[],
+      workSummary: string,
     ) => Promise<void>,
   ): void {
     this.goalCompletionRequestHandler = handler;
@@ -943,18 +944,16 @@ export class SlackHandler {
   ): Promise<void> {
     const goal = session.goal;
     if (!goal || goal.status !== 'active') return;
-    // If a prior eval is already in flight for this session, don't
-    // stack another one — the existing cycle will resolve and
-    // either flip status or restart the ralph loop.
     if (goal.pendingEval) return;
-    if (!this.goalCompletionRequestHandler) return;
+    const handler = this.goalCompletionRequestHandler;
+    if (!handler) return;
 
     const joined = assistantMessages.join('\n\n');
     const signal = detectGoalCompletionSignal(joined);
     if (!signal) return;
 
-    // Stamp pendingEval BEFORE invoking the handler so the
-    // ralph-loop guard sees it on the next idle and stays quiet.
+    // Stamp pendingEval BEFORE detaching so the ralph-loop guard
+    // sees it on the next idle and stays quiet.
     const now = Date.now();
     goal.pendingEval = { requestedAt: now, turnId: `${now}` };
     goal.updatedAt = now;
@@ -965,14 +964,20 @@ export class SlackHandler {
       reasonPreview: signal.reason.slice(0, 120),
     });
 
-    try {
-      await this.goalCompletionRequestHandler(session, sessionKey, signal, assistantMessages);
-    } catch (err: any) {
-      // Eval orchestrator handles its own user-facing notice;
-      // here we just log so the surface contract stays
-      // fire-and-forget for the turn runner.
-      this.logger.error('goalCompletionRequestHandler failed', { sessionKey, error: err?.message });
-    }
+    // Fire-and-forget: the eval runs a full Claude turn (multi-second)
+    // and must not block the turn pipeline's `finalizeOnEndTurn` →
+    // activity-state idle transition. Errors are logged here so the
+    // surface contract for TurnRunner.finish stays clean.
+    void (async () => {
+      try {
+        await handler(session, sessionKey, signal, joined);
+      } catch (err: unknown) {
+        this.logger.error('goalCompletionRequestHandler failed', {
+          sessionKey,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    })();
   }
 
   /**
