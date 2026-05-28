@@ -775,6 +775,24 @@ describe('CommandRouter — `goal` + `$skill` composition (preprocessor)', () =>
     return { router, deps, say, session };
   }
 
+  function makeRouterWithoutSession(): {
+    router: CommandRouter;
+    deps: any;
+    say: ReturnType<typeof vi.fn>;
+  } {
+    const say = vi.fn().mockResolvedValue(undefined);
+    const deps = buildDeps({
+      claudeHandler: {
+        getSession: vi.fn().mockReturnValue(null),
+        getSessionKey: vi.fn().mockImplementation((c: string, t: string) => `${c}:${t}`),
+        resetSessionContext: vi.fn().mockReturnValue(false),
+        saveSessions: vi.fn(),
+      },
+    });
+    const router = new CommandRouter(deps);
+    return { router, deps, say };
+  }
+
   beforeEach(() => {
     vi.restoreAllMocks();
   });
@@ -883,6 +901,8 @@ describe('CommandRouter — `goal` + `$skill` composition (preprocessor)', () =>
       createdAt: 1,
       updatedAt: 1,
       createdBy: 'U1',
+      continuationCount: 0,
+      maxContinuations: 10,
     };
 
     const result = await router.route(makeCtx('goal', say));
@@ -904,6 +924,8 @@ describe('CommandRouter — `goal` + `$skill` composition (preprocessor)', () =>
       createdAt: 1,
       updatedAt: 1,
       createdBy: 'U1',
+      continuationCount: 0,
+      maxContinuations: 10,
     };
 
     // `goal pause` does not produce a continueWithPrompt — splitting on the
@@ -915,6 +937,59 @@ describe('CommandRouter — `goal` + `$skill` composition (preprocessor)', () =>
     // `goal pause` (with no `$z` in the cleaned goalText) flips status to paused.
     expect(session.goal?.status).toBe('paused');
     expect(skillExec).not.toHaveBeenCalled();
+    expect(result.handled).toBe(true);
+    expect(result.continueWithPrompt).toBeUndefined();
+  });
+
+  // Without an active session, the goal preprocessor would emit "No active
+  // session" via GoalHandler and silently drop the `$skill` suffix. It must
+  // fall through instead so SkillForceHandler (which runs before GoalHandler
+  // in the main loop) picks up the full text as a normal prompt — the user's
+  // skill invocation wins over a goal command that can't be satisfied.
+  it('9. `goal foo $skill` with NO active session → preprocessor falls through, skill is force-invoked with full text as prompt', async () => {
+    stubSkillFs({ localSkills: ['using-ssot'] });
+    const goalExec = vi.spyOn(GoalHandler.prototype, 'execute');
+    const skillExec = vi.spyOn(SkillForceHandler.prototype, 'execute');
+
+    const { router, deps, say } = makeRouterWithoutSession();
+    const result = await router.route(makeCtx('goal 기능을 끝까지 완수해줘 $using-ssot', say, undefined));
+
+    expect(goalExec).not.toHaveBeenCalled();
+    expect(deps.slackApi.postSystemMessage).not.toHaveBeenCalledWith(
+      'C1',
+      expect.stringContaining('No active session'),
+      expect.anything(),
+    );
+
+    expect(skillExec).toHaveBeenCalledTimes(1);
+    expect(skillExec.mock.calls[0][0].text).toBe('goal 기능을 끝까지 완수해줘 $using-ssot');
+
+    expect(result.handled).toBe(true);
+    expect(result.continueWithPrompt).toContain('<invoked_skills>');
+    expect(result.continueWithPrompt).toContain('<local:using-ssot>');
+    // Full original text is preserved as the prompt body — Claude sees the
+    // user's `goal …` phrasing as a normal sentence, not a failed lifecycle
+    // command.
+    expect(result.continueWithPrompt).toContain('goal 기능을 끝까지 완수해줘');
+  });
+
+  // Spec-preservation guard (docs/goal-command/spec.md §36): pure `goal …`
+  // with no `$skill` suffix and no session must STILL surface "No active
+  // session" — the preprocessor fall-through only kicks in when the user
+  // signalled they care about the skill too.
+  it('10. pure `goal foo` with NO session and NO skill suffix → goal handler still emits "No active session"', async () => {
+    stubSkillFs({ localSkills: ['using-ssot'] }); // skill exists but not referenced
+    const goalExec = vi.spyOn(GoalHandler.prototype, 'execute');
+
+    const { router, deps, say } = makeRouterWithoutSession();
+    const result = await router.route(makeCtx('goal foo bar baz', say, undefined));
+
+    expect(goalExec).toHaveBeenCalledTimes(1);
+    expect(deps.slackApi.postSystemMessage).toHaveBeenCalledWith(
+      'C1',
+      expect.stringContaining('No active session'),
+      expect.anything(),
+    );
     expect(result.handled).toBe(true);
     expect(result.continueWithPrompt).toBeUndefined();
   });
