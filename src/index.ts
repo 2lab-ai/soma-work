@@ -76,6 +76,13 @@ import {
 import { acquirePidLock, releasePidLock } from './pid-lock';
 import { PluginManager } from './plugin/plugin-manager';
 import { getVersionInfo, notifyRelease } from './release-notifier';
+import {
+  applyGoalEvalDispatchFailure,
+  applyGoalEvalFailure,
+  applyGoalEvalSuccess,
+  evaluateGoalCompletion,
+} from './slack/goal-completion-evaluator';
+import { maybeScheduleGoalContinuation } from './slack/goal-continuation';
 import { SlackHandler } from './slack-handler';
 import { notifyStartup } from './startup-notifier';
 import { getTokenManager } from './token-manager';
@@ -768,6 +775,128 @@ async function start() {
       timing('Cron scheduler initialized');
     } catch (error) {
       logger.warn('Failed to start cron scheduler (non-critical)', error);
+    }
+
+    // Goal ralph-loop + host-side completion eval wiring.
+    // The continuation hook and the completion handler share the
+    // same messageInjector / Slack notifier helpers as the cron
+    // scheduler, so we set them up here rather than inside
+    // SlackHandler's constructor (where those deps aren't yet
+    // available).
+    //
+    // See `docs/goal-command/spec.md` §Auto-Continuation Loop and
+    // §Completion via Host-Side Eval Model.
+    try {
+      const registry = claudeHandler.getSessionRegistry();
+      const goalSlackApi = slackHandler.getSlackApi();
+      const postGoalNotice = (channel: string, threadTs: string | undefined, text: string): Promise<unknown> =>
+        goalSlackApi.postSystemMessage(channel, text, { threadTs });
+
+      // Ralph-loop continuation hook — fires when a session goes idle.
+      registry.setOnIdleAfterDrainHook((sessionKey: string) => {
+        // Fire-and-forget — must not block the activity-state
+        // transition that scheduled it.
+        maybeScheduleGoalContinuation(sessionKey, {
+          getSession: (key) => registry.getSessionByKey(key),
+          getActivityState: (key) => registry.getActivityStateByKey(key),
+          saveSessions: () => registry.saveSessions(),
+          messageInjector: async (event) => {
+            // Same say-builder as the cron scheduler so synthetic
+            // turns hit the same chat.postMessage shape.
+            const say = async (args: any) => {
+              const text = typeof args === 'string' ? args : args?.text;
+              const result = await app.client.chat.postMessage({
+                channel: event.channel,
+                text: text || ' ',
+                thread_ts: typeof args === 'string' ? event.thread_ts : args?.thread_ts || event.thread_ts,
+                blocks: typeof args === 'string' ? undefined : args?.blocks,
+                attachments: typeof args === 'string' ? undefined : args?.attachments,
+              });
+              return { ts: result.ts as string | undefined };
+            };
+            await slackHandler.handleMessage(event as any, say);
+          },
+          postSystemMessage: (channel, threadTs, text) => postGoalNotice(channel, threadTs, text).then(() => undefined),
+        }).catch((err: unknown) => {
+          logger.warn('maybeScheduleGoalContinuation failed', {
+            sessionKey,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
+      });
+      timing('Goal ralph-loop hook installed');
+
+      // Completion eval handler — fires when an assistant turn emits
+      // the completion sentinel. `slack-handler.handleAssistantTurnCompleteForGoal`
+      // already stamped `pendingEval`, joined the assistant messages, and
+      // detached the call from the turn pipeline.
+      slackHandler.setGoalCompletionRequestHandler(async (session, sessionKey, signal, workSummary) => {
+        const goal = session.goal;
+        if (!goal) return;
+
+        const evalUserSummary = [
+          `Detected via: ${signal.via}`,
+          `Sentinel reason / phrase: ${signal.reason}`,
+          '',
+          '## Assistant turn output',
+          workSummary.slice(0, 16_000),
+        ].join('\n');
+
+        try {
+          const verdict = await evaluateGoalCompletion(
+            {
+              objective: goal.objective,
+              workSummary: evalUserSummary,
+              // Eval must NOT be weaker than the work model — codex
+              // pins the same model+effort for the audit instance.
+              // Fall back to the session's persisted model if no
+              // explicit one is set; never silently downgrade.
+              model: session.model || 'claude-sonnet-4-20250514',
+              effort: session.effort,
+              cwd: session.workingDirectory,
+            },
+            ({ systemPrompt, userPrompt, model, abortController, cwd }) =>
+              claudeHandler.dispatchOneShot(userPrompt, systemPrompt, model, abortController, undefined, cwd),
+          );
+
+          if (verdict.completed) {
+            applyGoalEvalSuccess(goal);
+            registry.saveSessions();
+            await postGoalNotice(
+              session.channelId,
+              session.threadTs,
+              `✅ Goal completed (eval-model verdict).\n*Objective:* ${goal.objective}\n*Eval reason:* ${verdict.reason}`,
+            );
+          } else {
+            applyGoalEvalFailure(goal, verdict.reason);
+            registry.saveSessions();
+            const remaining = verdict.remaining.length
+              ? verdict.remaining.map((r) => `• ${r}`).join('\n')
+              : '_(no remaining items reported)_';
+            await postGoalNotice(
+              session.channelId,
+              session.threadTs,
+              `🔄 Goal not yet complete (eval-model verdict).\n*Reason:* ${verdict.reason}\n*Remaining:*\n${remaining}`,
+            );
+          }
+        } catch (err: unknown) {
+          // Parse / network / timeout failure — spec H.3 invariant
+          // is that status is preserved; only `pendingEval` resets so
+          // the loop can resume on the next user turn.
+          applyGoalEvalDispatchFailure(goal);
+          registry.saveSessions();
+          const message = err instanceof Error ? err.message : String(err);
+          logger.error('Goal eval dispatch failed', { sessionKey, error: message });
+          await postGoalNotice(
+            session.channelId,
+            session.threadTs,
+            `⚠️ Goal completion evaluation failed: ${message}. Run \`goal done\` to force completion or \`goal pause\` / \`goal clear\` to stop the loop.`,
+          );
+        }
+      });
+      timing('Goal completion eval handler installed');
+    } catch (error) {
+      logger.warn('Failed to install goal ralph-loop / eval wiring (non-critical)', error);
     }
 
     // Notify users whose sessions were interrupted by crash (non-blocking)
