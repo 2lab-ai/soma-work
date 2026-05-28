@@ -4,17 +4,24 @@
 > Related: docs/turn-notification/trace.md, docs/archive/features/turn-summary-lifecycle/trace.md, docs/rich-turn-notification/trace.md
 > Anthropic SDK doc: https://code.claude.com/docs/en/agent-sdk/streaming-output.md
 
-## Invariant
+## Invariant (revised 2026-05-28 after textual-ASK false-positive)
 
-Every model-turn end MUST surface exactly one terminal Slack Block Kit card. The three terminal states the SDK can produce — and the soma-work category each maps to — are:
+Every model-turn end MUST surface exactly one terminal Slack Block Kit card. **The user's binding definition of the four terminal categories**:
 
-| SDK signal | soma-work `TurnCategory` | Card |
+| User-defined meaning | `TurnCategory` | Card |
 | :--- | :--- | :--- |
-| `ResultMessage{subtype:'success'}` with end_turn, no pending user choice | `WorkflowComplete` | 🟢 `작업 완료` |
-| Assistant turn ends with a pending user choice (UIAskUserQuestion / B3) | `UIUserAskQuestion` | 🟠 `유저 입력 대기` |
-| `ResultMessage{subtype:'error_*'}` / SDK throw / supersede abort / stall-timeout abort | `Exception` | 🔴 `오류 발생` |
+| 모델이 end_turn 발화로 종료 (정상 완료) | `WorkflowComplete` | 🟢 `작업 완료` |
+| 모델이 ASK / pending choice로 유저 입력 필요 표시 | `UIUserAskQuestion` | 🟠 `유저 입력 대기` |
+| **즉시** 발생한 모델 / 코드 에러 (SDK throw, max_turns, parse fail 등) | `Exception` | 🔴 `오류 발생` |
+| idle-timeout fire — 모델이 end_turn / ASK를 보내지 않은 채 N 시간 침묵 | `Stalled` | ⚫ `응답 없음 — 코드 버그 의심` |
 
-There is no fourth state. Degraded enrichment (no usage %, no token stats) is **not** a separate category — it is the same terminal state rendered with reduced fidelity. Codex P1 binding decision (session `e294db6b-b322-4ec5-aed4-e05cf9a07d0b`, 2026-05-14): "Degraded enrichment is not a fourth terminal state; it is a reduced-fidelity rendering of the same terminal state. Optional fields already model that."
+**Important**: `Stalled` is **NOT** an immediate error — it's a **code-bug signal**. A `Stalled` card means our pipeline failed to surface a terminal signal in time. Per user's invariant `"이렇게 타임아웃나는 경우를 모두 제거하라"`, each `Stalled` card observed in production must be turned into a follow-up task that removes the underlying code path. The timer is now an **observability tool**, not a fail-safe.
+
+Degraded enrichment (no usage %, no token stats) is **not** a separate category — it is the same terminal state rendered with reduced fidelity. Codex P1 binding decision (session `e294db6b-b322-4ec5-aed4-e05cf9a07d0b`, 2026-05-14): "Degraded enrichment is not a fourth terminal state; it is a reduced-fidelity rendering of the same terminal state."
+
+### Why `Stalled` was split out (2026-05-28)
+
+PR #970 wired an in-process idle-timeout race for hung SDK iterators (C-1). Production observation (session `C0AKY7W2UGZ-1779941197.183069`): the assistant emitted text `"백그라운드 검색이 이제 완료됐다. 유저 응답 대기 중. 응답이 오면 선택된 그룹별로 코드 수정 → 커밋 → PR 푸시."` then went silent for 30 min while the user thought. Timer fired → 🔴 `Exception` card posted. The card was correct (no SDK activity) but the category was wrong (it's not an immediate error). User feedback (2026-05-28): `"녹색 - 모델에게 턴종료 메세지를 받고 완료 / 오렌지 - 모델에게 턴종료인데 유저 입력때문에 턴종료한경우 / 빨간색 - 기타 즉시 모델에서 혹은 코드에서 에러나 날 경우 ... 이렇게 타임아웃나는 경우를 모두 제거하라고"`. Resolution: split `Stalled` (⚫) out of `Exception` and document the timer as an investigation queue, not a fail-safe. Backlog item T4 — eliminate every code path that fires the timer.
 
 ## Guarantee boundary
 
