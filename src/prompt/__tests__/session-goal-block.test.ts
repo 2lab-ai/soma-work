@@ -107,9 +107,9 @@ describe('session-goal-block / buildSessionGoalBlock', () => {
     createdAt: 1,
     updatedAt: 2,
     createdBy: 'U123',
-  continuationCount: 0,
-          maxContinuations: 10,
-        };
+    continuationCount: 0,
+    maxContinuations: 10,
+  };
 
   it('returns an empty string when there is no session', () => {
     expect(buildSessionGoalBlock(undefined)).toBe('');
@@ -165,9 +165,9 @@ describe('session-goal-block / buildGoalContinuationPrompt', () => {
     createdAt: 1,
     updatedAt: 2,
     createdBy: 'U123',
-  continuationCount: 0,
-          maxContinuations: 10,
-        };
+    continuationCount: 0,
+    maxContinuations: 10,
+  };
 
   it('frames the continuation, embeds the escaped objective, and references host-side eval', () => {
     const prompt = buildGoalContinuationPrompt(goal);

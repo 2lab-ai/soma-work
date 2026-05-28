@@ -105,9 +105,9 @@ describe('GoalHandler', () => {
       createdAt: Date.now(),
       updatedAt: Date.now(),
       createdBy: 'U123',
-    continuationCount: 0,
-          maxContinuations: 10,
-        });
+      continuationCount: 0,
+      maxContinuations: 10,
+    });
     expect(session.systemPrompt).toBeUndefined();
     expect(deps.claudeHandler.saveSessions).toHaveBeenCalledTimes(1);
     expect(deps.slackApi.postSystemMessage).toHaveBeenCalledWith(
@@ -139,9 +139,9 @@ describe('GoalHandler', () => {
         createdAt: 1,
         updatedAt: 2,
         createdBy: 'U123',
-      continuationCount: 0,
-          maxContinuations: 10,
-        },
+        continuationCount: 0,
+        maxContinuations: 10,
+      },
     });
     const deps = makeDeps(session);
     const handler = new GoalHandler(deps);
@@ -165,9 +165,9 @@ describe('GoalHandler', () => {
         createdAt: 1,
         updatedAt: 2,
         createdBy: 'U123',
-      continuationCount: 0,
-          maxContinuations: 10,
-        },
+        continuationCount: 0,
+        maxContinuations: 10,
+      },
     });
     const deps = makeDeps(session);
     const handler = new GoalHandler(deps);

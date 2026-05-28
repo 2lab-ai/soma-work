@@ -191,7 +191,7 @@ describe('PromptBuilder', () => {
           createdAt: 1,
           updatedAt: 1,
           createdBy: 'U123',
-        continuationCount: 0,
+          continuationCount: 0,
           maxContinuations: 10,
         },
       };
@@ -211,7 +211,7 @@ describe('PromptBuilder', () => {
           createdAt: 1,
           updatedAt: 1,
           createdBy: 'U123',
-        continuationCount: 0,
+          continuationCount: 0,
           maxContinuations: 10,
         },
       };
@@ -222,7 +222,7 @@ describe('PromptBuilder', () => {
           createdAt: 1,
           updatedAt: 1,
           createdBy: 'U123',
-        continuationCount: 0,
+          continuationCount: 0,
           maxContinuations: 10,
         },
       };
@@ -245,7 +245,7 @@ describe('PromptBuilder', () => {
           createdAt: 1,
           updatedAt: 1,
           createdBy: 'U123',
-        continuationCount: 0,
+          continuationCount: 0,
           maxContinuations: 10,
         },
       };
@@ -268,7 +268,7 @@ describe('PromptBuilder', () => {
           createdAt: 1,
           updatedAt: 1,
           createdBy: 'U123',
-        continuationCount: 0,
+          continuationCount: 0,
           maxContinuations: 10,
         },
       };
@@ -298,7 +298,7 @@ describe('PromptBuilder', () => {
           createdAt: 1,
           updatedAt: 1,
           createdBy: 'U123',
-        continuationCount: 0,
+          continuationCount: 0,
           maxContinuations: 10,
         },
       };
