@@ -25,16 +25,21 @@ Once the gap is detected and written as an issue, zfix is done. Planning, implem
 
 ### Phase INTAKE — Gap Detection (zfix-specific)
 
-1. **Read intent.** Issue title + body + all comments. Extract user-facing scenarios exhaustively — happy path, edge cases, error paths, integration points.
-2. **Read implementation.** PR body + full diff. Assume nothing works. "Function exists" is not evidence.
-3. **Trace each scenario via `local:ztrace`** — callstack depth, not API surface. For every scenario, list each gate the call must cross: entry → validation → dispatch → handler → side-effect → exit. Classify:
-   - ✅ Works — full path verified
-   - ⚠️ Partial — path exists but lacks validation / test / edge case
-   - ❌ Blocked — path broken, code unreachable, or dead
-4. **Emit gap spec via `stv:new-task`.** The new issue contains:
-   - Scenario table with classifications
-   - For each ❌/⚠️: the exact failing gate + root cause
+1. **Build intent SSOT-TASK-TREE (`local:using-ssot` Hook 1).** Issue title + body + all user comments form the SSOT-LIST. Decompose into `ssot-task` nodes — one per user-facing scenario (happy path, edge case, error path, integration point). Output the tree.
+2. **Build "implemented" tree.** PR body + full diff. For each `ssot-task` from step 1, identify which artifact in the implementation **claims** to cover it. "Function exists" is not evidence — record only artifacts you can trace.
+3. **Compute gap = intent tree − implemented tree.** For every `ssot-task`:
+   - Run `local:ztrace` from entry point to side-effect at callstack depth.
+   - Classify against the trace result:
+     - ✅ Works — full path verified, ztrace scenario passes
+     - ⚠️ Partial — path exists but lacks validation / test / edge case
+     - ❌ Blocked — path broken, code unreachable, or dead
+4. **Gap is the set of `ssot-task` classified ⚠️ or ❌**. This set, not the diff line count, is the scope of the fix work.
+5. **Emit gap spec via `stv:new-task`.** The new issue contains:
+   - The intent SSOT-TASK-TREE (verbatim from step 1)
+   - Per-`ssot-task` classification table (✅ / ⚠️ / ❌)
+   - For each ⚠️/❌: the exact failing gate + root cause
    - The coverage dimension that was missed (see Meta-Principle below)
+   - The gap-set `ssot-task` IDs as the explicit work scope for the downstream `local:z` session
 
 ### Phase DISPATCH — Hand off to local:z
 

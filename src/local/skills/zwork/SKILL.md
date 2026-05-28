@@ -19,6 +19,8 @@ When invoked via session handoff from z phase1, the initial session prompt carri
 
 ## Process
 
+0. **SSOT restore (`local:using-ssot` Hook 3).** Read `## SSOT-LIST` and `## SSOT-TASK-TREE` from the `<z-handoff type="plan-to-work">` block (already parsed into session-level SSOT by z phase0 step 0.5). Emit a **one-line ack** at session start: `SSOT restored — N ssot-tasks, M still open` (no full re-render — phase0 already printed the tree on the producer side). Re-render the full tree only if the handoff parse failed or the user explicitly asks. Every subsequent RED test, every implementer dispatch, and the final PR body must trace back to one or more `ssot-task` IDs from this tree. If a drift instruction arrives mid-implementation, **do not mutate the tree locally** — bounce to the z controller (zreflect → Hook 2) and resume from the regenerated tree.
+
 1. Invoke `subagent-driven-development`
 
 2. Write Red tests to cover all user scenarios.
@@ -38,6 +40,7 @@ When invoked via session handoff from z phase1, the initial session prompt carri
 5. Create PR.
    - **Precondition**: Issue URL must be present in session-level SSOT (Case A/B), **or** a validly qualified Case A escape marker must be set. The escape marker is valid only when **all three**: (a) tier=`tiny`|`small` per `using-epic-tasks`, (b) the original user request contained no "issue first" demand (re-verify against `## Original Request Excerpt` in the handoff payload), **and** (c) repository policy does not require a linked issue (re-verify against `## Repository Policy`). Missing or invalid → abort PR creation and return control to `local:z` phase1 with the reason. This prevents orphan PRs with no linked issue.
    - PR body MUST include `Closes #<issue>` for Case A/B, or an explicit `Case A escape (tier=tiny|small, no issue by policy)` note when the qualified escape marker is used. **Inline only** — body must be passed as inline content to `--body` (literal string or heredoc). Shell variable indirection (e.g. `--body "$VAR"`) is host-rejected because the static check cannot see the runtime value.
+   - PR body MUST include a `## SSOT-TASK-TREE coverage` section listing every `ssot-task` ID from the session tree with the artifact (commit / file / RED→GREEN) that satisfies it. **`ssot-task` layer only — `ssot-subtask` is volatile (`using-ssot` Invariant 4) and lives in commit messages, not in the PR body.**
    - *(Host-enforced via in-process SDK PreToolUse hook — `src/hooks/pr-issue-guard.ts` wired through `src/claude-handler.ts`. Bash `gh pr create` and MCP `mcp__github__create_pull_request` both covered. This prompt rule remains as defense-in-depth.)*
 
 6. Invoke `stv:verify` — repeat until passing (max 5 times, then `local:decision-gate`).
