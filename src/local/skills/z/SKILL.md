@@ -21,14 +21,19 @@ Invoke `local:zreflect`
 ### phase0:
 
 0. **Handoff detection (first)** — scan the incoming user prompt for a `<z-handoff>` sentinel (contract: `local:using-z` §Session Handoff Protocol):
-   - **0.5** `<z-handoff type="plan-to-work">` present → this session was dispatched by a prior phase1. **Skip steps 1–5 below.** Parse the block: register Task List into TodoWrite, store Issue URL + Parent Epic as session-level SSOT for phase5, then jump to **phase2 (Implementation)**.
+   - **0.5** `<z-handoff type="plan-to-work">` present → this session was dispatched by a prior phase1. **Skip steps 1–5 below.** Parse the block: register Task List into TodoWrite, **restore SSOT-LIST + SSOT-TASK-TREE from the payload (`local:using-ssot` Hook 3)**, store Issue URL + Parent Epic as session-level SSOT for phase5, then jump to **phase2 (Implementation)**.
    - **0.6** `<z-handoff type="work-complete">` present → this session was dispatched by a prior phase5. **Skip steps 1–5 below.** Jump to **phase5.E (Epic Update branch)**.
    - Neither sentinel → proceed to step 1 normally (direct user request).
-1. **Do NOT summarize the user instruction — it is the **SSOT**. Output the original instruction exactly as-is on screen immediately.**
-2. Invoke `stv:clarify` to reorg user instaction and Output reorged user instruction.
-3. Re-read the **SSOT** and **re-orged** instructions and organize the Tasks in execution order without summarizing, then output the results.
-4. **Register the Tasks in a task tool such as TodoWrite.**
-5. Invoke `superpowers:dispatching-parallel-agents`
+
+**Steps 1–4 below run `local:using-ssot` **Hook 1** (Initial intake) for the z controller. Read that skill for definitions of SSOT / SSOT-LIST / SSOT-TASK-TREE / ssot-task / ssot-subtask. Step 5 is z-specific dispatch.**
+
+1. **Do NOT summarize the user instruction — it is the **SSOT**. Output the original instruction exactly as-is on screen immediately.** If the instruction is a bare link (issue / PR / external doc), fetch the target body and fold it into the SSOT so the SSOT is self-contained.
+2. **Build SSOT-LIST** — for a fresh intake this is `[SSOT_1]`. Output it under `## SSOT-LIST (시간 순)` per the `using-ssot` output format.
+3. **Build SSOT-TASK-TREE** — decompose the SSOT into atomic, self-contained `ssot-task` nodes with a dependency tree. Expand each `ssot-task` into `ssot-subtask` nodes. Every `ssot-task` must trace back to a SSOT excerpt; if it cannot, demote it to a `ssot-subtask` or drop it. Output the tree under `## SSOT-TASK-TREE`. Pause briefly so the user can interject before the dispatch step.
+4. **Register the leaves in TodoWrite.** `ssot-task` with no `ssot-subtask` → one entry. `ssot-task` with `ssot-subtask` children → one entry per `ssot-subtask`. The TodoWrite mirror MUST be kept in sync with the tree from this point on.
+5. **z-specific dispatch** — invoke `superpowers:dispatching-parallel-agents`. (Not part of Hook 1; this is z's downstream wiring.)
+
+**Drift handling during phase0–phase5.** If a new raw user message arrives any time before terminal report, invoke `local:zreflect` (which now triggers `local:using-ssot` **Hook 2**): append to SSOT-LIST, regenerate SSOT-TASK-TREE, diff at `ssot-task` granularity (`ssot-subtask` is volatile by definition), output the diff + refreshed tree, patch TodoWrite, then resume from the new tree's incomplete leaves. Do not wipe + restart.
 
 ### phase0.1-(If BUG)
 
@@ -67,7 +72,7 @@ Invoke `local:zcheck` with the implemented PR URL.
 ### phase5: After Work Completion
 
 1. Output work history + provide issue/PR links
-2. Invoke `local:es` and output to User.
+2. Invoke `local:es` and output to User. **`es` MUST consume the session's SSOT-LIST + final SSOT-TASK-TREE (`local:using-ssot` Hook 4)** — per-`ssot-task` accountability is now part of every es mode template.
 3. **Handoff to epic (if applicable)** (contract: `local:using-z` §Session Handoff Protocol → Handoff #2):
    - Read Parent Epic from session-level SSOT (set by phase0 step 0.5).
    - If Parent Epic is `none` (single issue, no epic): session ends normally — do NOT emit Handoff #2.

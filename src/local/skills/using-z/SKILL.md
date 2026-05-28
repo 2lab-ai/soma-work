@@ -51,6 +51,10 @@ z 컨트롤러의 phase 전환 중 **세션 경계**를 넘는 것은 두 지점
 
 ### Handoff #1 — plan → work
 
+> **SSOT carriage (모든 handoff 공통).** payload `<z-handoff>` 블록은 두 섹션 — `## SSOT-LIST` (시간 순 raw 인용)과 `## SSOT-TASK-TREE` (ssot-task 레벨만; ssot-subtask는 휘발성이라 carriage 대상 아님) — 을 **반드시** 포함한다. 정의는 `local:using-ssot`. 수신 세션 phase0 step 0.5 / 0.6은 이 두 섹션을 복원해서 세션 전역 SSOT로 보관하고, drift 발생 시 그 위에서 Hook 2를 돌린다.
+>
+> **Trivial 허용.** tier ∈ {`tiny`, `small`}로 트리가 단 1개 ssot-task인 경우, `## SSOT-TASK-TREE`의 본문은 한 줄 — `- [ ] T1 — trivial (1 ssot-task = ## Confirmed Plan)` — 만으로 충분하다. `## SSOT-LIST`는 어느 tier에서나 원문 인용 필수. 누락 시 malformed (§Sentinel Grammar Rule 4 참고).
+
 **트리거**: z phase1에서 계획이 유저 Approve를 받고, 이슈 생성(또는 Case A escape의 tiny/small에서는 PR 스캐폴드 범위)까지 끝났을 때.
 
 **선행 검증 (필수)**:
@@ -70,7 +74,7 @@ z 컨트롤러의 phase 전환 중 **세션 경계**를 넘는 것은 두 지점
 {
   "commandId": "CONTINUE_SESSION",
   "params": {
-    "prompt": "$z phase2 <ISSUE_URL or task-slug>\n\n<z-handoff type=\"plan-to-work\">\n## Issue\n<ISSUE_URL or \"none (Case A escape, tier=tiny|small)\">\n## Parent Epic\n<EPIC_URL or \"none\">\n## Tier\n<tiny|small|medium|large|xlarge>\n## Escape Eligible\n<true|false>\n## Issue Required By User\n<true|false>\n## Original Request Excerpt\n<원 유저 SSOT instruction 발췌 — 수신 세션이 escape 조건 및 scope를 재검증 가능하게>\n## Repository Policy\n<issue-required: true|false — CONTRIBUTING/policy가 이슈 선행을 요구하는지 여부>\n## Confirmed Plan\n<plan markdown — Goal / Scope / Done>\n## Task List\n- [ ] task 1\n- [ ] task 2\n## Codex Review\nscore: <N>/100 — <verdict>\n</z-handoff>",
+    "prompt": "$z phase2 <ISSUE_URL or task-slug>\n\n<z-handoff type=\"plan-to-work\">\n## Issue\n<ISSUE_URL or \"none (Case A escape, tier=tiny|small)\">\n## Parent Epic\n<EPIC_URL or \"none\">\n## Tier\n<tiny|small|medium|large|xlarge>\n## Escape Eligible\n<true|false>\n## Issue Required By User\n<true|false>\n## Original Request Excerpt\n<원 유저 SSOT instruction 발췌 — 수신 세션이 escape 조건 및 scope를 재검증 가능하게>\n## Repository Policy\n<issue-required: true|false — CONTRIBUTING/policy가 이슈 선행을 요구하는지 여부>\n## SSOT-LIST\n1. <원 유저 raw 메시지 1 — 그대로 인용>\n2. <원 유저 raw 메시지 2 — drift가 있었으면 시간 순>\n## SSOT-TASK-TREE\n- [ ] T1 — <ssot-task, 어느 SSOT 발췌에서 도출되었는지 1줄>\n- [ ] T2 — <ssot-task>\n## Confirmed Plan\n<plan markdown — Goal / Scope / Done>\n## Task List\n- [ ] task 1\n- [ ] task 2\n## Codex Review\nscore: <N>/100 — <verdict>\n</z-handoff>",
     "resetSession": true,
     "dispatchText": "<ISSUE_URL or task-slug>",
     "forceWorkflow": "z-plan-to-work"
@@ -83,8 +87,9 @@ z 컨트롤러의 phase 전환 중 **세션 경계**를 넘는 것은 두 지점
 - `## Tier` — `using-epic-tasks` 판정 tier.
 - `## Escape Eligible` — Case A 3-condition validation 통과 여부 (단순 마커 존재가 아닌 검증 통과).
 - `## Issue Required By User` — 유저 원 요청에 선행 이슈 요구 존재 여부.
+- `## SSOT-LIST` / `## SSOT-TASK-TREE` — `local:using-ssot` 정의. **required fields** (Sentinel Grammar §4 참고). 누락 시 malformed.
 
-모두 optional — 누락 시 conservative defaults (tier=null, escapeEligible=false, issueRequiredByUser=true). 명시할수록 downstream host guards가 신뢰할 수 있는 상태를 본다.
+위 세 typed-metadata field(`Tier` / `Escape Eligible` / `Issue Required By User`)는 optional — 누락 시 conservative defaults (tier=null, escapeEligible=false, issueRequiredByUser=true). 명시할수록 downstream host guards가 신뢰할 수 있는 상태를 본다. SSOT 두 section은 optional이 아니다.
 
 **새 세션 z phase0 동작**:
 
@@ -92,7 +97,8 @@ z 컨트롤러의 phase 전환 중 **세션 경계**를 넘는 것은 두 지점
 2. clarify / new-task / codex 리뷰 단계 **스킵**
 3. Task List를 TodoWrite로 등록
 4. Issue URL + Parent Epic을 세션 전역 SSOT로 보관 (phase5에서 재사용)
-5. phase2 (`local:zwork`) 직행
+5. **SSOT-LIST + SSOT-TASK-TREE를 세션 전역 SSOT로 복원** (`local:using-ssot` Hook 3). 이후 drift는 이 트리 위에서 Hook 2로 처리.
+6. phase2 (`local:zwork`) 직행
 
 ### Handoff #2 — work → epic (서브이슈인 경우만)
 
@@ -110,7 +116,7 @@ z 컨트롤러의 phase 전환 중 **세션 경계**를 넘는 것은 두 지점
 {
   "commandId": "CONTINUE_SESSION",
   "params": {
-    "prompt": "$z epic-update <EPIC_URL>\n\n<z-handoff type=\"work-complete\">\n## Completed Subissue\n<SUBISSUE_URL>\n## PR\n<PR_URL>\n## Summary\n<1-3줄 behavior 요약 — 무엇이 달성되었는지, 파일명/함수명 금지>\n## Remaining Epic Checklist\n- [x] 완료된 서브이슈 타이틀\n- [ ] 남은 서브이슈 타이틀 + URL\n</z-handoff>",
+    "prompt": "$z epic-update <EPIC_URL>\n\n<z-handoff type=\"work-complete\">\n## Completed Subissue\n<SUBISSUE_URL>\n## PR\n<PR_URL>\n## Summary\n<1-3줄 behavior 요약 — 무엇이 달성되었는지, 파일명/함수명 금지>\n## SSOT-LIST\n1. <원 유저 raw 메시지 1>\n2. <drift 있었으면 시간 순>\n## SSOT-TASK-TREE (final)\n- [x] T1 — <완료된 ssot-task>\n- [x] T2 — <완료된 ssot-task>\n## Remaining Epic Checklist\n- [x] 완료된 서브이슈 타이틀\n- [ ] 남은 서브이슈 타이틀 + URL\n</z-handoff>",
     "resetSession": true,
     "dispatchText": "<EPIC_URL>",
     "forceWorkflow": "z-epic-update"
@@ -134,7 +140,7 @@ z 컨트롤러의 phase 전환 중 **세션 경계**를 넘는 것은 두 지점
 1. **Exact form.** 여는 태그는 정확히 `<z-handoff type="plan-to-work">` 또는 `<z-handoff type="work-complete">` — 대소문자 구분, 속성은 쌍따옴표 고정. 변형(대소문자·홑따옴표·공백 변형) 불매칭.
 2. **Top-level only.** sentinel은 **dispatched prompt의 최상위 래퍼**로만 인정. 유저가 이슈 코멘트·버그 리포트에 이전 handoff 블록을 **인용**한 경우는 sentinel 아님 — 반드시 handoff 본문이 `$z ...` 커맨드 라인 바로 아래의 최상위 블록이어야 함. 애매하면 sentinel 아님으로 판정 (fall-through to normal phase0).
 3. **Closing tag 필수.** 여는 태그는 있으나 `</z-handoff>`가 없으면 **malformed** → safe-stop + 유저 에러 출력. 조용한 fall-through 금지.
-4. **Required fields 검증.** `type="plan-to-work"`은 `## Issue`, `## Parent Epic`, `## Task List` 세 섹션 필수. `type="work-complete"`은 `## Completed Subissue`, `## PR`, `## Summary`, `## Remaining Epic Checklist` 네 섹션 필수. 누락 시 malformed → safe-stop. `plan-to-work`의 **optional typed-metadata fields** (producer-authoritative, host가 `session.handoffContext`로 persist): `## Tier`, `## Escape Eligible`, `## Issue Required By User`. 누락 시 host는 conservative defaults를 사용하지만 downstream host guard가 정확히 동작하려면 producer가 명시 권장.
+4. **Required fields 검증.** `type="plan-to-work"`은 `## Issue`, `## Parent Epic`, `## SSOT-LIST`, `## SSOT-TASK-TREE`, `## Task List` 다섯 섹션 필수. `type="work-complete"`은 `## Completed Subissue`, `## PR`, `## Summary`, `## SSOT-LIST`, `## SSOT-TASK-TREE (final)`, `## Remaining Epic Checklist` 여섯 섹션 필수. 누락 시 malformed → safe-stop. `plan-to-work`의 **optional typed-metadata fields** (producer-authoritative, host가 `session.handoffContext`로 persist): `## Tier`, `## Escape Eligible`, `## Issue Required By User`. 누락 시 host는 conservative defaults를 사용하지만 downstream host guard가 정확히 동작하려면 producer가 명시 권장.
 5. **Duplicate sentinels.** 한 prompt에 `plan-to-work`와 `work-complete`가 동시 등장하면 **hard error** — 어느 쪽도 선택하지 않고 safe-stop. 같은 type이 두 번 나와도 마찬가지.
 6. **원요청 재검증 가능성.** `plan-to-work` 블록은 `## Original Request Excerpt` 필드로 원본 유저 SSOT instruction을 발췌 carrying — 수신 세션이 Case A escape 조건(또는 기타 계약)을 재검증 가능하게.
 
@@ -145,7 +151,7 @@ z 컨트롤러의 phase 전환 중 **세션 경계**를 넘는 것은 두 지점
 3. **Handoff 예산 — 세션당 자동 1회**. 한 세션은 자동 handoff를 **최대 1회** 발행할 수 있다. 단, handoff로 시작된 **새 세션은 자신의 수명주기에서 다시 1회**를 발행할 수 있다 (phase2 구현 세션이 phase5에서 Handoff #2를 발행하는 것은 이 예산 안). 금지되는 것은: 한 세션 안에서 두 번 이상 발행, 또는 `work-complete` 수신 세션이 다음 서브이슈를 자동 체인으로 발행하는 것.
 4. `<z-handoff>` sentinel 없는 prompt는 직접 유저 요청이므로 phase0부터 정상 진행.
 5. `forceWorkflow: "z-plan-to-work"` (Handoff #1) 또는 `"z-epic-update"` (Handoff #2) 사용. 이 workflow 타입들은 host-level로 구현되어 — host가 sentinel 존재/유효성/type 매핑을 검증하고 safe-stop (누락/malformed/mismatch 시). 기존 `"default"` 값은 legacy path로만 유효하며 결정적 새 세션 진입 보장이 없음.
-6. payload의 `<z-handoff>` 블록 안에는 **구현 토큰(파일 경로, 함수명, ENV) 금지** — `using-ha-thinking` 규율. Summary / Plan은 behavior 레벨.
+6. payload의 `<z-handoff>` 블록 안에는 **구현 토큰(파일 경로, 함수명, ENV) 금지** — `using-ha-thinking` 규율. Summary / Plan / SSOT-TASK-TREE 노드 라벨은 behavior 레벨. (단 `## SSOT-LIST`는 유저 raw text 인용이라 원문 그대로 — 인용 안에 토큰이 있으면 그건 유저 책임이고 SSOT의 일부.)
 
 ### Enforcement Status
 
