@@ -1922,7 +1922,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // so the user can see the wait window expire instead of guessing why
       // a summary suddenly appeared after silence.
       // Trace: docs/archive/features/turn-summary-lifecycle/trace.md, S1
-      if (this.deps.turnNotifier && this.deps.summaryTimer && category !== 'Exception') {
+      if (this.deps.turnNotifier && this.deps.summaryTimer && category !== 'Exception' && category !== 'Stalled') {
         this.deps.summaryTimer.start(
           sessionKey,
           () => this.onSummaryTimerFire(session, sessionKey),
@@ -2254,23 +2254,26 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     const shouldNotifyException =
       !!this.deps.turnNotifier && (!isAbort || notifyWorthyAbort) && !this.isOneMContextUnavailableError(error);
 
-    // Composed once so both rails (turnNotifier event AND B-4 say() fallback
-    // when DI is missing) use the same Korean text. Coalesce through
-    // `.message` → `.code` → `.name` → `JSON.stringify` so non-Error throws
-    // (raw strings, plain objects from net layer) still leave a visible trace.
+    // Compose user-facing text + category for the notify-worthy branches.
+    // Category split (per the user's invariant in `turn-notifier.ts`
+    // `TurnCategory` JSDoc):
+    //   - stall-timeout → `Stalled` (⚫) — code-bug signal, NOT an
+    //     immediate error. Black card invites operator investigation.
+    //   - ghost-session, unknown abort, real errors → `Exception` (🔴).
+    const notifyCategory: 'Exception' | 'Stalled' = stallTimeoutAbort ? 'Stalled' : 'Exception';
     const abortDisplayMessage = stallTimeoutAbort
-      ? '이전 턴이 일정 시간 응답이 없어 중단되었습니다.'
+      ? '응답 없음 — 모델이 end_turn / ASK 신호를 보내지 않은 채 시간이 초과되었습니다. 코드 경로에 누락된 종료 신호가 있을 가능성이 큽니다.'
       : ghostSessionAbort
         ? '세션이 종료되어 턴이 중단되었습니다.'
         : unknownAbort
           ? '턴이 알 수 없는 이유로 중단되었습니다.'
           : coalesceErrorMessage(error);
 
-    // Trace: docs/turn-notification/trace.md, Scenario 1, Section 3a — Exception path
+    // Trace: docs/turn-notification/trace.md, Scenario 1, Section 3a
     if (shouldNotifyException && this.deps.turnNotifier) {
       this.deps.turnNotifier
         .notify({
-          category: 'Exception',
+          category: notifyCategory,
           userId: session.ownerId || '',
           channel,
           threadTs,
@@ -2278,7 +2281,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           message: abortDisplayMessage,
           durationMs: 0,
         })
-        .catch((err: any) => this.logger.warn('Exception notification failed', { error: err?.message }));
+        .catch((err: any) => this.logger.warn(`${notifyCategory} notification failed`, { error: err?.message }));
     } else if (notifyWorthyAbort && !this.deps.turnNotifier && !this.isOneMContextUnavailableError(error)) {
       // B-4: turnNotifier DI missing AND the abort is notify-worthy. Fall
       // back to plain say() so the user still gets a terminal signal — the
@@ -2286,8 +2289,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // `!isAbort` case, but abort branches previously fell into the silent
       // gap when DI was misconfigured.
       // Trace: docs/current/plans/turn-end-surface-guarantee/exhaustive-paths.md §B-4.
+      const fallbackEmoji = notifyCategory === 'Stalled' ? '⚫' : '🔴';
       try {
-        await say({ text: `🔴 ${abortDisplayMessage}`, thread_ts: threadTs });
+        await say({ text: `${fallbackEmoji} ${abortDisplayMessage}`, thread_ts: threadTs });
       } catch (sayErr) {
         this.logger.warn('B-4 abort fallback say() failed', {
           sessionKey,

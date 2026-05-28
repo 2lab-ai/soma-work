@@ -26,6 +26,16 @@ export interface TurnRunnerSurface {
     endTurnInfo: EndTurnInfo,
     hasPendingChoice: boolean,
   ): Promise<void>;
+  /**
+   * Optional post-turn hook. Called once with the full assistant
+   * messages array AFTER `finalizeOnEndTurn` resolves. The
+   * slack-handler uses this to detect a goal completion sentinel
+   * and dispatch a host-side eval — see
+   * `docs/goal-command/spec.md` §Completion via Host-Side Eval
+   * Model. Stays optional so other consumers of TurnRunner (tests,
+   * acp-prep) don't need to implement it.
+   */
+  onAssistantTurnComplete?(session: any, sessionKey: string, assistantMessages: string[]): Promise<void>;
 }
 
 export interface TurnRunnerDeps {
@@ -67,6 +77,14 @@ export class TurnRunner {
 
     try {
       await this.surface?.finalizeOnEndTurn(this.session, this.sessionKey, result.endTurn, result.hasPendingChoice);
+    } catch {
+      // fire-and-forget
+    }
+    // Forward assistant messages to the optional post-turn hook.
+    // Wrapped in its own try/catch so a goal-detector failure
+    // can never destabilize the turn pipeline.
+    try {
+      await this.surface?.onAssistantTurnComplete?.(this.session, this.sessionKey, result.messages);
     } catch {
       // fire-and-forget
     }

@@ -44,6 +44,20 @@ export interface CommandRouterHandlers {
   newHandler: CommandHandler;
   skillForceHandler: CommandHandler;
   goalHandler?: CommandHandler;
+  /**
+   * Active-session probe used by the `goal` + `$skill` preprocessor. Required
+   * whenever `goalHandler` is supplied — without it, the preprocessor would
+   * unconditionally intercept `goal foo $skill` on threads with no session,
+   * silently drop the `$skill` suffix, and emit "No active session". When the
+   * probe returns false the preprocessor falls through to the main handler
+   * loop so `SkillForceHandler` picks up the full text.
+   *
+   * Default when omitted: `false`. A composition root that wires `goalHandler`
+   * but forgets this probe gets "no preprocessor", not "preprocessor swallows
+   * the skill" — failure mode chosen on the side of letting the user's
+   * `$skill` actually run.
+   */
+  hasActiveSession?: (channel: string, threadTs: string) => boolean;
 }
 
 export interface CommandRouterProviders {
@@ -69,6 +83,7 @@ export class CommandRouter {
   private newHandler: CommandHandler;
   private skillForceHandler: CommandHandler;
   private goalHandler?: CommandHandler;
+  private hasActiveSession?: (channel: string, threadTs: string) => boolean;
 
   constructor(deps: CommandDependencies) {
     const wired = providers.createHandlers(deps);
@@ -76,6 +91,7 @@ export class CommandRouter {
     this.newHandler = wired.newHandler;
     this.skillForceHandler = wired.skillForceHandler;
     this.goalHandler = wired.goalHandler;
+    this.hasActiveSession = wired.hasActiveSession;
   }
 
   async route(ctx: CommandContext): Promise<CommandResult> {
@@ -119,11 +135,14 @@ export class CommandRouter {
       return newResult;
     }
 
-    // Goal + skill split (e.g. `goal set X $z foo`). If a resolvable `$skill`
-    // token appears in a goal command, set the goal first, then re-dispatch
-    // the skill suffix through SkillForceHandler so this turn already carries
-    // the `<invoked_skills>` block. Falls through to the normal handler loop
-    // when no `$skill` token is resolvable.
+    // Goal + skill split (e.g. `goal set X $z foo`): set the goal on the
+    // clean prefix, then dispatch the `$skill` suffix through
+    // SkillForceHandler so the same turn carries the `<invoked_skills>`
+    // block. Gated on `hasActiveSession` — GoalHandler needs a session to
+    // do anything useful; without one it would emit "No active session" and
+    // drop the skill suffix on the floor (the user's actual intent is to
+    // fire the skill, so we let the main handler loop pick up the full
+    // text instead).
     if (this.goalHandler && CommandParser.isGoalCommand(routedText)) {
       const skillRefPattern = /\$[\w-]+(?::[\w-]+)?/g;
       let split: { goalText: string; skillText: string } | null = null;
@@ -139,7 +158,10 @@ export class CommandRouter {
         skillMatch = skillRefPattern.exec(routedText);
       }
 
-      if (split) {
+      // Default: assume no session. Composition roots that wire `goalHandler`
+      // must wire `hasActiveSession` to opt into the preprocessor.
+      const sessionActive = this.hasActiveSession?.(ctx.channel, ctx.threadTs) ?? false;
+      if (split && sessionActive) {
         const goalResult = await this.goalHandler.execute({ ...ctx, text: split.goalText });
         if (goalResult.continueWithPrompt === undefined) {
           return goalResult;
