@@ -1,5 +1,5 @@
 import { buildGoalContinuationPrompt, validateSessionGoalObjective } from '../../prompt/session-goal-block';
-import type { ConversationSession, SessionGoal } from '../../types';
+import { type ConversationSession, DEFAULT_GOAL_MAX_CONTINUATIONS, type SessionGoal } from '../../types';
 import { CommandParser } from '../command-parser';
 import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
 
@@ -64,6 +64,13 @@ export class GoalHandler implements CommandHandler {
       createdAt: now,
       updatedAt: now,
       createdBy: ctx.user,
+      // Ralph-loop state: starts at zero. Each user-driven turn resets it
+      // back to zero (see slack-handler user-message hook). Cap fires when
+      // the model alone keeps the goal active without user intervention.
+      continuationCount: 0,
+      maxContinuations: DEFAULT_GOAL_MAX_CONTINUATIONS,
+      consecutiveBlockedSignals: 0,
+      evalAttemptCount: 0,
     };
     session.goal = goal;
     this.persistGoalChange(session);
@@ -123,9 +130,17 @@ export class GoalHandler implements CommandHandler {
       await this.postNoGoal(channel, threadTs);
       return;
     }
+    // User-driven completion bypasses the host-side eval model — see
+    // docs/goal-command/spec.md §Completion via Host-Side Eval Model
+    // ("user trust") and SSOT requirement H.4. Always reset pendingEval
+    // and lastEvalReason so a half-finished eval cycle doesn't bleed
+    // state into the audit trail of a `goal done` close-out.
     session.goal.status = 'complete';
     session.goal.completedAt = Date.now();
     session.goal.completedBy = user;
+    session.goal.completedVia = 'user';
+    session.goal.pendingEval = undefined;
+    session.goal.lastEvalReason = undefined;
     session.goal.updatedAt = Date.now();
     this.persistGoalChange(session);
     await this.deps.slackApi.postSystemMessage(channel, '✅ Goal marked complete.', { threadTs });
