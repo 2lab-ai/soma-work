@@ -12,9 +12,12 @@ description: "Autonomous z-pipeline driver. Triggered by `autoz` or `$autoz`. Bu
 
 ## Hard Rules
 
-1. **SSOT-first.** Before anything else (including RED), apply `local:using-ssot` **Hook 1** verbatim — see that skill for the canonical procedure. autoz-specific deltas:
-   - (a) **Do not wait** for user confirmation after the tree is on screen. Output, then proceed.
-   - (b) **Codex validation** — submit the generated tree to `mcp__llm__chat` `model: codex` to confirm every `ssot-task` traces back to a SSOT excerpt and dependencies are acyclic. **Skip the codex call when `ssot-task` count == 1 and tree depth == 1** (trivial tree, no validation value). Log the transcript reference in the PR body when called.
+1. **SSOT contract.** Apply `local:using-ssot` at every lifecycle hook (Intake / Drift / Resume / Report). autoz-specific overrides:
+   - (a) **Never pause for user confirmation** at any hook. Output the tree, then proceed. Outputting the SSOT-TASK-TREE is not a question — it's a visible work plan.
+   - (b) **Codex consult is bounded** by switching cost. Skip codex when the operation is trivial:
+     - Intake — tree has `ssot-task` count == 1 AND depth == 1.
+     - Drift — diff is `added`-only AND adds ≤ 1 node AND no `changed`/`removed`.
+     Otherwise call `mcp__llm__chat` `model: codex` (use `gemini` as tiebreaker), log the transcript reference in the PR body. Report uses the ztrace single-pass result mandated by Hook 4.
 
 2. **RED-first.** After SSOT is captured, before any implementation, reproduce the user's intent (or the issue's described behavior) as a failing test.
    - Bug → test asserts the missing/broken behavior and must fail against current code.
@@ -23,28 +26,20 @@ description: "Autonomous z-pipeline driver. Triggered by `autoz` or `$autoz`. Bu
    - For pure doc/skill/config additions where "test" reduces to existence/format checks, the RED is the `ls`/`cat`/lint command that fails because the artifact does not yet exist or does not yet conform. Log it.
    - Each RED test must trace back to one or more `ssot-task` IDs — record the mapping.
 
-3. **No user questions.** Never call `ASK_USER_QUESTION` / `UIAskUserQuestion`. Never end a turn waiting for clarification. When a decision point appears (architecture, naming, scope, trade-off):
-   - Call `mcp__llm__chat` with `model: codex`.
-   - Use `gemini` as a tiebreaker if codex is ambiguous.
-   - Codex answer + your own analysis = binding decision. Log every such decision in the PR description so the user can audit.
-   - **Outputting the SSOT-TASK-TREE is not a question** — it is a visible work plan. autoz keeps running.
+3. **No user questions.** Never call `ASK_USER_QUESTION` / `UIAskUserQuestion`. Never end a turn waiting for clarification. Every decision point goes through Rule 1(b)'s codex consult; the consult answer + your own analysis = binding decision (logged in the PR body for audit).
 
-4. **Drift handling without asking.** If the user posts another raw instruction mid-run, apply `local:using-ssot` **Hook 2** — see that skill for the canonical procedure. autoz-specific deltas:
-   - (a) **Do not pause** for confirmation between regenerating the tree and resuming.
-   - (b) **Codex diff validation** — call `mcp__llm__chat` `model: codex` only when the diff touches existing topology (`changed`/`removed` non-empty) or adds ≥ 2 nodes. `added`-only with ≤ 1 node skips codex. Log the transcript reference when called.
+4. **Drive the full local:using-z / local:z pipeline.** Invoke `using-z` routing first, then `z` for the actual run. Honor every phase boundary (CONTINUE_SESSION handoffs included). Do not skip `zcheck`. Do not skip simplify / oracle / reviewer steps that the z flow defines at the current scope.
 
-5. **Drive the full local:using-z / local:z pipeline.** Invoke `using-z` routing first, then `z` for the actual run. Honor every phase boundary (CONTINUE_SESSION handoffs included). Do not skip `zcheck`. Do not skip simplify / oracle / reviewer steps that the z flow defines at the current scope. Session handoff payloads must carry SSOT-LIST + SSOT-TASK-TREE per `local:using-ssot` **Hook 3** so the receiving session resumes on the same tree.
-
-6. **PR approval via gh CLI.** After CI is green and required reviews pass:
+5. **PR approval via gh CLI.** After CI is green and required reviews pass:
    - Run `gh pr review <number> --approve --body "<short rationale>"` from the bot's gh-authenticated shell.
    - Do not request user approval. Do not paste the approve URL — execute the approval.
    - If merge requires a separate `gh pr merge`, run it too unless project policy forbids it. Check `.github/` and `CLAUDE.md` for merge-policy hints before merging.
 
-7. **Terminal report.** Apply `local:using-ssot` **Hook 4** via the `local:es` mode template — that template already renders the per-`ssot-task` accountability block (Requirement / Did / Why-it-satisfies). autoz-specific additions on top of `es`:
+6. **Terminal report only.** Render via the `local:es` mode template (which already implements Hook 4's per-`ssot-task` accountability block). autoz-specific additions on top of `es`:
    - PR URL + CI status + approve status.
-   - Codex transcript references for every autonomous decision made during the run.
-   - The `ztrace` single-pass result from Hook 4 step 4 attached as the verification evidence — gaps in the ssot-task↔scenario mapping are blocking, not advisory.
-   - No mid-run progress check-ins to the user. The only mid-run output is the tree visibility from Hard Rules 1 and 4.
+   - Codex transcript references for every autonomous decision.
+   - The single ztrace pass result from Hook 4 attached as verification evidence — unmapped `ssot-task` is blocking, not advisory.
+   - No mid-run progress check-ins. The only mid-run user-facing output is the SSOT-TASK-TREE visibility mandated by Hook 1 / Hook 2.
 
 ## Hard Blockers (when stopping is allowed)
 

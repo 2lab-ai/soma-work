@@ -26,22 +26,35 @@ description: "SSOT / SSOT-LIST / SSOT-TASK-TREE 단일 출처. 유저의 raw 지
   - **ssot-task** — 유저의 SSOT에서 분해한 task. 실제 SSOT 텍스트와 거의 **1:1로 매칭**되며, 트리 안에서 "왜 존재하는가"를 SSOT의 어느 문장 / 어느 요건으로 정당화할 수 있어야 한다. ssot-task의 raison d'être는 SSOT 안에서 스스로 증명된다.
   - **ssot-subtask** — ssot-task를 해결하기 위해 **모델이 만든** 하위 task. 유저의 raw 지시에 명시되지 않음. **유저의 신규 지시로 SSOT-TASK-TREE가 업데이트될 때 통째로 폐기되고 새로 만든다.** 유저에게 리포트할 때는 **생략 가능**(필요시 한 단계 더 들어간 디테일로만 첨부).
 
+#### ID convention (canonical)
+
+`ssot-task` 는 `T<n>` (n 은 1-based 정수). `ssot-subtask` 는 `T<n>.<m>` (parent ssot-task `T<n>` 아래 m번째 subtask). 새 노드는 항상 가장 큰 기존 번호 다음을 사용 — 기존 번호 재활용 금지(diff 안정성). 모든 코드 블록, 표, 산출물(PR body, 이슈 body, ES 보고서)은 이 표기를 사용한다. 다른 표기(`#1`, `ssot-task 1`, `task[0]`) 금지.
+
 #### Tree shape
 
 ```
 SSOT-TASK-TREE
-├── ssot-task #1   ← SSOT_1의 첫 번째 요건
-│   ├── ssot-subtask #1.1
-│   ├── ssot-subtask #1.2
-│   └── ssot-subtask #1.3 → depends-on: #2 (다른 ssot-task)
-├── ssot-task #2   ← SSOT_1의 두 번째 요건
-│   └── ssot-subtask #2.1
-└── ssot-task #3   ← SSOT_2 (drift)에서 추가된 요건
-    └── ssot-subtask #3.1
+├── T1     ← SSOT_1의 첫 번째 요건
+│   ├── T1.1
+│   ├── T1.2
+│   └── T1.3   → depends-on: T2 (다른 ssot-task)
+├── T2     ← SSOT_1의 두 번째 요건
+│   └── T2.1
+└── T3     ← SSOT_2 (drift)에서 추가된 요건
+    └── T3.1
 ```
 
 - 의존성은 ssot-task 사이에도, ssot-subtask 사이에도 명시 가능. cycle 금지.
 - ssot-task는 항상 SSOT-LIST의 어느 문장 / 요건에 묶여 있다. "이건 어디서 왔지?"가 즉답 가능해야 함.
+
+#### 분해 규율 (decomposition rules)
+
+LLM이 SSOT를 트리로 분해할 때 다음 4 규칙을 적용:
+
+1. **One sentence, one ssot-task — by default.** SSOT의 한 문장 = 후보 ssot-task 한 개. 단 한 문장이 명백히 두 요건을 결합한 경우(`A 처리하고 B도 보고해줘`)는 두 ssot-task로 split.
+2. **Dedupe by source span.** 두 후보 ssot-task가 SSOT의 동일 문장(or substring)을 인용하고 의미상 같으면 하나로 통합. 다른 문장이지만 같은 요건이면 더 구체적인 쪽을 채택하고 나머지는 drop.
+3. **Compound split signal.** "그리고", "+", "AND", 줄바꿈, 글머리표 — 이들 신호가 있으면 split 후보. 단 split하면 각각이 self-contained여야 함 — 한쪽이 다른 쪽 없이 의미를 잃으면 split 금지.
+4. **Source-span anchor.** 모든 ssot-task는 메타데이터로 어떤 SSOT 인덱스의 어떤 문자 범위에서 왔는지 기억한다 (예: `SSOT_1:23-87`). drift 시 동일 span을 가진 ssot-task는 `kept`로 매칭 — 이게 ID 안정성의 근거.
 
 ## Lifecycle hooks
 
@@ -83,8 +96,12 @@ z-계열 스킬은 아래 4개 지점에서 이 문서의 규율을 호출한다
 
 세션 핸드오프(`local:using-z` §Session Handoff Protocol)나 외부 재진입 시:
 
-1. SSOT-LIST 전체와 SSOT-TASK-TREE를 handoff payload에 포함 — payload가 self-contained해야 새 세션이 동일한 트리에서 작업 재개 가능.
-2. 새 세션은 진입 즉시 SSOT-LIST + SSOT-TASK-TREE를 출력하고, TodoWrite에 등록한 뒤 미완료 leaf부터 진행.
+1. **Producer side** — SSOT-LIST 전체와 SSOT-TASK-TREE (`ssot-task` 레벨만; `ssot-subtask`는 휘발성) 를 handoff payload에 포함 — payload가 self-contained해야 새 세션이 동일한 트리에서 작업 재개 가능.
+2. **Receiver side — ack-by-default.** 새 세션은 payload의 SSOT-LIST + SSOT-TASK-TREE를 세션 전역 SSOT로 복원하고, **요약 한 줄**(예: `SSOT restored — N ssot-tasks, M still open`)만 출력한다. 전체 재출력 금지 — producer가 이미 출력했고, 같은 트리를 또 찍으면 컨텍스트 낭비. TodoWrite는 미완료 leaf 기준으로 등록하고 그 leaf부터 진행한다.
+3. **Receiver-side full re-render는 다음 조건에서만**:
+   - payload parse 실패 (sections 누락 또는 malformed).
+   - producer 트리가 의심 상태 — 예: `N ssot-tasks 완료 + 0 새 추가 + 세션이 오래 떠 있음` 같은 trust-but-verify 신호. 이 경우 SSOT-LIST에서 트리를 다시 만들어 producer 트리와 diff, 다르면 receiver 버전을 채택하고 유저에게 한 줄로 보고.
+   - 유저가 명시적으로 "트리 다시 보여줘" 요청.
 
 ### Hook 4 — Completion report (`es`, autoz terminal report, zcheck 설득 단계)
 

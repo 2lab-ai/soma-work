@@ -51,9 +51,11 @@ z 컨트롤러의 phase 전환 중 **세션 경계**를 넘는 것은 두 지점
 
 ### Handoff #1 — plan → work
 
-> **SSOT carriage (모든 handoff 공통).** payload `<z-handoff>` 블록은 두 섹션 — `## SSOT-LIST` (시간 순 raw 인용)과 `## SSOT-TASK-TREE` (ssot-task 레벨만; ssot-subtask는 휘발성이라 carriage 대상 아님) — 을 **반드시** 포함한다. 정의는 `local:using-ssot`. 수신 세션 phase0 step 0.5 / 0.6은 이 두 섹션을 복원해서 세션 전역 SSOT로 보관하고, drift 발생 시 그 위에서 Hook 2를 돌린다.
+> **SSOT carriage (recommended).** payload `<z-handoff>` 블록은 두 섹션 — `## SSOT-LIST` (시간 순 raw 인용)과 `## SSOT-TASK-TREE` (ssot-task 레벨만; ssot-subtask는 휘발성이라 carriage 대상 아님) — 을 **권장**한다. 정의는 `local:using-ssot`. 수신 세션 phase0 step 0.5 / 0.6은 두 섹션이 있으면 복원해서 세션 전역 SSOT로 보관하고, 없으면 `## Original Request Excerpt` + `## Confirmed Plan` + `## Task List`에서 fallback 재구성. drift 발생 시 그 위에서 Hook 2를 돌린다.
 >
-> **Trivial 허용.** tier ∈ {`tiny`, `small`}로 트리가 단 1개 ssot-task인 경우, `## SSOT-TASK-TREE`의 본문은 한 줄 — `- [ ] T1 — trivial (1 ssot-task = ## Confirmed Plan)` — 만으로 충분하다. `## SSOT-LIST`는 어느 tier에서나 원문 인용 필수. 누락 시 malformed (§Sentinel Grammar Rule 4 참고).
+> **Trivial 허용.** tier ∈ {`tiny`, `small`}로 트리가 단 1개 ssot-task인 경우, `## SSOT-TASK-TREE`의 본문은 한 줄 — `- [ ] T1 — trivial (1 ssot-task = ## Confirmed Plan)` — 만으로 충분하다.
+>
+> **Host enforcement pending.** 두 섹션 누락은 현재 host parser에서 malformed 처리되지 않는다 (§Sentinel Grammar Rule 4 + §Enforcement Status 참고). 누락 시 fallback 재구성으로 동작 — host parser 업데이트 follow-up이 필요.
 
 **트리거**: z phase1에서 계획이 유저 Approve를 받고, 이슈 생성(또는 Case A escape의 tiny/small에서는 PR 스캐폴드 범위)까지 끝났을 때.
 
@@ -140,7 +142,7 @@ z 컨트롤러의 phase 전환 중 **세션 경계**를 넘는 것은 두 지점
 1. **Exact form.** 여는 태그는 정확히 `<z-handoff type="plan-to-work">` 또는 `<z-handoff type="work-complete">` — 대소문자 구분, 속성은 쌍따옴표 고정. 변형(대소문자·홑따옴표·공백 변형) 불매칭.
 2. **Top-level only.** sentinel은 **dispatched prompt의 최상위 래퍼**로만 인정. 유저가 이슈 코멘트·버그 리포트에 이전 handoff 블록을 **인용**한 경우는 sentinel 아님 — 반드시 handoff 본문이 `$z ...` 커맨드 라인 바로 아래의 최상위 블록이어야 함. 애매하면 sentinel 아님으로 판정 (fall-through to normal phase0).
 3. **Closing tag 필수.** 여는 태그는 있으나 `</z-handoff>`가 없으면 **malformed** → safe-stop + 유저 에러 출력. 조용한 fall-through 금지.
-4. **Required fields 검증.** `type="plan-to-work"`은 `## Issue`, `## Parent Epic`, `## SSOT-LIST`, `## SSOT-TASK-TREE`, `## Task List` 다섯 섹션 필수. `type="work-complete"`은 `## Completed Subissue`, `## PR`, `## Summary`, `## SSOT-LIST`, `## SSOT-TASK-TREE (final)`, `## Remaining Epic Checklist` 여섯 섹션 필수. 누락 시 malformed → safe-stop. `plan-to-work`의 **optional typed-metadata fields** (producer-authoritative, host가 `session.handoffContext`로 persist): `## Tier`, `## Escape Eligible`, `## Issue Required By User`. 누락 시 host는 conservative defaults를 사용하지만 downstream host guard가 정확히 동작하려면 producer가 명시 권장.
+4. **Required fields 검증.** `type="plan-to-work"`은 `## Issue`, `## Parent Epic`, `## Task List` 세 섹션 필수. `type="work-complete"`은 `## Completed Subissue`, `## PR`, `## Summary`, `## Remaining Epic Checklist` 네 섹션 필수. 누락 시 malformed → safe-stop. `plan-to-work`의 **optional typed-metadata fields** (producer-authoritative, host가 `session.handoffContext`로 persist): `## Tier`, `## Escape Eligible`, `## Issue Required By User`. `## SSOT-LIST` 및 `## SSOT-TASK-TREE`는 **prompt-side recommended, host enforcement pending** — host parser (`somalib/model-commands/handoff-parser.ts`) 와 schema (`session-types.ts`)가 두 섹션을 carriage 필드로 가르치기 전까지는 누락도 malformed 처리하지 않는다. producer는 모든 신규 handoff에서 명시 권장. host 강제는 §Enforcement Status 표의 follow-up 항목.
 5. **Duplicate sentinels.** 한 prompt에 `plan-to-work`와 `work-complete`가 동시 등장하면 **hard error** — 어느 쪽도 선택하지 않고 safe-stop. 같은 type이 두 번 나와도 마찬가지.
 6. **원요청 재검증 가능성.** `plan-to-work` 블록은 `## Original Request Excerpt` 필드로 원본 유저 SSOT instruction을 발췌 carrying — 수신 세션이 Case A escape 조건(또는 기타 계약)을 재검증 가능하게.
 
@@ -164,6 +166,7 @@ z 컨트롤러의 phase 전환 중 **세션 경계**를 넘는 것은 두 지점
 | 세션당 handoff 예산 | **구현 완료 (#697)** — `src/slack/handoff-budget.ts` + `slack-handler.onResetSession` 가드; `ConversationSession.autoHandoffBudget` 필드 (default 1, `resetSessionContext`에서 재초기화); 호스트-빌트 continuation (renew/onboarding)은 `Continuation.origin: 'host'` 마커로 제외 | — |
 | 1-hop 재귀 방지 | **구현 완료 (#697)** — 세션 예산 고갈 시 `HandoffBudgetExhaustedError` throw + slack-handler 외부 catch에서 safe-stop (`#695`의 `HandoffAbortError` 패턴과 동일, 단 session terminate는 하지 않음 — 수동 재입력 대기) | — |
 | Dispatch 실패 복구 | **구현 완료 (#698)** — `src/slack/dispatch-abort.ts` + `session-initializer`의 4개 drift site (classifier catch, in-flight wait-timeout, forceWorkflow `transitionToMain` × 2)가 `DispatchAbortError` throw로 전환; `session.handoffContext` 또는 `forcedWorkflowHint` 있을 때만 safe-stop, 일반 Slack 메시지 경로는 기존 default drift 유지; `slack-handler` widened outer catch에서 `terminateSession` + postMessage with handoff metadata | — |
+| `## SSOT-LIST` / `## SSOT-TASK-TREE` carriage 검증 | **pending (#977 prompt-side만)** — host parser (`somalib/model-commands/handoff-parser.ts`)·schema (`session-types.ts`)·테스트가 두 섹션을 SSOT carrier field로 가르치지 않음. 현재는 producer 권장 + receiver fallback (Confirmed Plan + Task List로 재구성). | `handoffContext`에 `ssotList: string[]` + `ssotTaskTree: string` 추가 + parser가 두 섹션 추출 + 누락 시 malformed safe-stop (follow-up PR) |
 
 **이 스킬 문서는 핸드오프 계약을 정의한다. 항목별 host-side 강제 진척은 위 표에 단일 진실원으로 기록한다.** 본문에 PR/이슈 번호를 박지 않는다 — 시간이 지나면 노이즈가 되고, 구체 추적은 위 표(또는 그 표가 가리키는 에픽)가 소유한다.
 
