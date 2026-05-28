@@ -293,12 +293,22 @@ export interface StreamCallbacks {
 
 /**
  * Default idle window between SDK `.next()` resolutions before
- * {@link StreamCallbacks.onIdleTimeout} fires. 30 min leaves headroom for
- * legitimate long-running tools (deploy steps, large test runs, npm
- * install) that emit no SDK events for several minutes while still
- * eventually surfacing a terminal card on a true hang.
+ * {@link StreamCallbacks.onIdleTimeout} fires. **2 hours** — earlier values
+ * (10 min in PR #926, 30 min in PR #970) both produced production
+ * false-positives:
+ *
+ *   - 10 min killed legitimate long-running deploys (`user:dev`).
+ *   - 30 min killed sessions where the assistant emitted a textual
+ *     "waiting for your response" without firing a formal ASK tool —
+ *     the SDK iterator was genuinely idle but the turn was healthy
+ *     and waiting on the user.
+ *
+ * 2 h leaves room for a user to take lunch / step away / think while
+ * still bounding true hangs (next-day cleanup, not infinite). Operators
+ * can override per-environment via `SOMA_STREAM_STALL_TIMEOUT_MS`; `=0`
+ * disables entirely.
  */
-export const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
+export const DEFAULT_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 
 /**
  * Env var operators use to tune or disable the idle timeout without a

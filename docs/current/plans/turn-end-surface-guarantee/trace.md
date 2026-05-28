@@ -212,12 +212,14 @@ wired in `stream-executor.ts`).
 
 - Owner: `packages/slack/src/stream-processor.ts` (`StreamProcessor`,
   `readIdleTimeoutMs`, `DEFAULT_IDLE_TIMEOUT_MS`, `IDLE_TIMEOUT_ENV_VAR`).
-- Default window: **30 minutes** (`DEFAULT_IDLE_TIMEOUT_MS =
-  30 * 60 * 1000`). Codex binding `5e6ab801` Q2: 10 min (PR #926
-  default) caused false positives on legitimate long-running tools
-  (`user:dev` deploy, big test runs, npm install) that emit no SDK
-  events for >10 min; 30 min preserves the safety net while leaving
-  room for real long tools.
+- Default window: **2 hours** (`DEFAULT_IDLE_TIMEOUT_MS =
+  2 * 60 * 60 * 1000`). Codex binding `46116ba1` Q1+Q2 — raised from
+  30 min (PR #970) → 10 min (PR #926). Both previous defaults produced
+  production false-positives: 10 min killed `user:dev`-class long deploys;
+  30 min killed sessions where the assistant emitted textual "waiting
+  for your response" without firing a formal ASK tool (SDK iterator
+  was genuinely idle, turn was healthy, but the timer fired anyway).
+  2 h covers lunch / thinking time while still bounding true hangs.
 - Env override: `SOMA_STREAM_STALL_TIMEOUT_MS` — name kept from PR #926
   so operator config carries forward unchanged. Positive int → ms;
   `0` or non-positive → disable; invalid/non-finite → fall back to
