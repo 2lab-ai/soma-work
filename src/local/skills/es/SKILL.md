@@ -15,7 +15,9 @@ This skill is tiered. Three modes, picked by **actual artifact scope of this ses
 | `issue` | One durable unit: 1 issue, 1 PR, 1 branch. Sub-issue of an epic counts here. | Case A | **Yes — encouraged** |
 | `epic` | Multiple PRs, multi-issue work, root-cause analysis, STV verify cycle. | Case B | **No — link out to sub-issues/PRs** (HA discipline) |
 
-The **top of every mode** carries the same invariant: SSOT (user's request verbatim) → Status (issue/PR links + state changes). The user's hard requirement that "what was done — issue handling, PR links, status changes — sits at the very top" is satisfied by this two-line top of document.
+The **top of every mode** carries the same invariant: SSOT (user's request verbatim) → Status (issue/PR links + state changes) → **SSOT-TASK-TREE result** (per-`ssot-task` accountability). The user's hard requirement that "what was done — issue handling, PR links, status changes — sits at the very top" is satisfied by this three-section top of document.
+
+Per `local:using-ssot` **Hook 4**, the SSOT-TASK-TREE result section is mandatory in all three modes. It is the link between "what the user asked for" (SSOT-LIST) and "what was actually delivered" (artifacts). Without it, completion reports drift into narrative.
 
 ## Mode resolution
 
@@ -86,5 +88,5 @@ Violating this is the most common reason an `epic` ES degenerates into a 4-page 
 
 - **Path A entry**: `local:zwork` exit → `local:es` (this skill) → `local:zcheck` post-gate.
 - **Path B entry**: `src/slack/pipeline/stream-executor.ts` `onSummaryTimerFire` → `SummaryService.execute` → forked one-shot using this skill's templates inlined in the prompt.
-- **Sister skills**: `using-ha-thinking` (layer discipline), `using-epic-tasks` (planning-side Case A/B/C), `decision-gate` (switching-cost tiers).
+- **Sister skills**: `using-ssot` (SSOT-TASK-TREE source of truth — every mode renders the tree result), `using-ha-thinking` (layer discipline), `using-epic-tasks` (planning-side Case A/B/C), `decision-gate` (switching-cost tiers).
 - **Legacy references** (kept, not deleted): `reference/executive-summary-template.md`, `reference/executive-summary-example.md`. These cover the previous fixed 8-section format and serve as the conceptual ancestor of the current `epic` template.

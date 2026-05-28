@@ -17,6 +17,7 @@ Concretely: at `epic` mode, **real artifacts are issue links, PR links, statuses
 
 ### 0. SSOT
 - Quote the user's instruction verbatim inside a fenced block. Multiple turns → preserve order + speaker labels.
+- This is **SSOT-LIST** per `local:using-ssot` — append-only.
 
 ### 1. Status
 - Epic: `{label}: {url} — {state}` plus Done / Remaining counts (`5/7 sub-issues merged`).
@@ -24,25 +25,33 @@ Concretely: at `epic` mode, **real artifacts are issue links, PR links, statuses
 - Child PRs: table with `# | Title | URL | State | Reviewer / Approval`.
 - Session-scoped state transitions: list them ("PR #1462 Open → Merged").
 
-### 2. Executive Summary
+### 2. SSOT-TASK-TREE result (`local:using-ssot` Hook 4)
+- Render the session's final SSOT-TASK-TREE at the **`ssot-task`** layer only (HA discipline — `ssot-subtask` is leaf detail and belongs to the linked sub-issue / PR body).
+- For each `ssot-task`:
+  - **Requirement** — quote the SSOT excerpt.
+  - **Maps to** — sub-issue / PR link (NOT file path, NOT function name — HA layer).
+  - **Why it satisfies** — one-line architectural / behavioral mapping.
+- The detailed `ssot-subtask` ↔ commit mapping lives in each linked PR body, not here.
+
+### 3. Executive Summary
 - One short paragraph: the architectural outcome of this epic — what changed at the system level, what is now possible / fixed / measurable. Concept language only.
 
-### 3. Workstream Status
+### 4. Workstream Status
 - Per workstream (or per sub-issue), 1–2 lines on where it stands. Block-level granularity, not function-level.
 
-### 4. Verification
+### 5. Verification
 - STV verify or end-to-end check outcomes per spec item.
 - Table: `Spec Item | Status (✅/❌/🔶) | Verification Method`.
 - Final Verdict: `PASS / PARTIAL / GAP_DETECTED / FAIL` with `{N}/{N} satisfied, {N} gaps`.
 
-### 5. Decisions Made
+### 6. Decisions Made
 - Architectural / scope decisions settled this cycle, with rationale. Explicit decision signals only — no inferred decisions.
 
-### 6. Risks / Blockers
+### 7. Risks / Blockers
 - Table: `Item | Status (⚠️/🔶/✅) | Action`.
 - Include: unverified failure points, deployment status, monitoring recommendations, residual damage that needs reconciliation.
 
-### 7. Next Actions
+### 8. Next Actions
 - Up to 5 concrete follow-ups. Each in its own fenced code block.
 
 ## Forbidden in epic mode

@@ -22,6 +22,20 @@ For every technical decision, estimate "How many lines would I need to change to
 | xlarge | ~500   | Architecture transitions, framework replacements |
 | xxlarge | ~1000+ | Multi-epic programs, entire subsystem rewrites — MUST decompose before proceeding |
 
+## SSOT-TASK-TREE shape as a tier signal
+
+When line-count estimation is hard, the **shape** of the SSOT-TASK-TREE produced by `local:using-ssot` Hook 1 is a leading indicator. The tier panel above does not stand alone — combine line-count guess with these shape signals.
+
+| Shape signal | Interpretation |
+|---|---|
+| `ssot-task` count ≤ 2, depth ≤ 1, no cross-task dependency | tiny / small candidate. |
+| `ssot-task` count 3–4, depth ≤ 2, ≤ 1 cross-task dependency | medium candidate. |
+| `ssot-task` count 5–7, depth ≤ 2, multiple cross-task dependencies | large / xlarge — strong signal for Case B (epic + sub-issues). |
+| `ssot-task` count ≥ 8 **OR** depth ≥ 3 **OR** an `ssot-task` has > 2 incoming dependencies | xxlarge / Case C — HALT and decompose. The tree is the proposed decomposition. |
+| Any `ssot-task` cannot be traced to a single SSOT excerpt | The decomposition is wrong, not the tier — return to Hook 1 and re-decompose before judging tier. |
+
+Use these signals in addition to (not instead of) the line-count heuristic. If line-count says `medium` but tree shape says `xlarge`, default up — large/xlarge work pretending to be medium is the more expensive mistake.
+
 ## Decision Algorithm
 
 ```
