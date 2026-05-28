@@ -95,12 +95,28 @@ print_error()   { echo -e "${RED}[ERROR]${NC} $1"; }
 print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
 
 # --- Service helpers ---
-is_running() {
+# `launchctl list | grep <label>` only proves the LaunchAgent is REGISTERED in
+# launchd's user domain. macOS prints `-` in the PID column when the agent is
+# registered but the underlying process is dead (e.g. crashed at startup, or
+# `LimitLoadToSessionType=Aqua` plist loaded from an SSH/CI session that can't
+# spawn into the GUI seat). Two distinct concerns ⇒ two distinct helpers, so
+# callers can pick the right one:
+#   * `is_registered` — launchd knows about us (stop/unload should target this)
+#   * `is_alive`      — there is a real running process (status/start verify
+#                       must require this, otherwise CI marks a dead deploy
+#                       as green; see PR #988).
+is_registered() {
     launchctl list 2>/dev/null | grep -q "$SERVICE_NAME"
 }
 
 get_pid() {
     launchctl list 2>/dev/null | grep "$SERVICE_NAME" | awk '{print $1}'
+}
+
+is_alive() {
+    local pid
+    pid=$(get_pid)
+    [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null
 }
 
 generate_plist() {
@@ -158,18 +174,30 @@ cmd_status() {
     echo "soma-work [$env_label] - Status"
     echo "=================================="
 
-    if is_running; then
+    # Exit code contract (consumed by .github/workflows/deploy.yml Verify step):
+    #   0 — RUNNING (registered AND live process)
+    #   1 — STALE (registered but no live process; usually Aqua-session mismatch
+    #              after a non-GUI `launchctl load`) or STOPPED (not registered).
+    # Pre-PR-#988 this was always 0, so CI marked dead deploys green.
+    local exit_code=0
+    if is_alive; then
         local pid=$(get_pid)
         print_success "Service is RUNNING (PID: $pid)"
 
-        if [[ "$pid" != "-" && "$pid" != "" ]]; then
-            local start_time=$(ps -p "$pid" -o lstart= 2>/dev/null)
-            if [[ -n "$start_time" ]]; then
-                echo "  Started: $start_time"
-            fi
+        local start_time=$(ps -p "$pid" -o lstart= 2>/dev/null)
+        if [[ -n "$start_time" ]]; then
+            echo "  Started: $start_time"
         fi
+    elif is_registered; then
+        local pid=$(get_pid)
+        print_error "Service is STALE (registered but no live PID: '$pid')"
+        echo "  Likely cause: plist 'LimitLoadToSessionType=Aqua' loaded from"
+        echo "  a non-GUI session (SSH, CI), or the process crashed at startup."
+        echo "  Try: launchctl kickstart -k gui/\$(id -u)/$SERVICE_NAME"
+        exit_code=1
     else
         print_warning "Service is STOPPED"
+        exit_code=1
     fi
 
     echo ""
@@ -188,14 +216,25 @@ cmd_status() {
     echo "Recent stderr (last 5 lines):"
     echo "---"
     tail -5 "$LOGS_DIR/stderr.log" 2>/dev/null || echo "  (no logs)"
+
+    return $exit_code
 }
 
 cmd_start() {
     print_status "Starting $SERVICE_NAME..."
 
-    if is_running; then
-        print_warning "Service is already running"
+    if is_alive; then
+        print_warning "Service is already running (PID: $(get_pid))"
         return 0
+    fi
+
+    # Registered-but-dead means a prior load left the label in launchd without
+    # a live process. `launchctl load` against an already-loaded plist is a
+    # no-op, so unload first before retrying.
+    if is_registered; then
+        print_warning "Service is registered but dead — unloading stale plist first"
+        launchctl unload "$PLIST_PATH" 2>/dev/null || true
+        sleep 1
     fi
 
     if [[ ! -f "$PLIST_PATH" ]]; then
@@ -206,10 +245,16 @@ cmd_start() {
     launchctl load "$PLIST_PATH"
     sleep 2
 
-    if is_running; then
+    if is_alive; then
         print_success "Service started (PID: $(get_pid))"
+    elif is_registered; then
+        print_error "Service registered but no live PID (likely Aqua-session mismatch)."
+        print_error "Try: launchctl kickstart -k gui/\$(id -u)/$SERVICE_NAME"
+        print_error "Check: tail -f $LOGS_DIR/stderr.log"
+        return 1
     else
-        print_error "Failed to start. Check: tail -f $LOGS_DIR/stderr.log"
+        print_error "Failed to start (launchctl did not register the label)."
+        print_error "Check: tail -f $LOGS_DIR/stderr.log"
         return 1
     fi
 }
@@ -217,13 +262,16 @@ cmd_start() {
 cmd_stop() {
     print_status "Stopping $SERVICE_NAME..."
 
-    if ! is_running; then
+    # `unload` operates on the launchd registration, not on liveness — so use
+    # is_registered (alive-or-dead) here. Otherwise a STALE service couldn't
+    # be cleaned up, which is exactly the situation we want stop to handle.
+    if ! is_registered; then
         print_warning "Service is not running (LaunchAgent)"
     else
         launchctl unload "$PLIST_PATH"
         sleep 2
 
-        if ! is_running; then
+        if ! is_registered; then
             print_success "Service stopped (LaunchAgent)"
         else
             print_error "Failed to stop service via LaunchAgent"
@@ -293,17 +341,22 @@ cmd_install() {
     launchctl load "$PLIST_PATH"
     sleep 2
 
-    if is_running; then
+    if is_alive; then
         print_success "Service installed and started (PID: $(get_pid))"
+    elif is_registered; then
+        print_error "Service installed and label registered but no live PID."
+        print_error "Likely Aqua-session mismatch. Try: launchctl kickstart -k gui/\$(id -u)/$SERVICE_NAME"
+        return 1
     else
         print_warning "Service installed but not running. Check logs."
+        return 1
     fi
 }
 
 cmd_uninstall() {
     print_status "Uninstalling $SERVICE_NAME..."
 
-    if is_running; then
+    if is_registered; then
         launchctl unload "$PLIST_PATH"
         sleep 2
     fi
@@ -356,10 +409,10 @@ cmd_reinstall() {
 
     # Step 1: Stop
     print_status "[1/4] Stopping service..."
-    if is_running; then
+    if is_registered; then
         launchctl unload "$PLIST_PATH"
         sleep 2
-        if ! is_running; then
+        if ! is_registered; then
             print_success "Service stopped"
         else
             print_error "Failed to stop service"
@@ -391,10 +444,14 @@ cmd_reinstall() {
     launchctl load "$PLIST_PATH"
     sleep 2
 
-    if is_running; then
+    if is_alive; then
         echo ""
         print_success "Reinstall completed! (PID: $(get_pid))"
         echo "  Check logs: ./scripts/service.sh ${ENV_ARG:+$ENV_ARG }logs follow"
+    elif is_registered; then
+        print_error "Reinstall: label registered but no live PID."
+        print_error "Likely Aqua-session mismatch. Try: launchctl kickstart -k gui/\$(id -u)/$SERVICE_NAME"
+        return 1
     else
         print_error "Service failed to start. Check: tail -f $LOGS_DIR/stderr.log"
         return 1
