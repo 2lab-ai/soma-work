@@ -1,4 +1,4 @@
-import { type Options, query } from '@anthropic-ai/claude-agent-sdk';
+import { buildOneShotOptions, runOneShotText } from '../agent-runtime';
 import { buildQueryEnv } from '../auth/query-env-builder';
 import { config } from '../config';
 import { ensureActiveSlotAuth, NoHealthySlotError, type SlotAuthLease } from '../credentials-manager';
@@ -32,41 +32,19 @@ export async function generateTitle(conversationContent: string): Promise<string
 
     const prompt = `Generate a concise, descriptive Korean title (max 40 chars) for this conversation. Output ONLY the title text, nothing else.\n\nConversation:\n${truncated}`;
 
-    // Pass the fresh lease token via options.env (built by `buildQueryEnv`)
-    // so concurrent spawns each see their own token — mutating
-    // `process.env.CLAUDE_CODE_OAUTH_TOKEN` globally would race against
-    // other in-flight dispatches holding leases on different slots.
+    // Use options.env (not process.env) so concurrent leases don't
+    // clobber the shared CLAUDE_CODE_OAUTH_TOKEN.
     const { env } = buildQueryEnv(lease);
-    const options: Options = {
+    const options = buildOneShotOptions({
       model: config.conversation.summaryModel,
-      maxTurns: 1,
-      tools: [],
       systemPrompt: 'You generate concise conversation titles. Output only the title text.',
-      settingSources: [],
-      plugins: [],
       env,
-      // Adaptive thinking on Haiku/Sonnet 4.5 silently consumes the entire
-      // output budget on these tiny prompts, leaving an empty response that
-      // truncates the title text to "". Disable thinking — title generation
-      // is a 1-shot text task where reasoning is unnecessary. (#762)
-      thinking: { type: 'disabled' },
-      stderr: (data: string) => {
-        logger.warn('TitleGenerator stderr', { data: data.trimEnd() });
-      },
-    };
+      logger,
+      stderrLabel: 'TitleGenerator',
+    });
 
     try {
-      let assistantText = '';
-
-      for await (const message of query({ prompt, options })) {
-        if (message.type === 'assistant' && message.message?.content) {
-          for (const block of message.message.content) {
-            if (block.type === 'text') {
-              assistantText += block.text;
-            }
-          }
-        }
-      }
+      const assistantText = await runOneShotText(prompt, options);
 
       const text = assistantText.replace(/[\r\n]+/g, ' ').trim();
 
