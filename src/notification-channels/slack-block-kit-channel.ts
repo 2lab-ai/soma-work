@@ -69,7 +69,15 @@ export class SlackBlockKitChannel implements NotificationChannel {
       // which for bot-initiated threads IS the surface/header message —
       // causing header deletion on next user input.
       // Trace: docs/archive/features/turn-summary-lifecycle/trace.md, S6
-      if (this.completionMessageTracker && result?.ts && event.category !== 'Exception') {
+      // Exception (real error) and Stalled (timeout / investigation queue)
+      // both persist — track() will also skip them defense-in-depth, but
+      // checking here avoids the unnecessary map lookup.
+      if (
+        this.completionMessageTracker &&
+        result?.ts &&
+        event.category !== 'Exception' &&
+        event.category !== 'Stalled'
+      ) {
         const sessionKey = `${event.channel}-${event.threadTs}`;
         this.completionMessageTracker.track(sessionKey, result.ts, event.category);
       }
@@ -121,11 +129,12 @@ export class SlackBlockKitChannel implements NotificationChannel {
    * goes into a separate section block built by {@link buildExceptionBodyBlock}.
    */
   private pickHeaderSuffix(event: TurnCompletionEvent): string {
-    if (event.category === 'Exception') {
+    // Exception AND Stalled both surface the full diagnostic message in
+    // the body block — keep the header suffix to the first line so the
+    // Slack notification preview stays readable.
+    if (event.category === 'Exception' || event.category === 'Stalled') {
       const message = event.message?.trim();
       if (message) {
-        // First line / first sentence so Slack notification previews stay
-        // readable. The full body is rendered separately.
         const firstLine = message.split(/\r?\n/, 1)[0] ?? message;
         return firstLine.length > EXCEPTION_HEADER_SUFFIX_MAX_CHARS
           ? `${firstLine.slice(0, EXCEPTION_HEADER_SUFFIX_MAX_CHARS - 1)}…`
@@ -156,7 +165,9 @@ export class SlackBlockKitChannel implements NotificationChannel {
    * the header. This block restores end-to-end visibility.
    */
   private buildExceptionBodyBlock(event: TurnCompletionEvent): any | null {
-    if (event.category !== 'Exception') return null;
+    // Both Exception (real error) and Stalled (timeout = code-bug signal)
+    // surface their full diagnostic message in a fenced body block.
+    if (event.category !== 'Exception' && event.category !== 'Stalled') return null;
     const message = event.message?.trim();
     if (!message) return null;
 
