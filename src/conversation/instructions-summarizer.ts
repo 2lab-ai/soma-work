@@ -14,7 +14,7 @@
  *     `session.systemPrompt` so the next rebuild picks up the new text.
  */
 
-import { type Options, query } from '@anthropic-ai/claude-agent-sdk';
+import { buildOneShotOptions, runOneShotText } from '../agent-runtime';
 import { buildQueryEnv } from '../auth/query-env-builder';
 import { ensureActiveSlotAuth, NoHealthySlotError, type SlotAuthLease } from '../credentials-manager';
 import { Logger } from '../logger';
@@ -73,32 +73,16 @@ Completed instructions:
 ${truncatedLines}`;
 
     const { env } = buildQueryEnv(lease);
-    const options: Options = {
+    const options = buildOneShotOptions({
       model: SONNET_MODEL,
-      maxTurns: 1,
-      tools: [],
       systemPrompt:
         'You compress completed-instruction logs into a compact prose summary. Output only the summary text.',
-      settingSources: [],
-      plugins: [],
       env,
-      // Adaptive thinking on Sonnet 4.5 can silently consume the output budget
-      // on this short summarisation task, leaving an empty response. Disable
-      // thinking — straightforward compression doesn't need reasoning. (#762)
-      thinking: { type: 'disabled' },
-      stderr: (data: string) => {
-        logger.warn('InstructionsSummarizer stderr', { data: data.trimEnd() });
-      },
-    };
+      logger,
+      stderrLabel: 'InstructionsSummarizer',
+    });
 
-    let assistantText = '';
-    for await (const message of query({ prompt, options })) {
-      if (message.type === 'assistant' && message.message?.content) {
-        for (const block of message.message.content) {
-          if (block.type === 'text') assistantText += block.text;
-        }
-      }
-    }
+    const assistantText = await runOneShotText(prompt, options);
 
     const summary = assistantText.trim();
     if (!summary) {
