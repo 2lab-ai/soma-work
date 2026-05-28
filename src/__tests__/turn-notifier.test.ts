@@ -20,6 +20,23 @@ describe('TurnNotifier', () => {
       // Trace: Scenario 1, Section 3a
       expect(determineTurnCategory({ hasPendingChoice: false, isError: true })).toBe('Exception');
     });
+
+    // Per the user's invariant (turn-notifier.ts TurnCategory JSDoc):
+    // timeout fire is a CODE BUG signal, NOT an immediate model/SDK
+    // error — it gets its own `Stalled` category (⚫, black). The
+    // `isStalled` flag takes precedence over `isError` because the
+    // catch-site sees stall-timeout as an AbortError (looks like an
+    // error) but must be classified separately.
+    it('categorizes idle-timeout as Stalled (NOT Exception)', () => {
+      expect(determineTurnCategory({ hasPendingChoice: false, isError: false, isStalled: true })).toBe('Stalled');
+    });
+
+    it('Stalled takes precedence over Exception when both signals fire', () => {
+      // Stall-timeout catch-site sets `isError=true` (AbortError) but
+      // `isStalled=true` overrides — we want the investigation card,
+      // not the immediate-error card.
+      expect(determineTurnCategory({ hasPendingChoice: false, isError: true, isStalled: true })).toBe('Stalled');
+    });
   });
 
   describe('Channel Dispatch', () => {
@@ -99,6 +116,11 @@ describe('TurnNotifier', () => {
       expect(getCategoryColor('UIUserAskQuestion')).toBe('#FF9500');
       expect(getCategoryColor('WorkflowComplete')).toBe('#36B37E');
       expect(getCategoryColor('Exception')).toBe('#FF5630');
+      // Stalled is intentionally near-black — visually distinct from
+      // Exception's red so operators recognize it as the investigation
+      // queue. Pure #000 reads as missing-style; #1F1F1F is the safest
+      // dark in Slack attachment rails.
+      expect(getCategoryColor('Stalled')).toBe('#1F1F1F');
     });
   });
 

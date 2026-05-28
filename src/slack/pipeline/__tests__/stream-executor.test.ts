@@ -435,7 +435,18 @@ describe('Abort handling', () => {
   // before abort. handleError surfaces a terminal card so the user gets
   // *some* turn-end signal even if the displacing message arrives later —
   // without this the thread looks half-finished forever.
-  it('emits a terminal card on "stall-timeout" aborts (stalled turn displaced)', async () => {
+  it('emits a Stalled (NOT Exception) card on "stall-timeout" aborts', async () => {
+    // Per the user's invariant in `turn-notifier.ts` `TurnCategory` JSDoc:
+    //   - Exception (🔴) = immediate model/code error (SDK throw, max_turns,
+    //     parse fail, etc.)
+    //   - Stalled (⚫) = idle-timeout fired without seeing end_turn / ASK
+    //     from the model. This is a CODE BUG signal — a path where the
+    //     pipeline failed to surface a terminal signal. Operators
+    //     investigating these cards should treat them as TODO items.
+    //
+    // Pre-fix this branch emitted `category: 'Exception'`, which is the
+    // wrong category — stall-timeout is not an immediate error, it's
+    // an investigation queue entry.
     const deps = createExecutorDeps();
     const executor = new StreamExecutor(deps);
     const say = vi.fn().mockResolvedValue(undefined);
@@ -460,15 +471,13 @@ describe('Abort handling', () => {
 
     expect(deps.turnNotifier.notify).toHaveBeenCalledTimes(1);
     const event = deps.turnNotifier.notify.mock.calls[0][0];
-    expect(event.category).toBe('Exception');
+    expect(event.category).toBe('Stalled');
     expect(event.channel).toBe('C123');
     expect(event.threadTs).toBe('thread123');
-    // Contract lock-in: stall-timeout must pass the friendly human-readable
-    // reason via `event.message`. The block-kit renderer prefers this over
-    // `event.sessionTitle` for Exception cards, so users see the real reason
-    // instead of a stale workflow title (e.g. "Session Reset" left over from
-    // an earlier /z reset). See slack-block-kit-channel.pickHeaderSuffix.
-    expect(event.message).toBe('이전 턴이 일정 시간 응답이 없어 중단되었습니다.');
+    // Message reframes the event as a code-bug signal so the user
+    // understands this is NOT a model/SDK error.
+    expect(event.message).toMatch(/end_turn \/ ASK 신호를 보내지 않은 채/);
+    expect(event.message).toMatch(/누락된 종료 신호/);
   });
 
   // -------------------------------------------------------------------------
@@ -5115,9 +5124,13 @@ describe('turn-end surface guarantee — P0 holes', () => {
       /* abortReason */ 'stall-timeout',
     );
 
-    // Exactly one say() call carrying the abort message.
+    // Exactly one say() call carrying the Stalled abort message.
+    // The fallback emoji is ⚫ (matches the Stalled category), NOT 🔴.
     const stallCalls = say.mock.calls.filter(
-      (c) => typeof c[0]?.text === 'string' && c[0].text.includes('이전 턴이 일정 시간 응답이 없어 중단되었습니다.'),
+      (c) =>
+        typeof c[0]?.text === 'string' &&
+        c[0].text.includes('end_turn / ASK 신호를 보내지 않은 채') &&
+        c[0].text.startsWith('⚫'),
     );
     expect(stallCalls).toHaveLength(1);
     expect(stallCalls[0][0].thread_ts).toBe('thread123');

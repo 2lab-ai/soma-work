@@ -3,12 +3,13 @@ import { Logger } from '@soma/common/logger';
 const logger = new Logger('CompletionMessageTracker');
 
 /** Turn completion categories - matches TurnCategory from turn-notifier */
-type TurnCategory = 'UIUserAskQuestion' | 'WorkflowComplete' | 'Exception';
+type TurnCategory = 'UIUserAskQuestion' | 'WorkflowComplete' | 'Exception' | 'Stalled';
 
 /**
  * Tracks turn completion message timestamps for later bulk deletion.
- * Error (Exception) messages are NOT tracked — they persist.
- * Protected timestamps (e.g. thread root / header) are never tracked or deleted.
+ * Error (`Exception`) AND `Stalled` messages are NOT tracked — both
+ * categories persist so operators can investigate them. Protected
+ * timestamps (e.g. thread root / header) are never tracked or deleted.
  * Trace: docs/archive/features/turn-summary-lifecycle/trace.md, S6-S9
  */
 export class CompletionMessageTracker {
@@ -41,12 +42,14 @@ export class CompletionMessageTracker {
 
   /**
    * Track a completion message for later deletion.
-   * Exception category is excluded — error messages persist.
+   * `Exception` and `Stalled` categories are excluded — they persist so
+   * operators can investigate (Exception = real error to triage; Stalled
+   * = code-bug signal that should be turned into a follow-up task).
    * Protected timestamps are rejected with a warning.
    * Trace: S6, Section 3b
    */
   track(sessionKey: string, messageTs: string, category: TurnCategory): void {
-    if (category === 'Exception') return; // S9: errors persist
+    if (category === 'Exception' || category === 'Stalled') return; // S9: errors + investigation cards persist
 
     // Defense-in-depth: never track a protected timestamp
     if (this.isProtected(sessionKey, messageTs)) {
