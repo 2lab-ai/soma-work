@@ -191,12 +191,19 @@ describe('StreamProcessor — idle timeout (C-1 replacement for PR #926 watchdog
 });
 
 describe('readIdleTimeoutMs (env reader for C-1 idle timeout)', () => {
-  it('returns the 30-min default when env unset', () => {
-    expect(readIdleTimeoutMs({})).toBe(30 * 60 * 1000);
+  // 2 h default — raised from 30 min after the 2026-05-28 production
+  // false-positive where the assistant emitted a textual "waiting for
+  // your response" without firing a formal ASK tool. The SDK iterator
+  // was genuinely idle but the turn was healthy; 30 min killed the
+  // turn after the user paused to think.
+  const DEFAULT_2H = 2 * 60 * 60 * 1000;
+
+  it('returns the 2h default when env unset', () => {
+    expect(readIdleTimeoutMs({})).toBe(DEFAULT_2H);
   });
 
-  it('returns the 30-min default when env is empty string', () => {
-    expect(readIdleTimeoutMs({ SOMA_STREAM_STALL_TIMEOUT_MS: '' })).toBe(30 * 60 * 1000);
+  it('returns the 2h default when env is empty string', () => {
+    expect(readIdleTimeoutMs({ SOMA_STREAM_STALL_TIMEOUT_MS: '' })).toBe(DEFAULT_2H);
   });
 
   it('returns 0 (disabled) when env is explicit 0', () => {
@@ -208,10 +215,10 @@ describe('readIdleTimeoutMs (env reader for C-1 idle timeout)', () => {
   });
 
   it('falls back to default for invalid (non-finite) env values — typo must not silently disable', () => {
-    expect(readIdleTimeoutMs({ SOMA_STREAM_STALL_TIMEOUT_MS: 'oops' })).toBe(30 * 60 * 1000);
+    expect(readIdleTimeoutMs({ SOMA_STREAM_STALL_TIMEOUT_MS: 'oops' })).toBe(DEFAULT_2H);
   });
 
-  it('returns parsed positive int for valid values', () => {
+  it('returns parsed positive int for valid values (operators can still set short windows)', () => {
     expect(readIdleTimeoutMs({ SOMA_STREAM_STALL_TIMEOUT_MS: '90000' })).toBe(90_000);
   });
 });
