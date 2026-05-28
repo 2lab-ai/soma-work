@@ -1,4 +1,5 @@
 import { setCommandRouterProviders } from '@soma/slack/commands/command-router';
+import type { ClaudeHandler } from '../../claude-handler';
 import { getReportDeps } from '../../metrics';
 import { AdminHandler } from './admin-handler';
 import { BypassHandler } from './bypass-handler';
@@ -46,10 +47,16 @@ setCommandRouterProviders({
     const skillForceHandler = new SkillForceHandler();
     const goalHandler = new GoalHandler(deps as any);
 
+    const claudeHandler = (deps as { claudeHandler: ClaudeHandler }).claudeHandler;
+
     return {
       newHandler,
       skillForceHandler,
       goalHandler,
+      // Probe used by the goal+skill preprocessor to skip when there's no
+      // session; without it GoalHandler would eat the message and drop the
+      // `$skill` suffix. See `CommandRouterHandlers.hasActiveSession`.
+      hasActiveSession: (channel, threadTs) => claudeHandler.getSession(channel, threadTs) != null,
       handlers: [
         new AdminHandler(),
         new PromptHandler(deps as any),
