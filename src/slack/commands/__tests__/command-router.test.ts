@@ -901,6 +901,8 @@ describe('CommandRouter — `goal` + `$skill` composition (preprocessor)', () =>
       createdAt: 1,
       updatedAt: 1,
       createdBy: 'U1',
+      continuationCount: 0,
+      maxContinuations: 10,
     };
 
     const result = await router.route(makeCtx('goal', say));
@@ -922,6 +924,8 @@ describe('CommandRouter — `goal` + `$skill` composition (preprocessor)', () =>
       createdAt: 1,
       updatedAt: 1,
       createdBy: 'U1',
+      continuationCount: 0,
+      maxContinuations: 10,
     };
 
     // `goal pause` does not produce a continueWithPrompt — splitting on the
