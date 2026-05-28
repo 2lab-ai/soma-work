@@ -176,7 +176,9 @@ async function start() {
     });
 
     {
-      const receiver = (app as unknown as { receiver?: { client?: { on?: (e: string, fn: (...a: unknown[]) => void) => void } } }).receiver;
+      const receiver = (
+        app as unknown as { receiver?: { client?: { on?: (e: string, fn: (...a: unknown[]) => void) => void } } }
+      ).receiver;
       const smClient = receiver?.client;
       if (smClient && typeof smClient.on === 'function') {
         const events = [
@@ -273,17 +275,22 @@ async function start() {
     timing('OAuth refresh scheduler wired');
 
     // Log ALL incoming events (before any handler)
+    type SlackEventBody = {
+      type?: string;
+      event?: { type?: string; channel?: string; user?: string };
+    };
+    type SlackEventPayload = { type?: string; channel?: string; user?: string };
     app.use(async ({ payload, body, next }) => {
-      const bodyAny = body as any;
-      const payloadAny = payload as any;
-      const eventType = bodyAny?.type || 'unknown';
-      const eventSubtype = bodyAny?.event?.type || payloadAny?.type || 'unknown';
+      const bodyShape = body as SlackEventBody;
+      const payloadShape = payload as SlackEventPayload;
+      const eventType = bodyShape?.type || 'unknown';
+      const eventSubtype = bodyShape?.event?.type || payloadShape?.type || 'unknown';
       logger.debug(`🔔 SLACK EVENT RECEIVED: ${eventType}/${eventSubtype}`, {
-        bodyType: bodyAny?.type,
-        eventType: bodyAny?.event?.type,
-        payloadType: payloadAny?.type,
-        channel: bodyAny?.event?.channel || payloadAny?.channel,
-        user: bodyAny?.event?.user || payloadAny?.user,
+        bodyType: bodyShape?.type,
+        eventType: bodyShape?.event?.type,
+        payloadType: payloadShape?.type,
+        channel: bodyShape?.event?.channel || payloadShape?.channel,
+        user: bodyShape?.event?.user || payloadShape?.user,
       });
       await next();
     });
