@@ -180,49 +180,39 @@ export type ClaudeStderrClassification = {
 };
 
 /**
- * The CLI prints this frame to its own stderr when our
- * `options.abortController.abort()` tears down the SDK ↔ CLI transport while
- * the CLI still has a PreToolUse `hook_callback` control_request in flight:
- * inputClosed=true → `sendRequest` throws "Stream closed". Permissive about
- * the bun-formatted source-context lines that wedge between the leading
- * "Error in hook callback hook_N:" header and the "Stream closed" tail.
+ * Cosmetic stderr frame the CLI emits when the SDK ↔ CLI IPC transport
+ * tears down while a `hook_callback` control_request (PreCompact /
+ * PostCompact / SessionStart / PreToolUse) is still in flight:
+ * inputClosed=true → `sendRequest` throws "Stream closed". The `[\s\S]*?`
+ * is permissive about bun-formatted source-context lines that wedge
+ * between the header and the tail.
+ *
+ * Fired identically on both explicit user-abort AND healthy turn-end (the
+ * SDK closes its half of the IPC as part of `query()` cleanup). PR #928's
+ * original "gate on aborted" missed the turn-end case — see PR #999.
  */
 const HOOK_CALLBACK_STREAM_CLOSED_PATTERN = /Error in hook callback hook_\d+:[\s\S]*?Stream closed/;
 
 /**
- * Classify a Claude Code CLI stderr chunk for logging. The post-abort
- * hook_callback Stream-closed frame is the cosmetic last-gasp the CLI prints
- * when the SDK closes the IPC transport while a PreToolUse callback is in
- * flight; it has no actionable signal and was floods the disk in production
- * (8 days × ~150 aborts × ~3 frames/abort × multi-KB bun stack each =
- * ~450+ multi-KB lines). When we know our own abort signal is set, classify
- * as `'silent'` so the wiring drops it entirely — no `logger.warn`, no
- * `logger.info`, no disk write. `stderrBuffer` is unaffected: it still sees
- * every chunk for downstream rate-limit extraction on error paths.
+ * Classify a Claude Code CLI stderr chunk for logging.
  *
- * Healthy-turn (non-aborted) occurrences stay at `'warn'` because they would
- * indicate an unexpected transport teardown and must surface in monitoring.
+ * Match the hook_callback Stream-closed signature → `'silent'` (wiring drops
+ * the chunk entirely; `stderrBuffer` still sees it for rate-limit extraction
+ * on error paths). Everything else → `'warn'`. Real mid-turn transport
+ * failures still surface via the query error path
+ * (`Error in Claude query` ERROR log) — this stderr frame is purely cosmetic.
  *
- * Decision history:
- *   - PR #928 introduced this classifier returning `'info'` for matched +
- *     aborted, on codex consult a79ba0ea-b576-4053-972d-5b243bc1a9b0 (D2 +
- *     D3 still apply — match the leading header, gate on aborted).
- *   - Follow-up codex consult ba315791-dfe5-4c5b-a74b-4eab43b0917a flipped
- *     the aborted branch from `'info'` to `'silent'` after the user pointed
- *     out the info-level frames still hit stdout.log and continue to fill
- *     the disk. Codex confirmed `(d)` is the only practical fix at the host
- *     level: the SDK 0.2.140 single-prompt API has no `query.interrupt()`,
- *     so we can't drain pending hooks before transport teardown, and forking
- *     the SDK is too invasive for a cosmetic frame.
+ * Exported only for unit testing.
  *
- * Exported for direct unit testing — the stderr callback is built inline
- * inside `streamQuery` and threading a logger spy through there is impractical.
+ * History: PR #928 (introduced, info-level when aborted), follow-up flip to
+ * silent-when-aborted, PR #999 dropped the aborted gate entirely after
+ * healthy-turn-end was found to produce the same frame.
  */
-export function classifyClaudeStderr(data: string, aborted: boolean): ClaudeStderrClassification {
-  if (aborted && HOOK_CALLBACK_STREAM_CLOSED_PATTERN.test(data)) {
+export function classifyClaudeStderr(data: string): ClaudeStderrClassification {
+  if (HOOK_CALLBACK_STREAM_CLOSED_PATTERN.test(data)) {
     return {
       level: 'silent',
-      reason: 'post-abort hook_callback stream-closed (expected during SDK shutdown)',
+      reason: 'hook_callback stream-closed (cosmetic SDK transport teardown frame)',
     };
   }
   return { level: 'warn' };
@@ -239,24 +229,17 @@ export interface StderrLogger {
 
 /**
  * Wiring used by `streamQuery`'s `options.stderr` callback: apply
- * `classifyClaudeStderr` and dispatch. The dispatch is intentionally a binary
- * switch — `'warn'` logs, `'silent'` does nothing. This is the disk-write
- * elimination point; keep it tight.
- *
- * `aborted` matches `classifyClaudeStderr`'s parameter shape so callers own
- * the source-of-truth for "are we tearing down" (which may not always be an
- * `AbortController` — `tools:[]` callsites we may unify later don't have one).
+ * `classifyClaudeStderr` and dispatch. `'warn'` logs, `'silent'` is dropped
+ * (disk-write elimination point — keep it tight).
  *
  * `stderrBuffer` accumulation lives at the caller because it's part of the
- * Claude query's error-recovery pathway, not part of logging policy. Don't
- * inline buffering here.
+ * Claude query's error-recovery pathway, not part of logging policy.
  *
  * Exported so tests can spy on the dispatch directly without rebuilding the
  * full `streamQuery` harness.
  */
-export function handleClaudeStderrChunk(logger: StderrLogger, data: string, aborted: boolean): void {
-  const classification = classifyClaudeStderr(data, aborted);
-  if (classification.level === 'silent') {
+export function handleClaudeStderrChunk(logger: StderrLogger, data: string): void {
+  if (classifyClaudeStderr(data).level === 'silent') {
     return;
   }
   logger.warn('Claude stderr', { data: data.trimEnd() });
@@ -1306,7 +1289,7 @@ export class ClaudeHandler {
       let stderrBuffer = '';
       options.stderr = (data: string) => {
         stderrBuffer += data;
-        handleClaudeStderrChunk(this.logger, data, abortController?.signal.aborted ?? false);
+        handleClaudeStderrChunk(this.logger, data);
       };
 
       this.logger.debug('Claude query options', options);
