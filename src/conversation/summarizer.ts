@@ -1,4 +1,4 @@
-import { type Options, query } from '@anthropic-ai/claude-agent-sdk';
+import { buildOneShotOptions, runOneShotText } from '../agent-runtime';
 import { buildQueryEnv } from '../auth/query-env-builder';
 import { config } from '../config';
 import { ensureActiveSlotAuth, NoHealthySlotError, type SlotAuthLease } from '../credentials-manager';
@@ -50,41 +50,19 @@ export async function summarizeResponse(content: string): Promise<SummaryResult 
 Response to summarize:
 ${truncatedContent}`;
 
-    // Pass the fresh lease token via options.env (built by `buildQueryEnv`)
-    // so concurrent summariser / title-generator / dispatch calls don't
-    // clobber each other's token on the shared
-    // `process.env.CLAUDE_CODE_OAUTH_TOKEN` variable.
+    // Use options.env (not process.env) so concurrent leases don't
+    // clobber the shared CLAUDE_CODE_OAUTH_TOKEN.
     const { env } = buildQueryEnv(lease);
-    const options: Options = {
+    const options = buildOneShotOptions({
       model: getSummaryModel(),
-      maxTurns: 1,
-      tools: [],
       systemPrompt: 'You are a concise summarizer. Output only what is requested.',
-      settingSources: [],
-      plugins: [],
       env,
-      // Adaptive thinking on Haiku/Sonnet 4.5 silently consumes the entire
-      // output budget on these tiny prompts, leaving an empty response that
-      // breaks JSON.parse. Disable thinking — these calls are 1-shot
-      // structured-output tasks where reasoning is unnecessary. (#762)
-      thinking: { type: 'disabled' },
-      stderr: (data: string) => {
-        logger.warn('Summarizer stderr', { data: data.trimEnd() });
-      },
-    };
+      logger,
+      stderrLabel: 'Summarizer',
+    });
 
     try {
-      let assistantText = '';
-
-      for await (const message of query({ prompt, options })) {
-        if (message.type === 'assistant' && message.message?.content) {
-          for (const block of message.message.content) {
-            if (block.type === 'text') {
-              assistantText += block.text;
-            }
-          }
-        }
-      }
+      const assistantText = await runOneShotText(prompt, options);
 
       // Strip markdown code block wrappers (LLMs frequently add them despite instructions)
       let cleanText = assistantText.trim();
@@ -188,33 +166,14 @@ async function runTitleQuery(
   lease: SlotAuthLease,
 ): Promise<string | null> {
   const { env } = buildQueryEnv(lease);
-  const options: Options = {
+  const options = buildOneShotOptions({
     model,
-    maxTurns: 1,
-    tools: [],
     systemPrompt: system,
-    settingSources: [],
-    plugins: [],
     env,
-    // Adaptive thinking on Haiku/Sonnet 4.5 silently consumes the entire
-    // output budget on these tiny prompts, leaving an empty response that
-    // breaks JSON.parse. Disable thinking — these calls are 1-shot
-    // structured-output tasks where reasoning is unnecessary. (#762)
-    thinking: { type: 'disabled' },
-    stderr: (data: string) => {
-      logger.warn('SessionSummaryTitle stderr', { data: data.trimEnd() });
-    },
-  };
-  let assistantText = '';
-  for await (const message of query({ prompt, options })) {
-    if (message.type === 'assistant' && message.message?.content) {
-      for (const block of message.message.content) {
-        if (block.type === 'text') {
-          assistantText += block.text;
-        }
-      }
-    }
-  }
+    logger,
+    stderrLabel: 'SessionSummaryTitle',
+  });
+  const assistantText = await runOneShotText(prompt, options);
   let cleanText = assistantText.trim();
   if (cleanText.startsWith('```')) {
     cleanText = cleanText.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');

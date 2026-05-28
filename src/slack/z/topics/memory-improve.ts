@@ -1,4 +1,4 @@
-import { type Options, query } from '@anthropic-ai/claude-agent-sdk';
+import { buildOneShotOptions, runOneShotText } from '../../../agent-runtime';
 import { buildQueryEnv } from '../../../auth/query-env-builder';
 import { config } from '../../../config';
 import { ensureActiveSlotAuth, NoHealthySlotError, type SlotAuthLease } from '../../../credentials-manager';
@@ -29,35 +29,24 @@ async function runQuery(prompt: string, systemPrompt: string): Promise<string> {
       throw credErr;
     }
 
-    // Pass the fresh lease token via options.env (built by `buildQueryEnv`)
-    // so this call and any concurrent Claude spawn each use their own
-    // lease's token.
+    // Use options.env (not process.env) so concurrent leases don't
+    // clobber the shared CLAUDE_CODE_OAUTH_TOKEN.
     const { env } = buildQueryEnv(lease);
-    const options: Options = {
+    // `disableThinking: false` preserves the pre-refactor behaviour —
+    // memory-improve is the only one-shot helper that does NOT pass
+    // `thinking: { type: 'disabled' }` and lets the SDK default apply.
+    // The explicit flag surfaces the divergence; a separate behaviour PR
+    // can decide whether this is intentional or a latent #762-class risk.
+    const options = buildOneShotOptions({
       model: config.conversation.summaryModel,
-      maxTurns: 1,
-      tools: [],
       systemPrompt,
-      settingSources: [],
-      plugins: [],
       env,
-      stderr: (data: string) => {
-        logger.warn('MemoryImprove stderr', { data: data.trimEnd() });
-      },
-    };
+      logger,
+      stderrLabel: 'MemoryImprove',
+      disableThinking: false,
+    });
 
-    let assistantText = '';
-    for await (const message of query({ prompt, options })) {
-      if (message.type === 'assistant' && message.message?.content) {
-        for (const block of message.message.content) {
-          if (block.type === 'text') {
-            assistantText += block.text;
-          }
-        }
-      }
-    }
-
-    return assistantText;
+    return await runOneShotText(prompt, options);
   } finally {
     if (lease) await lease.release();
   }
