@@ -18,7 +18,6 @@ import type {
   ActivityState,
   ConversationSession,
   HandoffContext,
-  SessionGoal,
   SessionInstruction,
   SessionLink,
   SessionLinkHistory,
@@ -31,6 +30,32 @@ import type {
   SessionState,
   WorkflowType,
 } from './types';
+import { DEFAULT_GOAL_MAX_CONTINUATIONS, type SessionGoal } from './types';
+
+/**
+ * Backfill ralph-loop fields onto a legacy `SessionGoal` loaded from
+ * disk. Pre-#959-followup goals lack `continuationCount` /
+ * `maxContinuations`, and the loop guards would treat `undefined < N`
+ * as `false`, silently disabling continuation. We default to a
+ * not-yet-fired loop with the standard cap.
+ *
+ * `status: 'paused'` legacy goals also predate the `'blocked'` arm —
+ * no migration needed there since the type is a union, not an enum.
+ */
+function migrateLegacyGoal(goal: SessionGoal | undefined): SessionGoal | undefined {
+  if (!goal) return goal;
+  return {
+    ...goal,
+    continuationCount: typeof goal.continuationCount === 'number' ? goal.continuationCount : 0,
+    maxContinuations:
+      typeof goal.maxContinuations === 'number' && goal.maxContinuations > 0
+        ? goal.maxContinuations
+        : DEFAULT_GOAL_MAX_CONTINUATIONS,
+    consecutiveBlockedSignals: typeof goal.consecutiveBlockedSignals === 'number' ? goal.consecutiveBlockedSignals : 0,
+    evalAttemptCount: typeof goal.evalAttemptCount === 'number' ? goal.evalAttemptCount : 0,
+  };
+}
+
 import { coerceToAvailableModel, type EffortLevel, userSettingsStore } from './user-settings-store';
 
 const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
@@ -217,6 +242,26 @@ export class SessionRegistry {
    * Trace: docs/archive/features/cron-scheduler/trace.md, Scenario 5, Section 3b-3c
    */
   private onIdleCallbacks: Map<string, Array<() => void>> = new Map();
+
+  /**
+   * Optional hook fired after `drainOnIdleCallbacks` resolves for a
+   * session that just transitioned to idle. Used by the ralph-loop
+   * (auto-continuation) driver to decide whether to inject the next
+   * synthetic continuation turn. Mirrors codex `goals.rs:1270`
+   * (`maybe_continue_goal_if_idle_runtime`) — a thin host hook that the
+   * goal subsystem owns, deliberately kept out of cron-scheduler state.
+   *
+   * Wired up in `src/index.ts` next to the existing cron-scheduler
+   * setup so messageInjector / dependencies are colocated.
+   */
+  private onIdleAfterDrainHook?: (sessionKey: string) => void;
+
+  /**
+   * Install (or replace) the post-drain idle hook. Idempotent.
+   */
+  setOnIdleAfterDrainHook(hook: ((sessionKey: string) => void) | undefined): void {
+    this.onIdleAfterDrainHook = hook;
+  }
 
   /**
    * Callback fired whenever any session's activity state changes.
@@ -617,6 +662,10 @@ export class SessionRegistry {
       // Trace: docs/archive/features/cron-scheduler/trace.md, Scenario 5, Section 3b
       const sessionKey = this.getSessionKey(channelId, threadTs);
       this.drainOnIdleCallbacks(sessionKey);
+      // Goal ralph-loop hook fires after cron drain so cron jobs win when
+      // both are queued for the same idle window. Mirrors codex
+      // `goals.rs:1270` (`maybe_continue_goal_if_idle_runtime`).
+      this.fireOnIdleAfterDrainHook(sessionKey);
     }
   }
 
@@ -643,6 +692,23 @@ export class SessionRegistry {
       this.saveSessions();
       // Drain onIdle callbacks (e.g., pending cron jobs)
       this.drainOnIdleCallbacks(sessionKey);
+      // Goal ralph-loop hook (see setActivityState).
+      this.fireOnIdleAfterDrainHook(sessionKey);
+    }
+  }
+
+  /**
+   * Fire the optional post-drain idle hook. Fire-and-forget; errors
+   * are swallowed so the goal driver can never destabilize the
+   * activity-state machine.
+   */
+  private fireOnIdleAfterDrainHook(sessionKey: string): void {
+    const hook = this.onIdleAfterDrainHook;
+    if (!hook) return;
+    try {
+      hook(sessionKey);
+    } catch (error: any) {
+      this.logger.warn('onIdleAfterDrainHook failed', { sessionKey, error: error?.message });
     }
   }
 
@@ -1792,7 +1858,7 @@ export class SessionRegistry {
         conversationId: serialized.conversationId,
         mergeStats: serialized.mergeStats,
         instructions: serialized.instructions,
-        goal: serialized.goal,
+        goal: migrateLegacyGoal(serialized.goal),
         activityState: serialized.activityState || 'idle',
         // Preserve handoff metadata for diagnostic parity when archiving.
         handoffContext: serialized.handoffContext,
@@ -1934,7 +2000,8 @@ export class SessionRegistry {
               }))
             : [],
           // Host-managed session goal (restored from disk).
-          goal: serialized.goal,
+          // Migrate legacy goals so ralph-loop guards see the new fields.
+          goal: migrateLegacyGoal(serialized.goal),
           // Cached completed-summary (may be stale — block builder validates via hash).
           instructionsCompletedSummary: serialized.instructionsCompletedSummary,
           // Dashboard v2.1 — restore aggregate snapshot

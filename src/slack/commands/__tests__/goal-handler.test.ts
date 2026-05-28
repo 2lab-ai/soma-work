@@ -105,7 +105,9 @@ describe('GoalHandler', () => {
       createdAt: Date.now(),
       updatedAt: Date.now(),
       createdBy: 'U123',
-    });
+    continuationCount: 0,
+          maxContinuations: 10,
+        });
     expect(session.systemPrompt).toBeUndefined();
     expect(deps.claudeHandler.saveSessions).toHaveBeenCalledTimes(1);
     expect(deps.slackApi.postSystemMessage).toHaveBeenCalledWith(
@@ -137,7 +139,9 @@ describe('GoalHandler', () => {
         createdAt: 1,
         updatedAt: 2,
         createdBy: 'U123',
-      },
+      continuationCount: 0,
+          maxContinuations: 10,
+        },
     });
     const deps = makeDeps(session);
     const handler = new GoalHandler(deps);
@@ -161,7 +165,9 @@ describe('GoalHandler', () => {
         createdAt: 1,
         updatedAt: 2,
         createdBy: 'U123',
-      },
+      continuationCount: 0,
+          maxContinuations: 10,
+        },
     });
     const deps = makeDeps(session);
     const handler = new GoalHandler(deps);
@@ -176,10 +182,17 @@ describe('GoalHandler', () => {
     expect(session.systemPrompt).toBeUndefined();
 
     session.systemPrompt = 'cached prompt';
+    // Stage a pending eval cycle and a previous eval failure reason so we
+    // can prove the user-completion path (Test-Matrix #9) clears both.
+    session.goal!.pendingEval = { requestedAt: 1, turnId: 'T1' };
+    session.goal!.lastEvalReason = 'stale eval gap';
     await handler.execute(makeCtx({ text: 'goal done' }));
     expect(session.goal?.status).toBe('complete');
     expect(session.goal?.completedAt).toBe(Date.now());
     expect(session.goal?.completedBy).toBe('U123');
+    expect(session.goal?.completedVia).toBe('user');
+    expect(session.goal?.pendingEval).toBeUndefined();
+    expect(session.goal?.lastEvalReason).toBeUndefined();
     expect(session.systemPrompt).toBeUndefined();
 
     session.systemPrompt = 'cached prompt';

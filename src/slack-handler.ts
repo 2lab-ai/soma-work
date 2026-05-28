@@ -42,6 +42,8 @@ import { createAssistantContainer } from './slack/assistant-container';
 import { CompletionMessageTracker } from './slack/completion-message-tracker';
 import { createForkExecutor } from './slack/create-fork-executor';
 import { DispatchAbortError, formatDispatchAbortMessage } from './slack/dispatch-abort';
+import { detectGoalCompletionSignal } from './slack/goal-completion-detector';
+import { resetGoalContinuationOnUserMessage } from './slack/goal-continuation';
 import {
   checkAndConsumeBudget,
   formatBudgetExhaustedMessage,
@@ -113,6 +115,21 @@ export class SlackHandler {
   private inputProcessor: InputProcessor;
   private sessionInitializer: SessionInitializer;
   private streamExecutor: StreamExecutor;
+
+  /**
+   * Optional handler invoked when a turn ends with a goal-completion
+   * signal (sentinel or natural-language safety net). Wired up in
+   * `index.ts` so the eval dispatcher (which needs the Claude SDK
+   * lease + Slack notifier) can be assembled without dragging those
+   * deps into the SlackHandler constructor. See
+   * `docs/goal-command/spec.md` §Completion via Host-Side Eval Model.
+   */
+  private goalCompletionRequestHandler?: (
+    session: ConversationSession,
+    sessionKey: string,
+    signal: { reason: string; via: 'sentinel' | 'natural-language' },
+    assistantMessages: string[],
+  ) => Promise<void>;
 
   constructor(app: App, claudeHandler: ClaudeHandler, mcpManager: McpManager) {
     this.app = app;
@@ -517,6 +534,28 @@ export class SlackHandler {
         return;
       }
 
+      // Goal ralph-loop reset on real user input. A user message
+      // means the cap counter ("how many synthetic turns has the
+      // model burned without the user weighing in?") must be
+      // zeroed; otherwise a long stretch of user activity could
+      // sit just below the cap and then quietly burn through it
+      // on the next idle. Mirrors codex
+      // `clear_reserved_goal_continuation_turn` invalidation
+      // semantics on user input. See
+      // `docs/goal-command/spec.md` §Auto-Continuation Loop.
+      // Skip for synthetic events — those ARE the ralph-loop
+      // turns and self-incrementing the counter inside the
+      // continuation driver is the source of truth.
+      if (!event.synthetic) {
+        const fullSession = (this.claudeHandler as any)
+          .getSessionRegistry?.()
+          ?.getSessionByKey?.(sessionResult.sessionKey) as ConversationSession | undefined;
+        if (fullSession?.goal) {
+          resetGoalContinuationOnUserMessage(fullSession);
+          this.claudeHandler.saveSessions();
+        }
+      }
+
       activeChannel = sessionResult.session.channelId || channel;
       activeThreadTs = sessionResult.session.threadRootTs || sessionResult.session.threadTs || originalThreadTs;
 
@@ -836,6 +875,9 @@ export class SlackHandler {
       finalizeOnEndTurn: async (session, sessionKey, endTurnInfo, hasPendingChoice) => {
         await this.threadPanel?.finalizeOnEndTurn(session, sessionKey, endTurnInfo, hasPendingChoice);
       },
+      onAssistantTurnComplete: async (session, sessionKey, assistantMessages) => {
+        await this.handleAssistantTurnCompleteForGoal(session, sessionKey, assistantMessages);
+      },
     };
 
     const turnRunner = new TurnRunner({
@@ -867,6 +909,70 @@ export class SlackHandler {
       executeParams,
       turnRunner,
     });
+  }
+
+  /**
+   * Install the goal completion request handler. Called from
+   * `index.ts` after the SlackHandler is constructed, once the
+   * Claude SDK lease / postSystemMessage helpers are available.
+   *
+   * Idempotent — re-installing replaces the previous handler.
+   */
+  setGoalCompletionRequestHandler(
+    handler: (
+      session: ConversationSession,
+      sessionKey: string,
+      signal: { reason: string; via: 'sentinel' | 'natural-language' },
+      assistantMessages: string[],
+    ) => Promise<void>,
+  ): void {
+    this.goalCompletionRequestHandler = handler;
+  }
+
+  /**
+   * Post-turn hook fired by the TurnRunner surface. If the active
+   * goal is `active` and the assistant text contains a completion
+   * signal, set `pendingEval` and hand off to the registered
+   * handler. The handler owns calling the eval model and applying
+   * the verdict — this method only handles detection + dedupe.
+   */
+  private async handleAssistantTurnCompleteForGoal(
+    session: ConversationSession,
+    sessionKey: string,
+    assistantMessages: string[],
+  ): Promise<void> {
+    const goal = session.goal;
+    if (!goal || goal.status !== 'active') return;
+    // If a prior eval is already in flight for this session, don't
+    // stack another one — the existing cycle will resolve and
+    // either flip status or restart the ralph loop.
+    if (goal.pendingEval) return;
+    if (!this.goalCompletionRequestHandler) return;
+
+    const joined = assistantMessages.join('\n\n');
+    const signal = detectGoalCompletionSignal(joined);
+    if (!signal) return;
+
+    // Stamp pendingEval BEFORE invoking the handler so the
+    // ralph-loop guard sees it on the next idle and stays quiet.
+    const now = Date.now();
+    goal.pendingEval = { requestedAt: now, turnId: `${now}` };
+    goal.updatedAt = now;
+    this.claudeHandler.saveSessions();
+    this.logger.info('Goal completion signal detected — dispatching eval', {
+      sessionKey,
+      via: signal.via,
+      reasonPreview: signal.reason.slice(0, 120),
+    });
+
+    try {
+      await this.goalCompletionRequestHandler(session, sessionKey, signal, assistantMessages);
+    } catch (err: any) {
+      // Eval orchestrator handles its own user-facing notice;
+      // here we just log so the surface contract stays
+      // fire-and-forget for the turn runner.
+      this.logger.error('goalCompletionRequestHandler failed', { sessionKey, error: err?.message });
+    }
   }
 
   /**

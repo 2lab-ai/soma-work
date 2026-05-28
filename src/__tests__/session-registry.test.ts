@@ -82,6 +82,8 @@ describe('SessionRegistry persistence', () => {
       createdAt: Date.now(),
       updatedAt: Date.now(),
       createdBy: 'U123',
+      continuationCount: 0,
+      maxContinuations: 10,
     };
 
     writer.saveSessions();
@@ -449,6 +451,8 @@ describe('SessionRegistry persistence', () => {
       createdAt: 1,
       updatedAt: 1,
       createdBy: 'U123',
+      continuationCount: 0,
+      maxContinuations: 10,
     };
 
     const result = registry.resetSessionContext('C_GOAL_RESET', '171.GR1');
@@ -470,6 +474,8 @@ describe('SessionRegistry persistence', () => {
       createdAt: 1,
       updatedAt: 1,
       createdBy: 'U123',
+      continuationCount: 0,
+      maxContinuations: 10,
     };
     expect(session.sessionId).toBeUndefined();
 
@@ -881,6 +887,107 @@ describe('persistAndBroadcast', () => {
     });
     expect(() => registry.persistAndBroadcast('chan:thr')).not.toThrow();
     expect(savesSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('setOnIdleAfterDrainHook — goal ralph-loop entry point', () => {
+  beforeEach(() => {
+    if (fs.existsSync(TEST_DATA_DIR)) {
+      fs.rmSync(TEST_DATA_DIR, { recursive: true });
+    }
+    fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
+  });
+
+  afterEach(() => {
+    if (fs.existsSync(TEST_DATA_DIR)) {
+      fs.rmSync(TEST_DATA_DIR, { recursive: true });
+    }
+  });
+
+  it('fires the installed hook AFTER cron drain on idle (drain order honored)', () => {
+    const registry = new SessionRegistry();
+    registry.createSession('U-z', 'Z', 'C-G', 't-G');
+    const sessionKey = registry.getSessionKey('C-G', 't-G');
+    const order: string[] = [];
+    registry.registerOnIdle(sessionKey, () => order.push('cron-drain'));
+    registry.setOnIdleAfterDrainHook((sk) => order.push(`goal-hook:${sk}`));
+    registry.setActivityState('C-G', 't-G', 'working');
+    registry.setActivityState('C-G', 't-G', 'idle');
+    expect(order).toEqual(['cron-drain', `goal-hook:${sessionKey}`]);
+  });
+
+  it('does not fire the goal hook on non-idle transitions', () => {
+    const registry = new SessionRegistry();
+    registry.createSession('U-z', 'Z', 'C-G', 't-G');
+    const hook = vi.fn();
+    registry.setOnIdleAfterDrainHook(hook);
+    registry.setActivityState('C-G', 't-G', 'working');
+    registry.setActivityState('C-G', 't-G', 'waiting');
+    expect(hook).not.toHaveBeenCalled();
+  });
+
+  it('swallows goal-hook errors without breaking the activity-state machine', () => {
+    const registry = new SessionRegistry();
+    registry.createSession('U-z', 'Z', 'C-G', 't-G');
+    registry.setOnIdleAfterDrainHook(() => {
+      throw new Error('goal-hook boom');
+    });
+    expect(() => {
+      registry.setActivityState('C-G', 't-G', 'working');
+      registry.setActivityState('C-G', 't-G', 'idle');
+    }).not.toThrow();
+    expect(registry.getActivityState('C-G', 't-G')).toBe('idle');
+  });
+
+  it('uninstalling the hook (undefined) stops further fires', () => {
+    const registry = new SessionRegistry();
+    registry.createSession('U-z', 'Z', 'C-G', 't-G');
+    const hook = vi.fn();
+    registry.setOnIdleAfterDrainHook(hook);
+    registry.setActivityState('C-G', 't-G', 'working');
+    registry.setActivityState('C-G', 't-G', 'idle');
+    expect(hook).toHaveBeenCalledTimes(1);
+    registry.setOnIdleAfterDrainHook(undefined);
+    registry.setActivityState('C-G', 't-G', 'working');
+    registry.setActivityState('C-G', 't-G', 'idle');
+    expect(hook).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('migrateLegacyGoal on loadSessions', () => {
+  beforeEach(() => {
+    if (fs.existsSync(TEST_DATA_DIR)) {
+      fs.rmSync(TEST_DATA_DIR, { recursive: true });
+    }
+    fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
+  });
+
+  afterEach(() => {
+    if (fs.existsSync(TEST_DATA_DIR)) {
+      fs.rmSync(TEST_DATA_DIR, { recursive: true });
+    }
+  });
+
+  it('backfills continuationCount / maxContinuations on pre-followup persisted goals', () => {
+    const writer = new SessionRegistry();
+    const session = writer.createSession('U_X', 'X', 'C_LEG', 't_LEG');
+    // Cast — we intentionally write a legacy-shaped goal (no
+    // continuationCount/maxContinuations) and assert the migrator
+    // backfills them on reload.
+    (session as any).goal = {
+      objective: 'legacy objective',
+      status: 'active',
+      createdAt: 1,
+      updatedAt: 1,
+      createdBy: 'U_X',
+    };
+    writer.saveSessions();
+
+    const reader = new SessionRegistry();
+    reader.loadSessions();
+    const restored = reader.getSession('C_LEG', 't_LEG');
+    expect(restored?.goal?.continuationCount).toBe(0);
+    expect(restored?.goal?.maxContinuations).toBeGreaterThan(0);
   });
 });
 

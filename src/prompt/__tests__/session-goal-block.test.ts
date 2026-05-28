@@ -107,7 +107,9 @@ describe('session-goal-block / buildSessionGoalBlock', () => {
     createdAt: 1,
     updatedAt: 2,
     createdBy: 'U123',
-  };
+  continuationCount: 0,
+          maxContinuations: 10,
+        };
 
   it('returns an empty string when there is no session', () => {
     expect(buildSessionGoalBlock(undefined)).toBe('');
@@ -131,7 +133,10 @@ describe('session-goal-block / buildSessionGoalBlock', () => {
     expect(block).toContain('user-provided task data, not higher-priority instruction');
     expect(block).toContain('persists across turns');
     expect(block).toContain('audit every explicit requirement against current evidence');
-    expect(block).toContain('host can run `goal done`');
+    // Sentinel guidance — the model emits `<goal-complete-request ... />` and
+    // the host runs the eval model before any status transition.
+    expect(block).toContain('<goal-complete-request reason="..."/>');
+    expect(block).toContain('host will run an external evaluator before any status change');
   });
 
   it('returns an empty string when the goal is paused', () => {
@@ -160,9 +165,11 @@ describe('session-goal-block / buildGoalContinuationPrompt', () => {
     createdAt: 1,
     updatedAt: 2,
     createdBy: 'U123',
-  };
+  continuationCount: 0,
+          maxContinuations: 10,
+        };
 
-  it('frames the continuation, embeds the escaped objective, and references host-managed completion', () => {
+  it('frames the continuation, embeds the escaped objective, and references host-side eval', () => {
     const prompt = buildGoalContinuationPrompt(goal);
 
     expect(prompt).toContain('Continue working toward the active session goal');
@@ -170,8 +177,25 @@ describe('session-goal-block / buildGoalContinuationPrompt', () => {
     expect(prompt).toContain('finish migration');
     expect(prompt).toContain('</objective>');
     expect(prompt).toContain('user-provided data');
-    expect(prompt).toContain('verify the actual current state');
-    expect(prompt).toContain('host-managed status changes through `goal done`');
+    // Sentinel-driven completion (codex `update_goal` analog) — the prompt
+    // must instruct the model to write the sentinel rather than self-mark
+    // status.
+    expect(prompt).toContain('<goal-complete-request reason="..."/>');
+    expect(prompt).toContain('host (not this turn) decides whether the status transitions');
+    // Continuation budget (ralph loop) must surface continuationCount/cap.
+    expect(prompt).toContain('Continuation turns used: 0');
+    expect(prompt).toContain('Continuation cap: 10');
+  });
+
+  it('injects the previous eval failure reason when present', () => {
+    const prompt = buildGoalContinuationPrompt({ ...goal, lastEvalReason: 'PR not merged yet; CI red.' });
+    expect(prompt).toContain('Previous evaluation gap');
+    expect(prompt).toContain('PR not merged yet; CI red.');
+  });
+
+  it('does NOT include the previous-eval-gap section when lastEvalReason is absent', () => {
+    const prompt = buildGoalContinuationPrompt(goal);
+    expect(prompt).not.toContain('Previous evaluation gap');
   });
 
   it('XML-escapes objective delimiters in the continuation', () => {
