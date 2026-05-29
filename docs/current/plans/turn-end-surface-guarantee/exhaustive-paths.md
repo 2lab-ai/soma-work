@@ -288,6 +288,21 @@ await this.deps.summaryService.execute(session, signal);                        
 ```
 - timer 콜백 안에서 hang. main `execute()` 흐름에는 영향 없으나 summary state 누수.
 
+### C-7. ★ `result` 직후 SDK가 iterator를 안 닫음 → C-1 idle-timer가 healthy 완료에 거짓 ⚫ — **Phase 7에서 fix됨**
+```
+} else if (message.type === 'result') {
+  lastUsage = await this.handleResultMessage(message, context, currentMessages);   // 최종 텍스트 게시 완료
+}
+// loop가 break 안 하고 raceNextStep로 복귀 → iterator.next() 가 terminal `done`을 기다림
+```
+- 시나리오: SDK가 terminal `result`(subtype:`success`, hasResult:true)를 yield하고, 우리는 최종 답변까지 Slack에 게시했는데, **그 뒤 async generator가 `done`을 안 닫음** — `.next()`가 영원히 pending. C-1이 막은 것은 "**아무것도 yield 안 하는** hang"이고, 이 케이스는 "**result까지 정상 yield 후 close에서** hang"이라 C-1의 detection을 통과한다.
+- 결과: loop가 `raceNextStep`에서 C-1 idle-timer(default 2h)만 기다림 → 2h 후 `onIdleTimeout` 발화 → **이미 완료된 턴에 거짓 ⚫ `Stalled` 카드**. post-loop finalization(`onUsageUpdate` → 완료 카드 / idle 전환 / 리액션 flip)은 loop가 break해야 도는데 break를 못 하므로 **완료 카드 없이 세션이 MAIN에 고착**. 유저는 답변은 보지만 봇이 "바쁜" 상태로 멈춰 보임.
+- 실측 (2026-05-29, iq-64 dev): `04:53:14.791` `result`(duration 1163621ms=19분, $82.83) → 최종 보고 텍스트 게시됨 → 이후 `Updated session usage`/`Completed processing message`/`Tracked completion message` **전부 없음** (정상 8s 턴 `03:34:17`에는 +2s 안에 모두 나옴). loop가 break를 못 했다는 직접 증거. 짧은 턴은 SDK가 `done`을 빨리 닫아 우연히 정상.
+- **근본 원인**: C-1의 전제 — "`done`만이 turn-terminal 신호" — 가 틀렸다. `result`(SDKResultMessage)가 turn-terminal 신호다(최종 output·usage·cost가 전부 그 위에 있음). `done`은 그 다음에 오는 transport 마감 신호일 뿐이고 SDK 0.2.140에서 신뢰할 수 없다.
+- **Phase 7 fix (PR #1000 → 단순화 PR #1001)**: `process()`가 `result`를 처리하는 즉시 **break**한다 — `.next()`로 돌아가 `done`을 기다리지 않는다. `result`가 authoritative terminal 상태이므로 trailing 메시지도 더 소비하지 않고(아래 설계 결정 참조), best-effort로 `tryReturnIterator(iterator,'result')`(`ITERATOR_RETURN_BOUND_MS=1s` bound, wedged transport가 hang을 `.next()`→`.return()`으로 옮기지 못하게)로 transport를 닫고 post-loop finalization(usage flush → 완료 카드)으로 진행. 정상 턴 latency 0(어차피 `result` 다음 step을 안 기다림). phase6 T4 "timeout 발화 경로 제거"의 첫 항목 — **이 경로는 더 이상 ⚫를 만들지 않는다.** (`packages/slack/src/stream-processor.ts` `process`/`tryReturnIterator`.)
+- **설계 결정 — 왜 bounded drain이 아니라 break인가**: PR #1000은 처음에 trailing 이벤트(prompt suggestion / observability — Agent SDK agent-loop 문서상 `result` 뒤에 올 수 있음) 보존을 위해 2s bounded drain을 넣었으나, codex 코드리뷰(`0a7ed5f4-d805-4991-96b9-1e627533fea5`)가 세 결함을 지적: (1) drain이 메시지 *간격* 타임아웃이라 절대 한도가 아님 → trailing junk가 2s 내 계속 오면 무한 루프, (2) `result` 후에도 늦은 assistant/tool/system이 `currentMessages`·`hasUserChoice`·`endTurnInfo`를 변형해 최종 상태 불일치, (3) 두 번째 `result`가 `lastUsage` 덮어쓰기 + side-effect 중복. **soma-work는 `result` 이후 어떤 메시지도 turn-end에 소비하지 않으므로** drain의 이득은 0, 리스크만 3개. 따라서 break-on-result로 단순화 — 세 결함이 한 번에 제거된다. (첫 consult `b2a6503e-fbaf-4933-bc26-34c9154a3d67`는 fidelity가 필요하면 drain을 권했으나, 소비자가 없어 불필요.)
+- 회귀 가드: `src/slack/__tests__/stream-processor-idle-timeout.test.ts` describe `result is the turn-terminal signal (C-7)` — result-then-hang이 timer 없이 `aborted:false`로 즉시 마감 + `onIdleTimeout` 미발화 + trailing 메시지 **미소비**(`i===1`) + `iterator.return` 1회 호출 + cooperative `done` 안 읽음(`phase===1`)을 pin.
+
 ---
 
 ## D. 종합 표 (codex 검증 후 갱신)
@@ -301,7 +316,8 @@ await this.deps.summaryService.execute(session, signal);                        
 | B-4 | turnNotifier DI 누락 + abort 분기 fallback 부재 | ✅ Phase 3 fix (PR #972) — handleError abort 분기에 `say()` fallback | **fixed** |
 | B-5 | 이메일 fast-fail 카드 부재 | ✅ Phase 3 fix (PR #972) — `turnNotifier.notify(Exception)` + Block Kit `say()` fallback + snapshot release | **fixed** |
 | B-6 | renew 실패 카테고리 misclassification | ✅ Phase 3 fix (PR #972) — renew 결정을 `determineTurnCategory` 이전으로 이동, 실패 시 category=Exception | **fixed** |
-| C-1 | `processor.process` 영원 hang | ⚠️ Phase 2 (PR #970) detection only, Phase 6 (this PR) **recategorized**: stall-timeout → `Stalled` (⚫) 카드 + "코드 버그 의심" 라벨. detection은 유지 (default 2h, env `SOMA_STREAM_STALL_TIMEOUT_MS`), 매 ⚫ 카드 = T4 백로그 항목. 진짜 fix는 T4 (timeout 발화 경로 모두 제거). | **detection only; T4 backlog** |
+| C-1 | `processor.process` 영원 hang (아무것도 yield 안 함) | ⚠️ Phase 2 (PR #970) detection only, Phase 6 **recategorized**: stall-timeout → `Stalled` (⚫) 카드 + "코드 버그 의심" 라벨. detection은 유지 (default 2h, env `SOMA_STREAM_STALL_TIMEOUT_MS`), 매 ⚫ 카드 = T4 백로그 항목. 진짜 fix는 T4 (timeout 발화 경로 모두 제거). | **detection only; T4 backlog** |
+| C-7 | `result` 직후 SDK가 iterator를 안 닫음 → C-1 idle-timer가 healthy 완료에 거짓 ⚫ + 세션 MAIN 고착 | ✅ Phase 7 fix (PR #1000 → 단순화 #1001) — `result`를 turn-terminal로 처리해 **즉시 break**(+bounded `iterator.return`), `done` 대기/trailing drain 의존 제거. T4 "timeout 발화 경로 제거" 첫 항목. | **fixed** |
 | C-2 | enrichAndResolve hang — 3s timeout 존재하나 timeout 시 카드 skip | ✅ Phase 1 fix (PR #969) | **fixed** |
 | C-3 | `beginTurn` hang | ✅ Phase 4 fix (this PR) — `runWithTimeout(5s)` 래핑, timeout 시 warn + proceed | **fixed** |
 | C-4 | `say(errorDetails)` hang | ✅ Phase 4 fix (this PR) — `runWithTimeout(3s)` 래핑, timeout 시 warn + proceed (Exception 카드는 이미 turnNotifier로 발사됨) | **fixed** |
