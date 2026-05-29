@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { estimatePayloadSize, markdownToBlocks, thinkingToQuoteBlock } from '../markdown-to-blocks';
+import { estimatePayloadSize, markdownToBlocks, sanitizeTable, thinkingToQuoteBlock } from '../markdown-to-blocks';
 
 describe('markdownToBlocks', () => {
   it('converts headers to header blocks', () => {
@@ -166,6 +166,38 @@ describe('markdownToBlocks table sanitization', () => {
     if (tableBlock) {
       expect(tableBlock.rows.length).toBeLessThanOrEqual(100);
     }
+  });
+
+  it('keeps GFM table rows uniform (regression guard for #1005 padding)', () => {
+    const md = '| A | B | C |\n|---|---|---|\n| 1 | 2 | 3 |';
+    const result = markdownToBlocks(md);
+    const tableBlock = result.blocks.find((b) => b.type === 'table');
+    expect(tableBlock).toBeDefined();
+    const widths = new Set((tableBlock!.rows as unknown[][]).map((r) => r.length));
+    expect(widths.size).toBe(1); // every row has the same cell count
+  });
+
+  it('#1005 — pads ragged rows so Slack does not reject with uneven_table_rows', () => {
+    // A table with differing cell counts triggers
+    // `uneven_table_rows_not_allowed`. sanitizeTable must normalize to the
+    // widest row by padding short rows with empty cells.
+    const cell = (t: string) => ({
+      type: 'rich_text',
+      elements: [{ type: 'rich_text_section', elements: [{ type: 'text', text: t }] }],
+    });
+    const ragged = {
+      type: 'table',
+      rows: [
+        [cell('A'), cell('B'), cell('C')],
+        [cell('1')], // missing 2 cells
+        [cell('x'), cell('y')], // missing 1 cell
+      ],
+    } as unknown as Parameters<typeof sanitizeTable>[0];
+
+    const out = sanitizeTable(ragged);
+    const widths = (out.rows as unknown[][]).map((r) => r.length);
+    expect(new Set(widths).size).toBe(1);
+    expect(widths[0]).toBe(3);
   });
 });
 

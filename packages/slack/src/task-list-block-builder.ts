@@ -182,11 +182,13 @@ export class TaskListBlockBuilder {
 
     const planBlock: Record<string, unknown> = {
       type: 'plan',
-      title: {
-        type: 'plain_text',
-        text: `Tasks (${todos.length})`,
-        emoji: false,
-      },
+      // #1005 — the `plan` block's `title` MUST be a bare string. Emitting a
+      // `plain_text` composition object here made Slack reject the whole
+      // payload with `invalid_blocks` ("must provide a string
+      // [json-pointer:/blocks/0/title]"), which silently dropped every plan
+      // card (~525 chat.postMessage failures/rotation). The sibling
+      // `task_card` block above already uses a bare string title.
+      title: `Tasks (${todos.length})`,
       tasks: taskCards,
     };
 

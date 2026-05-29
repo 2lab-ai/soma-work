@@ -1,4 +1,3 @@
-import './effective-phase';
 import { setSessionInitializerProviders } from '@soma/slack/pipeline/session-initializer';
 import {
   expectedHandoffKind,
@@ -14,7 +13,6 @@ import { getDispatchService } from '../../dispatch-service';
 import { userSettingsStore } from '../../user-settings-store';
 import { buildChannelRouteBlocks } from '../actions/channel-route-action-handler';
 import { DispatchAbortError } from '../dispatch-abort';
-import { getEffectiveFiveBlockPhase } from './effective-phase';
 
 setSessionInitializerProviders({
   expectedHandoffKind: (workflow) => expectedHandoffKind(workflow as any),
@@ -43,7 +41,6 @@ setSessionInitializerProviders({
   getUserSessionTheme: (userId) => userSettingsStore.getUserSessionTheme(userId),
   buildChannelRouteBlocks,
   getDefaultUpdateChannel: () => process.env.DEFAULT_UPDATE_CHANNEL,
-  shouldRunLegacyB4Path: (statusManager) => !!statusManager && getEffectiveFiveBlockPhase(statusManager) < 4,
 });
 
 export * from '@soma/slack/pipeline/session-initializer';

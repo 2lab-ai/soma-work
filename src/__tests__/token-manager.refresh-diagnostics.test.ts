@@ -139,6 +139,30 @@ describe('refresh diagnostics (#701)', () => {
       expect(st?.consecutiveRefreshFailures).toBe(1);
     });
 
+    it('400 invalid_grant → unauthorized + authState=refresh_failed (#1004 production case)', async () => {
+      const { tm, store, slot, OAuthRefreshError } = await setup();
+      // Anthropic returns invalid_grant ("Refresh token not found or invalid")
+      // as HTTP 400 (OAuth2 RFC 6749 §5.2), NOT 401. Before #1004 this was
+      // bucketed `unknown` → authState stayed `healthy` → the dead slot was
+      // refreshed every tick forever. It must now flip to `refresh_failed`.
+      refreshClaudeCredentialsMock.mockRejectedValueOnce(
+        new OAuthRefreshError(
+          400,
+          '{"error":"invalid_grant","error_description":"Refresh token not found or invalid"}',
+          'boom',
+        ),
+      );
+      await expect(tm.refreshCredentialsIfNeeded(slot.keyId)).rejects.toThrow();
+      const st = (await store.load()).state[slot.keyId];
+      expect(st?.authState).toBe('refresh_failed');
+      expect(st?.lastRefreshError).toMatchObject({
+        kind: 'unauthorized',
+        status: 400,
+        message: 'Refresh rejected (invalid_grant)',
+      });
+      expect(st?.consecutiveRefreshFailures).toBe(1);
+    });
+
     it('403 → revoked + authState=revoked', async () => {
       const { tm, store, slot, OAuthRefreshError } = await setup();
       refreshClaudeCredentialsMock.mockRejectedValueOnce(new OAuthRefreshError(403, '{"error":"revoked"}', 'boom'));
@@ -366,6 +390,27 @@ describe('refresh diagnostics (#701)', () => {
       expect(msg).toBe('Refresh server error (500)');
       expect(msg).not.toContain('sk-ant-');
       expect(msg).not.toContain(adversary);
+    });
+  });
+
+  describe('usage backoff on pre-fetch refresh failure (#1004)', () => {
+    it('fetchAndStoreUsage advances the usage backoff when the pre-fetch refresh throws', async () => {
+      const { tm, store, slot, OAuthRefreshError } = await setup();
+      // A dead refresh token makes the pre-fetch refresh throw. Before #1004
+      // this branch returned null WITHOUT advancing the backoff, so every
+      // scheduler tick re-attempted the dead slot and re-logged the warn
+      // (~6.2k lines/rotation). It must now set nextUsageFetchAllowedAt.
+      refreshClaudeCredentialsMock.mockRejectedValue(
+        new OAuthRefreshError(400, '{"error":"invalid_grant"}', 'dead refresh token'),
+      );
+      // `force` bypasses the LOCAL throttle so the pre-fetch refresh fires even
+      // if the attach-time fetch already stamped a backoff.
+      const result = await tm.fetchAndStoreUsage(slot.keyId, { force: true });
+      expect(result).toBeNull();
+      const st = (await store.load()).state[slot.keyId];
+      expect(st?.nextUsageFetchAllowedAt).toBeTruthy();
+      expect(new Date(st?.nextUsageFetchAllowedAt as string).getTime()).toBeGreaterThan(Date.now());
+      expect(st?.consecutiveUsageFailures ?? 0).toBeGreaterThanOrEqual(1);
     });
   });
 });

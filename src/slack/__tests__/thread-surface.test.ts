@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { config } from '../../config';
 import type { Todo } from '../../todo-manager';
 import type { ConversationSession } from '../../types';
 import { ThreadSurface } from '../thread-surface';
@@ -74,38 +73,11 @@ function hasTaskListEmbed(blocks: any[]): boolean {
 }
 
 describe('ThreadSurface.buildCombinedBlocks — P2 B2 guard', () => {
-  const originalPhase = config.ui.fiveBlockPhase;
-
   afterEach(() => {
-    config.ui.fiveBlockPhase = originalPhase;
     vi.clearAllMocks();
   });
 
-  it('PHASE=0 embeds the task list when todos exist (legacy behavior)', () => {
-    config.ui.fiveBlockPhase = 0;
-    const todos = [makeTodo({ content: 'one' }), makeTodo({ content: 'two' })];
-    const deps = makeDeps(todos);
-    const surface = new ThreadSurface(deps);
-
-    const blocks = buildBlocks(surface, makeSession(), 'C1:t1.0');
-
-    expect(hasTaskListEmbed(blocks)).toBe(true);
-    expect(deps.todoManager.getTodos).toHaveBeenCalledWith('sess-1');
-  });
-
-  it('PHASE=1 embeds the task list (guard is >=2, not >=1)', () => {
-    config.ui.fiveBlockPhase = 1;
-    const todos = [makeTodo({ content: 'only' })];
-    const deps = makeDeps(todos);
-    const surface = new ThreadSurface(deps);
-
-    const blocks = buildBlocks(surface, makeSession(), 'C1:t1.0');
-
-    expect(hasTaskListEmbed(blocks)).toBe(true);
-  });
-
-  it('PHASE=2 does NOT embed the task list even with todos present', () => {
-    config.ui.fiveBlockPhase = 2;
+  it('does NOT embed the task list even with todos present', () => {
     const todos = [makeTodo({ content: 'one' }), makeTodo({ content: 'two' })];
     const deps = makeDeps(todos);
     const surface = new ThreadSurface(deps);
@@ -117,20 +89,7 @@ describe('ThreadSurface.buildCombinedBlocks — P2 B2 guard', () => {
     expect(deps.todoManager.getTodos).not.toHaveBeenCalled();
   });
 
-  it('PHASE=3 also skips (cumulative flag — >=2 suffices)', () => {
-    config.ui.fiveBlockPhase = 3;
-    const todos = [makeTodo({ content: 'x' })];
-    const deps = makeDeps(todos);
-    const surface = new ThreadSurface(deps);
-
-    const blocks = buildBlocks(surface, makeSession(), 'C1:t1.0');
-
-    expect(hasTaskListEmbed(blocks)).toBe(false);
-    expect(deps.todoManager.getTodos).not.toHaveBeenCalled();
-  });
-
-  it('PHASE=2 still emits header + panel blocks (only the task section is gone)', () => {
-    config.ui.fiveBlockPhase = 2;
+  it('still emits header + panel blocks (only the task section is gone)', () => {
     const todos = [makeTodo({ content: 'x' })];
     const deps = makeDeps(todos);
     const surface = new ThreadSurface(deps);
@@ -149,10 +108,7 @@ describe('ThreadSurface.buildCombinedBlocks — P2 B2 guard', () => {
 // ---------------------------------------------------------------------------
 
 describe('ThreadSurface — P3 setChoiceMeta / clearChoice', () => {
-  const originalPhase = config.ui.fiveBlockPhase;
-
   afterEach(() => {
-    config.ui.fiveBlockPhase = originalPhase;
     vi.clearAllMocks();
   });
 
@@ -178,7 +134,6 @@ describe('ThreadSurface — P3 setChoiceMeta / clearChoice', () => {
   }
 
   it('setChoiceMeta writes choiceMessageTs + waitingForChoice and attempts permalink', async () => {
-    config.ui.fiveBlockPhase = 3;
     const session = makeSession();
     const deps = makeP3Deps(session);
     const surface = new ThreadSurface(deps);
@@ -193,7 +148,6 @@ describe('ThreadSurface — P3 setChoiceMeta / clearChoice', () => {
   });
 
   it('setChoiceMeta does NOT write choiceBlocks (the B3 message owns its own buttons)', async () => {
-    config.ui.fiveBlockPhase = 3;
     const session = makeSession();
     const deps = makeP3Deps(session);
     const surface = new ThreadSurface(deps);
@@ -202,19 +156,7 @@ describe('ThreadSurface — P3 setChoiceMeta / clearChoice', () => {
     expect(session.actionPanel?.choiceBlocks).toBeUndefined();
   });
 
-  it('setChoiceMeta is a no-op below PHASE=3', async () => {
-    config.ui.fiveBlockPhase = 2;
-    const session = makeSession();
-    const deps = makeP3Deps(session);
-    const surface = new ThreadSurface(deps);
-
-    await surface.setChoiceMeta('C1:t1.0', 'never-written');
-    expect(session.actionPanel?.choiceMessageTs).toBeUndefined();
-    expect(deps.slackApi.getPermalink).not.toHaveBeenCalled();
-  });
-
   it('setChoiceMeta is a no-op when session is missing', async () => {
-    config.ui.fiveBlockPhase = 3;
     const deps = makeP3Deps({} as any);
     (deps.claudeHandler.getSessionByKey as any) = vi.fn().mockReturnValue(undefined);
     const surface = new ThreadSurface(deps);
@@ -222,58 +164,7 @@ describe('ThreadSurface — P3 setChoiceMeta / clearChoice', () => {
     expect(deps.slackApi.getPermalink).not.toHaveBeenCalled();
   });
 
-  // #689 P4 Part 2/2 — chip suppression at effective PHASE>=4
-  describe('buildCombinedBlocks — P4 chip suppression', () => {
-    const makeMgr = (enabled: boolean) => ({ isEnabled: vi.fn().mockReturnValue(enabled) }) as any;
-
-    // Reset the module-level clamp-once flag so the disabled-mgr clamp test
-    // doesn't leak into subsequent tests in this file. Mirrors the pattern
-    // in turn-surface.test.ts (commit 1c83d5e).
-    afterEach(async () => {
-      const { __resetClampEmitted } = await import('../pipeline/effective-phase');
-      __resetClampEmitted();
-    });
-
-    function makeSessionWithChipState(): ConversationSession {
-      const s = makeSession();
-      s.actionPanel = { agentPhase: 'thinking', activeTool: 'Bash' };
-      (s as any).activityState = 'working';
-      return s;
-    }
-
-    function chipVisible(blocks: any[]): boolean {
-      // The chip renders as `\n_…_` italic text inside the hero status
-      // section (mrkdwn). If the text contains `\n_` the chip is present.
-      return blocks.some((b) => b.type === 'section' && b.text?.type === 'mrkdwn' && /\n_[^_]+_/.test(b.text.text));
-    }
-
-    it('PHASE<4 and no statusManager → chip present (legacy behaviour)', () => {
-      config.ui.fiveBlockPhase = 3;
-      const deps = makeDeps([]);
-      const surface = new ThreadSurface(deps);
-      const blocks = buildBlocks(surface, makeSessionWithChipState(), 'C1:t1.0');
-      expect(chipVisible(blocks)).toBe(true);
-    });
-
-    it('effective PHASE>=4 (manager enabled) → chip suppressed', () => {
-      config.ui.fiveBlockPhase = 4;
-      const deps = { ...makeDeps([]), assistantStatusManager: makeMgr(true) };
-      const surface = new ThreadSurface(deps);
-      const blocks = buildBlocks(surface, makeSessionWithChipState(), 'C1:t1.0');
-      expect(chipVisible(blocks)).toBe(false);
-    });
-
-    it('PHASE=4 but manager disabled → clamp to 3 → chip restored (graceful fallback)', () => {
-      config.ui.fiveBlockPhase = 4;
-      const deps = { ...makeDeps([]), assistantStatusManager: makeMgr(false) };
-      const surface = new ThreadSurface(deps);
-      const blocks = buildBlocks(surface, makeSessionWithChipState(), 'C1:t1.0');
-      expect(chipVisible(blocks)).toBe(true);
-    });
-  });
-
   it('clearChoice also clears pendingChoice (P3)', async () => {
-    config.ui.fiveBlockPhase = 3;
     const session = makeSession();
     session.actionPanel = {
       choiceMessageTs: 'ts-xyz',

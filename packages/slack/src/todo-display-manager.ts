@@ -6,12 +6,6 @@ import type { Todo } from './task-list-block-builder';
 const VALID_STATUSES = new Set(['pending', 'in_progress', 'completed']);
 const VALID_PRIORITIES = new Set(['high', 'medium', 'low']);
 
-let getFiveBlockPhase = (): number => Number(process.env.SOMA_UI_5BLOCK_PHASE ?? 0);
-
-export function setTodoDisplayFiveBlockPhaseProvider(provider: () => number): void {
-  getFiveBlockPhase = provider;
-}
-
 export interface TodoUpdateInput {
   todos?: Todo[];
 }
@@ -144,7 +138,7 @@ export class TodoDisplayManager {
         }
       }
 
-      if (getFiveBlockPhase() >= 2 && this.onPlanRender && turnId && turnCtx && newTodos.length > 0) {
+      if (this.onPlanRender && turnId && turnCtx && newTodos.length > 0) {
         try {
           await this.onPlanRender(turnId, newTodos, turnCtx);
         } catch (error) {

@@ -16,7 +16,6 @@ import type { RequestAbortReason, RequestCoordinator } from '../request-coordina
 import type { SlackApiHelper } from '../slack-api-helper';
 import { ThreadHeaderBuilder } from '../thread-header-builder';
 import type { ThreadPanel } from '../thread-panel';
-import { shouldRunLegacyB4Path as defaultShouldRunLegacyB4Path } from './effective-phase';
 import type { ConversationSession, MessageEvent, SayFn, SessionInitResult } from './types';
 
 export type { WorkflowType } from '../dispatch-abort';
@@ -88,7 +87,6 @@ export interface SessionInitializerProviders {
   getUserSessionTheme?: (userId: string) => any;
   buildChannelRouteBlocks?: (params: ChannelRouteBlockParams) => { text: string; blocks: any[] };
   getDefaultUpdateChannel?: () => string | undefined;
-  shouldRunLegacyB4Path?: (statusManager: AssistantStatusManager | null | undefined) => boolean;
 }
 
 const missingProvider = (name: string): never => {
@@ -121,7 +119,6 @@ const providers: Required<SessionInitializerProviders> = {
   getUserSessionTheme: () => undefined,
   buildChannelRouteBlocks: () => missingProvider('buildChannelRouteBlocks'),
   getDefaultUpdateChannel: () => undefined,
-  shouldRunLegacyB4Path: defaultShouldRunLegacyB4Path,
 };
 
 export function setSessionInitializerProviders(next: SessionInitializerProviders): void {
@@ -145,7 +142,6 @@ export function setSessionInitializerProviders(next: SessionInitializerProviders
   if (next.getUserSessionTheme) providers.getUserSessionTheme = next.getUserSessionTheme;
   if (next.buildChannelRouteBlocks) providers.buildChannelRouteBlocks = next.buildChannelRouteBlocks;
   if (next.getDefaultUpdateChannel) providers.getDefaultUpdateChannel = next.getDefaultUpdateChannel;
-  if (next.shouldRunLegacyB4Path) providers.shouldRunLegacyB4Path = next.shouldRunLegacyB4Path;
 }
 
 // Timeout for dispatch API call (30 seconds - Agent SDK needs time to start)
@@ -832,12 +828,6 @@ export class SessionInitializer {
     });
     dispatchInFlight.set(sessionKey, trackingPromise);
 
-    // Issue #688 — capture dispatch-scoped epoch. Any clearStatus call
-    // emitted by this dispatch (including fallback / failure paths) must
-    // carry `expectedEpoch: dispatchEpoch` so a stale clear from an
-    // aborted prior turn cannot nuke a newer spinner on the same thread.
-    const dispatchEpoch = this.deps.assistantStatusManager?.bumpEpoch(channel, threadTs) ?? 0;
-
     const startTime = Date.now();
     const abortController = new AbortController();
     const timeoutId = setTimeout(() => {
@@ -876,11 +866,6 @@ export class SessionInitializer {
       const dispatchService = providers.getDispatchService();
       const model = dispatchService.getModel();
 
-      // Native spinner during dispatch — legacy-only; TurnSurface.begin owns
-      // the "is thinking..." spinner at effective PHASE>=4 (#689 P4 Part 2).
-      if (providers.shouldRunLegacyB4Path(this.deps.assistantStatusManager)) {
-        await this.deps.assistantStatusManager?.setStatus(channel, threadTs, 'is analyzing your request...');
-      }
       await updateDispatchPanel('워크플로우 분석 중', 'working');
 
       // Add dispatching reaction and post status message
@@ -931,13 +916,6 @@ export class SessionInitializer {
           dispatchMessageTs,
           `✅ *Workflow:* \`${result.workflow}\` → "${result.title}" _(${elapsed}ms)_`,
         );
-      }
-
-      // Set thread title in DM history — legacy-only; at effective PHASE>=4
-      // the native Assistant UI owns thread titles (TurnSurface title-write
-      // is tracked for a follow-up — docs/archive/features/slack-ui/phase4.md §Out of scope).
-      if (providers.shouldRunLegacyB4Path(this.deps.assistantStatusManager)) {
-        await this.deps.assistantStatusManager?.setTitle(channel, threadTs, result.title);
       }
 
       // Store extracted links on the session
@@ -1013,15 +991,6 @@ export class SessionInitializer {
       }
 
       if (shouldSafeStop) {
-        // Clear spinner before throw (best-effort). Epoch-guarded + PHASE-gated
-        // same as default path below.
-        if (providers.shouldRunLegacyB4Path(this.deps.assistantStatusManager)) {
-          await bestEffort('clearStatus-safeStop', () =>
-            this.deps.assistantStatusManager!.clearStatus(channel, threadTs, {
-              expectedEpoch: dispatchEpoch,
-            }),
-          );
-        }
         // Map AbortError (DISPATCH_TIMEOUT_MS fired) to classifier-timeout;
         // any other thrown error is classifier-failed.
         const err = error as Error;
@@ -1040,15 +1009,6 @@ export class SessionInitializer {
       const fallbackTitle = MessageFormatter.generateSessionTitle(text);
       this.deps.claudeHandler.transitionToMain(channel, threadTs, 'default', fallbackTitle);
       await updateDispatchPanel('기본 워크플로우로 전환', 'idle');
-
-      // Tear down the dispatch spinner. Epoch-guarded (#688) so a stale
-      // clear from a superseded dispatch can't kill a newer turn's spinner;
-      // PHASE-gated (#689 P4) so we don't race TurnSurface at PHASE>=4.
-      if (providers.shouldRunLegacyB4Path(this.deps.assistantStatusManager)) {
-        await this.deps.assistantStatusManager?.clearStatus(channel, threadTs, {
-          expectedEpoch: dispatchEpoch,
-        });
-      }
     } finally {
       clearTimeout(timeoutId);
       // Clean up the in-flight tracking and resolve waiting promises
