@@ -546,6 +546,22 @@ export class TurnSurface {
           turnId,
           error: (err as Error).message,
         });
+        // #1005 — guaranteed plain-text fallback. When Slack rejects the Block
+        // Kit payload (e.g. `invalid_blocks`), still deliver the plan as plain
+        // text instead of silently dropping the card (~525 lost plan cards /
+        // rotation in dev). Mirrors StreamProcessor's sayWithBlockKit fallback
+        // for the streaming surface.
+        try {
+          const fallbackArgs: Record<string, unknown> = { channel: state.ctx.channelId, text };
+          if (state.ctx.threadTs) fallbackArgs.thread_ts = state.ctx.threadTs;
+          const fb: { ts?: string } = await (client.chat as any).postMessage(fallbackArgs);
+          if (fb?.ts) state.planTs = fb.ts;
+        } catch (fallbackErr) {
+          this.logger.warn('chat.postMessage plan-block plain-text fallback also failed', {
+            turnId,
+            error: (fallbackErr as Error).message,
+          });
+        }
       }
       return;
     }
@@ -564,6 +580,18 @@ export class TurnSurface {
         planTs: state.planTs,
         error: (err as Error).message,
       });
+      // #1005 — plain-text fallback (see the postMessage path above): on a
+      // Block Kit rejection, update the existing message with text only so the
+      // plan content is not lost.
+      try {
+        await (client.chat as any).update({ channel: state.ctx.channelId, ts: state.planTs, text });
+      } catch (fallbackErr) {
+        this.logger.warn('chat.update plan-block plain-text fallback also failed', {
+          turnId,
+          planTs: state.planTs,
+          error: (fallbackErr as Error).message,
+        });
+      }
     }
   }
 
