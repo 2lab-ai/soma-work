@@ -310,6 +310,10 @@ export interface StreamCallbacks {
  */
 export const DEFAULT_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 
+/** Bounded best-effort window for `iterator.return()` (§C-7). A wedged SDK
+ *  transport must not move the post-result hang from `.next()` to `.return()`. */
+export const ITERATOR_RETURN_BOUND_MS = 1000;
+
 /**
  * Env var operators use to tune or disable the idle timeout without a
  * redeploy. `0` disables; invalid/non-finite falls back to the default —
@@ -589,6 +593,20 @@ export class StreamProcessor {
           await this.handleUserMessage(message, context);
         } else if (message.type === 'result') {
           lastUsage = await this.handleResultMessage(message, context, currentMessages);
+          // §C-7: `result` (SDKResultMessage) is the turn-terminal signal —
+          // final output, usage and cost all live on it. Finalize the turn NOW
+          // instead of looping back to `.next()`:
+          //   - the SDK does not reliably emit the terminal `done` on long
+          //     turns; waiting for it stranded the turn until the 2 h idle
+          //     timer fired a spurious ⚫ stall card (prod hang 2026-05-29);
+          //   - soma-work consumes no message after `result`, so continuing to
+          //     drain trailing events buys nothing while risking late state
+          //     mutation or a double-applied duplicate `result`
+          //     (codex review 0a7ed5f4 findings 1-3).
+          // Best-effort, bounded close to release the SDK transport, then break
+          // to the post-loop finalization (usage flush → completion card).
+          await this.tryReturnIterator(iterator, 'result');
+          break;
         } else if (message.type === 'system') {
           await this.handleSystemMessage(message, context);
         }
@@ -712,7 +730,28 @@ export class StreamProcessor {
    */
   private async tryReturnIterator(iterator: AsyncIterator<SDKMessage>, reason: string): Promise<void> {
     try {
-      await iterator.return?.();
+      const ret = iterator.return?.();
+      if (!ret) return;
+      // §C-7: bound the close. A wedged transport whose `.return()` never
+      // settles must not re-introduce the very hang we just escaped. Lose the
+      // race → abandon the cleanup (best-effort; process teardown reclaims it).
+      let bound: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        Promise.resolve(ret).then(
+          () => undefined,
+          (err) => {
+            this.logger.debug(`iterator.return() after ${reason} threw — ignored`, {
+              error: (err as Error)?.message ?? String(err),
+            });
+          },
+        ),
+        new Promise<void>((resolve) => {
+          bound = setTimeout(resolve, ITERATOR_RETURN_BOUND_MS);
+          (bound as { unref?: () => void } | undefined)?.unref?.();
+        }),
+      ]).finally(() => {
+        if (bound) clearTimeout(bound);
+      });
     } catch (err) {
       this.logger.debug(`iterator.return() after ${reason} threw — ignored`, {
         error: (err as Error)?.message ?? String(err),
