@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { parseBool, parseFiveBlockPhase, parsePositiveIntEnv, parseUnitIntervalEnv } from '../config';
+import { parseBool, parsePositiveIntEnv, parseUnitIntervalEnv } from '../config';
 
 // Silence the warn path; we're testing the fallback value, not the log side-effect.
 vi.mock('../logger', () => ({
@@ -10,57 +10,6 @@ vi.mock('../logger', () => ({
     error = vi.fn();
   },
 }));
-
-describe('parseFiveBlockPhase', () => {
-  describe('valid values', () => {
-    it.each([
-      ['0', 0],
-      ['1', 1],
-      ['2', 2],
-      ['3', 3],
-      ['4', 4],
-      ['5', 5],
-    ])('parses "%s" → %d', (raw, expected) => {
-      expect(parseFiveBlockPhase(raw)).toBe(expected);
-    });
-  });
-
-  describe('fallback to 0', () => {
-    it('undefined falls back', () => {
-      expect(parseFiveBlockPhase(undefined)).toBe(0);
-    });
-
-    it('empty string falls back', () => {
-      expect(parseFiveBlockPhase('')).toBe(0);
-    });
-
-    it.each([
-      ['-1', 'negative'],
-      ['6', 'above range'],
-      ['10', 'far above range'],
-      ['1.5', 'non-integer'],
-      ['foo', 'non-numeric'],
-      ['true', 'boolean-ish'],
-      ['NaN', 'literal NaN'],
-      ['Infinity', 'infinity'],
-    ])('rejects "%s" (%s) and falls back to 0', (raw) => {
-      expect(parseFiveBlockPhase(raw)).toBe(0);
-    });
-  });
-
-  describe('lenient whitespace tolerance (documents current behavior)', () => {
-    // Number() is permissive about surrounding whitespace; this is acceptable
-    // because an operator who sets SOMA_UI_5BLOCK_PHASE="1 " still gets the
-    // feature enabled rather than a silent rollback to legacy. If a stricter
-    // parser is ever desired, add a String.prototype.trim() + regex check.
-    it('"1 " parses as 1', () => {
-      expect(parseFiveBlockPhase('1 ')).toBe(1);
-    });
-    it('" 1" parses as 1', () => {
-      expect(parseFiveBlockPhase(' 1')).toBe(1);
-    });
-  });
-});
 
 // #641 M1-S1 — `parsePositiveIntEnv` is the only barrier against an operator
 // setting `USAGE_REFRESH_INTERVAL_MS=1` (sub-second tick storm). The function
@@ -232,9 +181,6 @@ describe('config.autoRotate unit boundary (#781)', () => {
   });
 });
 
-// #666 Part 1/2 — P4 kill switch. `parseBool` gates `config.ui.b4NativeStatusEnabled`,
-// which must default to `false` so that registering the Bolt Assistant container
-// in Part 1 does NOT silently re-enable the legacy spinner path before Part 2 is wired.
 describe('parseBool (#666)', () => {
   describe('truthy values', () => {
     it.each([
@@ -285,46 +231,5 @@ describe('parseBool (#666)', () => {
       expect(parseBool(' 1 ', false)).toBe(true);
       expect(parseBool(' false ', true)).toBe(false);
     });
-  });
-});
-
-/**
- * Regression guard for the `config.ui.b4NativeStatusEnabled` wiring. The
- * value is evaluated at module import, so we can't trivially re-read it
- * after mutating `process.env`. Instead we mirror the exact wiring
- * expression (`parseBool(process.env.SOMA_UI_B4_NATIVE_STATUS, false)`)
- * and assert it resolves to the runtime-observable semantics we rely on.
- */
-describe('config.ui.b4NativeStatusEnabled env wiring (#666)', () => {
-  const ENV = 'SOMA_UI_B4_NATIVE_STATUS';
-  beforeEach(() => {
-    delete process.env[ENV];
-  });
-  afterEach(() => {
-    delete process.env[ENV];
-  });
-
-  it('undefined env → false (kill switch on by default — native spinner suppressed)', () => {
-    expect(parseBool(process.env[ENV], false)).toBe(false);
-  });
-
-  it('"1" env → true (explicit opt-in)', () => {
-    process.env[ENV] = '1';
-    expect(parseBool(process.env[ENV], false)).toBe(true);
-  });
-
-  it('"0" env → false (explicit disable)', () => {
-    process.env[ENV] = '0';
-    expect(parseBool(process.env[ENV], false)).toBe(false);
-  });
-
-  it('"true" env → true', () => {
-    process.env[ENV] = 'true';
-    expect(parseBool(process.env[ENV], false)).toBe(true);
-  });
-
-  it('"garbage" env → false (fallback with warn — fail-closed)', () => {
-    process.env[ENV] = 'garbage';
-    expect(parseBool(process.env[ENV], false)).toBe(false);
   });
 });

@@ -3,7 +3,6 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { config } from '../../config';
 import { McpCallTracker } from '../../mcp-call-tracker';
 import { McpStatusDisplay } from '../mcp-status-tracker';
 import {
@@ -278,62 +277,21 @@ describe('ToolEventProcessor', () => {
   });
 
   /**
-   * Tool verbose absorb (Issue #664, PHASE>=2 sink path).
+   * Tool verbose absorb (Issue #664 sink path).
    *
-   * Verifies the ToolResultSink contract: at PHASE>=2 with a sink installed
+   * Verifies the ToolResultSink contract: with a sink installed
    * and a `turnId` in context, `sendToolResult` routes the formatted result
    * through the sink instead of posting a separate legacy bubble via `say`.
-   * Any missing precondition (PHASE<2, no sink, no turnId) OR a sink that
+   * Any missing precondition (no sink, no turnId) OR a sink that
    * returns `false` (closing turn, Slack error) falls through to legacy
    * `say` — tool output is never silently dropped.
    */
-  describe('Tool verbose absorb (PHASE>=2 sink)', () => {
-    const originalPhase = config.ui.fiveBlockPhase;
-    afterEach(() => {
-      // Restore between cases so a test-only flip can't leak across the
-      // vitest run (matches TurnSurface.phase()'s per-call read model).
-      config.ui.fiveBlockPhase = originalPhase;
-    });
-
+  describe('Tool verbose absorb sink', () => {
     function makeContextWithTurn(turnId?: string): ToolEventContext {
       return { ...mockContext, turnId };
     }
 
-    it('PHASE=0 + sink installed: legacy say fires, sink NOT called (regression)', async () => {
-      config.ui.fiveBlockPhase = 0;
-      const sink = vi.fn().mockResolvedValue(true) as unknown as ToolResultSink;
-      processor.setToolResultSink(sink);
-      toolTracker.trackToolUse('tool_1', 'Bash');
-
-      await processor.handleToolResult(
-        [{ toolUseId: 'tool_1', toolName: 'Bash', result: 'command output' }],
-        makeContextWithTurn('session:42:abc'),
-      );
-
-      expect(sink).not.toHaveBeenCalled();
-      expect(mockSay).toHaveBeenCalledTimes(1);
-    });
-
-    it('PHASE=1 + sink installed: legacy say fires, sink NOT called (regression)', async () => {
-      // P1 boundary — B1 stream is live but tool results still own their own
-      // bubble. This test enforces the rollout gate so a future phase-gate
-      // mistake can't silently promote tool absorb to PHASE=1.
-      config.ui.fiveBlockPhase = 1;
-      const sink = vi.fn().mockResolvedValue(true) as unknown as ToolResultSink;
-      processor.setToolResultSink(sink);
-      toolTracker.trackToolUse('tool_1', 'Bash');
-
-      await processor.handleToolResult(
-        [{ toolUseId: 'tool_1', toolName: 'Bash', result: 'command output' }],
-        makeContextWithTurn('session:42:abc'),
-      );
-
-      expect(sink).not.toHaveBeenCalled();
-      expect(mockSay).toHaveBeenCalledTimes(1);
-    });
-
-    it('PHASE=2 + sink + turnId + sink returns true: say is NOT called (absorbed)', async () => {
-      config.ui.fiveBlockPhase = 2;
+    it('sink + turnId + sink returns true: say is NOT called (absorbed)', async () => {
       const sink = vi.fn().mockResolvedValue(true);
       processor.setToolResultSink(sink as unknown as ToolResultSink);
       toolTracker.trackToolUse('tool_1', 'Bash');
@@ -348,11 +306,10 @@ describe('ToolEventProcessor', () => {
       expect(mockSay).not.toHaveBeenCalled();
     });
 
-    it('PHASE=2 + sink returns false (closing/stream-closed): falls back to legacy say', async () => {
+    it('sink returns false (closing/stream-closed): falls back to legacy say', async () => {
       // This is the closing-race fallback: during `end()` the underlying
       // TurnSurface.appendText returns false, the sink propagates that
       // false, and we must still emit the tool bubble rather than drop it.
-      config.ui.fiveBlockPhase = 2;
       const sink = vi.fn().mockResolvedValue(false);
       processor.setToolResultSink(sink as unknown as ToolResultSink);
       toolTracker.trackToolUse('tool_1', 'Bash');
@@ -366,8 +323,7 @@ describe('ToolEventProcessor', () => {
       expect(mockSay).toHaveBeenCalledTimes(1);
     });
 
-    it('PHASE=2 + NO sink installed: legacy say still fires (never silent-drop)', async () => {
-      config.ui.fiveBlockPhase = 2;
+    it('NO sink installed: legacy say still fires (never silent-drop)', async () => {
       // No setToolResultSink call.
       toolTracker.trackToolUse('tool_1', 'Bash');
 
@@ -379,8 +335,7 @@ describe('ToolEventProcessor', () => {
       expect(mockSay).toHaveBeenCalledTimes(1);
     });
 
-    it('PHASE=2 + sink installed but NO turnId in context: falls back to legacy say', async () => {
-      config.ui.fiveBlockPhase = 2;
+    it('sink installed but NO turnId in context: falls back to legacy say', async () => {
       const sink = vi.fn().mockResolvedValue(true);
       processor.setToolResultSink(sink as unknown as ToolResultSink);
       toolTracker.trackToolUse('tool_1', 'Bash');
@@ -395,7 +350,6 @@ describe('ToolEventProcessor', () => {
     });
 
     it('setToolResultSink(null) clears the sink so legacy path resumes', async () => {
-      config.ui.fiveBlockPhase = 2;
       const sink = vi.fn().mockResolvedValue(true);
       processor.setToolResultSink(sink as unknown as ToolResultSink);
       processor.setToolResultSink(null);
@@ -410,13 +364,12 @@ describe('ToolEventProcessor', () => {
       expect(mockSay).toHaveBeenCalledTimes(1);
     });
 
-    it('hidden/compact render mode + PHASE=2: no sink call, no say (mode short-circuit preserved)', async () => {
+    it('hidden/compact render mode: no sink call, no say (mode short-circuit preserved)', async () => {
       // Short-circuit invariant: `getToolResultRenderMode` returns
       // 'hidden' for mask 0 and 'compact' for LOG_COMPACT (TOOL_CALL on,
       // TOOL_RESULT off). Both bypass the bubble entirely, and the sink
       // path must inherit that invariant — absorbing tool output when
       // the user asked to hide it would be a privacy regression.
-      config.ui.fiveBlockPhase = 2;
       const sink = vi.fn().mockResolvedValue(true);
       processor.setToolResultSink(sink as unknown as ToolResultSink);
       toolTracker.trackToolUse('tool_1', 'Bash');
@@ -533,10 +486,7 @@ describe('ToolEventProcessor', () => {
     });
 
     // S13 — bg Task spawn-ack: keeps progress UI alive.
-    it('S13: bg Task spawn-ack tool_result → endMcpTracking SKIPPED + onCompactDurationUpdate fired', async () => {
-      const compactCb = vi.fn().mockResolvedValue(undefined);
-      processor.setCompactDurationCallback(compactCb);
-
+    it('S13: bg Task spawn-ack tool_result → endMcpTracking SKIPPED', async () => {
       const ctx: ToolEventContext = { ...mockContext, turnId: 'C123:1:turn-A' };
       await processor.handleToolUse([{ id: 'tu_bg_ack', name: 'Task', input: makeBgTaskInput() }], ctx);
 
@@ -553,11 +503,6 @@ describe('ToolEventProcessor', () => {
       // Progress UI must survive — no endMcpTracking.
       expect(mcpCallTracker.endCall).not.toHaveBeenCalled();
       expect(mcpStatusDisplay.completeCall).not.toHaveBeenCalled();
-      // Compact one-line still closes via onCompactDurationUpdate.
-      // Pin the elapsed value (mock returns 750) so a future drift of
-      // `getElapsedTime` plumbing can't silently zero/null this field.
-      expect(mcpCallTracker.getElapsedTime).toHaveBeenCalledWith('call_123');
-      expect(compactCb).toHaveBeenCalledWith('tu_bg_ack', 750, 'C123');
     });
 
     // S13b — same spawn-ack semantics, but with the SDK's array
@@ -565,10 +510,7 @@ describe('ToolEventProcessor', () => {
     // Anthropic SDK returns this shape from real Task calls; a string-
     // only test would let an extractTaskIdFromResult regression on the
     // array branch slip past. (Issue #794.)
-    it('S13b: bg Task spawn-ack tool_result (array shape) → endMcpTracking SKIPPED + compactCb fired', async () => {
-      const compactCb = vi.fn().mockResolvedValue(undefined);
-      processor.setCompactDurationCallback(compactCb);
-
+    it('S13b: bg Task spawn-ack tool_result (array shape) → endMcpTracking SKIPPED', async () => {
       const ctx: ToolEventContext = { ...mockContext, turnId: 'C123:1:turn-A' };
       await processor.handleToolUse([{ id: 'tu_bg_ack_arr', name: 'Task', input: makeBgTaskInput() }], ctx);
 
@@ -589,7 +531,6 @@ describe('ToolEventProcessor', () => {
 
       expect(mcpCallTracker.endCall).not.toHaveBeenCalled();
       expect(mcpStatusDisplay.completeCall).not.toHaveBeenCalled();
-      expect(compactCb).toHaveBeenCalledWith('tu_bg_ack_arr', 750, 'C123');
     });
 
     // S14 — bg Task error result: normal close (no special-case).
@@ -948,50 +889,19 @@ describe('ToolEventProcessor', () => {
     });
   });
 
-  // #689 P4 Part 2/2 — PHASE>=4 suppresses the MCP-specific legacy setStatus
-  // call. TurnSurface takes over as the single B4 writer. At PHASE<4 the
-  // legacy path must still fire (regression guard).
-  describe('#689 B4 legacy suppression', () => {
-    const originalPhase = config.ui.fiveBlockPhase;
-    afterEach(async () => {
-      config.ui.fiveBlockPhase = originalPhase;
-      // Reset the module-level clamp-once flag so the disabled-mgr clamp
-      // test doesn't leak state into subsequent tests. Mirrors the pattern
-      // in turn-surface.test.ts (commit 1c83d5e).
-      const { __resetClampEmitted } = await import('../pipeline/effective-phase');
-      __resetClampEmitted();
-    });
-
-    const makeMgr = (enabled: boolean) => ({
-      isEnabled: vi.fn().mockReturnValue(enabled),
+  describe('B4 native status is not written from tool events', () => {
+    const makeMgr = () => ({
+      isEnabled: vi.fn().mockReturnValue(true),
       setStatus: vi.fn().mockResolvedValue(undefined),
       clearStatus: vi.fn().mockResolvedValue(undefined),
       getToolStatusText: vi.fn().mockReturnValue('is calling jira...'),
     });
 
-    it('PHASE<4: handleToolUse calls setStatus on MCP tool (legacy behaviour)', async () => {
-      config.ui.fiveBlockPhase = 3;
-      const mgr = makeMgr(true);
-      const proc = new ToolEventProcessor(toolTracker, mcpStatusDisplay, mcpCallTracker, mgr as any);
-      await proc.handleToolUse([{ id: 'tool_1', name: 'mcp__jira__search_issues', input: { q: 't' } }], mockContext);
-      expect(mgr.setStatus).toHaveBeenCalledTimes(1);
-      expect(mgr.setStatus).toHaveBeenCalledWith('C123', 'thread_ts', 'is calling jira...');
-    });
-
-    it('PHASE>=4 + enabled: handleToolUse does NOT call setStatus (TurnSurface owns)', async () => {
-      config.ui.fiveBlockPhase = 4;
-      const mgr = makeMgr(true);
+    it('handleToolUse does NOT call setStatus (TurnSurface owns)', async () => {
+      const mgr = makeMgr();
       const proc = new ToolEventProcessor(toolTracker, mcpStatusDisplay, mcpCallTracker, mgr as any);
       await proc.handleToolUse([{ id: 'tool_1', name: 'mcp__jira__search_issues', input: { q: 't' } }], mockContext);
       expect(mgr.setStatus).not.toHaveBeenCalled();
-    });
-
-    it('PHASE>=4 + disabled (clamped): handleToolUse re-fires legacy setStatus (graceful fallback)', async () => {
-      config.ui.fiveBlockPhase = 4;
-      const mgr = makeMgr(false);
-      const proc = new ToolEventProcessor(toolTracker, mcpStatusDisplay, mcpCallTracker, mgr as any);
-      await proc.handleToolUse([{ id: 'tool_1', name: 'mcp__jira__search_issues', input: { q: 't' } }], mockContext);
-      expect(mgr.setStatus).toHaveBeenCalledTimes(1);
     });
 
     // #700 round-3 review finding #8 — getToolStatusText returning undefined
@@ -1000,7 +910,6 @@ describe('ToolEventProcessor', () => {
     // skip so a future bug (TOOL_STATUS_MAP becoming Partial, serverName
     // resolution change) cannot silently regress into a clear.
     it('getToolStatusText returns undefined: setStatus is NOT called with empty string', async () => {
-      config.ui.fiveBlockPhase = 3;
       const mgr = {
         isEnabled: vi.fn().mockReturnValue(true),
         setStatus: vi.fn().mockResolvedValue(undefined),
