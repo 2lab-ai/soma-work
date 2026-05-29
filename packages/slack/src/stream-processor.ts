@@ -20,7 +20,6 @@ import {
   shouldOutput as checkOutputFlag,
   getThinkingRenderMode,
   getToolCallRenderMode,
-  getToolResultRenderMode,
   LOG_DETAIL,
   OutputFlag,
   verboseTag,
@@ -31,7 +30,6 @@ import { ToolFormatter } from './tool-formatter';
 import { UserChoiceHandler } from './user-choice-handler';
 
 export interface StreamProcessorProviders {
-  getFiveBlockPhase?: () => number;
   calculateTokenCost?: (
     model: string | undefined,
     inputTokens: number,
@@ -42,7 +40,6 @@ export interface StreamProcessorProviders {
 }
 
 let streamProcessorProviders: Required<StreamProcessorProviders> = {
-  getFiveBlockPhase: () => Number(process.env.SOMA_UI_5BLOCK_PHASE || 0),
   calculateTokenCost: () => 0,
 };
 
@@ -51,11 +48,6 @@ export function setStreamProcessorProviders(providers: StreamProcessorProviders)
     ...streamProcessorProviders,
     ...providers,
   };
-}
-
-function getFiveBlockPhase(): number {
-  const phase = Number(streamProcessorProviders.getFiveBlockPhase());
-  return Number.isFinite(phase) ? phase : 0;
 }
 
 /**
@@ -163,16 +155,6 @@ export interface PendingForm {
   questions: any[];
   selections: Record<string, { choiceId: string; label: string }>;
   createdAt: number;
-}
-
-/**
- * Compact mode tool call entry for batch-aware in-place updates
- */
-export interface CompactToolCallEntry {
-  toolName: string;
-  input: any;
-  status: 'pending' | 'done' | 'error';
-  duration?: number | null;
 }
 
 /**
@@ -459,10 +441,6 @@ export class StreamProcessor {
   private logger = new Logger('StreamProcessor');
   private callbacks: StreamCallbacks;
   private _hasUserChoice = false;
-  /** Maps message ts → Map<toolUseId, entry> for compact in-place updates (batch-aware) */
-  private compactMessageEntries = new Map<string, Map<string, CompactToolCallEntry>>();
-  /** Reverse lookup: toolUseId → message ts */
-  private toolUseToMessageTs = new Map<string, string>();
   /** Maps Task tool_use_id → input (for correlating TaskOutput with original Task) */
   private pendingTaskInputs = new Map<string, any>();
   /** Maps background task_id → original Task input metadata (for TaskOutput display) */
@@ -909,28 +887,10 @@ export class StreamProcessor {
       const toolContent = ToolFormatter.formatToolUse(enrichedContent, toolCallMode);
       if (toolContent) {
         const tag = this.vtag(OutputFlag.TOOL_CALL, context);
-        const result = await context.say({
+        await context.say({
           text: tag + toolContent,
           thread_ts: context.threadTs,
         });
-        // Track message ts + tool info for compact mode in-place updates (batch-aware)
-        if (toolCallMode === 'compact' && result?.ts) {
-          const ts = result.ts;
-          if (!this.compactMessageEntries.has(ts)) {
-            this.compactMessageEntries.set(ts, new Map());
-          }
-          const entries = this.compactMessageEntries.get(ts)!;
-          for (const part of enrichedContent) {
-            if (part.type === 'tool_use' && part.id) {
-              entries.set(part.id, {
-                toolName: part.name,
-                input: part.input,
-                status: 'pending',
-              });
-              this.toolUseToMessageTs.set(part.id, ts);
-            }
-          }
-        }
       }
     }
 
@@ -1295,104 +1255,9 @@ export class StreamProcessor {
     // Correlate Task results with background task IDs for TaskOutput display
     this.correlateTaskResults(toolResults);
 
-    // Compact mode: update tool call messages in-place (batch-aware)
-    const resultMode = getToolResultRenderMode(context.logVerbosity ?? LOG_DETAIL);
-    if (resultMode === 'compact' && this.callbacks.onUpdateMessage) {
-      // Collect which message ts's need rebuilding
-      const affectedTs = new Set<string>();
-      for (const tr of toolResults) {
-        const ts = this.toolUseToMessageTs.get(tr.toolUseId);
-        if (!ts) continue;
-        const entries = this.compactMessageEntries.get(ts);
-        if (!entries) continue;
-        const entry = entries.get(tr.toolUseId);
-        if (!entry) continue;
-
-        // Enrich TaskOutput with original Task metadata
-        if (entry.toolName === 'TaskOutput') {
-          entry.input = this.enrichTaskOutputInput(entry.input);
-        }
-
-        entry.status = tr.isError ? 'error' : 'done';
-        affectedTs.add(ts);
-      }
-
-      // Rebuild and update all affected messages
-      for (const ts of affectedTs) {
-        await this.rebuildCompactMessage(ts, context.channel);
-      }
-    }
-
     if (toolResults.length > 0 && this.callbacks.onToolResult) {
       await this.callbacks.onToolResult(toolResults, context);
     }
-  }
-
-  /**
-   * Rebuild a compact message from all tracked tool entries for the given ts.
-   * Each line shows the correct status icon (⏳/⚪/🟢/🔴) and optional duration.
-   *
-   * PHASE>=1: no compact messages are created in the first place (see
-   * handleToolUseMessage), so entries will be empty and this is a natural
-   * no-op. The explicit guard below documents intent and defends against
-   * accidental future wiring.
-   */
-  private async rebuildCompactMessage(ts: string, channel: string): Promise<void> {
-    if (getFiveBlockPhase() >= 1) return;
-    const entries = this.compactMessageEntries.get(ts);
-    if (!entries || !this.callbacks.onUpdateMessage) return;
-
-    const lines: string[] = [];
-    for (const [, entry] of entries) {
-      if (entry.status === 'done' || entry.status === 'error') {
-        lines.push(
-          ToolFormatter.formatOneLineToolComplete(
-            entry.toolName,
-            entry.input,
-            entry.status === 'error',
-            entry.duration,
-          ),
-        );
-      } else {
-        const isAsync = entry.toolName.startsWith('mcp__') || entry.toolName === 'Task';
-        const icon = isAsync ? '⏳' : '⚪';
-        lines.push(`${icon} ${ToolFormatter.formatOneLineToolUse(entry.toolName, entry.input)}`);
-      }
-    }
-
-    const text = lines.join('\n');
-    await this.callbacks.onUpdateMessage(channel, ts, text);
-
-    // Cleanup only when all entries are finalized:
-    // - all statuses resolved (done/error)
-    // - async tools (MCP/Task) have duration set (or won't get one)
-    const allDone = Array.from(entries.values()).every((e) => e.status !== 'pending');
-    const allDurationsResolved = Array.from(entries.values()).every((e) => {
-      const isAsync = e.toolName.startsWith('mcp__') || e.toolName === 'Task';
-      return !isAsync || e.duration !== undefined;
-    });
-    if (allDone && allDurationsResolved) {
-      for (const toolUseId of entries.keys()) {
-        this.toolUseToMessageTs.delete(toolUseId);
-      }
-      this.compactMessageEntries.delete(ts);
-    }
-  }
-
-  /**
-   * Update a tool call entry with duration (called by tool-event-processor after MCP completes).
-   * Triggers a rebuild of the compact message containing this tool.
-   */
-  async updateToolCallDuration(toolUseId: string, duration: number | null, channel: string): Promise<void> {
-    const ts = this.toolUseToMessageTs.get(toolUseId);
-    if (!ts) return;
-    const entries = this.compactMessageEntries.get(ts);
-    if (!entries) return;
-    const entry = entries.get(toolUseId);
-    if (!entry) return;
-
-    entry.duration = duration;
-    await this.rebuildCompactMessage(ts, channel);
   }
 
   /**

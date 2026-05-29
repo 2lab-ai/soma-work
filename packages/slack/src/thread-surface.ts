@@ -3,10 +3,9 @@ import { ActionPanelBuilder, type ActivityState, type PRStatusInfo, type Workflo
 import type { AssistantStatusManager } from './assistant-status-manager';
 import type { CompletionMessageTracker } from './completion-message-tracker';
 import { ContextWindowManager, type SessionUsage } from './context-window-manager';
-import { configureEffectivePhase, getEffectiveFiveBlockPhase } from './pipeline/effective-phase';
 import type { RequestCoordinator } from './request-coordinator';
 import type { SlackApiHelper } from './slack-api-helper';
-import { type SessionTheme, TaskListBlockBuilder, type Todo, type TodoStatusReader } from './task-list-block-builder';
+import { type SessionTheme, type Todo, type TodoStatusReader } from './task-list-block-builder';
 import { type SessionLinkHistory, type SessionLinks, ThreadHeaderBuilder } from './thread-header-builder';
 import type { SlackMessagePayload } from './user-choice-handler';
 
@@ -89,7 +88,6 @@ export interface GitHubPRDetails {
 export type GitHubPRReviewStatus = 'approved' | 'changes_requested' | 'pending' | undefined;
 
 export interface ThreadSurfaceProviders {
-  getFiveBlockPhase?: () => number;
   getSessionTheme?: (userId: string | undefined) => SessionTheme;
   fetchGitHubPRDetails?: (link: any) => Promise<GitHubPRDetails | undefined>;
   fetchGitHubPRReviewStatus?: (link: any) => Promise<GitHubPRReviewStatus>;
@@ -97,7 +95,6 @@ export interface ThreadSurfaceProviders {
 }
 
 let threadSurfaceProviders: Required<ThreadSurfaceProviders> = {
-  getFiveBlockPhase: () => Number(process.env.SOMA_UI_5BLOCK_PHASE || 0),
   getSessionTheme: () => 'default',
   fetchGitHubPRDetails: async () => undefined,
   fetchGitHubPRReviewStatus: async () => undefined,
@@ -109,14 +106,6 @@ export function setThreadSurfaceProviders(providers: ThreadSurfaceProviders): vo
     ...threadSurfaceProviders,
     ...providers,
   };
-  if (providers.getFiveBlockPhase) {
-    configureEffectivePhase({ getFiveBlockPhase: providers.getFiveBlockPhase });
-  }
-}
-
-function getFiveBlockPhase(): number {
-  const phase = Number(threadSurfaceProviders.getFiveBlockPhase());
-  return Number.isFinite(phase) ? phase : 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -195,14 +184,11 @@ interface SessionRenderState {
  */
 export class ThreadSurface {
   private logger = new Logger('ThreadSurface');
-  private taskListBuilder: TaskListBlockBuilder;
 
   // Per-session render state keyed by sessionKey
   private sessions = new Map<string, SessionRenderState>();
 
-  constructor(private deps: ThreadSurfaceDeps) {
-    this.taskListBuilder = new TaskListBlockBuilder(deps.todoManager);
-  }
+  constructor(private deps: ThreadSurfaceDeps) {}
 
   private getState(sessionKey: string): SessionRenderState {
     let state = this.sessions.get(sessionKey);
@@ -377,7 +363,6 @@ export class ThreadSurface {
    * no-op (legacy code should use attachChoice instead).
    */
   async setChoiceMeta(sessionKey: string, ts: string): Promise<void> {
-    if (getFiveBlockPhase() < 3) return;
     const session = this.deps.claudeHandler.getSessionByKey(sessionKey);
     if (!session) return;
     if (!session.actionPanel) {
@@ -717,14 +702,6 @@ export class ThreadSurface {
     blocks.push(...this.buildHeaderBlocks(session));
 
     // ── 2. Status + fields section (from ActionPanelBuilder) ──
-    // #689 P4 Part 2/2 — at effective PHASE>=4, TurnSurface owns the native
-    // spinner; suppress the inline agent chip here so the user does not see
-    // a duplicate progress indicator. Clamp-aware so a runtime scope error
-    // automatically restores the chip (Phase-3-style fallback).
-    const suppressAgentChip = this.deps.assistantStatusManager
-      ? getEffectiveFiveBlockPhase(this.deps.assistantStatusManager) >= 4
-      : false;
-
     const panelPayload = ActionPanelBuilder.build({
       sessionKey,
       workflow: session.workflow,
@@ -737,9 +714,6 @@ export class ThreadSurface {
       activityState: session.activityState,
       contextRemainingPercent: this.getContextRemainingPercent(session),
       hasActiveRequest,
-      agentPhase: panelState.agentPhase,
-      activeTool: panelState.activeTool,
-      suppressAgentChip,
       statusUpdatedAt: panelState.statusUpdatedAt,
       logVerbosity: session.logVerbosity,
       prStatus: prStatusInfo?.prStatus,
@@ -749,37 +723,11 @@ export class ThreadSurface {
     // ActionPanelBuilder.build() returns full blocks — use them after header
     blocks.push(...panelPayload.blocks);
 
-    // ── 3. Task list section (at bottom of header area) ──
-    // Slack enforces a 50-block maximum per message. Reserve room for summary.
-    const SLACK_MAX_BLOCKS = 50;
+    // ── 3. Summary section ──
     const summaryBlocks =
       session.actionPanel?.summaryBlocks && Array.isArray(session.actionPanel.summaryBlocks)
         ? session.actionPanel.summaryBlocks
         : [];
-    const budgetForTaskList = SLACK_MAX_BLOCKS - blocks.length - summaryBlocks.length;
-
-    // Under PHASE>=2 the task list renders as its own `planTs` message via
-    // TurnSurface.renderTasks. Skip the embed here to avoid dual rendering
-    // (combined header + plan message) showing the same todos twice.
-    const todos = getFiveBlockPhase() < 2 && session.sessionId ? this.deps.todoManager.getTodos(session.sessionId) : [];
-    if (todos.length > 0 && budgetForTaskList >= 4) {
-      const taskListTheme = threadSurfaceProviders.getSessionTheme(session.ownerId);
-      const taskListBlocks = this.taskListBuilder.buildBlocks(todos, {
-        startedAt: session.taskListStartedAt,
-        completedAt: session.taskListCompletedAt,
-        theme: taskListTheme,
-      });
-      // Only append if it fits within the block budget
-      if (taskListBlocks.length <= budgetForTaskList) {
-        blocks.push(...taskListBlocks);
-      } else {
-        this.logger.debug('Skipping task list blocks (would exceed 50-block limit)', {
-          current: blocks.length,
-          taskListBlocks: taskListBlocks.length,
-          summaryBlocks: summaryBlocks.length,
-        });
-      }
-    }
 
     // Append executive summary blocks if present
     // Trace: docs/archive/features/turn-summary-lifecycle/trace.md, S3

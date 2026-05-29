@@ -34,12 +34,6 @@ export interface WarnLogger {
   warn(message: string, meta?: Record<string, unknown>): void;
 }
 
-let getFiveBlockPhase: () => number = () => Number(process.env.SOMA_UI_5BLOCK_PHASE || 0);
-
-export function setClickClassifierFiveBlockPhaseProvider(provider: () => number): void {
-  getFiveBlockPhase = provider;
-}
-
 /**
  * Wrap a marker text in a single-section Slack blocks payload.
  */
@@ -63,7 +57,6 @@ export function classifyClick(
     formId?: string;
   },
 ): ClickBranch {
-  if (getFiveBlockPhase() < 3) return 'legacy';
   const session = claudeHandler.getSessionByKey(args.sessionKey);
   const pc = session?.actionPanel?.pendingChoice;
   if (pc) {

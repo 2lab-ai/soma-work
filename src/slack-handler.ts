@@ -348,8 +348,8 @@ export class SlackHandler {
     // `assistant_thread_started` / `assistant_thread_context_changed` and
     // assistant-thread `message.im` events through this middleware. The
     // `userMessage` handler delegates to `handleMessage` so assistant threads
-    // behave identically to a regular DM. Native spinner activation is gated
-    // by `SOMA_UI_B4_NATIVE_STATUS` (default off) — Part 2 will flip it.
+    // behave identically to a regular DM. Native spinner activation is
+    // handled by the assistant status manager.
     app.assistant(
       createAssistantContainer({
         logger: this.logger,
