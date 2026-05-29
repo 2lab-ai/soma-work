@@ -11,8 +11,7 @@
  *   - Part 1 (this file): threadStarted presents 4 placeholder prompts;
  *     userMessage delegates to the existing DM `handleMessage` so assistant
  *     threads behave identically to a regular DM. Native `setStatus` spinner
- *     activation lives in Part 2 behind `SOMA_UI_B4_NATIVE_STATUS=1` and
- *     turn-surface wiring.
+ *     updates are handled by turn-surface wiring.
  *   - threadContextChanged is intentionally omitted so Bolt's default
  *     context store handles `assistant_thread_context_changed` automatically.
  *     (Bolt v4.7.0 — see Assistant.ts#L23-L28.)

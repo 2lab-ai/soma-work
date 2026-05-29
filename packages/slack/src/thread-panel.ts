@@ -8,13 +8,11 @@ import type { Todo } from './task-list-block-builder';
 import {
   type ConversationSession,
   type EndTurnInfo,
-  setThreadSurfaceProviders,
   ThreadSurface,
   type ThreadSurfaceTodoManager,
 } from './thread-surface';
 import type { TurnCompletionEvent } from './turn-notifier';
 import {
-  setTurnSurfaceFiveBlockPhaseProvider,
   type TurnAddress,
   type TurnContext,
   type TurnEndReason,
@@ -22,19 +20,6 @@ import {
   TurnSurface,
 } from './turn-surface';
 import type { SlackMessagePayload } from './user-choice-handler';
-
-let fiveBlockPhaseProvider: () => number = () => Number(process.env.SOMA_UI_5BLOCK_PHASE || 0);
-
-export function setThreadPanelFiveBlockPhaseProvider(provider: () => number): void {
-  fiveBlockPhaseProvider = provider;
-  setThreadSurfaceProviders({ getFiveBlockPhase: provider });
-  setTurnSurfaceFiveBlockPhaseProvider(provider);
-}
-
-function getFiveBlockPhase(): number {
-  const phase = Number(fiveBlockPhaseProvider());
-  return Number.isFinite(phase) ? phase : 0;
-}
 
 export type UserChoice = unknown;
 export type UserChoices = unknown;
@@ -181,7 +166,7 @@ export class ThreadPanel {
    * the new `appendText` path without importing `config` itself.
    */
   isTurnSurfaceActive(): boolean {
-    return getFiveBlockPhase() >= 1;
+    return true;
   }
 
   /**
@@ -191,12 +176,11 @@ export class ThreadPanel {
    * keeps the legacy fan-out instead of silently dropping the marker.
    */
   isCompletionMarkerActive(): boolean {
-    return getFiveBlockPhase() >= 5 && this.deps.slackBlockKitChannel !== undefined;
+    return this.deps.slackBlockKitChannel !== undefined;
   }
 
   /** Open a per-turn B1 stream. PHASE=0 no-ops. */
   async beginTurn(ctx: TurnContext): Promise<void> {
-    if (getFiveBlockPhase() < 1) return;
     await this.turnSurface.begin(ctx);
   }
 
@@ -210,7 +194,6 @@ export class ThreadPanel {
    * assistant reply.
    */
   async appendText(turnId: string, text: string): Promise<boolean> {
-    if (getFiveBlockPhase() < 1) return false;
     return this.turnSurface.appendText(turnId, text);
   }
 
@@ -224,15 +207,11 @@ export class ThreadPanel {
    * post a fallback `turnNotifier.notify()`.
    */
   async endTurn(turnId: string, reason: TurnEndReason): Promise<TurnEndResult> {
-    // PHASE=0 — no B5 expected, so report `snapshotResolved: true` to
-    // suppress any fallback notify on the caller side.
-    if (getFiveBlockPhase() < 1) return { snapshotResolved: true };
     return this.turnSurface.end(turnId, reason);
   }
 
   /** Defensive close on error — always attempts stopStream. PHASE=0 no-ops. */
   async failTurn(turnId: string, error: Error): Promise<void> {
-    if (getFiveBlockPhase() < 1) return;
     await this.turnSurface.fail(turnId, error);
   }
 
@@ -252,7 +231,6 @@ export class ThreadPanel {
    * `false` as "fall back to legacy `onRenderRequest`".
    */
   async renderTasks(turnId: string, todos: Todo[], ctx?: TurnAddress): Promise<boolean> {
-    if (getFiveBlockPhase() < 2) return false;
     return this.turnSurface.renderTasks(turnId, todos, ctx);
   }
 
@@ -295,7 +273,6 @@ export class ThreadPanel {
     session: ConversationSession,
     sessionKey: string,
   ): Promise<{ ok: true; primaryTs: string } | { ok: false; reason: 'phase-disabled' | 'post-failed'; error?: Error }> {
-    if (getFiveBlockPhase() < 3) return { ok: false, reason: 'phase-disabled' };
     let ts: string;
     try {
       ts = await this.turnSurface.askUser(turnId, builtPayload, text, address);
@@ -358,8 +335,6 @@ export class ThreadPanel {
     | { ok: false; reason: 'phase-disabled' }
     | { ok: false; reason: 'post-failed'; postedTs: string[]; failedIndex: number; error: Error }
   > {
-    if (getFiveBlockPhase() < 3) return { ok: false, reason: 'phase-disabled' };
-
     const allTs: string[] = [];
     let i = 0;
     try {
@@ -449,7 +424,6 @@ export class ThreadPanel {
     completedText: string,
     completedBlocks: any[],
   ): Promise<boolean> {
-    if (getFiveBlockPhase() < 3) return false;
     const pc = session.actionPanel?.pendingChoice;
     if (!pc || pc.kind !== 'single' || !pc.choiceTs) return false;
     await this.turnSurface.resolveChoice(channelId, pc.choiceTs, completedText, completedBlocks);
@@ -469,7 +443,6 @@ export class ThreadPanel {
     completedText: string,
     completedBlocks: any[],
   ): Promise<boolean> {
-    if (getFiveBlockPhase() < 3) return false;
     const pc = session.actionPanel?.pendingChoice;
     if (!pc || pc.kind !== 'multi') return false;
     await this.turnSurface.resolveMultiChoice(channelId, tsList, completedText, completedBlocks);

@@ -1,36 +1,18 @@
 import { Logger } from '@soma/common/logger';
 import type { AssistantStatusManager } from './assistant-status-manager';
-import { configureEffectivePhase, getEffectiveFiveBlockPhase } from './pipeline/effective-phase';
 import type { SlackApiHelper } from './slack-api-helper';
 import { TaskListBlockBuilder, type Todo } from './task-list-block-builder';
 import type { TurnCompletionEvent } from './turn-notifier';
 import { TurnRenderDebouncer } from './turn-render-debouncer';
 
-let fiveBlockPhaseProvider: () => number = () => Number(process.env.SOMA_UI_5BLOCK_PHASE || 0);
-
-export function setTurnSurfaceFiveBlockPhaseProvider(provider: () => number): void {
-  fiveBlockPhaseProvider = provider;
-  configureEffectivePhase({ getFiveBlockPhase: provider });
-}
-
-function getFiveBlockPhase(): number {
-  const phase = Number(fiveBlockPhaseProvider());
-  return Number.isFinite(phase) ? phase : 0;
-}
-
 /**
  * TurnSurface — single-writer for a per-turn streaming surface (Issue #525).
  *
- * P1 scope (SOMA_UI_5BLOCK_PHASE>=1): owns **B1 stream consolidation** only.
+ * Owns the per-turn Slack stream and auxiliary turn-surface blocks.
  *
  *   begin()      → chat.startStream (opens B1 stream message)
  *   appendText() → chat.appendStream with a markdown_text chunk
  *   end()/fail() → chat.stopStream (chunks-mode symmetry)
- *
- * All other blocks (B2 plan / B3 choice / B4 status / B5 completion) remain
- * on the legacy ThreadSurface path. The corresponding placeholder methods
- * (`renderTasks`, `askUser`) are phase-guarded no-ops in P1 and will be
- * activated in P2/P3.
  *
  * **Chunks-mode invariant**:
  *   Once `chat.appendStream` is called with `chunks: [...]`, the stream is
@@ -244,27 +226,6 @@ export class TurnSurface {
   // Internal helpers
   // -------------------------------------------------------------------------
 
-  /**
-   * Current rollout phase (0..5). Read each call rather than cached, so
-   * a mid-session env flip (test-only) takes effect on the next turn.
-   */
-  private phase(): number {
-    return getFiveBlockPhase();
-  }
-
-  /**
-   * #689 P4 Part 2/2 — effective phase for B4 consumers. Identical to
-   * `phase()` unless `raw >= 4 && !assistantStatusManager.isEnabled()`, in
-   * which case it clamps to 3 and emits the `soma_ui_5block_phase_clamped`
-   * metric (once-flag). If no `assistantStatusManager` is injected we fall
-   * back to the raw phase (tests / legacy constructors).
-   */
-  private effectivePhase(): number {
-    const mgr = this.deps.assistantStatusManager;
-    if (!mgr) return this.phase();
-    return getEffectiveFiveBlockPhase(mgr);
-  }
-
   // -------------------------------------------------------------------------
   // Public API (plan v2 §3.2)
   // -------------------------------------------------------------------------
@@ -277,8 +238,6 @@ export class TurnSurface {
    * superseded first so the previous stream closes cleanly.
    */
   async begin(ctx: TurnContext): Promise<void> {
-    if (this.phase() < 1) return;
-
     // Duplicate begin() on the same turnId is a contract violation from the
     // caller, but we defend so a stray call can't open a second Slack stream
     // and orphan the first handle.
@@ -373,7 +332,7 @@ export class TurnSurface {
     // scope failure flips `enabled=false` → effective clamp to 3 on the
     // next turn, falling back to ThreadSurface chip.
     const mgr = this.deps.assistantStatusManager;
-    if (mgr && this.effectivePhase() >= 4 && ctx.threadTs) {
+    if (mgr && ctx.threadTs) {
       // Fail-open matching `chat.startStream` above: the B1 stream + turn
       // lifecycle must survive a sidebar-spinner throw. The manager handles
       // expected permanent/transient codes internally, so this try/catch
@@ -406,7 +365,6 @@ export class TurnSurface {
    *   - `chat.appendStream` itself raises (Slack error, network)
    */
   async appendText(turnId: string, text: string): Promise<boolean> {
-    if (this.phase() < 1) return false;
     // Reject whitespace-only chunks (matches `handleTextMessage`'s own
     // `!text.trim()` guard at stream-processor.ts) so stray newlines /
     // indentation fragments don't get billed as chunks or rendered as
@@ -461,7 +419,6 @@ export class TurnSurface {
    * — PHASE<2, empty todos, or missing context.
    */
   async renderTasks(turnId: string, todos: Todo[], ctx?: TurnAddress): Promise<boolean> {
-    if (this.phase() < 2) return false;
     if (!todos || todos.length === 0) return false;
 
     let state = this.turns.get(turnId);
@@ -616,7 +573,6 @@ export class TurnSurface {
     text: string,
     address: TurnAddress,
   ): Promise<string> {
-    if (this.phase() < 3) return '';
     const client = this.deps.slackApi.getClient();
     const postArgs: Record<string, unknown> = {
       channel: address.channelId,
@@ -650,7 +606,6 @@ export class TurnSurface {
     text: string,
     address: TurnAddress,
   ): Promise<string> {
-    if (this.phase() < 3) return '';
     const client = this.deps.slackApi.getClient();
     const postArgs: Record<string, unknown> = {
       channel: address.channelId,
@@ -683,7 +638,6 @@ export class TurnSurface {
     completedText: string,
     completedBlocks: any[],
   ): Promise<void> {
-    if (this.phase() < 3) return;
     try {
       await this.deps.slackApi.updateMessage(channelId, choiceTs, completedText, completedBlocks, []);
       this.logger.debug('B3 single-choice resolved', { channelId, choiceTs });
@@ -717,7 +671,6 @@ export class TurnSurface {
     completedText: string,
     completedBlocks: any[],
   ): Promise<void> {
-    if (this.phase() < 3) return;
     // Chunks are independent Slack messages — update in parallel so the user
     // sees all resolves at roughly the same wall clock. Individual failures
     // are logged but don't fail siblings.
@@ -745,11 +698,6 @@ export class TurnSurface {
    * opened a stream.
    */
   async end(turnId: string, reason: TurnEndReason): Promise<TurnEndResult> {
-    // PHASE=0 / unknown-turn / already-closing → no-op. Report
-    // `snapshotResolved: true` because there is no expected B5 snapshot on
-    // these paths and the caller MUST NOT post a fallback notify.
-    if (this.phase() < 1) return { snapshotResolved: true };
-
     const state = this.turns.get(turnId);
     // Idempotent: already closing (another end()/fail() in flight) or already
     // closed (state cleaned up) → no-op. Check-and-set is synchronous so
@@ -799,15 +747,15 @@ export class TurnSurface {
       });
     } finally {
       // #689 P4 Part 2/2 — B4 native spinner clear. Wrapped: although
-      // `clearStatus` swallows its own Slack errors, `effectivePhase()`
-      // and the epoch/`clearInterval` path can still throw. A throw here
+      // `clearStatus` swallows its own Slack errors, but the epoch/
+      // `clearInterval` path can still throw. A throw here
       // must NEVER skip `cleanupTurn` — orphaning `this.turns` would make
       // the next turn hit the `begin()` called-twice guard and drop silently.
       // #688 — pass `statusEpoch` so a stale close from a superseded turn
       // cannot wipe a spinner set by the newer turn on the same thread.
       try {
         const mgr = this.deps.assistantStatusManager;
-        if (mgr && this.effectivePhase() >= 4 && state.ctx.threadTs) {
+        if (mgr && state.ctx.threadTs) {
           const opts = state.ctx.statusEpoch !== undefined ? { expectedEpoch: state.ctx.statusEpoch } : undefined;
           await mgr.clearStatus(state.ctx.channelId, state.ctx.threadTs, opts);
         }
@@ -928,8 +876,6 @@ export class TurnSurface {
    * TurnNotifier path owns failure notifications through PHASE=4.
    */
   async fail(turnId: string, error: Error): Promise<void> {
-    if (this.phase() < 1) return;
-
     const state = this.turns.get(turnId);
     // Idempotent: already closing (another end()/fail() in flight) or already
     // closed (state cleaned up) → no-op. See end() for the same rationale.
@@ -958,7 +904,7 @@ export class TurnSurface {
       // Wrapped for the same reason: a throw must never skip `cleanupTurn`.
       try {
         const mgr = this.deps.assistantStatusManager;
-        if (mgr && this.effectivePhase() >= 4 && state.ctx.threadTs) {
+        if (mgr && state.ctx.threadTs) {
           const opts = state.ctx.statusEpoch !== undefined ? { expectedEpoch: state.ctx.statusEpoch } : undefined;
           await mgr.clearStatus(state.ctx.channelId, state.ctx.threadTs, opts);
         }
@@ -1041,7 +987,6 @@ export class TurnSurface {
    * the close path.
    */
   private async finalizePlanIfNeeded(turnId: string, state: TurnState): Promise<void> {
-    if (this.phase() < 2) return;
     if (!state.planTs || !state.latestTodos || state.latestTodos.length === 0) return;
     // `in_progress` is the only status Slack renders with a spinner — pending,
     // blocked (rendered as pending), completed and error are all static. So
