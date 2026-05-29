@@ -68,11 +68,14 @@ describe('model-topic.applyModel', () => {
 
   // --- Issue #656: end-to-end alias resolution ---
 
-  it('resolves opus[1m] alias to the 1M variant', async () => {
+  it('resolves opus[1m] alias to the current-latest 1M variant', async () => {
     const r = await applyModel({ userId: 'U1', value: 'opus[1m]' });
     expect(r.ok).toBe(true);
-    // Display name is mocked to `Display:<id>` — asserting the real model id is reached.
-    expect(r.description).toContain('claude-opus-4-7[1m]');
+    // The bare `opus[1m]` alias follows "latest opus" — currently 4.8.
+    // When a new opus generation lands the alias flips here too; that's the
+    // single point of update. Version-pinned aliases are covered separately
+    // below (opus-4.7[1m], opus-4.6[1m]).
+    expect(r.description).toContain('claude-opus-4-8[1m]');
   });
 
   it('resolves opus-4.7[1m] dotted alias to the 1M variant', async () => {
