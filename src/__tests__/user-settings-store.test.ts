@@ -30,31 +30,39 @@ function makeStore(): UserSettingsStore {
 // tests assert the **exact** expected arrays/records, not just the length,
 // so any future silent removal is caught immediately.
 describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', () => {
-  it('AVAILABLE_MODELS is exactly 8 entries in the expected order', () => {
+  it('AVAILABLE_MODELS is exactly 10 entries in the expected order', () => {
+    // 4.8 (2026-05-28) prepended at the top of each tier so substring matchers
+    // see it before 4.7. Historical entries MUST survive every bump.
     expect([...AVAILABLE_MODELS]).toEqual([
+      'claude-opus-4-8',
       'claude-opus-4-7',
       'claude-opus-4-6',
       'claude-sonnet-4-6',
       'claude-sonnet-4-5-20250929',
       'claude-opus-4-5-20251101',
       'claude-haiku-4-5-20251001',
+      'claude-opus-4-8[1m]',
       'claude-opus-4-7[1m]',
       'claude-opus-4-6[1m]',
     ]);
   });
 
-  it('MODEL_ALIASES has exactly the 12 expected key→value mappings', () => {
+  it('MODEL_ALIASES has exactly the 15 expected key→value mappings', () => {
+    // `opus` / `opus[1m]` follow "latest opus" semantics → 4.8. Version-pinned
+    // aliases (`opus-4.7`, `opus-4.6`, ...) remain pinned to their generation.
     expect(MODEL_ALIASES).toEqual({
       sonnet: 'claude-sonnet-4-6',
       'sonnet-4.6': 'claude-sonnet-4-6',
       'sonnet-4.5': 'claude-sonnet-4-5-20250929',
-      opus: 'claude-opus-4-7',
+      opus: 'claude-opus-4-8',
+      'opus-4.8': 'claude-opus-4-8',
       'opus-4.7': 'claude-opus-4-7',
       'opus-4.6': 'claude-opus-4-6',
       'opus-4.5': 'claude-opus-4-5-20251101',
       haiku: 'claude-haiku-4-5-20251001',
       'haiku-4.5': 'claude-haiku-4-5-20251001',
-      'opus[1m]': 'claude-opus-4-7[1m]',
+      'opus[1m]': 'claude-opus-4-8[1m]',
+      'opus-4.8[1m]': 'claude-opus-4-8[1m]',
       'opus-4.7[1m]': 'claude-opus-4-7[1m]',
       'opus-4.6[1m]': 'claude-opus-4-6[1m]',
     });

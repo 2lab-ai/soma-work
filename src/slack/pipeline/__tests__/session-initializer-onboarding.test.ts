@@ -29,20 +29,22 @@ vi.mock('../../../user-settings-store', () => ({
     loadSlackJiraMapping: vi.fn(),
     getSlackJiraMapping: vi.fn().mockReturnValue({}),
     findJiraAccountBySlackId: vi.fn().mockReturnValue(undefined),
-    getModelDisplayName: vi.fn().mockReturnValue('Opus 4.7'),
+    getModelDisplayName: vi.fn().mockReturnValue('Opus 4.8'),
     getUserSessionTheme: vi.fn().mockReturnValue('D'),
   },
   AVAILABLE_MODELS: [
+    'claude-opus-4-8',
     'claude-opus-4-7',
     'claude-opus-4-6',
     'claude-sonnet-4-6',
     'claude-sonnet-4-5-20250929',
     'claude-opus-4-5-20251101',
     'claude-haiku-4-5-20251001',
+    'claude-opus-4-8[1m]',
     'claude-opus-4-7[1m]',
     'claude-opus-4-6[1m]',
   ],
-  DEFAULT_MODEL: 'claude-opus-4-7',
+  DEFAULT_MODEL: 'claude-opus-4-8[1m]',
 }));
 
 vi.mock('../../../admin-utils', () => ({
