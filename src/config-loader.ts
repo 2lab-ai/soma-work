@@ -344,13 +344,43 @@ export function loadConfig(configFile: string): Config {
       // trace rather than discovering the drop via vanished data. The flag
       // is process-scoped because this loader runs at boot *and* on every
       // plugin-manager save.
+      //
+      // Issue #1014: relying on "the next saveConfig" leaves the key in place
+      // indefinitely for workspaces that never trigger a plugin-manager
+      // operation between restarts — the same warn then fires once per
+      // process for the lifetime of the deployment (production grep: 55x in
+      // a single rotation). Eagerly strip the key from the on-disk JSON now
+      // so the warn becomes a one-shot migration event rather than chronic
+      // noise. Preserve all other top-level keys verbatim (we strip from
+      // `raw`, not from the typed `result`, so future unknown fields survive).
       if (raw.llmChat !== undefined && !warnedLegacyLlmChat) {
         warnedLegacyLlmChat = true;
         logger.warn(
           'Ignoring legacy `llmChat` config key — subsystem removed in PR #639. ' +
-            'The key will be dropped on the next config save.',
+            'Stripping from config.json now (issue #1014).',
           { path: configFile },
         );
+
+        try {
+          const cleaned: Record<string, unknown> = { ...(raw as Record<string, unknown>) };
+          delete cleaned.llmChat;
+          // Atomic write via tmp + rename — same pattern as `saveConfig` to
+          // avoid corruption on concurrent process startups. If two processes
+          // race here they each write identical content; the last rename
+          // wins and the result is idempotent.
+          const tmpFile = `${configFile}.tmp.legacy-llmchat-strip`;
+          fs.writeFileSync(tmpFile, `${JSON.stringify(cleaned, null, 2)}\n`, 'utf-8');
+          fs.renameSync(tmpFile, configFile);
+          logger.info('Stripped legacy `llmChat` key from config.json', { path: configFile });
+        } catch (writeError) {
+          // Strip failed (disk full, permissions, etc.) — don't fail load.
+          // The warn already informed operators; the next plugin-manager
+          // save still drops the key via the existing path.
+          logger.warn('Failed to strip legacy `llmChat` key from config.json', {
+            path: configFile,
+            error: (writeError as Error).message,
+          });
+        }
       }
 
       logger.info('Loaded config', {

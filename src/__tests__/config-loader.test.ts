@@ -97,12 +97,17 @@ describe('saveConfig', () => {
 
 /**
  * PR #639 dropped the `llmChat` subsystem. Legacy configs keep loading but the
- * key is silently discarded on save. These tests pin down three guarantees
+ * key is silently discarded on save. These tests pin down four guarantees
  * that must not regress:
  *   1. `loadConfig` warns at most once per process for repeated loads.
  *   2. Absent `llmChat` key → no warn at all.
  *   3. `saveConfig` round-trip drops the key (data-loss is explicit,
  *      not accidental — the warning is the only user-visible breadcrumb).
+ *   4. (Issue #1014) `loadConfig` eagerly strips the key from disk on the
+ *      first detection so subsequent process starts see no llmChat at all.
+ *      Without this, workspaces that never trigger a plugin-manager save
+ *      keep emitting the warn once per boot indefinitely (production grep
+ *      showed 55x in a single rotation).
  *
  * `vi.resetModules()` is the linchpin: `warnedLegacyLlmChat` is a module-scope
  * `let`, so without a fresh import per test the "warn-once" assertion would
@@ -143,6 +148,46 @@ describe('loadConfig — legacy llmChat handling', () => {
     loadConfig(configFile);
 
     expect(legacyWarnCount()).toBe(1);
+  });
+
+  it('eagerly strips llmChat from disk on first load (issue #1014 self-heal)', async () => {
+    // Legacy config with several other top-level keys that must survive
+    // the strip. The strip rewrites the raw object minus `llmChat` — not
+    // the typed Config — so unknown future keys also survive.
+    const legacy = {
+      mcpServers: { foo: { command: 'node', args: ['foo.js'] } },
+      llmChat: { snippet: 'deprecated' },
+      futureExperimentalKey: { keep: 'me' },
+    };
+    fs.writeFileSync(configFile, JSON.stringify(legacy), 'utf-8');
+
+    const { loadConfig } = await import('../config-loader');
+    loadConfig(configFile);
+
+    // File on disk should no longer contain `llmChat` after the first load.
+    const onDisk = JSON.parse(fs.readFileSync(configFile, 'utf-8'));
+    expect(onDisk).not.toHaveProperty('llmChat');
+    // But all other top-level keys must be preserved verbatim — the strip
+    // operates on the raw parsed JSON, not the typed Config, so we don't
+    // accidentally drop unknown/future keys (regression guard).
+    expect(onDisk).toHaveProperty('mcpServers');
+    expect(onDisk.mcpServers).toEqual(legacy.mcpServers);
+    expect(onDisk).toHaveProperty('futureExperimentalKey');
+    expect(onDisk.futureExperimentalKey).toEqual(legacy.futureExperimentalKey);
+
+    // No leftover tmp file from the atomic rename.
+    expect(fs.existsSync(`${configFile}.tmp.legacy-llmchat-strip`)).toBe(false);
+  });
+
+  it('a second process loading the stripped file does not warn (post-migration steady state)', async () => {
+    // Simulate the steady state after the strip already happened — the file
+    // has no `llmChat` key. A new process starting fresh must not warn.
+    fs.writeFileSync(configFile, JSON.stringify({ mcpServers: {} }), 'utf-8');
+
+    const { loadConfig } = await import('../config-loader');
+    loadConfig(configFile);
+
+    expect(legacyWarnCount()).toBe(0);
   });
 
   it('does not warn when llmChat key is absent', async () => {
