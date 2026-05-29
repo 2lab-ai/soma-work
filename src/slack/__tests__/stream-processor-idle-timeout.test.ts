@@ -18,7 +18,13 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { readIdleTimeoutMs, type StreamCallbacks, type StreamContext, StreamProcessor } from '../stream-processor';
+import {
+  POST_RESULT_DRAIN_MS,
+  readIdleTimeoutMs,
+  type StreamCallbacks,
+  type StreamContext,
+  StreamProcessor,
+} from '../stream-processor';
 
 const baseContext = (): StreamContext => ({
   channel: 'C1',
@@ -186,6 +192,160 @@ describe('StreamProcessor — idle timeout (C-1 replacement for PR #926 watchdog
 
     // Advance well past the idle window: the cleared timer must not fire.
     await vi.advanceTimersByTimeAsync(10_000);
+    expect(onIdleTimeout).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Phase 7 of turn-end-surface-guarantee:
+ *   C-7 — the SDK `result` (SDKResultMessage) is the turn-terminal signal.
+ *   `process()` must finalize the turn on `result` regardless of whether the
+ *   SDK ever closes the iterator afterwards.
+ *
+ * Prod incident (2026-05-29, iq-64 dev): a 19-min / $82 turn emitted a
+ * `result` (subtype:"success", hasResult:true), posted its final answer to
+ * Slack, then the SDK async generator NEVER closed — `iterator.next()` for
+ * the terminal `done` hung. The loop sat in raceNextStep until the 2h idle
+ * timer fired a SPURIOUS ⚫ stall card; the completion card / idle transition
+ * (post-loop `onUsageUpdate`) never ran, leaving the session pinned in MAIN.
+ *
+ * The pre-existing "normal completion" test masked this: its mock returns
+ * `done:true` right after `result` (a COOPERATIVE SDK). Production's SDK does
+ * not reliably close after `result` on long turns.
+ *
+ * Contract pinned here: on `result`, the loop finalizes via a bounded
+ * post-result drain (POST_RESULT_DRAIN_MS) — NOT the 2h idle timer — and
+ * returns `aborted:false` (healthy completion), draining any trailing
+ * SDK events that arrive inside the bounded window.
+ * Trace: docs/current/plans/turn-end-surface-guarantee/exhaustive-paths.md §C-7.
+ */
+describe('StreamProcessor — result is the turn-terminal signal (C-7)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  /** Yields one `result` then hangs forever — models the SDK that never
+   *  closes its generator after the terminal result. No `return()` method,
+   *  so the no-return-method branch of tryReturnIterator is exercised. */
+  function resultThenHangStream(resultMsg: any): AsyncIterable<any> {
+    let sent = false;
+    return {
+      [Symbol.asyncIterator]() {
+        return {
+          next() {
+            if (!sent) {
+              sent = true;
+              return Promise.resolve({ value: resultMsg, done: false });
+            }
+            return new Promise<IteratorResult<any>>(() => {
+              /* SDK never closes after result */
+            });
+          },
+        };
+      },
+    };
+  }
+
+  const resultMsg = () => ({
+    type: 'result',
+    subtype: 'success',
+    modelUsage: {
+      'claude-test': { inputTokens: 1, outputTokens: 1, costUSD: 1, contextWindow: 1000 },
+    },
+  });
+
+  it('finalizes (aborted=false) when the SDK yields result then never closes — no false idle-timeout/stall', async () => {
+    const onIdleTimeout = vi.fn();
+    const onUsageUpdate = vi.fn();
+    // idleTimeoutMs is the 2h-analog here: the OLD code could ONLY escape the
+    // post-result hang via this timer (firing a spurious stall). The fix must
+    // finalize via the bounded drain FIRST, long before the idle timer.
+    const processor = new StreamProcessor({ onIdleTimeout, onUsageUpdate }, { idleTimeoutMs: 60_000 });
+
+    const promise = processor.process(resultThenHangStream(resultMsg()), baseContext(), new AbortController().signal);
+
+    let settled = false;
+    promise.then(() => {
+      settled = true;
+    });
+
+    // Advance past the bounded drain window but NOT past the 60s idle timer.
+    await vi.advanceTimersByTimeAsync(POST_RESULT_DRAIN_MS + 100);
+    await Promise.resolve();
+
+    // RED before fix: still pending here (only the 60s idle timer would free
+    // it, and that fires onIdleTimeout + returns aborted:true).
+    expect(settled).toBe(true);
+
+    const result = await promise;
+    expect(result.aborted).toBe(false);
+    expect(onIdleTimeout).not.toHaveBeenCalled();
+    // Post-loop finalization ran → completion card / idle transition path.
+    expect(onUsageUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it('drains a trailing event that arrives after result, then finalizes (no dropped events)', async () => {
+    const onUsageUpdate = vi.fn();
+    const msgs = [resultMsg(), { type: 'system', subtype: 'trailing-observability' }];
+    let i = 0;
+    const stream: AsyncIterable<any> = {
+      [Symbol.asyncIterator]() {
+        return {
+          next() {
+            if (i < msgs.length) {
+              return Promise.resolve({ value: msgs[i++], done: false });
+            }
+            return new Promise<IteratorResult<any>>(() => {
+              /* hang after trailing event */
+            });
+          },
+        };
+      },
+    };
+
+    const processor = new StreamProcessor({ onUsageUpdate }, { idleTimeoutMs: 60_000 });
+    const promise = processor.process(stream, baseContext(), new AbortController().signal);
+
+    await vi.advanceTimersByTimeAsync(POST_RESULT_DRAIN_MS + 100);
+    const result = await promise;
+
+    expect(result.aborted).toBe(false);
+    // Both the result and the trailing system event were consumed (i advanced
+    // past both) before the bounded drain finalized the turn.
+    expect(i).toBe(2);
+    expect(onUsageUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it('result followed by a cooperative done:true still finalizes immediately (no drain latency)', async () => {
+    const onIdleTimeout = vi.fn();
+    const onUsageUpdate = vi.fn();
+    let phase = 0;
+    const stream: AsyncIterable<any> = {
+      [Symbol.asyncIterator]() {
+        return {
+          next() {
+            phase += 1;
+            if (phase === 1) return Promise.resolve({ value: resultMsg(), done: false });
+            return Promise.resolve({ value: undefined, done: true });
+          },
+        };
+      },
+    };
+
+    const processor = new StreamProcessor({ onIdleTimeout, onUsageUpdate }, { idleTimeoutMs: 60_000 });
+    const result = await processor.process(stream, baseContext(), new AbortController().signal);
+
+    expect(result.aborted).toBe(false);
+    expect(onUsageUpdate).toHaveBeenCalledTimes(1);
+
+    // The cooperative `done` resolved the race; the drain timer must have been
+    // cleared and must never fire late.
+    await vi.advanceTimersByTimeAsync(POST_RESULT_DRAIN_MS + 60_000);
     expect(onIdleTimeout).not.toHaveBeenCalled();
   });
 });
