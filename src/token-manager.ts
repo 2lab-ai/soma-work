@@ -312,6 +312,28 @@ function isEligible(slot: AuthKey | undefined, state: SlotState | undefined, now
   return true;
 }
 
+/**
+ * #1004 — Detect an OAuth `invalid_grant` failure from the refresh response
+ * body. Anthropic's OAuth endpoint returns `invalid_grant` ("Refresh token
+ * not found or invalid") as HTTP **400** (OAuth2 RFC 6749 §5.2), not 401, so
+ * `classifyRefreshError`'s status-based table would otherwise bucket it as
+ * `unknown` and leave the slot `healthy` forever.
+ *
+ * Safety: only the FIXED string token `invalid_grant` (a known protocol error
+ * code) is matched against a parsed `error` field. The body is never returned
+ * or interpolated into any caller-visible message — the secret-leak boundary
+ * documented on `classifyRefreshError` is preserved.
+ */
+function bodyHasInvalidGrant(body: string): boolean {
+  if (!body) return false;
+  try {
+    const parsed = JSON.parse(body) as { error?: unknown };
+    return parsed?.error === 'invalid_grant';
+  } catch {
+    return false;
+  }
+}
+
 function deriveStatus(state: SlotState | undefined, nowMs: number): string {
   if (!state) return 'healthy';
   const tags: string[] = [];
@@ -1250,6 +1272,17 @@ export class TokenManager {
       if (status === 429) return { kind: 'rate_limited', status: 429, message: 'Refresh throttled (429)' };
       if (status >= 500 && status <= 599)
         return { kind: 'server', status, message: `Refresh server error (${status})` };
+      // #1004 — A dead refresh token surfaces as `invalid_grant`, which
+      // Anthropic returns as HTTP 400 (OAuth2 RFC 6749 §5.2) — it lands HERE,
+      // below the 401 branch. Without this, it is bucketed `unknown`,
+      // `markRefreshFailure` keeps `authState: 'healthy'`, `isEligible` never
+      // rejects the slot, and the scheduler retries the dead token every tick
+      // (~6.8k log lines/rotation in dev). Treat it as `unauthorized` so the
+      // slot flips to `refresh_failed` (needs re-auth) and the CCT card
+      // surfaces it. Message stays a fixed template (no body interpolation).
+      if (bodyHasInvalidGrant(err.body)) {
+        return { kind: 'unauthorized', status, message: 'Refresh rejected (invalid_grant)' };
+      }
       return { kind: 'unknown', status, message: `Refresh failed (${status})` };
     }
     // AbortError from the refresher's 30s timeout controller.
@@ -1881,6 +1914,15 @@ export class TokenManager {
     try {
       accessToken = await this.#getOAuthApiAccessTokenOrNull(keyId);
     } catch (err) {
+      // #1004 — a pre-fetch refresh failure (e.g. dead refresh token →
+      // `invalid_grant`) previously returned WITHOUT advancing the usage
+      // backoff, so every scheduler tick re-attempted the dead slot and
+      // re-logged this warn (~6.2k lines/rotation in dev). Apply the same
+      // backoff ladder as every other failure branch below so a persistently
+      // failing slot is retried on a decaying cadence, not every tick. The
+      // slot's `authState` flip (via `markRefreshFailure` in the refresh path)
+      // independently surfaces the needs-reauth state on the CCT card.
+      await this.applyUsageFailureBackoff(keyId);
       logger.warn('fetchAndStoreUsage: refresh failed pre-fetch', err);
       return null;
     }
