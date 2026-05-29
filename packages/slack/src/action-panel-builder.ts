@@ -39,15 +39,6 @@ export interface ActionPanelBuildParams {
   activityState?: ActivityState;
   contextRemainingPercent?: number;
   hasActiveRequest?: boolean;
-  agentPhase?: string;
-  activeTool?: string;
-  /**
-   * #689 P4 Part 2/2 — when `true`, the agent-chip (rendered as a phase +
-   * tool byline below the badge) is omitted from the status blocks. Set
-   * by `ThreadSurface` at effective PHASE>=4 so `TurnSurface` can own the
-   * visible progress indicator (native spinner) without a duplicate chip.
-   */
-  suppressAgentChip?: boolean;
   statusUpdatedAt?: number;
   logVerbosity?: number;
   prStatus?: PRStatusInfo;
@@ -188,9 +179,6 @@ export class ActionPanelBuilder {
         waitingForChoice: params.waitingForChoice,
         activityState: params.activityState,
         hasActiveRequest: params.hasActiveRequest,
-        agentPhase: params.agentPhase,
-        activeTool: params.activeTool,
-        suppressAgentChip: params.suppressAgentChip,
         prStatus: params.prStatus,
         contextRemainingPercent: params.contextRemainingPercent,
       }),
@@ -263,26 +251,11 @@ export class ActionPanelBuilder {
     waitingForChoice?: boolean;
     activityState?: ActivityState;
     hasActiveRequest?: boolean;
-    agentPhase?: string;
-    activeTool?: string;
-    suppressAgentChip?: boolean;
     prStatus?: PRStatusInfo;
     contextRemainingPercent?: number;
   }): any[] {
     const badge = ActionPanelBuilder.statusBadge(params.status);
-    // #689 P4 Part 2/2 — TurnSurface is the B4 writer at effective PHASE>=4;
-    // the agent chip here would be a duplicate progress indicator, so skip it.
-    const agentChip = params.suppressAgentChip
-      ? null
-      : ActionPanelBuilder.buildAgentChip({
-          waitingForChoice: params.waitingForChoice,
-          activityState: params.activityState,
-          hasActiveRequest: params.hasActiveRequest,
-          agentPhase: params.agentPhase,
-          activeTool: params.activeTool,
-        });
-
-    const statusText = agentChip ? `${badge}\n_${agentChip}_` : badge;
+    const statusText = badge;
 
     // PR chip for right column
     const prChip = params.prStatus ? ActionPanelBuilder.prStatusChip(params.prStatus) : '';
@@ -350,40 +323,6 @@ export class ActionPanelBuilder {
     return name === 'custom' ? `🔧 custom` : LABELS[name];
   }
 
-  private static buildAgentChip(params: {
-    waitingForChoice?: boolean;
-    activityState?: ActivityState;
-    hasActiveRequest?: boolean;
-    agentPhase?: string;
-    activeTool?: string;
-  }): string | undefined {
-    if (params.waitingForChoice) {
-      return '질문 응답 필요';
-    }
-
-    if (params.activeTool) {
-      return ActionPanelBuilder.formatToolLabel(params.activeTool);
-    }
-
-    if (params.agentPhase) {
-      return ActionPanelBuilder.truncateLine(params.agentPhase, 22);
-    }
-
-    if (params.hasActiveRequest) {
-      return '요청 처리';
-    }
-
-    if (params.activityState === 'working') {
-      return '응답 생성';
-    }
-
-    if (params.activityState === 'waiting') {
-      return '입력 대기';
-    }
-
-    return undefined;
-  }
-
   private static contextChip(contextRemainingPercent?: number): string {
     if (typeof contextRemainingPercent === 'number' && Number.isFinite(contextRemainingPercent)) {
       return `${ActionPanelBuilder.formatPercent(contextRemainingPercent)}%`;
@@ -393,30 +332,6 @@ export class ActionPanelBuilder {
 
   private static formatPercent(value: number): string {
     return Number.isInteger(value) ? String(value) : value.toFixed(1);
-  }
-
-  private static formatToolLabel(toolName: string): string {
-    if (toolName.startsWith('mcp__')) {
-      const parts = toolName.split('__');
-      const serverName = parts[1] || 'mcp';
-      const actualTool = parts.slice(2).join('__');
-      const label = actualTool ? `${serverName}:${actualTool}` : serverName;
-      return ActionPanelBuilder.truncateLine(label, 20);
-    }
-
-    const aliases: Record<string, string> = {
-      Read: '파일 읽기',
-      Write: '코드 작성',
-      Edit: '코드 수정',
-      Bash: '명령 실행',
-      Grep: '코드 검색',
-      Glob: '파일 탐색',
-      WebSearch: '웹 검색',
-      WebFetch: '웹 조회',
-      Task: '에이전트 위임',
-    };
-
-    return aliases[toolName] || ActionPanelBuilder.truncateLine(toolName, 20);
   }
 
   private static statusBadge(status: string): string {
@@ -521,13 +436,6 @@ export class ActionPanelBuilder {
       ];
     }
     return choiceBlocks.map((block) => JSON.parse(JSON.stringify(block)));
-  }
-
-  private static truncateLine(input: string, maxLength: number): string {
-    if (input.length <= maxLength) {
-      return input;
-    }
-    return `${input.slice(0, Math.max(0, maxLength - 3))}...`;
   }
 
   private static buildCloseButton(sessionKey: string): any {

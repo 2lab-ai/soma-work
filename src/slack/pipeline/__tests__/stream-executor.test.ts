@@ -94,7 +94,6 @@ vi.mock('../../../token-manager', () => ({
   parseCooldownTime: vi.fn().mockReturnValue(null),
 }));
 
-import { config } from '../../../config';
 import type { Continuation } from '../../../types';
 import { userSettingsStore } from '../../../user-settings-store';
 import { LOG_DETAIL } from '../../output-flags';
@@ -423,7 +422,6 @@ describe('Abort handling', () => {
       say,
       /* requestAborted */ true,
       /* activeSlotAtQueryStart */ null,
-      /* expectedEpoch */ undefined,
       /* abortReason */ 'supersede',
     );
 
@@ -465,7 +463,6 @@ describe('Abort handling', () => {
       say,
       /* requestAborted */ true,
       /* activeSlotAtQueryStart */ null,
-      /* expectedEpoch */ undefined,
       /* abortReason */ 'stall-timeout',
     );
 
@@ -588,7 +585,6 @@ describe('Abort handling', () => {
       say,
       /* requestAborted */ true,
       /* activeSlotAtQueryStart */ null,
-      /* expectedEpoch */ undefined,
       /* abortReason */ 'user-stop',
     );
 
@@ -612,7 +608,6 @@ describe('Abort handling', () => {
       say,
       true,
       null,
-      undefined,
       'session-close',
     );
 
@@ -3551,7 +3546,6 @@ describe('turnId propagation into ToolEventContext (#664)', () => {
       toolEventProcessor: {
         handleToolUse: vi.fn().mockResolvedValue(undefined),
         handleToolResult: vi.fn().mockResolvedValue(undefined),
-        setCompactDurationCallback: vi.fn(),
         setReactionManager: vi.fn(),
         setToolResultSink: vi.fn(),
         cleanup: vi.fn(),
@@ -3686,7 +3680,7 @@ describe('turnId propagation into ToolEventContext (#664)', () => {
   });
 });
 
-describe('stream-executor — P3 (PHASE>=3) B3 choice wiring', () => {
+describe('stream-executor — B3 choice wiring', () => {
   function createP3Deps() {
     const sessionRegistry = { persistAndBroadcast: vi.fn() };
     return {
@@ -3749,12 +3743,7 @@ describe('stream-executor — P3 (PHASE>=3) B3 choice wiring', () => {
     };
   }
 
-  afterEach(() => {
-    config.ui.fiveBlockPhase = 0;
-  });
-
-  it('PHASE=3 single-choice routes through ThreadPanel.askUser (with turnId)', async () => {
-    config.ui.fiveBlockPhase = 3;
+  it('single-choice routes through ThreadPanel.askUser (with turnId)', async () => {
     const { deps, sessionRegistry } = createP3Deps();
     const session = createSession();
     // Make getSessionByKey return the same session the executor passes through.
@@ -3809,8 +3798,7 @@ describe('stream-executor — P3 (PHASE>=3) B3 choice wiring', () => {
     expect(sessionRegistry.persistAndBroadcast).toHaveBeenCalledWith('C1-171.100');
   });
 
-  it('PHASE=3 multi-choice pre-allocates formIds with turnId and calls askUserForm', async () => {
-    config.ui.fiveBlockPhase = 3;
+  it('multi-choice pre-allocates formIds with turnId and calls askUserForm', async () => {
     const { deps } = createP3Deps();
     deps.threadPanel.askUserForm = vi
       .fn()
@@ -3873,8 +3861,7 @@ describe('stream-executor — P3 (PHASE>=3) B3 choice wiring', () => {
     );
   });
 
-  it('PHASE=3 defensive prelude clears prior pendingChoice before a new ask', async () => {
-    config.ui.fiveBlockPhase = 3;
+  it('defensive prelude clears prior pendingChoice before a new ask', async () => {
     const { deps, sessionRegistry } = createP3Deps();
     const session = createSession();
     deps.claudeHandler.getSessionByKey = vi.fn().mockReturnValue(session);
@@ -3915,8 +3902,7 @@ describe('stream-executor — P3 (PHASE>=3) B3 choice wiring', () => {
     expect(deps.threadPanel.askUser).toHaveBeenCalled();
   });
 
-  it('PHASE=3 single post-failed → sendCommandChoiceFallback (legacy say)', async () => {
-    config.ui.fiveBlockPhase = 3;
+  it('single post-failed -> sendCommandChoiceFallback', async () => {
     const { deps } = createP3Deps();
     deps.threadPanel.askUser = vi
       .fn()
@@ -3953,8 +3939,7 @@ describe('stream-executor — P3 (PHASE>=3) B3 choice wiring', () => {
     expect(say).toHaveBeenCalled();
   });
 
-  it('unconditional pendingQuestion write + persistAndBroadcast fires under PHASE<3', async () => {
-    config.ui.fiveBlockPhase = 0;
+  it('writes pendingQuestion and persistAndBroadcasts', async () => {
     const { deps, sessionRegistry } = createP3Deps();
     const session = createSession();
     deps.claudeHandler.getSessionByKey = vi.fn().mockReturnValue(session);
@@ -3987,58 +3972,12 @@ describe('stream-executor — P3 (PHASE>=3) B3 choice wiring', () => {
     expect(session.actionPanel?.pendingQuestion).toBeDefined();
     expect(sessionRegistry.persistAndBroadcast).toHaveBeenCalledWith('C1-171.100');
   });
-
-  it('PHASE<3 multi uses setPendingForm to persist messageTs (v7 fix)', async () => {
-    config.ui.fiveBlockPhase = 0;
-    const { deps } = createP3Deps();
-    const pendingCache: Record<string, any> = {};
-    deps.actionHandlers.setPendingForm = vi.fn((id: string, data: any) => {
-      pendingCache[id] = data;
-    });
-    deps.actionHandlers.getPendingForm = vi.fn((id: string) => pendingCache[id]);
-    const session = createSession();
-    deps.claudeHandler.getSessionByKey = vi.fn().mockReturnValue(session);
-    const executor = new StreamExecutor(deps);
-    const say = vi.fn().mockResolvedValue({ ts: 'multi-ts' });
-    await (executor as any).handleModelCommandToolResults(
-      [
-        {
-          toolUseId: 'tool-6',
-          toolName: 'mcp__model-command__run',
-          result: JSON.stringify({
-            type: 'model_command_result',
-            commandId: 'ASK_USER_QUESTION',
-            ok: true,
-            payload: {
-              question: {
-                type: 'user_choices',
-                title: 'T',
-                questions: [{ id: 'q1', question: 'Q', choices: [{ id: '1', label: 'A' }] }],
-              },
-            },
-          }),
-        },
-      ],
-      session,
-      {
-        channel: 'C1',
-        threadTs: '171.100',
-        sessionKey: 'C1-171.100',
-        say,
-        turnId: 'TID',
-      },
-    );
-    // Two setPendingForm calls: initial set (empty ts) + back-fill with posted ts.
-    expect(deps.actionHandlers.setPendingForm).toHaveBeenCalledTimes(2);
-    const backfillCall = deps.actionHandlers.setPendingForm.mock.calls[1][1];
-    expect(backfillCall.messageTs).toBe('multi-ts');
-  });
 });
 
 // ---------------------------------------------------------------------
-// Issue #688 — A-2 epoch guard + Bash resolver-descriptor wiring tests
+// Issue #688 — A-2 epoch guard wiring tests
 // ---------------------------------------------------------------------
-describe('stream-executor — epoch guard + Bash resolver descriptor (issue #688)', () => {
+describe('stream-executor — epoch guard wiring (issue #688)', () => {
   beforeEach(() => {
     vi.mocked(userSettingsStore.getUserEmail).mockReturnValue('user@example.com');
   });
@@ -4047,9 +3986,8 @@ describe('stream-executor — epoch guard + Bash resolver descriptor (issue #688
     vi.clearAllMocks();
   });
 
-  // Minimal stream that yields an assistant tool_use so onToolUse fires,
-  // then a tool_result and a success result so execute() reaches the
-  // success-path clearStatus (line 1025 region) and finally block.
+  // Minimal stream that yields an assistant tool_use, then a tool_result and
+  // a success result so execute() reaches the normal completion path.
   async function* toolFlowStream(toolName = 'Read') {
     yield {
       type: 'assistant',
@@ -4064,18 +4002,6 @@ describe('stream-executor — epoch guard + Bash resolver descriptor (issue #688
       },
     };
     yield { type: 'result', subtype: 'success', total_cost_usd: 0, usage: {} };
-  }
-
-  // A stream that throws partway through to exercise the catch path
-  // (handleError with expectedEpoch) and finally guarded clearStatus.
-  async function* throwingStream() {
-    yield {
-      type: 'assistant',
-      message: {
-        content: [{ type: 'tool_use', id: 'tool_1', name: 'Read', input: {} }],
-      },
-    };
-    throw new Error('stream blew up');
   }
 
   function createDeps(streamFn: () => AsyncIterable<any>): any {
@@ -4098,7 +4024,6 @@ describe('stream-executor — epoch guard + Bash resolver descriptor (issue #688
       toolEventProcessor: {
         handleToolUse: vi.fn().mockResolvedValue(undefined),
         handleToolResult: vi.fn().mockResolvedValue(undefined),
-        setCompactDurationCallback: vi.fn(),
         setReactionManager: vi.fn(),
         setToolResultSink: vi.fn(),
         cleanup: vi.fn(),
@@ -4145,11 +4070,6 @@ describe('stream-executor — epoch guard + Bash resolver descriptor (issue #688
         deleteMessage: vi.fn().mockResolvedValue(undefined),
       },
       assistantStatusManager: {
-        // #700 review P1 — isEnabled drives `shouldRunLegacyB4Path` /
-        // `getEffectiveFiveBlockPhase`. Default enabled=true so the
-        // pre-existing #688 tests keep running through the legacy path
-        // at PHASE<4 (raw default); tests that need PHASE>=4 behaviour
-        // override `config.ui.fiveBlockPhase` + this flag.
         isEnabled: vi.fn().mockReturnValue(true),
         setStatus: vi.fn().mockResolvedValue(undefined),
         clearStatus: vi.fn().mockResolvedValue(undefined),
@@ -4180,8 +4100,6 @@ describe('stream-executor — epoch guard + Bash resolver descriptor (issue #688
       session: {
         sessionId: 'sess_epoch',
         ownerId: 'U_TEST',
-        // LOG_DETAIL enables STATUS_SPINNER so setStatus/clearStatus
-        // branches in execute() actually fire on this test's path.
         logVerbosity: LOG_DETAIL,
         usage: {},
         terminated: false,
@@ -4199,7 +4117,7 @@ describe('stream-executor — epoch guard + Bash resolver descriptor (issue #688
     };
   }
 
-  it('captures epoch on entry and passes expectedEpoch to success-path clearStatus', async () => {
+  it('captures epoch on entry and passes it through TurnContext', async () => {
     const deps = createDeps(() => toolFlowStream('Read'));
     const executor = new StreamExecutor(deps);
     const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
@@ -4207,211 +4125,24 @@ describe('stream-executor — epoch guard + Bash resolver descriptor (issue #688
     await executor.execute(createParams(say));
 
     expect(deps.assistantStatusManager.bumpEpoch).toHaveBeenCalledWith('C42', 'thread42');
-    // Every clearStatus on the happy path must carry expectedEpoch: 42
-    // (42 is what bumpEpoch was mocked to return above).
-    const clearCalls = deps.assistantStatusManager.clearStatus.mock.calls;
-    expect(clearCalls.length).toBeGreaterThan(0);
-    for (const call of clearCalls) {
-      expect(call[0]).toBe('C42');
-      expect(call[1]).toBe('thread42');
-      expect(call[2]).toEqual({ expectedEpoch: 42 });
-    }
+    expect(deps.threadPanel.beginTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channelId: 'C42',
+        threadTs: 'thread42',
+        statusEpoch: 42,
+      }),
+    );
   });
 
-  // S2: error path finally clearStatus reached with expectedEpoch carried
-  // through handleError as well.
-  it('reaches finally clearStatus on thrown stream and forwards expectedEpoch to handleError (S2)', async () => {
-    const deps = createDeps(() => throwingStream());
-    const executor = new StreamExecutor(deps);
-    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
-
-    const result = await executor.execute(createParams(say));
-
-    expect(result.success).toBe(false);
-
-    // bumpEpoch called exactly once at execute() entry.
-    expect(deps.assistantStatusManager.bumpEpoch).toHaveBeenCalledTimes(1);
-
-    // Every clearStatus must carry the same captured epoch.
-    const clearCalls = deps.assistantStatusManager.clearStatus.mock.calls;
-    expect(clearCalls.length).toBeGreaterThanOrEqual(1);
-    for (const call of clearCalls) {
-      expect(call[2]).toEqual({ expectedEpoch: 42 });
-    }
-  });
-
-  // Bash resolver descriptor: Bash tool routes status through a thunk
-  // descriptor (() => string) so heartbeat ticks can recompute the text
-  // from the live bg counter.
-  it('Bash tool_use sets status with a resolver descriptor (not a static string)', async () => {
-    const deps = createDeps(() => toolFlowStream('Bash'));
-    const executor = new StreamExecutor(deps);
-    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
-
-    await executor.execute(createParams(say));
-
-    const setCalls = deps.assistantStatusManager.setStatus.mock.calls;
-    // We expect at least one call shaped with a thunk descriptor.
-    const resolverCall = setCalls.find((c: any[]) => typeof c[2] === 'function');
-    expect(resolverCall).toBeDefined();
-    expect(resolverCall![0]).toBe('C42');
-    expect(resolverCall![1]).toBe('thread42');
-    // Invoking the resolver should delegate to buildBashStatus on the manager.
-    const text = resolverCall![2]();
-    expect(text).toBe('is running commands...');
-    expect(deps.assistantStatusManager.buildBashStatus).toHaveBeenCalledWith('C42', 'thread42');
-    // getToolStatusText must NOT have been used for Bash on this path —
-    // the descriptor is injected directly.
-    for (const call of deps.assistantStatusManager.getToolStatusText.mock.calls) {
-      expect(call[0]).not.toBe('Bash');
-    }
-  });
-
-  it('non-Bash tool_use still uses the static getToolStatusText path', async () => {
+  it('does not write legacy native assistant status directly', async () => {
     const deps = createDeps(() => toolFlowStream('Read'));
     const executor = new StreamExecutor(deps);
     const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
 
     await executor.execute(createParams(say));
 
-    // Static string setStatus for Read: setStatus(ch, ts, 'is reading files...')
-    const staticCall = deps.assistantStatusManager.setStatus.mock.calls.find((c: any[]) => typeof c[2] === 'string');
-    expect(staticCall).toBeDefined();
-    expect(deps.assistantStatusManager.getToolStatusText).toHaveBeenCalledWith('Read');
-  });
-
-  // Verifies the 948-area setStatus('') got replaced by a guarded
-  // clearStatus call (not a setStatus with empty string) — the new
-  // single source of truth for "tear this spinner down" inside execute().
-  it('does not emit setStatus("") during execute() — guarded clearStatus only', async () => {
-    const deps = createDeps(() => toolFlowStream('Read'));
-    const executor = new StreamExecutor(deps);
-    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
-
-    await executor.execute(createParams(say));
-
-    const emptyStringSet = deps.assistantStatusManager.setStatus.mock.calls.find((c: any[]) => c[2] === '');
-    expect(emptyStringSet).toBeUndefined();
-  });
-
-  // #700 review P1 — PHASE>=4 Bash behavioural coverage. The onToolUse
-  // legacy-setStatus wrapper must route through `shouldRunLegacyB4Path`
-  // so Bash no longer double-writes the spinner when TurnSurface owns
-  // it. When the manager is clamped (disabled), the descriptor path must
-  // re-activate and fire the resolver so the heartbeat still reflects
-  // bg-bash counter changes. Both assertions directly protect the Bash
-  // + native spinner path against regressions.
-  describe('PHASE>=4 Bash legacy suppression (#700 P1)', () => {
-    const originalPhase = config.ui.fiveBlockPhase;
-
-    afterEach(async () => {
-      config.ui.fiveBlockPhase = originalPhase;
-      const { __resetClampEmitted } = await import('../effective-phase');
-      __resetClampEmitted();
-    });
-
-    it('PHASE=4 + enabled: Bash tool_use does NOT call legacy setStatus (TurnSurface owns)', async () => {
-      config.ui.fiveBlockPhase = 4;
-      const deps = createDeps(() => toolFlowStream('Bash'));
-      deps.assistantStatusManager.isEnabled = vi.fn().mockReturnValue(true);
-      const executor = new StreamExecutor(deps);
-      const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
-
-      await executor.execute(createParams(say));
-
-      // All Bash legacy setStatus callsites in execute() / onToolUse
-      // route through `legacySetStatus` → `shouldRunLegacyB4Path` and
-      // must short-circuit. Zero setStatus writes on the clamp=false
-      // path is the success condition.
-      expect(deps.assistantStatusManager.setStatus).not.toHaveBeenCalled();
-    });
-
-    it('PHASE=4 + disabled (clamped): Bash tool_use re-fires the resolver descriptor', async () => {
-      config.ui.fiveBlockPhase = 4;
-      const deps = createDeps(() => toolFlowStream('Bash'));
-      // Clamp: disabled manager pulls `getEffectiveFiveBlockPhase` down
-      // to 3 so the legacy path runs and the Bash resolver descriptor is
-      // injected (so live heartbeats can reflect the bg-bash counter).
-      deps.assistantStatusManager.isEnabled = vi.fn().mockReturnValue(false);
-      const executor = new StreamExecutor(deps);
-      const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
-
-      await executor.execute(createParams(say));
-
-      const setCalls = deps.assistantStatusManager.setStatus.mock.calls;
-      const resolverCall = setCalls.find((c: any[]) => typeof c[2] === 'function');
-      expect(resolverCall).toBeDefined();
-      expect(resolverCall![0]).toBe('C42');
-      expect(resolverCall![1]).toBe('thread42');
-      // Resolver delegates to buildBashStatus — matches the PHASE<4
-      // behaviour in the existing #688 test above.
-      expect(resolverCall![2]()).toBe('is running commands...');
-    });
-  });
-});
-
-// #689 P4 Part 2/2 — `legacySetStatus` / `legacyClearStatus` private wrappers.
-// All existing stream-executor native-spinner callsites route through these so
-// they can be PHASE-gated in one place. Verified directly (white-box) to keep
-// the test isolated from the full `execute()` pipeline.
-describe('StreamExecutor — #689 legacy native-spinner suppression', () => {
-  const originalPhase = config.ui.fiveBlockPhase;
-
-  const makeExec = (phase: number, enabled: boolean) => {
-    config.ui.fiveBlockPhase = phase;
-    const mgr = {
-      isEnabled: vi.fn().mockReturnValue(enabled),
-      setStatus: vi.fn().mockResolvedValue(undefined),
-      clearStatus: vi.fn().mockResolvedValue(undefined),
-    };
-    const executor = new StreamExecutor({ assistantStatusManager: mgr } as any);
-    return { executor, mgr };
-  };
-
-  afterEach(async () => {
-    config.ui.fiveBlockPhase = originalPhase;
-    // Reset the module-level clamp-once flag so the disabled-mgr clamp test
-    // doesn't leak the "already emitted" state into other suites in this
-    // file. Mirrors the pattern in turn-surface.test.ts (commit 1c83d5e).
-    const { __resetClampEmitted } = await import('../effective-phase');
-    __resetClampEmitted();
-  });
-
-  it('PHASE<4: legacySetStatus forwards to assistantStatusManager.setStatus', async () => {
-    const { executor, mgr } = makeExec(3, true);
-    await (executor as any).legacySetStatus('C', 'thr', 'is thinking...');
-    expect(mgr.setStatus).toHaveBeenCalledTimes(1);
-    expect(mgr.setStatus).toHaveBeenCalledWith('C', 'thr', 'is thinking...');
-  });
-
-  it('PHASE>=4 + enabled: legacySetStatus is a no-op (TurnSurface owns)', async () => {
-    const { executor, mgr } = makeExec(4, true);
-    await (executor as any).legacySetStatus('C', 'thr', 'is thinking...');
-    expect(mgr.setStatus).not.toHaveBeenCalled();
-  });
-
-  it('PHASE>=4 + disabled (clamped): legacySetStatus re-activates the forward', async () => {
-    const { executor, mgr } = makeExec(4, false);
-    await (executor as any).legacySetStatus('C', 'thr', 'fallback');
-    expect(mgr.setStatus).toHaveBeenCalledTimes(1);
-  });
-
-  it('PHASE<4: legacyClearStatus forwards to assistantStatusManager.clearStatus', async () => {
-    const { executor, mgr } = makeExec(2, true);
-    await (executor as any).legacyClearStatus('C', 'thr');
-    expect(mgr.clearStatus).toHaveBeenCalledTimes(1);
-  });
-
-  it('PHASE>=4 + enabled: legacyClearStatus is a no-op', async () => {
-    const { executor, mgr } = makeExec(5, true);
-    await (executor as any).legacyClearStatus('C', 'thr');
-    expect(mgr.clearStatus).not.toHaveBeenCalled();
-  });
-
-  it('legacyClearStatus propagates expectedEpoch option at PHASE<4', async () => {
-    const { executor, mgr } = makeExec(2, true);
-    await (executor as any).legacyClearStatus('C', 'thr', { expectedEpoch: 3 });
-    expect(mgr.clearStatus).toHaveBeenCalledWith('C', 'thr', { expectedEpoch: 3 });
+    expect(deps.assistantStatusManager.setStatus).not.toHaveBeenCalled();
+    expect(deps.assistantStatusManager.clearStatus).not.toHaveBeenCalled();
   });
 });
 
@@ -4432,10 +4163,7 @@ describe('StreamExecutor — #689 legacy native-spinner suppression', () => {
 // covered by the wider suite above; here we isolate the exclusion gate.
 // ---------------------------------------------------------------------------
 describe('StreamExecutor — P5 completion snapshot + exclusion (#667)', () => {
-  const originalPhase = config.ui.fiveBlockPhase;
-
   afterEach(() => {
-    config.ui.fiveBlockPhase = originalPhase;
     vi.clearAllMocks();
   });
 
@@ -4482,8 +4210,7 @@ describe('StreamExecutor — P5 completion snapshot + exclusion (#667)', () => {
     } as any;
   }
 
-  it('Exception path (handleError) — PHASE=5 + capability active → notify called WITHOUT excludeChannelNames', async () => {
-    config.ui.fiveBlockPhase = 5;
+  it('Exception path (handleError) calls notify WITHOUT excludeChannelNames', async () => {
     const deps = createDepsWithNotifier({ markerActive: true });
     const executor = new StreamExecutor(deps);
     const say = vi.fn().mockResolvedValue(undefined);
@@ -4499,22 +4226,7 @@ describe('StreamExecutor — P5 completion snapshot + exclusion (#667)', () => {
     expect(opts).toBeUndefined();
   });
 
-  it('Exception path (handleError) — PHASE<5 → notify called WITHOUT excludeChannelNames (legacy unchanged)', async () => {
-    config.ui.fiveBlockPhase = 4;
-    const deps = createDepsWithNotifier({ markerActive: false });
-    const executor = new StreamExecutor(deps);
-    const say = vi.fn().mockResolvedValue(undefined);
-    const error = new Error('generic failure');
-
-    await (executor as any).handleError(error, { ownerId: 'U1' } as any, 'C:t', 'C', 't', [], say);
-
-    expect(deps.turnNotifier.notify).toHaveBeenCalledTimes(1);
-    const [, opts] = deps.turnNotifier.notify.mock.calls[0];
-    expect(opts).toBeUndefined();
-  });
-
   it('Success-path exclusion helper: builds { excludeChannelNames: ["slack-block-kit"] } when capability active', () => {
-    config.ui.fiveBlockPhase = 5;
     const deps = createDepsWithNotifier({ markerActive: true });
     const executor = new StreamExecutor(deps);
 
@@ -4529,19 +4241,6 @@ describe('StreamExecutor — P5 completion snapshot + exclusion (#667)', () => {
   });
 
   it('Success-path exclusion helper: returns undefined when capability inactive', () => {
-    config.ui.fiveBlockPhase = 5;
-    const deps = createDepsWithNotifier({ markerActive: false });
-    const executor = new StreamExecutor(deps);
-
-    const opts = (executor as any).buildCompletionNotifyOpts();
-    expect(opts).toBeUndefined();
-  });
-
-  it('Success-path exclusion helper: returns undefined at PHASE<5', () => {
-    config.ui.fiveBlockPhase = 4;
-    // Even if a threadPanel claims markerActive=true here, capability
-    // aggregation depends on PHASE>=5 inside isCompletionMarkerActive —
-    // our test simulates that by having markerActive mirror the phase.
     const deps = createDepsWithNotifier({ markerActive: false });
     const executor = new StreamExecutor(deps);
 
@@ -4550,7 +4249,6 @@ describe('StreamExecutor — P5 completion snapshot + exclusion (#667)', () => {
   });
 
   it('Success-path exclusion helper: returns undefined when threadPanel is missing', () => {
-    config.ui.fiveBlockPhase = 5;
     const deps = createDepsWithNotifier({ markerActive: true });
     deps.threadPanel = undefined;
     const executor = new StreamExecutor(deps);
@@ -4580,10 +4278,7 @@ describe('StreamExecutor — P5 completion snapshot + exclusion (#667)', () => {
 // ---------------------------------------------------------------------------
 
 describe('StreamExecutor — P5 B5 race (issue #720)', () => {
-  const originalPhase = config.ui.fiveBlockPhase;
-
   afterEach(() => {
-    config.ui.fiveBlockPhase = originalPhase;
     vi.clearAllMocks();
     vi.useRealTimers();
   });
@@ -4605,8 +4300,6 @@ describe('StreamExecutor — P5 B5 race (issue #720)', () => {
   }
 
   it('#720 (a) closeStream resolves BEFORE snapshot → TurnSurface.end awaits → B5 posts exactly once when enrichment lands', async () => {
-    config.ui.fiveBlockPhase = 5;
-
     // Dynamic import so the test file doesn't pull in TurnSurface at top
     // level (the rest of the suite is stream-executor-only). Matches the
     // lazy-import pattern used elsewhere for surface-adjacent tests.
@@ -4674,8 +4367,6 @@ describe('StreamExecutor — P5 B5 race (issue #720)', () => {
   });
 
   it('#720 (b) enrichAndResolve rejects → resolver(undefined) → B5 not emitted', async () => {
-    config.ui.fiveBlockPhase = 5;
-
     const { TurnSurface } = await import('../../turn-surface');
     type TurnCompletionEventT = import('../../../turn-notifier').TurnCompletionEvent;
 
@@ -4722,8 +4413,6 @@ describe('StreamExecutor — P5 B5 race (issue #720)', () => {
     // misconfigured DI) must still produce a snapshot so TurnSurface emits
     // B5. We simulate stream-executor's post-stream chain inline — the
     // exact production control flow minus execute()'s 3000-line setup.
-    config.ui.fiveBlockPhase = 5;
-
     const { TurnSurface } = await import('../../turn-surface');
     type TurnCompletionEventT = import('../../../turn-notifier').TurnCompletionEvent;
 
@@ -4803,8 +4492,6 @@ describe('StreamExecutor — P5 B5 race (issue #720)', () => {
     // FIRST resolve produced. This test proves that invariant: once the
     // .then rail resolves with the event, a subsequent .catch-rail
     // `resolveSnapshot(undefined)` is a no-op and B5 still posts.
-    config.ui.fiveBlockPhase = 5;
-
     const { TurnSurface } = await import('../../turn-surface');
     type TurnCompletionEventT = import('../../../turn-notifier').TurnCompletionEvent;
 
@@ -4857,8 +4544,6 @@ describe('StreamExecutor — P5 B5 race (issue #720)', () => {
     // New 3s await window between "enter end()" and "return" widens the
     // pre-existing idempotency invariant: a second end() call during the
     // await must hit `!state || state.closing` and no-op, not double-post.
-    config.ui.fiveBlockPhase = 5;
-
     const { TurnSurface } = await import('../../turn-surface');
     type TurnCompletionEventT = import('../../../turn-notifier').TurnCompletionEvent;
 
@@ -5011,7 +4696,6 @@ describe('turn-end surface guarantee — P0 holes', () => {
       say,
       /* requestAborted */ true,
       /* activeSlotAtQueryStart */ null,
-      /* expectedEpoch */ undefined,
       /* abortReason */ 'ghost-session',
     );
 
@@ -5079,7 +4763,6 @@ describe('turn-end surface guarantee — P0 holes', () => {
       say,
       /* requestAborted */ true,
       /* activeSlotAtQueryStart */ null,
-      /* expectedEpoch */ undefined,
       /* abortReason */ undefined,
     );
 
@@ -5120,7 +4803,6 @@ describe('turn-end surface guarantee — P0 holes', () => {
       say,
       /* requestAborted */ true,
       /* activeSlotAtQueryStart */ null,
-      /* expectedEpoch */ undefined,
       /* abortReason */ 'stall-timeout',
     );
 
@@ -5154,7 +4836,6 @@ describe('turn-end surface guarantee — P0 holes', () => {
       say,
       true,
       null,
-      undefined,
       'ghost-session',
     );
 
@@ -5292,7 +4973,6 @@ describe('turn-end surface guarantee — P0 holes', () => {
       say,
       true,
       null,
-      undefined,
       'supersede',
     );
 

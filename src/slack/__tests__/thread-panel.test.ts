@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { config } from '../../config';
 import type { ConversationSession, UserChoice, UserChoices } from '../../types';
 import { ThreadPanel } from '../thread-panel';
 
@@ -394,10 +393,7 @@ describe('ThreadPanel', () => {
 // ---------------------------------------------------------------------------
 
 describe('ThreadPanel — P3 (PHASE>=3) B3 choice facade', () => {
-  const originalPhase = config.ui.fiveBlockPhase;
-
   afterEach(() => {
-    config.ui.fiveBlockPhase = originalPhase;
     vi.clearAllMocks();
   });
 
@@ -478,7 +474,6 @@ describe('ThreadPanel — P3 (PHASE>=3) B3 choice facade', () => {
   const address = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1' };
 
   it('askUser success: posts, writes pendingChoice synchronously, calls persistAndBroadcast', async () => {
-    config.ui.fiveBlockPhase = 3;
     const session = makeSession();
     const { panel, fakeClient, sessionRegistry } = makePanelWithMocks(session, {
       postMessage: vi.fn().mockResolvedValue({ ts: 'ts-choice-1' }),
@@ -510,21 +505,7 @@ describe('ThreadPanel — P3 (PHASE>=3) B3 choice facade', () => {
     expect(sessionRegistry.persistAndBroadcast).toHaveBeenCalledWith('C1:t1');
   });
 
-  it('askUser PHASE<3 returns phase-disabled without mutating state', async () => {
-    config.ui.fiveBlockPhase = 2;
-    const session = makeSession();
-    const { panel, fakeClient, sessionRegistry } = makePanelWithMocks(session);
-
-    const result = await panel.askUser('turn-1', sampleQuestion, { blocks: [] }, 'Q', address, session, 'C1:t1');
-
-    expect(result).toEqual({ ok: false, reason: 'phase-disabled' });
-    expect(fakeClient.chat.postMessage).not.toHaveBeenCalled();
-    expect(session.actionPanel?.pendingChoice).toBeUndefined();
-    expect(sessionRegistry.persistAndBroadcast).not.toHaveBeenCalled();
-  });
-
   it('askUser postMessage throws → post-failed + no pendingChoice written', async () => {
-    config.ui.fiveBlockPhase = 3;
     const session = makeSession();
     const { panel, sessionRegistry } = makePanelWithMocks(session, {
       postMessage: vi.fn().mockRejectedValue(new Error('slack 500')),
@@ -542,7 +523,6 @@ describe('ThreadPanel — P3 (PHASE>=3) B3 choice facade', () => {
   });
 
   it('askUserForm happy path (2 chunks): both posted, pendingChoice set after chunk 0', async () => {
-    config.ui.fiveBlockPhase = 3;
     const session = makeSession();
     const postMessage = vi.fn().mockResolvedValueOnce({ ts: 'chunk-0' }).mockResolvedValueOnce({ ts: 'chunk-1' });
     const { panel, sessionRegistry } = makePanelWithMocks(session, { postMessage });
@@ -585,7 +565,6 @@ describe('ThreadPanel — P3 (PHASE>=3) B3 choice facade', () => {
   });
 
   it('askUserForm partial failure: rolls back posted chunks and defensively clears pendingChoice', async () => {
-    config.ui.fiveBlockPhase = 3;
     const session = makeSession();
     const postMessage = vi.fn().mockResolvedValueOnce({ ts: 'chunk-0' }).mockRejectedValueOnce(new Error('slack down'));
     const { panel, slackApi, sessionRegistry } = makePanelWithMocks(session, { postMessage });
@@ -627,7 +606,6 @@ describe('ThreadPanel — P3 (PHASE>=3) B3 choice facade', () => {
   });
 
   it('resolveChoice happy path: updates message, clears pendingChoice, persistAndBroadcast', async () => {
-    config.ui.fiveBlockPhase = 3;
     const session = makeSession();
     session.actionPanel = {
       pendingChoice: {
@@ -654,7 +632,6 @@ describe('ThreadPanel — P3 (PHASE>=3) B3 choice facade', () => {
   });
 
   it('resolveChoice no pendingChoice present → returns false', async () => {
-    config.ui.fiveBlockPhase = 3;
     const session = makeSession();
     const { panel, slackApi, sessionRegistry } = makePanelWithMocks(session);
     const result = await panel.resolveChoice(session, 'C1:t1', 'C1', 'x', []);
@@ -663,27 +640,7 @@ describe('ThreadPanel — P3 (PHASE>=3) B3 choice facade', () => {
     expect(sessionRegistry.persistAndBroadcast).not.toHaveBeenCalled();
   });
 
-  it('resolveChoice PHASE<3 returns false', async () => {
-    config.ui.fiveBlockPhase = 2;
-    const session = makeSession();
-    session.actionPanel = {
-      pendingChoice: {
-        turnId: 'turn-1',
-        kind: 'single',
-        choiceTs: 'ts-1',
-        formIds: [],
-        question: sampleQuestion,
-        createdAt: 1,
-      },
-    };
-    const { panel, slackApi } = makePanelWithMocks(session);
-    const result = await panel.resolveChoice(session, 'C1:t1', 'C1', 'x', []);
-    expect(result).toBe(false);
-    expect(slackApi.updateMessage).not.toHaveBeenCalled();
-  });
-
   it('resolveMultiChoice happy path: iterates tsList and clears', async () => {
-    config.ui.fiveBlockPhase = 3;
     const session = makeSession();
     session.actionPanel = {
       pendingChoice: {
@@ -710,7 +667,6 @@ describe('ThreadPanel — P3 (PHASE>=3) B3 choice facade', () => {
   });
 
   it('resolveMultiChoice returns false when pendingChoice is single-kind', async () => {
-    config.ui.fiveBlockPhase = 3;
     const session = makeSession();
     session.actionPanel = {
       pendingChoice: {
@@ -738,10 +694,7 @@ describe('ThreadPanel — P3 (PHASE>=3) B3 choice facade', () => {
 // ---------------------------------------------------------------------------
 
 describe('ThreadPanel — isCompletionMarkerActive (#667 P5)', () => {
-  const originalPhase = config.ui.fiveBlockPhase;
-
   afterEach(() => {
-    config.ui.fiveBlockPhase = originalPhase;
     vi.clearAllMocks();
   });
 
@@ -769,26 +722,12 @@ describe('ThreadPanel — isCompletionMarkerActive (#667 P5)', () => {
     };
   }
 
-  it('PHASE=4 + channel undefined → false', () => {
-    config.ui.fiveBlockPhase = 4;
+  it('channel undefined → false', () => {
     const panel = new ThreadPanel(makeDeps(undefined));
     expect(panel.isCompletionMarkerActive()).toBe(false);
   });
 
-  it('PHASE=4 + channel defined → false', () => {
-    config.ui.fiveBlockPhase = 4;
-    const panel = new ThreadPanel(makeDeps({ send: vi.fn() }));
-    expect(panel.isCompletionMarkerActive()).toBe(false);
-  });
-
-  it('PHASE=5 + channel undefined → false', () => {
-    config.ui.fiveBlockPhase = 5;
-    const panel = new ThreadPanel(makeDeps(undefined));
-    expect(panel.isCompletionMarkerActive()).toBe(false);
-  });
-
-  it('PHASE=5 + channel defined → true', () => {
-    config.ui.fiveBlockPhase = 5;
+  it('channel defined → true', () => {
     const panel = new ThreadPanel(makeDeps({ send: vi.fn() }));
     expect(panel.isCompletionMarkerActive()).toBe(true);
   });

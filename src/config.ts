@@ -12,26 +12,6 @@ export interface PreflightResult {
 }
 
 /**
- * Parse SOMA_UI_5BLOCK_PHASE — integer in [0..5] rolling out the 5-block UI
- * refactor (Issue #525). Out-of-range, non-integer, or missing values fall
- * back to 0 (all legacy) with a warn log. This is the single rollout variable
- * for the whole refactor; cumulative prefix semantics (see
- * docs/archive/features/slack-ui/phase1.md §Rollout).
- *
- * @internal exported for unit tests; runtime consumers should read
- *           `config.ui.fiveBlockPhase` instead.
- */
-export function parseFiveBlockPhase(raw: string | undefined): number {
-  if (raw === undefined || raw === '') return 0;
-  const n = Number(raw);
-  if (!Number.isInteger(n) || n < 0 || n > 5) {
-    logger.warn(`SOMA_UI_5BLOCK_PHASE="${raw}" invalid (expected integer 0..5); falling back to 0`);
-    return 0;
-  }
-  return n;
-}
-
-/**
  * Defensive boolean parser for ENV knobs (#666 P4).
  *
  * Accepted truthy: `1`, `true`, `yes`, `on` (case-insensitive, trimmed).
@@ -40,8 +20,7 @@ export function parseFiveBlockPhase(raw: string | undefined): number {
  * non-empty values additionally log a warn so an operator typo surfaces
  * instead of silently reverting to the default.
  *
- * Runtime consumers should read the parsed value (e.g. `config.ui.b4NativeStatusEnabled`);
- * this function is exported for unit tests only.
+ * Exported for unit tests and reusable env parsing.
  */
 export function parseBool(raw: string | undefined, fallback: boolean): boolean {
   if (raw === undefined) return fallback;
@@ -73,7 +52,7 @@ export function parseBool(raw: string | undefined, fallback: boolean): boolean {
  * backoff so it just bounces, but still burns event-loop time every ms).
  *
  * @internal exported for unit tests; runtime consumers should read
- *           `config.usage.*` / `config.ui.fiveBlockPhase` instead.
+ *           `config.usage.*` instead.
  */
 export function parsePositiveIntEnv(name: string, fallback: number, minimum: number = 0): number {
   const raw = process.env[name];
@@ -126,29 +105,6 @@ export const config = {
     botToken: process.env.SLACK_BOT_TOKEN!,
     appToken: process.env.SLACK_APP_TOKEN!,
     signingSecret: process.env.SLACK_SIGNING_SECRET!,
-  },
-  ui: {
-    /**
-     * 5-block UI refactor rollout phase (Issue #525):
-     *   0 = all legacy (default)
-     *   1 = B1 stream consolidation new path
-     *   2 = + B2 plan
-     *   3 = + B3 choice
-     *   4 = + B4 status (requires Assistant container registration — must be
-     *                    wired at app-init; see slack-handler.ts app.assistant
-     *                    (P4 scope))
-     *   5 = + B5 completion marker
-     */
-    fiveBlockPhase: parseFiveBlockPhase(process.env.SOMA_UI_5BLOCK_PHASE),
-    /**
-     * #666 P4 B4 native status spinner kill switch. `false` (default) forces
-     * `AssistantStatusManager` to initialize with `enabled=false`, so every
-     * `client.assistant.threads.setStatus` call is a no-op even if the Bolt
-     * Assistant container has been registered and `assistant:write` is
-     * installed. Flip to `true` only once Part 2 (PHASE>=4 turn-surface
-     * wiring + legacy suppression) has merged. See docs/archive/features/slack-ui/phase4.md.
-     */
-    b4NativeStatusEnabled: parseBool(process.env.SOMA_UI_B4_NATIVE_STATUS, false),
   },
   claude: {
     useBedrock: process.env.CLAUDE_CODE_USE_BEDROCK === '1',
@@ -311,6 +267,94 @@ export function validateConfig() {
   logger.info('Auth: Agent SDK (OAuth via CLAUDE_CODE_OAUTH_TOKEN)');
 }
 
+/** Outcome of {@link probeSlackApi}. */
+export interface SlackProbeResult {
+  /** True when `auth.test` succeeded within the attempt budget. */
+  ok: boolean;
+  /**
+   * True only for a genuine credential rejection (`invalid_auth` /
+   * `account_inactive` / `token_revoked`) — these are NOT retried and SHOULD
+   * hard-fail preflight. A transient failure (network/5xx/rate-limit/timeout)
+   * leaves this false so the caller can degrade to a warning.
+   */
+  fatalAuth: boolean;
+  /** Last error message (fixed-shape, no secrets) when `!ok`. */
+  message: string;
+  user?: string;
+  team?: string;
+  botId?: string;
+}
+
+const FATAL_SLACK_AUTH_ERRORS = ['invalid_auth', 'account_inactive', 'token_revoked'];
+
+/**
+ * #1003 — Probe Slack connectivity via `auth.test` with bounded retry.
+ *
+ * The old preflight made a SINGLE `auth.test()` and pushed any throw into the
+ * fatal-error list, so a transient Slack-API/network hiccup at boot →
+ * `process.exit(1)` → supervisor restart → same hiccup again. That is the 22x
+ * watchdog/preflight/restart loop in dev.
+ *
+ * Behaviour:
+ *  - Success on any attempt → `{ ok: true, … }`.
+ *  - A fatal auth error short-circuits immediately → `{ ok:false, fatalAuth:true }`.
+ *  - Any other (transient) failure is retried up to `maxAttempts` with a linear
+ *    backoff (`backoffBaseMs * attempt`); after exhaustion →
+ *    `{ ok:false, fatalAuth:false }` so the caller can warn-and-continue.
+ *
+ * `backoffBaseMs` is injectable so tests run without real delays.
+ */
+export async function probeSlackApi(
+  token: string,
+  opts: {
+    maxAttempts?: number;
+    backoffBaseMs?: number;
+    onRetry?: (attempt: number, maxAttempts: number, message: string, waitMs: number) => void;
+  } = {},
+): Promise<SlackProbeResult> {
+  const maxAttempts = opts.maxAttempts ?? 3;
+  const backoffBaseMs = opts.backoffBaseMs ?? 1000;
+  const isFatalAuthError = (err: unknown): boolean => {
+    const e = err as { data?: { error?: unknown }; message?: unknown };
+    const fromData = typeof e?.data?.error === 'string' ? e.data.error : '';
+    const fromMsg = typeof e?.message === 'string' ? e.message : '';
+    return FATAL_SLACK_AUTH_ERRORS.some((code) => fromData === code || fromMsg.includes(code));
+  };
+
+  let lastErrorMessage = 'unknown error';
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const client = new WebClient(token);
+      const authResult = await client.auth.test();
+      if (authResult.ok) {
+        return {
+          ok: true,
+          fatalAuth: false,
+          message: '',
+          user: String(authResult.user ?? ''),
+          team: String(authResult.team ?? ''),
+          botId: String(authResult.bot_id ?? ''),
+        };
+      }
+      lastErrorMessage = `auth.test failed - ${authResult.error}`;
+      if (FATAL_SLACK_AUTH_ERRORS.includes(String(authResult.error))) {
+        return { ok: false, fatalAuth: true, message: lastErrorMessage };
+      }
+    } catch (err: unknown) {
+      lastErrorMessage = `Connection failed - ${(err as { message?: string })?.message ?? String(err)}`;
+      if (isFatalAuthError(err)) {
+        return { ok: false, fatalAuth: true, message: lastErrorMessage };
+      }
+    }
+    if (attempt < maxAttempts) {
+      const waitMs = backoffBaseMs * attempt;
+      opts.onRetry?.(attempt, maxAttempts, lastErrorMessage, waitMs);
+      if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs));
+    }
+  }
+  return { ok: false, fatalAuth: false, message: lastErrorMessage };
+}
+
 /**
  * Comprehensive preflight checks for environment configuration
  * Returns detailed errors and warnings
@@ -359,20 +403,25 @@ export async function runPreflightChecks(): Promise<PreflightResult> {
 
   // ===== 2. Slack API Connection Test =====
   if (slackBotToken && slackBotToken.startsWith('xoxb-')) {
-    try {
-      const client = new WebClient(slackBotToken);
-      const authResult = await client.auth.test();
-      if (authResult.ok) {
-        logger.info(`Slack API: Connected as @${authResult.user} (bot_id: ${authResult.bot_id})`);
-        logger.info(`Team: ${authResult.team} (${authResult.team_id})`);
-      } else {
-        errors.push(`❌ Slack API: auth.test failed - ${authResult.error}`);
-      }
-    } catch (err: any) {
-      errors.push(`❌ Slack API: Connection failed - ${err.message}`);
-      if (err.message.includes('invalid_auth')) {
-        errors.push('   → Token is invalid or revoked. Regenerate in Slack App settings.');
-      }
+    const probe = await probeSlackApi(slackBotToken, {
+      onRetry: (attempt, max, msg, waitMs) =>
+        logger.warn(`⚠️ Slack API: preflight attempt ${attempt}/${max} failed (${msg}); retrying in ${waitMs}ms`),
+    });
+    if (probe.ok) {
+      logger.info(`Slack API: Connected as @${probe.user} (bot_id: ${probe.botId})`);
+      logger.info(`Team: ${probe.team}`);
+    } else if (probe.fatalAuth) {
+      // Genuine credential rejection — hard-fail so the operator fixes the token.
+      errors.push(`❌ Slack API: ${probe.message}`);
+      errors.push('   → Token is invalid or revoked. Regenerate in Slack App settings.');
+    } else {
+      // #1003 — a persistent TRANSIENT failure no longer hard-fails preflight.
+      // Booting and letting Socket Mode + the socket watchdog reconnect beats a
+      // crash-loop that never makes progress during a Slack-side blip.
+      warnings.push(
+        `⚠️ Slack API: ${probe.message} after retries — likely transient; ` +
+          'continuing boot and relying on Socket Mode reconnect.',
+      );
     }
   }
 

@@ -1,4 +1,3 @@
-import './effective-phase';
 import { setStreamExecutorProviders } from '@soma/slack/pipeline/stream-executor';
 import { parseModelCommandRunResponse } from 'somalib/model-commands/result-parser';
 import { TurnResultCollector } from '../../agent-session/turn-result-collector.js';
@@ -10,7 +9,6 @@ import {
   isApiLikeError as rootIsApiLikeError,
   shouldShowStatusBlock,
 } from '../../claude-status-fetcher';
-import { config } from '../../config';
 import { createConversation, recordAssistantTurn, recordUserTurn } from '../../conversation';
 import { scheduleLinkDerivedTitleRefresh } from '../../conversation/link-derived-title';
 import { isMidThreadMention } from '../../mcp-config-builder';
@@ -28,7 +26,6 @@ import { buildCompactionContext, snapshotFromSession } from '../../session/compa
 import { getTokenManager, parseCooldownTime } from '../../token-manager';
 import { coerceToAvailableModel, userSettingsStore } from '../../user-settings-store';
 import { postCompactCompleteIfNeeded, postCompactStartingIfNeeded } from '../hooks/compact-hooks';
-import { getEffectiveFiveBlockPhase } from './effective-phase';
 
 setStreamExecutorProviders({
   parseModelCommandRunResponse,
@@ -39,7 +36,6 @@ setStreamExecutorProviders({
   formatStatusForSlack,
   isApiLikeError: (error) => rootIsApiLikeError(error as any),
   shouldShowStatusBlock,
-  getFiveBlockPhase: () => config.ui.fiveBlockPhase,
   createConversation,
   recordAssistantTurn,
   recordUserTurn,
@@ -61,7 +57,6 @@ setStreamExecutorProviders({
   userSettingsStore,
   postCompactCompleteIfNeeded,
   postCompactStartingIfNeeded,
-  shouldRunLegacyB4Path: (statusManager) => !!statusManager && getEffectiveFiveBlockPhase(statusManager) < 4,
 });
 
 export * from '@soma/slack/pipeline/stream-executor';
