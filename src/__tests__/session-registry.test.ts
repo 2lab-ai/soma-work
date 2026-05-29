@@ -823,7 +823,7 @@ describe('SessionRegistry deserialize — model coerce', () => {
     const reader = new SessionRegistry();
     reader.loadSessions();
     const restored = reader.getSession('C1', 't4');
-    expect(restored?.model).toBe('claude-opus-4-7'); // DEFAULT_MODEL
+    expect(restored?.model).toBe('claude-opus-4-8[1m]'); // DEFAULT_MODEL
   });
 
   it('preserves undefined when session was saved without a model', () => {

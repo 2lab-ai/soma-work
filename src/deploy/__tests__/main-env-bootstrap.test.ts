@@ -182,7 +182,7 @@ describe('main-env-bootstrap', () => {
     const sessions = JSON.parse(fs.readFileSync(path.join(targetDir, 'data', 'sessions.json'), 'utf8'));
 
     expect(settings.U1.accepted).toBe(true);
-    expect(settings.U1.defaultModel).toBe('claude-opus-4-7');
+    expect(settings.U1.defaultModel).toBe('claude-opus-4-8[1m]'); // bootstrap DEFAULT_MODEL
     expect(sessions[0].ownerId).toBe('U1');
     expect(sessions[0].state).toBe('MAIN');
     expect(sessions[0].workflow).toBe('default');
@@ -364,12 +364,14 @@ describe('main-env-bootstrap', () => {
     });
 
     it('falls back to DEFAULT_MODEL for unknown / empty / non-string', () => {
-      expect(__TEST_ONLY_coerceModel('gpt-99-turbo')).toBe('claude-opus-4-7');
-      expect(__TEST_ONLY_coerceModel('')).toBe('claude-opus-4-7');
-      expect(__TEST_ONLY_coerceModel('   ')).toBe('claude-opus-4-7');
-      expect(__TEST_ONLY_coerceModel(undefined)).toBe('claude-opus-4-7');
-      expect(__TEST_ONLY_coerceModel(null)).toBe('claude-opus-4-7');
-      expect(__TEST_ONLY_coerceModel(42)).toBe('claude-opus-4-7');
+      // Fallback target mirrors user-settings-store DEFAULT_MODEL — keep both
+      // in sync when bumping the `opus[1m]` alias generation.
+      expect(__TEST_ONLY_coerceModel('gpt-99-turbo')).toBe('claude-opus-4-8[1m]');
+      expect(__TEST_ONLY_coerceModel('')).toBe('claude-opus-4-8[1m]');
+      expect(__TEST_ONLY_coerceModel('   ')).toBe('claude-opus-4-8[1m]');
+      expect(__TEST_ONLY_coerceModel(undefined)).toBe('claude-opus-4-8[1m]');
+      expect(__TEST_ONLY_coerceModel(null)).toBe('claude-opus-4-8[1m]');
+      expect(__TEST_ONLY_coerceModel(42)).toBe('claude-opus-4-8[1m]');
     });
   });
 

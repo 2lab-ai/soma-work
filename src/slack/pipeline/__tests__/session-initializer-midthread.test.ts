@@ -42,7 +42,7 @@ vi.mock('../../../user-settings-store', () => ({
     'claude-opus-4-7[1m]',
     'claude-opus-4-6[1m]',
   ],
-  DEFAULT_MODEL: 'claude-opus-4-7',
+  DEFAULT_MODEL: 'claude-opus-4-8[1m]',
 }));
 
 vi.mock('../../../admin-utils', () => ({
