@@ -20,7 +20,7 @@ vi.mock('../../../user-settings-store', () => ({
     getModelDisplayName: vi.fn().mockReturnValue('Opus 4.7'),
     getUserSessionTheme: vi.fn().mockReturnValue('D'),
   },
-  DEFAULT_MODEL: 'claude-opus-4-7',
+  DEFAULT_MODEL: 'claude-opus-4-8[1m]',
 }));
 
 import { DispatchAbortError } from '../../dispatch-abort';
