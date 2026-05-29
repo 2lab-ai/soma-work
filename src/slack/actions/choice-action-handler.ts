@@ -1,5 +1,4 @@
 import type { ClaudeHandler } from '../../claude-handler';
-import { config } from '../../config';
 import { Logger } from '../../logger';
 import type { UserChoices } from '../../types';
 import { ChoiceMessageBuilder } from '../choice-message-builder';
@@ -502,12 +501,7 @@ export class ChoiceActionHandler {
     // were still unanswered).
     const pc = session?.actionPanel?.pendingChoice;
     const canUseP3 =
-      config.ui.fiveBlockPhase >= 3 &&
-      !!session &&
-      !!this.ctx.threadPanel &&
-      !!pc &&
-      pc.kind === 'multi' &&
-      pc.turnId === pendingForm.turnId;
+      !!session && !!this.ctx.threadPanel && !!pc && pc.kind === 'multi' && pc.turnId === pendingForm.turnId;
 
     if (canUseP3 && session && channel && pc && pendingForm.messageTs) {
       // Slack update: mark ONLY this chunk's message done.
@@ -909,8 +903,7 @@ export class ChoiceActionHandler {
     // Dashboard payloads don't carry turnId, but pc.turnId always matches itself,
     // so the classifier returns 'p3' whenever pc exists under PHASE>=3.
     const pcSingle = session.actionPanel?.pendingChoice;
-    const canUseDashboardP3 =
-      config.ui.fiveBlockPhase >= 3 && !!this.ctx.threadPanel && !!pcSingle && pcSingle.kind === 'single';
+    const canUseDashboardP3 = !!this.ctx.threadPanel && !!pcSingle && pcSingle.kind === 'single';
     if (canUseDashboardP3 && channel) {
       const completedText = `✅ *${question}*\n선택: *${choiceId}. ${label}* _(대시보드)_`;
       const completedBlocks = [
@@ -1139,8 +1132,7 @@ export class ChoiceActionHandler {
     // a multi record. Dashboard payloads don't carry turnId, but pc.turnId
     // always matches itself.
     const pcMulti = session.actionPanel?.pendingChoice;
-    const canUseDashboardMultiP3 =
-      config.ui.fiveBlockPhase >= 3 && !!this.ctx.threadPanel && !!pcMulti && pcMulti.kind === 'multi';
+    const canUseDashboardMultiP3 = !!this.ctx.threadPanel && !!pcMulti && pcMulti.kind === 'multi';
     if (canUseDashboardMultiP3 && channel) {
       const tsList: string[] = [];
       for (const fId of pcMulti!.formIds) {

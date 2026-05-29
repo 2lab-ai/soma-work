@@ -31,7 +31,6 @@ export {
   type PendingChoiceForClick,
   type SlackApiStaleMarkerWriter,
   SUPERSEDED_TEXT,
-  setClickClassifierFiveBlockPhaseProvider,
   type WarnLogger,
 } from './actions/click-classifier';
 export {
@@ -65,7 +64,6 @@ export {
   AssistantStatusManager,
   type AssistantStatusSlackApi,
   type StatusDescriptor,
-  setAssistantStatusB4NativeStatusEnabledProvider,
 } from './assistant-status-manager';
 export {
   type CctCardMode,
@@ -267,14 +265,6 @@ export {
   verboseTag,
 } from './output-flags';
 export {
-  __resetClampEmitted,
-  type AssistantStatusReader,
-  configureEffectivePhase,
-  getEffectiveFiveBlockPhase,
-  shouldRunLegacyB4Path,
-  type UiPhaseClampedEvent,
-} from './pipeline/effective-phase';
-export {
   type AutoCompactSession,
   type ClaudeSessionReader,
   type CommandRouteResult,
@@ -360,7 +350,6 @@ export {
 export { type StatusMessage, StatusReporter, type StatusType } from './status-reporter';
 export {
   type AssistantTextHandler,
-  type CompactToolCallEntry,
   extractTaskIdFromResult,
   type FinalResponseFooterParams,
   type PendingForm,
@@ -412,7 +401,6 @@ export {
   type WorkflowType as ThreadHeaderWorkflowType,
 } from './thread-header-builder';
 export {
-  setThreadPanelFiveBlockPhaseProvider,
   ThreadPanel,
   type ThreadPanelClaudeHandler,
   type ThreadPanelCompletionChannel,
@@ -438,7 +426,6 @@ export {
   type PlanRenderCallback,
   type RenderRequestCallback,
   type SayFunction as TodoSayFunction,
-  setTodoDisplayFiveBlockPhaseProvider,
   type TodoConversationSession,
   TodoDisplayManager,
   type TodoManagerReader,
@@ -490,7 +477,6 @@ export {
 } from './turn-notifier';
 export { TurnRenderDebouncer } from './turn-render-debouncer';
 export {
-  setTurnSurfaceFiveBlockPhaseProvider,
   type TurnAddress,
   type TurnContext,
   type TurnEndReason,

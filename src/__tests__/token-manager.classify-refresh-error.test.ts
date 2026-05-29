@@ -62,6 +62,42 @@ describe('TokenManager.classifyRefreshError', () => {
     expect(info).toEqual({ kind: 'unknown', status: 418, message: 'Refresh failed (418)' });
   });
 
+  // #1004 — `invalid_grant` ("Refresh token not found or invalid") is returned
+  // by Anthropic's OAuth endpoint as HTTP 400 (OAuth2 RFC 6749 §5.2), NOT 401.
+  // It must classify as `unauthorized` (→ authState `refresh_failed`, needs
+  // re-auth) so the slot stops being retried every tick. The returned message
+  // is a fixed template — the body is never interpolated.
+  it('400 invalid_grant → unauthorized (dead refresh token, the #1004 production case)', () => {
+    const info = TokenManager.classifyRefreshError(
+      new OAuthRefreshError(
+        400,
+        '{"error": "invalid_grant", "error_description": "Refresh token not found or invalid"}',
+        'OAuth refresh failed with status 400',
+      ),
+    );
+    expect(info).toEqual({ kind: 'unauthorized', status: 400, message: 'Refresh rejected (invalid_grant)' });
+  });
+
+  it('400 invalid_grant body does NOT leak the error_description into the message', () => {
+    const info = TokenManager.classifyRefreshError(
+      new OAuthRefreshError(
+        400,
+        '{"error": "invalid_grant", "error_description": "secret-ish detail sk-ant-oat01-LEAK"}',
+        'OAuth refresh failed with status 400',
+      ),
+    );
+    expect(info.message).toBe('Refresh rejected (invalid_grant)');
+    expect(info.message).not.toContain('sk-ant-');
+    expect(info.message).not.toContain('secret-ish');
+  });
+
+  it('400 with a non-invalid_grant error (e.g. invalid_request) stays unknown', () => {
+    const info = TokenManager.classifyRefreshError(
+      new OAuthRefreshError(400, '{"error": "invalid_request"}', 'OAuth refresh failed with status 400'),
+    );
+    expect(info).toEqual({ kind: 'unknown', status: 400, message: 'Refresh failed (400)' });
+  });
+
   it('parse — invalid JSON body (empty body + "not valid JSON" prefix)', () => {
     const info = TokenManager.classifyRefreshError(
       new OAuthRefreshError(200, '', 'OAuth refresh response was not valid JSON: Unexpected token'),
