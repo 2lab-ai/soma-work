@@ -112,6 +112,19 @@ async function start() {
     }
     timing('PID lock acquired');
 
+    // #1003 — release the PID lock on EVERY exit path, not just SIGINT/SIGTERM.
+    // The socket-watchdog trip (`process.exit(1)`), the preflight-failure exit,
+    // and the uncaughtException/unhandledRejection crash handlers all bypass
+    // `cleanup`, so without this the lock file survives and the next boot logs
+    // "Stale PID lock detected" (~45x/rotation in dev ≈ 2× each watchdog
+    // restart). Registered immediately after acquisition so it also covers an
+    // exit between here and the SIGINT/SIGTERM wiring below. Must stay
+    // synchronous — `releasePidLock` uses sync fs only, and only unlinks when
+    // the lock file still holds THIS pid (safe no-op otherwise).
+    process.on('exit', () => {
+      releasePidLock(DATA_DIR);
+    });
+
     // Initialize token manager (before preflight — tokens may be needed for API calls)
     // Align DATA_DIR so getTokenManager()'s singleton resolves the same cct-store.json
     // path as env-paths computed above (branch detection + dotenv already ran).
