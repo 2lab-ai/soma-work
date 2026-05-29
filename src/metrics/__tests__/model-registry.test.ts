@@ -16,8 +16,8 @@ import {
 
 describe('model-registry', () => {
   describe('PRICING_VERSION', () => {
-    it('should be 2026-04-17', () => {
-      expect(PRICING_VERSION).toBe('2026-04-17');
+    it('should be 2026-05-29 (Opus 4.8 release)', () => {
+      expect(PRICING_VERSION).toBe('2026-05-29');
     });
   });
 

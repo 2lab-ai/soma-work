@@ -4,19 +4,25 @@ import path from 'path';
 const DEFAULT_DEV_SOURCE_DIR = '/opt/soma-work/dev';
 const DEFAULT_LEGACY_ROOT_DIR = '/Users/dd/app.claude-code-slack-bot';
 const MARKER_FILE_NAME = '.main-bootstrap.json';
-const DEFAULT_MODEL = 'claude-opus-4-7';
+// Mirrors user-settings-store.DEFAULT_MODEL — the resolved `opus[1m]` alias.
+// Bootstrap is import-lean (runs before the main process and must not pull in
+// the settings store), so the literal is duplicated here. Drift is caught by
+// `VALID_MODELS + DEFAULT_MODEL stay in sync` in main-env-bootstrap.test.ts.
+const DEFAULT_MODEL = 'claude-opus-4-8[1m]';
 
 // Duplicated from user-settings-store.AVAILABLE_MODELS because bootstrap is
 // import-lean (it runs before the main process and must not pull in the
 // settings store). Drift is guarded by an exact-set equality test in
 // main-env-bootstrap.test.ts — that test imports AVAILABLE_MODELS directly.
 const VALID_MODELS = new Set([
+  'claude-opus-4-8',
   'claude-opus-4-7',
   'claude-opus-4-6',
   'claude-sonnet-4-6',
   'claude-sonnet-4-5-20250929',
   'claude-opus-4-5-20251101',
   'claude-haiku-4-5-20251001',
+  'claude-opus-4-8[1m]',
   'claude-opus-4-7[1m]',
   'claude-opus-4-6[1m]',
 ]);
