@@ -311,6 +311,34 @@ export interface StreamCallbacks {
 export const DEFAULT_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 
 /**
+ * Bounded post-result drain window (turn-end-surface-guarantee §C-7).
+ *
+ * The SDK `result` (SDKResultMessage) is the turn-terminal signal: final
+ * output, usage and cost are all on it. A well-behaved generator returns
+ * `done` immediately afterwards, but on long turns the SDK 0.2.140 transport
+ * does NOT reliably close — `iterator.next()` for the terminal `done` hangs.
+ * Before §C-7 the loop's only escape from that hang was the 2 h idle timer,
+ * which fired a SPURIOUS ⚫ stall card on a turn that had already completed
+ * (prod incident 2026-05-29: 19-min / $82 turn pinned in MAIN, completion
+ * card never emitted).
+ *
+ * Once a `result` is seen we therefore stop waiting on the 2 h idle timer and
+ * instead give trailing SDK events (e.g. prompt suggestions / observability —
+ * which CAN legitimately follow `result`, per the Agent SDK agent-loop docs)
+ * a short bounded window before finalizing the turn as a normal completion
+ * (`aborted:false`). Healthy turns are unaffected: a cooperative `done`
+ * resolves the race first and clears the timer, adding zero latency.
+ *
+ * 2 s is comfortably longer than the millisecond-scale gap real trailing
+ * events arrive in, while keeping a wedged transport from delaying turn-end.
+ */
+export const POST_RESULT_DRAIN_MS = 2000;
+
+/** Bounded best-effort window for `iterator.return()` (§C-7). A wedged SDK
+ *  transport must not move the hang from `.next()` to `.return()`. */
+export const ITERATOR_RETURN_BOUND_MS = 1000;
+
+/**
  * Env var operators use to tune or disable the idle timeout without a
  * redeploy. `0` disables; invalid/non-finite falls back to the default —
  * a typo'd env var must not silently disable the safety net.
@@ -528,14 +556,28 @@ export class StreamProcessor {
     // `asyncIteratorOf` adapts sync iterables (tests pass `function*`
     // generators); the explicit-iterator form here does not auto-promote.
     const iterator: AsyncIterator<SDKMessage> = asyncIteratorOf<SDKMessage>(stream);
+    // Turn-end-surface-guarantee §C-7: once the terminal `result` message has
+    // been seen, subsequent `.next()` waits are bounded by POST_RESULT_DRAIN_MS
+    // (a drain window for trailing SDK events) instead of the 2 h idle timer —
+    // so a transport that never closes after `result` finalizes the turn as a
+    // normal completion rather than firing a spurious stall card.
+    let terminalSeen = false;
     try {
       while (true) {
         if (abortSignal.aborted) {
           return { success: true, messageCount: currentMessages.length, aborted: true };
         }
 
-        const step = await this.raceNextStep(iterator, abortSignal);
+        const step = await this.raceNextStep(iterator, abortSignal, terminalSeen);
         if (step.kind === 'done') break;
+        if (step.kind === 'drainTimeout') {
+          // Terminal `result` already processed; the SDK did not close the
+          // iterator within the bounded drain window. Release the transport
+          // and break to the post-loop finalization — this is a HEALTHY
+          // completion (aborted:false), NOT a stall.
+          await this.tryReturnIterator(iterator, 'post-result drain');
+          break;
+        }
         if (step.kind === 'aborted') {
           // Mirror the idleTimeout branch: best-effort tell the abandoned
           // iterator we're done so the underlying generator can release
@@ -589,6 +631,10 @@ export class StreamProcessor {
           await this.handleUserMessage(message, context);
         } else if (message.type === 'result') {
           lastUsage = await this.handleResultMessage(message, context, currentMessages);
+          // §C-7: `result` is the turn-terminal signal. Switch the loop into
+          // the bounded post-result drain (see `terminalSeen` above) so we no
+          // longer wait on the 2 h idle timer for a `done` that may never come.
+          terminalSeen = true;
         } else if (message.type === 'system') {
           await this.handleSystemMessage(message, context);
         }
@@ -637,10 +683,25 @@ export class StreamProcessor {
   private async raceNextStep(
     iterator: AsyncIterator<SDKMessage>,
     abortSignal: AbortSignal,
-  ): Promise<{ kind: 'value'; value: SDKMessage } | { kind: 'done' } | { kind: 'aborted' } | { kind: 'idleTimeout' }> {
+    terminalSeen = false,
+  ): Promise<
+    | { kind: 'value'; value: SDKMessage }
+    | { kind: 'done' }
+    | { kind: 'aborted' }
+    | { kind: 'idleTimeout' }
+    | { kind: 'drainTimeout' }
+  > {
     if (abortSignal.aborted) {
       return { kind: 'aborted' };
     }
+
+    // §C-7: after the terminal `result`, bound the wait by the short
+    // post-result drain instead of the (possibly 2 h) idle timer. The drain
+    // is ALWAYS armed once terminal — even when the idle timeout is disabled
+    // (`idleTimeoutMs <= 0`) — because waiting indefinitely past a `result`
+    // is never correct.
+    const timeoutMs = terminalSeen ? POST_RESULT_DRAIN_MS : this.idleTimeoutMs;
+    const timeoutKind: 'idleTimeout' | 'drainTimeout' = terminalSeen ? 'drainTimeout' : 'idleTimeout';
 
     let timer: ReturnType<typeof setTimeout> | undefined;
     let abortListener: (() => void) | undefined;
@@ -665,13 +726,19 @@ export class StreamProcessor {
           });
 
       const racers: Array<
-        Promise<{ kind: 'value'; value: SDKMessage } | { kind: 'done' } | { kind: 'aborted' } | { kind: 'idleTimeout' }>
+        Promise<
+          | { kind: 'value'; value: SDKMessage }
+          | { kind: 'done' }
+          | { kind: 'aborted' }
+          | { kind: 'idleTimeout' }
+          | { kind: 'drainTimeout' }
+        >
       > = [nextPromise];
 
-      if (this.idleTimeoutMs > 0) {
+      if (timeoutMs > 0) {
         racers.push(
-          new Promise<{ kind: 'idleTimeout' }>((resolve) => {
-            timer = setTimeout(() => resolve({ kind: 'idleTimeout' }), this.idleTimeoutMs);
+          new Promise<{ kind: 'idleTimeout' } | { kind: 'drainTimeout' }>((resolve) => {
+            timer = setTimeout(() => resolve({ kind: timeoutKind }), timeoutMs);
             // Fail-safe must never keep Node alive at shutdown.
             // `unref` is missing on browser/jsdom timer stubs — optional-call.
             (timer as { unref?: () => void } | undefined)?.unref?.();
@@ -712,7 +779,28 @@ export class StreamProcessor {
    */
   private async tryReturnIterator(iterator: AsyncIterator<SDKMessage>, reason: string): Promise<void> {
     try {
-      await iterator.return?.();
+      const ret = iterator.return?.();
+      if (!ret) return;
+      // §C-7: bound the close. A wedged transport whose `.return()` never
+      // settles must not re-introduce the very hang we just escaped. Lose the
+      // race → abandon the cleanup (best-effort; process teardown reclaims it).
+      let bound: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        Promise.resolve(ret).then(
+          () => undefined,
+          (err) => {
+            this.logger.debug(`iterator.return() after ${reason} threw — ignored`, {
+              error: (err as Error)?.message ?? String(err),
+            });
+          },
+        ),
+        new Promise<void>((resolve) => {
+          bound = setTimeout(resolve, ITERATOR_RETURN_BOUND_MS);
+          (bound as { unref?: () => void } | undefined)?.unref?.();
+        }),
+      ]).finally(() => {
+        if (bound) clearTimeout(bound);
+      });
     } catch (err) {
       this.logger.debug(`iterator.return() after ${reason} threw — ignored`, {
         error: (err as Error)?.message ?? String(err),
