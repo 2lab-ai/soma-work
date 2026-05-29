@@ -9,10 +9,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import {
-  getModelSpec,
-  resolveContextWindow,
-} from '../metrics/model-registry';
+import { getModelSpec, resolveContextWindow } from '../metrics/model-registry';
 import {
   AVAILABLE_MODELS,
   coerceToAvailableModel,
