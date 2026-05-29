@@ -145,19 +145,45 @@ function sanitizeBlocks(blocks: SlackBlock[]): SlackBlock[] {
 }
 
 /**
- * Ensure table block stays within Slack limits (rows, columns, column_settings).
+ * An empty Slack table cell — a `rich_text` block with a single empty section.
+ * Mirrors the cell shape emitted by `markdown-to-slack-blocks` (a `rich_text`
+ * block whose first element is a `rich_text_section`). Used to pad short rows
+ * to a uniform width (see {@link sanitizeTable}).
  */
-function sanitizeTable(block: SlackBlock): SlackBlock {
+function emptyTableCell(): unknown {
+  return { type: 'rich_text', elements: [{ type: 'rich_text_section', elements: [{ type: 'text', text: ' ' }] }] };
+}
+
+/**
+ * Ensure table block stays within Slack limits (rows, columns, column_settings)
+ * AND that every row has the same number of cells.
+ *
+ * Exported for unit testing — the pad path can't be reached through
+ * `markdownToBlocks` because GFM source tables are always rectangular.
+ */
+export function sanitizeTable(block: SlackBlock): SlackBlock {
   const rows = block.rows as any[][];
   if (!rows || rows.length === 0) return block;
 
   const truncatedRows = rows.slice(0, MAX_TABLE_ROWS);
   const truncatedCols = truncatedRows.map((row) => row.slice(0, MAX_TABLE_COLUMNS));
 
+  // #1005 — Slack rejects a table whose rows have differing cell counts with
+  // `uneven_table_rows_not_allowed [json-pointer:/blocks/.../]`. A ragged GFM
+  // source table (missing trailing cells) — or an uneven truncation — produces
+  // exactly that and kills the whole message. Normalize every row to the
+  // widest row's column count by padding short rows with empty cells.
+  const targetCols = truncatedCols.reduce((max, row) => Math.max(max, row.length), 0);
+  const evenRows = truncatedCols.map((row) =>
+    row.length >= targetCols
+      ? row
+      : [...row, ...Array.from({ length: targetCols - row.length }, () => emptyTableCell())],
+  );
+
   return {
     ...block,
-    rows: truncatedCols,
-    ...(block.column_settings ? { column_settings: block.column_settings.slice(0, MAX_TABLE_COLUMNS) } : {}),
+    rows: evenRows,
+    ...(block.column_settings ? { column_settings: block.column_settings.slice(0, targetCols) } : {}),
   };
 }
 
