@@ -16,25 +16,30 @@ const invalidator = createPromptInvalidator(logger, 'Settings');
 export const setSettingsPromptInvalidationHook = invalidator.setHook;
 const fireSettingsInvalidate = invalidator.fire;
 
-// Available models — the 8-entry user-facing allow-list.
+// Available models — the 10-entry user-facing allow-list.
 //
 // Contract:
-//   - The 6 bare entries are the historical lineup and MUST NOT be removed.
-//   - The 2 `[1m]` entries are additive: they enable the 1M beta context window
-//     on opus-4-7 / opus-4-6 via the shared suffix convention. The Claude Agent
-//     SDK (≥ 0.2.111) detects `[1m]`, strips it before the API call, and
-//     injects the `context-1m-2025-08-07` beta header.
+//   - The 7 bare entries are the historical lineup and MUST NOT be removed.
+//     (4.8 added on 2026-05-28; 4.7/4.6 retained as user-selectable.)
+//   - The 3 `[1m]` entries are additive: they enable the 1M beta context window
+//     on opus-4-8 / opus-4-7 / opus-4-6 via the shared suffix convention. The
+//     Claude Agent SDK (≥ 0.2.111) detects `[1m]`, strips it before the API
+//     call, and injects the `context-1m-2025-08-07` beta header. (Opus 4.8
+//     spec ships 1M by default; we keep the `[1m]` opt-in here as the single
+//     resolveContextWindow signal — see metrics/model-registry.ts.)
 //
 // Issue #656 regression guard: any shrinking of this list (as attempted in
 // abandoned PR #652) silently deletes user-selectable models. Tests assert
 // exact array equality — NOT just length — to catch that class of mistake.
 export const AVAILABLE_MODELS = [
+  'claude-opus-4-8',
   'claude-opus-4-7',
   'claude-opus-4-6',
   'claude-sonnet-4-6',
   'claude-sonnet-4-5-20250929',
   'claude-opus-4-5-20251101',
   'claude-haiku-4-5-20251001',
+  'claude-opus-4-8[1m]',
   'claude-opus-4-7[1m]',
   'claude-opus-4-6[1m]',
 ] as const;
@@ -43,25 +48,39 @@ export type ModelId = (typeof AVAILABLE_MODELS)[number];
 
 // Model aliases for user-friendly input.
 //
-// Contract mirrors AVAILABLE_MODELS: the 9 pre-existing keys MUST be retained;
-// the 3 `[1m]` keys are additive (they resolve to the suffix-bearing ids).
+// "Latest opus" contract:
+//   - The bare `opus` and `opus[1m]` aliases follow the current latest opus
+//     and are the single update point when a new opus release ships. To roll
+//     forward to 4.9, only these two rows + AVAILABLE_MODELS need to change —
+//     DEFAULT_MODEL inherits the new pointer (see below).
+//   - Version-pinned aliases (`opus-4.8`, `opus-4.7`, ...) remain stable so
+//     users who explicitly chose a generation don't get silently upgraded.
 export const MODEL_ALIASES: Record<string, ModelId> = {
   sonnet: 'claude-sonnet-4-6',
   'sonnet-4.6': 'claude-sonnet-4-6',
   'sonnet-4.5': 'claude-sonnet-4-5-20250929',
-  opus: 'claude-opus-4-7',
+  // `opus` / `opus[1m]` follow the current latest opus — bump these two rows
+  // (plus AVAILABLE_MODELS) when a new generation lands.
+  opus: 'claude-opus-4-8',
+  'opus-4.8': 'claude-opus-4-8',
   'opus-4.7': 'claude-opus-4-7',
   'opus-4.6': 'claude-opus-4-6',
   'opus-4.5': 'claude-opus-4-5-20251101',
   haiku: 'claude-haiku-4-5-20251001',
   'haiku-4.5': 'claude-haiku-4-5-20251001',
   // 1M-context variants
-  'opus[1m]': 'claude-opus-4-7[1m]',
+  'opus[1m]': 'claude-opus-4-8[1m]',
+  'opus-4.8[1m]': 'claude-opus-4-8[1m]',
   'opus-4.7[1m]': 'claude-opus-4-7[1m]',
   'opus-4.6[1m]': 'claude-opus-4-6[1m]',
 };
 
-export const DEFAULT_MODEL: ModelId = 'claude-opus-4-7';
+// DEFAULT_MODEL is a logical pointer to the current latest opus + 1M context.
+// Flipping MODEL_ALIASES['opus[1m]'] propagates here automatically — single-
+// line edit per new opus release. The `??` literal is a defence-in-depth
+// fallback for the (test-asserted) case where the alias is ever dropped; the
+// Issue #656 exact-set test fails loud at CI time before that branch matters.
+export const DEFAULT_MODEL: ModelId = MODEL_ALIASES['opus[1m]'] ?? 'claude-opus-4-8[1m]';
 
 /**
  * Coerce arbitrary stored input to a known ModelId, falling back to DEFAULT_MODEL.
@@ -765,11 +784,15 @@ export class UserSettingsStore {
   /**
    * Get display name for a model.
    *
-   * Covers all 8 entries in AVAILABLE_MODELS. The `[1m]` variants append
+   * Covers all 10 entries in AVAILABLE_MODELS. The `[1m]` variants append
    * `" (1M)"` so users can tell them apart in the Slack UI.
    */
   getModelDisplayName(model: ModelId): string {
     switch (model) {
+      case 'claude-opus-4-8':
+        return 'Opus 4.8';
+      case 'claude-opus-4-8[1m]':
+        return 'Opus 4.8 (1M)';
       case 'claude-opus-4-7':
         return 'Opus 4.7';
       case 'claude-opus-4-7[1m]':
