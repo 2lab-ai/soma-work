@@ -164,11 +164,13 @@ generate_plist() {
     <true/>
 
     <!--
-      The supervisor owns logs/stdout.log + logs/stderr.log (rotated). These
-      launchd paths only capture the supervisor's own bootstrap diagnostics
-      (startup line, child-exit code, fatal stream errors) — tiny and bounded
-      by ThrottleInterval. Pointing launchd at the rotated files directly would
-      double-open them and defeat rotation.
+      The supervisor owns logs/stdout.log + logs/stderr.log (rotated) and writes
+      its OWN recurring diagnostics to a rotated logs/supervisor.log. These
+      launchd paths therefore only capture catastrophic *pre-init* failures
+      (node cannot even load the supervisor). They are not rotated by launchd,
+      so the supervisor caps them on startup (see capBootstrapLogs). Pointing
+      launchd at the rotated files directly would double-open them and defeat
+      rotation.
     -->
     <key>StandardOutPath</key>
     <string>$LOGS_DIR/launchd.out.log</string>

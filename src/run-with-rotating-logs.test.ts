@@ -2,8 +2,16 @@ import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { DEFAULT_ROTATION_OPTIONS, resolveLogDir, runWithRotatingLogs } from './run-with-rotating-logs';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  BOOTSTRAP_LOG_CAP_BYTES,
+  capBootstrapLogs,
+  DEFAULT_ROTATION_OPTIONS,
+  forwardSignalWithEscalation,
+  type KillableChild,
+  resolveLogDir,
+  runWithRotatingLogs,
+} from './run-with-rotating-logs';
 
 describe('resolveLogDir', () => {
   it('defaults to <cwd>/logs', () => {
@@ -103,7 +111,7 @@ describe('runWithRotatingLogs', () => {
     expect(code).toBe(3);
   }, 20000);
 
-  it('module is runnable as a launchd entrypoint (has a shebang-free main guard)', () => {
+  it('module is runnable as a launchd entrypoint (has a main guard)', () => {
     // Sanity: the compiled wrapper is what the plist invokes. Running it with a
     // trivial child entry must exit cleanly, proving the require.main guard wires
     // argv -> spawn. We invoke the TS source via tsx-equivalent (node --import not
@@ -112,5 +120,87 @@ describe('runWithRotatingLogs', () => {
     expect(src).toContain('require.main === module');
     // spawnSync guard keeps the import used (avoids unused-import lint churn).
     expect(typeof spawnSync).toBe('function');
+  });
+});
+
+describe('capBootstrapLogs', () => {
+  let logDir: string;
+
+  beforeEach(() => {
+    logDir = fs.mkdtempSync(path.join(os.tmpdir(), 'soma-cap-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(logDir, { recursive: true, force: true });
+  });
+
+  it('truncates a bootstrap log that exceeds the cap', () => {
+    const file = path.join(logDir, 'launchd.err.log');
+    fs.writeFileSync(file, 'x'.repeat(100));
+    const truncated = capBootstrapLogs(logDir, 10);
+    expect(truncated).toContain('launchd.err.log');
+    expect(fs.statSync(file).size).toBe(0);
+  });
+
+  it('leaves a small bootstrap log untouched', () => {
+    const file = path.join(logDir, 'launchd.out.log');
+    fs.writeFileSync(file, 'small');
+    const truncated = capBootstrapLogs(logDir, BOOTSTRAP_LOG_CAP_BYTES);
+    expect(truncated).toEqual([]);
+    expect(fs.readFileSync(file, 'utf8')).toBe('small');
+  });
+
+  it('is a no-op when the bootstrap files do not exist yet', () => {
+    expect(() => capBootstrapLogs(logDir, 10)).not.toThrow();
+    expect(capBootstrapLogs(logDir, 10)).toEqual([]);
+  });
+});
+
+describe('forwardSignalWithEscalation', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function fakeChild(overrides: Partial<KillableChild> = {}): KillableChild & { signals: string[] } {
+    const signals: string[] = [];
+    return {
+      signals,
+      killed: false,
+      exitCode: null,
+      signalCode: null,
+      kill(signal?: NodeJS.Signals) {
+        signals.push(signal ?? 'SIGTERM');
+        return true;
+      },
+      ...overrides,
+    };
+  }
+
+  it('forwards the requested signal immediately', () => {
+    const child = fakeChild();
+    forwardSignalWithEscalation(child, 'SIGTERM', 4000);
+    expect(child.signals).toEqual(['SIGTERM']);
+  });
+
+  it('escalates to SIGKILL if the child is still alive after the grace window', () => {
+    const child = fakeChild(); // exitCode/signalCode stay null = still alive
+    let escalated = false;
+    forwardSignalWithEscalation(child, 'SIGTERM', 4000, () => {
+      escalated = true;
+    });
+    vi.advanceTimersByTime(4000);
+    expect(escalated).toBe(true);
+    expect(child.signals).toEqual(['SIGTERM', 'SIGKILL']);
+  });
+
+  it('does NOT escalate if the child has already exited', () => {
+    const child = fakeChild({ exitCode: 0 });
+    forwardSignalWithEscalation(child, 'SIGTERM', 4000);
+    vi.advanceTimersByTime(4000);
+    expect(child.signals).toEqual(['SIGTERM']);
   });
 });
