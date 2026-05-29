@@ -59,7 +59,6 @@ vi.mock('../../../dispatch-service', () => ({
 }));
 
 import * as channelRegistry from '../../../channel-registry';
-import { getDispatchService } from '../../../dispatch-service';
 import { SessionInitializer } from '../session-initializer';
 
 describe('SessionInitializer - channel routing advisory', () => {
@@ -168,8 +167,6 @@ describe('SessionInitializer - channel routing advisory', () => {
       getToolStatusText: vi.fn().mockReturnValue('running...'),
       buildBashStatus: vi.fn().mockReturnValue('is running commands...'),
       registerBackgroundBashActive: vi.fn().mockReturnValue(() => {}),
-      // Required by @soma/slack/pipeline/effective-phase getEffectiveFiveBlockPhase.
-      // Without it the test crashes with `statusManager.isEnabled is not a function`.
       isEnabled: vi.fn().mockReturnValue(true),
     };
 
@@ -511,42 +508,11 @@ describe('SessionInitializer - channel routing advisory', () => {
     expect(mockAssistantStatusManager.bumpEpoch).not.toHaveBeenCalled();
   });
 
-  // S3: dispatchWorkflow failure path → guarded clearStatus with
-  // dispatch-captured expectedEpoch. The dispatch service mock rejects
-  // so the catch branch runs.
-  // TODO: This assertion was masked by an earlier crash
-  // (`statusManager.isEnabled is not a function`) until the missing mock was
-  // added in PR #960 cleanup. With the crash gone, the real S3 expectation
-  // (catch branch invoking clearStatus with expectedEpoch) does not hold on
-  // main. Quarantined pending owner triage — see follow-up issue from the
-  // post-SRP cleanup PR.
-  it.skip('dispatchWorkflow failure triggers guarded clearStatus with expectedEpoch (S3)', async () => {
-    // Make dispatch service reject so the catch branch runs.
-    const dispatchSvc = (getDispatchService as any)();
-    dispatchSvc.dispatch.mockRejectedValueOnce(new Error('boom'));
-
-    // bumpEpoch returns 7 so we can assert expectedEpoch propagation.
-    mockAssistantStatusManager.bumpEpoch.mockReturnValueOnce(7);
-
+  it('dispatchWorkflow does not write native assistant status directly', async () => {
     await (sessionInitializer as any).dispatchWorkflow('C123', 'thread123', 'some text', 'C123:thread123');
 
-    // Entry epoch bump happened once for this dispatch.
-    expect(mockAssistantStatusManager.bumpEpoch).toHaveBeenCalledWith('C123', 'thread123');
-
-    // catch branch's guarded clearStatus carried the captured epoch.
-    expect(mockAssistantStatusManager.clearStatus).toHaveBeenCalledWith('C123', 'thread123', {
-      expectedEpoch: 7,
-    });
-  });
-
-  it('dispatchWorkflow bumps epoch on entry even on success path', async () => {
-    // Success path: dispatch mock resolves (default). We still expect bumpEpoch
-    // to be called at entry so concurrent/stale clears from prior turns are
-    // isolated from this dispatch.
-    mockAssistantStatusManager.bumpEpoch.mockReturnValueOnce(3);
-
-    await (sessionInitializer as any).dispatchWorkflow('C123', 'thread123', 'some text', 'C123:thread123');
-
-    expect(mockAssistantStatusManager.bumpEpoch).toHaveBeenCalledWith('C123', 'thread123');
+    expect(mockAssistantStatusManager.bumpEpoch).not.toHaveBeenCalled();
+    expect(mockAssistantStatusManager.setStatus).not.toHaveBeenCalled();
+    expect(mockAssistantStatusManager.clearStatus).not.toHaveBeenCalled();
   });
 });

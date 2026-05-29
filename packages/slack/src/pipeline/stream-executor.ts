@@ -39,7 +39,6 @@ import {
 } from '../turn-notifier';
 import type { UserChoice, UserChoices } from '../user-choice-extractor';
 import { UserChoiceHandler } from '../user-choice-handler';
-import { shouldRunLegacyB4Path as defaultShouldRunLegacyB4Path } from './effective-phase';
 import { isLocalSlashCommand } from './local-slash-command';
 import { cleanupWithTimeout, DEFAULT_CLEANUP_TIMEOUT_MS, runWithTimeout } from './stream-executor-cleanup-helpers';
 import type { ConversationSession, ProcessedFile, SayFn } from './types';
@@ -120,7 +119,6 @@ export interface StreamExecutorProviders {
   formatStatusForSlack?: (status: any) => string;
   isApiLikeError?: (error: unknown) => boolean;
   shouldShowStatusBlock?: (status: any) => boolean;
-  getFiveBlockPhase?: () => number;
   createConversation?: (channel: string, threadTs: string, user: string, userName: string) => string;
   recordAssistantTurn?: (conversationId: string, text: string) => void;
   recordUserTurn?: (conversationId: string, text: string, userName: string, user: string) => void;
@@ -145,7 +143,6 @@ export interface StreamExecutorProviders {
   userSettingsStore?: any;
   postCompactCompleteIfNeeded?: (...args: any[]) => Promise<unknown>;
   postCompactStartingIfNeeded?: (...args: any[]) => Promise<unknown>;
-  shouldRunLegacyB4Path?: (statusManager: AssistantStatusManager | null | undefined) => boolean;
 }
 
 const FALLBACK_CONTEXT_WINDOW = 200_000;
@@ -162,7 +159,6 @@ let streamExecutorProviders: Required<StreamExecutorProviders> = {
   formatStatusForSlack: () => '',
   isApiLikeError: () => false,
   shouldShowStatusBlock: () => false,
-  getFiveBlockPhase: () => Number(process.env.SOMA_UI_5BLOCK_PHASE || 0),
   createConversation: () => '',
   recordAssistantTurn: () => {},
   recordUserTurn: () => {},
@@ -197,7 +193,6 @@ let streamExecutorProviders: Required<StreamExecutorProviders> = {
   userSettingsStore: defaultUserSettingsStore,
   postCompactCompleteIfNeeded: async () => undefined,
   postCompactStartingIfNeeded: async () => undefined,
-  shouldRunLegacyB4Path: defaultShouldRunLegacyB4Path,
 };
 
 export function setStreamExecutorProviders(providers: StreamExecutorProviders): void {
@@ -207,13 +202,6 @@ export function setStreamExecutorProviders(providers: StreamExecutorProviders): 
   };
 }
 
-const config = {
-  ui: {
-    get fiveBlockPhase() {
-      return streamExecutorProviders.getFiveBlockPhase();
-    },
-  },
-};
 const userSettingsStore: any = new Proxy(defaultUserSettingsStore, {
   get(_target, prop) {
     const store = streamExecutorProviders.userSettingsStore ?? defaultUserSettingsStore;
@@ -254,8 +242,6 @@ const parseCooldownTime = (text: string) => streamExecutorProviders.parseCooldow
 const coerceToAvailableModel = (model: string) => streamExecutorProviders.coerceToAvailableModel(model);
 const postCompactCompleteIfNeeded = (...args: any[]) => streamExecutorProviders.postCompactCompleteIfNeeded(...args);
 const postCompactStartingIfNeeded = (...args: any[]) => streamExecutorProviders.postCompactStartingIfNeeded(...args);
-const shouldRunLegacyB4Path = (statusManager: AssistantStatusManager | null | undefined) =>
-  streamExecutorProviders.shouldRunLegacyB4Path(statusManager);
 
 /**
  * Result of stream execution
@@ -489,30 +475,6 @@ export class StreamExecutor {
   private summaryAbortControllers = new Map<string, AbortController>();
 
   constructor(private deps: StreamExecutorDeps) {}
-
-  /**
-   * #689 P4 Part 2/2 — legacy native-spinner writer wrapper. At effective
-   * PHASE>=4 this is a no-op because `TurnSurface.begin/end` owns the
-   * native spinner as the single writer. At PHASE<4 (and at clamped
-   * PHASE=4 when `AssistantStatusManager` is disabled) the wrapper
-   * forwards to the legacy path so operational behaviour for PHASE<4
-   * sessions is unchanged.
-   */
-  private async legacySetStatus(channel: string, threadTs: string, text: string): Promise<void> {
-    const mgr = this.deps.assistantStatusManager;
-    if (!shouldRunLegacyB4Path(mgr)) return;
-    await mgr.setStatus(channel, threadTs, text);
-  }
-
-  private async legacyClearStatus(
-    channel: string,
-    threadTs: string,
-    options?: { expectedEpoch?: number },
-  ): Promise<void> {
-    const mgr = this.deps.assistantStatusManager;
-    if (!shouldRunLegacyB4Path(mgr)) return;
-    await mgr.clearStatus(channel, threadTs, options);
-  }
 
   /**
    * Excludes `slack-block-kit` from the WorkflowComplete fan-out when the
@@ -806,8 +768,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
 
     // Issue #525 P1: per-turn identity for the 5-block UI façade. Computed
     // BEFORE any try/catch so the finally block can call endTurn() even if
-    // preparePrompt/query-setup throws. TurnSurface.end is idempotent and
-    // gated on SOMA_UI_5BLOCK_PHASE>=1 — PHASE=0 deployments see no change.
+    // preparePrompt/query-setup throws. TurnSurface.end is idempotent.
     //
     // `randomUUID()` suffix guards against same-millisecond re-entry on the
     // same sessionKey. Without it, `${sessionKey}:${ms}` would collide and
@@ -1148,9 +1109,6 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       if (isOutputEnabled(OutputFlag.STATUS_REACTION)) {
         await this.deps.reactionManager.updateReaction(sessionKey, this.deps.statusReporter.getStatusEmoji('thinking'));
       }
-      if (isOutputEnabled(OutputFlag.STATUS_SPINNER)) {
-        await this.legacySetStatus(channel, threadTs, 'is thinking...');
-      }
 
       // Create Slack context for permission prompts + channel description for system prompt
       const channelDescription = await getChannelDescription(this.deps.slackApi.getClient(), channel);
@@ -1234,30 +1192,6 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
               sessionKey,
               this.deps.statusReporter.getStatusEmoji('working'),
             );
-          }
-          // Native spinner with tool-specific text
-          if (isOutputEnabled(OutputFlag.STATUS_SPINNER)) {
-            const toolName = toolUses[0]?.name;
-            if (toolName) {
-              // Issue #688 — Bash uses a thunk descriptor so the heartbeat
-              // tick can recompute the text from the live background-bash
-              // counter (e.g. switch to "waiting on background shell..."
-              // when a run_in_background call is in-flight). Non-Bash
-              // tools keep the simple static path.
-              if (toolName === 'Bash') {
-                const statusManager = this.deps.assistantStatusManager;
-                // PHASE>=4: TurnSurface is the single B4 writer — same gate
-                // as `legacySetStatus` (line 237) and the non-Bash branch.
-                if (shouldRunLegacyB4Path(statusManager)) {
-                  await statusManager.setStatus(channel, threadTs, () =>
-                    statusManager.buildBashStatus(channel, threadTs),
-                  );
-                }
-              } else {
-                const statusText = this.deps.assistantStatusManager.getToolStatusText(toolName);
-                await this.legacySetStatus(channel, threadTs, statusText);
-              }
-            }
           }
           const toolName = toolUses[0]?.name;
           await this.updateRuntimeStatus(session, ctx.sessionKey, {
@@ -1560,8 +1494,6 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         },
         onStatusUpdate: async (status: string) => {
           if (status === 'compacting') {
-            // Context compaction start — always visible regardless of verbosity
-            await this.legacySetStatus(channel, threadTs, '🗜️ 컨텍스트 압축 시작...');
             // #617 AC4 fallback: if the SDK PreCompact hook never fires
             // (older SDK or edge case), the `compacting` status still
             // guarantees a thread-visible "starting" post. Epoch dedupe in
@@ -1581,25 +1513,12 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
                 });
               }
             })();
-          } else if (status === 'compact_done') {
-            // Context compaction end — always visible regardless of verbosity
-            await this.legacySetStatus(channel, threadTs, '✅ 컨텍스트 압축 완료');
           } else if (status === 'working') {
             if (isOutputEnabled(OutputFlag.STATUS_REACTION)) {
               await this.deps.reactionManager.updateReaction(
                 sessionKey,
                 this.deps.statusReporter.getStatusEmoji('working'),
               );
-            }
-            if (isOutputEnabled(OutputFlag.STATUS_SPINNER)) {
-              // Issue #688 — empty-string setStatus previously triggered the
-              // heartbeat to re-send `''` every 20s (ghost spinner). The
-              // manager now reroutes setStatus('') to clearStatus, but
-              // calling clearStatus explicitly here makes intent clear and
-              // carries the epoch guard so a stale call doesn't race.
-              await this.legacyClearStatus(channel, threadTs, {
-                expectedEpoch: epoch,
-              });
             }
           }
         },
@@ -1634,11 +1553,6 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // Create and run stream processor. `idleTimeoutMs` arms the
       // per-`.next()` race documented at the construct site above.
       const processor = new StreamProcessor(streamCallbacks, { idleTimeoutMs });
-
-      // Wire compact duration callback: tool-event-processor → stream-processor
-      this.deps.toolEventProcessor.setCompactDurationCallback((toolUseId, duration, ch) =>
-        processor.updateToolCallDuration(toolUseId, duration, ch),
-      );
 
       const streamResult = await processor.process(
         this.deps.claudeHandler.streamQuery(finalPrompt, session, abortController, workingDirectory, slackContext),
@@ -1675,14 +1589,6 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           this.deps.statusReporter.getStatusEmoji(finalStatus),
         );
       }
-      // Always clear status regardless of verbosity — heartbeat timer must be stopped
-      // to prevent leaked intervals when verbosity changes mid-stream.
-      // Issue #688 — guarded by this turn's epoch so a stale call from a
-      // previous aborted turn cannot nuke a newer spinner.
-      await this.legacyClearStatus(channel, threadTs, {
-        expectedEpoch: epoch,
-      });
-
       // Transition activity state
       // Issue #391: Skip idle transition when continuation exists — next turn starts immediately,
       // so transitioning to idle would cause dashboard to briefly flicker to "대기" column.
@@ -2042,7 +1948,6 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         say,
         requestAborted,
         activeSlotSnapshot,
-        epoch,
         abortReason,
       );
       // `handleError()` ran to completion — it either dispatched a user-facing
@@ -2062,22 +1967,6 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         handled: retryAfterMs === undefined,
       };
     } finally {
-      // Issue #688 — defense-in-depth status clear on every exit path.
-      // The success and error branches above already clear with the
-      // same epoch guard; the manager is idempotent, and the guard
-      // means this call is a no-op if a newer turn has already bumped
-      // past `epoch`. Covers early-return paths that might skip the
-      // normal success/error clears.
-      try {
-        await this.legacyClearStatus(channel, threadTs, {
-          expectedEpoch: epoch,
-        });
-      } catch (err) {
-        this.logger.debug('stream-executor: finally clearStatus failed', {
-          turnId,
-          error: (err as Error)?.message ?? String(err),
-        });
-      }
       // Idempotent: if end/fail already ran (catch or early-return path
       // inside try), TurnSurface state is cleared and this is a no-op.
       // Covers success-path exits via return from the try block.
@@ -2196,7 +2085,6 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     say: SayFn,
     requestAborted: boolean = false,
     activeSlotAtQueryStart: ActiveTokenInfo | null = null,
-    expectedEpoch?: number,
     // B-2: callers now pass the {@link CoercedAbortReason} (known
     // RequestAbortReason | `'__unknown'` sentinel) rather than just a
     // `RequestAbortReason | undefined`. `undefined` is preserved for the
@@ -2204,19 +2092,6 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // notify-worthy branch below.
     abortReason?: CoercedAbortReason,
   ): Promise<number | undefined> {
-    // Clear native spinner on any error and reset activity state.
-    // Issue #688 — guard with the caller's captured epoch so a stale
-    // error-path clear from a previous turn cannot kill a newer spinner.
-    // Wrap the clear: a throw here must not skip the downstream
-    // reaction-update + user-facing `say(errorDetails)` ~240 lines below.
-    try {
-      await this.legacyClearStatus(channel, threadTs, expectedEpoch !== undefined ? { expectedEpoch } : undefined);
-    } catch (err) {
-      this.logger.debug('handleError: legacyClearStatus failed — continuing error notification', {
-        sessionKey,
-        error: (err as Error)?.message ?? String(err),
-      });
-    }
     this.deps.claudeHandler.setActivityState(channel, threadTs, 'idle');
 
     // Check for context overflow error
@@ -3971,7 +3846,6 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     sessionKey: string,
     channel: string,
   ): Promise<void> {
-    if (config.ui.fiveBlockPhase < 3) return;
     const prior = session.actionPanel?.pendingChoice;
     if (!prior) return;
 
@@ -4023,7 +3897,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // is written synchronously with the posted ts. Falls through to the legacy
     // context.say path when PHASE<3, threadPanel is missing, or askUser reports
     // phase-disabled (e.g. test harness mock).
-    if (config.ui.fiveBlockPhase >= 3 && session && this.deps.threadPanel && turnId) {
+    if (session && this.deps.threadPanel && turnId) {
       await this.supersedePriorPendingChoice(session, context.sessionKey, context.channel);
 
       const theme = userSettingsStore.getUserSessionTheme(session.ownerId);
@@ -4101,7 +3975,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
 
     // P3 (PHASE>=3): pre-allocate formIds + persist (with turnId) before any
     // Slack round-trip so a mid-flight click finds the live form entry.
-    if (config.ui.fiveBlockPhase >= 3 && session && this.deps.threadPanel && turnId) {
+    if (session && this.deps.threadPanel && turnId) {
       await this.supersedePriorPendingChoice(session, context.sessionKey, context.channel);
 
       const formIds: string[] = [];

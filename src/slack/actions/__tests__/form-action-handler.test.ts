@@ -1,5 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { config } from '../../../config';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { FormActionHandler } from '../form-action-handler';
 
 describe('FormActionHandler', () => {
@@ -241,12 +240,7 @@ describe('FormActionHandler — P3 (PHASE>=3) classifyClick', () => {
     );
   });
 
-  afterEach(() => {
-    config.ui.fiveBlockPhase = 0;
-  });
-
   it('handleCustomInputSingle inherits turnId into private_metadata', async () => {
-    config.ui.fiveBlockPhase = 3;
     claudeHandler.getSessionByKey.mockReturnValue({ threadRootTs: 'tr', threadTs: 'tr' });
     const views = { open: vi.fn().mockResolvedValue(undefined) };
     const client = { views };
@@ -267,7 +261,6 @@ describe('FormActionHandler — P3 (PHASE>=3) classifyClick', () => {
   });
 
   it('handleCustomInputSubmit single P3 stale → marks message and no dispatch', async () => {
-    config.ui.fiveBlockPhase = 3;
     claudeHandler.getSessionByKey.mockReturnValue({
       channelId: 'C1',
       threadRootTs: 'tr',
@@ -300,7 +293,6 @@ describe('FormActionHandler — P3 (PHASE>=3) classifyClick', () => {
   });
 
   it('handleCustomInputSubmit single P3 matching → resolveChoice + dispatch', async () => {
-    config.ui.fiveBlockPhase = 3;
     const session = {
       channelId: 'C1',
       threadRootTs: 'tr',
@@ -337,7 +329,6 @@ describe('FormActionHandler — P3 (PHASE>=3) classifyClick', () => {
   });
 
   it('multi custom-input P3 stale → marks message and no dispatch', async () => {
-    config.ui.fiveBlockPhase = 3;
     formStore.get.mockReturnValue({
       formId: 'f1',
       sessionKey,

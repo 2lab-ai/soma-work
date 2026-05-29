@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { config } from '../../config';
 import { TodoDisplayManager } from '../todo-display-manager';
 
 describe('TodoDisplayManager', () => {
@@ -86,9 +85,7 @@ describe('TodoDisplayManager', () => {
 // P2 B2 (#577) — dual-call behavior under PHASE>=2
 // =============================================================================
 
-describe('TodoDisplayManager — P2 B2 dual-call (PHASE>=2)', () => {
-  const originalPhase = config.ui.fiveBlockPhase;
-
+describe('TodoDisplayManager — B2 plan render dual-call', () => {
   let slackApi: { updateMessage: ReturnType<typeof vi.fn> };
   let todoManager: {
     getTodos: ReturnType<typeof vi.fn>;
@@ -122,7 +119,6 @@ describe('TodoDisplayManager — P2 B2 dual-call (PHASE>=2)', () => {
   });
 
   afterEach(() => {
-    config.ui.fiveBlockPhase = originalPhase;
     vi.clearAllMocks();
   });
 
@@ -131,9 +127,7 @@ describe('TodoDisplayManager — P2 B2 dual-call (PHASE>=2)', () => {
   const turnCtx = { channelId: 'C1', threadTs: 't1.0', sessionKey: 'C1:t1.0' };
   const say = vi.fn();
 
-  it('PHASE=2 + turnId + turnCtx → calls BOTH onPlanRender AND onRenderRequest', async () => {
-    config.ui.fiveBlockPhase = 2;
-
+  it('turnId + turnCtx → calls BOTH onPlanRender AND onRenderRequest', async () => {
     await manager.handleTodoUpdate(
       { todos },
       'C1:t1.0',
@@ -157,9 +151,7 @@ describe('TodoDisplayManager — P2 B2 dual-call (PHASE>=2)', () => {
     expect(say).not.toHaveBeenCalled();
   });
 
-  it('PHASE=2 without turnId → onRenderRequest only, onPlanRender skipped', async () => {
-    config.ui.fiveBlockPhase = 2;
-
+  it('without turnId → onRenderRequest only, onPlanRender skipped', async () => {
     await manager.handleTodoUpdate(
       { todos },
       'C1:t1.0',
@@ -176,9 +168,7 @@ describe('TodoDisplayManager — P2 B2 dual-call (PHASE>=2)', () => {
     expect(onRenderRequest).toHaveBeenCalledTimes(1);
   });
 
-  it('PHASE=2 without turnCtx → onPlanRender skipped', async () => {
-    config.ui.fiveBlockPhase = 2;
-
+  it('without turnCtx → onPlanRender skipped', async () => {
     await manager.handleTodoUpdate(
       { todos },
       'C1:t1.0',
@@ -196,48 +186,7 @@ describe('TodoDisplayManager — P2 B2 dual-call (PHASE>=2)', () => {
     expect(onRenderRequest).toHaveBeenCalledTimes(1);
   });
 
-  it('PHASE=1 (below threshold) → onPlanRender skipped even with full turn context', async () => {
-    config.ui.fiveBlockPhase = 1;
-
-    await manager.handleTodoUpdate(
-      { todos },
-      'C1:t1.0',
-      'S1',
-      'C1',
-      't1.0',
-      say,
-      0,
-      session,
-      'C1:t1.0:turn-1',
-      turnCtx,
-    );
-
-    expect(onPlanRender).not.toHaveBeenCalled();
-    expect(onRenderRequest).toHaveBeenCalledTimes(1);
-  });
-
-  it('PHASE=0 (default) → onPlanRender skipped; legacy-only flow', async () => {
-    config.ui.fiveBlockPhase = 0;
-
-    await manager.handleTodoUpdate(
-      { todos },
-      'C1:t1.0',
-      'S1',
-      'C1',
-      't1.0',
-      say,
-      0,
-      session,
-      'C1:t1.0:turn-1',
-      turnCtx,
-    );
-
-    expect(onPlanRender).not.toHaveBeenCalled();
-    expect(onRenderRequest).toHaveBeenCalledTimes(1);
-  });
-
-  it('PHASE=2 + onPlanRender throws → does NOT block onRenderRequest', async () => {
-    config.ui.fiveBlockPhase = 2;
+  it('onPlanRender throws → does NOT block onRenderRequest', async () => {
     onPlanRender.mockRejectedValueOnce(new Error('boom'));
 
     await manager.handleTodoUpdate(
@@ -258,9 +207,7 @@ describe('TodoDisplayManager — P2 B2 dual-call (PHASE>=2)', () => {
     expect(onRenderRequest).toHaveBeenCalledTimes(1);
   });
 
-  it('PHASE=2 + empty todos → onPlanRender skipped (nothing to render)', async () => {
-    config.ui.fiveBlockPhase = 2;
-
+  it('empty todos → onPlanRender skipped (nothing to render)', async () => {
     await manager.handleTodoUpdate(
       { todos: [] },
       'C1:t1.0',

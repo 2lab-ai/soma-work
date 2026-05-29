@@ -1,5 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { config } from '../../../config';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ChoiceActionHandler } from '../choice-action-handler';
 
 function createFormStore() {
@@ -777,10 +776,6 @@ describe('ChoiceActionHandler — P3 (PHASE>=3) classifyClick', () => {
     );
   });
 
-  afterEach(() => {
-    config.ui.fiveBlockPhase = 0;
-  });
-
   const clickBody = (turnId?: string, messageTs = 'msg-1') => ({
     actions: [
       {
@@ -798,24 +793,7 @@ describe('ChoiceActionHandler — P3 (PHASE>=3) classifyClick', () => {
     message: { ts: messageTs },
   });
 
-  it('PHASE<3 always legacy, ignores payload turnId', async () => {
-    config.ui.fiveBlockPhase = 2;
-    claudeHandler.getSessionByKey.mockReturnValue({
-      threadRootTs: 'thread-root',
-      threadTs: 'thread-root',
-      actionPanel: {
-        pendingChoice: { turnId: 'tOTHER', kind: 'single', choiceTs: 'msg-other', formIds: [] },
-        choiceMessageTs: 'thread-choice',
-      },
-    });
-    await handler.handleUserChoice(clickBody('tNEW', 'msg-1'));
-    expect(threadPanel.resolveChoice).not.toHaveBeenCalled();
-    expect(slackApi.updateMessage).toHaveBeenCalled(); // legacy path updates
-    expect(messageHandler).toHaveBeenCalled();
-  });
-
-  it('PHASE>=3 + matching pendingChoice + matching turnId → p3 path', async () => {
-    config.ui.fiveBlockPhase = 3;
+  it('matching pendingChoice + matching turnId → p3 path', async () => {
     claudeHandler.getSessionByKey.mockReturnValue({
       threadRootTs: 'thread-root',
       threadTs: 'thread-root',
@@ -837,8 +815,7 @@ describe('ChoiceActionHandler — P3 (PHASE>=3) classifyClick', () => {
     expect(messageHandler).toHaveBeenCalled();
   });
 
-  it('PHASE>=3 + payload turnId + no pendingChoice → stale (not legacy)', async () => {
-    config.ui.fiveBlockPhase = 3;
+  it('payload turnId + no pendingChoice → stale (not legacy)', async () => {
     claudeHandler.getSessionByKey.mockReturnValue({
       threadRootTs: 'thread-root',
       threadTs: 'thread-root',
@@ -852,8 +829,7 @@ describe('ChoiceActionHandler — P3 (PHASE>=3) classifyClick', () => {
     expect(threadPanel.resolveChoice).not.toHaveBeenCalled();
   });
 
-  it('PHASE>=3 + no payload turnId + no pendingChoice → legacy', async () => {
-    config.ui.fiveBlockPhase = 3;
+  it('no payload turnId + no pendingChoice → legacy', async () => {
     claudeHandler.getSessionByKey.mockReturnValue({
       threadRootTs: 'thread-root',
       threadTs: 'thread-root',
@@ -865,8 +841,7 @@ describe('ChoiceActionHandler — P3 (PHASE>=3) classifyClick', () => {
     expect(messageHandler).toHaveBeenCalled();
   });
 
-  it('PHASE>=3 + pendingChoice present + turnId mismatch → stale', async () => {
-    config.ui.fiveBlockPhase = 3;
+  it('pendingChoice present + turnId mismatch → stale', async () => {
     claudeHandler.getSessionByKey.mockReturnValue({
       threadRootTs: 'thread-root',
       threadTs: 'thread-root',
@@ -885,8 +860,7 @@ describe('ChoiceActionHandler — P3 (PHASE>=3) classifyClick', () => {
     expect(messageHandler).not.toHaveBeenCalled();
   });
 
-  it('PHASE>=3 + pendingChoice present + ts mismatch → stale', async () => {
-    config.ui.fiveBlockPhase = 3;
+  it('pendingChoice present + ts mismatch → stale', async () => {
     claudeHandler.getSessionByKey.mockReturnValue({
       threadRootTs: 'thread-root',
       threadTs: 'thread-root',
@@ -905,8 +879,7 @@ describe('ChoiceActionHandler — P3 (PHASE>=3) classifyClick', () => {
     expect(messageHandler).not.toHaveBeenCalled();
   });
 
-  it('PHASE>=3 + no payload turnId + pendingChoice present → stale (defensive)', async () => {
-    config.ui.fiveBlockPhase = 3;
+  it('no payload turnId + pendingChoice present → stale (defensive)', async () => {
     claudeHandler.getSessionByKey.mockReturnValue({
       threadRootTs: 'thread-root',
       threadTs: 'thread-root',
@@ -926,7 +899,6 @@ describe('ChoiceActionHandler — P3 (PHASE>=3) classifyClick', () => {
   });
 
   it('P3 path persistAndBroadcast clears pendingQuestion', async () => {
-    config.ui.fiveBlockPhase = 3;
     const session = {
       threadRootTs: 'thread-root',
       threadTs: 'thread-root',
@@ -962,7 +934,6 @@ describe('ChoiceActionHandler — P3 (PHASE>=3) classifyClick', () => {
     });
 
     it('submitting chunk 1 of 2: only chunk 1 marked done, chunk 2 untouched, pendingChoice keeps chunk 2', async () => {
-      config.ui.fiveBlockPhase = 3;
       formStore.set('form-A', makeForm('form-A', 'ts-A', 'turn-X'));
       formStore.set('form-B', makeForm('form-B', 'ts-B', 'turn-X'));
       const session = {
@@ -999,7 +970,6 @@ describe('ChoiceActionHandler — P3 (PHASE>=3) classifyClick', () => {
     });
 
     it('submitting last chunk (only formId in pendingChoice): pendingChoice fully cleared', async () => {
-      config.ui.fiveBlockPhase = 3;
       formStore.set('form-B', makeForm('form-B', 'ts-B', 'turn-X'));
       const session = {
         threadRootTs: 'thread-root',

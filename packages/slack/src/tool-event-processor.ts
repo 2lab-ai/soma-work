@@ -26,7 +26,6 @@ export interface McpCallTracker {
 }
 
 export interface ToolEventProcessorProviders {
-  getFiveBlockPhase?: () => number;
   getDefaultMcpCallTracker?: () => McpCallTracker;
 }
 
@@ -38,7 +37,6 @@ const noopMcpCallTracker: McpCallTracker = {
 };
 
 let toolEventProcessorProviders: Required<ToolEventProcessorProviders> = {
-  getFiveBlockPhase: () => Number(process.env.SOMA_UI_5BLOCK_PHASE || 0),
   getDefaultMcpCallTracker: () => noopMcpCallTracker,
 };
 
@@ -47,16 +45,6 @@ export function setToolEventProcessorProviders(providers: ToolEventProcessorProv
     ...toolEventProcessorProviders,
     ...providers,
   };
-}
-
-function getFiveBlockPhase(): number {
-  const phase = Number(toolEventProcessorProviders.getFiveBlockPhase());
-  return Number.isFinite(phase) ? phase : 0;
-}
-
-function shouldRunLegacyToolStatusPath(statusManager: AssistantStatusManager | null | undefined): boolean {
-  if (!statusManager) return false;
-  return getFiveBlockPhase() < 4 || !statusManager.isEnabled();
 }
 
 /**
@@ -282,8 +270,6 @@ export class ToolEventProcessor {
    * site, cleared at every `endCall` site.
    */
   private callIdsByTurn: Map<string, Set<string>> = new Map();
-  /** Callback for updating compact tool call messages with duration */
-  private onCompactDurationUpdate?: (toolUseId: string, duration: number | null, channel: string) => Promise<void>;
   /**
    * PHASE>=2 sink — absorbs formatted tool results into the B1 stream.
    * Null by default; installed by slack-handler after construction. See
@@ -310,13 +296,6 @@ export class ToolEventProcessor {
    */
   setReactionManager(reactionManager: ReactionManager): void {
     this.reactionManager = reactionManager;
-  }
-
-  /**
-   * Set callback for compact mode duration updates (in-place tool call message update)
-   */
-  setCompactDurationCallback(cb: (toolUseId: string, duration: number | null, channel: string) => Promise<void>): void {
-    this.onCompactDurationUpdate = cb;
   }
 
   /**
@@ -380,19 +359,6 @@ export class ToolEventProcessor {
     // Set hourglass reaction for MCP pending
     if (this.reactionManager && context.sessionKey) {
       await this.reactionManager.setMcpPending(context.sessionKey, callId);
-    }
-
-    // Native spinner with MCP server name — legacy-only; TurnSurface owns
-    // the single B4 writer at PHASE>=4. Lifting getToolStatusText into
-    // TurnSurface is a follow-up — see docs/archive/features/slack-ui/phase4.md.
-    // Skip when the descriptor is undefined/empty — `setStatus('')` reroutes
-    // to `clearStatus` internally, which would silently wipe the spinner
-    // mid-tool instead of leaving the previous status visible.
-    if (shouldRunLegacyToolStatusPath(this.assistantStatusManager)) {
-      const statusText = this.assistantStatusManager?.getToolStatusText(toolUse.name, serverName);
-      if (statusText) {
-        await this.assistantStatusManager?.setStatus(context.channel, context.threadTs, statusText);
-      }
     }
 
     const config = {
@@ -535,11 +501,6 @@ export class ToolEventProcessor {
       // (cleanup at turn end owns completion). See
       // `isBackgroundTaskSpawnAck` for the precondition contract.
       if (this.isBackgroundTaskSpawnAck(toolResult)) {
-        const callId = this.toolTracker.getMcpCallId(toolResult.toolUseId);
-        const elapsed = callId ? (this.mcpCallTracker.getElapsedTime(callId) ?? 0) : 0;
-        if (this.onCompactDurationUpdate) {
-          await this.onCompactDurationUpdate(toolResult.toolUseId, elapsed, context.channel);
-        }
         continue;
       }
 
@@ -551,11 +512,6 @@ export class ToolEventProcessor {
       // Issue #816 — propagate isError so the tracker entry flips to
       // `failed` instead of `completed` when the SDK reports a failure.
       const duration = await this.endMcpTracking(toolResult.toolUseId, context.sessionKey, toolResult.isError === true);
-
-      // Update compact tool call message with duration (in-place)
-      if (duration !== null && this.onCompactDurationUpdate) {
-        await this.onCompactDurationUpdate(toolResult.toolUseId, duration, context.channel);
-      }
 
       if (this.mcpHealthMonitor && toolResult.toolName?.startsWith('mcp__')) {
         await this.mcpHealthMonitor.recordResult({
@@ -653,9 +609,8 @@ export class ToolEventProcessor {
    *      to the marker format propagates everywhere at once.
    *
    * Returning true tells `handleToolResult` to keep the McpStatusDisplay
-   * entry open (no `endMcpTracking` call). The compact one-line tool
-   * call is closed separately via `onCompactDurationUpdate` so the user
-   * still gets a `🟢 (Ns)` close on the inline tool bubble.
+   * entry open (no `endMcpTracking` call); cleanup at turn end owns the
+   * eventual completion.
    *
    * **SDK shape-drift telemetry**: when the toolUseId IS registered as a
    * bg Task but `extractTaskIdFromResult` cannot find a marker on a
@@ -722,7 +677,7 @@ export class ToolEventProcessor {
     // turn shows a single consolidated body instead of separate tool
     // bubbles. Read the phase per-call so a mid-test env flip takes
     // effect on the next event, matching TurnSurface.phase()'s behavior.
-    if (getFiveBlockPhase() >= 2 && this.toolResultSink && context.turnId) {
+    if (this.toolResultSink && context.turnId) {
       const absorbed = await this.toolResultSink(context.turnId, formatted);
       if (absorbed) return;
       // Fallthrough: sink refused (no open stream, closing, Slack error).

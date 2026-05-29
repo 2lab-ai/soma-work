@@ -12,26 +12,6 @@ export interface PreflightResult {
 }
 
 /**
- * Parse SOMA_UI_5BLOCK_PHASE — integer in [0..5] rolling out the 5-block UI
- * refactor (Issue #525). Out-of-range, non-integer, or missing values fall
- * back to 0 (all legacy) with a warn log. This is the single rollout variable
- * for the whole refactor; cumulative prefix semantics (see
- * docs/archive/features/slack-ui/phase1.md §Rollout).
- *
- * @internal exported for unit tests; runtime consumers should read
- *           `config.ui.fiveBlockPhase` instead.
- */
-export function parseFiveBlockPhase(raw: string | undefined): number {
-  if (raw === undefined || raw === '') return 0;
-  const n = Number(raw);
-  if (!Number.isInteger(n) || n < 0 || n > 5) {
-    logger.warn(`SOMA_UI_5BLOCK_PHASE="${raw}" invalid (expected integer 0..5); falling back to 0`);
-    return 0;
-  }
-  return n;
-}
-
-/**
  * Defensive boolean parser for ENV knobs (#666 P4).
  *
  * Accepted truthy: `1`, `true`, `yes`, `on` (case-insensitive, trimmed).
@@ -40,8 +20,7 @@ export function parseFiveBlockPhase(raw: string | undefined): number {
  * non-empty values additionally log a warn so an operator typo surfaces
  * instead of silently reverting to the default.
  *
- * Runtime consumers should read the parsed value (e.g. `config.ui.b4NativeStatusEnabled`);
- * this function is exported for unit tests only.
+ * Exported for unit tests and reusable env parsing.
  */
 export function parseBool(raw: string | undefined, fallback: boolean): boolean {
   if (raw === undefined) return fallback;
@@ -73,7 +52,7 @@ export function parseBool(raw: string | undefined, fallback: boolean): boolean {
  * backoff so it just bounces, but still burns event-loop time every ms).
  *
  * @internal exported for unit tests; runtime consumers should read
- *           `config.usage.*` / `config.ui.fiveBlockPhase` instead.
+ *           `config.usage.*` instead.
  */
 export function parsePositiveIntEnv(name: string, fallback: number, minimum: number = 0): number {
   const raw = process.env[name];
@@ -126,29 +105,6 @@ export const config = {
     botToken: process.env.SLACK_BOT_TOKEN!,
     appToken: process.env.SLACK_APP_TOKEN!,
     signingSecret: process.env.SLACK_SIGNING_SECRET!,
-  },
-  ui: {
-    /**
-     * 5-block UI refactor rollout phase (Issue #525):
-     *   0 = all legacy (default)
-     *   1 = B1 stream consolidation new path
-     *   2 = + B2 plan
-     *   3 = + B3 choice
-     *   4 = + B4 status (requires Assistant container registration — must be
-     *                    wired at app-init; see slack-handler.ts app.assistant
-     *                    (P4 scope))
-     *   5 = + B5 completion marker
-     */
-    fiveBlockPhase: parseFiveBlockPhase(process.env.SOMA_UI_5BLOCK_PHASE),
-    /**
-     * #666 P4 B4 native status spinner kill switch. `false` (default) forces
-     * `AssistantStatusManager` to initialize with `enabled=false`, so every
-     * `client.assistant.threads.setStatus` call is a no-op even if the Bolt
-     * Assistant container has been registered and `assistant:write` is
-     * installed. Flip to `true` only once Part 2 (PHASE>=4 turn-surface
-     * wiring + legacy suppression) has merged. See docs/archive/features/slack-ui/phase4.md.
-     */
-    b4NativeStatusEnabled: parseBool(process.env.SOMA_UI_B4_NATIVE_STATUS, false),
   },
   claude: {
     useBedrock: process.env.CLAUDE_CODE_USE_BEDROCK === '1',

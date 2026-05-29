@@ -117,7 +117,6 @@ describe('ActionPanelBuilder', () => {
       workflow: 'jira-brainstorming',
       disabled: false,
       activityState: 'working',
-      activeTool: 'Read',
       contextRemainingPercent: 61,
       logVerbosity: LOG_DETAIL,
     });
@@ -125,7 +124,6 @@ describe('ActionPanelBuilder', () => {
     // Hero section (badge + italic subtitle) — single section, no fields (no PR)
     const statusText = getStatusSectionText(payload);
     expect(statusText).toContain('🟢 *작업 중*');
-    expect(statusText).toContain('_파일 읽기_');
     expect(statusText).not.toContain('📦');
 
     // Metrics context (verbosity label)
@@ -170,7 +168,6 @@ describe('ActionPanelBuilder', () => {
     // Hero section shows waiting
     const statusText = getStatusSectionText(payload);
     expect(statusText).toContain('🟡 *입력 대기*');
-    expect(statusText).toContain('_질문 응답 필요_');
   });
 
   it('shows choice text section without permalink when choiceMessageLink is absent', () => {
@@ -318,33 +315,6 @@ describe('ActionPanelBuilder', () => {
 
     expect(heroIdx).toBeLessThan(contextIdx);
     expect(contextIdx).toBeLessThan(actionsIdx);
-  });
-
-  // #689 P4 Part 2/2 — suppressAgentChip flag
-  it('suppressAgentChip=true omits agent chip from status text', () => {
-    const withChip = ActionPanelBuilder.build({
-      sessionKey: 'session-chip-on',
-      workflow: 'default',
-      agentPhase: 'thinking',
-      activeTool: 'Bash',
-      hasActiveRequest: true,
-    });
-    const withoutChip = ActionPanelBuilder.build({
-      sessionKey: 'session-chip-off',
-      workflow: 'default',
-      agentPhase: 'thinking',
-      activeTool: 'Bash',
-      hasActiveRequest: true,
-      suppressAgentChip: true,
-    });
-
-    // With chip: expect a `\n_…_` agent chip appended after the badge
-    const withHero = withChip.blocks.find((b: any) => b.type === 'section' && b.text?.type === 'mrkdwn');
-    expect(withHero.text.text).toMatch(/\n_[^_]+_/);
-
-    // Without chip: hero section has NO appended `\n_…_` chip line
-    const withoutHero = withoutChip.blocks.find((b: any) => b.type === 'section' && b.text?.type === 'mrkdwn');
-    expect(withoutHero.text.text).not.toMatch(/\n_[^_]+_/);
   });
 
   it('renders PR status in 2-column layout beside status badge', () => {

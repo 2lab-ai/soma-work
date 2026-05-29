@@ -27,12 +27,6 @@ const PERMANENT_CODES = new Set<string>([
 
 const TRANSIENT_WARN_THRESHOLD = 10;
 
-let getB4NativeStatusEnabled = (): boolean => process.env.SOMA_UI_B4_NATIVE_STATUS === '1';
-
-export function setAssistantStatusB4NativeStatusEnabledProvider(provider: () => boolean): void {
-  getB4NativeStatusEnabled = provider;
-}
-
 export interface AssistantStatusSlackApi {
   setAssistantStatus(channelId: string, threadTs: string, status: string): Promise<unknown>;
   setAssistantTitle(channelId: string, threadTs: string, title: string): Promise<unknown>;
@@ -72,12 +66,7 @@ export class AssistantStatusManager {
   private bgBashCounter = new Map<string, number>();
   private transientFailuresSinceLastSuccess = new Map<string, number>();
 
-  constructor(private slackApi: AssistantStatusSlackApi) {
-    if (!getB4NativeStatusEnabled()) {
-      this.enabled = false;
-      this.logger.debug('Native status spinner suppressed (SOMA_UI_B4_NATIVE_STATUS=0)');
-    }
-  }
+  constructor(private slackApi: AssistantStatusSlackApi) {}
 
   async setStatus(channelId: string, threadTs: string, status: StatusDescriptor): Promise<void> {
     if (typeof status === 'string' && status === '') {
