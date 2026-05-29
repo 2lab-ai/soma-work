@@ -59,6 +59,7 @@ import {
   stopWebServer,
 } from './conversation';
 import { CronScheduler, type SyntheticMessageEvent } from './cron-scheduler';
+import { forceMigrateOpus1m } from './deploy/force-migrate-opus-1m';
 import { initializeDispatchService } from './dispatch-service';
 import { CONFIG_FILE, DATA_DIR, PLUGINS_DIR } from './env-paths';
 import { discoverInstallations, getGitHubAppAuth, isGitHubAppConfigured } from './github-auth.js';
@@ -118,6 +119,17 @@ async function start() {
     const tokenManager = getTokenManager();
     await tokenManager.init({ startReaper: true });
     timing('TokenManager initialized');
+
+    // One-shot force-migration: every existing user.defaultModel that isn't
+    // already `claude-opus-4-8[1m]` is rewritten to it. Gated by a dedicated
+    // marker in DATA_DIR so a re-deploy of the same host doesn't re-touch.
+    // MUST run before UserSettingsStore.load (further down) so the store
+    // sees the migrated file.
+    const opus1mResult = forceMigrateOpus1m({ dataDir: DATA_DIR });
+    logger.info(
+      `opus[1m] migration: ${opus1mResult.status} (migrated=${opus1mResult.migrated}/${opus1mResult.total}, marker=${opus1mResult.markerFile})`,
+    );
+    timing('opus[1m] migration evaluated');
 
     // Run preflight checks
     const preflight = await runPreflightChecks();
