@@ -8,3 +8,12 @@
 export type { AgentRunOptions, ClaudeCodeExtensionOptions } from './agent-runner';
 export { type BuildOneShotOptionsInput, buildOneShotOptions, type LoggerLike } from './one-shot-options';
 export { runOneShotText } from './runner';
+export type {
+  AgentContent,
+  AgentStopReason,
+  AgentStreamEvent,
+  AgentStreamEventOf,
+  AgentToolKind,
+  AgentToolStatus,
+  AgentUsage,
+} from './stream-types';
