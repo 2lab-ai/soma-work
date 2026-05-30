@@ -87,6 +87,45 @@ typography constraints, palette). The agent obeys this contract when
 generating HTML. If the upstream template's `SKILL.md` is in Chinese or
 mixed CJK, that's fine — the structural intent translates.
 
+### 3.5. Consult the `design` skill (design discipline injection)
+
+Before writing any HTML, pull the design discipline from the local `design`
+skill and layer it **on top of** the template contract + global constraints.
+This is what lifts output from "template-correct" to "looks like a real
+design team made it".
+
+```bash
+# Anti-AI-slop checklist (§6) — the hard "don't do this" rules.
+# Prints from the §6 heading up to (not including) the next top-level heading.
+awk '/^### 6\. 反AI slop/{f=1;print;next} f && /^### [0-9]/{exit} f' \
+  "$CLAUDE_PLUGIN_ROOT/skills/design/SKILL.md"
+# 20-philosophy style vocabulary + the style×scene fit table.
+cat "$CLAUDE_PLUGIN_ROOT/skills/design/references/design-styles.md"
+```
+
+Apply exactly two things from what you read — nothing else:
+
+1. **Anti-AI-slop checklist** — before shipping, scan the HTML for the AI
+   visual common-denominator and remove it: purple/blue gradients as the
+   primary surface, emoji as icons, rounded-corner + left-border accent
+   cards, generic SVG humans, Inter-as-display, CSS silhouettes standing in
+   for real product shots. Prefer a deliberate serif display face, real
+   CSS Grid columns, `text-wrap: pretty`, and oklch color.
+2. **One style philosophy** — pick the single best-fit philosophy from
+   `design-styles.md` for the chosen template/content (e.g. a `data-report`
+   leans Müller-Brockmann/Information-Architects grid rigor; a
+   `social-x-post-card` leans Build/Sagmeister boldness; a
+   `doc-kami-parchment` leans Kenya Hara / Takram restraint) and let it steer
+   palette, type, and spacing within the template's hard constraints.
+
+**Scope guard — this skill stays deterministic.** Inject *principles only*.
+Do **not** adopt the `design` skill's interactive workflow: no clarifying
+questions, no WebSearch / Fact-Verification step, no Core Asset Protocol
+download flow, no variation rounds. If the template contract and a design
+principle conflict, the **template contract wins** (it owns geometry and the
+classifier's promise). Never invent data to satisfy a style — the no-lorem
+rule still rules.
+
 ### 4. Generate HTML
 
 Write a **single self-contained `.html` file** to the current session
@@ -219,6 +258,10 @@ V1 ships 8 templates. To add more from the html-anything catalog (75 total):
 
 ## References
 
+- [`../design/SKILL.md`](../design/SKILL.md) §6 + [`../design/references/design-styles.md`](../design/references/design-styles.md)
+  — the `design` skill's anti-AI-slop discipline + 20-philosophy style
+  vocabulary, injected at Step 3.5 (principles only; the interactive design
+  workflow is deliberately out of scope here).
 - [`templates/index.json`](./templates/index.json) — template catalog with
   per-template viewport overrides.
 - [`templates/skills/<name>/SKILL.md`](./templates/skills/) — vendored
