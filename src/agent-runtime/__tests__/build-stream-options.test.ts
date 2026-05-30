@@ -111,13 +111,18 @@ describe('buildStreamOptions — option parity (epic #1023 P1)', () => {
     expect(options.disallowedTools).toBeUndefined();
   });
 
-  it('hooks: composes a non-empty PreToolUse array for a non-admin slack user', async () => {
+  it('hooks: registers the unified ToolPolicy hook across the governed matchers (epic #1023 P5)', async () => {
     const deps = makeDeps();
     const { options } = await buildStreamOptions({ queryEnv: {}, slackContext: makeSlackContext() }, deps);
     const preToolUse = options.hooks?.PreToolUse;
     expect(Array.isArray(preToolUse)).toBe(true);
-    // ssh-ban + sensitive(4) + cross-user + bypass-bash + bypass-native + pr-issue
-    expect((preToolUse ?? []).length).toBeGreaterThanOrEqual(7);
+    // P5 collapsed the per-concern hooks into one policy hook fanned out across
+    // three matchers: Bash, the native-bypass tool union, and mcp__.
+    const matchers = (preToolUse ?? []).map((e) => (e as { matcher: string }).matcher);
+    expect(matchers).toHaveLength(3);
+    expect(matchers).toContain('Bash');
+    expect(matchers).toContain('mcp__');
+    expect(matchers.some((m) => m.includes('Write') && m.includes('Read'))).toBe(true);
   });
 
   it('hooks: registers PreCompact/PostCompact/SessionStart only when compactHookBuilder + session + threadTs', async () => {
