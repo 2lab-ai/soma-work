@@ -768,6 +768,11 @@ async function start() {
     // the storm threshold. exit(1) → supervisor (launchd/systemd) recycles.
     startSlackSocketWatchdog({
       client: slackReceiver.client,
+      // `app.start()` above only resolves after the socket's first
+      // `connected`, which this post-start wiring can't observe. Seed the
+      // flag so a healthy-but-quiet socket doesn't trip stale-inbound and
+      // loop-restart the process every `stalenessMs`.
+      initiallyConnected: true,
       reconnectStormThreshold: 5,
       stalenessMs: 5 * 60_000,
       checkIntervalMs: 30_000,

@@ -113,6 +113,33 @@ describe('startSlackSocketWatchdog', () => {
     expect(reasons).toEqual([]);
   });
 
+  it('does not trip stale-inbound on a healthy-but-quiet socket wired post-connect', () => {
+    // Production repro: the watchdog is wired AFTER `app.start()` resolves,
+    // so it never observes the socket's first `connected` event. Without
+    // `initiallyConnected: true`, `socketConnected` stays false on a perfectly
+    // healthy socket and stale-inbound fires every `stalenessMs`, restart-
+    // looping the process. No `connected`/`reconnecting` events arrive here —
+    // exactly the stable-socket case.
+    const client = makeClient();
+    const reasons: UnhealthyReason[] = [];
+
+    startSlackSocketWatchdog({
+      client,
+      reconnectStormThreshold: 99,
+      stalenessMs: 5 * 60_000,
+      checkIntervalMs: 30_000,
+      initiallyConnected: true,
+      onUnhealthy: (r) => reasons.push(r),
+      now: () => now,
+    });
+
+    // No inbound events, socket stays up (no reconnecting). Quiet for an hour.
+    advance(60 * 60_000);
+    vi.advanceTimersByTime(30_000);
+
+    expect(reasons).toEqual([]);
+  });
+
   it('trips unrecoverable-start immediately on unable_to_socket_mode_start', () => {
     const client = makeClient();
     const reasons: UnhealthyReason[] = [];

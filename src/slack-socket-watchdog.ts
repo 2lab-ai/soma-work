@@ -17,6 +17,14 @@
  *     a healthy socket are not a symptom.
  *   - `unrecoverable-start`: the `unable_to_socket_mode_start` event
  *     (UnrecoverableSocketModeStartError path).
+ *
+ * Initial-state caveat: this watchdog is wired AFTER `app.start()` resolves
+ * (so boot reconnects don't count against the storm threshold). By then the
+ * socket has already emitted its first `connected`, which this watchdog can
+ * never observe. Callers that wire post-connect MUST pass
+ * `initiallyConnected: true`; otherwise `socketConnected` stays `false` on a
+ * perfectly healthy-but-quiet socket and the stale-inbound gate fires every
+ * `stalenessMs`, killing the process in a restart loop.
  */
 
 export type SocketWatchdogUnhealthyReason = 'reconnect-storm' | 'stale-inbound' | 'unrecoverable-start';
@@ -32,6 +40,13 @@ export interface SlackSocketWatchdogOptions {
   stalenessMs: number;
   checkIntervalMs: number;
   onUnhealthy: (reason: SocketWatchdogUnhealthyReason, detail?: unknown) => void;
+  /**
+   * Seeds the internal `socketConnected` flag. Set `true` when wiring the
+   * watchdog right after `app.start()` resolves — at that instant the socket
+   * is Connected but its `connected` event already fired and can't be
+   * re-observed. Defaults to `false`.
+   */
+  initiallyConnected?: boolean;
   /** Injected for tests; defaults to `Date.now`. */
   now?: () => number;
 }
@@ -41,9 +56,17 @@ export interface SlackSocketWatchdogHandle {
 }
 
 export function startSlackSocketWatchdog(options: SlackSocketWatchdogOptions): SlackSocketWatchdogHandle {
-  const { client, reconnectStormThreshold, stalenessMs, checkIntervalMs, onUnhealthy, now = Date.now } = options;
+  const {
+    client,
+    reconnectStormThreshold,
+    stalenessMs,
+    checkIntervalMs,
+    onUnhealthy,
+    initiallyConnected = false,
+    now = Date.now,
+  } = options;
 
-  let socketConnected = false;
+  let socketConnected = initiallyConnected;
   let consecutiveReconnects = 0;
   let lastEventAt = now();
   // First-trip wins. Without this guard a reconnect storm above the
