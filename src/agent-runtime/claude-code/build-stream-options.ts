@@ -33,24 +33,16 @@ import {
   handleClaudeStderrChunk,
   resolveShowSummary,
 } from '../../claude-handler';
-import { bypassBashPermissionDecision, isCrossUserAccess, isSshCommand } from '../../dangerous-command-filter';
 import { CONFIG_FILE } from '../../env-paths';
-import { buildBypassPermissionHookEntry } from '../../hooks/bypass-permission-guard';
-import { buildPrIssueHookEntries } from '../../hooks/pr-issue-guard';
 import type { McpConfig, SlackContext } from '../../mcp-config-builder';
 import { getPermissionGatedServers, loadMcpToolPermissions } from '../../mcp-tool-permission-config';
 import { isSafePathSegment, normalizeTmpPath } from '../../path-utils';
 import type { SdkPluginPath } from '../../plugin/types';
 import { DEV_DOMAIN_ALLOWLIST } from '../../sandbox/dev-domain-allowlist';
-import {
-  checkBashSensitivePaths,
-  checkSensitiveGlob,
-  checkSensitivePath,
-  type SensitivePathResult,
-} from '../../sensitive-path-filter';
 import type { SessionRegistry } from '../../session-registry';
 import type { ConversationSession, WorkflowType } from '../../types';
 import { DEFAULT_THINKING_ENABLED, userSettingsStore } from '../../user-settings-store';
+import { evaluateToolPolicy, TOOL_POLICY_MATCHERS, type ToolPolicyContext } from '../policy/tool-policy';
 
 /**
  * Structural logger surface used by the builder. The concrete `Logger`
@@ -144,289 +136,65 @@ export async function buildStreamOptions(
 
   // PreToolUse hooks
   if (slackContext) {
-    const preToolUseHooks: Array<{ matcher: string; hooks: Array<(input: HookInput) => Promise<HookJSONOutput>> }> = [];
+    // PreToolUse: a single unified policy hook (epic #1023 P5). All tool guards
+    // — abort, ssh-ban, sensitive-path, cross-user, MCP grant, PR-issue
+    // precondition, bypass-mode allow/ask — collapse into `evaluateToolPolicy`,
+    // whose deny>ask>allow precedence reproduces the prior multi-hook SDK merge
+    // exactly (deny from any guard wins over the bypass allow; dangerous-Bash
+    // escalates to ask). Live state (abort signal, handoff context) is resolved
+    // per call so mid-session aborts and handoff changes are honored.
+    const policyUser = slackContext.user;
+    const policyIsAdmin = isAdminUser(slackContext.user);
+    const cachedPermConfig = CONFIG_FILE ? loadMcpToolPermissions(CONFIG_FILE) : {};
+    const gatedServerNames = getPermissionGatedServers(cachedPermConfig);
+    const hookSessionKey = deps.sessionRegistry.getSessionKey(slackContext.channel, slackContext.threadTs);
 
-    // Abort guard: deny all tool calls after session abort to prevent SDK fire-and-forget writes
-    if (abortController) {
-      preToolUseHooks.push({
-        matcher: 'Bash',
-        hooks: [
-          async (): Promise<HookJSONOutput> => {
-            if (abortController.signal.aborted) {
-              return {
-                hookSpecificOutput: {
-                  hookEventName: 'PreToolUse',
-                  permissionDecision: 'deny',
-                },
-              };
-            }
-            return { continue: true };
-          },
-        ],
-      });
-    }
-
-    // SSH command restriction: only admin users may execute SSH commands via Bash.
-    // Non-admin users must use the server-tools MCP (which has its own permission gating).
-    if (!isAdminUser(slackContext.user)) {
-      preToolUseHooks.push({
-        matcher: 'Bash',
-        hooks: [
-          async (input: HookInput): Promise<HookJSONOutput> => {
-            const { tool_input } = input as { tool_input: unknown };
-            const toolRecord = tool_input as Record<string, unknown> | undefined;
-            const command = typeof toolRecord?.command === 'string' ? toolRecord.command : '';
-
-            if (isSshCommand(command)) {
-              logger.warn('SSH command denied for non-admin user', {
-                command: command.substring(0, 100),
-                user: slackContext.user,
-              });
-              return {
-                hookSpecificOutput: {
-                  hookEventName: 'PreToolUse',
-                  permissionDecision: 'deny',
-                },
-              };
-            }
-
-            return { continue: true };
-          },
-        ],
-      });
-    }
-
-    // Sensitive path guard: block non-admin users from reading host secrets
-    // via any Claude tool. Addresses sandbox read.denyOnly being empty.
-    if (!isAdminUser(slackContext.user)) {
-      const makeSensitiveHook =
-        (
-          check: (r: Record<string, unknown>) => SensitivePathResult,
-          logCtx: (r: Record<string, unknown>) => Record<string, unknown>,
-        ) =>
-        async (input: HookInput): Promise<HookJSONOutput> => {
-          const toolRecord = ((input as { tool_input: unknown }).tool_input as Record<string, unknown>) ?? {};
-          const result = check(toolRecord);
-          if (result.isSensitive) {
-            logger.warn('Sensitive path access denied', {
-              user: slackContext.user,
-              reason: result.reason,
-              ...logCtx(toolRecord),
-            });
-            return {
-              hookSpecificOutput: {
-                hookEventName: 'PreToolUse',
-                permissionDecision: 'deny',
-              },
-            };
-          }
-          return { continue: true };
-        };
-
-      preToolUseHooks.push(
-        {
-          matcher: 'Bash',
-          hooks: [
-            makeSensitiveHook(
-              (r) => checkBashSensitivePaths(String(r.command ?? '')),
-              (r) => ({ command: String(r.command ?? '').substring(0, 100) }),
-            ),
-          ],
-        },
-        {
-          matcher: 'Read',
-          hooks: [
-            makeSensitiveHook(
-              (r) => checkSensitivePath(String(r.file_path ?? '')),
-              (r) => ({ file: String(r.file_path ?? '') }),
-            ),
-          ],
-        },
-        {
-          matcher: 'Glob',
-          hooks: [
-            makeSensitiveHook(
-              (r) => checkSensitiveGlob(String(r.pattern ?? ''), typeof r.path === 'string' ? r.path : undefined),
-              (r) => ({ pattern: String(r.pattern ?? ''), path: r.path }),
-            ),
-          ],
-        },
-        {
-          matcher: 'Grep',
-          hooks: [
-            makeSensitiveHook(
-              (r) => (typeof r.path === 'string' && r.path ? checkSensitivePath(r.path) : { isSensitive: false }),
-              (r) => ({ path: r.path }),
-            ),
-          ],
-        },
-      );
-    }
-
-    // Cross-user directory isolation: deny Bash commands that access another user's
-    // /tmp/{userId}/ directory. Always enforced regardless of bypass mode.
-    preToolUseHooks.push({
-      matcher: 'Bash',
-      hooks: [
-        async (input: HookInput): Promise<HookJSONOutput> => {
-          const { tool_input } = input as { tool_input: unknown };
-          const toolRecord = tool_input as Record<string, unknown> | undefined;
-          const command = typeof toolRecord?.command === 'string' ? toolRecord.command : '';
-
-          if (isCrossUserAccess(command, slackContext.user)) {
-            logger.warn('Cross-user directory access denied', {
-              command: command.substring(0, 100),
-              user: slackContext.user,
-            });
-            return {
-              hookSpecificOutput: {
-                hookEventName: 'PreToolUse',
-                permissionDecision: 'deny',
-              },
-            };
-          }
-
-          return { continue: true };
-        },
-      ],
-    });
-
-    // Bypass mode Bash gate: explicitly approve non-dangerous commands, escalate dangerous ones.
-    // CRITICAL: Return 'allow' instead of { continue: true } for non-dangerous commands.
-    // When permissionPromptToolName is set (always in Slack context), { continue: true }
-    // defers to SDK's permission check which routes through the permission MCP tool,
-    // causing Slack permission prompts even in bypass mode. Explicit 'allow' makes the
-    // decision at hook level, preventing SDK from invoking permissionPromptToolName.
-    // See bypassBashPermissionDecision() for the extracted, testable decision logic.
-    //
-    // Session-scoped rule disable: when the user has previously clicked
-    // "Approve & disable rule for this session" on a Slack permission prompt,
-    // the matched rule id is stored on `session.disabledDangerousRules` via
-    // SessionRegistry.disableDangerousRule(). The closure below passes a
-    // lookup into bypassBashPermissionDecision so commands that match only
-    // disabled rules degrade to 'allow' without prompting again.
-    if (mcpConfig.userBypass) {
-      const sessionRegistry = deps.sessionRegistry;
-      const hookSessionKey = sessionRegistry.getSessionKey(slackContext.channel, slackContext.threadTs);
-
-      preToolUseHooks.push({
-        matcher: 'Bash',
-        hooks: [
-          async (input: HookInput): Promise<HookJSONOutput> => {
-            const { tool_input } = input as { tool_input: unknown };
-            const toolRecord = tool_input as Record<string, unknown> | undefined;
-            const command = typeof toolRecord?.command === 'string' ? toolRecord.command : '';
-
-            const { decision, matchedRuleIds } = bypassBashPermissionDecision(command, (ruleId) =>
-              sessionRegistry.isDangerousRuleDisabled(hookSessionKey, ruleId),
-            );
-
-            if (decision === 'ask') {
-              logger.warn('Dangerous command in bypass mode \u2014 escalating to Slack permission UI', {
-                command: command.substring(0, 100),
-                user: slackContext.user,
-                matchedRuleIds,
-              });
-            } else if (matchedRuleIds.length === 0) {
-              // Non-dangerous: normal bypass allow.
-            } else {
-              // Matched rules but all were session-disabled \u2014 log for audit.
-              logger.info('Dangerous command auto-approved by session rule disable', {
-                command: command.substring(0, 100),
-                user: slackContext.user,
-                sessionKey: hookSessionKey,
-              });
-            }
-
-            return {
-              hookSpecificOutput: {
-                hookEventName: 'PreToolUse',
-                permissionDecision: decision,
-              },
-            };
-          },
-        ],
-      });
-
-      // Native non-Bash tools (Write/Edit/Read/etc.) need an explicit
-      // 'allow' hook so the SDK does not route them through
-      // `permissionPromptToolName` and pop a Slack UI. The covered set is
-      // audited in `bypass-permission-guard.ts`. The SDK's hook output
-      // merger still honors deny from other matchers (sensitive-path,
-      // cross-user, ssh-ban, abort-guard) per the documented Claude Code
-      // hook behavior, so this only changes the default outcome from
-      // "fall through to prompt" to "explicit allow".
-      preToolUseHooks.push(buildBypassPermissionHookEntry());
-    }
-
-    // MCP tool permission enforcement: deny calls to permission-gated MCP tools
-    // when the user lacks an active grant. Catches mid-session grant expiry that
-    // allowedTools (computed once at query start) cannot detect.
-    // Trace: docs/current/plans/mcp-tool-permission/trace.md, S3/S5
-    if (!isAdminUser(slackContext.user)) {
-      // Cache permission config once per query \u2014 it's static deployment config,
-      // unlike grants which must be re-checked from disk each call.
-      const cachedPermConfig = CONFIG_FILE ? loadMcpToolPermissions(CONFIG_FILE) : {};
-      const gatedServerNames = getPermissionGatedServers(cachedPermConfig);
-
-      if (gatedServerNames.length > 0) {
-        preToolUseHooks.push({
-          matcher: 'mcp__',
-          hooks: [
-            async (input: HookInput): Promise<HookJSONOutput> => {
-              const toolName = (input as { tool_name?: string }).tool_name || '';
-              const denied = deps.checkMcpToolPermission(
-                toolName,
-                slackContext.user,
-                cachedPermConfig,
-                gatedServerNames,
-              );
-              if (denied) {
-                logger.warn('MCP tool permission denied by PreToolUse hook', {
-                  tool: toolName,
-                  user: slackContext.user,
-                  reason: denied,
-                });
-                return {
-                  hookSpecificOutput: {
-                    hookEventName: 'PreToolUse',
-                    permissionDecision: 'deny',
-                  },
-                };
-              }
-              return { continue: true };
-            },
-          ],
-        });
-      }
-    }
-
-    // ── PR-issue precondition (#696) ──
-    // For z-handoff sessions (session.handoffContext set), require a linked
-    // source issue (or validated Case A escape) before allowing PR creation
-    // via Bash `gh pr create` or `mcp__github__create_pull_request`. Sessions
-    // without handoffContext are unaffected.
-    //
-    // SDK multi-hook precedence is `deny > allow` (verified cli.js:8208-8240
-    // in @anthropic-ai/claude-agent-sdk@0.2.111), so this deny wins over the
-    // bypass-mode Bash hook's allow regardless of array order.
-    //
-    // Spec / trace: docs/archive/features/pr-issue-precondition/{spec,trace}.md
-    preToolUseHooks.push(
-      ...buildPrIssueHookEntries({
-        getHandoffContext: () =>
-          deps.sessionRegistry.getSession(slackContext.channel, slackContext.threadTs)?.handoffContext,
-        logger,
-        logCtx: { channel: slackContext.channel, threadTs: slackContext.threadTs },
-      }),
-    );
-
-    if (preToolUseHooks.length > 0) {
-      options.hooks = {
-        ...options.hooks,
-        PreToolUse: preToolUseHooks,
+    const policyHook = async (input: HookInput): Promise<HookJSONOutput> => {
+      const toolName = (input as { tool_name?: string }).tool_name || '';
+      const toolInput = (input as { tool_input?: Record<string, unknown> }).tool_input;
+      const ctx: ToolPolicyContext = {
+        user: policyUser,
+        isAdmin: policyIsAdmin,
+        userBypass: mcpConfig.userBypass,
+        aborted: abortController?.signal.aborted ?? false,
+        isDangerousRuleDisabled: (ruleId) => deps.sessionRegistry.isDangerousRuleDisabled(hookSessionKey, ruleId),
+        handoffContext: deps.sessionRegistry.getSession(slackContext.channel, slackContext.threadTs)?.handoffContext,
+        checkMcpToolPermission: (name) =>
+          gatedServerNames.length > 0
+            ? (deps.checkMcpToolPermission(name, policyUser, cachedPermConfig, gatedServerNames) ?? null)
+            : null,
       };
-    }
+
+      const result = evaluateToolPolicy(toolName, toolInput, ctx);
+      switch (result.decision) {
+        case 'deny':
+          logger.warn('Tool policy denied call', { tool: toolName, user: policyUser, reason: result.reason });
+          return {
+            hookSpecificOutput: {
+              hookEventName: 'PreToolUse',
+              permissionDecision: 'deny',
+              ...(result.denyMessage ? { permissionDecisionReason: result.denyMessage } : {}),
+            },
+          };
+        case 'ask':
+          logger.warn('Tool policy escalating to Slack permission UI', {
+            tool: toolName,
+            user: policyUser,
+            reason: result.reason,
+          });
+          return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask' } };
+        case 'allow':
+          return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' } };
+        default:
+          // 'pass' → no policy opinion; defer to the SDK's own permission logic.
+          return { continue: true };
+      }
+    };
+
+    options.hooks = {
+      ...options.hooks,
+      PreToolUse: TOOL_POLICY_MATCHERS.map((matcher) => ({ matcher, hooks: [policyHook] })),
+    };
 
     // Compaction Tracking (#617): register PreCompact / PostCompact /
     // SessionStart hooks so we can post thread-visible start/end messages
