@@ -18,7 +18,12 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { readIdleTimeoutMs, type StreamCallbacks, type StreamContext, StreamProcessor } from '../stream-processor';
+import {
+  AgentStreamProcessor,
+  readIdleTimeoutMs,
+  type StreamCallbacks,
+  type StreamContext,
+} from '../stream-processor';
 
 const baseContext = (): StreamContext => ({
   channel: 'C1',
@@ -56,7 +61,7 @@ describe('StreamProcessor — idle timeout (C-1 replacement for PR #926 watchdog
   it('fires onIdleTimeout and returns aborted=true when iterator.next() never resolves', async () => {
     const onIdleTimeout = vi.fn();
     const callbacks: StreamCallbacks = { onIdleTimeout };
-    const processor = new StreamProcessor(callbacks, { idleTimeoutMs: 1000 });
+    const processor = new AgentStreamProcessor(callbacks, { idleTimeoutMs: 1000 });
 
     const abortController = new AbortController();
     const promise = processor.process(neverYieldingStream(), baseContext(), abortController.signal);
@@ -108,7 +113,7 @@ describe('StreamProcessor — idle timeout (C-1 replacement for PR #926 watchdog
       },
     };
 
-    const processor = new StreamProcessor({ onIdleTimeout }, { idleTimeoutMs: 500 });
+    const processor = new AgentStreamProcessor({ onIdleTimeout }, { idleTimeoutMs: 500 });
     const promise = processor.process(stream, baseContext(), new AbortController().signal);
 
     // The three yields consume the queue ~immediately. The timer should
@@ -122,7 +127,7 @@ describe('StreamProcessor — idle timeout (C-1 replacement for PR #926 watchdog
 
   it('idleTimeoutMs <= 0 disables the idle timeout entirely', async () => {
     const onIdleTimeout = vi.fn();
-    const processor = new StreamProcessor({ onIdleTimeout }, { idleTimeoutMs: 0 });
+    const processor = new AgentStreamProcessor({ onIdleTimeout }, { idleTimeoutMs: 0 });
 
     const abortController = new AbortController();
     const promise = processor.process(neverYieldingStream(), baseContext(), abortController.signal);
@@ -141,7 +146,7 @@ describe('StreamProcessor — idle timeout (C-1 replacement for PR #926 watchdog
 
   it('external abort while next() is pending exits promptly without waiting for idle timeout', async () => {
     const onIdleTimeout = vi.fn();
-    const processor = new StreamProcessor({ onIdleTimeout }, { idleTimeoutMs: 60_000 });
+    const processor = new AgentStreamProcessor({ onIdleTimeout }, { idleTimeoutMs: 60_000 });
 
     const abortController = new AbortController();
     const promise = processor.process(neverYieldingStream(), baseContext(), abortController.signal);
@@ -158,7 +163,7 @@ describe('StreamProcessor — idle timeout (C-1 replacement for PR #926 watchdog
     const onIdleTimeout = vi.fn();
     const messages = [{ type: 'result', subtype: 'success', usage: {}, total_cost_usd: 0 }];
 
-    const processor = new StreamProcessor({ onIdleTimeout }, { idleTimeoutMs: 1000 });
+    const processor = new AgentStreamProcessor({ onIdleTimeout }, { idleTimeoutMs: 1000 });
     const result = await processor.process(
       // Yield once then end (done:true) — normal completion path.
       (() => {
@@ -247,11 +252,19 @@ describe('StreamProcessor — result is the turn-terminal signal (C-7)', () => {
     };
   }
 
+  // epic #1023 P4: the processor consumes neutral AgentStreamEvents. A terminal
+  // `result` event carries its cumulative usage inline (as the mapper attaches
+  // it), so the post-loop `onUsageUpdate` fires without a separate usage event.
   const resultMsg = () => ({
     type: 'result',
-    subtype: 'success',
-    modelUsage: {
-      'claude-test': { inputTokens: 1, outputTokens: 1, costUSD: 1, contextWindow: 1000 },
+    stopReason: 'end_turn',
+    usage: {
+      inputTokens: 1,
+      outputTokens: 1,
+      totalCostUsd: 1,
+      costSource: 'sdk',
+      contextWindow: 1000,
+      modelName: 'claude-test',
     },
   });
 
@@ -261,7 +274,7 @@ describe('StreamProcessor — result is the turn-terminal signal (C-7)', () => {
     // idleTimeoutMs is the 2h-analog: the OLD code could ONLY escape the
     // post-result hang via this timer (firing a spurious stall). The fix breaks
     // on `result` immediately, so process() resolves WITHOUT any timer firing.
-    const processor = new StreamProcessor({ onIdleTimeout, onUsageUpdate }, { idleTimeoutMs: 60_000 });
+    const processor = new AgentStreamProcessor({ onIdleTimeout, onUsageUpdate }, { idleTimeoutMs: 60_000 });
 
     let settled = false;
     const promise = processor
@@ -310,7 +323,7 @@ describe('StreamProcessor — result is the turn-terminal signal (C-7)', () => {
       },
     };
 
-    const processor = new StreamProcessor({ onUsageUpdate }, { idleTimeoutMs: 60_000 });
+    const processor = new AgentStreamProcessor({ onUsageUpdate }, { idleTimeoutMs: 60_000 });
     const result = await processor.process(stream, baseContext(), new AbortController().signal);
 
     expect(result.aborted).toBe(false);
@@ -337,7 +350,7 @@ describe('StreamProcessor — result is the turn-terminal signal (C-7)', () => {
       },
     };
 
-    const processor = new StreamProcessor({}, { idleTimeoutMs: 60_000 });
+    const processor = new AgentStreamProcessor({}, { idleTimeoutMs: 60_000 });
     const result = await processor.process(stream, baseContext(), new AbortController().signal);
 
     expect(result.aborted).toBe(false);
@@ -360,7 +373,7 @@ describe('StreamProcessor — result is the turn-terminal signal (C-7)', () => {
       },
     };
 
-    const processor = new StreamProcessor({ onIdleTimeout, onUsageUpdate }, { idleTimeoutMs: 60_000 });
+    const processor = new AgentStreamProcessor({ onIdleTimeout, onUsageUpdate }, { idleTimeoutMs: 60_000 });
     const result = await processor.process(stream, baseContext(), new AbortController().signal);
 
     expect(result.aborted).toBe(false);

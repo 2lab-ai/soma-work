@@ -3,8 +3,8 @@
  * Extracted from slack-handler.ts for-await loop (Phase 4.1)
  */
 
-import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { Logger } from '@soma/common/logger';
+import type { AgentStreamEvent, AgentUsage } from './agent-stream-types';
 import type { SlackMessagePayload } from './choice-message-builder';
 import {
   ChannelMessageDirectiveHandler,
@@ -435,9 +435,11 @@ function asyncIteratorOf<T>(stream: AsyncIterable<T> | Iterable<T>): AsyncIterat
 }
 
 /**
- * StreamProcessor handles the for-await loop over Claude SDK messages
+ * AgentStreamProcessor handles the for-await loop over the neutral
+ * `AgentStreamEvent` stream (epic #1023 P4), replacing the SDK-typed
+ * `StreamProcessor`. It drives the unchanged Slack rendering callbacks.
  */
-export class StreamProcessor {
+export class AgentStreamProcessor {
   private logger = new Logger('StreamProcessor');
   private callbacks: StreamCallbacks;
   private _hasUserChoice = false;
@@ -488,16 +490,66 @@ export class StreamProcessor {
   }
 
   /**
-   * Process the stream of messages from Claude SDK
+   * Process the neutral `AgentStreamEvent` stream (epic #1023 P4).
+   *
+   * Replaces the prior SDK-message consumption: per-`SDKMessage` extraction now
+   * lives in the agent-runtime mapper, so this loop consumes already-extracted
+   * events and drives the unchanged Slack rendering helpers. Delta events
+   * (`assistant_delta`/`thought_delta`) and `tool_call`/`tool_result` events are
+   * buffered per render group and flushed at a group boundary, so SDK mode
+   * (one delta per message) is byte-identical to the old per-message handlers.
    */
   async process(
-    stream: AsyncIterable<SDKMessage>,
+    stream: AsyncIterable<AgentStreamEvent>,
     context: StreamContext,
     abortSignal: AbortSignal,
   ): Promise<StreamResult> {
     const currentMessages: string[] = [];
     let lastUsage: UsageData | undefined;
     this._hasUserChoice = false;
+    // Note: per-turn state fields (_lastAssistantTurnUsage, _lastToolName,
+    // _endTurnInfo, _sdkResultError, _lastAssistantModelName) are NOT reset
+    // here — stream-executor constructs a fresh AgentStreamProcessor per turn,
+    // so they start at their declared initializers (matches the old class).
+
+    // Per-render-group buffers. Only one is ever non-empty at a time: pushing
+    // to one flushes the others, so render order (thinking → text|tools) and
+    // cross-message grouping match the old per-message handlers exactly.
+    const thinkingBuf: string[] = [];
+    const textBuf: string[] = [];
+    const toolCallBuf: Array<{ type: 'tool_use'; id: string; name: string; input: unknown }> = [];
+    const toolResultBuf: Array<{ type: 'tool_result'; tool_use_id: string; content: unknown; is_error?: boolean }> = [];
+
+    const flushThinking = async (): Promise<void> => {
+      if (thinkingBuf.length === 0) return;
+      const joined = thinkingBuf.join('');
+      thinkingBuf.length = 0;
+      await this.handleThinkingContent([{ type: 'thinking', thinking: joined }], context);
+    };
+    const flushText = async (): Promise<void> => {
+      if (textBuf.length === 0) return;
+      const parts = textBuf.map((text) => ({ type: 'text', text }));
+      textBuf.length = 0;
+      await this.handleTextMessage(parts, context, currentMessages);
+    };
+    const flushToolCalls = async (): Promise<void> => {
+      if (toolCallBuf.length === 0) return;
+      const content = toolCallBuf.slice();
+      toolCallBuf.length = 0;
+      await this.handleToolUseMessage(content, context);
+    };
+    const flushToolResults = async (): Promise<void> => {
+      if (toolResultBuf.length === 0) return;
+      const content = toolResultBuf.slice();
+      toolResultBuf.length = 0;
+      await this.handleToolResultsContent(content, context);
+    };
+    const flushAll = async (): Promise<void> => {
+      await flushThinking();
+      await flushText();
+      await flushToolCalls();
+      await flushToolResults();
+    };
 
     // Drive the iterator manually so each `.next()` can race against the
     // external abort signal AND the idle timeout. A `for await` blocks
@@ -509,7 +561,7 @@ export class StreamProcessor {
     //
     // `asyncIteratorOf` adapts sync iterables (tests pass `function*`
     // generators); the explicit-iterator form here does not auto-promote.
-    const iterator: AsyncIterator<SDKMessage> = asyncIteratorOf<SDKMessage>(stream);
+    const iterator: AsyncIterator<AgentStreamEvent> = asyncIteratorOf<AgentStreamEvent>(stream);
     try {
       while (true) {
         if (abortSignal.aborted) {
@@ -544,10 +596,10 @@ export class StreamProcessor {
           return { success: true, messageCount: currentMessages.length, aborted: true };
         }
 
-        const message = step.value;
+        const event = step.value;
 
         // Fire *before* per-type handlers so the activity clock reflects
-        // when the SDK emitted the message, not when a slow handler returned.
+        // when the agent emitted the event, not when a slow handler returned.
         // Swallow throws — the clock is a UX heuristic; a handler bug here
         // must not abort the stream loop.
         if (this.callbacks.onSdkActivity) {
@@ -560,35 +612,83 @@ export class StreamProcessor {
           }
         }
 
-        this.logger.debug('Received message from Claude SDK', {
-          type: message.type,
-          subtype: 'subtype' in message ? message.subtype : undefined,
-        });
+        this.logger.debug('Received agent stream event', { type: event.type });
 
-        if (message.type === 'assistant') {
-          await this.handleAssistantMessage(message, context, currentMessages);
-        } else if (message.type === 'user') {
-          await this.handleUserMessage(message, context);
-        } else if (message.type === 'result') {
-          lastUsage = await this.handleResultMessage(message, context, currentMessages);
-          // §C-7: `result` (SDKResultMessage) is the turn-terminal signal —
-          // final output, usage and cost all live on it. Finalize the turn NOW
-          // instead of looping back to `.next()`:
-          //   - the SDK does not reliably emit the terminal `done` on long
-          //     turns; waiting for it stranded the turn until the 2 h idle
-          //     timer fired a spurious ⚫ stall card (prod hang 2026-05-29);
-          //   - soma-work consumes no message after `result`, so continuing to
-          //     drain trailing events buys nothing while risking late state
-          //     mutation or a double-applied duplicate `result`
-          //     (codex review 0a7ed5f4 findings 1-3).
-          // Best-effort, bounded close to release the SDK transport, then break
-          // to the post-loop finalization (usage flush → completion card).
-          await this.tryReturnIterator(iterator, 'result');
-          break;
-        } else if (message.type === 'system') {
-          await this.handleSystemMessage(message, context);
+        // Delta/tool events buffer per render group (flushing the others first
+        // so only one group is pending); everything else flushes all pending
+        // groups, then handles the terminal/usage/status event.
+        switch (event.type) {
+          case 'thought_delta':
+            await flushText();
+            await flushToolCalls();
+            await flushToolResults();
+            thinkingBuf.push(event.text);
+            break;
+          case 'assistant_delta':
+            await flushThinking();
+            await flushToolCalls();
+            await flushToolResults();
+            textBuf.push(event.text);
+            break;
+          case 'tool_call':
+            await flushThinking();
+            await flushText();
+            await flushToolResults();
+            this._lastToolName = event.name;
+            toolCallBuf.push({ type: 'tool_use', id: event.toolCallId, name: event.name, input: event.input });
+            break;
+          case 'tool_result':
+            await flushThinking();
+            await flushText();
+            await flushToolCalls();
+            toolResultBuf.push({
+              type: 'tool_result',
+              tool_use_id: event.toolCallId,
+              content: event.rawOutput ?? event.content,
+              // Preserve absence (undefined, not false) for ToolFormatter parity.
+              is_error: event.isError,
+            });
+            break;
+          case 'usage':
+            await flushAll();
+            lastUsage = this.applyUsageEvent(event.usage, lastUsage);
+            break;
+          case 'status':
+            await flushAll();
+            await this.handleStatusEvent(event.status, context);
+            break;
+          case 'compact_boundary':
+            await flushAll();
+            // onCompactBoundary only — the mapper emits a separate
+            // `status: 'compact_done'` event right after this, which carries the
+            // status update (avoids a double onStatusUpdate('compact_done')).
+            this.callbacks.onCompactBoundary?.(
+              (event.metadata.raw as Record<string, unknown> | undefined) ?? event.metadata,
+            );
+            break;
+          case 'result': {
+            await flushAll();
+            // §C-7: `result` is the turn-terminal signal — final output, usage
+            // and cost all live on it. Finalize NOW instead of looping back to
+            // `.next()`: the underlying transport does not reliably emit a
+            // terminal `done` on long turns (prod hang 2026-05-29), and nothing
+            // is consumed after `result`. Best-effort bounded close, then break
+            // to post-loop finalization.
+            lastUsage = await this.handleResultEvent(event, context, currentMessages, lastUsage);
+            await this.tryReturnIterator(iterator, 'result');
+            break;
+          }
+          default:
+            // session_start (handled by ClaudeHandler), plan_update, mode_update
+            // have no SDK-mode rendering today.
+            break;
         }
+        if (event.type === 'result') break;
       }
+
+      // The stream ended without a terminal `result` (e.g. transport closed) —
+      // flush any text/tool groups still buffered so nothing is dropped.
+      await flushAll();
 
       // Merge per-turn usage from the last assistant message into the
       // aggregate UsageData so consumers can distinguish billing totals
@@ -631,9 +731,11 @@ export class StreamProcessor {
    * iteration.
    */
   private async raceNextStep(
-    iterator: AsyncIterator<SDKMessage>,
+    iterator: AsyncIterator<AgentStreamEvent>,
     abortSignal: AbortSignal,
-  ): Promise<{ kind: 'value'; value: SDKMessage } | { kind: 'done' } | { kind: 'aborted' } | { kind: 'idleTimeout' }> {
+  ): Promise<
+    { kind: 'value'; value: AgentStreamEvent } | { kind: 'done' } | { kind: 'aborted' } | { kind: 'idleTimeout' }
+  > {
     if (abortSignal.aborted) {
       return { kind: 'aborted' };
     }
@@ -642,7 +744,7 @@ export class StreamProcessor {
     let abortListener: (() => void) | undefined;
 
     try {
-      const nextPromise: Promise<{ kind: 'value'; value: SDKMessage } | { kind: 'done' } | { kind: 'aborted' }> =
+      const nextPromise: Promise<{ kind: 'value'; value: AgentStreamEvent } | { kind: 'done' } | { kind: 'aborted' }> =
         iterator
           .next()
           .then((r) => (r.done ? ({ kind: 'done' } as const) : { kind: 'value' as const, value: r.value }))
@@ -661,7 +763,9 @@ export class StreamProcessor {
           });
 
       const racers: Array<
-        Promise<{ kind: 'value'; value: SDKMessage } | { kind: 'done' } | { kind: 'aborted' } | { kind: 'idleTimeout' }>
+        Promise<
+          { kind: 'value'; value: AgentStreamEvent } | { kind: 'done' } | { kind: 'aborted' } | { kind: 'idleTimeout' }
+        >
       > = [nextPromise];
 
       if (this.idleTimeoutMs > 0) {
@@ -706,7 +810,7 @@ export class StreamProcessor {
    * generator frames) held by the SDK transport when we abandon the
    * stream early (abort or idle timeout). `reason` is debug-only.
    */
-  private async tryReturnIterator(iterator: AsyncIterator<SDKMessage>, reason: string): Promise<void> {
+  private async tryReturnIterator(iterator: AsyncIterator<AgentStreamEvent>, reason: string): Promise<void> {
     try {
       const ret = iterator.return?.();
       if (!ret) return;
@@ -740,44 +844,6 @@ export class StreamProcessor {
   /**
    * Handle assistant message (text or tool use)
    */
-  private async handleAssistantMessage(
-    message: SDKMessage,
-    context: StreamContext,
-    currentMessages: string[],
-  ): Promise<void> {
-    if (message.type !== 'assistant') return;
-
-    // Capture per-turn usage from BetaMessage.usage (NOT cumulative).
-    // Each assistant message carries usage for that single API call.
-    const msgUsage = (message.message as any).usage;
-    if (msgUsage) {
-      this._lastAssistantTurnUsage = {
-        inputTokens: msgUsage.input_tokens || 0,
-        outputTokens: msgUsage.output_tokens || 0,
-        cacheReadTokens: msgUsage.cache_read_input_tokens || 0,
-        cacheCreateTokens: msgUsage.cache_creation_input_tokens || 0,
-      };
-    }
-
-    // Track model name for direct-usage fallback pricing in extractUsageData.
-    const msgModel = (message.message as any).model;
-    if (typeof msgModel === 'string' && msgModel.length > 0) {
-      this._lastAssistantModelName = msgModel;
-    }
-
-    const content = message.message.content;
-    const hasToolUse = content?.some((part: any) => part.type === 'tool_use');
-
-    // Extract and output thinking blocks (compact+)
-    await this.handleThinkingContent(content, context);
-
-    if (hasToolUse) {
-      await this.handleToolUseMessage(content, context);
-    } else {
-      await this.handleTextMessage(content, context, currentMessages);
-    }
-  }
-
   /**
    * Extract and output thinking/reasoning content from assistant message
    */
@@ -1030,8 +1096,8 @@ export class StreamProcessor {
 
     // Split questions into chunks if needed
     const chunks: any[][] = [];
-    for (let i = 0; i < questionCount; i += StreamProcessor.MAX_QUESTIONS_PER_FORM) {
-      chunks.push(questions.slice(i, i + StreamProcessor.MAX_QUESTIONS_PER_FORM));
+    for (let i = 0; i < questionCount; i += AgentStreamProcessor.MAX_QUESTIONS_PER_FORM) {
+      chunks.push(questions.slice(i, i + AgentStreamProcessor.MAX_QUESTIONS_PER_FORM));
     }
 
     if (chunks.length > 1) {
@@ -1239,16 +1305,14 @@ export class StreamProcessor {
   /**
    * Handle user message (typically tool results)
    */
-  private async handleUserMessage(message: any, context: StreamContext): Promise<void> {
-    const content = message.message?.content || message.content;
-
-    this.logger.debug('Processing user message for tool results', {
-      hasContent: !!content,
-      contentType: typeof content,
-      isArray: Array.isArray(content),
-    });
-
-    if (!content) return;
+  /**
+   * Emit tool results to the consumer (epic #1023 P4). Reconstructed from
+   * batched `tool_result` events into the SDK tool_result content shape that
+   * `ToolFormatter.extractToolResults` already understands, then correlated and
+   * forwarded via `onToolResult` — identical to the prior `handleUserMessage`.
+   */
+  private async handleToolResultsContent(content: any[], context: StreamContext): Promise<void> {
+    if (!content || content.length === 0) return;
 
     const toolResults = ToolFormatter.extractToolResults(content);
 
@@ -1261,261 +1325,135 @@ export class StreamProcessor {
   }
 
   /**
-   * Handle system messages from SDK (compact_boundary, status, init, etc.)
-   * Issue #122: Previously all system messages were silently dropped.
+   * Handle a neutral `status` event. `compacting` surfaces the compacting
+   * status; `compact_done` is emitted by the mapper right after a
+   * `compact_boundary` (so it carries the status update, keeping the boundary
+   * handler to `onCompactBoundary` only — no double status).
    */
-  private async handleSystemMessage(message: any, context: StreamContext): Promise<void> {
-    const subtype = message.subtype as string | undefined;
-
-    if (subtype === 'compact_boundary') {
-      const metadata = message.compact_metadata;
-      this.logger.info('SDK auto-compact completed', {
-        trigger: metadata?.trigger,
-        preTokens: metadata?.pre_tokens,
-        hasPreservedSegment: !!metadata?.preserved_segment,
-      });
-      // #196: notify executor so compaction context can be injected on next prompt
-      this.callbacks.onCompactBoundary?.(metadata);
+  private async handleStatusEvent(status: string, _context: StreamContext): Promise<void> {
+    if (status === 'compacting') {
+      this.logger.info('Agent context compacting in progress');
+      await this.callbacks.onStatusUpdate?.('compacting');
+    } else if (status === 'compact_done') {
       await this.callbacks.onStatusUpdate?.('compact_done');
-    } else if (subtype === 'status') {
-      const status = message.status as string | null;
-      if (status === 'compacting') {
-        this.logger.info('SDK context compacting in progress');
-        await this.callbacks.onStatusUpdate?.('compacting');
-      } else {
-        this.logger.debug('SDK status update', { status });
-      }
-    } else if (subtype === 'init') {
-      // Init is already handled in claude-handler.ts — log only
-      this.logger.debug('SDK session init (handled by ClaudeHandler)', {
-        sessionId: message.session_id,
-        model: message.model,
-      });
     } else {
-      this.logger.debug('Unhandled SDK system message', { subtype });
+      this.logger.debug('Agent status update', { status });
     }
   }
 
   /**
-   * Handle result message (completion)
-   * @returns Usage data extracted from the message
+   * Handle the turn-terminal `result` event (epic #1023 P4). Sets
+   * `endTurnInfo` from the stop reason, records any SDK result error, and
+   * renders the final text (deduped against text already emitted via deltas).
+   * `cumulativeUsage` is the usage already captured from the preceding `usage`
+   * event; it is threaded through to the footer and returned for the post-loop
+   * `lastTurn*` merge.
    */
-  private async handleResultMessage(
-    message: any,
+  private async handleResultEvent(
+    event: Extract<AgentStreamEvent, { type: 'result' }>,
     context: StreamContext,
     currentMessages: string[],
+    cumulativeUsage: UsageData | undefined,
   ): Promise<UsageData | undefined> {
-    this.logger.info('Received result from Claude SDK', {
-      subtype: message.subtype,
-      hasResult: message.subtype === 'success' && !!message.result,
-      totalCost: message.total_cost_usd,
-      duration: message.duration_ms,
+    this.logger.info('Received result from agent stream', {
+      stopReason: event.stopReason,
+      hasResult: typeof event.finalText === 'string',
+      isError: !!event.error,
+      duration: event.durationMs,
     });
 
-    const usage = this.extractUsageData(message);
-
-    // Parse stop_reason → EndTurnInfo (Issue #42 S3)
-    const rawStopReason = message.stop_reason as string | null;
+    // Parse stopReason → EndTurnInfo (Issue #42 S3). Clamp to the four reasons
+    // the surface understands; anything else (cancelled/error/…) → end_turn.
     const validReasons = ['end_turn', 'max_tokens', 'tool_use', 'stop_sequence'] as const;
-    const reason =
-      rawStopReason && validReasons.includes(rawStopReason as any)
-        ? (rawStopReason as (typeof validReasons)[number])
-        : 'end_turn';
+    const reason = (validReasons as readonly string[]).includes(event.stopReason)
+      ? (event.stopReason as (typeof validReasons)[number])
+      : 'end_turn';
     this._endTurnInfo = {
       reason,
       timestamp: Date.now(),
       ...(reason === 'tool_use' && this._lastToolName ? { lastToolUse: this._lastToolName } : {}),
     };
 
-    if (message.subtype === 'success' && message.result) {
-      const finalResult = message.result;
+    // Usage normally arrives as a `usage` event just before `result` (→
+    // cumulativeUsage). Fall back to the cumulative usage the mapper also
+    // attaches to `result.usage` if no preceding usage event set it.
+    const usage = cumulativeUsage ?? (event.usage ? this.toUsageData(event.usage) : undefined);
+
+    if (event.error) {
+      this.logger.error('Agent result error', {
+        subtype: event.error.subtype,
+        numTurns: event.error.numTurns,
+        errors: event.error.errors,
+      });
+      this._sdkResultError = {
+        subtype: event.error.subtype || 'error_during_execution',
+        errors: event.error.errors ?? [],
+        numTurns: event.error.numTurns,
+      };
+    } else if (typeof event.finalText === 'string') {
+      const finalResult = event.finalText;
       if (finalResult && !currentMessages.includes(finalResult)) {
         currentMessages.push(finalResult);
-        await this.handleFinalResult(finalResult, context, usage, message.duration_ms);
+        await this.handleFinalResult(finalResult, context, usage, event.durationMs);
       }
-    } else if (message.is_error || (typeof message.subtype === 'string' && message.subtype.startsWith('error_'))) {
-      // Handle SDKResultError: error_during_execution, error_max_turns, error_max_budget_usd, etc.
-      const errors: string[] = message.errors || [];
-      this.logger.error('SDK result error', {
-        subtype: message.subtype,
-        isError: message.is_error,
-        numTurns: message.num_turns,
-        errors,
-        duration: message.duration_ms,
-        totalCost: message.total_cost_usd,
-      });
-      if (errors.length > 0) {
-        this.logger.error('SDK result error details', { errors: errors.join(' | ') });
-      }
-      // Store for StreamResult so stream-executor can surface to user
-      this._sdkResultError = {
-        subtype: message.subtype || 'error_during_execution',
-        errors,
-        numTurns: message.num_turns,
-      };
     }
 
     return usage;
   }
 
   /**
-   * Extract usage data from result message
-   * Supports both modelUsage (new SDK) and direct usage field (older API)
+   * Apply a neutral `usage` event. The mapper emits two kinds: a *per-turn*
+   * usage (only `lastTurn*` fields) captured for the post-loop merge, and a
+   * *cumulative* usage (token/cost fields) that becomes the turn's `UsageData`.
    */
-  private extractUsageData(message: any): UsageData | undefined {
-    // Try modelUsage first (SDK uses camelCase with model names as keys)
-    const modelUsageMap = message.modelUsage;
-    if (modelUsageMap && typeof modelUsageMap === 'object') {
-      const usage = this.aggregateModelUsage(modelUsageMap);
-      this.logger.debug('Extracted usage data from modelUsage', {
-        ...usage,
-        models: Object.keys(modelUsageMap),
-      });
-      return usage;
+  private applyUsageEvent(u: AgentUsage, current: UsageData | undefined): UsageData | undefined {
+    const hasCumulative =
+      u.inputTokens !== undefined ||
+      u.outputTokens !== undefined ||
+      u.totalCostUsd !== undefined ||
+      u.cacheReadInputTokens !== undefined ||
+      u.cacheCreationInputTokens !== undefined ||
+      u.contextWindow !== undefined ||
+      u.modelName !== undefined;
+
+    if (hasCumulative) {
+      return this.toUsageData(u);
     }
 
-    // Fallback: try direct usage field (older API format)
-    const directUsage = message.usage;
-    if (directUsage) {
-      const directInput = directUsage.input_tokens || 0;
-      const directOutput = directUsage.output_tokens || 0;
-      const directCacheRead = directUsage.cache_read_input_tokens || 0;
-      const directCacheCreate = directUsage.cache_creation_input_tokens || 0;
-      const directSdkCost = message.total_cost_usd || 0;
-      // Extract model name from the message so calculateTokenCost prices the
-      // correct tier. Passing `undefined` here defaults to Sonnet-tier pricing
-      // in model-registry's FALLBACK_SPEC — which silently undercharges Opus
-      // and mis-charges all other non-Sonnet variants.
-      const directModel = (message.model as string | undefined) ?? this._lastAssistantModelName;
-      const useSdk = directSdkCost > 0;
-      const usage: UsageData = {
-        inputTokens: directInput,
-        outputTokens: directOutput,
-        cacheReadInputTokens: directCacheRead,
-        cacheCreationInputTokens: directCacheCreate,
-        totalCostUsd: useSdk
-          ? directSdkCost
-          : streamProcessorProviders.calculateTokenCost(
-              directModel,
-              directInput,
-              directOutput,
-              directCacheRead,
-              directCacheCreate,
-            ),
-        costSource: useSdk ? 'sdk' : 'calculated',
-        modelName: directModel,
+    if (
+      u.lastTurnInputTokens !== undefined ||
+      u.lastTurnOutputTokens !== undefined ||
+      u.lastTurnCacheReadTokens !== undefined ||
+      u.lastTurnCacheCreateTokens !== undefined
+    ) {
+      this._lastAssistantTurnUsage = {
+        inputTokens: u.lastTurnInputTokens ?? 0,
+        outputTokens: u.lastTurnOutputTokens ?? 0,
+        cacheReadTokens: u.lastTurnCacheReadTokens ?? 0,
+        cacheCreateTokens: u.lastTurnCacheCreateTokens ?? 0,
       };
-      this.logger.debug('Extracted usage data from direct usage field', usage);
-      return usage;
     }
 
-    this.logger.warn('No usage data found in result message', {
-      messageKeys: Object.keys(message),
-    });
-    return undefined;
+    return current;
   }
 
-  /**
-   * Aggregate usage across all models in modelUsage map.
-   *
-   * NOTE: The SDK's modelUsage is a **billing cumulative** that sums ALL
-   * API round-trips inside an agent loop. For context-window display we
-   * ideally want the LAST assistant turn's per-message usage. However the
-   * current SDK event model only exposes the cumulative on the result
-   * message. The per-turn values would require intercepting individual
-   * SDKAssistantMessage events (tracked as future improvement).
-   *
-   * What we CAN extract correctly right now:
-   * - contextWindow: from ModelUsage.contextWindow (accurate, per-model)
-   * - modelName: the primary model key
-   * - totalCost: sum of costUSD across models
-   *
-   * For input/output tokens we still aggregate (billing total). The
-   * consumer (updateSessionUsage) is aware of this limitation.
-   */
-  private aggregateModelUsage(modelUsageMap: Record<string, any>): UsageData {
-    let totalInput = 0;
-    let totalOutput = 0;
-    let totalCacheRead = 0;
-    let totalCacheCreation = 0;
-    let totalCost = 0;
-    let contextWindow: number | undefined;
-    let modelName: string | undefined;
-    // Track whether any model's cost came from our local calculation.
-    // Needed so downstream consumers (event emitter) can label the source
-    // correctly — a computed non-zero cost cannot be distinguished from an
-    // SDK-reported one by value alone.
-    let anyCalculated = false;
-    let sawAnyModel = false;
-
-    // Preserve per-model breakdown for token_usage event
-    const modelBreakdown: Record<
-      string,
-      {
-        inputTokens: number;
-        outputTokens: number;
-        cacheReadInputTokens: number;
-        cacheCreationInputTokens: number;
-        costUsd: number;
-      }
-    > = {};
-
-    for (const [model, usage] of Object.entries(modelUsageMap)) {
-      if (usage) {
-        sawAnyModel = true;
-        const input = usage.inputTokens || 0;
-        const output = usage.outputTokens || 0;
-        const cacheRead = usage.cacheReadInputTokens || 0;
-        const cacheCreate = usage.cacheCreationInputTokens || 0;
-        // SDK costUSD > 0 → trust it; else → calculate from token counts
-        const sdkCost = usage.costUSD || 0;
-        let cost: number;
-        if (sdkCost > 0) {
-          cost = sdkCost;
-        } else {
-          cost = streamProcessorProviders.calculateTokenCost(model, input, output, cacheRead, cacheCreate);
-          anyCalculated = true;
-        }
-
-        totalInput += input;
-        totalOutput += output;
-        totalCacheRead += cacheRead;
-        totalCacheCreation += cacheCreate;
-        totalCost += cost;
-
-        modelBreakdown[model] = {
-          inputTokens: input,
-          outputTokens: output,
-          cacheReadInputTokens: cacheRead,
-          cacheCreationInputTokens: cacheCreate,
-          costUsd: cost,
-        };
-
-        // Extract contextWindow from SDK ModelUsage (first model with it wins,
-        // typically there's only one model in a non-router setup)
-        if (usage.contextWindow && typeof usage.contextWindow === 'number') {
-          contextWindow = usage.contextWindow;
-          modelName = model;
-        } else if (!modelName) {
-          // Still capture model name even without contextWindow
-          modelName = model;
-        }
-      }
-    }
-
+  /** Map a neutral `AgentUsage` onto the internal `UsageData` shape. */
+  private toUsageData(u: AgentUsage): UsageData {
     return {
-      inputTokens: totalInput,
-      outputTokens: totalOutput,
-      cacheReadInputTokens: totalCacheRead,
-      cacheCreationInputTokens: totalCacheCreation,
-      totalCostUsd: totalCost,
-      // If we saw at least one model and none required calculation → 'sdk'.
-      // Any fallback path or empty map → 'calculated' (conservative: we can't
-      // claim the SDK vouched for a cost we had to compute or default to 0).
-      costSource: sawAnyModel && !anyCalculated ? 'sdk' : 'calculated',
-      contextWindow,
-      modelName,
-      modelBreakdown: Object.keys(modelBreakdown).length > 0 ? modelBreakdown : undefined,
+      inputTokens: u.inputTokens ?? 0,
+      outputTokens: u.outputTokens ?? 0,
+      cacheReadInputTokens: u.cacheReadInputTokens ?? 0,
+      cacheCreationInputTokens: u.cacheCreationInputTokens ?? 0,
+      totalCostUsd: u.totalCostUsd ?? 0,
+      // The neutral seam carries only 'sdk' | 'calculated' in SDK mode; map the
+      // ACP-only 'agent' source onto 'calculated' for internal consumers.
+      costSource: u.costSource === 'agent' ? 'calculated' : u.costSource,
+      contextWindow: u.contextWindow,
+      modelName: u.modelName,
+      lastTurnInputTokens: u.lastTurnInputTokens,
+      lastTurnOutputTokens: u.lastTurnOutputTokens,
+      lastTurnCacheReadTokens: u.lastTurnCacheReadTokens,
+      lastTurnCacheCreateTokens: u.lastTurnCacheCreateTokens,
     };
   }
 

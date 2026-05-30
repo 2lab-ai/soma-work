@@ -39,9 +39,9 @@ export { StatusReporter } from './status-reporter';
 export {
   PendingForm,
   SayFunction,
+  AgentStreamProcessor,
   StreamCallbacks,
   StreamContext,
-  StreamProcessor,
   StreamResult,
   ToolResultEvent as StreamToolResultEvent,
   ToolUseEvent as StreamToolUseEvent,
