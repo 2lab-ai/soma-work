@@ -14,7 +14,8 @@
  *     intervening `connected`.
  *   - `stale-inbound`: no `slack_event` for `stalenessMs` while not
  *     Connected. The not-Connected gate is critical — quiet channels on
- *     a healthy socket are not a symptom.
+ *     a healthy socket are not a symptom. Both `reconnecting` and
+ *     `disconnected` count as not-Connected; only `connected` clears it.
  *   - `unrecoverable-start`: the `unable_to_socket_mode_start` event
  *     (UnrecoverableSocketModeStartError path).
  *
@@ -85,12 +86,43 @@ export function startSlackSocketWatchdog(options: SlackSocketWatchdogOptions): S
     consecutiveReconnects = 0;
   };
 
-  const onReconnecting = (): void => {
+  // `connected` is the only signal that flips us back to healthy. EVERY
+  // not-connected transition (`reconnecting` and `disconnected`) routes
+  // through here so the stale-inbound gate arms no matter which event the
+  // SocketModeClient chooses. `disconnected`-without-`reconnecting` is the
+  // one path to a permanently-blind watchdog otherwise: socketConnected would
+  // stay `true`, the gate would never open, and a genuinely dead socket would
+  // never trip.
+  const markNotConnected = (): void => {
+    // Reset the staleness clock on the connected→disconnected *edge* only.
+    // `lastEventAt` tracks inbound recency, which on a quiet instance can be
+    // hours old. Without this reset, the first transient disconnect after a
+    // long silent-but-healthy stretch would make the very next staleness tick
+    // trip immediately — killing a socket Bolt would have recovered in
+    // seconds. Measuring from the disconnect edge means stale-inbound only
+    // trips after the socket has been *continuously* unhealthy for
+    // `stalenessMs`. Edge-only (guarded by `socketConnected`) so a flapping
+    // socket doesn't keep pushing the deadline out; `reconnect-storm` owns
+    // that case. A `disconnected`→`reconnecting` pair therefore resets once,
+    // not twice.
+    if (socketConnected) {
+      lastEventAt = now();
+    }
     socketConnected = false;
+  };
+
+  const onReconnecting = (): void => {
+    markNotConnected();
     consecutiveReconnects += 1;
     if (consecutiveReconnects >= reconnectStormThreshold) {
       trip('reconnect-storm', { consecutiveReconnects });
     }
+  };
+
+  // Terminal/clean disconnect. Arms staleness but does NOT count toward the
+  // reconnect storm (that trigger is reconnect-attempt-specific).
+  const onDisconnected = (): void => {
+    markNotConnected();
   };
 
   const onSlackEvent = (): void => {
@@ -103,6 +135,7 @@ export function startSlackSocketWatchdog(options: SlackSocketWatchdogOptions): S
 
   client.on('connected', onConnected);
   client.on('reconnecting', onReconnecting);
+  client.on('disconnected', onDisconnected);
   client.on('slack_event', onSlackEvent);
   client.on('unable_to_socket_mode_start', onUnrecoverableStart);
 
@@ -119,6 +152,7 @@ export function startSlackSocketWatchdog(options: SlackSocketWatchdogOptions): S
       clearInterval(timer);
       client.off('connected', onConnected);
       client.off('reconnecting', onReconnecting);
+      client.off('disconnected', onDisconnected);
       client.off('slack_event', onSlackEvent);
       client.off('unable_to_socket_mode_start', onUnrecoverableStart);
     },

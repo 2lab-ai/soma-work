@@ -140,6 +140,108 @@ describe('startSlackSocketWatchdog', () => {
     expect(reasons).toEqual([]);
   });
 
+  it('does not trip on a transient reconnect after a long quiet-but-healthy stretch', () => {
+    // Regression for the edge-reset: `lastEventAt` is hours stale on a quiet
+    // instance. A single transient `reconnecting` must NOT make the next tick
+    // trip — the staleness clock resets on the connected→disconnected edge, so
+    // a socket Bolt recovers within `stalenessMs` is left alone.
+    const client = makeClient();
+    const reasons: UnhealthyReason[] = [];
+
+    startSlackSocketWatchdog({
+      client,
+      reconnectStormThreshold: 99,
+      stalenessMs: 5 * 60_000,
+      checkIntervalMs: 30_000,
+      initiallyConnected: true,
+      onUnhealthy: (r) => reasons.push(r),
+      now: () => now,
+    });
+
+    advance(2 * 60 * 60_000); // 2h of silence on a healthy socket
+    client.emit('reconnecting'); // transient blip — clock resets HERE, not 2h ago
+    advance(60_000); // recovers within a minute
+    vi.advanceTimersByTime(30_000);
+    client.emit('connected');
+
+    advance(60 * 60_000);
+    vi.advanceTimersByTime(30_000);
+    expect(reasons).toEqual([]);
+  });
+
+  it('still trips stale-inbound when a quiet socket stays disconnected past stalenessMs', () => {
+    // The edge-reset must not blind the watchdog: once disconnected, if the
+    // socket never recovers and no events arrive, stale-inbound still fires —
+    // measured from the disconnect edge.
+    const client = makeClient();
+    const reasons: UnhealthyReason[] = [];
+
+    startSlackSocketWatchdog({
+      client,
+      reconnectStormThreshold: 99,
+      stalenessMs: 5 * 60_000,
+      checkIntervalMs: 30_000,
+      initiallyConnected: true,
+      onUnhealthy: (r) => reasons.push(r),
+      now: () => now,
+    });
+
+    advance(2 * 60 * 60_000); // 2h quiet + healthy
+    client.emit('reconnecting'); // disconnect edge; clock starts here
+    advance(6 * 60_000); // stuck for 6 min, no recovery, no events
+    vi.advanceTimersByTime(30_000);
+    expect(reasons).toEqual(['stale-inbound']);
+  });
+
+  it('trips stale-inbound on a terminal `disconnected` with no `reconnecting`', () => {
+    // The blind-spot guard: if the client emits a clean `disconnected` and
+    // never reconnects (no `reconnecting` ever fires), the watchdog must still
+    // arm staleness and trip. Otherwise socketConnected stays true forever and
+    // a genuinely dead socket is never caught.
+    const client = makeClient();
+    const reasons: UnhealthyReason[] = [];
+
+    startSlackSocketWatchdog({
+      client,
+      reconnectStormThreshold: 99,
+      stalenessMs: 5 * 60_000,
+      checkIntervalMs: 30_000,
+      initiallyConnected: true,
+      onUnhealthy: (r) => reasons.push(r),
+      now: () => now,
+    });
+
+    client.emit('disconnected'); // terminal, no reconnecting follows
+    advance(6 * 60_000);
+    vi.advanceTimersByTime(30_000);
+    expect(reasons).toEqual(['stale-inbound']);
+  });
+
+  it('a `disconnected`→`reconnecting` pair resets the staleness clock once, not twice', () => {
+    // Edge-reset must fire on the first not-connected transition only. If the
+    // second event (reconnecting after disconnected) also reset the clock, a
+    // stuck socket could defer the trip indefinitely.
+    const client = makeClient();
+    const reasons: UnhealthyReason[] = [];
+
+    startSlackSocketWatchdog({
+      client,
+      reconnectStormThreshold: 99,
+      stalenessMs: 5 * 60_000,
+      checkIntervalMs: 30_000,
+      initiallyConnected: true,
+      onUnhealthy: (r) => reasons.push(r),
+      now: () => now,
+    });
+
+    client.emit('disconnected'); // edge: clock starts here (t0)
+    advance(3 * 60_000); // 3 min in
+    client.emit('reconnecting'); // must NOT reset the clock (already not-connected)
+    advance(3 * 60_000); // total 6 min since the disconnect edge
+    vi.advanceTimersByTime(30_000);
+    expect(reasons).toEqual(['stale-inbound']);
+  });
+
   it('trips unrecoverable-start immediately on unable_to_socket_mode_start', () => {
     const client = makeClient();
     const reasons: UnhealthyReason[] = [];
