@@ -18,12 +18,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import {
-  AgentStreamProcessor,
-  readIdleTimeoutMs,
-  type StreamCallbacks,
-  type StreamContext,
-} from '../stream-processor';
+import { AgentStreamProcessor, readIdleTimeoutMs, type StreamCallbacks, type StreamContext } from '../stream-processor';
 
 const baseContext = (): StreamContext => ({
   channel: 'C1',

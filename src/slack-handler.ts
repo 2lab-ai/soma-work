@@ -17,6 +17,7 @@ import { WebhookChannel } from './notification-channels/webhook-channel';
 import {
   type ActionHandlerContext,
   ActionHandlers,
+  AgentStreamProcessor,
   AssistantStatusManager,
   type CommandDependencies,
   CommandRouter,
@@ -30,7 +31,6 @@ import {
   ReactionManager,
   RequestCoordinator,
   SessionUiManager,
-  AgentStreamProcessor,
   SlackApiHelper,
   StatusReporter,
   ThreadPanel,

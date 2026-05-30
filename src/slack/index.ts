@@ -37,9 +37,9 @@ export { SlackApiHelper } from './slack-api-helper';
 export { StatusReporter } from './status-reporter';
 // Phase 4: Stream and tool processing
 export {
+  AgentStreamProcessor,
   PendingForm,
   SayFunction,
-  AgentStreamProcessor,
   StreamCallbacks,
   StreamContext,
   StreamResult,
