@@ -12,6 +12,7 @@ import {
 } from '@anthropic-ai/claude-agent-sdk';
 import * as fs from 'fs';
 import * as path from 'path';
+import { type AgentStreamEvent, runAgentStream } from './agent-runtime';
 import { buildStreamOptions } from './agent-runtime/claude-code/build-stream-options';
 import { buildQueryEnv } from './auth/query-env-builder';
 import { Logger } from './logger';
@@ -24,6 +25,7 @@ import {
   resolveGatedTool,
 } from './mcp-tool-permission-config';
 import {
+  calculateTokenCost,
   hasOneMSuffix,
   isOneMContextUnavailableSignal,
   ONE_M_CONTEXT_UNAVAILABLE_CODE,
@@ -802,6 +804,27 @@ export class ClaudeHandler {
       if (heartbeatTimer) clearInterval(heartbeatTimer);
       if (lease) await lease.release();
     }
+  }
+
+  /**
+   * Streaming agent entry consumed by the Slack pipeline (epic #1023 P4).
+   *
+   * Wraps {@link streamQuery}'s SDK message stream through the agent-runtime
+   * mapper (`runAgentStream`) so `packages/slack` consumes neutral
+   * `AgentStreamEvent`s and never imports the Claude SDK (§3.9 contract 1). The
+   * lease / auth / `query()` lifecycle stays inside `streamQuery`; this method
+   * only relocates the SDK→event mapping behind the seam.
+   */
+  streamAgentEvents(
+    prompt: string,
+    session?: ConversationSession,
+    abortController?: AbortController,
+    workingDirectory?: string,
+    slackContext?: SlackContext,
+  ): AsyncIterable<AgentStreamEvent> {
+    return runAgentStream(this.streamQuery(prompt, session, abortController, workingDirectory, slackContext), {
+      calculateTokenCost,
+    });
   }
 
   /**

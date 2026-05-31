@@ -87,6 +87,39 @@ typography constraints, palette). The agent obeys this contract when
 generating HTML. If the upstream template's `SKILL.md` is in Chinese or
 mixed CJK, that's fine — the structural intent translates.
 
+### 3.5. Consult the `design` skill for a visual direction
+
+Before writing any HTML, read the **`design`** skill — it is what stops the
+output from looking like a model's reflexive default and makes it read like a
+real design team's work.
+
+```bash
+cat "$CLAUDE_PLUGIN_ROOT/skills/design/SKILL.md"
+```
+
+Operate the `design` skill in its **programmatic mode** (Mode A — *do not ask
+the user anything*; you are on the critical path of one Slack request):
+
+1. **Pick exactly one design direction** using the `design` skill's
+   deterministic style selector. If the user supplied brand context (palette,
+   codebase, reference screenshot), lift that real system instead of the
+   library. Otherwise map this step's chosen template → its default
+   HTML-friendly direction from the selector table (e.g. `data-report` → Fathom,
+   `deck-simple` → Pentagram, `doc-kami-parchment` → Takram).
+2. **Apply the `design` skill's anti-AI-slop hard rules** on top of the
+   template's structural contract. These are the priority order: the template
+   SKILL.md governs *structure/layout*, the chosen direction governs *visual
+   voice*, and the anti-slop rules govern *what never to do* (no rainbow
+   gradients, no left-border accent cards, no decorative emoji, no SVG hero
+   imagery, no invented stats/fonts/colors).
+3. **Record the choice** as a one-line HTML comment at the top of the file,
+   e.g. `<!-- design: 04 Fathom — dense quantitative data, scientific restraint -->`,
+   so the decision is auditable. Do not narrate it in the Slack reply.
+
+This step never blocks and never asks a question — it is a deterministic lookup
+that raises design quality. The classifier in Step 2 and the auto-flow are
+unchanged.
+
 ### 4. Generate HTML
 
 Write a **single self-contained `.html` file** to the current session
@@ -219,6 +252,9 @@ V1 ships 8 templates. To add more from the html-anything catalog (75 total):
 
 ## References
 
+- [`../design/SKILL.md`](../design/SKILL.md) — the `design` skill. Step 3.5
+  consults it for the visual direction + anti-AI-slop discipline before
+  generating HTML.
 - [`templates/index.json`](./templates/index.json) — template catalog with
   per-template viewport overrides.
 - [`templates/skills/<name>/SKILL.md`](./templates/skills/) — vendored

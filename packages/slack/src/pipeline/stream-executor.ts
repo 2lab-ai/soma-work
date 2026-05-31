@@ -17,10 +17,10 @@ import type { RequestAbortReason, RequestCoordinator } from '../request-coordina
 import type { SlackApiHelper } from '../slack-api-helper';
 import type { StatusReporter } from '../status-reporter';
 import {
+  AgentStreamProcessor,
   readIdleTimeoutMs,
   type StreamCallbacks,
   type StreamContext,
-  StreamProcessor,
   type UsageData,
 } from '../stream-processor';
 import type { SummaryService } from '../summary-service';
@@ -1552,10 +1552,20 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
 
       // Create and run stream processor. `idleTimeoutMs` arms the
       // per-`.next()` race documented at the construct site above.
-      const processor = new StreamProcessor(streamCallbacks, { idleTimeoutMs });
+      const processor = new AgentStreamProcessor(streamCallbacks, { idleTimeoutMs });
 
+      // epic #1023 P4: consume the neutral AgentStreamEvent stream produced by
+      // `ClaudeHandler.streamAgentEvents` (which wraps `streamQuery` through the
+      // agent-runtime mapper). `claudeHandler` is injected as `any`, so this
+      // file imports neither the runtime nor the SDK — the §3.9 boundary holds.
       const streamResult = await processor.process(
-        this.deps.claudeHandler.streamQuery(finalPrompt, session, abortController, workingDirectory, slackContext),
+        this.deps.claudeHandler.streamAgentEvents(
+          finalPrompt,
+          session,
+          abortController,
+          workingDirectory,
+          slackContext,
+        ),
         streamContext,
         abortController.signal,
       );
