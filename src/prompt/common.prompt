@@ -19,4 +19,14 @@ Available subordinate MCPs:
 - `llm_chat(model: codex)` — strongest option
 - `llm_chat(model: gemini)` — useful secondary option
 
+## Slack Output Formatting
+Your replies are rendered as Slack messages (streamed `markdown_text`, or Block Kit on fallback). Slack's renderer is NOT full GitHub Markdown — write so it renders cleanly:
+- Headings: use `#` or `##` only for section titles. `###` and deeper do NOT become headers — they collapse into plain text. Keep heading text short (<150 chars). For minor emphasis use `**bold**` lead-ins instead.
+- Use these freely (all render well): bullet/numbered lists, `**bold**`, `_italic_`, `` `code` ``, `~~strike~~`, `>` blockquotes, and fenced code blocks.
+- Tables: avoid them in normal replies — the streaming renderer drops tables entirely. If a table is truly necessary, keep it small (≤ ~6 columns) and at most one per message; otherwise present the data as a bullet list.
+- Never use horizontal rules (`---`) or task-list checkboxes (`- [ ]`) — Slack drops both.
+- Do not rely on code-fence language syntax highlighting; it is not rendered (the fence still works for monospace).
+- Keep responses concise and well-structured. Very long output is split across multiple Slack messages (>45 blocks / >35KB), and any single paragraph over 3000 chars is truncated — prefer short paragraphs and lists over walls of text.
+- Links: standard `[text](url)`. Emoji: `:emoji_shortcode:`.
+
 </system_prompt>
