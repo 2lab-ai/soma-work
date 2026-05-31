@@ -42,6 +42,19 @@ describe('PromptBuilder', () => {
       expect(prompt!.length).toBeGreaterThan(0);
     });
 
+    it('should include Slack output-formatting guidance (issue #1043)', () => {
+      // The default prompt includes common.prompt, which must teach the model
+      // to shape responses for Slack's renderer (no GFM tables / H3+ / rules).
+      const prompt = builder.loadWorkflowPrompt('default');
+
+      expect(prompt).toBeDefined();
+      expect(prompt).toContain('Slack Output Formatting');
+      // Core constraints from docs/misc/reference/slack-block-kit.md must be stated.
+      expect(prompt).toContain('Tables');
+      expect(prompt).toContain('horizontal rules');
+      expect(prompt!.toLowerCase()).toContain('heading');
+    });
+
     it('should load onboarding workflow prompt', () => {
       const prompt = builder.loadWorkflowPrompt('onboarding');
 
@@ -537,6 +550,21 @@ describe('PromptBuilder', () => {
 
       // Content should be the same but may be different object references
       expect(prompt1).toEqual(prompt2);
+    });
+  });
+
+  describe('common.prompt mirror (issue #1043)', () => {
+    it('keeps src and extensions copies byte-identical', async () => {
+      const { readFileSync } = await import('node:fs');
+      const { join } = await import('node:path');
+
+      const src = readFileSync(join(__dirname, '..', 'prompt', 'common.prompt'), 'utf-8');
+      const mirror = readFileSync(
+        join(__dirname, '..', '..', 'packages', 'extensions', 'assets', 'prompt', 'common.prompt'),
+        'utf-8',
+      );
+
+      expect(mirror).toBe(src);
     });
   });
 });
