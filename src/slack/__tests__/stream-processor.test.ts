@@ -3,19 +3,28 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createSdkMessageMapper } from '../../agent-runtime/claude-code/sdk-message-to-event';
+import { calculateTokenCost } from '../../metrics/model-registry';
 import {
+  AgentStreamProcessor,
   extractTaskIdFromResult,
   PendingForm,
   type SayFunction,
   type StreamCallbacks,
   type StreamContext,
-  StreamProcessor,
 } from '../stream-processor';
 
-// Mock SDKMessage generator
+// epic #1023 P4: the processor now consumes the neutral AgentStreamEvent stream.
+// To keep these behavior tests' SDKMessage inputs AND callback assertions
+// unchanged — i.e. prove the mapper+processor pipeline is byte-identical to the
+// old SDK-message StreamProcessor — feed each mock SDKMessage through the real
+// agent-runtime mapper (with the real cost fn) and yield the resulting events.
 function* createMockStream(messages: any[]): Generator<any> {
+  const mapper = createSdkMessageMapper({ calculateTokenCost });
   for (const msg of messages) {
-    yield msg;
+    for (const event of mapper.map(msg)) {
+      yield event;
+    }
   }
 }
 
@@ -47,7 +56,7 @@ describe('StreamProcessor', () => {
         },
       ];
 
-      const processor = new StreamProcessor();
+      const processor = new AgentStreamProcessor();
       const result = await processor.process(createMockStream(messages) as any, mockContext, abortController.signal);
 
       expect(result.success).toBe(true);
@@ -73,7 +82,7 @@ describe('StreamProcessor', () => {
       ];
 
       const callbacks: StreamCallbacks = { onToolUse };
-      const processor = new StreamProcessor(callbacks);
+      const processor = new AgentStreamProcessor(callbacks);
       await processor.process(createMockStream(messages) as any, mockContext, abortController.signal);
 
       expect(onToolUse).toHaveBeenCalledWith(
@@ -103,7 +112,7 @@ describe('StreamProcessor', () => {
         },
       ];
 
-      const processor = new StreamProcessor();
+      const processor = new AgentStreamProcessor();
       await processor.process(createMockStream(messages) as any, mockContext, abortController.signal);
 
       expect(mockSay).toHaveBeenCalledWith(
@@ -138,7 +147,7 @@ describe('StreamProcessor', () => {
       ];
 
       const callbacks: StreamCallbacks = { onTodoUpdate };
-      const processor = new StreamProcessor(callbacks);
+      const processor = new AgentStreamProcessor(callbacks);
       await processor.process(createMockStream(messages) as any, mockContext, abortController.signal);
 
       expect(onTodoUpdate).toHaveBeenCalledWith({ todos: [{ content: 'Test' }] }, mockContext);
@@ -156,7 +165,7 @@ describe('StreamProcessor', () => {
       ];
 
       const callbacks: StreamCallbacks = { onToolResult };
-      const processor = new StreamProcessor(callbacks);
+      const processor = new AgentStreamProcessor(callbacks);
       await processor.process(createMockStream(messages) as any, mockContext, abortController.signal);
 
       expect(onToolResult).toHaveBeenCalledWith(
@@ -176,7 +185,7 @@ describe('StreamProcessor', () => {
         },
       ];
 
-      const processor = new StreamProcessor();
+      const processor = new AgentStreamProcessor();
       await processor.process(createMockStream(messages) as any, mockContext, abortController.signal);
 
       expect(mockSay).toHaveBeenCalledWith(
@@ -204,7 +213,7 @@ describe('StreamProcessor', () => {
         },
       ];
 
-      const processor = new StreamProcessor({ buildFinalResponseFooter });
+      const processor = new AgentStreamProcessor({ buildFinalResponseFooter });
       await processor.process(createMockStream(messages) as any, mockContext, abortController.signal);
 
       expect(buildFinalResponseFooter).toHaveBeenCalledWith(
@@ -234,7 +243,7 @@ describe('StreamProcessor', () => {
       // Abort before processing
       abortController.abort();
 
-      const processor = new StreamProcessor();
+      const processor = new AgentStreamProcessor();
       const result = await processor.process(createMockStream(messages) as any, mockContext, abortController.signal);
 
       expect(result.aborted).toBe(true);
@@ -260,7 +269,7 @@ describe('StreamProcessor', () => {
         },
       ];
 
-      const processor = new StreamProcessor();
+      const processor = new AgentStreamProcessor();
       await processor.process(createMockStream(messages) as any, mockContext, abortController.signal);
 
       // Should send both the text and the choice blocks
@@ -298,7 +307,7 @@ describe('StreamProcessor', () => {
       ];
 
       const callbacks: StreamCallbacks = { onPendingFormCreate, getPendingForm };
-      const processor = new StreamProcessor(callbacks);
+      const processor = new AgentStreamProcessor(callbacks);
       await processor.process(createMockStream(messages) as any, mockContext, abortController.signal);
 
       expect(onPendingFormCreate).toHaveBeenCalledWith(
@@ -330,7 +339,7 @@ describe('StreamProcessor', () => {
         },
       ];
 
-      const processor = new StreamProcessor({ onChannelMessageDetected });
+      const processor = new AgentStreamProcessor({ onChannelMessageDetected });
       await processor.process(createMockStream(messages) as any, mockContext, abortController.signal);
 
       expect(onChannelMessageDetected).toHaveBeenCalledWith('## Release Notes\n- Deployed', mockContext);
@@ -360,7 +369,7 @@ describe('StreamProcessor', () => {
         },
       ];
 
-      const processor = new StreamProcessor({ onChannelMessageDetected });
+      const processor = new AgentStreamProcessor({ onChannelMessageDetected });
       await processor.process(createMockStream(messages) as any, mockContext, abortController.signal);
 
       expect(onChannelMessageDetected).toHaveBeenCalledWith('Root post only', mockContext);
@@ -373,7 +382,7 @@ describe('StreamProcessor', () => {
         { type: 'result', subtype: 'success', result: 'Same message' },
       ];
 
-      const processor = new StreamProcessor();
+      const processor = new AgentStreamProcessor();
       await processor.process(createMockStream(messages) as any, mockContext, abortController.signal);
 
       // Should only be called once for the assistant message
@@ -390,7 +399,7 @@ describe('StreamProcessor', () => {
         throw abortError;
       };
 
-      const processor = new StreamProcessor();
+      const processor = new AgentStreamProcessor();
       const result = await processor.process(failingStream() as any, mockContext, abortController.signal);
 
       expect(result.aborted).toBe(true);
@@ -403,7 +412,7 @@ describe('StreamProcessor', () => {
         throw error;
       };
 
-      const processor = new StreamProcessor();
+      const processor = new AgentStreamProcessor();
       await expect(processor.process(failingStream() as any, mockContext, abortController.signal)).rejects.toThrow(
         'Some other error',
       );
@@ -431,7 +440,7 @@ describe('StreamProcessor', () => {
       ];
 
       const onStatusUpdate = vi.fn().mockResolvedValue(undefined);
-      const processor = new StreamProcessor({ onStatusUpdate });
+      const processor = new AgentStreamProcessor({ onStatusUpdate });
       const result = await processor.process(createMockStream(messages) as any, mockContext, abortController.signal);
 
       expect(result.success).toBe(true);
@@ -449,7 +458,7 @@ describe('StreamProcessor', () => {
       ];
 
       const onStatusUpdate = vi.fn().mockResolvedValue(undefined);
-      const processor = new StreamProcessor({ onStatusUpdate });
+      const processor = new AgentStreamProcessor({ onStatusUpdate });
       const result = await processor.process(createMockStream(messages) as any, mockContext, abortController.signal);
 
       expect(result.success).toBe(true);
@@ -466,7 +475,7 @@ describe('StreamProcessor', () => {
         },
       ];
 
-      const processor = new StreamProcessor();
+      const processor = new AgentStreamProcessor();
       const result = await processor.process(createMockStream(messages) as any, mockContext, abortController.signal);
 
       expect(result.success).toBe(true);
@@ -480,7 +489,7 @@ describe('StreamProcessor', () => {
         },
       ];
 
-      const processor = new StreamProcessor();
+      const processor = new AgentStreamProcessor();
       const result = await processor.process(createMockStream(messages) as any, mockContext, abortController.signal);
 
       expect(result.success).toBe(true);
@@ -502,7 +511,7 @@ describe('StreamProcessor', () => {
         },
       ];
 
-      const processor = new StreamProcessor();
+      const processor = new AgentStreamProcessor();
       const result = await processor.process(createMockStream(messages) as any, mockContext, abortController.signal);
 
       expect(result.success).toBe(true);
@@ -526,7 +535,7 @@ describe('StreamProcessor', () => {
         },
       ];
 
-      const processor = new StreamProcessor();
+      const processor = new AgentStreamProcessor();
       const result = await processor.process(createMockStream(messages) as any, mockContext, abortController.signal);
 
       expect(result.sdkResultError).toBeDefined();
@@ -545,7 +554,7 @@ describe('StreamProcessor', () => {
         },
       ];
 
-      const processor = new StreamProcessor();
+      const processor = new AgentStreamProcessor();
       const result = await processor.process(createMockStream(messages) as any, mockContext, abortController.signal);
 
       expect(result.sdkResultError).toBeUndefined();
@@ -564,7 +573,7 @@ describe('StreamProcessor', () => {
           stop_reason: null,
         },
       ];
-      const processor = new StreamProcessor();
+      const processor = new AgentStreamProcessor();
       const result = await processor.process(createMockStream(messages) as any, mockContext, abortController.signal);
       expect(result.sdkResultError).toBeDefined();
       expect(result.sdkResultError!.subtype).toBe('error_max_turns');
@@ -584,7 +593,7 @@ describe('StreamProcessor', () => {
           stop_reason: null,
         },
       ];
-      const processor = new StreamProcessor();
+      const processor = new AgentStreamProcessor();
       const result = await processor.process(createMockStream(messages) as any, mockContext, abortController.signal);
       expect(result.sdkResultError).toBeDefined();
       expect(result.sdkResultError!.subtype).toBe('error_max_budget_usd');
@@ -601,7 +610,7 @@ describe('StreamProcessor', () => {
           stop_reason: null,
         },
       ];
-      const processor = new StreamProcessor();
+      const processor = new AgentStreamProcessor();
       const result = await processor.process(createMockStream(messages) as any, mockContext, abortController.signal);
       expect(result.sdkResultError).toBeDefined();
       expect(result.sdkResultError!.subtype).toBe('error_during_execution');
@@ -619,7 +628,7 @@ describe('StreamProcessor', () => {
           stop_reason: null,
         },
       ];
-      const processor = new StreamProcessor();
+      const processor = new AgentStreamProcessor();
       const result = await processor.process(createMockStream(messages) as any, mockContext, abortController.signal);
       expect(result.messageCount).toBe(0);
       expect(mockSay).not.toHaveBeenCalled();
@@ -655,7 +664,7 @@ describe('StreamProcessor', () => {
         },
       ];
 
-      const processor = new StreamProcessor();
+      const processor = new AgentStreamProcessor();
       await processor.process(createMockStream(messages) as any, context, abortController.signal);
 
       expect(appendText).toHaveBeenCalledWith('C123:thread_ts:1', 'streamed reply');
@@ -684,7 +693,7 @@ describe('StreamProcessor', () => {
         },
       ];
 
-      const processor = new StreamProcessor();
+      const processor = new AgentStreamProcessor();
       await processor.process(createMockStream(messages) as any, context, abortController.signal);
 
       expect(appendText).toHaveBeenCalledWith('C123:thread_ts:1', 'rescue reply');
@@ -715,7 +724,7 @@ describe('StreamProcessor', () => {
         },
       ];
 
-      const processor = new StreamProcessor();
+      const processor = new AgentStreamProcessor();
       await processor.process(createMockStream(messages) as any, context, abortController.signal);
 
       // Façade short-circuits at the `isTurnSurfaceActive()` guard.
@@ -761,7 +770,7 @@ describe('StreamProcessor', () => {
         },
       ];
 
-      const processor = new StreamProcessor();
+      const processor = new AgentStreamProcessor();
       await processor.process(createMockStream(messages) as any, phase1Context(), abortController.signal);
 
       // Banner + tool-call block both silenced. PHASE=0 equivalent is already
@@ -786,7 +795,7 @@ describe('StreamProcessor', () => {
         },
       ];
       // Default logVerbosity (LOG_DETAIL) → tool-call render mode = compact.
-      const processor = new StreamProcessor();
+      const processor = new AgentStreamProcessor();
       await processor.process(createMockStream(messages) as any, phase1Context(), abortController.signal);
 
       expect(mockSay).not.toHaveBeenCalled();
@@ -805,7 +814,7 @@ describe('StreamProcessor', () => {
         },
       ];
       const context = phase1Context();
-      const processor = new StreamProcessor();
+      const processor = new AgentStreamProcessor();
       await processor.process(createMockStream(messages) as any, context, abortController.signal);
 
       // handleThinkingContent's context.say must be silenced; the text chunk

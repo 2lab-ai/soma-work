@@ -349,6 +349,7 @@ export {
 } from './startup-notifier';
 export { type StatusMessage, StatusReporter, type StatusType } from './status-reporter';
 export {
+  AgentStreamProcessor,
   type AssistantTextHandler,
   extractTaskIdFromResult,
   type FinalResponseFooterParams,
@@ -357,7 +358,6 @@ export {
   type SayFunction as StreamSayFunction,
   type StreamCallbacks,
   type StreamContext,
-  StreamProcessor,
   type StreamProcessorProviders,
   type StreamResult,
   setStreamProcessorProviders,
