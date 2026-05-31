@@ -82,6 +82,21 @@ describe('local:html skill — RED contract', () => {
     expect(md).toMatch(/no lorem|real data|must use.*data/i);
   });
 
+  it('SKILL.md wires in the design skill before generating HTML (Step 3.5)', () => {
+    const md = readFileSync(SKILL_MD, 'utf8');
+    // The design skill is consulted for visual direction + anti-AI-slop before
+    // Step 4. This wiring is the whole point of the design-skill integration —
+    // if it silently disappears, html falls back to model-default slop.
+    expect(md).toMatch(/design.*skill|skills\/design/i);
+    expect(md).toMatch(/programmatic mode|design direction|anti-ai-slop|anti-slop/i);
+    // The design skill must sit before the HTML is generated.
+    const designIdx = md.search(/skills\/design\/SKILL\.md/);
+    const generateIdx = md.search(/###\s*4\.\s*Generate HTML/);
+    expect(designIdx).toBeGreaterThan(-1);
+    expect(generateIdx).toBeGreaterThan(-1);
+    expect(designIdx).toBeLessThan(generateIdx);
+  });
+
   it('renderer/render.mjs exists and uses Playwright Chromium', () => {
     expect(existsSync(RENDERER)).toBe(true);
     const src = readFileSync(RENDERER, 'utf8');
