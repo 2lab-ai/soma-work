@@ -6,8 +6,9 @@
  */
 
 export type { AgentRunOptions, ClaudeCodeExtensionOptions } from './agent-runner';
+export type { StreamRunnerDeps } from './claude-code/stream-runner';
 export { type BuildOneShotOptionsInput, buildOneShotOptions, type LoggerLike } from './one-shot-options';
-export { runOneShotText } from './runner';
+export { runAgentStream, runOneShotText } from './runner';
 export type {
   AgentContent,
   AgentStopReason,
