@@ -3,6 +3,15 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { runAgentStreamFromSdk } from '../../../agent-runtime/claude-code/stream-runner';
+
+// epic #1023 P4: the executor now consumes `claudeHandler.streamAgentEvents`
+// (neutral AgentStreamEvents) instead of `streamQuery` (SDKMessage). These mocks
+// still produce SDKMessage streams; wrap them through the real mapper so the
+// executor receives the same events production does.
+function toAgentEvents(sdkStream: AsyncIterable<any>): AsyncIterable<any> {
+  return runAgentStreamFromSdk(sdkStream, { calculateTokenCost: () => 0 });
+}
 
 vi.mock('../../../user-settings-store', () => ({
   userSettingsStore: {
@@ -3532,6 +3541,7 @@ describe('turnId propagation into ToolEventContext (#664)', () => {
         setActivityState: vi.fn(),
         clearSessionId: vi.fn(),
         streamQuery: vi.fn().mockImplementation(() => mockStreamQuery()),
+        streamAgentEvents: vi.fn().mockImplementation(() => toAgentEvents(mockStreamQuery())),
         getSessionRegistry: vi.fn().mockReturnValue({
           beginTurn: vi.fn(),
           endTurn: vi.fn(),
@@ -4010,6 +4020,7 @@ describe('stream-executor — epoch guard wiring (issue #688)', () => {
         setActivityState: vi.fn(),
         clearSessionId: vi.fn(),
         streamQuery: vi.fn().mockImplementation(streamFn),
+        streamAgentEvents: vi.fn().mockImplementation(() => toAgentEvents(streamFn())),
         getSessionRegistry: vi.fn().mockReturnValue({
           beginTurn: vi.fn(),
           endTurn: vi.fn(),

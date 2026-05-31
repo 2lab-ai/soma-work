@@ -160,7 +160,10 @@ export function createSdkMessageMapper(deps: SdkMessageMapperDeps): SdkMessageMa
           type: 'tool_result',
           toolCallId: String(block.tool_use_id ?? ''),
           content: normalizeToolResultContent(block.content),
-          isError: block.is_error === true,
+          // Preserve absence: a tool_result without `is_error` maps to
+          // `undefined` (not `false`) so downstream ToolFormatter output is
+          // byte-identical to the prior SDK-message path.
+          isError: typeof block.is_error === 'boolean' ? block.is_error : undefined,
           rawOutput: block.content,
         });
       }
