@@ -97,7 +97,7 @@ describe('saveConfig', () => {
 
 /**
  * PR #639 dropped the `llmChat` subsystem. Legacy configs keep loading but the
- * key is silently discarded on save. These tests pin down four guarantees
+ * key is silently discarded on save. These tests pin down five guarantees
  * that must not regress:
  *   1. `loadConfig` warns at most once per process for repeated loads.
  *   2. Absent `llmChat` key → no warn at all.
@@ -108,6 +108,10 @@ describe('saveConfig', () => {
  *      Without this, workspaces that never trigger a plugin-manager save
  *      keep emitting the warn once per boot indefinitely (production grep
  *      showed 55x in a single rotation).
+ *   5. (Issue #1014, PR #1022 codex review) The eager strip MUST operate on
+ *      the pre-`substituteEnvVars` JSON, so `${VAR}` placeholders survive
+ *      verbatim — otherwise we'd persist resolved secret values back to
+ *      disk and break env-driven secret rotation.
  *
  * `vi.resetModules()` is the linchpin: `warnedLegacyLlmChat` is a module-scope
  * `let`, so without a fresh import per test the "warn-once" assertion would
@@ -188,6 +192,48 @@ describe('loadConfig — legacy llmChat handling', () => {
     loadConfig(configFile);
 
     expect(legacyWarnCount()).toBe(0);
+  });
+
+  it('SECURITY: eager strip preserves ${VAR} placeholders verbatim (no resolved secret persisted)', async () => {
+    // Regression guard caught by codex review of PR #1022:
+    // an earlier draft spread the POST-`substituteEnvVars` object and
+    // would have written resolved secret values back to disk. The strip
+    // MUST operate on the pre-substitution `rawParsed`, so any
+    // `${VAR}` placeholder survives the rewrite unchanged.
+    //
+    // Two failure modes this test pins simultaneously:
+    //   (a) secret disclosure — the env-resolved token must NOT appear
+    //       in the rewritten config.json.
+    //   (b) round-trip corruption — env-driven secret rotation requires
+    //       the placeholder to remain a placeholder so a future process
+    //       resolves the new env value.
+    process.env.PR1022_FAKE_TOKEN = 'super-secret-real-value-must-not-be-persisted';
+    try {
+      const legacy = {
+        mcpServers: {
+          jira: {
+            command: 'node',
+            args: ['jira-mcp.js'],
+            env: { Authorization: 'Basic ${PR1022_FAKE_TOKEN}' },
+          },
+        },
+        llmChat: { snippet: 'deprecated' },
+      };
+      fs.writeFileSync(configFile, JSON.stringify(legacy), 'utf-8');
+
+      const { loadConfig } = await import('../config-loader');
+      loadConfig(configFile);
+
+      const onDiskRaw = fs.readFileSync(configFile, 'utf-8');
+      // (a) secret value MUST NOT appear in the rewritten file.
+      expect(onDiskRaw).not.toContain('super-secret-real-value-must-not-be-persisted');
+      // (b) placeholder MUST survive verbatim for the next process to resolve.
+      expect(onDiskRaw).toContain('${PR1022_FAKE_TOKEN}');
+      // And of course the legacy key is still gone.
+      expect(JSON.parse(onDiskRaw)).not.toHaveProperty('llmChat');
+    } finally {
+      delete process.env.PR1022_FAKE_TOKEN;
+    }
   });
 
   it('does not warn when llmChat key is absent', async () => {

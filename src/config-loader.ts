@@ -351,8 +351,16 @@ export function loadConfig(configFile: string): Config {
       // process for the lifetime of the deployment (production grep: 55x in
       // a single rotation). Eagerly strip the key from the on-disk JSON now
       // so the warn becomes a one-shot migration event rather than chronic
-      // noise. Preserve all other top-level keys verbatim (we strip from
-      // `raw`, not from the typed `result`, so future unknown fields survive).
+      // noise.
+      //
+      // CRITICAL: strip from `rawParsed` (pre-substitution), NEVER from
+      // `raw` (post-`substituteEnvVars`). Writing `raw` back would persist
+      // resolved secret values (e.g. a `"${JIRA_PAT_TOKEN}"` placeholder
+      // would land on disk as `"Basic <actual-token>"`) — both a secret
+      // disclosure on the filesystem and a round-trip corruption that
+      // breaks future env-driven rotation. By rewriting `rawParsed` we
+      // preserve every `${VAR}` placeholder verbatim and keep all unknown
+      // future top-level keys.
       if (raw.llmChat !== undefined && !warnedLegacyLlmChat) {
         warnedLegacyLlmChat = true;
         logger.warn(
@@ -362,7 +370,9 @@ export function loadConfig(configFile: string): Config {
         );
 
         try {
-          const cleaned: Record<string, unknown> = { ...(raw as Record<string, unknown>) };
+          // Spread the PRE-SUBSTITUTION object so `${VAR}` placeholders
+          // remain placeholders in the on-disk rewrite.
+          const cleaned: Record<string, unknown> = { ...(rawParsed as Record<string, unknown>) };
           delete cleaned.llmChat;
           // Atomic write via tmp + rename — same pattern as `saveConfig` to
           // avoid corruption on concurrent process startups. If two processes
