@@ -50,6 +50,40 @@ describe('ToolEventProcessor', () => {
     };
   });
 
+  describe('getLiveBackgroundWork (background-work resume guard)', () => {
+    it('reports a live background bash until its tool_result arrives', async () => {
+      const ctx: ToolEventContext = { ...mockContext, turnId: 'turn-1' };
+      // Foreground bash and a backgrounded bash in the same turn.
+      await processor.handleToolUse(
+        [
+          { id: 'fg', name: 'Bash', input: { command: 'ls' } },
+          { id: 'bg', name: 'Bash', input: { command: 'sleep 999', run_in_background: true } },
+        ],
+        ctx,
+      );
+
+      // Only the backgrounded bash is live; the foreground one is not tracked.
+      expect(processor.getLiveBackgroundWork('C123:thread_ts', 'turn-1')).toEqual({
+        bashCount: 1,
+        taskLabels: [],
+      });
+
+      // Once the background bash produces its tool_result, it is no longer live.
+      const results: ToolResultEvent[] = [{ toolUseId: 'bg', toolName: 'Bash', result: 'done' }];
+      await processor.handleToolResult(results, ctx);
+
+      expect(processor.getLiveBackgroundWork('C123:thread_ts', 'turn-1')).toEqual({
+        bashCount: 0,
+        taskLabels: [],
+      });
+    });
+
+    it('returns an empty snapshot for an unknown session/turn', () => {
+      expect(processor.getLiveBackgroundWork('nope', 'nope')).toEqual({ bashCount: 0, taskLabels: [] });
+      expect(processor.getLiveBackgroundWork()).toEqual({ bashCount: 0, taskLabels: [] });
+    });
+  });
+
   describe('handleToolUse', () => {
     it('should track tool use IDs', async () => {
       const toolUses: ToolUseEvent[] = [
