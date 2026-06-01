@@ -4037,6 +4037,7 @@ describe('stream-executor — epoch guard wiring (issue #688)', () => {
         handleToolResult: vi.fn().mockResolvedValue(undefined),
         setReactionManager: vi.fn(),
         setToolResultSink: vi.fn(),
+        getLiveBackgroundWork: vi.fn().mockReturnValue({ bashCount: 0, taskLabels: [] }),
         cleanup: vi.fn(),
       },
       statusReporter: {
@@ -4154,6 +4155,37 @@ describe('stream-executor — epoch guard wiring (issue #688)', () => {
 
     expect(deps.assistantStatusManager.setStatus).not.toHaveBeenCalled();
     expect(deps.assistantStatusManager.clearStatus).not.toHaveBeenCalled();
+  });
+
+  // Background-work resume guard end-to-end. A turn that ends with no
+  // continuation but with live background work must return a host continuation
+  // (re-entering the agent loop) instead of completing the session.
+  it('returns a host resume continuation when background work is live at turn end', async () => {
+    const deps = createDeps(() => toolFlowStream('Read'));
+    deps.toolEventProcessor.getLiveBackgroundWork = vi.fn().mockReturnValue({ bashCount: 1, taskLabels: [] });
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+    const result = await executor.execute(createParams(say));
+
+    // Guard actually ran (not swallowed by the catch path).
+    expect(deps.toolEventProcessor.getLiveBackgroundWork).toHaveBeenCalled();
+    expect(result.success).toBe(true);
+    expect(result.continuation).toBeDefined();
+    expect(result.continuation.origin).toBe('host');
+    expect(result.continuation.prompt).toMatch(/background/i);
+  });
+
+  it('completes normally (no continuation) when no background work is live', async () => {
+    const deps = createDeps(() => toolFlowStream('Read'));
+    // getLiveBackgroundWork defaults to { bashCount: 0, taskLabels: [] }
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+    const result = await executor.execute(createParams(say));
+
+    expect(result.success).toBe(true);
+    expect(result.continuation).toBeUndefined();
   });
 });
 
