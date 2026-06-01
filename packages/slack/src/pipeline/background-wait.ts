@@ -38,6 +38,21 @@
  *
  * This module is a PURE decision function so the policy is unit-testable in
  * isolation from the (very heavy) `StreamExecutor.execute` path.
+ *
+ * KNOWN LIMITATIONS
+ * -----------------
+ * - The intermediate "🟢 작업 완료" card is still posted on a resume turn (the
+ *   notify rail runs before the guard). This matches every other intermediate
+ *   continuation turn today (renew, model CONTINUE_SESSION handoffs); the guard
+ *   restores the missing *resume*, not the card label. Making the label honest
+ *   is a separate change (TurnCategory union + completion-message-tracker copy).
+ * - Background bash is sessionKey-scoped so it survives across resume turns;
+ *   background `Task`s are turnId-scoped (#794), so a Task still running after a
+ *   full resume turn drops out of the next turn's live snapshot and the chain
+ *   may end early for tasks. Bash (the long-build case) is fully covered.
+ * - If the model disobeys the "block until done" instruction and polls-then-
+ *   ends without re-backgrounding, the next turn's snapshot is empty and the
+ *   session completes. The prompt steers hard toward blocking (the SDK pattern).
  */
 
 /** Default number of consecutive background-wait continuations per session. */

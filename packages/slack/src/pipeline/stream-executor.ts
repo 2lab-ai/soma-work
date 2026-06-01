@@ -1880,6 +1880,10 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // `.then` rail above — fall through to the standard success-rail
       // return so the lifecycle (status clear, cleanup) still runs.
       if (renewContinuation) {
+        // A non-background-wait continuation means the model is progressing on
+        // its own — end any pending background-wait chain for this session so a
+        // stale counter can't mis-bound a later, unrelated chain.
+        this.bgWaitCounts.delete(sessionKey);
         turnCollector.setContinuation(renewContinuation);
         return {
           success: true,
@@ -1900,12 +1904,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           say,
         );
         if (continuation) {
+          this.bgWaitCounts.delete(sessionKey); // see renew branch
           turnCollector.setContinuation(continuation);
           return { success: true, messageCount: streamResult.messageCount, continuation, turnCollector };
         }
       }
 
       if (toolContinuation) {
+        this.bgWaitCounts.delete(sessionKey); // see renew branch
         return {
           success: true,
           messageCount: streamResult.messageCount,
@@ -1915,17 +1921,28 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       }
 
       // Background-work resume guard. Reaching here means the turn produced NO
-      // continuation (no model CONTINUE_SESSION, no renew, no onboarding) and
-      // would otherwise be marked 작업 완료. If the model backgrounded a long
-      // task (`Bash`/`Task` with run_in_background) and ended the turn while it
-      // is still live, completing now would strand the rest of the pipeline.
-      // Re-enter the agent loop with a host continuation that tells the model
-      // to block on the background work and continue. Bounded per session so a
-      // perpetually-re-backgrounding model can't loop forever.
+      // continuation (no model CONTINUE_SESSION, no renew, no onboarding), so
+      // without this guard the session would go idle with the work unfinished.
+      // If the model backgrounded a long task (`Bash`/`Task` with
+      // run_in_background) and ended the turn while it is still live, returning
+      // a host continuation re-enters the agent loop so the model can block on
+      // the work (Monitor/BashOutput) and continue the pipeline. Bounded per
+      // session so a perpetually-re-backgrounding model can't loop forever.
+      //
+      // NOTE: the terminal completion card (🟢 작업 완료) has already been
+      // dispatched by the notify rail above — same as every other intermediate
+      // continuation turn (renew, model CONTINUE_SESSION handoffs). This guard
+      // restores the missing *resume*, not the card semantics; making the
+      // intermediate card honest is tracked separately (it touches the
+      // TurnCategory union + a hand-rolled copy in completion-message-tracker).
       //
       // Read live state BEFORE the `finally` block's `cleanup()` drains the
       // registries. `hasSdkError`/`hasPendingChoice` already have their own
-      // terminal handling, so the guard defers to them.
+      // terminal handling, so the guard defers to them. Background bash is
+      // sessionKey-scoped (survives across resume turns); background Tasks are
+      // turnId-scoped (#794), so a Task that outlives a full resume turn drops
+      // out of the next turn's snapshot — bash (the dotnet-build case) is the
+      // primary, fully-covered path.
       const liveBackground = this.deps.toolEventProcessor.getLiveBackgroundWork(sessionKey, turnId);
       const bgDecision = decideBackgroundWaitContinuation({
         live: liveBackground,
