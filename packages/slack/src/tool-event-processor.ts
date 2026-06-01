@@ -93,6 +93,12 @@ class BackgroundBashRegistry {
     this.map.delete(sessionKey);
     return entries;
   }
+
+  /** Non-destructive count of live entries for a session (still running at
+   *  turn end, before `drain()`). Used by the background-work resume guard. */
+  countFor(sessionKey: string): number {
+    return this.map.get(sessionKey)?.size ?? 0;
+  }
 }
 
 /**
@@ -147,6 +153,14 @@ class BackgroundTaskRegistry {
     const entries = Array.from(bucket.values());
     this.map.delete(turnId);
     return entries;
+  }
+
+  /** Non-destructive subagent labels of live entries for a turn (still running
+   *  at turn end, before `drain()`). Used by the background-work resume guard. */
+  labelsFor(turnId: string): string[] {
+    const bucket = this.map.get(turnId);
+    if (!bucket) return [];
+    return Array.from(bucket.values()).map((e) => e.subagentLabel);
   }
 
   /**
@@ -717,6 +731,21 @@ export class ToolEventProcessor {
    *   3. Outstanding callId sweep (turn-scoped or legacy global).
    *   4. `flushSession(sessionKey)` for final render + tick teardown.
    */
+  /**
+   * Non-destructive snapshot of background work still live at turn end —
+   * background bash commands (keyed by sessionKey) and background subagent
+   * Tasks (keyed by turnId) whose `tool_result` has NOT yet arrived. MUST be
+   * read BEFORE `cleanup()` drains the registries. Consumed by StreamExecutor's
+   * background-work resume guard to decide whether to re-enter the agent loop
+   * instead of completing the session with live work outstanding.
+   */
+  getLiveBackgroundWork(sessionKey?: string, turnId?: string): { bashCount: number; taskLabels: string[] } {
+    return {
+      bashCount: sessionKey ? this.backgroundBashRegistry.countFor(sessionKey) : 0,
+      taskLabels: turnId ? this.backgroundTaskRegistry.labelsFor(turnId) : [],
+    };
+  }
+
   async cleanup(sessionKey?: string, turnId?: string): Promise<void> {
     if (sessionKey) {
       const bgEntries = this.backgroundBashRegistry.drain(sessionKey);
