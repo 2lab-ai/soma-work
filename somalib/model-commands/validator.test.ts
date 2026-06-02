@@ -1244,3 +1244,71 @@ describe('MANAGE_SKILL rename action — validator', () => {
     expect(result.error.message).toContain('newName');
   });
 });
+
+// ---------------------------------------------------------------------------
+// MANAGE_SKILL — get action
+// ---------------------------------------------------------------------------
+//
+// get is the "read back the full SKILL.md of one of my own skills" action —
+// a self-fetch primitive (inspect / read-modify-write). At the validator layer
+// the invariants mirror share:
+//   1. action='get' is allowed (was rejected before this change).
+//   2. name MUST be a string (no name → reject).
+//   3. content MUST NOT be present (get is read-only; a stray content field
+//      could otherwise be misread as a hidden write).
+
+describe('MANAGE_SKILL get action — validator', () => {
+  function run(params: Record<string, unknown>) {
+    return validateModelCommandRunArgs({
+      commandId: 'MANAGE_SKILL',
+      params,
+    });
+  }
+
+  it('accepts get with name only', () => {
+    const result = run({ action: 'get', name: 'my-deploy' });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    expect(result.request.commandId).toBe('MANAGE_SKILL');
+    expect(result.request.params).toMatchObject({ action: 'get', name: 'my-deploy' });
+    expect((result.request.params as { content?: string }).content).toBeUndefined();
+  });
+
+  it('rejects get when name is missing', () => {
+    const result = run({ action: 'get' });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.error.code).toBe('INVALID_ARGS');
+    expect(result.error.message).toContain('name is required');
+    expect(result.error.message).toContain('get');
+  });
+
+  it('rejects get when name is not a string', () => {
+    const result = run({ action: 'get', name: 42 });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.error.code).toBe('INVALID_ARGS');
+    expect(result.error.message).toContain('name is required');
+  });
+
+  it('rejects get when content is provided', () => {
+    const result = run({
+      action: 'get',
+      name: 'my-deploy',
+      content: 'sneak in a write under cover of get',
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.error.code).toBe('INVALID_ARGS');
+    expect(result.error.message).toContain('get');
+    expect(result.error.message).toContain('content');
+  });
+
+  it('lists `get` in the allowed-action error for an unknown action', () => {
+    const result = run({ action: 'haxx0r' });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.error.code).toBe('INVALID_ARGS');
+    expect(result.error.message).toContain('get');
+  });
+});

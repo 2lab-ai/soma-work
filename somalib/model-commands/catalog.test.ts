@@ -9,6 +9,7 @@ import {
 } from './catalog';
 import {
   SHARE_CONTENT_CHAR_LIMIT,
+  getSuccessMessage,
   invalidSkillNameMessage,
   shareOverLimitMessage,
 } from './skill-share-errors';
@@ -461,6 +462,165 @@ describe('MANAGE_SKILL share dispatcher', () => {
     expect(result.error.code).toBe('INVALID_ARGS');
     expect(result.error.message).toContain('name');
     expect(result.error.message).toContain('share');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MANAGE_SKILL get dispatcher
+// ---------------------------------------------------------------------------
+//
+// `get` is the self-read sibling of `share`: it reuses the `shareSkill` storage
+// read primitive but diverges in post-processing — no SHARE_CONTENT_CHAR_LIMIT
+// cap, a plain success message, and no install instructions. These tests pin
+// that divergence so a future refactor can't silently re-apply the share cap
+// (which would break read-modify-write of large skills) or leak a mutation
+// signal (get is read-only).
+
+describe('MANAGE_SKILL get dispatcher', () => {
+  function makeStubStore(overrides: Partial<SkillStore>): SkillStore {
+    return {
+      listSkills: () => [],
+      createSkill: () => ({ ok: true, message: 'stub' }),
+      updateSkill: () => ({ ok: true, message: 'stub' }),
+      deleteSkill: () => ({ ok: true, message: 'stub' }),
+      shareSkill: () => ({ ok: false, message: 'stub default' }),
+      renameSkill: () => ({ ok: true, message: 'stub rename' }),
+      ...overrides,
+    };
+  }
+
+  function getCtx(): ModelCommandContext {
+    return {
+      channel: 'C123',
+      threadTs: '111.222',
+      user: 'U123',
+      session: getDefaultSessionSnapshot(),
+    };
+  }
+
+  afterEach(() => {
+    registerSkillStore({
+      listSkills: () => {
+        throw new Error('skill store leak');
+      },
+      createSkill: () => {
+        throw new Error('skill store leak');
+      },
+      updateSkill: () => {
+        throw new Error('skill store leak');
+      },
+      deleteSkill: () => {
+        throw new Error('skill store leak');
+      },
+      shareSkill: () => {
+        throw new Error('skill store leak');
+      },
+      renameSkill: () => {
+        throw new Error('skill store leak');
+      },
+    });
+  });
+
+  it('happy path — returns ok=true with name + content and the get success message', () => {
+    const skillContent = 'Body of my own skill, retrieved for inspection.';
+    registerSkillStore(
+      makeStubStore({
+        shareSkill: (_user, name) => ({
+          ok: true,
+          message: `Skill "${name}" read.`,
+          content: skillContent,
+        }),
+      }),
+    );
+
+    const result = runModelCommand(
+      {
+        commandId: 'MANAGE_SKILL',
+        params: { action: 'get', name: 'my-deploy' },
+      } as ModelCommandRunRequest,
+      getCtx(),
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const payload = result.payload as Record<string, unknown>;
+    expect(payload.ok).toBe(true);
+    expect(payload.name).toBe('my-deploy');
+    expect(payload.content).toBe(skillContent);
+    expect(payload.message).toBe(getSuccessMessage('my-deploy'));
+    // get is read-only — it must never emit a cache-invalidation signal.
+    expect(payload.mutated).toBeUndefined();
+  });
+
+  it('does NOT apply the share cap — content over SHARE_CONTENT_CHAR_LIMIT is returned in full', () => {
+    const big = 'z'.repeat(SHARE_CONTENT_CHAR_LIMIT + 500);
+    registerSkillStore(
+      makeStubStore({
+        shareSkill: () => ({ ok: true, message: 'ok', content: big }),
+      }),
+    );
+
+    const result = runModelCommand(
+      {
+        commandId: 'MANAGE_SKILL',
+        params: { action: 'get', name: 'big-skill' },
+      } as ModelCommandRunRequest,
+      getCtx(),
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const payload = result.payload as Record<string, unknown>;
+    expect(payload.ok).toBe(true);
+    expect(payload.content).toBe(big);
+  });
+
+  it('not-found / invalid-name passthrough — storage failure surfaces with no content', () => {
+    const badName = 'Bad_Name';
+    registerSkillStore(
+      makeStubStore({
+        shareSkill: (_user, name) => ({ ok: false, message: invalidSkillNameMessage(name) }),
+      }),
+    );
+
+    const result = runModelCommand(
+      {
+        commandId: 'MANAGE_SKILL',
+        params: { action: 'get', name: badName },
+      } as ModelCommandRunRequest,
+      getCtx(),
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const payload = result.payload as Record<string, unknown>;
+    expect(payload.ok).toBe(false);
+    expect(payload.content).toBeUndefined();
+    expect(payload.message).toBe(invalidSkillNameMessage(badName));
+  });
+
+  it('rejects get when name is missing at the dispatcher layer', () => {
+    registerSkillStore(
+      makeStubStore({
+        shareSkill: () => {
+          throw new Error('storage should not be called when name is missing');
+        },
+      }),
+    );
+
+    const result = runModelCommand(
+      {
+        commandId: 'MANAGE_SKILL',
+        params: { action: 'get' },
+      } as ModelCommandRunRequest,
+      getCtx(),
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('INVALID_ARGS');
+    expect(result.error.message).toContain('name');
+    expect(result.error.message).toContain('get');
   });
 });
 

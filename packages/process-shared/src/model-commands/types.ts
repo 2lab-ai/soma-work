@@ -66,7 +66,7 @@ export interface SaveMemoryParams {
 }
 
 export interface ManageSkillParams {
-  action: 'create' | 'update' | 'delete' | 'list' | 'share' | 'rename';
+  action: 'create' | 'update' | 'delete' | 'list' | 'share' | 'rename' | 'get';
   name?: string;
   /**
    * New skill name for `action='rename'` only.
@@ -164,12 +164,17 @@ export interface ModelCommandPayloadMap {
     ok: boolean;
     message: string;
     skills?: Array<{ name: string; description: string }>;
-    /** Skill name echoed on share happy path (so recipient knows what to install). */
+    /**
+     * Skill name echoed on the share/get happy path (so the caller knows which
+     * skill the returned `content` belongs to).
+     */
     name?: string;
     /**
-     * Full SKILL.md content. Present only on share happy path; omitted on
-     * over-limit / not-found / invalid-name. Recipient model renders as a
-     * fenced code block (see MANAGE_SKILL descriptor for the format contract).
+     * Full SKILL.md content. Present on the share or get happy path; omitted on
+     * not-found / invalid-name (and, for share only, over-limit). `share`
+     * renders it as a fenced code block for cross-user install; `get` is a
+     * self-read of the caller's own skill (no share cap — see MANAGE_SKILL
+     * dispatcher for the difference).
      */
     content?: string;
     /**

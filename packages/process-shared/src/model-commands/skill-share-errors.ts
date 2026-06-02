@@ -44,6 +44,18 @@ export function shareSuccessMessage(name: string): string {
   );
 }
 
+/**
+ * Happy-path message for the MANAGE_SKILL `get` action.
+ *
+ * `get` is a self-read: the caller retrieves the full SKILL.md of one of their
+ * own skills (e.g. to inspect or edit it). Unlike `share`, the response is not
+ * framed as "install this on someone else's account", so the wording stays
+ * plain. The content cap that guards `share` does NOT apply to `get`.
+ */
+export function getSuccessMessage(name: string): string {
+  return `Skill "${name}" content retrieved.`;
+}
+
 export function shareOverLimitMessage(name: string, length: number): string {
   return (
     `Skill "${name}" content (${length} chars) exceeds share limit ` +
