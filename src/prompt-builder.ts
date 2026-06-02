@@ -446,7 +446,7 @@ export class PromptBuilder {
       const skillList = userSkills
         .map((s) => `- \`$user:${s.name}\`: ${s.description || '(no description)'}`)
         .join('\n');
-      const skillBlock = `\n## Your Personal Skills\nYou have ${userSkills.length} personal skill(s). Invoke with \`$user:skill-name\`. Manage with MANAGE_SKILL command (create/update/delete/rename/list/share).\n${skillList}`;
+      const skillBlock = `\n## Your Personal Skills\nYou have ${userSkills.length} personal skill(s). Invoke with \`$user:skill-name\`. Manage with MANAGE_SKILL command (create/update/delete/rename/list/share/get).\n${skillList}`;
       return prompt ? `${prompt}\n${skillBlock}` : skillBlock;
     } catch {
       // Skills dir may not exist — that's fine, no skills to inject
