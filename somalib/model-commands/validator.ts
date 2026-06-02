@@ -211,10 +211,11 @@ export function validateModelCommandRunArgs(args: unknown): ValidationResult {
       action !== 'delete' &&
       action !== 'list' &&
       action !== 'share' &&
-      action !== 'rename'
+      action !== 'rename' &&
+      action !== 'get'
     ) {
       return invalidArgs(
-        `MANAGE_SKILL action must be 'create', 'update', 'delete', 'list', 'share', or 'rename', got: ${String(action)}`,
+        `MANAGE_SKILL action must be 'create', 'update', 'delete', 'list', 'share', 'rename', or 'get', got: ${String(action)}`,
       );
     }
     if (
@@ -222,10 +223,11 @@ export function validateModelCommandRunArgs(args: unknown): ValidationResult {
         action === 'update' ||
         action === 'delete' ||
         action === 'share' ||
-        action === 'rename') &&
+        action === 'rename' ||
+        action === 'get') &&
       typeof params.name !== 'string'
     ) {
-      return invalidArgs('MANAGE_SKILL name is required for create/update/delete/share/rename');
+      return invalidArgs('MANAGE_SKILL name is required for create/update/delete/share/rename/get');
     }
     if ((action === 'create' || action === 'update') && typeof params.content !== 'string') {
       return invalidArgs('MANAGE_SKILL content is required for create/update');
@@ -234,6 +236,11 @@ export function validateModelCommandRunArgs(args: unknown): ValidationResult {
     // so a sloppy request can never be misinterpreted as a hidden update.
     if (action === 'share' && params.content !== undefined) {
       return invalidArgs('MANAGE_SKILL share does not accept content; only name is required');
+    }
+    // get is a read-only self-fetch — same content ban as share so a stray
+    // `content` field can never be silently reinterpreted as a write.
+    if (action === 'get' && params.content !== undefined) {
+      return invalidArgs('MANAGE_SKILL get does not accept content; only name is required');
     }
     // rename is a metadata-only operation — it must not carry SKILL.md bytes
     // (those would silently shadow the persisted content). Storage layer also
@@ -251,7 +258,7 @@ export function validateModelCommandRunArgs(args: unknown): ValidationResult {
       request: {
         commandId: 'MANAGE_SKILL',
         params: {
-          action: action as 'create' | 'update' | 'delete' | 'list' | 'share' | 'rename',
+          action: action as 'create' | 'update' | 'delete' | 'list' | 'share' | 'rename' | 'get',
           name: typeof params.name === 'string' ? params.name : undefined,
           newName: typeof params.newName === 'string' ? params.newName : undefined,
           content: typeof params.content === 'string' ? params.content : undefined,

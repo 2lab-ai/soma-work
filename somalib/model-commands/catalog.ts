@@ -117,6 +117,7 @@ import type {
   SaveMemoryParams,
 } from './types';
 import {
+  getSuccessMessage,
   SHARE_CONTENT_CHAR_LIMIT,
   shareOverLimitMessage,
   shareSuccessMessage,
@@ -339,16 +340,17 @@ const MANAGE_SKILL_SCHEMA = {
   properties: {
     action: {
       type: 'string',
-      enum: ['create', 'update', 'delete', 'list', 'share', 'rename'],
+      enum: ['create', 'update', 'delete', 'list', 'share', 'rename', 'get'],
       description:
         'create: new skill, update: overwrite existing, delete: remove, ' +
         'list: show all, share: return full content for cross-user copy-paste install, ' +
-        'rename: move SKILL.md directory from `name` to `newName`',
+        'rename: move SKILL.md directory from `name` to `newName`, ' +
+        'get: read back the full SKILL.md of one of your own skills (self-fetch, no share cap)',
     },
     name: {
       type: 'string',
       description:
-        'Skill name in kebab-case (e.g. my-deploy). Required for create/update/delete/share/rename.',
+        'Skill name in kebab-case (e.g. my-deploy). Required for create/update/delete/share/rename/get.',
     },
     newName: {
       type: 'string',
@@ -359,8 +361,8 @@ const MANAGE_SKILL_SCHEMA = {
       type: 'string',
       description:
         'Full SKILL.md content with YAML frontmatter. Required for create/update. ' +
-        'Must NOT be supplied for share or rename (server reads existing content for share; ' +
-        'rename is metadata-only and does not change SKILL.md bytes).',
+        'Must NOT be supplied for share, rename, or get (server reads existing content for ' +
+        'share/get; rename is metadata-only and does not change SKILL.md bytes).',
     },
   },
   required: ['action'],
@@ -482,9 +484,12 @@ export function listModelCommands(context: ModelCommandContext): ModelCommandDes
       {
         id: 'MANAGE_SKILL',
         description:
-          'Create, update, delete, rename, list, or share user personal skills. ' +
+          'Create, update, delete, rename, list, share, or get user personal skills. ' +
           'Skills are SKILL.md files with YAML frontmatter. Invoke via $user:skill-name. ' +
           'Immediately available after creation. ' +
+          'get: pass only `name` — the response payload returns the full SKILL.md ' +
+          'content of your own skill (self-fetch for inspect/edit; unlike share it is ' +
+          'not capped and carries no install instructions). ' +
           'rename: pass `name` (current) + `newName` (kebab-case, different) — moves ' +
           'the entire skill directory in place so multi-file skills keep their ' +
           'sibling resources. ' +
@@ -848,6 +853,39 @@ export function runModelCommand(
           ...(result.ok
             ? { mutated: { kind: 'skill' as const, user: context.user, action: 'rename' as const } }
             : {}),
+        },
+      };
+    }
+    if (params.action === 'get') {
+      if (!params.name) {
+        return toRunError('MANAGE_SKILL', { code: 'INVALID_ARGS', message: 'name required for get' });
+      }
+      // `get` is a self-read: the caller fetches the full SKILL.md of one of
+      // their own skills. The storage read is identical to `share`, so we reuse
+      // `shareSkill` as the underlying read primitive (DRY — both layers source
+      // their not-found / invalid-name wording from `skill-share-errors.ts`).
+      // The two actions diverge only in post-processing: `share` applies the
+      // SHARE_CONTENT_CHAR_LIMIT cap and emits install instructions, whereas
+      // `get` returns the raw content uncapped (the model reads its own skill,
+      // e.g. for read-modify-write, and must not be blocked on large bodies).
+      const result = store.shareSkill(context.user, params.name);
+      if (!result.ok || result.content === undefined) {
+        return {
+          type: 'model_command_result',
+          commandId: 'MANAGE_SKILL',
+          ok: true,
+          payload: { ok: result.ok, message: result.message },
+        };
+      }
+      return {
+        type: 'model_command_result',
+        commandId: 'MANAGE_SKILL',
+        ok: true,
+        payload: {
+          ok: true,
+          message: getSuccessMessage(params.name),
+          name: params.name,
+          content: result.content,
         },
       };
     }
