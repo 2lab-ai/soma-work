@@ -16,10 +16,14 @@
  *
  * THE FIX
  * -------
- * `StreamExecutor` already owns `ToolEventProcessor`, whose
- * `BackgroundBashRegistry` / `BackgroundTaskRegistry` track exactly the
- * background entries that are STILL LIVE at turn end (an entry is removed when
- * its `tool_result` arrives; whatever remains at turn end is still running).
+ * `StreamExecutor` reads `ToolEventProcessor.getLiveBackgroundWork()` at turn
+ * end. The bash half of that signal comes from `BackgroundResumeTracker`, which
+ * tracks a background bash from its spawn ack until the model TERMINALLY
+ * consumes it (`TaskOutput`/`BashOutput` reporting completed/failed/killed or
+ * an exit code, or a kill). NOTE: this is NOT `BackgroundBashRegistry` (#688):
+ * `Bash({run_in_background:true})` returns its `tool_result` immediately at
+ * spawn, so that registry empties within milliseconds and is always 0 by turn
+ * end — reading it (as the first cut of this fix did) is a no-op.
  * If a turn would otherwise complete (no other continuation, no pending user
  * choice, no error) while background work is live, we synthesize a host
  * continuation that re-enters the agent loop and instructs the model to block
@@ -46,13 +50,15 @@
  *   continuation turn today (renew, model CONTINUE_SESSION handoffs); the guard
  *   restores the missing *resume*, not the card label. Making the label honest
  *   is a separate change (TurnCategory union + completion-message-tracker copy).
- * - Background bash is sessionKey-scoped so it survives across resume turns;
- *   background `Task`s are turnId-scoped (#794), so a Task still running after a
- *   full resume turn drops out of the next turn's live snapshot and the chain
- *   may end early for tasks. Bash (the long-build case) is fully covered.
- * - If the model disobeys the "block until done" instruction and polls-then-
- *   ends without re-backgrounding, the next turn's snapshot is empty and the
- *   session completes. The prompt steers hard toward blocking (the SDK pattern).
+ * - Background bash is sessionKey-scoped (via `BackgroundResumeTracker`) so it
+ *   survives across resume turns and clears only on terminal consumption; the
+ *   long-build case is fully covered. Background `Task`s are turnId-scoped
+ *   (#794), so a Task still running after a full resume turn drops out of the
+ *   next turn's live snapshot and the chain may end early for tasks.
+ * - The bash signal clears only when the model consumes a TERMINAL output; a
+ *   bg launch the model never polls stays live until the per-session cap, then
+ *   the guard gives up (`clearBackgroundResume`) and completes. Id extraction
+ *   falls back to a text regex / FIFO drain when no structured id is present.
  */
 
 /** Default number of consecutive background-wait continuations per session. */
@@ -131,7 +137,7 @@ export function buildBackgroundWaitPrompt(live: LiveBackgroundWork, attempt: num
   return [
     `[background-work-resume ${attempt}/${cap}]`,
     `You ended your turn while ${summary} ${live.bashCount + live.taskLabels.length === 1 ? 'was' : 'were'} still running, so the session was about to be marked complete with the work unfinished.`,
-    `Do NOT stop. Block on the background work now — use the Monitor tool (or BashOutput for shell commands) to wait until each one actually finishes, read its output, then continue the remaining steps of your task in THIS turn.`,
+    `Do NOT stop. Block on the background work now — for a background shell call BashOutput/TaskOutput on its background id repeatedly until it reports completed/failed (not "running"); for a background subagent use the Monitor tool. Read each result, then continue the remaining steps of your task in THIS turn.`,
     `Only finish once the background work is consumed and your task is genuinely done, or emit CONTINUE_SESSION to hand off to the next phase.`,
     `If a background process is intentionally long-lived and you truly have no dependent work left, it is fine to finish now.`,
   ].join('\n');
