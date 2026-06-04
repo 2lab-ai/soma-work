@@ -132,7 +132,16 @@ generate_plist() {
     <array>
         <string>/bin/bash</string>
         <string>-c</string>
-        <string>export PATH=$NODE_PATH:$TOOL_PATHS:\$PATH; cd $PROJECT_DIR; node dist/index.js</string>
+        <!--
+          launchd has no log rotation, so instead of pointing StandardOutPath/
+          StandardErrorPath straight at the daemon we run a rotating-log
+          supervisor (src/run-with-rotating-logs.ts). It spawns dist/index.js,
+          tees its stdout/stderr into size-rotated logs/stdout.log + logs/stderr.log,
+          and owns retention/gzip. `exec` replaces bash with node so launchd's
+          SIGTERM (launchctl unload / stop) reaches the supervisor directly,
+          which then forwards it to the daemon for a clean shutdown.
+        -->
+        <string>export PATH=$NODE_PATH:$TOOL_PATHS:\$PATH; cd $PROJECT_DIR; exec node dist/run-with-rotating-logs.js dist/index.js</string>
     </array>
 
     <key>WorkingDirectory</key>
@@ -154,11 +163,20 @@ generate_plist() {
     <key>KeepAlive</key>
     <true/>
 
+    <!--
+      The supervisor owns logs/stdout.log + logs/stderr.log (rotated) and writes
+      its OWN recurring diagnostics to a rotated logs/supervisor.log. These
+      launchd paths therefore only capture catastrophic *pre-init* failures
+      (node cannot even load the supervisor). They are not rotated by launchd,
+      so the supervisor caps them on startup (see capBootstrapLogs). Pointing
+      launchd at the rotated files directly would double-open them and defeat
+      rotation.
+    -->
     <key>StandardOutPath</key>
-    <string>$LOGS_DIR/stdout.log</string>
+    <string>$LOGS_DIR/launchd.out.log</string>
 
     <key>StandardErrorPath</key>
-    <string>$LOGS_DIR/stderr.log</string>
+    <string>$LOGS_DIR/launchd.err.log</string>
 
     <key>ThrottleInterval</key>
     <integer>10</integer>
@@ -372,6 +390,27 @@ cmd_uninstall() {
     print_status "Logs preserved at: $LOGS_DIR"
 }
 
+# Search the live log plus its rotated history for a pattern.
+# Rotated files are produced by the supervisor's rotating-file-stream as
+# `<base>.<n>` and gzip-compressed to `<base>.<n>.gz`. We zgrep the .gz files
+# and grep the plain ones so operators can still find evidence that has already
+# rotated out of the live file.
+search_log_history() {
+    local base="$1"      # e.g. stderr.log
+    local pattern="$2"
+    shopt -s nullglob
+    local plain=("$LOGS_DIR/$base" "$LOGS_DIR/$base".[0-9]*)
+    local gz=("$LOGS_DIR/$base".*.gz)
+    shopt -u nullglob
+
+    if [[ ${#plain[@]} -gt 0 ]]; then
+        grep -Hn "$pattern" "${plain[@]}" 2>/dev/null
+    fi
+    if [[ ${#gz[@]} -gt 0 ]]; then
+        zgrep -Hn "$pattern" "${gz[@]}" 2>/dev/null
+    fi
+}
+
 cmd_logs() {
     local log_type="${1:-stderr}"
     local lines="${2:-50}"
@@ -386,8 +425,10 @@ cmd_logs() {
             tail -n "$lines" "$LOGS_DIR/stderr.log"
             ;;
         follow|f)
+            # -F (follow by name) re-opens the file after rotation, so the
+            # stream survives the supervisor rotating stderr.log out from under us.
             echo "=== Following $SERVICE_NAME stderr.log (Ctrl+C to stop) ==="
-            tail -f "$LOGS_DIR/stderr.log"
+            tail -F "$LOGS_DIR/stderr.log"
             ;;
         all)
             echo "=== $SERVICE_NAME stdout.log (last $lines lines) ==="
@@ -396,8 +437,21 @@ cmd_logs() {
             echo "=== $SERVICE_NAME stderr.log (last $lines lines) ==="
             tail -n "$lines" "$LOGS_DIR/stderr.log"
             ;;
+        history|grep)
+            # Usage: logs history <pattern> [stdout|stderr]
+            local pattern="$lines"   # second positional arg is the pattern here
+            local stream="${3:-stderr}"
+            if [[ -z "$pattern" ]]; then
+                echo "Usage: ./scripts/service.sh [env] logs history <pattern> [stdout|stderr]"
+                return 1
+            fi
+            local base="stderr.log"
+            [[ "$stream" == "stdout" || "$stream" == "out" ]] && base="stdout.log"
+            echo "=== Searching $base (+ rotated history) for: $pattern ==="
+            search_log_history "$base" "$pattern"
+            ;;
         *)
-            echo "Usage: ./scripts/service.sh [env] logs [stdout|stderr|follow|all] [lines]"
+            echo "Usage: ./scripts/service.sh [env] logs [stdout|stderr|follow|all|history] [lines|pattern]"
             ;;
     esac
 }
@@ -658,13 +712,14 @@ case "$COMMAND" in
         echo "  uninstall    Remove LaunchAgent"
         echo "  setup        Initialize deployment directory (config only)"
         echo "  check-env    Verify CLI tools and offer to install missing ones"
-        echo "  logs         View logs [stdout|stderr|follow|all] [lines]"
+        echo "  logs         View logs [stdout|stderr|follow|all|history] [lines|pattern]"
         echo ""
         echo "Examples:"
         echo "  ./scripts/service.sh status              # Local status"
         echo "  ./scripts/service.sh main status          # Production status"
         echo "  ./scripts/service.sh dev setup            # Initialize dev config dir"
-        echo "  ./scripts/service.sh main logs follow     # Stream production logs"
+        echo "  ./scripts/service.sh main logs follow     # Stream production logs (rotation-safe)"
+        echo "  ./scripts/service.sh main logs history ERROR  # Search live + rotated logs"
         echo "  ./scripts/service.sh status-all           # All environments"
         echo ""
         echo "Deployment: Push to dev/main branch triggers CI auto-deploy"
