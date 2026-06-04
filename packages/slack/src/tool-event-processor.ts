@@ -282,7 +282,9 @@ export class ToolEventProcessor {
    * from `backgroundBashRegistry` and never touched by per-turn `cleanup()` so
    * it survives resume turns. See `background-resume-tracker.ts`.
    */
-  private backgroundResumeTracker = new BackgroundResumeTracker();
+  private backgroundResumeTracker = new BackgroundResumeTracker((toolName) =>
+    this.logger.debug('bg resume: unrecognized consumer result (possible output-tool shape drift)', { toolName }),
+  );
   /** Issue #794 — see `BgTaskEntry` doc. */
   private backgroundTaskRegistry = new BackgroundTaskRegistry();
   /**

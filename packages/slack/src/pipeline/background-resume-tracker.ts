@@ -86,17 +86,18 @@ export function contentToText(content: unknown): string {
   return String(content);
 }
 
-/** Search structured payloads (object or block array) for a string field. */
+/** Search structured payloads (object or block array, recursively) for a string field. */
 function findStructuredString(content: unknown, field: string): string | undefined {
+  const seen = new Set<unknown>();
   const visit = (node: unknown): string | undefined => {
-    if (!node || typeof node !== 'object') return undefined;
+    if (!node || typeof node !== 'object' || seen.has(node)) return undefined;
+    seen.add(node);
     const rec = node as Record<string, unknown>;
     if (typeof rec[field] === 'string' && rec[field]) return rec[field] as string;
-    if (Array.isArray(node)) {
-      for (const child of node) {
-        const hit = visit(child);
-        if (hit) return hit;
-      }
+    // Recurse arrays AND nested object property values (e.g. `{result:{...}}`).
+    for (const child of Object.values(rec)) {
+      const hit = visit(child);
+      if (hit) return hit;
     }
     return undefined;
   };
@@ -123,6 +124,12 @@ export interface ConsumerResultClass {
   id?: string;
   /** True when the referenced task has stopped for good. */
   terminal: boolean;
+  /**
+   * True when we recognized ANY signal (id, status, or exit code). False means
+   * the result was opaque to the parser — a likely symptom of output-tool shape
+   * drift, surfaced as a debug log so it doesn't silently ride launches to the cap.
+   */
+  recognized: boolean;
 }
 
 /**
@@ -156,7 +163,8 @@ export function classifyConsumerResult(content: unknown): ConsumerResultClass {
   // Unknown / unparseable status with no exit code → treat as still live so we
   // do not drop a launch prematurely (the resume cap bounds any over-hold).
 
-  return { id, terminal };
+  const recognized = id != null || status != null || hasExitCodeTag || hasStructuredExit;
+  return { id, terminal, recognized };
 }
 
 /** Is this tool name one that consumes/terminates a background shell? */
@@ -171,6 +179,14 @@ export function isConsumerToolName(toolName: string | undefined): boolean {
  */
 export class BackgroundResumeTracker {
   private map = new Map<string /*sessionKey*/, LiveLaunch[]>();
+
+  /**
+   * @param onUnrecognized optional hook fired when a consumer-tool result is
+   * opaque to the parser (no id/status/exit). Lets the host log a greppable
+   * signal so future output-tool shape drift doesn't silently ride launches to
+   * the resume cap. Pure-by-default: omitted in unit tests.
+   */
+  constructor(private onUnrecognized?: (toolName: string) => void) {}
 
   /**
    * Record a background-bash launch from its spawn-ack result. Idempotent per
@@ -196,16 +212,23 @@ export class BackgroundResumeTracker {
     const list = this.map.get(sessionKey);
     if (!list || list.length === 0) return;
 
-    const { id, terminal } = classifyConsumerResult(resultContent);
+    const { id, terminal, recognized } = classifyConsumerResult(resultContent);
+    // Surface parser drift: a known consumer tool whose result we could not read
+    // at all. Bounded by the resume cap, but worth a greppable signal.
+    if (!recognized && this.onUnrecognized && toolName) this.onUnrecognized(toolName);
     if (!terminal) return;
 
     let idx = -1;
-    if (id) idx = list.findIndex((l) => l.hasId && l.key === id);
-    if (idx === -1) idx = list.findIndex((l) => !l.hasId); // FIFO drain an id-less launch
-    if (idx === -1 && id) {
-      // Terminal result for an id we never tracked (e.g. ack id parse missed).
-      // Fall back to draining the oldest live launch so we don't get stuck.
-      idx = 0;
+    if (id) {
+      // Id-bearing terminal result: drain ONLY the id-matched launch. If no
+      // match, it is not one of our tracked bashes (e.g. a background SUBAGENT
+      // TaskOutput, #794) — do NOT FIFO-drain, which would erroneously release
+      // an unrelated bash launch. A launch whose ack id-parse missed stays live
+      // until the cap (the safe direction).
+      idx = list.findIndex((l) => l.hasId && l.key === id);
+    } else {
+      // Legacy id-less terminal result → FIFO-drain one id-less launch.
+      idx = list.findIndex((l) => !l.hasId);
     }
     if (idx === -1) return;
 

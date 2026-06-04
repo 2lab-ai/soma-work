@@ -38,11 +38,11 @@ describe('parseBackgroundLaunchId', () => {
 
 describe('classifyConsumerResult', () => {
   it('treats a running/pending poll as non-terminal', () => {
-    expect(classifyConsumerResult(taskOut('b1', 'running'))).toEqual({ id: 'b1', terminal: false });
+    expect(classifyConsumerResult(taskOut('b1', 'running'))).toEqual({ id: 'b1', terminal: false, recognized: true });
     expect(classifyConsumerResult(taskOut('b1', 'pending')).terminal).toBe(false);
   });
   it('treats completed/failed/killed and exit codes as terminal', () => {
-    expect(classifyConsumerResult(taskOut('b1', 'completed', 0))).toEqual({ id: 'b1', terminal: true });
+    expect(classifyConsumerResult(taskOut('b1', 'completed', 0))).toEqual({ id: 'b1', terminal: true, recognized: true });
     expect(classifyConsumerResult(taskOut('b1', 'failed', 1)).terminal).toBe(true);
     expect(classifyConsumerResult(taskOut('b1', 'killed')).terminal).toBe(true);
     expect(classifyConsumerResult('<task_id>b1</task_id>\n<exit_code>0</exit_code>').terminal).toBe(true);
@@ -51,8 +51,8 @@ describe('classifyConsumerResult', () => {
     expect(classifyConsumerResult({ status: 'completed', exitCode: 0 }).terminal).toBe(true);
     expect(classifyConsumerResult({ status: 'running' }).terminal).toBe(false);
   });
-  it('treats an unparseable result as non-terminal (do not drop prematurely)', () => {
-    expect(classifyConsumerResult('weird output').terminal).toBe(false);
+  it('treats an unparseable result as non-terminal and not recognized', () => {
+    expect(classifyConsumerResult('weird output')).toEqual({ id: undefined, terminal: false, recognized: false });
   });
 });
 
@@ -100,12 +100,33 @@ describe('BackgroundResumeTracker', () => {
     expect(t.liveCount(SK)).toBe(1);
   });
 
-  it('FIFO-drains an id-less launch on any terminal consumer result', () => {
+  it('FIFO-drains an id-less launch on a legacy id-less terminal result', () => {
     const t = new BackgroundResumeTracker();
     t.trackLaunch(SK, 'use-x', 'done'); // no id parseable → keyed by toolUseId
     expect(t.liveCount(SK)).toBe(1);
     t.observeConsumerResult(SK, 'BashOutput', '<status>completed</status>');
     expect(t.liveCount(SK)).toBe(0);
+  });
+
+  it('does NOT drain when a terminal result carries an id we never tracked (e.g. a bg subagent)', () => {
+    const t = new BackgroundResumeTracker();
+    t.trackLaunch(SK, 'u1', ackText('b1'));
+    // A terminal TaskOutput for an UNRELATED id (a background subagent task) must
+    // not erroneously FIFO-drain our bash launch.
+    t.observeConsumerResult(SK, 'TaskOutput', taskOut('subagent-99', 'completed'));
+    expect(t.liveCount(SK)).toBe(1);
+    // The real one still drains.
+    t.observeConsumerResult(SK, 'TaskOutput', taskOut('b1', 'completed'));
+    expect(t.liveCount(SK)).toBe(0);
+  });
+
+  it('fires onUnrecognized for an opaque consumer result', () => {
+    const seen: string[] = [];
+    const t = new BackgroundResumeTracker((toolName) => seen.push(toolName));
+    t.trackLaunch(SK, 'u1', ackText('b1'));
+    t.observeConsumerResult(SK, 'TaskOutput', 'totally opaque blob');
+    expect(seen).toEqual(['TaskOutput']);
+    expect(t.liveCount(SK)).toBe(1); // unrecognized → kept live
   });
 
   it('ignores non-consumer tools and non-terminal results', () => {
