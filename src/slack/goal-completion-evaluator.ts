@@ -263,3 +263,49 @@ export function applyGoalEvalDispatchFailure(goal: import('../types').SessionGoa
   // Intentionally NOT bumping evalAttemptCount — that counter
   // tracks completed eval cycles, not infrastructure flakes.
 }
+
+/** Per-turn loop decision (spec §Auto-Continuation Loop step 4-5). */
+export type GoalEvalOutcome = { action: 'complete' } | { action: 'continue' } | { action: 'cap-paused' };
+
+/**
+ * Decide what the turn-end auto-continuation loop does given an eval
+ * verdict, and apply the matching state mutation to `goal`:
+ *
+ *   - `completed === true` → flip to complete (`applyGoalEvalSuccess`),
+ *     stop the loop. → `{ action: 'complete' }`
+ *   - `completed === false` and `continuationCount < maxContinuations`
+ *     → record the gap (`applyGoalEvalFailure`), bump the continuation
+ *     counter, stamp `lastContinuationAt`; the caller injects the next
+ *     turn. → `{ action: 'continue' }`
+ *   - `completed === false` at the cap → record the gap but do NOT bump
+ *     the counter; the caller posts a pause notice and stops until a
+ *     real user message resets the counter. → `{ action: 'cap-paused' }`
+ *
+ * Pure aside from the `goal` mutation — the caller owns persistence,
+ * `session.systemPrompt` invalidation, Slack notices, and injection.
+ * Extracted from the index.ts wiring so the loop decision is unit-
+ * testable in isolation.
+ */
+export function decideGoalEvalOutcome(
+  goal: import('../types').SessionGoal,
+  verdict: GoalEvalVerdict,
+  now: number = Date.now(),
+): GoalEvalOutcome {
+  if (verdict.completed) {
+    applyGoalEvalSuccess(goal, now);
+    return { action: 'complete' };
+  }
+
+  applyGoalEvalFailure(goal, verdict.reason, now);
+
+  // Cap check BEFORE incrementing: with maxContinuations=N the host
+  // injects continuations until the counter reaches N, then pauses.
+  if (goal.continuationCount >= goal.maxContinuations) {
+    return { action: 'cap-paused' };
+  }
+
+  goal.continuationCount = goal.continuationCount + 1;
+  goal.lastContinuationAt = now;
+  goal.updatedAt = now;
+  return { action: 'continue' };
+}

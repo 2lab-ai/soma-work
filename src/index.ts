@@ -80,8 +80,7 @@ import { buildGoalContinuationPrompt } from './prompt/session-goal-block';
 import { getVersionInfo, notifyRelease } from './release-notifier';
 import {
   applyGoalEvalDispatchFailure,
-  applyGoalEvalFailure,
-  applyGoalEvalSuccess,
+  decideGoalEvalOutcome,
   evaluateGoalCompletion,
 } from './slack/goal-completion-evaluator';
 import { GOAL_CONTINUATION_TEXT_PREFIX } from './slack/goal-continuation';
@@ -951,10 +950,19 @@ async function start() {
               claudeHandler.dispatchOneShot(userPrompt, systemPrompt, model, abortController, undefined, cwd),
           );
 
+          // Decide the loop action and apply the matching goal-state
+          // mutation. Pure decision lives in goal-completion-evaluator so
+          // it stays unit-testable; persistence + notices + injection are
+          // owned here.
+          const outcome = decideGoalEvalOutcome(goal, verdict);
+          // Every eval verdict changes goal state, so the cached system
+          // prompt (which embeds the active-goal steering block) is stale.
+          // Drop it so the next turn rebuilds — spec §Prompt Injection.
+          session.systemPrompt = undefined;
+          registry.saveSessions();
+
           // "y" — the goal is done. Stop the loop.
-          if (verdict.completed) {
-            applyGoalEvalSuccess(goal);
-            registry.saveSessions();
+          if (outcome.action === 'complete') {
             await postGoalNotice(
               session.channelId,
               session.threadTs,
@@ -963,16 +971,13 @@ async function start() {
             return;
           }
 
-          // "n" — not done yet. Record the gap; the next continuation
-          // embeds it via `buildGoalContinuationPrompt`.
-          applyGoalEvalFailure(goal, verdict.reason);
+          const remaining = verdict.remaining.length
+            ? verdict.remaining.map((r) => `• ${r}`).join('\n')
+            : '_(no remaining items reported)_';
 
-          // Safety backstop: cap the number of model-driven continuations
-          // since the last real user message. Hitting the cap pauses the
-          // loop until the user weighs in (which zeroes the counter via
-          // resetGoalContinuationOnUserMessage).
-          if (goal.continuationCount >= goal.maxContinuations) {
-            registry.saveSessions();
+          // Cap backstop — pause until a real user message resets the
+          // counter (resetGoalContinuationOnUserMessage).
+          if (outcome.action === 'cap-paused') {
             logger.info('Goal continuation cap reached', {
               sessionKey,
               continuationCount: goal.continuationCount,
@@ -981,27 +986,21 @@ async function start() {
             await postGoalNotice(
               session.channelId,
               session.threadTs,
-              `⏹️ Goal auto-continuation paused after ${goal.maxContinuations} turns. Send a message in this thread to resume.`,
+              `⏹️ Goal auto-continuation paused after ${goal.maxContinuations} turns.\n*Latest reason:* ${verdict.reason}\nSend a message in this thread to resume.`,
             );
             return;
           }
 
-          goal.continuationCount = goal.continuationCount + 1;
-          goal.lastContinuationAt = Date.now();
-          registry.saveSessions();
-
-          const remaining = verdict.remaining.length
-            ? verdict.remaining.map((r) => `• ${r}`).join('\n')
-            : '_(no remaining items reported)_';
+          // "n" under cap → continue. Post progress, then feed the goal
+          // back to the model. The injected synthetic turn runs the
+          // continuation prompt; when it ends, this handler fires again —
+          // that is the loop.
           await postGoalNotice(
             session.channelId,
             session.threadTs,
             `🔄 Goal not yet complete (eval-model verdict).\n*Reason:* ${verdict.reason}\n*Remaining:*\n${remaining}`,
           );
 
-          // Step 5: feed the goal back to the model and continue. The
-          // injected synthetic turn runs the continuation prompt; when it
-          // ends, this handler fires again — that is the loop.
           const now = Date.now();
           const syntheticEvent: SyntheticMessageEvent = {
             user: goal.createdBy,
@@ -1032,6 +1031,8 @@ async function start() {
           // Parse / network / timeout failure — status is preserved; only
           // `pendingEval` resets so the loop can resume on the next turn.
           applyGoalEvalDispatchFailure(goal);
+          // Goal state still changed (pendingEval cleared) → rebuild prompt.
+          session.systemPrompt = undefined;
           registry.saveSessions();
           const message = err instanceof Error ? err.message : String(err);
           logger.error('Goal eval dispatch failed', { sessionKey, error: message });
