@@ -1021,11 +1021,29 @@ async function start() {
           });
           // Fire-and-forget — the triggering turn has already released its
           // request slot, so this starts a fresh, cleanly-serialized turn.
-          goalMessageInjector(syntheticEvent).catch((err: unknown) => {
-            logger.warn('Goal continuation injection failed', {
+          // Injection is the only thing that drives the loop forward on a
+          // 'continue' verdict; if it throws, the loop silently stalls
+          // (no next turn → no next eval) while the user just saw "🔄 not
+          // yet complete". So escalate to error + an actionable notice
+          // instead of a quiet warn.
+          goalMessageInjector(syntheticEvent).catch(async (err: unknown) => {
+            const injectErr = err instanceof Error ? err.message : String(err);
+            logger.error('Goal continuation injection failed — loop stalled', {
               sessionKey,
-              error: err instanceof Error ? err.message : String(err),
+              error: injectErr,
             });
+            try {
+              await postGoalNotice(
+                session.channelId,
+                session.threadTs,
+                `⚠️ Goal continuation failed to start: ${injectErr}. The loop is paused — send a message in this thread to resume, or use \`goal pause\` / \`goal clear\`.`,
+              );
+            } catch (noticeErr: unknown) {
+              logger.error('Failed to post goal continuation-failure notice', {
+                sessionKey,
+                error: noticeErr instanceof Error ? noticeErr.message : String(noticeErr),
+              });
+            }
           });
         } catch (err: unknown) {
           // Parse / network / timeout failure — status is preserved; only

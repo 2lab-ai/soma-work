@@ -41,9 +41,21 @@ import { DEFAULT_GOAL_MAX_CONTINUATIONS, type SessionGoal } from './types';
  *
  * `status: 'paused'` legacy goals also predate the `'blocked'` arm —
  * no migration needed there since the type is a union, not an enum.
+ *
+ * Also clears `pendingEval` unconditionally on load: it is a
+ * process-local lease on an in-flight completion eval (fire-and-forget,
+ * in-memory only). No eval can survive a process restart, so a
+ * persisted `pendingEval` would permanently suppress the turn-end loop
+ * (every turn end short-circuits on `if (goal.pendingEval) return`).
+ * Dropping it on load lets the loop resume on the next turn.
  */
 function migrateLegacyGoal(goal: SessionGoal | undefined): SessionGoal | undefined {
   if (!goal) return goal;
+  // Stale lease cleanup — see doc comment. Rebind so both the fast path
+  // and the backfill path below return a goal without `pendingEval`.
+  if (goal.pendingEval !== undefined) {
+    goal = { ...goal, pendingEval: undefined };
+  }
   // Fast path — goal already has all post-followup fields.
   if (
     typeof goal.continuationCount === 'number' &&

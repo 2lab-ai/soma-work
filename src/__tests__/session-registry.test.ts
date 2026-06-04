@@ -98,6 +98,39 @@ describe('SessionRegistry persistence', () => {
     expect(restored?.goal?.status).toBe('active');
   });
 
+  it('clears a stale pendingEval on load (process-local eval lease cannot survive restart)', () => {
+    // pendingEval marks an in-flight, in-memory completion eval. If the
+    // process crashes mid-eval, a persisted pendingEval would make every
+    // future turn end short-circuit on `if (goal.pendingEval) return`,
+    // permanently killing the goal loop. Load must drop it so the loop
+    // resumes on the next turn.
+    const writer = new SessionRegistry();
+    const session = writer.createSession('U123', 'Tester', 'C_GOAL_PE', '171.G2');
+    session.goal = {
+      objective: 'finish the migration',
+      status: 'active',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      createdBy: 'U123',
+      continuationCount: 2,
+      maxContinuations: 10,
+      consecutiveBlockedSignals: 0,
+      evalAttemptCount: 1,
+      pendingEval: { requestedAt: Date.now(), turnId: 'stuck-turn' },
+    };
+    writer.saveSessions();
+
+    const reader = new SessionRegistry();
+    reader.loadSessions();
+    const restored = reader.getSession('C_GOAL_PE', '171.G2');
+
+    expect(restored?.goal?.objective).toBe('finish the migration');
+    expect(restored?.goal?.status).toBe('active');
+    expect(restored?.goal?.pendingEval).toBeUndefined();
+    // Other loop state is preserved.
+    expect(restored?.goal?.continuationCount).toBe(2);
+  });
+
   it('backfills effort from user default on legacy sessions without effort field', () => {
     // Simulate a sessions.json written before the effort field existed. Without
     // backfill, the restored session would have effort=undefined and the handler
