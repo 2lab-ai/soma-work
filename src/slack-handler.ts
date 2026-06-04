@@ -42,7 +42,6 @@ import { createAssistantContainer } from './slack/assistant-container';
 import { CompletionMessageTracker } from './slack/completion-message-tracker';
 import { createForkExecutor } from './slack/create-fork-executor';
 import { DispatchAbortError, formatDispatchAbortMessage } from './slack/dispatch-abort';
-import { detectGoalCompletionSignal } from './slack/goal-completion-detector';
 import { resetGoalContinuationOnUserMessage } from './slack/goal-continuation';
 import {
   checkAndConsumeBudget,
@@ -127,7 +126,7 @@ export class SlackHandler {
   private goalCompletionRequestHandler?: (
     session: ConversationSession,
     sessionKey: string,
-    signal: { reason: string; via: 'sentinel' | 'natural-language' },
+    signal: { reason: string; via: 'sentinel' | 'natural-language' | 'turn-end' },
     workSummary: string,
   ) => Promise<void>;
 
@@ -923,7 +922,7 @@ export class SlackHandler {
     handler: (
       session: ConversationSession,
       sessionKey: string,
-      signal: { reason: string; via: 'sentinel' | 'natural-language' },
+      signal: { reason: string; via: 'sentinel' | 'natural-language' | 'turn-end' },
       workSummary: string,
     ) => Promise<void>,
   ): void {
@@ -931,11 +930,16 @@ export class SlackHandler {
   }
 
   /**
-   * Post-turn hook fired by the TurnRunner surface. If the active
-   * goal is `active` and the assistant text contains a completion
-   * signal, set `pendingEval` and hand off to the registered
-   * handler. The handler owns calling the eval model and applying
-   * the verdict — this method only handles detection + dedupe.
+   * Post-turn hook fired by the TurnRunner surface. While a goal is
+   * `active`, EVERY turn end triggers a completion eval (spec
+   * §Auto-Continuation Loop step 4-5): set `pendingEval`, then hand
+   * off to the registered handler, which forks a clean eval turn to
+   * ask the model whether the goal is complete and — on "not yet" —
+   * injects the next continuation turn. This method only handles the
+   * trigger + dedupe; the handler owns eval + loop.
+   *
+   * No sentinel detection: the work model is not relied upon to
+   * announce completion. The host audits every turn.
    */
   private async handleAssistantTurnCompleteForGoal(
     session: ConversationSession,
@@ -944,24 +948,23 @@ export class SlackHandler {
   ): Promise<void> {
     const goal = session.goal;
     if (!goal || goal.status !== 'active') return;
+    // Dedupe: an eval is already in flight for this goal. Its verdict
+    // owns the next transition (complete / continue), so skip.
     if (goal.pendingEval) return;
     const handler = this.goalCompletionRequestHandler;
     if (!handler) return;
 
     const joined = assistantMessages.join('\n\n');
-    const signal = detectGoalCompletionSignal(joined);
-    if (!signal) return;
+    const signal = { reason: 'turn-end', via: 'turn-end' as const };
 
-    // Stamp pendingEval BEFORE detaching so the ralph-loop guard
-    // sees it on the next idle and stays quiet.
+    // Stamp pendingEval BEFORE detaching so a concurrent turn end
+    // (e.g. a racing user turn) sees the in-flight eval and stays quiet.
     const now = Date.now();
     goal.pendingEval = { requestedAt: now, turnId: `${now}` };
     goal.updatedAt = now;
     this.claudeHandler.saveSessions();
-    this.logger.info('Goal completion signal detected — dispatching eval', {
+    this.logger.info('Goal turn ended — dispatching completion eval', {
       sessionKey,
-      via: signal.via,
-      reasonPreview: signal.reason.slice(0, 120),
     });
 
     // Fire-and-forget: the eval runs a full Claude turn (multi-second)
