@@ -12,7 +12,10 @@ export interface MemoryStore {
   addMemory(user: string, target: string, content: string): { ok: boolean; message: string };
   replaceMemory(user: string, target: string, oldText: string, content: string): { ok: boolean; message: string };
   removeMemory(user: string, target: string, oldText: string): { ok: boolean; message: string };
-  loadMemory(user: string, target: string): { entries: string[]; charLimit: number; totalChars: number; percentUsed: number };
+  loadMemory(
+    user: string,
+    target: string,
+  ): { entries: string[]; charLimit: number; totalChars: number; percentUsed: number };
 }
 
 let _memoryStore: MemoryStore | null = null;
@@ -47,10 +50,7 @@ export interface SkillStore {
    * Both implementations import their messages from `skill-share-errors.ts`
    * so the two layers cannot drift on user-facing wording.
    */
-  shareSkill(
-    user: string,
-    name: string,
-  ): { ok: boolean; message: string; content?: string };
+  shareSkill(user: string, name: string): { ok: boolean; message: string; content?: string };
   /**
    * Rename a skill directory in place: `skills/{name}/` → `skills/{newName}/`.
    *
@@ -106,6 +106,13 @@ function getRatingStore(): RatingStore | null {
   return _ratingStore;
 }
 
+import { attachCommandHelp } from './command-help';
+import {
+  getSuccessMessage,
+  SHARE_CONTENT_CHAR_LIMIT,
+  shareOverLimitMessage,
+  shareSuccessMessage,
+} from './skill-share-errors';
 import type {
   ContinueSessionParams,
   ManageSkillParams,
@@ -116,11 +123,6 @@ import type {
   ModelCommandRunResponse,
   SaveMemoryParams,
 } from './types';
-import {
-  SHARE_CONTENT_CHAR_LIMIT,
-  shareOverLimitMessage,
-  shareSuccessMessage,
-} from './skill-share-errors';
 import { checkAskUserQuestionQuality } from './validator';
 
 const HISTORY_KEY_BY_RESOURCE: Record<SessionResourceType, 'issues' | 'prs' | 'docs'> = {
@@ -339,28 +341,27 @@ const MANAGE_SKILL_SCHEMA = {
   properties: {
     action: {
       type: 'string',
-      enum: ['create', 'update', 'delete', 'list', 'share', 'rename'],
+      enum: ['create', 'update', 'delete', 'list', 'share', 'rename', 'get'],
       description:
         'create: new skill, update: overwrite existing, delete: remove, ' +
         'list: show all, share: return full content for cross-user copy-paste install, ' +
-        'rename: move SKILL.md directory from `name` to `newName`',
+        'rename: move SKILL.md directory from `name` to `newName`, ' +
+        'get: read back the full SKILL.md of one of your own skills (self-fetch, no share cap)',
     },
     name: {
       type: 'string',
-      description:
-        'Skill name in kebab-case (e.g. my-deploy). Required for create/update/delete/share/rename.',
+      description: 'Skill name in kebab-case (e.g. my-deploy). Required for create/update/delete/share/rename/get.',
     },
     newName: {
       type: 'string',
-      description:
-        'New skill name (kebab-case). Required for rename only — must differ from `name`.',
+      description: 'New skill name (kebab-case). Required for rename only — must differ from `name`.',
     },
     content: {
       type: 'string',
       description:
         'Full SKILL.md content with YAML frontmatter. Required for create/update. ' +
-        'Must NOT be supplied for share or rename (server reads existing content for share; ' +
-        'rename is metadata-only and does not change SKILL.md bytes).',
+        'Must NOT be supplied for share, rename, or get (server reads existing content for ' +
+        'share/get; rename is metadata-only and does not change SKILL.md bytes).',
     },
   },
   required: ['action'],
@@ -482,9 +483,12 @@ export function listModelCommands(context: ModelCommandContext): ModelCommandDes
       {
         id: 'MANAGE_SKILL',
         description:
-          'Create, update, delete, rename, list, or share user personal skills. ' +
+          'Create, update, delete, rename, list, share, or get user personal skills. ' +
           'Skills are SKILL.md files with YAML frontmatter. Invoke via $user:skill-name. ' +
           'Immediately available after creation. ' +
+          'get: pass only `name` — the response payload returns the full SKILL.md ' +
+          'content of your own skill (self-fetch for inspect/edit; unlike share it is ' +
+          'not capped and carries no install instructions). ' +
           'rename: pass `name` (current) + `newName` (kebab-case, different) — moves ' +
           'the entire skill directory in place so multi-file skills keep their ' +
           'sibling resources. ' +
@@ -493,14 +497,15 @@ export function listModelCommands(context: ModelCommandContext): ModelCommandDes
           'render the returned content verbatim inside a fenced code block in the Slack ' +
           'thread, then append a single line instructing any reader to invoke MANAGE_SKILL ' +
           'with action=create using the same name and content to install the skill on ' +
-          "their own account. Maximum shareable content is " +
+          'their own account. Maximum shareable content is ' +
           `${SHARE_CONTENT_CHAR_LIMIT} characters; over-cap returns ok=false and the ` +
           'caller must trim the SKILL.md before retrying.',
         paramsSchema: MANAGE_SKILL_SCHEMA,
       },
       {
         id: 'RATE',
-        description: 'Get the current user rating for this model (0-10). The rating reflects user satisfaction and is also visible in <your_rating> context tag.',
+        description:
+          'Get the current user rating for this model (0-10). The rating reflects user satisfaction and is also visible in <your_rating> context tag.',
         paramsSchema: { type: 'object', properties: {}, additionalProperties: false },
       },
     );
@@ -522,7 +527,10 @@ function toRunError(commandId: ModelCommandRunRequest['commandId'], error: Model
     type: 'model_command_result',
     commandId,
     ok: false,
-    error,
+    // Attach full command help to INVALID_ARGS runtime failures (no-op for
+    // other codes) so a model that just failed can self-correct on the first
+    // try — same guarantee as the validation layer. See command-help.ts.
+    error: attachCommandHelp(commandId, error),
   };
 }
 
@@ -783,9 +791,7 @@ export function runModelCommand(
           // (over cap, name collision, validation error) hasn't changed disk
           // state, so emitting `mutated` would falsely invalidate the cached
           // system prompt and trigger a wasted rebuild.
-          ...(result.ok
-            ? { mutated: { kind: 'skill' as const, user: context.user, action: 'create' as const } }
-            : {}),
+          ...(result.ok ? { mutated: { kind: 'skill' as const, user: context.user, action: 'create' as const } } : {}),
         },
       };
     }
@@ -801,9 +807,7 @@ export function runModelCommand(
         payload: {
           ok: result.ok,
           message: result.message,
-          ...(result.ok
-            ? { mutated: { kind: 'skill' as const, user: context.user, action: 'update' as const } }
-            : {}),
+          ...(result.ok ? { mutated: { kind: 'skill' as const, user: context.user, action: 'update' as const } } : {}),
         },
       };
     }
@@ -819,9 +823,7 @@ export function runModelCommand(
         payload: {
           ok: result.ok,
           message: result.message,
-          ...(result.ok
-            ? { mutated: { kind: 'skill' as const, user: context.user, action: 'delete' as const } }
-            : {}),
+          ...(result.ok ? { mutated: { kind: 'skill' as const, user: context.user, action: 'delete' as const } } : {}),
         },
       };
     }
@@ -845,9 +847,40 @@ export function runModelCommand(
           // discriminant from storage is intentionally NOT exposed on the
           // wire — Slack rename modal consumes it via the in-process call,
           // and remote callers only need ok/message.
-          ...(result.ok
-            ? { mutated: { kind: 'skill' as const, user: context.user, action: 'rename' as const } }
-            : {}),
+          ...(result.ok ? { mutated: { kind: 'skill' as const, user: context.user, action: 'rename' as const } } : {}),
+        },
+      };
+    }
+    if (params.action === 'get') {
+      if (!params.name) {
+        return toRunError('MANAGE_SKILL', { code: 'INVALID_ARGS', message: 'name required for get' });
+      }
+      // `get` is a self-read: the caller fetches the full SKILL.md of one of
+      // their own skills. The storage read is identical to `share`, so we reuse
+      // `shareSkill` as the underlying read primitive (DRY — both layers source
+      // their not-found / invalid-name wording from `skill-share-errors.ts`).
+      // The two actions diverge only in post-processing: `share` applies the
+      // SHARE_CONTENT_CHAR_LIMIT cap and emits install instructions, whereas
+      // `get` returns the raw content uncapped (the model reads its own skill,
+      // e.g. for read-modify-write, and must not be blocked on large bodies).
+      const result = store.shareSkill(context.user, params.name);
+      if (!result.ok || result.content === undefined) {
+        return {
+          type: 'model_command_result',
+          commandId: 'MANAGE_SKILL',
+          ok: true,
+          payload: { ok: result.ok, message: result.message },
+        };
+      }
+      return {
+        type: 'model_command_result',
+        commandId: 'MANAGE_SKILL',
+        ok: true,
+        payload: {
+          ok: true,
+          message: getSuccessMessage(params.name),
+          name: params.name,
+          content: result.content,
         },
       };
     }

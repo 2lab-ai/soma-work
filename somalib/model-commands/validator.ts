@@ -1,3 +1,5 @@
+import { attachCommandHelp } from './command-help';
+import { expectedHandoffKind, extractSentinelType, isZHandoffWorkflow } from './handoff-parser';
 import type {
   SaveContextResultPayload,
   SessionLink,
@@ -10,7 +12,6 @@ import type {
   UserChoices,
   WorkflowType,
 } from './session-types';
-import { expectedHandoffKind, extractSentinelType, isZHandoffWorkflow } from './handoff-parser';
 import type {
   AskUserQuestionParams,
   ContinueSessionParams,
@@ -125,7 +126,7 @@ export function validateModelCommandRunArgs(args: unknown): ValidationResult {
   if (commandId === 'UPDATE_SESSION') {
     const parsed = parseUpdateSessionRequest(params);
     if (!parsed.ok) {
-      return parsed;
+      return withCommandHelp('UPDATE_SESSION', parsed);
     }
     return {
       ok: true,
@@ -139,7 +140,7 @@ export function validateModelCommandRunArgs(args: unknown): ValidationResult {
   if (commandId === 'ASK_USER_QUESTION') {
     const parsed = parseAskUserQuestionParams(params);
     if (!parsed.ok) {
-      return parsed;
+      return withCommandHelp('ASK_USER_QUESTION', parsed);
     }
     return {
       ok: true,
@@ -153,7 +154,7 @@ export function validateModelCommandRunArgs(args: unknown): ValidationResult {
   if (commandId === 'CONTINUE_SESSION') {
     const parsed = parseContinueSessionParams(params);
     if (!parsed.ok) {
-      return parsed;
+      return withCommandHelp('CONTINUE_SESSION', parsed);
     }
     return {
       ok: true,
@@ -166,15 +167,21 @@ export function validateModelCommandRunArgs(args: unknown): ValidationResult {
 
   if (commandId === 'SAVE_MEMORY') {
     if (!isRecord(params)) {
-      return invalidArgs('SAVE_MEMORY params must be an object with action, target, and content/old_text');
+      return invalidArgsFor(
+        'SAVE_MEMORY',
+        'SAVE_MEMORY params must be an object with action, target, and content/old_text',
+      );
     }
     const action = params.action;
     const target = params.target;
     if (action !== 'add' && action !== 'replace' && action !== 'remove') {
-      return invalidArgs(`SAVE_MEMORY action must be 'add', 'replace', or 'remove', got: ${String(action)}`);
+      return invalidArgsFor(
+        'SAVE_MEMORY',
+        `SAVE_MEMORY action must be 'add', 'replace', or 'remove', got: ${String(action)}`,
+      );
     }
     if (target !== 'memory' && target !== 'user') {
-      return invalidArgs(`SAVE_MEMORY target must be 'memory' or 'user', got: ${String(target)}`);
+      return invalidArgsFor('SAVE_MEMORY', `SAVE_MEMORY target must be 'memory' or 'user', got: ${String(target)}`);
     }
     return {
       ok: true,
@@ -202,7 +209,7 @@ export function validateModelCommandRunArgs(args: unknown): ValidationResult {
 
   if (commandId === 'MANAGE_SKILL') {
     if (!isRecord(params)) {
-      return invalidArgs('MANAGE_SKILL params must be an object with action');
+      return invalidArgsFor('MANAGE_SKILL', 'MANAGE_SKILL params must be an object with action');
     }
     const action = params.action;
     if (
@@ -211,10 +218,12 @@ export function validateModelCommandRunArgs(args: unknown): ValidationResult {
       action !== 'delete' &&
       action !== 'list' &&
       action !== 'share' &&
-      action !== 'rename'
+      action !== 'rename' &&
+      action !== 'get'
     ) {
-      return invalidArgs(
-        `MANAGE_SKILL action must be 'create', 'update', 'delete', 'list', 'share', or 'rename', got: ${String(action)}`,
+      return invalidArgsFor(
+        'MANAGE_SKILL',
+        `MANAGE_SKILL action must be 'create', 'update', 'delete', 'list', 'share', 'rename', or 'get', got: ${String(action)}`,
       );
     }
     if (
@@ -222,28 +231,37 @@ export function validateModelCommandRunArgs(args: unknown): ValidationResult {
         action === 'update' ||
         action === 'delete' ||
         action === 'share' ||
-        action === 'rename') &&
+        action === 'rename' ||
+        action === 'get') &&
       typeof params.name !== 'string'
     ) {
-      return invalidArgs('MANAGE_SKILL name is required for create/update/delete/share/rename');
+      return invalidArgsFor('MANAGE_SKILL', 'MANAGE_SKILL name is required for create/update/delete/share/rename/get');
     }
     if ((action === 'create' || action === 'update') && typeof params.content !== 'string') {
-      return invalidArgs('MANAGE_SKILL content is required for create/update');
+      return invalidArgsFor('MANAGE_SKILL', 'MANAGE_SKILL content is required for create/update');
     }
     // share is read-only on the server side — refuse callers that pass content
     // so a sloppy request can never be misinterpreted as a hidden update.
     if (action === 'share' && params.content !== undefined) {
-      return invalidArgs('MANAGE_SKILL share does not accept content; only name is required');
+      return invalidArgsFor('MANAGE_SKILL', 'MANAGE_SKILL share does not accept content; only name is required');
+    }
+    // get is a read-only self-fetch — same content ban as share so a stray
+    // `content` field can never be silently reinterpreted as a write.
+    if (action === 'get' && params.content !== undefined) {
+      return invalidArgsFor('MANAGE_SKILL', 'MANAGE_SKILL get does not accept content; only name is required');
     }
     // rename is a metadata-only operation — it must not carry SKILL.md bytes
     // (those would silently shadow the persisted content). Storage layer also
     // rejects accidental coupling, but we fail closed at the wire boundary.
     if (action === 'rename') {
       if (typeof params.newName !== 'string') {
-        return invalidArgs('MANAGE_SKILL rename requires newName');
+        return invalidArgsFor('MANAGE_SKILL', 'MANAGE_SKILL rename requires newName');
       }
       if (params.content !== undefined) {
-        return invalidArgs('MANAGE_SKILL rename does not accept content; only name + newName are required');
+        return invalidArgsFor(
+          'MANAGE_SKILL',
+          'MANAGE_SKILL rename does not accept content; only name + newName are required',
+        );
       }
     }
     return {
@@ -251,7 +269,7 @@ export function validateModelCommandRunArgs(args: unknown): ValidationResult {
       request: {
         commandId: 'MANAGE_SKILL',
         params: {
-          action: action as 'create' | 'update' | 'delete' | 'list' | 'share' | 'rename',
+          action: action as 'create' | 'update' | 'delete' | 'list' | 'share' | 'rename' | 'get',
           name: typeof params.name === 'string' ? params.name : undefined,
           newName: typeof params.newName === 'string' ? params.newName : undefined,
           content: typeof params.content === 'string' ? params.content : undefined,
@@ -270,12 +288,11 @@ export function validateModelCommandRunArgs(args: unknown): ValidationResult {
     };
   }
 
-
   // SAVE_CONTEXT_RESULT fallback — last remaining commandId
   const saveParams = params !== undefined ? params : buildSaveContextFallbackParams(args);
   const parsed = parseSaveContextResultParams(saveParams);
   if (!parsed.ok) {
-    return parsed;
+    return withCommandHelp('SAVE_CONTEXT_RESULT', parsed);
   }
   return {
     ok: true,
@@ -590,9 +607,7 @@ function pushContextWarnings(context: string | undefined, prefix: string, warnin
     return;
   }
   if (trimmed.length < MIN_CONTEXT_LENGTH) {
-    warnings.push(
-      `${prefix}context too short (${trimmed.length} chars, min ${MIN_CONTEXT_LENGTH}) — expand rationale`,
-    );
+    warnings.push(`${prefix}context too short (${trimmed.length} chars, min ${MIN_CONTEXT_LENGTH}) — expand rationale`);
   }
 }
 
@@ -615,9 +630,7 @@ function pushRecommendedWarnings(
   // the recommended option is expressed at the question level.
   for (const choice of choices) {
     if (typeof choice.description === 'string' && RECOMMENDED_MARKER_RE.test(choice.description)) {
-      warnings.push(
-        `${prefix}Recommended marker in description (option [${choice.id}]) — must be in label only`,
-      );
+      warnings.push(`${prefix}Recommended marker in description (option [${choice.id}]) — must be in label only`);
     }
   }
 
@@ -627,10 +640,7 @@ function pushRecommendedWarnings(
 
   // New API: explicit recommendedChoiceId satisfies the "Recommended" invariant.
   // Only nudge toward the legacy label suffix when no valid id is provided.
-  if (
-    typeof recommendedChoiceId === 'string' &&
-    choices.some((c) => c.id === recommendedChoiceId)
-  ) {
+  if (typeof recommendedChoiceId === 'string' && choices.some((c) => c.id === recommendedChoiceId)) {
     return;
   }
 
@@ -663,7 +673,10 @@ function isForbiddenMetaLabel(label: string): boolean {
   // Normalize: trim, strip leading/trailing non-word characters, lowercase.
   // Exact match against the forbidden set — substring match would incorrectly
   // flag valid domain labels like "Proceed to zwork".
-  const normalized = label.trim().replace(/^[^\w]+|[^\w]+$/g, '').toLowerCase();
+  const normalized = label
+    .trim()
+    .replace(/^[^\w]+|[^\w]+$/g, '')
+    .toLowerCase();
   if (normalized.length === 0) return false;
   return FORBIDDEN_META_LABELS.has(normalized);
 }
@@ -729,9 +742,7 @@ function parseContinueSessionParams(
     if (isZHandoffWorkflow(forceWorkflow as WorkflowType)) {
       const sentinelType = extractSentinelType(prompt);
       if (!sentinelType) {
-        return invalidArgs(
-          `CONTINUE_SESSION forceWorkflow '${forceWorkflow}' requires <z-handoff> sentinel in prompt`,
-        );
+        return invalidArgs(`CONTINUE_SESSION forceWorkflow '${forceWorkflow}' requires <z-handoff> sentinel in prompt`);
       }
       const expected = expectedHandoffKind(forceWorkflow as 'z-plan-to-work' | 'z-epic-update');
       if (sentinelType !== expected) {
@@ -904,10 +915,7 @@ function normalizeUserChoice(raw: Record<string, unknown>): UserChoice | null {
  * - If explicit id is provided but doesn't match, drop silently.
  * - If missing/invalid, scan options[].label for a legacy "(Recommended...)" marker; first match becomes implicit id.
  */
-function resolveRecommendedChoiceId(
-  explicitId: unknown,
-  options: UserChoiceOption[],
-): string | undefined {
+function resolveRecommendedChoiceId(explicitId: unknown, options: UserChoiceOption[]): string | undefined {
   if (typeof explicitId === 'string' && explicitId.trim() !== '') {
     if (options.some((o) => o.id === explicitId)) {
       return explicitId;
@@ -1003,6 +1011,30 @@ function invalidArgs(message: string, details?: unknown): { ok: false; error: Mo
       ...(details !== undefined ? { details } : {}),
     },
   };
+}
+
+/**
+ * INVALID_ARGS failure carrying full command help in `error.details.help` so
+ * the model can self-correct on the first failure (see `command-help.ts`).
+ */
+function invalidArgsFor(
+  commandId: ModelCommandRunRequest['commandId'],
+  message: string,
+  details?: unknown,
+): { ok: false; error: ModelCommandError } {
+  return { ok: false, error: attachCommandHelp(commandId, invalidArgs(message, details).error) };
+}
+
+/**
+ * Enrich a failed sub-parser result with command help. Only called on the
+ * failure branch; augments INVALID_ARGS errors (`attachCommandHelp` no-ops on
+ * other codes), preserving the original message and any existing details.
+ */
+function withCommandHelp(
+  commandId: ModelCommandRunRequest['commandId'],
+  failure: { ok: false; error: ModelCommandError },
+): { ok: false; error: ModelCommandError } {
+  return { ok: false, error: attachCommandHelp(commandId, failure.error) };
 }
 
 function isRecord(value: unknown): value is Record<string, any> {

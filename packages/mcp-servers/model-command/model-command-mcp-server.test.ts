@@ -215,6 +215,42 @@ describe('model-command MCP server helpers', () => {
     });
   });
 
+  it('surfaces full SAVE_MEMORY help on a failed run (the production bug)', () => {
+    // Reproduces the reported failure: the model called SAVE_MEMORY without an
+    // action/target and got a terse one-liner it could not recover from. The
+    // failed run must now carry every action + an example each in details.help.
+    const result = buildModelCommandRunResponse(
+      { commandId: 'SAVE_MEMORY', params: {} },
+      { user: 'U1', session: { issues: [], prs: [], docs: [], active: {}, sequence: 0 } },
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('INVALID_ARGS');
+    const help = (
+      result.error.details as { help?: { commandId: string; actions?: string[]; examples: Array<{ action?: string }> } }
+    ).help;
+    expect(help).toBeDefined();
+    expect(help?.commandId).toBe('SAVE_MEMORY');
+    expect(help?.actions).toEqual(expect.arrayContaining(['add', 'replace', 'remove']));
+    for (const action of ['add', 'replace', 'remove']) {
+      expect(help?.examples.some((e) => e.action === action)).toBe(true);
+    }
+  });
+
+  it('survives JSON round-trip with help attached (MCP stdio serialization)', () => {
+    const result = buildModelCommandRunResponse(
+      { commandId: 'MANAGE_SKILL', params: { action: 'bogus' } },
+      { user: 'U1', session: { issues: [], prs: [], docs: [], active: {}, sequence: 0 } },
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    const roundTripped = JSON.parse(JSON.stringify(result)) as typeof result;
+    if (roundTripped.ok) return;
+    const help = (roundTripped.error.details as { help?: { commandId: string } }).help;
+    expect(help?.commandId).toBe('MANAGE_SKILL');
+  });
+
   it('rejects ASK_USER_QUESTION params.user_choice wrapper outside payload', () => {
     const result = buildModelCommandRunResponse(
       {
