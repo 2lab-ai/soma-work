@@ -16,7 +16,12 @@ const taskOut = (id: string, status: string, exit?: number) =>
 describe('contentToText', () => {
   it('handles string, text-block arrays, and objects', () => {
     expect(contentToText('hi')).toBe('hi');
-    expect(contentToText([{ type: 'text', text: 'a' }, { type: 'text', text: 'b' }])).toBe('a\nb');
+    expect(
+      contentToText([
+        { type: 'text', text: 'a' },
+        { type: 'text', text: 'b' },
+      ]),
+    ).toBe('a\nb');
     expect(contentToText({ text: 'x' })).toBe('x');
     expect(contentToText(null)).toBe('');
   });
@@ -42,7 +47,11 @@ describe('classifyConsumerResult', () => {
     expect(classifyConsumerResult(taskOut('b1', 'pending')).terminal).toBe(false);
   });
   it('treats completed/failed/killed and exit codes as terminal', () => {
-    expect(classifyConsumerResult(taskOut('b1', 'completed', 0))).toEqual({ id: 'b1', terminal: true, recognized: true });
+    expect(classifyConsumerResult(taskOut('b1', 'completed', 0))).toEqual({
+      id: 'b1',
+      terminal: true,
+      recognized: true,
+    });
     expect(classifyConsumerResult(taskOut('b1', 'failed', 1)).terminal).toBe(true);
     expect(classifyConsumerResult(taskOut('b1', 'killed')).terminal).toBe(true);
     expect(classifyConsumerResult('<task_id>b1</task_id>\n<exit_code>0</exit_code>').terminal).toBe(true);

@@ -532,11 +532,7 @@ export class ToolEventProcessor {
         // A `TaskOutput`/`BashOutput`/kill result: drain the matching live
         // launch when it reports terminal (completed/failed/killed/exit code).
         // A `running`/`pending` poll keeps it live.
-        this.backgroundResumeTracker.observeConsumerResult(
-          context.sessionKey,
-          toolResult.toolName,
-          toolResult.result,
-        );
+        this.backgroundResumeTracker.observeConsumerResult(context.sessionKey, toolResult.toolName, toolResult.result);
       }
 
       // Issue #794 — bg Task spawn-ack keeps the progress UI alive

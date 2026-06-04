@@ -153,7 +153,8 @@ export function classifyConsumerResult(content: unknown): ConsumerResultClass {
   const status = statusTag ?? structuredStatus;
 
   const hasExitCodeTag = /<exit_code>\s*-?\d+\s*<\/exit_code>/i.test(text);
-  const structuredExit = content && typeof content === 'object' ? (content as { exitCode?: unknown }).exitCode : undefined;
+  const structuredExit =
+    content && typeof content === 'object' ? (content as { exitCode?: unknown }).exitCode : undefined;
   const hasStructuredExit = typeof structuredExit === 'number';
 
   let terminal = false;
