@@ -16,6 +16,10 @@ const requiredRootFiles = [
   'scripts/deploy/install-target.sh',
   'deploy/protected-paths.txt',
   'dist/index.js',
+  // The launchd plist (scripts/service.sh) starts this rotating-log supervisor,
+  // which in turn spawns dist/index.js. A bundle missing it would deploy a
+  // service that cannot start, so fail the smoke check loudly.
+  'dist/run-with-rotating-logs.js',
   'dist/deploy/main-env-bootstrap.js',
 ];
 
