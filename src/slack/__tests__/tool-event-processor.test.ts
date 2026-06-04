@@ -74,10 +74,7 @@ describe('ToolEventProcessor', () => {
       // The resume signal is sourced from the spawn ACK (carrying the bg id),
       // not the tool_use — the ack arrives within the same turn and well before
       // turn end, so this is the state the guard actually observes.
-      await processor.handleToolResult(
-        [{ toolUseId: 'bg', toolName: 'Bash', result: ackResult('bg-shell-1') }],
-        ctx,
-      );
+      await processor.handleToolResult([{ toolUseId: 'bg', toolName: 'Bash', result: ackResult('bg-shell-1') }], ctx);
       // The spawn-ack arrived but the process is STILL running, so the work
       // must remain live (this is the bug #1049 missed: it cleared here).
       expect(processor.getLiveBackgroundWork('C123:thread_ts', 'turn-1')).toEqual({
@@ -104,7 +101,8 @@ describe('ToolEventProcessor', () => {
           {
             toolUseId: 'poll-2',
             toolName: 'TaskOutput',
-            result: '<task_id>bg-shell-1</task_id>\n<status>completed</status>\n<exit_code>0</exit_code>\n<output>done</output>',
+            result:
+              '<task_id>bg-shell-1</task_id>\n<status>completed</status>\n<exit_code>0</exit_code>\n<output>done</output>',
           },
         ],
         ctx,
