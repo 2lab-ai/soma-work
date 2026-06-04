@@ -106,6 +106,7 @@ function getRatingStore(): RatingStore | null {
   return _ratingStore;
 }
 
+import { attachCommandHelp } from './command-help';
 import {
   getSuccessMessage,
   SHARE_CONTENT_CHAR_LIMIT,
@@ -526,7 +527,10 @@ function toRunError(commandId: ModelCommandRunRequest['commandId'], error: Model
     type: 'model_command_result',
     commandId,
     ok: false,
-    error,
+    // Attach full command help to INVALID_ARGS runtime failures (no-op for
+    // other codes) so a model that just failed can self-correct on the first
+    // try — same guarantee as the validation layer. See command-help.ts.
+    error: attachCommandHelp(commandId, error),
   };
 }
 

@@ -59,6 +59,16 @@ somalib/**/*.d.ts
 somalib/**/*.js.map
 somalib/**/*.d.ts.map
 
+# process-shared compiled output. The package builds to dist/ (already
+# ignored above), so any *.js/*.d.ts inside src/ is a stray in-place tsc
+# artifact that must never be committed — when present it shadows the .ts
+# source during test module resolution. (Root cause of the model-commands
+# test quarantine, see vitest.config.ts.)
+packages/process-shared/src/**/*.js
+packages/process-shared/src/**/*.d.ts
+packages/process-shared/src/**/*.js.map
+packages/process-shared/src/**/*.d.ts.map
+
 # Testing
 coverage/
 .nyc_output/
