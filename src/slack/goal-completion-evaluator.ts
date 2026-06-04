@@ -4,16 +4,15 @@
  * The work model is not allowed to flip `session.goal.status` to
  * `complete` on its own — codex enforces this via the `update_goal`
  * tool which only the runtime can honor, and soma-work has no
- * comparable tool surface. Instead, the work model writes the
- * `<goal-complete-request reason="..."/>` sentinel; this module
- * spawns a clean-context dispatch to the same model+effort and asks
- * for a strict JSON verdict on whether the objective is actually
- * met. Only `completed: true` from the evaluator flips the goal
- * status.
+ * comparable tool surface. Instead, at every turn end while a goal is
+ * active the host forks a clean-context dispatch to the same
+ * model+effort and asks for a strict JSON verdict on whether the
+ * objective is actually met. Only `completed: true` from the evaluator
+ * flips the goal status; `completed: false` drives the next
+ * continuation turn.
  *
  * See `docs/goal-command/spec.md` §Completion via Host-Side Eval
- * Model. The companion sentinel parser lives in
- * `goal-completion-detector.ts`.
+ * Model.
  */
 
 import fs from 'node:fs';
