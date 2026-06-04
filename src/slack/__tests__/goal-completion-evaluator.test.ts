@@ -20,6 +20,7 @@ import {
   applyGoalEvalFailure,
   applyGoalEvalSuccess,
   buildGoalEvalUserPrompt,
+  decideGoalEvalOutcome,
   evaluateGoalCompletion,
   GoalEvalParseError,
   parseGoalEvalVerdict,
@@ -191,5 +192,81 @@ describe('apply* — verdict-to-goal mutations', () => {
     const prompt = buildGoalContinuationPrompt(goal);
     expect(prompt).toContain('Previous evaluation gap');
     expect(prompt).toContain('tests fail in eval suite');
+  });
+});
+
+/**
+ * Per-turn loop decision — the heart of the turn-end auto-continuation
+ * loop (spec §Auto-Continuation Loop). Given a goal + the eval verdict,
+ * decide whether to stop (complete), inject the next continuation
+ * (continue), or pause at the cap, applying the matching state mutation.
+ *
+ * This is the seam that makes the loop driver unit-testable instead of
+ * being buried in the index.ts startup wiring.
+ */
+describe('decideGoalEvalOutcome', () => {
+  const NOW = 1_000;
+
+  it('completed=true → action "complete", status flipped, eval state cleared', () => {
+    const goal = makeGoal({ continuationCount: 4 });
+    const outcome = decideGoalEvalOutcome(goal, { completed: true, reason: 'all done', remaining: [] }, NOW);
+    expect(outcome).toEqual({ action: 'complete' });
+    expect(goal.status).toBe('complete');
+    expect(goal.completedVia).toBe('eval-model');
+    expect(goal.pendingEval).toBeUndefined();
+    expect(goal.lastEvalReason).toBeUndefined();
+    expect(goal.evalAttemptCount).toBe(2);
+    // No continuation on the success path.
+    expect(goal.continuationCount).toBe(4);
+  });
+
+  it('completed=false under cap → action "continue", count++ , reason recorded', () => {
+    const goal = makeGoal({ continuationCount: 3, maxContinuations: 10 });
+    const outcome = decideGoalEvalOutcome(
+      goal,
+      { completed: false, reason: 'PR not merged', remaining: ['merge PR'] },
+      NOW,
+    );
+    expect(outcome).toEqual({ action: 'continue' });
+    expect(goal.status).toBe('active');
+    expect(goal.pendingEval).toBeUndefined();
+    expect(goal.lastEvalReason).toBe('PR not merged');
+    expect(goal.continuationCount).toBe(4);
+    expect(goal.lastContinuationAt).toBe(NOW);
+    expect(goal.evalAttemptCount).toBe(2);
+  });
+
+  it('completed=false at cap → action "cap-paused", NO increment, status stays active', () => {
+    const goal = makeGoal({ continuationCount: 10, maxContinuations: 10, lastContinuationAt: 42 });
+    const outcome = decideGoalEvalOutcome(
+      goal,
+      { completed: false, reason: 'still failing', remaining: ['fix tests'] },
+      NOW,
+    );
+    expect(outcome).toEqual({ action: 'cap-paused' });
+    expect(goal.status).toBe('active');
+    expect(goal.pendingEval).toBeUndefined();
+    expect(goal.lastEvalReason).toBe('still failing');
+    // Cap reached → counter frozen, no new continuation stamped.
+    expect(goal.continuationCount).toBe(10);
+    expect(goal.lastContinuationAt).toBe(42);
+    expect(goal.evalAttemptCount).toBe(2);
+  });
+
+  it('drives a multi-turn loop: continues until the verdict flips to complete', () => {
+    // Reproduces the user intent ("goal이 완료될 때까지 계속 진행"): repeated
+    // not-complete verdicts keep producing 'continue' (the old idle-lock
+    // implementation stalled after exactly one), and a final complete
+    // verdict stops the loop.
+    const goal = makeGoal({ continuationCount: 0, maxContinuations: 10, status: 'active' });
+    for (let i = 1; i <= 3; i++) {
+      const outcome = decideGoalEvalOutcome(goal, { completed: false, reason: `gap ${i}`, remaining: [] }, NOW + i);
+      expect(outcome).toEqual({ action: 'continue' });
+      expect(goal.continuationCount).toBe(i);
+      expect(goal.status).toBe('active');
+    }
+    const finalOutcome = decideGoalEvalOutcome(goal, { completed: true, reason: 'done', remaining: [] }, NOW + 99);
+    expect(finalOutcome).toEqual({ action: 'complete' });
+    expect(goal.status).toBe('complete');
   });
 });
