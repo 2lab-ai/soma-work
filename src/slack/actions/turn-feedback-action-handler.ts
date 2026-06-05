@@ -10,7 +10,11 @@
  * in `index.ts` calls `ack()` before delegating, so the 3s ACK is satisfied.
  */
 
-import { buildFeedbackAckBlock, parseFeedbackValue } from '@soma/slack/turn-feedback-block-builder';
+import {
+  buildFeedbackAckBlock,
+  keepIconButtonsOnly,
+  parseFeedbackValue,
+} from '@soma/slack/turn-feedback-block-builder';
 import type { TurnFeedbackStore } from '@soma/slack/turn-feedback-store';
 import { Logger } from '../../logger';
 import type { SlackApiHelper } from '../slack-api-helper';
@@ -64,13 +68,18 @@ export class TurnFeedbackActionHandler {
       sentiment: parsed.sentiment,
     });
 
-    // Replace the feedback buttons with an acknowledgment. Swapping the
-    // interactive `context_actions` block for a plain `context` block avoids
-    // stale `block_id` reuse on update (docs §1.2). Other blocks are preserved.
+    // Acknowledge the feedback in place: insert a plain `context` ack block and
+    // drop the answered `feedback_buttons` — but KEEP any `icon_button` (the 🗑
+    // dismiss) so the card stays dismissible. Swapping interactive elements for
+    // a plain `context` block also avoids stale `block_id` reuse (docs §1.2).
     const currentBlocks: any[] = Array.isArray(body?.message?.blocks) ? body.message.blocks : [];
     const ackBlock = buildFeedbackAckBlock(parsed.sentiment);
     const nextBlocks = currentBlocks.length
-      ? currentBlocks.map((b) => (b?.type === 'context_actions' ? ackBlock : stripBlockId(b)))
+      ? currentBlocks.flatMap((b) => {
+          if (b?.type !== 'context_actions') return [stripBlockId(b)];
+          const iconsOnly = keepIconButtonsOnly(b);
+          return iconsOnly ? [ackBlock, iconsOnly] : [ackBlock];
+        })
       : [ackBlock];
 
     try {

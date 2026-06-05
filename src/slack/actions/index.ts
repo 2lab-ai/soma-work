@@ -16,6 +16,7 @@ import { PermissionActionHandler } from './permission-action-handler';
 import { PluginUpdateActionHandler } from './plugin-update-action-handler';
 import { PRActionHandler } from './pr-action-handler';
 import { SessionActionHandler } from './session-action-handler';
+import { TurnDismissActionHandler } from './turn-dismiss-action-handler';
 import { TurnFeedbackActionHandler } from './turn-feedback-action-handler';
 import { UsageCardActionHandler } from './usage-card-action-handler';
 import { UserAcceptanceActionHandler } from './user-acceptance-action-handler';
@@ -129,6 +130,10 @@ setActionHandlersProviders({
       feedbackHandler: new TurnFeedbackActionHandler({
         slackApi: ctx.slackApi as any,
         store: stores.turnFeedbackStore,
+      }),
+      dismissHandler: new TurnDismissActionHandler({
+        slackApi: ctx.slackApi as any,
+        completionMessageTracker: ctx.completionMessageTracker,
       }),
       zSettingsHandler: new ZSettingsActionHandler({
         registry: zTopicRegistry,
