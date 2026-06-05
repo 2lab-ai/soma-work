@@ -63,6 +63,24 @@ describe('classifyConsumerResult', () => {
   it('treats an unparseable result as non-terminal and not recognized', () => {
     expect(classifyConsumerResult('weird output')).toEqual({ id: undefined, terminal: false, recognized: false });
   });
+
+  it('treats a "No task found" ERROR as terminal and extracts its id', () => {
+    // A short bg shell finishes and is reaped before the model polls it; the
+    // later TaskOutput errors instead of returning a status. isError gates it.
+    const err = 'No task found with ID: b3d8xppf4';
+    expect(classifyConsumerResult(err, true)).toEqual({ id: 'b3d8xppf4', terminal: true, recognized: true });
+    expect(classifyConsumerResult('No such shell: b1', true).terminal).toBe(true);
+    expect(classifyConsumerResult('shell already killed', true).terminal).toBe(true);
+  });
+
+  it('does NOT treat "not found" in NON-error stdout as terminal (no premature drain)', () => {
+    // A still-running poll whose captured stdout merely mentions "not found"
+    // (e.g. a build log line) must stay live: isError is false here.
+    const running = `${taskOut('b1', 'running')}\nnpm ERR! package not found`;
+    expect(classifyConsumerResult(running, false).terminal).toBe(false);
+    // And even an error envelope that still reports a live <status> is not gone.
+    expect(classifyConsumerResult(`${taskOut('b1', 'running')} no task found`, true).terminal).toBe(false);
+  });
 });
 
 describe('isConsumerToolName', () => {
@@ -126,6 +144,18 @@ describe('BackgroundResumeTracker', () => {
     expect(t.liveCount(SK)).toBe(1);
     // The real one still drains.
     t.observeConsumerResult(SK, 'TaskOutput', taskOut('b1', 'completed'));
+    expect(t.liveCount(SK)).toBe(0);
+  });
+
+  it('drains on a "No task found" ERROR from a reaped short-lived shell', () => {
+    const t = new BackgroundResumeTracker();
+    t.trackLaunch(SK, 'u1', ackText('b3d8xppf4'));
+    expect(t.liveCount(SK)).toBe(1);
+    // Non-error poll mentioning "not found" must NOT drain.
+    t.observeConsumerResult(SK, 'TaskOutput', 'log says file not found', false);
+    expect(t.liveCount(SK)).toBe(1);
+    // The harness error envelope for a reaped task → drained.
+    t.observeConsumerResult(SK, 'TaskOutput', 'No task found with ID: b3d8xppf4', true);
     expect(t.liveCount(SK)).toBe(0);
   });
 

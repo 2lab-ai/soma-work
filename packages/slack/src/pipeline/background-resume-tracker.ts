@@ -133,11 +133,31 @@ export interface ConsumerResultClass {
 }
 
 /**
+ * Phrases by which a consumer tool reports that the referenced background task
+ * no longer exists. A short-lived `Bash({run_in_background:true})` finishes and
+ * is REAPED before the model gets a chance to poll it; a later `TaskOutput`/
+ * `BashOutput` on its id then ERRORS with one of these instead of returning a
+ * `<status>`. A task the harness cannot find is, by definition, not running, so
+ * this is a TERMINAL signal — without it the launch never drains and the
+ * background-work resume guard burns every retry up to the per-session cap.
+ * Matched ONLY against an error-flagged result (see `isError` gate below) so a
+ * normal poll whose captured STDOUT merely contains "not found" (e.g. a build
+ * log line) can never be misread as the task being gone.
+ */
+const TASK_GONE_RE =
+  /\bno (?:task|shell|background task|process) found\b|\bno such (?:task|shell|process)\b|\b(?:task|shell|process) (?:already )?(?:killed|stopped|completed|finished|terminated|reaped)\b/i;
+
+/**
  * Classify a consumer tool result. Parses `<task_id>`, `<status>`, `<exit_code>`
  * (current `TaskOutput` shape) and a legacy structured `{status, exitCode}`
  * fallback. A `running`/`pending`/`not_ready`/`timeout` poll is NOT terminal.
+ *
+ * When `isError` is true, an error envelope whose text matches {@link
+ * TASK_GONE_RE} ("No task found with ID: <id>") is also TERMINAL — the polled
+ * task was reaped after finishing. Gating on `isError` keeps captured stdout
+ * from a still-running poll from ever tripping this.
  */
-export function classifyConsumerResult(content: unknown): ConsumerResultClass {
+export function classifyConsumerResult(content: unknown, isError?: boolean): ConsumerResultClass {
   const text = contentToText(content);
 
   const idTag = text.match(/<task_id>\s*([^<\s]+)\s*<\/task_id>/i);
@@ -146,7 +166,9 @@ export function classifyConsumerResult(content: unknown): ConsumerResultClass {
     findStructuredString(content, 'bash_id') ??
     findStructuredString(content, 'shell_id') ??
     findStructuredString(content, 'shellId');
-  const id = idTag?.[1] ?? structuredId ?? shellId ?? undefined;
+  // "No task found with ID: <id>" / "...running in background with ID: <id>"
+  const idFromText = text.match(/\bwith ID:\s*([^\s.]+)/i)?.[1];
+  const id = idTag?.[1] ?? structuredId ?? shellId ?? idFromText ?? undefined;
 
   const statusTag = text.match(/<status>\s*([a-z_]+)\s*<\/status>/i)?.[1]?.toLowerCase();
   const structuredStatus = findStructuredString(content, 'status')?.toLowerCase();
@@ -157,14 +179,20 @@ export function classifyConsumerResult(content: unknown): ConsumerResultClass {
     content && typeof content === 'object' ? (content as { exitCode?: unknown }).exitCode : undefined;
   const hasStructuredExit = typeof structuredExit === 'number';
 
+  // A "task gone" error only counts when no live `<status>` is present (an
+  // error envelope never carries `running`/`pending`) — belt-and-suspenders so
+  // the two shapes can never disagree.
+  const gone = isError === true && status == null && TASK_GONE_RE.test(text);
+
   let terminal = false;
   if (status && TERMINAL_STATUSES.has(status)) terminal = true;
   else if (status && LIVE_STATUSES.has(status)) terminal = false;
   else if (hasExitCodeTag || hasStructuredExit) terminal = true;
+  else if (gone) terminal = true;
   // Unknown / unparseable status with no exit code → treat as still live so we
   // do not drop a launch prematurely (the resume cap bounds any over-hold).
 
-  const recognized = id != null || status != null || hasExitCodeTag || hasStructuredExit;
+  const recognized = id != null || status != null || hasExitCodeTag || hasStructuredExit || gone;
   return { id, terminal, recognized };
 }
 
@@ -207,13 +235,23 @@ export class BackgroundResumeTracker {
    * Observe a consumer (`TaskOutput`/`BashOutput`/kill) result. Drains the
    * matching live launch when the result is terminal. Id-matched when possible;
    * otherwise FIFO-drains one id-less launch. Non-terminal polls are ignored.
+   *
+   * `isError` (the tool_result's error flag) lets a "No task found with ID:
+   * <id>" error — a short bg shell reaped after finishing but before the model
+   * polled — count as terminal, without a still-running poll's stdout tripping
+   * the same phrase. See {@link TASK_GONE_RE}.
    */
-  observeConsumerResult(sessionKey: string, toolName: string | undefined, resultContent: unknown): void {
+  observeConsumerResult(
+    sessionKey: string,
+    toolName: string | undefined,
+    resultContent: unknown,
+    isError?: boolean,
+  ): void {
     if (!isConsumerToolName(toolName)) return;
     const list = this.map.get(sessionKey);
     if (!list || list.length === 0) return;
 
-    const { id, terminal, recognized } = classifyConsumerResult(resultContent);
+    const { id, terminal, recognized } = classifyConsumerResult(resultContent, isError);
     // Surface parser drift: a known consumer tool whose result we could not read
     // at all. Bounded by the resume cap, but worth a greppable signal.
     if (!recognized && this.onUnrecognized && toolName) this.onUnrecognized(toolName);

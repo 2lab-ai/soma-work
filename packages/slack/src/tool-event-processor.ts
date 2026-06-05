@@ -531,8 +531,16 @@ export class ToolEventProcessor {
       } else if (context.sessionKey && isConsumerToolName(toolResult.toolName)) {
         // A `TaskOutput`/`BashOutput`/kill result: drain the matching live
         // launch when it reports terminal (completed/failed/killed/exit code).
-        // A `running`/`pending` poll keeps it live.
-        this.backgroundResumeTracker.observeConsumerResult(context.sessionKey, toolResult.toolName, toolResult.result);
+        // A `running`/`pending` poll keeps it live. `isError` lets the tracker
+        // treat a "No task found with ID: <id>" error (a short bg shell reaped
+        // before the model polled) as terminal without a still-running poll's
+        // stdout ever tripping the same phrase.
+        this.backgroundResumeTracker.observeConsumerResult(
+          context.sessionKey,
+          toolResult.toolName,
+          toolResult.result,
+          toolResult.isError,
+        );
       }
 
       // Issue #794 — bg Task spawn-ack keeps the progress UI alive
