@@ -1,5 +1,7 @@
 import type { App } from '@slack/bolt';
 import { Logger } from '@soma/common/logger';
+import { TURN_FEEDBACK_ACTION_ID } from '../turn-feedback-block-builder';
+import { TurnFeedbackStore } from '../turn-feedback-store';
 import { type PendingChoiceFormData, PendingFormStore } from './pending-form-store';
 import { PendingInstructionConfirmStore } from './pending-instruction-confirm-store';
 
@@ -44,6 +46,7 @@ export interface ActionHandlerContext {
 export interface ActionHandlersStores {
   formStore: PendingFormStore;
   pendingInstructionConfirmStore: PendingInstructionConfirmStore;
+  turnFeedbackStore: TurnFeedbackStore;
 }
 
 export interface ZTopicRegistryLike {
@@ -124,6 +127,7 @@ export interface ActionHandlerDelegates {
     handleYes(body: any, respond: RespondFn): Promise<void>;
     handleNo(body: any, respond: RespondFn): Promise<void>;
   };
+  feedbackHandler: { handleFeedback(body: any, respond: RespondFn): Promise<void> };
   zSettingsHandler: { register(app: App): void };
   zTopicRegistry: ZTopicRegistryLike;
   registerCctActions(app: App): void;
@@ -159,14 +163,18 @@ export class ActionHandlers {
   private logger = new Logger('ActionHandlers');
   private formStore: PendingFormStore;
   private pendingInstructionConfirmStore: PendingInstructionConfirmStore;
+  private turnFeedbackStore: TurnFeedbackStore;
   private delegates: ActionHandlerDelegates;
 
   constructor(private ctx: ActionHandlerContext) {
     this.formStore = new PendingFormStore();
     this.pendingInstructionConfirmStore = ctx.pendingInstructionConfirmStore ?? new PendingInstructionConfirmStore();
+    this.turnFeedbackStore = new TurnFeedbackStore();
+    this.turnFeedbackStore.load();
     this.delegates = providers.createDelegates(ctx, {
       formStore: this.formStore,
       pendingInstructionConfirmStore: this.pendingInstructionConfirmStore,
+      turnFeedbackStore: this.turnFeedbackStore,
     });
   }
 
@@ -394,6 +402,13 @@ export class ActionHandlers {
     app.action('dm_delete_reject', async ({ ack, body, respond }) => {
       await ack();
       await this.handleDmDeleteReject(body, respond as RespondFn);
+    });
+
+    // #1064 — turn-completion feedback (👍/👎). ACK first (3s budget), then
+    // persist + acknowledge.
+    app.action(TURN_FEEDBACK_ACTION_ID, async ({ ack, body, respond }) => {
+      await ack();
+      await this.delegates.feedbackHandler.handleFeedback(body, respond as RespondFn);
     });
 
     app.view('custom_input_submit', async ({ ack, body, view }) => {

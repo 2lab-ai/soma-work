@@ -565,6 +565,7 @@ export class StreamExecutor {
       userId: args.userId,
       channel: args.channel,
       threadTs: args.threadTs,
+      turnId: args.turnId,
       sessionTitle: args.sessionTitle,
       durationMs: args.durationMs,
       message: fallbackMessage,
@@ -1725,6 +1726,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           userId: session.ownerId || user,
           channel,
           threadTs,
+          turnId,
           sessionTitle: session.title,
           // B-6: when the renew rail failed, surface the crisp failure
           // summary in the card body alongside the standard enrichment.
