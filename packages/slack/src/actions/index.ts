@@ -1,6 +1,6 @@
 import type { App } from '@slack/bolt';
 import { Logger } from '@soma/common/logger';
-import { TURN_FEEDBACK_ACTION_ID } from '../turn-feedback-block-builder';
+import { TURN_DISMISS_ACTION_ID, TURN_FEEDBACK_ACTION_ID } from '../turn-feedback-block-builder';
 import { TurnFeedbackStore } from '../turn-feedback-store';
 import { type PendingChoiceFormData, PendingFormStore } from './pending-form-store';
 import { PendingInstructionConfirmStore } from './pending-instruction-confirm-store';
@@ -128,6 +128,7 @@ export interface ActionHandlerDelegates {
     handleNo(body: any, respond: RespondFn): Promise<void>;
   };
   feedbackHandler: { handleFeedback(body: any, respond: RespondFn): Promise<void> };
+  dismissHandler: { handleDismiss(body: any, respond: RespondFn): Promise<void> };
   zSettingsHandler: { register(app: App): void };
   zTopicRegistry: ZTopicRegistryLike;
   registerCctActions(app: App): void;
@@ -409,6 +410,12 @@ export class ActionHandlers {
     app.action(TURN_FEEDBACK_ACTION_ID, async ({ ack, body, respond }) => {
       await ack();
       await this.delegates.feedbackHandler.handleFeedback(body, respond as RespondFn);
+    });
+
+    // #1064 — 🗑 dismiss the completion card. ACK first (3s budget), then delete.
+    app.action(TURN_DISMISS_ACTION_ID, async ({ ack, body, respond }) => {
+      await ack();
+      await this.delegates.dismissHandler.handleDismiss(body, respond as RespondFn);
     });
 
     app.view('custom_input_submit', async ({ ack, body, view }) => {

@@ -121,10 +121,19 @@ soma-work captures **no response feedback today**.
 
 ## Modernization plan (tracked by the surface-feedback epic)
 
-1. **Increment 1 (this work):** `feedback_buttons` on the B5 `WorkflowComplete`
+1. **Increment 1 — DONE (#1066):** `feedback_buttons` on the B5 `WorkflowComplete`
    card via a `context_actions` block, posted as top-level blocks; an action
    handler (`turn_feedback_v1`) that ACKs, persists minimal feedback, and
    acknowledges in place.
-2. Follow-ups: `icon_button` (retry / dismiss) on the action panel; workflow-aware
-   `setSuggestedPrompts` content; auto `setTitle` from the turn summary;
-   consolidating the dual status channels (emoji reactions vs. native spinner).
+2. **Increment 2 — DONE (#1064):** the remaining unused agent primitives:
+   - `icon_button` (🗑 trash, owner-only via `visible_to_user_ids`) in the same
+     `context_actions` row, action handler `turn_dismiss_v1` that deletes the
+     card and untracks it. The feedback ack keeps the trash button.
+   - workflow-aware `setSuggestedPrompts` (`SUGGESTED_PROMPTS`) advertising
+     soma-work's actual agent workflows (PR review / implement / deploy+QA /
+     debug) instead of generic chat starters.
+   - auto `setTitle` once per assistant thread from the turn's `sessionTitle`,
+     guarded by the `AssistantStatusManager` `enabled` gate (shared with
+     `setStatus`) so non-assistant threads disable it silently.
+3. Remaining follow-up: consolidating the dual status channels (emoji reactions
+   vs. native `setStatus` spinner) — out of scope for the surface-feedback epic.

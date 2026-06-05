@@ -582,4 +582,41 @@ describe('sustained-transient counter (#700 round-3 #10 option C)', () => {
     );
     expect(sustainedWarns.length).toBe(0);
   });
+
+  // #1064 — auto-title the assistant thread, once per thread.
+  describe('setTitle', () => {
+    it('sets the title once and no-ops on later calls for the same thread', async () => {
+      await manager.setTitle('C1', '1.2', 'PR #77 리뷰');
+      await manager.setTitle('C1', '1.2', 'something else');
+
+      expect(mockSlackApi.setAssistantTitle).toHaveBeenCalledTimes(1);
+      expect(mockSlackApi.setAssistantTitle).toHaveBeenCalledWith('C1', '1.2', 'PR #77 리뷰');
+    });
+
+    it('titles different threads independently', async () => {
+      await manager.setTitle('C1', '1.2', 'A');
+      await manager.setTitle('C1', '9.9', 'B');
+      expect(mockSlackApi.setAssistantTitle).toHaveBeenCalledTimes(2);
+    });
+
+    it('skips empty/whitespace titles', async () => {
+      await manager.setTitle('C1', '1.2', '   ');
+      await manager.setTitle('C1', '1.2', '');
+      expect(mockSlackApi.setAssistantTitle).not.toHaveBeenCalled();
+    });
+
+    it('re-titles when force is set', async () => {
+      await manager.setTitle('C1', '1.2', 'A');
+      await manager.setTitle('C1', '1.2', 'B', { force: true });
+      expect(mockSlackApi.setAssistantTitle).toHaveBeenCalledTimes(2);
+      expect(mockSlackApi.setAssistantTitle).toHaveBeenLastCalledWith('C1', '1.2', 'B');
+    });
+
+    it('does not mark the thread titled when the API throws (retries next turn)', async () => {
+      mockSlackApi.setAssistantTitle.mockRejectedValueOnce(new Error('thread_not_found'));
+      await manager.setTitle('C1', '1.2', 'A'); // throws internally, swallowed
+      await manager.setTitle('C1', '1.2', 'A'); // should retry
+      expect(mockSlackApi.setAssistantTitle).toHaveBeenCalledTimes(2);
+    });
+  });
 });
