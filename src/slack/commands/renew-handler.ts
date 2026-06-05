@@ -23,6 +23,16 @@ export class RenewHandler implements CommandHandler {
 
     // Check if there's an active session
     if (!session || !session.sessionId) {
+      // `renew` saves+resets the current session, so with no session there is
+      // nothing to renew. But `renew <instruction>` carries free-form text, and
+      // as a first message "renew ..." can only mean a fresh instruction (there
+      // is no session to renew). Return unhandled so CommandRouter falls through
+      // and the message starts a new conversation with the user's full text,
+      // instead of dropping it with "No active session". A bare `renew` keeps
+      // the explicit hint.
+      if (userMessage) {
+        return { handled: false };
+      }
       await this.deps.slackApi.postSystemMessage(
         channel,
         '💡 No active session to renew. Start a conversation first!',

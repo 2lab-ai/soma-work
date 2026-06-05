@@ -973,16 +973,47 @@ describe('CommandRouter — `goal` + `$skill` composition (preprocessor)', () =>
     expect(result.continueWithPrompt).toContain('goal 기능을 끝까지 완수해줘');
   });
 
-  // Spec-preservation guard (docs/goal-command/spec.md §36): pure `goal …`
-  // with no `$skill` suffix and no session must STILL surface "No active
-  // session" — the preprocessor fall-through only kicks in when the user
-  // signalled they care about the skill too.
-  it('10. pure `goal foo` with NO session and NO skill suffix → goal handler still emits "No active session"', async () => {
+  // Intent-recovery guard (docs/goal-command/spec.md §No-Session Fall-Through):
+  // a first message like `goal foo bar baz` with no session carries a free-form
+  // objective, and "goal" is everyday English — it is almost certainly a task,
+  // not a lifecycle command. The session-scoped reading is impossible anyway
+  // (there is no session to attach a goal to). GoalHandler must NOT swallow it
+  // with "No active session"; it returns unhandled so the router falls through
+  // and slack-handler starts a fresh conversation with the user's full text.
+  it('10. pure `goal foo …` with NO session and NO skill suffix → falls through (handled:false), no "No active session"', async () => {
     stubSkillFs({ localSkills: ['using-ssot'] }); // skill exists but not referenced
     const goalExec = vi.spyOn(GoalHandler.prototype, 'execute');
 
     const { router, deps, say } = makeRouterWithoutSession();
     const result = await router.route(makeCtx('goal foo bar baz', say, undefined));
+
+    // GoalHandler is consulted, but returns unhandled rather than rejecting.
+    expect(goalExec).toHaveBeenCalledTimes(1);
+    expect(deps.slackApi.postSystemMessage).not.toHaveBeenCalledWith(
+      'C1',
+      expect.stringContaining('No active session'),
+      expect.anything(),
+    );
+    // Router returns unhandled → slack-handler proceeds to session init with the
+    // user's full text as the first prompt instead of dropping it.
+    expect(result.handled).toBe(false);
+    expect(result.continueWithPrompt).toBeUndefined();
+    // And NO ❓ "unrecognized command" message leaks out — `isPotentialCommand`
+    // must classify multi-word "goal …" as plain text, not a failed command.
+    expect(say).not.toHaveBeenCalledWith(
+      expect.objectContaining({ text: expect.stringContaining('인식할 수 없습니다') }),
+    );
+  });
+
+  // Counterpart to test 10: a BARE `goal` (no free-form objective) with no
+  // session is a genuine lifecycle command with nothing to act on, so it keeps
+  // the explicit "No active session" hint.
+  it('11. bare `goal` with NO session → goal handler still emits "No active session"', async () => {
+    stubSkillFs({ localSkills: ['using-ssot'] });
+    const goalExec = vi.spyOn(GoalHandler.prototype, 'execute');
+
+    const { router, deps, say } = makeRouterWithoutSession();
+    const result = await router.route(makeCtx('goal', say, undefined));
 
     expect(goalExec).toHaveBeenCalledTimes(1);
     expect(deps.slackApi.postSystemMessage).toHaveBeenCalledWith(
