@@ -80,22 +80,25 @@ Changing goal state (set/pause/resume/complete/clear, plus every ralph-loop cont
 
 ## Auto-Continuation Loop (Ralph Loop)
 
-The loop is driven from the **turn-end** boundary, not from idle scheduling:
+The loop is driven from the **idle-settle** boundary — when the session has genuinely settled to idle with no in-flight request — NOT per-turn-end:
 
-1. User input → 2. model runs → 3. the assistant turn ends → 4. if a goal is `active`, the host forks a clean eval turn and asks the model whether the goal is complete (y/n) → 5. on **"no"**, the host feeds the goal back to the model as the next continuation turn (loop to step 2); on **"yes"**, the loop stops.
+1. User input → 2. model WORKS on the goal (a real, possibly multi-tool, minutes-long turn) → 3. the work turn ENDS and the session settles to idle → 4. if a goal is `active`, the host forks a clean eval turn and asks the model whether the goal is complete (y/n) → 5. on **"no"**, the host feeds the goal back to the model as the next continuation turn (loop to step 2); on **"yes"**, the loop stops.
 
-**Trigger:** the TurnRunner post-turn surface hook `onAssistantTurnComplete` calls `SlackHandler.handleAssistantTurnCompleteForGoal`, which — for **every** turn end while a goal is active — stamps `pendingEval` and hands off to the registered completion handler (wired in `index.ts`). There is no sentinel gate and no idle-hook scheduling: the host audits every turn.
+**Why idle-settle, not turn-end:** a per-turn-end trigger (`onAssistantTurnComplete`) raced the live work turn — the continuation injection went through `handleConcurrency`, which **superseded (aborted) the running turn**, so the model was killed ~1-2s into its work, produced empty output, and the eval spun on "nothing done" (PTN-4695 incident). The idle-settle driver only acts when no request is active, so it can never abort a live work turn ("턴이 종료될 때까지는 기다려야지").
 
-**Trigger guards (all must pass):**
+**Trigger:** `onAssistantTurnComplete` only *stashes* the turn's assistant text on the session (`session.goalLastTurnText`, runtime-only). The actual driver fires from `SessionRegistry`'s idle-after-drain hook (`setOnIdleAfterDrainHook`), **deferred via `setImmediate`** so the just-finished turn's `finally` (which removes its request-coordinator controller) runs first.
+
+**Driver gate (`shouldRunGoalIdleDriver`, all must pass):**
 
 1. Session has an `active` goal (paused / complete / blocked all suppress).
-2. `session.goal.pendingEval` is unset — an eval is already in flight; its verdict owns the next transition, so this turn end is skipped (dedupe).
-3. A completion handler is registered.
+2. `session.goal.pendingEval` is unset (no eval already in flight — dedupe).
+3. `requestCoordinator.isRequestActive(sessionKey) === false` — no live/fresh turn to step on.
+4. activity state is `'idle'`.
 
-**Loop driver (in the completion handler, `index.ts`):** runs the eval (see §Completion), then:
+**Loop driver (`runGoalIdleDriver` in `index.ts`):** stamps `pendingEval`, clears `systemPrompt`, runs the eval (see §Completion) with `goalLastTurnText` as work-summary evidence, then:
 
 - `completed === true` → mark complete, post `✅`, stop.
-- `completed === false` → record the gap (`lastEvalReason`), and if `continuationCount < maxContinuations`, increment `continuationCount`, stamp `lastContinuationAt`, persist, post `🔄`, and inject the next continuation turn. The continuation is a `SyntheticMessageEvent` dispatched **fire-and-forget** through the same `messageInjector` surface as the cron-scheduler injection path; the injected text is `buildGoalContinuationPrompt(goal)` with the `[goal-continuation]` prefix. Because the handler runs after the triggering turn has fully released its request slot, the next turn starts cleanly with no re-entrant lock held across it.
+- `completed === false` → record the gap (`lastEvalReason`), and if `continuationCount < maxContinuations`, increment `continuationCount`, stamp `lastContinuationAt`, persist, post `🔄`. Then — **only if the session is still idle** (re-checks `isRequestActive`; a user turn may have started during the eval, which must win) — inject the next continuation: a `SyntheticMessageEvent` dispatched **fire-and-forget** through the same `messageInjector` surface as the cron-scheduler injection path, text `buildGoalContinuationPrompt(goal)` with the `[goal-continuation]` prefix. The continuation turn runs to completion (never superseded); when it ends and the session settles idle again, the driver re-runs — that is the loop.
 
 **Cap policy:** when `continuationCount >= maxContinuations` the host posts a single in-thread notice that the loop has paused and any new message resumes it — it does **not** inject a continuation. The cap counter is reset to zero by every real (non-synthetic) user message via `resetGoalContinuationOnUserMessage` invoked from `slack-handler.ts`.
 
@@ -113,7 +116,7 @@ The Fidelity, Completion-audit, and Blocked-audit sections are carried verbatim 
 
 **The work model is not allowed to flip `status` to `complete` on its own.** Codex enforces this through the in-tool gate; soma-work has no comparable tool surface, so the host parses the assistant text and runs an external evaluator before any transition.
 
-**Trigger:** there is no sentinel — the work model is not relied upon to announce completion. Every assistant turn end while a goal is active triggers an eval.
+**Trigger:** there is no sentinel — the work model is not relied upon to announce completion. The host runs an eval each time the session settles to idle with an active goal (see §Auto-Continuation Loop).
 
 **Dispatch** (`src/slack/goal-completion-evaluator.ts`):
 
