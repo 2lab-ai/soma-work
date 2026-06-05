@@ -36,6 +36,10 @@ describe('SlackBlockKitChannel — #1064 feedback affordance', () => {
     expect(last.type).toBe('context_actions');
     expect(last.elements[0].type).toBe('feedback_buttons');
     expect(last.elements[0].action_id).toBe('turn_feedback_v1');
+    // ...and an owner-only 🗑 dismiss icon_button alongside it.
+    expect(last.elements[1].type).toBe('icon_button');
+    expect(last.elements[1].action_id).toBe('turn_dismiss_v1');
+    expect(last.elements[1].visible_to_user_ids).toEqual(['U123']);
   });
 
   it('WorkflowComplete WITHOUT turnId keeps the legacy colored attachment (no feedback)', async () => {

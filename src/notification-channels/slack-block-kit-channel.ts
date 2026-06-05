@@ -67,7 +67,7 @@ export class SlackBlockKitChannel implements NotificationChannel {
     // is noise. Requires a turnId to key the feedback record on.
     const withFeedback = event.category === 'WorkflowComplete' && typeof event.turnId === 'string' && !!event.turnId;
     const postOptions = withFeedback
-      ? { threadTs: event.threadTs, blocks: [...blocks, buildFeedbackContextActions(event.turnId!)] }
+      ? { threadTs: event.threadTs, blocks: [...blocks, buildFeedbackContextActions(event.turnId!, event.userId)] }
       : { threadTs: event.threadTs, attachments: [{ color, blocks }] };
 
     try {

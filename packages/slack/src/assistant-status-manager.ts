@@ -65,6 +65,8 @@ export class AssistantStatusManager {
   private epochCounter = new Map<string, number>();
   private bgBashCounter = new Map<string, number>();
   private transientFailuresSinceLastSuccess = new Map<string, number>();
+  /** Threads whose title has already been set — keeps setTitle once-per-thread. */
+  private titledThreads = new Set<string>();
 
   constructor(private slackApi: AssistantStatusSlackApi) {}
 
@@ -159,10 +161,26 @@ export class AssistantStatusManager {
     return TOOL_STATUS_MAP.Bash;
   }
 
-  async setTitle(channelId: string, threadTs: string, title: string): Promise<void> {
+  /**
+   * Set the assistant thread title — ONCE per thread (#1064 surface
+   * modernization). Re-setting on every turn would flicker the sidebar, so the
+   * first non-empty title for a thread wins and later calls are no-ops. Shares
+   * the `enabled` gate with `setStatus`, so in workspaces/threads where the
+   * assistant API isn't available the call disables itself the same way status
+   * does — no separate assistant-thread marker needed. `force` re-titles even
+   * if already set (unused today, reserved for an explicit rename).
+   */
+  async setTitle(channelId: string, threadTs: string, title: string, opts?: { force?: boolean }): Promise<void> {
     if (!this.enabled) return;
+    const trimmed = title?.trim();
+    if (!trimmed) return;
+
+    const key = `${channelId}:${threadTs}`;
+    if (!opts?.force && this.titledThreads.has(key)) return;
+
     try {
-      await this.slackApi.setAssistantTitle(channelId, threadTs, title);
+      await this.slackApi.setAssistantTitle(channelId, threadTs, trimmed);
+      this.titledThreads.add(key);
     } catch (error) {
       this.logger.debug('assistant.threads.setTitle failed', {
         error: readErrorLabel(error),

@@ -17,7 +17,7 @@ function makeBody(overrides: { value?: string; userId?: string; blocks?: any[] }
       thread_ts: '1700.1',
       blocks: overrides.blocks ?? [
         { type: 'section', text: { type: 'mrkdwn', text: '✅ *작업 완료*' } },
-        buildFeedbackContextActions(turnId),
+        buildFeedbackContextActions(turnId, overrides.userId ?? 'U1'),
       ],
     },
     actions: [
@@ -56,9 +56,13 @@ describe('TurnFeedbackActionHandler', () => {
     const [channel, ts, , blocks] = slackApi.updateMessage.mock.calls[0];
     expect(channel).toBe('C1');
     expect(ts).toBe('1700.9');
-    // The interactive context_actions block is replaced by a plain context ack.
-    expect(blocks.some((b: any) => b.type === 'context_actions')).toBe(false);
+    // The feedback_buttons are gone, replaced by a plain context ack...
     expect(JSON.stringify(blocks)).toContain('👍');
+    expect(JSON.stringify(blocks)).not.toContain('feedback_buttons');
+    // ...but the 🗑 dismiss icon_button is preserved so the card stays dismissible.
+    const ctxActions = blocks.find((b: any) => b.type === 'context_actions');
+    expect(ctxActions.elements).toHaveLength(1);
+    expect(ctxActions.elements[0].type).toBe('icon_button');
   });
 
   it('is idempotent on double-click (one record, sentiment stable)', async () => {

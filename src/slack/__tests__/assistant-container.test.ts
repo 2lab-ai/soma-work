@@ -11,6 +11,7 @@ import {
   ASSISTANT_VIEW_TITLE,
   buildAssistantConfig,
   createAssistantContainer,
+  SUGGESTED_PROMPTS,
   SUGGESTED_PROMPTS_PLACEHOLDER,
 } from '../assistant-container';
 
@@ -136,15 +137,28 @@ describe('assistant-container — buildAssistantConfig', () => {
     await expect((cfg.userMessage as any)(middlewareArgs)).rejects.toThrow('boom');
   });
 
-  // Case 7 — placeholder constants invariants
-  it('SUGGESTED_PROMPTS_PLACEHOLDER has 4 non-empty prompts', () => {
-    expect(SUGGESTED_PROMPTS_PLACEHOLDER).toHaveLength(4);
-    for (const p of SUGGESTED_PROMPTS_PLACEHOLDER) {
+  // Case 7 — suggested-prompt constants invariants
+  it('SUGGESTED_PROMPTS has 4 non-empty prompts', () => {
+    expect(SUGGESTED_PROMPTS).toHaveLength(4);
+    for (const p of SUGGESTED_PROMPTS) {
       expect(p.title).toBeTruthy();
       expect(p.message).toBeTruthy();
       expect(typeof p.title).toBe('string');
       expect(typeof p.message).toBe('string');
     }
+  });
+
+  it('SUGGESTED_PROMPTS reflect soma-work agent workflows (not generic chat)', () => {
+    const blob = JSON.stringify(SUGGESTED_PROMPTS);
+    // Workflow-aware: PR review, implementation, deploy, debug.
+    expect(blob).toMatch(/PR/);
+    expect(blob).toMatch(/구현/);
+    expect(blob).toMatch(/배포/);
+    expect(blob).toMatch(/디버그/);
+  });
+
+  it('SUGGESTED_PROMPTS_PLACEHOLDER remains an alias for back-compat', () => {
+    expect(SUGGESTED_PROMPTS_PLACEHOLDER).toBe(SUGGESTED_PROMPTS);
   });
 });
 
