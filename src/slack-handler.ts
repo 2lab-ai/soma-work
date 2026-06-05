@@ -897,18 +897,33 @@ export class SlackHandler {
   }
 
   /**
+   * Install the goal turn-settled handler (wired in `index.ts`). Fired
+   * once per assistant turn end while a goal is active — AFTER the turn
+   * has released its request-coordinator slot — so the driver can run
+   * the completion eval without racing/superseding the work turn.
+   */
+  setGoalTurnSettledHandler(handler: (sessionKey: string) => void): void {
+    this.goalTurnSettledHandler = handler;
+  }
+  private goalTurnSettledHandler?: (sessionKey: string) => void;
+
+  /**
    * Post-turn hook fired by the TurnRunner surface. While a goal is
-   * `active`, this ONLY stashes the turn's assistant text on the
-   * session for the idle-settle goal driver (wired in `index.ts`).
+   * `active`, this stashes the turn's assistant text on the session and
+   * then triggers the goal driver (eval + maybe continuation).
    *
-   * It deliberately does NOT run the eval or inject a continuation
-   * here. Doing that per-turn-end raced the live work turn: the
-   * continuation injection superseded (killed) the model mid-work,
-   * producing empty output and a tight eval spin (the PTN-4695
-   * incident). The eval + continuation now fire from the idle-after-
-   * drain hook, which only runs when the session has genuinely settled
-   * to idle (no in-flight request) — i.e. the work turn has actually
-   * ended. See `docs/goal-command/spec.md` §Auto-Continuation Loop.
+   * CRITICAL — the trigger point: `onAssistantTurnComplete` fires from
+   * `TurnRunner.finish()`, which runs AFTER `StreamExecutor.execute()`
+   * has returned and its `finally` has called `removeController` (slot
+   * released). The earlier idle-after-drain hook fired ~1s too early —
+   * from inside `setActivityState('idle')`, BEFORE the slot was released
+   * — so `shouldRunGoalIdleDriver` always saw `requestActive === true`
+   * and silently bailed; the eval never ran. Triggering here guarantees
+   * the slot is free, so the gate passes and the eval reliably fires.
+   *
+   * The driver itself still re-checks `isRequestActive` before INJECTING
+   * a continuation, so it can never supersede a live/fresh turn (the
+   * PTN-4695 spin). See `docs/goal-command/spec.md` §Auto-Continuation.
    */
   private handleAssistantTurnCompleteForGoal(
     session: ConversationSession,
@@ -917,10 +932,11 @@ export class SlackHandler {
   ): void {
     const goal = session.goal;
     if (!goal || goal.status !== 'active') return;
-    // Runtime-only stash (not persisted) — the idle driver reads this
-    // as the work-summary evidence for the completion eval.
+    // Runtime-only stash (not persisted) — the driver reads this as the
+    // work-summary evidence for the completion eval.
     session.goalLastTurnText = assistantMessages.join('\n\n');
-    this.logger.debug('Goal turn text stashed for idle driver', { sessionKey });
+    this.logger.debug('Goal turn settled — triggering goal driver', { sessionKey });
+    this.goalTurnSettledHandler?.(sessionKey);
   }
 
   /**
