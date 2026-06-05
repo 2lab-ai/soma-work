@@ -103,7 +103,22 @@ export type AgentStreamEvent =
       type: 'plan_update';
       entries: Array<{ id?: string; title: string; status?: AgentToolStatus; content?: string }>;
     }
-  | { type: 'mode_update'; modeId: string };
+  | { type: 'mode_update'; modeId: string }
+  // Authoritative background-task lifecycle (SDK `task_started` /
+  // `task_progress` / `task_notification`). The harness's REAL "is background
+  // work still running?" signal; replaces the heuristic spawn-ack + consumer-
+  // tool reconstruction the resume guard used to depend on. Keyed by SDK
+  // `taskId` (== the `Bash({run_in_background})` spawn-ack "with ID:" id).
+  | {
+      type: 'agent_task_lifecycle';
+      phase: 'started' | 'progress' | 'settled';
+      taskId: string;
+      toolUseId?: string;
+      taskType?: string;
+      status?: 'completed' | 'failed' | 'stopped';
+      outputFile?: string;
+      summary?: string;
+    };
 
 export type AgentStreamEventOf<T extends AgentStreamEvent['type']> = Extract<AgentStreamEvent, { type: T }>;
 

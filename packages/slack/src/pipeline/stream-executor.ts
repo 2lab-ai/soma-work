@@ -485,6 +485,16 @@ export class StreamExecutor {
    */
   private bgWaitCounts = new Map<string, number>();
 
+  /**
+   * Per-session NON-destructive cap suppression. When the resume cap is hit we
+   * record the live-task SIGNATURE we gave up on (instead of draining the
+   * authoritative live state, which would lie about whether work is running).
+   * While the live signature matches, auto-resume stays suppressed; when the
+   * signature changes (new bg work, or the stuck set finally settled) the entry
+   * is cleared and the guard re-arms. Keyed by sessionKey.
+   */
+  private bgWaitSuppressed = new Map<string, string>();
+
   constructor(private deps: StreamExecutorDeps) {}
 
   /**
@@ -1296,6 +1306,13 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             }
           }
         },
+        onAgentTaskLifecycle: (event, ctx) => {
+          // Authoritative background-task liveness (SDK task_started/progress/
+          // notification). Feeds the session-scoped tracker that the turn-end
+          // resume guard reads — replaces the old heuristic (spawn-ack text +
+          // the model polling TaskOutput/BashOutput).
+          this.deps.toolEventProcessor.handleAgentTaskLifecycle(event, ctx.sessionKey);
+        },
         onTodoUpdate: async (input, ctx) => {
           // Task list is part of thread header — always update regardless of verbosity.
           // The TODO_UPDATE flag only gates the legacy standalone message inside handleTodoUpdate.
@@ -1884,6 +1901,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         // its own — end any pending background-wait chain for this session so a
         // stale counter can't mis-bound a later, unrelated chain.
         this.bgWaitCounts.delete(sessionKey);
+        this.bgWaitSuppressed.delete(sessionKey);
         turnCollector.setContinuation(renewContinuation);
         return {
           success: true,
@@ -1905,6 +1923,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         );
         if (continuation) {
           this.bgWaitCounts.delete(sessionKey); // see renew branch
+          this.bgWaitSuppressed.delete(sessionKey);
           turnCollector.setContinuation(continuation);
           return { success: true, messageCount: streamResult.messageCount, continuation, turnCollector };
         }
@@ -1943,11 +1962,19 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // turnId-scoped (#794), so a Task that outlives a full resume turn drops
       // out of the next turn's snapshot — bash (the dotnet-build case) is the
       // primary, fully-covered path.
-      const liveBackground = this.deps.toolEventProcessor.getLiveBackgroundWork(sessionKey, turnId);
+      // Authoritative live-set from the SDK task lifecycle (session-scoped, so
+      // it survives across resume turns). Covers bg bash, bg subagent Task, AND
+      // Monitor uniformly — `count`/`labels`/`signature` in one snapshot.
+      const liveBackground = this.deps.toolEventProcessor.getLiveBackgroundWork(sessionKey);
+      // The pure decision fn owns the policy, INCLUDING non-destructive cap
+      // suppression: it compares the live `signature` against the one we gave up
+      // on (`suppressedSignature`) and returns `none` while the stuck set is
+      // unchanged, re-arming itself when it changes.
       const bgDecision = decideBackgroundWaitContinuation({
         live: liveBackground,
         priorWaitCount: this.bgWaitCounts.get(sessionKey) ?? 0,
         cap: getBackgroundWaitCap(),
+        suppressedSignature: this.bgWaitSuppressed.get(sessionKey),
         hasPendingChoice,
         hasError: hasSdkError,
         hasOtherContinuation: false,
@@ -1958,8 +1985,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           sessionKey,
           turnId,
           attempt: bgDecision.nextWaitCount,
-          bashCount: liveBackground.bashCount,
-          taskCount: liveBackground.taskLabels.length,
+          count: liveBackground.count,
+          labels: liveBackground.labels,
         });
         turnCollector.setContinuation(bgDecision.continuation);
         return {
@@ -1971,23 +1998,26 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       }
       if (bgDecision.action === 'cap-exceeded') {
         this.bgWaitCounts.delete(sessionKey);
-        // Give up on these launches: drop their resume tracking so a never-
-        // consumed background shell can't keep re-triggering the guard on
-        // later, unrelated turns of this session.
-        this.deps.toolEventProcessor.clearBackgroundResume?.(sessionKey);
-        this.logger.warn('Background-work resume: cap reached, stopping auto-wait', {
+        // NON-destructive give-up: remember the signature we bailed on instead
+        // of draining the authoritative live state (which would lie that the
+        // work finished). Re-arms automatically once the live signature changes.
+        this.bgWaitSuppressed.set(sessionKey, bgDecision.suppressSignature);
+        this.logger.warn('Background-work resume: cap reached, suppressing auto-wait for current live set', {
           sessionKey,
           turnId,
-          bashCount: liveBackground.bashCount,
-          taskCount: liveBackground.taskLabels.length,
+          count: liveBackground.count,
+          labels: liveBackground.labels,
+          signature: bgDecision.suppressSignature,
         });
         await say({
           text: `⚠️ 백그라운드 작업이 ${getBackgroundWaitCap()}회 대기 후에도 살아있어 자동 대기를 중단합니다. 수동 확인이 필요할 수 있습니다.`,
           thread_ts: threadTs,
         });
       } else if (bgDecision.action === 'reset') {
-        // Turn ended with nothing backgrounded — clear any prior wait chain.
+        // Turn ended with nothing backgrounded — clear the wait chain AND any
+        // prior cap suppression so a fresh background launch re-arms the guard.
         this.bgWaitCounts.delete(sessionKey);
+        this.bgWaitSuppressed.delete(sessionKey);
       }
 
       return { success: true, messageCount: streamResult.messageCount, turnCollector };
