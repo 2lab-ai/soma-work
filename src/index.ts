@@ -1073,23 +1073,26 @@ async function start() {
         }
       };
 
-      // Fire on idle settle, deferred via setImmediate so the just-finished
-      // turn's `finally` (removeController) runs first — otherwise
-      // `isRequestActive()` would still see the turn that just ended and the
-      // driver would needlessly bail.
-      registry.setOnIdleAfterDrainHook((sessionKey: string) => {
-        setImmediate(() => {
-          runGoalIdleDriver(sessionKey).catch((err: unknown) => {
-            logger.warn('Goal idle driver failed', {
-              sessionKey,
-              error: err instanceof Error ? err.message : String(err),
-            });
+      // Trigger from the turn-settled hook (TurnRunner.finish →
+      // onAssistantTurnComplete), which fires AFTER the just-finished turn
+      // released its request-coordinator slot. The previous wiring used the
+      // idle-after-drain hook, but that fires from inside
+      // `setActivityState('idle')` ~1s BEFORE `removeController` runs, so
+      // `shouldRunGoalIdleDriver` always saw `requestActive === true` and
+      // bailed silently — the eval never ran ("goal stopped checking"
+      // regression). The driver still re-checks `isRequestActive` before
+      // injecting a continuation, so it can never supersede a live turn.
+      slackHandler.setGoalTurnSettledHandler((sessionKey: string) => {
+        runGoalIdleDriver(sessionKey).catch((err: unknown) => {
+          logger.warn('Goal driver failed', {
+            sessionKey,
+            error: err instanceof Error ? err.message : String(err),
           });
         });
       });
-      timing('Goal idle-settle driver installed');
+      timing('Goal turn-settled driver installed');
     } catch (error) {
-      logger.warn('Failed to install goal idle-settle driver (non-critical)', error);
+      logger.warn('Failed to install goal turn-settled driver (non-critical)', error);
     }
 
     // Notify users whose sessions were interrupted by crash (non-blocking)

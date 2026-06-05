@@ -84,9 +84,11 @@ The loop is driven from the **idle-settle** boundary — when the session has ge
 
 1. User input → 2. model WORKS on the goal (a real, possibly multi-tool, minutes-long turn) → 3. the work turn ENDS and the session settles to idle → 4. if a goal is `active`, the host forks a clean eval turn and asks the model whether the goal is complete (y/n) → 5. on **"no"**, the host feeds the goal back to the model as the next continuation turn (loop to step 2); on **"yes"**, the loop stops.
 
-**Why idle-settle, not turn-end:** a per-turn-end trigger (`onAssistantTurnComplete`) raced the live work turn — the continuation injection went through `handleConcurrency`, which **superseded (aborted) the running turn**, so the model was killed ~1-2s into its work, produced empty output, and the eval spun on "nothing done" (PTN-4695 incident). The idle-settle driver only acts when no request is active, so it can never abort a live work turn ("턴이 종료될 때까지는 기다려야지").
+**Two failure modes this balances:**
+- *Spin* — injecting a continuation while a turn is live makes `handleConcurrency` **supersede (abort)** it, killing the model mid-work → empty output → tight eval loop (PTN-4695). Guarded by the injection-time `isRequestActive` check (never supersede).
+- *Never-checks* — firing the driver too early, before the just-finished turn released its request slot, makes `shouldRunGoalIdleDriver` see `requestActive === true` and bail silently → the eval never runs. This is why the trigger must fire AFTER slot release.
 
-**Trigger:** `onAssistantTurnComplete` only *stashes* the turn's assistant text on the session (`session.goalLastTurnText`, runtime-only). The actual driver fires from `SessionRegistry`'s idle-after-drain hook (`setOnIdleAfterDrainHook`), **deferred via `setImmediate`** so the just-finished turn's `finally` (which removes its request-coordinator controller) runs first.
+**Trigger:** `onAssistantTurnComplete` (from `TurnRunner.finish()`) both *stashes* the turn's assistant text (`session.goalLastTurnText`, runtime-only) and *invokes the driver*. `finish()` runs after `StreamExecutor.execute()` has returned and its `finally` has called `removeController` — so the slot is released and `shouldRunGoalIdleDriver` passes. (An earlier version fired from `setActivityState('idle')`'s idle-after-drain hook, which runs ~1s before `removeController`; the gate always saw an active request and the eval never fired.)
 
 **Driver gate (`shouldRunGoalIdleDriver`, all must pass):**
 
