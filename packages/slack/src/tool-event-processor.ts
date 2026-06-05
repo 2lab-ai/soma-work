@@ -8,6 +8,7 @@ import type { AssistantStatusManager } from './assistant-status-manager';
 import type { McpHealthMonitor } from './mcp-health-monitor';
 import type { McpStatusDisplay } from './mcp-status-tracker';
 import { getToolResultRenderMode, LOG_DETAIL, OutputFlag, shouldOutput } from './output-flags';
+import { BackgroundResumeTracker, isConsumerToolName } from './pipeline/background-resume-tracker';
 import type { ReactionManager } from './reaction-manager';
 import { extractTaskIdFromResult } from './stream-processor';
 import { ToolFormatter, type ToolResult } from './tool-formatter';
@@ -271,8 +272,19 @@ export class ToolEventProcessor {
    * Issue #688 — registry of live `Bash({run_in_background:true})` calls.
    * Populated by `startBackgroundBashTracking`, drained by
    * `handleToolResult` (normal completion) or `cleanup()` (turn end).
+   * NOTE: this owns the spinner/McpCallTracker lifecycle and is emptied at the
+   * spawn ack — it is NOT the resume signal (see `backgroundResumeTracker`).
    */
   private backgroundBashRegistry = new BackgroundBashRegistry();
+  /**
+   * Resume-guard signal: background bashes still running (spawn-acked, not
+   * terminally consumed via TaskOutput/BashOutput/kill). Deliberately separate
+   * from `backgroundBashRegistry` and never touched by per-turn `cleanup()` so
+   * it survives resume turns. See `background-resume-tracker.ts`.
+   */
+  private backgroundResumeTracker = new BackgroundResumeTracker((toolName) =>
+    this.logger.debug('bg resume: unrecognized consumer result (possible output-tool shape drift)', { toolName }),
+  );
   /** Issue #794 — see `BgTaskEntry` doc. */
   private backgroundTaskRegistry = new BackgroundTaskRegistry();
   /**
@@ -498,6 +510,13 @@ export class ToolEventProcessor {
       // must NOT call completeCall from here to avoid double-closing.
       const bgEntry = this.backgroundBashRegistry.remove(context.sessionKey, toolResult.toolUseId);
       if (bgEntry) {
+        // This tool_result is the SPAWN ACK of a bg bash (the process keeps
+        // running). Start tracking it for the resume guard so the session is
+        // not marked complete while the shell is still alive. The ack carries
+        // the background id (`backgroundTaskId` / "...with ID: <id>").
+        if (context.sessionKey) {
+          this.backgroundResumeTracker.trackLaunch(context.sessionKey, toolResult.toolUseId, toolResult.result);
+        }
         try {
           bgEntry.unregister();
         } catch (err) {
@@ -509,6 +528,11 @@ export class ToolEventProcessor {
             error: (err as Error)?.message ?? String(err),
           });
         }
+      } else if (context.sessionKey && isConsumerToolName(toolResult.toolName)) {
+        // A `TaskOutput`/`BashOutput`/kill result: drain the matching live
+        // launch when it reports terminal (completed/failed/killed/exit code).
+        // A `running`/`pending` poll keeps it live.
+        this.backgroundResumeTracker.observeConsumerResult(context.sessionKey, toolResult.toolName, toolResult.result);
       }
 
       // Issue #794 — bg Task spawn-ack keeps the progress UI alive
@@ -741,9 +765,22 @@ export class ToolEventProcessor {
    */
   getLiveBackgroundWork(sessionKey?: string, turnId?: string): { bashCount: number; taskLabels: string[] } {
     return {
-      bashCount: sessionKey ? this.backgroundBashRegistry.countFor(sessionKey) : 0,
+      // Resume signal = bg bashes spawn-acked but not yet terminally consumed.
+      // (Not `backgroundBashRegistry`, which empties at the spawn ack and so is
+      // always 0 by turn end — the no-op that #1049 read.)
+      bashCount: sessionKey ? this.backgroundResumeTracker.liveCount(sessionKey) : 0,
       taskLabels: turnId ? this.backgroundTaskRegistry.labelsFor(turnId) : [],
     };
+  }
+
+  /**
+   * Drop all background-resume tracking for a session. Called by StreamExecutor
+   * when the per-session resume cap is exhausted (give up auto-waiting) or on
+   * session teardown, so a never-consumed launch can't keep re-triggering the
+   * guard on later, unrelated turns.
+   */
+  clearBackgroundResume(sessionKey: string): void {
+    this.backgroundResumeTracker.drain(sessionKey);
   }
 
   async cleanup(sessionKey?: string, turnId?: string): Promise<void> {
