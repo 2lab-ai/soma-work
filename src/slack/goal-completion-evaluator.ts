@@ -4,16 +4,15 @@
  * The work model is not allowed to flip `session.goal.status` to
  * `complete` on its own — codex enforces this via the `update_goal`
  * tool which only the runtime can honor, and soma-work has no
- * comparable tool surface. Instead, the work model writes the
- * `<goal-complete-request reason="..."/>` sentinel; this module
- * spawns a clean-context dispatch to the same model+effort and asks
- * for a strict JSON verdict on whether the objective is actually
- * met. Only `completed: true` from the evaluator flips the goal
- * status.
+ * comparable tool surface. Instead, at every turn end while a goal is
+ * active the host forks a clean-context dispatch to the same
+ * model+effort and asks for a strict JSON verdict on whether the
+ * objective is actually met. Only `completed: true` from the evaluator
+ * flips the goal status; `completed: false` drives the next
+ * continuation turn.
  *
  * See `docs/goal-command/spec.md` §Completion via Host-Side Eval
- * Model. The companion sentinel parser lives in
- * `goal-completion-detector.ts`.
+ * Model.
  */
 
 import fs from 'node:fs';
@@ -263,4 +262,50 @@ export function applyGoalEvalDispatchFailure(goal: import('../types').SessionGoa
   goal.updatedAt = now;
   // Intentionally NOT bumping evalAttemptCount — that counter
   // tracks completed eval cycles, not infrastructure flakes.
+}
+
+/** Per-turn loop decision (spec §Auto-Continuation Loop step 4-5). */
+export type GoalEvalOutcome = { action: 'complete' } | { action: 'continue' } | { action: 'cap-paused' };
+
+/**
+ * Decide what the turn-end auto-continuation loop does given an eval
+ * verdict, and apply the matching state mutation to `goal`:
+ *
+ *   - `completed === true` → flip to complete (`applyGoalEvalSuccess`),
+ *     stop the loop. → `{ action: 'complete' }`
+ *   - `completed === false` and `continuationCount < maxContinuations`
+ *     → record the gap (`applyGoalEvalFailure`), bump the continuation
+ *     counter, stamp `lastContinuationAt`; the caller injects the next
+ *     turn. → `{ action: 'continue' }`
+ *   - `completed === false` at the cap → record the gap but do NOT bump
+ *     the counter; the caller posts a pause notice and stops until a
+ *     real user message resets the counter. → `{ action: 'cap-paused' }`
+ *
+ * Pure aside from the `goal` mutation — the caller owns persistence,
+ * `session.systemPrompt` invalidation, Slack notices, and injection.
+ * Extracted from the index.ts wiring so the loop decision is unit-
+ * testable in isolation.
+ */
+export function decideGoalEvalOutcome(
+  goal: import('../types').SessionGoal,
+  verdict: GoalEvalVerdict,
+  now: number = Date.now(),
+): GoalEvalOutcome {
+  if (verdict.completed) {
+    applyGoalEvalSuccess(goal, now);
+    return { action: 'complete' };
+  }
+
+  applyGoalEvalFailure(goal, verdict.reason, now);
+
+  // Cap check BEFORE incrementing: with maxContinuations=N the host
+  // injects continuations until the counter reaches N, then pauses.
+  if (goal.continuationCount >= goal.maxContinuations) {
+    return { action: 'cap-paused' };
+  }
+
+  goal.continuationCount = goal.continuationCount + 1;
+  goal.lastContinuationAt = now;
+  goal.updatedAt = now;
+  return { action: 'continue' };
 }
