@@ -24,6 +24,7 @@ import {
   evaluateGoalCompletion,
   GoalEvalParseError,
   parseGoalEvalVerdict,
+  shouldRunGoalIdleDriver,
 } from '../goal-completion-evaluator';
 
 function makeGoal(overrides: Partial<SessionGoal> = {}): SessionGoal {
@@ -268,5 +269,77 @@ describe('decideGoalEvalOutcome', () => {
     const finalOutcome = decideGoalEvalOutcome(goal, { completed: true, reason: 'done', remaining: [] }, NOW + 99);
     expect(finalOutcome).toEqual({ action: 'complete' });
     expect(goal.status).toBe('complete');
+  });
+});
+
+/**
+ * Gate for the idle-settle goal driver. Regression guard for the
+ * production bug where the loop evaluated + injected a continuation
+ * while a real work turn was still running, superseding (killing) it
+ * and spinning on empty output. The driver must act ONLY when the
+ * session has genuinely settled to idle.
+ */
+describe('shouldRunGoalIdleDriver', () => {
+  const activeGoal = (over: Partial<SessionGoal> = {}): SessionGoal => makeGoal({ status: 'active', ...over });
+
+  it('runs when goal active, no pending eval, no active request, idle', () => {
+    expect(
+      shouldRunGoalIdleDriver({
+        goal: activeGoal({ pendingEval: undefined }),
+        requestActive: false,
+        activityState: 'idle',
+      }),
+    ).toBe(true);
+  });
+
+  it('does NOT run while a request is active (live work turn — never supersede)', () => {
+    expect(
+      shouldRunGoalIdleDriver({
+        goal: activeGoal({ pendingEval: undefined }),
+        requestActive: true,
+        activityState: 'idle',
+      }),
+    ).toBe(false);
+  });
+
+  it('does NOT run when activity state is not idle (working/waiting)', () => {
+    expect(
+      shouldRunGoalIdleDriver({
+        goal: activeGoal({ pendingEval: undefined }),
+        requestActive: false,
+        activityState: 'working',
+      }),
+    ).toBe(false);
+    expect(
+      shouldRunGoalIdleDriver({
+        goal: activeGoal({ pendingEval: undefined }),
+        requestActive: false,
+        activityState: 'waiting',
+      }),
+    ).toBe(false);
+  });
+
+  it('does NOT run when an eval is already in flight (pendingEval set)', () => {
+    expect(
+      shouldRunGoalIdleDriver({
+        goal: activeGoal({ pendingEval: { requestedAt: 1, turnId: 't' } }),
+        requestActive: false,
+        activityState: 'idle',
+      }),
+    ).toBe(false);
+  });
+
+  it('does NOT run when no goal / goal not active', () => {
+    expect(shouldRunGoalIdleDriver({ goal: undefined, requestActive: false, activityState: 'idle' })).toBe(false);
+    expect(
+      shouldRunGoalIdleDriver({ goal: activeGoal({ status: 'paused' }), requestActive: false, activityState: 'idle' }),
+    ).toBe(false);
+    expect(
+      shouldRunGoalIdleDriver({
+        goal: activeGoal({ status: 'complete' }),
+        requestActive: false,
+        activityState: 'idle',
+      }),
+    ).toBe(false);
   });
 });

@@ -115,21 +115,6 @@ export class SlackHandler {
   private sessionInitializer: SessionInitializer;
   private streamExecutor: StreamExecutor;
 
-  /**
-   * Optional handler invoked when a turn ends with a goal-completion
-   * signal (sentinel or natural-language safety net). Wired up in
-   * `index.ts` so the eval dispatcher (which needs the Claude SDK
-   * lease + Slack notifier) can be assembled without dragging those
-   * deps into the SlackHandler constructor. See
-   * `docs/goal-command/spec.md` §Completion via Host-Side Eval Model.
-   */
-  private goalCompletionRequestHandler?: (
-    session: ConversationSession,
-    sessionKey: string,
-    signal: { reason: string; via: 'sentinel' | 'natural-language' | 'turn-end' },
-    workSummary: string,
-  ) => Promise<void>;
-
   constructor(app: App, claudeHandler: ClaudeHandler, mcpManager: McpManager) {
     this.app = app;
     this.claudeHandler = claudeHandler;
@@ -876,7 +861,7 @@ export class SlackHandler {
         await this.threadPanel?.finalizeOnEndTurn(session, sessionKey, endTurnInfo, hasPendingChoice);
       },
       onAssistantTurnComplete: async (session, sessionKey, assistantMessages) => {
-        await this.handleAssistantTurnCompleteForGoal(session, sessionKey, assistantMessages);
+        this.handleAssistantTurnCompleteForGoal(session, sessionKey, assistantMessages);
       },
     };
 
@@ -912,75 +897,30 @@ export class SlackHandler {
   }
 
   /**
-   * Install the goal completion request handler. Called from
-   * `index.ts` after the SlackHandler is constructed, once the
-   * Claude SDK lease / postSystemMessage helpers are available.
-   *
-   * Idempotent — re-installing replaces the previous handler.
-   */
-  setGoalCompletionRequestHandler(
-    handler: (
-      session: ConversationSession,
-      sessionKey: string,
-      signal: { reason: string; via: 'sentinel' | 'natural-language' | 'turn-end' },
-      workSummary: string,
-    ) => Promise<void>,
-  ): void {
-    this.goalCompletionRequestHandler = handler;
-  }
-
-  /**
    * Post-turn hook fired by the TurnRunner surface. While a goal is
-   * `active`, EVERY turn end triggers a completion eval (spec
-   * §Auto-Continuation Loop step 4-5): set `pendingEval`, then hand
-   * off to the registered handler, which forks a clean eval turn to
-   * ask the model whether the goal is complete and — on "not yet" —
-   * injects the next continuation turn. This method only handles the
-   * trigger + dedupe; the handler owns eval + loop.
+   * `active`, this ONLY stashes the turn's assistant text on the
+   * session for the idle-settle goal driver (wired in `index.ts`).
    *
-   * No sentinel detection: the work model is not relied upon to
-   * announce completion. The host audits every turn.
+   * It deliberately does NOT run the eval or inject a continuation
+   * here. Doing that per-turn-end raced the live work turn: the
+   * continuation injection superseded (killed) the model mid-work,
+   * producing empty output and a tight eval spin (the PTN-4695
+   * incident). The eval + continuation now fire from the idle-after-
+   * drain hook, which only runs when the session has genuinely settled
+   * to idle (no in-flight request) — i.e. the work turn has actually
+   * ended. See `docs/goal-command/spec.md` §Auto-Continuation Loop.
    */
-  private async handleAssistantTurnCompleteForGoal(
+  private handleAssistantTurnCompleteForGoal(
     session: ConversationSession,
     sessionKey: string,
     assistantMessages: string[],
-  ): Promise<void> {
+  ): void {
     const goal = session.goal;
     if (!goal || goal.status !== 'active') return;
-    // Dedupe: an eval is already in flight for this goal. Its verdict
-    // owns the next transition (complete / continue), so skip.
-    if (goal.pendingEval) return;
-    const handler = this.goalCompletionRequestHandler;
-    if (!handler) return;
-
-    const joined = assistantMessages.join('\n\n');
-    const signal = { reason: 'turn-end', via: 'turn-end' as const };
-
-    // Stamp pendingEval BEFORE detaching so a concurrent turn end
-    // (e.g. a racing user turn) sees the in-flight eval and stays quiet.
-    const now = Date.now();
-    goal.pendingEval = { requestedAt: now, turnId: `${now}` };
-    goal.updatedAt = now;
-    this.claudeHandler.saveSessions();
-    this.logger.info('Goal turn ended — dispatching completion eval', {
-      sessionKey,
-    });
-
-    // Fire-and-forget: the eval runs a full Claude turn (multi-second)
-    // and must not block the turn pipeline's `finalizeOnEndTurn` →
-    // activity-state idle transition. Errors are logged here so the
-    // surface contract for TurnRunner.finish stays clean.
-    void (async () => {
-      try {
-        await handler(session, sessionKey, signal, joined);
-      } catch (err: unknown) {
-        this.logger.error('goalCompletionRequestHandler failed', {
-          sessionKey,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-    })();
+    // Runtime-only stash (not persisted) — the idle driver reads this
+    // as the work-summary evidence for the completion eval.
+    session.goalLastTurnText = assistantMessages.join('\n\n');
+    this.logger.debug('Goal turn text stashed for idle driver', { sessionKey });
   }
 
   /**
