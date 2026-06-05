@@ -1971,6 +1971,10 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       }
       if (bgDecision.action === 'cap-exceeded') {
         this.bgWaitCounts.delete(sessionKey);
+        // Give up on these launches: drop their resume tracking so a never-
+        // consumed background shell can't keep re-triggering the guard on
+        // later, unrelated turns of this session.
+        this.deps.toolEventProcessor.clearBackgroundResume?.(sessionKey);
         this.logger.warn('Background-work resume: cap reached, stopping auto-wait', {
           sessionKey,
           turnId,
