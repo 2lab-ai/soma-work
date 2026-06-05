@@ -140,6 +140,18 @@ export class CompletionMessageTracker {
     }
   }
 
+  /**
+   * Forget a single tracked timestamp (e.g. the user manually dismissed/deleted
+   * that card). Without this, a later `deleteAll` would try to re-delete an
+   * already-gone message. No-op when not tracked.
+   */
+  untrack(sessionKey: string, messageTs: string): void {
+    const set = this.tracked.get(sessionKey);
+    if (!set) return;
+    set.delete(messageTs);
+    if (set.size === 0) this.tracked.delete(sessionKey);
+  }
+
   /** Check if there are tracked messages for a session */
   has(sessionKey: string): boolean {
     const set = this.tracked.get(sessionKey);

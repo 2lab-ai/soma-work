@@ -1794,6 +1794,13 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       enrichAndResolve()
         .then((evt) => {
           resolveSnapshot(evt);
+          // #1064 — auto-title the assistant thread from the workflow/session
+          // title. setTitle is once-per-thread and shares setStatus's `enabled`
+          // gate, so non-assistant threads disable it silently. Fire-and-forget
+          // off the completion hot path.
+          if (evt.sessionTitle && threadTs) {
+            void this.deps.assistantStatusManager.setTitle(channel, threadTs, evt.sessionTitle);
+          }
           // §C-2 once-guard — skip if the finally fallback already posted
           // (e.g. enrichment was slow, TurnSurface.end timeout fired first).
           if (terminalNotified) return;
