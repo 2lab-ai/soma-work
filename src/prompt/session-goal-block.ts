@@ -95,6 +95,7 @@ export function buildGoalContinuationPrompt(goal: SessionGoal): string {
     '- This goal persists across turns. Ending this turn does not require shrinking the objective to what fits now.',
     '- Keep the full objective intact. If it cannot be finished now, make concrete progress toward the real requested end state, leave the goal active, and do not redefine success around a smaller or easier task.',
     '- Temporary rough edges are acceptable while the work is moving in the right direction. Completion still requires the requested end state to be true and verified.',
+    '- End this turn with a brief written summary of the concrete actions you took and the evidence produced (files changed, commands run, test/PR results). The host audits progress from your turn output, so a turn that does work but writes nothing reads as "no progress".',
     '',
     'Continuation budget:',
     `- Continuation turns used: ${goal.continuationCount}`,

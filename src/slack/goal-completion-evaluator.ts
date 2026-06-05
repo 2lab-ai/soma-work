@@ -309,3 +309,42 @@ export function decideGoalEvalOutcome(
   goal.updatedAt = now;
   return { action: 'continue' };
 }
+
+/** Runtime conditions the idle-settle goal driver sees when a session
+ *  transitions to idle. */
+export interface GoalIdleDriverState {
+  /** `session.goal`, or undefined when no goal is set. */
+  goal: import('../types').SessionGoal | undefined;
+  /** `requestCoordinator.isRequestActive(sessionKey)` — a work turn is
+   *  still in flight (or a fresh user turn just started). */
+  requestActive: boolean;
+  /** `registry.getActivityStateByKey(sessionKey)`. */
+  activityState: string | undefined;
+}
+
+/**
+ * Decide whether the idle-settle goal driver may run an eval right now.
+ *
+ * This is the gate that prevents the production failure where the
+ * continuation loop evaluated + injected while a real work turn was
+ * still running, superseding (killing) it and spinning on empty output.
+ * The driver acts ONLY when the session has genuinely settled to idle
+ * with no in-flight request — i.e. the model's work turn has actually
+ * ended (the user's "턴이 종료될 때까지는 기다려야지").
+ *
+ * All four must hold:
+ *   1. an active goal exists,
+ *   2. no eval is already in flight (`pendingEval`),
+ *   3. no request is active (no live/fresh turn to step on),
+ *   4. activity state is `'idle'`.
+ *
+ * Pure — the driver owns stamping `pendingEval`, eval, and injection.
+ */
+export function shouldRunGoalIdleDriver(state: GoalIdleDriverState): boolean {
+  const { goal, requestActive, activityState } = state;
+  if (!goal || goal.status !== 'active') return false;
+  if (goal.pendingEval) return false;
+  if (requestActive) return false;
+  if (activityState !== 'idle') return false;
+  return true;
+}

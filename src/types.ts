@@ -442,6 +442,15 @@ export interface ConversationSession {
   goal?: SessionGoal;
 
   /**
+   * Runtime-only: the assistant text of the most recently completed turn,
+   * stashed by the goal turn-end observer so the idle-settle goal driver
+   * can feed it to the completion eval when the session settles. NOT
+   * persisted (see SessionRegistry serializer) — a stale work summary
+   * across a restart would be misleading.
+   */
+  goalLastTurnText?: string;
+
+  /**
    * Cached summary of `completed`-status instructions — used by the
    * user-instructions block builder when there are ≥ 2 completed entries so
    * the system prompt stays compact. `upstreamHash` is a deterministic hash
