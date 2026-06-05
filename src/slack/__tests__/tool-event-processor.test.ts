@@ -51,7 +51,16 @@ describe('ToolEventProcessor', () => {
   });
 
   describe('getLiveBackgroundWork (background-work resume guard)', () => {
-    it('reports a live background bash until its tool_result arrives', async () => {
+    // `Bash({run_in_background:true})` returns its tool_result (a spawn ack
+    // carrying the background id) IMMEDIATELY — not at process completion. The
+    // OS process keeps running. So the resume signal must stay LIVE after the
+    // ack and only clear once the model consumes a TERMINAL TaskOutput/BashOutput
+    // (or kills the shell). Tracking the ack→result window (as #1049 did) is a
+    // no-op because that window closes instantly.
+    const ackResult = (id: string) =>
+      `Command running in background with ID: ${id}. Output is being written to: /tmp/${id}.log`;
+
+    it('keeps a background bash live after its spawn-ack and clears it on a terminal TaskOutput', async () => {
       const ctx: ToolEventContext = { ...mockContext, turnId: 'turn-1' };
       // Foreground bash and a backgrounded bash in the same turn.
       await processor.handleToolUse(
@@ -62,16 +71,42 @@ describe('ToolEventProcessor', () => {
         ctx,
       );
 
-      // Only the backgrounded bash is live; the foreground one is not tracked.
+      // The resume signal is sourced from the spawn ACK (carrying the bg id),
+      // not the tool_use — the ack arrives within the same turn and well before
+      // turn end, so this is the state the guard actually observes.
+      await processor.handleToolResult([{ toolUseId: 'bg', toolName: 'Bash', result: ackResult('bg-shell-1') }], ctx);
+      // The spawn-ack arrived but the process is STILL running, so the work
+      // must remain live (this is the bug #1049 missed: it cleared here).
       expect(processor.getLiveBackgroundWork('C123:thread_ts', 'turn-1')).toEqual({
         bashCount: 1,
         taskLabels: [],
       });
 
-      // Once the background bash produces its tool_result, it is no longer live.
-      const results: ToolResultEvent[] = [{ toolUseId: 'bg', toolName: 'Bash', result: 'done' }];
-      await processor.handleToolResult(results, ctx);
+      // A poll that reports the task still running keeps it live.
+      await processor.handleToolResult(
+        [
+          {
+            toolUseId: 'poll-1',
+            toolName: 'TaskOutput',
+            result: '<task_id>bg-shell-1</task_id>\n<status>running</status>\n<output>...</output>',
+          },
+        ],
+        ctx,
+      );
+      expect(processor.getLiveBackgroundWork('C123:thread_ts', 'turn-1').bashCount).toBe(1);
 
+      // A terminal TaskOutput (completed) finally clears it.
+      await processor.handleToolResult(
+        [
+          {
+            toolUseId: 'poll-2',
+            toolName: 'TaskOutput',
+            result:
+              '<task_id>bg-shell-1</task_id>\n<status>completed</status>\n<exit_code>0</exit_code>\n<output>done</output>',
+          },
+        ],
+        ctx,
+      );
       expect(processor.getLiveBackgroundWork('C123:thread_ts', 'turn-1')).toEqual({
         bashCount: 0,
         taskLabels: [],
