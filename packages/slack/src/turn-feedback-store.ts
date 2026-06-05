@@ -2,6 +2,9 @@ import { DATA_DIR } from '@soma/common/env-paths';
 import { Logger } from '@soma/common/logger';
 import * as fs from 'fs';
 import * as path from 'path';
+import type { FeedbackSentiment } from './turn-feedback-block-builder';
+
+export type { FeedbackSentiment };
 
 let getDataDir: () => string = () => DATA_DIR;
 
@@ -14,10 +17,8 @@ function storeFile(): string {
   return path.join(getDataDir(), 'turn-feedback.json');
 }
 
-/** Records older than this are dropped on load — feedback is short-lived signal. */
+/** Records older than this are dropped — feedback is short-lived signal. */
 const FEEDBACK_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-
-export type FeedbackSentiment = 'positive' | 'negative';
 
 /**
  * One feedback record. Primary key is `(turnId, userId)` — a given user may
@@ -94,8 +95,19 @@ export class TurnFeedbackStore {
         };
 
     this.byKey.set(key, record);
+    // Opportunistic prune so a long-uptime process sheds expired records (the
+    // file is rewritten in full on every write — without this it would only
+    // shrink at restart). One O(n) pass over a human-paced write is cheap.
+    this.pruneExpired();
     this.save();
     return record;
+  }
+
+  /** Drop expired records from the in-memory map. Caller persists afterward. */
+  private pruneExpired(): void {
+    for (const [key, record] of this.byKey) {
+      if (this.isExpired(record)) this.byKey.delete(key);
+    }
   }
 
   get(turnId: string, userId: string): TurnFeedbackRecord | undefined {

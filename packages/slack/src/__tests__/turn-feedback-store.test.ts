@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setTurnFeedbackStoreDataDirProvider, TurnFeedbackStore } from '../turn-feedback-store';
 
 let tmpDir: string;
@@ -70,6 +70,23 @@ describe('TurnFeedbackStore', () => {
     const b = new TurnFeedbackStore();
     expect(b.load()).toBe(1);
     expect(b.get(base.turnId, base.userId)?.sentiment).toBe('positive');
+  });
+
+  it('prunes records that expire in-memory on the next write (long-uptime bound)', () => {
+    vi.useFakeTimers();
+    try {
+      const store = new TurnFeedbackStore();
+      store.record({ ...base, turnId: 'old', sentiment: 'positive' });
+      // Age past the 30d TTL while the record sits in memory, then write again.
+      vi.advanceTimersByTime(40 * 24 * 60 * 60 * 1000);
+      store.record({ ...base, turnId: 'fresh', sentiment: 'positive' });
+
+      expect(store.get('old', base.userId)).toBeUndefined();
+      expect(store.get('fresh', base.userId)?.sentiment).toBe('positive');
+      expect(store.list()).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('drops malformed records on load', () => {
