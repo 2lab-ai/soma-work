@@ -51,7 +51,6 @@ export function bumpGoalEpoch(goal: SessionGoal): void {
 export function resetGoalContinuationOnUserMessage(session: { goal?: ConversationSession['goal'] }): void {
   if (!session.goal) return;
   session.goal.continuationCount = 0;
-  session.goal.consecutiveBlockedSignals = 0;
   // Invalidate any in-flight completion eval — the user just weighed in, so
   // a verdict about the pre-message work must not apply (M1).
   bumpGoalEpoch(session.goal);

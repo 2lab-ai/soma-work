@@ -35,6 +35,7 @@
  *      never aborted by the injection.
  */
 
+import { createHash } from 'node:crypto';
 import type { SyntheticMessageEvent } from '../cron-scheduler';
 import { buildGoalContinuationPrompt } from '../prompt/session-goal-block';
 import type { ConversationSession, SessionGoal } from '../types';
@@ -44,6 +45,7 @@ import {
   decideGoalEvalOutcome,
   evaluateGoalCompletion,
   type GoalEvalDispatcher,
+  type GoalEvalVerdict,
   shouldRunGoalIdleDriver,
 } from './goal-completion-evaluator';
 import { GOAL_CONTINUATION_TEXT_PREFIX } from './goal-continuation';
@@ -83,6 +85,13 @@ export interface GoalLoopControllerDeps {
   logger: GoalLoopLogger;
   /** Default work model when the session has none. */
   fallbackModel: string;
+  /**
+   * Optional cheaper eval tier (S9). When set, the completion eval runs on
+   * this model instead of the session's work model — the eval only emits a
+   * small strict-JSON verdict, so a lighter model is usually sufficient and
+   * far cheaper at fleet scale. When unset, the eval matches the work model.
+   */
+  evalModelOverride?: string;
   /** Eval timeout; defaults to {@link DEFAULT_GOAL_EVAL_TIMEOUT_MS}. */
   evalTimeoutMs?: number;
   /** Injectable clock for tests. */
@@ -168,6 +177,26 @@ export class GoalLoopController {
       return;
     }
     const activeGoal = session.goal!;
+    const objective = activeGoal.objective;
+    const workSummaryRaw = (session.goalLastTurnText ?? activeGoal.lastAssistantTurnSummary ?? '').trim();
+    const summaryHash = this.hashSummary(workSummaryRaw);
+
+    // S9 cost short-circuit: if the work summary is byte-identical to what we
+    // last evaluated and we already hold that verdict's gap reason, a fresh
+    // eval would return the same "not complete" — skip the (expensive)
+    // dispatch and reuse it. Empty summaries never short-circuit (no evidence
+    // to reuse), and a `complete` verdict clears the hash so it never sticks.
+    if (workSummaryRaw !== '' && activeGoal.lastEvalSummaryHash === summaryHash && activeGoal.lastEvalReason) {
+      logger.info('Goal eval short-circuited — work summary unchanged since last eval', { sessionKey });
+      await this.handleVerdict(
+        sessionKey,
+        session,
+        activeGoal,
+        { completed: false, reason: activeGoal.lastEvalReason, remaining: [] },
+        summaryHash,
+      );
+      return;
+    }
 
     // Stamp the lease (pendingEval) so a racing settle can't start a second
     // eval, and snapshot the epoch so we can detect user intent landing
@@ -179,8 +208,6 @@ export class GoalLoopController {
     session.systemPrompt = undefined;
     registry.saveSessions();
 
-    const objective = activeGoal.objective;
-    const workSummaryRaw = (session.goalLastTurnText ?? activeGoal.lastAssistantTurnSummary ?? '').trim();
     const evalUserSummary = [
       'Eval trigger: idle-settle (work turn ended)',
       '',
@@ -217,7 +244,26 @@ export class GoalLoopController {
       return;
     }
 
+    await this.handleVerdict(sessionKey, session, activeGoal, verdict, summaryHash);
+  }
+
+  /**
+   * Apply a verdict: mutate goal state, post the Slack notice, and on a
+   * `continue` outcome inject the next continuation (never superseding a live
+   * turn). Shared by the real-eval path and the S9 short-circuit path.
+   */
+  private async handleVerdict(
+    sessionKey: string,
+    session: ConversationSession,
+    activeGoal: SessionGoal,
+    verdict: GoalEvalVerdict,
+    summaryHash: string,
+  ): Promise<void> {
+    const { registry, requestCoordinator, logger } = this.deps;
     const outcome = decideGoalEvalOutcome(activeGoal, verdict, this.now());
+    // Remember which summary produced this verdict so an identical next turn
+    // can short-circuit (S9). A `complete` verdict stops the loop, so clear it.
+    activeGoal.lastEvalSummaryHash = outcome.action === 'complete' ? undefined : summaryHash;
     session.systemPrompt = undefined;
     registry.saveSessions();
 
@@ -225,7 +271,7 @@ export class GoalLoopController {
       await this.deps.postNotice(
         session.channelId,
         session.threadTs,
-        `✅ Goal completed (eval-model verdict).\n*Objective:* ${objective}\n*Eval reason:* ${verdict.reason}`,
+        `✅ Goal completed (eval-model verdict).\n*Objective:* ${activeGoal.objective}\n*Eval reason:* ${verdict.reason}`,
       );
       return;
     }
@@ -265,6 +311,11 @@ export class GoalLoopController {
     this.injectContinuationTurn(sessionKey, session, activeGoal);
   }
 
+  /** Stable hash of the work summary for the S9 unchanged-summary check. */
+  private hashSummary(summary: string): string {
+    return createHash('sha1').update(summary).digest('hex');
+  }
+
   /** Run the eval bounded by a timeout that aborts the dispatch. */
   private async runEvalWithTimeout(
     session: ConversationSession,
@@ -285,7 +336,9 @@ export class GoalLoopController {
           {
             objective,
             workSummary,
-            model: session.model || this.deps.fallbackModel,
+            // S9: prefer the configured cheaper eval tier; otherwise match the
+            // work model so the eval is never weaker than the worker.
+            model: this.deps.evalModelOverride || session.model || this.deps.fallbackModel,
             effort: session.effort as EffortLevel | undefined,
             abortController,
             cwd: session.workingDirectory,
@@ -335,7 +388,11 @@ export class GoalLoopController {
       text: `${GOAL_CONTINUATION_TEXT_PREFIX} ${buildGoalContinuationPrompt(activeGoal)}`,
       synthetic: true,
       skipDispatch: true,
-      routeContext: { skipAutoBotThread: true },
+      // `goalContinuation` makes session-initializer DROP this turn (never
+      // supersede) if a live request is found at concurrency-control time —
+      // closing the residual async-gap window where a user turn started
+      // after our pre-injection idle recheck (M2).
+      routeContext: { skipAutoBotThread: true, goalContinuation: true },
     };
     this.deps.logger.info('Injecting goal continuation', {
       sessionKey,

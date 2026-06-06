@@ -142,7 +142,7 @@ export interface ActionPanelState {
   summaryBlocks?: any[];
 }
 
-export type SessionGoalStatus = 'active' | 'paused' | 'complete' | 'blocked';
+export type SessionGoalStatus = 'active' | 'paused' | 'complete';
 
 /**
  * Default cap for `maxContinuations`. Each user-driven turn resets
@@ -185,11 +185,6 @@ export interface SessionGoal {
   maxContinuations: number;
   /** ms epoch of the last continuation injection. */
   lastContinuationAt?: number;
-  /**
-   * Codex `Blocked audit` rule: only mark `blocked` after the model
-   * reports the SAME blocker for 3 consecutive turns.
-   */
-  consecutiveBlockedSignals?: number;
 
   // ── Host-side completion evaluation ────────────────────────────────────
   /**
@@ -228,6 +223,14 @@ export interface SessionGoal {
    * text. `session.goalLastTurnText` takes precedence when present.
    */
   lastAssistantTurnSummary?: string;
+
+  /**
+   * Hash of the work summary that produced the most recent `completed=false`
+   * verdict. If the next turn's summary is byte-identical, the host skips the
+   * (expensive) eval dispatch and reuses the cached "not complete" verdict
+   * (S9). Cleared on a `complete` verdict so it never sticks.
+   */
+  lastEvalSummaryHash?: string;
 }
 
 export interface ConversationSession {

@@ -44,18 +44,17 @@ The command is session-scoped, not user-global. It should fail with a clear "No 
 Persist a `SessionGoal` on `ConversationSession`:
 
 - `objective: string`
-- `status: "active" | "paused" | "complete" | "blocked"`
+- `status: "active" | "paused" | "complete"` (the codex `"blocked"` arm is intentionally not implemented — N11; a legacy persisted `"blocked"` is migrated to `"paused"` on load)
 - `createdAt: number`
 - `updatedAt: number`
 - `createdBy: string`
 - `completedAt?: number`
-- `completedBy?: string` (slack userId for user-driven, `'eval-model'` for eval-driven)
-- `completedVia?: 'user' | 'eval-model'` — audit trail of which path closed the goal
+- `completedBy?: string` — the Slack userId that closed the goal. Set on the user-driven path (`goal done`); left **undefined** on the eval path so the field keeps a single meaning ("which human closed it"). `completedVia` is the path discriminator (S7).
+- `completedVia?: 'user' | 'eval-model'` — audit trail of which path closed the goal; this, not `completedBy`, distinguishes user-driven from eval-driven completion
 - Ralph-loop control:
   - `continuationCount: number` — auto-continuation turns fired since the last real user message
   - `maxContinuations: number` — cap (default 10)
   - `lastContinuationAt?: number`
-  - `consecutiveBlockedSignals?: number` — codex three-turn rule counter
 - Eval tracking:
   - `pendingEval?: { requestedAt: number; turnId: string }` — set while an eval is in flight; dedupes a concurrent turn end until the verdict resolves
   - `lastEvalReason?: string` — verbatim verdict from the last `completed=false` eval; injected into the next continuation
@@ -69,7 +68,7 @@ Legacy goals serialized before this followup (lacking the ralph-loop fields) are
 
 ## Prompt Injection
 
-Only active goals are injected into the system prompt. Paused, complete, and blocked goals remain visible through `goal status` but do not steer the model.
+Only active goals are injected into the system prompt. Paused and complete goals remain visible through `goal status` but do not steer the model.
 
 The injected block must:
 
@@ -94,7 +93,7 @@ The loop is driven from the **idle-settle** boundary — when the session has ge
 
 **Driver gate (`shouldRunGoalIdleDriver`, all must pass):**
 
-1. Session has an `active` goal (paused / complete / blocked all suppress).
+1. Session has an `active` goal (paused / complete both suppress).
 2. `session.goal.pendingEval` is unset (no eval already in flight — dedupe).
 3. `requestCoordinator.isRequestActive(sessionKey) === false` — no live/fresh turn to step on.
 4. activity state is `'idle'`.
@@ -112,15 +111,15 @@ On a valid (in-epoch) verdict it stamps `pendingEval`, clears `systemPrompt`, ru
 
 **Cap policy:** when `continuationCount >= maxContinuations` the host posts a single in-thread notice that the loop has paused and any new message resumes it — it does **not** inject a continuation. The cap counter is reset to zero by every real (non-synthetic) user message via `resetGoalContinuationOnUserMessage` invoked from `slack-handler.ts`.
 
-**User-message reset:** A real user message zeroes `continuationCount` and `consecutiveBlockedSignals`. It does **not** clear `pendingEval` — an in-flight eval triggered by a previous turn must still resolve.
+**User-message reset:** A real user message zeroes `continuationCount` and bumps the intent `epoch`. It does **not** clear `pendingEval` — an in-flight eval triggered by a previous turn must still resolve — but the epoch bump makes `GoalLoopController` discard that eval's (now stale) verdict when it returns (M1).
 
 **Continuation prompt body** is the codex `continuation.md` template ported into `buildGoalContinuationPrompt`, with three Slack-environment adaptations:
 
 - The token-budget block is replaced by `Continuation turns used / cap / remaining`, which is the real governor in this environment.
-- The `update_goal` tool reference is replaced by the sentinel `<goal-complete-request reason="..."/>` as the model's way to express a completion belief. The sentinel is **not** the loop trigger — the host forks an eval after every turn end regardless — it only adds the model's self-assessment to the eval's work-summary evidence.
+- The `update_goal` tool reference is replaced by a plain-language completion self-assessment (N10 — there is **no** `<goal-complete-request>` sentinel; the host never parsed one). The model is told it cannot mark the goal complete itself and to state a completion belief with evidence in its closing summary; that text is one input to the eval's work-summary evidence. It is **not** a loop trigger — the host runs an eval after every active-goal turn regardless.
 - When `session.goal.lastEvalReason` is set, the prompt appends a `### Previous evaluation gap` section reproducing the verdict verbatim so the next turn closes that specific gap.
 
-The Fidelity, Completion-audit, and Blocked-audit sections are carried verbatim from codex.
+The Fidelity and Completion-audit sections are carried verbatim from codex. The codex Blocked-audit is dropped (N11 — the `blocked` status is not implemented); the prompt instead carries a lightweight "impasse" note that tells the model not to give up early and to keep going rather than self-declare a stop.
 
 ## Completion via Host-Side Eval Model
 
@@ -137,7 +136,7 @@ The Fidelity, Completion-audit, and Blocked-audit sections are carried verbatim 
 
 **Verdict application** (`applyGoalEvalSuccess` / `applyGoalEvalFailure` / `applyGoalEvalDispatchFailure` helpers):
 
-- `completed === true` → `status='complete'`, `completedAt=now`, `completedBy='eval-model'`, `completedVia='eval-model'`, `pendingEval=undefined`, `lastEvalReason=undefined`, `evalAttemptCount++`. Slack posts `✅ Goal completed (eval-model verdict)` with the objective and verbatim eval reason. The loop stops (no continuation injected).
+- `completed === true` → `status='complete'`, `completedAt=now`, `completedBy=undefined` (the Slack-userId slot stays empty on the eval path), `completedVia='eval-model'`, `pendingEval=undefined`, `lastEvalReason=undefined`, `evalAttemptCount++`. Slack posts `✅ Goal completed (eval-model verdict)` with the objective and verbatim eval reason. The loop stops (no continuation injected).
 - `completed === false` → `pendingEval=undefined`, `lastEvalReason=verdict.reason`, `evalAttemptCount++`, status stays `active`. Slack posts `🔄 Goal not yet complete` with the reason and remaining items, then (unless the cap is hit) the handler injects a continuation turn that embeds the reason via the `### Previous evaluation gap` block.
 - Dispatch / parse / timeout failure → `pendingEval=undefined`, status preserved, `evalAttemptCount` **not** bumped (infra flakes aren't completed eval attempts). Slack posts `⚠️ Goal completion evaluation failed` with instructions to use `goal done` / `goal pause` / `goal clear`.
 

@@ -70,7 +70,6 @@ export class GoalHandler implements CommandHandler {
       // the model alone keeps the goal active without user intervention.
       continuationCount: 0,
       maxContinuations: DEFAULT_GOAL_MAX_CONTINUATIONS,
-      consecutiveBlockedSignals: 0,
       evalAttemptCount: 0,
       // Intent epoch — see M1. A fresh objective also carries a fresh
       // `createdAt`, which already invalidates any eval in flight for the

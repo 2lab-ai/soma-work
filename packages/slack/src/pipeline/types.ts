@@ -50,6 +50,13 @@ export interface MessageEvent {
     skipAutoBotThread?: boolean;
     sourceChannel?: string;
     sourceThreadTs?: string;
+    /**
+     * True only for goal auto-continuation injections. Such a turn must
+     * NEVER supersede a live request: if the slot is busy when this event
+     * reaches concurrency control, the continuation is dropped (the active
+     * turn wins), not aborted. See `GoalLoopController` (M2).
+     */
+    goalContinuation?: boolean;
   };
   files?: Array<{
     id: string;

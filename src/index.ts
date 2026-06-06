@@ -933,6 +933,8 @@ async function start() {
         postNotice: postGoalNotice,
         logger,
         fallbackModel: 'claude-sonnet-4-20250514',
+        // S9: optional cheaper eval tier. Unset → eval matches the work model.
+        evalModelOverride: process.env.GOAL_EVAL_MODEL || undefined,
       });
 
       // Trigger from the turn-settled hook (TurnRunner.finish →

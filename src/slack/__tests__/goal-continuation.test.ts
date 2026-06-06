@@ -21,8 +21,8 @@ function makeGoal(overrides: Partial<SessionGoal> = {}): SessionGoal {
     createdBy: 'U1',
     continuationCount: 0,
     maxContinuations: 10,
-    consecutiveBlockedSignals: 0,
     evalAttemptCount: 0,
+    epoch: 0,
     ...overrides,
   };
 }
@@ -34,19 +34,21 @@ describe('GOAL_CONTINUATION_TEXT_PREFIX', () => {
 });
 
 describe('resetGoalContinuationOnUserMessage', () => {
-  it('zeroes the cap + blocked counters on a real user message', () => {
-    const session = { goal: makeGoal({ continuationCount: 7, consecutiveBlockedSignals: 2 }) };
+  it('zeroes the cap counter and bumps the intent epoch on a real user message', () => {
+    const session = { goal: makeGoal({ continuationCount: 7, epoch: 4 }) };
     resetGoalContinuationOnUserMessage(session);
     expect(session.goal.continuationCount).toBe(0);
-    expect(session.goal.consecutiveBlockedSignals).toBe(0);
+    // Epoch bump invalidates any in-flight eval (M1).
+    expect(session.goal.epoch).toBe(5);
   });
 
-  it('does NOT clear an in-flight pendingEval', () => {
+  it('does NOT clear an in-flight pendingEval (but bumps the epoch so the verdict is discarded)', () => {
     const pendingEval = { requestedAt: 123, turnId: 't' };
-    const session = { goal: makeGoal({ continuationCount: 3, pendingEval }) };
+    const session = { goal: makeGoal({ continuationCount: 3, epoch: 0, pendingEval }) };
     resetGoalContinuationOnUserMessage(session);
     expect(session.goal.continuationCount).toBe(0);
     expect(session.goal.pendingEval).toBe(pendingEval);
+    expect(session.goal.epoch).toBe(1);
   });
 
   it('is a no-op when no goal is set', () => {

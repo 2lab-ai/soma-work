@@ -27,7 +27,6 @@ function makeGoal(overrides: Partial<SessionGoal> = {}): SessionGoal {
     createdBy: 'U1',
     continuationCount: 0,
     maxContinuations: 10,
-    consecutiveBlockedSignals: 0,
     evalAttemptCount: 0,
     epoch: 0,
     ...overrides,
@@ -133,6 +132,9 @@ describe('GoalLoopController', () => {
     expect(h.goal.pendingEval).toBeUndefined();
     expect(h.injected).toHaveLength(1);
     expect(h.injected[0].text).toContain('[goal-continuation]');
+    // M2: the injected event must carry the never-supersede marker so
+    // session-initializer drops it (never aborts a live user turn).
+    expect(h.injected[0].routeContext?.goalContinuation).toBe(true);
     expect(h.notices.some((n) => n.includes('🔄 Goal not yet complete'))).toBe(true);
   });
 
@@ -227,5 +229,49 @@ describe('GoalLoopController', () => {
     await h.controller.settled(SESSION_KEY);
     // Second trigger is short-circuited by pendingEval, but never overlaps.
     expect(maxParallel).toBe(1);
+  });
+
+  it('S9: an unchanged work summary short-circuits the eval but still drives a continuation', async () => {
+    let dispatchCount = 0;
+    const h = makeHarness({
+      dispatcher: async () => {
+        dispatchCount += 1;
+        return JSON.stringify({ completed: false, reason: 'missing tests', remaining: ['add tests'] });
+      },
+    });
+
+    // First settle: real eval runs, records the summary hash + reason.
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+    expect(dispatchCount).toBe(1);
+    expect(h.goal.continuationCount).toBe(1);
+    expect(h.goal.lastEvalSummaryHash).toBeDefined();
+
+    // Second settle with the SAME goalLastTurnText: no new dispatch, but the
+    // loop still advances (reuses the prior "not complete" verdict).
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+    expect(dispatchCount).toBe(1); // short-circuited — no second eval
+    expect(h.goal.continuationCount).toBe(2);
+    expect(h.injected).toHaveLength(2);
+  });
+
+  it('S9: a changed work summary does NOT short-circuit (re-evaluates)', async () => {
+    let dispatchCount = 0;
+    const h = makeHarness({
+      dispatcher: async () => {
+        dispatchCount += 1;
+        return JSON.stringify({ completed: false, reason: 'r', remaining: [] });
+      },
+    });
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+    expect(dispatchCount).toBe(1);
+
+    // New work produced → summary changes → real eval runs again.
+    h.session.goalLastTurnText = 'did MORE work';
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+    expect(dispatchCount).toBe(2);
   });
 });
