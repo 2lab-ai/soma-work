@@ -114,7 +114,6 @@ describe('SessionRegistry persistence', () => {
       createdBy: 'U123',
       continuationCount: 2,
       maxContinuations: 10,
-      consecutiveBlockedSignals: 0,
       evalAttemptCount: 1,
       pendingEval: { requestedAt: Date.now(), turnId: 'stuck-turn' },
     };

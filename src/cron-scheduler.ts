@@ -36,6 +36,8 @@ export interface SyntheticMessageEvent {
   /** Route context — skipAutoBotThread prevents duplicate root message creation */
   routeContext?: {
     skipAutoBotThread?: boolean;
+    /** Goal auto-continuation marker — never supersede a live turn (M2). */
+    goalContinuation?: boolean;
   };
 }
 
