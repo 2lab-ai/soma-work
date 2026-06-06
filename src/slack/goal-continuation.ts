@@ -11,11 +11,22 @@
  * the shared text prefix and the user-message reset.
  */
 
-import type { ConversationSession } from '../types';
+import type { ConversationSession, SessionGoal } from '../types';
 
 /** Prefix carried on every synthetic continuation event so log greps and
  *  workflow classifiers can spot goal-loop traffic. */
 export const GOAL_CONTINUATION_TEXT_PREFIX = '[goal-continuation]';
+
+/**
+ * Bump the goal's intent epoch. Called by every goal mutation (set / pause
+ * / resume / done / clear) and by every real user message. The completion
+ * eval captures the epoch at dispatch and discards a verdict whose epoch
+ * moved while it was in flight (M1) — so a stale eval can never apply
+ * against state the user already changed. Idempotent and cheap.
+ */
+export function bumpGoalEpoch(goal: SessionGoal): void {
+  goal.epoch = (goal.epoch ?? 0) + 1;
+}
 
 /**
  * Reset loop state when a real user message arrives. Mirrors codex
@@ -28,8 +39,9 @@ export const GOAL_CONTINUATION_TEXT_PREFIX = '[goal-continuation]';
  * returns so the reset is durable across crashes.
  *
  * A pending eval triggered by a previous turn is explicitly NOT cleared
- * here — if the work model's turn ended and the user typed before the
- * evaluator returned, the eval result is still informative. The
+ * here — but the epoch IS bumped, so when that in-flight eval resolves the
+ * `GoalLoopController` epoch guard discards its (now stale) verdict instead
+ * of applying it against the work the user just steered (M1). The
  * evaluator's resolution clears `pendingEval` on its own.
  *
  * Accepts the structural shape (`{ goal?: SessionGoal }`) instead of the
@@ -40,4 +52,7 @@ export function resetGoalContinuationOnUserMessage(session: { goal?: Conversatio
   if (!session.goal) return;
   session.goal.continuationCount = 0;
   session.goal.consecutiveBlockedSignals = 0;
+  // Invalidate any in-flight completion eval — the user just weighed in, so
+  // a verdict about the pre-message work must not apply (M1).
+  bumpGoalEpoch(session.goal);
 }

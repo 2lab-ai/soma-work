@@ -76,15 +76,8 @@ import {
 } from './oauth';
 import { acquirePidLock, releasePidLock } from './pid-lock';
 import { PluginManager } from './plugin/plugin-manager';
-import { buildGoalContinuationPrompt } from './prompt/session-goal-block';
 import { getVersionInfo, notifyRelease } from './release-notifier';
-import {
-  applyGoalEvalDispatchFailure,
-  decideGoalEvalOutcome,
-  evaluateGoalCompletion,
-  shouldRunGoalIdleDriver,
-} from './slack/goal-completion-evaluator';
-import { GOAL_CONTINUATION_TEXT_PREFIX } from './slack/goal-continuation';
+import { GoalLoopController } from './slack/goal-loop-controller';
 import { SlackHandler } from './slack-handler';
 import { type SocketWatchdogUnhealthyReason, startSlackSocketWatchdog } from './slack-socket-watchdog';
 import { notifyStartup } from './startup-notifier';
@@ -921,174 +914,34 @@ async function start() {
         await slackHandler.handleMessage(event as any, say);
       };
 
-      // The driver: runs at most one eval per idle settle, and on "not
-      // complete" injects exactly one continuation (only while idle).
-      const runGoalIdleDriver = async (sessionKey: string): Promise<void> => {
-        const session = registry.getSessionByKey(sessionKey);
-        const goal = session?.goal;
-        if (
-          !session ||
-          !shouldRunGoalIdleDriver({
-            goal,
-            requestActive: requestCoordinator.isRequestActive(sessionKey),
-            activityState: registry.getActivityStateByKey(sessionKey),
-          })
-        ) {
-          return;
-        }
-        // `shouldRunGoalIdleDriver` guarantees an active, non-pending goal.
-        const activeGoal = session.goal!;
-
-        // Stamp pendingEval so a racing idle settle doesn't start a second
-        // eval. Every goal-state change drops the cached system prompt
-        // (spec §Prompt Injection).
-        const startedAt = Date.now();
-        activeGoal.pendingEval = { requestedAt: startedAt, turnId: `${startedAt}` };
-        activeGoal.updatedAt = startedAt;
-        session.systemPrompt = undefined;
-        registry.saveSessions();
-
-        const workSummaryRaw = (session.goalLastTurnText ?? '').trim();
-        const evalUserSummary = [
-          'Eval trigger: idle-settle (work turn ended)',
-          '',
-          '## Assistant turn output (latest work turn)',
-          workSummaryRaw ? workSummaryRaw.slice(0, 16_000) : '(no assistant text was produced this turn)',
-        ].join('\n');
-
-        logger.info('Goal session settled idle — dispatching completion eval', { sessionKey });
-        try {
-          const verdict = await evaluateGoalCompletion(
-            {
-              objective: activeGoal.objective,
-              workSummary: evalUserSummary,
-              // Eval must NOT be weaker than the work model — pin the same
-              // model+effort; fall back to the session model, never downgrade.
-              model: session.model || 'claude-sonnet-4-20250514',
-              effort: session.effort,
-              cwd: session.workingDirectory,
-            },
-            ({ systemPrompt, userPrompt, model, abortController, cwd }) =>
-              claudeHandler.dispatchOneShot(userPrompt, systemPrompt, model, abortController, undefined, cwd),
-          );
-
-          const outcome = decideGoalEvalOutcome(activeGoal, verdict);
-          session.systemPrompt = undefined;
-          registry.saveSessions();
-
-          // "y" — the goal is done. Stop the loop.
-          if (outcome.action === 'complete') {
-            await postGoalNotice(
-              session.channelId,
-              session.threadTs,
-              `✅ Goal completed (eval-model verdict).\n*Objective:* ${activeGoal.objective}\n*Eval reason:* ${verdict.reason}`,
-            );
-            return;
-          }
-
-          const remaining = verdict.remaining.length
-            ? verdict.remaining.map((r) => `• ${r}`).join('\n')
-            : '_(no remaining items reported)_';
-
-          // Cap backstop — pause until a real user message resets the
-          // counter (resetGoalContinuationOnUserMessage).
-          if (outcome.action === 'cap-paused') {
-            logger.info('Goal continuation cap reached', {
-              sessionKey,
-              continuationCount: activeGoal.continuationCount,
-              maxContinuations: activeGoal.maxContinuations,
-            });
-            await postGoalNotice(
-              session.channelId,
-              session.threadTs,
-              `⏹️ Goal auto-continuation paused after ${activeGoal.maxContinuations} turns.\n*Latest reason:* ${verdict.reason}\nSend a message in this thread to resume.`,
-            );
-            return;
-          }
-
-          // "n" under cap → continue: feed the goal back to the model.
-          await postGoalNotice(
-            session.channelId,
-            session.threadTs,
-            `🔄 Goal not yet complete (eval-model verdict).\n*Reason:* ${verdict.reason}\n*Remaining:*\n${remaining}`,
-          );
-
-          // A user turn may have started during the eval. NEVER supersede
-          // it — skip injection; when that turn ends and the session
-          // settles idle again, the driver re-runs and continues the loop.
-          if (requestCoordinator.isRequestActive(sessionKey)) {
-            logger.info('Goal continuation deferred — session became busy during eval', { sessionKey });
-            return;
-          }
-
-          const now = Date.now();
-          const syntheticEvent: SyntheticMessageEvent = {
-            user: activeGoal.createdBy,
-            channel: session.channelId,
-            thread_ts: session.threadTs,
-            ts: `${now / 1000}`,
-            text: `${GOAL_CONTINUATION_TEXT_PREFIX} ${buildGoalContinuationPrompt(activeGoal)}`,
-            synthetic: true,
-            // Bypass workflow classification — this is a goal-driven turn.
-            skipDispatch: true,
-            routeContext: { skipAutoBotThread: true },
-          };
-          logger.info('Injecting goal continuation', {
-            sessionKey,
-            continuationCount: activeGoal.continuationCount,
-            maxContinuations: activeGoal.maxContinuations,
-          });
-          // Fire-and-forget. Injection is the only thing that drives the
-          // loop forward on 'continue'; if it throws the loop silently
-          // stalls, so escalate to error + an actionable notice.
-          goalMessageInjector(syntheticEvent).catch(async (err: unknown) => {
-            const injectErr = err instanceof Error ? err.message : String(err);
-            logger.error('Goal continuation injection failed — loop stalled', { sessionKey, error: injectErr });
-            try {
-              await postGoalNotice(
-                session.channelId,
-                session.threadTs,
-                `⚠️ Goal continuation failed to start: ${injectErr}. The loop is paused — send a message in this thread to resume, or use \`goal pause\` / \`goal clear\`.`,
-              );
-            } catch (noticeErr: unknown) {
-              logger.error('Failed to post goal continuation-failure notice', {
-                sessionKey,
-                error: noticeErr instanceof Error ? noticeErr.message : String(noticeErr),
-              });
-            }
-          });
-        } catch (err: unknown) {
-          // Parse / network / timeout failure — status preserved; only
-          // `pendingEval` resets so the loop can resume on the next settle.
-          applyGoalEvalDispatchFailure(activeGoal);
-          session.systemPrompt = undefined;
-          registry.saveSessions();
-          const message = err instanceof Error ? err.message : String(err);
-          logger.error('Goal eval dispatch failed', { sessionKey, error: message });
-          await postGoalNotice(
-            session.channelId,
-            session.threadTs,
-            `⚠️ Goal completion evaluation failed: ${message}. Run \`goal done\` to force completion or \`goal pause\` / \`goal clear\` to stop the loop.`,
-          );
-        }
-      };
+      // The goal loop is owned end-to-end by GoalLoopController: it
+      // serializes per-session work, guards in-flight evals with an intent
+      // epoch (M1), bounds each eval with a timeout (M3), and never
+      // supersedes a live turn (M2). index.ts only constructs and wires it.
+      const goalLoopController = new GoalLoopController({
+        registry: {
+          getSessionByKey: (key) => registry.getSessionByKey(key),
+          getActivityStateByKey: (key) => registry.getActivityStateByKey(key),
+          saveSessions: () => registry.saveSessions(),
+        },
+        requestCoordinator: {
+          isRequestActive: (key) => requestCoordinator.isRequestActive(key),
+        },
+        dispatcher: ({ systemPrompt, userPrompt, model, effort, abortController, cwd }) =>
+          claudeHandler.dispatchOneShot(userPrompt, systemPrompt, model, abortController, undefined, cwd, effort),
+        injectContinuation: goalMessageInjector,
+        postNotice: postGoalNotice,
+        logger,
+        fallbackModel: 'claude-sonnet-4-20250514',
+      });
 
       // Trigger from the turn-settled hook (TurnRunner.finish →
       // onAssistantTurnComplete), which fires AFTER the just-finished turn
-      // released its request-coordinator slot. The previous wiring used the
-      // idle-after-drain hook, but that fires from inside
-      // `setActivityState('idle')` ~1s BEFORE `removeController` runs, so
-      // `shouldRunGoalIdleDriver` always saw `requestActive === true` and
-      // bailed silently — the eval never ran ("goal stopped checking"
-      // regression). The driver still re-checks `isRequestActive` before
-      // injecting a continuation, so it can never supersede a live turn.
+      // released its request-coordinator slot. The controller owns all loop
+      // state, serialization, and ordering (M4); the hook only forwards the
+      // sessionKey and returns immediately.
       slackHandler.setGoalTurnSettledHandler((sessionKey: string) => {
-        runGoalIdleDriver(sessionKey).catch((err: unknown) => {
-          logger.warn('Goal driver failed', {
-            sessionKey,
-            error: err instanceof Error ? err.message : String(err),
-          });
-        });
+        goalLoopController.onTurnSettled(sessionKey);
       });
       timing('Goal turn-settled driver installed');
     } catch (error) {

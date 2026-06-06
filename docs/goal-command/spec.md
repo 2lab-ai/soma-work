@@ -60,6 +60,8 @@ Persist a `SessionGoal` on `ConversationSession`:
   - `pendingEval?: { requestedAt: number; turnId: string }` — set while an eval is in flight; dedupes a concurrent turn end until the verdict resolves
   - `lastEvalReason?: string` — verbatim verdict from the last `completed=false` eval; injected into the next continuation
   - `evalAttemptCount?: number`
+  - `epoch?: number` — monotonic intent epoch. Bumped by every goal mutation (set / pause / resume / done / clear) and by every real (non-synthetic) user message. The completion eval captures it at dispatch and discards its verdict if the epoch moved while the eval was in flight, so a stale verdict can never apply against state the user already moved past (`GoalLoopController` M1).
+  - `lastAssistantTurnSummary?: string` — persisted, bounded (≤16k chars) mirror of the runtime-only `session.goalLastTurnText`. Survives a restart so the eval on the next post-restart turn-settled trigger has real evidence; the runtime stash takes precedence when present. Not a crash-replay mechanism.
 
 The objective must be trimmed, non-empty, and at most 4,000 Unicode characters.
 
@@ -97,10 +99,16 @@ The loop is driven from the **idle-settle** boundary — when the session has ge
 3. `requestCoordinator.isRequestActive(sessionKey) === false` — no live/fresh turn to step on.
 4. activity state is `'idle'`.
 
-**Loop driver (`runGoalIdleDriver` in `index.ts`):** stamps `pendingEval`, clears `systemPrompt`, runs the eval (see §Completion) with `goalLastTurnText` as work-summary evidence, then:
+**Loop owner (`GoalLoopController`, `src/slack/goal-loop-controller.ts`):** the loop is owned end-to-end by one controller; `index.ts` only constructs it and forwards the turn-settled trigger to `onTurnSettled(sessionKey)`. The controller:
+
+- **Serializes** per-session work through a promise queue, so two evals (or an eval and an injection) for the same session can never overlap.
+- **Snapshots the intent epoch** (`epoch` + `createdAt`) at eval dispatch and **discards** the verdict if it moved while the eval was in flight — no mutate / persist / notice / increment / complete / inject. The user's newer intent always wins (M1). The controller still clears its own stale `pendingEval` lease so the loop cannot wedge.
+- **Bounds the eval** with a timeout + `AbortController` (`DEFAULT_GOAL_EVAL_TIMEOUT_MS`); a hung dispatch is aborted and routed to the dispatch-failure path instead of wedging the loop on a never-clearing lease (M3).
+
+On a valid (in-epoch) verdict it stamps `pendingEval`, clears `systemPrompt`, runs the eval (see §Completion) with `goalLastTurnText` (or the persisted `lastAssistantTurnSummary` after a restart) as work-summary evidence, then:
 
 - `completed === true` → mark complete, post `✅`, stop.
-- `completed === false` → record the gap (`lastEvalReason`), and if `continuationCount < maxContinuations`, increment `continuationCount`, stamp `lastContinuationAt`, persist, post `🔄`. Then — **only if the session is still idle** (re-checks `isRequestActive`; a user turn may have started during the eval, which must win) — inject the next continuation: a `SyntheticMessageEvent` dispatched **fire-and-forget** through the same `messageInjector` surface as the cron-scheduler injection path, text `buildGoalContinuationPrompt(goal)` with the `[goal-continuation]` prefix. The continuation turn runs to completion (never superseded); when it ends and the session settles idle again, the driver re-runs — that is the loop.
+- `completed === false` → record the gap (`lastEvalReason`), and if `continuationCount < maxContinuations`, increment `continuationCount`, stamp `lastContinuationAt`, persist, post `🔄`. Then — **only if the session is still idle** (re-checks `isRequestActive`; a user turn may have started during the eval, which must win) — inject the next continuation: a `SyntheticMessageEvent` dispatched **fire-and-forget** through the same `messageInjector` surface as the cron-scheduler injection path, text `buildGoalContinuationPrompt(goal)` with the `[goal-continuation]` prefix. The continuation turn runs to completion (never superseded); when it ends and the session settles idle again, the controller re-runs — that is the loop.
 
 **Cap policy:** when `continuationCount >= maxContinuations` the host posts a single in-thread notice that the loop has paused and any new message resumes it — it does **not** inject a continuation. The cap counter is reset to zero by every real (non-synthetic) user message via `resetGoalContinuationOnUserMessage` invoked from `slack-handler.ts`.
 

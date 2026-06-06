@@ -208,6 +208,26 @@ export interface SessionGoal {
   lastEvalReason?: string;
   /** Counts how many eval cycles have run for this goal. */
   evalAttemptCount?: number;
+
+  /**
+   * Monotonic intent epoch. Bumped by every goal mutation (set / pause /
+   * resume / done / clear) AND by every real (non-synthetic) user message.
+   * The completion eval captures this at dispatch and discards its verdict
+   * if the epoch moved while the eval was in flight, so a stale verdict can
+   * never apply against state the user already moved past. See
+   * `GoalLoopController` (M1) and `docs/goal-command/spec.md`.
+   */
+  epoch?: number;
+
+  /**
+   * Persisted, bounded (≤16k chars) copy of the most recent assistant turn
+   * summary. Unlike the runtime-only `session.goalLastTurnText` this survives
+   * a restart, so the eval on the next post-restart turn-settled trigger has
+   * real evidence instead of an empty stash (S8). It is NOT a crash-replay
+   * mechanism — it only ensures the next driver run evaluates against real
+   * text. `session.goalLastTurnText` takes precedence when present.
+   */
+  lastAssistantTurnSummary?: string;
 }
 
 export interface ConversationSession {
@@ -445,8 +465,8 @@ export interface ConversationSession {
    * Runtime-only: the assistant text of the most recently completed turn,
    * stashed by the goal turn-end observer so the idle-settle goal driver
    * can feed it to the completion eval when the session settles. NOT
-   * persisted (see SessionRegistry serializer) — a stale work summary
-   * across a restart would be misleading.
+   * persisted (see SessionRegistry serializer) — the persisted, bounded
+   * mirror lives on `goal.lastAssistantTurnSummary` (S8).
    */
   goalLastTurnText?: string;
 
