@@ -2,22 +2,13 @@ import type { ConversationSession, SessionGoal } from '../types';
 
 export const MAX_SESSION_GOAL_OBJECTIVE_CHARS = 4_000;
 
-/**
- * Sentinel the work model emits when it believes the active goal is
- * complete. This is the *Slack* equivalent of codex's `update_goal`
- * tool — codex enforces the audit in-tool, but soma-work has no
- * comparable tool surface so the host parses this sentinel out of the
- * assistant text and then runs an out-of-band evaluation. See
- * `docs/goal-command/spec.md` §Completion via Host-Side Eval Model.
- *
- * Format: a single self-closing XML tag with a `reason` attribute.
- *   `<goal-complete-request reason="all 20 tests pass and PR merged"/>`
- *
- * The parser also accepts the natural-language safety net
- * "the goal appears complete" / "the objective is achieved" — but
- * the sentinel is the contract.
- */
-export const GOAL_COMPLETE_REQUEST_SENTINEL = '<goal-complete-request reason="…"/>';
+// NOTE: there is no completion sentinel. An earlier design instructed the
+// model to emit `<goal-complete-request .../>` as a pseudo-`update_goal`
+// signal, but the host never parsed it — `GoalLoopController` runs an
+// independent eval after EVERY active-goal turn regardless (N10,
+// docs/goal-command/spec.md §Completion). The prompts now ask only for a
+// plain-language completion self-assessment, which the eval reads as one
+// piece of work-summary evidence; the host (or the user) decides.
 
 export function countGoalObjectiveChars(value: string): number {
   return Array.from(value).length;
@@ -53,7 +44,7 @@ export function buildSessionGoalBlock(session?: ConversationSession): string {
     '- Do not redefine success around a smaller, safer, or easier task.',
     '- Before saying the goal is complete, audit every explicit requirement against current evidence from files, commands, rendered artifacts, or external state.',
     '- Treat uncertain, indirect, or missing evidence as not complete.',
-    '- This Slack Claude SDK environment does not expose a local update_goal tool. If the objective is fully achieved, write the sentinel `<goal-complete-request reason="..."/>` and the host will run an external evaluator before any status change.',
+    '- You cannot mark the goal complete yourself. When you believe it is done, say so explicitly in your closing summary with the proving evidence; the host runs an independent evaluator after every turn and decides whether the status changes.',
     '</session-goal>',
   ].join('\n');
 }
@@ -75,10 +66,10 @@ export function buildSessionGoalBlock(session?: ConversationSession): string {
  *     can target the specific gap instead of repeating the same
  *     "appears complete" assertion.
  *
- * Fidelity / Completion-audit / Blocked-audit sections are copied
- * from codex verbatim (with `update_goal` mentions rewritten) — those
- * are the load-bearing behavioral controls that prevent the loop
- * from degenerating into hopeful self-affirmation.
+ * Fidelity and Completion-audit sections are copied from codex verbatim
+ * (with `update_goal` / sentinel mentions rewritten as a plain completion
+ * self-assessment) — those are the load-bearing behavioral controls that
+ * prevent the loop from degenerating into hopeful self-affirmation.
  */
 export function buildGoalContinuationPrompt(goal: SessionGoal): string {
   const reason = goal.lastEvalReason?.trim();
@@ -121,13 +112,12 @@ export function buildGoalContinuationPrompt(goal: SessionGoal): string {
     '- Treat uncertain or indirect evidence as not achieved; gather stronger evidence or continue the work.',
     '- The audit must prove completion, not merely fail to find obvious remaining work.',
     '',
-    'Do not rely on intent, partial progress, memory of earlier work, or a plausible final answer as proof of completion. If you believe the goal is complete, write the sentinel `<goal-complete-request reason="..."/>` on its own line and the host will run an external evaluator. The host (not this turn) decides whether the status transitions to `complete`. If the evidence is incomplete, weak, indirect, merely consistent with completion, or leaves any requirement missing, keep working instead of writing the sentinel.',
+    'Do not rely on intent, partial progress, memory of earlier work, or a plausible final answer as proof of completion. You cannot mark the goal complete yourself. When you believe it is complete, state that explicitly in your closing summary together with the proving evidence; the host runs an independent evaluator after every turn and decides whether the status transitions to `complete`. If the evidence is incomplete, weak, indirect, merely consistent with completion, or leaves any requirement missing, keep working instead.',
     '',
-    'Blocked audit:',
-    '- Do not declare the goal blocked the first time a blocker appears.',
-    '- Only treat the goal as blocked when the same blocking condition has repeated for at least three consecutive goal turns, counting the original/user-triggered turn and any automatic goal continuations.',
-    '- Use blocked only when you are truly at an impasse and cannot make meaningful progress without user input or an external-state change.',
-    '- Never call the goal blocked merely because the work is hard, slow, uncertain, incomplete, or would benefit from clarification.',
+    'Impasse:',
+    '- Do not give up the first time a blocker appears.',
+    '- Only stop for user input when you are truly at an impasse and cannot make meaningful progress without it or an external-state change, and the same blocker has persisted across several consecutive goal turns.',
+    '- Never stop merely because the work is hard, slow, uncertain, incomplete, or would benefit from clarification — say what you tried and keep going.',
   ];
 
   if (reason) {

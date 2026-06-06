@@ -5,7 +5,7 @@ import type { CompletionMessageTracker } from './completion-message-tracker';
 import { ContextWindowManager, type SessionUsage } from './context-window-manager';
 import type { RequestCoordinator } from './request-coordinator';
 import type { SlackApiHelper } from './slack-api-helper';
-import { type SessionTheme, type Todo, type TodoStatusReader } from './task-list-block-builder';
+import type { SessionTheme, Todo, TodoStatusReader } from './task-list-block-builder';
 import { type SessionLinkHistory, type SessionLinks, ThreadHeaderBuilder } from './thread-header-builder';
 import type { SlackMessagePayload } from './user-choice-handler';
 

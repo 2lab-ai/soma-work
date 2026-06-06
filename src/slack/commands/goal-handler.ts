@@ -1,6 +1,7 @@
 import { buildGoalContinuationPrompt, validateSessionGoalObjective } from '../../prompt/session-goal-block';
 import { type ConversationSession, DEFAULT_GOAL_MAX_CONTINUATIONS, type SessionGoal } from '../../types';
 import { CommandParser } from '../command-parser';
+import { bumpGoalEpoch } from '../goal-continuation';
 import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
 
 export class GoalHandler implements CommandHandler {
@@ -69,8 +70,11 @@ export class GoalHandler implements CommandHandler {
       // the model alone keeps the goal active without user intervention.
       continuationCount: 0,
       maxContinuations: DEFAULT_GOAL_MAX_CONTINUATIONS,
-      consecutiveBlockedSignals: 0,
       evalAttemptCount: 0,
+      // Intent epoch — see M1. A fresh objective also carries a fresh
+      // `createdAt`, which already invalidates any eval in flight for the
+      // prior goal; the epoch tracks in-place mutations of THIS goal.
+      epoch: 0,
     };
     session.goal = goal;
     this.persistGoalChange(session);
@@ -175,6 +179,11 @@ export class GoalHandler implements CommandHandler {
   }
 
   private persistGoalChange(session: ConversationSession): void {
+    // Every user-driven goal mutation advances the intent epoch so an
+    // in-flight completion eval resolves into a discard, never an apply,
+    // against the state the user just changed (M1). `clear` leaves no goal
+    // to bump — the eval's epoch guard catches that via the missing goal.
+    if (session.goal) bumpGoalEpoch(session.goal);
     session.systemPrompt = undefined;
     this.deps.claudeHandler.saveSessions();
   }
