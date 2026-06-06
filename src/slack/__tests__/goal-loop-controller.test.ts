@@ -59,6 +59,8 @@ function makeHarness(opts: {
   goal?: Partial<SessionGoal>;
   evalTimeoutMs?: number;
   requestActive?: boolean;
+  isRequestActive?: () => boolean;
+  maxRearmAttempts?: number;
 }): Harness {
   const goal = makeGoal(opts.goal);
   const session = makeSession(goal);
@@ -80,7 +82,7 @@ function makeHarness(opts: {
       },
     },
     requestCoordinator: {
-      isRequestActive: () => requestActive,
+      isRequestActive: opts.isRequestActive ?? (() => requestActive),
     },
     dispatcher,
     injectContinuation: async (event) => {
@@ -93,6 +95,9 @@ function makeHarness(opts: {
     logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     fallbackModel: 'claude-sonnet-4',
     evalTimeoutMs: opts.evalTimeoutMs,
+    // Keep tests fast: short backoff, few attempts unless overridden.
+    rearmDelayMs: 2,
+    maxRearmAttempts: opts.maxRearmAttempts ?? 3,
   });
 
   return {
@@ -254,6 +259,35 @@ describe('GoalLoopController', () => {
     expect(dispatchCount).toBe(1); // short-circuited — no second eval
     expect(h.goal.continuationCount).toBe(2);
     expect(h.injected).toHaveLength(2);
+  });
+
+  it('#1058 regression: a trigger that observes the slot still busy re-arms and runs once it frees', async () => {
+    // Simulate the #1058 ordering: at trigger time the request slot is still
+    // held (removeController hasn't run yet); it frees on the 2nd observation.
+    let activeReads = 0;
+    const h = makeHarness({
+      verdict: { completed: false, reason: 'go', remaining: [] },
+      isRequestActive: () => {
+        activeReads += 1;
+        return activeReads <= 1; // busy on the first observation, free after
+      },
+    });
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+    // The controller re-armed and ran the eval once the slot freed — the eval
+    // is NOT silently lost just because the trigger fired a touch early.
+    expect(h.injected).toHaveLength(1);
+  });
+
+  it('gives up re-arming after maxRearmAttempts when the slot never frees', async () => {
+    const h = makeHarness({
+      verdict: { completed: false, reason: 'go', remaining: [] },
+      isRequestActive: () => true, // permanently busy
+      maxRearmAttempts: 3,
+    });
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+    expect(h.injected).toHaveLength(0); // never superseded a live turn
   });
 
   it('S9: a changed work summary does NOT short-circuit (re-evaluates)', async () => {

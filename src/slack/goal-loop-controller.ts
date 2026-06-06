@@ -53,6 +53,15 @@ import { GOAL_CONTINUATION_TEXT_PREFIX } from './goal-continuation';
 /** Default ceiling for a single completion eval before it is aborted. */
 export const DEFAULT_GOAL_EVAL_TIMEOUT_MS = 120_000;
 
+/**
+ * Re-arm cadence when a turn-settled trigger observes the request slot still
+ * busy. 6 attempts × 300ms ≈ 1.8s covers the ~1.4s window between an early
+ * trigger and `removeController` that caused the #1058 "never-checks"
+ * regression — so the eval runs once the slot frees instead of being lost.
+ */
+export const DEFAULT_GOAL_REARM_DELAY_MS = 300;
+export const DEFAULT_GOAL_MAX_REARM_ATTEMPTS = 6;
+
 /** Minimal logger surface (matches the project `Logger`). */
 export interface GoalLoopLogger {
   debug(message: string, meta?: unknown): void;
@@ -94,6 +103,13 @@ export interface GoalLoopControllerDeps {
   evalModelOverride?: string;
   /** Eval timeout; defaults to {@link DEFAULT_GOAL_EVAL_TIMEOUT_MS}. */
   evalTimeoutMs?: number;
+  /**
+   * Delay between re-arm attempts when a trigger observes the request slot
+   * still busy (M4 / criterion #5). Defaults to {@link DEFAULT_GOAL_REARM_DELAY_MS}.
+   */
+  rearmDelayMs?: number;
+  /** Max re-arm attempts before giving up. Defaults to {@link DEFAULT_GOAL_MAX_REARM_ATTEMPTS}. */
+  maxRearmAttempts?: number;
   /** Injectable clock for tests. */
   now?: () => number;
 }
@@ -113,6 +129,8 @@ export class GoalLoopController {
   private readonly deps: GoalLoopControllerDeps;
   private readonly now: () => number;
   private readonly evalTimeoutMs: number;
+  private readonly rearmDelayMs: number;
+  private readonly maxRearmAttempts: number;
   /** Per-session serialization queue — see guarantee (1). */
   private readonly queues = new Map<string, Promise<void>>();
 
@@ -120,6 +138,8 @@ export class GoalLoopController {
     this.deps = deps;
     this.now = deps.now ?? Date.now;
     this.evalTimeoutMs = deps.evalTimeoutMs ?? DEFAULT_GOAL_EVAL_TIMEOUT_MS;
+    this.rearmDelayMs = deps.rearmDelayMs ?? DEFAULT_GOAL_REARM_DELAY_MS;
+    this.maxRearmAttempts = deps.maxRearmAttempts ?? DEFAULT_GOAL_MAX_REARM_ATTEMPTS;
   }
 
   /**
@@ -162,18 +182,28 @@ export class GoalLoopController {
   }
 
   /** One eval (+ maybe one continuation) for a settled session. */
-  private async runOnce(sessionKey: string): Promise<void> {
+  private async runOnce(sessionKey: string, attempt = 0): Promise<void> {
     const { registry, requestCoordinator, logger } = this.deps;
     const session = registry.getSessionByKey(sessionKey);
     const goal = session?.goal;
-    if (
-      !session ||
-      !shouldRunGoalIdleDriver({
-        goal,
-        requestActive: requestCoordinator.isRequestActive(sessionKey),
-        activityState: registry.getActivityStateByKey(sessionKey),
-      })
-    ) {
+
+    // Terminal no-op: nothing to drive, or an eval is already in flight.
+    if (!session || !goal || goal.status !== 'active' || goal.pendingEval) return;
+
+    const requestActive = requestCoordinator.isRequestActive(sessionKey);
+    const activityState = registry.getActivityStateByKey(sessionKey);
+    if (!shouldRunGoalIdleDriver({ goal, requestActive, activityState })) {
+      // The goal is active and un-leased, but the slot still looks busy. This
+      // is exactly the #1058 failure shape: a trigger that observes the slot
+      // before `removeController` runs would otherwise skip the eval forever.
+      // Re-arm a bounded number of times so the eval runs once the slot frees
+      // — the CONTROLLER, not the call-site trigger ordering, guarantees the
+      // eval is not silently lost (M4 / criterion #5).
+      if (attempt < this.maxRearmAttempts) {
+        await this.delay(this.rearmDelayMs);
+        return this.runOnce(sessionKey, attempt + 1);
+      }
+      logger.debug('Goal driver gave up re-arming — slot still busy', { sessionKey });
       return;
     }
     const activeGoal = session.goal!;
@@ -314,6 +344,14 @@ export class GoalLoopController {
   /** Stable hash of the work summary for the S9 unchanged-summary check. */
   private hashSummary(summary: string): string {
     return createHash('sha1').update(summary).digest('hex');
+  }
+
+  /** Promise delay used by the re-arm backoff. */
+  private delay(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(resolve, ms);
+      timer.unref?.();
+    });
   }
 
   /** Run the eval bounded by a timeout that aborts the dispatch. */

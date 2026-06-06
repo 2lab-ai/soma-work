@@ -103,6 +103,7 @@ The loop is driven from the **idle-settle** boundary — when the session has ge
 - **Serializes** per-session work through a promise queue, so two evals (or an eval and an injection) for the same session can never overlap.
 - **Snapshots the intent epoch** (`epoch` + `createdAt`) at eval dispatch and **discards** the verdict if it moved while the eval was in flight — no mutate / persist / notice / increment / complete / inject. The user's newer intent always wins (M1). The controller still clears its own stale `pendingEval` lease so the loop cannot wedge.
 - **Bounds the eval** with a timeout + `AbortController` (`DEFAULT_GOAL_EVAL_TIMEOUT_MS`); a hung dispatch is aborted and routed to the dispatch-failure path instead of wedging the loop on a never-clearing lease (M3).
+- **Re-arms** (bounded: `DEFAULT_GOAL_MAX_REARM_ATTEMPTS` × `DEFAULT_GOAL_REARM_DELAY_MS`) when a trigger observes the request slot still busy, so an eval is never silently lost just because the trigger fired slightly before `removeController` — the controller, not the call-site trigger ordering, guarantees the eval runs once the slot frees (M4; this structurally forecloses the #1058 "never-checks" regression). It still never supersedes: a slot that stays busy past the re-arm budget simply defers to the next turn-settled trigger.
 
 On a valid (in-epoch) verdict it stamps `pendingEval`, clears `systemPrompt`, runs the eval (see §Completion) with `goalLastTurnText` (or the persisted `lastAssistantTurnSummary` after a restart) as work-summary evidence, then:
 
