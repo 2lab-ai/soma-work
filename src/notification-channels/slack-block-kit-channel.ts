@@ -5,6 +5,7 @@
  * Always enabled — this is the default in-thread visual feedback.
  */
 
+import { buildFeedbackContextActions } from '@soma/slack/turn-feedback-block-builder';
 import { Logger } from '../logger.js';
 import type { CompletionMessageTracker } from '../slack/completion-message-tracker.js';
 import {
@@ -58,11 +59,19 @@ export class SlackBlockKitChannel implements NotificationChannel {
     // than a stale workflow title.
     const fallbackText = this.pickHeaderSuffix(event) || event.sessionTitle || event.category;
 
+    // #1064 — agent-workflow feedback affordance. `context_actions` /
+    // `feedback_buttons` are NOT reliably rendered inside legacy message
+    // attachments (codex c411a78a), so the success card that carries feedback
+    // is posted as TOP-LEVEL blocks instead of an attachment. Only
+    // WorkflowComplete gets feedback — feedback on Exception/Stalled/Ask cards
+    // is noise. Requires a turnId to key the feedback record on.
+    const withFeedback = event.category === 'WorkflowComplete' && typeof event.turnId === 'string' && !!event.turnId;
+    const postOptions = withFeedback
+      ? { threadTs: event.threadTs, blocks: [...blocks, buildFeedbackContextActions(event.turnId!, event.userId)] }
+      : { threadTs: event.threadTs, attachments: [{ color, blocks }] };
+
     try {
-      const result = await this.slackApi.postMessage(event.channel, fallbackText, {
-        threadTs: event.threadTs,
-        attachments: [{ color, blocks }],
-      });
+      const result = await this.slackApi.postMessage(event.channel, fallbackText, postOptions);
 
       // Track the actual posted notification message ts for auto-deletion.
       // Previously tracked in stream-executor using threadTs (thread root),

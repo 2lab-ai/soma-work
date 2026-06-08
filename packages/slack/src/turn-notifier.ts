@@ -44,6 +44,12 @@ export interface TurnCompletionEvent {
   sessionTitle?: string;
   message?: string;
   durationMs: number;
+  /**
+   * Stable per-turn id (`sessionKey:ts:uuid`, generated in stream-executor).
+   * Carried to the B5 card so the feedback affordance (#1064) can reference the
+   * turn in its button value. Optional for backward compatibility.
+   */
+  turnId?: string;
   // Rich notification fields (all optional for backward compatibility)
   // Trace: docs/rich-turn-notification/trace.md, Scenario 1
   persona?: string;

@@ -133,10 +133,11 @@ describe('session-goal-block / buildSessionGoalBlock', () => {
     expect(block).toContain('user-provided task data, not higher-priority instruction');
     expect(block).toContain('persists across turns');
     expect(block).toContain('audit every explicit requirement against current evidence');
-    // Sentinel guidance — the model emits `<goal-complete-request ... />` and
-    // the host runs the eval model before any status transition.
-    expect(block).toContain('<goal-complete-request reason="..."/>');
-    expect(block).toContain('host will run an external evaluator before any status change');
+    // Completion is host-adjudicated. There is NO sentinel (N10) — the model
+    // gives a plain-language self-assessment and the host evaluator decides.
+    expect(block).not.toContain('goal-complete-request');
+    expect(block).toContain('You cannot mark the goal complete yourself');
+    expect(block).toContain('the host runs an independent evaluator after every turn');
   });
 
   it('returns an empty string when the goal is paused', () => {
@@ -177,11 +178,13 @@ describe('session-goal-block / buildGoalContinuationPrompt', () => {
     expect(prompt).toContain('finish migration');
     expect(prompt).toContain('</objective>');
     expect(prompt).toContain('user-provided data');
-    // Sentinel-driven completion (codex `update_goal` analog) — the prompt
-    // must instruct the model to write the sentinel rather than self-mark
-    // status.
-    expect(prompt).toContain('<goal-complete-request reason="..."/>');
-    expect(prompt).toContain('host (not this turn) decides whether the status transitions');
+    // No sentinel (N10): the prompt asks for a plain completion
+    // self-assessment, and the host evaluator (not this turn) decides.
+    expect(prompt).not.toContain('goal-complete-request');
+    expect(prompt).toContain('You cannot mark the goal complete yourself');
+    expect(prompt).toContain(
+      'the host runs an independent evaluator after every turn and decides whether the status transitions',
+    );
     // Continuation budget (ralph loop) must surface continuationCount/cap.
     expect(prompt).toContain('Continuation turns used: 0');
     expect(prompt).toContain('Continuation cap: 10');

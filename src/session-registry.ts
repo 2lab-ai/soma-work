@@ -39,8 +39,10 @@ import { DEFAULT_GOAL_MAX_CONTINUATIONS, type SessionGoal } from './types';
  * as `false`, silently disabling continuation. We default to a
  * not-yet-fired loop with the standard cap.
  *
- * `status: 'paused'` legacy goals also predate the `'blocked'` arm —
- * no migration needed there since the type is a union, not an enum.
+ * The dead `'blocked'` status arm was removed (N11) — it was never
+ * assigned in production, but a defensively-persisted `'blocked'` is
+ * coerced to `'paused'` on load so a legacy record can't carry an
+ * out-of-union status.
  *
  * Also clears `pendingEval` unconditionally on load: it is a
  * process-local lease on an in-flight completion eval (fire-and-forget,
@@ -56,12 +58,15 @@ function migrateLegacyGoal(goal: SessionGoal | undefined): SessionGoal | undefin
   if (goal.pendingEval !== undefined) {
     goal = { ...goal, pendingEval: undefined };
   }
+  // Coerce the retired `'blocked'` status arm (N11) to `'paused'`.
+  if ((goal.status as string) === 'blocked') {
+    goal = { ...goal, status: 'paused' };
+  }
   // Fast path — goal already has all post-followup fields.
   if (
     typeof goal.continuationCount === 'number' &&
     typeof goal.maxContinuations === 'number' &&
     goal.maxContinuations > 0 &&
-    typeof goal.consecutiveBlockedSignals === 'number' &&
     typeof goal.evalAttemptCount === 'number'
   ) {
     return goal;
@@ -73,7 +78,6 @@ function migrateLegacyGoal(goal: SessionGoal | undefined): SessionGoal | undefin
       typeof goal.maxContinuations === 'number' && goal.maxContinuations > 0
         ? goal.maxContinuations
         : DEFAULT_GOAL_MAX_CONTINUATIONS,
-    consecutiveBlockedSignals: typeof goal.consecutiveBlockedSignals === 'number' ? goal.consecutiveBlockedSignals : 0,
     evalAttemptCount: typeof goal.evalAttemptCount === 'number' ? goal.evalAttemptCount : 0,
   };
 }
