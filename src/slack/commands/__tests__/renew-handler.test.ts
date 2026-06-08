@@ -96,4 +96,29 @@ describe('RenewHandler', () => {
       expect.objectContaining({ threadTs: '171.100' }),
     );
   });
+
+  it('treats a leading-whitespace bare ` /renew` as bare (no leaked instruction)', async () => {
+    // The leading space must be trimmed before the slash anchor; otherwise
+    // userMessage would become "/renew" (non-empty) and the handler would fall
+    // through, leaking the ❓ unrecognized-command hint via CommandRouter.
+    for (const text of [' /renew', ' renew', '  /renew  ']) {
+      const deps = makeNoSessionDeps();
+      const handler = new RenewHandler(deps);
+
+      const result = await handler.execute({
+        user: 'U1',
+        channel: 'C1',
+        threadTs: '171.100',
+        text,
+        say: vi.fn(),
+      });
+
+      expect(result).toEqual({ handled: true });
+      expect(deps.slackApi.postSystemMessage).toHaveBeenCalledWith(
+        'C1',
+        expect.stringContaining('No active session'),
+        expect.objectContaining({ threadTs: '171.100' }),
+      );
+    }
+  });
 });

@@ -1121,11 +1121,13 @@ describe('CommandRouter — `goal` + `$skill` composition (preprocessor)', () =>
   });
 
   // Counterpart to tests 14/15: bare `renew` / `/renew` (no argument) keep the
-  // explicit "No active session to renew" hint.
-  it('16. bare `renew` / `/renew` with NO session → renew handler still emits "No active session to renew"', async () => {
+  // explicit "No active session to renew" hint. Leading-whitespace variants
+  // (` /renew`, ` renew`) must also be stripped before the slash anchor so they
+  // don't fall through to the ❓ unrecognized-command safety net.
+  it('16. bare `renew` / `/renew` (incl. leading whitespace) with NO session → renew handler still emits "No active session to renew"', async () => {
     stubSkillFs({ localSkills: ['using-ssot'] });
 
-    for (const text of ['renew', '/renew']) {
+    for (const text of ['renew', '/renew', ' /renew', ' renew', '  /renew  ']) {
       const { router, deps, say } = makeRouterWithoutSession();
       const result = await router.route(makeCtx(text, say, undefined));
 
