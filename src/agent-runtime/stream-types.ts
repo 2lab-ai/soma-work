@@ -129,7 +129,27 @@ export type AgentStreamEvent =
       type: 'plan_update';
       entries: Array<{ id?: string; title: string; status?: AgentToolStatus; content?: string }>;
     }
-  | { type: 'mode_update'; modeId: string };
+  | { type: 'mode_update'; modeId: string }
+  // Authoritative background-task lifecycle, mapped 1:1 from the SDK's
+  // `task_started` / `task_progress` / `task_notification` system messages.
+  // This is the harness's REAL "is background work still running?" signal —
+  // it replaces the heuristic reconstruction (spawn-ack text parsing +
+  // consumer-tool result parsing) that the resume guard used to depend on.
+  // Keyed by the SDK `taskId` (which equals the `Bash({run_in_background})`
+  // spawn-ack "with ID: <id>" id, so one tracker serves bash and Task alike).
+  | {
+      type: 'agent_task_lifecycle';
+      phase: 'started' | 'progress' | 'settled';
+      taskId: string;
+      toolUseId?: string;
+      /** Present on `started`: 'local_workflow' | bash | subagent | … (SDK `task_type`). */
+      taskType?: string;
+      /** Present on `settled`: the terminal disposition. */
+      status?: 'completed' | 'failed' | 'stopped';
+      /** SDK-managed output file path (carried through for host-side reconciliation). */
+      outputFile?: string;
+      summary?: string;
+    };
 
 /** Convenience: extract a single event variant by its `type` tag. */
 export type AgentStreamEventOf<T extends AgentStreamEvent['type']> = Extract<AgentStreamEvent, { type: T }>;

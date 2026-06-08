@@ -20,6 +20,20 @@ import type { ConversationSession, MessageEvent, SayFn, SessionInitResult } from
 
 export type { WorkflowType } from '../dispatch-abort';
 
+/**
+ * M2 — a goal auto-continuation must NEVER supersede a live request. If the
+ * slot is busy when the continuation reaches concurrency control, the
+ * continuation loses (it is dropped); the live user turn is never aborted by
+ * the injection. Pure predicate so the rule is unit-testable without the full
+ * initializer. See `GoalLoopController` and `docs/goal-command/spec.md`.
+ */
+export function shouldDropGoalContinuation(
+  event: { routeContext?: { goalContinuation?: boolean } },
+  isRequestActive: boolean,
+): boolean {
+  return event.routeContext?.goalContinuation === true && isRequestActive;
+}
+
 type ZHandoffWorkflow = 'z-plan-to-work' | 'z-epic-update';
 
 type HandoffParseResult = { ok: true; context: any } | { ok: false; reason: string; detail?: string };
@@ -693,6 +707,23 @@ export class SessionInitializer {
           return migrated;
         }
       }
+    }
+
+    // M2 — a goal auto-continuation must NEVER supersede a live request.
+    // Re-check atomically here (synchronous, no await before handleConcurrency)
+    // so a user turn that started after the controller's pre-injection idle
+    // recheck wins: drop the continuation instead of aborting the user's turn.
+    if (shouldDropGoalContinuation(event, this.deps.requestCoordinator.isRequestActive(sessionKey))) {
+      this.logger.info('Goal continuation dropped — session busy (never supersede)', { sessionKey });
+      return {
+        session,
+        sessionKey,
+        isNewSession,
+        userName,
+        workingDirectory: effectiveWorkingDir,
+        abortController: new AbortController(),
+        halted: true,
+      };
     }
 
     // Handle concurrency control

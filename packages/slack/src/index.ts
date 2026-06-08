@@ -58,6 +58,7 @@ export {
   buildAssistantConfig,
   createAssistantContainer,
   type MessageEvent as AssistantMessageEvent,
+  SUGGESTED_PROMPTS,
   SUGGESTED_PROMPTS_PLACEHOLDER,
 } from './assistant-container';
 export {

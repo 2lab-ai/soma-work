@@ -46,17 +46,26 @@ export interface MessageEvent {
 }
 
 /**
- * Placeholder prompts surfaced in the assistant sidebar on
- * `assistant_thread_started`. Intentionally generic — this PR does NOT own
- * prompt content design (see #666 "Out of Scope: setSuggestedPrompts 컨텐츠
- * 디자인"). Max 4 prompts (Slack API cap).
+ * Workflow-aware prompts surfaced in the assistant sidebar on
+ * `assistant_thread_started`. These mirror soma-work's actual agent workflows
+ * (PR review / issue implementation / dev deploy / debugging) so the sidebar
+ * advertises what the agent can do rather than generic chat starters (#1064
+ * surface modernization — supersedes the #666 generic placeholders). Max 4
+ * prompts (Slack API cap). The `message` is pre-filled into the composer, not
+ * auto-sent, so a trailing ": " invites the user to complete the request.
  */
-export const SUGGESTED_PROMPTS_PLACEHOLDER: ReadonlyArray<{ title: string; message: string }> = [
-  { title: 'Help me with a task', message: 'I need help with…' },
-  { title: 'Explain a concept', message: 'Please explain…' },
-  { title: 'Debug an error', message: 'I got this error:' },
-  { title: 'Review my code', message: 'Please review this code:' },
+export const SUGGESTED_PROMPTS: ReadonlyArray<{ title: string; message: string }> = [
+  { title: 'PR 리뷰', message: 'PR을 리뷰해줘: ' },
+  { title: '이슈/기능 구현', message: '이 이슈를 완벽하게 구현해줘: ' },
+  { title: 'dev 배포 + QA', message: 'dev 환경에 배포하고 QA해줘' },
+  { title: '에러 디버그', message: '이 에러를 디버그해줘: ' },
 ];
+
+/**
+ * @deprecated Use {@link SUGGESTED_PROMPTS}. Retained as an alias so external
+ * importers don't break during the rename.
+ */
+export const SUGGESTED_PROMPTS_PLACEHOLDER = SUGGESTED_PROMPTS;
 
 /**
  * Title shown above the suggested prompts in the Assistant sidebar.
@@ -97,7 +106,7 @@ export function buildAssistantConfig(deps: AssistantContainerDeps): AssistantCon
 
       try {
         await setSuggestedPrompts({
-          prompts: [...SUGGESTED_PROMPTS_PLACEHOLDER],
+          prompts: [...SUGGESTED_PROMPTS],
           title: ASSISTANT_VIEW_TITLE,
         });
       } catch (err) {

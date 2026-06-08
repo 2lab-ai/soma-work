@@ -932,9 +932,15 @@ export class SlackHandler {
   ): void {
     const goal = session.goal;
     if (!goal || goal.status !== 'active') return;
-    // Runtime-only stash (not persisted) — the driver reads this as the
-    // work-summary evidence for the completion eval.
-    session.goalLastTurnText = assistantMessages.join('\n\n');
+    const turnText = assistantMessages.join('\n\n');
+    // Runtime-only stash — the driver reads this first as the work-summary
+    // evidence for the completion eval.
+    session.goalLastTurnText = turnText;
+    // Persisted, bounded mirror (S8) so an eval that first runs after a
+    // restart still has real evidence instead of an empty stash. Persisted
+    // via the `goal` serializer; the runtime stash above takes precedence.
+    goal.lastAssistantTurnSummary = turnText.slice(0, 16_000);
+    this.claudeHandler.saveSessions();
     this.logger.debug('Goal turn settled — triggering goal driver', { sessionKey });
     this.goalTurnSettledHandler?.(sessionKey);
   }

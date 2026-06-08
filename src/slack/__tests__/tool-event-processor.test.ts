@@ -60,9 +60,8 @@ describe('ToolEventProcessor', () => {
     const ackResult = (id: string) =>
       `Command running in background with ID: ${id}. Output is being written to: /tmp/${id}.log`;
 
-    it('keeps a background bash live after its spawn-ack and clears it on a terminal TaskOutput', async () => {
+    it('keeps a bg bash live after its spawn-ack and clears it on the authoritative task_notification, NOT a TaskOutput poll', async () => {
       const ctx: ToolEventContext = { ...mockContext, turnId: 'turn-1' };
-      // Foreground bash and a backgrounded bash in the same turn.
       await processor.handleToolUse(
         [
           { id: 'fg', name: 'Bash', input: { command: 'ls' } },
@@ -71,51 +70,50 @@ describe('ToolEventProcessor', () => {
         ctx,
       );
 
-      // The resume signal is sourced from the spawn ACK (carrying the bg id),
-      // not the tool_use — the ack arrives within the same turn and well before
-      // turn end, so this is the state the guard actually observes.
+      // Spawn-ack carries the bg id (== SDK task_id) → FALLBACK add into the
+      // authoritative lifecycle tracker. The process is STILL running, so live.
       await processor.handleToolResult([{ toolUseId: 'bg', toolName: 'Bash', result: ackResult('bg-shell-1') }], ctx);
-      // The spawn-ack arrived but the process is STILL running, so the work
-      // must remain live (this is the bug #1049 missed: it cleared here).
-      expect(processor.getLiveBackgroundWork('C123:thread_ts', 'turn-1')).toEqual({
-        bashCount: 1,
-        taskLabels: [],
-      });
+      expect(processor.getLiveBackgroundWork('C123:thread_ts')).toMatchObject({ count: 1, signature: 'bg-shell-1' });
 
-      // A poll that reports the task still running keeps it live.
-      await processor.handleToolResult(
-        [
-          {
-            toolUseId: 'poll-1',
-            toolName: 'TaskOutput',
-            result: '<task_id>bg-shell-1</task_id>\n<status>running</status>\n<output>...</output>',
-          },
-        ],
-        ctx,
-      );
-      expect(processor.getLiveBackgroundWork('C123:thread_ts', 'turn-1').bashCount).toBe(1);
-
-      // A terminal TaskOutput (completed) finally clears it.
+      // A TaskOutput poll — even a terminal `completed` — NO LONGER drains.
+      // Liveness is owned by the SDK task lifecycle, not the model polling
+      // deprecated output tools (the whole point of the refactor).
       await processor.handleToolResult(
         [
           {
             toolUseId: 'poll-2',
             toolName: 'TaskOutput',
-            result:
-              '<task_id>bg-shell-1</task_id>\n<status>completed</status>\n<exit_code>0</exit_code>\n<output>done</output>',
+            result: '<task_id>bg-shell-1</task_id>\n<status>completed</status>\n<exit_code>0</exit_code>',
           },
         ],
         ctx,
       );
-      expect(processor.getLiveBackgroundWork('C123:thread_ts', 'turn-1')).toEqual({
-        bashCount: 0,
-        taskLabels: [],
-      });
+      expect(processor.getLiveBackgroundWork('C123:thread_ts').count).toBe(1);
+
+      // The authoritative SDK `task_notification` (settled) finally drains it.
+      processor.handleAgentTaskLifecycle(
+        { type: 'agent_task_lifecycle', phase: 'settled', taskId: 'bg-shell-1', status: 'completed' },
+        'C123:thread_ts',
+      );
+      expect(processor.getLiveBackgroundWork('C123:thread_ts')).toMatchObject({ count: 0 });
     });
 
-    it('returns an empty snapshot for an unknown session/turn', () => {
-      expect(processor.getLiveBackgroundWork('nope', 'nope')).toEqual({ bashCount: 0, taskLabels: [] });
-      expect(processor.getLiveBackgroundWork()).toEqual({ bashCount: 0, taskLabels: [] });
+    it('starts live from an authoritative task_started even without any spawn-ack (covers bg Task / Monitor)', () => {
+      processor.handleAgentTaskLifecycle(
+        { type: 'agent_task_lifecycle', phase: 'started', taskId: 'mon-1', taskType: 'local_workflow' },
+        'C123:thread_ts',
+      );
+      expect(processor.getLiveBackgroundWork('C123:thread_ts')).toMatchObject({ count: 1, labels: ['local_workflow'] });
+      processor.handleAgentTaskLifecycle(
+        { type: 'agent_task_lifecycle', phase: 'settled', taskId: 'mon-1', status: 'stopped' },
+        'C123:thread_ts',
+      );
+      expect(processor.getLiveBackgroundWork('C123:thread_ts').count).toBe(0);
+    });
+
+    it('returns an empty snapshot for an unknown session', () => {
+      expect(processor.getLiveBackgroundWork('nope')).toEqual({ count: 0, labels: [], signature: '' });
+      expect(processor.getLiveBackgroundWork()).toEqual({ count: 0, labels: [], signature: '' });
     });
   });
 

@@ -57,7 +57,7 @@ import { McpConfigBuilder, type SlackContext } from './mcp-config-builder';
 import { getAvailablePersonas, PromptBuilder } from './prompt-builder';
 import { type CrashRecoveredSession, SessionExpiryCallbacks, SessionRegistry } from './session-registry';
 import { getTokenManager } from './token-manager';
-import { DEFAULT_SHOW_THINKING } from './user-settings-store';
+import { DEFAULT_SHOW_THINKING, type EffortLevel } from './user-settings-store';
 
 /** Heartbeat interval for long-running Claude CLI calls. */
 const CLAUDE_LEASE_HEARTBEAT_MS = 5 * 60 * 1000;
@@ -525,6 +525,7 @@ export class ClaudeHandler {
     abortController?: AbortController,
     resumeSessionId?: string,
     cwd?: string,
+    effort?: EffortLevel,
   ): Promise<string> {
     // Acquire a lease on the active CCT slot. Held for the lifetime of the
     // Claude CLI dispatch call, released in the outer finally.
@@ -566,6 +567,7 @@ export class ClaudeHandler {
         abortController,
         resumeSessionId,
         cwd,
+        effort,
       );
     } finally {
       if (heartbeatTimer) clearInterval(heartbeatTimer);
@@ -581,6 +583,7 @@ export class ClaudeHandler {
     abortController?: AbortController,
     resumeSessionId?: string,
     cwd?: string,
+    effort?: EffortLevel,
   ): Promise<string> {
     // Build query options for one-shot dispatch. `env` is the per-call map
     // from `buildQueryEnv(lease)` — it carries the lease's fresh access
@@ -600,6 +603,13 @@ export class ClaudeHandler {
 
     if (model) {
       options.model = model;
+    }
+
+    // Match the work model's reasoning effort so the goal completion eval
+    // is never weaker than the worker (spec §Completion / S6). Only set when
+    // explicitly provided — otherwise the SDK default applies.
+    if (effort) {
+      options.effort = effort;
     }
 
     if (abortController) {
