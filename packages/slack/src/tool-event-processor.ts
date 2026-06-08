@@ -4,11 +4,12 @@
  */
 
 import { Logger } from '@soma/common/logger';
+import type { AgentStreamEventOf } from './agent-stream-types';
 import type { AssistantStatusManager } from './assistant-status-manager';
 import type { McpHealthMonitor } from './mcp-health-monitor';
 import type { McpStatusDisplay } from './mcp-status-tracker';
 import { getToolResultRenderMode, LOG_DETAIL, OutputFlag, shouldOutput } from './output-flags';
-import { BackgroundResumeTracker, isConsumerToolName } from './pipeline/background-resume-tracker';
+import { AgentTaskLifecycleTracker, parseBackgroundLaunchId } from './pipeline/background-task-tracker';
 import type { ReactionManager } from './reaction-manager';
 import { extractTaskIdFromResult } from './stream-processor';
 import { ToolFormatter, type ToolResult } from './tool-formatter';
@@ -273,18 +274,20 @@ export class ToolEventProcessor {
    * Populated by `startBackgroundBashTracking`, drained by
    * `handleToolResult` (normal completion) or `cleanup()` (turn end).
    * NOTE: this owns the spinner/McpCallTracker lifecycle and is emptied at the
-   * spawn ack — it is NOT the resume signal (see `backgroundResumeTracker`).
+   * spawn ack — it is NOT the resume signal (see `backgroundTaskTracker`).
    */
   private backgroundBashRegistry = new BackgroundBashRegistry();
   /**
-   * Resume-guard signal: background bashes still running (spawn-acked, not
-   * terminally consumed via TaskOutput/BashOutput/kill). Deliberately separate
-   * from `backgroundBashRegistry` and never touched by per-turn `cleanup()` so
-   * it survives resume turns. See `background-resume-tracker.ts`.
+   * Resume-guard signal: AUTHORITATIVE background-task liveness, fed by the
+   * SDK's `task_started`/`task_progress`/`task_notification` lifecycle (via
+   * `handleAgentTaskLifecycle`), with a spawn-ack fallback ADD in
+   * `handleToolResult`. Covers bg bash AND bg Task uniformly, keyed by SDK
+   * `task_id`. Session-scoped (never touched by per-turn `cleanup()`) so it
+   * survives resume turns. See `background-task-tracker.ts`. This replaces the
+   * old heuristic that reconstructed liveness from the model polling
+   * TaskOutput/BashOutput.
    */
-  private backgroundResumeTracker = new BackgroundResumeTracker((toolName) =>
-    this.logger.debug('bg resume: unrecognized consumer result (possible output-tool shape drift)', { toolName }),
-  );
+  private backgroundTaskTracker = new AgentTaskLifecycleTracker();
   /** Issue #794 — see `BgTaskEntry` doc. */
   private backgroundTaskRegistry = new BackgroundTaskRegistry();
   /**
@@ -511,11 +514,20 @@ export class ToolEventProcessor {
       const bgEntry = this.backgroundBashRegistry.remove(context.sessionKey, toolResult.toolUseId);
       if (bgEntry) {
         // This tool_result is the SPAWN ACK of a bg bash (the process keeps
-        // running). Start tracking it for the resume guard so the session is
-        // not marked complete while the shell is still alive. The ack carries
-        // the background id (`backgroundTaskId` / "...with ID: <id>").
+        // running). FALLBACK ADD into the authoritative resume tracker: the
+        // SDK's `task_started` (handled in `handleAgentTaskLifecycle`) is the
+        // primary live signal, but the ack id equals the SDK `task_id`, so
+        // adding it here too guarantees we never miss a launch even if a
+        // `task_started` is ever dropped. Idempotent by task_id. Drained ONLY
+        // by the authoritative `task_notification` (no consumer-tool polling).
         if (context.sessionKey) {
-          this.backgroundResumeTracker.trackLaunch(context.sessionKey, toolResult.toolUseId, toolResult.result);
+          const taskId = parseBackgroundLaunchId(toolResult.result);
+          if (taskId) {
+            this.backgroundTaskTracker.trackStart(context.sessionKey, taskId, {
+              toolUseId: toolResult.toolUseId,
+              taskType: 'bash',
+            });
+          }
         }
         try {
           bgEntry.unregister();
@@ -528,12 +540,11 @@ export class ToolEventProcessor {
             error: (err as Error)?.message ?? String(err),
           });
         }
-      } else if (context.sessionKey && isConsumerToolName(toolResult.toolName)) {
-        // A `TaskOutput`/`BashOutput`/kill result: drain the matching live
-        // launch when it reports terminal (completed/failed/killed/exit code).
-        // A `running`/`pending` poll keeps it live.
-        this.backgroundResumeTracker.observeConsumerResult(context.sessionKey, toolResult.toolName, toolResult.result);
       }
+      // NOTE: the old `else if (isConsumerToolName(...))` consumer-drain branch
+      // (parsing TaskOutput/BashOutput/kill results for a terminal status) is
+      // GONE. Liveness now drains on the SDK's authoritative `task_notification`
+      // (`handleAgentTaskLifecycle`), not on the model polling output tools.
 
       // Issue #794 — bg Task spawn-ack keeps the progress UI alive
       // (cleanup at turn end owns completion). See
@@ -763,24 +774,54 @@ export class ToolEventProcessor {
    * background-work resume guard to decide whether to re-enter the agent loop
    * instead of completing the session with live work outstanding.
    */
-  getLiveBackgroundWork(sessionKey?: string, turnId?: string): { bashCount: number; taskLabels: string[] } {
+  getLiveBackgroundWork(sessionKey?: string): { count: number; labels: string[]; signature: string } {
+    if (!sessionKey) return { count: 0, labels: [], signature: '' };
+    // AUTHORITATIVE source: the SDK task lifecycle (started − settled), keyed by
+    // task_id, session-scoped. Covers bg bash, bg subagent Tasks AND Monitor
+    // watches uniformly, so the resume signal survives across resume turns (the
+    // #794 turn-scoped limitation is gone). `labels` are best-effort cosmetic
+    // (distinct non-bash task types) for the resume-prompt summary; `count` +
+    // `signature` drive the decision and the non-destructive cap suppression.
+    const tasks = this.backgroundTaskTracker.liveTasks(sessionKey);
+    const labels = [...new Set(tasks.map((t) => t.taskType).filter((t): t is string => !!t && t !== 'bash'))];
     return {
-      // Resume signal = bg bashes spawn-acked but not yet terminally consumed.
-      // (Not `backgroundBashRegistry`, which empties at the spawn ack and so is
-      // always 0 by turn end — the no-op that #1049 read.)
-      bashCount: sessionKey ? this.backgroundResumeTracker.liveCount(sessionKey) : 0,
-      taskLabels: turnId ? this.backgroundTaskRegistry.labelsFor(turnId) : [],
+      count: this.backgroundTaskTracker.liveCount(sessionKey),
+      labels,
+      signature: this.backgroundTaskTracker.liveSignature(sessionKey),
     };
   }
 
   /**
-   * Drop all background-resume tracking for a session. Called by StreamExecutor
-   * when the per-session resume cap is exhausted (give up auto-waiting) or on
-   * session teardown, so a never-consumed launch can't keep re-triggering the
-   * guard on later, unrelated turns.
+   * Authoritative background-task lifecycle handler — wired to the SDK's
+   * `task_started`/`task_progress`/`task_notification` system messages via the
+   * `onAgentTaskLifecycle` stream callback. `started` marks a task live (primary
+   * signal; the spawn-ack fallback ADD in `handleToolResult` is the backstop);
+   * `settled` (completed/failed/stopped) drains it; `progress` is a no-op that
+   * keeps it live. This is the ONLY drain path — no model polling required.
+   */
+  handleAgentTaskLifecycle(event: AgentStreamEventOf<'agent_task_lifecycle'>, sessionKey?: string): void {
+    if (!sessionKey || !event.taskId) return;
+    if (event.phase === 'started') {
+      this.backgroundTaskTracker.trackStart(sessionKey, event.taskId, {
+        toolUseId: event.toolUseId,
+        taskType: event.taskType,
+        outputFile: event.outputFile,
+      });
+    } else if (event.phase === 'settled') {
+      this.backgroundTaskTracker.trackSettled(sessionKey, event.taskId);
+    }
+    // 'progress' → intentionally keeps the task live (no state change).
+  }
+
+  /**
+   * Drop all background-task tracking for a session. SESSION TEARDOWN ONLY.
+   * NOTE: this is no longer called on resume-cap exhaustion — the cap is now a
+   * NON-destructive suppression in StreamExecutor (it must not falsify the
+   * authoritative live state). Draining authoritative state on cap would lie
+   * about whether work is still running.
    */
   clearBackgroundResume(sessionKey: string): void {
-    this.backgroundResumeTracker.drain(sessionKey);
+    this.backgroundTaskTracker.drain(sessionKey);
   }
 
   async cleanup(sessionKey?: string, turnId?: string): Promise<void> {

@@ -336,6 +336,79 @@ export function createSdkMessageMapper(deps: SdkMessageMapperDeps): SdkMessageMa
       ];
     }
 
+    // Authoritative background-task lifecycle. The SDK emits these `system`
+    // messages for EVERY background task (`Bash({run_in_background})` and
+    // `Task({run_in_background})`) — this is the real "still running?" signal
+    // the resume guard needs. Previously dropped here (fell through to the
+    // `return []` below), which is why the harness had to reconstruct it
+    // heuristically from spawn-ack text + the model polling output tools.
+    if (subtype === 'task_started') {
+      const taskId = typeof m.task_id === 'string' ? m.task_id : '';
+      if (!taskId) return [];
+      return [
+        {
+          type: 'agent_task_lifecycle',
+          phase: 'started',
+          taskId,
+          toolUseId: typeof m.tool_use_id === 'string' ? m.tool_use_id : undefined,
+          taskType: typeof m.task_type === 'string' ? m.task_type : undefined,
+        },
+      ];
+    }
+
+    if (subtype === 'task_progress') {
+      const taskId = typeof m.task_id === 'string' ? m.task_id : '';
+      if (!taskId) return [];
+      return [
+        {
+          type: 'agent_task_lifecycle',
+          phase: 'progress',
+          taskId,
+          toolUseId: typeof m.tool_use_id === 'string' ? m.tool_use_id : undefined,
+        },
+      ];
+    }
+
+    if (subtype === 'task_notification') {
+      const taskId = typeof m.task_id === 'string' ? m.task_id : '';
+      const status = m.status;
+      if (!taskId || (status !== 'completed' && status !== 'failed' && status !== 'stopped')) {
+        return [];
+      }
+      return [
+        {
+          type: 'agent_task_lifecycle',
+          phase: 'settled',
+          taskId,
+          toolUseId: typeof m.tool_use_id === 'string' ? m.tool_use_id : undefined,
+          status,
+          outputFile: typeof m.output_file === 'string' ? m.output_file : undefined,
+          summary: typeof m.summary === 'string' ? m.summary : undefined,
+        },
+      ];
+    }
+
+    // `task_updated` carries a wire-safe patch; a terminal `patch.status`
+    // ({completed,failed,killed}) is a fallback settle signal in case a
+    // `task_notification` is ever missed. `killed` → neutral `stopped`.
+    if (subtype === 'task_updated') {
+      const taskId = typeof m.task_id === 'string' ? m.task_id : '';
+      const patch = (m.patch ?? {}) as Record<string, unknown>;
+      const pStatus = patch.status;
+      if (!taskId) return [];
+      if (pStatus === 'completed' || pStatus === 'failed' || pStatus === 'killed') {
+        return [
+          {
+            type: 'agent_task_lifecycle',
+            phase: 'settled',
+            taskId,
+            status: pStatus === 'killed' ? 'stopped' : pStatus,
+          },
+        ];
+      }
+      return [];
+    }
+
     return [];
   }
 
