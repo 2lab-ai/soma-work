@@ -4,7 +4,7 @@
  */
 
 import { Logger } from '@soma/common/logger';
-import type { AgentStreamEvent, AgentUsage } from './agent-stream-types';
+import type { AgentStreamEvent, AgentStreamEventOf, AgentUsage } from './agent-stream-types';
 import type { SlackMessagePayload } from './choice-message-builder';
 import {
   ChannelMessageDirectiveHandler,
@@ -250,6 +250,19 @@ export interface StreamCallbacks {
   onChoiceCreated?: (payload: SlackMessagePayload, context: StreamContext, sourceMessageTs?: string) => Promise<void>;
   /** Called when SDK emits compact_boundary (context was auto-compacted) */
   onCompactBoundary?: (metadata?: Record<string, unknown>) => void;
+  /**
+   * Authoritative background-task lifecycle (mapped 1:1 from the SDK
+   * `task_started` / `task_progress` / `task_notification` system messages).
+   * The harness's REAL "is background work still running?" signal — wired to
+   * the session-scoped lifecycle tracker so the turn-end resume guard no
+   * longer reconstructs it heuristically from spawn-ack text + the model
+   * polling deprecated output tools. Must be cheap: a pure tracker-state
+   * update with no Slack rendering.
+   */
+  onAgentTaskLifecycle?: (
+    event: AgentStreamEventOf<'agent_task_lifecycle'>,
+    context: StreamContext,
+  ) => void | Promise<void>;
   /** Called before sending the final assistant message to append footer text */
   buildFinalResponseFooter?: (params: FinalResponseFooterParams) => Promise<string | undefined> | string | undefined;
   /**
@@ -665,6 +678,12 @@ export class AgentStreamProcessor {
             this.callbacks.onCompactBoundary?.(
               (event.metadata.raw as Record<string, unknown> | undefined) ?? event.metadata,
             );
+            break;
+          case 'agent_task_lifecycle':
+            // Side-band authoritative background-task signal. Does NOT flush the
+            // render groups (it produces no Slack output — just a tracker-state
+            // update) so an interleaved task_progress can't fragment streaming.
+            await this.callbacks.onAgentTaskLifecycle?.(event, context);
             break;
           case 'result': {
             await flushAll();
