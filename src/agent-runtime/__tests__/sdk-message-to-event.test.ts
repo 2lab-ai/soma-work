@@ -319,4 +319,84 @@ describe('createSdkMessageMapper — golden (epic #1023 P3)', () => {
       expect(mapper().map(sdk({ type: 'system', subtype: 'something_else' }))).toEqual([]);
     });
   });
+
+  describe('background task lifecycle (authoritative SDK signal)', () => {
+    it('task_started → agent_task_lifecycle started (taskId/toolUseId/taskType)', () => {
+      expect(
+        mapper().map(
+          sdk({
+            type: 'system',
+            subtype: 'task_started',
+            task_id: 'bb818onz1',
+            tool_use_id: 'toolu_1',
+            task_type: 'bash',
+          }),
+        ),
+      ).toEqual([
+        { type: 'agent_task_lifecycle', phase: 'started', taskId: 'bb818onz1', toolUseId: 'toolu_1', taskType: 'bash' },
+      ]);
+    });
+
+    it('task_started without task_id → no event', () => {
+      expect(mapper().map(sdk({ type: 'system', subtype: 'task_started' }))).toEqual([]);
+    });
+
+    it('task_progress → agent_task_lifecycle progress', () => {
+      expect(mapper().map(sdk({ type: 'system', subtype: 'task_progress', task_id: 'b1', tool_use_id: 'u1' }))).toEqual(
+        [{ type: 'agent_task_lifecycle', phase: 'progress', taskId: 'b1', toolUseId: 'u1' }],
+      );
+    });
+
+    it('task_notification (completed) → agent_task_lifecycle settled with outputFile/summary', () => {
+      expect(
+        mapper().map(
+          sdk({
+            type: 'system',
+            subtype: 'task_notification',
+            task_id: 'bb818onz1',
+            tool_use_id: 'toolu_1',
+            status: 'completed',
+            output_file: '/tmp/bb818onz1.output',
+            summary: 'done',
+          }),
+        ),
+      ).toEqual([
+        {
+          type: 'agent_task_lifecycle',
+          phase: 'settled',
+          taskId: 'bb818onz1',
+          toolUseId: 'toolu_1',
+          status: 'completed',
+          outputFile: '/tmp/bb818onz1.output',
+          summary: 'done',
+        },
+      ]);
+    });
+
+    it('task_notification failed/stopped → settled; unknown status → no event', () => {
+      expect(
+        mapper().map(sdk({ type: 'system', subtype: 'task_notification', task_id: 'b1', status: 'failed' }))[0],
+      ).toMatchObject({ phase: 'settled', status: 'failed' });
+      expect(
+        mapper().map(sdk({ type: 'system', subtype: 'task_notification', task_id: 'b1', status: 'stopped' }))[0],
+      ).toMatchObject({ phase: 'settled', status: 'stopped' });
+      expect(
+        mapper().map(sdk({ type: 'system', subtype: 'task_notification', task_id: 'b1', status: 'running' })),
+      ).toEqual([]);
+    });
+
+    it('task_updated terminal patch.status → settled (killed → stopped); non-terminal → no event', () => {
+      expect(
+        mapper().map(sdk({ type: 'system', subtype: 'task_updated', task_id: 'b1', patch: { status: 'killed' } })),
+      ).toEqual([{ type: 'agent_task_lifecycle', phase: 'settled', taskId: 'b1', status: 'stopped' }]);
+      expect(
+        mapper().map(
+          sdk({ type: 'system', subtype: 'task_updated', task_id: 'b1', patch: { status: 'completed' } }),
+        )[0],
+      ).toMatchObject({ phase: 'settled', status: 'completed' });
+      expect(
+        mapper().map(sdk({ type: 'system', subtype: 'task_updated', task_id: 'b1', patch: { status: 'running' } })),
+      ).toEqual([]);
+    });
+  });
 });
