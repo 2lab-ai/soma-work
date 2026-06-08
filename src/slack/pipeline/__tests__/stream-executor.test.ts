@@ -4037,7 +4037,7 @@ describe('stream-executor — epoch guard wiring (issue #688)', () => {
         handleToolResult: vi.fn().mockResolvedValue(undefined),
         setReactionManager: vi.fn(),
         setToolResultSink: vi.fn(),
-        getLiveBackgroundWork: vi.fn().mockReturnValue({ bashCount: 0, taskLabels: [] }),
+        getLiveBackgroundWork: vi.fn().mockReturnValue({ count: 0, labels: [], signature: '' }),
         cleanup: vi.fn(),
       },
       statusReporter: {
@@ -4162,7 +4162,7 @@ describe('stream-executor — epoch guard wiring (issue #688)', () => {
   // (re-entering the agent loop) instead of completing the session.
   it('returns a host resume continuation when background work is live at turn end', async () => {
     const deps = createDeps(() => toolFlowStream('Read'));
-    deps.toolEventProcessor.getLiveBackgroundWork = vi.fn().mockReturnValue({ bashCount: 1, taskLabels: [] });
+    deps.toolEventProcessor.getLiveBackgroundWork = vi.fn().mockReturnValue({ count: 1, labels: [], signature: 'b1' });
     const executor = new StreamExecutor(deps);
     const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
 
@@ -4178,7 +4178,7 @@ describe('stream-executor — epoch guard wiring (issue #688)', () => {
 
   it('completes normally (no continuation) when no background work is live', async () => {
     const deps = createDeps(() => toolFlowStream('Read'));
-    // getLiveBackgroundWork defaults to { bashCount: 0, taskLabels: [] }
+    // getLiveBackgroundWork defaults to { count: 0, labels: [], signature: '' }
     const executor = new StreamExecutor(deps);
     const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
 
