@@ -61,6 +61,7 @@ import { NewHandler } from '../new-handler';
 import { PersonaHandler } from '../persona-handler';
 import { PromptHandler } from '../prompt-handler';
 import { RateHandler } from '../rate-handler';
+import { RenewHandler } from '../renew-handler';
 import { SkillForceHandler } from '../skill-force-handler';
 import { VerbosityHandler } from '../verbosity-handler';
 
@@ -1023,5 +1024,120 @@ describe('CommandRouter — `goal` + `$skill` composition (preprocessor)', () =>
     );
     expect(result.handled).toBe(true);
     expect(result.continueWithPrompt).toBeUndefined();
+  });
+
+  // P1 (#1068): the SLASH form `/goal foo …` with no session must fall through
+  // exactly like the plain-text form (test 10). Before the parser-level guard,
+  // `isPotentialCommand('/goal foo …')` returned `isPotential:true` (slash-root
+  // `goal` is a known keyword), so even though GoalHandler declined the router
+  // emitted the ❓ unrecognized-command hint and the user's instruction was
+  // dropped. The guard now classifies an argument-carrying greedy free-form
+  // slash root as non-command.
+  it('12. slash `/goal foo …` with NO session → falls through (handled:false), no ❓, no "No active session"', async () => {
+    stubSkillFs({ localSkills: ['using-ssot'] });
+    const goalExec = vi.spyOn(GoalHandler.prototype, 'execute');
+
+    const { router, deps, say } = makeRouterWithoutSession();
+    const result = await router.route(makeCtx('/goal foo bar baz', say, undefined));
+
+    expect(goalExec).toHaveBeenCalledTimes(1);
+    expect(deps.slackApi.postSystemMessage).not.toHaveBeenCalledWith(
+      'C1',
+      expect.stringContaining('No active session'),
+      expect.anything(),
+    );
+    expect(result.handled).toBe(false);
+    expect(result.continueWithPrompt).toBeUndefined();
+    expect(say).not.toHaveBeenCalledWith(
+      expect.objectContaining({ text: expect.stringContaining('인식할 수 없습니다') }),
+    );
+  });
+
+  // Counterpart to test 12: a BARE `/goal` (no argument) with no session is a
+  // genuine lifecycle command — it MUST still emit the "No active session" hint.
+  it('13. bare `/goal` with NO session → goal handler still emits "No active session"', async () => {
+    stubSkillFs({ localSkills: ['using-ssot'] });
+    const goalExec = vi.spyOn(GoalHandler.prototype, 'execute');
+
+    const { router, deps, say } = makeRouterWithoutSession();
+    const result = await router.route(makeCtx('/goal', say, undefined));
+
+    expect(goalExec).toHaveBeenCalledTimes(1);
+    expect(deps.slackApi.postSystemMessage).toHaveBeenCalledWith(
+      'C1',
+      expect.stringContaining('No active session'),
+      expect.anything(),
+    );
+    expect(result.handled).toBe(true);
+    expect(say).not.toHaveBeenCalledWith(
+      expect.objectContaining({ text: expect.stringContaining('인식할 수 없습니다') }),
+    );
+  });
+
+  // `renew` is the other greedy free-form, session-required root. Plain-text
+  // `renew <instruction>` with no session falls through (handled:false) so the
+  // message starts a fresh conversation — and no ❓ hint leaks.
+  it('14. plain `renew foo …` with NO session → falls through (handled:false), no ❓, no "No active session"', async () => {
+    stubSkillFs({ localSkills: ['using-ssot'] });
+    const renewExec = vi.spyOn(RenewHandler.prototype, 'execute');
+
+    const { router, deps, say } = makeRouterWithoutSession();
+    const result = await router.route(makeCtx('renew foo bar baz', say, undefined));
+
+    expect(renewExec).toHaveBeenCalledTimes(1);
+    expect(deps.slackApi.postSystemMessage).not.toHaveBeenCalledWith(
+      'C1',
+      expect.stringContaining('No active session to renew'),
+      expect.anything(),
+    );
+    expect(result.handled).toBe(false);
+    expect(result.continueWithPrompt).toBeUndefined();
+    expect(say).not.toHaveBeenCalledWith(
+      expect.objectContaining({ text: expect.stringContaining('인식할 수 없습니다') }),
+    );
+  });
+
+  // P1 (#1068): same fall-through for the SLASH form `/renew <text>` — without
+  // the parser-level guard this leaked the ❓ hint (slash-root `renew` is a
+  // known keyword) and dropped the instruction.
+  it('15. slash `/renew foo …` with NO session → falls through (handled:false), no ❓, no "No active session"', async () => {
+    stubSkillFs({ localSkills: ['using-ssot'] });
+    const renewExec = vi.spyOn(RenewHandler.prototype, 'execute');
+
+    const { router, deps, say } = makeRouterWithoutSession();
+    const result = await router.route(makeCtx('/renew foo bar baz', say, undefined));
+
+    expect(renewExec).toHaveBeenCalledTimes(1);
+    expect(deps.slackApi.postSystemMessage).not.toHaveBeenCalledWith(
+      'C1',
+      expect.stringContaining('No active session to renew'),
+      expect.anything(),
+    );
+    expect(result.handled).toBe(false);
+    expect(result.continueWithPrompt).toBeUndefined();
+    expect(say).not.toHaveBeenCalledWith(
+      expect.objectContaining({ text: expect.stringContaining('인식할 수 없습니다') }),
+    );
+  });
+
+  // Counterpart to tests 14/15: bare `renew` / `/renew` (no argument) keep the
+  // explicit "No active session to renew" hint.
+  it('16. bare `renew` / `/renew` with NO session → renew handler still emits "No active session to renew"', async () => {
+    stubSkillFs({ localSkills: ['using-ssot'] });
+
+    for (const text of ['renew', '/renew']) {
+      const { router, deps, say } = makeRouterWithoutSession();
+      const result = await router.route(makeCtx(text, say, undefined));
+
+      expect(deps.slackApi.postSystemMessage).toHaveBeenCalledWith(
+        'C1',
+        expect.stringContaining('No active session to renew'),
+        expect.anything(),
+      );
+      expect(result.handled).toBe(true);
+      expect(say).not.toHaveBeenCalledWith(
+        expect.objectContaining({ text: expect.stringContaining('인식할 수 없습니다') }),
+      );
+    }
   });
 });

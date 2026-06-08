@@ -17,7 +17,7 @@ export class GoalHandler implements CommandHandler {
     if (!session) {
       // No session yet. `goal <objective>` (action 'set') carries a free-form
       // instruction, and "goal" is also everyday English — a first message
-      // like "goal: ship the parser, see attached" is almost certainly a task,
+      // like "goal ship the parser, see attached" is almost certainly a task,
       // not a session-scoped command. The session-scoped reading is impossible
       // anyway (there is no session to attach a goal to), so don't swallow it
       // with "No active session" and drop the user's text + attachments. Return
