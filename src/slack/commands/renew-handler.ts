@@ -19,7 +19,10 @@ export class RenewHandler implements CommandHandler {
     const session = this.deps.claudeHandler.getSession(channel, threadTs);
 
     // Extract user message after /renew command (e.g., "/renew PR 리뷰해줘" → "PR 리뷰해줘")
-    const userMessage = text.trim().replace(/^\/?\s*renew\s*/i, '').trim();
+    const userMessage = text
+      .trim()
+      .replace(/^\/?\s*renew\s*/i, '')
+      .trim();
 
     // Check if there's an active session
     if (!session || !session.sessionId) {
