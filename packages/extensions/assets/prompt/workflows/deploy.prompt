@@ -103,7 +103,34 @@ Check at least the following before merging:
 - Merge eligibility (conflict, policy)
 - Whether the deployment target branch (base) is correct
 
-If there are no issues, proceed with the PR merge.
+If CI is still running, you **must wait for it in-turn** and then merge. The merge is part of *this* task — it is not done until the PR is merged (or you have explicitly halted for a user decision).
+
+#### How to wait for CI (mandatory procedure)
+
+**ABSOLUTELY PROHIBITED** — these patterns silently abandon the deploy and are the #1 cause of stalled merges:
+
+- ❌ `ScheduleWakeup` — it never resumes. The turn dies and the merge never happens.
+- ❌ A fire-and-forget background watcher (`run_in_background` Bash) followed by ending the turn or emitting a completion summary. Nothing consumes the result, so the merge never happens.
+- ❌ Any phrasing like "I'll be notified when CI completes, then merge", "the background watcher is set", "waiting on the monitor" — these are signs you are about to end the turn prematurely. Do not.
+- ❌ Emitting the executive-summary / "작업 완료" / `:large_green_circle:` completion block before the merge is actually done.
+
+**REQUIRED** — block synchronously, in the foreground, within this same turn:
+
+1. Run a blocking watch in the foreground (NOT `run_in_background`), bounded by a timeout so it cannot hang forever:
+
+   ```bash
+   timeout 1200 gh pr checks <pr-number> --watch --interval 30
+   ```
+
+   `gh pr checks --watch` blocks until every check resolves, then exits non-zero if any check failed. This keeps your turn alive — you are still working, not waiting to be woken up.
+
+2. If `timeout` fires (exit code 124) and checks are still pending, run the same `timeout ... gh pr checks --watch` command again. Keep looping **in-turn** until checks resolve. Never convert this into a wakeup or a backgrounded watcher.
+
+3. When checks resolve:
+   - **All green** → re-confirm `MERGEABLE`, then proceed to the PR merge **immediately, in this same turn**.
+   - **Any failure** → do NOT merge. Report the failing check (name + log summary) in the thread and request a user decision via `local:UIAskUserQuestion`. Halt the merge until a response is received.
+
+Only after the merge actually succeeds may you produce the deployment result / release-notes / completion output.
 
 ## Conflict Handling Policy
 
