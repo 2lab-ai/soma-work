@@ -3688,6 +3688,55 @@ describe('turnId propagation into ToolEventContext (#664)', () => {
     // pass assertions 1 and 2 while silently decoupling the sink.
     expect(toolUseCtx.turnId).toBe(toolResultCtx.turnId);
   });
+
+  // Issue #1082 T2 — execute() must thread the user-turn provenance into the
+  // StreamContext that reaches `handleModelCommandToolResults`. The SET_GOAL
+  // host-apply unit tests (see 'SET_GOAL host-apply (#1082)') call the private
+  // method directly with a hand-built context; these two tests prove the REAL
+  // wiring — `params.text` → `context.currentUserText` and `params.isUserInput`
+  // → `context.isUserInputTurn` — so the enforcement point cannot be starved
+  // of evidence by a context that simply never carries the fields.
+  it('#1082: threads params.text → currentUserText and params.isUserInput → isUserInputTurn into the model-command context', async () => {
+    const deps = createDepsForToolFlow();
+    const executor = new StreamExecutor(deps);
+    const spy = vi
+      .spyOn(executor as any, 'handleModelCommandToolResults')
+      .mockResolvedValue({ hasPendingChoice: false });
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    const params = {
+      ...createToolFlowParams(say),
+      text: 'goal로 잡아줘: ship the goal feature',
+      isUserInput: true,
+    };
+
+    await executor.execute(params);
+
+    expect(spy).toHaveBeenCalled();
+    const ctx = spy.mock.calls[0][2] as Record<string, unknown>;
+    expect(ctx.currentUserText).toBe('goal로 잡아줘: ship the goal feature');
+    expect(ctx.isUserInputTurn).toBe(true);
+  });
+
+  it('#1082: synthetic turns (isUserInput: false) reach the model-command context with isUserInputTurn !== true', async () => {
+    const deps = createDepsForToolFlow();
+    const executor = new StreamExecutor(deps);
+    const spy = vi
+      .spyOn(executor as any, 'handleModelCommandToolResults')
+      .mockResolvedValue({ hasPendingChoice: false });
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    const params = {
+      ...createToolFlowParams(say),
+      text: 'auto-continuation prompt',
+      isUserInput: false,
+    };
+
+    await executor.execute(params);
+
+    expect(spy).toHaveBeenCalled();
+    const ctx = spy.mock.calls[0][2] as Record<string, unknown>;
+    // Fail-closed contract: a synthetic turn must NEVER present as user input.
+    expect(ctx.isUserInputTurn).not.toBe(true);
+  });
 });
 
 describe('stream-executor — B3 choice wiring', () => {
@@ -5181,5 +5230,291 @@ describe('turn-end surface guarantee — P0 holes', () => {
       /cleanupWithTimeout\s*\(\s*\(\s*\)\s*=>\s*this\.deps\.fileHandler\.cleanupTempFiles/,
     );
     expect(firstCleanupWrapIdx).toBeGreaterThan(endTurnCompletedIdx);
+  });
+});
+
+/**
+ * Issue #1082 T2 — SET_GOAL host-apply branch.
+ *
+ * The MCP server only echoes SET_GOAL params; the HOST is the enforcement
+ * point. `handleModelCommandToolResults` must:
+ *   - refuse when the turn is synthetic / continuation (`isUserInputTurn !== true`),
+ *   - refuse when `userRequestEvidence` is not a verbatim substring of the
+ *     current user message (`currentUserText`),
+ *   - on success: apply an active goal to the session (epoch-fresh, cached
+ *     system prompt invalidated), persist, and post a user-visible 🎯 notice
+ *     that quotes the evidence.
+ * Refusals are user-visible (⚠️ via context.say) and never mutate the session.
+ */
+describe('SET_GOAL host-apply (#1082)', () => {
+  function createExecutorDeps() {
+    return {
+      claudeHandler: {
+        setActivityState: vi.fn(),
+        updateSessionResources: vi.fn(),
+        getSessionByKey: vi.fn().mockReturnValue({ ownerId: 'U1' }),
+        saveSessions: vi.fn(),
+      },
+      fileHandler: { cleanupTempFiles: vi.fn().mockResolvedValue(undefined) },
+      toolEventProcessor: {},
+      statusReporter: {
+        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
+        getStatusEmoji: vi.fn().mockReturnValue('stop_button'),
+      },
+      reactionManager: { updateReaction: vi.fn().mockResolvedValue(undefined) },
+      contextWindowManager: { handlePromptTooLong: vi.fn().mockResolvedValue(undefined) },
+      toolTracker: { scheduleCleanup: vi.fn() },
+      todoDisplayManager: { cleanup: vi.fn(), cleanupSession: vi.fn() },
+      actionHandlers: {
+        setPendingForm: vi.fn(),
+        getPendingForm: vi.fn(),
+        deletePendingForm: vi.fn(),
+        invalidateOldForms: vi.fn().mockResolvedValue(undefined),
+      },
+      requestCoordinator: { removeController: vi.fn() },
+      slackApi: { updateMessage: vi.fn().mockResolvedValue(undefined) },
+      assistantStatusManager: {
+        clearStatus: vi.fn().mockResolvedValue(undefined),
+        setStatus: vi.fn().mockResolvedValue(undefined),
+        bumpEpoch: vi.fn().mockReturnValue(1),
+        getToolStatusText: vi.fn().mockReturnValue('running...'),
+        buildBashStatus: vi.fn().mockReturnValue('is running commands...'),
+        registerBackgroundBashActive: vi.fn().mockReturnValue(() => {}),
+      },
+      threadPanel: {
+        attachChoice: vi.fn().mockResolvedValue(undefined),
+        updatePanel: vi.fn().mockResolvedValue(undefined),
+        setStatus: vi.fn().mockResolvedValue(undefined),
+      },
+    } as any;
+  }
+
+  function createSession(): any {
+    return {
+      ownerId: 'U1',
+      userId: 'U1',
+      channelId: 'C1',
+      threadTs: '171.100',
+      isActive: true,
+      lastActivity: new Date(),
+      renewState: null,
+      activityState: 'idle',
+      systemPrompt: 'cached prompt',
+    };
+  }
+
+  function makeSetGoalToolResult(objective: string, userRequestEvidence: string) {
+    return {
+      toolUseId: 'tool_goal_1',
+      toolName: 'mcp__model-command__run',
+      result: JSON.stringify({
+        type: 'model_command_result',
+        commandId: 'SET_GOAL',
+        ok: true,
+        payload: { objective, userRequestEvidence },
+      }),
+    };
+  }
+
+  function makeContext(overrides: Record<string, unknown> = {}) {
+    return {
+      channel: 'C1',
+      threadTs: '171.100',
+      sessionKey: 'C1-171.100',
+      say: vi.fn().mockResolvedValue({ ts: 'msg_ts' }),
+      ...overrides,
+    };
+  }
+
+  it('applies the goal when the turn is user input and evidence matches verbatim', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const session = createSession();
+    const context = makeContext({
+      currentUserText: '이번 릴리즈 goal로 잡아줘: ship the goal feature',
+      isUserInputTurn: true,
+    });
+
+    await (executor as any).handleModelCommandToolResults(
+      [makeSetGoalToolResult('ship the goal feature', 'goal로 잡아줘: ship the goal feature')],
+      session,
+      context,
+    );
+
+    expect(session.goal).toMatchObject({
+      objective: 'ship the goal feature',
+      status: 'active',
+      continuationCount: 0,
+    });
+    // Cached system prompt invalidated so the next turn carries the goal block.
+    expect(session.systemPrompt).toBeUndefined();
+    expect(deps.claudeHandler.saveSessions).toHaveBeenCalled();
+    // User-visible notice quotes objective + evidence.
+    const sayCalls = (context.say as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]?.text ?? '');
+    const notice = sayCalls.find((t: string) => t.includes('🎯'));
+    expect(notice).toBeDefined();
+    expect(notice).toContain('ship the goal feature');
+    expect(notice).toContain('goal로 잡아줘');
+  });
+
+  it('refuses on a synthetic/continuation turn (isUserInputTurn !== true) without mutating the session', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+
+    for (const isUserInputTurn of [false, undefined]) {
+      const session = createSession();
+      const context = makeContext({
+        currentUserText: 'goal로 잡아줘: ship the goal feature',
+        isUserInputTurn,
+      });
+
+      await (executor as any).handleModelCommandToolResults(
+        [makeSetGoalToolResult('ship the goal feature', 'goal로 잡아줘: ship the goal feature')],
+        session,
+        context,
+      );
+
+      expect(session.goal).toBeUndefined();
+      expect(session.systemPrompt).toBe('cached prompt');
+      const sayCalls = (context.say as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]?.text ?? '');
+      expect(sayCalls.some((t: string) => t.includes('⚠️'))).toBe(true);
+    }
+    expect(deps.claudeHandler.saveSessions).not.toHaveBeenCalled();
+  });
+
+  it('refuses when userRequestEvidence is not a verbatim substring of the current user message', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const session = createSession();
+    const context = makeContext({
+      currentUserText: 'please review this PR',
+      isUserInputTurn: true,
+    });
+
+    await (executor as any).handleModelCommandToolResults(
+      [makeSetGoalToolResult('ship the goal feature', 'goal로 잡아줘: ship the goal feature')],
+      session,
+      context,
+    );
+
+    expect(session.goal).toBeUndefined();
+    expect(session.systemPrompt).toBe('cached prompt');
+    expect(deps.claudeHandler.saveSessions).not.toHaveBeenCalled();
+    const sayCalls = (context.say as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]?.text ?? '');
+    expect(sayCalls.some((t: string) => t.includes('⚠️'))).toBe(true);
+  });
+
+  it('refuses when currentUserText is missing entirely (fail closed)', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const session = createSession();
+    const context = makeContext({ isUserInputTurn: true });
+
+    await (executor as any).handleModelCommandToolResults(
+      [makeSetGoalToolResult('ship it', 'goal: ship it')],
+      session,
+      context,
+    );
+
+    expect(session.goal).toBeUndefined();
+    expect(deps.claudeHandler.saveSessions).not.toHaveBeenCalled();
+    // Refusal must be user-visible, not silent.
+    const sayCalls = (context.say as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]?.text ?? '');
+    expect(sayCalls.some((t: string) => t.includes('⚠️'))).toBe(true);
+  });
+
+  it('matches evidence after trimming surrounding whitespace', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const session = createSession();
+    const context = makeContext({
+      currentUserText: 'goal로 등록해줘: finish the epic',
+      isUserInputTurn: true,
+    });
+
+    await (executor as any).handleModelCommandToolResults(
+      [makeSetGoalToolResult('finish the epic', '  goal로 등록해줘: finish the epic  ')],
+      session,
+      context,
+    );
+
+    expect(session.goal).toMatchObject({ objective: 'finish the epic', status: 'active' });
+  });
+
+  it('replaces an existing goal and bumps the intent epoch (stale eval guard)', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const session = createSession();
+    session.goal = {
+      objective: 'old objective',
+      status: 'active',
+      createdAt: 1,
+      updatedAt: 1,
+      createdBy: 'U1',
+      continuationCount: 7,
+      maxContinuations: 10,
+      epoch: 3,
+      pendingEval: { requestedAt: 1, turnId: 'T1' },
+    };
+    const context = makeContext({
+      currentUserText: 'goal 바꿔줘: new objective',
+      isUserInputTurn: true,
+    });
+
+    await (executor as any).handleModelCommandToolResults(
+      [makeSetGoalToolResult('new objective', 'goal 바꿔줘: new objective')],
+      session,
+      context,
+    );
+
+    expect(session.goal.objective).toBe('new objective');
+    expect(session.goal.status).toBe('active');
+    expect(session.goal.continuationCount).toBe(0);
+    // M1 stale-eval guard: a replacement is a NEW intent — the epoch must
+    // advance past the old goal's epoch so in-flight evals for the old
+    // objective are discarded on arrival.
+    expect(session.goal.epoch).toBeGreaterThan(3);
+    // No stale eval state may survive the replacement.
+    expect(session.goal.pendingEval).toBeUndefined();
+  });
+
+  it('a refused SET_GOAL leaves a pre-existing goal completely untouched', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const session = createSession();
+    const existingGoal = {
+      objective: 'old objective',
+      status: 'active',
+      createdAt: 1,
+      updatedAt: 1,
+      createdBy: 'U1',
+      continuationCount: 7,
+      maxContinuations: 10,
+      epoch: 3,
+      pendingEval: { requestedAt: 1, turnId: 'T1' },
+    };
+    session.goal = existingGoal;
+    const snapshot = structuredClone(existingGoal);
+
+    // Refusal 1: synthetic turn. Refusal 2: evidence mismatch.
+    for (const context of [
+      makeContext({ currentUserText: 'goal 바꿔줘: new objective', isUserInputTurn: false }),
+      makeContext({ currentUserText: 'please review this PR', isUserInputTurn: true }),
+    ]) {
+      await (executor as any).handleModelCommandToolResults(
+        [makeSetGoalToolResult('new objective', 'goal 바꿔줘: new objective')],
+        session,
+        context,
+      );
+
+      // Same reference, same content — the refusal path must not "helpfully"
+      // touch any field of the existing goal (epoch, counts, pendingEval, …).
+      expect(session.goal).toBe(existingGoal);
+      expect(session.goal).toEqual(snapshot);
+      const sayCalls = (context.say as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]?.text ?? '');
+      expect(sayCalls.some((t: string) => t.includes('⚠️'))).toBe(true);
+    }
+    expect(deps.claudeHandler.saveSessions).not.toHaveBeenCalled();
+    expect(session.systemPrompt).toBe('cached prompt');
   });
 });

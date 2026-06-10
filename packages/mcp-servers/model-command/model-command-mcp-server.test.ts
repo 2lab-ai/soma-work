@@ -535,3 +535,52 @@ describe('validateModelCommandRunArgs', () => {
     expect(result.request.commandId).toBe('CONTINUE_SESSION');
   });
 });
+
+/**
+ * Issue #1082 T2 — SET_GOAL must be reachable through the MCP server process
+ * boundary: listed when a user context exists, and runnable end-to-end via
+ * `buildModelCommandRunResponse` (validator → catalog echo).
+ */
+describe('SET_GOAL — MCP server wire-up (#1082)', () => {
+  const baseSession = { issues: [], prs: [], docs: [], active: {}, sequence: 0 };
+
+  it('list exposes SET_GOAL when user context exists, hides it otherwise', () => {
+    const withUser = buildModelCommandListResponse({ session: baseSession, user: 'U123' });
+    const withoutUser = buildModelCommandListResponse({ session: baseSession });
+
+    expect(withUser.commands.map((command) => command.id)).toContain('SET_GOAL');
+    expect(withoutUser.commands.map((command) => command.id)).not.toContain('SET_GOAL');
+  });
+
+  it('run validates and echoes SET_GOAL params', () => {
+    const result = buildModelCommandRunResponse(
+      {
+        commandId: 'SET_GOAL',
+        params: { objective: 'ship the feature', userRequestEvidence: 'goal: ship the feature' },
+      },
+      { session: baseSession, user: 'U123' },
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.commandId).toBe('SET_GOAL');
+    if (result.commandId !== 'SET_GOAL') return;
+    expect(result.payload).toMatchObject({
+      objective: 'ship the feature',
+      userRequestEvidence: 'goal: ship the feature',
+    });
+  });
+
+  it('run rejects malformed SET_GOAL params with INVALID_ARGS + help', () => {
+    const result = buildModelCommandRunResponse(
+      { commandId: 'SET_GOAL', params: { objective: '' } },
+      { session: baseSession, user: 'U123' },
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('INVALID_ARGS');
+    const help = (result.error.details as { help?: { commandId?: string } } | undefined)?.help;
+    expect(help?.commandId).toBe('SET_GOAL');
+  });
+});

@@ -1773,3 +1773,208 @@ describe('SlackHandler', () => {
     });
   });
 });
+
+/**
+ * Issue #1082 T1 — goal-prefixed FIRST message (no session yet) must set the
+ * session goal. `routeCommand` surfaces `setGoalObjective` (parsed by
+ * GoalHandler's no-session fall-through); slack-handler then:
+ *   1. passes the RAW objective to `sessionInitializer.initialize` so the
+ *      workflow classifier sees the user's actual instruction,
+ *   2. applies the goal to the freshly created session BEFORE dispatch (the
+ *      turn-1 system prompt must carry the goal block),
+ *   3. posts a 🎯 notice,
+ *   4. dispatches the goal-continuation prompt as the model-turn text.
+ */
+describe('SlackHandler — #1082 goal-prefixed first message', () => {
+  function buildGoalHarness(routeResult: Record<string, unknown>) {
+    const app = { client: {}, assistant: vi.fn() } as any;
+    const fullSession: any = { ownerId: 'U123', systemPrompt: 'cached prompt' };
+    const claudeHandler: any = {
+      getSessionByKey: vi.fn().mockReturnValue(fullSession),
+      getSession: vi.fn().mockReturnValue(fullSession),
+      saveSessions: vi.fn(),
+      setActivityStateByKey: vi.fn(),
+    };
+    const handler = new SlackHandler(app, claudeHandler, {} as any);
+    const handlerAny = handler as any;
+
+    // The session handed to dispatch IS the registry session — same object —
+    // so call-time snapshots inside the execute mock observe exactly the
+    // state the model turn would see.
+    const sessionResult = {
+      session: fullSession,
+      sessionKey: 'C123:111.222',
+      isNewSession: true,
+      userName: 'Test User',
+      workingDirectory: '/tmp',
+      abortController: new AbortController(),
+      halted: false,
+    };
+
+    handlerAny.slackApi = {
+      addReaction: vi.fn().mockResolvedValue(undefined),
+      removeReaction: vi.fn().mockResolvedValue(undefined),
+      postSystemMessage: vi.fn().mockResolvedValue({ ts: 'notice' }),
+      postMessage: vi.fn().mockResolvedValue({ ts: 'notice' }),
+    };
+    handlerAny.inputProcessor = {
+      processFiles: vi.fn().mockResolvedValue({ files: [], shouldContinue: true }),
+      routeCommand: vi.fn().mockResolvedValue(routeResult),
+    };
+    handlerAny.sessionInitializer = {
+      validateWorkingDirectory: vi.fn().mockResolvedValue({ valid: true, workingDirectory: '/tmp' }),
+      initialize: vi.fn().mockResolvedValue(sessionResult),
+    };
+    // Call-time snapshot: a wrong implementation that dispatches FIRST and
+    // applies the goal afterwards would still satisfy post-hoc assertions on
+    // `fullSession` — so we freeze what the session looked like at the exact
+    // moment `execute()` was invoked.
+    const dispatchSnapshots: Array<{ goal: unknown; systemPrompt: unknown; text: string }> = [];
+    const execute = vi.fn().mockImplementation(async (params: any) => {
+      const sessionAtDispatch = params?.session ?? fullSession;
+      dispatchSnapshots.push({
+        goal: sessionAtDispatch.goal ? structuredClone(sessionAtDispatch.goal) : sessionAtDispatch.goal,
+        systemPrompt: sessionAtDispatch.systemPrompt,
+        text: params?.text,
+      });
+      return { success: true, messageCount: 1 };
+    });
+    handlerAny.streamExecutor = { execute };
+    handlerAny.threadPanel = { create: vi.fn().mockResolvedValue(undefined) };
+
+    return { handler, handlerAny, claudeHandler, fullSession, execute, dispatchSnapshots };
+  }
+
+  it('applies the goal to the new session and dispatches the continuation prompt', async () => {
+    const { handler, handlerAny, claudeHandler, fullSession, execute, dispatchSnapshots } = buildGoalHarness({
+      handled: false,
+      setGoalObjective: 'ship the feature',
+    });
+
+    const say = vi.fn().mockResolvedValue({ ts: 'msg123' });
+    await handler.handleMessage(
+      { user: 'U123', channel: 'C123', ts: '111.222', text: 'goal ship the feature' } as any,
+      say,
+    );
+
+    // 1. Workflow classification sees the RAW objective, not the goal prompt.
+    expect(handlerAny.sessionInitializer.initialize).toHaveBeenCalledWith(
+      expect.anything(),
+      '/tmp',
+      'ship the feature',
+      undefined,
+    );
+
+    // 2. Goal applied to the full session BEFORE dispatch — asserted on the
+    // call-time snapshot, not post-hoc session state. An implementation that
+    // dispatched first and applied the goal afterwards fails here: turn 1
+    // would have run without the goal block.
+    expect(dispatchSnapshots).toHaveLength(1);
+    expect(dispatchSnapshots[0].goal).toMatchObject({
+      objective: 'ship the feature',
+      status: 'active',
+      createdBy: 'U123',
+      continuationCount: 0,
+    });
+    // Cached system prompt already invalidated AT dispatch time so turn 1
+    // rebuilds with the goal block.
+    expect(dispatchSnapshots[0].systemPrompt).toBeUndefined();
+    expect(fullSession.goal).toMatchObject({
+      objective: 'ship the feature',
+      status: 'active',
+      createdBy: 'U123',
+      continuationCount: 0,
+    });
+    expect(fullSession.systemPrompt).toBeUndefined();
+    expect(claudeHandler.saveSessions).toHaveBeenCalled();
+
+    // 3. 🎯 notice posted to the thread.
+    expect(handlerAny.slackApi.postSystemMessage).toHaveBeenCalledWith(
+      'C123',
+      expect.stringContaining('🎯'),
+      expect.anything(),
+    );
+
+    // 4. Model-turn text is the goal continuation prompt, not the raw text.
+    expect(execute).toHaveBeenCalledTimes(1);
+    const dispatched = execute.mock.calls[0][0].text as string;
+    expect(dispatched).toContain('Continue working toward the active session goal');
+    expect(dispatched).toContain('ship the feature');
+  });
+
+  it('continueWithPrompt (goal+skill split) wins as dispatch text while the goal is still applied', async () => {
+    const { handler, handlerAny, fullSession, execute, dispatchSnapshots } = buildGoalHarness({
+      handled: true,
+      continueWithPrompt: '<invoked_skills><local:z>do z</local:z></invoked_skills>\n$z proceed',
+      setGoalObjective: 'ship the feature',
+    });
+
+    const say = vi.fn().mockResolvedValue({ ts: 'msg123' });
+    await handler.handleMessage(
+      { user: 'U123', channel: 'C123', ts: '111.222', text: 'goal ship the feature $z proceed' } as any,
+      say,
+    );
+
+    // Goal applied BEFORE the skill turn dispatches (call-time snapshot).
+    expect(dispatchSnapshots).toHaveLength(1);
+    expect(dispatchSnapshots[0].goal).toMatchObject({ objective: 'ship the feature', status: 'active' });
+    expect(dispatchSnapshots[0].systemPrompt).toBeUndefined();
+    expect(fullSession.goal).toMatchObject({ objective: 'ship the feature', status: 'active' });
+    // Skill prompt drives classification AND dispatch.
+    expect(handlerAny.sessionInitializer.initialize).toHaveBeenCalledWith(
+      expect.anything(),
+      '/tmp',
+      expect.stringContaining('<invoked_skills>'),
+      undefined,
+    );
+    const dispatched = execute.mock.calls[0][0].text as string;
+    expect(dispatched).toContain('<invoked_skills>');
+    expect(dispatched).not.toContain('Continue working toward the active session goal');
+  });
+
+  it('warns loudly when the goal+skill split is consumed without a prompt (skill error, no session)', async () => {
+    // P1 from spec review: SkillForceHandler can return `{handled:true}` with
+    // no continueWithPrompt (ambiguous / unresolvable skill ref). The early
+    // "command handled" return then skips session creation entirely — the
+    // goal CANNOT be applied. That is acceptable, but it must be LOUD: the
+    // whole point of #1082 is that a goal never silently vanishes.
+    const { handler, handlerAny, fullSession, execute } = buildGoalHarness({
+      handled: true,
+      setGoalObjective: 'ship the feature',
+    });
+
+    const say = vi.fn().mockResolvedValue({ ts: 'msg123' });
+    await handler.handleMessage(
+      { user: 'U123', channel: 'C123', ts: '111.222', text: 'goal ship the feature $bogus-skill' } as any,
+      say,
+    );
+
+    // No session, no dispatch, no goal — the handled command consumed the message.
+    expect(handlerAny.sessionInitializer.initialize).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+    expect(fullSession.goal).toBeUndefined();
+    // …but the dropped goal is announced, not swallowed.
+    expect(handlerAny.slackApi.postSystemMessage).toHaveBeenCalledWith(
+      'C123',
+      expect.stringMatching(/⚠️[\s\S]*goal/i),
+      expect.anything(),
+    );
+  });
+
+  it('without setGoalObjective the flow is unchanged (no goal, raw text dispatched)', async () => {
+    const { handler, handlerAny, fullSession, execute } = buildGoalHarness({
+      handled: false,
+    });
+
+    const say = vi.fn().mockResolvedValue({ ts: 'msg123' });
+    await handler.handleMessage({ user: 'U123', channel: 'C123', ts: '111.222', text: 'hello' } as any, say);
+
+    expect(fullSession.goal).toBeUndefined();
+    expect(handlerAny.slackApi.postSystemMessage ?? vi.fn()).not.toHaveBeenCalledWith(
+      'C123',
+      expect.stringContaining('🎯'),
+      expect.anything(),
+    );
+    expect(execute.mock.calls[0][0].text).toBe('hello');
+  });
+});

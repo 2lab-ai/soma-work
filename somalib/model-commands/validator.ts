@@ -100,7 +100,8 @@ export function validateModelCommandRunArgs(args: unknown): ValidationResult {
     commandId !== 'SAVE_MEMORY' &&
     commandId !== 'GET_MEMORY' &&
     commandId !== 'MANAGE_SKILL' &&
-    commandId !== 'RATE'
+    commandId !== 'RATE' &&
+    commandId !== 'SET_GOAL'
   ) {
     return {
       ok: false,
@@ -274,6 +275,53 @@ export function validateModelCommandRunArgs(args: unknown): ValidationResult {
           newName: typeof params.newName === 'string' ? params.newName : undefined,
           content: typeof params.content === 'string' ? params.content : undefined,
         },
+      },
+    };
+  }
+
+  // Issue #1082 T2: SET_GOAL — validate-and-echo only. The host
+  // (stream-executor) is the enforcement point: it checks that
+  // `userRequestEvidence` is a verbatim quote from the user's CURRENT
+  // message before applying the goal. Trimmed values are written back so
+  // every downstream layer sees the normalized params.
+  if (commandId === 'SET_GOAL') {
+    if (!isRecord(params)) {
+      return invalidArgsFor('SET_GOAL', 'SET_GOAL params must be an object with objective and userRequestEvidence');
+    }
+    if (typeof params.objective !== 'string') {
+      return invalidArgsFor('SET_GOAL', `SET_GOAL objective must be a string, got: ${typeof params.objective}`);
+    }
+    const objective = params.objective.trim();
+    if (objective.length === 0) {
+      return invalidArgsFor('SET_GOAL', 'SET_GOAL objective must be a non-empty string');
+    }
+    // Count Unicode code points (not UTF-16 units) so astral characters
+    // (emoji, CJK extensions) are not double-counted.
+    const objectiveCodePoints = Array.from(objective).length;
+    if (objectiveCodePoints > 4000) {
+      return invalidArgsFor(
+        'SET_GOAL',
+        `SET_GOAL objective exceeds the 4000 code point limit (got ${objectiveCodePoints})`,
+      );
+    }
+    if (typeof params.userRequestEvidence !== 'string') {
+      return invalidArgsFor(
+        'SET_GOAL',
+        `SET_GOAL userRequestEvidence must be a string (verbatim quote from the user's current message), got: ${typeof params.userRequestEvidence}`,
+      );
+    }
+    const userRequestEvidence = params.userRequestEvidence.trim();
+    if (userRequestEvidence.length === 0) {
+      return invalidArgsFor(
+        'SET_GOAL',
+        "SET_GOAL userRequestEvidence must be a non-empty verbatim quote from the user's current message",
+      );
+    }
+    return {
+      ok: true,
+      request: {
+        commandId: 'SET_GOAL',
+        params: { objective, userRequestEvidence },
       },
     };
   }
