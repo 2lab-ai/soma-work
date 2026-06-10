@@ -48,9 +48,11 @@ describe('model-topic.renderModelCard', () => {
 });
 
 describe('FEATURED_ALIASES constant', () => {
-  it('has the exact SSOT order ["sonnet", "opus", "opus[1m]", "haiku"]', () => {
-    // Regression guard against silent removal/reordering of the 1M alias button.
-    expect([...FEATURED_ALIASES]).toEqual(['sonnet', 'opus', 'opus[1m]', 'haiku']);
+  it('has the exact SSOT order ["fable", "sonnet", "opus", "opus[1m]", "haiku"]', () => {
+    // Regression guard against silent removal/reordering of the alias buttons.
+    // `fable` leads as the flagship (native 1M); `opus[1m]` stays as the opus
+    // 1M opt-in button.
+    expect([...FEATURED_ALIASES]).toEqual(['fable', 'sonnet', 'opus', 'opus[1m]', 'haiku']);
   });
 });
 

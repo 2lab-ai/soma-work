@@ -15,6 +15,7 @@ const DEFAULT_MODEL = 'claude-opus-4-8[1m]';
 // settings store). Drift is guarded by an exact-set equality test in
 // main-env-bootstrap.test.ts — that test imports AVAILABLE_MODELS directly.
 const VALID_MODELS = new Set([
+  'claude-fable-5',
   'claude-opus-4-8',
   'claude-opus-4-7',
   'claude-opus-4-6',
