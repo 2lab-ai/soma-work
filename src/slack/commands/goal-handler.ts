@@ -15,6 +15,15 @@ export class GoalHandler implements CommandHandler {
     const { channel, threadTs, text, user } = ctx;
     const session = this.deps.claudeHandler.getSession(channel, threadTs);
     if (!session) {
+      // No session: `goal <objective>` (action 'set') is a free-form first-message
+      // instruction, not a session-scoped command — decline so the router falls
+      // through to session init with the full text (#1068, see
+      // CommandParser.GREEDY_FREEFORM_ROOTS). Bare/lifecycle/invalid forms keep
+      // the explicit hint.
+      const noSessionAction = CommandParser.parseGoalCommand(text);
+      if (noSessionAction.action === 'set') {
+        return { handled: false };
+      }
       await this.deps.slackApi.postSystemMessage(channel, '💡 No active session. Start a conversation first.', {
         threadTs,
       });

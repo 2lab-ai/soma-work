@@ -19,10 +19,20 @@ export class RenewHandler implements CommandHandler {
     const session = this.deps.claudeHandler.getSession(channel, threadTs);
 
     // Extract user message after /renew command (e.g., "/renew PR 리뷰해줘" → "PR 리뷰해줘")
-    const userMessage = text.replace(/^\/?\s*renew\s*/i, '').trim();
+    const userMessage = text
+      .trim()
+      .replace(/^\/?\s*renew\s*/i, '')
+      .trim();
 
     // Check if there's an active session
     if (!session || !session.sessionId) {
+      // No session: `renew <instruction>` carries free-form text and there is
+      // nothing to renew — decline so the router falls through to session init
+      // with the full text (#1068, see CommandParser.GREEDY_FREEFORM_ROOTS).
+      // Bare `renew` keeps the explicit hint.
+      if (userMessage) {
+        return { handled: false };
+      }
       await this.deps.slackApi.postSystemMessage(
         channel,
         '💡 No active session to renew. Start a conversation first!',
