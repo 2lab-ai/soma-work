@@ -7,6 +7,7 @@ import {
   getModelPricing,
   getModelSpec,
   hasOneMSuffix,
+  isNativeOneMModel,
   isOneMContextUnavailableSignal,
   ONE_M_SUFFIX_RE,
   PRICING_VERSION,
@@ -16,12 +17,23 @@ import {
 
 describe('model-registry', () => {
   describe('PRICING_VERSION', () => {
-    it('should be 2026-05-29 (Opus 4.8 release)', () => {
-      expect(PRICING_VERSION).toBe('2026-05-29');
+    it('should be 2026-06-09 (Fable 5 release)', () => {
+      expect(PRICING_VERSION).toBe('2026-06-09');
     });
   });
 
   describe('getModelSpec', () => {
+    it('returns Fable 5 spec (double opus pricing, 1M context, 128k out)', () => {
+      const spec = getModelSpec('claude-fable-5');
+      expect(spec.pricing.inputPerMTok).toBe(10);
+      expect(spec.pricing.outputPerMTok).toBe(50);
+      expect(spec.pricing.cacheReadPerMTok).toBe(1);
+      expect(spec.pricing.cache5minWritePerMTok).toBe(12.5);
+      expect(spec.pricing.cache1hrWritePerMTok).toBe(20);
+      expect(spec.contextWindow).toBe(1_000_000);
+      expect(spec.maxOutput).toBe(128_000);
+    });
+
     it('returns Opus 4.7 spec', () => {
       const spec = getModelSpec('claude-opus-4-7');
       expect(spec.pricing.inputPerMTok).toBe(5);
@@ -162,7 +174,25 @@ describe('model-registry', () => {
     });
   });
 
+  describe('isNativeOneMModel', () => {
+    it('returns true for fable-5 on the bare id (no suffix needed)', () => {
+      expect(isNativeOneMModel('claude-fable-5')).toBe(true);
+    });
+
+    it('returns false for opus/sonnet/haiku (suffix-gated or 200k)', () => {
+      expect(isNativeOneMModel('claude-opus-4-8')).toBe(false);
+      expect(isNativeOneMModel('claude-sonnet-4-6')).toBe(false);
+      expect(isNativeOneMModel('claude-haiku-4-5-20251001')).toBe(false);
+    });
+  });
+
   describe('resolveContextWindow', () => {
+    it('returns 1_000_000 for bare claude-fable-5 (native 1M, no [1m] suffix)', () => {
+      // The whole point of the Fable wiring: 1M on the bare id, no suffix and
+      // no beta header — unlike the opus [1m] opt-in below.
+      expect(resolveContextWindow('claude-fable-5')).toBe(1_000_000);
+    });
+
     it('returns 1_000_000 for [1m] variants (opus-4-7, opus-4-6)', () => {
       expect(resolveContextWindow('claude-opus-4-7[1m]')).toBe(1_000_000);
       expect(resolveContextWindow('claude-opus-4-6[1m]')).toBe(1_000_000);

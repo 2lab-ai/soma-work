@@ -10,10 +10,11 @@ import { buildSettingCard } from '../ui-builder';
  * Short aliases featured as primary buttons (resolved to real model ids by the store).
  *
  * Order matters: this is the exact visual order in the Slack `/z model` card.
- * `opus[1m]` sits between `opus` and `haiku` so users can jump to the 1M
- * variant without scrolling through the full allow-list.
+ * `fable` leads as the flagship (native 1M, no suffix); `opus[1m]` sits between
+ * `opus` and `haiku` so users can jump to the opus 1M variant without scrolling
+ * through the full allow-list.
  */
-export const FEATURED_ALIASES = ['sonnet', 'opus', 'opus[1m]', 'haiku'] as const;
+export const FEATURED_ALIASES = ['fable', 'sonnet', 'opus', 'opus[1m]', 'haiku'] as const;
 
 export async function renderModelCard(args: { userId: string; issuedAt: number }): Promise<RenderResult> {
   const { userId, issuedAt } = args;

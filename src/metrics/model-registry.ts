@@ -1,10 +1,10 @@
 /**
  * Unified model registry — single source of truth for pricing, context windows, and max output.
  * Source: https://docs.anthropic.com/en/docs/about-claude/models
- * Last updated: 2026-05-29 (Claude Opus 4.8 release, 2026-05-28)
+ * Last updated: 2026-06-09 (Claude Fable 5 release, 2026-06-09)
  */
 
-export const PRICING_VERSION = '2026-05-29';
+export const PRICING_VERSION = '2026-06-09';
 
 export interface ModelPricingSpec {
   inputPerMTok: number;
@@ -27,6 +27,25 @@ export interface ModelSpec {
  * Order matters — first match wins.
  */
 const MODEL_REGISTRY: [pattern: string, spec: ModelSpec][] = [
+  // Claude Fable 5 (2026-06-09). Anthropic's most capable generally-available
+  // model: 1M context, 128k max output. Pricing is double Opus-tier
+  // ($10 in / $50 out per MTok). cacheRead = 0.1×input, 5min write = 1.25×input,
+  // 1hr write = 2×input — same multipliers as every other tier. Listed first so
+  // the `includes('fable-5')` matcher resolves before any opus/sonnet pattern.
+  [
+    'fable-5',
+    {
+      pricing: {
+        inputPerMTok: 10,
+        outputPerMTok: 50,
+        cacheReadPerMTok: 1,
+        cache5minWritePerMTok: 12.5,
+        cache1hrWritePerMTok: 20,
+      },
+      contextWindow: 1_000_000,
+      maxOutput: 128_000,
+    },
+  ],
   // Claude 4.8 (2026-05-28). Same $/MTok as 4.7; 1M context (default per
   // Anthropic spec, but per soma-work convention only `[1m]`-suffixed ids
   // actually opt into 1M at resolveContextWindow — see hasOneMSuffix).
@@ -210,6 +229,22 @@ export function hasOneMSuffix(model: string): boolean {
   return ONE_M_SUFFIX_RE.test(model);
 }
 
+/**
+ * Models that serve a 1M context window on the BARE id — no `[1m]` suffix and
+ * no `context-1m-2025-08-07` beta header.
+ *
+ * Fable 5 ships 1M as its native, generally-available context (Anthropic docs,
+ * 2026-06-09), unlike opus where 1M is a beta opt-in gated behind the `[1m]`
+ * suffix + beta header. So `claude-fable-5` must resolve to 1M directly; it has
+ * no `[1m]` variant and must NOT go through the suffix/beta-header path.
+ */
+export const NATIVE_ONE_M_RE = /fable-5/i;
+
+/** Returns true when `model` serves 1M context on its bare id (no suffix). */
+export function isNativeOneMModel(model: string): boolean {
+  return NATIVE_ONE_M_RE.test(model);
+}
+
 /** Strips the `[1m]` suffix from `model` if present. Case-insensitive. */
 export function stripOneMSuffix(model: string): string {
   return model.replace(ONE_M_SUFFIX_RE, '');
@@ -287,17 +322,22 @@ export function classifyOneMUnavailable(text: string): OneMUnavailableKind {
 /**
  * Resolve context window for a model by name.
  *
- * Single source of truth: the `[1m]` suffix is the only signal for a 1M window.
- * Bare model ids (without the suffix) resolve to `FALLBACK_CONTEXT_WINDOW` (200k),
- * even for models whose base spec used to be 1M. This matches the
- * user-facing contract where 1M context is an opt-in via the `[1m]` variant.
+ * Two signals resolve to a 1M window:
+ *   1. The `[1m]` suffix (opus beta opt-in) — strips + injects the beta header.
+ *   2. A native-1M model id (e.g. `claude-fable-5`) — 1M on the bare id, no
+ *      suffix and no beta header. See `isNativeOneMModel`.
+ * Every other bare model id resolves to `FALLBACK_CONTEXT_WINDOW` (200k), even
+ * for specs that used to be 1M — matching the user-facing contract where 1M is
+ * otherwise an opt-in via the `[1m]` variant.
  *
  * Used by stream-executor hot paths and threshold checks that need a non-zero
  * denominator before the SDK reports `contextWindow`.
  */
 export function resolveContextWindow(modelName?: string): number {
   if (!modelName) return FALLBACK_CONTEXT_WINDOW;
-  return hasOneMSuffix(modelName) ? 1_000_000 : FALLBACK_CONTEXT_WINDOW;
+  if (hasOneMSuffix(modelName)) return 1_000_000;
+  if (isNativeOneMModel(modelName)) return 1_000_000;
+  return FALLBACK_CONTEXT_WINDOW;
 }
 
 /**
