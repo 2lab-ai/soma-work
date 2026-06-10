@@ -23,6 +23,13 @@ export interface CommandResult {
   error?: string;
   continueWithPrompt?: string;
   forceWorkflow?: any;
+  /**
+   * Issue #1082 T1: objective parsed from a `goal <objective>` set-form that
+   * arrived with NO active session. Rides out-of-band alongside
+   * `continueWithPrompt` so slack-handler can apply the goal to the freshly
+   * created session BEFORE the first dispatch.
+   */
+  setGoalObjective?: string;
 }
 
 export type SayFn = (message: {
@@ -174,8 +181,40 @@ export class CommandRouter {
         }
         return goalResult;
       }
+
+      // Issue #1082 T1: NO session yet, but the message still composes
+      // `goal <objective>` + `$skill`. When the prefix parses as a SET form,
+      // run GoalHandler on the clean prefix — it validates the objective and
+      // declines with `setGoalObjective` (there is no session to mutate) —
+      // then route ONLY the `$skill` suffix through SkillForceHandler so the
+      // `goal …` phrasing never leaks into the model turn. The objective rides
+      // out-of-band on the final result for slack-handler to apply right after
+      // session init. Non-set prefixes (e.g. bare `goal $skill …`) keep the
+      // old behavior: the main handler loop sees the full text and
+      // SkillForceHandler picks it up.
+      if (split && !sessionActive && CommandParser.parseGoalCommand(split.goalText).action === 'set') {
+        const goalResult = await this.goalHandler.execute({ ...ctx, text: split.goalText });
+        if (goalResult.handled) {
+          // Objective failed validation — GoalHandler already posted the ⚠️;
+          // consume the message instead of leaking it into session init.
+          return goalResult;
+        }
+        const setGoalObjective = goalResult.setGoalObjective;
+        if (this.skillForceHandler.canHandle(split.skillText, ctx.user)) {
+          const skillResult = await this.skillForceHandler.execute({ ...ctx, text: split.skillText });
+          if (skillResult.handled) {
+            return { ...skillResult, setGoalObjective };
+          }
+        }
+        return { handled: false, setGoalObjective };
+      }
     }
 
+    // Issue #1082 T1: a handler may decline while still carrying the parsed
+    // goal objective (GoalHandler's no-session set form falls through so the
+    // text reaches session init). Stash it so the final fall-through result
+    // preserves it for slack-handler to apply post session-init.
+    let fallThroughGoalObjective: string | undefined;
     for (const handler of this.handlers) {
       if (handler.canHandle(routedText, ctx.user)) {
         this.logger.debug('Routing to handler', {
@@ -187,6 +226,9 @@ export class CommandRouter {
           const result = await handler.execute(ctx);
           if (result.handled) {
             return result;
+          }
+          if (result.setGoalObjective !== undefined) {
+            fallThroughGoalObjective = result.setGoalObjective;
           }
         } catch (error: any) {
           this.logger.error('Error executing command handler', {
@@ -208,7 +250,11 @@ export class CommandRouter {
       return { handled: true };
     }
 
-    return { handled: false };
+    // Issue #1082 T1: keep the carried objective on the unhandled result so
+    // the new session is born with the goal already active.
+    return fallThroughGoalObjective !== undefined
+      ? { handled: false, setGoalObjective: fallThroughGoalObjective }
+      : { handled: false };
   }
 
   isCommand(text: string): boolean {

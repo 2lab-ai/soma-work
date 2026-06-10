@@ -14,6 +14,15 @@ import {
 import { LOG_DETAIL, OutputFlag, shouldOutput, verboseTag } from '../output-flags';
 import type { ReactionManager } from '../reaction-manager';
 import type { RequestAbortReason, RequestCoordinator } from '../request-coordinator';
+// Issue #1082 T2: shared goal-apply helpers (same pair T1's slack-handler
+// uses for goal-prefixed first messages) — epoch bump + cache invalidation
+// semantics live in one place.
+import {
+  applyGoalToSession,
+  createActiveSessionGoal,
+  formatGoalObjectiveForSlack,
+  type SessionGoalState,
+} from '../session-goal';
 import type { SlackApiHelper } from '../slack-api-helper';
 import type { StatusReporter } from '../status-reporter';
 import {
@@ -1164,6 +1173,12 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         // `appendText()` with graceful fallback on `false` return.
         turnId,
         threadPanel: this.deps.threadPanel,
+        // Issue #1082 T2: thread user-turn provenance into the model-command
+        // context. The SET_GOAL host-apply branch verifies the model's
+        // evidence quote against the ACTUAL current user message and refuses
+        // on synthetic/continuation turns (fail closed when text is absent).
+        currentUserText: text,
+        isUserInputTurn: params.isUserInput === true,
         get logVerbosity() {
           return session.logVerbosity ?? LOG_DETAIL;
         },
@@ -3720,6 +3735,78 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           forceWorkflow: continuation.forceWorkflow,
           origin: 'model',
           dispatchTextPreview: continuation.dispatchText?.slice(0, 120),
+        });
+        continue;
+      }
+
+      // Issue #1082 T2: SET_GOAL host-apply — the MCP layer only validated
+      // and echoed the params; the HOST is the enforcement point. A goal may
+      // be installed ONLY when (a) this turn originates from a real user
+      // message and (b) the model's `userRequestEvidence` is a verbatim
+      // substring of that ACTUAL message. Anything else is refused loudly
+      // (⚠️ via context.say, mirroring the UPDATE_SESSION host-failure
+      // pattern) with zero session mutation.
+      if (parsed.commandId === 'SET_GOAL') {
+        const payload = parsed.payload as { objective?: string; userRequestEvidence?: string };
+        const objective = typeof payload?.objective === 'string' ? payload.objective.trim() : '';
+        const evidence = typeof payload?.userRequestEvidence === 'string' ? payload.userRequestEvidence.trim() : '';
+        const isUserTurn = context.isUserInputTurn === true;
+        const userText = context.currentUserText;
+
+        let refusalReason: string | undefined;
+        if (!isUserTurn) {
+          refusalReason = 'not a direct user-input turn (synthetic/continuation turns cannot set goals)';
+        } else if (typeof userText !== 'string' || userText.length === 0) {
+          // Fail closed: without the actual user message there is nothing to
+          // verify the evidence against.
+          refusalReason = 'current user message unavailable (fail closed)';
+        } else if (objective.length === 0) {
+          // Defensive only — the validator already rejects empty objectives.
+          refusalReason = 'objective is empty';
+        } else if (evidence.length === 0 || !userText.includes(evidence)) {
+          refusalReason = 'userRequestEvidence is not a verbatim quote from the current user message';
+        }
+
+        if (refusalReason) {
+          this.logger.warn('Refused SET_GOAL on host (explicit-user-request gate)', {
+            sessionKey: context.sessionKey,
+            reason: refusalReason,
+            isUserInputTurn: context.isUserInputTurn === true,
+            hasCurrentUserText: typeof userText === 'string',
+          });
+          await context.say({
+            text:
+              `⚠️ SET_GOAL refused: ${refusalReason}. ` +
+              'A goal can only be set when the user explicitly asks for it in their current message.',
+            thread_ts: context.threadTs,
+          });
+          continue;
+        }
+
+        // `ownerId` is the canonical session-owner field (`userId` is the
+        // legacy pre-migration alias) — mirrors what T1's slack-handler path
+        // records as `createdBy`.
+        const goal = createActiveSessionGoal(
+          objective,
+          (session.ownerId as string) || (session.userId as string),
+          session.goal,
+        );
+        // Installs the goal and invalidates the cached systemPrompt +
+        // goalLastTurnText so the next turn carries the <session-goal> block.
+        // Cast: the package-tree ConversationSession is structurally loose
+        // (`[key: string]: any`), which fails TS's weak-type check against
+        // the helper's all-optional param — the registry session DOES carry
+        // these fields (see `SessionGoalState` mirror note in session-goal.ts).
+        applyGoalToSession(session as { goal?: SessionGoalState; systemPrompt?: string; goalLastTurnText?: string }, goal);
+        this.deps.claudeHandler.saveSessions();
+        this.logger.info('Applied SET_GOAL from model-command on host', {
+          sessionKey: context.sessionKey,
+          epoch: goal.epoch,
+          objectivePreview: objective.slice(0, 120),
+        });
+        await context.say({
+          text: `🎯 Goal set by model (user-requested): ${formatGoalObjectiveForSlack(objective)}\n> "${evidence}"`,
+          thread_ts: context.threadTs,
         });
         continue;
       }
