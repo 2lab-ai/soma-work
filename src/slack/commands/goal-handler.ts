@@ -15,19 +15,11 @@ export class GoalHandler implements CommandHandler {
     const { channel, threadTs, text, user } = ctx;
     const session = this.deps.claudeHandler.getSession(channel, threadTs);
     if (!session) {
-      // No session yet. `goal <objective>` (action 'set') carries a free-form
-      // instruction, and "goal" is also everyday English — a first message
-      // like "goal ship the parser, see attached" is almost certainly a task,
-      // not a session-scoped command. The session-scoped reading is impossible
-      // anyway (there is no session to attach a goal to), so don't swallow it
-      // with "No active session" and drop the user's text + attachments. Return
-      // unhandled so CommandRouter falls through and the message starts a fresh
-      // conversation with the user's full text as the first prompt.
-      //
-      // Bare `goal` / `goal status` / `goal pause|resume|done|clear` (and a
-      // malformed `goal set` with no objective → action 'invalid') are genuine
-      // command invocations with no instruction payload, so they keep the
-      // explicit "start a conversation first" hint.
+      // No session: `goal <objective>` (action 'set') is a free-form first-message
+      // instruction, not a session-scoped command — decline so the router falls
+      // through to session init with the full text (#1068, see
+      // CommandParser.GREEDY_FREEFORM_ROOTS). Bare/lifecycle/invalid forms keep
+      // the explicit hint.
       const noSessionAction = CommandParser.parseGoalCommand(text);
       if (noSessionAction.action === 'set') {
         return { handled: false };
