@@ -457,9 +457,7 @@ describe('AdminHandler', () => {
       const result = await handler.execute(ctx);
 
       expect(result.handled).toBe(true);
-      expect(ctx.say).toHaveBeenCalledWith(
-        expect.objectContaining({ text: expect.stringContaining('Admin only') }),
-      );
+      expect(ctx.say).toHaveBeenCalledWith(expect.objectContaining({ text: expect.stringContaining('Admin only') }));
     });
   });
 
@@ -560,9 +558,7 @@ describe('AdminHandler', () => {
       await setupHandler.execute(ctx);
 
       expect(mockScanChannels).not.toHaveBeenCalled();
-      expect(ctx.say).toHaveBeenCalledWith(
-        expect.objectContaining({ text: expect.stringContaining('Admin only') }),
-      );
+      expect(ctx.say).toHaveBeenCalledWith(expect.objectContaining({ text: expect.stringContaining('Admin only') }));
     });
   });
 
