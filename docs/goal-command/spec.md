@@ -37,7 +37,18 @@ Add a Slack command family for the current thread/session:
 - `goal done`, `goal complete`, or `goal completed`: mark the goal complete **(user-driven; bypasses host eval)**.
 - `goal clear`: remove the goal from the session.
 
-The command is session-scoped, not user-global. It should fail with a clear "No active session" message if the thread has no session.
+The command is session-scoped, not user-global.
+
+### No-Session Fall-Through
+
+When the thread has no session, the behavior depends on whether the message carries a free-form objective:
+
+- **Bare lifecycle forms** (`goal`, `goal status`, `goal pause|resume|done|clear`, and a malformed `goal set` with no objective): genuine session-scoped commands with nothing to act on. These fail with a clear "No active session. Start a conversation first." message.
+- **`goal <objective>` / `goal set <objective>`** (a free-form objective is present): the word "goal" is everyday English, so a first message like `goal ship the parser, see attached` is almost certainly a task — not a lifecycle command — and the session-scoped reading is impossible anyway (there is no session to attach a goal to). The handler must **not** swallow it with "No active session" and drop the user's text + attachments. Instead it returns *unhandled* so `CommandRouter` falls through and the message starts a fresh conversation with the user's full text as the first prompt.
+
+The same fall-through rule applies to `renew <instruction>` (greedy, session-required): bare `renew` with no session keeps the "No active session to renew" hint, while `renew <free-form text>` falls through to start a new conversation.
+
+The slash forms (`/goal <objective>`, `/renew <text>`) fall through identically. `CommandParser.isPotentialCommand` treats these greedy free-form roots like the plain-text branch: an argument-carrying slash form is an instruction (`isPotential:false`), so `CommandRouter` does **not** emit the ❓ unrecognized-command hint and the message reaches the work turn. Bare `/goal` / `/renew` (no argument) stay potential and keep the hint.
 
 ## Data Model
 

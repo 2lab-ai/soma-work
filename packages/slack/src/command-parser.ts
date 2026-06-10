@@ -1014,6 +1014,22 @@ export class CommandParser {
   ]);
 
   /**
+   * Greedy free-form command roots: `goal <objective>` / `renew <text>` carry a
+   * free-form argument that the handler treats as an instruction (and the word
+   * itself is everyday English). When they appear with a multi-word/free-form
+   * argument AND no session exists, GoalHandler/RenewHandler decline
+   * (`handled:false`) so the message starts a fresh conversation. For that
+   * fall-through to actually reach the work turn, `isPotentialCommand` must NOT
+   * classify the argument-carrying form as a command — otherwise CommandRouter
+   * emits the ❓ unrecognized-command hint and drops the user's text. See #1068.
+   *
+   * The plain-text branch already gets this for free (multi-word text is never
+   * a "potential command"); this set extends the same rule to the slash form.
+   * Bare `/goal` / `/renew` (no argument) stay potential and keep the hint.
+   */
+  private static readonly GREEDY_FREEFORM_ROOTS = new Set(['goal', 'renew']);
+
+  /**
    * Check if text looks like a command but may not be recognized
    * Used to provide feedback for unrecognized commands
    */
@@ -1039,6 +1055,15 @@ export class CommandParser {
     if (firstWord.startsWith('/')) {
       const slashRoot = firstWord.slice(1);
       if (CommandParser.COMMAND_KEYWORDS.has(slashRoot)) {
+        // Greedy free-form roots (`/goal <objective>`, `/renew <text>`): a
+        // multi-word/free-form argument is an instruction, not a command
+        // invocation — don't flag it as a potential command. Same outcome the
+        // plain-text branch below gives ALL multi-word text, but root-scoped
+        // here since other slash roots must keep hinting. Bare `/goal` /
+        // `/renew` still hint. See #1068.
+        if (CommandParser.GREEDY_FREEFORM_ROOTS.has(slashRoot) && words.length > 1) {
+          return { isPotential: false };
+        }
         return { isPotential: true, keyword: slashRoot };
       }
       if (words.length >= 2) {
