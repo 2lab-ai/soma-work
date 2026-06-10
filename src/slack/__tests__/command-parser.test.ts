@@ -761,6 +761,25 @@ describe('CommandParser', () => {
       expect(CommandParser.isPotentialCommand('/goal')).toEqual({ isPotential: true, keyword: 'goal' });
     });
 
+    // #1068: greedy free-form roots (`goal` / `renew`) carry an instruction when
+    // they have a multi-word/free-form argument. The slash form must mirror the
+    // plain-text branch and NOT be flagged as a (failed) command — otherwise the
+    // router emits the ❓ hint and drops the user's first-message instruction.
+    it('should NOT flag "/goal <objective>" (free-form arg) as a potential command', () => {
+      expect(CommandParser.isPotentialCommand('/goal ship the parser')).toEqual({ isPotential: false });
+      expect(CommandParser.isPotentialCommand('goal ship the parser').isPotential).toBe(false);
+    });
+
+    it('should NOT flag "/renew <text>" (free-form arg) as a potential command', () => {
+      expect(CommandParser.isPotentialCommand('/renew PR 리뷰해줘')).toEqual({ isPotential: false });
+      expect(CommandParser.isPotentialCommand('renew PR 리뷰해줘').isPotential).toBe(false);
+    });
+
+    it('should still flag bare "/renew" and "renew" as potential commands', () => {
+      expect(CommandParser.isPotentialCommand('/renew')).toEqual({ isPotential: true, keyword: 'renew' });
+      expect(CommandParser.isPotentialCommand('renew')).toEqual({ isPotential: true, keyword: 'renew' });
+    });
+
     it('should recognize "sessions" as a potential command', () => {
       expect(CommandParser.isPotentialCommand('sessions').isPotential).toBe(true);
     });
