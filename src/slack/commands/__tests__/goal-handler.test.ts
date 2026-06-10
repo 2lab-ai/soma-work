@@ -73,18 +73,36 @@ describe('GoalHandler', () => {
     });
   });
 
-  it('shows a clear message when no active session exists', async () => {
+  it('falls through (handled:false) when no session and the message carries a free-form objective', async () => {
+    // "goal build this" with no session is a fresh instruction that happens to
+    // start with the word "goal", not a session-scoped command. The handler
+    // must NOT swallow it with "No active session" — it returns unhandled so
+    // CommandRouter falls through and the message starts a new conversation.
     const deps = makeDeps(undefined);
     const handler = new GoalHandler(deps);
 
     const result = await handler.execute(makeCtx({ text: 'goal build this' }));
 
-    expect(result).toEqual({ handled: true });
-    expect(deps.slackApi.postSystemMessage).toHaveBeenCalledWith(
-      'C123',
-      expect.stringContaining('No active session'),
-      expect.objectContaining({ threadTs: '171.001' }),
-    );
+    expect(result).toEqual({ handled: false });
+    expect(deps.slackApi.postSystemMessage).not.toHaveBeenCalled();
+    expect(deps.claudeHandler.saveSessions).not.toHaveBeenCalled();
+  });
+
+  it('shows a clear message when no active session exists for a bare goal command', async () => {
+    const deps = makeDeps(undefined);
+    const handler = new GoalHandler(deps);
+
+    for (const text of ['goal', 'goal status', 'goal pause', 'goal done', 'goal clear', 'goal set']) {
+      (deps.slackApi.postSystemMessage as ReturnType<typeof vi.fn>).mockClear();
+      const result = await handler.execute(makeCtx({ text }));
+
+      expect(result).toEqual({ handled: true });
+      expect(deps.slackApi.postSystemMessage).toHaveBeenCalledWith(
+        'C123',
+        expect.stringContaining('No active session'),
+        expect.objectContaining({ threadTs: '171.001' }),
+      );
+    }
     expect(deps.claudeHandler.saveSessions).not.toHaveBeenCalled();
   });
 
