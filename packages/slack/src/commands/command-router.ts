@@ -94,7 +94,17 @@ export class CommandRouter {
     this.hasActiveSession = wired.hasActiveSession;
   }
 
-  async route(ctx: CommandContext): Promise<CommandResult> {
+  /**
+   * Maximum `new` re-route chain depth. Each `new` consumes its leading
+   * token so the recursion is structurally terminating; the cap only bounds
+   * the Slack side effects (every `new` posts a reset confirmation), e.g. a
+   * pathological `new new new … ×100` message must not fan out into 100
+   * chat.postMessage calls. Past the cap the remainder degrades to the old
+   * behavior: delivered to the model as a plain prompt.
+   */
+  private static readonly MAX_NEW_CHAIN_DEPTH = 5;
+
+  async route(ctx: CommandContext, depth = 0): Promise<CommandResult> {
     const { say, threadTs } = ctx;
     const originalText = ctx.text;
 
@@ -126,12 +136,23 @@ export class CommandRouter {
         return newResult;
       }
       const remainder = newResult.continueWithPrompt;
-      if (this.skillForceHandler.canHandle(remainder, ctx.user)) {
-        const skillResult = await this.skillForceHandler.execute({ ...ctx, text: remainder });
-        if (skillResult.handled) {
-          return skillResult;
+
+      // Re-route the remainder as if the user had typed it directly after
+      // the reset. `new goal <objective>` must actually set the goal,
+      // `new new <prompt>` must reset again, `new $skill …` must inject the
+      // skill block — command semantics survive the `new` prefix instead of
+      // degrading into a plain prompt (the old narrow-scope contract only
+      // composed `$skill` and silently dropped every other command; see the
+      // `new goal …` bug report).
+      if (depth < CommandRouter.MAX_NEW_CHAIN_DEPTH) {
+        const rerouted = await this.route({ ...ctx, text: remainder }, depth + 1);
+        if (rerouted.handled) {
+          return rerouted;
         }
       }
+
+      // Remainder is not a command (or chain depth exhausted) — deliver it
+      // to the model as the post-reset prompt.
       return newResult;
     }
 
