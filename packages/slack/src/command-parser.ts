@@ -1057,8 +1057,10 @@ export class CommandParser {
       if (CommandParser.COMMAND_KEYWORDS.has(slashRoot)) {
         // Greedy free-form roots (`/goal <objective>`, `/renew <text>`): a
         // multi-word/free-form argument is an instruction, not a command
-        // invocation — don't flag it as a potential command (mirrors the
-        // plain-text branch below). Bare `/goal` / `/renew` still hint. See #1068.
+        // invocation — don't flag it as a potential command. Same outcome the
+        // plain-text branch below gives ALL multi-word text, but root-scoped
+        // here since other slash roots must keep hinting. Bare `/goal` /
+        // `/renew` still hint. See #1068.
         if (CommandParser.GREEDY_FREEFORM_ROOTS.has(slashRoot) && words.length > 1) {
           return { isPotential: false };
         }
