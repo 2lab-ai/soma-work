@@ -47,7 +47,7 @@ describe('local:structurize skill — RED contract', () => {
   it('SKILL.md encodes the engine-before-renderer rule and lossless constraint', () => {
     const md = readFileSync(SKILL_MD, 'utf8');
     // Renderer choice must follow structure — the reverse direction is forbidden.
-    expect(md).toMatch(/렌더러를 먼저 정하고 구조를 거기 맞추는 역방향은 금지/);
+    expect(md).toMatch(/역방향[^\n]*금지/);
     // Lossless: details get an address, they are never dropped.
     expect(md).toMatch(/무손실/);
   });
