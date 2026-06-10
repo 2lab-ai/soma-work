@@ -3797,7 +3797,10 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         // (`[key: string]: any`), which fails TS's weak-type check against
         // the helper's all-optional param — the registry session DOES carry
         // these fields (see `SessionGoalState` mirror note in session-goal.ts).
-        applyGoalToSession(session as { goal?: SessionGoalState; systemPrompt?: string; goalLastTurnText?: string }, goal);
+        applyGoalToSession(
+          session as { goal?: SessionGoalState; systemPrompt?: string; goalLastTurnText?: string },
+          goal,
+        );
         this.deps.claudeHandler.saveSessions();
         this.logger.info('Applied SET_GOAL from model-command on host', {
           sessionKey: context.sessionKey,

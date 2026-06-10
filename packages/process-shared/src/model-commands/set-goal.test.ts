@@ -154,10 +154,7 @@ describe('SET_GOAL — catalog descriptor', () => {
 
 describe('SET_GOAL — runModelCommand (MCP-side echo)', () => {
   it('refuses without user context (CONTEXT_ERROR)', () => {
-    const result = runModelCommand(
-      VALID_ARGS as unknown as ModelCommandRunRequest,
-      makeContext({ user: undefined }),
-    );
+    const result = runModelCommand(VALID_ARGS as unknown as ModelCommandRunRequest, makeContext({ user: undefined }));
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.code).toBe('CONTEXT_ERROR');
