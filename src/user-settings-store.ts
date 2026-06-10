@@ -16,22 +16,28 @@ const invalidator = createPromptInvalidator(logger, 'Settings');
 export const setSettingsPromptInvalidationHook = invalidator.setHook;
 const fireSettingsInvalidate = invalidator.fire;
 
-// Available models — the 10-entry user-facing allow-list.
+// Available models — the 11-entry user-facing allow-list.
 //
 // Contract:
-//   - The 7 bare entries are the historical lineup and MUST NOT be removed.
-//     (4.8 added on 2026-05-28; 4.7/4.6 retained as user-selectable.)
-//   - The 3 `[1m]` entries are additive: they enable the 1M beta context window
-//     on opus-4-8 / opus-4-7 / opus-4-6 via the shared suffix convention. The
-//     Claude Agent SDK (≥ 0.2.111) detects `[1m]`, strips it before the API
-//     call, and injects the `context-1m-2025-08-07` beta header. (Opus 4.8
-//     spec ships 1M by default; we keep the `[1m]` opt-in here as the single
-//     resolveContextWindow signal — see metrics/model-registry.ts.)
+//   - The 8 bare entries are the historical lineup and MUST NOT be removed.
+//     (Fable 5 added 2026-06-09; 4.8 added 2026-05-28; 4.7/4.6 retained as
+//     user-selectable.)
+//   - `claude-fable-5` serves a 1M context window on the BARE id — Fable 5
+//     ships 1M as its native GA context, with no `[1m]` suffix and no
+//     `context-1m-2025-08-07` beta header. It therefore has NO `[1m]` variant:
+//     resolveContextWindow recognises it as native-1M (see model-registry.ts).
+//   - The 3 `[1m]` entries are additive: they enable the 1M *beta* context
+//     window on opus-4-8 / opus-4-7 / opus-4-6 via the shared suffix
+//     convention. The Claude Agent SDK (≥ 0.2.111) detects `[1m]`, strips it
+//     before the API call, and injects the `context-1m-2025-08-07` beta header.
+//     (Opus 4.8 ships 1M by default; we keep the `[1m]` opt-in here as the
+//     single resolveContextWindow signal — see metrics/model-registry.ts.)
 //
 // Issue #656 regression guard: any shrinking of this list (as attempted in
 // abandoned PR #652) silently deletes user-selectable models. Tests assert
 // exact array equality — NOT just length — to catch that class of mistake.
 export const AVAILABLE_MODELS = [
+  'claude-fable-5',
   'claude-opus-4-8',
   'claude-opus-4-7',
   'claude-opus-4-6',
@@ -56,6 +62,11 @@ export type ModelId = (typeof AVAILABLE_MODELS)[number];
 //   - Version-pinned aliases (`opus-4.8`, `opus-4.7`, ...) remain stable so
 //     users who explicitly chose a generation don't get silently upgraded.
 export const MODEL_ALIASES: Record<string, ModelId> = {
+  // `fable` / `fable-5` → Fable 5. There is no `[1m]` variant: Fable 5 is
+  // native-1M on the bare id, so no suffix alias is offered (a `[1m]` suffix
+  // would wrongly trigger the opus beta-header path in the SDK).
+  fable: 'claude-fable-5',
+  'fable-5': 'claude-fable-5',
   sonnet: 'claude-sonnet-4-6',
   'sonnet-4.6': 'claude-sonnet-4-6',
   'sonnet-4.5': 'claude-sonnet-4-5-20250929',
@@ -68,7 +79,8 @@ export const MODEL_ALIASES: Record<string, ModelId> = {
   'opus-4.5': 'claude-opus-4-5-20251101',
   haiku: 'claude-haiku-4-5-20251001',
   'haiku-4.5': 'claude-haiku-4-5-20251001',
-  // 1M-context variants
+  // 1M-context (beta opt-in) variants — opus only. Fable 5 is native-1M on
+  // the bare id and intentionally has no `[1m]` alias here.
   'opus[1m]': 'claude-opus-4-8[1m]',
   'opus-4.8[1m]': 'claude-opus-4-8[1m]',
   'opus-4.7[1m]': 'claude-opus-4-7[1m]',
@@ -789,6 +801,10 @@ export class UserSettingsStore {
    */
   getModelDisplayName(model: ModelId): string {
     switch (model) {
+      case 'claude-fable-5':
+        // Native 1M context on the bare id — surface "(1M)" so users see the
+        // window without a `[1m]` suffix existing.
+        return 'Fable 5 (1M)';
       case 'claude-opus-4-8':
         return 'Opus 4.8';
       case 'claude-opus-4-8[1m]':
