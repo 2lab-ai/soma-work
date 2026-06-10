@@ -30,10 +30,13 @@ function makeStore(): UserSettingsStore {
 // tests assert the **exact** expected arrays/records, not just the length,
 // so any future silent removal is caught immediately.
 describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', () => {
-  it('AVAILABLE_MODELS is exactly 10 entries in the expected order', () => {
-    // 4.8 (2026-05-28) prepended at the top of each tier so substring matchers
-    // see it before 4.7. Historical entries MUST survive every bump.
+  it('AVAILABLE_MODELS is exactly 11 entries in the expected order', () => {
+    // Fable 5 (2026-06-09) leads as the flagship; it is native-1M on the bare
+    // id and has NO `[1m]` variant. 4.8 prepended at the top of the opus tier so
+    // substring matchers see it before 4.7. Historical entries MUST survive
+    // every bump.
     expect([...AVAILABLE_MODELS]).toEqual([
+      'claude-fable-5',
       'claude-opus-4-8',
       'claude-opus-4-7',
       'claude-opus-4-6',
@@ -47,10 +50,19 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
     ]);
   });
 
-  it('MODEL_ALIASES has exactly the 15 expected key→value mappings', () => {
+  it('AVAILABLE_MODELS has no claude-fable-5[1m] variant (native-1M on bare id)', () => {
+    // Fable 5 serves 1M without a suffix; a `[1m]` variant would wrongly route
+    // through the opus beta-header path. Guard against it being re-added.
+    expect(AVAILABLE_MODELS as readonly string[]).not.toContain('claude-fable-5[1m]');
+  });
+
+  it('MODEL_ALIASES has exactly the 16 expected key→value mappings', () => {
+    // `fable` / `fable-5` → Fable 5 (no `[1m]` alias — native-1M bare id).
     // `opus` / `opus[1m]` follow "latest opus" semantics → 4.8. Version-pinned
     // aliases (`opus-4.7`, `opus-4.6`, ...) remain pinned to their generation.
     expect(MODEL_ALIASES).toEqual({
+      fable: 'claude-fable-5',
+      'fable-5': 'claude-fable-5',
       sonnet: 'claude-sonnet-4-6',
       'sonnet-4.6': 'claude-sonnet-4-6',
       'sonnet-4.5': 'claude-sonnet-4-5-20250929',
