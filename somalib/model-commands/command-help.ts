@@ -216,6 +216,26 @@ const ASK_USER_QUESTION_HELP: CommandHelp = {
   ],
 };
 
+// Issue #1082 T2: SET_GOAL self-correcting help.
+const SET_GOAL_HELP: CommandHelp = {
+  commandId: 'SET_GOAL',
+  summary:
+    'Set the session goal (set-only) — ONLY when the user explicitly asked for it in their CURRENT message. ' +
+    'objective: 1..4000 Unicode code points (trimmed). userRequestEvidence: verbatim quote from the ' +
+    "user's current message proving the explicit request — the host refuses when it is not an exact " +
+    'substring of that message. The host evaluates goal completion and runs a capped auto-continuation ' +
+    'loop; the model cannot mark the goal complete.',
+  examples: [
+    {
+      title: 'Set a goal the user explicitly requested in their current message',
+      params: {
+        objective: 'ship the goal feature end to end',
+        userRequestEvidence: 'goal로 설정해줘: ship the goal feature end to end',
+      },
+    },
+  ],
+};
+
 const COMMAND_HELP: Partial<Record<ModelCommandId, CommandHelp>> = {
   SAVE_MEMORY: SAVE_MEMORY_HELP,
   MANAGE_SKILL: MANAGE_SKILL_HELP,
@@ -223,6 +243,7 @@ const COMMAND_HELP: Partial<Record<ModelCommandId, CommandHelp>> = {
   CONTINUE_SESSION: CONTINUE_SESSION_HELP,
   SAVE_CONTEXT_RESULT: SAVE_CONTEXT_RESULT_HELP,
   ASK_USER_QUESTION: ASK_USER_QUESTION_HELP,
+  SET_GOAL: SET_GOAL_HELP,
   // GET_SESSION / GET_MEMORY / RATE take no params — nothing to guide.
 };
 

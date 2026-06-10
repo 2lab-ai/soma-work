@@ -367,6 +367,26 @@ const MANAGE_SKILL_SCHEMA = {
   required: ['action'],
 };
 
+// Issue #1082 T2: SET_GOAL params schema (set-only model goal command).
+const SET_GOAL_SCHEMA = {
+  type: 'object',
+  properties: {
+    objective: {
+      type: 'string',
+      minLength: 1,
+      maxLength: 4000,
+      description: 'The goal objective to install on the session (1..4000 Unicode code points, trimmed)',
+    },
+    userRequestEvidence: {
+      type: 'string',
+      description:
+        "Verbatim quote from the user's current message proving the explicit request to set a goal. " +
+        'The host rejects the command when this is not an exact substring of the current user message.',
+    },
+  },
+  required: ['objective', 'userRequestEvidence'],
+};
+
 const CONTINUE_SESSION_SCHEMA = {
   type: 'object',
   properties: {
@@ -507,6 +527,18 @@ export function listModelCommands(context: ModelCommandContext): ModelCommandDes
         description:
           'Get the current user rating for this model (0-10). The rating reflects user satisfaction and is also visible in <your_rating> context tag.',
         paramsSchema: { type: 'object', properties: {}, additionalProperties: false },
+      },
+      // Issue #1082 T2: SET_GOAL — set-only, user-gated like SAVE_MEMORY.
+      {
+        id: 'SET_GOAL',
+        description:
+          'Set the session goal (set-only). Use ONLY when the user explicitly asked in their CURRENT ' +
+          'message to set a goal — quote that request verbatim in userRequestEvidence; the host verifies ' +
+          'it against the actual message and refuses otherwise. Once set, the goal is re-injected every ' +
+          'turn, the host evaluates goal completion outside the model and drives a capped ' +
+          'auto-continuation loop; the model cannot mark the goal complete itself. The user keeps ' +
+          'lifecycle control and can pause, clear or complete it with the `goal` command.',
+        paramsSchema: SET_GOAL_SCHEMA,
       },
     );
   }
@@ -941,6 +973,25 @@ export function runModelCommand(
       commandId: 'RATE',
       ok: true,
       payload: { rating },
+    };
+  }
+
+  // Issue #1082 T2: SET_GOAL — pure echo on the MCP side. The HOST
+  // (stream-executor) is the enforcement point: it verifies the evidence
+  // quote against the actual current user message and applies the goal to
+  // the session (mirror of the ASK_USER_QUESTION echo pattern).
+  if (request.commandId === 'SET_GOAL') {
+    if (!context.user) {
+      return toRunError('SET_GOAL', { code: 'CONTEXT_ERROR', message: 'No user context available' });
+    }
+    return {
+      type: 'model_command_result',
+      commandId: 'SET_GOAL',
+      ok: true,
+      payload: {
+        objective: request.params.objective,
+        userRequestEvidence: request.params.userRequestEvidence,
+      },
     };
   }
 

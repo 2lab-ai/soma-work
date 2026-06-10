@@ -1116,6 +1116,14 @@ export class SessionInitializer {
     botSession.workingDirectory = session.workingDirectory;
     botSession.activityState = session.activityState;
     botSession.sessionWorkingDir = session.sessionWorkingDir;
+    // Issue #1082 T1: carry the session goal across bot-thread migration.
+    // Deep clone — the original session is terminated below and must not
+    // share mutable state (incl. nested `pendingEval`). The runtime stash
+    // `goalLastTurnText` refers to a turn of the dead thread and
+    // intentionally does NOT travel.
+    if (session.goal) {
+      botSession.goal = structuredClone(session.goal);
+    }
     // Store source thread for context linking (data concern only — UX is always "new conversation")
     if (hasSourceThread) {
       botSession.sourceThread = { channel, threadTs };

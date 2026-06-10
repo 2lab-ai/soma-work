@@ -942,36 +942,54 @@ describe('CommandRouter — `goal` + `$skill` composition (preprocessor)', () =>
     expect(result.continueWithPrompt).toBeUndefined();
   });
 
-  // Without an active session, the goal preprocessor would emit "No active
-  // session" via GoalHandler and silently drop the `$skill` suffix. It must
-  // fall through instead so SkillForceHandler (which runs before GoalHandler
-  // in the main loop) picks up the full text as a normal prompt — the user's
-  // skill invocation wins over a goal command that can't be satisfied.
-  it('9. `goal foo $skill` with NO active session → preprocessor falls through, skill is force-invoked with full text as prompt', async () => {
+  // #1082 T1: with NO active session a `goal <objective> $skill` message
+  // splits exactly like the session-active path — the clean objective is
+  // carried out-of-band as `setGoalObjective` (the new session is born with
+  // the goal active) and the `$skill` suffix becomes the model-turn text.
+  // The old behavior (drop the goal, hand the FULL text to the skill) leaked
+  // `goal …` phrasing into the prompt and silently lost the goal.
+  it('9. `goal foo $skill` with NO active session → split: setGoalObjective carries clean objective, skill gets suffix only', async () => {
     stubSkillFs({ localSkills: ['using-ssot'] });
-    const goalExec = vi.spyOn(GoalHandler.prototype, 'execute');
     const skillExec = vi.spyOn(SkillForceHandler.prototype, 'execute');
 
     const { router, deps, say } = makeRouterWithoutSession();
     const result = await router.route(makeCtx('goal 기능을 끝까지 완수해줘 $using-ssot', say, undefined));
 
-    expect(goalExec).not.toHaveBeenCalled();
     expect(deps.slackApi.postSystemMessage).not.toHaveBeenCalledWith(
       'C1',
       expect.stringContaining('No active session'),
       expect.anything(),
     );
 
+    // Skill is force-invoked on the SUFFIX only — the goal prefix must not
+    // leak into the skill prompt.
     expect(skillExec).toHaveBeenCalledTimes(1);
-    expect(skillExec.mock.calls[0][0].text).toBe('goal 기능을 끝까지 완수해줘 $using-ssot');
+    expect(skillExec.mock.calls[0][0].text).toBe('$using-ssot');
 
     expect(result.handled).toBe(true);
     expect(result.continueWithPrompt).toContain('<invoked_skills>');
     expect(result.continueWithPrompt).toContain('<local:using-ssot>');
-    // Full original text is preserved as the prompt body — Claude sees the
-    // user's `goal …` phrasing as a normal sentence, not a failed lifecycle
-    // command.
-    expect(result.continueWithPrompt).toContain('goal 기능을 끝까지 완수해줘');
+    // Clean objective rides out-of-band for the new session to adopt.
+    expect(result.setGoalObjective).toBe('기능을 끝까지 완수해줘');
+    expect(result.continueWithPrompt).not.toContain('기능을 끝까지 완수해줘');
+  });
+
+  // Counterpart: when the prefix before `$skill` does NOT parse as a goal-set
+  // (bare `goal` → lifecycle/status form), there is no objective to carry —
+  // the preprocessor must fall through to the old behavior (skill gets the
+  // full text, no setGoalObjective).
+  it("9b. `goal $skill foo` with NO session (prefix isn't a set form) → no setGoalObjective, skill gets full text", async () => {
+    stubSkillFs({ localSkills: ['using-ssot'] });
+    const skillExec = vi.spyOn(SkillForceHandler.prototype, 'execute');
+
+    const { router, say } = makeRouterWithoutSession();
+    const result = await router.route(makeCtx('goal $using-ssot proceed', say, undefined));
+
+    expect(skillExec).toHaveBeenCalledTimes(1);
+    expect(skillExec.mock.calls[0][0].text).toBe('goal $using-ssot proceed');
+    expect(result.handled).toBe(true);
+    expect(result.setGoalObjective).toBeUndefined();
+    expect(result.continueWithPrompt).toContain('<local:using-ssot>');
   });
 
   // Intent-recovery guard (docs/goal-command/spec.md §No-Session Fall-Through):
@@ -999,6 +1017,9 @@ describe('CommandRouter — `goal` + `$skill` composition (preprocessor)', () =>
     // user's full text as the first prompt instead of dropping it.
     expect(result.handled).toBe(false);
     expect(result.continueWithPrompt).toBeUndefined();
+    // #1082 T1: the objective rides out-of-band so the new session is born
+    // with the goal already active.
+    expect(result.setGoalObjective).toBe('foo bar baz');
     // And NO ❓ "unrecognized command" message leaks out — `isPotentialCommand`
     // must classify multi-word "goal …" as plain text, not a failed command.
     expect(say).not.toHaveBeenCalledWith(
@@ -1048,6 +1069,8 @@ describe('CommandRouter — `goal` + `$skill` composition (preprocessor)', () =>
     );
     expect(result.handled).toBe(false);
     expect(result.continueWithPrompt).toBeUndefined();
+    // #1082 T1: slash form carries the objective out-of-band too.
+    expect(result.setGoalObjective).toBe('foo bar baz');
     expect(say).not.toHaveBeenCalledWith(
       expect.objectContaining({ text: expect.stringContaining('인식할 수 없습니다') }),
     );

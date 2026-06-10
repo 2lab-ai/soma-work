@@ -11,6 +11,12 @@ export interface CommandRouteResult {
   handled: boolean;
   continueWithPrompt?: string;
   forceWorkflow?: WorkflowType;
+  /**
+   * Issue #1082 T1: objective parsed from a `goal <objective>` set-form that
+   * arrived with NO active session — see `CommandResult.setGoalObjective` in
+   * `commands/command-router.ts`.
+   */
+  setGoalObjective?: string;
 }
 
 export interface CommandRouterReader {
@@ -106,7 +112,12 @@ export class InputProcessor {
   async routeCommand(
     event: MessageEvent,
     say: SayFn,
-  ): Promise<{ handled: boolean; continueWithPrompt?: string; forceWorkflow?: WorkflowType }> {
+  ): Promise<{
+    handled: boolean;
+    continueWithPrompt?: string;
+    forceWorkflow?: WorkflowType;
+    setGoalObjective?: string;
+  }> {
     const { user, channel, thread_ts, ts, text } = event;
 
     if (!text) {
@@ -180,6 +191,10 @@ export class InputProcessor {
       handled: commandResult.handled,
       continueWithPrompt: commandResult.continueWithPrompt,
       forceWorkflow: commandResult.forceWorkflow,
+      // Issue #1082 T1: objective from a goal-prefixed message with no
+      // session — must survive this field-by-field rebuild to reach
+      // slack-handler.
+      setGoalObjective: commandResult.setGoalObjective,
     };
   }
 }

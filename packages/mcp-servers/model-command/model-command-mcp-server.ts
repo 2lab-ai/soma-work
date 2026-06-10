@@ -156,6 +156,8 @@ class ModelCommandMcpServer extends BaseMcpServer {
                 'GET_MEMORY',
                 'MANAGE_SKILL',
                 'RATE',
+                // Issue #1082 T2: model-initiated session goal (set-only).
+                'SET_GOAL',
               ],
             },
             params: { type: 'object', description: 'Command params object' },
