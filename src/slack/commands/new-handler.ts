@@ -57,7 +57,10 @@ export class NewHandler implements CommandHandler {
 
       if (prompt) {
         // Has follow-up prompt - send detailed confirmation and continue with prompt
-        resetDetails.push('', `_Re-dispatching with: "${prompt.substring(0, 50)}${prompt.length > 50 ? '...' : ''}"_`);
+        // "Continuing" not "Re-dispatching": the router re-routes the
+        // remainder as a command first (e.g. `new goal X` runs `goal X`);
+        // only non-command remainders are dispatched to the model.
+        resetDetails.push('', `_Continuing with: "${prompt.substring(0, 50)}${prompt.length > 50 ? '...' : ''}"_`);
         await this.deps.slackApi.postSystemMessage(channel, resetDetails.join('\n'), { threadTs });
         return { handled: true, continueWithPrompt: prompt };
       } else {
