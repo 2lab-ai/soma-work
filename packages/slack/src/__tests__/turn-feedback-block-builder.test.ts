@@ -80,6 +80,17 @@ describe('turn-feedback-block-builder', () => {
       expect(parseDismissValue(icon.value)).toEqual({ turnId: 't1', ownerUserId: 'Uowner' });
     });
 
+    it('the dismiss icon_button carries the REQUIRED plain_text `text` field (invalid_blocks regression)', () => {
+      // Slack rejects the whole message with `invalid_blocks: missing required
+      // field: text` when icon_button has no text — this killed every
+      // WorkflowComplete terminal card. Guard it explicitly.
+      const icon = block.elements[1];
+      expect(icon.text).toBeDefined();
+      expect(icon.text.type).toBe('plain_text');
+      expect(icon.text.text.length).toBeGreaterThan(0);
+      expect(icon.text.text.length).toBeLessThanOrEqual(75);
+    });
+
     it('builds plain_text button labels and encoded values within Slack limits', () => {
       const fb = block.elements[0];
       for (const btn of [fb.positive_button, fb.negative_button]) {
