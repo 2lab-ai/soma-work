@@ -2,6 +2,7 @@ import { buildGoalContinuationPrompt, validateSessionGoalObjective } from '../..
 import { type ConversationSession, DEFAULT_GOAL_MAX_CONTINUATIONS, type SessionGoal } from '../../types';
 import { CommandParser } from '../command-parser';
 import { bumpGoalEpoch } from '../goal-continuation';
+import { formatGoalObjectiveForSlack } from '../session-goal';
 import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
 
 export class GoalHandler implements CommandHandler {
@@ -22,7 +23,20 @@ export class GoalHandler implements CommandHandler {
       // the explicit hint.
       const noSessionAction = CommandParser.parseGoalCommand(text);
       if (noSessionAction.action === 'set') {
-        return { handled: false };
+        // Issue #1082 T1: validation runs BEFORE the fall-through decision —
+        // an over-limit objective is invalid whether or not a session exists,
+        // and silently starting a goal-less conversation with it would hide
+        // the error.
+        const objective = noSessionAction.objective.trim();
+        const validationError = validateSessionGoalObjective(objective);
+        if (validationError) {
+          await this.deps.slackApi.postSystemMessage(channel, `⚠️ ${validationError}.`, { threadTs });
+          return { handled: true };
+        }
+        // Carry the parsed objective out-of-band so the new session is born
+        // with the goal already active (applied by slack-handler right after
+        // session init, before the first dispatch).
+        return { handled: false, setGoalObjective: objective };
       }
       await this.deps.slackApi.postSystemMessage(channel, '💡 No active session. Start a conversation first.', {
         threadTs,
@@ -219,8 +233,8 @@ export class GoalHandler implements CommandHandler {
   }
 
   private formatObjectiveForSlack(objective: string): string {
-    const normalized = objective.replace(/\s+/g, ' ').trim();
-    const clipped = normalized.length > 900 ? `${normalized.slice(0, 897)}...` : normalized;
-    return `\`${clipped.replace(/`/g, "'")}\``;
+    // Issue #1082: single rendering source shared with the slack-handler 🎯
+    // notice and the SET_GOAL host-apply notice — see session-goal.ts.
+    return formatGoalObjectiveForSlack(objective);
   }
 }

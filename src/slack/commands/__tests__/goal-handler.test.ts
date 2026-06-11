@@ -73,18 +73,49 @@ describe('GoalHandler', () => {
     });
   });
 
-  it('falls through (handled:false) when no session and the message carries a free-form objective', async () => {
+  it('falls through (handled:false) with setGoalObjective when no session and the message carries a free-form objective', async () => {
     // "goal build this" with no session is a fresh instruction that happens to
     // start with the word "goal", not a session-scoped command. The handler
     // must NOT swallow it with "No active session" — it returns unhandled so
     // CommandRouter falls through and the message starts a new conversation.
+    // #1082: it ALSO carries the parsed objective so the new session can be
+    // born with the goal already active (T1).
     const deps = makeDeps(undefined);
     const handler = new GoalHandler(deps);
 
     const result = await handler.execute(makeCtx({ text: 'goal build this' }));
 
-    expect(result).toEqual({ handled: false });
+    expect(result).toEqual({ handled: false, setGoalObjective: 'build this' });
     expect(deps.slackApi.postSystemMessage).not.toHaveBeenCalled();
+    expect(deps.claudeHandler.saveSessions).not.toHaveBeenCalled();
+  });
+
+  it('carries setGoalObjective for explicit `goal set <objective>` with no session', async () => {
+    const deps = makeDeps(undefined);
+    const handler = new GoalHandler(deps);
+
+    const result = await handler.execute(makeCtx({ text: 'goal set ship the feature' }));
+
+    expect(result).toEqual({ handled: false, setGoalObjective: 'ship the feature' });
+    expect(deps.slackApi.postSystemMessage).not.toHaveBeenCalled();
+  });
+
+  it('rejects an over-limit objective with a warning even when no session exists (no silent fall-through)', async () => {
+    // Validation must run BEFORE the fall-through decision: a 4001+ code-point
+    // objective is invalid whether or not a session exists, and silently
+    // starting a goal-less conversation with it would hide the error (#1082).
+    const deps = makeDeps(undefined);
+    const handler = new GoalHandler(deps);
+    const objective = 'x'.repeat(4001);
+
+    const result = await handler.execute(makeCtx({ text: `goal ${objective}` }));
+
+    expect(result).toEqual({ handled: true });
+    expect(deps.slackApi.postSystemMessage).toHaveBeenCalledWith(
+      'C123',
+      expect.stringContaining('⚠️'),
+      expect.objectContaining({ threadTs: '171.001' }),
+    );
     expect(deps.claudeHandler.saveSessions).not.toHaveBeenCalled();
   });
 
