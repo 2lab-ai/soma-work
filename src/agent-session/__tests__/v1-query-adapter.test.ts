@@ -239,6 +239,73 @@ describe('V1QueryAdapter', () => {
     await expect(adapter.continue('Second')).rejects.toThrow();
   });
 
+  // Bug fix: SET_GOAL dead-feature — `start()` set `turnCount = 1` BEFORE
+  // executeTurn() evaluated `turnCount === 0`, so EVERY turn (including the
+  // genuine first user-input turn) was demoted to `isUserInput: false`. The
+  // host-side SET_GOAL gate (stream-executor `isUserInputTurn === true`) and
+  // the SSOT instruction tracking (`isUserInput !== false`) could therefore
+  // never see a user turn through the adapter path. The adapter must preserve
+  // baseParams.isUserInput on the FIRST dispatch turn and force `false` only
+  // on continuation turns.
+  describe('isUserInput propagation (SET_GOAL / SSOT gate)', () => {
+    it('start() preserves baseParams.isUserInput=true on the first dispatch turn', async () => {
+      const adapter = new V1QueryAdapter({
+        streamExecutor: mockExecutor as any,
+        executeParams: { ...createMockExecuteParams(), isUserInput: true },
+      });
+
+      await adapter.start('골 아무거나 설정해봐');
+      expect(mockExecutor.execute).toHaveBeenCalledWith(expect.objectContaining({ isUserInput: true }));
+    });
+
+    it('start() preserves baseParams.isUserInput=false (synthetic dispatch)', async () => {
+      const adapter = new V1QueryAdapter({
+        streamExecutor: mockExecutor as any,
+        executeParams: { ...createMockExecuteParams(), isUserInput: false },
+      });
+
+      await adapter.start('auto-resume prompt');
+      expect(mockExecutor.execute).toHaveBeenCalledWith(expect.objectContaining({ isUserInput: false }));
+    });
+
+    it('start() passes isUserInput through untouched when baseParams omit it', async () => {
+      // Direct StreamExecutor callers treat `undefined` differently from
+      // explicit `false` (SSOT tracking checks `!== false`) — the adapter
+      // must not coerce the missing value into `false` on the first turn.
+      const adapter = new V1QueryAdapter({
+        streamExecutor: mockExecutor as any,
+        executeParams: createMockExecuteParams(),
+      });
+
+      await adapter.start('Hello');
+      const params = mockExecutor.execute.mock.calls[0][0];
+      expect(params.isUserInput).toBeUndefined();
+    });
+
+    it('continue() forces isUserInput=false on continuation turns', async () => {
+      const adapter = new V1QueryAdapter({
+        streamExecutor: mockExecutor as any,
+        executeParams: { ...createMockExecuteParams(), isUserInput: true },
+      });
+
+      await adapter.start('First');
+      await adapter.continue('goal continuation');
+      expect(mockExecutor.execute).toHaveBeenLastCalledWith(expect.objectContaining({ isUserInput: false }));
+    });
+
+    it('restarted adapter treats the new start() as a first turn again', async () => {
+      const adapter = new V1QueryAdapter({
+        streamExecutor: mockExecutor as any,
+        executeParams: { ...createMockExecuteParams(), isUserInput: true },
+      });
+
+      await adapter.start('First');
+      await adapter.continue('Continuation');
+      await adapter.start('Second dispatch');
+      expect(mockExecutor.execute).toHaveBeenLastCalledWith(expect.objectContaining({ isUserInput: true }));
+    });
+  });
+
   // Trace: S6, Section 3a — adapter exposes lastExecuteResult
   it('getLastExecuteResult() returns mapped result after start()', async () => {
     const adapter = new V1QueryAdapter({
