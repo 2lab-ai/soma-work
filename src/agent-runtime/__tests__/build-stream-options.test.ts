@@ -221,6 +221,75 @@ describe('buildStreamOptions — option parity (epic #1023 P1)', () => {
     expect(options.resume).toBeUndefined();
   });
 
+  describe('native-1M SDK window workaround (fable-5 compacting at 167k)', () => {
+    it('injects DISABLE_AUTO_COMPACT + CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE for a native-1M session model', async () => {
+      const queryEnv: Record<string, string | undefined> = { CLAUDE_CODE_OAUTH_TOKEN: 'lease-token' };
+      const deps = makeDeps();
+      const session = { model: 'claude-fable-5', systemPrompt: 'x', sessionId: 's1' } as ConversationSession;
+      const { options } = await buildStreamOptions({ queryEnv, session }, deps);
+
+      // In-place injection — env identity (auth contract) is preserved.
+      expect(options.env).toBe(queryEnv);
+      expect(options.env?.DISABLE_AUTO_COMPACT).toBe('1');
+      expect(options.env?.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE).toBe('977000');
+      expect(options.env?.CLAUDE_CODE_OAUTH_TOKEN).toBe('lease-token'); // untouched
+    });
+
+    it('does NOT inject for a bare 200k model (SDK autocompact stays on)', async () => {
+      const deps = makeDeps();
+      const session = { model: 'claude-opus-4-7', systemPrompt: 'x', sessionId: 's2' } as ConversationSession;
+      const { options } = await buildStreamOptions({ queryEnv: {}, session }, deps);
+      expect(options.env?.DISABLE_AUTO_COMPACT).toBeUndefined();
+      expect(options.env?.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE).toBeUndefined();
+    });
+
+    it('does NOT inject for the `[1m]` suffix opt-in (SDK resolves that natively)', async () => {
+      const deps = makeDeps();
+      const session = { model: 'claude-opus-4-7[1m]', systemPrompt: 'x', sessionId: 's3' } as ConversationSession;
+      const { options } = await buildStreamOptions({ queryEnv: {}, session }, deps);
+      expect(options.env?.DISABLE_AUTO_COMPACT).toBeUndefined();
+      expect(options.env?.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE).toBeUndefined();
+    });
+
+    it('does NOT inject when no model resolves', async () => {
+      const deps = makeDeps();
+      const { options } = await buildStreamOptions({ queryEnv: {} }, deps);
+      expect(options.env?.DISABLE_AUTO_COMPACT).toBeUndefined();
+      expect(options.env?.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE).toBeUndefined();
+    });
+
+    it('respects operator-provided values (no clobbering)', async () => {
+      const deps = makeDeps();
+      const session = { model: 'claude-fable-5', systemPrompt: 'x', sessionId: 's4' } as ConversationSession;
+      const queryEnv: Record<string, string | undefined> = {
+        DISABLE_AUTO_COMPACT: 'false',
+        CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE: '500000',
+      };
+      const { options } = await buildStreamOptions({ queryEnv, session }, deps);
+      expect(options.env?.DISABLE_AUTO_COMPACT).toBe('false');
+      expect(options.env?.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE).toBe('500000');
+    });
+
+    it('injects when the native-1M model comes from the user default (no session model)', async () => {
+      const spy = vi.spyOn(await import('../../user-settings-store'), 'userSettingsStore', 'get').mockReturnValue({
+        getUserDefaultModel: () => 'claude-fable-5',
+        getUserThinkingEnabled: () => true,
+        getUserShowThinking: () => false,
+        getUserSandboxDisabled: () => false,
+        getUserNetworkDisabled: () => false,
+      } as never);
+      try {
+        const deps = makeDeps();
+        const { options } = await buildStreamOptions({ queryEnv: {}, slackContext: makeSlackContext() }, deps);
+        expect(options.model).toBe('claude-fable-5');
+        expect(options.env?.DISABLE_AUTO_COMPACT).toBe('1');
+        expect(options.env?.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE).toBe('977000');
+      } finally {
+        spy.mockRestore();
+      }
+    });
+  });
+
   it('abortController + stderr: wires the abort signal and accumulates stderr into the buffer', async () => {
     const deps = makeDeps();
     const abortController = new AbortController();
