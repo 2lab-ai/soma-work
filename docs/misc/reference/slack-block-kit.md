@@ -74,6 +74,7 @@ Scope: Slack Block Kit UI + Messaging/Interactivity + AI app workflows + Agentfo
   - `positive_button`, `negative_button` 필수
   - 각 버튼 `text` 최대 75, `value` 최대 2000
 - `icon_button`:
+  - `text` **필수** (plain_text, 최대 75) — 누락 시 메시지 전체가 `invalid_blocks: missing required field: text`로 거부됨 (#1079)
   - `icon: "trash"`만 지원
   - `visible_to_user_ids` 지원
 
