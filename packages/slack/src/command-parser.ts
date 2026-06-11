@@ -62,19 +62,40 @@ export type EmailAction = { action: 'status' } | { action: 'set'; email: string 
 export type RateAction = { action: 'status' } | { action: 'up' } | { action: 'down' };
 
 export type AdminAction =
+  | { action: 'menu' }
+  | { action: 'setup' }
+  | { action: 'delegate'; rest: string }
   | { action: 'accept'; targetUser: string }
   | { action: 'deny'; targetUser: string }
   | { action: 'users' }
   | { action: 'config'; sub: 'show' }
   | { action: 'config'; sub: 'set'; key: string; value: string };
 
+/**
+ * Sub-command roots accepted after the `admin ` prefix that are delegated to
+ * their original handlers (PromptHandler, SandboxHandler, …). Restricting to
+ * known roots keeps prose like "admin 페이지 만들어줘" out of the command
+ * router (it falls through to the model instead).
+ */
+const ADMIN_DELEGATE_ROOTS = ['show', 'sandbox', 'plugins', 'cct', 'ui-test'] as const;
+const ADMIN_SUB_ROOTS = ['setup', 'users', 'accept', 'deny', 'config', ...ADMIN_DELEGATE_ROOTS] as const;
+const ADMIN_COMMAND_RE = new RegExp(`^\\/?admin(?:\\s+(?:${ADMIN_SUB_ROOTS.join('|')})\\b[\\s\\S]*)?$`, 'i');
+
 export class CommandParser {
   /**
-   * Check if text is an admin command (accept/deny/users/config)
+   * Check if text is an admin command.
+   *
+   * Two grammars are accepted:
+   * - Canonical `admin` namespace (#1076): `admin`, `admin setup`,
+   *   `admin users`, `admin accept @user`, `admin config …`, and
+   *   `admin <delegated>` for admin-gated commands owned by other handlers
+   *   (`admin show prompt`, `admin sandbox on`, …).
+   * - Legacy bare forms (`accept`/`deny`/`users`/`config`) kept as aliases.
    */
   static isAdminCommand(text: string): boolean {
     const trimmed = text.trim();
     return (
+      ADMIN_COMMAND_RE.test(trimmed) ||
       /^\/?(?:accept|deny)\s+<@\w+(?:\|[^>]*)?>$/i.test(trimmed) ||
       /^\/?users$/i.test(trimmed) ||
       /^\/?config\s+\S+/i.test(trimmed)
@@ -86,6 +107,32 @@ export class CommandParser {
    */
   static parseAdminCommand(text: string): AdminAction | null {
     const trimmed = text.trim();
+
+    // Bare `admin` → admin command menu
+    if (/^\/?admin$/i.test(trimmed)) {
+      return { action: 'menu' };
+    }
+
+    // `admin setup` → idempotent re-initialization
+    if (/^\/?admin\s+setup$/i.test(trimmed)) {
+      return { action: 'setup' };
+    }
+
+    // `admin <rest>` → namespaced legacy actions (accept/deny/users/config)
+    // or delegation to another admin-gated handler (show/sandbox/plugins/…).
+    const adminPrefixMatch = trimmed.match(/^\/?admin\s+([\s\S]+)$/i);
+    if (adminPrefixMatch) {
+      const rest = adminPrefixMatch[1].trim();
+      const namespaced = CommandParser.parseAdminCommand(rest);
+      if (namespaced && namespaced.action !== 'menu' && namespaced.action !== 'setup') {
+        return namespaced;
+      }
+      const root = rest.split(/\s+/)[0]?.toLowerCase() ?? '';
+      if ((ADMIN_DELEGATE_ROOTS as readonly string[]).includes(root)) {
+        return { action: 'delegate', rest };
+      }
+      return null;
+    }
 
     // accept <@U123> or accept <@U123|name>
     const acceptMatch = trimmed.match(/^\/?accept\s+<@(\w+)(?:\|[^>]*)?>$/i);
@@ -948,6 +995,7 @@ export class CommandParser {
    */
   private static readonly COMMAND_KEYWORDS = new Set([
     // Admin commands
+    'admin',
     'accept',
     'deny',
     'users',
@@ -1213,6 +1261,10 @@ export class CommandParser {
       "• `usage month` - Show this month's token usage",
       "• `usage @user` - Show specific user's token usage",
       '• `usage card` or `/usage card` - Post your personal 30-day usage card (PNG) to the channel',
+      '',
+      '*Admin:*',
+      '• `admin` - Show all admin-only commands (admin only)',
+      '• `admin setup` - Idempotently re-run startup setup (channel-repo scan, MCP config reload, admin cache)',
       '',
       '*Help:*',
       '• `help` or `/help` - Show this help message',

@@ -49,6 +49,23 @@ setCommandRouterProviders({
 
     const claudeHandler = (deps as { claudeHandler: ClaudeHandler }).claudeHandler;
 
+    // Admin-gated handlers are shared between the main handler loop (legacy
+    // bare forms) and the `admin <command>` namespace delegation (#1076).
+    const promptHandler = new PromptHandler(deps as any);
+    const instructionsHandler = new InstructionsHandler(deps as any);
+    const cctHandler = new CctHandler();
+    const pluginsHandler = new PluginsHandler(deps as any);
+    const sandboxHandler = new SandboxHandler();
+    const uiTestHandler = new UITestHandler(deps as any);
+    const adminHandler = new AdminHandler(deps as any, [
+      promptHandler,
+      instructionsHandler,
+      sandboxHandler,
+      pluginsHandler,
+      cctHandler,
+      uiTestHandler,
+    ]);
+
     return {
       newHandler,
       skillForceHandler,
@@ -58,21 +75,21 @@ setCommandRouterProviders({
       // `$skill` suffix. See `CommandRouterHandlers.hasActiveSession`.
       hasActiveSession: (channel, threadTs) => claudeHandler.getSession(channel, threadTs) != null,
       handlers: [
-        new AdminHandler(),
-        new PromptHandler(deps as any),
-        new InstructionsHandler(deps as any),
-        new CctHandler(),
+        adminHandler,
+        promptHandler,
+        instructionsHandler,
+        cctHandler,
         new CwdHandler(deps as any),
         new McpHandler(deps as any),
         new DashboardHandler(),
         new MarketplaceHandler(deps as any),
-        new PluginsHandler(deps as any),
+        pluginsHandler,
         new UserSkillsListHandler(),
         skillForceHandler,
         new SessionCommandHandler(deps as any),
         new BypassHandler(),
-        new SandboxHandler(),
-        new UITestHandler(deps as any),
+        sandboxHandler,
+        uiTestHandler,
         new EmailHandler(),
         new RateHandler(),
         new PersonaHandler(),

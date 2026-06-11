@@ -1,11 +1,22 @@
 import fs from 'fs';
-import { isAdminUser, resetAdminUsersCache } from '../../admin-utils';
+import { getAdminUsers, isAdminUser, resetAdminUsersCache } from '../../admin-utils';
+import { invalidateChannelCache } from '../../channel-description-cache';
+import { getAllChannels, scanChannels } from '../../channel-registry';
 import { ENV_FILE } from '../../env-paths';
 import { redactAnthropicSecrets } from '../../logger';
 import { getTokenManager } from '../../token-manager';
 import { userSettingsStore } from '../../user-settings-store';
 import { CommandParser } from '../command-parser';
 import type { CommandContext, CommandHandler, CommandResult } from './types';
+
+/**
+ * Optional dependencies for `admin setup`. Each step degrades to an explicit
+ * "not wired" report line when its dependency is missing — never silently.
+ */
+export interface AdminHandlerDeps {
+  slackApi?: { getClient(): unknown };
+  mcpManager?: { reloadConfiguration(): { mcpServers: Record<string, unknown> } | null };
+}
 
 const SENSITIVE_PATTERNS = /TOKEN|SECRET|KEY|PASSWORD|PRIVATE/i;
 
@@ -55,9 +66,20 @@ function parseTokenListEntries(raw: string): ParsedSlotEntry[] {
 }
 
 /**
- * Handles admin commands: accept/deny/users/config (admin only)
+ * Handles the `admin` command namespace (admin only):
+ * - `admin` — menu of admin-only commands
+ * - `admin setup` — idempotent re-run of startup setup
+ * - `admin accept/deny/users/config` — namespaced user/config management
+ *   (legacy bare `accept`/`deny`/`users`/`config` forms remain as aliases)
+ * - `admin <delegated>` — admin-gated commands owned by other handlers
+ *   (`admin show prompt`, `admin sandbox on`, `admin plugins update`, …)
  */
 export class AdminHandler implements CommandHandler {
+  constructor(
+    private deps: AdminHandlerDeps = {},
+    private delegates: CommandHandler[] = [],
+  ) {}
+
   canHandle(text: string): boolean {
     return CommandParser.isAdminCommand(text);
   }
@@ -73,13 +95,19 @@ export class AdminHandler implements CommandHandler {
     const action = CommandParser.parseAdminCommand(text);
     if (!action) {
       await say({
-        text: 'Usage: `accept @user` | `deny @user` | `users` | `config show` | `config KEY=VALUE`',
+        text: 'Usage: `admin` | `admin setup` | `admin accept @user` | `admin deny @user` | `admin users` | `admin config show` | `admin config KEY=VALUE`',
         thread_ts: threadTs,
       });
       return { handled: true };
     }
 
     switch (action.action) {
+      case 'menu':
+        return this.handleMenu(ctx);
+      case 'setup':
+        return this.handleSetup(ctx);
+      case 'delegate':
+        return this.handleDelegate(ctx, action.rest);
       case 'accept':
         return this.handleAccept(ctx, action.targetUser);
       case 'deny':
@@ -90,6 +118,115 @@ export class AdminHandler implements CommandHandler {
         if (action.sub === 'show') return this.handleConfigShow(ctx);
         return this.handleConfigSet(ctx, action.key, action.value);
     }
+  }
+
+  private async handleMenu(ctx: CommandContext): Promise<CommandResult> {
+    const lines = [
+      '🛡️ *Admin Commands* (admin only)',
+      '',
+      '*Setup:*',
+      '• `admin setup` — Idempotently re-run startup setup: channel-repo registry rescan, channel description cache invalidation, MCP config reload, admin user cache refresh',
+      '',
+      '*User management:*',
+      '• `admin accept @user` — Approve a pending user',
+      '• `admin deny @user` — Deny/remove a user',
+      '• `admin users` — List pending/accepted users',
+      '',
+      '*Config:*',
+      '• `admin config show` — Show .env config (secrets masked)',
+      '• `admin config KEY=VALUE` — Update env config',
+      '',
+      '*Session inspection:*',
+      '• `admin show prompt` — Show the system prompt of this session',
+      '• `admin show instructions` — Show stored user instructions',
+      '',
+      '*Sandbox:*',
+      '• `admin sandbox on|off` — Toggle process sandbox',
+      '• `admin sandbox network on|off` — Toggle network allowlist',
+      '',
+      '*Plugins:*',
+      '• `admin plugins update` — Force re-download all plugins',
+      '• `admin plugins add|remove|rollback <ref>` — Manage plugins',
+      '',
+      '*Token pool:*',
+      '• `admin cct` — OAuth token pool admin card',
+      '• `admin cct set <name>` / `admin cct next` / `admin cct auto [dry]` — Rotate tokens',
+      '',
+      '*UI test:*',
+      '• `admin ui-test <case>` — Internal Block Kit UI tests',
+      '',
+      '_Legacy bare forms (`accept`, `users`, `config`, `show prompt`, `sandbox`, `plugins`, `cct`, `ui-test`) still work as aliases._',
+    ];
+    await ctx.say({ text: lines.join('\n'), thread_ts: ctx.threadTs });
+    return { handled: true };
+  }
+
+  /**
+   * Idempotent re-run of startup-time setup. Every step reports success or
+   * failure explicitly; a failed step never blocks the remaining steps.
+   */
+  private async handleSetup(ctx: CommandContext): Promise<CommandResult> {
+    const lines: string[] = ['🔄 *Admin Setup* — idempotent re-initialization', ''];
+
+    // Step 1: Channel-repo registry rescan (same scan as startup)
+    if (this.deps.slackApi && typeof this.deps.slackApi.getClient === 'function') {
+      try {
+        const total = await scanChannels(this.deps.slackApi.getClient() as never);
+        const channels = getAllChannels();
+        for (const ch of channels) invalidateChannelCache(ch.id);
+        const mapped = channels.filter((c) => c.repos.length > 0);
+        lines.push(`✅ Channel scan: ${total} channel(s), ${mapped.length} with repo mappings`);
+        for (const ch of mapped) {
+          lines.push(`    • #${ch.name} → ${ch.repos.join(', ')}`);
+        }
+      } catch (err) {
+        lines.push(`❌ Channel scan failed: ${(err as Error).message}`);
+      }
+    } else {
+      lines.push('❌ Channel scan skipped: slackApi not wired');
+    }
+
+    // Step 2: MCP configuration reload
+    if (this.deps.mcpManager && typeof this.deps.mcpManager.reloadConfiguration === 'function') {
+      try {
+        const config = this.deps.mcpManager.reloadConfiguration();
+        const count = config?.mcpServers ? Object.keys(config.mcpServers).length : 0;
+        lines.push(`✅ MCP config reloaded: ${count} server(s)`);
+      } catch (err) {
+        lines.push(`❌ MCP config reload failed: ${(err as Error).message}`);
+      }
+    } else {
+      lines.push('❌ MCP config reload skipped: mcpManager not wired');
+    }
+
+    // Step 3: Admin user cache refresh (re-reads ADMIN_USERS env)
+    try {
+      resetAdminUsersCache();
+      lines.push(`✅ Admin user cache refreshed: ${getAdminUsers().size} admin(s)`);
+    } catch (err) {
+      lines.push(`❌ Admin user cache refresh failed: ${(err as Error).message}`);
+    }
+
+    await ctx.say({ text: lines.join('\n'), thread_ts: ctx.threadTs });
+    return { handled: true };
+  }
+
+  /**
+   * Route `admin <delegated>` to the original owner handler with the `admin `
+   * prefix stripped. The owner handlers keep their own admin gates, so this
+   * adds no privilege — it only namespaces the commands.
+   */
+  private async handleDelegate(ctx: CommandContext, rest: string): Promise<CommandResult> {
+    for (const delegate of this.delegates) {
+      if (delegate.canHandle(rest, ctx.user)) {
+        return delegate.execute({ ...ctx, text: rest });
+      }
+    }
+    await ctx.say({
+      text: `❓ Unknown admin command: \`${rest}\`\nType \`admin\` to see available admin commands.`,
+      thread_ts: ctx.threadTs,
+    });
+    return { handled: true };
   }
 
   private async handleAccept(ctx: CommandContext, targetUser: string): Promise<CommandResult> {
