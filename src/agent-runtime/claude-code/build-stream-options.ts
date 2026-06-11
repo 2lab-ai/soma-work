@@ -36,6 +36,7 @@ import {
 import { CONFIG_FILE } from '../../env-paths';
 import type { McpConfig, SlackContext } from '../../mcp-config-builder';
 import { getPermissionGatedServers, loadMcpToolPermissions } from '../../mcp-tool-permission-config';
+import { isNativeOneMModel, NATIVE_ONE_M_SDK_BLOCKING_LIMIT } from '../../metrics/model-registry';
 import { isSafePathSegment, normalizeTmpPath } from '../../path-utils';
 import type { SdkPluginPath } from '../../plugin/types';
 import { DEV_DOMAIN_ALLOWLIST } from '../../sandbox/dev-domain-allowlist';
@@ -225,6 +226,46 @@ export async function buildStreamOptions(
     const userModel = userSettingsStore.getUserDefaultModel(slackContext.user);
     options.model = userModel;
     logger.debug('Using user default model', { model: userModel, user: slackContext.user });
+  }
+
+  // Native-1M SDK context-window workaround.
+  //
+  // The pinned Agent SDK (0.2.111, CLI bundled pre fable-5) does not know
+  // native-1M model ids: its internal window resolver only honors the `[1m]`
+  // suffix / 1M beta header / a sonnet-4-6 experiment, and falls back to 200k
+  // for everything else — including `claude-fable-5`. Observed consequence:
+  // SDK-side autocompact fired at 200k − 33k = 167k while the thread showed
+  // "17% (167k/1.0M)", and the SDK would hard-block input at ~177k. The
+  // harness itself resolves these models to 1M correctly (model-registry
+  // NATIVE_ONE_M_RE), so only the SDK's internal math needs correcting:
+  //
+  //   • DISABLE_AUTO_COMPACT=1 — kill the SDK's 200k-calibrated autocompact.
+  //     Compaction is still driven by the turn-end threshold checker (#617,
+  //     % of the true 1M window → next turn becomes `/compact`); the
+  //     `/compact` command itself stays enabled (only DISABLE_COMPACT would
+  //     remove it). CLAUDE_CODE_AUTO_COMPACT_WINDOW is NOT usable here — the
+  //     SDK caps it at its own (wrong) model window.
+  //   • CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE — lift the SDK's input
+  //     hard-block to the 1M equivalent of its own formula (977k), so long
+  //     sessions don't get refused at ~177k.
+  //
+  // Operator-provided values (process env / config.json#claude.env) win — we
+  // only fill keys that are unset. Remove this block once the pinned SDK CLI
+  // resolves fable-5 to 1M natively.
+  if (options.model && isNativeOneMModel(options.model)) {
+    if (!options.env) options.env = {};
+    const env = options.env;
+    if (env.DISABLE_AUTO_COMPACT === undefined) {
+      env.DISABLE_AUTO_COMPACT = '1';
+    }
+    if (env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE === undefined) {
+      env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE = String(NATIVE_ONE_M_SDK_BLOCKING_LIMIT);
+    }
+    logger.info('Native-1M model: injected SDK context-window workaround env', {
+      model: options.model,
+      disableAutoCompact: env.DISABLE_AUTO_COMPACT,
+      blockingLimitOverride: env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE,
+    });
   }
 
   // Set effort level only when explicitly configured
