@@ -107,6 +107,36 @@ function buildDeps(overrides: Record<string, any> = {}): any {
 }
 
 /**
+ * Stub filesystem so SkillForceHandler sees a well-known skill layout.
+ * Shared by the `new`/`goal` composition and `new` re-route describe blocks.
+ */
+function stubSkillFs(options: { localSkills?: string[]; pluginSkills?: Record<string, string[]> } = {}): void {
+  const localSkills = new Set(options.localSkills ?? ['z']);
+  const pluginSkills = new Map<string, Set<string>>();
+  for (const [plugin, skills] of Object.entries(options.pluginSkills ?? {})) {
+    pluginSkills.set(plugin, new Set(skills));
+  }
+  vi.mocked(fs.existsSync).mockImplementation((p) => {
+    const s = String(p);
+    // Local skill layout: .../local/skills/{skill}/SKILL.md
+    const localMatch = s.match(/local\/skills\/([\w-]+)\/SKILL\.md$/);
+    if (localMatch) return localSkills.has(localMatch[1]);
+    // Plugin skill layout: /mock/plugins/{plugin}/skills/{skill}/SKILL.md
+    const pluginMatch = s.match(/\/mock\/plugins\/([\w-]+)\/skills\/([\w-]+)\/SKILL\.md$/);
+    if (pluginMatch) return pluginSkills.get(pluginMatch[1])?.has(pluginMatch[2]) ?? false;
+    return false;
+  });
+  vi.mocked(fs.readFileSync).mockImplementation((p) => {
+    const s = String(p);
+    const localMatch = s.match(/local\/skills\/([\w-]+)\/SKILL\.md$/);
+    if (localMatch) return `# ${localMatch[1]} skill body\nDo the ${localMatch[1]} thing.`;
+    const pluginMatch = s.match(/\/mock\/plugins\/([\w-]+)\/skills\/([\w-]+)\/SKILL\.md$/);
+    if (pluginMatch) return `# ${pluginMatch[1]}:${pluginMatch[2]} skill body\nDo it.`;
+    return '';
+  });
+}
+
+/**
  * Regression guard (PR #509, codex P1): after stripping the `/z` prefix and
  * rewriting `ctx.text` via `translateToLegacy()`, the dispatch loop must
  * consult the rewritten text — not the locally destructured copy — so the
@@ -473,42 +503,18 @@ describe('CommandRouter — non-canonical bare input falls through (no tombstone
  * remainder would never get resolved into an `<invoked_skills>` block.
  *
  * Fix: `new`/`/new` is promoted to a preprocessor (mirroring the `/z` prefix
- * pattern). It runs session reset FIRST, then — and only then — if the
- * remainder contains a `$skill` force trigger, `SkillForceHandler` resolves
- * it so the reset + skill force invocation compose correctly.
+ * pattern). It runs session reset FIRST, then RE-ROUTES the remainder through
+ * the full router as if the user had typed it directly after the reset.
  *
- * All OTHER command-shaped remainders (help / sessions / compact / ...) keep
- * their existing semantics: delivered to Claude as a plain prompt. That is
- * the narrow-scope contract and it is verified below.
+ * Contract widening (`new goal …` bug): the original narrow-scope contract
+ * only composed `$skill` remainders and delivered every other command-shaped
+ * remainder (goal / help / new / …) to Claude as a plain prompt — so
+ * `new goal <objective>` reset the session but silently dropped the `goal`
+ * command. The remainder is now recursively re-routed: `new goal X` sets the
+ * goal, `new new X` resets twice, `new help` shows the help card. Plain-text
+ * remainders still fall through to Claude unchanged.
  */
 describe('CommandRouter — `new` + `$skill` composition (preprocessor)', () => {
-  /** Stub filesystem so SkillForceHandler sees a well-known skill layout. */
-  function stubSkillFs(options: { localSkills?: string[]; pluginSkills?: Record<string, string[]> } = {}): void {
-    const localSkills = new Set(options.localSkills ?? ['z']);
-    const pluginSkills = new Map<string, Set<string>>();
-    for (const [plugin, skills] of Object.entries(options.pluginSkills ?? {})) {
-      pluginSkills.set(plugin, new Set(skills));
-    }
-    vi.mocked(fs.existsSync).mockImplementation((p) => {
-      const s = String(p);
-      // Local skill layout: .../local/skills/{skill}/SKILL.md
-      const localMatch = s.match(/local\/skills\/([\w-]+)\/SKILL\.md$/);
-      if (localMatch) return localSkills.has(localMatch[1]);
-      // Plugin skill layout: /mock/plugins/{plugin}/skills/{skill}/SKILL.md
-      const pluginMatch = s.match(/\/mock\/plugins\/([\w-]+)\/skills\/([\w-]+)\/SKILL\.md$/);
-      if (pluginMatch) return pluginSkills.get(pluginMatch[1])?.has(pluginMatch[2]) ?? false;
-      return false;
-    });
-    vi.mocked(fs.readFileSync).mockImplementation((p) => {
-      const s = String(p);
-      const localMatch = s.match(/local\/skills\/([\w-]+)\/SKILL\.md$/);
-      if (localMatch) return `# ${localMatch[1]} skill body\nDo the ${localMatch[1]} thing.`;
-      const pluginMatch = s.match(/\/mock\/plugins\/([\w-]+)\/skills\/([\w-]+)\/SKILL\.md$/);
-      if (pluginMatch) return `# ${pluginMatch[1]}:${pluginMatch[2]} skill body\nDo it.`;
-      return '';
-    });
-  }
-
   function makeRouter(depsOverrides: Record<string, any> = {}): {
     router: CommandRouter;
     deps: any;
@@ -614,7 +620,7 @@ describe('CommandRouter — `new` + `$skill` composition (preprocessor)', () => 
     expect(result.continueWithPrompt).toBe('write a function');
   });
 
-  it('6. `new help` → preserves existing semantic (remainder delivered to Claude as prompt, HelpHandler NOT executed)', async () => {
+  it('6. `new help` → remainder re-routed as a command: HelpHandler IS executed (contract widened)', async () => {
     stubSkillFs({ localSkills: ['z'] });
     const helpExec = vi.spyOn(HelpHandler.prototype, 'execute');
     const skillExec = vi.spyOn(SkillForceHandler.prototype, 'execute');
@@ -622,10 +628,13 @@ describe('CommandRouter — `new` + `$skill` composition (preprocessor)', () => 
     const { router, say } = makeRouter();
     const result = await router.route(makeCtx('new help', say));
 
-    expect(helpExec).not.toHaveBeenCalled();
+    // The remainder is treated exactly as if the user had typed `help`
+    // directly after the reset — the help card is posted, nothing is
+    // forwarded to the model.
+    expect(helpExec).toHaveBeenCalledTimes(1);
     expect(skillExec).not.toHaveBeenCalled();
     expect(result.handled).toBe(true);
-    expect(result.continueWithPrompt).toBe('help');
+    expect(result.continueWithPrompt).toBeUndefined();
   });
 
   it('7. bare `new` → handled:true, continueWithPrompt undefined, SkillForce NOT run', async () => {
@@ -717,30 +726,6 @@ describe('CommandRouter — `new` + `$skill` composition (preprocessor)', () => 
  *   - The `<invoked_skills>` block reaches Claude on the same turn.
  */
 describe('CommandRouter — `goal` + `$skill` composition (preprocessor)', () => {
-  function stubSkillFs(options: { localSkills?: string[]; pluginSkills?: Record<string, string[]> } = {}): void {
-    const localSkills = new Set(options.localSkills ?? ['z']);
-    const pluginSkills = new Map<string, Set<string>>();
-    for (const [plugin, skills] of Object.entries(options.pluginSkills ?? {})) {
-      pluginSkills.set(plugin, new Set(skills));
-    }
-    vi.mocked(fs.existsSync).mockImplementation((p) => {
-      const s = String(p);
-      const localMatch = s.match(/local\/skills\/([\w-]+)\/SKILL\.md$/);
-      if (localMatch) return localSkills.has(localMatch[1]);
-      const pluginMatch = s.match(/\/mock\/plugins\/([\w-]+)\/skills\/([\w-]+)\/SKILL\.md$/);
-      if (pluginMatch) return pluginSkills.get(pluginMatch[1])?.has(pluginMatch[2]) ?? false;
-      return false;
-    });
-    vi.mocked(fs.readFileSync).mockImplementation((p) => {
-      const s = String(p);
-      const localMatch = s.match(/local\/skills\/([\w-]+)\/SKILL\.md$/);
-      if (localMatch) return `# ${localMatch[1]} skill body\nDo the ${localMatch[1]} thing.`;
-      const pluginMatch = s.match(/\/mock\/plugins\/([\w-]+)\/skills\/([\w-]+)\/SKILL\.md$/);
-      if (pluginMatch) return `# ${pluginMatch[1]}:${pluginMatch[2]} skill body\nDo it.`;
-      return '';
-    });
-  }
-
   function makeCtx(
     text: string,
     say: ReturnType<typeof vi.fn>,
@@ -1164,5 +1149,135 @@ describe('CommandRouter — `goal` + `$skill` composition (preprocessor)', () =>
         expect.objectContaining({ text: expect.stringContaining('인식할 수 없습니다') }),
       );
     }
+  });
+});
+
+/**
+ * `new <command …>` — recursive remainder re-route.
+ *
+ * Bug: `new goal <objective>` reset the session but the remainder
+ * `goal <objective>` was delivered to Claude as a PLAIN PROMPT — the goal
+ * command silently never ran (the old `new` preprocessor only composed
+ * `$skill` remainders). Contract now: after `new` runs, the remainder is
+ * re-routed through the full router as if the user had typed it directly,
+ * so command semantics survive the `new` prefix. `new new …` chains reset
+ * repeatedly; the chain depth is capped to bound Slack side effects.
+ */
+describe('CommandRouter — `new <command>` remainder re-route (recursive)', () => {
+  function makeRouterWithSession(): {
+    router: CommandRouter;
+    deps: any;
+    say: ReturnType<typeof vi.fn>;
+    session: { goal?: any; systemPrompt?: string };
+  } {
+    const say = vi.fn().mockResolvedValue(undefined);
+    const session: { goal?: any; systemPrompt?: string } = { systemPrompt: 'cached' };
+    const deps = buildDeps({
+      claudeHandler: {
+        getSession: vi.fn().mockReturnValue(session),
+        getSessionKey: vi.fn().mockImplementation((c: string, t: string) => `${c}:${t}`),
+        resetSessionContext: vi.fn().mockReturnValue(true),
+        saveSessions: vi.fn(),
+      },
+    });
+    const router = new CommandRouter(deps);
+    return { router, deps, say, session };
+  }
+
+  function makeCtx(text: string, say: ReturnType<typeof vi.fn>): any {
+    return { text, user: 'U1', channel: 'C1', threadTs: 'T1', say };
+  }
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('1. `new goal ship X` → session reset AND goal IS set, goal continuation prompt returned', async () => {
+    stubSkillFs({ localSkills: [] });
+    const newExec = vi.spyOn(NewHandler.prototype, 'execute');
+    const goalExec = vi.spyOn(GoalHandler.prototype, 'execute');
+
+    const { router, say, deps, session } = makeRouterWithSession();
+    const result = await router.route(makeCtx('new goal ship X', say));
+
+    // Reset ran first…
+    expect(newExec).toHaveBeenCalledTimes(1);
+    expect(deps.claudeHandler.resetSessionContext).toHaveBeenCalledTimes(1);
+    // …then the remainder was re-routed into GoalHandler.
+    expect(goalExec).toHaveBeenCalledTimes(1);
+    expect(session.goal).toBeDefined();
+    expect(session.goal.objective).toBe('ship X');
+    expect(session.goal.status).toBe('active');
+
+    // The turn continues with the goal continuation prompt — exactly what a
+    // directly-typed `goal ship X` produces.
+    expect(result.handled).toBe(true);
+    expect(result.continueWithPrompt).toContain('Continue working toward the active session goal');
+  });
+
+  it('2. `new goal ship X $z proceed` → reset + CLEAN goal objective + <invoked_skills> (triple composition)', async () => {
+    stubSkillFs({ localSkills: ['z'] });
+    const skillExec = vi.spyOn(SkillForceHandler.prototype, 'execute');
+
+    const { router, say, session } = makeRouterWithSession();
+    const result = await router.route(makeCtx('new goal ship X $z proceed', say));
+
+    expect(session.goal?.objective).toBe('ship X');
+    expect(skillExec).toHaveBeenCalledTimes(1);
+    expect(skillExec.mock.calls[0][0].text).toBe('$z proceed');
+    expect(result.handled).toBe(true);
+    expect(result.continueWithPrompt).toContain('<invoked_skills>');
+    expect(result.continueWithPrompt).toContain('<local:z>');
+    // Durable goal objective must not leak the skill suffix.
+    expect(session.goal?.objective).not.toContain('$z');
+  });
+
+  it('3. `new new write a test` → NewHandler runs TWICE, remainder delivered as plain prompt', async () => {
+    stubSkillFs({ localSkills: [] });
+    const newExec = vi.spyOn(NewHandler.prototype, 'execute');
+
+    const { router, say } = makeRouterWithSession();
+    const result = await router.route(makeCtx('new new write a test', say));
+
+    expect(newExec).toHaveBeenCalledTimes(2);
+    expect(result.handled).toBe(true);
+    expect(result.continueWithPrompt).toBe('write a test');
+  });
+
+  it('4. `new new new` → three resets, no continuation (final bare `new`)', async () => {
+    stubSkillFs({ localSkills: [] });
+    const newExec = vi.spyOn(NewHandler.prototype, 'execute');
+
+    const { router, say } = makeRouterWithSession();
+    const result = await router.route(makeCtx('new new new', say));
+
+    expect(newExec).toHaveBeenCalledTimes(3);
+    expect(result.handled).toBe(true);
+    expect(result.continueWithPrompt).toBeUndefined();
+  });
+
+  it('5. chain depth cap — `new` ×8 stops after MAX_NEW_CHAIN_DEPTH+1 executions, rest degrades to prompt', async () => {
+    stubSkillFs({ localSkills: [] });
+    const newExec = vi.spyOn(NewHandler.prototype, 'execute');
+
+    const { router, say } = makeRouterWithSession();
+    const result = await router.route(makeCtx('new new new new new new new new', say));
+
+    // Depths 0..5 each execute one `new` (6 total), then recursion stops and
+    // the remaining `new new` is delivered to the model as a plain prompt.
+    expect(newExec).toHaveBeenCalledTimes(6);
+    expect(result.handled).toBe(true);
+    expect(result.continueWithPrompt).toBe('new new');
+  });
+
+  it('6. `new renew` style non-goal command remainder also re-routes (RenewHandler executed)', async () => {
+    stubSkillFs({ localSkills: [] });
+    const renewExec = vi.spyOn(RenewHandler.prototype, 'execute').mockResolvedValue({ handled: true });
+
+    const { router, say } = makeRouterWithSession();
+    const result = await router.route(makeCtx('new renew', say));
+
+    expect(renewExec).toHaveBeenCalledTimes(1);
+    expect(result.handled).toBe(true);
   });
 });
