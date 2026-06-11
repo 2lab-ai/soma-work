@@ -84,3 +84,8 @@ usercontent/
 
 # bv (beads viewer) local config and caches
 .bv/
+
+# Python bytecode (zkorean static checker ships .py only)
+__pycache__/
+*.pyc
+*.pyo
