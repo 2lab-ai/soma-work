@@ -264,6 +264,24 @@ export class TurnNotifier {
     const active = enabledChannels.filter((ch): ch is NotificationChannel => ch !== null);
 
     if (active.length === 0) {
+      if (excludeSet) {
+        // A caller passing `excludeChannelNames` declares those channels are
+        // handled elsewhere — in the P5 path, `TurnSurface.end` has ALREADY
+        // surfaced the B5 terminal card via the block-kit channel (that is
+        // exactly why `slack-block-kit` is excluded here, see
+        // StreamExecutor.buildCompletionNotifyOpts). Zero remaining enabled
+        // channels just means the user has no opt-in fan-out channels
+        // (slack-dm / webhook / telegram) — fully expected, NOT a missing
+        // card. Logging this case with the §B-3 warn below ("terminal card
+        // not surfaced") is factually wrong and caused a real misdiagnosis
+        // during the #1079 invalid_blocks incident triage.
+        logger.debug('TurnNotifier: no opt-in fan-out channels enabled — terminal card already surfaced upstream', {
+          userId: event.userId,
+          category: event.category,
+          excluded: [...excludeSet],
+        });
+        return;
+      }
       // Turn-end surface guarantee §B-3: zero enabled channels means the
       // turn just ended with NO terminal signal anywhere. Pre-fix this
       // returned silently — operators triaging "where did the card go?"
