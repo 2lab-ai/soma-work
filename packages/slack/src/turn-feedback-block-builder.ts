@@ -73,12 +73,21 @@ export function parseDismissValue(value: string | undefined): { turnId: string; 
   return { turnId, ownerUserId };
 }
 
-/** The 🗑 `icon_button` element that dismisses (deletes) the completion card. */
+/**
+ * The 🗑 `icon_button` element that dismisses (deletes) the completion card.
+ *
+ * `text` is REQUIRED by the Slack API (plain_text label). Omitting it makes
+ * chat.postMessage reject the ENTIRE message with
+ * `invalid_blocks: missing required field: text [json-pointer:/blocks/N/elements/1]`
+ * — which silently killed every WorkflowComplete terminal card since #1067
+ * (the failure was only logged as a WARN in SlackBlockKitChannel.send).
+ */
 function dismissIconButton(turnId: string, ownerUserId: string): Record<string, unknown> {
   return {
     type: 'icon_button',
     action_id: TURN_DISMISS_ACTION_ID,
     icon: 'trash',
+    text: { type: 'plain_text', text: clampText('닫기') },
     value: encodeDismissValue(turnId, ownerUserId),
     accessibility_label: 'Dismiss this completion card',
     // Only the turn owner sees the trash affordance.
