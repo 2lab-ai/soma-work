@@ -245,6 +245,23 @@ export function isNativeOneMModel(model: string): boolean {
   return NATIVE_ONE_M_RE.test(model);
 }
 
+/**
+ * `CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE` value injected for native-1M models.
+ *
+ * The pinned Agent SDK (0.2.111) does not know native-1M model ids — its
+ * internal window resolver only honors the `[1m]` suffix, the 1M beta header
+ * (sonnet-4 / opus-4-6 / opus-4-7 only), or a sonnet-4-6 experiment, and
+ * falls back to 200k for everything else, including `claude-fable-5`. On that
+ * bogus 200k base the SDK hard-blocks new input at `window − 20k (output
+ * reserve) − 3k (safety) ≈ 177k`. This constant is the same SDK formula
+ * evaluated on the true 1M window: 1_000_000 − 20_000 − 3_000.
+ *
+ * Consumed by `build-stream-options.ts` (native-1M env workaround). Remove
+ * together with that injection once the pinned SDK CLI resolves fable-5 to
+ * 1M natively.
+ */
+export const NATIVE_ONE_M_SDK_BLOCKING_LIMIT = 977_000;
+
 /** Strips the `[1m]` suffix from `model` if present. Case-insensitive. */
 export function stripOneMSuffix(model: string): string {
   return model.replace(ONE_M_SUFFIX_RE, '');
