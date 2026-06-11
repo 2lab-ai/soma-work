@@ -26,6 +26,7 @@ const TEMPLATE_NAMES = [
   'ztrace-ambiguous-scenario',
   'zexplore-research-scope',
   'decision-gate-tier-medium',
+  'pr-triage-batch-action',
 ] as const;
 
 type TemplateName = (typeof TEMPLATE_NAMES)[number];
@@ -33,6 +34,8 @@ type TemplateName = (typeof TEMPLATE_NAMES)[number];
 interface RawTemplate {
   $schema?: string;
   _comment?: string;
+  /** v2-reserved templates may set _status; stripped before validation. */
+  _status?: string;
   type: 'user_choice' | 'user_choice_group';
   question: string;
   context?: string;
@@ -48,9 +51,10 @@ function loadTemplate(name: TemplateName): RawTemplate {
 
 function stripMetadata(raw: RawTemplate): UserChoice {
   // Drop documentation keys. The remaining shape must be a valid UserChoice.
-  const { $schema: _schema, _comment: _note, ...payload } = raw;
+  const { $schema: _schema, _comment: _note, _status: _stat, ...payload } = raw;
   void _schema;
   void _note;
+  void _stat;
   return payload as unknown as UserChoice;
 }
 
@@ -85,8 +89,8 @@ describe('UIAskUserQuestion caller templates', () => {
     });
   }
 
-  it('exports exactly 6 templates', () => {
-    expect(TEMPLATE_NAMES).toHaveLength(6);
+  it('exports exactly 7 templates', () => {
+    expect(TEMPLATE_NAMES).toHaveLength(7);
   });
 
   it('zcheck-pr-approve has 4 options (per zcheck/SKILL.md Step 4 spec)', () => {

@@ -1,0 +1,439 @@
+---
+name: pr-triage
+description: "Survey open PRs in 2lab-ai/soma-work, classify by stale/CI/review state, auto-label, and recommend (never execute) destructive actions. Triggered by: pr-triage, pr 정리, stale pr, pr cleanup, triage prs, 오래된 pr 정리, 오래된 pr 정리해줘."
+argument-hint: "[--dry-run]"
+allowed-tools: Bash, Read, Grep, Glob
+---
+
+# pr-triage — Stale PR cleanup for soma-work
+
+Survey open PRs, classify them, auto-label safe states (`stale` / `rotten` / `needs-rebase` / `needs-ci-fix`), and emit a Slack-friendly markdown report with **recommended** actions. Destructive actions (close / merge / rebase / comment) are **never** executed automatically — humans decide from the report.
+
+## Scope (hard-coded)
+
+- Repo: `2lab-ai/soma-work` only.
+- Open PRs only. Issues are out of scope.
+
+## Execution contract
+
+This skill is invoked by **the executing LLM** (you, reading this file). When the user trips a trigger keyword (e.g. "pr 정리해줘"), you become the executor of Steps 1–8 below. Specifically:
+
+- **Subject of every imperative below** ("Run …", "Fetch …", "Apply labels …") is **you**, the LLM, calling the `Bash` tool. The user does not run anything; they only see the final report you produce.
+- **Working directory**: any directory whose `gh` is authenticated against `2lab-ai/soma-work` (typically `cwd` of the user's session). Verify with `gh auth status` BEFORE Step 2; if it fails or the token lacks `repo` scope, halt with a clear "auth missing" message — do NOT silently fall through to no-op mode.
+- **Argument flow**: the user's `$ARGUMENTS` (e.g. `--dry-run`) flows through to (a) the bash wrapper that decides whether to run Step 7's mutations, AND (b) the `classify-prs.ts` invocation in Step 5. The TypeScript script accepts `--dry-run` as a no-op (so the same arg vector can be passed through both layers without filtering).
+- **TS script path**: `npx tsx src/local/skills/pr-triage/scripts/classify-prs.ts --prs <prs.json> [--ci <ci-by-num.json>] [--dry-run] [--now <ISO>]`. Output is JSON on stdout. Exit code 0 on success, non-zero on parse error.
+- **Failure modes**: any non-zero exit from `gh` or `tsx` halts the run after emitting a partial report with the specific failure step and command. Do NOT continue past auth/permission failures.
+
+## Requirements
+
+| Tool | Minimum | Why |
+|------|---------|-----|
+| `gh` | 2.40 | `--paginate --slurp` (older versions need `\| jq -s` fallback) |
+| `bash` | 4.3+ | `wait -n`, `export -f`, associative arrays |
+| `jq` | 1.6 | `capture` regex named groups for ci-by-num assembly |
+| `npx tsx` | latest | runs `classify-prs.ts` directly without compile step |
+
+macOS users running `/bin/bash` (3.2) MUST `brew install bash` and use `/opt/homebrew/bin/bash` for Steps 4 and 7. The Linux runners in `.github/workflows/ci.yml` already meet these versions.
+
+## Input
+
+**Arguments:** `$ARGUMENTS`
+
+| Flag | Default | Effect |
+|------|---------|--------|
+| `--dry-run` | off | Compute classification + report, but skip every label mutation. Use for first-time testing on a fresh repo. |
+
+If you ever need to extend scope to another repo, **stop and ask the user** — do not edit this skill silently.
+
+## Tier policy (stale / rotten thresholds)
+
+Stale clock is the number of days since **last real activity**. *Rotten* is the next escalation tier; do not auto-close — only recommend.
+
+| Category | Detection | Stale | Rotten |
+|----------|-----------|-------|--------|
+| **draft** | `isDraft=true` | 7d | 14d |
+| **ready** (no approval, no changes-requested) | `isDraft=false`, `reviewDecision` ∈ {`REVIEW_REQUIRED`, null} | 14d | 30d |
+| **approved** | `reviewDecision=APPROVED` AND `mergeable=MERGEABLE` AND latest CI run conclusion ∈ {`success`, null-but-no-required-checks} | 5d | 10d |
+| **failing-CI** | latest CI run conclusion ∈ {`failure`, `cancelled`, `timed_out`} | 7d | 14d |
+
+A PR can match multiple tiers (e.g. failing-CI + draft); use the **most-specific** tier in this priority order: `failing-CI` > `approved` > `draft` > `ready`.
+
+## Activity timestamp (CRITICAL — do not use `updatedAt`)
+
+`pr.updatedAt` from `gh pr list` is mutated by *any* PR-metadata change including label additions, milestone changes, reviewer assignments. Using it as the stale clock means **this skill resets the clock the moment it labels a PR** — self-defeating.
+
+Compute `lastActivityAt` per PR as the maximum of:
+
+1. `pr.headRefOid` commit date (`pushedAt`-equivalent) — `gh api repos/2lab-ai/soma-work/commits/<sha> --jq '.commit.committer.date'`. In practice fetch via the PR-list `commits(last:1)` GraphQL field below to avoid an extra round-trip per PR.
+2. Latest **issue** comment timestamp (general PR conversation).
+3. Latest **review** comment timestamp (line comments).
+4. Latest **review submission** timestamp (Approve / Changes-requested / Comment review events).
+
+Do not include label-change events, milestone changes, or assignee changes.
+
+Time math: all timestamps are ISO-8601 UTC. Compute `ageDays = (now - lastActivityAt) / 86400000` in UTC; do not localize.
+
+## Workflow
+
+### 1. Parse arguments
+
+Extract `--dry-run` flag from `$ARGUMENTS`. No positional args.
+
+### 2. Ensure required labels exist (skip if `--dry-run`)
+
+Required labels: `stale`, `rotten`, `needs-rebase`, `needs-ci-fix`, plus exemption labels `keep-open`, `pinned`.
+
+```bash
+# Requires bash 4+ for associative arrays. Spell out color/desc explicitly so
+# the LLM doesn't copy a `<see-table>` literal into the shell call.
+declare -A COLOR=(
+  [stale]=cccccc
+  [rotten]=b60205
+  [needs-rebase]=fbca04
+  [needs-ci-fix]=e99695
+  [keep-open]=0e8a16
+  [pinned]=5319e7
+)
+declare -A DESC=(
+  [stale]="No activity beyond category threshold"
+  [rotten]="No activity beyond rotten threshold — close candidate"
+  [needs-rebase]="mergeStateStatus=BEHIND — base branch advanced"
+  [needs-ci-fix]="CI failing for >3 days"
+  [keep-open]="Triage exemption — never mark stale"
+  [pinned]="Triage exemption (long-lived feature branches, RFCs)"
+)
+EXISTING=$(gh label list --repo 2lab-ai/soma-work --limit 200 --json name --jq '[.[].name]')
+DEGRADED=0
+for L in "${!COLOR[@]}"; do
+  case "$EXISTING" in
+    *"\"$L\""*) continue ;;
+  esac
+  if ! gh label create "$L" --repo 2lab-ai/soma-work \
+      --color "${COLOR[$L]}" --description "${DESC[$L]}" 2>/dev/null; then
+    echo "WARN: gh label create $L failed (permission?). Continuing in degraded mode." >&2
+    DEGRADED=1
+  fi
+done
+```
+
+| Label | Color | Description |
+|-------|-------|-------------|
+| `stale` | `cccccc` | No activity beyond category threshold |
+| `rotten` | `b60205` | No activity beyond rotten threshold — close candidate |
+| `needs-rebase` | `fbca04` | `mergeStateStatus=BEHIND` — base branch advanced |
+| `needs-ci-fix` | `e99695` | CI failing for >3 days |
+| `keep-open` | `0e8a16` | Triage exemption — never mark stale |
+| `pinned` | `5319e7` | Triage exemption (long-lived feature branches, RFCs) |
+
+### 3. Discover open PRs (single GraphQL roundtrip)
+
+Prefer one GraphQL query that fetches everything needed; falling back to `gh pr list --json` is acceptable but costs more roundtrips.
+
+```bash
+# Requires gh ≥ 2.40 for --slurp. --paginate alone emits concatenated JSON
+# (NDJSON-ish) which JSON.parse rejects on >1 page; --slurp wraps the pages
+# into a real JSON array which classify-prs.ts auto-detects.
+#
+# Do NOT pass -F endCursor=null. gh seeds the cursor itself when --paginate
+# detects $endCursor + pageInfo.endCursor in the response; passing -F also
+# binds the variable, and the precedence between the explicit -F and gh's
+# auto-seed varies by gh version. Just declare $endCursor in the query and
+# let gh manage the seed.
+gh api graphql --paginate --slurp -f query='
+  query($endCursor: String) {
+    repository(owner: "2lab-ai", name: "soma-work") {
+      pullRequests(states: OPEN, first: 100, after: $endCursor, orderBy: {field: UPDATED_AT, direction: DESC}) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          number title isDraft mergeable mergeStateStatus
+          baseRefName headRefName
+          reviewDecision
+          author {
+            __typename
+            ... on User { login }
+            ... on Bot { login }
+          }
+          createdAt
+          labels(first: 30) { nodes { name } }
+          commits(last: 1) { nodes { commit { committedDate } } }
+          comments(last: 1) { nodes { createdAt } }
+          reviews(last: 1) { nodes { submittedAt } }
+          latestReviews(last: 1) { nodes { submittedAt } }
+        }
+      }
+    }
+  }' > prs.json
+```
+
+Notes:
+- `--paginate` requires the variable name to be exactly `$endCursor` and the query must expose `pageInfo { hasNextPage endCursor }`. Renaming either breaks pagination.
+- If the local `gh` is older than 2.40 (no `--slurp`), pipe through `jq -s` instead: `gh api graphql --paginate -f query='...' | jq -s '.' > prs.json`.
+- `__typename` on `author` is required to distinguish bot authors from humans — `app/zhuge-liang-bot` and similar bot accounts cannot be pinged in comments, and the classifier emits a different recommendation track for bot-authored PRs (see §"Bot-authored PRs" below).
+- Cap total processed at 200 PRs; if the repo ever exceeds that, stop and emit a warning (do not silently truncate).
+- `pr.updatedAt` is intentionally NOT requested — its mutation behavior is incompatible with the stale-clock contract (see classify-prs.ts §"Activity timestamp").
+
+### 4. Per-PR enrich: CI status
+
+`gh pr checks` is **forbidden** (the bot token lacks the GraphQL `statusCheckRollup` permission — confirmed in `zcheck/SKILL.md:22`). Use Actions API per PR:
+
+```bash
+gh run list --branch "<head>" --repo 2lab-ai/soma-work --limit 1 \
+  --json status,conclusion,databaseId,createdAt -q '.[0]'
+```
+
+Possible outcomes:
+- Empty array `[]` → **No CI yet**: brand-new PR, workflow disabled, or branch has never run. Treat as a separate category — do **not** classify as approved-green or failing.
+- `status="completed", conclusion="success"` → green
+- `status="in_progress" | "queued"` → in-flight
+- `status="completed", conclusion ∈ {"failure","cancelled","timed_out","action_required"}` → red
+
+Run these CI lookups in parallel; cap concurrency at 8 to stay polite. Use the **bash background-job pattern below** (NOT raw `xargs`). The `bash -c` invocation MUST take the head ref via positional `$1` rather than string interpolation — adversarial branch names like `; rm -rf .` are accepted by GitHub but would execute if concatenated into the command string.
+
+**Assemble the per-PR CI map.** The `classify-prs.ts` script expects a single JSON object keyed by PR number string (`{ "383": {...}, "417": {...} }`), not N separate files. After fanning out the per-PR CI lookups, fold them into one map:
+
+```bash
+# Requires bash 4+ for `wait -n`. Branch refs go through positional args,
+# never string-concatenated, to defend against `; rm -rf .`-style branch names.
+mkdir -p .pr-triage-tmp
+fetch_ci() {
+  local n=$1 head=$2
+  gh run list --branch "$head" --repo 2lab-ai/soma-work --limit 1 \
+    --json status,conclusion,databaseId,createdAt -q '.[0] // {}' \
+    > ".pr-triage-tmp/ci-$n.json"
+}
+export -f fetch_ci
+while IFS=$'\t' read -r n head; do
+  fetch_ci "$n" "$head" &
+  while (( $(jobs -rp | wc -l) >= 8 )); do wait -n; done
+done < <(jq -r '[.[].data.repository.pullRequests.nodes[]] | .[] | "\(.number)\t\(.headRefName)"' prs.json)
+wait
+
+# Fold per-PR files into one map keyed by PR-number string. Requires jq 1.6+.
+jq -n 'reduce inputs as $r ({};
+  . + ({(input_filename | capture("ci-(?<n>[0-9]+)\\.json").n): $r}))' \
+  .pr-triage-tmp/ci-*.json > ci-by-num.json
+```
+
+The `ci-by-num.json` shape is `{"<pr_number>": { status, conclusion, databaseId, createdAt }, ...}`. An empty per-PR object `{}` is treated by classify-prs.ts as "No CI yet"; do not omit the key entirely — keep the PR present with an empty value so the script can distinguish "queried, none found" from "not queried at all".
+
+### 5. Classify each PR
+
+Canonical decision tree lives in `scripts/classify-prs.ts` (`classifyOne` + `pickAgeBucket` + `TIER_CATS` / `READY_MAP` / `CATEGORY_LABELS`). The TypeScript is the source of truth; this prose summary exists for human readers and stays at *summary* depth so the two cannot drift on details.
+
+Summary of the decision flow (run in this order):
+
+1. **Exemption first.** `keep-open` / `pinned` label → category `exempt`. Skip everything else.
+2. **Tier selection** (most-specific wins): `failing-CI` (CI red) → `approved` (APPROVED + MERGEABLE + CI not red) → `draft` (`isDraft=true`) → `ready` (everything else; further split by `reviewDecision` into `awaiting-review` vs `changes-requested`).
+3. **Age bucket** for that tier: `rotten` (≥ rotten threshold) > `stale` (≥ stale threshold) > `active`. Thresholds per tier are in §"Tier policy".
+4. **Single-condition overrides** (only when the tier put the PR in `active`, never overriding stale/rotten — those are more informative): `mergeable=CONFLICTING` & age ≥ 3d → `conflicted`; `mergeStateStatus=BEHIND` → `behind-base`.
+5. **Orthogonal label suggestions** (independent of category): always `needs-rebase` for BEHIND; `needs-ci-fix` for CI red ≥3d.
+6. **No-CI-yet override**: CI run absent AND age > 3d AND tier ≠ `failing-CI` → `no-ci-yet`. Strip `stale`/`rotten` from recommended labels (a PR with no CI run is not safely classifiable).
+7. **Idempotency filter**: drop any recommended label already present on the PR.
+8. **Un-stale**: if the PR is no longer in a stale/rotten category but still carries those labels, recommend their removal. Same for `needs-rebase` / `needs-ci-fix` when the underlying condition has cleared.
+9. **Stack-PR escalation** (§6): runs as a second pass after individual classification.
+
+If you change any threshold, decision branch, or category name, update **both** `classify-prs.ts` and the report header strings (§8) in the same commit. The `CATEGORY_LABELS` export is the single shared mapping between machine names and report headings.
+
+### 6. Stack-PR escalation
+
+A PR is *stack-dependent* when `baseRefName` is **not** the default branch (`main`) AND a sibling open PR exists whose `headRefName == this.baseRefName`.
+
+Stack rules:
+- If the parent PR is **healthy or active**, suppress the child's stale/rotten classification → category **Stack Dependent**, no label mutation, no recommendation.
+- If the parent PR is **stale or rotten itself**, surface the child in a new **Stack-Stuck** section with a link to the parent. Apply the child's normal labels too (parent stuckness should not protect children indefinitely — that is what hides MVC phase 1-7 chains today).
+- If the parent PR is **closed/merged**, the child is no longer stack-dependent — re-classify normally.
+
+Compute the parent map in one pass before classification: `{baseRefName: parentPRnumber}` keyed on heads of all open PRs.
+
+### 7. Apply labels (idempotent, capped, parallel)
+
+Skip when `--dry-run`.
+
+For each PR with a target label:
+- If the label is already present, skip.
+- Otherwise `gh pr edit <num> --repo 2lab-ai/soma-work --add-label <label>`.
+
+Counter-rule (un-stale): if a PR currently carries `stale` or `rotten` and *no longer* meets the threshold (i.e. fresh activity restored), remove the label (`--remove-label`). This is the only reason this skill removes labels.
+
+**Cap mutations at 30 per run.** If the budget is hit, stop labeling and emit a warning at the report top so the user knows to re-run.
+
+**Parallelize at -P 4 with explicit completion accounting.** `gh pr edit --add-label` is server-side idempotent, so the bot token's write rate-limit is the binding constraint, not concurrency. ~600ms per round-trip × 30 sequential = ~18s; -P 4 brings that under 5s.
+
+Concrete pattern (xargs alone can't track success/failure cleanly — use a small wrapper):
+
+```bash
+COMPLETED=0; SKIPPED_429=()
+apply_label() {
+  local n=$1 label=$2
+  for attempt in 1 2; do
+    if gh pr edit "$n" --repo 2lab-ai/soma-work --add-label "$label" 2>/dev/null; then
+      return 0
+    fi
+    sleep 2  # backoff before second attempt
+  done
+  return 1
+}
+export -f apply_label
+# Print "<num> <label>" lines on stdin; wrapper runs each, increments
+# COMPLETED only on success; logs 429-skipped to a file we read at the end.
+```
+
+Re-dispatch policy: each mutation gets at most 2 attempts (immediate + 1 retry after a 2s backoff). Persistent failures are reported under `Skipped (rate-limited or perm-denied)` in the report, NOT counted toward the 30-cap. Persistent failures across two consecutive runs imply a token permission issue — escalate to the user.
+
+Mutations are explicitly forbidden:
+- Posting comments (no warn comment, no rotten notice).
+- Closing PRs.
+- Merging PRs.
+- Pushing rebases.
+- Creating workflow_dispatch runs.
+
+#### 7a. Label-permission cascade (degraded mode)
+
+If `gh label create` fails in Step 2 (bot token lacks `repo:write` for labels), the skill enters **degraded mode**:
+1. Continue with classification + report — recommendations are still useful even without labels.
+2. **Suppress all `removeLabels` operations.** Removing a label that the user manually added would silently undo their decision when the bot can't add labels back.
+3. Add to the report header: `WARNING: degraded mode — labels could not be created. The keep-open exemption channel is unavailable; rotten recommendations cannot be deferred via label. Configure repo:write or use the alternative opt-out` (defined in §"Exemption rules").
+4. The `--dry-run` flag implies degraded mode automatically.
+
+### 8. Emit report
+
+Format the report exactly as below. Keep it Slack-friendly: tables, no images, no nested lists deeper than 2.
+
+**Section ordering and headings are fixed** — the LLM rendering this report MUST use them verbatim, in this order, omitting any section whose count is zero. The canonical mapping from `category` to section is exported as `REPORT_SECTIONS` from `scripts/classify-prs.ts`. Two invocations producing differently-ordered or differently-headed reports is a contract violation.
+
+| Section heading (verbatim) | Categories that roll up |
+|---|---|
+| `### 🔴 Rotten — close 추천 (N)` | approved-rotten, awaiting-review-rotten, changes-requested-rotten, draft-rotten, failing-ci-rotten |
+| `### 🟡 Stale (N)` | approved-stale, awaiting-review-stale, changes-requested-stale, draft-stale, failing-ci-stale |
+| `### 🚧 Failing CI (N)` | failing-ci-active |
+| `### 🔧 Behind base (N)` | behind-base |
+| `### ⛔ Conflicted (N)` | conflicted |
+| `### ⏳ Awaiting Review (N)` | awaiting-review-active, changes-requested-active |
+| `### ✅ Approved & Mergeable (N)` | approved-mergeable |
+| `### 📦 Stack Dependent (N)` | stack-dependent |
+| `### ⚠️ Stack-Stuck (N)` | stack-stuck |
+| `### ❓ No CI yet (N)` | no-ci-yet |
+| `### ⚠️ Corrupt input — manual review (N)` | corrupt |
+| `### 🛡 Exempt (N)` | exempt |
+
+````markdown
+## PR Triage — 2lab-ai/soma-work
+Generated <ISO timestamp> · <N_open> open PRs · <N_stale> stale · <N_rotten> rotten · <N_needs_action> need user action · <N_healthy> healthy
+{op_budget_warning_if_any}
+{degraded_mode_warning_if_any}
+
+### 🔴 Rotten — close 추천 (<count>)
+| # | Title | Author | Tier | Age | Reason | Action |
+|---|-------|--------|------|-----|--------|--------|
+| {n} | {title} | {author + 🤖 marker if bot, 👻 if ghost} | {tier} | {age}d | {LLM reason} | {action} |
+
+### 🟡 Stale (<count>)
+| # | Title | Author | Tier | Age | Reason | Action |
+
+### 🚧 Failing CI (<count>)
+| # | Title | Author | Run ID | Age red | Action |
+
+### 🔧 Behind base (<count>)
+| # | Title | base | Action |
+| {n} | {title} | {base} | `gh pr update-branch {n}` |
+
+### ⛔ Conflicted (<count>)
+| # | Title | Age | Action |
+| {n} | {title} | {age}d | resolve conflicts or close |
+
+### ⏳ Awaiting Review (<count>)
+| # | Title | Author | Age | Reviewer suggestions |
+
+### ✅ Approved & Mergeable (<count>)
+| # | Title | Approved at | Action |
+| {n} | {title} | {date} | `gh pr merge {n} --squash` |
+
+### 📦 Stack Dependent (<count>)
+| # | Title | Parent | Parent state |
+
+### ⚠️ Stack-Stuck (<count>)
+| # | Title | Parent | Parent age | Action |
+
+### ❓ No CI yet (<count>)
+| # | Title | Age | Action |
+| {n} | {title} | {age}d | trigger workflow or close |
+
+### 🛡 Exempt (<count>)
+| # | Title | Exempt label |
+
+## Auto-labeled this run
+- Added `stale`: #X, #Y, #Z (count)
+- Added `rotten`: #A, #B
+- Added `needs-rebase`: #C
+- Added `needs-ci-fix`: #D
+- Removed `stale` (un-stale): #E
+- Skipped (already labeled): <count>
+- Skipped (rate-limited or perm-denied): #F, #G
+
+## Suggested manual actions (NOT executed)
+**Close (rotten, human-authored):** `gh pr close 383 --comment "Closing as rotten — 30d no review activity. Reopen when ready."`
+**Close (rotten, bot-authored):** `gh pr close 417 --comment "Closing as rotten — bot-authored, no human follow-up. Re-trigger via the appropriate workflow if still relevant."`
+**Ping reviewer (awaiting, human-authored):** /cc @reviewer on #X, #Y
+**Bot-authored stale:** do NOT ping author; either close or assign a human owner via `gh pr edit <N> --add-assignee <login>`.
+**Rebase (behind base):** `gh pr update-branch 813`
+**Merge (approved):** `gh pr merge 815 --squash --delete-branch`
+
+**SECURITY — command injection prevention (read this once, every render):**
+- **Never** interpolate `pr.title`, `pr.headRefName`, `pr.author.login`, or any other user-controlled string into a `gh` command suggestion. PR titles like ``fix: rm `cat /etc/passwd` `` or branch names like `; rm -rf .` are accepted by GitHub and execute when copy-pasted into a shell that interprets backticks/`$()`/`;`.
+- Comment bodies must be **category-only templates** drawn from this fixed set:
+  - `Closing as rotten — N days no activity. Reopen when ready.`
+  - `Closing as rotten — bot-authored, no human follow-up. Re-trigger via the appropriate workflow if still relevant.`
+  - `Closing — author account deleted; re-open under a new author if still relevant.`
+- Substitute only **safe primitives** into `gh` commands: PR number (integer), label name (from the fixed `LabelName` enum), category name. Do **NOT** drop title, branch, login, or run-id text into double-quoted bash strings.
+- For `gh run list --branch "<head>"` (Step 4) and similar branch-substituting commands, the `bash -c` invocation pattern in Step 4 uses positional `$1` placeholders to keep the branch out of the command string — follow that template, do not concatenate.
+
+> Re-run with `--dry-run` to preview without labeling. Add `keep-open` to any PR that should be exempt.
+````
+
+#### Bot-authored PRs
+
+soma-work has many PRs authored by `app/zhuge-liang-bot` and similar App accounts. Bots cannot be pinged via GitHub `@mentions` and won't autonomously address review feedback. The classifier sets `authorType='bot'` for these PRs (driven by `__typename: Bot` in the GraphQL query, with a heuristic fallback for `app/`-prefixed and `[bot]`-suffixed logins), and the recommendation track diverges:
+
+- **Awaiting Review (bot, stale)**: do NOT recommend "ping author." Recommend either (a) assign a human owner (`gh pr edit --add-assignee`), or (b) close.
+- **Rotten (bot)**: recommend close with a comment that names the trigger workflow rather than the bot — humans only.
+- **Approved Stale (bot, mergeable)**: recommend `gh pr merge ...` directly; the bot won't merge itself.
+
+Mark bot rows with a 🤖 prefix in the Author column. Mark ghost (deleted-account) authors with 👻 and recommend close-or-reassign.
+
+Per-row "Reason" must be specific to that PR — leverage the LLM context. Examples:
+- `Awaiting review for 32d, last push 2026-04-05, CI green — no reviewer assigned`
+- `CI red for 9d (run #41827) — bot-author cannot self-fix`
+- `Approved by @y 8d ago, mergeable, but author hasn't merged`
+
+Do not output a single canned message for all rows — that is the documented weakness of `actions/stale`.
+
+### 9. (v2 placeholder — do not implement here) Batch action gate
+
+A future version will accept `--act` to surface a `UIAskUserQuestion` batch confirmation (close N rotten · ping M · rebase K). The template stub at `../UIAskUserQuestion/templates/pr-triage-batch-action.json` exists for that future. **For v1 the flag is silently ignored**; emit a one-line note "batch action gate coming in v2" if it is passed, do not error.
+
+## Error handling
+
+| Failure | Behavior |
+|---------|----------|
+| `gh auth status` fails / no token | Stop. Tell user to run `gh auth login` or set `GITHUB_TOKEN`. |
+| `gh label create` fails (permission) | Continue without that label; warn at report top; skip mutations that need it. |
+| GraphQL rate limit hit | Stop classification, emit partial report with header `WARNING: rate limited at PR #N`. |
+| `gh run list` returns 404 (workflow disabled) | Treat as **No CI yet**; do not classify as failing. |
+| > 200 open PRs | Process first 200 sorted by oldest `updatedAt`; emit warning recommending a tighter exemption policy. |
+
+## Invariants
+
+- **NEVER auto-close, auto-merge, auto-comment, or auto-rebase.** Only labels mutate.
+- **NEVER use `gh pr checks`** — bot token lacks GraphQL `statusCheckRollup`. Use `gh run list` instead.
+- **NEVER use `pr.updatedAt` as the stale clock** — label/milestone/reviewer changes reset it. Use commit + comment + review timestamps.
+- **NEVER touch issues** — open scope creep risk. PRs only.
+- **Idempotent (label mutations only)**: re-running with no new activity produces zero label mutations. The output JSON's `reasonHints` and `parent.category` strings CAN drift run-to-run when a parent's age crosses a tier boundary (e.g. parent rotten → stale because someone commented), even though the child's labels stay identical. Idempotency is a property of the side-effects (gh API calls), not of the report text.
+- **Cap 30 mutations per run.** If hit, surface in the report header.
+- **Exemption labels (`keep-open`, `pinned`) are absolute** — never override.
+- **Stack-dependent PRs with healthy parent are protected** from rotten/stale labeling. Stack-Stuck (parent itself stale) bypasses that protection.
+
+## Reference
+
+- Prior art studied for tier policy: `actions/stale`, Kubernetes Prow `lifecycle/{stale,rotten,frozen}`, Rust `triagebot` (S-waiting state machine), Dependabot 30-day rebase cutoff.
+- Issue: https://github.com/2lab-ai/soma-work/issues/825
+- Sibling skill conventions: `src/local/skills/zcheck/SKILL.md` (CI lookup), `src/local/skills/github-pr/SKILL.md` (PR data extraction), `src/local/skills/release-notes/SKILL.md` (report layout).
