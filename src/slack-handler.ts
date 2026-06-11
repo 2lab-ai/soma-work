@@ -14,6 +14,7 @@ import { SlackBlockKitChannel } from './notification-channels/slack-block-kit-ch
 import { SlackDmChannel } from './notification-channels/slack-dm-channel';
 import { TelegramChannel } from './notification-channels/telegram-channel';
 import { WebhookChannel } from './notification-channels/webhook-channel';
+import { buildGoalContinuationPrompt } from './prompt/session-goal-block';
 import {
   type ActionHandlerContext,
   ActionHandlers,
@@ -50,6 +51,7 @@ import {
 } from './slack/handoff-budget';
 import { buildCompactHooks } from './slack/hooks/compact-hooks';
 import { InputProcessor, type MessageEvent, SessionInitializer, StreamExecutor } from './slack/pipeline';
+import { applyGoalToSession, createActiveSessionGoal, formatGoalObjectiveForSlack } from './slack/session-goal';
 import { SummaryService } from './slack/summary-service';
 import { SummaryTimer } from './slack/summary-timer';
 import { normalizeZInvocation, stripZPrefix } from './slack/z/normalize';
@@ -457,8 +459,24 @@ export class SlackHandler {
     });
 
     // Step 2: Route commands
-    const { handled, continueWithPrompt, forceWorkflow } = await this.inputProcessor.routeCommand(event, wrappedSay);
+    const { handled, continueWithPrompt, forceWorkflow, setGoalObjective } = await this.inputProcessor.routeCommand(
+      event,
+      wrappedSay,
+    );
     if (handled && !continueWithPrompt) {
+      // Issue #1082 T1 (spec-review P1): the no-session goal+skill split can
+      // end here when the skill part errored out (`handled:true`, no prompt —
+      // e.g. ambiguous or unresolvable `$skill` ref). No session will be
+      // created, so the parsed objective CANNOT be applied — but #1082's
+      // whole contract is that a goal never vanishes silently, so announce
+      // the drop instead of swallowing it.
+      if (setGoalObjective) {
+        await this.slackApi.postSystemMessage(
+          channel,
+          '⚠️ Goal was NOT set — the rest of the message was consumed by a command that could not start a session. Resend `goal <objective>` (optionally with a valid `$skill`).',
+          { threadTs: originalThreadTs },
+        );
+      }
       // Command was handled - replace eyes with zap emoji
       await this.slackApi.removeReaction(channel, ts, 'eyes');
       await this.slackApi.addReaction(channel, ts, 'zap');
@@ -482,7 +500,12 @@ export class SlackHandler {
     // some Slack event shapes). Normalize to an empty string so downstream
     // `sessionInitializer.initialize` / `startWithContinuation` never receive
     // `undefined` and skip text handling silently.
-    const effectiveText = continueWithPrompt ?? event.text ?? '';
+    // Issue #1082 T1: a goal-prefixed FIRST message carries the parsed
+    // objective out-of-band — workflow classification must see the RAW
+    // objective (not the `goal …` phrasing, and not the goal continuation
+    // prompt built later). `continueWithPrompt` still wins when the
+    // goal+skill split produced one.
+    const effectiveText = continueWithPrompt ?? setGoalObjective ?? event.text ?? '';
 
     // Step 3: Validate working directory
     const cwdResult = await this.sessionInitializer.validateWorkingDirectory(event, wrappedSay);
@@ -543,6 +566,40 @@ export class SlackHandler {
 
       activeChannel = sessionResult.session.channelId || channel;
       activeThreadTs = sessionResult.session.threadRootTs || sessionResult.session.threadTs || originalThreadTs;
+
+      // Issue #1082 T1: the route carried an objective parsed from a
+      // goal-prefixed message that arrived with NO session. Apply it to the
+      // freshly created registry session BEFORE dispatch so turn 1 already
+      // runs with the goal block (cached system prompt invalidated by the
+      // helper), then dispatch the goal continuation prompt — unless the
+      // goal+skill split already produced a `continueWithPrompt`, which wins
+      // as dispatch text. Note: the user-message goal reset above ran on a
+      // goal-less session (this IS the message creating the goal), so the two
+      // blocks never act on the same turn.
+      let dispatchText = effectiveText;
+      if (setGoalObjective) {
+        const fullSession = this.claudeHandler.getSessionByKey?.(sessionResult.sessionKey);
+        if (fullSession) {
+          const goal = createActiveSessionGoal(setGoalObjective, event.user, fullSession.goal);
+          applyGoalToSession(fullSession, goal);
+          this.claudeHandler.saveSessions();
+          await this.slackApi.postSystemMessage(
+            activeChannel,
+            `🎯 Goal set: ${formatGoalObjectiveForSlack(setGoalObjective)}\n_Continuing with goal context._`,
+            { threadTs: activeThreadTs },
+          );
+          if (!continueWithPrompt) {
+            dispatchText = buildGoalContinuationPrompt(goal);
+          }
+        } else {
+          // Registry lookup miss (mock-only in tests, but a real miss would
+          // mean the raw objective dispatches with no goal installed) — keep
+          // it diagnosable instead of silently degrading.
+          this.logger.warn('setGoalObjective present but registry session not found — goal NOT applied', {
+            sessionKey: sessionResult.sessionKey,
+          });
+        }
+      }
 
       const hasPendingChoice = sessionResult.session.actionPanel?.waitingForChoice === true;
       if (hasPendingChoice) {
@@ -636,7 +693,7 @@ export class SlackHandler {
 
       // End of widened try (#698 AD-5.5) — startWithContinuation is the last
       // async step inside the try.
-      await agentSession.startWithContinuation(effectiveText || '', continuationHandler, processedFiles);
+      await agentSession.startWithContinuation(dispatchText || '', continuationHandler, processedFiles);
     } catch (error) {
       // Issue #695 — host-level z handoff safe-stop. `SessionInitializer.runDispatch`
       // throws `HandoffAbortError` when a forced z-* workflow cannot be entered

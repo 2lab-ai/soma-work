@@ -18,7 +18,8 @@ export type ModelCommandId =
   | 'SAVE_MEMORY'
   | 'GET_MEMORY'
   | 'MANAGE_SKILL'
-  | 'RATE';
+  | 'RATE'
+  | 'SET_GOAL';
 
 export interface ModelCommandContext {
   channel?: string;
@@ -98,6 +99,21 @@ export interface ManageSkillMutationSignal {
   action: 'create' | 'update' | 'delete' | 'rename';
 }
 
+/**
+ * Issue #1082 T2: SET_GOAL — model-initiated session goal (set-only).
+ *
+ * The MCP layer only validates and echoes these params; the HOST
+ * (stream-executor) is the enforcement point — it verifies that
+ * `userRequestEvidence` is a verbatim quote from the user's CURRENT message
+ * and applies the goal side effect (mirror of the ASK_USER_QUESTION pattern).
+ */
+export interface SetGoalParams {
+  /** The goal objective to install on the session (1..4000 Unicode code points, trimmed). */
+  objective: string;
+  /** Verbatim quote from the user's current message proving the explicit request. */
+  userRequestEvidence: string;
+}
+
 export interface ModelCommandParamsMap {
   GET_SESSION: undefined;
   UPDATE_SESSION: SessionResourceUpdateRequest;
@@ -108,6 +124,7 @@ export interface ModelCommandParamsMap {
   GET_MEMORY: undefined;
   MANAGE_SKILL: ManageSkillParams;
   RATE: undefined;
+  SET_GOAL: SetGoalParams;
 }
 
 export interface ModelCommandPayloadMap {
@@ -188,6 +205,12 @@ export interface ModelCommandPayloadMap {
   };
   RATE: {
     rating: number;
+  };
+  // Issue #1082 T2: pure echo — the host (stream-executor) verifies the
+  // evidence against the actual user message and applies the side effect.
+  SET_GOAL: {
+    objective: string;
+    userRequestEvidence: string;
   };
 }
 
