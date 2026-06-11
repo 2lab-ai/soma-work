@@ -313,5 +313,76 @@ describe('TurnNotifier', () => {
         warnSpy.mockRestore();
       }
     });
+
+    // P5 path: when `excludeChannelNames` is passed, the excluded channel
+    // (slack-block-kit) has ALREADY surfaced the B5 terminal card via
+    // TurnSurface.end — zero remaining enabled channels just means the user
+    // has no opt-in fan-out channels (slack-dm / webhook / telegram). The
+    // §B-3 warn ("terminal card not surfaced") is factually wrong in that
+    // case and caused a real misdiagnosis during the #1079 invalid_blocks
+    // incident triage. Expected: debug-level breadcrumb, NO warn.
+    it('does NOT warn when zero channels remain because of excludeChannelNames (card surfaced upstream)', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      try {
+        const slackBlock = {
+          name: 'slack-block-kit',
+          isEnabled: vi.fn().mockResolvedValue(true),
+          send: vi.fn().mockResolvedValue(undefined),
+        };
+        const dmOptOut = {
+          name: 'slack-dm',
+          isEnabled: vi.fn().mockResolvedValue(false),
+          send: vi.fn(),
+        };
+        const notifier = new TurnNotifier([slackBlock, dmOptOut]);
+
+        await notifier.notify(
+          {
+            category: 'WorkflowComplete',
+            userId: 'U_OWNER',
+            channel: 'C123',
+            threadTs: 't1',
+            durationMs: 0,
+          },
+          { excludeChannelNames: ['slack-block-kit'] },
+        );
+
+        expect(slackBlock.send).not.toHaveBeenCalled();
+        expect(dmOptOut.send).not.toHaveBeenCalled();
+        const misleading = warnSpy.mock.calls.find(
+          (c) => typeof c[0] === 'string' && /no enabled channels/i.test(c[0]),
+        );
+        expect(misleading).toBeUndefined();
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it('still warns when zero channels are enabled WITHOUT an exclusion filter (§B-3 preserved)', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      try {
+        const disabled = {
+          name: 'slack-block-kit',
+          isEnabled: vi.fn().mockResolvedValue(false),
+          send: vi.fn(),
+        };
+        const notifier = new TurnNotifier([disabled]);
+
+        await notifier.notify({
+          category: 'Exception',
+          userId: 'U_OWNER',
+          channel: 'C123',
+          threadTs: 't1',
+          durationMs: 0,
+        });
+
+        const call = warnSpy.mock.calls.find((c) => typeof c[0] === 'string' && /no enabled channels/i.test(c[0]));
+        expect(call).toBeDefined();
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
   });
 });
