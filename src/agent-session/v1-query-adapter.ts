@@ -64,7 +64,7 @@ export class V1QueryAdapter implements IAgentSession {
     this.turnCount = 1;
     // Ghost Session Fix #99: reuse baseParams.abortController (registered in RequestCoordinator)
     // instead of creating a new one that abort signals can't reach
-    return this.executeTurn(prompt);
+    return this.executeTurn(prompt, { isFirstDispatchTurn: true });
   }
 
   async continue(userPrompt: string): Promise<AgentTurnResult> {
@@ -73,7 +73,7 @@ export class V1QueryAdapter implements IAgentSession {
     }
     this.turnCount++;
     // Ghost Session Fix #99: reuse baseParams.abortController — same as start()
-    return this.executeTurn(userPrompt);
+    return this.executeTurn(userPrompt, { isFirstDispatchTurn: false });
   }
 
   cancel(): void {
@@ -163,7 +163,7 @@ export class V1QueryAdapter implements IAgentSession {
     Object.assign(this.baseParams, patch);
   }
 
-  private async executeTurn(text: string): Promise<AgentTurnResult> {
+  private async executeTurn(text: string, options: { isFirstDispatchTurn: boolean }): Promise<AgentTurnResult> {
     const startTime = Date.now();
     const turnId = `turn-${this.turnCount}-${Date.now()}`;
 
@@ -178,8 +178,18 @@ export class V1QueryAdapter implements IAgentSession {
         ...this.baseParams,
         text,
         abortController: currentController,
-        // Only the first turn (turn 0) is real user input; subsequent turns are continuations.
-        isUserInput: this.turnCount === 0 ? (this.baseParams as any).isUserInput : false,
+        // SET_GOAL/SSOT gate (stream-executor): only the FIRST turn of a
+        // dispatch may carry the caller's `isUserInput` (slack-handler sets
+        // `!context.synthetic`); continuation turns are always synthetic.
+        // NOTE: do NOT infer this from `turnCount` — `start()` bumps the
+        // counter to 1 BEFORE this runs, so a `turnCount === 0` check is
+        // never true and silently demoted every user turn to `false`
+        // (SET_GOAL was refused 100% of the time). The explicit flag from
+        // start()/continue() is authorization state; the counter is not.
+        // Pass the base value through untouched on the first turn —
+        // `undefined` and `false` mean different things downstream
+        // (SSOT tracking checks `!== false`, SET_GOAL checks `=== true`).
+        isUserInput: options.isFirstDispatchTurn ? (this.baseParams as any).isUserInput : false,
       };
 
       const executeResult = await this.executor.execute(params);
