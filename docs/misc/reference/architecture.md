@@ -1,305 +1,117 @@
 # Architecture Overview
 
-Claude Code Slack Bot의 아키텍처 문서입니다.
+soma-work (Slack multi-tenant AI Assistant) 아키텍처 문서. 2026-06-10 기준 전면 재작성.
 
-## Module Dependency Diagram
+> 편집 가능한 다이어그램 원본: [`architecture-diagram.excalidraw`](./architecture-diagram.excalidraw) (excalidraw.com에서 열기)
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                              Entry Point                                 │
-│                               index.ts                                   │
-└─────────────────────────────────────────────────────────────────────────┘
-                                    │
-          ┌─────────────────────────┼─────────────────────────┐
-          ▼                         ▼                         ▼
-┌──────────────────┐    ┌──────────────────┐    ┌──────────────────┐
-│   SlackHandler   │    │  ClaudeHandler   │    │   McpManager     │
-│   (~600 LOC)     │    │   (~610 LOC)     │    │   (~96 LOC)      │
-└──────────────────┘    └──────────────────┘    └──────────────────┘
-          │                       │                       │
-          ▼                       ▼                       ▼
-┌──────────────────┐    ┌──────────────────┐    ┌──────────────────┐
-│  src/slack/      │    │  Session +       │    │   src/mcp/       │
-│  - EventRouter   │    │  Prompt Modules  │    │  - ConfigLoader  │
-│  - CommandRouter │    │  - SessionReg    │    │  - ServerFactory │
-│  - StreamProc    │    │  - PromptBuilder │    │  - InfoFormatter │
-│  - ToolEventProc │    │  - DispatchSvc   │    │                  │
-│  - Commands/*    │    │  - McpConfigBldr │    │                  │
-│  - Actions/*     │    │                  │    │                  │
-│  - Pipeline/*    │    ├──────────────────┤    │                  │
-│  - Directives/*  │    │  src/conversation │    │                  │
-│  - Formatters/*  │    │  src/model-cmds  │    │                  │
-└──────────────────┘    └──────────────────┘    └──────────────────┘
-```
+![soma-work System Architecture](./architecture-diagram.png)
 
-## Core Components
+## Process Model
 
-### 1. Entry Point (`src/index.ts`)
-앱 초기화 및 Slack Bolt 앱 설정
+단일 Node 프로세스(`src/index.ts`, ~1,100 LOC)가 Slack Bolt(Socket Mode)로 기동하며, 부트스트랩 시 다음 백그라운드 컴포넌트를 와이어링한다:
 
-### 2. SlackHandler (Facade, ~600 LOC)
-Slack 이벤트 처리의 진입점. 다음 컴포넌트에 위임:
+| 컴포넌트 | 역할 | 위치 |
+|----------|------|------|
+| TokenManager + CCT Store | Claude OAuth 토큰 슬롯 풀, 자동 회전 | `src/token-manager.ts`(2.1k), `src/cct-store/` |
+| OAuth/Usage Schedulers | 토큰 갱신·사용량 폴링 | `src/oauth/` |
+| GitHub Auth | App installation 토큰 자동 갱신 | `src/github-auth.ts`, `src/github/` |
+| McpManager | MCP 서버 프로비저닝 (stdio) | `src/mcp-manager.ts`, `src/mcp/` |
+| PluginManager | 플러그인/마켓플레이스 라이프사이클 | `src/plugin/` |
+| AgentManager | 멀티 에이전트 인스턴스 기동 | `src/agent-manager.ts`, `src/agent-instance.ts` |
+| A2T Service | 음성→텍스트 (Python worker) | `services/a2t/worker.py` |
+| CronScheduler | 예약 synthetic 메시지 트리거 | `src/cron-scheduler.ts` |
+| Conversation Recorder | 대화 기록 + 리플레이 웹 대시보드 | `src/conversation/` |
+| Metrics Schedulers | 토큰/비용 텔레메트리 집계·리포트 | `src/metrics/` |
+| Socket Watchdog | Socket Mode 헬스 모니터 | `src/slack-socket-watchdog.ts` |
 
-| Component | 책임 |
-|-----------|------|
-| `EventRouter` (293) | 이벤트 라우팅 (DM, mention, thread) |
-| `CommandRouter` (105) | 명령어 감지 및 핸들러 디스패치 (20개 핸들러) |
-| `StreamProcessor` (837) | Claude SDK 스트림 처리 |
-| `ToolEventProcessor` | tool_use/tool_result 처리 |
-| `RequestCoordinator` | 세션별 동시성 제어 |
-| `ToolTracker` | 도구 사용 추적 |
-| `Actions/*` | 인터랙티브 액션 핸들러 (9개) |
-| `Pipeline/*` | 스트림 처리 파이프라인 (input → session → stream) |
-| `Directives/*` | 채널/세션 링크 디렉티브 |
-
-### 3. ClaudeHandler (Facade, ~610 LOC)
-Claude SDK 통합. 다음 컴포넌트에 위임:
-
-| Component | 책임 |
-|-----------|------|
-| `SessionRegistry` (1,048) | 세션 생성/조회/영속성 |
-| `PromptBuilder` (299) | 시스템 프롬프트 + 페르소나 조립 |
-| `DispatchService` (509) | 워크플로우 분류 및 디스패치 (9개 워크플로우) |
-| `McpConfigBuilder` (347) | MCP 설정 조립 |
-
-### 4. McpManager (Facade)
-MCP 서버 설정 관리. 다음 컴포넌트에 위임:
-
-| Component | 책임 |
-|-----------|------|
-| `McpConfigLoader` | 설정 파일 로드/검증 |
-| `McpServerFactory` | 서버 생성/GitHub 인증 주입 |
-| `McpInfoFormatter` | 상태 정보 포맷팅 |
-
-## Directory Structure
+## Core Request Flow
 
 ```
-src/                              # ~27,000 LOC (excl. test/local)
-├── index.ts                      # Entry point
-├── config.ts                     # Environment configuration
-├── slack-handler.ts              # Slack event facade (~600)
-├── claude-handler.ts             # Claude SDK facade (~610)
-├── mcp-manager.ts                # MCP configuration facade (~96)
-├── dispatch-service.ts           # Workflow dispatch (509)
-├── session-registry.ts           # Session management (1,048)
-├── prompt-builder.ts             # Prompt construction (299)
-├── mcp-config-builder.ts         # MCP config construction (347)
-├── channel-registry.ts           # Channel management
-├── channel-description-cache.ts  # Channel description cache
-├── claude-usage.ts               # Token usage tracking
-├── credential-alert.ts           # Credential warnings
-├── link-metadata-fetcher.ts      # Link preview fetching
-├── llm-mcp-server.ts             # LLM as MCP server
-├── model-command-mcp-server.ts   # Model switching MCP
-├── release-notifier.ts           # Release notifications
-├── token-manager.ts              # CCT token pool management
-├── todo-manager.ts               # Task tracking
-├── admin-utils.ts                # Admin command utilities
-├── credentials-manager.ts        # Credential management
-├── dangerous-command-filter.ts   # Bypass danger filter
-├── env-paths.ts                  # Environment path resolution
-├── file-handler.ts               # File handling
-├── github-auth.ts                # GitHub auth facade
-├── mcp-call-tracker.ts           # MCP call statistics
-├── mcp-client.ts                 # MCP client
-├── permission-mcp-server.ts      # Permission MCP server (245)
-├── stderr-logger.ts              # Stderr logging
-├── unified-config-loader.ts      # Unified config loader
-├── user-settings-store.ts        # User settings persistence
-├── working-directory-manager.ts  # Working directory management
-│
-├── slack/                        # Slack-specific modules
-│   ├── event-router.ts           # Event routing (293)
-│   ├── stream-processor.ts       # SDK stream handling (837)
-│   ├── commands/                 # 20 command handlers
-│   │   ├── command-router.ts     # Command dispatching (105)
-│   │   ├── cwd-handler.ts
-│   │   ├── mcp-handler.ts
-│   │   ├── bypass-handler.ts
-│   │   ├── persona-handler.ts
-│   │   ├── model-handler.ts
-│   │   ├── session-handler.ts
-│   │   ├── help-handler.ts
-│   │   ├── restore-handler.ts
-│   │   ├── close-handler.ts      # Session close
-│   │   ├── context-handler.ts    # Context window status
-│   │   ├── link-handler.ts       # Session link attach
-│   │   ├── new-handler.ts        # Session reset
-│   │   ├── renew-handler.ts      # Session renew
-│   │   ├── onboarding-handler.ts # Onboarding workflow
-│   │   ├── verbosity-handler.ts  # Verbosity settings
-│   │   ├── session-command-handler.ts  # $ prefix commands
-│   │   ├── admin-handler.ts      # Admin commands (accept/deny/users/config)
-│   │   ├── cct-handler.ts        # CCT token management
-│   │   ├── marketplace-handler.ts # Plugin marketplace
-│   │   └── plugins-handler.ts    # Plugin management
-│   ├── actions/                  # 9 interactive action handlers
-│   │   ├── action-panel-action-handler.ts  # Thread action panel
-│   │   ├── channel-route-action-handler.ts # Channel routing
-│   │   ├── choice-action-handler.ts        # User choices
-│   │   ├── form-action-handler.ts          # Form submissions
-│   │   ├── jira-action-handler.ts          # Jira actions
-│   │   ├── permission-action-handler.ts    # Permission approve/deny
-│   │   ├── pr-action-handler.ts            # PR actions
-│   │   ├── session-action-handler.ts       # Session actions
-│   │   └── user-acceptance-action-handler.ts # User acceptance gate
-│   ├── pipeline/                 # Stream processing pipeline
-│   │   ├── input-processor.ts    # Input preprocessing (79)
-│   │   ├── session-initializer.ts # Session init (771)
-│   │   └── stream-executor.ts    # Stream execution (1,551)
-│   ├── directives/               # Channel/session directives
-│   │   ├── channel-message-directive.ts
-│   │   └── session-link-directive.ts
-│   └── formatters/               # Output formatters
-│       ├── directory-formatter.ts
-│       └── markdown-to-blocks.ts # Markdown → Block Kit converter
-│
-├── conversation/                 # Conversation recording & replay
-│   ├── recorder.ts               # Recording engine
-│   ├── storage.ts                # Conversation storage
-│   ├── summarizer.ts             # Conversation summarizer
-│   ├── viewer.ts                 # Conversation viewer
-│   └── web-server.ts             # Replay web server
-│
-├── model-commands/               # Model command system
-│   ├── catalog.ts                # Command catalog
-│   ├── result-parser.ts          # Result parsing
-│   └── validator.ts              # Command validation
-│
-├── mcp/                          # MCP server management
-│   ├── config-loader.ts          # Config file loading
-│   ├── server-factory.ts         # Server provisioning
-│   └── info-formatter.ts         # Info formatting
-│
-├── github/                       # GitHub integration
-│   ├── api-client.ts             # GitHub API client
-│   ├── git-credentials-manager.ts # Git credentials
-│   └── token-refresh-scheduler.ts # Token auto-renewal
-│
-├── permission/                   # Permission system
-│   ├── service.ts                # Permission service
-│   └── slack-messenger.ts        # Slack permission UI
-│
-├── plugin/                       # Plugin system
-│   ├── config-parser.ts          # Plugin config parsing
-│   ├── marketplace-fetcher.ts    # Marketplace data fetching
-│   ├── plugin-cache.ts           # Plugin cache management
-│   ├── plugin-manager.ts         # Plugin lifecycle management
-│   └── types.ts                  # Plugin type definitions
-│
-├── prompt/                       # Prompt templates
-│   └── workflows/                # 9 workflow prompts
-│       ├── pr-review.prompt
-│       ├── pr-fix-and-update.prompt
-│       ├── pr-docs-confluence.prompt
-│       ├── jira-planning.prompt
-│       ├── jira-executive-summary.prompt
-│       ├── jira-brainstorming.prompt
-│       ├── jira-create-pr.prompt
-│       ├── deploy.prompt
-│       └── onboarding.prompt
-│
-├── persona/                      # 12 bot personas
-│   ├── default.md, chaechae.md, linus.md, buddha.md
-│   ├── davinci.md, einstein.md, elon.md, feynman.md
-│   ├── jesus.md, newton.md, turing.md, vonneumann.md
-│
-└── local/                        # Claude Code SDK local plugins
-    ├── agents/                   # Agent definitions
-    ├── skills/                   # Skill implementations
-    │   ├── github-pr/            # PR-related skills
-    │   ├── decision-gate/        # Decision gate skill
-    │   ├── UIAskUserQuestion/    # User choice skill
-    │   └── release-notes/        # Release notes skill
-    ├── hooks/                    # Git/build hooks
-    ├── commands/                 # Local slash commands
-    └── prompts/                  # Local prompts
+Slack Event (Socket Mode)
+  → SlackHandler (src/slack-handler.ts, 1.5k)
+      EventRouter · CommandRouter · Actions(9) · Commands(20+)
+  → Stream Pipeline (src/slack/pipeline/)
+      input-processor → session-initializer → stream-executor
+      ├ SessionRegistry.getOrCreate (src/session-registry.ts, 2.2k)
+      ├ DispatchService 워크플로우 분류 + PromptBuilder 프롬프트 조립
+      └ McpConfigBuilder 툴 목록 구성
+  → ClaudeHandler + AgentRuntime (src/claude-handler.ts, src/agent-runtime/)
+      ├ TokenManager: CCT lease + query env 주입 (src/auth/)
+      ├ Sandbox·Permission 게이트 (src/sandbox/, somalib/permission/)
+      └ Claude Agent SDK streaming
+  → 스트림 이벤트 처리 (text / tool_use / tool_result)
+      ├ MCP 툴 호출 → packages/mcp-servers/*
+      ├ Metrics 이벤트 적재
+      └ Conversation Recorder 기록
+  → NotificationChannels (src/notification-channels/)
+      Slack · DM · Telegram · Webhook 출력 라우팅
 ```
+
+## Major Subsystems
+
+### Multi-Agent (`src/agent-manager.ts`, `src/agent-instance.ts`, `src/agent-runtime/`, `src/agent-session/`)
+- `AgentManager`가 config의 agent 항목마다 `AgentInstance` 소유
+- 각 인스턴스는 격리된 Bolt App(별도 봇 토큰), SessionRegistry, PromptBuilder 보유
+- 메인 에이전트의 Claude 턴에서 agent MCP(`packages/mcp-servers/agent/`)를 통해 `agent_chat`으로 호출 — 장애 격리됨
+- `agent-session/`: turn runner, session phase, continuation handler
+
+### Auth / Token (`src/token-manager.ts`, `src/cct-store/`, `src/oauth/`, `src/auth/`)
+- CCT 슬롯 풀: v2 스키마, CAS 기반 atomic slot flip
+- OAuthRefreshScheduler가 5시간/7일 임계값으로 자동 회전 + Slack 알림
+- 쿼리마다 `ensureActiveSlotAuth()` → lease → env 주입 → release
+
+### MCP (`src/mcp-manager.ts`, `src/mcp-config-builder.ts`, `packages/mcp-servers/`)
+- 8개 내장 서버: slack-mcp, llm, agent, model-command, server-tools, permission, cron, mcp-tool-permission
+- 외부 MCP는 config.json 기반 프로비저닝, GitHub 인증 주입
+
+### Security (`src/sandbox/`, `somalib/permission/`, `src/dangerous-command-filter.ts`)
+- 도메인 allowlist, 툴 권한 레벨(admin/elevated/user), dangerous command 감지
+- 권한 승인 UI는 Slack 액션으로 처리 (`src/slack/actions/permission-action-handler.ts`)
+
+### Observability (`src/metrics/`, `src/conversation/`)
+- 이벤트 기반 텔레메트리(토큰·툴콜·레이턴시), 주기 리포트
+- 대화 레코더 + 웹 대시보드(`src/conversation/dashboard.ts`)
+
+## Data Stores (`$DATA_DIR`, JSON 파일 기반)
+
+| Store | 내용 |
+|-------|------|
+| `sessions.json` | 세션 상태·goal·instruction (SessionRegistry) |
+| `cct-store.json` | OAuth 토큰 슬롯, 사용량 스냅샷 (v2) |
+| `user-settings.json` | 유저별 model/effort/verbosity |
+| `user-memory/{userId}.json` | 유저 메모리 |
+| `user-skills/{userId}/` | 유저 정의 스킬 |
+| `conversations/{id}.json` | 턴 단위 대화 기록 |
+| `cron-storage.json` | 예약 작업 |
+| `session-archive/` | 크래시/복구 세션 스냅샷 |
+
+외부 스토어(선택, MCP 경유): ClickHouse(메트릭), MongoDB, Redis, MySQL.
+
+## Repository Layout
+
+```
+src/                  # 메인 앱 (~130k LOC)
+packages/
+  common/             # 공유 상수·헬퍼
+  process-shared/     # MCP 클라이언트, config 캐시
+  mcp-servers/        # 내장 MCP 서버 8종
+  test-utils/         # 모킹 유틸
+somalib/              # soma 계열 공유 라이브러리 (model-commands, permission, cron)
+services/a2t/         # 음성 전사 Python worker
+infra/                # docker, slack manifest, claude harness 설정
+```
+
+## External Integrations
+
+Slack(Bolt 4.x, Socket Mode) · Anthropic Claude Agent SDK · GitHub(App OAuth + REST) · Jira · Telegram(알림 폴백) · Webhook · esm.sh 기반 내부 렌더러 스킬.
 
 ## Design Principles
 
-### 1. Single Responsibility Principle (SRP)
-각 클래스는 하나의 책임만 가짐:
-- `McpConfigLoader`: 설정 파일 로드만 담당
-- `McpServerFactory`: 서버 생성만 담당
-- `McpInfoFormatter`: 포맷팅만 담당
+1. **Facade + Pipeline**: SlackHandler/ClaudeHandler가 진입 파사드, 실제 처리는 pipeline 3단계로 분리
+2. **격리**: AgentInstance 단위 장애 격리, MCP 서버는 별도 프로세스(stdio)
+3. **DI**: CommandRouter 등은 deps 주입으로 테스트 격리
+4. **Event-driven**: 스트림 콜백 + 메트릭 이벤트 버스
 
-### 2. Facade Pattern
-복잡한 서브시스템을 단순한 인터페이스로 제공:
-- `SlackHandler` → 다수의 Slack 모듈
-- `ClaudeHandler` → 세션/프롬프트/MCP 모듈
-- `McpManager` → 설정/팩토리/포매터 모듈
+## History
 
-### 3. Dependency Injection
-테스트 용이성을 위한 의존성 주입:
-```typescript
-class CommandRouter {
-  constructor(deps: CommandDependencies) {
-    this.handlers = this.initializeHandlers(deps);
-  }
-}
-```
-
-### 4. Event-Driven Architecture
-스트림 처리에서 콜백 기반 이벤트 처리:
-```typescript
-const callbacks: StreamCallbacks = {
-  onAssistantMessage: (text) => { ... },
-  onToolUse: (event) => { ... },
-  onToolResult: (event) => { ... },
-};
-```
-
-## Data Flow
-
-### Message Processing
-```
-Slack Event → EventRouter → CommandRouter/StreamProcessor
-                                    ↓
-                            ClaudeHandler.streamQuery()
-                                    ↓
-                            ToolEventProcessor
-                                    ↓
-                            StreamProcessor.process()
-                                    ↓
-                            Slack Message Updates
-```
-
-### Session Lifecycle
-```
-New Message → SessionRegistry.getOrCreateSession()
-                    ↓
-              PromptBuilder.buildSystemPrompt()
-                    ↓
-              McpConfigBuilder.buildMcpOptions()
-                    ↓
-              Claude SDK query()
-                    ↓
-              SessionRegistry.updateSession()
-```
-
-## Testing Strategy
-
-### Unit Tests (`src/slack/__tests__/`)
-- 각 모듈별 독립 테스트
-- Mock 의존성으로 격리
-
-### Integration Tests
-- 핵심 플로우 테스트 (concurrency, permissions, MCP cleanup)
-
-### Test Categories
-| Category | Files |
-|----------|-------|
-| Command Parsing | `command-parser.test.ts` |
-| Stream Processing | `stream-processor.test.ts` |
-| Tool Events | `tool-event-processor.test.ts` |
-| Concurrency | `concurrency.test.ts` |
-| Permissions | `permission-validation.test.ts` |
-| MCP Cleanup | `mcp-cleanup.test.ts` |
-| Action Handlers | `action-panel-action-handler.test.ts`, `choice-action-handler.test.ts`, etc. |
-| Pipeline | `session-initializer.test.ts`, `stream-executor.test.ts` |
-| Directives | `channel-message-directive.test.ts`, `session-link-directive.test.ts` |
-| Commands | `context-handler.test.ts`, `onboarding-handler.test.ts`, `renew-handler.test.ts` |
-| Conversation | `web-server.test.ts` |
-
-총 43개 테스트 파일, ~11,100 LOC.
+- 2026-06-10: 전면 재작성 (multi-agent, CCT v2, sandbox, metrics, notification-channels, a2t 반영). 이전 버전은 git history 참조.

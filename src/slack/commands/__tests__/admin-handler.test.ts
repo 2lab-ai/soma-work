@@ -4,6 +4,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../../../admin-utils', () => ({
   isAdminUser: vi.fn(),
   resetAdminUsersCache: vi.fn(),
+  getAdminUsers: vi.fn(() => new Set(['U_ADMIN'])),
+}));
+
+const mockScanChannels = vi.fn();
+const mockGetAllChannels = vi.fn();
+vi.mock('../../../channel-registry', () => ({
+  scanChannels: (...args: unknown[]) => mockScanChannels(...args),
+  getAllChannels: (...args: unknown[]) => mockGetAllChannels(...args),
+}));
+
+const mockInvalidateChannelCache = vi.fn();
+vi.mock('../../../channel-description-cache', () => ({
+  invalidateChannelCache: (...args: unknown[]) => mockInvalidateChannelCache(...args),
 }));
 
 vi.mock('../../../user-settings-store', () => ({
@@ -388,6 +401,21 @@ describe('AdminHandler', () => {
       '/deny <@U123>',
       '/users',
       '/config show',
+      // admin namespace (#1076)
+      'admin',
+      '/admin',
+      'admin setup',
+      'admin users',
+      'admin accept <@U123>',
+      'admin deny <@U123>',
+      'admin config show',
+      'admin config DEBUG=true',
+      'admin show prompt',
+      'admin show instructions',
+      'admin sandbox on',
+      'admin plugins update',
+      'admin cct next',
+      'admin ui-test buttons',
     ])('recognizes "%s"', (text) => {
       expect(handler.canHandle(text)).toBe(true);
     });
@@ -397,8 +425,202 @@ describe('AdminHandler', () => {
       'accept', // no target
       'config', // no subcommand
       'cct', // handled by CctHandler
+      'administrator', // not the admin command
+      'admin 페이지 만들어줘', // prose starting with "admin" must reach the model
+      'admin please do something', // unknown sub-root → not a command
     ])('rejects "%s"', (text) => {
       expect(handler.canHandle(text)).toBe(false);
+    });
+  });
+
+  // ── admin menu (#1076) ──
+  describe('admin menu', () => {
+    it('shows admin command menu to admins', async () => {
+      const ctx = makeCtx({ text: 'admin' });
+      const result = await handler.execute(ctx);
+
+      expect(result.handled).toBe(true);
+      const reply = (vi.mocked(ctx.say).mock.calls[0][0] as any).text as string;
+      expect(reply).toContain('Admin Commands');
+      expect(reply).toContain('admin setup');
+      expect(reply).toContain('admin accept @user');
+      expect(reply).toContain('admin config show');
+      expect(reply).toContain('admin show prompt');
+      expect(reply).toContain('admin sandbox');
+      expect(reply).toContain('admin plugins update');
+      expect(reply).toContain('admin cct');
+    });
+
+    it('rejects non-admin', async () => {
+      vi.mocked(isAdminUser).mockReturnValue(false);
+      const ctx = makeCtx({ text: 'admin' });
+      const result = await handler.execute(ctx);
+
+      expect(result.handled).toBe(true);
+      expect(ctx.say).toHaveBeenCalledWith(expect.objectContaining({ text: expect.stringContaining('Admin only') }));
+    });
+  });
+
+  // ── admin setup (#1076) ──
+  describe('admin setup', () => {
+    const mockGetClient = vi.fn(() => ({ fake: 'client' }));
+    const mockReloadConfiguration = vi.fn();
+
+    function makeSetupHandler(): AdminHandler {
+      return new AdminHandler({
+        slackApi: { getClient: mockGetClient },
+        mcpManager: { reloadConfiguration: mockReloadConfiguration },
+      });
+    }
+
+    beforeEach(() => {
+      mockScanChannels.mockReset().mockResolvedValue(4);
+      mockGetAllChannels.mockReset().mockReturnValue([
+        { id: 'C1', name: 'workspace-soma-work', repos: ['2lab-ai/soma-work'] },
+        { id: 'C2', name: 'random', repos: [] },
+      ]);
+      mockInvalidateChannelCache.mockReset();
+      mockGetClient.mockClear();
+      mockReloadConfiguration.mockReset().mockReturnValue({ mcpServers: { jira: {}, github: {} } });
+    });
+
+    it('re-runs channel scan and reports repo mappings', async () => {
+      const setupHandler = makeSetupHandler();
+      const ctx = makeCtx({ text: 'admin setup' });
+      const result = await setupHandler.execute(ctx);
+
+      expect(result.handled).toBe(true);
+      expect(mockScanChannels).toHaveBeenCalledWith({ fake: 'client' });
+      const reply = (vi.mocked(ctx.say).mock.calls[0][0] as any).text as string;
+      expect(reply).toContain('Channel scan: 4 channel(s), 1 with repo mappings');
+      expect(reply).toContain('#workspace-soma-work → 2lab-ai/soma-work');
+    });
+
+    it('invalidates the description cache for every scanned channel', async () => {
+      const setupHandler = makeSetupHandler();
+      await setupHandler.execute(makeCtx({ text: 'admin setup' }));
+
+      expect(mockInvalidateChannelCache).toHaveBeenCalledWith('C1');
+      expect(mockInvalidateChannelCache).toHaveBeenCalledWith('C2');
+    });
+
+    it('reloads MCP configuration and refreshes admin cache', async () => {
+      const setupHandler = makeSetupHandler();
+      const ctx = makeCtx({ text: 'admin setup' });
+      await setupHandler.execute(ctx);
+
+      expect(mockReloadConfiguration).toHaveBeenCalled();
+      expect(resetAdminUsersCache).toHaveBeenCalled();
+      const reply = (vi.mocked(ctx.say).mock.calls[0][0] as any).text as string;
+      expect(reply).toContain('MCP config reloaded: 2 server(s)');
+      expect(reply).toContain('Admin user cache refreshed');
+    });
+
+    it('is idempotent — running twice produces the same success report', async () => {
+      const setupHandler = makeSetupHandler();
+      await setupHandler.execute(makeCtx({ text: 'admin setup' }));
+      const ctx2 = makeCtx({ text: 'admin setup' });
+      await setupHandler.execute(ctx2);
+
+      expect(mockScanChannels).toHaveBeenCalledTimes(2);
+      const reply = (vi.mocked(ctx2.say).mock.calls[0][0] as any).text as string;
+      expect(reply).toContain('Channel scan: 4 channel(s)');
+    });
+
+    it('reports a failed step but still runs the remaining steps', async () => {
+      mockScanChannels.mockRejectedValue(new Error('missing_scope'));
+      const setupHandler = makeSetupHandler();
+      const ctx = makeCtx({ text: 'admin setup' });
+      const result = await setupHandler.execute(ctx);
+
+      expect(result.handled).toBe(true);
+      const reply = (vi.mocked(ctx.say).mock.calls[0][0] as any).text as string;
+      expect(reply).toContain('❌ Channel scan failed: missing_scope');
+      expect(reply).toContain('MCP config reloaded');
+      expect(resetAdminUsersCache).toHaveBeenCalled();
+    });
+
+    it('reports unwired dependencies explicitly instead of failing silently', async () => {
+      const bare = new AdminHandler();
+      const ctx = makeCtx({ text: 'admin setup' });
+      const result = await bare.execute(ctx);
+
+      expect(result.handled).toBe(true);
+      const reply = (vi.mocked(ctx.say).mock.calls[0][0] as any).text as string;
+      expect(reply).toContain('Channel scan skipped: slackApi not wired');
+      expect(reply).toContain('MCP config reload skipped: mcpManager not wired');
+    });
+
+    it('rejects non-admin', async () => {
+      vi.mocked(isAdminUser).mockReturnValue(false);
+      const setupHandler = makeSetupHandler();
+      const ctx = makeCtx({ text: 'admin setup' });
+      await setupHandler.execute(ctx);
+
+      expect(mockScanChannels).not.toHaveBeenCalled();
+      expect(ctx.say).toHaveBeenCalledWith(expect.objectContaining({ text: expect.stringContaining('Admin only') }));
+    });
+  });
+
+  // ── admin-namespaced legacy actions (#1076) ──
+  describe('admin-namespaced actions', () => {
+    it('routes `admin users` to the users action', async () => {
+      vi.mocked(userSettingsStore.getAllUsers).mockReturnValue([]);
+      const ctx = makeCtx({ text: 'admin users' });
+      const result = await handler.execute(ctx);
+
+      expect(result.handled).toBe(true);
+      expect(userSettingsStore.getAllUsers).toHaveBeenCalled();
+    });
+
+    it('routes `admin accept @user` to the accept action', async () => {
+      const ctx = makeCtx({ text: 'admin accept <@U_NEW>' });
+      await handler.execute(ctx);
+
+      expect(userSettingsStore.acceptUser).toHaveBeenCalledWith('U_NEW', 'U_ADMIN');
+    });
+
+    it('routes `admin config KEY=VALUE` to config set', async () => {
+      vi.mocked(fs.readFileSync).mockReturnValue('');
+      vi.mocked(fs.writeFileSync).mockImplementation(() => {});
+      const ctx = makeCtx({ text: 'admin config DEBUG=true' });
+      await handler.execute(ctx);
+
+      expect(process.env.DEBUG).toBe('true');
+      delete process.env.DEBUG;
+    });
+  });
+
+  // ── admin delegation (#1076) ──
+  describe('admin delegation', () => {
+    it('delegates `admin sandbox on` to the owning handler with prefix stripped', async () => {
+      const delegate = {
+        canHandle: vi.fn((text: string) => text.startsWith('sandbox')),
+        execute: vi.fn().mockResolvedValue({ handled: true }),
+      };
+      const delegatingHandler = new AdminHandler({}, [delegate]);
+      const ctx = makeCtx({ text: 'admin sandbox on' });
+      const result = await delegatingHandler.execute(ctx);
+
+      expect(result.handled).toBe(true);
+      expect(delegate.canHandle).toHaveBeenCalledWith('sandbox on', 'U_ADMIN');
+      expect(delegate.execute).toHaveBeenCalledWith(expect.objectContaining({ text: 'sandbox on' }));
+    });
+
+    it('replies with a hint when no delegate matches', async () => {
+      const delegate = {
+        canHandle: vi.fn(() => false),
+        execute: vi.fn(),
+      };
+      const delegatingHandler = new AdminHandler({}, [delegate]);
+      const ctx = makeCtx({ text: 'admin show somethingelse' });
+      const result = await delegatingHandler.execute(ctx);
+
+      expect(result.handled).toBe(true);
+      expect(delegate.execute).not.toHaveBeenCalled();
+      expect(ctx.say).toHaveBeenCalledWith(
+        expect.objectContaining({ text: expect.stringContaining('Unknown admin command') }),
+      );
     });
   });
 });

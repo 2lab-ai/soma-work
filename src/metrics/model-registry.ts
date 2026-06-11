@@ -245,6 +245,17 @@ export function isNativeOneMModel(model: string): boolean {
   return NATIVE_ONE_M_RE.test(model);
 }
 
+/**
+ * `CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE` value injected for native-1M models:
+ * the SDK's own input hard-block formula (`window − 20k output reserve − 3k
+ * safety`) evaluated on the true 1M window.
+ *
+ * See the native-1M workaround block in `build-stream-options.ts` for the
+ * full story (the pinned SDK resolves native-1M ids to 200k); remove this
+ * constant together with that injection.
+ */
+export const NATIVE_ONE_M_SDK_BLOCKING_LIMIT = 977_000;
+
 /** Strips the `[1m]` suffix from `model` if present. Case-insensitive. */
 export function stripOneMSuffix(model: string): string {
   return model.replace(ONE_M_SUFFIX_RE, '');
