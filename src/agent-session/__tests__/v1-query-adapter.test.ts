@@ -239,14 +239,9 @@ describe('V1QueryAdapter', () => {
     await expect(adapter.continue('Second')).rejects.toThrow();
   });
 
-  // Bug fix: SET_GOAL dead-feature — `start()` set `turnCount = 1` BEFORE
-  // executeTurn() evaluated `turnCount === 0`, so EVERY turn (including the
-  // genuine first user-input turn) was demoted to `isUserInput: false`. The
-  // host-side SET_GOAL gate (stream-executor `isUserInputTurn === true`) and
-  // the SSOT instruction tracking (`isUserInput !== false`) could therefore
-  // never see a user turn through the adapter path. The adapter must preserve
-  // baseParams.isUserInput on the FIRST dispatch turn and force `false` only
-  // on continuation turns.
+  // Bug fix: first dispatch turn must carry the caller's `isUserInput`
+  // through to StreamExecutor; continuation turns must force `false`.
+  // Full forensics in v1-query-adapter.ts above the `isUserInput:` line.
   describe('isUserInput propagation (SET_GOAL / SSOT gate)', () => {
     it('start() preserves baseParams.isUserInput=true on the first dispatch turn', async () => {
       const adapter = new V1QueryAdapter({
@@ -290,6 +285,9 @@ describe('V1QueryAdapter', () => {
 
       await adapter.start('First');
       await adapter.continue('goal continuation');
+      // Assert BOTH calls: the original bug demoted every turn to `false`,
+      // so checking only the continuation call could not catch a regression.
+      expect(mockExecutor.execute).toHaveBeenNthCalledWith(1, expect.objectContaining({ isUserInput: true }));
       expect(mockExecutor.execute).toHaveBeenLastCalledWith(expect.objectContaining({ isUserInput: false }));
     });
 
