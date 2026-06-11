@@ -61,6 +61,13 @@ export interface CommandResult {
   continueWithPrompt?: string;
   /** If set, skip dispatch and force this workflow for the next stream execution */
   forceWorkflow?: WorkflowType;
+  /**
+   * Issue #1082 T1: objective parsed from a `goal <objective>` set-form that
+   * arrived with NO active session. Rides out-of-band alongside
+   * `continueWithPrompt` so slack-handler can apply the goal to the freshly
+   * created session BEFORE the first dispatch.
+   */
+  setGoalObjective?: string;
 }
 
 /**

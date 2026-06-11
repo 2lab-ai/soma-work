@@ -76,6 +76,19 @@ export interface StreamContext {
    * Only present when PHASE>=1; stream-processor gates on this + turnId.
    */
   threadPanel?: ThreadPanelFacade;
+  /**
+   * Issue #1082 T2: raw text of the message that started this turn.
+   * Consumed by the SET_GOAL host-apply branch in stream-executor to verify
+   * that `userRequestEvidence` is a verbatim quote of the ACTUAL current
+   * user message. Absent on turns with no prompt text — SET_GOAL fails closed.
+   */
+  currentUserText?: string;
+  /**
+   * Issue #1082 T2: true ONLY when this turn originates from a real user
+   * message (`params.isUserInput === true`); synthetic turns (auto-resume,
+   * goal continuation, renew, …) must never present as user input.
+   */
+  isUserInputTurn?: boolean;
 }
 
 /**
