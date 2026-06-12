@@ -71,6 +71,10 @@ describe('local:lottie skill — RED contract', () => {
     expect(src).toMatch(/lottie-web@5\.13\.0/);
     expect(src).toMatch(/svgNodes/);
     expect(src).toMatch(/animationData/);
+    // Script-breakout guard: "</" in JSON string values must be escaped
+    // before inlining into the probe page, or a crafted animation executes
+    // arbitrary JS in the validator's Chromium.
+    expect(src).toContain('replace(/<\\//g');
   });
 
   it('LICENSES/NOTICE.md carries MIT attribution for diffusionstudio/lottie', () => {

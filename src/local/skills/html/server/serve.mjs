@@ -17,9 +17,16 @@
  *   3. Prints JSON: { "url", "localUrl", "port", "file" } on stdout.
  *
  * Daemon mode (internal): node serve.mjs --daemon --port <port>
- *   Plain node:http static server bound to 0.0.0.0, serving the serve root.
+ *   Plain node:http static server, serving the serve root.
  *   GET /__soma-serve-health → "soma-html-serve" (ownership probe).
  *   GET /                    → directory index of published artifacts.
+ *
+ * Exposure policy: binds 0.0.0.0 by default — LAN reachability is the whole
+ * point (the user opens the link from another machine). Everything ever
+ * published to the serve root is therefore listable and readable by anyone
+ * on the LAN; do not publish artifacts containing secrets. Set
+ * SOMA_HTML_SERVE_BIND=127.0.0.1 to restrict to the host. Symlinks inside
+ * the serve root are refused (realpath containment check).
  *
  * Exit codes: 0 published, 1 CLI/input error, 2 could not start/find server.
  */
@@ -27,11 +34,12 @@
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import http from 'node:http';
 import { networkInterfaces } from 'node:os';
-import { basename, extname, isAbsolute, join, resolve } from 'node:path';
+import { basename, extname, isAbsolute, join, resolve, sep } from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const SERVE_ROOT = process.env.SOMA_HTML_SERVE_ROOT || '/tmp/soma-html-serve';
+const BIND_ADDR = process.env.SOMA_HTML_SERVE_BIND || '0.0.0.0';
 const BASE_PORT = Number(process.env.SOMA_HTML_SERVE_PORT || 8763);
 const PORT_SCAN_RANGE = 20;
 const HEALTH_PATH = '/__soma-serve-health';
@@ -120,7 +128,7 @@ function startDaemon(port) {
   child.unref();
 }
 
-async function waitForOurs(port, attempts = 15, delayMs = 200) {
+async function waitForOurs(port, attempts = 30, delayMs = 200) {
   for (let i = 0; i < attempts; i++) {
     if ((await probeHealth(port)) === 'ours') return true;
     await new Promise((r) => setTimeout(r, delayMs));
@@ -190,20 +198,32 @@ function runDaemon(port) {
         return;
       }
       const target = resolve(rootReal, '.' + pathname);
-      // Path-traversal guard: resolved target must stay inside the serve root.
-      if (target !== rootReal && !target.startsWith(rootReal + '/')) {
+      // Path-traversal guard, pass 1: the lexically resolved target must stay
+      // inside the serve root (catches ../ tricks).
+      if (target !== rootReal && !target.startsWith(rootReal + sep)) {
         res.writeHead(403).end('forbidden');
         return;
       }
-      if (!existsSync(target) || !statSync(target).isFile()) {
+      if (!existsSync(target)) {
+        res.writeHead(404).end('not found');
+        return;
+      }
+      // Pass 2: follow symlinks and re-check containment — a symlink inside
+      // the root pointing at /Users/…/.ssh/id_rsa must not be served.
+      const targetReal = realpathSync(target);
+      if (targetReal !== rootReal && !targetReal.startsWith(rootReal + sep)) {
+        res.writeHead(403).end('forbidden');
+        return;
+      }
+      if (!statSync(targetReal).isFile()) {
         res.writeHead(404).end('not found');
         return;
       }
       res.writeHead(200, {
-        'content-type': MIME[extname(target).toLowerCase()] ?? 'application/octet-stream',
+        'content-type': MIME[extname(targetReal).toLowerCase()] ?? 'application/octet-stream',
         'cache-control': 'no-cache',
       });
-      res.end(readFileSync(target));
+      res.end(readFileSync(targetReal));
     } catch (err) {
       res.writeHead(500).end(`error: ${err.message}`);
     }
@@ -213,7 +233,7 @@ function runDaemon(port) {
     // the winner serves the same root, so the client's health re-probe succeeds.
     process.exit(err.code === 'EADDRINUSE' ? 0 : 2);
   });
-  server.listen(port, '0.0.0.0');
+  server.listen(port, BIND_ADDR);
 }
 
 async function publish(file, explicitPort) {
@@ -269,5 +289,11 @@ if (args.daemon) {
   }
   runDaemon(args.port);
 } else {
-  publish(args.file, args.port);
+  publish(args.file, args.port).catch((err) => {
+    // Keep the documented 0/1/2 exit-code contract even for unexpected
+    // throws (EACCES on copy, EROFS on mkdir, …) instead of an unhandled
+    // rejection stack.
+    console.error(`publish failed: ${err.message}`);
+    process.exit(2);
+  });
 }

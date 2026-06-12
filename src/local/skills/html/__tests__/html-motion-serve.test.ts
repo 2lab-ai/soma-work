@@ -55,8 +55,15 @@ describe('local:html skill — motion layer + local web server contract', () => 
     // Detached daemon — the link must outlive the agent turn.
     expect(src).toMatch(/detached:\s*true/);
     expect(src).toMatch(/unref\(\)/);
-    // Path traversal guard.
+    // Path traversal guard — lexical containment AND symlink-following
+    // realpath containment (a symlink inside the root must not leak files
+    // outside it over the LAN).
     expect(src).toMatch(/startsWith\(rootReal/);
+    expect(src).toMatch(/realpathSync\(target\)/);
+    // LAN exposure is intentional but must be overridable.
+    expect(src).toMatch(/SOMA_HTML_SERVE_BIND/);
+    // Entrypoint keeps the 0/1/2 exit-code contract on unexpected throws.
+    expect(src).toMatch(/publish\(args\.file, args\.port\)\.catch/);
     // Output contract consumed by the skill (and by humans reading Slack).
     expect(src).toMatch(/localUrl/);
   });

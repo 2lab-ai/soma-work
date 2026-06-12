@@ -85,12 +85,17 @@ async function main() {
 
   const w = Number(data.w) || 512;
   const h = Number(data.h) || 512;
+  // Escape "</" so a crafted string value inside the JSON (e.g. a layer name
+  // containing "</script><script>…") cannot break out of the inline script
+  // block — JSON.stringify does not escape forward slashes. "<\/" is a valid
+  // escape inside JS string literals, so the parsed data is unchanged.
+  const safeData = JSON.stringify(data).replace(/<\//g, '<\\/');
   const html = [
     '<!doctype html><html><head><meta charset="utf-8"></head>',
     `<body style="margin:0"><div id="anim" style="width:${w}px;height:${h}px"></div>`,
     `<script src="${LOTTIE_CDN}"><\/script>`,
     '<script>',
-    `  const data = ${JSON.stringify(data)};`,
+    `  const data = ${safeData};`,
     '  try {',
     '    const anim = lottie.loadAnimation({',
     '      container: document.getElementById("anim"),',
@@ -111,43 +116,53 @@ async function main() {
   ].join('\n');
 
   const browser = await chromium.launch({ headless: true });
+  // Collect the outcome inside try/catch and only exit after the browser is
+  // closed — process.exit before close() can leak Chromium children.
+  let failure = null;
+  let result = null;
   try {
     const page = await browser.newPage({ viewport: { width: w, height: h } });
     const pageErrors = [];
     page.on('pageerror', (err) => pageErrors.push(err.message));
-    await page.setContent(html, { waitUntil: 'networkidle', timeout: args.timeout });
+    // 'load' (not 'networkidle'): the only external resource is one script
+    // tag, and readiness is signalled explicitly via window.__verdict below.
+    await page.setContent(html, { waitUntil: 'load', timeout: args.timeout });
     await page.waitForFunction(() => window.__verdict !== undefined, null, { timeout: args.timeout });
     const verdict = await page.evaluate(() => window.__verdict);
 
     if (!verdict.ok) {
-      console.log(JSON.stringify({ ok: false, error: verdict.error, pageErrors }));
-      process.exit(2);
-    }
+      failure = { ok: false, error: verdict.error, pageErrors };
+    } else {
+      result = {
+        ok: true,
+        frames: verdict.frames,
+        duration: verdict.duration,
+        size: { w, h },
+        svgNodes: verdict.svgNodes,
+      };
+      if (verdict.svgNodes < 2) {
+        result.warning =
+          'svgNodes < 2 — likely the blank-render gotcha: shape primitives must be wrapped in a "gr" group ending with a "tr" transform';
+      }
+      if (pageErrors.length > 0) result.pageErrors = pageErrors;
 
-    const result = {
-      ok: true,
-      frames: verdict.frames,
-      duration: verdict.duration,
-      size: { w, h },
-      svgNodes: verdict.svgNodes,
-    };
-    if (verdict.svgNodes < 2) {
-      result.warning =
-        'svgNodes < 2 — likely the blank-render gotcha: shape primitives must be wrapped in a "gr" group ending with a "tr" transform';
+      if (args.screenshot) {
+        const shot = isAbsolute(args.screenshot) ? args.screenshot : resolve(process.cwd(), args.screenshot);
+        await page.locator('#anim').screenshot({ path: shot, type: 'png' });
+        result.screenshot = shot;
+      }
     }
-    if (pageErrors.length > 0) result.pageErrors = pageErrors;
-
-    if (args.screenshot) {
-      const shot = isAbsolute(args.screenshot) ? args.screenshot : resolve(process.cwd(), args.screenshot);
-      await page.locator('#anim').screenshot({ path: shot, type: 'png' });
-      result.screenshot = shot;
-    }
-    console.log(JSON.stringify(result, null, 2));
   } catch (err) {
-    fail(`render failed: ${err.message}`);
+    failure = { ok: false, error: `render failed: ${err.message}` };
   } finally {
     await browser.close();
   }
+
+  if (failure) {
+    console.log(JSON.stringify(failure));
+    process.exit(2);
+  }
+  console.log(JSON.stringify(result, null, 2));
 }
 
 main().catch((err) => {
