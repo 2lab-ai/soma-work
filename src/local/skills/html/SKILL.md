@@ -1,16 +1,19 @@
 ---
 name: html
-description: Convert any content (markdown, plain text, JSON, CSV, SQL, raw notes) into a styled single-file HTML and a rendered PNG, then upload both to the current Slack thread. Pick a template name from the catalog or let the skill auto-classify. Triggers on "html로 만들어줘", "HTML로 변환", "이걸 페이지로", "render as html", "html + png", "convert to html", "to html and png", "make a card", "make a deck", "make a poster", "make a report from this data".
+description: Convert any content (markdown, plain text, JSON, CSV, SQL, raw notes) into a styled single-file HTML with a Lottie motion layer and a rendered PNG, publish the HTML on the local web server (clickable access link), then upload both files to the current Slack thread. Pick a template name from the catalog or let the skill auto-classify. Triggers on "html로 만들어줘", "HTML로 변환", "이걸 페이지로", "render as html", "html + png", "convert to html", "to html and png", "make a card", "make a deck", "make a poster", "make a report from this data".
 allowed-tools: Read, Write, Edit, Bash, Glob, Grep
-version: 0.1.0
+version: 0.2.0
 license: ISC
 ---
 
 # HTML Anything — Local Skill
 
 Turn any blob of content into a ship-ready single-file HTML + a high-DPI PNG,
-then drop both into the current Slack thread. The HTML is the artifact; the
-PNG is the preview Slack can render inline.
+publish the HTML on a local web server, then drop both files **and the live
+access link** into the current Slack thread. The HTML is the artifact; the
+PNG is the static preview Slack can render inline; the served URL is where
+the page actually *lives* — Lottie motion (Step 3.7) only exists in a real
+browser tab, so the link is a first-class deliverable, not a nicety.
 
 This skill is a thin, vendored adaptation of
 [`nexu-io/html-anything`](https://github.com/nexu-io/html-anything) (Apache-2.0).
@@ -120,6 +123,39 @@ This step never blocks and never asks a question — it is a deterministic looku
 that raises design quality. The classifier in Step 2 and the auto-flow are
 unchanged.
 
+### 3.7. Plan the motion layer (`lottie` skill)
+
+Every page gets a **Lottie motion layer** unless the user opts out
+(`--no-motion`) or the surface is print-shaped (`resume-modern`). Read the
+**`lottie`** skill — it is the authoring contract (vendored from
+[`diffusionstudio/lottie`](https://github.com/diffusionstudio/lottie)) for
+writing valid Bodymovin JSON by hand:
+
+```bash
+cat "$CLAUDE_PLUGIN_ROOT/skills/lottie/SKILL.md"
+```
+
+Operate it in **embed mode**: author 1–3 small shape-layer animations
+yourself, inline each as `animationData`, and load them with the pinned
+lottie-web CDN snippet from that skill. Placement is template-driven:
+
+| Template | Motion job (pick 1–2) |
+|---|---|
+| `data-report` | KPI pulse on the headline number; a drawing-in trim-path underline on the title. |
+| `deck-simple` | Cover-slide hero accent (looping geometric motif); subtle slide-marker pulse. |
+| `saas-landing` | Hero accent next to the headline; animated checkmark on the primary feature. |
+| `meeting-notes` / `eng-runbook` | One status cue: animated check (decisions/done) or pulsing dot (open items / on-call). |
+| `social-x-post-card` | One ambient accent behind/beside the quote — slow, ≤ 6 s loop. |
+| `doc-kami-parchment` | A single subtle ambient texture or header ornament — or none if it fights the parchment calm. |
+| `resume-modern` | **None.** Print surface. |
+
+Hard rules (the `design` skill's anti-slop discipline extends to motion):
+palette-locked colors (0–1 RGBA from the chosen direction), eased keyframes,
+seamless loops, `prefers-reduced-motion` honored, `aria-hidden="true"` on
+decorative containers, **never** hotlink animation URLs at runtime. Validate
+each authored JSON with the lottie skill's `validate.mjs` before inlining
+when the animation is non-trivial (> 2 layers).
+
 ### 4. Generate HTML
 
 Write a **single self-contained `.html` file** to the current session
@@ -150,6 +186,11 @@ the model from freestyling AI-slop defaults):
   (e.g., `[—]`), do **not** invent content.
 - **Rounded corners + soft shadow + real `:focus`** on interactive elements
   (buttons / links).
+- **Motion stays inline and quiet** — Lottie JSON from Step 3.7 is embedded
+  as `animationData` (single-file rule: no `path:` fetches of separate
+  `.json` files), ≤ 3 animations per page, each loop seamless and
+  `prefers-reduced-motion`-guarded. The only allowed motion runtime is the
+  pinned `lottie-web@5.13.0` CDN script from the `lottie` skill.
 
 You may use a Tailwind CDN (`https://cdn.tailwindcss.com`) and Google Fonts
 (`https://fonts.googleapis.com/css2?family=Noto+Sans+SC…`). Both are
@@ -168,6 +209,11 @@ node "$CLAUDE_PLUGIN_ROOT/skills/html/renderer/render.mjs" \
 The renderer pulls geometry from `templates/index.json` based on
 `--template <name>`. Pass `--width` / `--height` / `--full-page` /
 `--no-full-page` / `--selector` to override.
+
+The PNG freezes Lottie mid-loop — that's expected; the live link (Step 7)
+carries the motion. If the captured frame looks empty because an animation
+starts from opacity 0, pass `--wait-ms 1500` so the screenshot lands on a
+populated frame.
 
 ### 6. Validate the PNG
 
@@ -191,32 +237,62 @@ with open(p, "rb") as f:
 PY
 ```
 
-### 7. Dual upload to Slack
+### 7. Publish to the local web server (access link)
+
+```bash
+node "$CLAUDE_PLUGIN_ROOT/skills/html/server/serve.mjs" \
+  --file "$(pwd)/html-<slug>-<ts>.html"
+```
+
+This copies the HTML into the serve root (`/tmp/soma-html-serve`), ensures a
+long-lived static-server daemon is listening (spawned detached on first use —
+idempotent, survives the agent turn, reused across sessions), and prints
+JSON:
+
+```json
+{ "url": "http://<lan-ip>:8763/html-<slug>-<ts>.html",
+  "localUrl": "http://localhost:8763/html-<slug>-<ts>.html",
+  "port": 8763, "file": "/tmp/soma-html-serve/html-<slug>-<ts>.html" }
+```
+
+Use `url` (LAN IP) as the access link you hand to the user — `localhost`
+only works on the host machine itself; include it as a secondary mention.
+Verify the link before sharing it:
+
+```bash
+curl -fsS -o /dev/null -w '%{http_code}' "<url>"   # must print 200
+```
+
+If the server cannot start (exit 2), report it in the upload comment and
+fall back to file-only delivery — do not block the artifact on the link.
+
+### 8. Dual upload to Slack (+ the link)
 
 ```
 mcp__slack-mcp__send_media(
   file_path="<absolute path to PNG>",
   title="<meaningful artifact title>",
   alt_text="<1-2 sentence description of what the page shows>",
-  initial_comment="<template name used + any fallback note>"
+  initial_comment="<template name used + any fallback note> — live: <url from Step 7>"
 )
 mcp__slack-mcp__send_file(
   file_path="<absolute path to HTML>",
   title="<same slug>.html (open in browser to edit / re-render)",
-  initial_comment="Single-file HTML. Drag into a browser tab."
+  initial_comment="Single-file HTML. Live (with motion): <url from Step 7>"
 )
 ```
 
 If the slack-mcp tools are not available in this session (e.g., the skill
 was invoked outside a Slack-mention context), skip the uploads, print both
-absolute paths, and end the turn.
+absolute paths plus the served URL, and end the turn.
 
-### 8. End the turn
+### 9. End the turn
 
-One-line confirmation: `template used`, `PNG path`, `HTML path`. No
-preamble. No follow-up question — the classifier resolves ambiguity by
-falling through to `doc-kami-parchment`, and the user can re-invoke with
-an explicit `--template=<name>` if they want a different look.
+One-line confirmation: `template used`, `PNG path`, `HTML path`, **served
+URL**. No preamble. No follow-up question — the classifier resolves
+ambiguity by falling through to `doc-kami-parchment`, and the user can
+re-invoke with an explicit `--template=<name>` if they want a different
+look.
 
 ## Anti-patterns
 
@@ -235,6 +311,11 @@ an explicit `--template=<name>` if they want a different look.
   the error and stop.
 - Do **not** mix two templates into one HTML. If the input has two clearly
   different shapes, render twice and upload both.
+- Do **not** decorate with stock-sticker motion — every Lottie animation
+  needs a job (Step 3.7's table). More than 3 per page, hotlinked `.json`
+  URLs, or off-palette colors are all slop.
+- Do **not** hand the user a link you haven't `curl`-verified, and do not
+  ship `localhost` as the primary link — it only resolves on the host.
 
 ## Adding more templates
 
@@ -255,6 +336,11 @@ V1 ships 8 templates. To add more from the html-anything catalog (75 total):
 - [`../design/SKILL.md`](../design/SKILL.md) — the `design` skill. Step 3.5
   consults it for the visual direction + anti-AI-slop discipline before
   generating HTML.
+- [`../lottie/SKILL.md`](../lottie/SKILL.md) — the `lottie` skill
+  (vendored from diffusionstudio/lottie). Step 3.7 consults it to author the
+  inline motion layer.
+- [`server/serve.mjs`](./server/serve.mjs) — local static web server CLI.
+  Step 7 publishes the HTML and returns the access link.
 - [`templates/index.json`](./templates/index.json) — template catalog with
   per-template viewport overrides.
 - [`templates/skills/<name>/SKILL.md`](./templates/skills/) — vendored
