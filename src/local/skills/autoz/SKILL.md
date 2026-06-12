@@ -42,7 +42,7 @@ description: "Autonomous z-pipeline driver. Triggered by `autoz` or `$autoz`. Bu
    - The run is not finished until this evidence is posted.
 
 7. **Terminal report only.** Render via the `local:es` mode template (which already implements Hook 4's per-`ssot-task` accountability block). autoz-specific additions on top of `es`:
-   - PR URL + CI status + approve status + the issue evidence-comment URL from Rule 6.
+   - PR URL + CI status + approve status + the evidence URL from Rule 6 (issue-comment URL preferred; the PR-body proof section URL on the no-issue fallback).
    - Codex transcript references for every autonomous decision.
    - The single ztrace pass result from Hook 4 attached as verification evidence — unmapped `ssot-task` is blocking, not advisory.
    - No mid-run progress check-ins. The only mid-run user-facing output is the SSOT-TASK-TREE visibility mandated by Hook 1 / Hook 2.
@@ -68,7 +68,7 @@ Stop and report — do not silently fail — only when:
 9. **Drift check before approve.** If a new user message arrived during 6–8, run Hook 2 first and re-loop 4–8 as needed.
 10. **`gh pr review --approve`** once green and zcheck is clean.
 11. **SSOT success proof → issue update.** Build the Hook 4 per-`ssot-task` proof (ztrace-verified) and post it to the source issue as the why-this-PR-resolved-it record (Hard Rule 6).
-12. **Terminal report.** Hook 4. Includes `ztrace` cross-check + the issue evidence-comment URL.
+12. **Terminal report.** Hook 4. Includes `ztrace` cross-check + the Rule 6 evidence URL (issue comment, or PR-body proof section when no issue).
 
 ## What This Skill Does NOT Do
 
