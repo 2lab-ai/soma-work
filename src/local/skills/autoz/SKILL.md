@@ -1,6 +1,6 @@
 ---
 name: autoz
-description: "Autonomous z-pipeline driver. Triggered by `autoz` or `$autoz`. Builds SSOT-LIST + SSOT-TASK-TREE first (per `local:using-ssot`), reproduces the user's instruction/issue as a RED test, confirms RED, then drives the full local:using-z / local:z procedure end-to-end without asking the user any questions. Open decisions are resolved by mutual agreement between you and codex (mcp__llm__chat model=codex). PR approval runs via `gh pr review --approve` from the gh CLI's authenticated account."
+description: "Autonomous z-pipeline driver. Triggered by `autoz` or `$autoz`. Builds SSOT-LIST + SSOT-TASK-TREE first (per `local:using-ssot`), reproduces the user's instruction/issue as a RED test, confirms RED, then drives the full local:using-z / local:z procedure end-to-end without asking the user any questions. Open decisions are resolved by mutual agreement between you and codex (mcp__llm__chat model=codex). PR approval runs via `gh pr review --approve` from the gh CLI's authenticated account. After approval, proves success against the SSOT (using-ssot Hook 4) and posts that proof to the source issue as the evidence record of why the PR resolved it."
 ---
 
 # autoz — Autonomous z-pipeline
@@ -35,8 +35,14 @@ description: "Autonomous z-pipeline driver. Triggered by `autoz` or `$autoz`. Bu
    - Do not request user approval. Do not paste the approve URL — execute the approval.
    - If merge requires a separate `gh pr merge`, run it too unless project policy forbids it. Check `.github/` and `CLAUDE.md` for merge-policy hints before merging.
 
-6. **Terminal report only.** Render via the `local:es` mode template (which already implements Hook 4's per-`ssot-task` accountability block). autoz-specific additions on top of `es`:
-   - PR URL + CI status + approve status.
+6. **SSOT success proof, posted to the issue (mandatory, after approve).** Prove — against the SSOT, not the work narrative — *why* the run succeeded, then write that proof into the source issue:
+   - Render the `local:using-ssot` Hook 4 mapping: per `ssot-task`, quote the SSOT sentence it came from → the concrete artifact (PR / commit / file / test) → the causal reason the artifact satisfies the requirement. Verify with the single ztrace pass mandated by Hook 4. An unmapped `ssot-task` means the run is NOT done — go back and finish; never write the proof around the gap.
+   - Post the proof as a comment on the source issue: `gh issue comment <number> --body-file <proof.md>` (bot-token 401 → the 5-retry protocol from Hard Blockers, raw curl included). This comment is the evidence record of **why this PR resolved this issue** — SSOT quote → what was done → why that satisfies it, plus RED→GREEN evidence and the PR link.
+   - If the run started from a plain instruction with no issue, append the proof as the final section of the PR body instead.
+   - The run is not finished until this evidence is posted.
+
+7. **Terminal report only.** Render via the `local:es` mode template (which already implements Hook 4's per-`ssot-task` accountability block). autoz-specific additions on top of `es`:
+   - PR URL + CI status + approve status + the evidence URL from Rule 6 (issue-comment URL preferred; the PR-body proof section URL on the no-issue fallback).
    - Codex transcript references for every autonomous decision.
    - The single ztrace pass result from Hook 4 attached as verification evidence — unmapped `ssot-task` is blocking, not advisory.
    - No mid-run progress check-ins. The only mid-run user-facing output is the SSOT-TASK-TREE visibility mandated by Hook 1 / Hook 2.
@@ -61,7 +67,8 @@ Stop and report — do not silently fail — only when:
 8. **Self-review** with `local:zcheck`. Address blocking findings.
 9. **Drift check before approve.** If a new user message arrived during 6–8, run Hook 2 first and re-loop 4–8 as needed.
 10. **`gh pr review --approve`** once green and zcheck is clean.
-11. **Terminal report.** Hook 4. Includes `ztrace` cross-check.
+11. **SSOT success proof → issue update.** Build the Hook 4 per-`ssot-task` proof (ztrace-verified) and post it to the source issue as the why-this-PR-resolved-it record (Hard Rule 6).
+12. **Terminal report.** Hook 4. Includes `ztrace` cross-check + the Rule 6 evidence URL (issue comment, or PR-body proof section when no issue).
 
 ## What This Skill Does NOT Do
 
@@ -70,6 +77,7 @@ Stop and report — do not silently fail — only when:
 - Does not wipe-and-restart on drift. Always diff at `ssot-task` granularity and resume.
 - Does not skip the RED phase even for "obvious" changes.
 - Does not approve PRs with unresolved review comments or red CI.
+- Does not end the run without the SSOT success proof posted to the source issue (or PR body when no issue exists).
 - Does not force-push to `main`, does not bypass branch protection, does not skip git hooks (`--no-verify`, `--no-gpg-sign`, etc.) unless the user has explicitly authorized it.
 - Does not re-implement the z pipeline. It only enforces the autonomous, SSOT-first + RED-first, no-user-question contract on top of `local:using-z` / `local:z`.
 
