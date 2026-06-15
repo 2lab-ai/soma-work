@@ -86,6 +86,8 @@ describe('ActionHandlers', () => {
       expect(mockApp.action).toHaveBeenCalledWith('managed_message_delete_confirm', expect.any(Function));
       expect(mockApp.action).toHaveBeenCalledWith('dm_delete_approve', expect.any(Function));
       expect(mockApp.action).toHaveBeenCalledWith('dm_delete_reject', expect.any(Function));
+      expect(mockApp.action).toHaveBeenCalledWith('dm_delete_thread_confirm', expect.any(Function));
+      expect(mockApp.action).toHaveBeenCalledWith('dm_delete_thread_cancel', expect.any(Function));
       expect(mockApp.action).toHaveBeenCalledWith('custom_input_single', expect.any(Function));
       expect(mockApp.action).toHaveBeenCalledWith(/^custom_input_multi_/, expect.any(Function));
       expect(mockApp.view).toHaveBeenCalledWith('custom_input_submit', expect.any(Function));
@@ -311,6 +313,107 @@ describe('ActionHandlers', () => {
           replace_original: false,
         }),
       );
+    });
+  });
+
+  describe('dm_delete_thread (full thread wipe)', () => {
+    const threadValue = {
+      requesterId: 'U_ADMIN',
+      targetChannel: 'C999',
+      threadTs: '111222.000000',
+      linkChannel: 'D123',
+      linkTs: '555.666',
+    };
+
+    it('confirm wipes the whole thread and marks the link message [v]', async () => {
+      const { resetAdminUsersCache } = await import('../../admin-utils');
+      process.env.ADMIN_USERS = 'U_ADMIN';
+      resetAdminUsersCache();
+
+      const threadSlackApi = {
+        ...createMockSlackApi(),
+        deleteThreadBotMessages: vi.fn().mockResolvedValue(undefined),
+        addReaction: vi.fn().mockResolvedValue(true),
+      };
+      const threadHandlers = new ActionHandlers({
+        ...ctx,
+        slackApi: threadSlackApi as unknown as SlackApiHelper,
+      });
+
+      const mockApp = { action: vi.fn(), view: vi.fn() };
+      threadHandlers.registerHandlers(mockApp as any);
+      const confirmCall = mockApp.action.mock.calls.find((c) => c[0] === 'dm_delete_thread_confirm');
+      const handler = confirmCall![1];
+
+      const mockAck = vi.fn();
+      const mockRespond = vi.fn();
+      await handler({
+        ack: mockAck,
+        body: { actions: [{ value: JSON.stringify(threadValue) }], user: { id: 'U_ADMIN' } },
+        respond: mockRespond,
+      });
+
+      expect(threadSlackApi.deleteThreadBotMessages).toHaveBeenCalledWith('C999', '111222.000000');
+      expect(threadSlackApi.deleteMessage).toHaveBeenCalledWith('C999', '111222.000000');
+      expect(threadSlackApi.addReaction).toHaveBeenCalledWith('D123', '555.666', 'white_check_mark');
+      expect(mockRespond).toHaveBeenCalledWith(expect.objectContaining({ replace_original: true }));
+
+      delete process.env.ADMIN_USERS;
+      resetAdminUsersCache();
+    });
+
+    it('confirm by a non-admin is rejected and deletes nothing', async () => {
+      const { resetAdminUsersCache } = await import('../../admin-utils');
+      process.env.ADMIN_USERS = 'U_ADMIN';
+      resetAdminUsersCache();
+
+      const threadSlackApi = {
+        ...createMockSlackApi(),
+        deleteThreadBotMessages: vi.fn().mockResolvedValue(undefined),
+        addReaction: vi.fn().mockResolvedValue(true),
+      };
+      const threadHandlers = new ActionHandlers({
+        ...ctx,
+        slackApi: threadSlackApi as unknown as SlackApiHelper,
+      });
+
+      const mockApp = { action: vi.fn(), view: vi.fn() };
+      threadHandlers.registerHandlers(mockApp as any);
+      const confirmCall = mockApp.action.mock.calls.find((c) => c[0] === 'dm_delete_thread_confirm');
+      const handler = confirmCall![1];
+
+      const mockRespond = vi.fn();
+      await handler({
+        ack: vi.fn(),
+        body: { actions: [{ value: JSON.stringify(threadValue) }], user: { id: 'U_OTHER' } },
+        respond: mockRespond,
+      });
+
+      expect(threadSlackApi.deleteThreadBotMessages).not.toHaveBeenCalled();
+      expect(threadSlackApi.deleteMessage).not.toHaveBeenCalled();
+      expect(mockRespond).toHaveBeenCalledWith(
+        expect.objectContaining({ response_type: 'ephemeral', replace_original: false }),
+      );
+
+      delete process.env.ADMIN_USERS;
+      resetAdminUsersCache();
+    });
+
+    it('cancel deletes nothing and replaces the prompt', async () => {
+      const mockApp = { action: vi.fn(), view: vi.fn() };
+      handlers.registerHandlers(mockApp as any);
+      const cancelCall = mockApp.action.mock.calls.find((c) => c[0] === 'dm_delete_thread_cancel');
+      const handler = cancelCall![1];
+
+      const mockRespond = vi.fn();
+      await handler({
+        ack: vi.fn(),
+        body: { actions: [{ value: JSON.stringify(threadValue) }], user: { id: 'U_ADMIN' } },
+        respond: mockRespond,
+      });
+
+      expect(mockSlackApi.deleteMessage).not.toHaveBeenCalled();
+      expect(mockRespond).toHaveBeenCalledWith(expect.objectContaining({ replace_original: true }));
     });
   });
 });

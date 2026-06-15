@@ -12,6 +12,7 @@ export interface MockSlackApi {
   addReaction: MockFn;
   removeReaction: MockFn;
   getMessage: MockFn;
+  getThreadMessage: MockFn;
   getUserName: MockFn;
   getChannelName: MockFn;
   getPermalink: MockFn;
@@ -42,6 +43,7 @@ export function createMockSlackApi(overrides: Partial<MockSlackApi> = {}): MockS
 
     // Queries
     getMessage: vi.fn().mockResolvedValue({ ts: '111.222', user: 'U123' }),
+    getThreadMessage: vi.fn().mockResolvedValue({ ts: '111.222', user: 'U123' }),
     getUserName: vi.fn().mockResolvedValue('Test User'),
     getChannelName: vi.fn().mockResolvedValue('general'),
     getPermalink: vi.fn().mockResolvedValue('https://slack.com/archives/C123/p111222'),
