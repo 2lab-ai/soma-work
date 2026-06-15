@@ -405,6 +405,16 @@ export class ActionHandlers {
       await this.handleDmDeleteReject(body, respond as RespondFn);
     });
 
+    app.action('dm_delete_thread_confirm', async ({ ack, body, respond }) => {
+      await ack();
+      await this.handleDmDeleteThreadConfirm(body, respond as RespondFn);
+    });
+
+    app.action('dm_delete_thread_cancel', async ({ ack, body, respond }) => {
+      await ack();
+      await this.handleDmDeleteThreadCancel(body, respond as RespondFn);
+    });
+
     // #1064 — turn-completion feedback (👍/👎). ACK first (3s budget), then
     // persist + acknowledge.
     app.action(TURN_FEEDBACK_ACTION_ID, async ({ ack, body, respond }) => {
@@ -670,6 +680,103 @@ export class ActionHandlers {
       requesterId: value.requesterId,
       targetChannel: value.targetChannel,
       targetTs: value.targetTs,
+    });
+  }
+
+  private parseDmDeleteThreadValue(rawValue: string): {
+    requesterId: string;
+    targetChannel: string;
+    threadTs: string;
+    linkChannel: string;
+    linkTs: string;
+  } | null {
+    try {
+      const value = JSON.parse(rawValue || '{}');
+      if (
+        typeof value.requesterId !== 'string' ||
+        typeof value.targetChannel !== 'string' ||
+        typeof value.threadTs !== 'string' ||
+        typeof value.linkChannel !== 'string' ||
+        typeof value.linkTs !== 'string'
+      ) {
+        return null;
+      }
+      return value;
+    } catch {
+      return null;
+    }
+  }
+
+  private async handleDmDeleteThreadConfirm(body: any, respond: RespondFn): Promise<void> {
+    const rawValue = body.actions?.[0]?.value || '{}';
+    const value = this.parseDmDeleteThreadValue(rawValue);
+    const actorId = body.user?.id;
+
+    if (!value || !actorId) {
+      this.logger.warn('Invalid dm delete thread confirm payload', { rawValue, actorId });
+      return;
+    }
+
+    // Only the admin who requested the deletion may confirm a full-thread wipe.
+    if (!providers.isAdminUser(actorId) || actorId !== value.requesterId) {
+      await respond({
+        text: '⚠️ 요청한 어드민만 스레드 전체 삭제를 확정할 수 있습니다.',
+        response_type: 'ephemeral',
+        replace_original: false,
+      });
+      return;
+    }
+
+    try {
+      // Delete bot-authored replies first (best-effort), then the root itself.
+      await this.ctx.slackApi.deleteThreadBotMessages?.(value.targetChannel, value.threadTs);
+      await this.ctx.slackApi.deleteMessage(value.targetChannel, value.threadTs);
+      await this.ctx.slackApi.addReaction?.(value.linkChannel, value.linkTs, 'white_check_mark');
+      await respond({
+        text: '🗑️ 스레드 전체를 삭제했습니다.',
+        replace_original: true,
+      });
+      this.logger.info('Admin confirmed full thread delete', {
+        adminId: actorId,
+        targetChannel: value.targetChannel,
+        threadTs: value.threadTs,
+      });
+    } catch (error) {
+      this.logger.warn('Failed to delete thread after admin confirm', {
+        targetChannel: value.targetChannel,
+        threadTs: value.threadTs,
+        error,
+      });
+      await this.ctx.slackApi.addReaction?.(value.linkChannel, value.linkTs, 'x');
+      await respond({
+        text: '⚠️ 스레드 삭제에 실패했습니다.',
+        replace_original: true,
+      });
+    }
+  }
+
+  private async handleDmDeleteThreadCancel(body: any, respond: RespondFn): Promise<void> {
+    const rawValue = body.actions?.[0]?.value || '{}';
+    const value = this.parseDmDeleteThreadValue(rawValue);
+    const actorId = body.user?.id;
+
+    if (!value || !actorId) {
+      this.logger.warn('Invalid dm delete thread cancel payload', { rawValue, actorId });
+      return;
+    }
+
+    if (actorId !== value.requesterId) {
+      await respond({
+        text: '⚠️ 요청한 어드민만 이 버튼을 사용할 수 있습니다.',
+        response_type: 'ephemeral',
+        replace_original: false,
+      });
+      return;
+    }
+
+    await respond({
+      text: '스레드 삭제를 취소했습니다.',
+      replace_original: true,
     });
   }
 }

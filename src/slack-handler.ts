@@ -66,12 +66,29 @@ import { WorkingDirectoryManager } from './working-directory-manager';
 interface SlackPermalinkTarget {
   channelId: string;
   messageTs: string;
+  /**
+   * Root timestamp of the thread, parsed from the `?thread_ts=` query of a
+   * thread permalink. Present when the link points at a message inside a
+   * thread (reply or root). Undefined for plain top-level channel messages.
+   */
+  threadTs?: string;
 }
 
 interface DmDeleteActionValue {
   requesterId: string;
   targetChannel: string;
   targetTs: string;
+  /** Root ts when the target lives inside a thread (reply or root). */
+  threadTs?: string;
+}
+
+interface DmDeleteThreadActionValue {
+  requesterId: string;
+  targetChannel: string;
+  threadTs: string;
+  /** DM channel + ts of the admin's link message, for success/failure reactions. */
+  linkChannel: string;
+  linkTs: string;
 }
 
 export class SlackHandler {
@@ -1134,9 +1151,23 @@ export class SlackHandler {
       return false;
     }
 
-    const targetMessage = await this.slackApi.getMessage(target.channelId, target.messageTs);
+    // A thread reply (the `p…` ts differs from the thread root in `?thread_ts=`)
+    // is NOT returned by conversations.history, so it must be looked up through
+    // conversations.replies. This was the source of the "no response" bug.
+    const isThreadReply = !!target.threadTs && target.threadTs !== target.messageTs;
+
+    const targetMessage = isThreadReply
+      ? await this.slackApi.getThreadMessage(target.channelId, target.threadTs as string, target.messageTs)
+      : await this.slackApi.getMessage(target.channelId, target.messageTs);
+
     if (!targetMessage) {
+      // Previously this silently returned true (no reaction, no message) — the
+      // exact "no response" symptom for thread links. At minimum, tell the
+      // admin the instruction could not be fulfilled with an [x] marker.
       this.logger.info('DM cleanup target not found', target);
+      if (isAdminUser(event.user)) {
+        await this.markDmCleanupFailed(event);
+      }
       return true;
     }
 
@@ -1148,6 +1179,13 @@ export class SlackHandler {
 
     // Admin users can delete bot messages directly
     if (isAdminUser(event.user)) {
+      // A channel thread ROOT link would wipe the entire thread, so confirm
+      // with the admin before doing anything destructive.
+      if (!isThreadReply && this.isThreadRoot(targetMessage)) {
+        await this.sendThreadDeleteConfirmation(event, target, say);
+        return true;
+      }
+
       try {
         await this.slackApi.deleteMessage(target.channelId, target.messageTs);
         await this.slackApi.addReaction(event.channel, event.ts, 'white_check_mark');
@@ -1155,6 +1193,7 @@ export class SlackHandler {
           adminId: event.user,
           targetChannel: target.channelId,
           targetTs: target.messageTs,
+          threadTs: target.threadTs,
         });
       } catch (error) {
         this.logger.warn('Admin DM cleanup failed', {
@@ -1163,7 +1202,7 @@ export class SlackHandler {
           targetTs: target.messageTs,
           error,
         });
-        await say({ text: '⚠️ 메시지 삭제에 실패했습니다.' });
+        await this.markDmCleanupFailed(event);
       }
       return true;
     }
@@ -1171,6 +1210,81 @@ export class SlackHandler {
     // Non-admin users: send delete request to admins for approval
     await this.sendAdminDeleteApproval(event, target, say);
     return true;
+  }
+
+  /** A message is a thread root when it has at least one reply hanging off it. */
+  private isThreadRoot(message: any): boolean {
+    const replyCount = typeof message?.reply_count === 'number' ? message.reply_count : 0;
+    return replyCount > 0;
+  }
+
+  /**
+   * Mark the admin's link message with an [x] reaction when a deletion request
+   * could not be fulfilled (target not found, or delete API failed).
+   */
+  private async markDmCleanupFailed(event: MessageEvent): Promise<void> {
+    try {
+      await this.slackApi.addReaction(event.channel, event.ts, 'x');
+    } catch (err: any) {
+      this.logger.warn('Failed to add DM cleanup failure reaction', {
+        channel: event.channel,
+        ts: event.ts,
+        err: err?.message,
+      });
+    }
+  }
+
+  /**
+   * The link points at a channel thread root. Deleting it removes the whole
+   * thread, so ask the admin to confirm with a Yes/No prompt before acting.
+   */
+  private async sendThreadDeleteConfirmation(
+    event: MessageEvent,
+    target: SlackPermalinkTarget,
+    say: any,
+  ): Promise<void> {
+    const value: DmDeleteThreadActionValue = {
+      requesterId: event.user,
+      targetChannel: target.channelId,
+      threadTs: target.messageTs,
+      linkChannel: event.channel,
+      linkTs: event.ts,
+    };
+    await say({
+      text: '이 링크는 스레드 루트입니다. 스레드 전체를 삭제하시겠습니까?',
+      blocks: [
+        {
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
+            text: '이 링크는 *채널 스레드의 루트* 글입니다.\n스레드 전체(루트 + 봇이 쓴 답글 전부)를 삭제하시겠습니까?',
+          },
+        },
+        {
+          type: 'actions',
+          elements: [
+            {
+              type: 'button',
+              action_id: 'dm_delete_thread_cancel',
+              text: { type: 'plain_text', text: 'No', emoji: true },
+              value: JSON.stringify(value),
+            },
+            {
+              type: 'button',
+              action_id: 'dm_delete_thread_confirm',
+              text: { type: 'plain_text', text: 'Yes', emoji: true },
+              style: 'danger',
+              value: JSON.stringify(value),
+            },
+          ],
+        },
+      ],
+    });
+    this.logger.info('Sent thread-delete confirmation to admin', {
+      adminId: event.user,
+      targetChannel: target.channelId,
+      threadTs: target.messageTs,
+    });
   }
 
   /**
@@ -1263,7 +1377,7 @@ export class SlackHandler {
     }
 
     for (const source of sources) {
-      const match = source.match(/https?:\/\/[^\s>|]*slack\.com\/archives\/([A-Z0-9]+)\/p(\d{10,})/i);
+      const match = source.match(/https?:\/\/[^\s>|]*slack\.com\/archives\/([A-Z0-9]+)\/p(\d{10,})(?:\?([^\s>|]*))?/i);
       if (!match) {
         continue;
       }
@@ -1275,7 +1389,19 @@ export class SlackHandler {
       }
 
       const messageTs = `${rawTs.slice(0, rawTs.length - 6)}.${rawTs.slice(-6)}`;
-      return { channelId, messageTs };
+
+      // Thread permalinks carry the thread root in `?thread_ts=`. Slack may
+      // HTML-encode the URL inside blocks/attachments (`&amp;`), so accept both.
+      let threadTs: string | undefined;
+      const query = match[3];
+      if (query) {
+        const threadMatch = query.match(/thread_ts=(\d+\.\d+)/);
+        if (threadMatch) {
+          threadTs = threadMatch[1];
+        }
+      }
+
+      return { channelId, messageTs, threadTs };
     }
 
     return null;
