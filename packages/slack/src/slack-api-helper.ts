@@ -276,6 +276,39 @@ export class SlackApiHelper {
   }
 
   /**
+   * Fetch a single message that lives inside a thread (a reply, or the root)
+   * by paginating conversations.replies. Thread replies are NOT returned by
+   * conversations.history, so getMessage() cannot find them — this method is
+   * required for permalinks that point at a thread reply.
+   */
+  async getThreadMessage(channel: string, threadTs: string, ts: string): Promise<any | null> {
+    let cursor: string | undefined;
+    try {
+      do {
+        const response = await this.enqueue(() =>
+          this.app.client.conversations.replies({
+            channel,
+            ts: threadTs,
+            limit: 200,
+            cursor,
+          }),
+        );
+        const messages = (response.messages as any[]) || [];
+        const exact = messages.find((message) => message?.ts === ts);
+        if (exact) {
+          return exact;
+        }
+        const nextCursor = response.response_metadata?.next_cursor;
+        cursor = nextCursor && nextCursor.length > 0 ? nextCursor : undefined;
+      } while (cursor);
+      return null;
+    } catch (error) {
+      this.logger.warn('Failed to fetch thread message', { channel, threadTs, ts, error });
+      return null;
+    }
+  }
+
+  /**
    * Fetch and cache the full auth context from Slack's auth.test API.
    */
   async getAuthContext(): Promise<SlackAuthContext> {
