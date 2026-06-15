@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildThinkingOption,
+  CLAUDE_API_ERROR_CODE,
   classifyClaudeStderr,
   handleClaudeStderrChunk,
+  maybeThrowApiErrorMessage,
   maybeThrowOneMUnavailable,
   resolveShowSummary,
   type StderrLogger,
@@ -119,6 +121,62 @@ describe('maybeThrowOneMUnavailable', () => {
   it('does NOT throw when signal text does not match (different 1m-suffix error)', () => {
     const message = buildApiErrorMessage('API Error: 500 server error');
     expect(() => maybeThrowOneMUnavailable(message as any, 'claude-opus-4-7[1m]')).not.toThrow();
+  });
+});
+
+// Generalized API-error guard: every synthetic `isApiErrorMessage` assistant
+// message (other than the 1M signal, which the 1M guard throws first) becomes a
+// thrown CLAUDE_API_ERROR so stream-executor.handleError surfaces an Exception
+// card instead of silently completing the turn. Regression for the Opus-4.8
+// "thinking blocks cannot be modified" 400 reported as "작업 완료".
+describe('maybeThrowApiErrorMessage', () => {
+  const thinkingError =
+    'API Error: 400 {"type":"error","error":{"type":"invalid_request_error","message":"messages.1.content.105: `thinking` or `redacted_thinking` blocks in the latest assistant message cannot be modified. These blocks must remain as they were in the original response."},"request_id":"req_011CbWZ2z3LVzjkM7pwUUwqe"}';
+
+  const buildApiErrorMessage = (text: string, apiErrorStatus?: number) => ({
+    type: 'assistant' as const,
+    isApiErrorMessage: true,
+    ...(apiErrorStatus !== undefined ? { apiErrorStatus } : {}),
+    message: { content: [{ type: 'text', text }] },
+  });
+
+  it('throws CLAUDE_API_ERROR on the thinking-block 400 (the silent-failure bug)', () => {
+    const message = buildApiErrorMessage(thinkingError, 400);
+    expect(() => maybeThrowApiErrorMessage(message as any)).toThrow();
+    try {
+      maybeThrowApiErrorMessage(message as any);
+    } catch (err: any) {
+      expect(err.code).toBe(CLAUDE_API_ERROR_CODE);
+      expect(err.isApiErrorMessage).toBe(true);
+      expect(err.apiErrorStatus).toBe(400);
+      expect(String(err.message)).toContain('cannot be modified');
+    }
+  });
+
+  it('throws for ANY isApiErrorMessage regardless of model (no [1m] gating)', () => {
+    const message = buildApiErrorMessage('API Error: 500 server error', 500);
+    expect(() => maybeThrowApiErrorMessage(message as any)).toThrow(/500 server error/);
+  });
+
+  it('synthesizes a message from apiErrorStatus when text is empty', () => {
+    const message = buildApiErrorMessage('', 429);
+    try {
+      maybeThrowApiErrorMessage(message as any);
+      throw new Error('should have thrown');
+    } catch (err: any) {
+      expect(err.code).toBe(CLAUDE_API_ERROR_CODE);
+      expect(String(err.message)).toContain('status 429');
+    }
+  });
+
+  it('does NOT throw on ordinary assistant messages (no isApiErrorMessage flag)', () => {
+    const message = { type: 'assistant' as const, message: { content: [{ type: 'text', text: 'hello' }] } };
+    expect(() => maybeThrowApiErrorMessage(message as any)).not.toThrow();
+  });
+
+  it('does NOT throw on non-assistant messages', () => {
+    expect(() => maybeThrowApiErrorMessage({ type: 'result', subtype: 'success' } as any)).not.toThrow();
+    expect(() => maybeThrowApiErrorMessage({ type: 'system', subtype: 'init' } as any)).not.toThrow();
   });
 });
 

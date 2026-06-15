@@ -151,6 +151,61 @@ export function maybeThrowOneMUnavailable(message: SDKMessage, model: string | u
   throw err;
 }
 
+/** Error code stamped on throws produced by {@link maybeThrowApiErrorMessage}. */
+export const CLAUDE_API_ERROR_CODE = 'CLAUDE_API_ERROR';
+
+/**
+ * Convert a synthetic SDK API-error message into a thrown Error.
+ *
+ * The Claude Agent SDK does NOT always throw on a failed API call. For a class
+ * of API errors (e.g. the Opus-4.8 `thinking`/`redacted_thinking` "blocks ...
+ * cannot be modified" 400, or any other `invalid_request_error`) the CLI emits
+ * a regular `assistant` message with `model: '<synthetic>'`,
+ * `isApiErrorMessage: true`, `apiErrorStatus: <http status>` and a single text
+ * block carrying `API Error: <status> {...}`. Crucially, the matching `result`
+ * message is NOT flagged `is_error`, so neither the SDK's end-of-stream throw
+ * nor `stream-processor.handleResultMessage`'s `is_error` branch fires — the
+ * error text is rendered as the assistant's reply and the turn is reported as
+ * "작업 완료" (silent failure). See logs req_011CbWZ2z3LVzjkM7pwUUwqe /
+ * req_011CbWZx4SUxGGQbj2s3ZpcX.
+ *
+ * `maybeThrowOneMUnavailable` already special-cases ONE specific API-error
+ * signal (1M-context-unavailable → fallback). This is the general guard for
+ * every OTHER API error: throw so the existing `stream-executor.handleError`
+ * catch surfaces a 🔴 Exception card and never marks the turn complete.
+ *
+ * MUST be called AFTER `maybeThrowOneMUnavailable` in the loop so the 1M case
+ * keeps its dedicated fallback code (`ONE_M_CONTEXT_UNAVAILABLE`) — by the time
+ * this runs, the 1M signal has already thrown.
+ *
+ * Exported for direct unit testing.
+ */
+export function maybeThrowApiErrorMessage(message: SDKMessage): void {
+  if (message.type !== 'assistant') return;
+  // `isApiErrorMessage` / `apiErrorStatus` are optional runtime flags on the
+  // SDK assistant message — not in the SDKMessage TS type. Cast once.
+  const msg = message as unknown as {
+    isApiErrorMessage?: boolean;
+    apiErrorStatus?: number;
+    message?: { content?: unknown[] };
+  };
+  if (msg.isApiErrorMessage !== true) return;
+
+  const content = Array.isArray(msg.message?.content) ? msg.message!.content : [];
+  const text = content
+    .filter((c): c is { type: string; text?: unknown } => !!c && typeof c === 'object' && (c as any).type === 'text')
+    .map((c) => String(c.text ?? ''))
+    .join('\n')
+    .trim();
+
+  const status = typeof msg.apiErrorStatus === 'number' ? msg.apiErrorStatus : undefined;
+  const err = new Error(text || `Claude API error${status !== undefined ? ` (status ${status})` : ''}`);
+  (err as any).code = CLAUDE_API_ERROR_CODE;
+  (err as any).isApiErrorMessage = true;
+  if (status !== undefined) (err as any).apiErrorStatus = status;
+  throw err;
+}
+
 /**
  * Classification result for an incoming chunk of Claude Code CLI stderr.
  *
@@ -660,6 +715,13 @@ export class ClaudeHandler {
           subtype: 'subtype' in message ? message.subtype : undefined,
         });
 
+        // A synthetic API-error message (e.g. the Opus-4.8 "thinking blocks
+        // cannot be modified" 400) must abort the dispatch — never let its
+        // `API Error: ...` text become the returned summary/classification.
+        // Throw BEFORE the text-accumulation block below so `assistantText`
+        // stays empty and the catch re-throws instead of "using it".
+        maybeThrowApiErrorMessage(message);
+
         // Handle system init message
         if (message.type === 'system' && message.subtype === 'init') {
           this.logger.info(`\u2705 DISPATCH: SDK initialized (${elapsed}ms)`, {
@@ -688,10 +750,48 @@ export class ClaudeHandler {
             responseLength: assistantText.length,
             stopReason: message.subtype === 'success' ? message.stop_reason : undefined,
           });
+
+          // An error result (`error_during_execution`, `error_max_turns`,
+          // `error_max_budget_usd`, …) means the turn did NOT succeed. Throw
+          // rather than returning whatever partial text we collected — a
+          // truncated/empty classification or summary is worse than a clean
+          // failure the caller can fall back from.
+          const resultMsg = message as unknown as { is_error?: boolean; subtype?: string; errors?: string[] };
+          if (resultMsg.is_error || (typeof resultMsg.subtype === 'string' && resultMsg.subtype.startsWith('error_'))) {
+            const detail =
+              Array.isArray(resultMsg.errors) && resultMsg.errors.length > 0 ? resultMsg.errors.join('; ') : '';
+            const err = new Error(
+              `Claude dispatch returned an error result: ${resultMsg.subtype || 'error'}${detail ? ` — ${detail}` : ''}`,
+            );
+            (err as any).code = CLAUDE_API_ERROR_CODE;
+            throw err;
+          }
         }
       }
     } catch (error) {
       const elapsed = Date.now() - startTime;
+
+      // Fatal errors — a synthetic API-error message (CLAUDE_API_ERROR), an SDK
+      // error result, or the SDK's end-of-stream "returned an error result"
+      // throw — must NEVER be masked by partial text. Only benign process-exit
+      // errors (SIGTERM / exit code 143 after a complete answer) may fall
+      // through to the collected text.
+      const errCode = (error as { code?: string }).code;
+      const errMsg = (error as Error).message || '';
+      const isFatal =
+        errCode === CLAUDE_API_ERROR_CODE ||
+        (error as { isApiErrorMessage?: boolean }).isApiErrorMessage === true ||
+        /returned an error result/i.test(errMsg) ||
+        /API Error:/i.test(errMsg);
+      if (isFatal) {
+        this.logger.error(`\u274C DISPATCH: Fatal error after ${elapsed}ms \u2014 not using partial text`, {
+          error: errMsg,
+          code: errCode,
+          messagesReceived: messageCount,
+          responseLength: assistantText.length,
+        });
+        throw error;
+      }
 
       // If we already collected assistant text, the response is likely complete
       // even though the process didn't exit cleanly (e.g., SIGTERM / exit code 143)
@@ -786,6 +886,15 @@ export class ClaudeHandler {
           // No-op unless options.model ends with `[1m]` AND the message
           // carries one of the stable 1M-unavailable signals.
           maybeThrowOneMUnavailable(message, options.model);
+
+          // Convert every OTHER synthetic API-error message (e.g. the
+          // Opus-4.8 "thinking blocks cannot be modified" 400) into a throw so
+          // the catch below + `stream-executor.handleError` surface a 🔴
+          // Exception card. Without this the SDK yields the error as a normal
+          // assistant reply (the `result` is NOT flagged `is_error`) and the
+          // turn is silently reported as complete. Runs after the 1M guard so
+          // that case keeps its dedicated auto-fallback path.
+          maybeThrowApiErrorMessage(message);
 
           // Update session ID on init
           if (message.type === 'system' && message.subtype === 'init') {
