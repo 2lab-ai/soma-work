@@ -451,6 +451,180 @@ describe('SlackHandler', () => {
     resetAdminUsersCache();
   });
 
+  it('admin deletes a bot-authored THREAD REPLY permalink sent in DM', async () => {
+    const { resetAdminUsersCache } = await import('../admin-utils');
+    process.env.ADMIN_USERS = 'U_ADMIN';
+    resetAdminUsersCache();
+
+    const app = { client: {}, assistant: vi.fn() } as any;
+    const handler = new SlackHandler(app as any, {} as any, {} as any);
+    const handlerAny = handler as any;
+
+    const mockSlackApi = {
+      // history-based lookup must NOT be used for a reply
+      getMessage: vi.fn().mockResolvedValue(null),
+      getThreadMessage: vi.fn().mockResolvedValue({ ts: '111222.000333', user: 'B999' }),
+      getBotUserId: vi.fn().mockResolvedValue('B999'),
+      deleteMessage: vi.fn().mockResolvedValue(undefined),
+      addReaction: vi.fn().mockResolvedValue(undefined),
+      removeReaction: vi.fn().mockResolvedValue(undefined),
+    };
+
+    handlerAny.slackApi = mockSlackApi;
+    handlerAny.inputProcessor = { processFiles: vi.fn(), routeCommand: vi.fn() };
+
+    const say = vi.fn().mockResolvedValue({ ts: 'msg123' });
+    const event = {
+      user: 'U_ADMIN',
+      channel: 'D123',
+      ts: '555.666',
+      text: 'https://workspace.slack.com/archives/C999/p111222000333?thread_ts=111222.000000&cid=C999',
+    };
+
+    await handler.handleMessage(event as any, say);
+
+    expect(mockSlackApi.getThreadMessage).toHaveBeenCalledWith('C999', '111222.000000', '111222.000333');
+    expect(mockSlackApi.deleteMessage).toHaveBeenCalledWith('C999', '111222.000333');
+    expect(mockSlackApi.addReaction).toHaveBeenCalledWith('D123', '555.666', 'white_check_mark');
+
+    delete process.env.ADMIN_USERS;
+    resetAdminUsersCache();
+  });
+
+  it('admin gets [x] reaction when a thread reply target cannot be found', async () => {
+    const { resetAdminUsersCache } = await import('../admin-utils');
+    process.env.ADMIN_USERS = 'U_ADMIN';
+    resetAdminUsersCache();
+
+    const app = { client: {}, assistant: vi.fn() } as any;
+    const handler = new SlackHandler(app as any, {} as any, {} as any);
+    const handlerAny = handler as any;
+
+    const mockSlackApi = {
+      getMessage: vi.fn().mockResolvedValue(null),
+      getThreadMessage: vi.fn().mockResolvedValue(null),
+      getBotUserId: vi.fn().mockResolvedValue('B999'),
+      deleteMessage: vi.fn().mockResolvedValue(undefined),
+      addReaction: vi.fn().mockResolvedValue(undefined),
+      removeReaction: vi.fn().mockResolvedValue(undefined),
+    };
+
+    handlerAny.slackApi = mockSlackApi;
+    handlerAny.inputProcessor = { processFiles: vi.fn(), routeCommand: vi.fn() };
+
+    const say = vi.fn().mockResolvedValue({ ts: 'msg123' });
+    const event = {
+      user: 'U_ADMIN',
+      channel: 'D123',
+      ts: '555.666',
+      text: 'https://workspace.slack.com/archives/C999/p111222000333?thread_ts=111222.000000&cid=C999',
+    };
+
+    await handler.handleMessage(event as any, say);
+
+    expect(mockSlackApi.deleteMessage).not.toHaveBeenCalled();
+    expect(mockSlackApi.addReaction).toHaveBeenCalledWith('D123', '555.666', 'x');
+    expect(handlerAny.inputProcessor.processFiles).not.toHaveBeenCalled();
+
+    delete process.env.ADMIN_USERS;
+    resetAdminUsersCache();
+  });
+
+  it('admin gets [x] reaction when chat.delete fails', async () => {
+    const { resetAdminUsersCache } = await import('../admin-utils');
+    process.env.ADMIN_USERS = 'U_ADMIN';
+    resetAdminUsersCache();
+
+    const app = { client: {}, assistant: vi.fn() } as any;
+    const handler = new SlackHandler(app as any, {} as any, {} as any);
+    const handlerAny = handler as any;
+
+    const mockSlackApi = {
+      getMessage: vi.fn().mockResolvedValue({ ts: '111.222', user: 'B999' }),
+      getThreadMessage: vi.fn(),
+      getBotUserId: vi.fn().mockResolvedValue('B999'),
+      deleteMessage: vi.fn().mockRejectedValue(new Error('message_not_found')),
+      addReaction: vi.fn().mockResolvedValue(undefined),
+      removeReaction: vi.fn().mockResolvedValue(undefined),
+    };
+
+    handlerAny.slackApi = mockSlackApi;
+    handlerAny.inputProcessor = { processFiles: vi.fn(), routeCommand: vi.fn() };
+
+    const say = vi.fn().mockResolvedValue({ ts: 'msg123' });
+    const event = {
+      user: 'U_ADMIN',
+      channel: 'D123',
+      ts: '555.666',
+      text: 'https://workspace.slack.com/archives/C999/p111222000000',
+    };
+
+    await handler.handleMessage(event as any, say);
+
+    expect(mockSlackApi.deleteMessage).toHaveBeenCalledWith('C999', '111222.000000');
+    expect(mockSlackApi.addReaction).toHaveBeenCalledWith('D123', '555.666', 'x');
+
+    delete process.env.ADMIN_USERS;
+    resetAdminUsersCache();
+  });
+
+  it('admin gets a Yes/No confirmation when the link is a channel thread ROOT', async () => {
+    const { resetAdminUsersCache } = await import('../admin-utils');
+    process.env.ADMIN_USERS = 'U_ADMIN';
+    resetAdminUsersCache();
+
+    const app = { client: {}, assistant: vi.fn() } as any;
+    const handler = new SlackHandler(app as any, {} as any, {} as any);
+    const handlerAny = handler as any;
+
+    const mockSlackApi = {
+      // a thread root: it has replies
+      getMessage: vi.fn().mockResolvedValue({
+        ts: '111222.000000',
+        thread_ts: '111222.000000',
+        reply_count: 3,
+        user: 'B999',
+      }),
+      getThreadMessage: vi.fn(),
+      getBotUserId: vi.fn().mockResolvedValue('B999'),
+      deleteMessage: vi.fn().mockResolvedValue(undefined),
+      addReaction: vi.fn().mockResolvedValue(undefined),
+      removeReaction: vi.fn().mockResolvedValue(undefined),
+    };
+
+    handlerAny.slackApi = mockSlackApi;
+    handlerAny.inputProcessor = { processFiles: vi.fn(), routeCommand: vi.fn() };
+
+    const say = vi.fn().mockResolvedValue({ ts: 'msg123' });
+    const event = {
+      user: 'U_ADMIN',
+      channel: 'D123',
+      ts: '555.666',
+      text: 'https://workspace.slack.com/archives/C999/p111222000000',
+    };
+
+    await handler.handleMessage(event as any, say);
+
+    // No deletion yet — must ask first
+    expect(mockSlackApi.deleteMessage).not.toHaveBeenCalled();
+    expect(say).toHaveBeenCalledWith(
+      expect.objectContaining({
+        blocks: expect.arrayContaining([
+          expect.objectContaining({
+            type: 'actions',
+            elements: expect.arrayContaining([
+              expect.objectContaining({ action_id: 'dm_delete_thread_confirm' }),
+              expect.objectContaining({ action_id: 'dm_delete_thread_cancel' }),
+            ]),
+          }),
+        ]),
+      }),
+    );
+
+    delete process.env.ADMIN_USERS;
+    resetAdminUsersCache();
+  });
+
   it('DM plain text from non-admin is rejected via Gate A (Issue #553)', async () => {
     // Old spec §6 silent-drop → new Issue #553 UX: ephemeral guide + ❎ reaction,
     // pipeline MUST NOT be entered. (Admin plain text is covered by T1 below.)
