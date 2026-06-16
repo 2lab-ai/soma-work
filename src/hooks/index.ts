@@ -40,11 +40,18 @@ export async function registerHookRoutes(server: FastifyInstance): Promise<void>
       // Track the call only after guard passes (avoids ghost entries)
       trackPreCall(body);
 
+      // Non-blocking warning: tool call proceeds, but the proxy surfaces this
+      // to the model via PreToolUse `additionalContext` so it registers a task.
+      if (result.warning) {
+        return reply.send({ action: 'warn', message: result.warning });
+      }
+
       reply.send({ action: 'pass' });
     } catch (error) {
       logger.error('pre_tool_use handler error', error);
-      // Fail-open: don't block on internal errors
-      reply.send({ decision: 'approve' });
+      // Fail-open: don't block on internal errors. Use the same {action:'pass'}
+      // shape as the success path so the proxy reads a consistent contract.
+      reply.send({ action: 'pass' });
     }
   });
 

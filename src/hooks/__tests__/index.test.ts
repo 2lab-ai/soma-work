@@ -88,6 +88,29 @@ describe('Hook routes (integration)', () => {
     expect(body.message).toContain('TodoWrite');
   });
 
+  it('POST /api/hooks/v1/pre_tool_use at warn threshold returns 200 action=warn with message', async () => {
+    // Calls 1, 2 → pass
+    for (let i = 0; i < 2; i++) {
+      const r = await server.inject({
+        method: 'POST',
+        url: '/api/hooks/v1/pre_tool_use',
+        payload: { session_id: 'sess-warn', tool_name: 'Bash' },
+      });
+      expect(JSON.parse(r.body).action).toBe('pass');
+    }
+
+    // Call 3 → non-blocking warning (still 200, tool proceeds)
+    const res = await server.inject({
+      method: 'POST',
+      url: '/api/hooks/v1/pre_tool_use',
+      payload: { session_id: 'sess-warn', tool_name: 'Bash' },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.action).toBe('warn');
+    expect(body.message).toContain('TaskCreate');
+  });
+
   it('POST /api/hooks/v1/post_tool_use returns 200', async () => {
     const res = await server.inject({
       method: 'POST',
