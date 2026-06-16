@@ -16,14 +16,19 @@ describe('Session Workspace Wiring', () => {
   let registry: SessionRegistry;
 
   beforeEach(() => {
-    if (fs.existsSync(TEST_DATA_DIR)) fs.rmSync(TEST_DATA_DIR, { recursive: true });
+    // `force: true` makes rmSync idempotent (no throw when the path is
+    // already gone). The previous `existsSync(...) && rmSync(...)` guard was a
+    // TOCTOU race: TEST_DATA_DIR is a hardcoded shared path, so under parallel
+    // CI workers another worker could delete it between the check and the
+    // rmSync, throwing ENOENT and flaking the run.
+    fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
     fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
     manager = new WorkingDirectoryManager();
     registry = new SessionRegistry();
   });
 
   afterEach(() => {
-    if (fs.existsSync(TEST_DATA_DIR)) fs.rmSync(TEST_DATA_DIR, { recursive: true });
+    fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
   });
 
   // === Scenario W1: createSessionBaseDir ===
