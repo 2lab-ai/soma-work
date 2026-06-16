@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { Logger, redactAnthropicSecrets } from '@soma/common/logger';
+import { textIndicatesUsageLimit } from '@soma/common/rate-limit';
 import type { ActionHandlers } from '../actions';
 import { buildMarkerBlocks, SUPERSEDED_TEXT } from '../actions/click-classifier';
 import type { PendingInstructionConfirmStore } from '../actions/pending-instruction-confirm-store';
@@ -1620,6 +1621,34 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         throw abortError;
       }
 
+      // Usage-limit-as-content guard.
+      //
+      // Claude Code surfaces a subscription usage cap two ways: as a thrown
+      // SDK error (handled in the catch → handleError → tryRotateToken), OR
+      // as an ordinary assistant *text* message followed by a *successful*
+      // result event ("You've hit your limit · resets 9pm"). The second
+      // shape used to slip through entirely: the turn "succeeds", so
+      // handleError never runs, rotation never fires, and the cap notice
+      // leaks as the turn's answer (and into the goal-eval JSON parser).
+      //
+      // Convert that case into the existing thrown-error rotation path by
+      // throwing here, BEFORE the cap text is recorded as an assistant turn
+      // or posted. handleError will then rotate to a healthy slot
+      // (isRateLimitError → tryRotateToken) and schedule a retry
+      // (isRecoverableClaudeSdkError), so the next attempt runs on a fresh
+      // credential instead of replaying the cap notice to the user.
+      if (!toolContinuation && textIndicatesUsageLimit(streamResult.collectedText)) {
+        this.logger.warn('Usage limit surfaced as turn content — converting to rotation path', {
+          sessionKey,
+          preview: String(streamResult.collectedText).slice(0, 120),
+        });
+        const capError = new Error(
+          `Claude usage limit hit (surfaced as turn content): ${String(streamResult.collectedText).slice(0, 200)}`,
+        );
+        (capError as { usageLimitFromContent?: boolean }).usageLimitFromContent = true;
+        throw capError;
+      }
+
       // Issue #42 S3: observer — endTurn 이벤트 + 텍스트 수집 + continuation/choice 동기화
       if (streamResult.endTurnInfo) {
         turnCollector.onEndTurn(streamResult.endTurnInfo);
@@ -2731,17 +2760,18 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
 
   private isRateLimitError(error: any): boolean {
     // Check both error.message AND stderr content (rate limit text often
-    // appears in stderr while error.message is just "process exited with code 1")
-    const message = String(error?.message || '').toLowerCase();
-    const stderr = String(error?.stderrContent || '').toLowerCase();
-    const combined = `${message} ${stderr}`;
-    return (
-      combined.includes("you've hit your limit") ||
-      combined.includes('out of extra usage') ||
-      combined.includes('rate limit') ||
-      combined.includes('too many requests') ||
-      combined.includes('429')
-    );
+    // appears in stderr while error.message is just "process exited with code 1").
+    //
+    // Detection is delegated to the shared `textIndicatesUsageLimit` so the
+    // error path and the content paths (turn result + goal-eval dispatch)
+    // can never diverge. `includeTransient` is on here because this is an
+    // error/stderr payload — transient 429 / rate-limit signals are
+    // trustworthy in that context. The shared detector also folds
+    // typographic apostrophes, so "You've" (the curly form Claude actually
+    // emits) matches the literal `you've` pattern — a mismatch that would
+    // otherwise silently defeat detection.
+    const combined = `${String(error?.message || '')} ${String(error?.stderrContent || '')}`;
+    return textIndicatesUsageLimit(combined, { includeTransient: true });
   }
 
   /**
