@@ -46,7 +46,7 @@
       }
     ],
     "plugins": [
-      "omc@soma-work"
+      "zworkflow@soma-work"
     ],
     "localOverrides": []
   },

@@ -752,7 +752,7 @@ cat > "${DEPLOY_DIR}/config.json" << 'CONFIG_EOF'
       }
     ],
     "plugins": [
-      "omc@soma-work"
+      "zworkflow@soma-work"
     ],
     "localOverrides": []
   }
