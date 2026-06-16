@@ -144,6 +144,44 @@ describe('todo-guard', () => {
     expect(state?.count).toBe(4);
   });
 
+  it('should warn (non-blocking) at the warn threshold (3rd call) without a task', () => {
+    // Calls 1, 2 → no warning, not blocked
+    for (let i = 0; i < 2; i++) {
+      const r = handlePreToolUse({ session_id: 'sess-1', tool_name: 'Bash' });
+      expect(r.blocked).toBe(false);
+      expect(r.warning).toBeUndefined();
+    }
+
+    // Call 3 → non-blocking warning, telling the model to register a task now
+    const warned = handlePreToolUse({ session_id: 'sess-1', tool_name: 'Bash' });
+    expect(warned.blocked).toBe(false);
+    expect(warned.warning).toBeDefined();
+    expect(warned.warning).toContain('3');
+    expect(warned.warning).toContain('5');
+    // Mentions a task-registration tool so the model knows what to do
+    expect(warned.warning).toMatch(/TaskCreate|TodoWrite/);
+  });
+
+  it('should not warn at the 4th call (warning fires once, at the warn threshold)', () => {
+    for (let i = 0; i < 3; i++) {
+      handlePreToolUse({ session_id: 'sess-1', tool_name: 'Bash' });
+    }
+    // 4th call: between warn (3) and block (5) — no warning, no block
+    const r = handlePreToolUse({ session_id: 'sess-1', tool_name: 'Bash' });
+    expect(r.blocked).toBe(false);
+    expect(r.warning).toBeUndefined();
+  });
+
+  it('should not warn once a task marker exists', () => {
+    handlePreToolUse({ session_id: 'sess-1', tool_name: 'Bash' });
+    hookState.markTodoExists('sess-1');
+    for (let i = 0; i < 3; i++) {
+      const r = handlePreToolUse({ session_id: 'sess-1', tool_name: 'Bash' });
+      expect(r.blocked).toBe(false);
+      expect(r.warning).toBeUndefined();
+    }
+  });
+
   it('should block at threshold (5 calls)', () => {
     // Make 5 calls to reach threshold
     for (let i = 0; i < 4; i++) {

@@ -4,7 +4,8 @@
 # Behavior:
 #   1. Manages a per-session tool call counter via file
 #   2. Sets a marker on TodoWrite/TaskCreate/TaskUpdate call → all subsequent tool calls pass
-#   3. Blocks with feedback if counter >= N (default 5) and no marker
+#   3. Emits a non-blocking warning (additionalContext) at the warn threshold (default 3)
+#   4. Blocks with feedback if counter >= N (default 5) and no marker
 #
 # Why: this guard forbids planless, aimless drift — racking up tool calls
 # without ever registering what you are doing as a task.
@@ -17,7 +18,8 @@
 set -uo pipefail
 
 # ── Configuration ──
-THRESHOLD="${TODO_GUARD_THRESHOLD:-5}"
+THRESHOLD="${TODO_GUARD_THRESHOLD:-5}"          # hard block at this count
+WARN_THRESHOLD="${TODO_GUARD_WARN_THRESHOLD:-3}" # non-blocking warning (< THRESHOLD)
 STATE_DIR="/tmp/claude-calls"
 mkdir -p "$STATE_DIR" 2>/dev/null || {
   echo "⚠️ todo-guard: cannot create $STATE_DIR, skipping check" >&2
@@ -127,7 +129,7 @@ fi
 COUNT=$((COUNT + 1))
 echo "{\"count\":$COUNT,\"todo_exists\":false,\"last_updated\":\"$NOW\"}" > "$STATE_FILE"
 
-# ── Check threshold ──
+# ── Check hard block threshold ──
 if [[ $COUNT -ge $THRESHOLD ]]; then
   echo "⚠️ Detected ${THRESHOLD} or more tool calls without TodoWrite/TaskCreate/TaskUpdate." >&2
   echo "This guard forbids planless, aimless drift — register what you're doing as a task first." >&2
@@ -136,6 +138,15 @@ if [[ $COUNT -ge $THRESHOLD ]]; then
   echo '  TodoWrite({ todos: [{ content: "Task description", status: "pending", activeForm: "In progress" }] })' >&2
   echo "Or register a task with TaskCreate / TaskUpdate." >&2
   exit 2
+fi
+
+# ── Early, non-blocking warning (fires once, at the warn threshold) ──
+# Surfaced to the model via PreToolUse additionalContext; exit 0 = call proceeds.
+if [[ $WARN_THRESHOLD -gt 0 && $WARN_THRESHOLD -lt $THRESHOLD && $COUNT -eq $WARN_THRESHOLD ]]; then
+  WARN_MSG="⚠️ 태스크 없이 ${WARN_THRESHOLD}회 작업했습니다. TodoWrite/TaskCreate 없이는 최대 ${THRESHOLD}회까지만 가능 — 지금 TodoWrite 또는 TaskCreate로 태스크를 등록하세요."
+  jq -n --arg m "$WARN_MSG" \
+    '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:$m}}' 2>/dev/null || true
+  exit 0
 fi
 
 exit 0

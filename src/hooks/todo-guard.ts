@@ -1,7 +1,11 @@
 import { isExemptTool } from './hook-policy';
 import { hookState } from './hook-state';
 
+// Hard block: at this many task-less tool calls the next call is denied.
 const THRESHOLD = parseInt(process.env.TODO_GUARD_THRESHOLD || '5', 10);
+// Early warning: one non-blocking nudge fires at this count (must be < THRESHOLD)
+// so the model registers a task before it hits the hard block.
+const WARN_THRESHOLD = parseInt(process.env.TODO_GUARD_WARN_THRESHOLD || '3', 10);
 
 // Task-tracking tools that satisfy the guard.
 //
@@ -23,6 +27,9 @@ interface HookInput {
 interface GuardResult {
   blocked: boolean;
   message?: string;
+  // Non-blocking warning. When set, the tool call proceeds but the proxy
+  // surfaces this text to the model via PreToolUse `additionalContext`.
+  warning?: string;
 }
 
 // Whether a task-tracking call actually registers a task (and so should set the
@@ -60,7 +67,7 @@ export function handlePreToolUse(input: HookInput): GuardResult {
   const state = hookState.getTodoGuardState(session_id);
   if (state?.todoExists) return { blocked: false };
 
-  // Increment and check threshold
+  // Increment and check thresholds
   const updated = hookState.incrementTodoGuard(session_id);
   if (updated.count >= THRESHOLD) {
     return {
@@ -72,6 +79,15 @@ TodoWrite 예시:
   TodoWrite({ todos: [{ content: "작업 내용", status: "pending", activeForm: "작업 중" }] })
 
 또는 TaskCreate / TaskUpdate 로 태스크를 등록해도 됩니다.`,
+    };
+  }
+
+  // Early, non-blocking warning — fires exactly once, at the warn threshold,
+  // so the model registers a task before the hard block at THRESHOLD.
+  if (WARN_THRESHOLD > 0 && WARN_THRESHOLD < THRESHOLD && updated.count === WARN_THRESHOLD) {
+    return {
+      blocked: false,
+      warning: `⚠️ 태스크 없이 ${WARN_THRESHOLD}회 작업했습니다. TodoWrite/TaskCreate 없이는 최대 ${THRESHOLD}회까지만 가능 — 지금 TodoWrite 또는 TaskCreate로 태스크를 등록하세요.`,
     };
   }
 
