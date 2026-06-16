@@ -5518,3 +5518,39 @@ describe('SET_GOAL host-apply (#1082)', () => {
     expect(session.systemPrompt).toBe('cached prompt');
   });
 });
+
+describe('isRateLimitError (usage-limit detection)', () => {
+  function makeExecutor() {
+    // isRateLimitError is a pure predicate over the error object — it never
+    // touches deps, so a bare instance is sufficient.
+    return new StreamExecutor({} as any);
+  }
+
+  it('detects the incident cap notice with a CURLY apostrophe (the rotation regression)', () => {
+    const executor = makeExecutor();
+    // Claude emits a typographic apostrophe (U+2019). The old detector
+    // matched the literal ASCII `you've`, so this returned false and
+    // rotation never fired — the exact bug being fixed.
+    const error = new Error('You\u2019ve hit your limit \u00b7 resets 9pm (Asia/Seoul)');
+    expect((executor as any).isRateLimitError(error)).toBe(true);
+  });
+
+  it('detects the cap notice in stderrContent (message is just a process-exit)', () => {
+    const executor = makeExecutor();
+    const error = Object.assign(new Error('Claude Code process exited with code 1'), {
+      stderrContent: 'You\u2019ve hit your limit \u00b7 resets 10:50pm (Asia/Seoul)',
+    });
+    expect((executor as any).isRateLimitError(error)).toBe(true);
+  });
+
+  it('still detects transient 429 / rate-limit signals on the error path', () => {
+    const executor = makeExecutor();
+    expect((executor as any).isRateLimitError(new Error('HTTP 429 too many requests'))).toBe(true);
+    expect((executor as any).isRateLimitError(new Error('rate limit exceeded'))).toBe(true);
+  });
+
+  it('does not misfire on unrelated errors', () => {
+    const executor = makeExecutor();
+    expect((executor as any).isRateLimitError(new Error('Prompt is too long'))).toBe(false);
+  });
+});
