@@ -49,8 +49,9 @@ export async function registerHookRoutes(server: FastifyInstance): Promise<void>
       reply.send({ action: 'pass' });
     } catch (error) {
       logger.error('pre_tool_use handler error', error);
-      // Fail-open: don't block on internal errors
-      reply.send({ decision: 'approve' });
+      // Fail-open: don't block on internal errors. Use the same {action:'pass'}
+      // shape as the success path so the proxy reads a consistent contract.
+      reply.send({ action: 'pass' });
     }
   });
 

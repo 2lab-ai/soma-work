@@ -101,9 +101,10 @@ case "$HTTP_CODE" in
   200|202)
     # Non-blocking warning: service returns {action:"warn", message:"..."}.
     # Surface it to the model via PreToolUse additionalContext (exit 0 = pass).
-    ACTION=$(echo "$BODY" | jq -r '.action // empty' 2>/dev/null)
-    if [[ "$ACTION" == "warn" ]]; then
-      WMSG=$(echo "$BODY" | jq -r '.message // empty' 2>/dev/null)
+    # Cheap substring pre-check avoids spawning jq on the common (non-warn) path —
+    # this hook runs on every tool call. Single jq pass extracts the message.
+    if [[ "$BODY" == *'"warn"'* ]]; then
+      WMSG=$(echo "$BODY" | jq -r 'if .action == "warn" then .message else empty end' 2>/dev/null)
       if [[ -n "$WMSG" ]]; then
         jq -n --arg m "$WMSG" \
           '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:$m}}' 2>/dev/null || true
