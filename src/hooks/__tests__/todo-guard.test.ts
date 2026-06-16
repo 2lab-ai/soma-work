@@ -65,6 +65,52 @@ describe('todo-guard', () => {
     expect(state?.todoExists).toBe(true);
   });
 
+  it('should not block TaskCreate and set marker (harness task-tracking tool)', () => {
+    // TaskCreate registers a task by the act of calling — it satisfies the
+    // guard even after the threshold would otherwise block.
+    for (let i = 0; i < 4; i++) {
+      handlePreToolUse({ session_id: 'sess-1', tool_name: 'Bash' });
+    }
+
+    const result = handlePreToolUse({
+      session_id: 'sess-1',
+      tool_name: 'TaskCreate',
+      tool_input: {},
+    });
+    expect(result.blocked).toBe(false);
+
+    const state = hookState.getTodoGuardState('sess-1');
+    expect(state?.todoExists).toBe(true);
+
+    // Subsequent calls pass even though count >= threshold
+    const after = handlePreToolUse({ session_id: 'sess-1', tool_name: 'Bash' });
+    expect(after.blocked).toBe(false);
+  });
+
+  it('should not block TaskUpdate and set marker (harness task-tracking tool)', () => {
+    const result = handlePreToolUse({
+      session_id: 'sess-1',
+      tool_name: 'TaskUpdate',
+      tool_input: {},
+    });
+    expect(result.blocked).toBe(false);
+
+    const state = hookState.getTodoGuardState('sess-1');
+    expect(state?.todoExists).toBe(true);
+  });
+
+  it('should mention TaskCreate/TaskUpdate in the block message', () => {
+    for (let i = 0; i < 4; i++) {
+      handlePreToolUse({ session_id: 'sess-1', tool_name: 'Bash' });
+    }
+    const result = handlePreToolUse({ session_id: 'sess-1', tool_name: 'Bash' });
+    expect(result.blocked).toBe(true);
+    expect(result.message).toContain('TaskCreate');
+    expect(result.message).toContain('TaskUpdate');
+    // Rationale: the guard forbids planless drift
+    expect(result.message).toContain('드리프트');
+  });
+
   it('should not block TodoWrite with empty todos and not set marker', () => {
     const result = handlePreToolUse({
       session_id: 'sess-1',
@@ -96,6 +142,44 @@ describe('todo-guard', () => {
 
     const state = hookState.getTodoGuardState('sess-1');
     expect(state?.count).toBe(4);
+  });
+
+  it('should warn (non-blocking) at the warn threshold (3rd call) without a task', () => {
+    // Calls 1, 2 → no warning, not blocked
+    for (let i = 0; i < 2; i++) {
+      const r = handlePreToolUse({ session_id: 'sess-1', tool_name: 'Bash' });
+      expect(r.blocked).toBe(false);
+      expect(r.warning).toBeUndefined();
+    }
+
+    // Call 3 → non-blocking warning, telling the model to register a task now
+    const warned = handlePreToolUse({ session_id: 'sess-1', tool_name: 'Bash' });
+    expect(warned.blocked).toBe(false);
+    expect(warned.warning).toBeDefined();
+    expect(warned.warning).toContain('3');
+    expect(warned.warning).toContain('5');
+    // Mentions a task-registration tool so the model knows what to do
+    expect(warned.warning).toMatch(/TaskCreate|TodoWrite/);
+  });
+
+  it('should not warn at the 4th call (warning fires once, at the warn threshold)', () => {
+    for (let i = 0; i < 3; i++) {
+      handlePreToolUse({ session_id: 'sess-1', tool_name: 'Bash' });
+    }
+    // 4th call: between warn (3) and block (5) — no warning, no block
+    const r = handlePreToolUse({ session_id: 'sess-1', tool_name: 'Bash' });
+    expect(r.blocked).toBe(false);
+    expect(r.warning).toBeUndefined();
+  });
+
+  it('should not warn once a task marker exists', () => {
+    handlePreToolUse({ session_id: 'sess-1', tool_name: 'Bash' });
+    hookState.markTodoExists('sess-1');
+    for (let i = 0; i < 3; i++) {
+      const r = handlePreToolUse({ session_id: 'sess-1', tool_name: 'Bash' });
+      expect(r.blocked).toBe(false);
+      expect(r.warning).toBeUndefined();
+    }
   });
 
   it('should block at threshold (5 calls)', () => {
