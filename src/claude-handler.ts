@@ -30,6 +30,7 @@ import {
   isOneMContextUnavailableSignal,
   ONE_M_CONTEXT_UNAVAILABLE_CODE,
 } from './metrics/model-registry';
+import { BUNDLED_PLUGINS_DIR } from './plugin/bundled';
 import type { SdkPluginPath } from './plugin/types';
 import type {
   ActivityState,
@@ -42,8 +43,10 @@ import type {
   WorkflowType,
 } from './types';
 
-// Fallback local plugins directory (used when no PluginManager is configured)
-const LOCAL_PLUGINS_DIR = path.join(__dirname, 'local');
+// Bundled local plugins directory (the first-party `zworkflow` plugin = src/local).
+// Used as a fallback when no PluginManager is configured, and as the canonical
+// path the bundled `zworkflow@soma-work` default resolves to (see plugin/bundled.ts).
+const LOCAL_PLUGINS_DIR = BUNDLED_PLUGINS_DIR;
 
 import type { ModelCommandContext } from 'somalib/model-commands/types';
 import { sendCredentialAlert } from './credential-alert';
@@ -282,11 +285,19 @@ export class ClaudeHandler {
   private getEffectivePluginPaths(): SdkPluginPath[] {
     const pm = this.mcpManager.getPluginManager();
     const paths = pm?.getPluginPaths() ?? [];
-    if (paths.length === 0) {
-      return [{ type: 'local' as const, path: LOCAL_PLUGINS_DIR }];
-    }
+    // Guarantee the bundled local plugin (zworkflow) is present. When the
+    // PluginManager already resolved it (its bundled path == LOCAL_PLUGINS_DIR),
+    // the de-dup below keeps it single; otherwise we prepend it.
     const hasLocal = paths.some((p) => p.path === LOCAL_PLUGINS_DIR);
-    return hasLocal ? paths : [{ type: 'local' as const, path: LOCAL_PLUGINS_DIR }, ...paths];
+    const merged = hasLocal ? [...paths] : [{ type: 'local' as const, path: LOCAL_PLUGINS_DIR }, ...paths];
+    // De-dup by path so the same plugin directory never loads twice (which would
+    // register duplicate skill names and break the session).
+    const seen = new Set<string>();
+    return merged.filter((p) => {
+      if (seen.has(p.path)) return false;
+      seen.add(p.path);
+      return true;
+    });
   }
 
   /**

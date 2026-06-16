@@ -75,6 +75,7 @@ import {
   type UsageRefreshScheduler,
 } from './oauth';
 import { acquirePidLock, releasePidLock } from './pid-lock';
+import { BUNDLED_PLUGINS } from './plugin/bundled';
 import { PluginManager } from './plugin/plugin-manager';
 import { getVersionInfo, notifyRelease } from './release-notifier';
 import { GoalLoopController } from './slack/goal-loop-controller';
@@ -339,7 +340,7 @@ async function start() {
     timing(`MCP config loaded (${mcpConfig ? Object.keys(mcpConfig.mcpServers).length : 0} servers)`);
 
     // Initialize Plugin manager
-    const pluginManager = new PluginManager(appConfig.plugin || {}, PLUGINS_DIR);
+    const pluginManager = new PluginManager(appConfig.plugin || {}, PLUGINS_DIR, undefined, BUNDLED_PLUGINS);
     try {
       await pluginManager.initialize();
       mcpManager.setPluginManager(pluginManager);
