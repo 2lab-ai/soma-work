@@ -48,8 +48,8 @@ import type {
 // path the bundled `zworkflow@soma-work` default resolves to (see plugin/bundled.ts).
 const LOCAL_PLUGINS_DIR = BUNDLED_PLUGINS_DIR;
 
+import { textIndicatesUsageLimit } from '@soma/common/rate-limit';
 import type { ModelCommandContext } from 'somalib/model-commands/types';
-import { textIndicatesUsageLimit } from 'somalib/rate-limit';
 import { sendCredentialAlert } from './credential-alert';
 import {
   ensureActiveSlotAuth,

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { Logger, redactAnthropicSecrets } from '@soma/common/logger';
-import { textIndicatesUsageLimit } from 'somalib/rate-limit';
+import { textIndicatesUsageLimit } from '@soma/common/rate-limit';
 import type { ActionHandlers } from '../actions';
 import { buildMarkerBlocks, SUPERSEDED_TEXT } from '../actions/click-classifier';
 import type { PendingInstructionConfirmStore } from '../actions/pending-instruction-confirm-store';

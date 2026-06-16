@@ -42,12 +42,7 @@ const CAP_NOTICE_PATTERNS: readonly string[] = [
  * content would false-positive on any turn that merely *discusses* rate
  * limits or contains the number 429. Enable with `includeTransient`.
  */
-const TRANSIENT_RATE_PATTERNS: readonly string[] = [
-  'rate limit',
-  'rate_limit',
-  'too many requests',
-  '429',
-] as const;
+const TRANSIENT_RATE_PATTERNS: readonly string[] = ['rate limit', 'rate_limit', 'too many requests', '429'] as const;
 
 /**
  * Normalize text before substring matching:
@@ -82,10 +77,7 @@ export interface UsageLimitMatchOptions {
  * phrasings. Pass `{ includeTransient: true }` for error/stderr text to
  * also catch transient 429 / rate-limit signals.
  */
-export function textIndicatesUsageLimit(
-  raw: string | null | undefined,
-  opts: UsageLimitMatchOptions = {},
-): boolean {
+export function textIndicatesUsageLimit(raw: string | null | undefined, opts: UsageLimitMatchOptions = {}): boolean {
   if (!raw) return false;
   const norm = normalizeForLimitMatch(raw);
   if (CAP_NOTICE_PATTERNS.some((p) => norm.includes(p))) return true;
