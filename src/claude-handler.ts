@@ -49,6 +49,7 @@ import type {
 const LOCAL_PLUGINS_DIR = BUNDLED_PLUGINS_DIR;
 
 import type { ModelCommandContext } from 'somalib/model-commands/types';
+import { textIndicatesUsageLimit } from 'somalib/rate-limit';
 import { sendCredentialAlert } from './credential-alert';
 import {
   ensureActiveSlotAuth,
@@ -64,6 +65,29 @@ import { DEFAULT_SHOW_THINKING, type EffortLevel } from './user-settings-store';
 
 /** Heartbeat interval for long-running Claude CLI calls. */
 const CLAUDE_LEASE_HEARTBEAT_MS = 5 * 60 * 1000;
+
+/**
+ * Max one-shot dispatch attempts when the active slot returns a usage cap
+ * AS CONTENT (the cap notice arrives as a successful assistant message, not
+ * a thrown error). Attempt 1 on the original slot, attempt 2 after rotating
+ * to a healthy slot.
+ */
+const DISPATCH_USAGE_LIMIT_MAX_ATTEMPTS = 2;
+
+/**
+ * Thrown when a one-shot dispatch (e.g. the goal-completion eval) keeps
+ * hitting a usage cap even after rotation. Callers (goal-loop-controller)
+ * treat any thrown dispatcher error as a dispatch failure and clear the
+ * pending eval — which is the correct outcome here: it stops the cap notice
+ * ("You've hit your limit · resets 9pm") from being parsed as the eval's
+ * JSON verdict (the original `Unexpected token 'Y', "You've hit"` failure).
+ */
+export class UsageLimitDispatchError extends Error {
+  constructor(public readonly capNotice: string) {
+    super(`Claude usage limit hit during one-shot dispatch: ${capNotice.slice(0, 200)}`);
+    this.name = 'UsageLimitDispatchError';
+  }
+}
 
 // Re-export for backward compatibility
 export { getAvailablePersonas, SessionExpiryCallbacks };
@@ -538,52 +562,110 @@ export class ClaudeHandler {
     cwd?: string,
     effort?: EffortLevel,
   ): Promise<string> {
-    // Acquire a lease on the active CCT slot. Held for the lifetime of the
-    // Claude CLI dispatch call, released in the outer finally.
-    let lease: SlotAuthLease | null = null;
-    let heartbeatTimer: NodeJS.Timeout | null = null;
-    try {
+    // A one-shot dispatch (notably the goal-completion eval) can hit the
+    // usage cap exactly like a streaming turn. Claude Code surfaces that cap
+    // as a *successful* assistant message ("You've hit your limit · resets
+    // 9pm"), NOT a thrown error — so `dispatchOneShotInner` happily returns
+    // the cap notice as its result string. The goal evaluator then tried to
+    // `JSON.parse` that notice and failed (`Unexpected token 'Y', "You've
+    // hit"`). Detect that here, rotate to a healthy slot, and retry on a
+    // fresh lease so the eval runs on a working credential.
+    let lastCapNotice = '';
+    for (let attempt = 1; attempt <= DISPATCH_USAGE_LIMIT_MAX_ATTEMPTS; attempt++) {
+      // Acquire a lease on the active CCT slot. Held for the lifetime of one
+      // Claude CLI dispatch attempt, released in the per-attempt finally.
+      let lease: SlotAuthLease | null = null;
+      let heartbeatTimer: NodeJS.Timeout | null = null;
       try {
-        lease = await ensureActiveSlotAuth(getTokenManager(), 'claude-handler:dispatchOneShot');
-      } catch (credErr) {
-        if (credErr instanceof NoHealthySlotError) {
-          this.logger.error('Claude credentials invalid for dispatch', {
-            error: credErr.message,
-            status: getCredentialStatus(),
-          });
-          await sendCredentialAlert(credErr.message);
-          throw new Error(
-            `Claude credentials missing: ${credErr.message}\n` +
-              'Please log in to Claude manually or enable automatic credential restore.',
-          );
+        try {
+          lease = await ensureActiveSlotAuth(getTokenManager(), 'claude-handler:dispatchOneShot');
+        } catch (credErr) {
+          if (credErr instanceof NoHealthySlotError) {
+            this.logger.error('Claude credentials invalid for dispatch', {
+              error: credErr.message,
+              status: getCredentialStatus(),
+            });
+            await sendCredentialAlert(credErr.message);
+            throw new Error(
+              `Claude credentials missing: ${credErr.message}\n` +
+                'Please log in to Claude manually or enable automatic credential restore.',
+            );
+          }
+          throw credErr;
         }
-        throw credErr;
+
+        heartbeatTimer = setInterval(() => {
+          lease?.heartbeat().catch((err) => this.logger.debug('lease heartbeat failed', err));
+        }, CLAUDE_LEASE_HEARTBEAT_MS);
+        if (typeof heartbeatTimer.unref === 'function') heartbeatTimer.unref();
+
+        // Build a per-call env map (containing the lease's fresh token) and
+        // thread it through to `query()` via `options.env`. This never mutates
+        // `process.env`, so concurrent dispatches on different slots are
+        // isolated by construction.
+        const { env } = buildQueryEnv(lease);
+        const result = await this.dispatchOneShotInner(
+          userMessage,
+          dispatchPrompt,
+          env,
+          model,
+          abortController,
+          resumeSessionId,
+          cwd,
+          effort,
+        );
+
+        // Cap-as-content guard. Default (content-safe) detector — never
+        // includeTransient here, since the eval/work output could legitimately
+        // mention "rate limit" or "429" in prose.
+        if (!textIndicatesUsageLimit(result)) {
+          return result;
+        }
+
+        lastCapNotice = result;
+        const cappedKeyId = lease.keyId;
+        this.logger.warn('DISPATCH: usage limit surfaced as content', {
+          attempt,
+          maxAttempts: DISPATCH_USAGE_LIMIT_MAX_ATTEMPTS,
+          cappedKeyId,
+          preview: result.slice(0, 120),
+        });
+
+        if (attempt >= DISPATCH_USAGE_LIMIT_MAX_ATTEMPTS) {
+          // Out of attempts — surface a typed error so the caller treats this
+          // as a dispatch failure rather than parsing the cap notice as a
+          // verdict.
+          throw new UsageLimitDispatchError(result);
+        }
+
+        // Rotate to a healthy slot before the next attempt. CAS-guard on the
+        // capped slot so concurrent dispatches collapse to a single rotation.
+        const rotation = await getTokenManager().rotateOnRateLimit(
+          'claude-handler:dispatchOneShot usage-limit (content)',
+          { source: 'error_string', cooldownMinutes: 60, expectedFromKeyId: cappedKeyId },
+        );
+        if (!rotation.rotated && rotation.skipReason !== 'cas-skipped') {
+          // No eligible replacement slot — retrying would just hit the same
+          // cap, so fail fast with the typed error.
+          this.logger.warn('DISPATCH: no eligible slot to rotate to on usage limit', {
+            skipReason: rotation.skipReason,
+          });
+          throw new UsageLimitDispatchError(result);
+        }
+        this.logger.info('DISPATCH: rotated slot on usage limit, retrying', {
+          newSlot: rotation.rotated?.name,
+          newKeyId: rotation.rotated?.keyId,
+        });
+        // Loop continues → fresh lease on the now-active slot.
+      } finally {
+        if (heartbeatTimer) clearInterval(heartbeatTimer);
+        if (lease) await lease.release();
       }
-
-      heartbeatTimer = setInterval(() => {
-        lease?.heartbeat().catch((err) => this.logger.debug('lease heartbeat failed', err));
-      }, CLAUDE_LEASE_HEARTBEAT_MS);
-      if (typeof heartbeatTimer.unref === 'function') heartbeatTimer.unref();
-
-      // Build a per-call env map (containing the lease's fresh token) and
-      // thread it through to `query()` via `options.env`. This never mutates
-      // `process.env`, so concurrent dispatches on different slots are
-      // isolated by construction.
-      const { env } = buildQueryEnv(lease);
-      return await this.dispatchOneShotInner(
-        userMessage,
-        dispatchPrompt,
-        env,
-        model,
-        abortController,
-        resumeSessionId,
-        cwd,
-        effort,
-      );
-    } finally {
-      if (heartbeatTimer) clearInterval(heartbeatTimer);
-      if (lease) await lease.release();
     }
+
+    // Unreachable in practice (the loop either returns, throws, or exhausts
+    // attempts via the in-loop throw), but keeps the function total.
+    throw new UsageLimitDispatchError(lastCapNotice);
   }
 
   private async dispatchOneShotInner(
