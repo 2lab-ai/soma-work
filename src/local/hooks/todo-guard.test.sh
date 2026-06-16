@@ -170,6 +170,32 @@ run "$(make_input "test4" "Bash")"
 assert_exit "Call 7 passes (todos exist)" 0 $?
 echo ""
 
+# ── Test 4b: 5th call is TaskCreate → marker set + subsequent calls pass ──
+echo "Test 4b: 5th call is TaskCreate → marker set + subsequent calls pass"
+setup
+for i in 1 2 3 4; do
+  run "$(make_input "test4b" "Read")" >/dev/null
+done
+run "$(make_input "test4b" "TaskCreate")"
+assert_exit "Call 5 (TaskCreate) passes" 0 $?
+assert_json_field "todo_exists marker set" "$TEST_STATE_DIR/session_test4b.todo_guard.json" ".todo_exists" "true"
+run "$(make_input "test4b" "Write")"
+assert_exit "Call 6 passes (task registered)" 0 $?
+echo ""
+
+# ── Test 4c: TaskUpdate also sets marker ──
+echo "Test 4c: TaskUpdate sets marker + subsequent calls pass"
+setup
+for i in 1 2 3 4; do
+  run "$(make_input "test4c" "Read")" >/dev/null
+done
+run "$(make_input "test4c" "TaskUpdate")"
+assert_exit "Call 5 (TaskUpdate) passes" 0 $?
+assert_json_field "todo_exists marker set" "$TEST_STATE_DIR/session_test4c.todo_guard.json" ".todo_exists" "true"
+run "$(make_input "test4c" "Bash")"
+assert_exit "Call 6 passes (task registered)" 0 $?
+echo ""
+
 # ── Test 5: Empty TodoWrite → marker not set but call passes ──
 echo "Test 5: Empty TodoWrite (todos: []) → marker not set, but always passes"
 setup
@@ -246,6 +272,8 @@ for i in 1 2 3 4; do
 done
 STDERR=$(run_stderr "$(make_input "test9" "Write")")
 assert_contains "Contains TodoWrite mention" "TodoWrite" "$STDERR"
+assert_contains "Contains TaskCreate mention" "TaskCreate" "$STDERR"
+assert_contains "Contains TaskUpdate mention" "TaskUpdate" "$STDERR"
 assert_contains "Contains threshold mention" "5" "$STDERR"
 echo ""
 

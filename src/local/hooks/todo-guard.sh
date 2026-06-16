@@ -3,8 +3,11 @@
 #
 # Behavior:
 #   1. Manages a per-session tool call counter via file
-#   2. Sets a marker on TodoWrite call → all subsequent tool calls pass
+#   2. Sets a marker on TodoWrite/TaskCreate/TaskUpdate call → all subsequent tool calls pass
 #   3. Blocks with feedback if counter >= N (default 5) and no marker
+#
+# Why: this guard forbids planless, aimless drift — racking up tool calls
+# without ever registering what you are doing as a task.
 #
 # Safety policy: passes on parse failure/missing session_id (fail-open + warning log)
 #
@@ -41,12 +44,23 @@ case "$TOOL_NAME" in
     # Required to load deferred tool schemas (e.g. TodoWrite itself)
     exit 0
     ;;
-  TodoWrite)
-    # The tool this guard enforces — blocking it is self-defeating
-    # Set marker only if payload contains a valid (non-empty) todos array
+  TodoWrite|TaskCreate|TaskUpdate)
+    # Task-tracking tools that satisfy this guard. The guard forbids planless,
+    # aimless drift — registering (or updating) a task proves there is a plan,
+    # so blocking these tools would be self-defeating.
+    #   - TodoWrite sets the marker only with a non-empty todos array.
+    #   - TaskCreate/TaskUpdate register a task by the act of calling them,
+    #     so they always set the marker.
     if [[ -n "$SESSION_ID" ]]; then
-      TODO_LEN=$(echo "$HOOK_INPUT" | jq '.tool_input.todos | if type == "array" then length else 0 end' 2>/dev/null || echo "0")
-      if [[ "$TODO_LEN" -gt 0 ]]; then
+      SET_MARKER="true"
+      if [[ "$TOOL_NAME" == "TodoWrite" ]]; then
+        TODO_LEN=$(echo "$HOOK_INPUT" | jq '.tool_input.todos | if type == "array" then length else 0 end' 2>/dev/null || echo "0")
+        if [[ "$TODO_LEN" -le 0 ]]; then
+          SET_MARKER="false"
+          echo "⚠️ todo-guard: TodoWrite with empty/invalid payload — marker not set" >&2
+        fi
+      fi
+      if [[ "$SET_MARKER" == "true" ]]; then
         SAFE_ID=$(echo "$SESSION_ID" | tr -cd '[:alnum:]_-')
         STATE_FILE="$STATE_DIR/session_${SAFE_ID}.todo_guard.json"
         LOCK_DIR="$STATE_DIR/session_${SAFE_ID}.todo_guard.lock"
@@ -54,7 +68,7 @@ case "$TOOL_NAME" in
         while ! mkdir "$LOCK_DIR" 2>/dev/null; do
           LOCK_ATTEMPTS=$((LOCK_ATTEMPTS + 1))
           if [[ $LOCK_ATTEMPTS -ge 50 ]]; then
-            echo "⚠️ todo-guard: lock timeout in TodoWrite, marker not set" >&2
+            echo "⚠️ todo-guard: lock timeout in $TOOL_NAME, marker not set" >&2
             exit 0
           fi
           sleep 0.01
@@ -63,8 +77,6 @@ case "$TOOL_NAME" in
         COUNT=$(jq -r '.count // 0' "$STATE_FILE" 2>/dev/null || echo "0")
         NOW=$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date '+%Y-%m-%dT%H:%M:%SZ')
         echo "{\"count\":$COUNT,\"todo_exists\":true,\"last_updated\":\"$NOW\"}" > "$STATE_FILE"
-      else
-        echo "⚠️ todo-guard: TodoWrite with empty/invalid payload — marker not set" >&2
       fi
     fi
     exit 0
@@ -117,11 +129,12 @@ echo "{\"count\":$COUNT,\"todo_exists\":false,\"last_updated\":\"$NOW\"}" > "$ST
 
 # ── Check threshold ──
 if [[ $COUNT -ge $THRESHOLD ]]; then
-  echo "⚠️ Detected ${THRESHOLD} or more tool calls without TodoWrite." >&2
-  echo "Please register your tasks with TodoWrite first." >&2
+  echo "⚠️ Detected ${THRESHOLD} or more tool calls without TodoWrite/TaskCreate/TaskUpdate." >&2
+  echo "This guard forbids planless, aimless drift — register what you're doing as a task first." >&2
   echo "" >&2
   echo "TodoWrite example:" >&2
   echo '  TodoWrite({ todos: [{ content: "Task description", status: "pending", activeForm: "In progress" }] })' >&2
+  echo "Or register a task with TaskCreate / TaskUpdate." >&2
   exit 2
 fi
 
