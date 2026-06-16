@@ -573,7 +573,7 @@ PROMPT_EOF
     "marketplace": [
       { "name": "soma-work", "repo": "2lab-ai/soma-work", "ref": "main" }
     ],
-    "plugins": ["omc@soma-work"],
+    "plugins": ["zworkflow@soma-work"],
     "localOverrides": []
   }
 }
