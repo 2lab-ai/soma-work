@@ -135,6 +135,16 @@ export function buildQueryEnv(lease: SlotAuthLease): QueryEnvResult {
     env[key] = value;
   }
 
+  // Hook-proxy opt-in. The zworkflow plugin's hook-proxy.sh defaults to the
+  // self-contained shell guard (`HOOKS_PROXY_ENABLED` unset → standalone) so
+  // external Claude Code installs work without a localhost service. soma-work
+  // DOES run the Fastify hook service, so it opts spawned agents into the HTTP
+  // proxy here. Only defaults when unset — an explicit process.env / operator
+  // value (layers 1–2) still wins, e.g. for local debugging.
+  if (env.HOOKS_PROXY_ENABLED === undefined) {
+    env.HOOKS_PROXY_ENABLED = 'true';
+  }
+
   // Layer 3 — lease token override. ALWAYS last. Defense in depth: even if a
   // future code path forgets to deny `CLAUDE_CODE_OAUTH_TOKEN` at load time,
   // the lease's fresh token wins here. process.env is never touched.
