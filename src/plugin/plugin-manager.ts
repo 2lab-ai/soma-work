@@ -43,13 +43,25 @@ export class PluginManager {
   private pluginConfig: PluginConfig;
   private readonly pluginsDir: string;
   private readonly configFile: string | undefined;
+  private readonly bundledPlugins: Record<string, string>;
   private resolved: readonly ResolvedPlugin[] = [];
   private initialized = false;
 
-  constructor(pluginConfig: PluginConfig, pluginsDir: string, configFile?: string) {
+  /**
+   * @param bundledPlugins Map of plugin name → absolute local path for first-party
+   *   plugins shipped inside the bundle (e.g. `{ zworkflow: dist/local }`). Any
+   *   plugin ref whose name is a key here resolves to that path with no fetch.
+   */
+  constructor(
+    pluginConfig: PluginConfig,
+    pluginsDir: string,
+    configFile?: string,
+    bundledPlugins: Record<string, string> = {},
+  ) {
     this.pluginConfig = pluginConfig;
     this.pluginsDir = path.resolve(pluginsDir);
     this.configFile = configFile;
+    this.bundledPlugins = bundledPlugins;
   }
 
   /**
@@ -69,6 +81,13 @@ export class PluginManager {
     // Resolve marketplace plugins (user + default combined)
     const refs = this.parsePluginRefs(effectiveConfig);
     for (const ref of refs) {
+      // First-party bundled plugins resolve to the local bundle — never fetched.
+      const bundled = this.resolveBundled(ref);
+      if (bundled) {
+        results.push(bundled);
+        continue;
+      }
+
       const marketplace = marketplaceMap.get(ref.marketplaceName);
       if (!marketplace) {
         logger.error('Marketplace not found for plugin', {
@@ -171,6 +190,22 @@ export class PluginManager {
 
     // Phase 1: Per-plugin smart update check
     for (const ref of refs) {
+      // Bundled first-party plugins have no remote to check — always current.
+      const bundled = this.resolveBundled(ref);
+      if (bundled) {
+        details.push({
+          name: bundled.name,
+          status: 'unchanged',
+          oldSha: null,
+          oldDate: null,
+          oldVersion: null,
+          newSha: null,
+          newDate: null,
+          newVersion: null,
+        });
+        continue;
+      }
+
       const marketplace = marketplaceMap.get(ref.marketplaceName);
       if (!marketplace) {
         const msg = `Marketplace "${ref.marketplaceName}" not found for plugin "${ref.pluginName}"`;
@@ -364,6 +399,12 @@ export class PluginManager {
     const refs = this.parsePluginRefs(effectiveConfig);
 
     for (const ref of refs) {
+      const bundled = this.resolveBundled(ref);
+      if (bundled) {
+        results.push(bundled);
+        continue;
+      }
+
       const refStr = `${ref.pluginName}@${ref.marketplaceName}`;
       if (hasCachedPlugin(this.pluginsDir, ref.pluginName)) {
         results.push({
@@ -638,6 +679,24 @@ export class PluginManager {
   // =========================================================================
   // Private helpers
   // =========================================================================
+
+  /**
+   * Resolve a first-party bundled plugin to its local path without any
+   * marketplace fetch.
+   *
+   * Bundled plugins (e.g. `zworkflow` = src/local) ship inside the soma-work
+   * bundle and are listed in DEFAULT_PLUGINS for symmetry/discoverability, but
+   * must never trigger a network download. Returns null for non-bundled refs.
+   */
+  private resolveBundled(ref: PluginRef): ResolvedPlugin | null {
+    const bundledPath = this.bundledPlugins[ref.pluginName];
+    if (!bundledPath) return null;
+    return {
+      name: `${ref.pluginName}@${ref.marketplaceName}`,
+      localPath: bundledPath,
+      source: 'default',
+    };
+  }
 
   /**
    * Merge DEFAULT_MARKETPLACES and DEFAULT_PLUGINS into the user config.

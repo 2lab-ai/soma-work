@@ -1,0 +1,18 @@
+{
+  "name": "soma-work",
+  "owner": {
+    "name": "zhugehyuk",
+    "email": "z@2lab.ai"
+  },
+  "metadata": {
+    "description": "soma-work default workflow plugins",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "zworkflow",
+      "source": "./src/local",
+      "description": "Z-workflow: SSOT-driven development pipeline (z / zcheck / ztrace / autoz) plus agents, commands, hooks, prompts, and skills. A soma-work default plugin."
+    }
+  ]
+}
