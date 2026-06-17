@@ -5,6 +5,9 @@ tools:
   - Read
   - Grep
   - Glob
+  - TodoWrite
+  - TaskCreate
+  - TaskUpdate
 color: "#DC143C"
 ---
 
