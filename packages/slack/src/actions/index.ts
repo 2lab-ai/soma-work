@@ -26,7 +26,15 @@ export interface SlackApiForActions {
   updateMessage(channel: string, ts: string, text: string, blocks?: any[]): Promise<unknown>;
   deleteMessage(channel: string, ts: string): Promise<unknown>;
   openDmChannel?(userId: string): Promise<string>;
-  postMessage?(channel: string, text: string, options?: any): Promise<unknown>;
+  postMessage?(channel: string, text: string, options?: any): Promise<{ ts?: string } | undefined>;
+  deleteThreadBotMessages?(
+    channel: string,
+    threadTs: string,
+    options?: {
+      excludeTs?: string[];
+      onProgress?: (progress: { deleted: number; total: number }) => unknown;
+    },
+  ): Promise<{ total: number; deleted: number }>;
   [key: string]: any;
 }
 
@@ -728,18 +736,70 @@ export class ActionHandlers {
     }
 
     try {
-      // Delete bot-authored replies first (best-effort), then the root itself.
-      await this.ctx.slackApi.deleteThreadBotMessages?.(value.targetChannel, value.threadTs);
-      await this.ctx.slackApi.deleteMessage(value.targetChannel, value.threadTs);
-      await this.ctx.slackApi.addReaction?.(value.linkChannel, value.linkTs, 'white_check_mark');
+      // Replace the confirm prompt right away so the admin sees it's in progress.
+      // (response_url has a 5-call/30min limit, so live progress is rendered via
+      // chat.update on a separately posted status message instead.)
       await respond({
-        text: '🗑️ 스레드 전체를 삭제했습니다.',
+        text: '⏳ 스레드 전체 삭제를 시작합니다…',
         replace_original: true,
       });
+
+      // Post a status message we can update every ~10s with live progress.
+      let statusTs: string | undefined;
+      try {
+        const posted = await this.ctx.slackApi.postMessage?.(
+          value.linkChannel,
+          '⏳ 작업중… 삭제 대상을 집계하고 있습니다.',
+        );
+        statusTs = posted?.ts;
+      } catch (error) {
+        this.logger.debug('Failed to post delete-progress status message', { error });
+      }
+
+      const PROGRESS_INTERVAL_MS = 10_000;
+      let lastUpdate = 0;
+      const renderProgress = async (deleted: number, total: number, done: boolean): Promise<void> => {
+        if (!statusTs) {
+          return;
+        }
+        const pct = total > 0 ? Math.floor((deleted / total) * 100) : 100;
+        const text = done
+          ? `✅ 완료: 전체 ${total}개 중 ${deleted}개를 삭제했습니다.`
+          : `⏳ 작업중… 전체 ${total}개 중 ${deleted}개 삭제 (${pct}%)`;
+        try {
+          await this.ctx.slackApi.updateMessage?.(value.linkChannel, statusTs, text);
+        } catch (error) {
+          this.logger.debug('Failed to update delete-progress status message', { error });
+        }
+      };
+
+      // Delete bot-authored replies first (with throttled progress), then the root.
+      const result = await this.ctx.slackApi.deleteThreadBotMessages?.(value.targetChannel, value.threadTs, {
+        onProgress: async ({ deleted, total }) => {
+          const now = Date.now();
+          // Always render the very first event (shows the total up front) and then
+          // throttle subsequent updates to at most once per 10s.
+          if (lastUpdate !== 0 && now - lastUpdate < PROGRESS_INTERVAL_MS) {
+            return;
+          }
+          lastUpdate = now;
+          await renderProgress(deleted, total, false);
+        },
+      });
+
+      await this.ctx.slackApi.deleteMessage(value.targetChannel, value.threadTs);
+      await this.ctx.slackApi.addReaction?.(value.linkChannel, value.linkTs, 'white_check_mark');
+
+      const total = result?.total ?? 0;
+      const deleted = result?.deleted ?? 0;
+      await renderProgress(deleted, total, true);
+
       this.logger.info('Admin confirmed full thread delete', {
         adminId: actorId,
         targetChannel: value.targetChannel,
         threadTs: value.threadTs,
+        total,
+        deleted,
       });
     } catch (error) {
       this.logger.warn('Failed to delete thread after admin confirm', {
