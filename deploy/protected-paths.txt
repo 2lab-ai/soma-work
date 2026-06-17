@@ -6,3 +6,4 @@ data/
 logs/
 .claude/
 .main-bootstrap.json
+plugins/
