@@ -12,7 +12,7 @@ import {
 } from '@anthropic-ai/claude-agent-sdk';
 import * as fs from 'fs';
 import * as path from 'path';
-import { type AgentStreamEvent, runAgentStream } from './agent-runtime';
+import { type AgentRunOptions, type AgentStreamEvent, runAgentStream, runOneShotText } from './agent-runtime';
 import { buildStreamOptions } from './agent-runtime/claude-code/build-stream-options';
 import type { SafetyClassifier } from './agent-runtime/policy/safety-classifier';
 import { buildSafetyClassifier } from './agent-runtime/policy/safety-classifier-factory';
@@ -698,45 +698,9 @@ export class ClaudeHandler {
     cwd?: string,
     effort?: EffortLevel,
   ): Promise<string> {
-    // Build query options for one-shot dispatch. `env` is the per-call map
-    // from `buildQueryEnv(lease)` — it carries the lease's fresh access
-    // token without ever touching `process.env`, so concurrent dispatches
-    // cannot clobber each other's auth.
-    const options: Options = {
-      settingSources: [],
-      plugins: [],
-      systemPrompt: dispatchPrompt,
-      env,
-      tools: [], // No tool use for dispatch
-      maxTurns: 1, // Single turn only
-      stderr: (data: string) => {
-        this.logger.warn('DISPATCH stderr', { data: data.trimEnd() });
-      },
-    };
-
-    if (model) {
-      options.model = model;
-    }
-
-    // Match the work model's reasoning effort so the goal completion eval
-    // is never weaker than the worker (spec §Completion / S6). Only set when
-    // explicitly provided — otherwise the SDK default applies.
-    if (effort) {
-      options.effort = effort;
-    }
-
-    if (abortController) {
-      options.abortController = abortController;
-    }
-
-    // Fork existing session to access conversation history for context-aware summaries.
-    // resume + forkSession: copies history into a new session without mutating the original.
-    // Without this, the fork has no knowledge of what happened in the session.
-    if (resumeSessionId) {
-      options.resume = resumeSessionId;
-      options.forkSession = true;
-    }
-
+    // Ensure cwd exists before spawn to avoid ENOENT (the SDK child fails to
+    // boot in a missing dir). Resolved here, then handed to the port.
+    let resolvedCwd: string | undefined;
     if (cwd) {
       if (!fs.existsSync(cwd)) {
         this.logger.warn('Dispatch CWD does not exist, recreating', { cwd });
@@ -746,92 +710,64 @@ export class ClaudeHandler {
           this.logger.error('Failed to recreate dispatch CWD', { cwd, error: mkdirErr });
         }
       }
-      if (fs.existsSync(cwd)) {
-        options.cwd = cwd;
-      }
+      if (fs.existsSync(cwd)) resolvedCwd = cwd;
+    }
+
+    // Route through the agent-runtime port (ADR 0002) — the SAME one-shot seam
+    // the summarizer / title / instructions / memory-improve helpers use — so
+    // EVERY one-shot model call funnels through `claude-code-runner`'s single
+    // `query()` loop. Claude-Code-specific knobs (env/effort/cwd/abort/resume/
+    // forkSession) ride in the named `claudeCode` extension bag; `env` carries
+    // the lease's fresh OAuth token without ever touching `process.env`.
+    const runOptions: AgentRunOptions = {
+      maxTurns: 1,
+      systemPrompt: dispatchPrompt,
+      tools: [],
+      // `model: ''` → omitted below so the SDK default applies (mirrors the old
+      // `if (model) options.model = model`).
+      model: model ?? '',
+      extensions: {
+        claudeCode: {
+          env,
+          settingSources: [],
+          plugins: [],
+          stderr: (data: string) => this.logger.warn('DISPATCH stderr', { data: data.trimEnd() }),
+          // Match the work model's reasoning effort so the goal-completion eval
+          // is never weaker than the worker (spec §Completion / S6).
+          ...(effort ? { effort } : {}),
+          ...(abortController ? { abortController } : {}),
+          ...(resolvedCwd ? { cwd: resolvedCwd } : {}),
+          // Fork the resumed session for context-aware summaries without
+          // mutating the original.
+          ...(resumeSessionId ? { resume: resumeSessionId, forkSession: true } : {}),
+        },
+      },
+    };
+    if (!model) {
+      delete (runOptions as { model?: string }).model;
     }
 
     const startTime = Date.now();
-    this.logger.info('\uD83D\uDE80 DISPATCH: Starting one-shot query', {
-      model: options.model,
+    this.logger.info('\uD83D\uDE80 DISPATCH: Starting one-shot query (agent-runtime port)', {
+      model,
       resumeSession: !!resumeSessionId,
       messageLength: userMessage.length,
       messagePreview: userMessage.substring(0, 100),
     });
 
-    let assistantText = '';
-    let messageCount = 0;
-
     try {
-      for await (const message of query({ prompt: userMessage, options })) {
-        messageCount++;
-        const elapsed = Date.now() - startTime;
-
-        // Log all message types for debugging
-        this.logger.debug(`\uD83D\uDCE8 DISPATCH: Message #${messageCount} (${elapsed}ms)`, {
-          type: message.type,
-          subtype: 'subtype' in message ? message.subtype : undefined,
-        });
-
-        // Handle system init message
-        if (message.type === 'system' && message.subtype === 'init') {
-          this.logger.info(`\u2705 DISPATCH: SDK initialized (${elapsed}ms)`, {
-            model: message.model,
-            sessionId: message.session_id,
-          });
-        }
-
-        // Collect assistant text from the response
-        if (message.type === 'assistant' && message.message?.content) {
-          for (const block of message.message.content) {
-            if (block.type === 'text') {
-              assistantText += block.text;
-              this.logger.debug(`\uD83D\uDCDD DISPATCH: Text received (${elapsed}ms)`, {
-                textLength: block.text.length,
-                textPreview: block.text.substring(0, 50),
-              });
-            }
-          }
-        }
-
-        // Handle result message
-        if (message.type === 'result') {
-          this.logger.info(`\uD83C\uDFC1 DISPATCH: Query completed (${elapsed}ms)`, {
-            totalMessages: messageCount,
-            responseLength: assistantText.length,
-            stopReason: message.subtype === 'success' ? message.stop_reason : undefined,
-          });
-        }
-      }
+      const assistantText = await runOneShotText(userMessage, runOptions);
+      const totalTime = Date.now() - startTime;
+      this.logger.info(`\uD83D\uDCCD DISPATCH: Response complete (${totalTime}ms)`, {
+        responseLength: assistantText.length,
+        preview: assistantText.substring(0, 200),
+      });
+      return assistantText;
     } catch (error) {
       const elapsed = Date.now() - startTime;
-
-      // If we already collected assistant text, the response is likely complete
-      // even though the process didn't exit cleanly (e.g., SIGTERM / exit code 143)
-      if (assistantText.trim()) {
-        this.logger.warn(`\u26A0\uFE0F DISPATCH: Process error after ${elapsed}ms but response available, using it`, {
-          error: (error as Error).message,
-          messagesReceived: messageCount,
-          responseLength: assistantText.length,
-          preview: assistantText.substring(0, 100),
-        });
-        // Fall through to return the collected text
-      } else {
-        this.logger.error(`\u274C DISPATCH: Error after ${elapsed}ms`, {
-          error: (error as Error).message,
-          messagesReceived: messageCount,
-        });
-        throw error;
-      }
+      this.logger.error(`\u274C DISPATCH: Error after ${elapsed}ms`, { error: (error as Error).message });
+      throw error;
     }
-
-    const totalTime = Date.now() - startTime;
-    this.logger.info(`\uD83D\uDCCD DISPATCH: Response complete (${totalTime}ms)`, {
-      responseLength: assistantText.length,
-      preview: assistantText.substring(0, 200),
-    });
-
-    return assistantText;
   }
 
   // ===== Core Query Logic =====

@@ -38,6 +38,12 @@ export interface SafetyClassifyRequest {
   cwd?: string;
   /** Slack user id that owns the session (its sandbox is scoped to /tmp/<user>). */
   user: string;
+  /**
+   * The model the session is CURRENTLY using. This is the default classifier
+   * model (the auto-mode reviewer runs on the same model as the work), unless
+   * an ops env override is set.
+   */
+  model?: string;
 }
 
 export interface SafetyClassifier {
@@ -47,6 +53,8 @@ export interface SafetyClassifier {
 /** Options passed to the backend chat function. */
 export interface SafetyChatOptions {
   timeoutMs: number;
+  /** Per-call model = the session's current model (see SafetyClassifyRequest.model). */
+  model?: string;
 }
 
 /**
@@ -129,7 +137,7 @@ export class LlmSafetyClassifier implements SafetyClassifier {
 
   async classify(req: SafetyClassifyRequest): Promise<SafetyVerdict> {
     try {
-      const raw = await this.chat(buildSafetyPrompt(req), { timeoutMs: this.timeoutMs });
+      const raw = await this.chat(buildSafetyPrompt(req), { timeoutMs: this.timeoutMs, model: req.model });
       return parseSafetyVerdict(raw);
     } catch (err) {
       return {

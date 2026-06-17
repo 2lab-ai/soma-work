@@ -25,11 +25,6 @@ import {
   StaticSafetyClassifier,
 } from './safety-classifier';
 
-/**
- * Cheap, fast classification model — the same default workflow-dispatch uses
- * (`FALLBACK_DISPATCH_MODEL` in `dispatch-service.ts`). Overridable via env.
- */
-const DEFAULT_MODEL = 'claude-haiku-4-5-20251001';
 const DEFAULT_TIMEOUT_MS = 20_000;
 
 /** System prompt for the dispatch one-shot — the guardian reviewer role. */
@@ -71,9 +66,14 @@ export function buildSafetyClassifier(args: BuildSafetyClassifierArgs = {}): Saf
     return new StaticSafetyClassifier();
   }
   const dispatch = args.dispatch;
-  const model = env.PERMISSION_AUTO_CLASSIFIER_MODEL || DEFAULT_MODEL;
+  // Model precedence: ops env override > the session's current model (threaded
+  // per-call via opts.model) > undefined (let dispatch/SDK pick its default).
+  // Default behaviour (#model-call-unify): the classifier runs on the SAME
+  // model the session is using.
+  const envModel = env.PERMISSION_AUTO_CLASSIFIER_MODEL || undefined;
   const timeoutMs = Number(env.PERMISSION_AUTO_CLASSIFIER_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
 
-  const chat: SafetyChatFn = (prompt) => dispatch(prompt, SAFETY_SYSTEM_PROMPT, { model });
+  const chat: SafetyChatFn = (prompt, opts) =>
+    dispatch(prompt, SAFETY_SYSTEM_PROMPT, { model: envModel || opts.model });
   return new LlmSafetyClassifier(chat, { timeoutMs });
 }

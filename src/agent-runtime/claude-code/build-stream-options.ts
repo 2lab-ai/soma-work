@@ -205,6 +205,9 @@ export async function buildStreamOptions(
                   matchedRuleIds: result.matchedRuleIds ?? [],
                   cwd: workingDirectory,
                   user: policyUser,
+                  // Default classifier model = the session's CURRENT model
+                  // (#model-call-unify). Resolved on `options.model` earlier.
+                  model: options.model,
                 })
                 .catch((err) => ({
                   verdict: 'ask' as const,

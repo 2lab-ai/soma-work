@@ -48,7 +48,9 @@ describe('dispatch-backed classifier', () => {
     const [userMessage, systemPrompt, opts] = dispatch.mock.calls[0];
     expect(userMessage).toContain('rm -rf /tmp/U1/x'); // command threaded into the prompt
     expect(systemPrompt).toMatch(/SAFETY REVIEWER/i);
-    expect(opts.model).toBeTruthy(); // a cheap dispatch model is selected
+    // No model on the request + no env override → undefined, so dispatch/SDK
+    // pick the default (the classifier no longer hardcodes a model).
+    expect(opts.model).toBeUndefined();
   });
 
   it('escalates (ask) when dispatch returns ask', async () => {
@@ -65,5 +67,22 @@ describe('dispatch-backed classifier', () => {
     const dispatch = vi.fn().mockResolvedValue('{"verdict":"allow","reason":"ok"}');
     await buildSafetyClassifier({ env: { PERMISSION_AUTO_CLASSIFIER_MODEL: 'custom-model' }, dispatch }).classify(REQ);
     expect(dispatch.mock.calls[0][2].model).toBe('custom-model');
+  });
+
+  // ── #model-call-unify: default classifier model = the session's CURRENT
+  // model (threaded via req.model), not a hardcoded cheap model. ──
+  it('defaults to the session model carried on the request', async () => {
+    const dispatch = vi.fn().mockResolvedValue('{"verdict":"allow","reason":"ok"}');
+    await buildSafetyClassifier({ dispatch }).classify({ ...REQ, model: 'claude-opus-4-8[1m]' });
+    expect(dispatch.mock.calls[0][2].model).toBe('claude-opus-4-8[1m]');
+  });
+
+  it('env override beats the session model when both are present', async () => {
+    const dispatch = vi.fn().mockResolvedValue('{"verdict":"ask","reason":"x"}');
+    await buildSafetyClassifier({ env: { PERMISSION_AUTO_CLASSIFIER_MODEL: 'forced' }, dispatch }).classify({
+      ...REQ,
+      model: 'claude-opus-4-8[1m]',
+    });
+    expect(dispatch.mock.calls[0][2].model).toBe('forced');
   });
 });
