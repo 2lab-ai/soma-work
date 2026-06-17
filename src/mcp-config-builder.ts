@@ -7,6 +7,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { ModelCommandContext } from 'somalib/model-commands/types';
 import { isAdminUser } from './admin-utils';
+import type { PermissionMode } from './agent-runtime/policy/permission-mode';
 import { substituteEnvVars } from './config-env-substitution';
 import { CONFIG_FILE, DATA_DIR } from './env-paths';
 import { NATIVE_BYPASS_TOOLS } from './hooks/bypass-permission-guard';
@@ -132,8 +133,18 @@ export interface McpConfig {
   permissionPromptToolName?: string;
   permissionMode: 'default' | 'bypassPermissions';
   allowDangerouslySkipPermissions?: boolean;
-  /** Whether the user has bypass enabled (used by PermissionRequest hook for auto-approve) */
+  /**
+   * Whether the SDK should auto-allow native/non-dangerous tools (true for both
+   * `auto` and `bypass` modes). Derived as `somaPermissionMode !== 'legacy'`.
+   * Kept for the allowedTools assembly + PreToolUse hook that gate on it.
+   */
   userBypass: boolean;
+  /**
+   * The soma tri-state permission mode (`auto` | `bypass` | `legacy`) that the
+   * PreToolUse policy hook evaluates. Distinct from the SDK `permissionMode`
+   * above (`default` | `bypassPermissions`).
+   */
+  somaPermissionMode: PermissionMode;
 }
 
 /**
@@ -165,15 +176,22 @@ export class McpConfigBuilder {
    * Build MCP configuration for a query
    */
   async buildConfig(slackContext?: SlackContext, modelCommandContext?: ModelCommandContext): Promise<McpConfig> {
-    // Check if user has bypass permission enabled
-    const userBypass = slackContext?.user ? userSettingsStore.getUserBypassPermission(slackContext.user) : false;
+    // Resolve the user's permission mode (auto | bypass | legacy). Without a
+    // Slack context (non-interactive callers) there is no human to prompt, so
+    // we run in `bypass` — matching the historical "!slackContext → bypass" path.
+    const somaPermissionMode: PermissionMode = slackContext?.user
+      ? userSettingsStore.getUserPermissionMode(slackContext.user)
+      : 'bypass';
 
-    // Without Slack context or bypass ON: bypass permissions
-    // Bypass ON still gets permission-prompt server for dangerous command interception via PreToolUse hook
-    const config: McpConfig =
-      !slackContext || userBypass
-        ? { permissionMode: 'bypassPermissions', allowDangerouslySkipPermissions: true, userBypass }
-        : { permissionMode: 'default', userBypass };
+    // `legacy` → SDK prompts the user for every tool (the old accept/reject).
+    // `auto` / `bypass` → the SDK runs without its own prompt; the unified
+    // PreToolUse policy hook decides allow / ask / classify per `somaPermissionMode`.
+    // (`auto` still gets the permission-prompt server below — the classifier may
+    // escalate a dangerous command to the Slack UI.)
+    const userBypass = somaPermissionMode !== 'legacy';
+    const config: McpConfig = userBypass
+      ? { permissionMode: 'bypassPermissions', allowDangerouslySkipPermissions: true, userBypass, somaPermissionMode }
+      : { permissionMode: 'default', userBypass, somaPermissionMode };
 
     // Get base MCP server configuration
     const mcpServers = await this.mcpManager.getServerConfiguration();
