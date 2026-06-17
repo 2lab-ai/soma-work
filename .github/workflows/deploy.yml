@@ -162,6 +162,14 @@ jobs:
 
       - name: Extract deploy bundle
         run: |
+          # Self-hosted runners keep their _work tree between jobs, so a stale
+          # bundle/root from an EARLIER deploy survives here. tar extracts on
+          # top without removing files that no longer exist in the new bundle,
+          # so a deleted workspace (e.g. the dead packages/extensions asset
+          # mirror) lingered in bundle/root and was then rsynced back onto the
+          # target — breaking `npm ci` with "Missing: @soma/extensions from
+          # lock file". Always extract into a clean directory.
+          rm -rf bundle/root
           mkdir -p bundle/root
           tar -xzf bundle/deploy-bundle.tar.gz -C bundle/root
 
