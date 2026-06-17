@@ -1,4 +1,4 @@
-# zworkflow — soma-work default plugin
+# zworkflow — soma-work default plugin (CLAUDE.md)
 
 `src/local/` **그 자체가 하나의 Claude Code 플러그인**이다 (`zworkflow`).
 `.claude-plugin/plugin.json`이 매니페스트고, 마켓플레이스(`/.claude-plugin/marketplace.json`)가
@@ -7,7 +7,7 @@ skills는 전부 플러그인 페이로드다.
 
 ## ⚠️ 규칙: 내용을 바꾸면 플러그인 버전을 올려라
 
-`src/local/` 아래의 **무엇이든** (hook, skill, command, agent, prompt) 수정/추가/삭제하면,
+`src/local/` 아래의 **무엇이든** (hook, skill, command, agent, prompt, 이 CLAUDE.md 포함) 수정/추가/삭제하면,
 같은 커밋에서 반드시 `.claude-plugin/plugin.json`의 `version`을 올려라 (SemVer):
 
 - **patch** (`1.0.0` → `1.0.1`): 버그 수정, 문구/룰 보강
