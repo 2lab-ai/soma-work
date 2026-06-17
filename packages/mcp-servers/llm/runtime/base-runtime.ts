@@ -13,13 +13,7 @@ import type { McpClientConfig } from '@soma/process-shared/mcp/mcp-client.js';
 import { McpClient } from '@soma/process-shared/mcp/mcp-client.js';
 import { execFileSync } from 'child_process';
 import { ErrorCode, LlmChatError } from './errors.js';
-import type {
-  Backend,
-  LlmRuntime,
-  ResumeSessionResult,
-  RuntimeCallOptions,
-  StartSessionResult,
-} from './types.js';
+import type { Backend, LlmRuntime, ResumeSessionResult, RuntimeCallOptions, StartSessionResult } from './types.js';
 import { runWithWatchdog } from './watchdog.js';
 
 const DEFAULT_TIMEOUT = 600_000;
@@ -89,9 +83,7 @@ export abstract class BaseMcpLlmRuntime implements LlmRuntime {
     if (rawResult?.[key]) return rawResult[key];
     if (rawResult?._meta?.[key]) return rawResult._meta[key];
     const text = rawResult?.content?.find((c: any) => c.type === 'text')?.text || '';
-    const match = text.match(
-      /Session ID:\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i,
-    );
+    const match = text.match(/Session ID:\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i);
     if (match) return match[1];
     return '';
   }
