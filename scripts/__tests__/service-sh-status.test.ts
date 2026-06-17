@@ -83,18 +83,23 @@ esac
   return fakeBin;
 }
 
-function runStatus(env: string, extraPath: string): RunResult {
+function runStatus(env: string, extraPath: string, pidFileOverride?: string): RunResult {
   // PATH prepended with fake bin so service.sh sees our launchctl first.
   // HOME points at workDir so plist path lookups don't hit the real
   // ~/Library/LaunchAgents and pollute the test machine.
   const homeStub = path.join(workDir, 'home');
   execFileSync('mkdir', ['-p', path.join(homeStub, 'Library', 'LaunchAgents')]);
+  // Pin the pidfile probe at a hermetic path (default: a non-existent temp file)
+  // so the headless-fallback liveness check can't read the real /opt tree and
+  // make these contract tests depend on the host's running services.
+  const pidFile = pidFileOverride ?? path.join(workDir, 'nonexistent.pid');
   try {
     const stdout = execFileSync('bash', [SERVICE_SH, env, 'status'], {
       env: {
         ...process.env,
         PATH: `${extraPath}:${process.env.PATH ?? ''}`,
         HOME: homeStub,
+        SOMA_PID_FILE_OVERRIDE: pidFile,
       },
       encoding: 'utf-8',
     });
@@ -146,5 +151,34 @@ describe('scripts/service.sh status — exit-code contract', () => {
 
     expect(result.status).not.toBe(0);
     expect(result.stdout).toMatch(/STOPPED|not.*running/i);
+  });
+
+  it('HEADLESS: launchd reports dead but a live PID lock file exists → exit 0 + RUNNING', () => {
+    // Host with no GUI/Aqua session: the LaunchAgent never spawns, so launchctl
+    // shows `-` (or nothing), but start_headless_fallback ran the supervisor
+    // directly and the app wrote its "<pid>:<ts>" lock. status must treat that
+    // as RUNNING so the CI Verify step marks the headless deploy green.
+    const livePid = process.pid;
+    const pidFile = path.join(workDir, 'soma-work.pid');
+    writeFileSync(pidFile, `${livePid}:1781668755147`);
+    const bin = installFakeLaunchctl('-\t0\tai.2lab.soma-work.dev');
+
+    const result = runStatus('dev', bin, pidFile);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toMatch(/RUNNING/);
+    expect(result.stdout).toContain(String(livePid));
+  });
+
+  it('HEADLESS stale: launchd dead AND PID lock points at a dead process → exit non-zero', () => {
+    // A leftover lock file whose process is gone must NOT be reported as alive.
+    const pidFile = path.join(workDir, 'soma-work.pid');
+    writeFileSync(pidFile, `999999:1781668755147`); // pid that isn't running
+    const bin = installFakeLaunchctl('-\t0\tai.2lab.soma-work.dev');
+
+    const result = runStatus('dev', bin, pidFile);
+
+    expect(result.status).not.toBe(0);
+    expect(result.stdout).toMatch(/STALE|DEAD|NOT RUNNING|registered but no live/i);
   });
 });
