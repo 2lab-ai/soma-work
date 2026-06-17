@@ -6,6 +6,8 @@ tools:
   - Grep
   - Glob
   - TodoWrite
+  - TaskCreate
+  - TaskUpdate
   - AskUserQuestion
   - mcp__llm__chat
 color: "#00CED1"
