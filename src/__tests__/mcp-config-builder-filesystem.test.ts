@@ -12,6 +12,7 @@ vi.mock('../env-paths', () => ({
 vi.mock('../user-settings-store', () => ({
   userSettingsStore: {
     getUserBypassPermission: vi.fn().mockReturnValue(false),
+    getUserPermissionMode: vi.fn().mockReturnValue('auto'),
     getUserDefaultModel: vi.fn().mockReturnValue('claude-sonnet-4-20250514'),
   },
 }));

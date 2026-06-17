@@ -31,10 +31,10 @@ vi.mock('../env-paths', () => ({
 }));
 
 // vi.mock factory is hoisted; use vi.hoisted to define the spy in the same phase.
-const { bypassMock } = vi.hoisted(() => ({ bypassMock: vi.fn().mockReturnValue(false) }));
+const { bypassMock } = vi.hoisted(() => ({ bypassMock: vi.fn().mockReturnValue('auto') }));
 vi.mock('../user-settings-store', () => ({
   userSettingsStore: {
-    getUserBypassPermission: bypassMock,
+    getUserPermissionMode: bypassMock,
     getUserDefaultModel: vi.fn().mockReturnValue('claude-sonnet-4-20250514'),
   },
 }));
@@ -55,7 +55,7 @@ describe('McpConfigBuilder — bypass allowedTools coverage', () => {
   });
 
   it('lists every native non-Bash tool in allowedTools when slackContext + userBypass=true', async () => {
-    bypassMock.mockReturnValue(true);
+    bypassMock.mockReturnValue('bypass');
     const builder = new McpConfigBuilder(createMockMcpManager());
 
     const config = await builder.buildConfig({ channel: 'C001', user: 'U_SELF' });
@@ -68,7 +68,7 @@ describe('McpConfigBuilder — bypass allowedTools coverage', () => {
   });
 
   it('does NOT include Bash in the allowedTools native set (bypass-Bash-gate owns escalation)', async () => {
-    bypassMock.mockReturnValue(true);
+    bypassMock.mockReturnValue('bypass');
     const builder = new McpConfigBuilder(createMockMcpManager());
     const config = await builder.buildConfig({ channel: 'C001', user: 'U_SELF' });
 
@@ -76,7 +76,7 @@ describe('McpConfigBuilder — bypass allowedTools coverage', () => {
   });
 
   it('does NOT add the native non-Bash tools when userBypass=false (SDK default permission flow runs)', async () => {
-    bypassMock.mockReturnValue(false);
+    bypassMock.mockReturnValue('legacy');
     const builder = new McpConfigBuilder(createMockMcpManager());
     const config = await builder.buildConfig({ channel: 'C001', user: 'U_SELF' });
 
@@ -87,7 +87,7 @@ describe('McpConfigBuilder — bypass allowedTools coverage', () => {
   });
 
   it('keeps EnterPlanMode/ExitPlanMode/Skill listed alongside the bypass native set', async () => {
-    bypassMock.mockReturnValue(true);
+    bypassMock.mockReturnValue('bypass');
     const builder = new McpConfigBuilder(createMockMcpManager());
     const config = await builder.buildConfig({ channel: 'C001', user: 'U_SELF' });
 
