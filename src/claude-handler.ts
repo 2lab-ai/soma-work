@@ -14,6 +14,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { type AgentStreamEvent, runAgentStream } from './agent-runtime';
 import { buildStreamOptions } from './agent-runtime/claude-code/build-stream-options';
+import { getDefaultSafetyClassifier } from './agent-runtime/policy/safety-classifier-factory';
 import { buildQueryEnv } from './auth/query-env-builder';
 import { Logger } from './logger';
 import type { McpManager } from './mcp-manager';
@@ -867,6 +868,7 @@ export class ClaudeHandler {
           promptBuilder: this.promptBuilder,
           sessionRegistry: this.sessionRegistry,
           checkMcpToolPermission: (a, b, c, d) => this.checkMcpToolPermission(a, b, c, d),
+          safetyClassifier: getDefaultSafetyClassifier(),
         },
       );
 
