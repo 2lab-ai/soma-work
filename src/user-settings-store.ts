@@ -1,5 +1,11 @@
 import fs from 'fs';
 import path from 'path';
+import {
+  DEFAULT_PERMISSION_MODE,
+  isPermissionMode,
+  type PermissionMode,
+  resolvePermissionMode,
+} from './agent-runtime/policy/permission-mode';
 import { DATA_DIR as ENV_DATA_DIR } from './env-paths';
 import { Logger } from './logger.js';
 import { createPromptInvalidator } from './prompt-cache-invalidation';
@@ -170,7 +176,17 @@ export function migrateLegacyTheme(theme: string): SessionTheme {
 export interface UserSettings {
   userId: string;
   defaultDirectory: string;
+  /**
+   * Legacy boolean permission flag. Superseded by `permissionMode` but kept for
+   * backward-compatible migration (`true` → `bypass`). New writes go through
+   * `setUserPermissionMode`, which keeps this field in sync.
+   */
   bypassPermission: boolean;
+  /**
+   * Tri-state permission mode: `auto` (default) | `bypass` (unsafe) | `legacy`.
+   * Undefined → resolved via `resolvePermissionMode` (default `auto`).
+   */
+  permissionMode?: PermissionMode;
   persona: string; // persona file name (without .md extension)
   defaultModel: ModelId; // default model for new sessions
   defaultLogVerbosity?: LogVerbosity; // default log verbosity for new sessions
@@ -541,6 +557,27 @@ export class UserSettingsStore {
   setUserBypassPermission(userId: string, bypass: boolean): void {
     this.patchUserSettings(userId, { bypassPermission: bypass });
     logger.info('Set user bypass permission', { userId, bypass });
+  }
+
+  /**
+   * Resolve the user's effective permission mode (`auto` | `bypass` | `legacy`).
+   * Defaults to `auto`; migrates a legacy `bypassPermission:true` to `bypass`.
+   */
+  getUserPermissionMode(userId: string): PermissionMode {
+    return resolvePermissionMode(this.settings[userId]);
+  }
+
+  /**
+   * Set the user's permission mode. Keeps the legacy `bypassPermission` boolean
+   * in sync so any remaining boolean readers stay consistent.
+   */
+  setUserPermissionMode(userId: string, mode: PermissionMode): void {
+    if (!isPermissionMode(mode)) {
+      logger.warn('Ignoring invalid permission mode', { userId, mode });
+      return;
+    }
+    this.patchUserSettings(userId, { permissionMode: mode, bypassPermission: mode === 'bypass' });
+    logger.info('Set user permission mode', { userId, mode });
   }
 
   /**

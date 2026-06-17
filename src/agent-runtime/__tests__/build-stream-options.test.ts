@@ -37,6 +37,7 @@ function makeMcpConfig(overrides: Partial<McpConfig> = {}): McpConfig {
   return {
     permissionMode: 'bypassPermissions',
     userBypass: true,
+    somaPermissionMode: 'bypass',
     allowDangerouslySkipPermissions: true,
     mcpServers: { mcp__demo: { type: 'stdio', command: 'demo' } },
     allowedTools: ['Bash', 'Read'],
