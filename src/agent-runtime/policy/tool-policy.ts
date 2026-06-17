@@ -34,10 +34,17 @@ import {
   type SensitivePathResult,
 } from '../../sensitive-path-filter';
 import type { HandoffContext } from '../../types';
+import type { PermissionMode } from './permission-mode';
 
 const PR_CREATE_MCP_TOOL = 'mcp__github__create_pull_request';
 
-export type ToolPolicyDecision = 'allow' | 'deny' | 'ask' | 'pass';
+/**
+ * `classify` is the auto-mode-only outcome: the static layer flagged a
+ * dangerous-rule hit, so instead of asking the human outright the caller must
+ * consult the async safety classifier (guardian). The async PreToolUse hook
+ * maps `classify` onto `allow` / `ask`; it never reaches the SDK directly.
+ */
+export type ToolPolicyDecision = 'allow' | 'deny' | 'ask' | 'classify' | 'pass';
 
 export interface ToolPolicyResult {
   decision: ToolPolicyDecision;
@@ -49,6 +56,11 @@ export interface ToolPolicyResult {
    * message (parity with the prior hooks, which only the PR-issue guard set).
    */
   denyMessage?: string;
+  /**
+   * Dangerous-rule ids that fired, set ONLY for the `classify` decision so the
+   * caller can hand them to the safety classifier as context.
+   */
+  matchedRuleIds?: readonly string[];
 }
 
 /**
@@ -61,8 +73,14 @@ export interface ToolPolicyContext {
   user: string;
   /** `isAdminUser(user)` — admins bypass the ssh / sensitive / mcp guards. */
   isAdmin: boolean;
-  /** Whether the session is in bypass-permissions mode (`mcpConfig.userBypass`). */
-  userBypass: boolean;
+  /**
+   * The session's permission mode (`mcpConfig.somaPermissionMode`). Governs the
+   * allow / ask / classify decision after the (mode-independent) hard-deny tier:
+   *   • `legacy` → `pass` (defer to the SDK per-tool prompt).
+   *   • `bypass` → `allow` everything governed (unsafe — even dangerous Bash).
+   *   • `auto`   → allow non-dangerous; a dangerous-rule hit → `classify`.
+   */
+  mode: PermissionMode;
   /** Live abort state at fire time (`abortController?.signal.aborted ?? false`). */
   aborted: boolean;
   /** Session-scoped dangerous-rule disable lookup (`sessionRegistry`). */
@@ -158,25 +176,39 @@ export function evaluateToolPolicy(
     }
   }
 
-  // ── ASK / ALLOW tier (only reached when no deny fired) ──
+  // ── ALLOW / ASK / CLASSIFY tier (only reached when no deny fired) ──
+  // Mode governs the outcome. Note `legacy` falls through to `pass` below so
+  // the SDK runs its own per-tool permission prompt (the old accept/reject).
 
-  // 7. Bypass-mode Bash gate: explicit allow for non-dangerous, ask for
-  //    dangerous (subject to session-scoped rule disable).
-  if (toolName === 'Bash' && ctx.userBypass) {
-    const { decision, matchedRuleIds } = bypassBashPermissionDecision(command, ctx.isDangerousRuleDisabled);
-    if (decision === 'ask') {
-      return { decision: 'ask', reason: `dangerous-bash: ${matchedRuleIds.join(',')}` };
+  // 7. Bypass mode (unsafe): allow every governed tool with no prompt —
+  //    including a dangerous Bash. The hard-deny tier above still protects
+  //    multi-tenant isolation (cross-user / ssh / sensitive / mcp grant).
+  if (ctx.mode === 'bypass') {
+    if (toolName === 'Bash') {
+      return { decision: 'allow', reason: 'bypass: unsafe allow-all Bash' };
     }
-    return { decision: 'allow', reason: 'bypass-bash: non-dangerous' };
+    if (NATIVE_BYPASS_TOOLS.includes(toolName)) {
+      return { decision: 'allow', reason: 'bypass: native tool' };
+    }
   }
 
-  // 8. Native non-Bash bypass tools — explicit allow so the SDK does not route
-  //    them through permissionPromptToolName and pop a Slack UI.
-  if (ctx.userBypass && NATIVE_BYPASS_TOOLS.includes(toolName)) {
-    return { decision: 'allow', reason: 'native-bypass: covered tool' };
+  // 8. Auto mode (default): non-dangerous Bash + native tools run; a
+  //    dangerous-rule hit is handed to the safety classifier via `classify`.
+  if (ctx.mode === 'auto') {
+    if (toolName === 'Bash') {
+      const { decision, matchedRuleIds } = bypassBashPermissionDecision(command, ctx.isDangerousRuleDisabled);
+      if (decision === 'ask') {
+        // Defer to the guardian classifier instead of asking the human outright.
+        return { decision: 'classify', reason: `auto-classify: ${matchedRuleIds.join(',')}`, matchedRuleIds };
+      }
+      return { decision: 'allow', reason: 'auto: non-dangerous Bash' };
+    }
+    if (NATIVE_BYPASS_TOOLS.includes(toolName)) {
+      return { decision: 'allow', reason: 'auto: native tool' };
+    }
   }
 
-  // ── default: no policy opinion → defer ──
+  // ── default: no policy opinion (legacy mode, or an ungoverned tool) → defer ──
   return { decision: 'pass', reason: 'no policy opinion' };
 }
 

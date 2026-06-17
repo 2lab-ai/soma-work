@@ -43,6 +43,7 @@ import { DEV_DOMAIN_ALLOWLIST } from '../../sandbox/dev-domain-allowlist';
 import type { SessionRegistry } from '../../session-registry';
 import type { ConversationSession, WorkflowType } from '../../types';
 import { DEFAULT_THINKING_ENABLED, userSettingsStore } from '../../user-settings-store';
+import type { SafetyClassifier } from '../policy/safety-classifier';
 import { evaluateToolPolicy, TOOL_POLICY_MATCHERS, type ToolPolicyContext } from '../policy/tool-policy';
 
 /**
@@ -75,6 +76,13 @@ export interface BuildStreamOptionsDeps {
     cfg: ReturnType<typeof loadMcpToolPermissions>,
     gated: string[],
   ) => string | null | undefined;
+  /**
+   * Auto-mode safety classifier (guardian). Consulted only when the policy
+   * returns the `classify` decision (a dangerous-rule hit in `auto` mode).
+   * When absent, `classify` fails closed to `ask` — i.e. auto mode degrades to
+   * the old "dangerous → ask the human" behaviour.
+   */
+  safetyClassifier?: SafetyClassifier;
 }
 
 export interface BuildStreamOptionsInput {
@@ -156,7 +164,7 @@ export async function buildStreamOptions(
       const ctx: ToolPolicyContext = {
         user: policyUser,
         isAdmin: policyIsAdmin,
-        userBypass: mcpConfig.userBypass,
+        mode: mcpConfig.somaPermissionMode,
         aborted: abortController?.signal.aborted ?? false,
         isDangerousRuleDisabled: (ruleId) => deps.sessionRegistry.isDangerousRuleDisabled(hookSessionKey, ruleId),
         handoffContext: deps.sessionRegistry.getSession(slackContext.channel, slackContext.threadTs)?.handoffContext,
@@ -184,6 +192,42 @@ export async function buildStreamOptions(
             reason: result.reason,
           });
           return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask' } };
+        case 'classify': {
+          // Auto mode: a dangerous-rule hit. Consult the guardian classifier;
+          // fail closed to `ask` when no classifier is wired or it errors.
+          const command = typeof toolInput?.command === 'string' ? toolInput.command : '';
+          const verdict = deps.safetyClassifier
+            ? await deps.safetyClassifier
+                .classify({
+                  toolName,
+                  command,
+                  toolInput: toolInput ?? {},
+                  matchedRuleIds: result.matchedRuleIds ?? [],
+                  cwd: workingDirectory,
+                  user: policyUser,
+                })
+                .catch((err) => ({
+                  verdict: 'ask' as const,
+                  reason: `classifier threw (fail-closed): ${err instanceof Error ? err.message : String(err)}`,
+                }))
+            : { verdict: 'ask' as const, reason: 'no classifier wired (fail-closed)' };
+          if (verdict.verdict === 'allow') {
+            logger.info('Auto-mode classifier approved tool call', {
+              tool: toolName,
+              user: policyUser,
+              rule: result.reason,
+              reason: verdict.reason,
+            });
+            return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' } };
+          }
+          logger.warn('Auto-mode classifier escalating to Slack permission UI', {
+            tool: toolName,
+            user: policyUser,
+            rule: result.reason,
+            reason: verdict.reason,
+          });
+          return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask' } };
+        }
         case 'allow':
           return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' } };
         default:
