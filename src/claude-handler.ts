@@ -14,7 +14,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { type AgentStreamEvent, runAgentStream } from './agent-runtime';
 import { buildStreamOptions } from './agent-runtime/claude-code/build-stream-options';
-import { getDefaultSafetyClassifier } from './agent-runtime/policy/safety-classifier-factory';
+import type { SafetyClassifier } from './agent-runtime/policy/safety-classifier';
+import { buildSafetyClassifier } from './agent-runtime/policy/safety-classifier-factory';
 import { buildQueryEnv } from './auth/query-env-builder';
 import { Logger } from './logger';
 import type { McpManager } from './mcp-manager';
@@ -549,6 +550,24 @@ export class ClaudeHandler {
 
   // ===== Dispatch One-Shot Query =====
 
+  /** Lazily-built auto-mode safety classifier (guardian). */
+  private safetyClassifierCache?: SafetyClassifier;
+
+  /**
+   * Build (once) the auto-mode safety classifier, backed by the SAME one-shot
+   * dispatch flow used by workflow-dispatch / executive-summary
+   * (`dispatchOneShot`). No bespoke API route.
+   */
+  private getSafetyClassifier(): SafetyClassifier {
+    if (!this.safetyClassifierCache) {
+      this.safetyClassifierCache = buildSafetyClassifier({
+        dispatch: (userMessage, systemPrompt, opts) =>
+          this.dispatchOneShot(userMessage, systemPrompt, opts.model, opts.abortController),
+      });
+    }
+    return this.safetyClassifierCache;
+  }
+
   /**
    * One-shot dispatch classification query.
    * Uses Agent SDK with no tools, no session persistence, and maxTurns=1.
@@ -868,7 +887,7 @@ export class ClaudeHandler {
           promptBuilder: this.promptBuilder,
           sessionRegistry: this.sessionRegistry,
           checkMcpToolPermission: (a, b, c, d) => this.checkMcpToolPermission(a, b, c, d),
-          safetyClassifier: getDefaultSafetyClassifier(),
+          safetyClassifier: this.getSafetyClassifier(),
         },
       );
 

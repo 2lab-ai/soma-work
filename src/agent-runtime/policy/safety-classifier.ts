@@ -44,8 +44,18 @@ export interface SafetyClassifier {
   classify(req: SafetyClassifyRequest): Promise<SafetyVerdict>;
 }
 
-/** Backend chat function: prompt → raw model text. Injected for testability. */
-export type SafetyChatFn = (prompt: string, opts: { timeoutMs: number }) => Promise<string>;
+/** Options passed to the backend chat function. */
+export interface SafetyChatOptions {
+  timeoutMs: number;
+}
+
+/**
+ * Backend chat function: prompt → raw model text. Injected for testability.
+ * Production binds this to the SAME unified one-shot dispatch that
+ * executive-summary / workflow-dispatch use (`ClaudeHandler.dispatchOneShot`),
+ * NOT a bespoke API route.
+ */
+export type SafetyChatFn = (prompt: string, opts: SafetyChatOptions) => Promise<string>;
 
 const DEFAULT_TIMEOUT_MS = 20_000;
 

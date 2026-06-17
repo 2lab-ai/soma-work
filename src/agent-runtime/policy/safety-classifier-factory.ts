@@ -1,26 +1,23 @@
 /**
  * Production wiring for the auto-mode safety classifier (#auto-permission-mode).
  *
- * Architecture note: the parent process never imports an LLM backend in-process
- * (the SRP contract keeps LLM runtimes as subprocesses — see
- * `packages-srp-*-contract.test.ts`). So the production classifier shells out to
- * the `gemini` CLI for a single headless completion, mirroring how every other
- * LLM call in this codebase is a spawned child. The call is cheap-to-reason-
- * about, stateless, and only ever runs on a dangerous-rule hit (rare), so a cold
- * CLI start per call is acceptable.
+ * The classifier reuses the EXISTING unified one-shot model path —
+ * `ClaudeHandler.dispatchOneShot` — the very same flow that workflow-dispatch
+ * and the executive summary use to start a throwaway Claude conversation
+ * (unified lease auth, cheap dispatch model). It does NOT open any bespoke API
+ * route. `claude-handler.ts` owns the `ClaudeHandler` instance and injects a
+ * thin dispatch adapter here.
  *
  * Everything fails CLOSED to `ask`:
- *   • classifier disabled via env  → `StaticSafetyClassifier` (always ask).
- *   • `gemini` missing / errors / times out → `LlmSafetyClassifier` catches and
- *     returns `ask`.
+ *   • classifier disabled via env, or no dispatch wired → `StaticSafetyClassifier`.
+ *   • dispatch throws / times out / returns unparseable output → `ask`.
  *
  * Ops switches:
  *   • `PERMISSION_AUTO_CLASSIFIER=off`            — force the static (always-ask) path.
- *   • `PERMISSION_AUTO_CLASSIFIER_MODEL=<id>`     — override the model (default flash).
+ *   • `PERMISSION_AUTO_CLASSIFIER_MODEL=<id>`     — override the dispatch model.
  *   • `PERMISSION_AUTO_CLASSIFIER_TIMEOUT_MS=<n>` — override the per-call timeout.
  */
 
-import { execFile } from 'node:child_process';
 import {
   LlmSafetyClassifier,
   type SafetyChatFn,
@@ -28,59 +25,55 @@ import {
   StaticSafetyClassifier,
 } from './safety-classifier';
 
+/**
+ * Cheap, fast classification model — the same default workflow-dispatch uses
+ * (`FALLBACK_DISPATCH_MODEL` in `dispatch-service.ts`). Overridable via env.
+ */
+const DEFAULT_MODEL = 'claude-haiku-4-5-20251001';
 const DEFAULT_TIMEOUT_MS = 20_000;
-const MAX_BUFFER = 1 << 20; // 1 MiB of CLI output is plenty for a JSON verdict.
+
+/** System prompt for the dispatch one-shot — the guardian reviewer role. */
+const SAFETY_SYSTEM_PROMPT = [
+  'You are a SAFETY REVIEWER (guardian) for an autonomous coding agent.',
+  'You receive one tool call that a static rule already flagged as potentially',
+  'dangerous, and you decide whether it is safe to AUTO-APPROVE or whether a',
+  'human should be asked first. Be conservative: when in doubt, ask.',
+  'Reply with STRICT JSON only, no prose: {"verdict":"allow"|"ask","reason":"<= 20 words"}.',
+].join(' ');
 
 /**
- * A `SafetyChatFn` that runs one headless `gemini -p` completion and returns its
- * stdout. Rejects on non-zero exit / spawn error / timeout so the classifier
- * fails closed. When `model` is undefined the CLI's own default model is used
- * (omitting `-m` avoids depending on a specific model id being valid).
+ * Adapter over `ClaudeHandler.dispatchOneShot`. `userMessage` is the concrete
+ * tool-call context (the classifier prompt); `systemPrompt` is the reviewer
+ * role. Returns the model's raw text. Injected by `claude-handler.ts`.
  */
-export function createGeminiCliChatFn(model?: string): SafetyChatFn {
-  return (prompt, { timeoutMs }) =>
-    new Promise<string>((resolve, reject) => {
-      const args = model ? ['-m', model, '-p', prompt] : ['-p', prompt];
-      const child = execFile('gemini', args, { timeout: timeoutMs, maxBuffer: MAX_BUFFER }, (err, stdout, stderr) => {
-        if (err) {
-          reject(
-            new Error(
-              `gemini classifier CLI failed: ${err.message}${stderr ? ` | ${String(stderr).slice(0, 200)}` : ''}`,
-            ),
-          );
-          return;
-        }
-        resolve(String(stdout ?? ''));
-      });
-      child.on('error', reject);
-    });
-}
+export type SafetyDispatchFn = (
+  userMessage: string,
+  systemPrompt: string,
+  opts: { model?: string; abortController?: AbortController },
+) => Promise<string>;
 
 /** Env-driven environment shape, injected for testability. */
 export type SafetyClassifierEnv = Record<string, string | undefined>;
 
+export interface BuildSafetyClassifierArgs {
+  env?: SafetyClassifierEnv;
+  /** The dispatch adapter. When omitted, the classifier fails closed to ask. */
+  dispatch?: SafetyDispatchFn;
+}
+
 /**
- * Pure builder: resolves the configured classifier from an env snapshot.
- * Exported for unit testing (no singleton, no real spawn until `classify`).
+ * Build the classifier from an env snapshot + a dispatch adapter. Pure: no
+ * model call happens until `classify`.
  */
-export function buildSafetyClassifier(env: SafetyClassifierEnv = process.env): SafetyClassifier {
-  if ((env.PERMISSION_AUTO_CLASSIFIER ?? '').toLowerCase() === 'off') {
+export function buildSafetyClassifier(args: BuildSafetyClassifierArgs = {}): SafetyClassifier {
+  const env = args.env ?? process.env;
+  if (!args.dispatch || (env.PERMISSION_AUTO_CLASSIFIER ?? '').toLowerCase() === 'off') {
     return new StaticSafetyClassifier();
   }
-  const model = env.PERMISSION_AUTO_CLASSIFIER_MODEL || undefined;
+  const dispatch = args.dispatch;
+  const model = env.PERMISSION_AUTO_CLASSIFIER_MODEL || DEFAULT_MODEL;
   const timeoutMs = Number(env.PERMISSION_AUTO_CLASSIFIER_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
-  return new LlmSafetyClassifier(createGeminiCliChatFn(model), { timeoutMs });
-}
 
-let cached: SafetyClassifier | null = null;
-
-/** Process-wide singleton classifier (lazy). */
-export function getDefaultSafetyClassifier(): SafetyClassifier {
-  if (!cached) cached = buildSafetyClassifier(process.env);
-  return cached;
-}
-
-/** Test hook: reset the singleton. */
-export function resetDefaultSafetyClassifierForTest(): void {
-  cached = null;
+  const chat: SafetyChatFn = (prompt) => dispatch(prompt, SAFETY_SYSTEM_PROMPT, { model });
+  return new LlmSafetyClassifier(chat, { timeoutMs });
 }
