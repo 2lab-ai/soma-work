@@ -13,6 +13,8 @@
  * }
  */
 
+import { extractBalancedJson } from './extract-balanced-json.js';
+
 export interface SessionLink {
   url: string;
   type: 'issue' | 'pr' | 'doc';
@@ -72,7 +74,7 @@ export class SessionLinkDirectiveHandler {
     let rawMatch;
 
     while ((rawMatch = jsonStartPattern.exec(text)) !== null) {
-      const jsonStr = SessionLinkDirectiveHandler.extractBalancedJson(text, rawMatch.index);
+      const jsonStr = extractBalancedJson(text, rawMatch.index);
       if (jsonStr) {
         const links = SessionLinkDirectiveHandler.parseSessionLinksJson(jsonStr);
         if (links) {
@@ -85,49 +87,6 @@ export class SessionLinkDirectiveHandler {
     }
 
     return { links: null, cleanedText: text };
-  }
-
-  /**
-   * Extract a balanced JSON object starting from a given position
-   */
-  private static extractBalancedJson(text: string, startIndex: number): string | null {
-    let braceCount = 0;
-    let inString = false;
-    let escape = false;
-    let jsonStart = -1;
-
-    for (let i = startIndex; i < text.length; i++) {
-      const char = text[i];
-
-      if (escape) {
-        escape = false;
-        continue;
-      }
-
-      if (char === '\\' && inString) {
-        escape = true;
-        continue;
-      }
-
-      if (char === '"') {
-        inString = !inString;
-        continue;
-      }
-
-      if (inString) continue;
-
-      if (char === '{') {
-        if (braceCount === 0) jsonStart = i;
-        braceCount++;
-      } else if (char === '}') {
-        braceCount--;
-        if (braceCount === 0 && jsonStart !== -1) {
-          return text.substring(jsonStart, i + 1);
-        }
-      }
-    }
-
-    return null;
   }
 
   /**
