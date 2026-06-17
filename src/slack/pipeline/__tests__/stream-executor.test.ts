@@ -5554,3 +5554,169 @@ describe('isRateLimitError (usage-limit detection)', () => {
     expect((executor as any).isRateLimitError(new Error('Prompt is too long'))).toBe(false);
   });
 });
+
+/**
+ * End-to-end proof that a usage cap delivered AS CONTENT (a successful
+ * assistant text turn, not a thrown error) now triggers slot rotation.
+ *
+ * This is the exact failure mode from the incident: Claude Code returned
+ * "You've hit your limit · resets 9pm" as a normal assistant message + a
+ * `result: success` event, so the old executor finished "successfully",
+ * never entered handleError, and never rotated. We drive the real
+ * `execute()` all the way through `StreamProcessor.process()` with a mock
+ * stream that yields the cap text + a success result, then assert the
+ * TokenManager's `rotateOnRateLimit` was actually called — i.e. the
+ * content→rotation wiring fires without any thrown SDK error.
+ */
+describe('usage cap delivered as content triggers rotation (incident regression)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(userSettingsStore.getUserEmail).mockReturnValue('user@example.com');
+    // getActiveToken returns a slot so tryRotateToken passes a CAS key.
+    getActiveTokenMock.mockReturnValue({ keyId: 'key_A', name: 'slotA', kind: 'cct' });
+    rotateOnRateLimitMock.mockResolvedValue({ rotated: { keyId: 'key_B', name: 'slotB' } });
+  });
+
+  afterEach(() => {
+    // Restore the module-level mock defaults so this (last) describe does not
+    // leak rotation state into other suites, mirroring the error-path suite.
+    rotateOnRateLimitMock.mockClear();
+    rotateOnRateLimitMock.mockResolvedValue({ rotated: null, skipReason: 'no-eligible' });
+    getActiveTokenMock.mockClear();
+    getActiveTokenMock.mockReturnValue(null);
+    vi.clearAllMocks();
+  });
+
+  // Assistant text carrying the cap notice (curly apostrophe + middot, as
+  // Claude actually emits), then a clean success result — NO error thrown.
+  async function* capAsContentStream() {
+    yield {
+      type: 'assistant',
+      message: {
+        content: [{ type: 'text', text: 'You\u2019ve hit your limit \u00b7 resets 9pm (Asia/Seoul)' }],
+      },
+    };
+    yield { type: 'result', subtype: 'success', total_cost_usd: 0, usage: {} };
+  }
+
+  function createCapDeps() {
+    return {
+      claudeHandler: {
+        setActivityState: vi.fn(),
+        clearSessionId: vi.fn(),
+        streamQuery: vi.fn().mockImplementation(() => capAsContentStream()),
+        streamAgentEvents: vi.fn().mockImplementation(() => toAgentEvents(capAsContentStream())),
+        getSessionRegistry: vi.fn().mockReturnValue({
+          beginTurn: vi.fn(),
+          endTurn: vi.fn(),
+          broadcastSessionUpdate: vi.fn(),
+          getActivityState: vi.fn().mockReturnValue('idle'),
+        }),
+      },
+      fileHandler: {
+        formatFilePrompt: vi.fn().mockResolvedValue(''),
+        cleanupTempFiles: vi.fn().mockResolvedValue(undefined),
+      },
+      toolEventProcessor: {
+        handleToolUse: vi.fn().mockResolvedValue(undefined),
+        handleToolResult: vi.fn().mockResolvedValue(undefined),
+        setReactionManager: vi.fn(),
+        setToolResultSink: vi.fn(),
+        cleanup: vi.fn(),
+      },
+      statusReporter: {
+        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
+        getStatusEmoji: vi.fn().mockReturnValue('thinking_face'),
+        cleanup: vi.fn(),
+      },
+      reactionManager: {
+        updateReaction: vi.fn().mockResolvedValue(undefined),
+        cleanup: vi.fn(),
+      },
+      contextWindowManager: {
+        handlePromptTooLong: vi.fn().mockResolvedValue(undefined),
+        cleanup: vi.fn(),
+      },
+      toolTracker: {
+        scheduleCleanup: vi.fn(),
+        trackToolUse: vi.fn(),
+        getToolName: vi.fn(),
+        trackMcpCall: vi.fn(),
+        getMcpCallId: vi.fn(),
+        removeMcpCallId: vi.fn(),
+        getActiveMcpCallIds: vi.fn().mockReturnValue([]),
+      },
+      todoDisplayManager: {
+        cleanupSession: vi.fn(),
+        cleanup: vi.fn(),
+        handleTodoUpdate: vi.fn().mockResolvedValue(undefined),
+        setRenderRequestCallback: vi.fn(),
+        setPlanRenderCallback: vi.fn(),
+      },
+      actionHandlers: {},
+      requestCoordinator: { removeController: vi.fn() },
+      slackApi: {
+        getUserProfile: vi.fn().mockResolvedValue({ email: 'user@example.com', displayName: 'User' }),
+        getClient: vi.fn().mockReturnValue({}),
+        getBotUserId: vi.fn().mockResolvedValue('U_BOT'),
+        deleteMessage: vi.fn().mockResolvedValue(undefined),
+      },
+      assistantStatusManager: {
+        setStatus: vi.fn().mockResolvedValue(undefined),
+        clearStatus: vi.fn().mockResolvedValue(undefined),
+        getToolStatusText: vi.fn().mockReturnValue('running tool...'),
+        bumpEpoch: vi.fn().mockReturnValue(1),
+        buildBashStatus: vi.fn().mockReturnValue('is running commands...'),
+        registerBackgroundBashActive: vi.fn().mockReturnValue(() => {}),
+      },
+      turnNotifier: { notify: vi.fn().mockResolvedValue(undefined) },
+      threadPanel: undefined,
+    } as any;
+  }
+
+  function createCapParams(say: ReturnType<typeof vi.fn>) {
+    return {
+      session: {
+        sessionId: 'sess_cap',
+        ownerId: 'U_TEST',
+        logVerbosity: 'detail',
+        usage: {},
+        terminated: false,
+      },
+      sessionKey: 'C777:thread777',
+      userName: 'testuser',
+      workingDirectory: '/tmp/test',
+      abortController: new AbortController(),
+      processedFiles: [],
+      text: 'do some work',
+      channel: 'C777',
+      threadTs: 'thread777',
+      user: 'U_TEST',
+      say,
+    } as any;
+  }
+
+  it('calls rotateOnRateLimit when the cap arrives as a successful content turn', async () => {
+    const deps = createCapDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+    const result = await executor.execute(createCapParams(say));
+
+    // The core regression assertion: rotation fired even though the SDK
+    // reported success (no thrown error). Pre-fix this was 0 calls.
+    expect(rotateOnRateLimitMock).toHaveBeenCalled();
+    const callArgs = rotateOnRateLimitMock.mock.calls[0];
+    expect(callArgs[1]).toEqual(expect.objectContaining({ source: 'error_string' }));
+
+    // Recoverable → executor asks the caller to retry on the rotated slot.
+    expect(result.retryAfterMs).toBeGreaterThan(0);
+
+    // The cap notice must NOT have been persisted as the assistant's answer.
+    const { recordAssistantTurn } = await import('../../../conversation');
+    expect(vi.mocked(recordAssistantTurn)).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.stringContaining('hit your limit'),
+    );
+  });
+});
