@@ -26,7 +26,7 @@ import type { AgentRunOptions } from './agent-runner';
  */
 export function toSdkOptions(opts: AgentRunOptions): Options {
   const ext = opts.extensions?.claudeCode ?? {};
-  return {
+  const sdk: Options = {
     model: opts.model,
     maxTurns: opts.maxTurns,
     systemPrompt: opts.systemPrompt,
@@ -37,6 +37,14 @@ export function toSdkOptions(opts: AgentRunOptions): Options {
     thinking: ext.thinking as Options['thinking'],
     stderr: ext.stderr,
   };
+  // One-shot dispatch knobs (#model-call-unify) — only set when supplied so the
+  // existing one-shot helpers' SDK Options stay byte-for-byte unchanged.
+  if (ext.effort !== undefined) sdk.effort = ext.effort as Options['effort'];
+  if (ext.cwd !== undefined) sdk.cwd = ext.cwd;
+  if (ext.abortController !== undefined) sdk.abortController = ext.abortController;
+  if (ext.resume !== undefined) sdk.resume = ext.resume;
+  if (ext.forkSession !== undefined) sdk.forkSession = ext.forkSession;
+  return sdk;
 }
 
 /**
@@ -53,14 +61,23 @@ export function toSdkOptions(opts: AgentRunOptions): Options {
 export async function runOneShotTextClaudeCode(prompt: string, opts: AgentRunOptions): Promise<string> {
   const options = toSdkOptions(opts);
   let assistantText = '';
-  for await (const message of query({ prompt, options })) {
-    if (message.type === 'assistant' && message.message?.content) {
-      for (const block of message.message.content) {
-        if (block.type === 'text') {
-          assistantText += block.text;
+  try {
+    for await (const message of query({ prompt, options })) {
+      if (message.type === 'assistant' && message.message?.content) {
+        for (const block of message.message.content) {
+          if (block.type === 'text') {
+            assistantText += block.text;
+          }
         }
       }
     }
+  } catch (error) {
+    // Resilience (preserved from the former dispatchOneShot inline loop): if the
+    // SDK child died (e.g. SIGTERM / exit 143) AFTER emitting usable assistant
+    // text, the response is effectively complete — return it. Only rethrow when
+    // nothing was collected. Callers still do their own parse/validation.
+    if (assistantText.trim()) return assistantText;
+    throw error;
   }
   return assistantText;
 }

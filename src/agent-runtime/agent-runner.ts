@@ -41,6 +41,20 @@ export interface ClaudeCodeExtensionOptions {
   plugins?: unknown[];
   /** Captures stderr from the SDK child process for logging. */
   stderr?: (data: string) => void;
+  // ── one-shot dispatch knobs (#model-call-unify) ──
+  // These let `ClaudeHandler.dispatchOneShot` route through this port instead
+  // of inlining its own `query()` loop. All are Claude-Code-specific (no ACP
+  // equivalent), so they live in the named bag — the portable core never grows.
+  /** Reasoning effort level (opaque string; SDK `Options.effort`). */
+  effort?: string;
+  /** Working directory for the SDK child process (`Options.cwd`). */
+  cwd?: string;
+  /** Abort signal owner for the run (`Options.abortController`). */
+  abortController?: AbortController;
+  /** Resume an existing SDK session id (`Options.resume`). */
+  resume?: string;
+  /** Fork the resumed session instead of mutating it (`Options.forkSession`). */
+  forkSession?: boolean;
 }
 
 /**

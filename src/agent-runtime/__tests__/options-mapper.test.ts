@@ -60,4 +60,38 @@ describe('toSdkOptions', () => {
     expect(out.thinking).toBeUndefined();
     expect(out.stderr).toBeUndefined();
   });
+
+  // ── unification (#model-call-unify): dispatchOneShot's Claude-Code knobs
+  // move into the port's claudeCode bag so dispatch can route through
+  // runOneShotText instead of its own query() loop. ──
+  it('routes the dispatch knobs (effort/cwd/abortController/resume/forkSession) into SDK Options', () => {
+    const abortController = new AbortController();
+    const out = toSdkOptions({
+      model: 'm',
+      maxTurns: 1,
+      extensions: {
+        claudeCode: {
+          effort: 'high',
+          cwd: '/tmp/U1/work',
+          abortController,
+          resume: 'sess-1',
+          forkSession: true,
+        },
+      },
+    });
+    expect(out.effort).toBe('high');
+    expect(out.cwd).toBe('/tmp/U1/work');
+    expect(out.abortController).toBe(abortController);
+    expect(out.resume).toBe('sess-1');
+    expect(out.forkSession).toBe(true);
+  });
+
+  it('leaves the dispatch knobs undefined when not supplied', () => {
+    const out = toSdkOptions({ model: 'm' });
+    expect(out.effort).toBeUndefined();
+    expect(out.cwd).toBeUndefined();
+    expect(out.abortController).toBeUndefined();
+    expect(out.resume).toBeUndefined();
+    expect(out.forkSession).toBeUndefined();
+  });
 });
