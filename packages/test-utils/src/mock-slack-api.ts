@@ -58,7 +58,7 @@ export function createMockSlackApi(overrides: Partial<MockSlackApi> = {}): MockS
     openModal: vi.fn().mockResolvedValue(undefined),
 
     // Thread
-    deleteThreadBotMessages: vi.fn().mockResolvedValue(undefined),
+    deleteThreadBotMessages: vi.fn().mockResolvedValue({ total: 0, deleted: 0 }),
 
     ...overrides,
   };
