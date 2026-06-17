@@ -2735,12 +2735,18 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     const stderr = String(error?.stderrContent || '').toLowerCase();
     const combined = `${message} ${stderr}`;
 
+    // Usage / rate caps are recoverable: after rotating to a healthy slot the
+    // turn should auto-retry. Delegated to the shared detector so the
+    // apostrophe-folding + cap phrasings stay in lock-step with
+    // isRateLimitError. Without this, a curly-apostrophe cap ("You've…",
+    // U+2019) would rotate (isRateLimitError is now apostrophe-robust) but
+    // NOT be classified recoverable here, so the retry that lands the turn on
+    // the rotated slot would never be scheduled.
+    if (textIndicatesUsageLimit(combined, { includeTransient: true })) {
+      return true;
+    }
+
     const recoverablePatterns = [
-      "you've hit your limit",
-      'out of extra usage',
-      'rate limit',
-      'too many requests',
-      '429',
       'process exited with code',
       'temporarily unavailable',
       'service unavailable',
