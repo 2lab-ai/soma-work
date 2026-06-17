@@ -36,6 +36,8 @@ export interface ExtractedChoice {
 /**
  * JSON 추출 및 파싱 로직
  */
+
+import { extractBalancedJson } from './directives/extract-balanced-json.js';
 export class UserChoiceExtractor {
   /**
    * Extract UserChoice, UserChoices, or UserChoiceGroup JSON from message text
@@ -63,7 +65,7 @@ export class UserChoiceExtractor {
     let rawMatch;
 
     while ((rawMatch = jsonStartPattern.exec(text)) !== null) {
-      const jsonStr = UserChoiceExtractor.extractBalancedJson(text, rawMatch.index);
+      const jsonStr = extractBalancedJson(text, rawMatch.index);
       if (jsonStr) {
         const result = UserChoiceExtractor.parseAndNormalizeChoice(jsonStr);
         if (result.choice || result.choices) {
@@ -78,49 +80,6 @@ export class UserChoiceExtractor {
     }
 
     return { choice, choices, textWithoutChoice };
-  }
-
-  /**
-   * Extract a balanced JSON object starting from a given position
-   */
-  private static extractBalancedJson(text: string, startIndex: number): string | null {
-    let braceCount = 0;
-    let inString = false;
-    let escape = false;
-    let jsonStart = -1;
-
-    for (let i = startIndex; i < text.length; i++) {
-      const char = text[i];
-
-      if (escape) {
-        escape = false;
-        continue;
-      }
-
-      if (char === '\\' && inString) {
-        escape = true;
-        continue;
-      }
-
-      if (char === '"') {
-        inString = !inString;
-        continue;
-      }
-
-      if (inString) continue;
-
-      if (char === '{') {
-        if (braceCount === 0) jsonStart = i;
-        braceCount++;
-      } else if (char === '}') {
-        braceCount--;
-        if (braceCount === 0 && jsonStart !== -1) {
-          return text.substring(jsonStart, i + 1);
-        }
-      }
-    }
-
-    return null;
   }
 
   /**
