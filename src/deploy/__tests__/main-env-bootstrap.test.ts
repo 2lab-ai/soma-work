@@ -100,6 +100,41 @@ describe('main-env-bootstrap', () => {
     expect(normalize).not.toHaveBeenCalled();
   });
 
+  it('adopts an already-provisioned target whose marker was lost (rewrites marker, skips copy)', async () => {
+    // Regression guard for the prod deploy failure: an older deploy's
+    // `rsync --delete` wiped `.main-bootstrap.json` (it was not in
+    // protected-paths.txt), so the next deploy saw a non-empty target with no
+    // marker. Bootstrap must adopt it — rewrite the marker and preserve live
+    // data — instead of throwing.
+    const devSourceDir = makeTempDir('bootstrap-dev-');
+    const legacyRootDir = makeTempDir('bootstrap-legacy-');
+    const targetDir = makeTempDir('bootstrap-target-');
+    const normalize = vi.fn().mockResolvedValue(undefined);
+
+    // Seed/legacy sources intentionally left missing — an adopt must not need them.
+
+    // Target already carries the protected runtime files a prior bootstrap left.
+    fs.writeFileSync(path.join(targetDir, '.env'), 'SLACK_BOT_TOKEN=live\n', 'utf8');
+    writeJson(path.join(targetDir, 'config.json'), { plugin: { enabled: true } });
+    writeJson(path.join(targetDir, 'data', 'user-settings.json'), { U1: { userId: 'U1' } });
+
+    const result = await bootstrapMainEnvironment({
+      devSourceDir,
+      legacyRootDir,
+      targetDir,
+      normalize,
+      now: () => new Date('2026-06-17T13:00:00.000Z'),
+    });
+
+    expect(result.bootstrapped).toBe(false);
+    expect(result.skipped).toBe(true);
+    // Marker rewritten so subsequent deploys skip cleanly.
+    expect(fs.existsSync(path.join(targetDir, '.main-bootstrap.json'))).toBe(true);
+    // Live data untouched (no clobber, no copy from seed/legacy).
+    expect(fs.readFileSync(path.join(targetDir, '.env'), 'utf8')).toContain('SLACK_BOT_TOKEN=live');
+    expect(normalize).not.toHaveBeenCalled();
+  });
+
   it('fails when target is non-empty without marker', async () => {
     const devSourceDir = makeTempDir('bootstrap-dev-');
     const legacyRootDir = makeTempDir('bootstrap-legacy-');
