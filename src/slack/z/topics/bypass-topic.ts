@@ -71,7 +71,7 @@ export async function renderBypassCard(args: { userId: string; issuedAt: number 
     currentLabel: modeLabel(current),
     currentDescription: modeDescription(current),
     options,
-    additionalCommands: ['`/z bypass set auto|bypass` — 직접 지정 (`legacy`는 구버전 호환용)'],
+    additionalCommands: ['버튼으로 `Auto`/`Bypass` 선택, 또는 텍스트 `bypass off`(=Auto) / `bypass on`(=Bypass)'],
     issuedAt,
   });
   return {
