@@ -96,6 +96,25 @@ function isNonEmptyDirectory(dirPath: string): boolean {
   return entries.length > 0;
 }
 
+/**
+ * True when `targetDir` already carries the protected runtime files that only a
+ * prior successful bootstrap puts there (`.env` + `config.json` + `data/`).
+ *
+ * This is how we tell an already-provisioned main environment whose marker was
+ * lost (e.g. an older deploy's `rsync --delete` wiped `.main-bootstrap.json`
+ * because it was not in deploy/protected-paths.txt) apart from a genuinely
+ * unknown non-empty directory we must not trample.
+ */
+function looksProvisioned(targetDir: string): boolean {
+  const dataDir = path.join(targetDir, 'data');
+  return (
+    fs.existsSync(path.join(targetDir, '.env')) &&
+    fs.existsSync(path.join(targetDir, 'config.json')) &&
+    fs.existsSync(dataDir) &&
+    fs.statSync(dataDir).isDirectory()
+  );
+}
+
 function validateSeedFiles(devSourceDir: string): void {
   assertDirectoryExists(devSourceDir, 'dev source');
   assertFileExists(path.join(devSourceDir, '.system.prompt'), 'seed .system.prompt');
@@ -183,6 +202,22 @@ export async function bootstrapMainEnvironment(options: BootstrapOptions): Promi
   const now = (options.now || (() => new Date()))();
 
   if (fs.existsSync(markerFile)) {
+    return {
+      bootstrapped: false,
+      skipped: true,
+      targetDir,
+      markerFile,
+    };
+  }
+
+  // Self-heal: the marker is gone but the target already looks like a
+  // provisioned main env (its protected runtime files survived). Adopt it —
+  // rewrite the marker and skip the copy so we never clobber live production
+  // data. This is independent of the seed/legacy sources, which an adopt does
+  // not need. Pair this with `.main-bootstrap.json` being in
+  // deploy/protected-paths.txt so `rsync --delete` stops wiping the marker.
+  if (looksProvisioned(targetDir)) {
+    writeMarker(markerFile, now, devSourceDir, legacyRootDir);
     return {
       bootstrapped: false,
       skipped: true,
