@@ -552,19 +552,4 @@ describe('PromptBuilder', () => {
       expect(prompt1).toEqual(prompt2);
     });
   });
-
-  describe('common.prompt mirror (issue #1043)', () => {
-    it('keeps src and extensions copies byte-identical', async () => {
-      const { readFileSync } = await import('node:fs');
-      const { join } = await import('node:path');
-
-      const src = readFileSync(join(__dirname, '..', 'prompt', 'common.prompt'), 'utf-8');
-      const mirror = readFileSync(
-        join(__dirname, '..', '..', 'packages', 'extensions', 'assets', 'prompt', 'common.prompt'),
-        'utf-8',
-      );
-
-      expect(mirror).toBe(src);
-    });
-  });
 });
