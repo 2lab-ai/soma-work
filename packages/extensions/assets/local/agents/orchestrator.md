@@ -5,6 +5,8 @@ tools:
   - Task
   - TaskOutput
   - TodoWrite
+  - TaskCreate
+  - TaskUpdate
   - Read
   - Grep
   - Glob
