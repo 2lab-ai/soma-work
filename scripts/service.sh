@@ -36,6 +36,12 @@ resolve_env() {
 
     PLIST_PATH="$LAUNCH_AGENTS_DIR/$SERVICE_NAME.plist"
     LOGS_DIR="$PROJECT_DIR/logs"
+    # PID lock file written by the app itself (dist/index.js) as "<pid>:<ts>".
+    # Authoritative liveness signal for the headless fallback path
+    # (start_headless_fallback) on hosts with no GUI/Aqua login session.
+    # SOMA_PID_FILE_OVERRIDE exists only so the contract tests can point the
+    # pidfile probe at a hermetic temp path instead of the real /opt tree.
+    PID_FILE="${SOMA_PID_FILE_OVERRIDE:-$PROJECT_DIR/data/soma-work.pid}"
     NODE_PATH="$(dirname "$(which node 2>/dev/null || echo "$HOME/.nvm/versions/node/v25.2.1/bin/node")")"
     USER_HOME="$HOME"
 
@@ -109,8 +115,31 @@ is_registered() {
     launchctl list 2>/dev/null | grep -q "$SERVICE_NAME"
 }
 
+# PID from the app's own lock file ("<pid>:<ts>"), validated as a live process.
+# This is the source of truth when the service runs OUTSIDE launchd — i.e. the
+# headless fallback on a host with no GUI/Aqua login session, where launchctl
+# cannot spawn the Aqua-typed LaunchAgent at all.
+get_pidfile_pid() {
+    [[ -f "$PID_FILE" ]] || return 1
+    local raw pid
+    raw=$(cat "$PID_FILE" 2>/dev/null)
+    pid="${raw%%:*}"
+    [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+    kill -0 "$pid" 2>/dev/null || return 1
+    echo "$pid"
+}
+
+# Prefer the launchd-reported PID (normal path, GUI hosts). Fall back to the
+# app PID lock file so a headless direct-spawn is still reported as a real,
+# live process by status/start verification.
 get_pid() {
-    launchctl list 2>/dev/null | grep "$SERVICE_NAME" | awk '{print $1}'
+    local lpid
+    lpid=$(launchctl list 2>/dev/null | grep "$SERVICE_NAME" | awk '{print $1}')
+    if [[ "$lpid" =~ ^[0-9]+$ ]]; then
+        echo "$lpid"
+        return 0
+    fi
+    get_pidfile_pid
 }
 
 is_alive() {
@@ -256,6 +285,41 @@ cmd_status() {
     return $exit_code
 }
 
+# Headless fallback: spawn the rotating-log supervisor DIRECTLY (not via
+# launchd) when there is no GUI/Aqua login session for launchd to schedule the
+# Aqua-typed LaunchAgent into. Without this, deploys to a Mac sitting at the
+# login window (no console user) fail forever at the start/verify step even
+# though the code is healthy. The spawned process is detached (nohup + disown,
+# stdin from /dev/null) so it outlives the deploy job / SSH session, mirrors the
+# exact command in generate_plist, and is reaped on the next deploy by cmd_stop
+# via the same PID lock file. KeepAlive auto-restart is forfeited in this mode
+# (documented limitation: restore a GUI login session to regain launchd
+# management), but the service runs the freshly deployed code.
+start_headless_fallback() {
+    local mgr
+    mgr="$(launchctl managername 2>/dev/null || echo unknown)"
+    print_warning "launchd could not bring up the service (session=$mgr); using headless direct-spawn fallback."
+
+    mkdir -p "$LOGS_DIR" "$PROJECT_DIR/data"
+
+    PATH="$NODE_PATH:$TOOL_PATHS:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+    HOME="$USER_HOME" \
+    SOMA_CONFIG_DIR="$PROJECT_DIR" \
+        nohup bash -c "cd '$PROJECT_DIR'; exec node dist/run-with-rotating-logs.js dist/index.js" \
+        >> "$LOGS_DIR/launchd.out.log" 2>&1 < /dev/null &
+    disown 2>/dev/null || true
+
+    # Wait for the app to acquire its PID lock (startup does channel scan etc.).
+    local i
+    for i in $(seq 1 25); do
+        sleep 1
+        if get_pidfile_pid >/dev/null 2>&1; then
+            return 0
+        fi
+    done
+    return 1
+}
+
 cmd_start() {
     print_status "Starting $SERVICE_NAME..."
 
@@ -283,15 +347,16 @@ cmd_start() {
 
     if is_alive; then
         print_success "Service started (PID: $(get_pid))"
-    elif is_registered; then
-        print_error "Service registered but no live PID (likely Aqua-session mismatch)."
-        print_error "Try: launchctl kickstart -k gui/\$(id -u)/$SERVICE_NAME"
-        print_error "Check: tail -f $LOGS_DIR/stderr.log"
-        return 1
     else
-        print_error "Failed to start (launchctl did not register the label)."
-        print_error "Check: tail -f $LOGS_DIR/stderr.log"
-        return 1
+        # launchd path failed (no live process). On a host with no GUI/Aqua
+        # session this is expected and permanent — fall back to a direct spawn.
+        if start_headless_fallback && is_alive; then
+            print_success "Service started via headless fallback (PID: $(get_pid))"
+        else
+            print_error "Failed to start service (launchd + headless fallback both failed)."
+            print_error "Check: tail -f $LOGS_DIR/stderr.log"
+            return 1
+        fi
     fi
 }
 
@@ -318,9 +383,14 @@ cmd_stop() {
     # Catches processes started outside LaunchAgent (e.g., manual node execution)
     local pid_file="$PROJECT_DIR/data/soma-work.pid"
     if [[ -f "$pid_file" ]]; then
-        local pid
-        pid=$(cat "$pid_file" 2>/dev/null)
-        if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+        local pid raw
+        # The app writes the lock as "<pid>:<ts>"; strip the timestamp suffix.
+        # Without this, kill -0 sees a non-numeric arg and the fallback never
+        # actually terminates a process started outside launchd (e.g. the
+        # headless direct-spawn), which would orphan it across deploys.
+        raw=$(cat "$pid_file" 2>/dev/null)
+        pid="${raw%%:*}"
+        if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
             print_status "Found running process via PID file (pid=$pid), sending SIGTERM..."
             kill "$pid" 2>/dev/null
             sleep 2
@@ -379,13 +449,16 @@ cmd_install() {
 
     if is_alive; then
         print_success "Service installed and started (PID: $(get_pid))"
-    elif is_registered; then
-        print_error "Service installed and label registered but no live PID."
-        print_error "Likely Aqua-session mismatch. Try: launchctl kickstart -k gui/\$(id -u)/$SERVICE_NAME"
-        return 1
     else
-        print_warning "Service installed but not running. Check logs."
-        return 1
+        # No live process via launchd — on a GUI-less host fall back to a
+        # direct spawn so the freshly deployed code actually runs.
+        if start_headless_fallback && is_alive; then
+            print_success "Service installed and started via headless fallback (PID: $(get_pid))"
+        else
+            print_error "Service installed but not running (launchd + headless fallback both failed)."
+            print_error "Check: tail -f $LOGS_DIR/stderr.log"
+            return 1
+        fi
     fi
 }
 
