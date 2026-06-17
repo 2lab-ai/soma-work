@@ -73,6 +73,7 @@ describe('McpConfigBuilder disallowedTools', () => {
     const config: McpConfig = {
       permissionMode: 'default',
       userBypass: false,
+      somaPermissionMode: 'legacy',
       disallowedTools: ['AskUserQuestion'],
     };
     expect(config.disallowedTools).toEqual(['AskUserQuestion']);

@@ -21,7 +21,7 @@ function makeCtx(overrides: Partial<ToolPolicyContext> = {}): ToolPolicyContext 
   return {
     user: USER,
     isAdmin: false,
-    userBypass: false,
+    mode: 'legacy',
     aborted: false,
     isDangerousRuleDisabled: () => false,
     handoffContext: undefined,
@@ -106,29 +106,16 @@ describe('evaluateToolPolicy — guards (epic #1023 P5)', () => {
   });
 
   describe('ask / allow tier', () => {
-    it('bypass-bash: non-dangerous → allow; dangerous → ask', () => {
-      expect(evaluateToolPolicy('Bash', { command: 'ls -la' }, makeCtx({ userBypass: true })).decision).toBe('allow');
-      const ask = evaluateToolPolicy('Bash', { command: 'rm -rf /tmp/dir' }, makeCtx({ userBypass: true }));
-      expect(ask.decision).toBe('ask');
-      expect(ask.reason).toContain('dangerous-bash');
-    });
-
-    it('bypass-bash: dangerous but rule session-disabled → allow', () => {
-      const allow = evaluateToolPolicy(
-        'Bash',
-        { command: 'rm -rf /tmp/dir' },
-        makeCtx({ userBypass: true, isDangerousRuleDisabled: () => true }),
-      );
-      expect(allow.decision).toBe('allow');
+    it('bypass-bash: non-dangerous AND dangerous both → allow (unsafe allow-all)', () => {
+      expect(evaluateToolPolicy('Bash', { command: 'ls -la' }, makeCtx({ mode: 'bypass' })).decision).toBe('allow');
+      // Unsafe bypass no longer asks on a dangerous rule — it just runs.
+      const dangerous = evaluateToolPolicy('Bash', { command: 'rm -rf /tmp/dir' }, makeCtx({ mode: 'bypass' }));
+      expect(dangerous.decision).toBe('allow');
     });
 
     it('native-bypass: Write/Read with bypass → allow', () => {
-      expect(evaluateToolPolicy('Write', { file_path: SAFE_READ }, makeCtx({ userBypass: true })).decision).toBe(
-        'allow',
-      );
-      expect(evaluateToolPolicy('Read', { file_path: SAFE_READ }, makeCtx({ userBypass: true })).decision).toBe(
-        'allow',
-      );
+      expect(evaluateToolPolicy('Write', { file_path: SAFE_READ }, makeCtx({ mode: 'bypass' })).decision).toBe('allow');
+      expect(evaluateToolPolicy('Read', { file_path: SAFE_READ }, makeCtx({ mode: 'bypass' })).decision).toBe('allow');
     });
 
     it('pass: no bypass, non-dangerous Bash → pass (defer to SDK)', () => {
@@ -142,19 +129,19 @@ describe('evaluateToolPolicy — guards (epic #1023 P5)', () => {
 
   describe('precedence: deny > ask > allow', () => {
     it('sensitive deny beats native-bypass allow (Read sensitive + bypass)', () => {
-      expect(evaluateToolPolicy('Read', { file_path: SENSITIVE_READ }, makeCtx({ userBypass: true })).decision).toBe(
+      expect(evaluateToolPolicy('Read', { file_path: SENSITIVE_READ }, makeCtx({ mode: 'bypass' })).decision).toBe(
         'deny',
       );
     });
 
     it('cross-user deny beats bypass-bash allow', () => {
       expect(
-        evaluateToolPolicy('Bash', { command: `cat /tmp/${OTHER_USER}/x` }, makeCtx({ userBypass: true })).decision,
+        evaluateToolPolicy('Bash', { command: `cat /tmp/${OTHER_USER}/x` }, makeCtx({ mode: 'bypass' })).decision,
       ).toBe('deny');
     });
 
     it('ssh deny beats bypass-bash allow', () => {
-      expect(evaluateToolPolicy('Bash', { command: 'ssh host' }, makeCtx({ userBypass: true })).decision).toBe('deny');
+      expect(evaluateToolPolicy('Bash', { command: 'ssh host' }, makeCtx({ mode: 'bypass' })).decision).toBe('deny');
     });
 
     it('pr-issue deny beats bypass-bash allow (non-dangerous gh pr create)', () => {
@@ -162,13 +149,13 @@ describe('evaluateToolPolicy — guards (epic #1023 P5)', () => {
         evaluateToolPolicy(
           'Bash',
           { command: 'gh pr create --body "no marker"' },
-          makeCtx({ userBypass: true, handoffContext: BLOCKING_HANDOFF }),
+          makeCtx({ mode: 'bypass', handoffContext: BLOCKING_HANDOFF }),
         ).decision,
       ).toBe('deny');
     });
 
     it('abort deny beats bypass-bash allow', () => {
-      expect(evaluateToolPolicy('Bash', { command: 'ls' }, makeCtx({ userBypass: true, aborted: true })).decision).toBe(
+      expect(evaluateToolPolicy('Bash', { command: 'ls' }, makeCtx({ mode: 'bypass', aborted: true })).decision).toBe(
         'deny',
       );
     });
