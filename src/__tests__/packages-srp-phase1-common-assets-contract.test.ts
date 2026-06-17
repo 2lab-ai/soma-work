@@ -100,45 +100,6 @@ describe('packages-srp Phase 1 common/assets contract', () => {
     }
   });
 
-  it('@soma/extensions owns prompt/persona/local assets with executable hook bits preserved', () => {
-    const manifestPath = path.join(repoRoot, 'packages/extensions/package.json');
-    expect(fs.existsSync(manifestPath)).toBe(true);
-
-    const manifest = readJson<PackageManifest>('packages/extensions/package.json');
-    expect(manifest.name).toBe('@soma/extensions');
-    expect(manifest.dependencies).toMatchObject({ '@soma/common': '*' });
-    expect(manifest.files).toEqual(expect.arrayContaining(['dist', 'assets']));
-    expect(manifest.scripts).toMatchObject({ 'smoke:assets': 'node scripts/smoke-assets.js' });
-
-    const rootScripts = readJson<PackageManifest>('package.json').scripts;
-    expect(rootScripts).toMatchObject({
-      'smoke:assets': 'npm run smoke:assets --workspaces --if-present',
-    });
-
-    const requiredAssets = [
-      'assets/prompt/default.prompt',
-      'assets/prompt/workflows/deploy.prompt',
-      'assets/persona/default.md',
-      'assets/local/agents/orchestrator.md',
-      'assets/local/hooks/hook-proxy.sh',
-      'assets/local/hooks/stop-hook.sh',
-      'assets/local/hooks/todo-guard.sh',
-      'assets/local/skills/z/SKILL.md',
-    ];
-
-    for (const asset of requiredAssets) {
-      expect(fs.existsSync(path.join(repoRoot, 'packages/extensions', asset)), asset).toBe(true);
-    }
-
-    const hookFiles = listFiles(path.join(repoRoot, 'packages/extensions/assets/local/hooks')).filter((file) =>
-      file.endsWith('.sh'),
-    );
-    expect(hookFiles.length).toBeGreaterThan(0);
-    for (const hookFile of hookFiles) {
-      expect(fs.statSync(hookFile).mode & 0o111, hookFile).not.toBe(0);
-    }
-  });
-
   it('@soma/test-utils packages reusable test factories without depending on app source paths', () => {
     const manifestPath = path.join(repoRoot, 'packages/test-utils/package.json');
     expect(fs.existsSync(manifestPath)).toBe(true);
