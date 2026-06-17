@@ -271,24 +271,48 @@ cmd_status() {
 # launchd) when there is no GUI/Aqua login session for launchd to schedule the
 # Aqua-typed LaunchAgent into. Without this, deploys to a Mac sitting at the
 # login window (no console user) fail forever at the start/verify step even
-# though the code is healthy. The spawned process is detached (nohup + disown,
-# stdin from /dev/null) so it outlives the deploy job / SSH session, mirrors the
-# exact command in generate_plist, and is reaped on the next deploy by cmd_stop
+# though the code is healthy. The spawned process must outlive the caller, so it
+# is detached into its OWN SESSION (setsid), not merely backgrounded.
+#
+# Why a new session is mandatory (not just nohup + disown): a CI deploy job
+# (GitHub Actions self-hosted runner) SIGKILLs its entire process GROUP when the
+# job completes. A bare `nohup ... & disown` stays in that group and is reaped
+# seconds after the deploy step finishes (observed on macmini: supervisor child
+# exits 137 ~4s after acquiring the PID lock, so the Verify step's status check
+# passes in a race window but the service is dead moments later). setsid makes
+# the supervisor a session leader in a brand-new session/process-group that the
+# job teardown cannot signal, so the freshly deployed code keeps running.
+#
+# macOS has no setsid(1), so prefer the binary when present (Linux) and fall back
+# to perl's POSIX::setsid (always available on macOS). The spawned command
+# mirrors generate_plist exactly, and is reaped on the next deploy by cmd_stop
 # via the same PID lock file. KeepAlive auto-restart is forfeited in this mode
 # (documented limitation: restore a GUI login session to regain launchd
-# management), but the service runs the freshly deployed code.
+# management), but the service runs durably under the deployed code.
 start_headless_fallback() {
     local mgr
     mgr="$(launchctl managername 2>/dev/null || echo unknown)"
-    print_warning "launchd could not bring up the service (session=$mgr); using headless direct-spawn fallback."
+    print_warning "launchd could not bring up the service (session=$mgr); using headless direct-spawn fallback (new session)."
 
     mkdir -p "$LOGS_DIR" "$PROJECT_DIR/data"
 
-    PATH="$NODE_PATH:$TOOL_PATHS:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
-    HOME="$USER_HOME" \
-    SOMA_CONFIG_DIR="$PROJECT_DIR" \
-        nohup bash -c "cd '$PROJECT_DIR'; exec node dist/run-with-rotating-logs.js dist/index.js" \
-        >> "$LOGS_DIR/launchd.out.log" 2>&1 < /dev/null &
+    local daemon_cmd="cd '$PROJECT_DIR'; exec node dist/run-with-rotating-logs.js dist/index.js"
+
+    if command -v setsid >/dev/null 2>&1; then
+        PATH="$NODE_PATH:$TOOL_PATHS:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+        HOME="$USER_HOME" \
+        SOMA_CONFIG_DIR="$PROJECT_DIR" \
+            setsid bash -c "$daemon_cmd" \
+            >> "$LOGS_DIR/launchd.out.log" 2>&1 < /dev/null &
+    else
+        # perl becomes a session leader via POSIX::setsid, then exec the
+        # supervisor (so the leader PID == the running node process).
+        PATH="$NODE_PATH:$TOOL_PATHS:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+        HOME="$USER_HOME" \
+        SOMA_CONFIG_DIR="$PROJECT_DIR" \
+            nohup perl -e 'use POSIX qw(setsid); setsid(); exec("/bin/bash","-c",$ARGV[0]) or die "exec failed: $!";' "$daemon_cmd" \
+            >> "$LOGS_DIR/launchd.out.log" 2>&1 < /dev/null &
+    fi
     disown 2>/dev/null || true
 
     # Wait for the app to acquire its PID lock (startup does channel scan etc.).
