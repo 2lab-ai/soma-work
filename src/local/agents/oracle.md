@@ -8,6 +8,8 @@ tools:
   - WebSearch
   - WebFetch
   - TodoWrite
+  - TaskCreate
+  - TaskUpdate
   - AskUserQuestion
   - mcp__llm__chat
 color: "#FFD700"
