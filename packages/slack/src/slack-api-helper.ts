@@ -449,13 +449,30 @@ export class SlackApiHelper {
   }
 
   /**
-   * Delete bot-authored messages within a thread (keeps the root message)
+   * Delete bot-authored messages within a thread (keeps the root message).
+   *
+   * Two-phase: first enumerate ALL bot-authored target messages (so the total
+   * count is known up front), then delete them one by one. `onProgress` is
+   * invoked after each successful delete with `{ deleted, total }` so callers
+   * can render progress for long-running bulk deletes.
+   *
+   * @returns `{ total, deleted }` — total targets found and how many were deleted.
    */
-  async deleteThreadBotMessages(channel: string, threadTs: string, options?: { excludeTs?: string[] }): Promise<void> {
+  async deleteThreadBotMessages(
+    channel: string,
+    threadTs: string,
+    options?: {
+      excludeTs?: string[];
+      onProgress?: (progress: { deleted: number; total: number }) => unknown;
+    },
+  ): Promise<{ total: number; deleted: number }> {
     const excludeTs = new Set(options?.excludeTs || []);
+    const onProgress = options?.onProgress;
     const botUserId = await this.getBotUserId();
-    let cursor: string | undefined;
 
+    // Phase 1: enumerate all target message timestamps (total known up front)
+    const targets: string[] = [];
+    let cursor: string | undefined;
     try {
       do {
         const response = await this.enqueue(() =>
@@ -476,19 +493,46 @@ export class SlackApiHelper {
           if (message?.user !== botUserId) {
             continue;
           }
-          try {
-            await this.deleteMessage(channel, messageTs);
-          } catch (error) {
-            this.logger.debug('Failed to delete thread message', { channel, messageTs, error });
-          }
+          targets.push(messageTs);
         }
 
         const nextCursor = response.response_metadata?.next_cursor;
         cursor = nextCursor && nextCursor.length > 0 ? nextCursor : undefined;
       } while (cursor);
     } catch (error) {
-      this.logger.warn('Failed to delete bot messages in thread', { channel, threadTs, error });
+      this.logger.warn('Failed to enumerate bot messages in thread', { channel, threadTs, error });
     }
+
+    const total = targets.length;
+    let deleted = 0;
+
+    // Emit an initial progress event so callers can show the total immediately.
+    if (onProgress) {
+      try {
+        await onProgress({ deleted, total });
+      } catch (error) {
+        this.logger.debug('onProgress callback failed', { channel, threadTs, error });
+      }
+    }
+
+    // Phase 2: delete each target, reporting progress as we go.
+    for (const messageTs of targets) {
+      try {
+        await this.deleteMessage(channel, messageTs);
+        deleted += 1;
+      } catch (error) {
+        this.logger.debug('Failed to delete thread message', { channel, messageTs, error });
+      }
+      if (onProgress) {
+        try {
+          await onProgress({ deleted, total });
+        } catch (error) {
+          this.logger.debug('onProgress callback failed', { channel, threadTs, error });
+        }
+      }
+    }
+
+    return { total, deleted };
   }
 
   /**

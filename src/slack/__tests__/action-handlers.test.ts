@@ -330,9 +330,20 @@ describe('ActionHandlers', () => {
       process.env.ADMIN_USERS = 'U_ADMIN';
       resetAdminUsersCache();
 
+      // Drive onProgress like a real bulk delete: 3 targets, reporting each step.
+      const deleteThreadBotMessages = vi.fn(async (_channel, _ts, options) => {
+        const total = 3;
+        await options?.onProgress?.({ deleted: 0, total });
+        await options?.onProgress?.({ deleted: 1, total });
+        await options?.onProgress?.({ deleted: 2, total });
+        await options?.onProgress?.({ deleted: 3, total });
+        return { total, deleted: 3 };
+      });
       const threadSlackApi = {
         ...createMockSlackApi(),
-        deleteThreadBotMessages: vi.fn().mockResolvedValue(undefined),
+        postMessage: vi.fn().mockResolvedValue({ ts: 'STATUS.1', channel: 'D123' }),
+        updateMessage: vi.fn().mockResolvedValue(undefined),
+        deleteThreadBotMessages,
         addReaction: vi.fn().mockResolvedValue(true),
       };
       const threadHandlers = new ActionHandlers({
@@ -353,7 +364,20 @@ describe('ActionHandlers', () => {
         respond: mockRespond,
       });
 
-      expect(threadSlackApi.deleteThreadBotMessages).toHaveBeenCalledWith('C999', '111222.000000');
+      // Bulk delete invoked with an onProgress callback for live progress.
+      expect(threadSlackApi.deleteThreadBotMessages).toHaveBeenCalledWith(
+        'C999',
+        '111222.000000',
+        expect.objectContaining({ onProgress: expect.any(Function) }),
+      );
+      // A "작업중" status message is posted in the link channel.
+      expect(threadSlackApi.postMessage).toHaveBeenCalledWith('D123', expect.stringContaining('작업중'));
+      // Progress (and completion) are rendered via chat.update on that status message.
+      expect(threadSlackApi.updateMessage).toHaveBeenCalledWith('D123', 'STATUS.1', expect.any(String));
+      const updateCalls = threadSlackApi.updateMessage.mock.calls;
+      const finalUpdate = updateCalls[updateCalls.length - 1];
+      expect(finalUpdate?.[2]).toContain('완료');
+      expect(finalUpdate?.[2]).toContain('3');
       expect(threadSlackApi.deleteMessage).toHaveBeenCalledWith('C999', '111222.000000');
       expect(threadSlackApi.addReaction).toHaveBeenCalledWith('D123', '555.666', 'white_check_mark');
       expect(mockRespond).toHaveBeenCalledWith(expect.objectContaining({ replace_original: true }));
