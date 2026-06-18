@@ -10,12 +10,14 @@ const createMockApp = () => ({
     conversations: {
       info: vi.fn(),
       history: vi.fn(),
+      replies: vi.fn(),
     },
     chat: {
       getPermalink: vi.fn(),
       postMessage: vi.fn(),
       update: vi.fn(),
       postEphemeral: vi.fn(),
+      delete: vi.fn(),
     },
     reactions: {
       add: vi.fn(),
@@ -501,6 +503,79 @@ describe('SlackApiHelper', () => {
       const status = helper.getQueueStatus();
       expect(status).toHaveProperty('queueLength');
       expect(status).toHaveProperty('tokens');
+    });
+  });
+
+  describe('deleteThreadBotMessages', () => {
+    beforeEach(() => {
+      mockApp.client.auth.test.mockResolvedValue({
+        user_id: 'BOT',
+        team_id: 'T1',
+        url: 'https://ws.slack.com/',
+      });
+      mockApp.client.chat.delete.mockResolvedValue({ ok: true });
+    });
+
+    const makeReply = (ts: string, user: string) => ({ ts, user });
+
+    it('reports total up front and fires onProgress for each delete (>100 across pages)', async () => {
+      // Use a fast rate limit so 200 sequential deletes don't hit the 100ms floor.
+      helper = new SlackApiHelper(mockApp as any, {
+        bucketSize: 1000,
+        refillRate: 100000,
+        minInterval: 0,
+        maxQueueSize: 1000,
+      });
+
+      // Page 1: root + 199 bot replies; Page 2: 1 bot reply + 1 non-bot reply.
+      const page1 = [
+        makeReply('100.000', 'BOT'), // root (threadTs) — skipped
+        ...Array.from({ length: 199 }, (_v, i) => makeReply(`200.${i}`, 'BOT')),
+      ];
+      const page2 = [makeReply('300.0', 'BOT'), makeReply('300.1', 'U_HUMAN')];
+
+      mockApp.client.conversations.replies
+        .mockResolvedValueOnce({ messages: page1, response_metadata: { next_cursor: 'C1' } })
+        .mockResolvedValueOnce({ messages: page2, response_metadata: { next_cursor: '' } });
+
+      const progress: Array<{ deleted: number; total: number }> = [];
+      const result = await helper.deleteThreadBotMessages('C1', '100.000', {
+        onProgress: (p) => {
+          progress.push({ ...p });
+        },
+      });
+
+      // 199 (page1, excluding root) + 1 (page2 bot) = 200 bot targets; human skipped.
+      expect(result).toEqual({ total: 200, deleted: 200 });
+      expect(mockApp.client.chat.delete).toHaveBeenCalledTimes(200);
+
+      // First progress event carries the full total with 0 deleted (known up front).
+      expect(progress[0]).toEqual({ deleted: 0, total: 200 });
+      // Final progress event reflects completion.
+      expect(progress[progress.length - 1]).toEqual({ deleted: 200, total: 200 });
+      // Monotonic non-decreasing deleted count.
+      for (let i = 1; i < progress.length; i++) {
+        expect(progress[i].deleted).toBeGreaterThanOrEqual(progress[i - 1].deleted);
+      }
+    });
+
+    it('continues counting deleted even when some deletes fail', async () => {
+      mockApp.client.conversations.replies.mockResolvedValueOnce({
+        messages: [
+          makeReply('100.000', 'BOT'), // root
+          makeReply('200.0', 'BOT'),
+          makeReply('200.1', 'BOT'),
+          makeReply('200.2', 'BOT'),
+        ],
+        response_metadata: { next_cursor: '' },
+      });
+      mockApp.client.chat.delete
+        .mockResolvedValueOnce({ ok: true })
+        .mockRejectedValueOnce(new Error('message_not_found'))
+        .mockResolvedValueOnce({ ok: true });
+
+      const result = await helper.deleteThreadBotMessages('C1', '100.000');
+      expect(result).toEqual({ total: 3, deleted: 2 });
     });
   });
 });
