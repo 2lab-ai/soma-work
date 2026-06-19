@@ -45,8 +45,9 @@ Patterns:
   "active" (different bg/text color), clip the copy so only the active tab shows,
   animate the clip on tab change. Beats timing individual color transitions.
 - **Comparison sliders** — overlay two images, clip the top one with
-  `inset(0 50% 0 0)`, adjust the right inset from drag position. No extra DOM,
-  fully hardware-accelerated.
+  `inset(0 50% 0 0)`, adjust the right inset from drag position. No extra DOM
+  nodes. (`clip-path` isn't a compositor-only property, so test on low-end
+  devices if you animate it continuously.)
 
 ## Gesture & drag
 

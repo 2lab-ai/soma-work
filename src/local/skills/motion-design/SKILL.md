@@ -14,10 +14,7 @@ motion details users never consciously notice; that is the point. When a feature
 moves exactly as someone assumes it should, they proceed without a second
 thought.
 
-This skill is a generalized distillation of Emil Kowalski's design-engineering
-writing. The upstream's paid-course marketing and personal-brand framing are
-intentionally **not** carried here — the skill stands on the engineering
-principles. See [`LICENSES/NOTICE.md`](./LICENSES/NOTICE.md) for attribution.
+See [`LICENSES/NOTICE.md`](./LICENSES/NOTICE.md) for source attribution.
 
 ## How to use this skill
 
@@ -63,23 +60,27 @@ animation.
 
 ### 3. What easing?
 
-- Entering or exiting → **`ease-out`** (starts fast, feels responsive)
+- Entering / immediate feedback → **`ease-out`** (starts fast, feels responsive)
 - Moving / morphing on screen → **`ease-in-out`**
+- Exiting → usually **`ease-out`**; an accelerating **`ease-in`** is fine when
+  the element is leaving and acceleration aids continuity
 - Hover / color change → **`ease`**
 - Constant motion (marquee, progress) → **`linear`**
 - Default → **`ease-out`**
 
-**Never `ease-in` on UI** — it delays the moment the user is watching most.
-Built-in CSS easings are too weak; use strong custom cubic-beziers (exact values
-in `references/motion-standards.md`).
+**Avoid `ease-in` on entrances and on user-triggered feedback** — it delays the
+moment the user is watching most and feels sluggish. The browser's built-in
+easings are weak; use strong custom cubic-beziers (exact values in
+`references/motion-standards.md`).
 
 ### 4. How fast?
 
-UI animations stay **under 300ms**. A 180ms dropdown feels more responsive than a
-400ms one. Per-element budgets (button press 100–160ms, dropdowns 150–250ms,
-modals/drawers 200–500ms) live in `references/motion-standards.md`. Perceived
-speed matters as much as actual speed — `ease-out` at 200ms *feels* faster than
-`ease-in` at 200ms.
+Default UI motion to **200–300ms or less**; a 180ms dropdown feels more
+responsive than a 400ms one. Larger gesture-driven surfaces (modals, drawers) may
+run **300–500ms** when the longer travel justifies it. Per-element budgets
+(button press 100–160ms, dropdowns 150–250ms, modals/drawers 200–500ms) live in
+`references/motion-standards.md`. Perceived speed matters as much as actual speed
+— `ease-out` at 200ms *feels* faster than `ease-in` at 200ms.
 
 ## Non-negotiable craft rules
 
@@ -94,8 +95,11 @@ These hold regardless of framework. Exact code in the references.
 - **Interruptibility** — rapidly-triggered or gesture-driven motion uses CSS
   transitions or springs that retarget from the current state, not keyframes that
   restart from zero.
-- **GPU-only** — animate `transform` and `opacity` only. Layout properties
+- **Compositor-friendly properties** — prefer `transform` and `opacity` for
+  routine motion; they skip layout and paint. Layout properties
   (`width`/`height`/`margin`/`padding`/`top`/`left`) trigger layout + paint.
+  `clip-path` and `filter` are powerful (see techniques) but cost more — measure
+  and use them with restraint.
 - **Asymmetric timing** — slow the deliberate phase (a press, a hold), snap the
   system's response.
 - **Accessibility** — honor `prefers-reduced-motion` (gentler, not zero — keep
@@ -105,16 +109,9 @@ These hold regardless of framework. Exact code in the references.
   product. When unsure whether motion feels right, deleting it is often the
   strongest move.
 
-## When reviewing UI motion inline
+## Reviewing existing motion
 
-If asked to review motion as part of building, output a single markdown table
-with `| Before | After | Why |` columns — one row per issue — rather than a
-"Before:/After:" list. For a full, opinionated review pass with a verdict, defer
-to the `review-motion` skill.
-
-| Before | After | Why |
-| --- | --- | --- |
-| `transition: all 300ms` | `transition: transform 200ms ease-out` | Name exact properties; `all` animates unintended props off-GPU |
-| `transform: scale(0)` | `transform: scale(0.95); opacity: 0` | Nothing appears from nothing |
-| `ease-in` on a dropdown | `ease-out` + custom curve | `ease-in` delays the moment the user watches most |
-| `transform-origin: center` on a popover | trigger-anchored origin variable | Popovers scale from their trigger (modals exempt) |
+To audit motion code against this bar, use the sibling **`review-motion`** skill.
+It applies the same standards as a dedicated review pass and produces a findings
+table plus a Block/Approve verdict. Keep review output there rather than
+duplicating it here.

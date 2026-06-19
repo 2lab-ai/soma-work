@@ -13,14 +13,13 @@ against a high craft bar. It does not write features, fix unrelated bugs, or
 review non-motion code. If asked to review general code, decline and point to a
 general review skill.
 
-This skill is a generalized distillation of Emil Kowalski's animation review
-philosophy; the upstream marketing is stripped (see
-[`LICENSES/NOTICE.md`](./LICENSES/NOTICE.md)). The substantive bar and every exact
-value come from the **single shared source of truth**:
+The substantive bar and every exact value come from the **single shared source of
+truth**:
 [`../motion-design/references/motion-standards.md`](../motion-design/references/motion-standards.md).
 Load it whenever a finding needs a precise curve, duration, or config. Technique
 detail lives in
 [`../motion-design/references/animation-techniques.md`](../motion-design/references/animation-techniques.md).
+See [`LICENSES/NOTICE.md`](./LICENSES/NOTICE.md) for source attribution.
 
 ## Operating Posture
 
@@ -40,12 +39,15 @@ Every animation in the diff is measured against these. A violation is a finding.
 2. **Frequency-appropriate.** Keyboard-initiated and 100+/day actions get **no**
    animation. Tens/day gets reduced motion. Occasional gets standard.
    Rare/first-time can have delight.
-3. **Responsive easing.** Entering/exiting elements use `ease-out` or a strong
-   custom curve. `ease-in` on UI is a block — it delays the moment the user
-   watches most. Built-in CSS easings are too weak; expect custom cubic-beziers.
-4. **Sub-300ms UI.** UI animations stay under 300ms; anything slower on a UI
-   element needs justification or it's a finding. Per-element budgets live in the
-   shared standards.
+3. **Responsive easing.** Entrances and immediate feedback use `ease-out` or a
+   strong custom curve. `ease-in` on an entrance or on feedback is a block — it
+   delays the moment the user watches most. (Exits may accelerate with `ease-in`
+   when it aids continuity.) Built-in CSS easings are weak; expect custom
+   cubic-beziers.
+4. **Tight UI durations.** Default UI motion is 200–300ms or less; the 300–500ms
+   band is reserved for large gesture-driven overlays (modals, drawers) with a
+   stated reason. A small control animating > 300ms with no justification is a
+   finding. Per-element budgets live in the shared standards.
 5. **Origin & physical correctness.** Popovers/dropdowns/tooltips scale from their
    trigger (`transform-origin`), not center. Never animate from `scale(0)` —
    start from `scale(0.9–0.97)` + opacity. (Modals are exempt — they stay
@@ -53,9 +55,12 @@ Every animation in the diff is measured against these. A violation is a finding.
 6. **Interruptibility.** Rapidly-triggered or gesture-driven motion (toasts,
    toggles, drags) must retarget from the current state — CSS transitions or
    springs, not keyframes that restart from zero.
-7. **GPU-only properties.** Animate `transform` and `opacity` only. Animating
-   `width`/`height`/`margin`/`padding`/`top`/`left` (or library shorthand
-   transforms that run on the main thread under load) is a performance finding.
+7. **Compositor-friendly properties.** Routine motion uses `transform` and
+   `opacity`. Animating `width`/`height`/`margin`/`padding`/`top`/`left` is a
+   performance finding. Library shorthand props (e.g. Framer Motion `x`/`y`/
+   `scale`) resolve to transforms but are rAF-scheduled on the main thread — flag
+   them on motion that runs while the page is busy. `clip-path`/`filter` are
+   allowed but not free; flag continuous use without a measurement note.
 8. **Accessibility.** `prefers-reduced-motion` is honored (gentler, not zero —
    keep opacity/color, drop movement). Hover animations are gated behind
    `@media (hover: hover) and (pointer: fine)`.
@@ -73,13 +78,15 @@ Flag these on sight, hard:
 
 - `transition: all` (unbounded property animation)
 - `scale(0)` or pure-fade entrances with no initial transform
-- `ease-in` on any UI interaction; weak built-in easing on a deliberate animation
+- `ease-in` on an entrance or on immediate feedback; weak built-in easing on a
+  deliberate animation
 - Animation on a keyboard shortcut, command-palette toggle, or 100+/day action
-- UI duration > 300ms with no stated reason
+- A small control animating > 300ms with no stated reason
 - `transform-origin: center` on a trigger-anchored popover/dropdown/tooltip
 - Keyframes on toasts, toggles, or anything added/triggered rapidly
 - Animating layout properties (`width`/`height`/`margin`/`padding`/`top`/`left`)
-- Library shorthand transform props on motion that runs while the page is busy
+- Library shorthand transform props (rAF-scheduled) on motion that runs while the
+  page is busy
 - Updating a CSS variable on a parent to drive a child transform (recalc storm)
 - Missing `prefers-reduced-motion` handling on movement
 - Ungated `:hover` motion
@@ -136,7 +143,8 @@ Group remaining commentary by impact tier, highest first. Omit empty tiers.
 Close with an explicit decision:
 
 - **Block** — any feel-breaking regression, animation on a keyboard/high-frequency
-  action, `scale(0)`/`ease-in` on UI, or a non-GPU animation with an easy GPU fix.
+  action, `scale(0)` or `ease-in` on an entrance/feedback, or a layout-property
+  animation with an easy `transform`/`opacity` fix.
 - **Approve** — no feel-breaking regressions, no obvious motion that should be
   deleted, durations and easing within bounds, interruptibility handled where
   needed, reduced-motion respected.
