@@ -148,6 +148,24 @@ is_alive() {
     [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null
 }
 
+# Load the plist AND force the agent to actually spawn.
+#
+# `launchctl load` only REGISTERS the LaunchAgent in the user domain. When the
+# caller's own session is not the GUI/Aqua seat — exactly the case for a GitHub
+# Actions self-hosted runner, which launchd starts as a background job — the
+# plist's `RunAtLoad` spawn is deferred as "speculative" and the process never
+# actually starts (`launchctl print` shows runs=0 / no live PID). The deploy
+# then fails the liveness check below with "registered but no live PID".
+# `kickstart` targets the GUI domain explicitly and forces the spawn, so the
+# service comes up regardless of which session ran the deploy. `load` is made
+# tolerant (|| true) because against an already-registered label it is a no-op
+# error — kickstart still does the right thing, and is_alive remains the gate.
+# Real incident: deploy run 27553669625 (oudwood-dev), 2026-06-15.
+load_and_kickstart() {
+    launchctl load "$PLIST_PATH" 2>/dev/null || true
+    launchctl kickstart -k "gui/$(id -u)/$SERVICE_NAME" 2>/dev/null || true
+}
+
 generate_plist() {
     cat << EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -348,7 +366,7 @@ cmd_start() {
         return 1
     fi
 
-    launchctl load "$PLIST_PATH"
+    load_and_kickstart
     sleep 2
 
     if is_alive; then
@@ -450,7 +468,7 @@ cmd_install() {
     generate_plist > "$PLIST_PATH"
     print_success "Plist created: $PLIST_PATH"
 
-    launchctl load "$PLIST_PATH"
+    load_and_kickstart
     sleep 2
 
     if is_alive; then
@@ -592,7 +610,7 @@ cmd_reinstall() {
 
     # Step 4: Start
     print_status "[4/4] Starting service..."
-    launchctl load "$PLIST_PATH"
+    load_and_kickstart
     sleep 2
 
     if is_alive; then
