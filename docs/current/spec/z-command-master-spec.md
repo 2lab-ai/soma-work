@@ -384,7 +384,7 @@ throw err;
 - [ ] `SOMA_ENABLE_LEGACY_SLASH=true` → 롤백 동작
 - [ ] 18가지 불일치 전부 해소 (섹션 9 체크리스트)
 - [ ] CI 통과
-- [ ] codex/gemini review P0/P1 0개
+- [ ] codex review P0/P1 0개
 
 ## 15. 구현 가드레일 (codex 지시사항)
 
