@@ -1,7 +1,7 @@
 /**
  * BaseMcpLlmRuntime — shared implementation for MCP-backed LlmRuntime adapters.
  *
- * MCP-backed runtimes share the same architecture: a single long-lived McpClient
+ * Codex and Gemini share the same architecture: a single long-lived McpClient
  * child shared across requests, each call wrapped in runWithWatchdog so a
  * timeout/abort kills the child and the next call re-spawns it via ensureReady.
  *
@@ -22,7 +22,7 @@ const DEFAULT_TIMEOUT = 600_000;
 export interface BackendSpec {
   /** Runtime identity (`LlmRuntime.name`). */
   readonly name: Backend;
-  /** Response key carrying the backend session ID (Codex `threadId`). */
+  /** Response key carrying the backend session ID (Codex `threadId` / Gemini `sessionId`). */
   readonly sessionIdKey: string;
   /** CLI binary that must exist on PATH for the backend to initialize. */
   readonly cliCommand: string;

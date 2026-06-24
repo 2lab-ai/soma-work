@@ -60,6 +60,7 @@ function makeRuntime(name: Backend): LlmRuntime {
 function buildServer(overrides: Partial<Record<Backend, LlmRuntime>> = {}) {
   const runtimes: Record<Backend, LlmRuntime> = {
     codex: overrides.codex ?? makeRuntime('codex'),
+    gemini: overrides.gemini ?? makeRuntime('gemini'),
   };
   const server = new LlmMCPServer({ runtimes });
   return { server };

@@ -59,7 +59,7 @@ Mark the recommended option with the top-level `recommendedChoiceId` field (sing
    - Problem/impact (performance? stability? data loss?)
    - Specific actions for each option (files, changes, workload)
    - Trade-offs for each option
-   - 2-person review consensus (Codex + oracle-reviewer)
+   - 3-person review consensus (Codex + oracle-reviewer + subagent (opus))
 4. **2-4 options** — Slack UI renders `1️⃣-4️⃣` buttons up to 4. The 5th and beyond get cut off. `multiSelect` not supported (single-select only).
 5. **Recommended option** — Set `recommendedChoiceId` to the id of the recommended option. (Legacy `(Recommended · N/M)` label suffix is still accepted as a fallback and is auto-stripped from display; prefer the explicit field.) N/M is the review vote count and should go into the `description` or `context` instead of the label.
 6. **Actionable label** — Specific action that can be executed immediately upon selection. Meta options like "I'll think about it" are prohibited.
@@ -114,7 +114,7 @@ No tier, no code snippets, no problem description, no review consensus → User 
     "payload": {
       "type": "user_choice",
       "question": "[medium ~50 lines] P1-1: Missing DbUpdateException filter — choose implementation approach",
-      "context": "▸ Current (`src/Repo/UserRepo.cs:45`):\n```csharp\ncatch (DbUpdateException ex) { return Result.Conflict(); }\n```\n▸ Problem: All DB exceptions including network/timeout are treated as Conflict → risk of data loss.\n▸ Review consensus (both Option A): Codex · oracle-reviewer unanimous.\n▸ Default if no response: Proceeding with Option A.",
+      "context": "▸ Current (`src/Repo/UserRepo.cs:45`):\n```csharp\ncatch (DbUpdateException ex) { return Result.Conflict(); }\n```\n▸ Problem: All DB exceptions including network/timeout are treated as Conflict → risk of data loss.\n▸ Review consensus (3/3 Option A): Codex · oracle-reviewer · subagent (opus) unanimous.\n▸ Default if no response: Proceeding with Option A.",
       "recommendedChoiceId": "option_a",
       "choices": [
         {
