@@ -10,7 +10,6 @@
 |---|----------|------|--------|
 | 1 | LlmRuntime interface + types | small | Ready |
 | 2 | CodexRuntime implementation | medium | Ready |
-| 3 | GeminiRuntime implementation | medium | Ready |
 | 4 | llm-mcp-server.ts router refactor | medium | Ready |
 | 5 | Unit tests for runtimes | medium | Ready |
 | 6 | Integration test for llm-mcp-server | small | Ready |
@@ -29,7 +28,7 @@
 ```typescript
 // mcp-servers/llm/runtime/types.ts
 
-export type Backend = 'codex' | 'gemini';
+export type Backend = 'codex';
 
 export interface SessionOptions {
   model: string;
@@ -114,48 +113,6 @@ CodexRuntime.shutdown()
 
 ---
 
-## Scenario 3: GeminiRuntime implementation
-
-### Size: medium (~60 lines)
-
-### 1. Entry Point
-**New file**: `mcp-servers/llm/runtime/gemini-runtime.ts`
-
-### 2. Call Stack
-
-```
-GeminiRuntime.initialize()
-  → cliExists('gemini')                          // L122-124
-  → new McpClient({ command: 'npx', args: ['@2lab.ai/gemini-mcp-server'] })  // L132
-  → client.start()
-
-GeminiRuntime.startSession(prompt, options)
-  → this.ensureClient()
-  → client.callTool('chat', { prompt, model: options.model }, 600_000)  // L255
-  → extractSessionId(result)                     // 'sessionId' key
-  → return SessionResult
-
-GeminiRuntime.resumeSession(sessionId, prompt)
-  → this.ensureClient()
-  → client.callTool('chat-reply', { prompt, sessionId }, 600_000)  // L295
-  → return SessionResult
-
-GeminiRuntime.shutdown()
-  → client?.stop()
-```
-
-### 3. Key Differences from CodexRuntime
-| Aspect | Codex | Gemini |
-|---|---|---|
-| CLI check | `codex` | `gemini` |
-| Spawn command | `codex mcp-server` | `npx @2lab.ai/gemini-mcp-server` |
-| Start tool name | `codex` | `chat` |
-| Reply tool name | `codex-reply` | `chat-reply` |
-| Session ID key | `threadId` | `sessionId` |
-| Config expansion | Yes (dot-notation) | No |
-
----
-
 ## Scenario 4: llm-mcp-server.ts router refactor
 
 ### Size: medium (~50 lines changed)
@@ -179,13 +136,11 @@ GeminiRuntime.shutdown()
 
 import { LlmRuntime, Backend, SessionResult } from './runtime/types.js';
 import { CodexRuntime } from './runtime/codex-runtime.js';
-import { GeminiRuntime } from './runtime/gemini-runtime.js';
 
 // Config + routeModel() — unchanged
 
 const runtimes: Record<Backend, LlmRuntime> = {
   codex: new CodexRuntime(),
-  gemini: new GeminiRuntime(),
 };
 
 class LlmMCPServer extends BaseMcpServer {
@@ -226,7 +181,6 @@ class LlmMCPServer extends BaseMcpServer {
 
 ### Files
 - `mcp-servers/llm/runtime/codex-runtime.test.ts`
-- `mcp-servers/llm/runtime/gemini-runtime.test.ts`
 
 ### Test Cases
 
@@ -236,12 +190,6 @@ class LlmMCPServer extends BaseMcpServer {
 3. `startSession()` — extracts threadId from response
 4. `resumeSession()` — calls codex-reply with threadId
 5. `resumeSession()` — handles session ID change
-
-**GeminiRuntime:**
-1. `initialize()` — throws if gemini CLI not found
-2. `startSession()` — calls chat tool with correct args (no config expansion)
-3. `startSession()` — extracts sessionId from response
-4. `resumeSession()` — calls chat-reply with sessionId
 
 ### Mock Strategy
 - Mock `McpClient` — inject via constructor (DI)
@@ -258,10 +206,9 @@ class LlmMCPServer extends BaseMcpServer {
 
 ### Test Cases
 1. `routeModel('codex')` → returns codex config
-2. `routeModel('gemini')` → returns gemini config
-3. `routeModel('gpt-5.4')` → routes to codex
-4. `routeModel('gemini-3.1-pro')` → routes to gemini
-5. Tool definitions unchanged (chat, chat-reply only)
+2. `routeModel('gpt-5.4')` → routes to codex
+3. `routeModel(<non-codex alias>)` → falls back to codex
+4. Tool definitions unchanged (chat, chat-reply only)
 
 ### Note
 - Full E2E test (actual CLI spawn) is not feasible in CI — mock runtimes

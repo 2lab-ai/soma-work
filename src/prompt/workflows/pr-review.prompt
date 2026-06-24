@@ -150,16 +150,16 @@ Classify **all findings** from step 3 (review-pr) and step 5 (issue-based verifi
 ```
 for each finding:
   if switching_cost < small (~20 lines):
-    → [Autonomous Decision] Determine fix approach by 3-agent majority vote
-    → Call oracle-reviewer + oracle-gemini-reviewer in parallel
-    → Confirm the approach agreed upon by 2/3 or more
+    → [Autonomous Decision] Determine fix approach by 2-agent agreement
+    → Call oracle-reviewer (codex)
+    → Confirm the approach both agents agree on
     → Record Auto-Decision log
     → Do not ask the user
 
   elif switching_cost >= medium (~50 lines):
     → [User Question] Must use `local:UIAskUserQuestion` Skill (plain text output is forbidden)
     → Send via `mcp__model-command__run` → `ASK_USER_QUESTION`
-    → Include review results from all 3 agents + recommendation
+    → Include review results from both agents + recommendation
     → [tier ~N lines] label is required
     → Prefer `recommendedChoiceId` over the legacy `(Recommended)` label suffix.
     → Warning: Questions like "Should we fix this? (fix/defer/skip)" are forbidden — must be in the form "How should we fix this? (Option A / Option B)"
@@ -169,7 +169,7 @@ for each finding:
 ```markdown
 ### Auto-Decision: [P2] Variable name mismatch [tiny ~5 lines]
 - **Decision**: Fix immediately
-- **Vote**: Codex ✅ / oracle-reviewer ✅ / oracle-gemini ✅ (3/3)
+- **Vote**: Codex ✅ / oracle-reviewer ✅
 - **Rationale**: Simple rename, no risk
 ```
 
@@ -313,10 +313,9 @@ For P1+ issues, there is no need to ask "whether to fix it or not." **It must be
 ```
 → Pros/Cons/Impact scope
 - **Scope of change**: N files, ~M lines
-- **Review Consensus (X/3)**:
+- **Review Consensus (both)**:
   - Codex: Option A — [reason]
   - oracle-reviewer: Option A — [reason]
-  - oracle-gemini: Option B — [reason]
 
 → Send the above via `local:UIAskUserQuestion` (options: Option A / Option B — all options must be concrete implementation approaches for this PR. Do not include defer variants like "Split into a separate issue" as options.)
 
