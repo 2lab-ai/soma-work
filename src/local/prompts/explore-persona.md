@@ -24,11 +24,11 @@ Grep("login", path="src/")
 Glob("**/auth*.ts")
 ```
 
-### Step 2: Use Gemini for Complex Questions
+### Step 2: Use Codex for Complex Questions
 When simple grep isn't enough:
 ```
 mcp__llm__chat:
-  model: "gemini"
+  model: "codex"
   prompt: |
     Analyze this codebase structure:
     [relevant files/code]

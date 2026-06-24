@@ -61,7 +61,6 @@ interface Deps {
 function buildServer(): Deps {
   const runtimes: Record<Backend, RuntimeMock> = {
     codex: makeRuntime('codex'),
-    gemini: makeRuntime('gemini'),
   };
   // `exitOnShutdown: false` so shutdown-related tests can await the hook
   // without the test runner being killed by `process.exit(0)`.
@@ -398,17 +397,16 @@ describe('LlmMCPServer.handleTool — chat new/resume', () => {
     const logger = (deps.server as unknown as { logger: { warn: (...a: any[]) => void } }).logger;
     const warnSpy = vi.spyOn(logger, 'warn');
 
-    deps.runtimes.gemini.shutdown.mockRejectedValueOnce(new Error('gemini stuck'));
+    deps.runtimes.codex.shutdown.mockRejectedValueOnce(new Error('codex stuck'));
     // Accessing the protected hook is intentional — the change under review
     // exposed this seam specifically so tests can assert teardown without
     // `process.exit` terminating the runner.
     await (deps.server as unknown as { shutdown: () => Promise<void> }).shutdown();
     expect(deps.runtimes.codex.shutdown).toHaveBeenCalled();
-    expect(deps.runtimes.gemini.shutdown).toHaveBeenCalled();
     // Pin the runtime identity in the payload — a closure bug that logs the
     // wrong runtime's name (or drops it entirely) still passes a name-only
     // `toContain` check and ops would lose the ability to identify which
     // runtime hung during teardown.
-    expect(warnSpy).toHaveBeenCalledWith('llm.runtime.shutdown-failed', expect.objectContaining({ runtime: 'gemini' }));
+    expect(warnSpy).toHaveBeenCalledWith('llm.runtime.shutdown-failed', expect.objectContaining({ runtime: 'codex' }));
   });
 });

@@ -4,7 +4,7 @@
 
 ## Problem
 
-`llm-mcp-server.ts`(328행)에 백엔드별 분기(`if codex / else gemini`)가 5곳에 산재.
+`llm-mcp-server.ts`(328행)에 백엔드별 분기(`if codex / else ...`)가 5곳에 산재.
 새 백엔드 추가 시 5곳을 동시에 수정해야 하고, 후속 이슈(#333~#338)가 모두 이 구조에 의존.
 
 ## AS-IS
@@ -12,7 +12,7 @@
 ```
 llm-mcp-server.ts (328 lines, monolith)
 ├── routeModel()           — model string → BackendConfig
-├── getClient()            — if codex: spawn codex mcp / else: spawn gemini mcp
+├── getClient()            — spawn codex mcp
 ├── handleChat()           — if codex: codex tool / else: chat tool + codex config expansion
 ├── handleChatReply()      — if codex: codex-reply + threadId / else: chat-reply + sessionId
 ├── extractBackendSessionId() — if codex: threadId / else: sessionId
@@ -36,8 +36,7 @@ llm-mcp-server.ts (~120 lines, router only)
 └── handleChatReply()      — runtime.resumeSession(sessionId, prompt)
 
 LlmRuntime interface
-├── CodexRuntime           — McpClient 경유, codex-specific 로직 캡슐화
-└── GeminiRuntime          — McpClient 경유, gemini-specific 로직 캡슐화
+└── CodexRuntime           — McpClient 경유, codex-specific 로직 캡슐화
 ```
 
 ## LlmRuntime Interface Design
@@ -53,7 +52,7 @@ interface SessionOptions {
 }
 
 interface SessionResult {
-  /** Backend-native session ID (threadId for Codex, sessionId for Gemini) */
+  /** Backend-native session ID (threadId for Codex) */
   backendSessionId: string;
   content: string;
   backend: Backend;
@@ -105,9 +104,7 @@ mcp-servers/llm/
 ├── runtime/
 │   ├── types.ts               — LlmRuntime, SessionOptions, SessionResult
 │   ├── codex-runtime.ts       — CodexRuntime implements LlmRuntime
-│   ├── codex-runtime.test.ts
-│   ├── gemini-runtime.ts      — GeminiRuntime implements LlmRuntime
-│   └── gemini-runtime.test.ts
+│   └── codex-runtime.test.ts
 ```
 
 ## Constraints
