@@ -155,12 +155,13 @@ Closes #<서브이슈 번호>
 
 각 에픽은 독립 세션에서 Case B로 처리됩니다.
 
-## 2-Person Review Consensus
+## 3-Person Review Consensus
 
 - self: <의견>
 - oracle-reviewer: <의견>
+- subagent (opus): <의견>
 
-합의: <양측 합의 요약>
+합의: <2/3 또는 3/3 합의 요약>
 
 ## 요청
 

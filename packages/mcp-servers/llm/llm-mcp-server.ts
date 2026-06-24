@@ -18,6 +18,7 @@ import type { ToolDefinition, ToolResult } from '@soma/process-shared/mcp/base-m
 import { BaseMcpServer } from '@soma/process-shared/mcp/base-mcp-server.js';
 import { CodexRuntime } from './runtime/codex-runtime.js';
 import { ErrorCode, LlmChatError } from './runtime/errors.js';
+import { GeminiRuntime } from './runtime/gemini-runtime.js';
 import type { Backend, LlmRuntime } from './runtime/types.js';
 
 // ── Model Routing ──────────────────────────────────────────
@@ -30,14 +31,16 @@ export interface RouteResult {
 }
 
 const DEFAULT_CODEX_MODEL = 'gpt-5.5';
+const DEFAULT_GEMINI_MODEL = 'gemini-3.1-pro-preview';
 
 export function routeModel(model: string): RouteResult {
   if (model === 'codex') return { backend: 'codex', model: DEFAULT_CODEX_MODEL };
+  if (model === 'gemini') return { backend: 'gemini', model: DEFAULT_GEMINI_MODEL };
+  if (model.startsWith('gemini-')) return { backend: 'gemini', model };
   if (model.startsWith('gpt-') || model.startsWith('o')) return { backend: 'codex', model };
-  // Codex is the only backend. Any other alias (including legacy `gemini` /
-  // `gemini-*` callers) passes through to codex as a last-resort default,
-  // surfaced via `unknownAlias` so the server can emit a one-shot log — dropping
-  // silently would hide typos in caller-supplied `model` values.
+  // Unknown alias: pass through to codex as a last-resort default. Surfaced via
+  // `unknownAlias` so the server can emit a one-shot log — dropping silently
+  // would hide typos in caller-supplied `model` values.
   return { backend: 'codex', model, unknownAlias: true };
 }
 
@@ -106,7 +109,7 @@ export class LlmMCPServer extends BaseMcpServer {
       {
         name: 'chat',
         description:
-          'Send a prompt to the Codex LLM backend. Pass `resumeSessionId` ' +
+          'Send a prompt to an LLM backend (Codex or Gemini). Pass `resumeSessionId` ' +
           'to continue a previous session; `model` is then forbidden.',
         inputSchema: {
           type: 'object',
@@ -121,7 +124,7 @@ export class LlmMCPServer extends BaseMcpServer {
             model: {
               type: 'string',
               minLength: 1,
-              description: '"codex" selects the backend; gpt-*/o* → codex. Other aliases fall back to codex.',
+              description: '"codex" / "gemini" select a backend; gpt-*/o* → codex; gemini-* → gemini.',
             },
             cwd: { type: 'string', minLength: 1, description: 'Working directory for the backend child.' },
             timeoutMs: {
@@ -316,6 +319,7 @@ export class LlmMCPServer extends BaseMcpServer {
 async function bootstrap(): Promise<void> {
   const runtimes: Record<Backend, LlmRuntime> = {
     codex: new CodexRuntime(),
+    gemini: new GeminiRuntime(),
   };
 
   const server = new LlmMCPServer({ runtimes, exitOnShutdown: true });
