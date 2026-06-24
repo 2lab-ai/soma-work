@@ -138,12 +138,6 @@ MCP 서버 설정 파일:
       "command": "codex",
       "args": ["mcp-server"],
       "env": {}
-    },
-    "gemini": {
-      "type": "stdio",
-      "command": "npx",
-      "args": ["@2lab.ai/gemini-mcp-server"],
-      "env": {}
     }
   }
 }
