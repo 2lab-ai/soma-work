@@ -17,7 +17,7 @@ description: "Autonomous z-pipeline driver. Triggered by `autoz` or `$autoz`. Bu
    - (b) **Codex consult is bounded** by switching cost. Skip codex when the operation is trivial:
      - Intake — tree has `ssot-task` count == 1 AND depth == 1.
      - Drift — diff is `added`-only AND adds ≤ 1 node AND no `changed`/`removed`.
-     Otherwise call `mcp__llm__chat` `model: codex`, log the transcript reference in the PR body. Report uses the ztrace single-pass result mandated by Hook 4.
+     Otherwise call `mcp__llm__chat` `model: codex` (use a `subagent (opus)` as tiebreaker if codex is ambiguous), log the transcript reference in the PR body. Report uses the ztrace single-pass result mandated by Hook 4.
      - This trivial-skip exemption covers **SSOT-shaping decision consults only**. It NEVER applies to the mandatory codex review gate in Rule 8 — the PR-diff review runs on every single run regardless of triviality.
 
 2. **RED-first.** After SSOT is captured, before any implementation, reproduce the user's intent (or the issue's described behavior) as a failing test.

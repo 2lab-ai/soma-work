@@ -35,7 +35,7 @@ Run a comprehensive pull request review using multiple specialized agents, each 
 4. **Determine Applicable Reviews**
 
    Based on changes:
-   - **Always applicable**: code-reviewer (general quality), `oracle-reviewer` Skill
+   - **Always applicable**: code-reviewer (general quality), `oracle-reviewer` Skill (codex), `subagent (opus)` reviewer
    - **If test files changed**: pr-test-analyzer
    - **If comments/docs added**: comment-analyzer
    - **If error handling changed**: silent-failure-hunter
@@ -43,7 +43,7 @@ Run a comprehensive pull request review using multiple specialized agents, each 
    - **After passing review**: code-simplifier (polish and refine)
 
    **IMPORTANT — Oracle reviewers**:
-   Use `oracle-reviewer` Skill, not subagents
+   Use `oracle-reviewer` Skill (codex) plus a `subagent (opus)` reviewer as the second/tiebreaker reviewer
 
 5. **Launch Review Agents**
 
@@ -118,7 +118,10 @@ Run a comprehensive pull request review using multiple specialized agents, each 
 ## Agent Descriptions:
 
 **oracle-reviewer** SKILL(not subagent):
-- Reviews general code quality with high intelligent
+- Reviews general code quality with high intelligent (codex)
+
+**subagent (opus)** reviewer:
+- Independent Opus-subagent review — second opinion / tiebreaker (replaces the former gemini reviewer)
 
 **comment-analyzer**:
 - Verifies comment accuracy vs code

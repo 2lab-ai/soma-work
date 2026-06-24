@@ -98,7 +98,7 @@ You may only `endTurn` to the user in the following cases.
 - [ ] Ask questions via `UIAskUserQuestion` and wait for the user's decision
 
 #### `endTurn` Checklist
-- [ ] 0 P0 and P1 issues from codex review
+- [ ] 0 P0 and P1 issues from codex and subagent (opus) reviews
 - [ ] `stv:verify` shows 0 issues
 - [ ] The created PR has been merged
 
