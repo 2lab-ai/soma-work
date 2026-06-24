@@ -197,7 +197,7 @@ export class McpConfigBuilder {
     const mcpServers = await this.mcpManager.getServerConfiguration();
     const internalServers: Record<string, any> = {};
 
-    // Always add LLM aggregate server (wraps codex + gemini)
+    // Always add LLM aggregate server (wraps codex)
     internalServers['llm'] = this.buildLlmServer();
 
     // Add agent MCP server when agents are configured (Trace: docs/current/plans/multi-agent/trace.md, S4)

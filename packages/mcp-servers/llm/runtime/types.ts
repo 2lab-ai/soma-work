@@ -1,12 +1,12 @@
 /**
  * LlmRuntime — Backend adapter interface for the llm MCP server.
  *
- * Each backend (Codex, Gemini) implements this interface to encapsulate
- * its protocol-specific logic (tool names, session ID format).
+ * The Codex backend implements this interface to encapsulate its
+ * protocol-specific logic (tool names, session ID format).
  * The router (llm-mcp-server.ts) delegates to runtimes without backend branches.
  */
 
-export type Backend = 'codex' | 'gemini';
+export type Backend = 'codex';
 
 /**
  * RuntimeCallOptions — Shared call-site options for runtime invocations.
@@ -20,7 +20,7 @@ export interface RuntimeCallOptions {
 }
 
 export interface StartSessionResult {
-  /** Backend-native session ID (Codex threadId / Gemini sessionId). */
+  /** Backend-native session ID (Codex threadId). */
   backendSessionId: string;
   content: string;
 }

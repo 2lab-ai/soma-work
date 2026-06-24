@@ -100,12 +100,6 @@ const configPath = path.resolve('./config.json');
       "args": ["mcp-server"],
       "env": {}
     },
-    "gemini": {
-      "type": "stdio",
-      "command": "npx",
-      "args": ["@2lab.ai/gemini-mcp-server"],
-      "env": {}
-    },
     "filesystem": {
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-filesystem", "/usercontent"]
