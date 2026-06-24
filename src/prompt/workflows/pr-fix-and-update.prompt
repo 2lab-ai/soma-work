@@ -63,9 +63,9 @@ Refer to the `decision-gate` Skill to classify each feedback item:
 ```
 for each feedback:
   if switching_cost < small (~20 lines):
-    → [Autonomous Fix] Determine fix approach by 3-agent majority vote
-    → Call oracle-reviewer + oracle-gemini-reviewer in parallel
-    → If 2/3 or more agree, proceed with the fix immediately
+    → [Autonomous Fix] Determine fix approach by 2-agent agreement
+    → Call oracle-reviewer (codex)
+    → If both agree, proceed with the fix immediately
     → Do not ask the user
 
   elif switching_cost >= medium (~50 lines):

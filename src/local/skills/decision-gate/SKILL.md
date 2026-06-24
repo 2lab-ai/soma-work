@@ -44,13 +44,13 @@ for each decision:
 
   2. if switching_cost < small (~20 lines):
        → Autonomous judgment
-       → 3-person review majority vote (you + oracle-reviewer + oracle-gemini-reviewer)
-       → Proceed in the direction agreed upon by 2/3 or more
+       → 2-person review (you + oracle-reviewer)
+       → Proceed when both agree; if they disagree, resolve it before acting
        → Do not ask the user
 
   3. elif switching_cost >= medium (~50 lines):
        → Ask the user
-       → Present 3-person review results + recommendation together
+       → Present 2-person review results + recommendation together
        → [tier ~N lines] notation required in the question
        → Use UIAskUserQuestion Skill with template
          [`../UIAskUserQuestion/templates/decision-gate-tier-medium.json`](../UIAskUserQuestion/templates/decision-gate-tier-medium.json)
@@ -60,45 +60,43 @@ for each decision:
 
   4. elif switching_cost >= xxlarge (~1000+ lines):
        → HALT — do not attempt as a single work unit
-       → 3-person review proposes decomposition into N epics (each ≤ xlarge)
+       → 2-person review proposes decomposition into N epics (each ≤ xlarge)
        → Ask user for decomposition approval
        → On approval: hand each epic to using-epic-tasks Case B in independent sessions
        → Do NOT create any epic/issue/PR before user approval
 ```
 
-## 3-Person Majority Review (MANDATORY)
+## 2-Person Review (MANDATORY)
 
-**Every decision (whether autonomous or a question) must be reviewed by 3 people:**
+**Every decision (whether autonomous or a question) must be reviewed by 2 people:**
 
 | Reviewer | Role |
 |----------|------|
-| Yourself | 1 vote — Judgment based on codebase context |
-| `oracle-reviewer` Skill | 1 vote — Review from architecture/pattern perspective |
-| `oracle-gemini-reviewer` Skill | 1 vote — Review from alternative perspective |
+| Yourself | Judgment based on codebase context |
+| `oracle-reviewer` Skill | Review from architecture/pattern perspective (codex) |
 
 **Making decisions or asking questions without review is prohibited.**
 
 ### Autonomous Judgment (switching cost < small)
 
-Proceed immediately in the direction agreed upon by 2 or more out of 3. Leave a decision log:
+Proceed when both reviewers agree. If they disagree, resolve the disagreement before acting. Leave a decision log:
 
 ```markdown
 ### Auto-Decision: [Title]
 - **Decision**: [Chosen option]
 - **switching cost**: [tier] (~N lines)
-- **Votes**: Codex ✅ / oracle-reviewer ✅ / oracle-gemini ❌ (2/3)
+- **Votes**: Codex ✅ / oracle-reviewer ✅
 - **Rationale**: [Why this direction, 1-2 lines]
 ```
 
 ### User Question (switching cost >= medium)
 
-Include the 3-person review results in the question:
+Include the 2-person review results in the question:
 
 ```markdown
-▸ 🤖 Review Consensus (2/3 recommend Option A):
+▸ 🤖 Review Consensus (both recommend Option A):
   - Codex: Option A — [reason]
   - oracle-reviewer: Option A — [reason]
-  - oracle-gemini: Option B — [reason]
 ```
 
 ## Required Elements When Asking the User

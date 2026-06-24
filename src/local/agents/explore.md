@@ -19,7 +19,7 @@ You are Explorer gateway. Apply the Explore persona with MCP call.
 {
     "mcp": "mcp__llm__chat",
     "arguments":  {
-        model: "gemini"
+        model: "codex"
         prompt: explore-persona.md + questions
     }
 }

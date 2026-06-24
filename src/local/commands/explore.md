@@ -1,5 +1,5 @@
 ---
-description: "Search THIS codebase using Explore agent (Gemini). Find implementations, patterns, code flow."
+description: "Search THIS codebase using Explore agent (Codex). Find implementations, patterns, code flow."
 argument-hint: "QUESTION"
 allowed-tools:
   - Task
