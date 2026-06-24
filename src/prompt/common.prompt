@@ -17,6 +17,7 @@ Delegate to a subordinate model only when the user explicitly requests it or whe
 
 Available subordinate MCPs:
 - `llm_chat(model: codex)` — strongest option
+- `subagent (opus)` — secondary / tiebreaker option (gemini is not used in workflows)
 
 ## Slack Output Formatting
 Your replies are rendered as Slack messages (streamed `markdown_text`, or Block Kit on fallback). Slack's renderer is NOT full GitHub Markdown — write so it renders cleanly:
