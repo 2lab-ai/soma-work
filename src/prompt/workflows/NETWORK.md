@@ -131,7 +131,7 @@ Foundation shared by all workflows via `{{include:./common.prompt}}`:
 - **Working folder rules**: Unique folder creation + git clone
 - **Disk space check**: fast_fail if under 512MB
 - **Model-command-tool priority**: UIAskUserQuestion, session links, etc. prioritize MCP
-- **Sub-models (MCP)**: codex (highest performance), gemini (good performance)
+- **Sub-models (MCP)**: codex (highest performance)
 - **Auto session title update**: On issue link, on PR merge
 
 ## Key Skill Dependencies
@@ -146,14 +146,14 @@ zwork:
 pr-review:
   - local:github-pr (PR data collection)
   - local:review-pr (executor)
-  - local:oracle-reviewer, local:oracle-gemini-reviewer (3-reviewer vote)
+  - local:oracle-reviewer (reviewer vote)
   - local:UIAskUserQuestion (user questions)
   - local:decision-gate (autonomous/user classification)
   - mcp__jira__getJiraIssue / mcp__github__get_issue (issue retrieval)
 
 pr-fix-and-update:
   - local:github-pr (PR data collection)
-  - local:oracle-reviewer, local:oracle-gemini-reviewer (fix direction vote)
+  - local:oracle-reviewer (fix direction vote)
   - code-simplifier (code cleanup)
 
 jira-*:

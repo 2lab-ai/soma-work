@@ -117,9 +117,8 @@ Task({ subagent_type: "oh-my-claude:oracle", prompt: "..." })
 **ONLY in Optional Review Phase (Phase 3)** - when explicitly running multi-model code review:
 
 ```typescript
-// Phase 3 ONLY - parallel model review
+// Phase 3 ONLY - model review
 mcp__llm__chat({ model: "codex", ... })
-mcp__llm__chat({ model: "gemini", ... })
 Task({ subagent_type: "oh-my-claude:reviewer", ... })
 ```
 
@@ -397,7 +396,6 @@ When `oh-my-claude:reviewer` returns `GAP_DETECTED` verdict:
 ```typescript
 // ❌ WRONG (anywhere except Review Phase)
 mcp__llm__chat({ model: "codex", prompt: "..." })
-mcp__llm__chat({ model: "gemini", prompt: "..." })
 
 // ✅ CORRECT (always)
 Task({ subagent_type: "oh-my-claude:oracle", prompt: "..." })
