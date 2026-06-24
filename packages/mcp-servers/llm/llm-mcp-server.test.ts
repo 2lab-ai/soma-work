@@ -35,6 +35,22 @@ vi.mock('./runtime/codex-runtime.js', () => ({
     shutdown = vi.fn();
   },
 }));
+vi.mock('./runtime/gemini-runtime.js', () => ({
+  GeminiRuntime: class {
+    name = 'gemini';
+    capabilities = {
+      supportsReview: false,
+      supportsInterrupt: false,
+      supportsResume: true,
+      supportsEventStream: false,
+    };
+    ensureReady = vi.fn();
+    startSession = vi.fn();
+    resumeSession = vi.fn();
+    shutdown = vi.fn();
+  },
+}));
+
 describe('routeModel', () => {
   it('routes "codex" alias to codex backend with default model', async () => {
     const { routeModel } = await import('./llm-mcp-server.js');
@@ -43,11 +59,11 @@ describe('routeModel', () => {
     expect(route.model).toBe('gpt-5.5');
   });
 
-  it('falls legacy "gemini" alias back to codex (gemini backend removed)', async () => {
+  it('routes "gemini" alias to gemini backend with defaults', async () => {
     const { routeModel } = await import('./llm-mcp-server.js');
     const route = routeModel('gemini');
-    expect(route.backend).toBe('codex');
-    expect(route.unknownAlias).toBe(true);
+    expect(route.backend).toBe('gemini');
+    expect(route.model).toBe('gemini-3.1-pro-preview');
   });
 
   it('routes gpt-* models to codex', async () => {
@@ -57,11 +73,11 @@ describe('routeModel', () => {
     expect(route.model).toBe('gpt-5.4');
   });
 
-  it('falls legacy gemini-* models back to codex (gemini backend removed)', async () => {
+  it('routes gemini-* models to gemini', async () => {
     const { routeModel } = await import('./llm-mcp-server.js');
     const route = routeModel('gemini-3.1-pro');
-    expect(route.backend).toBe('codex');
-    expect(route.unknownAlias).toBe(true);
+    expect(route.backend).toBe('gemini');
+    expect(route.model).toBe('gemini-3.1-pro');
   });
 
   it('routes o-series models to codex', async () => {
