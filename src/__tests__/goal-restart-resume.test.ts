@@ -83,6 +83,39 @@ describe('resumeActiveGoals (T1)', () => {
     expect(stale.activityState).toBe('idle');
   });
 
+  it('repairs a stranded queue (complete goal + non-empty queue) by promoting the next goal', () => {
+    // Simulates the eval-complete crash window: disk persisted a completed goal
+    // with the queued goal still pending. resumeActiveGoals must promote it.
+    const completed = activeGoalSession();
+    (completed.goal as any).status = 'complete';
+    completed.goalQueue = [
+      {
+        goalId: 'g2',
+        objective: 'next objective',
+        status: 'queued',
+        createdAt: 1,
+        updatedAt: 1,
+        createdBy: 'U1',
+        continuationCount: 0,
+        maxContinuations: 10,
+      } as any,
+    ];
+    const sessions = new Map<string, ConversationSession>([['C1-T1', completed]]);
+    const { handler } = createHandler(sessions);
+    const settled = vi.fn();
+    handler.setGoalTurnSettledHandler(settled);
+
+    const resumed = handler.resumeActiveGoals();
+
+    // promoted to active + queue drained + loop re-triggered
+    expect(completed.goal?.objective).toBe('next objective');
+    expect(completed.goal?.status).toBe('active');
+    expect(completed.goalQueue).toHaveLength(0);
+    expect(completed.goalHistory?.[0].objective).toBe('finish the migration');
+    expect(resumed).toBe(1);
+    expect(settled).toHaveBeenCalledWith('C1-T1');
+  });
+
   it('does nothing (no throw) when no goal loop is wired', () => {
     const sessions = new Map<string, ConversationSession>([['C1-T1', activeGoalSession()]]);
     const { handler } = createHandler(sessions);

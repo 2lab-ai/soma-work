@@ -6,6 +6,9 @@ import { advanceGoalQueue, enqueueOrActivateGoal, formatGoalObjectiveForSlack } 
 import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
 
 export class GoalHandler implements CommandHandler {
+  /** Max queue/history rows rendered by `goal` status before truncating. */
+  private static readonly STATUS_LIST_LIMIT = 10;
+
   constructor(private deps: CommandDependencies) {}
 
   canHandle(text: string): boolean {
@@ -240,20 +243,28 @@ export class GoalHandler implements CommandHandler {
     if (queue.length > 0) {
       lines.push('');
       lines.push(`📋 *Queued goals (${queue.length})* — start automatically in order:`);
-      for (const [i, q] of queue.entries()) {
+      // Cap the rendered list so a long queue can't overflow the Slack message.
+      const shownQueue = queue.slice(0, GoalHandler.STATUS_LIST_LIMIT);
+      for (const [i, q] of shownQueue.entries()) {
         lines.push(`  ${i + 1}. ${this.formatObjectiveForSlack(q.objective)}`);
+      }
+      if (queue.length > shownQueue.length) {
+        lines.push(`  …and ${queue.length - shownQueue.length} more`);
       }
     }
 
     // ── Completed history (T3) ─────────────────────────────────────────
     if (history.length > 0) {
       // Newest first, capped for Slack readability.
-      const recent = [...history].reverse().slice(0, 10);
+      const recent = [...history].reverse().slice(0, GoalHandler.STATUS_LIST_LIMIT);
       lines.push('');
       lines.push(`✅ *Completed goals (${history.length})* — most recent first:`);
       for (const h of recent) {
         const reason = h.completionReason ?? h.completedVia ?? 'done';
         lines.push(`  • ${this.formatObjectiveForSlack(h.objective)} — _${reason}_ · ${this.formatGoalMetrics(h)}`);
+      }
+      if (history.length > recent.length) {
+        lines.push(`  …and ${history.length - recent.length} older`);
       }
     }
 

@@ -51,7 +51,7 @@ import {
 } from './slack/handoff-budget';
 import { buildCompactHooks } from './slack/hooks/compact-hooks';
 import { InputProcessor, type MessageEvent, SessionInitializer, StreamExecutor } from './slack/pipeline';
-import { enqueueOrActivateGoal, formatGoalObjectiveForSlack } from './slack/session-goal';
+import { advanceGoalQueue, enqueueOrActivateGoal, formatGoalObjectiveForSlack } from './slack/session-goal';
 import { SummaryService } from './slack/summary-service';
 import { SummaryTimer } from './slack/summary-timer';
 import { normalizeZInvocation, stripZPrefix } from './slack/z/normalize';
@@ -1615,7 +1615,21 @@ export class SlackHandler {
     }
     let resumed = 0;
     let forcedIdle = 0;
+    let repaired = 0;
     for (const [sessionKey, session] of this.claudeHandler.getAllSessions()) {
+      // Repair a stranded queue (defense for the eval-complete crash window):
+      // if the current goal is NOT active (completed/cleared) but goals are
+      // still queued, promote the next one so the queue can't be orphaned.
+      if (session.goal?.status !== 'active' && (session.goalQueue?.length ?? 0) > 0) {
+        const promoted = advanceGoalQueue(session);
+        if (promoted) {
+          repaired++;
+          this.logger.info('Repaired stranded goal queue after restart — promoted next goal', {
+            sessionKey,
+            objectivePreview: promoted.objective.slice(0, 120),
+          });
+        }
+      }
       if (session.goal?.status !== 'active') continue;
       if (session.activityState !== 'idle') {
         // Recovery: treat a stale persisted working/waiting state as idle.
@@ -1637,8 +1651,10 @@ export class SlackHandler {
         });
       }
     }
-    if (forcedIdle > 0) this.claudeHandler.saveSessions();
-    if (resumed > 0) this.logger.info(`Resumed ${resumed} active goal(s) after restart`);
+    if (forcedIdle > 0 || repaired > 0) this.claudeHandler.saveSessions();
+    if (resumed > 0 || repaired > 0) {
+      this.logger.info(`Resumed ${resumed} active goal(s) after restart (repaired ${repaired} stranded queue(s))`);
+    }
     return resumed;
   }
 

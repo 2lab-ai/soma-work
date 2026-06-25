@@ -611,6 +611,14 @@ export interface ConversationSession {
   pendingEventContext?: { channel: string; threadTs: string; user: string; ts: string } | null;
   // Wall-clock timestamp (ms) when the current active turn leg started. `undefined` when idle.
   activeLegStartedAtMs?: number;
+  /**
+   * `goalId` of the goal that was active when the current turn leg STARTED.
+   * Captured at `beginTurn` so per-goal time/token accounting credits the
+   * goal that owned the leg, even if the goal is completed/advanced before the
+   * leg closes (`goal done` mid-turn). Persisted so the load-time orphan sweep
+   * credits the right goal. `undefined` when no goal was active at leg start.
+   */
+  activeLegGoalId?: string;
   // Accumulated busy time (ms) across closed legs of the current session.
   activeAccumulatedMs?: number;
   // LLM-generated concise task title (falls back to `title` when absent).

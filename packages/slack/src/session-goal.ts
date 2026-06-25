@@ -162,6 +162,20 @@ function isGoalInFlight(goal: SessionGoalState | undefined): boolean {
 }
 
 /**
+ * Resolve a goal by `goalId` across the active goal, the pending queue, and
+ * the completed history. Used by per-goal accounting so a turn's spend is
+ * credited to the goal that owned the leg even after it has been advanced into
+ * `goalHistory`. Returns `undefined` when `goalId` is absent/unknown.
+ */
+export function findGoalById(session: GoalQueueSession, goalId: string | undefined): SessionGoalState | undefined {
+  if (!goalId) return undefined;
+  if (session.goal?.goalId === goalId) return session.goal;
+  const inQueue = session.goalQueue?.find((g) => g.goalId === goalId);
+  if (inQueue) return inQueue;
+  return session.goalHistory?.find((g) => g.goalId === goalId);
+}
+
+/**
  * THE single entry point for every "user wants a goal" path (typed
  * `goal <text>`, the `SET_GOAL` model-command, and the goal-prefixed first
  * message). Centralizing here is what makes the queue behavior uniform — a
@@ -223,9 +237,15 @@ export function advanceGoalQueue(
   const finished = session.goal;
   if (finished) {
     session.goalHistory = session.goalHistory ?? [];
-    session.goalHistory.push(finished);
-    if (session.goalHistory.length > MAX_GOAL_HISTORY) {
-      session.goalHistory.splice(0, session.goalHistory.length - MAX_GOAL_HISTORY);
+    // Idempotency: don't double-archive the same goal if `advanceGoalQueue`
+    // runs twice for one completion (e.g. re-running `goal done` on an
+    // already-complete goal, or a retried eval-complete path).
+    const alreadyArchived = session.goalHistory.some((g) => g.goalId === finished.goalId);
+    if (!alreadyArchived) {
+      session.goalHistory.push(finished);
+      if (session.goalHistory.length > MAX_GOAL_HISTORY) {
+        session.goalHistory.splice(0, session.goalHistory.length - MAX_GOAL_HISTORY);
+      }
     }
   }
 

@@ -13,6 +13,7 @@ import { getMetricsEmitter } from './metrics/event-emitter';
 import { normalizeTmpPath } from './path-utils';
 import { getArchiveStore } from './session-archive';
 import { DEFAULT_AUTO_HANDOFF_BUDGET } from './slack/handoff-budget';
+import { findGoalById } from './slack/session-goal';
 import type {
   ActionPanelState,
   ActivityState,
@@ -58,8 +59,14 @@ import { DEFAULT_GOAL_MAX_CONTINUATIONS, type SessionGoal } from './types';
  * load-time orphan sweep) — only while THIS goal is `active`.
  */
 function creditActiveGoalMs(session: ConversationSession, elapsedMs: number): void {
-  const goal = session.goal;
-  if (!goal || goal.status !== 'active' || elapsedMs <= 0) return;
+  if (elapsedMs <= 0) return;
+  // Credit the goal that OWNED the leg (captured at beginTurn), resolved across
+  // active/queue/history so a `goal done`/advance mid-leg still credits the
+  // right goal. Fall back to the live active goal when no owner was recorded
+  // (e.g. the load-time orphan sweep before any beginTurn ran this process).
+  const goal =
+    findGoalById(session, session.activeLegGoalId) ?? (session.goal?.status === 'active' ? session.goal : undefined);
+  if (!goal) return;
   goal.activeMsUsed = (goal.activeMsUsed ?? 0) + elapsedMs;
 }
 
@@ -223,6 +230,7 @@ interface SerializedSession {
   // Dashboard v2.1 — thread-aggregate snapshot fields (live aggregate derived from memory).
   compactionCount?: number;
   activeLegStartedAtMs?: number;
+  activeLegGoalId?: string;
   activeAccumulatedMs?: number;
   summaryTitle?: string;
   summaryTitleTurnId?: string;
@@ -458,12 +466,17 @@ export class SessionRegistry {
    */
   beginTurn(session: ConversationSession, now: number = Date.now()): void {
     // Fold any stale leg first (MAX_LEG_MS cap covers crash / missed endTurn).
+    // Credit the PREVIOUS leg to its recorded owner (`activeLegGoalId` still
+    // holds the prior leg's owner here) BEFORE re-stamping the owner below.
     if (session.activeLegStartedAtMs) {
       const elapsed = Math.min(now - session.activeLegStartedAtMs, MAX_LEG_MS);
       session.activeAccumulatedMs = (session.activeAccumulatedMs || 0) + Math.max(0, elapsed);
       creditActiveGoalMs(session, Math.max(0, elapsed));
     }
     session.activeLegStartedAtMs = now;
+    // Capture the goal that owns THIS leg so a `goal done`/advance mid-turn
+    // doesn't misattribute the leg's spend to the promoted goal.
+    session.activeLegGoalId = session.goal?.status === 'active' ? session.goal.goalId : undefined;
   }
 
   endTurn(session: ConversationSession, now: number = Date.now()): void {
@@ -1868,6 +1881,7 @@ export class SessionRegistry {
             // Dashboard v2.1 — derive-first aggregate snapshot (persisted per session)
             compactionCount: session.compactionCount,
             activeLegStartedAtMs: session.activeLegStartedAtMs,
+            activeLegGoalId: session.activeLegGoalId,
             activeAccumulatedMs: session.activeAccumulatedMs,
             summaryTitle: session.summaryTitle,
             summaryTitleTurnId: session.summaryTitleTurnId,
@@ -2076,6 +2090,7 @@ export class SessionRegistry {
           // Dashboard v2.1 — restore aggregate snapshot
           compactionCount: typeof serialized.compactionCount === 'number' ? serialized.compactionCount : 0,
           activeLegStartedAtMs: serialized.activeLegStartedAtMs,
+          activeLegGoalId: serialized.activeLegGoalId,
           activeAccumulatedMs: typeof serialized.activeAccumulatedMs === 'number' ? serialized.activeAccumulatedMs : 0,
           summaryTitle: serialized.summaryTitle,
           summaryTitleTurnId: serialized.summaryTitleTurnId,

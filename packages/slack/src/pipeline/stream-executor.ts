@@ -18,7 +18,12 @@ import type { RequestAbortReason, RequestCoordinator } from '../request-coordina
 // Issue #1082 T2: shared goal-apply helpers (same pair T1's slack-handler
 // uses for goal-prefixed first messages) — epoch bump + cache invalidation
 // semantics live in one place.
-import { enqueueOrActivateGoal, formatGoalObjectiveForSlack, type GoalQueueSession } from '../session-goal';
+import {
+  enqueueOrActivateGoal,
+  findGoalById,
+  formatGoalObjectiveForSlack,
+  type GoalQueueSession,
+} from '../session-goal';
 import type { SlackApiHelper } from '../slack-api-helper';
 import type { StatusReporter } from '../status-reporter';
 import {
@@ -3553,26 +3558,31 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     session.usage.lastUpdated = Date.now();
 
     // Per-goal token accounting (T3): credit the SAME aggregate deltas to the
-    // active goal so `goal` status can show each goal's real spend. Live
-    // accumulation (not a snapshot diff of `session.usage.total*`) because
-    // `session.usage` is in-memory and reset on compaction — diffing would
-    // lose every token spent before the last compaction.
-    const activeGoal = session.goal as
-      | {
-          status?: string;
-          tokensInput?: number;
-          tokensOutput?: number;
-          tokensCacheRead?: number;
-          tokensCacheCreate?: number;
-          costUsd?: number;
-        }
-      | undefined;
-    if (activeGoal && activeGoal.status === 'active') {
-      activeGoal.tokensInput = (activeGoal.tokensInput ?? 0) + usage.inputTokens;
-      activeGoal.tokensOutput = (activeGoal.tokensOutput ?? 0) + usage.outputTokens;
-      activeGoal.tokensCacheRead = (activeGoal.tokensCacheRead ?? 0) + usage.cacheReadInputTokens;
-      activeGoal.tokensCacheCreate = (activeGoal.tokensCacheCreate ?? 0) + usage.cacheCreationInputTokens;
-      activeGoal.costUsd = (activeGoal.costUsd ?? 0) + usage.totalCostUsd;
+    // goal that OWNS the current turn leg (captured at beginTurn as
+    // `activeLegGoalId`), resolved across active/queue/history so a `goal
+    // done`/advance mid-turn doesn't misattribute spend to the promoted goal.
+    // Live accumulation (not a snapshot diff of `session.usage.total*`) because
+    // `session.usage` is in-memory and reset on compaction — diffing would lose
+    // every token spent before the last compaction.
+    const legOwner = findGoalById(
+      session as unknown as GoalQueueSession,
+      session.activeLegGoalId as string | undefined,
+    );
+    const goalToCredit =
+      legOwner ?? ((session.goal as { status?: string } | undefined)?.status === 'active' ? session.goal : undefined);
+    if (goalToCredit) {
+      const g = goalToCredit as {
+        tokensInput?: number;
+        tokensOutput?: number;
+        tokensCacheRead?: number;
+        tokensCacheCreate?: number;
+        costUsd?: number;
+      };
+      g.tokensInput = (g.tokensInput ?? 0) + usage.inputTokens;
+      g.tokensOutput = (g.tokensOutput ?? 0) + usage.outputTokens;
+      g.tokensCacheRead = (g.tokensCacheRead ?? 0) + usage.cacheReadInputTokens;
+      g.tokensCacheCreate = (g.tokensCacheCreate ?? 0) + usage.cacheCreationInputTokens;
+      g.costUsd = (g.costUsd ?? 0) + usage.totalCostUsd;
     }
 
     const contextUsed =

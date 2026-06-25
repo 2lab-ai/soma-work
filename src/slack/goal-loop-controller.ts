@@ -271,7 +271,6 @@ export class GoalLoopController {
     // can short-circuit (S9). A `complete` verdict stops the loop, so clear it.
     activeGoal.lastEvalSummaryHash = outcome.action === 'complete' ? undefined : summaryHash;
     session.systemPrompt = undefined;
-    registry.saveSessions();
 
     if (outcome.action === 'complete') {
       // Pin the eval reason on the goal so `goal` status history can show why
@@ -279,6 +278,13 @@ export class GoalLoopController {
       activeGoal.completionReason = verdict.reason;
       // Multi-goal (T2): archive the finished goal and promote the next queued
       // goal. Shared `advanceGoalQueue` keeps this identical to user `goal done`.
+      //
+      // CRITICAL (codex blocking #1): persist ONLY after the advance, never
+      // between the status flip and the advance. Otherwise a crash there would
+      // leave disk in an inconsistent `status=complete` + non-empty `goalQueue`
+      // state and the queued goal would be stranded on restart (resumeActiveGoals
+      // only scans active goals). One durable write = a consistent state:
+      // either the next goal is active, or the goal is closed with an empty queue.
       const next = advanceGoalQueue(session);
       registry.saveSessions();
 
@@ -304,6 +310,12 @@ export class GoalLoopController {
       }
       return;
     }
+
+    // Non-complete (continue / cap): persist the loop-state mutations
+    // (`continuationCount`, `lastEvalReason`, `lastContinuationAt`) that
+    // `decideGoalEvalOutcome` applied. The complete branch above owns its own
+    // single post-advance save and returns before reaching here.
+    registry.saveSessions();
 
     const remaining = verdict.remaining.length
       ? verdict.remaining.map((r) => `• ${r}`).join('\n')
@@ -457,6 +469,11 @@ export class GoalLoopController {
    */
   private epochStillValid(live: SessionGoal | undefined, snapshot: GoalEpochSnapshot): boolean {
     if (!live) return false;
+    // Fail closed on a missing/empty goalId on either side — never let
+    // `undefined === undefined` pass the identity check (would defeat M1 for
+    // hand-built/legacy state). Production goals always carry a goalId
+    // (creation + migration backfill).
+    if (!live.goalId || !snapshot.goalId) return false;
     if (live.goalId !== snapshot.goalId) return false;
     return (live.epoch ?? 0) === snapshot.epoch;
   }

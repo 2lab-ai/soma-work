@@ -1068,3 +1068,45 @@ describe('invalidateSystemPromptForUser', () => {
     expect(s.systemPrompt).toBe('cached');
   });
 });
+
+describe('SessionRegistry per-goal time attribution (T3)', () => {
+  it('credits the leg-owner goal, not a goal promoted mid-turn (codex blocking #2)', () => {
+    const registry = new SessionRegistry();
+    const session = registry.createSession('U1', 'Tester', 'C_LEG', 't1');
+    session.goal = {
+      goalId: 'g1',
+      objective: 'first',
+      status: 'active',
+      createdAt: 1,
+      updatedAt: 1,
+      createdBy: 'U1',
+      continuationCount: 0,
+      maxContinuations: 10,
+    } as never;
+
+    // Leg starts while g1 is active → owner captured.
+    registry.beginTurn(session, 1000);
+    expect(session.activeLegGoalId).toBe('g1');
+
+    // Mid-turn the goal completes and the next queued goal is promoted.
+    (session.goal as { status: string }).status = 'complete';
+    session.goalHistory = [session.goal as never];
+    session.goal = {
+      goalId: 'g2',
+      objective: 'second',
+      status: 'active',
+      createdAt: 2,
+      updatedAt: 2,
+      createdBy: 'U1',
+      continuationCount: 0,
+      maxContinuations: 10,
+    } as never;
+
+    // Leg closes — the 5s must credit g1 (the owner), NOT the promoted g2.
+    registry.endTurn(session, 6000);
+
+    const g1 = session.goalHistory.find((g) => g.goalId === 'g1') as { activeMsUsed?: number };
+    expect(g1.activeMsUsed).toBe(5000);
+    expect((session.goal as { activeMsUsed?: number }).activeMsUsed ?? 0).toBe(0);
+  });
+});
