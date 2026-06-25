@@ -116,6 +116,37 @@ describe('resumeActiveGoals (T1)', () => {
     expect(settled).toHaveBeenCalledWith('C1-T1');
   });
 
+  it('does NOT advance past a paused current goal that has a queue (paused + queue is valid)', () => {
+    const paused = activeGoalSession();
+    (paused.goal as any).status = 'paused';
+    paused.goalQueue = [
+      {
+        goalId: 'g2',
+        objective: 'next objective',
+        status: 'queued',
+        createdAt: 1,
+        updatedAt: 1,
+        createdBy: 'U1',
+        continuationCount: 0,
+        maxContinuations: 10,
+      } as any,
+    ];
+    const sessions = new Map<string, ConversationSession>([['C1-T1', paused]]);
+    const { handler } = createHandler(sessions);
+    const settled = vi.fn();
+    handler.setGoalTurnSettledHandler(settled);
+
+    const resumed = handler.resumeActiveGoals();
+
+    // paused goal untouched, queue intact, nothing resumed
+    expect(paused.goal?.status).toBe('paused');
+    expect(paused.goal?.objective).toBe('finish the migration');
+    expect(paused.goalQueue).toHaveLength(1);
+    expect(paused.goalHistory ?? []).toHaveLength(0);
+    expect(resumed).toBe(0);
+    expect(settled).not.toHaveBeenCalled();
+  });
+
   it('does nothing (no throw) when no goal loop is wired', () => {
     const sessions = new Map<string, ConversationSession>([['C1-T1', activeGoalSession()]]);
     const { handler } = createHandler(sessions);

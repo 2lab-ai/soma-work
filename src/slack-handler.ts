@@ -1618,9 +1618,13 @@ export class SlackHandler {
     let repaired = 0;
     for (const [sessionKey, session] of this.claudeHandler.getAllSessions()) {
       // Repair a stranded queue (defense for the eval-complete crash window):
-      // if the current goal is NOT active (completed/cleared) but goals are
-      // still queued, promote the next one so the queue can't be orphaned.
-      if (session.goal?.status !== 'active' && (session.goalQueue?.length ?? 0) > 0) {
+      // if the current goal is genuinely closed (completed) or absent but goals
+      // are still queued, promote the next one so the queue can't be orphaned.
+      // A `paused` current goal with a queue is VALID T2 state — never advance
+      // past it (that would archive the paused goal and skip it).
+      const currentStatus = session.goal?.status;
+      const stranded = (!session.goal || currentStatus === 'complete') && (session.goalQueue?.length ?? 0) > 0;
+      if (stranded) {
         const promoted = advanceGoalQueue(session);
         if (promoted) {
           repaired++;
