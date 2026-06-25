@@ -77,6 +77,7 @@ describe('SessionRegistry persistence', () => {
     const writer = new SessionRegistry();
     const session = writer.createSession('U123', 'Tester', 'C_GOAL', '171.G1');
     session.goal = {
+      goalId: 'goal-test',
       objective: 'ship the goal command',
       status: 'active',
       createdAt: Date.now(),
@@ -107,6 +108,7 @@ describe('SessionRegistry persistence', () => {
     const writer = new SessionRegistry();
     const session = writer.createSession('U123', 'Tester', 'C_GOAL_PE', '171.G2');
     session.goal = {
+      goalId: 'goal-test',
       objective: 'finish the migration',
       status: 'active',
       createdAt: Date.now(),
@@ -478,6 +480,7 @@ describe('SessionRegistry persistence', () => {
     const session = registry.createSession('U123', 'Tester', 'C_GOAL_RESET', '171.GR1');
     session.sessionId = 'session-goal-reset';
     session.goal = {
+      goalId: 'goal-test',
       objective: 'old objective',
       status: 'active',
       createdAt: 1,
@@ -501,6 +504,7 @@ describe('SessionRegistry persistence', () => {
     const registry = new SessionRegistry();
     const session = registry.createSession('U123', 'Tester', 'C_GOAL_ONLY', '171.GO1');
     session.goal = {
+      goalId: 'goal-test',
       objective: 'pre-first-turn objective',
       status: 'active',
       createdAt: 1,
@@ -1062,5 +1066,47 @@ describe('invalidateSystemPromptForUser', () => {
     expect(registry.invalidateSystemPromptForUser('U-ghost')).toBe(0);
     expect(registry.invalidateSystemPromptForUser('')).toBe(0);
     expect(s.systemPrompt).toBe('cached');
+  });
+});
+
+describe('SessionRegistry per-goal time attribution (T3)', () => {
+  it('credits the leg-owner goal, not a goal promoted mid-turn (codex blocking #2)', () => {
+    const registry = new SessionRegistry();
+    const session = registry.createSession('U1', 'Tester', 'C_LEG', 't1');
+    session.goal = {
+      goalId: 'g1',
+      objective: 'first',
+      status: 'active',
+      createdAt: 1,
+      updatedAt: 1,
+      createdBy: 'U1',
+      continuationCount: 0,
+      maxContinuations: 10,
+    } as never;
+
+    // Leg starts while g1 is active → owner captured.
+    registry.beginTurn(session, 1000);
+    expect(session.activeLegGoalId).toBe('g1');
+
+    // Mid-turn the goal completes and the next queued goal is promoted.
+    (session.goal as { status: string }).status = 'complete';
+    session.goalHistory = [session.goal as never];
+    session.goal = {
+      goalId: 'g2',
+      objective: 'second',
+      status: 'active',
+      createdAt: 2,
+      updatedAt: 2,
+      createdBy: 'U1',
+      continuationCount: 0,
+      maxContinuations: 10,
+    } as never;
+
+    // Leg closes — the 5s must credit g1 (the owner), NOT the promoted g2.
+    registry.endTurn(session, 6000);
+
+    const g1 = session.goalHistory.find((g) => g.goalId === 'g1') as { activeMsUsed?: number };
+    expect(g1.activeMsUsed).toBe(5000);
+    expect((session.goal as { activeMsUsed?: number }).activeMsUsed ?? 0).toBe(0);
   });
 });

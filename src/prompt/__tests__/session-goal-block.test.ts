@@ -102,6 +102,7 @@ describe('session-goal-block / buildSessionGoalBlock', () => {
   }
 
   const baseGoal: SessionGoal = {
+    goalId: 'goal-test',
     objective: 'finish migration',
     status: 'active',
     createdAt: 1,
@@ -161,6 +162,7 @@ describe('session-goal-block / buildSessionGoalBlock', () => {
 
 describe('session-goal-block / buildGoalContinuationPrompt', () => {
   const goal: SessionGoal = {
+    goalId: 'goal-test',
     objective: 'finish migration',
     status: 'active',
     createdAt: 1,
