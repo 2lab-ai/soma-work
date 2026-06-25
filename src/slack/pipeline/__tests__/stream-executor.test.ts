@@ -5441,11 +5441,12 @@ describe('SET_GOAL host-apply (#1082)', () => {
     expect(session.goal).toMatchObject({ objective: 'finish the epic', status: 'active' });
   });
 
-  it('replaces an existing goal and bumps the intent epoch (stale eval guard)', async () => {
+  it('queues behind an in-flight goal instead of replacing it (multi-goal T2)', async () => {
     const deps = createExecutorDeps();
     const executor = new StreamExecutor(deps);
     const session = createSession();
     session.goal = {
+      goalId: 'goal-old',
       objective: 'old objective',
       status: 'active',
       createdAt: 1,
@@ -5457,25 +5458,25 @@ describe('SET_GOAL host-apply (#1082)', () => {
       pendingEval: { requestedAt: 1, turnId: 'T1' },
     };
     const context = makeContext({
-      currentUserText: 'goal 바꿔줘: new objective',
+      currentUserText: 'goal 추가해줘: new objective',
       isUserInputTurn: true,
     });
 
     await (executor as any).handleModelCommandToolResults(
-      [makeSetGoalToolResult('new objective', 'goal 바꿔줘: new objective')],
+      [makeSetGoalToolResult('new objective', 'goal 추가해줘: new objective')],
       session,
       context,
     );
 
-    expect(session.goal.objective).toBe('new objective');
+    // T2: a second goal request while one is active must NOT replace the
+    // running goal — it is appended to the queue. The running goal (incl. its
+    // in-flight eval lease + epoch) stays untouched.
+    expect(session.goal.objective).toBe('old objective');
     expect(session.goal.status).toBe('active');
-    expect(session.goal.continuationCount).toBe(0);
-    // M1 stale-eval guard: a replacement is a NEW intent — the epoch must
-    // advance past the old goal's epoch so in-flight evals for the old
-    // objective are discarded on arrival.
-    expect(session.goal.epoch).toBeGreaterThan(3);
-    // No stale eval state may survive the replacement.
-    expect(session.goal.pendingEval).toBeUndefined();
+    expect(session.goal.epoch).toBe(3);
+    expect(session.goal.pendingEval).toEqual({ requestedAt: 1, turnId: 'T1' });
+    expect(session.goalQueue).toHaveLength(1);
+    expect(session.goalQueue[0]).toMatchObject({ objective: 'new objective', status: 'queued' });
   });
 
   it('a refused SET_GOAL leaves a pre-existing goal completely untouched', async () => {

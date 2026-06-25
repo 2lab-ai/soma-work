@@ -958,6 +958,17 @@ async function start() {
         if (notified > 0) {
           timing(`Crash recovery notifications sent (${notified} sessions)`);
         }
+        // T1 — after the restart notices are posted, re-enter the goal loop
+        // for any session that still has an unfinished (active) goal so it is
+        // driven to completion across the restart. Runs after the goal loop
+        // controller is wired above and after crash-recovery's no-double-resume
+        // guard has skipped these sessions.
+        try {
+          const resumed = slackHandler.resumeActiveGoals();
+          if (resumed > 0) timing(`Resumed ${resumed} active goal(s) after restart`);
+        } catch (error) {
+          logger.warn('Resuming active goals after restart failed (non-critical)', error);
+        }
       })
       .catch((error) => {
         logger.warn('Crash recovery notifications failed (non-critical)', error);

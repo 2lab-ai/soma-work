@@ -19,10 +19,10 @@ import type { RequestAbortReason, RequestCoordinator } from '../request-coordina
 // uses for goal-prefixed first messages) — epoch bump + cache invalidation
 // semantics live in one place.
 import {
-  applyGoalToSession,
-  createActiveSessionGoal,
+  enqueueOrActivateGoal,
+  findGoalById,
   formatGoalObjectiveForSlack,
-  type SessionGoalState,
+  type GoalQueueSession,
 } from '../session-goal';
 import type { SlackApiHelper } from '../slack-api-helper';
 import type { StatusReporter } from '../status-reporter';
@@ -3557,6 +3557,34 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     session.usage.totalCostUsd += usage.totalCostUsd;
     session.usage.lastUpdated = Date.now();
 
+    // Per-goal token accounting (T3): credit the SAME aggregate deltas to the
+    // goal that OWNS the current turn leg (captured at beginTurn as
+    // `activeLegGoalId`), resolved across active/queue/history so a `goal
+    // done`/advance mid-turn doesn't misattribute spend to the promoted goal.
+    // Live accumulation (not a snapshot diff of `session.usage.total*`) because
+    // `session.usage` is in-memory and reset on compaction — diffing would lose
+    // every token spent before the last compaction.
+    const legOwner = findGoalById(
+      session as unknown as GoalQueueSession,
+      session.activeLegGoalId as string | undefined,
+    );
+    const goalToCredit =
+      legOwner ?? ((session.goal as { status?: string } | undefined)?.status === 'active' ? session.goal : undefined);
+    if (goalToCredit) {
+      const g = goalToCredit as {
+        tokensInput?: number;
+        tokensOutput?: number;
+        tokensCacheRead?: number;
+        tokensCacheCreate?: number;
+        costUsd?: number;
+      };
+      g.tokensInput = (g.tokensInput ?? 0) + usage.inputTokens;
+      g.tokensOutput = (g.tokensOutput ?? 0) + usage.outputTokens;
+      g.tokensCacheRead = (g.tokensCacheRead ?? 0) + usage.cacheReadInputTokens;
+      g.tokensCacheCreate = (g.tokensCacheCreate ?? 0) + usage.cacheCreationInputTokens;
+      g.costUsd = (g.costUsd ?? 0) + usage.totalCostUsd;
+    }
+
     const contextUsed =
       session.usage.currentInputTokens +
       session.usage.currentCacheReadTokens +
@@ -3822,29 +3850,30 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         // `ownerId` is the canonical session-owner field (`userId` is the
         // legacy pre-migration alias) — mirrors what T1's slack-handler path
         // records as `createdBy`.
-        const goal = createActiveSessionGoal(
+        //
+        // Centralized activate-vs-queue (T2): if a goal is already in flight
+        // the model-set goal is APPENDED to the queue rather than replacing
+        // the running goal. Cast: the package-tree ConversationSession is
+        // structurally loose (`[key: string]: any`), which fails TS's
+        // weak-type check against the helper's all-optional param — the
+        // registry session DOES carry these fields (see `SessionGoalState`
+        // mirror note in session-goal.ts).
+        const applied = enqueueOrActivateGoal(
+          session as unknown as GoalQueueSession,
           objective,
           (session.ownerId as string) || (session.userId as string),
-          session.goal,
-        );
-        // Installs the goal and invalidates the cached systemPrompt +
-        // goalLastTurnText so the next turn carries the <session-goal> block.
-        // Cast: the package-tree ConversationSession is structurally loose
-        // (`[key: string]: any`), which fails TS's weak-type check against
-        // the helper's all-optional param — the registry session DOES carry
-        // these fields (see `SessionGoalState` mirror note in session-goal.ts).
-        applyGoalToSession(
-          session as { goal?: SessionGoalState; systemPrompt?: string; goalLastTurnText?: string },
-          goal,
         );
         this.deps.claudeHandler.saveSessions();
         this.logger.info('Applied SET_GOAL from model-command on host', {
           sessionKey: context.sessionKey,
-          epoch: goal.epoch,
+          epoch: applied.goal.epoch,
+          activated: applied.activated,
           objectivePreview: objective.slice(0, 120),
         });
         await context.say({
-          text: `🎯 Goal set by model (user-requested): ${formatGoalObjectiveForSlack(objective)}\n> "${evidence}"`,
+          text: applied.activated
+            ? `🎯 Goal set by model (user-requested): ${formatGoalObjectiveForSlack(objective)}\n> "${evidence}"`
+            : `📋 Goal queued by model at position ${applied.position}: ${formatGoalObjectiveForSlack(objective)}\n> "${evidence}"`,
           thread_ts: context.threadTs,
         });
         continue;
