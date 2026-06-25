@@ -51,7 +51,7 @@ import {
 } from './slack/handoff-budget';
 import { buildCompactHooks } from './slack/hooks/compact-hooks';
 import { InputProcessor, type MessageEvent, SessionInitializer, StreamExecutor } from './slack/pipeline';
-import { applyGoalToSession, createActiveSessionGoal, formatGoalObjectiveForSlack } from './slack/session-goal';
+import { enqueueOrActivateGoal, formatGoalObjectiveForSlack } from './slack/session-goal';
 import { SummaryService } from './slack/summary-service';
 import { SummaryTimer } from './slack/summary-timer';
 import { normalizeZInvocation, stripZPrefix } from './slack/z/normalize';
@@ -59,7 +59,7 @@ import { DmZRespond } from './slack/z/respond';
 import { isDmAllowedForNonAdmin } from './slack/z/whitelist';
 import { TodoManager } from './todo-manager';
 import { TurnNotifier } from './turn-notifier';
-import type { ConversationSession } from './types';
+import type { ConversationSession, SessionGoal } from './types';
 import { userSettingsStore } from './user-settings-store';
 import { WorkingDirectoryManager } from './working-directory-manager';
 
@@ -597,16 +597,26 @@ export class SlackHandler {
       if (setGoalObjective) {
         const fullSession = this.claudeHandler.getSessionByKey?.(sessionResult.sessionKey);
         if (fullSession) {
-          const goal = createActiveSessionGoal(setGoalObjective, event.user, fullSession.goal);
-          applyGoalToSession(fullSession, goal);
+          // Centralized activate-vs-queue (T2). At a goal-prefixed FIRST
+          // message the session is brand-new so this activates; if a goal is
+          // somehow already in flight it queues behind it instead of replacing.
+          const applied = enqueueOrActivateGoal(fullSession, setGoalObjective, event.user);
           this.claudeHandler.saveSessions();
-          await this.slackApi.postSystemMessage(
-            activeChannel,
-            `🎯 Goal set: ${formatGoalObjectiveForSlack(setGoalObjective)}\n_Continuing with goal context._`,
-            { threadTs: activeThreadTs },
-          );
-          if (!continueWithPrompt) {
-            dispatchText = buildGoalContinuationPrompt(goal);
+          if (applied.activated) {
+            await this.slackApi.postSystemMessage(
+              activeChannel,
+              `🎯 Goal set: ${formatGoalObjectiveForSlack(setGoalObjective)}\n_Continuing with goal context._`,
+              { threadTs: activeThreadTs },
+            );
+            if (!continueWithPrompt) {
+              dispatchText = buildGoalContinuationPrompt(applied.goal as SessionGoal);
+            }
+          } else {
+            await this.slackApi.postSystemMessage(
+              activeChannel,
+              `📋 Goal queued at position ${applied.position}: ${formatGoalObjectiveForSlack(setGoalObjective)}\n_It will start automatically when the current goal completes._`,
+              { threadTs: activeThreadTs },
+            );
           }
         } else {
           // Registry lookup miss (mock-only in tests, but a real miss would
@@ -1499,6 +1509,22 @@ export class SlackHandler {
         continue;
       }
 
+      // T1 no-double-resume: a session with an ACTIVE goal is resumed by the
+      // goal loop (`resumeActiveGoals`), which re-enters the ralph loop with
+      // the goal continuation prompt. Skipping the generic auto-resume here
+      // avoids firing two competing turns into the same thread.
+      const liveGoalForRecovery = this.claudeHandler.getSessionByKey?.(session.sessionKey)?.goal;
+      if (liveGoalForRecovery?.status === 'active') {
+        this.logger.info('Skipping generic auto-resume — active goal will be resumed by the goal loop', {
+          channelId: session.channelId,
+          threadTs: session.threadTs,
+        });
+        if (i < recovered.length - 1) {
+          await new Promise((resolve) => setTimeout(resolve, SlackHandler.CRASH_RECOVERY_DELAY_MS));
+        }
+        continue;
+      }
+
       // Auto-resume sessions that were actively working (model mid-execution)
       // IMPORTANT: Fire-and-forget — do NOT await handleMessage.
       // handleMessage triggers Claude SDK streaming which takes minutes.
@@ -1555,6 +1581,65 @@ export class SlackHandler {
       `Sent crash recovery notifications to ${notified}/${recovered.length} sessions, auto-resumed ${autoResumed}`,
     );
     return notified;
+  }
+
+  /**
+   * T1 — resume unfinished goals after a service restart.
+   *
+   * When the process restarts mid-goal the goal IS persisted and reloaded,
+   * but nothing re-enters the auto-continuation ("ralph") loop — so the goal
+   * silently stalls. This scans ALL live sessions (not just the
+   * crash-recovered set: a goal session that was idle between continuations at
+   * shutdown is not flagged as crash-recovered) and, for every session whose
+   * `goal.status === 'active'`, re-triggers the goal loop so the goal is
+   * driven to completion.
+   *
+   * The trigger is `goalTurnSettledHandler` — the same idle-settle entry the
+   * normal loop uses. The controller runs the completion eval first (against
+   * the persisted `goal.lastAssistantTurnSummary` evidence), then either
+   * completes, advances the queue, or injects the next continuation. All of
+   * its guards (epoch, cap, never-supersede, per-session serialization) apply,
+   * so a redundant trigger is safe.
+   *
+   * A persisted `activityState` of `working`/`waiting` is stale after a
+   * restart (no turn is actually running) and would block the idle-driver
+   * gate, so it is forced to `idle` first. Must be called AFTER the goal loop
+   * controller is wired (`setGoalTurnSettledHandler`). Returns the count
+   * resumed.
+   */
+  resumeActiveGoals(): number {
+    const handler = this.goalTurnSettledHandler;
+    if (!handler) {
+      this.logger.warn('resumeActiveGoals called before goal loop was wired — skipping');
+      return 0;
+    }
+    let resumed = 0;
+    let forcedIdle = 0;
+    for (const [sessionKey, session] of this.claudeHandler.getAllSessions()) {
+      if (session.goal?.status !== 'active') continue;
+      if (session.activityState !== 'idle') {
+        // Recovery: treat a stale persisted working/waiting state as idle.
+        session.activityState = 'idle';
+        forcedIdle++;
+      }
+      this.logger.info('Resuming active goal after restart', {
+        sessionKey,
+        objectivePreview: session.goal.objective.slice(0, 120),
+        queued: session.goalQueue?.length ?? 0,
+      });
+      try {
+        handler(sessionKey);
+        resumed++;
+      } catch (error) {
+        this.logger.error('Failed to resume active goal after restart', {
+          sessionKey,
+          error: (error as Error).message,
+        });
+      }
+    }
+    if (forcedIdle > 0) this.claudeHandler.saveSessions();
+    if (resumed > 0) this.logger.info(`Resumed ${resumed} active goal(s) after restart`);
+    return resumed;
   }
 
   /**

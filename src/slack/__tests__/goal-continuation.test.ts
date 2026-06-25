@@ -14,6 +14,7 @@ import { GOAL_CONTINUATION_TEXT_PREFIX, resetGoalContinuationOnUserMessage } fro
 function makeGoal(overrides: Partial<SessionGoal> = {}): SessionGoal {
   const now = Date.now();
   return {
+    goalId: 'goal-test',
     objective: 'ship the feature',
     status: 'active',
     createdAt: now,

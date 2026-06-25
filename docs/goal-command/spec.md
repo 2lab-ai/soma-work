@@ -155,9 +155,27 @@ The Fidelity and Completion-audit sections are carried verbatim from codex. The 
 
 **Invariant:** the work model can only request completion. The eval model (or the user) decides.
 
+## Multi-Goal Queue (T2)
+
+A session holds **one active goal plus a FIFO queue** of pending goals and a capped history of completed ones (`session.goal`, `session.goalQueue`, `session.goalHistory`).
+
+- Setting a goal while one is already **active or paused** does NOT replace it — the new objective is appended to `goalQueue` with `status='queued'` (never injected into the prompt, never drives the loop). This is enforced at the single chokepoint `enqueueOrActivateGoal`, shared by typed `goal <text>`, the `SET_GOAL` model-command, and the goal-prefixed first message, so the activate-vs-queue decision can't drift between surfaces.
+- When the active goal **completes** (user `goal done` OR the eval-model `complete` verdict), `advanceGoalQueue` archives it to `goalHistory` (cap `MAX_GOAL_HISTORY`) and promotes the head of the queue to `session.goal` with a fresh active run (`continuationCount=0`, epoch rebased strictly past the finished goal, all per-eval scratch cleared). The promoted goal re-enters the ralph loop via the same continuation injection. Both completion paths share `advanceGoalQueue` so the semantics are identical.
+- `goal clear` is the full escape hatch: it drops the current goal **and** the entire queue + history.
+
+Each goal carries a stable `goalId`; the completion-eval snapshot guard (M1) keys on `goalId` (not `createdAt`) so a verdict can never apply against a different goal that shares a `createdAt` — including a queue-promoted goal created in the same millisecond.
+
+## Per-Goal Accounting (T3)
+
+Each goal live-accumulates its own spend while it is the active goal: `activeMsUsed` (folded by the turn timer — `beginTurn`/`endTurn`/load-time orphan sweep) and `tokensInput/Output/CacheRead/CacheCreate` + `costUsd` (the same aggregate deltas added to `session.usage.total*`, credited in `updateSessionUsage`). Live accumulation is used rather than a snapshot-diff of `session.usage` because `session.usage` is in-memory and reset on compaction. Bare `goal` renders the current goal, the queue, and the completed history, each with its time/token spend and completion result.
+
+## Restart Resume (T1)
+
+The goal, queue, and history are persisted, so they survive a process restart. On startup, after crash-recovery notices are posted, `SlackHandler.resumeActiveGoals()` scans **all** loaded sessions (not only the crash-recovered set — a goal session that was idle between continuations at shutdown is not flagged as crash-recovered) and, for every session whose `goal.status==='active'`, forces a stale `activityState` to `idle` and re-triggers the goal loop (`goalTurnSettledHandler`). The completion eval runs first against the persisted `lastAssistantTurnSummary`, then completes / advances / continues. Crash-recovery's generic auto-resume **skips** active-goal sessions so the goal loop is the sole resumer (no double turn).
+
 ## Persistence
 
-`SessionRegistry.saveSessions()` must persist sessions that have either a `sessionId`, a `handoffContext`, or a `goal`. This preserves a goal set before the first model turn.
+`SessionRegistry.saveSessions()` must persist sessions that have a `sessionId`, a `handoffContext`, a `goal`, a non-empty `goalQueue`, or a non-empty `goalHistory`. This preserves a goal set before the first model turn and the multi-goal queue/history across restarts. `migrateLegacyGoal` backfills `goalId` for goals persisted before the field existed.
 
 `resetSessionContext()` clears the goal because `/new` and `/renew` create a fresh logical conversation in the same Slack thread.
 
@@ -171,5 +189,5 @@ The `/z` help card can expose a read-only `goal` topic card that documents the c
 
 ## Non-Goals
 
-- No token-budget accounting in this Slack implementation. Claude SDK session state does not expose Codex's local thread goal accounting hooks; the ralph loop is bounded by `maxContinuations` instead.
+- No token-**budget** enforcement: per-goal time/token spend is tracked and displayed (T3), but it does not bound the loop — the ralph loop is bounded by `maxContinuations`, not by a token budget.
 - No Slack Block Kit buttons for setting or completing goals in this change.

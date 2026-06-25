@@ -51,6 +51,18 @@ import { DEFAULT_GOAL_MAX_CONTINUATIONS, type SessionGoal } from './types';
  * (every turn end short-circuits on `if (goal.pendingEval) return`).
  * Dropping it on load lets the loop resume on the next turn.
  */
+/**
+ * Credit `elapsedMs` of active turn time to the session's active goal (T3).
+ * Mirrors how `activeAccumulatedMs` is folded by the turn timer, so a goal's
+ * `activeMsUsed` tracks the same wall-clock legs (begin-fold, end, and the
+ * load-time orphan sweep) — only while THIS goal is `active`.
+ */
+function creditActiveGoalMs(session: ConversationSession, elapsedMs: number): void {
+  const goal = session.goal;
+  if (!goal || goal.status !== 'active' || elapsedMs <= 0) return;
+  goal.activeMsUsed = (goal.activeMsUsed ?? 0) + elapsedMs;
+}
+
 function migrateLegacyGoal(goal: SessionGoal | undefined): SessionGoal | undefined {
   if (!goal) return goal;
   // Stale lease cleanup — see doc comment. Rebind so both the fast path
@@ -61,6 +73,11 @@ function migrateLegacyGoal(goal: SessionGoal | undefined): SessionGoal | undefin
   // Coerce the retired `'blocked'` status arm (N11) to `'paused'`.
   if ((goal.status as string) === 'blocked') {
     goal = { ...goal, status: 'paused' };
+  }
+  // Backfill the stable `goalId` (added with the multi-goal queue) for goals
+  // persisted before the field existed — the eval snapshot guard keys on it.
+  if (typeof goal.goalId !== 'string' || goal.goalId.length === 0) {
+    goal = { ...goal, goalId: `goal-legacy-${goal.createdAt}-${Math.random().toString(36).slice(2, 8)}` };
   }
   // Fast path — goal already has all post-followup fields.
   if (
@@ -80,6 +97,12 @@ function migrateLegacyGoal(goal: SessionGoal | undefined): SessionGoal | undefin
         : DEFAULT_GOAL_MAX_CONTINUATIONS,
     evalAttemptCount: typeof goal.evalAttemptCount === 'number' ? goal.evalAttemptCount : 0,
   };
+}
+
+/** Migrate a persisted goal array (queue / history), dropping nullish entries. */
+function migrateLegacyGoalArray(arr: SessionGoal[] | undefined): SessionGoal[] | undefined {
+  if (!Array.isArray(arr) || arr.length === 0) return arr === undefined ? undefined : [];
+  return arr.map((g) => migrateLegacyGoal(g)).filter((g): g is SessionGoal => !!g);
 }
 
 import { coerceToAvailableModel, type EffortLevel, userSettingsStore } from './user-settings-store';
@@ -187,6 +210,9 @@ interface SerializedSession {
   instructions?: SessionInstruction[];
   // Host-managed session goal (persisted)
   goal?: SessionGoal;
+  // Multi-goal queue + completed history (persisted — T1/T2).
+  goalQueue?: SessionGoal[];
+  goalHistory?: SessionGoal[];
   /**
    * Cached summary of completed instructions. Persisted so that
    * restart after a long session doesn't force a fresh summary re-build
@@ -435,6 +461,7 @@ export class SessionRegistry {
     if (session.activeLegStartedAtMs) {
       const elapsed = Math.min(now - session.activeLegStartedAtMs, MAX_LEG_MS);
       session.activeAccumulatedMs = (session.activeAccumulatedMs || 0) + Math.max(0, elapsed);
+      creditActiveGoalMs(session, Math.max(0, elapsed));
     }
     session.activeLegStartedAtMs = now;
   }
@@ -443,6 +470,7 @@ export class SessionRegistry {
     if (session.activeLegStartedAtMs) {
       const elapsed = Math.min(now - session.activeLegStartedAtMs, MAX_LEG_MS);
       session.activeAccumulatedMs = (session.activeAccumulatedMs || 0) + Math.max(0, elapsed);
+      creditActiveGoalMs(session, Math.max(0, elapsed));
     }
     session.activeLegStartedAtMs = undefined;
   }
@@ -1769,7 +1797,13 @@ export class SessionRegistry {
         // sessionId) and the first model turn after a forced handoff entrypoint,
         // where the typed metadata must survive a crash/restart so downstream
         // guards (#696/#697/#698) can consume it.
-        if (session.sessionId || session.handoffContext || session.goal) {
+        if (
+          session.sessionId ||
+          session.handoffContext ||
+          session.goal ||
+          session.goalQueue?.length ||
+          session.goalHistory?.length
+        ) {
           this.ensureSessionLinkState(session);
           sessionsArray.push({
             key,
@@ -1823,6 +1857,10 @@ export class SessionRegistry {
             instructions: session.instructions,
             // Host-managed session goal (persisted)
             goal: session.goal,
+            // Multi-goal queue + completed history (persisted so the queue
+            // survives a restart — T1/T2).
+            goalQueue: session.goalQueue,
+            goalHistory: session.goalHistory,
             // Cached completed-summary (persisted so the next turn after restart
             // doesn't pay a cold summary rebuild). Safe to omit — the block
             // builder falls back to a placeholder and the async regen kicks in.
@@ -1885,6 +1923,8 @@ export class SessionRegistry {
         mergeStats: serialized.mergeStats,
         instructions: serialized.instructions,
         goal: migrateLegacyGoal(serialized.goal),
+        goalQueue: migrateLegacyGoalArray(serialized.goalQueue),
+        goalHistory: migrateLegacyGoalArray(serialized.goalHistory),
         activityState: serialized.activityState || 'idle',
         // Preserve handoff metadata for diagnostic parity when archiving.
         handoffContext: serialized.handoffContext,
@@ -2028,6 +2068,9 @@ export class SessionRegistry {
           // Host-managed session goal (restored from disk).
           // Migrate legacy goals so ralph-loop guards see the new fields.
           goal: migrateLegacyGoal(serialized.goal),
+          // Multi-goal queue + completed history (restored — T1/T2).
+          goalQueue: migrateLegacyGoalArray(serialized.goalQueue),
+          goalHistory: migrateLegacyGoalArray(serialized.goalHistory),
           // Cached completed-summary (may be stale — block builder validates via hash).
           instructionsCompletedSummary: serialized.instructionsCompletedSummary,
           // Dashboard v2.1 — restore aggregate snapshot
@@ -2068,6 +2111,7 @@ export class SessionRegistry {
         if (session.activeLegStartedAtMs) {
           const elapsed = Math.min(Date.now() - session.activeLegStartedAtMs, MAX_LEG_MS);
           session.activeAccumulatedMs = (session.activeAccumulatedMs || 0) + Math.max(0, elapsed);
+          creditActiveGoalMs(session, Math.max(0, elapsed));
           session.activeLegStartedAtMs = undefined;
         }
         this.ensureSessionLinkState(session);

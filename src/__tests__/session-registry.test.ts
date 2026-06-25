@@ -77,6 +77,7 @@ describe('SessionRegistry persistence', () => {
     const writer = new SessionRegistry();
     const session = writer.createSession('U123', 'Tester', 'C_GOAL', '171.G1');
     session.goal = {
+      goalId: 'goal-test',
       objective: 'ship the goal command',
       status: 'active',
       createdAt: Date.now(),
@@ -107,6 +108,7 @@ describe('SessionRegistry persistence', () => {
     const writer = new SessionRegistry();
     const session = writer.createSession('U123', 'Tester', 'C_GOAL_PE', '171.G2');
     session.goal = {
+      goalId: 'goal-test',
       objective: 'finish the migration',
       status: 'active',
       createdAt: Date.now(),
@@ -478,6 +480,7 @@ describe('SessionRegistry persistence', () => {
     const session = registry.createSession('U123', 'Tester', 'C_GOAL_RESET', '171.GR1');
     session.sessionId = 'session-goal-reset';
     session.goal = {
+      goalId: 'goal-test',
       objective: 'old objective',
       status: 'active',
       createdAt: 1,
@@ -501,6 +504,7 @@ describe('SessionRegistry persistence', () => {
     const registry = new SessionRegistry();
     const session = registry.createSession('U123', 'Tester', 'C_GOAL_ONLY', '171.GO1');
     session.goal = {
+      goalId: 'goal-test',
       objective: 'pre-first-turn objective',
       status: 'active',
       createdAt: 1,

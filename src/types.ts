@@ -142,7 +142,15 @@ export interface ActionPanelState {
   summaryBlocks?: any[];
 }
 
-export type SessionGoalStatus = 'active' | 'paused' | 'complete';
+/**
+ * `queued` is a goal that has been added to `ConversationSession.goalQueue`
+ * but is NOT yet the active goal — it waits behind the current goal and is
+ * promoted to `active` by `advanceGoalQueue` when the current goal completes.
+ * It is never assigned to `session.goal` directly; every `status !== 'active'`
+ * guard (idle-driver gate, `<session-goal>` block injection) already excludes
+ * it, so queued goals never drive the loop or leak into the prompt.
+ */
+export type SessionGoalStatus = 'active' | 'paused' | 'complete' | 'queued';
 
 /**
  * Default cap for `maxContinuations`. Each user-driven turn resets
@@ -152,6 +160,13 @@ export type SessionGoalStatus = 'active' | 'paused' | 'complete';
  * §Auto-Continuation Loop.
  */
 export const DEFAULT_GOAL_MAX_CONTINUATIONS = 10;
+
+/**
+ * Cap on `ConversationSession.goalHistory` length. Oldest entries are
+ * dropped first so an unbounded sequence of completed goals can't grow the
+ * persisted session record or overflow the Slack `goal` status output.
+ */
+export const MAX_GOAL_HISTORY = 20;
 
 export type GoalCompletedVia = 'user' | 'eval-model';
 
@@ -167,6 +182,15 @@ export interface SessionGoalPendingEval {
 }
 
 export interface SessionGoal {
+  /**
+   * Stable identity for this goal, independent of `createdAt` (which can
+   * collide in same-ms test/advance paths). The completion-eval snapshot
+   * guard (M1) keys on `goalId` so a verdict can never apply against a
+   * different goal that happens to share a `createdAt`. Assigned once at
+   * creation and preserved across queue promotion. See
+   * `GoalLoopController` and `createActiveSessionGoal`.
+   */
+  goalId: string;
   objective: string;
   status: SessionGoalStatus;
   createdAt: number;
@@ -177,6 +201,25 @@ export interface SessionGoal {
   completedBy?: string;
   /** Audit trail — which path closed this goal. */
   completedVia?: GoalCompletedVia;
+  /**
+   * Human-readable close-out reason shown in `goal` status history. For
+   * eval-driven completion this is the eval verdict `reason`; for
+   * user-driven completion (`goal done`) it is the literal `user`.
+   */
+  completionReason?: string;
+
+  // ── Per-goal accounting (live-accumulated; survives compaction) ────────
+  // Credited while THIS goal is the active goal: ms from the turn timer
+  // (begin/end/orphan-sweep) and the same aggregate token deltas added to
+  // `session.usage.total*`. `session.usage` is in-memory and reset on
+  // compaction, so we accumulate per-goal at the source rather than diffing.
+  /** Wall-clock active turn time attributed to this goal (ms). */
+  activeMsUsed?: number;
+  tokensInput?: number;
+  tokensOutput?: number;
+  tokensCacheRead?: number;
+  tokensCacheCreate?: number;
+  costUsd?: number;
 
   // ── Ralph loop (auto-continuation) control ─────────────────────────────
   /** How many synthetic continuation turns have fired since the last user message. */
@@ -463,6 +506,23 @@ export interface ConversationSession {
   // Active goals are injected into the system prompt; paused/complete goals
   // remain visible through the `goal` command but do not steer the model.
   goal?: SessionGoal;
+
+  /**
+   * Pending goals waiting behind the active `goal` (FIFO). Typing
+   * `goal <text>` while a goal is already active/paused APPENDS here instead
+   * of replacing the current goal; `advanceGoalQueue` promotes the head to
+   * `session.goal` (status → `active`) when the current goal completes. Each
+   * entry has `status: 'queued'`. Persisted so the queue survives a restart.
+   */
+  goalQueue?: SessionGoal[];
+
+  /**
+   * Completed (and cleared-on-advance) goals, newest last, capped at
+   * {@link MAX_GOAL_HISTORY}. Surfaced by the `goal` status command so each
+   * finished goal's time / token spend / completion reason stays visible.
+   * Persisted.
+   */
+  goalHistory?: SessionGoal[];
 
   /**
    * Runtime-only: the assistant text of the most recently completed turn,
