@@ -13,6 +13,7 @@ import { getMetricsEmitter } from './metrics/event-emitter';
 import { normalizeTmpPath } from './path-utils';
 import { getArchiveStore } from './session-archive';
 import { DEFAULT_AUTO_HANDOFF_BUDGET } from './slack/handoff-budget';
+import { findGoalById } from './slack/session-goal';
 import type {
   ActionPanelState,
   ActivityState,
@@ -51,6 +52,24 @@ import { DEFAULT_GOAL_MAX_CONTINUATIONS, type SessionGoal } from './types';
  * (every turn end short-circuits on `if (goal.pendingEval) return`).
  * Dropping it on load lets the loop resume on the next turn.
  */
+/**
+ * Credit `elapsedMs` of active turn time to the session's active goal (T3).
+ * Mirrors how `activeAccumulatedMs` is folded by the turn timer, so a goal's
+ * `activeMsUsed` tracks the same wall-clock legs (begin-fold, end, and the
+ * load-time orphan sweep) — only while THIS goal is `active`.
+ */
+function creditActiveGoalMs(session: ConversationSession, elapsedMs: number): void {
+  if (elapsedMs <= 0) return;
+  // Credit the goal that OWNED the leg (captured at beginTurn), resolved across
+  // active/queue/history so a `goal done`/advance mid-leg still credits the
+  // right goal. Fall back to the live active goal when no owner was recorded
+  // (e.g. the load-time orphan sweep before any beginTurn ran this process).
+  const goal =
+    findGoalById(session, session.activeLegGoalId) ?? (session.goal?.status === 'active' ? session.goal : undefined);
+  if (!goal) return;
+  goal.activeMsUsed = (goal.activeMsUsed ?? 0) + elapsedMs;
+}
+
 function migrateLegacyGoal(goal: SessionGoal | undefined): SessionGoal | undefined {
   if (!goal) return goal;
   // Stale lease cleanup — see doc comment. Rebind so both the fast path
@@ -61,6 +80,11 @@ function migrateLegacyGoal(goal: SessionGoal | undefined): SessionGoal | undefin
   // Coerce the retired `'blocked'` status arm (N11) to `'paused'`.
   if ((goal.status as string) === 'blocked') {
     goal = { ...goal, status: 'paused' };
+  }
+  // Backfill the stable `goalId` (added with the multi-goal queue) for goals
+  // persisted before the field existed — the eval snapshot guard keys on it.
+  if (typeof goal.goalId !== 'string' || goal.goalId.length === 0) {
+    goal = { ...goal, goalId: `goal-legacy-${goal.createdAt}-${Math.random().toString(36).slice(2, 8)}` };
   }
   // Fast path — goal already has all post-followup fields.
   if (
@@ -80,6 +104,12 @@ function migrateLegacyGoal(goal: SessionGoal | undefined): SessionGoal | undefin
         : DEFAULT_GOAL_MAX_CONTINUATIONS,
     evalAttemptCount: typeof goal.evalAttemptCount === 'number' ? goal.evalAttemptCount : 0,
   };
+}
+
+/** Migrate a persisted goal array (queue / history), dropping nullish entries. */
+function migrateLegacyGoalArray(arr: SessionGoal[] | undefined): SessionGoal[] | undefined {
+  if (!Array.isArray(arr) || arr.length === 0) return arr === undefined ? undefined : [];
+  return arr.map((g) => migrateLegacyGoal(g)).filter((g): g is SessionGoal => !!g);
 }
 
 import { coerceToAvailableModel, type EffortLevel, userSettingsStore } from './user-settings-store';
@@ -187,6 +217,9 @@ interface SerializedSession {
   instructions?: SessionInstruction[];
   // Host-managed session goal (persisted)
   goal?: SessionGoal;
+  // Multi-goal queue + completed history (persisted — T1/T2).
+  goalQueue?: SessionGoal[];
+  goalHistory?: SessionGoal[];
   /**
    * Cached summary of completed instructions. Persisted so that
    * restart after a long session doesn't force a fresh summary re-build
@@ -197,6 +230,7 @@ interface SerializedSession {
   // Dashboard v2.1 — thread-aggregate snapshot fields (live aggregate derived from memory).
   compactionCount?: number;
   activeLegStartedAtMs?: number;
+  activeLegGoalId?: string;
   activeAccumulatedMs?: number;
   summaryTitle?: string;
   summaryTitleTurnId?: string;
@@ -432,17 +466,24 @@ export class SessionRegistry {
    */
   beginTurn(session: ConversationSession, now: number = Date.now()): void {
     // Fold any stale leg first (MAX_LEG_MS cap covers crash / missed endTurn).
+    // Credit the PREVIOUS leg to its recorded owner (`activeLegGoalId` still
+    // holds the prior leg's owner here) BEFORE re-stamping the owner below.
     if (session.activeLegStartedAtMs) {
       const elapsed = Math.min(now - session.activeLegStartedAtMs, MAX_LEG_MS);
       session.activeAccumulatedMs = (session.activeAccumulatedMs || 0) + Math.max(0, elapsed);
+      creditActiveGoalMs(session, Math.max(0, elapsed));
     }
     session.activeLegStartedAtMs = now;
+    // Capture the goal that owns THIS leg so a `goal done`/advance mid-turn
+    // doesn't misattribute the leg's spend to the promoted goal.
+    session.activeLegGoalId = session.goal?.status === 'active' ? session.goal.goalId : undefined;
   }
 
   endTurn(session: ConversationSession, now: number = Date.now()): void {
     if (session.activeLegStartedAtMs) {
       const elapsed = Math.min(now - session.activeLegStartedAtMs, MAX_LEG_MS);
       session.activeAccumulatedMs = (session.activeAccumulatedMs || 0) + Math.max(0, elapsed);
+      creditActiveGoalMs(session, Math.max(0, elapsed));
     }
     session.activeLegStartedAtMs = undefined;
   }
@@ -1769,7 +1810,13 @@ export class SessionRegistry {
         // sessionId) and the first model turn after a forced handoff entrypoint,
         // where the typed metadata must survive a crash/restart so downstream
         // guards (#696/#697/#698) can consume it.
-        if (session.sessionId || session.handoffContext || session.goal) {
+        if (
+          session.sessionId ||
+          session.handoffContext ||
+          session.goal ||
+          session.goalQueue?.length ||
+          session.goalHistory?.length
+        ) {
           this.ensureSessionLinkState(session);
           sessionsArray.push({
             key,
@@ -1823,6 +1870,10 @@ export class SessionRegistry {
             instructions: session.instructions,
             // Host-managed session goal (persisted)
             goal: session.goal,
+            // Multi-goal queue + completed history (persisted so the queue
+            // survives a restart — T1/T2).
+            goalQueue: session.goalQueue,
+            goalHistory: session.goalHistory,
             // Cached completed-summary (persisted so the next turn after restart
             // doesn't pay a cold summary rebuild). Safe to omit — the block
             // builder falls back to a placeholder and the async regen kicks in.
@@ -1830,6 +1881,7 @@ export class SessionRegistry {
             // Dashboard v2.1 — derive-first aggregate snapshot (persisted per session)
             compactionCount: session.compactionCount,
             activeLegStartedAtMs: session.activeLegStartedAtMs,
+            activeLegGoalId: session.activeLegGoalId,
             activeAccumulatedMs: session.activeAccumulatedMs,
             summaryTitle: session.summaryTitle,
             summaryTitleTurnId: session.summaryTitleTurnId,
@@ -1885,6 +1937,8 @@ export class SessionRegistry {
         mergeStats: serialized.mergeStats,
         instructions: serialized.instructions,
         goal: migrateLegacyGoal(serialized.goal),
+        goalQueue: migrateLegacyGoalArray(serialized.goalQueue),
+        goalHistory: migrateLegacyGoalArray(serialized.goalHistory),
         activityState: serialized.activityState || 'idle',
         // Preserve handoff metadata for diagnostic parity when archiving.
         handoffContext: serialized.handoffContext,
@@ -2028,11 +2082,15 @@ export class SessionRegistry {
           // Host-managed session goal (restored from disk).
           // Migrate legacy goals so ralph-loop guards see the new fields.
           goal: migrateLegacyGoal(serialized.goal),
+          // Multi-goal queue + completed history (restored — T1/T2).
+          goalQueue: migrateLegacyGoalArray(serialized.goalQueue),
+          goalHistory: migrateLegacyGoalArray(serialized.goalHistory),
           // Cached completed-summary (may be stale — block builder validates via hash).
           instructionsCompletedSummary: serialized.instructionsCompletedSummary,
           // Dashboard v2.1 — restore aggregate snapshot
           compactionCount: typeof serialized.compactionCount === 'number' ? serialized.compactionCount : 0,
           activeLegStartedAtMs: serialized.activeLegStartedAtMs,
+          activeLegGoalId: serialized.activeLegGoalId,
           activeAccumulatedMs: typeof serialized.activeAccumulatedMs === 'number' ? serialized.activeAccumulatedMs : 0,
           summaryTitle: serialized.summaryTitle,
           summaryTitleTurnId: serialized.summaryTitleTurnId,
@@ -2068,6 +2126,7 @@ export class SessionRegistry {
         if (session.activeLegStartedAtMs) {
           const elapsed = Math.min(Date.now() - session.activeLegStartedAtMs, MAX_LEG_MS);
           session.activeAccumulatedMs = (session.activeAccumulatedMs || 0) + Math.max(0, elapsed);
+          creditActiveGoalMs(session, Math.max(0, elapsed));
           session.activeLegStartedAtMs = undefined;
         }
         this.ensureSessionLinkState(session);
