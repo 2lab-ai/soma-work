@@ -37,6 +37,17 @@ describe('resolveUserIdentifier', () => {
     expect(resolveUserIdentifier('Zhuge', directory)).toBe('U094E5L4A15');
   });
 
+  it('SECURITY: cross-field collision across DISTINCT users fails closed', () => {
+    // A's real_name == B's display_name == "sam" → 2 distinct uids → ambiguous.
+    const dir: UserDirectory = {
+      getAllUsers: () => [
+        { userId: 'U0A', slackName: 'sam' },
+        { userId: 'U0B', slackName: 'bob', slackDisplayName: 'Sam' },
+      ],
+    };
+    expect(resolveUserIdentifier('sam', dir)).toBeNull();
+  });
+
   it('resolves a raw uid to itself', () => {
     expect(resolveUserIdentifier('U094E5L4A15', directory)).toBe('U094E5L4A15');
   });
