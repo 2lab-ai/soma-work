@@ -49,6 +49,7 @@ import {
   shouldRunGoalIdleDriver,
 } from './goal-completion-evaluator';
 import { GOAL_CONTINUATION_TEXT_PREFIX } from './goal-continuation';
+import { advanceGoalQueue } from './session-goal';
 
 /** Default ceiling for a single completion eval before it is aborted. */
 export const DEFAULT_GOAL_EVAL_TIMEOUT_MS = 120_000;
@@ -105,8 +106,13 @@ export interface GoalLoopControllerDeps {
 interface GoalEpochSnapshot {
   /** Monotonic counter bumped by every goal mutation + real user message. */
   epoch: number;
-  /** Guards against the goal being replaced by a brand-new objective. */
-  createdAt: number;
+  /**
+   * Stable goal identity. Keying the guard on `goalId` (not `createdAt`)
+   * means a verdict can never apply against a different goal that happens to
+   * share a `createdAt` — including a queue-promoted goal created in the same
+   * millisecond as the one that just completed.
+   */
+  goalId: string;
 }
 
 export class GoalLoopController {
@@ -202,7 +208,7 @@ export class GoalLoopController {
     // eval, and snapshot the epoch so we can detect user intent landing
     // during the eval. Every goal-state change drops the cached prompt.
     const startedAt = this.now();
-    const snapshot: GoalEpochSnapshot = { epoch: activeGoal.epoch ?? 0, createdAt: activeGoal.createdAt };
+    const snapshot: GoalEpochSnapshot = { epoch: activeGoal.epoch ?? 0, goalId: activeGoal.goalId };
     activeGoal.pendingEval = { requestedAt: startedAt, turnId: `${startedAt}` };
     activeGoal.updatedAt = startedAt;
     session.systemPrompt = undefined;
@@ -237,7 +243,7 @@ export class GoalLoopController {
       // exactly the discard case — but the lease is still ours to release.
       // A replaced/cleared goal (createdAt changed) owns its own lease; we
       // never touch it.
-      if (live && live.createdAt === snapshot.createdAt && live.pendingEval?.requestedAt === startedAt) {
+      if (live && live.goalId === snapshot.goalId && live.pendingEval?.requestedAt === startedAt) {
         live.pendingEval = undefined;
         registry.saveSessions();
       }
@@ -265,16 +271,51 @@ export class GoalLoopController {
     // can short-circuit (S9). A `complete` verdict stops the loop, so clear it.
     activeGoal.lastEvalSummaryHash = outcome.action === 'complete' ? undefined : summaryHash;
     session.systemPrompt = undefined;
-    registry.saveSessions();
 
     if (outcome.action === 'complete') {
+      // Pin the eval reason on the goal so `goal` status history can show why
+      // it closed. `applyGoalEvalSuccess` already set status/audit fields.
+      activeGoal.completionReason = verdict.reason;
+      // Multi-goal (T2): archive the finished goal and promote the next queued
+      // goal. Shared `advanceGoalQueue` keeps this identical to user `goal done`.
+      //
+      // CRITICAL (codex blocking #1): persist ONLY after the advance, never
+      // between the status flip and the advance. Otherwise a crash there would
+      // leave disk in an inconsistent `status=complete` + non-empty `goalQueue`
+      // state and the queued goal would be stranded on restart (resumeActiveGoals
+      // only scans active goals). One durable write = a consistent state:
+      // either the next goal is active, or the goal is closed with an empty queue.
+      const next = advanceGoalQueue(session);
+      registry.saveSessions();
+
       await this.deps.postNotice(
         session.channelId,
         session.threadTs,
         `✅ Goal completed (eval-model verdict).\n*Objective:* ${activeGoal.objective}\n*Eval reason:* ${verdict.reason}`,
       );
+
+      if (next) {
+        await this.deps.postNotice(
+          session.channelId,
+          session.threadTs,
+          `▶️ Starting next queued goal:\n*Objective:* ${next.objective}`,
+        );
+        // Re-enter the ralph loop for the promoted goal — unless a real user
+        // turn started during the eval, in which case defer (never supersede).
+        if (requestCoordinator.isRequestActive(sessionKey)) {
+          logger.info('Queued-goal continuation deferred — session became busy during eval', { sessionKey });
+          return;
+        }
+        this.injectContinuationTurn(sessionKey, session, next as SessionGoal);
+      }
       return;
     }
+
+    // Non-complete (continue / cap): persist the loop-state mutations
+    // (`continuationCount`, `lastEvalReason`, `lastContinuationAt`) that
+    // `decideGoalEvalOutcome` applied. The complete branch above owns its own
+    // single post-advance save and returns before reaching here.
+    registry.saveSessions();
 
     const remaining = verdict.remaining.length
       ? verdict.remaining.map((r) => `• ${r}`).join('\n')
@@ -422,13 +463,18 @@ export class GoalLoopController {
 
   /**
    * A snapshot is still valid iff the live goal is the SAME goal (same
-   * `createdAt`) and its epoch has not advanced. Any goal mutation or real
-   * user message bumps the epoch; a `goal clear`/replace changes
-   * `createdAt`. Either invalidates the in-flight eval.
+   * `goalId`) and its epoch has not advanced. Any goal mutation or real
+   * user message bumps the epoch; a `goal clear`/replace/queue-advance swaps
+   * in a goal with a different `goalId`. Either invalidates the in-flight eval.
    */
   private epochStillValid(live: SessionGoal | undefined, snapshot: GoalEpochSnapshot): boolean {
     if (!live) return false;
-    if (live.createdAt !== snapshot.createdAt) return false;
+    // Fail closed on a missing/empty goalId on either side — never let
+    // `undefined === undefined` pass the identity check (would defeat M1 for
+    // hand-built/legacy state). Production goals always carry a goalId
+    // (creation + migration backfill).
+    if (!live.goalId || !snapshot.goalId) return false;
+    if (live.goalId !== snapshot.goalId) return false;
     return (live.epoch ?? 0) === snapshot.epoch;
   }
 }

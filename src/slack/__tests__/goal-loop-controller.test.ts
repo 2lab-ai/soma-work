@@ -20,6 +20,7 @@ const SESSION_KEY = 'C1:T1';
 
 function makeGoal(overrides: Partial<SessionGoal> = {}): SessionGoal {
   return {
+    goalId: 'goal-test',
     objective: 'ship the feature',
     status: 'active',
     createdAt: 100,
@@ -121,6 +122,27 @@ describe('GoalLoopController', () => {
     expect(h.notices.some((n) => n.includes('✅ Goal completed'))).toBe(true);
   });
 
+  it('completed=true WITH a queued goal → advances queue, archives, injects next goal (T2)', async () => {
+    const h = makeHarness({ verdict: { completed: true, reason: 'all done', remaining: [] } });
+    // queue a second goal behind the active one
+    h.session.goalQueue = [makeGoal({ goalId: 'goal-2', objective: 'second objective', status: 'queued', epoch: 0 })];
+
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+
+    // finished goal archived to history with the eval reason pinned
+    expect(h.session.goalHistory).toHaveLength(1);
+    expect(h.session.goalHistory?.[0].objective).toBe('ship the feature');
+    expect(h.session.goalHistory?.[0].completionReason).toBe('all done');
+    // next goal promoted to active and its continuation injected
+    expect(h.session.goal?.objective).toBe('second objective');
+    expect(h.session.goal?.status).toBe('active');
+    expect(h.session.goalQueue).toHaveLength(0);
+    expect(h.injected).toHaveLength(1);
+    expect(h.notices.some((n) => n.includes('✅ Goal completed'))).toBe(true);
+    expect(h.notices.some((n) => n.includes('Starting next queued goal'))).toBe(true);
+  });
+
   it('completed=false under cap → bumps counter, posts 🔄, injects one continuation', async () => {
     const h = makeHarness({ verdict: { completed: false, reason: 'missing tests', remaining: ['add tests'] } });
     h.controller.onTurnSettled(SESSION_KEY);
@@ -173,10 +195,10 @@ describe('GoalLoopController', () => {
     expect(h.goal.pendingEval).toBeUndefined();
   });
 
-  it('M1: goal replaced (createdAt changes) during eval → verdict discarded', async () => {
+  it('M1: goal replaced (goalId changes) during eval → verdict discarded', async () => {
     const h = makeHarness({
       dispatcher: async () => {
-        h.goal.createdAt = 999; // a brand-new objective replaced the goal
+        h.goal.goalId = 'goal-replaced'; // a brand-new objective replaced the goal
         return JSON.stringify({ completed: false, reason: 'x', remaining: [] });
       },
     });
