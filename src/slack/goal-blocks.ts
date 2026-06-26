@@ -154,7 +154,12 @@ export function buildGoalStatusBlocks(input: GoalStatusBlocksInput): any[] {
     const lines = [`✅ *Completed goals (${history.length})* — most recent first:`];
     for (const h of recent) {
       const reason = h.completionReason ?? h.completedVia ?? 'done';
-      lines.push(`• ${formatObjective(h.objective)} — _${reason}_ · ${formatMetrics(h)}`);
+      // codex review #4: history rows are JOINED into a single section, and
+      // `formatObjective` can emit ~900 chars each — `limit` (10) of those would
+      // blow past Slack's 3000-char section cap and fail the whole message with
+      // `invalid_blocks`. Use a tight per-row trim so the joined block stays
+      // well under the limit (≤ ~10×200 + overhead).
+      lines.push(`• \`${objectiveLine(h.objective, 160).replace(/`/g, "'")}\` — _${reason}_ · ${formatMetrics(h)}`);
     }
     if (history.length > recent.length) lines.push(`…and ${history.length - recent.length} older`);
     blocks.push({ type: 'section', text: { type: 'mrkdwn', text: lines.join('\n') } });

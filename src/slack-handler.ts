@@ -600,7 +600,13 @@ export class SlackHandler {
           // Centralized activate-vs-queue (T2). At a goal-prefixed FIRST
           // message the session is brand-new so this activates; if a goal is
           // somehow already in flight it queues behind it instead of replacing.
-          const applied = enqueueOrActivateGoal(fullSession, setGoalObjective, event.user);
+          // S4: honor the per-user max-continuation default on this surface too.
+          const applied = enqueueOrActivateGoal(
+            fullSession,
+            setGoalObjective,
+            event.user,
+            userSettingsStore.getUserGoalMaxContinuations(event.user),
+          );
           this.claudeHandler.saveSessions();
           if (applied.activated) {
             await this.slackApi.postSystemMessage(

@@ -173,6 +173,14 @@ export class GoalActionHandler {
       // so the new objective is injected into the next turn.
       goal.epoch = (goal.epoch ?? 0) + 1;
       session.systemPrompt = undefined;
+      // codex review #5: the prior turn's output (runtime stash + persisted
+      // mirror + eval-cache) was evidence for the OLD objective — clear it so
+      // the first eval for the new objective starts from real, fresh evidence
+      // instead of crediting the old turn against the changed goal.
+      session.goalLastTurnText = undefined;
+      goal.lastAssistantTurnSummary = undefined;
+      goal.lastEvalReason = undefined;
+      goal.lastEvalSummaryHash = undefined;
       this.ctx.claudeHandler.saveSessions();
 
       await ack({ response_action: 'clear' });
@@ -199,31 +207,47 @@ export class GoalActionHandler {
     }
   }
 
+  /**
+   * Resolve the cap-decision DM target (codex review #2). The DM is only ever
+   * sent for the ACTIVE goal with a pending decision, so we bind strictly to
+   * `session.goal` (NOT `findGoalById`, which can return a queued/history goal
+   * a stale click would otherwise corrupt). Requires:
+   *   - the clicked goalId == the live active goal's id,
+   *   - the clicker is the goal owner (`createdBy`),
+   *   - `capDmPendingAt` is still set (a decision is genuinely pending; a user
+   *     message / prior answer / queue-advance clears it ⇒ this click is stale).
+   */
+  private resolveCapDecision(
+    body: any,
+  ): { value: GoalActionValue; session: ConversationSession; goal: SessionGoal } | { stale: true } | { error: string } {
+    const value = decodeGoalActionValue(body.actions?.[0]?.value);
+    const userId = body.user?.id;
+    if (!value || !userId) return { error: '❌ 요청을 처리할 수 없습니다.' };
+    const session = this.ctx.claudeHandler.getSessionByKey(value.sessionKey);
+    const goal = session?.goal;
+    if (!session || !goal || goal.goalId !== value.goalId) return { stale: true };
+    if (goal.createdBy !== userId) return { error: '❌ goal 소유자만 응답할 수 있습니다.' };
+    if (goal.capDmPendingAt === undefined) return { stale: true };
+    return { value, session, goal };
+  }
+
   async handleContinueDm(body: any, respond: RespondFn): Promise<void> {
     try {
-      const value = decodeGoalActionValue(body.actions?.[0]?.value);
-      const userId = body.user?.id;
-      if (!value || !userId) {
-        await respond({ response_type: 'ephemeral', replace_original: false, text: '❌ 요청을 처리할 수 없습니다.' });
+      const r = this.resolveCapDecision(body);
+      if ('error' in r) {
+        await respond({ response_type: 'ephemeral', replace_original: false, text: r.error });
         return;
       }
-      const session = this.ctx.claudeHandler.getSessionByKey(value.sessionKey);
-      const goal = session ? (findGoalById(session, value.goalId) as SessionGoal | undefined) : undefined;
-      // DM is sent to the goal owner (createdBy); only they may answer.
-      if (!session || !goal || goal.createdBy !== userId) {
-        await respond({
-          response_type: 'ephemeral',
-          replace_original: false,
-          text: '❌ goal 소유자만 응답할 수 있습니다.',
-        });
+      if ('stale' in r) {
+        await respond({ replace_original: true, text: '⚠️ 이미 처리되었거나 더 이상 유효하지 않은 요청입니다.' });
         return;
       }
-      goal.continuationCount = 0;
-      goal.capDmPendingAt = undefined;
-      goal.status = 'active';
-      goal.updatedAt = Date.now();
+      r.goal.continuationCount = 0;
+      r.goal.capDmPendingAt = undefined;
+      r.goal.status = 'active';
+      r.goal.updatedAt = Date.now();
       this.ctx.claudeHandler.saveSessions();
-      resumeGoalLoop(value.sessionKey);
+      resumeGoalLoop(r.value.sessionKey);
       await respond({ replace_original: true, text: '✅ goal을 계속 진행합니다.' });
     } catch (error) {
       this.logger.error('Error processing goal continue DM', error);
@@ -237,25 +261,18 @@ export class GoalActionHandler {
 
   async handleCancelDm(body: any, respond: RespondFn): Promise<void> {
     try {
-      const value = decodeGoalActionValue(body.actions?.[0]?.value);
-      const userId = body.user?.id;
-      if (!value || !userId) {
-        await respond({ response_type: 'ephemeral', replace_original: false, text: '❌ 요청을 처리할 수 없습니다.' });
+      const r = this.resolveCapDecision(body);
+      if ('error' in r) {
+        await respond({ response_type: 'ephemeral', replace_original: false, text: r.error });
         return;
       }
-      const session = this.ctx.claudeHandler.getSessionByKey(value.sessionKey);
-      const goal = session ? (findGoalById(session, value.goalId) as SessionGoal | undefined) : undefined;
-      if (!session || !goal || goal.createdBy !== userId) {
-        await respond({
-          response_type: 'ephemeral',
-          replace_original: false,
-          text: '❌ goal 소유자만 응답할 수 있습니다.',
-        });
+      if ('stale' in r) {
+        await respond({ replace_original: true, text: '⚠️ 이미 처리되었거나 더 이상 유효하지 않은 요청입니다.' });
         return;
       }
-      goal.status = 'paused';
-      goal.capDmPendingAt = undefined;
-      goal.updatedAt = Date.now();
+      r.goal.status = 'paused';
+      r.goal.capDmPendingAt = undefined;
+      r.goal.updatedAt = Date.now();
       this.ctx.claudeHandler.saveSessions();
       await respond({
         replace_original: true,

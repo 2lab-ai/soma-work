@@ -341,8 +341,6 @@ export class GoalLoopController {
       // real user message via resetGoalContinuationOnUserMessage).
       const alreadyAsked = activeGoal.capDmPendingAt !== undefined;
       if (this.deps.postOwnerDm && !alreadyAsked) {
-        activeGoal.capDmPendingAt = this.now();
-        registry.saveSessions();
         const blocks = buildCapDecisionDmBlocks({
           value: {
             sessionKey,
@@ -355,21 +353,33 @@ export class GoalLoopController {
           reason: verdict.reason,
           formatObjective: formatGoalObjectiveForSlack,
         });
-        await this.deps.postOwnerDm(activeGoal.createdBy, '⏳ Goal 계속 진행할까요?', blocks).catch((err: unknown) => {
-          logger.warn('Failed to DM goal owner the cap decision', {
+        // Send the DM FIRST; only stamp the dedup guard on success so a failed
+        // send never leaves the goal flagged-but-undecided with no retry path
+        // (codex review #1). On failure, fall through to the in-thread notice;
+        // a later cap trigger can retry the DM since the flag was never set.
+        let dmSent = false;
+        try {
+          await this.deps.postOwnerDm(activeGoal.createdBy, '⏳ Goal 계속 진행할까요?', blocks);
+          dmSent = true;
+        } catch (err: unknown) {
+          logger.warn('Failed to DM goal owner the cap decision — falling back to thread notice', {
             sessionKey,
             error: err instanceof Error ? err.message : String(err),
           });
-        });
-        await this.deps.postNotice(
-          session.channelId,
-          session.threadTs,
-          `⏸️ Goal auto-continuation reached its ${activeGoal.maxContinuations}-turn budget. Asked the owner via DM whether to keep going.`,
-        );
-        return;
+        }
+        if (dmSent) {
+          activeGoal.capDmPendingAt = this.now();
+          registry.saveSessions();
+          await this.deps.postNotice(
+            session.channelId,
+            session.threadTs,
+            `⏸️ Goal auto-continuation reached its ${activeGoal.maxContinuations}-turn budget. Asked the owner via DM whether to keep going.`,
+          );
+          return;
+        }
       }
-      // Fallback (no DM transport, or already asked): keep the original
-      // in-thread pause notice.
+      // Fallback (no DM transport, already asked, or DM send failed): keep the
+      // original in-thread pause notice.
       await this.deps.postNotice(
         session.channelId,
         session.threadTs,
