@@ -12,7 +12,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ConversationSession } from '../../../types';
-import { advanceGoalQueue, createActiveSessionGoal, enqueueOrActivateGoal } from '../../session-goal';
+import { advanceGoalQueue, createActiveSessionGoal, deleteGoalById, enqueueOrActivateGoal } from '../../session-goal';
 import { GoalHandler } from '../goal-handler';
 import type { CommandContext, CommandDependencies } from '../types';
 
@@ -47,12 +47,34 @@ function makeDeps(session?: ConversationSession): CommandDependencies {
   return {
     claudeHandler: {
       getSession: vi.fn().mockReturnValue(session),
+      getSessionKey: vi.fn().mockReturnValue('C123:171.001'),
       saveSessions: vi.fn(),
     },
     slackApi: {
       postSystemMessage: vi.fn().mockResolvedValue({ ts: 'msg_ts' }),
     },
+    userSettingsStore: {
+      getUserGoalMaxContinuations: vi.fn().mockReturnValue(undefined),
+      setUserGoalMaxContinuations: vi.fn(),
+      getUserAutoGoalEnabled: vi.fn().mockReturnValue(false),
+      setUserAutoGoalEnabled: vi.fn(),
+      toggleUserAutoGoalEnabled: vi.fn().mockReturnValue(true),
+    },
   } as unknown as CommandDependencies;
+}
+
+/** Flatten all mrkdwn/plain text out of a Block Kit blocks array. */
+function blocksText(blocks: any[] | undefined): string {
+  if (!blocks) return '';
+  const out: string[] = [];
+  for (const b of blocks) {
+    if (b?.text?.text) out.push(b.text.text);
+    for (const el of b?.elements ?? []) {
+      if (typeof el?.text === 'string') out.push(el.text);
+      else if (el?.text?.text) out.push(el.text.text);
+    }
+  }
+  return out.join('\n');
 }
 
 describe('session-goal queue helpers', () => {
@@ -106,6 +128,58 @@ describe('session-goal queue helpers', () => {
     const next = advanceGoalQueue(session);
     expect(next).toBeUndefined();
     expect(session.goalHistory).toHaveLength(1);
+  });
+
+  // ── S1: deleteGoalById (Delete button) ────────────────────────────────
+  it('deleteGoalById on the ACTIVE goal auto-advances to the next queued goal', () => {
+    const active = createActiveSessionGoal('first goal', 'U1');
+    active.epoch = 3;
+    const session = makeSession({ goal: active });
+    enqueueOrActivateGoal(session, 'second goal', 'U1');
+    const activeId = session.goal!.goalId;
+
+    const result = deleteGoalById(session, activeId);
+
+    expect(result.deleted).toBe(true);
+    expect(result.wasActive).toBe(true);
+    expect(result.promoted?.objective).toBe('second goal');
+    // promoted goal is now the active goal — auto-advance to next
+    expect(session.goal?.objective).toBe('second goal');
+    expect(session.goal?.status).toBe('active');
+    expect(session.goal?.continuationCount).toBe(0);
+    expect((session.goal?.epoch ?? 0) > 3).toBe(true);
+    expect(session.goalQueue ?? []).toHaveLength(0);
+    // a delete is NOT a completion — the deleted goal is not archived to history
+    expect(session.goalHistory ?? []).toHaveLength(0);
+  });
+
+  it('deleteGoalById on the ACTIVE goal with no queue clears the goal', () => {
+    const session = makeSession({ goal: createActiveSessionGoal('only goal', 'U1') });
+    const result = deleteGoalById(session, session.goal!.goalId);
+    expect(result.deleted).toBe(true);
+    expect(result.wasActive).toBe(true);
+    expect(result.promoted).toBeUndefined();
+    expect(session.goal).toBeUndefined();
+  });
+
+  it('deleteGoalById removes a QUEUED goal without promoting anything', () => {
+    const session = makeSession({ goal: createActiveSessionGoal('first goal', 'U1') });
+    enqueueOrActivateGoal(session, 'queued goal', 'U1');
+    const queuedId = session.goalQueue![0].goalId;
+
+    const result = deleteGoalById(session, queuedId);
+
+    expect(result.deleted).toBe(true);
+    expect(result.wasActive).toBe(false);
+    expect(session.goal?.objective).toBe('first goal'); // untouched
+    expect(session.goalQueue ?? []).toHaveLength(0);
+  });
+
+  it('deleteGoalById returns deleted=false for an unknown goalId', () => {
+    const session = makeSession({ goal: createActiveSessionGoal('first goal', 'U1') });
+    const result = deleteGoalById(session, 'nonexistent');
+    expect(result.deleted).toBe(false);
+    expect(session.goal?.objective).toBe('first goal');
   });
 });
 
@@ -189,7 +263,11 @@ describe('GoalHandler — status with list + metrics (T3)', () => {
 
     await handler.execute(makeCtx({ text: 'goal' }));
 
-    const msg = (deps.slackApi.postSystemMessage as ReturnType<typeof vi.fn>).mock.calls[0][1] as string;
+    // S1: status is now rendered as Block Kit with per-goal Delete/Update
+    // buttons. The list content lives in the blocks, not the text arg.
+    const call = (deps.slackApi.postSystemMessage as ReturnType<typeof vi.fn>).mock.calls[0];
+    const blocks = call[2]?.blocks as any[];
+    const msg = blocksText(blocks);
     // current goal + its metrics
     expect(msg).toContain('current goal');
     expect(msg).toMatch(/1m\s*5s|65s|1:05/); // some human-readable duration
@@ -198,5 +276,12 @@ describe('GoalHandler — status with list + metrics (T3)', () => {
     // history with completion result
     expect(msg).toContain('done goal');
     expect(msg).toContain('all acceptance criteria met');
+
+    // S1: the active goal and the queued goal each carry Delete + Update buttons.
+    const actionIds = blocks
+      .filter((b) => b.type === 'actions')
+      .flatMap((b) => b.elements.map((e: any) => e.action_id as string));
+    expect(actionIds.some((id) => id.startsWith('goal_delete:'))).toBe(true);
+    expect(actionIds.some((id) => id.startsWith('goal_update:'))).toBe(true);
   });
 });
