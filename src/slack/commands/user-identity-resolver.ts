@@ -10,7 +10,7 @@
  * before the model sees the message.
  */
 export interface UserDirectory {
-  getAllUsers(): Array<{ userId: string; slackName?: string }>;
+  getAllUsers(): Array<{ userId: string; slackName?: string; slackDisplayName?: string }>;
 }
 
 /** Resolves a Slack identifier (uid / display name / mention) to a uid. */
@@ -45,7 +45,10 @@ const defaultDirectory: UserDirectory = {
  * Accepted forms (S6):
  *   - mention markup  `<@U094E5L4A15>` / `<@U094E5L4A15|zhuge>`
  *   - raw uid         `U094E5L4A15`
- *   - display name    `Zhuge` / `@Zhuge` / `alice.kim` (case-insensitive)
+ *   - display name    `Z` / `Zhuge` / `@Zhuge` / `alice.kim` (case-insensitive).
+ *     Matches BOTH the user's Slack display_name (`slackDisplayName`) AND their
+ *     real_name (`slackName`) — users reference each other by the display name
+ *     shown in chat, which often differs from the stored real_name.
  *
  * Resolution order is deliberate (uid precedence is a SECURITY property):
  *   1. mention markup → the embedded uid (definitive; Slack itself produced it)
@@ -54,9 +57,10 @@ const defaultDirectory: UserDirectory = {
  *      sets their Slack display name to another user's uid (`U0VICTIM`) could
  *      hijack `$user:U0VICTIM` / `$U0VICTIM:skill` and intercept references
  *      meant for the real uid owner.
- *   3. display-name match against the directory (case-insensitive). NOT unique
- *      in Slack, so we fail closed on ambiguity: 2+ distinct uids sharing the
- *      name → null (require uid/mention) rather than guess a tenant.
+ *   3. name match against the directory (display_name OR real_name,
+ *      case-insensitive). NOT unique in Slack, so we fail closed on ambiguity:
+ *      2+ DISTINCT uids sharing the name → null (require uid/mention). Both
+ *      names of the SAME user collapse to one uid (not ambiguous).
  *   4. exact uid match in the directory (covers non-UID_RE-shaped ids).
  */
 export function resolveUserIdentifier(token: string, directory: UserDirectory = defaultDirectory): string | null {
@@ -76,9 +80,12 @@ export function resolveUserIdentifier(token: string, directory: UserDirectory = 
   //    malicious display name equal to a uid cannot hijack that uid.
   if (UID_RE.test(bare)) return bare;
 
-  // 3. Display-name match (case-insensitive), failing closed on ambiguity.
+  // 3. Name match (display_name OR real_name, case-insensitive), failing closed
+  //    on ambiguity. The matches Set keys on uid, so a user whose display and
+  //    real names both match (or coincide) counts once — only DISTINCT uids
+  //    sharing the name are ambiguous.
   const lower = bare.toLowerCase();
-  let users: Array<{ userId: string; slackName?: string }>;
+  let users: Array<{ userId: string; slackName?: string; slackDisplayName?: string }>;
   try {
     users = directory.getAllUsers();
   } catch {
@@ -86,7 +93,12 @@ export function resolveUserIdentifier(token: string, directory: UserDirectory = 
   }
   const nameMatches = new Set<string>();
   for (const u of users) {
-    if (u.slackName && u.slackName.toLowerCase() === lower) nameMatches.add(u.userId);
+    if (
+      (u.slackName && u.slackName.toLowerCase() === lower) ||
+      (u.slackDisplayName && u.slackDisplayName.toLowerCase() === lower)
+    ) {
+      nameMatches.add(u.userId);
+    }
   }
   if (nameMatches.size === 1) return [...nameMatches][0];
   if (nameMatches.size > 1) return null; // ambiguous — require uid/mention
