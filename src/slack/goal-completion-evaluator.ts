@@ -229,6 +229,8 @@ export function applyGoalEvalSuccess(goal: import('../types').SessionGoal, now: 
   goal.completedVia = 'eval-model';
   goal.pendingEval = undefined;
   goal.lastEvalReason = undefined;
+  // A completed goal resolves any pending cap-decision DM (S3 dedup guard).
+  goal.capDmPendingAt = undefined;
   goal.evalAttemptCount = (goal.evalAttemptCount ?? 0) + 1;
   goal.updatedAt = now;
 }

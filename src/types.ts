@@ -228,6 +228,13 @@ export interface SessionGoal {
   maxContinuations: number;
   /** ms epoch of the last continuation injection. */
   lastContinuationAt?: number;
+  /**
+   * Set to the ms epoch when a cap-reached "continue?" DM was sent to the
+   * goal owner (S3). Acts as a dedup guard so the loop sends exactly one DM
+   * per cap event; cleared when the owner answers (continue/cancel) or any
+   * real user message resets the loop. Undefined ⇒ no decision pending.
+   */
+  capDmPendingAt?: number;
 
   // ── Host-side completion evaluation ────────────────────────────────────
   /**
@@ -619,6 +626,15 @@ export interface ConversationSession {
    * credits the right goal. `undefined` when no goal was active at leg start.
    */
   activeLegGoalId?: string;
+  /**
+   * Intent `epoch` of the goal that was active when the current turn leg
+   * STARTED (captured at `beginTurn` alongside {@link activeLegGoalId}). Lets
+   * the turn-end goal-evidence stash detect an in-turn objective change
+   * (Update bumps the epoch on the same `goalId`) and skip crediting the
+   * finished turn's output against the changed objective. `undefined` when no
+   * goal was active at leg start.
+   */
+  activeLegGoalEpoch?: number;
   // Accumulated busy time (ms) across closed legs of the current session.
   activeAccumulatedMs?: number;
   // LLM-generated concise task title (falls back to `title` when absent).

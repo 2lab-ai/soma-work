@@ -9,6 +9,7 @@ import { ChannelRouteActionHandler } from './channel-route-action-handler';
 import { ChoiceActionHandler } from './choice-action-handler';
 import { CompactActionHandler } from './compact-action-handler';
 import { FormActionHandler } from './form-action-handler';
+import { GoalActionHandler } from './goal-action-handler';
 import { InstructionConfirmActionHandler } from './instruction-confirm-action-handler';
 import { JiraActionHandler } from './jira-action-handler';
 import { McpToolPermissionActionHandler } from './mcp-tool-permission-action-handler';
@@ -140,6 +141,10 @@ setActionHandlersProviders({
       dismissHandler: new TurnDismissActionHandler({
         slackApi: ctx.slackApi as any,
         completionMessageTracker: ctx.completionMessageTracker,
+      }),
+      goalHandler: new GoalActionHandler({
+        slackApi: ctx.slackApi as any,
+        claudeHandler: ctx.claudeHandler,
       }),
       zSettingsHandler: new ZSettingsActionHandler({
         registry: zTopicRegistry,

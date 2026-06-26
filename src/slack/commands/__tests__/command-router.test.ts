@@ -102,6 +102,14 @@ function buildDeps(overrides: Record<string, any> = {}): any {
     contextWindowManager: {
       cleanupWithReaction: vi.fn().mockResolvedValue(undefined),
     },
+    userSettingsStore: {
+      // GoalHandler.setGoal resolves the per-user max-continuation default (S4).
+      getUserGoalMaxContinuations: vi.fn().mockReturnValue(undefined),
+      setUserGoalMaxContinuations: vi.fn(),
+      getUserAutoGoalEnabled: vi.fn().mockReturnValue(false),
+      setUserAutoGoalEnabled: vi.fn(),
+      toggleUserAutoGoalEnabled: vi.fn().mockReturnValue(true),
+    },
     ...overrides,
   };
 }
