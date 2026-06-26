@@ -30,14 +30,29 @@ function makeSession(overrides: Partial<ConversationSession> = {}): Conversation
   } as ConversationSession;
 }
 
-function makeDeps(session?: ConversationSession): CommandDependencies {
+function makeDeps(
+  session?: ConversationSession,
+  settingsOverrides: Partial<{
+    autoGoal: boolean;
+    maxContinuations: number | undefined;
+    toggleResult: boolean;
+  }> = {},
+): CommandDependencies {
   return {
     claudeHandler: {
       getSession: vi.fn().mockReturnValue(session),
+      getSessionKey: vi.fn().mockReturnValue('C123:171.001'),
       saveSessions: vi.fn(),
     },
     slackApi: {
       postSystemMessage: vi.fn().mockResolvedValue({ ts: 'msg_ts' }),
+    },
+    userSettingsStore: {
+      getUserGoalMaxContinuations: vi.fn().mockReturnValue(settingsOverrides.maxContinuations),
+      setUserGoalMaxContinuations: vi.fn(),
+      getUserAutoGoalEnabled: vi.fn().mockReturnValue(settingsOverrides.autoGoal ?? false),
+      setUserAutoGoalEnabled: vi.fn(),
+      toggleUserAutoGoalEnabled: vi.fn().mockReturnValue(settingsOverrides.toggleResult ?? true),
     },
   } as unknown as CommandDependencies;
 }
@@ -316,6 +331,104 @@ describe('GoalHandler', () => {
       'C123',
       expect.stringContaining('goal <objective>'),
       expect.objectContaining({ threadTs: '171.001' }),
+    );
+  });
+});
+
+describe('GoalHandler — autogoal toggle (S2)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-18T10:00:00.000Z'));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.clearAllMocks();
+  });
+
+  it('`goal auto` toggles the per-user mode even with NO session', async () => {
+    const deps = makeDeps(undefined, { toggleResult: true });
+    const handler = new GoalHandler(deps);
+
+    const result = await handler.execute(makeCtx({ text: 'goal auto' }));
+
+    expect(result.handled).toBe(true);
+    expect(deps.userSettingsStore.toggleUserAutoGoalEnabled).toHaveBeenCalledWith('U123');
+    expect(deps.slackApi.postSystemMessage).toHaveBeenCalledWith(
+      'C123',
+      expect.stringContaining('Autogoal mode ON'),
+      expect.objectContaining({ threadTs: '171.001' }),
+    );
+  });
+
+  it('`goal auto off` explicitly disables', async () => {
+    const deps = makeDeps(undefined);
+    const handler = new GoalHandler(deps);
+
+    await handler.execute(makeCtx({ text: 'goal auto off' }));
+
+    expect(deps.userSettingsStore.setUserAutoGoalEnabled).toHaveBeenCalledWith('U123', false);
+    expect(deps.slackApi.postSystemMessage).toHaveBeenCalledWith(
+      'C123',
+      expect.stringContaining('OFF'),
+      expect.anything(),
+    );
+  });
+});
+
+describe('GoalHandler — max-continuation override (S4)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-18T10:00:00.000Z'));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.clearAllMocks();
+  });
+
+  it('`goal 100` updates the current active goal AND saves the per-user default', async () => {
+    const session = makeSession({
+      goal: {
+        goalId: 'g1',
+        objective: 'ship it',
+        status: 'active',
+        createdAt: 1,
+        updatedAt: 1,
+        createdBy: 'U123',
+        continuationCount: 0,
+        maxContinuations: 10,
+      },
+    });
+    const deps = makeDeps(session);
+    const handler = new GoalHandler(deps);
+
+    await handler.execute(makeCtx({ text: 'goal 100' }));
+
+    expect(session.goal?.maxContinuations).toBe(100);
+    expect(deps.userSettingsStore.setUserGoalMaxContinuations).toHaveBeenCalledWith('U123', 100);
+    expect(deps.claudeHandler.saveSessions).toHaveBeenCalled();
+  });
+
+  it('`goal max 5000` clamps to the 1000 ceiling', async () => {
+    const deps = makeDeps(undefined);
+    const handler = new GoalHandler(deps);
+
+    await handler.execute(makeCtx({ text: 'goal max 5000' }));
+
+    expect(deps.userSettingsStore.setUserGoalMaxContinuations).toHaveBeenCalledWith('U123', 1000);
+  });
+
+  it('`goal max <N>` works with NO session (per-user default only)', async () => {
+    const deps = makeDeps(undefined);
+    const handler = new GoalHandler(deps);
+
+    const result = await handler.execute(makeCtx({ text: 'goal max 42' }));
+
+    expect(result.handled).toBe(true);
+    expect(deps.userSettingsStore.setUserGoalMaxContinuations).toHaveBeenCalledWith('U123', 42);
+    expect(deps.slackApi.postSystemMessage).toHaveBeenCalledWith(
+      'C123',
+      expect.stringContaining('42'),
+      expect.anything(),
     );
   });
 });
