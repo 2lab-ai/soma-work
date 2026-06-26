@@ -446,7 +446,11 @@ export class PromptBuilder {
       const skillList = userSkills
         .map((s) => `- \`$user:${s.name}\`: ${s.description || '(no description)'}`)
         .join('\n');
-      const skillBlock = `\n## Your Personal Skills\nYou have ${userSkills.length} personal skill(s). Invoke with \`$user:skill-name\`. Manage with MANAGE_SKILL command (create/update/delete/rename/list/share/get).\n${skillList}`;
+      const crossUserNote =
+        '\n_Cross-user (다른 유저 스킬): `${user}:{skill}` or `<@uid>:{skill}` force-invokes another user’s skill; ' +
+        '`{user}:{skill}` (no $) softly uses it; `$user:{user}` lists their skills with 보기/copy. ' +
+        'Copy with MANAGE_SKILL `action=copy sourceUser=<uid|name> name=<skill>`._';
+      const skillBlock = `\n## Your Personal Skills\nYou have ${userSkills.length} personal skill(s). Invoke with \`$user:skill-name\`. Manage with MANAGE_SKILL command (create/update/delete/rename/list/share/get/copy).\n${skillList}${crossUserNote}`;
       return prompt ? `${prompt}\n${skillBlock}` : skillBlock;
     } catch {
       // Skills dir may not exist — that's fine, no skills to inject

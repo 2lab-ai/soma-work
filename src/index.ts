@@ -6,6 +6,7 @@ import './env-paths';
 import { registerMemoryStore, registerSkillStore } from 'somalib/model-commands/catalog';
 import * as userMemoryStore from './user-memory-store';
 import { setSettingsPromptInvalidationHook } from './user-settings-store';
+import { gatedManageSkillCopy } from './user-skill-copy-gate';
 import {
   createUserSkill,
   deleteUserSkill,
@@ -24,6 +25,9 @@ registerSkillStore({
   deleteSkill: deleteUserSkill,
   shareSkill: shareUserSkill,
   renameSkill: renameUserSkill,
+  // Copy is permission-gated (S1/S6/S8 + owner permission): A may only copy B's
+  // skill when B granted access — see `gatedManageSkillCopy`.
+  copySkill: (user, sourceUser, name, newName) => gatedManageSkillCopy(user, sourceUser, name, newName),
 });
 
 import { App, LogLevel, SocketModeReceiver } from '@slack/bolt';
@@ -957,6 +961,17 @@ async function start() {
       .then((notified) => {
         if (notified > 0) {
           timing(`Crash recovery notifications sent (${notified} sessions)`);
+        }
+        // T1 — after the restart notices are posted, re-enter the goal loop
+        // for any session that still has an unfinished (active) goal so it is
+        // driven to completion across the restart. Runs after the goal loop
+        // controller is wired above and after crash-recovery's no-double-resume
+        // guard has skipped these sessions.
+        try {
+          const resumed = slackHandler.resumeActiveGoals();
+          if (resumed > 0) timing(`Resumed ${resumed} active goal(s) after restart`);
+        } catch (error) {
+          logger.warn('Resuming active goals after restart failed (non-critical)', error);
         }
       })
       .catch((error) => {
