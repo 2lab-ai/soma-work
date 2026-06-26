@@ -600,7 +600,13 @@ export class SlackHandler {
           // Centralized activate-vs-queue (T2). At a goal-prefixed FIRST
           // message the session is brand-new so this activates; if a goal is
           // somehow already in flight it queues behind it instead of replacing.
-          const applied = enqueueOrActivateGoal(fullSession, setGoalObjective, event.user);
+          // S4: honor the per-user max-continuation default on this surface too.
+          const applied = enqueueOrActivateGoal(
+            fullSession,
+            setGoalObjective,
+            event.user,
+            userSettingsStore.getUserGoalMaxContinuations(event.user),
+          );
           this.claudeHandler.saveSessions();
           if (applied.activated) {
             await this.slackApi.postSystemMessage(
@@ -625,6 +631,40 @@ export class SlackHandler {
           this.logger.warn('setGoalObjective present but registry session not found — goal NOT applied', {
             sessionKey: sessionResult.sessionKey,
           });
+        }
+      }
+
+      // S2 — Autogoal mode: when the user has autogoal ON and this session has
+      // NO goal in flight (no active/paused goal, no queue), the first real
+      // instruction is promoted to the session goal automatically and then
+      // dispatched as the goal's opening turn. Skips synthetic continuation
+      // turns and the goal-prefixed path (already handled via setGoalObjective).
+      if (
+        !setGoalObjective &&
+        !continueWithPrompt &&
+        !event.synthetic &&
+        effectiveText.trim() !== '' &&
+        userSettingsStore.getUserAutoGoalEnabled(event.user)
+      ) {
+        const fullSession = this.claudeHandler.getSessionByKey?.(sessionResult.sessionKey);
+        const inFlight =
+          !!fullSession?.goal && (fullSession.goal.status === 'active' || fullSession.goal.status === 'paused');
+        if (fullSession && !inFlight && !fullSession.goalQueue?.length) {
+          const applied = enqueueOrActivateGoal(
+            fullSession,
+            effectiveText,
+            event.user,
+            userSettingsStore.getUserGoalMaxContinuations(event.user),
+          );
+          this.claudeHandler.saveSessions();
+          if (applied.activated) {
+            await this.slackApi.postSystemMessage(
+              activeChannel,
+              `🤖 Autogoal: 이 지시를 goal로 설정했습니다 — ${formatGoalObjectiveForSlack(effectiveText)}`,
+              { threadTs: activeThreadTs },
+            );
+            dispatchText = buildGoalContinuationPrompt(applied.goal as SessionGoal);
+          }
         }
       }
 
@@ -1016,15 +1056,36 @@ export class SlackHandler {
   ): void {
     const goal = session.goal;
     if (!goal || goal.status !== 'active') return;
-    const turnText = assistantMessages.join('\n\n');
-    // Runtime-only stash — the driver reads this first as the work-summary
-    // evidence for the completion eval.
-    session.goalLastTurnText = turnText;
-    // Persisted, bounded mirror (S8) so an eval that first runs after a
-    // restart still has real evidence instead of an empty stash. Persisted
-    // via the `goal` serializer; the runtime stash above takes precedence.
-    goal.lastAssistantTurnSummary = turnText.slice(0, 16_000);
-    this.claudeHandler.saveSessions();
+
+    // codex review round 2/3 #2: only credit this turn's output to the goal if
+    // the live goal is STILL the one that owned the turn LEG (same goalId +
+    // intent epoch). An Update (epoch bump) or active-goal Delete (goalId swap)
+    // mid-turn invalidates the evidence. We key off `activeLegGoalId` /
+    // `activeLegGoalEpoch`, which `SessionRegistry.beginTurn` re-captures for
+    // EVERY leg — so this is correct even when one `startWithContinuation` call
+    // runs multiple adapter turns in a `continue()` loop (a single
+    // dispatch-time snapshot would only cover the first leg). A missing leg id
+    // (no goal was active at leg start, or beginTurn never ran in a unit test)
+    // preserves the original always-stash behavior. We still fire the driver
+    // either way: its own M1 epoch guard drives a correct fresh eval.
+    const legGoalId = session.activeLegGoalId;
+    const legGoalEpoch = session.activeLegGoalEpoch;
+    const goalChanged =
+      legGoalId !== undefined && (legGoalId !== goal.goalId || (legGoalEpoch ?? 0) !== (goal.epoch ?? 0));
+
+    if (goalChanged) {
+      this.logger.info('Goal changed during turn — skipping stale evidence stash', { sessionKey });
+    } else {
+      const turnText = assistantMessages.join('\n\n');
+      // Runtime-only stash — the driver reads this first as the work-summary
+      // evidence for the completion eval.
+      session.goalLastTurnText = turnText;
+      // Persisted, bounded mirror (S8) so an eval that first runs after a
+      // restart still has real evidence instead of an empty stash. Persisted
+      // via the `goal` serializer; the runtime stash above takes precedence.
+      goal.lastAssistantTurnSummary = turnText.slice(0, 16_000);
+      this.claudeHandler.saveSessions();
+    }
     this.logger.debug('Goal turn settled — triggering goal driver', { sessionKey });
     this.goalTurnSettledHandler?.(sessionKey);
   }
