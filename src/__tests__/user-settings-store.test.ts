@@ -22,6 +22,29 @@ function makeStore(): UserSettingsStore {
   return new UserSettingsStore(dir);
 }
 
+describe('Slack display-name identity (cross-user skill resolution)', () => {
+  it('stores slackDisplayName + exposes it via getAllUsers', () => {
+    const s = makeStore();
+    s.setUserSlackDisplayName('U094E5L4A15', 'Z');
+    const rec = s.getAllUsers().find((u) => u.userId === 'U094E5L4A15');
+    expect(rec?.slackDisplayName).toBe('Z');
+    expect(typeof rec?.slackIdentitySyncedAt).toBe('number');
+  });
+
+  it('shouldRefreshSlackIdentity: true when never synced, false right after a sync', () => {
+    const s = makeStore();
+    expect(s.shouldRefreshSlackIdentity('U1', 1000)).toBe(true); // never synced
+    s.setUserSlackDisplayName('U1', 'Z');
+    expect(s.shouldRefreshSlackIdentity('U1', 60_000)).toBe(false); // just synced
+  });
+
+  it('shouldRefreshSlackIdentity: true once the TTL has elapsed', () => {
+    const s = makeStore();
+    s.setUserSlackDisplayName('U1', 'Z');
+    expect(s.shouldRefreshSlackIdentity('U1', -1)).toBe(true); // negative ttl ⇒ always stale
+  });
+});
+
 // Issue #656 — 1M context variants + allow-list regression guards.
 //
 // The killshot that felled PR #652 was a silent shrinking of the user-facing

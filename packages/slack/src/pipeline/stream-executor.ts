@@ -1056,15 +1056,25 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         isOwner: session.ownerId === user,
       });
 
-      // Auto-fetch user profile (email + displayName) from Slack if not cached
-      // Uses strict === undefined to distinguish "never fetched" from "fetched but no email scope"
-      if (userSettingsStore.getUserEmail(user) === undefined) {
+      // Auto-fetch user profile (email + display_name) from Slack.
+      //   - email: one-time (strict === undefined distinguishes "never fetched"
+      //     from "fetched but no email scope").
+      //   - display_name: refreshed on a TTL so cross-user skill invocation by
+      //     display name (`$Z:skill`) tracks the user's CURRENT Slack handle —
+      //     the previous one-time email gate left renamed users' display names
+      //     stale, so the display name never resolved.
+      const SLACK_IDENTITY_TTL_MS = 6 * 60 * 60 * 1000; // 6h
+      const emailUnknown = userSettingsStore.getUserEmail(user) === undefined;
+      const identityStale = userSettingsStore.shouldRefreshSlackIdentity(user, SLACK_IDENTITY_TTL_MS);
+      if (emailUnknown || identityStale) {
         try {
           const profile = await this.deps.slackApi.getUserProfile(user);
-          // Store email or empty sentinel to prevent re-fetching when scope is missing
-          userSettingsStore.setUserEmail(user, profile.email ?? '');
+          if (emailUnknown) {
+            // Store email or empty sentinel to prevent re-fetching when scope is missing
+            userSettingsStore.setUserEmail(user, profile.email ?? '');
+          }
           if (profile.displayName && profile.displayName !== user) {
-            userSettingsStore.ensureUserExists(user, profile.displayName);
+            userSettingsStore.setUserSlackDisplayName(user, profile.displayName);
           }
         } catch (e) {
           this.logger.debug('Failed to fetch user profile from Slack', { user, error: e });
