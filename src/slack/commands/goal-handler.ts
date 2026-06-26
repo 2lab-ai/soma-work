@@ -208,6 +208,8 @@ export class GoalHandler implements CommandHandler {
       return;
     }
     session.goal.status = 'paused';
+    // A lifecycle change resolves any pending cap-decision DM (S3 dedup guard).
+    session.goal.capDmPendingAt = undefined;
     session.goal.updatedAt = Date.now();
     this.persistGoalChange(session);
     await this.deps.slackApi.postSystemMessage(channel, '⏸️ Goal paused. It will not be injected into future prompts.', {
@@ -257,6 +259,8 @@ export class GoalHandler implements CommandHandler {
     session.goal.completionReason = 'user';
     session.goal.pendingEval = undefined;
     session.goal.lastEvalReason = undefined;
+    // A completed goal resolves any pending cap-decision DM (S3 dedup guard).
+    session.goal.capDmPendingAt = undefined;
     session.goal.updatedAt = now;
 
     // Multi-goal (T2): archive the finished goal and promote the next queued

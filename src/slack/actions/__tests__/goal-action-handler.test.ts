@@ -146,4 +146,19 @@ describe('GoalActionHandler — cap-decision DM guards (S3, codex #2)', () => {
     expect(session.goal?.status).toBe('paused');
     expect(session.goal?.capDmPendingAt).toBeUndefined();
   });
+
+  it('Continue does NOT resurrect a goal that has since completed (round-2 #1)', async () => {
+    // `goal done` with no queue keeps a status=complete goal in session.goal,
+    // and capDmPendingAt may still be set if it was never cleared — a stale
+    // Continue click must NOT flip it back to active.
+    const session = makeSession({ goal: makeGoal({ status: 'complete', capDmPendingAt: 123 }) });
+    const { handler, saveSessions } = makeHandler(session);
+    const respond = vi.fn().mockResolvedValue(undefined);
+
+    await handler.handleContinueDm(body('goal-1'), respond);
+
+    expect(session.goal?.status).toBe('complete'); // not resurrected
+    expect(resumeGoalLoopMock).not.toHaveBeenCalled();
+    expect(saveSessions).not.toHaveBeenCalled();
+  });
 });

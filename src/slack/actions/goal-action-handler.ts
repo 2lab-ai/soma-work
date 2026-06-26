@@ -227,6 +227,12 @@ export class GoalActionHandler {
     const goal = session?.goal;
     if (!session || !goal || goal.goalId !== value.goalId) return { stale: true };
     if (goal.createdBy !== userId) return { error: '❌ goal 소유자만 응답할 수 있습니다.' };
+    // The cap DM is only ever sent for an ACTIVE goal sitting at its budget.
+    // Requiring status==='active' (in addition to a pending flag) means a goal
+    // that was completed (`goal done` keeps a complete goal in `session.goal`
+    // when the queue is empty) or paused since the DM was sent can never be
+    // resurrected by a stale Continue/Cancel click (codex review round 2 #1).
+    if (goal.status !== 'active') return { stale: true };
     if (goal.capDmPendingAt === undefined) return { stale: true };
     return { value, session, goal };
   }
