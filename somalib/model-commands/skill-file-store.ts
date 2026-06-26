@@ -258,6 +258,32 @@ export class SkillFileStore implements SkillStore {
    * The copy embeds the TRUE origin owner via `copied_from` so a chained copy
    * keeps resolving owner-relative refs to the original author.
    */
+  /**
+   * Persisted-grant permission check, reading the same `skill-grants.json`
+   * (`{ allowAll: string[], perSkill: Record<string,string[]> }`) the app's
+   * `user-skill-grants-store` writes. Mirrors `isSkillUseAllowed` for the
+   * persisted tiers only — one-time grants are app-process in-memory and not
+   * visible to this standalone store. No app imports (process-shared layer).
+   */
+  private isUseAllowed(ownerUid: string, skillName: string, requesterUid: string): boolean {
+    if (ownerUid === requesterUid) return true;
+    if (!isSafeSegment(ownerUid)) return false;
+    try {
+      const file = path.join(this.dataDir, ownerUid, 'skill-grants.json');
+      if (!fs.existsSync(file)) return false;
+      const g = JSON.parse(fs.readFileSync(file, 'utf-8')) as {
+        allowAll?: unknown;
+        perSkill?: Record<string, unknown>;
+      };
+      if (Array.isArray(g.allowAll) && g.allowAll.includes(requesterUid)) return true;
+      const list = g.perSkill?.[skillName];
+      if (Array.isArray(list) && list.includes(requesterUid)) return true;
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
   copySkill(user: string, sourceUser: string, name: string, newName?: string): { ok: boolean; message: string } {
     if (!isSafeSegment(sourceUser)) {
       return { ok: false, message: `Source user "${sourceUser}" not found.` };
@@ -267,6 +293,20 @@ export class SkillFileStore implements SkillStore {
     }
     if (sourceUser === user) {
       return { ok: false, message: 'Cannot copy your own skill.' };
+    }
+    // PERMISSION GATE: copying reads another user's SKILL.md, so it requires the
+    // owner's grant (codex review — this standalone MCP path was a gate bypass).
+    // Only PERSISTED grants are visible here: one-time grants live in the app
+    // process's memory, not on disk, so the cross-process MCP copy needs an
+    // allowlist/all-skills grant. Reads the same `skill-grants.json` the app's
+    // `user-skill-grants-store` writes.
+    if (!this.isUseAllowed(sourceUser, name, user)) {
+      return {
+        ok: false,
+        message:
+          `Permission required: <@${sourceUser}> must grant access. ` +
+          `In Slack open \`$user:<@${sourceUser}>\` and press '📋 복사' on "${name}" to request it.`,
+      };
     }
     const srcFp = this.skillPath(sourceUser, name);
     if (!fs.existsSync(srcFp)) {
