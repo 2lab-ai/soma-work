@@ -33,6 +33,37 @@ function extractDescription(content: string): string {
   return match?.[1]?.trim() ?? '';
 }
 
+const FRONTMATTER_RE = /^(---\s*\n[\s\S]*?\n---)/;
+const COPIED_FROM_LINE_RE = /^[ \t]*copied_from:[ \t]*["']?([\w-]+)(?::([\w-]+))?["']?[ \t]*$/m;
+
+/**
+ * Original-owner uid embedded in a copied skill's frontmatter, or null.
+ * Mirrors `src/user-skill-frontmatter.ts` (the app-level pure helper) — kept
+ * inline here because this standalone store must not import app modules.
+ */
+function extractCopiedFromOwner(content: string): string | null {
+  const fm = content.match(FRONTMATTER_RE);
+  if (!fm) return null;
+  const m = fm[1].match(COPIED_FROM_LINE_RE);
+  return m ? m[1] : null;
+}
+
+/** Set/insert a `copied_from` frontmatter field. Mirrors `withCopiedFrom`. */
+function injectCopiedFrom(content: string, ownerUserId: string, skillName: string): string {
+  const line = `copied_from: "${ownerUserId}:${skillName}"`;
+  const fm = content.match(FRONTMATTER_RE);
+  if (!fm) return `---\n${line}\n---\n${content}`;
+  const block = fm[1];
+  let newBlock: string;
+  if (COPIED_FROM_LINE_RE.test(block)) {
+    newBlock = block.replace(COPIED_FROM_LINE_RE, line);
+  } else {
+    const closingIdx = block.lastIndexOf('\n---');
+    newBlock = `${block.slice(0, closingIdx)}\n${line}${block.slice(closingIdx)}`;
+  }
+  return newBlock + content.slice(block.length);
+}
+
 export class SkillFileStore implements SkillStore {
   constructor(private readonly dataDir: string) {}
 
@@ -218,5 +249,32 @@ export class SkillFileStore implements SkillStore {
     }
 
     return { ok: true, message: skillRenameSuccessMessage(name, newName) };
+  }
+
+  /**
+   * Copy `sourceUser`'s skill `name` into `user`'s own set (S1/S8). The
+   * standalone store is uid-based — `sourceUser` must be a uid (the Slack host
+   * layer resolves display names before calling its in-process counterpart).
+   * The copy embeds the TRUE origin owner via `copied_from` so a chained copy
+   * keeps resolving owner-relative refs to the original author.
+   */
+  copySkill(user: string, sourceUser: string, name: string, newName?: string): { ok: boolean; message: string } {
+    if (!isSafeSegment(sourceUser)) {
+      return { ok: false, message: `Source user "${sourceUser}" not found.` };
+    }
+    if (!SKILL_NAME_PATTERN.test(name) || !isSafeSegment(name)) {
+      return { ok: false, message: invalidSkillNameMessage(name) };
+    }
+    if (sourceUser === user) {
+      return { ok: false, message: 'Cannot copy your own skill.' };
+    }
+    const srcFp = this.skillPath(sourceUser, name);
+    if (!fs.existsSync(srcFp)) {
+      return { ok: false, message: skillNotFoundMessage(name) };
+    }
+    const content = fs.readFileSync(srcFp, 'utf-8');
+    const originOwner = extractCopiedFromOwner(content) ?? sourceUser;
+    const withMeta = injectCopiedFrom(content, originOwner, name);
+    return this.createSkill(user, newName ?? name, withMeta);
   }
 }

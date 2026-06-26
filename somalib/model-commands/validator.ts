@@ -220,11 +220,12 @@ export function validateModelCommandRunArgs(args: unknown): ValidationResult {
       action !== 'list' &&
       action !== 'share' &&
       action !== 'rename' &&
-      action !== 'get'
+      action !== 'get' &&
+      action !== 'copy'
     ) {
       return invalidArgsFor(
         'MANAGE_SKILL',
-        `MANAGE_SKILL action must be 'create', 'update', 'delete', 'list', 'share', 'rename', or 'get', got: ${String(action)}`,
+        `MANAGE_SKILL action must be 'create', 'update', 'delete', 'list', 'share', 'rename', 'get', or 'copy', got: ${String(action)}`,
       );
     }
     if (
@@ -233,10 +234,25 @@ export function validateModelCommandRunArgs(args: unknown): ValidationResult {
         action === 'delete' ||
         action === 'share' ||
         action === 'rename' ||
-        action === 'get') &&
+        action === 'get' ||
+        action === 'copy') &&
       typeof params.name !== 'string'
     ) {
-      return invalidArgsFor('MANAGE_SKILL', 'MANAGE_SKILL name is required for create/update/delete/share/rename/get');
+      return invalidArgsFor(
+        'MANAGE_SKILL',
+        'MANAGE_SKILL name is required for create/update/delete/share/rename/get/copy',
+      );
+    }
+    // copy installs another user's skill into the caller's set — it needs a
+    // sourceUser and must not carry SKILL.md bytes (the server reads the
+    // source's content).
+    if (action === 'copy') {
+      if (typeof params.sourceUser !== 'string') {
+        return invalidArgsFor('MANAGE_SKILL', 'MANAGE_SKILL copy requires sourceUser');
+      }
+      if (params.content !== undefined) {
+        return invalidArgsFor('MANAGE_SKILL', 'MANAGE_SKILL copy does not accept content');
+      }
     }
     if ((action === 'create' || action === 'update') && typeof params.content !== 'string') {
       return invalidArgsFor('MANAGE_SKILL', 'MANAGE_SKILL content is required for create/update');
@@ -270,9 +286,10 @@ export function validateModelCommandRunArgs(args: unknown): ValidationResult {
       request: {
         commandId: 'MANAGE_SKILL',
         params: {
-          action: action as 'create' | 'update' | 'delete' | 'list' | 'share' | 'rename' | 'get',
+          action: action as 'create' | 'update' | 'delete' | 'list' | 'share' | 'rename' | 'get' | 'copy',
           name: typeof params.name === 'string' ? params.name : undefined,
           newName: typeof params.newName === 'string' ? params.newName : undefined,
+          sourceUser: typeof params.sourceUser === 'string' ? params.sourceUser : undefined,
           content: typeof params.content === 'string' ? params.content : undefined,
         },
       },

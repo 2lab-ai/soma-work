@@ -1,19 +1,22 @@
 import { Logger } from '../../logger';
-import { listUserSkills, type UserSkillMeta } from '../../user-skill-store';
+import { listUserSkills, type UserSkillMeta, userSkillExists } from '../../user-skill-store';
 // Pulled from the leaf module instead of '../actions/user-skill-menu-action-handler'
 // to break the cycle list-handler → menu-action-handler → view-submission-shared
 // → list-handler (#745).
 import {
   LEGACY_INVOKE_ACTION_ID_PREFIX,
   MENU_ACTION_ID_PREFIX,
+  VALUE_KIND_COPY,
   VALUE_KIND_DELETE,
   VALUE_KIND_EDIT,
   VALUE_KIND_INVOKE,
   VALUE_KIND_RENAME,
   VALUE_KIND_SHARE,
+  VALUE_KIND_VIEW,
 } from '../actions/user-skill-action-kinds';
 import { escapeSlackMrkdwn } from '../mrkdwn-escape';
 import type { CommandContext, CommandHandler, CommandResult } from './types';
+import { resolveUserIdentifier, type UserResolver } from './user-identity-resolver';
 
 /**
  * Slack message blocks have a hard cap of 50 (per Slack Block Kit docs).
@@ -84,6 +87,79 @@ export function buildUserSkillListBlocks(userId: string): UserSkillListBlocks | 
   const fallback = `🎯 Personal Skills (${skills.length}) — 버튼을 눌러 발동/편집/삭제/이름변경/공유`;
 
   return { blocks, fallback, count: skills.length };
+}
+
+/**
+ * Build blocks for ANOTHER user's skill list (`$user:{otherUser}`, S4).
+ *
+ * Each skill renders with an overflow hamburger carrying three verbs:
+ *   🚀 발동 (invoke the owner's skill via `$<@owner>:name`)
+ *   👀 보기 (view the SKILL.md — read-only)
+ *   📋 복사 (copy into the clicker's own skill set)
+ *
+ * The action value carries BOTH `ownerId` (the source user) and `requesterId`
+ * (the clicker who rendered the list, used for the click-binding guard).
+ */
+export function buildOtherUserSkillListBlocks(ownerId: string, requesterId: string): UserSkillListBlocks | null {
+  const skills = listUserSkills(ownerId);
+  if (skills.length === 0) return null;
+
+  const overflowed = skills.length > STORE_CAP;
+  const renderable = overflowed ? skills.slice(0, MAX_SECTIONS_BEFORE_OVERFLOW) : skills;
+
+  const blocks: any[] = [
+    {
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: `🎯 <@${ownerId}> 님의 Personal Skills (${skills.length})` }],
+    },
+    ...renderable.map((s) => buildOtherUserSkillSection(s, ownerId, requesterId)),
+  ];
+
+  if (overflowed) {
+    const hidden = skills.length - MAX_SECTIONS_BEFORE_OVERFLOW;
+    blocks.push({
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: `⚠️ ${hidden} more skills hidden — store cap exceeded.` }],
+    });
+  }
+
+  const fallback = `🎯 <@${ownerId}> 님의 Personal Skills (${skills.length}) — 발동/보기/복사`;
+  return { blocks, fallback, count: skills.length };
+}
+
+function buildOtherUserSkillSection(skill: UserSkillMeta, ownerId: string, requesterId: string): any {
+  const baseDesc = skill.description || '_(no description)_';
+  const safeDesc = escapeSlackMrkdwn(baseDesc).substring(0, DESC_TRUNC_LEN);
+  const multiFileNote = skill.isSingleFile ? '' : '\n_📁 multi-file_';
+  return {
+    type: 'section',
+    text: {
+      type: 'mrkdwn',
+      text: `*\`$<@${ownerId}>:${skill.name}\`*\n${safeDesc}${multiFileNote}`,
+    },
+    accessory: {
+      type: 'overflow',
+      action_id: `${MENU_ACTION_ID_PREFIX}${skill.name}`,
+      options: [
+        buildOwnerOption('🚀 발동', VALUE_KIND_INVOKE, skill.name, requesterId, ownerId),
+        buildOwnerOption('👀 보기', VALUE_KIND_VIEW, skill.name, requesterId, ownerId),
+        buildOwnerOption('📋 복사', VALUE_KIND_COPY, skill.name, requesterId, ownerId),
+      ],
+    },
+  };
+}
+
+function buildOwnerOption(
+  label: string,
+  kind: string,
+  skillName: string,
+  requesterId: string,
+  ownerId: string,
+): OverflowOption {
+  return {
+    text: { type: 'plain_text', text: label, emoji: true },
+    value: JSON.stringify({ kind, skillName, requesterId, ownerId }),
+  };
 }
 
 function buildSkillSection(skill: UserSkillMeta, requesterId: string): any {
@@ -188,13 +264,60 @@ function buildSkillAccessory(skillName: string, requesterId: string, isSingle: b
 export class UserSkillsListHandler implements CommandHandler {
   private logger = new Logger('UserSkillsListHandler');
 
+  /**
+   * @param resolveUser maps a Slack identifier to a uid for the cross-user list
+   *   form `$user:{otherUser}` (S4/S6). Defaults to the offline resolver;
+   *   injected as a stub in tests.
+   */
+  constructor(private resolveUser: UserResolver = resolveUserIdentifier) {}
+
   /** Matches exactly `$user` with optional surrounding whitespace, case-insensitive. */
-  canHandle(text: string): boolean {
-    return /^\s*\$user\s*$/i.test(text);
+  private static readonly BARE_RE = /^\s*\$user\s*$/i;
+  /** Matches `$user:{target}` — a single token after the colon. */
+  private static readonly TARGET_RE = /^\s*\$user:(\S+)\s*$/i;
+
+  /**
+   * Resolve `$user:{target}` to ANOTHER user's uid, or `null` when the form
+   * doesn't apply. Own-skill invocation wins for backward compatibility: if
+   * `target` is the requester's own skill, this returns `null` so the qualified
+   * `$user:{skill}` ref falls through to `SkillForceHandler`.
+   */
+  private resolveOtherUser(text: string, userId?: string): string | null {
+    if (!userId) return null;
+    const m = text.match(UserSkillsListHandler.TARGET_RE);
+    if (!m) return null;
+    const target = m[1];
+    // Own skill wins (BC) — let SkillForceHandler invoke it.
+    if (userSkillExists(userId, target)) return null;
+    const ownerId = this.resolveUser(target);
+    if (!ownerId || ownerId === userId) return null;
+    return ownerId;
+  }
+
+  canHandle(text: string, userId?: string): boolean {
+    if (UserSkillsListHandler.BARE_RE.test(text)) return true;
+    return this.resolveOtherUser(text, userId) !== null;
   }
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
-    const { user, say, threadTs } = ctx;
+    const { user, say, threadTs, text } = ctx;
+
+    // Cross-user list: `$user:{otherUser}` (S4).
+    const ownerId = this.resolveOtherUser(text, user);
+    if (ownerId) {
+      const built = buildOtherUserSkillListBlocks(ownerId, user);
+      if (!built) {
+        await say({
+          text: `📭 <@${ownerId}> 님은 등록된 personal skill이 없습니다.`,
+          thread_ts: threadTs,
+        });
+        return { handled: true };
+      }
+      this.logger.info('Listed another user’s skills', { requester: user, owner: ownerId, count: built.count });
+      await say({ text: built.fallback, thread_ts: threadTs, blocks: built.blocks });
+      return { handled: true };
+    }
+
     const built = buildUserSkillListBlocks(user);
 
     if (!built) {
