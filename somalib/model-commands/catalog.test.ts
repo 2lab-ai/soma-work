@@ -273,6 +273,7 @@ describe('MANAGE_SKILL share dispatcher', () => {
       deleteSkill: () => ({ ok: true, message: 'stub' }),
       shareSkill: () => ({ ok: false, message: 'stub default' }),
       renameSkill: () => ({ ok: true, message: 'stub rename' }),
+      copySkill: () => ({ ok: true, message: 'stub copy' }),
       ...overrides,
     };
   }
@@ -316,6 +317,9 @@ describe('MANAGE_SKILL share dispatcher', () => {
         throw new Error('skill store leak');
       },
       renameSkill: () => {
+        throw new Error('skill store leak');
+      },
+      copySkill: () => {
         throw new Error('skill store leak');
       },
     });
@@ -463,6 +467,71 @@ describe('MANAGE_SKILL share dispatcher', () => {
     expect(result.error.message).toContain('name');
     expect(result.error.message).toContain('share');
   });
+
+  // MANAGE_SKILL copy dispatcher (S1/S8) — install another user's skill.
+  describe('copy action', () => {
+    it('happy path — copies sourceUser’s skill into the caller’s set + emits mutated', () => {
+      registerSkillStore(
+        makeStubStore({
+          copySkill: (user, sourceUser, name) => ({
+            ok: true,
+            message: `copied ${sourceUser}:${name} for ${user}`,
+          }),
+        }),
+      );
+
+      const result = runModelCommand(
+        {
+          commandId: 'MANAGE_SKILL',
+          params: { action: 'copy', sourceUser: 'Zhuge', name: 'qa-dev' },
+        } as ModelCommandRunRequest,
+        shareCtx(),
+      );
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const payload = result.payload as Record<string, unknown>;
+      expect(payload.ok).toBe(true);
+      expect(payload.mutated).toEqual({ kind: 'skill', user: 'U123', action: 'create' });
+    });
+
+    it('does NOT emit mutated on copy failure', () => {
+      registerSkillStore(makeStubStore({ copySkill: () => ({ ok: false, message: 'already exists' }) }));
+
+      const result = runModelCommand(
+        {
+          commandId: 'MANAGE_SKILL',
+          params: { action: 'copy', sourceUser: 'Zhuge', name: 'qa-dev' },
+        } as ModelCommandRunRequest,
+        shareCtx(),
+      );
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const payload = result.payload as Record<string, unknown>;
+      expect(payload.ok).toBe(false);
+      expect(payload.mutated).toBeUndefined();
+    });
+
+    it('rejects copy when sourceUser or name is missing', () => {
+      registerSkillStore(
+        makeStubStore({
+          copySkill: () => {
+            throw new Error('storage should not be called when args missing');
+          },
+        }),
+      );
+
+      const result = runModelCommand(
+        { commandId: 'MANAGE_SKILL', params: { action: 'copy', name: 'qa-dev' } } as ModelCommandRunRequest,
+        shareCtx(),
+      );
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.code).toBe('INVALID_ARGS');
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -485,6 +554,7 @@ describe('MANAGE_SKILL get dispatcher', () => {
       deleteSkill: () => ({ ok: true, message: 'stub' }),
       shareSkill: () => ({ ok: false, message: 'stub default' }),
       renameSkill: () => ({ ok: true, message: 'stub rename' }),
+      copySkill: () => ({ ok: true, message: 'stub copy' }),
       ...overrides,
     };
   }
@@ -516,6 +586,9 @@ describe('MANAGE_SKILL get dispatcher', () => {
         throw new Error('skill store leak');
       },
       renameSkill: () => {
+        throw new Error('skill store leak');
+      },
+      copySkill: () => {
         throw new Error('skill store leak');
       },
     });
@@ -644,6 +717,7 @@ describe('MANAGE_SKILL rename dispatcher + mutation signal', () => {
       deleteSkill: () => ({ ok: true, message: 'stub delete' }),
       shareSkill: () => ({ ok: false, message: 'stub share default' }),
       renameSkill: () => ({ ok: true, message: 'stub rename' }),
+      copySkill: () => ({ ok: true, message: 'stub copy' }),
       ...overrides,
     };
   }

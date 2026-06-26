@@ -73,6 +73,19 @@ export interface SkillStore {
     name: string,
     newName: string,
   ): { ok: boolean; message: string; error?: 'NOT_FOUND' | 'EEXIST' | 'INVALID' | 'IO' };
+  /**
+   * Copy another user's skill into `user`'s own set (S1/S8).
+   *
+   * `sourceUser` is a Slack identifier (uid or display name) — the
+   * implementation resolves it to a uid, reads the source SKILL.md, and writes
+   * a copy into `user`'s skills dir with an embedded `copied_from` attribution
+   * so the copy's owner-relative refs keep resolving to the original author.
+   * `newName` optionally renames the installed copy.
+   *
+   *   - happy:        `{ ok: true, message }`
+   *   - source gone / unresolved user / name collision / cap → `{ ok: false, message }`
+   */
+  copySkill(user: string, sourceUser: string, name: string, newName?: string): { ok: boolean; message: string };
 }
 
 let _skillStore: SkillStore | null = null;
@@ -341,20 +354,30 @@ const MANAGE_SKILL_SCHEMA = {
   properties: {
     action: {
       type: 'string',
-      enum: ['create', 'update', 'delete', 'list', 'share', 'rename', 'get'],
+      enum: ['create', 'update', 'delete', 'list', 'share', 'rename', 'get', 'copy'],
       description:
         'create: new skill, update: overwrite existing, delete: remove, ' +
         'list: show all, share: return full content for cross-user copy-paste install, ' +
         'rename: move SKILL.md directory from `name` to `newName`, ' +
-        'get: read back the full SKILL.md of one of your own skills (self-fetch, no share cap)',
+        'get: read back the full SKILL.md of one of your own skills (self-fetch, no share cap), ' +
+        "copy: install another user's skill `name` (from `sourceUser`) into your own set",
     },
     name: {
       type: 'string',
-      description: 'Skill name in kebab-case (e.g. my-deploy). Required for create/update/delete/share/rename/get.',
+      description:
+        'Skill name in kebab-case (e.g. my-deploy). Required for create/update/delete/share/rename/get/copy.',
     },
     newName: {
       type: 'string',
-      description: 'New skill name (kebab-case). Required for rename only — must differ from `name`.',
+      description:
+        'New skill name (kebab-case). Required for rename (must differ from `name`); optional for copy ' +
+        '(install the copied skill under a different name).',
+    },
+    sourceUser: {
+      type: 'string',
+      description:
+        'Source user for copy — a Slack uid (e.g. U094E5L4A15) or display name (e.g. Zhuge) whose skill ' +
+        '`name` will be copied into your own set. Required for copy only.',
     },
     content: {
       type: 'string',
@@ -956,6 +979,28 @@ export function runModelCommand(
           message: shareSuccessMessage(params.name),
           name: params.name,
           content: result.content,
+        },
+      };
+    }
+    if (params.action === 'copy') {
+      if (!params.name || !params.sourceUser) {
+        return toRunError('MANAGE_SKILL', {
+          code: 'INVALID_ARGS',
+          message: 'name and sourceUser required for copy',
+        });
+      }
+      const result = store.copySkill(context.user, params.sourceUser, params.name, params.newName);
+      return {
+        type: 'model_command_result',
+        commandId: 'MANAGE_SKILL',
+        ok: true,
+        payload: {
+          ok: result.ok,
+          message: result.message,
+          // Copy creates a new skill in the caller's set — same emit-on-success
+          // invariant as create. `action: 'create'` so the host invalidates the
+          // caller's cached system prompt (the new skill must appear).
+          ...(result.ok ? { mutated: { kind: 'skill' as const, user: context.user, action: 'create' as const } } : {}),
         },
       };
     }

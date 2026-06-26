@@ -4,6 +4,7 @@ import type { ClaudeHandler } from '../../claude-handler';
 import { Logger } from '../../logger';
 import {
   computeContentHash,
+  copyUserSkill,
   getUserSkill,
   isSingleFileSkill,
   isValidSkillName,
@@ -22,11 +23,13 @@ import type { MessageHandler, RespondFn, SayFn } from './types';
 import {
   LEGACY_INVOKE_ACTION_ID_PREFIX,
   MENU_ACTION_ID_PREFIX,
+  VALUE_KIND_COPY,
   VALUE_KIND_DELETE,
   VALUE_KIND_EDIT,
   VALUE_KIND_INVOKE,
   VALUE_KIND_RENAME,
   VALUE_KIND_SHARE,
+  VALUE_KIND_VIEW,
 } from './user-skill-action-kinds';
 import { buildSkillViewPrivateMetadata } from './user-skill-view-submission-shared';
 
@@ -61,12 +64,21 @@ type SkillMenuKind =
   | typeof VALUE_KIND_EDIT
   | typeof VALUE_KIND_DELETE
   | typeof VALUE_KIND_RENAME
-  | typeof VALUE_KIND_SHARE;
+  | typeof VALUE_KIND_SHARE
+  | typeof VALUE_KIND_VIEW
+  | typeof VALUE_KIND_COPY;
 
 interface ParsedActionValue {
   kind: SkillMenuKind;
   skillName: string;
   requesterId: string;
+  /**
+   * Cross-user list (S4): the SOURCE user whose skill this row represents. When
+   * present and different from `requesterId`, view/copy/invoke target this user
+   * instead of the clicker's own skill set. The click guard still binds to
+   * `requesterId` (the clicker who rendered the list).
+   */
+  ownerId?: string;
 }
 
 const KNOWN_KINDS: ReadonlySet<SkillMenuKind> = new Set([
@@ -75,6 +87,8 @@ const KNOWN_KINDS: ReadonlySet<SkillMenuKind> = new Set([
   VALUE_KIND_DELETE,
   VALUE_KIND_RENAME,
   VALUE_KIND_SHARE,
+  VALUE_KIND_VIEW,
+  VALUE_KIND_COPY,
 ]);
 
 /**
@@ -206,6 +220,12 @@ export class UserSkillMenuActionHandler {
           return;
         case VALUE_KIND_SHARE:
           await this.handleShare(click, respond, client);
+          return;
+        case VALUE_KIND_VIEW:
+          await this.handleView(click, respond);
+          return;
+        case VALUE_KIND_COPY:
+          await this.handleCopy(click, respond);
           return;
         case VALUE_KIND_INVOKE:
         default:
@@ -444,12 +464,116 @@ export class UserSkillMenuActionHandler {
     });
   }
 
+  /**
+   * View another user's SKILL.md read-only (S4 보기). Sources from `ownerId`
+   * (the list owner) and responds ephemerally to the clicker. Long bodies are
+   * truncated in the ephemeral preview — view is a quick look, not an export
+   * (use 복사 to install, or 공유 from one's own list to export).
+   */
+  private async handleView(click: ResolvedClick, respond: RespondFn): Promise<void> {
+    const sourceId = click.value.ownerId ?? click.value.requesterId;
+    const detail = getUserSkill(sourceId, click.value.skillName);
+    if (!detail) {
+      await respond({
+        response_type: 'ephemeral',
+        text: `❌ 스킬을 찾을 수 없습니다: \`$<@${sourceId}>:${click.value.skillName}\``,
+        replace_original: false,
+      });
+      return;
+    }
+
+    const preview =
+      detail.content.length > SHARE_CONTENT_CHAR_LIMIT
+        ? `${detail.content.slice(0, SHARE_CONTENT_CHAR_LIMIT)}\n… (truncated — 복사 후 편집해서 전체를 보세요)`
+        : detail.content;
+    const fence = chooseSafeFence(preview);
+    const body = [
+      `👀 *<@${sourceId}> 님의 skill:* \`${click.value.skillName}\``,
+      '`📋 복사` 를 누르면 내 skill 로 설치됩니다.',
+      '',
+      fence,
+      preview,
+      fence,
+    ].join('\n');
+
+    await respond({ response_type: 'ephemeral', text: body, replace_original: false });
+    this.logger.info('user_skill_menu: cross-user view', {
+      requesterId: click.value.requesterId,
+      ownerId: sourceId,
+      skillName: click.value.skillName,
+    });
+  }
+
+  /**
+   * Copy another user's skill into the clicker's own set (S4 복사). The store
+   * embeds the origin owner via `copied_from` so the copy's owner-relative refs
+   * keep resolving to the original author (S8).
+   */
+  private async handleCopy(click: ResolvedClick, respond: RespondFn): Promise<void> {
+    const sourceId = click.value.ownerId ?? click.value.requesterId;
+    if (sourceId === click.value.requesterId) {
+      await respond({
+        response_type: 'ephemeral',
+        text: '⚠️ 자기 자신의 skill 은 복사할 수 없습니다.',
+        replace_original: false,
+      });
+      return;
+    }
+
+    const result = copyUserSkill(sourceId, click.value.skillName, click.value.requesterId);
+    await respond({
+      response_type: 'ephemeral',
+      text: result.ok
+        ? `📋 복사 완료: \`$user:${click.value.skillName}\` — 이제 내 skill 로 사용할 수 있습니다.`
+        : `❌ 복사 실패: ${result.message}`,
+      replace_original: false,
+    });
+    this.logger.info('user_skill_menu: cross-user copy', {
+      requesterId: click.value.requesterId,
+      ownerId: sourceId,
+      skillName: click.value.skillName,
+      ok: result.ok,
+    });
+  }
+
   private async handleInvoke(click: ResolvedClick, respond: RespondFn): Promise<void> {
     const { value, channel, messageTs, threadTs } = click;
 
     if (!channel) {
       this.logger.warn('user_skill_menu invoke: missing channel id', {
         requesterId: value.requesterId,
+        skillName: value.skillName,
+      });
+      return;
+    }
+
+    // Cross-user invoke (S4): re-inject `$<@owner>:skill` so SkillForceHandler
+    // resolves the owner's skill (owner-scoped nested refs included).
+    const isCrossUser = !!value.ownerId && value.ownerId !== value.requesterId;
+    if (isCrossUser) {
+      const ownerId = value.ownerId as string;
+      if (!userSkillExists(ownerId, value.skillName)) {
+        await respond({
+          response_type: 'ephemeral',
+          text: `❌ 스킬이 더 이상 존재하지 않습니다: \`$<@${ownerId}>:${value.skillName}\``,
+          replace_original: false,
+        });
+        return;
+      }
+      const say = this.createSayFn(channel);
+      await this.ctx.messageHandler(
+        {
+          user: value.requesterId,
+          channel,
+          thread_ts: threadTs,
+          ts: messageTs ?? '',
+          text: `$<@${ownerId}>:${value.skillName}`,
+        },
+        say,
+      );
+      this.logger.info('user_skill_menu: cross-user invoke dispatched', {
+        requesterId: value.requesterId,
+        ownerId,
         skillName: value.skillName,
       });
       return;
@@ -709,6 +833,10 @@ export class UserSkillMenuActionHandler {
 
     const skillName = typeof parsed.skillName === 'string' ? parsed.skillName : '';
     const requesterId = typeof parsed.requesterId === 'string' ? parsed.requesterId : '';
+    const ownerId =
+      typeof (parsed as { ownerId?: unknown }).ownerId === 'string'
+        ? ((parsed as { ownerId?: string }).ownerId as string)
+        : undefined;
     const rawKind = typeof parsed.kind === 'string' ? parsed.kind : VALUE_KIND_INVOKE;
     // Whitelist known kinds — anything else (forged payload, future verb
     // typo, etc.) collapses to INVOKE (the original BC behavior). New verbs
@@ -719,7 +847,7 @@ export class UserSkillMenuActionHandler {
 
     const messageTs: string | undefined = body?.message?.ts;
     return {
-      value: { kind, skillName, requesterId },
+      value: { kind, skillName, requesterId, ownerId },
       clickerId: body?.user?.id,
       channel: body?.channel?.id,
       messageTs,
