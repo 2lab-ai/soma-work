@@ -179,6 +179,30 @@ export function computeContentHash(content: string): string {
 
 // --- Public API ---
 
+/**
+ * List a user's skill NAMES only — without reading any SKILL.md content.
+ *
+ * Used to render ANOTHER user's `$user:{owner}` list: skill names (directory
+ * names) are the minimal metadata needed to request access, whereas the
+ * descriptions inside SKILL.md are gated content. Reading descriptions for a
+ * cross-user list would leak the owner's skill bodies before any permission
+ * grant (codex review). Only a directory walk + a `SKILL.md` existence check —
+ * no `readFileSync`.
+ */
+export function listUserSkillNames(userId: string): string[] {
+  const skillsDir = getUserSkillsDir(userId);
+  if (!fs.existsSync(skillsDir)) return [];
+  try {
+    return fs
+      .readdirSync(skillsDir, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && fs.existsSync(path.join(skillsDir, e.name, 'SKILL.md')))
+      .map((e) => e.name)
+      .sort((a, b) => a.localeCompare(b));
+  } catch {
+    return [];
+  }
+}
+
 export function listUserSkills(userId: string): UserSkillMeta[] {
   const skillsDir = getUserSkillsDir(userId);
   if (!fs.existsSync(skillsDir)) return [];

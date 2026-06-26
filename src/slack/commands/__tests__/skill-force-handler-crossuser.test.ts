@@ -13,6 +13,15 @@ vi.mock('../../../path-utils', () => ({
   isSafePathSegment: (s: string) => !!s && !s.includes('/') && !s.includes('..'),
 }));
 
+// These tests exercise cross-user RESOLUTION mechanics, not the permission gate
+// — assume the owner has granted access. The deny path is covered in
+// skill-force-handler-permission.test.ts.
+vi.mock('../../../user-skill-grants-store', () => ({
+  isSkillUseAllowed: () => true,
+  hasOneTimeGrant: () => false,
+  consumeOneTimeGrant: () => false,
+}));
+
 /**
  * RED tests for cross-user forced skill invocation (S3) + owner-scoped nested
  * resolution (S7) + copied-skill owner context (S8 at invocation time).

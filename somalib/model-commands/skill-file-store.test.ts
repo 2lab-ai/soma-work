@@ -101,6 +101,54 @@ describe('SkillFileStore.shareSkill', () => {
  * moved, not the file. We assert byte equality post-rename so future "smarten
  * frontmatter" temptations have a regression alarm to trip.
  */
+describe('SkillFileStore.copySkill — permission gate', () => {
+  let dataDir: string;
+  let store: SkillFileStore;
+  const owner = 'U0OWNER';
+  const requester = 'U0REQ';
+  const ownerSkill = ['---', 'name: deploy', 'description: x', '---', 'body'].join('\n');
+
+  beforeEach(() => {
+    dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-file-store-copy-'));
+    store = new SkillFileStore(dataDir);
+    store.createSkill(owner, 'deploy', ownerSkill);
+  });
+
+  afterEach(() => {
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  function writeGrants(grants: { allowAll?: string[]; perSkill?: Record<string, string[]> }) {
+    fs.mkdirSync(path.join(dataDir, owner), { recursive: true });
+    fs.writeFileSync(path.join(dataDir, owner, 'skill-grants.json'), JSON.stringify(grants), 'utf-8');
+  }
+
+  it('DENIES copy when the requester has no persisted grant', () => {
+    const res = store.copySkill(requester, owner, 'deploy');
+    expect(res.ok).toBe(false);
+    expect(res.message).toMatch(/Permission required/i);
+    // The copy must NOT have been installed.
+    expect(store.listSkills(requester).some((s) => s.name === 'deploy')).toBe(false);
+  });
+
+  it('ALLOWS copy with a per-skill grant', () => {
+    writeGrants({ perSkill: { deploy: [requester] } });
+    const res = store.copySkill(requester, owner, 'deploy');
+    expect(res.ok).toBe(true);
+    expect(store.listSkills(requester).some((s) => s.name === 'deploy')).toBe(true);
+  });
+
+  it('ALLOWS copy with an all-skills grant', () => {
+    writeGrants({ allowAll: [requester] });
+    expect(store.copySkill(requester, owner, 'deploy').ok).toBe(true);
+  });
+
+  it('a per-skill grant for a DIFFERENT skill does not authorize this one', () => {
+    writeGrants({ perSkill: { other: [requester] } });
+    expect(store.copySkill(requester, owner, 'deploy').ok).toBe(false);
+  });
+});
+
 describe('SkillFileStore.renameSkill', () => {
   let dataDir: string;
   let store: SkillFileStore;
