@@ -64,6 +64,18 @@ describe('resolveUserIdentifier', () => {
     expect(resolveUserIdentifier('Sam', dupDir)).toBeNull();
   });
 
+  it('SECURITY: a uid-shaped token resolves to the uid, not a display-name squatter', () => {
+    // A malicious user sets their display name to another user's uid. The uid
+    // is canonical and must win, so `$user:U0VICTIM01` cannot be hijacked.
+    const squatDir: UserDirectory = {
+      getAllUsers: () => [
+        { userId: 'U0VICTIM01', slackName: 'victim' },
+        { userId: 'U0ATTACKER', slackName: 'U0VICTIM01' },
+      ],
+    };
+    expect(resolveUserIdentifier('U0VICTIM01', squatDir)).toBe('U0VICTIM01');
+  });
+
   it('still resolves a uid even when a display name is ambiguous', () => {
     const dupDir: UserDirectory = {
       getAllUsers: () => [

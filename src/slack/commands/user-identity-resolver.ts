@@ -47,14 +47,17 @@ const defaultDirectory: UserDirectory = {
  *   - raw uid         `U094E5L4A15`
  *   - display name    `Zhuge` / `@Zhuge` / `alice.kim` (case-insensitive)
  *
- * Resolution order is deliberate:
+ * Resolution order is deliberate (uid precedence is a SECURITY property):
  *   1. mention markup → the embedded uid (definitive; Slack itself produced it)
- *   2. display-name match against the directory (the user's typed intent)
- *   3. uid-shaped bare token → itself (covers users absent from the directory,
- *      e.g. the skill-existence check downstream is the real gate)
- *
- * Display-name match precedes the uid-shape fallback so a token that is BOTH a
- * valid display name and uid-shaped resolves as the name the user meant.
+ *   2. uid-shaped bare token → itself. A uid is the canonical, unspoofable
+ *      identifier, so it MUST win over a display name. Otherwise a user who
+ *      sets their Slack display name to another user's uid (`U0VICTIM`) could
+ *      hijack `$user:U0VICTIM` / `$U0VICTIM:skill` and intercept references
+ *      meant for the real uid owner.
+ *   3. display-name match against the directory (case-insensitive). NOT unique
+ *      in Slack, so we fail closed on ambiguity: 2+ distinct uids sharing the
+ *      name → null (require uid/mention) rather than guess a tenant.
+ *   4. exact uid match in the directory (covers non-UID_RE-shaped ids).
  */
 export function resolveUserIdentifier(token: string, directory: UserDirectory = defaultDirectory): string | null {
   if (typeof token !== 'string') return null;
@@ -69,10 +72,11 @@ export function resolveUserIdentifier(token: string, directory: UserDirectory = 
   const bare = trimmed.startsWith('@') ? trimmed.slice(1) : trimmed;
   if (!bare) return null;
 
-  // 2. Display-name match (case-insensitive) against the offline directory.
-  //    Display names are NOT unique in Slack, so we fail closed on ambiguity:
-  //    if two distinct uids share the name, the caller must use a uid/mention
-  //    rather than silently target the wrong tenant.
+  // 2. uid-shaped bare token → itself, BEFORE any display-name lookup, so a
+  //    malicious display name equal to a uid cannot hijack that uid.
+  if (UID_RE.test(bare)) return bare;
+
+  // 3. Display-name match (case-insensitive), failing closed on ambiguity.
   const lower = bare.toLowerCase();
   let users: Array<{ userId: string; slackName?: string }>;
   try {
@@ -87,14 +91,11 @@ export function resolveUserIdentifier(token: string, directory: UserDirectory = 
   if (nameMatches.size === 1) return [...nameMatches][0];
   if (nameMatches.size > 1) return null; // ambiguous — require uid/mention
 
-  // An exact uid match in the directory also wins (covers directories that key
-  // by uid without a slackName).
+  // 4. Exact uid match in the directory (covers directories that key by uid
+  //    with a non-UID_RE-shaped id).
   for (const u of users) {
     if (u.userId === bare) return u.userId;
   }
-
-  // 3. uid-shaped bare token → itself (user may not be in the directory yet).
-  if (UID_RE.test(bare)) return bare;
 
   return null;
 }
