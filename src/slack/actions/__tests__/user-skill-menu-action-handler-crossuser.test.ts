@@ -4,6 +4,15 @@ import { UserSkillMenuActionHandler } from '../user-skill-menu-action-handler';
 
 vi.mock('../../../user-skill-store');
 
+// Controllable permission gate. Default: allow (these tests exercise view/copy
+// mechanics). The deny path (permission requested) is asserted explicitly.
+const perm = vi.hoisted(() => ({
+  allow: vi.fn((_o: string, _s: string, _r: string) => true),
+  createReq: vi.fn(() => ({ requestId: 'rq1' })),
+}));
+vi.mock('../../../user-skill-grants-store', () => ({ isSkillUseAllowed: perm.allow }));
+vi.mock('../../../skill-permission-request-store', () => ({ createPermissionRequest: perm.createReq }));
+
 /**
  * RED tests for the cross-user list verbs (S4): 보기(view) + 복사(copy), plus
  * cross-user invoke. The action value carries `ownerId` (the source user)
@@ -34,6 +43,8 @@ describe('UserSkillMenuActionHandler — cross-user (S4)', () => {
     vi.mocked(userSkillStore.userSkillExists).mockReturnValue(true);
     vi.mocked(userSkillStore.getUserSkill).mockReturnValue({ name: 'deploy', description: 'd', content: 'OWNER BODY' });
     vi.mocked(userSkillStore.copyUserSkill).mockReturnValue({ ok: true, message: 'copied' });
+    perm.allow.mockReturnValue(true);
+    perm.createReq.mockReturnValue({ requestId: 'rq1' } as any);
   });
 
   const overflowBody = (kind: string) => ({
@@ -86,5 +97,26 @@ describe('UserSkillMenuActionHandler — cross-user (S4)', () => {
     await handler.handleAction(body, respond, {} as any);
     expect(userSkillStore.copyUserSkill).not.toHaveBeenCalled();
     expect(respond.mock.calls[0][0].response_type).toBe('ephemeral');
+  });
+
+  // --- permission gate (deny path) ---
+
+  it('VIEW denied: posts a permission request to the owner instead of the content', async () => {
+    perm.allow.mockReturnValue(false);
+    await handler.handleAction(overflowBody('user_skill_view'), respond, {} as any);
+    // No content read; a request was created + prompt posted to the thread.
+    expect(userSkillStore.getUserSkill).not.toHaveBeenCalled();
+    expect(perm.createReq).toHaveBeenCalledWith(
+      expect.objectContaining({ operation: 'view', ownerId: 'U094', requesterId: 'U1', skillName: 'deploy' }),
+    );
+    expect(slackApi.postMessage).toHaveBeenCalled();
+    expect(JSON.stringify(slackApi.postMessage.mock.calls)).toContain('skill_perm_');
+  });
+
+  it('COPY denied: requests permission instead of copying', async () => {
+    perm.allow.mockReturnValue(false);
+    await handler.handleAction(overflowBody('user_skill_copy'), respond, {} as any);
+    expect(userSkillStore.copyUserSkill).not.toHaveBeenCalled();
+    expect(perm.createReq).toHaveBeenCalledWith(expect.objectContaining({ operation: 'copy', ownerId: 'U094' }));
   });
 });

@@ -3,7 +3,10 @@ import * as path from 'node:path';
 import { DATA_DIR, PLUGINS_DIR } from '../../env-paths';
 import { Logger } from '../../logger';
 import { isSafePathSegment } from '../../path-utils';
+import { createPermissionRequest } from '../../skill-permission-request-store';
 import { extractCopiedFrom } from '../../user-skill-frontmatter';
+import { consumeOneTimeGrant, hasOneTimeGrant, isSkillUseAllowed } from '../../user-skill-grants-store';
+import { buildPermissionRequestMessage } from '../skill-permission-blocks';
 import { ToolFormatter } from '../tool-formatter';
 import type { CommandContext, CommandHandler, CommandResult } from './types';
 import { resolveUserIdentifier, type UserResolver } from './user-identity-resolver';
@@ -161,6 +164,29 @@ interface SkillRef {
   ownerUserId?: string;
 }
 
+/** A cross-user (owner, skill) the requester is not (yet) permitted to access. */
+interface DeniedRef {
+  ownerUserId: string;
+  skillName: string;
+}
+
+/**
+ * Mutable state threaded through the recursive resolution. `requesterId` (the
+ * original caller A) is constant across recursion — it drives the permission
+ * gate independently of the owner-context userId used for path resolution.
+ */
+interface ResolveState {
+  resolved: Map<string, string>;
+  errors: string[];
+  /** The original requester (A). Constant through recursion. */
+  requesterId: string;
+  /** Cross-user refs A may not access — drives a halt + permission request. */
+  denied: DeniedRef[];
+  deniedSeen: Set<string>;
+  /** (owner, skill) satisfied by a one-time grant — consumed on success only. */
+  oneTime: DeniedRef[];
+}
+
 /**
  * Outcome of resolving a bare `$skill` against the fallback chain.
  *
@@ -273,12 +299,27 @@ export class SkillForceHandler implements CommandHandler {
       return { handled: false };
     }
 
-    // Resolve all skills recursively, collecting content
-    const resolved = new Map<string, string>();
-    const errors: string[] = [];
+    // Resolve all skills recursively, collecting content + permission denials.
+    const state: ResolveState = {
+      resolved: new Map<string, string>(),
+      errors: [],
+      requesterId: user,
+      denied: [],
+      deniedSeen: new Set<string>(),
+      oneTime: [],
+    };
 
     for (const ref of topLevelRefs) {
-      this.resolveSkill(ref, resolved, errors, 0, user);
+      this.resolveSkill(ref, state, 0, user);
+    }
+
+    const { resolved, errors } = state;
+
+    // Any cross-user skill the requester isn't permitted to access HALTS the
+    // whole turn (no partial execution) and asks each owner for permission.
+    if (state.denied.length > 0) {
+      await this.emitPermissionRequests(ctx, state.denied, text);
+      return { handled: true };
     }
 
     if (resolved.size === 0) {
@@ -291,6 +332,12 @@ export class SkillForceHandler implements CommandHandler {
 
     if (errors.length > 0) {
       this.logger.warn('Some skills could not be resolved', { errors });
+    }
+
+    // Turn is fulfilling — consume any one-time grants that authorized a
+    // cross-user read (strict single-use; only on the success path).
+    for (const o of state.oneTime) {
+      consumeOneTimeGrant(o.ownerUserId, o.skillName, user);
     }
 
     // Build the <invoked_skills> block with plugin:skill tags
@@ -320,6 +367,38 @@ export class SkillForceHandler implements CommandHandler {
       handled: true,
       continueWithPrompt: finalPrompt,
     };
+  }
+
+  /**
+   * Post a permission-request prompt to each denied skill's owner (B). The
+   * original message text is recorded so a grant can re-dispatch A's request to
+   * fulfill it. Requests dedupe server-side, so re-running A's message after a
+   * partial grant won't re-prompt an owner who already has a pending request.
+   */
+  private async emitPermissionRequests(ctx: CommandContext, denied: DeniedRef[], originalText: string): Promise<void> {
+    const { user, channel, threadTs, say } = ctx;
+    for (const d of denied) {
+      const req = createPermissionRequest({
+        operation: 'invoke',
+        requesterId: user,
+        ownerId: d.ownerUserId,
+        skillName: d.skillName,
+        channel,
+        threadTs,
+        originalText,
+      });
+      const msg = buildPermissionRequestMessage({
+        requestId: req.requestId,
+        requesterId: user,
+        ownerId: d.ownerUserId,
+        skillName: d.skillName,
+      });
+      await say({ text: msg.text, thread_ts: threadTs, blocks: msg.blocks });
+    }
+    this.logger.info('Cross-user skill use denied — permission requested', {
+      requester: user,
+      owners: denied.map((d) => `${d.ownerUserId}:${d.skillName}`),
+    });
   }
 
   /**
@@ -614,13 +693,7 @@ export class SkillForceHandler implements CommandHandler {
    * Ambiguous nested bare refs are dropped silently with a warning — they
    * are not the user's direct request, so a thrown error would be surprising.
    */
-  private resolveSkill(
-    ref: SkillRef,
-    resolved: Map<string, string>,
-    errors: string[],
-    depth: number,
-    userId?: string,
-  ): void {
+  private resolveSkill(ref: SkillRef, state: ResolveState, depth: number, userId?: string): void {
     // Owner-aware canonical key: a `user`-namespace ref's identity is
     // (owner, skill), NOT just the skill name. Without the owner, two borrowed
     // skills from different owners that both nest `$user:dev` would collide on
@@ -630,15 +703,34 @@ export class SkillForceHandler implements CommandHandler {
     const effectiveOwner = ref.ownerUserId ?? (ref.plugin === 'user' ? userId : undefined);
     const canonicalKey = effectiveOwner ? `user:${effectiveOwner}:${ref.skill}` : ref.key;
 
-    if (resolved.has(canonicalKey)) return;
+    if (state.resolved.has(canonicalKey)) return;
     if (depth >= MAX_DEPTH) {
       this.logger.warn('Max skill recursion depth reached', { skill: canonicalKey, depth });
       return;
     }
 
+    // PERMISSION GATE (applies at every depth, including nested + copied_from-
+    // redirected refs): reading another user's SKILL.md requires that owner's
+    // grant. Checked NON-mutatingly here; one-time grants are recorded and
+    // consumed only if the whole turn succeeds. A denial halts the read (and
+    // recursion) so no portion of the owner's skill leaks.
+    if (effectiveOwner && effectiveOwner !== state.requesterId) {
+      if (!isSkillUseAllowed(effectiveOwner, ref.skill, state.requesterId)) {
+        const dk = `${effectiveOwner}\u0000${ref.skill}`;
+        if (!state.deniedSeen.has(dk)) {
+          state.deniedSeen.add(dk);
+          state.denied.push({ ownerUserId: effectiveOwner, skillName: ref.skill });
+        }
+        return;
+      }
+      if (hasOneTimeGrant(effectiveOwner, ref.skill, state.requesterId)) {
+        state.oneTime.push({ ownerUserId: effectiveOwner, skillName: ref.skill });
+      }
+    }
+
     const skillPath = this.resolveSkillPath(ref, userId);
     if (!fs.existsSync(skillPath)) {
-      errors.push(canonicalKey);
+      state.errors.push(canonicalKey);
       this.logger.warn('Skill file not found', { skill: canonicalKey, skillPath });
       return;
     }
@@ -661,10 +753,10 @@ export class SkillForceHandler implements CommandHandler {
       });
     }
     for (const nestedRef of nested.refs) {
-      this.resolveSkill(nestedRef, resolved, errors, depth + 1, childOwner);
+      this.resolveSkill(nestedRef, state, depth + 1, childOwner);
     }
 
     // Add this skill AFTER its dependencies (depth-first)
-    resolved.set(canonicalKey, content);
+    state.resolved.set(canonicalKey, content);
   }
 }

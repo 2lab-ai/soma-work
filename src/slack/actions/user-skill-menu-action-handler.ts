@@ -2,6 +2,8 @@ import type { WebClient } from '@slack/web-api';
 import { SHARE_CONTENT_CHAR_LIMIT } from 'somalib/model-commands/skill-share-errors';
 import type { ClaudeHandler } from '../../claude-handler';
 import { Logger } from '../../logger';
+import { createPermissionRequest, type PermissionOperation } from '../../skill-permission-request-store';
+import { isSkillUseAllowed } from '../../user-skill-grants-store';
 import {
   computeContentHash,
   copyUserSkill,
@@ -13,6 +15,7 @@ import {
   shareUserSkill,
   userSkillExists,
 } from '../../user-skill-store';
+import { buildPermissionRequestMessage } from '../skill-permission-blocks';
 import type { SlackApiHelper } from '../slack-api-helper';
 import { EDIT_UPLOAD_TTL_MS, uploadSkillFile } from '../user-skill-file-roundtrip';
 import type { MessageHandler, RespondFn, SayFn } from './types';
@@ -470,7 +473,56 @@ export class UserSkillMenuActionHandler {
    * truncated in the ephemeral preview — view is a quick look, not an export
    * (use 복사 to install, or 공유 from one's own list to export).
    */
+  /**
+   * Permission gate for a cross-user list operation (보기/복사). When A is not
+   * permitted to access B's skill, post the 3-button permission prompt to B (in
+   * the thread, B is mentioned) and tell A their request was sent. Returns true
+   * when a request was emitted (caller must stop). Owner's own access is never
+   * gated.
+   */
+  private async requestUsePermissionIfNeeded(
+    click: ResolvedClick,
+    respond: RespondFn,
+    operation: PermissionOperation,
+  ): Promise<boolean> {
+    const ownerId = click.value.ownerId;
+    const requesterId = click.value.requesterId;
+    if (!ownerId || ownerId === requesterId) return false; // own access — no gate
+    if (isSkillUseAllowed(ownerId, click.value.skillName, requesterId)) return false;
+
+    const req = createPermissionRequest({
+      operation,
+      requesterId,
+      ownerId,
+      skillName: click.value.skillName,
+      channel: click.channel ?? '',
+      threadTs: click.threadTs,
+    });
+    const msg = buildPermissionRequestMessage({
+      requestId: req.requestId,
+      requesterId,
+      ownerId,
+      skillName: click.value.skillName,
+    });
+    if (click.channel) {
+      await this.ctx.slackApi.postMessage(click.channel, msg.text, { threadTs: click.threadTs, blocks: msg.blocks });
+    }
+    await respond({
+      response_type: 'ephemeral',
+      text: `🔐 <@${ownerId}>님께 \`${click.value.skillName}\` 사용 권한을 요청했습니다. 승인되면 진행됩니다.`,
+      replace_original: false,
+    });
+    this.logger.info('user_skill_menu: cross-user access denied — permission requested', {
+      operation,
+      ownerId,
+      requesterId,
+      skillName: click.value.skillName,
+    });
+    return true;
+  }
+
   private async handleView(click: ResolvedClick, respond: RespondFn): Promise<void> {
+    if (await this.requestUsePermissionIfNeeded(click, respond, 'view')) return;
     const sourceId = click.value.ownerId ?? click.value.requesterId;
     const detail = getUserSkill(sourceId, click.value.skillName);
     if (!detail) {
@@ -519,6 +571,8 @@ export class UserSkillMenuActionHandler {
       });
       return;
     }
+
+    if (await this.requestUsePermissionIfNeeded(click, respond, 'copy')) return;
 
     const result = copyUserSkill(sourceId, click.value.skillName, click.value.requesterId);
     await respond({

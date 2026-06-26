@@ -16,6 +16,7 @@ import { PermissionActionHandler } from './permission-action-handler';
 import { PluginUpdateActionHandler } from './plugin-update-action-handler';
 import { PRActionHandler } from './pr-action-handler';
 import { SessionActionHandler } from './session-action-handler';
+import { SkillPermissionActionHandler } from './skill-permission-action-handler';
 import { TurnDismissActionHandler } from './turn-dismiss-action-handler';
 import { TurnFeedbackActionHandler } from './turn-feedback-action-handler';
 import { UsageCardActionHandler } from './usage-card-action-handler';
@@ -102,6 +103,11 @@ setActionHandlersProviders({
         slackApi: ctx.slackApi as any,
       }),
       userSkillMenuHandler: new UserSkillMenuActionHandler({
+        slackApi: ctx.slackApi as any,
+        claudeHandler: ctx.claudeHandler,
+        messageHandler: ctx.messageHandler as any,
+      }),
+      userSkillPermissionHandler: new SkillPermissionActionHandler({
         slackApi: ctx.slackApi as any,
         claudeHandler: ctx.claudeHandler,
         messageHandler: ctx.messageHandler as any,
