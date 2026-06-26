@@ -183,6 +183,7 @@ describe('GoalHandler', () => {
   it('shows active goal status without continuing to the model', async () => {
     const session = makeSession({
       goal: {
+        goalId: 'goal-test',
         objective: 'finish migration',
         status: 'active',
         createdAt: 1,
@@ -209,6 +210,7 @@ describe('GoalHandler', () => {
   it('pauses, resumes, completes, and clears the goal as host-managed state', async () => {
     const session = makeSession({
       goal: {
+        goalId: 'goal-test',
         objective: 'finish migration',
         status: 'active',
         createdAt: 1,

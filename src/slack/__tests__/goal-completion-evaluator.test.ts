@@ -29,6 +29,7 @@ import {
 
 function makeGoal(overrides: Partial<SessionGoal> = {}): SessionGoal {
   return {
+    goalId: 'goal-test',
     objective: 'X',
     status: 'active',
     createdAt: 1,

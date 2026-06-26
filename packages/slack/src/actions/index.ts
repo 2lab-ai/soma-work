@@ -119,6 +119,7 @@ export interface ActionHandlerDelegates {
     handleDeny(body: any, respond: RespondFn): Promise<void>;
   };
   userSkillMenuHandler: { handleAction(body: any, respond: RespondFn, client: any): Promise<void> };
+  userSkillPermissionHandler: { handleAction(body: any, respond: RespondFn, client: any): Promise<void> };
   userSkillEditSubmitHandler: { handleSubmit(ack: ViewAck, body: any, client: any): Promise<void> };
   userSkillRenameSubmitHandler: { handleSubmit(ack: ViewAck, body: any, client: any): Promise<void> };
   userSkillDeleteSubmitHandler: { handleSubmit(ack: ViewAck, body: any, client: any): Promise<void> };
@@ -274,6 +275,11 @@ export class ActionHandlers {
     app.action(/^user_skill_invoke_/, async ({ ack, body, respond, client }) => {
       await ack();
       await this.delegates.userSkillMenuHandler.handleAction(body, respond as RespondFn, client);
+    });
+
+    app.action(/^skill_perm_/, async ({ ack, body, respond, client }) => {
+      await ack();
+      await this.delegates.userSkillPermissionHandler.handleAction(body, respond as RespondFn, client);
     });
 
     app.view(USER_SKILL_EDIT_MODAL_CALLBACK_ID, async ({ ack, body, client }) => {
