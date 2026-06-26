@@ -53,16 +53,16 @@ describe('UserSkillsListHandler — cross-user list (S4)', () => {
   });
 
   describe('execute()', () => {
-    it('renders another user’s skills with invoke/view/copy overflow carrying ownerId', async () => {
+    it('renders another user’s skill NAMES with invoke/view/copy overflow (no SKILL.md read)', async () => {
       vi.mocked(userSkillStore.userSkillExists).mockReturnValue(false);
-      vi.mocked(userSkillStore.listUserSkills).mockReturnValue([
-        skill('deploy', 'deploy helper'),
-        skill('qa', 'qa it'),
-      ]);
+      vi.mocked(userSkillStore.listUserSkillNames).mockReturnValue(['deploy', 'qa']);
 
       const result = await handler.execute(makeCtx('$user:Zhuge', 'U1'));
 
       expect(result).toEqual({ handled: true });
+      // Content-bearing listUserSkills must NOT be called for another user's list
+      // (descriptions are gated content).
+      expect(userSkillStore.listUserSkills).not.toHaveBeenCalled();
       const arg = mockSay.mock.calls[0][0];
       const sections = arg.blocks.filter((b: any) => b.type === 'section');
       expect(sections.length).toBe(2);
@@ -81,8 +81,8 @@ describe('UserSkillsListHandler — cross-user list (S4)', () => {
 
     it('never exceeds Slack’s 50-block cap, even with 50 skills + header', async () => {
       vi.mocked(userSkillStore.userSkillExists).mockReturnValue(false);
-      vi.mocked(userSkillStore.listUserSkills).mockReturnValue(
-        Array.from({ length: 50 }, (_, i) => skill(`s${i.toString().padStart(2, '0')}`, `d${i}`)),
+      vi.mocked(userSkillStore.listUserSkillNames).mockReturnValue(
+        Array.from({ length: 50 }, (_, i) => `s${i.toString().padStart(2, '0')}`),
       );
 
       await handler.execute(makeCtx('$user:Zhuge', 'U1'));
@@ -93,7 +93,7 @@ describe('UserSkillsListHandler — cross-user list (S4)', () => {
 
     it('emits a "no skills" message when the other user has none', async () => {
       vi.mocked(userSkillStore.userSkillExists).mockReturnValue(false);
-      vi.mocked(userSkillStore.listUserSkills).mockReturnValue([]);
+      vi.mocked(userSkillStore.listUserSkillNames).mockReturnValue([]);
 
       const result = await handler.execute(makeCtx('$user:Zhuge', 'U1'));
       expect(result).toEqual({ handled: true });

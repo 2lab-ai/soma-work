@@ -1,5 +1,5 @@
 import { Logger } from '../../logger';
-import { listUserSkills, type UserSkillMeta, userSkillExists } from '../../user-skill-store';
+import { listUserSkillNames, listUserSkills, type UserSkillMeta, userSkillExists } from '../../user-skill-store';
 // Pulled from the leaf module instead of '../actions/user-skill-menu-action-handler'
 // to break the cycle list-handler → menu-action-handler → view-submission-shared
 // → list-handler (#745).
@@ -101,54 +101,59 @@ export function buildUserSkillListBlocks(userId: string): UserSkillListBlocks | 
  * (the clicker who rendered the list, used for the click-binding guard).
  */
 export function buildOtherUserSkillListBlocks(ownerId: string, requesterId: string): UserSkillListBlocks | null {
-  const skills = listUserSkills(ownerId);
-  if (skills.length === 0) return null;
+  // Names only — NEVER read the owner's SKILL.md content here. Descriptions are
+  // gated body content; a public discovery list must not leak them before a
+  // permission grant (codex review). The names are what A needs to request use.
+  const names = listUserSkillNames(ownerId);
+  if (names.length === 0) return null;
 
   // Slack hard-caps a message at 50 blocks. This list reserves 1 block for the
   // owner header, so at most STORE_CAP-1 (49) section blocks fit. When the owner
   // has more skills than that, we render one fewer section and append a single
   // truncation context block — keeping header + sections + note ≤ 50.
   const SECTION_BUDGET = STORE_CAP - 1; // 49 (reserve 1 for the header)
-  const overflowed = skills.length > SECTION_BUDGET;
-  const renderable = overflowed ? skills.slice(0, SECTION_BUDGET - 1) : skills;
+  const overflowed = names.length > SECTION_BUDGET;
+  const renderable = overflowed ? names.slice(0, SECTION_BUDGET - 1) : names;
 
   const blocks: any[] = [
     {
       type: 'context',
-      elements: [{ type: 'mrkdwn', text: `🎯 <@${ownerId}> 님의 Personal Skills (${skills.length})` }],
+      elements: [
+        {
+          type: 'mrkdwn',
+          text: `🎯 <@${ownerId}> 님의 Personal Skills (${names.length}) — 사용하려면 소유자 승인이 필요합니다`,
+        },
+      ],
     },
-    ...renderable.map((s) => buildOtherUserSkillSection(s, ownerId, requesterId)),
+    ...renderable.map((name) => buildOtherUserSkillSection(name, ownerId, requesterId)),
   ];
 
   if (overflowed) {
-    const hidden = skills.length - renderable.length;
+    const hidden = names.length - renderable.length;
     blocks.push({
       type: 'context',
       elements: [{ type: 'mrkdwn', text: `⚠️ ${hidden} more skills hidden — open their list to see all.` }],
     });
   }
 
-  const fallback = `🎯 <@${ownerId}> 님의 Personal Skills (${skills.length}) — 발동/보기/복사`;
-  return { blocks, fallback, count: skills.length };
+  const fallback = `🎯 <@${ownerId}> 님의 Personal Skills (${names.length}) — 발동/보기/복사`;
+  return { blocks, fallback, count: names.length };
 }
 
-function buildOtherUserSkillSection(skill: UserSkillMeta, ownerId: string, requesterId: string): any {
-  const baseDesc = skill.description || '_(no description)_';
-  const safeDesc = escapeSlackMrkdwn(baseDesc).substring(0, DESC_TRUNC_LEN);
-  const multiFileNote = skill.isSingleFile ? '' : '\n_📁 multi-file_';
+function buildOtherUserSkillSection(skillName: string, ownerId: string, requesterId: string): any {
   return {
     type: 'section',
     text: {
       type: 'mrkdwn',
-      text: `*\`$<@${ownerId}>:${skill.name}\`*\n${safeDesc}${multiFileNote}`,
+      text: `*\`$<@${ownerId}>:${skillName}\`*`,
     },
     accessory: {
       type: 'overflow',
-      action_id: `${MENU_ACTION_ID_PREFIX}${skill.name}`,
+      action_id: `${MENU_ACTION_ID_PREFIX}${skillName}`,
       options: [
-        buildOwnerOption('🚀 발동', VALUE_KIND_INVOKE, skill.name, requesterId, ownerId),
-        buildOwnerOption('👀 보기', VALUE_KIND_VIEW, skill.name, requesterId, ownerId),
-        buildOwnerOption('📋 복사', VALUE_KIND_COPY, skill.name, requesterId, ownerId),
+        buildOwnerOption('🚀 발동', VALUE_KIND_INVOKE, skillName, requesterId, ownerId),
+        buildOwnerOption('👀 보기', VALUE_KIND_VIEW, skillName, requesterId, ownerId),
+        buildOwnerOption('📋 복사', VALUE_KIND_COPY, skillName, requesterId, ownerId),
       ],
     },
   };

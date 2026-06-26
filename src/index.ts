@@ -4,11 +4,10 @@ installConsoleRedaction();
 
 import './env-paths';
 import { registerMemoryStore, registerSkillStore } from 'somalib/model-commands/catalog';
-import { resolveUserIdentifier } from './slack/commands/user-identity-resolver';
 import * as userMemoryStore from './user-memory-store';
 import { setSettingsPromptInvalidationHook } from './user-settings-store';
+import { gatedManageSkillCopy } from './user-skill-copy-gate';
 import {
-  copyUserSkill,
   createUserSkill,
   deleteUserSkill,
   listUserSkills,
@@ -26,19 +25,9 @@ registerSkillStore({
   deleteSkill: deleteUserSkill,
   shareSkill: shareUserSkill,
   renameSkill: renameUserSkill,
-  // Resolve the source identifier (uid or display name) to a uid before the
-  // store copy (S1/S6/S8). An unresolved source is a user-facing failure, not
-  // a thrown error.
-  copySkill: (user, sourceUser, name, newName) => {
-    const sourceUid = resolveUserIdentifier(sourceUser);
-    if (!sourceUid) {
-      return { ok: false, message: `Source user "${sourceUser}" not found.` };
-    }
-    if (sourceUid === user) {
-      return { ok: false, message: 'Cannot copy your own skill.' };
-    }
-    return copyUserSkill(sourceUid, name, user, newName);
-  },
+  // Copy is permission-gated (S1/S6/S8 + owner permission): A may only copy B's
+  // skill when B granted access — see `gatedManageSkillCopy`.
+  copySkill: (user, sourceUser, name, newName) => gatedManageSkillCopy(user, sourceUser, name, newName),
 });
 
 import { App, LogLevel, SocketModeReceiver } from '@slack/bolt';
