@@ -83,6 +83,7 @@ import { BUNDLED_PLUGINS } from './plugin/bundled';
 import { PluginManager } from './plugin/plugin-manager';
 import { getVersionInfo, notifyRelease } from './release-notifier';
 import { GoalLoopController } from './slack/goal-loop-controller';
+import { setGoalLoopResumeHandler } from './slack/goal-loop-resume';
 import { SlackHandler } from './slack-handler';
 import { type SocketWatchdogUnhealthyReason, startSlackSocketWatchdog } from './slack-socket-watchdog';
 import { notifyStartup } from './startup-notifier';
@@ -901,6 +902,13 @@ async function start() {
       const postGoalNotice = (channel: string, threadTs: string | undefined, text: string): Promise<unknown> =>
         goalSlackApi.postSystemMessage(channel, text, { threadTs });
 
+      // S3: DM the goal owner a "keep going?" decision when the
+      // auto-continuation budget is exhausted (Continue/Cancel buttons).
+      const postGoalOwnerDm = async (userId: string, text: string, blocks: unknown[]): Promise<unknown> => {
+        const dmChannel = await goalSlackApi.openDmChannel(userId);
+        return goalSlackApi.postMessage(dmChannel, text, { blocks: blocks as any[] });
+      };
+
       // Synthetic-turn injector for goal continuations — same surface as
       // the cron-scheduler injection path (chat.postMessage say-builder →
       // slackHandler.handleMessage).
@@ -936,6 +944,7 @@ async function start() {
           claudeHandler.dispatchOneShot(userPrompt, systemPrompt, model, abortController, undefined, cwd, effort),
         injectContinuation: goalMessageInjector,
         postNotice: postGoalNotice,
+        postOwnerDm: postGoalOwnerDm,
         logger,
         fallbackModel: 'claude-sonnet-4-20250514',
         // S9: optional cheaper eval tier. Unset → eval matches the work model.
@@ -948,6 +957,11 @@ async function start() {
       // state, serialization, and ordering (M4); the hook only forwards the
       // sessionKey and returns immediately.
       slackHandler.setGoalTurnSettledHandler((sessionKey: string) => {
+        goalLoopController.onTurnSettled(sessionKey);
+      });
+      // S1/S3: let goal action handlers (Delete-advance, owner-DM Continue)
+      // kick the loop without holding a direct controller reference.
+      setGoalLoopResumeHandler((sessionKey: string) => {
         goalLoopController.onTurnSettled(sessionKey);
       });
       timing('Goal turn-settled driver installed');

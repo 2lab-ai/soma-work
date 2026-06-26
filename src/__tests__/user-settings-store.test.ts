@@ -11,10 +11,13 @@ import {
   coerceToAvailableModel,
   DEFAULT_COMPACT_THRESHOLD,
   DEFAULT_MODEL,
+  GOAL_MAX_CONTINUATIONS_MAX,
+  GOAL_MAX_CONTINUATIONS_MIN,
   MODEL_ALIASES,
   migrateLegacyTheme,
   UserSettingsStore,
   validateCompactThreshold,
+  validateGoalMaxContinuations,
 } from '../user-settings-store';
 
 function makeStore(): UserSettingsStore {
@@ -348,5 +351,34 @@ describe('UserSettingsStore.getUserCompactThreshold / setUserCompactThreshold (#
     store.setUserCompactThreshold('U2', 90);
     expect(store.getUserCompactThreshold('U1')).toBe(60);
     expect(store.getUserCompactThreshold('U2')).toBe(90);
+  });
+});
+
+describe('autogoal mode (S2) + goal max-continuations (S4)', () => {
+  it('autogoal defaults to false and toggles per-user', () => {
+    const store = makeStore();
+    expect(store.getUserAutoGoalEnabled('U1')).toBe(false);
+    expect(store.toggleUserAutoGoalEnabled('U1')).toBe(true);
+    expect(store.getUserAutoGoalEnabled('U1')).toBe(true);
+    expect(store.toggleUserAutoGoalEnabled('U1')).toBe(false);
+    store.setUserAutoGoalEnabled('U2', true);
+    expect(store.getUserAutoGoalEnabled('U1')).toBe(false);
+    expect(store.getUserAutoGoalEnabled('U2')).toBe(true);
+  });
+
+  it('validateGoalMaxContinuations clamps to [1, 1000] and rejects non-integers', () => {
+    expect(validateGoalMaxContinuations(100)).toBe(100);
+    expect(validateGoalMaxContinuations(5000)).toBe(GOAL_MAX_CONTINUATIONS_MAX);
+    expect(validateGoalMaxContinuations(0)).toBe(GOAL_MAX_CONTINUATIONS_MIN);
+    expect(() => validateGoalMaxContinuations(1.5)).toThrow();
+    expect(() => validateGoalMaxContinuations('x' as unknown as number)).toThrow();
+  });
+
+  it('goal max-continuations is undefined until set, then persists per-user', () => {
+    const store = makeStore();
+    expect(store.getUserGoalMaxContinuations('U1')).toBeUndefined();
+    store.setUserGoalMaxContinuations('U1', 50);
+    expect(store.getUserGoalMaxContinuations('U1')).toBe(50);
+    expect(store.getUserGoalMaxContinuations('U2')).toBeUndefined();
   });
 });

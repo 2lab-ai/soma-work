@@ -233,6 +233,37 @@ export interface UserSettings {
    * See #617.
    */
   compactThreshold?: number;
+  /**
+   * Autogoal mode. When `true`, the first user instruction in a session that
+   * has no active/queued goal is automatically promoted to the session goal.
+   * Toggled via `goal auto` / `set goal auto`. Undefined ⇒ default `false`.
+   */
+  autoGoalEnabled?: boolean;
+  /**
+   * Per-user default for a new goal's auto-continuation cap
+   * (`SessionGoal.maxContinuations`). Set via `goal max <N>` / `set goal <N>`.
+   * Undefined ⇒ `DEFAULT_GOAL_MAX_CONTINUATIONS` (10). Bounded
+   * {@link GOAL_MAX_CONTINUATIONS_MIN}..{@link GOAL_MAX_CONTINUATIONS_MAX}.
+   */
+  goalMaxContinuations?: number;
+}
+
+// Goal auto-continuation cap bounds (S4). The default lives in
+// `src/types.ts` (`DEFAULT_GOAL_MAX_CONTINUATIONS`) which the package tree
+// cannot import; this store only validates/clamps the user-supplied override.
+export const GOAL_MAX_CONTINUATIONS_MIN = 1;
+export const GOAL_MAX_CONTINUATIONS_MAX = 1000;
+
+/**
+ * Clamp/validate a user-supplied goal max-continuations value. Throws a
+ * user-facing `Error` (surfaced verbatim to Slack) on a non-integer; clamps
+ * an out-of-range integer into the valid band.
+ */
+export function validateGoalMaxContinuations(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isInteger(value)) {
+    throw new Error('goal max must be an integer');
+  }
+  return Math.min(GOAL_MAX_CONTINUATIONS_MAX, Math.max(GOAL_MAX_CONTINUATIONS_MIN, value));
 }
 
 // Compaction Tracking (#617): threshold bounds + default.
@@ -699,6 +730,47 @@ export class UserSettingsStore {
   setUserDefaultEffort(userId: string, effort: EffortLevel): void {
     this.patchUserSettings(userId, { defaultEffort: effort });
     logger.info('Set user default effort', { userId, effort });
+  }
+
+  /**
+   * Get user's autogoal mode (S2). Default `false`.
+   */
+  getUserAutoGoalEnabled(userId: string): boolean {
+    return this.settings[userId]?.autoGoalEnabled ?? false;
+  }
+
+  /**
+   * Set user's autogoal mode and return the persisted value.
+   */
+  setUserAutoGoalEnabled(userId: string, enabled: boolean): void {
+    this.patchUserSettings(userId, { autoGoalEnabled: enabled });
+    logger.info('Set user autogoal mode', { userId, enabled });
+  }
+
+  /**
+   * Toggle user's autogoal mode, returning the NEW value.
+   */
+  toggleUserAutoGoalEnabled(userId: string): boolean {
+    const next = !this.getUserAutoGoalEnabled(userId);
+    this.setUserAutoGoalEnabled(userId, next);
+    return next;
+  }
+
+  /**
+   * Get user's default goal max-continuations (S4). Undefined ⇒ caller falls
+   * back to `DEFAULT_GOAL_MAX_CONTINUATIONS`.
+   */
+  getUserGoalMaxContinuations(userId: string): number | undefined {
+    return this.settings[userId]?.goalMaxContinuations;
+  }
+
+  /**
+   * Set user's default goal max-continuations (already validated/clamped by
+   * {@link validateGoalMaxContinuations}).
+   */
+  setUserGoalMaxContinuations(userId: string, value: number): void {
+    this.patchUserSettings(userId, { goalMaxContinuations: value });
+    logger.info('Set user goal max-continuations', { userId, value });
   }
 
   /**

@@ -138,6 +138,13 @@ export interface ActionHandlerDelegates {
   };
   feedbackHandler: { handleFeedback(body: any, respond: RespondFn): Promise<void> };
   dismissHandler: { handleDismiss(body: any, respond: RespondFn): Promise<void> };
+  goalHandler: {
+    handleDelete(body: any, respond: RespondFn): Promise<void>;
+    handleUpdate(body: any, respond: RespondFn, client: any): Promise<void>;
+    handleUpdateSubmit(ack: ViewAck, body: any, client: any): Promise<void>;
+    handleContinueDm(body: any, respond: RespondFn): Promise<void>;
+    handleCancelDm(body: any, respond: RespondFn): Promise<void>;
+  };
   zSettingsHandler: { register(app: App): void };
   zTopicRegistry: ZTopicRegistryLike;
   registerCctActions(app: App): void;
@@ -160,6 +167,7 @@ export function setActionHandlersProviders(next: ActionHandlersProviders): void 
   if (next.isAdminUser) providers.isAdminUser = next.isAdminUser;
 }
 
+const GOAL_UPDATE_MODAL_CALLBACK_ID = 'goal_update_modal_submit';
 const USER_SKILL_EDIT_MODAL_CALLBACK_ID = 'user_skill_edit_modal_submit';
 const USER_SKILL_RENAME_MODAL_CALLBACK_ID = 'user_skill_rename_modal_submit';
 const USER_SKILL_DELETE_MODAL_CALLBACK_ID = 'user_skill_delete_modal_submit';
@@ -445,6 +453,31 @@ export class ActionHandlers {
     app.view('custom_input_submit', async ({ ack, body, view }) => {
       await ack();
       await this.delegates.formHandler.handleCustomInputSubmit(body, view);
+    });
+
+    // ── Interactive goal list (S1) + cap-reached owner DM (S3) ──────────────
+    app.action(/^goal_delete:/, async ({ ack, body, respond }) => {
+      await ack();
+      await this.delegates.goalHandler.handleDelete(body, respond as RespondFn);
+    });
+
+    app.action(/^goal_update:/, async ({ ack, body, respond, client }) => {
+      await ack();
+      await this.delegates.goalHandler.handleUpdate(body, respond as RespondFn, client);
+    });
+
+    app.view(GOAL_UPDATE_MODAL_CALLBACK_ID, async ({ ack, body, client }) => {
+      await this.delegates.goalHandler.handleUpdateSubmit(ack as ViewAck, body, client);
+    });
+
+    app.action('goal_continue_dm', async ({ ack, body, respond }) => {
+      await ack();
+      await this.delegates.goalHandler.handleContinueDm(body, respond as RespondFn);
+    });
+
+    app.action('goal_cancel_dm', async ({ ack, body, respond }) => {
+      await ack();
+      await this.delegates.goalHandler.handleCancelDm(body, respond as RespondFn);
     });
 
     this.delegates.zSettingsHandler.register(app);

@@ -31,7 +31,13 @@ export type GoalAction =
   | { action: 'resume' }
   | { action: 'complete' }
   | { action: 'clear' }
-  | { action: 'invalid'; reason: 'missing_objective' };
+  // `goal auto` / `set goal auto` — toggle (or explicitly set) the per-user
+  // autogoal mode. `mode` undefined ⇒ toggle the current value.
+  | { action: 'auto'; mode?: 'on' | 'off' }
+  // `goal max <N>` / `set goal <N>` — override the auto-continuation cap.
+  // The parser passes the raw integer through; the handler clamps/validates.
+  | { action: 'max'; max: number }
+  | { action: 'invalid'; reason: 'missing_objective' | 'invalid_max' };
 export type OnboardingCommandResult = { prompt?: string };
 export type SessionsCommandResult = { isPublic: boolean };
 export type SessionThemeCommandResult = { theme: string | null } | null;
@@ -621,16 +627,29 @@ export class CommandParser {
 
   /**
    * Check if text is a goal command.
+   *
+   * Matches the canonical `goal …` root, plus the literal aliases the user
+   * asked for: `set goal auto` and `set goal <N>` (digits). `set goal <text>`
+   * is intentionally NOT a general objective setter — only the `auto` and
+   * numeric-cap forms are aliased so the command surface stays unfragmented.
    */
   static isGoalCommand(text: string): boolean {
-    return /^\/?goal(?:\s+[\s\S]*)?$/i.test(text.trim());
+    const trimmed = text.trim();
+    if (/^\/?goal(?:\s+[\s\S]*)?$/i.test(trimmed)) return true;
+    return /^\/?set\s+goal\s+(?:auto|max\b|\d+)\b[\s\S]*$/i.test(trimmed);
   }
 
   /**
    * Parse goal command variants.
+   *
+   * The `set goal auto` / `set goal <N>` aliases are normalized to their
+   * canonical `goal auto` / `goal <N>` form up front so the rest of the
+   * parser only deals with the `goal …` root.
    */
   static parseGoalCommand(text: string): GoalAction {
-    const match = text.trim().match(/^\/?goal(?:\s+([\s\S]*))?$/i);
+    // Normalize the `set goal auto` / `set goal <N>` aliases → `goal …`.
+    const aliasNormalized = text.trim().replace(/^\/?set\s+goal\b/i, 'goal');
+    const match = aliasNormalized.match(/^\/?goal(?:\s+([\s\S]*))?$/i);
     const rest = match?.[1]?.trim();
     if (!rest || /^(?:status|show)$/i.test(rest)) {
       return { action: 'status' };
@@ -640,6 +659,29 @@ export class CommandParser {
     if (/^resume$/i.test(rest)) return { action: 'resume' };
     if (/^(?:done|complete|completed)$/i.test(rest)) return { action: 'complete' };
     if (/^(?:clear|remove|delete)$/i.test(rest)) return { action: 'clear' };
+
+    // Autogoal mode toggle: `goal auto` (toggle), `goal auto on`, `goal auto off`.
+    const autoMatch = rest.match(/^auto(?:\s+(on|off|enable|disable|true|false))?$/i);
+    if (autoMatch) {
+      const word = autoMatch[1]?.toLowerCase();
+      if (!word) return { action: 'auto' };
+      const on = word === 'on' || word === 'enable' || word === 'true';
+      return { action: 'auto', mode: on ? 'on' : 'off' };
+    }
+
+    // Max-continuation override: `goal max <N>` or the bare `goal <N>` /
+    // `set goal <N>` form. A purely numeric argument is a cap override, never
+    // an objective (an all-digit objective is meaningless). Explicit
+    // `goal set <N>` still routes to the objective setter below.
+    const maxMatch = rest.match(/^max(?:\s+(\S+))?$/i);
+    if (maxMatch) {
+      const n = Number(maxMatch[1]);
+      if (!maxMatch[1] || !Number.isInteger(n)) return { action: 'invalid', reason: 'invalid_max' };
+      return { action: 'max', max: n };
+    }
+    if (/^\d+$/.test(rest)) {
+      return { action: 'max', max: Number(rest) };
+    }
 
     const setMatch = rest.match(/^set(?:\s+([\s\S]+))?$/i);
     if (setMatch) {
