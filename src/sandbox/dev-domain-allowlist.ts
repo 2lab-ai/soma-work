@@ -188,8 +188,10 @@ export const ALLOWLIST_AI_APIS = [
   'api.groq.com',
   'api.deepseek.com',
   'api.perplexity.ai',
-  '*.2lab.ai',
 ] as const;
+
+/** 2lab.ai first-party API + product domains. */
+export const ALLOWLIST_2LAB = ['*.2lab.ai', 'gosu.place', '*.gosu.place', 'bets.place', '*.bets.place'] as const;
 
 /** Editor / IDE support surfaces. */
 export const ALLOWLIST_IDE = [
@@ -219,6 +221,7 @@ export const DEV_DOMAIN_ALLOWLIST: readonly string[] = Array.from(
     ...ALLOWLIST_LINUX_DISTROS,
     ...ALLOWLIST_CLOUD,
     ...ALLOWLIST_AI_APIS,
+    ...ALLOWLIST_2LAB,
     ...ALLOWLIST_IDE,
   ]),
 );
