@@ -11,13 +11,43 @@ import { resolveUserIdentifier, type UserDirectory } from '../user-identity-reso
  */
 const directory: UserDirectory = {
   getAllUsers: () => [
-    { userId: 'U094E5L4A15', slackName: 'Zhuge' },
+    // Zhuge's stored real_name is "Zhuge" but their Slack DISPLAY name is "Z".
+    { userId: 'U094E5L4A15', slackName: 'Zhuge', slackDisplayName: 'Z' },
     { userId: 'U0ALICE0001', slackName: 'alice.kim' },
     { userId: 'U0BOB000002', slackName: 'Bob' },
   ],
 };
 
 describe('resolveUserIdentifier', () => {
+  // The reported bug: a user's Slack DISPLAY name must resolve, not just the
+  // stored real_name. Zhuge types `$Z:skill` (display name) — it must resolve.
+  it('resolves a Slack DISPLAY name (case-insensitive) to its uid', () => {
+    expect(resolveUserIdentifier('Z', directory)).toBe('U094E5L4A15');
+    expect(resolveUserIdentifier('z', directory)).toBe('U094E5L4A15');
+    expect(resolveUserIdentifier('@Z', directory)).toBe('U094E5L4A15');
+  });
+
+  it('still resolves the real_name when the display name differs', () => {
+    expect(resolveUserIdentifier('Zhuge', directory)).toBe('U094E5L4A15');
+  });
+
+  it('display-name and real-name of the SAME user are not treated as ambiguous', () => {
+    // Both 'Z' (display) and 'Zhuge' (real) map to one uid — not a collision.
+    expect(resolveUserIdentifier('Z', directory)).toBe('U094E5L4A15');
+    expect(resolveUserIdentifier('Zhuge', directory)).toBe('U094E5L4A15');
+  });
+
+  it('SECURITY: cross-field collision across DISTINCT users fails closed', () => {
+    // A's real_name == B's display_name == "sam" → 2 distinct uids → ambiguous.
+    const dir: UserDirectory = {
+      getAllUsers: () => [
+        { userId: 'U0A', slackName: 'sam' },
+        { userId: 'U0B', slackName: 'bob', slackDisplayName: 'Sam' },
+      ],
+    };
+    expect(resolveUserIdentifier('sam', dir)).toBeNull();
+  });
+
   it('resolves a raw uid to itself', () => {
     expect(resolveUserIdentifier('U094E5L4A15', directory)).toBe('U094E5L4A15');
   });
