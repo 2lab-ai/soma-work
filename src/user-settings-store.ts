@@ -208,7 +208,17 @@ export interface UserSettings {
   // Jira integration
   jiraAccountId?: string;
   jiraName?: string;
+  /** Slack `real_name` (from `users.info`). Used as a display label. */
   slackName?: string;
+  /**
+   * Slack profile `display_name` — the short handle shown in chat, which users
+   * type to reference each other (e.g. "Z"). Often differs from `slackName`
+   * (`real_name`, e.g. "Zhuge"). Captured so cross-user skill invocation
+   * (`$Z:skill`) resolves the display name, not just the real_name.
+   */
+  slackDisplayName?: string;
+  /** Epoch ms of the last Slack identity (display_name) sync — drives TTL refresh. */
+  slackIdentitySyncedAt?: number;
   email?: string; // Slack profile email (auto-fetched via users.info)
   /** Model rating (0-10, default 5). Used for <your_rating> context tag. */
   rating?: number;
@@ -493,6 +503,35 @@ export class UserSettingsStore {
   setUserEmail(userId: string, email: string): void {
     this.patchUserSettings(userId, { email });
     logger.info('Set user email', { userId, email });
+  }
+
+  /**
+   * Record the user's Slack `display_name` (the handle shown in chat) and stamp
+   * the identity sync time. Drives cross-user skill invocation by display name
+   * (`$Z:skill`). No-op when the value is unchanged so a stale-refresh that
+   * finds the same name doesn't churn the system-prompt cache.
+   */
+  setUserSlackDisplayName(userId: string, displayName: string): void {
+    const existing = this.settings[userId];
+    if (existing?.slackDisplayName === displayName && existing.slackIdentitySyncedAt) {
+      // Same name — just refresh the sync stamp without an invalidation.
+      existing.slackIdentitySyncedAt = Date.now();
+      this.saveSettings();
+      return;
+    }
+    this.patchUserSettings(userId, { slackDisplayName: displayName, slackIdentitySyncedAt: Date.now() });
+    logger.info('Set user Slack display name', { userId, displayName });
+  }
+
+  /**
+   * Whether the user's Slack display_name should be (re-)fetched from Slack:
+   * true when never synced, or synced longer than `ttlMs` ago. Periodic refresh
+   * keeps the display name current when a user renames themselves in Slack.
+   */
+  shouldRefreshSlackIdentity(userId: string, ttlMs: number): boolean {
+    const at = this.settings[userId]?.slackIdentitySyncedAt;
+    if (typeof at !== 'number') return true;
+    return Date.now() - at > ttlMs;
   }
 
   /**

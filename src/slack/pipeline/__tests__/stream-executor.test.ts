@@ -19,6 +19,8 @@ vi.mock('../../../user-settings-store', () => ({
     getUserEmail: vi.fn().mockReturnValue(undefined),
     setUserEmail: vi.fn(),
     ensureUserExists: vi.fn(),
+    setUserSlackDisplayName: vi.fn(),
+    shouldRefreshSlackIdentity: vi.fn().mockReturnValue(false),
     getUserJiraAccountId: vi.fn(),
     getUserJiraName: vi.fn(),
     getUserBypassPermission: vi.fn().mockReturnValue(false),
