@@ -70,6 +70,9 @@ export function resolveUserIdentifier(token: string, directory: UserDirectory = 
   if (!bare) return null;
 
   // 2. Display-name match (case-insensitive) against the offline directory.
+  //    Display names are NOT unique in Slack, so we fail closed on ambiguity:
+  //    if two distinct uids share the name, the caller must use a uid/mention
+  //    rather than silently target the wrong tenant.
   const lower = bare.toLowerCase();
   let users: Array<{ userId: string; slackName?: string }>;
   try {
@@ -77,9 +80,13 @@ export function resolveUserIdentifier(token: string, directory: UserDirectory = 
   } catch {
     users = [];
   }
+  const nameMatches = new Set<string>();
   for (const u of users) {
-    if (u.slackName && u.slackName.toLowerCase() === lower) return u.userId;
+    if (u.slackName && u.slackName.toLowerCase() === lower) nameMatches.add(u.userId);
   }
+  if (nameMatches.size === 1) return [...nameMatches][0];
+  if (nameMatches.size > 1) return null; // ambiguous — require uid/mention
+
   // An exact uid match in the directory also wins (covers directories that key
   // by uid without a slackName).
   for (const u of users) {

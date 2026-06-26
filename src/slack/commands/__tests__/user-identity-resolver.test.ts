@@ -53,6 +53,28 @@ describe('resolveUserIdentifier', () => {
     expect(resolveUserIdentifier('nobody-here', directory)).toBeNull();
   });
 
+  it('fails closed on an AMBIGUOUS display name (duplicate slackName)', () => {
+    const dupDir: UserDirectory = {
+      getAllUsers: () => [
+        { userId: 'U0SAM000001', slackName: 'Sam' },
+        { userId: 'U0SAM000002', slackName: 'sam' }, // case-insensitive collision
+      ],
+    };
+    // Two distinct uids share the name → must require uid/mention, not guess.
+    expect(resolveUserIdentifier('Sam', dupDir)).toBeNull();
+  });
+
+  it('still resolves a uid even when a display name is ambiguous', () => {
+    const dupDir: UserDirectory = {
+      getAllUsers: () => [
+        { userId: 'U0SAM000001', slackName: 'Sam' },
+        { userId: 'U0SAM000002', slackName: 'Sam' },
+      ],
+    };
+    expect(resolveUserIdentifier('U0SAM000001', dupDir)).toBe('U0SAM000001');
+    expect(resolveUserIdentifier('<@U0SAM000002>', dupDir)).toBe('U0SAM000002');
+  });
+
   it('returns null for empty / whitespace token', () => {
     expect(resolveUserIdentifier('', directory)).toBeNull();
     expect(resolveUserIdentifier('   ', directory)).toBeNull();

@@ -79,6 +79,18 @@ describe('UserSkillsListHandler — cross-user list (S4)', () => {
       }
     });
 
+    it('never exceeds Slack’s 50-block cap, even with 50 skills + header', async () => {
+      vi.mocked(userSkillStore.userSkillExists).mockReturnValue(false);
+      vi.mocked(userSkillStore.listUserSkills).mockReturnValue(
+        Array.from({ length: 50 }, (_, i) => skill(`s${i.toString().padStart(2, '0')}`, `d${i}`)),
+      );
+
+      await handler.execute(makeCtx('$user:Zhuge', 'U1'));
+      const blocks = mockSay.mock.calls[0][0].blocks;
+      expect(blocks.length).toBeLessThanOrEqual(50);
+      expect(blocks[0].type).toBe('context');
+    });
+
     it('emits a "no skills" message when the other user has none', async () => {
       vi.mocked(userSkillStore.userSkillExists).mockReturnValue(false);
       vi.mocked(userSkillStore.listUserSkills).mockReturnValue([]);

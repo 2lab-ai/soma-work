@@ -26,7 +26,7 @@ describe('SkillForceHandler — cross-user', () => {
   const mockSay = vi.fn().mockResolvedValue({ ts: '1' });
 
   // Display-name → uid resolver stub (offline; injected).
-  const resolveUser = (token: string): string | null => (token === 'Zhuge' ? 'U094' : null);
+  const resolveUser = (token: string): string | null => ({ Zhuge: 'U094', Bob: 'U0BOB' })[token] ?? null;
   const handler = new SkillForceHandler(resolveUser);
 
   const makeCtx = (text: string, user = 'U1') => ({
@@ -94,6 +94,22 @@ describe('SkillForceHandler — cross-user', () => {
 
     expect(result.continueWithPrompt).toContain('# ZHUGE DEV SKILL');
     expect(result.continueWithPrompt).not.toContain('REQUESTER DEV SKILL');
+  });
+
+  it('S7: two borrowed skills nesting `$user:dev` keep each owner’s dev (no key collision)', async () => {
+    // Both Zhuge and Bob have a qa-dev that nests `$user:dev`. The two devs
+    // differ — both must appear (owner-aware dedupe), not collapse to one.
+    mountFs({
+      '/mock/data/U094/skills/qa-dev/SKILL.md': '# Zhuge qa\n$user:dev',
+      '/mock/data/U094/skills/dev/SKILL.md': '# ZHUGE DEV',
+      '/mock/data/U0BOB/skills/qa-dev/SKILL.md': '# Bob qa\n$user:dev',
+      '/mock/data/U0BOB/skills/dev/SKILL.md': '# BOB DEV',
+    });
+
+    const result = await handler.execute(makeCtx('$Zhuge:qa-dev 하고 $Bob:qa-dev'));
+
+    expect(result.continueWithPrompt).toContain('# ZHUGE DEV');
+    expect(result.continueWithPrompt).toContain('# BOB DEV');
   });
 
   it('S8: a copied skill resolves owner-relative refs to the ORIGINAL owner', async () => {

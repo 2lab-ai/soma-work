@@ -621,16 +621,25 @@ export class SkillForceHandler implements CommandHandler {
     depth: number,
     userId?: string,
   ): void {
-    if (resolved.has(ref.key)) return;
+    // Owner-aware canonical key: a `user`-namespace ref's identity is
+    // (owner, skill), NOT just the skill name. Without the owner, two borrowed
+    // skills from different owners that both nest `$user:dev` would collide on
+    // `user:dev` and the second owner's `dev` would be silently dropped
+    // (wrong-owner mixing). Cross-user refs already carry `ownerUserId`; nested
+    // own/borrowed `user` refs derive the owner from the threaded context.
+    const effectiveOwner = ref.ownerUserId ?? (ref.plugin === 'user' ? userId : undefined);
+    const canonicalKey = effectiveOwner ? `user:${effectiveOwner}:${ref.skill}` : ref.key;
+
+    if (resolved.has(canonicalKey)) return;
     if (depth >= MAX_DEPTH) {
-      this.logger.warn('Max skill recursion depth reached', { skill: ref.key, depth });
+      this.logger.warn('Max skill recursion depth reached', { skill: canonicalKey, depth });
       return;
     }
 
     const skillPath = this.resolveSkillPath(ref, userId);
     if (!fs.existsSync(skillPath)) {
-      errors.push(ref.key);
-      this.logger.warn('Skill file not found', { skill: ref.key, skillPath });
+      errors.push(canonicalKey);
+      this.logger.warn('Skill file not found', { skill: canonicalKey, skillPath });
       return;
     }
 
@@ -656,6 +665,6 @@ export class SkillForceHandler implements CommandHandler {
     }
 
     // Add this skill AFTER its dependencies (depth-first)
-    resolved.set(ref.key, content);
+    resolved.set(canonicalKey, content);
   }
 }

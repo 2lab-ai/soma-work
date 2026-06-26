@@ -104,8 +104,13 @@ export function buildOtherUserSkillListBlocks(ownerId: string, requesterId: stri
   const skills = listUserSkills(ownerId);
   if (skills.length === 0) return null;
 
-  const overflowed = skills.length > STORE_CAP;
-  const renderable = overflowed ? skills.slice(0, MAX_SECTIONS_BEFORE_OVERFLOW) : skills;
+  // Slack hard-caps a message at 50 blocks. This list reserves 1 block for the
+  // owner header, so at most STORE_CAP-1 (49) section blocks fit. When the owner
+  // has more skills than that, we render one fewer section and append a single
+  // truncation context block — keeping header + sections + note ≤ 50.
+  const SECTION_BUDGET = STORE_CAP - 1; // 49 (reserve 1 for the header)
+  const overflowed = skills.length > SECTION_BUDGET;
+  const renderable = overflowed ? skills.slice(0, SECTION_BUDGET - 1) : skills;
 
   const blocks: any[] = [
     {
@@ -116,10 +121,10 @@ export function buildOtherUserSkillListBlocks(ownerId: string, requesterId: stri
   ];
 
   if (overflowed) {
-    const hidden = skills.length - MAX_SECTIONS_BEFORE_OVERFLOW;
+    const hidden = skills.length - renderable.length;
     blocks.push({
       type: 'context',
-      elements: [{ type: 'mrkdwn', text: `⚠️ ${hidden} more skills hidden — store cap exceeded.` }],
+      elements: [{ type: 'mrkdwn', text: `⚠️ ${hidden} more skills hidden — open their list to see all.` }],
     });
   }
 
