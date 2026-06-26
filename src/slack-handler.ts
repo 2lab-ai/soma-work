@@ -758,20 +758,6 @@ export class SlackHandler {
         refreshSession: () => this.claudeHandler.getSession(activeChannel, activeThreadTs),
       };
 
-      // codex review round 2 #2: snapshot the goal identity this turn is
-      // working toward, so the turn-end evidence stash can detect a mid-turn
-      // goal change (Update / active-goal Delete) and skip crediting this
-      // turn's output against a different/changed objective.
-      {
-        const dispatchGoal = this.claudeHandler.getSessionByKey?.(sessionResult.sessionKey)?.goal;
-        this.goalTurnSnapshots.set(
-          sessionResult.sessionKey,
-          dispatchGoal && dispatchGoal.status === 'active'
-            ? { goalId: dispatchGoal.goalId, epoch: dispatchGoal.epoch ?? 0 }
-            : null,
-        );
-      }
-
       // End of widened try (#698 AD-5.5) — startWithContinuation is the last
       // async step inside the try.
       await agentSession.startWithContinuation(dispatchText || '', continuationHandler, processedFiles);
@@ -1046,17 +1032,6 @@ export class SlackHandler {
   private goalTurnSettledHandler?: (sessionKey: string) => void;
 
   /**
-   * Per-session snapshot of the goal identity at the moment a turn was
-   * dispatched (codex review round 2 #2). At turn completion we only stash the
-   * turn's output as goal-eval evidence if the live goal is STILL the same goal
-   * at the same intent epoch — otherwise an Update / active-goal Delete that
-   * happened mid-turn would credit the old turn's output against a different
-   * (or changed) objective. Keyed by sessionKey, identity-robust regardless of
-   * the session object reference TurnRunner hands back.
-   */
-  private goalTurnSnapshots = new Map<string, { goalId: string; epoch: number } | null>();
-
-  /**
    * Post-turn hook fired by the TurnRunner surface. While a goal is
    * `active`, this stashes the turn's assistant text on the session and
    * then triggers the goal driver (eval + maybe continuation).
@@ -1082,20 +1057,21 @@ export class SlackHandler {
     const goal = session.goal;
     if (!goal || goal.status !== 'active') return;
 
-    // codex review round 2 #2: only credit this turn's output to the goal if
-    // the live goal is STILL the one that was active when the turn dispatched
-    // (same goalId + epoch). An Update (epoch bump) or active-goal Delete
-    // (goalId swap) during the turn invalidates the evidence — skip the stash
-    // so the old turn's text can't become eval evidence for a different or
-    // changed objective. We still fire the driver: its own M1 epoch guard +
-    // (now-empty/cleared) evidence drive a correct fresh eval.
-    const snapshot = this.goalTurnSnapshots.get(sessionKey);
-    this.goalTurnSnapshots.delete(sessionKey);
-    // Skip the stash ONLY when we have positive evidence the goal changed since
-    // dispatch (different goalId, or a bumped epoch from an Update). A missing
-    // snapshot (dispatch paths that don't set one, e.g. handoff re-dispatch, or
-    // direct unit-test calls) preserves the original always-stash behavior.
-    const goalChanged = snapshot != null && (snapshot.goalId !== goal.goalId || snapshot.epoch !== (goal.epoch ?? 0));
+    // codex review round 2/3 #2: only credit this turn's output to the goal if
+    // the live goal is STILL the one that owned the turn LEG (same goalId +
+    // intent epoch). An Update (epoch bump) or active-goal Delete (goalId swap)
+    // mid-turn invalidates the evidence. We key off `activeLegGoalId` /
+    // `activeLegGoalEpoch`, which `SessionRegistry.beginTurn` re-captures for
+    // EVERY leg — so this is correct even when one `startWithContinuation` call
+    // runs multiple adapter turns in a `continue()` loop (a single
+    // dispatch-time snapshot would only cover the first leg). A missing leg id
+    // (no goal was active at leg start, or beginTurn never ran in a unit test)
+    // preserves the original always-stash behavior. We still fire the driver
+    // either way: its own M1 epoch guard drives a correct fresh eval.
+    const legGoalId = session.activeLegGoalId;
+    const legGoalEpoch = session.activeLegGoalEpoch;
+    const goalChanged =
+      legGoalId !== undefined && (legGoalId !== goal.goalId || (legGoalEpoch ?? 0) !== (goal.epoch ?? 0));
 
     if (goalChanged) {
       this.logger.info('Goal changed during turn — skipping stale evidence stash', { sessionKey });

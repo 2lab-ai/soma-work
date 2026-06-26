@@ -474,9 +474,13 @@ export class SessionRegistry {
       creditActiveGoalMs(session, Math.max(0, elapsed));
     }
     session.activeLegStartedAtMs = now;
-    // Capture the goal that owns THIS leg so a `goal done`/advance mid-turn
-    // doesn't misattribute the leg's spend to the promoted goal.
-    session.activeLegGoalId = session.goal?.status === 'active' ? session.goal.goalId : undefined;
+    // Capture the goal (id + intent epoch) that owns THIS leg so a `goal
+    // done`/advance mid-turn doesn't misattribute the leg's spend to the
+    // promoted goal, AND so the turn-end evidence stash can detect an in-turn
+    // objective change (Update bumps the epoch on the same goalId).
+    const legGoal = session.goal?.status === 'active' ? session.goal : undefined;
+    session.activeLegGoalId = legGoal?.goalId;
+    session.activeLegGoalEpoch = legGoal ? (legGoal.epoch ?? 0) : undefined;
   }
 
   endTurn(session: ConversationSession, now: number = Date.now()): void {

@@ -626,6 +626,15 @@ export interface ConversationSession {
    * credits the right goal. `undefined` when no goal was active at leg start.
    */
   activeLegGoalId?: string;
+  /**
+   * Intent `epoch` of the goal that was active when the current turn leg
+   * STARTED (captured at `beginTurn` alongside {@link activeLegGoalId}). Lets
+   * the turn-end goal-evidence stash detect an in-turn objective change
+   * (Update bumps the epoch on the same `goalId`) and skip crediting the
+   * finished turn's output against the changed objective. `undefined` when no
+   * goal was active at leg start.
+   */
+  activeLegGoalEpoch?: number;
   // Accumulated busy time (ms) across closed legs of the current session.
   activeAccumulatedMs?: number;
   // LLM-generated concise task title (falls back to `title` when absent).
