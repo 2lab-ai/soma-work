@@ -67,7 +67,7 @@ export interface SaveMemoryParams {
 }
 
 export interface ManageSkillParams {
-  action: 'create' | 'update' | 'delete' | 'list' | 'share' | 'rename' | 'get';
+  action: 'create' | 'update' | 'delete' | 'list' | 'share' | 'rename' | 'get' | 'copy';
   name?: string;
   /**
    * New skill name for `action='rename'` only.
@@ -75,8 +75,17 @@ export interface ManageSkillParams {
    * Validator and dispatcher both require `newName` to be present (and a
    * different string than `name`) when `action==='rename'`; absent for every
    * other action. Same kebab-case predicate as `name`.
+   *
+   * Also reused (optional) by `action='copy'` to install the copied skill under
+   * a different name than the source.
    */
   newName?: string;
+  /**
+   * Source user for `action='copy'` only — a Slack identifier (uid or display
+   * name) whose skill `name` is copied into the caller's own set. The store
+   * implementation resolves the identifier to a uid. (S1/S6)
+   */
+  sourceUser?: string;
   content?: string;
 }
 
