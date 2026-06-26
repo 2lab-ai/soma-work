@@ -10,6 +10,7 @@ const h = vi.hoisted(() => ({
   getReq: vi.fn(),
   markHandled: vi.fn(),
   addOneTime: vi.fn(),
+  consumeOneTime: vi.fn(() => true),
   grantSkill: vi.fn(),
   grantAll: vi.fn(),
   copy: vi.fn(() => ({ ok: true, message: 'copied' })),
@@ -23,6 +24,7 @@ vi.mock('../../../skill-permission-request-store', () => ({
 }));
 vi.mock('../../../user-skill-grants-store', () => ({
   addOneTimeGrant: h.addOneTime,
+  consumeOneTimeGrant: h.consumeOneTime,
   grantSkill: h.grantSkill,
   grantAllSkills: h.grantAll,
 }));
@@ -108,12 +110,13 @@ describe('SkillPermissionActionHandler', () => {
     expect(h.grantSkill).not.toHaveBeenCalled();
   });
 
-  it('view operation: posts the SKILL.md content to the thread on grant', async () => {
+  it('view operation: posts the SKILL.md content to the thread on grant + consumes one-time', async () => {
     h.getReq.mockReturnValue({ ...invokeReq, operation: 'view', originalText: undefined });
-    await handler.handleAction(body(VALUE_KIND_PERM_ALLOW_SKILL), respond);
+    await handler.handleAction(body(VALUE_KIND_PERM_YES_ONCE), respond);
     expect(h.getUserSkill).toHaveBeenCalledWith('U0B', 'deploy');
     expect(slackApi.postMessage).toHaveBeenCalled();
     expect(JSON.stringify(slackApi.postMessage.mock.calls)).toContain('BODY');
+    expect(h.consumeOneTime).toHaveBeenCalledWith('U0B', 'deploy', 'U0A');
   });
 
   it('copy operation: copies on grant', async () => {

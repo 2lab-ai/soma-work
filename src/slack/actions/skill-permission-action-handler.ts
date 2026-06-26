@@ -2,7 +2,7 @@ import type { WebClient } from '@slack/web-api';
 import type { ClaudeHandler } from '../../claude-handler';
 import { Logger } from '../../logger';
 import { getPermissionRequest, markRequestHandled, type PermissionRequest } from '../../skill-permission-request-store';
-import { addOneTimeGrant, grantAllSkills, grantSkill } from '../../user-skill-grants-store';
+import { addOneTimeGrant, consumeOneTimeGrant, grantAllSkills, grantSkill } from '../../user-skill-grants-store';
 import { copyUserSkill, getUserSkill, userSkillExists } from '../../user-skill-store';
 import {
   VALUE_KIND_PERM_ALLOW_ALL,
@@ -183,6 +183,8 @@ export class SkillPermissionActionHandler {
     }
 
     if (req.operation === 'view') {
+      // Strict single-use: a one-time grant for this view is spent here.
+      consumeOneTimeGrant(req.ownerId, req.skillName, req.requesterId);
       const detail = getUserSkill(req.ownerId, req.skillName);
       if (!detail) return;
       await say({
@@ -197,6 +199,8 @@ export class SkillPermissionActionHandler {
     }
 
     if (req.operation === 'copy') {
+      // Strict single-use: a one-time grant for this copy is spent here.
+      consumeOneTimeGrant(req.ownerId, req.skillName, req.requesterId);
       const result = copyUserSkill(req.ownerId, req.skillName, req.requesterId);
       await say({
         text: result.ok

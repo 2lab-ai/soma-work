@@ -3,7 +3,7 @@ import { SHARE_CONTENT_CHAR_LIMIT } from 'somalib/model-commands/skill-share-err
 import type { ClaudeHandler } from '../../claude-handler';
 import { Logger } from '../../logger';
 import { createPermissionRequest, type PermissionOperation } from '../../skill-permission-request-store';
-import { isSkillUseAllowed } from '../../user-skill-grants-store';
+import { consumeOneTimeGrant, isSkillUseAllowed } from '../../user-skill-grants-store';
 import {
   computeContentHash,
   copyUserSkill,
@@ -524,6 +524,11 @@ export class UserSkillMenuActionHandler {
   private async handleView(click: ResolvedClick, respond: RespondFn): Promise<void> {
     if (await this.requestUsePermissionIfNeeded(click, respond, 'view')) return;
     const sourceId = click.value.ownerId ?? click.value.requesterId;
+    // Strict single-use: if a one-time grant authorized this cross-user view,
+    // consume it now (idempotent no-op for persisted grants / own access).
+    if (sourceId !== click.value.requesterId) {
+      consumeOneTimeGrant(sourceId, click.value.skillName, click.value.requesterId);
+    }
     const detail = getUserSkill(sourceId, click.value.skillName);
     if (!detail) {
       await respond({
@@ -573,6 +578,9 @@ export class UserSkillMenuActionHandler {
     }
 
     if (await this.requestUsePermissionIfNeeded(click, respond, 'copy')) return;
+
+    // Strict single-use: consume any one-time grant that authorized this copy.
+    consumeOneTimeGrant(sourceId, click.value.skillName, click.value.requesterId);
 
     const result = copyUserSkill(sourceId, click.value.skillName, click.value.requesterId);
     await respond({

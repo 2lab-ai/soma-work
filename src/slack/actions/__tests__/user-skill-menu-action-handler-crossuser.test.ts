@@ -10,7 +10,11 @@ const perm = vi.hoisted(() => ({
   allow: vi.fn((_o: string, _s: string, _r: string) => true),
   createReq: vi.fn(() => ({ requestId: 'rq1' })),
 }));
-vi.mock('../../../user-skill-grants-store', () => ({ isSkillUseAllowed: perm.allow }));
+const consumeOneTime = vi.hoisted(() => vi.fn(() => true));
+vi.mock('../../../user-skill-grants-store', () => ({
+  isSkillUseAllowed: perm.allow,
+  consumeOneTimeGrant: consumeOneTime,
+}));
 vi.mock('../../../skill-permission-request-store', () => ({ createPermissionRequest: perm.createReq }));
 
 /**
@@ -118,5 +122,17 @@ describe('UserSkillMenuActionHandler — cross-user (S4)', () => {
     await handler.handleAction(overflowBody('user_skill_copy'), respond, {} as any);
     expect(userSkillStore.copyUserSkill).not.toHaveBeenCalled();
     expect(perm.createReq).toHaveBeenCalledWith(expect.objectContaining({ operation: 'copy', ownerId: 'U094' }));
+  });
+
+  it('VIEW allowed: consumes a one-time grant (strict single-use)', async () => {
+    perm.allow.mockReturnValue(true);
+    await handler.handleAction(overflowBody('user_skill_view'), respond, {} as any);
+    expect(consumeOneTime).toHaveBeenCalledWith('U094', 'deploy', 'U1');
+  });
+
+  it('COPY allowed: consumes a one-time grant (strict single-use)', async () => {
+    perm.allow.mockReturnValue(true);
+    await handler.handleAction(overflowBody('user_skill_copy'), respond, {} as any);
+    expect(consumeOneTime).toHaveBeenCalledWith('U094', 'deploy', 'U1');
   });
 });
