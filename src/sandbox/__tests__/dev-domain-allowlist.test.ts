@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ALLOWLIST_2LAB,
   ALLOWLIST_AI_APIS,
   ALLOWLIST_ANTHROPIC,
   ALLOWLIST_CLOUD,
@@ -60,6 +61,10 @@ describe('DEV_DOMAIN_ALLOWLIST', () => {
     // AI
     expect(DEV_DOMAIN_ALLOWLIST).toContain('api.openai.com');
     expect(DEV_DOMAIN_ALLOWLIST).toContain('huggingface.co');
+    // 2lab first-party
+    expect(DEV_DOMAIN_ALLOWLIST).toContain('*.2lab.ai');
+    expect(DEV_DOMAIN_ALLOWLIST).toContain('gosu.place');
+    expect(DEV_DOMAIN_ALLOWLIST).toContain('bets.place');
   });
 
   it('flat list deduplicates entries that appear in multiple categories', () => {
@@ -75,6 +80,7 @@ describe('DEV_DOMAIN_ALLOWLIST', () => {
       ...ALLOWLIST_LINUX_DISTROS,
       ...ALLOWLIST_CLOUD,
       ...ALLOWLIST_AI_APIS,
+      ...ALLOWLIST_2LAB,
       ...ALLOWLIST_IDE,
     ];
     expect(DEV_DOMAIN_ALLOWLIST.length).toBeLessThanOrEqual(concat.length);
