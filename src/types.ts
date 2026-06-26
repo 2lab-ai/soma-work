@@ -228,6 +228,13 @@ export interface SessionGoal {
   maxContinuations: number;
   /** ms epoch of the last continuation injection. */
   lastContinuationAt?: number;
+  /**
+   * Set to the ms epoch when a cap-reached "continue?" DM was sent to the
+   * goal owner (S3). Acts as a dedup guard so the loop sends exactly one DM
+   * per cap event; cleared when the owner answers (continue/cancel) or any
+   * real user message resets the loop. Undefined ⇒ no decision pending.
+   */
+  capDmPendingAt?: number;
 
   // ── Host-side completion evaluation ────────────────────────────────────
   /**

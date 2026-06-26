@@ -467,6 +467,27 @@ describe('CommandParser', () => {
       expect(CommandParser.parseGoalCommand('goal remove')).toEqual({ action: 'clear' });
       expect(CommandParser.parseGoalCommand('goal delete')).toEqual({ action: 'clear' });
     });
+
+    // ── S2: autogoal mode toggle ──────────────────────────────────────────
+    it('parses `goal auto` and the `set goal auto` alias to the auto toggle', () => {
+      expect(CommandParser.isGoalCommand('set goal auto')).toBe(true);
+      expect(CommandParser.parseGoalCommand('goal auto')).toEqual({ action: 'auto' });
+      expect(CommandParser.parseGoalCommand('set goal auto')).toEqual({ action: 'auto' });
+      expect(CommandParser.parseGoalCommand('/set goal auto')).toEqual({ action: 'auto' });
+      expect(CommandParser.parseGoalCommand('goal auto on')).toEqual({ action: 'auto', mode: 'on' });
+      expect(CommandParser.parseGoalCommand('goal auto off')).toEqual({ action: 'auto', mode: 'off' });
+    });
+
+    // ── S4: max-continuation override ─────────────────────────────────────
+    it('parses `goal max <N>`, bare `goal <N>`, and the `set goal <N>` alias', () => {
+      expect(CommandParser.isGoalCommand('set goal 100')).toBe(true);
+      expect(CommandParser.parseGoalCommand('goal max 100')).toEqual({ action: 'max', max: 100 });
+      expect(CommandParser.parseGoalCommand('goal 100')).toEqual({ action: 'max', max: 100 });
+      expect(CommandParser.parseGoalCommand('set goal 100')).toEqual({ action: 'max', max: 100 });
+      expect(CommandParser.parseGoalCommand('goal max abc')).toEqual({ action: 'invalid', reason: 'invalid_max' });
+      // `goal set <N>` is an explicit objective setter, not a cap override.
+      expect(CommandParser.parseGoalCommand('goal set 100')).toEqual({ action: 'set', objective: '100' });
+    });
   });
 
   describe('isOnboardingCommand', () => {

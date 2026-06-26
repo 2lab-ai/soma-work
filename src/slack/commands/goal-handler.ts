@@ -1,6 +1,9 @@
 import { buildGoalContinuationPrompt, validateSessionGoalObjective } from '../../prompt/session-goal-block';
 import type { ConversationSession, SessionGoal } from '../../types';
+import { DEFAULT_GOAL_MAX_CONTINUATIONS } from '../../types';
+import { validateGoalMaxContinuations } from '../../user-settings-store';
 import { CommandParser } from '../command-parser';
+import { buildGoalStatusBlocks } from '../goal-blocks';
 import { bumpGoalEpoch } from '../goal-continuation';
 import { advanceGoalQueue, enqueueOrActivateGoal, formatGoalObjectiveForSlack } from '../session-goal';
 import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
@@ -25,6 +28,16 @@ export class GoalHandler implements CommandHandler {
       // CommandParser.GREEDY_FREEFORM_ROOTS). Bare/lifecycle/invalid forms keep
       // the explicit hint.
       const noSessionAction = CommandParser.parseGoalCommand(text);
+      // `goal auto` / `goal max <N>` are per-user settings — they apply to
+      // FUTURE sessions, so they must work even with no active session.
+      if (noSessionAction.action === 'auto') {
+        await this.toggleAutoGoal(ctx, noSessionAction.mode);
+        return { handled: true };
+      }
+      if (noSessionAction.action === 'max') {
+        await this.setMaxContinuations(ctx, undefined, noSessionAction.max);
+        return { handled: true };
+      }
       if (noSessionAction.action === 'set') {
         // Issue #1082 T1: validation runs BEFORE the fall-through decision —
         // an over-limit objective is invalid whether or not a session exists,
@@ -68,7 +81,74 @@ export class GoalHandler implements CommandHandler {
       case 'clear':
         await this.clearGoal(channel, threadTs, session);
         return { handled: true };
+      case 'auto':
+        await this.toggleAutoGoal(ctx, action.mode);
+        return { handled: true };
+      case 'max':
+        await this.setMaxContinuations(ctx, session, action.max);
+        return { handled: true };
     }
+  }
+
+  /**
+   * Toggle (or explicitly set) the per-user autogoal mode (S2). Per-user, so
+   * it works with or without a live session.
+   */
+  private async toggleAutoGoal(ctx: CommandContext, mode?: 'on' | 'off'): Promise<void> {
+    const store = this.deps.userSettingsStore;
+    let next: boolean;
+    if (mode === undefined) {
+      next = store.toggleUserAutoGoalEnabled(ctx.user);
+    } else {
+      next = mode === 'on';
+      store.setUserAutoGoalEnabled(ctx.user, next);
+    }
+    await this.deps.slackApi.postSystemMessage(
+      ctx.channel,
+      next
+        ? '🤖 *Autogoal mode ON.* When a session has no active goal, your next instruction becomes the goal automatically.'
+        : '🤖 Autogoal mode OFF.',
+      { threadTs: ctx.threadTs },
+    );
+  }
+
+  /**
+   * Override the auto-continuation cap (S4). Updates the current active goal
+   * when one exists AND persists a per-user default for future goals.
+   */
+  private async setMaxContinuations(
+    ctx: CommandContext,
+    session: ConversationSession | undefined,
+    rawMax: number,
+  ): Promise<void> {
+    let value: number;
+    try {
+      value = validateGoalMaxContinuations(rawMax);
+    } catch (err) {
+      await this.deps.slackApi.postSystemMessage(ctx.channel, `⚠️ ${(err as Error).message} (1–1000).`, {
+        threadTs: ctx.threadTs,
+      });
+      return;
+    }
+    this.deps.userSettingsStore.setUserGoalMaxContinuations(ctx.user, value);
+
+    const active = session?.goal;
+    if (active && (active.status === 'active' || active.status === 'paused')) {
+      active.maxContinuations = value;
+      active.updatedAt = Date.now();
+      this.persistGoalChange(session as ConversationSession);
+      await this.deps.slackApi.postSystemMessage(
+        ctx.channel,
+        `🔢 Goal will now auto-continue up to *${value}* turns (was the ${DEFAULT_GOAL_MAX_CONTINUATIONS} default). Applied to the current goal and saved as your default.`,
+        { threadTs: ctx.threadTs },
+      );
+      return;
+    }
+    await this.deps.slackApi.postSystemMessage(
+      ctx.channel,
+      `🔢 New goals will auto-continue up to *${value}* turns (default is ${DEFAULT_GOAL_MAX_CONTINUATIONS}).`,
+      { threadTs: ctx.threadTs },
+    );
   }
 
   private async setGoal(
@@ -87,7 +167,12 @@ export class GoalHandler implements CommandHandler {
     // APPENDS to the queue instead of replacing the running goal. The single
     // chokepoint (`enqueueOrActivateGoal`) decides activate-vs-queue so the
     // SET_GOAL model-command and first-message paths behave identically.
-    const result = enqueueOrActivateGoal(session, objective, ctx.user);
+    const result = enqueueOrActivateGoal(
+      session,
+      objective,
+      ctx.user,
+      this.deps.userSettingsStore.getUserGoalMaxContinuations(ctx.user),
+    );
 
     if (!result.activated) {
       // Queued behind the current goal — do NOT start a continuation, and do
@@ -221,54 +306,40 @@ export class GoalHandler implements CommandHandler {
       return;
     }
 
-    const lines: string[] = [];
+    // S1: render the goal list as Block Kit so each live goal carries a
+    // Delete + Update button. `sessionKey` is encoded into each button so the
+    // action handler can resolve the goal without re-deriving it from the
+    // channel/thread pair.
+    const sessionKey = this.deps.claudeHandler.getSessionKey(
+      session.channelId ?? channel,
+      session.threadTs ?? threadTs,
+    );
+    const blocks = buildGoalStatusBlocks({
+      sessionKey,
+      channel,
+      threadTs,
+      goal: session.goal,
+      queue,
+      history,
+      listLimit: GoalHandler.STATUS_LIST_LIMIT,
+      formatObjective: (o) => this.formatObjectiveForSlack(o),
+      formatMetrics: (g) => this.formatGoalMetrics(g),
+    });
 
-    // ── Current goal ───────────────────────────────────────────────────
-    const goal = session.goal;
-    if (goal) {
-      lines.push(`🎯 *Current goal* — _${goal.status}_`);
-      lines.push(`*Objective:* ${this.formatObjectiveForSlack(goal.objective)}`);
-      lines.push(`*Spent:* ${this.formatGoalMetrics(goal)}`);
-      if (goal.status === 'active') {
-        lines.push(`*Auto-continuations:* ${goal.continuationCount}/${goal.maxContinuations}`);
-      }
-      if (goal.completedAt) {
-        lines.push(
-          `*Completed:* ${new Date(goal.completedAt).toISOString()} (${goal.completionReason ?? goal.completedVia ?? 'done'})`,
-        );
-      }
-    }
+    // Text fallback (notifications + non-Block-Kit surfaces) keeps the old
+    // plain-text summary shape.
+    const fallback: string[] = [];
+    if (session.goal)
+      fallback.push(
+        `🎯 Current goal (${session.goal.status}): ${this.formatObjectiveForSlack(session.goal.objective)}`,
+      );
+    if (queue.length) fallback.push(`📋 ${queue.length} queued`);
+    if (history.length) fallback.push(`✅ ${history.length} completed`);
 
-    // ── Pending queue (T2) ─────────────────────────────────────────────
-    if (queue.length > 0) {
-      lines.push('');
-      lines.push(`📋 *Queued goals (${queue.length})* — start automatically in order:`);
-      // Cap the rendered list so a long queue can't overflow the Slack message.
-      const shownQueue = queue.slice(0, GoalHandler.STATUS_LIST_LIMIT);
-      for (const [i, q] of shownQueue.entries()) {
-        lines.push(`  ${i + 1}. ${this.formatObjectiveForSlack(q.objective)}`);
-      }
-      if (queue.length > shownQueue.length) {
-        lines.push(`  …and ${queue.length - shownQueue.length} more`);
-      }
-    }
-
-    // ── Completed history (T3) ─────────────────────────────────────────
-    if (history.length > 0) {
-      // Newest first, capped for Slack readability.
-      const recent = [...history].reverse().slice(0, GoalHandler.STATUS_LIST_LIMIT);
-      lines.push('');
-      lines.push(`✅ *Completed goals (${history.length})* — most recent first:`);
-      for (const h of recent) {
-        const reason = h.completionReason ?? h.completedVia ?? 'done';
-        lines.push(`  • ${this.formatObjectiveForSlack(h.objective)} — _${reason}_ · ${this.formatGoalMetrics(h)}`);
-      }
-      if (history.length > recent.length) {
-        lines.push(`  …and ${history.length - recent.length} older`);
-      }
-    }
-
-    await this.deps.slackApi.postSystemMessage(channel, lines.join('\n'), { threadTs });
+    await this.deps.slackApi.postSystemMessage(channel, fallback.join(' · ') || '🎯 Goal status', {
+      threadTs,
+      blocks,
+    });
   }
 
   /** Compact "time + tokens" summary for one goal's accounting fields. */

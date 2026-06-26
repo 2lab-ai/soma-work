@@ -40,6 +40,7 @@ import type { SyntheticMessageEvent } from '../cron-scheduler';
 import { buildGoalContinuationPrompt } from '../prompt/session-goal-block';
 import type { ConversationSession, SessionGoal } from '../types';
 import type { EffortLevel } from '../user-settings-store';
+import { buildCapDecisionDmBlocks } from './goal-blocks';
 import {
   applyGoalEvalDispatchFailure,
   decideGoalEvalOutcome,
@@ -49,7 +50,7 @@ import {
   shouldRunGoalIdleDriver,
 } from './goal-completion-evaluator';
 import { GOAL_CONTINUATION_TEXT_PREFIX } from './goal-continuation';
-import { advanceGoalQueue } from './session-goal';
+import { advanceGoalQueue, formatGoalObjectiveForSlack } from './session-goal';
 
 /** Default ceiling for a single completion eval before it is aborted. */
 export const DEFAULT_GOAL_EVAL_TIMEOUT_MS = 120_000;
@@ -83,6 +84,13 @@ export interface GoalLoopControllerDeps {
   injectContinuation: (event: SyntheticMessageEvent) => Promise<void>;
   /** Posts an in-thread system notice. */
   postNotice: (channel: string, threadTs: string | undefined, text: string) => Promise<unknown>;
+  /**
+   * DMs the goal owner a Block Kit message (S3). Used when the
+   * auto-continuation budget is exhausted to ask "keep going?" with
+   * Continue/Cancel buttons. Optional — when unset the loop falls back to the
+   * in-thread pause notice only.
+   */
+  postOwnerDm?: (userId: string, text: string, blocks: unknown[]) => Promise<unknown>;
   logger: GoalLoopLogger;
   /** Default work model when the session has none. */
   fallbackModel: string;
@@ -327,6 +335,41 @@ export class GoalLoopController {
         continuationCount: activeGoal.continuationCount,
         maxContinuations: activeGoal.maxContinuations,
       });
+      // S3: instead of silently pausing, DM the owner a "keep going?" decision
+      // with Continue/Cancel buttons. `capDmPendingAt` dedups so exactly one DM
+      // is sent per cap event (it's cleared on a Continue/Cancel answer or any
+      // real user message via resetGoalContinuationOnUserMessage).
+      const alreadyAsked = activeGoal.capDmPendingAt !== undefined;
+      if (this.deps.postOwnerDm && !alreadyAsked) {
+        activeGoal.capDmPendingAt = this.now();
+        registry.saveSessions();
+        const blocks = buildCapDecisionDmBlocks({
+          value: {
+            sessionKey,
+            goalId: activeGoal.goalId,
+            channel: session.channelId,
+            threadTs: session.threadTs,
+          },
+          objective: activeGoal.objective,
+          maxContinuations: activeGoal.maxContinuations,
+          reason: verdict.reason,
+          formatObjective: formatGoalObjectiveForSlack,
+        });
+        await this.deps.postOwnerDm(activeGoal.createdBy, '⏳ Goal 계속 진행할까요?', blocks).catch((err: unknown) => {
+          logger.warn('Failed to DM goal owner the cap decision', {
+            sessionKey,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
+        await this.deps.postNotice(
+          session.channelId,
+          session.threadTs,
+          `⏸️ Goal auto-continuation reached its ${activeGoal.maxContinuations}-turn budget. Asked the owner via DM whether to keep going.`,
+        );
+        return;
+      }
+      // Fallback (no DM transport, or already asked): keep the original
+      // in-thread pause notice.
       await this.deps.postNotice(
         session.channelId,
         session.threadTs,

@@ -44,6 +44,8 @@ export interface SessionGoalState {
   createdBy: string;
   continuationCount: number;
   maxContinuations: number;
+  /** ms epoch of a pending cap-reached owner DM decision (S3 dedup guard). */
+  capDmPendingAt?: number;
   evalAttemptCount?: number;
   epoch?: number;
   pendingEval?: { requestedAt: number; turnId: string };
@@ -98,6 +100,12 @@ export function createActiveSessionGoal(
   objective: string,
   userId: string,
   existingGoal?: { epoch?: number },
+  /**
+   * Per-user override for the auto-continuation cap (S4). Undefined ⇒
+   * {@link DEFAULT_GOAL_MAX_CONTINUATIONS}. Callers in the composition root
+   * resolve this from `userSettingsStore.getUserGoalMaxContinuations`.
+   */
+  maxContinuations?: number,
 ): SessionGoalState {
   const now = Date.now();
   return {
@@ -108,7 +116,7 @@ export function createActiveSessionGoal(
     updatedAt: now,
     createdBy: userId,
     continuationCount: 0,
-    maxContinuations: DEFAULT_GOAL_MAX_CONTINUATIONS,
+    maxContinuations: maxContinuations ?? DEFAULT_GOAL_MAX_CONTINUATIONS,
     evalAttemptCount: 0,
     epoch: (existingGoal?.epoch ?? 0) + 1,
   };
@@ -120,7 +128,11 @@ export function createActiveSessionGoal(
  * prompt and never drives the loop until promoted). Epoch starts at 0; it is
  * re-based when promoted by {@link advanceGoalQueue}.
  */
-export function createQueuedSessionGoal(objective: string, userId: string): SessionGoalState {
+export function createQueuedSessionGoal(
+  objective: string,
+  userId: string,
+  maxContinuations?: number,
+): SessionGoalState {
   const now = Date.now();
   return {
     goalId: newGoalId(),
@@ -130,7 +142,7 @@ export function createQueuedSessionGoal(objective: string, userId: string): Sess
     updatedAt: now,
     createdBy: userId,
     continuationCount: 0,
-    maxContinuations: DEFAULT_GOAL_MAX_CONTINUATIONS,
+    maxContinuations: maxContinuations ?? DEFAULT_GOAL_MAX_CONTINUATIONS,
     evalAttemptCount: 0,
     epoch: 0,
   };
@@ -196,14 +208,16 @@ export function enqueueOrActivateGoal(
   session: GoalQueueSession,
   objective: string,
   userId: string,
+  /** Per-user auto-continuation cap default (S4) applied to the new goal. */
+  maxContinuations?: number,
 ): { activated: boolean; goal: SessionGoalState; position?: number } {
   if (isGoalInFlight(session.goal)) {
-    const queued = createQueuedSessionGoal(objective, userId);
+    const queued = createQueuedSessionGoal(objective, userId, maxContinuations);
     session.goalQueue = session.goalQueue ?? [];
     session.goalQueue.push(queued);
     return { activated: false, goal: queued, position: session.goalQueue.length };
   }
-  const goal = createActiveSessionGoal(objective, userId, session.goal);
+  const goal = createActiveSessionGoal(objective, userId, session.goal, maxContinuations);
   applyGoalToSession(session, goal);
   return { activated: true, goal };
 }
@@ -269,6 +283,57 @@ export function advanceGoalQueue(
   next.lastAssistantTurnSummary = undefined;
   applyGoalToSession(session, next);
   return next;
+}
+
+/**
+ * Delete a goal by `goalId` from the active slot, the pending queue, or the
+ * completed history (S1 — the goal-list Delete button).
+ *
+ *   - Queued / history goal → removed in place; nothing is promoted.
+ *   - Active goal → dropped (NOT archived to history — a deletion is not a
+ *     completion) and the next queued goal (if any) is promoted to active,
+ *     rebased to a fresh run exactly like {@link advanceGoalQueue} does. This
+ *     is the "현재 진행중인 goal을 삭제하면 자동으로 다음 goal로 진행" requirement.
+ *
+ * Returns whether anything was deleted, whether it was the active goal, and
+ * the promoted goal (if the active goal was deleted and the queue was
+ * non-empty). Persistence is the caller's job.
+ */
+export function deleteGoalById(
+  session: GoalQueueSession,
+  goalId: string,
+): { deleted: boolean; wasActive: boolean; promoted?: SessionGoalState } {
+  if (session.goalQueue?.some((g) => g.goalId === goalId)) {
+    session.goalQueue = session.goalQueue.filter((g) => g.goalId !== goalId);
+    return { deleted: true, wasActive: false };
+  }
+  if (session.goalHistory?.some((g) => g.goalId === goalId)) {
+    session.goalHistory = session.goalHistory.filter((g) => g.goalId !== goalId);
+    return { deleted: true, wasActive: false };
+  }
+  if (session.goal?.goalId === goalId) {
+    const finished = session.goal;
+    const next = session.goalQueue && session.goalQueue.length > 0 ? session.goalQueue.shift() : undefined;
+    if (next) {
+      const now = Date.now();
+      next.status = 'active';
+      next.continuationCount = 0;
+      next.epoch = (finished.epoch ?? 0) + 1;
+      next.updatedAt = now;
+      next.pendingEval = undefined;
+      next.lastEvalReason = undefined;
+      next.lastEvalSummaryHash = undefined;
+      next.lastAssistantTurnSummary = undefined;
+      next.capDmPendingAt = undefined;
+      applyGoalToSession(session, next);
+      return { deleted: true, wasActive: true, promoted: next };
+    }
+    session.goal = undefined;
+    session.goalLastTurnText = undefined;
+    session.systemPrompt = undefined;
+    return { deleted: true, wasActive: true };
+  }
+  return { deleted: false, wasActive: false };
 }
 
 /**

@@ -628,6 +628,40 @@ export class SlackHandler {
         }
       }
 
+      // S2 — Autogoal mode: when the user has autogoal ON and this session has
+      // NO goal in flight (no active/paused goal, no queue), the first real
+      // instruction is promoted to the session goal automatically and then
+      // dispatched as the goal's opening turn. Skips synthetic continuation
+      // turns and the goal-prefixed path (already handled via setGoalObjective).
+      if (
+        !setGoalObjective &&
+        !continueWithPrompt &&
+        !event.synthetic &&
+        effectiveText.trim() !== '' &&
+        userSettingsStore.getUserAutoGoalEnabled(event.user)
+      ) {
+        const fullSession = this.claudeHandler.getSessionByKey?.(sessionResult.sessionKey);
+        const inFlight =
+          !!fullSession?.goal && (fullSession.goal.status === 'active' || fullSession.goal.status === 'paused');
+        if (fullSession && !inFlight && !fullSession.goalQueue?.length) {
+          const applied = enqueueOrActivateGoal(
+            fullSession,
+            effectiveText,
+            event.user,
+            userSettingsStore.getUserGoalMaxContinuations(event.user),
+          );
+          this.claudeHandler.saveSessions();
+          if (applied.activated) {
+            await this.slackApi.postSystemMessage(
+              activeChannel,
+              `🤖 Autogoal: 이 지시를 goal로 설정했습니다 — ${formatGoalObjectiveForSlack(effectiveText)}`,
+              { threadTs: activeThreadTs },
+            );
+            dispatchText = buildGoalContinuationPrompt(applied.goal as SessionGoal);
+          }
+        }
+      }
+
       const hasPendingChoice = sessionResult.session.actionPanel?.waitingForChoice === true;
       if (hasPendingChoice) {
         await this.threadPanel?.clearChoice(sessionResult.sessionKey);
