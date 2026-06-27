@@ -151,8 +151,36 @@ export interface SlotAuthLease {
 }
 
 /**
+ * Build the synthetic lease used in llmux auth mode (`config.auth.mode ===
+ * 'llmux'`).
+ *
+ * In llmux mode there is no CCT slot and no OAuth token — the local llmux
+ * proxy (https://github.com/2lab-ai/llmux) owns upstream auth. `buildQueryEnv`
+ * detects the mode and injects `ANTHROPIC_BASE_URL` + a throwaway
+ * `ANTHROPIC_API_KEY` instead of `CLAUDE_CODE_OAUTH_TOKEN`, so this lease's
+ * `accessToken` is never consumed for auth. We still return a lease so the
+ * dispatch call sites keep their acquire → `buildQueryEnv` → release shape
+ * unchanged. `release()` / `heartbeat()` are no-ops (no TokenManager state).
+ */
+function buildLlmuxLease(): SlotAuthLease {
+  return {
+    keyId: 'llmux',
+    accessToken: config.auth.llmux.apiKey,
+    kind: 'api_key',
+    async release(): Promise<void> {
+      /* no-op — synthetic lease holds no TokenManager state */
+    },
+    async heartbeat(): Promise<void> {
+      /* no-op — synthetic lease has no TTL to extend */
+    },
+  };
+}
+
+/**
  * Acquire an auth lease on the active CCT slot.
  *
+ * - In llmux mode (`config.auth.mode === 'llmux'`) short-circuits to a
+ *   synthetic lease (see {@link buildLlmuxLease}) — no CCT slot required.
  * - Picks the currently-active HEALTHY slot via `tokenManager.acquireLease()`.
  * - Resolves the dispatch token via `getValidAccessToken(keyId, 'dispatch')`;
  *   see that method for the per-kind resolution. Callers MUST pass the
@@ -168,6 +196,12 @@ export async function ensureActiveSlotAuth(
   ownerTag: string,
   ttlMs?: number,
 ): Promise<SlotAuthLease> {
+  // llmux mode: skip the CCT slot machinery entirely. The local proxy owns
+  // upstream auth, so there is no token to lease and no slot to keep healthy.
+  if (config.auth.mode === 'llmux') {
+    return buildLlmuxLease();
+  }
+
   let lease;
   try {
     lease = await tokenManager.acquireLease(ownerTag, ttlMs);

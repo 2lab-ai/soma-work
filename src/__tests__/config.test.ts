@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { parseBool, parsePositiveIntEnv, parseUnitIntervalEnv } from '../config';
+import { parseAuthMode, parseBool, parsePositiveIntEnv, parseUnitIntervalEnv } from '../config';
 
 // Silence the warn path; we're testing the fallback value, not the log side-effect.
 vi.mock('../logger', () => ({
@@ -231,5 +231,33 @@ describe('parseBool (#666)', () => {
       expect(parseBool(' 1 ', false)).toBe(true);
       expect(parseBool(' false ', true)).toBe(false);
     });
+  });
+});
+
+// #llmux — `parseAuthMode` selects the backend auth path (ccp default | llmux).
+// A typo (`AUTH_MODE=lmux`) must fall back to ccp, NOT silently break dispatch
+// auth, so the bot keeps using the existing OAuth-lease path until the operator
+// fixes the env value.
+describe('parseAuthMode (#llmux)', () => {
+  it('undefined → ccp (default)', () => {
+    expect(parseAuthMode(undefined)).toBe('ccp');
+  });
+
+  it('empty / whitespace-only → ccp (default)', () => {
+    expect(parseAuthMode('')).toBe('ccp');
+    expect(parseAuthMode('   ')).toBe('ccp');
+  });
+
+  it.each(['ccp', 'CCP', ' Ccp '])('recognizes "%s" → ccp', (raw) => {
+    expect(parseAuthMode(raw)).toBe('ccp');
+  });
+
+  it.each(['llmux', 'LLMUX', ' Llmux '])('recognizes "%s" → llmux', (raw) => {
+    expect(parseAuthMode(raw)).toBe('llmux');
+  });
+
+  it('unrecognized value → ccp (warn-and-fallback)', () => {
+    expect(parseAuthMode('lmux')).toBe('ccp');
+    expect(parseAuthMode('openai')).toBe('ccp');
   });
 });
