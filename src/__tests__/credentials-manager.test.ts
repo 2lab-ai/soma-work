@@ -34,9 +34,20 @@ vi.mock('../token-manager', async () => {
   };
 });
 
-// Avoid touching config / logger filesystem
+// Avoid touching config / logger filesystem. `auth` is mutable per-test so the
+// llmux short-circuit in `ensureActiveSlotAuth` can be exercised; default ccp.
+const mockConfig = {
+  credentials: { enabled: false },
+  oauthProfile: { enabled: false, timeoutMs: 5000 },
+  auth: {
+    mode: 'ccp' as 'ccp' | 'llmux',
+    llmux: { baseUrl: 'http://localhost:3456', apiKey: 'llmux-local' },
+  },
+};
 vi.mock('../config', () => ({
-  config: { credentials: { enabled: false }, oauthProfile: { enabled: false, timeoutMs: 5000 } },
+  get config() {
+    return mockConfig;
+  },
 }));
 
 import { ensureActiveSlotAuth, ensureValidCredentials, NoHealthySlotError } from '../credentials-manager';
@@ -49,6 +60,27 @@ beforeEach(() => {
   mockHeartbeatLease.mockResolvedValue(undefined);
   mockGetActiveToken.mockReset();
   mockGetValidAccessToken.mockReset();
+  // Default every test to ccp; the llmux suite flips this explicitly.
+  mockConfig.auth.mode = 'ccp';
+});
+
+describe('ensureActiveSlotAuth — llmux mode', () => {
+  it('returns a synthetic lease and never touches the TokenManager', async () => {
+    mockConfig.auth.mode = 'llmux';
+
+    const lease = await ensureActiveSlotAuth(mockTokenManager as any, 'test:llmux');
+
+    expect(lease.keyId).toBe('llmux');
+    expect(lease.kind).toBe('api_key');
+    expect(lease.accessToken).toBe('llmux-local');
+    // No CCT slot machinery is consulted.
+    expect(mockAcquireLease).not.toHaveBeenCalled();
+    expect(mockGetActiveToken).not.toHaveBeenCalled();
+    expect(mockGetValidAccessToken).not.toHaveBeenCalled();
+    // release()/heartbeat() are no-ops and must not throw.
+    await expect(lease.release()).resolves.toBeUndefined();
+    await expect(lease.heartbeat()).resolves.toBeUndefined();
+  });
 });
 
 describe('ensureActiveSlotAuth', () => {
