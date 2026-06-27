@@ -1,7 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../../../config', () => ({
-  config: { conversation: { summaryModel: 'test-model' } },
+  config: {
+    conversation: { summaryModel: 'test-model' },
+    // buildQueryEnv reads config.auth.mode; default to ccp so the OAuth-lease
+    // path is exercised (these tests assert on the lease token, not llmux).
+    auth: { mode: 'ccp', llmux: { baseUrl: 'http://localhost:3456', apiKey: 'llmux-local' } },
+  },
 }));
 
 // Preserve legacy ensureValidCredentials mock for backward compat; the new

@@ -25,9 +25,30 @@
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `ANTHROPIC_API_KEY` | Anthropic API 키 (구독 대신 사용 시) | - |
+| `ANTHROPIC_API_KEY` | Anthropic API 키 (구독 대신 사용 시 / llmux 모드의 throwaway 키) | - |
 | `CLAUDE_CODE_USE_BEDROCK` | AWS Bedrock 사용 | `0` |
 | `CLAUDE_CODE_USE_VERTEX` | Google Vertex 사용 | `0` |
+
+#### Auth Backend (`AUTH_MODE`)
+
+백엔드가 Claude Agent SDK 호출을 어떤 경로로 인증할지 선택합니다. `config.auth`에 매핑됩니다. 변경 시 재시작 필요 (hot reload 없음).
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `AUTH_MODE` | `ccp` \| `llmux` | `ccp` |
+| `ANTHROPIC_BASE_URL` | llmux 프록시 URL (`llmux` 모드에서만 사용) | `http://localhost:3456` |
+| `ANTHROPIC_API_KEY` | llmux로 전달되는 throwaway 키 (값 무관) | `llmux-local` |
+
+- **`ccp` (기본값)**: Claude Code Pro/Max OAuth — CCT slot lease (`CLAUDE_CODE_OAUTH_TOKEN`). 멀티 계정 로테이션, usage 추적, `/z cct` 카드가 모두 동작. 직접 API 키는 기존 cct 토큰 스토어로 관리.
+- **`llmux`**: 로컬에 설치된 [llmux](https://github.com/2lab-ai/llmux) 프록시로 모든 SDK 호출을 라우팅. `buildQueryEnv`가 `ANTHROPIC_BASE_URL` + throwaway `ANTHROPIC_API_KEY`를 주입하고 OAuth 토큰을 제거함. CCT slot 불필요 — lease 획득은 synthetic lease로 short-circuit. 업스트림 계정 풀은 llmux가 소유.
+
+설정 예시 (`.env`):
+
+```bash
+AUTH_MODE=llmux
+ANTHROPIC_BASE_URL=http://localhost:3456
+ANTHROPIC_API_KEY=anything
+```
 
 #### Working Directory
 
