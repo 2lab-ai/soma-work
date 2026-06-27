@@ -1,3 +1,4 @@
+import { config } from '../config';
 import type { SlotAuthLease } from '../credentials-manager';
 
 /**
@@ -101,9 +102,14 @@ export function getQueryEnvAdditional(): Record<string, string> {
  *   2. Operator-controlled additional env from `config.json#claude.env`,
  *      installed via {@link setQueryEnvAdditional}. Operator intent overrides
  *      the inherited shell environment.
- *   3. `CLAUDE_CODE_OAUTH_TOKEN = lease.accessToken`. ALWAYS last — defense
- *      in depth even if the load-time denylist in `parseClaudeEnv` is
- *      bypassed, the lease's fresh token cannot be overridden by config.
+ *   3. Auth backend (`config.auth.mode`):
+ *        - `'ccp'` (default): `CLAUDE_CODE_OAUTH_TOKEN = lease.accessToken`.
+ *          ALWAYS last — defense in depth even if the load-time denylist in
+ *          `parseClaudeEnv` is bypassed, the lease's fresh token cannot be
+ *          overridden by config.
+ *        - `'llmux'`: set `ANTHROPIC_BASE_URL` + throwaway `ANTHROPIC_API_KEY`
+ *          and DELETE `CLAUDE_CODE_OAUTH_TOKEN` so the local llmux proxy owns
+ *          upstream auth. The lease token is unused in this mode.
  *
  * Contract:
  *   - NEVER mutates `process.env`.
@@ -135,9 +141,24 @@ export function buildQueryEnv(lease: SlotAuthLease): QueryEnvResult {
     env[key] = value;
   }
 
-  // Layer 3 — lease token override. ALWAYS last. Defense in depth: even if a
-  // future code path forgets to deny `CLAUDE_CODE_OAUTH_TOKEN` at load time,
-  // the lease's fresh token wins here. process.env is never touched.
+  // Layer 3 — auth backend (AUTH_MODE).
+  if (config.auth.mode === 'llmux') {
+    // llmux mode: the local proxy (https://github.com/2lab-ai/llmux) owns the
+    // real upstream account pool. Point the SDK at it with a throwaway API key
+    // and SUPPRESS the OAuth token — Claude Code prefers CLAUDE_CODE_OAUTH_TOKEN
+    // over ANTHROPIC_API_KEY when both are present, so an inherited token from
+    // process.env (or a future code path) would otherwise silently bypass the
+    // proxy. `lease.accessToken` is intentionally unused here; the synthetic
+    // llmux lease carries the placeholder key for symmetry only.
+    env.ANTHROPIC_BASE_URL = config.auth.llmux.baseUrl;
+    env.ANTHROPIC_API_KEY = config.auth.llmux.apiKey;
+    delete env.CLAUDE_CODE_OAUTH_TOKEN;
+    return { env };
+  }
+
+  // ccp mode (default) — lease token override. ALWAYS last. Defense in depth:
+  // even if a future code path forgets to deny `CLAUDE_CODE_OAUTH_TOKEN` at
+  // load time, the lease's fresh token wins here. process.env is never touched.
   env.CLAUDE_CODE_OAUTH_TOKEN = lease.accessToken;
 
   return { env };
