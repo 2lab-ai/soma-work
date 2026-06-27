@@ -100,6 +100,31 @@ export function parseUnitIntervalEnv(name: string, fallback: number, minimum: nu
   return n;
 }
 
+/**
+ * Backend auth backend selector (#llmux). See {@link config.auth}.
+ */
+export type AuthMode = 'ccp' | 'llmux';
+
+/**
+ * Parse the `AUTH_MODE` knob into a typed {@link AuthMode}.
+ *
+ *   - unset / empty           → `'ccp'` (default; existing OAuth-lease path)
+ *   - `ccp`   (any case)      → `'ccp'`
+ *   - `llmux` (any case)      → `'llmux'`
+ *   - anything else           → warn + fall back to `'ccp'` so an operator
+ *     typo (`AUTH_MODE=lmux`) surfaces instead of silently mis-routing auth.
+ *
+ * Exported for unit tests.
+ */
+export function parseAuthMode(raw: string | undefined): AuthMode {
+  if (raw === undefined) return 'ccp';
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === '') return 'ccp';
+  if (normalized === 'ccp' || normalized === 'llmux') return normalized;
+  logger.warn(`AUTH_MODE="${raw}" unrecognized (expected ccp|llmux); falling back to ccp`);
+  return 'ccp';
+}
+
 export const config = {
   slack: {
     botToken: process.env.SLACK_BOT_TOKEN!,
@@ -109,6 +134,45 @@ export const config = {
   claude: {
     useBedrock: process.env.CLAUDE_CODE_USE_BEDROCK === '1',
     useVertex: process.env.CLAUDE_CODE_USE_VERTEX === '1',
+  },
+  /**
+   * Backend auth mode (#llmux). Selects how every Claude Agent SDK
+   * subprocess authenticates upstream. Set once at boot; restart required to
+   * change (mirrors `config.json#claude.env` — there is no hot reload).
+   *
+   *   - `'ccp'` (default): Claude Code Pro/Max OAuth via CCT slot leases
+   *     (`CLAUDE_CODE_OAUTH_TOKEN`). Multi-account rotation, usage tracking,
+   *     and the `/z cct` card all operate in this mode. Direct API keys are
+   *     managed through the existing cct token store.
+   *
+   *   - `'llmux'`: point the SDK at a locally-installed llmux proxy
+   *     (https://github.com/2lab-ai/llmux). `buildQueryEnv` injects
+   *     `ANTHROPIC_BASE_URL` + a throwaway `ANTHROPIC_API_KEY` and suppresses
+   *     the OAuth token; llmux owns the real upstream account pool. No CCT
+   *     slot is required — lease acquisition is short-circuited with a
+   *     synthetic lease.
+   *
+   * Configure with:
+   *   AUTH_MODE=llmux
+   *   ANTHROPIC_BASE_URL=http://localhost:3456   # llmux's default port
+   *   ANTHROPIC_API_KEY=<anything>               # llmux ignores the value
+   */
+  auth: {
+    mode: parseAuthMode(process.env.AUTH_MODE),
+    llmux: {
+      /**
+       * llmux proxy base URL — `ANTHROPIC_BASE_URL=http://localhost:3456` is
+       * the entire llmux integration contract. Only consulted in `'llmux'`
+       * mode; ignored in `'ccp'` mode.
+       */
+      baseUrl: process.env.ANTHROPIC_BASE_URL || 'http://localhost:3456',
+      /**
+       * API key forwarded to llmux. llmux owns the real upstream auth, so any
+       * non-empty placeholder works ("API_KEY 아무거나"); a sentinel is used
+       * when `ANTHROPIC_API_KEY` is unset. Only consulted in `'llmux'` mode.
+       */
+      apiKey: process.env.ANTHROPIC_API_KEY || 'llmux-local',
+    },
   },
   credentials: {
     enabled: process.env.ENABLE_LOCAL_FILE_CREDENTIALS_JSON === '1',
@@ -263,8 +327,12 @@ export function validateConfig() {
     throw new Error(`Missing required environment variables: ${missing.join(', ')}`);
   }
 
-  // Auth is handled exclusively via Agent SDK (OAuth)
-  logger.info('Auth: Agent SDK (OAuth via CLAUDE_CODE_OAUTH_TOKEN)');
+  // Auth is handled exclusively via Agent SDK. The backend depends on AUTH_MODE.
+  if (config.auth.mode === 'llmux') {
+    logger.info(`Auth: llmux proxy (ANTHROPIC_BASE_URL=${config.auth.llmux.baseUrl}, throwaway API key)`);
+  } else {
+    logger.info('Auth: Agent SDK (OAuth via CLAUDE_CODE_OAUTH_TOKEN)');
+  }
 }
 
 /** Outcome of {@link probeSlackApi}. */
@@ -425,9 +493,23 @@ export async function runPreflightChecks(): Promise<PreflightResult> {
     }
   }
 
-  // ===== 3. Auth: Agent SDK Only (no ANTHROPIC_API_KEY needed) =====
-  if (process.env.ANTHROPIC_API_KEY) {
-    warnings.push('⚠️ ANTHROPIC_API_KEY is set but unused — all auth uses Agent SDK (OAuth)');
+  // ===== 3. Auth backend (AUTH_MODE: ccp | llmux) =====
+  if (config.auth.mode === 'llmux') {
+    // llmux mode: the SDK is pointed at the local proxy. ANTHROPIC_API_KEY is
+    // a throwaway forwarded to llmux (which owns real upstream auth), so its
+    // presence is expected — not the "set but unused" footgun of ccp mode.
+    logger.info(`Auth mode: llmux → ${config.auth.llmux.baseUrl} (throwaway API key, OAuth token suppressed)`);
+    if (!process.env.ANTHROPIC_BASE_URL) {
+      warnings.push(
+        `⚠️ AUTH_MODE=llmux but ANTHROPIC_BASE_URL is unset — defaulting to ${config.auth.llmux.baseUrl}. ` +
+          'Ensure llmux is running there (https://github.com/2lab-ai/llmux).',
+      );
+    }
+  } else {
+    logger.info('Auth mode: ccp (Agent SDK OAuth via CLAUDE_CODE_OAUTH_TOKEN)');
+    if (process.env.ANTHROPIC_API_KEY) {
+      warnings.push('⚠️ ANTHROPIC_API_KEY is set but unused in ccp mode — all auth uses Agent SDK (OAuth)');
+    }
   }
 
   // ===== 4. GitHub Configuration =====
