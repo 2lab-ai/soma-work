@@ -33,6 +33,12 @@ export interface CommandContext {
    * the channel.
    */
   postEphemeral?: PostEphemeralFn;
+  /**
+   * When true, a forced `$skill` defers its banner + `<invoked_skills>` block
+   * (returned as `deferredSkillFire`) instead of firing during routing — so a
+   * fresh-context start fires it AFTER session init / autogoal / autoskill.
+   */
+  deferSkillFire?: boolean;
 }
 
 /**
@@ -52,6 +58,17 @@ export interface CommandDependencies {
 }
 
 /**
+ * A forced `$skill` invocation that was deferred (see {@link CommandContext.deferSkillFire}).
+ * Banner is the RPG attachment; `invokedBlock` is the `<invoked_skills>` block
+ * byte-identical to what `SkillForceHandler` would have appended.
+ */
+export interface DeferredSkillFire {
+  keys: string[];
+  invokedBlock: string;
+  banner: { text: string; color: string };
+}
+
+/**
  * Result of command execution
  */
 export interface CommandResult {
@@ -68,6 +85,12 @@ export interface CommandResult {
    * created session BEFORE the first dispatch.
    */
   setGoalObjective?: string;
+  /**
+   * Set when a forced `$skill` was deferred (ctx.deferSkillFire). slack-handler
+   * posts the banner + appends the block AFTER autogoal + autoskill. When
+   * present, `continueWithPrompt` holds the RAW instruction text (no block).
+   */
+  deferredSkillFire?: DeferredSkillFire;
 }
 
 /**

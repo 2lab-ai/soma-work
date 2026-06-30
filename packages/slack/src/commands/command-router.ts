@@ -12,6 +12,26 @@ export interface CommandContext {
   say: SayFn;
   triggerId?: string;
   postEphemeral?: PostEphemeralFn;
+  /**
+   * When true, a forced `$skill` invocation must NOT post its banner or bake
+   * its `<invoked_skills>` block into `continueWithPrompt` during routing.
+   * Instead it returns the banner + block as `deferredSkillFire` so the caller
+   * (slack-handler) can fire it AFTER session init / autogoal / autoskill on a
+   * fresh-context start. Set for brand-new sessions and `new`-reset remainders.
+   */
+  deferSkillFire?: boolean;
+}
+
+/**
+ * A forced `$skill` invocation that was deferred (see {@link CommandContext.deferSkillFire}).
+ * The block is byte-identical to what `SkillForceHandler` would otherwise have
+ * appended to `continueWithPrompt`; the banner is the RPG attachment it would
+ * have posted. The caller posts the banner and appends the block last.
+ */
+export interface DeferredSkillFire {
+  keys: string[];
+  invokedBlock: string;
+  banner: { text: string; color: string };
 }
 
 export interface CommandDependencies {
@@ -30,6 +50,13 @@ export interface CommandResult {
    * created session BEFORE the first dispatch.
    */
   setGoalObjective?: string;
+  /**
+   * Set when a forced `$skill` was deferred (ctx.deferSkillFire). slack-handler
+   * posts the banner and appends the block AFTER autogoal + autoskill on a
+   * fresh-context start. When present, `continueWithPrompt` holds the RAW
+   * instruction text (no `<invoked_skills>` block).
+   */
+  deferredSkillFire?: DeferredSkillFire;
 }
 
 export type SayFn = (message: {
@@ -152,7 +179,10 @@ export class CommandRouter {
       // composed `$skill` and silently dropped every other command; see the
       // `new goal …` bug report).
       if (depth < CommandRouter.MAX_NEW_CHAIN_DEPTH) {
-        const rerouted = await this.route({ ...ctx, text: remainder }, depth + 1);
+        // A `new` reset always starts a fresh context, so any `$skill` in the
+        // remainder must be DEFERRED (fired after session init / autogoal /
+        // autoskill), even when the pre-route session still had a sessionId.
+        const rerouted = await this.route({ ...ctx, text: remainder, deferSkillFire: true }, depth + 1);
         if (rerouted.handled) {
           return rerouted;
         }
