@@ -5,6 +5,8 @@ import { registerCctActions } from '../cct/actions';
 import { defaultTabCache } from '../commands/usage-carousel-cache';
 import { buildDefaultTopicRegistry } from '../z/topics';
 import { ActionPanelActionHandler } from './action-panel-action-handler';
+import { AutoskillActionHandler } from './autoskill-action-handler';
+import { AutoskillAddViewSubmissionHandler } from './autoskill-add-view-submission-handler';
 import { ChannelRouteActionHandler } from './channel-route-action-handler';
 import { ChoiceActionHandler } from './choice-action-handler';
 import { CompactActionHandler } from './compact-action-handler';
@@ -101,6 +103,12 @@ setActionHandlersProviders({
         messageHandler: ctx.messageHandler as any,
       }),
       userAcceptanceHandler: new UserAcceptanceActionHandler({
+        slackApi: ctx.slackApi as any,
+      }),
+      autoskillActionHandler: new AutoskillActionHandler({
+        slackApi: ctx.slackApi as any,
+      }),
+      autoskillAddSubmitHandler: new AutoskillAddViewSubmissionHandler({
         slackApi: ctx.slackApi as any,
       }),
       userSkillMenuHandler: new UserSkillMenuActionHandler({
