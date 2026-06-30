@@ -1,0 +1,16 @@
+{
+  "$schema": "https://uupm.local/ui-ux-references.schema.json",
+  "description": "Named design references for the ui-ux skill. Each entry maps a short name to a design.md extracted from a real-world site. Authored/updated by the ui-ux-reference skill. The ui-ux skill applies these by name.",
+  "references": [
+    {
+      "name": "il-capo-production",
+      "title": "Il Capo Production — cinematic video-production portfolio",
+      "source": "https://www.awwwards.com/sites/il-capo-production",
+      "path": "references/il-capo-production/design.md",
+      "tags": ["cinematic", "minimalism", "dark", "monochrome", "portfolio", "video", "motion", "custom-cursor"],
+      "accent": "#D60001",
+      "default": true,
+      "captured": "2026-06-30"
+    }
+  ]
+}
