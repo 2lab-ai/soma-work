@@ -40,6 +40,7 @@ import {
   ToolTracker,
 } from './slack';
 import { createAssistantContainer } from './slack/assistant-container';
+import { buildAutoskillFire } from './slack/autoskill-fire';
 import { CompletionMessageTracker } from './slack/completion-message-tracker';
 import { createForkExecutor } from './slack/create-fork-executor';
 import { DispatchAbortError, formatDispatchAbortMessage } from './slack/dispatch-abort';
@@ -665,6 +666,36 @@ export class SlackHandler {
             );
             dispatchText = buildGoalContinuationPrompt(applied.goal as SessionGoal);
           }
+        }
+      }
+
+      // S-autoskill: on the FIRST turn of a new session, visibly force-fire the
+      // user's registered autoskills — the `$skill` equivalent, deliberately
+      // NOT a silent system-prompt embed. Runs AFTER the autogoal block so the
+      // Autogoal banner posts first, then the skills fire. Posts the RPG banner
+      // and appends the `<invoked_skills>` block to THIS turn's dispatch prompt
+      // so the model actually executes the skills. Skips synthetic continuation
+      // turns (those are not new user tasks).
+      if (sessionResult.isNewSession && !event.synthetic) {
+        try {
+          const fire = buildAutoskillFire(event.user, `<@${event.user}>`);
+          if (fire) {
+            await this.slackApi.postMessage(activeChannel, '', {
+              threadTs: activeThreadTs,
+              attachments: [{ color: fire.banner.color, text: fire.banner.text }],
+            });
+            dispatchText = dispatchText ? `${dispatchText}\n\n${fire.invokedBlock}` : fire.invokedBlock;
+            this.logger.info('Autoskills force-fired on session start', {
+              user: event.user,
+              skills: fire.keys,
+            });
+          }
+        } catch (err) {
+          // Best-effort — a firing failure must not block the user's turn.
+          this.logger.warn('Autoskill firing failed', {
+            user: event.user,
+            error: (err as Error)?.message ?? String(err),
+          });
         }
       }
 
