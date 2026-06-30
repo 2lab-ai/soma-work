@@ -58,7 +58,7 @@ export function buildAutoskillCard(args: { requesterId: string; skills: string[]
       elements: [
         {
           type: 'mrkdwn',
-          text: '등록된 스킬은 매 새 세션의 시스템 프롬프트에 SKILL.md 내용이 강제 주입됩니다. `set autoskill a, b` 로도 한 번에 설정할 수 있습니다.',
+          text: '등록된 스킬은 새 세션 시작 시 (Autogoal 다음에) `$skill`처럼 자동으로 *강제 발동*됩니다. `set autoskill a, b` 로도 한 번에 설정할 수 있습니다.',
         },
       ],
     },

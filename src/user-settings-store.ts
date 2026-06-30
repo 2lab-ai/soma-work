@@ -257,12 +257,13 @@ export interface UserSettings {
    */
   goalMaxContinuations?: number;
   /**
-   * Per-user auto-injected skills. Each entry is a skill NAME (kebab-case,
-   * resolved via the same user→local→plugin fallback chain as `$skill`). When
-   * non-empty, every fresh system-prompt build for this user force-injects the
-   * full SKILL.md content of each listed skill in an `<auto_invoked_skills>`
-   * block — so a new session/task always starts with these skills active.
-   * Managed via the `autoskill` command + card. Undefined ⇒ none.
+   * Per-user autoskills. Each entry is a skill NAME (kebab-case, resolved via
+   * the same user→local→plugin fallback chain as `$skill`). When non-empty,
+   * the FIRST turn of every new session visibly force-fires these skills —
+   * exactly like the user had typed `$using-ssot $using-govuk` (RPG banner +
+   * `<invoked_skills>` block injected into that turn's prompt), AFTER the
+   * Autogoal step. Not a silent system-prompt embed. Managed via the
+   * `autoskill` command + card. Undefined ⇒ none.
    */
   autoskills?: string[];
 }

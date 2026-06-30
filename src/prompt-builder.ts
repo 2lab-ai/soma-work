@@ -10,7 +10,6 @@ import { SYSTEM_PROMPT_FILE } from './env-paths';
 import { Logger } from './logger';
 import { buildSessionGoalBlock } from './prompt/session-goal-block';
 import { buildUserInstructionsBlock } from './prompt/user-instructions-block';
-import { resolveAutoskillContent } from './skill-locator';
 import type { ConversationSession, WorkflowType } from './types';
 import { formatMemoryForPrompt } from './user-memory-store';
 import { userSettingsStore } from './user-settings-store';
@@ -384,7 +383,6 @@ export class PromptBuilder {
     systemPrompt = this.applyUserPersona(systemPrompt, userId, workflow);
     systemPrompt = this.applyPersistentMemory(systemPrompt, userId);
     systemPrompt = this.applyPersonalSkills(systemPrompt, userId);
-    systemPrompt = this.applyAutoskills(systemPrompt, userId);
     systemPrompt = this.applySessionGoal(systemPrompt, session);
     systemPrompt = this.applyUserInstructions(systemPrompt, session);
 
@@ -458,41 +456,6 @@ export class PromptBuilder {
       // Skills dir may not exist — that's fine, no skills to inject
       return prompt;
     }
-  }
-
-  /**
-   * Force-inject the user's registered autoskills (full SKILL.md content) so a
-   * fresh session starts with them active — the prompt-level equivalent of the
-   * user having typed `$using-ssot $using-govuk …` as the first instruction.
-   *
-   * Fires once per system-prompt build (cached on the session; invalidated by
-   * the settings-store hook whenever the autoskill list changes). Unresolvable
-   * names are skipped with a warning rather than failing the whole build.
-   */
-  private applyAutoskills(prompt: string, userId?: string): string {
-    if (!userId) return prompt;
-    const names = userSettingsStore.getUserAutoskills(userId);
-    if (names.length === 0) return prompt;
-
-    const blocks: string[] = [];
-    const injected: string[] = [];
-    for (const name of names) {
-      const resolved = resolveAutoskillContent(name, userId);
-      if (!resolved) {
-        this.logger.warn('Autoskill not found — skipped', { user: userId, skill: name });
-        continue;
-      }
-      blocks.push(`<${resolved.key}>\n${resolved.content}\n</${resolved.key}>`);
-      injected.push(resolved.key);
-    }
-    if (blocks.length === 0) return prompt;
-
-    this.logger.info('Injected autoskills', { user: userId, skills: injected });
-    const header =
-      'The following skills are auto-activated for this user at the start of every new task. ' +
-      'Treat them as if invoked at the top of the first instruction — follow their procedures from the outset.';
-    const skillBlock = `\n\n<auto_invoked_skills>\n${header}\n\n${blocks.join('\n')}\n</auto_invoked_skills>`;
-    return prompt ? `${prompt}${skillBlock}` : skillBlock.trimStart();
   }
 
   /**
