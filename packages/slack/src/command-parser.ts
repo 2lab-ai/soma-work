@@ -65,6 +65,13 @@ export type PluginsAction =
 
 export type EmailAction = { action: 'status' } | { action: 'set'; email: string };
 
+/**
+ * Autoskill command actions. `status` renders the management card (bare
+ * `autoskill`); `set` replaces the registered list (`set autoskill a, b`),
+ * with an empty list meaning "clear".
+ */
+export type AutoskillAction = { action: 'status' } | { action: 'set'; skills: string[] };
+
 export type RateAction = { action: 'status' } | { action: 'up' } | { action: 'down' };
 
 export type AdminAction =
@@ -840,6 +847,43 @@ export class CommandParser {
 
     // "set email" with no argument → show status
     return { action: 'status' };
+  }
+
+  /**
+   * Check if text is an autoskill command.
+   * Matches: bare `autoskill`, `set autoskill`, `set autoskill <list>`.
+   */
+  static isAutoskillCommand(text: string): boolean {
+    return /^\/?(?:set\s+)?autoskill\b/i.test(text.trim());
+  }
+
+  /**
+   * Parse an autoskill command.
+   *
+   * - `autoskill`                       → status (render card)
+   * - `set autoskill`                   → status (no list ⇒ show card)
+   * - `set autoskill a, b c`            → set ['a','b','c'] (comma/space split)
+   * - `set autoskill clear` / `none`    → set [] (clear all)
+   * - `autoskill clear`                 → set [] (clear all)
+   */
+  static parseAutoskillCommand(text: string): AutoskillAction {
+    const trimmed = text.trim();
+    const match = trimmed.match(/^\/?(?:set\s+)?autoskill\b\s*(.*)$/i);
+    const rest = (match?.[1] ?? '').trim();
+
+    if (!rest) {
+      return { action: 'status' };
+    }
+    if (/^(clear|none|off|reset)$/i.test(rest)) {
+      return { action: 'set', skills: [] };
+    }
+    // Split on commas and/or whitespace; drop a leading `$` so `$using-ssot`
+    // and `using-ssot` are equivalent. Keep only kebab-ish tokens.
+    const skills = rest
+      .split(/[\s,]+/)
+      .map((s) => s.replace(/^\$/, '').trim())
+      .filter((s) => s.length > 0);
+    return { action: 'set', skills };
   }
 
   /**

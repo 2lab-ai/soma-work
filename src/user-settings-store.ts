@@ -256,7 +256,19 @@ export interface UserSettings {
    * {@link GOAL_MAX_CONTINUATIONS_MIN}..{@link GOAL_MAX_CONTINUATIONS_MAX}.
    */
   goalMaxContinuations?: number;
+  /**
+   * Per-user auto-injected skills. Each entry is a skill NAME (kebab-case,
+   * resolved via the same user→local→plugin fallback chain as `$skill`). When
+   * non-empty, every fresh system-prompt build for this user force-injects the
+   * full SKILL.md content of each listed skill in an `<auto_invoked_skills>`
+   * block — so a new session/task always starts with these skills active.
+   * Managed via the `autoskill` command + card. Undefined ⇒ none.
+   */
+  autoskills?: string[];
 }
+
+/** Max number of auto-injected skills a user may register. */
+export const MAX_AUTOSKILLS = 20;
 
 // Goal auto-continuation cap bounds (S4). The default lives in
 // `src/types.ts` (`DEFAULT_GOAL_MAX_CONTINUATIONS`) which the package tree
@@ -810,6 +822,67 @@ export class UserSettingsStore {
   setUserGoalMaxContinuations(userId: string, value: number): void {
     this.patchUserSettings(userId, { goalMaxContinuations: value });
     logger.info('Set user goal max-continuations', { userId, value });
+  }
+
+  /**
+   * Get user's auto-injected skill names (S-autoskill). Returns a defensive
+   * copy so callers can't mutate the stored array. Empty when unset.
+   */
+  getUserAutoskills(userId: string): string[] {
+    const list = this.settings[userId]?.autoskills;
+    return Array.isArray(list) ? [...list] : [];
+  }
+
+  /**
+   * Replace the user's auto-injected skill list wholesale. Order-preserving
+   * de-duplication; capped at {@link MAX_AUTOSKILLS} (excess silently dropped
+   * from the tail). Persisting fires the system-prompt invalidation hook via
+   * `patchUserSettings`, so the next session build re-injects the new set.
+   */
+  setUserAutoskills(userId: string, skills: string[]): void {
+    const deduped = this.dedupeAutoskills(skills);
+    this.patchUserSettings(userId, { autoskills: deduped });
+    logger.info('Set user autoskills', { userId, skills: deduped });
+  }
+
+  /**
+   * Add one skill to the user's auto-injected list. No-op (returns false) when
+   * already present or the cap is reached. Returns true when the list changed.
+   */
+  addUserAutoskill(userId: string, skill: string): boolean {
+    const current = this.getUserAutoskills(userId);
+    if (current.includes(skill)) return false;
+    if (current.length >= MAX_AUTOSKILLS) return false;
+    this.setUserAutoskills(userId, [...current, skill]);
+    return true;
+  }
+
+  /**
+   * Remove one skill from the user's auto-injected list. Returns true when the
+   * list changed (the skill was present), false otherwise.
+   */
+  removeUserAutoskill(userId: string, skill: string): boolean {
+    const current = this.getUserAutoskills(userId);
+    if (!current.includes(skill)) return false;
+    this.setUserAutoskills(
+      userId,
+      current.filter((s) => s !== skill),
+    );
+    return true;
+  }
+
+  /** Order-preserving de-dup + cap helper for autoskill writes. */
+  private dedupeAutoskills(skills: string[]): string[] {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const raw of skills) {
+      const name = typeof raw === 'string' ? raw.trim() : '';
+      if (!name || seen.has(name)) continue;
+      seen.add(name);
+      out.push(name);
+      if (out.length >= MAX_AUTOSKILLS) break;
+    }
+    return out;
   }
 
   /**
