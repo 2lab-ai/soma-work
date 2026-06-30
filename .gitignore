@@ -46,6 +46,9 @@ plugins/
 # User data
 data/
 data.dev/
+# ...but the ui-ux skill ships its own bundled CSV `data/` assets (not user data).
+!src/local/skills/ui-ux/data/
+!src/local/skills/ui-ux/data/**
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
