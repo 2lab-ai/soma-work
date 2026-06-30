@@ -51,7 +51,7 @@ REFDIR="$UIUX/references"
 > Persistence note: in the deployed runtime the skill tree under `dist/local` is
 > ephemeral. To make a reference **durable**, the canonical home is the repo —
 > author the file under `src/local/skills/ui-ux/references/<name>/` and open a PR
-> (the same way the default `il-capo-production` reference ships). When running
+> (the same way the default `claude` reference ships). When running
 > against a local checkout, write directly into `src/local/...`.
 
 ## Procedure
