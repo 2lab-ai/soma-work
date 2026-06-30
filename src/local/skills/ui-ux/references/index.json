@@ -3,13 +3,23 @@
   "description": "Named design references for the ui-ux skill. Each entry maps a short name to a design.md extracted from a real-world site. Authored/updated by the ui-ux-reference skill. The ui-ux skill applies these by name.",
   "references": [
     {
+      "name": "claude",
+      "title": "Claude / Anthropic — warm editorial AI brand",
+      "source": "https://www.anthropic.com/",
+      "path": "references/claude/design.md",
+      "tags": ["warm", "editorial", "light", "cream", "serif", "minimal", "calm", "ai", "human"],
+      "accent": "#CC785C",
+      "default": true,
+      "captured": "2026-06-30"
+    },
+    {
       "name": "il-capo-production",
       "title": "Il Capo Production — cinematic video-production portfolio",
       "source": "https://www.awwwards.com/sites/il-capo-production",
       "path": "references/il-capo-production/design.md",
       "tags": ["cinematic", "minimalism", "dark", "monochrome", "portfolio", "video", "motion", "custom-cursor"],
       "accent": "#D60001",
-      "default": true,
+      "default": false,
       "captured": "2026-06-30"
     }
   ]
