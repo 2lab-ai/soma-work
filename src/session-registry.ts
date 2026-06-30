@@ -324,6 +324,30 @@ export class SessionRegistry {
   }
 
   /**
+   * Fire-and-forget hook invoked when a session goes to sleep or expires, used
+   * to consolidate that owner's hierarchical memory ("dreaming"). Keyed by
+   * ownerId so a per-user LLM pass runs at most at the 24h sleep cadence, not
+   * per turn. Must never throw.
+   */
+  private onSessionConsolidateHook?: (ownerId: string) => void;
+
+  setOnSessionConsolidateHook(hook: ((ownerId: string) => void) | undefined): void {
+    this.onSessionConsolidateHook = hook;
+  }
+
+  private fireSessionConsolidate(ownerId: string | undefined): void {
+    if (!ownerId || !this.onSessionConsolidateHook) return;
+    try {
+      this.onSessionConsolidateHook(ownerId);
+    } catch (error) {
+      this.logger.warn('onSessionConsolidateHook failed', {
+        ownerId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /**
    * Callback fired whenever any session's activity state changes.
    * Used by the dashboard WebSocket to push real-time updates.
    */
@@ -1724,6 +1748,9 @@ export class SessionRegistry {
             this.logger.error('Failed to send session sleep message', error);
           }
         }
+        // Auto-update memory on session end: consolidate this owner's episodic
+        // observations into durable L1 memory ("dreaming"). Fire-and-forget.
+        this.fireSessionConsolidate(session.ownerId);
         continue;
       }
 

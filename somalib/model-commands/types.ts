@@ -17,6 +17,7 @@ export type ModelCommandId =
   | 'SAVE_CONTEXT_RESULT'
   | 'SAVE_MEMORY'
   | 'GET_MEMORY'
+  | 'MEMORY'
   | 'MANAGE_SKILL'
   | 'RATE'
   | 'SET_GOAL';
@@ -64,6 +65,39 @@ export interface SaveMemoryParams {
   target: 'memory' | 'user';
   content?: string;
   old_text?: string;
+}
+
+/**
+ * Hierarchical (taxonomy-based) memory operations — semantic pages, episodic
+ * observations, and the page index. Complements the flat SAVE_MEMORY/GET_MEMORY
+ * L1 store (MEMORY.md/USER.md).
+ */
+export interface MemoryParams {
+  op: 'page_upsert' | 'page_get' | 'page_remove' | 'episodic_append' | 'episodic_get' | 'search' | 'index';
+  /** Semantic page category (required for page_* ops). */
+  type?: 'agent' | 'sites' | 'concepts' | 'project' | 'cron';
+  /** Page slug for agent | sites | concepts. */
+  slug?: string;
+  /** Project name for type='project'. */
+  project?: string;
+  /** Issue id under a project (omit → project-level page). */
+  issue?: string;
+  /** Routine name for type='cron'. */
+  routine?: string;
+  /** Page title (page_upsert). */
+  title?: string;
+  /** Page aliases (page_upsert). */
+  aliases?: string[];
+  /** Replacement text for the Current section (page_upsert). */
+  current?: string;
+  /** Dated bullet appended to History (page_upsert). */
+  history?: string;
+  /** Raw observation text (episodic_append). */
+  content?: string;
+  /** YYYY-MM-DD for episodic_append / episodic_get (default: today). */
+  date?: string;
+  /** Keyword for search. */
+  query?: string;
 }
 
 export interface ManageSkillParams {
@@ -131,6 +165,7 @@ export interface ModelCommandParamsMap {
   SAVE_CONTEXT_RESULT: SaveContextResultParams;
   SAVE_MEMORY: SaveMemoryParams;
   GET_MEMORY: undefined;
+  MEMORY: MemoryParams;
   MANAGE_SKILL: ManageSkillParams;
   RATE: undefined;
   SET_GOAL: SetGoalParams;
@@ -185,6 +220,19 @@ export interface ModelCommandPayloadMap {
     memoryLimit: number;
     userChars: number;
     userLimit: number;
+  };
+  MEMORY: {
+    ok: boolean;
+    message: string;
+    /** page_get / page_upsert: the affected page id and rendered markdown. */
+    id?: string;
+    page?: string;
+    /** episodic_get: raw day file content. */
+    episodic?: string;
+    /** search / index: matched/all page index entries. */
+    entries?: Array<{ id: string; type: string; title: string; aliases: string[]; updated: string }>;
+    /** Host invalidation signal for mutating ops (page_upsert / page_remove). */
+    mutated?: { kind: 'memory'; user: string };
   };
   MANAGE_SKILL: {
     ok: boolean;
