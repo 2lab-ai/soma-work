@@ -118,6 +118,8 @@ export interface ActionHandlerDelegates {
     handleAccept(body: any, respond: RespondFn): Promise<void>;
     handleDeny(body: any, respond: RespondFn): Promise<void>;
   };
+  autoskillActionHandler: { handleAction(body: any, respond: RespondFn, client: any): Promise<void> };
+  autoskillAddSubmitHandler: { handleSubmit(ack: ViewAck, body: any, client: any): Promise<void> };
   userSkillMenuHandler: { handleAction(body: any, respond: RespondFn, client: any): Promise<void> };
   userSkillPermissionHandler: { handleAction(body: any, respond: RespondFn, client: any): Promise<void> };
   userSkillEditSubmitHandler: { handleSubmit(ack: ViewAck, body: any, client: any): Promise<void> };
@@ -168,6 +170,7 @@ export function setActionHandlersProviders(next: ActionHandlersProviders): void 
 }
 
 const GOAL_UPDATE_MODAL_CALLBACK_ID = 'goal_update_modal_submit';
+const AUTOSKILL_ADD_MODAL_CALLBACK_ID = 'autoskill_add_modal_submit';
 const USER_SKILL_EDIT_MODAL_CALLBACK_ID = 'user_skill_edit_modal_submit';
 const USER_SKILL_RENAME_MODAL_CALLBACK_ID = 'user_skill_rename_modal_submit';
 const USER_SKILL_DELETE_MODAL_CALLBACK_ID = 'user_skill_delete_modal_submit';
@@ -273,6 +276,15 @@ export class ActionHandlers {
     app.action(/^user_choice_/, async ({ ack, body }) => {
       await ack();
       await this.delegates.choiceHandler.handleUserChoice(body);
+    });
+
+    app.action(/^autoskill_/, async ({ ack, body, respond, client }) => {
+      await ack();
+      await this.delegates.autoskillActionHandler.handleAction(body, respond as RespondFn, client);
+    });
+
+    app.view(AUTOSKILL_ADD_MODAL_CALLBACK_ID, async ({ ack, body, client }) => {
+      await this.delegates.autoskillAddSubmitHandler.handleSubmit(ack as ViewAck, body, client);
     });
 
     app.action(/^user_skill_menu_/, async ({ ack, body, respond, client }) => {

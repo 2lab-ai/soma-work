@@ -5,6 +5,7 @@ vi.mock('../user-settings-store', () => ({
   userSettingsStore: {
     getUserPersona: vi.fn().mockReturnValue('default'),
     getUserSettings: vi.fn().mockReturnValue(undefined),
+    getUserAutoskills: vi.fn().mockReturnValue([]),
   },
 }));
 
