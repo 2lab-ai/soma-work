@@ -1,6 +1,6 @@
 ---
 name: html
-description: Convert any content (markdown, plain text, JSON, CSV, SQL, raw notes) into a styled single-file HTML with a Lottie motion layer and a rendered PNG, publish the HTML on the local web server (clickable access link), then upload both files to the current Slack thread. Pick a template name from the catalog or let the skill auto-classify. Triggers on "html로 만들어줘", "HTML로 변환", "이걸 페이지로", "render as html", "html + png", "convert to html", "to html and png", "make a card", "make a deck", "make a poster", "make a report from this data".
+description: Convert any content (markdown, plain text, JSON, CSV, SQL, raw notes) into a styled single-file HTML with a Lottie motion layer and a rendered PNG, publish the HTML on the local web server (clickable access link), then upload both files to the current Slack thread. The visual design is driven by the `ui-ux` skill as the main design engine (design-system + named references; default reference `openai`), with the `design` skill applied on top as the anti-AI-slop layer. Pick a template name from the catalog or let the skill auto-classify. Triggers on "html로 만들어줘", "HTML로 변환", "이걸 페이지로", "render as html", "html + png", "convert to html", "to html and png", "make a card", "make a deck", "make a poster", "make a report from this data".
 allowed-tools: Read, Write, Edit, Bash, Glob, Grep
 version: 0.2.0
 license: ISC
@@ -90,11 +90,58 @@ typography constraints, palette). The agent obeys this contract when
 generating HTML. If the upstream template's `SKILL.md` is in Chinese or
 mixed CJK, that's fine — the structural intent translates.
 
-### 3.5. Consult the `design` skill for a visual direction
+### 3.4. Drive the design from the `ui-ux` skill (MAIN driver)
 
-Before writing any HTML, read the **`design`** skill — it is what stops the
-output from looking like a model's reflexive default and makes it read like a
-real design team's work.
+The **`ui-ux`** skill is the **main design driver** for this skill. Before any
+visual decision, read it and run its engine — it owns palette, typography,
+layout system, and the named visual reference. (The `design` skill in Step 3.5
+then runs *on top* of the ui-ux output as the anti-AI-slop refinement layer; it
+is no longer the primary source of the visual voice.)
+
+```bash
+UIUX="$CLAUDE_PLUGIN_ROOT/skills/ui-ux"
+[ -d "$UIUX" ] || UIUX="$(git rev-parse --show-toplevel 2>/dev/null)/src/local/skills/ui-ux"
+cat "$UIUX/SKILL.md"
+```
+
+Operate `ui-ux` in its non-interactive path (you are on the critical path of one
+Slack request — *do not ask the user anything*):
+
+1. **Run the design-system engine (REQUIRED).** This is `ui-ux` Step 2 — it
+   returns the pattern, style, colors, typography, and effects with reasoning:
+   ```bash
+   python3 "$UIUX/scripts/search.py" "<product/content type> <industry> <keywords>" --design-system -f markdown
+   ```
+   Derive the keywords from the content + the template chosen in Step 2.
+2. **Apply the active named reference as the visual North Star.** Resolve which
+   reference is active, in priority order:
+   - the reference the user explicitly named ("use the `<name>` reference"), else
+   - real brand context the user supplied (palette / codebase / screenshot), else
+   - the **default reference** — the entry with `"default": true` in
+     `$UIUX/references/index.json` (currently **`openai`**).
+   ```bash
+   REF=$(python3 -c "import json,sys; d=json.load(open('$UIUX/references/index.json')); print(next(r['name'] for r in d['references'] if r.get('default')))")
+   cat "$UIUX/references/$REF/design.md"
+   ```
+   The reference's palette, typography, layout, and motion language **override**
+   the engine's generic output and this skill's default palette when they
+   conflict (per the `ui-ux` skill's Named Design References contract). The engine
+   output fills the gaps the reference is silent on.
+3. **Honor ui-ux quality gates.** The reference sets aesthetic direction, never
+   permission to break ui-ux Quick Reference §1–§3 (accessibility, touch targets,
+   performance) — verify color pairs meet the §1 contrast rules.
+4. **Record the choice** as a one-line HTML comment at the top of the file, e.g.
+   `<!-- ui-ux: reference=openai · design-system=Dark Mode/Inter · template=data-report -->`,
+   so the decision is auditable. Do not narrate it in the Slack reply.
+
+This step never blocks and never asks a question — it is a deterministic engine
+lookup + reference read. The classifier in Step 2 and the auto-flow are unchanged.
+
+### 3.5. Apply the `design` skill as the anti-AI-slop layer
+
+After the `ui-ux` driver (Step 3.4) has set the visual voice, read the
+**`design`** skill and apply it *on top* — it is the anti-AI-slop discipline that
+stops the output from sliding back into a model's reflexive default.
 
 ```bash
 cat "$CLAUDE_PLUGIN_ROOT/skills/design/SKILL.md"
@@ -103,24 +150,20 @@ cat "$CLAUDE_PLUGIN_ROOT/skills/design/SKILL.md"
 Operate the `design` skill in its **programmatic mode** (Mode A — *do not ask
 the user anything*; you are on the critical path of one Slack request):
 
-1. **Pick exactly one design direction** using the `design` skill's
-   deterministic style selector. If the user supplied brand context (palette,
-   codebase, reference screenshot), lift that real system instead of the
-   library. Otherwise map this step's chosen template → its default
-   HTML-friendly direction from the selector table (e.g. `data-report` → Fathom,
-   `deck-simple` → Pentagram, `doc-kami-parchment` → Takram).
-2. **Apply the `design` skill's anti-AI-slop hard rules** on top of the
-   template's structural contract. These are the priority order: the template
-   SKILL.md governs *structure/layout*, the chosen direction governs *visual
-   voice*, and the anti-slop rules govern *what never to do* (no rainbow
+1. **The visual direction is already set by `ui-ux` (Step 3.4).** Do not let the
+   `design` skill's style selector override the active ui-ux reference — use the
+   `design` skill only to *enforce* its **anti-AI-slop hard rules** on top of the
+   ui-ux palette/type. Priority order: the active **ui-ux reference governs the
+   visual voice**, the template SKILL.md governs *structure/layout*, and the
+   `design` skill's anti-slop rules govern *what never to do* (no rainbow
    gradients, no left-border accent cards, no decorative emoji, no SVG hero
-   imagery, no invented stats/fonts/colors).
-3. **Record the choice** as a one-line HTML comment at the top of the file,
-   e.g. `<!-- design: 04 Fathom — dense quantitative data, scientific restraint -->`,
-   so the decision is auditable. Do not narrate it in the Slack reply.
+   imagery, no invented stats/fonts/colors). Only fall back to the `design`
+   skill's own style selector if Step 3.4 produced no usable reference.
+2. **Record nothing extra** — the auditable choice line is already written in
+   Step 3.4. Do not narrate the design decision in the Slack reply.
 
-This step never blocks and never asks a question — it is a deterministic lookup
-that raises design quality. The classifier in Step 2 and the auto-flow are
+This step never blocks and never asks a question — it is a deterministic anti-slop
+pass layered on the ui-ux driver. The classifier in Step 2 and the auto-flow are
 unchanged.
 
 ### 3.7. Plan the motion layer (`lottie` skill)
@@ -180,7 +223,10 @@ the model from freestyling AI-slop defaults):
   multiple of 8 (allowed mid-step: 4 for hairline details).
 - **Contrast ≥ 4.5** for any body text against its background. WCAG AA.
 - **No pure black / pure white** — use `#0f172a` (slate-900) for ink,
-  `#fafaf9` (stone-50) for paper, unless the template's palette overrides.
+  `#fafaf9` (stone-50) for paper, **unless** the template's palette or the active
+  `ui-ux` reference (Step 3.4) intentionally specifies pure values. A named
+  reference's palette wins over this default (e.g. the `openai` reference uses
+  true `#000`/`#FFF`) as long as it still clears the contrast gate.
 - **No lorem ipsum** — use the user's real data. If the user's data has a
   hole the template requires, leave it blank with a visible placeholder
   (e.g., `[—]`), do **not** invent content.
@@ -333,8 +379,15 @@ V1 ships 8 templates. To add more from the html-anything catalog (75 total):
 
 ## References
 
+- [`../ui-ux/SKILL.md`](../ui-ux/SKILL.md) — the `ui-ux` skill, the **main
+  design driver**. Step 3.4 runs its `--design-system` engine and applies its
+  active named reference (default `openai`) as the visual North Star before
+  generating HTML.
+- [`../ui-ux/references/index.json`](../ui-ux/references/index.json) — the named
+  design reference registry; the entry with `"default": true` is what Step 3.4
+  applies when the user names no reference.
 - [`../design/SKILL.md`](../design/SKILL.md) — the `design` skill. Step 3.5
-  consults it for the visual direction + anti-AI-slop discipline before
+  applies it *on top of* the ui-ux driver as the anti-AI-slop discipline before
   generating HTML.
 - [`../lottie/SKILL.md`](../lottie/SKILL.md) — the `lottie` skill
   (vendored from diffusionstudio/lottie). Step 3.7 consults it to author the
