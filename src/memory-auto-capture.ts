@@ -71,22 +71,22 @@ interface DreamState {
   turnsSinceLastDream: number;
 }
 
-function dreamStatePath(userId: string): string {
-  return path.join(memoryRoot(DATA_DIR, userId), '.dream-state.json');
+function dreamStatePath(dataDir: string, userId: string): string {
+  return path.join(memoryRoot(dataDir, userId), '.dream-state.json');
 }
 
-function readDreamState(userId: string): DreamState {
+function readDreamState(dataDir: string, userId: string): DreamState {
   try {
-    return JSON.parse(fs.readFileSync(dreamStatePath(userId), 'utf-8')) as DreamState;
+    return JSON.parse(fs.readFileSync(dreamStatePath(dataDir, userId), 'utf-8')) as DreamState;
   } catch {
     return { lastDreamAt: 0, turnsSinceLastDream: 0 };
   }
 }
 
-function writeDreamState(userId: string, state: DreamState): void {
+function writeDreamState(dataDir: string, userId: string, state: DreamState): void {
   try {
-    fs.mkdirSync(path.dirname(dreamStatePath(userId)), { recursive: true });
-    fs.writeFileSync(dreamStatePath(userId), `${JSON.stringify(state, null, 2)}\n`, 'utf-8');
+    fs.mkdirSync(path.dirname(dreamStatePath(dataDir, userId)), { recursive: true });
+    fs.writeFileSync(dreamStatePath(dataDir, userId), `${JSON.stringify(state, null, 2)}\n`, 'utf-8');
   } catch {
     /* best-effort */
   }
@@ -131,39 +131,75 @@ function parseJsonObject(text: string): { memory?: unknown; user?: unknown } | n
   }
 }
 
-function applyL1(userId: string, target: 'memory' | 'user', proposed: unknown): void {
+function applyL1(deps: ConsolidationDeps, userId: string, target: 'memory' | 'user', proposed: unknown): void {
   if (!Array.isArray(proposed)) return;
   const entries = proposed
     .filter((e): e is string => typeof e === 'string' && e.trim().length > 0)
     .map((e) => e.trim());
   if (entries.length === 0) return;
-  const result = userMemoryStore.replaceAllMemory(userId, target, entries);
+  const result = deps.l1ReplaceAll(userId, target, entries);
   if (!result.ok) {
     logger.debug('dreaming L1 apply rejected', { userId, target, reason: result.reason });
   }
 }
 
 /**
+ * Injectable collaborators for `consolidateUserMemory`. Production wires the
+ * real singletons; tests inject a temp-dir store, in-memory L1, and a fake LLM
+ * so the full consolidation orchestration is verifiable without live auth.
+ */
+export interface ConsolidationDeps {
+  store: {
+    readIndex: (userId: string) => unknown;
+    recentEpisodicDates: (userId: string, limit: number) => string[];
+    readEpisodic: (userId: string, date?: string) => string;
+  };
+  l1Load: (userId: string, target: 'memory' | 'user') => { entries: string[] };
+  l1ReplaceAll: (userId: string, target: 'memory' | 'user', entries: string[]) => { ok: boolean; reason?: string };
+  runQuery: (prompt: string) => Promise<string>;
+  dataDir: string;
+}
+
+function defaultConsolidationDeps(): ConsolidationDeps {
+  return {
+    store: hierarchicalMemoryStore,
+    l1Load: (userId, target) => userMemoryStore.loadMemory(userId, target),
+    l1ReplaceAll: (userId, target, entries) => userMemoryStore.replaceAllMemory(userId, target, entries),
+    runQuery: runConsolidationQuery,
+    dataDir: DATA_DIR,
+  };
+}
+
+/**
  * Best-effort "dreaming" consolidation. Rebuilds the page index, then runs one
  * LLM pass to refresh L1 from recent episodic observations. Never throws.
- * Returns true when a consolidation pass actually ran.
+ * Returns true when a consolidation pass actually ran (episodic existed and the
+ * LLM query was invoked), independent of whether the LLM output parsed.
+ *
+ * The LLM call is the only piece that needs live auth; everything else
+ * (episodic read, prompt assembly, JSON parse, L1 apply, dream-state write) is
+ * injectable via `depsOverride` so the session-end behavior is unit-tested.
  */
-export async function consolidateUserMemory(userId: string): Promise<boolean> {
+export async function consolidateUserMemory(
+  userId: string,
+  depsOverride?: Partial<ConsolidationDeps>,
+): Promise<boolean> {
   if (!DREAMING_ENABLED) return false;
+  const deps: ConsolidationDeps = { ...defaultConsolidationDeps(), ...depsOverride };
   try {
     // Always keep the index fresh even if the LLM pass is skipped/fails.
-    hierarchicalMemoryStore.readIndex(userId);
+    deps.store.readIndex(userId);
 
-    const recentDates = hierarchicalMemoryStore.recentEpisodicDates(userId, 3);
+    const recentDates = deps.store.recentEpisodicDates(userId, 3);
     if (recentDates.length === 0) return false;
     const episodic = recentDates
-      .map((d) => hierarchicalMemoryStore.readEpisodic(userId, d))
+      .map((d) => deps.store.readEpisodic(userId, d))
       .filter((s) => s.trim().length > 0)
       .join('\n\n');
     if (!episodic.trim()) return false;
 
-    const mem = userMemoryStore.loadMemory(userId, 'memory');
-    const usr = userMemoryStore.loadMemory(userId, 'user');
+    const mem = deps.l1Load(userId, 'memory');
+    const usr = deps.l1Load(userId, 'user');
 
     const prompt = [
       '## 현재 L1 MEMORY 엔트리',
@@ -176,17 +212,17 @@ export async function consolidateUserMemory(userId: string): Promise<boolean> {
       episodic.slice(0, 6000),
     ].join('\n');
 
-    const raw = await runConsolidationQuery(prompt);
+    const raw = await deps.runQuery(prompt);
     const parsed = parseJsonObject(raw);
     if (parsed) {
-      applyL1(userId, 'memory', parsed.memory);
-      applyL1(userId, 'user', parsed.user);
+      applyL1(deps, userId, 'memory', parsed.memory);
+      applyL1(deps, userId, 'user', parsed.user);
     } else {
       logger.debug('dreaming produced no parseable JSON', { userId });
     }
 
-    const prev = readDreamState(userId);
-    writeDreamState(userId, { lastDreamAt: Date.now(), turnsSinceLastDream: 0 });
+    const prev = readDreamState(deps.dataDir, userId);
+    writeDreamState(deps.dataDir, userId, { lastDreamAt: Date.now(), turnsSinceLastDream: 0 });
     logger.info('memory consolidation complete', {
       userId,
       episodicDays: recentDates.length,
