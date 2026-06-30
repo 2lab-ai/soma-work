@@ -7,6 +7,13 @@ export interface FileHandlerReader {
   downloadAndProcessFiles(files: NonNullable<MessageEvent['files']>): Promise<ProcessedFile[]>;
 }
 
+/** See `DeferredSkillFire` in `commands/command-router.ts`. */
+export interface DeferredSkillFireResult {
+  keys: string[];
+  invokedBlock: string;
+  banner: { text: string; color: string };
+}
+
 export interface CommandRouteResult {
   handled: boolean;
   continueWithPrompt?: string;
@@ -17,6 +24,8 @@ export interface CommandRouteResult {
    * `commands/command-router.ts`.
    */
   setGoalObjective?: string;
+  /** Deferred forced `$skill` (banner + block) for a fresh-context start. */
+  deferredSkillFire?: DeferredSkillFireResult;
 }
 
 export interface CommandRouterReader {
@@ -27,6 +36,7 @@ export interface CommandRouterReader {
     text: string;
     say: SayFn;
     postEphemeral?: (msg: { text: string; blocks?: any[] }) => Promise<void>;
+    deferSkillFire?: boolean;
   }): Promise<CommandRouteResult>;
 }
 
@@ -112,11 +122,13 @@ export class InputProcessor {
   async routeCommand(
     event: MessageEvent,
     say: SayFn,
+    options?: { deferSkillFire?: boolean },
   ): Promise<{
     handled: boolean;
     continueWithPrompt?: string;
     forceWorkflow?: WorkflowType;
     setGoalObjective?: string;
+    deferredSkillFire?: DeferredSkillFireResult;
   }> {
     const { user, channel, thread_ts, ts, text } = event;
 
@@ -185,6 +197,7 @@ export class InputProcessor {
       text,
       say,
       postEphemeral,
+      deferSkillFire: options?.deferSkillFire,
     });
 
     return {
@@ -195,6 +208,8 @@ export class InputProcessor {
       // session — must survive this field-by-field rebuild to reach
       // slack-handler.
       setGoalObjective: commandResult.setGoalObjective,
+      // Deferred forced `$skill` — fired by slack-handler after autoskill.
+      deferredSkillFire: commandResult.deferredSkillFire,
     };
   }
 }
