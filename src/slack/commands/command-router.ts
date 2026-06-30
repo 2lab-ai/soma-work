@@ -2,6 +2,7 @@ import { setCommandRouterProviders } from '@soma/slack/commands/command-router';
 import type { ClaudeHandler } from '../../claude-handler';
 import { getReportDeps } from '../../metrics';
 import { AdminHandler } from './admin-handler';
+import { AutoskillHandler } from './autoskill-handler';
 import { BypassHandler } from './bypass-handler';
 import { CctHandler } from './cct-handler';
 import { CloseHandler } from './close-handler';
@@ -84,6 +85,11 @@ setCommandRouterProviders({
         new DashboardHandler(),
         new MarketplaceHandler(deps as any),
         pluginsHandler,
+        // Must precede `skillForceHandler`: `set autoskill $a, $b` contains
+        // `$skill` tokens that SkillForceHandler would otherwise intercept and
+        // inject instead of registering. AutoskillHandler.canHandle is narrow
+        // (`^/?(set )?autoskill\b`) so it never steals unrelated messages.
+        new AutoskillHandler(),
         new UserSkillsListHandler(),
         skillForceHandler,
         new SessionCommandHandler(deps as any),

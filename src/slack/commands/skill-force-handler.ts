@@ -121,6 +121,7 @@ const KNOWN_NON_SKILL_DIRECTIVES: ReadonlySet<string> = new Set([
   'sandbox',
   'rate',
   'email',
+  'autoskill',
   'notify',
   'webhook',
   'compact',
