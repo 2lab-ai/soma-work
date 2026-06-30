@@ -208,6 +208,60 @@ export function validateModelCommandRunArgs(args: unknown): ValidationResult {
     };
   }
 
+  if (commandId === 'MEMORY') {
+    if (!isRecord(params)) {
+      return invalidArgsFor('MEMORY', 'MEMORY params must be an object with an `op` field');
+    }
+    const op = params.op;
+    const validOps = ['page_upsert', 'page_get', 'page_remove', 'episodic_append', 'episodic_get', 'search', 'index'];
+    if (typeof op !== 'string' || !validOps.includes(op)) {
+      return invalidArgsFor('MEMORY', `MEMORY op must be one of ${validOps.join(', ')}, got: ${String(op)}`);
+    }
+    const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
+    const type = params.type;
+    if (
+      type !== undefined &&
+      type !== 'agent' &&
+      type !== 'sites' &&
+      type !== 'concepts' &&
+      type !== 'project' &&
+      type !== 'cron'
+    ) {
+      return invalidArgsFor('MEMORY', `MEMORY type must be agent|sites|concepts|project|cron, got: ${String(type)}`);
+    }
+    const aliases = Array.isArray(params.aliases)
+      ? params.aliases.filter((a): a is string => typeof a === 'string')
+      : undefined;
+    return {
+      ok: true,
+      request: {
+        commandId: 'MEMORY',
+        params: {
+          op: op as
+            | 'page_upsert'
+            | 'page_get'
+            | 'page_remove'
+            | 'episodic_append'
+            | 'episodic_get'
+            | 'search'
+            | 'index',
+          type: type as 'agent' | 'sites' | 'concepts' | 'project' | 'cron' | undefined,
+          slug: str(params.slug),
+          project: str(params.project),
+          issue: str(params.issue),
+          routine: str(params.routine),
+          title: str(params.title),
+          aliases,
+          current: str(params.current),
+          history: str(params.history),
+          content: str(params.content),
+          date: str(params.date),
+          query: str(params.query),
+        },
+      },
+    };
+  }
+
   if (commandId === 'MANAGE_SKILL') {
     if (!isRecord(params)) {
       return invalidArgsFor('MANAGE_SKILL', 'MANAGE_SKILL params must be an object with action');
