@@ -90,6 +90,13 @@ describe('HierarchicalMemoryFileStore', () => {
     expect(store.recentEpisodicDates(user, 5)).toContain('2026-06-30');
   });
 
+  it('writes the day header exactly once across many appends (race-safe)', () => {
+    for (let i = 0; i < 5; i++) store.appendEpisodic(user, `obs ${i}`, '2026-06-30');
+    const text = store.readEpisodic(user, '2026-06-30');
+    expect(text.match(/^# 2026-06-30$/gm)?.length).toBe(1);
+    for (let i = 0; i < 5; i++) expect(text).toContain(`obs ${i}`);
+  });
+
   it('builds an index and searches by id/title/alias', () => {
     store.upsertPage(user, { type: 'agent', slug: 'build-system' }, { title: 'Build system', aliases: ['bun'] });
     store.upsertPage(user, { type: 'sites', slug: 'danawa' }, { title: 'Danawa price aggregator' });

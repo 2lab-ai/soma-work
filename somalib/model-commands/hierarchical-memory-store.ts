@@ -262,11 +262,16 @@ export class HierarchicalMemoryFileStore {
     const firstLine = trimmed.split('\n')[0].slice(0, 80);
     const block = `\n## ${nowHM()} - ${firstLine}\n\n${trimmed}\n`;
     this.ensureDir(path.dirname(filePath));
-    if (!fs.existsSync(filePath)) {
-      fs.writeFileSync(filePath, `# ${day}\n${block}`, 'utf-8');
-    } else {
-      fs.appendFileSync(filePath, block, 'utf-8');
+    // Race-safe: create the day header exactly once with an exclusive open
+    // (`wx` throws EEXIST if another process already created it), then always
+    // append the block. Using append (never truncating write) means two
+    // concurrent first-writers cannot clobber each other's block — both append.
+    try {
+      fs.writeFileSync(filePath, `# ${day}\n`, { encoding: 'utf-8', flag: 'wx' });
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
     }
+    fs.appendFileSync(filePath, block, 'utf-8');
     return { ok: true, message: `Appended episodic ${day}`, relPath };
   }
 

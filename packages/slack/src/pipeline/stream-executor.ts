@@ -3791,6 +3791,27 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         }
       }
 
+      // MEMORY page mutations carry the same wire-level invalidation signal.
+      // Model-commands run in the MCP server process, whose hierarchical store
+      // has no in-process invalidation hook — so a page_upsert/page_remove there
+      // would otherwise leave the cached system prompt's semantic INDEX stale.
+      // (For local in-process dispatch the store wrapper already fires the hook;
+      // this second invalidate is idempotent.)
+      if (parsed.commandId === 'MEMORY') {
+        const payload = parsed.payload as ModelCommandPayloadMap['MEMORY'];
+        if (payload.ok && payload.mutated?.kind === 'memory') {
+          try {
+            this.deps.claudeHandler.getSessionRegistry().invalidateSystemPromptForUser(payload.mutated.user);
+          } catch (err) {
+            this.logger.debug('MEMORY invalidation hook failed', {
+              sessionKey: context.sessionKey,
+              user: payload.mutated.user,
+              err: (err as Error)?.message ?? String(err),
+            });
+          }
+        }
+      }
+
       if (parsed.commandId === 'ASK_USER_QUESTION') {
         pendingQuestions.push(parsed.payload.question);
         hasPendingChoice = true;

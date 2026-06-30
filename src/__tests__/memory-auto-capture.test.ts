@@ -18,14 +18,14 @@ describe('consolidateUserMemory (session-end dreaming)', () => {
 
   // In-memory L1 so we can assert what the consolidation wrote.
   let l1: { memory: string[]; user: string[] };
-  let replaceCalls: Array<{ target: string; entries: string[] }>;
+  let replaceCalls: Array<{ target: string; entries: string[]; expectedOld?: string[] }>;
 
   function makeDeps(runQuery: ConsolidationDeps['runQuery']): Partial<ConsolidationDeps> {
     return {
       store,
       l1Load: (_u, target) => ({ entries: l1[target] }),
-      l1ReplaceAll: (_u, target, entries) => {
-        replaceCalls.push({ target, entries });
+      l1ReplaceAll: (_u, target, entries, expectedOld) => {
+        replaceCalls.push({ target, entries, expectedOld });
         l1[target] = entries;
         return { ok: true };
       },
@@ -49,7 +49,7 @@ describe('consolidateUserMemory (session-end dreaming)', () => {
     store.appendEpisodic(user, 'User prefers KRW price tables.');
     store.appendEpisodic(user, 'Repo builds with bun not npm.');
 
-    const runQuery = vi.fn(async () =>
+    const runQuery = vi.fn(async (_prompt: string) =>
       JSON.stringify({
         memory: ['Repo builds with bun, not npm.'],
         user: ['Prefers concise KRW price tables.'],
@@ -69,6 +69,11 @@ describe('consolidateUserMemory (session-end dreaming)', () => {
     expect(l1.memory).toEqual(['Repo builds with bun, not npm.']);
     expect(l1.user).toEqual(['Prefers concise KRW price tables.']);
     expect(replaceCalls.map((c) => c.target).sort()).toEqual(['memory', 'user']);
+
+    // CAS: the pre-LLM snapshot is passed as expectedOld so a concurrent
+    // SAVE_MEMORY during the (multi-second) LLM call is not silently clobbered.
+    const memCall = replaceCalls.find((c) => c.target === 'memory');
+    expect(memCall?.expectedOld).toEqual(['existing memory fact']);
 
     // dream-state recorded.
     const dreamState = JSON.parse(fs.readFileSync(path.join(memoryRoot(dataDir, user), '.dream-state.json'), 'utf-8'));

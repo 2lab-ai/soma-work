@@ -47,6 +47,25 @@ function clip(s: string, n: number): string {
   return t.length > n ? `${t.slice(0, n)}…` : t;
 }
 
+// Best-effort redaction of obvious secrets before they land in on-disk memory.
+// Not a security boundary — a cheap guard against the most common token shapes
+// leaking into the episodic log from a user message or tool output.
+const SECRET_PATTERNS: RegExp[] = [
+  /\b(?:sk|pk|rk)-[A-Za-z0-9_-]{16,}\b/g, // OpenAI-style keys
+  /\bgh[posu]_[A-Za-z0-9]{20,}\b/g, // GitHub tokens
+  /\bxox[abprs]-[A-Za-z0-9-]{10,}\b/g, // Slack tokens
+  /\bAKIA[0-9A-Z]{16}\b/g, // AWS access key id
+  /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, // JWT
+  /\b[Bb]earer\s+[A-Za-z0-9._-]{20,}\b/g, // Bearer tokens
+  /\b[A-Fa-f0-9]{40,}\b/g, // long hex secrets (sha/api)
+];
+
+function redactSecrets(s: string): string {
+  let out = s;
+  for (const re of SECRET_PATTERNS) out = out.replace(re, '[REDACTED]');
+  return out;
+}
+
 /**
  * Append a per-turn episodic breadcrumb. Deterministic and synchronous-light:
  * scheduled on the microtask queue so it never adds latency to the reply path.
@@ -55,8 +74,8 @@ export function captureTurnEpisodic(userId: string, userText: string, assistantT
   if (!TURN_CAPTURE_ENABLED) return;
   queueMicrotask(() => {
     try {
-      const ask = clip(cleanUserText(userText), USER_TEXT_CAP);
-      const did = clip(assistantText, ASSISTANT_TEXT_CAP);
+      const ask = redactSecrets(clip(cleanUserText(userText), USER_TEXT_CAP));
+      const did = redactSecrets(clip(assistantText, ASSISTANT_TEXT_CAP));
       if (!ask && !did) return;
       const body = [ask ? `**Ask:** ${ask}` : '', did ? `**Did:** ${did}` : ''].filter(Boolean).join('\n');
       hierarchicalMemoryStore.appendEpisodic(userId, body);
@@ -131,13 +150,25 @@ function parseJsonObject(text: string): { memory?: unknown; user?: unknown } | n
   }
 }
 
-function applyL1(deps: ConsolidationDeps, userId: string, target: 'memory' | 'user', proposed: unknown): void {
+function applyL1(
+  deps: ConsolidationDeps,
+  userId: string,
+  target: 'memory' | 'user',
+  proposed: unknown,
+  expectedOld: string[],
+): void {
   if (!Array.isArray(proposed)) return;
   const entries = proposed
     .filter((e): e is string => typeof e === 'string' && e.trim().length > 0)
     .map((e) => e.trim());
+  // Never wipe L1 on an empty/garbage LLM result — keep the existing entries.
   if (entries.length === 0) return;
-  const result = deps.l1ReplaceAll(userId, target, entries);
+  // Compare-and-swap against the snapshot read before the (multi-second) LLM
+  // call: if the user issued a SAVE_MEMORY in the meantime, their explicit edit
+  // wins and the dreaming rewrite is dropped rather than silently clobbering it.
+  // The raw episodic log remains the durable backstop for any fact the LLM
+  // rewrite may have dropped.
+  const result = deps.l1ReplaceAll(userId, target, entries, expectedOld);
   if (!result.ok) {
     logger.debug('dreaming L1 apply rejected', { userId, target, reason: result.reason });
   }
@@ -155,7 +186,12 @@ export interface ConsolidationDeps {
     readEpisodic: (userId: string, date?: string) => string;
   };
   l1Load: (userId: string, target: 'memory' | 'user') => { entries: string[] };
-  l1ReplaceAll: (userId: string, target: 'memory' | 'user', entries: string[]) => { ok: boolean; reason?: string };
+  l1ReplaceAll: (
+    userId: string,
+    target: 'memory' | 'user',
+    entries: string[],
+    expectedOld?: string[],
+  ) => { ok: boolean; reason?: string };
   runQuery: (prompt: string) => Promise<string>;
   dataDir: string;
 }
@@ -164,7 +200,8 @@ function defaultConsolidationDeps(): ConsolidationDeps {
   return {
     store: hierarchicalMemoryStore,
     l1Load: (userId, target) => userMemoryStore.loadMemory(userId, target),
-    l1ReplaceAll: (userId, target, entries) => userMemoryStore.replaceAllMemory(userId, target, entries),
+    l1ReplaceAll: (userId, target, entries, expectedOld) =>
+      userMemoryStore.replaceAllMemory(userId, target, entries, expectedOld),
     runQuery: runConsolidationQuery,
     dataDir: DATA_DIR,
   };
@@ -215,8 +252,8 @@ export async function consolidateUserMemory(
     const raw = await deps.runQuery(prompt);
     const parsed = parseJsonObject(raw);
     if (parsed) {
-      applyL1(deps, userId, 'memory', parsed.memory);
-      applyL1(deps, userId, 'user', parsed.user);
+      applyL1(deps, userId, 'memory', parsed.memory, mem.entries);
+      applyL1(deps, userId, 'user', parsed.user, usr.entries);
     } else {
       logger.debug('dreaming produced no parseable JSON', { userId });
     }
