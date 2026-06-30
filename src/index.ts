@@ -3,7 +3,13 @@ import { installConsoleRedaction } from './logger';
 installConsoleRedaction();
 
 import './env-paths';
-import { registerMemoryStore, registerSkillStore } from 'somalib/model-commands/catalog';
+import {
+  registerHierarchicalMemoryStore,
+  registerMemoryStore,
+  registerSkillStore,
+} from 'somalib/model-commands/catalog';
+import { hierarchicalMemoryStore, setHierarchicalMemoryPromptInvalidationHook } from './hierarchical-memory';
+import { consolidateUserMemory } from './memory-auto-capture';
 import * as userMemoryStore from './user-memory-store';
 import { setSettingsPromptInvalidationHook } from './user-settings-store';
 import { gatedManageSkillCopy } from './user-skill-copy-gate';
@@ -18,6 +24,7 @@ import {
 } from './user-skill-store';
 
 registerMemoryStore(userMemoryStore);
+registerHierarchicalMemoryStore(hierarchicalMemoryStore);
 registerSkillStore({
   listSkills: listUserSkills,
   createSkill: createUserSkill,
@@ -472,7 +479,14 @@ async function start() {
         registry.invalidateSystemPromptForUser(userId);
       };
       userMemoryStore.setMemoryPromptInvalidationHook(invalidate);
+      setHierarchicalMemoryPromptInvalidationHook(invalidate);
       setSettingsPromptInvalidationHook(invalidate);
+      // Auto-update memory on session sleep/expiry: run a best-effort LLM
+      // "dreaming" pass that promotes recent episodic observations into the
+      // owner's durable L1 memory. Fire-and-forget; never blocks cleanup.
+      registry.setOnSessionConsolidateHook((ownerId: string) => {
+        void consolidateUserMemory(ownerId);
+      });
       // Personal skills are injected into every system prompt by
       // `prompt-builder.ts`, so create/update/delete/rename mutations must
       // also drop cached snapshots for the affected user. (#774)

@@ -74,6 +74,36 @@ const SAVE_MEMORY_HELP: CommandHelp = {
   ],
 };
 
+const MEMORY_HELP: CommandHelp = {
+  commandId: 'MEMORY',
+  summary:
+    'Hierarchical taxonomy memory (semantic pages + episodic). op selects the operation. ' +
+    'page_upsert/page_get/page_remove take a locator: type=agent|sites|concepts use slug; type=project uses ' +
+    'project (+ optional issue); type=cron uses routine. page_upsert sets title/current/history. ' +
+    'episodic_append stores a raw dated observation (content). search/index browse pages.',
+  examples: [
+    {
+      title: 'Create/update an agent page',
+      params: {
+        op: 'page_upsert',
+        type: 'agent',
+        slug: 'build-system',
+        title: 'Build system',
+        current: 'Repo builds with bun; run `bun run build`.',
+        history: 'Confirmed bun build after npm failed.',
+      },
+    },
+    {
+      title: 'Create a project→issue page',
+      params: { op: 'page_upsert', type: 'project', project: 'soma-work', issue: '1234', current: 'Spec: ...' },
+    },
+    { title: 'Append an episodic observation', params: { op: 'episodic_append', content: 'User prefers KRW tables.' } },
+    { title: 'Read a page', params: { op: 'page_get', type: 'agent', slug: 'build-system' } },
+    { title: 'Search pages', params: { op: 'search', query: 'build' } },
+    { title: 'List all pages', params: { op: 'index' } },
+  ],
+};
+
 const MANAGE_SKILL_HELP: CommandHelp = {
   commandId: 'MANAGE_SKILL',
   summary:
@@ -238,6 +268,7 @@ const SET_GOAL_HELP: CommandHelp = {
 
 const COMMAND_HELP: Partial<Record<ModelCommandId, CommandHelp>> = {
   SAVE_MEMORY: SAVE_MEMORY_HELP,
+  MEMORY: MEMORY_HELP,
   MANAGE_SKILL: MANAGE_SKILL_HELP,
   UPDATE_SESSION: UPDATE_SESSION_HELP,
   CONTINUE_SESSION: CONTINUE_SESSION_HELP,
