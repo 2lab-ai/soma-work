@@ -12,10 +12,10 @@ import type { CommandContext, CommandHandler, CommandResult } from './types';
  *   - `set autoskill a, b, c`      → replace the registered list in one shot.
  *   - `set autoskill clear`/`none` → clear the list.
  *
- * Registered skills are force-injected into every fresh system-prompt build for
- * the user (see `prompt-builder.applyAutoskills`), so a new session/task always
- * starts with them active. Skill names are validated against the same fallback
- * chain `$skill` uses (`skill-locator`).
+ * Registered skills are visibly force-fired on the first turn of every new
+ * session (see `slack/autoskill-fire.ts` + slack-handler), after the Autogoal
+ * step — the `$skill` equivalent, not a silent system-prompt embed. Skill names
+ * are validated against the same fallback chain `$skill` uses (`skill-locator`).
  */
 export class AutoskillHandler implements CommandHandler {
   canHandle(text: string): boolean {
