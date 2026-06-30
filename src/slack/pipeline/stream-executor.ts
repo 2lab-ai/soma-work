@@ -12,6 +12,7 @@ import {
 import { createConversation, recordAssistantTurn, recordUserTurn } from '../../conversation';
 import { scheduleLinkDerivedTitleRefresh } from '../../conversation/link-derived-title';
 import { isMidThreadMention } from '../../mcp-config-builder';
+import { captureTurnEpisodic } from '../../memory-auto-capture';
 import { getMetricsEmitter } from '../../metrics/event-emitter';
 import {
   classifyOneMUnavailable,
@@ -39,6 +40,7 @@ setStreamExecutorProviders({
   createConversation,
   recordAssistantTurn,
   recordUserTurn,
+  captureMemoryTurn: captureTurnEpisodic,
   scheduleLinkDerivedTitleRefresh,
   isMidThreadMention,
   getMetricsEmitter: () => getMetricsEmitter() as any,

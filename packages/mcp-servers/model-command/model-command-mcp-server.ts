@@ -7,11 +7,13 @@ import {
   getDefaultSessionSnapshot,
   listModelCommands,
   normalizeSessionSnapshot,
+  registerHierarchicalMemoryStore,
   registerMemoryStore,
   registerRatingStore,
   registerSkillStore,
   runModelCommand,
 } from '@soma/process-shared/model-commands/catalog.js';
+import { HierarchicalMemoryFileStore } from '@soma/process-shared/model-commands/hierarchical-memory-store.js';
 import { MemoryFileStore } from '@soma/process-shared/model-commands/memory-file-store.js';
 import { SkillFileStore } from '@soma/process-shared/model-commands/skill-file-store.js';
 import type {
@@ -112,6 +114,7 @@ class ModelCommandMcpServer extends BaseMcpServer {
     // Register memory + skill stores so commands work in this process
     if (process.env.SOMA_DATA_DIR) {
       registerMemoryStore(new MemoryFileStore(process.env.SOMA_DATA_DIR));
+      registerHierarchicalMemoryStore(new HierarchicalMemoryFileStore(process.env.SOMA_DATA_DIR));
       registerSkillStore(new SkillFileStore(process.env.SOMA_DATA_DIR));
 
       // Register rating store so RATE command works in this process
@@ -154,6 +157,7 @@ class ModelCommandMcpServer extends BaseMcpServer {
                 'SAVE_CONTEXT_RESULT',
                 'SAVE_MEMORY',
                 'GET_MEMORY',
+                'MEMORY',
                 'MANAGE_SKILL',
                 'RATE',
                 // Issue #1082 T2: model-initiated session goal (set-only).
