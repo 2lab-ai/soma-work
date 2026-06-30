@@ -6,6 +6,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import type { MemoryStore } from './catalog';
+import { l1FilePath, migrateLegacyL1IfNeeded } from './hierarchical-memory-store';
 
 const ENTRY_DELIMITER = '\n§\n';
 const DEFAULT_MEMORY_CHAR_LIMIT = 2200;
@@ -25,8 +26,11 @@ export class MemoryFileStore implements MemoryStore {
 
   private filePath(user: string, target: string): string {
     if (!isSafeSegment(user)) throw new Error(`Invalid userId: ${user}`);
-    const fileName = target === 'memory' ? 'MEMORY.md' : 'USER.md';
-    return path.join(this.dataDir, user, fileName);
+    const l1 = target === 'memory' ? 'memory' : 'user';
+    // Keep L1 location in lockstep with the in-process store: files live under
+    // `memory/`, with lazy migration from the legacy root-level path.
+    migrateLegacyL1IfNeeded(this.dataDir, user, l1);
+    return l1FilePath(this.dataDir, user, l1);
   }
 
   private charLimit(target: string): number {

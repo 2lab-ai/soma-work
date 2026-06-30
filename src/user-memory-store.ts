@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
+import { l1FilePath, migrateLegacyL1IfNeeded } from 'somalib/model-commands/hierarchical-memory-store';
 import { DATA_DIR } from './env-paths';
 import { Logger } from './logger';
 import { isSafePathSegment } from './path-utils';
@@ -40,16 +41,15 @@ const invalidator = createPromptInvalidator(logger, 'Memory');
 export const setMemoryPromptInvalidationHook = invalidator.setHook;
 const fireInvalidate = invalidator.fire;
 
-function getUserMemoryDir(userId: string): string {
+function getFilePath(userId: string, target: MemoryTarget): string {
   if (!isSafePathSegment(userId)) {
     throw new Error(`Invalid userId for memory storage: ${userId}`);
   }
-  return path.join(DATA_DIR, userId);
-}
-
-function getFilePath(userId: string, target: MemoryTarget): string {
-  const dir = getUserMemoryDir(userId);
-  return path.join(dir, target === 'memory' ? 'MEMORY.md' : 'USER.md');
+  // L1 files now live under `{DATA_DIR}/{userId}/memory/`. Lazily copy a
+  // legacy root-level MEMORY.md/USER.md into the new location on first touch
+  // so existing users keep their memory without a migration script.
+  migrateLegacyL1IfNeeded(DATA_DIR, userId, target);
+  return l1FilePath(DATA_DIR, userId, target);
 }
 
 function getCharLimit(target: MemoryTarget): number {

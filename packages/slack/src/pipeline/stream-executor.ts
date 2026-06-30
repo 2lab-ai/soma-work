@@ -133,6 +133,11 @@ export interface StreamExecutorProviders {
   createConversation?: (channel: string, threadTs: string, user: string, userName: string) => string;
   recordAssistantTurn?: (conversationId: string, text: string) => void;
   recordUserTurn?: (conversationId: string, text: string, userName: string, user: string) => void;
+  /**
+   * Append a per-turn episodic breadcrumb to the user's hierarchical memory.
+   * Fire-and-forget; must never throw or block the reply. No-op by default.
+   */
+  captureMemoryTurn?: (userId: string, userText: string, assistantText: string) => void;
   scheduleLinkDerivedTitleRefresh?: (claudeHandler: any, channel: string, threadTs: string, reason: string) => void;
   isMidThreadMention?: (input: { threadTs?: string; mentionTs?: string }) => boolean;
   getMetricsEmitter?: () => {
@@ -173,6 +178,7 @@ let streamExecutorProviders: Required<StreamExecutorProviders> = {
   createConversation: () => '',
   recordAssistantTurn: () => {},
   recordUserTurn: () => {},
+  captureMemoryTurn: () => {},
   scheduleLinkDerivedTitleRefresh: () => {},
   isMidThreadMention: () => false,
   getMetricsEmitter: () => ({ emit: () => {}, emitTokenUsage: async () => undefined }),
@@ -234,6 +240,8 @@ const recordAssistantTurn = (conversationId: string, text: string) =>
   streamExecutorProviders.recordAssistantTurn(conversationId, text);
 const recordUserTurn = (conversationId: string, text: string, userName: string, user: string) =>
   streamExecutorProviders.recordUserTurn(conversationId, text, userName, user);
+const captureMemoryTurn = (userId: string, userText: string, assistantText: string) =>
+  streamExecutorProviders.captureMemoryTurn(userId, userText, assistantText);
 const scheduleLinkDerivedTitleRefresh = (claudeHandler: any, channel: string, threadTs: string, reason: string) =>
   streamExecutorProviders.scheduleLinkDerivedTitleRefresh(claudeHandler, channel, threadTs, reason);
 const isMidThreadMention = (input: { threadTs?: string; mentionTs?: string }) =>
@@ -1701,6 +1709,20 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // Record assistant turn (fire-and-forget, non-blocking)
       if (session.conversationId && streamResult.collectedText) {
         recordAssistantTurn(session.conversationId, streamResult.collectedText);
+      }
+
+      // Auto-update hierarchical memory: append a per-turn episodic breadcrumb.
+      // Guarded on a real user-visible turn (not a tool continuation) and a
+      // resolvable owner. Fire-and-forget; the provider must never throw.
+      if (!hasContinuation && streamResult.collectedText) {
+        const memUser = session.ownerId || user;
+        if (memUser) {
+          try {
+            captureMemoryTurn(memUser, finalPrompt, streamResult.collectedText);
+          } catch {
+            /* memory capture must never break the turn */
+          }
+        }
       }
 
       // Issue #122: Surface SDK result errors to user (errors[] from SDKResultError)

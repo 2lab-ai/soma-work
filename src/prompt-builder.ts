@@ -7,6 +7,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { SYSTEM_PROMPT_FILE } from './env-paths';
+import { formatSemanticIndexForPrompt } from './hierarchical-memory';
 import { Logger } from './logger';
 import { buildSessionGoalBlock } from './prompt/session-goal-block';
 import { buildUserInstructionsBlock } from './prompt/user-instructions-block';
@@ -427,11 +428,13 @@ export class PromptBuilder {
   private applyPersistentMemory(prompt: string, userId?: string): string {
     if (!userId) return prompt;
     const memoryBlock = formatMemoryForPrompt(userId);
-    if (!memoryBlock) return prompt;
+    const semanticIndex = formatSemanticIndexForPrompt(userId);
+    if (!memoryBlock && !semanticIndex) return prompt;
 
-    const guidance = `\nYou have persistent memory across sessions. Save durable facts using the SAVE_MEMORY model-command: user preferences, environment details, tool quirks, and stable conventions. Memory is injected into every turn, so keep it compact and focused on facts that will still matter later.\nPrioritize what reduces future user steering -- the most valuable memory is one that prevents the user from having to correct or remind you again.\nDo NOT save: task progress, session outcomes, completed-work logs, or temporary TODO state.\n`;
-    this.logger.debug('Injected persistent memory', { user: userId });
-    return prompt ? `${prompt}\n\n${guidance}\n${memoryBlock}` : `${guidance}\n${memoryBlock}`;
+    const guidance = `\nYou have persistent memory across sessions, organized as a per-user taxonomy.\nL1 (always loaded): flat MEMORY.md (agent notes) + USER.md (user profile), written via SAVE_MEMORY. Keep these compact — facts that matter at the start of every session.\nHierarchical memory (loaded as an INDEX below; fetch a page on demand with the MEMORY command, op=page_get): semantic pages under agent/sites/concepts/projects/cron, plus append-only episodic observations.\nWrite durable knowledge with the MEMORY command: op=page_upsert for stable subject pages (Current + History), op=episodic_append for sparse/dated observations. Promote repeated episodic facts into a page once durable.\nPrioritize what reduces future user steering. Do NOT save task progress, session outcomes, or temporary TODO state into L1.\n`;
+    const blocks = [memoryBlock, semanticIndex].filter((b) => b).join('\n\n');
+    this.logger.debug('Injected persistent memory', { user: userId, hasIndex: Boolean(semanticIndex) });
+    return prompt ? `${prompt}\n\n${guidance}\n${blocks}` : `${guidance}\n${blocks}`;
   }
 
   /**
