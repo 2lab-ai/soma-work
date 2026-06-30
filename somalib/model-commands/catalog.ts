@@ -1,4 +1,11 @@
 import type {
+  MemoryIndex,
+  MemoryIndexEntry,
+  PageLocator,
+  SemanticPage,
+  SemanticPageType,
+} from './hierarchical-memory-store';
+import type {
   SessionInstruction,
   SessionInstructionOperation,
   SessionLink,
@@ -30,6 +37,36 @@ function getMemoryStore(): MemoryStore {
     throw new Error('Memory store not registered. Call registerMemoryStore() before using SAVE_MEMORY/GET_MEMORY.');
   }
   return _memoryStore;
+}
+
+// Hierarchical (taxonomy-based) memory store — injected by the host app.
+// Backs the MEMORY command (semantic pages, episodic, index, search).
+export interface HierarchicalMemoryStore {
+  upsertPage(
+    user: string,
+    loc: PageLocator,
+    fields: { title?: string; aliases?: string[]; current?: string; historyEntry?: string },
+  ): { ok: boolean; message: string; id: string };
+  getPage(user: string, loc: PageLocator): SemanticPage | null;
+  removePage(user: string, loc: PageLocator): { ok: boolean; message: string };
+  appendEpisodic(user: string, content: string, date?: string): { ok: boolean; message: string; relPath: string };
+  readEpisodic(user: string, date?: string): string;
+  readIndex(user: string): MemoryIndex;
+  search(user: string, query: string): MemoryIndexEntry[];
+}
+
+let _hierMemoryStore: HierarchicalMemoryStore | null = null;
+
+/** Register the hierarchical memory store implementation. Required for the MEMORY command. */
+export function registerHierarchicalMemoryStore(store: HierarchicalMemoryStore): void {
+  _hierMemoryStore = store;
+}
+
+function getHierarchicalMemoryStore(): HierarchicalMemoryStore {
+  if (!_hierMemoryStore) {
+    throw new Error('Hierarchical memory store not registered. Call registerHierarchicalMemoryStore() before MEMORY.');
+  }
+  return _hierMemoryStore;
 }
 
 // Skill store interface — injected by the host app via registerSkillStore().
@@ -132,6 +169,7 @@ import type {
   ModelCommandContext,
   ModelCommandDescriptor,
   ModelCommandError,
+  MemoryParams,
   ModelCommandRunRequest,
   ModelCommandRunResponse,
   SaveMemoryParams,
@@ -349,6 +387,34 @@ const SAVE_MEMORY_SCHEMA = {
   required: ['action', 'target'],
 };
 
+const MEMORY_SCHEMA = {
+  type: 'object',
+  properties: {
+    op: {
+      type: 'string',
+      enum: ['page_upsert', 'page_get', 'page_remove', 'episodic_append', 'episodic_get', 'search', 'index'],
+      description: 'Operation to perform',
+    },
+    type: {
+      type: 'string',
+      enum: ['agent', 'sites', 'concepts', 'project', 'cron'],
+      description: 'Semantic page category (required for page_* ops)',
+    },
+    slug: { type: 'string', description: 'Page slug for agent|sites|concepts' },
+    project: { type: 'string', description: 'Project name for type=project' },
+    issue: { type: 'string', description: 'Issue id under a project (omit for project-level page)' },
+    routine: { type: 'string', description: 'Routine name for type=cron' },
+    title: { type: 'string', description: 'Page title (page_upsert)' },
+    aliases: { type: 'array', items: { type: 'string' }, description: 'Page aliases (page_upsert)' },
+    current: { type: 'string', description: 'Replacement text for the Current section (page_upsert)' },
+    history: { type: 'string', description: 'Dated bullet appended to History (page_upsert)' },
+    content: { type: 'string', description: 'Raw observation text (episodic_append)' },
+    date: { type: 'string', description: 'YYYY-MM-DD for episodic ops (default today)' },
+    query: { type: 'string', description: 'Keyword for search' },
+  },
+  required: ['op'],
+};
+
 const MANAGE_SKILL_SCHEMA = {
   type: 'object',
   properties: {
@@ -524,6 +590,20 @@ export function listModelCommands(context: ModelCommandContext): ModelCommandDes
         paramsSchema: { type: 'object', properties: {}, additionalProperties: false },
       },
       {
+        id: 'MEMORY',
+        description:
+          'Hierarchical taxonomy memory beyond the flat MEMORY.md/USER.md. Organize durable knowledge into ' +
+          'semantic pages and date-grouped episodic observations. Ops: ' +
+          'page_upsert (create/update a page: pass type + locator + title/current/history); ' +
+          'page_get (read one page); page_remove (delete a page); ' +
+          'episodic_append (append a raw dated observation: pass content); episodic_get (read a day); ' +
+          'search (find pages by query); index (list all pages). ' +
+          'type=agent|sites|concepts use `slug`; type=project uses `project` (+ optional `issue`); ' +
+          'type=cron uses `routine`. Pages carry a Current section (stable understanding) and a History log. ' +
+          'Use episodic for sparse/uncertain events; promote to a page once a fact is durable.',
+        paramsSchema: MEMORY_SCHEMA,
+      },
+      {
         id: 'MANAGE_SKILL',
         description:
           'Create, update, delete, rename, list, share, or get user personal skills. ' +
@@ -575,6 +655,15 @@ export function listModelCommands(context: ModelCommandContext): ModelCommandDes
   }
 
   return commands;
+}
+
+/** Compact human-readable rendering of a semantic page for page_get. */
+function renderPageForRead(page: SemanticPage): string {
+  const lines = [`# ${page.title} (${page.id})`, '', '## Current', '', page.current || '(empty)'];
+  if (page.history.length > 0) {
+    lines.push('', '## History', '', ...page.history.slice(0, 20).map((h) => `- ${h}`));
+  }
+  return lines.join('\n');
 }
 
 function toRunError(commandId: ModelCommandRunRequest['commandId'], error: ModelCommandError): ModelCommandRunResponse {
@@ -812,6 +901,89 @@ export function runModelCommand(
         userLimit: usr.charLimit,
       },
     };
+  }
+
+  if (request.commandId === 'MEMORY') {
+    if (!context.user) {
+      return toRunError('MEMORY', { code: 'CONTEXT_ERROR', message: 'No user context available' });
+    }
+    const params = request.params as MemoryParams;
+    const store = getHierarchicalMemoryStore();
+    const user = context.user;
+
+    const buildLocator = (): PageLocator | { error: string } => {
+      if (!params.type) return { error: 'type is required for page ops' };
+      return {
+        type: params.type as SemanticPageType,
+        slug: params.slug,
+        project: params.project,
+        issue: params.issue,
+        routine: params.routine,
+      };
+    };
+
+    const ok = (payload: Record<string, unknown>) =>
+      ({ type: 'model_command_result', commandId: 'MEMORY', ok: true, payload }) as ModelCommandRunResponse;
+
+    try {
+      if (params.op === 'page_upsert') {
+        const loc = buildLocator();
+        if ('error' in loc) return toRunError('MEMORY', { code: 'INVALID_ARGS', message: loc.error });
+        const res = store.upsertPage(user, loc, {
+          title: params.title,
+          aliases: params.aliases,
+          current: params.current,
+          historyEntry: params.history,
+        });
+        const page = store.getPage(user, loc);
+        return ok({
+          ok: res.ok,
+          message: res.message,
+          id: res.id,
+          ...(page ? { page: page.current } : {}),
+          ...(res.ok ? { mutated: { kind: 'memory' as const, user } } : {}),
+        });
+      }
+      if (params.op === 'page_get') {
+        const loc = buildLocator();
+        if ('error' in loc) return toRunError('MEMORY', { code: 'INVALID_ARGS', message: loc.error });
+        const page = store.getPage(user, loc);
+        if (!page) return ok({ ok: false, message: 'Page not found' });
+        return ok({
+          ok: true,
+          message: `Loaded ${page.id}`,
+          id: page.id,
+          page: renderPageForRead(page),
+        });
+      }
+      if (params.op === 'page_remove') {
+        const loc = buildLocator();
+        if ('error' in loc) return toRunError('MEMORY', { code: 'INVALID_ARGS', message: loc.error });
+        const res = store.removePage(user, loc);
+        return ok({ ok: res.ok, message: res.message, ...(res.ok ? { mutated: { kind: 'memory' as const, user } } : {}) });
+      }
+      if (params.op === 'episodic_append') {
+        if (!params.content) return toRunError('MEMORY', { code: 'INVALID_ARGS', message: 'content is required' });
+        const res = store.appendEpisodic(user, params.content, params.date);
+        return ok({ ok: res.ok, message: res.message });
+      }
+      if (params.op === 'episodic_get') {
+        const text = store.readEpisodic(user, params.date);
+        return ok({ ok: true, message: text ? 'Loaded episodic' : 'No episodic entries', episodic: text });
+      }
+      if (params.op === 'search') {
+        if (!params.query) return toRunError('MEMORY', { code: 'INVALID_ARGS', message: 'query is required' });
+        const entries = store.search(user, params.query);
+        return ok({ ok: true, message: `${entries.length} matches`, entries });
+      }
+      if (params.op === 'index') {
+        const index = store.readIndex(user);
+        return ok({ ok: true, message: `${index.entries.length} pages`, entries: index.entries });
+      }
+      return toRunError('MEMORY', { code: 'INVALID_ARGS', message: `Unknown op: ${params.op}` });
+    } catch (err) {
+      return toRunError('MEMORY', { code: 'INVALID_ARGS', message: err instanceof Error ? err.message : String(err) });
+    }
   }
 
   if (request.commandId === 'MANAGE_SKILL') {
