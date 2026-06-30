@@ -353,11 +353,30 @@ export class SkillForceHandler implements CommandHandler {
     this.logger.info('Forced skill invocation', {
       skills: resolvedKeys,
       errorSkills: errors,
+      deferred: ctx.deferSkillFire === true,
     });
 
     // Emit RPG-style forced skill invocation banner (red attachment bar)
     const casterName = user ? `<@${user}>` : '누군가';
     const rpg = ToolFormatter.formatSkillForceInvocationRPG(resolvedKeys, casterName);
+
+    // Fresh-context start (new session / `new` reset): DEFER the banner + block
+    // so slack-handler fires it AFTER session init / autogoal / autoskill —
+    // keeping the desired order (autogoal → autoskill → first-instruction
+    // `$skill`). `continueWithPrompt` carries the RAW text only; the block rides
+    // out-of-band on `deferredSkillFire`.
+    if (ctx.deferSkillFire) {
+      return {
+        handled: true,
+        continueWithPrompt: text,
+        deferredSkillFire: {
+          keys: resolvedKeys,
+          invokedBlock,
+          banner: { text: rpg.text, color: rpg.color },
+        },
+      };
+    }
+
     await say({
       text: '',
       thread_ts: threadTs,

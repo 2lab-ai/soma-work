@@ -476,11 +476,18 @@ export class SlackHandler {
       fileCount: processedFiles.length,
     });
 
+    // S-autoskill: decide whether a forced `$skill` in THIS message should be
+    // deferred (fired after session init / autogoal / autoskill) rather than
+    // during routing. True for a fresh-context start: no session yet, or the
+    // existing session has no sessionId (already reset). The `new`-reset case
+    // (existing session WITH sessionId, reset mid-routing) is forced to defer
+    // inside CommandRouter's new-remainder re-route. Synthetic turns never defer.
+    const preRouteSession = this.claudeHandler.getSession?.(channel, originalThreadTs);
+    const deferSkillFire = !event.synthetic && (!preRouteSession || preRouteSession.sessionId === undefined);
+
     // Step 2: Route commands
-    const { handled, continueWithPrompt, forceWorkflow, setGoalObjective } = await this.inputProcessor.routeCommand(
-      event,
-      wrappedSay,
-    );
+    const { handled, continueWithPrompt, forceWorkflow, setGoalObjective, deferredSkillFire } =
+      await this.inputProcessor.routeCommand(event, wrappedSay, { deferSkillFire });
     if (handled && !continueWithPrompt) {
       // Issue #1082 T1 (spec-review P1): the no-session goal+skill split can
       // end here when the skill part errored out (`handled:true`, no prompt —
@@ -595,6 +602,13 @@ export class SlackHandler {
       // goal-less session (this IS the message creating the goal), so the two
       // blocks never act on the same turn.
       let dispatchText = effectiveText;
+
+      // Fresh-context start = a brand-new session OR a `new`-reset (which keeps
+      // the session object but clears `sessionId`). Drives autoskill firing and
+      // lets autogoal run for a deferred `$skill`. `sessionId` is only assigned
+      // later by the SDK stream, so it is undefined for both fresh cases here.
+      const freshContextStart = sessionResult.isNewSession || sessionResult.session.sessionId === undefined;
+
       if (setGoalObjective) {
         const fullSession = this.claudeHandler.getSessionByKey?.(sessionResult.sessionKey);
         if (fullSession) {
@@ -640,9 +654,14 @@ export class SlackHandler {
       // instruction is promoted to the session goal automatically and then
       // dispatched as the goal's opening turn. Skips synthetic continuation
       // turns and the goal-prefixed path (already handled via setGoalObjective).
+      //
+      // A deferred `$skill` (fresh-context start) still runs autogoal: its
+      // `continueWithPrompt` is the RAW instruction text (no <invoked_skills>
+      // block), so the goal objective stays clean. Other `continueWithPrompt`
+      // sources (onboarding/compact/`new <plain>`) keep their original skip.
       if (
         !setGoalObjective &&
-        !continueWithPrompt &&
+        (!continueWithPrompt || (freshContextStart && !!deferredSkillFire)) &&
         !event.synthetic &&
         effectiveText.trim() !== '' &&
         userSettingsStore.getUserAutoGoalEnabled(event.user)
@@ -669,14 +688,15 @@ export class SlackHandler {
         }
       }
 
-      // S-autoskill: on the FIRST turn of a new session, visibly force-fire the
-      // user's registered autoskills — the `$skill` equivalent, deliberately
-      // NOT a silent system-prompt embed. Runs AFTER the autogoal block so the
-      // Autogoal banner posts first, then the skills fire. Posts the RPG banner
-      // and appends the `<invoked_skills>` block to THIS turn's dispatch prompt
-      // so the model actually executes the skills. Skips synthetic continuation
-      // turns (those are not new user tasks).
-      if (sessionResult.isNewSession && !event.synthetic) {
+      // S-autoskill: on a FRESH-CONTEXT start (new session OR `new` reset),
+      // visibly force-fire the user's registered autoskills — the `$skill`
+      // equivalent, deliberately NOT a silent system-prompt embed. Runs AFTER
+      // the autogoal block (Autogoal banner first, then the autoskill banner)
+      // and BEFORE the deferred first-instruction `$skill` below, giving the
+      // requested order: autogoal → autoskill → forced `$skill`. Appends the
+      // `<invoked_skills>` block to THIS turn's dispatch prompt so the model
+      // actually executes the skills. Skips synthetic continuation turns.
+      if (freshContextStart && !event.synthetic) {
         try {
           const fire = buildAutoskillFire(event.user, `<@${event.user}>`);
           if (fire) {
@@ -697,6 +717,25 @@ export class SlackHandler {
             error: (err as Error)?.message ?? String(err),
           });
         }
+      }
+
+      // Deferred forced `$skill` (the first-instruction `$skill`, e.g. `new
+      // $deploy` or a first message `$deploy`). Fired LAST so its banner shows
+      // after the autoskill banner and its `<invoked_skills>` block sits after
+      // the autoskill block in the dispatch prompt. Always fired when present —
+      // SkillForceHandler already resolved + deferred it, so it must not vanish.
+      if (deferredSkillFire) {
+        await this.slackApi.postMessage(activeChannel, '', {
+          threadTs: activeThreadTs,
+          attachments: [{ color: deferredSkillFire.banner.color, text: deferredSkillFire.banner.text }],
+        });
+        dispatchText = dispatchText
+          ? `${dispatchText}\n\n${deferredSkillFire.invokedBlock}`
+          : deferredSkillFire.invokedBlock;
+        this.logger.info('Deferred forced $skill fired after autoskill', {
+          user: event.user,
+          skills: deferredSkillFire.keys,
+        });
       }
 
       const hasPendingChoice = sessionResult.session.actionPanel?.waitingForChoice === true;

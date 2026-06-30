@@ -55,6 +55,65 @@ describe('SlackHandler', () => {
     expect(create).toHaveBeenCalledWith(sessionResult.session, sessionResult.sessionKey);
   });
 
+  it('passes deferSkillFire on a fresh context and fires the deferred forced $skill banner', async () => {
+    const app = { client: {}, assistant: vi.fn() } as any;
+    // No pre-route session → fresh context → deferSkillFire must be true.
+    const claudeHandler = {
+      getSession: vi.fn().mockReturnValue(undefined),
+      getSessionByKey: vi.fn().mockReturnValue(undefined),
+      saveSessions: vi.fn(),
+    };
+    const handler = new SlackHandler(app as any, claudeHandler as any, {} as any);
+    const handlerAny = handler as any;
+
+    const postMessage = vi.fn().mockResolvedValue({ ts: 'm' });
+    handlerAny.slackApi = {
+      addReaction: vi.fn().mockResolvedValue(undefined),
+      removeReaction: vi.fn().mockResolvedValue(undefined),
+      postMessage,
+    };
+
+    const routeCommand = vi.fn().mockResolvedValue({
+      handled: true,
+      continueWithPrompt: '$z foo', // raw remainder (block deferred)
+      deferredSkillFire: {
+        keys: ['local:z'],
+        invokedBlock: '<invoked_skills>\n<local:z>\nBODY\n</local:z>\n</invoked_skills>',
+        banner: { text: '⚡ DEFERRED-FIRE-BANNER', color: '#FF0000' },
+      },
+    });
+    handlerAny.inputProcessor = {
+      processFiles: vi.fn().mockResolvedValue({ files: [], shouldContinue: true }),
+      routeCommand,
+    };
+    handlerAny.sessionInitializer = {
+      validateWorkingDirectory: vi.fn().mockResolvedValue({ valid: true, workingDirectory: '/tmp' }),
+      initialize: vi.fn().mockResolvedValue({
+        session: { ownerId: 'U123', channelId: 'C123', threadTs: '111.222', sessionId: undefined },
+        sessionKey: 'C123:111.222',
+        isNewSession: true,
+        userName: 'T',
+        workingDirectory: '/tmp',
+        abortController: new AbortController(),
+        halted: false,
+      }),
+    };
+    handlerAny.streamExecutor = { execute: vi.fn().mockResolvedValue({ success: true, messageCount: 1 }) };
+    handlerAny.threadPanel = { create: vi.fn().mockResolvedValue(undefined) };
+
+    const say = vi.fn().mockResolvedValue({ ts: 'msg' });
+    await handler.handleMessage({ user: 'U123', channel: 'C123', ts: '111.222', text: '$z foo' } as any, say);
+
+    // routeCommand was told to defer the forced `$skill` (fresh context start).
+    expect(routeCommand.mock.calls[0][2]).toEqual({ deferSkillFire: true });
+    // The deferred forced-skill banner was posted as a red attachment.
+    const bannerCall = postMessage.mock.calls.find(
+      (c: any[]) => c[2]?.attachments?.[0]?.text === '⚡ DEFERRED-FIRE-BANNER',
+    );
+    expect(bannerCall).toBeDefined();
+    expect(bannerCall?.[2].attachments[0].color).toBe('#FF0000');
+  });
+
   it('streams into bot-initiated thread when initializer returns migrated session', async () => {
     const app = { client: {}, assistant: vi.fn() } as any;
     const claudeHandler = {};
