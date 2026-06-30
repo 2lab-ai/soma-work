@@ -1,6 +1,6 @@
 ---
 name: ui-ux
-description: "UI/UX design intelligence for web and mobile. Includes 50+ styles, 161 color palettes, 57 font pairings, 161 product types, 99 UX guidelines, and 25 chart types across 10 stacks (React, Next.js, Vue, Svelte, SwiftUI, React Native, Flutter, Tailwind, shadcn/ui, and HTML/CSS). Actions: plan, build, create, design, implement, review, fix, improve, optimize, enhance, refactor, and check UI/UX code. Projects: website, landing page, dashboard, admin panel, e-commerce, SaaS, portfolio, blog, and mobile app. Elements: button, modal, navbar, sidebar, card, table, form, and chart. Styles: glassmorphism, claymorphism, minimalism, brutalism, neumorphism, bento grid, dark mode, responsive, skeuomorphism, and flat design. Topics: color systems, accessibility, animation, layout, typography, font pairing, spacing, interaction states, shadow, and gradient. Named design references: apply a saved real-world site reference by name (e.g. 'use the claude reference') — see 'Named Design References'; defaults to the 'claude' (Anthropic) reference when none is named. Integrations: shadcn/ui MCP for component search and examples."
+description: "UI/UX design intelligence for web and mobile. Includes 50+ styles, 161 color palettes, 57 font pairings, 161 product types, 99 UX guidelines, and 25 chart types across 10 stacks (React, Next.js, Vue, Svelte, SwiftUI, React Native, Flutter, Tailwind, shadcn/ui, and HTML/CSS). Actions: plan, build, create, design, implement, review, fix, improve, optimize, enhance, refactor, and check UI/UX code. Projects: website, landing page, dashboard, admin panel, e-commerce, SaaS, portfolio, blog, and mobile app. Elements: button, modal, navbar, sidebar, card, table, form, and chart. Styles: glassmorphism, claymorphism, minimalism, brutalism, neumorphism, bento grid, dark mode, responsive, skeuomorphism, and flat design. Topics: color systems, accessibility, animation, layout, typography, font pairing, spacing, interaction states, shadow, and gradient. Named design references: apply a saved real-world site reference by name (e.g. 'use the claude reference') — see 'Named Design References'; defaults to the 'openai' reference when none is named. Integrations: shadcn/ui MCP for component search and examples."
 allowed-tools: Read, Write, Edit, Bash, Glob, Grep, WebFetch, WebSearch
 version: 2.6.2
 license: MIT
@@ -77,14 +77,19 @@ it extracts a `design.md`). Once saved, you reference them here **by name**.
 
 ### Default reference
 
-- **`claude`** — Anthropic / Claude brand: warm, editorial, calm. Ivory paper
-  canvas `#F0EEE6` + charcoal ink `#191919` + a single rationed clay/coral accent
-  `#CC785C`, serif display headlines over a clean sans body, generous whitespace,
-  quiet motion. **This is the default** — apply it whenever the user does not name
-  another reference. See `references/claude/design.md`.
+- **`openai`** — OpenAI brand: clinical, high-contrast, engineered. Pure white
+  canvas `#FFFFFF` + pure black ink `#000000` with no chromatic accent (emphasis by
+  black fills / inversion and opacity tiers), a single grotesque sans ("OpenAI Sans"
+  → Inter/Söhne stand-in), sharp `0px` corners, ruthless whitespace. **This is the
+  default** — apply it whenever the user does not name another reference. See
+  `references/openai/design.md`.
 
 Other shipped references:
 
+- **`claude`** — Anthropic / Claude brand: warm, editorial, calm. Ivory paper
+  canvas `#F0EEE6` + charcoal ink `#191919` + a single rationed clay/coral accent
+  `#CC785C`, serif display headlines over a clean sans body, generous whitespace,
+  quiet motion. See `references/claude/design.md`.
 - **`il-capo-production`** — cinematic, minimalist video-production portfolio
   (Awwwards SOTD). Monochrome dark canvas + signature red `#D60001`, custom-cursor
   and page-transition motion. See `references/il-capo-production/design.md`.
@@ -114,7 +119,7 @@ reference"*, *"use the `<name>` reference / design"*, or *"design like `<name>`"
 4. **Cite it.** When you hand off the design, state which reference shaped it.
 
 If no reference is named, **apply the default reference** (the entry with
-`"default": true` in `references/index.json` — currently `claude`): read its
+`"default": true` in `references/index.json` — currently `openai`): read its
 `design.md` and treat it as the visual North Star per steps 1–4 above, then layer
 the standard workflow below on top to fill any gaps. Only skip the default when the
 user explicitly asks for a different reference or for "no reference / neutral".
