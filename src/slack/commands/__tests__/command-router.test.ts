@@ -549,7 +549,7 @@ describe('CommandRouter — `new` + `$skill` composition (preprocessor)', () => 
     vi.mocked(userSettingsStore.markMigrationHintShown).mockClear();
   });
 
-  it('1. `new $z foo` → NewHandler runs AND SkillForce injects <invoked_skills>', async () => {
+  it('1. `new $z foo` → NewHandler runs AND SkillForce DEFERS <invoked_skills>', async () => {
     stubSkillFs({ localSkills: ['z'] });
     const newExec = vi.spyOn(NewHandler.prototype, 'execute');
     const skillExec = vi.spyOn(SkillForceHandler.prototype, 'execute');
@@ -559,16 +559,19 @@ describe('CommandRouter — `new` + `$skill` composition (preprocessor)', () => 
 
     expect(newExec).toHaveBeenCalledTimes(1);
     expect(skillExec).toHaveBeenCalledTimes(1);
+    // `new` reset forces deferSkillFire so the block rides on `deferredSkillFire`
+    // (fired after session init / autogoal / autoskill), NOT in continueWithPrompt.
+    expect(skillExec.mock.calls[0][0].deferSkillFire).toBe(true);
     expect(result.handled).toBe(true);
-    expect(result.continueWithPrompt).toBeDefined();
-    // Remainder after `new` is "$z foo" — that's what SkillForce sees.
-    expect(result.continueWithPrompt?.startsWith('$z foo')).toBe(true);
-    expect(result.continueWithPrompt).toContain('<invoked_skills>');
-    expect(result.continueWithPrompt).toContain('<local:z>');
-    expect(result.continueWithPrompt).toContain('</local:z>');
+    expect(result.continueWithPrompt).toBe('$z foo'); // raw remainder, no block
+    expect(result.continueWithPrompt).not.toContain('<invoked_skills>');
+    expect(result.deferredSkillFire?.invokedBlock).toContain('<invoked_skills>');
+    expect(result.deferredSkillFire?.invokedBlock).toContain('<local:z>');
+    expect(result.deferredSkillFire?.invokedBlock).toContain('</local:z>');
+    expect(result.deferredSkillFire?.keys).toContain('local:z');
   });
 
-  it('2. `/new $z foo` (slash variant) → same composition', async () => {
+  it('2. `/new $z foo` (slash variant) → same deferred composition', async () => {
     stubSkillFs({ localSkills: ['z'] });
     const newExec = vi.spyOn(NewHandler.prototype, 'execute');
     const skillExec = vi.spyOn(SkillForceHandler.prototype, 'execute');
@@ -579,8 +582,8 @@ describe('CommandRouter — `new` + `$skill` composition (preprocessor)', () => 
     expect(newExec).toHaveBeenCalledTimes(1);
     expect(skillExec).toHaveBeenCalledTimes(1);
     expect(result.handled).toBe(true);
-    expect(result.continueWithPrompt?.startsWith('$z foo')).toBe(true);
-    expect(result.continueWithPrompt).toContain('<local:z>');
+    expect(result.continueWithPrompt).toBe('$z foo');
+    expect(result.deferredSkillFire?.invokedBlock).toContain('<local:z>');
   });
 
   it('3. `/z new $z foo` via full route() (stripZPrefix + translateToLegacy path)', async () => {
@@ -592,15 +595,15 @@ describe('CommandRouter — `new` + `$skill` composition (preprocessor)', () => 
     const result = await router.route(makeCtx('/z new $z foo', say));
 
     // /z is stripped to "new $z foo", translateToLegacy passes through unchanged
-    // for `new …`, preprocessor then fires for the translated form.
+    // for `new …`, preprocessor then fires (deferred) for the translated form.
     expect(newExec).toHaveBeenCalledTimes(1);
     expect(skillExec).toHaveBeenCalledTimes(1);
     expect(result.handled).toBe(true);
-    expect(result.continueWithPrompt?.startsWith('$z foo')).toBe(true);
-    expect(result.continueWithPrompt).toContain('<local:z>');
+    expect(result.continueWithPrompt).toBe('$z foo');
+    expect(result.deferredSkillFire?.invokedBlock).toContain('<local:z>');
   });
 
-  it('4. `new $stv:new-task implement X` → plugin skill is injected', async () => {
+  it('4. `new $stv:new-task implement X` → plugin skill is deferred', async () => {
     stubSkillFs({ localSkills: [], pluginSkills: { stv: ['new-task'] } });
     const skillExec = vi.spyOn(SkillForceHandler.prototype, 'execute');
 
@@ -609,9 +612,9 @@ describe('CommandRouter — `new` + `$skill` composition (preprocessor)', () => 
 
     expect(skillExec).toHaveBeenCalledTimes(1);
     expect(result.handled).toBe(true);
-    expect(result.continueWithPrompt?.startsWith('$stv:new-task implement X')).toBe(true);
-    expect(result.continueWithPrompt).toContain('<stv:new-task>');
-    expect(result.continueWithPrompt).toContain('</stv:new-task>');
+    expect(result.continueWithPrompt).toBe('$stv:new-task implement X');
+    expect(result.deferredSkillFire?.invokedBlock).toContain('<stv:new-task>');
+    expect(result.deferredSkillFire?.invokedBlock).toContain('</stv:new-task>');
   });
 
   it('5. `new write a function` (no $skill) → plain remainder prompt, no SkillForce run', async () => {
@@ -697,7 +700,7 @@ describe('CommandRouter — `new` + `$skill` composition (preprocessor)', () => 
     expect(result.continueWithPrompt).toBeUndefined();
   });
 
-  it('10. multi-line `new <URL>\\n$z proceed` → session reset + <invoked_skills> AND URL preserved in remainder', async () => {
+  it('10. multi-line `new <URL>\\n$z proceed` → session reset + DEFERRED <invoked_skills> AND URL preserved in remainder', async () => {
     stubSkillFs({ localSkills: ['z'] });
     const newExec = vi.spyOn(NewHandler.prototype, 'execute');
     const skillExec = vi.spyOn(SkillForceHandler.prototype, 'execute');
@@ -709,10 +712,13 @@ describe('CommandRouter — `new` + `$skill` composition (preprocessor)', () => 
     expect(newExec).toHaveBeenCalledTimes(1);
     expect(skillExec).toHaveBeenCalledTimes(1);
     expect(result.handled).toBe(true);
+    // Raw remainder (URL + skill ref) stays in continueWithPrompt; the resolved
+    // block is deferred onto deferredSkillFire.
     expect(result.continueWithPrompt).toContain('https://github.com/foo/bar');
     expect(result.continueWithPrompt).toContain('$z proceed');
-    expect(result.continueWithPrompt).toContain('<invoked_skills>');
-    expect(result.continueWithPrompt).toContain('<local:z>');
+    expect(result.continueWithPrompt).not.toContain('<invoked_skills>');
+    expect(result.deferredSkillFire?.invokedBlock).toContain('<invoked_skills>');
+    expect(result.deferredSkillFire?.invokedBlock).toContain('<local:z>');
   });
 });
 
@@ -1223,7 +1229,7 @@ describe('CommandRouter — `new <command>` remainder re-route (recursive)', () 
     expect(result.continueWithPrompt).toContain('Continue working toward the active session goal');
   });
 
-  it('2. `new goal ship X $z proceed` → reset + CLEAN goal objective + <invoked_skills> (triple composition)', async () => {
+  it('2. `new goal ship X $z proceed` → reset + CLEAN goal objective + DEFERRED <invoked_skills> (triple composition)', async () => {
     stubSkillFs({ localSkills: ['z'] });
     const skillExec = vi.spyOn(SkillForceHandler.prototype, 'execute');
 
@@ -1233,9 +1239,13 @@ describe('CommandRouter — `new <command>` remainder re-route (recursive)', () 
     expect(session.goal?.objective).toBe('ship X');
     expect(skillExec).toHaveBeenCalledTimes(1);
     expect(skillExec.mock.calls[0][0].text).toBe('$z proceed');
+    // `new` forces deferral: raw remainder in continueWithPrompt, block deferred.
+    expect(skillExec.mock.calls[0][0].deferSkillFire).toBe(true);
     expect(result.handled).toBe(true);
-    expect(result.continueWithPrompt).toContain('<invoked_skills>');
-    expect(result.continueWithPrompt).toContain('<local:z>');
+    expect(result.continueWithPrompt).toBe('$z proceed');
+    expect(result.continueWithPrompt).not.toContain('<invoked_skills>');
+    expect(result.deferredSkillFire?.invokedBlock).toContain('<invoked_skills>');
+    expect(result.deferredSkillFire?.invokedBlock).toContain('<local:z>');
     // Durable goal objective must not leak the skill suffix.
     expect(session.goal?.objective).not.toContain('$z');
   });
