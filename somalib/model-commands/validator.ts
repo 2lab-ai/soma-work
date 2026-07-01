@@ -99,6 +99,7 @@ export function validateModelCommandRunArgs(args: unknown): ValidationResult {
     commandId !== 'SAVE_CONTEXT_RESULT' &&
     commandId !== 'SAVE_MEMORY' &&
     commandId !== 'GET_MEMORY' &&
+    commandId !== 'MEMORY' &&
     commandId !== 'MANAGE_SKILL' &&
     commandId !== 'RATE' &&
     commandId !== 'SET_GOAL'
