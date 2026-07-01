@@ -1548,4 +1548,72 @@ describe('CommandParser', () => {
       expect(CommandParser.parseCompactCommand('/COMPACT --YES')).toEqual({ confirmed: true });
     });
   });
+
+  describe('memory command — hierarchical text interface', () => {
+    it('routes bare + L1 verbs', () => {
+      expect(CommandParser.isMemoryCommand('memory')).toBe(true);
+      expect(CommandParser.isMemoryCommand('memory show')).toBe(true);
+      expect(CommandParser.isMemoryCommand('memory save memory bun builds')).toBe(true);
+      expect(CommandParser.isMemoryCommand('memory clear 2')).toBe(true);
+    });
+
+    it('recognizes hierarchical verbs', () => {
+      for (const t of [
+        'memory pages',
+        'memory index',
+        'memory list',
+        'memory page agent/foo',
+        'memory show agent/foo',
+        'memory search bun',
+        'memory episodic',
+        'memory episodic 2026-07-01',
+        'memory note observed a thing',
+        'memory rmpage agent/foo',
+        'memory page rm agent/foo',
+        'memory help',
+      ]) {
+        expect(CommandParser.isMemoryCommand(t)).toBe(true);
+      }
+    });
+
+    it('does not route plain prose starting with memory', () => {
+      expect(CommandParser.isMemoryCommand('memory is important to me')).toBe(false);
+      expect(CommandParser.isMemoryCommand('memory of a good day')).toBe(false);
+    });
+
+    it('parses hierarchical actions', () => {
+      expect(CommandParser.parseMemoryCommand('memory pages')).toEqual({ action: 'pages' });
+      expect(CommandParser.parseMemoryCommand('memory index')).toEqual({ action: 'pages' });
+      expect(CommandParser.parseMemoryCommand('memory page agent/foo')).toEqual({ action: 'page', id: 'agent/foo' });
+      expect(CommandParser.parseMemoryCommand('memory show project/soma/123')).toEqual({
+        action: 'page',
+        id: 'project/soma/123',
+      });
+      expect(CommandParser.parseMemoryCommand('memory search bun')).toEqual({ action: 'search', query: 'bun' });
+      expect(CommandParser.parseMemoryCommand('memory episodic')).toEqual({ action: 'episodic', date: undefined });
+      expect(CommandParser.parseMemoryCommand('memory episodic 2026-07-01')).toEqual({
+        action: 'episodic',
+        date: '2026-07-01',
+      });
+      expect(CommandParser.parseMemoryCommand('memory note hi there')).toEqual({ action: 'note', content: 'hi there' });
+      expect(CommandParser.parseMemoryCommand('memory rmpage agent/foo')).toEqual({
+        action: 'rmpage',
+        id: 'agent/foo',
+      });
+      expect(CommandParser.parseMemoryCommand('memory page rm sites/x')).toEqual({ action: 'rmpage', id: 'sites/x' });
+      expect(CommandParser.parseMemoryCommand('memory help')).toEqual({ action: 'help' });
+    });
+
+    it('keeps L1 parsing intact', () => {
+      expect(CommandParser.parseMemoryCommand('memory')).toEqual({ action: 'show' });
+      expect(CommandParser.parseMemoryCommand('memory show')).toEqual({ action: 'show' });
+      expect(CommandParser.parseMemoryCommand('memory clear')).toEqual({ action: 'clear' });
+      expect(CommandParser.parseMemoryCommand('memory clear 3')).toEqual({ action: 'clear', index: 3 });
+      expect(CommandParser.parseMemoryCommand('memory save user likes terse')).toEqual({
+        action: 'save',
+        target: 'user',
+        content: 'likes terse',
+      });
+    });
+  });
 });
