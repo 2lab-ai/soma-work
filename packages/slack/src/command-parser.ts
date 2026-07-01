@@ -21,7 +21,15 @@ export type PersonaAction = { action: 'list' | 'status' | 'set'; persona?: strin
 export type MemoryAction =
   | { action: 'show' }
   | { action: 'clear'; index?: number }
-  | { action: 'save'; target: 'memory' | 'user'; content: string };
+  | { action: 'save'; target: 'memory' | 'user'; content: string }
+  // Hierarchical (taxonomy) memory — user-facing text interface.
+  | { action: 'pages' } // list the semantic page index + episodic days
+  | { action: 'page'; id: string } // show one semantic page (e.g. agent/foo, project/x/1)
+  | { action: 'search'; query: string } // search pages by keyword
+  | { action: 'episodic'; date?: string } // show episodic observations for a day
+  | { action: 'note'; content: string } // append an episodic observation (manage)
+  | { action: 'rmpage'; id: string } // remove a semantic page (manage)
+  | { action: 'help' }; // list all memory subcommands
 export type ModelAction = { action: 'list' | 'status' | 'set'; model?: string };
 export type NewCommandResult = { prompt?: string };
 export type GoalAction =
@@ -366,11 +374,18 @@ export class CommandParser {
    */
   static isMemoryCommand(text: string): boolean {
     const t = text.trim();
-    return /^\/?memory(?:\s+(?:show|clear(?:\s+\d+)?|save\s+(?:user|memory)\s+.+))?$/i.test(t);
+    // L1 verbs (show/clear/save) plus the hierarchical-memory verbs
+    // (pages/index/list/page/search/episodic/note/rmpage/help). Only known
+    // verbs route here so plain prose starting with "memory" is left to the agent.
+    return /^\/?memory(?:\s+(?:show(?:\s+.+)?|clear(?:\s+\d+)?|save\s+(?:user|memory)\s+.+|pages|index|list|page\s+.+|search\s+.+|episodic(?:\s+\S+)?|note\s+.+|rmpage\s+.+|help))?$/i.test(
+      t,
+    );
   }
 
   /**
-   * Parse memory command
+   * Parse memory command. Recognizes the flat L1 verbs (show/save/clear) and
+   * the hierarchical-memory text interface (pages/page/search/episodic/note/
+   * rmpage/help).
    */
   static parseMemoryCommand(text: string): MemoryAction {
     const trimmed = text.trim();
@@ -388,6 +403,43 @@ export class CommandParser {
 
     if (/^\/?memory\s+clear$/i.test(trimmed)) {
       return { action: 'clear' };
+    }
+
+    // ── Hierarchical memory verbs ──
+    if (/^\/?memory\s+(pages|index|list)$/i.test(trimmed)) {
+      return { action: 'pages' };
+    }
+
+    if (/^\/?memory\s+help$/i.test(trimmed)) {
+      return { action: 'help' };
+    }
+
+    // memory rmpage <id>  |  memory page rm <id>
+    const rmMatch = trimmed.match(/^\/?memory\s+(?:rmpage|page\s+rm)\s+(.+)$/i);
+    if (rmMatch) {
+      return { action: 'rmpage', id: rmMatch[1].trim() };
+    }
+
+    // memory page <id>  |  memory show <id>
+    const pageMatch = trimmed.match(/^\/?memory\s+(?:page|show)\s+(.+)$/i);
+    if (pageMatch) {
+      return { action: 'page', id: pageMatch[1].trim() };
+    }
+
+    const searchMatch = trimmed.match(/^\/?memory\s+search\s+(.+)$/i);
+    if (searchMatch) {
+      return { action: 'search', query: searchMatch[1].trim() };
+    }
+
+    // memory episodic [YYYY-MM-DD]
+    const epMatch = trimmed.match(/^\/?memory\s+episodic(?:\s+(\S+))?$/i);
+    if (epMatch) {
+      return { action: 'episodic', date: epMatch[1]?.trim() };
+    }
+
+    const noteMatch = trimmed.match(/^\/?memory\s+note\s+(.+)$/is);
+    if (noteMatch) {
+      return { action: 'note', content: noteMatch[1].trim() };
     }
 
     return { action: 'show' };
