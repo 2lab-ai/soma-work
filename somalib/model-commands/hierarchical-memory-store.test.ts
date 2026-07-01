@@ -12,7 +12,7 @@ import {
   HierarchicalMemoryFileStore,
   l1FilePath,
   legacyL1FilePath,
-  migrateLegacyL1IfNeeded,
+  migrateLegacyL1,
   memoryRoot,
 } from './hierarchical-memory-store';
 
@@ -140,23 +140,51 @@ describe('HierarchicalMemoryFileStore', () => {
       expect(l1FilePath(dataDir, user, 'user')).toBe(path.join(dataDir, user, 'memory', 'USER.md'));
     });
 
-    it('migrates a legacy root-level L1 file into memory/ once', () => {
+    it('moves a legacy root-level L1 file into memory/ and DELETES the legacy file', () => {
       const legacy = legacyL1FilePath(dataDir, user, 'memory');
       fs.mkdirSync(path.dirname(legacy), { recursive: true });
       fs.writeFileSync(legacy, 'legacy memory content', 'utf-8');
 
-      const migrated = migrateLegacyL1IfNeeded(dataDir, user, 'memory');
+      const migrated = migrateLegacyL1(dataDir, user, 'memory');
       expect(migrated).toBe(true);
       expect(fs.readFileSync(l1FilePath(dataDir, user, 'memory'), 'utf-8')).toBe('legacy memory content');
-      // legacy retained for rollback safety
-      expect(fs.existsSync(legacy)).toBe(true);
+      // one-way migration: legacy root file removed so the two never coexist
+      expect(fs.existsSync(legacy)).toBe(false);
 
-      // second call is a no-op (new file already exists)
-      expect(migrateLegacyL1IfNeeded(dataDir, user, 'memory')).toBe(false);
+      // idempotent: legacy gone → cheap no-op
+      expect(migrateLegacyL1(dataDir, user, 'memory')).toBe(false);
+    });
+
+    it('deletes a stale legacy file when the new file already exists (resolves "mixed" state)', () => {
+      const legacy = legacyL1FilePath(dataDir, user, 'user');
+      const newPath = l1FilePath(dataDir, user, 'user');
+      fs.mkdirSync(path.dirname(legacy), { recursive: true });
+      fs.mkdirSync(path.dirname(newPath), { recursive: true });
+      fs.writeFileSync(legacy, 'stale legacy profile', 'utf-8');
+      fs.writeFileSync(newPath, 'current profile', 'utf-8');
+
+      const migrated = migrateLegacyL1(dataDir, user, 'user');
+      expect(migrated).toBe(true);
+      // new is authoritative; legacy removed
+      expect(fs.readFileSync(newPath, 'utf-8')).toBe('current profile');
+      expect(fs.existsSync(legacy)).toBe(false);
+    });
+
+    it('preserves legacy content when the new file exists but is empty', () => {
+      const legacy = legacyL1FilePath(dataDir, user, 'memory');
+      const newPath = l1FilePath(dataDir, user, 'memory');
+      fs.mkdirSync(path.dirname(legacy), { recursive: true });
+      fs.mkdirSync(path.dirname(newPath), { recursive: true });
+      fs.writeFileSync(legacy, 'real legacy content', 'utf-8');
+      fs.writeFileSync(newPath, '   \n', 'utf-8'); // empty placeholder
+
+      migrateLegacyL1(dataDir, user, 'memory');
+      expect(fs.readFileSync(newPath, 'utf-8')).toBe('real legacy content');
+      expect(fs.existsSync(legacy)).toBe(false);
     });
 
     it('does not migrate when no legacy file exists', () => {
-      expect(migrateLegacyL1IfNeeded(dataDir, user, 'user')).toBe(false);
+      expect(migrateLegacyL1(dataDir, user, 'user')).toBe(false);
     });
   });
 });
