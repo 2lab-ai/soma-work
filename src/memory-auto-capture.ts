@@ -66,12 +66,30 @@ function redactSecrets(s: string): string {
   return out;
 }
 
+// Host-generated turn re-injections are NOT user asks — capturing them as
+// "Ask:" floods the episodic log with boilerplate (observed: a stalled goal
+// loop wrote ~15/20 entries in one day, all "[goal-continuation] Continue
+// working toward the active session goal ..."). Skip episodic capture for
+// these system messages so the log stays a signal of real user turns.
+const SYSTEM_REINJECTION_MARKERS: RegExp[] = [
+  /\[goal-continuation\]/i,
+  /Continue working toward the active session goal/i,
+  /<goal-continuation\b/i,
+  /goal-continuation]\s*Continue working/i,
+];
+
+function isSystemReinjection(rawUserText: string): boolean {
+  return SYSTEM_REINJECTION_MARKERS.some((re) => re.test(rawUserText));
+}
+
 /**
  * Append a per-turn episodic breadcrumb. Deterministic and synchronous-light:
  * scheduled on the microtask queue so it never adds latency to the reply path.
  */
 export function captureTurnEpisodic(userId: string, userText: string, assistantText: string): void {
   if (!TURN_CAPTURE_ENABLED) return;
+  // Host re-injections (goal-continuation, etc.) are not real user turns.
+  if (isSystemReinjection(userText)) return;
   queueMicrotask(() => {
     try {
       const ask = redactSecrets(clip(cleanUserText(userText), USER_TEXT_CAP));
