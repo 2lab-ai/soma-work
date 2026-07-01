@@ -281,4 +281,39 @@ export function formatMemoryHelp(): string {
   ].join('\n');
 }
 
+/**
+ * Compact hierarchical-memory summary for the default `memory` Block Kit card,
+ * so a bare `memory` shows the NEW taxonomy memory (pages + episodic) next to
+ * the flat L1 store — not only the old flat entries. Returns mrkdwn text.
+ * Titles are stripped of backticks/newlines so they can't break the section.
+ */
+export function formatHierarchicalCardText(userId: string): string {
+  let entries: MemoryIndexEntry[];
+  try {
+    entries = hierarchicalMemoryStore.readIndex(userId).entries;
+  } catch {
+    entries = [];
+  }
+  const days = recentEpisodicDates(userId, 5);
+
+  if (entries.length === 0 && days.length === 0) {
+    return '🧠 *계층형 메모리 (신규)* — 아직 비어있음\n_`memory note <내용>`으로 관찰 추가 · `memory help`_';
+  }
+
+  const clean = (s: string) =>
+    s
+      .replace(/[`\r\n]/g, ' ')
+      .trim()
+      .slice(0, 80);
+  const shown = entries.slice(0, 20);
+  const lines = shown.map((e) => `• \`${e.id}\` — ${clean(e.title)}`);
+  const more = entries.length > shown.length ? `\n_…외 ${entries.length - shown.length}개_` : '';
+  const ep = days.length > 0 ? `\nepisodic: ${days.join(', ')}` : '';
+  return [
+    `🧠 *계층형 메모리 (신규)* — ${entries.length}개 페이지`,
+    `${lines.join('\n')}${more}${ep}`,
+    '_`memory pages` 목록 · `memory page <id>` 열람 · `memory search <q>` · `memory note <내용>` 추가 · `memory rmpage <id>` · `memory help`_',
+  ].join('\n');
+}
+
 export type { MemoryIndexEntry, PageLocator, SemanticPage };
