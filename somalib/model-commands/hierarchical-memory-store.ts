@@ -103,19 +103,36 @@ export function legacyL1FilePath(dataDir: string, userId: string, target: 'memor
 }
 
 /**
- * Lazily migrate a legacy root-level L1 file into `memory/`.
- * Copy (not move) so a rollback to old code keeps reading the legacy file.
- * No-op when the new file already exists or the legacy file is absent.
- * Returns true when a migration copy happened.
+ * One-way migration of a legacy root-level L1 file (`{userId}/MEMORY.md` or
+ * `{userId}/USER.md`) into the hierarchical `memory/` root, then **removes the
+ * legacy file** so the two locations can never coexist ("mixed" state).
+ *
+ * Resolution:
+ *   - No legacy file → nothing to do.
+ *   - Legacy exists, new absent → move legacy content into `memory/`.
+ *   - Legacy exists, new present but empty while legacy has content → legacy
+ *     content is preserved into `memory/` (guards against clobbering real data
+ *     with an empty placeholder).
+ *   - Legacy exists, new present and non-empty → `memory/` is authoritative.
+ *   - In every case where a legacy file existed, it is deleted afterwards.
+ *
+ * Returns true when a legacy file was consolidated/removed. Idempotent: once the
+ * legacy file is gone, subsequent calls are a cheap no-op.
  */
-export function migrateLegacyL1IfNeeded(dataDir: string, userId: string, target: 'memory' | 'user'): boolean {
-  const newPath = l1FilePath(dataDir, userId, target);
-  if (fs.existsSync(newPath)) return false;
+export function migrateLegacyL1(dataDir: string, userId: string, target: 'memory' | 'user'): boolean {
   const legacy = legacyL1FilePath(dataDir, userId, target);
   if (!fs.existsSync(legacy)) return false;
+  const newPath = l1FilePath(dataDir, userId, target);
   try {
-    fs.mkdirSync(path.dirname(newPath), { recursive: true });
-    fs.copyFileSync(legacy, newPath);
+    const legacyContent = fs.readFileSync(legacy, 'utf-8');
+    const newExists = fs.existsSync(newPath);
+    const newEmpty = newExists ? fs.readFileSync(newPath, 'utf-8').trim().length === 0 : true;
+    if ((!newExists || newEmpty) && legacyContent.trim().length > 0) {
+      fs.mkdirSync(path.dirname(newPath), { recursive: true });
+      fs.writeFileSync(newPath, legacyContent, 'utf-8');
+    }
+    // Delete the legacy root file — one-way migration, no rollback leftover.
+    fs.rmSync(legacy, { force: true });
     return true;
   } catch {
     return false;
