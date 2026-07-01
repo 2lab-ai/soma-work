@@ -1312,3 +1312,45 @@ describe('MANAGE_SKILL get action — validator', () => {
     expect(result.error.message).toContain('get');
   });
 });
+
+describe('MEMORY command — validator allow-list (regression: listed-but-uninvokable)', () => {
+  // Guard against the bug where the MEMORY handler branch existed but the early
+  // commandId allow-list did not include 'MEMORY', so every MEMORY call was
+  // rejected with INVALID_COMMAND before reaching its handler.
+  it('accepts MEMORY op=index (passes the allow-list guard)', () => {
+    const result = validateModelCommandRunArgs({ commandId: 'MEMORY', params: { op: 'index' } });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    expect(result.request.commandId).toBe('MEMORY');
+  });
+
+  it('accepts MEMORY op=page_get with a locator', () => {
+    const result = validateModelCommandRunArgs({
+      commandId: 'MEMORY',
+      params: { op: 'page_get', type: 'agent', slug: 'build' },
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it('accepts MEMORY op=episodic_append', () => {
+    const result = validateModelCommandRunArgs({
+      commandId: 'MEMORY',
+      params: { op: 'episodic_append', content: 'observed a thing' },
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it('rejects an invalid MEMORY op with INVALID_ARGS (reaches the handler, not INVALID_COMMAND)', () => {
+    const result = validateModelCommandRunArgs({ commandId: 'MEMORY', params: { op: 'bogus' } });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.error.code).toBe('INVALID_ARGS');
+  });
+
+  it('still rejects a genuinely unknown commandId with INVALID_COMMAND', () => {
+    const result = validateModelCommandRunArgs({ commandId: 'NOT_A_COMMAND', params: {} });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.error.code).toBe('INVALID_COMMAND');
+  });
+});
