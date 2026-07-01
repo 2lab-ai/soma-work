@@ -390,8 +390,9 @@ describe('renderMemoryCard — v4 minimal', () => {
 
     // Fixed blocks: header + summary-context + group_memory + divider +
     // group_user + bottom_actions + help_context = 7.
-    // Per-entry blocks: 1 section each × 10 = 10. Total = 17.
-    expect(blocks.length).toBe(17);
+    // Per-entry blocks: 1 section each × 10 = 10.
+    // Hierarchical memory section: divider + section = 2. Total = 19.
+    expect(blocks.length).toBe(19);
 
     // Each per-entry section has original text (post-escape) + accessory
     // button pointing to the improve action.
