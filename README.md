@@ -103,8 +103,8 @@ Run multiple independent AI agents within a single process. Each sub-agent is a 
 @soma-gwanu    → DevOps & infrastructure (관우 persona)
 ```
 
-- **Direct mention**: Users @mention sub-agents directly for specialized tasks
-- **Delegation**: Main bot delegates via `agent_chat` MCP tool
+- **Direct mention** *(pending)*: sub-agent apps connect via Socket Mode and receive @mentions/DMs, but handling is not yet wired (see TODO in `src/agent-instance.ts`)
+- **Delegation** *(partial)*: main bot reaches agents via the `agent_chat` MCP tool; Claude SDK query integration is still a placeholder
 - **Zero-config scaling**: Add agents by editing `config.json` — no code changes needed
 - **Error isolation**: One agent crashing doesn't affect others
 
