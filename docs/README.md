@@ -10,6 +10,7 @@
 - [current/plans/](./current/plans/) — active feature specs, traces, plans
 - [current/spec/](./current/spec/) — evergreen product/system specs
 - [`/z` command master spec](./current/spec/z-command-master-spec.md)
+- [goal-command/](./goal-command/) — goal command spec (top-level legacy location; new specs go under `current/`)
 
 ## 2. Stale Plans
 
@@ -48,6 +49,7 @@
 - [misc/guides/](./misc/guides/) — how-to and migration guides
 - [misc/research/](./misc/research/) — dated research notes
 - [misc/debugging/current/](./misc/debugging/current/) — current debug traces not yet archived
+- [debugging/](./debugging/) — top-level legacy debug traces (new traces go under `misc/debugging/current/`)
 - [misc/issues/current/](./misc/issues/current/) — issue-oriented helper docs
 - [misc/configuration/current/](./misc/configuration/current/) — configuration notes
 - [misc/handoffs/](./misc/handoffs/) — handoff notes

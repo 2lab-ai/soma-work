@@ -52,7 +52,7 @@ Slack Event (Socket Mode)
 ### Multi-Agent (`src/agent-manager.ts`, `src/agent-instance.ts`, `src/agent-runtime/`, `src/agent-session/`)
 - `AgentManager`가 config의 agent 항목마다 `AgentInstance` 소유
 - 각 인스턴스는 격리된 Bolt App(별도 봇 토큰), SessionRegistry, PromptBuilder 보유
-- 메인 에이전트의 Claude 턴에서 agent MCP(`packages/mcp-servers/agent/`)를 통해 `agent_chat`으로 호출 — 장애 격리됨
+- 메인 에이전트의 Claude 턴에서 agent MCP(`packages/mcp-servers/agent/`)의 `agent_chat`으로 라우팅 — 단, 실제 Claude SDK query 통합은 아직 placeholder (agent-mcp-server.ts TODO). 직접 @멘션/DM 처리도 `SlackHandler` 통합 대기 중 (`src/agent-instance.ts` TODO)
 - `agent-session/`: turn runner, session phase, continuation handler
 
 ### Auth / Token (`src/token-manager.ts`, `src/cct-store/`, `src/oauth/`, `src/auth/`)
