@@ -60,10 +60,9 @@ The bot classifies user input and routes it to the optimal workflow — no manua
 | **Jira → PR** | Jira issue + `create PR` | Auto-creates pull request from issue |
 | **Deploy** | Deploy-related request | Deployment workflow orchestration |
 | **Onboarding** | New user / `onboarding` | Interactive guided setup |
-| **zwork** | `z` + task / issue / PR link | z-pipeline implementation workflow |
 | **Default** | Everything else | General-purpose coding assistant |
 
-Additional session-handoff entrypoints (`z-plan-to-work`, `z-epic-update`) exist for z controller handoffs (#695). Source of truth: [`src/prompt/workflows/`](./src/prompt/workflows/) and `VALID_WORKFLOWS` in [`src/dispatch-service.ts`](./src/dispatch-service.ts).
+Additional session-handoff entrypoints (`z-plan-to-work`, `z-epic-update`) exist for z controller handoffs (#695) — they enter via `CONTINUE_SESSION` handoff, not free-text classification. Source of truth: `WorkflowType` in [`somalib/model-commands/session-types.ts`](./somalib/model-commands/session-types.ts) and `VALID_WORKFLOWS` in [`src/dispatch-service.ts`](./src/dispatch-service.ts); prompt files live in [`src/prompt/workflows/`](./src/prompt/workflows/).
 
 ### 🎭 Genius Personas
 
@@ -109,7 +108,7 @@ Run multiple independent AI agents within a single process. Each sub-agent is a 
 - **Zero-config scaling**: Add agents by editing `config.json` — no code changes needed
 - **Error isolation**: One agent crashing doesn't affect others
 
-> **Note**: `agent_chat` delegation from the main bot is wired via the agent MCP server ([`packages/mcp-servers/agent/`](./packages/mcp-servers/agent/)). Direct @mention/DM handling on sub-agent apps is still pending full `SlackHandler` integration (see TODO in `src/agent-instance.ts`).
+> **Note**: multi-agent integration is partial. The agent MCP server ([`packages/mcp-servers/agent/`](./packages/mcp-servers/agent/)) exposes `agent_chat`/`agent_reply` and routes to configured agents, but the actual Claude SDK query integration is still a placeholder (see TODO in `agent-mcp-server.ts`). Direct @mention/DM handling on sub-agent apps is likewise pending full `SlackHandler` integration (see TODO in `src/agent-instance.ts`).
 
 See [How to Add a New Agent](./docs/misc/guides/how-to-new-agent.md) for setup instructions.
 
@@ -136,7 +135,7 @@ See [How to Add a New Agent](./docs/misc/guides/how-to-new-agent.md) for setup i
 └─┬──┘ └──┬───┘ └────┬───┘         └───────────────────┘
   │        │          │
   │  ┌─────▼────┐ ┌───▼──────┐
-  │  │ 27 Cmd   │ │ Pipeline │
+  │  │ Command  │ │ Pipeline │
   │  │ Handlers │ │ in→sess→ │
   │  └──────────┘ │ stream   │
   │               └────┬─────┘
