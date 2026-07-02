@@ -60,20 +60,23 @@ The bot classifies user input and routes it to the optimal workflow — no manua
 | **Jira → PR** | Jira issue + `create PR` | Auto-creates pull request from issue |
 | **Deploy** | Deploy-related request | Deployment workflow orchestration |
 | **Onboarding** | New user / `onboarding` | Interactive guided setup |
+| **zwork** | `z` + task / issue / PR link | z-pipeline implementation workflow |
 | **Default** | Everything else | General-purpose coding assistant |
 
-### 🎭 12 Genius Personas
+Additional session-handoff entrypoints (`z-plan-to-work`, `z-epic-update`) exist for z controller handoffs (#695). Source of truth: [`src/prompt/workflows/`](./src/prompt/workflows/) and `VALID_WORKFLOWS` in [`src/dispatch-service.ts`](./src/dispatch-service.ts).
+
+### 🎭 Genius Personas
 
 Switch the bot's personality and reasoning style. Each persona brings a distinct approach to problem-solving.
 
 ```
-persona einstein    → First-principles physics thinking
-persona linus       → Ruthless code review, no BS
-persona feynman     → "If I can't explain it simply..."
-persona vonneumann  → Mathematical precision
+/z persona set einstein    → First-principles physics thinking
+/z persona set linus       → Ruthless code review, no BS
+/z persona set feynman     → "If I can't explain it simply..."
+/z persona set vonneumann  → Mathematical precision
 ```
 
-Available: `default` · `chaechae` · `linus` · `buddha` · `davinci` · `einstein` · `elon` · `feynman` · `jesus` · `newton` · `turing` · `vonneumann`
+Available: `default` · `linus` · `buddha` · `davinci` · `einstein` · `elon` · `feynman` · `jesus` · `newton` · `turing` · `vonneumann` — source of truth: [`src/persona/`](./src/persona/)
 
 ### 🔌 MCP Tool Ecosystem
 
@@ -106,7 +109,7 @@ Run multiple independent AI agents within a single process. Each sub-agent is a 
 - **Zero-config scaling**: Add agents by editing `config.json` — no code changes needed
 - **Error isolation**: One agent crashing doesn't affect others
 
-> **Note**: Direct @mention/DM handling and `agent_chat` query integration are being wired up (Phase 2). Agents currently connect via Socket Mode and receive events, but full ClaudeHandler integration is in progress.
+> **Note**: `agent_chat` delegation from the main bot is wired via the agent MCP server ([`packages/mcp-servers/agent/`](./packages/mcp-servers/agent/)). Direct @mention/DM handling on sub-agent apps is still pending full `SlackHandler` integration (see TODO in `src/agent-instance.ts`).
 
 See [How to Add a New Agent](./docs/misc/guides/how-to-new-agent.md) for setup instructions.
 
@@ -384,8 +387,8 @@ npm run build && npm run prod      # Production
 ### Docker
 
 ```bash
-docker-compose up -d
-docker-compose logs -f
+docker compose -f infra/docker/docker-compose.yml up -d
+docker compose -f infra/docker/docker-compose.yml logs -f
 ```
 
 ### macOS LaunchAgent
@@ -424,16 +427,21 @@ GitHub App takes priority when configured. Falls back to PAT automatically.
 
 ## Project Structure
 
+> Counts drift — always check the directories themselves. Full component wiring: [docs/misc/reference/architecture.md](./docs/misc/reference/architecture.md).
+
 ```
 src/                                # TypeScript source
 ├── agent-manager.ts                # Sub-agent lifecycle management
 ├── agent-instance.ts               # Individual agent (Slack App + Handler)
+├── agent-runtime/                  # Claude Agent SDK execution runtime
 ├── slack/                          # Slack integration layer
-│   ├── actions/                    # Interactive action handlers (10)
-│   ├── commands/                   # Command handlers (27)
+│   ├── actions/                    # Interactive action handlers
+│   ├── commands/                   # Command handlers
 │   ├── pipeline/                   # Stream processing pipeline
 │   ├── directives/                 # Channel/session link directives
-│   └── formatters/                 # Output formatters
+│   ├── formatters/                 # Output formatters
+│   └── z/                          # /z command surface + naked whitelist
+├── auth/                           # CCT lease + query env injection
 ├── conversation/                   # Conversation recording & replay
 ├── model-commands/                 # Model command catalog & validation
 ├── mcp/                            # MCP server management
@@ -441,36 +449,39 @@ src/                                # TypeScript source
 ├── permission/                     # Permission service + Slack UI
 ├── plugin/                         # Plugin system (marketplace, cache)
 ├── prompt/                         # System prompts
-│   ├── workflows/                  # Workflow prompts (10 workflows)
+│   ├── workflows/                  # Dispatch workflow prompts
 │   ├── jangbi/                     # Sub-agent: code review specialist
 │   └── gwanu/                      # Sub-agent: DevOps specialist
-├── persona/                        # Bot personas (12 personas)
+├── persona/                        # Bot personas
+├── sandbox/                        # Execution sandbox gate
+├── metrics/                        # Token/cost telemetry
+├── notification-channels/          # Slack · DM · Telegram · Webhook routing
 └── local/                          # Claude Code SDK extensions
-    ├── agents/                     # Agent definitions (11)
+    ├── agents/                     # Agent definitions
     ├── skills/                     # Skill implementations
     ├── hooks/                      # Git/build hooks
     ├── commands/                   # Local slash commands
     └── prompts/                    # Local prompts
 
-mcp-servers/                        # Internal MCP servers (extracted)
-├── agent/                          # agent_chat / agent_reply tools
-├── llm/                            # LLM aggregate (codex)
-├── model-command/                  # Session/UI model commands
-├── slack-mcp/                      # Thread context + file upload
-├── cron/                           # Cron job management
-├── server-tools/                   # Server administration
-├── permission/                     # Permission prompt service
-└── mcp-tool-permission/            # Per-tool permission gating
+packages/                           # Workspace packages
+├── mcp-servers/                    # Internal MCP servers
+│   ├── agent/                      # agent_chat / agent_reply tools
+│   ├── llm/                        # LLM aggregate (codex)
+│   ├── model-command/              # Session/UI model commands
+│   ├── slack-mcp/                  # Thread context + file upload
+│   ├── cron/                       # Cron job management
+│   ├── server-tools/               # Server administration
+│   ├── permission/                 # Permission prompt service
+│   └── mcp-tool-permission/        # Per-tool permission gating
+├── common/ · slack/ · process-shared/ · test-utils/
 
-scripts/                            # Utility scripts
-├── provision-agent.ts              # Automated sub-agent provisioning
-├── create-agent.sh                 # Semi-automated agent creation
-└── ...
+somalib/                            # Shared soma-family library
+services/a2t/                       # Audio-to-text Python worker
+infra/                              # docker / slack manifest / claude config
+scripts/                            # Utility scripts (provision-agent.ts, ...)
 
 docs/                               # Architecture & feature specs
-├── how-to-new-agent.md             # Guide: adding new sub-agents
-├── multi-agent/                    # Multi-agent spec & trace
-└── ...
+└── README.md                       # Docs routing map — start here
 ```
 
 ## Design Principles
