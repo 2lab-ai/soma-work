@@ -79,7 +79,7 @@ export function isWhitelistedNaked(text: string): boolean {
  *    `thinking_summary`.
  *
  * Note: topics in the list (persona, model, verbosity, effort, theme, cwd,
- * email, memory, notify, sandbox, cct, bypass) configure user/session
+ * email, memory, notify, sandbox, cct, auth, bypass) configure user/session
  * settings and do NOT execute prompts. `persona`/`model`/etc. are explicit
  * settings topics surfaced to end users through the docs — keeping them
  * accessible from DM for non-admins is intentional and matches the SSOT:
@@ -91,7 +91,7 @@ export function isWhitelistedNaked(text: string): boolean {
  * `/z sessions public`, `/z theme set dark`, `/z model haiku`).
  */
 const SAFE_Z_TOPICS =
-  /^(?:help|sessions?|theme|persona|model|verbosity|effort|cwd|email|memory|notify|sandbox|cct|bypass)(?:\s+.*)?$/;
+  /^(?:help|sessions?|theme|persona|model|verbosity|effort|cwd|email|memory|notify|sandbox|cct|auth|bypass)(?:\s+.*)?$/;
 
 /**
  * Non-admin DM policy gate (Issue #553).

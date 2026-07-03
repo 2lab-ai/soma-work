@@ -124,6 +124,7 @@ describe('ActionHandlers', () => {
       const topics = registry.topics().sort();
       expect(topics).toEqual(
         [
+          'auth',
           'bypass',
           'cct',
           'cwd',
