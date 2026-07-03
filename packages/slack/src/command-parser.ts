@@ -13,6 +13,18 @@ export type CctAction =
   | { action: 'rm-forbidden' }
   | { action: 'auto'; dry: boolean };
 
+/**
+ * Auth backend command (#llmux runtime switch).
+ *   - `auth`                        → { action: 'status' }  (mode card)
+ *   - `auth llmux` / `auth cct|ccp` → { action: 'set-mode', mode }
+ *   - `set auth llmux|cct|ccp`      → same (legacy `set auth` form)
+ *   - `auth switch <name>`          → { action: 'switch', target } (llmux manual switch)
+ */
+export type AuthCommandAction =
+  | { action: 'status' }
+  | { action: 'set-mode'; mode: 'llmux' | 'ccp' }
+  | { action: 'switch'; target: string };
+
 export type BypassAction = 'on' | 'off' | 'status';
 export type SandboxAction = 'on' | 'off' | 'status';
 export type SandboxTarget = 'sandbox' | 'network';
@@ -184,6 +196,31 @@ export class CommandParser {
     }
 
     return null;
+  }
+
+  /**
+   * Check if text is an auth command (#llmux runtime switch).
+   *
+   * Accepted: `auth`, `auth llmux`, `auth cct`, `auth ccp`,
+   * `set auth llmux|cct|ccp`, `auth switch <name>`.
+   */
+  static isAuthCommand(text: string): boolean {
+    return /^\/?(?:set\s+)?auth(?:\s+(?:llmux|cct|ccp|switch\s+\S+))?$/i.test(text.trim());
+  }
+
+  /** Parse an auth command. See {@link AuthCommandAction}. */
+  static parseAuthCommand(text: string): AuthCommandAction {
+    const trimmed = text.trim();
+    const modeMatch = trimmed.match(/^\/?(?:set\s+)?auth\s+(llmux|cct|ccp)$/i);
+    if (modeMatch) {
+      const raw = modeMatch[1].toLowerCase();
+      return { action: 'set-mode', mode: raw === 'llmux' ? 'llmux' : 'ccp' };
+    }
+    const switchMatch = trimmed.match(/^\/?auth\s+switch\s+(\S+)$/i);
+    if (switchMatch) {
+      return { action: 'switch', target: switchMatch[1] };
+    }
+    return { action: 'status' };
   }
 
   /**
@@ -1140,6 +1177,8 @@ export class CommandParser {
     'config',
     // Token management
     'cct',
+    // Auth backend (#llmux runtime switch)
+    'auth',
     // Working directory
     'cwd',
     // MCP
@@ -1380,6 +1419,11 @@ export class CommandParser {
       '*Prompt & Instructions (Admin):*',
       '• `show prompt` - Show the system prompt used in this session',
       '• `show instructions` - Show user instructions stored in this session',
+      '',
+      '*Auth Backend:*',
+      '• `auth` - Show auth backend card: current mode (llmux/cct), llmux pool usage, settings',
+      '• `auth llmux` / `auth cct` - Switch auth backend at runtime (Admin only; llmux is default, cct is legacy)',
+      '• `auth switch <name>` - Manually switch the llmux account (Admin only)',
       '',
       '*Token Management (Admin):*',
       '• `cct` - Show OAuth token pool status (Block Kit card)',

@@ -42,6 +42,8 @@ import type { WebClient } from '@slack/web-api';
 import * as path from 'path';
 import { CronStorage } from 'somalib/cron/cron-storage';
 import { initA2tService, shutdownA2tService } from './a2t/a2t-service';
+import { initAuthRuntimeDefault } from './auth/auth-runtime';
+import { isLlmuxUp } from './auth/llmux-client';
 import { setQueryEnvAdditional } from './auth/query-env-builder';
 import { scanChannels } from './channel-registry';
 import { ClaudeHandler } from './claude-handler';
@@ -342,6 +344,17 @@ async function start() {
       // Keys-only — values are operator-supplied and may be secrets.
       timing(`claude.env applied (${claudeEnvKeys.length} vars): [${claudeEnvKeys.join(', ')}]`);
     }
+
+    // Resolve the runtime auth backend (#llmux runtime switch) BEFORE any
+    // dispatch: persisted data/auth-runtime.json > AUTH_MODE env > llmux
+    // boot probe (reachable -> llmux default; down -> legacy ccp). The mode
+    // stays runtime-mutable afterwards via the `auth` command / card.
+    const authState = await initAuthRuntimeDefault((baseUrl) => isLlmuxUp(baseUrl));
+    timing(
+      authState.mode === 'llmux'
+        ? `Auth runtime: llmux -> ${authState.llmux.baseUrl} (runtime-switchable via \`auth\`)`
+        : 'Auth runtime: ccp (legacy CCT slot leases; runtime-switchable via `auth`)',
+    );
 
     // Initialize MCP manager from config.json#mcpServers.
     // Empty section ⇒ start with no remote MCP servers; default/internal

@@ -1616,4 +1616,30 @@ describe('CommandParser', () => {
       });
     });
   });
+
+  describe('auth command (#llmux runtime switch)', () => {
+    it('isAuthCommand matches the documented grammar', () => {
+      expect(CommandParser.isAuthCommand('auth')).toBe(true);
+      expect(CommandParser.isAuthCommand('/auth')).toBe(true);
+      expect(CommandParser.isAuthCommand('auth llmux')).toBe(true);
+      expect(CommandParser.isAuthCommand('auth cct')).toBe(true);
+      expect(CommandParser.isAuthCommand('auth ccp')).toBe(true);
+      expect(CommandParser.isAuthCommand('set auth llmux')).toBe(true);
+      expect(CommandParser.isAuthCommand('set auth cct')).toBe(true);
+      expect(CommandParser.isAuthCommand('auth switch claude:me@example.com')).toBe(true);
+      expect(CommandParser.isAuthCommand('auth bogus')).toBe(false);
+      expect(CommandParser.isAuthCommand('auth switch')).toBe(false);
+      expect(CommandParser.isAuthCommand('authll')).toBe(false);
+      expect(CommandParser.isAuthCommand('oauth')).toBe(false);
+    });
+
+    it('parseAuthCommand maps modes (cct alias -> ccp) and switch targets', () => {
+      expect(CommandParser.parseAuthCommand('auth')).toEqual({ action: 'status' });
+      expect(CommandParser.parseAuthCommand('auth llmux')).toEqual({ action: 'set-mode', mode: 'llmux' });
+      expect(CommandParser.parseAuthCommand('auth cct')).toEqual({ action: 'set-mode', mode: 'ccp' });
+      expect(CommandParser.parseAuthCommand('auth ccp')).toEqual({ action: 'set-mode', mode: 'ccp' });
+      expect(CommandParser.parseAuthCommand('set auth llmux')).toEqual({ action: 'set-mode', mode: 'llmux' });
+      expect(CommandParser.parseAuthCommand('auth switch api-1')).toEqual({ action: 'switch', target: 'api-1' });
+    });
+  });
 });

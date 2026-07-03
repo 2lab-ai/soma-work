@@ -202,6 +202,7 @@ Grammar: `/z <topic> [verb] [args...]`. See `docs/current/spec/01-slack-integrat
 | `/z onboarding` | Run onboarding workflow |
 | `/z admin [accept\|deny\|users\|config\|llmchat\|session list]` | Admin commands |
 | `/z cct [set <name>\|next]` | CCT token status / manual switch |
+| `/z auth [llmux\|cct\|switch <name>]` | Auth backend card: runtime mode switch (llmux default / cct legacy), llmux pool usage, account switch/add/remove |
 | `/z marketplace [add <x>]` | Plugin marketplace |
 | `/z plugin [add\|update\|remove\|rollback\|backups]` | Manage installed plugins |
 | `/z skill [list\|download]` | Skills directory |

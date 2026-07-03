@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { getAuthMode, getLlmuxSettings } from './auth/auth-runtime';
 import { config } from './config';
 import { Logger } from './logger';
 import { getTokenManager, type TokenManager } from './token-manager';
@@ -165,7 +166,7 @@ export interface SlotAuthLease {
 function buildLlmuxLease(): SlotAuthLease {
   return {
     keyId: 'llmux',
-    accessToken: config.auth.llmux.apiKey,
+    accessToken: getLlmuxSettings().apiKey,
     kind: 'api_key',
     async release(): Promise<void> {
       /* no-op — synthetic lease holds no TokenManager state */
@@ -198,7 +199,8 @@ export async function ensureActiveSlotAuth(
 ): Promise<SlotAuthLease> {
   // llmux mode: skip the CCT slot machinery entirely. The local proxy owns
   // upstream auth, so there is no token to lease and no slot to keep healthy.
-  if (config.auth.mode === 'llmux') {
+  // Read the RUNTIME mode (auth-runtime.ts) — `auth llmux|cct` flips it live.
+  if (getAuthMode() === 'llmux') {
     return buildLlmuxLease();
   }
 
