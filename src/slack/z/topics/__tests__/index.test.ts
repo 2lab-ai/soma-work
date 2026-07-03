@@ -4,6 +4,7 @@ import { buildDefaultTopicRegistry, registerAllTopics } from '../index';
 
 const EXPECTED_TOPICS = [
   'bypass',
+  'auth',
   'cct',
   'cwd',
   'email',

@@ -50,7 +50,13 @@ vi.mock('../config', () => ({
   },
 }));
 
+import { resetAuthRuntimeForTests } from '../auth/auth-runtime';
 import { ensureActiveSlotAuth, ensureValidCredentials, NoHealthySlotError } from '../credentials-manager';
+
+// ensureActiveSlotAuth reads the RUNTIME auth mode (auth-runtime.ts), which
+// snapshots the mocked config at first access. Re-point it at a nonexistent
+// store after every mockConfig.auth.mode flip so env defaults are re-read.
+const NO_STORE = '/nonexistent-auth-runtime-dir/auth-runtime.json';
 
 beforeEach(() => {
   mockAcquireLease.mockReset();
@@ -62,11 +68,13 @@ beforeEach(() => {
   mockGetValidAccessToken.mockReset();
   // Default every test to ccp; the llmux suite flips this explicitly.
   mockConfig.auth.mode = 'ccp';
+  resetAuthRuntimeForTests(NO_STORE);
 });
 
 describe('ensureActiveSlotAuth — llmux mode', () => {
   it('returns a synthetic lease and never touches the TokenManager', async () => {
     mockConfig.auth.mode = 'llmux';
+    resetAuthRuntimeForTests(NO_STORE);
 
     const lease = await ensureActiveSlotAuth(mockTokenManager as any, 'test:llmux');
 

@@ -1,6 +1,7 @@
 import { setActionHandlersProviders } from '@soma/slack/actions';
 import { isAdminUser } from '../../admin-utils';
 import { getTokenManager } from '../../token-manager';
+import { registerAuthActions } from '../auth/actions';
 import { registerCctActions } from '../cct/actions';
 import { defaultTabCache } from '../commands/usage-carousel-cache';
 import { buildDefaultTopicRegistry } from '../z/topics';
@@ -159,6 +160,7 @@ setActionHandlersProviders({
       }),
       zTopicRegistry,
       registerCctActions: (app) => registerCctActions(app as any, getTokenManager()),
+      registerAuthActions: (app) => registerAuthActions(app as any),
     };
   },
 });
