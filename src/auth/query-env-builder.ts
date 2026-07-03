@@ -1,5 +1,5 @@
-import { config } from '../config';
 import type { SlotAuthLease } from '../credentials-manager';
+import { getAuthMode, getLlmuxSettings } from './auth-runtime';
 
 /**
  * Result of {@link buildQueryEnv}: a fresh env map suitable for the Claude
@@ -141,8 +141,11 @@ export function buildQueryEnv(lease: SlotAuthLease): QueryEnvResult {
     env[key] = value;
   }
 
-  // Layer 3 — auth backend (AUTH_MODE).
-  if (config.auth.mode === 'llmux') {
+  // Layer 3 — auth backend. Read from the RUNTIME state (auth-runtime.ts),
+  // not static config: `auth llmux|cct` flips the mode live and the flip must
+  // apply to the next dispatch without a restart. AUTH_MODE env remains the
+  // boot-time default only.
+  if (getAuthMode() === 'llmux') {
     // llmux mode: the local proxy (https://github.com/2lab-ai/llmux) owns the
     // real upstream account pool. Point the SDK at it with a throwaway API key
     // and SUPPRESS the OAuth token — Claude Code prefers CLAUDE_CODE_OAUTH_TOKEN
@@ -150,8 +153,9 @@ export function buildQueryEnv(lease: SlotAuthLease): QueryEnvResult {
     // process.env (or a future code path) would otherwise silently bypass the
     // proxy. `lease.accessToken` is intentionally unused here; the synthetic
     // llmux lease carries the placeholder key for symmetry only.
-    env.ANTHROPIC_BASE_URL = config.auth.llmux.baseUrl;
-    env.ANTHROPIC_API_KEY = config.auth.llmux.apiKey;
+    const llmux = getLlmuxSettings();
+    env.ANTHROPIC_BASE_URL = llmux.baseUrl;
+    env.ANTHROPIC_API_KEY = llmux.apiKey;
     delete env.CLAUDE_CODE_OAUTH_TOKEN;
     return { env };
   }

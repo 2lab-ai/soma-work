@@ -2,6 +2,7 @@ import { setCommandRouterProviders } from '@soma/slack/commands/command-router';
 import type { ClaudeHandler } from '../../claude-handler';
 import { getReportDeps } from '../../metrics';
 import { AdminHandler } from './admin-handler';
+import { AuthHandler } from './auth-handler';
 import { AutoskillHandler } from './autoskill-handler';
 import { BypassHandler } from './bypass-handler';
 import { CctHandler } from './cct-handler';
@@ -80,6 +81,9 @@ setCommandRouterProviders({
         promptHandler,
         instructionsHandler,
         cctHandler,
+        // Auth backend (#llmux runtime switch). Non-admin `auth` renders the
+        // readonly card; mutating arms are admin-gated inside the handler.
+        new AuthHandler(),
         new CwdHandler(deps as any),
         new McpHandler(deps as any),
         new DashboardHandler(),

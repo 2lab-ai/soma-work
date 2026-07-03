@@ -62,18 +62,20 @@ Bot:   [업로드된 코드 분석, 병목 지점 식별, 최적화된 버전 �
 | **Onboarding** | 신규 유저 / `onboarding` | 인터랙티브 가이드 셋업 |
 | **Default** | 기타 모든 입력 | 범용 코딩 어시스턴트 |
 
-### 🎭 12명의 천재 페르소나
+세션 핸드오프 전용 entrypoint(`z-plan-to-work`, `z-epic-update`)도 있습니다 (#695) — free-text 분류가 아니라 `CONTINUE_SESSION` 핸드오프로 진입합니다. Source of truth: [`somalib/model-commands/session-types.ts`](./somalib/model-commands/session-types.ts)의 `WorkflowType`, [`src/dispatch-service.ts`](./src/dispatch-service.ts)의 `VALID_WORKFLOWS`; 프롬프트 파일은 [`src/prompt/workflows/`](./src/prompt/workflows/).
+
+### 🎭 천재 페르소나
 
 봇의 성격과 사고방식을 전환합니다. 각 페르소나는 문제 해결에 고유한 접근법을 제공합니다.
 
 ```
-persona einstein    → 제1원리 물리학적 사고
-persona linus       → 무자비한 코드 리뷰
-persona feynman     → "간단히 설명 못하면 이해 못한 것"
-persona vonneumann  → 수학적 정밀함
+/z persona set einstein    → 제1원리 물리학적 사고
+/z persona set linus       → 무자비한 코드 리뷰
+/z persona set feynman     → "간단히 설명 못하면 이해 못한 것"
+/z persona set vonneumann  → 수학적 정밀함
 ```
 
-사용 가능: `default` · `chaechae` · `linus` · `buddha` · `davinci` · `einstein` · `elon` · `feynman` · `jesus` · `newton` · `turing` · `vonneumann`
+사용 가능: `default` · `linus` · `buddha` · `davinci` · `einstein` · `elon` · `feynman` · `jesus` · `newton` · `turing` · `vonneumann` — source of truth: [`src/persona/`](./src/persona/)
 
 ### 🔌 MCP 도구 생태계
 
@@ -113,7 +115,7 @@ GitHub App(권장) 또는 Personal Access Token 인증. 자동 토큰 갱신 지
    └──────┬──────┘ └──┬───────┘ └─────┬──────┘
           │            │                │
           │     ┌──────▼──────┐  ┌─────▼──────┐
-          │     │ 26 Command  │  │  Pipeline  │
+          │     │  Command    │  │  Pipeline  │
           │     │  Handlers   │  │ input →    │
           │     └─────────────┘  │ session →  │
           │                      │ stream     │
@@ -135,33 +137,26 @@ GitHub App(권장) 또는 Personal Access Token 인증. 자동 토큰 갱신 지
    └─────────┘  └─────────┘  └─────────┘
 ```
 
-**Three Facades** — `SlackHandler`, `ClaudeHandler`, `McpManager`가 복잡한 서브시스템 위에 단순한 인터페이스를 제공합니다. 각 모듈은 단일 책임 원칙을 따릅니다.
+**Key Facades** — `SlackHandler`, `ClaudeHandler`, `McpManager`, `AgentManager`가 복잡한 서브시스템 위에 단순한 인터페이스를 제공합니다. 각 모듈은 단일 책임 원칙을 따릅니다. 전체 컴포넌트 와이어링은 [architecture.md](./docs/misc/reference/architecture.md)를 참고하세요.
 
 ---
 
 ## 명령어
 
-| 명령어 | 설명 |
-|--------|------|
-| `cwd [path]` | 작업 디렉토리 확인 / 설정 |
-| `mcp` · `mcp reload` | MCP 서버 목록 / 설정 리로드 |
-| `bypass [on\|off]` | 권한 바이패스 토글 |
-| `persona [name]` | 페르소나 전환 |
-| `model [name]` | 모델 전환 (sonnet, opus, haiku) |
-| `verbosity [level]` | 출력 상세도 설정 |
-| `sessions` | 활성 세션 목록 |
-| `new` · `renew` | 세션 초기화 / 갱신 |
-| `close` | 현재 스레드 세션 종료 |
-| `restore` | 세션 복원 |
-| `context` | 컨텍스트 윈도우 상태 |
-| `link [url]` | 이슈/PR/문서 링크 첨부 |
-| `onboarding` | 온보딩 워크플로우 실행 |
-| `admin` | 관리자 명령 (accept/deny/users/config) |
-| `cct` · `set_cct` | CCT 토큰 상태 / 수동 전환 |
-| `marketplace` | 플러그인 마켓플레이스 |
-| `plugins` | 설치된 플러그인 관리 |
-| `%model` · `%verbosity` | 세션 전용 설정 (비영속). `$` 접두는 deprecation grace period 동안만 허용 (경고 메시지 출력). `$`는 강제 스킬 발동 전용 (`$z`, `$stv:new-task` 등). |
-| `help` | 도움말 |
+목적이 겹치지 않는 4개의 prefix family:
+
+| Prefix | 범위 | 지속성 | 예시 |
+|--------|------|--------|------|
+| `/z <topic> …` | 기본 명령어 surface (필요 시 Block Kit UI) | 유저 전역 | `/z persona set linus` |
+| `%<sub> …` | **현재 세션 전용** — 저장 없이 오버라이드 | 휘발성 (`new`/`renew` 시 초기화) | `%model opus` |
+| `$<skill>` / `$<plugin>:<skill>` | **강제 스킬 발동** (`SKILL.md` 로드, RPG 배너 출력) | 메시지 단위 | `$z`, `$stv:new-task` |
+| naked text | 화이트리스트 bare form 또는 채팅 / 워크플로우 디스패치 | n/a | `sessions`, `new`, `fix PR 123` |
+
+주요 `/z` 명령: `help` · `cwd` · `mcp` · `bypass` · `persona` · `model` · `verbosity` · `session` · `new`/`renew` · `close` · `restore` · `context`/`compact` · `link` · `onboarding` · `admin` · `cct` · `auth` · `marketplace` · `plugin` · `skill` · `report`
+
+- 전체 명령어 표와 마이그레이션 히스토리(#506, #508)는 [README.md의 Commands 섹션](./README.md#commands)을 참고하세요.
+- naked 화이트리스트의 source of truth: [`src/slack/z/whitelist.ts`](./src/slack/z/whitelist.ts)
+- `$model` 등 legacy `$` 세션 설정은 deprecation grace period 동안만 허용 (경고 후 `%` 사용 안내)
 
 ---
 
@@ -247,8 +242,8 @@ npm run build && npm run prod      # 프로덕션
 ### Docker
 
 ```bash
-docker-compose up -d
-docker-compose logs -f
+docker compose -f infra/docker/docker-compose.yml up -d
+docker compose -f infra/docker/docker-compose.yml logs -f
 ```
 
 ### macOS LaunchAgent
@@ -287,51 +282,57 @@ GitHub App이 설정되어 있으면 우선 사용됩니다. 없으면 PAT으로
 
 ## 프로젝트 구조
 
+> 숫자 카운트는 반드시 drift합니다 — 디렉토리를 직접 확인하세요. 전체 컴포넌트 와이어링: [docs/misc/reference/architecture.md](./docs/misc/reference/architecture.md)
+
 ```
 src/                                # TypeScript 소스
+├── agent-manager.ts                # 서브 에이전트 라이프사이클 관리
+├── agent-instance.ts               # 개별 에이전트 (Slack App + Handler)
+├── agent-runtime/                  # Claude Agent SDK 실행 런타임
 ├── slack/                          # Slack 통합 레이어
-│   ├── actions/                    # 인터랙티브 액션 핸들러 (12)
-│   ├── commands/                   # 명령어 핸들러 (26)
+│   ├── actions/                    # 인터랙티브 액션 핸들러
+│   ├── commands/                   # 명령어 핸들러
 │   ├── pipeline/                   # 스트림 처리 파이프라인
 │   ├── directives/                 # 채널/세션 링크 디렉티브
-│   └── formatters/                 # 출력 포맷터
+│   ├── formatters/                 # 출력 포맷터
+│   └── z/                          # /z 명령어 surface + naked 화이트리스트
+├── auth/                           # CCT lease + query env 주입
 ├── conversation/                   # 대화 기록 & 리플레이
 ├── model-commands/                 # 모델 커맨드 카탈로그 & 검증
 ├── mcp/                            # MCP 서버 관리
 ├── github/                         # GitHub App 인증 + Git CLI
 ├── permission/                     # 권한 서비스 + Slack UI
 ├── plugin/                         # 플러그인 시스템 (마켓플레이스, 캐시)
-├── prompt/                         # 시스템 프롬프트
-│   └── workflows/                  # 워크플로우 프롬프트 (9)
-├── persona/                        # 봇 페르소나 (12)
-└── local/                          # Claude Code SDK 확장
-    ├── agents/                     # Agent 정의 (11)
-    ├── skills/                     # Skill 구현
-    ├── hooks/                      # Git/빌드 훅
-    ├── commands/                   # 로컬 슬래시 커맨드
-    └── prompts/                    # 로컬 프롬프트
+├── prompt/                         # 시스템 프롬프트 + workflows/
+├── persona/                        # 봇 페르소나
+├── sandbox/                        # 실행 샌드박스 게이트
+├── metrics/                        # 토큰/비용 텔레메트리
+├── notification-channels/          # Slack · DM · Telegram · Webhook 라우팅
+└── local/                          # Claude Code SDK 확장 (skills/, agents/, hooks/)
 
-docs/                               # 아키텍처 & 기능 스펙
+packages/                           # 워크스페이스 패키지
+├── mcp-servers/                    # 내장 MCP 서버 (agent, cron, llm, model-command, ...)
+├── common/ · slack/ · process-shared/ · test-utils/
+
+somalib/                            # soma 계열 공유 라이브러리
+services/a2t/                       # 음성→텍스트 Python worker
+infra/                              # docker / slack manifest / claude 설정
 scripts/                            # 유틸리티 스크립트
-```
 
-| 항목 | 파일 수 | 코드 라인 |
-|------|--------:|----------:|
-| 소스 (테스트/로컬 제외) | 167 | ~36,000 |
-| 테스트 | 97 | ~22,400 |
-| 페르소나 | 12 | ~4,700 |
-| 워크플로우 프롬프트 | 9 | ~1,400 |
+docs/                               # 아키텍처 & 기능 스펙 — docs/README.md에서 시작
+```
 
 ## 설계 원칙
 
-1. **Facade Pattern** — 3개의 Facade로 복잡한 서브시스템 단순화
-2. **Single Responsibility** — 모듈당 하나의 책임 (167개 모듈)
+1. **Facade Pattern** — 4개의 Facade(`SlackHandler`, `ClaudeHandler`, `McpManager`, `AgentManager`)로 복잡한 서브시스템 단순화
+2. **Single Responsibility** — 모듈당 하나의 책임
 3. **Pipeline Architecture** — 입력 전처리 → 세션 초기화 → 스트림 실행
 4. **Workflow Dispatch** — 입력 분류 → 전문 워크플로우 프롬프트 적용
 5. **Append-Only Messages** — 메시지 편집 대신 새 메시지 (안정성)
 6. **Session-Based Context** — 스레드별 세션 유지 + 자동 재개
-7. **Dependency Injection** — 주입된 의존성으로 테스트 용이성 확보
-8. **Hierarchical CWD** — Thread > Channel > User 작업 디렉토리 우선순위
+7. **Error Isolation** — 서브 에이전트 장애가 메인 봇으로 전파되지 않음
+8. **Dependency Injection** — 주입된 의존성으로 테스트 용이성 확보
+9. **Hierarchical CWD** — Thread > Channel > User 작업 디렉토리 우선순위
 
 ---
 
@@ -342,7 +343,7 @@ npx vitest run          # 단일 실행
 npx vitest              # 감시 모드
 ```
 
-97개 테스트 파일(~22,400 LOC)이 핵심 경로를 커버합니다: 이벤트 라우팅, 스트림 처리, 명령어 파싱, 권한 검증, 도구 포맷팅, 세션 관리, 액션 핸들러, 파이프라인 처리, MCP 통합 등.
+테스트 커버리지: 이벤트 라우팅, 스트림 처리, 명령어 파싱, 권한 검증, 도구 포맷팅, 세션 관리, 액션 핸들러, 파이프라인 처리, MCP 통합, 멀티 에이전트 라이프사이클 등.
 
 ---
 

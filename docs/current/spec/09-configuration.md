@@ -31,7 +31,9 @@
 
 #### Auth Backend (`AUTH_MODE`)
 
-백엔드가 Claude Agent SDK 호출을 어떤 경로로 인증할지 선택합니다. `config.auth`에 매핑됩니다. 변경 시 재시작 필요 (hot reload 없음).
+백엔드가 Claude Agent SDK 호출을 어떤 경로로 인증할지 선택합니다. `config.auth`에 매핑됩니다.
+
+**런타임 전환 지원**: `AUTH_MODE` env는 *부팅 기본값*일 뿐입니다. 실제 라이브 모드는 `src/auth/auth-runtime.ts`가 소유하며, Slack에서 `auth llmux` / `auth cct` (또는 `auth` 카드의 모드 버튼)로 재시작 없이 전환됩니다. 선택은 `data/auth-runtime.json`에 영속되어 재시작 후에도 유지됩니다. 우선순위: `data/auth-runtime.json` > `AUTH_MODE` env > 부팅 시 llmux 프로브 (llmux가 응답하면 `llmux`가 기본값, 아니면 `ccp`). `ANTHROPIC_BASE_URL`/`ANTHROPIC_API_KEY`도 `auth` 카드의 ⚙️ Settings 모달로 런타임 변경 가능.
 
 | Variable | Description | Default |
 |----------|-------------|---------|

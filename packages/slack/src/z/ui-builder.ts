@@ -101,6 +101,7 @@ export const DEFAULT_HELP_CATEGORIES: HelpCategory[] = [
     topics: [
       { id: 'memory', label: 'memory' },
       { id: 'cct', label: 'cct' },
+      { id: 'auth', label: 'auth' },
       { id: 'mcp', label: 'mcp' },
       { id: 'skill', label: 'skill' },
       { id: 'plugin', label: 'plugin' },

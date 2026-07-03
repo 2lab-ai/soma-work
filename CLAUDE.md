@@ -23,28 +23,48 @@ Slack에서 Claude Code SDK를 통해 AI 코딩 어시스턴트를 제공하는 
 | `SlackHandler` | Slack 이벤트 처리 | `EventRouter`, `CommandRouter`, `StreamProcessor` |
 | `ClaudeHandler` | Claude SDK 통합 | `SessionRegistry`, `PromptBuilder`, `McpConfigBuilder` |
 | `McpManager` | MCP 서버 관리 | `ConfigLoader`, `ServerFactory`, `InfoFormatter` |
+| `AgentManager` | 멀티 에이전트 인스턴스 기동 | `AgentInstance` (App + Handler per agent) |
 
 **Pipeline**: `InputProcessor` → `SessionInitializer` (dispatch + onboarding + channel routing) → `StreamExecutor`
 
 ### Module Layout
 
+숫자 카운트는 여기 적지 않는다 — 하드코딩된 카운트는 반드시 drift한다. 항상 디렉토리를 직접 확인.
+
 ```
 src/
 ├── slack/           # Slack 모듈 (SRP 분리)
-│   ├── actions/     # 인터랙티브 액션 핸들러 (8개)
+│   ├── actions/     # 인터랙티브 액션 핸들러
 │   ├── pipeline/    # 스트림 처리 파이프라인
-│   ├── commands/    # 슬래시 명령어 핸들러 (16개)
+│   ├── commands/    # 명령어 핸들러
 │   ├── directives/  # 채널/세션 링크 디렉티브
-│   └── formatters/  # 출력 포맷터
+│   ├── formatters/  # 출력 포맷터
+│   └── z/           # /z 명령어 surface + naked whitelist
+├── agent-runtime/   # Claude Agent SDK 실행 런타임
+├── auth/            # CCT lease + query env 주입
 ├── conversation/    # 대화 기록 및 리플레이
 ├── model-commands/  # 모델 커맨드 카탈로그 & 검증
 ├── mcp/             # MCP 서버 관리
 ├── github/          # GitHub App 인증 + Git 자격증명
 ├── permission/      # Slack 권한 프롬프트
-├── prompt/          # 시스템 프롬프트 + 워크플로우 (9개)
-├── persona/         # 봇 페르소나 (12개)
-└── local/           # Claude Code SDK 로컬 플러그인
+├── plugin/          # 플러그인 시스템 (마켓플레이스, 캐시)
+├── prompt/          # 시스템 프롬프트 + workflows/ (디스패치 워크플로우)
+├── persona/         # 봇 페르소나
+├── sandbox/         # 실행 샌드박스 게이트
+├── metrics/         # 토큰/비용 텔레메트리
+├── notification-channels/  # Slack·DM·Telegram·Webhook 출력 라우팅
+└── local/           # Claude Code SDK 로컬 플러그인 (skills/, agents/, hooks/)
+
+packages/            # 워크스페이스 패키지
+├── mcp-servers/     # 내장 MCP 서버 (agent, cron, llm, model-command, permission, ...)
+├── common/ · slack/ · process-shared/ · test-utils/
+
+somalib/             # soma 계열 공유 라이브러리 (model-commands, permission, cron)
+services/a2t/        # 음성→텍스트 Python worker
+infra/               # docker / slack manifest / claude 설정
 ```
+
+전체 컴포넌트 와이어링은 `docs/misc/reference/architecture.md`가 SSOT.
 
 ## Design Decisions
 
@@ -105,7 +125,24 @@ gh workflow run deploy --ref main -f confirm=deploy
   ```
 - **Permission MCP Server**: `mcp-config-builder.ts`에서 `__filename` 기반 동적 확장자 사용 (.ts dev / .js prod). 하드코딩 금지.
 
+## Command Surface
 
-whitelist 외 네이키드 텍스트는 채팅 / 워크플로우 디스패치로 처리.
+- 명령어 체계는 4개 prefix family: `/z <topic>` (영속) · `%<sub>` (세션 전용) · `$<skill>` (강제 스킬 발동) · naked whitelist. 상세는 `README.md`의 Commands 섹션과 `src/slack/z/whitelist.ts`.
+- whitelist 외 네이키드 텍스트는 채팅 / 워크플로우 디스패치로 처리.
+- **Migration (#506)**: whitelist 외의 legacy 네이키드 형태(`persona linus`, `model sonnet`, `show_prompt` 등)는 deprecated. 첫 사용 시 tombstone hint, 이후 drop. `SOMA_ENABLE_LEGACY_SLASH=true` 환경변수로 rollback 가능.
 
-**Migration (#506)**: whitelist 외의 legacy 네이키드 형태(`persona linus`, `model sonnet`, `show_prompt` 등)는 deprecated. 첫 사용 시 tombstone hint, 이후 drop. `SOMA_ENABLE_LEGACY_SLASH=true` 환경변수로 rollback 가능.
+## Documentation Sync (Required)
+
+**작업은 코드 + 테스트 + 문서가 모두 맞아야 완료다.** 코드만 바꾸고 끝내지 않는다.
+
+모든 작업(기능 추가, 버그 수정, 리팩토링, 구조 변경)을 마무리할 때, 커밋/PR 전에 반드시:
+
+1. `.claude/skills/update-docs/SKILL.md` 스킬을 따라 문서 drift를 점검한다.
+2. 변경이 아래 표면에 영향을 주면 **같은 PR에서** 함께 업데이트한다:
+   - `README.md` / `README.ko.md` — 기능, 명령어, 아키텍처, 프로젝트 구조, 설정 방법이 바뀌었을 때. 두 파일은 항상 같이 움직인다.
+   - `CLAUDE.md` / `AGENTS.md` — agent 행동 규칙, 모듈 구조, gotcha가 바뀌었을 때.
+   - `docs/README.md` — docs 디렉토리 구조나 라우팅이 바뀌었을 때.
+   - `docs/misc/reference/architecture.md` — 컴포넌트 와이어링이 바뀌었을 때.
+3. 문서에 영향이 없으면 PR 본문에 "docs: no impact"를 한 줄로 명시한다 — 점검을 건너뛴 것과 점검 후 영향 없음은 다르다.
+
+문서 라우팅 규칙은 `docs/README.md`와 `rules/pattern.doc.md`를 따른다. 하드코딩된 숫자 카운트(핸들러 N개 등)는 문서에 넣지 않는다.

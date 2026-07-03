@@ -150,6 +150,8 @@ export interface ActionHandlerDelegates {
   zSettingsHandler: { register(app: App): void };
   zTopicRegistry: ZTopicRegistryLike;
   registerCctActions(app: App): void;
+  /** Auth card actions (#llmux runtime switch). Optional for older delegate providers. */
+  registerAuthActions?(app: App): void;
 }
 
 export interface ActionHandlersProviders {
@@ -494,6 +496,7 @@ export class ActionHandlers {
 
     this.delegates.zSettingsHandler.register(app);
     this.delegates.registerCctActions(app);
+    this.delegates.registerAuthActions?.(app);
   }
 
   async handleDashboardChoiceAnswer(
