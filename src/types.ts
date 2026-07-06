@@ -612,6 +612,17 @@ export interface ConversationSession {
   // %, then nulls it (one-shot). Honest user-facing recovery for the case
   // where `onCompactBoundary` doesn't supply `post_tokens`.
   compactCompletionMessageTs?: string | null;
+  // Prompt-too-long emergency compact fallback. When a non-1M model cannot fit
+  // the next prompt before normal threshold compaction fires, the error path
+  // temporarily switches `model` to a 1M compact model, retries with `/compact`,
+  // then restores the original model after the compact boundary.
+  fallbackCompactOriginalModel?: string | null;
+  fallbackCompactActive?: boolean;
+  // User message that triggered the prompt-too-long fallback. Re-dispatched
+  // after the fallback `/compact` finishes, mirroring the normal auto-compact
+  // pending-user path.
+  fallbackCompactPendingUserText?: string | null;
+  fallbackCompactPendingEventContext?: { channel: string; threadTs: string; user: string; ts: string } | null;
   // User message text captured when auto-compact intercepts the turn; re-dispatched after PostCompact.
   pendingUserText?: string | null;
   // Slack event context captured alongside `pendingUserText` for synthetic re-dispatch via event-router.

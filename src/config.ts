@@ -134,6 +134,13 @@ export const config = {
   claude: {
     useBedrock: process.env.CLAUDE_CODE_USE_BEDROCK === '1',
     useVertex: process.env.CLAUDE_CODE_USE_VERTEX === '1',
+    /**
+     * Emergency compaction model. When a non-1M model hard-fails with
+     * "Prompt is too long" before the normal threshold checker can schedule
+     * `/compact`, the session temporarily switches to this 1M-capable model,
+     * runs `/compact`, then restores the original model.
+     */
+    autoFallbackCompactModel: process.env.AUTO_FALLBACK_COMPACT_MODEL || 'opus[1m]',
   },
   /**
    * Backend auth mode (#llmux). Selects how every Claude Agent SDK

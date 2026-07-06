@@ -157,6 +157,13 @@ export interface StreamExecutorProviders {
   parseCooldownTime?: (text: string) => Date | null;
   coerceToAvailableModel?: (model: string) => string;
   userSettingsStore?: any;
+  /**
+   * Model used only for emergency compact recovery when the active model cannot
+   * fit the current prompt. The session switches to this 1M-capable model for
+   * the `/compact` retry, then restores the original model after the compact
+   * boundary fires.
+   */
+  getAutoFallbackCompactModel?: () => string;
   postCompactCompleteIfNeeded?: (...args: any[]) => Promise<unknown>;
   postCompactStartingIfNeeded?: (...args: any[]) => Promise<unknown>;
 }
@@ -208,6 +215,7 @@ let streamExecutorProviders: Required<StreamExecutorProviders> = {
   parseCooldownTime: () => null,
   coerceToAvailableModel: (model) => model,
   userSettingsStore: defaultUserSettingsStore,
+  getAutoFallbackCompactModel: () => process.env.AUTO_FALLBACK_COMPACT_MODEL || 'opus[1m]',
   postCompactCompleteIfNeeded: async () => undefined,
   postCompactStartingIfNeeded: async () => undefined,
 };
@@ -259,6 +267,7 @@ const snapshotFromSession = (session: ConversationSession) => streamExecutorProv
 const getTokenManager = () => streamExecutorProviders.getTokenManager();
 const parseCooldownTime = (text: string) => streamExecutorProviders.parseCooldownTime(text);
 const coerceToAvailableModel = (model: string) => streamExecutorProviders.coerceToAvailableModel(model);
+const getAutoFallbackCompactModel = () => streamExecutorProviders.getAutoFallbackCompactModel();
 const postCompactCompleteIfNeeded = (...args: any[]) => streamExecutorProviders.postCompactCompleteIfNeeded(...args);
 const postCompactStartingIfNeeded = (...args: any[]) => streamExecutorProviders.postCompactStartingIfNeeded(...args);
 
@@ -273,6 +282,12 @@ export interface ExecuteResult {
   turnCollector?: TurnResultCollectorLike;
   /** If set, caller should auto-retry after this many ms (recoverable error). */
   retryAfterMs?: number;
+  /**
+   * Auto fallback compact (prompt-too-long emergency recovery): `true` when
+   * handleError switched the session to the 1M compact model and expects the
+   * caller (V1QueryAdapter) to re-enter immediately with `/compact`.
+   */
+  fallbackCompact?: boolean;
   /**
    * `true` when the catch branch already surfaced the failure to the user
    * (Exception card via `turnNotifier`, status reset, thread-panel close).
@@ -983,6 +998,25 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // would break SDK recognition of the leading `/cmd`. The session flag is
       // still cleared so we don't inject stale context into the next real turn.
       if (session.compactionOccurred) {
+        // Auto fallback compact safety net: normally `onCompactBoundary`
+        // restores the original model at the boundary. If compaction sealed
+        // via a path that skipped the boundary callback (e.g. the AC4
+        // `status==='compacting'` fallback), restore here on the next turn so
+        // the session can never be left stranded on the 1M compact model.
+        if (session.fallbackCompactActive && session.fallbackCompactOriginalModel) {
+          const compactModel = session.model;
+          session.model = session.fallbackCompactOriginalModel;
+          session.fallbackCompactOriginalModel = null;
+          session.fallbackCompactActive = false;
+          session.fallbackCompactPendingUserText = null;
+          session.fallbackCompactPendingEventContext = null;
+          this.logger.info('Auto fallback compact: restored original model on next turn (safety net)', {
+            sessionKey,
+            compactModel,
+            restoredModel: session.model,
+          });
+        }
+
         if (!isSlashCommand) {
           const compactionCtx = buildCompactionContext(snapshotFromSession(session));
           if (compactionCtx) {
@@ -1466,6 +1500,39 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         // at turn-end and is stale between PreCompact and PostCompact).
         onCompactBoundary: (metadata) => {
           session.compactionOccurred = true;
+
+          // Auto fallback compact (prompt-too-long emergency path): the
+          // compaction that just sealed ran on the temporary 1M compact model.
+          // Restore the original session model NOW (at the boundary), not on
+          // the next turn — if the user goes idle there may be no next turn
+          // and the session would silently stay on the fallback model. The
+          // stashed user text that triggered the overflow is re-dispatched so
+          // the interrupted turn resumes on the restored model.
+          if (session.fallbackCompactActive && session.fallbackCompactOriginalModel) {
+            const compactModel = session.model;
+            const restoredModel = session.fallbackCompactOriginalModel;
+            const pendingText = session.fallbackCompactPendingUserText;
+            const pendingCtx = session.fallbackCompactPendingEventContext;
+            session.model = restoredModel;
+            session.fallbackCompactOriginalModel = null;
+            session.fallbackCompactActive = false;
+            session.fallbackCompactPendingUserText = null;
+            session.fallbackCompactPendingEventContext = null;
+            this.logger.info('Auto fallback compact: restored original model at compact boundary', {
+              sessionKey,
+              compactModel,
+              restoredModel,
+              hasPendingText: Boolean(pendingText),
+            });
+            if (pendingText && pendingCtx && this.deps.dispatchPendingUserMessage) {
+              void this.deps.dispatchPendingUserMessage(pendingCtx, pendingText).catch((err: unknown) => {
+                this.logger.warn('Auto fallback compact: pending user re-dispatch failed', {
+                  sessionKey,
+                  error: (err as Error)?.message ?? String(err),
+                });
+              });
+            }
+          }
           // Dashboard v2.1 — bump compaction counter. Guarded so any failure
           // in the dashboard/broadcast path cannot interrupt compaction.
           try {
@@ -2108,6 +2175,19 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       return { success: true, messageCount: streamResult.messageCount, turnCollector };
     } catch (error: any) {
       const requestAborted = abortController.signal.aborted;
+      // Auto fallback compact: preserve the real-user text whose turn just
+      // failed so the prompt-too-long branch in handleError can stash it and
+      // re-dispatch after the emergency `/compact`. Synthetic/continuation
+      // turns are excluded — replaying those after compaction is meaningless.
+      if (
+        error &&
+        typeof error === 'object' &&
+        params.isUserInput === true &&
+        typeof text === 'string' &&
+        text.trim()
+      ) {
+        (error as any).failedTurnText = text;
+      }
       // The reason was set by `RequestCoordinator.abortSession(reason)` —
       // `controller.abort(reason)` surfaces it on `signal.reason`. Used by
       // `handleError` to decide whether to post a "🔴 오류 발생" card for
@@ -2176,6 +2256,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         success: false,
         messageCount: 0,
         retryAfterMs,
+        fallbackCompact: Boolean(
+          session.fallbackCompactActive && retryAfterMs === StreamExecutor.ONE_M_FALLBACK_RETRY_DELAY_MS,
+        ),
         handled: retryAfterMs === undefined,
       };
     } finally {
@@ -2306,8 +2389,18 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
   ): Promise<number | undefined> {
     this.deps.claudeHandler.setActivityState(channel, threadTs, 'idle');
 
-    // Check for context overflow error
+    let retryAfterMs: number | undefined;
+    let fallbackCompactApplied = false;
+
+    // Check for context overflow error. If a non-1M model hit the SDK hard
+    // prompt limit before the normal threshold checker could schedule compact,
+    // temporarily retry on a configurable 1M compact model with `/compact`.
+    // The original user text is stashed and re-dispatched after compact completes.
     if (this.isContextOverflowError(error)) {
+      fallbackCompactApplied = this.applyAutoFallbackCompact(session, channel, threadTs, error);
+      if (fallbackCompactApplied) {
+        retryAfterMs = StreamExecutor.ONE_M_FALLBACK_RETRY_DELAY_MS;
+      }
       await this.deps.contextWindowManager.handlePromptTooLong(sessionKey);
     }
 
@@ -2387,8 +2480,6 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       }
     }
 
-    let retryAfterMs: number | undefined;
-
     if (!isAbort) {
       this.logger.error('Error handling message', error);
 
@@ -2403,10 +2494,21 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       });
 
       // Clear session only when current conversation context is no longer reusable.
-      // Transient errors (Slack API, rate-limit, process exit) should preserve session.
-      const sessionCleared = this.shouldClearSessionOnError(error);
+      // Prompt-too-long is recoverable when the emergency fallback-compact path
+      // switched to a 1M model and scheduled a `/compact` retry.
+      const sessionCleared = fallbackCompactApplied ? false : this.shouldClearSessionOnError(error);
 
-      if (sessionCleared) {
+      if (fallbackCompactApplied) {
+        (error as any).fallbackCompactInfo = {
+          compactModel: session.model,
+          originalModel: session.fallbackCompactOriginalModel,
+        };
+        this.logger.info('Prompt-too-long recovered via fallback compact retry', {
+          sessionKey,
+          compactModel: session.model,
+          originalModel: session.fallbackCompactOriginalModel,
+        });
+      } else if (sessionCleared) {
         this.deps.claudeHandler.clearSessionId(channel, threadTs);
 
         if (this.isImageProcessingError(error)) {
@@ -2711,6 +2813,74 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       message.includes('context length exceeded') ||
       message.includes('maximum context length')
     );
+  }
+
+  /**
+   * Prompt-too-long emergency recovery ("auto fallback compact").
+   *
+   * The turn-end threshold checker (#617) usually schedules `/compact` before
+   * the window fills, but it estimates from the PREVIOUS turn's usage — a
+   * single huge turn on a 200k/275k model can hard-fail with "Prompt is too
+   * long" before any threshold fires. In that case:
+   *   1. Stash the current model + the user text that triggered the overflow.
+   *   2. Switch `session.model` to a configurable 1M-capable compact model
+   *      (default `opus[1m]`, env `AUTO_FALLBACK_COMPACT_MODEL`).
+   *   3. The caller (V1QueryAdapter) immediately re-enters with `/compact`,
+   *      which now fits inside the 1M window.
+   *   4. `onCompactBoundary` restores the original model and re-dispatches
+   *      the stashed user text.
+   *
+   * Returns `true` when the fallback was armed (session mutated, retry
+   * expected); `false` when not applicable (already on a 1M-window model,
+   * fallback already active, or the configured model is unusable).
+   */
+  private applyAutoFallbackCompact(
+    session: ConversationSession,
+    channel: string,
+    threadTs: string,
+    error: any,
+  ): boolean {
+    if (session.fallbackCompactActive) return false;
+
+    const currentModel = String(session.model ?? userSettingsStore.getUserDefaultModel(session.ownerId || '') ?? '');
+    if (!currentModel) return false;
+    // Models that already serve a 1M window (either via the `[1m]` suffix or
+    // natively, e.g. fable-5) gain nothing from this fallback — overflowing
+    // 1M means genuinely too much context, not a window mismatch.
+    if (hasOneMSuffix(currentModel) || resolveContextWindow(currentModel) >= 1_000_000) return false;
+
+    const fallbackModel = coerceToAvailableModel(getAutoFallbackCompactModel());
+    if (!fallbackModel || fallbackModel === currentModel || resolveContextWindow(fallbackModel) < 1_000_000) {
+      this.logger.warn('Auto fallback compact: configured compact model unusable — skipping', {
+        configured: getAutoFallbackCompactModel(),
+        resolved: fallbackModel,
+      });
+      return false;
+    }
+
+    // The user text whose turn overflowed — attached by execute()'s catch so
+    // the boundary handler can re-dispatch it after compaction completes.
+    const failedTurnText = typeof (error as any)?.failedTurnText === 'string' ? (error as any).failedTurnText : null;
+
+    session.fallbackCompactOriginalModel = currentModel;
+    session.fallbackCompactActive = true;
+    session.fallbackCompactPendingUserText = failedTurnText;
+    session.fallbackCompactPendingEventContext = failedTurnText
+      ? { channel, threadTs, user: session.ownerId || '', ts: `${Date.now() / 1000}` }
+      : null;
+    session.model = fallbackModel;
+    session.lastErrorContext = undefined;
+    session.errorRetryCount = 0;
+    session.fileAccessRetryCount = 0;
+
+    this.logger.info('Auto fallback compact triggered', {
+      channel,
+      threadTs,
+      from: currentModel,
+      compactModel: fallbackModel,
+      hasPendingUserText: Boolean(failedTurnText),
+    });
+    return true;
   }
 
   /**
@@ -3165,6 +3335,22 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
    * Distinguishes between bot system errors and model errors
    */
   private formatErrorForUser(error: any, sessionCleared: boolean, statusInfo?: any, retryAttempt?: number): string {
+    if ((error as any).fallbackCompactInfo) {
+      const info = (error as any).fallbackCompactInfo as { compactModel?: string; originalModel?: string };
+      const lines: string[] = [`ℹ️ *[Prompt too long]* 1M 모델로 자동 컴팩트를 수행합니다.`, ''];
+      lines.push(`> *Type:* Claude SDK (PromptTooLong)`);
+      lines.push(`> *Session:* ✅ 유지됨 - \`/compact\`를 1M 모델로 자동 재시도합니다.`);
+      lines.push(
+        `> *조치:* 이번 컴팩트에만 \`${info.compactModel ?? '1M model'}\`를 사용하고, 완료 후 \`${info.originalModel ?? 'original model'}\`로 복귀합니다.`,
+      );
+      this.appendSdkDetails(lines, error);
+      if (shouldShowStatusBlock(statusInfo ?? null)) {
+        lines.push('');
+        lines.push(formatStatusForSlack(statusInfo ?? null));
+      }
+      return lines.join('\n');
+    }
+
     // Issue #661 — top-priority branch for 1M-context auto-fallback.
     // Reads `oneMFallbackInfo` (set by the handleError 1M branch) so the
     // wording matches what actually happened on this turn:

@@ -107,7 +107,7 @@ Used in:
 - `pr-fix-and-update` -> `pr-review` (re-review after fix)
 - `pr-review` -> `pr-review` (when rerun_review is selected)
 
-### UIAskUserQuestion (User Choice-Based Transition)
+### local:UIAskUserQuestion (User Choice-Based Transition)
 
 Transitions by letting the user select the next step. Uses the `local:UIAskUserQuestion` skill.
 
@@ -130,7 +130,7 @@ Foundation shared by all workflows via `{{include:./common.prompt}}`:
 
 - **Working folder rules**: Unique folder creation + git clone
 - **Disk space check**: fast_fail if under 512MB
-- **Model-command-tool priority**: UIAskUserQuestion, session links, etc. prioritize MCP
+- **Model-command-tool priority**: `local:UIAskUserQuestion`, session links, etc. prioritize MCP
 - **Sub-models (MCP)**: codex (highest performance). Fallback / tiebreaker: `subagent (opus)` (gemini is not used in workflows)
 - **Auto session title update**: On issue link, on PR merge
 
@@ -154,7 +154,7 @@ pr-review:
 pr-fix-and-update:
   - local:github-pr (PR data collection)
   - local:oracle-reviewer + subagent (opus) (fix direction vote)
-  - code-simplifier (code cleanup)
+  - local:simplify (over-engineering review + fix skill, adapted from ponytail)
 
 jira-*:
   - mcp__jira__* (Jira API)
