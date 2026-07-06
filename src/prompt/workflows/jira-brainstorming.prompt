@@ -43,6 +43,7 @@ This session is dedicated to **Jira issue analysis and brainstorming**. Actual i
 - **Acceptance Criteria**: ...
 
 ### 🔍 Related Code Analysis
+Compact bullet list (or a single small table ≤6 columns, per common.prompt Slack formatting rules):
 | File | Role |
 |------|------|
 | `path/to/file.ts` | Main logic currently handling XXX |

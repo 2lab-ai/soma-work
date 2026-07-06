@@ -23,6 +23,7 @@ Consider the big picture in order of priority and advise on what to tackle first
 ## Output Format
 
 ### 📊 Sprint Status
+Compact bullet list (or a single small table ≤6 columns, per common.prompt Slack formatting rules):
 | Status | Count |
 |--------|-------|
 | 🔄 In Progress | N |
