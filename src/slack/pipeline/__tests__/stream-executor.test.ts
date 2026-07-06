@@ -40,6 +40,10 @@ vi.mock('../../../user-settings-store', () => ({
   // `coerceToAvailableModel` is a pure function — pass-through is sufficient
   // for tests that never exercise the AVAILABLE_MODELS allowlist guard.
   coerceToAvailableModel: (raw: string) => raw,
+  // Auto fallback compact (prompt-too-long): the wrapper resolves the
+  // configured alias (default `opus[1m]`) through MODEL_ALIASES before
+  // handing it to packages/slack. Only the alias the default uses is needed.
+  MODEL_ALIASES: { 'opus[1m]': 'claude-opus-4-8[1m]' },
 }));
 
 vi.mock('../../../channel-description-cache', () => ({
@@ -807,15 +811,62 @@ describe('Abort handling', () => {
     expect(payload.text).toContain('Session:* ✅ 유지됨');
   });
 
-  it('clears session for context-overflow errors', async () => {
+  it('context-overflow on a non-1M model arms the auto fallback compact (session preserved)', async () => {
+    // Behavior change (auto-fallback-compact): prompt-too-long used to clear
+    // the session. Now, when the session sits on a non-1M model, the session
+    // is preserved, temporarily switched to the 1M compact model, and a
+    // `/compact` retry is scheduled instead.
     const deps = createExecutorDeps();
     const executor = new StreamExecutor(deps);
     const say = vi.fn().mockResolvedValue(undefined);
     const error = new Error('Prompt is too long: maximum context length exceeded');
+    const session = { model: 'gpt-5.5', ownerId: 'U1' } as any;
 
-    await (executor as any).handleError(error, {} as any, 'C123:thread123', 'C123', 'thread123', [], say);
+    const retryAfterMs = await (executor as any).handleError(
+      error,
+      session,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say,
+    );
 
+    expect(retryAfterMs).toBe(500);
+    expect(deps.claudeHandler.clearSessionId).not.toHaveBeenCalled();
+    expect(session.model).toBe('claude-opus-4-8[1m]');
+    expect(session.fallbackCompactActive).toBe(true);
+    expect(session.fallbackCompactOriginalModel).toBe('gpt-5.5');
+    expect(deps.contextWindowManager.handlePromptTooLong).toHaveBeenCalledWith('C123:thread123');
+    expect(say).toHaveBeenCalledTimes(1);
+    const payload = say.mock.calls[0][0];
+    expect(payload.text).toContain('1M 모델로 자동 컴팩트');
+    expect(payload.text).toContain('Session:* ✅ 유지됨');
+  });
+
+  it('context-overflow on a 1M-window model still clears the session (no fallback possible)', async () => {
+    // Overflowing an actual 1M window means the context is genuinely too
+    // large — switching models cannot help, so the legacy clear-session
+    // behavior is preserved.
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = new Error('Prompt is too long: maximum context length exceeded');
+    const session = { model: 'claude-opus-4-8[1m]', ownerId: 'U1' } as any;
+
+    const retryAfterMs = await (executor as any).handleError(
+      error,
+      session,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say,
+    );
+
+    expect(retryAfterMs).toBeUndefined();
     expect(deps.claudeHandler.clearSessionId).toHaveBeenCalledWith('C123', 'thread123');
+    expect(session.fallbackCompactActive).toBeUndefined();
     expect(say).toHaveBeenCalledTimes(1);
     const payload = say.mock.calls[0][0];
     expect(payload.text).toContain('Session:* 🔄 초기화됨');
@@ -2741,6 +2792,134 @@ describe('File access blocked error recovery', () => {
     // Session still got pinned → retry still scheduled. Auth-kind only
     // changes the remediation copy, not the fallback mechanics.
     expect(session.model).toBe('claude-opus-4-7');
+  });
+});
+
+// ── Auto fallback compact (prompt-too-long emergency recovery) ──
+//
+// When a non-1M model hard-fails with "Prompt is too long" (the turn-end
+// threshold checker could not fire in time), handleError:
+//   1. stashes the current model + failed user text on the session,
+//   2. switches session.model to the configured 1M compact model
+//      (default alias `opus[1m]` → `claude-opus-4-8[1m]`),
+//   3. returns retryAfterMs + fallbackCompact so V1QueryAdapter immediately
+//      re-enters with `/compact`.
+// After the compact boundary, the original model is restored and the stashed
+// user text re-dispatched (see onCompactBoundary in stream-executor).
+describe('Auto fallback compact — handleError arming', () => {
+  function createExecutorDeps() {
+    return {
+      claudeHandler: {
+        setActivityState: vi.fn(),
+        clearSessionId: vi.fn(),
+      },
+      fileHandler: { cleanupTempFiles: vi.fn().mockResolvedValue(undefined) },
+      toolEventProcessor: { cleanup: vi.fn() },
+      statusReporter: {
+        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
+        getStatusEmoji: vi.fn().mockReturnValue('x'),
+        cleanup: vi.fn(),
+      },
+      reactionManager: { updateReaction: vi.fn().mockResolvedValue(undefined), cleanup: vi.fn() },
+      contextWindowManager: { handlePromptTooLong: vi.fn().mockResolvedValue(undefined), cleanup: vi.fn() },
+      toolTracker: { scheduleCleanup: vi.fn() },
+      todoDisplayManager: { cleanupSession: vi.fn(), cleanup: vi.fn() },
+      actionHandlers: {},
+      requestCoordinator: { removeController: vi.fn() },
+      slackApi: {},
+      assistantStatusManager: {
+        clearStatus: vi.fn().mockResolvedValue(undefined),
+        setStatus: vi.fn().mockResolvedValue(undefined),
+        bumpEpoch: vi.fn().mockReturnValue(1),
+        getToolStatusText: vi.fn().mockReturnValue('running...'),
+        buildBashStatus: vi.fn().mockReturnValue('is running commands...'),
+        registerBackgroundBashActive: vi.fn().mockReturnValue(() => {}),
+      },
+      threadPanel: undefined,
+    } as any;
+  }
+
+  const overflowError = () => new Error('Prompt is too long');
+
+  it('arms fallback: stashes original model, switches to opus[1m] target, schedules retry', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const session = { model: 'gpt-5.5', ownerId: 'U1' } as any;
+
+    const retryAfterMs = await (executor as any).handleError(overflowError(), session, 'C1:t1', 'C1', 't1', [], say);
+
+    expect(retryAfterMs).toBe(500);
+    expect(session.model).toBe('claude-opus-4-8[1m]'); // default opus[1m] alias target
+    expect(session.fallbackCompactOriginalModel).toBe('gpt-5.5');
+    expect(session.fallbackCompactActive).toBe(true);
+    expect(deps.claudeHandler.clearSessionId).not.toHaveBeenCalled();
+  });
+
+  it('stashes the failed user text (attached by execute catch) for post-compact re-dispatch', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const session = { model: 'gpt-5.5', ownerId: 'U1' } as any;
+    const error = overflowError();
+    (error as any).failedTurnText = '이 메시지가 오버플로우를 일으켰다';
+
+    await (executor as any).handleError(error, session, 'C1:t1', 'C1', 't1', [], say);
+
+    expect(session.fallbackCompactPendingUserText).toBe('이 메시지가 오버플로우를 일으켰다');
+    expect(session.fallbackCompactPendingEventContext).toMatchObject({
+      channel: 'C1',
+      threadTs: 't1',
+      user: 'U1',
+    });
+  });
+
+  it('does NOT arm for native-1M models (fable-5) — genuine 1M overflow clears session', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const session = { model: 'claude-fable-5', ownerId: 'U1' } as any;
+
+    const retryAfterMs = await (executor as any).handleError(overflowError(), session, 'C1:t1', 'C1', 't1', [], say);
+
+    expect(retryAfterMs).toBeUndefined();
+    expect(session.model).toBe('claude-fable-5'); // untouched
+    expect(session.fallbackCompactActive).toBeUndefined();
+    expect(deps.claudeHandler.clearSessionId).toHaveBeenCalledWith('C1', 't1');
+  });
+
+  it('does NOT re-arm while a fallback is already active (second overflow → legacy clear)', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    // Simulates: the /compact retry itself overflowed. Escape hatch = the
+    // legacy clear-session path, never an infinite fallback loop.
+    const session = {
+      model: 'claude-opus-4-8[1m]',
+      ownerId: 'U1',
+      fallbackCompactActive: true,
+      fallbackCompactOriginalModel: 'gpt-5.5',
+    } as any;
+
+    const retryAfterMs = await (executor as any).handleError(overflowError(), session, 'C1:t1', 'C1', 't1', [], say);
+
+    expect(retryAfterMs).toBeUndefined();
+    expect(deps.claudeHandler.clearSessionId).toHaveBeenCalledWith('C1', 't1');
+  });
+
+  it('user-facing message explains the compact-model swap and the return to the original model', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const session = { model: 'gpt-5.5', ownerId: 'U1' } as any;
+
+    await (executor as any).handleError(overflowError(), session, 'C1:t1', 'C1', 't1', [], say);
+
+    expect(say).toHaveBeenCalledTimes(1);
+    const text = say.mock.calls[0][0].text as string;
+    expect(text).toContain('1M 모델로 자동 컴팩트');
+    expect(text).toContain('claude-opus-4-8[1m]');
+    expect(text).toContain('gpt-5.5'); // 복귀 대상 원래 모델 명시
   });
 });
 
