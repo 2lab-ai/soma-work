@@ -45,11 +45,10 @@ Invoke `local:zreflect`
 2. Invoke `stv:new-task` and update the todo list with TodoWrite.
 3. Always ask the user about any unclear points and get confirmation.
 4. Get the plan reviewed by `llm_chat codex`. If the score is below 95, use the feedback to update the plan and go back to step 1 to update it again.
-5. Output the full plan and get confirmation from the user via `local:UIAskUserQuestion`. 
 5. Output the full plan and get confirmation from the user via `local:UIAskUserQuestion`. Use the `../UIAskUserQuestion/templates/z-phase1-plan-approval.json`.
 6. Update Tasks with TodoWrite with the confirmed plan.
 7. **Handoff to phase2 via new session** (contract: `local:using-z` §Session Handoff Protocol → Handoff #1):
-   - Verify Issue URL from `using-epic-tasks` Case A/B output. Use a Case A escape marker only when **all three** conditions hold: (a) `using-epic-tasks` classified this as tier=`tiny`|`small`, (b) the original user request contained no explicit or implicit "issue first" demand, **and** (c) the repository policy (CONTRIBUTING, team rules, branch protection, PR template) does not require a linked issue for any PR at this tier. If any condition fails, the Issue URL path is mandatory.
+   - Verify Issue URL from `using-epic-tasks` Case A/B output. Case A escape 조건: `local:using-z` §Case A escape (3 conditions)를 단일 진실원으로 따른다 — 여기서 재정의하지 않는다 (tier / user demand / repo policy 조합을 결정하는 게이트). 조건 미충족 시 Issue URL 경로가 필수.
    - If neither Issue URL nor a validly qualified escape marker is available, **do not call CONTINUE_SESSION** — return to step 2 and fix the plan. This is the structural gate preventing issue-less PRs.
    - Call `mcp__model-command__run` with `CONTINUE_SESSION` per the Handoff #1 payload spec: carries Issue URL (or escape marker), Parent Epic (or `none`), Confirmed Plan, Task List, Codex Review score.
    - `resetSession: true`. The current session ends — phase2 runs in the **new session** (which enters via phase0 step 0.5).

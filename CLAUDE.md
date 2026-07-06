@@ -127,7 +127,7 @@ gh workflow run deploy --ref main -f confirm=deploy
 
 ## Command Surface
 
-- 명령어 체계는 4개 prefix family: `/z <topic>` (영속) · `%<sub>` (세션 전용) · `$<skill>` (강제 스킬 발동) · naked whitelist. 상세는 `README.md`의 Commands 섹션과 `src/slack/z/whitelist.ts`.
+- 명령어 체계는 4개 prefix family: `/z <topic>` (영속) · `%<sub>` (세션 전용) · `$<skill>` (강제 스킬 발동) · naked whitelist. 상세는 `README.md`의 Commands 섹션. naked form의 source of truth는 두 층: `src/slack/z/whitelist.ts` + `CommandRouter`의 `CommandParser.is*Command` 매처(`auth`, `cct` 등 운영 카드).
 - whitelist 외 네이키드 텍스트는 채팅 / 워크플로우 디스패치로 처리.
 - **Migration (#506)**: whitelist 외의 legacy 네이키드 형태(`persona linus`, `model sonnet`, `show_prompt` 등)는 deprecated. 첫 사용 시 tombstone hint, 이후 drop. `SOMA_ENABLE_LEGACY_SLASH=true` 환경변수로 rollback 가능.
 
