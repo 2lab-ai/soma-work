@@ -9,6 +9,7 @@ import {
   isApiLikeError as rootIsApiLikeError,
   shouldShowStatusBlock,
 } from '../../claude-status-fetcher';
+import { config } from '../../config';
 import { createConversation, recordAssistantTurn, recordUserTurn } from '../../conversation';
 import { scheduleLinkDerivedTitleRefresh } from '../../conversation/link-derived-title';
 import { isMidThreadMention } from '../../mcp-config-builder';
@@ -25,7 +26,7 @@ import { interceptToolResults } from '../../metrics/tool-result-interceptor';
 import { checkAndSchedulePendingCompact } from '../../session/compact-threshold-checker';
 import { buildCompactionContext, snapshotFromSession } from '../../session/compaction-context-builder';
 import { getTokenManager, parseCooldownTime } from '../../token-manager';
-import { coerceToAvailableModel, userSettingsStore } from '../../user-settings-store';
+import { coerceToAvailableModel, MODEL_ALIASES, userSettingsStore } from '../../user-settings-store';
 import { postCompactCompleteIfNeeded, postCompactStartingIfNeeded } from '../hooks/compact-hooks';
 
 setStreamExecutorProviders({
@@ -57,6 +58,13 @@ setStreamExecutorProviders({
   parseCooldownTime,
   coerceToAvailableModel,
   userSettingsStore,
+  // Auto fallback compact model (default `opus[1m]`). Aliases are resolved
+  // here so the packages/slack layer receives a canonical model id; unknown
+  // values pass through and are coerced (→ DEFAULT_MODEL) at the use site.
+  getAutoFallbackCompactModel: () => {
+    const raw = config.claude.autoFallbackCompactModel;
+    return MODEL_ALIASES[raw.trim().toLowerCase()] ?? raw;
+  },
   postCompactCompleteIfNeeded,
   postCompactStartingIfNeeded,
 });
