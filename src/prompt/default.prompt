@@ -17,7 +17,7 @@ Even when it is not a PR review request, when looking at code:
 
 ## Based on the user's instructions, appropriately determine and invoke the following skills to resolve the task.
 
-- superpower:using-superpower
+- superpowers:using-superpowers
 - stv:new-task
 - stv:debug
 - stv:think

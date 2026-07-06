@@ -74,8 +74,8 @@ You are not a reviewer — you are a reviewer agent coordinator. Your job is to 
 
 ## Review Process
 
-### 1. Run the review-pr skill
-Run the `review-pr` skill from the working folder containing the source
+### 1. Run the local:review-pr skill
+Run the `local:review-pr` skill from the working folder containing the source
 
 Input example:
 ```json
@@ -86,8 +86,8 @@ Input example:
 }
 ```
 
-### 2. Receive review-pr results (JSON)
-Parse the `review-pr` results based on the following format:
+### 2. Receive local:review-pr results (JSON)
+Parse the `local:review-pr` results based on the following format:
 ```json
 {
   "summary": {
@@ -111,7 +111,7 @@ Parse the `review-pr` results based on the following format:
 - If priority is missing or unrecognized, default it to `P2`.
 - Findings without `file` or `line` are classified as "general findings" — include them in the PR body summary but omit line comments.
 - Deduplicate findings with identical `(file, line, title)`.
-- If parsing fails, retry `review-pr` once. If the retry also fails, preserve the raw text for manual classification.
+- If parsing fails, retry `local:review-pr` once. If the retry also fails, preserve the raw text for manual classification.
 
 ### 4. Issue Classification — Priority + Switching Cost Tier
 
@@ -145,13 +145,13 @@ If no issue is linked (user selected "None"), skip this step.
 
 ### 6. Decision Gate — Autonomous Handling vs User Question Classification
 
-Classify **all findings** from step 3 (review-pr) and step 5 (issue-based verification):
+Classify **all findings** from step 3 (local:review-pr) and step 5 (issue-based verification):
 
 ```
 for each finding:
   if switching_cost < small (~20 lines):
     → [Autonomous Decision] Determine fix approach by 3-agent majority vote
-    → Call oracle-reviewer (codex) + subagent (opus) in parallel
+    → Call local:oracle-reviewer (codex) + subagent (opus) in parallel
     → Confirm the approach agreed upon by 2/3 or more
     → Record Auto-Decision log
     → Do not ask the user
@@ -169,7 +169,7 @@ for each finding:
 ```markdown
 ### Auto-Decision: [P2] Variable name mismatch [tiny ~5 lines]
 - **Decision**: Fix immediately
-- **Vote**: Codex ✅ / oracle-reviewer ✅ / subagent (opus) ✅ (3/3)
+- **Vote**: Codex ✅ / local:oracle-reviewer ✅ / subagent (opus) ✅ (3/3)
 - **Rationale**: Simple rename, no risk
 ```
 
@@ -266,6 +266,7 @@ Important:
 ## Output Format
 
 ### Review Summary
+Compact bullet list (or a single small table ≤6 columns, per common.prompt Slack formatting rules):
 | Priority | Count | Autonomous | User Decision Required |
 |----------|-------|------------|----------------------|
 | P0 | N | X items | Y items |
@@ -275,6 +276,7 @@ Important:
 
 ### Autonomous Handling Complete (tiny/small — no user confirmation needed)
 
+Compact bullet list (or a single small table ≤6 columns, per common.prompt Slack formatting rules):
 | # | Issue | Tier | Decision | Vote |
 |---|-------|------|----------|------|
 | 1 | [P2] Variable name typo | tiny ~5 lines | Fix immediately | 3/3 |
@@ -315,7 +317,7 @@ For P1+ issues, there is no need to ask "whether to fix it or not." **It must be
 - **Scope of change**: N files, ~M lines
 - **Review Consensus (X/3)**:
   - Codex: Option A — [reason]
-  - oracle-reviewer: Option A — [reason]
+  - local:oracle-reviewer: Option A — [reason]
   - subagent (opus): Option B — [reason]
 
 → Send the above via `local:UIAskUserQuestion` (options: Option A / Option B — all options must be concrete implementation approaches for this PR. Do not include defer variants like "Split into a separate issue" as options.)
