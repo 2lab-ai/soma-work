@@ -2923,6 +2923,140 @@ describe('Auto fallback compact — handleError arming', () => {
   });
 });
 
+// ── Auto fallback compact — end-to-end restore at the compact boundary ──
+//
+// Full execute() run of the emergency `/compact` retry turn: the session is
+// mid-fallback (model already switched to the 1M compact model by
+// handleError), the SDK stream emits a `compact_boundary`, and the
+// onCompactBoundary handler must restore the original model, clear the
+// fallback markers, and re-dispatch the stashed user text.
+describe('Auto fallback compact — boundary restore (execute e2e)', () => {
+  async function* compactBoundaryStream() {
+    yield {
+      type: 'system',
+      subtype: 'compact_boundary',
+      compact_metadata: { trigger: 'manual', pre_tokens: 210_000, post_tokens: 30_000 },
+    };
+    yield { type: 'result', subtype: 'success', total_cost_usd: 0, usage: {} };
+  }
+
+  function createDeps() {
+    return {
+      claudeHandler: {
+        setActivityState: vi.fn(),
+        clearSessionId: vi.fn(),
+        streamAgentEvents: vi.fn().mockImplementation(() => toAgentEvents(compactBoundaryStream())),
+        getSessionRegistry: vi.fn().mockReturnValue({
+          beginTurn: vi.fn(),
+          endTurn: vi.fn(),
+          broadcastSessionUpdate: vi.fn(),
+          getActivityState: vi.fn().mockReturnValue('idle'),
+        }),
+      },
+      fileHandler: {
+        formatFilePrompt: vi.fn().mockResolvedValue(''),
+        cleanupTempFiles: vi.fn().mockResolvedValue(undefined),
+      },
+      toolEventProcessor: {
+        handleToolUse: vi.fn().mockResolvedValue(undefined),
+        handleToolResult: vi.fn().mockResolvedValue(undefined),
+        getLiveBackgroundWork: vi.fn().mockReturnValue({ count: 0, labels: [], signature: '' }),
+        cleanup: vi.fn(),
+      },
+      statusReporter: {
+        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
+        getStatusEmoji: vi.fn().mockReturnValue('thinking_face'),
+        cleanup: vi.fn(),
+      },
+      reactionManager: { updateReaction: vi.fn().mockResolvedValue(undefined), cleanup: vi.fn() },
+      contextWindowManager: {
+        handlePromptTooLong: vi.fn().mockResolvedValue(undefined),
+        calculateRemainingPercent: vi.fn().mockReturnValue(50),
+        updateContextEmoji: vi.fn().mockResolvedValue(undefined),
+        cleanup: vi.fn(),
+      },
+      toolTracker: { scheduleCleanup: vi.fn() },
+      todoDisplayManager: {
+        cleanupSession: vi.fn(),
+        cleanup: vi.fn(),
+        handleTodoUpdate: vi.fn().mockResolvedValue(undefined),
+      },
+      actionHandlers: {},
+      requestCoordinator: { removeController: vi.fn(), touchSession: vi.fn() },
+      slackApi: {
+        getUserProfile: vi.fn().mockResolvedValue({ email: 'user@example.com', displayName: 'User' }),
+        getClient: vi.fn().mockReturnValue({}),
+        getBotUserId: vi.fn().mockResolvedValue('U_BOT'),
+        deleteMessage: vi.fn().mockResolvedValue(undefined),
+        postSystemMessage: vi.fn().mockResolvedValue(undefined),
+      },
+      assistantStatusManager: {
+        setStatus: vi.fn().mockResolvedValue(undefined),
+        clearStatus: vi.fn().mockResolvedValue(undefined),
+        bumpEpoch: vi.fn().mockReturnValue(1),
+        getToolStatusText: vi.fn().mockReturnValue('running...'),
+        buildBashStatus: vi.fn().mockReturnValue('is running commands...'),
+        registerBackgroundBashActive: vi.fn().mockReturnValue(() => {}),
+      },
+      threadPanel: undefined,
+      dispatchPendingUserMessage: vi.fn().mockResolvedValue(undefined),
+    } as any;
+  }
+
+  it('restores the original model at the boundary and re-dispatches the stashed user text', async () => {
+    vi.mocked(userSettingsStore.getUserEmail).mockReturnValue('user@example.com');
+
+    const deps = createDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+    // Session mid-fallback: handleError already switched to the 1M compact
+    // model and stashed the original model + failed user text.
+    const session = {
+      sessionId: 'sess_fb',
+      ownerId: 'U_TEST',
+      logVerbosity: 'detail',
+      usage: {},
+      terminated: false,
+      model: 'claude-opus-4-8[1m]',
+      fallbackCompactActive: true,
+      fallbackCompactOriginalModel: 'gpt-5.5',
+      fallbackCompactPendingUserText: '오버플로우를 일으킨 원래 메시지',
+      fallbackCompactPendingEventContext: { channel: 'C9', threadTs: 't9', user: 'U_TEST', ts: '1.0' },
+    } as any;
+
+    const result = await executor.execute({
+      session,
+      sessionKey: 'C9:t9',
+      userName: 'testuser',
+      workingDirectory: '/tmp/test',
+      abortController: new AbortController(),
+      processedFiles: [],
+      text: '/compact', // the emergency retry turn injected by V1QueryAdapter
+      channel: 'C9',
+      threadTs: 't9',
+      user: 'U_TEST',
+      say,
+      isUserInput: false,
+    } as any);
+
+    expect(result.success).toBe(true);
+    // Boundary handler restored the ORIGINAL model and cleared all markers.
+    expect(session.model).toBe('gpt-5.5');
+    expect(session.fallbackCompactActive).toBe(false);
+    expect(session.fallbackCompactOriginalModel).toBeNull();
+    expect(session.fallbackCompactPendingUserText).toBeNull();
+    expect(session.fallbackCompactPendingEventContext).toBeNull();
+    // The interrupted user message resumes on the restored model.
+    expect(deps.dispatchPendingUserMessage).toHaveBeenCalledWith(
+      { channel: 'C9', threadTs: 't9', user: 'U_TEST', ts: '1.0' },
+      '오버플로우를 일으킨 원래 메시지',
+    );
+    // Compaction bookkeeping still ran (flag consumed by boundary path).
+    expect(session.compactionCount).toBe(1);
+  });
+});
+
 // ── Trace: docs/archive/features/fix-thread-header-files/trace.md ──
 // S2: Thread-awareness hint guides array mode + root file check
 describe('getThreadContextHint — array mode guidance', () => {
