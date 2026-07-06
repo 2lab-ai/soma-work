@@ -466,6 +466,25 @@ function coerceAbortReason(raw: unknown): CoercedAbortReason {
   return UNKNOWN_ABORT_REASON;
 }
 
+/**
+ * Detect a context-overflow API error that surfaced as ordinary assistant
+ * TEXT with a successful result event (observed: the whole turn content is
+ * literally "Prompt is too long"; SDK isError=false, so nothing throws).
+ *
+ * Deliberately narrow to avoid false positives on turns where the assistant
+ * legitimately *discusses* overflow errors: the text must be SHORT (an error
+ * string, not prose — real answers about this topic run far longer) AND match
+ * the same overflow signals as `isContextOverflowError`.
+ */
+function textIndicatesPromptTooLong(text: unknown): boolean {
+  if (typeof text !== 'string') return false;
+  const t = text.trim().toLowerCase();
+  if (t.length === 0 || t.length > 160) return false;
+  return (
+    t.includes('prompt is too long') || t.includes('context length exceeded') || t.includes('maximum context length')
+  );
+}
+
 /** Issue #816 — single-line preview for the MCP parse-fail Slack post. */
 function stringifyAndTruncate(value: unknown, max: number): string {
   if (value === null || value === undefined) return '(empty response)';
@@ -1732,6 +1751,32 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         );
         (capError as { usageLimitFromContent?: boolean }).usageLimitFromContent = true;
         throw capError;
+      }
+
+      // Prompt-too-long-as-content guard (auto fallback compact, field bug).
+      //
+      // Observed on dev (2026-07-06T05:42Z, oudwood-512): a 275k-window model
+      // overflow came back as an ordinary assistant text turn whose ENTIRE
+      // content was "Prompt is too long", with a SUCCESSFUL result event
+      // (stopReason=stop_sequence, isError=false, duration 6ms) — the SDK
+      // never threw. The auto-fallback-compact recovery is armed in
+      // handleError, so this shape bypassed it completely: the error text
+      // leaked as the turn's answer and the session stayed wedged (every
+      // subsequent turn overflows the same way).
+      //
+      // Same class of problem — and same cure — as the usage-limit guard
+      // above: convert the content-shaped error into a thrown error BEFORE it
+      // is recorded/posted. `isContextOverflowError` matches the message, so
+      // handleError arms the fallback (stash model → switch to the 1M compact
+      // model → `/compact` retry → restore at the boundary).
+      if (!toolContinuation && textIndicatesPromptTooLong(streamResult.collectedText)) {
+        this.logger.warn('Prompt-too-long surfaced as turn content — converting to fallback-compact path', {
+          sessionKey,
+          preview: String(streamResult.collectedText).slice(0, 120),
+        });
+        throw new Error(
+          `Prompt is too long (surfaced as turn content): ${String(streamResult.collectedText).slice(0, 200)}`,
+        );
       }
 
       // Issue #42 S3: observer — endTurn 이벤트 + 텍스트 수집 + continuation/choice 동기화
