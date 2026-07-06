@@ -283,6 +283,12 @@ export interface ExecuteResult {
   /** If set, caller should auto-retry after this many ms (recoverable error). */
   retryAfterMs?: number;
   /**
+   * Auto fallback compact (prompt-too-long emergency recovery): `true` when
+   * handleError switched the session to the 1M compact model and expects the
+   * caller (V1QueryAdapter) to re-enter immediately with `/compact`.
+   */
+  fallbackCompact?: boolean;
+  /**
    * `true` when the catch branch already surfaced the failure to the user
    * (Exception card via `turnNotifier`, status reset, thread-panel close).
    * V1QueryAdapter resolves instead of throwing when this is set — re-throwing
