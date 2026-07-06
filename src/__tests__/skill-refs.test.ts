@@ -80,18 +80,8 @@ function walkFiles(root: string, predicate: (p: string) => boolean): string[] {
 
 function collectScanTargets(): string[] {
   const files: string[] = [];
-  files.push(
-    ...walkFiles(
-      srcPrompt,
-      (p) => p.endsWith('.prompt') || p.endsWith('.md'),
-    ),
-  );
-  files.push(
-    ...walkFiles(
-      path.join(srcLocal, 'skills'),
-      (p) => path.basename(p) === 'SKILL.md',
-    ),
-  );
+  files.push(...walkFiles(srcPrompt, (p) => p.endsWith('.prompt') || p.endsWith('.md')));
+  files.push(...walkFiles(path.join(srcLocal, 'skills'), (p) => path.basename(p) === 'SKILL.md'));
   return files;
 }
 
@@ -122,12 +112,7 @@ describe('local: skill references resolve to real assets', () => {
         }
       }
     }
-    expect(
-      offenders,
-      offenders
-        .map((o) => `  ${o.file}: local:${o.name}`)
-        .join('\n'),
-    ).toEqual([]);
+    expect(offenders, offenders.map((o) => `  ${o.file}: local:${o.name}`).join('\n')).toEqual([]);
   });
 
   it('does not contain the known-bad `superpower:` (singular) namespace typo', () => {
@@ -145,11 +130,6 @@ describe('local: skill references resolve to real assets', () => {
         });
       }
     }
-    expect(
-      offenders,
-      offenders
-        .map((o) => `  ${o.file}: ${o.snippet}`)
-        .join('\n'),
-    ).toEqual([]);
+    expect(offenders, offenders.map((o) => `  ${o.file}: ${o.snippet}`).join('\n')).toEqual([]);
   });
 });
