@@ -36,7 +36,12 @@ import {
 import { CONFIG_FILE } from '../../env-paths';
 import type { McpConfig, SlackContext } from '../../mcp-config-builder';
 import { getPermissionGatedServers, loadMcpToolPermissions } from '../../mcp-tool-permission-config';
-import { isNativeOneMModel, NATIVE_ONE_M_SDK_BLOCKING_LIMIT } from '../../metrics/model-registry';
+import {
+  GPT_5_5_SDK_BLOCKING_LIMIT,
+  isGpt55Model,
+  isNativeOneMModel,
+  NATIVE_ONE_M_SDK_BLOCKING_LIMIT,
+} from '../../metrics/model-registry';
 import { isSafePathSegment, normalizeTmpPath } from '../../path-utils';
 import type { SdkPluginPath } from '../../plugin/types';
 import { DEV_DOMAIN_ALLOWLIST } from '../../sandbox/dev-domain-allowlist';
@@ -299,20 +304,34 @@ export async function buildStreamOptions(
   // Operator-provided values (process env / config.json#claude.env) win — we
   // only fill keys that are unset. Remove this block once the pinned SDK CLI
   // resolves fable-5 to 1M natively.
-  if (options.model && isNativeOneMModel(options.model)) {
-    if (!options.env) options.env = {};
-    const env = options.env;
-    if (env.DISABLE_AUTO_COMPACT === undefined) {
-      env.DISABLE_AUTO_COMPACT = '1';
+  //
+  // gpt-5.5 (llmux codex backend) needs the SAME workaround with 275k math:
+  // the SDK doesn't know the id either, so its 200k-calibrated autocompact
+  // would fire at ~167k and input would hard-block at ~177k. Blocking limit
+  // is the SDK formula on the true window (275k − 20k − 3k = 252k); the
+  // harness-side auto-compact fires at 250k tokens via the turn-end checker
+  // (`resolveAutoCompactTokens`, compact-threshold-checker.ts).
+  if (options.model) {
+    const blockingLimit = isNativeOneMModel(options.model)
+      ? NATIVE_ONE_M_SDK_BLOCKING_LIMIT
+      : isGpt55Model(options.model)
+        ? GPT_5_5_SDK_BLOCKING_LIMIT
+        : undefined;
+    if (blockingLimit !== undefined) {
+      if (!options.env) options.env = {};
+      const env = options.env;
+      if (env.DISABLE_AUTO_COMPACT === undefined) {
+        env.DISABLE_AUTO_COMPACT = '1';
+      }
+      if (env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE === undefined) {
+        env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE = String(blockingLimit);
+      }
+      logger.info('Injected SDK context-window workaround env (unknown-to-SDK window)', {
+        model: options.model,
+        disableAutoCompact: env.DISABLE_AUTO_COMPACT,
+        blockingLimitOverride: env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE,
+      });
     }
-    if (env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE === undefined) {
-      env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE = String(NATIVE_ONE_M_SDK_BLOCKING_LIMIT);
-    }
-    logger.info('Native-1M model: injected SDK context-window workaround env', {
-      model: options.model,
-      disableAutoCompact: env.DISABLE_AUTO_COMPACT,
-      blockingLimitOverride: env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE,
-    });
   }
 
   // Set effort level only when explicitly configured

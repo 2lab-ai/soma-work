@@ -26,6 +26,7 @@ const VALID_MODELS = new Set([
   'claude-opus-4-8[1m]',
   'claude-opus-4-7[1m]',
   'claude-opus-4-6[1m]',
+  'gpt-5.5',
 ]);
 
 /** Exposed for drift tests only — asserts exact-set equality with AVAILABLE_MODELS. */

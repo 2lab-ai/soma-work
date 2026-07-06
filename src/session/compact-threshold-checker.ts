@@ -7,13 +7,17 @@
  * decision on the thread. The next user turn is intercepted by
  * `InputProcessor` and converted into a `/compact` prompt (AC3).
  *
+ * Models with a fixed token-count compaction point (`resolveAutoCompactTokens`,
+ * e.g. gpt-5.5 → 250k of its 275k window) use that absolute trigger instead of
+ * the per-user percent threshold.
+ *
  * The check is idempotent within a turn — repeated calls while
  * `autoCompactPending` is already set are no-ops so that re-entry paths
  * (continuation, `/compact` loop) don't double-post.
  */
 
 import type { Logger } from '../logger';
-import { resolveContextWindow } from '../metrics/model-registry';
+import { resolveAutoCompactTokens, resolveContextWindow } from '../metrics/model-registry';
 import { ContextWindowManager } from '../slack/context-window-manager';
 import { updateDeferredCompactCompletionIfPending } from '../slack/hooks/compact-hooks';
 import type { SlackApiHelper } from '../slack/slack-api-helper';
@@ -90,17 +94,27 @@ export async function checkAndSchedulePendingCompact(args: CheckAndSchedulePendi
     return false;
   }
 
-  const threshold = userSettings.getUserCompactThreshold(userId);
-  if (pct < threshold) return false;
+  // Token-count trigger override (e.g. gpt-5.5: fixed 250k of a 275k window).
+  // When the model defines an absolute compaction point, it replaces the
+  // per-user percent threshold — the model spec knows its own limits better
+  // than a generic percentage does.
+  // (`session.usage` is non-null here — `pct !== undefined` proved it above.)
+  const compactAtTokens = resolveAutoCompactTokens(session.model);
+  let announcement: string;
+  if (compactAtTokens !== undefined && session.usage) {
+    const usedTokens = ContextWindowManager.computeUsedTokens(session.usage);
+    if (usedTokens < compactAtTokens) return false;
+    announcement = `🗜️ Context usage ${Math.round(usedTokens / 1000)}k tokens ≥ ${Math.round(compactAtTokens / 1000)}k (model auto-compact point) — next turn will auto /compact`;
+  } else {
+    const threshold = userSettings.getUserCompactThreshold(userId);
+    if (pct < threshold) return false;
+    announcement = `🗜️ Context usage ${pct}% ≥ threshold ${threshold}% — next turn will auto /compact`;
+  }
 
   session.autoCompactPending = true;
 
   try {
-    await slackApi.postSystemMessage(
-      channel,
-      `🗜️ Context usage ${pct}% ≥ threshold ${threshold}% — next turn will auto /compact`,
-      { threadTs },
-    );
+    await slackApi.postSystemMessage(channel, announcement, { threadTs });
   } catch (err) {
     // Posting is best-effort — even if Slack is flaky, the flag is already set
     // and the next turn will still be compacted. Just log.
