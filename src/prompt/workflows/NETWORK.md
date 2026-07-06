@@ -154,7 +154,7 @@ pr-review:
 pr-fix-and-update:
   - local:github-pr (PR data collection)
   - local:oracle-reviewer + subagent (opus) (fix direction vote)
-  - simplify (global harness skill for code cleanup)
+  - local:simplify (over-engineering review + fix skill, adapted from ponytail)
 
 jira-*:
   - mcp__jira__* (Jira API)

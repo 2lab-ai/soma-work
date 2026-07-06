@@ -162,7 +162,7 @@ git add <resolved_files>
 git rebase --continue
 ```
 - If resolution is impossible or intent is unclear, run `git rebase --abort` and immediately ask the user.
-3. Invoke the global `simplify` skill against the `origin/main...HEAD` diff.
+3. Invoke `local:simplify` (fix mode) against the `origin/main...HEAD` diff.
 4. If `simplify` returns no changes, record "No changes" and proceed to the next step without an additional commit.
 5. If `simplify` returns changes, apply them, re-run tests, then commit and push.
 
