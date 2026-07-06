@@ -37,17 +37,7 @@ ssot-task ID는 산출물 안에서 carry — 서브이슈 본문 첫 줄 `<!-- 
 
 ### Tier 판정 휴리스틱 (line 수 예측이 어려울 때)
 
-유저 요청 단계에서 실제 diff 라인 수를 알기 어렵다. 아래 대체 신호를 사용.
-
-| 신호 | xxlarge 가중치 |
-|---|---|
-| 수정 대상 모듈 ≥ 5 | +1 |
-| 의존 층 ≥ 3 (DB · API · UI · auth · billing 등) | +1 |
-| 외부 API 계약 또는 DB 스키마 변경 | +1 |
-| 배포 유닛 ≥ 2 (서비스·워커·CI) | +1 |
-| 신규 제품 표면 (새 인증 스택, 새 빌링 시스템 등) | +1 |
-
-**≥ 2개 충족** 시 xxlarge 판정, Case C. 1개면 xlarge 후보로 Case B + `decision-gate` 재검토.
+line 수 예측이 어려운 상황의 대체 신호는 `local:decision-gate` §"SSOT-TASK-TREE shape as a tier signal"를 단일 진실원으로 따른다 — 여기서 재정의하지 않는다.
 
 ## Case A — 단일 이슈
 

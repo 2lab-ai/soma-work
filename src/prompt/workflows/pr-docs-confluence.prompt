@@ -27,7 +27,7 @@ gh pr diff <PR_NUM>  # Detailed diff (for code-level analysis)
 ```
 
 ### 3. Stakeholder Classification
-Use UIAskUserQuestion to confirm the target stakeholder groups for documentation:
+Use `local:UIAskUserQuestion` to confirm the target stakeholder groups for documentation:
 - **API Consumer**: API users (external developers, frontend team, etc.)
 - **Implementation**: Implementation owners (backend team, code reviewers, etc.)
 - **Business**: Business stakeholders (PM, product planners, etc.)
@@ -129,7 +129,7 @@ mcp__jira__createConfluencePage
 - Part 2: {group name} - {summary}
 
 #### Next Steps
-Use UIAskUserQuestion to confirm additional actions:
+Use `local:UIAskUserQuestion` to confirm additional actions:
 - Revise documentation
 - Add another stakeholder group
 - Done
