@@ -206,6 +206,21 @@ export class V1QueryAdapter implements IAgentSession {
       // and let the normal turn-end path run (runner.finish below). Stall-
       // timeout abort is the primary trigger — see `stream-executor.ts`
       // `handleError()` and PR fix/exception-card-render-message-not-sessiontitle.
+      // Emergency prompt-too-long recovery (auto fallback compact):
+      // StreamExecutor's handleError already switched `session.model` to the
+      // configured 1M compact model (default `opus[1m]`) and stashed the
+      // triggering user text. Re-enter immediately with the SDK-local
+      // `/compact` command — it runs on the 1M window, so it fits. The compact
+      // boundary handler then restores the original model and re-dispatches
+      // the stashed text. `session` is shared by reference with the executor,
+      // so the model switch is already visible on `baseParams.session`.
+      // `_lastRetryAfterMs` stays unset so SlackHandler's generic auto-retry
+      // does not double-fire alongside this in-adapter retry.
+      if (!executeResult.success && (executeResult as any).fallbackCompact) {
+        this._lastRetryAfterMs = undefined;
+        return await this.continue('/compact');
+      }
+
       if (!executeResult.success && !executeResult.turnCollector) {
         this._lastRetryAfterMs = (executeResult as any).retryAfterMs;
         if (!executeResult.handled) {
