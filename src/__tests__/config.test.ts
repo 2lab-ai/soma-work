@@ -261,3 +261,30 @@ describe('parseAuthMode (#llmux)', () => {
     expect(parseAuthMode('openai')).toBe('ccp');
   });
 });
+
+// Auto fallback compact (prompt-too-long emergency recovery) — the compact
+// model used when a non-1M model overflows its window before the threshold
+// checker can fire. The DEFAULT must be the `opus[1m]` alias (resolved to the
+// current latest 1M opus at the use site); operators override via the
+// AUTO_FALLBACK_COMPACT_MODEL env var.
+describe('claude.autoFallbackCompactModel (auto fallback compact)', () => {
+  it('defaults to opus[1m] when AUTO_FALLBACK_COMPACT_MODEL is unset', async () => {
+    // `config` is computed at module load; this suite runs without the env
+    // var set, so the loaded value IS the default.
+    const { config } = await import('../config');
+    if (process.env.AUTO_FALLBACK_COMPACT_MODEL) {
+      // Operator env leaked into the test run — assert the override wins instead.
+      expect(config.claude.autoFallbackCompactModel).toBe(process.env.AUTO_FALLBACK_COMPACT_MODEL);
+    } else {
+      expect(config.claude.autoFallbackCompactModel).toBe('opus[1m]');
+    }
+  });
+
+  it('opus[1m] alias resolves to a 1M-window model id (claude-opus-4-8[1m])', async () => {
+    const { MODEL_ALIASES } = await import('../user-settings-store');
+    const resolved = MODEL_ALIASES['opus[1m]'];
+    expect(resolved).toBe('claude-opus-4-8[1m]');
+    const { resolveContextWindow } = await import('../metrics/model-registry');
+    expect(resolveContextWindow(resolved)).toBe(1_000_000);
+  });
+});
