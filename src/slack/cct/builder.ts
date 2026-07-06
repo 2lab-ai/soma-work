@@ -196,7 +196,33 @@ export function formatUsageBar(
   nowMs: number,
   label: UsageWindowLabel,
 ): string {
-  const padded = LABEL_PADDED[label];
+  return renderUsageBar(util, resetsAtIso, nowMs, LABEL_PADDED[label], WINDOW_DURATION_MS[label]);
+}
+
+/**
+ * Progress-bar formatter for model-scoped weekly windows (llmux
+ * `fable_weekly` / `scoped_limits[]` — e.g. the "Fable" weekly cap). Same
+ * layout as {@link formatUsageBar}, but the label is dynamic (llmux decides
+ * the scope names) so it can't live in the closed `UsageWindowLabel` union.
+ * Scoped windows are weekly — the remaining-bar is scaled against 7d.
+ */
+export function formatScopedUsageBar(
+  util: number | undefined,
+  resetsAtIso: string | undefined,
+  nowMs: number,
+  label: string,
+): string {
+  return renderUsageBar(util, resetsAtIso, nowMs, label.padEnd(USAGE_LABEL_WIDTH), 7 * 86_400_000);
+}
+
+/** Core renderer shared by {@link formatUsageBar} / {@link formatScopedUsageBar}. */
+function renderUsageBar(
+  util: number | undefined,
+  resetsAtIso: string | undefined,
+  nowMs: number,
+  padded: string,
+  windowMs: number,
+): string {
   if (util === undefined || !Number.isFinite(util) || !resetsAtIso) {
     return `${padded} (no data)`;
   }
@@ -204,7 +230,6 @@ export function formatUsageBar(
   const filled = Math.max(0, Math.min(PROGRESS_BAR_CELLS, Math.round((pct / 100) * PROGRESS_BAR_CELLS)));
   const utilBar = '█'.repeat(filled) + '░'.repeat(PROGRESS_BAR_CELLS - filled);
   const resetMs = new Date(resetsAtIso).getTime();
-  const windowMs = WINDOW_DURATION_MS[label];
   let remainingBar: string;
   let hint: string;
   if (!Number.isFinite(resetMs)) {
