@@ -32,6 +32,21 @@ export interface LlmuxWindow {
   resets_in_secs: number;
 }
 
+/**
+ * One model-scoped weekly window from `/llmux/status` (`fable_weekly` /
+ * `scoped_limits[]`). Same shape as {@link LlmuxWindow} plus:
+ *   - `scope_label` — present only in the generic `scoped_limits` list
+ *     (e.g. `"Fable"`); `fable_weekly` omits it (it IS the Fable entry).
+ *   - `severity` / `is_active` — llmux's own read of the window
+ *     (`"ok" | "warning" | "critical"` etc.).
+ * Additive fields — older llmux versions don't emit these at all.
+ */
+export interface LlmuxScopedWindow extends LlmuxWindow {
+  scope_label?: string;
+  severity?: string;
+  is_active?: boolean;
+}
+
 export interface LlmuxAccount {
   name: string;
   /** Credential kind: 'oauth' | 'apikey' | 'codex'. */
@@ -46,6 +61,14 @@ export interface LlmuxAccount {
   blocked?: string | null;
   five_hour?: LlmuxWindow | null;
   seven_day?: LlmuxWindow | null;
+  /**
+   * Model-scoped weekly windows (additive, llmux ≥ status-v2). `fable_weekly`
+   * is the "Fable" entry surfaced for convenient reads; `scoped_limits` is
+   * the full generic list (each entry carries `scope_label`) so future scoped
+   * models appear without a schema change. Absent on older llmux.
+   */
+  fable_weekly?: LlmuxScopedWindow | null;
+  scoped_limits?: LlmuxScopedWindow[];
   cooldown_until?: number | null;
   in_flight?: number;
   totals?: { requests: number; input_tokens: number; output_tokens: number };

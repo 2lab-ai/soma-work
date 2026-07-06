@@ -265,3 +265,72 @@ describe('checkAndSchedulePendingCompact (#617 AC3)', () => {
     expect(logger.warn).toHaveBeenCalled();
   });
 });
+
+/**
+ * gpt-5.5 — fixed token-count auto-compact trigger (250k of the 275k
+ * window). Replaces the per-user percent threshold for that model.
+ */
+describe('checkAndSchedulePendingCompact — gpt-5.5 token trigger', () => {
+  let slackApi: { postSystemMessage: ReturnType<typeof vi.fn> };
+  let userSettings: { getUserCompactThreshold: ReturnType<typeof vi.fn> };
+  let session: ConversationSession;
+
+  beforeEach(() => {
+    slackApi = { postSystemMessage: vi.fn().mockResolvedValue(undefined) };
+    userSettings = { getUserCompactThreshold: vi.fn().mockReturnValue(80) };
+    session = makeSession({ model: 'gpt-5.5', usage: makeUsage(0, 275_000) });
+  });
+
+  async function run(): Promise<boolean> {
+    return checkAndSchedulePendingCompact({
+      session,
+      userId: 'U1',
+      channel: 'C1',
+      threadTs: 'T1',
+      userSettings: userSettings as unknown as UserSettingsStore,
+      slackApi: slackApi as unknown as SlackApiHelper,
+    });
+  }
+
+  it('does NOT fire below 250k tokens — even past the 80% percent threshold', async () => {
+    // 240k/275k ≈ 87% — the generic percent path (80) would have fired.
+    session.usage = makeUsage(240_000, 275_000);
+    const result = await run();
+    expect(result).toBe(false);
+    expect(session.autoCompactPending).toBe(false);
+    expect(slackApi.postSystemMessage).not.toHaveBeenCalled();
+    // Percent threshold must not even be consulted for gpt-5.5.
+    expect(userSettings.getUserCompactThreshold).not.toHaveBeenCalled();
+  });
+
+  it('fires at exactly 250k tokens with a token-count announcement', async () => {
+    session.usage = makeUsage(250_000, 275_000);
+    const result = await run();
+    expect(result).toBe(true);
+    expect(session.autoCompactPending).toBe(true);
+    expect(slackApi.postSystemMessage).toHaveBeenCalledWith(
+      'C1',
+      expect.stringMatching(/250k tokens ≥ 250k .*next turn will auto \/compact/),
+      { threadTs: 'T1' },
+    );
+  });
+
+  it('fires above 250k tokens', async () => {
+    session.usage = makeUsage(260_000, 275_000);
+    expect(await run()).toBe(true);
+    expect(session.autoCompactPending).toBe(true);
+  });
+
+  it('resolves the 275k window for gpt-5.5 when the SDK has not reported one', () => {
+    // contextWindow=0 → falls back to resolveContextWindow('gpt-5.5') = 275k.
+    const s = makeSession({ model: 'gpt-5.5', usage: makeUsage(137_500, 0) });
+    expect(computeContextUsagePct(s)).toBe(50);
+  });
+
+  it('claude models keep the percent-threshold path untouched', async () => {
+    session = makeSession({ model: 'claude-opus-4-7', usage: makeUsage(80_000, 100_000) });
+    const result = await run();
+    expect(result).toBe(true);
+    expect(userSettings.getUserCompactThreshold).toHaveBeenCalled();
+  });
+});

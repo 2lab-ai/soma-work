@@ -6,7 +6,7 @@
  *   ├ actions: [llmux] [cct (legacy)] mode buttons        (admin only)
  *   ├ context: llmux server line (version · uptime · port, or ❌ unreachable)
  *   ├ context: settings line (base URL · masked key) + ⚙️ Edit  (admin only)
- *   ├ per-account section: status emoji + name + usage bars (5h/7d)
+ *   ├ per-account section: status emoji + name + usage bars (5h/7d + scoped weekly, e.g. 7d-fable)
  *   │   admin: [Switch] [Remove] accessory / readonly: bars only, name masked
  *   └ actions: [➕ Add account] [🔄 Refresh]               (Add = admin only)
  *
@@ -22,8 +22,8 @@
  */
 
 import type { AuthRuntimeState } from '../../auth/auth-runtime';
-import type { LlmuxAccount, LlmuxStatus } from '../../auth/llmux-client';
-import { formatUsageBar } from '../cct/builder';
+import type { LlmuxAccount, LlmuxScopedWindow, LlmuxStatus } from '../../auth/llmux-client';
+import { formatScopedUsageBar, formatUsageBar } from '../cct/builder';
 import type { ZBlock } from '../z/types';
 import { AUTH_ACTION_IDS, AUTH_BLOCK_IDS, AUTH_VIEW_IDS } from './views';
 
@@ -74,6 +74,33 @@ function llmuxWindowBar(
 ): string {
   if (!window) return formatUsageBar(undefined, undefined, nowMs, label);
   return formatUsageBar(window.utilization * 100, new Date(window.resets_at * 1000).toISOString(), nowMs, label);
+}
+
+/**
+ * Collect an account's model-scoped weekly windows for display, labelled in
+ * the existing `7d-<scope>` convention (mirrors the CCT card's `7d-sonnet`).
+ *
+ * Source preference:
+ *   1. `scoped_limits` — the full generic list; each entry carries its
+ *      `scope_label` (e.g. "Fable" → `7d-fable`), so future scoped models
+ *      show up without a soma-work change.
+ *   2. `fable_weekly` — fallback for llmux versions that emit only the
+ *      convenience field (it duplicates the Fable entry of `scoped_limits`,
+ *      so it is used only when the generic list is absent/empty).
+ *
+ * Unlike 5h/7d (always rendered, `(no data)` when null), scoped rows are
+ * additive — nothing renders when llmux doesn't emit them.
+ */
+export function collectScopedWindows(account: LlmuxAccount): { label: string; window: LlmuxScopedWindow }[] {
+  const scoped = account.scoped_limits;
+  if (Array.isArray(scoped) && scoped.length > 0) {
+    return scoped.map((window, i) => ({
+      label: `7d-${(window.scope_label ?? `scoped${i + 1}`).toLowerCase()}`,
+      window,
+    }));
+  }
+  if (account.fable_weekly) return [{ label: '7d-fable', window: account.fable_weekly }];
+  return [];
 }
 
 function formatUptime(uptimeSecs: number | undefined): string {
@@ -127,9 +154,14 @@ function buildAccountBlocks(account: LlmuxAccount, viewerMode: AuthCardViewerMod
   if (account.status === 'cooldown') badges.push('cooldown');
   if (account.status === 'auth_failed') badges.push('auth failed');
   if (account.blocked) badges.push(account.blocked);
-  const bars = [llmuxWindowBar(account.five_hour, '5h', nowMs), llmuxWindowBar(account.seven_day, '7d', nowMs)].join(
-    '\n',
-  );
+  const barRows = [llmuxWindowBar(account.five_hour, '5h', nowMs), llmuxWindowBar(account.seven_day, '7d', nowMs)];
+  // Model-scoped weekly windows (e.g. Fable) — additive rows below 5h/7d.
+  for (const { label, window } of collectScopedWindows(account)) {
+    barRows.push(
+      formatScopedUsageBar(window.utilization * 100, new Date(window.resets_at * 1000).toISOString(), nowMs, label),
+    );
+  }
+  const bars = barRows.join('\n');
   const section: ZBlock = {
     type: 'section',
     text: {

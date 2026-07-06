@@ -46,6 +46,26 @@ const MODEL_REGISTRY: [pattern: string, spec: ModelSpec][] = [
       maxOutput: 128_000,
     },
   ],
+  // OpenAI gpt-5.5 — served via llmux's codex backend group (llmux routes
+  // `gpt-` prefixed ids to codex; see llmux src/routing.rs). Rates mirror
+  // llmux's built-in gpt-5.5 pricing (2026-04-23): $5 in / $30 out /
+  // $0.5 cache-read per MTok, and NO cache-creation charge (codex has no
+  // cache-write billing — both write rates are 0). Context window is 275k
+  // with harness-side auto-compact at 250k (see GPT_5_5_* constants below).
+  [
+    'gpt-5.5',
+    {
+      pricing: {
+        inputPerMTok: 5,
+        outputPerMTok: 30,
+        cacheReadPerMTok: 0.5,
+        cache5minWritePerMTok: 0,
+        cache1hrWritePerMTok: 0,
+      },
+      contextWindow: 275_000,
+      maxOutput: 128_000,
+    },
+  ],
   // Claude 4.8 (2026-05-28). Same $/MTok as 4.7; 1M context (default per
   // Anthropic spec, but per soma-work convention only `[1m]`-suffixed ids
   // actually opt into 1M at resolveContextWindow — see hasOneMSuffix).
@@ -261,6 +281,56 @@ export function stripOneMSuffix(model: string): string {
   return model.replace(ONE_M_SUFFIX_RE, '');
 }
 
+/* ------------------------------------------------------------------ *
+ * gpt-5.5 (llmux codex backend)
+ * ------------------------------------------------------------------ */
+
+/**
+ * gpt-5.5 — an OpenAI model served through llmux's codex backend group
+ * (llmux routes `gpt-` prefixed ids to codex accounts; the SDK subprocess
+ * talks to llmux exactly as it does for claude ids). The pinned Agent SDK
+ * does not know this id, so — like native-1M models — the harness owns the
+ * context-window math (see `resolveContextWindow`, the SDK workaround block
+ * in `build-stream-options.ts`, and the token-based auto-compact trigger in
+ * `compact-threshold-checker.ts`).
+ */
+export const GPT_5_5_RE = /gpt-5\.5/i;
+
+/** Returns true when `model` is a gpt-5.5 id (case-insensitive). */
+export function isGpt55Model(model: string): boolean {
+  return GPT_5_5_RE.test(model);
+}
+
+/** gpt-5.5 true context window: 275k. */
+export const GPT_5_5_CONTEXT_WINDOW = 275_000;
+
+/**
+ * Harness-side auto-compact trigger for gpt-5.5: when a session's used
+ * context tokens reach 250k, the turn-end checker schedules `/compact` for
+ * the next turn — a fixed token count (not the per-user percent threshold),
+ * per the model's spec.
+ */
+export const GPT_5_5_AUTO_COMPACT_TOKENS = 250_000;
+
+/**
+ * `CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE` value injected for gpt-5.5: the
+ * SDK's own input hard-block formula (`window − 20k output reserve − 3k
+ * safety`) evaluated on the true 275k window. Without it the pinned SDK
+ * resolves the unknown id to 200k and refuses input at ~177k.
+ */
+export const GPT_5_5_SDK_BLOCKING_LIMIT = GPT_5_5_CONTEXT_WINDOW - 20_000 - 3_000;
+
+/**
+ * Fixed token-count auto-compact trigger for models whose compaction point
+ * is defined in absolute tokens rather than the per-user percent threshold.
+ * Returns `undefined` for every other model — callers fall back to the
+ * percent-based check (#617).
+ */
+export function resolveAutoCompactTokens(modelName?: string): number | undefined {
+  if (modelName && isGpt55Model(modelName)) return GPT_5_5_AUTO_COMPACT_TOKENS;
+  return undefined;
+}
+
 /**
  * Error code surfaced on thrown errors when the account lacks 1M-context
  * entitlement. Set by `claude-handler.maybeThrowOneMUnavailable` and checked
@@ -337,6 +407,7 @@ export function classifyOneMUnavailable(text: string): OneMUnavailableKind {
  *   1. The `[1m]` suffix (opus beta opt-in) — strips + injects the beta header.
  *   2. A native-1M model id (e.g. `claude-fable-5`) — 1M on the bare id, no
  *      suffix and no beta header. See `isNativeOneMModel`.
+ * gpt-5.5 (llmux codex backend) resolves to its true 275k window.
  * Every other bare model id resolves to `FALLBACK_CONTEXT_WINDOW` (200k), even
  * for specs that used to be 1M — matching the user-facing contract where 1M is
  * otherwise an opt-in via the `[1m]` variant.
@@ -348,6 +419,7 @@ export function resolveContextWindow(modelName?: string): number {
   if (!modelName) return FALLBACK_CONTEXT_WINDOW;
   if (hasOneMSuffix(modelName)) return 1_000_000;
   if (isNativeOneMModel(modelName)) return 1_000_000;
+  if (isGpt55Model(modelName)) return GPT_5_5_CONTEXT_WINDOW;
   return FALLBACK_CONTEXT_WINDOW;
 }
 
