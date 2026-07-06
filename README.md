@@ -240,7 +240,7 @@ Nested `$plugin:skill` references inside skill content are resolved recursively 
 
 ### naked — bare-text compatibility
 
-A whitelist of bare (no-prefix) forms is still accepted for legacy reasons. Source of truth: [`src/slack/z/whitelist.ts`](./src/slack/z/whitelist.ts).
+A whitelist of bare (no-prefix) forms is still accepted for legacy reasons. Source of truth is split across two layers: [`src/slack/z/whitelist.ts`](./src/slack/z/whitelist.ts) (z-topic forms) and the `CommandParser.is*Command` matchers routed by [`src/slack/commands/command-router.ts`](./src/slack/commands/command-router.ts) (operational cards such as `auth`, `cct`).
 
 | Form | Notes |
 |------|-------|
@@ -250,6 +250,8 @@ A whitelist of bare (no-prefix) forms is still accepted for legacy reasons. Sour
 | `theme` · `theme <name>` · `theme set <name>` · `theme=<name>` | Theme get/set (both `set`-prefixed and bare-value forms accepted) |
 | `sessions theme [<name>]` · `sessions theme=<name>` | Session-scoped theme |
 | `new [<prompt>]` · `renew [<prompt>]` | Reset / renew session, optional prompt carries over |
+| `auth` · `auth llmux\|cct` · `set auth <mode>` · `auth switch <name>` | Auth backend card / runtime mode switch (#1189; mutations admin-only) |
+| `cct` · `cct set <n>` · `cct next` · `cct usage [<n>]` · `cct auto [dry]` | CCT token status / rotation; `auto` = admin-only manual auto-rotate (token mutation is card-only since #569) |
 | `$` · `$model <v>` · `$verbosity <v>` · `$effort <v>` · `$thinking <v>` · `$thinking_summary <v>` | **Legacy** session prefix during deprecation grace period (emits one-line notice, use `%` going forward) |
 
 Any free-form text not matching the whitelist is treated as a chat / workflow dispatch prompt.

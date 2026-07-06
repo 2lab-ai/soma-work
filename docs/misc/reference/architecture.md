@@ -59,6 +59,7 @@ Slack Event (Socket Mode)
 - CCT 슬롯 풀: v2 스키마, CAS 기반 atomic slot flip
 - OAuthRefreshScheduler가 5시간/7일 임계값으로 자동 회전 + Slack 알림
 - 쿼리마다 `ensureActiveSlotAuth()` → lease → env 주입 → release
+- **런타임 auth 백엔드 전환 (#1189)**: 라이브 모드는 `src/auth/auth-runtime.ts` 소유 (`data/auth-runtime.json` 영속, 우선순위 persisted > `AUTH_MODE` env > 부팅 llmux 프로브). `llmux` 모드는 CCT lease를 synthetic lease로 단락하고 `ANTHROPIC_BASE_URL`을 주입. Slack `auth` 카드/명령으로 무재시작 전환 (mutation은 admin 전용)
 
 ### MCP (`src/mcp-manager.ts`, `src/mcp-config-builder.ts`, `packages/mcp-servers/`)
 - 8개 내장 서버: slack-mcp, llm, agent, model-command, server-tools, permission, cron, mcp-tool-permission
