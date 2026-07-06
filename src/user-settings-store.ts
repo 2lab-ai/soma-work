@@ -22,12 +22,17 @@ const invalidator = createPromptInvalidator(logger, 'Settings');
 export const setSettingsPromptInvalidationHook = invalidator.setHook;
 const fireSettingsInvalidate = invalidator.fire;
 
-// Available models — the 11-entry user-facing allow-list.
+// Available models — the 12-entry user-facing allow-list.
 //
 // Contract:
-//   - The 8 bare entries are the historical lineup and MUST NOT be removed.
-//     (Fable 5 added 2026-06-09; 4.8 added 2026-05-28; 4.7/4.6 retained as
-//     user-selectable.)
+//   - The 8 bare claude entries are the historical lineup and MUST NOT be
+//     removed. (Fable 5 added 2026-06-09; 4.8 added 2026-05-28; 4.7/4.6
+//     retained as user-selectable.)
+//   - `gpt-5.5` (added 2026-07-06) is served through llmux's codex backend
+//     group — llmux routes `gpt-` prefixed ids to codex accounts, so the SDK
+//     subprocess dispatches it exactly like a claude id (requires llmux auth
+//     mode with a codex account in the pool). 275k context window; harness
+//     auto-compacts at 250k tokens (see metrics/model-registry.ts GPT_5_5_*).
 //   - `claude-fable-5` serves a 1M context window on the BARE id — Fable 5
 //     ships 1M as its native GA context, with no `[1m]` suffix and no
 //     `context-1m-2025-08-07` beta header. It therefore has NO `[1m]` variant:
@@ -54,6 +59,7 @@ export const AVAILABLE_MODELS = [
   'claude-opus-4-8[1m]',
   'claude-opus-4-7[1m]',
   'claude-opus-4-6[1m]',
+  'gpt-5.5',
 ] as const;
 
 export type ModelId = (typeof AVAILABLE_MODELS)[number];
@@ -85,6 +91,11 @@ export const MODEL_ALIASES: Record<string, ModelId> = {
   'opus-4.5': 'claude-opus-4-5-20251101',
   haiku: 'claude-haiku-4-5-20251001',
   'haiku-4.5': 'claude-haiku-4-5-20251001',
+  // `gpt` / `gpt5.5` → gpt-5.5 (llmux codex backend). The canonical id
+  // `gpt-5.5` is already in AVAILABLE_MODELS, so resolveModelInput accepts it
+  // directly — these aliases only cover the shorthand spellings.
+  gpt: 'gpt-5.5',
+  'gpt5.5': 'gpt-5.5',
   // 1M-context (beta opt-in) variants — opus only. Fable 5 is native-1M on
   // the bare id and intentionally has no `[1m]` alias here.
   'opus[1m]': 'claude-opus-4-8[1m]',
@@ -1018,7 +1029,7 @@ export class UserSettingsStore {
   /**
    * Get display name for a model.
    *
-   * Covers all 10 entries in AVAILABLE_MODELS. The `[1m]` variants append
+   * Covers all 12 entries in AVAILABLE_MODELS. The `[1m]` variants append
    * `" (1M)"` so users can tell them apart in the Slack UI.
    */
   getModelDisplayName(model: ModelId): string {
@@ -1047,6 +1058,9 @@ export class UserSettingsStore {
         return 'Opus 4.5';
       case 'claude-haiku-4-5-20251001':
         return 'Haiku 4.5';
+      case 'gpt-5.5':
+        // Served via llmux codex backend; 275k context window.
+        return 'GPT-5.5 (275k)';
       default:
         return model;
     }
