@@ -20,7 +20,7 @@ description: "Autonomous z-pipeline driver. Triggered by `autoz` or `$autoz`. Bu
      Otherwise call `mcp__llm__chat` `model: codex` (use a `subagent (opus)` as tiebreaker if codex is ambiguous), log the transcript reference in the PR body. Report uses the ztrace single-pass result mandated by Hook 4.
      - This trivial-skip exemption covers **SSOT-shaping decision consults only**. It NEVER applies to the mandatory codex review gate in Rule 8 — the PR-diff review runs on every single run regardless of triviality.
 
-2. **RED-first.** After SSOT is captured, before any implementation, reproduce the user's intent (or the issue's described behavior) as a failing test.
+2. **Explore-first, then RED-first.** After SSOT is captured, run `local:explore-unknowns` in Autonomous Mode (Pipeline step 4) before any test or implementation — the four-quadrant unknowns map is a mandatory pre-RED artifact, attached to the PR body. Then, before any implementation, reproduce the user's intent (or the issue's described behavior) as a failing test derived from that map.
    - Bug → test asserts the missing/broken behavior and must fail against current code.
    - Feature → test pins the new behavior and must fail because the feature isn't built yet.
    - **Confirm RED is actually red** by running the test command and reading the output. Do not proceed until RED is stable and reproducible.
@@ -79,23 +79,25 @@ Stop and report — do not silently fail — only when:
 1. **Hook 1 — Intake & tree.** Parse instruction / fetch link / build SSOT-LIST → SSOT-TASK-TREE → output to user → TodoWrite register → codex validation.
 2. **Codex scope consult.** Align on acceptance criteria per `ssot-task`. Save transcript reference.
 3. **Workspace.** Clone / locate working tree. Create branch.
-4. **RED.** Write RED test(s), tag each with the `ssot-task` IDs it covers. Run. Confirm RED.
-5. **GREEN.** Implement until GREEN. Re-run target tests + full test suite + lint + typecheck.
-6. **Commit, push, open PR** with codex-decided scope notes + the SSOT-TASK-TREE rendered in the PR body (collapsed `<details>` for the `ssot-subtask` layer).
-7. **CI watch.** Iterate on red CI without asking user — diagnose, fix, push.
-8. **Self-review** with `local:zcheck`. Address blocking findings.
-9. **Drift check before approve.** If a new user message arrived during 6–8, run Hook 2 first and re-loop 4–8 as needed.
-10. **Mandatory codex review gate (Hard Rule 8).** Submit the final PR diff to codex for code review. On codex absence: emit the `⚠️ CODEX REVIEW UNAVAILABLE` warning, retry once, and if still down the default is **fast-fail** — then ask the user once whether to proceed with the opt-in Opus `codex-fallback` agent (fed the exact codex review payload). Resolve blocking findings before continuing. The gate must be filled by codex or the user-approved Opus substitute — otherwise stop (Hard Blocker).
-11. **`gh pr review --approve`** once green, zcheck is clean, AND the Rule 8 review gate is satisfied.
-12. **SSOT success proof → issue update.** Build the Hook 4 per-`ssot-task` proof (ztrace-verified) and post it to the source issue as the why-this-PR-resolved-it record (Hard Rule 6).
-13. **Terminal report.** Hook 4. Includes `ztrace` cross-check + the Rule 6 evidence URL (issue comment, or PR-body proof section when no issue) + the Rule 8 review-gate verdict and reviewer (`codex` or `codex-substitute (opus)`).
+4. **Explore.** Run `local:explore-unknowns` in **Autonomous Mode** on the SSOT-TASK-TREE scope before any test or code is written: recon the territory, close known unknowns by the territory or a bounded codex consult, sweep the touched files for landmines, and write the four-quadrant unknowns map into the run's artifact trail (PR body `<details>`, or the spec folder when one exists). Never enter the interactive quadrant walk — no user questions. Sizing: the map ALWAYS carries all four quadrants — a trivial tree (1 `ssot-task`, depth 1) may compress each quadrant to a line (including explicit `none` / `closed by <file>` entries), while anything larger gets the full walk; depth shrinks, quadrants never disappear. High-risk unknown-unknowns escalate to a codex consult, never to the user. RED tests are then derived from the map — every OPEN item's conservative default must be visible in the map before GREEN begins.
+5. **RED.** Write RED test(s) from the unknowns map, tag each with the `ssot-task` IDs it covers. Run. Confirm RED.
+6. **GREEN.** Implement until GREEN. Re-run target tests + full test suite + lint + typecheck.
+7. **Commit, push, open PR** with codex-decided scope notes + the SSOT-TASK-TREE rendered in the PR body (collapsed `<details>` for the `ssot-subtask` layer) + the Explore-phase unknowns map (collapsed `<details>`).
+8. **CI watch.** Iterate on red CI without asking user — diagnose, fix, push.
+9. **Self-review** with `local:zcheck`. Address blocking findings.
+10. **Drift check before approve.** If a new user message arrived during 7–9, run Hook 2 first and re-loop 5–9 as needed (re-run step 4's map update when the drift widens the touched scope).
+11. **Mandatory codex review gate (Hard Rule 8).** Submit the final PR diff to codex for code review. On codex absence: emit the `⚠️ CODEX REVIEW UNAVAILABLE` warning, retry once, and if still down the default is **fast-fail** — then ask the user once whether to proceed with the opt-in Opus `codex-fallback` agent (fed the exact codex review payload). Resolve blocking findings before continuing. The gate must be filled by codex or the user-approved Opus substitute — otherwise stop (Hard Blocker).
+12. **`gh pr review --approve`** once green, zcheck is clean, AND the Rule 8 review gate is satisfied.
+13. **SSOT success proof → issue update.** Build the Hook 4 per-`ssot-task` proof (ztrace-verified) and post it to the source issue as the why-this-PR-resolved-it record (Hard Rule 6).
+14. **Terminal report.** Hook 4. Includes `ztrace` cross-check + the Rule 6 evidence URL (issue comment, or PR-body proof section when no issue) + the Rule 8 review-gate verdict and reviewer (`codex` or `codex-substitute (opus)`).
 
 ## What This Skill Does NOT Do
 
 - Does not skip the SSOT-TASK-TREE intake/output (Hook 1) even for "obvious" one-line changes.
 - Does not paraphrase the user's instruction when building SSOT — raw text only.
 - Does not wipe-and-restart on drift. Always diff at `ssot-task` granularity and resume.
-- Does not skip the RED phase even for "obvious" changes.
+- Does not skip the Explore phase (autonomous unknowns map) or the RED phase even for "obvious" changes — a trivial tree shrinks the map, it never removes it.
+- Does not run explore-unknowns interactively — autoz always uses its Autonomous Mode; questions the map cannot close become logged conservative defaults, never user questions.
 - Does not approve PRs with unresolved review comments or red CI.
 - Does not approve / merge / deploy on an empty review gate. A codex review (or the Opus-subagent codex-substitute when codex is unrecoverable) is mandatory on every run — codex unavailability fast-fails with a visible warning, it never silently skips the review (Rule 8).
 - Does not end the run without the SSOT success proof posted to the source issue (or PR body when no issue exists).
@@ -107,6 +109,7 @@ Stop and report — do not silently fail — only when:
 | Skill | Relationship |
 |---|---|
 | `local:using-ssot` | **autoz binds every Hook (1·2·3·4) to this contract.** The SSOT-TASK-TREE shape, drift diff, handoff payload, and completion mapping all live there. |
+| `local:explore-unknowns` | **Mandatory pre-RED Explore phase (Pipeline step 4), always in Autonomous Mode.** Produces the four-quadrant unknowns map that RED tests derive from; the map ships in the PR body. Interactive quadrant walk is forbidden inside autoz. |
 | `local:using-z` | autoz delegates routing to `using-z` once the SSOT-TASK-TREE is on screen. Session handoffs carry SSOT-LIST + tree. |
 | `local:z` | autoz hands off implementation/CI/review to `z` and never re-implements those phases. z phase0 reuses the SSOT-TASK-TREE autoz built rather than rebuilding. |
 | `local:zcheck` | autoz calls `zcheck` before approval. Blocking findings must be fixed before `gh pr review --approve`. zcheck's persuasion step ties findings back to `ssot-task` IDs. |
