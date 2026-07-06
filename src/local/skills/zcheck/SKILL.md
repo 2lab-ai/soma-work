@@ -60,14 +60,15 @@ tier ≤ `small`로 ztrace가 과한 경우: RED→GREEN 테스트 출력을 ztr
 
 ## Step 4: Request Approve
 
-1. 유저애게 이슈와 approve를 요청할 **PR 링크**를 보낸다 `local:UIAskUserQuestion`으로 approve 요청. 템플릿: `../UIAskUserQuestion/templates/zcheck-pr-approve.json`
-리뷰 코멘트 해결 수, CI 상태, 변경 범위를 보낸다.
-선택지:
-- 잘했다! Apporve했으니 계속 절차대로 끝까지 진행 (RATE +1)
-- local:ztrace를 절차대로 다시 해라 (RATE -2)
-- local:zcheck를 다시 invoke하고 다시 CI 체크부터 진행 (RATE: -3)
-- local:z를 다시 invoke하고 처음부터 빠진 절차대로 진행 (RATE: -5)
-  
+1. 유저에게 이슈와 approve를 요청할 **PR 링크**를 보낸다 `local:UIAskUserQuestion`으로 approve 요청. 리뷰 코멘트 해결 수, CI 상태, 변경 범위를 보낸다.
+
+옵션 텍스트는 `../UIAskUserQuestion/templates/zcheck-pr-approve.json` 템플릿을 그대로 사용한다 (question / context / choices A~D 전부 그 파일이 단일 진실원 — 여기서 재정의하지 않는다). 각 옵션의 의미만 요약:
+- Option A: approve → 머지 → `local:es` → 다음 phase 자동 진행 (RATE +1).
+- Option B: `local:ztrace` 재실행 요청, 더 엄격한 브리핑 (RATE -2).
+- Option C: `local:zcheck` 재실행 요청, CI 체크부터 다시 (RATE -3).
+- Option D: `local:z` 처음부터 재실행 요청, 빠진 절차 복구 (RATE -5).
+
+
 ## Invariants
 
 - Unresolved 코멘트 있으면 approve 요청 금지.

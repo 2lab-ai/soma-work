@@ -29,7 +29,7 @@ This session is dedicated to **Jira issue analysis and brainstorming**. Actual i
 - Explain specifically how the code would change at the code level
 
 ### 4. Prepare for Next Step Selection
-- Once the analysis is complete, instead of just leaving a "in a new session..." message, use `UIAskUserQuestion` to immediately prompt for the next action.
+- Once the analysis is complete, instead of just leaving a "in a new session..." message, use `local:UIAskUserQuestion` to immediately prompt for the next action.
 - Include current session link information in the question.
   - Always include the issue link if available
   - Include the linked PR URL if one already exists
@@ -83,7 +83,7 @@ After brainstorming is complete, first automatically update session links (not d
 }
 ```
 
-Then use `UIAskUserQuestion` to prompt for the next step:
+Then use `local:UIAskUserQuestion` to prompt for the next step:
 ```json
 {
   "type": "UIAskUserQuestion",
