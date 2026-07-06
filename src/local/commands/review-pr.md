@@ -40,7 +40,7 @@ Run a comprehensive pull request review using multiple specialized agents, each 
    - **If comments/docs added**: comment-analyzer
    - **If error handling changed**: silent-failure-hunter
    - **If types added/modified**: type-design-analyzer
-   - **After passing review**: code-simplifier (polish and refine)
+   - **After passing review**: `local:simplify` (fix mode — cut over-engineering, polish)
 
    **IMPORTANT — Oracle reviewers**:
    Use `oracle-reviewer` Skill (codex) plus a `subagent (opus)` reviewer as the second/tiebreaker reviewer
@@ -148,11 +148,10 @@ Run a comprehensive pull request review using multiple specialized agents, each 
 - Detects bugs and issues
 - Reviews general code quality
 
-**code-simplifier**:
-- Simplifies complex code
-- Improves clarity and readability
-- Applies project standards
-- Preserves functionality
+**local:simplify**:
+- Reviews the diff for over-engineering (delete / stdlib / native / yagni / shrink)
+- Applies safe, behavior-preserving cuts in fix mode
+- Preserves functionality; correctness/security routed to normal review
 
 ## Tips:
 
