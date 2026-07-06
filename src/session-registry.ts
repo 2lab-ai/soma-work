@@ -162,6 +162,12 @@ interface SerializedSession {
   workingDirectory?: string;
   title?: string;
   model?: string;
+  // Auto fallback compact (prompt-too-long emergency recovery): persisted so a
+  // restart that lands between "switched to the 1M compact model" and "compact
+  // boundary restored the original model" can restore the original model on
+  // load instead of stranding the session on the 1M compact model.
+  fallbackCompactActive?: boolean;
+  fallbackCompactOriginalModel?: string | null;
   // Session state machine fields
   state?: SessionState;
   workflow?: WorkflowType;
@@ -1862,6 +1868,10 @@ export class SessionRegistry {
             workingDirectory: session.workingDirectory,
             title: session.title,
             model: session.model,
+            // Auto fallback compact: persist the in-flight fallback marker so
+            // loadSessions can restore the original model after a restart.
+            fallbackCompactActive: session.fallbackCompactActive,
+            fallbackCompactOriginalModel: session.fallbackCompactOriginalModel,
             state: session.state,
             workflow: session.workflow,
             links: session.links,
@@ -2151,6 +2161,19 @@ export class SessionRegistry {
           pendingUserText: null,
           pendingEventContext: null,
         };
+        // Auto fallback compact: a restart that lands mid-fallback (model
+        // switched to the 1M compact model, boundary restore not yet fired)
+        // aborts the emergency compact. Restore the original model so the
+        // session does not silently stay on the 1M compact model; the stashed
+        // pending text is dropped (same convention as pendingUserText above —
+        // the user can simply retype).
+        if (serialized.fallbackCompactActive && serialized.fallbackCompactOriginalModel) {
+          session.model = coerceToAvailableModel(serialized.fallbackCompactOriginalModel);
+          this.logger.info('Auto fallback compact: restored original model on session reload', {
+            key: serialized.key,
+            restoredModel: session.model,
+          });
+        }
         // Orphan sweep: if process crashed while a turn was active, fold the elapsed
         // leg (capped by MAX_LEG_MS) into the accumulator and clear the marker so
         // the next beginTurn starts a fresh leg.
