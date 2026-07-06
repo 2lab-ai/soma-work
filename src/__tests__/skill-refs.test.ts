@@ -82,6 +82,8 @@ function collectScanTargets(): string[] {
   const files: string[] = [];
   files.push(...walkFiles(srcPrompt, (p) => p.endsWith('.prompt') || p.endsWith('.md')));
   files.push(...walkFiles(path.join(srcLocal, 'skills'), (p) => path.basename(p) === 'SKILL.md'));
+  files.push(...walkFiles(path.join(srcLocal, 'commands'), (p) => p.endsWith('.md')));
+  files.push(...walkFiles(path.join(srcLocal, 'agents'), (p) => p.endsWith('.md')));
   return files;
 }
 
@@ -113,6 +115,23 @@ describe('local: skill references resolve to real assets', () => {
       }
     }
     expect(offenders, offenders.map((o) => `  ${o.file}: local:${o.name}`).join('\n')).toEqual([]);
+  });
+
+  it('does not reference known-dead asset names', () => {
+    // These assets never existed in src/local; references to them have been a
+    // recurring source of broken runtime invocations (see PR #1191/#1192).
+    // `superpowers:subagent-driven-development` is a real upstream skill — only
+    // the bare (un-namespaced) form is dead.
+    const deadNames = /(?<!superpowers:)\b(code-simplifier|code-simplify|subagent-driven-development)\b/g;
+    const offenders: { file: string; snippet: string }[] = [];
+    for (const file of targets) {
+      const text = fs.readFileSync(file, 'utf8');
+      let match: RegExpExecArray | null;
+      while ((match = deadNames.exec(text)) !== null) {
+        offenders.push({ file: path.relative(repoRoot, file), snippet: match[0] });
+      }
+    }
+    expect(offenders, offenders.map((o) => `  ${o.file}: ${o.snippet}`).join('\n')).toEqual([]);
   });
 
   it('does not contain the known-bad `superpower:` (singular) namespace typo', () => {
