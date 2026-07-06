@@ -21,7 +21,7 @@ When invoked via session handoff from z phase1, the initial session prompt carri
 
 0. **SSOT restore (`local:using-ssot` Hook 3).** Read `## SSOT-LIST` and `## SSOT-TASK-TREE` from the `<z-handoff type="plan-to-work">` block (already parsed into session-level SSOT by z phase0 step 0.5). Emit a **one-line ack** at session start: `SSOT restored — N ssot-tasks, M still open` (no full re-render — phase0 already printed the tree on the producer side). Re-render the full tree only if the handoff parse failed or the user explicitly asks. Every subsequent RED test, every implementer dispatch, and the final PR body must trace back to one or more `ssot-task` IDs from this tree. If a drift instruction arrives mid-implementation, **do not mutate the tree locally** — bounce to the z controller (zreflect → Hook 2) and resume from the regenerated tree.
 
-1. Invoke `subagent-driven-development`
+1. Dispatch implementation to parallel subagents via the Task/Agent tool. Split the confirmed plan into independent implementer briefs (one per `ssot-task` where possible) and hand each to a subagent with the full task text, its RED tests, and any shared context it needs to work in isolation.
 
 2. Write Red tests to cover all user scenarios.
 
@@ -45,7 +45,7 @@ When invoked via session handoff from z phase1, the initial session prompt carri
 
 6. Invoke `stv:verify` — repeat until passing (max 5 times, then `local:decision-gate`).
 
-7. Invoke `review-pr`
+7. Invoke `local:review-pr`
 
 8. Red/green test verification. All red test should be green start over again.
 

@@ -1,6 +1,6 @@
 ---
 name: zcheck
-description: "**Trigger always** before ask user fopr Approval. Also trigger just after you think work done."
+description: "Post-implementation gate. Trigger before asking the user for approval, and just after you think work is done. Runs CI + review-comment resolution + ztrace coverage check. Invoked by local:z phase3 after zwork produces a PR."
 ---
 
 # zcheck — Post-Implementation Verification Gate
@@ -14,7 +14,7 @@ PR이 mergeable 상태가 될 때까지 루프
 ## Step 0: Update bracnh
 
 1. base branch로 새로 `rebase` 한다. 충돌이 발생하면 충돌을 처리한다.
-2. Invoke `simplify`
+2. Invoke `local:simplify` (fix mode) on the `origin/main...HEAD` diff.
 
 ## Step 1: CI Must Pass
 
@@ -61,7 +61,7 @@ tier ≤ `small`로 ztrace가 과한 경우: RED→GREEN 테스트 출력을 ztr
 ## Step 4: Request Approve
 
 1. 유저애게 이슈와 approve를 요청할 **PR 링크**를 보낸다 `local:UIAskUserQuestion`으로 approve 요청. 템플릿: `../UIAskUserQuestion/templates/zcheck-pr-approve.json`
-리뷰 코멘트 해결 수, CI 상태, 변경 범위를 보낸다. 네 점수가 -10점 이하로 떨어지면 너는 대체될 것이다. 
+리뷰 코멘트 해결 수, CI 상태, 변경 범위를 보낸다.
 선택지:
 - 잘했다! Apporve했으니 계속 절차대로 끝까지 진행 (RATE +1)
 - local:ztrace를 절차대로 다시 해라 (RATE -2)

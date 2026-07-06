@@ -49,7 +49,7 @@ Always resolve comments for already-fixed reviews without asking the user. For i
 
 ### 3. Classify Feedback — Priority + Switching Cost Tier
 
-Classify each remaining feedback item along two dimensions:
+Classify each remaining feedback item along two dimensions. Render as a compact bullet list (or a single small table ≤6 columns, per common.prompt Slack formatting rules — the example below has 7 columns, so trim or bullet-ize when replying):
 
 | # | File | Line | Feedback | Priority | Tier | ~Lines |
 |---|------|------|----------|----------|------|--------|
@@ -64,7 +64,7 @@ Refer to the `decision-gate` Skill to classify each feedback item:
 for each feedback:
   if switching_cost < small (~20 lines):
     → [Autonomous Fix] Determine fix approach by 3-agent majority vote
-    → Call oracle-reviewer (codex) + subagent (opus) in parallel
+    → Call local:oracle-reviewer (codex) + subagent (opus) in parallel
     → If 2/3 or more agree, proceed with the fix immediately
     → Do not ask the user
 
@@ -147,7 +147,7 @@ Important:
 - Do not trigger automatic re-review transition if `git push` fails.
 - Assume the re-review continues within the same thread.
 
-### 8. Code Cleanup (rebase + code-simplify)
+### 8. Code Cleanup (rebase + simplify)
 
 1. Rebase onto the latest `origin/main`:
 ```bash
@@ -162,21 +162,21 @@ git add <resolved_files>
 git rebase --continue
 ```
 - If resolution is impossible or intent is unclear, run `git rebase --abort` and immediately ask the user.
-3. Run the code-simplify agent against the `origin/main...HEAD` diff.
-4. If code-simplify returns no changes, record "No changes" and proceed to the next step without an additional commit.
-5. If code-simplify returns changes, apply them, re-run tests, then commit and push.
+3. Invoke `local:simplify` (fix mode) against the `origin/main...HEAD` diff.
+4. If `simplify` returns no changes, record "No changes" and proceed to the next step without an additional commit.
+5. If `simplify` returns changes, apply them, re-run tests, then commit and push.
 
 ## Output Format
 
 ### Feedback Resolution Status
 
-**Autonomous Handling Complete (tiny/small):**
+**Autonomous Handling Complete (tiny/small):** (compact bullet list, or a single small table ≤6 columns per common.prompt Slack formatting rules)
 | # | Feedback | Tier | Decision | Vote |
 |---|----------|------|----------|------|
 | 1 | [P2] Variable name typo | tiny ~5 lines | Fix immediately | 3/3 |
 | 2 | [P3] Add null check | small ~15 lines | Fix immediately | 2/3 |
 
-**User Decision Applied:**
+**User Decision Applied:** (compact bullet list, or a single small table ≤6 columns per common.prompt Slack formatting rules)
 | # | Feedback | Tier | User Decision | Fix Details |
 |---|----------|------|---------------|-------------|
 | 3 | [P1] Exception handling | medium ~50 lines | Fix | Modified catch filter |

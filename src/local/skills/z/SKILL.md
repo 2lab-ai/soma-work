@@ -45,7 +45,6 @@ Invoke `local:zreflect`
 2. Invoke `stv:new-task` and update the todo list with TodoWrite.
 3. Always ask the user about any unclear points and get confirmation.
 4. Get the plan reviewed by `llm_chat codex`. If the score is below 95, use the feedback to update the plan and go back to step 1 to update it again.
-5. Output the full plan and get confirmation from the user via `local:UIAskUserQuestion`. 
 5. Output the full plan and get confirmation from the user via `local:UIAskUserQuestion`. Use the `../UIAskUserQuestion/templates/z-phase1-plan-approval.json`.
 6. Update Tasks with TodoWrite with the confirmed plan.
 7. **Handoff to phase2 via new session** (contract: `local:using-z` §Session Handoff Protocol → Handoff #1):

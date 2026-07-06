@@ -87,6 +87,26 @@ describe('PromptBuilder', () => {
       expect(prompt).toContain('CONTINUE_SESSION');
     });
 
+    it('should resolve pr-review include of review_prompt.md', () => {
+      // pr-review.prompt has `{{include:./review_prompt.md}}` — since includes are
+      // resolved relative to `promptDir` (src/prompt), this must load the
+      // review_prompt.md content and NOT produce an "Include not found" comment.
+      const prompt = builder.loadWorkflowPrompt('pr-review');
+      expect(prompt).toBeDefined();
+      expect(prompt).not.toContain('Include not found: ./review_prompt.md');
+      expect(prompt).not.toContain('Include blocked: ./review_prompt.md');
+    });
+
+    it('should resolve pr-docs-confluence include of examples/PROJ-1978-summary.md', () => {
+      // pr-docs-confluence.prompt has
+      // `{{include:./workflows/examples/PROJ-1978-summary.md}}` — likewise
+      // resolved relative to promptDir. Must not surface as "Include not found".
+      const prompt = builder.loadWorkflowPrompt('pr-docs-confluence');
+      expect(prompt).toBeDefined();
+      expect(prompt).not.toContain('Include not found: ./workflows/examples/PROJ-1978-summary.md');
+      expect(prompt).not.toContain('Include blocked: ./workflows/examples/PROJ-1978-summary.md');
+    });
+
     it('should load pr-fix-and-update prompt with automatic re-review handoff', () => {
       const prompt = builder.loadWorkflowPrompt('pr-fix-and-update');
 
