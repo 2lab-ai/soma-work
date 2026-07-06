@@ -6,7 +6,7 @@
 
 Perform a PR review and classify findings by switching cost:
 - **tiny/small issues**: Autonomous decision on fix approach (3-agent majority vote) — do not ask the user
-- **medium+ issues**: Ask the user specific questions via UIAskUserQuestion
+- **medium+ issues**: Ask the user specific questions via `local:UIAskUserQuestion`
 
 Goal: **The user should only need to make one round of decisions before moving to the fix workflow.**
 
@@ -14,7 +14,7 @@ Goal: **The user should only need to make one round of decisions before moving t
 
 - All review findings must be **classified by switching cost tier**, and each must be posted as a **review comment with code line references** on the PR
 - tiny/small issues: Autonomous decision completed (with Auto-Decision log included)
-- medium+ issues: Ask the user via UIAskUserQuestion — **each issue must include [tier ~N lines] label + review consensus**
+- medium+ issues: Ask the user via `local:UIAskUserQuestion` — **each issue must include [tier ~N lines] label + review consensus**
 - **Important**: Each issue must be asked about individually. Vague questions like "How should we handle the P0 issues?" are not allowed
 - If there are no P0/P1 issues, Approve the PR
 - After the review is finalized, a **CI check loop** must be performed
@@ -125,7 +125,7 @@ Classify each finding along two dimensions:
 | P2 | Normal | Should be fixed eventually |
 | P3 | Low | Nice to have |
 
-**Switching Cost Tier (Scope of change)** — Refer to the `decision-gate` Skill:
+**Switching Cost Tier (Scope of change)** — Refer to the `local:decision-gate` Skill:
 | Tier   | Lines  | Examples |
 |--------|--------|----------|
 | tiny   | ~5     | Typo, constant, one-line fix |
@@ -284,7 +284,7 @@ Compact bullet list (or a single small table ≤6 columns, per common.prompt Sla
 
 ### User Decision Required (medium+)
 
-Describe each issue in detail using the `decision-gate` format, then **send the question via the `local:UIAskUserQuestion` Skill.**
+Describe each issue in detail using the `local:decision-gate` format, then **send the question via the `local:UIAskUserQuestion` Skill.**
 Outputting questions as plain text is **forbidden**. They must be sent via `mcp__model-command__run` → `ASK_USER_QUESTION`.
 
 #### Question Quality Self-Check Checklist (must pass before sending):

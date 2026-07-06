@@ -21,7 +21,7 @@ at the top of this prompt and parsed its typed metadata into
 
 ## Forbidden
 
-- Re-running phase0 clarify or decision-gate (the origin session already made
+- Re-running phase0 clarify or `local:decision-gate` (the origin session already made
   those judgments and the tier is preserved in the handoff metadata).
 - Re-planning or re-scoping — the block's `## Confirmed Plan` is authoritative.
 - Opening a new issue / PR when the block already carries a `## Issue` URL.

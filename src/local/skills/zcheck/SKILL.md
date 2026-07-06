@@ -58,16 +58,19 @@ gh run list --branch <BRANCH> --repo <OWNER/REPO> --limit 1 --json status,conclu
 
 tier ≤ `small`로 ztrace가 과한 경우: RED→GREEN 테스트 출력을 ztrace 대체로 허용. 1:N 매핑 규율은 유지.
 
-## Step 4: Request Approve
+## Step 4: Readiness Verdict & Approve Handoff
 
-1. 유저애게 이슈와 approve를 요청할 **PR 링크**를 보낸다 `local:UIAskUserQuestion`으로 approve 요청. 템플릿: `../UIAskUserQuestion/templates/zcheck-pr-approve.json`
-리뷰 코멘트 해결 수, CI 상태, 변경 범위를 보낸다.
-선택지:
-- 잘했다! Apporve했으니 계속 절차대로 끝까지 진행 (RATE +1)
-- local:ztrace를 절차대로 다시 해라 (RATE -2)
-- local:zcheck를 다시 invoke하고 다시 CI 체크부터 진행 (RATE: -3)
-- local:z를 다시 invoke하고 처음부터 빠진 절차대로 진행 (RATE: -5)
-  
+**zcheck 자체는 approve/merge를 실행하지 않는다** (`local:using-z` 라우팅표: approve는 `local:z` phase4 소유). zcheck의 산출물은 **readiness 판정**이다:
+
+1. Coverage 완전 + CI green + unresolved 0 → **READY** 판정. 유저에게 **PR 링크** + 리뷰 코멘트 해결 수, CI 상태, 변경 범위를 첨부해 `local:UIAskUserQuestion`으로 approve 여부를 묻는다 — 이 질문은 `local:z` phase4 approve 게이트를 대행하는 것이며, 머지·`local:es` 진행은 유저 approve 후 `local:z` phase4/5 절차가 이어받는다. autoz 하에서는 approve/merge 전에 autoz Rule 8 codex 리뷰 게이트가 먼저 통과되어야 한다.
+
+옵션 텍스트는 `../UIAskUserQuestion/templates/zcheck-pr-approve.json` 템플릿을 그대로 사용한다 (question / context / choices A~D 전부 그 파일이 단일 진실원 — 여기서 재정의하지 않는다). 각 옵션의 의미만 요약:
+- Option A: approve — 이후 머지 → `local:es` → 다음 phase는 `local:z` phase4/5가 절차대로 수행 (RATE +1).
+- Option B: `local:ztrace` 재실행 요청, 더 엄격한 브리핑 (RATE -2).
+- Option C: `local:zcheck` 재실행 요청, CI 체크부터 다시 (RATE -3).
+- Option D: `local:z` 처음부터 재실행 요청, 빠진 절차 복구 (RATE -5).
+
+
 ## Invariants
 
 - Unresolved 코멘트 있으면 approve 요청 금지.
