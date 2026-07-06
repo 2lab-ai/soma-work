@@ -14,7 +14,7 @@ PR이 mergeable 상태가 될 때까지 루프
 ## Step 0: Update bracnh
 
 1. base branch로 새로 `rebase` 한다. 충돌이 발생하면 충돌을 처리한다.
-2. Invoke the global `simplify` skill.
+2. Invoke `local:simplify` (fix mode) on the `origin/main...HEAD` diff.
 
 ## Step 1: CI Must Pass
 
