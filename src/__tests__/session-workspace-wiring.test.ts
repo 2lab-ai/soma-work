@@ -2,14 +2,22 @@ import fs from 'fs';
 import path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+// Per-process suffix: a hardcoded shared path collides across parallel CI
+// workers — one worker's SessionRegistry can persist into the dir while
+// another worker's afterEach rmSync walks it, throwing ENOTEMPTY
+// (observed: CI run 28876339891).
 vi.mock('../env-paths', () => ({
-  DATA_DIR: '/tmp/soma-work-wiring-test',
+  DATA_DIR: `/tmp/soma-work-wiring-test-${process.pid}`,
 }));
 
 import { SessionRegistry } from '../session-registry';
 import { WorkingDirectoryManager } from '../working-directory-manager';
 
-const TEST_DATA_DIR = '/tmp/soma-work-wiring-test';
+const TEST_DATA_DIR = `/tmp/soma-work-wiring-test-${process.pid}`;
+
+// Retries make rmSync robust against ENOTEMPTY when an async write (e.g.
+// debounced registry persistence in this same process) lands mid-deletion.
+const RM_OPTS = { recursive: true, force: true, maxRetries: 10, retryDelay: 50 } as const;
 
 describe('Session Workspace Wiring', () => {
   let manager: WorkingDirectoryManager;
@@ -17,18 +25,15 @@ describe('Session Workspace Wiring', () => {
 
   beforeEach(() => {
     // `force: true` makes rmSync idempotent (no throw when the path is
-    // already gone). The previous `existsSync(...) && rmSync(...)` guard was a
-    // TOCTOU race: TEST_DATA_DIR is a hardcoded shared path, so under parallel
-    // CI workers another worker could delete it between the check and the
-    // rmSync, throwing ENOENT and flaking the run.
-    fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+    // already gone); RM_OPTS retries cover mid-deletion writes.
+    fs.rmSync(TEST_DATA_DIR, RM_OPTS);
     fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
     manager = new WorkingDirectoryManager();
     registry = new SessionRegistry();
   });
 
   afterEach(() => {
-    fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+    fs.rmSync(TEST_DATA_DIR, RM_OPTS);
   });
 
   // === Scenario W1: createSessionBaseDir ===
