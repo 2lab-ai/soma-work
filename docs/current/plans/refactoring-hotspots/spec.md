@@ -107,7 +107,7 @@ consult `51b9ebc9` endorsed the reorder.
 |-------|----|------|--------|
 | Phase 1 (pre-drift) | #1208 (merged) | session-goal lifecycle extraction from `session-registry.ts` | registry 2279→~2190 lines, 17 new tests |
 | Delete round 1 | #1209 (merged) | knip-verified dead files: 4 legacy SRP shims, `@deprecated` `action-handlers.ts` compat, stray `permission-server-start.js`; barrels pruned to single-importer surface; contract-test shim mandate narrowed; stale `llm-runtime-adapter` plan archived | +33/−136, 6 files deleted |
-| Delete round 2 | (this PR) | knip-flagged unused exports: 1 dead function deleted (`getGitHubTokenForCLI`), 20 exports demoted to module-private across 12 files (each grep-verified zero external importers) | −33 net, export surface −21 |
+| Delete round 2 | (this PR) | knip-flagged unused exports: 1 dead function deleted (`getGitHubTokenForCLI`), 17 exports demoted to module-private across 12 files (each grep-verified zero external importers) | −33 net code, export surface −18 |
 
 ## Re-scoped backlog (Musk-ordered)
 
