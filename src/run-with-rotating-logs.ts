@@ -82,7 +82,7 @@ export interface LogStreams {
  * The non-rotated (live) file is always exactly `stdout.log` / `stderr.log`, so
  * `tail -F logs/stdout.log` stays valid across rotations.
  */
-export function createLogStreams(logDir: string, overrides: Partial<RotationStreamOptions> = {}): LogStreams {
+function createLogStreams(logDir: string, overrides: Partial<RotationStreamOptions> = {}): LogStreams {
   fs.mkdirSync(logDir, { recursive: true });
   const opts: RotationStreamOptions = { ...DEFAULT_ROTATION_OPTIONS, ...overrides };
 
@@ -214,7 +214,7 @@ export function runWithRotatingLogs(options: RunOptions): RunHandle {
 export const BOOTSTRAP_LOG_CAP_BYTES = 5 * 1024 * 1024;
 const BOOTSTRAP_LOG_NAMES = ['launchd.out.log', 'launchd.err.log'] as const;
 /** Default grace before the supervisor escalates SIGTERM → SIGKILL on the child. */
-export const DEFAULT_SHUTDOWN_GRACE_MS = 4000;
+const DEFAULT_SHUTDOWN_GRACE_MS = 4000;
 
 /**
  * Truncate the launchd-owned bootstrap logs if they have grown past the cap.

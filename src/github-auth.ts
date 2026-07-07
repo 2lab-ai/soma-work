@@ -164,29 +164,3 @@ export async function discoverInstallations(): Promise<void> {
     logger.error('Failed to discover GitHub App installations:', error);
   }
 }
-
-export async function getGitHubTokenForCLI(): Promise<string | null> {
-  // First try to get the token from environment variable
-  if (config.github.token) {
-    logger.info('Using GITHUB_TOKEN from environment variables for Git CLI operations');
-    return config.github.token;
-  }
-
-  // If no environment token, try to get one from GitHub App
-  const githubAuth = getGitHubAppAuth();
-  if (githubAuth) {
-    try {
-      logger.info('Obtaining GitHub App installation token for Git CLI operations');
-      const token = await githubAuth.getInstallationToken();
-      return token;
-    } catch (error) {
-      logger.error('Failed to obtain GitHub App installation token:', error);
-      return null;
-    }
-  }
-
-  logger.warn(
-    'No GitHub authentication configured. Set GITHUB_TOKEN or configure GitHub App (GITHUB_APP_ID, GITHUB_PRIVATE_KEY, GITHUB_INSTALLATION_ID)',
-  );
-  return null;
-}

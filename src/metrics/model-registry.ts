@@ -294,7 +294,7 @@ export function stripOneMSuffix(model: string): string {
  * in `build-stream-options.ts`, and the token-based auto-compact trigger in
  * `compact-threshold-checker.ts`).
  */
-export const GPT_5_5_RE = /gpt-5\.5/i;
+const GPT_5_5_RE = /gpt-5\.5/i;
 
 /** Returns true when `model` is a gpt-5.5 id (case-insensitive). */
 export function isGpt55Model(model: string): boolean {

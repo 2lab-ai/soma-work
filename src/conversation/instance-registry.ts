@@ -34,7 +34,7 @@ const logger = new Logger('InstanceRegistry');
 export const STALE_THRESHOLD_MS = 30_000;
 
 /** Default refresh cadence for {@link startHeartbeatLoop}. */
-export const DEFAULT_HEARTBEAT_INTERVAL_MS = 5_000;
+const DEFAULT_HEARTBEAT_INTERVAL_MS = 5_000;
 
 export interface HeartbeatPayload {
   /** Listening port — also the filename stem (`<port>.json`). */
