@@ -1,7 +1,7 @@
 # LlmRuntime Adapter Layer — Vertical Trace
 
 > STV Trace | Created: 2026-04-03
-> Spec: docs/current/plans/llm-runtime-adapter/spec.md
+> Spec: docs/archive/plans/llm-runtime-adapter/spec.md
 > Issue: #332
 
 ## Implementation Status
