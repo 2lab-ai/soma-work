@@ -11,6 +11,7 @@ import { AutoskillAddViewSubmissionHandler } from './autoskill-add-view-submissi
 import { ChannelRouteActionHandler } from './channel-route-action-handler';
 import { ChoiceActionHandler } from './choice-action-handler';
 import { CompactActionHandler } from './compact-action-handler';
+import { CronActionHandler } from './cron-action-handler';
 import { FormActionHandler } from './form-action-handler';
 import { GoalActionHandler } from './goal-action-handler';
 import { InstructionConfirmActionHandler } from './instruction-confirm-action-handler';
@@ -110,6 +111,9 @@ setActionHandlersProviders({
         slackApi: ctx.slackApi as any,
       }),
       autoskillAddSubmitHandler: new AutoskillAddViewSubmissionHandler({
+        slackApi: ctx.slackApi as any,
+      }),
+      cronActionHandler: new CronActionHandler({
         slackApi: ctx.slackApi as any,
       }),
       userSkillMenuHandler: new UserSkillMenuActionHandler({
