@@ -252,6 +252,8 @@ A whitelist of bare (no-prefix) forms is still accepted for legacy reasons. Sour
 | `new [<prompt>]` · `renew [<prompt>]` | Reset / renew session, optional prompt carries over |
 | `auth` · `auth llmux\|cct` · `set auth <mode>` · `auth switch <name>` | Auth backend card / runtime mode switch (#1189; mutations admin-only) |
 | `cct` · `cct set <n>` · `cct next` · `cct usage [<n>]` · `cct auto [dry]` | CCT token status / rotation; `auto` = admin-only manual auto-rotate (token mutation is card-only since #569) |
+| `cron` · `schedule` (also `크론` · `스케줄`) | List cron jobs — routed as a command so autogoal can never swallow it; admins see all users' jobs with the owner shown |
+| `cron model <name> <default\|fast\|model>` · `cron target <name> <channel\|dm\|thread>` · `cron delete <name>` | Change a job's model (`default` = creator's current model at fire time) / delivery target / delete; admins address another user's job by appending `<@owner>` |
 | `$` · `$model <v>` · `$verbosity <v>` · `$effort <v>` · `$thinking <v>` · `$thinking_summary <v>` | **Legacy** session prefix during deprecation grace period (emits one-line notice, use `%` going forward) |
 
 Any free-form text not matching the whitelist is treated as a chat / workflow dispatch prompt.
