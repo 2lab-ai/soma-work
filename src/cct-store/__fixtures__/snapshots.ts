@@ -11,7 +11,7 @@ import type { AuthKey, CctSlotLegacyAttachmentOnly, CctSlotWithSetup, OAuthAttac
 import type { CctStoreSnapshot, LegacyV1Snapshot, LegacyV1TokenSlot, SlotState } from '../types';
 
 /** Canonical OAuth attachment for the `source: 'legacy-attachment'` arm. */
-export function makeOAuthAttachment(overrides: Partial<OAuthAttachment> = {}): OAuthAttachment {
+function makeOAuthAttachment(overrides: Partial<OAuthAttachment> = {}): OAuthAttachment {
   return {
     accessToken: 'at-xyz',
     refreshToken: 'rt-xyz',

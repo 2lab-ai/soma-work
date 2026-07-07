@@ -100,7 +100,7 @@ export function buildUserSkillListBlocks(userId: string): UserSkillListBlocks | 
  * The action value carries BOTH `ownerId` (the source user) and `requesterId`
  * (the clicker who rendered the list, used for the click-binding guard).
  */
-export function buildOtherUserSkillListBlocks(ownerId: string, requesterId: string): UserSkillListBlocks | null {
+function buildOtherUserSkillListBlocks(ownerId: string, requesterId: string): UserSkillListBlocks | null {
   // Names only — NEVER read the owner's SKILL.md content here. Descriptions are
   // gated body content; a public discovery list must not leak them before a
   // permission grant (codex review). The names are what A needs to request use.
