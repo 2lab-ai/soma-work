@@ -130,8 +130,8 @@ describe('target select', () => {
     expect(j.threadTs).toBeNull();
   });
 
-  it('thread anchors to the card thread ts', async () => {
-    seed();
+  it('thread anchors to the card thread ts AND repoints channel to the card channel', async () => {
+    seed(); // job.channel = C111, card lives in C_CARD
     await handler.handleAction(
       body({
         actionId: 'cron_target::U_ALICE::daily-report',
@@ -144,6 +144,8 @@ describe('target select', () => {
     const j = storage.getJobsByOwner('U_ALICE')[0];
     expect(j.target).toBe('thread');
     expect(j.threadTs).toBe('777.888');
+    // scheduler posts threadReplier(job.channel, job.threadTs) — both must match the card
+    expect(j.channel).toBe('C_CARD');
   });
 });
 

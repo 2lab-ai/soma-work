@@ -177,12 +177,19 @@ export class CronCommandHandler implements CommandHandler {
       desc = 'dm — 잡 오너에게 DM';
     } else {
       // thread: explicit ts arg > existing job ts > the thread this command ran in
-      const ts = rest[1] ?? resolved.job.threadTs ?? ctx.threadTs;
+      const explicitTs = rest[1];
+      const ts = explicitTs ?? resolved.job.threadTs ?? ctx.threadTs;
       if (!ts) {
         await ctx.say({ text: '❌ thread 대상에는 threadTs가 필요합니다.', thread_ts: ctx.threadTs });
         return;
       }
       patch = { target: 'thread', threadTs: ts };
+      // Anchoring to the CURRENT thread must also repoint the job channel —
+      // the scheduler replies via threadReplier(job.channel, job.threadTs),
+      // so a ts from this channel with the old job.channel would miss.
+      if (!explicitTs && !resolved.job.threadTs) {
+        patch.channel = ctx.channel;
+      }
       desc = `thread(ts:${ts}) — 해당 스레드에 답글`;
     }
 

@@ -142,15 +142,20 @@ function buildModelPatch(selected: string): CronJobPatch | null {
 
 /**
  * Map a target select value to a CronJobPatch. `thread` anchors to the thread
- * the card lives in (message.thread_ts, falling back to the card ts itself).
+ * the card lives in (message.thread_ts, falling back to the card ts itself)
+ * AND repoints the job's channel to the card's channel — the scheduler posts
+ * thread replies as `threadReplier(job.channel, job.threadTs)` (cron-scheduler
+ * executeJob), so a threadTs from another channel would otherwise reply into a
+ * nonexistent thread of the old channel.
  */
 function buildTargetPatch(selected: string, body: any): CronJobPatch | null {
   if (selected === 'channel') return { target: null, threadTs: null };
   if (selected === 'dm') return { target: 'dm', threadTs: null };
   if (selected === 'thread') {
     const ts: string | undefined = body?.message?.thread_ts ?? body?.message?.ts;
-    if (!ts) return null;
-    return { target: 'thread', threadTs: ts };
+    const channelId: string | undefined = body?.channel?.id;
+    if (!ts || !channelId) return null;
+    return { target: 'thread', threadTs: ts, channel: channelId };
   }
   return null;
 }
