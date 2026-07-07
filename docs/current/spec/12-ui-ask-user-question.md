@@ -5,7 +5,7 @@
 - Source Files:
   - Skill spec: `src/local/skills/UIAskUserQuestion/SKILL.md`
   - Prompt injection: `src/prompt/common.prompt`
-  - Extraction/normalization: `src/slack/user-choice-extractor.ts`, `src/slack/user-choice-handler.ts`
+  - Extraction/normalization: `packages/slack/src/user-choice-extractor.ts`, `src/slack/user-choice-handler.ts`
   - Slack UI: `src/slack/choice-message-builder.ts`
   - Stream integration: `src/slack/stream-processor.ts`, `src/slack/pipeline/stream-executor.ts`
   - Action handling/state: `src/slack/actions/index.ts`, `src/slack/actions/choice-action-handler.ts`, `src/slack/actions/form-action-handler.ts`, `src/slack/actions/pending-form-store.ts`
@@ -128,7 +128,7 @@ UIAskUserQuestion은 **모델이 유저에게 “결정이 필요한 질문”�
 - 권장 포맷(`user_choice_group`)을 쓰면 `options/choices` 양쪽을 안전하게 수용합니다.
 
 ### 3.5 호환성 규칙(파서가 수용하는 변형)
-`src/slack/user-choice-extractor.ts` 기준:
+`packages/slack/src/user-choice-extractor.ts` 기준:
 - `user_choice.options` 또는 `user_choice.choices` 둘 다 허용(내부로는 `choices`로 정규화)
 - `user_choice_group`의 각 choice도 `options` 또는 `choices` 허용
 - `user_choice_group.type`은 `user_choice_group` 또는 생략(권장은 명시)
@@ -158,7 +158,7 @@ Slack 스트림 처리 파이프라인에서 모델 응답 텍스트를 처리�
   - `handleFinalResult()`
 
 ### 5.2 추출기(Extractor) 동작
-`src/slack/user-choice-extractor.ts`의 `extractUserChoice(text)`가 수행합니다:
+`packages/slack/src/user-choice-extractor.ts`의 `extractUserChoice(text)`가 수행합니다:
 1. 우선 ` ```json ... ``` ` 코드블록을 탐색하며 JSON 파싱 시도
 2. 실패 시 raw JSON(`{ "type": ... }` 또는 `{ "question": ... }`)을 탐색
    - 문자열/escape를 고려해 **brace balance**로 JSON object 범위를 추출
