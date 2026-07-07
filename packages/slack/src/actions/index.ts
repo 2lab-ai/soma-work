@@ -120,6 +120,8 @@ export interface ActionHandlerDelegates {
   };
   autoskillActionHandler: { handleAction(body: any, respond: RespondFn, client: any): Promise<void> };
   autoskillAddSubmitHandler: { handleSubmit(ack: ViewAck, body: any, client: any): Promise<void> };
+  /** Cron management card (model/target selects, delete button). */
+  cronActionHandler: { handleAction(body: any, respond: RespondFn): Promise<void> };
   userSkillMenuHandler: { handleAction(body: any, respond: RespondFn, client: any): Promise<void> };
   userSkillPermissionHandler: { handleAction(body: any, respond: RespondFn, client: any): Promise<void> };
   userSkillEditSubmitHandler: { handleSubmit(ack: ViewAck, body: any, client: any): Promise<void> };
@@ -283,6 +285,13 @@ export class ActionHandlers {
     app.action(/^autoskill_/, async ({ ack, body, respond, client }) => {
       await ack();
       await this.delegates.autoskillActionHandler.handleAction(body, respond as RespondFn, client);
+    });
+
+    // Cron management card: cron_model::/cron_target::/cron_delete:: — the
+    // `::` addressing suffix keeps this disjoint from any future bare cron_* ids.
+    app.action(/^cron_(model|target|delete)::/, async ({ ack, body, respond }) => {
+      await ack();
+      await this.delegates.cronActionHandler.handleAction(body, respond as RespondFn);
     });
 
     app.view(AUTOSKILL_ADD_MODAL_CALLBACK_ID, async ({ ack, body, client }) => {

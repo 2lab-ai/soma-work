@@ -58,7 +58,7 @@ interface PersistedAuthRuntime {
 }
 
 /** Default on-disk location — sibling of `cct-store.json` under DATA_DIR. */
-export function defaultAuthRuntimePath(): string {
+function defaultAuthRuntimePath(): string {
   const dataDir = process.env.DATA_DIR || './data';
   return path.join(dataDir, 'auth-runtime.json');
 }

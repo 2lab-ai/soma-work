@@ -19,7 +19,7 @@ interface InternalMcpServerSpec {
   packageBinSpecifier: string;
 }
 
-export const INTERNAL_MCP_SERVER_SPECS: Record<InternalMcpServerName, InternalMcpServerSpec> = {
+const INTERNAL_MCP_SERVER_SPECS: Record<InternalMcpServerName, InternalMcpServerSpec> = {
   agent: {
     dir: 'agent',
     basename: 'agent-mcp-server',
