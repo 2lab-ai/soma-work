@@ -543,6 +543,35 @@ describe('handleUpdate', () => {
     expect(r.isError).toBe(true);
     expect(r.text).toContain('owner');
   });
+
+  it('admin name-only call with cross-owner name collision is rejected as ambiguous', () => {
+    seedJob(storage); // U_OWNER's 'daily'
+    seedJob(storage, { owner: 'U_ADMIN' }); // admin's own 'daily'
+    const r = handleUpdate({ name: 'daily', prompt: 'x' }, adminContext, storage);
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('ambiguous');
+    expect(r.text).toContain('U_ADMIN');
+    expect(r.text).toContain('U_OWNER');
+    // nothing was modified
+    expect(storage.getJobsByOwner('U_ADMIN')[0].prompt).toBe('standup');
+    expect(storage.getJobsByOwner('U_OWNER')[0].prompt).toBe('standup');
+  });
+
+  it('admin resolves collision by passing owner explicitly (own job included)', () => {
+    seedJob(storage);
+    seedJob(storage, { owner: 'U_ADMIN' });
+    const r = handleUpdate({ name: 'daily', owner: 'U_ADMIN', prompt: 'mine' }, adminContext, storage);
+    expect(r.isError).toBe(false);
+    expect(storage.getJobsByOwner('U_ADMIN')[0].prompt).toBe('mine');
+    expect(storage.getJobsByOwner('U_OWNER')[0].prompt).toBe('standup');
+  });
+
+  it('admin name-only call without collision still edits own job', () => {
+    seedJob(storage, { owner: 'U_ADMIN' });
+    const r = handleUpdate({ name: 'daily', prompt: 'mine' }, adminContext, storage);
+    expect(r.isError).toBe(false);
+    expect(storage.getJobsByOwner('U_ADMIN')[0].prompt).toBe('mine');
+  });
 });
 
 describe('handleList admin scoping', () => {
@@ -609,5 +638,14 @@ describe('handleDelete admin scoping', () => {
     const r = handleDelete({ name: 'daily', owner: 'U_OWNER' }, adminContext, storage);
     expect(r.isError).toBe(false);
     expect(storage.getJobsByOwner('U_OWNER')).toHaveLength(0);
+  });
+
+  it('admin name-only delete with cross-owner collision is rejected as ambiguous', () => {
+    seedJob(storage, { owner: 'U_ADMIN' });
+    const r = handleDelete({ name: 'daily' }, adminContext, storage);
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('ambiguous');
+    expect(storage.getJobsByOwner('U_OWNER')).toHaveLength(1);
+    expect(storage.getJobsByOwner('U_ADMIN')).toHaveLength(1);
   });
 });
