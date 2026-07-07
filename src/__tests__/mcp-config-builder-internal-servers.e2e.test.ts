@@ -96,6 +96,7 @@ describe('McpConfigBuilder internal MCP servers e2e', () => {
       channel: 'C123',
       threadTs: '1700000000.000000',
       user: 'U123',
+      isAdmin: false,
     });
     expect(JSON.parse(servers['slack-mcp'].env.SLACK_MCP_CONTEXT)).toEqual({
       channel: 'C123',
