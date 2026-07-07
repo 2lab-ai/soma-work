@@ -9,8 +9,9 @@
  * (re-exported by `./session-goal`).
  *
  * Mutation contract (do not mix the styles):
- * - `migrateLegacyGoal` / `migrateLegacyGoalArray` return copies and never
- *   mutate their input — deserialize paths rely on rebinding.
+ * - `migrateLegacyGoal` / `migrateLegacyGoalArray` never mutate their input;
+ *   they return copies when a migration change is needed (the fast path
+ *   returns the same object) — deserialize paths rely on rebinding.
  * - `creditActiveGoalMs` / `stampActiveLegGoalOwner` mutate the live
  *   session/goal in place — the turn timer relies on identity.
  */
