@@ -393,13 +393,6 @@ if (require.main === module) {
   main();
 }
 
-export type { ArchivedSession, ConversationRecord, ShowSessionOptions };
+export type { ArchivedSession, ConversationRecord };
 // ── Test-only exports ───────────────────────────────────────────────
-export {
-  loadArchiveBySessionKey,
-  parseShowArgs,
-  printConversationSection,
-  printSessionExtras,
-  printSessionHeader,
-  showSession,
-};
+export { showSession };

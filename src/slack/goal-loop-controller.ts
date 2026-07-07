@@ -53,7 +53,7 @@ import { GOAL_CONTINUATION_TEXT_PREFIX } from './goal-continuation';
 import { advanceGoalQueue, formatGoalObjectiveForSlack } from './session-goal';
 
 /** Default ceiling for a single completion eval before it is aborted. */
-export const DEFAULT_GOAL_EVAL_TIMEOUT_MS = 120_000;
+const DEFAULT_GOAL_EVAL_TIMEOUT_MS = 120_000;
 
 /** Minimal logger surface (matches the project `Logger`). */
 export interface GoalLoopLogger {
