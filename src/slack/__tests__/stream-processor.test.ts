@@ -8,7 +8,6 @@ import { calculateTokenCost } from '../../metrics/model-registry';
 import {
   AgentStreamProcessor,
   extractTaskIdFromResult,
-  PendingForm,
   type SayFunction,
   type StreamCallbacks,
   type StreamContext,
@@ -516,9 +515,9 @@ describe('StreamProcessor', () => {
 
       expect(result.success).toBe(true);
       expect(result.sdkResultError).toBeDefined();
-      expect(result.sdkResultError!.subtype).toBe('error_during_execution');
-      expect(result.sdkResultError!.errors).toEqual(['context window exceeded', 'prompt too long']);
-      expect(result.sdkResultError!.numTurns).toBe(5);
+      expect(result.sdkResultError?.subtype).toBe('error_during_execution');
+      expect(result.sdkResultError?.errors).toEqual(['context window exceeded', 'prompt too long']);
+      expect(result.sdkResultError?.numTurns).toBe(5);
     });
 
     it('should capture error_max_turns in sdkResultError', async () => {
@@ -539,7 +538,7 @@ describe('StreamProcessor', () => {
       const result = await processor.process(createMockStream(messages) as any, mockContext, abortController.signal);
 
       expect(result.sdkResultError).toBeDefined();
-      expect(result.sdkResultError!.subtype).toBe('error_max_turns');
+      expect(result.sdkResultError?.subtype).toBe('error_max_turns');
     });
 
     it('should not set sdkResultError on success result', async () => {
@@ -576,8 +575,8 @@ describe('StreamProcessor', () => {
       const processor = new AgentStreamProcessor();
       const result = await processor.process(createMockStream(messages) as any, mockContext, abortController.signal);
       expect(result.sdkResultError).toBeDefined();
-      expect(result.sdkResultError!.subtype).toBe('error_max_turns');
-      expect(result.sdkResultError!.errors).toEqual([]);
+      expect(result.sdkResultError?.subtype).toBe('error_max_turns');
+      expect(result.sdkResultError?.errors).toEqual([]);
     });
 
     it('should capture error_ prefix subtype even when is_error is false', async () => {
@@ -596,7 +595,7 @@ describe('StreamProcessor', () => {
       const processor = new AgentStreamProcessor();
       const result = await processor.process(createMockStream(messages) as any, mockContext, abortController.signal);
       expect(result.sdkResultError).toBeDefined();
-      expect(result.sdkResultError!.subtype).toBe('error_max_budget_usd');
+      expect(result.sdkResultError?.subtype).toBe('error_max_budget_usd');
     });
 
     it('should default subtype to error_during_execution when subtype is missing', async () => {
@@ -613,7 +612,7 @@ describe('StreamProcessor', () => {
       const processor = new AgentStreamProcessor();
       const result = await processor.process(createMockStream(messages) as any, mockContext, abortController.signal);
       expect(result.sdkResultError).toBeDefined();
-      expect(result.sdkResultError!.subtype).toBe('error_during_execution');
+      expect(result.sdkResultError?.subtype).toBe('error_during_execution');
     });
 
     it('should not call say or increment messageCount on error result', async () => {
@@ -858,5 +857,63 @@ describe('extractTaskIdFromResult', () => {
   it('null/undefined result: returns undefined', () => {
     expect(extractTaskIdFromResult(undefined)).toBeUndefined();
     expect(extractTaskIdFromResult(null)).toBeUndefined();
+  });
+});
+
+// Field incident 2026-07-07 (session ccee16e0): the SDK seals a FAILED
+// /compact as a successful assistant turn whose content is the raw stderr
+// line, and a transcript poisoned with empty text blocks surfaces Anthropic's
+// 400 validation error as assistant content on every turn. Neither transport
+// error may stream to Slack — stream-executor inspects collectedText and
+// routes them into the transcript-repair / terminal-failure rails, which
+// surface ONE condensed notice instead.
+describe('compaction-error leak suppression', () => {
+  let mockSay: SayFunction;
+  let mockContext: StreamContext;
+  let abortController: AbortController;
+
+  beforeEach(() => {
+    mockSay = vi.fn().mockResolvedValue({ ts: 'msg_ts' }) as unknown as SayFunction;
+    abortController = new AbortController();
+    mockContext = {
+      channel: 'C123',
+      threadTs: 'thread_ts',
+      sessionKey: 'session_key',
+      sessionId: 'session_id',
+      say: mockSay,
+    };
+  });
+
+  async function processText(text: string) {
+    const messages = [{ type: 'assistant', message: { content: [{ type: 'text', text }] } }];
+    const processor = new AgentStreamProcessor();
+    return processor.process(createMockStream(messages) as any, mockContext, abortController.signal);
+  }
+
+  it('does not stream the raw "Error during compaction" stderr line, but still collects it', async () => {
+    const leak =
+      'Error: Error during compaction: API Error: 400 {"type":"error","error":{"type":"invalid_request_error","message":"messages: text content blocks must be non-empty"},"request_id":"req_x"}';
+    const result = await processText(leak);
+
+    expect(mockSay).not.toHaveBeenCalled();
+    // stream-executor must still see the text to route recovery.
+    expect(result.collectedText).toContain('Error during compaction');
+  });
+
+  it('does not stream the bare empty-text-block 400 error either', async () => {
+    const leak =
+      'API Error: 400 {"type":"error","error":{"type":"invalid_request_error","message":"messages: text content blocks must be non-empty"},"request_id":"req_y"}';
+    const result = await processText(leak);
+
+    expect(mockSay).not.toHaveBeenCalled();
+    expect(result.collectedText).toContain('must be non-empty');
+  });
+
+  it('still streams prose that merely DISCUSSES compaction errors', async () => {
+    const prose =
+      'The failure you saw earlier happened because compaction replays the transcript. When a record contains an empty text block, the API responds with a validation error and the message "Error during compaction" appears in the thread. The fix repairs the transcript before compacting, so you should not see it again.';
+    await processText(prose);
+
+    expect(mockSay).toHaveBeenCalled();
   });
 });
