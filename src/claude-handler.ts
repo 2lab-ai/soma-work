@@ -50,7 +50,12 @@ import type {
 // path the bundled `zworkflow@soma-work` default resolves to (see plugin/bundled.ts).
 const LOCAL_PLUGINS_DIR = BUNDLED_PLUGINS_DIR;
 
-import { textIndicatesUsageLimit } from '@soma/common/rate-limit';
+import {
+  boundRateLimitDelayMs,
+  parseRetryAfterMs,
+  textIndicatesRetryableRateLimit,
+  textIndicatesUsageLimit,
+} from '@soma/common/rate-limit';
 import type { ModelCommandContext } from 'somalib/model-commands/types';
 import { sendCredentialAlert } from './credential-alert';
 import {
@@ -61,6 +66,7 @@ import {
 } from './credentials-manager';
 import {
   DISPATCH_OVERLOADED_MAX_RETRIES,
+  DISPATCH_RATE_LIMIT_MAX_RETRIES,
   type DispatchRetryDecision,
   decideDispatchRetry,
   sleepWithAbort,
@@ -605,6 +611,7 @@ export class ClaudeHandler {
     // exhausted the error propagates as before.
     let usageLimitAttempts = 0;
     let overloadedRetries = 0;
+    let rateLimitRetries = 0;
     let overflowFallbackUsed = false;
     let effectiveModel = model;
     while (true) {
@@ -660,9 +667,28 @@ export class ClaudeHandler {
           if (textIndicatesPromptTooLongContent(result)) {
             throw new Error(`Prompt is too long (surfaced as dispatch content): ${result.slice(0, 200)}`);
           }
+          // Pool-rate-limit-as-content guard. The account-pool gateway rejects
+          // with "Request rejected (429) · All N eligible accounts are
+          // rate-limited; retry in Ns" as a SUCCESSFUL assistant turn (nothing
+          // throws), so `dispatchOneShotInner` returns it verbatim — which the
+          // goal-completion eval then tried to `JSON.parse` (the original
+          // `Unexpected token 'A', "API Error:"` crash). Convert the content
+          // shape into a thrown error so the recovery classifier below waits
+          // the advertised window and retries instead of leaking the notice.
+          if (textIndicatesRetryableRateLimit(result)) {
+            // Parse the "retry in Ns" window from the FULL content and stash it
+            // on the thrown error so `decideDispatchRetry` honors it even if
+            // the hint sits past the 200-char message preview below.
+            const rlErr = new Error(`Claude pool rate-limited (surfaced as dispatch content): ${result.slice(0, 200)}`);
+            (rlErr as { poolRateLimitRetryMs?: number }).poolRateLimitRetryMs = boundRateLimitDelayMs(
+              parseRetryAfterMs(result),
+            );
+            throw rlErr;
+          }
         } catch (attemptErr) {
           const decision = decideDispatchRetry(attemptErr, {
             overloadedRetries,
+            rateLimitRetries,
             overflowFallbackUsed,
             model: effectiveModel,
             aborted: abortController?.signal.aborted ?? false,
@@ -674,6 +700,14 @@ export class ClaudeHandler {
             this.logger.warn('DISPATCH: overloaded/529 — retrying after delay', {
               attempt: overloadedRetries,
               maxRetries: DISPATCH_OVERLOADED_MAX_RETRIES,
+              delayMs: decision.delayMs,
+              error: errPreview,
+            });
+          } else if (decision.kind === 'rate-limit-wait') {
+            rateLimitRetries++;
+            this.logger.warn('DISPATCH: pool rate-limited — waiting advertised window before retry', {
+              attempt: rateLimitRetries,
+              maxRetries: DISPATCH_RATE_LIMIT_MAX_RETRIES,
               delayMs: decision.delayMs,
               error: errPreview,
             });
@@ -740,19 +774,26 @@ export class ClaudeHandler {
         if (lease) await lease.release();
       }
 
-      // Overloaded/529 backoff happens AFTER the lease is released so a slot
-      // is never pinned for the 30s wait. The sleep resolves early on abort;
-      // surface the abort as an error instead of burning another attempt.
+      // Overloaded/529 AND pool-rate-limit backoff happen AFTER the lease is
+      // released so a slot is never pinned for the wait. The sleep resolves
+      // early on abort; surface the abort as an error instead of burning
+      // another attempt.
       if (pendingRetry?.kind === 'overloaded-wait') {
         await sleepWithAbort(pendingRetry.delayMs, abortController?.signal);
         if (abortController?.signal.aborted) {
           throw new Error('one-shot dispatch aborted during overloaded/529 retry wait');
         }
+      } else if (pendingRetry?.kind === 'rate-limit-wait') {
+        await sleepWithAbort(pendingRetry.delayMs, abortController?.signal);
+        if (abortController?.signal.aborted) {
+          throw new Error('one-shot dispatch aborted during pool rate-limit retry wait');
+        }
       }
       // while(true) re-enters: every path that reaches here has either a
       // finite retry budget (overloaded ≤ DISPATCH_OVERLOADED_MAX_RETRIES,
-      // overflow-fallback once, usage-limit ≤ DISPATCH_USAGE_LIMIT_MAX_ATTEMPTS)
-      // or returned/thrown above, so the loop always terminates.
+      // rate-limit ≤ DISPATCH_RATE_LIMIT_MAX_RETRIES, overflow-fallback once,
+      // usage-limit ≤ DISPATCH_USAGE_LIMIT_MAX_ATTEMPTS) or returned/thrown
+      // above, so the loop always terminates.
     }
   }
 
