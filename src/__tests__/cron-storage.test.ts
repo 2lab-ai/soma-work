@@ -324,3 +324,93 @@ describe('isValidCronName', () => {
     expect(isValidCronName('a'.repeat(65))).toBe(false);
   });
 });
+
+// --- updateJob — cron manage UI (T2.1) ---
+// Trace: cron/schedule 관리 UI — 모델·출력 대상 변경은 updateJob 경유
+describe('CronStorage.updateJob', () => {
+  let storage: CronStorage;
+  let tmpFile: string;
+
+  beforeEach(() => {
+    tmpFile = path.join(os.tmpdir(), `cron-update-test-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+    storage = new CronStorage(tmpFile);
+  });
+
+  afterEach(() => {
+    try {
+      fs.unlinkSync(tmpFile);
+    } catch {}
+    try {
+      fs.unlinkSync(tmpFile + '.tmp');
+    } catch {}
+  });
+
+  function seed(over: Partial<Parameters<CronStorage['addJob']>[0]> = {}) {
+    return storage.addJob({
+      name: 'job-a',
+      expression: '0 9 * * *',
+      prompt: 'hello',
+      owner: 'U_OWNER',
+      channel: 'C111',
+      threadTs: null,
+      ...over,
+    });
+  }
+
+  it('patches modelConfig and leaves other fields untouched', () => {
+    const created = seed();
+    const updated = storage.updateJob('U_OWNER', 'job-a', {
+      modelConfig: { type: 'custom', model: 'gpt-5.5' },
+    });
+    expect(updated).not.toBeNull();
+    expect(updated!.modelConfig).toEqual({ type: 'custom', model: 'gpt-5.5' });
+    expect(updated!.expression).toBe('0 9 * * *');
+    expect(updated!.prompt).toBe('hello');
+    expect(updated!.id).toBe(created.id);
+    expect(updated!.createdAt).toBe(created.createdAt);
+    // persisted
+    const reloaded = storage.getJobsByOwner('U_OWNER')[0];
+    expect(reloaded.modelConfig).toEqual({ type: 'custom', model: 'gpt-5.5' });
+  });
+
+  it('clears modelConfig with null (default = creator current model)', () => {
+    seed({ modelConfig: { type: 'fast' } });
+    const updated = storage.updateJob('U_OWNER', 'job-a', { modelConfig: null });
+    expect(updated!.modelConfig).toBeUndefined();
+    const reloaded = storage.getJobsByOwner('U_OWNER')[0];
+    expect('modelConfig' in reloaded).toBe(false);
+  });
+
+  it('patches target and clears with null', () => {
+    seed({ target: 'dm' });
+    const t = storage.updateJob('U_OWNER', 'job-a', { target: 'thread', threadTs: '1.2' });
+    expect(t!.target).toBe('thread');
+    expect(t!.threadTs).toBe('1.2');
+    const cleared = storage.updateJob('U_OWNER', 'job-a', { target: null, threadTs: null });
+    expect(cleared!.target).toBeUndefined();
+    expect(cleared!.threadTs).toBeNull();
+  });
+
+  it('clears mode with null and sets fastlane', () => {
+    seed({ mode: 'fastlane' });
+    const cleared = storage.updateJob('U_OWNER', 'job-a', { mode: null });
+    expect(cleared!.mode).toBeUndefined();
+    const set = storage.updateJob('U_OWNER', 'job-a', { mode: 'fastlane' });
+    expect(set!.mode).toBe('fastlane');
+  });
+
+  it('returns null for wrong owner or unknown name', () => {
+    seed();
+    expect(storage.updateJob('U_OTHER', 'job-a', { prompt: 'x' })).toBeNull();
+    expect(storage.updateJob('U_OWNER', 'nope', { prompt: 'x' })).toBeNull();
+  });
+
+  it('preserves lastRun bookkeeping fields across update', () => {
+    const created = seed();
+    storage.updateLastRun(created.id, new Date('2026-01-02T03:04:00Z'));
+    const updated = storage.updateJob('U_OWNER', 'job-a', { expression: '*/5 * * * *' });
+    expect(updated!.lastRunAt).toBe('2026-01-02T03:04:00.000Z');
+    expect(updated!.lastRunMinute).toBe('2026-01-02T03:04');
+    expect(updated!.expression).toBe('*/5 * * * *');
+  });
+});

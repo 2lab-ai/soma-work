@@ -838,6 +838,7 @@ describe('Abort handling', () => {
     expect(session.fallbackCompactActive).toBe(true);
     expect(session.fallbackCompactOriginalModel).toBe('gpt-5.5');
     expect(deps.contextWindowManager.handlePromptTooLong).toHaveBeenCalledWith('C123:thread123');
+    expect(deps.turnNotifier.notify).not.toHaveBeenCalled();
     expect(say).toHaveBeenCalledTimes(1);
     const payload = say.mock.calls[0][0];
     expect(payload.text).toContain('1M 모델로 자동 컴팩트');
@@ -867,6 +868,12 @@ describe('Abort handling', () => {
     expect(retryAfterMs).toBeUndefined();
     expect(deps.claudeHandler.clearSessionId).toHaveBeenCalledWith('C123', 'thread123');
     expect(session.fallbackCompactActive).toBeUndefined();
+    expect(deps.turnNotifier.notify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        category: 'Exception',
+        message: 'Prompt is too long: maximum context length exceeded',
+      }),
+    );
     expect(say).toHaveBeenCalledTimes(1);
     const payload = say.mock.calls[0][0];
     expect(payload.text).toContain('Session:* 🔄 초기화됨');
@@ -6112,11 +6119,14 @@ describe('prompt-too-long delivered as content triggers auto fallback compact (f
         buildBashStatus: vi.fn().mockReturnValue('is running commands...'),
         registerBackgroundBashActive: vi.fn().mockReturnValue(() => {}),
       },
+      turnNotifier: {
+        notify: vi.fn().mockResolvedValue(undefined),
+      },
       threadPanel: undefined,
     } as any;
   }
 
-  it('converts the content-shaped overflow to the fallback-compact path (model switched, retry scheduled)', async () => {
+  it('converts the content-shaped overflow to the fallback-compact path without emitting a raw Exception card', async () => {
     vi.mocked(userSettingsStore.getUserEmail).mockReturnValue('user@example.com');
     const deps = createPtlDeps();
     const executor = new StreamExecutor(deps);
@@ -6157,6 +6167,12 @@ describe('prompt-too-long delivered as content triggers auto fallback compact (f
     expect(session.fallbackCompactPendingUserText).toBe('아주 긴 메시지');
     // Session must NOT be cleared — history is what /compact will shrink.
     expect(deps.claudeHandler.clearSessionId).not.toHaveBeenCalled();
+    // The recoverable fallback path must not surface the raw prompt-too-long
+    // wrapper as a red Exception card before the compact notice.
+    expect(deps.turnNotifier.notify).not.toHaveBeenCalled();
+    expect(say).toHaveBeenCalledTimes(1);
+    expect(say.mock.calls[0][0].text).toContain('1M 모델로 자동 컴팩트');
+    expect(say.mock.calls[0][0].text).not.toContain('surfaced as turn content');
     // The error text must NOT be persisted as the assistant's answer.
     const { recordAssistantTurn } = await import('../../../conversation');
     expect(vi.mocked(recordAssistantTurn)).not.toHaveBeenCalledWith(expect.anything(), 'Prompt is too long');
@@ -6169,5 +6185,379 @@ describe('prompt-too-long delivered as content triggers auto fallback compact (f
     // text must not convert to a throw. We assert via execute-level behavior
     // being unnecessary here — the length gate (>160 chars) excludes prose.
     expect(prose.length).toBeGreaterThan(160);
+  });
+});
+
+// ── Compaction failure delivered as content: transcript repair + unwedge ──
+//
+// Field incident (dev, 2026-07-07T08:32Z, session ccee16e0): a gpt-5.5 turn
+// persisted an assistant message with an EMPTY text content block into the
+// SDK transcript. The auto-fallback `/compact` (on opus[1m]) replayed that
+// history through the Anthropic API → 400 "messages: text content blocks
+// must be non-empty". The SDK sealed the failed compact as a SUCCESSFUL turn
+// whose content was the raw stderr line — so nothing threw, the raw error
+// leaked to Slack, fallbackCompactActive/model were never restored, and every
+// subsequent turn 400-ed the same way (session wedged forever).
+describe('compaction failure delivered as content (transcript repair + unwedge)', () => {
+  const SESSION_UUID = 'ccee16e0-ffed-4c59-a1c1-732b89c5cf53';
+  const EMPTY_BLOCK_400_TEXT =
+    'Error: Error during compaction: API Error: 400 {"type":"error","error":{"type":"invalid_request_error","message":"messages: text content blocks must be non-empty"},"request_id":"req_x"}';
+
+  let configDir: string;
+  let transcriptPath: string;
+  let prevConfigDirEnv: string | undefined;
+
+  function writePoisonedTranscript() {
+    const fsn = require('node:fs');
+    const pathn = require('node:path');
+    const projectDir = pathn.join(configDir, 'projects', '-tmp-U-session-1');
+    fsn.mkdirSync(projectDir, { recursive: true });
+    transcriptPath = pathn.join(projectDir, `${SESSION_UUID}.jsonl`);
+    const lines = [
+      { type: 'user', uuid: 'u1', message: { role: 'user', content: [{ type: 'text', text: 'work' }] } },
+      {
+        type: 'assistant',
+        uuid: 'a1',
+        parentUuid: 'u1',
+        message: { role: 'assistant', content: [{ type: 'text', text: '' }], stop_reason: 'tool_use' },
+      },
+    ];
+    fsn.writeFileSync(transcriptPath, lines.map((l: unknown) => JSON.stringify(l)).join('\n'), 'utf8');
+  }
+
+  function transcriptStillPoisoned(): boolean {
+    const fsn = require('node:fs');
+    return fsn
+      .readFileSync(transcriptPath, 'utf8')
+      .split('\n')
+      .some((l: string) => l !== '' && l.includes('"text":""'));
+  }
+
+  beforeEach(() => {
+    vi.mocked(userSettingsStore.getUserEmail).mockReturnValue('user@example.com');
+    const fsn = require('node:fs');
+    const osn = require('node:os');
+    const pathn = require('node:path');
+    configDir = fsn.mkdtempSync(pathn.join(osn.tmpdir(), 'se-compact-repair-'));
+    prevConfigDirEnv = process.env.CLAUDE_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = configDir;
+    writePoisonedTranscript();
+  });
+
+  afterEach(() => {
+    const fsn = require('node:fs');
+    if (prevConfigDirEnv === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = prevConfigDirEnv;
+    fsn.rmSync(configDir, { recursive: true, force: true });
+  });
+
+  async function* contentTurnStream(text: string) {
+    yield { type: 'assistant', message: { content: [{ type: 'text', text }] } };
+    yield { type: 'result', subtype: 'success', total_cost_usd: 0, usage: {} };
+  }
+
+  function createRepairDeps(turnText: string) {
+    return {
+      claudeHandler: {
+        setActivityState: vi.fn(),
+        clearSessionId: vi.fn(),
+        streamAgentEvents: vi.fn().mockImplementation(() => toAgentEvents(contentTurnStream(turnText))),
+        getSessionRegistry: vi.fn().mockReturnValue({
+          beginTurn: vi.fn(),
+          endTurn: vi.fn(),
+          broadcastSessionUpdate: vi.fn(),
+          getActivityState: vi.fn().mockReturnValue('idle'),
+        }),
+      },
+      fileHandler: {
+        formatFilePrompt: vi.fn().mockResolvedValue(''),
+        cleanupTempFiles: vi.fn().mockResolvedValue(undefined),
+      },
+      toolEventProcessor: {
+        handleToolUse: vi.fn().mockResolvedValue(undefined),
+        handleToolResult: vi.fn().mockResolvedValue(undefined),
+        getLiveBackgroundWork: vi.fn().mockReturnValue({ count: 0, labels: [], signature: '' }),
+        cleanup: vi.fn(),
+      },
+      statusReporter: {
+        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
+        getStatusEmoji: vi.fn().mockReturnValue('thinking_face'),
+        cleanup: vi.fn(),
+      },
+      reactionManager: { updateReaction: vi.fn().mockResolvedValue(undefined), cleanup: vi.fn() },
+      contextWindowManager: {
+        handlePromptTooLong: vi.fn().mockResolvedValue(undefined),
+        calculateRemainingPercent: vi.fn().mockReturnValue(50),
+        updateContextEmoji: vi.fn().mockResolvedValue(undefined),
+        cleanup: vi.fn(),
+      },
+      toolTracker: { scheduleCleanup: vi.fn() },
+      todoDisplayManager: {
+        cleanupSession: vi.fn(),
+        cleanup: vi.fn(),
+        handleTodoUpdate: vi.fn().mockResolvedValue(undefined),
+      },
+      actionHandlers: {},
+      requestCoordinator: { removeController: vi.fn(), touchSession: vi.fn() },
+      slackApi: {
+        getUserProfile: vi.fn().mockResolvedValue({ email: 'user@example.com', displayName: 'User' }),
+        getClient: vi.fn().mockReturnValue({}),
+        getBotUserId: vi.fn().mockResolvedValue('U_BOT'),
+        deleteMessage: vi.fn().mockResolvedValue(undefined),
+        postSystemMessage: vi.fn().mockResolvedValue(undefined),
+      },
+      assistantStatusManager: {
+        setStatus: vi.fn().mockResolvedValue(undefined),
+        clearStatus: vi.fn().mockResolvedValue(undefined),
+        bumpEpoch: vi.fn().mockReturnValue(1),
+        getToolStatusText: vi.fn().mockReturnValue('running...'),
+        buildBashStatus: vi.fn().mockReturnValue('is running commands...'),
+        registerBackgroundBashActive: vi.fn().mockReturnValue(() => {}),
+      },
+      turnNotifier: { notify: vi.fn().mockResolvedValue(undefined) },
+      threadPanel: undefined,
+    } as any;
+  }
+
+  function fallbackCompactSession() {
+    return {
+      sessionId: SESSION_UUID,
+      ownerId: 'U_TEST',
+      logVerbosity: 'detail',
+      usage: {},
+      terminated: false,
+      model: 'claude-opus-4-8[1m]',
+      fallbackCompactActive: true,
+      fallbackCompactOriginalModel: 'gpt-5.5',
+      fallbackCompactPendingUserText: '아주 긴 메시지',
+      fallbackCompactPendingEventContext: { channel: 'C555', threadTs: 't555', user: 'U_TEST', ts: '1' },
+    } as any;
+  }
+
+  function executeParams(session: any, say: ReturnType<typeof vi.fn>, text: string) {
+    return {
+      session,
+      sessionKey: 'C555:t555',
+      userName: 'testuser',
+      workingDirectory: '/tmp/test',
+      abortController: new AbortController(),
+      processedFiles: [],
+      text,
+      channel: 'C555',
+      threadTs: 't555',
+      user: 'U_TEST',
+      say,
+    } as any;
+  }
+
+  it('repairs the transcript and schedules a /compact retry on the empty-block 400 (quiet)', async () => {
+    const deps = createRepairDeps(EMPTY_BLOCK_400_TEXT);
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    const session = fallbackCompactSession();
+
+    const result = await executor.execute(executeParams(session, say, '/compact'));
+
+    // Retry rail: fallbackCompact re-entry scheduled, session state intact.
+    expect(result.success).toBe(false);
+    expect((result as any).fallbackCompact).toBe(true);
+    expect(result.retryAfterMs).toBe(500);
+    expect(session.fallbackCompactActive).toBe(true);
+    expect(session.model).toBe('claude-opus-4-8[1m]');
+    // The poison was actually removed from the transcript.
+    expect(transcriptStillPoisoned()).toBe(false);
+    // Quiet: no raw error post, no Exception card, session preserved.
+    expect(say).not.toHaveBeenCalled();
+    expect(deps.turnNotifier.notify).not.toHaveBeenCalled();
+    expect(deps.claudeHandler.clearSessionId).not.toHaveBeenCalled();
+  });
+
+  it('fails terminally when repair was already attempted: restores model, clears state, resets session, posts ONE condensed notice', async () => {
+    const deps = createRepairDeps(EMPTY_BLOCK_400_TEXT);
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    const session = fallbackCompactSession();
+    session.transcriptRepairAttemptedAtMs = Date.now(); // repair already ran for this wedge
+    session.compactTickInterval = setInterval(() => {}, 60_000);
+    session.compactEpoch = 3;
+    session.compactPostedByEpoch = { 3: { pre: true, post: false } };
+
+    const result = await executor.execute(executeParams(session, say, '/compact'));
+
+    // Terminal: no retry, turn handled.
+    expect(result.retryAfterMs).toBeUndefined();
+    expect((result as any).fallbackCompact).toBe(false);
+    expect(result.handled).toBe(true);
+    // Unwedged: original model restored, fallback state cleared.
+    expect(session.model).toBe('gpt-5.5');
+    expect(session.fallbackCompactActive).toBe(false);
+    expect(session.fallbackCompactOriginalModel).toBeNull();
+    expect(session.fallbackCompactPendingUserText).toBeNull();
+    expect(typeof session.fallbackCompactFailedAtMs).toBe('number');
+    // Compact-cycle UI sealed: ticker stopped, epoch closed.
+    expect(session.compactTickInterval).toBeUndefined();
+    expect(session.compactPostedByEpoch[3].post).toBe(true);
+    // Transcript unrepairable → SDK session cleared so next turn starts clean.
+    expect(deps.claudeHandler.clearSessionId).toHaveBeenCalledWith('C555', 't555');
+    // Exactly ONE condensed notice — not the raw stderr, not a 🔴 card pair.
+    expect(deps.turnNotifier.notify).not.toHaveBeenCalled();
+    expect(say).toHaveBeenCalledTimes(1);
+    const text = say.mock.calls[0][0].text as string;
+    expect(text).toContain('자동 컴팩트 실패');
+    expect(text).toContain('gpt-5.5');
+    expect(text).not.toContain('Error during compaction');
+  });
+
+  it('fails terminally on a non-400 compaction error WITHOUT clearing the session', async () => {
+    const deps = createRepairDeps(
+      'Error: Error during compaction: API Error: Server is temporarily limiting requests (not your usage limit)',
+    );
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    const session = fallbackCompactSession();
+
+    const result = await executor.execute(executeParams(session, say, '/compact'));
+
+    expect(result.retryAfterMs).toBeUndefined();
+    expect(session.model).toBe('gpt-5.5');
+    expect(session.fallbackCompactActive).toBe(false);
+    // History is intact — a rate-limited compact must NOT cost the session.
+    expect(deps.claudeHandler.clearSessionId).not.toHaveBeenCalled();
+    expect(say).toHaveBeenCalledTimes(1);
+    expect(say.mock.calls[0][0].text).toContain('자동 컴팩트 실패');
+  });
+
+  // Codex review (PR #1206): guard ORDER regression. A compaction failure
+  // whose detail embeds a prompt-too-long / usage-limit phrase must reach the
+  // terminal compact rail — if the generic content guards consumed it first,
+  // fallback state and the 1M model would never be unwound.
+  it('routes "Error during compaction: Prompt is too long" to the terminal compact rail, not the PTL guard', async () => {
+    const deps = createRepairDeps('Error: Error during compaction: Prompt is too long');
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    const session = fallbackCompactSession();
+
+    const result = await executor.execute(executeParams(session, say, '/compact'));
+
+    // Terminal compact rail — NOT the prompt-too-long fallback path.
+    expect(result.retryAfterMs).toBeUndefined();
+    expect(session.model).toBe('gpt-5.5');
+    expect(session.fallbackCompactActive).toBe(false);
+    expect(typeof session.fallbackCompactFailedAtMs).toBe('number');
+    // Not an empty-block 400 → the session history survives.
+    expect(deps.claudeHandler.clearSessionId).not.toHaveBeenCalled();
+    expect(say).toHaveBeenCalledTimes(1);
+    expect(say.mock.calls[0][0].text).toContain('자동 컴팩트 실패');
+  });
+
+  it('routes a usage-limit-phrased compaction failure to the terminal compact rail, not the rotation path', async () => {
+    const deps = createRepairDeps("Error: Error during compaction: You've hit your usage limit · resets 9pm");
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    const session = fallbackCompactSession();
+
+    const result = await executor.execute(executeParams(session, say, '/compact'));
+
+    expect(result.retryAfterMs).toBeUndefined();
+    expect(session.model).toBe('gpt-5.5');
+    expect(session.fallbackCompactActive).toBe(false);
+    expect(deps.claudeHandler.clearSessionId).not.toHaveBeenCalled();
+    expect(say).toHaveBeenCalledTimes(1);
+    expect(say.mock.calls[0][0].text).toContain('자동 컴팩트 실패');
+  });
+
+  it('does NOT set the re-arm cooldown when a MANUAL /compact fails (no armed fallback)', async () => {
+    const deps = createRepairDeps('Error: Error during compaction: API Error: Server is temporarily limiting requests');
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    const session = {
+      sessionId: SESSION_UUID,
+      ownerId: 'U_TEST',
+      logVerbosity: 'detail',
+      usage: {},
+      terminated: false,
+      model: 'gpt-5.5',
+      // No fallbackCompactActive — this is a user-invoked /compact.
+    } as any;
+
+    const result = await executor.execute(executeParams(session, say, '/compact'));
+
+    expect(result.retryAfterMs).toBeUndefined();
+    // A failed manual compact must not block a later EMERGENCY fallback.
+    expect(session.fallbackCompactFailedAtMs).toBeUndefined();
+    expect(say).toHaveBeenCalledTimes(1);
+    expect(say.mock.calls[0][0].text).toContain('자동 컴팩트 실패');
+  });
+
+  it('repairs the transcript PROACTIVELY when arming the fallback compact (prompt-too-long path)', async () => {
+    const deps = createRepairDeps('Prompt is too long');
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    const session = {
+      sessionId: SESSION_UUID,
+      ownerId: 'U_TEST',
+      logVerbosity: 'detail',
+      usage: {},
+      terminated: false,
+      model: 'gpt-5.5',
+    } as any;
+
+    const result = await executor.execute(executeParams(session, say, '아주 긴 메시지'));
+
+    // Fallback armed as before…
+    expect((result as any).fallbackCompact).toBe(true);
+    expect(session.fallbackCompactActive).toBe(true);
+    // …and the poison was removed BEFORE the /compact that would have 400-ed.
+    expect(transcriptStillPoisoned()).toBe(false);
+    expect(typeof session.transcriptRepairAttemptedAtMs).toBe('number');
+  });
+
+  it('does not re-arm the fallback within the terminal-failure cooldown (no arm→fail→arm loop)', async () => {
+    const deps = createRepairDeps('Prompt is too long');
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    const session = {
+      sessionId: SESSION_UUID,
+      ownerId: 'U_TEST',
+      logVerbosity: 'detail',
+      usage: {},
+      terminated: false,
+      model: 'gpt-5.5',
+      fallbackCompactFailedAtMs: Date.now(), // just failed terminally
+    } as any;
+
+    const result = await executor.execute(executeParams(session, say, '아주 긴 메시지'));
+
+    expect((result as any).fallbackCompact).toBe(false);
+    expect(session.fallbackCompactActive).toBeFalsy();
+    // Falls through to the generic overflow policy instead of looping.
+    expect(deps.claudeHandler.clearSessionId).toHaveBeenCalled();
+  });
+
+  it('repairs and quietly retries when the empty-block 400 leaks on a NORMAL turn', async () => {
+    const deps = createRepairDeps(
+      'API Error: 400 {"type":"error","error":{"type":"invalid_request_error","message":"messages: text content blocks must be non-empty"},"request_id":"req_y"}',
+    );
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    const session = {
+      sessionId: SESSION_UUID,
+      ownerId: 'U_TEST',
+      logVerbosity: 'detail',
+      usage: {},
+      terminated: false,
+      model: 'claude-opus-4-8[1m]',
+    } as any;
+
+    const result = await executor.execute(executeParams(session, say, '계속 진행해줘'));
+
+    expect(result.success).toBe(false);
+    expect(result.retryAfterMs).toBe(500);
+    expect((result as any).fallbackCompact).toBe(false);
+    expect(transcriptStillPoisoned()).toBe(false);
+    // Quiet retry: no raw 400 leak, no Exception card, session preserved.
+    expect(say).not.toHaveBeenCalled();
+    expect(deps.turnNotifier.notify).not.toHaveBeenCalled();
+    expect(deps.claudeHandler.clearSessionId).not.toHaveBeenCalled();
   });
 });
