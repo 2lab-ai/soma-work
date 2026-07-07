@@ -367,6 +367,10 @@ export class McpConfigBuilder {
       user: slackContext.user,
       channel: slackContext.channel,
       threadTs: slackContext.threadTs,
+      // Trusted admin flag — computed here (parent process, ADMIN_USERS env),
+      // so the model-facing cron MCP server can scope list/update/delete
+      // without being forgeable from the model side.
+      isAdmin: isAdminUser(slackContext.user),
     };
 
     return {
