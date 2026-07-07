@@ -94,7 +94,7 @@
 | `src/model-command-mcp-server.ts` | `mcp-servers/model-command/model-command-mcp-server.ts` |
 | `src/model-command-mcp-server.test.ts` | `mcp-servers/model-command/model-command-mcp-server.test.ts` |
 | `src/permission-mcp-server.ts` | `mcp-servers/permission/permission-mcp-server.ts` |
-| `src/permission-server-start.js` | `mcp-servers/permission/permission-server-start.js` |
+| `src/permission-server-start.js` | `mcp-servers/permission/permission-server-start.js` (removed 2026-07, unused — PR #1209) |
 
 ### 3. Layer Flow
 
@@ -131,7 +131,7 @@
   - `./shared-store.js` → `../../src/shared-store.js`
   - `./permission/index.js` → `../../src/permission/index.js`
 
-#### 3f. permission-server-start.js
+#### 3f. permission-server-start.js (removed 2026-07, unused — PR #1209)
 - Move to `mcp-servers/permission/`
 - Change: `require('./permission-mcp-server.ts')` → `require('./permission-mcp-server.ts')` (same dir, no change)
 
