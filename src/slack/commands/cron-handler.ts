@@ -3,6 +3,7 @@ import { type CronJob, type CronJobPatch, CronStorage } from 'somalib/cron/cron-
 import { isAdminUser } from '../../admin-utils';
 import { DATA_DIR } from '../../env-paths';
 import { userSettingsStore } from '../../user-settings-store';
+import { buildCronCard } from '../cron-blocks';
 import type { CommandContext, CommandHandler, CommandResult } from './types';
 
 /**
@@ -87,29 +88,12 @@ export class CronCommandHandler implements CommandHandler {
     const storage = this.storage();
     const jobs = admin ? storage.getAll() : storage.getJobsByOwner(ctx.user);
 
-    if (jobs.length === 0) {
-      await ctx.say({
-        text: `⏰ 등록된 크론잡이 없습니다.\n등록은 자연어로: "매일 아침 9시에 열린 PR 요약해줘, 크론으로 등록"\n\n${usageText()}`,
-        thread_ts: ctx.threadTs,
-      });
-      return;
-    }
-
-    const lines = jobs.map((j) => {
-      const ownerStr = admin ? ` | ${describeOwner(j)}` : '';
-      const modeStr = j.mode === 'fastlane' ? ' | ⚡fastlane' : '';
-      return (
-        `• *${j.name}*${ownerStr} | \`${j.expression}\` | ch:<#${j.channel}>${modeStr}` +
-        ` | model:${describeModel(j)} | target:${describeTarget(j)} | last: ${j.lastRunMinute || 'never'}\n` +
-        `   ↳ ${j.prompt.substring(0, 100)}`
-      );
-    });
-
-    const header = admin ? `⏰ *크론잡 (${jobs.length}) — admin view, 전체 유저*` : `⏰ *크론잡 (${jobs.length})*`;
-    await ctx.say({
-      text: `${header}\n${lines.join('\n')}\n\n${usageText()}`,
-      thread_ts: ctx.threadTs,
-    });
+    // Interactive Block Kit card: per-job model/target dropdowns + delete
+    // button (src/slack/cron-blocks.ts); mutations land in
+    // src/slack/actions/cron-action-handler.ts. `text` stays as the plain
+    // fallback for notifications/clients without Block Kit.
+    const card = buildCronCard({ jobs, isAdmin: admin });
+    await ctx.say({ text: card.text, blocks: card.blocks, thread_ts: ctx.threadTs });
   }
 
   // --- model ---
@@ -193,12 +177,19 @@ export class CronCommandHandler implements CommandHandler {
       desc = 'dm — 잡 오너에게 DM';
     } else {
       // thread: explicit ts arg > existing job ts > the thread this command ran in
-      const ts = rest[1] ?? resolved.job.threadTs ?? ctx.threadTs;
+      const explicitTs = rest[1];
+      const ts = explicitTs ?? resolved.job.threadTs ?? ctx.threadTs;
       if (!ts) {
         await ctx.say({ text: '❌ thread 대상에는 threadTs가 필요합니다.', thread_ts: ctx.threadTs });
         return;
       }
       patch = { target: 'thread', threadTs: ts };
+      // Anchoring to the CURRENT thread must also repoint the job channel —
+      // the scheduler replies via threadReplier(job.channel, job.threadTs),
+      // so a ts from this channel with the old job.channel would miss.
+      if (!explicitTs && !resolved.job.threadTs) {
+        patch.channel = ctx.channel;
+      }
       desc = `thread(ts:${ts}) — 해당 스레드에 답글`;
     }
 
