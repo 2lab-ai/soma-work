@@ -255,7 +255,10 @@ export class CronCommandHandler implements CommandHandler {
       return { owner: requestedOwner, job };
     }
 
-    if (admin) {
+    // Ambiguity guard applies only when NO owner was requested — an explicit
+    // self-mention (`... <@me>`) is already a disambiguation, same contract as
+    // the cron MCP server's resolveTargetOwner.
+    if (admin && !requestedOwner) {
       const others = storage.getAll().filter((j) => j.name === name && j.owner !== ctx.user);
       if (others.length > 0) {
         const own = storage.getJobsByOwner(ctx.user).some((j) => j.name === name);

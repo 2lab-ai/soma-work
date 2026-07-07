@@ -225,6 +225,15 @@ describe('admin scoping on modification', () => {
     expect(storage.getJobsByOwner('U_BOB')[0].modelConfig).toEqual({ type: 'fast' });
   });
 
+  it('admin explicit self-mention resolves collision to own job', async () => {
+    seed({ owner: 'U_ADMIN' });
+    seed({ owner: 'U_BOB' });
+    const ctx = makeCtx({ user: 'U_ADMIN', text: 'cron model daily-report fast <@U_ADMIN>' });
+    await handler.execute(ctx);
+    expect(storage.getJobsByOwner('U_ADMIN')[0].modelConfig).toEqual({ type: 'fast' });
+    expect(storage.getJobsByOwner('U_BOB')[0].modelConfig).toBeUndefined();
+  });
+
   it('admin name-only with cross-owner collision is rejected as ambiguous', async () => {
     seed({ owner: 'U_ADMIN' });
     seed({ owner: 'U_BOB' });
