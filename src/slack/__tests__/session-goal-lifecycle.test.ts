@@ -91,7 +91,7 @@ describe('migrateLegacyGoalArray', () => {
 });
 
 describe('creditActiveGoalMs', () => {
-  it('credits the leg-owner goal resolved by activeLegGoalId across the queue', () => {
+  it('credits a completed leg-owner goal found in goalHistory (not the promoted active goal)', () => {
     const owner = makeGoal({ goalId: 'owner', status: 'complete', activeMsUsed: 10 });
     const promoted = makeGoal({ goalId: 'promoted', status: 'active' });
     const session: GoalLifecycleSession = {
@@ -102,6 +102,19 @@ describe('creditActiveGoalMs', () => {
     creditActiveGoalMs(session, 500);
     expect(owner.activeMsUsed).toBe(510);
     expect(promoted.activeMsUsed).toBeUndefined();
+  });
+
+  it('credits a queued leg-owner goal found in goalQueue', () => {
+    const owner = makeGoal({ goalId: 'owner', status: 'queued', activeMsUsed: 3 });
+    const active = makeGoal({ goalId: 'active-goal', status: 'active' });
+    const session: GoalLifecycleSession = {
+      goal: active,
+      goalQueue: [owner],
+      activeLegGoalId: 'owner',
+    };
+    creditActiveGoalMs(session, 100);
+    expect(owner.activeMsUsed).toBe(103);
+    expect(active.activeMsUsed).toBeUndefined();
   });
 
   it('falls back to the live active goal when no leg owner is recorded', () => {
