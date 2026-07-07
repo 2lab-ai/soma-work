@@ -112,6 +112,35 @@ export type SayFunction = (message: {
   attachments?: any[];
 }) => Promise<{ ts?: string }>;
 
+function textIndicatesPromptTooLong(text: unknown): boolean {
+  if (typeof text !== 'string') return false;
+  const t = text.trim().toLowerCase();
+  if (t.length === 0 || t.length > 160) return false;
+  return (
+    t.includes('prompt is too long') || t.includes('context length exceeded') || t.includes('maximum context length')
+  );
+}
+
+/**
+ * Transport-error text leaked as assistant content that must NOT stream to
+ * Slack (stream-executor inspects collectedText after process() and routes it
+ * into the compaction-failure / transcript-repair recovery rails — see field
+ * incident 2026-07-07, session ccee16e0):
+ *   - `Error: Error during compaction: …` — the SDK's local-command stderr
+ *     for a FAILED `/compact`, sealed as a successful turn.
+ *   - `API Error: 400 … text content blocks must be non-empty` — Anthropic
+ *     validation rejecting a transcript poisoned with empty text blocks.
+ * Matchers are shape-anchored (prefix / both transport markers) and
+ * length-bounded so prose that merely discusses these errors is not eaten.
+ */
+function textIndicatesCompactionErrorLeak(text: unknown): boolean {
+  if (typeof text !== 'string') return false;
+  const t = text.trim().toLowerCase();
+  if (t.length === 0 || t.length > 1500) return false;
+  if (t.startsWith('error: error during compaction') || t.startsWith('error during compaction')) return true;
+  return t.includes('api error: 400') && t.includes('text content blocks must be non-empty');
+}
+
 /**
  * Handler for assistant text messages
  */
@@ -1079,6 +1108,21 @@ export class AgentStreamProcessor {
     }
 
     currentMessages.push(textContent);
+
+    // Claude SDK can surface a context overflow as a successful assistant text
+    // turn. Do not stream that raw transport error to Slack; stream-executor
+    // inspects collectedText after process() and routes it into fallback compact.
+    if (textIndicatesPromptTooLong(textContent)) {
+      return;
+    }
+
+    // Same class of leak for FAILED compaction / empty-text-block 400 errors
+    // (field incident 2026-07-07): the raw transport error must not stream to
+    // Slack — stream-executor routes collectedText into the transcript-repair
+    // / terminal-failure rails, which surface one condensed notice instead.
+    if (textIndicatesCompactionErrorLeak(textContent)) {
+      return;
+    }
 
     // Check for user choice JSON
     const { choice, choices, textWithoutChoice } = UserChoiceHandler.extractUserChoice(textContent);

@@ -59,6 +59,13 @@ import {
   NoHealthySlotError,
   type SlotAuthLease,
 } from './credentials-manager';
+import {
+  DISPATCH_OVERLOADED_MAX_RETRIES,
+  type DispatchRetryDecision,
+  decideDispatchRetry,
+  sleepWithAbort,
+  textIndicatesPromptTooLongContent,
+} from './dispatch-recovery';
 import { McpConfigBuilder, type SlackContext } from './mcp-config-builder';
 import { getAvailablePersonas, PromptBuilder } from './prompt-builder';
 import { type CrashRecoveredSession, SessionExpiryCallbacks, SessionRegistry } from './session-registry';
@@ -590,12 +597,22 @@ export class ClaudeHandler {
     // `JSON.parse` that notice and failed (`Unexpected token 'Y', "You've
     // hit"`). Detect that here, rotate to a healthy slot, and retry on a
     // fresh lease so the eval runs on a working credential.
-    let lastCapNotice = '';
-    for (let attempt = 1; attempt <= DISPATCH_USAGE_LIMIT_MAX_ATTEMPTS; attempt++) {
+    //
+    // Two further transient classes get the streaming path's recovery ported
+    // over (see dispatch-recovery.ts): overloaded/529 → 30s wait + retry
+    // (≤ DISPATCH_OVERLOADED_MAX_RETRIES), and prompt-too-long → one retry on
+    // the 1M fallback-compact model. Each budget is independent; when all are
+    // exhausted the error propagates as before.
+    let usageLimitAttempts = 0;
+    let overloadedRetries = 0;
+    let overflowFallbackUsed = false;
+    let effectiveModel = model;
+    while (true) {
       // Acquire a lease on the active CCT slot. Held for the lifetime of one
       // Claude CLI dispatch attempt, released in the per-attempt finally.
       let lease: SlotAuthLease | null = null;
       let heartbeatTimer: NodeJS.Timeout | null = null;
+      let pendingRetry: DispatchRetryDecision | null = null;
       try {
         try {
           lease = await ensureActiveSlotAuth(getTokenManager(), 'claude-handler:dispatchOneShot');
@@ -624,68 +641,119 @@ export class ClaudeHandler {
         // `process.env`, so concurrent dispatches on different slots are
         // isolated by construction.
         const { env } = buildQueryEnv(lease);
-        const result = await this.dispatchOneShotInner(
-          userMessage,
-          dispatchPrompt,
-          env,
-          model,
-          abortController,
-          resumeSessionId,
-          cwd,
-          effort,
-        );
-
-        // Cap-as-content guard. Default (content-safe) detector — never
-        // includeTransient here, since the eval/work output could legitimately
-        // mention "rate limit" or "429" in prose.
-        if (!textIndicatesUsageLimit(result)) {
-          return result;
-        }
-
-        lastCapNotice = result;
-        const cappedKeyId = lease.keyId;
-        this.logger.warn('DISPATCH: usage limit surfaced as content', {
-          attempt,
-          maxAttempts: DISPATCH_USAGE_LIMIT_MAX_ATTEMPTS,
-          cappedKeyId,
-          preview: result.slice(0, 120),
-        });
-
-        if (attempt >= DISPATCH_USAGE_LIMIT_MAX_ATTEMPTS) {
-          // Out of attempts — surface a typed error so the caller treats this
-          // as a dispatch failure rather than parsing the cap notice as a
-          // verdict.
-          throw new UsageLimitDispatchError(result);
-        }
-
-        // Rotate to a healthy slot before the next attempt. CAS-guard on the
-        // capped slot so concurrent dispatches collapse to a single rotation.
-        const rotation = await getTokenManager().rotateOnRateLimit(
-          'claude-handler:dispatchOneShot usage-limit (content)',
-          { source: 'error_string', cooldownMinutes: 60, expectedFromKeyId: cappedKeyId },
-        );
-        if (!rotation.rotated && rotation.skipReason !== 'cas-skipped') {
-          // No eligible replacement slot — retrying would just hit the same
-          // cap, so fail fast with the typed error.
-          this.logger.warn('DISPATCH: no eligible slot to rotate to on usage limit', {
-            skipReason: rotation.skipReason,
+        let result: string;
+        try {
+          result = await this.dispatchOneShotInner(
+            userMessage,
+            dispatchPrompt,
+            env,
+            effectiveModel,
+            abortController,
+            resumeSessionId,
+            cwd,
+            effort,
+          );
+          // Prompt-too-long-as-content guard (same field bug class as #1200:
+          // the overflow arrives as a successful assistant text turn, nothing
+          // throws). Convert the content shape into a thrown error so the
+          // recovery classifier below sees it.
+          if (textIndicatesPromptTooLongContent(result)) {
+            throw new Error(`Prompt is too long (surfaced as dispatch content): ${result.slice(0, 200)}`);
+          }
+        } catch (attemptErr) {
+          const decision = decideDispatchRetry(attemptErr, {
+            overloadedRetries,
+            overflowFallbackUsed,
+            model: effectiveModel,
+            aborted: abortController?.signal.aborted ?? false,
           });
-          throw new UsageLimitDispatchError(result);
+          if (decision.kind === 'rethrow') throw attemptErr;
+          const errPreview = String((attemptErr as Error)?.message ?? attemptErr).slice(0, 200);
+          if (decision.kind === 'overloaded-wait') {
+            overloadedRetries++;
+            this.logger.warn('DISPATCH: overloaded/529 — retrying after delay', {
+              attempt: overloadedRetries,
+              maxRetries: DISPATCH_OVERLOADED_MAX_RETRIES,
+              delayMs: decision.delayMs,
+              error: errPreview,
+            });
+          } else {
+            overflowFallbackUsed = true;
+            this.logger.warn('DISPATCH: prompt too long — retrying on 1M fallback model', {
+              from: effectiveModel || '(sdk default)',
+              fallbackModel: decision.fallbackModel,
+              error: errPreview,
+            });
+            effectiveModel = decision.fallbackModel;
+          }
+          pendingRetry = decision;
+          // Fall through → finally releases the lease, then the loop bottom
+          // sleeps (overloaded) and re-enters on a fresh lease.
+          result = '';
         }
-        this.logger.info('DISPATCH: rotated slot on usage limit, retrying', {
-          newSlot: rotation.rotated?.name,
-          newKeyId: rotation.rotated?.keyId,
-        });
-        // Loop continues → fresh lease on the now-active slot.
+        if (pendingRetry === null) {
+          // Cap-as-content guard. Default (content-safe) detector — never
+          // includeTransient here, since the eval/work output could legitimately
+          // mention "rate limit" or "429" in prose.
+          if (!textIndicatesUsageLimit(result)) {
+            return result;
+          }
+
+          usageLimitAttempts++;
+          const cappedKeyId = lease.keyId;
+          this.logger.warn('DISPATCH: usage limit surfaced as content', {
+            attempt: usageLimitAttempts,
+            maxAttempts: DISPATCH_USAGE_LIMIT_MAX_ATTEMPTS,
+            cappedKeyId,
+            preview: result.slice(0, 120),
+          });
+
+          if (usageLimitAttempts >= DISPATCH_USAGE_LIMIT_MAX_ATTEMPTS) {
+            // Out of attempts — surface a typed error so the caller treats this
+            // as a dispatch failure rather than parsing the cap notice as a
+            // verdict.
+            throw new UsageLimitDispatchError(result);
+          }
+
+          // Rotate to a healthy slot before the next attempt. CAS-guard on the
+          // capped slot so concurrent dispatches collapse to a single rotation.
+          const rotation = await getTokenManager().rotateOnRateLimit(
+            'claude-handler:dispatchOneShot usage-limit (content)',
+            { source: 'error_string', cooldownMinutes: 60, expectedFromKeyId: cappedKeyId },
+          );
+          if (!rotation.rotated && rotation.skipReason !== 'cas-skipped') {
+            // No eligible replacement slot — retrying would just hit the same
+            // cap, so fail fast with the typed error.
+            this.logger.warn('DISPATCH: no eligible slot to rotate to on usage limit', {
+              skipReason: rotation.skipReason,
+            });
+            throw new UsageLimitDispatchError(result);
+          }
+          this.logger.info('DISPATCH: rotated slot on usage limit, retrying', {
+            newSlot: rotation.rotated?.name,
+            newKeyId: rotation.rotated?.keyId,
+          });
+          // Loop continues → fresh lease on the now-active slot.
+        }
       } finally {
         if (heartbeatTimer) clearInterval(heartbeatTimer);
         if (lease) await lease.release();
       }
-    }
 
-    // Unreachable in practice (the loop either returns, throws, or exhausts
-    // attempts via the in-loop throw), but keeps the function total.
-    throw new UsageLimitDispatchError(lastCapNotice);
+      // Overloaded/529 backoff happens AFTER the lease is released so a slot
+      // is never pinned for the 30s wait. The sleep resolves early on abort;
+      // surface the abort as an error instead of burning another attempt.
+      if (pendingRetry?.kind === 'overloaded-wait') {
+        await sleepWithAbort(pendingRetry.delayMs, abortController?.signal);
+        if (abortController?.signal.aborted) {
+          throw new Error('one-shot dispatch aborted during overloaded/529 retry wait');
+        }
+      }
+      // while(true) re-enters: every path that reaches here has either a
+      // finite retry budget (overloaded ≤ DISPATCH_OVERLOADED_MAX_RETRIES,
+      // overflow-fallback once, usage-limit ≤ DISPATCH_USAGE_LIMIT_MAX_ATTEMPTS)
+      // or returned/thrown above, so the loop always terminates.
+    }
   }
 
   private async dispatchOneShotInner(
