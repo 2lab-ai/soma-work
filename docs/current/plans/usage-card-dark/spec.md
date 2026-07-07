@@ -213,7 +213,7 @@ Luminance는 엄격히 단조증가. v1 draft 의 `#2A2A2A` (L=42.0)는 step 1(`
 - `src/metrics/usage-render/carousel-renderer.ts` — `renderCarousel(stats, clock): {tab24h, tab7d, tab30d, tabAll}` (4 PNG)
 - `src/metrics/report-aggregator.ts` — `aggregateCarousel({targetUserId, now})` (v1 legacy aggregator 는 rev-3 에서 제거됨; see trace.md Changelog)
 - `src/slack/commands/usage-carousel-cache.ts` — `TabCache` class + default instance
-- `src/slack/action-handlers.ts` — `usage_card_tab` handler 등록 (기존 파일에 추가)
+- `src/slack/actions/usage-card-action-handler.ts` — `usage_card_tab` handler (등록: `src/slack/actions/index.ts`)
 
 ### 5.2 Modified
 

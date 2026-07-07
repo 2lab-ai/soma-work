@@ -71,7 +71,7 @@ mcp-servers/
 │   └── model-command-mcp-server.test.ts
 ├── permission/
 │   ├── permission-mcp-server.ts
-│   └── permission-server-start.js
+│   └── permission-server-start.js  (removed 2026-07, unused — PR #1209)
 └── server-tools/
     ├── server-tools-mcp-server.ts    # ← NEW
     └── server-tools-mcp-server.test.ts
