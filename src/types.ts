@@ -623,6 +623,16 @@ export interface ConversationSession {
   // pending-user path.
   fallbackCompactPendingUserText?: string | null;
   fallbackCompactPendingEventContext?: { channel: string; threadTs: string; user: string; ts: string } | null;
+  // Wall-clock ms of the last transcript empty-text-block repair attempt
+  // (proactive at fallback-compact arming, or reactive on a content-shaped
+  // `400 text content blocks must be non-empty`). Bounds the repair→retry
+  // loop: within TRANSCRIPT_REPAIR_COOLDOWN_MS a second failure is terminal.
+  transcriptRepairAttemptedAtMs?: number | null;
+  // Wall-clock ms of the last TERMINAL fallback-compact failure (compaction
+  // errored and the original model was restored). `applyAutoFallbackCompact`
+  // refuses to re-arm within its cooldown so goal-continuation auto-turns
+  // cannot spin an arm→fail→arm notice loop.
+  fallbackCompactFailedAtMs?: number | null;
   // User message text captured when auto-compact intercepts the turn; re-dispatched after PostCompact.
   pendingUserText?: string | null;
   // Slack event context captured alongside `pendingUserText` for synthetic re-dispatch via event-router.
