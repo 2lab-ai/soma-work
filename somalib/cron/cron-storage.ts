@@ -58,6 +58,24 @@ interface CronData {
   jobs: CronJob[];
 }
 
+/**
+ * Presence-aware patch for updateJob. Omitted key = no change.
+ * `null` on nullable/optional keys = clear the field:
+ * - `modelConfig: null` → remove override (fire-time model = creator's current default model)
+ * - `target: null` → remove override (deliver as new channel message)
+ * - `mode: null` → remove override (default queueing)
+ * - `threadTs: null` → clear thread anchor
+ */
+export interface CronJobPatch {
+  expression?: string;
+  prompt?: string;
+  channel?: string;
+  threadTs?: string | null;
+  mode?: CronMode | null;
+  modelConfig?: CronModelConfig | null;
+  target?: CronTarget | null;
+}
+
 // --- Execution History Types ---
 
 export interface CronExecutionRecord {
@@ -290,6 +308,39 @@ export class CronStorage {
     this.save(data);
     logger.info('Cron job deleted', { name, owner });
     return true;
+  }
+
+  /**
+   * Patch a job addressed by (owner, name). Presence-aware: omitted keys are
+   * untouched; `null` clears optional overrides (see CronJobPatch).
+   * Bookkeeping fields (id, createdAt, lastRunAt, lastRunMinute, lastRunDate)
+   * are always preserved. Returns the updated job, or null if not found.
+   */
+  updateJob(owner: string, name: string, patch: CronJobPatch): CronJob | null {
+    const data = this.load();
+    const job = data.jobs.find((j) => j.owner === owner && j.name === name);
+    if (!job) return null;
+
+    if (patch.expression !== undefined) job.expression = patch.expression;
+    if (patch.prompt !== undefined) job.prompt = patch.prompt;
+    if (patch.channel !== undefined) job.channel = patch.channel;
+    if (patch.threadTs !== undefined) job.threadTs = patch.threadTs;
+    if (patch.mode !== undefined) {
+      if (patch.mode === null) delete job.mode;
+      else job.mode = patch.mode;
+    }
+    if (patch.modelConfig !== undefined) {
+      if (patch.modelConfig === null) delete job.modelConfig;
+      else job.modelConfig = patch.modelConfig;
+    }
+    if (patch.target !== undefined) {
+      if (patch.target === null) delete job.target;
+      else job.target = patch.target;
+    }
+
+    this.save(data);
+    logger.info('Cron job updated', { id: job.id, name: job.name, owner: job.owner });
+    return job;
   }
 
   /** Update lastRunAt and lastRunMinute for a job. */
