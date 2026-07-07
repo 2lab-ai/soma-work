@@ -52,6 +52,7 @@ import { UserChoiceHandler } from '../user-choice-handler';
 import { decideBackgroundWaitContinuation, getBackgroundWaitCap } from './background-wait';
 import { isLocalSlashCommand } from './local-slash-command';
 import { cleanupWithTimeout, DEFAULT_CLEANUP_TIMEOUT_MS, runWithTimeout } from './stream-executor-cleanup-helpers';
+import { sanitizeTranscriptEmptyTextBlocks } from './transcript-sanitizer';
 import type { ConversationSession, ProcessedFile, SayFn } from './types';
 
 type ClaudeHandler = any;
@@ -483,6 +484,39 @@ function textIndicatesPromptTooLong(text: unknown): boolean {
   return (
     t.includes('prompt is too long') || t.includes('context length exceeded') || t.includes('maximum context length')
   );
+}
+
+/**
+ * Detect a FAILED compaction surfaced as ordinary turn content. The SDK never
+ * throws for `/compact` errors: it emits the failure as a
+ * `system/local_command` stderr line + assistant text
+ * (`Error: Error during compaction: …`) and seals the turn with
+ * `stopReason=end_turn, isError=false` (field incident 2026-07-07, session
+ * ccee16e0). Narrow shape: short error-like text that STARTS with the SDK's
+ * stderr prefix — prose that merely quotes the phrase runs longer and starts
+ * differently.
+ */
+function textIndicatesCompactionFailure(text: unknown): boolean {
+  if (typeof text !== 'string') return false;
+  const t = text.trim().toLowerCase();
+  if (t.length === 0 || t.length > 1500) return false;
+  return t.startsWith('error: error during compaction') || t.startsWith('error during compaction');
+}
+
+/**
+ * Detect the Anthropic `400 invalid_request_error` for EMPTY text content
+ * blocks, surfaced as turn content. A transcript poisoned with
+ * `{"type":"text","text":""}` (written by a tolerant non-Anthropic model,
+ * e.g. gpt-5.5) makes EVERY Anthropic-model request over that history fail
+ * this way — including the fallback `/compact` meant to recover it. Requires
+ * BOTH the transport shape (`API Error: 400`) and the exact validation
+ * message, so prose can't false-positive.
+ */
+function textIndicatesEmptyContentBlock400(text: unknown): boolean {
+  if (typeof text !== 'string') return false;
+  const t = text.trim().toLowerCase();
+  if (t.length === 0 || t.length > 1500) return false;
+  return t.includes('api error: 400') && t.includes('text content blocks must be non-empty');
 }
 
 /** Issue #816 — single-line preview for the MCP parse-fail Slack post. */
@@ -1725,6 +1759,65 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         throw abortError;
       }
 
+      // Compaction-failure-as-content guard (field incident 2026-07-07,
+      // session ccee16e0). The SDK seals a FAILED `/compact` as a successful
+      // turn (`end_turn`, `isError=false`) whose content is the stderr line
+      // `Error: Error during compaction: …`, so nothing threw and:
+      //   (a) the raw error leaked to Slack as the turn's answer,
+      //   (b) `fallbackCompactActive`/the 1M compact model were never
+      //       restored (the boundary callback only fires on SUCCESS), and
+      //   (c) when the cause was the empty-text-block 400, the transcript
+      //       stayed poisoned — EVERY subsequent Anthropic-model turn failed
+      //       the same way. Session wedged forever.
+      //
+      // Cure: convert to a typed throw. When the cause is the empty-block
+      // 400 and a repair hasn't been attempted recently, sanitize the
+      // transcript and retry `/compact` once; otherwise fail terminally —
+      // handleError restores the original model, clears fallback state, and
+      // posts ONE condensed notice instead of the raw error.
+      //
+      // ORDER MATTERS (codex review, PR #1206): this guard runs BEFORE the
+      // usage-limit and prompt-too-long content guards below. A compaction
+      // failure whose detail embeds one of those phrases (e.g.
+      // `Error: Error during compaction: Prompt is too long`) must reach the
+      // terminal compact rail — if the generic guards consumed it first, the
+      // fallback state/1M model would never be unwound (the exact stranding
+      // this PR fixes).
+      const compactCommandTurn = isSlashCommand && trimmedText.startsWith('/compact');
+      if (
+        !toolContinuation &&
+        (compactCommandTurn || session.fallbackCompactActive) &&
+        textIndicatesCompactionFailure(streamResult.collectedText)
+      ) {
+        const collected = String(streamResult.collectedText);
+        const emptyBlock400 = textIndicatesEmptyContentBlock400(collected);
+        const repairRecentlyAttempted =
+          typeof session.transcriptRepairAttemptedAtMs === 'number' &&
+          Date.now() - session.transcriptRepairAttemptedAtMs < StreamExecutor.TRANSCRIPT_REPAIR_COOLDOWN_MS;
+
+        if (emptyBlock400 && session.sessionId && !repairRecentlyAttempted) {
+          session.transcriptRepairAttemptedAtMs = Date.now();
+          const repair = sanitizeTranscriptEmptyTextBlocks(session.sessionId);
+          this.logger.warn('Compaction failed on empty text content block — transcript repair attempted', {
+            sessionKey,
+            transcriptPath: repair.transcriptPath,
+            repairedBlocks: repair.repairedBlocks,
+          });
+          if (repair.repairedBlocks > 0 && session.fallbackCompactActive) {
+            const retryErr = new Error(
+              `Compaction failed on empty text content block — transcript repaired (${repair.repairedBlocks} block(s)), retrying /compact`,
+            );
+            (retryErr as any).compactRetryAfterRepair = true;
+            throw retryErr;
+          }
+        }
+
+        const failErr = new Error(`Compaction failed (surfaced as turn content): ${collected.slice(0, 300)}`);
+        (failErr as any).compactTerminalFailure = true;
+        (failErr as any).compactFailureIsEmptyBlock400 = emptyBlock400;
+        throw failErr;
+      }
+
       // Usage-limit-as-content guard.
       //
       // Claude Code surfaces a subscription usage cap two ways: as a thrown
@@ -1777,6 +1870,35 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         throw new Error(
           `Prompt is too long (surfaced as turn content): ${String(streamResult.collectedText).slice(0, 200)}`,
         );
+      }
+
+      // Empty-text-block 400 surfaced as content on a NORMAL turn (post-
+      // poisoning wedge): the transcript contains `{"type":"text","text":""}`
+      // and this turn's model hits Anthropic validation. Repair once, then
+      // let the recoverable-error rail retry; if the repair already ran and
+      // the 400 persists, fall through to the generic throw so
+      // `shouldClearSessionOnError` policy decides.
+      if (!toolContinuation && textIndicatesEmptyContentBlock400(streamResult.collectedText)) {
+        const collected = String(streamResult.collectedText);
+        const repairRecentlyAttempted =
+          typeof session.transcriptRepairAttemptedAtMs === 'number' &&
+          Date.now() - session.transcriptRepairAttemptedAtMs < StreamExecutor.TRANSCRIPT_REPAIR_COOLDOWN_MS;
+        let repairedBlocks = 0;
+        if (session.sessionId && !repairRecentlyAttempted) {
+          session.transcriptRepairAttemptedAtMs = Date.now();
+          const repair = sanitizeTranscriptEmptyTextBlocks(session.sessionId);
+          repairedBlocks = repair.repairedBlocks;
+          this.logger.warn('Empty-text-block 400 surfaced as turn content — transcript repair attempted', {
+            sessionKey,
+            transcriptPath: repair.transcriptPath,
+            repairedBlocks: repair.repairedBlocks,
+          });
+        }
+        const contentErr = new Error(`API error surfaced as turn content: ${collected.slice(0, 300)}`);
+        // Repair fixed something → deterministic quiet retry (handleError
+        // rail); nothing repaired → generic error policy decides.
+        (contentErr as any).transcriptRepairedRetry = repairedBlocks > 0;
+        throw contentErr;
       }
 
       // Issue #42 S3: observer — endTurn 이벤트 + 텍스트 수집 + continuation/choice 동기화
@@ -2410,6 +2532,20 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
   private static readonly ONE_M_FALLBACK_RETRY_DELAY_MS = 500;
   /** Max SDK-details tail length (chars) surfaced in formatted error messages. */
   private static readonly SDK_DETAILS_MAX_CHARS = 500;
+  /**
+   * Min interval between transcript empty-text-block repair attempts for one
+   * session. A second empty-block 400 inside this window means the repair did
+   * not cure the transcript — fail terminally instead of looping
+   * repair → `/compact` → 400 forever.
+   */
+  private static readonly TRANSCRIPT_REPAIR_COOLDOWN_MS = 10 * 60 * 1000;
+  /**
+   * Cooldown after a TERMINAL fallback-compact failure before
+   * `applyAutoFallbackCompact` may re-arm. Goal-continuation auto-turns can
+   * re-overflow immediately; without this gate they would spin an
+   * arm → compact-fail → arm notice loop.
+   */
+  private static readonly FALLBACK_COMPACT_FAILURE_COOLDOWN_MS = 5 * 60 * 1000;
 
   /**
    * Handle execution errors. Returns retryAfterMs if the error is recoverable
@@ -2433,6 +2569,99 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     abortReason?: CoercedAbortReason,
   ): Promise<number | undefined> {
     this.deps.claudeHandler.setActivityState(channel, threadTs, 'idle');
+
+    // ── Compaction-failure recovery rails (content-shaped SDK compact
+    // errors thrown by execute()'s guards — see textIndicatesCompactionFailure
+    // / textIndicatesEmptyContentBlock400). These are handled FIRST and
+    // return early: they are quiet, deterministic recovery paths that must
+    // not fall through to the generic error surfaces (🔴 card / errorDetails
+    // post) the incident showed to be redundant noise. ──
+
+    // Rail 1 — transcript repaired while the fallback compact is armed:
+    // schedule the immediate `/compact` retry (V1QueryAdapter re-enters on
+    // ExecuteResult.fallbackCompact, which keys on fallbackCompactActive +
+    // this exact delay). No user-facing post: the ℹ️ compact notice from the
+    // original arming is still the active status.
+    if ((error as any).compactRetryAfterRepair && session.fallbackCompactActive) {
+      this.logger.info('Fallback compact retry scheduled after transcript repair', { sessionKey });
+      await this.deps.reactionManager.updateReaction(sessionKey, this.deps.statusReporter.getStatusEmoji('thinking'));
+      return StreamExecutor.ONE_M_FALLBACK_RETRY_DELAY_MS;
+    }
+
+    // Rail 2 — terminal compaction failure: unwedge the session. Restore the
+    // original model, clear ALL fallback-compact state (the boundary callback
+    // that normally does this only fires on SUCCESS), seal the compact-cycle
+    // UI (stop the "Compaction starting" ticker), and surface exactly ONE
+    // condensed notice. When the cause is the empty-text-block 400 the
+    // transcript is still poisoned beyond repair → clear the SDK session so
+    // the next turn starts clean instead of 400-ing forever.
+    if ((error as any).compactTerminalFailure) {
+      const emptyBlock400 = Boolean((error as any).compactFailureIsEmptyBlock400);
+      const restoredModel = session.fallbackCompactOriginalModel ?? null;
+      const hadFallback = Boolean(session.fallbackCompactActive);
+      if (hadFallback && restoredModel) {
+        session.model = restoredModel as typeof session.model;
+      }
+      session.fallbackCompactActive = false;
+      session.fallbackCompactOriginalModel = null;
+      session.fallbackCompactPendingUserText = null;
+      session.fallbackCompactPendingEventContext = null;
+      // Cooldown applies only to the EMERGENCY fallback path (codex review,
+      // PR #1206): a failed MANUAL `/compact` must not suppress a later
+      // prompt-too-long emergency recovery.
+      if (hadFallback) {
+        session.fallbackCompactFailedAtMs = Date.now();
+      }
+
+      // Seal the live compact-cycle UI: stop the "Compaction starting"
+      // ticker and close the epoch so the next cycle can open cleanly.
+      if (session.compactTickInterval) {
+        clearInterval(session.compactTickInterval);
+        session.compactTickInterval = undefined;
+      }
+      const epoch = session.compactEpoch ?? 0;
+      if (session.compactPostedByEpoch?.[epoch]) {
+        session.compactPostedByEpoch[epoch].post = true;
+      }
+
+      let sessionResetNote = '';
+      if (emptyBlock400) {
+        this.deps.claudeHandler.clearSessionId(channel, threadTs);
+        sessionResetNote = ' 대화 기록이 복구 불가능하게 손상되어 세션을 초기화했습니다.';
+      }
+
+      this.logger.error('Fallback compact failed terminally — session unwedged', {
+        sessionKey,
+        emptyBlock400,
+        restoredModel,
+        sessionCleared: emptyBlock400,
+        reason: String((error as any).message ?? '').slice(0, 300),
+      });
+
+      await this.updateRuntimeStatus(session, sessionKey, {
+        agentPhase: '오류 발생',
+        activeTool: undefined,
+        waitingForChoice: false,
+      });
+      await this.deps.reactionManager.updateReaction(sessionKey, this.deps.statusReporter.getStatusEmoji('error'));
+
+      const restoreNote = hadFallback && restoredModel ? ` 모델을 \`${restoredModel}\`로 복원했습니다.` : '';
+      const condensed = `🔴 자동 컴팩트 실패 — 대화 요약 중 오류가 발생했습니다.${restoreNote}${sessionResetNote} 다음 메시지부터 정상 동작합니다.`;
+      await runWithTimeout(() => say({ text: condensed, thread_ts: threadTs }), DEFAULT_CLEANUP_TIMEOUT_MS, {
+        what: 'handleError say(compactTerminalFailure)',
+        logger: this.logger,
+      });
+      return undefined;
+    }
+
+    // Rail 3 — normal-turn empty-block 400 with a successful transcript
+    // repair: quiet deterministic retry (the repaired transcript makes the
+    // resume succeed). No 🔴 card — the turn will re-run in seconds.
+    if ((error as any).transcriptRepairedRetry) {
+      this.logger.info('Turn retry scheduled after transcript repair', { sessionKey });
+      await this.deps.reactionManager.updateReaction(sessionKey, this.deps.statusReporter.getStatusEmoji('thinking'));
+      return StreamExecutor.ONE_M_FALLBACK_RETRY_DELAY_MS;
+    }
 
     let retryAfterMs: number | undefined;
     let fallbackCompactApplied = false;
@@ -2890,6 +3119,23 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
   ): boolean {
     if (session.fallbackCompactActive) return false;
 
+    // Terminal-failure cooldown: the last fallback compact on this session
+    // failed and was unwound. Goal-continuation auto-turns re-overflow within
+    // seconds; re-arming immediately would loop arm → compact-fail → arm and
+    // spam a notice pair per cycle. Inside the cooldown, fall through to the
+    // generic overflow policy (session clear) instead.
+    if (
+      typeof session.fallbackCompactFailedAtMs === 'number' &&
+      Date.now() - session.fallbackCompactFailedAtMs < StreamExecutor.FALLBACK_COMPACT_FAILURE_COOLDOWN_MS
+    ) {
+      this.logger.warn('Auto fallback compact: recent terminal failure — not re-arming (cooldown)', {
+        channel,
+        threadTs,
+        failedAtMs: session.fallbackCompactFailedAtMs,
+      });
+      return false;
+    }
+
     const currentModel = String(session.model ?? userSettingsStore.getUserDefaultModel(session.ownerId || '') ?? '');
     if (!currentModel) return false;
     // Models that already serve a 1M window (either via the `[1m]` suffix or
@@ -2909,6 +3155,33 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // The user text whose turn overflowed — attached by execute()'s catch so
     // the boundary handler can re-dispatch it after compaction completes.
     const failedTurnText = typeof (error as any)?.failedTurnText === 'string' ? (error as any).failedTurnText : null;
+
+    // Proactive transcript repair (field incident 2026-07-07, ccee16e0): the
+    // `/compact` we are about to run replays the FULL transcript through the
+    // Anthropic API. If a tolerant model (gpt-5.5) left an empty text content
+    // block in the history, compaction is guaranteed to fail with
+    // `400 text content blocks must be non-empty` — so repair BEFORE
+    // compacting. Cheap single-file scan; no-op on clean transcripts.
+    if (typeof session.sessionId === 'string' && session.sessionId) {
+      try {
+        session.transcriptRepairAttemptedAtMs = Date.now();
+        const repair = sanitizeTranscriptEmptyTextBlocks(session.sessionId);
+        if (repair.repairedBlocks > 0) {
+          this.logger.warn('Auto fallback compact: repaired empty text blocks before /compact', {
+            channel,
+            threadTs,
+            transcriptPath: repair.transcriptPath,
+            repairedBlocks: repair.repairedBlocks,
+          });
+        }
+      } catch (repairErr) {
+        this.logger.warn('Auto fallback compact: transcript pre-repair failed (continuing)', {
+          channel,
+          threadTs,
+          error: (repairErr as Error)?.message ?? String(repairErr),
+        });
+      }
+    }
 
     session.fallbackCompactOriginalModel = currentModel;
     session.fallbackCompactActive = true;
