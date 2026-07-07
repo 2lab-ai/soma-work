@@ -155,7 +155,8 @@ describe('packages-srp Phase 2 slack contract', () => {
       'dispatch-abort',
       'event-router',
       'formatters/markdown-to-blocks',
-      'formatters/directory-formatter',
+      // 'formatters/directory-formatter', 'user-choice-extractor', 'z/strip-z-prefix':
+      // legacy src shims deleted once all importers moved to @soma/slack directly.
       'handoff-budget',
       'instruction-confirm-blocks',
       'message-formatter',
@@ -194,13 +195,11 @@ describe('packages-srp Phase 2 slack contract', () => {
       'turn-render-debouncer',
       'turn-surface',
       'user-choice-handler',
-      'user-choice-extractor',
       'user-skill-file-roundtrip',
       'z/capability',
       'z/normalize',
       'z/respond',
       'z/router',
-      'z/strip-z-prefix',
       'z/tombstone',
       'z/types',
       'z/ui-builder',
@@ -233,7 +232,8 @@ describe('packages-srp Phase 2 slack contract', () => {
       );
     }
 
-    const movedIndexModules = ['actions', 'directives', 'formatters', 'pipeline'];
+    // 'directives': legacy src barrel shim deleted once all importers moved off it.
+    const movedIndexModules = ['actions', 'formatters', 'pipeline'];
     for (const moduleName of movedIndexModules) {
       const packageSource = path.join(repoRoot, 'packages/slack/src', moduleName, 'index.ts');
       const legacySource = path.join(repoRoot, 'src/slack', moduleName, 'index.ts');
