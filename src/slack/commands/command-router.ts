@@ -10,6 +10,7 @@ import { CloseHandler } from './close-handler';
 import { CompactHandler } from './compact-handler';
 import { CompactThresholdHandler } from './compact-threshold-handler';
 import { ContextHandler } from './context-handler';
+import { CronCommandHandler } from './cron-handler';
 import { CwdHandler } from './cwd-handler';
 import { DashboardHandler } from './dashboard-handler';
 import { EffortHandler } from './effort-handler';
@@ -105,6 +106,10 @@ setCommandRouterProviders({
         new PersonaHandler(),
         new SkillsHandler(),
         new MemoryHandler(),
+        // Cron manage command — `cron`/`schedule` must be a routed command,
+        // not plain text: plain text reaches the dispatch path where autogoal
+        // can promote it to a session goal before the model sees it.
+        new CronCommandHandler(),
         new ModelHandler(deps as any),
         new VerbosityHandler(deps as any),
         new EffortHandler(deps as any),

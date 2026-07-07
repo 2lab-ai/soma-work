@@ -154,6 +154,7 @@ GitHub App(권장) 또는 Personal Access Token 인증. 자동 토큰 갱신 지
 
 주요 `/z` 명령: `help` · `cwd` · `mcp` · `bypass` · `persona` · `model` · `verbosity` · `session` · `new`/`renew` · `close` · `restore` · `context`/`compact` · `link` · `onboarding` · `admin` · `cct` · `auth` · `marketplace` · `plugin` · `skill` · `report`
 
+- naked `cron`/`schedule`(크론/스케줄): 크론잡 목록 + 수정 — `cron model <name> <default|fast|모델>` (default = 만든 사람의 현재 모델) · `cron target <name> <channel|dm|thread>` · `cron delete <name>`; admin은 전체 유저 잡을 owner와 함께 보고 `<@owner>` 후행 인자로 타인 잡을 수정. 커맨드로 라우팅되므로 autogoal이 삼키지 않음.
 - 전체 명령어 표와 마이그레이션 히스토리(#506, #508)는 [README.md의 Commands 섹션](./README.md#commands)을 참고하세요.
 - naked 화이트리스트의 source of truth: [`src/slack/z/whitelist.ts`](./src/slack/z/whitelist.ts)
 - `$model` 등 legacy `$` 세션 설정은 deprecation grace period 동안만 허용 (경고 후 `%` 사용 안내)
