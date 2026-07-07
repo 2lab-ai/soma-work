@@ -206,10 +206,17 @@ export function handleCreate(
 /**
  * Resolve which owner's job the call addresses. Non-admins are always scoped
  * to themselves; admins may pass `owner` to address another user's job.
+ *
+ * Ambiguity guard: an admin calling by name only (no `owner`) while another
+ * user also has a job with the same name is rejected — the admin may believe
+ * they are editing the job they just saw in the all-users list. Cross-owner
+ * collisions must be disambiguated with the explicit `owner` parameter.
  */
 function resolveTargetOwner(
   args: Record<string, any>,
   context: CronContext,
+  name: string,
+  storage: CronStorage,
 ): { ok: true; owner: string } | { ok: false; errorText: string } {
   const requested = args.owner;
   if (requested && requested !== context.user) {
@@ -217,6 +224,20 @@ function resolveTargetOwner(
       return { ok: false, errorText: 'Error: owner parameter requires admin privileges' };
     }
     return { ok: true, owner: requested };
+  }
+  if (!requested && context.isAdmin === true) {
+    const otherOwners = storage
+      .getAll()
+      .filter((j) => j.name === name && j.owner !== context.user)
+      .map((j) => j.owner);
+    if (otherOwners.length > 0) {
+      const hasOwn = storage.getJobsByOwner(context.user).some((j) => j.name === name);
+      const candidates = hasOwn ? [context.user, ...otherOwners] : otherOwners;
+      return {
+        ok: false,
+        errorText: `Error: Cron job '${name}' is ambiguous — jobs with this name exist under owner(s): ${candidates.join(', ')}. Pass the owner parameter to address one.`,
+      };
+    }
   }
   return { ok: true, owner: context.user };
 }
@@ -231,36 +252,18 @@ export function handleDelete(
     return { text: 'Error: name is required', isError: true };
   }
 
-  const ownerResult = resolveTargetOwner(args, context);
+  const ownerResult = resolveTargetOwner(args, context, name, storage);
   if (!ownerResult.ok) {
     return { text: ownerResult.errorText, isError: true };
   }
 
   const removed = storage.removeJob(ownerResult.owner, name);
   if (!removed) {
-    return { text: notFoundText(name, ownerResult.owner, context, storage), isError: true };
+    return { text: `Error: Cron job '${name}' not found`, isError: true };
   }
 
   const ownerNote = ownerResult.owner !== context.user ? ` (owner: ${ownerResult.owner})` : '';
   return { text: `Cron job '${name}' deleted${ownerNote}`, isError: false };
-}
-
-/**
- * Not-found message. For admins addressing without `owner`, surface which
- * owner(s) hold a job with that name instead of silently failing —
- * admin cross-user edits must be explicit (owner param), never implicit.
- */
-function notFoundText(name: string, resolvedOwner: string, context: CronContext, storage: CronStorage): string {
-  if (context.isAdmin === true && resolvedOwner === context.user) {
-    const owners = storage
-      .getAll()
-      .filter((j) => j.name === name)
-      .map((j) => j.owner);
-    if (owners.length > 0) {
-      return `Error: Cron job '${name}' not found for you. Found under owner(s): ${owners.join(', ')} — pass the owner parameter to address it.`;
-    }
-  }
-  return `Error: Cron job '${name}' not found`;
 }
 
 // --- cron_update ---
@@ -272,7 +275,7 @@ function buildUpdatePatch(
   const patch: CronJobPatch = {};
 
   if (args.expression !== undefined) {
-    if (!isValidCronExpression(args.expression)) {
+    if (typeof args.expression !== 'string' || !isValidCronExpression(args.expression)) {
       return {
         ok: false,
         errorText: `Error: Invalid cron expression '${args.expression}'. Use 5-field format: min hour dom mon dow`,
@@ -289,7 +292,7 @@ function buildUpdatePatch(
   }
 
   if (args.channel !== undefined) {
-    if (!args.channel.startsWith('C') && !args.channel.startsWith('D')) {
+    if (typeof args.channel !== 'string' || (!args.channel.startsWith('C') && !args.channel.startsWith('D'))) {
       return { ok: false, errorText: `Error: Invalid channel '${args.channel}'` };
     }
     patch.channel = args.channel;
@@ -312,6 +315,9 @@ function buildUpdatePatch(
   }
 
   if (args.threadTs !== undefined) {
+    if (typeof args.threadTs !== 'string' || args.threadTs.length === 0) {
+      return { ok: false, errorText: `Error: Invalid threadTs '${args.threadTs}'` };
+    }
     patch.threadTs = args.threadTs;
   }
   if (args.clear_threadTs === true) {
@@ -369,7 +375,7 @@ export function handleUpdate(
     return { text: 'Error: name is required', isError: true };
   }
 
-  const ownerResult = resolveTargetOwner(args, context);
+  const ownerResult = resolveTargetOwner(args, context, name, storage);
   if (!ownerResult.ok) {
     return { text: ownerResult.errorText, isError: true };
   }
@@ -377,7 +383,7 @@ export function handleUpdate(
   const jobs = storage.getJobsByOwner(ownerResult.owner);
   const job = jobs.find((j) => j.name === name);
   if (!job) {
-    return { text: notFoundText(name, ownerResult.owner, context, storage), isError: true };
+    return { text: `Error: Cron job '${name}' not found`, isError: true };
   }
 
   const patchResult = buildUpdatePatch(args, job);

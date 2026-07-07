@@ -35,14 +35,22 @@ description: "Cron/schedule manager UI. Trigger when the user types cron, schedu
 - Q2 "무엇을 변경할까요?" — `모델 변경` / `출력 대상 변경` / `스케줄·프롬프트 변경` / `삭제`
 
 질문 prefix는 `[small]` 정도면 충분하다. 잡이 1개뿐이면 Q1을 생략하고 그 잡을 대상으로 Q2만 묻는다.
+**버튼 상한 주의**: 질문당 옵션은 최대 4개다. 잡이 4개 이상이면 Q1 옵션에 전부 넣지 말고, 1단계 리스트에 번호를 붙인 뒤 상위 3개 + "다른 잡(번호/이름 입력)"으로 구성하고 나머지는 `✏️ Other` 입력으로 받는다.
 
 ### 3. 값 선택 — 두 번째 질문
 
-**모델 변경** 선택 시 (recommended = default):
+**모델 변경** 선택 시 — Slack 버튼은 **질문당 최대 4개**(+자동 `✏️ Other`)이므로 2단계로 나눈다:
 
-- `default` — 만든 사람의 **현재** 기본 모델을 실행 시점에 사용 (override 해제, 추천)
-- `fast` — sonnet 고정 (가벼운 정기 작업용)
-- 특정 모델 — `claude-fable-5`, `claude-opus-4-8[1m]`, `claude-sonnet-4-6`, `claude-haiku-4-5-20251001`, `gpt-5.5` 중 택 (canonical id는 `src/user-settings-store.ts` AVAILABLE_MODELS 기준 — 유저가 다른 모델을 원하면 `✏️ Other`로 직접 입력받아 `model_type=custom, model_name=<입력>`으로 전달)
+1단계 (recommended = default, 옵션 3개):
+
+- `default` — 만든 사람의 **현재** 기본 모델을 실행 시점에 사용 (override 해제, 추천) → 즉시 적용
+- `fast` — sonnet 고정 (가벼운 정기 작업용) → 즉시 적용
+- `특정 모델 선택` → 2단계 질문으로 진행
+
+2단계 (특정 모델, 옵션 4개 + `✏️ Other`):
+
+- `claude-fable-5` / `claude-opus-4-8[1m]` / `claude-sonnet-4-6` / `gpt-5.5` (canonical id는 `src/user-settings-store.ts` AVAILABLE_MODELS 기준 — drift 주의)
+- 그 외 모델(haiku 등)은 렌더러가 자동으로 붙이는 `✏️ Other` 입력으로 받아 `model_type=custom, model_name=<입력>`으로 전달 (5번째 이후 옵션은 잘리므로 절대 4개를 넘기지 말 것)
 
 **출력 대상 변경** 선택 시:
 
