@@ -1,7 +1,9 @@
+import { RATE_LIMIT_MAX_WAIT_MS } from '@soma/common/rate-limit';
 import { describe, expect, it } from 'vitest';
 import {
   DISPATCH_OVERLOADED_MAX_RETRIES,
   DISPATCH_OVERLOADED_RETRY_DELAY_MS,
+  DISPATCH_RATE_LIMIT_MAX_RETRIES,
   decideDispatchRetry,
   isContextOverflowErrorText,
   isOverloadedErrorText,
@@ -12,10 +14,14 @@ import { resolveContextWindow } from '../metrics/model-registry';
 
 const baseState = {
   overloadedRetries: 0,
+  rateLimitRetries: 0,
   overflowFallbackUsed: false,
   model: 'claude-opus-4-8' as string | undefined,
   aborted: false,
 };
+
+const POOL_RATE_LIMIT =
+  'API Error: Request rejected (429) · All 9 eligible accounts are rate-limited right now; retry in 3283s.';
 
 describe('isOverloadedErrorText', () => {
   it('matches the Anthropic overloaded_error JSON shape', () => {
@@ -135,6 +141,58 @@ describe('decideDispatchRetry — prompt too long', () => {
       ...baseState,
       overflowFallbackUsed: true,
     });
+    expect(decision).toEqual({ kind: 'rethrow' });
+  });
+});
+
+describe('decideDispatchRetry — pool rate limit (retry in Ns)', () => {
+  it('waits the advertised window and retries on the incident rejection', () => {
+    const decision = decideDispatchRetry(new Error(POOL_RATE_LIMIT), { ...baseState });
+    expect(decision).toEqual({ kind: 'rate-limit-wait', delayMs: 3283 * 1000 });
+  });
+
+  it('detects the rate limit from stderrContent (issue #118 class)', () => {
+    const err = Object.assign(new Error('process exited with code 1'), {
+      stderrContent: POOL_RATE_LIMIT,
+    });
+    expect(decideDispatchRetry(err, { ...baseState }).kind).toBe('rate-limit-wait');
+  });
+
+  it('clamps an absurd hint to the 1-hour ceiling', () => {
+    const decision = decideDispatchRetry(
+      new Error('Request rejected (429) all accounts rate-limited; retry in 999999s'),
+      { ...baseState },
+    );
+    expect(decision).toEqual({ kind: 'rate-limit-wait', delayMs: RATE_LIMIT_MAX_WAIT_MS });
+  });
+
+  it('honors a stashed poolRateLimitRetryMs when the truncated message omits the hint', () => {
+    // The content-guard slices the message to 200 chars, so the "retry in Ns"
+    // hint can be absent from `message` — but the parsed window is stashed.
+    const err = Object.assign(
+      new Error(
+        'Claude pool rate-limited (surfaced as dispatch content): request rejected — all accounts rate-limited',
+      ),
+      { poolRateLimitRetryMs: 3283 * 1000 },
+    );
+    expect(decideDispatchRetry(err, { ...baseState })).toEqual({ kind: 'rate-limit-wait', delayMs: 3283 * 1000 });
+  });
+
+  it('floors a stashed 0ms window so the retry still fires', () => {
+    const err = Object.assign(new Error('pool rate-limited'), { poolRateLimitRetryMs: 0 });
+    expect(decideDispatchRetry(err, { ...baseState })).toEqual({ kind: 'rate-limit-wait', delayMs: 1_000 });
+  });
+
+  it('rethrows once the rate-limit retry budget is exhausted', () => {
+    const decision = decideDispatchRetry(new Error(POOL_RATE_LIMIT), {
+      ...baseState,
+      rateLimitRetries: DISPATCH_RATE_LIMIT_MAX_RETRIES,
+    });
+    expect(decision).toEqual({ kind: 'rethrow' });
+  });
+
+  it('never retries an aborted dispatch even on a rate limit', () => {
+    const decision = decideDispatchRetry(new Error(POOL_RATE_LIMIT), { ...baseState, aborted: true });
     expect(decision).toEqual({ kind: 'rethrow' });
   });
 });
