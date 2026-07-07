@@ -1,0 +1,156 @@
+import * as path from 'path';
+import { type CronJobPatch, CronStorage } from 'somalib/cron/cron-storage';
+import { isAdminUser } from '../../admin-utils';
+import { DATA_DIR } from '../../env-paths';
+import { Logger } from '../../logger';
+import { buildCronCard, CRON_MODEL_DEFAULT, CRON_MODEL_FAST, parseCronActionId } from '../cron-blocks';
+import type { SlackApiHelper } from '../slack-api-helper';
+import type { RespondFn } from './types';
+
+interface CronActionContext {
+  slackApi: SlackApiHelper;
+  /** Test seam — defaults to DATA_DIR/cron-jobs.json (same file the scheduler reads). */
+  storagePath?: string;
+}
+
+/**
+ * Handles interactions on the cron management card (src/slack/cron-blocks.ts):
+ *   - `cron_model::<owner>::<name>`  static_select → change model override
+ *   - `cron_target::<owner>::<name>` static_select → change delivery target
+ *   - `cron_delete::<owner>::<name>` button        → delete the job
+ *
+ * Authorization is job-owner-scoped: the clicker must be the job's owner or an
+ * admin (ADMIN_USERS). Everyone else gets an ephemeral reject and the card
+ * stays live. After a mutation the card re-renders in place with the clicker's
+ * visibility (admin sees all users' jobs, owner sees their own).
+ * Pattern: src/slack/actions/autoskill-action-handler.ts
+ */
+export class CronActionHandler {
+  private logger = new Logger('CronActionHandler');
+
+  constructor(private ctx: CronActionContext) {}
+
+  private storage(): CronStorage {
+    return new CronStorage(this.ctx.storagePath ?? path.join(DATA_DIR, 'cron-jobs.json'));
+  }
+
+  async handleAction(body: any, respond: RespondFn): Promise<void> {
+    try {
+      const action = body?.actions?.[0];
+      const actionId: string = action?.action_id ?? '';
+      const parsed = parseCronActionId(actionId);
+      if (!parsed) {
+        this.logger.warn('cron action: malformed action_id', { actionId });
+        return;
+      }
+      const { kind, owner, name } = parsed;
+
+      const clickerId: string | undefined = body?.user?.id;
+      if (!clickerId || (clickerId !== owner && !isAdminUser(clickerId))) {
+        await respond({
+          response_type: 'ephemeral',
+          replace_original: false,
+          text: `⚠️ *${name}* 은 <@${owner}>님의 크론잡입니다 — 본인 또는 admin만 수정할 수 있습니다.`,
+        });
+        return;
+      }
+
+      if (kind === 'delete') {
+        const removed = this.storage().removeJob(owner, name);
+        if (!removed) {
+          await this.notFound(respond, name);
+          return;
+        }
+        this.logger.info('cron job deleted via card', { clickerId, owner, name });
+        await this.rerenderCard(body, clickerId);
+        return;
+      }
+
+      const selected: string | undefined = action?.selected_option?.value;
+      if (!selected) {
+        this.logger.warn('cron action: missing selected_option', { actionId });
+        return;
+      }
+
+      const patch = kind === 'model' ? buildModelPatch(selected) : buildTargetPatch(selected, body);
+      if (!patch) {
+        await respond({
+          response_type: 'ephemeral',
+          replace_original: false,
+          text: `⚠️ 잘못된 선택값입니다: \`${selected}\``,
+        });
+        return;
+      }
+
+      const updated = this.storage().updateJob(owner, name, patch);
+      if (!updated) {
+        await this.notFound(respond, name);
+        return;
+      }
+      this.logger.info('cron job updated via card', { clickerId, owner, name, kind, selected });
+      await this.rerenderCard(body, clickerId);
+    } catch (error) {
+      this.logger.error('Error processing cron action', error);
+      try {
+        await respond({
+          response_type: 'ephemeral',
+          replace_original: false,
+          text: '⚠️ 크론잡 변경 중 오류가 발생했습니다.',
+        });
+      } catch {
+        // best-effort
+      }
+    }
+  }
+
+  private async notFound(respond: RespondFn, name: string): Promise<void> {
+    await respond({
+      response_type: 'ephemeral',
+      replace_original: false,
+      text: `⚠️ 크론잡 \`${name}\` 을 찾을 수 없습니다 (이미 삭제되었을 수 있음). \`cron\` 으로 새로고침하세요.`,
+    });
+  }
+
+  /** Re-render the card in place with the clicker's visibility scope. */
+  private async rerenderCard(body: any, clickerId: string): Promise<void> {
+    const channelId: string | undefined = body?.channel?.id;
+    const messageTs: string | undefined = body?.message?.ts;
+    if (!channelId || !messageTs) return;
+    const admin = isAdminUser(clickerId);
+    const storage = this.storage();
+    const jobs = admin ? storage.getAll() : storage.getJobsByOwner(clickerId);
+    const card = buildCronCard({ jobs, isAdmin: admin });
+    await this.ctx.slackApi.updateMessage(channelId, messageTs, card.text, card.blocks, []).catch((err: unknown) =>
+      this.logger.warn('cron rerender: updateMessage failed', {
+        err: (err as Error)?.message ?? String(err),
+      }),
+    );
+  }
+}
+
+/** Map a model select value to a CronJobPatch. */
+function buildModelPatch(selected: string): CronJobPatch | null {
+  if (selected === CRON_MODEL_DEFAULT) return { modelConfig: null };
+  if (selected === CRON_MODEL_FAST) return { modelConfig: { type: 'fast' } };
+  if (selected.startsWith('custom:')) {
+    const model = selected.slice('custom:'.length);
+    if (!model) return null;
+    return { modelConfig: { type: 'custom', model } };
+  }
+  return null;
+}
+
+/**
+ * Map a target select value to a CronJobPatch. `thread` anchors to the thread
+ * the card lives in (message.thread_ts, falling back to the card ts itself).
+ */
+function buildTargetPatch(selected: string, body: any): CronJobPatch | null {
+  if (selected === 'channel') return { target: null, threadTs: null };
+  if (selected === 'dm') return { target: 'dm', threadTs: null };
+  if (selected === 'thread') {
+    const ts: string | undefined = body?.message?.thread_ts ?? body?.message?.ts;
+    if (!ts) return null;
+    return { target: 'thread', threadTs: ts };
+  }
+  return null;
+}

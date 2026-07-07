@@ -13,6 +13,7 @@ import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../../user-settings-store', () => ({
+  AVAILABLE_MODELS: ['claude-fable-5', 'claude-opus-4-8', 'claude-sonnet-4-6', 'gpt-5.5'],
   userSettingsStore: {
     resolveModelInput: vi.fn((input: string) => {
       const map: Record<string, string> = {
@@ -51,7 +52,8 @@ function makeCtx(overrides: Partial<CommandContext> = {}): CommandContext {
 
 function saidText(ctx: CommandContext): string {
   const calls = (ctx.say as any).mock.calls;
-  return calls.map((c: any[]) => c[0].text).join('\n');
+  // Card renders put structure in blocks; include both surfaces for assertions.
+  return calls.map((c: any[]) => `${c[0].text ?? ''}\n${JSON.stringify(c[0].blocks ?? [])}`).join('\n');
 }
 
 beforeEach(() => {
@@ -115,6 +117,19 @@ describe('canHandle', () => {
 });
 
 describe('list', () => {
+  it('bare `cron` renders an interactive card with per-job selects', async () => {
+    seed();
+    const ctx = makeCtx({ text: 'cron' });
+    await handler.execute(ctx);
+    const blocks = (ctx.say as any).mock.calls[0][0].blocks;
+    const actions = blocks.find((b: any) => b.type === 'actions');
+    expect(actions.elements.map((e: any) => e.action_id)).toEqual([
+      'cron_model::U_ALICE::daily-report',
+      'cron_target::U_ALICE::daily-report',
+      'cron_delete::U_ALICE::daily-report',
+    ]);
+  });
+
   it('bare `cron` lists own jobs for non-admin (own only, no owner column)', async () => {
     seed();
     seed({ name: 'other-job', owner: 'U_BOB', target: 'dm' });
@@ -144,10 +159,12 @@ describe('list', () => {
     expect(out).toContain('dm');
   });
 
-  it('empty list shows usage hint', async () => {
+  it('empty list shows registration guidance card', async () => {
     const ctx = makeCtx({ text: 'cron' });
     await handler.execute(ctx);
-    expect(saidText(ctx)).toContain('cron model');
+    expect(saidText(ctx)).toContain('크론으로 등록');
+    // card blocks are attached
+    expect((ctx.say as any).mock.calls[0][0].blocks).toBeDefined();
   });
 });
 

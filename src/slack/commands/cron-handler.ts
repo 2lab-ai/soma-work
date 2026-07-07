@@ -3,6 +3,7 @@ import { type CronJob, type CronJobPatch, CronStorage } from 'somalib/cron/cron-
 import { isAdminUser } from '../../admin-utils';
 import { DATA_DIR } from '../../env-paths';
 import { userSettingsStore } from '../../user-settings-store';
+import { buildCronCard } from '../cron-blocks';
 import type { CommandContext, CommandHandler, CommandResult } from './types';
 
 /**
@@ -87,29 +88,12 @@ export class CronCommandHandler implements CommandHandler {
     const storage = this.storage();
     const jobs = admin ? storage.getAll() : storage.getJobsByOwner(ctx.user);
 
-    if (jobs.length === 0) {
-      await ctx.say({
-        text: `⏰ 등록된 크론잡이 없습니다.\n등록은 자연어로: "매일 아침 9시에 열린 PR 요약해줘, 크론으로 등록"\n\n${usageText()}`,
-        thread_ts: ctx.threadTs,
-      });
-      return;
-    }
-
-    const lines = jobs.map((j) => {
-      const ownerStr = admin ? ` | ${describeOwner(j)}` : '';
-      const modeStr = j.mode === 'fastlane' ? ' | ⚡fastlane' : '';
-      return (
-        `• *${j.name}*${ownerStr} | \`${j.expression}\` | ch:<#${j.channel}>${modeStr}` +
-        ` | model:${describeModel(j)} | target:${describeTarget(j)} | last: ${j.lastRunMinute || 'never'}\n` +
-        `   ↳ ${j.prompt.substring(0, 100)}`
-      );
-    });
-
-    const header = admin ? `⏰ *크론잡 (${jobs.length}) — admin view, 전체 유저*` : `⏰ *크론잡 (${jobs.length})*`;
-    await ctx.say({
-      text: `${header}\n${lines.join('\n')}\n\n${usageText()}`,
-      thread_ts: ctx.threadTs,
-    });
+    // Interactive Block Kit card: per-job model/target dropdowns + delete
+    // button (src/slack/cron-blocks.ts); mutations land in
+    // src/slack/actions/cron-action-handler.ts. `text` stays as the plain
+    // fallback for notifications/clients without Block Kit.
+    const card = buildCronCard({ jobs, isAdmin: admin });
+    await ctx.say({ text: card.text, blocks: card.blocks, thread_ts: ctx.threadTs });
   }
 
   // --- model ---
