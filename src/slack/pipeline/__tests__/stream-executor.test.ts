@@ -838,6 +838,7 @@ describe('Abort handling', () => {
     expect(session.fallbackCompactActive).toBe(true);
     expect(session.fallbackCompactOriginalModel).toBe('gpt-5.5');
     expect(deps.contextWindowManager.handlePromptTooLong).toHaveBeenCalledWith('C123:thread123');
+    expect(deps.turnNotifier.notify).not.toHaveBeenCalled();
     expect(say).toHaveBeenCalledTimes(1);
     const payload = say.mock.calls[0][0];
     expect(payload.text).toContain('1M 모델로 자동 컴팩트');
@@ -867,6 +868,12 @@ describe('Abort handling', () => {
     expect(retryAfterMs).toBeUndefined();
     expect(deps.claudeHandler.clearSessionId).toHaveBeenCalledWith('C123', 'thread123');
     expect(session.fallbackCompactActive).toBeUndefined();
+    expect(deps.turnNotifier.notify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        category: 'Exception',
+        message: 'Prompt is too long: maximum context length exceeded',
+      }),
+    );
     expect(say).toHaveBeenCalledTimes(1);
     const payload = say.mock.calls[0][0];
     expect(payload.text).toContain('Session:* 🔄 초기화됨');
@@ -6112,11 +6119,14 @@ describe('prompt-too-long delivered as content triggers auto fallback compact (f
         buildBashStatus: vi.fn().mockReturnValue('is running commands...'),
         registerBackgroundBashActive: vi.fn().mockReturnValue(() => {}),
       },
+      turnNotifier: {
+        notify: vi.fn().mockResolvedValue(undefined),
+      },
       threadPanel: undefined,
     } as any;
   }
 
-  it('converts the content-shaped overflow to the fallback-compact path (model switched, retry scheduled)', async () => {
+  it('converts the content-shaped overflow to the fallback-compact path without emitting a raw Exception card', async () => {
     vi.mocked(userSettingsStore.getUserEmail).mockReturnValue('user@example.com');
     const deps = createPtlDeps();
     const executor = new StreamExecutor(deps);
@@ -6157,6 +6167,12 @@ describe('prompt-too-long delivered as content triggers auto fallback compact (f
     expect(session.fallbackCompactPendingUserText).toBe('아주 긴 메시지');
     // Session must NOT be cleared — history is what /compact will shrink.
     expect(deps.claudeHandler.clearSessionId).not.toHaveBeenCalled();
+    // The recoverable fallback path must not surface the raw prompt-too-long
+    // wrapper as a red Exception card before the compact notice.
+    expect(deps.turnNotifier.notify).not.toHaveBeenCalled();
+    expect(say).toHaveBeenCalledTimes(1);
+    expect(say.mock.calls[0][0].text).toContain('1M 모델로 자동 컴팩트');
+    expect(say.mock.calls[0][0].text).not.toContain('surfaced as turn content');
     // The error text must NOT be persisted as the assistant's answer.
     const { recordAssistantTurn } = await import('../../../conversation');
     expect(vi.mocked(recordAssistantTurn)).not.toHaveBeenCalledWith(expect.anything(), 'Prompt is too long');

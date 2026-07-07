@@ -112,6 +112,15 @@ export type SayFunction = (message: {
   attachments?: any[];
 }) => Promise<{ ts?: string }>;
 
+function textIndicatesPromptTooLong(text: unknown): boolean {
+  if (typeof text !== 'string') return false;
+  const t = text.trim().toLowerCase();
+  if (t.length === 0 || t.length > 160) return false;
+  return (
+    t.includes('prompt is too long') || t.includes('context length exceeded') || t.includes('maximum context length')
+  );
+}
+
 /**
  * Handler for assistant text messages
  */
@@ -1079,6 +1088,13 @@ export class AgentStreamProcessor {
     }
 
     currentMessages.push(textContent);
+
+    // Claude SDK can surface a context overflow as a successful assistant text
+    // turn. Do not stream that raw transport error to Slack; stream-executor
+    // inspects collectedText after process() and routes it into fallback compact.
+    if (textIndicatesPromptTooLong(textContent)) {
+      return;
+    }
 
     // Check for user choice JSON
     const { choice, choices, textWithoutChoice } = UserChoiceHandler.extractUserChoice(textContent);

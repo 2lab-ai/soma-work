@@ -2477,7 +2477,10 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     const unknownAbort = isAbort && !stallTimeoutAbort && !ghostSessionAbort && !knownSilentAbort;
     const notifyWorthyAbort = stallTimeoutAbort || ghostSessionAbort || unknownAbort;
     const shouldNotifyException =
-      !!this.deps.turnNotifier && (!isAbort || notifyWorthyAbort) && !this.isOneMContextUnavailableError(error);
+      !!this.deps.turnNotifier &&
+      (!isAbort || notifyWorthyAbort) &&
+      !fallbackCompactApplied &&
+      !this.isOneMContextUnavailableError(error);
 
     // Compose user-facing text + category for the notify-worthy branches.
     // Category split (per the user's invariant in `turn-notifier.ts`
