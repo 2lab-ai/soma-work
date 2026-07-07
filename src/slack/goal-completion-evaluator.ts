@@ -59,7 +59,7 @@ export type GoalEvalDispatcher = (params: {
 
 /** Load the eval system prompt from disk (kept in `src/prompt/`). */
 let cachedSystemPrompt: string | null = null;
-export function loadGoalEvalSystemPrompt(): string {
+function loadGoalEvalSystemPrompt(): string {
   if (cachedSystemPrompt !== null) return cachedSystemPrompt;
   // Resolve relative to this compiled file. In dev (tsx) `__dirname`
   // points at src/slack; in prod the file is copied into dist/prompt

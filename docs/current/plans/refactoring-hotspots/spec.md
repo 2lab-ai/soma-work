@@ -88,3 +88,45 @@ compatibility.
 - `tsc --noEmit`, `biome check`, `vitest run` green
 - No Slack payload/UI behavior change
 - Extracted module imports no Slack/Claude/runtime concerns (goal domain only)
+
+## Drift (2026-07-07): Musk 5-step ordering is binding
+
+Mid-run the user mandated the ordering principle for this plan (SSOT_2):
+
+> 1. Question every requirement 2. Delete the part or process 3. Simplify or
+> optimize 4. Accelerate cycle time 5. Automate — "The most common mistake of
+> smart engineers is to optimize a thing that should not exist."
+
+Consequence: deletion outranks code-motion. Splitting a live file is step 3;
+it only happens after step 1-2 have removed what should not exist. Codex
+consult `51b9ebc9` endorsed the reorder.
+
+## Execution record
+
+| Round | PR | What | Result |
+|-------|----|------|--------|
+| Phase 1 (pre-drift) | #1208 (merged) | session-goal lifecycle extraction from `session-registry.ts` | registry 2279→~2190 lines, 17 new tests |
+| Delete round 1 | #1209 (merged) | knip-verified dead files: 4 legacy SRP shims, `@deprecated` `action-handlers.ts` compat, stray `permission-server-start.js`; barrels pruned to single-importer surface; contract-test shim mandate narrowed; stale `llm-runtime-adapter` plan archived | +33/−136, 6 files deleted |
+| Delete round 2 | (this PR) | knip-flagged unused exports: 1 dead function deleted (`getGitHubTokenForCLI`), 17 exports demoted to module-private across 12 files (each grep-verified zero external importers) | −33 net code, export surface −18 |
+
+## Re-scoped backlog (Musk-ordered)
+
+Step 2 (delete) — remaining:
+- knip still reports findings that need a curated config to separate real
+  dead code from workspace/runtime entry points (somalib/*, skills scripts,
+  Docker healthcheck). See "Automate" below.
+- `src/slack/output-flags.ts` + several cross-package duplicate exports
+  (`getStatusEmoji`, `extractJiraKey`, `MAX_GOAL_HISTORY`, modal callback IDs)
+  need per-symbol shim analysis before pruning — deferred, tracked here.
+
+Step 3 (simplify) — candidates from the ranked backlog, in order:
+1. `dashboard.ts` (5218 lines): FIRST question which routes/templates are
+   actually used (step 1-2), then characterization tests, then split.
+2. `token-manager.ts` usage-fetch/lease-reaper extraction (preserve `CctStore`
+   lock coordination).
+3. ADR 0002 Pass 2 (needs own spec/trace; too large for one autonomous PR).
+4. `choice-action-handler.ts`: tests before any split.
+
+Step 5 (automate) — add a curated `knip.json` (workspace entries, skill
+scripts, bin files) and a `npm run deadcode` script so step-2 sweeps are
+repeatable and eventually CI-enforced.
