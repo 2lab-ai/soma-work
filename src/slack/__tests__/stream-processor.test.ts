@@ -8,6 +8,7 @@ import { calculateTokenCost } from '../../metrics/model-registry';
 import {
   AgentStreamProcessor,
   extractTaskIdFromResult,
+  PendingForm,
   type SayFunction,
   type StreamCallbacks,
   type StreamContext,
@@ -515,9 +516,9 @@ describe('StreamProcessor', () => {
 
       expect(result.success).toBe(true);
       expect(result.sdkResultError).toBeDefined();
-      expect(result.sdkResultError?.subtype).toBe('error_during_execution');
-      expect(result.sdkResultError?.errors).toEqual(['context window exceeded', 'prompt too long']);
-      expect(result.sdkResultError?.numTurns).toBe(5);
+      expect(result.sdkResultError!.subtype).toBe('error_during_execution');
+      expect(result.sdkResultError!.errors).toEqual(['context window exceeded', 'prompt too long']);
+      expect(result.sdkResultError!.numTurns).toBe(5);
     });
 
     it('should capture error_max_turns in sdkResultError', async () => {
@@ -538,7 +539,7 @@ describe('StreamProcessor', () => {
       const result = await processor.process(createMockStream(messages) as any, mockContext, abortController.signal);
 
       expect(result.sdkResultError).toBeDefined();
-      expect(result.sdkResultError?.subtype).toBe('error_max_turns');
+      expect(result.sdkResultError!.subtype).toBe('error_max_turns');
     });
 
     it('should not set sdkResultError on success result', async () => {
@@ -575,8 +576,8 @@ describe('StreamProcessor', () => {
       const processor = new AgentStreamProcessor();
       const result = await processor.process(createMockStream(messages) as any, mockContext, abortController.signal);
       expect(result.sdkResultError).toBeDefined();
-      expect(result.sdkResultError?.subtype).toBe('error_max_turns');
-      expect(result.sdkResultError?.errors).toEqual([]);
+      expect(result.sdkResultError!.subtype).toBe('error_max_turns');
+      expect(result.sdkResultError!.errors).toEqual([]);
     });
 
     it('should capture error_ prefix subtype even when is_error is false', async () => {
@@ -595,7 +596,7 @@ describe('StreamProcessor', () => {
       const processor = new AgentStreamProcessor();
       const result = await processor.process(createMockStream(messages) as any, mockContext, abortController.signal);
       expect(result.sdkResultError).toBeDefined();
-      expect(result.sdkResultError?.subtype).toBe('error_max_budget_usd');
+      expect(result.sdkResultError!.subtype).toBe('error_max_budget_usd');
     });
 
     it('should default subtype to error_during_execution when subtype is missing', async () => {
@@ -612,7 +613,7 @@ describe('StreamProcessor', () => {
       const processor = new AgentStreamProcessor();
       const result = await processor.process(createMockStream(messages) as any, mockContext, abortController.signal);
       expect(result.sdkResultError).toBeDefined();
-      expect(result.sdkResultError?.subtype).toBe('error_during_execution');
+      expect(result.sdkResultError!.subtype).toBe('error_during_execution');
     });
 
     it('should not call say or increment messageCount on error result', async () => {

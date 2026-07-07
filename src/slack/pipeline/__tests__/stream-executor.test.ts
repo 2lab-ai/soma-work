@@ -1597,8 +1597,8 @@ describe('model-command integration', () => {
   });
 
   it('buildRenewContinuation resolves relative dir against session working directory', async () => {
-    const fs = await import('node:fs');
-    const path = await import('node:path');
+    const fs = await import('fs');
+    const path = await import('path');
 
     // Create a real temp directory with a context.md file
     const tmpDir = path.join('/tmp', `renew-test-${Date.now()}`);
@@ -1700,8 +1700,8 @@ describe('model-command integration', () => {
   // ── P1-B: scanForLatestSave fail-closed when saveId not found ──
 
   it('scanForLatestSave returns null when explicit saveId not found', async () => {
-    const fs = await import('node:fs');
-    const path = await import('node:path');
+    const fs = await import('fs');
+    const path = await import('path');
 
     const tmpDir = path.join('/tmp', `scan-test-${Date.now()}`);
     const saveRoot = path.join(tmpDir, '.claude', 'omc', 'tasks', 'save');
@@ -1721,8 +1721,8 @@ describe('model-command integration', () => {
   });
 
   it('scanForLatestSave finds newest when no saveId given', async () => {
-    const fs = await import('node:fs');
-    const path = await import('node:path');
+    const fs = await import('fs');
+    const path = await import('path');
 
     const tmpDir = path.join('/tmp', `scan-newest-${Date.now()}`);
     const saveRoot = path.join(tmpDir, '.claude', 'omc', 'tasks', 'save');
@@ -3577,7 +3577,7 @@ describe('Email guard in execute()', () => {
     expect(result.success).toBe(false);
     const blockKitCall = say.mock.calls.find((c) => Array.isArray(c[0]?.blocks) && c[0].blocks.length > 0);
     expect(blockKitCall).toBeDefined();
-    expect(blockKitCall?.[0].text).toContain('이메일이 설정되지 않았습니다');
+    expect(blockKitCall![0].text).toContain('이메일이 설정되지 않았습니다');
   });
 });
 
@@ -5423,7 +5423,7 @@ describe('turn-end surface guarantee — P0 holes', () => {
     // RED gate: helper does not exist yet on main.
     expect(typeof handler).toBe('function');
 
-    handler?.call(executor, {
+    handler!.call(executor, {
       snapshotResolved: false,
       fallbackArgs: {
         category: 'WorkflowComplete',
@@ -5456,7 +5456,7 @@ describe('turn-end surface guarantee — P0 holes', () => {
       | undefined;
     expect(typeof handler).toBe('function');
 
-    handler?.call(executor, {
+    handler!.call(executor, {
       snapshotResolved: true,
       fallbackArgs: {
         category: 'WorkflowComplete',
@@ -5492,7 +5492,7 @@ describe('turn-end surface guarantee — P0 holes', () => {
     try {
       const never = () => new Promise<void>(() => {});
       const settled = vi.fn();
-      const p = wrapper?.(never, 3000).then(settled, settled);
+      const p = wrapper!(never, 3000).then(settled, settled);
 
       // Before the timeout: pending.
       await Promise.resolve();
@@ -6423,6 +6423,68 @@ describe('compaction failure delivered as content (transcript repair + unwedge)'
     expect(session.fallbackCompactActive).toBe(false);
     // History is intact — a rate-limited compact must NOT cost the session.
     expect(deps.claudeHandler.clearSessionId).not.toHaveBeenCalled();
+    expect(say).toHaveBeenCalledTimes(1);
+    expect(say.mock.calls[0][0].text).toContain('자동 컴팩트 실패');
+  });
+
+  // Codex review (PR #1206): guard ORDER regression. A compaction failure
+  // whose detail embeds a prompt-too-long / usage-limit phrase must reach the
+  // terminal compact rail — if the generic content guards consumed it first,
+  // fallback state and the 1M model would never be unwound.
+  it('routes "Error during compaction: Prompt is too long" to the terminal compact rail, not the PTL guard', async () => {
+    const deps = createRepairDeps('Error: Error during compaction: Prompt is too long');
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    const session = fallbackCompactSession();
+
+    const result = await executor.execute(executeParams(session, say, '/compact'));
+
+    // Terminal compact rail — NOT the prompt-too-long fallback path.
+    expect(result.retryAfterMs).toBeUndefined();
+    expect(session.model).toBe('gpt-5.5');
+    expect(session.fallbackCompactActive).toBe(false);
+    expect(typeof session.fallbackCompactFailedAtMs).toBe('number');
+    // Not an empty-block 400 → the session history survives.
+    expect(deps.claudeHandler.clearSessionId).not.toHaveBeenCalled();
+    expect(say).toHaveBeenCalledTimes(1);
+    expect(say.mock.calls[0][0].text).toContain('자동 컴팩트 실패');
+  });
+
+  it('routes a usage-limit-phrased compaction failure to the terminal compact rail, not the rotation path', async () => {
+    const deps = createRepairDeps("Error: Error during compaction: You've hit your usage limit · resets 9pm");
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    const session = fallbackCompactSession();
+
+    const result = await executor.execute(executeParams(session, say, '/compact'));
+
+    expect(result.retryAfterMs).toBeUndefined();
+    expect(session.model).toBe('gpt-5.5');
+    expect(session.fallbackCompactActive).toBe(false);
+    expect(deps.claudeHandler.clearSessionId).not.toHaveBeenCalled();
+    expect(say).toHaveBeenCalledTimes(1);
+    expect(say.mock.calls[0][0].text).toContain('자동 컴팩트 실패');
+  });
+
+  it('does NOT set the re-arm cooldown when a MANUAL /compact fails (no armed fallback)', async () => {
+    const deps = createRepairDeps('Error: Error during compaction: API Error: Server is temporarily limiting requests');
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    const session = {
+      sessionId: SESSION_UUID,
+      ownerId: 'U_TEST',
+      logVerbosity: 'detail',
+      usage: {},
+      terminated: false,
+      model: 'gpt-5.5',
+      // No fallbackCompactActive — this is a user-invoked /compact.
+    } as any;
+
+    const result = await executor.execute(executeParams(session, say, '/compact'));
+
+    expect(result.retryAfterMs).toBeUndefined();
+    // A failed manual compact must not block a later EMERGENCY fallback.
+    expect(session.fallbackCompactFailedAtMs).toBeUndefined();
     expect(say).toHaveBeenCalledTimes(1);
     expect(say.mock.calls[0][0].text).toContain('자동 컴팩트 실패');
   });

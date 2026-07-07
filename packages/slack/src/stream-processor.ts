@@ -509,6 +509,13 @@ export class AgentStreamProcessor {
     cacheReadTokens: number;
     cacheCreateTokens: number;
   } | null = null;
+  /**
+   * Model name captured from the most recent SDKAssistantMessage
+   * (BetaMessage.model). Used by extractUsageData's direct-usage fallback
+   * so calculateTokenCost prices the correct tier when the result message
+   * itself does not carry `model`.
+   */
+  private _lastAssistantModelName: string | undefined;
   /** EndTurn info from the result message stop_reason (Issue #42 S3) */
   private _endTurnInfo: EndTurnInfo | undefined;
   /** Last tool name seen in assistant messages (for endTurnInfo.lastToolUse) */
