@@ -16,11 +16,6 @@ vi.mock('../../../cron-scheduler', () => ({
   getActiveCronScheduler: vi.fn(() => ({ runJobNow })),
 }));
 
-const runJobNow = vi.fn().mockResolvedValue({ ok: true, message: 'fired' });
-vi.mock('../../../cron-scheduler', () => ({
-  getActiveCronScheduler: vi.fn(() => ({ runJobNow })),
-}));
-
 import { CronStorage } from 'somalib/cron/cron-storage';
 import { CronActionHandler } from '../cron-action-handler';
 
@@ -170,61 +165,6 @@ describe('delete', () => {
   it('already-deleted job responds not-found ephemeral', async () => {
     const respond = vi.fn();
     await handler.handleAction(body({ actionId: 'cron_delete::U_ALICE::daily-report', user: 'U_ALICE' }), respond);
-    expect(respond).toHaveBeenCalledWith(expect.objectContaining({ response_type: 'ephemeral' }));
-  });
-});
-
-describe('mode select', () => {
-  it('fastlane sets mode; default clears it', async () => {
-    seed();
-    await handler.handleAction(
-      body({ actionId: 'cron_mode::U_ALICE::daily-report', user: 'U_ALICE', selected: 'fastlane' }),
-      vi.fn(),
-    );
-    expect(storage.getJobsByOwner('U_ALICE')[0].mode).toBe('fastlane');
-    await handler.handleAction(
-      body({ actionId: 'cron_mode::U_ALICE::daily-report', user: 'U_ALICE', selected: 'default' }),
-      vi.fn(),
-    );
-    expect('mode' in storage.getJobsByOwner('U_ALICE')[0]).toBe(false);
-  });
-});
-
-describe('run now', () => {
-  it('fires the job through the live scheduler (real cron path) and re-renders', async () => {
-    seed();
-    const respond = vi.fn();
-    await handler.handleAction(body({ actionId: 'cron_run::U_ALICE::daily-report', user: 'U_ALICE' }), respond);
-    expect(runJobNow).toHaveBeenCalledWith('U_ALICE', 'daily-report');
-    expect(respond).toHaveBeenCalledWith(expect.objectContaining({ text: expect.stringContaining('실행 트리거') }));
-    expect(updateMessage).toHaveBeenCalledTimes(1);
-  });
-
-  it('non-owner non-admin cannot run', async () => {
-    seed();
-    const respond = vi.fn();
-    await handler.handleAction(body({ actionId: 'cron_run::U_ALICE::daily-report', user: 'U_EVE' }), respond);
-    expect(runJobNow).not.toHaveBeenCalled();
-    expect(respond).toHaveBeenCalledWith(expect.objectContaining({ response_type: 'ephemeral' }));
-  });
-});
-
-describe('edit button', () => {
-  it('opens the edit modal via views.open with job initial values', async () => {
-    seed();
-    const viewsOpen = vi.fn().mockResolvedValue({});
-    const b = { ...body({ actionId: 'cron_edit::U_ALICE::daily-report', user: 'U_ALICE' }), trigger_id: 'trig1' };
-    await handler.handleAction(b, vi.fn(), { views: { open: viewsOpen } });
-    expect(viewsOpen).toHaveBeenCalledTimes(1);
-    const view = viewsOpen.mock.calls[0][0].view;
-    expect(view.callback_id).toBe('cron_edit_modal_submit');
-    expect(JSON.stringify(view.blocks)).toContain('daily-report');
-  });
-
-  it('missing client/trigger_id responds ephemeral instead of throwing', async () => {
-    seed();
-    const respond = vi.fn();
-    await handler.handleAction(body({ actionId: 'cron_edit::U_ALICE::daily-report', user: 'U_ALICE' }), respond);
     expect(respond).toHaveBeenCalledWith(expect.objectContaining({ response_type: 'ephemeral' }));
   });
 });

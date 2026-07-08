@@ -101,10 +101,18 @@ describe('CronEditViewSubmissionHandler', () => {
     const ack = vi.fn();
     await handler.handleSubmit(ack as any, submitBody({ user: 'U_ALICE', name: 'other-job' }));
     expect(ack).toHaveBeenCalledWith(
-      expect.objectContaining({ response_action: 'errors', errors: expect.objectContaining({ cron_edit_name: expect.any(String) }) }),
+      expect.objectContaining({
+        response_action: 'errors',
+        errors: expect.objectContaining({ cron_edit_name: expect.any(String) }),
+      }),
     );
     // original untouched
-    expect(storage.getJobsByOwner('U_ALICE').map((j) => j.name).sort()).toEqual(['daily-report', 'other-job']);
+    expect(
+      storage
+        .getJobsByOwner('U_ALICE')
+        .map((j) => j.name)
+        .sort(),
+    ).toEqual(['daily-report', 'other-job']);
   });
 
   it('invalid expression is rejected inline', async () => {
@@ -112,7 +120,10 @@ describe('CronEditViewSubmissionHandler', () => {
     const ack = vi.fn();
     await handler.handleSubmit(ack as any, submitBody({ user: 'U_ALICE', expr: 'not-a-cron' }));
     expect(ack).toHaveBeenCalledWith(
-      expect.objectContaining({ response_action: 'errors', errors: expect.objectContaining({ cron_edit_expr: expect.any(String) }) }),
+      expect.objectContaining({
+        response_action: 'errors',
+        errors: expect.objectContaining({ cron_edit_expr: expect.any(String) }),
+      }),
     );
   });
 
