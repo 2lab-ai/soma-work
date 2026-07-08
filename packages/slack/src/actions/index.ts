@@ -120,8 +120,10 @@ export interface ActionHandlerDelegates {
   };
   autoskillActionHandler: { handleAction(body: any, respond: RespondFn, client: any): Promise<void> };
   autoskillAddSubmitHandler: { handleSubmit(ack: ViewAck, body: any, client: any): Promise<void> };
-  /** Cron management card (model/target selects, delete button). */
-  cronActionHandler: { handleAction(body: any, respond: RespondFn): Promise<void> };
+  /** Cron management card (model/target/mode selects, run/edit/delete buttons). */
+  cronActionHandler: { handleAction(body: any, respond: RespondFn, client?: any): Promise<void> };
+  /** Cron edit modal submit (name/schedule/channel/prompt). */
+  cronEditSubmitHandler: { handleSubmit(ack: ViewAck, body: any): Promise<void> };
   userSkillMenuHandler: { handleAction(body: any, respond: RespondFn, client: any): Promise<void> };
   userSkillPermissionHandler: { handleAction(body: any, respond: RespondFn, client: any): Promise<void> };
   userSkillEditSubmitHandler: { handleSubmit(ack: ViewAck, body: any, client: any): Promise<void> };
@@ -175,6 +177,7 @@ export function setActionHandlersProviders(next: ActionHandlersProviders): void 
 
 const GOAL_UPDATE_MODAL_CALLBACK_ID = 'goal_update_modal_submit';
 const AUTOSKILL_ADD_MODAL_CALLBACK_ID = 'autoskill_add_modal_submit';
+const CRON_EDIT_MODAL_CALLBACK_ID = 'cron_edit_modal_submit';
 const USER_SKILL_EDIT_MODAL_CALLBACK_ID = 'user_skill_edit_modal_submit';
 const USER_SKILL_RENAME_MODAL_CALLBACK_ID = 'user_skill_rename_modal_submit';
 const USER_SKILL_DELETE_MODAL_CALLBACK_ID = 'user_skill_delete_modal_submit';
@@ -287,11 +290,16 @@ export class ActionHandlers {
       await this.delegates.autoskillActionHandler.handleAction(body, respond as RespondFn, client);
     });
 
-    // Cron management card: cron_model::/cron_target::/cron_delete:: — the
-    // `::` addressing suffix keeps this disjoint from any future bare cron_* ids.
-    app.action(/^cron_(model|target|delete)::/, async ({ ack, body, respond }) => {
+    // Cron management card: cron_<kind>:: — the `::` addressing suffix keeps
+    // this disjoint from any future bare cron_* ids. `client` is needed by the
+    // ✏️ edit button (views.open).
+    app.action(/^cron_(model|target|mode|edit|run|delete)::/, async ({ ack, body, respond, client }) => {
       await ack();
-      await this.delegates.cronActionHandler.handleAction(body, respond as RespondFn);
+      await this.delegates.cronActionHandler.handleAction(body, respond as RespondFn, client);
+    });
+
+    app.view(CRON_EDIT_MODAL_CALLBACK_ID, async ({ ack, body }) => {
+      await this.delegates.cronEditSubmitHandler.handleSubmit(ack as ViewAck, body);
     });
 
     app.view(AUTOSKILL_ADD_MODAL_CALLBACK_ID, async ({ ack, body, client }) => {

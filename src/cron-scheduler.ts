@@ -115,6 +115,34 @@ export class CronScheduler {
   }
 
   /**
+   * Manually fire a job NOW through the exact same execution path a scheduled
+   * fire takes (target/mode/model resolution, session inject/queue/new-thread,
+   * execution history, lastRun bookkeeping). Used by the cron card's ▶ button —
+   * this is a REAL cron firing, not a model-side simulation.
+   */
+  async runJobNow(owner: string, name: string): Promise<{ ok: boolean; message: string }> {
+    let job: CronJob | undefined;
+    try {
+      job = this.deps.storage.getJobsByOwner(owner).find((j) => j.name === name);
+    } catch (error: any) {
+      return { ok: false, message: `storage read failed: ${error?.message}` };
+    }
+    if (!job) {
+      return { ok: false, message: `Cron job '${name}' not found` };
+    }
+    const now = new Date();
+    try {
+      logger.info('Manual cron fire', { name: job.name, owner: job.owner });
+      await this.executeJob(job, now);
+      return { ok: true, message: 'fired' };
+    } catch (error: any) {
+      logger.error('Manual cron fire failed', { name: job.name, error: error?.message });
+      this.recordExecution(job, 'failed', 'idle_inject', undefined, error?.message);
+      return { ok: false, message: error?.message ?? 'unknown error' };
+    }
+  }
+
+  /**
    * Main tick: evaluate all cron jobs against current time.
    * Trace: docs/archive/features/cron-scheduler/trace.md, Scenario 4, Section 3a
    */
@@ -467,4 +495,20 @@ export class CronScheduler {
       logger.warn('Failed to record execution history', { name: job.name, error: err?.message });
     }
   }
+}
+
+// --- Active-instance registry ---------------------------------------------
+// The scheduler is constructed deep in src/index.ts bootstrap; the cron card's
+// ▶ run-now button (src/slack/actions/cron-action-handler.ts) needs to reach
+// it without threading a new dependency through the whole action-handler
+// context chain. Same singleton pattern as userSettingsStore/getTokenManager.
+
+let activeCronScheduler: CronScheduler | null = null;
+
+export function setActiveCronScheduler(scheduler: CronScheduler | null): void {
+  activeCronScheduler = scheduler;
+}
+
+export function getActiveCronScheduler(): CronScheduler | null {
+  return activeCronScheduler;
 }
