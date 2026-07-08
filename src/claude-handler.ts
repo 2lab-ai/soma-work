@@ -786,7 +786,13 @@ export class ClaudeHandler {
       } else if (pendingRetry?.kind === 'rate-limit-wait') {
         await sleepWithAbort(pendingRetry.delayMs, abortController?.signal);
         if (abortController?.signal.aborted) {
-          throw new Error('one-shot dispatch aborted during pool rate-limit retry wait');
+          // Carry the advertised window on the abort error so callers with a
+          // shorter patience than the window (goal-eval aborts at 120s, the
+          // gateway can say "retry in 3283s") can schedule their OWN retry
+          // after the real wait instead of failing terminally.
+          const abortErr = new Error('one-shot dispatch aborted during pool rate-limit retry wait');
+          (abortErr as { poolRateLimitRetryMs?: number }).poolRateLimitRetryMs = pendingRetry.delayMs;
+          throw abortErr;
         }
       }
       // while(true) re-enters: every path that reaches here has either a
