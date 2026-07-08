@@ -54,6 +54,11 @@ export function resetGoalContinuationOnUserMessage(session: { goal?: Conversatio
   // A real user message answers any pending cap-decision DM implicitly — clear
   // the dedup guard so a future cap event can DM again (S3).
   session.goal.capDmPendingAt = undefined;
+  // A user nudge also resets the transient eval-dispatch failure streak and
+  // lifts any pending backoff window — user intent always outranks the
+  // self-healing retry machinery.
+  session.goal.evalDispatchRetryCount = undefined;
+  session.goal.evalBackoffUntil = undefined;
   // Invalidate any in-flight completion eval — the user just weighed in, so
   // a verdict about the pre-message work must not apply (M1).
   bumpGoalEpoch(session.goal);

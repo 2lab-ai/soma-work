@@ -36,6 +36,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { boundRateLimitDelayMs, parseRetryAfterMs, textIndicatesRetryableRateLimit } from '@soma/common/rate-limit';
 import type { SyntheticMessageEvent } from '../cron-scheduler';
 import { buildGoalContinuationPrompt } from '../prompt/session-goal-block';
 import type { ConversationSession, SessionGoal } from '../types';
@@ -54,6 +55,49 @@ import { advanceGoalQueue, formatGoalObjectiveForSlack } from './session-goal';
 
 /** Default ceiling for a single completion eval before it is aborted. */
 const DEFAULT_GOAL_EVAL_TIMEOUT_MS = 120_000;
+
+/**
+ * Consecutive eval-dispatch failures the loop self-heals before falling back
+ * to the terminal "run `goal done` / `goal pause`" notice. Counts transient
+ * API failures (429 pool rate limit, 529 overloaded, timeouts, flaky JSON),
+ * NOT completed eval cycles.
+ */
+export const GOAL_EVAL_DISPATCH_MAX_RETRIES = 3;
+
+/**
+ * Backoff before a scheduled re-eval when the failure carries no explicit
+ * "retry in Ns" window (timeouts, parse flakes, unknown API errors).
+ */
+export const GOAL_EVAL_RETRY_DEFAULT_DELAY_MS = 60_000;
+
+/**
+ * After the eval timeout aborts the dispatch, how long we keep listening for
+ * the dispatch's OWN (richer, typed) rejection before failing with the
+ * generic timeout error. The dispatch seam rejects promptly on abort and its
+ * error carries `poolRateLimitRetryMs` when the abort interrupted a
+ * rate-limit wait — that window is what lets the loop schedule the retry at
+ * the gateway-advertised time instead of a blind 60s backoff.
+ */
+const GOAL_EVAL_ABORT_GRACE_MS = 5_000;
+
+/**
+ * Extract the delay before a scheduled eval retry from a dispatch failure.
+ * Prefers the gateway-advertised rate-limit window (stashed
+ * `poolRateLimitRetryMs`, else parsed from the message), bounded to the
+ * shared [1s, 1h] band; anything else gets the fixed default backoff.
+ * Pure — exported for tests.
+ */
+export function extractEvalRetryDelayMs(err: unknown): number {
+  const stashed = (err as { poolRateLimitRetryMs?: unknown })?.poolRateLimitRetryMs;
+  if (typeof stashed === 'number' && Number.isFinite(stashed) && stashed >= 0) {
+    return boundRateLimitDelayMs(stashed);
+  }
+  const message = String((err as { message?: unknown })?.message ?? '');
+  if (textIndicatesRetryableRateLimit(message)) {
+    return boundRateLimitDelayMs(parseRetryAfterMs(message));
+  }
+  return GOAL_EVAL_RETRY_DEFAULT_DELAY_MS;
+}
 
 /** Minimal logger surface (matches the project `Logger`). */
 export interface GoalLoopLogger {
@@ -105,6 +149,12 @@ export interface GoalLoopControllerDeps {
   evalTimeoutMs?: number;
   /** Injectable clock for tests. */
   now?: () => number;
+  /**
+   * Schedules a deferred eval-retry callback (production: unref'd
+   * `setTimeout`). Injectable so tests can capture and fire retries
+   * synchronously instead of faking timers.
+   */
+  scheduleEvalRetry?: (fn: () => void, delayMs: number) => void;
 }
 
 /**
@@ -127,13 +177,33 @@ export class GoalLoopController {
   private readonly deps: GoalLoopControllerDeps;
   private readonly now: () => number;
   private readonly evalTimeoutMs: number;
+  private readonly scheduleEvalRetry: (fn: () => void, delayMs: number) => void;
   /** Per-session serialization queue — see guarantee (1). */
   private readonly queues = new Map<string, Promise<void>>();
+  /**
+   * Sessions with a scheduled eval retry currently armed, keyed by the
+   * goal-intent snapshot the retry was armed for. Dedups re-arming for the
+   * SAME intent (multiple gated settles during one backoff window must not
+   * stack timers) while letting a NEWER intent (epoch/goal moved, then a
+   * fresh failure) supersede a stale armed timer — the stale timer's
+   * `token` no longer matches, so it no-ops instead of deleting the fresh
+   * arm's bookkeeping. In-memory on purpose: a restart loses the timers AND
+   * this map together, so the first post-restart settle re-arms exactly one
+   * retry for the remaining `evalBackoffUntil` window.
+   */
+  private readonly armedEvalRetries = new Map<string, { token: object; goalId: string; epoch: number }>();
 
   constructor(deps: GoalLoopControllerDeps) {
     this.deps = deps;
     this.now = deps.now ?? Date.now;
     this.evalTimeoutMs = deps.evalTimeoutMs ?? DEFAULT_GOAL_EVAL_TIMEOUT_MS;
+    this.scheduleEvalRetry =
+      deps.scheduleEvalRetry ??
+      ((fn, delayMs) => {
+        const timer = setTimeout(fn, delayMs);
+        // Never keep the process alive just for a retry.
+        if (typeof timer.unref === 'function') timer.unref();
+      });
   }
 
   /**
@@ -191,6 +261,24 @@ export class GoalLoopController {
       return;
     }
     const activeGoal = session.goal!;
+
+    // Transient-failure backoff gate: while a scheduled eval retry is waiting
+    // out a rate-limit window, ordinary settles (e.g. a duplicate trigger that
+    // was already queued behind the failing run) must NOT re-dispatch — they
+    // would hammer the same 429 and burn the retry budget instantly. The
+    // scheduled retry clears the stamp when it fires; the timestamp
+    // self-expires so a lost timer (process restart) can never wedge the loop.
+    if (activeGoal.evalBackoffUntil !== undefined && this.now() < activeGoal.evalBackoffUntil) {
+      const backoffMsRemaining = activeGoal.evalBackoffUntil - this.now();
+      logger.info('Goal eval skipped — transient-failure backoff in effect', { sessionKey, backoffMsRemaining });
+      // Re-arm (deduped) a retry for the REMAINING window. Normally the
+      // failure path already armed one and this is a no-op; after a restart
+      // the timer was lost while `evalBackoffUntil` persisted, so without
+      // this the loop would stall until unrelated user activity.
+      this.armEvalRetry(sessionKey, { epoch: activeGoal.epoch ?? 0, goalId: activeGoal.goalId }, backoffMsRemaining);
+      return;
+    }
+
     const objective = activeGoal.objective;
     const workSummaryRaw = (session.goalLastTurnText ?? activeGoal.lastAssistantTurnSummary ?? '').trim();
     const summaryHash = this.hashSummary(workSummaryRaw);
@@ -235,9 +323,14 @@ export class GoalLoopController {
     try {
       verdict = await this.runEvalWithTimeout(session, objective, evalUserSummary);
     } catch (err: unknown) {
-      this.handleEvalDispatchFailure(sessionKey, session, snapshot, err);
+      this.handleEvalDispatchFailure(sessionKey, session, snapshot, startedAt, err);
       return;
     }
+
+    // A successful dispatch (verdict obtained) closes the transient-failure
+    // streak — the retry budget only measures CONSECUTIVE dispatch failures.
+    activeGoal.evalDispatchRetryCount = undefined;
+    activeGoal.evalBackoffUntil = undefined;
 
     // M1 epoch guard — if the user changed the goal or sent a message while
     // the eval ran, the live goal no longer matches what we evaluated.
@@ -410,18 +503,35 @@ export class GoalLoopController {
     return createHash('sha1').update(summary).digest('hex');
   }
 
-  /** Run the eval bounded by a timeout that aborts the dispatch. */
+  /**
+   * Run the eval bounded by a timeout that aborts the dispatch.
+   *
+   * The abort and the failure are deliberately SPLIT: at `evalTimeoutMs` the
+   * dispatch is aborted, but we keep listening for its own rejection for a
+   * short grace window before failing with the generic timeout error. The
+   * dispatch seam rejects promptly on abort with a typed error that carries
+   * `poolRateLimitRetryMs` when the abort interrupted a rate-limit wait —
+   * racing a bare rejection at `evalTimeoutMs` (the old shape) swallowed that
+   * window, so the retry scheduler could never honor the gateway's
+   * "retry in Ns" hint. A dispatch that ignores the abort entirely still
+   * fails at `evalTimeoutMs + grace` (M3 boundedness holds).
+   */
   private async runEvalWithTimeout(
     session: ConversationSession,
     objective: string,
     workSummary: string,
   ): ReturnType<typeof evaluateGoalCompletion> {
     const abortController = new AbortController();
-    let timer: ReturnType<typeof setTimeout> | undefined;
+    const graceMs = Math.min(GOAL_EVAL_ABORT_GRACE_MS, this.evalTimeoutMs);
+    let abortTimer: ReturnType<typeof setTimeout> | undefined;
+    let failTimer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => {
+      abortTimer = setTimeout(() => {
         abortController.abort('goal-eval-timeout');
-        reject(new Error(`goal completion eval timed out after ${this.evalTimeoutMs}ms`));
+        failTimer = setTimeout(
+          () => reject(new Error(`goal completion eval timed out after ${this.evalTimeoutMs}ms`)),
+          graceMs,
+        );
       }, this.evalTimeoutMs);
     });
     try {
@@ -442,7 +552,8 @@ export class GoalLoopController {
         timeout,
       ]);
     } finally {
-      if (timer) clearTimeout(timer);
+      if (abortTimer) clearTimeout(abortTimer);
+      if (failTimer) clearTimeout(failTimer);
     }
   }
 
@@ -450,19 +561,73 @@ export class GoalLoopController {
     sessionKey: string,
     session: ConversationSession,
     snapshot: GoalEpochSnapshot,
+    startedAt: number,
     err: unknown,
   ): void {
     const { registry, logger } = this.deps;
     const live = registry.getSessionByKey(sessionKey)?.goal;
+    const epochValid = live !== undefined && this.epochStillValid(live, snapshot);
+    const message = err instanceof Error ? err.message : String(err);
+    logger.error('Goal eval dispatch failed', { sessionKey, error: message });
+
+    // Epoch moved during the failed eval (user message / goal mutation): the
+    // user's newer intent supersedes this eval entirely — no retry, no notice.
+    // But the lease is still OURS to release (same goal object, same
+    // `requestedAt` we stamped) — mirroring the success-path discard cleanup;
+    // leaving it set would wedge every future driver run behind `pendingEval`.
+    if (!epochValid) {
+      if (live && live.goalId === snapshot.goalId && live.pendingEval?.requestedAt === startedAt) {
+        live.pendingEval = undefined;
+        registry.saveSessions();
+      }
+      logger.info('Goal eval dispatch failure discarded — goal epoch moved during eval', { sessionKey });
+      return;
+    }
+
     // Only clear OUR lease, and only if the goal we evaluated is still the
     // live one — otherwise a newer goal owns its own lease.
-    if (live && this.epochStillValid(live, snapshot)) {
+    if (live) {
       applyGoalEvalDispatchFailure(live, this.now());
       session.systemPrompt = undefined;
       registry.saveSessions();
     }
-    const message = err instanceof Error ? err.message : String(err);
-    logger.error('Goal eval dispatch failed', { sessionKey, error: message });
+
+    // Self-heal transient API failures (429 pool rate limit, 529, timeouts,
+    // flaky output): schedule a re-eval after the failure's advertised window
+    // (or a fixed backoff) instead of stopping the loop on a manual notice.
+    if (live) {
+      const retriesUsed = live.evalDispatchRetryCount ?? 0;
+      if (retriesUsed < GOAL_EVAL_DISPATCH_MAX_RETRIES) {
+        const delayMs = extractEvalRetryDelayMs(err);
+        live.evalDispatchRetryCount = retriesUsed + 1;
+        // Backoff stamp: any settle that lands before the scheduled retry
+        // fires is skipped by the runOnce gate, so queued duplicate triggers
+        // can never hammer the same 429 window and burn the budget instantly.
+        live.evalBackoffUntil = this.now() + delayMs;
+        registry.saveSessions();
+        logger.warn('Scheduling goal eval retry after transient dispatch failure', {
+          sessionKey,
+          attempt: live.evalDispatchRetryCount,
+          maxRetries: GOAL_EVAL_DISPATCH_MAX_RETRIES,
+          delayMs,
+        });
+        void this.deps
+          .postNotice(
+            session.channelId,
+            session.threadTs,
+            `⏳ Goal completion evaluation hit a transient API error — retrying in ${Math.round(delayMs / 1000)}s ` +
+              `(attempt ${live.evalDispatchRetryCount}/${GOAL_EVAL_DISPATCH_MAX_RETRIES}).\n*Error:* ${message}`,
+          )
+          .catch(() => undefined);
+        this.armEvalRetry(sessionKey, snapshot, delayMs);
+        return;
+      }
+      // Budget exhausted — reset the streak so a user nudge starts a fresh
+      // budget instead of landing straight back on the terminal notice.
+      live.evalDispatchRetryCount = undefined;
+      registry.saveSessions();
+    }
+
     void this.deps
       .postNotice(
         session.channelId,
@@ -470,6 +635,40 @@ export class GoalLoopController {
         `⚠️ Goal completion evaluation failed: ${message}. Run \`goal done\` to force completion or \`goal pause\` / \`goal clear\` to stop the loop.`,
       )
       .catch(() => undefined);
+  }
+
+  /**
+   * Arm (at most one per session) a scheduled eval retry that re-enters
+   * through the ONE public entry, `onTurnSettled`, so the retry rides the
+   * same serial queue and re-checks every gate (idle / requestActive /
+   * pendingEval) at fire time. The fire-time snapshot check makes the retry
+   * a no-op when the user weighed in (or the goal was replaced) during the
+   * wait — their own turn-settled trigger drives the loop then, so the
+   * retry never produces a stale extra eval. On a valid fire it lifts the
+   * `evalBackoffUntil` gate so the re-entered run can actually dispatch.
+   */
+  private armEvalRetry(sessionKey: string, snapshot: GoalEpochSnapshot, delayMs: number): void {
+    const existing = this.armedEvalRetries.get(sessionKey);
+    // Same intent already armed → dedupe. A DIFFERENT intent (goal replaced
+    // or epoch moved since the stale arm) must NOT be suppressed — the stale
+    // timer will fail its own snapshot check, so without replacement the new
+    // backoff window would be left with no timer at all (stall).
+    if (existing && existing.goalId === snapshot.goalId && existing.epoch === snapshot.epoch) return;
+    const token = {};
+    this.armedEvalRetries.set(sessionKey, { token, goalId: snapshot.goalId, epoch: snapshot.epoch });
+    this.scheduleEvalRetry(() => {
+      // Superseded by a newer arm → this timer no longer owns the session's
+      // retry; never delete the newer arm's bookkeeping.
+      if (this.armedEvalRetries.get(sessionKey)?.token !== token) return;
+      this.armedEvalRetries.delete(sessionKey);
+      const liveAtFire = this.deps.registry.getSessionByKey(sessionKey)?.goal;
+      if (!liveAtFire || !this.epochStillValid(liveAtFire, snapshot)) return;
+      // OUR window elapsed — lift the backoff gate so the retry (and any
+      // later natural settle) can dispatch again.
+      liveAtFire.evalBackoffUntil = undefined;
+      this.deps.registry.saveSessions();
+      this.onTurnSettled(sessionKey);
+    }, delayMs);
   }
 
   private injectContinuationTurn(sessionKey: string, session: ConversationSession, activeGoal: SessionGoal): void {
