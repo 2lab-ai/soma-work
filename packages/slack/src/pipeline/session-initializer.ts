@@ -751,6 +751,35 @@ export class SessionInitializer {
       };
     }
 
+    // Codex F2 (replay-vs-user race): a post-compact deferred replay must
+    // never supersede a real turn that grabbed the slot between the
+    // finally's isRequestActive check and this point. Re-park it — the
+    // active turn's own finally replays the queue at its stream end.
+    if (event.routeContext?.compactRedispatch === true && this.deps.requestCoordinator.isRequestActive(sessionKey)) {
+      this.logger.info('Post-compact replay lost the slot race — re-parking for the active turn', { sessionKey });
+      if (dispatchText) {
+        stashUserMessageDuringCompaction(session, { channel, threadTs, user, ts }, dispatchText);
+      }
+      return {
+        session,
+        sessionKey,
+        isNewSession,
+        userName,
+        workingDirectory: effectiveWorkingDir,
+        abortController: new AbortController(),
+        halted: true,
+      };
+    }
+
+    // Codex F1 (early shield): claim the /compact turn marker BEFORE
+    // concurrency control registers this turn's controller, so there is no
+    // window where the /compact turn is active-but-unshielded. The
+    // stream-executor sets it again at the local-slash-command bypass
+    // (idempotent) and clears it in the turn's `finally`.
+    if ((dispatchText ?? '').trim().split(/\s/)[0] === '/compact') {
+      session.compactTurnActive = true;
+    }
+
     // Compact re-loop fix — NEVER abort an in-flight compaction (see
     // `shouldStashForCompaction`). Instead: stash the message for
     // post-compact re-dispatch (arrival order preserved) and halt this turn.

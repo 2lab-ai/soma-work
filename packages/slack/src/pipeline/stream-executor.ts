@@ -334,6 +334,7 @@ interface StreamExecutorDeps {
   dispatchPendingUserMessage?: (
     ctx: { channel: string; threadTs: string; user: string; ts: string },
     text: string,
+    opts?: { compactRedispatch?: boolean },
   ) => Promise<void>;
   /**
    * Shared store for deferred `UPDATE_SESSION.instructionOperations`.
@@ -2608,7 +2609,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           void (async () => {
             for (const payload of queue) {
               try {
-                await dispatch(payload.ctx, payload.text);
+                await dispatch(payload.ctx, payload.text, { compactRedispatch: true });
               } catch (err) {
                 this.logger.warn('Deferred post-compact re-dispatch failed', {
                   sessionKey,
