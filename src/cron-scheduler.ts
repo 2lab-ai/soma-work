@@ -388,7 +388,8 @@ export class CronScheduler {
       const rootTs = await this.deps.threadCreator(job.channel, `[cron:${job.name}] Scheduled task`);
       if (!rootTs) {
         logger.warn('Failed to create thread (no ts returned)', { name: job.name });
-        return;
+        this.recordExecution(job, 'failed', 'new_thread', undefined, 'thread creation returned no ts');
+        return false;
       }
 
       const syntheticEvent: SyntheticMessageEvent = {

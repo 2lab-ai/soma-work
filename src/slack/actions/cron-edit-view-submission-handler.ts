@@ -71,7 +71,10 @@ export class CronEditViewSubmissionHandler {
       const values = view?.state?.values ?? {};
       const name: string = values[CRON_EDIT_NAME_BLOCK]?.[CRON_EDIT_INPUT_ACTION]?.value?.trim() ?? '';
       const expression: string = values[CRON_EDIT_EXPR_BLOCK]?.[CRON_EDIT_INPUT_ACTION]?.value?.trim() ?? '';
-      const channel: string = values[CRON_EDIT_CHANNEL_BLOCK]?.[CRON_EDIT_INPUT_ACTION]?.selected_channel ?? '';
+      const channelInput = values[CRON_EDIT_CHANNEL_BLOCK]?.[CRON_EDIT_INPUT_ACTION];
+      // conversations_select submits selected_conversation; keep the
+      // channels_select key as a fallback for any in-flight old modals.
+      const channel: string = channelInput?.selected_conversation ?? channelInput?.selected_channel ?? '';
       const prompt: string = values[CRON_EDIT_PROMPT_BLOCK]?.[CRON_EDIT_INPUT_ACTION]?.value ?? '';
 
       const errors: Record<string, string> = {};
@@ -104,6 +107,14 @@ export class CronEditViewSubmissionHandler {
         .find((j) => j.name === meta.name);
       if (current && current.prompt.length > 3000 && prompt === current.prompt.substring(0, 3000)) {
         delete patch.prompt;
+      }
+      // Channel reassignment invalidates a thread anchor from the OLD channel:
+      // the scheduler posts threadReplier(job.channel, job.threadTs), so a
+      // stale pair would reply into a nonexistent thread. Fall back to channel
+      // delivery; the user re-picks a thread from the card if wanted.
+      if (current && channel !== current.channel && (current.target === 'thread' || current.threadTs)) {
+        patch.target = null;
+        patch.threadTs = null;
       }
       let updated;
       try {
