@@ -14,6 +14,17 @@ Slack에서 Claude Code SDK를 통해 AI 코딩 어시스턴트를 제공하는 
 - repo-wide architecture decision은 `docs/adr/README.md`와 `docs/adr/000N-*.md`에 기록.
 - `CLAUDE.md`에는 반복적으로 필요한 agent 행동 규칙만 둔다. 완료 이력, 긴 조사 내용, changelog는 `docs/`로 보낸다.
 
+## Rules (반복 패턴 — 코드 손대기 전 확인)
+
+반복 적용되는 패턴 규칙은 `rules/`에 산다. 진입점: **`rules/README.md`**. 특히:
+
+- `rules/auth.md` — Claude **API 인증** 단일 경로.
+- `rules/permission.md` — **인가(도구 허용/거부)** 단일 결정 파이프라인. (인증≠인가)
+- `rules/config.md` — **설정(env·파일) 단일 출처** + **상태 저장 원자성**.
+- `rules/packaging.md` — **`@soma/*` 패키지 경계**. 추출은 이동(복사 금지), 이중 출처 해소.
+
+config·permission·packaging 횡단 부채 맵: `docs/current/spec/architecture-map.md` (전체 와이어링 SSOT는 `docs/misc/reference/architecture.md`).
+
 ## Architecture
 
 **Facade Pattern** — 복잡한 서브시스템을 단순한 인터페이스로 제공:
@@ -30,6 +41,7 @@ Slack에서 Claude Code SDK를 통해 AI 코딩 어시스턴트를 제공하는 
 ### Module Layout
 
 숫자 카운트는 여기 적지 않는다 — 하드코딩된 카운트는 반드시 drift한다. 항상 디렉토리를 직접 확인.
+config·permission·packaging 횡단 관심사 맵: `docs/current/spec/architecture-map.md`.
 
 ```
 src/
