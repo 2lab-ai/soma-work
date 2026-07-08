@@ -194,6 +194,7 @@ export class EventRouter {
   public async dispatchPendingUserMessage(
     ctx: { channel: string; threadTs: string; user: string; ts: string },
     text: string,
+    opts?: { compactRedispatch?: boolean },
   ): Promise<void> {
     const syntheticEvent = {
       type: 'message',
@@ -202,6 +203,7 @@ export class EventRouter {
       user: ctx.user,
       ts: ctx.ts,
       text,
+      ...(opts?.compactRedispatch ? { routeContext: { compactRedispatch: true } } : {}),
     } as unknown as MessageEvent;
 
     const say: SayFn = async (arg) => {

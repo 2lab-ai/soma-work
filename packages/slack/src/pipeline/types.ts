@@ -51,6 +51,14 @@ export interface MessageEvent {
     sourceChannel?: string;
     sourceThreadTs?: string;
     /**
+     * True only for post-compact deferred replays (codex F2). Such a turn
+     * must NEVER supersede a live request: if a real turn grabbed the slot
+     * between the finally's isRequestActive check and this event reaching
+     * concurrency control, the replay is RE-PARKED on the session queue
+     * (the active turn's own finally replays it later), never aborted into.
+     */
+    compactRedispatch?: boolean;
+    /**
      * True only for goal auto-continuation injections. Such a turn must
      * NEVER supersede a live request: if the slot is busy when this event
      * reaches concurrency control, the continuation is dropped (the active
