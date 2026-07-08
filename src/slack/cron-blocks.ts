@@ -18,9 +18,6 @@
 import type { CronJob } from 'somalib/cron/cron-storage';
 import { AVAILABLE_MODELS } from '../user-settings-store';
 
-/** action_id prefix routed by `app.action(/^cron_/)`. */
-export const CRON_ACTION_PREFIX = 'cron_';
-
 export type CronActionKind = 'model' | 'target' | 'mode' | 'edit' | 'run' | 'delete';
 
 /**
@@ -47,7 +44,7 @@ export const CRON_MODEL_FAST = 'fast';
 const MODAL_PROMPT_MAX = 3000;
 
 /** view callback_id for the per-job edit modal submit. */
-export const CRON_EDIT_MODAL_CALLBACK_ID = 'cron_edit_modal_submit';
+const CRON_EDIT_MODAL_CALLBACK_ID = 'cron_edit_modal_submit';
 /** input block_ids / action_ids inside the edit modal. */
 export const CRON_EDIT_NAME_BLOCK = 'cron_edit_name';
 export const CRON_EDIT_EXPR_BLOCK = 'cron_edit_expr';
