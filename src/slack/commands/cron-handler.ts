@@ -318,10 +318,10 @@ export class CronCommandHandler implements CommandHandler {
   private async changeChannel(ctx: CommandContext, args: string[]): Promise<void> {
     const { name, rest, owner } = splitOwnerArg(args);
     const raw = rest[0] ?? '';
-    // Accept <#C123|name>, <#C123>, or bare C123/D123.
-    const mention = raw.match(/^<#([CD][A-Z0-9_]+)(\|[^>]*)?>$/);
+    // Accept <#C123|name>, <#C123>, or bare C…/G…/D… ids (G = private channel).
+    const mention = raw.match(/^<#([CDG][A-Z0-9_]+)(\|[^>]*)?>$/);
     const channel = mention ? mention[1] : raw;
-    if (!name || !channel || (!channel.startsWith('C') && !channel.startsWith('D'))) {
+    if (!name || !channel || !/^[CDG]/.test(channel)) {
       await ctx.say({ text: '사용법: `cron channel <name> <#채널>` (또는 채널 ID)', thread_ts: ctx.threadTs });
       return;
     }
@@ -330,10 +330,19 @@ export class CronCommandHandler implements CommandHandler {
       await ctx.say({ text: resolved.error, thread_ts: ctx.threadTs });
       return;
     }
-    const updated = this.storage().updateJob(resolved.owner, name, { channel });
+    // Repointing the channel invalidates a thread anchor from the old channel
+    // (scheduler posts threadReplier(job.channel, job.threadTs)) — clear it.
+    const patch: CronJobPatch = { channel };
+    let anchorNote = '';
+    if (channel !== resolved.job.channel && (resolved.job.target === 'thread' || resolved.job.threadTs)) {
+      patch.target = null;
+      patch.threadTs = null;
+      anchorNote = ' (이전 채널의 thread anchor 해제 → 채널 새 메시지)';
+    }
+    const updated = this.storage().updateJob(resolved.owner, name, patch);
     await ctx.say({
       text: updated
-        ? `✅ *${name}* 출력 채널 → <#${channel}>${ownerSuffix(ctx, resolved.owner)}`
+        ? `✅ *${name}* 출력 채널 → <#${channel}>${anchorNote}${ownerSuffix(ctx, resolved.owner)}`
         : `❌ 크론잡 \`${name}\` 을 찾을 수 없습니다.`,
       thread_ts: ctx.threadTs,
     });

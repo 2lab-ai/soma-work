@@ -141,8 +141,8 @@ describe('buildCronEditModal', () => {
     const byId = Object.fromEntries(modal.blocks.map((b: any) => [b.block_id, b]));
     expect(byId.cron_edit_name.element.initial_value).toBe('daily-report');
     expect(byId.cron_edit_expr.element.initial_value).toBe('0 9 * * 1-5');
-    expect(byId.cron_edit_channel.element.type).toBe('channels_select');
-    expect(byId.cron_edit_channel.element.initial_channel).toBe('C111');
+    expect(byId.cron_edit_channel.element.type).toBe('conversations_select');
+    expect(byId.cron_edit_channel.element.initial_conversation).toBe('C111');
     expect(byId.cron_edit_prompt.element.initial_value).toBe('hello world');
     expect(byId.cron_edit_prompt.element.multiline).toBe(true);
     // Slack caps plain_text_input.max_length at 3000 — 4000 makes views.open reject the modal
@@ -186,8 +186,8 @@ describe('buildCronEditModal', () => {
     const byId = Object.fromEntries((modal.blocks as any[]).map((b) => [b.block_id, b]));
     expect(byId.cron_edit_name.element.initial_value).toBe('daily-report');
     expect(byId.cron_edit_expr.element.initial_value).toBe('0 9 * * 1-5');
-    expect(byId.cron_edit_channel.element.type).toBe('channels_select');
-    expect(byId.cron_edit_channel.element.initial_channel).toBe('C111');
+    expect(byId.cron_edit_channel.element.type).toBe('conversations_select');
+    expect(byId.cron_edit_channel.element.initial_conversation).toBe('C111');
     expect(byId.cron_edit_prompt.element.multiline).toBe(true);
     // Slack caps plain_text_input.max_length at 3000 — 4000 makes views.open reject the modal
     expect(byId.cron_edit_prompt.element.max_length).toBe(3000);
