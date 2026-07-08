@@ -32,6 +32,7 @@ import type {
   PreCompactHookInput,
   SessionStartHookInput,
 } from '@anthropic-ai/claude-agent-sdk';
+import { promotePendingToDispatchQueue } from '@soma/slack/compact-state';
 import { Logger } from '../../logger';
 import { resolveContextWindow } from '../../metrics/model-registry';
 import { buildCompactionContext, snapshotFromSession } from '../../session/compaction-context-builder';
@@ -120,7 +121,7 @@ export interface CompactHookDeps {
    * is no longer dispatched from inside the hook callbacks (that let the new
    * turn abort the still-running /compact process before the CLI persisted
    * the compacted transcript); `postCompactCompleteIfNeeded` now defers the
-   * re-dispatch via `session.compactPendingDispatch`, consumed by the
+   * re-dispatch via `session.compactPendingDispatches`, consumed by the
    * stream-executor at the /compact turn's stream end.
    */
   eventRouter?: EventRouter;
@@ -486,7 +487,7 @@ export interface PostCompactCompleteOpts {
  *      still have its ts (typical path), or posts a fresh system message as
  *      a fallback (e.g. the ts wasn't captured — Slack post failure on START).
  *   4. Marks the epoch rehydrated, clears `autoCompactPending`, and moves any
- *      captured user message to `session.compactPendingDispatch` for the
+ *      captured user message to `session.compactPendingDispatches` for the
  *      stream-executor to re-dispatch AFTER the /compact turn's stream ends
  *      (never from inside the hook callback — see the deferral comment below).
  */
@@ -597,7 +598,7 @@ export async function postCompactCompleteIfNeeded(
   // Consume pending atomically so a second END signal in the same cycle
   // cannot double-fire — but DEFER the actual re-dispatch to the /compact
   // turn's stream end (stream-executor `finally` consumes
-  // `session.compactPendingDispatch`).
+  // `session.compactPendingDispatches`).
   //
   // Deferral is load-bearing, not cosmetic. This function runs INSIDE the
   // PostCompact hook callback, which the CLI awaits BEFORE it has flushed
@@ -611,13 +612,7 @@ export async function postCompactCompleteIfNeeded(
   // stays at pre-compact levels (`now ~85% ← was ~85%`), the threshold
   // re-trips, and the session loops compact→abort→compact forever
   // (observed on work-m64 dev, session f4ee1a3f, 2026-07-08 07:46/07:57/08:51Z).
-  if (session.pendingUserText && session.pendingEventContext) {
-    const text = session.pendingUserText;
-    const ctx = session.pendingEventContext;
-    session.pendingUserText = null;
-    session.pendingEventContext = null;
-    session.compactPendingDispatch = { ctx, text };
-  }
+  promotePendingToDispatchQueue(session);
 
   await postPromise;
 }
