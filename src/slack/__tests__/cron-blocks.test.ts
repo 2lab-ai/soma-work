@@ -145,6 +145,8 @@ describe('buildCronEditModal', () => {
     expect(byId.cron_edit_channel.element.initial_channel).toBe('C111');
     expect(byId.cron_edit_prompt.element.initial_value).toBe('hello world');
     expect(byId.cron_edit_prompt.element.multiline).toBe(true);
+    // Slack caps plain_text_input.max_length at 3000 — 4000 makes views.open reject the modal
+    expect(byId.cron_edit_prompt.element.max_length).toBe(3000);
     const meta = JSON.parse(modal.private_metadata);
     expect(meta).toMatchObject({ owner: 'U_ALICE', name: 'daily-report', requesterId: 'U_ALICE' });
   });
@@ -187,6 +189,25 @@ describe('buildCronEditModal', () => {
     expect(byId.cron_edit_channel.element.type).toBe('channels_select');
     expect(byId.cron_edit_channel.element.initial_channel).toBe('C111');
     expect(byId.cron_edit_prompt.element.multiline).toBe(true);
+    // Slack caps plain_text_input.max_length at 3000 — 4000 makes views.open reject the modal
+    expect(byId.cron_edit_prompt.element.max_length).toBe(3000);
     expect(JSON.parse(modal.private_metadata).owner).toBe('U_ALICE');
+  });
+
+  it('truncates over-3000-char prompts in the modal initial value (Slack cap)', () => {
+    const long = 'x'.repeat(3500);
+    const modal = buildCronEditModal({
+      job: job({ prompt: long }),
+      metadata: {
+        owner: 'U_ALICE',
+        name: 'daily-report',
+        cardChannelId: 'C',
+        cardMessageTs: '1',
+        requesterId: 'U_ALICE',
+      },
+    });
+    const block = (modal.blocks as any[]).find((b) => b.block_id === 'cron_edit_prompt');
+    expect(block.element.initial_value.length).toBe(3000);
+    expect(block.hint.text).toContain('잘려');
   });
 });

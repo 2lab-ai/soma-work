@@ -84,8 +84,10 @@ export class CronEditViewSubmissionHandler {
       if (!channel) {
         errors[CRON_EDIT_CHANNEL_BLOCK] = '채널을 선택하세요.';
       }
-      if (!prompt || prompt.length > 4000) {
-        errors[CRON_EDIT_PROMPT_BLOCK] = '프롬프트는 1-4000자여야 합니다.';
+      // Modal surface caps at Slack's 3000-char plain_text_input limit; the
+      // 4000-char storage cap is reachable only via the text command / MCP.
+      if (!prompt || prompt.length > 3000) {
+        errors[CRON_EDIT_PROMPT_BLOCK] = '프롬프트는 1-3000자여야 합니다 (더 길게는 cron prompt 명령).';
       }
       if (Object.keys(errors).length > 0) {
         await ack({ response_action: 'errors', errors });
