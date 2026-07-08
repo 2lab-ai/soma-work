@@ -43,7 +43,7 @@ interface UserSkillMenuContext {
 }
 
 /** callback_id for the inline-edit modal — paired with the view handler. */
-export const USER_SKILL_EDIT_MODAL_CALLBACK_ID = 'user_skill_edit_modal_submit';
+const USER_SKILL_EDIT_MODAL_CALLBACK_ID = 'user_skill_edit_modal_submit';
 /** input block_id used inside the edit modal. */
 export const USER_SKILL_EDIT_BLOCK_ID = 'user_skill_edit_body';
 /**
@@ -55,12 +55,12 @@ export const USER_SKILL_EDIT_BLOCK_ID = 'user_skill_edit_body';
 export const USER_SKILL_EDIT_ACTION_ID = 'user_skill_edit_value';
 
 /** callback_id / block / action ids for the rename modal (issue #774). */
-export const USER_SKILL_RENAME_MODAL_CALLBACK_ID = 'user_skill_rename_modal_submit';
+const USER_SKILL_RENAME_MODAL_CALLBACK_ID = 'user_skill_rename_modal_submit';
 export const USER_SKILL_RENAME_BLOCK_ID = 'user_skill_rename_input';
 export const USER_SKILL_RENAME_ACTION_ID = 'user_skill_rename_value';
 
 /** callback_id for the delete confirmation modal (issue #774). */
-export const USER_SKILL_DELETE_MODAL_CALLBACK_ID = 'user_skill_delete_modal_submit';
+const USER_SKILL_DELETE_MODAL_CALLBACK_ID = 'user_skill_delete_modal_submit';
 
 type SkillMenuKind =
   | typeof VALUE_KIND_INVOKE

@@ -33,7 +33,6 @@ export {
   matchRules,
   overridableMatchedRuleIds,
   overridableRulesByIds,
-  rulesByIds,
 } from 'somalib/permission/dangerous-rules';
 
 /**

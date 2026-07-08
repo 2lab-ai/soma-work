@@ -2,9 +2,9 @@
  * `/z verbosity` Block Kit topic — Phase 2 (#507).
  */
 
+import { type LogVerbosity, VERBOSITY_NAMES } from '@soma/slack/output-flags';
 import { userSettingsStore } from '../../../user-settings-store';
 import type { ApplyResult, RenderResult, ZTopicBinding } from '../../actions/z-settings-actions';
-import { type LogVerbosity, VERBOSITY_NAMES } from '../../output-flags';
 import { buildSettingCard } from '../ui-builder';
 
 const VERBOSITY_DESCRIPTIONS: Record<LogVerbosity, string> = {
