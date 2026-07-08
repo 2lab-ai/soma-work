@@ -3,6 +3,7 @@ import {
   COMPACTION_IN_PROGRESS_MAX_MS,
   type CompactStateSession,
   isCompactionInProgress,
+  promotePendingToDispatchQueue,
   stashUserMessageDuringCompaction,
 } from '../compact-state';
 
@@ -48,36 +49,79 @@ describe('isCompactionInProgress', () => {
 });
 
 describe('stashUserMessageDuringCompaction', () => {
-  const ctx = { channel: 'C1', threadTs: 'T1', user: 'U1', ts: '1.0' };
+  const u1 = { channel: 'C1', threadTs: 'T1', user: 'U1', ts: '1.0' };
+  const u2 = { channel: 'C1', threadTs: 'T1', user: 'U2', ts: '2.0' };
 
-  it('becomes the pending message when nothing is stashed yet', () => {
+  it('starts the dispatch queue when nothing is stashed yet', () => {
     const s: CompactStateSession = {};
-    stashUserMessageDuringCompaction(s, ctx, 'hello');
-    expect(s.pendingUserText).toBe('hello');
-    expect(s.pendingEventContext).toEqual(ctx);
+    stashUserMessageDuringCompaction(s, u1, 'hello');
+    expect(s.compactPendingDispatches).toEqual([{ ctx: u1, text: 'hello' }]);
   });
 
-  it('appends to an existing pre-compact pending message, keeping the original context', () => {
-    const firstCtx = { channel: 'C1', threadTs: 'T1', user: 'U1', ts: '0.5' };
+  it('appends to the pre-compact pending message when the SAME user sends more text', () => {
+    const firstCtx = { ...u1, ts: '0.5' };
     const s: CompactStateSession = { pendingUserText: 'first', pendingEventContext: firstCtx };
-    stashUserMessageDuringCompaction(s, ctx, 'second');
+    stashUserMessageDuringCompaction(s, u1, 'second');
     expect(s.pendingUserText).toBe('first\nsecond');
     expect(s.pendingEventContext).toEqual(firstCtx);
+    expect(s.compactPendingDispatches ?? []).toEqual([]);
   });
 
-  it('appends to a parked deferred dispatch when the cycle already sealed', () => {
-    const s: CompactStateSession = {
-      compactPendingDispatch: { ctx, text: 'parked' },
-    };
-    stashUserMessageDuringCompaction(s, { ...ctx, ts: '2.0' }, 'late-arrival');
-    expect(s.compactPendingDispatch?.text).toBe('parked\nlate-arrival');
-    expect(s.pendingUserText).toBeUndefined();
+  it('codex F4: a DIFFERENT user is queued as a separate entry with their own ctx — never merged', () => {
+    const s: CompactStateSession = { pendingUserText: 'u1 text', pendingEventContext: u1 };
+    stashUserMessageDuringCompaction(s, u2, 'u2 text');
+    expect(s.pendingUserText).toBe('u1 text'); // untouched
+    expect(s.compactPendingDispatches).toEqual([{ ctx: u2, text: 'u2 text' }]);
+  });
+
+  it('merges contiguous same-user bursts in the queue, keeps cross-user entries separate', () => {
+    const s: CompactStateSession = {};
+    stashUserMessageDuringCompaction(s, u1, 'a');
+    stashUserMessageDuringCompaction(s, u1, 'b');
+    stashUserMessageDuringCompaction(s, u2, 'c');
+    stashUserMessageDuringCompaction(s, u2, 'd');
+    expect(s.compactPendingDispatches).toEqual([
+      { ctx: u1, text: 'a\nb' },
+      { ctx: u2, text: 'c\nd' },
+    ]);
   });
 
   it('ignores empty text', () => {
     const s: CompactStateSession = {};
-    stashUserMessageDuringCompaction(s, ctx, '');
-    expect(s.pendingUserText).toBeUndefined();
-    expect(s.pendingEventContext).toBeUndefined();
+    stashUserMessageDuringCompaction(s, u1, '');
+    expect(s.compactPendingDispatches ?? []).toEqual([]);
+  });
+});
+
+describe('promotePendingToDispatchQueue', () => {
+  const u1 = { channel: 'C1', threadTs: 'T1', user: 'U1', ts: '1.0' };
+  const u2 = { channel: 'C1', threadTs: 'T1', user: 'U2', ts: '2.0' };
+
+  it('moves pendingUserText to the FRONT of the queue (earliest message first)', () => {
+    const s: CompactStateSession = {
+      pendingUserText: 'intercepted',
+      pendingEventContext: u1,
+      compactPendingDispatches: [{ ctx: u2, text: 'arrived during compaction' }],
+    };
+    promotePendingToDispatchQueue(s);
+    expect(s.compactPendingDispatches).toEqual([
+      { ctx: u1, text: 'intercepted' },
+      { ctx: u2, text: 'arrived during compaction' },
+    ]);
+    expect(s.pendingUserText).toBeNull();
+    expect(s.pendingEventContext).toBeNull();
+  });
+
+  it('is idempotent — second call (double END signal) is a no-op', () => {
+    const s: CompactStateSession = { pendingUserText: 'x', pendingEventContext: u1 };
+    promotePendingToDispatchQueue(s);
+    promotePendingToDispatchQueue(s);
+    expect(s.compactPendingDispatches).toEqual([{ ctx: u1, text: 'x' }]);
+  });
+
+  it('no-op when nothing is pending', () => {
+    const s: CompactStateSession = {};
+    promotePendingToDispatchQueue(s);
+    expect(s.compactPendingDispatches ?? null).toBeNull();
   });
 });

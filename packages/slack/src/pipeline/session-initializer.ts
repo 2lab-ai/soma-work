@@ -50,7 +50,13 @@ export function shouldDropGoalContinuation(
  * unit-testable without the full initializer.
  */
 export function shouldStashForCompaction(session: CompactStateSession, isRequestActive: boolean): boolean {
-  return isRequestActive && isCompactionInProgress(session);
+  // `compactTurnActive` (set for the whole dedicated /compact turn) covers
+  // the two windows the epoch marker misses (codex review F1): query init
+  // before the PreCompact hook claims the cycle, and the post-PostCompact /
+  // pre-`result` stretch where the cycle is already sealed but the CLI has
+  // not yet flushed the compacted transcript. The epoch marker still covers
+  // SDK-internal auto-compaction that happens mid-way through a NORMAL turn.
+  return isRequestActive && (isCompactionInProgress(session) || session.compactTurnActive === true);
 }
 
 type ZHandoffWorkflow = 'z-plan-to-work' | 'z-epic-update';
