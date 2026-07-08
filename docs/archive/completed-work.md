@@ -11,6 +11,12 @@
 - **Partial**: 일부 scenario/task만 완료 증거가 있고 전체 feature 완료는 확정하지 않음.
 - **Unclassified**: feature directory는 있으나 완료 증거가 애매함. 이 원장에 올리지 않는다.
 
+## Refactoring
+
+| Work | Status | Evidence |
+|------|--------|----------|
+| Refactoring hotspots (delete-first, 4 PRs) | Archived / Completed | [archive/plans/refactoring-hotspots/spec.md](./plans/refactoring-hotspots/spec.md) — PRs #1208 #1209 #1213 #1219 merged; follow-ups #1220-#1223 |
+
 ## Documentation Cleanup
 
 | Work | Status | Evidence |

@@ -1,4 +1,9 @@
-# Refactoring hotspots — plan and phase 1 execution
+# Refactoring hotspots — plan and execution (COMPLETE)
+
+> Status: **complete** (2026-07-08). Four refactoring PRs merged; remaining
+> strategic items converted to tracked issues (#1220 dashboard, #1221 ADR 0002
+> Pass 2, #1222 choice-action-handler tests, #1223 CI deadcode enforcement).
+> Token-manager extraction explicitly rejected — see "Closure" below.
 
 > Created: 2026-07-07 | Driver: autoz run (Slack goal: "soma-work 리팩토링 계획 세우고 리팩토링 진행해줘")
 > Codex scope consult: session `0625f614-5770-414a-b64c-9d17091c80ef`
@@ -111,7 +116,7 @@ consult `51b9ebc9` endorsed the reorder.
 
 ## Re-scoped backlog (Musk-ordered)
 
-Step 2 (delete) — round 3 (#executed):
+Step 2 (delete) — round 3 (#1219, merged):
 - `src/slack/output-flags.ts` shim deleted; its 6 importers now import
   `@soma/slack/output-flags` directly; contract-test mandate entry removed.
 - Demoted: `UsageLimitDispatchError`, `NATIVE_ONE_M_RE`,
@@ -136,3 +141,26 @@ Step 5 (automate) — DONE in round 3: curated `knip.json` (workspace entries,
 skill scripts ignored, bin files) + `npm run deadcode` (knip, files+exports),
 currently exit 0. Wire into CI when the team wants it enforced; unused
 exported *types* (182) remain report-only backlog.
+
+
+## Closure (2026-07-08)
+
+Executed: #1208 (goal-lifecycle extraction), #1209 (dead-file sweep),
+#1213 (dead-export prune), #1219 (output-flags shim removal + `npm run
+deadcode` automation, exit 0 on main).
+
+Remaining simplify candidates dispositioned per the Musk step-1 test
+(codex consult `bbe510c4`):
+
+- `dashboard.ts` → #1220 (question routes → characterization tests →
+  split; tests are a hard gate before any split).
+- ADR 0002 Pass 2 → #1221 (own spec/trace; multi-PR program).
+- `choice-action-handler.ts` → #1222 (characterization tests first;
+  extraction only under feature pressure).
+- CI deadcode enforcement → #1223 (team decision; gate already exit 0).
+- **token-manager usage-fetch/lease-reaper extraction — REJECTED.**
+  Pure code-motion on a working, well-tested subsystem with live
+  `CctStore` lock coordination and no current feature pressure:
+  "the most common mistake of smart engineers is to optimize a thing
+  that should not exist." Revisit only when token-manager next needs
+  feature work.
