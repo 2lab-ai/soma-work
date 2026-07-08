@@ -10,6 +10,7 @@ import type { ActionHandlers } from '../actions';
 import { buildMarkerBlocks, SUPERSEDED_TEXT } from '../actions/click-classifier';
 import type { PendingInstructionConfirmStore } from '../actions/pending-instruction-confirm-store';
 import type { AssistantStatusManager } from '../assistant-status-manager';
+import { type CompactStateSession, promotePendingToDispatchQueue } from '../compact-state';
 import type { CompletionMessageTracker } from '../completion-message-tracker';
 import type { ContextWindowManager } from '../context-window-manager';
 import {
@@ -333,6 +334,7 @@ interface StreamExecutorDeps {
   dispatchPendingUserMessage?: (
     ctx: { channel: string; threadTs: string; user: string; ts: string },
     text: string,
+    opts?: { compactRedispatch?: boolean },
   ) => Promise<void>;
   /**
    * Shared store for deferred `UPDATE_SESSION.instructionOperations`.
@@ -1035,6 +1037,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       let finalPrompt: string;
       if (isSlashCommand) {
         finalPrompt = trimmedText;
+        // Compact re-loop fix (codex F1): mark the WHOLE dedicated /compact
+        // turn so `shouldStashForCompaction` shields it even in the windows
+        // the epoch marker misses (query init before PreCompact; sealed
+        // cycle after PostCompact but before the CLI flushes the compacted
+        // transcript and emits `result`). Cleared in this turn's `finally`.
+        if (trimmedText.split(/\s/)[0] === '/compact') {
+          session.compactTurnActive = true;
+        }
         this.logger.info('Bypassing preparePrompt for SDK local slash command', {
           sessionKey,
           command: trimmedText.split(/\s/)[0],
@@ -2559,25 +2569,55 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // re-tripped the threshold). Now that this turn's stream has fully
       // ended and `cleanup()` removed the request controller, re-entering
       // the pipeline is safe: there is no in-flight query left to abort.
-      // Runs on every exit path (success, error, abort) so the user's
-      // message is never swallowed; skipped only when the session was
-      // explicitly terminated mid-turn.
-      const deferredDispatch = session.compactPendingDispatch;
-      if (deferredDispatch && !session.terminated) {
-        session.compactPendingDispatch = null;
-        if (this.deps.dispatchPendingUserMessage) {
-          this.logger.info('Dispatching deferred post-compact user message', {
+      //
+      // Codex review F3 (strand rescue): if this was a /compact turn that
+      // died WITHOUT any END signal (crash/abort before PostCompact and
+      // compact_boundary), `pendingUserText` was never promoted. Promote it
+      // here so the intercepted message can neither strand forever nor be
+      // overwritten by the next auto-compact interception.
+      const wasCompactTurn = session.compactTurnActive === true;
+      session.compactTurnActive = false;
+      if (wasCompactTurn) {
+        promotePendingToDispatchQueue(session as CompactStateSession);
+      }
+      // Codex review F2: if ANOTHER turn started in the tiny window between
+      // `cleanup()` removing this turn's controller and this consumption
+      // point, dispatching now would supersede (abort) that live user turn —
+      // inverted priority. Leave the queue parked instead: this consumption
+      // block runs in EVERY turn's `finally`, so the newer turn will replay
+      // the queue at ITS stream end. No message is lost, order is preserved.
+      // Runs on every exit path (success, error, abort); skipped only when
+      // the session was explicitly terminated mid-turn.
+      const queue = session.compactPendingDispatches;
+      if (queue && queue.length > 0 && !session.terminated) {
+        if (this.deps.requestCoordinator.isRequestActive(sessionKey)) {
+          this.logger.info('Deferred post-compact dispatch left parked — a newer turn is active', {
             sessionKey,
-            textPreview: String(deferredDispatch.text).substring(0, 80),
+            queued: queue.length,
           });
-          void this.deps
-            .dispatchPendingUserMessage(deferredDispatch.ctx, deferredDispatch.text)
-            .catch((err: unknown) => {
-              this.logger.warn('Deferred post-compact re-dispatch failed', {
-                sessionKey,
-                error: (err as Error)?.message ?? String(err),
-              });
-            });
+        } else if (this.deps.dispatchPendingUserMessage) {
+          session.compactPendingDispatches = null;
+          this.logger.info('Dispatching deferred post-compact user message(s)', {
+            sessionKey,
+            count: queue.length,
+            textPreview: String(queue[0].text).substring(0, 80),
+          });
+          const dispatch = this.deps.dispatchPendingUserMessage;
+          // Sequential fire-and-forget chain: each payload keeps its own
+          // author context (codex review F4 — never replay U2's text under
+          // U1's identity), replayed in arrival order.
+          void (async () => {
+            for (const payload of queue) {
+              try {
+                await dispatch(payload.ctx, payload.text, { compactRedispatch: true });
+              } catch (err) {
+                this.logger.warn('Deferred post-compact re-dispatch failed', {
+                  sessionKey,
+                  error: (err as Error)?.message ?? String(err),
+                });
+              }
+            }
+          })();
         } else {
           this.logger.warn('Deferred post-compact dispatch dropped — no dispatchPendingUserMessage dep wired', {
             sessionKey,

@@ -50,7 +50,13 @@ export function shouldDropGoalContinuation(
  * unit-testable without the full initializer.
  */
 export function shouldStashForCompaction(session: CompactStateSession, isRequestActive: boolean): boolean {
-  return isRequestActive && isCompactionInProgress(session);
+  // `compactTurnActive` (set for the whole dedicated /compact turn) covers
+  // the two windows the epoch marker misses (codex review F1): query init
+  // before the PreCompact hook claims the cycle, and the post-PostCompact /
+  // pre-`result` stretch where the cycle is already sealed but the CLI has
+  // not yet flushed the compacted transcript. The epoch marker still covers
+  // SDK-internal auto-compaction that happens mid-way through a NORMAL turn.
+  return isRequestActive && (isCompactionInProgress(session) || session.compactTurnActive === true);
 }
 
 type ZHandoffWorkflow = 'z-plan-to-work' | 'z-epic-update';
@@ -743,6 +749,46 @@ export class SessionInitializer {
         abortController: new AbortController(),
         halted: true,
       };
+    }
+
+    // Codex F2 (replay-vs-user race): a post-compact deferred replay must
+    // never supersede a real turn that grabbed the slot between the
+    // finally's isRequestActive check and this point. Re-park it — the
+    // active turn's own finally replays the queue at its stream end.
+    if (event.routeContext?.compactRedispatch === true && this.deps.requestCoordinator.isRequestActive(sessionKey)) {
+      this.logger.info('Post-compact replay lost the slot race — re-parking for the active turn', { sessionKey });
+      if (dispatchText) {
+        stashUserMessageDuringCompaction(session, { channel, threadTs, user, ts }, dispatchText);
+      }
+      return {
+        session,
+        sessionKey,
+        isNewSession,
+        userName,
+        workingDirectory: effectiveWorkingDir,
+        abortController: new AbortController(),
+        halted: true,
+      };
+    }
+
+    // Codex F1 (early shield): claim the /compact turn marker BEFORE
+    // concurrency control registers this turn's controller, so there is no
+    // window where the /compact turn is active-but-unshielded. The
+    // stream-executor sets it again at the local-slash-command bypass
+    // (idempotent) and clears it in the turn's `finally`.
+    //
+    // Claim ONLY when the slot is idle: if another request is active this
+    // /compact will be halted/stashed below and never reach execute(), so an
+    // early claim would leak the flag and wrongly compaction-shield the
+    // unrelated active turn until its own finally clears it (codex
+    // re-review). When /compact instead supersedes a live turn (manual path
+    // is already refused by CompactHandler while busy), the stream-executor
+    // backstop claims the flag at query start.
+    if (
+      (dispatchText ?? '').trim().split(/\s/)[0] === '/compact' &&
+      !this.deps.requestCoordinator.isRequestActive(sessionKey)
+    ) {
+      session.compactTurnActive = true;
     }
 
     // Compact re-loop fix — NEVER abort an in-flight compaction (see

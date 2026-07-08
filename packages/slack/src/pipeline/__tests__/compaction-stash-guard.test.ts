@@ -45,4 +45,24 @@ describe('shouldStashForCompaction', () => {
   it('does not stash when the open cycle is stale (10-minute safety ceiling)', () => {
     expect(shouldStashForCompaction(openCompactCycle(11 * 60 * 1000), true)).toBe(false);
   });
+
+  it('codex F1: stashes for the whole /compact turn via compactTurnActive — even after the cycle sealed (pre-flush window) or before it opened', () => {
+    // Sealed cycle but /compact turn still running (post-PostCompact,
+    // pre-result: transcript not flushed yet).
+    expect(
+      shouldStashForCompaction(
+        {
+          compactEpoch: 2,
+          compactPostedByEpoch: { 2: { pre: true, post: true } },
+          compactStartedAtMs: Date.now(),
+          compactTurnActive: true,
+        },
+        true,
+      ),
+    ).toBe(true);
+    // Query init: /compact turn started, PreCompact hook not fired yet.
+    expect(shouldStashForCompaction({ compactTurnActive: true }, true)).toBe(true);
+    // Turn ended (flag cleared in finally) → normal semantics restored.
+    expect(shouldStashForCompaction({ compactTurnActive: false }, true)).toBe(false);
+  });
 });
