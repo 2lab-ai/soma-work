@@ -651,6 +651,18 @@ export interface ConversationSession {
   pendingUserText?: string | null;
   // Slack event context captured alongside `pendingUserText` for synthetic re-dispatch via event-router.
   pendingEventContext?: { channel: string; threadTs: string; user: string; ts: string } | null;
+  // Deferred post-compact re-dispatch payload. `postCompactCompleteIfNeeded`
+  // moves `pendingUserText`/`pendingEventContext` here when a compact cycle
+  // seals; the /compact turn's stream-end cleanup (stream-executor `finally`)
+  // consumes it and re-enters the pipeline. Deferral is load-bearing: the
+  // PostCompact hook fires BEFORE the CLI persists the compacted transcript,
+  // so dispatching from inside the hook lets the new turn's concurrency
+  // control abort the still-running /compact process and lose the compaction
+  // entirely (observed as `now ~85% ← was ~85%` immediate re-compact loops).
+  compactPendingDispatch?: {
+    ctx: { channel: string; threadTs: string; user: string; ts: string };
+    text: string;
+  } | null;
   // Wall-clock timestamp (ms) when the current active turn leg started. `undefined` when idle.
   activeLegStartedAtMs?: number;
   /**

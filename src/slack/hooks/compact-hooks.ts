@@ -116,9 +116,12 @@ export interface CompactHookDeps {
   threadTs: string;
   slackApi: SlackApiHelper;
   /**
-   * Optional — used only by the PostCompact path to re-dispatch a captured
-   * user message (AC3 end-to-end). Omitted in tests that only need PreCompact
-   * / PostCompact slackPost behaviour.
+   * Optional — retained for wiring compatibility. The captured user message
+   * is no longer dispatched from inside the hook callbacks (that let the new
+   * turn abort the still-running /compact process before the CLI persisted
+   * the compacted transcript); `postCompactCompleteIfNeeded` now defers the
+   * re-dispatch via `session.compactPendingDispatch`, consumed by the
+   * stream-executor at the /compact turn's stream end.
    */
   eventRouter?: EventRouter;
 }
@@ -482,16 +485,16 @@ export interface PostCompactCompleteOpts {
  *   3. Replaces the "starting" message in-place via `chat.update` when we
  *      still have its ts (typical path), or posts a fresh system message as
  *      a fallback (e.g. the ts wasn't captured — Slack post failure on START).
- *   4. Marks the epoch rehydrated, clears `autoCompactPending`, and
- *      re-dispatches any captured user message atomically.
- *
- * The Slack post and the pending re-dispatch are independent → run in parallel.
+ *   4. Marks the epoch rehydrated, clears `autoCompactPending`, and moves any
+ *      captured user message to `session.compactPendingDispatch` for the
+ *      stream-executor to re-dispatch AFTER the /compact turn's stream ends
+ *      (never from inside the hook callback — see the deferral comment below).
  */
 export async function postCompactCompleteIfNeeded(
   deps: CompactHookDeps,
   opts: PostCompactCompleteOpts = {},
 ): Promise<void> {
-  const { session, channel, threadTs, slackApi, eventRouter } = deps;
+  const { session, channel, threadTs, slackApi } = deps;
   const epoch = getCurrentEpochForEnd(session);
   const marker = ensurePostedMap(session)[epoch];
   if (!marker) return;
@@ -592,17 +595,31 @@ export async function postCompactCompleteIfNeeded(
   session.autoCompactPending = false;
 
   // Consume pending atomically so a second END signal in the same cycle
-  // cannot double-fire, then re-dispatch in parallel with the Slack post.
-  let dispatchPromise: Promise<void> = Promise.resolve();
-  if (session.pendingUserText && session.pendingEventContext && eventRouter) {
+  // cannot double-fire — but DEFER the actual re-dispatch to the /compact
+  // turn's stream end (stream-executor `finally` consumes
+  // `session.compactPendingDispatch`).
+  //
+  // Deferral is load-bearing, not cosmetic. This function runs INSIDE the
+  // PostCompact hook callback, which the CLI awaits BEFORE it has flushed
+  // the compacted transcript (summary entry + compact_boundary) to disk —
+  // the flush happens seconds later, just before the `result` event.
+  // Dispatching here re-enters the message pipeline immediately; the new
+  // turn's concurrency control (`SessionInitializer.handleConcurrency`) sees
+  // the still-running /compact query as a stalled in-flight request and
+  // aborts it, killing the CLI in the pre-flush window. The compaction is
+  // silently lost: the next resume loads the UNCOMPACTED transcript, usage
+  // stays at pre-compact levels (`now ~85% ← was ~85%`), the threshold
+  // re-trips, and the session loops compact→abort→compact forever
+  // (observed on work-m64 dev, session f4ee1a3f, 2026-07-08 07:46/07:57/08:51Z).
+  if (session.pendingUserText && session.pendingEventContext) {
     const text = session.pendingUserText;
     const ctx = session.pendingEventContext;
     session.pendingUserText = null;
     session.pendingEventContext = null;
-    dispatchPromise = eventRouter.dispatchPendingUserMessage(ctx, text);
+    session.compactPendingDispatch = { ctx, text };
   }
 
-  await Promise.all([postPromise, dispatchPromise]);
+  await postPromise;
 }
 
 /**

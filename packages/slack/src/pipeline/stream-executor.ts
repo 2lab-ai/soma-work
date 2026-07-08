@@ -2549,6 +2549,41 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         });
       }
       await this.cleanup(session, sessionKey, abortController, turnId);
+      // Deferred post-compact re-dispatch (compact re-loop fix). When a
+      // compact cycle sealed during THIS turn, `postCompactCompleteIfNeeded`
+      // parked the intercepted user message on the session instead of
+      // dispatching from inside the PostCompact hook — dispatching there let
+      // the new turn's concurrency control abort the still-running /compact
+      // process BEFORE the CLI flushed the compacted transcript, silently
+      // losing the compaction (context stayed at ~85–93% and immediately
+      // re-tripped the threshold). Now that this turn's stream has fully
+      // ended and `cleanup()` removed the request controller, re-entering
+      // the pipeline is safe: there is no in-flight query left to abort.
+      // Runs on every exit path (success, error, abort) so the user's
+      // message is never swallowed; skipped only when the session was
+      // explicitly terminated mid-turn.
+      const deferredDispatch = session.compactPendingDispatch;
+      if (deferredDispatch && !session.terminated) {
+        session.compactPendingDispatch = null;
+        if (this.deps.dispatchPendingUserMessage) {
+          this.logger.info('Dispatching deferred post-compact user message', {
+            sessionKey,
+            textPreview: String(deferredDispatch.text).substring(0, 80),
+          });
+          void this.deps
+            .dispatchPendingUserMessage(deferredDispatch.ctx, deferredDispatch.text)
+            .catch((err: unknown) => {
+              this.logger.warn('Deferred post-compact re-dispatch failed', {
+                sessionKey,
+                error: (err as Error)?.message ?? String(err),
+              });
+            });
+        } else {
+          this.logger.warn('Deferred post-compact dispatch dropped — no dispatchPendingUserMessage dep wired', {
+            sessionKey,
+          });
+        }
+      }
     }
   }
 

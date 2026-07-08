@@ -373,7 +373,7 @@ describe('buildCompactHooks — PostCompact (#617 AC5, chat.update v2)', () => {
     expect(slackApi.postSystemMessage).not.toHaveBeenCalled();
   });
 
-  it('AC3 re-dispatch: PostCompact consumes pendingUserText via eventRouter exactly once', async () => {
+  it('AC3 re-dispatch: PostCompact DEFERS pendingUserText (never dispatches inside the hook)', async () => {
     session.pendingUserText = 'original user text';
     session.pendingEventContext = { channel: 'C1', threadTs: 'T1', user: 'U1', ts: '171.0' };
 
@@ -386,17 +386,21 @@ describe('buildCompactHooks — PostCompact (#617 AC5, chat.update v2)', () => {
     });
     await hooks.PostCompact(postPayload() as any);
 
-    expect(eventRouter.dispatchPendingUserMessage).toHaveBeenCalledTimes(1);
-    expect(eventRouter.dispatchPendingUserMessage).toHaveBeenCalledWith(
-      { channel: 'C1', threadTs: 'T1', user: 'U1', ts: '171.0' },
-      'original user text',
-    );
-    // Cleared after atomic consume — second END signal cannot re-dispatch.
+    // Compact re-loop fix: dispatching from inside the PostCompact hook let
+    // the new turn abort the still-running /compact process before the CLI
+    // persisted the compacted transcript. The hook must only PARK the
+    // message; the stream-executor dispatches it after the stream ends.
+    expect(eventRouter.dispatchPendingUserMessage).not.toHaveBeenCalled();
+    expect(session.compactPendingDispatch).toEqual({
+      ctx: { channel: 'C1', threadTs: 'T1', user: 'U1', ts: '171.0' },
+      text: 'original user text',
+    });
+    // Cleared after atomic consume — second END signal cannot double-park.
     expect(session.pendingUserText).toBeNull();
     expect(session.pendingEventContext).toBeNull();
   });
 
-  it('AC3 re-dispatch: no eventRouter injected → silently skips without throwing', async () => {
+  it('AC3 re-dispatch: second END signal in same epoch does not overwrite the parked dispatch', async () => {
     session.pendingUserText = 'x';
     session.pendingEventContext = { channel: 'C1', threadTs: 'T1', user: 'U1', ts: '0' };
     const hooks = buildCompactHooks({
@@ -404,11 +408,19 @@ describe('buildCompactHooks — PostCompact (#617 AC5, chat.update v2)', () => {
       channel: 'C1',
       threadTs: 'T1',
       slackApi: slackApi as unknown as SlackApiHelper,
-      // no eventRouter
+      // no eventRouter — deferral must not require one
     });
     await expect(hooks.PostCompact(postPayload() as any)).resolves.toEqual({ continue: true });
-    // pendingUserText NOT cleared because no router — next turn still has it.
-    expect(session.pendingUserText).toBe('x');
+    expect(session.compactPendingDispatch).toEqual({
+      ctx: { channel: 'C1', threadTs: 'T1', user: 'U1', ts: '0' },
+      text: 'x',
+    });
+    // Second END signal: nothing pending left to park, parked payload intact.
+    await hooks.PostCompact(postPayload() as any);
+    expect(session.compactPendingDispatch).toEqual({
+      ctx: { channel: 'C1', threadTs: 'T1', user: 'U1', ts: '0' },
+      text: 'x',
+    });
   });
 });
 
