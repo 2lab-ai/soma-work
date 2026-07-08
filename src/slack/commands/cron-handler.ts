@@ -1,6 +1,13 @@
 import * as path from 'path';
-import { type CronJob, type CronJobPatch, CronStorage } from 'somalib/cron/cron-storage';
+import {
+  type CronJob,
+  type CronJobPatch,
+  CronStorage,
+  isValidCronExpression,
+  isValidCronName,
+} from 'somalib/cron/cron-storage';
 import { isAdminUser } from '../../admin-utils';
+import { getActiveCronScheduler } from '../../cron-scheduler';
 import { DATA_DIR } from '../../env-paths';
 import { userSettingsStore } from '../../user-settings-store';
 import { buildCronCard } from '../cron-blocks';
@@ -42,7 +49,21 @@ export class CronCommandHandler implements CommandHandler {
     '스케쥴러',
   ]);
 
-  private static readonly SUBCOMMANDS = new Set(['list', 'model', 'target', 'delete', 'remove', 'help']);
+  private static readonly SUBCOMMANDS = new Set([
+    'list',
+    'model',
+    'target',
+    'mode',
+    'rename',
+    'prompt',
+    'channel',
+    'schedule',
+    'expr',
+    'run',
+    'delete',
+    'remove',
+    'help',
+  ]);
 
   private readonly storagePath: string;
 
@@ -75,6 +96,18 @@ export class CronCommandHandler implements CommandHandler {
       await this.changeModel(ctx, tokens.slice(2));
     } else if (sub === 'target') {
       await this.changeTarget(ctx, tokens.slice(2));
+    } else if (sub === 'mode') {
+      await this.changeMode(ctx, tokens.slice(2));
+    } else if (sub === 'rename') {
+      await this.renameJob(ctx, tokens.slice(2));
+    } else if (sub === 'prompt') {
+      await this.changePrompt(ctx, tokens.slice(2));
+    } else if (sub === 'channel') {
+      await this.changeChannel(ctx, tokens.slice(2));
+    } else if (sub === 'schedule' || sub === 'expr') {
+      await this.changeSchedule(ctx, tokens.slice(2));
+    } else if (sub === 'run') {
+      await this.runNow(ctx, tokens.slice(2));
     } else if (sub === 'delete' || sub === 'remove') {
       await this.deleteJob(ctx, tokens.slice(2));
     }
@@ -204,6 +237,157 @@ export class CronCommandHandler implements CommandHandler {
     });
   }
 
+  // --- mode / rename / prompt / channel / schedule / run ---
+
+  private async changeMode(ctx: CommandContext, args: string[]): Promise<void> {
+    const { name, rest, owner } = splitOwnerArg(args);
+    const value = rest[0]?.toLowerCase();
+    if (!name || !value || !['default', 'fastlane'].includes(value)) {
+      await ctx.say({ text: '사용법: `cron mode <name> <default|fastlane>`', thread_ts: ctx.threadTs });
+      return;
+    }
+    const resolved = this.resolveJob(ctx, name, owner);
+    if ('error' in resolved) {
+      await ctx.say({ text: resolved.error, thread_ts: ctx.threadTs });
+      return;
+    }
+    const updated = this.storage().updateJob(resolved.owner, name, {
+      mode: value === 'default' ? null : 'fastlane',
+    });
+    await ctx.say({
+      text: updated
+        ? `✅ *${name}* 실행 모드 → ${value === 'fastlane' ? '⚡fastlane (항상 새 스레드 즉시)' : 'default (대기열)'}${ownerSuffix(ctx, resolved.owner)}`
+        : `❌ 크론잡 \`${name}\` 을 찾을 수 없습니다.`,
+      thread_ts: ctx.threadTs,
+    });
+  }
+
+  private async renameJob(ctx: CommandContext, args: string[]): Promise<void> {
+    const { name, rest, owner } = splitOwnerArg(args);
+    const newName = rest[0];
+    if (!name || !newName || !isValidCronName(newName)) {
+      await ctx.say({
+        text: '사용법: `cron rename <name> <새이름>` (영문/숫자/하이픈/언더스코어 1-64자)',
+        thread_ts: ctx.threadTs,
+      });
+      return;
+    }
+    const resolved = this.resolveJob(ctx, name, owner);
+    if ('error' in resolved) {
+      await ctx.say({ text: resolved.error, thread_ts: ctx.threadTs });
+      return;
+    }
+    try {
+      const updated = this.storage().updateJob(resolved.owner, name, { name: newName });
+      await ctx.say({
+        text: updated
+          ? `✅ *${name}* → *${newName}* 이름 변경${ownerSuffix(ctx, resolved.owner)}`
+          : `❌ 크론잡 \`${name}\` 을 찾을 수 없습니다.`,
+        thread_ts: ctx.threadTs,
+      });
+    } catch (error: any) {
+      if (error?.message?.startsWith('DUPLICATE_NAME')) {
+        await ctx.say({ text: `❌ 이미 같은 이름의 잡이 있습니다: \`${newName}\``, thread_ts: ctx.threadTs });
+        return;
+      }
+      throw error;
+    }
+  }
+
+  private async changePrompt(ctx: CommandContext, args: string[]): Promise<void> {
+    const { name, rest, owner } = splitOwnerArg(args);
+    const prompt = rest.join(' ').trim();
+    if (!name || !prompt || prompt.length > 4000) {
+      await ctx.say({ text: '사용법: `cron prompt <name> <새 프롬프트…>` (1-4000자)', thread_ts: ctx.threadTs });
+      return;
+    }
+    const resolved = this.resolveJob(ctx, name, owner);
+    if ('error' in resolved) {
+      await ctx.say({ text: resolved.error, thread_ts: ctx.threadTs });
+      return;
+    }
+    const updated = this.storage().updateJob(resolved.owner, name, { prompt });
+    await ctx.say({
+      text: updated
+        ? `✅ *${name}* 프롬프트 변경 → ${prompt.substring(0, 120)}${ownerSuffix(ctx, resolved.owner)}`
+        : `❌ 크론잡 \`${name}\` 을 찾을 수 없습니다.`,
+      thread_ts: ctx.threadTs,
+    });
+  }
+
+  private async changeChannel(ctx: CommandContext, args: string[]): Promise<void> {
+    const { name, rest, owner } = splitOwnerArg(args);
+    const raw = rest[0] ?? '';
+    // Accept <#C123|name>, <#C123>, or bare C123/D123.
+    const mention = raw.match(/^<#([CD][A-Z0-9_]+)(\|[^>]*)?>$/);
+    const channel = mention ? mention[1] : raw;
+    if (!name || !channel || (!channel.startsWith('C') && !channel.startsWith('D'))) {
+      await ctx.say({ text: '사용법: `cron channel <name> <#채널>` (또는 채널 ID)', thread_ts: ctx.threadTs });
+      return;
+    }
+    const resolved = this.resolveJob(ctx, name, owner);
+    if ('error' in resolved) {
+      await ctx.say({ text: resolved.error, thread_ts: ctx.threadTs });
+      return;
+    }
+    const updated = this.storage().updateJob(resolved.owner, name, { channel });
+    await ctx.say({
+      text: updated
+        ? `✅ *${name}* 출력 채널 → <#${channel}>${ownerSuffix(ctx, resolved.owner)}`
+        : `❌ 크론잡 \`${name}\` 을 찾을 수 없습니다.`,
+      thread_ts: ctx.threadTs,
+    });
+  }
+
+  private async changeSchedule(ctx: CommandContext, args: string[]): Promise<void> {
+    const { name, rest, owner } = splitOwnerArg(args);
+    const expression = rest.join(' ').trim();
+    if (!name || !isValidCronExpression(expression)) {
+      await ctx.say({
+        text: '사용법: `cron schedule <name> <분 시 일 월 요일>` — 예: `cron schedule daily 0 9 * * 1-5` (UTC)',
+        thread_ts: ctx.threadTs,
+      });
+      return;
+    }
+    const resolved = this.resolveJob(ctx, name, owner);
+    if ('error' in resolved) {
+      await ctx.say({ text: resolved.error, thread_ts: ctx.threadTs });
+      return;
+    }
+    const updated = this.storage().updateJob(resolved.owner, name, { expression });
+    await ctx.say({
+      text: updated
+        ? `✅ *${name}* 스케줄 → \`${expression}\` (UTC)${ownerSuffix(ctx, resolved.owner)}`
+        : `❌ 크론잡 \`${name}\` 을 찾을 수 없습니다.`,
+      thread_ts: ctx.threadTs,
+    });
+  }
+
+  private async runNow(ctx: CommandContext, args: string[]): Promise<void> {
+    const { name, owner } = splitOwnerArg(args);
+    if (!name) {
+      await ctx.say({ text: '사용법: `cron run <name>`', thread_ts: ctx.threadTs });
+      return;
+    }
+    const resolved = this.resolveJob(ctx, name, owner);
+    if ('error' in resolved) {
+      await ctx.say({ text: resolved.error, thread_ts: ctx.threadTs });
+      return;
+    }
+    const scheduler = getActiveCronScheduler();
+    if (!scheduler) {
+      await ctx.say({ text: '⚠️ 크론 스케줄러가 아직 기동되지 않았습니다.', thread_ts: ctx.threadTs });
+      return;
+    }
+    const result = await scheduler.runJobNow(resolved.owner, name);
+    await ctx.say({
+      text: result.ok
+        ? `▶ *${name}* 실행 트리거됨 — 실제 크론 경로로 발동${ownerSuffix(ctx, resolved.owner)}`
+        : `⚠️ *${name}* 실행 실패: ${result.message}`,
+      thread_ts: ctx.threadTs,
+    });
+  }
+
   // --- delete ---
 
   private async deleteJob(ctx: CommandContext, args: string[]): Promise<void> {
@@ -307,9 +491,12 @@ function splitOwnerArg(args: string[]): { name?: string; rest: string[]; owner?:
 
 function usageText(): string {
   return [
-    '수정 명령:',
-    '• `cron model <name> <default|fast|모델>` — 모델 변경 (default = 만든 사람의 현재 모델)',
-    '• `cron target <name> <channel|dm|thread>` — 출력 대상 변경',
+    '수정 명령 (카드 버튼/드롭다운 또는 텍스트):',
+    '• `cron model <name> <default|fast|모델>` — 모델 (default = 만든 사람의 현재 모델)',
+    '• `cron target <name> <channel|dm|thread>` — 출력 대상',
+    '• `cron mode <name> <default|fastlane>` — 실행 모드',
+    '• `cron channel <name> <#채널>` · `cron schedule <name> <5-field cron>` · `cron prompt <name> <텍스트>` · `cron rename <name> <새이름>`',
+    '• `cron run <name>` — 지금 즉시 실행 (실제 크론 경로)',
     '• `cron delete <name>` — 삭제',
     '_admin은 명령 끝에 `<@owner>` 를 붙여 다른 유저 잡을 수정합니다._',
   ].join('\n');

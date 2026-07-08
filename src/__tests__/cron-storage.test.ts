@@ -405,6 +405,33 @@ describe('CronStorage.updateJob', () => {
     expect(storage.updateJob('U_OWNER', 'nope', { prompt: 'x' })).toBeNull();
   });
 
+  it('renames a job and rejects duplicate names', () => {
+    seed();
+    const renamed = storage.updateJob('U_OWNER', 'job-a', { name: 'job-b' });
+    expect(renamed!.name).toBe('job-b');
+    expect(storage.getJobsByOwner('U_OWNER').map((j) => j.name)).toEqual(['job-b']);
+
+    storage.addJob({
+      name: 'job-c',
+      expression: '0 9 * * *',
+      prompt: 'x',
+      owner: 'U_OWNER',
+      channel: 'C1',
+      threadTs: null,
+    });
+    expect(() => storage.updateJob('U_OWNER', 'job-b', { name: 'job-c' })).toThrow(/DUPLICATE_NAME/);
+  });
+
+  it('renames a job; duplicate rename throws DUPLICATE_NAME', () => {
+    seed();
+    const renamed = storage.updateJob('U_OWNER', 'job-a', { name: 'job-b' });
+    expect(renamed!.name).toBe('job-b');
+    expect(storage.getJobsByOwner('U_OWNER').map((j) => j.name)).toEqual(['job-b']);
+
+    seed(); // job-a again
+    expect(() => storage.updateJob('U_OWNER', 'job-a', { name: 'job-b' })).toThrow(/DUPLICATE_NAME/);
+  });
+
   it('preserves lastRun bookkeeping fields across update', () => {
     const created = seed();
     storage.updateLastRun(created.id, new Date('2026-01-02T03:04:00Z'));

@@ -67,6 +67,8 @@ interface CronData {
  * - `threadTs: null` → clear thread anchor
  */
 export interface CronJobPatch {
+  /** Rename. Throws DUPLICATE_NAME when another job of the same owner already uses it. */
+  name?: string;
   expression?: string;
   prompt?: string;
   channel?: string;
@@ -321,6 +323,13 @@ export class CronStorage {
     const job = data.jobs.find((j) => j.owner === owner && j.name === name);
     if (!job) return null;
 
+    if (patch.name !== undefined && patch.name !== job.name) {
+      const clash = data.jobs.some((j) => j.owner === owner && j.name === patch.name);
+      if (clash) {
+        throw new Error(`DUPLICATE_NAME: Cron job '${patch.name}' already exists for this user`);
+      }
+      job.name = patch.name;
+    }
     if (patch.expression !== undefined) job.expression = patch.expression;
     if (patch.prompt !== undefined) job.prompt = patch.prompt;
     if (patch.channel !== undefined) job.channel = patch.channel;
