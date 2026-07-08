@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import { Logger } from '@soma/common/logger';
 import type { AssistantStatusManager } from '../assistant-status-manager';
+import { type CompactStateSession, isCompactionInProgress, stashUserMessageDuringCompaction } from '../compact-state';
 import type { ContextWindowManager } from '../context-window-manager';
 import {
   DispatchAbortError,
@@ -32,6 +33,24 @@ export function shouldDropGoalContinuation(
   isRequestActive: boolean,
 ): boolean {
   return event.routeContext?.goalContinuation === true && isRequestActive;
+}
+
+/**
+ * Compact re-loop fix — a message must NEVER abort an in-flight compaction.
+ * The SDK's /compact turn is silent for 2–3 minutes (no stream events while
+ * the summarization request runs), so `handleConcurrency` would classify it
+ * as stalled and displace it. Killing the CLI in that window loses the
+ * compaction: the compacted transcript (summary + `compact_boundary`) is only
+ * flushed a few seconds after the PostCompact hook fires, and an aborted
+ * process never writes it. The session then resumes UNCOMPACTED, the
+ * threshold re-trips, and the thread loops compact→abort→compact (observed
+ * on work-m64 dev, session f4ee1a3f, 2026-07-08: three consecutive /compact
+ * runs each aborted by the immediately re-dispatched pending message, context
+ * pinned at 82–93% of a 1M window). Pure predicate, M2-style, so the rule is
+ * unit-testable without the full initializer.
+ */
+export function shouldStashForCompaction(session: CompactStateSession, isRequestActive: boolean): boolean {
+  return isRequestActive && isCompactionInProgress(session);
 }
 
 type ZHandoffWorkflow = 'z-plan-to-work' | 'z-epic-update';
@@ -715,6 +734,33 @@ export class SessionInitializer {
     // recheck wins: drop the continuation instead of aborting the user's turn.
     if (shouldDropGoalContinuation(event, this.deps.requestCoordinator.isRequestActive(sessionKey))) {
       this.logger.info('Goal continuation dropped — session busy (never supersede)', { sessionKey });
+      return {
+        session,
+        sessionKey,
+        isNewSession,
+        userName,
+        workingDirectory: effectiveWorkingDir,
+        abortController: new AbortController(),
+        halted: true,
+      };
+    }
+
+    // Compact re-loop fix — NEVER abort an in-flight compaction (see
+    // `shouldStashForCompaction`). Instead: stash the message for
+    // post-compact re-dispatch (arrival order preserved) and halt this turn.
+    if (shouldStashForCompaction(session, this.deps.requestCoordinator.isRequestActive(sessionKey))) {
+      this.logger.info('Compaction in progress — stashing message instead of aborting the /compact turn', {
+        sessionKey,
+        user: userName,
+      });
+      if (dispatchText) {
+        stashUserMessageDuringCompaction(session, { channel, threadTs, user, ts }, dispatchText);
+      }
+      void this.deps.slackApi
+        .postSystemMessage(channel, '🗜️ Compaction 진행 중 — 메시지는 완료 후 처리됩니다', { threadTs })
+        .catch(() => {
+          /* decorative notice — never block on Slack */
+        });
       return {
         session,
         sessionKey,
