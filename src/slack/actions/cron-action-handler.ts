@@ -1,9 +1,16 @@
 import * as path from 'path';
 import { type CronJobPatch, CronStorage } from 'somalib/cron/cron-storage';
 import { isAdminUser } from '../../admin-utils';
+import { getActiveCronScheduler } from '../../cron-scheduler';
 import { DATA_DIR } from '../../env-paths';
 import { Logger } from '../../logger';
-import { buildCronCard, CRON_MODEL_DEFAULT, CRON_MODEL_FAST, parseCronActionId } from '../cron-blocks';
+import {
+  buildCronCard,
+  buildCronEditModal,
+  CRON_MODEL_DEFAULT,
+  CRON_MODEL_FAST,
+  parseCronActionId,
+} from '../cron-blocks';
 import type { SlackApiHelper } from '../slack-api-helper';
 import type { RespondFn } from './types';
 
@@ -34,7 +41,7 @@ export class CronActionHandler {
     return new CronStorage(this.ctx.storagePath ?? path.join(DATA_DIR, 'cron-jobs.json'));
   }
 
-  async handleAction(body: any, respond: RespondFn): Promise<void> {
+  async handleAction(body: any, respond: RespondFn, client?: any): Promise<void> {
     try {
       const action = body?.actions?.[0];
       const actionId: string = action?.action_id ?? '';
@@ -66,13 +73,82 @@ export class CronActionHandler {
         return;
       }
 
+      if (kind === 'run') {
+        const scheduler = getActiveCronScheduler();
+        if (!scheduler) {
+          await respond({
+            response_type: 'ephemeral',
+            replace_original: false,
+            text: '⚠️ 크론 스케줄러가 아직 기동되지 않았습니다.',
+          });
+          return;
+        }
+        // Real cron fire: identical path to a scheduled fire (target/mode/
+        // model/history/lastRun) — NOT a model-side simulation.
+        const result = await scheduler.runJobNow(owner, name);
+        await respond({
+          response_type: 'ephemeral',
+          replace_original: false,
+          text: result.ok
+            ? `▶ *${name}* 실행 트리거됨 — 실제 크론 경로(대상/모드/모델 그대로)로 발동했습니다.`
+            : `⚠️ *${name}* 실행 실패: ${result.message}`,
+        });
+        if (result.ok) await this.rerenderCard(body, clickerId); // last-run 갱신 반영
+        return;
+      }
+
+      if (kind === 'edit') {
+        const triggerId: string | undefined = body?.trigger_id;
+        if (!triggerId || !client) {
+          await respond({
+            response_type: 'ephemeral',
+            replace_original: false,
+            text: '⚠️ 편집 모달을 열 수 없습니다 (trigger_id/client 누락).',
+          });
+          return;
+        }
+        const job = this.storage()
+          .getJobsByOwner(owner)
+          .find((j) => j.name === name);
+        if (!job) {
+          await this.notFound(respond, name);
+          return;
+        }
+        const modal = buildCronEditModal({
+          job,
+          metadata: {
+            owner,
+            name,
+            cardChannelId: body?.channel?.id ?? '',
+            cardMessageTs: body?.message?.ts ?? '',
+            requesterId: clickerId,
+          },
+        });
+        try {
+          await client.views.open({ trigger_id: triggerId, view: modal });
+        } catch (err) {
+          this.logger.error('cron edit: views.open failed', { err: (err as Error)?.message ?? String(err) });
+          await respond({
+            response_type: 'ephemeral',
+            replace_original: false,
+            text: `⚠️ 편집 모달 열기 실패: ${(err as Error)?.message ?? String(err)}`,
+          });
+        }
+        return;
+      }
+
       const selected: string | undefined = action?.selected_option?.value;
       if (!selected) {
         this.logger.warn('cron action: missing selected_option', { actionId });
         return;
       }
 
-      const patch = kind === 'model' ? buildModelPatch(selected) : buildTargetPatch(selected, body);
+      const patch =
+        kind === 'model'
+          ? buildModelPatch(selected)
+          : kind === 'mode'
+            ? buildModePatch(selected)
+            : buildTargetPatch(selected, body);
       if (!patch) {
         await respond({
           response_type: 'ephemeral',
@@ -126,6 +202,13 @@ export class CronActionHandler {
       }),
     );
   }
+}
+
+/** Map a mode select value to a CronJobPatch ('default' clears the override). */
+function buildModePatch(selected: string): CronJobPatch | null {
+  if (selected === 'default') return { mode: null };
+  if (selected === 'fastlane') return { mode: 'fastlane' };
+  return null;
 }
 
 /** Map a model select value to a CronJobPatch. */

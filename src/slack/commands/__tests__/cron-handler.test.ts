@@ -31,6 +31,11 @@ vi.mock('../../../admin-utils', () => ({
   isAdminUser: vi.fn((u: string) => u === 'U_ADMIN'),
 }));
 
+const runJobNow = vi.fn().mockResolvedValue({ ok: true, message: 'fired' });
+vi.mock('../../../cron-scheduler', () => ({
+  getActiveCronScheduler: vi.fn(() => ({ runJobNow })),
+}));
+
 import { CronStorage } from 'somalib/cron/cron-storage';
 import { CronCommandHandler } from '../cron-handler';
 import type { CommandContext } from '../types';
@@ -126,6 +131,9 @@ describe('list', () => {
     expect(actions.elements.map((e: any) => e.action_id)).toEqual([
       'cron_model::U_ALICE::daily-report',
       'cron_target::U_ALICE::daily-report',
+      'cron_mode::U_ALICE::daily-report',
+      'cron_run::U_ALICE::daily-report',
+      'cron_edit::U_ALICE::daily-report',
       'cron_delete::U_ALICE::daily-report',
     ]);
   });
@@ -275,5 +283,60 @@ describe('delete', () => {
     const ctx = makeCtx({ text: 'cron delete nope' });
     await handler.execute(ctx);
     expect(saidText(ctx)).toContain('없');
+  });
+});
+
+describe('field edit subcommands', () => {
+  it('mode fastlane / default', async () => {
+    seed();
+    await handler.execute(makeCtx({ text: 'cron mode daily-report fastlane' }));
+    expect(storage.getJobsByOwner('U_ALICE')[0].mode).toBe('fastlane');
+    await handler.execute(makeCtx({ text: 'cron mode daily-report default' }));
+    expect(storage.getJobsByOwner('U_ALICE')[0].mode).toBeUndefined();
+  });
+
+  it('rename with duplicate guard', async () => {
+    seed();
+    seed({ name: 'other' });
+    await handler.execute(makeCtx({ text: 'cron rename daily-report fresh-name' }));
+    expect(
+      storage
+        .getJobsByOwner('U_ALICE')
+        .map((j) => j.name)
+        .sort(),
+    ).toEqual(['fresh-name', 'other']);
+    const ctx = makeCtx({ text: 'cron rename fresh-name other' });
+    await handler.execute(ctx);
+    expect(saidText(ctx)).toContain('이미 같은 이름');
+  });
+
+  it('prompt joins remaining tokens', async () => {
+    seed();
+    await handler.execute(makeCtx({ text: 'cron prompt daily-report generate the daily ops report' }));
+    expect(storage.getJobsByOwner('U_ALICE')[0].prompt).toBe('generate the daily ops report');
+  });
+
+  it('channel accepts a Slack channel mention', async () => {
+    seed();
+    await handler.execute(makeCtx({ text: 'cron channel daily-report <#C777|ops>' }));
+    expect(storage.getJobsByOwner('U_ALICE')[0].channel).toBe('C777');
+  });
+
+  it('schedule validates and applies a 5-field expression', async () => {
+    seed();
+    await handler.execute(makeCtx({ text: 'cron schedule daily-report */15 * * * *' }));
+    expect(storage.getJobsByOwner('U_ALICE')[0].expression).toBe('*/15 * * * *');
+    const ctx = makeCtx({ text: 'cron schedule daily-report bogus' });
+    await handler.execute(ctx);
+    expect(storage.getJobsByOwner('U_ALICE')[0].expression).toBe('*/15 * * * *');
+  });
+
+  it('run fires the real scheduler path', async () => {
+    seed();
+    runJobNow.mockClear();
+    const ctx = makeCtx({ text: 'cron run daily-report' });
+    await handler.execute(ctx);
+    expect(runJobNow).toHaveBeenCalledWith('U_ALICE', 'daily-report');
+    expect(saidText(ctx)).toContain('실행 트리거');
   });
 });

@@ -1093,3 +1093,50 @@ describe('CronScheduler — Error Paths', () => {
     expect(deps.threadReplier).toHaveBeenCalledOnce();
   });
 });
+
+// --- runJobNow — manual fire via the real execution path (cron card ▶) ---
+describe('CronScheduler.runJobNow', () => {
+  it('reports ok:false when delivery fails (helpers swallow internally)', async () => {
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const { CronStorage } = await import('somalib/cron/cron-storage');
+    const { CronScheduler } = await import('../cron-scheduler');
+    const file = path.join(os.tmpdir(), `cron-runnow-${Date.now()}.json`);
+    const storage = new CronStorage(file);
+    storage.addJob({
+      name: 'dm-job',
+      expression: '0 9 * * *',
+      prompt: 'p',
+      owner: 'U1',
+      channel: 'C1',
+      threadTs: null,
+      target: 'dm',
+    });
+    const scheduler = new CronScheduler({
+      storage,
+      sessionRegistry: { getAllSessions: () => new Map() } as any,
+      messageInjector: async () => {},
+      threadCreator: async () => undefined,
+      dmSender: async () => {
+        throw new Error('slack down');
+      },
+    });
+    const fail = await scheduler.runJobNow('U1', 'dm-job');
+    expect(fail.ok).toBe(false);
+    expect(fail.message).toContain('dm');
+
+    const scheduler2 = new CronScheduler({
+      storage,
+      sessionRegistry: { getAllSessions: () => new Map() } as any,
+      messageInjector: async () => {},
+      threadCreator: async () => undefined,
+      dmSender: async () => {},
+    });
+    const ok = await scheduler2.runJobNow('U1', 'dm-job');
+    expect(ok.ok).toBe(true);
+    expect(ok.message).toBe('dm');
+
+    const missing = await scheduler2.runJobNow('U1', 'nope');
+    expect(missing.ok).toBe(false);
+  });
+});
