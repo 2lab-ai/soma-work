@@ -391,10 +391,12 @@ describe('buildCompactHooks — PostCompact (#617 AC5, chat.update v2)', () => {
     // persisted the compacted transcript. The hook must only PARK the
     // message; the stream-executor dispatches it after the stream ends.
     expect(eventRouter.dispatchPendingUserMessage).not.toHaveBeenCalled();
-    expect(session.compactPendingDispatch).toEqual({
-      ctx: { channel: 'C1', threadTs: 'T1', user: 'U1', ts: '171.0' },
-      text: 'original user text',
-    });
+    expect(session.compactPendingDispatches).toEqual([
+      {
+        ctx: { channel: 'C1', threadTs: 'T1', user: 'U1', ts: '171.0' },
+        text: 'original user text',
+      },
+    ]);
     // Cleared after atomic consume — second END signal cannot double-park.
     expect(session.pendingUserText).toBeNull();
     expect(session.pendingEventContext).toBeNull();
@@ -411,16 +413,14 @@ describe('buildCompactHooks — PostCompact (#617 AC5, chat.update v2)', () => {
       // no eventRouter — deferral must not require one
     });
     await expect(hooks.PostCompact(postPayload() as any)).resolves.toEqual({ continue: true });
-    expect(session.compactPendingDispatch).toEqual({
-      ctx: { channel: 'C1', threadTs: 'T1', user: 'U1', ts: '0' },
-      text: 'x',
-    });
+    expect(session.compactPendingDispatches).toEqual([
+      { ctx: { channel: 'C1', threadTs: 'T1', user: 'U1', ts: '0' }, text: 'x' },
+    ]);
     // Second END signal: nothing pending left to park, parked payload intact.
     await hooks.PostCompact(postPayload() as any);
-    expect(session.compactPendingDispatch).toEqual({
-      ctx: { channel: 'C1', threadTs: 'T1', user: 'U1', ts: '0' },
-      text: 'x',
-    });
+    expect(session.compactPendingDispatches).toEqual([
+      { ctx: { channel: 'C1', threadTs: 'T1', user: 'U1', ts: '0' }, text: 'x' },
+    ]);
   });
 });
 

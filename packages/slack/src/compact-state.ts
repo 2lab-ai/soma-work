@@ -17,12 +17,17 @@
  *
  * The fix has two halves:
  *   1. `postCompactCompleteIfNeeded` defers the pending-user re-dispatch to
- *      the /compact turn's stream end (see `compactPendingDispatch` on the
+ *      the /compact turn's stream end (see `compactPendingDispatches` on the
  *      session) instead of dispatching from inside the PostCompact hook.
- *   2. Session-initializer consults `isCompactionInProgress` and refuses to
+ *   2. Session-initializer consults `shouldStashForCompaction` and refuses to
  *      abort an in-flight compaction — the incoming message is stashed via
- *      `stashUserMessageDuringCompaction` and replayed after the boundary.
+ *      `stashUserMessageDuringCompaction` and replayed after the turn ends.
  */
+
+export interface CompactDispatchPayload {
+  ctx: { channel: string; threadTs: string; user: string; ts: string };
+  text: string;
+}
 
 /**
  * Minimal structural view of the session fields this module reads/writes.
@@ -34,12 +39,28 @@ export interface CompactStateSession {
   compactEpoch?: number;
   compactPostedByEpoch?: Record<number, { pre: boolean; post: boolean }>;
   compactStartedAtMs?: number | null;
+  /**
+   * Runtime-only marker: true while a dedicated `/compact` SDK turn is
+   * executing for this session (set when the local slash command query
+   * starts, cleared in the stream-executor `finally`). Codex review F1:
+   * the epoch marker alone is insufficient — PostCompact seals the cycle
+   * (`marker.post=true`) several seconds BEFORE the CLI flushes the
+   * compacted transcript and emits `result`. A message arriving in that
+   * post-hook/pre-result window must still be stashed, not allowed to
+   * abort the process.
+   */
+  compactTurnActive?: boolean;
   pendingUserText?: string | null;
   pendingEventContext?: { channel: string; threadTs: string; user: string; ts: string } | null;
-  compactPendingDispatch?: {
-    ctx: { channel: string; threadTs: string; user: string; ts: string };
-    text: string;
-  } | null;
+  /**
+   * Deferred post-compact re-dispatch queue, in arrival order. Multiple
+   * entries occur when different users (or non-contiguous messages) arrive
+   * during compaction — each keeps its OWN event context so replayed
+   * messages are attributed to the correct author (codex review F4:
+   * merging U2's text under U1's ctx corrupted permissions / working-dir /
+   * initiator attribution downstream).
+   */
+  compactPendingDispatches?: CompactDispatchPayload[] | null;
 }
 
 /**
@@ -70,14 +91,13 @@ export function isCompactionInProgress(session: CompactStateSession, nowMs: numb
 
 /**
  * Stash a user message that arrived while compaction is running so it can be
- * replayed after the compact cycle seals. Ordered merge rules:
+ * replayed after the /compact turn ends. Ordered, author-preserving merge:
  *
- *   - A deferred dispatch already exists (`compactPendingDispatch`, i.e. the
- *     cycle sealed but the /compact turn's stream hasn't ended yet) → append
- *     to its text so one re-dispatch carries both messages in arrival order.
- *   - A pre-compact pending message exists (`pendingUserText`) → append.
- *   - Nothing stashed yet → become the pending message (context captured for
- *     the synthetic re-dispatch).
+ *   - Same author as the last queued entry → append to that entry's text
+ *     (one re-dispatch carries the contiguous burst).
+ *   - Same author as the pre-compact pending message → append there.
+ *   - Otherwise → push a NEW entry with its own event context, so the replay
+ *     never attributes one user's text to another (codex review F4).
  */
 export function stashUserMessageDuringCompaction(
   session: CompactStateSession,
@@ -85,14 +105,36 @@ export function stashUserMessageDuringCompaction(
   text: string,
 ): void {
   if (!text) return;
-  if (session.compactPendingDispatch) {
-    session.compactPendingDispatch.text += `\n${text}`;
+  const queue = (session.compactPendingDispatches ??= []);
+  const last = queue[queue.length - 1];
+  if (last && last.ctx.user === ctx.user) {
+    last.text += `\n${text}`;
     return;
   }
-  if (session.pendingUserText) {
+  if (queue.length === 0 && session.pendingUserText && session.pendingEventContext?.user === ctx.user) {
     session.pendingUserText += `\n${text}`;
     return;
   }
-  session.pendingUserText = text;
-  session.pendingEventContext = ctx;
+  queue.push({ ctx, text });
+}
+
+/**
+ * Move the pre-compact intercepted message (`pendingUserText` +
+ * `pendingEventContext`) to the FRONT of the deferred-dispatch queue — it is
+ * always the earliest message. Atomic consume: idempotent on a second END
+ * signal (fields already nulled). Also the strand-rescue path (codex review
+ * F3): the stream-executor calls this in `finally` for a /compact turn that
+ * died without ANY END signal, so the intercepted message can never be
+ * silently overwritten by the next auto-compact interception.
+ */
+export function promotePendingToDispatchQueue(session: CompactStateSession): void {
+  if (!session.pendingUserText || !session.pendingEventContext) return;
+  const payload: CompactDispatchPayload = {
+    ctx: session.pendingEventContext,
+    text: session.pendingUserText,
+  };
+  session.pendingUserText = null;
+  session.pendingEventContext = null;
+  const queue = (session.compactPendingDispatches ??= []);
+  queue.unshift(payload);
 }
