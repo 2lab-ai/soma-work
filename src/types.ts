@@ -246,6 +246,26 @@ export interface SessionGoal {
   lastEvalReason?: string;
   /** Counts how many eval cycles have run for this goal. */
   evalAttemptCount?: number;
+  /**
+   * Consecutive completion-eval DISPATCH failures (API error / rate limit /
+   * timeout — never completed eval cycles). While below
+   * `GOAL_EVAL_DISPATCH_MAX_RETRIES` the loop self-heals by scheduling a
+   * re-eval after the failure's advertised/backoff delay instead of stopping
+   * with a manual `goal done` notice. Cleared by a successful eval dispatch
+   * and by any real user message (`resetGoalContinuationOnUserMessage`).
+   */
+  evalDispatchRetryCount?: number;
+  /**
+   * ms epoch before which NO eval may dispatch (transient-failure backoff,
+   * typically the gateway-advertised 429 window). Ordinary turn-settled
+   * triggers that land during the window are skipped — otherwise a queued
+   * duplicate settle would re-dispatch immediately and burn the retry budget
+   * against the same rate limit. The scheduled retry clears it when it fires;
+   * it also self-expires by timestamp so a lost timer (restart) can never
+   * wedge the loop. Cleared by a successful dispatch and by any real user
+   * message.
+   */
+  evalBackoffUntil?: number;
 
   /**
    * Monotonic intent epoch. Bumped by every goal mutation (set / pause /
