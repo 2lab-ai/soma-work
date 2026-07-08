@@ -94,3 +94,8 @@ usercontent/
 __pycache__/
 *.pyc
 *.pyo
+
+# cleanup sweep 2026-07-08
+*.oudwood
+.beads/*.lock
+.sandbox-write-probe
