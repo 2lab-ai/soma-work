@@ -1,3 +1,4 @@
+import { DEFAULT_LOG_VERBOSITY, getVerbosityFlags, type LogVerbosity, VERBOSITY_NAMES } from '@soma/slack/output-flags';
 import fs from 'fs';
 import path from 'path';
 import {
@@ -9,7 +10,6 @@ import {
 import { DATA_DIR as ENV_DATA_DIR } from './env-paths';
 import { Logger } from './logger.js';
 import { createPromptInvalidator } from './prompt-cache-invalidation';
-import { DEFAULT_LOG_VERBOSITY, getVerbosityFlags, type LogVerbosity, VERBOSITY_NAMES } from './slack/output-flags';
 import { maskUrl } from './turn-notifier.js';
 
 const logger = new Logger('UserSettingsStore');

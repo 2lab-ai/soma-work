@@ -21,7 +21,7 @@ import { type SessionTheme, userSettingsStore } from '../user-settings-store.js'
 const logger = new Logger('SlackBlockKitChannel');
 
 /** Stable identifier for `TurnNotifier.notify({ excludeChannelNames: [...] })` and future filters. */
-export const SLACK_BLOCK_KIT_CHANNEL_NAME = 'slack-block-kit';
+const SLACK_BLOCK_KIT_CHANNEL_NAME = 'slack-block-kit';
 
 /**
  * Slack `section.text` hard limit is 3000 chars. We cap below that to leave

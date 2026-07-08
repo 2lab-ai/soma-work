@@ -164,7 +164,7 @@ describe('packages-srp Phase 2 slack contract', () => {
       'mcp-health-monitor',
       'mcp-status-tracker',
       'mrkdwn-escape',
-      'output-flags',
+      // 'output-flags': legacy src shim deleted once all importers moved to @soma/slack directly.
       'pipeline/input-processor',
       'pipeline/session-initializer',
       'pipeline/stream-executor',
