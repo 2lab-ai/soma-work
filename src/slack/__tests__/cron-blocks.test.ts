@@ -6,7 +6,7 @@
 import type { CronJob } from 'somalib/cron/cron-storage';
 import { describe, expect, it } from 'vitest';
 import { AVAILABLE_MODELS } from '../../user-settings-store';
-import { buildCronCard, cronActionId, parseCronActionId } from '../cron-blocks';
+import { buildCronCard, buildCronEditModal, cronActionId, parseCronActionId } from '../cron-blocks';
 
 function job(over: Partial<CronJob> = {}): CronJob {
   return {
@@ -46,6 +46,9 @@ describe('buildCronCard', () => {
     expect(ids).toEqual([
       'cron_model::U_ALICE::daily-report',
       'cron_target::U_ALICE::daily-report',
+      'cron_mode::U_ALICE::daily-report',
+      'cron_run::U_ALICE::daily-report',
+      'cron_edit::U_ALICE::daily-report',
       'cron_delete::U_ALICE::daily-report',
     ]);
     // model select contains default, fast, and every AVAILABLE_MODELS entry
@@ -56,8 +59,9 @@ describe('buildCronCard', () => {
     for (const m of AVAILABLE_MODELS) {
       expect(values).toContain(`custom:${m}`);
     }
-    // delete button has a native confirm dialog
-    expect(actions.elements[2].confirm).toBeDefined();
+    // delete button has a native confirm dialog; run button does not
+    expect(actions.elements[5].confirm).toBeDefined();
+    expect(actions.elements[3].confirm).toBeUndefined();
   });
 
   it('preselects the current model and target', () => {
@@ -98,5 +102,112 @@ describe('buildCronCard', () => {
     const { blocks } = buildCronCard({ jobs: many, isAdmin: false });
     expect(blocks.length).toBeLessThanOrEqual(50);
     expect(JSON.stringify(blocks)).toContain('생략');
+  });
+});
+
+describe('current settings line (change visibility)', () => {
+  it('job section shows model/target/mode as text so dropdown changes are visible after rerender', () => {
+    const { blocks } = buildCronCard({
+      jobs: [job({ modelConfig: { type: 'custom', model: 'gpt-5.5' }, target: 'dm', mode: 'fastlane' })],
+      isAdmin: false,
+    });
+    const section = blocks.find((b: any) => b.type === 'section' && b.text.text.includes('daily-report'));
+    expect(section.text.text).toContain('현재 설정');
+    expect(section.text.text).toContain('custom(gpt-5.5)');
+    expect(section.text.text).toContain('DM(오너)');
+    expect(section.text.text).toContain('fastlane');
+  });
+
+  it('mode select preselects current mode', () => {
+    const { blocks } = buildCronCard({ jobs: [job({ mode: 'fastlane' })], isAdmin: false });
+    const actions = blocks.find((b: any) => b.type === 'actions');
+    expect(actions.elements[2].initial_option.value).toBe('fastlane');
+  });
+});
+
+describe('buildCronEditModal', () => {
+  it('renders name/schedule/channel/prompt inputs prefilled from the job', () => {
+    const modal = buildCronEditModal({
+      job: job({ prompt: 'hello world' }),
+      metadata: {
+        owner: 'U_ALICE',
+        name: 'daily-report',
+        cardChannelId: 'C_CARD',
+        cardMessageTs: '1.2',
+        requesterId: 'U_ALICE',
+      },
+    });
+    expect(modal.callback_id).toBe('cron_edit_modal_submit');
+    const byId = Object.fromEntries(modal.blocks.map((b: any) => [b.block_id, b]));
+    expect(byId.cron_edit_name.element.initial_value).toBe('daily-report');
+    expect(byId.cron_edit_expr.element.initial_value).toBe('0 9 * * 1-5');
+    expect(byId.cron_edit_channel.element.type).toBe('conversations_select');
+    expect(byId.cron_edit_channel.element.initial_conversation).toBe('C111');
+    expect(byId.cron_edit_prompt.element.initial_value).toBe('hello world');
+    expect(byId.cron_edit_prompt.element.multiline).toBe(true);
+    // Slack caps plain_text_input.max_length at 3000 — 4000 makes views.open reject the modal
+    expect(byId.cron_edit_prompt.element.max_length).toBe(3000);
+    const meta = JSON.parse(modal.private_metadata);
+    expect(meta).toMatchObject({ owner: 'U_ALICE', name: 'daily-report', requesterId: 'U_ALICE' });
+  });
+
+  it('mode select preselects current mode', () => {
+    const { blocks } = buildCronCard({ jobs: [job({ mode: 'fastlane' })], isAdmin: false });
+    const actions = blocks.find((b: any) => b.type === 'actions');
+    expect(actions.elements[2].initial_option.value).toBe('fastlane');
+  });
+
+  it('section shows current settings as text (change confirmation surface)', () => {
+    const { blocks } = buildCronCard({
+      jobs: [job({ modelConfig: { type: 'custom', model: 'gpt-5.5' }, target: 'dm', mode: 'fastlane' })],
+      isAdmin: false,
+    });
+    const section = blocks.find((b: any) => b.type === 'section' && b.text.text.includes('daily-report'));
+    expect(section.text.text).toContain('현재 설정');
+    expect(section.text.text).toContain('custom(gpt-5.5)');
+    expect(section.text.text).toContain('DM(오너)');
+    expect(section.text.text).toContain('fastlane');
+  });
+});
+
+describe('buildCronEditModal', () => {
+  it('renders name/schedule/channel/prompt inputs with initial values', () => {
+    const modal = buildCronEditModal({
+      job: job(),
+      metadata: {
+        owner: 'U_ALICE',
+        name: 'daily-report',
+        cardChannelId: 'C_CARD',
+        cardMessageTs: '1.2',
+        requesterId: 'U_ALICE',
+      },
+    });
+    expect(modal.callback_id).toBe('cron_edit_modal_submit');
+    const byId = Object.fromEntries((modal.blocks as any[]).map((b) => [b.block_id, b]));
+    expect(byId.cron_edit_name.element.initial_value).toBe('daily-report');
+    expect(byId.cron_edit_expr.element.initial_value).toBe('0 9 * * 1-5');
+    expect(byId.cron_edit_channel.element.type).toBe('conversations_select');
+    expect(byId.cron_edit_channel.element.initial_conversation).toBe('C111');
+    expect(byId.cron_edit_prompt.element.multiline).toBe(true);
+    // Slack caps plain_text_input.max_length at 3000 — 4000 makes views.open reject the modal
+    expect(byId.cron_edit_prompt.element.max_length).toBe(3000);
+    expect(JSON.parse(modal.private_metadata).owner).toBe('U_ALICE');
+  });
+
+  it('truncates over-3000-char prompts in the modal initial value (Slack cap)', () => {
+    const long = 'x'.repeat(3500);
+    const modal = buildCronEditModal({
+      job: job({ prompt: long }),
+      metadata: {
+        owner: 'U_ALICE',
+        name: 'daily-report',
+        cardChannelId: 'C',
+        cardMessageTs: '1',
+        requesterId: 'U_ALICE',
+      },
+    });
+    const block = (modal.blocks as any[]).find((b) => b.block_id === 'cron_edit_prompt');
+    expect(block.element.initial_value.length).toBe(3000);
+    expect(block.hint.text).toContain('잘려');
   });
 });

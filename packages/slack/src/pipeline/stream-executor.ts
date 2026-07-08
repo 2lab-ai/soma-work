@@ -1,6 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { Logger, redactAnthropicSecrets } from '@soma/common/logger';
-import { textIndicatesUsageLimit } from '@soma/common/rate-limit';
+import {
+  boundRateLimitDelayMs,
+  parseRetryAfterMs,
+  textIndicatesRetryableRateLimit,
+  textIndicatesUsageLimit,
+} from '@soma/common/rate-limit';
 import type { ActionHandlers } from '../actions';
 import { buildMarkerBlocks, SUPERSEDED_TEXT } from '../actions/click-classifier';
 import type { PendingInstructionConfirmStore } from '../actions/pending-instruction-confirm-store';
@@ -1818,6 +1823,32 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         throw failErr;
       }
 
+      // Pool-rate-limit-as-content guard.
+      //
+      // The account-pool gateway rejects a fully-capped pool with
+      // "Request rejected (429) · All N eligible accounts are rate-limited
+      // right now; retry in Ns" as a SUCCESSFUL assistant turn (nothing
+      // throws). Like the usage-limit guard below, that shape used to leak as
+      // the turn's answer. But unlike a per-account cap, rotation cannot help
+      // (every slot is capped) — the cure is to WAIT the advertised window and
+      // retry the same pool. Convert to a thrown error carrying the parsed
+      // delay so `handleError` schedules the timed retry. Checked BEFORE the
+      // usage-limit guard so the retry-after hint is honored rather than
+      // triggering a futile rotation.
+      if (!toolContinuation && textIndicatesRetryableRateLimit(streamResult.collectedText)) {
+        const delayMs = boundRateLimitDelayMs(parseRetryAfterMs(streamResult.collectedText));
+        this.logger.warn('Pool rate-limit surfaced as turn content — converting to timed-retry path', {
+          sessionKey,
+          delayMs,
+          preview: String(streamResult.collectedText).slice(0, 120),
+        });
+        const rlError = new Error(
+          `Claude pool rate-limited (surfaced as turn content): ${String(streamResult.collectedText).slice(0, 200)}`,
+        );
+        (rlError as { poolRateLimitRetryMs?: number }).poolRateLimitRetryMs = delayMs;
+        throw rlError;
+      }
+
       // Usage-limit-as-content guard.
       //
       // Claude Code surfaces a subscription usage cap two ways: as a thrown
@@ -2909,6 +2940,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         }
       } else {
         const isRecoverable = this.isRecoverableClaudeSdkError(error);
+        // Set when the pool-rate-limit branch below owns the retry decision,
+        // so the generic rotation + recoverable-retry rails are skipped.
+        let poolRateLimitHandled = false;
         this.logger.warn(
           isRecoverable
             ? 'Recoverable error - session preserved'
@@ -2925,15 +2959,43 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         session.lastErrorContext = undefined;
         session.fileAccessRetryCount = 0;
 
+        // Pool-exhaustion rate limit ("All N eligible accounts are
+        // rate-limited; retry in Ns"): every slot is capped, so rotation is
+        // futile — the gateway told us exactly how long to wait. Honor the
+        // advertised window as the retry delay (bounded) instead of the fixed
+        // 30s recoverable backoff, which would just re-hit the same wall and
+        // burn the budget in ~90s. `poolRateLimitRetryMs` is stashed by the
+        // content-guard; otherwise it is parsed from message + stderr.
+        const poolRateLimitRetryMs = this.detectPoolRateLimitRetryMs(error);
+        if (poolRateLimitRetryMs !== null) {
+          const retryCount = session.errorRetryCount ?? 0;
+          if (retryCount < StreamExecutor.MAX_ERROR_RETRIES) {
+            session.errorRetryCount = retryCount + 1;
+            retryAfterMs = poolRateLimitRetryMs;
+            this.logger.info('Scheduling pool-rate-limit retry after advertised window', {
+              sessionKey,
+              attempt: retryCount + 1,
+              maxRetries: StreamExecutor.MAX_ERROR_RETRIES,
+              delayMs: retryAfterMs,
+            });
+          } else {
+            this.logger.warn('Pool-rate-limit retry budget exhausted', { sessionKey, retryCount });
+            session.errorRetryCount = 0;
+          }
+          // Skip the rotation + generic recoverable branch below — this class
+          // is handled.
+          poolRateLimitHandled = true;
+        }
+
         // Auto-rotate token on rate limit (pass query-start slot for CAS safety)
-        if (this.isRateLimitError(error)) {
+        if (!poolRateLimitHandled && this.isRateLimitError(error)) {
           await this.tryRotateToken(error, activeSlotAtQueryStart);
         }
 
         // Auto-retry only for known recoverable errors.
         // Unknown errors are preserved but not auto-retried — the user
         // decides whether to continue or `/reset`.
-        if (isRecoverable) {
+        if (!poolRateLimitHandled && isRecoverable) {
           const retryCount = session.errorRetryCount ?? 0;
           if (retryCount < StreamExecutor.MAX_ERROR_RETRIES) {
             session.errorRetryCount = retryCount + 1;
@@ -2952,7 +3014,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             // Reset for next error sequence
             session.errorRetryCount = 0;
           }
-        } else {
+        } else if (!poolRateLimitHandled) {
           // Unknown errors: reset retry budget so a subsequent recoverable
           // error starts fresh (not with a partially consumed budget).
           session.errorRetryCount = 0;
@@ -2969,7 +3031,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           ? (session.fileAccessRetryCount ?? 0)
           : (session.errorRetryCount ?? 0)
         : undefined;
-      const errorDetails = this.formatErrorForUser(error, sessionCleared, statusInfo, retryAttempt);
+      const errorDetails = this.formatErrorForUser(error, sessionCleared, statusInfo, retryAttempt, retryAfterMs);
       // C-4: bound the user-facing error post so a hung Slack API call
       // cannot block handleError's downstream lifecycle (status clear,
       // cleanup). The Exception card already fired above via
@@ -3301,6 +3363,28 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // otherwise silently defeat detection.
     const combined = `${String(error?.message || '')} ${String(error?.stderrContent || '')}`;
     return textIndicatesUsageLimit(combined, { includeTransient: true });
+  }
+
+  /**
+   * Detect a POOL-exhaustion rate limit that carries an explicit retry-after
+   * hint, and return the bounded delay (ms) the caller should wait before
+   * retrying — or `null` when this is not that error class.
+   *
+   * Distinct from {@link isRateLimitError} (a per-account cap that rotation
+   * can cure): here every eligible account is capped, so the only cure is to
+   * WAIT the advertised window and retry the same pool. Prefers the delay the
+   * content-guard stashed on `error.poolRateLimitRetryMs`; otherwise parses it
+   * from message + stderr. The gateway advertises seconds; the delay is
+   * clamped to a sane ceiling so a malformed hint can never pin a turn.
+   */
+  private detectPoolRateLimitRetryMs(error: any): number | null {
+    const stashed = (error as { poolRateLimitRetryMs?: unknown })?.poolRateLimitRetryMs;
+    if (typeof stashed === 'number' && Number.isFinite(stashed) && stashed >= 0) {
+      return boundRateLimitDelayMs(stashed);
+    }
+    const combined = `${String(error?.message || '')} ${String(error?.stderrContent || '')}`;
+    if (!textIndicatesRetryableRateLimit(combined)) return null;
+    return boundRateLimitDelayMs(parseRetryAfterMs(combined));
   }
 
   /**
@@ -3655,7 +3739,13 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
    * Format error message for user with detailed info
    * Distinguishes between bot system errors and model errors
    */
-  private formatErrorForUser(error: any, sessionCleared: boolean, statusInfo?: any, retryAttempt?: number): string {
+  private formatErrorForUser(
+    error: any,
+    sessionCleared: boolean,
+    statusInfo?: any,
+    retryAttempt?: number,
+    scheduledRetryMs?: number,
+  ): string {
     if ((error as any).fallbackCompactInfo) {
       const info = (error as any).fallbackCompactInfo as { compactModel?: string; originalModel?: string };
       const lines: string[] = [`ℹ️ *[Prompt too long]* 1M 모델로 자동 컴팩트를 수행합니다.`, ''];
@@ -3777,20 +3867,31 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // Issue #122: Append SDK stderr details so users can see the actual error cause
     this.appendSdkDetails(lines, error);
 
-    // Append slot rotation info if rate limit triggered rotation
-    if (this.isRateLimitError(error) && getTokenManager().listTokens().length > 1) {
+    // Append slot rotation info if rate limit triggered rotation. A
+    // pool-exhaustion rate limit deliberately does NOT rotate (all slots
+    // capped), so suppress the "auto-rotated" line for that class.
+    if (
+      this.isRateLimitError(error) &&
+      this.detectPoolRateLimitRetryMs(error) === null &&
+      getTokenManager().listTokens().length > 1
+    ) {
       const active = getTokenManager().getActiveToken();
       if (active) {
         lines.push(`> 🔄 Token auto-rotated → *${active.name}*`);
       }
     }
 
-    // Append auto-retry info
+    // Append auto-retry info. Prefer the ACTUAL scheduled delay (e.g. a
+    // pool-rate-limit "retry in Ns" window, which can be minutes) over the
+    // fixed class defaults so the user sees the real resume time.
     if (retryAttempt !== undefined && retryAttempt > 0) {
-      const delayMs = this.isFileAccessBlockedError(error)
-        ? StreamExecutor.FILE_ACCESS_RETRY_DELAY_MS
-        : StreamExecutor.ERROR_RETRY_DELAY_MS;
-      const delaySec = delayMs / 1000;
+      const delayMs =
+        typeof scheduledRetryMs === 'number' && scheduledRetryMs > 0
+          ? scheduledRetryMs
+          : this.isFileAccessBlockedError(error)
+            ? StreamExecutor.FILE_ACCESS_RETRY_DELAY_MS
+            : StreamExecutor.ERROR_RETRY_DELAY_MS;
+      const delaySec = Math.round(delayMs / 1000);
       lines.push(`> ⏳ ${delaySec}초후 작업을 재개합니다. (시도 ${retryAttempt}/${StreamExecutor.MAX_ERROR_RETRIES})`);
     }
 

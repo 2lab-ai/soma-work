@@ -26,6 +26,12 @@
  * `claude-handler.ts`.
  */
 
+import {
+  boundRateLimitDelayMs,
+  parseRetryAfterMs,
+  RATE_LIMIT_DEFAULT_WAIT_MS,
+  textIndicatesRetryableRateLimit,
+} from '@soma/common/rate-limit';
 import { config } from './config';
 import { hasOneMSuffix, resolveContextWindow } from './metrics/model-registry';
 import { coerceToAvailableModel } from './user-settings-store';
@@ -42,6 +48,14 @@ export const DISPATCH_OVERLOADED_MAX_RETRIES = 3;
  * backoff) — and the explicit ops request: "529는 30초 대기후 재시도".
  */
 export const DISPATCH_OVERLOADED_RETRY_DELAY_MS = 30_000;
+
+/**
+ * Max retries when a one-shot dispatch hits a POOL-exhaustion rate limit
+ * ("All N eligible accounts are rate-limited; retry in Ns"). Each attempt
+ * waits the gateway-advertised window, so a small budget already spans a long
+ * wall-clock window — the goal-eval abort (120s) truncates most waits anyway.
+ */
+export const DISPATCH_RATE_LIMIT_MAX_RETRIES = 3;
 
 /**
  * Anthropic-overload signal in an ERROR payload (message/stderr — never turn
@@ -83,6 +97,8 @@ export function textIndicatesPromptTooLongContent(text: unknown): boolean {
 export interface DispatchRetryState {
   /** Overloaded/529 retries already consumed in this dispatch. */
   overloadedRetries: number;
+  /** Pool-exhaustion rate-limit ("retry in Ns") retries already consumed. */
+  rateLimitRetries: number;
   /** Whether the 1M fallback-model retry was already spent. */
   overflowFallbackUsed: boolean;
   /** Model the failing attempt ran on (undefined/'' → SDK default). */
@@ -93,6 +109,7 @@ export interface DispatchRetryState {
 
 export type DispatchRetryDecision =
   | { kind: 'overloaded-wait'; delayMs: number }
+  | { kind: 'rate-limit-wait'; delayMs: number }
   | { kind: 'overflow-fallback'; fallbackModel: string }
   | { kind: 'rethrow' };
 
@@ -140,6 +157,22 @@ export function decideDispatchRetry(
       return { kind: 'rethrow' };
     }
     return { kind: 'overflow-fallback', fallbackModel };
+  }
+
+  // Pool-exhaustion rate limit: every eligible account is capped and the
+  // gateway told us how long to wait. Rotation cannot help (all capped) —
+  // the cure is to WAIT the advertised window and retry the same pool. The
+  // hint is honored (bounded), falling back to a fixed wait when unparseable.
+  // A content-guard may have already parsed the window from the FULL content
+  // and stashed it on `poolRateLimitRetryMs` (the message preview is
+  // truncated to 200 chars, so re-parsing `combined` can miss a late hint).
+  const stashedRetryMs = (err as { poolRateLimitRetryMs?: unknown })?.poolRateLimitRetryMs;
+  const hasStashedRetryMs =
+    typeof stashedRetryMs === 'number' && Number.isFinite(stashedRetryMs) && stashedRetryMs >= 0;
+  if (hasStashedRetryMs || textIndicatesRetryableRateLimit(combined)) {
+    if (state.rateLimitRetries >= DISPATCH_RATE_LIMIT_MAX_RETRIES) return { kind: 'rethrow' };
+    const parsed = hasStashedRetryMs ? stashedRetryMs : (parseRetryAfterMs(combined) ?? RATE_LIMIT_DEFAULT_WAIT_MS);
+    return { kind: 'rate-limit-wait', delayMs: boundRateLimitDelayMs(parsed) };
   }
 
   if (isOverloadedErrorText(combined)) {

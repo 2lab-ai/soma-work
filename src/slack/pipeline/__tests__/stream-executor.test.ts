@@ -5878,6 +5878,46 @@ describe('isRateLimitError (usage-limit detection)', () => {
   });
 });
 
+describe('detectPoolRateLimitRetryMs (pool-exhaustion retry-after)', () => {
+  function makeExecutor() {
+    return new StreamExecutor({} as any);
+  }
+
+  const INCIDENT =
+    'API Error: Request rejected (429) · All 9 eligible accounts are rate-limited right now; retry in 3283s.';
+
+  it('parses the advertised window from the incident rejection message', () => {
+    const executor = makeExecutor();
+    expect((executor as any).detectPoolRateLimitRetryMs(new Error(INCIDENT))).toBe(3283 * 1000);
+  });
+
+  it('reads the delay from stderrContent when the message is a bare process-exit', () => {
+    const executor = makeExecutor();
+    const error = Object.assign(new Error('Claude Code process exited with code 1'), { stderrContent: INCIDENT });
+    expect((executor as any).detectPoolRateLimitRetryMs(error)).toBe(3283 * 1000);
+  });
+
+  it('prefers the delay stashed by the content-guard (poolRateLimitRetryMs)', () => {
+    const executor = makeExecutor();
+    const error = Object.assign(new Error('Claude pool rate-limited (surfaced as turn content)'), {
+      poolRateLimitRetryMs: 42_000,
+    });
+    expect((executor as any).detectPoolRateLimitRetryMs(error)).toBe(42_000);
+  });
+
+  it('clamps an absurd advertised window to the 1-hour ceiling', () => {
+    const executor = makeExecutor();
+    const error = new Error('Request rejected (429) all accounts rate-limited; retry in 999999s');
+    expect((executor as any).detectPoolRateLimitRetryMs(error)).toBe(60 * 60 * 1000);
+  });
+
+  it('returns null for a per-account cap (rotation class, not a timed retry)', () => {
+    const executor = makeExecutor();
+    expect((executor as any).detectPoolRateLimitRetryMs(new Error("You've hit your limit · resets 9pm"))).toBeNull();
+    expect((executor as any).detectPoolRateLimitRetryMs(new Error('HTTP 429 too many requests'))).toBeNull();
+  });
+});
+
 /**
  * End-to-end proof that a usage cap delivered AS CONTENT (a successful
  * assistant text turn, not a thrown error) now triggers slot rotation.

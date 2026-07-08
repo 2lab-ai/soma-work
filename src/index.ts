@@ -71,7 +71,7 @@ import {
   startWebServer,
   stopWebServer,
 } from './conversation';
-import { CronScheduler, type SyntheticMessageEvent } from './cron-scheduler';
+import { CronScheduler, type SyntheticMessageEvent, setActiveCronScheduler } from './cron-scheduler';
 import { forceMigrateOpus1m } from './deploy/force-migrate-opus-1m';
 import { initializeDispatchService } from './dispatch-service';
 import { CONFIG_FILE, DATA_DIR, PLUGINS_DIR } from './env-paths';
@@ -901,6 +901,8 @@ async function start() {
         threadReplier,
       });
       cronScheduler.start();
+      // Expose to the cron card's ▶ run-now action (real-fire path).
+      setActiveCronScheduler(cronScheduler);
       timing('Cron scheduler initialized');
     } catch (error) {
       logger.warn('Failed to start cron scheduler (non-critical)', error);
