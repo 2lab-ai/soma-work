@@ -7,6 +7,5 @@ export {
   type CctBlockId,
   type CctViewId,
   OAUTH_BLOB_HELP,
-  OAUTH_BLOB_WARN_THRESHOLD,
   SLACK_PLAIN_TEXT_INPUT_MAX,
 } from '@soma/slack/cct/views';

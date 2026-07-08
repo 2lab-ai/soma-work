@@ -1,0 +1,31 @@
+{
+  "$schema": "https://unpkg.com/knip@5/schema.json",
+  "workspaces": {
+    ".": {
+      "entry": [
+        "src/index.ts",
+        "scripts/*.{ts,js}",
+        "scripts/smoke/*.js",
+        "vitest.config.ts"
+      ],
+      "project": ["src/**/*.ts", "scripts/**/*.{ts,js}"],
+      "ignore": [
+        "src/local/**",
+        "src/prompt/**",
+        "src/persona/**"
+      ]
+    },
+    "somalib": {
+      "entry": ["**/*.ts"],
+      "project": ["**/*.ts"]
+    },
+    "packages/*": {
+      "entry": ["src/index.ts", "*.ts"],
+      "project": ["**/*.ts"]
+    },
+    "packages/mcp-servers/*": {
+      "entry": ["*.ts", "src/*.ts"],
+      "project": ["**/*.ts"]
+    }
+  }
+}

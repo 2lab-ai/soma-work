@@ -97,7 +97,7 @@ const DISPATCH_USAGE_LIMIT_MAX_ATTEMPTS = 2;
  * ("You've hit your limit · resets 9pm") from being parsed as the eval's
  * JSON verdict (the original `Unexpected token 'Y', "You've hit"` failure).
  */
-export class UsageLimitDispatchError extends Error {
+class UsageLimitDispatchError extends Error {
   constructor(public readonly capNotice: string) {
     super(`Claude usage limit hit during one-shot dispatch: ${capNotice.slice(0, 200)}`);
     this.name = 'UsageLimitDispatchError';

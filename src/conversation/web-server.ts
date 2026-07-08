@@ -370,6 +370,7 @@ export function getViewerBaseUrl(): string {
 
 /**
  * Get the full URL for a specific conversation
+ * @public — consumed dynamically via `import * as conversation` + `(conversation as any).getConversationUrl` in src/slack/session-manager.ts; knip cannot see that.
  */
 export function getConversationUrl(conversationId: string): string {
   return `${getViewerBaseUrl()}/conversations/${conversationId}`;

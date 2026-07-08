@@ -258,7 +258,7 @@ export function hasOneMSuffix(model: string): boolean {
  * suffix + beta header. So `claude-fable-5` must resolve to 1M directly; it has
  * no `[1m]` variant and must NOT go through the suffix/beta-header path.
  */
-export const NATIVE_ONE_M_RE = /fable-5/i;
+const NATIVE_ONE_M_RE = /fable-5/i;
 
 /** Returns true when `model` serves 1M context on its bare id (no suffix). */
 export function isNativeOneMModel(model: string): boolean {

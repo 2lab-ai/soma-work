@@ -614,6 +614,7 @@ export function formatRateLimitedSegment(state: SlotState | undefined, userTz?: 
  * Legacy compat: snapshots written before #871 may still carry the removed
  * `'inferred_shared'` enum value. Treat any source not in the current union
  * as missing so the UI degrades to the bare `rate-limited <ts>` form.
+ * @public — exported for tests (src/slack/cct/__tests__/builder.test.ts).
  */
 export function formatRateLimitSource(source: SlotState['rateLimitSource'] | string | undefined): string {
   if (!source) return '';

@@ -13,7 +13,7 @@ export const AUTOSKILL_REMOVE_ACTION_ID = 'autoskill_remove';
 /** Button action_id: open the "add skill" modal. */
 export const AUTOSKILL_ADD_OPEN_ACTION_ID = 'autoskill_add_open';
 /** view callback_id: the add-skill modal submit. */
-export const AUTOSKILL_ADD_MODAL_CALLBACK_ID = 'autoskill_add_modal_submit';
+const AUTOSKILL_ADD_MODAL_CALLBACK_ID = 'autoskill_add_modal_submit';
 /** input block_id inside the add modal. */
 export const AUTOSKILL_ADD_BLOCK_ID = 'autoskill_add_block';
 /** multi_static_select action_id inside the add modal. */
