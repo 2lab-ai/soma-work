@@ -43,6 +43,9 @@ export function parseCronActionId(actionId: string): { kind: CronActionKind; own
 export const CRON_MODEL_DEFAULT = 'default';
 export const CRON_MODEL_FAST = 'fast';
 
+/** Slack plain_text_input.max_length hard cap (1..3000). */
+const MODAL_PROMPT_MAX = 3000;
+
 /** view callback_id for the per-job edit modal submit. */
 export const CRON_EDIT_MODAL_CALLBACK_ID = 'cron_edit_modal_submit';
 /** input block_ids / action_ids inside the edit modal. */
@@ -266,8 +269,19 @@ export function buildCronEditModal(args: { job: CronJob; metadata: CronEditModal
           type: 'plain_text_input',
           action_id: CRON_EDIT_INPUT_ACTION,
           multiline: true,
-          initial_value: job.prompt,
-          max_length: 4000,
+          // Slack caps plain_text_input.max_length at 3000 (1..3000) — a
+          // larger value makes views.open reject the whole modal. Storage
+          // allows 4000, so longer prompts are truncated here for display and
+          // must be edited via the text command instead.
+          initial_value: job.prompt.length > MODAL_PROMPT_MAX ? job.prompt.substring(0, MODAL_PROMPT_MAX) : job.prompt,
+          max_length: MODAL_PROMPT_MAX,
+        },
+        hint: {
+          type: 'plain_text',
+          text:
+            job.prompt.length > MODAL_PROMPT_MAX
+              ? `⚠️ 기존 프롬프트가 ${job.prompt.length}자라 ${MODAL_PROMPT_MAX}자로 잘려 표시됩니다 — 긴 프롬프트는 \`cron prompt <name> <텍스트>\` 명령을 쓰세요.`
+              : `최대 ${MODAL_PROMPT_MAX}자 (Slack 입력 한도). 더 길게는 cron prompt 명령 사용.`,
         },
       },
     ],
