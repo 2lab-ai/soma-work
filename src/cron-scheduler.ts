@@ -133,8 +133,13 @@ export class CronScheduler {
     const now = new Date();
     try {
       logger.info('Manual cron fire', { name: job.name, owner: job.owner });
-      await this.executeJob(job, now);
-      return { ok: true, message: 'fired' };
+      // Delivery helpers record failures internally and report via the return
+      // status — surface that here so the ▶ button never claims success on a
+      // swallowed Slack delivery error.
+      const result = await this.executeJob(job, now);
+      return result.ok
+        ? { ok: true, message: result.detail }
+        : { ok: false, message: `delivery failed (${result.detail}) — cron history 확인` };
     } catch (error: any) {
       logger.error('Manual cron fire failed', { name: job.name, error: error?.message });
       this.recordExecution(job, 'failed', 'idle_inject', undefined, error?.message);
@@ -200,40 +205,39 @@ export class CronScheduler {
    * Fastlane mode always creates a new thread regardless of session state.
    * Target determines delivery: channel (default), thread (reply), or dm.
    */
-  private async executeJob(job: CronJob, now: Date): Promise<void> {
+  private async executeJob(job: CronJob, now: Date): Promise<{ ok: boolean; detail: string }> {
     const target = job.target || 'channel';
 
     // DM target: send directly to user, no session interaction
     if (target === 'dm') {
-      await this.executeWithDm(job, now);
-      return;
+      return { ok: await this.executeWithDm(job, now), detail: 'dm' };
     }
 
     // Thread target: post reply in existing thread, no session interaction
     if (target === 'thread') {
-      await this.executeWithThreadReply(job, now);
-      return;
+      return { ok: await this.executeWithThreadReply(job, now), detail: 'thread_reply' };
     }
 
     // Channel target (default): original behavior
     // Fastlane: always new thread, skip session lookup
     if (job.mode === 'fastlane') {
-      await this.executeWithNewThread(job, now);
-      return;
+      return { ok: await this.executeWithNewThread(job, now), detail: 'new_thread' };
     }
 
     const session = this.findSession(job.owner, job.channel, job.threadTs);
 
     if (!session) {
       // Scenario 6: No session → create new thread
-      await this.executeWithNewThread(job, now);
-    } else if (session.activityState === 'idle') {
+      return { ok: await this.executeWithNewThread(job, now), detail: 'new_thread' };
+    }
+    if (session.activityState === 'idle') {
       // Scenario 4: Idle → inject immediately
       await this.injectMessage(job, session, now);
-    } else {
-      // Scenario 5: Busy → queue and wait for idle
-      this.enqueueForIdle(job, session, now);
+      return { ok: true, detail: 'idle_inject' };
     }
+    // Scenario 5: Busy → queue and wait for idle
+    this.enqueueForIdle(job, session, now);
+    return { ok: true, detail: 'busy_queue' };
   }
 
   /**
@@ -377,7 +381,7 @@ export class CronScheduler {
    * Create a new bot-initiated thread and inject the cron message.
    * Trace: docs/archive/features/cron-scheduler/trace.md, Scenario 6, Section 3b-3c
    */
-  private async executeWithNewThread(job: CronJob, now: Date): Promise<void> {
+  private async executeWithNewThread(job: CronJob, now: Date): Promise<boolean> {
     logger.info('No session found, creating new thread', { name: job.name, channel: job.channel });
 
     try {
@@ -402,20 +406,21 @@ export class CronScheduler {
       await this.deps.messageInjector(syntheticEvent);
       this.deps.storage.updateLastRun(job.id, now);
       this.recordExecution(job, 'success', 'new_thread');
+      return true;
     } catch (error: any) {
       logger.error('New thread creation failed', { name: job.name, error: error?.message });
       this.recordExecution(job, 'failed', 'new_thread', undefined, error?.message);
+      return false;
     }
   }
 
   /**
    * Send cron result as a DM to the job owner.
    */
-  private async executeWithDm(job: CronJob, now: Date): Promise<void> {
+  private async executeWithDm(job: CronJob, now: Date): Promise<boolean> {
     if (!this.deps.dmSender) {
       logger.warn('DM sender not configured, falling back to new thread', { name: job.name });
-      await this.executeWithNewThread(job, now);
-      return;
+      return this.executeWithNewThread(job, now);
     }
 
     try {
@@ -424,26 +429,27 @@ export class CronScheduler {
       this.deps.storage.updateLastRun(job.id, now);
       this.recordExecution(job, 'success', 'dm');
       logger.info('Cron DM sent', { name: job.name, owner: job.owner });
+      return true;
     } catch (error: any) {
       logger.error('Cron DM failed', { name: job.name, error: error?.message });
       this.recordExecution(job, 'failed', 'dm', undefined, error?.message);
+      return false;
     }
   }
 
   /**
    * Post cron result as a reply in an existing thread.
    */
-  private async executeWithThreadReply(job: CronJob, now: Date): Promise<void> {
+  private async executeWithThreadReply(job: CronJob, now: Date): Promise<boolean> {
     if (!job.threadTs) {
       logger.error('Thread target requires threadTs — cannot deliver', { name: job.name });
       this.deps.storage.updateLastRun(job.id, now);
       this.recordExecution(job, 'failed', 'thread_reply', undefined, 'threadTs required for thread target');
-      return;
+      return false;
     }
     if (!this.deps.threadReplier) {
       logger.warn('Thread replier not configured, falling back to new thread', { name: job.name });
-      await this.executeWithNewThread(job, now);
-      return;
+      return this.executeWithNewThread(job, now);
     }
 
     try {
@@ -452,9 +458,11 @@ export class CronScheduler {
       this.deps.storage.updateLastRun(job.id, now);
       this.recordExecution(job, 'success', 'thread_reply');
       logger.info('Cron thread reply sent', { name: job.name, channel: job.channel, threadTs: job.threadTs });
+      return true;
     } catch (error: any) {
       logger.error('Cron thread reply failed', { name: job.name, error: error?.message });
       this.recordExecution(job, 'failed', 'thread_reply', undefined, error?.message);
+      return false;
     }
   }
 

@@ -137,6 +137,28 @@ describe('CronEditViewSubmissionHandler', () => {
     expect(storage.getJobsByOwner('U_ALICE')[0].prompt).toBe('morning report');
   });
 
+  it('long prompt (>3000) is preserved when only other fields are edited', async () => {
+    const long = 'y'.repeat(3500);
+    seed({ prompt: long });
+    const ack = vi.fn();
+    // Modal showed the truncated 3000-char prefix; user only changed the schedule.
+    await handler.handleSubmit(
+      ack as any,
+      submitBody({ user: 'U_ALICE', expr: '*/15 * * * *', prompt: long.substring(0, 3000) }),
+    );
+    expect(ack).toHaveBeenCalledWith({ response_action: 'clear' });
+    const job = storage.getJobsByOwner('U_ALICE')[0];
+    expect(job.expression).toBe('*/15 * * * *');
+    expect(job.prompt).toBe(long); // full 3500 chars preserved — no silent truncation
+  });
+
+  it('long prompt IS replaced when the user actually typed a new one', async () => {
+    seed({ prompt: 'z'.repeat(3500) });
+    const ack = vi.fn();
+    await handler.handleSubmit(ack as any, submitBody({ user: 'U_ALICE', prompt: 'brand new prompt' }));
+    expect(storage.getJobsByOwner('U_ALICE')[0].prompt).toBe('brand new prompt');
+  });
+
   it('admin can edit another user job via the modal', async () => {
     seed();
     const ack = vi.fn();
