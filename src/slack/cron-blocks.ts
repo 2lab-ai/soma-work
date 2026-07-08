@@ -256,9 +256,13 @@ export function buildCronEditModal(args: { job: CronJob; metadata: CronEditModal
         block_id: CRON_EDIT_CHANNEL_BLOCK,
         label: { type: 'plain_text', text: '출력 채널' },
         element: {
-          type: 'channels_select',
+          // conversations_select (not channels_select): cron jobs regularly
+          // live in PRIVATE channels (G…) — channels_select can neither
+          // prefill nor reselect those.
+          type: 'conversations_select',
           action_id: CRON_EDIT_INPUT_ACTION,
-          ...(job.channel?.startsWith('C') ? { initial_channel: job.channel } : {}),
+          filter: { include: ['public', 'private'], exclude_bot_users: true },
+          ...(job.channel ? { initial_conversation: job.channel } : {}),
         },
       },
       {

@@ -95,6 +95,16 @@ export class CronEditViewSubmissionHandler {
       }
 
       const patch: CronJobPatch = { name, expression, channel, prompt };
+      // Data-loss guard: prompts longer than the 3000-char Slack input cap are
+      // shown truncated in the modal. If the submitted value is exactly that
+      // truncated prefix, the user didn't edit it — preserve the full stored
+      // prompt instead of silently cutting it to 3000.
+      const current = this.storage()
+        .getJobsByOwner(meta.owner)
+        .find((j) => j.name === meta.name);
+      if (current && current.prompt.length > 3000 && prompt === current.prompt.substring(0, 3000)) {
+        delete patch.prompt;
+      }
       let updated;
       try {
         updated = this.storage().updateJob(meta.owner, meta.name, patch);
