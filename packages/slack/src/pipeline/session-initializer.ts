@@ -776,7 +776,18 @@ export class SessionInitializer {
     // window where the /compact turn is active-but-unshielded. The
     // stream-executor sets it again at the local-slash-command bypass
     // (idempotent) and clears it in the turn's `finally`.
-    if ((dispatchText ?? '').trim().split(/\s/)[0] === '/compact') {
+    //
+    // Claim ONLY when the slot is idle: if another request is active this
+    // /compact will be halted/stashed below and never reach execute(), so an
+    // early claim would leak the flag and wrongly compaction-shield the
+    // unrelated active turn until its own finally clears it (codex
+    // re-review). When /compact instead supersedes a live turn (manual path
+    // is already refused by CompactHandler while busy), the stream-executor
+    // backstop claims the flag at query start.
+    if (
+      (dispatchText ?? '').trim().split(/\s/)[0] === '/compact' &&
+      !this.deps.requestCoordinator.isRequestActive(sessionKey)
+    ) {
       session.compactTurnActive = true;
     }
 
