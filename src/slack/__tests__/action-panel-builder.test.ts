@@ -1,6 +1,6 @@
+import { LOG_DETAIL } from '@soma/slack/output-flags';
 import { describe, expect, it } from 'vitest';
 import { ActionPanelBuilder } from '../action-panel-builder';
-import { LOG_DETAIL } from '../output-flags';
 
 function getStatusSectionText(payload: { blocks: any[] }): string {
   // Status may be in section.text.text (no PR) or section.fields[0].text (with PR)

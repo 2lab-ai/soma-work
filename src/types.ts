@@ -161,13 +161,6 @@ export type SessionGoalStatus = 'active' | 'paused' | 'complete' | 'queued';
  */
 export const DEFAULT_GOAL_MAX_CONTINUATIONS = 10;
 
-/**
- * Cap on `ConversationSession.goalHistory` length. Oldest entries are
- * dropped first so an unbounded sequence of completed goals can't grow the
- * persisted session record or overflow the Slack `goal` status output.
- */
-export const MAX_GOAL_HISTORY = 20;
-
 export type GoalCompletedVia = 'user' | 'eval-model';
 
 export interface SessionGoalPendingEval {
@@ -525,7 +518,8 @@ export interface ConversationSession {
 
   /**
    * Completed (and cleared-on-advance) goals, newest last, capped at
-   * {@link MAX_GOAL_HISTORY}. Surfaced by the `goal` status command so each
+   * `MAX_GOAL_HISTORY` (20, enforced in `@soma/slack/session-goal`). Surfaced
+   * by the `goal` status command so each
    * finished goal's time / token spend / completion reason stays visible.
    * Persisted.
    */

@@ -1,3 +1,4 @@
+import { getVerbosityFlags, getVerbosityName, LOG_DETAIL, VERBOSITY_NAMES } from '@soma/slack/output-flags';
 import {
   DEFAULT_EFFORT,
   DEFAULT_SHOW_THINKING,
@@ -9,7 +10,6 @@ import {
 } from '../../user-settings-store';
 import { formatBytes as formatBytesUtil, getDirSizeBytes } from '../../utils/dir-size';
 import { CommandParser } from '../command-parser';
-import { getVerbosityFlags, getVerbosityName, LOG_DETAIL, VERBOSITY_NAMES } from '../output-flags';
 import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
 
 /**

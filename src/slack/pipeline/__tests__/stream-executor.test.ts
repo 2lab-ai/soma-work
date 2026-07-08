@@ -109,9 +109,9 @@ vi.mock('../../../token-manager', () => ({
   parseCooldownTime: vi.fn().mockReturnValue(null),
 }));
 
+import { LOG_DETAIL } from '@soma/slack/output-flags';
 import type { Continuation } from '../../../types';
 import { userSettingsStore } from '../../../user-settings-store';
-import { LOG_DETAIL } from '../../output-flags';
 import { type ExecuteResult, StreamExecutor } from '../stream-executor';
 
 describe('Continuation type', () => {

@@ -27,7 +27,7 @@ export type SessionGoalStatus = 'active' | 'paused' | 'complete' | 'queued';
  */
 export const DEFAULT_GOAL_MAX_CONTINUATIONS = 10;
 
-/** Mirrors `MAX_GOAL_HISTORY` in `src/types.ts`. */
+/** Cap on `goalHistory` length. Single source of truth (the former src/types.ts mirror was removed). */
 export const MAX_GOAL_HISTORY = 20;
 
 /**
