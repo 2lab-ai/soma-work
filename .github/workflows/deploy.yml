@@ -19,7 +19,7 @@ permissions:
 
 jobs:
   prepare:
-    runs-on: [self-hosted, devbox-b]
+    runs-on: [self-hosted, owner-mac]
     timeout-minutes: 15
     outputs:
       matrix: ${{ steps.targets.outputs.matrix }}
@@ -65,13 +65,6 @@ jobs:
             {
               "name":"prod-host-dev",
               "runner_label":"prod-host",
-              "github_env":"development",
-              "deploy_env":"dev",
-              "target_dir":"/opt/soma-work/dev"
-            },
-            {
-              "name":"devbox-b-dev",
-              "runner_label":"devbox-b",
               "github_env":"development",
               "deploy_env":"dev",
               "target_dir":"/opt/soma-work/dev"
