@@ -15,7 +15,7 @@ describe('deploy config expectations', () => {
     expect(workflow).toContain('branches: [deploy/dev, deploy/prod]');
     expect(workflow).toContain('deploy/prod)');
     expect(workflow).toContain('"name":"work-m16-dev"');
-    expect(workflow).toContain('"name":"oudwood-dev"');
+    expect(workflow).toContain('"name":"fable-dev"');
     expect(workflow).toContain('"name":"work-m64-dev"');
     expect(workflow).toContain('"name":"work-m16-main"');
     expect(workflow).toContain('"deploy_env":"dev"');
