@@ -1,6 +1,6 @@
+import { getVerbosityFlags, VERBOSITY_NAMES } from '@soma/slack/output-flags';
 import { userSettingsStore } from '../../user-settings-store';
 import { CommandParser } from '../command-parser';
-import { getVerbosityFlags, VERBOSITY_NAMES } from '../output-flags';
 import { applyVerbosity, renderVerbosityCard } from '../z/topics/verbosity-topic';
 import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
 

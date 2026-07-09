@@ -68,6 +68,7 @@ async function getGitHubToken(): Promise<string | null> {
 
 /**
  * Get status emoji for a normalized status string
+ * @public — consumed dynamically via `import * as linkMetadataFetcher` in src/slack/session-manager.ts.
  */
 export function getStatusEmoji(status: string | undefined, linkType?: string): string {
   if (!status) return '';
@@ -219,6 +220,10 @@ async function fetchJiraMetadata(link: SessionLink): Promise<{ title?: string; s
   };
 }
 
+/**
+ * Extract a Jira issue key from a browse URL.
+ * @public — consumed dynamically via `import * as linkMetadataFetcher` in src/slack/session-manager.ts.
+ */
 export function extractJiraKey(url: string): string | undefined {
   const match = url.match(/\/browse\/([A-Z]+-\d+)/);
   return match?.[1];
@@ -242,6 +247,7 @@ export interface JiraTransition {
 /**
  * Fetch available Jira transitions for an issue.
  * Returns empty array on failure (graceful degradation).
+ * @public — consumed dynamically via `import * as linkMetadataFetcher` in src/slack/session-manager.ts.
  */
 export async function fetchJiraTransitions(issueKey: string): Promise<JiraTransition[]> {
   const baseUrl = process.env.JIRA_BASE_URL;
