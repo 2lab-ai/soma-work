@@ -82,6 +82,13 @@ jobs:
               "github_env":"development",
               "deploy_env":"dev",
               "target_dir":"/opt/soma-work/dev"
+            },
+            {
+              "name":"fable-dev",
+              "runner_label":"owner-mac",
+              "github_env":"development",
+              "deploy_env":"dev",
+              "target_dir":"/opt/soma-work/dev"
             }
           ]}
           EOF
