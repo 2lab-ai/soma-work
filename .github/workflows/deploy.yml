@@ -19,7 +19,7 @@ permissions:
 
 jobs:
   prepare:
-    runs-on: [self-hosted, oudwood-512]
+    runs-on: [self-hosted, fable-m5max]
     timeout-minutes: 15
     outputs:
       matrix: ${{ steps.targets.outputs.matrix }}
@@ -65,13 +65,6 @@ jobs:
             {
               "name":"work-m16-dev",
               "runner_label":"work-m16",
-              "github_env":"development",
-              "deploy_env":"dev",
-              "target_dir":"/opt/soma-work/dev"
-            },
-            {
-              "name":"oudwood-dev",
-              "runner_label":"oudwood-512",
               "github_env":"development",
               "deploy_env":"dev",
               "target_dir":"/opt/soma-work/dev"
