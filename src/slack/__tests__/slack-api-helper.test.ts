@@ -328,6 +328,46 @@ describe('SlackApiHelper', () => {
 
       await expect(helper.postMessage('C123', 'Hello')).rejects.toThrow('API error');
     });
+
+    /**
+     * Regression guard (2026-07-09 work-m64 incident): an over-limit Block Kit
+     * payload (`invalid_blocks`) must DEGRADE to the text fallback instead of
+     * throwing — the goal-status blocks blew Slack's 3000-char section cap,
+     * the throw crashed GoalHandler, and the raw `goal` text got hijacked by
+     * autogoal. The fallback text is always supplied by callers precisely for
+     * non-Block-Kit surfaces, so reuse it here.
+     */
+    it('invalid_blocks → retries once WITHOUT blocks using the fallback text', async () => {
+      const platformError: any = new Error('An API error occurred: invalid_blocks');
+      platformError.code = 'slack_webapi_platform_error';
+      platformError.data = { ok: false, error: 'invalid_blocks' };
+      mockApp.client.chat.postMessage.mockRejectedValueOnce(platformError).mockResolvedValueOnce({
+        ts: '123.456',
+        channel: 'C123',
+      });
+
+      const result = await helper.postMessage('C123', 'fallback text', {
+        threadTs: '111.222',
+        blocks: [{ type: 'section', text: { type: 'mrkdwn', text: 'x'.repeat(4000) } }],
+      });
+
+      expect(result).toEqual({ ts: '123.456', channel: 'C123' });
+      expect(mockApp.client.chat.postMessage).toHaveBeenCalledTimes(2);
+      const retryPayload = mockApp.client.chat.postMessage.mock.calls[1][0];
+      expect(retryPayload.blocks).toBeUndefined();
+      expect(retryPayload.text).toBe('fallback text');
+      expect(retryPayload.thread_ts).toBe('111.222');
+    });
+
+    it('invalid_blocks with NO blocks in payload still throws (nothing to strip)', async () => {
+      const platformError: any = new Error('An API error occurred: invalid_blocks');
+      platformError.code = 'slack_webapi_platform_error';
+      platformError.data = { ok: false, error: 'invalid_blocks' };
+      mockApp.client.chat.postMessage.mockRejectedValue(platformError);
+
+      await expect(helper.postMessage('C123', 'Hello')).rejects.toThrow('invalid_blocks');
+      expect(mockApp.client.chat.postMessage).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('updateMessage', () => {
