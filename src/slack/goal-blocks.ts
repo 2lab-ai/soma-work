@@ -65,6 +65,27 @@ function objectiveLine(objective: string, max = 280): string {
   return normalized.length > max ? `${normalized.slice(0, max - 1)}…` : normalized;
 }
 
+/**
+ * Slack hard-fails the whole message (`invalid_blocks`) when any section's
+ * `text.text` exceeds 3000 chars. 2026-07-09 incident: the joined history
+ * section blew past the limit (verbose `completionReason` eval paragraphs),
+ * the post threw, GoalHandler crashed, and the raw `goal` command text fell
+ * through to autogoal. Every section this module emits goes through this
+ * clamp as the last line of defense; ROW_BUDGET is the packing budget that
+ * keeps the clamp from ever firing in practice.
+ * See docs/misc/reference/slack-block-kit.md.
+ */
+const SECTION_TEXT_LIMIT = 3000;
+const SECTION_TEXT_BUDGET = 2800;
+
+function clampSectionText(text: string): string {
+  return text.length > SECTION_TEXT_LIMIT ? `${text.slice(0, SECTION_TEXT_LIMIT - 1)}…` : text;
+}
+
+function section(text: string): any {
+  return { type: 'section', text: { type: 'mrkdwn', text: clampSectionText(text) } };
+}
+
 function actionButtons(value: GoalActionValue): any {
   const encoded = encodeGoalActionValue(value);
   return {
@@ -122,11 +143,12 @@ export function buildGoalStatusBlocks(input: GoalStatusBlocksInput): any[] {
       lines.push(`*Auto-continuations:* ${goal.continuationCount}/${goal.maxContinuations}`);
     }
     if (goal.completedAt) {
-      lines.push(
-        `*Completed:* ${new Date(goal.completedAt).toISOString()} (${goal.completionReason ?? goal.completedVia ?? 'done'})`,
-      );
+      // completionReason carries the eval model's full explanation — trim it
+      // hard, or a single verbose reason pushes this section past 3000 chars.
+      const reason = objectiveLine(String(goal.completionReason ?? goal.completedVia ?? 'done'), 400);
+      lines.push(`*Completed:* ${new Date(goal.completedAt).toISOString()} (${reason})`);
     }
-    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: lines.join('\n') } });
+    blocks.push(section(lines.join('\n')));
     // Buttons make sense only while the goal is still live (active/paused).
     if (goal.status === 'active' || goal.status === 'paused') {
       blocks.push(actionButtons(valueFor(goal)));
@@ -135,12 +157,9 @@ export function buildGoalStatusBlocks(input: GoalStatusBlocksInput): any[] {
 
   if (queue.length > 0) {
     blocks.push({ type: 'divider' });
-    blocks.push({
-      type: 'section',
-      text: { type: 'mrkdwn', text: `📋 *Queued goals (${queue.length})* — start automatically in order:` },
-    });
+    blocks.push(section(`📋 *Queued goals (${queue.length})* — start automatically in order:`));
     for (const q of queue.slice(0, limit)) {
-      blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `• ${formatObjective(q.objective)}` } });
+      blocks.push(section(`• ${formatObjective(q.objective)}`));
       blocks.push(actionButtons(valueFor(q)));
     }
     if (queue.length > limit) {
@@ -151,18 +170,29 @@ export function buildGoalStatusBlocks(input: GoalStatusBlocksInput): any[] {
   if (history.length > 0) {
     blocks.push({ type: 'divider' });
     const recent = [...history].reverse().slice(0, limit);
-    const lines = [`✅ *Completed goals (${history.length})* — most recent first:`];
+    const header = `✅ *Completed goals (${history.length})* — most recent first:`;
+    const lines = [header];
+    // History rows are JOINED into a single section. 2026-07-09 incident:
+    // the earlier fix (codex review #4 on #1153) trimmed only the OBJECTIVE
+    // to 160 chars but left `completionReason` unbounded — the eval model
+    // writes multi-hundred-char paragraphs, so 6 completed goals blew past
+    // Slack's 3000-char section cap and failed the whole message with
+    // `invalid_blocks`. Now every row field is trimmed AND rows are packed
+    // under an explicit character budget; whatever doesn't fit is summarized
+    // as "…and N older" instead of crashing the status command.
+    let used = header.length;
+    let shown = 0;
     for (const h of recent) {
-      const reason = h.completionReason ?? h.completedVia ?? 'done';
-      // codex review #4: history rows are JOINED into a single section, and
-      // `formatObjective` can emit ~900 chars each — `limit` (10) of those would
-      // blow past Slack's 3000-char section cap and fail the whole message with
-      // `invalid_blocks`. Use a tight per-row trim so the joined block stays
-      // well under the limit (≤ ~10×200 + overhead).
-      lines.push(`• \`${objectiveLine(h.objective, 160).replace(/`/g, "'")}\` — _${reason}_ · ${formatMetrics(h)}`);
+      const reason = objectiveLine(String(h.completionReason ?? h.completedVia ?? 'done'), 160);
+      const row = `• \`${objectiveLine(h.objective, 160).replace(/`/g, "'")}\` — _${reason}_ · ${formatMetrics(h)}`;
+      if (used + 1 + row.length > SECTION_TEXT_BUDGET) break;
+      lines.push(row);
+      used += 1 + row.length;
+      shown += 1;
     }
-    if (history.length > recent.length) lines.push(`…and ${history.length - recent.length} older`);
-    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: lines.join('\n') } });
+    const omitted = history.length - shown;
+    if (omitted > 0) lines.push(`…and ${omitted} older`);
+    blocks.push(section(lines.join('\n')));
   }
 
   return blocks;
