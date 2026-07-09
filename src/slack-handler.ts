@@ -332,7 +332,8 @@ export class SlackHandler {
     (this.streamExecutor as any).deps.dispatchPendingUserMessage = (
       ctx: { channel: string; threadTs: string; user: string; ts: string },
       text: string,
-    ) => this.eventRouter.dispatchPendingUserMessage(ctx, text);
+      opts?: { compactRedispatch?: boolean },
+    ) => this.eventRouter.dispatchPendingUserMessage(ctx, text, opts);
 
     // 2. ClaudeHandler compact-hook factory. Each call creates a closure
     //    over the session + slack routing context for a single query.

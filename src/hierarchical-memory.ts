@@ -122,7 +122,7 @@ export function formatSemanticIndexForPrompt(userId: string): string {
 }
 
 /** Today + recent episodic file dates, for optional prompt hinting. */
-export function recentEpisodicDates(userId: string, limit = 3): string[] {
+function recentEpisodicDates(userId: string, limit = 3): string[] {
   try {
     return hierarchicalMemoryStore.recentEpisodicDates(userId, limit);
   } catch {

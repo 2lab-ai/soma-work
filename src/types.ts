@@ -161,13 +161,6 @@ export type SessionGoalStatus = 'active' | 'paused' | 'complete' | 'queued';
  */
 export const DEFAULT_GOAL_MAX_CONTINUATIONS = 10;
 
-/**
- * Cap on `ConversationSession.goalHistory` length. Oldest entries are
- * dropped first so an unbounded sequence of completed goals can't grow the
- * persisted session record or overflow the Slack `goal` status output.
- */
-export const MAX_GOAL_HISTORY = 20;
-
 export type GoalCompletedVia = 'user' | 'eval-model';
 
 export interface SessionGoalPendingEval {
@@ -253,6 +246,26 @@ export interface SessionGoal {
   lastEvalReason?: string;
   /** Counts how many eval cycles have run for this goal. */
   evalAttemptCount?: number;
+  /**
+   * Consecutive completion-eval DISPATCH failures (API error / rate limit /
+   * timeout — never completed eval cycles). While below
+   * `GOAL_EVAL_DISPATCH_MAX_RETRIES` the loop self-heals by scheduling a
+   * re-eval after the failure's advertised/backoff delay instead of stopping
+   * with a manual `goal done` notice. Cleared by a successful eval dispatch
+   * and by any real user message (`resetGoalContinuationOnUserMessage`).
+   */
+  evalDispatchRetryCount?: number;
+  /**
+   * ms epoch before which NO eval may dispatch (transient-failure backoff,
+   * typically the gateway-advertised 429 window). Ordinary turn-settled
+   * triggers that land during the window are skipped — otherwise a queued
+   * duplicate settle would re-dispatch immediately and burn the retry budget
+   * against the same rate limit. The scheduled retry clears it when it fires;
+   * it also self-expires by timestamp so a lost timer (restart) can never
+   * wedge the loop. Cleared by a successful dispatch and by any real user
+   * message.
+   */
+  evalBackoffUntil?: number;
 
   /**
    * Monotonic intent epoch. Bumped by every goal mutation (set / pause /
@@ -525,7 +538,8 @@ export interface ConversationSession {
 
   /**
    * Completed (and cleared-on-advance) goals, newest last, capped at
-   * {@link MAX_GOAL_HISTORY}. Surfaced by the `goal` status command so each
+   * `MAX_GOAL_HISTORY` (20, enforced in `@soma/slack/session-goal`). Surfaced
+   * by the `goal` status command so each
    * finished goal's time / token spend / completion reason stays visible.
    * Persisted.
    */
@@ -637,6 +651,26 @@ export interface ConversationSession {
   pendingUserText?: string | null;
   // Slack event context captured alongside `pendingUserText` for synthetic re-dispatch via event-router.
   pendingEventContext?: { channel: string; threadTs: string; user: string; ts: string } | null;
+  // Deferred post-compact re-dispatch queue (arrival order, one entry per
+  // author burst). `postCompactCompleteIfNeeded` promotes
+  // `pendingUserText`/`pendingEventContext` here when a compact cycle seals;
+  // the /compact turn's stream-end cleanup (stream-executor `finally`)
+  // consumes it and re-enters the pipeline. Deferral is load-bearing: the
+  // PostCompact hook fires BEFORE the CLI persists the compacted transcript,
+  // so dispatching from inside the hook lets the new turn's concurrency
+  // control abort the still-running /compact process and lose the compaction
+  // entirely (observed as `now ~85% ← was ~85%` immediate re-compact loops).
+  compactPendingDispatches?: Array<{
+    ctx: { channel: string; threadTs: string; user: string; ts: string };
+    text: string;
+  }> | null;
+  // Runtime-only: true while a dedicated `/compact` SDK turn is executing.
+  // Set at query start (local slash command bypass), cleared in the
+  // stream-executor `finally`. Covers the post-PostCompact/pre-result window
+  // where the epoch marker is already sealed but the CLI has not yet flushed
+  // the compacted transcript (codex review F1) and the pre-PreCompact query
+  // init window.
+  compactTurnActive?: boolean;
   // Wall-clock timestamp (ms) when the current active turn leg started. `undefined` when idle.
   activeLegStartedAtMs?: number;
   /**

@@ -22,7 +22,8 @@
     "smoke:deploy-bundle": "node scripts/smoke/deploy-bundle.js",
     "mapping:list": "tsx scripts/update-slack-jira-mapping.ts list",
     "mapping:sync": "tsx scripts/update-slack-jira-mapping.ts sync",
-    "mapping:add": "tsx scripts/update-slack-jira-mapping.ts add"
+    "mapping:add": "tsx scripts/update-slack-jira-mapping.ts add",
+    "deadcode": "knip --no-config-hints --include files,exports"
   },
   "workspaces": [
     "somalib",
@@ -37,6 +38,7 @@
     "@types/ioredis": "^4.28.10",
     "@types/node": "=24.0.4",
     "@types/proper-lockfile": "^4.1.4",
+    "knip": "^6.25.0",
     "tsx": "=4.20.3",
     "typescript": "^5.9.3",
     "vitest": "^4.0.15"

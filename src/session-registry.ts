@@ -2082,6 +2082,10 @@ export class SessionRegistry {
           autoCompactPending: false,
           pendingUserText: null,
           pendingEventContext: null,
+          // Deferred post-compact dispatch queue + /compact-turn marker are
+          // runtime-only (same rationale as pendingUserText above).
+          compactPendingDispatches: null,
+          compactTurnActive: false,
         };
         // Auto fallback compact: a restart that lands mid-fallback (model
         // switched to the 1M compact model, boundary restore not yet fired)
