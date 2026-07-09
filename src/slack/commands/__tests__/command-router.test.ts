@@ -1299,3 +1299,62 @@ describe('CommandRouter — `new <command>` remainder re-route (recursive)', () 
     expect(result.handled).toBe(true);
   });
 });
+
+/**
+ * Regression guard (2026-07-09 work-m64 incident): a handler that CLAIMED the
+ * text (canHandle → true) but THREW during execute must consume the message.
+ *
+ * Old behavior returned `{ handled: false, error }`, which let the raw
+ * command text fall through into session init — where autogoal promoted the
+ * literal string `goal` into a session goal after GoalHandler crashed on a
+ * Slack `invalid_blocks` error. A crashed command must never turn into a
+ * model prompt or a goal objective.
+ */
+describe('CommandRouter — handler throw must not fall through to session init', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.mocked(userSettingsStore.markMigrationHintShown).mockClear();
+  });
+
+  it('`goal` + GoalHandler.execute throws → handled:true + error notice posted', async () => {
+    vi.spyOn(GoalHandler.prototype, 'execute').mockRejectedValue(new Error('invalid_blocks'));
+
+    const say = vi.fn().mockResolvedValue(undefined);
+    const deps = buildDeps({
+      claudeHandler: {
+        getSession: vi.fn().mockReturnValue({ systemPrompt: 'cached' }),
+        getSessionKey: vi.fn().mockImplementation((c: string, t: string) => `${c}:${t}`),
+        resetSessionContext: vi.fn().mockReturnValue(false),
+      },
+    });
+    const router = new CommandRouter(deps);
+
+    const result = await router.route({ text: 'goal', user: 'U1', channel: 'C1', threadTs: 'T1', say } as any);
+
+    // The message is CONSUMED — never falls through to session init/autogoal.
+    expect(result.handled).toBe(true);
+    expect(result.error).toBe('invalid_blocks');
+    // The user sees a visible failure instead of a silent hijack.
+    const notices = say.mock.calls.map((c: any[]) => c[0]?.text ?? '');
+    expect(notices.some((t: string) => t.includes('⚠️') && t.includes('GoalHandler'))).toBe(true);
+  });
+
+  it('error notice failure is swallowed — result still handled:true', async () => {
+    vi.spyOn(GoalHandler.prototype, 'execute').mockRejectedValue(new Error('boom'));
+
+    const say = vi.fn().mockRejectedValue(new Error('slack down'));
+    const deps = buildDeps({
+      claudeHandler: {
+        getSession: vi.fn().mockReturnValue({ systemPrompt: 'cached' }),
+        getSessionKey: vi.fn().mockImplementation((c: string, t: string) => `${c}:${t}`),
+        resetSessionContext: vi.fn().mockReturnValue(false),
+      },
+    });
+    const router = new CommandRouter(deps);
+
+    const result = await router.route({ text: 'goal', user: 'U1', channel: 'C1', threadTs: 'T1', say } as any);
+
+    expect(result.handled).toBe(true);
+    expect(result.error).toBe('boom');
+  });
+});
