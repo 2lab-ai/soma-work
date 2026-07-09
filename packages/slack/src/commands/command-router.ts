@@ -286,7 +286,21 @@ export class CommandRouter {
             handler: handler.constructor.name,
             error: error.message,
           });
-          return { handled: false, error: error.message };
+          // 2026-07-09 incident guard: this text was CLAIMED by a handler
+          // (canHandle → true), so a crash must CONSUME the message — never
+          // let the raw command text fall through to session init, where
+          // autogoal promoted the literal string `goal` into a session goal
+          // after GoalHandler died on a Slack `invalid_blocks` error. Surface
+          // the failure visibly instead.
+          try {
+            await say({
+              text: `⚠️ \`${routedText.trim().split(/\s+/)[0]}\` 명령 처리 중 오류가 발생했습니다 (${handler.constructor.name}): ${error.message}`,
+              thread_ts: threadTs,
+            });
+          } catch {
+            // Error notice is best-effort — the command is consumed either way.
+          }
+          return { handled: true, error: error.message };
         }
       }
     }
