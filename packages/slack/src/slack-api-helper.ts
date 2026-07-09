@@ -378,25 +378,39 @@ export class SlackApiHelper {
     text: string,
     options?: MessageOptions,
   ): Promise<{ ts?: string; channel?: string }> {
+    const payload: any = {
+      channel,
+      text,
+      thread_ts: options?.threadTs,
+      blocks: options?.blocks,
+      attachments: options?.attachments,
+    };
+
+    if (typeof options?.unfurlLinks === 'boolean') {
+      payload.unfurl_links = options.unfurlLinks;
+    }
+    if (typeof options?.unfurlMedia === 'boolean') {
+      payload.unfurl_media = options.unfurlMedia;
+    }
+
     try {
-      const payload: any = {
-        channel,
-        text,
-        thread_ts: options?.threadTs,
-        blocks: options?.blocks,
-        attachments: options?.attachments,
-      };
-
-      if (typeof options?.unfurlLinks === 'boolean') {
-        payload.unfurl_links = options.unfurlLinks;
-      }
-      if (typeof options?.unfurlMedia === 'boolean') {
-        payload.unfurl_media = options.unfurlMedia;
-      }
-
       const result = await this.enqueue(() => this.app.client.chat.postMessage(payload));
       return { ts: result.ts, channel: result.channel };
     } catch (error) {
+      // 2026-07-09 incident: an over-limit goal-status section (3000-char cap)
+      // made chat.postMessage fail with `invalid_blocks`, the throw crashed
+      // the command handler, and the raw command text got hijacked by
+      // autogoal. Every caller supplies `text` as the notification fallback
+      // for exactly this kind of degradation — so when the BLOCKS are the
+      // problem, strip them and deliver the text instead of throwing.
+      const platformErrorCode = (error as any)?.data?.error;
+      if (platformErrorCode === 'invalid_blocks' && payload.blocks) {
+        this.logger.warn('invalid_blocks — retrying with text-only fallback', { channel, error });
+        const fallback = { ...payload };
+        fallback.blocks = undefined;
+        const result = await this.enqueue(() => this.app.client.chat.postMessage(fallback));
+        return { ts: result.ts, channel: result.channel };
+      }
       this.logger.error('Failed to post message', { channel, error });
       throw error;
     }
