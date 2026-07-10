@@ -113,10 +113,7 @@ class SharedStore {
     const filePath = path.join(this.responseDir, `${approvalId}.json`);
     try {
       await fs.promises.writeFile(filePath, JSON.stringify(response, null, 2));
-      logger.debug('Stored permission response', {
-        approvalId,
-        response: response.behavior,
-      });
+      logger.debug('Stored permission response', { approvalId, response: response.behavior });
     } catch (error) {
       logger.error('Failed to store permission response:', error);
       throw error;
@@ -128,36 +125,17 @@ class SharedStore {
    */
   async waitForPermissionResponse(
     approvalId: string,
-    timeoutMs: number = 5 * 60 * 1000,
-    signal?: AbortSignal,
+    timeoutMs: number = 5 * 60 * 1000
   ): Promise<PermissionResponse> {
     const filePath = path.join(this.responseDir, `${approvalId}.json`);
     const startTime = Date.now();
     const pollInterval = 500; // 500ms polling interval
 
     return new Promise((resolve, reject) => {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      let settled = false;
-
-      const finish = () => {
-        settled = true;
-        if (timer) clearTimeout(timer);
-        signal?.removeEventListener('abort', onAbort);
-      };
-
-      const onAbort = () => {
-        if (settled) return;
-        const reason = signal?.reason ?? new DOMException('The operation was aborted', 'AbortError');
-        finish();
-        void this.cleanup(approvalId).finally(() => reject(reason));
-      };
-
       const poll = async () => {
-        if (settled) return;
         try {
           // Check for timeout
           if (Date.now() - startTime > timeoutMs) {
-            finish();
             await this.cleanup(approvalId);
             resolve({
               behavior: 'deny',
@@ -171,7 +149,7 @@ class SharedStore {
             const data = await fs.promises.readFile(filePath, 'utf8');
             const response = JSON.parse(data) as PermissionResponse;
 
-            finish();
+            // Cleanup files
             await this.cleanup(approvalId);
 
             resolve(response);
@@ -179,21 +157,15 @@ class SharedStore {
           }
 
           // Continue polling
-          timer = setTimeout(poll, pollInterval);
+          setTimeout(poll, pollInterval);
         } catch (error) {
-          finish();
           logger.error('Error during polling:', error);
           await this.cleanup(approvalId);
           reject(error);
         }
       };
 
-      signal?.addEventListener('abort', onAbort, { once: true });
-      if (signal?.aborted) {
-        onAbort();
-      } else {
-        void poll();
-      }
+      poll();
     });
   }
 
