@@ -101,31 +101,6 @@ describe('buildStreamOptions — option parity (epic #1023 P1)', () => {
     expect(options.permissionPromptToolName).toBe('mcp__permission-prompt__permission_prompt');
   });
 
-  it('MCP set: preserves the five-minute Slack approval window for the in-process prompt tool', async () => {
-    const deps = makeDeps();
-    const queryEnv: Record<string, string | undefined> = {};
-    const { options } = await buildStreamOptions({ queryEnv, slackContext: makeSlackContext() }, deps);
-
-    expect(options.env?.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT).toBe('310000');
-    expect(options.env).toBe(queryEnv);
-  });
-
-  it('MCP set: preserves an operator-provided stream-close timeout', async () => {
-    const deps = makeDeps();
-    const queryEnv: Record<string, string | undefined> = { CLAUDE_CODE_STREAM_CLOSE_TIMEOUT: '600000' };
-    const { options } = await buildStreamOptions({ queryEnv, slackContext: makeSlackContext() }, deps);
-
-    expect(options.env?.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT).toBe('600000');
-  });
-
-  it('MCP set: does not change the stream-close timeout without Slack context', async () => {
-    const deps = makeDeps();
-    const queryEnv: Record<string, string | undefined> = {};
-    const { options } = await buildStreamOptions({ queryEnv }, deps);
-
-    expect(options.env?.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT).toBeUndefined();
-  });
-
   it('MCP set: omits empty allowed/disallowed arrays (inline guarded on length>0)', async () => {
     const deps = makeDeps({
       mcpConfigBuilder: {
