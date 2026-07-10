@@ -4,11 +4,12 @@ import path from 'path';
 const DEFAULT_DEV_SOURCE_DIR = '/opt/soma-work/dev';
 const DEFAULT_LEGACY_ROOT_DIR = '/Users/dd/app.claude-code-slack-bot';
 const MARKER_FILE_NAME = '.main-bootstrap.json';
-// Mirrors user-settings-store.DEFAULT_MODEL — the resolved `opus[1m]` alias.
-// Bootstrap is import-lean (runs before the main process and must not pull in
-// the settings store), so the literal is duplicated here. Drift is caught by
-// `VALID_MODELS + DEFAULT_MODEL stay in sync` in main-env-bootstrap.test.ts.
-const DEFAULT_MODEL = 'claude-opus-4-8[1m]';
+// Mirrors user-settings-store.DEFAULT_MODEL — the resolved `gpt` alias
+// (gpt-5.6 since 2026-07-10). Bootstrap is import-lean (runs before the main
+// process and must not pull in the settings store), so the literal is
+// duplicated here. Drift is caught by `VALID_MODELS + DEFAULT_MODEL stay in
+// sync` in main-env-bootstrap.test.ts.
+const DEFAULT_MODEL = 'gpt-5.6';
 
 // Duplicated from user-settings-store.AVAILABLE_MODELS because bootstrap is
 // import-lean (it runs before the main process and must not pull in the
@@ -27,6 +28,7 @@ const VALID_MODELS = new Set([
   'claude-opus-4-7[1m]',
   'claude-opus-4-6[1m]',
   'gpt-5.5',
+  'gpt-5.6',
 ]);
 
 /** Exposed for drift tests only — asserts exact-set equality with AVAILABLE_MODELS. */

@@ -1,6 +1,7 @@
 /**
  * One-shot force-migration of every persisted `defaultModel` in
- * `user-settings.json` to the current `opus[1m]` target.
+ * `user-settings.json` to the current default target (gpt-5.6 since
+ * 2026-07-10; opus[1m] before).
  *
  * Why this exists. Bumping the in-code `DEFAULT_MODEL` only affects users
  * whose stored `defaultModel` is missing or coerced-away. Existing users on
@@ -30,7 +31,15 @@ import path from 'node:path';
 
 import type { ModelId } from '../user-settings-store';
 
-/** Target model id every user lands on after this migration runs. */
+/**
+ * Target model id every user lands on after this migration runs.
+ * 2026-07-10: bumped opus[1m] → gpt-5.6 (operator decision; see the gpt-5.6
+ * release PR). The marker short-circuit is TARGET-AWARE: hosts that migrated
+ * to the old opus[1m] target re-run exactly once for the new target.
+ */
+export const FORCE_DEFAULT_TARGET: ModelId = 'gpt-5.6';
+
+/** Historical first-generation target (kept for marker back-compat tests). */
 export const OPUS_1M_TARGET: ModelId = 'claude-opus-4-8[1m]';
 
 /** Dedicated marker file name (sibling of user-settings.json in DATA_DIR). */
@@ -71,15 +80,26 @@ interface OpusOneMMarker {
 }
 
 export function forceMigrateOpus1m(params: ForceMigrateOpus1mParams): ForceMigrateOpus1mResult {
-  const target = params.target ?? OPUS_1M_TARGET;
+  const target = params.target ?? FORCE_DEFAULT_TARGET;
   const now = params.now ?? (() => new Date());
   const settingsFile = path.join(params.dataDir, 'user-settings.json');
   const markerFile = path.join(params.dataDir, OPUS_1M_MIGRATION_MARKER);
 
-  // Marker presence is the sole short-circuit signal. Even if the data
-  // dir was tampered with after the previous run, we do not re-touch.
+  // Target-aware short-circuit (the doc-comment's "invert the predicate"
+  // option): skip only when the existing marker already records THIS target.
+  // A marker for an older target (e.g. the 2026-06 opus[1m] run) re-runs
+  // exactly once and is then overwritten with the new target. An unreadable
+  // marker re-runs too — the migration is a plain idempotent rewrite, so a
+  // spurious re-run is harmless while a wrongly-skipped one strands users.
   if (fs.existsSync(markerFile)) {
-    return { status: 'skipped', markerFile, migrated: 0, total: 0 };
+    try {
+      const existing = JSON.parse(fs.readFileSync(markerFile, 'utf8')) as Partial<OpusOneMMarker>;
+      if (existing.target === target) {
+        return { status: 'skipped', markerFile, migrated: 0, total: 0 };
+      }
+    } catch {
+      // fall through — corrupt marker, re-run and rewrite it.
+    }
   }
 
   let migrated = 0;
