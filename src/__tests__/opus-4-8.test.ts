@@ -30,11 +30,11 @@ describe('opus-4.8 — release wiring', () => {
     expect(AVAILABLE_MODELS as readonly string[]).toContain('claude-opus-4-8[1m]');
   });
 
-  it('DEFAULT_MODEL tracks the resolved opus[1m] alias', () => {
+  it('DEFAULT_MODEL no longer tracks opus[1m] (gpt-5.6 took over on 2026-07-10)', () => {
     // Single-line-edit contract: bumping MODEL_ALIASES['opus[1m]'] in a future
     // PR rolls DEFAULT_MODEL forward without any other edit.
-    expect(DEFAULT_MODEL).toBe(MODEL_ALIASES['opus[1m]']);
-    expect(DEFAULT_MODEL).toBe('claude-opus-4-8[1m]');
+    expect(MODEL_ALIASES['opus[1m]']).toBe('claude-opus-4-8[1m]');
+    expect(DEFAULT_MODEL).toBe('gpt-5.6');
   });
 
   it('coerce normalises uppercase [1M] typo on the 4.8 variant', () => {

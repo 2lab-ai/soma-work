@@ -38,7 +38,9 @@ import type { McpConfig, SlackContext } from '../../mcp-config-builder';
 import { getPermissionGatedServers, loadMcpToolPermissions } from '../../mcp-tool-permission-config';
 import {
   GPT_5_5_SDK_BLOCKING_LIMIT,
+  GPT_5_6_SDK_BLOCKING_LIMIT,
   isGpt55Model,
+  isGpt56Model,
   isNativeOneMModel,
   NATIVE_ONE_M_SDK_BLOCKING_LIMIT,
 } from '../../metrics/model-registry';
@@ -305,18 +307,23 @@ export async function buildStreamOptions(
   // only fill keys that are unset. Remove this block once the pinned SDK CLI
   // resolves fable-5 to 1M natively.
   //
-  // gpt-5.5 (llmux codex backend) needs the SAME workaround with 275k math:
-  // the SDK doesn't know the id either, so its 200k-calibrated autocompact
-  // would fire at ~167k and input would hard-block at ~177k. Blocking limit
-  // is the SDK formula on the true window (275k − 20k − 3k = 252k); the
-  // harness-side auto-compact fires at 250k tokens via the turn-end checker
-  // (`resolveAutoCompactTokens`, compact-threshold-checker.ts).
+  // gpt-5.5 / gpt-5.6 (llmux codex backend) need the SAME workaround with
+  // their own window math: the SDK doesn't know these ids either, so its
+  // 200k-calibrated autocompact would fire at ~167k and input would
+  // hard-block at ~177k. Blocking limit is the SDK formula on the true
+  // window (gpt-5.5: 275k − 23k = 252k; gpt-5.6: 370k − 23k = 347k); the
+  // harness-side auto-compact fires at the fixed token trigger via the
+  // turn-end checker (`resolveAutoCompactTokens`,
+  // compact-threshold-checker.ts). gpt-5.6 is checked before gpt-5.5 to
+  // keep the newest-generation-first convention of resolveAutoCompactTokens.
   if (options.model) {
     const blockingLimit = isNativeOneMModel(options.model)
       ? NATIVE_ONE_M_SDK_BLOCKING_LIMIT
-      : isGpt55Model(options.model)
-        ? GPT_5_5_SDK_BLOCKING_LIMIT
-        : undefined;
+      : isGpt56Model(options.model)
+        ? GPT_5_6_SDK_BLOCKING_LIMIT
+        : isGpt55Model(options.model)
+          ? GPT_5_5_SDK_BLOCKING_LIMIT
+          : undefined;
     if (blockingLimit !== undefined) {
       if (!options.env) options.env = {};
       const env = options.env;

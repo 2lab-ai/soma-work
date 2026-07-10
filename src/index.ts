@@ -73,6 +73,7 @@ import {
 } from './conversation';
 import { CronScheduler, type SyntheticMessageEvent, setActiveCronScheduler } from './cron-scheduler';
 import { forceMigrateOpus1m } from './deploy/force-migrate-opus-1m';
+import { GPT_5_6_UPSTREAM_SLUG, syncLlmuxCodexModel } from './deploy/llmux-codex-model-sync';
 import { initializeDispatchService } from './dispatch-service';
 import { CONFIG_FILE, DATA_DIR, PLUGINS_DIR } from './env-paths';
 import { discoverInstallations, getGitHubAppAuth, isGitHubAppConfigured } from './github-auth.js';
@@ -143,15 +144,35 @@ async function start() {
     timing('TokenManager initialized');
 
     // One-shot force-migration: every existing user.defaultModel that isn't
-    // already `claude-opus-4-8[1m]` is rewritten to it. Gated by a dedicated
-    // marker in DATA_DIR so a re-deploy of the same host doesn't re-touch.
-    // MUST run before UserSettingsStore.load (further down) so the store
-    // sees the migrated file.
-    const opus1mResult = forceMigrateOpus1m({ dataDir: DATA_DIR });
+    // already the current default target (gpt-5.6 since 2026-07-10) is
+    // rewritten to it. Gated by a TARGET-AWARE marker in DATA_DIR: hosts that
+    // ran the older opus[1m] migration re-run exactly once for the new
+    // target, then skip. MUST run before UserSettingsStore.load (further
+    // down) so the store sees the migrated file.
+    const defaultModelMigration = forceMigrateOpus1m({ dataDir: DATA_DIR });
     logger.info(
-      `opus[1m] migration: ${opus1mResult.status} (migrated=${opus1mResult.migrated}/${opus1mResult.total}, marker=${opus1mResult.markerFile})`,
+      `default-model migration: ${defaultModelMigration.status} (migrated=${defaultModelMigration.migrated}/${defaultModelMigration.total}, marker=${defaultModelMigration.markerFile})`,
     );
-    timing('opus[1m] migration evaluated');
+    timing('default-model migration evaluated');
+
+    // Align the local llmux codex pin with the gpt-5.6 default. gpt-* ids
+    // only ROUTE via llmux; the upstream slug is pinned in llmux's own
+    // config, which deploys never touch. A stale gpt-5.5 pin would serve a
+    // 272k-input model under soma-work's 370k window math — repair it once,
+    // fail-soft on proxy errors (boot must not block on llmux hiccups).
+    if (config.auth.mode === 'llmux') {
+      const llmuxSync = await syncLlmuxCodexModel({ baseUrl: config.auth.llmux.baseUrl });
+      if (llmuxSync.status === 'failed') {
+        logger.warn(
+          `llmux codex pin sync FAILED (${llmuxSync.error}) — verify codex.default_model is ${GPT_5_6_UPSTREAM_SLUG} in the llmux config, or gpt-5.6 sessions will overrun the upstream window`,
+        );
+      } else {
+        logger.info(
+          `llmux codex pin sync: ${llmuxSync.status}${llmuxSync.before ? ` (before=${llmuxSync.before}${llmuxSync.after ? `, after=${llmuxSync.after}` : ''})` : ''}`,
+        );
+      }
+      timing('llmux codex pin sync evaluated');
+    }
 
     // Run preflight checks
     const preflight = await runPreflightChecks();
