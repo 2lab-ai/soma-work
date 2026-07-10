@@ -1,9 +1,14 @@
 /**
  * One-shot force-migration of every persisted `defaultModel` to the current
- * `opus[1m]` target. Triggered by user instruction:
+ * default target (gpt-5.6 since 2026-07-10; opus[1m] before). Originally
+ * triggered by user instruction:
  *
  *   "soma-work에는 디폴트 모델을 opus[1m]으로 변경하라는건 모든 유저의 모델이
  *    opus[1m]이 아닌 경우 1회 opus[1m]으로 마이그레이션하라는 것"
+ *
+ * 2026-07-10 update: the marker short-circuit is TARGET-AWARE (the doc's
+ * "flip the predicate" option) — a marker for an older target re-runs once
+ * for the new target, then skips.
  *
  * Contract:
  *   - On first run (marker absent): every user-settings.json entry whose
@@ -30,7 +35,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { forceMigrateOpus1m, OPUS_1M_MIGRATION_MARKER, OPUS_1M_TARGET } from '../force-migrate-opus-1m';
+import {
+  FORCE_DEFAULT_TARGET,
+  forceMigrateOpus1m,
+  OPUS_1M_MIGRATION_MARKER,
+  OPUS_1M_TARGET,
+} from '../force-migrate-opus-1m';
 
 function makeTempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'opus-1m-mig-'));
@@ -47,7 +57,8 @@ function readSettings(dataDir: string): Record<string, Record<string, unknown>> 
 }
 
 describe('forceMigrateOpus1m — target and marker name', () => {
-  it('targets claude-opus-4-8[1m]', () => {
+  it('default target is gpt-5.6 (2026-07-10); the historical opus[1m] constant survives', () => {
+    expect(FORCE_DEFAULT_TARGET).toBe('gpt-5.6');
     expect(OPUS_1M_TARGET).toBe('claude-opus-4-8[1m]');
   });
 
@@ -64,7 +75,7 @@ describe('forceMigrateOpus1m — first run', () => {
       U1: { userId: 'U1', defaultModel: 'claude-opus-4-7', accepted: true },
       U2: { userId: 'U2', defaultModel: 'claude-opus-4-7[1m]', accepted: true },
       U3: { userId: 'U3', defaultModel: 'claude-sonnet-4-6', accepted: true },
-      U4: { userId: 'U4', defaultModel: 'claude-opus-4-8[1m]', accepted: true },
+      U4: { userId: 'U4', defaultModel: 'gpt-5.6', accepted: true },
       U5: { userId: 'U5', defaultModel: 'claude-haiku-4-5-20251001', accepted: true },
     });
 
@@ -76,7 +87,7 @@ describe('forceMigrateOpus1m — first run', () => {
 
     const after = readSettings(dataDir);
     for (const u of ['U1', 'U2', 'U3', 'U4', 'U5']) {
-      expect(after[u]?.defaultModel).toBe('claude-opus-4-8[1m]');
+      expect(after[u]?.defaultModel).toBe('gpt-5.6');
     }
   });
 
@@ -94,7 +105,7 @@ describe('forceMigrateOpus1m — first run', () => {
     const markerPath = path.join(dataDir, '.opus-1m-migration.json');
     expect(fs.existsSync(markerPath)).toBe(true);
     const marker = JSON.parse(fs.readFileSync(markerPath, 'utf8'));
-    expect(marker.target).toBe('claude-opus-4-8[1m]');
+    expect(marker.target).toBe('gpt-5.6');
     expect(marker.migrated).toBe(1);
     expect(marker.total).toBe(1);
     expect(marker.migratedAt).toBe('2026-05-29T03:00:00.000Z');
@@ -118,7 +129,7 @@ describe('forceMigrateOpus1m — first run', () => {
     const after = readSettings(dataDir);
     expect(after.U1).toMatchObject({
       userId: 'U1',
-      defaultModel: 'claude-opus-4-8[1m]',
+      defaultModel: 'gpt-5.6',
       persona: 'engineer',
       accepted: true,
       defaultDirectory: '/repos/foo',
@@ -140,7 +151,7 @@ describe('forceMigrateOpus1m — first run', () => {
 });
 
 describe('forceMigrateOpus1m — idempotent re-runs', () => {
-  it('short-circuits when the marker already exists', () => {
+  it('short-circuits when the marker already records the current target', () => {
     const dir = makeTempDir();
     const dataDir = path.join(dir, 'data');
     writeSettings(dataDir, {
@@ -159,5 +170,40 @@ describe('forceMigrateOpus1m — idempotent re-runs', () => {
     const second = forceMigrateOpus1m({ dataDir });
     expect(second.status).toBe('skipped');
     expect(readSettings(dataDir).U1?.defaultModel).toBe('claude-opus-4-7');
+  });
+
+  it('re-runs exactly once when the marker records an OLDER target (opus[1m] → gpt-5.6)', () => {
+    const dir = makeTempDir();
+    const dataDir = path.join(dir, 'data');
+    writeSettings(dataDir, {
+      U1: { userId: 'U1', defaultModel: 'claude-opus-4-8[1m]' },
+    });
+    // Simulate a host that already ran the 2026-06 opus[1m] migration.
+    fs.writeFileSync(
+      path.join(dataDir, OPUS_1M_MIGRATION_MARKER),
+      JSON.stringify({ migratedAt: '2026-06-01T00:00:00.000Z', target: OPUS_1M_TARGET, migrated: 3, total: 3 }),
+      'utf8',
+    );
+
+    const rerun = forceMigrateOpus1m({ dataDir });
+    expect(rerun.status).toBe('applied');
+    expect(readSettings(dataDir).U1?.defaultModel).toBe('gpt-5.6');
+
+    // Marker now records the new target — third run skips.
+    const third = forceMigrateOpus1m({ dataDir });
+    expect(third.status).toBe('skipped');
+  });
+
+  it('re-runs when the marker is corrupt (unreadable JSON)', () => {
+    const dir = makeTempDir();
+    const dataDir = path.join(dir, 'data');
+    writeSettings(dataDir, {
+      U1: { userId: 'U1', defaultModel: 'claude-opus-4-7' },
+    });
+    fs.writeFileSync(path.join(dataDir, OPUS_1M_MIGRATION_MARKER), '{not json', 'utf8');
+
+    const result = forceMigrateOpus1m({ dataDir });
+    expect(result.status).toBe('applied');
+    expect(readSettings(dataDir).U1?.defaultModel).toBe('gpt-5.6');
   });
 });
