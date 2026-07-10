@@ -64,8 +64,10 @@ describe('local:review-motion skill — RED contract', () => {
     expect(existsSync(LICENSES_DIR)).toBe(true);
     const files = readdirSync(LICENSES_DIR).map((f) => f.toLowerCase());
     expect(files.some((f) => f.includes('notice'))).toBe(true);
+    // Upstream added an MIT license (commit 622957c); we vendor a verbatim copy.
+    expect(files.some((f) => f.includes('mit'))).toBe(true);
     const notice = readFileSync(resolve(LICENSES_DIR, 'NOTICE.md'), 'utf8');
     expect(notice).toMatch(/emilkowalski\/skills/);
-    expect(notice).toMatch(/no license|attribution only|not a license grant/i);
+    expect(notice).toMatch(/MIT/);
   });
 });
