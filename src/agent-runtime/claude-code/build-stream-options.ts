@@ -311,7 +311,7 @@ export async function buildStreamOptions(
   // their own window math: the SDK doesn't know these ids either, so its
   // 200k-calibrated autocompact would fire at ~167k and input would
   // hard-block at ~177k. Blocking limit is the SDK formula on the true
-  // window (gpt-5.5: 275k − 23k = 252k; gpt-5.6: 370k − 23k = 347k); the
+  // window (gpt-5.5: 275k − 23k = 252k; gpt-5.6: 372k − 23k = 349k); the
   // harness-side auto-compact fires at the fixed token trigger via the
   // turn-end checker (`resolveAutoCompactTokens`,
   // compact-threshold-checker.ts). gpt-5.6 is checked before gpt-5.5 to

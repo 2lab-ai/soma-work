@@ -22,7 +22,7 @@ const invalidator = createPromptInvalidator(logger, 'Settings');
 export const setSettingsPromptInvalidationHook = invalidator.setHook;
 const fireSettingsInvalidate = invalidator.fire;
 
-// Available models — the 13-entry user-facing allow-list.
+// Available models — the 14-entry user-facing allow-list.
 //
 // Contract:
 //   - The 8 bare claude entries are the historical lineup and MUST NOT be
@@ -36,10 +36,18 @@ const fireSettingsInvalidate = invalidator.fire;
 //   - `gpt-5.6` (added 2026-07-10, the DEFAULT) rides the same llmux codex
 //     path. llmux ≥ 0.2.16 pins the upstream codex slug to `gpt-5.6-sol`
 //     (the bare `gpt-5.6` id is rejected by the ChatGPT-account codex
-//     backend, so llmux owns the slug mapping). 370k context window measured
-//     empirically against the codex backend (369,755-token input accepted,
-//     ~380k rejected — up from gpt-5.5's 272k input cap); harness
-//     auto-compacts at 340k tokens (see metrics/model-registry.ts GPT_5_6_*).
+//     backend, so llmux owns the slug mapping). 372k context window — the
+//     official openai/codex catalog value (models.json), probe-consistent
+//     (369,755-token input accepted, ~380k rejected — up from gpt-5.5's
+//     272k input cap); harness auto-compacts at 340k tokens (see
+//     metrics/model-registry.ts GPT_5_6_*). Efforts low..xhigh plus
+//     max/ultra (llmux passes them through for the 5.6 family).
+//   - `gpt-5.6-terra` (added 2026-07-10) is the mid tier of the same family
+//     (half the price of sol, same 372k catalog window; llmux ≥ 0.2.16
+//     passes the slug through verbatim). `gpt-5.6-luna` is intentionally NOT
+//     listed: the ChatGPT-account codex backend still returns "Model not
+//     found gpt-5.6-luna" (probed twice 2026-07-10) — add it when OpenAI
+//     enables the slug (llmux already allowlists it).
 //   - `claude-fable-5` serves a 1M context window on the BARE id — Fable 5
 //     ships 1M as its native GA context, with no `[1m]` suffix and no
 //     `context-1m-2025-08-07` beta header. It therefore has NO `[1m]` variant:
@@ -68,6 +76,7 @@ export const AVAILABLE_MODELS = [
   'claude-opus-4-6[1m]',
   'gpt-5.5',
   'gpt-5.6',
+  'gpt-5.6-terra',
 ] as const;
 
 export type ModelId = (typeof AVAILABLE_MODELS)[number];
@@ -109,6 +118,13 @@ export const MODEL_ALIASES: Record<string, ModelId> = {
   gpt: 'gpt-5.6',
   'gpt5.5': 'gpt-5.5',
   'gpt5.6': 'gpt-5.6',
+  // Tier shorthands. `sol` is the flagship = the canonical `gpt-5.6` id
+  // (llmux maps it to the upstream `gpt-5.6-sol` slug); the explicit
+  // `gpt-5.6-sol` spelling normalizes to the same canonical id.
+  sol: 'gpt-5.6',
+  'gpt-5.6-sol': 'gpt-5.6',
+  terra: 'gpt-5.6-terra',
+  'gpt5.6-terra': 'gpt-5.6-terra',
   // 1M-context (beta opt-in) variants — opus only. Fable 5 is native-1M on
   // the bare id and intentionally has no `[1m]` alias here.
   'opus[1m]': 'claude-opus-4-8[1m]',
@@ -1044,7 +1060,7 @@ export class UserSettingsStore {
   /**
    * Get display name for a model.
    *
-   * Covers all 13 entries in AVAILABLE_MODELS. The `[1m]` variants append
+   * Covers all 14 entries in AVAILABLE_MODELS. The `[1m]` variants append
    * `" (1M)"` so users can tell them apart in the Slack UI.
    */
   getModelDisplayName(model: ModelId): string {
@@ -1078,8 +1094,12 @@ export class UserSettingsStore {
         return 'GPT-5.5 (275k)';
       case 'gpt-5.6':
         // Served via llmux codex backend (upstream slug gpt-5.6-sol);
-        // empirically measured 370k context window.
-        return 'GPT-5.6 (370k)';
+        // 372k context window per the openai/codex model catalog.
+        return 'GPT-5.6 (372k)';
+      case 'gpt-5.6-terra':
+        // Mid tier of the gpt-5.6 family — same 372k catalog window,
+        // half the price of sol.
+        return 'GPT-5.6 Terra (372k)';
       default:
         return model;
     }
