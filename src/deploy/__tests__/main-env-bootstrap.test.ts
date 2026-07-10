@@ -217,7 +217,7 @@ describe('main-env-bootstrap', () => {
     const sessions = JSON.parse(fs.readFileSync(path.join(targetDir, 'data', 'sessions.json'), 'utf8'));
 
     expect(settings.U1.accepted).toBe(true);
-    expect(settings.U1.defaultModel).toBe('gpt-5.6'); // bootstrap DEFAULT_MODEL
+    expect(settings.U1.defaultModel).toBe('gpt-5.6-sol'); // bootstrap DEFAULT_MODEL
     expect(sessions[0].ownerId).toBe('U1');
     expect(sessions[0].state).toBe('MAIN');
     expect(sessions[0].workflow).toBe('default');
@@ -402,12 +402,12 @@ describe('main-env-bootstrap', () => {
       // Fallback target mirrors user-settings-store DEFAULT_MODEL — keep both
       // in sync when bumping the default-model generation (gpt-5.6 since
       // 2026-07-10).
-      expect(__TEST_ONLY_coerceModel('gpt-99-turbo')).toBe('gpt-5.6');
-      expect(__TEST_ONLY_coerceModel('')).toBe('gpt-5.6');
-      expect(__TEST_ONLY_coerceModel('   ')).toBe('gpt-5.6');
-      expect(__TEST_ONLY_coerceModel(undefined)).toBe('gpt-5.6');
-      expect(__TEST_ONLY_coerceModel(null)).toBe('gpt-5.6');
-      expect(__TEST_ONLY_coerceModel(42)).toBe('gpt-5.6');
+      expect(__TEST_ONLY_coerceModel('gpt-99-turbo')).toBe('gpt-5.6-sol');
+      expect(__TEST_ONLY_coerceModel('')).toBe('gpt-5.6-sol');
+      expect(__TEST_ONLY_coerceModel('   ')).toBe('gpt-5.6-sol');
+      expect(__TEST_ONLY_coerceModel(undefined)).toBe('gpt-5.6-sol');
+      expect(__TEST_ONLY_coerceModel(null)).toBe('gpt-5.6-sol');
+      expect(__TEST_ONLY_coerceModel(42)).toBe('gpt-5.6-sol');
     });
   });
 

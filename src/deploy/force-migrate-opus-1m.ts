@@ -33,11 +33,12 @@ import type { ModelId } from '../user-settings-store';
 
 /**
  * Target model id every user lands on after this migration runs.
- * 2026-07-10: bumped opus[1m] → gpt-5.6 (operator decision; see the gpt-5.6
- * release PR). The marker short-circuit is TARGET-AWARE: hosts that migrated
- * to the old opus[1m] target re-run exactly once for the new target.
+ * 2026-07-10: bumped opus[1m] → gpt-5.6 → gpt-5.6-sol (operator decision —
+ * there is no bare gpt-5.6 model; the sol flagship is the real id). The
+ * marker short-circuit is TARGET-AWARE: hosts that migrated to an older
+ * target re-run exactly once for the new target.
  */
-export const FORCE_DEFAULT_TARGET: ModelId = 'gpt-5.6';
+export const FORCE_DEFAULT_TARGET: ModelId = 'gpt-5.6-sol';
 
 /** Historical first-generation target (kept for marker back-compat tests). */
 export const OPUS_1M_TARGET: ModelId = 'claude-opus-4-8[1m]';
