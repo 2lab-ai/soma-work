@@ -43,20 +43,18 @@ describe('gpt-5.5 — release wiring', () => {
     expect(AVAILABLE_MODELS as readonly string[]).toContain('gpt-5.5');
   });
 
-  it('resolves the `gpt` and `gpt5.5` aliases to gpt-5.5', () => {
-    expect(MODEL_ALIASES.gpt).toBe('gpt-5.5');
+  it('keeps the version-pinned `gpt5.5` alias (the bare `gpt` moved to gpt-5.6)', () => {
     expect(MODEL_ALIASES['gpt5.5']).toBe('gpt-5.5');
   });
 
-  it('resolveModelInput accepts the canonical id and both aliases', () => {
+  it('resolveModelInput accepts the canonical id and the pinned alias', () => {
     const store = makeStore();
     expect(store.resolveModelInput('gpt-5.5')).toBe('gpt-5.5');
-    expect(store.resolveModelInput('gpt')).toBe('gpt-5.5');
     expect(store.resolveModelInput('  GPT5.5 ')).toBe('gpt-5.5');
   });
 
-  it('does NOT change DEFAULT_MODEL (gpt-5.5 is opt-in, not the default)', () => {
-    expect(DEFAULT_MODEL).toBe('claude-opus-4-8[1m]');
+  it('is NOT the DEFAULT_MODEL (superseded by gpt-5.6 on 2026-07-10)', () => {
+    expect(DEFAULT_MODEL).toBe('gpt-5.6');
   });
 
   it('coerce passes the id through (persisted settings survive restarts)', () => {
@@ -77,7 +75,7 @@ describe('gpt-5.5 — 275k context / 250k auto-compact (the key contract)', () =
     expect(resolveContextWindow('gpt-5.5')).toBe(275_000);
   });
 
-  it('resolveAutoCompactTokens returns the fixed 250k trigger for gpt-5.5 only', () => {
+  it('resolveAutoCompactTokens returns the fixed 250k trigger for gpt-5.5', () => {
     expect(GPT_5_5_AUTO_COMPACT_TOKENS).toBe(250_000);
     expect(resolveAutoCompactTokens('gpt-5.5')).toBe(250_000);
     expect(resolveAutoCompactTokens('claude-fable-5')).toBeUndefined();

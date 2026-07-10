@@ -34,7 +34,7 @@ import {
 } from '@soma/common/rate-limit';
 import { config } from './config';
 import { hasOneMSuffix, resolveContextWindow } from './metrics/model-registry';
-import { coerceToAvailableModel } from './user-settings-store';
+import { coerceToAvailableModel, MODEL_ALIASES } from './user-settings-store';
 
 /**
  * Max retries when a one-shot dispatch throws an overloaded/529 API error.
@@ -150,9 +150,13 @@ export function decideDispatchRetry(
     if (current && (hasOneMSuffix(current) || resolveContextWindow(current) >= 1_000_000)) {
       return { kind: 'rethrow' };
     }
-    const fallbackModel = coerceToAvailableModel(
-      opts?.configuredFallbackModel ?? config.claude.autoFallbackCompactModel,
-    );
+    // Resolve aliases (the config default is the ALIAS `opus[1m]`, not a
+    // canonical id) before coercing — same as the stream-executor seam's
+    // getAutoFallbackCompactModel. Without this, coerce would fall back to
+    // DEFAULT_MODEL, which is no longer a 1M-window model (gpt-5.6 since
+    // 2026-07-10) and would silently disable the overflow recovery.
+    const rawFallback = opts?.configuredFallbackModel ?? config.claude.autoFallbackCompactModel;
+    const fallbackModel = coerceToAvailableModel(MODEL_ALIASES[rawFallback.trim().toLowerCase()] ?? rawFallback);
     if (!fallbackModel || fallbackModel === current || resolveContextWindow(fallbackModel) < 1_000_000) {
       return { kind: 'rethrow' };
     }
