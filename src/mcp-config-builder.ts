@@ -3,9 +3,13 @@
  * Extracted from claude-handler.ts (Phase 5.3)
  */
 
-import * as fs from 'fs';
-import * as path from 'path';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import type { McpSdkServerConfigWithInstance } from '@anthropic-ai/claude-agent-sdk';
+import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
+import { createPermissionPromptHandler, type PermissionRequestContext } from '@soma/mcp-server-permission';
 import type { ModelCommandContext } from 'somalib/model-commands/types';
+import { z } from 'zod';
 import { isAdminUser } from './admin-utils';
 import type { PermissionMode } from './agent-runtime/policy/permission-mode';
 import { substituteEnvVars } from './config-env-substitution';
@@ -190,7 +194,12 @@ export class McpConfigBuilder {
     // escalate a dangerous command to the Slack UI.)
     const userBypass = somaPermissionMode !== 'legacy';
     const config: McpConfig = userBypass
-      ? { permissionMode: 'bypassPermissions', allowDangerouslySkipPermissions: true, userBypass, somaPermissionMode }
+      ? {
+          permissionMode: 'bypassPermissions',
+          allowDangerouslySkipPermissions: true,
+          userBypass,
+          somaPermissionMode,
+        }
       : { permissionMode: 'default', userBypass, somaPermissionMode };
 
     // Get base MCP server configuration
@@ -317,19 +326,44 @@ export class McpConfigBuilder {
   }
 
   /**
-   * Build the permission prompt MCP server configuration
+   * Build the permission prompt as an in-process SDK MCP server.
+   *
+   * The handler remains owned by @soma/mcp-server-permission so the SDK and
+   * stdio entrypoints share the same Slack approval semantics.
    */
-  private buildPermissionServer(slackContext: SlackContext): Record<string, any> {
-    const command = this.getInternalServerCommand('permission');
-    return {
-      'permission-prompt': {
-        command: command.command,
-        args: command.args,
-        env: {
-          SLACK_BOT_TOKEN: process.env.SLACK_BOT_TOKEN,
-          SLACK_CONTEXT: JSON.stringify(slackContext),
-        },
+  private buildPermissionServer(slackContext: SlackContext): Record<string, McpSdkServerConfigWithInstance> {
+    const handler = createPermissionPromptHandler({
+      slackToken: process.env.SLACK_BOT_TOKEN,
+      slackContext: {
+        channel: slackContext.channel,
+        threadTs: slackContext.threadTs,
+        user: slackContext.user,
       },
+    });
+    const permissionPrompt = tool(
+      'permission_prompt',
+      'Request user permission for tool execution via Slack button',
+      {
+        tool_name: z.string().describe('Name of the tool requesting permission'),
+        input: z.record(z.string(), z.unknown()).describe('Input parameters for the tool'),
+        channel: z.string().optional().describe('Slack channel ID'),
+        thread_ts: z.string().optional().describe('Slack thread timestamp'),
+        user: z.string().optional().describe('User ID requesting permission'),
+      },
+      async (args, extra) => {
+        const context: PermissionRequestContext = {};
+        if (typeof extra === 'object' && extra !== null && 'signal' in extra && extra.signal instanceof AbortSignal) {
+          context.signal = extra.signal;
+        }
+        return await handler.handleTool('permission_prompt', args, context);
+      },
+    );
+
+    return {
+      'permission-prompt': createSdkMcpServer({
+        name: 'permission-prompt',
+        tools: [permissionPrompt],
+      }),
     };
   }
 
@@ -430,7 +464,11 @@ export class McpConfigBuilder {
    */
   private getServerPath(label: string, basename: string, subdir: string): string {
     if (!this.serverPathRegistry.has(basename)) {
-      this.serverPathRegistry.set(basename, { path: null, checked: false, triedPaths: [] });
+      this.serverPathRegistry.set(basename, {
+        path: null,
+        checked: false,
+        triedPaths: [],
+      });
     }
     return this.resolveServerPath(
       label,
