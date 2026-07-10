@@ -59,9 +59,10 @@ describe('local:motion-design skill — RED contract', () => {
     const files = readdirSync(LICENSES_DIR).map((f) => f.toLowerCase());
     const hasNotice = files.some((f) => f.includes('notice'));
     expect(hasNotice, `expected an attribution NOTICE under ${LICENSES_DIR}`).toBe(true);
+    // Upstream added an MIT license (commit 622957c); we vendor a verbatim copy.
+    expect(files.some((f) => f.includes('mit'))).toBe(true);
     const notice = readFileSync(resolve(LICENSES_DIR, 'NOTICE.md'), 'utf8');
-    // No upstream LICENSE file exists — we must NOT claim a license grant.
     expect(notice).toMatch(/emilkowalski\/skills/);
-    expect(notice).toMatch(/no license|attribution only|not a license grant/i);
+    expect(notice).toMatch(/MIT/);
   });
 });
