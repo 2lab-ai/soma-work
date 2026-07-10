@@ -148,6 +148,12 @@ export async function buildStreamOptions(
   }
   if (mcpConfig.permissionPromptToolName) {
     options.permissionPromptToolName = mcpConfig.permissionPromptToolName;
+    // SDK MCP calls default to a 60s stream-close timeout. Slack approvals
+    // intentionally wait up to five minutes, so keep the SDK bridge open past
+    // the handler timeout while preserving an operator override.
+    if (slackContext && options.env && options.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT === undefined) {
+      options.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT = '310000';
+    }
   }
 
   // PreToolUse hooks
