@@ -158,7 +158,7 @@ async function start() {
     // Align the local llmux codex pin with the gpt-5.6 default. gpt-* ids
     // only ROUTE via llmux; the upstream slug is pinned in llmux's own
     // config, which deploys never touch. A stale gpt-5.5 pin would serve a
-    // 272k-input model under soma-work's 370k window math — repair it once,
+    // 272k-input model under soma-work's 372k window math — repair it once,
     // fail-soft on proxy errors (boot must not block on llmux hiccups).
     if (config.auth.mode === 'llmux') {
       const llmuxSync = await syncLlmuxCodexModel({ baseUrl: config.auth.llmux.baseUrl });
