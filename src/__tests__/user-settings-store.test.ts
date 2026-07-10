@@ -56,7 +56,7 @@ describe('Slack display-name identity (cross-user skill resolution)', () => {
 // tests assert the **exact** expected arrays/records, not just the length,
 // so any future silent removal is caught immediately.
 describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', () => {
-  it('AVAILABLE_MODELS is exactly 14 entries in the expected order', () => {
+  it('AVAILABLE_MODELS is exactly 16 entries in the expected order', () => {
     // Fable 5 (2026-06-09) leads as the flagship; it is native-1M on the bare
     // id and has NO `[1m]` variant. 4.8 prepended at the top of the opus tier so
     // substring matchers see it before 4.7. gpt-5.5 (2026-07-06) and gpt-5.6
@@ -75,8 +75,9 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
       'claude-opus-4-7[1m]',
       'claude-opus-4-6[1m]',
       'gpt-5.5',
-      'gpt-5.6',
+      'gpt-5.6-sol',
       'gpt-5.6-terra',
+      'gpt-5.6-luna',
     ]);
   });
 
@@ -103,13 +104,13 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
       'opus-4.5': 'claude-opus-4-5-20251101',
       haiku: 'claude-haiku-4-5-20251001',
       'haiku-4.5': 'claude-haiku-4-5-20251001',
-      gpt: 'gpt-5.6',
+      gpt: 'gpt-5.6-sol',
       'gpt5.5': 'gpt-5.5',
-      'gpt5.6': 'gpt-5.6',
-      sol: 'gpt-5.6',
-      'gpt-5.6-sol': 'gpt-5.6',
+      'gpt-5.6': 'gpt-5.6-sol',
+      'gpt5.6': 'gpt-5.6-sol',
+      sol: 'gpt-5.6-sol',
       terra: 'gpt-5.6-terra',
-      'gpt5.6-terra': 'gpt-5.6-terra',
+      luna: 'gpt-5.6-luna',
       'opus[1m]': 'claude-opus-4-8[1m]',
       'opus-4.8[1m]': 'claude-opus-4-8[1m]',
       'opus-4.7[1m]': 'claude-opus-4-7[1m]',
