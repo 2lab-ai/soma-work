@@ -57,8 +57,8 @@ function readSettings(dataDir: string): Record<string, Record<string, unknown>> 
 }
 
 describe('forceMigrateOpus1m — target and marker name', () => {
-  it('default target is gpt-5.6 (2026-07-10); the historical opus[1m] constant survives', () => {
-    expect(FORCE_DEFAULT_TARGET).toBe('gpt-5.6');
+  it('default target is gpt-5.6-sol (2026-07-10); the historical opus[1m] constant survives', () => {
+    expect(FORCE_DEFAULT_TARGET).toBe('gpt-5.6-sol');
     expect(OPUS_1M_TARGET).toBe('claude-opus-4-8[1m]');
   });
 
@@ -75,7 +75,7 @@ describe('forceMigrateOpus1m — first run', () => {
       U1: { userId: 'U1', defaultModel: 'claude-opus-4-7', accepted: true },
       U2: { userId: 'U2', defaultModel: 'claude-opus-4-7[1m]', accepted: true },
       U3: { userId: 'U3', defaultModel: 'claude-sonnet-4-6', accepted: true },
-      U4: { userId: 'U4', defaultModel: 'gpt-5.6', accepted: true },
+      U4: { userId: 'U4', defaultModel: 'gpt-5.6-sol', accepted: true },
       U5: { userId: 'U5', defaultModel: 'claude-haiku-4-5-20251001', accepted: true },
     });
 
@@ -87,7 +87,7 @@ describe('forceMigrateOpus1m — first run', () => {
 
     const after = readSettings(dataDir);
     for (const u of ['U1', 'U2', 'U3', 'U4', 'U5']) {
-      expect(after[u]?.defaultModel).toBe('gpt-5.6');
+      expect(after[u]?.defaultModel).toBe('gpt-5.6-sol');
     }
   });
 
@@ -105,7 +105,7 @@ describe('forceMigrateOpus1m — first run', () => {
     const markerPath = path.join(dataDir, '.opus-1m-migration.json');
     expect(fs.existsSync(markerPath)).toBe(true);
     const marker = JSON.parse(fs.readFileSync(markerPath, 'utf8'));
-    expect(marker.target).toBe('gpt-5.6');
+    expect(marker.target).toBe('gpt-5.6-sol');
     expect(marker.migrated).toBe(1);
     expect(marker.total).toBe(1);
     expect(marker.migratedAt).toBe('2026-05-29T03:00:00.000Z');
@@ -129,7 +129,7 @@ describe('forceMigrateOpus1m — first run', () => {
     const after = readSettings(dataDir);
     expect(after.U1).toMatchObject({
       userId: 'U1',
-      defaultModel: 'gpt-5.6',
+      defaultModel: 'gpt-5.6-sol',
       persona: 'engineer',
       accepted: true,
       defaultDirectory: '/repos/foo',
@@ -172,7 +172,7 @@ describe('forceMigrateOpus1m — idempotent re-runs', () => {
     expect(readSettings(dataDir).U1?.defaultModel).toBe('claude-opus-4-7');
   });
 
-  it('re-runs exactly once when the marker records an OLDER target (opus[1m] → gpt-5.6)', () => {
+  it('re-runs exactly once when the marker records an OLDER target (opus[1m] → gpt-5.6-sol)', () => {
     const dir = makeTempDir();
     const dataDir = path.join(dir, 'data');
     writeSettings(dataDir, {
@@ -187,7 +187,7 @@ describe('forceMigrateOpus1m — idempotent re-runs', () => {
 
     const rerun = forceMigrateOpus1m({ dataDir });
     expect(rerun.status).toBe('applied');
-    expect(readSettings(dataDir).U1?.defaultModel).toBe('gpt-5.6');
+    expect(readSettings(dataDir).U1?.defaultModel).toBe('gpt-5.6-sol');
 
     // Marker now records the new target — third run skips.
     const third = forceMigrateOpus1m({ dataDir });
@@ -204,6 +204,6 @@ describe('forceMigrateOpus1m — idempotent re-runs', () => {
 
     const result = forceMigrateOpus1m({ dataDir });
     expect(result.status).toBe('applied');
-    expect(readSettings(dataDir).U1?.defaultModel).toBe('gpt-5.6');
+    expect(readSettings(dataDir).U1?.defaultModel).toBe('gpt-5.6-sol');
   });
 });

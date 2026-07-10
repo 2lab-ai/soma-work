@@ -53,8 +53,8 @@ describe('gpt-5.5 — release wiring', () => {
     expect(store.resolveModelInput('  GPT5.5 ')).toBe('gpt-5.5');
   });
 
-  it('is NOT the DEFAULT_MODEL (superseded by gpt-5.6 on 2026-07-10)', () => {
-    expect(DEFAULT_MODEL).toBe('gpt-5.6');
+  it('is NOT the DEFAULT_MODEL (superseded by gpt-5.6-sol on 2026-07-10)', () => {
+    expect(DEFAULT_MODEL).toBe('gpt-5.6-sol');
   });
 
   it('coerce passes the id through (persisted settings survive restarts)', () => {

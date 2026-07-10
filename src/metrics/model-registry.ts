@@ -67,17 +67,34 @@ const MODEL_REGISTRY: [pattern: string, spec: ModelSpec][] = [
       maxOutput: 128_000,
     },
   ],
-  // OpenAI gpt-5.6 — served via llmux's codex backend group; llmux ≥ 0.2.16
-  // pins the upstream codex slug to `gpt-5.6-sol` (flagship tier — the bare
-  // `gpt-5.6` id is rejected by the ChatGPT-account codex backend). Rates
-  // match OpenAI's 2026-07-09 launch pricing: $5 in / $30 out / $0.5
-  // cache-read per MTok, no cache-creation charge on codex. Context window is
-  // 372k — the official value from the openai/codex model catalog
-  // (models-manager/models.json: context_window 372000 for sol/terra/luna),
-  // probe-consistent (369,755-token input accepted, ~380k rejected) — with
-  // harness-side auto-compact at 340k (see GPT_5_6_* constants below). The
-  // pattern `gpt-5.6` also matches the upstream-reported `gpt-5.6-sol` /
-  // future dated snapshots.
+  // OpenAI gpt-5.6-luna — budget tier ($1 in / $6 out / $0.1 cache-read per
+  // MTok, 2026-07-09 launch rates; no cache-creation charge on codex). Same
+  // 372k catalog window. MUST stay above the generic 'gpt-5.6' pattern.
+  [
+    'gpt-5.6-luna',
+    {
+      pricing: {
+        inputPerMTok: 1,
+        outputPerMTok: 6,
+        cacheReadPerMTok: 0.1,
+        cache5minWritePerMTok: 0,
+        cache1hrWritePerMTok: 0,
+      },
+      contextWindow: 372_000,
+      maxOutput: 128_000,
+    },
+  ],
+  // OpenAI gpt-5.6 family fallback (sol rates) — served via llmux's codex
+  // backend group. There is no bare `gpt-5.6` model; this pattern catches
+  // `gpt-5.6-sol` plus the legacy bare-id spelling in old transcripts and
+  // future dated sol snapshots. Rates match OpenAI's 2026-07-09 launch
+  // pricing for the sol flagship: $5 in / $30 out / $0.5 cache-read per
+  // MTok, no cache-creation charge on codex. Context window is 372k — the
+  // official openai/codex catalog value (models-manager/models.json:
+  // context_window 372000 for sol/terra/luna alike), probe-consistent
+  // (369,755-token input accepted, ~380k rejected) — with harness-side
+  // auto-compact at 340k (see GPT_5_6_* constants below). Terra/luna have
+  // their own entries ABOVE this one (substring matching is first-wins).
   [
     'gpt-5.6',
     {

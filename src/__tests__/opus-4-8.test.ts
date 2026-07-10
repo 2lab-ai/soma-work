@@ -34,7 +34,7 @@ describe('opus-4.8 — release wiring', () => {
     // Single-line-edit contract: bumping MODEL_ALIASES['opus[1m]'] in a future
     // PR rolls DEFAULT_MODEL forward without any other edit.
     expect(MODEL_ALIASES['opus[1m]']).toBe('claude-opus-4-8[1m]');
-    expect(DEFAULT_MODEL).toBe('gpt-5.6');
+    expect(DEFAULT_MODEL).toBe('gpt-5.6-sol');
   });
 
   it('coerce normalises uppercase [1M] typo on the 4.8 variant', () => {
