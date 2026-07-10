@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import path from 'node:path';
 import { WebClient } from '@slack/web-api';
 import type { ToolDefinition, ToolResult } from '@soma/process-shared/mcp/base-mcp-server.js';
 import { BaseMcpServer } from '@soma/process-shared/mcp/base-mcp-server.js';
@@ -173,13 +174,17 @@ export function getPermissionServer(): PermissionMCPServer {
   return serverInstance;
 }
 
-export const permissionServer = getPermissionServer();
+const invokedDirectly =
+  require.main === module ||
+  ['permission-mcp-server.ts', 'permission-mcp-server.js'].includes(path.basename(process.argv[1] ?? ''));
 
-if (require.main === module) {
-  getPermissionServer()
-    .run()
-    .catch((error) => {
-      console.error('Permission MCP server error:', error);
-      process.exit(1);
-    });
+async function main(): Promise<void> {
+  await getPermissionServer().run();
+}
+
+if (invokedDirectly) {
+  main().catch((error) => {
+    console.error('Permission MCP server error:', error);
+    process.stderr.write('', () => process.exit(1));
+  });
 }
