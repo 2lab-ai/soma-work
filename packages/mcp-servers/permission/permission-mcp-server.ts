@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import path from 'node:path';
 import { WebClient } from '@slack/web-api';
 import type { ToolDefinition, ToolResult } from '@soma/process-shared/mcp/base-mcp-server.js';
 import { BaseMcpServer } from '@soma/process-shared/mcp/base-mcp-server.js';
@@ -19,14 +20,31 @@ interface PermissionRequest {
   user?: string;
 }
 
+export interface PermissionSlackContext {
+  channel: string;
+  threadTs?: string;
+  user: string;
+}
+
+export interface PermissionMCPServerOptions {
+  slackToken?: string;
+  slackContext?: PermissionSlackContext;
+}
+
+export interface PermissionRequestContext {
+  signal?: AbortSignal;
+}
+
 class PermissionMCPServer extends BaseMcpServer {
   private slack: WebClient;
   private messenger: SlackPermissionMessenger;
+  private slackContext?: PermissionSlackContext;
 
-  constructor() {
+  constructor(options: PermissionMCPServerOptions = {}) {
     super('permission-prompt');
-    this.slack = new WebClient(process.env.SLACK_BOT_TOKEN);
+    this.slack = new WebClient(options.slackToken ?? process.env.SLACK_BOT_TOKEN);
     this.messenger = new SlackPermissionMessenger(this.slack);
+    this.slackContext = options.slackContext;
   }
 
   defineTools(): ToolDefinition[] {
@@ -37,11 +55,23 @@ class PermissionMCPServer extends BaseMcpServer {
         inputSchema: {
           type: 'object',
           properties: {
-            tool_name: { type: 'string', description: 'Name of the tool requesting permission' },
-            input: { type: 'object', description: 'Input parameters for the tool' },
+            tool_name: {
+              type: 'string',
+              description: 'Name of the tool requesting permission',
+            },
+            input: {
+              type: 'object',
+              description: 'Input parameters for the tool',
+            },
             channel: { type: 'string', description: 'Slack channel ID' },
-            thread_ts: { type: 'string', description: 'Slack thread timestamp' },
-            user: { type: 'string', description: 'User ID requesting permission' },
+            thread_ts: {
+              type: 'string',
+              description: 'Slack thread timestamp',
+            },
+            user: {
+              type: 'string',
+              description: 'User ID requesting permission',
+            },
           },
           required: ['tool_name', 'input'],
         },
@@ -49,20 +79,30 @@ class PermissionMCPServer extends BaseMcpServer {
     ];
   }
 
-  async handleTool(name: string, args: Record<string, unknown>): Promise<ToolResult> {
+  async handleTool(
+    name: string,
+    args: Record<string, unknown>,
+    context: PermissionRequestContext = {},
+  ): Promise<ToolResult> {
     if (name === 'permission_prompt') {
-      return await this.handlePermissionPrompt(args as unknown as PermissionRequest);
+      return await this.handlePermissionPrompt(args as unknown as PermissionRequest, context);
     }
     throw new Error(`Unknown tool: ${name}`);
   }
 
-  private async handlePermissionPrompt(params: PermissionRequest): Promise<ToolResult> {
+  private async handlePermissionPrompt(
+    params: PermissionRequest,
+    context: PermissionRequestContext,
+  ): Promise<ToolResult> {
     const { tool_name, input } = params;
 
-    this.logger.debug('Received permission prompt request', { tool_name, input });
+    this.logger.debug('Received permission prompt request', {
+      tool_name,
+      input,
+    });
 
     const slackContextStr = process.env.SLACK_CONTEXT;
-    const slackContext = slackContextStr ? JSON.parse(slackContextStr) : {};
+    const slackContext = this.slackContext ?? (slackContextStr ? JSON.parse(slackContextStr) : {});
     const { channel, threadTs: thread_ts, user } = slackContext;
 
     const approvalId = `approval_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -80,9 +120,10 @@ class PermissionMCPServer extends BaseMcpServer {
     const overridableRules = overridableRulesByIds(ruleIds);
 
     const blocks = this.messenger.buildRequestBlocks(tool_name, input, approvalId, user, overridableRules);
+    let permissionMessage: { ts?: string; channel?: string } | undefined;
 
     try {
-      const result = await this.messenger.sendPermissionRequest(
+      permissionMessage = await this.messenger.sendPermissionRequest(
         { channel, threadTs: thread_ts, user },
         blocks,
         tool_name,
@@ -101,18 +142,19 @@ class PermissionMCPServer extends BaseMcpServer {
 
       await sharedStore.storePendingApproval(approvalId, pendingApproval);
 
-      const response = await this.waitForApproval(approvalId);
+      const response = await this.waitForApproval(approvalId, context.signal);
 
-      if (result.ts && result.channel) {
-        try {
-          await this.slack.chat.delete({ channel: result.channel, ts: result.ts });
-        } catch (deleteError) {
-          this.logger.warn('Failed to delete permission message:', deleteError);
-        }
-      }
+      await this.deletePermissionMessage(permissionMessage);
 
       return { content: [{ type: 'text', text: JSON.stringify(response) }] };
     } catch (error) {
+      await sharedStore.cleanup(approvalId);
+      await this.deletePermissionMessage(permissionMessage);
+
+      if (context.signal?.aborted) {
+        throw error;
+      }
+
       this.logger.error('Error handling permission prompt:', error);
 
       const response: PermissionResponse = {
@@ -124,13 +166,30 @@ class PermissionMCPServer extends BaseMcpServer {
     }
   }
 
-  private async waitForApproval(approvalId: string): Promise<PermissionResponse> {
-    this.logger.debug('Waiting for approval using shared store', { approvalId });
-    return await sharedStore.waitForPermissionResponse(approvalId, 5 * 60 * 1000);
+  private async waitForApproval(approvalId: string, signal?: AbortSignal): Promise<PermissionResponse> {
+    this.logger.debug('Waiting for approval using shared store', {
+      approvalId,
+    });
+    return await sharedStore.waitForPermissionResponse(approvalId, 5 * 60 * 1000, signal);
+  }
+
+  private async deletePermissionMessage(message?: { ts?: string; channel?: string }): Promise<void> {
+    if (!message?.ts || !message.channel) return;
+    try {
+      await this.slack.chat.delete({
+        channel: message.channel,
+        ts: message.ts,
+      });
+    } catch (deleteError) {
+      this.logger.warn('Failed to delete permission message:', deleteError);
+    }
   }
 
   public async resolveApproval(approvalId: string, approved: boolean, updatedInput?: any) {
-    this.logger.debug('Resolving approval via shared store', { approvalId, approved });
+    this.logger.debug('Resolving approval via shared store', {
+      approvalId,
+      approved,
+    });
 
     const response: PermissionResponse = {
       behavior: approved ? 'allow' : 'deny',
@@ -139,7 +198,10 @@ class PermissionMCPServer extends BaseMcpServer {
     };
 
     await sharedStore.storePermissionResponse(approvalId, response);
-    this.logger.debug('Permission resolved via shared store', { approvalId, behavior: response.behavior });
+    this.logger.debug('Permission resolved via shared store', {
+      approvalId,
+      behavior: response.behavior,
+    });
   }
 
   public async getPendingApprovalCount(): Promise<number> {
@@ -166,6 +228,14 @@ class PermissionMCPServer extends BaseMcpServer {
 
 let serverInstance: PermissionMCPServer | null = null;
 
+export interface PermissionPromptHandler {
+  handleTool(name: string, args: Record<string, unknown>, context?: PermissionRequestContext): Promise<ToolResult>;
+}
+
+export function createPermissionPromptHandler(options: PermissionMCPServerOptions = {}): PermissionPromptHandler {
+  return new PermissionMCPServer(options);
+}
+
 export function getPermissionServer(): PermissionMCPServer {
   if (!serverInstance) {
     serverInstance = new PermissionMCPServer();
@@ -173,13 +243,17 @@ export function getPermissionServer(): PermissionMCPServer {
   return serverInstance;
 }
 
-export const permissionServer = getPermissionServer();
+const invokedDirectly =
+  require.main === module ||
+  ['permission-mcp-server.ts', 'permission-mcp-server.js'].includes(path.basename(process.argv[1] ?? ''));
 
-if (require.main === module) {
-  getPermissionServer()
-    .run()
-    .catch((error) => {
-      console.error('Permission MCP server error:', error);
-      process.exit(1);
-    });
+async function main(): Promise<void> {
+  await getPermissionServer().run();
+}
+
+if (invokedDirectly) {
+  main().catch((error) => {
+    console.error('Permission MCP server error:', error);
+    process.stderr.write('', () => process.exit(1));
+  });
 }

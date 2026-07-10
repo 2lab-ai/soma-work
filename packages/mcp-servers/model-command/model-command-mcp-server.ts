@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import fs from 'node:fs';
+import path from 'node:path';
 import type { ToolDefinition, ToolResult } from '@soma/process-shared/mcp/base-mcp-server.js';
 import { BaseMcpServer } from '@soma/process-shared/mcp/base-mcp-server.js';
 import type { WorkflowType } from '@soma/process-shared/mcp/types.js';
@@ -23,8 +25,6 @@ import type {
 } from '@soma/process-shared/model-commands/types.js';
 import { validateModelCommandRunArgs } from '@soma/process-shared/model-commands/validator.js';
 import { StderrLogger } from '@soma/process-shared/stderr-logger.js';
-import fs from 'fs';
-import path from 'path';
 
 const logger = new StderrLogger('ModelCommandMCP');
 
@@ -199,13 +199,19 @@ function getModelCommandServer(): ModelCommandMcpServer {
   return serverInstance;
 }
 
-if (require.main === module) {
-  getModelCommandServer()
-    .run()
-    .catch((error) => {
-      logger.error('Model-command MCP server error', error);
-      process.exit(1);
-    });
+const invokedDirectly =
+  require.main === module ||
+  ['model-command-mcp-server.ts', 'model-command-mcp-server.js'].includes(path.basename(process.argv[1] ?? ''));
+
+async function main(): Promise<void> {
+  await getModelCommandServer().run();
+}
+
+if (invokedDirectly) {
+  main().catch((error) => {
+    logger.error('Model-command MCP server error', error);
+    process.stderr.write('', () => process.exit(1));
+  });
 }
 
 function isRecord(value: unknown): value is Record<string, any> {

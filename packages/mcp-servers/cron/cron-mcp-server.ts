@@ -7,12 +7,12 @@
  * Pattern: mcp-servers/model-command/model-command-mcp-server.ts
  */
 
+import * as path from 'node:path';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { CronStorage, isValidCronExpression, isValidCronName } from '@soma/process-shared/cron/cron-storage.js';
 import { StderrLogger } from '@soma/process-shared/stderr-logger.js';
-import * as path from 'path';
 
 const logger = new StderrLogger('CronMcpServer');
 
@@ -675,12 +675,18 @@ export function getCronServer(): CronMcpServer {
   return serverInstance;
 }
 
+const invokedDirectly =
+  require.main === module ||
+  ['cron-mcp-server.ts', 'cron-mcp-server.js'].includes(path.basename(process.argv[1] ?? ''));
+
+async function main(): Promise<void> {
+  await getCronServer().run();
+}
+
 // Direct execution entry point
-if (require.main === module) {
-  getCronServer()
-    .run()
-    .catch((error) => {
-      logger.error('Cron MCP server error', error);
-      process.exit(1);
-    });
+if (invokedDirectly) {
+  main().catch((error) => {
+    logger.error('Cron MCP server error', error);
+    process.stderr.write('', () => process.exit(1));
+  });
 }
