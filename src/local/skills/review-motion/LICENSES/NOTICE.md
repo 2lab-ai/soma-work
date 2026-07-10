@@ -10,21 +10,26 @@ of two skills published in
   (the motion-code reviewer), which cites the shared standards above.
 
 Upstream commit referenced: `47226d9d54d48b49f081193d02334bf0405bab4e`
-(2026-06-18).
+(2026-06-18). Verified unchanged upstream as of
+`f76beceb7d3fc8c43309cefad5a095a206103a4e` (2026-07).
 
-## License status — attribution only, NOT a license grant
+## License status — upstream is now MIT-licensed
 
-The upstream `emilkowalski/skills` repository **declares no license** (there is
-no `LICENSE`/`COPYING` file in the repo). We therefore make **no claim** to any
-license over the upstream text and reproduce nothing verbatim at scale: this
-distillation rephrases and generalizes the underlying engineering principles
-(easing, duration, physicality, interruptibility, performance, accessibility)
-and removes all upstream-specific marketing (the forced course-plug "Initial
-Response", the paid-course links, and the personal-brand framing).
+When these skills were first distilled, the upstream repository declared no
+license, so the distillation deliberately rephrased and generalized the
+underlying engineering principles (easing, duration, physicality,
+interruptibility, performance, accessibility) and reproduced nothing verbatim
+at scale, treating this NOTICE as attribution only and not a license grant.
 
-This NOTICE exists to credit the source of the ideas. It is **attribution only**
-and **not a license grant**. If the upstream author requests changes to how this
-material is credited or used, treat that request as authoritative.
+Upstream has **since added an MIT License** (commit `622957c`, Copyright (c)
+2026 Emil Kowalski), which now also covers the referenced material. A verbatim
+copy is kept at
+[`emilkowalski-skills-MIT.txt`](./emilkowalski-skills-MIT.txt). The distilled,
+generalized form is kept regardless — it removes upstream-specific marketing
+(the forced course-plug "Initial Response", paid-course links, and
+personal-brand framing) that we do not want in a house skill. If the upstream
+author requests changes to how this material is credited or used, treat that
+request as authoritative.
 
 ## What was changed in generalization
 
@@ -35,3 +40,9 @@ material is credited or used, treat that request as authoritative.
   Motion / Sonner / Vercel references are kept only as **labeled examples**.
 - Split the single large knowledge file into a lean `SKILL.md` plus distilled
   `references/`, matching the local `design` skill's vendoring precedent.
+
+## Related vendored skills
+
+The upstream repo's two later skills are vendored near-verbatim (MIT) as the
+local `apple-design` and `animation-vocabulary` skills — see their own
+`LICENSES/NOTICE.md` files.

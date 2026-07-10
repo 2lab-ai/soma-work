@@ -1,8 +1,8 @@
 ---
 name: html
-description: Convert any content (markdown, plain text, JSON, CSV, SQL, raw notes) into a styled single-file HTML with a Lottie motion layer and a rendered PNG, publish the HTML on the local web server (clickable access link), then upload both files to the current Slack thread. The visual design is driven by the `ui-ux` skill as the main design engine (design-system + named references; default reference `openai`), with the `design` skill applied on top as the anti-AI-slop layer. Pick a template name from the catalog or let the skill auto-classify. Triggers on "html로 만들어줘", "HTML로 변환", "이걸 페이지로", "render as html", "html + png", "convert to html", "to html and png", "make a card", "make a deck", "make a poster", "make a report from this data".
+description: Convert any content (markdown, plain text, JSON, CSV, SQL, raw notes) into a styled single-file HTML with a Lottie motion layer and a rendered PNG, publish the HTML on the local web server (clickable access link), then upload both files to the current Slack thread. The visual design is driven by the `ui-ux` skill as the main design engine (design-system + named references; default reference `openai`), with the `design` skill applied on top as the anti-AI-slop layer and the `motion-design`/`apple-design` standards governing all CSS motion and display typography. Pick a template name from the catalog or let the skill auto-classify. Triggers on "html로 만들어줘", "HTML로 변환", "이걸 페이지로", "render as html", "html + png", "convert to html", "to html and png", "make a card", "make a deck", "make a poster", "make a report from this data".
 allowed-tools: Read, Write, Edit, Bash, Glob, Grep
-version: 0.2.0
+version: 0.3.0
 license: ISC
 ---
 
@@ -166,6 +166,47 @@ This step never blocks and never asks a question — it is a deterministic anti-
 pass layered on the ui-ux driver. The classifier in Step 2 and the auto-flow are
 unchanged.
 
+### 3.6. CSS motion & typography craft (`motion-design` + `apple-design` layer)
+
+Lottie (Step 3.7) is the *decorative* motion layer. Every **authored CSS
+transition/animation** on the page (entrances, hover states, links, buttons)
+is governed by the motion-design standards instead. Read the shared source of
+truth before writing any `transition`/`@keyframes`/`@starting-style` rule:
+
+```bash
+cat "$CLAUDE_PLUGIN_ROOT/skills/motion-design/references/motion-standards.md"
+```
+
+Apply these non-negotiables to all authored CSS motion:
+
+- **Entrances** use `@starting-style` (no JS) with a strong custom ease-out —
+  `cubic-bezier(0.23, 1, 0.32, 1)`, never a weak built-in easing and never
+  `ease-in`. Never enter from `scale(0)` — start `scale(0.95–0.97)` + opacity.
+  Groups of items (cards, list rows, KPI tiles) get a 30–80ms stagger, not an
+  everything-at-once pop.
+- **Durations**: UI elements ≤ 300ms; only slow ambient/decorative motion may
+  exceed it. Never `transition: all` — name exact properties.
+- **Compositor-only**: animate `transform` and `opacity`; never layout
+  properties (`width`/`height`/`margin`/`top`…).
+- **Hover/press**: hover motion gated behind
+  `@media (hover: hover) and (pointer: fine)`; pressable elements get
+  `transform: scale(0.97)` on `:active`.
+- **Reduced motion**: one `@media (prefers-reduced-motion: reduce)` block
+  covers *both* the CSS motion and the Lottie layer — keep opacity/color
+  changes, drop movement.
+
+Typography refinement, from the [`apple-design`](../apple-design/SKILL.md)
+skill (§15 Typography, §12 Materials): tracking is **size-specific** — display
+headings get negative letter-spacing (≈ `-0.02em`) and tight leading
+(`1.05–1.15`); body copy stays near `0` tracking with comfortable leading
+(`1.5`). Sticky headers/toolbars may use the translucent-material treatment
+(`backdrop-filter: blur() + semi-transparent background`) — never stack two
+light translucent surfaces, and pair it with `prefers-reduced-transparency`
+fallback when used.
+
+This step is deterministic reference reading — it never blocks and never asks
+the user anything.
+
 ### 3.7. Plan the motion layer (`lottie` skill)
 
 Every page gets a **Lottie motion layer** unless the user opts out
@@ -232,6 +273,13 @@ the model from freestyling AI-slop defaults):
   (e.g., `[—]`), do **not** invent content.
 - **Rounded corners + soft shadow + real `:focus`** on interactive elements
   (buttons / links).
+- **CSS motion follows Step 3.6** — strong custom easing (never `ease-in`,
+  never `transition: all`), UI durations ≤ 300ms, `transform`/`opacity` only,
+  entrances ≥ `scale(0.95)` via `@starting-style`, 30–80ms stagger on groups,
+  hover gated behind `@media (hover: hover) and (pointer: fine)`,
+  `prefers-reduced-motion` honored.
+- **Display typography is size-specific** (Step 3.6) — negative tracking
+  (≈ `-0.02em`) + tight leading on large headings; body near `0` tracking.
 - **Motion stays inline and quiet** — Lottie JSON from Step 3.7 is embedded
   as `animationData` (single-file rule: no `path:` fetches of separate
   `.json` files), ≤ 3 animations per page, each loop seamless and
@@ -389,6 +437,12 @@ V1 ships 8 templates. To add more from the html-anything catalog (75 total):
 - [`../design/SKILL.md`](../design/SKILL.md) — the `design` skill. Step 3.5
   applies it *on top of* the ui-ux driver as the anti-AI-slop discipline before
   generating HTML.
+- [`../motion-design/references/motion-standards.md`](../motion-design/references/motion-standards.md)
+  — the shared motion standards (easing curves, duration budgets, reduced-motion
+  rules). Step 3.6 applies them to every authored CSS transition/animation.
+- [`../apple-design/SKILL.md`](../apple-design/SKILL.md) — Apple's fluid-interface
+  craft (vendored from emilkowalski/skills, MIT). Step 3.6 pulls its
+  size-specific typography (§15) and translucent-material (§12) rules.
 - [`../lottie/SKILL.md`](../lottie/SKILL.md) — the `lottie` skill
   (vendored from diffusionstudio/lottie). Step 3.7 consults it to author the
   inline motion layer.
