@@ -7,7 +7,7 @@
  * sends is only used for backend-group ROUTING. Deploys ship the app bundle
  * but never touch host-level llmux config, so after the gpt-5.6 default flip
  * a host whose llmux still pins `gpt-5.5` would silently serve the smaller
- * model: soma-work's window math (370k, `GPT_5_6_CONTEXT_WINDOW`) would
+ * model: soma-work's window math (372k, `GPT_5_6_CONTEXT_WINDOW`) would
  * overrun gpt-5.5's real 272k input cap and long sessions would hit hard
  * context-overflow errors before the harness ever compacts.
  *

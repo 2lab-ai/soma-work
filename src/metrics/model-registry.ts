@@ -46,15 +46,38 @@ const MODEL_REGISTRY: [pattern: string, spec: ModelSpec][] = [
       maxOutput: 128_000,
     },
   ],
+  // OpenAI gpt-5.6-terra — mid tier of the gpt-5.6 family ($2.50 in / $15
+  // out / $0.25 cache-read per MTok, 2026-07-09 launch rates; no
+  // cache-creation charge on codex). Same 372k window as sol — official
+  // value from the openai/codex model catalog (models-manager/models.json),
+  // probe-consistent (369,755-token input accepted, ~380k rejected).
+  // MUST stay ABOVE the 'gpt-5.6' entry — patterns are substring-matched
+  // first-wins, and 'gpt-5.6' would swallow 'gpt-5.6-terra'.
+  [
+    'gpt-5.6-terra',
+    {
+      pricing: {
+        inputPerMTok: 2.5,
+        outputPerMTok: 15,
+        cacheReadPerMTok: 0.25,
+        cache5minWritePerMTok: 0,
+        cache1hrWritePerMTok: 0,
+      },
+      contextWindow: 372_000,
+      maxOutput: 128_000,
+    },
+  ],
   // OpenAI gpt-5.6 — served via llmux's codex backend group; llmux ≥ 0.2.16
   // pins the upstream codex slug to `gpt-5.6-sol` (flagship tier — the bare
   // `gpt-5.6` id is rejected by the ChatGPT-account codex backend). Rates
   // match OpenAI's 2026-07-09 launch pricing: $5 in / $30 out / $0.5
   // cache-read per MTok, no cache-creation charge on codex. Context window is
-  // 370k, measured empirically against the codex backend (369,755-token input
-  // accepted, ~380k rejected), with harness-side auto-compact at 340k (see
-  // GPT_5_6_* constants below). The pattern `gpt-5.6` also matches the
-  // upstream-reported `gpt-5.6-sol` / future dated snapshots.
+  // 372k — the official value from the openai/codex model catalog
+  // (models-manager/models.json: context_window 372000 for sol/terra/luna),
+  // probe-consistent (369,755-token input accepted, ~380k rejected) — with
+  // harness-side auto-compact at 340k (see GPT_5_6_* constants below). The
+  // pattern `gpt-5.6` also matches the upstream-reported `gpt-5.6-sol` /
+  // future dated snapshots.
   [
     'gpt-5.6',
     {
@@ -65,7 +88,7 @@ const MODEL_REGISTRY: [pattern: string, spec: ModelSpec][] = [
         cache5minWritePerMTok: 0,
         cache1hrWritePerMTok: 0,
       },
-      contextWindow: 370_000,
+      contextWindow: 372_000,
       maxOutput: 128_000,
     },
   ],
@@ -353,7 +376,7 @@ export const GPT_5_5_SDK_BLOCKING_LIMIT = GPT_5_5_CONTEXT_WINDOW - 20_000 - 3_00
  * `gpt-5.6-sol` (the bare `gpt-5.6` id is rejected by the ChatGPT-account
  * codex backend). The pinned Agent SDK does not know this id either, so the
  * harness owns the context-window math — same workaround set as gpt-5.5,
- * evaluated on the measured 370k window.
+ * evaluated on the 372k catalog window.
  *
  * The regex matches the soma-work id (`gpt-5.6`) AND the upstream-reported
  * slugs (`gpt-5.6-sol`, `gpt-5.6-terra`) so usage events that carry the
@@ -367,17 +390,19 @@ export function isGpt56Model(model: string): boolean {
 }
 
 /**
- * gpt-5.6 context window: 370k — measured empirically against the
- * ChatGPT-account codex backend on 2026-07-10 (369,755-token input accepted,
- * ~380k rejected; gpt-5.5's 272k input split is gone). The official API
- * window is 1.05M, but the codex backend clamps lower — do NOT raise this
- * without re-probing the backend.
+ * gpt-5.6 context window: 372k — the official value from the openai/codex
+ * model catalog (models-manager/models.json: context_window 372000 for
+ * sol/terra/luna alike), cross-checked by probing the ChatGPT-account codex
+ * backend on 2026-07-10 (369,755-token input accepted, ~380k rejected;
+ * gpt-5.5's 272k input split is gone). The official API window is 1.05M,
+ * but the codex backend clamps to the catalog value — do NOT raise this
+ * without re-checking the catalog.
  */
-export const GPT_5_6_CONTEXT_WINDOW = 370_000;
+export const GPT_5_6_CONTEXT_WINDOW = 372_000;
 
 /**
- * Harness-side auto-compact trigger for gpt-5.6: fixed 340k tokens (~92% of
- * the 370k window, mirroring gpt-5.5's 250k/275k ratio). The 30k headroom
+ * Harness-side auto-compact trigger for gpt-5.6: fixed 340k tokens (~91% of
+ * the 372k window, mirroring gpt-5.5's 250k/275k ratio). The 32k headroom
  * matters: the compact turn itself resends the full history plus the summary
  * prompt, so the trigger must sit safely below the hard window.
  */
@@ -386,7 +411,7 @@ export const GPT_5_6_AUTO_COMPACT_TOKENS = 340_000;
 /**
  * `CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE` value injected for gpt-5.6: the
  * SDK's own input hard-block formula (`window − 20k output reserve − 3k
- * safety`) evaluated on the measured 370k window. Without it the pinned SDK
+ * safety`) evaluated on the true 372k window. Without it the pinned SDK
  * resolves the unknown id to 200k and refuses input at ~177k.
  */
 export const GPT_5_6_SDK_BLOCKING_LIMIT = GPT_5_6_CONTEXT_WINDOW - 20_000 - 3_000;
@@ -483,7 +508,7 @@ export function classifyOneMUnavailable(text: string): OneMUnavailableKind {
  *   1. The `[1m]` suffix (opus beta opt-in) — strips + injects the beta header.
  *   2. A native-1M model id (e.g. `claude-fable-5`) — 1M on the bare id, no
  *      suffix and no beta header. See `isNativeOneMModel`.
- * gpt-5.6 (llmux codex backend) resolves to its measured 370k window;
+ * gpt-5.6 (llmux codex backend) resolves to its true 372k window;
  * gpt-5.5 (same backend) resolves to its true 275k window.
  * Every other bare model id resolves to `FALLBACK_CONTEXT_WINDOW` (200k), even
  * for specs that used to be 1M — matching the user-facing contract where 1M is
