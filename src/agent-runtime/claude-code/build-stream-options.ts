@@ -50,6 +50,7 @@ import { DEV_DOMAIN_ALLOWLIST } from '../../sandbox/dev-domain-allowlist';
 import type { SessionRegistry } from '../../session-registry';
 import type { ConversationSession, WorkflowType } from '../../types';
 import { DEFAULT_THINKING_ENABLED, userSettingsStore } from '../../user-settings-store';
+import { createTrackedClaudeProcessSpawner } from '../claude-child-process-registry';
 import type { SafetyClassifier } from '../policy/safety-classifier';
 import { evaluateToolPolicy, TOOL_POLICY_MATCHERS, type ToolPolicyContext } from '../policy/tool-policy';
 
@@ -517,6 +518,7 @@ export async function buildStreamOptions(
     stderrBuffer += data;
     handleClaudeStderrChunk(logger, data);
   };
+  options.spawnClaudeCodeProcess = createTrackedClaudeProcessSpawner(options.stderr);
 
   return {
     options,

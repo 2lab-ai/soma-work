@@ -42,6 +42,7 @@ import type { WebClient } from '@slack/web-api';
 import * as path from 'path';
 import { CronStorage } from 'somalib/cron/cron-storage';
 import { initA2tService, shutdownA2tService } from './a2t/a2t-service';
+import { getClaudeChildProcessRegistry } from './agent-runtime/claude-child-process-registry';
 import { initAuthRuntimeDefault } from './auth/auth-runtime';
 import { isLlmuxUp } from './auth/llmux-client';
 import { setQueryEnvAdditional } from './auth/query-env-builder';
@@ -132,6 +133,7 @@ async function start() {
     // synchronous — `releasePidLock` uses sync fs only, and only unlinks when
     // the lock file still holds THIS pid (safe no-op otherwise).
     process.on('exit', () => {
+      getClaudeChildProcessRegistry().killAllSync('SIGKILL');
       releasePidLock(DATA_DIR);
     });
 
@@ -1080,8 +1082,12 @@ async function start() {
 
       logger.info('Shutting down gracefully...');
 
+      // Stop accepting work and abort every active Agent SDK query before
+      // notifying/saving sessions. The SDK child registry below then owns the
+      // bounded TERM→KILL drain before process.exit.
+      slackHandler.getRequestCoordinator().clearAll();
+
       try {
-        // Stop report scheduler
         stopReportScheduler();
 
         // Stop cron scheduler
@@ -1143,7 +1149,19 @@ async function start() {
         logger.error('Error stopping conversation viewer:', error);
       }
 
-      // Release PID lock last — after all connections are torn down
+      // SDK transport.close() escalates with timers, but timers cannot run after
+      // process.exit(). Drain host-tracked Claude children first. A surviving
+      // child is a failed shutdown: log it explicitly and exit non-zero instead
+      // of relying on an unhandled rejection to reach the crash handler.
+      try {
+        await getClaudeChildProcessRegistry().drain();
+      } catch (error) {
+        logger.error('Claude child cleanup failed during shutdown:', error);
+        releasePidLock(DATA_DIR);
+        process.exit(1);
+      }
+
+      // Release PID lock last — after all connections and children are torn down
       releasePidLock(DATA_DIR);
 
       process.exit(0);
@@ -1164,6 +1182,7 @@ async function start() {
       } catch (saveError) {
         console.error('CRASH: failed to save sessions', saveError);
       }
+      getClaudeChildProcessRegistry().killAllSync('SIGKILL');
       process.exit(1);
     });
 
@@ -1176,6 +1195,7 @@ async function start() {
       } catch (saveError) {
         console.error('CRASH: failed to save sessions', saveError);
       }
+      getClaudeChildProcessRegistry().killAllSync('SIGKILL');
       process.exit(1);
     });
 
