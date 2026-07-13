@@ -18,6 +18,7 @@ soma-work (Slack multi-tenant AI Assistant) 아키텍처 문서. 2026-06-10 기�
 | McpManager | MCP 서버 프로비저닝 (stdio) | `src/mcp-manager.ts`, `src/mcp/` |
 | PluginManager | 플러그인/마켓플레이스 라이프사이클 | `src/plugin/` |
 | AgentManager | 멀티 에이전트 인스턴스 기동 | `src/agent-manager.ts`, `src/agent-instance.ts` |
+| Claude Child Registry | Agent SDK 자식 프로세스 소유, 종료 시 bounded TERM→KILL 회수 | `src/agent-runtime/claude-child-process-registry.ts` |
 | A2T Service | 음성→텍스트 (Python worker) | `services/a2t/worker.py` |
 | CronScheduler | 예약 synthetic 메시지 트리거 | `src/cron-scheduler.ts` |
 | Conversation Recorder | 대화 기록 + 리플레이 웹 대시보드 | `src/conversation/` |

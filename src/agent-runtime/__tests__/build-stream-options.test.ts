@@ -316,11 +316,12 @@ describe('buildStreamOptions — option parity (epic #1023 P1)', () => {
     });
   });
 
-  it('abortController + stderr: wires the abort signal and accumulates stderr into the buffer', async () => {
+  it('abortController + stderr: wires the abort signal, tracked child spawn, and stderr buffer', async () => {
     const deps = makeDeps();
     const abortController = new AbortController();
     const { options, getStderrBuffer } = await buildStreamOptions({ queryEnv: {}, abortController }, deps);
     expect(options.abortController).toBe(abortController);
+    expect(options.spawnClaudeCodeProcess).toBeTypeOf('function');
     expect(getStderrBuffer()).toBe('');
     options.stderr?.('boom-1\n');
     options.stderr?.('boom-2\n');

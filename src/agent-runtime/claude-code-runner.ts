@@ -12,6 +12,7 @@
 
 import { type Options, query } from '@anthropic-ai/claude-agent-sdk';
 import type { AgentRunOptions } from './agent-runner';
+import { createTrackedClaudeProcessSpawner } from './claude-child-process-registry';
 
 /**
  * Map portable {@link AgentRunOptions} to the SDK's {@link Options} shape.
@@ -36,6 +37,7 @@ export function toSdkOptions(opts: AgentRunOptions): Options {
     env: ext.env,
     thinking: ext.thinking as Options['thinking'],
     stderr: ext.stderr,
+    spawnClaudeCodeProcess: createTrackedClaudeProcessSpawner(ext.stderr),
   };
   // One-shot dispatch knobs (#model-call-unify) — only set when supplied so the
   // existing one-shot helpers' SDK Options stay byte-for-byte unchanged.
