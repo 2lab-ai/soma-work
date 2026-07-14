@@ -141,6 +141,17 @@ export function buildQueryEnv(lease: SlotAuthLease): QueryEnvResult {
     env[key] = value;
   }
 
+  // Hook-proxy opt-in. The zworkflow plugin's hook-proxy.sh defaults to the
+  // self-contained shell guard (`HOOKS_PROXY_ENABLED` unset → standalone) so
+  // external Claude Code installs work without a localhost service. soma-work
+  // DOES run the Fastify hook service, so it opts spawned agents into the HTTP
+  // proxy here. Only defaults when unset — an explicit process.env / operator
+  // value (layers 1–2) still wins, e.g. for local debugging. Set before the
+  // auth-backend branch so both llmux and ccp dispatches carry it.
+  if (env.HOOKS_PROXY_ENABLED === undefined) {
+    env.HOOKS_PROXY_ENABLED = 'true';
+  }
+
   // Layer 3 — auth backend. Read from the RUNTIME state (auth-runtime.ts),
   // not static config: `auth llmux|cct` flips the mode live and the flip must
   // apply to the next dispatch without a restart. AUTH_MODE env remains the

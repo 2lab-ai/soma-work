@@ -1,7 +1,19 @@
 #!/bin/bash
-# hook-proxy.sh — Thin HTTP proxy for Claude Code hooks
-# Routes hook events to soma-work Fastify service.
-# All business logic lives in the service; this script only forwards.
+# hook-proxy.sh — Claude Code hook entrypoint for the zworkflow plugin.
+#
+# Two modes, gated by HOOKS_PROXY_ENABLED:
+#   • unset / != "true"  → STANDALONE (default): run the self-contained shell
+#       guards (todo-guard.sh / call-tracker.sh). No network, file-based state.
+#       This is what an external Claude Code install gets — it must work with no
+#       soma-work service present.
+#   • "true"             → PROXY: forward events to the soma-work Fastify service
+#       (centralized state). soma-work opts in by setting HOOKS_PROXY_ENABLED=true
+#       in the spawned agent's env (see buildQueryEnv in query-env-builder.ts).
+#
+# Why default standalone: the old default ("true") made external installs POST
+# to 127.0.0.1:33000, which doesn't exist off a soma-work box → curl fails →
+# fail-open → the guard silently did nothing. Defaulting to the shell guard
+# matches the plugin's standalone contract.
 #
 # Usage: hook-proxy.sh <pre_tool_use|post_tool_use|cleanup>
 # Exit codes: 0 = pass, 2 = blocked (pre_tool_use only)
@@ -17,8 +29,8 @@ if [[ -z "$EVENT" ]]; then
   exit 0
 fi
 
-# ── Rollback: disabled proxy → delegate to legacy scripts ──
-if [[ "${HOOKS_PROXY_ENABLED:-true}" != "true" ]]; then
+# ── Default STANDALONE: run self-contained shell guards (no service needed) ──
+if [[ "${HOOKS_PROXY_ENABLED:-false}" != "true" ]]; then
   SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
   if [[ -t 0 ]]; then
     HOOK_INPUT="{}"
