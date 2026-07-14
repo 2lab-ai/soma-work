@@ -175,6 +175,46 @@ function resetLoggerConfig() {
   cachedMuted = null;
 }
 
+/**
+ * `JSON.stringify` that never throws.
+ *
+ * Fast path is a plain `JSON.stringify` so serializable payloads keep byte-
+ * identical output. Only when that throws (circular structure, BigInt) does
+ * the cycle-guard replacer run, substituting `"[Circular]"` for re-visited
+ * objects. A log call must never take down its caller: a circular object in
+ * a debug payload (an in-process SDK MCP server instance inside stream
+ * options — ajv SchemaEnv's `root` self-reference) failed every Slack turn
+ * on 2026-07-10.
+ */
+export function safeJsonStringify(data: unknown, space?: number): string {
+  try {
+    const out = JSON.stringify(data, undefined, space);
+    return out === undefined ? String(data) : out;
+  } catch {
+    // Fallback replacer. The WeakSet marks every visited object, so shared
+    // (non-cyclic) references also collapse to "[Circular]" — acceptable for
+    // a log line that would previously have crashed the process.
+    const seen = new WeakSet<object>();
+    try {
+      const out = JSON.stringify(
+        data,
+        (_key, value) => {
+          if (typeof value === 'bigint') return `${value}n`;
+          if (typeof value === 'object' && value !== null) {
+            if (seen.has(value)) return '[Circular]';
+            seen.add(value);
+          }
+          return value;
+        },
+        space,
+      );
+      return out === undefined ? String(data) : out;
+    } catch (err) {
+      return `[Unserializable: ${err instanceof Error ? err.message.split('\n')[0] : String(err)}]`;
+    }
+  }
+}
+
 export class Logger {
   private context: string;
   private contextLower: string;
@@ -206,11 +246,11 @@ export class Logger {
 
     if (data && Object.keys(data).length > 0) {
       // Compact single-line JSON for simple objects
-      const jsonStr = JSON.stringify(data);
+      const jsonStr = safeJsonStringify(data);
       if (jsonStr.length < 100) {
         return `${prefix} ${message} ${jsonStr}`;
       }
-      return `${prefix} ${message}\n${JSON.stringify(data, null, 2)}`;
+      return `${prefix} ${message}\n${safeJsonStringify(data, 2)}`;
     }
     return `${prefix} ${message}`;
   }
