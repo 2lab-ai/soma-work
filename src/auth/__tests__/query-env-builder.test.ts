@@ -162,6 +162,37 @@ describe('buildQueryEnv', () => {
     expect(env.NEW).toBeUndefined();
   });
 
+  // ===== HOOKS_PROXY_ENABLED opt-in =====
+  // The zworkflow plugin defaults to the self-contained shell guard so external
+  // installs work without a service. soma-work owns the Fastify hook service, so
+  // it opts spawned agents INTO the HTTP proxy by setting HOOKS_PROXY_ENABLED.
+
+  it('defaults HOOKS_PROXY_ENABLED to "true" when unset (soma-work opts into the hook service)', () => {
+    const original = process.env.HOOKS_PROXY_ENABLED;
+    delete process.env.HOOKS_PROXY_ENABLED;
+    try {
+      const lease = makeLease('slot-a', 'TOKEN', 'cct');
+      const { env } = buildQueryEnv(lease);
+      expect(env.HOOKS_PROXY_ENABLED).toBe('true');
+    } finally {
+      if (original === undefined) delete process.env.HOOKS_PROXY_ENABLED;
+      else process.env.HOOKS_PROXY_ENABLED = original;
+    }
+  });
+
+  it('respects an explicit HOOKS_PROXY_ENABLED from the environment (override wins)', () => {
+    const original = process.env.HOOKS_PROXY_ENABLED;
+    process.env.HOOKS_PROXY_ENABLED = 'false';
+    try {
+      const lease = makeLease('slot-a', 'TOKEN', 'cct');
+      const { env } = buildQueryEnv(lease);
+      expect(env.HOOKS_PROXY_ENABLED).toBe('false');
+    } finally {
+      if (original === undefined) delete process.env.HOOKS_PROXY_ENABLED;
+      else process.env.HOOKS_PROXY_ENABLED = original;
+    }
+  });
+
   it('RESERVED_LEASE_KEYS is frozen and contains the auth/proxy/provider slots', () => {
     expect(Object.isFrozen(RESERVED_LEASE_KEYS)).toBe(true);
     // Spot-check the canonical entries — full list pinned by the parser
