@@ -119,6 +119,32 @@ describe('SessionCommandHandler', () => {
       expect(texts.some((t: string) => t.includes('Session Model Changed'))).toBe(true);
     });
 
+    it('`%model <value>` immediately updates session.usage.contextWindow to the new model window', async () => {
+      // Regression: after `%model sol` the session kept the OLD model's
+      // contextWindow until the next turn's usage event, so `/context`
+      // reported remaining space against the wrong denominator.
+      session.usage = {
+        currentInputTokens: 100,
+        currentOutputTokens: 10,
+        currentCacheReadTokens: 0,
+        currentCacheCreateTokens: 0,
+        contextWindow: 1_000_000, // stale window from previous [1m] model
+        totalInputTokens: 100,
+        totalOutputTokens: 10,
+        totalCacheReadTokens: 0,
+        totalCacheCreateTokens: 0,
+        totalCostUsd: 0.01,
+        lastUpdated: Date.now(),
+      };
+
+      const ctx = makeCtx('%model opus');
+      await handler.execute(ctx);
+
+      // Mocked resolveModelInput('opus') → 'claude-opus-4-1-20250805' (bare id,
+      // no [1m] suffix) → resolveContextWindow = 200k fallback, not 1M.
+      expect((session.usage as { contextWindow: number }).contextWindow).toBe(200_000);
+    });
+
     it('emits deprecation notice for bare `$` → info', async () => {
       const ctx = makeCtx('$');
       await handler.execute(ctx);
