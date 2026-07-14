@@ -121,3 +121,50 @@ describe('SessionRegistry sourceWorkingDirs', () => {
     expect(updated?.sourceWorkingDirs).toEqual([]);
   });
 });
+
+// Recovered from the removed session-workspace-isolation.test.ts (#813): these
+// exercise live SessionRegistry behavior, not the deleted createSessionWorkingDir.
+describe('cleanup with normalized paths', () => {
+  let registry: SessionRegistry;
+
+  beforeEach(() => {
+    for (const d of [TEST_DATA_DIR, TEST_WORKING_DIR]) {
+      if (fs.existsSync(d)) fs.rmSync(d, { recursive: true });
+      fs.mkdirSync(d, { recursive: true });
+    }
+    registry = new SessionRegistry();
+  });
+
+  afterEach(() => {
+    for (const d of [TEST_DATA_DIR, TEST_WORKING_DIR]) {
+      if (fs.existsSync(d)) fs.rmSync(d, { recursive: true });
+    }
+  });
+
+  it('normalizes /private/tmp paths when registering', () => {
+    const session = registry.createSession('U001', 'Tester', 'C001', '200.001');
+    session.sessionId = 'test-cleanup-1';
+    session.state = 'MAIN';
+
+    const dirPath = path.join(TEST_WORKING_DIR, 'normalize-test');
+    fs.mkdirSync(dirPath, { recursive: true });
+
+    const result = registry.addSourceWorkingDir('C001', '200.001', dirPath);
+    expect(result).toBe(true);
+  });
+
+  it('removes session working directory on termination', () => {
+    const session = registry.createSession('U001', 'Tester', 'C001', '300.001');
+    session.sessionId = 'test-cleanup-2';
+    session.state = 'MAIN';
+
+    const dirPath = path.join(TEST_WORKING_DIR, 'cleanup-session-test');
+    fs.mkdirSync(dirPath, { recursive: true });
+
+    registry.addSourceWorkingDir('C001', '300.001', dirPath);
+    expect(fs.existsSync(dirPath)).toBe(true);
+
+    registry.terminateSession('C001-300.001');
+    expect(fs.existsSync(dirPath)).toBe(false);
+  });
+});
