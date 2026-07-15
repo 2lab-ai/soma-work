@@ -45,10 +45,16 @@ export const __TEST_ONLY_VALID_MODELS: ReadonlySet<string> = VALID_MODELS;
 function readCatalogSnapshotIds(dataDir: string | undefined): Set<string> {
   const ids = new Set<string>();
   if (!dataDir) return ids;
-  try {
-    const raw = fs.readFileSync(path.join(dataDir, 'model-catalog.json'), 'utf8');
-    const parsed = JSON.parse(raw) as { models?: Array<{ id?: unknown }> };
-    if (Array.isArray(parsed?.models)) {
+  const file = path.join(dataDir, 'model-catalog.json');
+  // Mirror modelCatalog.loadSnapshotSync: try the live snapshot, then the
+  // `.bak` kept by the atomic writer — a corrupt live file must not coerce
+  // persisted catalog models (e.g. grok-4.5) down to DEFAULT_MODEL when the
+  // backup still knows them.
+  for (const candidate of [file, `${file}.bak`]) {
+    try {
+      const raw = fs.readFileSync(candidate, 'utf8');
+      const parsed = JSON.parse(raw) as { models?: Array<{ id?: unknown }> };
+      if (!Array.isArray(parsed?.models)) continue;
       for (const entry of parsed.models) {
         if (entry && typeof entry.id === 'string' && entry.id.trim().length > 0) {
           const id = entry.id.trim().toLowerCase();
@@ -60,9 +66,10 @@ function readCatalogSnapshotIds(dataDir: string | undefined): Set<string> {
           ids.add(id);
         }
       }
+      return ids;
+    } catch {
+      // fail-soft: missing/corrupt candidate → try the next one
     }
-  } catch {
-    // fail-soft: no snapshot / corrupt snapshot → static behavior
   }
   return ids;
 }
