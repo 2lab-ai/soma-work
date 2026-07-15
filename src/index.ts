@@ -44,7 +44,7 @@ import { CronStorage } from 'somalib/cron/cron-storage';
 import { initA2tService, shutdownA2tService } from './a2t/a2t-service';
 import { getClaudeChildProcessRegistry } from './agent-runtime/claude-child-process-registry';
 import { initAuthRuntimeDefault } from './auth/auth-runtime';
-import { fetchLlmuxModels, isLlmuxUp } from './auth/llmux-client';
+import { isLlmuxUp } from './auth/llmux-client';
 import { setQueryEnvAdditional } from './auth/query-env-builder';
 import { scanChannels } from './channel-registry';
 import { ClaudeHandler } from './claude-handler';
@@ -81,7 +81,7 @@ import { discoverInstallations, getGitHubAppAuth, isGitHubAppConfigured } from '
 import { Logger } from './logger';
 import { McpManager } from './mcp-manager';
 import { startReportScheduler, stopReportScheduler } from './metrics';
-import { modelCatalog } from './model-catalog';
+import { bootModelCatalog } from './model-catalog-boot';
 import {
   evaluateAndMaybeRotate,
   notifyAutoRotation,
@@ -158,43 +158,11 @@ async function start() {
     );
     timing('default-model migration evaluated');
 
-    // Align the local llmux codex pin with the gpt-5.6 default. gpt-* ids
-    // only ROUTE via llmux; the upstream slug is pinned in llmux's own
-    // config, which deploys never touch. A stale gpt-5.5 pin would serve a
-    // 272k-input model under soma-work's 372k window math — repair it once,
-    // fail-soft on proxy errors (boot must not block on llmux hiccups).
-    if (config.auth.mode === 'llmux') {
-      const llmuxSync = await syncLlmuxCodexModel({ baseUrl: config.auth.llmux.baseUrl });
-      if (llmuxSync.status === 'failed') {
-        logger.warn(
-          `llmux codex pin sync FAILED (${llmuxSync.error}) — verify codex.default_model is ${GPT_5_6_UPSTREAM_SLUG} in the llmux config, or gpt-5.6 sessions will overrun the upstream window`,
-        );
-      } else {
-        logger.info(
-          `llmux codex pin sync: ${llmuxSync.status}${llmuxSync.before ? ` (before=${llmuxSync.before}${llmuxSync.after ? `, after=${llmuxSync.after}` : ''})` : ''}`,
-        );
-      }
-      timing('llmux codex pin sync evaluated');
-
-      // Fetch the llmux model catalog (GET /llmux/models) so catalog models
-      // (grok-4.5 et al) are selectable from the first turn. Fail-soft: on
-      // any error the static allow-list + the last persisted snapshot keep
-      // serving — boot never blocks on llmux hiccups.
-      modelCatalog.setFetcher(() => fetchLlmuxModels({ baseUrl: config.auth.llmux.baseUrl }));
-      const catalogResult = await modelCatalog.refresh();
-      if (catalogResult.ok) {
-        logger.info(`llmux model catalog: ${catalogResult.count} models`);
-      } else {
-        const fetchedAt = modelCatalog.getFetchedAt();
-        const snapshotAge = fetchedAt
-          ? `snapshot age ${Math.round((Date.now() - fetchedAt) / 60_000)}min`
-          : 'no snapshot';
-        logger.warn(
-          `llmux model catalog fetch failed — using static allow-list (+${catalogResult.count} snapshot models, ${snapshotAge}): ${catalogResult.error}`,
-        );
-      }
-      timing('llmux model catalog fetch evaluated');
-    }
+    // llmux-dependent boot steps (codex pin sync + model-catalog fetch) run
+    // AFTER initAuthRuntimeDefault below — gating them on the static
+    // `config.auth.mode` missed hosts that boot as ccp and only flip to
+    // llmux via the runtime reachability probe (work-m64 dev: no grok in the
+    // model list because the catalog was never fetched).
 
     // Run preflight checks
     const preflight = await runPreflightChecks();
@@ -398,6 +366,35 @@ async function start() {
         ? `Auth runtime: llmux -> ${authState.llmux.baseUrl} (runtime-switchable via \`auth\`)`
         : 'Auth runtime: ccp (legacy CCT slot leases; runtime-switchable via `auth`)',
     );
+
+    // llmux-dependent boot steps — gated on the RUNTIME auth mode resolved
+    // above (NOT the static config.auth.mode, which is `ccp` on hosts that
+    // rely on the boot probe to default to llmux). Both are fail-soft.
+    if (authState.mode === 'llmux') {
+      // Align the local llmux codex pin with the gpt-5.6 default. gpt-* ids
+      // only ROUTE via llmux; the upstream slug is pinned in llmux's own
+      // config, which deploys never touch. A stale gpt-5.5 pin would serve a
+      // 272k-input model under soma-work's 372k window math.
+      const llmuxSync = await syncLlmuxCodexModel({ baseUrl: authState.llmux.baseUrl });
+      if (llmuxSync.status === 'failed') {
+        logger.warn(
+          `llmux codex pin sync FAILED (${llmuxSync.error}) — verify codex.default_model is ${GPT_5_6_UPSTREAM_SLUG} in the llmux config, or gpt-5.6 sessions will overrun the upstream window`,
+        );
+      } else {
+        logger.info(
+          `llmux codex pin sync: ${llmuxSync.status}${llmuxSync.before ? ` (before=${llmuxSync.before}${llmuxSync.after ? `, after=${llmuxSync.after}` : ''})` : ''}`,
+        );
+      }
+      timing('llmux codex pin sync evaluated');
+    }
+
+    // Fetch the llmux model catalog (GET /llmux/models) so catalog models
+    // (grok-4.5 et al) are selectable from the first turn. Always wires the
+    // fetcher (live runtime settings) so a later runtime switch to llmux
+    // can populate the catalog via TTL background refreshes; the boot fetch
+    // itself runs only in llmux mode. Fail-soft — boot never blocks.
+    await bootModelCatalog(authState.mode);
+    timing('llmux model catalog boot evaluated');
 
     // Initialize MCP manager from config.json#mcpServers.
     // Empty section ⇒ start with no remote MCP servers; default/internal
