@@ -446,6 +446,24 @@ describe('main-env-bootstrap', () => {
       expect(__TEST_ONLY_coerceModel('claude-opus-4-7', dataDir)).toBe('claude-opus-4-7');
     });
 
+    it('falls back to the `.bak` snapshot when the live file is corrupt (mirrors loadSnapshotSync)', () => {
+      const dataDir = makeTempDir('bootstrap-catalog-');
+      fs.mkdirSync(dataDir, { recursive: true });
+      fs.writeFileSync(path.join(dataDir, 'model-catalog.json'), '{ nope', 'utf8');
+      writeJson(path.join(dataDir, 'model-catalog.json.bak'), GROK_SNAPSHOT);
+      expect(__TEST_ONLY_coerceModel('grok-4.5', dataDir)).toBe('grok-4.5');
+    });
+
+    it('excludes native-1M [1m] snapshot ids from preservation (fable beta-header contract)', () => {
+      const dataDir = makeTempDir('bootstrap-catalog-');
+      writeJson(path.join(dataDir, 'model-catalog.json'), {
+        fetchedAt: 1,
+        models: [{ id: 'claude-fable-5[1m]' }, ...GROK_SNAPSHOT.models],
+      });
+      expect(__TEST_ONLY_coerceModel('claude-fable-5[1m]', dataDir)).toBe('gpt-5.6-sol');
+      expect(__TEST_ONLY_coerceModel('grok-4.5', dataDir)).toBe('grok-4.5');
+    });
+
     it('normalizeMainTargetData preserves grok-4.5 settings when the data dir has the snapshot', async () => {
       const targetDir = makeTempDir('bootstrap-catalog-target-');
       const dataDir = path.join(targetDir, 'data');
