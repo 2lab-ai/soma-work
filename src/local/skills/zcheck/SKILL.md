@@ -11,7 +11,7 @@ PR이 mergeable 상태가 될 때까지 루프
 
 - PR URL or `owner/repo#number`
 
-## Step 0: Update bracnh
+## Step 0: Update branch
 
 1. base branch로 새로 `rebase` 한다. 충돌이 발생하면 충돌을 처리한다.
 2. Invoke `local:simplify` (fix mode) on the `origin/main...HEAD` diff.
@@ -62,7 +62,7 @@ tier ≤ `small`로 ztrace가 과한 경우: RED→GREEN 테스트 출력을 ztr
 
 **zcheck 자체는 approve/merge를 실행하지 않는다** (`local:using-z` 라우팅표: approve는 `local:z` phase4 소유). zcheck의 산출물은 **readiness 판정**이다:
 
-1. Coverage 완전 + CI green + unresolved 0 → **READY** 판정. 유저에게 **PR 링크** + 리뷰 코멘트 해결 수, CI 상태, 변경 범위를 첨부해 `local:UIAskUserQuestion`으로 approve 여부를 묻는다 — 이 질문은 `local:z` phase4 approve 게이트를 대행하는 것이며, 머지·`local:es` 진행은 유저 approve 후 `local:z` phase4/5 절차가 이어받는다. autoz 하에서는 approve/merge 전에 autoz Rule 8 codex 리뷰 게이트가 먼저 통과되어야 한다.
+1. Coverage 완전 + CI green + unresolved 0 → **READY** 판정. 유저에게 **PR 링크** + 리뷰 코멘트 해결 수, CI 상태, 변경 범위를 첨부해 `local:UIAskUserQuestion`으로 approve 여부를 묻는다 — 이 질문은 `local:z` phase4 approve 게이트를 대행하는 것이며, 머지·`local:es` 진행은 유저 approve 후 `local:z` phase4/5 절차가 이어받는다. **autoz 하에서는 이 질문을 생략한다** (autoz Rule 4) — READY 판정만 반환하고, approve는 autoz Rule 8 codex 리뷰 게이트 통과 후 autoz Rule 5가 직접 수행한다.
 
 옵션 텍스트는 `../UIAskUserQuestion/templates/zcheck-pr-approve.json` 템플릿을 그대로 사용한다 (question / context / choices A~D 전부 그 파일이 단일 진실원 — 여기서 재정의하지 않는다). 각 옵션의 의미만 요약:
 - Option A: approve — 이후 머지 → `local:es` → 다음 phase는 `local:z` phase4/5가 절차대로 수행 (RATE +1).

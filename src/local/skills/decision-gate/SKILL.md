@@ -42,11 +42,12 @@ Use these signals in addition to (not instead of) the line-count heuristic. If l
 for each decision:
   1. Estimate switching_cost = how many lines to change if reversing this decision later?
 
-  2. if switching_cost < small (~20 lines):
-       → Autonomous judgment
-       → 3-person review majority vote (you + oracle-reviewer + subagent (opus))
-       → Proceed in the direction agreed upon by 2/3 or more
-       → Do not ask the user
+  2. if switching_cost >= xxlarge (~1000+ lines):
+       → HALT — do not attempt as a single work unit
+       → 3-person review proposes decomposition into N epics (each ≤ xlarge)
+       → Ask user for decomposition approval
+       → On approval: hand each epic to using-epic-tasks Case B in independent sessions
+       → Do NOT create any epic/issue/PR before user approval
 
   3. elif switching_cost >= medium (~50 lines):
        → Ask the user
@@ -58,13 +59,14 @@ for each decision:
          already pass the 6-rule soft gate. `local:zwork` delegates here when
          retries exceed 3; it must not own its own UIAskUserQuestion template.
 
-  4. elif switching_cost >= xxlarge (~1000+ lines):
-       → HALT — do not attempt as a single work unit
-       → 3-person review proposes decomposition into N epics (each ≤ xlarge)
-       → Ask user for decomposition approval
-       → On approval: hand each epic to using-epic-tasks Case B in independent sessions
-       → Do NOT create any epic/issue/PR before user approval
+  4. else — switching_cost < medium (tiny ~5 / small ~20 lines):
+       → Autonomous judgment
+       → 3-person review majority vote (you + oracle-reviewer + subagent (opus))
+       → Proceed in the direction agreed upon by 2/3 or more
+       → Do not ask the user
 ```
+
+Branches are evaluated top-down; the bands are exhaustive — every decision lands in exactly one branch (the old `< small` / `>= medium` split left 20–50 lines undefined and made the xxlarge branch unreachable).
 
 ## 3-Person Majority Review (MANDATORY)
 
@@ -78,7 +80,7 @@ for each decision:
 
 **Making decisions or asking questions without review is prohibited.**
 
-### Autonomous Judgment (switching cost < small)
+### Autonomous Judgment (switching cost < medium)
 
 Proceed immediately in the direction agreed upon by 2 or more out of 3. Leave a decision log:
 
@@ -86,7 +88,7 @@ Proceed immediately in the direction agreed upon by 2 or more out of 3. Leave a 
 ### Auto-Decision: [Title]
 - **Decision**: [Chosen option]
 - **switching cost**: [tier] (~N lines)
-- **Votes**: Codex ✅ / oracle-reviewer ✅ / subagent (opus) ❌ (2/3)
+- **Votes**: Self ✅ / oracle-reviewer ✅ / subagent (opus) ❌ (2/3)
 - **Rationale**: [Why this direction, 1-2 lines]
 ```
 
@@ -96,7 +98,7 @@ Include the 3-person review results in the question:
 
 ```markdown
 ▸ 🤖 Review Consensus (2/3 recommend Option A):
-  - Codex: Option A — [reason]
+  - Self: Option A — [reason]
   - oracle-reviewer: Option A — [reason]
   - subagent (opus): Option B — [reason]
 ```
@@ -118,7 +120,7 @@ Include the 3-person review results in the question:
 
 ## Reference Table: Default Tier by Category
 
-### Autonomous Judgment Area (switching cost < small)
+### Autonomous Judgment Area (switching cost < medium)
 
 | Category | Tier | Why |
 |----------|------|-----|
