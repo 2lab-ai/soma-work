@@ -25,15 +25,7 @@ ssot-task ID는 산출물 안에서 carry — 서브이슈 본문 첫 줄 `<!-- 
 
 ## Core
 
-유저 요청 → `decision-gate` 호출 → 반환된 tier로 케이스 결정.
-
-| tier | 케이스 | 산출물 |
-|---|---|---|
-| ≤ large (≤~100 lines) | **Case A** | 이슈 1 + PR 1 |
-| xlarge (~500 lines) | **Case B** | 에픽 1 + 서브이슈 N + PR N |
-| ≥ xxlarge (≥~1000 lines) | **Case C** | 없음 — 유저에게 쪼개기 요청 후 중지 |
-
-**작업 시작 전 반드시 케이스 판정.** 판정 없이 에픽·이슈 생성 금지.
+유저 요청 → tier(= `z` phase0의 `decision-gate` 판정 결과) → 위 매핑 표로 케이스 결정. **작업 시작 전 반드시 케이스 판정.** 판정 없이 에픽·이슈 생성 금지.
 
 ### Tier 판정 휴리스틱 (line 수 예측이 어려울 때)
 

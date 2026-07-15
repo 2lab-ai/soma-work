@@ -21,13 +21,13 @@ When invoked via session handoff from z phase1, the initial session prompt carri
 
 0. **SSOT restore (`local:using-ssot` Hook 3).** Read `## SSOT-LIST` and `## SSOT-TASK-TREE` from the `<z-handoff type="plan-to-work">` block (already parsed into session-level SSOT by z phase0 step 0.5). Emit a **one-line ack** at session start: `SSOT restored — N ssot-tasks, M still open` (no full re-render — phase0 already printed the tree on the producer side). Re-render the full tree only if the handoff parse failed or the user explicitly asks. Every subsequent RED test, every implementer dispatch, and the final PR body must trace back to one or more `ssot-task` IDs from this tree. If a drift instruction arrives mid-implementation, **do not mutate the tree locally** — bounce to the z controller (zreflect → Hook 2) and resume from the regenerated tree.
 
-1. Dispatch implementation to parallel subagents via the Task/Agent tool. Split the confirmed plan into independent implementer briefs (one per `ssot-task` where possible) and hand each to a subagent with the full task text, its RED tests, and any shared context it needs to work in isolation.
+1. Write RED tests covering all user scenarios (tag each with the `ssot-task` IDs it covers). Run them and confirm they fail. **If RED tests were already authored upstream** (autoz Analysis/RED intake, carried via the Handoff #1 `## Analysis Artifact` / `## Analysis Summary` / `## RED Mapping` fields) — reuse and extend them; do not re-author from scratch. RED authorship has one owner: the session that ran the intake. Link the carried analysis artifact in the PR body.
 
-2. Write Red tests to cover all user scenarios.
+2. Review RED-test coverage of the user scenarios with llm_chat(codex). If coverage is incomplete, extend the tests and re-review — loop until codex passes it.
 
-3. Review Red tests coverage for user scenarios with llm_chat(codex). This should pass or go to 3 again.
+3. Split the confirmed plan into independent implementer briefs (one per `ssot-task` where possible), each carrying the full task text, its RED tests, and the shared context needed to work in isolation.
 
-4. **Per-task loop** (dispatch independent tasks in parallel):
+4. **Per-task loop** (dispatch independent briefs to parallel subagents via the Task/Agent tool):
    a. **Dispatch Implementer subagent** — include full task text + context + RED tests
       - If there are questions, answer them and re-dispatch
    b. **Dispatch Spec compliance reviewer subagent** — verify implementation matches requirements
@@ -47,7 +47,7 @@ When invoked via session handoff from z phase1, the initial session prompt carri
 
 7. Invoke `local:review-pr`
 
-8. Red/green test verification. All red test should be green start over again.
+8. RED→GREEN verification: every RED test from step 1 must now pass. Any test still red → return to step 4 for the owning `ssot-task`.
 
 ## Exit
 

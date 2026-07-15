@@ -2,7 +2,13 @@
  * `/z model` Block Kit topic — Phase 2 (#507).
  */
 
-import { AVAILABLE_MODELS, MODEL_ALIASES, userSettingsStore } from '../../../user-settings-store';
+import { modelCatalog } from '../../../model-catalog';
+import {
+  AVAILABLE_MODELS,
+  isCatalogIdSelectable,
+  MODEL_ALIASES,
+  userSettingsStore,
+} from '../../../user-settings-store';
 import type { ApplyResult, RenderResult, ZTopicBinding } from '../../actions/z-settings-actions';
 import { buildSettingCard } from '../ui-builder';
 
@@ -14,17 +20,23 @@ import { buildSettingCard } from '../ui-builder';
  * `opus` and `haiku` so users can jump to the opus 1M variant without scrolling
  * through the full allow-list.
  */
-export const FEATURED_ALIASES = ['fable', 'sonnet', 'opus', 'opus[1m]', 'haiku'] as const;
+export const FEATURED_ALIASES = ['fable', 'sonnet', 'opus', 'opus[1m]', 'haiku', 'grok'] as const;
 
 export async function renderModelCard(args: { userId: string; issuedAt: number }): Promise<RenderResult> {
   const { userId, issuedAt } = args;
+  // Opportunistic catalog revalidation (fire-and-forget, ≥10min TTL) — the
+  // card renders immediately from the current overlay either way.
+  modelCatalog.maybeRefreshInBackground();
   const current = userSettingsStore.getUserDefaultModel(userId);
   const currentDisplay = userSettingsStore.getModelDisplayName(current);
 
-  // Featured aliases first (easy to hit), then each full model id as a power-user option.
+  // Featured aliases first (easy to hit), then each full model id as a
+  // power-user option. Aliases resolve through the store (static aliases +
+  // llmux catalog aliases like `grok`); unresolvable ones are skipped so a
+  // catalog-less boot never renders a dead button.
   const options: Array<{ id: string; label: string; description?: string }> = [];
   for (const alias of FEATURED_ALIASES) {
-    const resolved = MODEL_ALIASES[alias];
+    const resolved = userSettingsStore.resolveModelInput(alias);
     if (!resolved) continue;
     options.push({
       id: alias,
@@ -32,11 +44,26 @@ export async function renderModelCard(args: { userId: string; issuedAt: number }
       description: userSettingsStore.getModelDisplayName(resolved),
     });
   }
+  const seen = new Set<string>(AVAILABLE_MODELS);
   for (const id of AVAILABLE_MODELS) {
     options.push({
       id,
       label: userSettingsStore.getModelDisplayName(id),
       description: id,
+    });
+  }
+  // llmux model-catalog overlay — catalog models not already in the static
+  // allow-list (e.g. grok-4.5), deduped by id. Non-selectable catalog ids
+  // (native-1M `[1m]` variants, e.g. `claude-fable-5[1m]`) are skipped — see
+  // isCatalogIdSelectable.
+  for (const model of modelCatalog.getModels()) {
+    if (seen.has(model.id)) continue;
+    if (!isCatalogIdSelectable(model.id)) continue;
+    seen.add(model.id);
+    options.push({
+      id: model.id,
+      label: userSettingsStore.getModelDisplayName(model.id),
+      description: model.id,
     });
   }
 
