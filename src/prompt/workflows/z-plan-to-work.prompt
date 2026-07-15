@@ -11,13 +11,22 @@ at the top of this prompt and parsed its typed metadata into
 
 1. Treat the `<z-handoff type="plan-to-work">` block in this prompt body as the
    session SSOT — the host already verified structural correctness, so there is
-   no need to re-parse or re-validate.
+   no need to re-validate the required sections.
 2. **Skip `local:z` phase0 (clarify / new-task / codex review)** — the source
    session completed those phases and the confirmed plan is authoritative.
 3. Register the block's `## Task List` into your todo list (TodoWrite).
 4. Record the block's `## Issue` URL and `## Parent Epic` URL as session-wide
    SSOT (they will be needed again in phase5 when emitting `<z-handoff type="work-complete">`).
-5. Jump directly to `local:zwork` — phase2 implementation.
+5. **Restore the prompt-only fields from the raw block** — the host parser does
+   NOT extract these, so read them yourself:
+   - `## Pipeline Mode` — if `autoz`, suppress every interactive gate for the
+     rest of this session per `local:autoz` Rule 4 (no plan-confirm, no approve
+     question; zcheck returns READY without prompting).
+   - `## Analysis Artifact` / `## Analysis Summary` / `## RED Mapping` — hand
+     them to `local:zwork`: reuse+extend the carried RED tests, link the
+     artifact in the PR body.
+   Missing fields → conservative defaults (`interactive`, no analysis).
+6. Jump directly to `local:zwork` — phase2 implementation.
 
 ## Forbidden
 

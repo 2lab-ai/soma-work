@@ -21,7 +21,7 @@ description: "SSOT / SSOT-LIST / SSOT-TASK-TREE 단일 출처. 유저의 raw 지
 - 완전한 SSOT-LIST는 언제든 그대로 재출력 가능해야 한다 — 후속 세션의 phase0 입력으로 그대로 쓸 수 있어야 함.
 
 ### SSOT-TASK-TREE
-- 유저의 SSOT-LIST를 모델이 **이행 가능한** psuedo-atomic·self-contained task의 **의존성 트리**.
+- 유저의 SSOT-LIST를 모델이 **이행 가능한** atomic·self-contained task의 **의존성 트리**로 분해한 것.
 - 트리 노드는 두 종류:
   - **ssot-task** — 유저의 SSOT에서 분해한 task. 실제 SSOT 텍스트와 거의 **1:1로 매칭**되며, 트리 안에서 "왜 존재하는가"를 SSOT의 어느 문장 / 어느 요건으로 정당화할 수 있어야 한다. ssot-task의 raison d'être는 SSOT 안에서 스스로 증명된다.
   - **ssot-subtask** — ssot-task를 해결하기 위해 **모델이 만든** 하위 task. 유저의 raw 지시에 명시되지 않음. **유저의 신규 지시로 SSOT-TASK-TREE가 업데이트될 때 통째로 폐기되고 새로 만든다.** 유저에게 리포트할 때는 **생략 가능**(필요시 한 단계 더 들어간 디테일로만 첨부).

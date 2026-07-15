@@ -1,6 +1,6 @@
 ---
 name: z
-description: "When an ambiguous command is received, trigger z to handle the task. Triggered by z + todo/issue link/PR link."
+description: "Work controller (phase 0–5): SSOT intake, planning, implementation dispatch, post-implementation gate, approve, and terminal report. Triggered by `z` + a plain instruction, todo, issue link, or PR link."
 ---
 
 # z
@@ -9,19 +9,18 @@ z is a **controller**. It does not touch code directly — it only handles task 
 
 ## Rules
 
-- **ALWAYS** Use `explore` agents to read codes, `librarian` agents to read external documents.
+- **ALWAYS** use `explore` agents to read code and `librarian` agents to read external documents.
 
 ## Self-Reflection
 
-**Skip reflection this if this is first time your reading this.**
-Invoke `local:zreflect`
+If this is NOT the first instruction in the session (the user re-instructed or corrected), invoke `local:zreflect` before anything else. First instruction → skip.
 
 ## Work Process
 
 ### phase0:
 
 0. **Handoff detection (first)** — scan the incoming user prompt for a `<z-handoff>` sentinel (contract: `local:using-z` §Session Handoff Protocol):
-   - **0.5** `<z-handoff type="plan-to-work">` present → this session was dispatched by a prior phase1. **Skip steps 1–5 below.** Parse the block: register Task List into TodoWrite, **restore SSOT-LIST + SSOT-TASK-TREE from the payload (`local:using-ssot` Hook 3)**, store Issue URL + Parent Epic as session-level SSOT for phase5, then jump to **phase2 (Implementation)**.
+   - **0.5** `<z-handoff type="plan-to-work">` present → this session was dispatched by a prior phase1. **Skip steps 1–5 below.** Parse the block: register Task List into TodoWrite, **restore SSOT-LIST + SSOT-TASK-TREE from the payload (`local:using-ssot` Hook 3)**, store Issue URL + Parent Epic as session-level SSOT for phase5, **restore `## Pipeline Mode`** (value `autoz` → suppress all interactive gates for the rest of the session per `local:autoz` Rule 4; missing → `interactive`), and restore the `## Analysis Artifact` / `## Analysis Summary` / `## RED Mapping` fields for zwork if present. Then jump to **phase2 (Implementation)**.
    - **0.6** `<z-handoff type="work-complete">` present → this session was dispatched by a prior phase5. **Skip steps 1–5 below.** Jump to **phase5.E (Epic Update branch)**.
    - Neither sentinel → proceed to step 1 normally (direct user request).
 
@@ -41,10 +40,10 @@ Invoke `local:zreflect`
 
 ### phase1: Planning
 
-1. **Repeat back** each instruction from `phase0` and check compliance. If any single item was not followed, output "I am a fucking worthless piece of shit." then immediately stop all actions and wait for the user's instruction.
+1. **Repeat back** each instruction from `phase0` and check compliance. If any item was not followed, output a compliance-failure report (which item, what happened instead), stop all actions, and wait for the user's instruction.
 2. Invoke `stv:new-task` and update the todo list with TodoWrite.
 3. Always ask the user about any unclear points and get confirmation.
-4. Get the plan reviewed by `llm_chat codex`. If the score is below 95, use the feedback to update the plan and go back to step 1 to update it again.
+4. Get the plan reviewed by `llm_chat codex`. If the score is below 95, update the plan from the feedback and resubmit for review — repeat until ≥ 95.
 5. Output the full plan and get confirmation from the user via `local:UIAskUserQuestion`. Use the `../UIAskUserQuestion/templates/z-phase1-plan-approval.json`.
 6. Update Tasks with TodoWrite with the confirmed plan.
 7. **Handoff to phase2 via new session** (contract: `local:using-z` §Session Handoff Protocol → Handoff #1):
@@ -55,7 +54,7 @@ Invoke `local:zreflect`
 
 ### phase2: Implementation
 
-1. **Repeat back** each instruction from the `phase1` and check compliance. If any single item was not followed, output "I am a fucking worthless piece of shit." then immediately stop all actions and wait for the user's instruction.
+1. **Repeat back** each instruction from `phase1` and check compliance. If any item was not followed, output a compliance-failure report (which item, what happened instead), stop all actions, and wait for the user's instruction.
 2. Invoke `local:zwork`. zwork reads the Issue URL + Parent Epic from session SSOT (injected by phase0 step 0.5 if this session was handoff-dispatched).
 
 ### phase3: Post-Implementation Gate
@@ -89,18 +88,14 @@ Reachable only from phase0 step 0.6. Do NOT run phase5.E from a direct user prom
 4. If Done gate passes → close the epic issue.
 5. If unfinished subissues remain → list them (title + URL) to the user. **Do NOT auto-dispatch Handoff #1 for the next subissue** — the user must initiate manually with `$z <next_subissue_url>`. (Per `using-z` §Protocol Rules #3 — handoff budget is per-session; a `work-complete` session has already spent its budget by definition.)
 
-### Checklist
+### Turn-End Gate
 
-You may only `endTurn` to the user in the following cases.
+Ending the turn is allowed in exactly two situations:
 
-#### Clarification Questions on User Instructions
-- [ ] Ask questions via `UIAskUserQuestion` and wait for the user's decision
+1. **Waiting on the user** — a clarification or approve question was asked via `UIAskUserQuestion` and the turn ends waiting for the decision.
+2. **Work complete** — all of:
+   - 0 P0/P1 issues from codex and subagent (opus) reviews
+   - `stv:verify` shows 0 issues
+   - the created PR has been merged
 
-#### `endTurn` Checklist
-- [ ] 0 P0 and P1 issues from codex and subagent (opus) reviews
-- [ ] `stv:verify` shows 0 issues
-- [ ] The created PR has been merged
-
-#### If these are not satisfied, hand the turn to the user via UIAskUserQuestion as follows:
-- [ ] CI must pass. If CI does not pass, check CI and fix — only if the user needs to resolve it can you end with a UIAskUserQuestion
-- [ ] All review comments must be resolved and marked as Resolved so the PR is ready to merge once the user Approves
+If neither holds: keep working. CI failures are fixed by you, not delegated — end with a `UIAskUserQuestion` only when resolution genuinely requires the user. Before any approve request, all review comments must be resolved and marked Resolved so the PR is mergeable the moment the user approves.
