@@ -4,6 +4,8 @@
  * Last updated: 2026-06-09 (Claude Fable 5 release, 2026-06-09)
  */
 
+import { modelCatalog } from '../model-catalog';
+
 export const PRICING_VERSION = '2026-06-09';
 
 export interface ModelPricingSpec {
@@ -540,6 +542,17 @@ export function resolveContextWindow(modelName?: string): number {
   if (isNativeOneMModel(modelName)) return 1_000_000;
   if (isGpt56Model(modelName)) return GPT_5_6_CONTEXT_WINDOW;
   if (isGpt55Model(modelName)) return GPT_5_5_CONTEXT_WINDOW;
+  // llmux model-catalog overlay — NON-claude groups only (grok, codex,
+  // future). Claude ids must stay byte-identical to the rules above (bare
+  // id → 200k, 1M only via the `[1m]` opt-in / native-1M list), so a
+  // catalog claude entry never overrides them; gpt ids are already caught
+  // by the regex rules above. In practice this gives grok-4.5 its true
+  // 500k window instead of the 200k fallback.
+  const catalogGroup = modelCatalog.getGroupFor(modelName);
+  if (catalogGroup && catalogGroup !== 'claude') {
+    const catalogWindow = modelCatalog.getContextWindowFor(modelName);
+    if (typeof catalogWindow === 'number' && catalogWindow > 0) return catalogWindow;
+  }
   return FALLBACK_CONTEXT_WINDOW;
 }
 

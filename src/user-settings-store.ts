@@ -9,6 +9,8 @@ import {
 } from './agent-runtime/policy/permission-mode';
 import { DATA_DIR as ENV_DATA_DIR } from './env-paths';
 import { Logger } from './logger.js';
+import { hasOneMSuffix, isNativeOneMModel, stripOneMSuffix } from './metrics/model-registry';
+import { modelCatalog } from './model-catalog';
 import { createPromptInvalidator } from './prompt-cache-invalidation';
 import { maskUrl } from './turn-notifier.js';
 
@@ -157,14 +159,34 @@ export const DEFAULT_MODEL: ModelId = MODEL_ALIASES['gpt'] ?? 'gpt-5.6-sol';
  * Used by: loadSettings, session-registry deserialize path, and
  * deploy/main-env-bootstrap normalization.
  */
-export function coerceToAvailableModel(raw: string | null | undefined): ModelId {
+export function coerceToAvailableModel(raw: string | null | undefined): string {
   if (typeof raw !== 'string') return DEFAULT_MODEL;
   const normalized = raw.trim().toLowerCase();
   if (normalized.length === 0) return DEFAULT_MODEL;
   if ((AVAILABLE_MODELS as readonly string[]).includes(normalized)) {
-    return normalized as ModelId;
+    return normalized;
   }
+  // llmux model-catalog overlay: ids llmux advertises (e.g. `grok-4.5`) are
+  // valid even though they are not in the static allow-list. Matching is
+  // case-insensitive; the CANONICAL catalog id is returned.
+  const catalogEntry = modelCatalog.getById(normalized);
+  if (catalogEntry && isCatalogIdSelectable(catalogEntry.id)) return catalogEntry.id;
   return DEFAULT_MODEL;
+}
+
+/**
+ * Whether a llmux-catalog id may be offered/persisted as a selectable model.
+ *
+ * The one exclusion: `[1m]`-suffixed ids whose BASE is a native-1M model
+ * (today `claude-fable-5[1m]`). Fable serves 1M on the bare id with NO beta
+ * header; the SDK's `[1m]` path would strip the suffix and wrongly inject the
+ * `context-1m-2025-08-07` opus beta header (see MODEL_ALIASES fable note and
+ * model-registry.isNativeOneMModel). llmux advertises the id as catalog
+ * metadata, but selecting it here would route fable through the wrong path —
+ * users get the same 1M via the bare `claude-fable-5` / `fable` alias.
+ */
+export function isCatalogIdSelectable(id: string): boolean {
+  return !(hasOneMSuffix(id) && isNativeOneMModel(stripOneMSuffix(id)));
 }
 
 // Effort levels
@@ -232,7 +254,12 @@ export interface UserSettings {
    */
   permissionMode?: PermissionMode;
   persona: string; // persona file name (without .md extension)
-  defaultModel: ModelId; // default model for new sessions
+  /**
+   * Default model for new sessions. Usually a static `ModelId`, but may be a
+   * llmux model-catalog id (e.g. `grok-4.5`) — the catalog overlay extends
+   * the static allow-list without shrinking it (#656).
+   */
+  defaultModel: string;
   defaultLogVerbosity?: LogVerbosity; // default log verbosity for new sessions
   sessionTheme?: SessionTheme; // UI display theme. undefined = default ('default' Rich Card)
   defaultEffort?: EffortLevel; // default effort level for new sessions
@@ -761,14 +788,14 @@ export class UserSettingsStore {
   /**
    * Get user's default model
    */
-  getUserDefaultModel(userId: string): ModelId {
+  getUserDefaultModel(userId: string): string {
     return this.settings[userId]?.defaultModel ?? DEFAULT_MODEL;
   }
 
   /**
    * Set user's default model
    */
-  setUserDefaultModel(userId: string, model: ModelId): void {
+  setUserDefaultModel(userId: string, model: string): void {
     this.patchUserSettings(userId, { defaultModel: model });
     logger.info('Set user default model', { userId, model });
   }
@@ -1043,12 +1070,12 @@ export class UserSettingsStore {
   /**
    * Parse and resolve model input (handle aliases)
    */
-  resolveModelInput(input: string): ModelId | null {
+  resolveModelInput(input: string): string | null {
     const normalized = input.toLowerCase().trim();
 
     // Check if it's already a valid model ID
     if (AVAILABLE_MODELS.includes(normalized as ModelId)) {
-      return normalized as ModelId;
+      return normalized;
     }
 
     // Check aliases
@@ -1056,6 +1083,11 @@ export class UserSettingsStore {
       return MODEL_ALIASES[normalized];
     }
 
+    // llmux model-catalog overlay: catalog ids + catalog aliases (e.g.
+    // `grok` → `grok-4.5`). Static ids/aliases above always win; ids the
+    // overlay must not offer (native-1M `[1m]` variants) resolve to null.
+    const catalogResolved = modelCatalog.resolveInput(normalized);
+    if (catalogResolved && isCatalogIdSelectable(catalogResolved)) return catalogResolved;
     return null;
   }
 
@@ -1065,7 +1097,7 @@ export class UserSettingsStore {
    * Covers all 16 entries in AVAILABLE_MODELS. The `[1m]` variants append
    * `" (1M)"` so users can tell them apart in the Slack UI.
    */
-  getModelDisplayName(model: ModelId): string {
+  getModelDisplayName(model: string): string {
     switch (model) {
       case 'claude-fable-5':
         // Native 1M context on the bare id — surface "(1M)" so users see the
@@ -1105,7 +1137,10 @@ export class UserSettingsStore {
         // Budget tier — same 372k catalog window.
         return 'GPT-5.6 Luna (372k)';
       default:
-        return model;
+        // llmux model-catalog overlay — catalog models carry their llmux
+        // display name (e.g. `grok-4.5` → "Grok 4.5"); anything else echoes
+        // the raw id (unchanged fallback behavior).
+        return modelCatalog.getDisplayName(model) ?? model;
     }
   }
 
