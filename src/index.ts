@@ -44,7 +44,7 @@ import { CronStorage } from 'somalib/cron/cron-storage';
 import { initA2tService, shutdownA2tService } from './a2t/a2t-service';
 import { getClaudeChildProcessRegistry } from './agent-runtime/claude-child-process-registry';
 import { initAuthRuntimeDefault } from './auth/auth-runtime';
-import { isLlmuxUp } from './auth/llmux-client';
+import { fetchLlmuxModels, isLlmuxUp } from './auth/llmux-client';
 import { setQueryEnvAdditional } from './auth/query-env-builder';
 import { scanChannels } from './channel-registry';
 import { ClaudeHandler } from './claude-handler';
@@ -81,6 +81,7 @@ import { discoverInstallations, getGitHubAppAuth, isGitHubAppConfigured } from '
 import { Logger } from './logger';
 import { McpManager } from './mcp-manager';
 import { startReportScheduler, stopReportScheduler } from './metrics';
+import { modelCatalog } from './model-catalog';
 import {
   evaluateAndMaybeRotate,
   notifyAutoRotation,
@@ -174,6 +175,25 @@ async function start() {
         );
       }
       timing('llmux codex pin sync evaluated');
+
+      // Fetch the llmux model catalog (GET /llmux/models) so catalog models
+      // (grok-4.5 et al) are selectable from the first turn. Fail-soft: on
+      // any error the static allow-list + the last persisted snapshot keep
+      // serving — boot never blocks on llmux hiccups.
+      modelCatalog.setFetcher(() => fetchLlmuxModels({ baseUrl: config.auth.llmux.baseUrl }));
+      const catalogResult = await modelCatalog.refresh();
+      if (catalogResult.ok) {
+        logger.info(`llmux model catalog: ${catalogResult.count} models`);
+      } else {
+        const fetchedAt = modelCatalog.getFetchedAt();
+        const snapshotAge = fetchedAt
+          ? `snapshot age ${Math.round((Date.now() - fetchedAt) / 60_000)}min`
+          : 'no snapshot';
+        logger.warn(
+          `llmux model catalog fetch failed — using static allow-list (+${catalogResult.count} snapshot models, ${snapshotAge}): ${catalogResult.error}`,
+        );
+      }
+      timing('llmux model catalog fetch evaluated');
     }
 
     // Run preflight checks

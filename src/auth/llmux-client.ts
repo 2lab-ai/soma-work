@@ -165,6 +165,39 @@ export async function isLlmuxUp(baseUrl?: string, timeoutMs = 1_500): Promise<bo
   }
 }
 
+/**
+ * One entry of `GET /llmux/models` (llmux ≥ 0.2.17).
+ *
+ * `group` routes the id to a backend account pool (`'claude' | 'codex' |
+ * 'grok'` today — future groups appear without a schema change).
+ * `max_context` can be `null` (unknown) and `efforts` can be empty.
+ */
+export interface LlmuxModelEntry {
+  id: string;
+  aliases: string[];
+  name: string;
+  efforts: string[];
+  max_context: number | null;
+  group: string;
+}
+
+/**
+ * `GET /llmux/models` — the model catalog llmux is willing to serve.
+ * Returns the `.models` array; entries lacking a non-empty string `id` are
+ * dropped (defensive — the consumer keys everything off `id`).
+ */
+export async function fetchLlmuxModels(opts?: { baseUrl?: string; timeoutMs?: number }): Promise<LlmuxModelEntry[]> {
+  const payload = await request<{ models?: unknown }>('GET', '/llmux/models', opts);
+  const models = Array.isArray(payload?.models) ? payload.models : [];
+  return models.filter(
+    (entry): entry is LlmuxModelEntry =>
+      !!entry &&
+      typeof entry === 'object' &&
+      typeof (entry as { id?: unknown }).id === 'string' &&
+      (entry as { id: string }).id.trim().length > 0,
+  );
+}
+
 /** `POST /llmux/switch` — manual account switch. 409 → LlmuxClientError with the scheduler's refusal reason. */
 export async function switchLlmuxAccount(account: string): Promise<{ ok: boolean; current: string }> {
   return request('POST', '/llmux/switch', { body: { account } });
