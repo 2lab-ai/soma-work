@@ -44,6 +44,7 @@ import {
   isNativeOneMModel,
   NATIVE_ONE_M_SDK_BLOCKING_LIMIT,
 } from '../../metrics/model-registry';
+import { clampEffortToModel, modelCatalog } from '../../model-catalog';
 import { isSafePathSegment, normalizeTmpPath } from '../../path-utils';
 import type { SdkPluginPath } from '../../plugin/types';
 import { DEV_DOMAIN_ALLOWLIST } from '../../sandbox/dev-domain-allowlist';
@@ -323,14 +324,28 @@ export async function buildStreamOptions(
   // turn-end checker (`resolveAutoCompactTokens`,
   // compact-threshold-checker.ts). gpt-5.6 is checked before gpt-5.5 to
   // keep the newest-generation-first convention of resolveAutoCompactTokens.
+  //
+  // llmux model-catalog models (non-claude groups, e.g. grok-4.5) get the
+  // same treatment from their catalog window: the SDK does not know these
+  // ids either, so its 200k-calibrated math would misfire the same way.
+  // Blocking limit is the SDK formula on the catalog window (window − 20k
+  // output reserve − 3k safety; grok-4.5: 500k − 23k = 477k). Claude-group
+  // catalog entries are excluded — claude ids stay SDK-managed exactly as
+  // before (the [1m]/native-1M rules above are the only claude overrides).
   if (options.model) {
+    const catalogGroup = modelCatalog.getGroupFor(options.model);
+    const catalogWindow = modelCatalog.getContextWindowFor(options.model);
+    const catalogBlockingLimit =
+      catalogGroup && catalogGroup !== 'claude' && typeof catalogWindow === 'number' && catalogWindow > 0
+        ? catalogWindow - 23_000
+        : undefined;
     const blockingLimit = isNativeOneMModel(options.model)
       ? NATIVE_ONE_M_SDK_BLOCKING_LIMIT
       : isGpt56Model(options.model)
         ? GPT_5_6_SDK_BLOCKING_LIMIT
         : isGpt55Model(options.model)
           ? GPT_5_5_SDK_BLOCKING_LIMIT
-          : undefined;
+          : catalogBlockingLimit;
     if (blockingLimit !== undefined) {
       if (!options.env) options.env = {};
       const env = options.env;
@@ -348,10 +363,22 @@ export async function buildStreamOptions(
     }
   }
 
-  // Set effort level only when explicitly configured
+  // Set effort level only when explicitly configured. The value is clamped
+  // to the model's llmux-catalog effort menu (e.g. grok-4.5 has no
+  // xhigh/max → clamp to high) — the SAVED session/user effort is never
+  // mutated, only this per-query option.
   if (session?.effort) {
-    options.effort = session.effort;
-    logger.debug('Using session effort', { effort: session.effort });
+    const clamped = options.model ? clampEffortToModel(options.model, session.effort) : session.effort;
+    options.effort = clamped as typeof options.effort;
+    if (clamped !== session.effort) {
+      logger.debug('Clamped session effort to model catalog menu', {
+        model: options.model,
+        requested: session.effort,
+        effort: clamped,
+      });
+    } else {
+      logger.debug('Using session effort', { effort: session.effort });
+    }
   }
 
   // Set thinking config (adaptive reasoning toggle).
