@@ -3,7 +3,8 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
+import { modelCatalog } from '../model-catalog';
 import {
   AVAILABLE_MODELS,
   COMPACT_THRESHOLD_MAX,
@@ -415,5 +416,87 @@ describe('autogoal mode (S2) + goal max-continuations (S4)', () => {
     store.setUserGoalMaxContinuations('U1', 50);
     expect(store.getUserGoalMaxContinuations('U1')).toBe(50);
     expect(store.getUserGoalMaxContinuations('U2')).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// llmux model catalog — catalog-aware selection (grok-4.5)
+//
+// The static AVAILABLE_MODELS allow-list above stays byte-identical (#656);
+// the catalog is a runtime OVERLAY that extends selection. These tests use
+// the modelCatalog test hooks to seed/clear the overlay.
+// ---------------------------------------------------------------------------
+describe('llmux model catalog overlay (grok-4.5 selection)', () => {
+  const GROK = {
+    id: 'grok-4.5',
+    aliases: ['grok'],
+    name: 'Grok 4.5',
+    efforts: ['low', 'medium', 'high'],
+    max_context: 500_000,
+    group: 'grok',
+  };
+
+  afterEach(() => {
+    modelCatalog.__testReset();
+  });
+
+  it("resolveModelInput('grok') resolves via the catalog alias", () => {
+    modelCatalog.__testSeed([GROK]);
+    const store = makeStore();
+    expect(store.resolveModelInput('grok')).toBe('grok-4.5');
+  });
+
+  it("resolveModelInput('grok-4.5') resolves the catalog id", () => {
+    modelCatalog.__testSeed([GROK]);
+    const store = makeStore();
+    expect(store.resolveModelInput('grok-4.5')).toBe('grok-4.5');
+  });
+
+  it('static ids/aliases still win over the catalog', () => {
+    modelCatalog.__testSeed([GROK]);
+    const store = makeStore();
+    expect(store.resolveModelInput('opus')).toBe('claude-opus-4-8');
+    expect(store.resolveModelInput('gpt-5.6-sol')).toBe('gpt-5.6-sol');
+  });
+
+  it("coerceToAvailableModel('grok-4.5') preserves the catalog id (not DEFAULT_MODEL)", () => {
+    modelCatalog.__testSeed([GROK]);
+    expect(coerceToAvailableModel('grok-4.5')).toBe('grok-4.5');
+  });
+
+  it("getModelDisplayName('grok-4.5') uses the catalog display name", () => {
+    modelCatalog.__testSeed([GROK]);
+    const store = makeStore();
+    expect(store.getModelDisplayName('grok-4.5')).toBe('Grok 4.5');
+  });
+
+  it('with the catalog empty, unknown ids still coerce to DEFAULT_MODEL', () => {
+    expect(coerceToAvailableModel('grok-4.5')).toBe(DEFAULT_MODEL);
+    const store = makeStore();
+    expect(store.resolveModelInput('grok')).toBeNull();
+    expect(store.getModelDisplayName('grok-4.5')).toBe('grok-4.5');
+  });
+
+  it('native-1M `[1m]` catalog variants are NOT selectable (fable beta-header contract)', () => {
+    // llmux advertises `claude-fable-5[1m]` as catalog metadata, but fable
+    // serves 1M on the BARE id — the SDK `[1m]` path would wrongly inject the
+    // opus beta header. The overlay must refuse to offer/persist it.
+    modelCatalog.__testSeed([
+      {
+        id: 'claude-fable-5[1m]',
+        aliases: [],
+        name: 'Claude Fable 5',
+        efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+        max_context: 1_000_000,
+        group: 'claude',
+      },
+      GROK,
+    ]);
+    const store = makeStore();
+    expect(store.resolveModelInput('claude-fable-5[1m]')).toBeNull();
+    expect(coerceToAvailableModel('claude-fable-5[1m]')).toBe(DEFAULT_MODEL);
+    // Opus [1m] variants stay selectable (static list) and grok is untouched.
+    expect(store.resolveModelInput('claude-opus-4-8[1m]')).toBe('claude-opus-4-8[1m]');
+    expect(store.resolveModelInput('grok-4.5')).toBe('grok-4.5');
   });
 });
