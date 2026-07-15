@@ -37,15 +37,52 @@ const VALID_MODELS = new Set([
 export const __TEST_ONLY_VALID_MODELS: ReadonlySet<string> = VALID_MODELS;
 
 /**
+ * Read the llmux model-catalog snapshot ids from `${dataDir}/model-catalog.json`
+ * (written by `src/model-catalog.ts`). Fail-soft: any fs/parse problem →
+ * empty set (static VALID_MODELS behavior). Import-lean by design — the
+ * bootstrap must not pull in the runtime catalog module.
+ */
+function readCatalogSnapshotIds(dataDir: string | undefined): Set<string> {
+  const ids = new Set<string>();
+  if (!dataDir) return ids;
+  try {
+    const raw = fs.readFileSync(path.join(dataDir, 'model-catalog.json'), 'utf8');
+    const parsed = JSON.parse(raw) as { models?: Array<{ id?: unknown }> };
+    if (Array.isArray(parsed?.models)) {
+      for (const entry of parsed.models) {
+        if (entry && typeof entry.id === 'string' && entry.id.trim().length > 0) {
+          const id = entry.id.trim().toLowerCase();
+          // Mirror user-settings-store.isCatalogIdSelectable (import-lean
+          // duplicate): `[1m]` variants of native-1M models (fable) must not
+          // be preserved — the SDK suffix path would inject the wrong beta
+          // header for them.
+          if (/\[1m\]$/i.test(id) && /fable-5/i.test(id)) continue;
+          ids.add(id);
+        }
+      }
+    }
+  } catch {
+    // fail-soft: no snapshot / corrupt snapshot → static behavior
+  }
+  return ids;
+}
+
+/**
  * Coerce persisted model strings to a VALID_MODELS entry, falling back to
  * DEFAULT_MODEL. Trims + lowercases so hand-edited JSON with stray whitespace
  * or `[1M]` uppercase round-trips cleanly.
+ *
+ * When `dataDir` is given, ids present in the llmux model-catalog snapshot
+ * (`${dataDir}/model-catalog.json`, e.g. `grok-4.5`) are also preserved —
+ * mirroring user-settings-store's catalog-aware `coerceToAvailableModel`.
  */
-function coerceModel(raw: unknown): string {
+function coerceModel(raw: unknown, dataDir?: string): string {
   if (typeof raw !== 'string') return DEFAULT_MODEL;
   const normalized = raw.trim().toLowerCase();
   if (normalized.length === 0) return DEFAULT_MODEL;
-  return VALID_MODELS.has(normalized) ? normalized : DEFAULT_MODEL;
+  if (VALID_MODELS.has(normalized)) return normalized;
+  if (readCatalogSnapshotIds(dataDir).has(normalized)) return normalized;
+  return DEFAULT_MODEL;
 }
 
 /** Exposed for tests. */
@@ -164,7 +201,7 @@ export async function normalizeMainTargetData(targetDir: string): Promise<void> 
     for (const userSettings of Object.values(settings)) {
       // Coerce to VALID_MODELS. Known-legacy ids (sonnet-4-6, opus-4-5-20251101, etc.)
       // pass through; only unknown/missing values fall back to DEFAULT_MODEL.
-      userSettings.defaultModel = coerceModel(userSettings.defaultModel);
+      userSettings.defaultModel = coerceModel(userSettings.defaultModel, dataDir);
       if (userSettings.accepted === undefined) {
         userSettings.accepted = true;
       }
@@ -190,7 +227,7 @@ export async function normalizeMainTargetData(targetDir: string): Promise<void> 
       // stale model id that was valid at some point but is no longer in
       // VALID_MODELS. Missing/non-string fields are left untouched.
       if (typeof session.model === 'string') {
-        session.model = coerceModel(session.model);
+        session.model = coerceModel(session.model, dataDir);
       }
     }
 

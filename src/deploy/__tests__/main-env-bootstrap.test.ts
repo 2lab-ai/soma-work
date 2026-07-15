@@ -411,6 +411,58 @@ describe('main-env-bootstrap', () => {
     });
   });
 
+  describe('coerceModel — llmux catalog snapshot overlay', () => {
+    const GROK_SNAPSHOT = {
+      fetchedAt: 1,
+      models: [
+        {
+          id: 'grok-4.5',
+          aliases: ['grok'],
+          name: 'Grok 4.5',
+          efforts: ['low', 'medium', 'high'],
+          maxContext: 500_000,
+          group: 'grok',
+        },
+      ],
+    };
+
+    it('preserves a catalog id when the snapshot file lists it', () => {
+      const dataDir = makeTempDir('bootstrap-catalog-');
+      writeJson(path.join(dataDir, 'model-catalog.json'), GROK_SNAPSHOT);
+      expect(__TEST_ONLY_coerceModel('grok-4.5', dataDir)).toBe('grok-4.5');
+    });
+
+    it('falls back to DEFAULT_MODEL without a snapshot file', () => {
+      const dataDir = makeTempDir('bootstrap-catalog-');
+      expect(__TEST_ONLY_coerceModel('grok-4.5', dataDir)).toBe('gpt-5.6-sol');
+      expect(__TEST_ONLY_coerceModel('grok-4.5')).toBe('gpt-5.6-sol');
+    });
+
+    it('fails soft on a corrupt snapshot file (static behavior)', () => {
+      const dataDir = makeTempDir('bootstrap-catalog-');
+      fs.mkdirSync(dataDir, { recursive: true });
+      fs.writeFileSync(path.join(dataDir, 'model-catalog.json'), '{ nope', 'utf8');
+      expect(__TEST_ONLY_coerceModel('grok-4.5', dataDir)).toBe('gpt-5.6-sol');
+      expect(__TEST_ONLY_coerceModel('claude-opus-4-7', dataDir)).toBe('claude-opus-4-7');
+    });
+
+    it('normalizeMainTargetData preserves grok-4.5 settings when the data dir has the snapshot', async () => {
+      const targetDir = makeTempDir('bootstrap-catalog-target-');
+      const dataDir = path.join(targetDir, 'data');
+      writeJson(path.join(dataDir, 'model-catalog.json'), GROK_SNAPSHOT);
+      writeJson(path.join(dataDir, 'user-settings.json'), {
+        U1: { userId: 'U1', defaultModel: 'grok-4.5', accepted: true },
+        U2: { userId: 'U2', defaultModel: 'not-a-model', accepted: true },
+      });
+
+      await normalizeMainTargetData(targetDir);
+
+      const settings = JSON.parse(fs.readFileSync(path.join(dataDir, 'user-settings.json'), 'utf8'));
+      expect(settings.U1.defaultModel).toBe('grok-4.5');
+      expect(settings.U2.defaultModel).toBe('gpt-5.6-sol');
+    });
+  });
+
   describe('normalizeMainTargetData — [1M] round-trip + trim + sessions', () => {
     it('round-trips claude-opus-4-7[1m] through settings normalize', async () => {
       const targetDir = makeTempDir('bootstrap-target-');
