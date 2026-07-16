@@ -66,6 +66,22 @@ export interface AgentUsage {
   lastTurnOutputTokens?: number;
   lastTurnCacheReadTokens?: number;
   lastTurnCacheCreateTokens?: number;
+  /**
+   * Per-model billing breakdown for the turn, preserved from the SDK's
+   * `modelUsage` map before aggregation. `costUsd` is the SDK-reported
+   * cost when available, otherwise calculated at that model's rates.
+   * Keyed by the model id the SDK reported (e.g. `gpt-5.6-sol`).
+   */
+  modelBreakdown?: Record<
+    string,
+    {
+      inputTokens: number;
+      outputTokens: number;
+      cacheReadInputTokens: number;
+      cacheCreationInputTokens: number;
+      costUsd: number;
+    }
+  >;
 }
 
 /**
