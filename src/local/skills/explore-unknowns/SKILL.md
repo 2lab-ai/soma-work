@@ -58,16 +58,17 @@ map is still the deliverable; only the sources change:
 - **Stage 1 (known knowns)** — unchanged: parallel recon of the code the task
   touches; cite files.
 - **Stage 2 (known unknowns)** — close every question **by the territory**
-  (read the code/tests/docs/git history) or by a bounded codex consult
-  (`mcp__llm__chat`, model codex) when the territory is silent. A question
+  (read the code/tests/docs/git history) or by a bounded external consult via
+  the `local:trinity` chain (trinity consensus → `mcp__llm__chat` model codex
+  → `codex-fallback` opus) when the territory is silent. A question
   neither can close is recorded OPEN with the conservative default you chose
   and why — a logged decision, not a question.
 - **Stage 3 (unknown knowns)** — extract tacit context from the repo instead
   of the user: existing conventions, prior art, reverted attempts, the
   consumers the code reveals. Label inferences as inferences.
 - **Stage 4 (unknown unknowns)** — unchanged: sweep every file the task will
-  touch; landmine cards with evidence. High-risk findings escalate to a codex
-  consult, never to the user.
+  touch; landmine cards with evidence. High-risk findings escalate to the same
+  trinity-chain consult, never to the user.
 - **Stage 5** — the map is written into the run's artifact trail (spec
   folder, PR body, or handoff payload) instead of a conversation reply, so
   the user can audit it after the fact.
