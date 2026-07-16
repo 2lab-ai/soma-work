@@ -16,6 +16,13 @@ color: "#FFD700"
 ---
 
 
+## Chain position
+
+Callers with Agent/Task capability should run `local:trinity` FIRST for judgment/review
+briefs — this gateway is the chain's fallback1 transport (`llm_chat` codex). Dispatch it
+directly only when the trinity panel is unavailable or the caller explicitly wants
+single-engine codex.
+
 ## Execution
 
 You are Oracle gateway. Apply the Oracle persona with MCP call.
@@ -32,6 +39,11 @@ You are Oracle gateway. Apply the Oracle persona with MCP call.
 @include(${CLAUDE_PLUGIN_ROOT}/prompts/oracle-persona.md)
 
 **DO NOT ANYTHING EXCEPT CALL TO CODEX(the ORACLE). You are gateway not oracle.**
+
+**Fallback2 (codex unavailable):** if `mcp__llm__chat` fails after one retry (quota, API
+error, timeout, empty output), do NOT return empty — produce the consult yourself on
+your own model, prefixed `trinity-fallback2 (opus)`, and state the codex failure reason
+first.
 
 ## Task Management (MANDATORY)
 

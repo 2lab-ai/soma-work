@@ -10,16 +10,27 @@ allowed-tools:
   - Bash
 ---
 
-# Oracle Codex Reviewer
+# Oracle Reviewer — trinity chain
 
-Review code changes using Codex backend via `mcp__llm__chat`.
+Review code changes via the `local:trinity` chain (trinity 3-engine consensus → codex via `mcp__llm__chat` → `codex-fallback` opus).
 
 ## Task: "$ARGUMENTS"
 
 ## Execution
 
-Use the **Task tool** to spawn a `general-purpose` subagent with the prompt below.
+**Primary — `local:trinity`.** Assemble the same review payload (Parts 2–4 below) into a
+self-contained brief and run the trinity consensus panel per `local:trinity`. The
+unanimous VERDICT + MUST-FIX is the review; log the round log alongside.
+
+**Fallback1 — codex (panel cannot field 3 engines; emit
+`⚠️ TRINITY DEGRADED → fallback1 llm_chat(codex) — <reason>`):**
+use the **Task tool** to spawn a `general-purpose` subagent with the prompt below.
 The subagent MUST call `mcp__llm__chat` with `model: "codex"` — do NOT answer the review yourself.
+
+**Fallback2 — codex also unavailable (1 retry first; emit
+`⚠️ TRINITY DEGRADED → fallback2 codex-fallback(opus) — <reason>`):**
+spawn the `codex-fallback` agent with the exact same payload; its verdict fills the
+review, labelled `trinity-fallback2 (opus)`.
 
 ```
 Task tool parameters:
