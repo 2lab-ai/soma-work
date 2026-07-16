@@ -30,6 +30,7 @@ import {
   formatGoalObjectiveForSlack,
   type GoalQueueSession,
 } from '../session-goal';
+import { accumulateModelTotals, selectCurrentContextTokens } from '../session-usage-math';
 import type { SlackApiHelper } from '../slack-api-helper';
 import type { StatusReporter } from '../status-reporter';
 import {
@@ -4256,13 +4257,15 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // Why: An agent loop with 10 tool calls accumulates ~10× the actual context
     // in cacheRead alone. The per-turn value from BetaMessage.usage reflects the
     // real context window state at the end of the loop.
-    const hasPerTurn = usage.lastTurnInputTokens !== undefined;
-    session.usage.currentInputTokens = hasPerTurn ? usage.lastTurnInputTokens! : usage.inputTokens;
-    session.usage.currentOutputTokens = hasPerTurn ? usage.lastTurnOutputTokens! : usage.outputTokens;
-    session.usage.currentCacheReadTokens = hasPerTurn ? usage.lastTurnCacheReadTokens! : usage.cacheReadInputTokens;
-    session.usage.currentCacheCreateTokens = hasPerTurn
-      ? usage.lastTurnCacheCreateTokens!
-      : usage.cacheCreationInputTokens;
+    //
+    // ALL-ZERO per-turn values (llmux/codex assistant messages) are treated as
+    // missing — `selectCurrentContextTokens` falls back to the aggregate so the
+    // context display and auto-compact triggers never see an empty window.
+    const current = selectCurrentContextTokens(usage);
+    session.usage.currentInputTokens = current.inputTokens;
+    session.usage.currentOutputTokens = current.outputTokens;
+    session.usage.currentCacheReadTokens = current.cacheReadTokens;
+    session.usage.currentCacheCreateTokens = current.cacheCreateTokens;
 
     // Accumulate totals (billing-oriented: use aggregate values, not per-turn)
     session.usage.totalInputTokens += usage.inputTokens;
@@ -4271,6 +4274,15 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     session.usage.totalCacheCreateTokens += usage.cacheCreationInputTokens;
     session.usage.totalCostUsd += usage.totalCostUsd;
     session.usage.lastUpdated = Date.now();
+
+    // Per-model cumulative totals (input/output/cache write/cache read/cost),
+    // rendered by `/context`. Survives model switches — each model keeps its
+    // own bucket priced at its own rates.
+    session.usage.modelTotals = accumulateModelTotals(
+      session.usage.modelTotals ?? {},
+      usage,
+      usage.modelName ?? session.model,
+    );
 
     // Per-goal token accounting (T3): credit the SAME aggregate deltas to the
     // goal that OWNS the current turn leg (captured at beginTurn as
@@ -4309,18 +4321,19 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       currentContext: contextUsed,
       contextWindow: session.usage.contextWindow,
       contextWindowSource: usage.contextWindow ? 'sdk' : session.model ? 'model-lookup' : 'fallback',
-      usageSource: hasPerTurn ? 'per-turn' : 'aggregate-fallback',
+      usageSource: current.source,
       totalInput: session.usage.totalInputTokens,
       totalOutput: session.usage.totalOutputTokens,
       totalCostUsd: session.usage.totalCostUsd,
     });
 
     // Per-turn data is the source of truth for live context display. If it is
-    // missing, the aggregate path overstates context usage (sums ALL API calls
-    // in the agent loop). Log a warning so the gap is observable in ops.
-    if (!hasPerTurn) {
+    // missing OR all-zero (llmux/codex), the aggregate path overstates context
+    // usage (sums ALL API calls in the agent loop). Log so the gap is
+    // observable in ops.
+    if (current.source === 'aggregate-fallback') {
       this.logger.warn(
-        'Session context usage derived from aggregate fallback (per-turn tokens missing) — displayed context may overstate actual window occupancy',
+        'Session context usage derived from aggregate fallback (per-turn tokens missing or all-zero) — displayed context may overstate actual window occupancy',
         {
           conversationId: session.conversationId,
           model: usage.modelName || session.model,

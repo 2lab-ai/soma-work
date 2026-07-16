@@ -70,10 +70,31 @@ export class ContextHandler implements CommandHandler {
     lines.push('*Session Totals:*');
     lines.push(`  • Input: ${ThreadHeaderBuilder.formatTokenCount(usage.totalInputTokens)}`);
     lines.push(`  • Output: ${ThreadHeaderBuilder.formatTokenCount(usage.totalOutputTokens)}`);
+    if (usage.totalCacheCreateTokens > 0) {
+      lines.push(`  • Cache write: ${ThreadHeaderBuilder.formatTokenCount(usage.totalCacheCreateTokens)}`);
+    }
+    if (usage.totalCacheReadTokens > 0) {
+      lines.push(`  • Cache read: ${ThreadHeaderBuilder.formatTokenCount(usage.totalCacheReadTokens)}`);
+    }
 
     // Cost
     if (usage.totalCostUsd > 0) {
       lines.push(`  • Cost: $${usage.totalCostUsd.toFixed(4)}`);
+    }
+
+    // Per-model breakdown: real tokens and cost PER MODEL actually used in
+    // this session (survives model switches — each bucket is priced at that
+    // model's own rates).
+    const modelTotals = usage.modelTotals;
+    if (modelTotals && Object.keys(modelTotals).length > 0) {
+      lines.push('');
+      lines.push('*Per-Model Usage:*');
+      for (const [model, t] of Object.entries(modelTotals)) {
+        const fmt = ThreadHeaderBuilder.formatTokenCount;
+        lines.push(
+          `  • \`${model}\` — in ${fmt(t.inputTokens)} · out ${fmt(t.outputTokens)} · cache w ${fmt(t.cacheCreateTokens)} · cache r ${fmt(t.cacheReadTokens)} · $${t.costUsd.toFixed(4)}`,
+        );
+      }
     }
 
     // Warning if context is getting full
