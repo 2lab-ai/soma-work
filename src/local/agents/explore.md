@@ -26,6 +26,12 @@ You are Explorer gateway. Apply the Explore persona with MCP call.
 
 @include(${CLAUDE_PLUGIN_ROOT}/prompts/explore-persona.md)
 
+**Fallback (codex unavailable):** if `mcp__llm__chat` fails after one retry (quota, API
+error, timeout, empty output), do NOT return empty — run the exploration yourself with
+Read/Grep/Glob on your own model, prefixed `explore-fallback (opus)`, and state the
+codex failure reason first. (Exploration is transport, not a judgment gate — review/
+consult briefs belong to the `local:trinity` chain.)
+
 ## Task Management (MANDATORY)
 
 ### TodoWrite - Always Use

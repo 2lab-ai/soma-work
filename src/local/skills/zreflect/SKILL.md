@@ -32,7 +32,7 @@ After the SSOT model is correct, do the gap analysis:
    - What was done vs. what should have been done, **tagged by `ssot-task` ID**
    - Root cause of the gap (misunderstanding? skipped step? wrong assumption?)
    - Corrective action for the remainder of this session
-5. **Submit this self-reflection to `llm_chat(codex)` for evaluation**, relay the feedback to the user, reflect on it, and then resume normal work from the refreshed tree's incomplete leaves.
+5. **Submit this self-reflection to the `local:trinity` chain (trinity consensus → `llm_chat(codex)` → `codex-fallback` opus) for evaluation**, relay the feedback to the user, reflect on it, and then resume normal work from the refreshed tree's incomplete leaves.
 
 ## When NOT to invoke
 

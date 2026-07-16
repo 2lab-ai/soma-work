@@ -100,17 +100,31 @@ export function createSdkMessageMapper(deps: SdkMessageMapperDeps): SdkMessageMa
     }
 
     // Per-turn usage (NOT cumulative) → lastTurn* fields only.
+    //
+    // ALL-ZERO usage is dropped: llmux/codex-backed models (gpt-5.6 family)
+    // attach a zeroed `usage` object to assistant messages. Forwarding it as
+    // `lastTurn* = 0` made the executor overwrite the real context-window
+    // state with zeros (`/context` → `0/372k (100% available)`, and the GPT
+    // fixed-token auto-compact trigger never fired). A per-turn usage that
+    // sums to zero carries no information — skip the event so downstream
+    // falls back to the billing aggregate.
     const u = inner.usage;
     if (u) {
-      events.push({
-        type: 'usage',
-        usage: {
-          lastTurnInputTokens: u.input_tokens || 0,
-          lastTurnOutputTokens: u.output_tokens || 0,
-          lastTurnCacheReadTokens: u.cache_read_input_tokens || 0,
-          lastTurnCacheCreateTokens: u.cache_creation_input_tokens || 0,
-        },
-      });
+      const lastTurnInputTokens = u.input_tokens || 0;
+      const lastTurnOutputTokens = u.output_tokens || 0;
+      const lastTurnCacheReadTokens = u.cache_read_input_tokens || 0;
+      const lastTurnCacheCreateTokens = u.cache_creation_input_tokens || 0;
+      if (lastTurnInputTokens + lastTurnOutputTokens + lastTurnCacheReadTokens + lastTurnCacheCreateTokens > 0) {
+        events.push({
+          type: 'usage',
+          usage: {
+            lastTurnInputTokens,
+            lastTurnOutputTokens,
+            lastTurnCacheReadTokens,
+            lastTurnCacheCreateTokens,
+          },
+        });
+      }
     }
 
     const content = Array.isArray(inner.content) ? (inner.content as Array<Record<string, unknown>>) : [];
@@ -184,6 +198,7 @@ export function createSdkMessageMapper(deps: SdkMessageMapperDeps): SdkMessageMa
       let modelName: string | undefined;
       let anyCalculated = false;
       let sawAnyModel = false;
+      const modelBreakdown: NonNullable<AgentUsage['modelBreakdown']> = {};
 
       for (const [model, raw] of Object.entries(modelUsageMap as Record<string, Record<string, number>>)) {
         if (!raw) continue;
@@ -205,12 +220,26 @@ export function createSdkMessageMapper(deps: SdkMessageMapperDeps): SdkMessageMa
         totalCacheRead += cacheRead;
         totalCacheCreation += cacheCreate;
         totalCost += cost;
+        modelBreakdown[model] = {
+          inputTokens: input,
+          outputTokens: output,
+          cacheReadInputTokens: cacheRead,
+          cacheCreationInputTokens: cacheCreate,
+          costUsd: cost,
+        };
         if (raw.contextWindow && typeof raw.contextWindow === 'number') {
           contextWindow = raw.contextWindow;
           modelName = model;
         } else if (!modelName) {
           modelName = model;
         }
+      }
+
+      // Multi-model turns (e.g. subagents on a different tier, or a session
+      // that switched models): the entry pairing above is arbitrary — prefer
+      // the model of the LAST assistant message as the turn's model identity.
+      if (lastAssistantModelName && modelBreakdown[lastAssistantModelName]) {
+        modelName = lastAssistantModelName;
       }
 
       return {
@@ -222,6 +251,7 @@ export function createSdkMessageMapper(deps: SdkMessageMapperDeps): SdkMessageMa
         costSource: sawAnyModel && !anyCalculated ? 'sdk' : 'calculated',
         contextWindow,
         modelName,
+        modelBreakdown: sawAnyModel ? modelBreakdown : undefined,
       };
     }
 

@@ -23,7 +23,7 @@ When invoked via session handoff from z phase1, the initial session prompt carri
 
 1. Write RED tests covering all user scenarios (tag each with the `ssot-task` IDs it covers). Run them and confirm they fail. **If RED tests were already authored upstream** (autoz Analysis/RED intake, carried via the Handoff #1 `## Analysis Artifact` / `## Analysis Summary` / `## RED Mapping` fields) — reuse and extend them; do not re-author from scratch. RED authorship has one owner: the session that ran the intake. Link the carried analysis artifact in the PR body.
 
-2. Review RED-test coverage of the user scenarios with llm_chat(codex). If coverage is incomplete, extend the tests and re-review — loop until codex passes it.
+2. Review RED-test coverage of the user scenarios via the `local:trinity` chain (trinity consensus → llm_chat(codex) → `codex-fallback` opus). If coverage is incomplete, extend the tests and re-review — loop until the review passes.
 
 3. Split the confirmed plan into independent implementer briefs (one per `ssot-task` where possible), each carrying the full task text, its RED tests, and the shared context needed to work in isolation.
 

@@ -28,6 +28,7 @@
     "./directives/channel-message-directive": "./dist/directives/channel-message-directive.js",
     "./directives/session-link-directive": "./dist/directives/session-link-directive.js",
     "./context-window-manager": "./dist/context-window-manager.js",
+    "./session-usage-math": "./dist/session-usage-math.js",
     "./directives/source-working-dir-directive": "./dist/directives/source-working-dir-directive.js",
     "./dispatch-abort": "./dist/dispatch-abort.js",
     "./event-router": "./dist/event-router.js",
@@ -146,6 +147,9 @@
       ],
       "context-window-manager": [
         "dist/context-window-manager.d.ts"
+      ],
+      "session-usage-math": [
+        "dist/session-usage-math.d.ts"
       ],
       "directives": [
         "dist/directives/index.d.ts"
