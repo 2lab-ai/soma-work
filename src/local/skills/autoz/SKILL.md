@@ -70,13 +70,14 @@ autoz
 
 6. **SSOT success proof, posted to the issue (after approve).** Render the `local:using-ssot` Hook 4 mapping — per `ssot-task`: SSOT quote → concrete artifact (PR / commit / file / test) → why the artifact satisfies the requirement — verified by the single ztrace pass Hook 4 mandates. An unmapped `ssot-task` means the run is NOT done; finish it, never write the proof around the gap. Post the proof as a comment on the source issue (`gh issue comment <n> --body-file proof.md`; bot-token 401 → the 5-retry protocol from Hard Blockers). No source issue → append the proof as the final PR-body section. The run is not finished until this evidence is posted.
 
-7. **Terminal report only.** No mid-run progress check-ins — the only mid-run user-facing output is the SSOT-TASK-TREE (Hook 1/2) and the problem-analysis artifact. Render the terminal report via the `local:es` mode template, adding: PR URL + CI status + approve status + the Rule 6 evidence URL, codex transcript references for every autonomous decision, the Hook 4 ztrace result, the Rule 8 review verdict and reviewer, and the final ES report artifact (Analysis Step, artifact 2).
+7. **Terminal report only.** No mid-run progress check-ins — the only mid-run user-facing output is the SSOT-TASK-TREE (Hook 1/2) and the problem-analysis artifact. Render the terminal report via the `local:es` mode template, adding: PR URL + CI status + approve status + the Rule 6 evidence URL, review-chain verdict/round-log (or transcript) references for every autonomous decision with the tier that produced each, the Hook 4 ztrace result, the Rule 8 review verdict + tier, and the final ES report artifact (Analysis Step, artifact 2).
 
 8. **Mandatory review gate (trinity chain, never empty).** Before `gh pr review --approve`, the final PR diff MUST receive a code review through the `local:trinity` fallback chain. Runs on **every** autoz run — "obvious", "trivial", and security must-fix changes included.
    - **Primary — `local:trinity`.** Send the full PR diff + SSOT-TASK-TREE + RED→GREEN evidence as a self-contained brief to the trinity panel and require a unanimous verdict (concrete findings, or an explicit "no blocking findings"). Log the verdict + round log in the PR body.
    - **Fallback1 — codex.** Panel cannot field 3 engines (llmux down, panel agents unavailable; 1 retry first) → emit `⚠️ TRINITY DEGRADED → fallback1 llm_chat(codex) — <reason>` and send the same payload to `mcp__llm__chat` `model: codex`. Log the transcript reference in the PR body.
    - **Fallback2 — `codex-fallback` (opus, automatic).** codex also unusable (quota, API error, timeout, empty output; retry once) → emit `⚠️ TRINITY DEGRADED → fallback2 codex-fallback(opus) — <reason>` and spawn `codex-fallback` (`Agent` tool, `subagent_type: codex-fallback`) with the **exact payload destined for codex**; treat its verdict as the review, logged in the PR body labelled `trinity-fallback2 (opus)`. This tier is automatic — no user question (2026-07-16 directive; supersedes the old opt-in contract).
    - **Fast-fail on total absence.** All three tiers failed → DO NOT approve/merge/deploy. Emit: `⚠️ REVIEW GATE UNAVAILABLE — auto-approve halted. <reason>`.
+   - **Split terminal (panel valid but not unanimous after max rounds).** A split is NOT a fallback trigger — the panel stood. Treat the union of all panelists' MUST-FIX items as blocking findings, resolve them, and re-run the gate once; a second split is a Hard Blocker: stop and report the split axes (never ask, never approve on a split).
    - **Findings are blocking.** Resolve blocking findings (re-loop GREEN → zcheck → review) before approve.
 
 ## Analysis Step
@@ -102,9 +103,10 @@ Runs after Explore, before RED (pipeline step 5); its terminal counterpart runs 
 Stop and report — never silently fail — only when:
 
 - Repo/branch literally cannot be accessed (auth, disk, network) **after** the 5-retry protocol: (a) different headers (Bearer↔token), (b) different tokens in env, (c) raw curl bypass, (d) alternative trigger paths (PR close+reopen, empty commit, force push), (e) a real fix attempt. "Permission insufficient" alone never justifies delegating to the user.
-- The user's intent is genuinely incoherent (mutually contradictory requirements). Present codex's diagnosis as a SSOT-TASK-TREE that cannot be made acyclic, not an open-ended question.
+- The user's intent is genuinely incoherent (mutually contradictory requirements). Present the review-chain's diagnosis as a SSOT-TASK-TREE that cannot be made acyclic, not an open-ended question.
 - A drift instruction retracts already-merged work and the retraction is non-revertible (e.g. a destructive migration already ran in prod) — surface the irreversibility.
 - The Rule 8 gate cannot be filled: all three chain tiers failed (trinity panel, codex, codex-fallback). Report with the `⚠️ REVIEW GATE UNAVAILABLE` warning.
+- The Rule 8 gate split twice: a valid trinity panel stayed non-unanimous after max rounds, the MUST-FIX union was resolved, and the re-run split again. Report the split axes per `local:trinity` §종결.
 - **Oversized scope** — `local:decision-gate` judges the tree xxlarge (Case C). The interactive flow would ask for decomposition approval; autoz cannot ask, so it stops and reports the SSOT-TASK-TREE-based decomposition proposal (epic candidates + the `ssot-task` IDs each covers). The user relaunches per epic; autoz never starts an xxlarge tree on its own.
 
 ## Pipeline Order

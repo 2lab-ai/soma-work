@@ -1,5 +1,5 @@
 ---
-description: "깊은 사고·전략 Oracle (gpt-5.6-sol 엔진판) — elon 인격을 gpt-5.6-sol 엔진으로 자문할 때 (trinity 예비 슬롯: grok-4.5 불능 시 physics-first 대체 엔진). 비-anthropic 모델은 llmux 경유 — llmux 데몬 다운이면 즉시 가시적으로 실패하라"
+description: "깊은 사고·전략 Oracle (gpt-5.6-sol 엔진판) — elon 인격을 gpt-5.6-sol 엔진으로 단독 자문할 때. trinity 패널 대타가 아니다 (패널은 엔진 대체 없이 3종 성립 또는 fallback1 강등). 비-anthropic 모델은 llmux 경유 — llmux 데몬 다운이면 즉시 가시적으로 실패하라"
 model: gpt-5.6-sol
 color: "#9370DB"
 ---
