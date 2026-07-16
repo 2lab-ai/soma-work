@@ -12,6 +12,8 @@ Two paths, one contract:
 
 The `model` is passed through unchanged. Dual-model callers invoke this skill once per model; it never fans out.
 
+> **Chain position.** This skill is TRANSPORT. Judgment/review/consult gates route through `local:trinity` first (trinity 3-engine consensus → `mcp__llm__chat` codex → `codex-fallback` opus); this skill is how the chain's fallback1 gets executed for long-running briefs. Do not use it to bypass that chain.
+
 ## When to use
 
 - Sub-LLM turn ≥ 60s (deep research, long review, large refactor proposal).

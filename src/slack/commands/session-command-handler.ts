@@ -1,4 +1,5 @@
 import { getVerbosityFlags, getVerbosityName, LOG_DETAIL, VERBOSITY_NAMES } from '@soma/slack/output-flags';
+import { resolveContextWindow } from '../../metrics/model-registry';
 import {
   DEFAULT_EFFORT,
   DEFAULT_SHOW_THINKING,
@@ -240,6 +241,13 @@ export class SessionCommandHandler implements CommandHandler {
     }
 
     session.model = resolved;
+    // Re-anchor the context window to the NEW model immediately. Without this
+    // the session keeps the previous model's window (e.g. 1M from opus[1m])
+    // until the next turn's usage event, so `/context` reports remaining
+    // space against the wrong denominator.
+    if (session.usage) {
+      session.usage.contextWindow = resolveContextWindow(resolved);
+    }
     const displayName = userSettingsStore.getModelDisplayName(resolved);
     await say({
       text: `⚡ *Session Model Changed*\n\nThis session now uses: *${displayName}* (\`${resolved}\`)\n_User default unchanged. Use \`model ${input}\` to change permanently._`,

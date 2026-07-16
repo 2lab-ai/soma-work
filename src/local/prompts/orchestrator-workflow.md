@@ -114,11 +114,13 @@ Task({ subagent_type: "oh-my-claude:oracle", prompt: "..." })
 
 ### When to Use MCP Directly
 
-**ONLY in Optional Review Phase (Phase 3)** - when explicitly running multi-model code review:
+**ONLY in Optional Review Phase (Phase 3)** - when explicitly running multi-model code review, and only as fallback1 of the `local:trinity` chain:
 
 ```typescript
-// Phase 3 ONLY - model review
-mcp__llm__chat({ model: "codex", ... })
+// Phase 3 ONLY - model review, chain order:
+// 1. local:trinity (3-engine consensus panel) — primary
+// 2. mcp__llm__chat({ model: "codex", ... })   — fallback1 (panel unavailable)
+// 3. Task({ subagent_type: "codex-fallback" }) — fallback2 (codex also down; automatic)
 Task({ subagent_type: "oh-my-claude:reviewer", ... })
 ```
 
@@ -391,10 +393,10 @@ When `oh-my-claude:reviewer` returns `GAP_DETECTED` verdict:
 - **Skip gap self-check** → ALWAYS compare implementation against original intent before review
 - **More than 1 autonomous gap correction** → 2nd gap = ESCALATE to user
 
-### MCP Direct Call = ONLY Review Phase
+### MCP Direct Call = ONLY Review Phase (as trinity fallback1)
 
 ```typescript
-// ❌ WRONG (anywhere except Review Phase)
+// ❌ WRONG (anywhere except Review Phase; in Review Phase run local:trinity first)
 mcp__llm__chat({ model: "codex", prompt: "..." })
 
 // ✅ CORRECT (always)

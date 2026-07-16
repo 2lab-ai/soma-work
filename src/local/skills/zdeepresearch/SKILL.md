@@ -19,6 +19,7 @@ raw 모델 출력은 artifact로 저장하고, 호출자에겐 **요약(정규�
 - 코드베이스 스캔 → `local:explore`.
 - 외부 문서 수집 → `local:librarian`.
 - 리서치 전체 오케스트레이션 → **`local:zexplore`를 쓴다**. 이 스킬은 부품.
+- 리뷰·판정·합의가 필요한 브리프 → `local:trinity` (이 스킬은 단일 엔진 리서치 transport다 — 판정 게이트가 아니다).
 
 ## Input
 

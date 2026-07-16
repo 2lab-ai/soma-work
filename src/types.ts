@@ -87,6 +87,23 @@ export interface SessionUsage {
   totalCacheCreateTokens: number;
   totalCostUsd: number;
 
+  /**
+   * Per-model cumulative totals (input/output/cache write/cache read/cost),
+   * keyed by the model id the SDK reported. Survives session model switches —
+   * each model keeps its own bucket priced at its own rates. Rendered by the
+   * `/context` command. Optional: absent on legacy persisted sessions.
+   */
+  modelTotals?: Record<
+    string,
+    {
+      inputTokens: number;
+      outputTokens: number;
+      cacheReadTokens: number;
+      cacheCreateTokens: number;
+      costUsd: number;
+    }
+  >;
+
   lastUpdated: number; // Timestamp of last update
 }
 

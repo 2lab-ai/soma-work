@@ -43,7 +43,7 @@ If this is NOT the first instruction in the session (the user re-instructed or c
 1. **Repeat back** each instruction from `phase0` and check compliance. If any item was not followed, output a compliance-failure report (which item, what happened instead), stop all actions, and wait for the user's instruction.
 2. Invoke `stv:new-task` and update the todo list with TodoWrite.
 3. Always ask the user about any unclear points and get confirmation.
-4. Get the plan reviewed by `llm_chat codex`. If the score is below 95, update the plan from the feedback and resubmit for review — repeat until ≥ 95.
+4. Get the plan reviewed via the `local:trinity` chain (trinity 3-engine consensus → `llm_chat codex` → `codex-fallback` opus). Pass = APPROVE with MUST-FIX none at whichever tier produced the verdict (trinity: unanimous). Not passed → update the plan from the feedback and resubmit — repeat until it passes. Record tier + verdict for the handoff payload (its legacy `Codex Review score` field carries `100` on a pass, or the numeric score if the reviewing tier returned one).
 5. Output the full plan and get confirmation from the user via `local:UIAskUserQuestion`. Use the `../UIAskUserQuestion/templates/z-phase1-plan-approval.json`.
 6. Update Tasks with TodoWrite with the confirmed plan.
 7. **Handoff to phase2 via new session** (contract: `local:using-z` §Session Handoff Protocol → Handoff #1):

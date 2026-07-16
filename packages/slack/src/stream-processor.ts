@@ -1502,12 +1502,18 @@ export class AgentStreamProcessor {
       u.lastTurnCacheReadTokens !== undefined ||
       u.lastTurnCacheCreateTokens !== undefined
     ) {
-      this._lastAssistantTurnUsage = {
+      const perTurn = {
         inputTokens: u.lastTurnInputTokens ?? 0,
         outputTokens: u.lastTurnOutputTokens ?? 0,
         cacheReadTokens: u.lastTurnCacheReadTokens ?? 0,
         cacheCreateTokens: u.lastTurnCacheCreateTokens ?? 0,
       };
+      // Defense in depth (the SDK mapper already drops these): an ALL-ZERO
+      // per-turn usage carries no context-state information — keep the last
+      // meaningful snapshot instead of blanking the context display.
+      if (perTurn.inputTokens + perTurn.outputTokens + perTurn.cacheReadTokens + perTurn.cacheCreateTokens > 0) {
+        this._lastAssistantTurnUsage = perTurn;
+      }
     }
 
     return current;
@@ -1530,6 +1536,7 @@ export class AgentStreamProcessor {
       lastTurnOutputTokens: u.lastTurnOutputTokens,
       lastTurnCacheReadTokens: u.lastTurnCacheReadTokens,
       lastTurnCacheCreateTokens: u.lastTurnCacheCreateTokens,
+      modelBreakdown: u.modelBreakdown,
     };
   }
 
