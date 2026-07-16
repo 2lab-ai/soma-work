@@ -133,7 +133,7 @@ zexplore는 **결론을 내기 전에 사실을 쌓는** 스킬이다. 의견·�
 ### Phase 4: Two-gate Validation
 
 1. **Primary gate — Hard Rules 체크리스트 전수**. 하나라도 실패 → 해당 Phase로 루프백.
-2. **Secondary lint — external review chain**. Primary = `local:trinity` (보고서 + 체크리스트를 self-contained 브리프로; 합의 APPROVE + MUST-FIX none = 통과). 패널 성립 불가 시 fallback1: `mcp__llm__chat({ model:"codex", prompt:<보고서 + 체크리스트>, timeoutMs: 600000 })` 동기 호출 — 점수 <95면 피드백 수집해 Phase 2~3에 반영, 재리뷰 ≤3회, 후속 프롬프트는 반환된 `sessionId`로 `mcp__llm__chat({ resumeSessionId, prompt })`. codex도 불능이면 fallback2: `codex-fallback` opus 서브에이전트 (판정 `trinity-fallback2 (opus)` 라벨).
+2. **Secondary lint — external review chain**. 판정 기준은 tier와 무관하게 하나다: **APPROVE + MUST-FIX none = 통과** (모든 tier의 브리프에 trinity 답변 계약을 강제; 숫자 점수는 진단 메타데이터로만 허용). Primary = `local:trinity` (보고서 + 체크리스트를 self-contained 브리프로). 패널 성립 불가 시 fallback1: `mcp__llm__chat({ model:"codex", prompt:<보고서 + 체크리스트 + 답변 계약>, timeoutMs: 600000 })` 동기 호출 — 후속 프롬프트는 반환된 `sessionId`로 `mcp__llm__chat({ resumeSessionId, prompt })`. codex도 불능이면 fallback2: `codex-fallback` opus 서브에이전트 (판정 `trinity-fallback2 (opus)` 라벨, 동일 기준). 미통과 시 MUST-FIX 피드백을 Phase 2~3에 반영, 재리뷰 ≤3회.
    - **Retry on timeout** (fallback1): 10분 초과(`BACKEND_TIMEOUT`) 시 새 세션(`mcp__llm__chat` with `model`)으로 1회 재실행. 그래도 미완이면 fallback2로 강등.
    - **Primary gate(1번) 통과 시 lint 결과와 무관하게 Brief 반환**. lint 실패·3회 초과는 Brief에 "external lint: skipped/failed — reason + tier" 노트로 남기고 caller가 추가 검토 여부 결정(`local:UIAskUserQuestion`).
 
