@@ -1,4 +1,5 @@
 ---
+name: trinity
 description: "Use when a brief (code review, plan review, decision, tie-break) needs the 3-engine consensus panel run until unanimous — the PRIMARY vehicle for every review/consult gate that previously called mcp__llm__chat model:codex directly (z phase1 plan review, zwork RED-coverage review, zreflect evaluation, zexplore secondary lint, autoz Rule 1(b) consults + Rule 8 review gate, oracle-reviewer). Triggers on 'trinity', '트리니티', '3엔진 합의', 'trinity로 리뷰/판단해줘'. Args — the brief to adjudicate (required; text, file path, or PR/diff reference); optional --max-rounds N (default 5). Degrades via the Fallback chain (llm_chat codex → codex-fallback opus), never by silently skipping the gate."
 ---
 
@@ -16,7 +17,7 @@ description: "Use when a brief (code review, plan review, decision, tie-break) n
 | 책사 | `gpt56-zhuge` | gpt-5.6-sol (llmux 경유) |
 | 합성 전략가 | `strategist` | anthropic (model 미지정 → 세션 상속) |
 
-세 엔진이 서로 달라야 의미가 있다 — 로스터 교체는 유저 지시가 있을 때만. grok-4.5 단독 불능 시 physics-first 슬롯만 `gpt56-elon`으로 대체할 수 있으나, 그 경우 엔진 2종 체제임을 결과 보고에 명시한다 (엔진 중복 = 약한 합의).
+세 엔진이 서로 달라야 의미가 있다 — 로스터 교체는 유저 지시가 있을 때만. **엔진 대체 금지**: 한 엔진이라도 불능이면 그 라운드의 패널은 성립하지 않은 것이고(2-엔진 결과를 primary 합의로 세지 않는다), §Fallback chain의 fallback1로 강등한다. (`gpt56-elon`은 단독 자문용 에이전트다 — 패널 대타가 아니다.)
 
 ## Protocol
 
@@ -71,7 +72,8 @@ MUST-FIX: <차단 항목 목록, 없으면 "none">
 ### 4. 종결
 
 - **합의 도달** → 즉시 종료. 라운드를 채우려고 더 돌지 않는다.
-- **max-rounds(기본 5) 도달 + 불합의** → 분열 보고: 갈린 축, 에이전트별 최종 VERDICT + 핵심 근거, 라운드별 입장 변화 1줄씩. 결정은 caller/유저에게 — dispatcher 캐스팅보트 금지.
+- **max-rounds(기본 5; 자율 파이프라인에서는 하드캡 5) 도달 + 불합의** → 분열 보고: 갈린 축, 에이전트별 최종 VERDICT + 핵심 근거, 라운드별 입장 변화 1줄씩. 결정은 caller/유저에게 — dispatcher 캐스팅보트 금지.
+- **자율 caller(유저에게 물을 수 없는 파이프라인, 예: autoz)의 분열 터미널**: 분열은 fallback 사유가 아니다(패널은 성립했다). caller는 전 패널리스트 MUST-FIX의 합집합을 blocking findings로 간주해 수리 후 게이트를 1회 재실행한다; 재실행도 분열이면 Hard Blocker — 분열 축을 보고하고 정지한다 (approve 금지, 질문 금지).
 
 ### 5. 최종 보고 형식
 
@@ -90,7 +92,7 @@ MUST-FIX: <차단 항목 목록, 없으면 "none">
 
 1. **Primary — trinity 패널.** 패널리스트 하나가 죽거나 형식 위반이면 같은 라운드에서 1회 재요청. 그래도 3-엔진 패널이 성립 불가(예: llmux 다운으로 grok·gpt 둘 다 불능)면 ↓
    `⚠️ TRINITY DEGRADED → fallback1 llm_chat(codex) — <이유>` 를 가시 출력하고 강등.
-2. **Fallback1 — `mcp__llm__chat` `model: codex` 단일 엔진.** 동일 브리프 + 동일 답변 계약. 장기 실행이면 `local:llm-dispatch` 프로토콜로 구동. 사용/쿼터 소진·API 에러·타임아웃·빈 출력이면 1회 회복 재시도 후 ↓
+2. **Fallback1 — `mcp__llm__chat` `model: codex` 단일 엔진.** 동일 브리프 + 동일 답변 계약 (브리프가 점수 등 추가 필드를 요구하면 fallback tier도 그 필드를 반드시 포함한다 — pass/fail 판정 기준은 tier와 무관하게 caller 브리프가 정의한 하나여야 한다). 장기 실행이면 `local:llm-dispatch` 프로토콜로 구동. 사용/쿼터 소진·API 에러·타임아웃·빈 출력이면 1회 회복 재시도 후 ↓
    `⚠️ TRINITY DEGRADED → fallback2 codex-fallback(opus) — <이유>` 를 가시 출력하고 강등.
 3. **Fallback2 — `codex-fallback` opus 서브에이전트 (자동).** 동일 브리프 전달, 판정은 `trinity-fallback2 (opus)` 라벨로 기록. 이 tier는 자동이다 — 유저 승인 게이트가 아니다 (2026-07-16 지시로 기존 opt-in 계약 대체).
 4. **Fallback2까지 실패** → 게이트 미충족. 진행 중단하고 caller/유저에 보고. 리뷰 없는 approve/merge/deploy는 어떤 tier에서도 금지.
@@ -107,7 +109,7 @@ MUST-FIX: <차단 항목 목록, 없으면 "none">
 | Caller | 게이트 |
 |---|---|
 | `local:z` phase1 step 4 | 계획 리뷰 |
-| `local:zwork` step 3 | RED 테스트 커버리지 리뷰 |
+| `local:zwork` step 2 | RED 테스트 커버리지 리뷰 |
 | `local:zreflect` step 5 | 자기반성 평가 |
 | `local:zexplore` Phase 4 | secondary lint |
 | `local:autoz` Rule 1(b) | SSOT-shaping 자문 (trivial-skip 유지) |
