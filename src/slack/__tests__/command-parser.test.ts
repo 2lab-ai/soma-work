@@ -1642,4 +1642,82 @@ describe('CommandParser', () => {
       expect(CommandParser.parseAuthCommand('auth switch api-1')).toEqual({ action: 'switch', target: 'api-1' });
     });
   });
+
+  // Inline session directives — `%model <v> {instruction}` / `%nogoal {instruction}`.
+  // A leading `%model <v>` WITH a remainder is TWO actions (session model change +
+  // instruction); a leading `%nogoal` suppresses autogoal promotion for the message.
+  describe('parseInlineSessionDirectives', () => {
+    it('parses `%model fable do the thing` into model + remainder', () => {
+      expect(CommandParser.parseInlineSessionDirectives('%model fable do the thing')).toEqual({
+        model: 'fable',
+        noGoal: false,
+        remainder: 'do the thing',
+      });
+    });
+
+    it('parses `%nogoal deploy it` into noGoal + remainder', () => {
+      expect(CommandParser.parseInlineSessionDirectives('%nogoal deploy it')).toEqual({
+        model: undefined,
+        noGoal: true,
+        remainder: 'deploy it',
+      });
+    });
+
+    it('parses chained `%model fable %nogoal do X`', () => {
+      expect(CommandParser.parseInlineSessionDirectives('%model fable %nogoal do X')).toEqual({
+        model: 'fable',
+        noGoal: true,
+        remainder: 'do X',
+      });
+    });
+
+    it('parses chained `%nogoal %model fable do X` (order independent)', () => {
+      expect(CommandParser.parseInlineSessionDirectives('%nogoal %model fable do X')).toEqual({
+        model: 'fable',
+        noGoal: true,
+        remainder: 'do X',
+      });
+    });
+
+    it('bare `%nogoal` yields empty remainder (caller posts usage hint)', () => {
+      expect(CommandParser.parseInlineSessionDirectives('%nogoal')).toEqual({
+        model: undefined,
+        noGoal: true,
+        remainder: '',
+      });
+    });
+
+    it('bare `%model fable` is NOT an inline directive (stays a session command)', () => {
+      expect(CommandParser.parseInlineSessionDirectives('%model fable')).toBeNull();
+    });
+
+    it('bare `%model` is NOT an inline directive', () => {
+      expect(CommandParser.parseInlineSessionDirectives('%model')).toBeNull();
+    });
+
+    it('plain text is NOT an inline directive', () => {
+      expect(CommandParser.parseInlineSessionDirectives('hello world')).toBeNull();
+      expect(CommandParser.parseInlineSessionDirectives('50% done, continue')).toBeNull();
+    });
+
+    it('is case-insensitive on the directive keyword', () => {
+      expect(CommandParser.parseInlineSessionDirectives('%MODEL fable do x')).toEqual({
+        model: 'fable',
+        noGoal: false,
+        remainder: 'do x',
+      });
+    });
+
+    it('keeps a multiline remainder intact', () => {
+      expect(CommandParser.parseInlineSessionDirectives('%model fable\n지시 첫 줄\n지시 둘째 줄')).toEqual({
+        model: 'fable',
+        noGoal: false,
+        remainder: '지시 첫 줄\n지시 둘째 줄',
+      });
+    });
+
+    it('does NOT treat mid-text `%model` as a directive', () => {
+      expect(CommandParser.parseInlineSessionDirectives('please run %model fable')).toBeNull();
+    });
+  });
 });
