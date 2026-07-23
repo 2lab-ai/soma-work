@@ -4,6 +4,8 @@ Control what the user-facing surfaces show, and how each field renders, with the
 
 A bad `ui` value never breaks boot: structurally invalid input degrades to the built-in defaults with a warning in the logs.
 
+On first boot, if `config.json` has no `ui` key, the full default composition is seeded into the file automatically — edit the settings right there. An existing `ui` key (even an empty `{}`) is never overwritten, so your edits are safe across restarts. `config.default.json` in the repo root remains the pristine reference copy of the defaults.
+
 ## Surfaces
 
 | Surface | Where it appears |
