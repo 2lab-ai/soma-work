@@ -203,6 +203,29 @@ describe('SessionInitializer - channel routing advisory', () => {
     expect(mockSlackApi.postEphemeral).not.toHaveBeenCalled();
   });
 
+  it('advisory userMessage preserves inline-directive raw text (codex review of #1268)', async () => {
+    // The message handler stripped `%model fable %nogoal ` off event.text
+    // before initialize. The Move/Stay replay re-enters the handler with
+    // `userMessage`, so it must carry the ORIGINAL directive-bearing text —
+    // otherwise the model change and the autogoal suppression are lost.
+    const event = {
+      user: 'U123',
+      channel: 'C123',
+      thread_ts: undefined,
+      ts: 'thread123',
+      text: 'Review PR https://github.com/acme/repo/pull/1',
+      inlineDirectiveRawText: '%model fable %nogoal Review PR https://github.com/acme/repo/pull/1',
+    };
+
+    await sessionInitializer.initialize(event as any, '/test/dir');
+
+    const callWithBlocks = mockSlackApi.postMessage.mock.calls.find((call: any[]) => Array.isArray(call[2]?.blocks));
+    expect(callWithBlocks).toBeDefined();
+    const actionsBlock = callWithBlocks[2].blocks.find((block: any) => block.type === 'actions');
+    const value = JSON.parse(actionsBlock.elements[0].value);
+    expect(value.userMessage).toBe('%model fable %nogoal Review PR https://github.com/acme/repo/pull/1');
+  });
+
   it('shows fallback advisory when repo channel mapping is missing', async () => {
     mockCheckRepoChannelMatch.mockReturnValue({
       correct: false,
