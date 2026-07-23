@@ -18,6 +18,7 @@ import { Logger } from './logger';
 import type { McpServerConfig } from './mcp/config-loader';
 import { validatePluginConfig } from './plugin/config-parser';
 import type { PluginConfig } from './plugin/types';
+import { DEFAULT_UI_SURFACES } from './slack/surface-config';
 import type { AgentConfig } from './types';
 
 const logger = new Logger('ConfigLoader');
@@ -37,6 +38,15 @@ const RESERVED_LEASE_KEYS_SET = new Set<string>(RESERVED_LEASE_KEYS);
  * would otherwise double-log the same deprecation message within seconds.
  */
 let warnedLegacyLlmChat = false;
+
+/**
+ * Process-scoped guard so the "seeded default ui" info log fires at most
+ * once. Same rationale as `warnedLegacyLlmChat`: `loadConfig` runs at boot
+ * *and* on every plugin-manager save (and once per agent config in
+ * multi-agent setups) — the seed itself is idempotent per file, but the
+ * log would otherwise repeat.
+ */
+let seededUiDefaults = false;
 
 export interface Config {
   mcpServers?: Record<string, McpServerConfig>;
@@ -373,6 +383,48 @@ export function loadConfig(configFile: string): Config {
         result.ui = rawUi as Record<string, unknown>;
       } else if (rawUi !== undefined) {
         logger.warn(`Ignoring config.json#"ui": expected a JSON object, got ${describeKind(rawUi)}`);
+      } else {
+        // Seed the built-in UI surface defaults INTO config.json when the
+        // `ui` key is absent (user requirement: "디폴트 설정을 config.json에
+        // 넣어줘") — operators then see and edit the full default composition
+        // directly in their config file instead of hunting for
+        // config.default.json. Seeded only when the key is missing, so an
+        // operator-customized (or deliberately emptied `{}`) `ui` is never
+        // overwritten and future boots are no-ops.
+        //
+        // Same atomic tmp+rename pattern as the llmChat strip below, and the
+        // same pre-substitution rule: spread `rawParsed` so every `${VAR}`
+        // placeholder elsewhere in the file survives verbatim.
+        // `DEFAULT_UI_SURFACES` itself is pure literal JSON data containing
+        // no `${VAR}` placeholders, so writing it to disk cannot interact
+        // with env substitution on future loads.
+        // Reflect the seed into `rawParsed` BEFORE the write attempt: the
+        // legacy llmChat strip below re-writes the file from `rawParsed`,
+        // and a losing process in a concurrent-boot rename race would
+        // otherwise strip llmChat from an UNSEEDED object — persisting a
+        // file with no `ui` (codex review, PR #1270, rounds 1–2). Setting it
+        // up-front makes every later rewrite in this load carry the seed,
+        // even when this process's own seed write loses the race or fails.
+        (rawParsed as Record<string, unknown>).ui = DEFAULT_UI_SURFACES;
+        result.ui = JSON.parse(JSON.stringify(DEFAULT_UI_SURFACES)) as Record<string, unknown>;
+        try {
+          // Unique tmp name per process — two concurrently-booting processes
+          // must not write/rename the same tmp path (ENOENT for the loser).
+          const tmpFile = `${configFile}.tmp.ui-defaults-seed.${process.pid}`;
+          fs.writeFileSync(tmpFile, `${JSON.stringify(rawParsed, null, 2)}\n`, 'utf-8');
+          fs.renameSync(tmpFile, configFile);
+          if (!seededUiDefaults) {
+            seededUiDefaults = true;
+            logger.info('Seeded default `ui` surface settings into config.json', { path: configFile });
+          }
+        } catch (seedError) {
+          // Seed failed (disk full, permissions) — not fatal: built-in
+          // defaults still apply at runtime via surface-config fallback.
+          logger.warn('Failed to seed default `ui` settings into config.json', {
+            path: configFile,
+            error: (seedError as Error).message,
+          });
+        }
       }
 
       // PR #639 removed the `llmChat` subsystem (prompt-builder snippet,
