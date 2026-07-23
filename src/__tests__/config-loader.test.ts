@@ -872,3 +872,98 @@ describe('loadConfig (claude.env round-trip)', () => {
     expect(reloaded['claude.env']).toEqual({ FOO: 'bar' });
   });
 });
+
+describe('loadConfig — ui surfaces passthrough', () => {
+  let tmpDir: string;
+  let configFile: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'unified-config-ui-'));
+    configFile = path.join(tmpDir, 'config.json');
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const UI_SECTION = {
+    threadheader: {
+      lines: [{ block: 'header', fields: [{ field: 'title', truncate: 80 }] }],
+    },
+  };
+
+  it('loads a ui object into result.ui verbatim (opaque passthrough)', () => {
+    fs.writeFileSync(configFile, JSON.stringify({ ui: UI_SECTION }));
+    const cfg = loadConfig(configFile);
+    expect(cfg.ui).toEqual(UI_SECTION);
+  });
+
+  it('round-trips ui through loadConfig → saveConfig (plugin-manager data-loss guard)', () => {
+    // plugin-manager.ts saveConfig path: loadConfig → {...full, plugin} →
+    // saveConfig. Without passthrough a plugin save would DELETE the
+    // operator's ui config.
+    fs.writeFileSync(
+      configFile,
+      JSON.stringify({
+        ui: UI_SECTION,
+        plugin: { marketplace: [], plugins: [], localOverrides: [] },
+      }),
+    );
+    const loaded = loadConfig(configFile);
+    const updated = { ...loaded, plugin: { ...loaded.plugin, plugins: ['some@plugin'] } };
+    saveConfig(configFile, updated);
+
+    const onDisk = JSON.parse(fs.readFileSync(configFile, 'utf-8'));
+    expect(onDisk.ui).toEqual(UI_SECTION);
+    const reloaded = loadConfig(configFile);
+    expect(reloaded.ui).toEqual(UI_SECTION);
+  });
+
+  it('SECURITY: ui keeps ${VAR} placeholders literal — never substituted, never persisted resolved', () => {
+    // ui is display-only config: env substitution must NOT apply to it.
+    // Regression guard for the round-trip leak: loadConfig used to surface
+    // the POST-substituteEnvVars ui object, so plugin-manager's
+    // loadConfig → saveConfig cycle would persist the RESOLVED env value
+    // to disk (secret disclosure + breaks env-driven rotation).
+    process.env.LEAK_TEST_VAR = 'resolved-secret-value-must-stay-in-env';
+    try {
+      fs.writeFileSync(
+        configFile,
+        JSON.stringify({
+          ui: {
+            threadheader: {
+              lines: [{ block: 'header', fields: [{ field: 'title', label: '${LEAK_TEST_VAR}' }] }],
+            },
+          },
+          plugin: { marketplace: [], plugins: [], localOverrides: [] },
+        }),
+      );
+
+      const loaded = loadConfig(configFile);
+      // In-memory Config.ui still carries the literal placeholder.
+      expect(JSON.stringify(loaded.ui)).toContain('${LEAK_TEST_VAR}');
+      expect(JSON.stringify(loaded.ui)).not.toContain('resolved-secret-value-must-stay-in-env');
+
+      // plugin-manager saveConfig path: loadConfig → spread → saveConfig.
+      saveConfig(configFile, { ...loaded, plugin: { ...loaded.plugin, plugins: ['some@plugin'] } });
+
+      const onDiskRaw = fs.readFileSync(configFile, 'utf-8');
+      expect(onDiskRaw).toContain('${LEAK_TEST_VAR}');
+      expect(onDiskRaw).not.toContain('resolved-secret-value-must-stay-in-env');
+    } finally {
+      delete process.env.LEAK_TEST_VAR;
+    }
+  });
+
+  it('drops a malformed ui (array) without throwing', () => {
+    fs.writeFileSync(configFile, JSON.stringify({ ui: [1, 2, 3] }));
+    const cfg = loadConfig(configFile);
+    expect(cfg.ui).toBeUndefined();
+  });
+
+  it('drops a malformed ui (string) without throwing', () => {
+    fs.writeFileSync(configFile, JSON.stringify({ ui: 'compact' }));
+    const cfg = loadConfig(configFile);
+    expect(cfg.ui).toBeUndefined();
+  });
+});

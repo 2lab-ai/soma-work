@@ -56,6 +56,25 @@ export interface Config {
    * `number`/`boolean` JSON values and rejects everything else with a warn.
    */
   'claude.env'?: Record<string, string>;
+  /**
+   * UI surface composition overrides (thread header, turn-end card,
+   * dashboard card header). Kept OPAQUE here — validation/normalization is
+   * owned by `@soma/slack/surface-config` (`normalizeUiSurfacesConfig`),
+   * installed once at boot via `setUiSurfacesConfig` in `src/index.ts`.
+   * Schema + examples: docs/ui-surfaces.md; inspectable defaults:
+   * config.default.json (repo root).
+   *
+   * The passthrough matters for round-trip safety: plugin-manager
+   * (`src/plugin/plugin-manager.ts`) does `loadConfig` → spread →
+   * `saveConfig`; without this key a plugin save would silently delete the
+   * operator's ui config.
+   *
+   * NOTE: ui values are treated as LITERALS — `${VAR}` placeholders are NOT
+   * substituted in `ui` (display-only config) and are preserved verbatim on
+   * the saveConfig round-trip. This intentionally mirrors the llmChat-strip
+   * rule below: never persist post-substitution values back to disk.
+   */
+  ui?: Record<string, unknown>;
 }
 
 /**
@@ -337,6 +356,25 @@ export function loadConfig(configFile: string): Config {
         result['claude.env'] = claudeEnv;
       }
 
+      // Pass through `ui` (surface composition) opaquely — deep validation
+      // happens in @soma/slack/surface-config at install time. Only the
+      // "plain object" shape is checked here; arrays/strings are dropped so
+      // a malformed value cannot poison the saveConfig round-trip.
+      //
+      // CRITICAL: take `ui` from `rawParsed` (PRE-substitution), never from
+      // `raw` (post-`substituteEnvVars`). `ui` is display-only config, so
+      // `${VAR}` placeholders are treated as literals and preserved verbatim.
+      // Using the substituted object would make plugin-manager `saveConfig`
+      // persist RESOLVED env values to disk — a secret disclosure and a
+      // round-trip corruption that breaks env rotation (same hazard class as
+      // the llmChat strip below).
+      const rawUi = (rawParsed as Record<string, unknown>).ui;
+      if (rawUi && typeof rawUi === 'object' && !Array.isArray(rawUi)) {
+        result.ui = rawUi as Record<string, unknown>;
+      } else if (rawUi !== undefined) {
+        logger.warn(`Ignoring config.json#"ui": expected a JSON object, got ${describeKind(rawUi)}`);
+      }
+
       // PR #639 removed the `llmChat` subsystem (prompt-builder snippet,
       // llmChatConfigStore, Slack LlmChatHandler). Legacy configs still
       // carrying `llmChat` keep working but the key is silently dropped on
@@ -399,6 +437,7 @@ export function loadConfig(configFile: string): Config {
         hasPluginConfig: !!result.plugin,
         agents: result.agents ? Object.keys(result.agents).length : 0,
         hasA2t: !!result.a2t,
+        hasUi: !!result.ui,
         // keys-only — never log the values
         claudeEnvKeys: result['claude.env'] ? Object.keys(result['claude.env']) : [],
       });

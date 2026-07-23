@@ -228,6 +228,11 @@ cp config.example.json config.json
 }
 ```
 
+`config.json`의 최상위 `ui` 키로 스레드 헤더·턴 종료 카드·대시보드 카드
+헤더의 표시 항목을 커스터마이즈할 수 있습니다. 기본값은 저장소 루트의
+`config.default.json`(자동 생성, 직접 수정 금지)에서 확인하고, 원하는
+섹션만 `config.json`에 복사해 수정하세요. 스키마: [docs/ui-surfaces.md](docs/ui-surfaces.md).
+
 ### 5. 실행
 
 ```bash
