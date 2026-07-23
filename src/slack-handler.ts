@@ -490,6 +490,10 @@ export class SlackHandler {
           inlineModel = resolved;
         }
         inlineNoGoal = directives.noGoal;
+        // Preserve the directive-bearing original for replay stashes
+        // (channel-route halt advisory, auto-compact pendingUserText) so a
+        // replayed message re-parses the directives instead of losing them.
+        event.inlineDirectiveRawText = event.text;
         event.text = directives.remainder;
       }
     }
