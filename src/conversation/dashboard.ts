@@ -26,6 +26,7 @@ import { MetricsEventStore } from '../metrics/event-store';
 import { ReportAggregator } from '../metrics/report-aggregator';
 import { AggregatedMetrics, type MetricsEvent } from '../metrics/types';
 import { type ArchivedSession, getArchiveStore } from '../session-archive';
+import { getSurfaceLines } from '../slack/surface-config';
 import { buildThreadPermalink } from '../turn-notifier';
 import { coerceEffort, type EffortLevel, userSettingsStore } from '../user-settings-store';
 import { fetchSiblingBoards, type InstanceEnvironment, mergeBoards, shouldAggregate } from './aggregator';
@@ -1734,6 +1735,13 @@ function renderDashboardPage(userId?: string): string {
   // sibling cards (`environment.instanceName !== SELF_INSTANCE_NAME`) and
   // hide actions that would silently 4xx if dispatched to the wrong port.
   const initSelfInstance = _selfInstanceEnv ? JSON.stringify(_selfInstanceEnv.instanceName) : 'null';
+  // ui.dashboardheader — normalized card-header composition (config.json#ui
+  // via @soma/slack/surface-config; docs/ui-surfaces.md). `<` is escaped so
+  // an operator-supplied label cannot break out of the <script> block.
+  const initDashboardHeaderConfig = JSON.stringify(getSurfaceLines('dashboardheader', 'default')).replace(
+    /</g,
+    '\\u003c',
+  );
   return `<!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -3142,6 +3150,30 @@ const INIT_USER = ${initUser};
 // buttons that would post to the wrong instance. null when single-instance
 // (no env wired) or pre-listen tests; the suppression check tolerates null.
 const SELF_INSTANCE_NAME = ${initSelfInstance};
+// ui.dashboardheader (config.json#ui) — resolved card-header line composition.
+// renderCard() consults this to decide which sub-blocks to emit and with
+// what limits. Fields absent from the lines are hidden (isFieldVisible
+// semantics on the server side).
+const DASHBOARD_HEADER_CONFIG = ${initDashboardHeaderConfig};
+// field → first config entry map (show/max/truncate lookups in renderCard).
+const _dhFieldMap = {};
+for (const _dhLine of DASHBOARD_HEADER_CONFIG) {
+  for (const _dhField of (_dhLine.fields || [])) {
+    if (!(_dhField.field in _dhFieldMap)) _dhFieldMap[_dhField.field] = _dhField;
+  }
+}
+function dhShow(field) {
+  const f = _dhFieldMap[field];
+  return !!f && f.show !== false;
+}
+function dhMax(field, fallback) {
+  const f = _dhFieldMap[field];
+  return (f && typeof f.max === 'number') ? f.max : fallback;
+}
+function dhTruncate(field) {
+  const f = _dhFieldMap[field];
+  return (f && typeof f.truncate === 'number') ? f.truncate : null;
+}
 let currentUserId = INIT_USER || '';
 // Displayed + placeholder copy when a non-owner views a session. Kept here so
 // wording edits only touch one place instead of four button sites + panel.
@@ -3793,33 +3825,39 @@ function renderCard(s, col) {
   // needs a descriptive tooltip (e.g. pending-question choices).
   const readOnlyAttrs = isOwner ? '' : ' disabled';
 
-  // Conversation link
-  const convLink = s.conversationId
+  // Conversation link — gated by ui.dashboardheader field 'links'
+  const convLink = (dhShow('links') && s.conversationId)
     ? ' <a class="conv-link" href="/conversations/' + esc(s.conversationId) + '" target="_blank" onclick="event.stopPropagation()" title="View conversation">&#x1F4DD;</a>'
     : '';
 
-  // Slack thread link
-  const slackLink = s.slackThreadUrl
+  // Slack thread link — gated by ui.dashboardheader field 'links'
+  const slackLink = (dhShow('links') && s.slackThreadUrl)
     ? ' <a class="slack-link" href="' + esc(s.slackThreadUrl) + '" target="_blank" onclick="event.stopPropagation()" title="Open in Slack">&#x1F4AC;</a>'
     : '';
 
-  // Merge stats
-  const mergeHtml = s.mergeStats
+  // Merge stats — gated by ui.dashboardheader field 'mergestats'
+  const mergeHtml = (dhShow('mergestats') && s.mergeStats)
     ? '<div class="card-merge">+' + s.mergeStats.totalLinesAdded + ' / -' + s.mergeStats.totalLinesDeleted + '</div>'
     : '';
 
-  // Token info + context bar
+  // Token info + context bar — 'tokens' / 'cost' / 'contextwindow' fields
+  // are gated independently (cost lives inside the tokens row, so the row
+  // is emitted when either flag is on).
   let tokenHtml = '';
   if (s.tokenUsage) {
     const ctxPct = s.tokenUsage.contextUsagePercent || 0;
     const ctxCls = ctxPct > 80 ? 'ctx-danger' : ctxPct > 60 ? 'ctx-warn' : '';
-    tokenHtml = '<div class="card-tokens">' + formatTokens(s.tokenUsage.totalInputTokens + s.tokenUsage.totalOutputTokens) + ' tok &middot; <span class="cost">$' + s.tokenUsage.totalCostUsd.toFixed(2) + '</span></div>'
-      + (ctxPct > 0 ? '<div class="context-bar"><div class="context-bar-fill ' + ctxCls + '" style="width:' + Math.min(ctxPct, 100).toFixed(0) + '%"></div></div>' : '');
+    const tokParts = [];
+    if (dhShow('tokens')) tokParts.push(formatTokens(s.tokenUsage.totalInputTokens + s.tokenUsage.totalOutputTokens) + ' tok');
+    if (dhShow('cost')) tokParts.push('<span class="cost">$' + s.tokenUsage.totalCostUsd.toFixed(2) + '</span>');
+    tokenHtml = (tokParts.length > 0 ? '<div class="card-tokens">' + tokParts.join(' &middot; ') + '</div>' : '')
+      + ((dhShow('contextwindow') && ctxPct > 0) ? '<div class="context-bar"><div class="context-bar-fill ' + ctxCls + '" style="width:' + Math.min(ctxPct, 100).toFixed(0) + '%"></div></div>' : '');
   }
 
-  // Tasks — sort in_progress → pending → completed; completed items sink below the 5-item slice.
+  // Tasks — sort in_progress → pending → completed; completed items sink below the max-item slice.
+  // Gated by ui.dashboardheader field 'tasks'; max entries from config (default 5).
   let tasksHtml = '';
-  if (s.tasks && s.tasks.length > 0) {
+  if (dhShow('tasks') && s.tasks && s.tasks.length > 0) {
     function taskRank(status) {
       if (status === 'in_progress') return 0;
       if (status === 'completed') return 2;
@@ -3828,7 +3866,7 @@ function renderCard(s, col) {
     const sortedTasks = s.tasks.slice().sort(function(a, b) {
       return taskRank(a.status) - taskRank(b.status);
     });
-    const shown = sortedTasks.slice(0, 5);
+    const shown = sortedTasks.slice(0, dhMax('tasks', 5));
     const extra = sortedTasks.length - shown.length;
     const taskItems = shown.map(function(t) {
       let icon, cls2;
@@ -3938,12 +3976,13 @@ function renderCard(s, col) {
     + '</div>';
 
   // Short refs (PROJ-123 · PR-123). escAttr for href/title because they're attribute values.
+  // Gated by ui.dashboardheader field 'links' like every other link rendering.
   const refParts = [];
-  if (s.issueShortRef && s.issueUrl) {
+  if (dhShow('links') && s.issueShortRef && s.issueUrl) {
     const issueTip = s.issueTitle || s.issueLabel || s.issueShortRef;
     refParts.push('<a href="' + escAttr(s.issueUrl) + '" target="_blank" onclick="event.stopPropagation()" title="' + escAttr(issueTip) + '">' + esc(s.issueShortRef) + '</a>');
   }
-  if (s.prShortRef && s.prUrl) {
+  if (dhShow('links') && s.prShortRef && s.prUrl) {
     const prTip = s.prTitle || s.prLabel || s.prShortRef;
     refParts.push('<a href="' + escAttr(s.prUrl) + '" target="_blank" onclick="event.stopPropagation()" title="' + escAttr(prTip) + '">' + esc(s.prShortRef) + '</a>');
   }
@@ -3964,14 +4003,16 @@ function renderCard(s, col) {
     var envHostPort = (s.environment.host || '') + ':' + (s.environment.port || '');
     envHtml = '<span class="env-badge" style="background:' + envColor + '" title="' + escAttr(instName + ' (' + envHostPort + ')') + '">' + esc(instName) + '</span>';
   }
-  const metaHtml = '<div class="card-meta">'
-    + envHtml
-    + '<span>' + esc(s.workflow) + '</span>'
-    + '<span>' + modelShort + '</span>'
-    + effortHtml
-    + '<span class="meta-owner">' + esc(s.ownerName) + '</span>'
-    + '<span>' + timeAgo(s.lastActivity) + '</span>'
-    + '</div>';
+  // Meta row — every registered ui.dashboardheader field is gated via dhShow
+  // ("fields absent from config lines are hidden" contract): workflow /
+  // model / owner / status (= last-activity indicator). envHtml and
+  // effortHtml are not registry fields and always render.
+  const metaWorkflowHtml = dhShow('workflow') ? '<span>' + esc(s.workflow) + '</span>' : '';
+  const metaModelHtml = dhShow('model') ? '<span>' + modelShort + '</span>' : '';
+  const metaOwnerHtml = dhShow('owner') ? '<span class="meta-owner">' + esc(s.ownerName) + '</span>' : '';
+  const metaStatusHtml = dhShow('status') ? '<span>' + timeAgo(s.lastActivity) + '</span>' : '';
+  const metaInner = envHtml + metaWorkflowHtml + metaModelHtml + effortHtml + metaOwnerHtml + metaStatusHtml;
+  const metaHtml = metaInner ? '<div class="card-meta">' + metaInner + '</div>' : '';
 
   // Server-resolved headline (#762) — displayHeadline reflects the full
   // priority chain (summaryTitle then issueTitle then prTitle then title then
@@ -3979,13 +4020,23 @@ function renderCard(s, col) {
   // summaryTitleChanged / sessionUpdated may have rewritten only a subset.
   const displayHeadline = s.displayHeadline || s.summaryTitle || s.title;
 
+  // Title row — 'title' text and 'links' icons are gated independently; the
+  // row is dropped entirely only when nothing in it survives the config.
+  const titleTrunc = dhTruncate('title');
+  const titleTextHtml = dhShow('title')
+    ? '<span class="card-title-text">' + esc(titleTrunc ? String(displayHeadline || '').slice(0, titleTrunc) : displayHeadline) + '</span>'
+    : '';
+  const titleRowHtml = (titleTextHtml || slackLink || convLink)
+    ? '<div class="card-title">' + titleTextHtml + slackLink + convLink + '</div>'
+    : '';
+
   // Card order: hero → stats → title → refs → meta → issue/pr subtitles → tokens → merge → question → tasks → actions.
   // linksHtml removed (2026-04 #708): refs + issue/pr subtitles already surface
   // the same hrefs; the iconized line was redundant and bloated the card.
   return '<div class="' + cls + '" draggable="true" data-session-key="' + escJs(s.key) + '" data-source-col="' + col + '" onclick="openPanel(\\'' + escJs(s.key) + '\\')">'
     + heroTimerHtml
     + timerRowHtml
-    + '<div class="card-title"><span class="card-title-text">' + esc(displayHeadline) + '</span>' + slackLink + convLink + '</div>'
+    + titleRowHtml
     + refsHtml
     + metaHtml
     + (s.issueTitle ? '<div style="font-size:0.7em;color:var(--text-secondary);margin-top:3px">' + esc(s.issueTitle).slice(0, 60) + '</div>' : '')

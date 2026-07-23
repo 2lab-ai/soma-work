@@ -1659,3 +1659,123 @@ describe('extractIssueShortRef / extractPrShortRef', () => {
     expect(extractPrShortRef(undefined)).toBeUndefined();
   });
 });
+
+// ── Dashboard header surface config injection (ui.dashboardheader) ──
+describe('DASHBOARD_HEADER_CONFIG injection', () => {
+  let startWebServer: any;
+  let stopWebServer: any;
+  let injectWebServer: any;
+  let surfaceConfig: any;
+
+  beforeEach(async () => {
+    vi.resetModules();
+    mockConfig.conversation.viewerToken = 'test-token';
+
+    const webServer = await import('../web-server');
+    startWebServer = webServer.startWebServer;
+    stopWebServer = webServer.stopWebServer;
+    injectWebServer = webServer.injectWebServer;
+
+    // Import via the same src shim dashboard.ts uses so this test shares the
+    // module-store instance with the served page (resetModules gives a fresh
+    // store per test).
+    surfaceConfig = await import('../../slack/surface-config');
+    await import('../dashboard');
+
+    await startWebServer({ listen: false });
+  });
+
+  afterEach(async () => {
+    surfaceConfig.resetUiSurfacesConfig();
+    await stopWebServer();
+  });
+
+  function extractInjectedConfig(html: string): any {
+    const match = html.match(/const DASHBOARD_HEADER_CONFIG = (.*);/);
+    expect(match, 'DASHBOARD_HEADER_CONFIG assignment not found in served HTML').toBeTruthy();
+    return JSON.parse((match as RegExpMatchArray)[1]);
+  }
+
+  it('serves the default dashboardheader lines (title, tasks, tokens...) in the HTML', async () => {
+    const res = await injectWebServer({ method: 'GET', url: '/dashboard', headers: AUTH_HEADER });
+    expect(res.statusCode).toBe(200);
+
+    const lines = extractInjectedConfig(res.body);
+    const fields = lines.flatMap((l: any) => l.fields.map((f: any) => f.field));
+    expect(fields).toContain('title');
+    expect(fields).toContain('tasks');
+    expect(fields).toContain('tokens');
+    expect(fields).toContain('cost');
+    expect(fields).toContain('contextwindow');
+    expect(fields).toContain('mergestats');
+    expect(fields).toContain('links');
+    // Meta-row fields the card renders — part of the default lines so they
+    // are gateable (registry contract: fields absent from config lines are
+    // hidden). Pre-fix these rendered unconditionally and were missing here.
+    expect(fields).toContain('owner');
+    expect(fields).toContain('workflow');
+    expect(fields).toContain('model');
+    expect(fields).toContain('status');
+  });
+
+  it('hiding workflow/model via custom dashboardheader config resolves them hidden in the injected JSON', async () => {
+    surfaceConfig.setUiSurfacesConfig({
+      dashboardheader: {
+        lines: [
+          { fields: [{ field: 'title' }, { field: 'links' }] },
+          {
+            fields: [
+              { field: 'workflow', show: false },
+              { field: 'model', show: false },
+              { field: 'owner' },
+              { field: 'status' },
+            ],
+          },
+        ],
+      },
+    });
+
+    const res = await injectWebServer({ method: 'GET', url: '/dashboard', headers: AUTH_HEADER });
+    expect(res.statusCode).toBe(200);
+
+    const lines = extractInjectedConfig(res.body);
+    const byField: Record<string, any> = {};
+    for (const line of lines) for (const f of line.fields) if (!(f.field in byField)) byField[f.field] = f;
+
+    // dhShow(field) in the client is `!!f && f.show !== false` — these two
+    // must resolve hidden while owner/status stay visible.
+    expect(byField.workflow.show).toBe(false);
+    expect(byField.model.show).toBe(false);
+    expect(byField.owner.show).not.toBe(false);
+    expect(byField.status.show).not.toBe(false);
+    // Fields absent from the custom lines resolve hidden too (no entry).
+    expect(byField.tasks).toBeUndefined();
+  });
+
+  it('reflects a setUiSurfacesConfig override in the injected JSON', async () => {
+    surfaceConfig.setUiSurfacesConfig({
+      dashboardheader: { lines: [{ fields: [{ field: 'title' }] }] },
+    });
+
+    const res = await injectWebServer({ method: 'GET', url: '/dashboard', headers: AUTH_HEADER });
+    expect(res.statusCode).toBe(200);
+
+    const lines = extractInjectedConfig(res.body);
+    const fields = lines.flatMap((l: any) => l.fields.map((f: any) => f.field));
+    expect(fields).toEqual(['title']);
+    expect(fields).not.toContain('tasks');
+  });
+
+  it('escapes </script>-capable sequences in the injected JSON', async () => {
+    surfaceConfig.setUiSurfacesConfig({
+      dashboardheader: { lines: [{ fields: [{ field: 'title', label: '</script><b>' }] }] },
+    });
+
+    const res = await injectWebServer({ method: 'GET', url: '/dashboard', headers: AUTH_HEADER });
+    const match = res.body.match(/const DASHBOARD_HEADER_CONFIG = (.*);/);
+    expect(match).toBeTruthy();
+    expect(match![1]).not.toContain('</script>');
+    const lines = JSON.parse(match![1]);
+    expect(lines[0].fields[0].label).toBe('</script><b>');
+  });
+});

@@ -1,0 +1,449 @@
+{
+  "ui": {
+    "threadheader": {
+      "lines": [
+        {
+          "block": "header",
+          "fields": [
+            {
+              "field": "title",
+              "show": true,
+              "truncate": 150
+            }
+          ]
+        },
+        {
+          "block": "context",
+          "fields": [
+            {
+              "field": "owner",
+              "show": true,
+              "format": "mention"
+            },
+            {
+              "field": "workflow",
+              "show": true,
+              "style": {
+                "code": true
+              }
+            },
+            {
+              "field": "model",
+              "show": true,
+              "style": {
+                "code": true
+              }
+            },
+            {
+              "field": "contextwindow",
+              "show": true,
+              "bar": {
+                "width": 5,
+                "filledChar": "▓",
+                "emptyChar": "░"
+              }
+            }
+          ]
+        },
+        {
+          "block": "context",
+          "fields": [
+            {
+              "field": "linkhistory",
+              "show": true,
+              "max": 5
+            }
+          ]
+        },
+        {
+          "block": "context",
+          "fields": [
+            {
+              "field": "status",
+              "show": true,
+              "format": "closed-marker"
+            }
+          ]
+        }
+      ],
+      "themes": {
+        "compact": {
+          "lines": [
+            {
+              "block": "section",
+              "fields": [
+                {
+                  "field": "title",
+                  "show": true,
+                  "format": "headline"
+                }
+              ]
+            },
+            {
+              "block": "context",
+              "fields": [
+                {
+                  "field": "workflow",
+                  "show": true,
+                  "style": {
+                    "code": true
+                  }
+                },
+                {
+                  "field": "model",
+                  "show": true,
+                  "style": {
+                    "code": true
+                  }
+                },
+                {
+                  "field": "contextwindow",
+                  "show": true,
+                  "bar": {
+                    "width": 5,
+                    "filledChar": "▓",
+                    "emptyChar": "░"
+                  }
+                },
+                {
+                  "field": "links",
+                  "show": true
+                },
+                {
+                  "field": "status",
+                  "show": true,
+                  "format": "closed-text"
+                }
+              ]
+            }
+          ]
+        },
+        "minimal": {
+          "lines": [
+            {
+              "block": "context",
+              "fields": [
+                {
+                  "field": "title",
+                  "show": true
+                },
+                {
+                  "field": "model",
+                  "show": true,
+                  "style": {
+                    "code": true
+                  }
+                },
+                {
+                  "field": "contextwindow",
+                  "show": true,
+                  "bar": {
+                    "width": 5,
+                    "filledChar": "▓",
+                    "emptyChar": "░"
+                  }
+                },
+                {
+                  "field": "links",
+                  "show": true
+                },
+                {
+                  "field": "status",
+                  "show": true,
+                  "format": "closed-text"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "turnend": {
+      "lines": [
+        {
+          "block": "section",
+          "fields": [
+            {
+              "field": "status",
+              "show": true
+            },
+            {
+              "field": "title",
+              "show": true
+            },
+            {
+              "field": "threadlink",
+              "show": true
+            }
+          ]
+        },
+        {
+          "block": "section",
+          "fields": [
+            {
+              "field": "errorbody",
+              "show": true,
+              "truncate": 2900
+            }
+          ]
+        },
+        {
+          "block": "context",
+          "separator": " | ",
+          "fields": [
+            {
+              "field": "persona",
+              "show": true,
+              "style": {
+                "code": true
+              }
+            },
+            {
+              "field": "model",
+              "show": true,
+              "style": {
+                "code": true
+              },
+              "format": "with-effort"
+            },
+            {
+              "field": "startedat",
+              "show": true
+            }
+          ]
+        },
+        {
+          "block": "context",
+          "separator": " | ",
+          "fields": [
+            {
+              "field": "contextwindow",
+              "show": true,
+              "label": "Ctx",
+              "bar": {
+                "width": 5,
+                "filledChar": "▓",
+                "emptyChar": "░"
+              },
+              "decimals": 1
+            },
+            {
+              "field": "duration",
+              "show": true,
+              "label": "Dur"
+            },
+            {
+              "field": "fivehour",
+              "show": true,
+              "label": "5h",
+              "bar": {
+                "width": 6,
+                "filledChar": "▓",
+                "emptyChar": "░"
+              },
+              "decimals": 0
+            },
+            {
+              "field": "sevenday",
+              "show": true,
+              "label": "7d",
+              "bar": {
+                "width": 8,
+                "filledChar": "▓",
+                "emptyChar": "░"
+              },
+              "decimals": 0
+            }
+          ]
+        },
+        {
+          "block": "context",
+          "fields": [
+            {
+              "field": "toolstats",
+              "show": true,
+              "max": 5,
+              "prefixEmoji": ":wrench:"
+            }
+          ]
+        }
+      ],
+      "themes": {
+        "compact": {
+          "lines": [
+            {
+              "block": "section",
+              "fields": [
+                {
+                  "field": "status",
+                  "show": true
+                },
+                {
+                  "field": "title",
+                  "show": true
+                },
+                {
+                  "field": "threadlink",
+                  "show": true
+                }
+              ]
+            },
+            {
+              "block": "section",
+              "fields": [
+                {
+                  "field": "errorbody",
+                  "show": true,
+                  "truncate": 2900
+                }
+              ]
+            },
+            {
+              "block": "context",
+              "separator": " · ",
+              "fields": [
+                {
+                  "field": "model",
+                  "show": true,
+                  "style": {
+                    "code": true
+                  },
+                  "format": "with-effort"
+                },
+                {
+                  "field": "contextwindow",
+                  "show": true,
+                  "label": "Ctx",
+                  "format": "percent",
+                  "decimals": 1
+                },
+                {
+                  "field": "duration",
+                  "show": true
+                },
+                {
+                  "field": "toolstats",
+                  "show": true,
+                  "format": "summary"
+                }
+              ]
+            }
+          ]
+        },
+        "minimal": {
+          "lines": [
+            {
+              "block": "context",
+              "separator": " · ",
+              "fields": [
+                {
+                  "field": "status",
+                  "show": true,
+                  "format": "plain"
+                },
+                {
+                  "field": "model",
+                  "show": true,
+                  "format": "with-effort"
+                },
+                {
+                  "field": "contextwindow",
+                  "show": true,
+                  "format": "percent",
+                  "decimals": 1
+                },
+                {
+                  "field": "duration",
+                  "show": true
+                }
+              ]
+            },
+            {
+              "block": "section",
+              "fields": [
+                {
+                  "field": "errorbody",
+                  "show": true,
+                  "truncate": 2900
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "dashboardheader": {
+      "lines": [
+        {
+          "fields": [
+            {
+              "field": "title",
+              "show": true
+            },
+            {
+              "field": "links",
+              "show": true
+            }
+          ]
+        },
+        {
+          "fields": [
+            {
+              "field": "workflow",
+              "show": true
+            },
+            {
+              "field": "model",
+              "show": true
+            },
+            {
+              "field": "owner",
+              "show": true
+            },
+            {
+              "field": "status",
+              "show": true
+            }
+          ]
+        },
+        {
+          "fields": [
+            {
+              "field": "mergestats",
+              "show": true
+            }
+          ]
+        },
+        {
+          "fields": [
+            {
+              "field": "tokens",
+              "show": true
+            },
+            {
+              "field": "cost",
+              "show": true
+            }
+          ]
+        },
+        {
+          "fields": [
+            {
+              "field": "contextwindow",
+              "show": true
+            }
+          ]
+        },
+        {
+          "fields": [
+            {
+              "field": "tasks",
+              "show": true,
+              "max": 5
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
