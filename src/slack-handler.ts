@@ -10,6 +10,7 @@ import { FileHandler } from './file-handler';
 import { Logger } from './logger';
 import { mcpCallTracker } from './mcp-call-tracker';
 import type { McpManager } from './mcp-manager';
+import { resolveContextWindow } from './metrics/model-registry';
 import { SlackBlockKitChannel } from './notification-channels/slack-block-kit-channel';
 import { SlackDmChannel } from './notification-channels/slack-dm-channel';
 import { TelegramChannel } from './notification-channels/telegram-channel';
@@ -41,6 +42,7 @@ import {
 } from './slack';
 import { createAssistantContainer } from './slack/assistant-container';
 import { buildAutoskillFire } from './slack/autoskill-fire';
+import { CommandParser } from './slack/command-parser';
 import { CompletionMessageTracker } from './slack/completion-message-tracker';
 import { createForkExecutor } from './slack/create-fork-executor';
 import { DispatchAbortError, formatDispatchAbortMessage } from './slack/dispatch-abort';
@@ -449,6 +451,49 @@ export class SlackHandler {
       }
     }
 
+    // Inline session directives — `%model <v> {instruction}` / `%nogoal {instruction}`.
+    // `%model <v> {instruction}` is TWO actions in one message: a session-scoped
+    // model change applied FIRST (before autogoal promotion and dispatch — see the
+    // apply site after session init below), then the remainder re-enters the
+    // pipeline as if it were the message the user sent. `%nogoal {instruction}`
+    // suppresses autogoal promotion for this message only. Bare `%model <v>`
+    // (no remainder) keeps its existing SessionCommandHandler routing.
+    let inlineModel: string | undefined;
+    let inlineNoGoal = false;
+    if (!event.synthetic) {
+      const directives = CommandParser.parseInlineSessionDirectives(event.text || '');
+      if (directives) {
+        if (directives.remainder === '') {
+          // Directive-only message (e.g. bare `%nogoal`) — nothing to run.
+          await this.slackApi.removeReaction(channel, ts, 'eyes');
+          await this.slackApi.postSystemMessage(
+            channel,
+            '💡 Usage: `%nogoal <지시>` / `%model <model> <지시>` — 뒤에 지시가 없어 아무것도 실행하지 않았습니다.',
+            { threadTs: originalThreadTs },
+          );
+          return;
+        }
+        if (directives.model) {
+          const resolved = userSettingsStore.resolveModelInput(directives.model);
+          if (!resolved) {
+            // Fail loudly and DROP the instruction — dispatching it on the old
+            // model would silently ignore the user's model choice.
+            await this.slackApi.removeReaction(channel, ts, 'eyes');
+            await this.slackApi.addReaction(channel, ts, 'warning');
+            await this.slackApi.postSystemMessage(
+              channel,
+              `❌ Unknown model \`${directives.model}\` — 지시는 실행되지 않았습니다. \`model list\`로 확인 후 다시 보내세요.`,
+              { threadTs: originalThreadTs },
+            );
+            return;
+          }
+          inlineModel = resolved;
+        }
+        inlineNoGoal = directives.noGoal;
+        event.text = directives.remainder;
+      }
+    }
+
     // Wrap say function
     const wrappedSay = async (args: any) => {
       const result = await say({
@@ -593,6 +638,28 @@ export class SlackHandler {
       activeChannel = sessionResult.session.channelId || channel;
       activeThreadTs = sessionResult.session.threadRootTs || sessionResult.session.threadTs || originalThreadTs;
 
+      // Inline `%model` — applied right after session init and BEFORE the
+      // goal/autogoal blocks below, so this very turn (including a goal
+      // promoted from the remainder) runs on the requested model. Mirrors
+      // SessionCommandHandler.setSessionModel: session-scoped, user default
+      // unchanged, context window re-anchored to the new model.
+      if (inlineModel) {
+        const registrySession = this.claudeHandler.getSessionByKey?.(sessionResult.sessionKey);
+        const targets = new Set<any>([registrySession, sessionResult.session].filter(Boolean));
+        for (const target of targets) {
+          target.model = inlineModel;
+          if (target.usage) {
+            target.usage.contextWindow = resolveContextWindow(inlineModel);
+          }
+        }
+        this.claudeHandler.saveSessions();
+        await this.slackApi.postSystemMessage(
+          activeChannel,
+          `⚡ Session model → *${userSettingsStore.getModelDisplayName(inlineModel)}* (\`${inlineModel}\`)\n_이 세션에만 적용. 유저 기본값은 그대로입니다._`,
+          { threadTs: activeThreadTs },
+        );
+      }
+
       // Issue #1082 T1: the route carried an objective parsed from a
       // goal-prefixed message that arrived with NO session. Apply it to the
       // freshly created registry session BEFORE dispatch so turn 1 already
@@ -662,6 +729,7 @@ export class SlackHandler {
       // sources (onboarding/compact/`new <plain>`) keep their original skip.
       if (
         !setGoalObjective &&
+        !inlineNoGoal &&
         (!continueWithPrompt || (freshContextStart && !!deferredSkillFire)) &&
         !event.synthetic &&
         effectiveText.trim() !== '' &&
@@ -1259,6 +1327,7 @@ export class SlackHandler {
       '• `sessions` / `sessions public` — 세션 목록\n' +
       '• `theme set <name>` — 테마 설정\n' +
       '• `%model <v>`, `%verbosity <v>`, `%effort <v>` — 세션 설정\n' +
+      '• `%model <v> <지시>` / `%nogoal <지시>` — 인라인 모델 변경 / autogoal 미적용 지시\n' +
       '• `/z persona`, `/z model`, `/z notify` 등';
 
     // Wrap each Slack surface independently so one failure cannot kill the
