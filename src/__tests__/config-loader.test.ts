@@ -872,3 +872,257 @@ describe('loadConfig (claude.env round-trip)', () => {
     expect(reloaded['claude.env']).toEqual({ FOO: 'bar' });
   });
 });
+
+describe('loadConfig — ui surfaces passthrough', () => {
+  let tmpDir: string;
+  let configFile: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'unified-config-ui-'));
+    configFile = path.join(tmpDir, 'config.json');
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const UI_SECTION = {
+    threadheader: {
+      lines: [{ block: 'header', fields: [{ field: 'title', truncate: 80 }] }],
+    },
+  };
+
+  it('loads a ui object into result.ui verbatim (opaque passthrough)', () => {
+    fs.writeFileSync(configFile, JSON.stringify({ ui: UI_SECTION }));
+    const cfg = loadConfig(configFile);
+    expect(cfg.ui).toEqual(UI_SECTION);
+  });
+
+  it('round-trips ui through loadConfig → saveConfig (plugin-manager data-loss guard)', () => {
+    // plugin-manager.ts saveConfig path: loadConfig → {...full, plugin} →
+    // saveConfig. Without passthrough a plugin save would DELETE the
+    // operator's ui config.
+    fs.writeFileSync(
+      configFile,
+      JSON.stringify({
+        ui: UI_SECTION,
+        plugin: { marketplace: [], plugins: [], localOverrides: [] },
+      }),
+    );
+    const loaded = loadConfig(configFile);
+    const updated = { ...loaded, plugin: { ...loaded.plugin, plugins: ['some@plugin'] } };
+    saveConfig(configFile, updated);
+
+    const onDisk = JSON.parse(fs.readFileSync(configFile, 'utf-8'));
+    expect(onDisk.ui).toEqual(UI_SECTION);
+    const reloaded = loadConfig(configFile);
+    expect(reloaded.ui).toEqual(UI_SECTION);
+  });
+
+  it('SECURITY: ui keeps ${VAR} placeholders literal — never substituted, never persisted resolved', () => {
+    // ui is display-only config: env substitution must NOT apply to it.
+    // Regression guard for the round-trip leak: loadConfig used to surface
+    // the POST-substituteEnvVars ui object, so plugin-manager's
+    // loadConfig → saveConfig cycle would persist the RESOLVED env value
+    // to disk (secret disclosure + breaks env-driven rotation).
+    process.env.LEAK_TEST_VAR = 'resolved-secret-value-must-stay-in-env';
+    try {
+      fs.writeFileSync(
+        configFile,
+        JSON.stringify({
+          ui: {
+            threadheader: {
+              lines: [{ block: 'header', fields: [{ field: 'title', label: '${LEAK_TEST_VAR}' }] }],
+            },
+          },
+          plugin: { marketplace: [], plugins: [], localOverrides: [] },
+        }),
+      );
+
+      const loaded = loadConfig(configFile);
+      // In-memory Config.ui still carries the literal placeholder.
+      expect(JSON.stringify(loaded.ui)).toContain('${LEAK_TEST_VAR}');
+      expect(JSON.stringify(loaded.ui)).not.toContain('resolved-secret-value-must-stay-in-env');
+
+      // plugin-manager saveConfig path: loadConfig → spread → saveConfig.
+      saveConfig(configFile, { ...loaded, plugin: { ...loaded.plugin, plugins: ['some@plugin'] } });
+
+      const onDiskRaw = fs.readFileSync(configFile, 'utf-8');
+      expect(onDiskRaw).toContain('${LEAK_TEST_VAR}');
+      expect(onDiskRaw).not.toContain('resolved-secret-value-must-stay-in-env');
+    } finally {
+      delete process.env.LEAK_TEST_VAR;
+    }
+  });
+
+  it('drops a malformed ui (array) without throwing', () => {
+    fs.writeFileSync(configFile, JSON.stringify({ ui: [1, 2, 3] }));
+    const cfg = loadConfig(configFile);
+    expect(cfg.ui).toBeUndefined();
+  });
+
+  it('drops a malformed ui (string) without throwing', () => {
+    fs.writeFileSync(configFile, JSON.stringify({ ui: 'compact' }));
+    const cfg = loadConfig(configFile);
+    expect(cfg.ui).toBeUndefined();
+  });
+});
+
+describe('config.json ui defaults seeding (디폴트 설정을 config.json에)', () => {
+  // User requirement SSOT_1: defaults must land IN config.json itself so the
+  // operator sees and edits them there. Seed happens once, only when the
+  // `ui` key is absent; existing/emptied `ui` is never overwritten.
+  let tmpDir: string;
+  let configFile: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ui-seed-test-'));
+    configFile = path.join(tmpDir, 'config.json');
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('seeds DEFAULT_UI_SURFACES into config.json when ui key is absent', async () => {
+    fs.writeFileSync(configFile, JSON.stringify({ mcpServers: {} }, null, 2));
+    const { loadConfig } = await import('../config-loader');
+    const { DEFAULT_UI_SURFACES } = await import('../slack/surface-config');
+
+    const cfg = loadConfig(configFile);
+    expect(cfg.ui).toEqual(JSON.parse(JSON.stringify(DEFAULT_UI_SURFACES)));
+
+    const onDisk = JSON.parse(fs.readFileSync(configFile, 'utf-8'));
+    expect(onDisk.ui).toEqual(JSON.parse(JSON.stringify(DEFAULT_UI_SURFACES)));
+    expect(onDisk.ui.threadheader.lines[0].fields[0].field).toBe('title');
+    expect(onDisk.mcpServers).toEqual({});
+    // No tmp leftover from the atomic write
+    expect(fs.readdirSync(tmpDir).filter((f) => f.includes('.tmp'))).toEqual([]);
+  });
+
+  it('does NOT overwrite an operator-customized ui key (file byte-content untouched)', async () => {
+    const custom = { ui: { threadheader: { lines: [{ fields: [{ field: 'title' }] }] } } };
+    // Deliberately non-pretty JSON: a rewrite would reformat, so byte
+    // equality proves the loader never touched the file at all.
+    const originalBytes = JSON.stringify(custom);
+    fs.writeFileSync(configFile, originalBytes);
+    const { loadConfig } = await import('../config-loader');
+
+    const cfg = loadConfig(configFile);
+    expect(cfg.ui).toEqual(custom.ui);
+    expect(fs.readFileSync(configFile, 'utf-8')).toBe(originalBytes);
+  });
+
+  it('preserves ${VAR} placeholders elsewhere in the file when seeding', async () => {
+    fs.writeFileSync(
+      configFile,
+      JSON.stringify({ mcpServers: { j: { type: 'sse', url: '${SEED_TEST_URL}' } } }, null, 2),
+    );
+    process.env.SEED_TEST_URL = 'https://resolved.example';
+    try {
+      const { loadConfig } = await import('../config-loader');
+      loadConfig(configFile);
+      const onDisk = fs.readFileSync(configFile, 'utf-8');
+      expect(onDisk).toContain('${SEED_TEST_URL}');
+      expect(onDisk).not.toContain('https://resolved.example');
+    } finally {
+      delete process.env.SEED_TEST_URL;
+    }
+  });
+
+  it('second load is a no-op (seed is idempotent)', async () => {
+    fs.writeFileSync(configFile, JSON.stringify({}, null, 2));
+    const { loadConfig } = await import('../config-loader');
+    loadConfig(configFile);
+    const first = fs.readFileSync(configFile, 'utf-8');
+    loadConfig(configFile);
+    expect(fs.readFileSync(configFile, 'utf-8')).toBe(first);
+  });
+
+  it('missing config.json → returns {} and does NOT create the file', async () => {
+    // Seeding must never manufacture a config.json out of thin air — the
+    // loader's missing-file contract (warn + empty Config) stays intact.
+    const { loadConfig } = await import('../config-loader');
+    const cfg = loadConfig(configFile);
+    expect(cfg).toEqual({});
+    expect(fs.existsSync(configFile)).toBe(false);
+    expect(fs.readdirSync(tmpDir)).toEqual([]);
+  });
+
+  it('round-trip: seeded file → loadConfig → saveConfig keeps ui present', async () => {
+    // plugin-manager path: loadConfig → spread → saveConfig. The seeded
+    // defaults must survive that cycle like any operator-authored ui.
+    fs.writeFileSync(
+      configFile,
+      JSON.stringify({ plugin: { marketplace: [], plugins: [], localOverrides: [] } }, null, 2),
+    );
+    const { loadConfig, saveConfig: save } = await import('../config-loader');
+    const { DEFAULT_UI_SURFACES } = await import('../slack/surface-config');
+
+    const loaded = loadConfig(configFile); // triggers seed
+    save(configFile, { ...loaded, plugin: { ...loaded.plugin, plugins: ['some@plugin'] } as Config['plugin'] });
+
+    const onDisk = JSON.parse(fs.readFileSync(configFile, 'utf-8'));
+    expect(onDisk.ui).toEqual(JSON.parse(JSON.stringify(DEFAULT_UI_SURFACES)));
+    const reloaded = loadConfig(configFile);
+    expect(reloaded.ui).toEqual(JSON.parse(JSON.stringify(DEFAULT_UI_SURFACES)));
+  });
+
+  it('logs the seed info at most once per process (module-scoped flag)', async () => {
+    // `loadConfig` runs at boot AND on every plugin-manager save; without
+    // the flag, seeding two different config files (multi-agent setups)
+    // would double-log. vi.resetModules gives this test a fresh flag.
+    vi.resetModules();
+    const infoSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const { loadConfig } = await import('../config-loader');
+      const otherFile = path.join(tmpDir, 'config-b.json');
+      fs.writeFileSync(configFile, JSON.stringify({}, null, 2));
+      fs.writeFileSync(otherFile, JSON.stringify({}, null, 2));
+
+      loadConfig(configFile);
+      loadConfig(otherFile);
+
+      const seedLogs = infoSpy.mock.calls.filter(
+        (call: unknown[]) => typeof call[0] === 'string' && call[0].includes('Seeded default `ui`'),
+      );
+      expect(seedLogs.length).toBe(1);
+      // Both files are still seeded — only the LOG is deduped.
+      expect(JSON.parse(fs.readFileSync(configFile, 'utf-8')).ui).toBeDefined();
+      expect(JSON.parse(fs.readFileSync(otherFile, 'utf-8')).ui).toBeDefined();
+    } finally {
+      infoSpy.mockRestore();
+    }
+  });
+});
+
+describe('ui seeding + legacy llmChat strip interplay (PR #1270 codex finding)', () => {
+  let tmpDir: string;
+  let configFile: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ui-seed-llmchat-'));
+    configFile = path.join(tmpDir, 'config.json');
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('keeps the seeded ui when the llmChat strip rewrites the file in the same load', async () => {
+    // Both migrations fire in one loadConfig: (1) seed ui, (2) strip llmChat.
+    // The strip rewrites from rawParsed — it must include the seeded ui,
+    // otherwise the second rename drops it (BLOCKING finding, PR #1270).
+    vi.resetModules();
+    fs.writeFileSync(configFile, JSON.stringify({ llmChat: { legacy: true }, mcpServers: {} }, null, 2));
+    const { loadConfig } = await import('../config-loader');
+    const { DEFAULT_UI_SURFACES } = await import('../slack/surface-config');
+
+    const cfg = loadConfig(configFile);
+    expect(cfg.ui).toEqual(JSON.parse(JSON.stringify(DEFAULT_UI_SURFACES)));
+
+    const onDisk = JSON.parse(fs.readFileSync(configFile, 'utf-8'));
+    expect(onDisk.llmChat).toBeUndefined();
+    expect(onDisk.ui).toEqual(JSON.parse(JSON.stringify(DEFAULT_UI_SURFACES)));
+  });
+});

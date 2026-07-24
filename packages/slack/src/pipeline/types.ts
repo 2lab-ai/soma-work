@@ -42,6 +42,15 @@ export interface MessageEvent {
   text?: string;
   /** True for auto-resume, auto-retry, and other system-generated messages (not real user input) */
   synthetic?: boolean;
+  /**
+   * Original message text BEFORE leading inline session directives
+   * (`%model <v>` / `%nogoal`) were stripped by the message handler.
+   * Replay stashes (channel-route halt advisory `userMessage`, auto-compact
+   * `pendingUserText`) must store THIS text so a replayed message re-parses
+   * the directives instead of silently losing them. Never used as dispatch
+   * text for the current turn.
+   */
+  inlineDirectiveRawText?: string;
   /** Skip dispatch (workflow classification) entirely — transition straight to default workflow */
   skipDispatch?: boolean;
   /** Model override for cron jobs (e.g. "claude-sonnet-4-20250514"). Applied at session creation. */

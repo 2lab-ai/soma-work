@@ -70,6 +70,19 @@ export type SessionCommandAction =
   | { type: 'thinking'; action: 'status' | 'set'; value?: string }
   | { type: 'thinking_summary'; action: 'status' | 'set'; value?: string };
 
+/**
+ * Leading inline session directives parsed off an instruction message.
+ * See `CommandParser.parseInlineSessionDirectives`.
+ */
+export interface InlineSessionDirectives {
+  /** Raw model input from a leading `%model <value>` directive (unresolved alias). */
+  model?: string;
+  /** True when a leading `%nogoal` directive was present. */
+  noGoal: boolean;
+  /** Instruction text remaining after stripping the leading directives. */
+  remainder: string;
+}
+
 export type MarketplaceAction =
   | { action: 'list' }
   | { action: 'add'; repo: string; name?: string; ref?: string }
@@ -1158,6 +1171,53 @@ export class CommandParser {
   }
 
   /**
+   * Parse LEADING inline session directives off an instruction message.
+   *
+   * Two directives are recognized, in any order and combination:
+   *   - `%model <value> {instruction}` — a session-scoped model change that must
+   *     be applied BEFORE the remaining instruction is processed. The message is
+   *     treated as TWO actions: the model change, then the instruction (which
+   *     re-enters the normal pipeline — commands, `$skill`, autogoal, dispatch).
+   *   - `%nogoal {instruction}` — suppress autogoal promotion for this message;
+   *     the instruction is followed without becoming the session goal.
+   *
+   * Returns `null` when the text carries no inline directive. Notably:
+   *   - Bare `%model <value>` (no remainder) is NOT inline — it keeps its
+   *     existing full-match session-command routing (`isSessionCommand`).
+   *   - Mid-text occurrences (`please run %model x`) are NOT directives; only
+   *     leading prefixes count.
+   *
+   * Bare `%nogoal` (no remainder) IS returned (with `remainder: ''`) so the
+   * caller can answer with a usage hint instead of dispatching the literal text.
+   */
+  static parseInlineSessionDirectives(text: string): InlineSessionDirectives | null {
+    let rest = (text ?? '').trim();
+    let model: string | undefined;
+    let noGoal = false;
+    let matched = false;
+
+    for (;;) {
+      const modelMatch = rest.match(/^%model\s+(\S+)\s+([\s\S]+)$/i);
+      if (modelMatch) {
+        model = modelMatch[1];
+        rest = modelMatch[2].trim();
+        matched = true;
+        continue;
+      }
+      const noGoalMatch = rest.match(/^%nogoal(?:\s+([\s\S]*))?$/i);
+      if (noGoalMatch) {
+        noGoal = true;
+        rest = (noGoalMatch[1] ?? '').trim();
+        matched = true;
+        continue;
+      }
+      break;
+    }
+
+    return matched ? { model, noGoal, remainder: rest } : null;
+  }
+
+  /**
    * Known command keywords (for `isPotentialCommand` hint detection).
    *
    * `/z` refactor (#506) — removed aliases (all now tombstone-redirected):
@@ -1400,6 +1460,8 @@ export class CommandParser {
       '• `%` - Show current session info (model, effort, verbosity, context, etc.)',
       '• `%model` - Show session model',
       '• `%model <name>` - Change model for this session only',
+      '• `%model <name> <지시>` - Change session model, then run the instruction (model applies before autogoal)',
+      '• `%nogoal <지시>` - Run the instruction WITHOUT autogoal promotion',
       '• `%effort` - Show session effort level',
       `• \`%effort <level>\` - Change effort for this session only (${EFFORT_LEVELS.join('/')})`,
       '• `%verbosity` - Show session verbosity',

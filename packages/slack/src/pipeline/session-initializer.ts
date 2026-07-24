@@ -298,6 +298,10 @@ export class SessionInitializer {
     const threadTs = thread_ts || ts;
     // Use effectiveText for dispatch if provided (e.g., after command parsing)
     const dispatchText = effectiveText ?? text;
+    // Replay stashes must preserve leading inline session directives
+    // (`%model <v>` / `%nogoal`) that the message handler already stripped
+    // off `event.text` — a replayed message re-parses them on re-entry.
+    const replayText = event.inlineDirectiveRawText || dispatchText;
     const skipAutoBotThread = event.routeContext?.skipAutoBotThread === true;
     // Whether the mention originated from inside an existing thread (thread_ts exists).
     // Used for sourceThread data linking — NOT for UX decisions.
@@ -605,7 +609,7 @@ export class SessionInitializer {
           originalChannel: channel,
           originalTs: threadTs,
           originalThreadTs: threadTs,
-          userMessage: dispatchText || text || '',
+          userMessage: replayText || text || '',
           userId: user,
           advisoryEphemeral: false,
           allowStay: true,
@@ -654,7 +658,7 @@ export class SessionInitializer {
           originalChannel: channel,
           originalTs: threadTs,
           originalThreadTs: threadTs,
-          userMessage: dispatchText || text || '',
+          userMessage: replayText || text || '',
           userId: user,
           advisoryEphemeral: false,
           allowStay: true,
@@ -758,7 +762,7 @@ export class SessionInitializer {
     if (event.routeContext?.compactRedispatch === true && this.deps.requestCoordinator.isRequestActive(sessionKey)) {
       this.logger.info('Post-compact replay lost the slot race — re-parking for the active turn', { sessionKey });
       if (dispatchText) {
-        stashUserMessageDuringCompaction(session, { channel, threadTs, user, ts }, dispatchText);
+        stashUserMessageDuringCompaction(session, { channel, threadTs, user, ts }, replayText ?? dispatchText);
       }
       return {
         session,
@@ -800,7 +804,7 @@ export class SessionInitializer {
         user: userName,
       });
       if (dispatchText) {
-        stashUserMessageDuringCompaction(session, { channel, threadTs, user, ts }, dispatchText);
+        stashUserMessageDuringCompaction(session, { channel, threadTs, user, ts }, replayText ?? dispatchText);
       }
       void this.deps.slackApi
         .postSystemMessage(channel, '🗜️ Compaction 진행 중 — 메시지는 완료 후 처리됩니다', { threadTs })

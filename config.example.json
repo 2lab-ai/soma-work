@@ -52,5 +52,23 @@
   },
   "claude.env": {
     "ENABLE_CLAUDEAI_MCP_SERVERS": false
+  },
+  "ui": {
+    "_comment": "UI surface overrides — schema in docs/ui-surfaces.md, full defaults in config.default.json. This threadheader example shows the shape: a header line with the title, then a context line with the owner's display name and the model hidden.",
+    "threadheader": {
+      "lines": [
+        {
+          "block": "header",
+          "fields": [{ "field": "title", "truncate": 150 }]
+        },
+        {
+          "block": "context",
+          "fields": [
+            { "field": "owner", "format": "name" },
+            { "field": "model", "show": false }
+          ]
+        }
+      ]
+    }
   }
 }

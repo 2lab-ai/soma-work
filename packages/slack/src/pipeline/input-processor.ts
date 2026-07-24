@@ -162,7 +162,10 @@ export class InputProcessor {
           user,
         });
       } else {
-        session.pendingUserText = text;
+        // Preserve leading inline session directives (`%model <v>` / `%nogoal`)
+        // that the message handler stripped off `event.text` — the post-compact
+        // replay re-enters the handler and re-parses them.
+        session.pendingUserText = event.inlineDirectiveRawText || text;
         session.pendingEventContext = { channel, threadTs, user, ts };
 
         // Notice post is decorative — fire-and-forget so Slack latency cannot

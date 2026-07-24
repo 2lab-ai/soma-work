@@ -376,7 +376,15 @@ misconfigurations are visible.
 interpolation, set the variable in the host environment before launch
 instead of in `claude.env`.
 
-### 6. Run
+### 6. Customize UI surfaces (Optional)
+
+The `ui` section of `config.json` controls what the thread header, turn-end
+card and dashboard card header show, and how each field renders. Inspect the
+built-in defaults in `config.default.json` (generated, do not edit), copy the
+sections you want to change into `config.json`, and restart. Schema and
+examples: [docs/ui-surfaces.md](docs/ui-surfaces.md).
+
+### 7. Run
 
 ```bash
 npm run dev                        # Development (watch mode)

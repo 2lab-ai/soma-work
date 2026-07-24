@@ -18,6 +18,7 @@ import { Logger } from './logger';
 import type { McpServerConfig } from './mcp/config-loader';
 import { validatePluginConfig } from './plugin/config-parser';
 import type { PluginConfig } from './plugin/types';
+import { DEFAULT_UI_SURFACES } from './slack/surface-config';
 import type { AgentConfig } from './types';
 
 const logger = new Logger('ConfigLoader');
@@ -38,6 +39,15 @@ const RESERVED_LEASE_KEYS_SET = new Set<string>(RESERVED_LEASE_KEYS);
  */
 let warnedLegacyLlmChat = false;
 
+/**
+ * Process-scoped guard so the "seeded default ui" info log fires at most
+ * once. Same rationale as `warnedLegacyLlmChat`: `loadConfig` runs at boot
+ * *and* on every plugin-manager save (and once per agent config in
+ * multi-agent setups) — the seed itself is idempotent per file, but the
+ * log would otherwise repeat.
+ */
+let seededUiDefaults = false;
+
 export interface Config {
   mcpServers?: Record<string, McpServerConfig>;
   plugin?: PluginConfig;
@@ -56,6 +66,25 @@ export interface Config {
    * `number`/`boolean` JSON values and rejects everything else with a warn.
    */
   'claude.env'?: Record<string, string>;
+  /**
+   * UI surface composition overrides (thread header, turn-end card,
+   * dashboard card header). Kept OPAQUE here — validation/normalization is
+   * owned by `@soma/slack/surface-config` (`normalizeUiSurfacesConfig`),
+   * installed once at boot via `setUiSurfacesConfig` in `src/index.ts`.
+   * Schema + examples: docs/ui-surfaces.md; inspectable defaults:
+   * config.default.json (repo root).
+   *
+   * The passthrough matters for round-trip safety: plugin-manager
+   * (`src/plugin/plugin-manager.ts`) does `loadConfig` → spread →
+   * `saveConfig`; without this key a plugin save would silently delete the
+   * operator's ui config.
+   *
+   * NOTE: ui values are treated as LITERALS — `${VAR}` placeholders are NOT
+   * substituted in `ui` (display-only config) and are preserved verbatim on
+   * the saveConfig round-trip. This intentionally mirrors the llmChat-strip
+   * rule below: never persist post-substitution values back to disk.
+   */
+  ui?: Record<string, unknown>;
 }
 
 /**
@@ -337,6 +366,67 @@ export function loadConfig(configFile: string): Config {
         result['claude.env'] = claudeEnv;
       }
 
+      // Pass through `ui` (surface composition) opaquely — deep validation
+      // happens in @soma/slack/surface-config at install time. Only the
+      // "plain object" shape is checked here; arrays/strings are dropped so
+      // a malformed value cannot poison the saveConfig round-trip.
+      //
+      // CRITICAL: take `ui` from `rawParsed` (PRE-substitution), never from
+      // `raw` (post-`substituteEnvVars`). `ui` is display-only config, so
+      // `${VAR}` placeholders are treated as literals and preserved verbatim.
+      // Using the substituted object would make plugin-manager `saveConfig`
+      // persist RESOLVED env values to disk — a secret disclosure and a
+      // round-trip corruption that breaks env rotation (same hazard class as
+      // the llmChat strip below).
+      const rawUi = (rawParsed as Record<string, unknown>).ui;
+      if (rawUi && typeof rawUi === 'object' && !Array.isArray(rawUi)) {
+        result.ui = rawUi as Record<string, unknown>;
+      } else if (rawUi !== undefined) {
+        logger.warn(`Ignoring config.json#"ui": expected a JSON object, got ${describeKind(rawUi)}`);
+      } else {
+        // Seed the built-in UI surface defaults INTO config.json when the
+        // `ui` key is absent (user requirement: "디폴트 설정을 config.json에
+        // 넣어줘") — operators then see and edit the full default composition
+        // directly in their config file instead of hunting for
+        // config.default.json. Seeded only when the key is missing, so an
+        // operator-customized (or deliberately emptied `{}`) `ui` is never
+        // overwritten and future boots are no-ops.
+        //
+        // Same atomic tmp+rename pattern as the llmChat strip below, and the
+        // same pre-substitution rule: spread `rawParsed` so every `${VAR}`
+        // placeholder elsewhere in the file survives verbatim.
+        // `DEFAULT_UI_SURFACES` itself is pure literal JSON data containing
+        // no `${VAR}` placeholders, so writing it to disk cannot interact
+        // with env substitution on future loads.
+        // Reflect the seed into `rawParsed` BEFORE the write attempt: the
+        // legacy llmChat strip below re-writes the file from `rawParsed`,
+        // and a losing process in a concurrent-boot rename race would
+        // otherwise strip llmChat from an UNSEEDED object — persisting a
+        // file with no `ui` (codex review, PR #1270, rounds 1–2). Setting it
+        // up-front makes every later rewrite in this load carry the seed,
+        // even when this process's own seed write loses the race or fails.
+        (rawParsed as Record<string, unknown>).ui = DEFAULT_UI_SURFACES;
+        result.ui = JSON.parse(JSON.stringify(DEFAULT_UI_SURFACES)) as Record<string, unknown>;
+        try {
+          // Unique tmp name per process — two concurrently-booting processes
+          // must not write/rename the same tmp path (ENOENT for the loser).
+          const tmpFile = `${configFile}.tmp.ui-defaults-seed.${process.pid}`;
+          fs.writeFileSync(tmpFile, `${JSON.stringify(rawParsed, null, 2)}\n`, 'utf-8');
+          fs.renameSync(tmpFile, configFile);
+          if (!seededUiDefaults) {
+            seededUiDefaults = true;
+            logger.info('Seeded default `ui` surface settings into config.json', { path: configFile });
+          }
+        } catch (seedError) {
+          // Seed failed (disk full, permissions) — not fatal: built-in
+          // defaults still apply at runtime via surface-config fallback.
+          logger.warn('Failed to seed default `ui` settings into config.json', {
+            path: configFile,
+            error: (seedError as Error).message,
+          });
+        }
+      }
+
       // PR #639 removed the `llmChat` subsystem (prompt-builder snippet,
       // llmChatConfigStore, Slack LlmChatHandler). Legacy configs still
       // carrying `llmChat` keep working but the key is silently dropped on
@@ -399,6 +489,7 @@ export function loadConfig(configFile: string): Config {
         hasPluginConfig: !!result.plugin,
         agents: result.agents ? Object.keys(result.agents).length : 0,
         hasA2t: !!result.a2t,
+        hasUi: !!result.ui,
         // keys-only — never log the values
         claudeEnvKeys: result['claude.env'] ? Object.keys(result['claude.env']) : [],
       });

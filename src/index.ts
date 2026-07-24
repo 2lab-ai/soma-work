@@ -96,6 +96,7 @@ import { PluginManager } from './plugin/plugin-manager';
 import { getVersionInfo, notifyRelease } from './release-notifier';
 import { GoalLoopController } from './slack/goal-loop-controller';
 import { setGoalLoopResumeHandler } from './slack/goal-loop-resume';
+import { setUiSurfacesConfig } from './slack/surface-config';
 import { SlackHandler } from './slack-handler';
 import { type SocketWatchdogUnhealthyReason, startSlackSocketWatchdog } from './slack-socket-watchdog';
 import { notifyStartup } from './startup-notifier';
@@ -341,6 +342,18 @@ async function start() {
     // Load config from config.json (mcpServers + plugin + agents + claude.env + a2t)
     const appConfig = loadConfig(CONFIG_FILE);
     timing('Config loaded');
+
+    // Install UI surface composition overrides (config.json#ui) — single
+    // injection point for @soma/slack/surface-config (thread header /
+    // turn-end card / dashboard card header). See docs/ui-surfaces.md and
+    // config.default.json for the schema + inspectable defaults.
+    const uiConfigResult = setUiSurfacesConfig(appConfig.ui);
+    for (const warning of uiConfigResult.warnings) {
+      logger.warn(`config.json#ui: ${warning}`);
+    }
+    if (appConfig.ui) {
+      timing(`UI surface config applied (${Object.keys(uiConfigResult.config).length} surfaces overridden)`);
+    }
 
     // Install operator-controlled additional env (config.json#claude.env)
     // BEFORE any ClaudeHandler / SDK consumers are constructed, so every
