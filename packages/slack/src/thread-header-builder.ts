@@ -1,4 +1,13 @@
 import { ContextWindowManager, type SessionUsage } from './context-window-manager';
+import {
+  getSurfaceLines,
+  MAX_BAR_WIDTH,
+  MAX_TEXT_OBJECT_CHARS,
+  type SurfaceBarStyle,
+  type SurfaceFieldConfig,
+  type SurfaceLineConfig,
+  type SurfaceTheme,
+} from './surface-config';
 
 export type { SessionUsage } from './context-window-manager';
 
@@ -72,8 +81,13 @@ function getStatusEmoji(status: string | undefined, linkType?: string): string {
   return STATUS_EMOJI[key] || STATUS_EMOJI[status.toLowerCase()] || '';
 }
 
-/** Max links to display per type in Default theme */
+/** Max links to display per type when the field config sets no `max` */
 const MAX_LINKS_PER_TYPE = 5;
+
+/** Slack hard limits enforced regardless of configuration */
+const HEADER_MAX_CHARS = 150;
+const CONTEXT_MAX_ELEMENTS = 10;
+const MESSAGE_MAX_BLOCKS = 50;
 
 export interface ThreadHeaderData {
   title?: string;
@@ -120,20 +134,147 @@ export class ThreadHeaderBuilder {
     });
   }
 
+  /**
+   * Build the thread header payload from the resolved surface config.
+   * Line composition comes from `ui.threadheader` (user config.json override
+   * or built-in DEFAULT_UI_SURFACES parity presets) via getSurfaceLines.
+   */
   static build(data: ThreadHeaderData): ThreadHeaderPayload {
-    const theme = data.theme || 'default';
+    const theme = (data.theme || 'default') as SurfaceTheme;
     const textFallback = ThreadHeaderBuilder.buildTextFallback(data);
+    const lines = getSurfaceLines('threadheader', theme);
+    return { text: textFallback, blocks: ThreadHeaderBuilder.renderLines(lines, data) };
+  }
 
-    switch (theme) {
-      case 'default':
-        return { text: textFallback, blocks: ThreadHeaderBuilder.buildDefault(data) };
-      case 'compact':
-        return { text: textFallback, blocks: ThreadHeaderBuilder.buildCompact(data) };
-      case 'minimal':
-        return { text: textFallback, blocks: ThreadHeaderBuilder.buildMinimal(data) };
-      default:
-        return { text: textFallback, blocks: ThreadHeaderBuilder.buildDefault(data) };
+  // ---------------------------------------------------------------------------
+  // Generic line → block rendering
+  // ---------------------------------------------------------------------------
+
+  private static renderLines(lines: SurfaceLineConfig[], data: ThreadHeaderData): any[] {
+    const blocks: any[] = [];
+
+    for (const line of lines) {
+      if (blocks.length >= MESSAGE_MAX_BLOCKS) break;
+
+      // Explicit divider block, or a line whose only field(s) are `separator`
+      const dividerOnly = line.fields.length > 0 && line.fields.every((f) => f.field === 'separator');
+      if (line.block === 'divider' || dividerOnly) {
+        blocks.push({ type: 'divider' });
+        continue;
+      }
+
+      const values: string[] = [];
+      for (const field of line.fields) {
+        if (field.show === false || field.field === 'separator') continue;
+        for (const raw of ThreadHeaderBuilder.renderField(field, data)) {
+          const decorated = ThreadHeaderBuilder.decorate(raw, field);
+          if (decorated) values.push(decorated);
+        }
+      }
+      if (values.length === 0) continue; // fully-empty lines are omitted
+
+      const separator = line.separator ?? ' ';
+      switch (line.block ?? 'context') {
+        case 'header':
+          blocks.push({
+            type: 'header',
+            text: {
+              type: 'plain_text',
+              text: ThreadHeaderBuilder.truncateText(values.join(separator), HEADER_MAX_CHARS),
+              emoji: true,
+            },
+          });
+          break;
+        case 'section':
+          blocks.push({ type: 'section', text: ThreadHeaderBuilder.mrkdwn(values.join(separator)) });
+          break;
+        default: {
+          // context — one mrkdwn element per rendered value, chunked to
+          // Slack's 10-elements-per-context-block cap.
+          for (let i = 0; i < values.length; i += CONTEXT_MAX_ELEMENTS) {
+            if (blocks.length >= MESSAGE_MAX_BLOCKS) break;
+            blocks.push({
+              type: 'context',
+              elements: values.slice(i, i + CONTEXT_MAX_ELEMENTS).map((v) => ThreadHeaderBuilder.mrkdwn(v)),
+            });
+          }
+        }
+      }
     }
+
+    return blocks.slice(0, MESSAGE_MAX_BLOCKS);
+  }
+
+  /**
+   * Produce the raw value(s) for a configured field.
+   * Multi-value fields (links, linkhistory) yield one entry per link so
+   * context blocks render them as separate elements.
+   */
+  private static renderField(field: SurfaceFieldConfig, data: ThreadHeaderData): string[] {
+    switch (field.field) {
+      case 'title': {
+        if (field.format === 'headline') {
+          const title = ThreadHeaderBuilder.resolveTitle(data);
+          const owner = ThreadHeaderBuilder.resolveOwner(data);
+          const emoji = data.closed ? '🔴' : '🟢';
+          return [owner ? `${emoji} *${owner} — ${title}*` : `${emoji} *${title}*`];
+        }
+        return [ThreadHeaderBuilder.resolveTitle(data)];
+      }
+      case 'owner': {
+        const format = field.format ?? 'mention';
+        if (format === 'name') {
+          const name = data.ownerName || data.ownerId;
+          return name ? [name] : [];
+        }
+        if (format === 'both') {
+          if (data.ownerId && data.ownerName) return [`<@${data.ownerId}> (${data.ownerName})`];
+          if (data.ownerId) return [`<@${data.ownerId}>`];
+          return data.ownerName ? [data.ownerName] : [];
+        }
+        // 'mention' (default): requires an id to be renderable
+        return data.ownerId ? [`<@${data.ownerId}>`] : [];
+      }
+      case 'workflow':
+        return [data.workflow || 'default'];
+      case 'model':
+        return data.model ? [ThreadHeaderBuilder.formatModelName(data.model)] : [];
+      case 'contextwindow': {
+        const bar = ThreadHeaderBuilder.formatContextBar(data.usage, field.bar);
+        return bar ? [bar] : [];
+      }
+      case 'links':
+        return ThreadHeaderBuilder.formatLinks(data.links);
+      case 'linkhistory':
+        return ThreadHeaderBuilder.formatAllLinks(data.linkHistory, data.links, field.max ?? MAX_LINKS_PER_TYPE);
+      case 'status': {
+        if (!data.closed) return [];
+        return [field.format === 'closed-text' ? '_종료됨_' : '🔴 _종료됨_'];
+      }
+      default:
+        // Unknown fields were already warn-filtered by surface-config
+        // normalization; built-ins never hit this. Stay silent on the hot path.
+        return [];
+    }
+  }
+
+  /**
+   * Apply per-field decorations to a rendered value:
+   * truncate → style (code innermost, then bold/italic/strike) → label prefix
+   * → prefixEmoji prefix. `color` is intentionally ignored — Slack mrkdwn has
+   * no inline text color (no per-render warnings on this hot path).
+   */
+  private static decorate(value: string, field: SurfaceFieldConfig): string {
+    if (!value) return '';
+    let out = value;
+    if (field.truncate) out = ThreadHeaderBuilder.truncateText(out, field.truncate);
+    if (field.style?.code) out = `\`${out}\``;
+    if (field.style?.bold) out = `*${out}*`;
+    if (field.style?.italic) out = `_${out}_`;
+    if (field.style?.strike) out = `~${out}~`;
+    if (field.label) out = `${field.label} ${out}`;
+    if (field.prefixEmoji) out = `${field.prefixEmoji} ${out}`;
+    return out;
   }
 
   // ---------------------------------------------------------------------------
@@ -163,111 +304,18 @@ export class ThreadHeaderBuilder {
     return parts.join('\n');
   }
 
-  private static truncateHeader(text: string): string {
-    const MAX = 150;
-    return text.length > MAX ? text.slice(0, MAX - 1) + '…' : text;
+  private static truncateText(text: string, max: number): string {
+    return text.length > max ? `${text.slice(0, max - 1)}…` : text;
   }
 
-  private static headerBlock(text: string): any {
-    return {
-      type: 'header',
-      text: { type: 'plain_text', text: ThreadHeaderBuilder.truncateHeader(text), emoji: true },
-    };
-  }
-
-  private static contextBlock(elements: any[]): any {
-    // Slack caps context elements at 10
-    return { type: 'context', elements: elements.slice(0, 10) };
-  }
-
+  /**
+   * Build a mrkdwn text object hard-capped at Slack's 3000-char text-object
+   * limit. Per-option normalization bounds each config string, but many
+   * bounded values joined on one line can still exceed the limit — an
+   * over-long text object gets the whole message rejected by the API.
+   */
   private static mrkdwn(text: string): any {
-    return { type: 'mrkdwn', text };
-  }
-
-  /** Gather the standard meta elements: workflow, model, contextBar */
-  private static metaElements(data: ThreadHeaderData): any[] {
-    const els: any[] = [];
-    const workflow = data.workflow || 'default';
-    els.push(ThreadHeaderBuilder.mrkdwn(`\`${workflow}\``));
-    if (data.model) {
-      els.push(ThreadHeaderBuilder.mrkdwn(`\`${ThreadHeaderBuilder.formatModelName(data.model)}\``));
-    }
-    const ctxBar = ThreadHeaderBuilder.formatContextBar(data.usage);
-    if (ctxBar) els.push(ThreadHeaderBuilder.mrkdwn(ctxBar));
-    return els;
-  }
-
-  private static linkElements(data: ThreadHeaderData): any[] {
-    return ThreadHeaderBuilder.formatLinks(data.links).map((t) => ThreadHeaderBuilder.mrkdwn(t));
-  }
-
-  private static ownerMention(data: ThreadHeaderData): any | undefined {
-    return data.ownerId ? ThreadHeaderBuilder.mrkdwn(`<@${data.ownerId}>`) : undefined;
-  }
-
-  // ---------------------------------------------------------------------------
-  // Theme: Default (Rich Card) — maximum info density, all links with metadata
-  // ---------------------------------------------------------------------------
-  private static buildDefault(data: ThreadHeaderData): any[] {
-    const title = ThreadHeaderBuilder.resolveTitle(data);
-    const blocks: any[] = [ThreadHeaderBuilder.headerBlock(title)];
-
-    // Row 1: @owner + workflow + model
-    const row1: any[] = [];
-    const mention = ThreadHeaderBuilder.ownerMention(data);
-    if (mention) row1.push(mention);
-    row1.push(...ThreadHeaderBuilder.metaElements(data));
-    if (row1.length > 0) blocks.push(ThreadHeaderBuilder.contextBlock(row1));
-
-    // Row 2+: All links from linkHistory (max 5 per type) with metadata
-    const allLinkElements = ThreadHeaderBuilder.formatAllLinks(data.linkHistory, data.links);
-    if (allLinkElements.length > 0) {
-      // Group into context blocks (max 10 elements each)
-      for (let i = 0; i < allLinkElements.length; i += 10) {
-        blocks.push(ThreadHeaderBuilder.contextBlock(allLinkElements.slice(i, i + 10)));
-      }
-    }
-
-    // Closed indicator
-    if (data.closed) {
-      blocks.push(ThreadHeaderBuilder.contextBlock([ThreadHeaderBuilder.mrkdwn('🔴 _종료됨_')]));
-    }
-
-    return blocks;
-  }
-
-  // ---------------------------------------------------------------------------
-  // Theme: Compact — section.text + thin context, active links only
-  // ---------------------------------------------------------------------------
-  private static buildCompact(data: ThreadHeaderData): any[] {
-    const title = ThreadHeaderBuilder.resolveTitle(data);
-    const owner = ThreadHeaderBuilder.resolveOwner(data);
-    const emoji = data.closed ? '🔴' : '🟢';
-    const sectionText = owner ? `${emoji} *${owner} — ${title}*` : `${emoji} *${title}*`;
-
-    const blocks: any[] = [{ type: 'section', text: ThreadHeaderBuilder.mrkdwn(sectionText) }];
-
-    const ctxEls: any[] = [...ThreadHeaderBuilder.metaElements(data), ...ThreadHeaderBuilder.linkElements(data)];
-    if (data.closed) ctxEls.push(ThreadHeaderBuilder.mrkdwn('_종료됨_'));
-    if (ctxEls.length > 0) blocks.push(ThreadHeaderBuilder.contextBlock(ctxEls));
-    return blocks;
-  }
-
-  // ---------------------------------------------------------------------------
-  // Theme: Minimal — single context line, bare minimum
-  // ---------------------------------------------------------------------------
-  private static buildMinimal(data: ThreadHeaderData): any[] {
-    const title = ThreadHeaderBuilder.resolveTitle(data);
-    const els: any[] = [ThreadHeaderBuilder.mrkdwn(title)];
-    if (data.model) {
-      els.push(ThreadHeaderBuilder.mrkdwn(`\`${ThreadHeaderBuilder.formatModelName(data.model)}\``));
-    }
-    const ctxBar = ThreadHeaderBuilder.formatContextBar(data.usage);
-    if (ctxBar) els.push(ThreadHeaderBuilder.mrkdwn(ctxBar));
-    // Active links only (labels)
-    els.push(...ThreadHeaderBuilder.linkElements(data));
-    if (data.closed) els.push(ThreadHeaderBuilder.mrkdwn('_종료됨_'));
-    return [ThreadHeaderBuilder.contextBlock(els)];
+    return { type: 'mrkdwn', text: ThreadHeaderBuilder.truncateText(text, MAX_TEXT_OBJECT_CHARS) };
   }
 
   // ---------------------------------------------------------------------------
@@ -275,49 +323,37 @@ export class ThreadHeaderBuilder {
   // ---------------------------------------------------------------------------
 
   /**
-   * Format all links from linkHistory for Default theme.
-   * Shows up to MAX_LINKS_PER_TYPE per type with title and status.
+   * Format all links from linkHistory (one string per link) with title and
+   * status metadata, up to `maxPerType` per type with "+N more" overflow.
    * Falls back to active links if no history available.
    */
-  private static formatAllLinks(linkHistory?: SessionLinkHistory, activeLinks?: SessionLinks): any[] {
-    const elements: any[] = [];
-
+  private static formatAllLinks(
+    linkHistory: SessionLinkHistory | undefined,
+    activeLinks: SessionLinks | undefined,
+    maxPerType: number,
+  ): string[] {
     if (!linkHistory) {
       // Fallback: use active links only
-      return ThreadHeaderBuilder.formatLinks(activeLinks).map((t) => ThreadHeaderBuilder.mrkdwn(t));
+      return ThreadHeaderBuilder.formatLinks(activeLinks);
     }
 
-    // Issues
-    const issues = linkHistory.issues || [];
-    const displayIssues = issues.slice(-MAX_LINKS_PER_TYPE);
-    for (const link of displayIssues) {
-      elements.push(ThreadHeaderBuilder.mrkdwn(ThreadHeaderBuilder.formatLinkWithMeta(link, '📋')));
-    }
-    if (issues.length > MAX_LINKS_PER_TYPE) {
-      elements.push(ThreadHeaderBuilder.mrkdwn(`_+${issues.length - MAX_LINKS_PER_TYPE} more issues_`));
+    const values: string[] = [];
+    const groups: Array<{ links: SessionLink[]; emoji: string; noun: string }> = [
+      { links: linkHistory.issues || [], emoji: '📋', noun: 'issues' },
+      { links: linkHistory.prs || [], emoji: '🔀', noun: 'PRs' },
+      { links: linkHistory.docs || [], emoji: '📄', noun: 'docs' },
+    ];
+
+    for (const { links, emoji, noun } of groups) {
+      for (const link of links.slice(-maxPerType)) {
+        values.push(ThreadHeaderBuilder.formatLinkWithMeta(link, emoji));
+      }
+      if (links.length > maxPerType) {
+        values.push(`_+${links.length - maxPerType} more ${noun}_`);
+      }
     }
 
-    // PRs
-    const prs = linkHistory.prs || [];
-    const displayPrs = prs.slice(-MAX_LINKS_PER_TYPE);
-    for (const link of displayPrs) {
-      elements.push(ThreadHeaderBuilder.mrkdwn(ThreadHeaderBuilder.formatLinkWithMeta(link, '🔀')));
-    }
-    if (prs.length > MAX_LINKS_PER_TYPE) {
-      elements.push(ThreadHeaderBuilder.mrkdwn(`_+${prs.length - MAX_LINKS_PER_TYPE} more PRs_`));
-    }
-
-    // Docs
-    const docs = linkHistory.docs || [];
-    const displayDocs = docs.slice(-MAX_LINKS_PER_TYPE);
-    for (const link of displayDocs) {
-      elements.push(ThreadHeaderBuilder.mrkdwn(ThreadHeaderBuilder.formatLinkWithMeta(link, '📄')));
-    }
-    if (docs.length > MAX_LINKS_PER_TYPE) {
-      elements.push(ThreadHeaderBuilder.mrkdwn(`_+${docs.length - MAX_LINKS_PER_TYPE} more docs_`));
-    }
-
-    return elements;
+    return values;
   }
 
   /**
@@ -328,7 +364,7 @@ export class ThreadHeaderBuilder {
     const label = link.label || link.url;
     let text = `${emoji} <${link.url}|${label}>`;
     if (link.title) {
-      const truncated = link.title.length > 40 ? link.title.slice(0, 39) + '…' : link.title;
+      const truncated = link.title.length > 40 ? `${link.title.slice(0, 39)}…` : link.title;
       text += `: ${truncated}`;
     }
     if (link.status) {
@@ -338,7 +374,7 @@ export class ThreadHeaderBuilder {
     return text;
   }
 
-  /** Format active links only (for Compact/Minimal themes) */
+  /** Format active links only (labels; slack-message URLs skipped) */
   private static formatLinks(links?: SessionLinks): string[] {
     if (!links) return [];
     const parts: string[] = [];
@@ -393,17 +429,25 @@ export class ThreadHeaderBuilder {
   /**
    * Format context window usage as a compact bar.
    * Returns "▓░░░░ 156k/1M (85%)" or undefined if no usage data.
+   * Bar styling (segment count / chars) is configurable; defaults to 5/▓/░.
    */
-  static formatContextBar(usage?: SessionUsage): string | undefined {
+  static formatContextBar(usage?: SessionUsage, barStyle?: SurfaceBarStyle): string | undefined {
     if (!usage || usage.contextWindow <= 0) return undefined;
+
+    // Defensive clamp: normalizeField already bounds config-provided widths,
+    // but callers can pass an arbitrary SurfaceBarStyle (DEFAULT_UI_SURFACES
+    // bypasses normalize) — an unbounded width would throw in `''.repeat`.
+    const width = Math.min(MAX_BAR_WIDTH, Math.max(1, Math.floor(barStyle?.width ?? 5)));
+    const filledChar = barStyle?.filledChar ?? '▓';
+    const emptyChar = barStyle?.emptyChar ?? '░';
 
     const used = ContextWindowManager.computeUsedTokens(usage);
     const total = usage.contextWindow;
     const remainingPercent = Math.max(0, Math.min(100, ((total - used) / total) * 100));
     const usedPercent = 100 - remainingPercent;
 
-    const filledSegments = Math.round(usedPercent / 20);
-    const bar = '▓'.repeat(filledSegments) + '░'.repeat(5 - filledSegments);
+    const filledSegments = Math.min(width, Math.max(0, Math.round((usedPercent / 100) * width)));
+    const bar = filledChar.repeat(filledSegments) + emptyChar.repeat(width - filledSegments);
 
     const pct = Number.isInteger(remainingPercent) ? `${remainingPercent}` : remainingPercent.toFixed(1);
     return `${bar} ${ThreadHeaderBuilder.formatTokenCount(used)}/${ThreadHeaderBuilder.formatTokenCount(total)} (${pct}%)`;

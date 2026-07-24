@@ -66,6 +66,7 @@
     "./summary-timer": "./dist/summary-timer.js",
     "./task-list-block-builder": "./dist/task-list-block-builder.js",
     "./thread-panel": "./dist/thread-panel.js",
+    "./surface-config": "./dist/surface-config.js",
     "./thread-header-builder": "./dist/thread-header-builder.js",
     "./thread-surface": "./dist/thread-surface.js",
     "./todo-display-manager": "./dist/todo-display-manager.js",

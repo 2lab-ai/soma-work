@@ -382,6 +382,26 @@ export {
 } from './summary-service';
 export { SummaryTimer } from './summary-timer';
 export {
+  DEFAULT_UI_SURFACES,
+  getFieldConfig,
+  getSurfaceLines,
+  getUiSurfacesConfig,
+  isFieldVisible,
+  type NormalizeResult as UiSurfacesNormalizeResult,
+  normalizeUiSurfacesConfig,
+  resetUiSurfacesConfig,
+  SURFACE_FIELD_REGISTRY,
+  type SurfaceBarStyle,
+  type SurfaceFieldConfig,
+  type SurfaceFieldStyle,
+  type SurfaceLineConfig,
+  type SurfaceName,
+  type SurfaceTheme,
+  type SurfaceUiConfig,
+  setUiSurfacesConfig,
+  type UiSurfacesConfig,
+} from './surface-config';
+export {
   type BuildPlanTasksOptions,
   type SessionTheme as TaskListSessionTheme,
   TaskListBlockBuilder,
