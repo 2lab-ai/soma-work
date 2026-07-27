@@ -1092,6 +1092,22 @@ export class UserSettingsStore {
   }
 
   /**
+   * Like {@link resolveModelInput}, but on a cache miss asks llmux for a
+   * FRESH catalog (forced fetch, 5s-throttled) and retries once before giving
+   * up. This makes models llmux already serves — but the local snapshot does
+   * not know yet — usable immediately instead of erroring until the next TTL
+   * revalidation. Still returns null when llmux does not serve the model
+   * either (typos must NOT be persisted into defaults/sessions/crons).
+   */
+  async resolveModelInputWithRefresh(input: string): Promise<string | null> {
+    const resolved = this.resolveModelInput(input);
+    if (resolved) return resolved;
+    if (input.trim().length === 0) return null;
+    await modelCatalog.refresh(undefined, { force: true });
+    return this.resolveModelInput(input);
+  }
+
+  /**
    * Get display name for a model.
    *
    * Covers all 16 entries in AVAILABLE_MODELS. The `[1m]` variants append

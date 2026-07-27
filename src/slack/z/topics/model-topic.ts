@@ -85,7 +85,9 @@ export async function renderModelCard(args: { userId: string; issuedAt: number }
 
 export async function applyModel(args: { userId: string; value: string }): Promise<ApplyResult> {
   const { userId, value } = args;
-  const resolved = userSettingsStore.resolveModelInput(value);
+  // Cache miss → forced llmux catalog re-fetch + one retry (models llmux
+  // already serves must not be rejected just because the snapshot is stale).
+  const resolved = await userSettingsStore.resolveModelInputWithRefresh(value);
   if (!resolved) {
     const aliases = Object.keys(MODEL_ALIASES)
       .map((a) => `\`${a}\``)
