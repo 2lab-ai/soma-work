@@ -19,6 +19,11 @@ vi.mock('../../../../user-settings-store', async () => {
         if ((actual.AVAILABLE_MODELS as readonly string[]).includes(lower)) return lower as any;
         return actual.MODEL_ALIASES[lower] ?? null;
       },
+      resolveModelInputWithRefresh: async (raw: string) => {
+        const lower = raw.toLowerCase();
+        if ((actual.AVAILABLE_MODELS as readonly string[]).includes(lower)) return lower as any;
+        return actual.MODEL_ALIASES[lower] ?? null;
+      },
     },
   };
 });

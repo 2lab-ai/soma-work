@@ -474,7 +474,9 @@ export class SlackHandler {
           return;
         }
         if (directives.model) {
-          const resolved = userSettingsStore.resolveModelInput(directives.model);
+          // Cache miss → forced llmux catalog re-fetch + one retry before
+          // dropping the instruction.
+          const resolved = await userSettingsStore.resolveModelInputWithRefresh(directives.model);
           if (!resolved) {
             // Fail loudly and DROP the instruction — dispatching it on the old
             // model would silently ignore the user's model choice.

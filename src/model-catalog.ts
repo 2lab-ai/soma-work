@@ -53,10 +53,25 @@ export const CANONICAL_EFFORT_ORDER = ['low', 'medium', 'high', 'xhigh', 'max', 
 const SNAPSHOT_FILE_NAME = 'model-catalog.json';
 /** Min gap between two llmux fetch attempts (success or failure). */
 const REFRESH_COOLDOWN_MS = 60_000;
+/**
+ * Min gap between two FORCED fetch attempts. Forced refreshes (admin `model`,
+ * unknown-model re-resolution) bypass the normal 60s cooldown but keep this
+ * short throttle so repeated typo input / admin spam cannot hammer llmux.
+ */
+const FORCE_REFRESH_COOLDOWN_MS = 5_000;
 /** Stale-while-revalidate TTL for `maybeRefreshInBackground`. */
 const REFRESH_TTL_MS = 10 * 60_000;
 
 export type CatalogFetcher = () => Promise<LlmuxModelEntry[]>;
+
+export interface RefreshOptions {
+  /**
+   * Bypass the normal 60s attempt cooldown (still deduped against in-flight
+   * fetches and throttled by {@link FORCE_REFRESH_COOLDOWN_MS} between two
+   * forced attempts).
+   */
+  force?: boolean;
+}
 
 export interface RefreshResult {
   ok: boolean;
@@ -114,6 +129,7 @@ class ModelCatalog {
   private byAlias = new Map<string, CatalogModel>();
   private fetchedAt: number | null = null;
   private lastAttemptAt = 0;
+  private lastForcedAttemptAt = 0;
   private inFlight: Promise<RefreshResult> | null = null;
   private fetcher: CatalogFetcher | null = null;
   private snapshotPathOverride: string | null = null;
@@ -237,8 +253,12 @@ class ModelCatalog {
    * Fetch the catalog from llmux. Success replaces entries + persists the
    * snapshot; failure WARNs and keeps the current entries (never downgrade).
    * In-flight calls are deduped; attempts are rate-limited by a 60s cooldown.
+   *
+   * `opts.force` (admin `model` refresh, unknown-model re-resolution) bypasses
+   * the 60s cooldown; two forced attempts are still ≥ 5s apart
+   * ({@link FORCE_REFRESH_COOLDOWN_MS}) so bad input cannot hammer llmux.
    */
-  refresh(fetchImpl?: CatalogFetcher): Promise<RefreshResult> {
+  refresh(fetchImpl?: CatalogFetcher, opts?: RefreshOptions): Promise<RefreshResult> {
     if (this.inFlight) return this.inFlight;
 
     const fetcher = fetchImpl ?? this.fetcher;
@@ -246,7 +266,12 @@ class ModelCatalog {
       return Promise.resolve({ ok: false, count: this.entries.length, skipped: true, error: 'no fetcher wired' });
     }
     const now = Date.now();
-    if (now - this.lastAttemptAt < REFRESH_COOLDOWN_MS) {
+    if (opts?.force) {
+      if (now - this.lastForcedAttemptAt < FORCE_REFRESH_COOLDOWN_MS) {
+        return Promise.resolve({ ok: false, count: this.entries.length, skipped: true, error: 'force cooldown' });
+      }
+      this.lastForcedAttemptAt = now;
+    } else if (now - this.lastAttemptAt < REFRESH_COOLDOWN_MS) {
       return Promise.resolve({ ok: false, count: this.entries.length, skipped: true, error: 'cooldown' });
     }
     this.lastAttemptAt = now;
@@ -290,6 +315,7 @@ class ModelCatalog {
     this.setEntries([]);
     this.fetchedAt = null;
     this.lastAttemptAt = 0;
+    this.lastForcedAttemptAt = 0;
     this.inFlight = null;
     this.fetcher = null;
   }

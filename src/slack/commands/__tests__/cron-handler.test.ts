@@ -12,20 +12,24 @@ import * as os from 'os';
 import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../../user-settings-store', () => ({
-  AVAILABLE_MODELS: ['claude-fable-5', 'claude-opus-4-8', 'claude-sonnet-4-6', 'gpt-5.5'],
-  userSettingsStore: {
-    resolveModelInput: vi.fn((input: string) => {
-      const map: Record<string, string> = {
-        'gpt-5.5': 'gpt-5.5',
-        gpt: 'gpt-5.5',
-        opus: 'claude-opus-4-8',
-        'claude-fable-5': 'claude-fable-5',
-      };
-      return map[input] ?? null;
-    }),
-  },
-}));
+vi.mock('../../../user-settings-store', () => {
+  const resolve = (input: string) => {
+    const map: Record<string, string> = {
+      'gpt-5.5': 'gpt-5.5',
+      gpt: 'gpt-5.5',
+      opus: 'claude-opus-4-8',
+      'claude-fable-5': 'claude-fable-5',
+    };
+    return map[input] ?? null;
+  };
+  return {
+    AVAILABLE_MODELS: ['claude-fable-5', 'claude-opus-4-8', 'claude-sonnet-4-6', 'gpt-5.5'],
+    userSettingsStore: {
+      resolveModelInput: vi.fn(resolve),
+      resolveModelInputWithRefresh: vi.fn(async (input: string) => resolve(input)),
+    },
+  };
+});
 
 vi.mock('../../../admin-utils', () => ({
   isAdminUser: vi.fn((u: string) => u === 'U_ADMIN'),
