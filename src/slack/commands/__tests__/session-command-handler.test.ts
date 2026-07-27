@@ -13,6 +13,7 @@ vi.mock('../../../user-settings-store', () => ({
     getUserThinkingEnabled: vi.fn().mockReturnValue(false),
     getUserShowThinking: vi.fn().mockReturnValue(false),
     resolveModelInput: vi.fn((v: string) => (v === 'opus' ? 'claude-opus-4-1-20250805' : null)),
+    resolveModelInputWithRefresh: vi.fn(async (v: string) => (v === 'opus' ? 'claude-opus-4-1-20250805' : null)),
     resolveVerbosityInput: vi.fn((v: string) => (['minimal', 'compact', 'detail', 'verbose'].includes(v) ? v : null)),
   },
 }));
