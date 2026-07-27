@@ -158,7 +158,8 @@ export class CronCommandHandler implements CommandHandler {
       patch = { modelConfig: { type: 'fast' } };
       desc = 'fast (sonnet)';
     } else {
-      const modelId = userSettingsStore.resolveModelInput(value);
+      // Cache miss → forced llmux catalog re-fetch + one retry before erroring.
+      const modelId = await userSettingsStore.resolveModelInputWithRefresh(value);
       if (!modelId) {
         await ctx.say({
           text: `❌ 알 수 없는 모델: \`${value}\`\n\`default\` / \`fast\` / 모델 별칭(예: fable, opus, sonnet, haiku, gpt) 또는 canonical id를 쓰세요.`,

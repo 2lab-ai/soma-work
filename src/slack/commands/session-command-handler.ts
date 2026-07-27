@@ -227,7 +227,8 @@ export class SessionCommandHandler implements CommandHandler {
 
   private async setSessionModel(ctx: CommandContext, session: any, input: string): Promise<CommandResult> {
     const { say, threadTs } = ctx;
-    const resolved = userSettingsStore.resolveModelInput(input);
+    // Cache miss → forced llmux catalog re-fetch + one retry before erroring.
+    const resolved = await userSettingsStore.resolveModelInputWithRefresh(input);
 
     if (!resolved) {
       const aliases = Object.keys(MODEL_ALIASES)
