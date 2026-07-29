@@ -7,18 +7,20 @@
  *   ├ context: llmux server line (version · uptime · port, or ❌ unreachable)
  *   ├ context: settings line (base URL · masked key) + ⚙️ Edit  (admin only)
  *   ├ per-account section: status emoji + name + usage bars (5h/7d + scoped weekly, e.g. 7d-fable)
- *   │   admin: [Switch] [Remove] accessory / readonly: bars only, name masked
+ *   │   admin: [Switch] [Remove] accessory / readonly: bars only
  *   └ actions: [➕ Add account] [🔄 Refresh]               (Add = admin only)
  *
  * Layout (ccp/cct mode): header + mode buttons + hint; the caller appends
  * the existing CCT card blocks below (see `renderAuthCard` in
  * `src/slack/z/topics/auth-topic.ts`).
  *
- * Non-admin ("readonly") rules (#goal req 4):
- *   - account names are NEVER shown (llmux names embed emails) — rows render
- *     as `slot N (kind)`.
+ * Non-admin ("readonly") rules:
+ *   - account identity is fully visible — names and the `current:` account
+ *     render the same for every viewer (the CCT card behaves the same, #803).
+ *     Non-admins must be able to tell WHICH account is burning the quota.
  *   - no mutating buttons (mode switch / settings / switch / add / remove).
- *   - slot count + per-slot usage remain visible.
+ *   - the settings line stays admin-only: base URL + API key are infra
+ *     secrets, not account info.
  */
 
 import type { AuthRuntimeState } from '../../auth/auth-runtime';
@@ -43,16 +45,6 @@ export interface AuthCardInput {
 export function maskSecret(secret: string): string {
   if (secret.length <= 4) return '••••';
   return `••••${secret.slice(-4)}`;
-}
-
-/**
- * Mask an llmux account name for readonly viewers. llmux names commonly
- * embed emails (`claude:foo@bar.com`) and the readonly contract is "no
- * emails, ever" — so readonly rows use the positional label instead of a
- * masked transform (masking still leaks length/shape).
- */
-export function readonlySlotLabel(account: LlmuxAccount): string {
-  return `slot ${account.order} (${account.type})`;
 }
 
 const STATUS_EMOJI: Record<string, string> = {
@@ -146,7 +138,8 @@ export function buildAuthModeHeaderBlocks(runtime: AuthRuntimeState, viewerMode:
 /** One llmux account section block (+ optional admin accessory). */
 function buildAccountBlocks(account: LlmuxAccount, viewerMode: AuthCardViewerMode, nowMs: number): ZBlock[] {
   const isActive = account.status === 'active';
-  const name = viewerMode === 'admin' ? account.name : readonlySlotLabel(account);
+  // Account identity is viewer-independent — every viewer sees the real name.
+  const name = account.name;
   const emoji = statusEmoji(account.status);
   const badges: string[] = [account.type];
   if (account.group && account.group !== 'claude') badges.push(account.group);
@@ -207,7 +200,7 @@ export function buildAuthCardBlocks(input: AuthCardInput): ZBlock[] {
       elements: [
         {
           type: 'mrkdwn',
-          text: `llmux \`${llmuxStatus.version ?? '?'}\` · up ${formatUptime(llmuxStatus.uptime_secs)} · port ${llmuxStatus.port ?? '?'} · current: *${viewerMode === 'admin' ? (llmuxStatus.current ?? 'none') : llmuxStatus.current ? 'set' : 'none'}*`,
+          text: `llmux \`${llmuxStatus.version ?? '?'}\` · up ${formatUptime(llmuxStatus.uptime_secs)} · port ${llmuxStatus.port ?? '?'} · current: *${llmuxStatus.current ?? 'none'}*`,
         },
       ],
     });

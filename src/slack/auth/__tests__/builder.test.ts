@@ -1,13 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { AuthRuntimeState } from '../../../auth/auth-runtime';
 import type { LlmuxAccount, LlmuxStatus } from '../../../auth/llmux-client';
-import {
-  buildAuthCardBlocks,
-  buildAuthModeHeaderBlocks,
-  collectScopedWindows,
-  maskSecret,
-  readonlySlotLabel,
-} from '../builder';
+import { buildAuthCardBlocks, buildAuthModeHeaderBlocks, collectScopedWindows, maskSecret } from '../builder';
 import { AUTH_ACTION_IDS } from '../views';
 
 const RUNTIME_LLMUX: AuthRuntimeState = {
@@ -79,7 +73,7 @@ describe('auth card builder (#llmux runtime switch)', () => {
     expect(text).toContain('60%');
   });
 
-  it('readonly llmux card: NO emails, NO mutating buttons, usage + slot count still visible', () => {
+  it('readonly llmux card: NO mutating buttons, account info + usage + slot count visible', () => {
     const blocks = buildAuthCardBlocks({
       runtime: RUNTIME_LLMUX,
       llmuxStatus: STATUS,
@@ -87,11 +81,6 @@ describe('auth card builder (#llmux runtime switch)', () => {
       nowMs: NOW,
     });
     const text = allText(blocks);
-    // Requirement 4: emails must not be visible to non-admin.
-    expect(text).not.toContain('example.com');
-    expect(text).not.toContain('claude:me');
-    expect(text).toContain('slot 1 (oauth)');
-    expect(text).toContain('slot 2 (oauth)');
     expect(text).toContain('2 slot(s)');
     expect(text).toContain('60%');
     // No mutating affordances (mode switch / settings / add / remove / switch).
@@ -103,6 +92,29 @@ describe('auth card builder (#llmux runtime switch)', () => {
     // Refresh (read-only fetch) stays available.
     expect(text).toContain(AUTH_ACTION_IDS.refresh);
     // Settings line (base URL) is admin-only.
+    expect(text).not.toContain('localhost:3456');
+  });
+
+  it('readonly llmux card: account identity IS visible (names + current slot) to non-admins', () => {
+    const blocks = buildAuthCardBlocks({
+      runtime: RUNTIME_LLMUX,
+      llmuxStatus: STATUS,
+      viewerMode: 'readonly',
+      nowMs: NOW,
+    });
+    const text = allText(blocks);
+    // Account info is no longer anonymized for non-admins.
+    expect(text).toContain('claude:me@example.com');
+    expect(text).toContain('claude:other@example.com');
+    expect(text).not.toContain('slot 1 (oauth)');
+    // The `current:` field on the server line shows the real account, not `set`.
+    expect(text).toContain('current: *claude:me@example.com*');
+    expect(text).not.toContain('current: *set*');
+    // Mutating affordances stay admin-only, and infra settings stay hidden.
+    expect(text).not.toContain(AUTH_ACTION_IDS.switch);
+    expect(text).not.toContain(AUTH_ACTION_IDS.remove);
+    expect(text).not.toContain(AUTH_ACTION_IDS.add);
+    expect(text).not.toContain(AUTH_ACTION_IDS.settings);
     expect(text).not.toContain('localhost:3456');
   });
 
@@ -126,10 +138,6 @@ describe('auth card builder (#llmux runtime switch)', () => {
     expect(admin).toContain(`${AUTH_ACTION_IDS.mode}_llmux`);
     const readonly = allText(buildAuthModeHeaderBlocks(runtime, 'readonly'));
     expect(readonly).not.toContain(`${AUTH_ACTION_IDS.mode}_llmux`);
-  });
-
-  it('readonlySlotLabel never includes the account name', () => {
-    expect(readonlySlotLabel(STATUS.accounts[0])).toBe('slot 1 (oauth)');
   });
 });
 
