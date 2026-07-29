@@ -3,6 +3,7 @@ import {
   type CronJob,
   type CronJobPatch,
   CronStorage,
+  isRunAllowed,
   isValidCronExpression,
   isValidCronName,
 } from 'somalib/cron/cron-storage';
@@ -11,6 +12,7 @@ import { getActiveCronScheduler } from '../../cron-scheduler';
 import { DATA_DIR } from '../../env-paths';
 import { userSettingsStore } from '../../user-settings-store';
 import { buildCronCard } from '../cron-blocks';
+import { type CronRunPermissionSlackApi, requestCronRunPermission } from '../cron-run-permission-request';
 import type { CommandContext, CommandHandler, CommandResult } from './types';
 
 /**
@@ -29,12 +31,21 @@ import type { CommandContext, CommandHandler, CommandResult } from './types';
  * - `cron list`                                        → same as bare
  * - `cron model <name> <default|fast|모델|별칭> [<@owner>]`
  * - `cron target <name> <channel|dm|thread> [threadTs] [<@owner>]`
+ * - `cron run <name> [<@owner>]`                       → fire now (see below)
+ * - `cron allow|revoke <name> <@user> [<@owner>]`      → run allowlist
  * - `cron delete <name> [<@owner>]`
  * - `cron help`                                        → usage
  *
  * Admin scoping mirrors the cron MCP server: non-admins are locked to their
  * own jobs; admins address another user's job with an explicit owner mention;
  * admin name-only calls with a cross-owner name collision are rejected.
+ *
+ * `run` is the one exception to that lock, because firing someone's job is a
+ * request, not a mutation: a non-owner may address any job by name, and is
+ * gated by the job's `runAllowlist`. Not on it → the owner is DM'd a 3-button
+ * prompt (`src/slack/cron-run-permission-blocks.ts`) and, on approval, the job
+ * fires with the OWNER's identity. "항상 허용" persists the requester on the
+ * job's allowlist so the next `cron run` fires immediately.
  */
 export class CronCommandHandler implements CommandHandler {
   private static readonly BARE_FORMS = new Set([
@@ -60,15 +71,20 @@ export class CronCommandHandler implements CommandHandler {
     'schedule',
     'expr',
     'run',
+    'allow',
+    'revoke',
     'delete',
     'remove',
     'help',
   ]);
 
   private readonly storagePath: string;
+  /** Needed to DM a job owner a run-permission prompt; absent in unit tests. */
+  private readonly slackApi?: CronRunPermissionSlackApi;
 
-  constructor(storagePath?: string) {
+  constructor(storagePath?: string, deps?: { slackApi?: CronRunPermissionSlackApi }) {
     this.storagePath = storagePath ?? path.join(DATA_DIR, 'cron-jobs.json');
+    this.slackApi = deps?.slackApi;
   }
 
   /** Fresh instance per call — CronStorage reads from disk on every op. */
@@ -108,6 +124,8 @@ export class CronCommandHandler implements CommandHandler {
       await this.changeSchedule(ctx, tokens.slice(2));
     } else if (sub === 'run') {
       await this.runNow(ctx, tokens.slice(2));
+    } else if (sub === 'allow' || sub === 'revoke') {
+      await this.changeRunAllowlist(ctx, tokens.slice(2), sub === 'allow');
     } else if (sub === 'delete' || sub === 'remove') {
       await this.deleteJob(ctx, tokens.slice(2));
     }
@@ -379,11 +397,34 @@ export class CronCommandHandler implements CommandHandler {
       await ctx.say({ text: '사용법: `cron run <name>`', thread_ts: ctx.threadTs });
       return;
     }
-    const resolved = this.resolveJob(ctx, name, owner);
+    const resolved = this.resolveRunTarget(ctx, name, owner);
     if ('error' in resolved) {
       await ctx.say({ text: resolved.error, thread_ts: ctx.threadTs });
       return;
     }
+
+    // Cross-user run without a grant: ask the owner instead of refusing.
+    // A granted run still fires with the OWNER's identity (runJobNow(owner,…)).
+    if (!isRunAllowed(resolved.job, ctx.user) && !isAdminUser(ctx.user)) {
+      const { delivered } = await requestCronRunPermission({
+        slackApi: this.slackApi,
+        requesterId: ctx.user,
+        ownerId: resolved.owner,
+        jobName: name,
+        channel: ctx.channel,
+        threadTs: ctx.threadTs,
+        postFallback: (msg) => ctx.say({ text: msg.text, blocks: msg.blocks, thread_ts: ctx.threadTs }),
+      });
+      await ctx.say({
+        text:
+          delivered === 'none'
+            ? `⚠️ <@${resolved.owner}>님께 \`${name}\` 실행 권한 요청을 전달하지 못했습니다. 오너에게 직접 문의하세요.`
+            : `🔐 <@${resolved.owner}>님께 \`${name}\` 실행 권한을 요청했습니다${delivered === 'dm' ? ' (DM 발송)' : ''}. 승인되면 오너 권한으로 실행됩니다.`,
+        thread_ts: ctx.threadTs,
+      });
+      return;
+    }
+
     const scheduler = getActiveCronScheduler();
     if (!scheduler) {
       await ctx.say({ text: '⚠️ 크론 스케줄러가 아직 기동되지 않았습니다.', thread_ts: ctx.threadTs });
@@ -394,6 +435,48 @@ export class CronCommandHandler implements CommandHandler {
       text: result.ok
         ? `▶ *${name}* 실행 트리거됨 — 실제 크론 경로로 발동${ownerSuffix(ctx, resolved.owner)}`
         : `⚠️ *${name}* 실행 실패: ${result.message}`,
+      thread_ts: ctx.threadTs,
+    });
+  }
+
+  // --- run allowlist (allow / revoke) ---
+
+  /**
+   * `cron allow <name> <@user> [<@owner>]` / `cron revoke …` — the owner-side
+   * inverse of the grant prompt: grant up front without waiting to be asked,
+   * and take a grant back. Owner/admin only (this IS the permission surface),
+   * so it goes through {@link resolveJob}, not the run-specific addressing.
+   */
+  private async changeRunAllowlist(ctx: CommandContext, args: string[], grant: boolean): Promise<void> {
+    const verb = grant ? 'allow' : 'revoke';
+    const name = args[0];
+    const targetUser = parseUserRef(args[1]);
+    const owner = parseUserRef(args[2]);
+    if (!name || !targetUser) {
+      await ctx.say({
+        text: `사용법: \`cron ${verb} <name> <@user>\` — 해당 유저의 \`cron run\` 실행 권한을 ${grant ? '부여' : '회수'}합니다.`,
+        thread_ts: ctx.threadTs,
+      });
+      return;
+    }
+
+    const resolved = this.resolveJob(ctx, name, owner);
+    if ('error' in resolved) {
+      await ctx.say({ text: resolved.error, thread_ts: ctx.threadTs });
+      return;
+    }
+
+    const current = resolved.job.runAllowlist ?? [];
+    const next = grant ? [...current, targetUser] : current.filter((u) => u !== targetUser);
+    const updated = this.storage().updateJob(resolved.owner, name, { runAllowlist: next.length ? next : null });
+    if (!updated) {
+      await ctx.say({ text: `❌ 크론잡 \`${name}\` 을 찾을 수 없습니다.`, thread_ts: ctx.threadTs });
+      return;
+    }
+    await ctx.say({
+      text: grant
+        ? `✅ <@${targetUser}>님에게 *${name}* 즉시 실행을 허용했습니다 — 실행은 오너 권한으로 발동합니다.${ownerSuffix(ctx, resolved.owner)}`
+        : `🚫 <@${targetUser}>님의 *${name}* 즉시 실행 권한을 회수했습니다.${ownerSuffix(ctx, resolved.owner)}`,
       thread_ts: ctx.threadTs,
     });
   }
@@ -419,6 +502,47 @@ export class CronCommandHandler implements CommandHandler {
       return;
     }
     await ctx.say({ text: `🗑️ *${name}* 삭제됨${ownerSuffix(ctx, resolved.owner)}`, thread_ts: ctx.threadTs });
+  }
+
+  /**
+   * Address a job for `cron run` — the ONLY subcommand a non-owner may target.
+   * Mutations stay owner/admin-scoped via {@link resolveJob}; running is gated
+   * afterwards by the job's allowlist (grant flow), not by addressing. Resolves
+   * to the job itself so the caller can consult `isRunAllowed`.
+   *
+   * Addressing is identical for admins and everyone else — only the gate that
+   * follows differs — so a name that exists for exactly one owner resolves, and
+   * a name shared by several owners demands an explicit `<@owner>`.
+   */
+  private resolveRunTarget(
+    ctx: CommandContext,
+    name: string,
+    requestedOwner: string | undefined,
+  ): { owner: string; job: CronJob } | { error: string } {
+    const storage = this.storage();
+
+    // Own job (or an explicit self-mention) — no cross-user question at all.
+    if (!requestedOwner || requestedOwner === ctx.user) {
+      const own = storage.getJobsByOwner(ctx.user).find((j) => j.name === name);
+      if (own) return { owner: ctx.user, job: own };
+    }
+
+    if (requestedOwner) {
+      const job = storage.getJobsByOwner(requestedOwner).find((j) => j.name === name);
+      if (!job) return { error: `❌ <@${requestedOwner}> 의 크론잡 \`${name}\` 을 찾을 수 없습니다.` };
+      return { owner: requestedOwner, job };
+    }
+
+    const candidates = storage.getAll().filter((j) => j.name === name);
+    if (candidates.length === 0) {
+      return { error: `❌ 크론잡 \`${name}\` 을 찾을 수 없습니다. \`cron\` 으로 목록을 확인하세요.` };
+    }
+    if (candidates.length > 1) {
+      return {
+        error: `❌ \`${name}\` 이름의 잡이 여러 유저에게 있습니다: ${candidates.map((j) => `<@${j.owner}>`).join(', ')}\n실행할 오너를 지정하세요: \`cron run ${name} <@owner>\``,
+      };
+    }
+    return { owner: candidates[0].owner, job: candidates[0] };
   }
 
   // --- shared job addressing (mirrors cron MCP server's resolveTargetOwner) ---
@@ -482,6 +606,14 @@ function ownerSuffix(ctx: CommandContext, owner: string): string {
   return owner !== ctx.user ? ` (owner: <@${owner}>)` : '';
 }
 
+/** Parse `<@U123>` / `<@U123|name>` / bare `U123...` as a user id. */
+function parseUserRef(token: string | undefined): string | undefined {
+  if (!token) return undefined;
+  const mention = token.match(/^<@([A-Z0-9_]+)(\|[^>]*)?>$/);
+  if (mention) return mention[1];
+  return /^U[A-Z0-9_]{4,}$/.test(token) ? token : undefined;
+}
+
 /** Parse trailing `<@U123>` / `<@U123|name>` / bare `U123...` as the owner argument. */
 function splitOwnerArg(args: string[]): { name?: string; rest: string[]; owner?: string } {
   let owner: string | undefined;
@@ -507,7 +639,9 @@ function usageText(): string {
     '• `cron mode <name> <default|fastlane>` — 실행 모드',
     '• `cron channel <name> <#채널>` · `cron schedule <name> <5-field cron>` · `cron prompt <name> <텍스트>` · `cron rename <name> <새이름>`',
     '• `cron run <name>` — 지금 즉시 실행 (실제 크론 경로)',
+    '• `cron allow <name> <@user>` / `cron revoke <name> <@user>` — 다른 유저의 즉시 실행 허용/회수',
     '• `cron delete <name>` — 삭제',
+    '_다른 유저의 잡에 `cron run` 을 치면 오너에게 DM으로 승인 요청이 갑니다. 승인되면 오너 권한으로 실행되고, "항상 허용" 시 다음부터는 바로 실행됩니다._',
     '_admin은 명령 끝에 `<@owner>` 를 붙여 다른 유저 잡을 수정합니다._',
   ].join('\n');
 }

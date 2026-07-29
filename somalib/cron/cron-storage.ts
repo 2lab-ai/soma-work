@@ -52,6 +52,18 @@ export interface CronJob {
   modelConfig?: CronModelConfig;
   /** Delivery target. Omitted = 'channel' (new channel message). */
   target?: CronTarget;
+  /**
+   * Non-owner uids the owner allowed to fire this job on demand (`cron run` /
+   * the ▶ card button). The fire still runs with OWNER identity — the allowlist
+   * only decides who may pull the trigger. Lives on the job, so a rename
+   * carries the grants and a delete disposes of them.
+   */
+  runAllowlist?: string[];
+}
+
+/** May `userId` fire this job on demand? Owner always may; others need the allowlist. */
+export function isRunAllowed(job: CronJob, userId: string): boolean {
+  return job.owner === userId || (job.runAllowlist?.includes(userId) ?? false);
 }
 
 interface CronData {
@@ -76,6 +88,8 @@ export interface CronJobPatch {
   mode?: CronMode | null;
   modelConfig?: CronModelConfig | null;
   target?: CronTarget | null;
+  /** `null` clears every on-demand run grant. */
+  runAllowlist?: string[] | null;
 }
 
 // --- Execution History Types ---
@@ -346,9 +360,29 @@ export class CronStorage {
       if (patch.target === null) delete job.target;
       else job.target = patch.target;
     }
+    if (patch.runAllowlist !== undefined) {
+      if (patch.runAllowlist === null) delete job.runAllowlist;
+      else job.runAllowlist = [...new Set(patch.runAllowlist)];
+    }
 
     this.save(data);
     logger.info('Cron job updated', { id: job.id, name: job.name, owner: job.owner });
+    return job;
+  }
+
+  /**
+   * Add a user to the job's on-demand run allowlist (idempotent).
+   * Returns the updated job, or null when the job is gone.
+   */
+  allowRun(owner: string, name: string, userId: string): CronJob | null {
+    const data = this.load();
+    const job = data.jobs.find((j) => j.owner === owner && j.name === name);
+    if (!job) return null;
+    if (job.runAllowlist?.includes(userId)) return job;
+
+    job.runAllowlist = [...(job.runAllowlist ?? []), userId];
+    this.save(data);
+    logger.info('Cron run permission granted', { name: job.name, owner, userId });
     return job;
   }
 
