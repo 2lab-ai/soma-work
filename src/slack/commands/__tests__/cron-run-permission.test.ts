@@ -196,6 +196,25 @@ describe('cron run — cross-user permission request', () => {
     expect(runJobNow).toHaveBeenCalledWith('U_ALICE', 'stage0-daily-deploy-0400kst', { triggeredBy: 'U_BOB' });
   });
 
+  // "1회 허용" persists nothing, so the next `cron run` must ask again.
+  it('re-asks after a one-time grant (nothing was persisted)', async () => {
+    seedAliceJob();
+    await handler.execute(makeCtx({ text: 'cron run stage0-daily-deploy-0400kst' }));
+    expect(runJobNow).not.toHaveBeenCalled();
+    expect(createCronRunRequest).toHaveBeenCalledTimes(1);
+
+    // second ask, still no allowlist entry → another request, never a fire
+    await handler.execute(makeCtx({ text: 'cron run stage0-daily-deploy-0400kst' }));
+    expect(runJobNow).not.toHaveBeenCalled();
+    expect(createCronRunRequest).toHaveBeenCalledTimes(2);
+  });
+
+  it('carries the job id into the permission request', async () => {
+    const job = seedAliceJob();
+    await handler.execute(makeCtx({ text: 'cron run stage0-daily-deploy-0400kst' }));
+    expect(createCronRunRequest).toHaveBeenCalledWith(expect.objectContaining({ jobId: job.id }));
+  });
+
   it('does not leak the owner list of colliding job names to a stranger', async () => {
     seedAliceJob();
     seedAliceJob({ owner: 'U_CAROL' });

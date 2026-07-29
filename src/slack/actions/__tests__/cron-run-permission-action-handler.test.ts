@@ -16,7 +16,6 @@ const h = vi.hoisted(() => ({
   getReq: vi.fn(),
   markHandled: vi.fn(),
   runJobNow: vi.fn().mockResolvedValue({ ok: true, message: 'fired' }),
-  isAdmin: vi.fn(() => false),
 }));
 
 vi.mock('../../../cron-run-request-store', () => ({
@@ -26,7 +25,6 @@ vi.mock('../../../cron-run-request-store', () => ({
 vi.mock('../../../cron-scheduler', () => ({
   getActiveCronScheduler: vi.fn(() => ({ runJobNow: h.runJobNow })),
 }));
-vi.mock('../../../admin-utils', () => ({ isAdminUser: h.isAdmin }));
 
 import {
   VALUE_KIND_CRON_RUN_ALWAYS,
@@ -41,10 +39,11 @@ let slackApi: any;
 let respond: any;
 let handler: CronRunPermissionActionHandler;
 
-const baseReq = {
+const baseReq: Record<string, any> = {
   requestId: 'r1',
   requesterId: 'U_BOB',
   ownerId: 'U_ALICE',
+  jobId: 'JOB_ID_PLACEHOLDER',
   jobName: 'stage0-daily-deploy-0400kst',
   channel: 'C123',
   threadTs: 'T1',
@@ -60,7 +59,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   tmpFile = path.join(os.tmpdir(), `cron-run-act-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
   storage = new CronStorage(tmpFile);
-  storage.addJob({
+  const seeded = storage.addJob({
     name: 'stage0-daily-deploy-0400kst',
     expression: '0 19 * * *',
     prompt: 'deploy',
@@ -68,6 +67,7 @@ beforeEach(() => {
     channel: 'C111',
     threadTs: null,
   });
+  baseReq.jobId = seeded.id;
   slackApi = { postMessage: vi.fn().mockResolvedValue({ ts: 'x' }) };
   respond = vi.fn().mockResolvedValue(undefined);
   handler = new CronRunPermissionActionHandler({ slackApi, storagePath: tmpFile });
@@ -133,6 +133,30 @@ describe('CronRunPermissionActionHandler', () => {
     await handler.handleAction(body(VALUE_KIND_CRON_RUN_ALWAYS), respond);
     expect(h.runJobNow).not.toHaveBeenCalled();
     expect(h.markHandled).toHaveBeenCalledWith('r1');
+  });
+
+  // Consent belongs to the job, not to the name it wore at ask time.
+  it('follows a rename: approval fires the SAME job under its new name', async () => {
+    storage.updateJob('U_ALICE', 'stage0-daily-deploy-0400kst', { name: 'renamed-deploy' });
+    await handler.handleAction(body(VALUE_KIND_CRON_RUN_ALWAYS), respond);
+    expect(h.runJobNow).toHaveBeenCalledWith('U_ALICE', 'renamed-deploy', { triggeredBy: 'U_BOB' });
+    expect(storage.getJobsByOwner('U_ALICE')[0].runAllowlist).toEqual(['U_BOB']);
+  });
+
+  it('a NEW job that reused the old name does not inherit the consent', async () => {
+    storage.updateJob('U_ALICE', 'stage0-daily-deploy-0400kst', { name: 'renamed-deploy' });
+    const impostor = storage.addJob({
+      name: 'stage0-daily-deploy-0400kst',
+      expression: '0 19 * * *',
+      prompt: 'something else entirely',
+      owner: 'U_ALICE',
+      channel: 'C111',
+      threadTs: null,
+    });
+    await handler.handleAction(body(VALUE_KIND_CRON_RUN_ALWAYS), respond);
+    expect(h.runJobNow).toHaveBeenCalledWith('U_ALICE', 'renamed-deploy', { triggeredBy: 'U_BOB' });
+    const untouched = storage.getJobsByOwner('U_ALICE').find((j) => j.id === impostor.id);
+    expect(untouched?.runAllowlist).toBeUndefined();
   });
 
   it('surfaces a failed fire instead of claiming success', async () => {

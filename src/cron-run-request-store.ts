@@ -28,6 +28,13 @@ export interface CronRunRequest {
   requesterId: string;
   /** B — the cron job owner, the only user who may grant. */
   ownerId: string;
+  /**
+   * Immutable job id. Consent belongs to the JOB: the owner may rename it (or
+   * create a new job reusing the name) between the ask and the click, and the
+   * approval must still land on the job they were asked about.
+   */
+  jobId: string;
+  /** Name at ask time — display only; never the authority for resolution. */
   jobName: string;
   /** Where A asked from — the run result is reported back there. */
   channel: string;
@@ -40,6 +47,7 @@ export interface CronRunRequest {
 export interface CreateCronRunRequestInput {
   requesterId: string;
   ownerId: string;
+  jobId: string;
   jobName: string;
   channel: string;
   threadTs?: string;
@@ -99,7 +107,7 @@ export function createCronRunRequest(input: CreateCronRunRequestInput): CronRunR
       isLive(req, now) &&
       req.ownerId === input.ownerId &&
       req.requesterId === input.requesterId &&
-      req.jobName === input.jobName
+      req.jobId === input.jobId
     ) {
       req.channel = input.channel;
       req.threadTs = input.threadTs;
@@ -112,6 +120,7 @@ export function createCronRunRequest(input: CreateCronRunRequestInput): CronRunR
     requestId: randomUUID(),
     requesterId: input.requesterId,
     ownerId: input.ownerId,
+    jobId: input.jobId,
     jobName: input.jobName,
     channel: input.channel,
     threadTs: input.threadTs,

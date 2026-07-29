@@ -94,6 +94,9 @@ export class CronRunPermissionActionHandler {
         return;
       }
 
+      // NOTE: the read above and markCronRunRequestHandled below must stay in
+      // one synchronous span — an `await` inserted between them reopens the
+      // double-click double-fire this guard closes.
       if (req.handled) {
         await respond({
           response_type: 'ephemeral',
@@ -103,10 +106,12 @@ export class CronRunPermissionActionHandler {
         return;
       }
 
-      // The job must still exist — it may have been deleted/renamed since the ask.
-      const job = this.storage()
-        .getJobsByOwner(req.ownerId)
-        .find((j) => j.name === req.jobName);
+      // Resolve by immutable id: a rename between ask and click must still
+      // land on the job the owner was asked about, and a NEW job that took
+      // over the old name must never inherit that consent. (Legacy requests
+      // written before jobId existed fall back to the name.)
+      const jobs = this.storage().getJobsByOwner(req.ownerId);
+      const job = req.jobId ? jobs.find((j) => j.id === req.jobId) : jobs.find((j) => j.name === req.jobName);
       if (!job) {
         markCronRunRequestHandled(requestId);
         await respond({
@@ -131,10 +136,10 @@ export class CronRunPermissionActionHandler {
 
       let grantLabel: string;
       if (kind === VALUE_KIND_CRON_RUN_ALWAYS) {
-        this.storage().allowRun(req.ownerId, req.jobName, req.requesterId);
-        grantLabel = `<@${req.requesterId}>님을 \`${req.jobName}\` 실행 허용 리스트에 추가하고 지금 실행합니다.`;
+        this.storage().allowRunById(job.id, req.requesterId);
+        grantLabel = `<@${req.requesterId}>님을 \`${job.name}\` 실행 허용 리스트에 추가하고 지금 실행합니다.`;
       } else {
-        grantLabel = `<@${req.requesterId}>님의 \`${req.jobName}\` 1회 실행을 허용했습니다.`;
+        grantLabel = `<@${req.requesterId}>님의 \`${job.name}\` 1회 실행을 허용했습니다.`;
       }
       markCronRunRequestHandled(requestId);
       await this.replacePrompt(respond, `✅ ${grantLabel}`);
@@ -148,12 +153,12 @@ export class CronRunPermissionActionHandler {
         return;
       }
       // Owner identity: the fire is indistinguishable from the owner running it.
-      const result = await scheduler.runJobNow(req.ownerId, req.jobName, { triggeredBy: req.requesterId });
+      const result = await scheduler.runJobNow(req.ownerId, job.name, { triggeredBy: req.requesterId });
       await this.notifyRequester(
         req,
         result.ok
-          ? `▶ <@${req.requesterId}> — <@${req.ownerId}>님의 허가로 \`${req.jobName}\` 을 오너 권한으로 실행했습니다.`
-          : `⚠️ \`${req.jobName}\` 실행 실패: ${result.message}`,
+          ? `▶ <@${req.requesterId}> — <@${req.ownerId}>님의 허가로 \`${job.name}\` 을 오너 권한으로 실행했습니다.`
+          : `⚠️ \`${job.name}\` 실행 실패: ${result.message}`,
       );
       this.logger.info('cron_run_perm: granted + fired', {
         kind,

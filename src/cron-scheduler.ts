@@ -443,7 +443,7 @@ export class CronScheduler {
   private async executeWithDm(job: CronJob, now: Date, triggeredBy?: string): Promise<boolean> {
     if (!this.deps.dmSender) {
       logger.warn('DM sender not configured, falling back to new thread', { name: job.name });
-      return this.executeWithNewThread(job, now);
+      return this.executeWithNewThread(job, now, triggeredBy);
     }
 
     try {
@@ -479,7 +479,7 @@ export class CronScheduler {
     }
     if (!this.deps.threadReplier) {
       logger.warn('Thread replier not configured, falling back to new thread', { name: job.name });
-      return this.executeWithNewThread(job, now);
+      return this.executeWithNewThread(job, now, triggeredBy);
     }
 
     try {

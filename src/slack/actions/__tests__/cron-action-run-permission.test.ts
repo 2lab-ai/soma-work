@@ -19,7 +19,12 @@ vi.mock('../../../cron-scheduler', () => ({
   getActiveCronScheduler: vi.fn(() => ({ runJobNow })),
 }));
 
-const createCronRunRequest = vi.fn((input: any) => ({ ...input, requestId: 'req-1', handled: false, reused: false }));
+const createCronRunRequest = vi.fn((input: any) => ({
+  ...input,
+  requestId: 'req-1',
+  handled: false,
+  reused: false,
+}));
 vi.mock('../../../cron-run-request-store', () => ({
   createCronRunRequest: (input: any) => createCronRunRequest(input),
 }));
@@ -90,6 +95,28 @@ describe('▶ run button — non-owner', () => {
     await handler.handleAction(runBody('U_BOB'), respond);
     expect(runJobNow).toHaveBeenCalledWith('U_ALICE', 'daily-report', { triggeredBy: 'U_BOB' });
     expect(createCronRunRequest).not.toHaveBeenCalled();
+  });
+
+  // The card is a channel message showing the OWNER's jobs. Re-rendering it
+  // with an allowlisted stranger's visibility would overwrite it with THEIR
+  // job list (or an empty card) for everyone in the channel.
+  it('does not re-render the owner card when an allowlisted stranger fires it', async () => {
+    storage.allowRun('U_ALICE', 'daily-report', 'U_BOB');
+    await handler.handleAction(runBody('U_BOB'), respond);
+    expect(runJobNow).toHaveBeenCalled();
+    expect(slackApi.updateMessage).not.toHaveBeenCalled();
+  });
+
+  it('still re-renders for the owner', async () => {
+    await handler.handleAction(runBody('U_ALICE'), respond);
+    expect(runJobNow).toHaveBeenCalledWith('U_ALICE', 'daily-report', { triggeredBy: 'U_ALICE' });
+    expect(slackApi.updateMessage).toHaveBeenCalled();
+  });
+
+  it('carries the job id into the permission request', async () => {
+    const job = storage.getJobsByOwner('U_ALICE')[0];
+    await handler.handleAction(runBody('U_BOB'), respond);
+    expect(createCronRunRequest).toHaveBeenCalledWith(expect.objectContaining({ jobId: job.id }));
   });
 
   it('non-run actions from a non-owner are still rejected outright', async () => {

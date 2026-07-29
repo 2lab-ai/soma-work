@@ -105,6 +105,28 @@ describe('cron allow / revoke', () => {
     expect(storage.getJobsByOwner('U_ALICE')[0].runAllowlist).toEqual(['U_BOB']);
   });
 
+  // The exact attack: a stranger naming the owner explicitly to slip past the
+  // implicit-owner check and grant themselves run access.
+  it('a non-owner cannot grant themselves by naming the owner explicitly', async () => {
+    const ctx = makeCtx({ user: 'U_BOB', text: 'cron allow deploy <@U_BOB> <@U_ALICE>' });
+    await handler.execute(ctx);
+    expect(storage.getJobsByOwner('U_ALICE')[0].runAllowlist ?? []).toEqual([]);
+    expect(saidText(ctx)).toContain('admin');
+  });
+
+  it('a non-owner cannot revoke someone else’s grant either', async () => {
+    storage.allowRun('U_ALICE', 'deploy', 'U_CAROL');
+    const ctx = makeCtx({ user: 'U_BOB', text: 'cron revoke deploy <@U_CAROL> <@U_ALICE>' });
+    await handler.execute(ctx);
+    expect(storage.getJobsByOwner('U_ALICE')[0].runAllowlist).toEqual(['U_CAROL']);
+  });
+
+  it('revoking the last entry clears the field rather than leaving []', async () => {
+    storage.allowRun('U_ALICE', 'deploy', 'U_BOB');
+    await handler.execute(makeCtx({ text: 'cron revoke deploy <@U_BOB>' }));
+    expect(storage.getJobsByOwner('U_ALICE')[0].runAllowlist).toBeUndefined();
+  });
+
   it('rejects a missing/!mention target user', async () => {
     const ctx = makeCtx({ text: 'cron allow deploy' });
     await handler.execute(ctx);

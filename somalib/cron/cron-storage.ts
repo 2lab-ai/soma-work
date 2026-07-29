@@ -381,14 +381,51 @@ export class CronStorage {
    * Returns the updated job, or null when the job is gone.
    */
   allowRun(owner: string, name: string, userId: string): CronJob | null {
-    const data = this.load();
-    const job = data.jobs.find((j) => j.owner === owner && j.name === name);
-    if (!job) return null;
-    if (job.runAllowlist?.includes(userId)) return job;
+    return this.mutateAllowlist(
+      (j) => j.owner === owner && j.name === name,
+      (list) => (list.includes(userId) ? list : [...list, userId]),
+    );
+  }
 
-    job.runAllowlist = [...(job.runAllowlist ?? []), userId];
+  /**
+   * Same as {@link allowRun} but addressed by the job's immutable id — the
+   * form the grant flow uses, because a job can be renamed between the ask
+   * and the owner's click and consent belongs to the JOB, not to a name.
+   */
+  allowRunById(jobId: string, userId: string): CronJob | null {
+    return this.mutateAllowlist(
+      (j) => j.id === jobId,
+      (list) => (list.includes(userId) ? list : [...list, userId]),
+    );
+  }
+
+  /** Remove a user from the job's run allowlist. Null when the job is gone. */
+  revokeRun(owner: string, name: string, userId: string): CronJob | null {
+    return this.mutateAllowlist(
+      (j) => j.owner === owner && j.name === name,
+      (list) => list.filter((u) => u !== userId),
+    );
+  }
+
+  /**
+   * Read-modify-write of one job's allowlist. Narrow on purpose: it reloads
+   * immediately before mutating and writes only that field's new value, so a
+   * concurrent writer (the MCP cron server process) can at worst lose this
+   * one grant/revoke instead of a whole stale list clobbering theirs.
+   */
+  private mutateAllowlist(match: (j: CronJob) => boolean, next: (list: string[]) => string[]): CronJob | null {
+    const data = this.load();
+    const job = data.jobs.find(match);
+    if (!job) return null;
+
+    const updated = next(job.runAllowlist ?? []);
+    const current = job.runAllowlist ?? [];
+    if (updated.length === current.length && updated.every((u, i) => u === current[i])) return job;
+
+    if (updated.length === 0) delete job.runAllowlist;
+    else job.runAllowlist = updated;
     this.save(data);
-    logger.info('Cron run permission granted', { name: job.name, owner, userId });
+    logger.info('Cron run allowlist updated', { name: job.name, owner: job.owner, allowlist: updated });
     return job;
   }
 

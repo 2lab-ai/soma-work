@@ -414,6 +414,7 @@ export class CronCommandHandler implements CommandHandler {
         slackApi: this.slackApi,
         requesterId: ctx.user,
         ownerId: resolved.owner,
+        jobId: resolved.job.id,
         jobName: name,
         channel: ctx.channel,
         threadTs: ctx.threadTs,
@@ -464,9 +465,12 @@ export class CronCommandHandler implements CommandHandler {
       return;
     }
 
-    const current = resolved.job.runAllowlist ?? [];
-    const next = grant ? [...current, targetUser] : current.filter((u) => u !== targetUser);
-    const updated = this.storage().updateJob(resolved.owner, name, { runAllowlist: next.length ? next : null });
+    // allowRun/revokeRun re-read immediately before writing, so a concurrent
+    // writer loses at most this one entry — never a whole stale list.
+    const storage = this.storage();
+    const updated = grant
+      ? storage.allowRun(resolved.owner, name, targetUser)
+      : storage.revokeRun(resolved.owner, name, targetUser);
     if (!updated) {
       await ctx.say({ text: `❌ 크론잡 \`${name}\` 을 찾을 수 없습니다.`, thread_ts: ctx.threadTs });
       return;

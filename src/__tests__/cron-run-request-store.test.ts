@@ -36,6 +36,7 @@ describe('cron-run-request-store', () => {
   const base = {
     requesterId: 'U_BOB',
     ownerId: 'U_ALICE',
+    jobId: 'job-1',
     jobName: 'stage0-daily-deploy-0400kst',
     channel: 'C1',
     threadTs: '171.1',
@@ -79,8 +80,15 @@ describe('cron-run-request-store', () => {
 
   it('does not dedupe across different jobs', () => {
     const a = store.createCronRunRequest(base);
-    const b = store.createCronRunRequest({ ...base, jobName: 'other-job' });
+    const b = store.createCronRunRequest({ ...base, jobId: 'job-2', jobName: 'other-job' });
     expect(b.requestId).not.toBe(a.requestId);
+  });
+
+  // Consent is bound to the job identity, not to the name it had at ask time.
+  it('dedupes on job id even after the job was renamed', () => {
+    const a = store.createCronRunRequest(base);
+    const b = store.createCronRunRequest({ ...base, jobName: 'renamed' });
+    expect(b.requestId).toBe(a.requestId);
   });
 
   it('marks a request handled — replay guard', () => {
@@ -109,6 +117,7 @@ describe('cron-run-request-store — re-ask behaviour (review fixes)', () => {
   const base = {
     requesterId: 'U_BOB',
     ownerId: 'U_ALICE',
+    jobId: 'job-1',
     jobName: 'deploy',
     channel: 'C1',
   };

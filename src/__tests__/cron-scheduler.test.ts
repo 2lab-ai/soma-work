@@ -1177,4 +1177,39 @@ describe('CronScheduler.runJobNow', () => {
     expect(history[1].triggeredBy).toBeUndefined();
     expect(history[2].triggeredBy).toBe('U_GUEST');
   });
+
+  // A dm/thread job with no deliverer configured falls back to a new thread.
+  // The fallback used to drop the attribution, so the one fire most likely to
+  // surprise an owner was the one with no "who" in its history.
+  it('keeps the attribution through the new-thread fallback', async () => {
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const { CronStorage } = await import('somalib/cron/cron-storage');
+    const { CronScheduler } = await import('../cron-scheduler');
+    const file = path.join(os.tmpdir(), `cron-attr2-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+    const storage = new CronStorage(file);
+    storage.addJob({
+      name: 'dm-job',
+      expression: '0 9 * * *',
+      prompt: 'p',
+      owner: 'U_OWNER',
+      channel: 'C1',
+      threadTs: null,
+      target: 'dm',
+    });
+    const scheduler = new CronScheduler({
+      storage,
+      sessionRegistry: { getAllSessions: () => new Map() } as any,
+      messageInjector: async () => {},
+      threadCreator: async () => 'ts-1',
+      // no dmSender → executeWithDm falls back to executeWithNewThread
+    });
+
+    await scheduler.runJobNow('U_OWNER', 'dm-job', { triggeredBy: 'U_GUEST' });
+
+    const history = storage.getExecutionHistory('dm-job');
+    expect(history).toHaveLength(1);
+    expect(history[0].executionPath).toBe('new_thread');
+    expect(history[0].triggeredBy).toBe('U_GUEST');
+  });
 });

@@ -8,7 +8,7 @@
  * in a DM with them, Slack error). Never swallow the failure silently: an
  * undelivered prompt would leave the requester waiting forever.
  */
-import { createCronRunRequest } from '../cron-run-request-store';
+import { createCronRunRequest, markCronRunRequestHandled } from '../cron-run-request-store';
 import { Logger } from '../logger';
 import { buildCronRunPermissionMessage } from './cron-run-permission-blocks';
 
@@ -28,6 +28,8 @@ export interface RequestCronRunPermissionInput {
   slackApi?: CronRunPermissionSlackApi;
   requesterId: string;
   ownerId: string;
+  /** Immutable job id — what the consent is actually bound to. */
+  jobId: string;
   jobName: string;
   /** Channel the requester asked from — the run result is reported back there. */
   channel: string;
@@ -55,6 +57,7 @@ export async function requestCronRunPermission(
   const req = createCronRunRequest({
     requesterId: input.requesterId,
     ownerId: input.ownerId,
+    jobId: input.jobId,
     jobName: input.jobName,
     channel: input.channel,
     threadTs: input.threadTs,
@@ -86,10 +89,22 @@ export async function requestCronRunPermission(
   }
 
   if (input.postFallback) {
-    await input.postFallback({ text: msg.text, blocks: msg.blocks });
-    return { requestId: req.requestId, delivered: 'fallback' };
+    try {
+      await input.postFallback({ text: msg.text, blocks: msg.blocks });
+      return { requestId: req.requestId, delivered: 'fallback' };
+    } catch (error) {
+      logger.warn('cron run permission thread fallback failed', {
+        ownerId: input.ownerId,
+        jobName: input.jobName,
+        error: (error as Error)?.message ?? String(error),
+      });
+    }
   }
 
+  // Nothing reached the owner. Retiring the request matters: a live unhandled
+  // request would make every retry dedupe into "already pending" and sit there
+  // until the 24h TTL — a prompt nobody ever saw, blocking every later ask.
+  markCronRunRequestHandled(req.requestId);
   logger.error('cron run permission prompt undeliverable', {
     ownerId: input.ownerId,
     jobName: input.jobName,

@@ -201,7 +201,12 @@ export class CronActionHandler {
         ? `▶ *${name}* 실행 트리거됨 — 실제 크론 경로(대상/모드/모델 그대로)로 발동했습니다.${clickerId !== owner ? ` (오너 <@${owner}> 권한)` : ''}`
         : `⚠️ *${name}* 실행 실패: ${result.message}`,
     });
-    if (result.ok) await this.rerenderCard(body, clickerId); // last-run 갱신 반영
+    // Re-render ONLY for the owner/admin. The card is a channel message owned
+    // by whoever posted it; re-rendering with an allowlisted stranger's
+    // visibility would overwrite the owner's card with the clicker's job list.
+    if (result.ok && (clickerId === owner || isAdminUser(clickerId))) {
+      await this.rerenderCard(body, clickerId); // last-run 갱신 반영
+    }
   }
 
   /**
@@ -235,6 +240,7 @@ export class CronActionHandler {
       slackApi,
       requesterId: clickerId,
       ownerId: owner,
+      jobId: job.id,
       jobName: name,
       channel,
       threadTs,
