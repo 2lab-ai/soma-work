@@ -26,7 +26,11 @@ config({ path: path.join(__dirname, '..', '.env') });
 const MAPPING_FILE = path.join(__dirname, '..', 'data', 'slack_jira_mapping.json');
 
 // Jira configuration
-const JIRA_CLOUD_ID = process.env.JIRA_CLOUD_ID || 'yourcompany.atlassian.net';
+const JIRA_CLOUD_ID = process.env.JIRA_CLOUD_ID;
+if (!JIRA_CLOUD_ID) {
+  console.error('JIRA_CLOUD_ID env var is required (e.g. yourcompany.atlassian.net)');
+  process.exit(1);
+}
 
 interface SlackUser {
   id: string;

@@ -8,7 +8,8 @@ import type { CommandContext, CommandHandler, CommandResult } from './types';
  * Handles auth backend commands (#llmux runtime switch):
  *   - `auth`                     — show the auth card (mode + llmux pool /
  *                                  legacy cct card). Non-admin sees the
- *                                  readonly variant (no emails, no buttons).
+ *                                  readonly variant: same account info, no
+ *                                  mutating buttons, no settings line.
  *   - `auth llmux` / `auth cct`  — flip the runtime auth mode (admin only).
  *     (`set auth llmux|cct` is an accepted alias.)
  *   - `auth switch <name>`       — llmux manual account switch (admin only).
@@ -50,7 +51,8 @@ export class AuthHandler implements CommandHandler {
     }
 
     // status — card render. Viewer mode (admin/readonly) is derived inside
-    // renderAuthCard, so non-admin gets the masked readonly card.
+    // renderAuthCard; readonly only strips mutating affordances + the
+    // settings line, account info renders for everyone.
     const { text: fallback, blocks } = await renderAuthCard({ userId: user, issuedAt: Date.now() });
     await say({ text: fallback ?? '🔐 Auth', blocks, thread_ts: threadTs });
     return { handled: true };
