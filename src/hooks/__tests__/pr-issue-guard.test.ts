@@ -306,7 +306,7 @@ describe('pr-issue-guard — Jira source path (Bash)', () => {
   it('T1.24 Jira source + body has lowercase `closes PROJ-4217` → pass (case-insensitive)', () => {
     const result = handlePrIssuePrecondition({
       toolName: 'Bash',
-      toolInput: { command: 'gh pr create --body "closes PROJ-4217 fixes the thing"' },
+      toolInput: { command: 'gh pr create --body "closes proj-4217 fixes the thing"' },
       handoffContext: makeContext({ sourceIssueUrl: JIRA_SOURCE }),
     });
     expect(result.blocked).toBe(false);
@@ -493,9 +493,9 @@ describe('pr-issue-guard — Jira malformed source URLs', () => {
   it('T1.41 lowercase project key → malformed-source-issue-url', () => {
     const result = handlePrIssuePrecondition({
       toolName: 'Bash',
-      toolInput: { command: 'gh pr create --body "Closes PROJ-4217"' },
+      toolInput: { command: 'gh pr create --body "Closes proj-4217"' },
       handoffContext: makeContext({
-        sourceIssueUrl: 'https://yourcompany.atlassian.net/browse/PROJ-4217',
+        sourceIssueUrl: 'https://yourcompany.atlassian.net/browse/proj-4217',
       }),
     });
     expect(result.blocked).toBe(true);

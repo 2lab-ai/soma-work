@@ -137,11 +137,13 @@ jobs:
       - name: Pack deploy bundle
         run: tar -czf deploy-bundle.tar.gz -C .deploy-bundle .
 
-      - name: Upload deploy bundle
-        uses: actions/upload-artifact@v4
-        with:
-          name: deploy-bundle
-          path: deploy-bundle.tar.gz
+      - name: Upload deploy bundle (draft release asset — org artifact quota independent)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="deploy-bundle-${{ github.run_id }}-${{ github.run_attempt }}"
+          gh release create "$TAG" --draft --title "$TAG" --notes "transient deploy bundle (auto-deleted)" --target "${{ github.sha }}" --repo "${{ github.repository }}"
+          gh release upload "$TAG" deploy-bundle.tar.gz --repo "${{ github.repository }}"
 
   deploy:
     name: Deploy ${{ matrix.name }}
@@ -155,10 +157,13 @@ jobs:
 
     steps:
       - name: Download deploy bundle
-        uses: actions/download-artifact@v4
-        with:
-          name: deploy-bundle
-          path: bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          export PATH="/opt/homebrew/bin:$PATH"
+          TAG="deploy-bundle-${{ github.run_id }}-${{ github.run_attempt }}"
+          rm -rf bundle && mkdir -p bundle
+          gh release download "$TAG" -p deploy-bundle.tar.gz -D bundle --repo "${{ github.repository }}"
 
       - name: Extract deploy bundle
         run: |
@@ -241,3 +246,17 @@ jobs:
           cd bundle/root
           sleep 3
           bash scripts/service.sh "$ENV" status
+
+  cleanup-bundle:
+    name: Cleanup deploy bundle release
+    needs: [prepare, deploy]
+    if: always() && needs.prepare.result == 'success'
+    runs-on: [self-hosted, fable-m5max]
+    timeout-minutes: 5
+    steps:
+      - name: Delete draft bundle release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="deploy-bundle-${{ github.run_id }}-${{ github.run_attempt }}"
+          gh release delete "$TAG" --yes --repo "${{ github.repository }}" || true

@@ -1,0 +1,21 @@
+name: Sanitize Gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  scan:
+    runs-on: [self-hosted, fable-m5max]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Full-history forbidden-pattern scan
+        env:
+          SANITIZE_PATTERNS: ${{ secrets.SANITIZE_PATTERNS }}
+        run: bash scripts/sanitize-scan.sh
