@@ -86,7 +86,7 @@ afterEach(() => {
 describe('CronRunPermissionActionHandler', () => {
   it('once: fires the job as the OWNER without persisting an allowlist entry', async () => {
     await handler.handleAction(body(VALUE_KIND_CRON_RUN_ONCE), respond);
-    expect(h.runJobNow).toHaveBeenCalledWith('U_ALICE', 'stage0-daily-deploy-0400kst');
+    expect(h.runJobNow).toHaveBeenCalledWith('U_ALICE', 'stage0-daily-deploy-0400kst', { triggeredBy: 'U_BOB' });
     expect(h.markHandled).toHaveBeenCalledWith('r1');
     expect(storage.getJobsByOwner('U_ALICE')[0].runAllowlist ?? []).toEqual([]);
     // The requester learns the outcome in the channel they asked from.
@@ -97,7 +97,7 @@ describe('CronRunPermissionActionHandler', () => {
   it('always: persists the requester on the job allowlist and fires the job', async () => {
     await handler.handleAction(body(VALUE_KIND_CRON_RUN_ALWAYS), respond);
     expect(storage.getJobsByOwner('U_ALICE')[0].runAllowlist).toEqual(['U_BOB']);
-    expect(h.runJobNow).toHaveBeenCalledWith('U_ALICE', 'stage0-daily-deploy-0400kst');
+    expect(h.runJobNow).toHaveBeenCalledWith('U_ALICE', 'stage0-daily-deploy-0400kst', { triggeredBy: 'U_BOB' });
   });
 
   it('deny: neither grants nor runs, and tells the requester', async () => {

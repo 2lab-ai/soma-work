@@ -102,6 +102,12 @@ export interface CronExecutionRecord {
   executionPath: 'idle_inject' | 'busy_queue' | 'new_thread' | 'dm' | 'thread_reply';
   error?: string;
   sessionKey?: string;
+  /**
+   * Who pulled the trigger when it was NOT the owner — an allowlisted user or
+   * an owner-approved one-off `cron run`. Absent for scheduled fires and for
+   * the owner firing their own job.
+   */
+  triggeredBy?: string;
 }
 
 interface CronHistoryData {
@@ -399,15 +405,31 @@ export class CronStorage {
 
   // --- Execution History ---
 
+  /**
+   * History lives in a sibling file. The canonical `cron-jobs.json` maps to
+   * `cron-history.json`; ANY other filename derives `<name>-history.json`.
+   *
+   * The previous `String.replace(/cron-jobs\.json$/…)` silently returned the
+   * jobs path itself for every other filename, so the first `addExecution`
+   * would write the history array over the jobs array. It only ever appeared
+   * benign because the resulting `data.history.push` on a jobs object threw
+   * and the caller swallowed it — losing history instead of losing jobs.
+   */
   private get historyFilePath(): string {
-    return this.filePath.replace(/cron-jobs\.json$/, 'cron-history.json');
+    const dir = path.dirname(this.filePath);
+    const base = path.basename(this.filePath);
+    if (base === 'cron-jobs.json') return path.join(dir, 'cron-history.json');
+    return path.join(dir, `${base.replace(/\.json$/, '')}-history.json`);
   }
 
   private loadHistory(): CronHistoryData {
     try {
       if (fs.existsSync(this.historyFilePath)) {
         const raw = fs.readFileSync(this.historyFilePath, 'utf-8');
-        return JSON.parse(raw) as CronHistoryData;
+        const parsed = JSON.parse(raw) as Partial<CronHistoryData>;
+        // A file that parses but has no `history` array (wrong file, older
+        // shape) must not hand callers `undefined` to iterate over.
+        return { history: Array.isArray(parsed?.history) ? parsed.history : [] };
       }
     } catch (error) {
       logger.warn('Failed to load cron history, returning empty', error);

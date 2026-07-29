@@ -148,7 +148,7 @@ export class CronRunPermissionActionHandler {
         return;
       }
       // Owner identity: the fire is indistinguishable from the owner running it.
-      const result = await scheduler.runJobNow(req.ownerId, req.jobName);
+      const result = await scheduler.runJobNow(req.ownerId, req.jobName, { triggeredBy: req.requesterId });
       await this.notifyRequester(
         req,
         result.ok

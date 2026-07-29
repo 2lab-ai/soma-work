@@ -11,7 +11,11 @@ import {
   CRON_MODEL_FAST,
   parseCronActionId,
 } from '../cron-blocks';
-import { type CronRunPermissionSlackApi, requestCronRunPermission } from '../cron-run-permission-request';
+import {
+  type CronRunPermissionSlackApi,
+  describeDelivery,
+  requestCronRunPermission,
+} from '../cron-run-permission-request';
 import type { SlackApiHelper } from '../slack-api-helper';
 import type { RespondFn } from './types';
 
@@ -189,7 +193,7 @@ export class CronActionHandler {
       });
       return;
     }
-    const result = await scheduler.runJobNow(owner, name);
+    const result = await scheduler.runJobNow(owner, name, { triggeredBy: clickerId });
     await respond({
       response_type: 'ephemeral',
       replace_original: false,
@@ -241,10 +245,7 @@ export class CronActionHandler {
     await respond({
       response_type: 'ephemeral',
       replace_original: false,
-      text:
-        delivered === 'none'
-          ? `⚠️ <@${owner}>님께 *${name}* 실행 권한 요청을 전달하지 못했습니다. 오너에게 직접 문의하세요.`
-          : `🔐 <@${owner}>님께 *${name}* 실행 권한을 요청했습니다${delivered === 'dm' ? ' (DM 발송)' : ''}. 승인되면 오너 권한으로 실행됩니다.`,
+      text: describeDelivery(delivered, owner, name),
     });
     this.logger.info('cron run permission requested via card', { clickerId, owner, name, delivered });
   }

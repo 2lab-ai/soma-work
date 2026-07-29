@@ -68,3 +68,24 @@ describe('cron run allowlist', () => {
     expect(updated?.runAllowlist).toBeUndefined();
   });
 });
+
+/**
+ * The history file used to be derived with a `cron-jobs.json` string replace,
+ * so any other storage filename aliased history ONTO the jobs file — the first
+ * recorded execution would overwrite every job. Guard the derivation.
+ */
+describe('execution history never aliases onto the jobs file', () => {
+  it('keeps jobs intact after recording an execution on a non-canonical filename', () => {
+    const job = storage.getJobsByOwner('U_ALICE')[0];
+    storage.addExecution({ jobId: job.id, jobName: job.name, status: 'success', executionPath: 'dm' });
+
+    expect(storage.getJobsByOwner('U_ALICE')).toHaveLength(1);
+    expect(storage.getExecutionHistory('deploy')).toHaveLength(1);
+
+    const historyFile = tmpFile.replace(/\.json$/, '-history.json');
+    expect(fs.existsSync(historyFile)).toBe(true);
+    try {
+      fs.unlinkSync(historyFile);
+    } catch {}
+  });
+});

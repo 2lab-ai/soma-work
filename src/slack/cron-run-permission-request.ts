@@ -36,7 +36,14 @@ export interface RequestCronRunPermissionInput {
   postFallback?: (msg: { text: string; blocks: any[] }) => Promise<unknown>;
 }
 
-export type CronRunPermissionDelivery = 'dm' | 'fallback' | 'none';
+/**
+ * How the owner prompt reached the owner:
+ *   dm       — DM delivered
+ *   fallback — DM failed, prompt posted in the asking thread
+ *   none     — could not be delivered at all (tell the requester the truth)
+ *   pending  — an identical unanswered ask already exists; nothing re-sent
+ */
+export type CronRunPermissionDelivery = 'dm' | 'fallback' | 'none' | 'pending';
 
 /**
  * Record the request and deliver the owner prompt. Returns how it was
@@ -52,6 +59,11 @@ export async function requestCronRunPermission(
     channel: input.channel,
     threadTs: input.threadTs,
   });
+  // An unanswered ask is already sitting in the owner's DMs. Re-sending on
+  // every retry turns `cron run` into a DM-bombing tool — say nothing more.
+  if (req.reused) {
+    return { requestId: req.requestId, delivered: 'pending' };
+  }
   const msg = buildCronRunPermissionMessage({
     requestId: req.requestId,
     requesterId: input.requesterId,
@@ -83,4 +95,18 @@ export async function requestCronRunPermission(
     jobName: input.jobName,
   });
   return { requestId: req.requestId, delivered: 'none' };
+}
+
+/** One phrasing of the permission-request outcome, shared by both surfaces. */
+export function describeDelivery(delivered: CronRunPermissionDelivery, ownerId: string, jobName: string): string {
+  switch (delivered) {
+    case 'none':
+      return `⚠️ <@${ownerId}>님께 \`${jobName}\` 실행 권한 요청을 전달하지 못했습니다. 오너에게 직접 문의하세요.`;
+    case 'pending':
+      return `⏳ \`${jobName}\` 실행 권한 요청이 이미 <@${ownerId}>님께 대기 중입니다. 승인되면 실행됩니다.`;
+    case 'dm':
+      return `🔐 <@${ownerId}>님께 \`${jobName}\` 실행 권한을 요청했습니다 (DM 발송). 승인되면 오너 권한으로 실행됩니다.`;
+    default:
+      return `🔐 <@${ownerId}>님께 \`${jobName}\` 실행 권한을 요청했습니다. 승인되면 오너 권한으로 실행됩니다.`;
+  }
 }

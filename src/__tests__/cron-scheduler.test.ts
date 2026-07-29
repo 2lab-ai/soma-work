@@ -1139,4 +1139,42 @@ describe('CronScheduler.runJobNow', () => {
     const missing = await scheduler2.runJobNow('U1', 'nope');
     expect(missing.ok).toBe(false);
   });
+
+  // A permission feature whose history cannot answer "who fired this" is not
+  // auditable. The job runs as the owner; the trigger is attributed separately.
+  it('records triggeredBy when a non-owner pulled the trigger, and omits it for the owner', async () => {
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const { CronStorage } = await import('somalib/cron/cron-storage');
+    const { CronScheduler } = await import('../cron-scheduler');
+    const file = path.join(os.tmpdir(), `cron-attr-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+    const storage = new CronStorage(file);
+    storage.addJob({
+      name: 'dm-job',
+      expression: '0 9 * * *',
+      prompt: 'p',
+      owner: 'U_OWNER',
+      channel: 'C1',
+      threadTs: null,
+      target: 'dm',
+    });
+    const scheduler = new CronScheduler({
+      storage,
+      sessionRegistry: { getAllSessions: () => new Map() } as any,
+      messageInjector: async () => {},
+      threadCreator: async () => undefined,
+      dmSender: async () => {},
+    });
+
+    await scheduler.runJobNow('U_OWNER', 'dm-job', { triggeredBy: 'U_GUEST' });
+    await scheduler.runJobNow('U_OWNER', 'dm-job', { triggeredBy: 'U_OWNER' });
+    await scheduler.runJobNow('U_OWNER', 'dm-job');
+
+    const history = storage.getExecutionHistory('dm-job');
+    expect(history).toHaveLength(3);
+    // most recent first: plain fire, owner fire, guest fire
+    expect(history[0].triggeredBy).toBeUndefined();
+    expect(history[1].triggeredBy).toBeUndefined();
+    expect(history[2].triggeredBy).toBe('U_GUEST');
+  });
 });

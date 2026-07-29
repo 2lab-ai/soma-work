@@ -102,3 +102,43 @@ describe('cron-run-request-store', () => {
     expect(store.getCronRunRequest('nope')).toBeNull();
   });
 });
+
+describe('cron-run-request-store — re-ask behaviour (review fixes)', () => {
+  let store: typeof import('../cron-run-request-store');
+
+  const base = {
+    requesterId: 'U_BOB',
+    ownerId: 'U_ALICE',
+    jobName: 'deploy',
+    channel: 'C1',
+  };
+
+  beforeEach(async () => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'soma-cronreq2-'));
+    vi.resetModules();
+    store = await import('../cron-run-request-store');
+  });
+
+  afterEach(() => {
+    try {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    } catch {
+      /* ignore */
+    }
+  });
+
+  it('flags a reused request so the caller does not re-DM the owner', () => {
+    expect(store.createCronRunRequest(base).reused).toBe(false);
+    expect(store.createCronRunRequest(base).reused).toBe(true);
+  });
+
+  it('a reused request follows the requester to where they last asked', () => {
+    const first = store.createCronRunRequest({ ...base, channel: 'C_OLD', threadTs: 'T_OLD' });
+    const again = store.createCronRunRequest({ ...base, channel: 'C_NEW', threadTs: 'T_NEW' });
+    expect(again.requestId).toBe(first.requestId);
+    expect(again.channel).toBe('C_NEW');
+    expect(again.threadTs).toBe('T_NEW');
+    // …and the refresh is persisted, not just returned.
+    expect(store.getCronRunRequest(first.requestId)).toMatchObject({ channel: 'C_NEW', threadTs: 'T_NEW' });
+  });
+});

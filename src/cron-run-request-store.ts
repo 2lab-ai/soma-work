@@ -80,11 +80,15 @@ function prune(all: Record<string, CronRunRequest>, now: number): void {
 }
 
 /**
- * Create (or reuse) a pending request. Dedupes against an existing unhandled,
- * unexpired request for the same (owner, jobName, requester) so a re-typed
- * `cron run` doesn't spam the owner with duplicate prompts.
+ * Create (or reuse) a pending request for (owner, jobName, requester).
+ *
+ * `reused: true` means an unhandled, unexpired ask already exists — the caller
+ * MUST NOT deliver a second prompt, otherwise `cron run` in a loop becomes a
+ * DM-bombing tool aimed at the owner. The reused request's channel/threadTs are
+ * refreshed to the latest ask so the result is reported where the requester is
+ * actually waiting, not in the room they asked from hours ago.
  */
-export function createCronRunRequest(input: CreateCronRunRequestInput): CronRunRequest {
+export function createCronRunRequest(input: CreateCronRunRequestInput): CronRunRequest & { reused: boolean } {
   const now = Date.now();
   const all = loadAll();
   prune(all, now);
@@ -97,8 +101,10 @@ export function createCronRunRequest(input: CreateCronRunRequestInput): CronRunR
       req.requesterId === input.requesterId &&
       req.jobName === input.jobName
     ) {
-      saveAll(all); // persist any pruning
-      return req;
+      req.channel = input.channel;
+      req.threadTs = input.threadTs;
+      saveAll(all);
+      return { ...req, reused: true };
     }
   }
 
@@ -121,7 +127,7 @@ export function createCronRunRequest(input: CreateCronRunRequestInput): CronRunR
     requesterId: req.requesterId,
     jobName: req.jobName,
   });
-  return req;
+  return { ...req, reused: false };
 }
 
 /** Read a request by id, or null when missing/expired. */

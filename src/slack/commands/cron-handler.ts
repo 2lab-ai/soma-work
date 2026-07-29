@@ -12,7 +12,11 @@ import { getActiveCronScheduler } from '../../cron-scheduler';
 import { DATA_DIR } from '../../env-paths';
 import { userSettingsStore } from '../../user-settings-store';
 import { buildCronCard } from '../cron-blocks';
-import { type CronRunPermissionSlackApi, requestCronRunPermission } from '../cron-run-permission-request';
+import {
+  type CronRunPermissionSlackApi,
+  describeDelivery,
+  requestCronRunPermission,
+} from '../cron-run-permission-request';
 import type { CommandContext, CommandHandler, CommandResult } from './types';
 
 /**
@@ -415,13 +419,7 @@ export class CronCommandHandler implements CommandHandler {
         threadTs: ctx.threadTs,
         postFallback: (msg) => ctx.say({ text: msg.text, blocks: msg.blocks, thread_ts: ctx.threadTs }),
       });
-      await ctx.say({
-        text:
-          delivered === 'none'
-            ? `⚠️ <@${resolved.owner}>님께 \`${name}\` 실행 권한 요청을 전달하지 못했습니다. 오너에게 직접 문의하세요.`
-            : `🔐 <@${resolved.owner}>님께 \`${name}\` 실행 권한을 요청했습니다${delivered === 'dm' ? ' (DM 발송)' : ''}. 승인되면 오너 권한으로 실행됩니다.`,
-        thread_ts: ctx.threadTs,
-      });
+      await ctx.say({ text: describeDelivery(delivered, resolved.owner, name), thread_ts: ctx.threadTs });
       return;
     }
 
@@ -430,7 +428,7 @@ export class CronCommandHandler implements CommandHandler {
       await ctx.say({ text: '⚠️ 크론 스케줄러가 아직 기동되지 않았습니다.', thread_ts: ctx.threadTs });
       return;
     }
-    const result = await scheduler.runJobNow(resolved.owner, name);
+    const result = await scheduler.runJobNow(resolved.owner, name, { triggeredBy: ctx.user });
     await ctx.say({
       text: result.ok
         ? `▶ *${name}* 실행 트리거됨 — 실제 크론 경로로 발동${ownerSuffix(ctx, resolved.owner)}`
@@ -538,8 +536,10 @@ export class CronCommandHandler implements CommandHandler {
       return { error: `❌ 크론잡 \`${name}\` 을 찾을 수 없습니다. \`cron\` 으로 목록을 확인하세요.` };
     }
     if (candidates.length > 1) {
+      // Deliberately does NOT list the owners: to a non-owner that would be a
+      // free directory of who runs what. The asker knows whose job they want.
       return {
-        error: `❌ \`${name}\` 이름의 잡이 여러 유저에게 있습니다: ${candidates.map((j) => `<@${j.owner}>`).join(', ')}\n실행할 오너를 지정하세요: \`cron run ${name} <@owner>\``,
+        error: `❌ \`${name}\` 이름의 잡이 여러 유저에게 있습니다. 실행할 오너를 지정하세요: \`cron run ${name} <@owner>\``,
       };
     }
     return { owner: candidates[0].owner, job: candidates[0] };
@@ -616,17 +616,9 @@ function parseUserRef(token: string | undefined): string | undefined {
 
 /** Parse trailing `<@U123>` / `<@U123|name>` / bare `U123...` as the owner argument. */
 function splitOwnerArg(args: string[]): { name?: string; rest: string[]; owner?: string } {
-  let owner: string | undefined;
   const rest = [...args];
-  const last = rest[rest.length - 1];
-  const mention = last?.match(/^<@([A-Z0-9_]+)(\|[^>]*)?>$/);
-  if (mention) {
-    owner = mention[1];
-    rest.pop();
-  } else if (last && /^U[A-Z0-9_]{4,}$/.test(last)) {
-    owner = last;
-    rest.pop();
-  }
+  const owner = parseUserRef(rest[rest.length - 1]);
+  if (owner) rest.pop();
   const [name, ...remainder] = rest;
   return { name, rest: remainder, owner };
 }

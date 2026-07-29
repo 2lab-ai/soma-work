@@ -19,7 +19,7 @@ vi.mock('../../../cron-scheduler', () => ({
   getActiveCronScheduler: vi.fn(() => ({ runJobNow })),
 }));
 
-const createCronRunRequest = vi.fn((input: any) => ({ ...input, requestId: 'req-1', handled: false }));
+const createCronRunRequest = vi.fn((input: any) => ({ ...input, requestId: 'req-1', handled: false, reused: false }));
 vi.mock('../../../cron-run-request-store', () => ({
   createCronRunRequest: (input: any) => createCronRunRequest(input),
 }));
@@ -88,7 +88,7 @@ describe('▶ run button — non-owner', () => {
   it('fires as the owner once allowlisted', async () => {
     storage.allowRun('U_ALICE', 'daily-report', 'U_BOB');
     await handler.handleAction(runBody('U_BOB'), respond);
-    expect(runJobNow).toHaveBeenCalledWith('U_ALICE', 'daily-report');
+    expect(runJobNow).toHaveBeenCalledWith('U_ALICE', 'daily-report', { triggeredBy: 'U_BOB' });
     expect(createCronRunRequest).not.toHaveBeenCalled();
   });
 
