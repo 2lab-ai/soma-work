@@ -450,7 +450,11 @@ export function handleList(context: CronContext, storage: CronStorage): { text: 
     // the current setting is visible without reading the schema docs.
     const modelStr = ` | model:${describeModel(j.modelConfig)}`;
     const targetStr = ` | target:${describeTarget(j)}`;
-    return `- **${j.name}**${ownerStr} | \`${j.expression}\` | ch:${j.channel}${modeStr}${modelStr}${targetStr} | last: ${j.lastRunMinute || 'never'}\n  prompt: ${j.prompt.substring(0, 100)}`;
+    // Who else may fire this job on demand. Hidden when empty so the common
+    // listing is unchanged, shown otherwise — a grant nobody can see is a
+    // grant nobody audits.
+    const allowStr = j.runAllowlist?.length ? ` | run-allow:${j.runAllowlist.map((u) => `<@${u}>`).join(',')}` : '';
+    return `- **${j.name}**${ownerStr} | \`${j.expression}\` | ch:${j.channel}${modeStr}${modelStr}${targetStr}${allowStr} | last: ${j.lastRunMinute || 'never'}\n  prompt: ${j.prompt.substring(0, 100)}`;
   });
 
   const header = isAdmin

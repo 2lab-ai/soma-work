@@ -119,8 +119,18 @@ export class CronScheduler {
    * fire takes (target/mode/model resolution, session inject/queue/new-thread,
    * execution history, lastRun bookkeeping). Used by the cron card's ▶ button —
    * this is a REAL cron firing, not a model-side simulation.
+   *
+   * `triggeredBy` names the user who pulled the trigger when that is NOT the
+   * owner (an allowlisted user, or an owner-approved one-off). The job still
+   * runs with the owner's identity; the attribution exists so cron history can
+   * answer "who fired this" — the one question a permission feature must not
+   * leave to the log file.
    */
-  async runJobNow(owner: string, name: string): Promise<{ ok: boolean; message: string }> {
+  async runJobNow(
+    owner: string,
+    name: string,
+    opts?: { triggeredBy?: string },
+  ): Promise<{ ok: boolean; message: string }> {
     let job: CronJob | undefined;
     try {
       job = this.deps.storage.getJobsByOwner(owner).find((j) => j.name === name);
@@ -132,17 +142,17 @@ export class CronScheduler {
     }
     const now = new Date();
     try {
-      logger.info('Manual cron fire', { name: job.name, owner: job.owner });
+      logger.info('Manual cron fire', { name: job.name, owner: job.owner, triggeredBy: opts?.triggeredBy });
       // Delivery helpers record failures internally and report via the return
       // status — surface that here so the ▶ button never claims success on a
       // swallowed Slack delivery error.
-      const result = await this.executeJob(job, now);
+      const result = await this.executeJob(job, now, opts?.triggeredBy);
       return result.ok
         ? { ok: true, message: result.detail }
         : { ok: false, message: `delivery failed (${result.detail}) — cron history 확인` };
     } catch (error: any) {
       logger.error('Manual cron fire failed', { name: job.name, error: error?.message });
-      this.recordExecution(job, 'failed', 'idle_inject', undefined, error?.message);
+      this.recordExecution(job, 'failed', 'idle_inject', undefined, error?.message, opts?.triggeredBy);
       return { ok: false, message: error?.message ?? 'unknown error' };
     }
   }
@@ -205,38 +215,38 @@ export class CronScheduler {
    * Fastlane mode always creates a new thread regardless of session state.
    * Target determines delivery: channel (default), thread (reply), or dm.
    */
-  private async executeJob(job: CronJob, now: Date): Promise<{ ok: boolean; detail: string }> {
+  private async executeJob(job: CronJob, now: Date, triggeredBy?: string): Promise<{ ok: boolean; detail: string }> {
     const target = job.target || 'channel';
 
     // DM target: send directly to user, no session interaction
     if (target === 'dm') {
-      return { ok: await this.executeWithDm(job, now), detail: 'dm' };
+      return { ok: await this.executeWithDm(job, now, triggeredBy), detail: 'dm' };
     }
 
     // Thread target: post reply in existing thread, no session interaction
     if (target === 'thread') {
-      return { ok: await this.executeWithThreadReply(job, now), detail: 'thread_reply' };
+      return { ok: await this.executeWithThreadReply(job, now, triggeredBy), detail: 'thread_reply' };
     }
 
     // Channel target (default): original behavior
     // Fastlane: always new thread, skip session lookup
     if (job.mode === 'fastlane') {
-      return { ok: await this.executeWithNewThread(job, now), detail: 'new_thread' };
+      return { ok: await this.executeWithNewThread(job, now, triggeredBy), detail: 'new_thread' };
     }
 
     const session = this.findSession(job.owner, job.channel, job.threadTs);
 
     if (!session) {
       // Scenario 6: No session → create new thread
-      return { ok: await this.executeWithNewThread(job, now), detail: 'new_thread' };
+      return { ok: await this.executeWithNewThread(job, now, triggeredBy), detail: 'new_thread' };
     }
     if (session.activityState === 'idle') {
       // Scenario 4: Idle → inject immediately
-      await this.injectMessage(job, session, now);
+      await this.injectMessage(job, session, now, triggeredBy);
       return { ok: true, detail: 'idle_inject' };
     }
     // Scenario 5: Busy → queue and wait for idle
-    this.enqueueForIdle(job, session, now);
+    this.enqueueForIdle(job, session, now, triggeredBy);
     return { ok: true, detail: 'busy_queue' };
   }
 
@@ -273,7 +283,12 @@ export class CronScheduler {
    * Trace: docs/archive/features/cron-scheduler/trace.md, Scenario 4, Section 3c
    * Pattern: src/slack-handler.ts:745-762 (autoResumeSession)
    */
-  private async injectMessage(job: CronJob, session: ConversationSession, now: Date): Promise<void> {
+  private async injectMessage(
+    job: CronJob,
+    session: ConversationSession,
+    now: Date,
+    triggeredBy?: string,
+  ): Promise<void> {
     const syntheticEvent: SyntheticMessageEvent = {
       user: job.owner,
       channel: session.channelId,
@@ -293,14 +308,21 @@ export class CronScheduler {
 
     await this.deps.messageInjector(syntheticEvent);
     this.deps.storage.updateLastRun(job.id, now);
-    this.recordExecution(job, 'success', 'idle_inject', `${session.channelId}-${session.threadTs}`);
+    this.recordExecution(
+      job,
+      'success',
+      'idle_inject',
+      `${session.channelId}-${session.threadTs}`,
+      undefined,
+      triggeredBy,
+    );
   }
 
   /**
    * Queue a cron job for later execution when session becomes idle.
    * Trace: docs/archive/features/cron-scheduler/trace.md, Scenario 5, Section 3a
    */
-  private enqueueForIdle(job: CronJob, session: ConversationSession, now: Date): void {
+  private enqueueForIdle(job: CronJob, session: ConversationSession, now: Date, triggeredBy?: string): void {
     const sessionKey = `${session.channelId}-${session.threadTs || 'direct'}`;
     const queue = this.pendingCronQueue.get(sessionKey) || [];
     const isFirstInQueue = queue.length === 0;
@@ -324,7 +346,7 @@ export class CronScheduler {
 
     // Mark as run to prevent re-queueing next tick
     this.deps.storage.updateLastRun(job.id, now);
-    this.recordExecution(job, 'queued', 'busy_queue', sessionKey);
+    this.recordExecution(job, 'queued', 'busy_queue', sessionKey, undefined, triggeredBy);
   }
 
   /**
@@ -381,14 +403,14 @@ export class CronScheduler {
    * Create a new bot-initiated thread and inject the cron message.
    * Trace: docs/archive/features/cron-scheduler/trace.md, Scenario 6, Section 3b-3c
    */
-  private async executeWithNewThread(job: CronJob, now: Date): Promise<boolean> {
+  private async executeWithNewThread(job: CronJob, now: Date, triggeredBy?: string): Promise<boolean> {
     logger.info('No session found, creating new thread', { name: job.name, channel: job.channel });
 
     try {
       const rootTs = await this.deps.threadCreator(job.channel, `[cron:${job.name}] Scheduled task`);
       if (!rootTs) {
         logger.warn('Failed to create thread (no ts returned)', { name: job.name });
-        this.recordExecution(job, 'failed', 'new_thread', undefined, 'thread creation returned no ts');
+        this.recordExecution(job, 'failed', 'new_thread', undefined, 'thread creation returned no ts', triggeredBy);
         return false;
       }
 
@@ -406,11 +428,11 @@ export class CronScheduler {
 
       await this.deps.messageInjector(syntheticEvent);
       this.deps.storage.updateLastRun(job.id, now);
-      this.recordExecution(job, 'success', 'new_thread');
+      this.recordExecution(job, 'success', 'new_thread', undefined, undefined, triggeredBy);
       return true;
     } catch (error: any) {
       logger.error('New thread creation failed', { name: job.name, error: error?.message });
-      this.recordExecution(job, 'failed', 'new_thread', undefined, error?.message);
+      this.recordExecution(job, 'failed', 'new_thread', undefined, error?.message, triggeredBy);
       return false;
     }
   }
@@ -418,22 +440,22 @@ export class CronScheduler {
   /**
    * Send cron result as a DM to the job owner.
    */
-  private async executeWithDm(job: CronJob, now: Date): Promise<boolean> {
+  private async executeWithDm(job: CronJob, now: Date, triggeredBy?: string): Promise<boolean> {
     if (!this.deps.dmSender) {
       logger.warn('DM sender not configured, falling back to new thread', { name: job.name });
-      return this.executeWithNewThread(job, now);
+      return this.executeWithNewThread(job, now, triggeredBy);
     }
 
     try {
       const text = `[cron:${job.name}] ${job.prompt}`;
       await this.deps.dmSender(job.owner, text);
       this.deps.storage.updateLastRun(job.id, now);
-      this.recordExecution(job, 'success', 'dm');
+      this.recordExecution(job, 'success', 'dm', undefined, undefined, triggeredBy);
       logger.info('Cron DM sent', { name: job.name, owner: job.owner });
       return true;
     } catch (error: any) {
       logger.error('Cron DM failed', { name: job.name, error: error?.message });
-      this.recordExecution(job, 'failed', 'dm', undefined, error?.message);
+      this.recordExecution(job, 'failed', 'dm', undefined, error?.message, triggeredBy);
       return false;
     }
   }
@@ -441,28 +463,35 @@ export class CronScheduler {
   /**
    * Post cron result as a reply in an existing thread.
    */
-  private async executeWithThreadReply(job: CronJob, now: Date): Promise<boolean> {
+  private async executeWithThreadReply(job: CronJob, now: Date, triggeredBy?: string): Promise<boolean> {
     if (!job.threadTs) {
       logger.error('Thread target requires threadTs — cannot deliver', { name: job.name });
       this.deps.storage.updateLastRun(job.id, now);
-      this.recordExecution(job, 'failed', 'thread_reply', undefined, 'threadTs required for thread target');
+      this.recordExecution(
+        job,
+        'failed',
+        'thread_reply',
+        undefined,
+        'threadTs required for thread target',
+        triggeredBy,
+      );
       return false;
     }
     if (!this.deps.threadReplier) {
       logger.warn('Thread replier not configured, falling back to new thread', { name: job.name });
-      return this.executeWithNewThread(job, now);
+      return this.executeWithNewThread(job, now, triggeredBy);
     }
 
     try {
       const text = `[cron:${job.name}] ${job.prompt}`;
       await this.deps.threadReplier(job.channel, job.threadTs, text);
       this.deps.storage.updateLastRun(job.id, now);
-      this.recordExecution(job, 'success', 'thread_reply');
+      this.recordExecution(job, 'success', 'thread_reply', undefined, undefined, triggeredBy);
       logger.info('Cron thread reply sent', { name: job.name, channel: job.channel, threadTs: job.threadTs });
       return true;
     } catch (error: any) {
       logger.error('Cron thread reply failed', { name: job.name, error: error?.message });
-      this.recordExecution(job, 'failed', 'thread_reply', undefined, error?.message);
+      this.recordExecution(job, 'failed', 'thread_reply', undefined, error?.message, triggeredBy);
       return false;
     }
   }
@@ -490,6 +519,7 @@ export class CronScheduler {
     executionPath: CronExecutionRecord['executionPath'],
     sessionKey?: string,
     error?: string,
+    triggeredBy?: string,
   ): void {
     try {
       this.deps.storage.addExecution({
@@ -499,6 +529,9 @@ export class CronScheduler {
         executionPath,
         sessionKey,
         error,
+        // Only recorded for a non-owner fire — an owner firing their own job is
+        // the default and needs no attribution noise.
+        triggeredBy: triggeredBy && triggeredBy !== job.owner ? triggeredBy : undefined,
       });
     } catch (err: any) {
       logger.warn('Failed to record execution history', { name: job.name, error: err?.message });
