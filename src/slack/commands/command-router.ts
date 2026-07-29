@@ -109,7 +109,7 @@ setCommandRouterProviders({
         // Cron manage command — `cron`/`schedule` must be a routed command,
         // not plain text: plain text reaches the dispatch path where autogoal
         // can promote it to a session goal before the model sees it.
-        new CronCommandHandler(),
+        new CronCommandHandler(undefined, { slackApi: (deps as any).slackApi }),
         new ModelHandler(deps as any),
         new VerbosityHandler(deps as any),
         new EffortHandler(deps as any),

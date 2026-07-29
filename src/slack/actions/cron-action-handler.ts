@@ -1,5 +1,5 @@
 import * as path from 'path';
-import { type CronJobPatch, CronStorage } from 'somalib/cron/cron-storage';
+import { type CronJobPatch, CronStorage, isRunAllowed } from 'somalib/cron/cron-storage';
 import { isAdminUser } from '../../admin-utils';
 import { getActiveCronScheduler } from '../../cron-scheduler';
 import { DATA_DIR } from '../../env-paths';
@@ -11,6 +11,11 @@ import {
   CRON_MODEL_FAST,
   parseCronActionId,
 } from '../cron-blocks';
+import {
+  type CronRunPermissionSlackApi,
+  describeDelivery,
+  requestCronRunPermission,
+} from '../cron-run-permission-request';
 import type { SlackApiHelper } from '../slack-api-helper';
 import type { RespondFn } from './types';
 
@@ -54,6 +59,14 @@ export class CronActionHandler {
 
       const clickerId: string | undefined = body?.user?.id;
       if (!clickerId || (clickerId !== owner && !isAdminUser(clickerId))) {
+        // ▶ run is the one action a non-owner may ask for: the card lives in a
+        // channel, so anyone can click it. Allowlisted → fire as the owner;
+        // otherwise ask the owner instead of refusing. Every other action
+        // (mutations) stays owner/admin-only.
+        if (clickerId && kind === 'run') {
+          await this.handleNonOwnerRun(body, respond, { clickerId, owner, name });
+          return;
+        }
         await respond({
           response_type: 'ephemeral',
           replace_original: false,
@@ -74,26 +87,7 @@ export class CronActionHandler {
       }
 
       if (kind === 'run') {
-        const scheduler = getActiveCronScheduler();
-        if (!scheduler) {
-          await respond({
-            response_type: 'ephemeral',
-            replace_original: false,
-            text: '⚠️ 크론 스케줄러가 아직 기동되지 않았습니다.',
-          });
-          return;
-        }
-        // Real cron fire: identical path to a scheduled fire (target/mode/
-        // model/history/lastRun) — NOT a model-side simulation.
-        const result = await scheduler.runJobNow(owner, name);
-        await respond({
-          response_type: 'ephemeral',
-          replace_original: false,
-          text: result.ok
-            ? `▶ *${name}* 실행 트리거됨 — 실제 크론 경로(대상/모드/모델 그대로)로 발동했습니다.`
-            : `⚠️ *${name}* 실행 실패: ${result.message}`,
-        });
-        if (result.ok) await this.rerenderCard(body, clickerId); // last-run 갱신 반영
+        await this.fireJob(body, respond, { clickerId, owner, name });
         return;
       }
 
@@ -177,6 +171,89 @@ export class CronActionHandler {
         // best-effort
       }
     }
+  }
+
+  /**
+   * Fire a job through the real cron path — identical to a scheduled fire
+   * (target/mode/model/history/lastRun), NOT a model-side simulation. Always
+   * runs with the job OWNER's identity, whoever pressed the button.
+   */
+  private async fireJob(
+    body: any,
+    respond: RespondFn,
+    args: { clickerId: string; owner: string; name: string },
+  ): Promise<void> {
+    const { clickerId, owner, name } = args;
+    const scheduler = getActiveCronScheduler();
+    if (!scheduler) {
+      await respond({
+        response_type: 'ephemeral',
+        replace_original: false,
+        text: '⚠️ 크론 스케줄러가 아직 기동되지 않았습니다.',
+      });
+      return;
+    }
+    const result = await scheduler.runJobNow(owner, name, { triggeredBy: clickerId });
+    await respond({
+      response_type: 'ephemeral',
+      replace_original: false,
+      text: result.ok
+        ? `▶ *${name}* 실행 트리거됨 — 실제 크론 경로(대상/모드/모델 그대로)로 발동했습니다.${clickerId !== owner ? ` (오너 <@${owner}> 권한)` : ''}`
+        : `⚠️ *${name}* 실행 실패: ${result.message}`,
+    });
+    // Re-render ONLY for the owner/admin. The card is a channel message owned
+    // by whoever posted it; re-rendering with an allowlisted stranger's
+    // visibility would overwrite the owner's card with the clicker's job list.
+    if (result.ok && (clickerId === owner || isAdminUser(clickerId))) {
+      await this.rerenderCard(body, clickerId); // last-run 갱신 반영
+    }
+  }
+
+  /**
+   * ▶ pressed by someone who is neither owner nor admin. Allowlisted users
+   * fire the job as the owner; everyone else triggers a permission request DM
+   * to the owner (same flow as the `cron run` command).
+   */
+  private async handleNonOwnerRun(
+    body: any,
+    respond: RespondFn,
+    args: { clickerId: string; owner: string; name: string },
+  ): Promise<void> {
+    const { clickerId, owner, name } = args;
+    const job = this.storage()
+      .getJobsByOwner(owner)
+      .find((j) => j.name === name);
+    if (!job) {
+      await this.notFound(respond, name);
+      return;
+    }
+
+    if (isRunAllowed(job, clickerId)) {
+      await this.fireJob(body, respond, args);
+      return;
+    }
+
+    const channel: string = body?.channel?.id ?? '';
+    const threadTs: string | undefined = body?.message?.thread_ts;
+    const slackApi = this.ctx.slackApi as unknown as CronRunPermissionSlackApi;
+    const { delivered } = await requestCronRunPermission({
+      slackApi,
+      requesterId: clickerId,
+      ownerId: owner,
+      jobId: job.id,
+      jobName: name,
+      channel,
+      threadTs,
+      postFallback: channel
+        ? (msg) => slackApi.postMessage(channel, msg.text, { threadTs, blocks: msg.blocks })
+        : undefined,
+    });
+    await respond({
+      response_type: 'ephemeral',
+      replace_original: false,
+      text: describeDelivery(delivered, owner, name),
+    });
+    this.logger.info('cron run permission requested via card', { clickerId, owner, name, delivered });
   }
 
   private async notFound(respond: RespondFn, name: string): Promise<void> {

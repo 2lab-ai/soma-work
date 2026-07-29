@@ -340,7 +340,7 @@ describe('field edit subcommands', () => {
     runJobNow.mockClear();
     const ctx = makeCtx({ text: 'cron run daily-report' });
     await handler.execute(ctx);
-    expect(runJobNow).toHaveBeenCalledWith('U_ALICE', 'daily-report');
+    expect(runJobNow).toHaveBeenCalledWith('U_ALICE', 'daily-report', { triggeredBy: 'U_ALICE' });
     expect(saidText(ctx)).toContain('실행 트리거');
   });
 });

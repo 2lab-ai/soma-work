@@ -213,7 +213,7 @@ describe('run now', () => {
     seed();
     const respond = vi.fn();
     await handler.handleAction(body({ actionId: 'cron_run::U_ALICE::daily-report', user: 'U_ALICE' }), respond);
-    expect(runJobNow).toHaveBeenCalledWith('U_ALICE', 'daily-report');
+    expect(runJobNow).toHaveBeenCalledWith('U_ALICE', 'daily-report', { triggeredBy: 'U_ALICE' });
     expect(respond).toHaveBeenCalledWith(expect.objectContaining({ response_type: 'ephemeral' }));
     expect(updateMessage).toHaveBeenCalledTimes(1); // last-run rerender
   });

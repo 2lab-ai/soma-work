@@ -13,6 +13,7 @@ import { ChoiceActionHandler } from './choice-action-handler';
 import { CompactActionHandler } from './compact-action-handler';
 import { CronActionHandler } from './cron-action-handler';
 import { CronEditViewSubmissionHandler } from './cron-edit-view-submission-handler';
+import { CronRunPermissionActionHandler } from './cron-run-permission-action-handler';
 import { FormActionHandler } from './form-action-handler';
 import { GoalActionHandler } from './goal-action-handler';
 import { InstructionConfirmActionHandler } from './instruction-confirm-action-handler';
@@ -118,6 +119,9 @@ setActionHandlersProviders({
         slackApi: ctx.slackApi as any,
       }),
       cronEditSubmitHandler: new CronEditViewSubmissionHandler({
+        slackApi: ctx.slackApi as any,
+      }),
+      cronRunPermissionHandler: new CronRunPermissionActionHandler({
         slackApi: ctx.slackApi as any,
       }),
       userSkillMenuHandler: new UserSkillMenuActionHandler({
