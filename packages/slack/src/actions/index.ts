@@ -124,6 +124,8 @@ export interface ActionHandlerDelegates {
   cronActionHandler: { handleAction(body: any, respond: RespondFn, client?: any): Promise<void> };
   /** Cron edit modal submit (name/schedule/channel/prompt). */
   cronEditSubmitHandler: { handleSubmit(ack: ViewAck, body: any): Promise<void> };
+  /** Owner-facing buttons of the `cron run` permission prompt (once/always/deny). */
+  cronRunPermissionHandler: { handleAction(body: any, respond: RespondFn): Promise<void> };
   userSkillMenuHandler: { handleAction(body: any, respond: RespondFn, client: any): Promise<void> };
   userSkillPermissionHandler: { handleAction(body: any, respond: RespondFn, client: any): Promise<void> };
   userSkillEditSubmitHandler: { handleSubmit(ack: ViewAck, body: any, client: any): Promise<void> };
@@ -296,6 +298,13 @@ export class ActionHandlers {
     app.action(/^cron_(model|target|mode|edit|run|delete)::/, async ({ ack, body, respond, client }) => {
       await ack();
       await this.delegates.cronActionHandler.handleAction(body, respond as RespondFn, client);
+    });
+
+    // Owner's answer to a cross-user `cron run` request (DM'd prompt, or the
+    // in-thread fallback when the DM could not be delivered).
+    app.action(/^cron_run_perm_/, async ({ ack, body, respond }) => {
+      await ack();
+      await this.delegates.cronRunPermissionHandler.handleAction(body, respond as RespondFn);
     });
 
     app.view(CRON_EDIT_MODAL_CALLBACK_ID, async ({ ack, body }) => {

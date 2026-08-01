@@ -136,11 +136,14 @@ function jobSection(job: CronJob, showOwner: boolean): Record<string, any> {
   const last = job.lastRunMinute || 'never';
   const prompt = job.prompt.length > 80 ? `${job.prompt.substring(0, 80)}…` : job.prompt;
   const settings = `현재 설정 → 모델: *${describeModelShort(job)}* · 출력: *${describeTargetShort(job)}* · 모드: *${job.mode === 'fastlane' ? '⚡fastlane' : 'default'}*`;
+  // Who else may pull the ▶ trigger. Silent when nobody was granted, so the
+  // usual card is unchanged — and auditable the moment a grant exists.
+  const allow = job.runAllowlist?.length ? `\n실행 허용: ${job.runAllowlist.map((u) => `<@${u}>`).join(', ')}` : '';
   return {
     type: 'section',
     text: {
       type: 'mrkdwn',
-      text: `*${job.name}*${ownerStr} · \`${job.expression}\` · last: ${last}\n${settings}\n↳ _${prompt}_`,
+      text: `*${job.name}*${ownerStr} · \`${job.expression}\` · last: ${last}\n${settings}${allow}\n↳ _${prompt}_`,
     },
   };
 }
