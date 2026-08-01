@@ -52,6 +52,18 @@ export interface CronJob {
   modelConfig?: CronModelConfig;
   /** Delivery target. Omitted = 'channel' (new channel message). */
   target?: CronTarget;
+  /**
+   * Non-owner uids the owner allowed to fire this job on demand (`cron run` /
+   * the ▶ card button). The fire still runs with OWNER identity — the allowlist
+   * only decides who may pull the trigger. Lives on the job, so a rename
+   * carries the grants and a delete disposes of them.
+   */
+  runAllowlist?: string[];
+}
+
+/** May `userId` fire this job on demand? Owner always may; others need the allowlist. */
+export function isRunAllowed(job: CronJob, userId: string): boolean {
+  return job.owner === userId || (job.runAllowlist?.includes(userId) ?? false);
 }
 
 interface CronData {
@@ -76,6 +88,8 @@ export interface CronJobPatch {
   mode?: CronMode | null;
   modelConfig?: CronModelConfig | null;
   target?: CronTarget | null;
+  /** `null` clears every on-demand run grant. */
+  runAllowlist?: string[] | null;
 }
 
 // --- Execution History Types ---
@@ -88,6 +102,12 @@ export interface CronExecutionRecord {
   executionPath: 'idle_inject' | 'busy_queue' | 'new_thread' | 'dm' | 'thread_reply';
   error?: string;
   sessionKey?: string;
+  /**
+   * Who pulled the trigger when it was NOT the owner — an allowlisted user or
+   * an owner-approved one-off `cron run`. Absent for scheduled fires and for
+   * the owner firing their own job.
+   */
+  triggeredBy?: string;
 }
 
 interface CronHistoryData {
@@ -346,9 +366,66 @@ export class CronStorage {
       if (patch.target === null) delete job.target;
       else job.target = patch.target;
     }
+    if (patch.runAllowlist !== undefined) {
+      if (patch.runAllowlist === null) delete job.runAllowlist;
+      else job.runAllowlist = [...new Set(patch.runAllowlist)];
+    }
 
     this.save(data);
     logger.info('Cron job updated', { id: job.id, name: job.name, owner: job.owner });
+    return job;
+  }
+
+  /**
+   * Add a user to the job's on-demand run allowlist (idempotent).
+   * Returns the updated job, or null when the job is gone.
+   */
+  allowRun(owner: string, name: string, userId: string): CronJob | null {
+    return this.mutateAllowlist(
+      (j) => j.owner === owner && j.name === name,
+      (list) => (list.includes(userId) ? list : [...list, userId]),
+    );
+  }
+
+  /**
+   * Same as {@link allowRun} but addressed by the job's immutable id — the
+   * form the grant flow uses, because a job can be renamed between the ask
+   * and the owner's click and consent belongs to the JOB, not to a name.
+   */
+  allowRunById(jobId: string, userId: string): CronJob | null {
+    return this.mutateAllowlist(
+      (j) => j.id === jobId,
+      (list) => (list.includes(userId) ? list : [...list, userId]),
+    );
+  }
+
+  /** Remove a user from the job's run allowlist. Null when the job is gone. */
+  revokeRun(owner: string, name: string, userId: string): CronJob | null {
+    return this.mutateAllowlist(
+      (j) => j.owner === owner && j.name === name,
+      (list) => list.filter((u) => u !== userId),
+    );
+  }
+
+  /**
+   * Read-modify-write of one job's allowlist. Narrow on purpose: it reloads
+   * immediately before mutating and writes only that field's new value, so a
+   * concurrent writer (the MCP cron server process) can at worst lose this
+   * one grant/revoke instead of a whole stale list clobbering theirs.
+   */
+  private mutateAllowlist(match: (j: CronJob) => boolean, next: (list: string[]) => string[]): CronJob | null {
+    const data = this.load();
+    const job = data.jobs.find(match);
+    if (!job) return null;
+
+    const updated = next(job.runAllowlist ?? []);
+    const current = job.runAllowlist ?? [];
+    if (updated.length === current.length && updated.every((u, i) => u === current[i])) return job;
+
+    if (updated.length === 0) delete job.runAllowlist;
+    else job.runAllowlist = updated;
+    this.save(data);
+    logger.info('Cron run allowlist updated', { name: job.name, owner: job.owner, allowlist: updated });
     return job;
   }
 
@@ -365,15 +442,31 @@ export class CronStorage {
 
   // --- Execution History ---
 
+  /**
+   * History lives in a sibling file. The canonical `cron-jobs.json` maps to
+   * `cron-history.json`; ANY other filename derives `<name>-history.json`.
+   *
+   * The previous `String.replace(/cron-jobs\.json$/…)` silently returned the
+   * jobs path itself for every other filename, so the first `addExecution`
+   * would write the history array over the jobs array. It only ever appeared
+   * benign because the resulting `data.history.push` on a jobs object threw
+   * and the caller swallowed it — losing history instead of losing jobs.
+   */
   private get historyFilePath(): string {
-    return this.filePath.replace(/cron-jobs\.json$/, 'cron-history.json');
+    const dir = path.dirname(this.filePath);
+    const base = path.basename(this.filePath);
+    if (base === 'cron-jobs.json') return path.join(dir, 'cron-history.json');
+    return path.join(dir, `${base.replace(/\.json$/, '')}-history.json`);
   }
 
   private loadHistory(): CronHistoryData {
     try {
       if (fs.existsSync(this.historyFilePath)) {
         const raw = fs.readFileSync(this.historyFilePath, 'utf-8');
-        return JSON.parse(raw) as CronHistoryData;
+        const parsed = JSON.parse(raw) as Partial<CronHistoryData>;
+        // A file that parses but has no `history` array (wrong file, older
+        // shape) must not hand callers `undefined` to iterate over.
+        return { history: Array.isArray(parsed?.history) ? parsed.history : [] };
       }
     } catch (error) {
       logger.warn('Failed to load cron history, returning empty', error);
