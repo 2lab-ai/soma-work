@@ -139,7 +139,7 @@ Use `local:UIAskUserQuestion` to confirm additional actions:
 ## Example Document Format
 
 ```
-{{include:./workflows/examples/PROJ-1978-summary.md}}
+{{include:./workflows/examples/pr-docs-summary.md}}
 ```
 
 ## 🔄 Next Steps
