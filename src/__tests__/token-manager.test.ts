@@ -1581,6 +1581,33 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       expect((finalSnap.registry.slots[0] as any).oauthAttachment).toBeUndefined();
     });
 
+    /**
+     * `attachOAuth` kicks off a FIRE-AND-FORGET profile sync
+     * (token-manager.ts: `this.refreshOAuthProfile(keyId).catch(...)`), so the
+     * fresh generation's own `oauthAttachment.profile` can land either side of
+     * the snapshot these tests capture — green locally, red on a loaded CI
+     * runner (observed: run 30681106933, `+ "profile": { … "fetchedAt": …}`
+     * 5ms after `attachedAt`).
+     *
+     * That write is legitimate: it is the NEW generation writing its own data,
+     * which is precisely what the guard is supposed to allow. So it is lifted
+     * out of the byte-for-byte comparison and asserted separately — a profile
+     * belonging to the STALE generation would still fail, which is the property
+     * these tests exist to protect.
+     */
+    const stripProfile = <T>(value: T): T => {
+      const clone = structuredClone(value) as any;
+      const attachment = clone?.registry?.slots?.[0]?.oauthAttachment ?? clone?.oauthAttachment ?? clone;
+      if (attachment && typeof attachment === 'object') delete attachment.profile;
+      return clone as T;
+    };
+
+    const expectProfileBelongsToFreshGeneration = (attachment: any, freshAttachedAt: number | undefined): void => {
+      if (!attachment?.profile) return;
+      expect(typeof freshAttachedAt).toBe('number');
+      expect(attachment.profile.fetchedAt).toBeGreaterThanOrEqual(freshAttachedAt as number);
+    };
+
     // ── T5i / T5j: detach + re-attach before persist — attachment-generation
     // guard (Codex P0 fix #3, attachedAt fingerprint).
     //
@@ -1661,8 +1688,10 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       await staleRefreshPromise;
       const finalSnap = await store.load();
       const finalAttachment = (finalSnap.registry.slots[0] as any).oauthAttachment;
-      // Pure-generation guard: fresh attachment survives byte-for-byte.
-      expect(finalAttachment).toEqual(freshAttachment);
+      // Pure-generation guard: fresh attachment survives byte-for-byte
+      // (minus the async profile sync — see stripProfile).
+      expect(stripProfile(finalAttachment)).toEqual(stripProfile(freshAttachment));
+      expectProfileBelongsToFreshGeneration(finalAttachment, freshAttachedAt);
       expect(finalAttachment.accessToken).toBe('oat-SHARED');
       expect(finalAttachment.accessToken).not.toBe('oat-SHARED-refreshed');
       expect(finalAttachment.attachedAt).toBe(freshAttachedAt);
@@ -1678,6 +1707,17 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       const tm = new mod.TokenManager(store);
       await tm.init();
       const slot = await tm.addSlot({ name: 'cct1', kind: 'setup_token', value: 'sk-ant-oat01-aaa' });
+      // Pin the CI ordering instead of hoping for it: the fire-and-forget
+      // profile sync is gated so it lands strictly BETWEEN `postReattachSnap`
+      // and `finalSnap` — the exact window that made run 30681106933 red.
+      let releaseProfile!: () => void;
+      const profileGate = new Promise<void>((r) => {
+        releaseProfile = r;
+      });
+      fetchOAuthProfileMock.mockImplementation(async () => {
+        await profileGate;
+        return { fetchedAt: Date.now(), email: 'test@example.com', rateLimitTier: 'default_claude_max_20x' };
+      });
       const identicalCreds = makeOAuthCreds({ accessToken: 'oat-SHARED' });
       await tm.attachOAuth(slot.keyId, identicalCreds, true);
       // Capture the stale generation's fingerprint BEFORE detach.
@@ -1718,14 +1758,22 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       expect(typeof staleAttachedAt).toBe('number');
       expect(typeof freshAttachedAt).toBe('number');
       expect(freshAttachedAt).not.toBe(staleAttachedAt);
+      // Land the fresh generation's profile write now — after the snapshot
+      // above, before the one below.
+      releaseProfile();
+      await vi.waitFor(async () => {
+        const snap = await store.load();
+        expect((snap.registry.slots[0] as any).oauthAttachment?.profile).toBeDefined();
+      });
       releaseFetch();
       await staleUsagePromise;
       const finalSnap = await store.load();
       // WHOLE-SNAPSHOT equality (revision-normalized). Any stale write to
       // state or slot fails the assertion — not only the `usage` field.
-      const normalize = <T extends { revision: number }>(s: T): T => ({ ...s, revision: 0 });
+      const normalize = <T extends { revision: number }>(s: T): T => stripProfile({ ...s, revision: 0 });
       expect(normalize(finalSnap)).toEqual(normalize(postReattachSnap));
       // Spot-checks.
+      expectProfileBelongsToFreshGeneration((finalSnap.registry.slots[0] as any).oauthAttachment, freshAttachedAt);
       expect(finalSnap.state[slot.keyId]?.usage).toBeUndefined();
       expect((finalSnap.registry.slots[0] as any).oauthAttachment?.attachedAt).toBe(freshAttachedAt);
       expect((finalSnap.registry.slots[0] as any).oauthAttachment?.accessToken).toBe('oat-SHARED');

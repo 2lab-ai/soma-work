@@ -97,14 +97,27 @@ describe('PromptBuilder', () => {
       expect(prompt).not.toContain('Include blocked: ./review_prompt.md');
     });
 
-    it('should resolve pr-docs-confluence include of examples/PROJ-1978-summary.md', () => {
+    it('should resolve pr-docs-confluence include of examples/pr-docs-summary.md', () => {
       // pr-docs-confluence.prompt has
-      // `{{include:./workflows/examples/PROJ-1978-summary.md}}` — likewise
+      // `{{include:./workflows/examples/pr-docs-summary.md}}` — likewise
       // resolved relative to promptDir. Must not surface as "Include not found".
       const prompt = builder.loadWorkflowPrompt('pr-docs-confluence');
       expect(prompt).toBeDefined();
-      expect(prompt).not.toContain('Include not found: ./workflows/examples/PROJ-1978-summary.md');
-      expect(prompt).not.toContain('Include blocked: ./workflows/examples/PROJ-1978-summary.md');
+      expect(prompt).not.toContain('Include not found: ./workflows/examples/pr-docs-summary.md');
+      expect(prompt).not.toContain('Include blocked: ./workflows/examples/pr-docs-summary.md');
+      // The example must actually carry content — an empty include file passes
+      // the "not found" check while teaching the model nothing (the sanitize
+      // cutover left examples/executive-summary.md at 0 bytes exactly so).
+      expect(prompt).toContain('Part 1 — API consumers');
+    });
+
+    it('ships no empty prompt include targets', () => {
+      const fs = require('node:fs') as typeof import('node:fs');
+      const nodePath = require('node:path') as typeof import('node:path');
+      const dir = nodePath.join(__dirname, '..', 'prompt', 'workflows', 'examples');
+      for (const f of fs.readdirSync(dir)) {
+        expect(fs.statSync(nodePath.join(dir, f)).size, `${f} is empty`).toBeGreaterThan(0);
+      }
     });
 
     it('should load pr-fix-and-update prompt with automatic re-review handoff', () => {
