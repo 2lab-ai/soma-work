@@ -66,6 +66,10 @@ describe('local:html skill — motion layer + local web server contract', () => 
     expect(src).toMatch(/migrateLegacyArtifacts/);
     expect(src).toMatch(/lstatSync/);
     expect(src).toMatch(/migrationErrors/);
+    // Trust gate for the world-writable legacy namespace (real dir + owner)
+    // and atomic create-if-absent installs (no check-then-rename race).
+    expect(src).toMatch(/getuid/);
+    expect(src).toMatch(/linkSync/);
     // The printed link is verified with a real HTTP GET before hand-out.
     expect(src).toMatch(/verifyServed/);
     const md = readFileSync(SKILL_MD, 'utf8');
