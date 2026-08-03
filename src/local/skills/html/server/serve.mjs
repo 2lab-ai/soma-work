@@ -62,6 +62,7 @@ import {
   closeSync,
   constants as FS,
   existsSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   openSync,
@@ -193,23 +194,46 @@ function verifyServed(port, name, expectedBytes, timeoutMs = 2000) {
   // enough: an old daemon on an unknown root can happily serve a stale file
   // with the same name.
   return new Promise((resolveVerify) => {
+    let done = false;
+    const finish = (ok) => {
+      if (done) return;
+      done = true;
+      clearTimeout(deadline);
+      resolveVerify(ok);
+    };
     const req = http.get(
       { host: '127.0.0.1', port, path: `/${encodeURIComponent(name)}`, timeout: timeoutMs },
       (res) => {
         if (res.statusCode !== 200) {
           res.resume();
-          return resolveVerify(false);
+          return finish(false);
         }
         const chunks = [];
-        res.on('data', (c) => chunks.push(c));
-        res.on('end', () => resolveVerify(Buffer.concat(chunks).equals(expectedBytes)));
+        let received = 0;
+        res.on('data', (c) => {
+          received += c.length;
+          if (received > expectedBytes.length) {
+            // Longer than the artifact can never match — stop reading so a
+            // misbehaving endpoint can't grow our memory or stall us.
+            req.destroy();
+            return finish(false);
+          }
+          chunks.push(c);
+        });
+        res.on('end', () => finish(Buffer.concat(chunks).equals(expectedBytes)));
       },
     );
+    // Overall deadline: Node's request timeout is socket-inactivity based; a
+    // slowly dripping endpoint would otherwise hold the publisher forever.
+    const deadline = setTimeout(() => {
+      req.destroy();
+      finish(false);
+    }, timeoutMs * 2);
     req.on('timeout', () => {
       req.destroy();
-      resolveVerify(false);
+      finish(false);
     });
-    req.on('error', () => resolveVerify(false));
+    req.on('error', () => finish(false));
   });
 }
 
@@ -221,6 +245,39 @@ function readFileNoFollow(path) {
     return readFileSync(fd);
   } finally {
     closeSync(fd);
+  }
+}
+
+function ownedRealDir(dir) {
+  // Trust gate for directories in world-writable namespaces (/tmp): the
+  // path must be a REAL directory (a symlinked root would make readdir and
+  // every write traverse an attacker-chosen parent — O_NOFOLLOW only guards
+  // the final path component) and, where the platform exposes UIDs, owned
+  // by the current user.
+  try {
+    const st = lstatSync(dir);
+    if (!st.isDirectory()) return false;
+    return typeof process.getuid !== 'function' || st.uid === process.getuid();
+  } catch {
+    return false;
+  }
+}
+
+function installFileIfAbsent(dstDir, name, bytes) {
+  // Atomic create-if-absent: link() fails with EEXIST when the destination
+  // exists (and does not follow a symlink sitting there), so a concurrent
+  // publisher's fresh artifact can never be replaced by stale legacy bytes —
+  // unlike an existsSync check followed by a separate rename.
+  const tmp = join(dstDir, `.tmp-migrate-${process.pid}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`);
+  writeFileSync(tmp, bytes, { flag: 'wx' });
+  try {
+    linkSync(tmp, join(dstDir, name));
+    return true;
+  } catch (err) {
+    if (err.code === 'EEXIST') return false; // keep the existing (newer) file
+    throw err;
+  } finally {
+    rmSync(tmp, { force: true });
   }
 }
 
@@ -270,18 +327,22 @@ function migrateLegacyArtifacts() {
   if (SERVE_ROOT === LEGACY_SERVE_ROOT) return result;
   try {
     if (!existsSync(LEGACY_SERVE_ROOT)) return result;
+    if (!ownedRealDir(LEGACY_SERVE_ROOT)) {
+      // A symlinked or foreign-owned legacy root in world-writable /tmp is
+      // an attack surface, not a migration source — refuse it, loudly.
+      result.errors.push(`${LEGACY_SERVE_ROOT}: not a real directory owned by this user — sweep refused`);
+      return result;
+    }
     mkdirSync(SERVE_ROOT, { recursive: true });
     for (const name of readdirSync(LEGACY_SERVE_ROOT)) {
       if (name.startsWith('.')) continue;
       const src = join(LEGACY_SERVE_ROOT, name);
-      const dst = join(SERVE_ROOT, name);
       try {
         if (!lstatSync(src).isFile()) continue; // lstat: symlinks excluded
-        if (existsSync(dst)) continue;
-        // O_NOFOLLOW read + temp-file/rename write: neither side of the copy
-        // can be redirected through a symlink.
-        writeFileReplacing(SERVE_ROOT, name, readFileNoFollow(src));
-        result.migrated++;
+        // O_NOFOLLOW read + atomic link-based create-if-absent write: the
+        // read can't be redirected through a symlink, and an existing (or
+        // concurrently published, fresher) destination is never replaced.
+        if (installFileIfAbsent(SERVE_ROOT, name, readFileNoFollow(src))) result.migrated++;
       } catch (err) {
         result.errors.push(`${src}: ${err.message}`);
       }
@@ -404,8 +465,10 @@ async function adoptDaemon(port, probe, artifactBytes, name) {
   // signal (a stale same-name file answering 200 must not pass).
   const guess = daemonRoot ?? LEGACY_SERVE_ROOT;
   try {
-    mkdirSync(guess, { recursive: true });
-    writeFileReplacing(guess, name, artifactBytes);
+    if (!existsSync(guess)) mkdirSync(guess, { recursive: true });
+    // Same trust gate as migration: never write through a symlinked or
+    // foreign-owned directory in a world-writable namespace.
+    if (ownedRealDir(guess)) writeFileReplacing(guess, name, artifactBytes);
   } catch {
     // fall through to verification, which will fail and reject this daemon
   }

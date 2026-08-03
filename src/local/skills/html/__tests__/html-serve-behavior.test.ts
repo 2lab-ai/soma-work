@@ -118,6 +118,37 @@ describe('local:html serve.mjs — behavioral contract (real daemon, real GET)',
     expect(readFileSync(join(durableRoot, 'planted.html'), 'utf8')).toContain('planted replacement');
   });
 
+  it('refuses a symlinked legacy root (world-writable /tmp trust gate)', () => {
+    const realDir = mkdtempSync(join(tmpdir(), 'soma-serve-reallegacy-'));
+    writeFileSync(join(realDir, 'juicy.html'), 'SHOULD-NOT-MIGRATE');
+    const linkPath = join(mkdtempSync(join(tmpdir(), 'soma-serve-linkparent-')), 'legacy-link');
+    symlinkSync(realDir, linkPath);
+    const artifact = join(artifactDir, 'symlink-root-check.html');
+    writeFileSync(artifact, '<!doctype html><title>symlink root check</title>');
+    const raw = execFileSync(process.execPath, [SERVER, '--file', artifact, '--port', String(PORT)], {
+      env: { ...env, SOMA_HTML_LEGACY_ROOT: linkPath },
+      encoding: 'utf8',
+    });
+    const out = JSON.parse(raw);
+    // Publish still succeeds, but the sweep refused the symlinked root loudly
+    // and nothing behind the link entered the LAN-served archive.
+    expect(out.migrationErrors).toBeGreaterThanOrEqual(1);
+    expect(existsSync(join(durableRoot, 'juicy.html'))).toBe(false);
+    rmSync(realDir, { recursive: true, force: true });
+  });
+
+  it('migration never replaces an existing (possibly fresher) archive file', () => {
+    writeFileSync(join(legacyRoot, 'collide.html'), 'STALE-LEGACY-BYTES');
+    writeFileSync(join(durableRoot, 'collide.html'), 'FRESH-ARCHIVE-BYTES');
+    const artifact = join(artifactDir, 'collide-trigger.html');
+    writeFileSync(artifact, '<!doctype html><title>collide trigger</title>');
+    execFileSync(process.execPath, [SERVER, '--file', artifact, '--port', String(PORT)], {
+      env,
+      encoding: 'utf8',
+    });
+    expect(readFileSync(join(durableRoot, 'collide.html'), 'utf8')).toBe('FRESH-ARCHIVE-BYTES');
+  });
+
   it('rejects an unknown-root daemon serving a stale same-name file (no silent 404/stale link)', async () => {
     // Emulate a pre-durable-root daemon with a custom root: bare health body
     // (no root line) + a stale artifact under the requested name.
