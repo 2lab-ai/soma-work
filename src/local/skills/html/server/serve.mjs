@@ -15,33 +15,50 @@
  *      doubles as the permanent artifact archive (see resolution order at
  *      defaultServeRoot below). Never a system temp dir by default: OS temp
  *      cleanup used to wipe every published artifact.
- *   2. Ensures a detached daemon is listening (spawns one if needed —
- *      survives the agent turn; idempotent across sessions).
+ *   2. Ensures a daemon is listening whose link for this artifact actually
+ *      answers 200 — the final URL is VERIFIED over loopback before it is
+ *      printed, never assumed.
  *   3. Prints JSON: { "url", "localUrl", "port", "file" } on stdout
- *      (+ "note" when an older daemon is still serving the legacy root).
+ *      (+ "note" when a pre-durable-root daemon needed a compat copy,
+ *      + "migrated"/"migrationErrors" when a legacy sweep did work).
  *
  * Daemon mode (internal): node serve.mjs --daemon --port <port>
  *   Plain node:http static server, serving the serve root.
- *   GET /__soma-serve-health → "soma-html-serve\nroot=<serve-root>"
- *     (ownership probe; the root line lets a publisher detect a daemon that
- *     is still serving a different — e.g. legacy /tmp — root).
+ *   GET /__soma-serve-health → "soma-html-serve" (+ "\nroot=<serve-root>"
+ *     for loopback callers only — the absolute path is not broadcast to the
+ *     LAN). The root line lets a same-host publisher detect a daemon that is
+ *     serving a different — e.g. legacy /tmp — root.
  *   GET /                    → directory index of the archive, newest first.
+ *
+ * Mixed-version behavior (deliberate, fail-safe):
+ *   - NEW publisher + OLD daemon: the publisher tries a compat copy into the
+ *     daemon's root and only trusts it after a verified 200; otherwise it
+ *     starts its own daemon on the next free port.
+ *   - OLD publisher + NEW daemon: old publishers compare the WHOLE health
+ *     body, so the two-line reply reads as foreign and they self-heal onto
+ *     the next free port with their own daemon. That port drift is accepted
+ *     on purpose: the alternative (keeping the body byte-identical) would
+ *     make old publishers treat a new daemon as their own, copy into a root
+ *     the daemon does not serve, and hand the user a silent 404 link.
  *
  * Archive semantics: artifacts are timestamped by the skill, never
  * auto-pruned here, and migrate forward automatically from the legacy
- * /tmp root when one is found. Reclaiming disk is a human decision.
+ * /tmp root when one is found (regular files only — symlinks are never
+ * followed into the archive). Re-publishing the same filename intentionally
+ * refreshes that artifact in place. Reclaiming disk is a human decision.
  *
  * Exposure policy: binds 0.0.0.0 by default — LAN reachability is the whole
  * point (the user opens the link from another machine). Everything ever
  * published to the serve root is therefore listable and readable by anyone
- * on the LAN; do not publish artifacts containing secrets. Set
+ * on the LAN, indefinitely; do not publish artifacts containing secrets. Set
  * SOMA_HTML_SERVE_BIND=127.0.0.1 to restrict to the host. Symlinks inside
  * the serve root are refused (realpath containment check).
  *
- * Exit codes: 0 published, 1 CLI/input error, 2 could not start/find server.
+ * Exit codes: 0 published+verified, 1 CLI/input error, 2 could not start,
+ * find, or verify a server.
  */
 
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import http from 'node:http';
 import { homedir, networkInterfaces } from 'node:os';
 import { basename, extname, isAbsolute, join, resolve, sep } from 'node:path';
@@ -49,8 +66,9 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 // Pre-durable-root versions served from here; kept only as a migration
-// source and as the assumed root of daemons started by those versions.
-const LEGACY_SERVE_ROOT = '/tmp/soma-html-serve';
+// source and as the first root guess for daemons started by those versions.
+// Overridable so tests (and unusual setups) never touch the real /tmp dir.
+const LEGACY_SERVE_ROOT = process.env.SOMA_HTML_LEGACY_ROOT || '/tmp/soma-html-serve';
 
 function defaultServeRoot() {
   // Resolution order (first hit wins):
@@ -128,9 +146,9 @@ function lanIp() {
 
 function probeHealth(port, timeoutMs = 700) {
   // Resolves { state: 'ours'|'foreign'|'free', root?: string }.
-  // Ownership is decided by the FIRST line only, so daemons from versions
-  // that answered a bare body (no root line) still probe as ours; their
-  // root is assumed to be the legacy /tmp path.
+  // Ownership is decided by the FIRST line. Daemons from older versions
+  // answer a bare body (no root line) — their root is unknown, not assumed:
+  // publish() treats an undefined root as "guess, then verify".
   return new Promise((resolveProbe) => {
     const req = http.get(
       { host: '127.0.0.1', port, path: HEALTH_PATH, timeout: timeoutMs },
@@ -141,7 +159,7 @@ function probeHealth(port, timeoutMs = 700) {
           const lines = body.trim().split('\n');
           if (lines[0].trim() !== HEALTH_BODY) return resolveProbe({ state: 'foreign' });
           const rootLine = lines.find((l) => l.startsWith('root='));
-          resolveProbe({ state: 'ours', root: rootLine ? rootLine.slice(5).trim() : LEGACY_SERVE_ROOT });
+          resolveProbe({ state: 'ours', root: rootLine ? rootLine.slice(5).trim() : undefined });
         });
       },
     );
@@ -152,6 +170,25 @@ function probeHealth(port, timeoutMs = 700) {
     req.on('error', (err) => {
       resolveProbe({ state: err.code === 'ECONNREFUSED' ? 'free' : 'foreign' });
     });
+  });
+}
+
+function verifyServed(port, name, timeoutMs = 1500) {
+  // The printed link is a deliverable — prove it answers 200 over loopback
+  // before handing it out. Never trust root bookkeeping alone.
+  return new Promise((resolveVerify) => {
+    const req = http.get(
+      { host: '127.0.0.1', port, path: '/' + encodeURIComponent(name), timeout: timeoutMs },
+      (res) => {
+        res.resume();
+        resolveVerify(res.statusCode === 200);
+      },
+    );
+    req.on('timeout', () => {
+      req.destroy();
+      resolveVerify(false);
+    });
+    req.on('error', () => resolveVerify(false));
   });
 }
 
@@ -173,48 +210,34 @@ async function waitForOurs(port, attempts = 30, delayMs = 200) {
   return null;
 }
 
-async function ensureServer() {
-  for (let port = BASE_PORT; port < BASE_PORT + PORT_SCAN_RANGE; port++) {
-    const probe = await probeHealth(port);
-    if (probe.state === 'ours') return { port, root: probe.root };
-    if (probe.state === 'free') {
-      startDaemon(port);
-      const started = await waitForOurs(port);
-      if (started) return { port, root: started.root };
-      // Lost the race or daemon died — try the next port instead of looping here.
-    }
-    // 'foreign': some other process owns this port; never serve through it.
-  }
-  return null;
-}
-
 function migrateLegacyArtifacts() {
-  // Best-effort forward migration: anything still alive in the legacy /tmp
-  // root gets copied into the durable archive (existing names are never
-  // overwritten). Runs at daemon start and at every publish, so surviving
-  // artifacts are rescued before the next OS temp cleanup gets them.
-  if (SERVE_ROOT === LEGACY_SERVE_ROOT) return 0;
-  let migrated = 0;
+  // Forward migration: regular files still alive in the legacy root are
+  // copied into the durable archive (existing names are never overwritten).
+  // Symlinks are skipped — following one would copy arbitrary readable
+  // local files into a LAN-served archive. Failures never block publishing,
+  // but they are counted and surfaced, not swallowed silently.
+  const result = { migrated: 0, errors: [] };
+  if (SERVE_ROOT === LEGACY_SERVE_ROOT) return result;
   try {
-    if (!existsSync(LEGACY_SERVE_ROOT)) return 0;
+    if (!existsSync(LEGACY_SERVE_ROOT)) return result;
     mkdirSync(SERVE_ROOT, { recursive: true });
     for (const name of readdirSync(LEGACY_SERVE_ROOT)) {
       if (name.startsWith('.')) continue;
+      const src = join(LEGACY_SERVE_ROOT, name);
+      const dst = join(SERVE_ROOT, name);
       try {
-        const src = join(LEGACY_SERVE_ROOT, name);
-        const dst = join(SERVE_ROOT, name);
-        if (statSync(src).isFile() && !existsSync(dst)) {
-          copyFileSync(src, dst);
-          migrated++;
-        }
-      } catch {
-        // one unreadable entry must not abort the migration sweep
+        if (!lstatSync(src).isFile()) continue; // lstat: symlinks excluded
+        if (existsSync(dst)) continue;
+        copyFileSync(src, dst);
+        result.migrated++;
+      } catch (err) {
+        result.errors.push(`${src}: ${err.message}`);
       }
     }
-  } catch {
-    // migration is opportunistic — publishing must not fail because of it
+  } catch (err) {
+    result.errors.push(`${LEGACY_SERVE_ROOT}: ${err.message}`);
   }
-  return migrated;
+  return result;
 }
 
 function htmlEscape(s) {
@@ -247,6 +270,11 @@ function directoryIndex() {
   ].join('\n');
 }
 
+function isLoopback(req) {
+  const addr = req.socket?.remoteAddress ?? '';
+  return addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1';
+}
+
 function runDaemon(port) {
   mkdirSync(SERVE_ROOT, { recursive: true });
   migrateLegacyArtifacts();
@@ -257,9 +285,10 @@ function runDaemon(port) {
       const pathname = decodeURIComponent(url.pathname);
       if (pathname === HEALTH_PATH) {
         res.writeHead(200, { 'content-type': 'text/plain' });
-        // Line 1 = ownership token (older publishers compare only this);
-        // line 2 advertises which root this daemon actually serves.
-        res.end(`${HEALTH_BODY}\nroot=${SERVE_ROOT}`);
+        // Line 1 = ownership token. Line 2 advertises the served root — to
+        // loopback callers only, so the absolute path (which can embed a
+        // username) is not broadcast to the LAN.
+        res.end(isLoopback(req) ? `${HEALTH_BODY}\nroot=${SERVE_ROOT}` : HEALTH_BODY);
         return;
       }
       if (pathname === '/' || pathname === '/index.html') {
@@ -306,6 +335,33 @@ function runDaemon(port) {
   server.listen(port, BIND_ADDR);
 }
 
+async function adoptDaemon(port, probe, abs, name) {
+  // Try to make an existing 'ours' daemon serve this artifact, returning
+  // { port, note? } only after a VERIFIED 200 — otherwise null.
+  const daemonRoot = probe.root; // undefined = pre-root-advertising daemon
+  if (daemonRoot === SERVE_ROOT) {
+    return (await verifyServed(port, name)) ? { port } : null;
+  }
+  // Different (or unknown) root: drop a compat copy where we believe the
+  // daemon looks, then verify. The legacy default is only a guess — an old
+  // daemon may have been started with a custom SOMA_HTML_SERVE_ROOT — which
+  // is exactly why the verified GET, not the copy, is the success signal.
+  const guess = daemonRoot ?? LEGACY_SERVE_ROOT;
+  try {
+    mkdirSync(guess, { recursive: true });
+    copyFileSync(abs, join(guess, name));
+  } catch {
+    // fall through to verification, which will fail and reject this daemon
+  }
+  if (await verifyServed(port, name)) {
+    return {
+      port,
+      note: `daemon on port ${port} serves ${daemonRoot ?? `an older root (compat copy placed in ${guess})`}; artifact archived in ${SERVE_ROOT}, which takes over when that daemon restarts`,
+    };
+  }
+  return null;
+}
+
 async function publish(file, explicitPort) {
   if (!file) {
     console.error('--file is required');
@@ -317,61 +373,58 @@ async function publish(file, explicitPort) {
     process.exit(1);
   }
   mkdirSync(SERVE_ROOT, { recursive: true });
-  migrateLegacyArtifacts();
+  const migration = migrateLegacyArtifacts();
+  for (const e of migration.errors) console.error(`legacy migration failed for ${e}`);
   const name = basename(abs);
   copyFileSync(abs, join(SERVE_ROOT, name));
 
-  let port = null;
-  let daemonRoot = null;
-  if (explicitPort) {
-    const probe = await probeHealth(explicitPort);
-    if (probe.state === 'ours') {
-      port = explicitPort;
-      daemonRoot = probe.root;
-    } else if (probe.state === 'free') {
-      startDaemon(explicitPort);
-      const started = await waitForOurs(explicitPort);
-      if (started) {
-        port = explicitPort;
-        daemonRoot = started.root;
-      }
-    }
-  } else {
-    const found = await ensureServer();
-    if (found) {
-      port = found.port;
-      daemonRoot = found.root;
-    }
+  let chosen = null;
+  const ports = explicitPort ? [explicitPort] : [];
+  if (!explicitPort) {
+    for (let p = BASE_PORT; p < BASE_PORT + PORT_SCAN_RANGE; p++) ports.push(p);
   }
-  if (!port) {
-    console.error(`could not start or find a soma-html-serve daemon (base port ${explicitPort ?? BASE_PORT})`);
-    process.exit(2);
+  for (const port of ports) {
+    const probe = await probeHealth(port);
+    if (probe.state === 'ours') {
+      chosen = await adoptDaemon(port, probe, abs, name);
+      if (chosen) break;
+      // Unusable 'ours' daemon (e.g. old daemon on an unknown custom root):
+      // with an explicit port we must fail loudly below; when scanning we
+      // move on and start a fresh daemon on the next free port.
+      continue;
+    }
+    if (probe.state === 'free') {
+      startDaemon(port);
+      const started = await waitForOurs(port);
+      if (started && (await verifyServed(port, name))) {
+        chosen = { port };
+        break;
+      }
+      // Lost the race or daemon died — try the next port instead of looping here.
+    }
+    // 'foreign': some other process owns this port; never serve through it.
   }
 
-  // A daemon from before the durable-root change (or with a different env)
-  // serves a different directory than the one we just archived into. Drop a
-  // copy where that daemon can see it so the printed link works right now;
-  // the durable root takes over when the daemon next restarts.
-  let note;
-  if (daemonRoot && daemonRoot !== SERVE_ROOT) {
-    try {
-      mkdirSync(daemonRoot, { recursive: true });
-      copyFileSync(abs, join(daemonRoot, name));
-      note = `daemon on port ${port} still serves ${daemonRoot} (pre-durable-root daemon); artifact archived in ${SERVE_ROOT} and also copied next to the daemon so the link works now`;
-    } catch {
-      note = `daemon on port ${port} serves ${daemonRoot}, which is not writable; the link may 404 until the daemon restarts with root ${SERVE_ROOT}`;
-    }
+  if (!chosen) {
+    console.error(
+      explicitPort
+        ? `no usable soma-html-serve daemon on port ${explicitPort} (occupied by a foreign process, or serving a root this artifact could not be verified on)`
+        : `could not start or find a soma-html-serve daemon (ports ${BASE_PORT}-${BASE_PORT + PORT_SCAN_RANGE - 1})`,
+    );
+    process.exit(2);
   }
 
   const encoded = encodeURIComponent(name);
   console.log(
     JSON.stringify(
       {
-        url: `http://${lanIp()}:${port}/${encoded}`,
-        localUrl: `http://localhost:${port}/${encoded}`,
-        port,
+        url: `http://${lanIp()}:${chosen.port}/${encoded}`,
+        localUrl: `http://localhost:${chosen.port}/${encoded}`,
+        port: chosen.port,
         file: join(SERVE_ROOT, name),
-        ...(note ? { note } : {}),
+        ...(chosen.note ? { note: chosen.note } : {}),
+        ...(migration.migrated ? { migrated: migration.migrated } : {}),
+        ...(migration.errors.length ? { migrationErrors: migration.errors.length } : {}),
       },
       null,
       2,
