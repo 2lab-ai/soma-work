@@ -58,7 +58,21 @@
  * find, or verify a server.
  */
 
-import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import {
+  closeSync,
+  constants as FS,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import http from 'node:http';
 import { homedir, networkInterfaces } from 'node:os';
 import { basename, extname, isAbsolute, join, resolve, sep } from 'node:path';
@@ -173,15 +187,22 @@ function probeHealth(port, timeoutMs = 700) {
   });
 }
 
-function verifyServed(port, name, timeoutMs = 1500) {
-  // The printed link is a deliverable — prove it answers 200 over loopback
-  // before handing it out. Never trust root bookkeeping alone.
+function verifyServed(port, name, expectedBytes, timeoutMs = 2000) {
+  // The printed link is a deliverable — prove the daemon returns THIS
+  // artifact's bytes over loopback before handing it out. A bare 200 is not
+  // enough: an old daemon on an unknown root can happily serve a stale file
+  // with the same name.
   return new Promise((resolveVerify) => {
     const req = http.get(
-      { host: '127.0.0.1', port, path: '/' + encodeURIComponent(name), timeout: timeoutMs },
+      { host: '127.0.0.1', port, path: `/${encodeURIComponent(name)}`, timeout: timeoutMs },
       (res) => {
-        res.resume();
-        resolveVerify(res.statusCode === 200);
+        if (res.statusCode !== 200) {
+          res.resume();
+          return resolveVerify(false);
+        }
+        const chunks = [];
+        res.on('data', (c) => chunks.push(c));
+        res.on('end', () => resolveVerify(Buffer.concat(chunks).equals(expectedBytes)));
       },
     );
     req.on('timeout', () => {
@@ -190,6 +211,35 @@ function verifyServed(port, name, timeoutMs = 1500) {
     });
     req.on('error', () => resolveVerify(false));
   });
+}
+
+function readFileNoFollow(path) {
+  // O_NOFOLLOW closes the lstat→read race: if the path is (or becomes) a
+  // symlink, the open fails instead of following it.
+  const fd = openSync(path, FS.O_RDONLY | FS.O_NOFOLLOW);
+  try {
+    return readFileSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function writeFileReplacing(dstDir, name, bytes) {
+  // Write-to-temp + atomic rename. rename REPLACES a symlink sitting at the
+  // destination instead of following it, so a link planted inside a serve
+  // root can never redirect this write to a file outside it.
+  const tmp = join(dstDir, `.tmp-publish-${process.pid}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`);
+  writeFileSync(tmp, bytes, { flag: 'wx' });
+  try {
+    renameSync(tmp, join(dstDir, name));
+  } catch (err) {
+    try {
+      rmSync(tmp, { force: true });
+    } catch {
+      /* temp cleanup is best-effort */
+    }
+    throw err;
+  }
 }
 
 function startDaemon(port) {
@@ -228,7 +278,9 @@ function migrateLegacyArtifacts() {
       try {
         if (!lstatSync(src).isFile()) continue; // lstat: symlinks excluded
         if (existsSync(dst)) continue;
-        copyFileSync(src, dst);
+        // O_NOFOLLOW read + temp-file/rename write: neither side of the copy
+        // can be redirected through a symlink.
+        writeFileReplacing(SERVE_ROOT, name, readFileNoFollow(src));
         result.migrated++;
       } catch (err) {
         result.errors.push(`${src}: ${err.message}`);
@@ -277,7 +329,10 @@ function isLoopback(req) {
 
 function runDaemon(port) {
   mkdirSync(SERVE_ROOT, { recursive: true });
-  migrateLegacyArtifacts();
+  const sweep = migrateLegacyArtifacts();
+  // Daemons spawned by publish run with stdio ignored, but a directly-run
+  // daemon still surfaces sweep failures instead of losing them.
+  for (const e of sweep.errors) console.error(`legacy migration failed for ${e}`);
   const rootReal = realpathSync(SERVE_ROOT);
   const server = http.createServer((req, res) => {
     try {
@@ -335,25 +390,26 @@ function runDaemon(port) {
   server.listen(port, BIND_ADDR);
 }
 
-async function adoptDaemon(port, probe, abs, name) {
+async function adoptDaemon(port, probe, artifactBytes, name) {
   // Try to make an existing 'ours' daemon serve this artifact, returning
-  // { port, note? } only after a VERIFIED 200 — otherwise null.
+  // { port, note? } only after the served bytes are VERIFIED — otherwise null.
   const daemonRoot = probe.root; // undefined = pre-root-advertising daemon
   if (daemonRoot === SERVE_ROOT) {
-    return (await verifyServed(port, name)) ? { port } : null;
+    return (await verifyServed(port, name, artifactBytes)) ? { port } : null;
   }
   // Different (or unknown) root: drop a compat copy where we believe the
   // daemon looks, then verify. The legacy default is only a guess — an old
   // daemon may have been started with a custom SOMA_HTML_SERVE_ROOT — which
-  // is exactly why the verified GET, not the copy, is the success signal.
+  // is exactly why the verified byte-compare, not the copy, is the success
+  // signal (a stale same-name file answering 200 must not pass).
   const guess = daemonRoot ?? LEGACY_SERVE_ROOT;
   try {
     mkdirSync(guess, { recursive: true });
-    copyFileSync(abs, join(guess, name));
+    writeFileReplacing(guess, name, artifactBytes);
   } catch {
     // fall through to verification, which will fail and reject this daemon
   }
-  if (await verifyServed(port, name)) {
+  if (await verifyServed(port, name, artifactBytes)) {
     return {
       port,
       note: `daemon on port ${port} serves ${daemonRoot ?? `an older root (compat copy placed in ${guess})`}; artifact archived in ${SERVE_ROOT}, which takes over when that daemon restarts`,
@@ -376,7 +432,8 @@ async function publish(file, explicitPort) {
   const migration = migrateLegacyArtifacts();
   for (const e of migration.errors) console.error(`legacy migration failed for ${e}`);
   const name = basename(abs);
-  copyFileSync(abs, join(SERVE_ROOT, name));
+  const artifactBytes = readFileSync(abs);
+  writeFileReplacing(SERVE_ROOT, name, artifactBytes);
 
   let chosen = null;
   const ports = explicitPort ? [explicitPort] : [];
@@ -386,7 +443,7 @@ async function publish(file, explicitPort) {
   for (const port of ports) {
     const probe = await probeHealth(port);
     if (probe.state === 'ours') {
-      chosen = await adoptDaemon(port, probe, abs, name);
+      chosen = await adoptDaemon(port, probe, artifactBytes, name);
       if (chosen) break;
       // Unusable 'ours' daemon (e.g. old daemon on an unknown custom root):
       // with an explicit port we must fail loudly below; when scanning we
@@ -396,7 +453,7 @@ async function publish(file, explicitPort) {
     if (probe.state === 'free') {
       startDaemon(port);
       const started = await waitForOurs(port);
-      if (started && (await verifyServed(port, name))) {
+      if (started && (await verifyServed(port, name, artifactBytes))) {
         chosen = { port };
         break;
       }

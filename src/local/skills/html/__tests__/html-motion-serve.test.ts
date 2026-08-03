@@ -52,7 +52,9 @@ describe('local:html skill — motion layer + local web server contract', () => 
     expect(src).toMatch(/XDG_DATA_HOME/);
     expect(src).toMatch(/homedir/);
     expect(src).toMatch(/'\.local',\s*'share',\s*'soma-html-serve'/);
-    expect(src).toMatch(/LEGACY_SERVE_ROOT\s*=\s*process\.env\.SOMA_HTML_LEGACY_ROOT\s*\|\|\s*'\/tmp\/soma-html-serve'/);
+    expect(src).toMatch(
+      /LEGACY_SERVE_ROOT\s*=\s*process\.env\.SOMA_HTML_LEGACY_ROOT\s*\|\|\s*'\/tmp\/soma-html-serve'/,
+    );
     expect(src).not.toMatch(/SOMA_HTML_SERVE_ROOT\s*\|\|\s*'\/tmp\/soma-html-serve'/);
     // Explicit override must stay supported.
     expect(src).toMatch(/SOMA_HTML_SERVE_ROOT/);
