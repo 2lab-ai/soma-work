@@ -99,3 +99,4 @@ __pycache__/
 *.oudwood
 .beads/*.lock
 .sandbox-write-probe
+.worktrees/
