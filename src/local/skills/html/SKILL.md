@@ -366,13 +366,27 @@ artifacts are timestamped by the Step 4 filename, retained indefinitely
 (no auto-pruning), and listable at the daemon's `/` index newest-first;
 reclaiming disk is a human decision, not the server's.
 
-**Migration & mixed versions** (automatic, no action needed): every publish
-and daemon start sweeps any artifacts still in the legacy `/tmp` root into
-the durable archive (existing names are never overwritten). If a daemon from
-an older version is still serving the legacy root, publish also drops a copy
-where that daemon can see it — the printed link works immediately and the
-JSON carries a `note`; the durable root takes over when that daemon next
-restarts (e.g. after reboot).
+**Migration & mixed versions** (automatic): every publish and daemon start
+sweeps regular files still in the legacy `/tmp` root into the durable
+archive (existing names are never overwritten; symlinks are never followed).
+Sweep failures don't block publishing but are surfaced on stderr and as a
+`migrationErrors` count in the JSON — a silent sweep is not assumed to have
+worked. The printed link is **verified with a real HTTP 200 before it is
+handed out**: if an older daemon is still serving a different root, publish
+places a compat copy, verifies, and marks the JSON with a `note`; if the old
+daemon can't be verified, publish starts a fresh daemon on the next free
+port instead of printing a dead link. (Old publishers meeting a new daemon
+read its health reply as foreign and self-heal onto another port — accepted
+port drift, never a silent 404.) Re-publishing the same filename refreshes
+that artifact in place — timestamps in the filename are what make archive
+entries distinct.
+
+**The archive is LAN-readable, indefinitely.** With the default `0.0.0.0`
+bind, everything published is listable and readable by anyone on the local
+network for as long as it stays in the archive — never publish pages
+containing secrets, tokens, or personal data. If something sensitive was
+published, delete that file from the serve root yourself (that is the
+removal procedure; there is no expiry).
 
 Use `url` (LAN IP) as the access link you hand to the user — `localhost`
 only works on the host machine itself; include it as a secondary mention.

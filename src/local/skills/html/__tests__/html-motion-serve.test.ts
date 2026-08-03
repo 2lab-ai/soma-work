@@ -52,18 +52,25 @@ describe('local:html skill — motion layer + local web server contract', () => 
     expect(src).toMatch(/XDG_DATA_HOME/);
     expect(src).toMatch(/homedir/);
     expect(src).toMatch(/'\.local',\s*'share',\s*'soma-html-serve'/);
-    expect(src).toMatch(/LEGACY_SERVE_ROOT\s*=\s*'\/tmp\/soma-html-serve'/);
+    expect(src).toMatch(/LEGACY_SERVE_ROOT\s*=\s*process\.env\.SOMA_HTML_LEGACY_ROOT\s*\|\|\s*'\/tmp\/soma-html-serve'/);
     expect(src).not.toMatch(/SOMA_HTML_SERVE_ROOT\s*\|\|\s*'\/tmp\/soma-html-serve'/);
     // Explicit override must stay supported.
     expect(src).toMatch(/SOMA_HTML_SERVE_ROOT/);
     // The health probe advertises the daemon's root so a publisher can detect
     // a pre-durable-root daemon still serving the legacy directory…
     expect(src).toMatch(/root=\$\{SERVE_ROOT\}/);
-    // …and legacy artifacts are migrated forward, never destroyed.
+    // …and legacy artifacts are migrated forward, never destroyed. The sweep
+    // must refuse symlinks (lstat) and must not swallow failures silently.
     expect(src).toMatch(/migrateLegacyArtifacts/);
+    expect(src).toMatch(/lstatSync/);
+    expect(src).toMatch(/migrationErrors/);
+    // The printed link is verified with a real HTTP GET before hand-out.
+    expect(src).toMatch(/verifyServed/);
     const md = readFileSync(SKILL_MD, 'utf8');
     expect(md).toMatch(/durable|archive/i);
     expect(md).toMatch(/SOMA_HTML_SERVE_ROOT/);
+    // Archive-forever + LAN exposure requires an explicit no-secrets warning.
+    expect(md).toMatch(/secrets, tokens, or personal data/i);
   });
 
   it('ui-ux design driver is the unconditional default, not opt-in', () => {
