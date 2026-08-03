@@ -165,25 +165,46 @@ function probeHealth(port, timeoutMs = 700) {
   // answer a bare body (no root line) — their root is unknown, not assumed:
   // publish() treats an undefined root as "guess, then verify".
   return new Promise((resolveProbe) => {
+    let done = false;
+    const finish = (v) => {
+      if (done) return;
+      done = true;
+      clearTimeout(deadline);
+      resolveProbe(v);
+    };
     const req = http.get(
       { host: '127.0.0.1', port, path: HEALTH_PATH, timeout: timeoutMs },
       (res) => {
         let body = '';
-        res.on('data', (chunk) => (body += chunk));
+        res.on('data', (chunk) => {
+          body += chunk;
+          if (body.length > 4096) {
+            // A real health reply is two short lines; anything bigger is not
+            // our daemon — stop reading instead of buffering it.
+            req.destroy();
+            finish({ state: 'foreign' });
+          }
+        });
         res.on('end', () => {
           const lines = body.trim().split('\n');
-          if (lines[0].trim() !== HEALTH_BODY) return resolveProbe({ state: 'foreign' });
+          if (lines[0].trim() !== HEALTH_BODY) return finish({ state: 'foreign' });
           const rootLine = lines.find((l) => l.startsWith('root='));
-          resolveProbe({ state: 'ours', root: rootLine ? rootLine.slice(5).trim() : undefined });
+          finish({ state: 'ours', root: rootLine ? rootLine.slice(5).trim() : undefined });
         });
       },
     );
+    // Overall deadline, matching verifyServed: the socket-inactivity timeout
+    // alone lets a slowly dripping endpoint stall the publisher.
+    const deadline = setTimeout(() => {
+      req.destroy();
+      finish({ state: 'foreign' });
+    }, timeoutMs * 2);
     req.on('timeout', () => {
       req.destroy();
-      resolveProbe({ state: 'foreign' });
+      finish({ state: 'foreign' });
     });
     req.on('error', (err) => {
-      resolveProbe({ state: err.code === 'ECONNREFUSED' ? 'free' : 'foreign' });
+      finish({ state: err.code === 'ECONNREFUSED' ? 'free' : 'foreign' });
     });
   });
 }
