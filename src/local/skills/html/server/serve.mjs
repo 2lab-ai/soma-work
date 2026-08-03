@@ -11,15 +11,25 @@
  * Contract (CLI, publish mode — the one agents call):
  *   node serve.mjs --file <abs-path-to-html> [--port 8763]
  *
- *   1. Copies <file> into the serve root (default /tmp/soma-html-serve).
+ *   1. Copies <file> into the serve root — a DURABLE per-user data dir that
+ *      doubles as the permanent artifact archive (see resolution order at
+ *      defaultServeRoot below). Never a system temp dir by default: OS temp
+ *      cleanup used to wipe every published artifact.
  *   2. Ensures a detached daemon is listening (spawns one if needed —
  *      survives the agent turn; idempotent across sessions).
- *   3. Prints JSON: { "url", "localUrl", "port", "file" } on stdout.
+ *   3. Prints JSON: { "url", "localUrl", "port", "file" } on stdout
+ *      (+ "note" when an older daemon is still serving the legacy root).
  *
  * Daemon mode (internal): node serve.mjs --daemon --port <port>
  *   Plain node:http static server, serving the serve root.
- *   GET /__soma-serve-health → "soma-html-serve" (ownership probe).
- *   GET /                    → directory index of published artifacts.
+ *   GET /__soma-serve-health → "soma-html-serve\nroot=<serve-root>"
+ *     (ownership probe; the root line lets a publisher detect a daemon that
+ *     is still serving a different — e.g. legacy /tmp — root).
+ *   GET /                    → directory index of the archive, newest first.
+ *
+ * Archive semantics: artifacts are timestamped by the skill, never
+ * auto-pruned here, and migrate forward automatically from the legacy
+ * /tmp root when one is found. Reclaiming disk is a human decision.
  *
  * Exposure policy: binds 0.0.0.0 by default — LAN reachability is the whole
  * point (the user opens the link from another machine). Everything ever
@@ -33,12 +43,29 @@
 
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import http from 'node:http';
-import { networkInterfaces } from 'node:os';
+import { homedir, networkInterfaces } from 'node:os';
 import { basename, extname, isAbsolute, join, resolve, sep } from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-const SERVE_ROOT = process.env.SOMA_HTML_SERVE_ROOT || '/tmp/soma-html-serve';
+// Pre-durable-root versions served from here; kept only as a migration
+// source and as the assumed root of daemons started by those versions.
+const LEGACY_SERVE_ROOT = '/tmp/soma-html-serve';
+
+function defaultServeRoot() {
+  // Resolution order (first hit wins):
+  //   1. SOMA_HTML_SERVE_ROOT       — explicit override, any path the user wants.
+  //   2. $XDG_DATA_HOME/soma-html-serve
+  //   3. ~/.local/share/soma-html-serve  (works on macOS and Linux alike)
+  //   4. LEGACY_SERVE_ROOT          — only when no home dir is resolvable.
+  if (process.env.SOMA_HTML_SERVE_ROOT) return process.env.SOMA_HTML_SERVE_ROOT;
+  if (process.env.XDG_DATA_HOME) return join(process.env.XDG_DATA_HOME, 'soma-html-serve');
+  const home = homedir();
+  if (home) return join(home, '.local', 'share', 'soma-html-serve');
+  return LEGACY_SERVE_ROOT;
+}
+
+const SERVE_ROOT = defaultServeRoot();
 const BIND_ADDR = process.env.SOMA_HTML_SERVE_BIND || '0.0.0.0';
 const BASE_PORT = Number(process.env.SOMA_HTML_SERVE_PORT || 8763);
 const PORT_SCAN_RANGE = 20;
@@ -100,21 +127,30 @@ function lanIp() {
 }
 
 function probeHealth(port, timeoutMs = 700) {
+  // Resolves { state: 'ours'|'foreign'|'free', root?: string }.
+  // Ownership is decided by the FIRST line only, so daemons from versions
+  // that answered a bare body (no root line) still probe as ours; their
+  // root is assumed to be the legacy /tmp path.
   return new Promise((resolveProbe) => {
     const req = http.get(
       { host: '127.0.0.1', port, path: HEALTH_PATH, timeout: timeoutMs },
       (res) => {
         let body = '';
         res.on('data', (chunk) => (body += chunk));
-        res.on('end', () => resolveProbe(body.trim() === HEALTH_BODY ? 'ours' : 'foreign'));
+        res.on('end', () => {
+          const lines = body.trim().split('\n');
+          if (lines[0].trim() !== HEALTH_BODY) return resolveProbe({ state: 'foreign' });
+          const rootLine = lines.find((l) => l.startsWith('root='));
+          resolveProbe({ state: 'ours', root: rootLine ? rootLine.slice(5).trim() : LEGACY_SERVE_ROOT });
+        });
       },
     );
     req.on('timeout', () => {
       req.destroy();
-      resolveProbe('foreign');
+      resolveProbe({ state: 'foreign' });
     });
     req.on('error', (err) => {
-      resolveProbe(err.code === 'ECONNREFUSED' ? 'free' : 'foreign');
+      resolveProbe({ state: err.code === 'ECONNREFUSED' ? 'free' : 'foreign' });
     });
   });
 }
@@ -130,24 +166,55 @@ function startDaemon(port) {
 
 async function waitForOurs(port, attempts = 30, delayMs = 200) {
   for (let i = 0; i < attempts; i++) {
-    if ((await probeHealth(port)) === 'ours') return true;
+    const probe = await probeHealth(port);
+    if (probe.state === 'ours') return probe;
     await new Promise((r) => setTimeout(r, delayMs));
   }
-  return false;
+  return null;
 }
 
 async function ensureServer() {
   for (let port = BASE_PORT; port < BASE_PORT + PORT_SCAN_RANGE; port++) {
-    const state = await probeHealth(port);
-    if (state === 'ours') return port;
-    if (state === 'free') {
+    const probe = await probeHealth(port);
+    if (probe.state === 'ours') return { port, root: probe.root };
+    if (probe.state === 'free') {
       startDaemon(port);
-      if (await waitForOurs(port)) return port;
+      const started = await waitForOurs(port);
+      if (started) return { port, root: started.root };
       // Lost the race or daemon died — try the next port instead of looping here.
     }
     // 'foreign': some other process owns this port; never serve through it.
   }
   return null;
+}
+
+function migrateLegacyArtifacts() {
+  // Best-effort forward migration: anything still alive in the legacy /tmp
+  // root gets copied into the durable archive (existing names are never
+  // overwritten). Runs at daemon start and at every publish, so surviving
+  // artifacts are rescued before the next OS temp cleanup gets them.
+  if (SERVE_ROOT === LEGACY_SERVE_ROOT) return 0;
+  let migrated = 0;
+  try {
+    if (!existsSync(LEGACY_SERVE_ROOT)) return 0;
+    mkdirSync(SERVE_ROOT, { recursive: true });
+    for (const name of readdirSync(LEGACY_SERVE_ROOT)) {
+      if (name.startsWith('.')) continue;
+      try {
+        const src = join(LEGACY_SERVE_ROOT, name);
+        const dst = join(SERVE_ROOT, name);
+        if (statSync(src).isFile() && !existsSync(dst)) {
+          copyFileSync(src, dst);
+          migrated++;
+        }
+      } catch {
+        // one unreadable entry must not abort the migration sweep
+      }
+    }
+  } catch {
+    // migration is opportunistic — publishing must not fail because of it
+  }
+  return migrated;
 }
 
 function htmlEscape(s) {
@@ -182,6 +249,7 @@ function directoryIndex() {
 
 function runDaemon(port) {
   mkdirSync(SERVE_ROOT, { recursive: true });
+  migrateLegacyArtifacts();
   const rootReal = realpathSync(SERVE_ROOT);
   const server = http.createServer((req, res) => {
     try {
@@ -189,7 +257,9 @@ function runDaemon(port) {
       const pathname = decodeURIComponent(url.pathname);
       if (pathname === HEALTH_PATH) {
         res.writeHead(200, { 'content-type': 'text/plain' });
-        res.end(HEALTH_BODY);
+        // Line 1 = ownership token (older publishers compare only this);
+        // line 2 advertises which root this daemon actually serves.
+        res.end(`${HEALTH_BODY}\nroot=${SERVE_ROOT}`);
         return;
       }
       if (pathname === '/' || pathname === '/index.html') {
@@ -247,23 +317,50 @@ async function publish(file, explicitPort) {
     process.exit(1);
   }
   mkdirSync(SERVE_ROOT, { recursive: true });
+  migrateLegacyArtifacts();
   const name = basename(abs);
   copyFileSync(abs, join(SERVE_ROOT, name));
 
-  let port;
+  let port = null;
+  let daemonRoot = null;
   if (explicitPort) {
-    const state = await probeHealth(explicitPort);
-    if (state === 'ours') port = explicitPort;
-    else if (state === 'free') {
+    const probe = await probeHealth(explicitPort);
+    if (probe.state === 'ours') {
+      port = explicitPort;
+      daemonRoot = probe.root;
+    } else if (probe.state === 'free') {
       startDaemon(explicitPort);
-      port = (await waitForOurs(explicitPort)) ? explicitPort : null;
-    } else port = null;
+      const started = await waitForOurs(explicitPort);
+      if (started) {
+        port = explicitPort;
+        daemonRoot = started.root;
+      }
+    }
   } else {
-    port = await ensureServer();
+    const found = await ensureServer();
+    if (found) {
+      port = found.port;
+      daemonRoot = found.root;
+    }
   }
   if (!port) {
     console.error(`could not start or find a soma-html-serve daemon (base port ${explicitPort ?? BASE_PORT})`);
     process.exit(2);
+  }
+
+  // A daemon from before the durable-root change (or with a different env)
+  // serves a different directory than the one we just archived into. Drop a
+  // copy where that daemon can see it so the printed link works right now;
+  // the durable root takes over when the daemon next restarts.
+  let note;
+  if (daemonRoot && daemonRoot !== SERVE_ROOT) {
+    try {
+      mkdirSync(daemonRoot, { recursive: true });
+      copyFileSync(abs, join(daemonRoot, name));
+      note = `daemon on port ${port} still serves ${daemonRoot} (pre-durable-root daemon); artifact archived in ${SERVE_ROOT} and also copied next to the daemon so the link works now`;
+    } catch {
+      note = `daemon on port ${port} serves ${daemonRoot}, which is not writable; the link may 404 until the daemon restarts with root ${SERVE_ROOT}`;
+    }
   }
 
   const encoded = encodeURIComponent(name);
@@ -274,6 +371,7 @@ async function publish(file, explicitPort) {
         localUrl: `http://localhost:${port}/${encoded}`,
         port,
         file: join(SERVE_ROOT, name),
+        ...(note ? { note } : {}),
       },
       null,
       2,
