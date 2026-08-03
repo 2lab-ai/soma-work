@@ -44,6 +44,47 @@ describe('local:html skill — motion layer + local web server contract', () => 
     expect(md).toMatch(/localhost.*only (works|resolves)|only resolves on the host/i);
   });
 
+  it('serves from a durable per-user archive root, never /tmp by default', () => {
+    const src = readFileSync(SERVER, 'utf8');
+    // The default root must resolve to user data dirs; /tmp is legacy-only.
+    // OS temp cleanup wiping the serve root deleted every published artifact
+    // once (2026-07 — recovered only by replaying session transcripts).
+    expect(src).toMatch(/XDG_DATA_HOME/);
+    expect(src).toMatch(/homedir/);
+    expect(src).toMatch(/'\.local',\s*'share',\s*'soma-html-serve'/);
+    expect(src).toMatch(
+      /LEGACY_SERVE_ROOT\s*=\s*process\.env\.SOMA_HTML_LEGACY_ROOT\s*\|\|\s*'\/tmp\/soma-html-serve'/,
+    );
+    expect(src).not.toMatch(/SOMA_HTML_SERVE_ROOT\s*\|\|\s*'\/tmp\/soma-html-serve'/);
+    // Explicit override must stay supported.
+    expect(src).toMatch(/SOMA_HTML_SERVE_ROOT/);
+    // The health probe advertises the daemon's root so a publisher can detect
+    // a pre-durable-root daemon still serving the legacy directory…
+    expect(src).toMatch(/root=\$\{SERVE_ROOT\}/);
+    // …and legacy artifacts are migrated forward, never destroyed. The sweep
+    // must refuse symlinks (lstat) and must not swallow failures silently.
+    expect(src).toMatch(/migrateLegacyArtifacts/);
+    expect(src).toMatch(/lstatSync/);
+    expect(src).toMatch(/migrationErrors/);
+    // Trust gate for the world-writable legacy namespace (real dir + owner)
+    // and atomic create-if-absent installs (no check-then-rename race).
+    expect(src).toMatch(/getuid/);
+    expect(src).toMatch(/linkSync/);
+    // The printed link is verified with a real HTTP GET before hand-out.
+    expect(src).toMatch(/verifyServed/);
+    const md = readFileSync(SKILL_MD, 'utf8');
+    expect(md).toMatch(/durable|archive/i);
+    expect(md).toMatch(/SOMA_HTML_SERVE_ROOT/);
+    // Archive-forever + LAN exposure requires an explicit no-secrets warning.
+    expect(md).toMatch(/secrets, tokens, or personal data/i);
+  });
+
+  it('ui-ux design driver is the unconditional default, not opt-in', () => {
+    const md = readFileSync(SKILL_MD, 'utf8');
+    expect(md).toMatch(/not opt-in/i);
+    expect(md).toMatch(/every invocation/i);
+  });
+
   it('server/serve.mjs is a self-contained node static server with health + traversal guard', () => {
     expect(existsSync(SERVER)).toBe(true);
     const src = readFileSync(SERVER, 'utf8');
