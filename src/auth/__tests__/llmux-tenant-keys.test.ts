@@ -39,6 +39,10 @@ function newKeyDoc(overrides?: Record<string, unknown>) {
   };
 }
 
+const KEYS_URL = 'http://localhost:3456/llmux/keys';
+const NEW_URL = 'http://localhost:3456/llmux/keys/new';
+const ROTATE_URL = 'http://localhost:3456/llmux/keys/rotate';
+
 describe('llmux tenant keys (per-user metering)', () => {
   let dir: string;
   let storePath: string;
@@ -63,84 +67,136 @@ describe('llmux tenant keys (per-user metering)', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  /** llmux with no keys at all: list is empty, `keys/new` succeeds. */
+  function mockEmptyDaemon(doc: Record<string, unknown> = newKeyDoc()) {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.endsWith('/llmux/keys')) return okResponse({ keys: [] });
+      return okResponse(doc);
+    });
+  }
+
+  const urlsOf = () => fetchMock.mock.calls.map((c) => c[0]);
+
   it('issues a key on first use, persists it, and serves later calls from the store', async () => {
-    fetchMock.mockImplementation(async () => okResponse(newKeyDoc()));
+    mockEmptyDaemon();
 
     const secret = await ensureTenantKey('U1', { name: 'Zhuge', email: 'z@example.com' });
     expect(secret).toBe('lmk-abcdef-secret');
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const [url, init] = fetchMock.mock.calls[0];
-    expect(url).toBe('http://localhost:3456/llmux/keys/new');
+    // Reclaim lookup precedes creation (see the display-name cases below).
+    expect(urlsOf()).toEqual([KEYS_URL, NEW_URL]);
+    const init = fetchMock.mock.calls[1][1];
     expect(init.method).toBe('POST');
     expect(init.headers['x-api-key']).toBe('admin-key');
-    // The name embeds the Slack id, which is what makes it unique per user.
+    // The name embeds the Slack id, which is what makes the key re-identifiable.
     expect(JSON.parse(init.body)).toEqual({ name: 'Zhuge (U1)', email: 'z@example.com', kind: 'default' });
 
     const persisted = JSON.parse(fs.readFileSync(storePath, 'utf-8'));
     expect(persisted.version).toBe(1);
-    expect(persisted.tenants.U1).toMatchObject({ id: 'k-1', secret: 'lmk-abcdef-secret', keyPrefix: 'lmk-abc' });
+    expect(persisted.tenants.U1).toMatchObject({
+      id: 'k-1',
+      secret: 'lmk-abcdef-secret',
+      keyPrefix: 'lmk-abc',
+      baseUrl: 'http://localhost:3456',
+    });
+    // The file holds plaintext secrets — owner-only.
+    expect(fs.statSync(storePath).mode & 0o777).toBe(0o600);
 
     // Second call is a pure store hit — no further llmux traffic.
     await expect(ensureTenantKey('U1', { name: 'Zhuge' })).resolves.toBe('lmk-abcdef-secret');
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it('falls back to the Slack id when no display name is known', async () => {
-    fetchMock.mockImplementation(async () => okResponse(newKeyDoc({ name: 'U9' })));
+    mockEmptyDaemon(newKeyDoc({ name: 'U9' }));
     await ensureTenantKey('U9');
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ name: 'U9', kind: 'default' });
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ name: 'U9', kind: 'default' });
   });
 
-  it('self-heals a 409 (name taken) by rotating the existing key', async () => {
+  // ===== reclaim is keyed on the immutable Slack id, not the display name =====
+
+  it('rotates an existing key named by the bare Slack id instead of creating a second one', async () => {
     fetchMock.mockImplementation(async (url: string) => {
-      if (url.endsWith('/llmux/keys/new')) {
-        return okResponse({ type: 'error', error: { message: 'name already in use' } }, 409);
+      if (url.endsWith('/llmux/keys')) {
+        return okResponse({ keys: [{ id: 'k-live', name: 'U1', key_prefix: 'lmk-live', revoked_at_ms: null }] });
       }
+      return okResponse({ ok: true, key: { id: 'k-live', key_prefix: 'lmk-new', key: 'lmk-rotated-secret' } });
+    });
+
+    // The user now HAS a display name, so keyName() would produce a different
+    // name than the stored key — creating would silently split their metering.
+    await expect(ensureTenantKey('U1', { name: 'Zhuge' })).resolves.toBe('lmk-rotated-secret');
+    expect(urlsOf()).toEqual([KEYS_URL, ROTATE_URL]);
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ id: 'k-live' });
+
+    const persisted = JSON.parse(fs.readFileSync(storePath, 'utf-8'));
+    // Name is llmux's (there is no rename); the id is preserved.
+    expect(persisted.tenants.U1).toMatchObject({ id: 'k-live', name: 'U1', secret: 'lmk-rotated-secret' });
+  });
+
+  it('rotates an existing key whose display name is stale, ignoring revoked and foreign entries', async () => {
+    fetchMock.mockImplementation(async (url: string) => {
       if (url.endsWith('/llmux/keys')) {
         return okResponse({
           keys: [
-            { id: 'k-old', name: 'Zhuge (U1)', key_prefix: 'lmk-old', revoked_at_ms: 1_700_000_000_000 },
-            { id: 'k-live', name: 'Zhuge (U1)', key_prefix: 'lmk-live', revoked_at_ms: null },
-            { id: 'k-other', name: 'Someone (U2)', key_prefix: 'lmk-x', revoked_at_ms: null },
+            { id: 'k-old', name: 'Old Name (U1)', revoked_at_ms: 1_700_000_000_000 },
+            { id: 'k-live', name: 'Old Name (U1)', key_prefix: 'lmk-live', revoked_at_ms: null },
+            { id: 'k-other', name: 'Someone (U2)', revoked_at_ms: null },
           ],
         });
       }
       return okResponse({ ok: true, key: { id: 'k-live', key_prefix: 'lmk-new', key: 'lmk-rotated-secret' } });
     });
 
-    await expect(ensureTenantKey('U1', { name: 'Zhuge' })).resolves.toBe('lmk-rotated-secret');
-    expect(fetchMock.mock.calls.map((c) => c[0])).toEqual([
-      'http://localhost:3456/llmux/keys/new',
-      'http://localhost:3456/llmux/keys',
-      'http://localhost:3456/llmux/keys/rotate',
-    ]);
-    // Rotation targets the non-revoked key with OUR exact name.
-    expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toEqual({ id: 'k-live' });
-
+    await expect(ensureTenantKey('U1', { name: 'New Name' })).resolves.toBe('lmk-rotated-secret');
+    expect(urlsOf()).toEqual([KEYS_URL, ROTATE_URL]);
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ id: 'k-live' });
     const persisted = JSON.parse(fs.readFileSync(storePath, 'utf-8'));
-    expect(persisted.tenants.U1).toMatchObject({ id: 'k-live', secret: 'lmk-rotated-secret' });
     expect(persisted.tenants.U1.rotatedAtMs).toBeGreaterThan(0);
+  });
+
+  it('self-heals a 409 raced after an empty listing', async () => {
+    let listCalls = 0;
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.endsWith('/llmux/keys')) {
+        listCalls += 1;
+        // First listing sees nothing; by the time we create, a key exists.
+        return okResponse({
+          keys: listCalls === 1 ? [] : [{ id: 'k-live', name: 'Zhuge (U1)', revoked_at_ms: null }],
+        });
+      }
+      if (url.endsWith('/llmux/keys/new')) {
+        return okResponse({ type: 'error', error: { message: 'name already in use' } }, 409);
+      }
+      return okResponse({ ok: true, key: { id: 'k-live', key_prefix: 'lmk-new', key: 'lmk-rotated-secret' } });
+    });
+
+    await expect(ensureTenantKey('U1', { name: 'Zhuge' })).resolves.toBe('lmk-rotated-secret');
+    expect(urlsOf()).toEqual([KEYS_URL, NEW_URL, KEYS_URL, ROTATE_URL]);
   });
 
   it('treats a 409 with no matching live key as a failure (shared-key fallback)', async () => {
     fetchMock.mockImplementation(async (url: string) => {
-      if (url.endsWith('/llmux/keys/new')) return okResponse({ ok: false }, 409);
-      return okResponse({ keys: [{ id: 'k-old', name: 'Zhuge (U1)', revoked_at_ms: 1_700_000_000_000 }] });
+      if (url.endsWith('/llmux/keys')) {
+        return okResponse({ keys: [{ id: 'k-old', name: 'Zhuge (U1)', revoked_at_ms: 1_700_000_000_000 }] });
+      }
+      return okResponse({ ok: false }, 409);
     });
     await expect(ensureTenantKey('U1', { name: 'Zhuge' })).resolves.toBeNull();
   });
+
+  // ===== failure handling =====
 
   it('returns null on a non-2xx and negative-caches the failure', async () => {
     fetchMock.mockImplementation(async () =>
       okResponse({ type: 'error', error: { message: 'admin credential required' } }, 403),
     );
     await expect(ensureTenantKey('U1', { name: 'Zhuge' })).resolves.toBeNull();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const callsAfterFirst = fetchMock.mock.calls.length;
     // Immediate retry must NOT hit llmux again — one broken llmux would
-    // otherwise add a failing request to every dispatch.
+    // otherwise add failing requests to every dispatch.
     await expect(ensureTenantKey('U1', { name: 'Zhuge' })).resolves.toBeNull();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(callsAfterFirst);
   });
 
   it('returns null without any llmux call in ccp mode', async () => {
@@ -149,36 +205,60 @@ describe('llmux tenant keys (per-user metering)', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('reloads persisted keys after a restart — no re-issue', async () => {
-    fetchMock.mockImplementation(async () => okResponse(newKeyDoc()));
-    await ensureTenantKey('U1', { name: 'Zhuge' });
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-
-    // Fresh module state (simulated restart) against the same store file.
-    resetLlmuxTenantKeysForTests(storePath);
-    await expect(ensureTenantKey('U1', { name: 'Zhuge' })).resolves.toBe('lmk-abcdef-secret');
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-  });
-
-  it('issues at most one key for concurrent dispatches of the same user', async () => {
-    // Hold the issuance open so the second call necessarily overlaps the first.
-    let resolveIssue!: (res: Response) => void;
-    const gate = new Promise<Response>((resolve) => {
-      resolveIssue = resolve;
-    });
-    fetchMock.mockImplementation(() => gate);
-
-    const calls = [ensureTenantKey('U1', { name: 'Zhuge' }), ensureTenantKey('U1', { name: 'Zhuge' })];
-    resolveIssue(okResponse(newKeyDoc()));
-
-    expect(await Promise.all(calls)).toEqual(['lmk-abcdef-secret', 'lmk-abcdef-secret']);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-  });
-
   it('never throws when llmux is unreachable', async () => {
     fetchMock.mockImplementation(async () => {
       throw new Error('ECONNREFUSED');
     });
     await expect(ensureTenantKey('U1', { name: 'Zhuge' })).resolves.toBeNull();
+  });
+
+  // ===== store reuse is bound to the issuing daemon =====
+
+  it('reloads persisted keys after a restart — no re-issue', async () => {
+    mockEmptyDaemon();
+    await ensureTenantKey('U1', { name: 'Zhuge' });
+    const callsAfterIssue = fetchMock.mock.calls.length;
+
+    // Fresh module state (simulated restart) against the same store file.
+    resetLlmuxTenantKeysForTests(storePath);
+    await expect(ensureTenantKey('U1', { name: 'Zhuge' })).resolves.toBe('lmk-abcdef-secret');
+    expect(fetchMock).toHaveBeenCalledTimes(callsAfterIssue);
+  });
+
+  it('re-issues when the daemon changed — a key from another llmux is not reused', async () => {
+    mockEmptyDaemon();
+    await expect(ensureTenantKey('U1', { name: 'Zhuge' })).resolves.toBe('lmk-abcdef-secret');
+    fetchMock.mockClear();
+
+    // Operator re-points soma-work at a different llmux. The stored secret is
+    // meaningless there (it would 401 without ever falling back), so a fresh
+    // key must be issued against the new daemon.
+    setLlmuxSettings({ baseUrl: 'http://10.0.0.5:3456' });
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.endsWith('/llmux/keys')) return okResponse({ keys: [] });
+      return okResponse(newKeyDoc({ id: 'k-remote', key: 'lmk-remote-secret', key_prefix: 'lmk-rem' }));
+    });
+
+    await expect(ensureTenantKey('U1', { name: 'Zhuge' })).resolves.toBe('lmk-remote-secret');
+    expect(urlsOf()).toEqual(['http://10.0.0.5:3456/llmux/keys', 'http://10.0.0.5:3456/llmux/keys/new']);
+    const persisted = JSON.parse(fs.readFileSync(storePath, 'utf-8'));
+    expect(persisted.tenants.U1).toMatchObject({ id: 'k-remote', baseUrl: 'http://10.0.0.5:3456' });
+  });
+
+  it('issues at most one key for concurrent dispatches of the same user', async () => {
+    // Hold the creation open so the second call necessarily overlaps the first.
+    let resolveIssue!: (res: Response) => void;
+    const gate = new Promise<Response>((resolve) => {
+      resolveIssue = resolve;
+    });
+    fetchMock.mockImplementation((url: string) =>
+      url.endsWith('/llmux/keys') ? Promise.resolve(okResponse({ keys: [] })) : gate,
+    );
+
+    const calls = [ensureTenantKey('U1', { name: 'Zhuge' }), ensureTenantKey('U1', { name: 'Zhuge' })];
+    resolveIssue(okResponse(newKeyDoc()));
+
+    expect(await Promise.all(calls)).toEqual(['lmk-abcdef-secret', 'lmk-abcdef-secret']);
+    expect(urlsOf().filter((url) => url === NEW_URL)).toHaveLength(1);
   });
 });
