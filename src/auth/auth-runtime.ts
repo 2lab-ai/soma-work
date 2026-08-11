@@ -221,19 +221,24 @@ function isLoopbackBaseUrl(baseUrl: string): boolean {
  *      behavior for server-local CLIs, which auto-present that key. Cached for
  *      60s.
  *
- *      ONLY when the live `baseUrl` is loopback. That file belongs to the llmux
- *      running on THIS host, and callers send whatever this function returns to
- *      whatever `baseUrl` points at — so without the gate, "placeholder apiKey +
- *      remote baseUrl" would ship the local daemon's admin secret to a foreign
- *      host. A remote llmux must be given its own key explicitly (path 1).
+ *      ONLY when the daemon this credential is about to be SENT TO is loopback.
+ *      That file belongs to the llmux running on THIS host, so without the gate
+ *      "placeholder apiKey + remote destination" would ship the local daemon's
+ *      admin secret to a foreign host. A remote llmux must be given its own key
+ *      explicitly (path 1).
  *   3. Otherwise return the placeholder unchanged (legacy behavior: harmless
  *      against single-tenant/older llmux, 403 against multi-tenant llmux —
  *      which every caller already degrades gracefully on).
+ *
+ * @param targetBaseUrl the URL this credential will actually be sent to.
+ *   Callers with a per-request baseUrl override (llmux-client's Settings-modal
+ *   candidate probe) MUST pass it — the live setting can be loopback while the
+ *   request goes off-host. Omitted → the live setting.
  */
-export function getLlmuxAdminKey(): string {
+export function getLlmuxAdminKey(targetBaseUrl?: string): string {
   const { apiKey, baseUrl } = getLlmuxSettings();
   if (apiKey.trim() !== '' && apiKey !== LLMUX_PLACEHOLDER_API_KEY) return apiKey;
-  if (!isLoopbackBaseUrl(baseUrl)) return apiKey;
+  if (!isLoopbackBaseUrl(targetBaseUrl?.trim() || baseUrl)) return apiKey;
 
   const now = Date.now();
   if (_llmuxConfigKeyCache === null || now - _llmuxConfigKeyCache.readAtMs >= LLMUX_CONFIG_KEY_TTL_MS) {

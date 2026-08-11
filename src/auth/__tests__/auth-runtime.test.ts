@@ -156,6 +156,24 @@ describe('auth-runtime (#llmux runtime switch)', () => {
       setLlmuxSettings({ baseUrl: 'not a url' });
       expect(getLlmuxAdminKey()).toBe('llmux-local');
     });
+
+    it('gates on the REQUEST destination, not the persisted setting', () => {
+      // llmux-client takes a per-request baseUrl override (the Settings modal
+      // probes a CANDIDATE url), so a loopback setting must not unlock the
+      // local secret for a request that actually leaves this host.
+      const llmuxConfig = path.join(dir, 'llmux.json');
+      fs.writeFileSync(llmuxConfig, JSON.stringify({ proxy: { api_key: 'local-admin-secret' } }));
+      process.env.LLMUX_CONFIG = llmuxConfig;
+
+      setLlmuxSettings({ baseUrl: 'http://localhost:3456' });
+      expect(getLlmuxAdminKey('http://10.0.0.5:3456')).toBe('llmux-local');
+      expect(getLlmuxAdminKey()).toBe('local-admin-secret');
+
+      // Converse: a remote live setting still allows an explicit loopback target.
+      setLlmuxSettings({ baseUrl: 'http://10.0.0.5:3456' });
+      expect(getLlmuxAdminKey('http://127.0.0.1:3456')).toBe('local-admin-secret');
+      expect(getLlmuxAdminKey()).toBe('llmux-local');
+    });
   });
 
   describe('initAuthRuntimeDefault (boot probe)', () => {

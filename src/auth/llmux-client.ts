@@ -123,7 +123,12 @@ async function request<T>(
         // returns the operator-set key when there is one and otherwise falls
         // back to the co-located llmux config's `proxy.api_key` (which llmux
         // resolves to admin) when the operator left the placeholder.
-        'x-api-key': getLlmuxAdminKey(),
+        //
+        // Resolved against `base`, NOT the live setting: `opts.baseUrl` (the
+        // Settings modal's candidate probe) can address another host while the
+        // persisted setting is still loopback, and the local llmux config's key
+        // must never leave this machine.
+        'x-api-key': getLlmuxAdminKey(base),
       },
       body: opts?.body === undefined ? undefined : JSON.stringify(opts.body),
       signal: controller.signal,
