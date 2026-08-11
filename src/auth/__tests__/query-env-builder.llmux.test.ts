@@ -32,6 +32,7 @@ function makeLease(keyId: string, accessToken: string, kind: SlotAuthLease['kind
 
 describe('buildQueryEnv — llmux mode (#llmux)', () => {
   let originalOauth: string | undefined;
+  let originalBaseUrl: string | undefined;
 
   beforeEach(() => {
     originalOauth = process.env.CLAUDE_CODE_OAUTH_TOKEN;
@@ -39,11 +40,18 @@ describe('buildQueryEnv — llmux mode (#llmux)', () => {
     // otherwise Claude Code would prefer the OAuth token over the API key and
     // silently bypass the proxy.
     process.env.CLAUDE_CODE_OAUTH_TOKEN = 'INHERITED-OAUTH-TOKEN';
+    // The "does NOT mutate process.env" case reads ANTHROPIC_BASE_URL, which a
+    // developer machine pointed at a local llmux legitimately exports. Clear it
+    // for the duration so the assertion measures buildQueryEnv, not the host.
+    originalBaseUrl = process.env.ANTHROPIC_BASE_URL;
+    delete process.env.ANTHROPIC_BASE_URL;
   });
 
   afterEach(() => {
     if (originalOauth === undefined) delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
     else process.env.CLAUDE_CODE_OAUTH_TOKEN = originalOauth;
+    if (originalBaseUrl === undefined) delete process.env.ANTHROPIC_BASE_URL;
+    else process.env.ANTHROPIC_BASE_URL = originalBaseUrl;
   });
 
   it('points the SDK at the llmux proxy with a throwaway API key', () => {
@@ -63,6 +71,17 @@ describe('buildQueryEnv — llmux mode (#llmux)', () => {
     expect(env.ANTHROPIC_API_KEY).toBe('llmux-local');
     expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
     expect(Object.values(env)).not.toContain('sk-ant-oat01-SHOULD-NOT-APPEAR');
+  });
+
+  it('uses the per-user llmux tenant key when one was issued', () => {
+    const { env } = buildQueryEnv(makeLease('llmux', 'llmux-local'), { llmuxTenantKey: 'lmk-abc' });
+    expect(env.ANTHROPIC_API_KEY).toBe('lmk-abc');
+    expect(env.ANTHROPIC_BASE_URL).toBe('http://localhost:3456');
+  });
+
+  it('falls back to the shared key (legacy tenant) when issuance produced nothing', () => {
+    expect(buildQueryEnv(makeLease('llmux', 'x'), { llmuxTenantKey: null }).env.ANTHROPIC_API_KEY).toBe('llmux-local');
+    expect(buildQueryEnv(makeLease('llmux', 'x'), {}).env.ANTHROPIC_API_KEY).toBe('llmux-local');
   });
 
   it('does NOT mutate process.env', () => {

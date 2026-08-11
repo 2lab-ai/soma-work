@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
-import { type AuthMode, config } from '../config';
+import { type AuthMode, config, LLMUX_PLACEHOLDER_API_KEY } from '../config';
 import { Logger } from '../logger';
 
 const logger = new Logger('AuthRuntime');
@@ -144,6 +145,82 @@ export function getLlmuxSettings(): { baseUrl: string; apiKey: string } {
   return { ...state().llmux };
 }
 
+/**
+ * Cached result of the llmux-config file read used by {@link getLlmuxAdminKey}.
+ * `key` is `null` when no candidate file yielded a usable `proxy.api_key`.
+ * Short TTL so an operator who starts/edits llmux does not need a restart,
+ * while a per-dispatch key lookup stays free of syscalls.
+ */
+let _llmuxConfigKeyCache: { key: string | null; readAtMs: number } | null = null;
+const LLMUX_CONFIG_KEY_TTL_MS = 60_000;
+
+/**
+ * Candidate paths of llmux's OWN config file, in llmux's resolution order
+ * (llmux `src/config/mod.rs`): `$LLMUX_CONFIG`, else
+ * `$XDG_CONFIG_HOME/llmux.json`, else `~/.config/llmux.json`.
+ *
+ * Reading these external-tool env names directly is a deliberate, documented
+ * exception to the `SOMA_`-prefixed-config rule (rules/config.md §5): they are
+ * llmux's variables, not ours — re-declaring them under a `SOMA_` name would
+ * create a second source of truth for someone else's config path.
+ */
+function llmuxConfigCandidates(): string[] {
+  const explicit = process.env.LLMUX_CONFIG?.trim();
+  const xdg = process.env.XDG_CONFIG_HOME?.trim();
+  return [
+    ...(explicit ? [explicit] : []),
+    path.join(xdg && xdg !== '' ? xdg : path.join(os.homedir(), '.config'), 'llmux.json'),
+  ];
+}
+
+/** First candidate file with a non-empty `.proxy.api_key`, else null. Never throws. */
+function readLlmuxConfigApiKey(): string | null {
+  for (const candidate of llmuxConfigCandidates()) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(candidate, 'utf-8')) as { proxy?: { api_key?: unknown } };
+      const key = parsed?.proxy?.api_key;
+      if (typeof key === 'string' && key.trim() !== '') return key.trim();
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT') {
+        logger.warn(`llmux config ${candidate} unreadable (${(err as Error).message}); no admin key from it`);
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Credential for llmux's CONTROL plane (`/llmux/*`).
+ *
+ * llmux requires an ADMIN credential on every control endpoint — including
+ * loopback callers (llmux `src/proxy/server.rs` client_auth), unlike the data
+ * plane which lets loopback through as the `local` tenant. So the placeholder
+ * data-plane key is NOT sufficient here.
+ *
+ * Resolution:
+ *   1. Operator-set `llmux.apiKey` (runtime settings / `ANTHROPIC_API_KEY`)
+ *      always wins — an explicit key is an explicit choice.
+ *   2. Otherwise (the operator left {@link LLMUX_PLACEHOLDER_API_KEY}) read the
+ *      co-located llmux daemon's own config file and use its legacy
+ *      `proxy.api_key`, which llmux resolves to admin. This mirrors llmux's own
+ *      behavior for server-local CLIs, which auto-present that key. Cached for
+ *      60s.
+ *   3. Otherwise return the placeholder unchanged (legacy behavior: harmless
+ *      against single-tenant/older llmux, 403 against multi-tenant llmux —
+ *      which every caller already degrades gracefully on).
+ */
+export function getLlmuxAdminKey(): string {
+  const { apiKey } = getLlmuxSettings();
+  if (apiKey.trim() !== '' && apiKey !== LLMUX_PLACEHOLDER_API_KEY) return apiKey;
+
+  const now = Date.now();
+  if (_llmuxConfigKeyCache === null || now - _llmuxConfigKeyCache.readAtMs >= LLMUX_CONFIG_KEY_TTL_MS) {
+    _llmuxConfigKeyCache = { key: readLlmuxConfigApiKey(), readAtMs: now };
+  }
+  return _llmuxConfigKeyCache.key ?? apiKey;
+}
+
 /** Full snapshot for card rendering (defensive copy). */
 export function getAuthRuntimeSnapshot(): AuthRuntimeState {
   const s = state();
@@ -215,4 +292,5 @@ export async function initAuthRuntimeDefault(probe: (baseUrl: string) => Promise
 export function resetAuthRuntimeForTests(overridePath?: string): void {
   _state = null;
   _storePath = overridePath ?? null;
+  _llmuxConfigKeyCache = null;
 }

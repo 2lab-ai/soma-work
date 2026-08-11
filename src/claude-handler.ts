@@ -16,6 +16,7 @@ import { type AgentRunOptions, type AgentStreamEvent, runAgentStream, runOneShot
 import { buildStreamOptions } from './agent-runtime/claude-code/build-stream-options';
 import type { SafetyClassifier } from './agent-runtime/policy/safety-classifier';
 import { buildSafetyClassifier } from './agent-runtime/policy/safety-classifier-factory';
+import { ensureTenantKey } from './auth/llmux-tenant-keys';
 import { buildQueryEnv } from './auth/query-env-builder';
 import { Logger } from './logger';
 import type { McpManager } from './mcp-manager';
@@ -76,7 +77,7 @@ import { McpConfigBuilder, type SlackContext } from './mcp-config-builder';
 import { getAvailablePersonas, PromptBuilder } from './prompt-builder';
 import { type CrashRecoveredSession, SessionExpiryCallbacks, SessionRegistry } from './session-registry';
 import { getTokenManager } from './token-manager';
-import { DEFAULT_SHOW_THINKING, type EffortLevel } from './user-settings-store';
+import { DEFAULT_SHOW_THINKING, type EffortLevel, userSettingsStore } from './user-settings-store';
 
 /** Heartbeat interval for long-running Claude CLI calls. */
 const CLAUDE_LEASE_HEARTBEAT_MS = 5 * 60 * 1000;
@@ -102,6 +103,16 @@ class UsageLimitDispatchError extends Error {
     super(`Claude usage limit hit during one-shot dispatch: ${capNotice.slice(0, 200)}`);
     this.name = 'UsageLimitDispatchError';
   }
+}
+
+/**
+ * Naming/contact hints for a user's llmux client key, so the key is legible in
+ * llmux's own admin surfaces. Both fields are optional — an unknown user still
+ * gets a key (named by Slack id alone).
+ */
+function tenantKeyProfile(userId: string): { name?: string; email?: string } {
+  const settings = userSettingsStore.getUserSettings(userId);
+  return { name: settings?.slackName, email: settings?.email };
 }
 
 // Re-export for backward compatibility
@@ -646,7 +657,9 @@ export class ClaudeHandler {
         // Build a per-call env map (containing the lease's fresh token) and
         // thread it through to `query()` via `options.env`. This never mutates
         // `process.env`, so concurrent dispatches on different slots are
-        // isolated by construction.
+        // isolated by construction. No llmux tenant key: a one-shot dispatch
+        // (classification / goal eval) carries no user identity, so these
+        // system dispatches stay on the shared key = legacy tenant.
         const { env } = buildQueryEnv(lease);
         let result: string;
         try {
@@ -926,7 +939,13 @@ export class ClaudeHandler {
       // never crosses the shared `process.env.CLAUDE_CODE_OAUTH_TOKEN`
       // variable — concurrent streams holding leases on different slots
       // therefore cannot clobber each other's auth.
-      const { env: queryEnv } = buildQueryEnv(lease);
+      //
+      // Per-user llmux tenant key (multi-tenant metering): attribute this
+      // stream's tokens to the triggering Slack user. Null (issuance
+      // unavailable / ccp mode) falls back to the shared key = legacy tenant.
+      const tenantUserId = session?.currentInitiatorId || session?.userId || slackContext?.user;
+      const llmuxTenantKey = tenantUserId ? await ensureTenantKey(tenantUserId, tenantKeyProfile(tenantUserId)) : null;
+      const { env: queryEnv } = buildQueryEnv(lease, { llmuxTenantKey });
       const { options, getStderrBuffer } = await buildStreamOptions(
         { queryEnv, session, abortController, workingDirectory, slackContext },
         {

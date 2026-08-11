@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+// Control-plane calls now authenticate with the ADMIN key (llmux requires one
+// even on loopback since it went multi-tenant), so the client reads
+// `getLlmuxAdminKey()` rather than the data-plane `apiKey`.
 vi.mock('../auth-runtime', () => ({
-  getLlmuxSettings: () => ({ baseUrl: 'http://localhost:3456', apiKey: 'proxy-key' }),
+  getLlmuxSettings: () => ({ baseUrl: 'http://localhost:3456', apiKey: 'llmux-local' }),
+  getLlmuxAdminKey: () => 'admin-key',
 }));
 
 import {
@@ -53,14 +57,14 @@ describe('llmux-client', () => {
     vi.unstubAllGlobals();
   });
 
-  it('fetchLlmuxStatus GETs /llmux/status with the x-api-key header', async () => {
+  it('fetchLlmuxStatus GETs /llmux/status with the admin x-api-key header', async () => {
     fetchMock.mockResolvedValue(okResponse(STATUS_DOC));
     const status = await fetchLlmuxStatus();
     expect(fetchMock).toHaveBeenCalledWith(
       'http://localhost:3456/llmux/status',
       expect.objectContaining({
         method: 'GET',
-        headers: expect.objectContaining({ 'x-api-key': 'proxy-key' }),
+        headers: expect.objectContaining({ 'x-api-key': 'admin-key' }),
       }),
     );
     expect(status.current).toBe('claude:me@example.com');

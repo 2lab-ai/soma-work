@@ -12,11 +12,13 @@ vi.mock('../../config', () => ({
       llmux: { baseUrl: 'http://localhost:3456', apiKey: 'llmux-local' },
     },
   },
+  LLMUX_PLACEHOLDER_API_KEY: 'llmux-local',
 }));
 
 import {
   getAuthMode,
   getAuthRuntimeSnapshot,
+  getLlmuxAdminKey,
   getLlmuxSettings,
   initAuthRuntimeDefault,
   resetAuthRuntimeForTests,
@@ -88,6 +90,50 @@ describe('auth-runtime (#llmux runtime switch)', () => {
     snap.llmux.baseUrl = 'http://mutated';
     expect(getAuthMode()).toBe('ccp');
     expect(getLlmuxSettings().baseUrl).toBe('http://localhost:3456');
+  });
+
+  describe('getLlmuxAdminKey (control-plane credential)', () => {
+    let originalLlmuxConfig: string | undefined;
+    let originalXdg: string | undefined;
+
+    beforeEach(() => {
+      originalLlmuxConfig = process.env.LLMUX_CONFIG;
+      originalXdg = process.env.XDG_CONFIG_HOME;
+      delete process.env.LLMUX_CONFIG;
+      // Point the second candidate (`$XDG_CONFIG_HOME/llmux.json`) at an empty
+      // temp dir so a real llmux install on the host cannot leak in.
+      process.env.XDG_CONFIG_HOME = dir;
+    });
+
+    afterEach(() => {
+      if (originalLlmuxConfig === undefined) delete process.env.LLMUX_CONFIG;
+      else process.env.LLMUX_CONFIG = originalLlmuxConfig;
+      if (originalXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = originalXdg;
+    });
+
+    it('returns an operator-set key as-is — no llmux config file is consulted', () => {
+      // Pointing LLMUX_CONFIG at a readable file proves it is NOT read: the
+      // operator key wins outright.
+      const llmuxConfig = path.join(dir, 'llmux.json');
+      fs.writeFileSync(llmuxConfig, JSON.stringify({ proxy: { api_key: 'from-file' } }));
+      process.env.LLMUX_CONFIG = llmuxConfig;
+      setLlmuxSettings({ apiKey: 'operator-key' });
+      expect(getLlmuxAdminKey()).toBe('operator-key');
+    });
+
+    it('falls back to the co-located llmux config key when the operator left the placeholder', () => {
+      const llmuxConfig = path.join(dir, 'llmux.json');
+      fs.writeFileSync(llmuxConfig, JSON.stringify({ proxy: { api_key: 'admin-from-llmux-config' } }));
+      process.env.LLMUX_CONFIG = llmuxConfig;
+      expect(getLlmuxSettings().apiKey).toBe('llmux-local'); // placeholder
+      expect(getLlmuxAdminKey()).toBe('admin-from-llmux-config');
+    });
+
+    it('keeps the placeholder when no llmux config file yields a key', () => {
+      process.env.LLMUX_CONFIG = path.join(dir, 'does-not-exist.json');
+      expect(getLlmuxAdminKey()).toBe('llmux-local');
+    });
   });
 
   describe('initAuthRuntimeDefault (boot probe)', () => {
