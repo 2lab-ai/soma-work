@@ -32,8 +32,17 @@ interface TenantKeyRecord {
   secret: string;
   /** Non-secret display prefix llmux returns alongside the secret. */
   keyPrefix: string;
-  /** llmux key name — `${slackName} (${userId})`, unique per user by construction. */
+  /** llmux key name as the issuing daemon holds it (see {@link isUsersKeyName}). */
   name: string;
+  /**
+   * Normalized base URL of the llmux daemon that issued this key. A key only
+   * means anything to its issuer, so a record is reused ONLY while the live
+   * `baseUrl` still matches; re-pointing soma-work at another llmux re-issues
+   * instead of presenting a secret the new daemon never saw — which would 401
+   * the dispatch WITHOUT engaging the shared-key fallback, since a stored
+   * secret makes `ensureTenantKey` return non-null.
+   */
+  baseUrl: string;
   email?: string;
   issuedAtMs: number;
   rotatedAtMs?: number;
@@ -122,21 +131,39 @@ function state(): TenantKeyStore {
 }
 
 /**
- * llmux key name for a user. MUST embed `userId` so it is unique per user by
- * construction: llmux rejects a duplicate name with 409, which is exactly the
- * signal we self-heal from (see the 409 branch below).
+ * llmux key name for a user. MUST embed `userId`: the Slack id is the only
+ * immutable part of a user's identity here, and it is what makes an existing
+ * key re-identifiable as theirs (see {@link isUsersKeyName}).
  */
 function keyName(userId: string, profile?: { name?: string }): string {
   const name = profile?.name?.trim();
   return name ? `${name} (${userId})` : userId;
 }
 
+/**
+ * Whether an llmux key name denotes `userId` — the display-name-independent
+ * counterpart of {@link keyName}.
+ *
+ * Reclaim MUST NOT depend on the display name: it is mutable (Slack profile
+ * edits) and may have been unknown at first issuance, so an exact-name match
+ * would miss the user's existing key and mint a SECOND one, splitting their
+ * billing history across two llmux tenants. Matching the immutable
+ * `…(userId)` marker (or the bare id) makes reclaim deterministic.
+ */
+function isUsersKeyName(name: string, userId: string): boolean {
+  return name === userId || name.endsWith(`(${userId})`);
+}
+
+/** Live llmux base URL, trailing slashes stripped — the form stored on records. */
+function currentBaseUrl(): string {
+  return getLlmuxSettings().baseUrl.replace(/\/+$/, '');
+}
+
 async function llmuxPost<T>(pathName: string, body: unknown): Promise<{ status: number; body: T | null }> {
-  const { baseUrl } = getLlmuxSettings();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new Error(`llmux POST ${pathName} timed out`)), REQUEST_TIMEOUT_MS);
   try {
-    const res = await fetch(`${baseUrl.replace(/\/+$/, '')}${pathName}`, {
+    const res = await fetch(`${currentBaseUrl()}${pathName}`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
@@ -159,11 +186,10 @@ async function llmuxPost<T>(pathName: string, body: unknown): Promise<{ status: 
 }
 
 async function llmuxGetKeys(): Promise<{ status: number; body: { keys?: LlmuxIssuedKey[] } | null }> {
-  const { baseUrl } = getLlmuxSettings();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new Error('llmux GET /llmux/keys timed out')), REQUEST_TIMEOUT_MS);
   try {
-    const res = await fetch(`${baseUrl.replace(/\/+$/, '')}/llmux/keys`, {
+    const res = await fetch(`${currentBaseUrl()}/llmux/keys`, {
       method: 'GET',
       headers: { 'content-type': 'application/json', 'x-api-key': getLlmuxAdminKey() },
       signal: controller.signal,
@@ -204,33 +230,50 @@ function fail(userId: string, reason: string): null {
   return null;
 }
 
-/**
- * Recover from a 409 (name already taken): our store lost a key we issued
- * earlier — safe to reclaim because the name embeds the Slack user id, so the
- * existing key IS this user's. llmux only ever shows a secret once, so the key
- * must be ROTATED to learn a usable secret again.
- */
-async function reissueExisting(userId: string, name: string, email?: string): Promise<string | null> {
+/** Outcome of looking this user up in llmux's key list. */
+type ExistingKeyLookup = { ok: true; key: { id: string; name: string } | null } | { ok: false; reason: string };
+
+/** The user's live (non-revoked) key on the current daemon, per {@link isUsersKeyName}. */
+async function findExistingKey(userId: string): Promise<ExistingKeyLookup> {
   const listed = await llmuxGetKeys();
   if (listed.status !== 200 || !Array.isArray(listed.body?.keys)) {
-    return fail(userId, `GET /llmux/keys → ${listed.status}`);
+    return { ok: false, reason: `GET /llmux/keys → ${listed.status}` };
   }
   const match = listed.body.keys.find(
-    (entry) => entry && entry.name === name && (entry.revoked_at_ms === null || entry.revoked_at_ms === undefined),
+    (entry) =>
+      entry &&
+      typeof entry.name === 'string' &&
+      isUsersKeyName(entry.name, userId) &&
+      (entry.revoked_at_ms === null || entry.revoked_at_ms === undefined),
   );
   const id = nonEmptyString(match?.id);
-  if (!id) return fail(userId, 'existing non-revoked key not found in GET /llmux/keys');
+  const name = typeof match?.name === 'string' ? match.name : '';
+  return { ok: true, key: id ? { id, name } : null };
+}
 
-  const rotated = await llmuxPost<{ key?: LlmuxIssuedKey }>('/llmux/keys/rotate', { id });
+/**
+ * Take ownership of a key llmux already holds for this user (our store lost the
+ * secret, or this soma-work never had it). llmux shows a secret exactly once, so
+ * the only way back to a usable secret is a ROTATE. The key keeps its existing
+ * name — llmux has no rename, and the name is display-only.
+ */
+async function rotateExisting(
+  userId: string,
+  key: { id: string; name: string },
+  email: string | undefined,
+  baseUrl: string,
+): Promise<string | null> {
+  const rotated = await llmuxPost<{ key?: LlmuxIssuedKey }>('/llmux/keys/rotate', { id: key.id });
   const secret = nonEmptyString(rotated.body?.key?.key);
   if (rotated.status !== 200 || !secret) {
     return fail(userId, `POST /llmux/keys/rotate → ${rotated.status}`);
   }
   return remember(userId, {
-    id,
+    id: key.id,
     secret,
     keyPrefix: nonEmptyString(rotated.body?.key?.key_prefix) ?? '',
-    name,
+    name: key.name,
+    baseUrl,
     ...(email ? { email } : {}),
     issuedAtMs: Date.now(),
     rotatedAtMs: Date.now(),
@@ -240,13 +283,28 @@ async function reissueExisting(userId: string, name: string, email?: string): Pr
 async function issue(userId: string, profile?: { name?: string; email?: string }): Promise<string | null> {
   const name = keyName(userId, profile);
   const email = profile?.email?.trim() || undefined;
+  const baseUrl = currentBaseUrl();
   try {
+    // Reclaim BEFORE creating. A user whose display name changed since their
+    // first issuance would otherwise create a second key under the new name
+    // (no 409, because the names differ) and split their billing history.
+    // Costs one GET per issuance — i.e. per user per store lifetime.
+    const existing = await findExistingKey(userId);
+    if (existing.ok && existing.key) return await rotateExisting(userId, existing.key, email, baseUrl);
+
     const created = await llmuxPost<LlmuxIssuedKey>('/llmux/keys/new', {
       name,
       ...(email ? { email } : {}),
       kind: 'default',
     });
-    if (created.status === 409) return await reissueExisting(userId, name, email);
+    if (created.status === 409) {
+      // Race fallback: someone issued this user's key between our list and our
+      // create (or the list call itself failed above). Re-list and reclaim.
+      const raced = await findExistingKey(userId);
+      if (!raced.ok) return fail(userId, raced.reason);
+      if (!raced.key) return fail(userId, 'existing non-revoked key not found in GET /llmux/keys');
+      return await rotateExisting(userId, raced.key, email, baseUrl);
+    }
 
     const secret = nonEmptyString(created.body?.key);
     const id = nonEmptyString(created.body?.id);
@@ -258,6 +316,7 @@ async function issue(userId: string, profile?: { name?: string; email?: string }
       secret,
       keyPrefix: nonEmptyString(created.body?.key_prefix) ?? '',
       name,
+      baseUrl,
       ...(email ? { email } : {}),
       issuedAtMs: Date.now(),
     });
@@ -283,8 +342,11 @@ export async function ensureTenantKey(
   if (getAuthMode() !== 'llmux') return null;
   if (!userId.trim()) return null;
 
+  // Store hit only counts for the daemon that issued it. A record written
+  // before this field existed has no `baseUrl` and is likewise a miss —
+  // issuance overwrites it.
   const existing = state().tenants[userId];
-  if (existing?.secret) return existing.secret;
+  if (existing?.secret && existing.baseUrl === currentBaseUrl()) return existing.secret;
 
   const failedAt = _negativeCache.get(userId);
   if (failedAt !== undefined && Date.now() - failedAt < NEGATIVE_CACHE_MS) return null;

@@ -191,6 +191,20 @@ function readLlmuxConfigApiKey(): string | null {
 }
 
 /**
+ * Whether `baseUrl` addresses a daemon on THIS host. Unparseable input is NOT
+ * loopback — an unrecognized URL must never unlock the local-credential path.
+ */
+function isLoopbackBaseUrl(baseUrl: string): boolean {
+  try {
+    // Node keeps IPv6 literals bracketed in `hostname` ("[::1]").
+    const host = new URL(baseUrl).hostname.replace(/^\[|\]$/g, '').toLowerCase();
+    return host === 'localhost' || host === '::1' || host === '127.0.0.1' || host.startsWith('127.');
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Credential for llmux's CONTROL plane (`/llmux/*`).
  *
  * llmux requires an ADMIN credential on every control endpoint — including
@@ -206,13 +220,20 @@ function readLlmuxConfigApiKey(): string | null {
  *      `proxy.api_key`, which llmux resolves to admin. This mirrors llmux's own
  *      behavior for server-local CLIs, which auto-present that key. Cached for
  *      60s.
+ *
+ *      ONLY when the live `baseUrl` is loopback. That file belongs to the llmux
+ *      running on THIS host, and callers send whatever this function returns to
+ *      whatever `baseUrl` points at — so without the gate, "placeholder apiKey +
+ *      remote baseUrl" would ship the local daemon's admin secret to a foreign
+ *      host. A remote llmux must be given its own key explicitly (path 1).
  *   3. Otherwise return the placeholder unchanged (legacy behavior: harmless
  *      against single-tenant/older llmux, 403 against multi-tenant llmux —
  *      which every caller already degrades gracefully on).
  */
 export function getLlmuxAdminKey(): string {
-  const { apiKey } = getLlmuxSettings();
+  const { apiKey, baseUrl } = getLlmuxSettings();
   if (apiKey.trim() !== '' && apiKey !== LLMUX_PLACEHOLDER_API_KEY) return apiKey;
+  if (!isLoopbackBaseUrl(baseUrl)) return apiKey;
 
   const now = Date.now();
   if (_llmuxConfigKeyCache === null || now - _llmuxConfigKeyCache.readAtMs >= LLMUX_CONFIG_KEY_TTL_MS) {

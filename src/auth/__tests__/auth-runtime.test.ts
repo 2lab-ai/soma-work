@@ -134,6 +134,28 @@ describe('auth-runtime (#llmux runtime switch)', () => {
       process.env.LLMUX_CONFIG = path.join(dir, 'does-not-exist.json');
       expect(getLlmuxAdminKey()).toBe('llmux-local');
     });
+
+    it('never hands the LOCAL llmux config key to a remote baseUrl', () => {
+      // The config file describes the daemon on THIS host, and callers send
+      // whatever this returns to whatever baseUrl points at — so a remote
+      // target must be configured with its own key instead.
+      const llmuxConfig = path.join(dir, 'llmux.json');
+      fs.writeFileSync(llmuxConfig, JSON.stringify({ proxy: { api_key: 'local-admin-secret' } }));
+      process.env.LLMUX_CONFIG = llmuxConfig;
+
+      setLlmuxSettings({ baseUrl: 'http://10.0.0.5:3456' });
+      expect(getLlmuxAdminKey()).toBe('llmux-local');
+
+      // Loopback aliases do unlock it.
+      for (const baseUrl of ['http://127.0.0.1:3456', 'http://127.5.5.5:3456', 'http://[::1]:3456']) {
+        setLlmuxSettings({ baseUrl });
+        expect(getLlmuxAdminKey()).toBe('local-admin-secret');
+      }
+
+      // An unparseable baseUrl is NOT loopback.
+      setLlmuxSettings({ baseUrl: 'not a url' });
+      expect(getLlmuxAdminKey()).toBe('llmux-local');
+    });
   });
 
   describe('initAuthRuntimeDefault (boot probe)', () => {
