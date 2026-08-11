@@ -17,6 +17,7 @@ import * as path from 'path';
 import { memoryRoot } from 'somalib/model-commands/hierarchical-memory-store';
 import { runOneShotText } from './agent-runtime';
 import { buildOneShotOptions } from './agent-runtime/one-shot-options';
+import { ensureTenantKey } from './auth/llmux-tenant-keys';
 import { buildQueryEnv } from './auth/query-env-builder';
 import { config } from './config';
 import { ensureActiveSlotAuth, NoHealthySlotError, type SlotAuthLease } from './credentials-manager';
@@ -25,6 +26,7 @@ import { hierarchicalMemoryStore } from './hierarchical-memory';
 import { Logger } from './logger';
 import { getTokenManager } from './token-manager';
 import * as userMemoryStore from './user-memory-store';
+import { userSettingsStore } from './user-settings-store';
 
 const logger = new Logger('MemoryAutoCapture');
 
@@ -139,11 +141,15 @@ const CONSOLIDATION_SYSTEM_PROMPT = `당신은 Slack AI assistant의 장기기�
 - 출력은 JSON만. 형식: {"memory": ["..."], "user": ["..."]}. 각 항목은 한 줄, MEMORY 250자/USER 200자 이내.
 - 새로 배울 게 없으면 기존 엔트리를 그대로 반환한다.`;
 
-async function runConsolidationQuery(prompt: string): Promise<string> {
+async function runConsolidationQuery(prompt: string, userId: string): Promise<string> {
   let lease: SlotAuthLease | null = null;
   try {
     lease = await ensureActiveSlotAuth(getTokenManager(), 'memory-dreaming');
-    const { env } = buildQueryEnv(lease);
+    // Dreaming is work done ON BEHALF OF one user, so it is metered against
+    // that user's llmux tenant (null → shared key = legacy tenant).
+    const settings = userSettingsStore.getUserSettings(userId);
+    const llmuxTenantKey = await ensureTenantKey(userId, { name: settings?.slackName, email: settings?.email });
+    const { env } = buildQueryEnv(lease, { llmuxTenantKey });
     const options = buildOneShotOptions({
       model: config.conversation.summaryModel,
       systemPrompt: CONSOLIDATION_SYSTEM_PROMPT,
@@ -210,7 +216,8 @@ export interface ConsolidationDeps {
     entries: string[],
     expectedOld?: string[],
   ) => { ok: boolean; reason?: string };
-  runQuery: (prompt: string) => Promise<string>;
+  /** `userId` is the memory's owner — it selects the llmux tenant the LLM call is billed to. */
+  runQuery: (prompt: string, userId: string) => Promise<string>;
   dataDir: string;
 }
 
@@ -267,7 +274,7 @@ export async function consolidateUserMemory(
       episodic.slice(0, 6000),
     ].join('\n');
 
-    const raw = await deps.runQuery(prompt);
+    const raw = await deps.runQuery(prompt, userId);
     const parsed = parseJsonObject(raw);
     if (parsed) {
       applyL1(deps, userId, 'memory', parsed.memory, mem.entries);

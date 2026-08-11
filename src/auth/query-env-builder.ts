@@ -14,6 +14,15 @@ export interface QueryEnvResult {
   env: Record<string, string>;
 }
 
+/** Per-call inputs that only some dispatches can supply. */
+export interface QueryEnvOptions {
+  /**
+   * Per-user llmux client key (`lmk-…`) from `ensureTenantKey`; llmux mode
+   * only. `null`/omitted → the shared key (legacy tenant).
+   */
+  llmuxTenantKey?: string | null;
+}
+
 /**
  * Reserved env keys that operators MUST NOT set via `config.json#claude.env`.
  *
@@ -107,9 +116,13 @@ export function getQueryEnvAdditional(): Record<string, string> {
  *          ALWAYS last — defense in depth even if the load-time denylist in
  *          `parseClaudeEnv` is bypassed, the lease's fresh token cannot be
  *          overridden by config.
- *        - `'llmux'`: set `ANTHROPIC_BASE_URL` + throwaway `ANTHROPIC_API_KEY`
- *          and DELETE `CLAUDE_CODE_OAUTH_TOKEN` so the local llmux proxy owns
- *          upstream auth. The lease token is unused in this mode.
+ *        - `'llmux'`: set `ANTHROPIC_BASE_URL` + `ANTHROPIC_API_KEY` and DELETE
+ *          `CLAUDE_CODE_OAUTH_TOKEN` so the local llmux proxy owns upstream
+ *          auth. The lease token is unused in this mode. The API key is
+ *          `opts.llmuxTenantKey` (the triggering user's own llmux client key,
+ *          so llmux meters them as their own tenant) when the dispatch has a
+ *          user identity; the shared key remains the fallback and is what
+ *          identity-less system dispatches use (the legacy tenant).
  *
  * Contract:
  *   - NEVER mutates `process.env`.
@@ -125,7 +138,7 @@ export function getQueryEnvAdditional(): Record<string, string> {
  *   - `api_key` lease kind + `ANTHROPIC_API_KEY` env var.
  *   - `CLAUDE_CONFIG_DIR` credential-directory isolation.
  */
-export function buildQueryEnv(lease: SlotAuthLease): QueryEnvResult {
+export function buildQueryEnv(lease: SlotAuthLease, opts?: QueryEnvOptions): QueryEnvResult {
   // Shallow-copy process.env into a plain record. process.env is a proxy
   // whose enumerable string values are what Node forwards to subprocesses,
   // so copying owned string entries is both correct and explicit.
@@ -158,15 +171,18 @@ export function buildQueryEnv(lease: SlotAuthLease): QueryEnvResult {
   // boot-time default only.
   if (getAuthMode() === 'llmux') {
     // llmux mode: the local proxy (https://github.com/2lab-ai/llmux) owns the
-    // real upstream account pool. Point the SDK at it with a throwaway API key
-    // and SUPPRESS the OAuth token — Claude Code prefers CLAUDE_CODE_OAUTH_TOKEN
-    // over ANTHROPIC_API_KEY when both are present, so an inherited token from
-    // process.env (or a future code path) would otherwise silently bypass the
-    // proxy. `lease.accessToken` is intentionally unused here; the synthetic
-    // llmux lease carries the placeholder key for symmetry only.
+    // real upstream account pool. Point the SDK at it with the caller's llmux
+    // key and SUPPRESS the OAuth token — Claude Code prefers
+    // CLAUDE_CODE_OAUTH_TOKEN over ANTHROPIC_API_KEY when both are present, so
+    // an inherited token from process.env (or a future code path) would
+    // otherwise silently bypass the proxy. `lease.accessToken` is intentionally
+    // unused here; the synthetic llmux lease carries the placeholder key for
+    // symmetry only.
     const llmux = getLlmuxSettings();
     env.ANTHROPIC_BASE_URL = llmux.baseUrl;
-    env.ANTHROPIC_API_KEY = llmux.apiKey;
+    // Per-user tenant key when the dispatch knows who triggered it, so llmux
+    // meters that user separately; shared key otherwise (legacy tenant).
+    env.ANTHROPIC_API_KEY = opts?.llmuxTenantKey || llmux.apiKey;
     delete env.CLAUDE_CODE_OAUTH_TOKEN;
     return { env };
   }
