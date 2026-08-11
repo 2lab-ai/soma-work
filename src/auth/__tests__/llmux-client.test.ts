@@ -2,10 +2,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Control-plane calls now authenticate with the ADMIN key (llmux requires one
 // even on loopback since it went multi-tenant), so the client reads
-// `getLlmuxAdminKey()` rather than the data-plane `apiKey`.
+// `getLlmuxAdminKey()` rather than the data-plane `apiKey`. The real resolver
+// is destination-aware; this double stands in for "loopback target → local
+// admin key, off-host target → placeholder only".
+const { adminKeyMock } = vi.hoisted(() => ({
+  adminKeyMock: vi.fn((target?: string) => {
+    const loopback = target === undefined || target.includes('localhost') || target.includes('127.0.0.1');
+    return loopback ? 'admin-key' : 'llmux-local';
+  }),
+}));
+
 vi.mock('../auth-runtime', () => ({
   getLlmuxSettings: () => ({ baseUrl: 'http://localhost:3456', apiKey: 'llmux-local' }),
-  getLlmuxAdminKey: () => 'admin-key',
+  getLlmuxAdminKey: adminKeyMock,
 }));
 
 import {
@@ -76,6 +85,21 @@ describe('llmux-client', () => {
     fetchMock.mockResolvedValue(okResponse(STATUS_DOC));
     await fetchLlmuxStatus({ baseUrl: 'http://10.1.1.1:9999/' });
     expect(fetchMock.mock.calls[0][0]).toBe('http://10.1.1.1:9999/llmux/status');
+  });
+
+  it('resolves the admin credential against the OVERRIDE target, not the live setting', async () => {
+    // Live setting is loopback here; probing a candidate on another host must
+    // not carry this machine's llmux admin key off-box.
+    adminKeyMock.mockClear();
+    // Fresh Response per call — a Response body is single-read.
+    fetchMock.mockImplementation(async () => okResponse(STATUS_DOC));
+    await fetchLlmuxStatus({ baseUrl: 'http://10.1.1.1:9999/' });
+    expect(adminKeyMock).toHaveBeenCalledWith('http://10.1.1.1:9999');
+    expect(fetchMock.mock.calls[0][1].headers['x-api-key']).toBe('llmux-local');
+
+    await fetchLlmuxStatus();
+    expect(adminKeyMock).toHaveBeenLastCalledWith('http://localhost:3456');
+    expect(fetchMock.mock.calls[1][1].headers['x-api-key']).toBe('admin-key');
   });
 
   it('switchLlmuxAccount POSTs the account body and surfaces 409 refusals', async () => {

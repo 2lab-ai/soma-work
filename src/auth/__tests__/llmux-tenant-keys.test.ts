@@ -197,6 +197,38 @@ describe('llmux tenant keys (per-user metering)', () => {
     // otherwise add failing requests to every dispatch.
     await expect(ensureTenantKey('U1', { name: 'Zhuge' })).resolves.toBeNull();
     expect(fetchMock).toHaveBeenCalledTimes(callsAfterFirst);
+    // Fails closed: a failed listing must never lead to a create.
+    expect(urlsOf()).not.toContain(NEW_URL);
+  });
+
+  it('fails CLOSED when the preflight listing errors — no key is created', async () => {
+    // "We could not look" is indistinguishable from "this user has no key", and
+    // creating on that ignorance mints a duplicate tenant whenever the display
+    // name changed since the first issuance. Degrade to the shared key instead.
+    fetchMock.mockImplementation(async (url: string) =>
+      url.endsWith('/llmux/keys') ? okResponse({ error: 'boom' }, 500) : okResponse(newKeyDoc()),
+    );
+
+    await expect(ensureTenantKey('U1', { name: 'Zhuge' })).resolves.toBeNull();
+    expect(urlsOf()).toEqual([KEYS_URL]);
+
+    // …and the failure is negative-cached like any other.
+    await expect(ensureTenantKey('U1', { name: 'Zhuge' })).resolves.toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails CLOSED when the preflight listing is unparseable', async () => {
+    fetchMock.mockImplementation(async (url: string) =>
+      url.endsWith('/llmux/keys') ? okResponse({ notKeys: true }) : okResponse(newKeyDoc()),
+    );
+    await expect(ensureTenantKey('U1', { name: 'Zhuge' })).resolves.toBeNull();
+    expect(urlsOf()).toEqual([KEYS_URL]);
+  });
+
+  it('creates only after a SUCCESSFUL empty listing', async () => {
+    mockEmptyDaemon();
+    await expect(ensureTenantKey('U1', { name: 'Zhuge' })).resolves.toBe('lmk-abcdef-secret');
+    expect(urlsOf()).toEqual([KEYS_URL, NEW_URL]);
   });
 
   it('returns null without any llmux call in ccp mode', async () => {
@@ -243,6 +275,45 @@ describe('llmux tenant keys (per-user metering)', () => {
     expect(urlsOf()).toEqual(['http://10.0.0.5:3456/llmux/keys', 'http://10.0.0.5:3456/llmux/keys/new']);
     const persisted = JSON.parse(fs.readFileSync(storePath, 'utf-8'));
     expect(persisted.tenants.U1).toMatchObject({ id: 'k-remote', baseUrl: 'http://10.0.0.5:3456' });
+  });
+
+  it('a failure against one daemon does not suppress issuance against another', async () => {
+    fetchMock.mockImplementation(async () => okResponse({ error: 'boom' }, 500));
+    await expect(ensureTenantKey('U1', { name: 'Zhuge' })).resolves.toBeNull();
+
+    // The negative cache is scoped to the daemon that failed, so re-pointing at
+    // a healthy llmux issues immediately instead of degrading for 10 minutes.
+    setLlmuxSettings({ baseUrl: 'http://10.0.0.5:3456' });
+    fetchMock.mockImplementation(async (url: string) =>
+      url.endsWith('/llmux/keys')
+        ? okResponse({ keys: [] })
+        : okResponse(newKeyDoc({ id: 'k-remote', key: 'lmk-remote-secret' })),
+    );
+    await expect(ensureTenantKey('U1', { name: 'Zhuge' })).resolves.toBe('lmk-remote-secret');
+  });
+
+  it('does not hand an in-flight issuance for one daemon to a dispatch targeting another', async () => {
+    let resolveLocal!: (res: Response) => void;
+    const localCreate = new Promise<Response>((resolve) => {
+      resolveLocal = resolve;
+    });
+    fetchMock.mockImplementation((url: string) => {
+      if (url.endsWith('/llmux/keys')) return Promise.resolve(okResponse({ keys: [] }));
+      if (url.startsWith('http://localhost:3456')) return localCreate;
+      return Promise.resolve(okResponse(newKeyDoc({ id: 'k-remote', key: 'lmk-remote-secret' })));
+    });
+
+    const localCall = ensureTenantKey('U1', { name: 'Zhuge' });
+    // Let the preflight settle so the create against localhost is in flight.
+    await new Promise((resolve) => setImmediate(resolve));
+
+    setLlmuxSettings({ baseUrl: 'http://10.0.0.5:3456' });
+    // Must NOT be served the pending localhost issuance — that key is worthless
+    // at the new daemon.
+    await expect(ensureTenantKey('U1', { name: 'Zhuge' })).resolves.toBe('lmk-remote-secret');
+
+    resolveLocal(okResponse(newKeyDoc()));
+    await expect(localCall).resolves.toBe('lmk-abcdef-secret');
   });
 
   it('issues at most one key for concurrent dispatches of the same user', async () => {
