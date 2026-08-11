@@ -940,12 +940,14 @@ export class ClaudeHandler {
       // variable — concurrent streams holding leases on different slots
       // therefore cannot clobber each other's auth.
       //
-      // Per-user llmux tenant key (multi-tenant metering): attribute this
-      // stream's tokens to the triggering Slack user. Null (issuance
+      // Per-user llmux tenant credential (multi-tenant metering): attribute
+      // this stream's tokens to the triggering Slack user. Null (issuance
       // unavailable / ccp mode) falls back to the shared key = legacy tenant.
+      // The lease carries the daemon it belongs to, so an llmux switch during
+      // issuance cannot pair this key with a different daemon's URL.
       const tenantUserId = session?.currentInitiatorId || session?.userId || slackContext?.user;
-      const llmuxTenantKey = tenantUserId ? await ensureTenantKey(tenantUserId, tenantKeyProfile(tenantUserId)) : null;
-      const { env: queryEnv } = buildQueryEnv(lease, { llmuxTenantKey });
+      const llmuxTenant = tenantUserId ? await ensureTenantKey(tenantUserId, tenantKeyProfile(tenantUserId)) : null;
+      const { env: queryEnv } = buildQueryEnv(lease, { llmuxTenant });
       const { options, getStderrBuffer } = await buildStreamOptions(
         { queryEnv, session, abortController, workingDirectory, slackContext },
         {

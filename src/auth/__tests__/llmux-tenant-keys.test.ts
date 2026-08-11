@@ -39,9 +39,12 @@ function newKeyDoc(overrides?: Record<string, unknown>) {
   };
 }
 
-const KEYS_URL = 'http://localhost:3456/llmux/keys';
-const NEW_URL = 'http://localhost:3456/llmux/keys/new';
-const ROTATE_URL = 'http://localhost:3456/llmux/keys/rotate';
+/** The daemon the suite runs against by default, and the one it switches to. */
+const LOCAL = 'http://localhost:3456';
+const REMOTE = 'http://10.0.0.5:3456';
+const KEYS_URL = `${LOCAL}/llmux/keys`;
+const NEW_URL = `${LOCAL}/llmux/keys/new`;
+const ROTATE_URL = `${LOCAL}/llmux/keys/rotate`;
 
 describe('llmux tenant keys (per-user metering)', () => {
   let dir: string;
@@ -54,7 +57,7 @@ describe('llmux tenant keys (per-user metering)', () => {
     resetAuthRuntimeForTests(path.join(dir, 'auth-runtime.json'));
     resetLlmuxTenantKeysForTests(storePath);
     delete process.env.AUTH_MODE;
-    setLlmuxSettings({ baseUrl: 'http://localhost:3456', apiKey: 'admin-key' });
+    setLlmuxSettings({ baseUrl: LOCAL, apiKey: 'admin-key' });
     setAuthMode('llmux');
     fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
@@ -80,8 +83,9 @@ describe('llmux tenant keys (per-user metering)', () => {
   it('issues a key on first use, persists it, and serves later calls from the store', async () => {
     mockEmptyDaemon();
 
-    const secret = await ensureTenantKey('U1', { name: 'Zhuge', email: 'z@example.com' });
-    expect(secret).toBe('lmk-abcdef-secret');
+    // The lease pairs the secret with the daemon it is valid at.
+    const leased = await ensureTenantKey('U1', { name: 'Zhuge', email: 'z@example.com' });
+    expect(leased).toEqual({ secret: 'lmk-abcdef-secret', baseUrl: LOCAL });
 
     // Reclaim lookup precedes creation (see the display-name cases below).
     expect(urlsOf()).toEqual([KEYS_URL, NEW_URL]);
@@ -97,13 +101,16 @@ describe('llmux tenant keys (per-user metering)', () => {
       id: 'k-1',
       secret: 'lmk-abcdef-secret',
       keyPrefix: 'lmk-abc',
-      baseUrl: 'http://localhost:3456',
+      baseUrl: LOCAL,
     });
     // The file holds plaintext secrets — owner-only.
     expect(fs.statSync(storePath).mode & 0o777).toBe(0o600);
 
     // Second call is a pure store hit — no further llmux traffic.
-    await expect(ensureTenantKey('U1', { name: 'Zhuge' })).resolves.toBe('lmk-abcdef-secret');
+    await expect(ensureTenantKey('U1', { name: 'Zhuge' })).resolves.toEqual({
+      secret: 'lmk-abcdef-secret',
+      baseUrl: LOCAL,
+    });
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
@@ -125,7 +132,10 @@ describe('llmux tenant keys (per-user metering)', () => {
 
     // The user now HAS a display name, so keyName() would produce a different
     // name than the stored key — creating would silently split their metering.
-    await expect(ensureTenantKey('U1', { name: 'Zhuge' })).resolves.toBe('lmk-rotated-secret');
+    await expect(ensureTenantKey('U1', { name: 'Zhuge' })).resolves.toEqual({
+      secret: 'lmk-rotated-secret',
+      baseUrl: LOCAL,
+    });
     expect(urlsOf()).toEqual([KEYS_URL, ROTATE_URL]);
     expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ id: 'k-live' });
 
@@ -148,7 +158,10 @@ describe('llmux tenant keys (per-user metering)', () => {
       return okResponse({ ok: true, key: { id: 'k-live', key_prefix: 'lmk-new', key: 'lmk-rotated-secret' } });
     });
 
-    await expect(ensureTenantKey('U1', { name: 'New Name' })).resolves.toBe('lmk-rotated-secret');
+    await expect(ensureTenantKey('U1', { name: 'New Name' })).resolves.toEqual({
+      secret: 'lmk-rotated-secret',
+      baseUrl: LOCAL,
+    });
     expect(urlsOf()).toEqual([KEYS_URL, ROTATE_URL]);
     expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ id: 'k-live' });
     const persisted = JSON.parse(fs.readFileSync(storePath, 'utf-8'));
@@ -171,7 +184,10 @@ describe('llmux tenant keys (per-user metering)', () => {
       return okResponse({ ok: true, key: { id: 'k-live', key_prefix: 'lmk-new', key: 'lmk-rotated-secret' } });
     });
 
-    await expect(ensureTenantKey('U1', { name: 'Zhuge' })).resolves.toBe('lmk-rotated-secret');
+    await expect(ensureTenantKey('U1', { name: 'Zhuge' })).resolves.toEqual({
+      secret: 'lmk-rotated-secret',
+      baseUrl: LOCAL,
+    });
     expect(urlsOf()).toEqual([KEYS_URL, NEW_URL, KEYS_URL, ROTATE_URL]);
   });
 
@@ -227,7 +243,10 @@ describe('llmux tenant keys (per-user metering)', () => {
 
   it('creates only after a SUCCESSFUL empty listing', async () => {
     mockEmptyDaemon();
-    await expect(ensureTenantKey('U1', { name: 'Zhuge' })).resolves.toBe('lmk-abcdef-secret');
+    await expect(ensureTenantKey('U1', { name: 'Zhuge' })).resolves.toEqual({
+      secret: 'lmk-abcdef-secret',
+      baseUrl: LOCAL,
+    });
     expect(urlsOf()).toEqual([KEYS_URL, NEW_URL]);
   });
 
@@ -253,28 +272,37 @@ describe('llmux tenant keys (per-user metering)', () => {
 
     // Fresh module state (simulated restart) against the same store file.
     resetLlmuxTenantKeysForTests(storePath);
-    await expect(ensureTenantKey('U1', { name: 'Zhuge' })).resolves.toBe('lmk-abcdef-secret');
+    await expect(ensureTenantKey('U1', { name: 'Zhuge' })).resolves.toEqual({
+      secret: 'lmk-abcdef-secret',
+      baseUrl: LOCAL,
+    });
     expect(fetchMock).toHaveBeenCalledTimes(callsAfterIssue);
   });
 
   it('re-issues when the daemon changed — a key from another llmux is not reused', async () => {
     mockEmptyDaemon();
-    await expect(ensureTenantKey('U1', { name: 'Zhuge' })).resolves.toBe('lmk-abcdef-secret');
+    await expect(ensureTenantKey('U1', { name: 'Zhuge' })).resolves.toEqual({
+      secret: 'lmk-abcdef-secret',
+      baseUrl: LOCAL,
+    });
     fetchMock.mockClear();
 
     // Operator re-points soma-work at a different llmux. The stored secret is
     // meaningless there (it would 401 without ever falling back), so a fresh
     // key must be issued against the new daemon.
-    setLlmuxSettings({ baseUrl: 'http://10.0.0.5:3456' });
+    setLlmuxSettings({ baseUrl: REMOTE });
     fetchMock.mockImplementation(async (url: string) => {
       if (url.endsWith('/llmux/keys')) return okResponse({ keys: [] });
       return okResponse(newKeyDoc({ id: 'k-remote', key: 'lmk-remote-secret', key_prefix: 'lmk-rem' }));
     });
 
-    await expect(ensureTenantKey('U1', { name: 'Zhuge' })).resolves.toBe('lmk-remote-secret');
-    expect(urlsOf()).toEqual(['http://10.0.0.5:3456/llmux/keys', 'http://10.0.0.5:3456/llmux/keys/new']);
+    await expect(ensureTenantKey('U1', { name: 'Zhuge' })).resolves.toEqual({
+      secret: 'lmk-remote-secret',
+      baseUrl: REMOTE,
+    });
+    expect(urlsOf()).toEqual([`${REMOTE}/llmux/keys`, `${REMOTE}/llmux/keys/new`]);
     const persisted = JSON.parse(fs.readFileSync(storePath, 'utf-8'));
-    expect(persisted.tenants.U1).toMatchObject({ id: 'k-remote', baseUrl: 'http://10.0.0.5:3456' });
+    expect(persisted.tenants.U1).toMatchObject({ id: 'k-remote', baseUrl: REMOTE });
   });
 
   it('a failure against one daemon does not suppress issuance against another', async () => {
@@ -283,13 +311,16 @@ describe('llmux tenant keys (per-user metering)', () => {
 
     // The negative cache is scoped to the daemon that failed, so re-pointing at
     // a healthy llmux issues immediately instead of degrading for 10 minutes.
-    setLlmuxSettings({ baseUrl: 'http://10.0.0.5:3456' });
+    setLlmuxSettings({ baseUrl: REMOTE });
     fetchMock.mockImplementation(async (url: string) =>
       url.endsWith('/llmux/keys')
         ? okResponse({ keys: [] })
         : okResponse(newKeyDoc({ id: 'k-remote', key: 'lmk-remote-secret' })),
     );
-    await expect(ensureTenantKey('U1', { name: 'Zhuge' })).resolves.toBe('lmk-remote-secret');
+    await expect(ensureTenantKey('U1', { name: 'Zhuge' })).resolves.toEqual({
+      secret: 'lmk-remote-secret',
+      baseUrl: REMOTE,
+    });
   });
 
   it('does not hand an in-flight issuance for one daemon to a dispatch targeting another', async () => {
@@ -299,7 +330,7 @@ describe('llmux tenant keys (per-user metering)', () => {
     });
     fetchMock.mockImplementation((url: string) => {
       if (url.endsWith('/llmux/keys')) return Promise.resolve(okResponse({ keys: [] }));
-      if (url.startsWith('http://localhost:3456')) return localCreate;
+      if (url.startsWith(LOCAL)) return localCreate;
       return Promise.resolve(okResponse(newKeyDoc({ id: 'k-remote', key: 'lmk-remote-secret' })));
     });
 
@@ -307,13 +338,16 @@ describe('llmux tenant keys (per-user metering)', () => {
     // Let the preflight settle so the create against localhost is in flight.
     await new Promise((resolve) => setImmediate(resolve));
 
-    setLlmuxSettings({ baseUrl: 'http://10.0.0.5:3456' });
+    setLlmuxSettings({ baseUrl: REMOTE });
     // Must NOT be served the pending localhost issuance — that key is worthless
     // at the new daemon.
-    await expect(ensureTenantKey('U1', { name: 'Zhuge' })).resolves.toBe('lmk-remote-secret');
+    await expect(ensureTenantKey('U1', { name: 'Zhuge' })).resolves.toEqual({
+      secret: 'lmk-remote-secret',
+      baseUrl: REMOTE,
+    });
 
     resolveLocal(okResponse(newKeyDoc()));
-    await expect(localCall).resolves.toBe('lmk-abcdef-secret');
+    await expect(localCall).resolves.toEqual({ secret: 'lmk-abcdef-secret', baseUrl: LOCAL });
   });
 
   it('issues at most one key for concurrent dispatches of the same user', async () => {
@@ -329,7 +363,8 @@ describe('llmux tenant keys (per-user metering)', () => {
     const calls = [ensureTenantKey('U1', { name: 'Zhuge' }), ensureTenantKey('U1', { name: 'Zhuge' })];
     resolveIssue(okResponse(newKeyDoc()));
 
-    expect(await Promise.all(calls)).toEqual(['lmk-abcdef-secret', 'lmk-abcdef-secret']);
+    const lease = { secret: 'lmk-abcdef-secret', baseUrl: LOCAL };
+    expect(await Promise.all(calls)).toEqual([lease, lease]);
     expect(urlsOf().filter((url) => url === NEW_URL)).toHaveLength(1);
   });
 });

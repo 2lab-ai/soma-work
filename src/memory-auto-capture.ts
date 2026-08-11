@@ -148,8 +148,8 @@ async function runConsolidationQuery(prompt: string, userId: string): Promise<st
     // Dreaming is work done ON BEHALF OF one user, so it is metered against
     // that user's llmux tenant (null → shared key = legacy tenant).
     const settings = userSettingsStore.getUserSettings(userId);
-    const llmuxTenantKey = await ensureTenantKey(userId, { name: settings?.slackName, email: settings?.email });
-    const { env } = buildQueryEnv(lease, { llmuxTenantKey });
+    const llmuxTenant = await ensureTenantKey(userId, { name: settings?.slackName, email: settings?.email });
+    const { env } = buildQueryEnv(lease, { llmuxTenant });
     const options = buildOneShotOptions({
       model: config.conversation.summaryModel,
       systemPrompt: CONSOLIDATION_SYSTEM_PROMPT,
