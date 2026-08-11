@@ -96,8 +96,9 @@ describe('llmux tenant keys (per-user metering)', () => {
     expect(JSON.parse(init.body)).toEqual({ name: 'Zhuge (U1)', email: 'z@example.com', kind: 'default' });
 
     const persisted = JSON.parse(fs.readFileSync(storePath, 'utf-8'));
-    expect(persisted.version).toBe(1);
-    expect(persisted.tenants.U1).toMatchObject({
+    expect(persisted.version).toBe(2);
+    // Slot is (user, daemon).
+    expect(persisted.tenants.U1[LOCAL]).toMatchObject({
       id: 'k-1',
       secret: 'lmk-abcdef-secret',
       keyPrefix: 'lmk-abc',
@@ -141,7 +142,7 @@ describe('llmux tenant keys (per-user metering)', () => {
 
     const persisted = JSON.parse(fs.readFileSync(storePath, 'utf-8'));
     // Name is llmux's (there is no rename); the id is preserved.
-    expect(persisted.tenants.U1).toMatchObject({ id: 'k-live', name: 'U1', secret: 'lmk-rotated-secret' });
+    expect(persisted.tenants.U1[LOCAL]).toMatchObject({ id: 'k-live', name: 'U1', secret: 'lmk-rotated-secret' });
   });
 
   it('rotates an existing key whose display name is stale, ignoring revoked and foreign entries', async () => {
@@ -165,7 +166,7 @@ describe('llmux tenant keys (per-user metering)', () => {
     expect(urlsOf()).toEqual([KEYS_URL, ROTATE_URL]);
     expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ id: 'k-live' });
     const persisted = JSON.parse(fs.readFileSync(storePath, 'utf-8'));
-    expect(persisted.tenants.U1.rotatedAtMs).toBeGreaterThan(0);
+    expect(persisted.tenants.U1[LOCAL].rotatedAtMs).toBeGreaterThan(0);
   });
 
   it('self-heals a 409 raced after an empty listing', async () => {
@@ -302,7 +303,28 @@ describe('llmux tenant keys (per-user metering)', () => {
     });
     expect(urlsOf()).toEqual([`${REMOTE}/llmux/keys`, `${REMOTE}/llmux/keys/new`]);
     const persisted = JSON.parse(fs.readFileSync(storePath, 'utf-8'));
-    expect(persisted.tenants.U1).toMatchObject({ id: 'k-remote', baseUrl: REMOTE });
+    expect(persisted.tenants.U1[REMOTE]).toMatchObject({ id: 'k-remote', baseUrl: REMOTE });
+  });
+
+  it('carries ONE daemon’s admin credential for the whole issuance, even if settings flip mid-flight', async () => {
+    // The URL is already snapshotted; the admin key must be too. Otherwise the
+    // create leg would present daemon B's secret to daemon A's URL.
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.endsWith('/llmux/keys')) {
+        setLlmuxSettings({ baseUrl: REMOTE, apiKey: 'admin-key-B' });
+        return okResponse({ keys: [] });
+      }
+      return okResponse(newKeyDoc());
+    });
+
+    await expect(ensureTenantKey('U1', { name: 'Zhuge' })).resolves.toEqual({
+      secret: 'lmk-abcdef-secret',
+      baseUrl: LOCAL,
+    });
+    expect(urlsOf()).toEqual([KEYS_URL, NEW_URL]);
+    const headers = fetchMock.mock.calls.map((c) => c[1].headers['x-api-key']);
+    expect(headers).toEqual(['admin-key', 'admin-key']);
+    expect(headers).not.toContain('admin-key-B');
   });
 
   it('a failure against one daemon does not suppress issuance against another', async () => {
@@ -348,6 +370,71 @@ describe('llmux tenant keys (per-user metering)', () => {
 
     resolveLocal(okResponse(newKeyDoc()));
     await expect(localCall).resolves.toEqual({ secret: 'lmk-abcdef-secret', baseUrl: LOCAL });
+  });
+
+  it('keeps BOTH daemons’ keys when concurrent issuances land out of order', async () => {
+    // The slow daemon-A issuance completes AFTER daemon B's. With a flat
+    // per-user slot A would clobber B, and the next B lookup — a miss — would
+    // force-rotate B's key out from under live dispatches still using it.
+    let resolveLocal!: (res: Response) => void;
+    const localCreate = new Promise<Response>((resolve) => {
+      resolveLocal = resolve;
+    });
+    fetchMock.mockImplementation((url: string) => {
+      if (url.endsWith('/llmux/keys')) return Promise.resolve(okResponse({ keys: [] }));
+      if (url.startsWith(LOCAL)) return localCreate;
+      return Promise.resolve(okResponse(newKeyDoc({ id: 'k-remote', key: 'lmk-remote-secret' })));
+    });
+
+    const localCall = ensureTenantKey('U1', { name: 'Zhuge' });
+    await new Promise((resolve) => setImmediate(resolve));
+    setLlmuxSettings({ baseUrl: REMOTE });
+    await ensureTenantKey('U1', { name: 'Zhuge' }); // daemon B finishes first
+    resolveLocal(okResponse(newKeyDoc())); // …daemon A finishes last
+    await localCall;
+
+    const persisted = JSON.parse(fs.readFileSync(storePath, 'utf-8'));
+    expect(persisted.tenants.U1[LOCAL]).toMatchObject({ id: 'k-1', secret: 'lmk-abcdef-secret' });
+    expect(persisted.tenants.U1[REMOTE]).toMatchObject({ id: 'k-remote', secret: 'lmk-remote-secret' });
+
+    // After a restart each daemon still serves its OWN key — no re-issue.
+    resetLlmuxTenantKeysForTests(storePath);
+    fetchMock.mockClear();
+    await expect(ensureTenantKey('U1', { name: 'Zhuge' })).resolves.toEqual({
+      secret: 'lmk-remote-secret',
+      baseUrl: REMOTE,
+    });
+    setLlmuxSettings({ baseUrl: LOCAL });
+    await expect(ensureTenantKey('U1', { name: 'Zhuge' })).resolves.toEqual({
+      secret: 'lmk-abcdef-secret',
+      baseUrl: LOCAL,
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('migrates a v1 flat store, dropping records with no daemon attribution', async () => {
+    fs.writeFileSync(
+      storePath,
+      JSON.stringify({
+        version: 1,
+        tenants: {
+          U1: { id: 'k-1', secret: 'lmk-v1-secret', keyPrefix: 'lmk-abc', name: 'Zhuge (U1)', baseUrl: LOCAL },
+          // Pre-daemon-tracking record: presenting it to the wrong llmux 401s,
+          // so it is dropped and re-issued instead.
+          U2: { id: 'k-2', secret: 'lmk-orphan', keyPrefix: 'lmk-orp', name: 'U2' },
+        },
+      }),
+    );
+    resetLlmuxTenantKeysForTests(storePath);
+
+    await expect(ensureTenantKey('U1', { name: 'Zhuge' })).resolves.toEqual({
+      secret: 'lmk-v1-secret',
+      baseUrl: LOCAL,
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    mockEmptyDaemon(newKeyDoc({ id: 'k-2b', name: 'U2', key: 'lmk-reissued' }));
+    await expect(ensureTenantKey('U2')).resolves.toEqual({ secret: 'lmk-reissued', baseUrl: LOCAL });
   });
 
   it('issues at most one key for concurrent dispatches of the same user', async () => {

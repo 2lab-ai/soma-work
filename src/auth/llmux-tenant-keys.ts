@@ -48,9 +48,34 @@ interface TenantKeyRecord {
   rotatedAtMs?: number;
 }
 
+/**
+ * On-disk shape. Keyed `[slackUserId][normalizedBaseUrl]` — a user legitimately
+ * holds one key PER daemon (an operator can flip back and forth, and two
+ * issuances for the same user can even be in flight against different daemons
+ * at once). A flat per-user slot would let the slower issuance overwrite the
+ * other daemon's record, turning the next lookup there into a miss that
+ * force-rotates — and rotation invalidates a key that live dispatches may still
+ * be using.
+ *
+ * v1 was the flat `[slackUserId] → record` shape; {@link load} migrates it.
+ */
 interface TenantKeyStore {
-  version: 1;
-  tenants: Record<string, TenantKeyRecord>;
+  version: 2;
+  tenants: Record<string, Record<string, TenantKeyRecord>>;
+}
+
+/**
+ * The control-plane endpoint an issuance talks to: URL **and** the admin
+ * credential for exactly that URL, captured together.
+ *
+ * Both halves are snapshotted once per {@link ensureTenantKey} call and threaded
+ * through every request. Re-reading either mid-issuance is a bug: an operator
+ * flip to another daemon (with its own explicit key) would otherwise send the
+ * NEW daemon's admin secret to the OLD daemon's URL.
+ */
+interface ControlPlaneTarget {
+  baseUrl: string;
+  adminKey: string;
 }
 
 /** Response of `POST /llmux/keys/new` and `POST /llmux/keys/rotate` (`.key`). */
@@ -90,22 +115,55 @@ function storePath(): string {
 }
 
 function emptyStore(): TenantKeyStore {
-  return { version: 1, tenants: {} };
+  return { version: 2, tenants: {} };
 }
 
-/** Load persisted keys. Never throws — a corrupt file WARNs and starts empty. */
+/** A usable persisted record — anything without an id + non-empty secret is noise. */
+function isTenantKeyRecord(value: unknown): value is TenantKeyRecord {
+  const record = value as TenantKeyRecord | null;
+  return !!record && typeof record.id === 'string' && typeof record.secret === 'string' && record.secret !== '';
+}
+
+function remembered(store: TenantKeyStore, userId: string, baseUrl: string, record: TenantKeyRecord): void {
+  const byDaemon = store.tenants[userId] ?? {};
+  byDaemon[baseUrl] = { ...record, baseUrl };
+  store.tenants[userId] = byDaemon;
+}
+
+/** Load persisted keys, migrating v1. Never throws — a corrupt file WARNs and starts empty. */
 function load(): TenantKeyStore {
   const store = emptyStore();
   try {
-    const parsed = JSON.parse(fs.readFileSync(storePath(), 'utf-8')) as Partial<TenantKeyStore>;
-    if (parsed?.tenants && typeof parsed.tenants === 'object') {
-      for (const [userId, record] of Object.entries(parsed.tenants)) {
-        if (record && typeof record.id === 'string' && typeof record.secret === 'string' && record.secret !== '') {
-          store.tenants[userId] = record;
+    const parsed = JSON.parse(fs.readFileSync(storePath(), 'utf-8')) as {
+      tenants?: Record<string, unknown>;
+    };
+    let migrated = 0;
+    let dropped = 0;
+    for (const [userId, entry] of Object.entries(parsed?.tenants ?? {})) {
+      if (!entry || typeof entry !== 'object') continue;
+      if (isTenantKeyRecord(entry)) {
+        // v1: one flat record per user. Re-nest it under the daemon it names;
+        // a record predating that field cannot be attributed to any daemon, and
+        // presenting it to the wrong one 401s — so it is dropped and re-issued.
+        const baseUrl = typeof entry.baseUrl === 'string' ? entry.baseUrl.trim() : '';
+        if (baseUrl === '') {
+          dropped += 1;
+          continue;
         }
+        remembered(store, userId, baseUrl, entry);
+        migrated += 1;
+        continue;
+      }
+      for (const [baseUrl, record] of Object.entries(entry as Record<string, unknown>)) {
+        if (baseUrl.trim() !== '' && isTenantKeyRecord(record)) remembered(store, userId, baseUrl, record);
       }
     }
-    logger.info(`Loaded llmux tenant keys: ${Object.keys(store.tenants).length} user(s)`);
+    const keys = Object.values(store.tenants).reduce((n, byDaemon) => n + Object.keys(byDaemon).length, 0);
+    logger.info(`Loaded llmux tenant keys: ${keys} key(s) for ${Object.keys(store.tenants).length} user(s)`);
+    if (migrated > 0) logger.info(`Migrated ${migrated} v1 tenant key record(s) to the per-daemon layout`);
+    if (dropped > 0) {
+      logger.warn(`Dropped ${dropped} v1 tenant key record(s) with no daemon attribution; they will be re-issued`);
+    }
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     if (code !== 'ENOENT') {
@@ -170,20 +228,20 @@ function currentBaseUrl(): string {
 }
 
 async function llmuxPost<T>(
-  base: string,
+  target: ControlPlaneTarget,
   pathName: string,
   body: unknown,
 ): Promise<{ status: number; body: T | null }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new Error(`llmux POST ${pathName} timed out`)), REQUEST_TIMEOUT_MS);
   try {
-    const res = await fetch(`${base}${pathName}`, {
+    const res = await fetch(`${target.baseUrl}${pathName}`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        // Resolved against the URL we are actually posting to — the admin
-        // credential must never be sent to a daemon it does not belong to.
-        'x-api-key': getLlmuxAdminKey(base),
+        // From the captured target — the admin credential and the URL it was
+        // resolved for always travel together.
+        'x-api-key': target.adminKey,
       },
       body: JSON.stringify(body),
       signal: controller.signal,
@@ -201,13 +259,15 @@ async function llmuxPost<T>(
   }
 }
 
-async function llmuxGetKeys(base: string): Promise<{ status: number; body: { keys?: LlmuxIssuedKey[] } | null }> {
+async function llmuxGetKeys(
+  target: ControlPlaneTarget,
+): Promise<{ status: number; body: { keys?: LlmuxIssuedKey[] } | null }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new Error('llmux GET /llmux/keys timed out')), REQUEST_TIMEOUT_MS);
   try {
-    const res = await fetch(`${base}/llmux/keys`, {
+    const res = await fetch(`${target.baseUrl}/llmux/keys`, {
       method: 'GET',
-      headers: { 'content-type': 'application/json', 'x-api-key': getLlmuxAdminKey(base) },
+      headers: { 'content-type': 'application/json', 'x-api-key': target.adminKey },
       signal: controller.signal,
     });
     const text = await res.text();
@@ -245,7 +305,9 @@ export interface TenantKeyLease {
 
 function remember(userId: string, record: TenantKeyRecord): TenantKeyLease {
   const store = state();
-  store.tenants[userId] = record;
+  // Slot is (user, daemon): a concurrent issuance for the same user against a
+  // DIFFERENT daemon must survive, whichever finishes last.
+  remembered(store, userId, record.baseUrl, record);
   persist(store);
   logger.info('issued llmux tenant key', {
     userId,
@@ -266,9 +328,9 @@ function fail(userId: string, baseUrl: string, reason: string): null {
 /** Outcome of looking this user up in llmux's key list. */
 type ExistingKeyLookup = { ok: true; key: { id: string; name: string } | null } | { ok: false; reason: string };
 
-/** The user's live (non-revoked) key on the daemon at `base`, per {@link isUsersKeyName}. */
-async function findExistingKey(base: string, userId: string): Promise<ExistingKeyLookup> {
-  const listed = await llmuxGetKeys(base);
+/** The user's live (non-revoked) key on the target daemon, per {@link isUsersKeyName}. */
+async function findExistingKey(target: ControlPlaneTarget, userId: string): Promise<ExistingKeyLookup> {
+  const listed = await llmuxGetKeys(target);
   if (listed.status !== 200 || !Array.isArray(listed.body?.keys)) {
     return { ok: false, reason: `GET /llmux/keys → ${listed.status}` };
   }
@@ -294,19 +356,19 @@ async function rotateExisting(
   userId: string,
   key: { id: string; name: string },
   email: string | undefined,
-  baseUrl: string,
+  target: ControlPlaneTarget,
 ): Promise<TenantKeyLease | null> {
-  const rotated = await llmuxPost<{ key?: LlmuxIssuedKey }>(baseUrl, '/llmux/keys/rotate', { id: key.id });
+  const rotated = await llmuxPost<{ key?: LlmuxIssuedKey }>(target, '/llmux/keys/rotate', { id: key.id });
   const secret = nonEmptyString(rotated.body?.key?.key);
   if (rotated.status !== 200 || !secret) {
-    return fail(userId, baseUrl, `POST /llmux/keys/rotate → ${rotated.status}`);
+    return fail(userId, target.baseUrl, `POST /llmux/keys/rotate → ${rotated.status}`);
   }
   return remember(userId, {
     id: key.id,
     secret,
     keyPrefix: nonEmptyString(rotated.body?.key?.key_prefix) ?? '',
     name: key.name,
-    baseUrl,
+    baseUrl: target.baseUrl,
     ...(email ? { email } : {}),
     issuedAtMs: Date.now(),
     rotatedAtMs: Date.now(),
@@ -314,17 +376,19 @@ async function rotateExisting(
 }
 
 /**
- * Issue (or reclaim) this user's key at `baseUrl`. `baseUrl` is passed in, never
- * re-read: every request, cache entry and the returned lease must describe ONE
- * daemon even if an operator flips the setting mid-issuance.
+ * Issue (or reclaim) this user's key at `target`. The target (URL + its admin
+ * credential) is passed in and never re-read: every request, cache entry and the
+ * returned lease must describe ONE daemon even if an operator flips the settings
+ * mid-issuance.
  */
 async function issue(
   userId: string,
-  baseUrl: string,
+  target: ControlPlaneTarget,
   profile?: { name?: string; email?: string },
 ): Promise<TenantKeyLease | null> {
   const name = keyName(userId, profile);
   const email = profile?.email?.trim() || undefined;
+  const baseUrl = target.baseUrl;
   try {
     // Reclaim BEFORE creating. A user whose display name changed since their
     // first issuance would otherwise create a second key under the new name
@@ -336,11 +400,11 @@ async function issue(
     // exactly how a transient 500 mints a duplicate tenant. Degrade to the
     // shared key instead; the next dispatch after the negative-cache window
     // retries.
-    const existing = await findExistingKey(baseUrl, userId);
+    const existing = await findExistingKey(target, userId);
     if (!existing.ok) return fail(userId, baseUrl, `preflight ${existing.reason}`);
-    if (existing.key) return await rotateExisting(userId, existing.key, email, baseUrl);
+    if (existing.key) return await rotateExisting(userId, existing.key, email, target);
 
-    const created = await llmuxPost<LlmuxIssuedKey>(baseUrl, '/llmux/keys/new', {
+    const created = await llmuxPost<LlmuxIssuedKey>(target, '/llmux/keys/new', {
       name,
       ...(email ? { email } : {}),
       kind: 'default',
@@ -348,10 +412,10 @@ async function issue(
     if (created.status === 409) {
       // Race fallback: someone issued this user's key between our (successful,
       // empty) listing and our create. Re-list and reclaim.
-      const raced = await findExistingKey(baseUrl, userId);
+      const raced = await findExistingKey(target, userId);
       if (!raced.ok) return fail(userId, baseUrl, raced.reason);
       if (!raced.key) return fail(userId, baseUrl, 'existing non-revoked key not found in GET /llmux/keys');
-      return await rotateExisting(userId, raced.key, email, baseUrl);
+      return await rotateExisting(userId, raced.key, email, target);
     }
 
     const secret = nonEmptyString(created.body?.key);
@@ -384,9 +448,10 @@ async function issue(
  * (negative-cached for 10 min so one broken llmux does not add a request per
  * dispatch), or any llmux/network error.
  *
- * The daemon is snapshotted ONCE here and threaded through the store lookup,
- * both caches, every HTTP call and the returned lease, so the result is always
- * an internally coherent pair even if the live setting changes meanwhile.
+ * The target daemon — its URL AND the admin credential resolved for that URL —
+ * is snapshotted ONCE here and threaded through the store lookup, both caches,
+ * every HTTP call and the returned lease, so the result is always internally
+ * coherent even if the live settings change meanwhile.
  */
 export async function ensureTenantKey(
   userId: string,
@@ -395,12 +460,12 @@ export async function ensureTenantKey(
   if (getAuthMode() !== 'llmux') return null;
   if (!userId.trim()) return null;
 
-  // Store hit only counts for the daemon that issued it. A record written
-  // before this field existed has no `baseUrl` and is likewise a miss —
-  // issuance overwrites it.
   const baseUrl = currentBaseUrl();
-  const existing = state().tenants[userId];
-  if (existing?.secret && existing.baseUrl === baseUrl) return { secret: existing.secret, baseUrl };
+  const target: ControlPlaneTarget = { baseUrl, adminKey: getLlmuxAdminKey(baseUrl) };
+
+  // Store hit only counts for the daemon that issued the key.
+  const existing = state().tenants[userId]?.[baseUrl];
+  if (existing?.secret) return { secret: existing.secret, baseUrl };
 
   const cacheKey = tenantCacheKey(baseUrl, userId);
   const failedAt = _negativeCache.get(cacheKey);
@@ -409,7 +474,7 @@ export async function ensureTenantKey(
   const pending = _inFlight.get(cacheKey);
   if (pending) return pending;
 
-  const attempt = issue(userId, baseUrl, profile).finally(() => _inFlight.delete(cacheKey));
+  const attempt = issue(userId, target, profile).finally(() => _inFlight.delete(cacheKey));
   _inFlight.set(cacheKey, attempt);
   return attempt;
 }
