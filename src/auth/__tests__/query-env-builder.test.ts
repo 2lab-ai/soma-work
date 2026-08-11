@@ -55,11 +55,12 @@ describe('buildQueryEnv', () => {
     expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe('sk-ant-oat01-TOKEN-B');
   });
 
-  it('ignores an llmux tenant key in ccp mode (the lease token still wins)', () => {
+  it('ignores an llmux tenant lease in ccp mode (the lease token still wins)', () => {
     // The option is llmux-only; a caller that always passes it (claude-handler)
     // must not perturb the OAuth-lease path.
     const lease = makeLease('slot-a', 'sk-ant-oat01-TOKEN-C', 'cct');
-    const { env } = buildQueryEnv(lease, { llmuxTenantKey: 'lmk-should-be-ignored' });
+    const tenant = { secret: 'lmk-should-be-ignored', baseUrl: 'http://localhost:3456' };
+    const { env } = buildQueryEnv(lease, { llmuxTenant: tenant });
     expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe('sk-ant-oat01-TOKEN-C');
     expect(env.ANTHROPIC_API_KEY).not.toBe('lmk-should-be-ignored');
   });

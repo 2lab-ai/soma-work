@@ -72,7 +72,7 @@ let _storePath: string | null = null;
 /** {@link tenantCacheKey} → epoch ms of the last failed issuance (retry suppressed until +TTL). */
 const _negativeCache = new Map<string, number>();
 /** {@link tenantCacheKey} → in-flight issuance, so concurrent dispatches issue at most one key. */
-const _inFlight = new Map<string, Promise<string | null>>();
+const _inFlight = new Map<string, Promise<TenantKeyLease | null>>();
 
 /**
  * Both per-user caches are scoped to the DAEMON as well as the user: a key is
@@ -169,8 +169,11 @@ function currentBaseUrl(): string {
   return getLlmuxSettings().baseUrl.replace(/\/+$/, '');
 }
 
-async function llmuxPost<T>(pathName: string, body: unknown): Promise<{ status: number; body: T | null }> {
-  const base = currentBaseUrl();
+async function llmuxPost<T>(
+  base: string,
+  pathName: string,
+  body: unknown,
+): Promise<{ status: number; body: T | null }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new Error(`llmux POST ${pathName} timed out`)), REQUEST_TIMEOUT_MS);
   try {
@@ -198,8 +201,7 @@ async function llmuxPost<T>(pathName: string, body: unknown): Promise<{ status: 
   }
 }
 
-async function llmuxGetKeys(): Promise<{ status: number; body: { keys?: LlmuxIssuedKey[] } | null }> {
-  const base = currentBaseUrl();
+async function llmuxGetKeys(base: string): Promise<{ status: number; body: { keys?: LlmuxIssuedKey[] } | null }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new Error('llmux GET /llmux/keys timed out')), REQUEST_TIMEOUT_MS);
   try {
@@ -225,7 +227,23 @@ function nonEmptyString(value: unknown): string | null {
   return typeof value === 'string' && value.trim() !== '' ? value : null;
 }
 
-function remember(userId: string, record: TenantKeyRecord): string {
+/**
+ * A usable tenant credential together with the daemon it is usable AT.
+ *
+ * The pair must travel together: an operator can flip `baseUrl` while an
+ * issuance is in flight (or between the caller's `await` and its env build), and
+ * pairing daemon A's secret with daemon B's URL yields a 401 on B instead of the
+ * intended shared-key degradation. Consumers (`buildQueryEnv`) therefore take
+ * BOTH fields from the lease rather than re-reading the live settings.
+ */
+export interface TenantKeyLease {
+  /** Plaintext `lmk-…` secret. NEVER log this. */
+  secret: string;
+  /** Normalized baseUrl of the daemon that issued/validated this secret. */
+  baseUrl: string;
+}
+
+function remember(userId: string, record: TenantKeyRecord): TenantKeyLease {
   const store = state();
   store.tenants[userId] = record;
   persist(store);
@@ -233,9 +251,10 @@ function remember(userId: string, record: TenantKeyRecord): string {
     userId,
     keyId: record.id,
     keyPrefix: record.keyPrefix,
+    baseUrl: record.baseUrl,
     rotated: record.rotatedAtMs !== undefined,
   });
-  return record.secret;
+  return { secret: record.secret, baseUrl: record.baseUrl };
 }
 
 function fail(userId: string, baseUrl: string, reason: string): null {
@@ -247,9 +266,9 @@ function fail(userId: string, baseUrl: string, reason: string): null {
 /** Outcome of looking this user up in llmux's key list. */
 type ExistingKeyLookup = { ok: true; key: { id: string; name: string } | null } | { ok: false; reason: string };
 
-/** The user's live (non-revoked) key on the current daemon, per {@link isUsersKeyName}. */
-async function findExistingKey(userId: string): Promise<ExistingKeyLookup> {
-  const listed = await llmuxGetKeys();
+/** The user's live (non-revoked) key on the daemon at `base`, per {@link isUsersKeyName}. */
+async function findExistingKey(base: string, userId: string): Promise<ExistingKeyLookup> {
+  const listed = await llmuxGetKeys(base);
   if (listed.status !== 200 || !Array.isArray(listed.body?.keys)) {
     return { ok: false, reason: `GET /llmux/keys → ${listed.status}` };
   }
@@ -276,8 +295,8 @@ async function rotateExisting(
   key: { id: string; name: string },
   email: string | undefined,
   baseUrl: string,
-): Promise<string | null> {
-  const rotated = await llmuxPost<{ key?: LlmuxIssuedKey }>('/llmux/keys/rotate', { id: key.id });
+): Promise<TenantKeyLease | null> {
+  const rotated = await llmuxPost<{ key?: LlmuxIssuedKey }>(baseUrl, '/llmux/keys/rotate', { id: key.id });
   const secret = nonEmptyString(rotated.body?.key?.key);
   if (rotated.status !== 200 || !secret) {
     return fail(userId, baseUrl, `POST /llmux/keys/rotate → ${rotated.status}`);
@@ -294,10 +313,18 @@ async function rotateExisting(
   });
 }
 
-async function issue(userId: string, profile?: { name?: string; email?: string }): Promise<string | null> {
+/**
+ * Issue (or reclaim) this user's key at `baseUrl`. `baseUrl` is passed in, never
+ * re-read: every request, cache entry and the returned lease must describe ONE
+ * daemon even if an operator flips the setting mid-issuance.
+ */
+async function issue(
+  userId: string,
+  baseUrl: string,
+  profile?: { name?: string; email?: string },
+): Promise<TenantKeyLease | null> {
   const name = keyName(userId, profile);
   const email = profile?.email?.trim() || undefined;
-  const baseUrl = currentBaseUrl();
   try {
     // Reclaim BEFORE creating. A user whose display name changed since their
     // first issuance would otherwise create a second key under the new name
@@ -309,11 +336,11 @@ async function issue(userId: string, profile?: { name?: string; email?: string }
     // exactly how a transient 500 mints a duplicate tenant. Degrade to the
     // shared key instead; the next dispatch after the negative-cache window
     // retries.
-    const existing = await findExistingKey(userId);
+    const existing = await findExistingKey(baseUrl, userId);
     if (!existing.ok) return fail(userId, baseUrl, `preflight ${existing.reason}`);
     if (existing.key) return await rotateExisting(userId, existing.key, email, baseUrl);
 
-    const created = await llmuxPost<LlmuxIssuedKey>('/llmux/keys/new', {
+    const created = await llmuxPost<LlmuxIssuedKey>(baseUrl, '/llmux/keys/new', {
       name,
       ...(email ? { email } : {}),
       kind: 'default',
@@ -321,7 +348,7 @@ async function issue(userId: string, profile?: { name?: string; email?: string }
     if (created.status === 409) {
       // Race fallback: someone issued this user's key between our (successful,
       // empty) listing and our create. Re-list and reclaim.
-      const raced = await findExistingKey(userId);
+      const raced = await findExistingKey(baseUrl, userId);
       if (!raced.ok) return fail(userId, baseUrl, raced.reason);
       if (!raced.key) return fail(userId, baseUrl, 'existing non-revoked key not found in GET /llmux/keys');
       return await rotateExisting(userId, raced.key, email, baseUrl);
@@ -349,17 +376,22 @@ async function issue(userId: string, profile?: { name?: string; email?: string }
 }
 
 /**
- * The llmux client key to authenticate `userId`'s dispatches with, or `null`
- * when the caller must fall back to the shared key.
+ * The llmux credential to authenticate `userId`'s dispatches with — as a
+ * {@link TenantKeyLease} (secret + the daemon it belongs to) — or `null` when
+ * the caller must fall back to the shared key.
  *
  * `null` (never a throw) for: non-llmux auth mode, a recent issuance failure
  * (negative-cached for 10 min so one broken llmux does not add a request per
  * dispatch), or any llmux/network error.
+ *
+ * The daemon is snapshotted ONCE here and threaded through the store lookup,
+ * both caches, every HTTP call and the returned lease, so the result is always
+ * an internally coherent pair even if the live setting changes meanwhile.
  */
 export async function ensureTenantKey(
   userId: string,
   profile?: { name?: string; email?: string },
-): Promise<string | null> {
+): Promise<TenantKeyLease | null> {
   if (getAuthMode() !== 'llmux') return null;
   if (!userId.trim()) return null;
 
@@ -368,7 +400,7 @@ export async function ensureTenantKey(
   // issuance overwrites it.
   const baseUrl = currentBaseUrl();
   const existing = state().tenants[userId];
-  if (existing?.secret && existing.baseUrl === baseUrl) return existing.secret;
+  if (existing?.secret && existing.baseUrl === baseUrl) return { secret: existing.secret, baseUrl };
 
   const cacheKey = tenantCacheKey(baseUrl, userId);
   const failedAt = _negativeCache.get(cacheKey);
@@ -377,7 +409,7 @@ export async function ensureTenantKey(
   const pending = _inFlight.get(cacheKey);
   if (pending) return pending;
 
-  const attempt = issue(userId, profile).finally(() => _inFlight.delete(cacheKey));
+  const attempt = issue(userId, baseUrl, profile).finally(() => _inFlight.delete(cacheKey));
   _inFlight.set(cacheKey, attempt);
   return attempt;
 }
