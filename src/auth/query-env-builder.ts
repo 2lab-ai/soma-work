@@ -142,8 +142,8 @@ export function buildQueryEnv(lease: SlotAuthLease): QueryEnvResult {
   }
 
   // Hook-proxy opt-in. The zworkflow plugin's hook-proxy.sh defaults to the
-  // self-contained shell guard (`HOOKS_PROXY_ENABLED` unset → standalone) so
-  // external Claude Code installs work without a localhost service. soma-work
+  // self-contained shell call tracker (`HOOKS_PROXY_ENABLED` unset → standalone)
+  // so external Claude Code installs work without a localhost service. soma-work
   // DOES run the Fastify hook service, so it opts spawned agents into the HTTP
   // proxy here. Only defaults when unset — an explicit process.env / operator
   // value (layers 1–2) still wins, e.g. for local debugging. Set before the
