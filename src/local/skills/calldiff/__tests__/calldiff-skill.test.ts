@@ -166,6 +166,78 @@ describe('default prompt wires calldiff into task completion (T2)', () => {
   });
 });
 
+/**
+ * SSOT_2: "디폴트 프롬프트에 PR 만들시 항상 코드 변경이 일어날시에 calldiff 스킬 사용해서
+ *          최상단 서머리에 항상 calldiff 리포트 포함하도록 변경하고 배포까지 해줘"
+ *
+ *  - T4: default.prompt must require a calldiff report block at the TOP of every
+ *        PR body whenever the PR carries code changes, and the block must always
+ *        be present (no-change / unavailable / no-source cases each get a line).
+ */
+describe('default prompt requires a calldiff report at the top of every PR body (T4)', () => {
+  function prCreationSection(): string {
+    const prompt = readFileSync(DEFAULT_PROMPT, 'utf8');
+    const start = prompt.indexOf('## On Pull Request Creation');
+    if (start === -1) return '';
+    const rest = prompt.slice(start + 1);
+    const nextHeading = rest.indexOf('\n## ');
+    return nextHeading === -1 ? rest : rest.slice(0, nextHeading);
+  }
+
+  it('has a dedicated PR-creation section', () => {
+    expect(prCreationSection(), 'default.prompt needs a "## On Pull Request Creation" section').not.toBe('');
+  });
+
+  it('fires whenever the PR contains code changes', () => {
+    const section = prCreationSection().toLowerCase();
+    expect(section).toMatch(/code change|source change|changes source|modified source/);
+    expect(section).toMatch(/pull request|\bpr\b/);
+  });
+
+  it('pins the report to the TOP summary of the PR body', () => {
+    const section = prCreationSection();
+    const lower = section.toLowerCase();
+    // Position is the whole point of the requirement: topmost summary block.
+    expect(lower).toMatch(/top of the pr body|first section|topmost|before any other section/);
+    expect(lower).toMatch(/summary/);
+  });
+
+  it('names the skill and a pinned, bounded invocation', () => {
+    const section = prCreationSection();
+    expect(section).toMatch(/local:calldiff/);
+    expect(section).toMatch(/npx calldiff@\d+\.\d+\.\d+/);
+    expect(section, 'the `timeout` binary is absent on macOS hosts').not.toMatch(/timeout \d+ npx calldiff/);
+  });
+
+  it('detects the PR base ref rather than hardcoding main', () => {
+    const section = prCreationSection();
+    expect(section).toMatch(/baseRefName|base branch|origin\/HEAD/);
+    expect(section.toLowerCase()).not.toMatch(/always diff against `?main`?/);
+  });
+
+  it('keeps the block present in all three quiet cases — never silently omitted', () => {
+    const section = prCreationSection();
+    // (a) call flow genuinely unchanged
+    expect(section).toMatch(/No callstack changes/);
+    // (b) tool could not run
+    expect(section).toMatch(/calldiff unavailable/);
+    // (c) no source files in the PR at all
+    expect(section.toLowerCase()).toMatch(/no source|n\/a|not applicable/);
+    // and the block must be stated as mandatory
+    expect(section.toLowerCase()).toMatch(/always|never omit|must/);
+  });
+
+  it('does not let calldiff block PR creation', () => {
+    const section = prCreationSection().toLowerCase();
+    expect(section).toMatch(/not a blocker|never block|do not block/);
+  });
+
+  it('keeps the report fresh when more source commits land on the PR', () => {
+    const section = prCreationSection().toLowerCase();
+    expect(section).toMatch(/push|update|refresh/);
+  });
+});
+
 describe('plugin manifest keeps pace with its payload (src/local/CLAUDE.md rule)', () => {
   it('plugin.json version is bumped past 1.3.0 for the new skill', () => {
     const manifest = JSON.parse(readFileSync(PLUGIN_JSON, 'utf8')) as { version: string };

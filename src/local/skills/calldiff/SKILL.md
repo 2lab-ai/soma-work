@@ -156,6 +156,44 @@ Requires `--entry` / `--file` plus `--to`. Prints all paths, including alternate
 4. Flag anything surprising: a new call under a hot path, a dropped validation step, a
    dependency inversion you did not intend.
 
+## In a pull request body — the report goes first
+
+Every PR carrying code changes opens with this block. It is the **first section of the PR
+body**, before context, before the test plan. A reviewer should see what moved in the call
+graph before reading prose about it.
+
+```sh
+BASE=$(gh pr view --json baseRefName -q .baseRefName 2>/dev/null \
+       || git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|origin/||' \
+       || echo main)
+npx calldiff@0.5.0 diff "$BASE" HEAD
+```
+
+Shape of the block:
+
+````md
+## Summary
+
+```
+<calldiff output, verbatim>
+```
+
+<2–3 lines: what the delta means behaviorally — what the entrypoint stopped calling,
+what it now calls, and why that matters.>
+````
+
+The block is never omitted. When there is no tree to show, exactly one line stands in for
+it:
+
+| Case | Line to write |
+|---|---|
+| exit 0, `No callstack changes between <base> and HEAD.` | that line verbatim, then the file-level summary |
+| non-zero exit / timeout / no network / sandbox denial | `calldiff unavailable: <reason>` — never block or delay PR creation |
+| PR touches only docs / config / prompts | `Call-flow report N/A — no source files in this PR.` |
+
+Push more source commits to the PR later? Re-run and update the block. A stale call-flow
+report is worse than none.
+
 ## Limits — do not over-claim
 
 - Analysis is **syntactic** (AST-based, tree-sitter), not a typechecker. Dynamic calls,
