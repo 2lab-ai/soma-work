@@ -99,3 +99,4 @@ __pycache__/
 *.devbox-b
 .beads/*.lock
 .sandbox-write-probe
+.worktrees/

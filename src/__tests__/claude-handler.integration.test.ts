@@ -17,10 +17,15 @@ import type { ConversationSession } from '../types';
 // Skip if running inside Claude Code session (nested sessions crash)
 // Run from a regular terminal: npx vitest run src/claude-handler.integration.test.ts
 const isNestedSession = !!process.env.CLAUDECODE;
+// CI runners (hosted or self-hosted) must not consume real Claude credentials:
+// on a self-hosted runner the runner user's ~/.claude exists, which used to
+// make this suite run and fail on CCT lease acquisition.
+const isCI = !!process.env.CI;
 const hasApiKey = !!process.env.ANTHROPIC_API_KEY;
 
 const canRun =
   !isNestedSession &&
+  !isCI &&
   (hasApiKey ||
     (() => {
       try {
@@ -41,7 +46,10 @@ if (isNestedSession) {
   console.warn('⚠️  Skipped: running inside Claude Code session (nested sessions not allowed)');
   console.warn('   Run from terminal: npx vitest run src/claude-handler.integration.test.ts');
 }
-if (!canRun && !isNestedSession) {
+if (isCI) {
+  console.warn('⚠️  Skipped: CI environment (no real Claude credentials in CI)');
+}
+if (!canRun && !isNestedSession && !isCI) {
   console.warn('⚠️  Skipped: no Claude credentials found');
 }
 
