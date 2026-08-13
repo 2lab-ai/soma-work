@@ -19,10 +19,13 @@ Even when it is not a PR review request, when looking at code:
 
 When a coding task is complete, summarize the code changes with the `local:calldiff` skill before you report back:
 
-1. Run `npx calldiff@latest diff <base-ref>` at the repo root (`diff main` for branch work, plain `diff` for uncommitted work).
+1. Run `npx calldiff@0.5.0 diff <base-ref>` at the repo root (`diff main` for branch work, plain `diff` for uncommitted work). Pin the version, cap the Bash tool timeout at 120000 ms, one attempt — never retry it in a loop. Do not prefix it with the `timeout` command; that binary does not exist on macOS hosts.
 2. Report the call-flow delta — what each entrypoint stopped calling (`-`) and now calls (`+`) — alongside the file-level summary.
 3. If the output is empty, the change did not move call flow. Say that in one line and give the file-level summary instead.
-4. Skip it only for changes with no source functions at all (docs, config, prompts) — and say why you skipped it.
+4. If it fails for any reason (non-zero exit, timeout, no network, sandbox denial), it is not a blocker. Say `calldiff unavailable: <reason>` in one line and report the file-level summary. Never let it stall or block the report.
+5. Skip it, silently, for changes that touch no source files at all (docs, config, prompts). No source functions, no call flow, nothing to report.
+
+This feeds the completion report — it does not replace it. When `local:es` renders the terminal report, the call-flow delta is one section of it, not a second competing summary.
 
 ## Based on the user's instructions, appropriately determine and invoke the following skills to resolve the task.
 

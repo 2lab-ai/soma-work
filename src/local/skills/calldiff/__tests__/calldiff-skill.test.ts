@@ -58,15 +58,35 @@ describe('local:calldiff skill — contract (T1)', () => {
     expect(desc).toMatch(/변경점|변경 사항|summar/);
   });
 
-  it('documents a runnable invocation that needs no prior install', () => {
+  it('documents a runnable invocation that is pinned, not floating on @latest', () => {
     const md = readFileSync(SKILL_MD, 'utf8');
-    expect(md).toContain('npx calldiff@latest');
+    expect(md).toMatch(/npx calldiff@\d+\.\d+\.\d+/);
+    expect(md, 'a default-prompt rule must not run an unpinned package').not.toContain('calldiff@latest');
+  });
+
+  it('bounds the call portably — tool timeout, never the macOS-missing `timeout` binary', () => {
+    const md = readFileSync(SKILL_MD, 'utf8');
+    expect(md).toMatch(/timeout .*120000|120000 ms/);
+    expect(md, 'the `timeout` binary is absent on the macOS hosts this bot runs on').not.toMatch(
+      /^\s*timeout \d+ npx/m,
+    );
+  });
+
+  it('documents the failure path: one attempt, degrade to a file-level summary', () => {
+    const md = readFileSync(SKILL_MD, 'utf8');
+    const lower = md.toLowerCase();
+    expect(lower).toMatch(/non-zero exit|exits non-zero/);
+    expect(lower).toMatch(/timeout|times out/);
+    expect(md).toMatch(/calldiff unavailable/);
+    expect(lower).toMatch(/do not retry|never block|one attempt/);
   });
 
   it('documents all three subcommands with concrete examples', () => {
     const md = readFileSync(SKILL_MD, 'utf8');
     for (const sub of ['diff', 'tree', 'reach']) {
-      expect(md, `SKILL.md must document the "${sub}" subcommand`).toMatch(new RegExp(`calldiff@latest ${sub}\\b`));
+      expect(md, `SKILL.md must document the "${sub}" subcommand`).toMatch(
+        new RegExp(`calldiff@\\d+\\.\\d+\\.\\d+ ${sub}\\b`),
+      );
     }
     // git-diff shaped ref semantics — the part agents get wrong most often.
     expect(md).toMatch(/HEAD/);
@@ -99,6 +119,18 @@ describe('default prompt wires calldiff into task completion (T2)', () => {
   it('the completion rule names the skill in invocable form (local:calldiff)', () => {
     const prompt = readFileSync(DEFAULT_PROMPT, 'utf8');
     expect(prompt).toMatch(/local:calldiff/);
+  });
+
+  it('the completion rule is pinned, bounded, and degrades instead of blocking', () => {
+    const prompt = readFileSync(DEFAULT_PROMPT, 'utf8');
+    // A rule that fires on every completed coding task must not run an unpinned
+    // package, must not hang unbounded, and must not gate the report.
+    expect(prompt).toMatch(/npx calldiff@\d+\.\d+\.\d+/);
+    expect(prompt).toMatch(/120000/);
+    expect(prompt, 'the `timeout` binary is absent on macOS hosts').not.toMatch(/timeout \d+ npx calldiff/);
+    expect(prompt).not.toContain('calldiff@latest');
+    expect(prompt).toMatch(/calldiff unavailable/);
+    expect(prompt.toLowerCase()).toMatch(/never let it stall|not a blocker/);
   });
 });
 

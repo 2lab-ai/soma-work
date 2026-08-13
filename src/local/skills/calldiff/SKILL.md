@@ -38,14 +38,37 @@ diffs those trees.
 
 ## Invocation
 
-No install step. Run it through npx, from the repo root:
+No install step. Run it through npx, from the repo root, **pinned and bounded**:
 
 ```sh
-npx calldiff@latest diff
+npx calldiff@0.5.0 diff
 ```
+
+- **Pin the version.** `@latest` re-resolves on every cold cache and runs whatever upstream
+  published since — unreviewed code inside the user's checkout, with an output shape that
+  can change under you. Bump the pin here deliberately, never implicitly.
+- **Bound the call.** One attempt, with the Bash tool's own `timeout` capped at 120000 ms.
+  Do **not** prefix the command with the `timeout` binary — it does not exist on macOS
+  hosts, which is where this bot runs. A cold cache downloads the package plus tree-sitter
+  grammars; an unbounded hang is the expensive failure mode.
 
 Prefer `--format json` when you need to post-process; the default ASCII output is already
 the right shape for a human-facing summary.
+
+## When it fails — degrade, never block
+
+calldiff is an accessory to the summary, not a gate on it. If the command exits non-zero,
+times out, cannot reach the registry, or is denied by the sandbox: **stop after one
+attempt**, write `calldiff unavailable: <reason>` in one line, and report the file-level
+summary instead. Do not retry in a loop, do not install anything else, do not withhold the
+report waiting for it.
+
+Distinguish the two quiet outcomes — they mean opposite things:
+
+| Outcome | Meaning | What to say |
+|---|---|---|
+| exit 0, nothing printed | The change genuinely did not move call flow | "No call-flow change" + file-level summary |
+| non-zero exit / timeout | The tool did not run | `calldiff unavailable: <reason>` + file-level summary |
 
 ## `diff` — call-flow delta between two trees
 
@@ -54,23 +77,23 @@ working tree; two refs → those two trees.
 
 ```sh
 # HEAD vs working tree
-npx calldiff@latest diff
+npx calldiff@0.5.0 diff
 
 # branch base vs current work (the usual completion summary)
-npx calldiff@latest diff main
+npx calldiff@0.5.0 diff main
 
 # two explicit refs
-npx calldiff@latest diff abc123 def456
+npx calldiff@0.5.0 diff abc123 def456
 
 # force entrypoints: functionName or ClassName.method
-npx calldiff@latest diff main HEAD --entry createAgentSession
-npx calldiff@latest diff main HEAD -e PiService.createAgentSession -e boot
+npx calldiff@0.5.0 diff main HEAD --entry createAgentSession
+npx calldiff@0.5.0 diff main HEAD -e PiService.createAgentSession -e boot
 
 # every exported symbol of one file as the entrypoint set
-npx calldiff@latest diff main HEAD --file src/routes.ts
+npx calldiff@0.5.0 diff main HEAD --file src/routes.ts
 
 # limit to path prefixes (trailing positionals)
-npx calldiff@latest diff main HEAD src/agent-runtime
+npx calldiff@0.5.0 diff main HEAD src/agent-runtime
 ```
 
 `-` lines existed in *from* and are gone in *to*. `+` lines are new in *to*. With no
@@ -79,9 +102,9 @@ npx calldiff@latest diff main HEAD src/agent-runtime
 ## `tree` — one call tree, no diff
 
 ```sh
-npx calldiff@latest tree --entry createAgentSession
-npx calldiff@latest tree HEAD -e PiService.createAgentSession --max-depth 8 src/lib
-npx calldiff@latest tree --file src/routes.ts --locs
+npx calldiff@0.5.0 tree --entry createAgentSession
+npx calldiff@0.5.0 tree HEAD -e PiService.createAgentSession --max-depth 8 src/lib
+npx calldiff@0.5.0 tree --file src/routes.ts --locs
 ```
 
 `--entry` / `-e` or `--file` / `-F` is required. `--locs` adds `file:line` — the root uses
@@ -90,8 +113,8 @@ the definition site, children use the call site inside the parent.
 ## `reach` — every call path from A to B
 
 ```sh
-npx calldiff@latest reach -e runCheckout --to sendEmail
-npx calldiff@latest reach HEAD -e runCheckout --to sendEmail examples/checkout
+npx calldiff@0.5.0 reach -e runCheckout --to sendEmail
+npx calldiff@0.5.0 reach HEAD -e runCheckout --to sendEmail examples/checkout
 ```
 
 Requires `--entry` / `--file` plus `--to`. Prints all paths, including alternate `if` /
@@ -118,7 +141,7 @@ Requires `--entry` / `--file` plus `--to`. Prints all paths, including alternate
 
 ## How to turn the output into a summary
 
-1. Run `npx calldiff@latest diff <base-ref>` at the repo root.
+1. Run `npx calldiff@0.5.0 diff <base-ref>` at the repo root.
 2. If it prints nothing, the change did not move call flow — say exactly that, then fall
    back to a file-level summary. Empty output is a finding, not a failure.
 3. Otherwise report, per entrypoint: what it stopped calling (`-`), what it now calls
