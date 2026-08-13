@@ -1,7 +1,7 @@
 {
   "name": "zworkflow",
-  "version": "1.3.0",
-  "description": "Z-workflow plugin: SSOT-driven development pipeline (z / zcheck / ztrace / autoz / zwork / trinity) plus agents, commands, hooks, prompts, and skills. Shipped as a soma-work default plugin.",
+  "version": "1.4.0",
+  "description": "Z-workflow plugin: SSOT-driven development pipeline (z / zcheck / ztrace / autoz / zwork / trinity) plus calldiff call-flow summaries, agents, commands, hooks, prompts, and skills. Shipped as a soma-work default plugin.",
   "author": {
     "name": "zhugehyuk",
     "email": "z@2lab.ai"
