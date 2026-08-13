@@ -44,54 +44,10 @@ describe('HookState', () => {
     }
   });
 
-  // ── TodoGuard state ──
-
-  describe('incrementTodoGuard', () => {
-    it('should increase count on each call', () => {
-      const r1 = hookState.incrementTodoGuard('sess-1');
-      expect(r1.count).toBe(1);
-      expect(r1.todoExists).toBe(false);
-
-      const r2 = hookState.incrementTodoGuard('sess-1');
-      expect(r2.count).toBe(2);
-    });
-
-    it('should track sessions independently', () => {
-      hookState.incrementTodoGuard('sess-1');
-      hookState.incrementTodoGuard('sess-1');
-      hookState.incrementTodoGuard('sess-2');
-
-      const s1 = hookState.getTodoGuardState('sess-1');
-      const s2 = hookState.getTodoGuardState('sess-2');
-      expect(s1?.count).toBe(2);
-      expect(s2?.count).toBe(1);
-    });
-  });
-
-  describe('markTodoExists', () => {
-    it('should set todoExists to true', () => {
-      hookState.markTodoExists('sess-1');
-      const state = hookState.getTodoGuardState('sess-1');
-      expect(state?.todoExists).toBe(true);
-    });
-
-    it('should preserve count when marking', () => {
-      hookState.incrementTodoGuard('sess-1');
-      hookState.incrementTodoGuard('sess-1');
-      hookState.markTodoExists('sess-1');
-
-      const state = hookState.getTodoGuardState('sess-1');
-      expect(state?.count).toBe(2);
-      expect(state?.todoExists).toBe(true);
-    });
-  });
-
   // ── Session cleanup ──
 
   describe('cleanupSession', () => {
     it('should remove all session data', () => {
-      hookState.incrementTodoGuard('sess-1');
-      hookState.markTodoExists('sess-1');
       hookState.recordCallStart('sess-1', {
         toolName: 'Task',
         callId: 'c1',
@@ -102,17 +58,25 @@ describe('HookState', () => {
 
       hookState.cleanupSession('sess-1');
 
-      expect(hookState.getTodoGuardState('sess-1')).toBeUndefined();
+      // The pending call is gone — nothing left to match on end.
+      expect(hookState.recordCallEnd('sess-1', 'Task', 'ok')).toBeNull();
     });
 
     it('should not affect other sessions', () => {
-      hookState.incrementTodoGuard('sess-1');
-      hookState.incrementTodoGuard('sess-2');
+      for (const sessionId of ['sess-1', 'sess-2']) {
+        hookState.recordCallStart(sessionId, {
+          toolName: 'Task',
+          callId: `c-${sessionId}`,
+          startTime: new Date().toISOString(),
+          epoch: Math.floor(Date.now() / 1000),
+          description: 'test',
+        });
+      }
 
       hookState.cleanupSession('sess-1');
 
-      expect(hookState.getTodoGuardState('sess-1')).toBeUndefined();
-      expect(hookState.getTodoGuardState('sess-2')?.count).toBe(1);
+      expect(hookState.recordCallEnd('sess-1', 'Task', 'ok')).toBeNull();
+      expect(hookState.recordCallEnd('sess-2', 'Task', 'ok')?.callId).toBe('c-sess-2');
     });
   });
 
@@ -199,32 +163,38 @@ describe('HookState', () => {
   // ── Stale cleanup ──
 
   describe('cleanupStale', () => {
-    it('should remove entries older than 24 hours', () => {
-      const now = new Date('2026-04-10T12:00:00Z');
-      vi.setSystemTime(now);
+    const startPendingCall = (sessionId: string) => {
+      hookState.recordCallStart(sessionId, {
+        toolName: 'Task',
+        callId: `c-${sessionId}`,
+        startTime: new Date().toISOString(),
+        epoch: Math.floor(Date.now() / 1000),
+        description: 'pending',
+      });
+    };
 
-      hookState.incrementTodoGuard('sess-old');
+    it('should remove entries older than 24 hours', () => {
+      vi.setSystemTime(new Date('2026-04-10T12:00:00Z'));
+      startPendingCall('sess-old');
 
       // Advance 25 hours
       vi.advanceTimersByTime(25 * 60 * 60 * 1000);
 
       hookState.cleanupStale();
 
-      expect(hookState.getTodoGuardState('sess-old')).toBeUndefined();
+      expect(hookState.recordCallEnd('sess-old', 'Task', 'ok')).toBeNull();
     });
 
     it('should keep entries within 24 hours', () => {
-      const now = new Date('2026-04-10T12:00:00Z');
-      vi.setSystemTime(now);
-
-      hookState.incrementTodoGuard('sess-recent');
+      vi.setSystemTime(new Date('2026-04-10T12:00:00Z'));
+      startPendingCall('sess-recent');
 
       // Advance 23 hours
       vi.advanceTimersByTime(23 * 60 * 60 * 1000);
 
       hookState.cleanupStale();
 
-      expect(hookState.getTodoGuardState('sess-recent')).not.toBeUndefined();
+      expect(hookState.recordCallEnd('sess-recent', 'Task', 'ok')).not.toBeNull();
     });
   });
 
@@ -232,9 +202,14 @@ describe('HookState', () => {
 
   describe('load/save', () => {
     it('should persist and reload state via JSON file', async () => {
-      hookState.incrementTodoGuard('sess-persist');
-      hookState.incrementTodoGuard('sess-persist');
-      hookState.markTodoExists('sess-persist');
+      hookState.recordCallStart('sess-persist', {
+        toolName: 'Task',
+        callId: 'c1',
+        startTime: new Date().toISOString(),
+        epoch: Math.floor(Date.now() / 1000),
+        description: 'persisted call',
+      });
+      hookState.recordCallEnd('sess-persist', 'Task', 'ok');
 
       // Force synchronous write
       hookState.flushSync();
@@ -244,9 +219,9 @@ describe('HookState', () => {
 
       // Verify file content
       const data = JSON.parse(fs.readFileSync(stateFile, 'utf-8'));
-      expect(data.todoGuard['sess-persist']).toBeDefined();
-      expect(data.todoGuard['sess-persist'].count).toBe(2);
-      expect(data.todoGuard['sess-persist'].todoExists).toBe(true);
+      expect(data.callLog).toHaveLength(1);
+      expect(data.callLog[0].sessionId).toBe('sess-persist');
+      expect(data.callLog[0].description).toBe('persisted call');
     });
 
     it('should start fresh on corrupted state file', async () => {
@@ -260,8 +235,14 @@ describe('HookState', () => {
       const freshState = mod.hookState;
 
       // Should work without error — started fresh
-      const result = freshState.incrementTodoGuard('sess-new');
-      expect(result.count).toBe(1);
+      freshState.recordCallStart('sess-new', {
+        toolName: 'Task',
+        callId: 'c1',
+        startTime: new Date().toISOString(),
+        epoch: Math.floor(Date.now() / 1000),
+        description: 'fresh',
+      });
+      expect(freshState.recordCallEnd('sess-new', 'Task', 'ok')?.callId).toBe('c1');
     });
   });
 });
