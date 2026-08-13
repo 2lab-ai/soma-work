@@ -11,34 +11,94 @@
  * Contract (CLI, publish mode — the one agents call):
  *   node serve.mjs --file <abs-path-to-html> [--port 8763]
  *
- *   1. Copies <file> into the serve root (default /tmp/soma-html-serve).
- *   2. Ensures a detached daemon is listening (spawns one if needed —
- *      survives the agent turn; idempotent across sessions).
- *   3. Prints JSON: { "url", "localUrl", "port", "file" } on stdout.
+ *   1. Copies <file> into the serve root — a DURABLE per-user data dir that
+ *      doubles as the permanent artifact archive (see resolution order at
+ *      defaultServeRoot below). Never a system temp dir by default: OS temp
+ *      cleanup used to wipe every published artifact.
+ *   2. Ensures a daemon is listening whose link for this artifact actually
+ *      answers 200 — the final URL is VERIFIED over loopback before it is
+ *      printed, never assumed.
+ *   3. Prints JSON: { "url", "localUrl", "port", "file" } on stdout
+ *      (+ "note" when a pre-durable-root daemon needed a compat copy,
+ *      + "migrated"/"migrationErrors" when a legacy sweep did work).
  *
  * Daemon mode (internal): node serve.mjs --daemon --port <port>
  *   Plain node:http static server, serving the serve root.
- *   GET /__soma-serve-health → "soma-html-serve" (ownership probe).
- *   GET /                    → directory index of published artifacts.
+ *   GET /__soma-serve-health → "soma-html-serve" (+ "\nroot=<serve-root>"
+ *     for loopback callers only — the absolute path is not broadcast to the
+ *     LAN). The root line lets a same-host publisher detect a daemon that is
+ *     serving a different — e.g. legacy /tmp — root.
+ *   GET /                    → directory index of the archive, newest first.
+ *
+ * Mixed-version behavior (deliberate, fail-safe):
+ *   - NEW publisher + OLD daemon: the publisher tries a compat copy into the
+ *     daemon's root and only trusts it after a verified 200; otherwise it
+ *     starts its own daemon on the next free port.
+ *   - OLD publisher + NEW daemon: old publishers compare the WHOLE health
+ *     body, so the two-line reply reads as foreign and they self-heal onto
+ *     the next free port with their own daemon. That port drift is accepted
+ *     on purpose: the alternative (keeping the body byte-identical) would
+ *     make old publishers treat a new daemon as their own, copy into a root
+ *     the daemon does not serve, and hand the user a silent 404 link.
+ *
+ * Archive semantics: artifacts are timestamped by the skill, never
+ * auto-pruned here, and migrate forward automatically from the legacy
+ * /tmp root when one is found (regular files only — symlinks are never
+ * followed into the archive). Re-publishing the same filename intentionally
+ * refreshes that artifact in place. Reclaiming disk is a human decision.
  *
  * Exposure policy: binds 0.0.0.0 by default — LAN reachability is the whole
  * point (the user opens the link from another machine). Everything ever
  * published to the serve root is therefore listable and readable by anyone
- * on the LAN; do not publish artifacts containing secrets. Set
+ * on the LAN, indefinitely; do not publish artifacts containing secrets. Set
  * SOMA_HTML_SERVE_BIND=127.0.0.1 to restrict to the host. Symlinks inside
  * the serve root are refused (realpath containment check).
  *
- * Exit codes: 0 published, 1 CLI/input error, 2 could not start/find server.
+ * Exit codes: 0 published+verified, 1 CLI/input error, 2 could not start,
+ * find, or verify a server.
  */
 
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import {
+  closeSync,
+  constants as FS,
+  existsSync,
+  linkSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import http from 'node:http';
-import { networkInterfaces } from 'node:os';
+import { homedir, networkInterfaces } from 'node:os';
 import { basename, extname, isAbsolute, join, resolve, sep } from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-const SERVE_ROOT = process.env.SOMA_HTML_SERVE_ROOT || '/tmp/soma-html-serve';
+// Pre-durable-root versions served from here; kept only as a migration
+// source and as the first root guess for daemons started by those versions.
+// Overridable so tests (and unusual setups) never touch the real /tmp dir.
+const LEGACY_SERVE_ROOT = process.env.SOMA_HTML_LEGACY_ROOT || '/tmp/soma-html-serve';
+
+function defaultServeRoot() {
+  // Resolution order (first hit wins):
+  //   1. SOMA_HTML_SERVE_ROOT       — explicit override, any path the user wants.
+  //   2. $XDG_DATA_HOME/soma-html-serve
+  //   3. ~/.local/share/soma-html-serve  (works on macOS and Linux alike)
+  //   4. LEGACY_SERVE_ROOT          — only when no home dir is resolvable.
+  if (process.env.SOMA_HTML_SERVE_ROOT) return process.env.SOMA_HTML_SERVE_ROOT;
+  if (process.env.XDG_DATA_HOME) return join(process.env.XDG_DATA_HOME, 'soma-html-serve');
+  const home = homedir();
+  if (home) return join(home, '.local', 'share', 'soma-html-serve');
+  return LEGACY_SERVE_ROOT;
+}
+
+const SERVE_ROOT = defaultServeRoot();
 const BIND_ADDR = process.env.SOMA_HTML_SERVE_BIND || '0.0.0.0';
 const BASE_PORT = Number(process.env.SOMA_HTML_SERVE_PORT || 8763);
 const PORT_SCAN_RANGE = 20;
@@ -100,23 +160,164 @@ function lanIp() {
 }
 
 function probeHealth(port, timeoutMs = 700) {
+  // Resolves { state: 'ours'|'foreign'|'free', root?: string }.
+  // Ownership is decided by the FIRST line. Daemons from older versions
+  // answer a bare body (no root line) — their root is unknown, not assumed:
+  // publish() treats an undefined root as "guess, then verify".
   return new Promise((resolveProbe) => {
+    let done = false;
+    const finish = (v) => {
+      if (done) return;
+      done = true;
+      clearTimeout(deadline);
+      resolveProbe(v);
+    };
     const req = http.get(
       { host: '127.0.0.1', port, path: HEALTH_PATH, timeout: timeoutMs },
       (res) => {
         let body = '';
-        res.on('data', (chunk) => (body += chunk));
-        res.on('end', () => resolveProbe(body.trim() === HEALTH_BODY ? 'ours' : 'foreign'));
+        res.on('data', (chunk) => {
+          body += chunk;
+          if (body.length > 4096) {
+            // A real health reply is two short lines; anything bigger is not
+            // our daemon — stop reading instead of buffering it.
+            req.destroy();
+            finish({ state: 'foreign' });
+          }
+        });
+        res.on('end', () => {
+          const lines = body.trim().split('\n');
+          if (lines[0].trim() !== HEALTH_BODY) return finish({ state: 'foreign' });
+          const rootLine = lines.find((l) => l.startsWith('root='));
+          finish({ state: 'ours', root: rootLine ? rootLine.slice(5).trim() : undefined });
+        });
       },
     );
+    // Overall deadline, matching verifyServed: the socket-inactivity timeout
+    // alone lets a slowly dripping endpoint stall the publisher.
+    const deadline = setTimeout(() => {
+      req.destroy();
+      finish({ state: 'foreign' });
+    }, timeoutMs * 2);
     req.on('timeout', () => {
       req.destroy();
-      resolveProbe('foreign');
+      finish({ state: 'foreign' });
     });
     req.on('error', (err) => {
-      resolveProbe(err.code === 'ECONNREFUSED' ? 'free' : 'foreign');
+      finish({ state: err.code === 'ECONNREFUSED' ? 'free' : 'foreign' });
     });
   });
+}
+
+function verifyServed(port, name, expectedBytes, timeoutMs = 2000) {
+  // The printed link is a deliverable — prove the daemon returns THIS
+  // artifact's bytes over loopback before handing it out. A bare 200 is not
+  // enough: an old daemon on an unknown root can happily serve a stale file
+  // with the same name.
+  return new Promise((resolveVerify) => {
+    let done = false;
+    const finish = (ok) => {
+      if (done) return;
+      done = true;
+      clearTimeout(deadline);
+      resolveVerify(ok);
+    };
+    const req = http.get(
+      { host: '127.0.0.1', port, path: `/${encodeURIComponent(name)}`, timeout: timeoutMs },
+      (res) => {
+        if (res.statusCode !== 200) {
+          res.resume();
+          return finish(false);
+        }
+        const chunks = [];
+        let received = 0;
+        res.on('data', (c) => {
+          received += c.length;
+          if (received > expectedBytes.length) {
+            // Longer than the artifact can never match — stop reading so a
+            // misbehaving endpoint can't grow our memory or stall us.
+            req.destroy();
+            return finish(false);
+          }
+          chunks.push(c);
+        });
+        res.on('end', () => finish(Buffer.concat(chunks).equals(expectedBytes)));
+      },
+    );
+    // Overall deadline: Node's request timeout is socket-inactivity based; a
+    // slowly dripping endpoint would otherwise hold the publisher forever.
+    const deadline = setTimeout(() => {
+      req.destroy();
+      finish(false);
+    }, timeoutMs * 2);
+    req.on('timeout', () => {
+      req.destroy();
+      finish(false);
+    });
+    req.on('error', () => finish(false));
+  });
+}
+
+function readFileNoFollow(path) {
+  // O_NOFOLLOW closes the lstat→read race: if the path is (or becomes) a
+  // symlink, the open fails instead of following it.
+  const fd = openSync(path, FS.O_RDONLY | FS.O_NOFOLLOW);
+  try {
+    return readFileSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function ownedRealDir(dir) {
+  // Trust gate for directories in world-writable namespaces (/tmp): the
+  // path must be a REAL directory (a symlinked root would make readdir and
+  // every write traverse an attacker-chosen parent — O_NOFOLLOW only guards
+  // the final path component) and, where the platform exposes UIDs, owned
+  // by the current user.
+  try {
+    const st = lstatSync(dir);
+    if (!st.isDirectory()) return false;
+    return typeof process.getuid !== 'function' || st.uid === process.getuid();
+  } catch {
+    return false;
+  }
+}
+
+function installFileIfAbsent(dstDir, name, bytes) {
+  // Atomic create-if-absent: link() fails with EEXIST when the destination
+  // exists (and does not follow a symlink sitting there), so a concurrent
+  // publisher's fresh artifact can never be replaced by stale legacy bytes —
+  // unlike an existsSync check followed by a separate rename.
+  const tmp = join(dstDir, `.tmp-migrate-${process.pid}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`);
+  writeFileSync(tmp, bytes, { flag: 'wx' });
+  try {
+    linkSync(tmp, join(dstDir, name));
+    return true;
+  } catch (err) {
+    if (err.code === 'EEXIST') return false; // keep the existing (newer) file
+    throw err;
+  } finally {
+    rmSync(tmp, { force: true });
+  }
+}
+
+function writeFileReplacing(dstDir, name, bytes) {
+  // Write-to-temp + atomic rename. rename REPLACES a symlink sitting at the
+  // destination instead of following it, so a link planted inside a serve
+  // root can never redirect this write to a file outside it.
+  const tmp = join(dstDir, `.tmp-publish-${process.pid}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`);
+  writeFileSync(tmp, bytes, { flag: 'wx' });
+  try {
+    renameSync(tmp, join(dstDir, name));
+  } catch (err) {
+    try {
+      rmSync(tmp, { force: true });
+    } catch {
+      /* temp cleanup is best-effort */
+    }
+    throw err;
+  }
 }
 
 function startDaemon(port) {
@@ -130,24 +331,47 @@ function startDaemon(port) {
 
 async function waitForOurs(port, attempts = 30, delayMs = 200) {
   for (let i = 0; i < attempts; i++) {
-    if ((await probeHealth(port)) === 'ours') return true;
+    const probe = await probeHealth(port);
+    if (probe.state === 'ours') return probe;
     await new Promise((r) => setTimeout(r, delayMs));
   }
-  return false;
+  return null;
 }
 
-async function ensureServer() {
-  for (let port = BASE_PORT; port < BASE_PORT + PORT_SCAN_RANGE; port++) {
-    const state = await probeHealth(port);
-    if (state === 'ours') return port;
-    if (state === 'free') {
-      startDaemon(port);
-      if (await waitForOurs(port)) return port;
-      // Lost the race or daemon died — try the next port instead of looping here.
+function migrateLegacyArtifacts() {
+  // Forward migration: regular files still alive in the legacy root are
+  // copied into the durable archive (existing names are never overwritten).
+  // Symlinks are skipped — following one would copy arbitrary readable
+  // local files into a LAN-served archive. Failures never block publishing,
+  // but they are counted and surfaced, not swallowed silently.
+  const result = { migrated: 0, errors: [] };
+  if (SERVE_ROOT === LEGACY_SERVE_ROOT) return result;
+  try {
+    if (!existsSync(LEGACY_SERVE_ROOT)) return result;
+    if (!ownedRealDir(LEGACY_SERVE_ROOT)) {
+      // A symlinked or foreign-owned legacy root in world-writable /tmp is
+      // an attack surface, not a migration source — refuse it, loudly.
+      result.errors.push(`${LEGACY_SERVE_ROOT}: not a real directory owned by this user — sweep refused`);
+      return result;
     }
-    // 'foreign': some other process owns this port; never serve through it.
+    mkdirSync(SERVE_ROOT, { recursive: true });
+    for (const name of readdirSync(LEGACY_SERVE_ROOT)) {
+      if (name.startsWith('.')) continue;
+      const src = join(LEGACY_SERVE_ROOT, name);
+      try {
+        if (!lstatSync(src).isFile()) continue; // lstat: symlinks excluded
+        // O_NOFOLLOW read + atomic link-based create-if-absent write: the
+        // read can't be redirected through a symlink, and an existing (or
+        // concurrently published, fresher) destination is never replaced.
+        if (installFileIfAbsent(SERVE_ROOT, name, readFileNoFollow(src))) result.migrated++;
+      } catch (err) {
+        result.errors.push(`${src}: ${err.message}`);
+      }
+    }
+  } catch (err) {
+    result.errors.push(`${LEGACY_SERVE_ROOT}: ${err.message}`);
   }
-  return null;
+  return result;
 }
 
 function htmlEscape(s) {
@@ -180,8 +404,17 @@ function directoryIndex() {
   ].join('\n');
 }
 
+function isLoopback(req) {
+  const addr = req.socket?.remoteAddress ?? '';
+  return addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1';
+}
+
 function runDaemon(port) {
   mkdirSync(SERVE_ROOT, { recursive: true });
+  const sweep = migrateLegacyArtifacts();
+  // Daemons spawned by publish run with stdio ignored, but a directly-run
+  // daemon still surfaces sweep failures instead of losing them.
+  for (const e of sweep.errors) console.error(`legacy migration failed for ${e}`);
   const rootReal = realpathSync(SERVE_ROOT);
   const server = http.createServer((req, res) => {
     try {
@@ -189,7 +422,10 @@ function runDaemon(port) {
       const pathname = decodeURIComponent(url.pathname);
       if (pathname === HEALTH_PATH) {
         res.writeHead(200, { 'content-type': 'text/plain' });
-        res.end(HEALTH_BODY);
+        // Line 1 = ownership token. Line 2 advertises the served root — to
+        // loopback callers only, so the absolute path (which can embed a
+        // username) is not broadcast to the LAN.
+        res.end(isLoopback(req) ? `${HEALTH_BODY}\nroot=${SERVE_ROOT}` : HEALTH_BODY);
         return;
       }
       if (pathname === '/' || pathname === '/index.html') {
@@ -236,6 +472,36 @@ function runDaemon(port) {
   server.listen(port, BIND_ADDR);
 }
 
+async function adoptDaemon(port, probe, artifactBytes, name) {
+  // Try to make an existing 'ours' daemon serve this artifact, returning
+  // { port, note? } only after the served bytes are VERIFIED — otherwise null.
+  const daemonRoot = probe.root; // undefined = pre-root-advertising daemon
+  if (daemonRoot === SERVE_ROOT) {
+    return (await verifyServed(port, name, artifactBytes)) ? { port } : null;
+  }
+  // Different (or unknown) root: drop a compat copy where we believe the
+  // daemon looks, then verify. The legacy default is only a guess — an old
+  // daemon may have been started with a custom SOMA_HTML_SERVE_ROOT — which
+  // is exactly why the verified byte-compare, not the copy, is the success
+  // signal (a stale same-name file answering 200 must not pass).
+  const guess = daemonRoot ?? LEGACY_SERVE_ROOT;
+  try {
+    if (!existsSync(guess)) mkdirSync(guess, { recursive: true });
+    // Same trust gate as migration: never write through a symlinked or
+    // foreign-owned directory in a world-writable namespace.
+    if (ownedRealDir(guess)) writeFileReplacing(guess, name, artifactBytes);
+  } catch {
+    // fall through to verification, which will fail and reject this daemon
+  }
+  if (await verifyServed(port, name, artifactBytes)) {
+    return {
+      port,
+      note: `daemon on port ${port} serves ${daemonRoot ?? `an older root (compat copy placed in ${guess})`}; artifact archived in ${SERVE_ROOT}, which takes over when that daemon restarts`,
+    };
+  }
+  return null;
+}
+
 async function publish(file, explicitPort) {
   if (!file) {
     console.error('--file is required');
@@ -247,22 +513,45 @@ async function publish(file, explicitPort) {
     process.exit(1);
   }
   mkdirSync(SERVE_ROOT, { recursive: true });
+  const migration = migrateLegacyArtifacts();
+  for (const e of migration.errors) console.error(`legacy migration failed for ${e}`);
   const name = basename(abs);
-  copyFileSync(abs, join(SERVE_ROOT, name));
+  const artifactBytes = readFileSync(abs);
+  writeFileReplacing(SERVE_ROOT, name, artifactBytes);
 
-  let port;
-  if (explicitPort) {
-    const state = await probeHealth(explicitPort);
-    if (state === 'ours') port = explicitPort;
-    else if (state === 'free') {
-      startDaemon(explicitPort);
-      port = (await waitForOurs(explicitPort)) ? explicitPort : null;
-    } else port = null;
-  } else {
-    port = await ensureServer();
+  let chosen = null;
+  const ports = explicitPort ? [explicitPort] : [];
+  if (!explicitPort) {
+    for (let p = BASE_PORT; p < BASE_PORT + PORT_SCAN_RANGE; p++) ports.push(p);
   }
-  if (!port) {
-    console.error(`could not start or find a soma-html-serve daemon (base port ${explicitPort ?? BASE_PORT})`);
+  for (const port of ports) {
+    const probe = await probeHealth(port);
+    if (probe.state === 'ours') {
+      chosen = await adoptDaemon(port, probe, artifactBytes, name);
+      if (chosen) break;
+      // Unusable 'ours' daemon (e.g. old daemon on an unknown custom root):
+      // with an explicit port we must fail loudly below; when scanning we
+      // move on and start a fresh daemon on the next free port.
+      continue;
+    }
+    if (probe.state === 'free') {
+      startDaemon(port);
+      const started = await waitForOurs(port);
+      if (started && (await verifyServed(port, name, artifactBytes))) {
+        chosen = { port };
+        break;
+      }
+      // Lost the race or daemon died — try the next port instead of looping here.
+    }
+    // 'foreign': some other process owns this port; never serve through it.
+  }
+
+  if (!chosen) {
+    console.error(
+      explicitPort
+        ? `no usable soma-html-serve daemon on port ${explicitPort} (occupied by a foreign process, or serving a root this artifact could not be verified on)`
+        : `could not start or find a soma-html-serve daemon (ports ${BASE_PORT}-${BASE_PORT + PORT_SCAN_RANGE - 1})`,
+    );
     process.exit(2);
   }
 
@@ -270,10 +559,13 @@ async function publish(file, explicitPort) {
   console.log(
     JSON.stringify(
       {
-        url: `http://${lanIp()}:${port}/${encoded}`,
-        localUrl: `http://localhost:${port}/${encoded}`,
-        port,
+        url: `http://${lanIp()}:${chosen.port}/${encoded}`,
+        localUrl: `http://localhost:${chosen.port}/${encoded}`,
+        port: chosen.port,
         file: join(SERVE_ROOT, name),
+        ...(chosen.note ? { note: chosen.note } : {}),
+        ...(migration.migrated ? { migrated: migration.migrated } : {}),
+        ...(migration.errors.length ? { migrationErrors: migration.errors.length } : {}),
       },
       null,
       2,

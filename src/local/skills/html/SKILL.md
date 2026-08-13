@@ -1,8 +1,8 @@
 ---
 name: html
-description: Convert any content (markdown, plain text, JSON, CSV, SQL, raw notes) into a styled single-file HTML with a Lottie motion layer and a rendered PNG, publish the HTML on the local web server (clickable access link), then upload both files to the current Slack thread. The visual design is driven by the `ui-ux` skill as the main design engine (design-system + named references; default reference `openai`), with the `design` skill applied on top as the anti-AI-slop layer and the `motion-design`/`apple-design` standards governing all CSS motion and display typography. Pick a template name from the catalog or let the skill auto-classify. Triggers on "html로 만들어줘", "HTML로 변환", "이걸 페이지로", "render as html", "html + png", "convert to html", "to html and png", "make a card", "make a deck", "make a poster", "make a report from this data".
+description: Convert any content (markdown, plain text, JSON, CSV, SQL, raw notes) into a styled single-file HTML with a Lottie motion layer and a rendered PNG, publish the HTML on the local web server (clickable access link), then upload both files to the current Slack thread. The visual design is driven by the `ui-ux` skill as the main design engine — applied by default on EVERY invocation, whether or not the user mentions design (design-system + named references; default reference `openai`) — with the `design` skill applied on top as the anti-AI-slop layer and the `motion-design`/`apple-design` standards governing all CSS motion and display typography. Pick a template name from the catalog or let the skill auto-classify. Triggers on "html로 만들어줘", "HTML로 변환", "이걸 페이지로", "render as html", "html + png", "convert to html", "to html and png", "make a card", "make a deck", "make a poster", "make a report from this data".
 allowed-tools: Read, Write, Edit, Bash, Glob, Grep
-version: 0.3.0
+version: 0.4.0
 license: ISC
 ---
 
@@ -90,13 +90,19 @@ typography constraints, palette). The agent obeys this contract when
 generating HTML. If the upstream template's `SKILL.md` is in Chinese or
 mixed CJK, that's fine — the structural intent translates.
 
-### 3.4. Drive the design from the `ui-ux` skill (MAIN driver)
+### 3.4. Drive the design from the `ui-ux` skill (MAIN driver — always on)
 
-The **`ui-ux`** skill is the **main design driver** for this skill. Before any
-visual decision, read it and run its engine — it owns palette, typography,
-layout system, and the named visual reference. (The `design` skill in Step 3.5
-then runs *on top* of the ui-ux output as the anti-AI-slop refinement layer; it
-is no longer the primary source of the visual voice.)
+The **`ui-ux`** skill is the **main design driver** for this skill, and this
+step is **not opt-in**: run it on every invocation, even when the user says
+nothing about design, style, or references. The user asking for "HTML" IS the
+request for a designed page — do not wait for a design keyword, and do not
+skip to raw markup because the content seems plain. Skip this step only when
+the user explicitly opts out (e.g. asks for "unstyled/bare HTML").
+
+Before any visual decision, read `ui-ux` and run its engine — it owns palette,
+typography, layout system, and the named visual reference. (The `design` skill
+in Step 3.5 then runs *on top* of the ui-ux output as the anti-AI-slop
+refinement layer; it is no longer the primary source of the visual voice.)
 
 ```bash
 UIUX="$CLAUDE_PLUGIN_ROOT/skills/ui-ux"
@@ -331,23 +337,56 @@ with open(p, "rb") as f:
 PY
 ```
 
-### 7. Publish to the local web server (access link)
+### 7. Publish to the local web server (access link + durable archive)
 
 ```bash
 node "$CLAUDE_PLUGIN_ROOT/skills/html/server/serve.mjs" \
   --file "$(pwd)/html-<slug>-<ts>.html"
 ```
 
-This copies the HTML into the serve root (`/tmp/soma-html-serve`), ensures a
-long-lived static-server daemon is listening (spawned detached on first use —
-idempotent, survives the agent turn, reused across sessions), and prints
-JSON:
+This copies the HTML into the **serve root, which doubles as the permanent
+artifact archive**, ensures a long-lived static-server daemon is listening
+(spawned detached on first use — idempotent, survives the agent turn, reused
+across sessions), and prints JSON:
 
 ```json
 { "url": "http://<lan-ip>:8763/html-<slug>-<ts>.html",
   "localUrl": "http://localhost:8763/html-<slug>-<ts>.html",
-  "port": 8763, "file": "/tmp/soma-html-serve/html-<slug>-<ts>.html" }
+  "port": 8763, "file": "<serve-root>/html-<slug>-<ts>.html" }
 ```
+
+**Serve root = archive.** The root resolves in this order (first hit wins):
+`SOMA_HTML_SERVE_ROOT` env override → `$XDG_DATA_HOME/soma-html-serve` →
+`~/.local/share/soma-html-serve` (the default on macOS and Linux) → the
+legacy `/tmp/soma-html-serve` only when no home directory is resolvable.
+Never point the root at a system temp directory yourself: OS temp cleanup
+deletes every published artifact — a week of reports once vanished this way
+and had to be reconstructed from session transcripts. Archive policy:
+artifacts are timestamped by the Step 4 filename, retained indefinitely
+(no auto-pruning), and listable at the daemon's `/` index newest-first;
+reclaiming disk is a human decision, not the server's.
+
+**Migration & mixed versions** (automatic): every publish and daemon start
+sweeps regular files still in the legacy `/tmp` root into the durable
+archive (existing names are never overwritten; symlinks are never followed).
+Sweep failures don't block publishing but are surfaced on stderr and as a
+`migrationErrors` count in the JSON — a silent sweep is not assumed to have
+worked. The printed link is **verified with a real HTTP 200 before it is
+handed out**: if an older daemon is still serving a different root, publish
+places a compat copy, verifies, and marks the JSON with a `note`; if the old
+daemon can't be verified, publish starts a fresh daemon on the next free
+port instead of printing a dead link. (Old publishers meeting a new daemon
+read its health reply as foreign and self-heal onto another port — accepted
+port drift, never a silent 404.) Re-publishing the same filename refreshes
+that artifact in place — timestamps in the filename are what make archive
+entries distinct.
+
+**The archive is LAN-readable, indefinitely.** With the default `0.0.0.0`
+bind, everything published is listable and readable by anyone on the local
+network for as long as it stays in the archive — never publish pages
+containing secrets, tokens, or personal data. If something sensitive was
+published, delete that file from the serve root yourself (that is the
+removal procedure; there is no expiry).
 
 Use `url` (LAN IP) as the access link you hand to the user — `localhost`
 only works on the host machine itself; include it as a secondary mention.
@@ -410,6 +449,9 @@ look.
   URLs, or off-palette colors are all slop.
 - Do **not** hand the user a link you haven't `curl`-verified, and do not
   ship `localhost` as the primary link — it only resolves on the host.
+- Do **not** point `SOMA_HTML_SERVE_ROOT` at a system temp directory, and do
+  not "clean up" the serve root as part of a task — it is the artifact
+  archive; pruning it is the user's call.
 
 ## Adding more templates
 

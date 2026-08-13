@@ -15,6 +15,18 @@ Even when it is not a PR review request, when looking at code:
 2. **Be specific**: Provide code examples rather than abstract advice
 3. **Be practical**: Offer working solutions rather than theory
 
+## On Task Completion
+
+This rule fires only when **you modified source code in this session** and the task is complete. It does not fire on read-only work — reviews, investigations, debugging that changed nothing, explanations, planning, or turns that produced no source edit. When it applies, summarize the change with the `local:calldiff` skill before you report back:
+
+1. Run `npx calldiff@0.5.0 diff <base-ref>` at the repo root. Detect the base ref (PR base branch, or `origin/HEAD`) — do not hardcode `main`; use plain `diff` for uncommitted work. Pin the version, cap the Bash tool timeout at 120000 ms, one attempt — never retry it in a loop. Do not prefix it with the `timeout` command; that binary does not exist on macOS hosts.
+2. Report the call-flow delta — what each entrypoint stopped calling (`-`) and now calls (`+`) — alongside the file-level summary.
+3. `No callstack changes between ... and ...` on exit 0 means the edit did not move call flow. That is a finding: say it in one line, then give the file-level summary.
+4. If it fails for any reason (non-zero exit, timeout, no network, sandbox denial), it is not a blocker. Say `calldiff unavailable: <reason>` in one line and report the file-level summary. Never let it stall or block the report.
+5. Skip it, silently, when the edits touch no source files at all (docs, config, prompts). No source functions, no call flow, nothing to report.
+
+This feeds the completion report — it does not replace it. When `local:es` renders the terminal report, the call-flow delta is one section of it, not a second competing summary.
+
 ## Based on the user's instructions, appropriately determine and invoke the following skills to resolve the task.
 
 - superpowers:using-superpowers
@@ -24,5 +36,6 @@ Even when it is not a PR review request, when looking at code:
 - local:zwork
 - local:diagram
 - local:architecture-diagram
+- local:calldiff
 
 </workflow_prompt>

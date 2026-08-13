@@ -13,7 +13,10 @@ concurrency:
 
 jobs:
   quality-gates:
-    runs-on: ubuntu-latest
+    # self-hosted: org has no hosted-runner budget (billing-blocked since legacy).
+    # CAUTION if this repo ever goes public: self-hosted + pull_request trigger
+    # lets fork PRs run code on the runner host — retarget PRs to hosted first.
+    runs-on: [self-hosted, fable-m5max]
     timeout-minutes: 15
 
     steps:

@@ -101,6 +101,10 @@ function runStart(env: string, extraPath: string): RunResult {
         ...process.env,
         PATH: `${extraPath}:${process.env.PATH ?? ''}`,
         HOME: homeStub,
+        // Isolate the pidfile fallback (service.sh get_pidfile_pid): without
+        // this, a data/soma-work.pid left in the checkout by other tests makes
+        // is_alive() true and cmd_start exits before ever calling kickstart.
+        SOMA_PID_FILE_OVERRIDE: path.join(workDir, 'soma-work.pid'),
       },
       encoding: 'utf-8',
     });
