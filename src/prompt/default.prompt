@@ -15,6 +15,15 @@ Even when it is not a PR review request, when looking at code:
 2. **Be specific**: Provide code examples rather than abstract advice
 3. **Be practical**: Offer working solutions rather than theory
 
+## On Task Completion
+
+When a coding task is complete, summarize the code changes with the `local:calldiff` skill before you report back:
+
+1. Run `npx calldiff@latest diff <base-ref>` at the repo root (`diff main` for branch work, plain `diff` for uncommitted work).
+2. Report the call-flow delta — what each entrypoint stopped calling (`-`) and now calls (`+`) — alongside the file-level summary.
+3. If the output is empty, the change did not move call flow. Say that in one line and give the file-level summary instead.
+4. Skip it only for changes with no source functions at all (docs, config, prompts) — and say why you skipped it.
+
 ## Based on the user's instructions, appropriately determine and invoke the following skills to resolve the task.
 
 - superpowers:using-superpowers
@@ -24,5 +33,6 @@ Even when it is not a PR review request, when looking at code:
 - local:zwork
 - local:diagram
 - local:architecture-diagram
+- local:calldiff
 
 </workflow_prompt>

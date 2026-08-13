@@ -1,0 +1,143 @@
+---
+name: calldiff
+description: "Diff call stacks across git refs — git diff for who-calls-whom. Shows which callees appeared, disappeared, or moved under an entrypoint across 22 languages (diff / tree / reach). Use it to summarize what a change actually did to call flow when work completes, and during code review when line diffs bury the shape of the change. Triggers on 'calldiff', '콜스택 diff', '호출 흐름 변경', '코드 변경점 요약', 'summarize the code changes', 'call flow changed'."
+---
+
+# calldiff — diff the call flow, not just the lines
+
+Line diffs tell you which characters moved. They do not tell you that `createSession`
+stopped calling `AuthStorage.create()` directly and now goes through `getServices()`.
+`calldiff` parses both git trees with tree-sitter, builds per-function callee trees, and
+diffs those trees.
+
+```diff
+  PiService.createAgentSession(options)
+- ├─ AuthStorage.create()
+- ├─ new ModelRegistry
+- ├─ createCodingTools()
++ ├─ PiService.getServices()
++ │  ├─ SettingsManager.create()
++ │  ├─ AuthStorage.create()
++ │  └─ new ModelRegistry
+```
+
+## When to use
+
+- **Completion summary (default).** Work is done, the branch has commits — run `diff` and
+  report the call-flow delta alongside the file-level summary.
+- **Code review.** A PR touches many files and you need the shape of the change, not the
+  line noise.
+- **Impact check.** Before editing, see who reaches the symbol you are about to change
+  (`reach`), or what an entrypoint pulls in (`tree`).
+
+## When not to use
+
+- Pure docs / config / prompt / skill changes with no source functions — there is no call
+  flow to diff. Say so in one line instead of running it.
+- Non-git working copies, or repos in a language outside the supported list.
+
+## Invocation
+
+No install step. Run it through npx, from the repo root:
+
+```sh
+npx calldiff@latest diff
+```
+
+Prefer `--format json` when you need to post-process; the default ASCII output is already
+the right shape for a human-facing summary.
+
+## `diff` — call-flow delta between two trees
+
+Ref semantics match `git diff`: no refs → `HEAD` vs working tree; one ref → that ref vs
+working tree; two refs → those two trees.
+
+```sh
+# HEAD vs working tree
+npx calldiff@latest diff
+
+# branch base vs current work (the usual completion summary)
+npx calldiff@latest diff main
+
+# two explicit refs
+npx calldiff@latest diff abc123 def456
+
+# force entrypoints: functionName or ClassName.method
+npx calldiff@latest diff main HEAD --entry createAgentSession
+npx calldiff@latest diff main HEAD -e PiService.createAgentSession -e boot
+
+# every exported symbol of one file as the entrypoint set
+npx calldiff@latest diff main HEAD --file src/routes.ts
+
+# limit to path prefixes (trailing positionals)
+npx calldiff@latest diff main HEAD src/agent-runtime
+```
+
+`-` lines existed in *from* and are gone in *to*. `+` lines are new in *to*. With no
+`--entry` / `--file`, calldiff infers the exported functions whose call trees changed.
+
+## `tree` — one call tree, no diff
+
+```sh
+npx calldiff@latest tree --entry createAgentSession
+npx calldiff@latest tree HEAD -e PiService.createAgentSession --max-depth 8 src/lib
+npx calldiff@latest tree --file src/routes.ts --locs
+```
+
+`--entry` / `-e` or `--file` / `-F` is required. `--locs` adds `file:line` — the root uses
+the definition site, children use the call site inside the parent.
+
+## `reach` — every call path from A to B
+
+```sh
+npx calldiff@latest reach -e runCheckout --to sendEmail
+npx calldiff@latest reach HEAD -e runCheckout --to sendEmail examples/checkout
+```
+
+Requires `--entry` / `--file` plus `--to`. Prints all paths, including alternate `if` /
+`else` arms.
+
+## Options worth knowing
+
+| Flag | Default | What it does |
+|---|---|---|
+| `--entry` / `-e` | inferred | Entrypoint symbol: `functionName` or `ClassName.method` (repeatable) |
+| `--file` / `-F` | — | Entrypoint file: expands to that file's exports (exact path or unique suffix) |
+| `--max-depth` | `12` | Call-tree depth cap |
+| `--locs` | off | Show `file:line` for definitions and call sites |
+| `--format` | ascii | `json` / `yaml` / `md` / `jsonl` for machine consumption |
+
+## Reading the labels
+
+- `functionName` — free function
+- `ClassName.method` — class method
+- `new ClassName` — constructor call
+- `Component` — JSX/TSX component tag; children nest under it
+- `if (cond)` / `else if (cond)` / `else` — conditional arms
+- `file:line` — location, only with `--locs`
+
+## How to turn the output into a summary
+
+1. Run `npx calldiff@latest diff <base-ref>` at the repo root.
+2. If it prints nothing, the change did not move call flow — say exactly that, then fall
+   back to a file-level summary. Empty output is a finding, not a failure.
+3. Otherwise report, per entrypoint: what it stopped calling (`-`), what it now calls
+   (`+`), and what that means behaviorally. Quote the tree — the ASCII shape carries more
+   than a paraphrase.
+4. Flag anything surprising: a new call under a hot path, a dropped validation step, a
+   dependency inversion you did not intend.
+
+## Limits — do not over-claim
+
+- Analysis is **syntactic** (AST-based, tree-sitter), not a typechecker. Dynamic calls,
+  reflection, and calls through unresolved values will not resolve.
+- Grammars download on first use into `~/.cache/calldiff/grammars`
+  (override with `CALLDIFF_GRAMMAR_CACHE`). First run in a sandbox may need network.
+- Supported: TypeScript, TSX, JavaScript, JSX, Python, Go, Rust, Java, Ruby, C, C++, C#,
+  PHP, Kotlin, Swift, Scala, Lua, Elixir, Bash, Haskell, Zig, Solidity, OCaml.
+
+## Upstream
+
+Adapted from [tanishqkancharla/calldiff](https://github.com/tanishqkancharla/calldiff)
+(MIT). The CLI is the upstream `calldiff` npm package, invoked unmodified; this skill only
+adds the usage discipline for agents.
