@@ -162,11 +162,24 @@ Every PR carrying code changes opens with this block. It is the **first section 
 body**, before context, before the test plan. A reviewer should see what moved in the call
 graph before reading prose about it.
 
+**Resolve the base in this order.** The PR does not exist yet when you are creating it, so
+`gh pr view` is the *second* source, not the first:
+
+1. The ref you are about to pass to `gh pr create --base` — you already know it.
+2. `gh pr view --json baseRefName -q .baseRefName` — only when refreshing an existing PR.
+3. `git symbolic-ref --short refs/remotes/origin/HEAD` — repo default, last resort.
+
+Diffing against the wrong base yields a report that is present, topmost, and **false**.
+That is worse than no report.
+
+Then make sure the base ref actually exists locally — agent checkouts are frequently
+shallow clones (`git clone --depth 1`), where `origin/<base>` is simply absent and calldiff
+degrades to "unavailable" for a reason that has nothing to do with your change:
+
 ```sh
-BASE=$(gh pr view --json baseRefName -q .baseRefName 2>/dev/null \
-       || git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|origin/||' \
-       || echo main)
-npx calldiff@0.5.0 diff "$BASE" HEAD
+BASE="<the ref you are passing to --base>"        # step 1 above
+git rev-parse -q --verify "origin/$BASE" >/dev/null || git fetch --depth=50 origin "$BASE"
+npx calldiff@0.5.0 diff "origin/$BASE" HEAD
 ```
 
 Shape of the block:

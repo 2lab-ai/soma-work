@@ -31,7 +31,15 @@
 
 ```markdown
 ## Summary
-<이슈 Goal을 구현 관점에서 한 줄로 재서술>
+
+```
+<local:calldiff 리포트 — `npx calldiff@0.5.0 diff origin/<base> HEAD` 출력 그대로.
+ 콜플로우가 안 움직였으면 `No callstack changes between ... and ...` 한 줄.
+ 도구가 못 돌았으면 `calldiff unavailable: <reason>` (PR 생성을 막지 않는다).
+ 소스 파일이 없는 PR이면 `Call-flow report N/A — no source files in this PR.`>
+```
+
+<이슈 Goal을 구현 관점에서 한 줄로 재서술 + 콜플로우 델타가 행동상 무엇을 뜻하는지 2~3줄>
 
 Closes #<이슈번호>
 
@@ -126,7 +134,12 @@ Unit / Integration / Regression
 
 ```markdown
 ## Summary
-<서브이슈 Goal 재서술 한 줄>
+
+```
+<local:calldiff 리포트 — A-2와 동일 규약. 최상단 고정, 생략 금지.>
+```
+
+<서브이슈 Goal 재서술 한 줄 + 콜플로우 델타의 의미 2~3줄>
 
 Closes #<서브이슈 번호>
 ```
