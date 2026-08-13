@@ -1,37 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { isExemptTool, shouldTrackTool } from '../hook-policy';
+import { shouldTrackTool } from '../hook-policy';
 
 describe('hook-policy', () => {
-  describe('isExemptTool', () => {
-    it('should exempt ToolSearch', () => {
-      expect(isExemptTool('ToolSearch')).toBe(true);
-    });
-
-    it('should exempt TodoWrite', () => {
-      expect(isExemptTool('TodoWrite')).toBe(true);
-    });
-
-    it('should not exempt Read', () => {
-      expect(isExemptTool('Read')).toBe(false);
-    });
-
-    it('should not exempt Edit', () => {
-      expect(isExemptTool('Edit')).toBe(false);
-    });
-
-    it('should not exempt Bash', () => {
-      expect(isExemptTool('Bash')).toBe(false);
-    });
-
-    it('should not exempt Task', () => {
-      expect(isExemptTool('Task')).toBe(false);
-    });
-
-    it('should not exempt empty string', () => {
-      expect(isExemptTool('')).toBe(false);
-    });
-  });
-
   describe('shouldTrackTool', () => {
     it('should track Task', () => {
       expect(shouldTrackTool('Task')).toBe(true);
