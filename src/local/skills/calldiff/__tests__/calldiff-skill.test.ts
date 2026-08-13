@@ -93,6 +93,28 @@ describe('local:calldiff skill — contract (T1)', () => {
     expect(md).toMatch(/--entry|-e /);
   });
 
+  it('describes the real no-change output of the pinned CLI, not "empty output"', () => {
+    // Verified against calldiff@0.5.0: it prints
+    // "No callstack changes between HEAD and working tree." — it does not print nothing.
+    const md = readFileSync(SKILL_MD, 'utf8');
+    expect(md).toMatch(/No callstack changes between/);
+  });
+
+  it('does not claim `ascii` is an accepted --format value', () => {
+    // calldiff@0.5.0 --help: --format <toon|json|yaml|md|jsonl>. ASCII is the
+    // no-flag default renderer, not a value.
+    const md = readFileSync(SKILL_MD, 'utf8');
+    const formatRow = md.split('\n').find((line) => line.includes('`--format`')) ?? '';
+    expect(formatRow, 'the --format row must exist').not.toBe('');
+    expect(formatRow).toMatch(/toon/);
+    expect(formatRow).toMatch(/not.*accepted value|`ascii` is \*\*not\*\*/);
+  });
+
+  it('detects the base ref instead of hardcoding main', () => {
+    const md = readFileSync(SKILL_MD, 'utf8');
+    expect(md).toMatch(/do not hardcode `main`|baseRefName|origin\/HEAD/);
+  });
+
   it('states the syntactic (AST) limitation so agents do not over-claim', () => {
     const md = readFileSync(SKILL_MD, 'utf8').toLowerCase();
     expect(md).toMatch(/syntactic|ast-based|tree-sitter/);
@@ -119,6 +141,16 @@ describe('default prompt wires calldiff into task completion (T2)', () => {
   it('the completion rule names the skill in invocable form (local:calldiff)', () => {
     const prompt = readFileSync(DEFAULT_PROMPT, 'utf8');
     expect(prompt).toMatch(/local:calldiff/);
+  });
+
+  it('the rule is scoped to turns that actually modified source, not every "coding task"', () => {
+    const prompt = readFileSync(DEFAULT_PROMPT, 'utf8');
+    const section = prompt.slice(prompt.indexOf('## On Task Completion'));
+    // Must require a real source edit...
+    expect(section).toMatch(/modified source code|edited source|changed source/i);
+    // ...and must exclude read-only work explicitly.
+    expect(section.toLowerCase()).toMatch(/read-only/);
+    expect(section.toLowerCase()).toMatch(/review|investigat|explanation|planning/);
   });
 
   it('the completion rule is pinned, bounded, and degrades instead of blocking', () => {

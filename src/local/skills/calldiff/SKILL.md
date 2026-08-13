@@ -67,8 +67,8 @@ Distinguish the two quiet outcomes — they mean opposite things:
 
 | Outcome | Meaning | What to say |
 |---|---|---|
-| exit 0, nothing printed | The change genuinely did not move call flow | "No call-flow change" + file-level summary |
-| non-zero exit / timeout | The tool did not run | `calldiff unavailable: <reason>` + file-level summary |
+| exit 0 + `No callstack changes between <from> and <to>.` (verified output of v0.5.0 — it prints this line, it does not print nothing) | The change genuinely did not move call flow | "No call-flow change" + file-level summary |
+| non-zero exit / timeout / no output at all | The tool did not run | `calldiff unavailable: <reason>` + file-level summary |
 
 ## `diff` — call-flow delta between two trees
 
@@ -79,8 +79,12 @@ working tree; two refs → those two trees.
 # HEAD vs working tree
 npx calldiff@0.5.0 diff
 
-# branch base vs current work (the usual completion summary)
-npx calldiff@0.5.0 diff main
+# branch base vs current work (the usual completion summary).
+# Detect the base — do not hardcode `main`. Repos differ (master, develop, a PR base).
+BASE=$(gh pr view --json baseRefName -q .baseRefName 2>/dev/null \
+       || git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|origin/||' \
+       || echo main)
+npx calldiff@0.5.0 diff "$BASE"
 
 # two explicit refs
 npx calldiff@0.5.0 diff abc123 def456
@@ -128,7 +132,7 @@ Requires `--entry` / `--file` plus `--to`. Prints all paths, including alternate
 | `--file` / `-F` | — | Entrypoint file: expands to that file's exports (exact path or unique suffix) |
 | `--max-depth` | `12` | Call-tree depth cap |
 | `--locs` | off | Show `file:line` for definitions and call sites |
-| `--format` | ascii | `json` / `yaml` / `md` / `jsonl` for machine consumption |
+| `--format` | omitted | Accepts `toon` / `json` / `yaml` / `md` / `jsonl`. `ascii` is **not** an accepted value — the ASCII tree is what you get when you omit the flag |
 
 ## Reading the labels
 
@@ -142,8 +146,10 @@ Requires `--entry` / `--file` plus `--to`. Prints all paths, including alternate
 ## How to turn the output into a summary
 
 1. Run `npx calldiff@0.5.0 diff <base-ref>` at the repo root.
-2. If it prints nothing, the change did not move call flow — say exactly that, then fall
-   back to a file-level summary. Empty output is a finding, not a failure.
+2. If it exits 0 with `No callstack changes between <from> and <to>.`, the change did not
+   move call flow — say exactly that, then fall back to a file-level summary. That line is
+   a finding, not a failure. (Silence plus a non-zero exit is the opposite case — see
+   "When it fails" above.)
 3. Otherwise report, per entrypoint: what it stopped calling (`-`), what it now calls
    (`+`), and what that means behaviorally. Quote the tree — the ASCII shape carries more
    than a paraphrase.
