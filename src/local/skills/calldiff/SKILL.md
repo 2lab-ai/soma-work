@@ -178,9 +178,29 @@ degrades to "unavailable" for a reason that has nothing to do with your change:
 
 ```sh
 BASE="<the ref you are passing to --base>"        # step 1 above
-git rev-parse -q --verify "origin/$BASE" >/dev/null || git fetch --depth=50 origin "$BASE"
+git rev-parse -q --verify "origin/$BASE" >/dev/null \
+  || git fetch --depth=50 origin "refs/heads/$BASE:refs/remotes/origin/$BASE"
 npx calldiff@0.5.0 diff "origin/$BASE" HEAD
 ```
+
+**The explicit refspec is not decoration.** `git fetch origin "$BASE"` — the form everyone
+reaches for — only moves `FETCH_HEAD` when the clone's fetch refspec is narrowed, which is
+exactly what `--depth 1 --branch <one>` produces. Verified in a real shallow clone:
+
+```
+$ git clone --depth 1 --branch main <repo> && cd repo
+$ git fetch --depth=50 origin deploy/dev
+ * branch            deploy/dev -> FETCH_HEAD
+$ git rev-parse -q --verify origin/deploy/dev   # → MISSING
+
+$ git fetch --depth=50 origin "refs/heads/deploy/dev:refs/remotes/origin/deploy/dev"
+$ git rev-parse -q --verify origin/deploy/dev   # → EXISTS
+$ npx calldiff@0.5.0 diff origin/deploy/dev HEAD
+No callstack changes between origin/deploy/dev and HEAD.
+```
+
+Without the `src:dst` refspec the next line dies with
+`DIFF_FAILED — Unknown git ref: origin/<base>`.
 
 Shape of the block:
 

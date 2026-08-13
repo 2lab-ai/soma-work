@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -237,7 +237,16 @@ describe('default prompt requires a calldiff report at the top of every PR body 
     const md = readFileSync(SKILL_MD, 'utf8');
     const prSection = md.slice(md.indexOf('## In a pull request body'));
     expect(prSection).toMatch(/gh pr create --base/);
-    expect(prSection).toMatch(/git fetch/);
+    // A bare `git fetch origin <base>` only moves FETCH_HEAD in a narrowed
+    // clone (verified: `git clone --depth 1 --branch main` then
+    // `git fetch --depth=50 origin deploy/dev` leaves origin/deploy/dev
+    // MISSING, and calldiff dies with "Unknown git ref"). The explicit
+    // src:dst refspec is what actually creates the remote-tracking ref.
+    expect(prSection).toMatch(/git fetch[^\n]*refs\/heads\/[^\n]*:refs\/remotes\/origin\//);
+    expect(prSection, 'a bare `git fetch origin $BASE` is the defect, not the fix').not.toMatch(
+      /git fetch --depth=\d+ origin "\$BASE"\s*$/m,
+    );
+    expect(prSection).toMatch(/FETCH_HEAD/);
     expect(prSection.toLowerCase()).toMatch(/shallow clone/);
     // and it must say why a wrong base is worse than nothing
     expect(prSection.toLowerCase()).toMatch(/false|wrong base/);
@@ -298,13 +307,22 @@ describe('every PR-creating surface carries the calldiff-first rule (T5)', () =>
     }
   });
 
-  it('no PR-creating surface silently drops the rule', () => {
-    // Any skill that documents `gh pr create` must mention calldiff.
+  it('no PR-creating surface silently drops the rule — discovered by scan, not hardcoded', () => {
+    // The whole point of T5 is catching a surface nobody remembered to update.
+    // A hardcoded list would stay green forever while a NEW skill quietly
+    // bypasses the rule — so this discovers skills instead of listing them.
+    const scanned: string[] = [];
     const offenders: string[] = [];
-    for (const file of [ZWORK]) {
-      const md = readFileSync(file, 'utf8');
-      if (md.includes('gh pr create') && !md.includes('calldiff')) offenders.push(file);
+    for (const entry of readdirSync(SKILLS_DIR, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.name === 'calldiff') continue;
+      const skillMd = resolve(SKILLS_DIR, entry.name, 'SKILL.md');
+      if (!existsSync(skillMd)) continue;
+      const md = readFileSync(skillMd, 'utf8');
+      if (!md.includes('gh pr create')) continue;
+      scanned.push(entry.name);
+      if (!md.includes('calldiff')) offenders.push(entry.name);
     }
+    expect(scanned.length, 'the scan must actually find PR-creating skills').toBeGreaterThan(0);
     expect(offenders, `these skills create PRs without the calldiff rule: ${offenders.join(', ')}`).toEqual([]);
   });
 });
