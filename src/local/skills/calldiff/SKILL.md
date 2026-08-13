@@ -156,6 +156,77 @@ Requires `--entry` / `--file` plus `--to`. Prints all paths, including alternate
 4. Flag anything surprising: a new call under a hot path, a dropped validation step, a
    dependency inversion you did not intend.
 
+## In a pull request body — the report goes first
+
+Every PR carrying code changes opens with this block. It is the **first section of the PR
+body**, before context, before the test plan. A reviewer should see what moved in the call
+graph before reading prose about it.
+
+**Resolve the base in this order.** The PR does not exist yet when you are creating it, so
+`gh pr view` is the *second* source, not the first:
+
+1. The ref you are about to pass to `gh pr create --base` — you already know it.
+2. `gh pr view --json baseRefName -q .baseRefName` — only when refreshing an existing PR.
+3. `git symbolic-ref --short refs/remotes/origin/HEAD` — repo default, last resort.
+
+Diffing against the wrong base yields a report that is present, topmost, and **false**.
+That is worse than no report.
+
+Then make sure the base ref actually exists locally — agent checkouts are frequently
+shallow clones (`git clone --depth 1`), where `origin/<base>` is simply absent and calldiff
+degrades to "unavailable" for a reason that has nothing to do with your change:
+
+```sh
+BASE="<the ref you are passing to --base>"        # step 1 above
+git rev-parse -q --verify "origin/$BASE" >/dev/null \
+  || git fetch --depth=50 origin "refs/heads/$BASE:refs/remotes/origin/$BASE"
+npx calldiff@0.5.0 diff "origin/$BASE" HEAD
+```
+
+**The explicit refspec is not decoration.** `git fetch origin "$BASE"` — the form everyone
+reaches for — only moves `FETCH_HEAD` when the clone's fetch refspec is narrowed, which is
+exactly what `--depth 1 --branch <one>` produces. Verified in a real shallow clone:
+
+```
+$ git clone --depth 1 --branch main <repo> && cd repo
+$ git fetch --depth=50 origin deploy/dev
+ * branch            deploy/dev -> FETCH_HEAD
+$ git rev-parse -q --verify origin/deploy/dev   # → MISSING
+
+$ git fetch --depth=50 origin "refs/heads/deploy/dev:refs/remotes/origin/deploy/dev"
+$ git rev-parse -q --verify origin/deploy/dev   # → EXISTS
+$ npx calldiff@0.5.0 diff origin/deploy/dev HEAD
+No callstack changes between origin/deploy/dev and HEAD.
+```
+
+Without the `src:dst` refspec the next line dies with
+`DIFF_FAILED — Unknown git ref: origin/<base>`.
+
+Shape of the block:
+
+````md
+## Summary
+
+```
+<calldiff output, verbatim>
+```
+
+<2–3 lines: what the delta means behaviorally — what the entrypoint stopped calling,
+what it now calls, and why that matters.>
+````
+
+The block is never omitted. When there is no tree to show, exactly one line stands in for
+it:
+
+| Case | Line to write |
+|---|---|
+| exit 0, `No callstack changes between <base> and HEAD.` | that line verbatim, then the file-level summary |
+| non-zero exit / timeout / no network / sandbox denial | `calldiff unavailable: <reason>` — never block or delay PR creation |
+| PR touches only docs / config / prompts | `Call-flow report N/A — no source files in this PR.` |
+
+Push more source commits to the PR later? Re-run and update the block. A stale call-flow
+report is worse than none.
+
 ## Limits — do not over-claim
 
 - Analysis is **syntactic** (AST-based, tree-sitter), not a typechecker. Dynamic calls,
