@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -163,6 +163,167 @@ describe('default prompt wires calldiff into task completion (T2)', () => {
     expect(prompt).not.toContain('calldiff@latest');
     expect(prompt).toMatch(/calldiff unavailable/);
     expect(prompt.toLowerCase()).toMatch(/never let it stall|not a blocker/);
+  });
+});
+
+/**
+ * SSOT_2: "디폴트 프롬프트에 PR 만들시 항상 코드 변경이 일어날시에 calldiff 스킬 사용해서
+ *          최상단 서머리에 항상 calldiff 리포트 포함하도록 변경하고 배포까지 해줘"
+ *
+ *  - T4: default.prompt must require a calldiff report block at the TOP of every
+ *        PR body whenever the PR carries code changes, and the block must always
+ *        be present (no-change / unavailable / no-source cases each get a line).
+ */
+describe('default prompt requires a calldiff report at the top of every PR body (T4)', () => {
+  function prCreationSection(): string {
+    const prompt = readFileSync(DEFAULT_PROMPT, 'utf8');
+    const start = prompt.indexOf('## On Pull Request Creation');
+    if (start === -1) return '';
+    const rest = prompt.slice(start + 1);
+    const nextHeading = rest.indexOf('\n## ');
+    return nextHeading === -1 ? rest : rest.slice(0, nextHeading);
+  }
+
+  it('has a dedicated PR-creation section', () => {
+    expect(prCreationSection(), 'default.prompt needs a "## On Pull Request Creation" section').not.toBe('');
+  });
+
+  it('fires whenever the PR contains code changes', () => {
+    const section = prCreationSection().toLowerCase();
+    expect(section).toMatch(/code change|source change|changes source|modified source/);
+    expect(section).toMatch(/pull request|\bpr\b/);
+  });
+
+  it('pins the report to the TOP summary of the PR body', () => {
+    const section = prCreationSection();
+    const lower = section.toLowerCase();
+    // Position is the whole point of the requirement: topmost summary block.
+    expect(lower).toMatch(/top of the pr body|first section|topmost|before any other section/);
+    expect(lower).toMatch(/summary/);
+  });
+
+  it('states the obligation and delegates mechanics to the skill — one source of truth', () => {
+    const section = prCreationSection();
+    // default.prompt is loaded in EVERY session, so it carries the obligation only.
+    expect(section).toMatch(/local:calldiff/);
+    expect(section, 'default.prompt must not restate the pinned command — that lives in SKILL.md').not.toMatch(
+      /npx calldiff@\d+\.\d+\.\d+/,
+    );
+    // ...and the skill must actually carry the mechanics being delegated to it.
+    const prSection = readFileSync(SKILL_MD, 'utf8').slice(
+      readFileSync(SKILL_MD, 'utf8').indexOf('## In a pull request body'),
+    );
+    expect(prSection).toMatch(/npx calldiff@\d+\.\d+\.\d+ diff/);
+    expect(prSection, 'the `timeout` binary is absent on macOS hosts').not.toMatch(/timeout \d+ npx calldiff/);
+  });
+
+  it('resolves the base as the ref passed to `gh pr create --base`, not a not-yet-existing PR', () => {
+    const section = prCreationSection();
+    // The PR does not exist at creation time, so `gh pr view` cannot be the
+    // primary source — diffing against the wrong base yields a report that is
+    // present, topmost, and false.
+    expect(section).toMatch(/gh pr create --base/);
+    expect(section.toLowerCase()).toMatch(/existing pr/);
+    expect(section).toMatch(/origin\/HEAD/);
+    expect(section.toLowerCase()).not.toMatch(/always diff against `?main`?/);
+  });
+
+  it('anchors the trigger on PR creation itself', () => {
+    const section = prCreationSection();
+    expect(section).toMatch(/gh pr create/);
+  });
+
+  it('SKILL.md orders base resolution and fetches a missing base ref (shallow clones)', () => {
+    const md = readFileSync(SKILL_MD, 'utf8');
+    const prSection = md.slice(md.indexOf('## In a pull request body'));
+    expect(prSection).toMatch(/gh pr create --base/);
+    // A bare `git fetch origin <base>` only moves FETCH_HEAD in a narrowed
+    // clone (verified: `git clone --depth 1 --branch main` then
+    // `git fetch --depth=50 origin deploy/dev` leaves origin/deploy/dev
+    // MISSING, and calldiff dies with "Unknown git ref"). The explicit
+    // src:dst refspec is what actually creates the remote-tracking ref.
+    expect(prSection).toMatch(/git fetch[^\n]*refs\/heads\/[^\n]*:refs\/remotes\/origin\//);
+    expect(prSection, 'a bare `git fetch origin $BASE` is the defect, not the fix').not.toMatch(
+      /git fetch --depth=\d+ origin "\$BASE"\s*$/m,
+    );
+    expect(prSection).toMatch(/FETCH_HEAD/);
+    expect(prSection.toLowerCase()).toMatch(/shallow clone/);
+    // and it must say why a wrong base is worse than nothing
+    expect(prSection.toLowerCase()).toMatch(/false|wrong base/);
+  });
+
+  it('keeps the block present in all three quiet cases — never silently omitted', () => {
+    const section = prCreationSection();
+    // (a) call flow genuinely unchanged
+    expect(section).toMatch(/No callstack changes/);
+    // (b) tool could not run
+    expect(section).toMatch(/calldiff unavailable/);
+    // (c) no source files in the PR at all
+    expect(section.toLowerCase()).toMatch(/no source|n\/a|not applicable/);
+    // and the block must be stated as mandatory
+    expect(section.toLowerCase()).toMatch(/always|never omit|must/);
+  });
+
+  it('does not let calldiff block PR creation', () => {
+    const section = prCreationSection().toLowerCase();
+    expect(section).toMatch(/not a blocker|never block|do not block/);
+  });
+
+  it('keeps the report fresh when more source commits land on the PR', () => {
+    const section = prCreationSection().toLowerCase();
+    expect(section).toMatch(/push|update|refresh/);
+  });
+});
+
+/**
+ * T5 — the "항상" (always) guarantee only holds if EVERY PR-creating surface in
+ * this repo carries the rule. default.prompt is one surface among several: the
+ * z/autoz pipeline creates PRs through `local:zwork`, and `local:using-epic-tasks`
+ * ships PR body templates that own the `## Summary` slot. A more specific skill
+ * contract beats the default prompt, so an un-updated surface is a real hole.
+ */
+describe('every PR-creating surface carries the calldiff-first rule (T5)', () => {
+  const SKILLS_DIR = resolve(__dirname, '..', '..');
+  const ZWORK = resolve(SKILLS_DIR, 'zwork', 'SKILL.md');
+  const EPIC_TEMPLATES = resolve(SKILLS_DIR, 'using-epic-tasks', 'reference', 'templates.md');
+
+  it('zwork — the pipeline surface that actually runs `gh pr create` — requires the block first', () => {
+    const md = readFileSync(ZWORK, 'utf8');
+    expect(md).toMatch(/gh pr create/);
+    const prStep = md.slice(md.indexOf('5. Create PR.'), md.indexOf('6. Invoke'));
+    expect(prStep, 'zwork step 5 must name the calldiff block').toMatch(/calldiff/);
+    expect(prStep.toLowerCase()).toMatch(/first|최상단|top/);
+  });
+
+  it('using-epic-tasks PR templates reserve the top of `## Summary` for the report', () => {
+    const md = readFileSync(EPIC_TEMPLATES, 'utf8');
+    const summaryBlocks = md.split('## Summary').slice(1);
+    expect(summaryBlocks.length, 'templates.md must still contain PR Summary templates').toBeGreaterThan(0);
+    for (const [i, block] of summaryBlocks.entries()) {
+      // Look only at the head of each Summary section — the report must come
+      // before the one-line restatement and before `Closes #`.
+      const head = block.slice(0, block.indexOf('Closes #') === -1 ? 400 : block.indexOf('Closes #'));
+      expect(head, `PR Summary template #${i + 1} must lead with the calldiff block`).toMatch(/calldiff/);
+    }
+  });
+
+  it('no PR-creating surface silently drops the rule — discovered by scan, not hardcoded', () => {
+    // The whole point of T5 is catching a surface nobody remembered to update.
+    // A hardcoded list would stay green forever while a NEW skill quietly
+    // bypasses the rule — so this discovers skills instead of listing them.
+    const scanned: string[] = [];
+    const offenders: string[] = [];
+    for (const entry of readdirSync(SKILLS_DIR, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.name === 'calldiff') continue;
+      const skillMd = resolve(SKILLS_DIR, entry.name, 'SKILL.md');
+      if (!existsSync(skillMd)) continue;
+      const md = readFileSync(skillMd, 'utf8');
+      if (!md.includes('gh pr create')) continue;
+      scanned.push(entry.name);
+      if (!md.includes('calldiff')) offenders.push(entry.name);
+    }
+    expect(scanned.length, 'the scan must actually find PR-creating skills').toBeGreaterThan(0);
+    expect(offenders, `these skills create PRs without the calldiff rule: ${offenders.join(', ')}`).toEqual([]);
   });
 });
 

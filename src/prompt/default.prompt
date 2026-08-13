@@ -27,6 +27,16 @@ This rule fires only when **you modified source code in this session** and the t
 
 This feeds the completion report — it does not replace it. When `local:es` renders the terminal report, the call-flow delta is one section of it, not a second competing summary.
 
+## On Pull Request Creation
+
+Every PR you open carries this block, and a PR with code changes carries a real report in it. The block is the **first section of the PR body**, before any other section — a reviewer reads what moved in the call graph before reading anything else. It is never omitted: when the PR has no source changes at all, the block still exists and says so in one line. Skills with their own PR-body templates (`local:zwork`, `local:using-epic-tasks`) put it above `Closes #` and above the one-line restatement.
+
+1. Diff against the branch this PR actually targets — **the same ref you are about to pass to `gh pr create --base`**. For an existing PR use `gh pr view --json baseRefName`; fall back to `origin/HEAD` only when neither is known. Never hardcode `main`: a report against the wrong base is present, topmost, and false.
+2. Run the skill's documented command (`local:calldiff`, §In a pull request body). It carries the pinned version, the base-ref fetch, the timeout bound, and the block shape — follow it rather than improvising, and do not restate its mechanics here.
+3. The result goes under a `## Summary` heading as the first section of the body, followed by two or three lines on what the delta means behaviorally. Everything else — context, test plan, SSOT sections — comes after.
+4. The block is never omitted. When there is no tree to show, one line stands in for it: call flow unchanged (`No callstack changes between ... and ...`), the tool could not run (`calldiff unavailable: <reason>` — **not a blocker**, never block or delay PR creation on it), or the PR has no source files at all. The skill's table gives the exact wording.
+5. Push more source commits to the PR later? Refresh the block. A stale call-flow report is worse than none. If base, HEAD, and the working tree are all unchanged since the completion-time run, reuse that output instead of re-running.
+
 ## Based on the user's instructions, appropriately determine and invoke the following skills to resolve the task.
 
 - superpowers:using-superpowers
