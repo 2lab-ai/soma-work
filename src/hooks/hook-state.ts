@@ -17,12 +17,6 @@ const CALL_LOG_CAP = 1000;
 
 // ── Types ──
 
-interface TodoGuardEntry {
-  count: number;
-  todoExists: boolean;
-  updatedAt: string;
-}
-
 export interface CallState {
   toolName: string;
   callId: string;
@@ -43,7 +37,6 @@ export interface CallLogEntry {
 }
 
 interface PersistedState {
-  todoGuard: Record<string, TodoGuardEntry>;
   pendingCalls: Record<string, CallState[]>;
   callLog: CallLogEntry[];
 }
@@ -51,7 +44,6 @@ interface PersistedState {
 // ── HookState class ──
 
 class HookState {
-  private todoGuard: Map<string, TodoGuardEntry> = new Map();
   private pendingCalls: Map<string, CallState[]> = new Map();
   private callLog: CallLogEntry[] = [];
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -60,29 +52,6 @@ class HookState {
 
   constructor() {
     this.load();
-  }
-
-  // ── TodoGuard ──
-
-  incrementTodoGuard(sessionId: string): { count: number; todoExists: boolean } {
-    const existing = this.todoGuard.get(sessionId) || { count: 0, todoExists: false, updatedAt: '' };
-    existing.count++;
-    existing.updatedAt = new Date().toISOString();
-    this.todoGuard.set(sessionId, existing);
-    this.save();
-    return { count: existing.count, todoExists: existing.todoExists };
-  }
-
-  markTodoExists(sessionId: string): void {
-    const existing = this.todoGuard.get(sessionId) || { count: 0, todoExists: false, updatedAt: '' };
-    existing.todoExists = true;
-    existing.updatedAt = new Date().toISOString();
-    this.todoGuard.set(sessionId, existing);
-    this.save();
-  }
-
-  getTodoGuardState(sessionId: string): TodoGuardEntry | undefined {
-    return this.todoGuard.get(sessionId);
   }
 
   // ── Call tracking ──
@@ -140,8 +109,6 @@ class HookState {
   // ── Session cleanup ──
 
   cleanupSession(sessionId: string): void {
-    this.todoGuard.delete(sessionId);
-
     // Remove all pending calls for this session
     for (const key of [...this.pendingCalls.keys()]) {
       if (key.startsWith(`${sessionId}:`)) {
@@ -172,12 +139,10 @@ class HookState {
       const raw = fs.readFileSync(STATE_FILE, 'utf-8');
       const data: PersistedState = JSON.parse(raw);
 
-      this.todoGuard = new Map(Object.entries(data.todoGuard || {}));
       this.pendingCalls = new Map(Object.entries(data.pendingCalls || {}));
       this.callLog = data.callLog || [];
 
       logger.debug('Loaded hook state', {
-        todoGuardEntries: this.todoGuard.size,
         pendingCallKeys: this.pendingCalls.size,
         callLogEntries: this.callLog.length,
       });
@@ -200,17 +165,10 @@ class HookState {
     const now = Date.now();
     let removed = 0;
 
-    for (const [sessionId, entry] of this.todoGuard) {
-      const updatedAt = new Date(entry.updatedAt).getTime();
-      if (now - updatedAt > STALE_TTL_MS) {
-        this.todoGuard.delete(sessionId);
-        removed++;
-      }
-    }
-
     // Clean stale pending calls (by epoch)
     for (const [key, queue] of this.pendingCalls) {
       const filtered = queue.filter((c) => now - c.epoch * 1000 < STALE_TTL_MS);
+      removed += queue.length - filtered.length;
       if (filtered.length === 0) {
         this.pendingCalls.delete(key);
       } else if (filtered.length !== queue.length) {
@@ -249,7 +207,6 @@ class HookState {
       }
 
       const data: PersistedState = {
-        todoGuard: Object.fromEntries(this.todoGuard),
         pendingCalls: Object.fromEntries(this.pendingCalls),
         callLog: this.callLog,
       };
