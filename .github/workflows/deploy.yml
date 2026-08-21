@@ -21,9 +21,6 @@ jobs:
   prepare:
     runs-on: [self-hosted, fable-m5max]
     timeout-minutes: 15
-    outputs:
-      matrix: ${{ steps.targets.outputs.matrix }}
-
     steps:
       - name: Validate manual trigger
         if: github.event_name == 'workflow_dispatch'
@@ -37,69 +34,6 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
-
-      - name: Determine deployment target
-        id: target
-        run: |
-          case "${{ github.ref_name }}" in
-            main|deploy/dev)
-              echo "deploy_env=dev" >> "$GITHUB_OUTPUT"
-              ;;
-            deploy/prod)
-              echo "deploy_env=main" >> "$GITHUB_OUTPUT"
-              ;;
-            *)
-              echo "Unsupported branch: ${{ github.ref_name }}"
-              exit 1
-              ;;
-          esac
-
-      - name: Build target matrix
-        id: targets
-        run: |
-          echo 'matrix<<EOF' >> "$GITHUB_OUTPUT"
-
-          if [[ "${{ github.ref_name }}" == "main" || "${{ github.ref_name }}" == "deploy/dev" ]]; then
-            cat >> "$GITHUB_OUTPUT" <<'EOF'
-          {"include":[
-            {
-              "name":"work-m16-dev",
-              "runner_label":"work-m16",
-              "github_env":"development",
-              "deploy_env":"dev",
-              "target_dir":"/opt/soma-work/dev"
-            },
-            {
-              "name":"work-m64-dev",
-              "runner_label":"work-m64",
-              "github_env":"development",
-              "deploy_env":"dev",
-              "target_dir":"/opt/soma-work/dev"
-            },
-            {
-              "name":"fable-dev",
-              "runner_label":"fable-m5max",
-              "github_env":"development",
-              "deploy_env":"dev",
-              "target_dir":"/opt/soma-work/dev"
-            }
-          ]}
-          EOF
-          else
-            cat >> "$GITHUB_OUTPUT" <<'EOF'
-          {"include":[
-            {
-              "name":"work-m16-main",
-              "runner_label":"work-m16",
-              "github_env":"production",
-              "deploy_env":"main",
-              "target_dir":"/opt/soma-work/main"
-            }
-          ]}
-          EOF
-          fi
-
-          echo 'EOF' >> "$GITHUB_OUTPUT"
 
       - name: Install dependencies
         run: npm ci
@@ -153,7 +87,12 @@ jobs:
     environment: ${{ matrix.github_env }}
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+      # Deployment topology lives OUTSIDE the repo, in Actions variables
+      # (Settings > Secrets and variables > Actions > Variables):
+      #   DEPLOY_TARGETS_DEV  — preview channel targets  (deploy/dev, main dispatch)
+      #   DEPLOY_TARGETS_MAIN — production channel targets (deploy/prod)
+      # Entries use neutral display names; run logs stay topology-free.
+      matrix: ${{ github.ref_name == 'deploy/prod' && fromJSON(vars.DEPLOY_TARGETS_MAIN) || fromJSON(vars.DEPLOY_TARGETS_DEV) }}
 
     steps:
       - name: Download deploy bundle
@@ -184,7 +123,8 @@ jobs:
           TARGET: ${{ matrix.target_dir }}
         run: |
           cd bundle/root
-          echo "Deploying ${{ matrix.name }} to $TARGET..."
+          echo "::add-mask::$TARGET"
+          echo "Deploying target ${{ matrix.name }}..."
 
           # Self-hosted runners launch non-login shells; nvm-installed node
           # is not on PATH until we source nvm.sh. Without this, the
