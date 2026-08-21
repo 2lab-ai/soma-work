@@ -1,7 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+// Control-plane calls now authenticate with the ADMIN key (llmux requires one
+// even on loopback since it went multi-tenant), so the client reads
+// `getLlmuxAdminKey()` rather than the data-plane `apiKey`. The real resolver
+// is destination-aware; this double stands in for "loopback target → local
+// admin key, off-host target → placeholder only".
+const { adminKeyMock } = vi.hoisted(() => ({
+  adminKeyMock: vi.fn((target?: string) => {
+    const loopback = target === undefined || target.includes('localhost') || target.includes('127.0.0.1');
+    return loopback ? 'admin-key' : 'llmux-local';
+  }),
+}));
+
 vi.mock('../auth-runtime', () => ({
-  getLlmuxSettings: () => ({ baseUrl: 'http://localhost:3456', apiKey: 'proxy-key' }),
+  getLlmuxSettings: () => ({ baseUrl: 'http://localhost:3456', apiKey: 'llmux-local' }),
+  getLlmuxAdminKey: adminKeyMock,
 }));
 
 import {
@@ -53,14 +66,14 @@ describe('llmux-client', () => {
     vi.unstubAllGlobals();
   });
 
-  it('fetchLlmuxStatus GETs /llmux/status with the x-api-key header', async () => {
+  it('fetchLlmuxStatus GETs /llmux/status with the admin x-api-key header', async () => {
     fetchMock.mockResolvedValue(okResponse(STATUS_DOC));
     const status = await fetchLlmuxStatus();
     expect(fetchMock).toHaveBeenCalledWith(
       'http://localhost:3456/llmux/status',
       expect.objectContaining({
         method: 'GET',
-        headers: expect.objectContaining({ 'x-api-key': 'proxy-key' }),
+        headers: expect.objectContaining({ 'x-api-key': 'admin-key' }),
       }),
     );
     expect(status.current).toBe('claude:me@example.com');
@@ -72,6 +85,21 @@ describe('llmux-client', () => {
     fetchMock.mockResolvedValue(okResponse(STATUS_DOC));
     await fetchLlmuxStatus({ baseUrl: 'http://10.1.1.1:9999/' });
     expect(fetchMock.mock.calls[0][0]).toBe('http://10.1.1.1:9999/llmux/status');
+  });
+
+  it('resolves the admin credential against the OVERRIDE target, not the live setting', async () => {
+    // Live setting is loopback here; probing a candidate on another host must
+    // not carry this machine's llmux admin key off-box.
+    adminKeyMock.mockClear();
+    // Fresh Response per call — a Response body is single-read.
+    fetchMock.mockImplementation(async () => okResponse(STATUS_DOC));
+    await fetchLlmuxStatus({ baseUrl: 'http://10.1.1.1:9999/' });
+    expect(adminKeyMock).toHaveBeenCalledWith('http://10.1.1.1:9999');
+    expect(fetchMock.mock.calls[0][1].headers['x-api-key']).toBe('llmux-local');
+
+    await fetchLlmuxStatus();
+    expect(adminKeyMock).toHaveBeenLastCalledWith('http://localhost:3456');
+    expect(fetchMock.mock.calls[1][1].headers['x-api-key']).toBe('admin-key');
   });
 
   it('switchLlmuxAccount POSTs the account body and surfaces 409 refusals', async () => {
