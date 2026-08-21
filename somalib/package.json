@@ -3,6 +3,6 @@
   "version": "1.0.0",
   "private": true,
   "dependencies": {
-    "soma-lib": "https://github.com/2lab-ai/soma-lib/releases/download/v0.3.0/soma-lib-0.3.0.tgz"
+    "soma-lib": "https://github.com/2lab-ai/soma-lib/releases/download/v0.3.1/soma-lib-0.3.1.tgz"
   }
 }
