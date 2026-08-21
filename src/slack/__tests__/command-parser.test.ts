@@ -1641,6 +1641,20 @@ describe('CommandParser', () => {
       expect(CommandParser.parseAuthCommand('set auth llmux')).toEqual({ action: 'set-mode', mode: 'llmux' });
       expect(CommandParser.parseAuthCommand('auth switch api-1')).toEqual({ action: 'switch', target: 'api-1' });
     });
+
+    it('accepts the personal llmux key forms (`key` / `auth key`)', () => {
+      expect(CommandParser.isAuthCommand('key')).toBe(true);
+      expect(CommandParser.isAuthCommand('/key')).toBe(true);
+      expect(CommandParser.isAuthCommand('KEY')).toBe(true);
+      expect(CommandParser.isAuthCommand('auth key')).toBe(true);
+      expect(CommandParser.isAuthCommand('/auth key')).toBe(true);
+      // bare-word only — prose that merely starts with "key" must stay chat text
+      expect(CommandParser.isAuthCommand('key rotate')).toBe(false);
+      expect(CommandParser.isAuthCommand('keys')).toBe(false);
+      expect(CommandParser.isAuthCommand('monkey')).toBe(false);
+      expect(CommandParser.parseAuthCommand('key')).toEqual({ action: 'key' });
+      expect(CommandParser.parseAuthCommand('auth key')).toEqual({ action: 'key' });
+    });
   });
 
   // Inline session directives — `%model <v> {instruction}` / `%nogoal {instruction}`.

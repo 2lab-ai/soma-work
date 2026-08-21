@@ -19,11 +19,14 @@ export type CctAction =
  *   - `auth llmux` / `auth cct|ccp` → { action: 'set-mode', mode }
  *   - `set auth llmux|cct|ccp`      → same (legacy `set auth` form)
  *   - `auth switch <name>`          → { action: 'switch', target } (llmux manual switch)
+ *   - `auth key` / bare `key`       → { action: 'key' } (DM the caller their
+ *     personal llmux client key + local Claude Code setup; non-admin allowed)
  */
 export type AuthCommandAction =
   | { action: 'status' }
   | { action: 'set-mode'; mode: 'llmux' | 'ccp' }
-  | { action: 'switch'; target: string };
+  | { action: 'switch'; target: string }
+  | { action: 'key' };
 
 export type BypassAction = 'on' | 'off' | 'status';
 export type SandboxAction = 'on' | 'off' | 'status';
@@ -215,15 +218,21 @@ export class CommandParser {
    * Check if text is an auth command (#llmux runtime switch).
    *
    * Accepted: `auth`, `auth llmux`, `auth cct`, `auth ccp`,
-   * `set auth llmux|cct|ccp`, `auth switch <name>`.
+   * `set auth llmux|cct|ccp`, `auth switch <name>`, `auth key`, and the bare
+   * `key` shorthand (exact word only — prose starting with "key" stays chat).
    */
   static isAuthCommand(text: string): boolean {
-    return /^\/?(?:set\s+)?auth(?:\s+(?:llmux|cct|ccp|switch\s+\S+))?$/i.test(text.trim());
+    const trimmed = text.trim();
+    if (/^\/?key$/i.test(trimmed)) return true;
+    return /^\/?(?:set\s+)?auth(?:\s+(?:llmux|cct|ccp|key|switch\s+\S+))?$/i.test(trimmed);
   }
 
   /** Parse an auth command. See {@link AuthCommandAction}. */
   static parseAuthCommand(text: string): AuthCommandAction {
     const trimmed = text.trim();
+    if (/^\/?key$/i.test(trimmed) || /^\/?(?:set\s+)?auth\s+key$/i.test(trimmed)) {
+      return { action: 'key' };
+    }
     const modeMatch = trimmed.match(/^\/?(?:set\s+)?auth\s+(llmux|cct|ccp)$/i);
     if (modeMatch) {
       const raw = modeMatch[1].toLowerCase();
