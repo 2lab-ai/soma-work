@@ -21,6 +21,8 @@ jobs:
   prepare:
     runs-on: [self-hosted, fable-m5max]
     timeout-minutes: 15
+    outputs:
+      matrix: ${{ steps.targets.outputs.matrix }}
     steps:
       - name: Validate manual trigger
         if: github.event_name == 'workflow_dispatch'
@@ -34,6 +36,39 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
+
+      # Deployment topology lives OUTSIDE the repo, in Actions repo variables
+      # (Settings > Secrets and variables > Actions > Variables), one entry
+      # per line in the form  {runner-name}:{target-dir} :
+      #   PREVIEW_DEPLOY_TARGETS    — preview channel  (deploy/dev, main dispatch)
+      #   PRODUCTION_DEPLOY_TARGETS — production channel (deploy/prod)
+      # Entries get neutral job names (t1, t2, ...) so run logs stay topology-free.
+      - name: Resolve deploy targets
+        id: targets
+        env:
+          RAW: ${{ github.ref_name == 'deploy/prod' && vars.PRODUCTION_DEPLOY_TARGETS || vars.PREVIEW_DEPLOY_TARGETS }}
+          GITHUB_ENV_NAME: ${{ github.ref_name == 'deploy/prod' && 'production' || 'development' }}
+          DEPLOY_ENV_NAME: ${{ github.ref_name == 'deploy/prod' && 'main' || 'dev' }}
+        run: |
+          matrix=$(jq -R -s -c --arg ge "$GITHUB_ENV_NAME" --arg de "$DEPLOY_ENV_NAME" '
+            split("\n")
+            | map(gsub("^\\s*-\\s*";"") | gsub("^\\s+|\\s+$";""))
+            | map(select(length > 0 and (startswith("#") | not)))
+            | to_entries
+            | map((.value | split(":")) as $p
+                | {name: ("t\(.key + 1)"),
+                   runner_label: $p[0],
+                   target_dir: ($p[1:] | join(":")),
+                   github_env: $ge,
+                   deploy_env: $de})
+            | {include: .}' <<< "$RAW")
+          count=$(jq '.include | length' <<< "$matrix")
+          if [[ "$count" -eq 0 ]]; then
+            echo "::error::No deploy targets configured for this channel (check repo Actions variables)."
+            exit 1
+          fi
+          echo "targets: $count"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
       - name: Install dependencies
         run: npm ci
@@ -87,12 +122,9 @@ jobs:
     environment: ${{ matrix.github_env }}
     strategy:
       fail-fast: false
-      # Deployment topology lives OUTSIDE the repo, in Actions variables
-      # (Settings > Secrets and variables > Actions > Variables):
-      #   DEPLOY_TARGETS_DEV  — preview channel targets  (deploy/dev, main dispatch)
-      #   DEPLOY_TARGETS_MAIN — production channel targets (deploy/prod)
-      # Entries use neutral display names; run logs stay topology-free.
-      matrix: ${{ github.ref_name == 'deploy/prod' && fromJSON(vars.DEPLOY_TARGETS_MAIN) || fromJSON(vars.DEPLOY_TARGETS_DEV) }}
+      # Matrix is resolved by the prepare job from PREVIEW_DEPLOY_TARGETS /
+      # PRODUCTION_DEPLOY_TARGETS repo variables ({runner}:{target-dir} lines).
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
 
     steps:
       - name: Download deploy bundle
