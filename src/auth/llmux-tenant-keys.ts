@@ -479,6 +479,29 @@ export async function ensureTenantKey(
   return attempt;
 }
 
+/** Non-secret metadata of a user's stored key — safe to render/log. */
+export interface TenantKeyDescription {
+  id: string;
+  keyPrefix: string;
+  name: string;
+  baseUrl: string;
+  issuedAtMs: number;
+  rotatedAtMs?: number;
+}
+
+/**
+ * Non-secret metadata of `userId`'s key for the CURRENT daemon, or `null` when
+ * none is stored. Never issues — pair with {@link ensureTenantKey}, which is
+ * what guarantees a record exists. Used by the `key` command DM to show key
+ * identity next to the secret.
+ */
+export function describeTenantKey(userId: string): TenantKeyDescription | null {
+  const record = state().tenants[userId]?.[currentBaseUrl()];
+  if (!record) return null;
+  const { id, keyPrefix, name, baseUrl, issuedAtMs, rotatedAtMs } = record;
+  return { id, keyPrefix, name, baseUrl, issuedAtMs, ...(rotatedAtMs !== undefined ? { rotatedAtMs } : {}) };
+}
+
 /** Test-only: reset module state (and optionally point the store elsewhere). */
 export function resetLlmuxTenantKeysForTests(overridePath?: string): void {
   _state = null;
