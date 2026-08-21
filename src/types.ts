@@ -66,6 +66,7 @@ export type SessionState = 'INITIALIZING' | 'MAIN' | 'SLEEPING';
 // soma's session state machine declares the identical union; re-exported here
 // so every existing `from './types'` import path keeps working.
 export type { ActivityState } from 'soma-lib';
+
 import type { ActivityState } from 'soma-lib';
 
 /**
