@@ -202,7 +202,7 @@ Grammar: `/z <topic> [verb] [args...]`. See `docs/current/spec/01-slack-integrat
 | `/z onboarding` | Run onboarding workflow |
 | `/z admin [accept\|deny\|users\|config\|llmchat\|session list]` | Admin commands |
 | `/z cct [set <name>\|next]` | CCT token status / manual switch |
-| `/z auth [llmux\|cct\|switch <name>]` | Auth backend card: runtime mode switch (llmux default / cct legacy), llmux pool usage, account switch/add/remove |
+| `/z auth [llmux\|cct\|switch <name>\|key]` | Auth backend card: runtime mode switch (llmux default / cct legacy), llmux pool usage, account switch/add/remove; `key` DMs your personal llmux client key |
 | `/z marketplace [add <x>]` | Plugin marketplace |
 | `/z plugin [add\|update\|remove\|rollback\|backups]` | Manage installed plugins |
 | `/z skill [list\|download]` | Skills directory |
@@ -251,6 +251,7 @@ A whitelist of bare (no-prefix) forms is still accepted for legacy reasons. Sour
 | `sessions theme [<name>]` · `sessions theme=<name>` | Session-scoped theme |
 | `new [<prompt>]` · `renew [<prompt>]` | Reset / renew session, optional prompt carries over |
 | `auth` · `auth llmux\|cct` · `set auth <mode>` · `auth switch <name>` | Auth backend card / runtime mode switch (#1189; mutations admin-only) |
+| `key` · `auth key` | DM yourself your personal llmux client key + local Claude Code setup (`ANTHROPIC_BASE_URL`/`ANTHROPIC_API_KEY`). Same user always gets the same key; llmux meters bot + local usage as one tenant. Works for every user (it is your own key) |
 | `cct` · `cct set <n>` · `cct next` · `cct usage [<n>]` · `cct auto [dry]` | CCT token status / rotation; `auto` = admin-only manual auto-rotate (token mutation is card-only since #569) |
 | `cron` · `schedule` (also `크론` · `스케줄`) | Interactive cron card — per-job model/output-target dropdowns + delete button; routed as a command so autogoal can never swallow it; admins see all users' jobs with the owner shown |
 | `cron model <name> <default\|fast\|model>` · `cron target <name> <channel\|dm\|thread>` · `cron delete <name>` | Change a job's model (`default` = creator's current model at fire time) / delivery target / delete; admins address another user's job by appending `<@owner>` |

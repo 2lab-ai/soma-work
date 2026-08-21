@@ -24,20 +24,31 @@
  */
 const ANTHROPIC_SECRET_RE = /\bsk-ant-(oat01|ort01|api03|admin01)-[A-Za-z0-9_-]{8,}\b/g;
 
+/**
+ * llmux client-key secrets (`lmk-…`) — per-user tenant keys issued by the
+ * llmux daemon (src/auth/llmux-tenant-keys.ts). They authenticate against the
+ * llmux proxy exactly like an API key, so a logged one is a leaked one; the
+ * DM path is the only sanctioned carrier. Same shape rules as above.
+ */
+const LLMUX_KEY_RE = /\blmk-[A-Za-z0-9_-]{8,}\b/g;
+
 function redactString(value: string): string {
   // Reset lastIndex is unnecessary when using String.replace with a /g regex,
   // but spelling it out avoids surprises if we ever switch to exec().
-  return value.replace(ANTHROPIC_SECRET_RE, (match, kind: string) => {
-    const last4 = match.slice(-4);
-    return `[REDACTED sk-ant-${kind}-...${last4}]`;
-  });
+  return value
+    .replace(ANTHROPIC_SECRET_RE, (match, kind: string) => {
+      const last4 = match.slice(-4);
+      return `[REDACTED sk-ant-${kind}-...${last4}]`;
+    })
+    .replace(LLMUX_KEY_RE, (match) => `[REDACTED lmk-...${match.slice(-4)}]`);
 }
 
 /**
- * Deep-clone and redact any Anthropic secrets found in strings.
+ * Deep-clone and redact any Anthropic / llmux secrets found in strings.
  *
  * - Strings are scanned with {@link ANTHROPIC_SECRET_RE} and each match is
- *   replaced by `[REDACTED sk-ant-${kind}-...${last4}]`.
+ *   replaced by `[REDACTED sk-ant-${kind}-...${last4}]`; llmux client keys
+ *   ({@link LLMUX_KEY_RE}) become `[REDACTED lmk-...${last4}]`.
  * - Objects and arrays are cloned; nested strings are redacted recursively.
  * - Other primitives (`number`, `boolean`, `null`, `undefined`, `bigint`,
  *   `symbol`) are returned as-is.
