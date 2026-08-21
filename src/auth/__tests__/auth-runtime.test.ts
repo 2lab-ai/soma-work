@@ -12,11 +12,13 @@ vi.mock('../../config', () => ({
       llmux: { baseUrl: 'http://localhost:3456', apiKey: 'llmux-local' },
     },
   },
+  LLMUX_PLACEHOLDER_API_KEY: 'llmux-local',
 }));
 
 import {
   getAuthMode,
   getAuthRuntimeSnapshot,
+  getLlmuxAdminKey,
   getLlmuxSettings,
   initAuthRuntimeDefault,
   resetAuthRuntimeForTests,
@@ -88,6 +90,90 @@ describe('auth-runtime (#llmux runtime switch)', () => {
     snap.llmux.baseUrl = 'http://mutated';
     expect(getAuthMode()).toBe('ccp');
     expect(getLlmuxSettings().baseUrl).toBe('http://localhost:3456');
+  });
+
+  describe('getLlmuxAdminKey (control-plane credential)', () => {
+    let originalLlmuxConfig: string | undefined;
+    let originalXdg: string | undefined;
+
+    beforeEach(() => {
+      originalLlmuxConfig = process.env.LLMUX_CONFIG;
+      originalXdg = process.env.XDG_CONFIG_HOME;
+      delete process.env.LLMUX_CONFIG;
+      // Point the second candidate (`$XDG_CONFIG_HOME/llmux.json`) at an empty
+      // temp dir so a real llmux install on the host cannot leak in.
+      process.env.XDG_CONFIG_HOME = dir;
+    });
+
+    afterEach(() => {
+      if (originalLlmuxConfig === undefined) delete process.env.LLMUX_CONFIG;
+      else process.env.LLMUX_CONFIG = originalLlmuxConfig;
+      if (originalXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = originalXdg;
+    });
+
+    it('returns an operator-set key as-is — no llmux config file is consulted', () => {
+      // Pointing LLMUX_CONFIG at a readable file proves it is NOT read: the
+      // operator key wins outright.
+      const llmuxConfig = path.join(dir, 'llmux.json');
+      fs.writeFileSync(llmuxConfig, JSON.stringify({ proxy: { api_key: 'from-file' } }));
+      process.env.LLMUX_CONFIG = llmuxConfig;
+      setLlmuxSettings({ apiKey: 'operator-key' });
+      expect(getLlmuxAdminKey()).toBe('operator-key');
+    });
+
+    it('falls back to the co-located llmux config key when the operator left the placeholder', () => {
+      const llmuxConfig = path.join(dir, 'llmux.json');
+      fs.writeFileSync(llmuxConfig, JSON.stringify({ proxy: { api_key: 'admin-from-llmux-config' } }));
+      process.env.LLMUX_CONFIG = llmuxConfig;
+      expect(getLlmuxSettings().apiKey).toBe('llmux-local'); // placeholder
+      expect(getLlmuxAdminKey()).toBe('admin-from-llmux-config');
+    });
+
+    it('keeps the placeholder when no llmux config file yields a key', () => {
+      process.env.LLMUX_CONFIG = path.join(dir, 'does-not-exist.json');
+      expect(getLlmuxAdminKey()).toBe('llmux-local');
+    });
+
+    it('never hands the LOCAL llmux config key to a remote baseUrl', () => {
+      // The config file describes the daemon on THIS host, and callers send
+      // whatever this returns to whatever baseUrl points at — so a remote
+      // target must be configured with its own key instead.
+      const llmuxConfig = path.join(dir, 'llmux.json');
+      fs.writeFileSync(llmuxConfig, JSON.stringify({ proxy: { api_key: 'local-admin-secret' } }));
+      process.env.LLMUX_CONFIG = llmuxConfig;
+
+      setLlmuxSettings({ baseUrl: 'http://10.0.0.5:3456' });
+      expect(getLlmuxAdminKey()).toBe('llmux-local');
+
+      // Loopback aliases do unlock it.
+      for (const baseUrl of ['http://127.0.0.1:3456', 'http://127.5.5.5:3456', 'http://[::1]:3456']) {
+        setLlmuxSettings({ baseUrl });
+        expect(getLlmuxAdminKey()).toBe('local-admin-secret');
+      }
+
+      // An unparseable baseUrl is NOT loopback.
+      setLlmuxSettings({ baseUrl: 'not a url' });
+      expect(getLlmuxAdminKey()).toBe('llmux-local');
+    });
+
+    it('gates on the REQUEST destination, not the persisted setting', () => {
+      // llmux-client takes a per-request baseUrl override (the Settings modal
+      // probes a CANDIDATE url), so a loopback setting must not unlock the
+      // local secret for a request that actually leaves this host.
+      const llmuxConfig = path.join(dir, 'llmux.json');
+      fs.writeFileSync(llmuxConfig, JSON.stringify({ proxy: { api_key: 'local-admin-secret' } }));
+      process.env.LLMUX_CONFIG = llmuxConfig;
+
+      setLlmuxSettings({ baseUrl: 'http://localhost:3456' });
+      expect(getLlmuxAdminKey('http://10.0.0.5:3456')).toBe('llmux-local');
+      expect(getLlmuxAdminKey()).toBe('local-admin-secret');
+
+      // Converse: a remote live setting still allows an explicit loopback target.
+      setLlmuxSettings({ baseUrl: 'http://10.0.0.5:3456' });
+      expect(getLlmuxAdminKey('http://127.0.0.1:3456')).toBe('local-admin-secret');
+      expect(getLlmuxAdminKey()).toBe('llmux-local');
+    });
   });
 
   describe('initAuthRuntimeDefault (boot probe)', () => {

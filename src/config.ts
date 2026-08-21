@@ -125,6 +125,16 @@ export function parseAuthMode(raw: string | undefined): AuthMode {
   return 'ccp';
 }
 
+/**
+ * Sentinel used for `config.auth.llmux.apiKey` when `ANTHROPIC_API_KEY` is
+ * unset. It is a placeholder, NOT a credential: llmux accepts any value on the
+ * data plane for loopback callers. Its presence therefore means "the operator
+ * never configured an llmux key", which `getLlmuxAdminKey()`
+ * (auth/auth-runtime.ts) uses to decide whether it may fall back to the
+ * co-located llmux config file for a real admin credential.
+ */
+export const LLMUX_PLACEHOLDER_API_KEY = 'llmux-local';
+
 export const config = {
   slack: {
     botToken: process.env.SLACK_BOT_TOKEN!,
@@ -178,7 +188,7 @@ export const config = {
        * non-empty placeholder works ("API_KEY 아무거나"); a sentinel is used
        * when `ANTHROPIC_API_KEY` is unset. Only consulted in `'llmux'` mode.
        */
-      apiKey: process.env.ANTHROPIC_API_KEY || 'llmux-local',
+      apiKey: process.env.ANTHROPIC_API_KEY || LLMUX_PLACEHOLDER_API_KEY,
     },
   },
   credentials: {
