@@ -1,3 +1,4 @@
+import { createSocket } from 'node:dgram';
 import * as os from 'node:os';
 
 /**
@@ -8,9 +9,10 @@ import * as os from 'node:os';
  * key `ensureTenantKey` issued for their Slack dispatches — so llmux meters
  * their bot usage and their local usage as one tenant.
  *
- * Pure functions — no I/O, no logging (the inputs contain a plaintext secret;
- * keeping this module side-effect-free is what makes "the secret only ever
- * travels inside the DM payload" auditable at the call site).
+ * No logging anywhere in this module (the inputs contain a plaintext secret;
+ * that is what makes "the secret only ever travels inside the DM payload"
+ * auditable at the call site). The only I/O is {@link defaultRouteIpv4}'s
+ * local routing-table lookup — it never transmits, logs, or sees the secret.
  */
 
 /** Loopback hosts that are only reachable from the bot machine itself. */
@@ -26,27 +28,128 @@ function isLoopbackHost(host: string): boolean {
   return h === 'localhost' || h === '::1' || h === '0.0.0.0' || h.startsWith('127.') || /^7f[0-9a-f]{2}:/.test(h);
 }
 
+const LINK_LOCAL_RE = /^169\.254\./;
+/** Carrier-grade NAT 100.64.0.0/10 — what Tailscale assigns. */
+const CGNAT_RE = /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./;
+const RFC1918_RE = /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/;
+
 /**
- * The llmux address to ADVERTISE to a user's own machine.
+ * Whether `address` is worth advertising to a coworker's machine. Rejects
+ * loopback, link-local, and Tailscale CGNAT — a tailnet-only address is
+ * exactly what the DM must NOT advertise (only tailscale-connected users can
+ * reach it; 2026-08-21 user directive: advertise the IP, hostname-like
+ * tailnet handles don't resolve for everyone).
+ */
+function isAdvertisableIpv4(address: string): boolean {
+  return !address.startsWith('127.') && !LINK_LOCAL_RE.test(address) && !CGNAT_RE.test(address);
+}
+
+/**
+ * The IPv4 the default route egresses from — the routing table's own answer
+ * to "which of my addresses do peers reach me at". A UDP `connect()` performs
+ * the route lookup locally and binds the local address WITHOUT sending any
+ * packet, so this works offline-config-free and never touches the network.
+ * `null` on failure/timeout or when the selected address is not advertisable
+ * (e.g. the default route egresses over the tailnet).
+ */
+export function defaultRouteIpv4(): Promise<string | null> {
+  return new Promise((resolve) => {
+    const socket = createSocket('udp4');
+    let settled = false;
+    const done = (value: string | null): void => {
+      if (settled) return;
+      settled = true;
+      try {
+        socket.close();
+      } catch {
+        /* already closed */
+      }
+      resolve(value);
+    };
+    const timer = setTimeout(() => done(null), 300);
+    timer.unref?.();
+    socket.on('error', () => done(null));
+    try {
+      socket.connect(53, '1.1.1.1', () => {
+        clearTimeout(timer);
+        try {
+          const address = socket.address().address;
+          done(address && isAdvertisableIpv4(address) ? address : null);
+        } catch {
+          done(null);
+        }
+      });
+    } catch {
+      done(null);
+    }
+  });
+}
+
+/**
+ * Deterministic interface-enumeration fallback: every advertisable IPv4,
+ * RFC1918 preferred over the rest, ties broken by sorted interface name and
+ * sorted address — same interface set in any enumeration order yields the
+ * same answer. This is a POLICY fallback, not a routing decision; when a host
+ * has several private NICs (VM bridges, secondary LANs) the route-aware
+ * {@link defaultRouteIpv4} is authoritative and operators with exotic
+ * topologies should pin `LLMUX_ADVERTISED_BASE_URL`.
+ */
+export function primaryLanIpv4(
+  interfaces: NodeJS.Dict<os.NetworkInterfaceInfo[]> = os.networkInterfaces(),
+): string | null {
+  const rfc1918: string[] = [];
+  const other: string[] = [];
+  for (const name of Object.keys(interfaces).sort()) {
+    for (const info of interfaces[name] ?? []) {
+      if (info.family !== 'IPv4' || info.internal) continue;
+      if (!isAdvertisableIpv4(info.address)) continue;
+      (RFC1918_RE.test(info.address) ? rfc1918 : other).push(info.address);
+    }
+  }
+  rfc1918.sort();
+  other.sort();
+  return rfc1918[0] ?? other[0] ?? null;
+}
+
+/** Test seam for {@link advertisedLlmuxBaseUrl}'s two IP sources. */
+export interface AdvertiseProbes {
+  routeProbe?: () => Promise<string | null>;
+  interfaces?: NodeJS.Dict<os.NetworkInterfaceInfo[]>;
+}
+
+/**
+ * The llmux address to ADVERTISE to a user's own machine — always an IP for
+ * loopback deployments, or `null` when none can be determined.
  *
  * soma-work reaches llmux at `auth.llmux.baseUrl`, which in every current
  * deployment is loopback (`http://localhost:3456`) — an address that means
  * "this bot host", not "the llmux server", when pasted into someone else's
  * terminal. Resolution order:
- *   1. `LLMUX_ADVERTISED_BASE_URL` env — operator override per deployment
- *      (e.g. a tailnet name), normalized (trailing slashes stripped).
+ *   1. `LLMUX_ADVERTISED_BASE_URL` env — operator override per deployment,
+ *      normalized (trailing slashes stripped).
  *   2. Non-loopback `baseUrl` — already externally meaningful; passed through.
- *   3. Loopback `baseUrl` — host swapped for `os.hostname()` (LAN/mDNS
- *      reachable by default on the current Mac fleet), port + scheme kept.
+ *   3. Loopback `baseUrl` — host swapped for the default-route IPv4
+ *      ({@link defaultRouteIpv4}), else the deterministic enumeration pick
+ *      ({@link primaryLanIpv4}). Hostnames are NEVER substituted: tailnet/mDNS
+ *      host names only resolve for tailscale/mDNS-capable clients, and sending
+ *      one would ship instructions that fail on a plain office network. No IP →
+ *      `null`; the caller reports a configuration error instead of a card.
  * Unparseable input is returned unchanged — the DM degrades to showing what
  * the operator configured instead of throwing away the whole card.
  */
-export function advertisedLlmuxBaseUrl(baseUrl: string, env: NodeJS.ProcessEnv = process.env): string {
+export async function advertisedLlmuxBaseUrl(
+  baseUrl: string,
+  env: NodeJS.ProcessEnv = process.env,
+  probes?: AdvertiseProbes,
+): Promise<string | null> {
   const override = env.LLMUX_ADVERTISED_BASE_URL?.trim();
   if (override) return override.replace(/\/+$/, '');
   try {
     const url = new URL(baseUrl);
-    if (isLoopbackHost(url.hostname)) url.hostname = os.hostname();
+    if (!isLoopbackHost(url.hostname)) return url.toString().replace(/\/+$/, '');
+    const ip = (await (probes?.routeProbe ?? defaultRouteIpv4)()) ?? primaryLanIpv4(probes?.interfaces);
+    if (!ip) return null;
+    url.hostname = ip;
     return url.toString().replace(/\/+$/, '');
   } catch {
     return baseUrl;
