@@ -27,6 +27,38 @@ function isLoopbackHost(host: string): boolean {
 }
 
 /**
+ * The bot machine's primary LAN IPv4 — the address a coworker's laptop can
+ * actually reach — or `null` when none exists.
+ *
+ * Skipped outright:
+ *   - internal/loopback interfaces
+ *   - link-local (`169.254/16`)
+ *   - CGNAT `100.64/10` — that block is what Tailscale assigns, and a
+ *     tailnet-only address is exactly what the DM must NOT advertise (only
+ *     tailscale-connected users could resolve it; 2026-08-21 user directive:
+ *     "iq-64는 tailscale 접속한 유저 사용할때만 가능", advertise the IP).
+ * RFC1918 (10/8, 172.16/12, 192.168/16) wins over anything else; a public
+ * IPv4 is the fallback.
+ */
+export function primaryLanIpv4(
+  interfaces: NodeJS.Dict<os.NetworkInterfaceInfo[]> = os.networkInterfaces(),
+): string | null {
+  const rfc1918: string[] = [];
+  const other: string[] = [];
+  for (const infos of Object.values(interfaces)) {
+    for (const info of infos ?? []) {
+      if (info.family !== 'IPv4' || info.internal) continue;
+      const address = info.address;
+      if (/^169\.254\./.test(address)) continue;
+      if (/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(address)) continue;
+      if (/^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(address)) rfc1918.push(address);
+      else other.push(address);
+    }
+  }
+  return rfc1918[0] ?? other[0] ?? null;
+}
+
+/**
  * The llmux address to ADVERTISE to a user's own machine.
  *
  * soma-work reaches llmux at `auth.llmux.baseUrl`, which in every current
@@ -36,17 +68,23 @@ function isLoopbackHost(host: string): boolean {
  *   1. `LLMUX_ADVERTISED_BASE_URL` env — operator override per deployment
  *      (e.g. a tailnet name), normalized (trailing slashes stripped).
  *   2. Non-loopback `baseUrl` — already externally meaningful; passed through.
- *   3. Loopback `baseUrl` — host swapped for `os.hostname()` (LAN/mDNS
- *      reachable by default on the current Mac fleet), port + scheme kept.
+ *   3. Loopback `baseUrl` — host swapped for the machine's LAN IPv4
+ *      ({@link primaryLanIpv4}). An IP works for every office peer; hostnames
+ *      (`iq-64`, mDNS `.local`) only resolve for tailnet/mDNS-capable
+ *      clients, so `os.hostname()` is the last resort only.
  * Unparseable input is returned unchanged — the DM degrades to showing what
  * the operator configured instead of throwing away the whole card.
  */
-export function advertisedLlmuxBaseUrl(baseUrl: string, env: NodeJS.ProcessEnv = process.env): string {
+export function advertisedLlmuxBaseUrl(
+  baseUrl: string,
+  env: NodeJS.ProcessEnv = process.env,
+  interfaces?: NodeJS.Dict<os.NetworkInterfaceInfo[]>,
+): string {
   const override = env.LLMUX_ADVERTISED_BASE_URL?.trim();
   if (override) return override.replace(/\/+$/, '');
   try {
     const url = new URL(baseUrl);
-    if (isLoopbackHost(url.hostname)) url.hostname = os.hostname();
+    if (isLoopbackHost(url.hostname)) url.hostname = primaryLanIpv4(interfaces) ?? os.hostname();
     return url.toString().replace(/\/+$/, '');
   } catch {
     return baseUrl;
