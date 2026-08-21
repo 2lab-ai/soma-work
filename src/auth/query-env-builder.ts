@@ -1,5 +1,6 @@
 import type { SlotAuthLease } from '../credentials-manager';
 import { getAuthMode, getLlmuxSettings } from './auth-runtime';
+import type { TenantKeyLease } from './llmux-tenant-keys';
 
 /**
  * Result of {@link buildQueryEnv}: a fresh env map suitable for the Claude
@@ -12,6 +13,16 @@ import { getAuthMode, getLlmuxSettings } from './auth-runtime';
  */
 export interface QueryEnvResult {
   env: Record<string, string>;
+}
+
+/** Per-call inputs that only some dispatches can supply. */
+export interface QueryEnvOptions {
+  /**
+   * Per-user llmux credential from `ensureTenantKey` — the secret AND the
+   * daemon it is valid at; llmux mode only. `null`/omitted → the shared key
+   * against the live daemon (legacy tenant).
+   */
+  llmuxTenant?: TenantKeyLease | null;
 }
 
 /**
@@ -107,9 +118,17 @@ export function getQueryEnvAdditional(): Record<string, string> {
  *          ALWAYS last — defense in depth even if the load-time denylist in
  *          `parseClaudeEnv` is bypassed, the lease's fresh token cannot be
  *          overridden by config.
- *        - `'llmux'`: set `ANTHROPIC_BASE_URL` + throwaway `ANTHROPIC_API_KEY`
- *          and DELETE `CLAUDE_CODE_OAUTH_TOKEN` so the local llmux proxy owns
- *          upstream auth. The lease token is unused in this mode.
+ *        - `'llmux'`: set `ANTHROPIC_BASE_URL` + `ANTHROPIC_API_KEY` and DELETE
+ *          `CLAUDE_CODE_OAUTH_TOKEN` so the local llmux proxy owns upstream
+ *          auth. The lease token is unused in this mode. When the dispatch has
+ *          a user identity, BOTH values come from `opts.llmuxTenant` — the
+ *          triggering user's own llmux client key and the daemon that issued
+ *          it, taken as an atomic pair so a mid-dispatch daemon flip can never
+ *          combine one daemon's key with another's URL (the flip applies from
+ *          the next dispatch, matching auth-runtime's "in-flight calls keep the
+ *          env they were built with" contract). Without a tenant lease the live
+ *          settings + shared key are used — what identity-less system
+ *          dispatches run on (the legacy tenant).
  *
  * Contract:
  *   - NEVER mutates `process.env`.
@@ -125,7 +144,7 @@ export function getQueryEnvAdditional(): Record<string, string> {
  *   - `api_key` lease kind + `ANTHROPIC_API_KEY` env var.
  *   - `CLAUDE_CONFIG_DIR` credential-directory isolation.
  */
-export function buildQueryEnv(lease: SlotAuthLease): QueryEnvResult {
+export function buildQueryEnv(lease: SlotAuthLease, opts?: QueryEnvOptions): QueryEnvResult {
   // Shallow-copy process.env into a plain record. process.env is a proxy
   // whose enumerable string values are what Node forwards to subprocesses,
   // so copying owned string entries is both correct and explicit.
@@ -158,15 +177,21 @@ export function buildQueryEnv(lease: SlotAuthLease): QueryEnvResult {
   // boot-time default only.
   if (getAuthMode() === 'llmux') {
     // llmux mode: the local proxy (https://github.com/2lab-ai/llmux) owns the
-    // real upstream account pool. Point the SDK at it with a throwaway API key
-    // and SUPPRESS the OAuth token — Claude Code prefers CLAUDE_CODE_OAUTH_TOKEN
-    // over ANTHROPIC_API_KEY when both are present, so an inherited token from
-    // process.env (or a future code path) would otherwise silently bypass the
-    // proxy. `lease.accessToken` is intentionally unused here; the synthetic
-    // llmux lease carries the placeholder key for symmetry only.
+    // real upstream account pool. Point the SDK at it with the caller's llmux
+    // key and SUPPRESS the OAuth token — Claude Code prefers
+    // CLAUDE_CODE_OAUTH_TOKEN over ANTHROPIC_API_KEY when both are present, so
+    // an inherited token from process.env (or a future code path) would
+    // otherwise silently bypass the proxy. `lease.accessToken` is intentionally
+    // unused here; the synthetic llmux lease carries the placeholder key for
+    // symmetry only.
+    // Per-user tenant credential when the dispatch knows who triggered it (so
+    // llmux meters that user separately), else the live shared settings. URL
+    // and key ALWAYS come from the same source — mixing a tenant key with a
+    // different daemon's URL 401s instead of degrading to the shared key.
     const llmux = getLlmuxSettings();
-    env.ANTHROPIC_BASE_URL = llmux.baseUrl;
-    env.ANTHROPIC_API_KEY = llmux.apiKey;
+    const tenant = opts?.llmuxTenant;
+    env.ANTHROPIC_BASE_URL = tenant ? tenant.baseUrl : llmux.baseUrl;
+    env.ANTHROPIC_API_KEY = tenant ? tenant.secret : llmux.apiKey;
     delete env.CLAUDE_CODE_OAUTH_TOKEN;
     return { env };
   }

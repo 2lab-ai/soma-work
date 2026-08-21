@@ -1,5 +1,5 @@
 import { Logger } from '../logger';
-import { getLlmuxSettings } from './auth-runtime';
+import { getLlmuxAdminKey, getLlmuxSettings } from './auth-runtime';
 
 const logger = new Logger('LlmuxClient');
 
@@ -13,10 +13,10 @@ const logger = new Logger('LlmuxClient');
  *   - `POST /llmux/add-account` `{api_key,name?}` → add an api-key account
  *   - `POST /llmux/remove-account` `{name,confirm:true}` → remove an account
  *
- * Auth: llmux exempts loopback peers; non-loopback peers must present the
- * proxy api key as `x-api-key`. We always send the live runtime apiKey — on
- * loopback it is ignored, elsewhere it is exactly the key the SDK subprocess
- * already uses for `/v1/messages`, so no extra secret is introduced.
+ * Auth: these are CONTROL-plane endpoints, which multi-tenant llmux gates on an
+ * admin credential for every peer — the loopback exemption applies to the data
+ * plane only. We send `getLlmuxAdminKey()` as `x-api-key`; see its doc in
+ * `auth-runtime.ts` for how the admin credential is resolved.
  *
  * Every method takes an optional `baseUrl` override (the Settings modal
  * validates a *candidate* URL before persisting); default is the live
@@ -116,9 +116,19 @@ async function request<T>(
       method,
       headers: {
         'content-type': 'application/json',
-        // Loopback llmux ignores this; remote llmux validates it against its
-        // proxy api key (same key the SDK uses for /v1/messages).
-        'x-api-key': settings.apiKey,
+        // Control-plane endpoints (`/llmux/*` except `/llmux/models`) require
+        // an ADMIN credential even on loopback since llmux went multi-tenant
+        // (llmux #22) — the loopback exemption only covers the data plane. So
+        // send the admin key, not the data-plane one: `getLlmuxAdminKey()`
+        // returns the operator-set key when there is one and otherwise falls
+        // back to the co-located llmux config's `proxy.api_key` (which llmux
+        // resolves to admin) when the operator left the placeholder.
+        //
+        // Resolved against `base`, NOT the live setting: `opts.baseUrl` (the
+        // Settings modal's candidate probe) can address another host while the
+        // persisted setting is still loopback, and the local llmux config's key
+        // must never leave this machine.
+        'x-api-key': getLlmuxAdminKey(base),
       },
       body: opts?.body === undefined ? undefined : JSON.stringify(opts.body),
       signal: controller.signal,
