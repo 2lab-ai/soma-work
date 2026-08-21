@@ -66,6 +66,7 @@
     "playwright": "^1.60.0",
     "proper-lockfile": "^4.1.2",
     "rotating-file-stream": "^3.2.9",
+    "soma-lib": "https://github.com/2lab-ai/soma-lib/releases/download/v0.5.0/soma-lib-0.5.0.tgz",
     "ulid": "^3.0.2",
     "zod": "^4.3.6"
   }
