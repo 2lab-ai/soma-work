@@ -84,7 +84,8 @@ setCommandRouterProviders({
         cctHandler,
         // Auth backend (#llmux runtime switch). Non-admin `auth` renders the
         // readonly card; mutating arms are admin-gated inside the handler.
-        new AuthHandler(),
+        // slackApi + userSettingsStore power the `key` personal-key DM path.
+        new AuthHandler(deps as any),
         new CwdHandler(deps as any),
         new McpHandler(deps as any),
         new DashboardHandler(),

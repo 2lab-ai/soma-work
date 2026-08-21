@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { isWhitelistedNaked } from '../whitelist';
+import { isDmAllowedForNonAdmin, isWhitelistedNaked } from '../whitelist';
 
 describe('isWhitelistedNaked — table-driven', () => {
   const ACCEPT: string[] = [
@@ -71,5 +71,25 @@ describe('isWhitelistedNaked — table-driven', () => {
     expect(isWhitelistedNaked('SESSION')).toBe(true);
     expect(isWhitelistedNaked('New prompt')).toBe(true);
     expect(isWhitelistedNaked('Renew')).toBe(true);
+  });
+});
+
+describe('isDmAllowedForNonAdmin — personal llmux key command', () => {
+  it('allows the naked `key` / `auth key` forms (users fetch their own key via DM)', () => {
+    expect(isDmAllowedForNonAdmin('key')).toBe(true);
+    expect(isDmAllowedForNonAdmin('KEY')).toBe(true);
+    expect(isDmAllowedForNonAdmin('auth key')).toBe(true);
+    expect(isDmAllowedForNonAdmin('/z auth key')).toBe(true);
+  });
+
+  it('accepts every form CommandParser.isAuthCommand routes (grammar parity)', () => {
+    expect(isDmAllowedForNonAdmin('/key')).toBe(true);
+    expect(isDmAllowedForNonAdmin('/auth key')).toBe(true);
+    expect(isDmAllowedForNonAdmin('set auth key')).toBe(true);
+  });
+
+  it('still rejects prose that merely contains "key"', () => {
+    expect(isDmAllowedForNonAdmin('key rotate please')).toBe(false);
+    expect(isDmAllowedForNonAdmin('monkey')).toBe(false);
   });
 });
