@@ -119,10 +119,21 @@ export class AuthHandler implements CommandHandler {
       return { handled: true };
     }
 
+    // IP-only contract: never DM a hostname a plain-office-network client
+    // can't resolve. No determinable IP is an operator problem, not a card.
+    const advertised = await advertisedLlmuxBaseUrl(lease.baseUrl);
+    if (!advertised) {
+      await say({
+        text: '❌ 이 봇 호스트에서 외부에서 접근 가능한 IP를 찾지 못했습니다 — 운영자가 `LLMUX_ADVERTISED_BASE_URL`을 설정해야 합니다.',
+        thread_ts: threadTs,
+      });
+      return { handled: true };
+    }
+
     const meta = describeTenantKey(user);
     const dmText = buildLlmuxKeyDmText({
       secret: lease.secret,
-      baseUrl: advertisedLlmuxBaseUrl(lease.baseUrl),
+      baseUrl: advertised,
       ...(meta?.id ? { keyId: meta.id } : {}),
       ...(meta?.name ? { keyName: meta.name } : {}),
       ...(meta?.issuedAtMs ? { issuedAtMs: meta.issuedAtMs } : {}),
@@ -131,10 +142,10 @@ export class AuthHandler implements CommandHandler {
 
     // Secret-safe error boundary: `dmText` carries the plaintext key, so a
     // rejection from the Slack calls must NOT propagate to callers that might
-    // serialize handler state into logs or chat. The user-facing reply is a
-    // constant; the logged detail is only the Slack error message (which never
-    // echoes request bodies) — and the console redaction layer additionally
-    // masks any `lmk-…` that would slip through a future path.
+    // serialize handler state into logs or chat. The error is deliberately
+    // swallowed (constant user-facing reply, no diagnostics emitted here) —
+    // and the console redaction layer additionally masks any `lmk-…` that
+    // would slip through a future logging path.
     try {
       const dmChannel = await slackApi.openDmChannel(user);
       await slackApi.postMessage(dmChannel, dmText);
