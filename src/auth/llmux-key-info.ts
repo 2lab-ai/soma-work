@@ -15,8 +15,15 @@ import * as os from 'node:os';
 
 /** Loopback hosts that are only reachable from the bot machine itself. */
 function isLoopbackHost(host: string): boolean {
-  const h = host.replace(/^\[|\]$/g, '').toLowerCase();
-  return h === 'localhost' || h === '::1' || h === '0.0.0.0' || h.startsWith('127.');
+  // Strip brackets (IPv6 URL form), a trailing FQDN dot (`localhost.`), and
+  // the IPv4-mapped IPv6 prefix. WHATWG URL normalizes `[::ffff:127.0.0.1]`
+  // to hex (`[::ffff:7f00:1]`), so match the 127.0.0.0/8 block in both forms.
+  const h = host
+    .replace(/^\[|\]$/g, '')
+    .replace(/\.$/, '')
+    .toLowerCase()
+    .replace(/^::ffff:/, '');
+  return h === 'localhost' || h === '::1' || h === '0.0.0.0' || h.startsWith('127.') || /^7f[0-9a-f]{2}:/.test(h);
 }
 
 /**

@@ -82,6 +82,12 @@ describe('isDmAllowedForNonAdmin — personal llmux key command', () => {
     expect(isDmAllowedForNonAdmin('/z auth key')).toBe(true);
   });
 
+  it('accepts every form CommandParser.isAuthCommand routes (grammar parity)', () => {
+    expect(isDmAllowedForNonAdmin('/key')).toBe(true);
+    expect(isDmAllowedForNonAdmin('/auth key')).toBe(true);
+    expect(isDmAllowedForNonAdmin('set auth key')).toBe(true);
+  });
+
   it('still rejects prose that merely contains "key"', () => {
     expect(isDmAllowedForNonAdmin('key rotate please')).toBe(false);
     expect(isDmAllowedForNonAdmin('monkey')).toBe(false);

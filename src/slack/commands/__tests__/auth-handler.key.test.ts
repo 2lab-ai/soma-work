@@ -128,6 +128,20 @@ describe('AuthHandler — `key` (personal llmux key DM)', () => {
     expect(ctx.saidTexts.join('\n')).toMatch(/실패|fail/i);
   });
 
+  it('a failed DM send is contained: constant channel reply, no thrown secret-bearing error', async () => {
+    const deps = makeDeps();
+    deps.slackApi.postMessage.mockRejectedValue(new Error('channel_not_found'));
+    const handler = new AuthHandler(deps);
+    const ctx = makeCtx();
+
+    const result = await handler.execute(ctx);
+
+    expect(result.handled).toBe(true);
+    const said = ctx.saidTexts.join('\n');
+    expect(said).toMatch(/DM 발송에 실패/);
+    expect(said).not.toContain('lmk-secret-1');
+  });
+
   it('non-admin users can use it (no admin gate)', async () => {
     // makeCtx user U123 is not in adminUsers (config empty in tests)
     const deps = makeDeps();

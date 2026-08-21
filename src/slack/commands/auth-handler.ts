@@ -129,13 +129,26 @@ export class AuthHandler implements CommandHandler {
       ...(meta?.rotatedAtMs ? { rotatedAtMs: meta.rotatedAtMs } : {}),
     });
 
-    const dmChannel = await slackApi.openDmChannel(user);
-    await slackApi.postMessage(dmChannel, dmText);
+    // Secret-safe error boundary: `dmText` carries the plaintext key, so a
+    // rejection from the Slack calls must NOT propagate to callers that might
+    // serialize handler state into logs or chat. The user-facing reply is a
+    // constant; the logged detail is only the Slack error message (which never
+    // echoes request bodies) — and the console redaction layer additionally
+    // masks any `lmk-…` that would slip through a future path.
+    try {
+      const dmChannel = await slackApi.openDmChannel(user);
+      await slackApi.postMessage(dmChannel, dmText);
 
-    // Invoked from a channel → confirm there WITHOUT the secret. Invoked from
-    // the DM itself → the key message above IS the response.
-    if (channel !== dmChannel) {
-      await say({ text: '🔑 llmux 키와 로컬 Claude Code 사용법을 DM으로 보냈습니다.', thread_ts: threadTs });
+      // Invoked from a channel → confirm there WITHOUT the secret. Invoked
+      // from the DM itself → the key message above IS the response.
+      if (channel !== dmChannel) {
+        await say({ text: '🔑 llmux 키와 로컬 Claude Code 사용법을 DM으로 보냈습니다.', thread_ts: threadTs });
+      }
+    } catch {
+      await say({
+        text: '❌ DM 발송에 실패했습니다 — 봇과의 DM이 열려 있는지 확인한 뒤 다시 시도해주세요.',
+        thread_ts: threadTs,
+      });
     }
     return { handled: true };
   }

@@ -21,6 +21,11 @@ describe('advertisedLlmuxBaseUrl', () => {
   it('returns unparseable input unchanged rather than throwing', () => {
     expect(advertisedLlmuxBaseUrl('not a url', {})).toBe('not a url');
   });
+
+  it('recognizes loopback aliases (trailing-dot FQDN, IPv4-mapped IPv6)', () => {
+    expect(advertisedLlmuxBaseUrl('http://localhost.:3456', {})).toBe(`http://${os.hostname()}:3456`);
+    expect(advertisedLlmuxBaseUrl('http://[::ffff:127.0.0.1]:3456', {})).toBe(`http://${os.hostname()}:3456`);
+  });
 });
 
 describe('buildLlmuxKeyDmText', () => {
