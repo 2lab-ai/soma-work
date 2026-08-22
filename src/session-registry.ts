@@ -12,7 +12,7 @@ import { Logger } from './logger';
 import { getMetricsEmitter } from './metrics/event-emitter';
 import { normalizeTmpPath } from './path-utils';
 import { getArchiveStore } from './session-archive';
-import { buildWorkSessionKey, normalizeSessionKey } from './session-identity';
+import { buildLegacySessionKey, buildWorkSessionKey, normalizeSessionKey } from './session-identity';
 import { DEFAULT_AUTO_HANDOFF_BUDGET } from './slack/handoff-budget';
 import {
   creditActiveGoalMs,
@@ -1773,7 +1773,7 @@ export class SessionRegistry {
       }
 
       const sessionsArray: SerializedSession[] = [];
-      for (const [key, session] of this.sessions.entries()) {
+      for (const session of this.sessions.values()) {
         // Save sessions that have conversation history (sessionId) OR a pending
         // handoff context (AD-12, issue #695). The handoffContext branch covers
         // the narrow window between `resetSessionContext()` (which clears
@@ -1789,7 +1789,13 @@ export class SessionRegistry {
         ) {
           this.ensureSessionLinkState(session);
           sessionsArray.push({
-            key,
+            // Rollback compatibility: persist the LEGACY key form. The
+            // running (post-4d) loader ignores this field and re-derives the
+            // canonical key from channelId/threadTs; a pre-4d binary loads it
+            // verbatim and derives legacy keys for lookup — so this exact
+            // form is what keeps sessions.json loadable after an emergency
+            // rollback. See buildLegacySessionKey.
+            key: buildLegacySessionKey(session.channelId, session.threadTs),
             ownerId: session.ownerId,
             ownerName: session.ownerName,
             userId: session.userId, // Legacy field
@@ -2125,12 +2131,22 @@ export class SessionRegistry {
         // channel/thread fields, never trusted from `serialized.key` — a
         // sessions.json written before the shared-identity format switch
         // migrates automatically (and idempotently) on this load.
-        const derivedKey = this.getSessionKey(serialized.channelId, serialized.threadTs);
-        if (serialized.key !== derivedKey) {
-          this.logger.info('Migrated session key format on load', {
-            from: serialized.key,
-            to: derivedKey,
+        //
+        // Per-record containment: the shared identity builder throws on
+        // empty/separator-bearing segments, so one corrupt record must
+        // quarantine itself instead of aborting every record after it
+        // (the enclosing catch spans the whole loop).
+        let derivedKey: string;
+        try {
+          derivedKey = this.getSessionKey(serialized.channelId, serialized.threadTs);
+        } catch (keyError) {
+          this.logger.warn('Skipped session with underivable key on load', {
+            key: serialized.key,
+            channelId: serialized.channelId,
+            threadTs: serialized.threadTs,
+            error: (keyError as Error)?.message,
           });
+          continue;
         }
         this.sessions.set(derivedKey, session);
         loaded++;
@@ -2157,7 +2173,7 @@ export class SessionRegistry {
             ownerId: serialized.ownerId || serialized.userId,
             ownerName: serialized.ownerName,
             activityState: serialized.activityState || 'idle',
-            sessionKey: serialized.key,
+            sessionKey: derivedKey,
             title: serialized.title,
             workflow: serialized.workflow,
             shouldAutoResume: serialized.wasWorkingAtShutdown === true,
@@ -2169,7 +2185,7 @@ export class SessionRegistry {
             ownerId: serialized.ownerId || serialized.userId,
             ownerName: serialized.ownerName,
             activityState: serialized.activityState,
-            sessionKey: serialized.key,
+            sessionKey: derivedKey,
             title: serialized.title,
             workflow: serialized.workflow,
             shouldAutoResume: serialized.activityState === 'working',

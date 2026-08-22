@@ -46,6 +46,19 @@ export function buildWorkSessionKey(channelId: string, threadTs?: string): strin
 }
 
 /**
+ * Legacy key format, kept ONLY for the persisted `SerializedSession.key`
+ * field. The running system derives its map keys via `buildWorkSessionKey`
+ * and ignores the persisted field — its sole consumer is a PRE-4d binary
+ * after an emergency rollback, which loads `serialized.key` verbatim and
+ * derives legacy keys for lookup. Writing the legacy form there keeps
+ * sessions.json loadable in both directions during the transition; drop
+ * this (and the field's format) once the rollback horizon has passed.
+ */
+export function buildLegacySessionKey(channelId: string, threadTs?: string): string {
+  return `${channelId}-${threadTs || DIRECT_THREAD_ID}`;
+}
+
+/**
  * Normalize a session key that may be in the legacy `<channel>-<thread>`
  * format (e.g. from a Slack action payload posted before the format switch).
  *
