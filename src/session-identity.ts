@@ -6,16 +6,21 @@
  * (shared triplet `tenant:channel:thread`). This replaces the legacy ad-hoc
  * `<channelId>-<threadTs|direct>` format that predated the shared model.
  *
- * Migration model — two persistence surfaces carry keys across the format
- * switch, and both are handled here or at the registry boundary:
+ * Migration model — three persistence surfaces carry keys across the format
+ * switch:
  *
  * 1. `sessions.json` — `loadSessions()` re-derives every map key from the
  *    persisted `channelId`/`threadTs` fields via `buildWorkSessionKey`, so
  *    old-format `key` fields migrate automatically (and idempotently) on the
- *    first load after deploy.
+ *    first load after deploy. (The `key` FIELD itself stays in legacy form
+ *    for rollback compatibility — see `buildLegacySessionKey`.)
  * 2. Slack action payloads — buttons posted before the deploy embed
  *    old-format keys in their `value` and outlive the restart. Registry
  *    by-key lookups run `normalizeSessionKey` so those clicks keep resolving.
+ * 3. Metrics events — records written before the switch carry legacy
+ *    `sessionKey`s forever; the report aggregator normalizes keys on READ
+ *    at its per-session grouping point, so one session spanning the deploy
+ *    does not split into two rows.
  */
 import { buildSessionKeyFromInput, parseSessionKey } from 'soma-lib';
 
