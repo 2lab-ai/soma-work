@@ -395,6 +395,25 @@ describe('aggregateCarousel', () => {
     expect(tAll.totals.tokens).toBe(100 + 200 + 400 + 800);
   });
 
+  it('Step 4d key migration: legacy and canonical events collapse into ONE per-session row', async () => {
+    // One continuing session spans the key-format deploy: its older events
+    // carry the legacy `channel-thread` key, newer ones the canonical
+    // `work:channel:thread` key. Normalize-on-read must group them together.
+    const now = new Date('2026-04-18T12:00:00+09:00');
+    const events: MetricsEvent[] = [
+      tokenEvent({ timestamp: hoursAgo(now, 5), userId: TARGET, tokens: 300, sessionKey: 'C42-171.500' }),
+      tokenEvent({ timestamp: hoursAgo(now, 2), userId: TARGET, tokens: 700, sessionKey: 'work:C42:171.500' }),
+    ];
+    const { aggregator } = makeAgg(events);
+    const result = await aggregator.aggregateCarousel({ targetUserId: TARGET, now });
+
+    const t24 = result.tabs['24h'];
+    if (t24.empty) throw new Error('24h should not be empty');
+    expect(t24.topSessions).toHaveLength(1);
+    expect(t24.topSessions[0].sessionKey).toBe('work:C42:171.500');
+    expect(t24.topSessions[0].totalTokens).toBe(300 + 700);
+  });
+
   it('hourly 24h: events spread across distinct hours in last 24h', async () => {
     const now = new Date('2026-04-18T12:00:00+09:00');
     // Hours 03:00, 06:00, 09:00, 10:30, 11:45 KST on 2026-04-18 — all within last 24h.
