@@ -14,7 +14,13 @@ vi.mock('../env-paths', () => ({
   DATA_DIR: '/tmp/soma-work-session-identity-test',
 }));
 
-import { buildWorkSessionKey, DIRECT_THREAD_ID, normalizeSessionKey, WORK_TENANT_ID } from '../session-identity';
+import {
+  buildLegacySessionKey,
+  buildWorkSessionKey,
+  DIRECT_THREAD_ID,
+  normalizeSessionKey,
+  WORK_TENANT_ID,
+} from '../session-identity';
 import { SessionRegistry } from '../session-registry';
 
 const TEST_DATA_DIR = '/tmp/soma-work-session-identity-test';
@@ -104,7 +110,10 @@ describe('SessionRegistry key migration on load (Step 4d)', () => {
     expect(registry.getSessionByKey('C777-171.100')?.sessionId).toBe('sess-1');
   });
 
-  it('persists the migrated key on the next save', () => {
+  it('keeps the persisted key in LEGACY form for rollback compatibility', () => {
+    // A pre-4d binary loads `serialized.key` verbatim and derives legacy
+    // keys for lookup — so a file saved by THIS version must still carry
+    // the legacy form there, while the in-memory map uses canonical keys.
     const legacy = {
       key: 'C888-direct',
       ownerId: 'U1',
@@ -118,11 +127,46 @@ describe('SessionRegistry key migration on load (Step 4d)', () => {
 
     const registry = new SessionRegistry();
     registry.loadSessions();
+    // In-memory map key is canonical…
+    expect(registry.getSessionByKey('work:C888:direct')?.sessionId).toBe('sess-2');
     registry.saveSessions();
 
+    // …but disk keeps the pre-4d form: a rolled-back binary doing
+    // `sessions.set(serialized.key, …)` + legacy-derived lookups still
+    // resolves this session.
     const rewritten = JSON.parse(fs.readFileSync(path.join(TEST_DATA_DIR, 'sessions.json'), 'utf-8'));
     expect(rewritten).toHaveLength(1);
-    expect(rewritten[0].key).toBe('work:C888:direct');
+    expect(rewritten[0].key).toBe('C888-direct');
+    expect(rewritten[0].key).toBe(buildLegacySessionKey('C888', undefined));
+  });
+
+  it('quarantines a corrupt record without aborting later valid records', () => {
+    const corrupt = {
+      key: 'bad',
+      ownerId: 'U1',
+      userId: 'U1',
+      channelId: 'C:evil', // separator char — identity builder rejects
+      threadTs: '171.300',
+      sessionId: 'sess-corrupt',
+      isActive: true,
+      lastActivity: new Date().toISOString(),
+    };
+    const valid = {
+      key: 'C555-171.400',
+      ownerId: 'U1',
+      userId: 'U1',
+      channelId: 'C555',
+      threadTs: '171.400',
+      sessionId: 'sess-valid',
+      isActive: true,
+      lastActivity: new Date().toISOString(),
+    };
+    fs.writeFileSync(path.join(TEST_DATA_DIR, 'sessions.json'), JSON.stringify([corrupt, valid]));
+
+    const registry = new SessionRegistry();
+    expect(registry.loadSessions()).toBe(1);
+    expect(registry.getSession('C555', '171.400')?.sessionId).toBe('sess-valid');
+    expect(registry.getAllSessions().size).toBe(1);
   });
 
   it('is idempotent for already-canonical files', () => {
