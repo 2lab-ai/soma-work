@@ -12,6 +12,7 @@ import { Logger } from './logger';
 import { getMetricsEmitter } from './metrics/event-emitter';
 import { normalizeTmpPath } from './path-utils';
 import { getArchiveStore } from './session-archive';
+import { buildLegacySessionKey, buildWorkSessionKey, normalizeSessionKey } from './session-identity';
 import { DEFAULT_AUTO_HANDOFF_BUDGET } from './slack/handoff-budget';
 import {
   creditActiveGoalMs,
@@ -340,10 +341,12 @@ export class SessionRegistry {
   }
 
   /**
-   * Get session key - based on channel and thread only (shared session)
+   * Get session key - based on channel and thread only (shared session).
+   * Canonical format is the shared soma-lib identity model
+   * (`work:<channel>:<thread>`) — see src/session-identity.ts.
    */
   getSessionKey(channelId: string, threadTs?: string): string {
-    return `${channelId}-${threadTs || 'direct'}`;
+    return buildWorkSessionKey(channelId, threadTs);
   }
 
   /**
@@ -368,10 +371,12 @@ export class SessionRegistry {
   }
 
   /**
-   * Get a session by its key directly
+   * Get a session by its key directly. Accepts legacy `<channel>-<thread>`
+   * keys (e.g. from Slack action payloads posted before the Step 4d key
+   * format switch) via normalization.
    */
   getSessionByKey(sessionKey: string): ConversationSession | undefined {
-    return this.sessions.get(sessionKey);
+    return this.sessions.get(normalizeSessionKey(sessionKey));
   }
 
   /**
@@ -453,12 +458,14 @@ export class SessionRegistry {
     threadTs: string | undefined,
     now: number = Date.now(),
   ): { totalActiveMs: number; sessionCount: number; compactionCount: number } {
-    const threadKey = `${channelId}-${threadTs || 'direct'}`;
+    // Match on session FIELDS, not a constructed key — the shared identity
+    // builder throws on separator characters, and aggregation must stay
+    // total even over hostile/corrupt in-memory data.
     let totalActiveMs = 0;
     let sessionCount = 0;
     let compactionCount = 0;
-    for (const [key, s] of this.sessions.entries()) {
-      if (key !== threadKey) continue;
+    for (const s of this.sessions.values()) {
+      if (s.channelId !== channelId || (s.threadTs || undefined) !== (threadTs || undefined)) continue;
       sessionCount += 1;
       compactionCount += s.compactionCount || 0;
       let acc = s.activeAccumulatedMs || 0;
@@ -696,6 +703,7 @@ export class SessionRegistry {
    * Set activity state by session key
    */
   setActivityStateByKey(sessionKey: string, state: ActivityState): void {
+    sessionKey = normalizeSessionKey(sessionKey);
     const session = this.getSessionByKey(sessionKey);
     if (!session) return;
     if (session.activityState === state) return;
@@ -756,6 +764,7 @@ export class SessionRegistry {
    * Trace: docs/archive/features/cron-scheduler/trace.md, Scenario 5, Section 3c
    */
   registerOnIdle(sessionKey: string, callback: () => void): void {
+    sessionKey = normalizeSessionKey(sessionKey);
     const existing = this.onIdleCallbacks.get(sessionKey) || [];
     existing.push(callback);
     this.onIdleCallbacks.set(sessionKey, existing);
@@ -788,7 +797,7 @@ export class SessionRegistry {
    * Trace: docs/archive/features/cron-scheduler/trace.md, Scenario 5, Section 5
    */
   clearOnIdleCallbacks(sessionKey: string): void {
-    this.onIdleCallbacks.delete(sessionKey);
+    this.onIdleCallbacks.delete(normalizeSessionKey(sessionKey));
   }
 
   /**
@@ -1134,7 +1143,7 @@ export class SessionRegistry {
         //       (single source of truth via stdout parsing). Only issue_created is emitted here.
         if (existingIndex < 0 && operation.resourceType === 'issue') {
           const emitter = getMetricsEmitter();
-          const sessionKey = `${session.channelId}-${session.threadTs || 'direct'}`;
+          const sessionKey = this.getSessionKey(session.channelId, session.threadTs);
           emitter
             .emitGitHubEvent('issue_created', session.ownerId, session.ownerName || 'unknown', sessionKey, {
               url: normalized.url,
@@ -1232,7 +1241,7 @@ export class SessionRegistry {
    * of throwing because racing with session cleanup is expected.
    */
   disableDangerousRule(sessionKey: string, ruleId: string): void {
-    const session = this.sessions.get(sessionKey);
+    const session = this.sessions.get(normalizeSessionKey(sessionKey));
     if (!session) {
       this.logger.debug('disableDangerousRule: session not found', { sessionKey, ruleId });
       return;
@@ -1254,7 +1263,7 @@ export class SessionRegistry {
    */
   disableDangerousRules(sessionKey: string, ruleIds: ReadonlyArray<string>): void {
     if (ruleIds.length === 0) return;
-    const session = this.sessions.get(sessionKey);
+    const session = this.sessions.get(normalizeSessionKey(sessionKey));
     if (!session) {
       this.logger.debug('disableDangerousRules: session not found', { sessionKey, ruleIds });
       return;
@@ -1278,7 +1287,7 @@ export class SessionRegistry {
    * (still escalates).
    */
   isDangerousRuleDisabled(sessionKey: string, ruleId: string): boolean {
-    const session = this.sessions.get(sessionKey);
+    const session = this.sessions.get(normalizeSessionKey(sessionKey));
     return session?.disabledDangerousRules?.has(ruleId) ?? false;
   }
 
@@ -1287,7 +1296,7 @@ export class SessionRegistry {
    * array if the session is unknown or no rules have been disabled.
    */
   listDisabledDangerousRules(sessionKey: string): string[] {
-    const session = this.sessions.get(sessionKey);
+    const session = this.sessions.get(normalizeSessionKey(sessionKey));
     return session?.disabledDangerousRules ? Array.from(session.disabledDangerousRules) : [];
   }
 
@@ -1585,6 +1594,7 @@ export class SessionRegistry {
    * Terminate a session by its key
    */
   terminateSession(sessionKey: string): boolean {
+    sessionKey = normalizeSessionKey(sessionKey);
     const session = this.sessions.get(sessionKey);
     if (!session) {
       return false;
@@ -1614,6 +1624,7 @@ export class SessionRegistry {
 
   /** Mark a session as trashed (hidden from dashboard but kept in conversation list) */
   trashSession(sessionKey: string): boolean {
+    sessionKey = normalizeSessionKey(sessionKey);
     const session = this.sessions.get(sessionKey);
     if (!session) return false;
     session.trashed = true;
@@ -1762,7 +1773,7 @@ export class SessionRegistry {
       }
 
       const sessionsArray: SerializedSession[] = [];
-      for (const [key, session] of this.sessions.entries()) {
+      for (const session of this.sessions.values()) {
         // Save sessions that have conversation history (sessionId) OR a pending
         // handoff context (AD-12, issue #695). The handoffContext branch covers
         // the narrow window between `resetSessionContext()` (which clears
@@ -1778,7 +1789,13 @@ export class SessionRegistry {
         ) {
           this.ensureSessionLinkState(session);
           sessionsArray.push({
-            key,
+            // Rollback compatibility: persist the LEGACY key form. The
+            // running (post-4d) loader ignores this field and re-derives the
+            // canonical key from channelId/threadTs; a pre-4d binary loads it
+            // verbatim and derives legacy keys for lookup — so this exact
+            // form is what keeps sessions.json loadable after an emergency
+            // rollback. See buildLegacySessionKey.
+            key: buildLegacySessionKey(session.channelId, session.threadTs),
             ownerId: session.ownerId,
             ownerName: session.ownerName,
             userId: session.userId, // Legacy field
@@ -2110,7 +2127,28 @@ export class SessionRegistry {
           session.activeLegStartedAtMs = undefined;
         }
         this.ensureSessionLinkState(session);
-        this.sessions.set(serialized.key, session);
+        // Step 4d key migration: the map key is DERIVED from the persisted
+        // channel/thread fields, never trusted from `serialized.key` — a
+        // sessions.json written before the shared-identity format switch
+        // migrates automatically (and idempotently) on this load.
+        //
+        // Per-record containment: the shared identity builder throws on
+        // empty/separator-bearing segments, so one corrupt record must
+        // quarantine itself instead of aborting every record after it
+        // (the enclosing catch spans the whole loop).
+        let derivedKey: string;
+        try {
+          derivedKey = this.getSessionKey(serialized.channelId, serialized.threadTs);
+        } catch (keyError) {
+          this.logger.warn('Skipped session with underivable key on load', {
+            key: serialized.key,
+            channelId: serialized.channelId,
+            threadTs: serialized.threadTs,
+            error: (keyError as Error)?.message,
+          });
+          continue;
+        }
+        this.sessions.set(derivedKey, session);
         loaded++;
 
         // Decide whether to enqueue this session for restart/crash recovery.
@@ -2135,7 +2173,7 @@ export class SessionRegistry {
             ownerId: serialized.ownerId || serialized.userId,
             ownerName: serialized.ownerName,
             activityState: serialized.activityState || 'idle',
-            sessionKey: serialized.key,
+            sessionKey: derivedKey,
             title: serialized.title,
             workflow: serialized.workflow,
             shouldAutoResume: serialized.wasWorkingAtShutdown === true,
@@ -2147,7 +2185,7 @@ export class SessionRegistry {
             ownerId: serialized.ownerId || serialized.userId,
             ownerName: serialized.ownerName,
             activityState: serialized.activityState,
-            sessionKey: serialized.key,
+            sessionKey: derivedKey,
             title: serialized.title,
             workflow: serialized.workflow,
             shouldAutoResume: serialized.activityState === 'working',
