@@ -459,12 +459,15 @@ function computeThreadAggregate(
   allSessions: Map<string, any>,
   now: number,
 ): { totalActiveMs: number; sessionCount: number; compactionCount: number } {
-  const threadKey = `${channelId}-${threadTs || 'direct'}`;
+  // Match on session FIELDS, not a constructed key: aggregation must never
+  // throw on hostile/corrupt in-memory data (the shared identity builder
+  // rejects separator characters), and the fields are the ground truth the
+  // map key is derived from anyway.
   let totalActiveMs = 0;
   let sessionCount = 0;
   let compactionCount = 0;
-  for (const [k, s] of allSessions.entries()) {
-    if (k !== threadKey) continue;
+  for (const s of allSessions.values()) {
+    if (s.channelId !== channelId || (s.threadTs || undefined) !== (threadTs || undefined)) continue;
     sessionCount += 1;
     compactionCount += s.compactionCount || 0;
     let acc = s.activeAccumulatedMs || 0;

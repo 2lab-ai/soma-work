@@ -80,7 +80,7 @@ describe('SessionRegistry sourceWorkingDirs', () => {
     const sessionsFile = path.join(TEST_DATA_DIR, 'sessions.json');
     const raw = JSON.parse(fs.readFileSync(sessionsFile, 'utf-8'));
     // sessions.json is an array of SerializedSession objects
-    const entry = raw.find((s: Record<string, unknown>) => s.key === 'C001-100.001');
+    const entry = raw.find((s: Record<string, unknown>) => s.key === 'work:C001:100.001');
     expect(entry).toBeDefined();
     if (!entry.sourceWorkingDirs) entry.sourceWorkingDirs = [];
     entry.sourceWorkingDirs.push('/etc/passwd');

@@ -652,7 +652,7 @@ describe('SessionRegistry persistence', () => {
     const recovered = reader.getCrashRecoveredSessions();
     expect(recovered.length).toBe(1);
     expect(recovered[0].activityState).toBe('working');
-    expect(recovered[0].sessionKey).toBe('C391-171.391d');
+    expect(recovered[0].sessionKey).toBe('work:C391:171.391d');
   });
 });
 
