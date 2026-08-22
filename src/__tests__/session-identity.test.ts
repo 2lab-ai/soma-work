@@ -14,21 +14,14 @@ vi.mock('../env-paths', () => ({
   DATA_DIR: '/tmp/soma-work-session-identity-test',
 }));
 
-import {
-  buildWorkSessionKey,
-  DIRECT_THREAD_ID,
-  normalizeSessionKey,
-  WORK_TENANT_ID,
-} from '../session-identity';
+import { buildWorkSessionKey, DIRECT_THREAD_ID, normalizeSessionKey, WORK_TENANT_ID } from '../session-identity';
 import { SessionRegistry } from '../session-registry';
 
 const TEST_DATA_DIR = '/tmp/soma-work-session-identity-test';
 
 describe('buildWorkSessionKey', () => {
   it('builds the shared tenant:channel:thread format', () => {
-    expect(buildWorkSessionKey('C0ACM4320MQ', '1755849600.123456')).toBe(
-      'work:C0ACM4320MQ:1755849600.123456',
-    );
+    expect(buildWorkSessionKey('C0ACM4320MQ', '1755849600.123456')).toBe('work:C0ACM4320MQ:1755849600.123456');
   });
 
   it('uses the direct sentinel for channel-level sessions', () => {
@@ -51,9 +44,7 @@ describe('normalizeSessionKey', () => {
   });
 
   it('converts a legacy channel-threadTs key', () => {
-    expect(normalizeSessionKey('C0ACM4320MQ-1755849600.123456')).toBe(
-      'work:C0ACM4320MQ:1755849600.123456',
-    );
+    expect(normalizeSessionKey('C0ACM4320MQ-1755849600.123456')).toBe('work:C0ACM4320MQ:1755849600.123456');
   });
 
   it('converts a legacy channel-direct key', () => {
@@ -129,9 +120,7 @@ describe('SessionRegistry key migration on load (Step 4d)', () => {
     registry.loadSessions();
     registry.saveSessions();
 
-    const rewritten = JSON.parse(
-      fs.readFileSync(path.join(TEST_DATA_DIR, 'sessions.json'), 'utf-8'),
-    );
+    const rewritten = JSON.parse(fs.readFileSync(path.join(TEST_DATA_DIR, 'sessions.json'), 'utf-8'));
     expect(rewritten).toHaveLength(1);
     expect(rewritten[0].key).toBe('work:C888:direct');
   });
