@@ -4,6 +4,7 @@
  */
 
 import { Logger } from '../logger';
+import { normalizeSessionKey } from '../session-identity';
 import type { MetricsEventStore } from './event-store';
 import {
   type Achievement,
@@ -470,7 +471,11 @@ export class ReportAggregator {
 
       const hour = getHourInTz(e.timestamp);
       const dayKey = timestampToDateInTz(e.timestamp);
-      const sessionKey = m.sessionKey || e.sessionKey;
+      // Normalize on read: events written before the Step 4d key format
+      // switch carry legacy `channel-thread` keys — without this, one
+      // session spanning the deploy splits into two per-session rows.
+      const rawSessionKey = m.sessionKey || e.sessionKey;
+      const sessionKey = rawSessionKey ? normalizeSessionKey(rawSessionKey) : rawSessionKey;
 
       // Each of 4 windows: if event in range, accumulate.
       const winRanges: Array<[PeriodTabId, number, number]> = [

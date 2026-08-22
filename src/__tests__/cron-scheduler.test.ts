@@ -233,7 +233,7 @@ describe('CronScheduler — Busy Queue + Idle Drain', () => {
     // Should NOT inject immediately
     expect(injectedMessages).toHaveLength(0);
     // Should be in pending queue
-    expect(scheduler.getPendingQueueSize('C456-thread-1')).toBe(1);
+    expect(scheduler.getPendingQueueSize('work:C456:thread-1')).toBe(1);
   });
 
   // Trace: S5, Section 3b-3d — Happy Path
@@ -299,7 +299,7 @@ describe('CronScheduler — Busy Queue + Idle Drain', () => {
     await scheduler.tick();
 
     // Both jobs queued
-    expect(scheduler.getPendingQueueSize('C456-thread-1')).toBe(2);
+    expect(scheduler.getPendingQueueSize('work:C456:thread-1')).toBe(2);
 
     // First idle → drains one job
     deps.sessionRegistry.setActivityState('C456', 'thread-1', 'idle');
@@ -332,11 +332,11 @@ describe('CronScheduler — Busy Queue + Idle Drain', () => {
 
     const scheduler = new CronScheduler(deps);
     await scheduler.tick();
-    expect(scheduler.getPendingQueueSize('C456-thread-1')).toBe(1);
+    expect(scheduler.getPendingQueueSize('work:C456:thread-1')).toBe(1);
 
     // Simulate session cleanup
-    scheduler.clearPendingQueue('C456-thread-1');
-    expect(scheduler.getPendingQueueSize('C456-thread-1')).toBe(0);
+    scheduler.clearPendingQueue('work:C456:thread-1');
+    expect(scheduler.getPendingQueueSize('work:C456:thread-1')).toBe(0);
   });
 });
 
