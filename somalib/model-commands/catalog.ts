@@ -956,7 +956,7 @@ export function runModelCommand(
         const prefix = slug.includes('/') ? pageIdSegments(slug)[0] : undefined;
         if (prefix && isSemanticPageType(prefix)) {
           if (type && type !== prefix) {
-            return { error: `\`slug\` "${slug}" names a ${prefix} page, but type=${type} was given` };
+            return { error: `\`slug\` "${slug}" belongs to type=${prefix}, but type=${type} was given` };
           }
           id = slug;
         } else if (type) {
