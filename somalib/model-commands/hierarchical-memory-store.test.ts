@@ -188,3 +188,44 @@ describe('HierarchicalMemoryFileStore', () => {
     });
   });
 });
+
+/**
+ * `parseId` turns a canonical index id back into a locator. It is the bridge
+ * that lets the MEMORY model-command accept the ids its own prompt index
+ * advertises, so it has to reject anything that is not a real page id rather
+ * than hand a bogus type down to `resolve`.
+ */
+describe('HierarchicalMemoryFileStore.parseId', () => {
+  it('parses each page shape', () => {
+    expect(HierarchicalMemoryFileStore.parseId('agent/build')).toEqual({ type: 'agent', slug: 'build' });
+    expect(HierarchicalMemoryFileStore.parseId('sites/danawa')).toEqual({ type: 'sites', slug: 'danawa' });
+    expect(HierarchicalMemoryFileStore.parseId('concepts/ha')).toEqual({ type: 'concepts', slug: 'ha' });
+    expect(HierarchicalMemoryFileStore.parseId('project/soma')).toEqual({ type: 'project', project: 'soma' });
+    expect(HierarchicalMemoryFileStore.parseId('project/soma/1234')).toEqual({
+      type: 'project',
+      project: 'soma',
+      issue: '1234',
+    });
+    expect(HierarchicalMemoryFileStore.parseId('cron/daily')).toEqual({ type: 'cron', routine: 'daily' });
+  });
+
+  it('tolerates surrounding whitespace and stray slashes', () => {
+    expect(HierarchicalMemoryFileStore.parseId('  /agent/build/  ')).toEqual({ type: 'agent', slug: 'build' });
+  });
+
+  it('rejects an unknown first segment', () => {
+    expect(() => HierarchicalMemoryFileStore.parseId('bogus/thing')).toThrow(/agent/);
+  });
+
+  it('rejects an id with no second segment', () => {
+    expect(() => HierarchicalMemoryFileStore.parseId('agent')).toThrow();
+  });
+
+  it('rejects an empty id', () => {
+    expect(() => HierarchicalMemoryFileStore.parseId('   ')).toThrow();
+  });
+
+  it('rejects a traversing id', () => {
+    expect(() => HierarchicalMemoryFileStore.parseId('agent/../../escape')).toThrow();
+  });
+});

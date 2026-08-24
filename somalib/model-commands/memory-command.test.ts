@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { getDefaultSessionSnapshot, registerHierarchicalMemoryStore, runModelCommand } from './catalog';
 import { HierarchicalMemoryFileStore } from './hierarchical-memory-store';
 import type { ModelCommandContext, ModelCommandRunRequest } from './types';
+import { validateModelCommandRunArgs } from './validator';
 
 function ctx(user = 'U123'): ModelCommandContext {
   return { channel: 'C1', threadTs: '1.2', user, session: getDefaultSessionSnapshot() };
@@ -82,6 +83,118 @@ describe('MEMORY command dispatch', () => {
 
   it('errors on an unsafe locator', () => {
     const res = run({ op: 'page_upsert', type: 'agent', slug: '../escape', current: 'x' });
+    expect(res.ok).toBe(false);
+  });
+});
+
+/**
+ * The prompt-injected MEMORY INDEX advertises canonical page ids (`agent/foo`,
+ * `project/soma-work/1234`) and tells the model to "fetch with MEMORY
+ * op=page_get" — but the command used to accept only a decomposed
+ * type + slug/project/routine locator. Every natural call with the advertised
+ * id failed with `INVALID_ARGS — type is required for page ops` (observed in
+ * the dev deployment). The id form is now first-class.
+ */
+describe('MEMORY page ops accept the canonical page id', () => {
+  let dataDir: string;
+
+  beforeEach(() => {
+    dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-id-'));
+    registerHierarchicalMemoryStore(new HierarchicalMemoryFileStore(dataDir));
+  });
+
+  afterEach(() => {
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  const payloadOf = (res: ReturnType<typeof run>) => {
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error('unreachable');
+    return res.payload as { ok: boolean; id?: string; page?: string; message?: string };
+  };
+
+  it('page_get resolves an agent page from `id` alone (no `type`)', () => {
+    run({ op: 'page_upsert', type: 'agent', slug: 'build-system', current: 'bun build' });
+
+    const payload = payloadOf(run({ op: 'page_get', id: 'agent/build-system' }));
+    expect(payload.ok).toBe(true);
+    expect(payload.id).toBe('agent/build-system');
+    expect(payload.page).toContain('bun build');
+  });
+
+  // `path` is normalized to `id` in the validator, which every real call goes
+  // through (MCP server: validate → run), so this one exercises both layers.
+  it('page_get accepts `path` as an alias of `id` through the validated path', () => {
+    run({ op: 'page_upsert', type: 'concepts', slug: 'ha-thinking', current: 'layered reasoning' });
+
+    const validated = validateModelCommandRunArgs({
+      commandId: 'MEMORY',
+      params: { op: 'page_get', path: 'concepts/ha-thinking' },
+    });
+    expect(validated.ok).toBe(true);
+    if (!validated.ok) throw new Error('unreachable');
+
+    const payload = payloadOf(runModelCommand(validated.request, ctx()));
+    expect(payload.ok).toBe(true);
+    expect(payload.page).toContain('layered reasoning');
+  });
+
+  it('page_upsert creates a project→issue page from `id`', () => {
+    const up = payloadOf(run({ op: 'page_upsert', id: 'project/soma-work/1234', current: 'spec' }));
+    expect(up.ok).toBe(true);
+    expect(up.id).toBe('project/soma-work/1234');
+    expect(payloadOf(run({ op: 'page_get', id: 'project/soma-work/1234' })).page).toContain('spec');
+  });
+
+  it('page_upsert creates a cron page from `id`', () => {
+    const up = payloadOf(run({ op: 'page_upsert', id: 'cron/daily-standup', current: 'runs 09:00' }));
+    expect(up.id).toBe('cron/daily-standup');
+    expect(payloadOf(run({ op: 'page_get', id: 'cron/daily-standup' })).page).toContain('runs 09:00');
+  });
+
+  it('page_remove deletes a page addressed by `id`', () => {
+    run({ op: 'page_upsert', id: 'sites/danawa', current: 'price site' });
+    expect(payloadOf(run({ op: 'page_remove', id: 'sites/danawa' })).ok).toBe(true);
+    expect(payloadOf(run({ op: 'page_get', id: 'sites/danawa' })).ok).toBe(false);
+  });
+
+  it('tolerates a slug that redundantly carries its own type prefix', () => {
+    run({ op: 'page_upsert', type: 'agent', slug: 'build-system', current: 'bun build' });
+
+    const payload = payloadOf(run({ op: 'page_get', type: 'agent', slug: 'agent/build-system' }));
+    expect(payload.ok).toBe(true);
+    expect(payload.id).toBe('agent/build-system');
+  });
+
+  it('infers the type from a slash-qualified slug when `type` is omitted', () => {
+    run({ op: 'page_upsert', type: 'agent', slug: 'build-system', current: 'bun build' });
+
+    const payload = payloadOf(run({ op: 'page_get', slug: 'agent/build-system' }));
+    expect(payload.ok).toBe(true);
+    expect(payload.id).toBe('agent/build-system');
+  });
+
+  it('explicit locator fields win over the id', () => {
+    run({ op: 'page_upsert', type: 'agent', slug: 'explicit', current: 'from explicit slug' });
+
+    const payload = payloadOf(run({ op: 'page_get', id: 'agent/other', type: 'agent', slug: 'explicit' }));
+    expect(payload.id).toBe('agent/explicit');
+  });
+
+  it('names `id` in the error when no locator at all is given', () => {
+    const res = run({ op: 'page_get' });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error.message).toContain('id');
+  });
+
+  it('rejects an id whose first segment is not a semantic page type', () => {
+    const res = run({ op: 'page_get', id: 'bogus/thing' });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error.message).toMatch(/agent/);
+  });
+
+  it('rejects a path-traversing id', () => {
+    const res = run({ op: 'page_upsert', id: 'agent/../../escape', current: 'x' });
     expect(res.ok).toBe(false);
   });
 });

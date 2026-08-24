@@ -1,10 +1,5 @@
-import type {
-  MemoryIndex,
-  MemoryIndexEntry,
-  PageLocator,
-  SemanticPage,
-  SemanticPageType,
-} from './hierarchical-memory-store';
+import type { MemoryIndex, MemoryIndexEntry, SemanticPage } from './hierarchical-memory-store';
+import { isSemanticPageType, type PageLocator, pageIdSegments, parsePageId } from './memory-page-id';
 import type {
   SessionInstruction,
   SessionInstructionOperation,
@@ -395,10 +390,16 @@ const MEMORY_SCHEMA = {
       enum: ['page_upsert', 'page_get', 'page_remove', 'episodic_append', 'episodic_get', 'search', 'index'],
       description: 'Operation to perform',
     },
+    id: {
+      type: 'string',
+      description:
+        'Canonical page id as listed in MEMORY INDEX (agent/foo, project/soma-work/1234, cron/daily). ' +
+        'Enough on its own for page_* ops — no need to split it into type + slug.',
+    },
     type: {
       type: 'string',
       enum: ['agent', 'sites', 'concepts', 'project', 'cron'],
-      description: 'Semantic page category (required for page_* ops)',
+      description: 'Semantic page category (only needed for page_* ops when `id` is not given)',
     },
     slug: { type: 'string', description: 'Page slug for agent|sites|concepts' },
     project: { type: 'string', description: 'Project name for type=project' },
@@ -598,6 +599,8 @@ export function listModelCommands(context: ModelCommandContext): ModelCommandDes
           'page_get (read one page); page_remove (delete a page); ' +
           'episodic_append (append a raw dated observation: pass content); episodic_get (read a day); ' +
           'search (find pages by query); index (list all pages). ' +
+          'Page ops take `id` — the canonical id listed in MEMORY INDEX (agent/foo, project/soma-work/1234, ' +
+          'cron/daily) — or, if you have no id, `type` plus a locator field: ' +
           'type=agent|sites|concepts use `slug`; type=project uses `project` (+ optional `issue`); ' +
           'type=cron uses `routine`. Pages carry a Current section (stable understanding) and a History log. ' +
           'Use episodic for sparse/uncertain events; promote to a page once a fact is durable.',
@@ -911,15 +914,55 @@ export function runModelCommand(
     const store = getHierarchicalMemoryStore();
     const user = context.user;
 
+    /**
+     * Resolve the caller's params into a page locator.
+     *
+     * The MEMORY INDEX injected into the system prompt lists canonical page ids
+     * (`agent/foo`, `project/soma-work/1234`) and nothing else, so `id` is a
+     * first-class locator here — decomposing an id back into type + slug is not
+     * the caller's job. Explicit locator fields still win over `id`, and a
+     * field that arrives already carrying its type prefix (`slug:
+     * "agent/foo"`) is read as an id too.
+     */
     const buildLocator = (): PageLocator | { error: string } => {
-      if (!params.type) return { error: 'type is required for page ops' };
-      return {
-        type: params.type as SemanticPageType,
-        slug: params.slug,
-        project: params.project,
-        issue: params.issue,
-        routine: params.routine,
+      const text = (v: unknown): string | undefined => {
+        const s = typeof v === 'string' ? v.trim() : '';
+        return s.length > 0 ? s : undefined;
       };
+      const type = text(params.type);
+      const slug = text(params.slug);
+      const project = text(params.project);
+      const issue = text(params.issue);
+      const routine = text(params.routine);
+
+      // The page name, plus the type it implies when the caller used a
+      // type-specific field instead of passing `type`.
+      const name = project ? (issue ? `${project}/${issue}` : project) : (routine ?? slug);
+      const impliedType = project ? 'project' : routine ? 'cron' : undefined;
+
+      let id: string | undefined;
+      if (name) {
+        const qualified = name.includes('/') && isSemanticPageType(pageIdSegments(name)[0]);
+        if (qualified) id = name;
+        else {
+          const t = type ?? impliedType;
+          if (t) id = `${t}/${name}`;
+        }
+      }
+      id ??= text(params.id);
+
+      if (!id) {
+        return {
+          error:
+            'page ops need a locator: pass `id` as listed in MEMORY INDEX (e.g. "agent/build-system", ' +
+            '"project/soma-work/1234", "cron/daily"), or `type` plus slug/project/routine',
+        };
+      }
+      try {
+        return parsePageId(id);
+      } catch (err) {
+        return { error: err instanceof Error ? err.message : String(err) };
+      }
     };
 
     const ok = (payload: Record<string, unknown>) =>

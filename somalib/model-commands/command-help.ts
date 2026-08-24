@@ -78,10 +78,16 @@ const MEMORY_HELP: CommandHelp = {
   commandId: 'MEMORY',
   summary:
     'Hierarchical taxonomy memory (semantic pages + episodic). op selects the operation. ' +
-    'page_upsert/page_get/page_remove take a locator: type=agent|sites|concepts use slug; type=project uses ' +
-    'project (+ optional issue); type=cron uses routine. page_upsert sets title/current/history. ' +
+    'page_upsert/page_get/page_remove take a locator, and the simplest one is `id` — the canonical page id ' +
+    'listed in MEMORY INDEX (agent/foo, project/soma-work/1234, cron/daily), passed verbatim. Without an id, ' +
+    'pass type + a field: type=agent|sites|concepts use slug; type=project uses project (+ optional issue); ' +
+    'type=cron uses routine. page_upsert sets title/current/history. ' +
     'episodic_append stores a raw dated observation (content). search/index browse pages.',
   examples: [
+    {
+      title: 'Read a page listed in MEMORY INDEX (the id alone is enough)',
+      params: { op: 'page_get', id: 'agent/build-system' },
+    },
     {
       title: 'Create/update an agent page',
       params: {
@@ -98,7 +104,7 @@ const MEMORY_HELP: CommandHelp = {
       params: { op: 'page_upsert', type: 'project', project: 'soma-work', issue: '1234', current: 'Spec: ...' },
     },
     { title: 'Append an episodic observation', params: { op: 'episodic_append', content: 'User prefers KRW tables.' } },
-    { title: 'Read a page', params: { op: 'page_get', type: 'agent', slug: 'build-system' } },
+    { title: 'Read a page by explicit locator', params: { op: 'page_get', type: 'agent', slug: 'build-system' } },
     { title: 'Search pages', params: { op: 'search', query: 'build' } },
     { title: 'List all pages', params: { op: 'index' } },
   ],
