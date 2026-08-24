@@ -92,8 +92,10 @@ describe('local:using-eli5 skill — doc contract: inherits using-govuk (T2)', (
 describe('local:using-eli5 skill — doc contract: ELI5 first (T3)', () => {
   it('mandates the ELI5 layer before the detail layer', () => {
     const md = body().toLowerCase();
-    expect(md).toMatch(/eli5 (layer )?first|always.{0,40}eli5.{0,40}first/);
-    expect(md).toMatch(/then the detail|detail layer/);
+    // Anchored on the contract bullet itself: a loose keyword match would pass
+    // on prose that says the opposite.
+    expect(md).toMatch(/always write the eli5 layer first, then the detail layer/);
+    expect(md).toMatch(/never the other way round, and never only one of the two/);
   });
 
   it('puts the ELI5 heading physically above the detail heading in the layer spec', () => {

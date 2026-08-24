@@ -89,7 +89,7 @@ That is the one analogy this ELI5 layer is allowed, and both halves of it — th
 - Could someone outside the domain read the ELI5 layer alone and still be right about what happens?
 - Does anything in the ELI5 layer contradict the detail layer, or promise more than it?
 - Is the detail layer still complete — every number, name, caveat and failure mode intact?
-- Is the ELI5 layer inside 120 words, and is it one paragraph or 5 bullets at most?
+- Is the ELI5 layer inside its cap — 120 words, or 150 at document level — and is it one paragraph or 5 bullets at most?
 - Did you skip a layer? If so, name which of the 2 listed exceptions applies. If neither does, write the layer.
 - Does the whole thing pass the using-govuk self-check? Load using-govuk if you have not.
 
