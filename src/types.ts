@@ -62,7 +62,12 @@ export type SessionState = 'INITIALIZING' | 'MAIN' | 'SLEEPING';
  * - waiting: Waiting for user input (choice/permission prompt shown)
  * - idle: Response completed, no active processing
  */
-export type ActivityState = 'working' | 'waiting' | 'idle';
+// Shared vocabulary since soma-lib v0.5.0 (convergence roadmap Step 4a) —
+// soma's session state machine declares the identical union; re-exported here
+// so every existing `from './types'` import path keeps working.
+export type { ActivityState } from 'soma-lib';
+
+import type { ActivityState } from 'soma-lib';
 
 /**
  * Token usage tracking for a session.

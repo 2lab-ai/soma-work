@@ -14,6 +14,7 @@ import {
   matchesCronExpression,
 } from 'somalib/cron/cron-storage';
 import { Logger } from './logger';
+import { buildWorkSessionKey } from './session-identity';
 import type { SessionRegistry } from './session-registry';
 import type { ConversationSession } from './types';
 
@@ -323,7 +324,7 @@ export class CronScheduler {
    * Trace: docs/archive/features/cron-scheduler/trace.md, Scenario 5, Section 3a
    */
   private enqueueForIdle(job: CronJob, session: ConversationSession, now: Date, triggeredBy?: string): void {
-    const sessionKey = `${session.channelId}-${session.threadTs || 'direct'}`;
+    const sessionKey = buildWorkSessionKey(session.channelId, session.threadTs);
     const queue = this.pendingCronQueue.get(sessionKey) || [];
     const isFirstInQueue = queue.length === 0;
     queue.push(job);
