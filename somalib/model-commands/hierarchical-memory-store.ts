@@ -23,26 +23,17 @@
  */
 import * as fs from 'fs';
 import * as path from 'path';
+import {
+  isSafeSegment,
+  isSemanticPageType,
+  type PageLocator,
+  type SemanticPageType,
+  parsePageId,
+} from './memory-page-id';
 
 export const MEMORY_DIR = 'memory';
 
-/** Semantic page categories addressable by the model. */
-export type SemanticPageType = 'agent' | 'sites' | 'concepts' | 'project' | 'cron';
-
-const SEMANTIC_TYPES: SemanticPageType[] = ['agent', 'sites', 'concepts', 'project', 'cron'];
-
-/** Where a semantic page lives. project/issue/cron use nested locators. */
-export interface PageLocator {
-  type: SemanticPageType;
-  /** agent | sites | concepts page slug */
-  slug?: string;
-  /** projects/<project>/... */
-  project?: string;
-  /** projects/<project>/issues/<issue>.md (omit → project-level MEMORY.md) */
-  issue?: string;
-  /** cron/<routine>/MEMORY.md */
-  routine?: string;
-}
+export type { PageLocator, SemanticPageType };
 
 export interface SemanticPage {
   id: string; // canonical id, e.g. "agent/foo" or "project/soma/123"
@@ -70,10 +61,6 @@ export interface MemoryIndex {
 }
 
 const INDEX_VERSION = 1;
-
-function isSafeSegment(s: string): boolean {
-  return /^[A-Za-z0-9_.-]+$/.test(s) && s !== '.' && s !== '..';
-}
 
 function todayISO(): string {
   return new Date().toISOString().slice(0, 10);
@@ -172,7 +159,7 @@ export class HierarchicalMemoryFileStore {
 
   /** Resolve a locator into {relPath, id}, validating all segments. */
   resolve(loc: PageLocator): { relPath: string; id: string } {
-    if (!SEMANTIC_TYPES.includes(loc.type)) throw new Error(`Invalid memory page type: ${loc.type}`);
+    if (!isSemanticPageType(loc.type)) throw new Error(`Invalid memory page type: ${loc.type}`);
     if (loc.type === 'project') {
       const project = (loc.project || '').trim();
       if (!project || !isSafeSegment(project)) throw new Error('project locator requires a safe `project` segment');
@@ -197,16 +184,13 @@ export class HierarchicalMemoryFileStore {
     return { relPath: path.join(loc.type, `${slug}.md`), id: `${loc.type}/${slug}` };
   }
 
-  /** Parse a canonical id (as stored in the index) back into a locator. */
+  /**
+   * Parse a canonical id (as stored in the index and shown to the model in the
+   * prompt's MEMORY INDEX) back into a locator. Throws on a malformed id — see
+   * `parsePageId`.
+   */
   static parseId(id: string): PageLocator {
-    const parts = id.split('/');
-    const type = parts[0] as SemanticPageType;
-    if (type === 'project') {
-      if (parts.length === 3) return { type, project: parts[1], issue: parts[2] };
-      return { type, project: parts[1] };
-    }
-    if (type === 'cron') return { type, routine: parts[1] };
-    return { type, slug: parts.slice(1).join('/') };
+    return parsePageId(id);
   }
 
   // ── Page read / write ──────────────────────────────────────────────────────
