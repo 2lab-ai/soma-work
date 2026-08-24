@@ -247,6 +247,11 @@ export function validateModelCommandRunArgs(args: unknown): ValidationResult {
             | 'search'
             | 'index',
           type: type as 'agent' | 'sites' | 'concepts' | 'project' | 'cron' | undefined,
+          // The prompt's MEMORY INDEX shows page ids and nothing else, so the
+          // id form has to survive this rebuild. `path` is the other spelling
+          // the id invites; normalize it here rather than letting the params
+          // rebuild drop it silently.
+          id: str(params.id) ?? str(params.path),
           slug: str(params.slug),
           project: str(params.project),
           issue: str(params.issue),
