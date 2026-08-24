@@ -62,3 +62,6 @@
 - repo-wide 결정은 `docs/adr/`로 승격한다.
 - 운영자가 순서대로 실행하는 절차서는 `docs/runbook/`에 둔다.
 - Slack UI/API payload를 건드릴 때는 [Slack Block Kit reference](./misc/reference/slack-block-kit.md)를 먼저 확인한다.
+
+### Active onboarding design
+- [somawork setup onboarding](superpowers/specs/2026-08-23-somawork-setup-onboarding-design.md) — brew/xbrew install → terminal setup wizard → Slack + local llmux Claude/Codex → service receipt.
