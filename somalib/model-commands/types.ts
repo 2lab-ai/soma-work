@@ -74,7 +74,13 @@ export interface SaveMemoryParams {
  */
 export interface MemoryParams {
   op: 'page_upsert' | 'page_get' | 'page_remove' | 'episodic_append' | 'episodic_get' | 'search' | 'index';
-  /** Semantic page category (required for page_* ops). */
+  /**
+   * Canonical page id, exactly as listed in the prompt's MEMORY INDEX —
+   * `agent/foo`, `project/soma-work/1234`, `cron/daily`. Enough on its own for
+   * page_* ops; the explicit locator fields below win when both are given.
+   */
+  id?: string;
+  /** Semantic page category (needed only when `id` is not given). */
   type?: 'agent' | 'sites' | 'concepts' | 'project' | 'cron';
   /** Page slug for agent | sites | concepts. */
   slug?: string;
