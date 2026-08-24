@@ -70,9 +70,11 @@ describe('hierarchical memory — user text interface', () => {
     expect(out).toContain('confirmed');
   });
 
-  it('reports a missing page for an unknown or malformed id', () => {
+  it('separates a well-formed id with no page from a malformed id', () => {
     expect(formatPageForDisplay(user, 'agent/nope')).toContain('찾을 수 없');
-    expect(formatPageForDisplay(user, 'notavalidid')).toContain('찾을 수 없');
+    // `notavalidid` has no `<type>/` prefix, so it is not a page id at all —
+    // the reader gets the id-format hint rather than a misleading "not found".
+    expect(formatPageForDisplay(user, 'notavalidid')).toContain('잘못된 페이지 id');
   });
 
   it('searches pages', () => {
