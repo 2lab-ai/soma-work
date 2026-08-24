@@ -5,6 +5,7 @@
 
 import { randomUUID } from 'crypto';
 import { Logger } from '../logger';
+import { buildWorkSessionKey } from '../session-identity';
 import { MetricsEventStore } from './event-store';
 import type { MetricsEvent, MetricsEventType, TokenUsageMetadata } from './types';
 
@@ -20,7 +21,7 @@ interface SessionLike {
 }
 
 function sessionKeyFrom(session: SessionLike): string {
-  return `${session.channelId}-${session.threadTs || 'direct'}`;
+  return buildWorkSessionKey(session.channelId, session.threadTs);
 }
 
 export class MetricsEventEmitter {
