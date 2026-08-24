@@ -29,7 +29,6 @@ import {
   type PageLocator,
   type SemanticPageType,
   parsePageId,
-  SEMANTIC_TYPES,
 } from './memory-page-id';
 
 export const MEMORY_DIR = 'memory';
