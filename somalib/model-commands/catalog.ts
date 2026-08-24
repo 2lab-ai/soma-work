@@ -920,9 +920,14 @@ export function runModelCommand(
      * The MEMORY INDEX injected into the system prompt lists canonical page ids
      * (`agent/foo`, `project/soma-work/1234`) and nothing else, so `id` is a
      * first-class locator here — decomposing an id back into type + slug is not
-     * the caller's job. Explicit locator fields still win over `id`, and a
-     * field that arrives already carrying its type prefix (`slug:
-     * "agent/foo"`) is read as an id too.
+     * the caller's job.
+     *
+     * Precedence: a locator field (`project` / `routine` / `slug`) names the
+     * page when one is given, and `id` is read only when none is. A `slug` may
+     * carry its own type prefix, since that is exactly what the index shows.
+     * Whenever the caller's fields disagree with each other this errors rather
+     * than picking a winner — resolving to the wrong page would mean
+     * `page_upsert` writing over an unrelated one.
      */
     const buildLocator = (): PageLocator | { error: string } => {
       const text = (v: unknown): string | undefined => {
@@ -935,21 +940,35 @@ export function runModelCommand(
       const issue = text(params.issue);
       const routine = text(params.routine);
 
-      // The page name, plus the type it implies when the caller used a
-      // type-specific field instead of passing `type`.
-      const name = project ? (issue ? `${project}/${issue}` : project) : (routine ?? slug);
-      const impliedType = project ? 'project' : routine ? 'cron' : undefined;
+      const mismatch = (field: string, expected: string) =>
+        `\`${field}\` is only valid with type=${expected}, but type=${type} was given`;
 
       let id: string | undefined;
-      if (name) {
-        const qualified = name.includes('/') && isSemanticPageType(pageIdSegments(name)[0]);
-        if (qualified) id = name;
-        else {
-          const t = type ?? impliedType;
-          if (t) id = `${t}/${name}`;
+      if (project) {
+        // A project (or issue) is a name, never a type-prefixed id — a project
+        // legitimately named `agent` must not be read as an agent page.
+        if (type && type !== 'project') return { error: mismatch('project', 'project') };
+        id = issue ? `project/${project}/${issue}` : `project/${project}`;
+      } else if (routine) {
+        if (type && type !== 'cron') return { error: mismatch('routine', 'cron') };
+        id = `cron/${routine}`;
+      } else if (slug) {
+        const prefix = slug.includes('/') ? pageIdSegments(slug)[0] : undefined;
+        if (prefix && isSemanticPageType(prefix)) {
+          if (type && type !== prefix) {
+            return { error: `\`slug\` "${slug}" names a ${prefix} page, but type=${type} was given` };
+          }
+          id = slug;
+        } else if (type) {
+          id = `${type}/${slug}`;
+        } else {
+          return {
+            error: `\`slug\` "${slug}" needs a \`type\`, or pass the whole id (e.g. id="agent/${slug}")`,
+          };
         }
+      } else {
+        id = text(params.id);
       }
-      id ??= text(params.id);
 
       if (!id) {
         return {

@@ -174,11 +174,54 @@ describe('MEMORY page ops accept the canonical page id', () => {
     expect(payload.id).toBe('agent/build-system');
   });
 
-  it('explicit locator fields win over the id', () => {
+  it('a locator field names the page even when an id is also present', () => {
     run({ op: 'page_upsert', type: 'agent', slug: 'explicit', current: 'from explicit slug' });
 
     const payload = payloadOf(run({ op: 'page_get', id: 'agent/other', type: 'agent', slug: 'explicit' }));
     expect(payload.id).toBe('agent/explicit');
+  });
+
+  // Resolving to the wrong page is worse than refusing: `page_upsert` would
+  // write over an unrelated page. So every disagreement between the caller's
+  // own fields is an error, never a coin flip.
+  it('does not read a project named after a page type as that type', () => {
+    const up = payloadOf(run({ op: 'page_upsert', type: 'project', project: 'agent', issue: '1234', current: 'x' }));
+    expect(up.id).toBe('project/agent/1234');
+  });
+
+  it('resolves a project literally named `agent` at project level too', () => {
+    const up = payloadOf(run({ op: 'page_upsert', type: 'project', project: 'agent', current: 'x' }));
+    expect(up.id).toBe('project/agent');
+  });
+
+  it('rejects a slug whose type prefix contradicts `type`', () => {
+    const res = run({ op: 'page_get', type: 'cron', slug: 'agent/build-system' });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error.message).toMatch(/type=cron/);
+  });
+
+  it('rejects `project` under a non-project type', () => {
+    const res = run({ op: 'page_get', type: 'agent', project: 'soma-work' });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error.message).toMatch(/type=project/);
+  });
+
+  it('rejects `routine` under a non-cron type', () => {
+    const res = run({ op: 'page_get', type: 'agent', routine: 'daily' });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error.message).toMatch(/type=cron/);
+  });
+
+  it('rejects a bare slug with neither `type` nor a type prefix, even alongside an id', () => {
+    const res = run({ op: 'page_get', id: 'agent/build-system', slug: 'other' });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error.message).toMatch(/needs a `type`/);
+  });
+
+  it('keeps type=cron + slug working (the store routine-or-slug fallback)', () => {
+    const up = payloadOf(run({ op: 'page_upsert', type: 'cron', slug: 'daily-standup', current: 'runs 09:00' }));
+    expect(up.id).toBe('cron/daily-standup');
+    expect(payloadOf(run({ op: 'page_get', type: 'cron', routine: 'daily-standup' })).page).toContain('runs 09:00');
   });
 
   it('names `id` in the error when no locator at all is given', () => {
