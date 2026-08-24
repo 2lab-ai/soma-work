@@ -51,7 +51,7 @@ describe('local:using-eli5 skill — plugin registration (T1)', () => {
     expect(existsSync(GOVUK_MD)).toBe(true);
   });
 
-  it('ships inside the zworkflow plugin', () => {
+  it('sits under the manifest of the zworkflow plugin that ships src/local', () => {
     const plugin = JSON.parse(readFileSync(PLUGIN_JSON, 'utf8'));
     expect(plugin.name).toBe('zworkflow');
   });
@@ -71,7 +71,7 @@ describe('local:using-eli5 skill — plugin registration (T1)', () => {
   });
 });
 
-describe('local:using-eli5 skill — inherits the using-govuk context (T2)', () => {
+describe('local:using-eli5 skill — doc contract: inherits using-govuk (T2)', () => {
   it('names using-govuk as the style it builds on', () => {
     expect(body()).toMatch(/using-govuk/);
   });
@@ -89,7 +89,7 @@ describe('local:using-eli5 skill — inherits the using-govuk context (T2)', () 
   });
 });
 
-describe('local:using-eli5 skill — ELI5-first contract (T3)', () => {
+describe('local:using-eli5 skill — doc contract: ELI5 first (T3)', () => {
   it('mandates the ELI5 layer before the detail layer', () => {
     const md = body().toLowerCase();
     expect(md).toMatch(/eli5 (layer )?first|always.{0,40}eli5.{0,40}first/);
@@ -112,18 +112,43 @@ describe('local:using-eli5 skill — ELI5-first contract (T3)', () => {
   });
 
   it('forbids the two layers from contradicting each other', () => {
-    expect(body().toLowerCase()).toMatch(/contradict/);
+    // Anchored on the prohibition, so a permissive sentence cannot satisfy it.
+    expect(body().toLowerCase()).toMatch(/must never contradict/);
   });
 
-  it('gives a length budget for the ELI5 layer', () => {
-    // A rule with no number is a suggestion, not a contract.
-    expect(body()).toMatch(/\b\d{2,3}\s*(words|단어)/);
+  it('gives a hard length budget for the ELI5 layer', () => {
+    // A soft number is a mood, not a contract.
+    expect(body()).toMatch(/\b\d{2,3}\s*words maximum/);
   });
 
-  it('resolves the analogy conflict with using-govuk explicitly', () => {
+  it('closes the exception list — no self-judged skipping', () => {
     const md = body().toLowerCase();
-    expect(md).toMatch(/analog(y|ies)/);
+    // Trivial content shrinks the layer; it never removes it.
+    expect(md).toMatch(/shrinks to one sentence/);
+    expect(md).toMatch(/complete list of exceptions|this is the complete list/);
+    // Only an explicit user request, never the agent's own read of the audience.
+    expect(md).toMatch(/explicitly asked/);
+    expect(md).toMatch(/own (reading|belief|judgement).{0,40}(audience|expert)/);
+  });
+
+  it('resolves the analogy conflict with using-govuk, with a counted unit', () => {
+    const md = body().toLowerCase();
     expect(md).toMatch(/metaphor|clich/);
+    // "one analogy" with no unit means one per section, per document or per whim.
+    expect(md).toMatch(/one analogy per eli5 layer/);
+  });
+
+  it('defers to using-govuk for the banned word list instead of copying it', () => {
+    const md = body().toLowerCase();
+    expect(md).toMatch(/full using-govuk banned list/);
+    // A partial copy silently permits whatever it left out.
+    expect(md).not.toMatch(/ring-fence/);
+  });
+
+  it('yields the first PR-body position to the calldiff block', () => {
+    const md = body().toLowerCase();
+    expect(md).toMatch(/calldiff/);
+    expect(md).toMatch(/first position|stays first/);
   });
 
   it('says when NOT to add an ELI5 layer', () => {
@@ -133,6 +158,13 @@ describe('local:using-eli5 skill — ELI5-first contract (T3)', () => {
 
   it('has a before-you-finish self-check', () => {
     expect(body().toLowerCase()).toMatch(/self-check|before you finish/);
+  });
+
+  it('dogfoods its own labelling rule', () => {
+    // The skill demands both layers be labelled; this file is prose too.
+    const md = body();
+    expect(md).toMatch(/^## In short$/m);
+    expect(md).toMatch(/^Detail: /m);
   });
 
   it('shows a worked before/after example', () => {
