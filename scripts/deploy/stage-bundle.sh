@@ -43,6 +43,7 @@ copy_file deploy/protected-paths.txt
 
 copy_dir dist
 copy_dir somalib
+copy_dir services
 
 while IFS= read -r package_json; do
   package_dir="$(dirname "$package_json")"
@@ -61,5 +62,10 @@ fi
 
 if [[ ! -f "$STAGE_DIR/packages/mcp-servers/permission/dist/permission-mcp-server.js" ]]; then
   echo "Missing packaged MCP server dist output in staged deploy bundle" >&2
+  exit 1
+fi
+
+if [[ ! -f "$STAGE_DIR/services/a2t/worker.py" ]]; then
+  echo "Missing services/a2t/worker.py in staged deploy bundle" >&2
   exit 1
 fi
