@@ -273,3 +273,50 @@ describe('loadDotenvForConfig — priority cwd → config dir → parent', () =>
     expect(process.env.COUNTER).toBe('initial');
   });
 });
+
+/**
+ * The injected-environment option.
+ *
+ * `somawork doctor` resolves a *profile's* placeholders while the controller
+ * process carries its own unrelated environment. The property that matters is
+ * not just "the map is used" but "the ambient environment is neither read as a
+ * fallback nor written to" — otherwise a profile's value could silently come
+ * from, or leak into, the inspecting process.
+ */
+describe('substituteEnvVars({ env })', () => {
+  const AMBIENT = 'SOMA_SUBSTITUTION_AMBIENT_PROBE';
+
+  afterEach(() => {
+    delete process.env[AMBIENT];
+  });
+
+  it('resolves from the supplied map', () => {
+    const result = substituteEnvVars({ a: '${SOMA_X}' }, { env: { SOMA_X: 'from-map' } });
+    expect(result.value).toEqual({ a: 'from-map' });
+    expect(result.missing).toEqual([]);
+  });
+
+  it('does not fall back to process.env for a name the map omits', () => {
+    process.env[AMBIENT] = 'ambient-value';
+    const result = substituteEnvVars({ a: `\${${AMBIENT}}` }, { env: {} });
+    expect(result.value).toEqual({ a: `\${${AMBIENT}}` });
+    expect(result.missing).toEqual([AMBIENT]);
+  });
+
+  it('does not write the supplied map into process.env', () => {
+    const before = { ...process.env };
+    substituteEnvVars({ a: '${SOMA_X}' }, { env: { SOMA_X: 'from-map', SOMA_UNUSED: 'also-from-map' } });
+    expect(process.env).toEqual(before);
+  });
+
+  it('honours :- defaults and :? requirements against the supplied map', () => {
+    expect(substituteEnvVars({ a: '${SOMA_X:-fallback}' }, { env: {} }).value).toEqual({ a: 'fallback' });
+    expect(() => substituteEnvVars({ a: '${SOMA_X:?required}' }, { env: {} })).toThrow(/required/);
+    expect(substituteEnvVars({ a: '${SOMA_X:?required}' }, { env: { SOMA_X: 'set' } }).value).toEqual({ a: 'set' });
+  });
+
+  it('still reads process.env when no map is supplied', () => {
+    process.env[AMBIENT] = 'ambient-value';
+    expect(substituteEnvVars({ a: `\${${AMBIENT}}` }).value).toEqual({ a: 'ambient-value' });
+  });
+});

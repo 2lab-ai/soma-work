@@ -335,8 +335,8 @@ function getPort(): number {
  *   1. `config.conversation.viewerHost` when it's an externally meaningful
  *      bind address (not `127.0.0.1` / `localhost` / `0.0.0.0` which are
  *      bind-only tokens, not reachable hostnames).
- *   2. `os.hostname()` — the OS-reported short hostname (e.g. `oudwood-512`,
- *      `mac-mini-dev`), resolvable on the local network via DNS/mDNS.
+ *   2. `os.hostname()` — the OS-reported short hostname, resolvable on the
+ *      local network via DNS/mDNS.
  *   3. `localhost` as a last resort (matches prior behaviour for single-box
  *      dev where hostname resolution isn't available).
  */

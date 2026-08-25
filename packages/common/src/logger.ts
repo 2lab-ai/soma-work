@@ -8,17 +8,26 @@
  */
 
 // ---------------------------------------------------------------------------
-// Anthropic secret redaction
+// Secret redaction — the single owner for every credential shape this repo
+// knows about. `redactSecrets` is the implementation; `redactAnthropicSecrets`
+// is the historical name kept as an alias so existing call sites (token
+// manager, admin handler, stream executor) keep working while gaining the
+// wider coverage. Never add a second regex set elsewhere: a redactor that only
+// some sinks use is a redactor that leaks.
 // ---------------------------------------------------------------------------
 
 /**
  * Regex matching Anthropic API credentials.
  *
- * Recognised kinds:
- *   - sk-ant-oat01-...    (OAuth access token)
- *   - sk-ant-ort01-...    (OAuth refresh token)
- *   - sk-ant-api03-...    (API key)
- *   - sk-ant-admin01-...  (admin key)
+ * Recognised kinds, by their `sk-ant-…` infix: `oat01` (OAuth access token),
+ * `ort01` (OAuth refresh token), `api03` (API key), `admin01` (admin key).
+ *
+ * Written that way on purpose. This file compiles into the runtime bundle, and
+ * the bundle smoke (`scripts/smoke/setup-package.js`) scans every staged text
+ * file for credential shapes with **no allowlist** — an allowlist for
+ * credential-shaped bytes is a permanent blind spot. A doc comment carrying a
+ * full `sk-ant-<kind>-<body>` example would be the one entry that list needed,
+ * so the example is described rather than spelled.
  *
  * Only the 8+ character suffix body is matched (A-Z, a-z, 0-9, _, -).
  */
@@ -32,23 +41,91 @@ const ANTHROPIC_SECRET_RE = /\bsk-ant-(oat01|ort01|api03|admin01)-[A-Za-z0-9_-]{
  */
 const LLMUX_KEY_RE = /\blmk-[A-Za-z0-9_-]{8,}\b/g;
 
-function redactString(value: string): string {
-  // Reset lastIndex is unnecessary when using String.replace with a /g regex,
-  // but spelling it out avoids surprises if we ever switch to exec().
-  return value
-    .replace(ANTHROPIC_SECRET_RE, (match, kind: string) => {
-      const last4 = match.slice(-4);
-      return `[REDACTED sk-ant-${kind}-...${last4}]`;
-    })
-    .replace(LLMUX_KEY_RE, (match) => `[REDACTED lmk-...${match.slice(-4)}]`);
+/**
+ * Slack refresh/rotation tokens. Matched *before* the plain `xox?-` family
+ * because `xoxe.xoxp-…` embeds an `xoxp-` token: without this ordering the
+ * inner match would leave the `xoxe.` prefix dangling in the output.
+ */
+const SLACK_ROTATION_TOKEN_RE = /\bxoxe[.-][A-Za-z0-9._-]{8,}/g;
+
+/** Slack bot/user/app/legacy tokens (`xoxb-`, `xoxp-`, `xoxa-`, `xoxr-`, `xoxs-`). */
+const SLACK_TOKEN_RE = /\bxox([bpars])-[A-Za-z0-9-]{8,}/g;
+
+/** Slack app-level (Socket Mode) tokens. */
+const SLACK_APP_TOKEN_RE = /\bxapp-[A-Za-z0-9-]{8,}/g;
+
+/**
+ * Socket Mode WebSocket URLs. `apps.connections.open` returns a `wss://` URL
+ * whose query string *is* the credential, so the whole URL is redacted rather
+ * than parsed. The character class deliberately stops at quotes/brackets so a
+ * URL embedded in JSON does not swallow its closing delimiter.
+ */
+const WSS_URL_RE = /\bwss:\/\/[^\s"'`<>\\)\]}]+/gi;
+
+/**
+ * Unambiguous credential key names in `key=value`, `key: value` and
+ * `"key": "value"` forms. These names carry no non-secret meaning, so an 8+
+ * character value next to one is always redacted.
+ */
+const OAUTH_KV_RE =
+  /\b(access[_-]?token|refresh[_-]?token|client[_-]?secret|signing[_-]?secret|bot[_-]?token|app[_-]?token)\b(["']?\s*[:=]\s*["']?)([A-Za-z0-9._~+/=-]{8,})/gi;
+
+/**
+ * OAuth authorization codes. `code` *is* an ordinary word (`exit code 3`,
+ * `{"code":"ENOENT"}`), so this pattern is deliberately narrow: a key/value
+ * separator, a 20+ character value, and a value that is not a SCREAMING_SNAKE
+ * error identifier. Anything looser redacts debugging information.
+ */
+const OAUTH_CODE_KV_RE = /\b(code)(["']?\s*[:=]\s*["']?)([A-Za-z0-9._~-]{20,})/gi;
+const ERROR_IDENTIFIER_RE = /^[A-Z][A-Z0-9_]*$/;
+
+/** Options for {@link redactSecrets}. */
+export interface RedactOptions {
+  /**
+   * Values that are secret only for this call — a Slack auth ticket, a
+   * challenge code, a provider one-time token. They have no recognisable
+   * shape, so the caller must register them explicitly; every occurrence is
+   * replaced with `[REDACTED ephemeral]`. Matched literally, not as a regex.
+   */
+  ephemeralValues?: readonly string[];
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function redactString(value: string, ephemeral: readonly string[]): string {
+  let out = value;
+
+  // Ephemeral values first: they are arbitrary strings that may contain (or be
+  // contained by) a shaped token, and losing them is the worst outcome.
+  for (const secret of ephemeral) {
+    out = out.replace(new RegExp(escapeRegExp(secret), 'g'), '[REDACTED ephemeral]');
+  }
+
+  return out
+    .replace(ANTHROPIC_SECRET_RE, (match, kind: string) => `[REDACTED sk-ant-${kind}-...${match.slice(-4)}]`)
+    .replace(LLMUX_KEY_RE, (match) => `[REDACTED lmk-...${match.slice(-4)}]`)
+    .replace(SLACK_ROTATION_TOKEN_RE, (match) => `[REDACTED xoxe-...${match.slice(-4)}]`)
+    .replace(SLACK_TOKEN_RE, (match, kind: string) => `[REDACTED xox${kind}-...${match.slice(-4)}]`)
+    .replace(SLACK_APP_TOKEN_RE, (match) => `[REDACTED xapp-...${match.slice(-4)}]`)
+    .replace(WSS_URL_RE, '[REDACTED wss-url]')
+    .replace(OAUTH_KV_RE, (_match, key: string, sep: string) => `${key}${sep}[REDACTED]`)
+    .replace(OAUTH_CODE_KV_RE, (match, key: string, sep: string, value: string) =>
+      ERROR_IDENTIFIER_RE.test(value) ? match : `${key}${sep}[REDACTED]`,
+    );
 }
 
 /**
- * Deep-clone and redact any Anthropic / llmux secrets found in strings.
+ * Deep-clone `input` and redact every known credential shape found in strings.
  *
- * - Strings are scanned with {@link ANTHROPIC_SECRET_RE} and each match is
- *   replaced by `[REDACTED sk-ant-${kind}-...${last4}]`; llmux client keys
- *   ({@link LLMUX_KEY_RE}) become `[REDACTED lmk-...${last4}]`.
+ * Covered: Anthropic `sk-ant-*`, llmux `lmk-*`, Slack `xoxb/xoxp/xoxa/xoxr/
+ * xoxs`, `xapp-*` and `xoxe.`/`xoxe-` rotation tokens, Socket Mode `wss://`
+ * URLs, unambiguous OAuth key/value pairs (`access_token`, `refresh_token`,
+ * `client_secret`, `signing_secret`, `bot_token`, `app_token`), long OAuth
+ * authorization `code=` values, and any {@link RedactOptions.ephemeralValues}
+ * the caller registered for this call.
+ *
  * - Objects and arrays are cloned; nested strings are redacted recursively.
  * - Other primitives (`number`, `boolean`, `null`, `undefined`, `bigint`,
  *   `symbol`) are returned as-is.
@@ -56,13 +133,24 @@ function redactString(value: string): string {
  *   replaced with a `"[Circular]"` sentinel to avoid infinite recursion.
  * - The caller's input is never mutated.
  */
-export function redactAnthropicSecrets(input: unknown): unknown {
-  return redactValue(input, new WeakSet<object>());
+export function redactSecrets(input: unknown, options?: RedactOptions): unknown {
+  const ephemeral = (options?.ephemeralValues ?? []).filter((v) => typeof v === 'string' && v.length > 0);
+  return redactValue(input, new WeakSet<object>(), ephemeral);
 }
 
-function redactValue(value: unknown, seen: WeakSet<object>): unknown {
+/**
+ * Historical name for {@link redactSecrets}, kept so existing call sites keep
+ * compiling. It is the same function, not a narrower one: callers that only
+ * expected Anthropic coverage now also get Slack/OAuth coverage, which is
+ * strictly safer for a log sink.
+ */
+export function redactAnthropicSecrets(input: unknown): unknown {
+  return redactSecrets(input);
+}
+
+function redactValue(value: unknown, seen: WeakSet<object>, ephemeral: readonly string[]): unknown {
   if (typeof value === 'string') {
-    return redactString(value);
+    return redactString(value, ephemeral);
   }
 
   if (value === null || typeof value !== 'object') {
@@ -79,7 +167,7 @@ function redactValue(value: unknown, seen: WeakSet<object>): unknown {
   if (Array.isArray(value)) {
     const out: unknown[] = new Array(value.length);
     for (let i = 0; i < value.length; i++) {
-      out[i] = redactValue(value[i], seen);
+      out[i] = redactValue(value[i], seen, ephemeral);
     }
     return out;
   }
@@ -88,7 +176,7 @@ function redactValue(value: unknown, seen: WeakSet<object>): unknown {
   const src = value as Record<string, unknown>;
   const out: Record<string, unknown> = {};
   for (const key of Object.keys(src)) {
-    out[key] = redactValue(src[key], seen);
+    out[key] = redactValue(src[key], seen, ephemeral);
   }
   return out;
 }
@@ -107,7 +195,7 @@ type BrandedFn = ((...args: unknown[]) => void) & { [REDACTION_BRAND]?: true };
 
 /**
  * Replace the global `console.{log,warn,error,info,debug,trace}` with
- * wrappers that run every argument through {@link redactAnthropicSecrets}
+ * wrappers that run every argument through {@link redactSecrets}
  * before delegating to the original method.
  *
  * Idempotent — calling more than once is a no-op after the first install.
@@ -122,7 +210,7 @@ export function installConsoleRedaction(): void {
     }
     const original = current.bind(console);
     const wrapped: BrandedFn = (...args: unknown[]) => {
-      const redacted = args.map((a) => redactAnthropicSecrets(a));
+      const redacted = args.map((a) => redactSecrets(a));
       original(...redacted);
     };
     wrapped[REDACTION_BRAND] = true;

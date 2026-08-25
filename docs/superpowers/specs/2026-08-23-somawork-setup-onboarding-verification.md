@@ -1,6 +1,6 @@
 # somawork Setup Onboarding Verification
 
-**Date:** 2026-08-23  
+**Date:** 2026-08-23
 **Design:** [somawork setup onboarding](2026-08-23-somawork-setup-onboarding-design.md)
 
 ## 1. Testing and receipts

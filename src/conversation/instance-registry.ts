@@ -40,7 +40,7 @@ export interface HeartbeatPayload {
   /** Listening port — also the filename stem (`<port>.json`). */
   port: number;
   /**
-   * Operator-supplied instance label (e.g. `oudwood-dev`). When empty the
+   * Operator-supplied instance label (e.g. `instance-a`). When empty the
    * caller is expected to fall back to `${hostname}:${port}` upstream.
    */
   instanceName: string;

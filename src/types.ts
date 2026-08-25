@@ -746,7 +746,13 @@ export interface ConversationSession {
 export interface AgentConfig {
   slackBotToken: string;
   slackAppToken: string;
-  signingSecret: string;
+  /**
+   * OPTIONAL. Verifies the `X-Slack-Signature` header on HTTP delivery only.
+   * Every agent runs Socket Mode (outbound wss keyed by `slackAppToken`), so
+   * no request signature is exchanged and this may be omitted entirely. When
+   * declared it must be at least `SIGNING_SECRET_MIN_LENGTH` chars.
+   */
+  signingSecret?: string;
   promptDir?: string; // default: src/prompt/{agentName}
   persona?: string; // default: 'default'
   description?: string;

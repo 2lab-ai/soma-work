@@ -1,7 +1,7 @@
 # somawork Setup Onboarding Design
 
-**Date:** 2026-08-23  
-**Status:** Approved design — implementation planning next  
+**Date:** 2026-08-23
+**Status:** Approved design — implementation planning next
 **Scope:** macOS ARM64 v1; public Homebrew/xbrew distribution; preview and production coexistence
 
 ## 1. User outcome

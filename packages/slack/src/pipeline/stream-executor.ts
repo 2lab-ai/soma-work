@@ -1890,7 +1890,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
 
       // Prompt-too-long-as-content guard (auto fallback compact, field bug).
       //
-      // Observed on dev (2026-07-06T05:42Z, oudwood-512): a 275k-window model
+      // Observed on dev (2026-07-06T05:42Z): a 275k-window model
       // overflow came back as an ordinary assistant text turn whose ENTIRE
       // content was "Prompt is too long", with a SUCCESSFUL result event
       // (stopReason=stop_sequence, isError=false, duration 6ms) — the SDK

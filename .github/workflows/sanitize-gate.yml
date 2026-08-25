@@ -6,8 +6,39 @@ on:
   pull_request:
     branches: [main]
 
+# Read-only, at the top level so it applies to every job present and future. The
+# scan reads the full history and reports; it writes nothing. Pairing a
+# repository-scoped secret with a write-capable token on a self-hosted runner is
+# exactly the combination the same-repo guard below exists to avoid handing to a
+# fork, so the token is narrowed here as well and neither half depends on the
+# other being correct.
+permissions:
+  contents: read
+
 jobs:
   scan:
+    # Same allow-list guard as `.github/workflows/ci.yml`, and this job has the
+    # larger stake of the two. The repository is public, `pull_request` fires
+    # for forks, and the runner is a persistent machine we own — but on top of
+    # that, the scan step is handed `secrets.SANITIZE_PATTERNS`, and the script
+    # it runs (`scripts/sanitize-scan.sh`) is a file the pull request can
+    # rewrite. Without this guard a fork PR could replace that script with one
+    # that prints the secret, and the gate that exists to keep patterns out of
+    # published history would be the thing that published them.
+    #
+    # Job-level so the decision happens before dispatch: a fork PR's head commit
+    # is never fetched onto the host, and no secret is ever materialised in a
+    # step environment. `pull_request_target` would run the trusted base script
+    # but keep the secret and add a write token — it is not the fix, and forks
+    # simply do not get this gate.
+    #
+    # Kept flat (no continuation line indented further than the first): a
+    # more-indented line in a folded scalar is preserved verbatim, which would
+    # put a literal newline inside the expression GitHub has to parse.
+    if: >-
+      github.event_name == 'push' ||
+      (github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: [self-hosted, fable-m5max]
     timeout-minutes: 10
     steps:
