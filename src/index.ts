@@ -94,10 +94,12 @@ import { acquirePidLock, releasePidLock } from './pid-lock';
 import { BUNDLED_PLUGINS } from './plugin/bundled';
 import { PluginManager } from './plugin/plugin-manager';
 import { getVersionInfo, notifyRelease } from './release-notifier';
+import { clearDaemonReady, clearStaleDaemonReady, publishDaemonReadiness } from './service-readiness';
 import { GoalLoopController } from './slack/goal-loop-controller';
 import { setGoalLoopResumeHandler } from './slack/goal-loop-resume';
 import { setUiSurfacesConfig } from './slack/surface-config';
 import { SlackHandler } from './slack-handler';
+import { signingSecretOption } from './slack-signing-secret';
 import { type SocketWatchdogUnhealthyReason, startSlackSocketWatchdog } from './slack-socket-watchdog';
 import { notifyStartup } from './startup-notifier';
 import { getTokenManager } from './token-manager';
@@ -125,6 +127,14 @@ async function start() {
     }
     timing('PID lock acquired');
 
+    // Only now. A readiness marker that outlived its daemon would have the
+    // service manager read a previous run's "I am connected" and call this boot
+    // green before it has done anything — but clearing it BEFORE the lock would
+    // be worse: a second startup that is about to lose the lock race would
+    // erase the RUNNING daemon's valid marker on its way out. Holding the lock
+    // is what makes a non-matching marker provably stale.
+    clearStaleDaemonReady(DATA_DIR);
+
     // #1003 — release the PID lock on EVERY exit path, not just SIGINT/SIGTERM.
     // The socket-watchdog trip (`process.exit(1)`), the preflight-failure exit,
     // and the uncaughtException/unhandledRejection crash handlers all bypass
@@ -136,6 +146,10 @@ async function start() {
     // the lock file still holds THIS pid (safe no-op otherwise).
     process.on('exit', () => {
       getClaudeChildProcessRegistry().killAllSync('SIGKILL');
+      // Same reasoning as the lock, and the same exit-path coverage: readiness
+      // is a claim about a LIVE socket, so it must not survive the process that
+      // made it. Synchronous and self-silencing, like `releasePidLock`.
+      clearDaemonReady(DATA_DIR);
       releasePidLock(DATA_DIR);
     });
 
@@ -214,9 +228,13 @@ async function start() {
       pingPongLoggingEnabled: true,
       logLevel: slackLogLevel,
     });
+    // `signingSecret` is spread in only when configured: Socket Mode verifies
+    // no request signature (that is an HTTP-receiver concern). Bolt would
+    // accept an explicit `undefined` identically — the spread keeps the option
+    // object canonical so nothing downstream reads a declared-but-empty key.
     const app = new App({
       token: config.slack.botToken,
-      signingSecret: config.slack.signingSecret,
+      ...signingSecretOption(config.slack.signingSecret),
       receiver: slackReceiver,
       logLevel: slackLogLevel,
     });
@@ -844,6 +862,19 @@ async function start() {
     await app.start();
     timing('Slack socket connected');
 
+    // The socket is up: publish readiness for THIS instance. This is the only
+    // call site, and it is deliberately on the far side of `app.start()` —
+    // everything before this line is a process that exists, not a service that
+    // works, and the PID lock already covers the former.
+    //
+    // `publishDaemonReadiness` cannot throw: a marker write that fails (a
+    // symlinked `~/.local/share`, EROFS, ENOSPC) must not reach the outer
+    // `catch`, whose handler is `process.exit(1)` — under the plist's
+    // `KeepAlive` that would crashloop a bot that HAS connected. It also
+    // publishes nothing for a source-tree run, where `DATA_DIR` is a directory
+    // inside the operator's checkout.
+    publishDaemonReadiness({ dataDir: DATA_DIR, warn: (message) => logger.warn(message) });
+
     // Wire AFTER app.start() so boot-time reconnects don't count against
     // the storm threshold. exit(1) → supervisor (launchd/systemd) recycles.
     startSlackSocketWatchdog({
@@ -1187,11 +1218,13 @@ async function start() {
         await getClaudeChildProcessRegistry().drain();
       } catch (error) {
         logger.error('Claude child cleanup failed during shutdown:', error);
+        clearDaemonReady(DATA_DIR);
         releasePidLock(DATA_DIR);
         process.exit(1);
       }
 
       // Release PID lock last — after all connections and children are torn down
+      clearDaemonReady(DATA_DIR);
       releasePidLock(DATA_DIR);
 
       process.exit(0);
