@@ -3,7 +3,7 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { modelCatalog } from '../model-catalog';
 import {
   AVAILABLE_MODELS,
@@ -57,14 +57,17 @@ describe('Slack display-name identity (cross-user skill resolution)', () => {
 // tests assert the **exact** expected arrays/records, not just the length,
 // so any future silent removal is caught immediately.
 describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', () => {
-  it('AVAILABLE_MODELS is exactly 16 entries in the expected order', () => {
-    // Fable 5 (2026-06-09) leads as the flagship; it is native-1M on the bare
-    // id and has NO `[1m]` variant. 4.8 prepended at the top of the opus tier so
-    // substring matchers see it before 4.7. gpt-5.5 (2026-07-06) and gpt-5.6
-    // (2026-07-10, the default) appended last — served via llmux's codex
-    // backend group. Historical entries MUST survive every bump.
+  it('AVAILABLE_MODELS is exactly 20 entries in the expected order', () => {
+    // Fable 5 (2026-06-09) leads as the flagship; Opus 5 (2026-08-26) heads the
+    // opus tier so substring matchers see it before 4.8/4.7. The `[1m]` block
+    // now carries the literal `claude-fable-5[1m]` and `gpt-5.6-sol[1m]` — the
+    // suffix is what makes Claude Code's own accounting use a 1M denominator,
+    // which the 750k/600k auto-compact defaults depend on. `grok-4.6` is
+    // declared statically so a cold start with no llmux catalog snapshot can
+    // still select it. Historical entries MUST survive every bump.
     expect([...AVAILABLE_MODELS]).toEqual([
       'claude-fable-5',
+      'claude-opus-5',
       'claude-opus-4-8',
       'claude-opus-4-7',
       'claude-opus-4-6',
@@ -72,33 +75,46 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
       'claude-sonnet-4-5-20250929',
       'claude-opus-4-5-20251101',
       'claude-haiku-4-5-20251001',
+      'claude-fable-5[1m]',
+      'claude-opus-5[1m]',
       'claude-opus-4-8[1m]',
       'claude-opus-4-7[1m]',
       'claude-opus-4-6[1m]',
       'gpt-5.5',
       'gpt-5.6-sol',
+      'gpt-5.6-sol[1m]',
       'gpt-5.6-terra',
       'gpt-5.6-luna',
+      'grok-4.6',
     ]);
   });
 
-  it('AVAILABLE_MODELS has no claude-fable-5[1m] variant (native-1M on bare id)', () => {
-    // Fable 5 serves 1M without a suffix; a `[1m]` variant would wrongly route
-    // through the opus beta-header path. Guard against it being re-added.
-    expect(AVAILABLE_MODELS as readonly string[]).not.toContain('claude-fable-5[1m]');
+  it('AVAILABLE_MODELS carries the literal claude-fable-5[1m] variant', () => {
+    // Superseded 2026-08-26: the old guard FORBADE this id, on the theory that
+    // the SDK `[1m]` path would inject the opus beta header for a native-1M
+    // model. The live llmux probe disproved it — literal `claude-fable-5[1m]`
+    // is accepted upstream AND is the only spelling for which Claude Code
+    // reports contextWindow=1,000,000 (bare `fable` reports 200,000). Both
+    // spellings stay selectable; the aliases point at the literal one.
+    expect(AVAILABLE_MODELS as readonly string[]).toContain('claude-fable-5[1m]');
+    expect(AVAILABLE_MODELS as readonly string[]).toContain('claude-fable-5');
   });
 
-  it('MODEL_ALIASES has exactly the 23 expected key→value mappings', () => {
-    // `fable` / `fable-5` → Fable 5 (no `[1m]` alias — native-1M bare id).
-    // `opus` / `opus[1m]` follow "latest opus" semantics → 4.8. Version-pinned
-    // aliases (`opus-4.7`, `opus-4.6`, ...) remain pinned to their generation.
+  it('MODEL_ALIASES has exactly the 28 expected key→value mappings', () => {
+    // `fable` / `fable[1m]` → the literal 1M id. `opus` / `opus[1m]` follow
+    // "latest opus" semantics → Opus 5, and both land on the `[1m]` variant
+    // because that is the id whose client-side denominator is 1M. Version-
+    // pinned aliases (`opus-4.8`, `opus-4.7`, ...) remain pinned.
     expect(MODEL_ALIASES).toEqual({
-      fable: 'claude-fable-5',
-      'fable-5': 'claude-fable-5',
+      fable: 'claude-fable-5[1m]',
+      'fable-5': 'claude-fable-5[1m]',
+      'fable[1m]': 'claude-fable-5[1m]',
+      'fable-5[1m]': 'claude-fable-5[1m]',
       sonnet: 'claude-sonnet-4-6',
       'sonnet-4.6': 'claude-sonnet-4-6',
       'sonnet-4.5': 'claude-sonnet-4-5-20250929',
-      opus: 'claude-opus-4-8',
+      opus: 'claude-opus-5[1m]',
+      'opus-5': 'claude-opus-5',
       'opus-4.8': 'claude-opus-4-8',
       'opus-4.7': 'claude-opus-4-7',
       'opus-4.6': 'claude-opus-4-6',
@@ -110,9 +126,11 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
       'gpt-5.6': 'gpt-5.6-sol',
       'gpt5.6': 'gpt-5.6-sol',
       sol: 'gpt-5.6-sol',
+      'sol[1m]': 'gpt-5.6-sol[1m]',
       terra: 'gpt-5.6-terra',
       luna: 'gpt-5.6-luna',
-      'opus[1m]': 'claude-opus-4-8[1m]',
+      'opus[1m]': 'claude-opus-5[1m]',
+      'opus-5[1m]': 'claude-opus-5[1m]',
       'opus-4.8[1m]': 'claude-opus-4-8[1m]',
       'opus-4.7[1m]': 'claude-opus-4-7[1m]',
       'opus-4.6[1m]': 'claude-opus-4-6[1m]',
@@ -455,7 +473,7 @@ describe('llmux model catalog overlay (grok-4.5 selection)', () => {
   it('static ids/aliases still win over the catalog', () => {
     modelCatalog.__testSeed([GROK]);
     const store = makeStore();
-    expect(store.resolveModelInput('opus')).toBe('claude-opus-4-8');
+    expect(store.resolveModelInput('opus')).toBe('claude-opus-5[1m]');
     expect(store.resolveModelInput('gpt-5.6-sol')).toBe('gpt-5.6-sol');
   });
 
@@ -477,10 +495,11 @@ describe('llmux model catalog overlay (grok-4.5 selection)', () => {
     expect(store.getModelDisplayName('grok-4.5')).toBe('grok-4.5');
   });
 
-  it('native-1M `[1m]` catalog variants are NOT selectable (fable beta-header contract)', () => {
-    // llmux advertises `claude-fable-5[1m]` as catalog metadata, but fable
-    // serves 1M on the BARE id — the SDK `[1m]` path would wrongly inject the
-    // opus beta header. The overlay must refuse to offer/persist it.
+  it('the `[1m]` fable catalog variant IS selectable (2026-08-26 probe supersedes the old filter)', () => {
+    // Superseded: `isCatalogIdSelectable` used to drop `claude-fable-5[1m]`.
+    // The live llmux probe showed the literal id is accepted upstream and is
+    // the ONLY spelling for which the client reports a 1M denominator, so the
+    // filter is gone and the id is both catalog- and statically-selectable.
     modelCatalog.__testSeed([
       {
         id: 'claude-fable-5[1m]',
@@ -493,10 +512,91 @@ describe('llmux model catalog overlay (grok-4.5 selection)', () => {
       GROK,
     ]);
     const store = makeStore();
-    expect(store.resolveModelInput('claude-fable-5[1m]')).toBeNull();
-    expect(coerceToAvailableModel('claude-fable-5[1m]')).toBe(DEFAULT_MODEL);
+    expect(store.resolveModelInput('claude-fable-5[1m]')).toBe('claude-fable-5[1m]');
+    expect(coerceToAvailableModel('claude-fable-5[1m]')).toBe('claude-fable-5[1m]');
     // Opus [1m] variants stay selectable (static list) and grok is untouched.
     expect(store.resolveModelInput('claude-opus-4-8[1m]')).toBe('claude-opus-4-8[1m]');
     expect(store.resolveModelInput('grok-4.5')).toBe('grok-4.5');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fake `grok-*[1m]` inputs (2026-08-26). llmux's grok provider forwards any
+// `grok-*` id VERBATIM upstream, so `grok-4.6[1m]` would reach xAI as a model
+// name that does not exist — and silently rewriting it to `grok-4.6` would
+// serve a different model than the one asked for. The store must therefore
+// distinguish REJECTED (visible, with a suggestion) from UNKNOWN (typo).
+// ---------------------------------------------------------------------------
+describe('model input resolution — accepted / rejected / unknown', () => {
+  afterEach(() => {
+    modelCatalog.__testReset();
+  });
+
+  it('accepts the requested aliases and canonical ids', () => {
+    const store = makeStore();
+    expect(store.resolveModelInput('fable')).toBe('claude-fable-5[1m]');
+    expect(store.resolveModelInput('fable[1m]')).toBe('claude-fable-5[1m]');
+    expect(store.resolveModelInput('opus')).toBe('claude-opus-5[1m]');
+    expect(store.resolveModelInput('opus[1m]')).toBe('claude-opus-5[1m]');
+    expect(store.resolveModelInput('opus-5')).toBe('claude-opus-5');
+    expect(store.resolveModelInput('sol[1m]')).toBe('gpt-5.6-sol[1m]');
+    expect(store.resolveModelInput('grok-4.6')).toBe('grok-4.6');
+  });
+
+  it('resolves bare grok-4.6 with NO llmux catalog snapshot loaded', () => {
+    // Static declaration, not catalog-derived: a cold start must still be able
+    // to select the model whose 450k auto-compact default is declared policy.
+    const store = makeStore();
+    expect(store.resolveModelInput('grok-4.6')).toBe('grok-4.6');
+    expect(coerceToAvailableModel('grok-4.6')).toBe('grok-4.6');
+  });
+
+  it('REJECTS grok-4.6[1m] visibly with a `grok-4.6` suggestion', () => {
+    const store = makeStore();
+    const result = store.resolveModelInputDetailed('grok-4.6[1m]');
+    expect(result.status).toBe('rejected');
+    if (result.status !== 'rejected') throw new Error('unreachable');
+    expect(result.suggestedModel).toBe('grok-4.6');
+    expect(result.rejectedReason).toContain('grok-4.6[1m]');
+    expect(result.rejectedReason).toContain('grok-4.6');
+  });
+
+  it('never normalizes or persists a fake grok `[1m]` id', () => {
+    const store = makeStore();
+    expect(store.resolveModelInput('grok-4.6[1m]')).toBeNull();
+    expect(coerceToAvailableModel('grok-4.6[1m]')).toBe(DEFAULT_MODEL);
+  });
+
+  it('rejects a fake grok `[1m]` id even when the catalog advertises it', () => {
+    // Defence in depth: llmux must never be able to make the harness persist
+    // an id its own grok provider would forward verbatim to xAI.
+    modelCatalog.__testSeed([
+      { id: 'grok-4.6[1m]', aliases: [], name: 'Grok 4.6 1M', efforts: ['low'], max_context: 1_000_000, group: 'grok' },
+    ]);
+    const store = makeStore();
+    expect(store.resolveModelInput('grok-4.6[1m]')).toBeNull();
+    expect(coerceToAvailableModel('grok-4.6[1m]')).toBe(DEFAULT_MODEL);
+  });
+
+  it('does NOT force a catalog refresh for a rejected id (only for unknown ones)', async () => {
+    const store = makeStore();
+    const refresh = vi.spyOn(modelCatalog, 'refresh').mockResolvedValue(undefined as never);
+    try {
+      const rejected = await store.resolveModelInputDetailedWithRefresh('grok-4.6[1m]');
+      expect(rejected.status).toBe('rejected');
+      expect(refresh).not.toHaveBeenCalled();
+
+      const unknown = await store.resolveModelInputDetailedWithRefresh('totally-made-up');
+      expect(unknown.status).toBe('unknown');
+      expect(refresh).toHaveBeenCalledTimes(1);
+    } finally {
+      refresh.mockRestore();
+    }
+  });
+
+  it('reports an unknown typo as `unknown`, not `rejected`', () => {
+    const store = makeStore();
+    expect(store.resolveModelInputDetailed('opuss').status).toBe('unknown');
+    expect(store.resolveModelInputDetailed('').status).toBe('unknown');
   });
 });

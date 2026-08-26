@@ -190,6 +190,20 @@ export class EventRouter {
    * already consumes, and an inline `SayFn` that writes to the same thread
    * via `slackApi.postMessage` so we don't depend on Bolt's request-scoped
    * `say` (which is unavailable outside an actual event handler).
+   *
+   * Handoff boundary: invoking `messageHandler` below IS the handoff. There
+   * is no earlier "accepted" seam to await instead — `messageHandler` is the
+   * full production pipeline (session mutation, model queries, Slack posts),
+   * so by the time it rejects, real side effects may already have happened.
+   * Callers of this method (StreamExecutor's post-compact replay drain,
+   * `packages/slack/src/pipeline/stream-executor.ts`) retain-and-retry a
+   * payload when the dispatch call rejects, which is correct for a rejection
+   * that happens BEFORE handoff (e.g. dependency wiring is missing) but would
+   * duplicate a turn that already ran if the rejection happens AFTER handoff.
+   * So this method never propagates a `messageHandler` rejection: it logs the
+   * failure and best-effort-notifies the thread once, then resolves. A
+   * genuine pre-handoff failure (this method itself throwing before
+   * `messageHandler` runs) still propagates normally.
    */
   public async dispatchPendingUserMessage(
     ctx: { channel: string; threadTs: string; user: string; ts: string },
@@ -222,7 +236,28 @@ export class EventRouter {
       textPreview: text.substring(0, 80),
     });
 
-    await this.messageHandler(syntheticEvent, say);
+    try {
+      await this.messageHandler(syntheticEvent, say);
+    } catch (err) {
+      // Past the handoff boundary — do not rethrow (see doc comment above).
+      this.logger.error('dispatchPendingUserMessage: downstream handler failed after handoff — not retried', {
+        channel: ctx.channel,
+        threadTs: ctx.threadTs,
+        user: ctx.user,
+        error: (err as Error)?.message ?? String(err),
+      });
+      try {
+        await this.deps.slackApi.postMessage(
+          ctx.channel,
+          "⚠️ Something went wrong resuming your message after compaction. Please resend it if you don't see a reply.",
+          { threadTs: ctx.threadTs },
+        );
+      } catch (postErr) {
+        this.logger.error('dispatchPendingUserMessage: failed to post failure notice', {
+          error: (postErr as Error)?.message ?? String(postErr),
+        });
+      }
+    }
   }
 
   /**

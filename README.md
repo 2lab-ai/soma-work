@@ -208,6 +208,54 @@ Grammar: `/z <topic> [verb] [args...]`. See `docs/current/spec/01-slack-integrat
 | `/z skill [list\|download]` | Skills directory |
 | `/z report [today\|daily\|weekly]` | Usage reports |
 
+### Auto-compact thresholds (`autocompact` / `compact-threshold`)
+
+`autocompact` is a message command (the message may also start with `/`, as in
+`/autocompact`; it is not a separately registered Slack slash command). It sets
+how many used tokens a session may reach before soma-work schedules `/compact`.
+The setting is **session-scoped** — it lives on the conversation session and
+persists with that session across process restarts. Use `reset` to clear it and
+return to the model/default threshold.
+
+| Form | Effect |
+|------|--------|
+| `/autocompact` · `autocompact` | Show the effective threshold and which source it came from |
+| `/autocompact <value>` · `autocompact <value>` | Set the session threshold. Accepts `800k`, `800K`, `0.8M`, `800000`, or bare `800` (read as thousands — `autocompact 800` = 800,000); the general range is 100k–1M, but a model's own safe maximum can reject a syntactically valid value |
+| `/autocompact reset` · `autocompact reset` | Clear the session override — falls back to the model default |
+
+**Precedence** (highest wins): session override (`/autocompact <value>`) → the
+model's canonical default → the legacy per-user percentage, converted against
+the current model's context window.
+
+**Model defaults** — resolved by `resolveModelProfile` in
+[`src/metrics/model-profile.ts`](./src/metrics/model-profile.ts), which is the
+source of truth for any model not listed here:
+
+| Model | Context window | Auto-compact default |
+|---|---|---|
+| `claude-fable-5[1m]` (alias `fable`) | 1,000,000 | 750,000 |
+| `claude-opus-5[1m]` (alias `opus`) | 1,000,000 | 750,000 |
+| `claude-opus-5` (bare, no `[1m]`) | 200,000 | none — falls back to the legacy per-user percentage below |
+| `gpt-5.6-sol[1m]` (alias `sol[1m]`) | 1,000,000 | 600,000 |
+| `gpt-5.6-sol` (bare) | 372,000 | 340,000 |
+| `grok-4.6` | 500,000 | 450,000 |
+
+`grok-4.6[1m]` is not a real model — grok has no 1M variant, and llmux forwards
+grok ids verbatim upstream — so it is rejected everywhere a model id is
+accepted (model set, session model, `/autocompact`) with a visible
+`use grok-4.6` message rather than being silently rewritten.
+
+`/compact-threshold <percent>` is a **deprecated** compatibility adapter, not a
+second setting: it converts `<percent>` against the *current* model's context
+window, writes the result into the same session token slot `/autocompact`
+uses, and removes the old stored per-user percentage once the conversion
+succeeds. A conversion that would land above the model's safe maximum fails
+visibly instead of silently clamping.
+
+soma-work's own turn-end checker is the sole automatic-compaction authority —
+the Claude Agent SDK's built-in autocompaction is disabled for every resolved
+model profile, so exactly one scheduler ever decides when a session compacts.
+
 ### `%` — session-scoped (ephemeral)
 
 Overrides that apply **only to the current session** and do not persist. Cleared on `/z new` or `/z renew`.

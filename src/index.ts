@@ -11,7 +11,7 @@ import {
 import { hierarchicalMemoryStore, setHierarchicalMemoryPromptInvalidationHook } from './hierarchical-memory';
 import { consolidateUserMemory } from './memory-auto-capture';
 import * as userMemoryStore from './user-memory-store';
-import { setSettingsPromptInvalidationHook } from './user-settings-store';
+import { setSettingsPromptInvalidationHook, userSettingsStore } from './user-settings-store';
 import { gatedManageSkillCopy } from './user-skill-copy-gate';
 import {
   createUserSkill,
@@ -161,17 +161,27 @@ async function start() {
     await tokenManager.init({ startReaper: true });
     timing('TokenManager initialized');
 
-    // One-shot force-migration: every existing user.defaultModel that isn't
-    // already the current default target (gpt-5.6 since 2026-07-10) is
-    // rewritten to it. Gated by a TARGET-AWARE marker in DATA_DIR: hosts that
-    // ran the older opus[1m] migration re-run exactly once for the new
-    // target, then skip. MUST run before UserSettingsStore.load (further
-    // down) so the store sees the migrated file.
-    const defaultModelMigration = forceMigrateOpus1m({ dataDir: DATA_DIR });
+    // One-shot OPUS-FAMILY migration: user defaults on any `claude-opus-*`
+    // generation (bare or `[1m]`) are rewritten to `claude-opus-5[1m]`. Every
+    // other user is left untouched — the all-user rewrite this used to
+    // perform was retired on 2026-08-26. Gated by a TARGET-AWARE marker in
+    // DATA_DIR, so a host carrying the retired `gpt-5.6-sol` marker re-runs
+    // exactly once for the new target and then skips.
+    const opusDefaultMigration = forceMigrateOpus1m({ dataDir: DATA_DIR });
     logger.info(
-      `default-model migration: ${defaultModelMigration.status} (migrated=${defaultModelMigration.migrated}/${defaultModelMigration.total}, marker=${defaultModelMigration.markerFile})`,
+      `opus default-model migration: ${opusDefaultMigration.status} (migrated=${opusDefaultMigration.migrated}/${opusDefaultMigration.total}, marker=${opusDefaultMigration.markerFile})`,
     );
-    timing('default-model migration evaluated');
+    // The settings singleton loaded during MODULE IMPORT (see the static
+    // import above), i.e. before this migration ran, so it is holding the
+    // pre-migration defaults. Re-read the file the migration just wrote —
+    // otherwise this very process serves stale defaults until the next boot.
+    // Only when something was actually written: a `skipped` (or applied-but-
+    // zero) run leaves the file untouched, so a reload would be pure I/O.
+    if (opusDefaultMigration.status === 'applied' && opusDefaultMigration.migrated > 0) {
+      userSettingsStore.reloadSettings();
+      logger.info(`reloaded user settings after opus migration (migrated=${opusDefaultMigration.migrated})`);
+    }
+    timing('opus default-model migration evaluated');
 
     // llmux-dependent boot steps (codex pin sync + model-catalog fetch) run
     // AFTER initAuthRuntimeDefault below — gating them on the static
