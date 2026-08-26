@@ -18,6 +18,7 @@ const createMockSlackApi = () => ({
   getChannelInfo: vi.fn().mockResolvedValue({ name: 'general' }),
   getClient: vi.fn().mockReturnValue({}),
   addReaction: vi.fn().mockResolvedValue(true),
+  postMessage: vi.fn().mockResolvedValue({ ts: 'posted.1' }),
 });
 
 const createMockClaudeHandler = () => ({
@@ -85,6 +86,40 @@ describe('EventRouter', () => {
   afterEach(() => {
     // Clean up interval to prevent open handles in tests
     router.cleanup();
+  });
+
+  describe('dispatchPendingUserMessage', () => {
+    it('treats pipeline invocation as the handoff boundary and does not reject after downstream acceptance', async () => {
+      mockMessageHandler = vi.fn(async () => {
+        throw new Error('downstream turn failed after acceptance');
+      }) as unknown as MessageHandler;
+      router.cleanup();
+      router = new EventRouter(mockApp as any, deps, mockMessageHandler);
+
+      await expect(
+        router.dispatchPendingUserMessage(
+          { channel: 'C123', threadTs: '111.222', user: 'U123', ts: '111.333' },
+          'replay me once',
+          { compactRedispatch: true },
+        ),
+      ).resolves.toBeUndefined();
+
+      expect(mockMessageHandler).toHaveBeenCalledTimes(1);
+      expect(mockMessageHandler).toHaveBeenCalledWith(
+        expect.objectContaining({
+          channel: 'C123',
+          thread_ts: '111.222',
+          user: 'U123',
+          text: 'replay me once',
+          routeContext: { compactRedispatch: true },
+        }),
+        expect.any(Function),
+      );
+      expect(mockSlackApi.postMessage).toHaveBeenCalledTimes(1);
+      expect(mockSlackApi.postMessage).toHaveBeenCalledWith('C123', expect.stringContaining('Please resend it'), {
+        threadTs: '111.222',
+      });
+    });
   });
 
   describe('setup', () => {

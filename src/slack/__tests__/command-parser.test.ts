@@ -1734,4 +1734,58 @@ describe('CommandParser', () => {
       expect(CommandParser.parseInlineSessionDirectives('please run %model fable')).toBeNull();
     });
   });
+
+  describe('isAutoCompactCommand / parseAutoCompactCommand', () => {
+    it.each([
+      'autocompact',
+      '/autocompact',
+      'autocompact 800k',
+      '/autocompact reset',
+      'autocompact abc',
+    ])('accepts "%s"', (cmd) => {
+      expect(CommandParser.isAutoCompactCommand(cmd)).toBe(true);
+    });
+
+    it.each([
+      'compact',
+      '/compact',
+      '/compact --yes',
+      'compact-threshold',
+      '/compact-threshold 80',
+      'autocompacting',
+    ])('rejects "%s"', (cmd) => {
+      expect(CommandParser.isAutoCompactCommand(cmd)).toBe(false);
+    });
+
+    it('does not let /autocompact leak into the compact commands', () => {
+      expect(CommandParser.isCompactCommand('/autocompact')).toBe(false);
+      expect(CommandParser.isCompactCommand('autocompact 800k')).toBe(false);
+      expect(CommandParser.isCompactThresholdCommand('/autocompact')).toBe(false);
+      expect(CommandParser.isCompactThresholdCommand('autocompact reset')).toBe(false);
+    });
+
+    it('returns the raw argument when present, undefined when absent', () => {
+      expect(CommandParser.parseAutoCompactCommand('/autocompact')).toEqual({});
+      expect(CommandParser.parseAutoCompactCommand('autocompact 800k')).toEqual({ rawArg: '800k' });
+      expect(CommandParser.parseAutoCompactCommand('/autocompact reset')).toEqual({ rawArg: 'reset' });
+    });
+
+    it('is recognized as a command keyword so unknown forms still hint', () => {
+      expect(CommandParser.isPotentialCommand('autocompact')).toEqual({
+        isPotential: true,
+        keyword: 'autocompact',
+      });
+      expect(CommandParser.isPotentialCommand('/autocompact')).toEqual({
+        isPotential: true,
+        keyword: 'autocompact',
+      });
+    });
+
+    it('documents the command in the help message', () => {
+      const help = CommandParser.getHelpMessage();
+      expect(help).toContain('`autocompact`');
+      expect(help).toContain('autocompact <tokens>');
+      expect(help).toContain('autocompact reset');
+    });
+  });
 });

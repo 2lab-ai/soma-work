@@ -3,12 +3,7 @@
  */
 
 import { modelCatalog } from '../../../model-catalog';
-import {
-  AVAILABLE_MODELS,
-  isCatalogIdSelectable,
-  MODEL_ALIASES,
-  userSettingsStore,
-} from '../../../user-settings-store';
+import { AVAILABLE_MODELS, MODEL_ALIASES, userSettingsStore } from '../../../user-settings-store';
 import type { ApplyResult, RenderResult, ZTopicBinding } from '../../actions/z-settings-actions';
 import { buildSettingCard } from '../ui-builder';
 
@@ -16,11 +11,12 @@ import { buildSettingCard } from '../ui-builder';
  * Short aliases featured as primary buttons (resolved to real model ids by the store).
  *
  * Order matters: this is the exact visual order in the Slack `/z model` card.
- * `fable` leads as the flagship (native 1M, no suffix); `opus[1m]` sits between
- * `opus` and `haiku` so users can jump to the opus 1M variant without scrolling
- * through the full allow-list.
+ * `fable` leads as the flagship (it resolves to the literal
+ * `claude-fable-5[1m]`); `opus[1m]` sits between `opus` and `haiku`. The
+ * featured Grok value is the literal static id, so it remains available on a
+ * catalog-less cold start; the generic `grok` shorthand keeps catalog semantics.
  */
-export const FEATURED_ALIASES = ['fable', 'sonnet', 'opus', 'opus[1m]', 'haiku', 'grok'] as const;
+export const FEATURED_ALIASES = ['fable', 'sonnet', 'opus', 'opus[1m]', 'haiku', 'grok-4.6'] as const;
 
 export async function renderModelCard(args: { userId: string; issuedAt: number }): Promise<RenderResult> {
   const { userId, issuedAt } = args;
@@ -53,12 +49,11 @@ export async function renderModelCard(args: { userId: string; issuedAt: number }
     });
   }
   // llmux model-catalog overlay — catalog models not already in the static
-  // allow-list (e.g. grok-4.5), deduped by id. Non-selectable catalog ids
-  // (native-1M `[1m]` variants, e.g. `claude-fable-5[1m]`) are skipped — see
-  // isCatalogIdSelectable.
+  // allow-list (e.g. grok-4.5), deduped by id. There is no longer a
+  // selectability filter here: the one exclusion it carried
+  // (`claude-fable-5[1m]`) is now a static allow-list member.
   for (const model of modelCatalog.getModels()) {
     if (seen.has(model.id)) continue;
-    if (!isCatalogIdSelectable(model.id)) continue;
     seen.add(model.id);
     options.push({
       id: model.id,
@@ -87,8 +82,22 @@ export async function applyModel(args: { userId: string; value: string }): Promi
   const { userId, value } = args;
   // Cache miss → forced llmux catalog re-fetch + one retry (models llmux
   // already serves must not be rejected just because the snapshot is stale).
-  const resolved = await userSettingsStore.resolveModelInputWithRefresh(value);
-  if (!resolved) {
+  // A REFUSED id short-circuits before that refresh — no catalog answer can
+  // make `grok-4.6[1m]` real.
+  const resolution = await userSettingsStore.resolveModelInputDetailedWithRefresh(value);
+
+  if (resolution.status === 'rejected') {
+    // Deliberately NOT the "unknown model + alias dump" text: this id is not a
+    // typo, and offering the alias list would suggest the user just spelled it
+    // wrong instead of naming the id that actually works.
+    return {
+      ok: false,
+      summary: `❌ \`${value}\` is not a real model id`,
+      description: `${resolution.rejectedReason} Use \`${resolution.suggestedModel}\`.`,
+    };
+  }
+
+  if (resolution.status === 'unknown') {
     const aliases = Object.keys(MODEL_ALIASES)
       .map((a) => `\`${a}\``)
       .join(', ');
@@ -98,6 +107,8 @@ export async function applyModel(args: { userId: string; value: string }): Promi
       description: `Available aliases: ${aliases}`,
     };
   }
+
+  const resolved = resolution.modelId;
   userSettingsStore.setUserDefaultModel(userId, resolved);
   return {
     ok: true,

@@ -93,3 +93,19 @@ describe('isDmAllowedForNonAdmin — personal llmux key command', () => {
     expect(isDmAllowedForNonAdmin('monkey')).toBe(false);
   });
 });
+
+describe('isDmAllowedForNonAdmin — autocompact (config-only, never spawns a prompt)', () => {
+  it('allows status/set/reset forms matching CommandParser.isAutoCompactCommand grammar', () => {
+    expect(isDmAllowedForNonAdmin('autocompact')).toBe(true);
+    expect(isDmAllowedForNonAdmin('AUTOCOMPACT')).toBe(true);
+    expect(isDmAllowedForNonAdmin('/autocompact')).toBe(true);
+    expect(isDmAllowedForNonAdmin('autocompact 800k')).toBe(true);
+    expect(isDmAllowedForNonAdmin('/autocompact 800k')).toBe(true);
+    expect(isDmAllowedForNonAdmin('autocompact reset')).toBe(true);
+  });
+
+  it('still rejects prose that merely contains "autocompact"', () => {
+    expect(isDmAllowedForNonAdmin('please autocompact this')).toBe(false);
+    expect(isDmAllowedForNonAdmin('autocompacting now')).toBe(false);
+  });
+});
