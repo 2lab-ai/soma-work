@@ -21,7 +21,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { describe, expect, it } from 'vitest';
-import { FakeHost, type FakeSpawnBehavior, type RecordedCall } from '../fake-host';
+import { type FakeCommandResponse, FakeHost, type FakeSpawnBehavior, type RecordedCall } from '../fake-host';
 import type { CommandSpec } from '../host';
 import {
   classifyLlmuxAccounts,
@@ -55,8 +55,29 @@ const CODEX_ACCOUNT = 'zelda-codex@example.test';
 const APIKEY_MASK = '****SENTINELKEY9';
 const RAW_STDOUT_SENTINEL = 'RAW-STDOUT-SENTINEL-9f3a';
 const CREDENTIAL_SENTINEL = 'sk-ant-oat01-SENTINELtoken1234';
+/**
+ * The proxy api key `llmux env` prints when one is configured
+ * (`src/cli/env.rs:19-21`).
+ *
+ * Deliberately shaped like NOTHING the redactor recognises
+ * (`packages/common/src/logger.ts:34-56` knows `sk-ant-`, `lmk-`, Slack and
+ * GitHub families, and `ANTHROPIC_API_KEY=` is not one of its key/value names).
+ * A `llmux.json` `proxy.api_key` is an arbitrary operator-chosen string, so
+ * `CommandResult.stdout` — the *redacted* view — carries it verbatim. Finding
+ * this sentinel anywhere therefore proves a real leak rather than a redaction
+ * gap, and it is why the env step reads `unsafeRawStdout()` at the parser and
+ * never touches the redacted view.
+ */
+const PROXY_API_KEY_SENTINEL = 'PROXYKEY-SENTINEL-7c1e9b';
 
-const SENTINELS = [CLAUDE_ACCOUNT, CODEX_ACCOUNT, APIKEY_MASK, RAW_STDOUT_SENTINEL, CREDENTIAL_SENTINEL];
+const SENTINELS = [
+  CLAUDE_ACCOUNT,
+  CODEX_ACCOUNT,
+  APIKEY_MASK,
+  RAW_STDOUT_SENTINEL,
+  CREDENTIAL_SENTINEL,
+  PROXY_API_KEY_SENTINEL,
+];
 
 /** `llmux accounts` with an empty config (`accounts.rs:30-34`). */
 const ROSTER_EMPTY = ['No accounts configured.', 'Add one with: llmux import, llmux login, or llmux login --api'].join(
@@ -106,6 +127,19 @@ const HEALTHY_BOTH = liveDoc([
 /** `ServerProbe::NotRunning` — exit 1 with a JSON body (`accounts.rs:120-126`). */
 const NOT_RUNNING = `${JSON.stringify({ server: 'not running', port: 3456 }, null, 2)}\n`;
 
+/** llmux's own local endpoint contract: `http://localhost:<proxy.port>` (`cli/mod.rs:544`). */
+const DEFAULT_ENDPOINT = 'http://localhost:3456';
+
+/**
+ * `llmux env` output (`src/cli/env.rs:18-21`): one `export` line for the base
+ * URL, and the proxy api key line only when the config sets one.
+ */
+const envOutput = (baseUrl: string, apiKey?: string) =>
+  `${[
+    `export ANTHROPIC_BASE_URL=${baseUrl}`,
+    ...(apiKey === undefined ? [] : [`export ANTHROPIC_API_KEY=${apiKey}`]),
+  ].join('\n')}\n`;
+
 // ---------------------------------------------------------------------------
 // Matchers — exact argv arrays, so `accounts` never shadows `accounts --json`
 // ---------------------------------------------------------------------------
@@ -127,6 +161,7 @@ const ACCOUNTS_JSON = argv('accounts', '--json');
 const LOGIN = argv('login');
 const LOGIN_CODEX = argv('login', '--codex');
 const RESTART = argv('restart');
+const ENV = argv('env');
 
 /** Argv of every recorded `command` call. */
 const commandLines = (host: FakeHost): string[] =>
@@ -153,6 +188,7 @@ function installedHost(
   return new FakeHost()
     .stubWhich('llmux', LLMUX_BIN)
     .stubCommand(ACCOUNTS, { stdout: roster })
+    .stubCommand(ENV, { stdout: envOutput(DEFAULT_ENDPOINT) })
     .stubSpawn(LOGIN, logins.claude ?? {})
     .stubSpawn(LOGIN_CODEX, logins.codex ?? {});
 }
@@ -204,7 +240,8 @@ describe('ensureLlmux — installation', () => {
       .stubWhich('brew', BREW_BIN)
       .stubCommand(ACCOUNTS, { stdout: ROSTER_BOTH })
       .stubCommand(RESTART, {})
-      .stubCommand(ACCOUNTS_JSON, { stdout: HEALTHY_BOTH });
+      .stubCommand(ACCOUNTS_JSON, { stdout: HEALTHY_BOTH })
+      .stubCommand(ENV, { stdout: envOutput(DEFAULT_ENDPOINT) });
     // The formula lands while `brew install` runs, so the re-`which` finds it.
     host.stubCommand(
       (s) => s.command === BREW_BIN,
@@ -883,6 +920,7 @@ describe('ensureLlmux — recovery re-login', () => {
       `${LLMUX_BIN} login --codex`,
       `${LLMUX_BIN} restart`,
       `${LLMUX_BIN} accounts --json`,
+      `${LLMUX_BIN} env`,
     ]);
     expect(receipt.restartCount).toBe(2);
   });
@@ -1000,11 +1038,180 @@ describe('ensureLlmux — recovery re-login', () => {
 });
 
 // ---------------------------------------------------------------------------
+// The endpoint is llmux's answer, never somawork's constant
+// ---------------------------------------------------------------------------
+
+describe('ensureLlmux — the endpoint comes from `llmux env`', () => {
+  /**
+   * A healthy run whose `llmux env` answers `stdout`.
+   *
+   * `stubCommandOnce` rather than `stubCommand`: `installedHost` already
+   * registered the default endpoint as a general stub, and FakeHost resolves
+   * general stubs in registration order, so a second general stub would be
+   * permanently shadowed by the first.
+   */
+  const endpointHost = (stdout: string, extra: FakeCommandResponse = {}) =>
+    installedHost(ROSTER_BOTH)
+      .stubCommand(RESTART, {})
+      .stubCommand(ACCOUNTS_JSON, { stdout: HEALTHY_BOTH })
+      .stubCommandOnce(ENV, { stdout, ...extra });
+
+  it('reports the default local endpoint when llmux runs on its default port', async () => {
+    const receipt = await ensureLlmux(endpointHost(envOutput('http://localhost:3456')));
+
+    expect(receipt.baseUrl).toBe('http://localhost:3456');
+  });
+
+  it('reports the configured port when another llmux already owns 3456', async () => {
+    const receipt = await ensureLlmux(endpointHost(envOutput('http://localhost:13456')));
+
+    expect(receipt.baseUrl).toBe('http://localhost:13456');
+  });
+
+  it.each([
+    ['a 127.0.0.1 endpoint', 'http://127.0.0.1:13456', 'http://127.0.0.1:13456'],
+    ['an IPv6 loopback endpoint', 'http://[::1]:13456', 'http://[::1]:13456'],
+    ['a bare host with no port', 'http://localhost', 'http://localhost'],
+    ['a trailing slash, normalised to the origin', 'http://localhost:13456/', 'http://localhost:13456'],
+  ])('accepts %s', async (_label, printed, expected) => {
+    const receipt = await ensureLlmux(endpointHost(envOutput(printed)));
+
+    expect(receipt.baseUrl).toBe(expected);
+  });
+
+  it('ignores the api key line llmux prints beside the URL', async () => {
+    const receipt = await ensureLlmux(endpointHost(envOutput('http://localhost:13456', PROXY_API_KEY_SENTINEL)));
+
+    expect(receipt.baseUrl).toBe('http://localhost:13456');
+  });
+
+  it('keeps the api key out of the receipt, the call log, and the setup-state gate', async () => {
+    const host = endpointHost(envOutput('http://localhost:13456', PROXY_API_KEY_SENTINEL));
+    const progress: string[] = [];
+
+    const receipt = await ensureLlmux(host, { onProgress: (line) => void progress.push(line) });
+
+    for (const surface of [
+      JSON.stringify(receipt),
+      JSON.stringify(host.calls),
+      JSON.stringify(host.unsafeRawCalls()),
+      progress.join('\n'),
+    ]) {
+      expect(surface).not.toContain(PROXY_API_KEY_SENTINEL);
+    }
+    expect(() => assertSecretFree(receipt)).not.toThrow();
+    expect(() => assertSecretFree(JSON.parse(JSON.stringify(receipt)))).not.toThrow();
+  });
+
+  it('never runs `llmux env` on a path that ends in failure', async () => {
+    const host = installedHost(ROSTER_BOTH)
+      .stubCommand(RESTART, {})
+      .stubCommand(ACCOUNTS_JSON, {
+        stdout: liveDoc([
+          { group: 'claude', status: 'active' },
+          { group: 'codex', status: 'cooldown' },
+        ]),
+      });
+
+    await ensureLlmux(host).catch(() => {});
+
+    expect(commandLines(host)).not.toContain(`${LLMUX_BIN} env`);
+  });
+
+  it.each([
+    ['nothing at all', ''],
+    ['whitespace only', '   \n\n'],
+    ['only the api key line', `export ANTHROPIC_API_KEY=${PROXY_API_KEY_SENTINEL}\n`],
+    [
+      'two base URL lines',
+      'export ANTHROPIC_BASE_URL=http://localhost:3456\nexport ANTHROPIC_BASE_URL=http://localhost:13456\n',
+    ],
+    [
+      'two api key lines',
+      `export ANTHROPIC_BASE_URL=http://localhost:3456\nexport ANTHROPIC_API_KEY=a${PROXY_API_KEY_SENTINEL}\nexport ANTHROPIC_API_KEY=b${PROXY_API_KEY_SENTINEL}\n`,
+    ],
+    ['an unexpected export', 'export ANTHROPIC_BASE_URL=http://localhost:3456\nexport PATH=/tmp/evil\n'],
+    ['an assignment with no `export`', 'ANTHROPIC_BASE_URL=http://localhost:3456\n'],
+    ['a comment line', '# llmux 0.9\nexport ANTHROPIC_BASE_URL=http://localhost:3456\n'],
+    ['a single-quoted value', "export ANTHROPIC_BASE_URL='http://localhost:3456'\n"],
+    ['a double-quoted value', 'export ANTHROPIC_BASE_URL="http://localhost:3456"\n'],
+    ['a backtick command substitution', 'export ANTHROPIC_BASE_URL=`id`\n'],
+    ['a $() command substitution', 'export ANTHROPIC_BASE_URL=http://localhost:$(id -u)\n'],
+    ['a trailing shell command', 'export ANTHROPIC_BASE_URL=http://localhost:3456;curl evil.example\n'],
+    ['a value with a space', 'export ANTHROPIC_BASE_URL=http://localhost:3456 evil\n'],
+    ['a remote host', 'export ANTHROPIC_BASE_URL=http://10.0.0.5:3456\n'],
+    ['a lookalike registrable domain', 'export ANTHROPIC_BASE_URL=http://localhost.evil.example:3456\n'],
+    ['an https endpoint', 'export ANTHROPIC_BASE_URL=https://localhost:3456\n'],
+    ['embedded userinfo', 'export ANTHROPIC_BASE_URL=http://user:pass@localhost:3456\n'],
+    ['a path', 'export ANTHROPIC_BASE_URL=http://localhost:3456/exfil\n'],
+    ['a query string', 'export ANTHROPIC_BASE_URL=http://localhost:3456/?to=evil.example\n'],
+    ['a fragment', 'export ANTHROPIC_BASE_URL=http://localhost:3456/#evil\n'],
+    ['an out-of-range port', 'export ANTHROPIC_BASE_URL=http://localhost:99999\n'],
+    ['a value that is not a URL', 'export ANTHROPIC_BASE_URL=nope\n'],
+    ['an empty value', 'export ANTHROPIC_BASE_URL=\n'],
+  ])('refuses %s as a contract failure', async (_label, stdout) => {
+    const host = endpointHost(stdout);
+
+    const error = await ensureLlmux(host).catch((e) => e);
+
+    expect(error).toBeInstanceOf(LlmuxContractError);
+    // The offending bytes came from a child process; naming them in an error
+    // that a caller may print or persist is the leak this parser exists to
+    // avoid. Line shape only.
+    const surfaces = [error.message, JSON.stringify(error), JSON.stringify(error.toJSON())];
+    for (const surface of surfaces) {
+      expect(surface).not.toContain(PROXY_API_KEY_SENTINEL);
+      expect(surface).not.toContain('evil.example');
+      expect(surface).not.toContain('id -u');
+    }
+  });
+
+  it('fails with a command error, not a contract error, when `llmux env` exits non-zero', async () => {
+    const host = endpointHost('', { code: 1, stderr: 'llmux: config is unreadable' });
+
+    const error = await ensureLlmux(host).catch((e) => e);
+
+    expect(error).toBeInstanceOf(LlmuxCommandError);
+    expect(error.step).toBe('env');
+    expect(error.exitStatus).toBe(1);
+    expect(error.message).toMatch(/config is unreadable/);
+  });
+
+  it('fails with a command error when `llmux env` has to be killed', async () => {
+    const host = endpointHost('', { timedOut: true });
+
+    const error = await ensureLlmux(host).catch((e) => e);
+
+    expect(error).toBeInstanceOf(LlmuxCommandError);
+    expect(error.step).toBe('env');
+  });
+
+  it('never quotes `llmux env` stdout in a failure, even when the exit is non-zero', async () => {
+    const host = endpointHost(`export ANTHROPIC_API_KEY=${PROXY_API_KEY_SENTINEL}\n`, {
+      code: 1,
+      stderr: 'boom',
+    });
+
+    const error = await ensureLlmux(host).catch((e) => e);
+
+    expect(`${error.message} ${JSON.stringify(error)}`).not.toContain(PROXY_API_KEY_SENTINEL);
+  });
+
+  it('carries progress on an endpoint failure so a resume knows how far it got', async () => {
+    const host = endpointHost('export ANTHROPIC_BASE_URL=http://10.0.0.5:3456\n');
+
+    const error = await ensureLlmux(host).catch((e) => e);
+
+    expect(error.progress).toEqual({ install: 'already-installed', restartCount: 1, readinessChecks: 1 });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Full command order
 // ---------------------------------------------------------------------------
 
 describe('ensureLlmux — command order', () => {
-  it('runs which → accounts → login → login --codex → restart → accounts --json', async () => {
+  it('runs which → accounts → login → login --codex → restart → accounts --json → env', async () => {
     const host = healthyDaemon(installedHost(ROSTER_EMPTY));
 
     await ensureLlmux(host);
@@ -1020,7 +1227,21 @@ describe('ensureLlmux — command order', () => {
       `spawn:${LLMUX_BIN} login --codex`,
       `command:${LLMUX_BIN} restart`,
       `command:${LLMUX_BIN} accounts --json`,
+      `command:${LLMUX_BIN} env`,
     ]);
+  });
+
+  it('reads the endpoint exactly once, after the daemon is proven healthy', async () => {
+    const host = installedHost(ROSTER_BOTH)
+      .stubCommand(RESTART, {})
+      .stubCommandOnce(ACCOUNTS_JSON, { code: 1, stdout: NOT_RUNNING })
+      .stubCommand(ACCOUNTS_JSON, { stdout: HEALTHY_BOTH });
+
+    await ensureLlmux(host);
+
+    const lines = commandLines(host);
+    expect(lines.filter((l) => l === `${LLMUX_BIN} env`)).toHaveLength(1);
+    expect(lines.indexOf(`${LLMUX_BIN} env`)).toBe(lines.length - 1);
   });
 });
 

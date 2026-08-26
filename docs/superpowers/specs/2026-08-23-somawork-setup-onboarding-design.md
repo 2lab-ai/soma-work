@@ -40,7 +40,7 @@ llmux already owns both OAuth implementations and atomic credential persistence:
 - `llmux login --codex` opens ChatGPT/Codex browser OAuth and writes a `codex:*` account; it may import `~/.codex/auth.json` only as a documented fallback.
 - `llmux accounts --json` / `/llmux/status` expose account group and health without exposing tokens.
 - The default config is `~/.config/llmux.json`, mode 0600, with atomic read-merge-write.
-- `llmux restart` starts a detached local daemon and readiness can be polled on port 3456.
+- `llmux restart` starts a detached local daemon on `config.proxy.port`; readiness is polled on that port, which is 3456 only by default. In local mode `llmux env` prints `export ANTHROPIC_BASE_URL=http://localhost:<configured port>` (plus the proxy api key when one is set) and is the only thing that knows which port this machine's llmux serves — the same uid may already run another llmux on 3456. `llmux env` is not unconditionally local: it shares `resolve_endpoint` with the other subcommands and prints the configured `remote.host` endpoint when one is set. Setup never reaches that case — a remote-configured llmux is refused at step one, where `llmux accounts` returns a live JSON document instead of a roster — so no remote branch is needed at the `env` read.
 The setup controller never handles, copies, or parses Claude/Codex tokens. It only invokes the official llmux CLI and validates account-group health.
 
 ### 3.3 Slack authorization
@@ -106,6 +106,7 @@ Setup is idempotent and resumable. The state file contains step identifiers, non
 - If no healthy Claude-group account exists, invoke `llmux login` and wait for its browser OAuth to finish.
 - If no healthy Codex-group account exists, invoke `llmux login --codex` and wait for its browser OAuth to finish.
 - Invoke `llmux restart`, poll readiness, then require at least one healthy account in each group.
+- Once healthy, read `llmux env` and reduce it, at the parser, to one validated loopback origin. The api key line it may print is discarded and never persisted, returned, or logged. That origin is the endpoint the rest of setup uses.
 - Never clone or reuse an existing refresh token in a test/scratch config.
 ### Step 2 — Slack CLI authorization
 - Install Slack CLI if absent.
@@ -127,7 +128,7 @@ Setup is idempotent and resumable. The state file contains step identifiers, non
 
 Atomically write:
 - `secrets.env`: Slack bot/app tokens only.
-- `runtime.env`: `AUTH_MODE=llmux`, `ANTHROPIC_BASE_URL=http://localhost:3456`, placeholder API key, `BASE_DIRECTORY`, profile/runtime/data/log paths.
+- `runtime.env`: `AUTH_MODE=llmux`, `ANTHROPIC_BASE_URL=<the origin Step 1 read from `llmux env`>` (not a fixed port), placeholder API key, `BASE_DIRECTORY`, profile/runtime/data/log paths.
 - `config.json`: canonical defaults plus any Slack-agent declaration using env placeholders.
 - `.system.prompt`: packaged default or selected persona.
 The wizard creates all directories with user-only permissions and validates that no secret appears in non-secret files.
@@ -135,7 +136,7 @@ The wizard creates all directories with user-only permissions and validates that
 ### Step 5 — doctor
 
 The setup does not install/start the service until all mandatory checks pass:
-- llmux daemon responds and has healthy `claude` and `codex` account groups.
+- llmux daemon responds at the endpoint written in the profile's own `.env` and has healthy `claude` and `codex` account groups.
 - Slack bot token passes `auth.test`.
 - Slack app token passes `apps.connections.open` without logging the returned WebSocket URL.
 - Runtime and base-directory paths exist and are writable.
