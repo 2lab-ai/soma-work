@@ -118,7 +118,16 @@ describe('userSettingsStore.resolveModelInputWithRefresh (T2)', () => {
     const fetcher = vi.fn(async () => [GROK]);
     modelCatalog.setFetcher(fetcher);
     const resolved = await userSettingsStore.resolveModelInputWithRefresh('opus');
-    expect(resolved).toBe('claude-opus-4-8');
+    expect(resolved).toBe('claude-opus-5[1m]');
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it('does not fetch for a REFUSED id either (no catalog answer can make it real)', async () => {
+    // `grok-4.6[1m]` is refused on a property of llmux's own grok routing, so
+    // a forced re-fetch would only add latency to a certain "no".
+    const fetcher = vi.fn(async () => [GROK]);
+    modelCatalog.setFetcher(fetcher);
+    expect(await userSettingsStore.resolveModelInputWithRefresh('grok-4.6[1m]')).toBeNull();
     expect(fetcher).not.toHaveBeenCalled();
   });
 });
