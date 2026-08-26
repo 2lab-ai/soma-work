@@ -100,6 +100,7 @@ describe('runDoctor', () => {
       paths,
       runtime,
       baseDirectory,
+      llmuxBaseUrl: 'http://localhost:3456',
       slack: { appId: 'A0123456789', teamId: 'T0123456789' },
       defaultConfig: { content: PACKAGED_CONFIG },
       systemPrompt: { content: PACKAGED_PROMPT },
@@ -737,6 +738,7 @@ describe('default doctor seams', () => {
       paths,
       runtime,
       baseDirectory,
+      llmuxBaseUrl: 'http://localhost:3456',
       slack: { appId: 'A0123456789', teamId: 'T0123456789' },
       defaultConfig: { content: JSON.stringify({ ui: { threadheader: {} } }) },
       systemPrompt: { content: PACKAGED_PROMPT },
@@ -894,6 +896,29 @@ describe('default doctor seams', () => {
     expect(urls).toEqual(['http://127.0.0.1:9999/llmux/status']);
   });
 
+  it('probes the non-default endpoint the materializer wrote for this profile', async () => {
+    // End to end across the two modules that must agree: whatever `llmux env`
+    // reported is materialized into the profile's `.env`, and doctor reads that
+    // file back rather than assuming llmux's default port.
+    materializeProfile({
+      profile: 'preview',
+      paths,
+      runtime,
+      baseDirectory,
+      llmuxBaseUrl: 'http://localhost:13456',
+      slack: { appId: 'A0123456789', teamId: 'T0123456789' },
+      defaultConfig: { content: PACKAGED_CONFIG },
+      systemPrompt: { content: PACKAGED_PROMPT },
+    });
+    const { urls, restore } = spyFetch();
+    try {
+      await llmuxDeps().fetchLlmuxStatus();
+    } finally {
+      restore();
+    }
+    expect(urls).toEqual(['http://localhost:13456/llmux/status']);
+  });
+
   it('lets an explicit override win over the profile value', async () => {
     writeProfileEnv('http://127.0.0.1:9999');
     const { urls, restore } = spyFetch();
@@ -905,26 +930,78 @@ describe('default doctor seams', () => {
     expect(urls).toEqual(['http://localhost:4444/llmux/status']);
   });
 
-  it('falls back to the exact local default when the profile names none', async () => {
-    fs.writeFileSync(path.join(paths.configDir, '.env'), 'AUTH_MODE=llmux\n', { mode: 0o600 });
+  it.each([
+    ['the file carries no such key', 'AUTH_MODE=llmux\n'],
+    ['the key is present but empty', 'AUTH_MODE=llmux\nANTHROPIC_BASE_URL=\n'],
+    ['the key is present but blank', 'AUTH_MODE=llmux\nANTHROPIC_BASE_URL="   "\n'],
+  ])('refuses to guess an endpoint when %s, and makes no request at all', async (_label, contents) => {
+    // Doctor is profile-scoped: an unconfigured profile is a local
+    // configuration failure, not a licence to dial llmux's default port. A
+    // guess would send the operator's admin key to whatever happens to be
+    // listening on 3456 and then report a *daemon* verdict about it.
+    fs.writeFileSync(path.join(paths.configDir, '.env'), contents, { mode: 0o600 });
     const { urls, restore } = spyFetch();
+    let caught: unknown;
     try {
       await llmuxDeps().fetchLlmuxStatus();
+    } catch (err) {
+      caught = err;
     } finally {
       restore();
     }
-    expect(DEFAULT_LLMUX_BASE_URL).toBe('http://localhost:3456');
-    expect(urls).toEqual([`${DEFAULT_LLMUX_BASE_URL}/llmux/status`]);
+    expect(caught).toBeInstanceOf(LlmuxEndpointError);
+    expect(urls).toEqual([]);
   });
 
-  it('falls back to the exact local default when the profile has no .env at all', async () => {
+  it('refuses to guess an endpoint when the profile has no .env at all', async () => {
     const { urls, restore } = spyFetch();
+    let caught: unknown;
     try {
       await llmuxDeps().fetchLlmuxStatus();
+    } catch (err) {
+      caught = err;
     } finally {
       restore();
     }
-    expect(urls).toEqual([`${DEFAULT_LLMUX_BASE_URL}/llmux/status`]);
+    expect(caught).toBeInstanceOf(LlmuxEndpointError);
+    expect(urls).toEqual([]);
+  });
+
+  it('states the same secret-safe phrase whether the profile named nothing or named something unsupported', () => {
+    // One phrase for both origins. "The profile names an endpoint that is not
+    // supported" was a false statement in the missing case — it named none —
+    // and an operator who reads it goes looking for a line that is not there.
+    const named = (() => {
+      try {
+        resolveLlmuxBaseUrl(paths.configDir, 'https://evil.example.com');
+        return null;
+      } catch (err) {
+        return err as Error;
+      }
+    })();
+    const namedNothing = (() => {
+      try {
+        resolveLlmuxBaseUrl(paths.configDir);
+        return null;
+      } catch (err) {
+        return err as Error;
+      }
+    })();
+    for (const err of [named, namedNothing]) {
+      expect(err).toBeInstanceOf(LlmuxEndpointError);
+      expect((err as Error).message).toBe('No supported local llmux endpoint is configured for this profile.');
+    }
+    // Still carries nothing an attacker chose, and nothing about the filesystem.
+    expect((named as Error).message).not.toContain('evil');
+    expect((named as Error).message).not.toContain(paths.configDir);
+  });
+
+  it("keeps the default constant available to setup without making it doctor's answer", () => {
+    // The constant is still what a reader with no profile to consult uses
+    // (`llmux env` reports the real port during setup); doctor is never such a
+    // reader, so its presence must not be reachable from the resolver.
+    expect(DEFAULT_LLMUX_BASE_URL).toBe('http://localhost:3456');
+    expect(() => resolveLlmuxBaseUrl(paths.configDir)).toThrow(LlmuxEndpointError);
   });
 
   it.each([
@@ -1040,10 +1117,42 @@ describe('default doctor seams', () => {
       restore();
     }
     expect(statusOf(report, 'llmux')).toBe('fail');
-    expect(detailOf(report, 'llmux')).toMatch(/not a supported local address/);
+    expect(detailOf(report, 'llmux')).toMatch(/no supported local llmux endpoint is configured/);
     expect(detailOf(report, 'llmux')).not.toMatch(/unreachable/);
     expect(urls).toEqual([]);
     expect(doctorReportToJson(report)).not.toContain('evil');
+  });
+
+  it('fails the llmux check locally on an unconfigured profile and still runs the rest', async () => {
+    // The standalone `doctor`/`status` path on a profile setup never touched.
+    // One check fails with the local-address detail; the run continues so the
+    // operator sees every other verdict in the same pass.
+    const { urls, restore } = spyFetch();
+    let report: DoctorReport;
+    try {
+      report = await runDoctor('preview', {
+        paths,
+        runtime,
+        baseDirectory,
+        uid: os.userInfo().uid,
+        runtimeAssets: [],
+        fs: createNodeDoctorFileSystem(),
+        readSecrets: () => ({}),
+        probeSlackBot: async () => ({ ok: true, fatalAuth: false }),
+        openSlackSocket: async () => ({ ok: true }),
+        fetchLlmuxStatus: llmuxDeps().fetchLlmuxStatus,
+        loadConfigFile: () => ({ loaded: true, missing: [] }),
+      });
+    } finally {
+      restore();
+    }
+    expect(statusOf(report, 'llmux')).toBe('fail');
+    expect(detailOf(report, 'llmux')).toMatch(/no supported local llmux endpoint is configured/);
+    expect(detailOf(report, 'llmux')).not.toMatch(/unreachable/);
+    expect(urls).toEqual([]);
+    // The remaining checks still ran rather than the throw aborting the report.
+    expect(report.checks.map((c) => c.id)).toContain('slack_bot');
+    expect(report.checks.length).toBeGreaterThan(3);
   });
 
   // ------------------------------------------------- I-4: real socket probe

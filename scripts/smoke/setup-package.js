@@ -124,6 +124,18 @@ const JSON_ASSETS = [CONFIG_ASSET, MANIFEST_ASSET];
 const MANIFEST_SECTIONS = ['display_information', 'features', 'oauth_config', 'settings'];
 
 /**
+ * The llmux endpoint this harness materializes with.
+ *
+ * Deliberately **not** llmux's default 3456. `somawork setup` learns the real
+ * port from `llmux env` — a machine whose 3456 is taken runs the daemon
+ * elsewhere — so a materializer that hardcoded or defaulted to 3456 would be
+ * indistinguishable from one that honours the caller. Materializing at 13456
+ * and reading the byte back out of the profile's `.env` makes that difference
+ * observable, which is the only reason this constant is odd.
+ */
+const SMOKE_LLMUX_BASE_URL = 'http://localhost:13456';
+
+/**
  * Never in the bundle: mutable state, credentials, source, build residue.
  *
  * Exact basenames. `config.json` is here while `config.default.json` is
@@ -1237,6 +1249,7 @@ function checkMaterialization(harness) {
     paths,
     runtime: { profile: 'preview', root: harness.runtimeRoot, version: '0.0.0-smoke' },
     baseDirectory,
+    llmuxBaseUrl: SMOKE_LLMUX_BASE_URL,
     slack: { appId: 'A0SMOKE0001', teamId: 'T0SMOKE0001' },
     defaultConfig: { path: path.join(harness.runtimeRoot, CONFIG_ASSET) },
     systemPrompt: { path: path.join(harness.runtimeRoot, PROMPT_ASSET) },
@@ -1279,6 +1292,23 @@ function checkMaterialization(harness) {
 
   const envBody = fs.readFileSync(receipt.runtimeEnvFile, 'utf8');
   check(!/xoxb-|xapp-|SLACK_BOT_TOKEN=|SLACK_APP_TOKEN=|SIGNING_SECRET/.test(envBody), 'the materialized env carries no credential');
+
+  // The endpoint the caller supplied must be the endpoint on disk, byte for
+  // byte: `doctor` reads this line back and refuses to guess when it is absent,
+  // so a materializer that dropped or rewrote it would strand every profile it
+  // wrote. Matched anchored and with the exact value, so a stray `3456` — the
+  // default this harness deliberately avoids — cannot satisfy it.
+  const endpointLines = envBody.split('\n').filter((line) => line.startsWith('ANTHROPIC_BASE_URL='));
+  check(
+    endpointLines.length === 1,
+    'the materialized env names ANTHROPIC_BASE_URL exactly once',
+    JSON.stringify(endpointLines),
+  );
+  check(
+    endpointLines[0] === `ANTHROPIC_BASE_URL=${SMOKE_LLMUX_BASE_URL}`,
+    'the materialized env carries the caller-supplied llmux endpoint, not llmux\'s default port',
+    JSON.stringify(endpointLines[0]),
+  );
 
   for (const written of [paths.configDir, paths.dataDir, paths.stateDir]) {
     check(written.startsWith(`${home}/`), 'every materialized path lives under the hermetic home', written);

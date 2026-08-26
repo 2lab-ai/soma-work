@@ -43,7 +43,7 @@
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `AUTH_MODE` | `ccp` \| `llmux` | `ccp` |
-| `ANTHROPIC_BASE_URL` | llmux 프록시 URL (`llmux` 모드에서만 사용) | `http://localhost:3456` |
+| `ANTHROPIC_BASE_URL` | llmux 프록시 URL (`llmux` 모드에서만 사용) | `http://localhost:3456` (llmux의 기본 포트일 뿐, 고정 계약이 아님) |
 | `ANTHROPIC_API_KEY` | llmux로 전달되는 throwaway 키 (값 무관) | `llmux-local` |
 
 - **`ccp` (기본값)**: Claude Code Pro/Max OAuth — CCT slot lease (`CLAUDE_CODE_OAUTH_TOKEN`). 멀티 계정 로테이션, usage 추적, `/z cct` 카드가 모두 동작. 직접 API 키는 기존 cct 토큰 스토어로 관리.
@@ -56,6 +56,8 @@ AUTH_MODE=llmux
 ANTHROPIC_BASE_URL=http://localhost:3456
 ANTHROPIC_API_KEY=anything
 ```
+
+`somawork setup`이 프로필을 materialize할 때는 이 포트를 가정하지 않고 `llmux env`가 알려주는 실제 엔드포인트(로컬 모드에서 `http://localhost:<proxy.port>`; remote가 설정된 llmux는 setup 첫 단계인 `llmux accounts`에서 거부되므로 `env` 시점엔 로컬 모드뿐입니다)를 씁니다 — 같은 uid에 이미 3456을 쓰는 llmux가 있으면 이 머신의 데몬은 다른 포트에 있습니다. `somawork doctor`는 프로필의 `.env`에 적힌 그 값을 되읽어 프로브하며, loopback http origin이 아니면 거부합니다. `.env`가 없거나 `ANTHROPIC_BASE_URL`이 비어 있으면 doctor는 3456을 가정하지 않고 llmux 체크만 로컬 설정 실패로 떨어뜨립니다 (나머지 체크는 계속 실행) — 설정된 적 없는 프로필에 대해 데몬 판정을 내리지 않기 위해서입니다.
 
 #### Working Directory
 

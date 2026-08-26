@@ -42,6 +42,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { isProfileName, type ProfileName, type ProfilePaths, type RuntimeInstall } from './profile';
 import { classifyLlmuxGroups, type LlmuxGroup, type LlmuxGroupCondition } from './setup/llmux';
+import { DEFAULT_LLMUX_BASE_URL, LlmuxEndpointError, validateLlmuxBaseUrl } from './setup/llmux-endpoint';
 import {
   RUNTIME_CONFIG_FILENAME,
   RUNTIME_DATA_DIRNAME,
@@ -357,11 +358,14 @@ export async function runDoctor(profile: ProfileName, deps: DoctorDeps): Promise
       } catch (err) {
         // The one seam failure worth naming separately: nothing was contacted,
         // so "unreachable" would send the operator to check a daemon that is
-        // probably fine. The error deliberately carries no URL to echo.
+        // probably fine. Covers both an endpoint the profile named and refused
+        // (not a loopback http origin) and one it never named at all — the same
+        // fix answers both, and the detail deliberately carries no URL, no path
+        // and no hint of which of the two it was.
         if (err instanceof LlmuxEndpointError) {
           return {
             status: 'fail',
-            detail: 'the profile names an llmux endpoint that is not a supported local address',
+            detail: 'no supported local llmux endpoint is configured for this profile',
           };
         }
         throw err;
@@ -779,8 +783,9 @@ export interface DefaultDoctorDepsOptions {
   runtimeAssets: readonly DoctorRuntimeAsset[];
   readSecrets: () => SecretValues;
   /**
-   * llmux base URL to probe. Defaults to the `ANTHROPIC_BASE_URL` written in
-   * the profile's own `.env`, and only then to the client's ambient default.
+   * llmux base URL to probe. Omitted, the endpoint is the `ANTHROPIC_BASE_URL`
+   * written in the profile's own `.env`; a profile that names none fails the
+   * llmux check locally rather than falling back to any default.
    */
   llmuxBaseUrl?: string;
   /** Injection point for the socket probe's transport. Defaults to `fetch`. */
@@ -788,78 +793,12 @@ export interface DefaultDoctorDepsOptions {
 }
 
 /**
- * The address somawork v1 supports, and exactly what the materializer writes.
- * Used verbatim when a profile does not name one.
+ * The endpoint rule lives in `./setup/llmux-endpoint`, a leaf module, because
+ * the materializer needs the same gate and this file already imports the
+ * materializer — owning it here would be a cycle. Re-exported so existing
+ * callers keep their import site.
  */
-export const DEFAULT_LLMUX_BASE_URL = 'http://localhost:3456';
-
-/** Hosts a v1 llmux endpoint may name. `URL` renders IPv6 hostnames bracketed. */
-const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
-
-/**
- * Raised when a profile (or an explicit override) names an llmux endpoint that
- * is not a local address.
- *
- * Carries no URL — not in the message, not in a field. The offending value came
- * from a file an attacker may control, and it must not be echoed into a report,
- * a log, or an exception that some future handler decides to print.
- */
-export class LlmuxEndpointError extends Error {
-  constructor() {
-    super('The profile names an llmux endpoint that is not a supported local address.');
-    this.name = 'LlmuxEndpointError';
-  }
-}
-
-/**
- * Accept only a plain loopback HTTP endpoint.
- *
- * This gate exists because of what the caller does next: `fetchLlmuxStatus`
- * sends `x-api-key: getLlmuxAdminKey(base)`, and `getLlmuxAdminKey` returns the
- * operator-set ambient key *before* its own loopback test (that test only
- * guards the llmux-config-file fallback). So an unvalidated destination read
- * out of a file is an outbound credential surface: whoever writes
- * `ANTHROPIC_BASE_URL` into the profile's `.env` chooses where the operator's
- * llmux admin key is POSTed.
- *
- * Refused, each for its own reason:
- * - a non-`http:` scheme — v1 talks to a local daemon; `https://evil.example`
- *   is the whole attack in one line;
- * - any host but `localhost` / `127.0.0.1` / `::1` — note `localhost.evil.com`
- *   passes a naive `startsWith`/`includes` check and is a real registrable
- *   domain;
- * - userinfo (`http://user:pass@localhost`) — credentials in a URL, and a
- *   parser-confusion vector;
- * - a path, query, or fragment — the client appends `/llmux/status`, so
- *   anything here is either dead weight or an attempt to reshape the request;
- * - a port outside 1..65535.
- *
- * Returns the parsed **origin**, not the caller's string. `search` and `hash`
- * are tested with `!== ''` and a bare delimiter parses to empty, so
- * `http://localhost:3456/?` and `.../#` pass validation — and the client then
- * builds `http://localhost:3456/?/llmux/status`, dialing `/` with the real
- * path as a query and reporting a healthy daemon dead. Returning the origin
- * makes the string that was validated the string that is sent, which closes
- * that class rather than special-casing its two instances.
- */
-export function validateLlmuxBaseUrl(candidate: string): string {
-  let url: URL;
-  try {
-    url = new URL(candidate);
-  } catch {
-    throw new LlmuxEndpointError();
-  }
-  if (url.protocol !== 'http:') throw new LlmuxEndpointError();
-  if (!LOOPBACK_HOSTS.has(url.hostname)) throw new LlmuxEndpointError();
-  if (url.username !== '' || url.password !== '') throw new LlmuxEndpointError();
-  if (url.pathname !== '' && url.pathname !== '/') throw new LlmuxEndpointError();
-  if (url.search !== '' || url.hash !== '') throw new LlmuxEndpointError();
-  if (url.port !== '') {
-    const port = Number(url.port);
-    if (!Number.isInteger(port) || port < 1 || port > 65535) throw new LlmuxEndpointError();
-  }
-  return url.origin;
-}
+export { DEFAULT_LLMUX_BASE_URL, LlmuxEndpointError, validateLlmuxBaseUrl };
 
 /**
  * Read `ANTHROPIC_BASE_URL` out of the profile's materialized `.env`.
@@ -873,7 +812,10 @@ export function validateLlmuxBaseUrl(candidate: string): string {
  * it resolves a single ambient config directory at module load, which is the
  * same mistake one level down.
  *
- * Returns `undefined` when the file is absent or carries no such key.
+ * Returns `undefined` when the file is absent, unreadable, or carries no
+ * non-empty value for the key — three states the caller must not distinguish,
+ * because all three mean the same thing: this profile has not told us where
+ * its llmux is.
  */
 function readProfileLlmuxBaseUrl(configDir: string): string | undefined {
   try {
@@ -886,16 +828,30 @@ function readProfileLlmuxBaseUrl(configDir: string): string | undefined {
 }
 
 /**
- * Resolve the endpoint to probe: explicit override, else the profile's `.env`,
- * else {@link DEFAULT_LLMUX_BASE_URL}.
+ * Resolve the endpoint to probe: explicit override, else the profile's `.env`.
+ * There is no third answer.
  *
  * An explicit override is validated on the same terms as a file-supplied value;
  * being passed in code is not evidence of being safe, and the credential
- * exposure is identical either way. Falling back to the literal default rather
- * than to `undefined` keeps the client from re-deriving an ambient answer.
+ * exposure is identical either way.
+ *
+ * A profile that names no endpoint is a **local configuration failure**, not a
+ * cue to try {@link DEFAULT_LLMUX_BASE_URL}. Setup materializes `.env` before
+ * it ever runs doctor (`./setup/orchestrator`), so the only way to reach here
+ * empty-handed is a standalone `doctor`/`status` on a profile that was never
+ * set up — and for that profile, dialing 3456 would send the operator's llmux
+ * admin key to whatever happens to be listening there and then report a
+ * *daemon* verdict ("unreachable", or worse, a green from a stranger) about a
+ * question that was never asked. Throwing {@link LlmuxEndpointError} is the
+ * honest answer and costs zero network calls: it precedes the client import
+ * and the admin-key resolution. {@link DEFAULT_LLMUX_BASE_URL} stays exported
+ * from this module only to preserve the pre-existing public export site — no
+ * production code reads it, here or anywhere else — and it must not become
+ * reachable from this function again.
  */
 export function resolveLlmuxBaseUrl(configDir: string, override?: string): string {
-  const candidate = override ?? readProfileLlmuxBaseUrl(configDir) ?? DEFAULT_LLMUX_BASE_URL;
+  const candidate = override ?? readProfileLlmuxBaseUrl(configDir);
+  if (candidate === undefined) throw new LlmuxEndpointError();
   return validateLlmuxBaseUrl(candidate);
 }
 

@@ -683,15 +683,26 @@ export async function runSetup(deps: SetupDeps): Promise<SetupOutcome> {
   save(completeStep(state, 'inspect', deps.now()));
 
   // --- Step 1: local llmux ------------------------------------------------
+  //
+  // The endpoint travels from here to Step 4. It is llmux's answer about its
+  // own `proxy.port`, and the profile that Step 4 writes is what the service
+  // dials forever after — so re-deriving it downstream (or defaulting to 3456)
+  // is how a profile ends up pointed at a *different* llmux that happens to own
+  // the default port under the same uid.
   deps.output.step('llmux', 'Checking the local llmux daemon');
+  let llmuxBaseUrl: string;
   try {
     const receipt = await deps.ensureLlmux(deps.host, {
       signal: deps.signal,
       onProgress: (line) => deps.output.info(line),
     });
-    deps.output.info(`llmux ready: ${receipt.claudeHealthy} Claude / ${receipt.codexHealthy} Codex account(s).`);
+    llmuxBaseUrl = receipt.baseUrl;
+    deps.output.info(
+      `llmux ready at ${receipt.baseUrl}: ${receipt.claudeHealthy} Claude / ${receipt.codexHealthy} Codex account(s).`,
+    );
   } catch (error) {
     fail('llmux', error, 'llmux is not ready. Re-run `somawork setup` to resume from this step.');
+    throw error; // unreachable; keeps control-flow analysis honest
   }
   save(completeStep(state, 'llmux', deps.now()));
 
@@ -792,6 +803,7 @@ export async function runSetup(deps: SetupDeps): Promise<SetupOutcome> {
       paths,
       runtime,
       baseDirectory,
+      llmuxBaseUrl,
       slack: { appId: capture.appId, teamId: capture.teamId },
       defaultConfig: assets.defaultConfig,
       systemPrompt: assets.systemPrompt,
