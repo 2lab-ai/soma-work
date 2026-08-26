@@ -84,6 +84,28 @@ describe('forceMigrateOpus1m — target and marker name', () => {
   it('uses a dedicated marker file separate from .main-bootstrap.json', () => {
     expect(OPUS_1M_MIGRATION_MARKER).toBe('.opus-1m-migration.json');
   });
+
+  it('has ONE target authority: marker always records the canonical target, matching the transformed data, regardless of what a caller might try to pass (post-merge review finding)', () => {
+    // The transform (`migrateOpusDefaultModel`) always rewrites onto
+    // `OPUS_DEFAULT_MIGRATION_TARGET` — there is no way to parameterize it.
+    // A `target?:` override param on `forceMigrateOpus1m` would therefore let
+    // the MARKER record one target while the DATA is silently rewritten onto
+    // a different one, and a future call with that same override would then
+    // skip forever, believing the (wrong) target was already applied. A
+    // caller cannot reach a different target — even if it tries to smuggle
+    // one in via an object cast, the module must ignore it and use the
+    // canonical constant for both the transform and the marker.
+    const dataDir = path.join(makeTempDir(), 'data');
+    writeSettings(dataDir, { U1: { userId: 'U1', defaultModel: 'claude-opus-4-7' } });
+
+    const smuggled = { dataDir, target: 'gpt-5.6-sol' } as unknown as Parameters<typeof forceMigrateOpus1m>[0];
+    const result = forceMigrateOpus1m(smuggled);
+    expect(result.status).toBe('applied');
+
+    const marker = JSON.parse(fs.readFileSync(path.join(dataDir, OPUS_1M_MIGRATION_MARKER), 'utf8'));
+    expect(marker.target).toBe(OPUS_MIGRATION_TARGET);
+    expect(readSettings(dataDir).U1?.defaultModel).toBe(OPUS_MIGRATION_TARGET);
+  });
 });
 
 describe('forceMigrateOpus1m — first run is Opus-family selective', () => {
