@@ -33,10 +33,21 @@
  *
  * ## Output discipline
  *
- * Raw child output is read at exactly two narrowly named points
- * ({@link readOfflineRoster}, {@link probeLiveDaemon}) and reduced immediately to
- * booleans, counts, and a closed status enum. Nothing carries an account name, a
- * masked key, a config path, or raw stdout.
+ * Raw child output is read at exactly three narrowly named points
+ * ({@link readOfflineRoster}, {@link probeLiveDaemon}, {@link readEndpoint}) and
+ * reduced immediately to booleans, counts, a closed status enum, and one
+ * validated origin. Nothing carries an account name, a masked key, a config
+ * path, or raw stdout.
+ *
+ * {@link readEndpoint} is the strictest of the three and the reason the rule is
+ * stated as "raw, then reduce" rather than "the redacted view is enough":
+ * `llmux env` prints the proxy api key beside the URL when one is configured
+ * (`env.rs:19-21`), that key is an arbitrary operator-chosen string, and
+ * `ANTHROPIC_API_KEY=` is not one of the key/value names the redactor knows
+ * (`packages/common/src/logger.ts:64-70`). So for that one command the
+ * *redacted* `stdout` is credential-bearing too: it is never read, never
+ * quoted in an error, and the raw bytes are consumed once inside
+ * {@link parseLlmuxEnvBaseUrl}, which returns an origin and nothing else.
  *
  * The **redacted** views (`CommandResult.stderr`, the `spawn` line streams) are
  * a different matter: `host.ts` documents them as safe for terminal, log, and
@@ -46,6 +57,7 @@
  */
 
 import type { CommandSpec, ProcessExit, SetupHost } from './host';
+import { LlmuxEndpointError, validateLlmuxBaseUrl } from './llmux-endpoint';
 
 /** Homebrew formula that provides the `llmux` binary. */
 export const LLMUX_FORMULA = '2lab-ai/tap/llmux';
@@ -140,6 +152,25 @@ export interface LlmuxProgress {
  */
 export interface LlmuxReceipt extends LlmuxAccountCounts {
   install: LlmuxInstallDisposition;
+  /**
+   * The endpoint this machine's llmux actually listens on, as an origin
+   * (`http://localhost:13456`).
+   *
+   * Read from `llmux env`. In LOCAL mode that resolves `config.proxy.port`, the
+   * same port `accounts` / `restart` / the daemon itself use (`llmux`
+   * `src/cli/mod.rs:639`, the `remote: false` arm of `resolve_endpoint`) — so it
+   * is the one answer that stays true when 3456 is already owned by another
+   * llmux under the same uid. `llmux env` is *not* unconditionally local:
+   * `env.rs:17` calls the same `resolve_endpoint`, which returns the configured
+   * `remote.host` endpoint when one is set (`mod.rs:633`). somawork never sees
+   * that arm, because a remote-configured llmux is refused at the first command
+   * `onboard` runs — `readOfflineRoster` throws {@link LlmuxRemoteModeError} on
+   * `llmux accounts` (see below), long before `llmux env` is reached. Non-secret
+   * by construction: the parser returns a validated loopback origin and discards
+   * everything else `llmux env` printed, so this field clears `assertSecretFree`
+   * and is safe to persist, log, and write into the profile's `.env`.
+   */
+  baseUrl: string;
   /** A first-time `llmux login` ran because no Claude OAuth account existed. */
   claudeLoginPerformed: boolean;
   /** A first-time `llmux login --codex` ran because no Codex account existed. */
@@ -344,6 +375,8 @@ export interface EnsureLlmuxOptions {
   probeTimeoutMs?: number;
   /** Cap on the offline `llmux accounts` read. Default 30000ms. */
   rosterTimeoutMs?: number;
+  /** Cap on the `llmux env` endpoint read. Default 15000ms. */
+  envTimeoutMs?: number;
 }
 
 type LlmuxTunables = Required<Omit<EnsureLlmuxOptions, 'signal' | 'onProgress'>>;
@@ -356,6 +389,7 @@ const DEFAULTS: LlmuxTunables = {
   restartTimeoutMs: 90_000,
   probeTimeoutMs: 15_000,
   rosterTimeoutMs: 30_000,
+  envTimeoutMs: 15_000,
 };
 
 const TUNABLE_KEYS = Object.keys(DEFAULTS) as Array<keyof LlmuxTunables>;
@@ -726,6 +760,164 @@ function tryParseJson(raw: string): { ok: true; value: unknown } | { ok: false }
 }
 
 // ---------------------------------------------------------------------------
+// Endpoint (raw-output boundary #3)
+// ---------------------------------------------------------------------------
+
+/**
+ * One `export NAME=value` line, whole.
+ *
+ * `\S*` for the value, not `.*`: `llmux env` is meant for `eval "$(llmux env)"`
+ * and prints an unquoted value (`env.rs:18`), so a value containing whitespace
+ * is not a value this contract can produce. Refusing the line is the right
+ * answer — accepting the prefix would silently truncate whatever produced it.
+ */
+const ENV_EXPORT_LINE = /^export ([A-Z][A-Z0-9_]*)=(\S*)$/;
+
+/**
+ * Characters that mean something to a shell.
+ *
+ * Redundant with {@link validateLlmuxBaseUrl} — `'…'`, `` `id` `` and
+ * `$(id)` are all rejected by `new URL` or by the path/port checks — and kept
+ * anyway because the hazard is worth naming at the boundary that reads a
+ * child's bytes: this output is designed to be `eval`'d, and the refusal
+ * should read as "somawork does not eval this" rather than depend on a URL
+ * parser incidentally saying no.
+ */
+const SHELL_METACHARACTERS = /['"`\\$;&|<>()]/;
+
+/** Variables `llmux env` is allowed to export (`env.rs:18-21`). */
+const ENV_BASE_URL_NAME = 'ANTHROPIC_BASE_URL';
+const ENV_API_KEY_NAME = 'ANTHROPIC_API_KEY';
+
+/**
+ * Reduce `llmux env` output to the one thing somawork is allowed to keep.
+ *
+ * `raw` is consumed here and nowhere else, and nothing derived from it leaves
+ * this function except a validated loopback origin — in particular the
+ * `ANTHROPIC_API_KEY` line is counted (so a duplicate is still a contract
+ * failure) and never read. `llmux env` deliberately prints that key for
+ * off-host clients (`env.rs:9-12`); somawork is on-host and writes the
+ * throwaway `llmux-local` placeholder instead, so retaining the real one would
+ * be storing a credential it has no use for.
+ *
+ * Everything is refused that is not exactly the documented two-line shape:
+ * a missing URL, a duplicate of either line, an unexpected variable, a line
+ * that is not an `export`, a quoted or command-substituted value, and any
+ * endpoint {@link validateLlmuxBaseUrl} will not accept (remote host, https,
+ * userinfo, path, query, fragment, bad port). A "close enough" read here would
+ * point the materialized profile — and therefore the running service — at an
+ * endpoint llmux is not serving, or at one it is not the only thing serving.
+ *
+ * No message quotes the offending bytes: the line that failed is exactly the
+ * line most likely to be carrying the key.
+ */
+export function parseLlmuxEnvBaseUrl(raw: string): string {
+  const lines = raw
+    .split('\n')
+    .map((line) => line.replace(/\r+$/, ''))
+    .filter((line) => line.trim().length > 0);
+
+  let baseUrl: string | null = null;
+  let sawApiKey = false;
+
+  for (const [index, line] of lines.entries()) {
+    const match = ENV_EXPORT_LINE.exec(line);
+    if (match === null) {
+      // Line number only, exactly as the roster parser: the line itself is the
+      // thing that may hold a credential.
+      throw new LlmuxContractError(
+        `\`llmux env\` line ${index + 1} is not a plain \`export NAME=value\` line; llmux's env output contract changed.`,
+      );
+    }
+    const [, name, value] = match;
+    if (name === ENV_BASE_URL_NAME) {
+      if (baseUrl !== null) {
+        throw new LlmuxContractError(`\`llmux env\` exported ${ENV_BASE_URL_NAME} more than once; refusing to guess.`);
+      }
+      if (SHELL_METACHARACTERS.test(value)) {
+        throw new LlmuxContractError(
+          `\`llmux env\` exported a ${ENV_BASE_URL_NAME} the shell would have to expand; somawork does not evaluate llmux's output.`,
+        );
+      }
+      baseUrl = value;
+    } else if (name === ENV_API_KEY_NAME) {
+      if (sawApiKey) {
+        throw new LlmuxContractError(`\`llmux env\` exported ${ENV_API_KEY_NAME} more than once; refusing to guess.`);
+      }
+      // Counted, never read: see above.
+      sawApiKey = true;
+    } else {
+      // The variable NAME is withheld too. It is `[A-Z_]`-shaped and so cannot
+      // carry a URL or a token body, but this module's rule is that no text
+      // derived from child output leaves it, and a one-off exception is how
+      // that rule stops being checkable.
+      throw new LlmuxContractError(
+        `\`llmux env\` line ${index + 1} exported a variable somawork does not expect; llmux's env output contract changed.`,
+      );
+    }
+  }
+
+  if (baseUrl === null) {
+    throw new LlmuxContractError(
+      `\`llmux env\` did not print ${ENV_BASE_URL_NAME}; somawork cannot tell which endpoint this machine's llmux is serving.`,
+    );
+  }
+
+  try {
+    return validateLlmuxBaseUrl(baseUrl);
+  } catch (error) {
+    if (error instanceof LlmuxEndpointError) {
+      throw new LlmuxContractError(
+        `\`llmux env\` named an endpoint that is not a plain local http address; somawork v1 onboards the LOCAL daemon.`,
+      );
+    }
+    throw error;
+  }
+}
+
+/**
+ * Ask llmux where it listens.
+ *
+ * Runs on the success path only — after the daemon has been restarted and
+ * proven healthy — for two reasons that point the same way. The endpoint is
+ * only meaningful once there is a daemon behind it, and this is the single
+ * command in the flow that prints a live credential, so no failure path spends
+ * one on it.
+ *
+ * `unsafeRawStdout()` is called exactly once, inside the parser, and the
+ * redacted `stdout` is never touched: for this command it is not a safe view
+ * (module header). Failures quote `stderr` only, which carries llmux's own
+ * `CliError` text and never the key `println!`d to stdout.
+ */
+async function readEndpoint(host: SetupHost, bin: string, policy: Policy): Promise<string> {
+  const result = await run(
+    host,
+    { command: bin, args: ['env'], timeoutMs: policy.envTimeoutMs },
+    policy,
+    '`llmux env`',
+  );
+
+  if (result.timedOut) {
+    throw new LlmuxCommandError(
+      `\`llmux env\` did not return within ${policy.envTimeoutMs}ms and was terminated; somawork could not learn which endpoint llmux is serving.`,
+      'env',
+      null,
+      boundedDetail(result.stderr),
+    );
+  }
+  if (!result.ok) {
+    throw new LlmuxCommandError(
+      `\`llmux env\` failed (exit ${String(result.code)}); somawork could not learn which endpoint llmux is serving.`,
+      'env',
+      result.code,
+      boundedDetail(result.stderr),
+    );
+  }
+
+  return parseLlmuxEnvBaseUrl(result.unsafeRawStdout());
+}
+
+// ---------------------------------------------------------------------------
 // Command helpers
 // ---------------------------------------------------------------------------
 
@@ -1024,7 +1216,25 @@ function unhealthyError(
  *   unknown status        → LlmuxContractError
  *   llmux restart             RESTART #2 (only if something was re-logged in)
  *   llmux accounts --json     probe + bounded poll again
+ *   llmux env                 SUCCESS PATH ONLY — the endpoint llmux serves
+ *                             · reduced to one loopback origin at the parser
+ *                             · the api key line it may print is discarded
  * ```
+ *
+ * The endpoint is read last, and it is read from llmux rather than assumed: in
+ * LOCAL mode llmux resolves `config.proxy.port` for `accounts`, `restart`, the
+ * daemon and `env` alike (`llmux` `src/cli/mod.rs:639`), so a machine whose 3456
+ * is already taken by another llmux under the same uid answers with its real
+ * port. Assuming 3456 pointed the materialized profile at the other daemon.
+ *
+ * LOCAL mode is the only mode this pipeline can be in by the time `llmux env`
+ * runs. `env` shares `resolve_endpoint` with every other subcommand
+ * (`env.rs:17`), and that function prefers a configured `remote.host`
+ * (`mod.rs:633`) — but a remote-configured llmux never gets this far: step one,
+ * `llmux accounts`, answers with a live JSON document instead of a roster and
+ * {@link LlmuxRemoteModeError} ends the run before any login, restart, or read.
+ * The parser's loopback gate is a second, independent backstop rather than the
+ * thing that makes the claim true, so no runtime branch is needed here.
  */
 export async function ensureLlmux(host: SetupHost, options: EnsureLlmuxOptions = {}): Promise<LlmuxReceipt> {
   const policy = resolvePolicy(options);
@@ -1083,8 +1293,11 @@ async function onboard(host: SetupHost, policy: Policy, progress: MutableProgres
     throw unhealthyError(summary, conditions, blocked, groupsWith(conditions, ['cooldown']));
   }
 
+  const baseUrl = await readEndpoint(host, bin, policy);
+
   return {
     install,
+    baseUrl,
     claudeLoginPerformed,
     codexLoginPerformed,
     claudeReloginPerformed,

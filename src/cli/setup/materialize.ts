@@ -62,6 +62,7 @@ import dotenv from 'dotenv';
 import * as fs from 'fs';
 import * as path from 'path';
 import { isProfileName, type ProfileName, type ProfilePaths, type RuntimeInstall } from '../profile';
+import { LlmuxEndpointError, validateLlmuxBaseUrl } from './llmux-endpoint';
 import { assertSecretFree, SecretInStateError } from './state';
 
 /** Mode for every file this module writes. */
@@ -76,8 +77,6 @@ export const RUNTIME_PROMPT_FILENAME = '.system.prompt';
 /** Directory `env-paths` binds to `DATA_DIR` when `SOMA_CONFIG_DIR` is set. */
 export const RUNTIME_DATA_DIRNAME = 'data';
 
-/** llmux proxy contract — `AUTH_MODE=llmux` + loopback base URL (`src/config.ts`). */
-const LLMUX_BASE_URL = 'http://localhost:3456';
 /**
  * Throwaway upstream key. llmux owns real provider auth and ignores the value
  * (`src/config.ts` documents it as such), so this is a constant, not a secret:
@@ -112,6 +111,19 @@ export interface MaterializeProfileInput {
   runtime: RuntimeInstall;
   /** Absolute workspace root; per-user directories are created beneath it. */
   baseDirectory: string;
+  /**
+   * The endpoint the local llmux daemon actually serves, from `ensureLlmux`'s
+   * receipt (which reads `llmux env`).
+   *
+   * Required, and deliberately without a default. A default here would be a
+   * second opinion about a fact only llmux holds: the same uid can already have
+   * an llmux on 3456, in which case this machine's daemon is on another port
+   * and a fallback would materialize a profile — and start a service — pointed
+   * at somebody else's proxy. A caller that cannot say must not materialize.
+   * Validated on the same terms as a file-supplied value; being passed in code
+   * is not evidence of being safe.
+   */
+  llmuxBaseUrl: string;
   /** Non-secret Slack identifiers recorded in the receipt (never in `.env`). */
   slack: { appId: string; teamId: string };
   /** Packaged canonical `config.json` defaults. */
@@ -259,6 +271,37 @@ function envValueRoundTrips(key: string, value: string): boolean {
   }
 }
 
+/**
+ * Accept only a plain loopback llmux endpoint, and return the validated origin.
+ *
+ * The same gate `somawork doctor` applies when it reads this line back, shared
+ * through a leaf module so the writer and the reader cannot drift. Writing an
+ * unvalidated value here would be the more dangerous half of that pair: doctor
+ * refuses a bad endpoint on one run, while a bad line in `.env` is what the
+ * long-lived service dials on every request.
+ *
+ * The rejected value is not named. It reached this module from a child process
+ * (`llmux env`) by way of a receipt, and the refusal may be printed or
+ * persisted by a caller.
+ */
+function requireLlmuxBaseUrl(candidate: unknown): string {
+  if (typeof candidate !== 'string' || candidate.trim().length === 0) {
+    throw new MaterializeProfileError(
+      'The local llmux endpoint is required; setup reads it from `llmux env` rather than assuming a port.',
+    );
+  }
+  try {
+    return validateLlmuxBaseUrl(candidate.trim());
+  } catch (err) {
+    if (err instanceof LlmuxEndpointError) {
+      throw new MaterializeProfileError(
+        'The llmux endpoint is not a plain local http address; setup will not point a profile at it.',
+      );
+    }
+    throw err;
+  }
+}
+
 function readAsset(asset: PackagedAsset | undefined, label: string): string {
   if (asset === null || typeof asset !== 'object') {
     throw new MaterializeProfileError(`${label} was not supplied.`);
@@ -299,7 +342,12 @@ function readAsset(asset: PackagedAsset | undefined, label: string): string {
  * | `SOMA_BASE_DIRECTORY` | `packages/slack` message-validator / directory-formatter   |
  *
  * The first three are legacy non-`SOMA_` names and are migration debt: they are
- * what the shipped runtime reads today, so setup must emit them. New readers
+ * what the shipped runtime reads today, so setup must emit them.
+ *
+ * `ANTHROPIC_BASE_URL` is an *input* ({@link MaterializeProfileInput.llmuxBaseUrl}),
+ * not a constant this module owns: the port llmux serves is llmux's fact, and
+ * hardcoding it wrote a profile that pointed at whichever daemon happened to
+ * hold 3456. New readers
  * must use `SOMA_`-prefixed names (plan global constraints).
  *
  * `DATA_DIR` is deliberately absent even though two modules read it
@@ -315,10 +363,10 @@ function readAsset(asset: PackagedAsset | undefined, label: string): string {
  * it belongs in the service environment (Task 9), not inside the file it points
  * at. The Slack credentials are absent for the reason in {@link ProfileReceipt}.
  */
-function buildRuntimeEnv(baseDirectory: string): string {
+function buildRuntimeEnv(baseDirectory: string, llmuxBaseUrl: string): string {
   const entries: Array<[string, string]> = [
     ['AUTH_MODE', 'llmux'],
-    ['ANTHROPIC_BASE_URL', LLMUX_BASE_URL],
+    ['ANTHROPIC_BASE_URL', llmuxBaseUrl],
     ['ANTHROPIC_API_KEY', LLMUX_PLACEHOLDER_API_KEY],
     ['BASE_DIRECTORY', baseDirectory],
     ['SOMA_BASE_DIRECTORY', baseDirectory],
@@ -464,9 +512,11 @@ export function materializeProfile(input: MaterializeProfileInput): ProfileRecei
     throw err;
   }
 
+  const llmuxBaseUrl = requireLlmuxBaseUrl(input.llmuxBaseUrl);
+
   // Bodies first: every failure mode above and below this line happens before
   // a single byte is written.
-  const envBody = buildRuntimeEnv(baseDirectory);
+  const envBody = buildRuntimeEnv(baseDirectory, llmuxBaseUrl);
   const configBody = parseDefaultConfig(readAsset(input.defaultConfig, 'The packaged default config'));
   const promptBody = normalizeSystemPrompt(readAsset(input.systemPrompt, 'The packaged system prompt'));
 

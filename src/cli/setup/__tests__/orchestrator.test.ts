@@ -89,8 +89,15 @@ function liveStatus(profile: ProfileName): ServiceStatus {
   };
 }
 
+/**
+ * A receipt whose endpoint is deliberately NOT llmux's default port: a
+ * materializer that hardcodes 3456 passes with the default and fails here.
+ */
+const LLMUX_ENDPOINT = 'http://localhost:13456';
+
 function llmuxReceipt(): LlmuxReceipt {
   return {
+    baseUrl: LLMUX_ENDPOINT,
     install: 'already-installed',
     claudeLoginPerformed: false,
     codexLoginPerformed: false,
@@ -491,6 +498,17 @@ describe('runSetup — fresh success', () => {
     await runSetup(h.deps);
     expect(seen).toEqual(['/Volumes/work']);
     expect(h.workspace.created).toEqual([]);
+  });
+
+  it('hands the materializer the endpoint `ensureLlmux` reported, not a default', async () => {
+    const h = harness();
+    const seen: string[] = [];
+    (h.deps as SetupDeps).materializeProfile = (input) => {
+      seen.push(input.llmuxBaseUrl);
+      return { ...profileReceipt(input.profile), baseDirectory: input.baseDirectory };
+    };
+    await runSetup(h.deps);
+    expect(seen).toEqual([LLMUX_ENDPOINT]);
   });
 
   it('gates service installation behind an all-green doctor', async () => {
