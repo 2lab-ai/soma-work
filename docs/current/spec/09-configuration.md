@@ -17,9 +17,14 @@
 |----------|-------------|---------|
 | `SLACK_BOT_TOKEN` | Slack Bot OAuth Token | `xoxb-123456789-...` |
 | `SLACK_APP_TOKEN` | Slack App-level Token (Socket Mode) | `xapp-1-...` |
-| `SLACK_SIGNING_SECRET` | Slack 요청 서명 검증용 | `abc123def456...` |
 
 ### 2.2 Optional Variables
+
+#### Slack
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `SLACK_SIGNING_SECRET` | Slack 요청 서명 검증용 — **HTTP 리시버 전용**. Socket Mode는 서명을 주고받지 않으므로 미설정이 정상. 설정한다면 20자 이상이어야 하며, 짧으면 부팅 실패 | - (미설정) |
 
 #### Claude Code
 
@@ -94,7 +99,8 @@ export const config = {
   slack: {
     botToken: string,
     appToken: string,
-    signingSecret: string,
+    // HTTP 리시버 전용. Socket Mode는 서명 검증을 하지 않으므로 미설정이 정상.
+    signingSecret: string | undefined,
   },
   claude: {
     useBedrock: boolean,
@@ -122,7 +128,8 @@ export const config = {
   slack: {
     botToken: process.env.SLACK_BOT_TOKEN || '',
     appToken: process.env.SLACK_APP_TOKEN || '',
-    signingSecret: process.env.SLACK_SIGNING_SECRET || '',
+    // 미설정/공백 → undefined (Socket Mode는 서명 검증 없음)
+    signingSecret: normalizeSigningSecret(process.env.SLACK_SIGNING_SECRET),
   },
   claude: {
     useBedrock: process.env.CLAUDE_CODE_USE_BEDROCK === '1',
@@ -424,7 +431,7 @@ macOS 서비스 설정 (현행: `/Library/LaunchDaemons/ai.2lab.soma-work.{main,
 # Required - Slack Configuration
 SLACK_BOT_TOKEN=xoxb-your-bot-token
 SLACK_APP_TOKEN=xapp-your-app-token
-SLACK_SIGNING_SECRET=your-signing-secret
+# SLACK_SIGNING_SECRET=...  # optional — HTTP 리시버 전용, Socket Mode는 불필요
 
 # Optional - Claude Code
 # ANTHROPIC_API_KEY=your-api-key
@@ -458,16 +465,20 @@ DEBUG=true
 
 ```typescript
 function validateConfig() {
-  const required = [
-    'SLACK_BOT_TOKEN',
-    'SLACK_APP_TOKEN',
-    'SLACK_SIGNING_SECRET'
-  ];
+  // SLACK_SIGNING_SECRET은 여기 없다 — HTTP 서명 검증 전용이고
+  // 이 런타임은 Socket Mode다.
+  const required = ['SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN'];
 
   for (const key of required) {
     if (!process.env[key]) {
       throw new Error(`Missing required environment variable: ${key}`);
     }
+  }
+
+  // 설정된 경우에만 검증한다 (길이만 보고하고 값은 절대 로그에 남기지 않는다).
+  const signingSecret = normalizeSigningSecret(process.env.SLACK_SIGNING_SECRET);
+  if (signingSecret !== undefined && signingSecret.length < SIGNING_SECRET_MIN_LENGTH) {
+    throw new Error(`SLACK_SIGNING_SECRET is too short (${signingSecret.length} chars; minimum 20)`);
   }
 }
 ```
