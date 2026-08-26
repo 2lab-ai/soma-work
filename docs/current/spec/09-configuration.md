@@ -17,9 +17,14 @@
 |----------|-------------|---------|
 | `SLACK_BOT_TOKEN` | Slack Bot OAuth Token | `xoxb-123456789-...` |
 | `SLACK_APP_TOKEN` | Slack App-level Token (Socket Mode) | `xapp-1-...` |
-| `SLACK_SIGNING_SECRET` | Slack 요청 서명 검증용 | `abc123def456...` |
 
 ### 2.2 Optional Variables
+
+#### Slack
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `SLACK_SIGNING_SECRET` | Slack 요청 서명 검증용 — **HTTP 리시버 전용**. Socket Mode는 서명을 주고받지 않으므로 미설정이 정상. 설정한다면 20자 이상이어야 하며, 짧으면 부팅 실패 | - (미설정) |
 
 #### Claude Code
 
@@ -38,7 +43,7 @@
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `AUTH_MODE` | `ccp` \| `llmux` | `ccp` |
-| `ANTHROPIC_BASE_URL` | llmux 프록시 URL (`llmux` 모드에서만 사용) | `http://localhost:3456` |
+| `ANTHROPIC_BASE_URL` | llmux 프록시 URL (`llmux` 모드에서만 사용) | `http://localhost:3456` (llmux의 기본 포트일 뿐, 고정 계약이 아님) |
 | `ANTHROPIC_API_KEY` | llmux로 전달되는 throwaway 키 (값 무관) | `llmux-local` |
 
 - **`ccp` (기본값)**: Claude Code Pro/Max OAuth — CCT slot lease (`CLAUDE_CODE_OAUTH_TOKEN`). 멀티 계정 로테이션, usage 추적, `/z cct` 카드가 모두 동작. 직접 API 키는 기존 cct 토큰 스토어로 관리.
@@ -51,6 +56,8 @@ AUTH_MODE=llmux
 ANTHROPIC_BASE_URL=http://localhost:3456
 ANTHROPIC_API_KEY=anything
 ```
+
+`somawork setup`이 프로필을 materialize할 때는 이 포트를 가정하지 않고 `llmux env`가 알려주는 실제 엔드포인트(로컬 모드에서 `http://localhost:<proxy.port>`; remote가 설정된 llmux는 setup 첫 단계인 `llmux accounts`에서 거부되므로 `env` 시점엔 로컬 모드뿐입니다)를 씁니다 — 같은 uid에 이미 3456을 쓰는 llmux가 있으면 이 머신의 데몬은 다른 포트에 있습니다. `somawork doctor`는 프로필의 `.env`에 적힌 그 값을 되읽어 프로브하며, loopback http origin이 아니면 거부합니다. `.env`가 없거나 `ANTHROPIC_BASE_URL`이 비어 있으면 doctor는 3456을 가정하지 않고 llmux 체크만 로컬 설정 실패로 떨어뜨립니다 (나머지 체크는 계속 실행) — 설정된 적 없는 프로필에 대해 데몬 판정을 내리지 않기 위해서입니다.
 
 #### Working Directory
 
@@ -94,7 +101,8 @@ export const config = {
   slack: {
     botToken: string,
     appToken: string,
-    signingSecret: string,
+    // HTTP 리시버 전용. Socket Mode는 서명 검증을 하지 않으므로 미설정이 정상.
+    signingSecret: string | undefined,
   },
   claude: {
     useBedrock: boolean,
@@ -122,7 +130,8 @@ export const config = {
   slack: {
     botToken: process.env.SLACK_BOT_TOKEN || '',
     appToken: process.env.SLACK_APP_TOKEN || '',
-    signingSecret: process.env.SLACK_SIGNING_SECRET || '',
+    // 미설정/공백 → undefined (Socket Mode는 서명 검증 없음)
+    signingSecret: normalizeSigningSecret(process.env.SLACK_SIGNING_SECRET),
   },
   claude: {
     useBedrock: process.env.CLAUDE_CODE_USE_BEDROCK === '1',
@@ -424,7 +433,7 @@ macOS 서비스 설정 (현행: `/Library/LaunchDaemons/ai.2lab.soma-work.{main,
 # Required - Slack Configuration
 SLACK_BOT_TOKEN=xoxb-your-bot-token
 SLACK_APP_TOKEN=xapp-your-app-token
-SLACK_SIGNING_SECRET=your-signing-secret
+# SLACK_SIGNING_SECRET=...  # optional — HTTP 리시버 전용, Socket Mode는 불필요
 
 # Optional - Claude Code
 # ANTHROPIC_API_KEY=your-api-key
@@ -458,16 +467,20 @@ DEBUG=true
 
 ```typescript
 function validateConfig() {
-  const required = [
-    'SLACK_BOT_TOKEN',
-    'SLACK_APP_TOKEN',
-    'SLACK_SIGNING_SECRET'
-  ];
+  // SLACK_SIGNING_SECRET은 여기 없다 — HTTP 서명 검증 전용이고
+  // 이 런타임은 Socket Mode다.
+  const required = ['SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN'];
 
   for (const key of required) {
     if (!process.env[key]) {
       throw new Error(`Missing required environment variable: ${key}`);
     }
+  }
+
+  // 설정된 경우에만 검증한다 (길이만 보고하고 값은 절대 로그에 남기지 않는다).
+  const signingSecret = normalizeSigningSecret(process.env.SLACK_SIGNING_SECRET);
+  if (signingSecret !== undefined && signingSecret.length < SIGNING_SECRET_MIN_LENGTH) {
+    throw new Error(`SLACK_SIGNING_SECRET is too short (${signingSecret.length} chars; minimum 20)`);
   }
 }
 ```

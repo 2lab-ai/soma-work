@@ -25,6 +25,40 @@ soma-work (Slack multi-tenant AI Assistant) 아키텍처 문서. 2026-06-10 기�
 | Metrics Schedulers | 토큰/비용 텔레메트리 집계·리포트 | `src/metrics/` |
 | Socket Watchdog | Socket Mode 헬스 모니터 | `src/slack-socket-watchdog.ts` |
 
+## Controller Process (`somawork`)
+
+데몬과 **별개의 프로세스**가 하나 더 있다. `dist/cli/index.js`(소스 `src/cli/`)는 설치된 런타임을
+운영하는 컨트롤러이고, Slack 이벤트를 처리하지 않는다. 데몬이 "돌면서 일하는 쪽"이라면 컨트롤러는
+"세팅하고 들여다보는 쪽"이다.
+
+| 축 | 데몬 (`src/index.ts`) | 컨트롤러 (`src/cli/`) |
+|---|---|---|
+| 수명 | launchd가 유지하는 장기 프로세스 | 커맨드 하나당 한 번 |
+| 입력 | Slack Socket Mode 이벤트 | argv |
+| 상태 | 프로파일 config·data·session archive | 없음 (읽기 + materialize 후 종료) |
+| 부수효과 | Slack·Claude·MCP·파일시스템 | 주입된 seam 경유 (`src/cli/production-seams.ts`가 유일한 실제 배선) |
+
+컨트롤러의 온보딩 state machine은 `src/cli/setup/orchestrator.ts`에 있고, 단계마다 어댑터를
+호출한다: llmux 기동 → Slack CLI 인가 → Slack 앱 생성/설치 + 훅으로 런타임 토큰 수집 →
+`materialize.ts`가 프로파일 트리 작성(0700 디렉터리 / 0600 파일) → `doctor.ts` 게이트 →
+`service.ts`가 launchd user agent 설치. 마커를 신뢰해 단계를 건너뛰지 않는다 — 매 실행마다
+어댑터가 실제 상태를 다시 검증하고, 단계 N을 완료하면 그 뒤의 마커는 모두 잘라낸다.
+
+프로파일은 `preview` / `production` 둘뿐이고 경로·서비스 레이블이 겹치지 않는다
+(`src/cli/profile.ts`가 SSOT). 자격증명은 `<configDir>/secrets.env`(0600)에만 있고,
+`.env`·argv·stdout·setup state 어디에도 들어가지 않는다.
+
+## Runtime Bundle
+
+`scripts/deploy/stage-bundle.sh`가 만드는 불변 트리를 두 소비자가 공유한다: 레거시 플릿 배포
+(rsync 후 노드에서 `npm ci --omit=dev`)와 패키지 설치(런타임 루트). 런타임 루트 기준 고정 경로는
+`dist/cli/index.js`(실행 비트) · `dist/run-with-rotating-logs.js` · `dist/index.js` ·
+`config.default.json` · `.system.prompt.example` · `infra/slack/slack-app-manifest.json`.
+
+계약의 실행 가능한 진술은 `scripts/smoke/setup-package.js`다 — staged 트리를 외부 소비자처럼
+구동하고, 하드링크 사본에서 asset을 하나씩 제거해 실패를 확인한다. `scripts/smoke/deploy-bundle.js`는
+배포/워크스페이스 패키지 쪽 계약을 계속 소유한다.
+
 ## Core Request Flow
 
 ```
@@ -96,11 +130,14 @@ src/                  # 메인 앱 (~130k LOC)
 packages/
   common/             # 공유 상수·헬퍼
   process-shared/     # MCP 클라이언트, config 캐시
-  mcp-servers/        # 내장 MCP 서버 8종
+  mcp-servers/        # 내장 MCP 서버 (목록은 디렉터리가 SSOT)
   test-utils/         # 모킹 유틸
 somalib/              # soma 계열 공유 라이브러리 (model-commands, permission, cron)
 services/a2t/         # 음성 전사 Python worker
 infra/                # docker, slack manifest, claude harness 설정
+scripts/deploy/       # stage-bundle.sh · sync-bundle.sh · install-target.sh
+scripts/smoke/        # deploy-bundle.js · setup-package.js
+scripts/setup/        # DEPRECATED 셸 수집기 — 도달 불가, 번들 제외, 삭제 대기
 ```
 
 ## External Integrations
@@ -116,4 +153,5 @@ Slack(Bolt 4.x, Socket Mode) · Anthropic Claude Agent SDK · GitHub(App OAuth +
 
 ## History
 
+- 2026-08-25: 컨트롤러 프로세스(`somawork`)와 런타임 번들 계약 추가. 데몬 아키텍처는 변경 없음.
 - 2026-06-10: 전면 재작성 (multi-agent, CCT v2, sandbox, metrics, notification-channels, a2t 반영). 이전 버전은 git history 참조.

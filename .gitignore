@@ -100,3 +100,10 @@ __pycache__/
 .beads/*.lock
 .sandbox-write-probe
 .worktrees/
+
+# Local python virtualenvs for the a2t worker. Scoped to services/ rather than
+# repo-wide: `stage-bundle.sh` copies that tree verbatim and prunes these, and
+# an unignored local venv is otherwise untracked state a `git status` has to
+# step around. Bytecode is covered by the __pycache__/*.pyc rules above.
+services/**/.venv/
+services/**/venv/

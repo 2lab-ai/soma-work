@@ -1,5 +1,6 @@
 import { WebClient } from '@slack/web-api';
 import { Logger } from './logger';
+import { normalizeSigningSecret, SIGNING_SECRET_MIN_LENGTH } from './slack-signing-secret';
 
 // Logger for preflight checks and config validation
 const logger = new Logger('Config');
@@ -139,7 +140,14 @@ export const config = {
   slack: {
     botToken: process.env.SLACK_BOT_TOKEN!,
     appToken: process.env.SLACK_APP_TOKEN!,
-    signingSecret: process.env.SLACK_SIGNING_SECRET!,
+    /**
+     * OPTIONAL. Only an HTTP receiver needs this — it verifies the
+     * `X-Slack-Signature` header on requests Slack POSTs to a public URL.
+     * This runtime speaks Socket Mode (outbound wss keyed by `SLACK_APP_TOKEN`),
+     * where no signature is exchanged, so `undefined` is a valid steady state.
+     * Blank / whitespace-only env values normalize to `undefined`.
+     */
+    signingSecret: normalizeSigningSecret(process.env.SLACK_SIGNING_SECRET),
   },
   claude: {
     useBedrock: process.env.CLAUDE_CODE_USE_BEDROCK === '1',
@@ -336,12 +344,27 @@ export const config = {
 };
 
 export function validateConfig() {
-  const required = ['SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN', 'SLACK_SIGNING_SECRET'];
+  // `SLACK_SIGNING_SECRET` is deliberately NOT here: it only verifies the
+  // `X-Slack-Signature` header on HTTP delivery, and this runtime is Socket
+  // Mode (outbound wss authenticated by SLACK_APP_TOKEN).
+  const required = ['SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN'];
 
   const missing = required.filter((key) => !process.env[key]);
 
   if (missing.length > 0) {
     throw new Error(`Missing required environment variables: ${missing.join(', ')}`);
+  }
+
+  // A secret that IS configured must look real — a truncated paste would
+  // silently disable verification on any future HTTP receiver. Report the
+  // length only; never echo the value.
+  const signingSecret = normalizeSigningSecret(process.env.SLACK_SIGNING_SECRET);
+  if (signingSecret !== undefined && signingSecret.length < SIGNING_SECRET_MIN_LENGTH) {
+    throw new Error(
+      `SLACK_SIGNING_SECRET is too short (${signingSecret.length} chars; ` +
+        `minimum ${SIGNING_SECRET_MIN_LENGTH}). It is only needed for HTTP signature ` +
+        'verification — unset it entirely to run Socket Mode without one.',
+    );
   }
 
   // Auth is handled exclusively via Agent SDK. The backend depends on AUTH_MODE.
@@ -453,7 +476,7 @@ export async function runPreflightChecks(): Promise<PreflightResult> {
   // ===== 1. Slack Token Format Validation =====
   const slackBotToken = process.env.SLACK_BOT_TOKEN || '';
   const slackAppToken = process.env.SLACK_APP_TOKEN || '';
-  const slackSigningSecret = process.env.SLACK_SIGNING_SECRET || '';
+  const slackSigningSecret = normalizeSigningSecret(process.env.SLACK_SIGNING_SECRET);
 
   // Bot token format
   if (!slackBotToken) {
@@ -477,11 +500,19 @@ export async function runPreflightChecks(): Promise<PreflightResult> {
     logger.info('SLACK_APP_TOKEN: Format OK (xapp-...)');
   }
 
-  // Signing secret
-  if (!slackSigningSecret) {
-    errors.push('❌ SLACK_SIGNING_SECRET: Missing');
-  } else if (slackSigningSecret.length < 20) {
-    warnings.push(`⚠️ SLACK_SIGNING_SECRET: Unusually short (${slackSigningSecret.length} chars)`);
+  // Signing secret — OPTIONAL under Socket Mode. It verifies the
+  // `X-Slack-Signature` header on HTTP delivery only, so its absence is a
+  // valid configuration and produces neither an error nor a warning. A secret
+  // that IS provided must be plausible: a truncated paste is an operator error
+  // and hard-fails (never a warning) so it is fixed rather than tolerated.
+  if (slackSigningSecret === undefined) {
+    logger.info('SLACK_SIGNING_SECRET: Not set (not required for Socket Mode)');
+  } else if (slackSigningSecret.length < SIGNING_SECRET_MIN_LENGTH) {
+    errors.push(
+      `❌ SLACK_SIGNING_SECRET: Too short (${slackSigningSecret.length} chars; ` +
+        `minimum ${SIGNING_SECRET_MIN_LENGTH})`,
+    );
+    errors.push('   → Only HTTP signature verification uses it; unset it entirely for Socket Mode.');
   } else {
     logger.info('SLACK_SIGNING_SECRET: Present');
   }

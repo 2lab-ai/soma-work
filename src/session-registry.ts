@@ -180,6 +180,13 @@ interface SerializedSession {
    * from pre-#697 disk state is handled defensively by `checkAndConsumeBudget`.
    */
   autoHandoffBudget?: number;
+  /**
+   * Session-scoped `/autocompact` token override. Persisted VERBATIM: the
+   * safe-max clamp is a read-time decision of `resolveEffectiveAutoCompact`,
+   * so a threshold that is temporarily too large for the current model still
+   * round-trips unchanged.
+   */
+  autoCompactTokens?: number | null;
 }
 
 /**
@@ -1780,12 +1787,17 @@ export class SessionRegistry {
         // sessionId) and the first model turn after a forced handoff entrypoint,
         // where the typed metadata must survive a crash/restart so downstream
         // guards (#696/#697/#698) can consume it.
+        // The `autoCompactTokens` branch is the same shape of exception as
+        // `goal`: the user set it EXPLICITLY, possibly before the first SDK
+        // turn produced a sessionId, so dropping it here would silently
+        // discard a direct instruction.
         if (
           session.sessionId ||
           session.handoffContext ||
           session.goal ||
           session.goalQueue?.length ||
-          session.goalHistory?.length
+          session.goalHistory?.length ||
+          session.autoCompactTokens != null
         ) {
           this.ensureSessionLinkState(session);
           sessionsArray.push({
@@ -1870,6 +1882,8 @@ export class SessionRegistry {
             handoffContext: session.handoffContext,
             // Host-enforced auto-handoff budget (issue #697)
             autoHandoffBudget: session.autoHandoffBudget,
+            // Session-scoped `/autocompact` token override (persisted verbatim).
+            autoCompactTokens: session.autoCompactTokens,
           });
         }
       }
@@ -2082,6 +2096,10 @@ export class SessionRegistry {
           // backfill is deferred to `checkAndConsumeBudget` so pre-#697 disk
           // state loads as `undefined` and is handled by the guard.
           autoHandoffBudget: serialized.autoHandoffBudget,
+          // Session-scoped `/autocompact` override — restored verbatim. Unlike
+          // the pending/compaction state below this is USER intent, not
+          // in-flight machinery, so it survives the restart.
+          autoCompactTokens: serialized.autoCompactTokens ?? null,
           // Compaction Tracking (#617): runtime-only dedupe state — always reset on reload.
           // Pending state (autoCompactPending / pendingUserText / pendingEventContext) is
           // intentionally NOT rehydrated because the original event context cannot be

@@ -84,29 +84,45 @@ export interface SubstituteResult<T> {
 }
 
 /**
+ * Optional seam for callers that must resolve placeholders against an
+ * explicitly supplied environment instead of the ambient one.
+ *
+ * `somawork doctor` inspects a *profile's* `.env` + `secrets.env` while the
+ * controller process has its own unrelated environment; loading those files
+ * into `process.env` to make substitution work would mutate global state (and
+ * leak the profile's credentials into the controller). Passing the map in
+ * keeps the same parser and the same grammar with no global write.
+ */
+export interface SubstituteEnvOptions {
+  /** Variable source. Defaults to `process.env` when omitted. */
+  env?: NodeJS.ProcessEnv;
+}
+
+/**
  * Recursively substitute `${VAR}` placeholders in every string leaf of a
  * JSON-shaped value. Returns a new structure; the input is never mutated.
  *
  * Throws when a placeholder uses `${VAR:?msg}` and `VAR` is unset/empty —
  * this is the operator's "fail-fast" opt-in for required secrets.
  */
-export function substituteEnvVars<T>(input: T): SubstituteResult<T> {
+export function substituteEnvVars<T>(input: T, opts: SubstituteEnvOptions = {}): SubstituteResult<T> {
   const missing: string[] = [];
-  const result = walk(input, missing);
+  const env = opts.env ?? process.env;
+  const result = walk(input, missing, env);
   return { value: result as T, missing };
 }
 
-function walk(node: unknown, missing: string[]): unknown {
+function walk(node: unknown, missing: string[], env: NodeJS.ProcessEnv): unknown {
   if (typeof node === 'string') {
-    return substituteString(node, missing);
+    return substituteString(node, missing, env);
   }
   if (Array.isArray(node)) {
-    return node.map((item) => walk(item, missing));
+    return node.map((item) => walk(item, missing, env));
   }
   if (node && typeof node === 'object') {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
-      out[k] = walk(v, missing);
+      out[k] = walk(v, missing, env);
     }
     return out;
   }
@@ -127,14 +143,14 @@ function walk(node: unknown, missing: string[]): unknown {
  * that to mean "fall back to default", not "use empty string". This is the
  * same trade-off Docker Compose `${VAR:-default}` makes.
  */
-function substituteString(input: string, missing: string[]): string {
+function substituteString(input: string, missing: string[], env: NodeJS.ProcessEnv): string {
   // Honor `$$` as a literal-dollar escape BEFORE placeholder scan. Without
   // this, `$${FOO}` would match `${FOO}` and substitute FOO instead of
   // producing `${FOO}` literal.
   const escaped = input.split('$$').join(ESCAPE_SENTINEL);
 
   const replaced = escaped.replace(PLACEHOLDER_REGEX, (full, name, operator, operand) => {
-    const raw = process.env[name];
+    const raw = env[name];
     const isPresent = raw !== undefined && raw !== '';
 
     if (isPresent) {

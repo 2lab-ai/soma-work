@@ -36,15 +36,8 @@ import {
 import { CONFIG_FILE } from '../../env-paths';
 import type { McpConfig, SlackContext } from '../../mcp-config-builder';
 import { getPermissionGatedServers, loadMcpToolPermissions } from '../../mcp-tool-permission-config';
-import {
-  GPT_5_5_SDK_BLOCKING_LIMIT,
-  GPT_5_6_SDK_BLOCKING_LIMIT,
-  isGpt55Model,
-  isGpt56Model,
-  isNativeOneMModel,
-  NATIVE_ONE_M_SDK_BLOCKING_LIMIT,
-} from '../../metrics/model-registry';
-import { clampEffortToModel, modelCatalog } from '../../model-catalog';
+import { resolveModelProfile } from '../../metrics/model-profile';
+import { clampEffortToModel } from '../../model-catalog';
 import { isSafePathSegment, normalizeTmpPath } from '../../path-utils';
 import type { SdkPluginPath } from '../../plugin/types';
 import { DEV_DOMAIN_ALLOWLIST } from '../../sandbox/dev-domain-allowlist';
@@ -290,73 +283,61 @@ export async function buildStreamOptions(
     logger.debug('Using user default model', { model: userModel, user: slackContext.user });
   }
 
-  // Native-1M SDK context-window workaround.
+  // Context-window env, driven by the canonical model profile
+  // (`metrics/model-profile.ts` — the single resolver for window / blocking
+  // limit / auto-compact trigger, so those three can no longer disagree. The
+  // regex ladder that used to live here handed a `gpt-5.6-sol[1m]` session the
+  // BARE model's 349k blocking limit while model-registry advertised 1M).
   //
-  // The pinned Agent SDK (0.2.111, CLI bundled pre fable-5) does not know
-  // native-1M model ids: its internal window resolver only honors the `[1m]`
-  // suffix / 1M beta header / a sonnet-4-6 experiment, and falls back to 200k
-  // for everything else — including `claude-fable-5`. Observed consequence:
-  // SDK-side autocompact fired at 200k − 33k = 167k while the thread showed
-  // "17% (167k/1.0M)", and the SDK would hard-block input at ~177k. The
-  // harness itself resolves these models to 1M correctly (model-registry
-  // NATIVE_ONE_M_RE), so only the SDK's internal math needs correcting:
+  // Automatic compaction has ONE authority: the harness turn-end scheduler
+  // (`session/compact-threshold-checker.ts#checkAndSchedulePendingCompact`),
+  // which sizes every model from `resolveModelProfile` (ruling 2026-08-26).
+  // The SDK's own automatic compaction is therefore switched off:
   //
-  //   • DISABLE_AUTO_COMPACT=1 — kill the SDK's 200k-calibrated autocompact.
-  //     Compaction is still driven by the turn-end threshold checker (#617,
-  //     % of the true 1M window → next turn becomes `/compact`); the
-  //     `/compact` command itself stays enabled (only DISABLE_COMPACT would
-  //     remove it). CLAUDE_CODE_AUTO_COMPACT_WINDOW is NOT usable here — the
-  //     SDK caps it at its own (wrong) model window.
-  //   • CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE — lift the SDK's input
-  //     hard-block to the 1M equivalent of its own formula (977k), so long
-  //     sessions don't get refused at ~177k.
+  //   • DISABLE_AUTO_COMPACT=1 — read by the pinned SDK's `z0()` gate
+  //     (cli.js: `if(S6(process.env.DISABLE_AUTO_COMPACT))return!1`), which
+  //     guards the whole autocompact path. The `/compact` command itself stays
+  //     enabled (only DISABLE_COMPACT would remove it), so the scheduler's
+  //     next-turn `/compact` interception keeps working.
+  //   • CLAUDE_CODE_AUTO_COMPACT_WINDOW is NEVER injected. It cannot be a
+  //     second authority: `Jn()` clamps it with `Math.min(ff(model), value)`
+  //     and `ff()` returns `WR1` = 200,000 for every id the pinned SDK does
+  //     not know — so a declared 750k trigger on `claude-fable-5[1m]` would
+  //     still fire at ~167k, the exact premature compaction this work exists
+  //     to remove.
+  //   • CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE — the SDK's own formula on the
+  //     profile's TRUE window (window − 20k output reserve − 3k safety),
+  //     injected for EVERY model. There is no "does the SDK know this id?"
+  //     classifier: where it does (bare claude ids, the generic `[1m]`
+  //     opt-in) the value equals what it would have computed itself, and
+  //     where it does not (native-1M claude, the llmux codex family,
+  //     non-claude catalog models) it replaces the ~177k hard block. One rule
+  //     beats a tier nobody can keep in sync with the pinned CLI.
   //
   // Operator-provided values (process env / config.json#claude.env) win — we
-  // only fill keys that are unset. Remove this block once the pinned SDK CLI
-  // resolves fable-5 to 1M natively.
-  //
-  // gpt-5.5 / gpt-5.6 (llmux codex backend) need the SAME workaround with
-  // their own window math: the SDK doesn't know these ids either, so its
-  // 200k-calibrated autocompact would fire at ~167k and input would
-  // hard-block at ~177k. Blocking limit is the SDK formula on the true
-  // window (gpt-5.5: 275k − 23k = 252k; gpt-5.6: 372k − 23k = 349k); the
-  // harness-side auto-compact fires at the fixed token trigger via the
-  // turn-end checker (`resolveAutoCompactTokens`,
-  // compact-threshold-checker.ts). gpt-5.6 is checked before gpt-5.5 to
-  // keep the newest-generation-first convention of resolveAutoCompactTokens.
-  //
-  // llmux model-catalog models (non-claude groups, e.g. grok-4.5) get the
-  // same treatment from their catalog window: the SDK does not know these
-  // ids either, so its 200k-calibrated math would misfire the same way.
-  // Blocking limit is the SDK formula on the catalog window (window − 20k
-  // output reserve − 3k safety; grok-4.5: 500k − 23k = 477k). Claude-group
-  // catalog entries are excluded — claude ids stay SDK-managed exactly as
-  // before (the [1m]/native-1M rules above are the only claude overrides).
+  // only fill keys that are unset, so an operator can hand SDK-native
+  // compaction back by setting `DISABLE_AUTO_COMPACT=0` themselves.
   if (options.model) {
-    const catalogGroup = modelCatalog.getGroupFor(options.model);
-    const catalogWindow = modelCatalog.getContextWindowFor(options.model);
-    const catalogBlockingLimit =
-      catalogGroup && catalogGroup !== 'claude' && typeof catalogWindow === 'number' && catalogWindow > 0
-        ? catalogWindow - 23_000
-        : undefined;
-    const blockingLimit = isNativeOneMModel(options.model)
-      ? NATIVE_ONE_M_SDK_BLOCKING_LIMIT
-      : isGpt56Model(options.model)
-        ? GPT_5_6_SDK_BLOCKING_LIMIT
-        : isGpt55Model(options.model)
-          ? GPT_5_5_SDK_BLOCKING_LIMIT
-          : catalogBlockingLimit;
-    if (blockingLimit !== undefined) {
-      if (!options.env) options.env = {};
-      const env = options.env;
-      if (env.DISABLE_AUTO_COMPACT === undefined) {
-        env.DISABLE_AUTO_COMPACT = '1';
-      }
-      if (env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE === undefined) {
-        env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE = String(blockingLimit);
-      }
-      logger.info('Injected SDK context-window workaround env (unknown-to-SDK window)', {
+    const profile = resolveModelProfile(options.model);
+    if (!options.env) options.env = {};
+    const env = options.env;
+    const wrote: string[] = [];
+    if (env.DISABLE_AUTO_COMPACT === undefined) {
+      env.DISABLE_AUTO_COMPACT = '1';
+      wrote.push('DISABLE_AUTO_COMPACT');
+    }
+    if (env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE === undefined) {
+      env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE = String(profile.sdkBlockingLimit);
+      wrote.push('CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE');
+    }
+    // Report the WRITE, not the visit: when the operator already set both keys
+    // this block changed nothing, and an "Injected …" line every turn would be
+    // a lie printed at one line per query.
+    if (wrote.length > 0) {
+      logger.info('Injected SDK context-window env from model profile', {
         model: options.model,
+        contextWindow: profile.contextWindow,
+        wrote,
         disableAutoCompact: env.DISABLE_AUTO_COMPACT,
         blockingLimitOverride: env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE,
       });

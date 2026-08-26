@@ -1890,7 +1890,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
 
       // Prompt-too-long-as-content guard (auto fallback compact, field bug).
       //
-      // Observed on dev (2026-07-06T05:42Z, oudwood-512): a 275k-window model
+      // Observed on dev (2026-07-06T05:42Z): a 275k-window model
       // overflow came back as an ordinary assistant text turn whose ENTIRE
       // content was "Prompt is too long", with a SUCCESSFUL result event
       // (stopReason=stop_sequence, isError=false, duration 6ms) — the SDK
@@ -2596,29 +2596,41 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             sessionKey,
             queued: queue.length,
           });
+        } else if (session.compactDispatchInFlight) {
+          // Re-entrant turn: outer drain owns the queue; this finally is nested
+          // inside the in-flight dispatch chain. Leave the queue parked.
+          this.logger.debug('Deferred post-compact dispatch left parked — drain already in flight', {
+            sessionKey,
+            queued: queue.length,
+          });
         } else if (this.deps.dispatchPendingUserMessage) {
-          session.compactPendingDispatches = null;
+          session.compactDispatchInFlight = true;
           this.logger.info('Dispatching deferred post-compact user message(s)', {
             sessionKey,
             count: queue.length,
             textPreview: String(queue[0].text).substring(0, 80),
           });
           const dispatch = this.deps.dispatchPendingUserMessage;
-          // Sequential fire-and-forget chain: each payload keeps its own
-          // author context (codex review F4 — never replay U2's text under
-          // U1's identity), replayed in arrival order.
-          void (async () => {
-            for (const payload of queue) {
-              try {
-                await dispatch(payload.ctx, payload.text, { compactRedispatch: true });
-              } catch (err) {
-                this.logger.warn('Deferred post-compact re-dispatch failed', {
-                  sessionKey,
-                  error: (err as Error)?.message ?? String(err),
-                });
-              }
+          // Await the handoff chain so queue ownership stays exact: remove an
+          // item only after a successful dispatch. A rejection leaves that item
+          // and every later item parked for the next turn; the in-flight guard
+          // prevents a racing finally block from double-dispatching it.
+          try {
+            while (queue.length > 0) {
+              const payload = queue[0];
+              await dispatch(payload.ctx, payload.text, { compactRedispatch: true });
+              queue.shift();
             }
-          })();
+            session.compactPendingDispatches = null;
+          } catch (err) {
+            this.logger.warn('Deferred post-compact re-dispatch failed — payload retained', {
+              sessionKey,
+              queued: queue.length,
+              error: (err as Error)?.message ?? String(err),
+            });
+          } finally {
+            session.compactDispatchInFlight = false;
+          }
         } else {
           this.logger.warn('Deferred post-compact dispatch dropped — no dispatchPendingUserMessage dep wired', {
             sessionKey,

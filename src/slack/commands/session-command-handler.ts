@@ -228,9 +228,21 @@ export class SessionCommandHandler implements CommandHandler {
   private async setSessionModel(ctx: CommandContext, session: any, input: string): Promise<CommandResult> {
     const { say, threadTs } = ctx;
     // Cache miss → forced llmux catalog re-fetch + one retry before erroring.
-    const resolved = await userSettingsStore.resolveModelInputWithRefresh(input);
+    // A REFUSED id (e.g. the fake `grok-4.6[1m]`) skips the refresh entirely.
+    const resolution = await userSettingsStore.resolveModelInputDetailedWithRefresh(input);
 
-    if (!resolved) {
+    if (resolution.status === 'rejected') {
+      // Distinct from the typo path below on purpose: the alias dump would
+      // read as "you misspelled it" and bury the fact that this id would be
+      // forwarded verbatim to a provider that does not have it.
+      await say({
+        text: `❌ ${resolution.rejectedReason}\n*Use* \`${resolution.suggestedModel}\` instead.`,
+        thread_ts: threadTs,
+      });
+      return { handled: true };
+    }
+
+    if (resolution.status === 'unknown') {
       const aliases = Object.keys(MODEL_ALIASES)
         .map((a) => `\`${a}\``)
         .join(', ');
@@ -241,6 +253,7 @@ export class SessionCommandHandler implements CommandHandler {
       return { handled: true };
     }
 
+    const resolved = resolution.modelId;
     session.model = resolved;
     // Re-anchor the context window to the NEW model immediately. Without this
     // the session keeps the previous model's window (e.g. 1M from opus[1m])

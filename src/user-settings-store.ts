@@ -9,7 +9,7 @@ import {
 } from './agent-runtime/policy/permission-mode';
 import { DATA_DIR as ENV_DATA_DIR } from './env-paths';
 import { Logger } from './logger.js';
-import { hasOneMSuffix, isNativeOneMModel, stripOneMSuffix } from './metrics/model-registry';
+import { isRejectedModelInput, resolveModelInputCompatibility } from './metrics/model-registry';
 import { modelCatalog } from './model-catalog';
 import { createPromptInvalidator } from './prompt-cache-invalidation';
 import { maskUrl } from './turn-notifier.js';
@@ -24,12 +24,12 @@ const invalidator = createPromptInvalidator(logger, 'Settings');
 export const setSettingsPromptInvalidationHook = invalidator.setHook;
 const fireSettingsInvalidate = invalidator.fire;
 
-// Available models — the 16-entry user-facing allow-list.
+// Available models — the 20-entry user-facing allow-list.
 //
 // Contract:
-//   - The 8 bare claude entries are the historical lineup and MUST NOT be
-//     removed. (Fable 5 added 2026-06-09; 4.8 added 2026-05-28; 4.7/4.6
-//     retained as user-selectable.)
+//   - The 9 bare claude entries are the historical lineup and MUST NOT be
+//     removed. (Opus 5 added 2026-08-26; Fable 5 added 2026-06-09; 4.8 added
+//     2026-05-28; 4.7/4.6 retained as user-selectable.)
 //   - `gpt-5.5` (added 2026-07-06) is served through llmux's codex backend
 //     group — llmux routes `gpt-` prefixed ids to codex accounts, so the SDK
 //     subprocess dispatches it exactly like a claude id (requires llmux auth
@@ -50,22 +50,37 @@ const fireSettingsInvalidate = invalidator.fire;
 //     efforts low..xhigh plus max/ultra (llmux forwards output_config
 //     effort per request). llmux ≥ preview-2026-07-10-0206 forwards the
 //     tier slugs verbatim.
-//   - `claude-fable-5` serves a 1M context window on the BARE id — Fable 5
-//     ships 1M as its native GA context, with no `[1m]` suffix and no
-//     `context-1m-2025-08-07` beta header. It therefore has NO `[1m]` variant:
-//     resolveContextWindow recognises it as native-1M (see model-registry.ts).
-//   - The 3 `[1m]` entries are additive: they enable the 1M *beta* context
-//     window on opus-4-8 / opus-4-7 / opus-4-6 via the shared suffix
-//     convention. The Claude Agent SDK (≥ 0.2.111) detects `[1m]`, strips it
-//     before the API call, and injects the `context-1m-2025-08-07` beta header.
-//     (Opus 4.8 ships 1M by default; we keep the `[1m]` opt-in here as the
-//     single resolveContextWindow signal — see metrics/model-registry.ts.)
+//   - `grok-4.6` (added 2026-08-26) is DECLARED here rather than left to the
+//     llmux catalog overlay: a cold start with no catalog snapshot must still
+//     be able to select the model whose 450k auto-compact default is declared
+//     policy in metrics/model-profile.ts.
+//   - The 6 `[1m]` entries are additive and share one convention: the Claude
+//     Agent SDK (≥ 0.2.111) detects the suffix, strips it before the API call,
+//     and injects the `context-1m-2025-08-07` beta header; llmux does the
+//     equivalent for the codex `gpt-5.6-sol[1m]` id.
+//
+//     2026-08-26 — `claude-fable-5[1m]` joined them, reversing the earlier
+//     "fable is native-1M so it must never carry the suffix" rule. Two facts
+//     drove the reversal, and neither is "the bare id is small": the harness
+//     does give bare fable a 1M window and a 977k blocking limit (native-1M
+//     branch in metrics/model-profile.ts).
+//       1. Profile identity. The declared 750k auto-compact default is a row
+//          in POLICY_PROFILES keyed on the exact id `claude-fable-5[1m]`. The
+//          bare id takes the derived native-1M branch, which carries NO
+//          `autoCompactTokens` — so the requested threshold is unreachable on
+//          that spelling.
+//       2. Client accounting. The live llmux probe returned client
+//          contextWindow 1,000,000 for the literal id and 200,000 for bare
+//          `fable`, and confirmed the suffixed id is accepted upstream.
+//     Both spellings stay selectable; the `fable` aliases point at the
+//     suffixed one.
 //
 // Issue #656 regression guard: any shrinking of this list (as attempted in
 // abandoned PR #652) silently deletes user-selectable models. Tests assert
 // exact array equality — NOT just length — to catch that class of mistake.
 export const AVAILABLE_MODELS = [
   'claude-fable-5',
+  'claude-opus-5',
   'claude-opus-4-8',
   'claude-opus-4-7',
   'claude-opus-4-6',
@@ -73,16 +88,31 @@ export const AVAILABLE_MODELS = [
   'claude-sonnet-4-5-20250929',
   'claude-opus-4-5-20251101',
   'claude-haiku-4-5-20251001',
+  'claude-fable-5[1m]',
+  'claude-opus-5[1m]',
   'claude-opus-4-8[1m]',
   'claude-opus-4-7[1m]',
   'claude-opus-4-6[1m]',
   'gpt-5.5',
   'gpt-5.6-sol',
+  'gpt-5.6-sol[1m]',
   'gpt-5.6-terra',
   'gpt-5.6-luna',
+  'grok-4.6',
 ] as const;
 
 export type ModelId = (typeof AVAILABLE_MODELS)[number];
+
+/**
+ * Outcome of resolving raw model input on a user-facing model-set surface.
+ *
+ * Three cases, because two of them are failures that must be RENDERED
+ * differently — see {@link UserSettingsStore.resolveModelInputDetailed}.
+ */
+export type ModelInputResolution =
+  | { status: 'accepted'; modelId: string }
+  | { status: 'rejected'; rejectedReason: string; suggestedModel: string }
+  | { status: 'unknown' };
 
 // Model aliases for user-friendly input.
 //
@@ -94,17 +124,23 @@ export type ModelId = (typeof AVAILABLE_MODELS)[number];
 //   - Version-pinned aliases (`opus-4.8`, `opus-4.7`, ...) remain stable so
 //     users who explicitly chose a generation don't get silently upgraded.
 export const MODEL_ALIASES: Record<string, ModelId> = {
-  // `fable` / `fable-5` → Fable 5. There is no `[1m]` variant: Fable 5 is
-  // native-1M on the bare id, so no suffix alias is offered (a `[1m]` suffix
-  // would wrongly trigger the opus beta-header path in the SDK).
-  fable: 'claude-fable-5',
-  'fable-5': 'claude-fable-5',
+  // Every `fable` spelling → the LITERAL `[1m]` id. Bare `claude-fable-5` is
+  // still selectable by its full id, but the shorthand a user types must land
+  // on the spelling whose SDK-side window is actually 1M (see AVAILABLE_MODELS).
+  fable: 'claude-fable-5[1m]',
+  'fable-5': 'claude-fable-5[1m]',
+  'fable[1m]': 'claude-fable-5[1m]',
+  'fable-5[1m]': 'claude-fable-5[1m]',
   sonnet: 'claude-sonnet-4-6',
   'sonnet-4.6': 'claude-sonnet-4-6',
   'sonnet-4.5': 'claude-sonnet-4-5-20250929',
   // `opus` / `opus[1m]` follow the current latest opus — bump these two rows
-  // (plus AVAILABLE_MODELS) when a new generation lands.
-  opus: 'claude-opus-4-8',
+  // (plus AVAILABLE_MODELS) when a new generation lands. Both point at the
+  // `[1m]` variant: bare Opus 5 is a 200k profile, so the shorthand would
+  // otherwise silently hand the user a fifth of the window they asked for.
+  // `opus-5` stays available for someone who explicitly wants the 200k id.
+  opus: 'claude-opus-5[1m]',
+  'opus-5': 'claude-opus-5',
   'opus-4.8': 'claude-opus-4-8',
   'opus-4.7': 'claude-opus-4-7',
   'opus-4.6': 'claude-opus-4-6',
@@ -125,17 +161,50 @@ export const MODEL_ALIASES: Record<string, ModelId> = {
   // keep resolving (llmux also maps the bare id to sol on the wire).
   'gpt-5.6': 'gpt-5.6-sol',
   'gpt5.6': 'gpt-5.6-sol',
-  // Tier shorthands.
+  // Tier shorthands. `sol[1m]` is the 1M opt-in of the flagship — a different
+  // profile (1M window / 977k blocking limit / 600k trigger), not a decoration
+  // on the bare 372k one.
   sol: 'gpt-5.6-sol',
+  'sol[1m]': 'gpt-5.6-sol[1m]',
   terra: 'gpt-5.6-terra',
   luna: 'gpt-5.6-luna',
-  // 1M-context (beta opt-in) variants — opus only. Fable 5 is native-1M on
-  // the bare id and intentionally has no `[1m]` alias here.
-  'opus[1m]': 'claude-opus-4-8[1m]',
+  // 1M-context opt-in variants.
+  'opus[1m]': 'claude-opus-5[1m]',
+  'opus-5[1m]': 'claude-opus-5[1m]',
   'opus-4.8[1m]': 'claude-opus-4-8[1m]',
   'opus-4.7[1m]': 'claude-opus-4-7[1m]',
   'opus-4.6[1m]': 'claude-opus-4-6[1m]',
 };
+
+/**
+ * The one id every opus-family USER DEFAULT converges on.
+ *
+ * Exported so the startup one-shot in `deploy/force-migrate-opus-1m.ts`
+ * imports the same literal. That eager import constructs the settings singleton
+ * before `main()`, so `src/index.ts` reloads it after an applied migration.
+ */
+export const OPUS_DEFAULT_MIGRATION_TARGET: ModelId = 'claude-opus-5[1m]';
+
+/** Every claude opus generation, bare or `[1m]`, dated or not. */
+const OPUS_FAMILY_RE = /^claude-opus-/i;
+
+/**
+ * Migrate ONE persisted user-default model id to the current opus target.
+ *
+ * Scope is deliberately narrow — user DEFAULTS only, opus family only:
+ *   - `claude-opus-*` (4.5 … 4.8 and 5, bare or `[1m]`) → `claude-opus-5[1m]`;
+ *   - anything else is returned BYTE-identical, including whitespace/case
+ *     oddities (normalisation is `coerceToAvailableModel`'s job, and a
+ *     migration that "tidied" a non-opus value would be indistinguishable
+ *     from the all-user rewrite this replaced).
+ *
+ * Total and idempotent: the target is itself opus-family, so re-applying is a
+ * fixpoint, and a non-string input passes straight through.
+ */
+export function migrateOpusDefaultModel(model: string): string {
+  if (typeof model !== 'string') return model;
+  return OPUS_FAMILY_RE.test(model.trim().toLowerCase()) ? OPUS_DEFAULT_MIGRATION_TARGET : model;
+}
 
 // DEFAULT_MODEL is a logical pointer to the current latest gpt flagship
 // (llmux codex backend) — gpt-5.6-sol since 2026-07-10 (operator decision;
@@ -163,6 +232,14 @@ export function coerceToAvailableModel(raw: string | null | undefined): string {
   if (typeof raw !== 'string') return DEFAULT_MODEL;
   const normalized = raw.trim().toLowerCase();
   if (normalized.length === 0) return DEFAULT_MODEL;
+  // Refused spellings never survive a round-trip, no matter where they came
+  // from. `grok-4.6[1m]` is the live case: llmux forwards grok ids verbatim
+  // upstream, so persisting it would send xAI a model name that does not
+  // exist — and rewriting it to `grok-4.6` would silently serve a different
+  // model. Checked BEFORE the allow-list/catalog so a catalog that advertises
+  // the fake id cannot launder it into persisted state.
+  const compatibility = resolveModelInputCompatibility(normalized);
+  if (compatibility && isRejectedModelInput(compatibility)) return DEFAULT_MODEL;
   if ((AVAILABLE_MODELS as readonly string[]).includes(normalized)) {
     return normalized;
   }
@@ -170,23 +247,8 @@ export function coerceToAvailableModel(raw: string | null | undefined): string {
   // valid even though they are not in the static allow-list. Matching is
   // case-insensitive; the CANONICAL catalog id is returned.
   const catalogEntry = modelCatalog.getById(normalized);
-  if (catalogEntry && isCatalogIdSelectable(catalogEntry.id)) return catalogEntry.id;
+  if (catalogEntry) return catalogEntry.id;
   return DEFAULT_MODEL;
-}
-
-/**
- * Whether a llmux-catalog id may be offered/persisted as a selectable model.
- *
- * The one exclusion: `[1m]`-suffixed ids whose BASE is a native-1M model
- * (today `claude-fable-5[1m]`). Fable serves 1M on the bare id with NO beta
- * header; the SDK's `[1m]` path would strip the suffix and wrongly inject the
- * `context-1m-2025-08-07` opus beta header (see MODEL_ALIASES fable note and
- * model-registry.isNativeOneMModel). llmux advertises the id as catalog
- * metadata, but selecting it here would route fable through the wrong path —
- * users get the same 1M via the bare `claude-fable-5` / `fable` alias.
- */
-export function isCatalogIdSelectable(id: string): boolean {
-  return !(hasOneMSuffix(id) && isNativeOneMModel(stripOneMSuffix(id)));
 }
 
 // Effort levels
@@ -439,7 +501,7 @@ export class UserSettingsStore {
         this.settings = JSON.parse(data);
         let didUpdate = false;
         for (const userSettings of Object.values(this.settings)) {
-          // Coerce to the 8-entry allow-list. Known-legacy ids (e.g. sonnet-4-6,
+          // Coerce to the current allow-list. Known-legacy ids (e.g. sonnet-4-6,
           // opus-4-5-20251101) pass through; only unknown/missing values fall
           // back to DEFAULT_MODEL.
           const coerced = coerceToAvailableModel(userSettings.defaultModel);
@@ -506,6 +568,25 @@ export class UserSettingsStore {
    */
   reloadSlackJiraMapping(): void {
     this.loadSlackJiraMapping();
+  }
+
+  /**
+   * Re-read `user-settings.json` from disk, replacing in-memory state.
+   *
+   * Exists for exactly one caller: the startup opus migration
+   * (`deploy/force-migrate-opus-1m.ts`) rewrites the file from `main()`, but
+   * `src/index.ts` statically imports this module, so the singleton has
+   * ALREADY loaded by then. Without this seam the process that performed the
+   * migration keeps serving pre-migration defaults from memory until the next
+   * boot — disk and memory disagreeing inside one process.
+   *
+   * Read-only by construction: it reruns {@link loadSettings}, which writes
+   * only when its own coercion pass changes something (nothing, right after a
+   * migration to allow-list ids). It is NOT a second migration authority —
+   * the rewrite decision stays entirely in the one-shot.
+   */
+  reloadSettings(): void {
+    this.loadSettings();
   }
 
   /**
@@ -840,6 +921,17 @@ export class UserSettingsStore {
     logger.info('Set user compact threshold', { userId, value: validated });
   }
 
+  /** Remove the deprecated persisted percentage after session-token conversion. */
+  clearUserCompactThreshold(userId: string): void {
+    const settings = this.settings[userId];
+    if (!settings || !Object.prototype.hasOwnProperty.call(settings, 'compactThreshold')) return;
+    delete settings.compactThreshold;
+    settings.lastUpdated = new Date().toISOString();
+    this.saveSettings();
+    fireSettingsInvalidate(userId);
+    logger.info('Cleared legacy user compact threshold', { userId });
+  }
+
   /**
    * Get user's default effort level
    */
@@ -1068,57 +1160,108 @@ export class UserSettingsStore {
   }
 
   /**
-   * Parse and resolve model input (handle aliases)
+   * Parse and resolve model input, keeping the REASON a value did not resolve.
+   *
+   * `string | null` cannot express the difference between the two failures a
+   * model-set surface has to render differently:
+   *   - `unknown` — a typo. "Unknown model, here are the aliases" is right.
+   *   - `rejected` — a spelling that looks plausible but must never be routed
+   *     (`grok-4.6[1m]`: llmux forwards grok ids verbatim, so it would reach
+   *     xAI as a nonexistent model). Showing the alias dump here would read as
+   *     "you misspelled it" and hide that the id is fake, so the refusal and
+   *     its `suggestedModel` are carried out to the caller instead.
+   *
+   * Resolution order: refusal/canonical policy (model-profile) → static
+   * allow-list → static aliases → llmux catalog overlay.
    */
-  resolveModelInput(input: string): string | null {
-    const normalized = input.toLowerCase().trim();
+  resolveModelInputDetailed(input: string): ModelInputResolution {
+    const normalized = typeof input === 'string' ? input.toLowerCase().trim() : '';
+    if (normalized.length === 0) return { status: 'unknown' };
 
-    // Check if it's already a valid model ID
+    // Canonical policy first: it owns both the refusals and the exact-id set
+    // the profile resolver declares, so no later tier can override a refusal.
+    const compatibility = resolveModelInputCompatibility(normalized);
+    if (compatibility) {
+      return isRejectedModelInput(compatibility)
+        ? {
+            status: 'rejected',
+            rejectedReason: compatibility.rejectedReason,
+            suggestedModel: compatibility.suggestedModel,
+          }
+        : { status: 'accepted', modelId: compatibility.modelId };
+    }
+
     if (AVAILABLE_MODELS.includes(normalized as ModelId)) {
-      return normalized;
+      return { status: 'accepted', modelId: normalized };
     }
 
-    // Check aliases
-    if (MODEL_ALIASES[normalized]) {
-      return MODEL_ALIASES[normalized];
-    }
+    const alias = MODEL_ALIASES[normalized];
+    if (alias) return { status: 'accepted', modelId: alias };
 
     // llmux model-catalog overlay: catalog ids + catalog aliases (e.g.
-    // `grok` → `grok-4.5`). Static ids/aliases above always win; ids the
-    // overlay must not offer (native-1M `[1m]` variants) resolve to null.
+    // `grok` → `grok-4.5`). Static ids/aliases above always win.
     const catalogResolved = modelCatalog.resolveInput(normalized);
-    if (catalogResolved && isCatalogIdSelectable(catalogResolved)) return catalogResolved;
-    return null;
+    if (catalogResolved) return { status: 'accepted', modelId: catalogResolved };
+    return { status: 'unknown' };
   }
 
   /**
-   * Like {@link resolveModelInput}, but on a cache miss asks llmux for a
-   * FRESH catalog (forced fetch, 5s-throttled) and retries once before giving
-   * up. This makes models llmux already serves — but the local snapshot does
-   * not know yet — usable immediately instead of erroring until the next TTL
-   * revalidation. Still returns null when llmux does not serve the model
-   * either (typos must NOT be persisted into defaults/sessions/crons).
+   * Parse and resolve model input (handle aliases). Thin projection of
+   * {@link resolveModelInputDetailed} for the many call sites that only need
+   * "did it resolve?" — both failure kinds collapse to `null` here.
+   */
+  resolveModelInput(input: string): string | null {
+    const resolved = this.resolveModelInputDetailed(input);
+    return resolved.status === 'accepted' ? resolved.modelId : null;
+  }
+
+  /**
+   * Like {@link resolveModelInputDetailed}, but on a cache miss asks llmux for
+   * a FRESH catalog (forced fetch, 5s-throttled) and retries once before
+   * giving up. This makes models llmux already serves — but the local snapshot
+   * does not know yet — usable immediately instead of erroring until the next
+   * TTL revalidation.
+   *
+   * A REJECTED input never triggers the refresh: the id is refused on a
+   * property of llmux's own routing, so no catalog answer could make it valid,
+   * and re-fetching would only add latency to a certain "no".
+   */
+  async resolveModelInputDetailedWithRefresh(input: string): Promise<ModelInputResolution> {
+    const first = this.resolveModelInputDetailed(input);
+    if (first.status !== 'unknown') return first;
+    if (typeof input !== 'string' || input.trim().length === 0) return first;
+    await modelCatalog.refresh(undefined, { force: true });
+    return this.resolveModelInputDetailed(input);
+  }
+
+  /**
+   * {@link resolveModelInputDetailedWithRefresh} projected to `string | null`
+   * (typos must NOT be persisted into defaults/sessions/crons).
    */
   async resolveModelInputWithRefresh(input: string): Promise<string | null> {
-    const resolved = this.resolveModelInput(input);
-    if (resolved) return resolved;
-    if (input.trim().length === 0) return null;
-    await modelCatalog.refresh(undefined, { force: true });
-    return this.resolveModelInput(input);
+    const resolved = await this.resolveModelInputDetailedWithRefresh(input);
+    return resolved.status === 'accepted' ? resolved.modelId : null;
   }
 
   /**
    * Get display name for a model.
    *
-   * Covers all 16 entries in AVAILABLE_MODELS. The `[1m]` variants append
+   * Covers every entry in AVAILABLE_MODELS. The `[1m]` variants append
    * `" (1M)"` so users can tell them apart in the Slack UI.
    */
   getModelDisplayName(model: string): string {
     switch (model) {
       case 'claude-fable-5':
-        // Native 1M context on the bare id — surface "(1M)" so users see the
-        // window without a `[1m]` suffix existing.
+        // Plain label: "(1M)" is reserved for the spelling that actually
+        // carries the 1M profile + 750k default (`claude-fable-5[1m]`), so the
+        // two entries in the picker are distinguishable at a glance.
+        return 'Fable 5';
+      case 'claude-fable-5[1m]':
         return 'Fable 5 (1M)';
+      case 'claude-opus-5':
+        return 'Opus 5';
+      case 'claude-opus-5[1m]':
+        return 'Opus 5 (1M)';
       case 'claude-opus-4-8':
         return 'Opus 4.8';
       case 'claude-opus-4-8[1m]':
@@ -1146,6 +1289,14 @@ export class UserSettingsStore {
         // Flagship tier (llmux codex backend); 372k context window per the
         // openai/codex model catalog.
         return 'GPT-5.6 Sol (372k)';
+      case 'gpt-5.6-sol[1m]':
+        // 1M opt-in of the flagship — a distinct profile (977k blocking limit,
+        // 600k auto-compact), not a bigger label on the 372k one.
+        return 'GPT-5.6 Sol (1M)';
+      case 'grok-4.6':
+        // Declared statically so the label survives a cold start with no llmux
+        // catalog snapshot; 500k window / 450k auto-compact (model-profile.ts).
+        return 'Grok 4.6 (500k)';
       case 'gpt-5.6-terra':
         // Mid tier — same 372k catalog window, half the price of sol.
         return 'GPT-5.6 Terra (372k)';
