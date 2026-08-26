@@ -1,3 +1,4 @@
+import { resolveModelProfile } from '../../metrics/model-profile';
 import { formatTokens, validateAutoCompactTokensForModel } from '../../session/autocompact-policy';
 import { COMPACT_THRESHOLD_MAX, COMPACT_THRESHOLD_MIN, validateCompactThreshold } from '../../user-settings-store';
 import { CommandParser } from '../command-parser';
@@ -37,9 +38,13 @@ export class CompactThresholdHandler implements CommandHandler {
 
     try {
       const pct = validateCompactThreshold(Number(rawArg));
-      const contextWindow =
-        session.usage?.contextWindow ||
-        (await import('../../metrics/model-profile')).resolveModelProfile(session.model).contextWindow;
+      // Denominator MUST come from the current model's canonical profile, never
+      // from `session.usage` — the SDK-reported usage snapshot is refreshed
+      // only on the next turn's reply, so it goes stale the instant
+      // `model set` re-anchors `session.model` (ModelHandler updates
+      // `session.model` but not `session.usage`). Using the cached value here
+      // silently wrote an 8x-wrong override across a 200k↔1M model switch.
+      const contextWindow = resolveModelProfile(session.model).contextWindow;
       const tokens = Math.round((contextWindow * pct) / 100);
       const validation = validateAutoCompactTokensForModel(tokens, session.model);
       if (!validation.ok) {
