@@ -247,8 +247,30 @@ describe('buildStreamOptions — option parity (epic #1023 P1)', () => {
     expect(options.resume).toBeUndefined();
   });
 
-  describe('native-1M SDK window workaround (fable-5 compacting at 167k)', () => {
-    it('injects DISABLE_AUTO_COMPACT + CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE for a native-1M session model', async () => {
+  describe('model-profile context env (harness compaction authority)', () => {
+    // Ruling 2026-08-26: the HARNESS owns automatic compaction
+    // (`checkAndSchedulePendingCompact`), so SDK-native autocompact is turned
+    // off for every session. `CLAUDE_CODE_AUTO_COMPACT_WINDOW` cannot be the
+    // second authority: the pinned SDK clamps it to its own model window
+    // (`Jn` → `Math.min(ff(model), configured)`, cli.js) and `ff` returns
+    // 200,000 (`WR1`) for every id it does not know — so a 750k trigger on
+    // `claude-fable-5[1m]` would still fire at ~167k. Only
+    // `DISABLE_AUTO_COMPACT` (read by `z0()`, which gates the whole
+    // autocompact path) removes that second authority.
+    const EVERY_RESOLVED_MODEL = [
+      'claude-fable-5',
+      'claude-fable-5[1m]',
+      'claude-opus-5',
+      'claude-opus-5[1m]',
+      'gpt-5.6-sol',
+      'gpt-5.6-sol[1m]',
+      'gpt-5.5',
+      'grok-4.6',
+      'claude-opus-4-7',
+      'claude-opus-4-7[1m]',
+    ];
+
+    it('injects CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE for a native-1M session model', async () => {
       const queryEnv: Record<string, string | undefined> = { CLAUDE_CODE_OAUTH_TOKEN: 'lease-token' };
       const deps = makeDeps();
       const session = { model: 'claude-fable-5', systemPrompt: 'x', sessionId: 's1' } as ConversationSession;
@@ -256,44 +278,166 @@ describe('buildStreamOptions — option parity (epic #1023 P1)', () => {
 
       // In-place injection — env identity (auth contract) is preserved.
       expect(options.env).toBe(queryEnv);
-      expect(options.env?.DISABLE_AUTO_COMPACT).toBe('1');
       expect(options.env?.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE).toBe('977000');
       expect(options.env?.CLAUDE_CODE_OAUTH_TOKEN).toBe('lease-token'); // untouched
     });
 
-    it('does NOT inject for a bare 200k model (SDK autocompact stays on)', async () => {
+    it('injects DISABLE_AUTO_COMPACT=1 for every resolved model profile', async () => {
+      for (const model of EVERY_RESOLVED_MODEL) {
+        const deps = makeDeps();
+        const session = { model, systemPrompt: 'x', sessionId: `sd-${model}` } as ConversationSession;
+        const { options } = await buildStreamOptions({ queryEnv: {}, session }, deps);
+        expect(options.env?.DISABLE_AUTO_COMPACT).toBe('1');
+      }
+    });
+
+    it('never injects CLAUDE_CODE_AUTO_COMPACT_WINDOW for any profile', async () => {
+      for (const model of EVERY_RESOLVED_MODEL) {
+        const deps = makeDeps();
+        const session = { model, systemPrompt: 'x', sessionId: `sw-${model}` } as ConversationSession;
+        const { options } = await buildStreamOptions({ queryEnv: {}, session }, deps);
+        expect(options.env?.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBeUndefined();
+      }
+    });
+
+    it('injects CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE=<profile limit> for every resolved model', async () => {
+      // Unconditional, profile-window-derived — there is no "does the SDK know
+      // this id?" tier. For ids the SDK sizes correctly the value simply
+      // equals its own computation (200k window → 177000).
+      const limits: [model: string, limit: string][] = [
+        ['claude-fable-5', '977000'],
+        ['claude-fable-5[1m]', '977000'],
+        ['claude-opus-5', '177000'],
+        ['claude-opus-5[1m]', '977000'],
+        ['gpt-5.6-sol', '349000'],
+        ['gpt-5.6-sol[1m]', '977000'],
+        ['gpt-5.5', '252000'],
+        ['grok-4.6', '477000'],
+        ['claude-opus-4-7', '177000'],
+        ['claude-opus-4-7[1m]', '977000'],
+      ];
+      for (const [model, limit] of limits) {
+        const deps = makeDeps();
+        const session = { model, systemPrompt: 'x', sessionId: `sb-${model}` } as ConversationSession;
+        const { options } = await buildStreamOptions({ queryEnv: {}, session }, deps);
+        expect(options.env?.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE).toBe(limit);
+      }
+    });
+
+    it('injects the 200k-window limit for a bare claude model', async () => {
       const deps = makeDeps();
       const session = { model: 'claude-opus-4-7', systemPrompt: 'x', sessionId: 's2' } as ConversationSession;
       const { options } = await buildStreamOptions({ queryEnv: {}, session }, deps);
-      expect(options.env?.DISABLE_AUTO_COMPACT).toBeUndefined();
-      expect(options.env?.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE).toBeUndefined();
+      expect(options.env?.DISABLE_AUTO_COMPACT).toBe('1');
+      expect(options.env?.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE).toBe('177000');
     });
 
-    it('does NOT inject for the `[1m]` suffix opt-in (SDK resolves that natively)', async () => {
+    it('injects the 1M limit for the generic `[1m]` suffix opt-in', async () => {
       const deps = makeDeps();
       const session = { model: 'claude-opus-4-7[1m]', systemPrompt: 'x', sessionId: 's3' } as ConversationSession;
       const { options } = await buildStreamOptions({ queryEnv: {}, session }, deps);
-      expect(options.env?.DISABLE_AUTO_COMPACT).toBeUndefined();
-      expect(options.env?.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE).toBeUndefined();
+      expect(options.env?.DISABLE_AUTO_COMPACT).toBe('1');
+      expect(options.env?.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE).toBe('977000');
     });
 
     it('does NOT inject when no model resolves', async () => {
       const deps = makeDeps();
       const { options } = await buildStreamOptions({ queryEnv: {} }, deps);
       expect(options.env?.DISABLE_AUTO_COMPACT).toBeUndefined();
+      expect(options.env?.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBeUndefined();
       expect(options.env?.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE).toBeUndefined();
     });
 
     it('respects operator-provided values (no clobbering)', async () => {
       const deps = makeDeps();
-      const session = { model: 'claude-fable-5', systemPrompt: 'x', sessionId: 's4' } as ConversationSession;
+      const session = { model: 'gpt-5.6-sol', systemPrompt: 'x', sessionId: 's4' } as ConversationSession;
       const queryEnv: Record<string, string | undefined> = {
-        DISABLE_AUTO_COMPACT: 'false',
+        DISABLE_AUTO_COMPACT: '0',
+        CLAUDE_CODE_AUTO_COMPACT_WINDOW: '111111',
         CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE: '500000',
       };
       const { options } = await buildStreamOptions({ queryEnv, session }, deps);
-      expect(options.env?.DISABLE_AUTO_COMPACT).toBe('false');
+      // An operator who deliberately re-enables SDK autocompact keeps it.
+      expect(options.env?.DISABLE_AUTO_COMPACT).toBe('0');
+      expect(options.env?.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe('111111');
       expect(options.env?.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE).toBe('500000');
+    });
+
+    it('never writes CLAUDE_CODE_AUTO_COMPACT_WINDOW but never deletes an operator value either', async () => {
+      // "We are not the author of this key" cuts both ways: the builder must
+      // not set it (the SDK would clamp it to 200k for unknown ids) and must
+      // not remove an operator's deliberate value.
+      for (const model of EVERY_RESOLVED_MODEL) {
+        const deps = makeDeps();
+        const session = { model, systemPrompt: 'x', sessionId: `so-${model}` } as ConversationSession;
+        const queryEnv: Record<string, string | undefined> = { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '123456' };
+        const { options } = await buildStreamOptions({ queryEnv, session }, deps);
+        expect(options.env?.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe('123456');
+      }
+    });
+
+    it('leaves an operator-provided DISABLE_AUTO_COMPACT untouched for every resolved model', async () => {
+      for (const model of EVERY_RESOLVED_MODEL) {
+        const deps = makeDeps();
+        const session = { model, systemPrompt: 'x', sessionId: `sk-${model}` } as ConversationSession;
+        const queryEnv: Record<string, string | undefined> = { DISABLE_AUTO_COMPACT: '0' };
+        const { options } = await buildStreamOptions({ queryEnv, session }, deps);
+        expect(options.env?.DISABLE_AUTO_COMPACT).toBe('0');
+      }
+    });
+
+    /** The env-injection info line, if the builder emitted one. */
+    function injectionLog(deps: BuildStreamOptionsDeps): [string, { wrote?: string[] }] | undefined {
+      const calls = (deps.logger.info as ReturnType<typeof vi.fn>).mock.calls as [string, { wrote?: string[] }][];
+      return calls.find(([message]) => message.includes('context-window env'));
+    }
+
+    it('logs only the env keys it actually wrote', async () => {
+      const deps = makeDeps();
+      const session = { model: 'gpt-5.6-sol', systemPrompt: 'x', sessionId: 'sl1' } as ConversationSession;
+      const queryEnv: Record<string, string | undefined> = { DISABLE_AUTO_COMPACT: '0' };
+      await buildStreamOptions({ queryEnv, session }, deps);
+
+      expect(injectionLog(deps)?.[1].wrote).toEqual(['CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE']);
+    });
+
+    it('says nothing when the operator already set every key (no "Injected" line for a no-op)', async () => {
+      const deps = makeDeps();
+      const session = { model: 'gpt-5.6-sol', systemPrompt: 'x', sessionId: 'sl2' } as ConversationSession;
+      const queryEnv: Record<string, string | undefined> = {
+        DISABLE_AUTO_COMPACT: '0',
+        CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE: '500000',
+      };
+      await buildStreamOptions({ queryEnv, session }, deps);
+
+      expect(injectionLog(deps)).toBeUndefined();
+    });
+
+    it('gpt-5.6-sol[1m] gets the 1M blocking limit (977000), NOT the bare family 349000', async () => {
+      const deps = makeDeps();
+      const session = { model: 'gpt-5.6-sol[1m]', systemPrompt: 'x', sessionId: 's1m' } as ConversationSession;
+      const { options } = await buildStreamOptions({ queryEnv: {}, session }, deps);
+      expect(options.env?.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE).toBe('977000');
+    });
+
+    it('bare gpt-5.6-sol keeps the family 349000 blocking limit', async () => {
+      const deps = makeDeps();
+      const session = { model: 'gpt-5.6-sol', systemPrompt: 'x', sessionId: 's1b' } as ConversationSession;
+      const { options } = await buildStreamOptions({ queryEnv: {}, session }, deps);
+      expect(options.env?.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE).toBe('349000');
+    });
+
+    it('claude-opus-5 gets its own window limit on both spellings (177000 / 977000)', async () => {
+      for (const [model, limit] of [
+        ['claude-opus-5[1m]', '977000'],
+        ['claude-opus-5', '177000'],
+      ]) {
+        const deps = makeDeps();
+        const session = { model, systemPrompt: 'x', sessionId: `s-${model}` } as ConversationSession;
+        const { options } = await buildStreamOptions({ queryEnv: {}, session }, deps);
+        expect(options.env?.DISABLE_AUTO_COMPACT).toBe('1');
+        expect(options.env?.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE).toBe(limit);
+      }
     });
 
     it('injects when the native-1M model comes from the user default (no session model)', async () => {

@@ -17,6 +17,7 @@ const DEFAULT_MODEL = 'gpt-5.6-sol';
 // main-env-bootstrap.test.ts — that test imports AVAILABLE_MODELS directly.
 const VALID_MODELS = new Set([
   'claude-fable-5',
+  'claude-opus-5',
   'claude-opus-4-8',
   'claude-opus-4-7',
   'claude-opus-4-6',
@@ -24,13 +25,17 @@ const VALID_MODELS = new Set([
   'claude-sonnet-4-5-20250929',
   'claude-opus-4-5-20251101',
   'claude-haiku-4-5-20251001',
+  'claude-fable-5[1m]',
+  'claude-opus-5[1m]',
   'claude-opus-4-8[1m]',
   'claude-opus-4-7[1m]',
   'claude-opus-4-6[1m]',
   'gpt-5.5',
   'gpt-5.6-sol',
+  'gpt-5.6-sol[1m]',
   'gpt-5.6-terra',
   'gpt-5.6-luna',
+  'grok-4.6',
 ]);
 
 /** Exposed for drift tests only — asserts exact-set equality with AVAILABLE_MODELS. */
@@ -58,11 +63,12 @@ function readCatalogSnapshotIds(dataDir: string | undefined): Set<string> {
       for (const entry of parsed.models) {
         if (entry && typeof entry.id === 'string' && entry.id.trim().length > 0) {
           const id = entry.id.trim().toLowerCase();
-          // Mirror user-settings-store.isCatalogIdSelectable (import-lean
-          // duplicate): `[1m]` variants of native-1M models (fable) must not
-          // be preserved — the SDK suffix path would inject the wrong beta
-          // header for them.
-          if (/\[1m\]$/i.test(id) && /fable-5/i.test(id)) continue;
+          // Keep the runtime store's refusal contract import-lean: llmux's
+          // grok provider forwards `grok-*` ids verbatim, so a fake `[1m]`
+          // spelling must never survive deploy-time normalization even if a
+          // stale or malformed catalog snapshot advertises it. Fable `[1m]`
+          // remains a valid first-class id.
+          if (/^grok-.*\[1m\]$/i.test(id)) continue;
           ids.add(id);
         }
       }

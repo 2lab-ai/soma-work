@@ -89,6 +89,15 @@ git push
 
 **효과**
 - `infra/slack/slack-app-manifest.json`이 `docs/archive/manifests/slack-app-manifest.prev.json`로 복원 (→ `/soma`, `/session`, `/new`만 존재).
+- ⚠️ **이름도 함께 되돌아간다.** 스냅샷은 `[DEV] Claude Code Bot` / `DEV Claude Code` 시절 것이라,
+  복원본을 업로드하면 앱·봇 이름이 그 이름으로 되돌아간다. 이 롤백은 슬래시 커맨드 되돌리기가
+  목적이므로, 이름은 유지하고 싶다면 3단계 업로드 전에 `display_information.name` 과
+  `features.bot_user.display_name` 을 `Somawork` 로 되돌려 놓아라. (스냅샷 파일 자체는 그 시점의
+  기록이므로 수정하지 않는다.)
+- ⚠️ **롤백 직후 테스트가 빨개지는 것은 의도된 동작이다.** `src/cli/setup/__tests__/slack-manifest.test.ts`
+  가 canonical 매니페스트의 이름을 `Somawork` 로 핀하고 있어서, 스냅샷을 덮어쓴 상태로는 그 케이스가
+  실패한다. 이름 핀은 "조용한 rename 금지" 장치이므로 롤백을 시끄럽게 만드는 것이 목적이다. 위 단계대로
+  이름 두 필드를 `Somawork` 로 되돌리면 초록으로 돌아온다.
 - Slack 앱 설정 UI에서 `/z` 슬래시 커맨드 사라짐.
 - `*.rollback-backup-YYYYMMDD-HHMMSS` 파일에 이전 상태 보존.
 

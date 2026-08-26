@@ -1,17 +1,9 @@
+import { formatTokens, validateAutoCompactTokensForModel } from '../../session/autocompact-policy';
 import { COMPACT_THRESHOLD_MAX, COMPACT_THRESHOLD_MIN, validateCompactThreshold } from '../../user-settings-store';
 import { CommandParser } from '../command-parser';
 import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
 
-/**
- * Handles `/compact-threshold` command (#617, AC1/AC2/AC7):
- *
- * - `/compact-threshold`         → reply with `Current threshold: N%`.
- * - `/compact-threshold <int>`   → validate 50–95, persist via
- *   `userSettingsStore.setUserCompactThreshold`, reply `Updated to N%`.
- * - `/compact-threshold <bad>`   → reply with the exact validator error message.
- *
- * All replies go to the current thread via `slackApi.postSystemMessage`.
- */
+/** Deprecated percent adapter: writes the current session token override. */
 export class CompactThresholdHandler implements CommandHandler {
   constructor(private deps: CommandDependencies) {}
 
@@ -23,19 +15,49 @@ export class CompactThresholdHandler implements CommandHandler {
     const { channel, threadTs, text, user } = ctx;
     const { rawArg } = CommandParser.parseCompactThresholdCommand(text);
 
-    // AC7: no argument → current-value query.
     if (rawArg === undefined) {
       const current = this.deps.userSettingsStore.getUserCompactThreshold(user);
-      await this.deps.slackApi.postSystemMessage(channel, `Current threshold: ${current}%`, { threadTs });
+      await this.deps.slackApi.postSystemMessage(
+        channel,
+        `Current legacy threshold: ${current}% (deprecated — use \`autocompact\`)`,
+        { threadTs },
+      );
       return { handled: true };
     }
 
-    // AC1: argument present → validate + persist. `validateCompactThreshold`
-    // rejects NaN and non-integers ("abc", "3.5") with the same error message.
+    const session = this.deps.claudeHandler.getSession(channel, threadTs);
+    if (!session) {
+      await this.deps.slackApi.postSystemMessage(
+        channel,
+        '💡 No active session. Use `autocompact` after starting a conversation.',
+        { threadTs },
+      );
+      return { handled: true };
+    }
+
     try {
-      const validated = validateCompactThreshold(Number(rawArg));
-      this.deps.userSettingsStore.setUserCompactThreshold(user, validated);
-      await this.deps.slackApi.postSystemMessage(channel, `Updated to ${validated}%`, { threadTs });
+      const pct = validateCompactThreshold(Number(rawArg));
+      const contextWindow =
+        session.usage?.contextWindow ||
+        (await import('../../metrics/model-profile')).resolveModelProfile(session.model).contextWindow;
+      const tokens = Math.round((contextWindow * pct) / 100);
+      const validation = validateAutoCompactTokensForModel(tokens, session.model);
+      if (!validation.ok) {
+        await this.deps.slackApi.postSystemMessage(
+          channel,
+          `❌ ${validation.message} Use \`autocompact <tokens>\` instead.`,
+          { threadTs },
+        );
+        return { handled: true };
+      }
+      session.autoCompactTokens = validation.tokens;
+      this.deps.userSettingsStore.clearUserCompactThreshold(user);
+      this.deps.claudeHandler.saveSessions();
+      await this.deps.slackApi.postSystemMessage(
+        channel,
+        `Deprecated percentage converted: ${pct}% → ${formatTokens(validation.tokens)} tokens for this session. Use \`autocompact\` going forward.`,
+        { threadTs },
+      );
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'invalid compactThreshold';
       await this.deps.slackApi.postSystemMessage(

@@ -14,6 +14,7 @@ import { Logger } from './logger';
 import type { McpManager } from './mcp-manager';
 import { PromptBuilder } from './prompt-builder';
 import { SessionRegistry } from './session-registry';
+import { signingSecretOption } from './slack-signing-secret';
 import type { AgentConfig } from './types';
 
 export interface AgentInfo {
@@ -82,9 +83,13 @@ export class AgentInstance {
 
     this.logger.info(`Starting agent '${this.name}'...`);
 
+    // `signingSecret` is spread in only when the agent declared one: Socket
+    // Mode verifies no request signature (that is an HTTP-receiver concern).
+    // Bolt would accept an explicit `undefined` identically — the spread keeps
+    // the option object canonical, matching the shape `AgentConfig` carries.
     const app = new App({
       token: this.config.slackBotToken,
-      signingSecret: this.config.signingSecret,
+      ...signingSecretOption(this.config.signingSecret),
       socketMode: true,
       appToken: this.config.slackAppToken,
     });

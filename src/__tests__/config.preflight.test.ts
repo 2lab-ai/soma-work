@@ -28,7 +28,7 @@ vi.mock('../logger', () => ({
   },
 }));
 
-import { probeSlackApi } from '../config';
+import { probeSlackApi, runPreflightChecks, validateConfig } from '../config';
 
 describe('probeSlackApi (#1003 preflight retry)', () => {
   beforeEach(() => {
@@ -91,5 +91,149 @@ describe('probeSlackApi (#1003 preflight retry)', () => {
     expect(result.ok).toBe(true);
     expect(result.botId).toBe('B999');
     expect(authTestMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+/**
+ * Task 7 — signing secret is OPTIONAL under Socket Mode.
+ *
+ * `SLACK_SIGNING_SECRET` verifies the `X-Slack-Signature` header on requests
+ * Slack delivers over HTTP. This runtime speaks Socket Mode (outbound wss,
+ * authenticated by `xapp-…`), so a missing secret is not a defect and must not
+ * fail boot. A secret that IS provided must still look real — a truncated
+ * paste is an operator error, so it stays a hard error (never a warning).
+ */
+describe('signing secret contract (Socket Mode)', () => {
+  const EXACTLY_MIN = 'b'.repeat(20);
+  const TOO_SHORT = 'c'.repeat(19);
+
+  function signingEntries(list: string[]): string[] {
+    return list.filter((entry) => entry.includes('SIGNING_SECRET'));
+  }
+
+  beforeEach(() => {
+    authTestMock.mockReset();
+    authTestMock.mockResolvedValue({ ok: true, user: 'soma', team: 'Acme', bot_id: 'B1' });
+    vi.stubEnv('SLACK_BOT_TOKEN', 'xoxb-valid-token');
+    vi.stubEnv('SLACK_APP_TOKEN', 'xapp-valid-token');
+    vi.stubEnv('SLACK_SIGNING_SECRET', undefined);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  describe('validateConfig', () => {
+    it('accepts an absent SLACK_SIGNING_SECRET when bot + app tokens are present', () => {
+      expect(() => validateConfig()).not.toThrow();
+    });
+
+    it('accepts an empty / whitespace-only SLACK_SIGNING_SECRET', () => {
+      vi.stubEnv('SLACK_SIGNING_SECRET', '');
+      expect(() => validateConfig()).not.toThrow();
+      vi.stubEnv('SLACK_SIGNING_SECRET', '   ');
+      expect(() => validateConfig()).not.toThrow();
+    });
+
+    it('still requires SLACK_BOT_TOKEN and SLACK_APP_TOKEN', () => {
+      vi.stubEnv('SLACK_BOT_TOKEN', undefined);
+      expect(() => validateConfig()).toThrow(/SLACK_BOT_TOKEN/);
+      vi.stubEnv('SLACK_BOT_TOKEN', 'xoxb-valid-token');
+      vi.stubEnv('SLACK_APP_TOKEN', undefined);
+      expect(() => validateConfig()).toThrow(/SLACK_APP_TOKEN/);
+    });
+
+    it('rejects a provided secret shorter than 20 chars (hard error)', () => {
+      vi.stubEnv('SLACK_SIGNING_SECRET', TOO_SHORT);
+      expect(() => validateConfig()).toThrow(/SLACK_SIGNING_SECRET/);
+      expect(() => validateConfig()).toThrow(/19 chars/);
+    });
+
+    it('accepts a provided secret of exactly 20 chars', () => {
+      vi.stubEnv('SLACK_SIGNING_SECRET', EXACTLY_MIN);
+      expect(() => validateConfig()).not.toThrow();
+    });
+
+    it('never puts the secret value in the failure message', () => {
+      vi.stubEnv('SLACK_SIGNING_SECRET', TOO_SHORT);
+      let message = '';
+      try {
+        validateConfig();
+      } catch (error) {
+        message = (error as Error).message;
+      }
+      expect(message).not.toBe('');
+      expect(message).not.toContain(TOO_SHORT);
+    });
+  });
+
+  describe('runPreflightChecks', () => {
+    it('reports no error and no warning for an absent signing secret', async () => {
+      const result = await runPreflightChecks();
+      expect(signingEntries(result.errors)).toEqual([]);
+      expect(signingEntries(result.warnings)).toEqual([]);
+    });
+
+    it('reports nothing for a whitespace-only signing secret either', async () => {
+      vi.stubEnv('SLACK_SIGNING_SECRET', '   ');
+      const result = await runPreflightChecks();
+      expect(signingEntries(result.errors)).toEqual([]);
+      expect(signingEntries(result.warnings)).toEqual([]);
+    });
+
+    it('hard-errors (not warns) on a provided secret shorter than 20 chars', async () => {
+      vi.stubEnv('SLACK_SIGNING_SECRET', TOO_SHORT);
+      const result = await runPreflightChecks();
+      expect(signingEntries(result.errors)).toHaveLength(1);
+      expect(signingEntries(result.errors)[0]).toContain('19 chars');
+      expect(signingEntries(result.errors)[0]).not.toContain(TOO_SHORT);
+      expect(signingEntries(result.warnings)).toEqual([]);
+    });
+
+    it('accepts a provided secret of exactly 20 chars', async () => {
+      vi.stubEnv('SLACK_SIGNING_SECRET', EXACTLY_MIN);
+      const result = await runPreflightChecks();
+      expect(signingEntries(result.errors)).toEqual([]);
+      expect(signingEntries(result.warnings)).toEqual([]);
+    });
+
+    it('keeps xoxb- / xapp- prefix validation untouched', async () => {
+      vi.stubEnv('SLACK_BOT_TOKEN', 'xoxa-wrong');
+      vi.stubEnv('SLACK_APP_TOKEN', 'xoxb-wrong');
+      const result = await runPreflightChecks();
+      expect(result.errors.some((e) => e.includes('SLACK_BOT_TOKEN') && e.includes('xoxb-'))).toBe(true);
+      expect(result.errors.some((e) => e.includes('SLACK_APP_TOKEN') && e.includes('xapp-'))).toBe(true);
+    });
+  });
+});
+
+/**
+ * `config.slack.signingSecret` is read once at module import, so this block
+ * re-imports the module under a stubbed env instead of reusing the singleton.
+ */
+describe('config.slack.signingSecret normalization', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  async function loadSigningSecret(raw: string | undefined): Promise<string | undefined> {
+    vi.resetModules();
+    vi.stubEnv('SLACK_SIGNING_SECRET', raw);
+    const mod = await import('../config');
+    return mod.config.slack.signingSecret;
+  }
+
+  it('is undefined when the env var is absent', async () => {
+    await expect(loadSigningSecret(undefined)).resolves.toBeUndefined();
+  });
+
+  it('is undefined for blank / whitespace-only values', async () => {
+    await expect(loadSigningSecret('')).resolves.toBeUndefined();
+    await expect(loadSigningSecret('   ')).resolves.toBeUndefined();
+  });
+
+  it('carries a configured value through (trimmed)', async () => {
+    await expect(loadSigningSecret(`  ${'a'.repeat(32)}  `)).resolves.toBe('a'.repeat(32));
   });
 });

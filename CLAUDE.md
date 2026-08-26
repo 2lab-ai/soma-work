@@ -65,6 +65,14 @@ src/
 ├── sandbox/         # 실행 샌드박스 게이트
 ├── metrics/         # 토큰/비용 텔레메트리
 ├── notification-channels/  # Slack·DM·Telegram·Webhook 출력 라우팅
+├── cli/             # `somawork` 컨트롤러 (데몬과 별개 프로세스 — 아래 참조)
+│   ├── index.ts     # 라우터: 공개 커맨드 + 비공개 Slack 훅 라우트
+│   ├── args.ts      # 커맨드별 문법 테이블 (토큰 1개당 정확히 1회 소비)
+│   ├── doctor.ts    # 주입된 seam만 쓰는 진단 게이트
+│   ├── profile.ts   # ProfileName + 프로파일 경로/서비스 식별자
+│   ├── service.ts   # launchd user agent 설치/기동
+│   ├── production-seams.ts  # 실제 배선 + 패키징된 asset 경로 상수
+│   └── setup/       # 온보딩 state machine (orchestrator, materialize, slack-*, llmux)
 └── local/           # Claude Code SDK 로컬 플러그인 (skills/, agents/, hooks/)
 
 packages/            # 워크스페이스 패키지
@@ -74,9 +82,42 @@ packages/            # 워크스페이스 패키지
 somalib/             # soma 계열 공유 라이브러리 (model-commands, permission, cron)
 services/a2t/        # 음성→텍스트 Python worker
 infra/               # docker / slack manifest / claude 설정
+scripts/deploy/      # stage-bundle.sh — 불변 런타임 번들 생성
+scripts/smoke/       # deploy-bundle.js (배포 계약) · setup-package.js (setup/런타임 계약)
+scripts/setup/       # DEPRECATED 셸 수집기 — 도달 불가, 번들 제외, 삭제 대기
 ```
 
 전체 컴포넌트 와이어링은 `docs/misc/reference/architecture.md`가 SSOT.
+
+### Controller vs daemon — 한 레포, 두 프로세스
+
+`src/cli/`(컨트롤러 `somawork`)와 `src/index.ts`(데몬)는 다른 프로세스이고 규칙이 다르다.
+
+- 컨트롤러는 **프로바이더도 Slack도 launchd도 직접 부르지 않는다.** 모든 효과는 주입된 seam으로 들어오고, 실제 배선은 `production-seams.ts` 한 곳에만 있다.
+- `--json` 라우트의 stdout은 **정확히 한 개의 문서**다. 그래서 JSON 바디는 ambient stdout/stderr/console을 캡처한 뒤 하나의 큐(`withJsonOutputLock`)로 직렬화한다. 캡처를 새로 추가하는 바디는 반드시 그 큐 안에 있어야 한다 — 비공개 `_print-slack-manifest` 라우트도 포함이다(그 stdout이 곧 JSON 문서다).
+- 어떤 에러 메시지도 그대로 출력하지 않는다. 허용 목록(`describeCliError`)에 없으면 고정 문구 + 검증된 클래스 이름뿐이다.
+- `src/cli/`가 import하는 모듈은 **module load 시 부수효과가 없어야** 한다. `@soma/common/env-paths`는 로드 시 `git`을 실행하고 배너를 출력하므로, 순수 리졸버는 `@soma/common/soma-paths`에 있다. 여기서 실수하면 `--json` 첫 바이트가 배너가 된다.
+- 프로파일 홈 오버라이드는 `SOMAWORK_HOME`이 정본, `SOMA_HOME`은 deprecated 별칭.
+
+### 런타임 번들 계약
+
+`scripts/deploy/stage-bundle.sh`가 만드는 트리 하나를 플릿 배포와 패키지 설치가 함께 쓴다.
+런타임 루트 기준 고정 경로: `dist/cli/index.js`(실행 비트 필수) · `dist/run-with-rotating-logs.js` ·
+`dist/index.js` · `config.default.json` · `.system.prompt.example` ·
+`infra/slack/slack-app-manifest.json`. 자격증명·프로파일 상태·테스트·소스맵·TypeScript 소스는
+들어가지 않는다.
+
+번들 경로를 바꾼다면 `src/cli/production-seams.ts` 상수, `stage-bundle.sh` 복사 목록,
+그리고 **두 스모크 모두**를 같은 커밋에서 고친다:
+
+```bash
+npm run build && npm run stage:bundle
+npm run smoke:deploy-bundle && npm run smoke:setup-package
+```
+
+`smoke:setup-package`는 소스 트리가 아니라 **staged 트리**를 검사하고, 하드링크 사본에서
+asset을 하나씩 지워 실패하는지까지 확인한다. 소스에 파일이 있다는 사실은 번들에 있다는 증거가
+아니다.
 
 ## Design Decisions
 
@@ -114,6 +155,14 @@ infra/               # docker / slack manifest / claude 설정
 
 ## Deployment
 
+배포 모델이 둘이다. 섞지 마라.
+
+- **플릿 배포 (레거시, 현행)** — 아래 브랜치 push. `/opt/soma-work/<env>` + `scripts/service.sh` +
+  노드의 `.env`. 런북은 `docs/runbook/add-new-deploy.md`.
+- **프로파일 패키지 (신규)** — `somawork setup` / `somawork service install`. 프로파일별 경로와
+  `ai.2lab.somawork.<profile>` 레이블. **아직 포뮬러가 배포되지 않았고 clean-machine·실 Slack
+  리시트도 없다** — 구현이 끝났다는 것과 출하됐다는 것을 문서에서 섞지 마라.
+
 main 머지 시 자동 배포 없음. 명시적 브랜치 push로만 배포된다.
 
 | 명령 | 대상 환경 | 배포 호스트 |
@@ -141,6 +190,7 @@ gh workflow run deploy --ref main -f confirm=deploy
 
 - 명령어 체계는 4개 prefix family: `/z <topic>` (영속) · `%<sub>` (세션 전용) · `$<skill>` (강제 스킬 발동) · naked whitelist. 상세는 `README.md`의 Commands 섹션. naked form의 source of truth는 두 층: `src/slack/z/whitelist.ts` + `CommandRouter`의 `CommandParser.is*Command` 매처(`auth`, `cct` 등 운영 카드).
 - whitelist 외 네이키드 텍스트는 채팅 / 워크플로우 디스패치로 처리.
+- **터미널 `somawork` 컨트롤러는 별개 surface다** (`setup` · `doctor` · `status` · `service` · `profile` · `sessions` · `help` · `version`). Slack prefix family와 아무 관계 없고, 문법의 SSOT는 `src/cli/args.ts`의 `COMMAND_GRAMMAR` + `publicCommandSummaries()` — help 텍스트가 그 테이블에서 생성되므로 drift할 수 없고, 비공개 훅 라우트는 절대 나타나지 않는다.
 - **Migration (#506)**: whitelist 외의 legacy 네이키드 형태(`persona linus`, `model sonnet`, `show_prompt` 등)는 deprecated. 첫 사용 시 tombstone hint, 이후 drop. `SOMA_ENABLE_LEGACY_SLASH=true` 환경변수로 rollback 가능.
 
 ## Documentation Sync (Required)
