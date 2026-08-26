@@ -11,18 +11,27 @@ describe('CompactThresholdHandler (#617 AC1, AC7)', () => {
   let mockDeps: CommandDependencies;
   let postSystemMessage: ReturnType<typeof vi.fn>;
   let getUserCompactThreshold: ReturnType<typeof vi.fn>;
-  let setUserCompactThreshold: ReturnType<typeof vi.fn>;
+  let clearUserCompactThreshold: ReturnType<typeof vi.fn>;
+  let getSession: ReturnType<typeof vi.fn>;
+  let saveSessions: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     postSystemMessage = vi.fn().mockResolvedValue(undefined);
     getUserCompactThreshold = vi.fn().mockReturnValue(80);
-    setUserCompactThreshold = vi.fn();
+    clearUserCompactThreshold = vi.fn();
+    const session = { model: 'claude-opus-5[1m]', autoCompactTokens: undefined };
+    getSession = vi.fn().mockReturnValue(session);
+    saveSessions = vi.fn();
 
     mockDeps = {
       slackApi: { postSystemMessage },
       userSettingsStore: {
         getUserCompactThreshold,
-        setUserCompactThreshold,
+        clearUserCompactThreshold,
+      },
+      claudeHandler: {
+        getSession,
+        saveSessions,
       },
     } as unknown as CommandDependencies;
 
@@ -61,8 +70,9 @@ describe('CompactThresholdHandler (#617 AC1, AC7)', () => {
 
       expect(result.handled).toBe(true);
       expect(getUserCompactThreshold).toHaveBeenCalledWith('U1');
-      expect(postSystemMessage).toHaveBeenCalledWith('C1', 'Current threshold: 80%', { threadTs: '171.100' });
-      expect(setUserCompactThreshold).not.toHaveBeenCalled();
+      expect(postSystemMessage.mock.calls[0][1]).toMatch(/Current legacy threshold: 80%/);
+      expect(postSystemMessage.mock.calls[0][1]).toMatch(/deprecated/i);
+      expect(clearUserCompactThreshold).not.toHaveBeenCalled();
     });
 
     it('AC7: reflects persisted value when set', async () => {
@@ -70,7 +80,8 @@ describe('CompactThresholdHandler (#617 AC1, AC7)', () => {
       const ctx = makeCtx('compact-threshold');
       await handler.execute(ctx);
 
-      expect(postSystemMessage).toHaveBeenCalledWith('C1', 'Current threshold: 65%', { threadTs: '171.100' });
+      expect(postSystemMessage.mock.calls[0][1]).toMatch(/Current legacy threshold: 65%/);
+      expect(postSystemMessage.mock.calls[0][1]).toMatch(/deprecated/i);
     });
   });
 
@@ -80,22 +91,25 @@ describe('CompactThresholdHandler (#617 AC1, AC7)', () => {
       const result = await handler.execute(ctx);
 
       expect(result.handled).toBe(true);
-      expect(setUserCompactThreshold).toHaveBeenCalledWith('U1', 75);
-      expect(postSystemMessage).toHaveBeenCalledWith('C1', 'Updated to 75%', { threadTs: '171.100' });
+      expect(getSession.mock.results[0].value.autoCompactTokens).toBe(750_000);
+      expect(clearUserCompactThreshold).toHaveBeenCalledWith('U1');
+      expect(saveSessions).toHaveBeenCalledTimes(1);
+      expect(postSystemMessage.mock.calls[0][1]).toMatch(/deprecated/i);
+      expect(postSystemMessage.mock.calls[0][1]).toMatch(/750,?000|750k/);
     });
 
     it('AC1: accepts 50 (lower boundary)', async () => {
       const ctx = makeCtx('/compact-threshold 50');
       await handler.execute(ctx);
-      expect(setUserCompactThreshold).toHaveBeenCalledWith('U1', 50);
-      expect(postSystemMessage).toHaveBeenCalledWith('C1', 'Updated to 50%', { threadTs: '171.100' });
+      expect(getSession.mock.results[0].value.autoCompactTokens).toBe(500_000);
+      expect(clearUserCompactThreshold).toHaveBeenCalledWith('U1');
     });
 
     it('AC1: accepts 95 (upper boundary)', async () => {
       const ctx = makeCtx('/compact-threshold 95');
       await handler.execute(ctx);
-      expect(setUserCompactThreshold).toHaveBeenCalledWith('U1', 95);
-      expect(postSystemMessage).toHaveBeenCalledWith('C1', 'Updated to 95%', { threadTs: '171.100' });
+      expect(getSession.mock.results[0].value.autoCompactTokens).toBe(950_000);
+      expect(clearUserCompactThreshold).toHaveBeenCalledWith('U1');
     });
   });
 
@@ -106,7 +120,7 @@ describe('CompactThresholdHandler (#617 AC1, AC7)', () => {
 
       expect(result.handled).toBe(true);
       // Handler pre-validates via validateCompactThreshold; setter never runs.
-      expect(setUserCompactThreshold).not.toHaveBeenCalled();
+      expect(clearUserCompactThreshold).not.toHaveBeenCalled();
       const msg = postSystemMessage.mock.calls[0][1];
       expect(msg).toMatch(/must be in \[50, 95\]/);
       expect(msg).toMatch(/allowed range: 50.95/);
@@ -119,7 +133,7 @@ describe('CompactThresholdHandler (#617 AC1, AC7)', () => {
       expect(result.handled).toBe(true);
       // "abc" fails the integer regex — NaN is handed to validator, which
       // rejects with "must be an integer". Setter must NOT be invoked.
-      expect(setUserCompactThreshold).not.toHaveBeenCalled();
+      expect(clearUserCompactThreshold).not.toHaveBeenCalled();
       const msg = postSystemMessage.mock.calls[0][1];
       expect(msg).toMatch(/integer/);
       expect(msg).toMatch(/allowed range: 50.95/);
@@ -130,7 +144,7 @@ describe('CompactThresholdHandler (#617 AC1, AC7)', () => {
       const result = await handler.execute(ctx);
 
       expect(result.handled).toBe(true);
-      expect(setUserCompactThreshold).not.toHaveBeenCalled();
+      expect(clearUserCompactThreshold).not.toHaveBeenCalled();
       const msg = postSystemMessage.mock.calls[0][1];
       expect(msg).toMatch(/integer/);
     });
@@ -140,7 +154,7 @@ describe('CompactThresholdHandler (#617 AC1, AC7)', () => {
       await handler.execute(ctx);
 
       // Handler pre-validates; setter never runs for out-of-range values.
-      expect(setUserCompactThreshold).not.toHaveBeenCalled();
+      expect(clearUserCompactThreshold).not.toHaveBeenCalled();
       const msg = postSystemMessage.mock.calls[0][1];
       expect(msg).toMatch(/must be in \[50, 95\]/);
     });

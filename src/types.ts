@@ -632,6 +632,16 @@ export interface ConversationSession {
   compactTickInterval?: ReturnType<typeof setInterval>;
   // Threshold-checker → input-processor signal that next /compact-threshold-violating user turn must be compacted.
   autoCompactPending?: boolean;
+  /**
+   * Session-scoped auto-compact threshold in TOKENS, set by `/autocompact
+   * <tokens>` and cleared by `/autocompact reset`. Wins over the model's
+   * declared default and over the legacy per-user percent (see
+   * `session/autocompact-policy.ts`). Persisted. Deliberately kept verbatim
+   * across model switches — the resolver clamps it for the CURRENT model
+   * instead of rewriting it, so switching back restores the user's number.
+   * `null` / `undefined` = no override.
+   */
+  autoCompactTokens?: number | null;
   // One-shot suppression for `checkAndSchedulePendingCompact`. Set to `true`
   // by `postCompactCompleteIfNeeded` when a compact cycle seals; cleared by
   // the very next threshold check. Prevents the "Compaction completed →
@@ -686,6 +696,8 @@ export interface ConversationSession {
     ctx: { channel: string; threadTs: string; user: string; ts: string };
     text: string;
   }> | null;
+  // Runtime-only exact-once guard while the queue is handed back to EventRouter.
+  compactDispatchInFlight?: boolean;
   // Runtime-only: true while a dedicated `/compact` SDK turn is executing.
   // Set at query start (local slash command bypass), cleared in the
   // stream-executor `finally`. Covers the post-PostCompact/pre-result window

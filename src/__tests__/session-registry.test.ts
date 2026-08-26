@@ -1109,4 +1109,69 @@ describe('SessionRegistry per-goal time attribution (T3)', () => {
     expect(g1.activeMsUsed).toBe(5000);
     expect((session.goal as { activeMsUsed?: number }).activeMsUsed ?? 0).toBe(0);
   });
+
+  it('persists an autoCompactTokens override across a restart', () => {
+    const writer = new SessionRegistry();
+    const session = writer.createSession('U123', 'Tester', 'C_AC', '171.AC1');
+    session.sessionId = 'session-ac-1';
+    session.model = 'claude-opus-5[1m]';
+    session.autoCompactTokens = 400_000;
+
+    writer.saveSessions();
+
+    const reader = new SessionRegistry();
+    reader.loadSessions();
+    const restored = reader.getSession('C_AC', '171.AC1');
+
+    expect(restored?.autoCompactTokens).toBe(400_000);
+  });
+
+  it('persists an override set BEFORE the first SDK sessionId exists', () => {
+    // Save eligibility must not drop a pre-first-turn override — the user set
+    // it, so it has to survive a crash the same way `goal` does.
+    const writer = new SessionRegistry();
+    const session = writer.createSession('U123', 'Tester', 'C_AC', '171.AC2');
+    expect(session.sessionId).toBeUndefined();
+    session.autoCompactTokens = 250_000;
+
+    writer.saveSessions();
+
+    const reader = new SessionRegistry();
+    reader.loadSessions();
+    const restored = reader.getSession('C_AC', '171.AC2');
+
+    expect(restored?.autoCompactTokens).toBe(250_000);
+  });
+
+  it('restores a cleared override as absent, not as a stale number', () => {
+    const writer = new SessionRegistry();
+    const session = writer.createSession('U123', 'Tester', 'C_AC', '171.AC3');
+    session.sessionId = 'session-ac-3';
+    session.autoCompactTokens = null;
+
+    writer.saveSessions();
+
+    const reader = new SessionRegistry();
+    reader.loadSessions();
+    const restored = reader.getSession('C_AC', '171.AC3');
+
+    expect(restored?.autoCompactTokens ?? null).toBeNull();
+  });
+
+  it('loads an active session model verbatim — the user-default Opus migration does not touch it', () => {
+    // `migrateOpusDefaultModel` rewrites USER DEFAULTS only. An active session
+    // pinned to an older Opus must resume on exactly that model.
+    const writer = new SessionRegistry();
+    const session = writer.createSession('U123', 'Tester', 'C_AC', '171.AC4');
+    session.sessionId = 'session-ac-4';
+    session.model = 'claude-opus-4-6';
+
+    writer.saveSessions();
+
+    const reader = new SessionRegistry();
+    reader.loadSessions();
+    const restored = reader.getSession('C_AC', '171.AC4');
+
+    expect(restored?.model).toBe('claude-opus-4-6');
+  });
 });

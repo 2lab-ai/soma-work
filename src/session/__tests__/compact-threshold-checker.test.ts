@@ -92,7 +92,7 @@ describe('checkAndSchedulePendingCompact (#617 AC3)', () => {
   }
 
   it('AC3: below threshold (79/80) → returns false, no post, no flag', async () => {
-    session.usage = makeUsage(79_000, 100_000);
+    session.usage = makeUsage(158_000, 200_000);
     const result = await run();
     expect(result).toBe(false);
     expect(session.autoCompactPending).toBe(false);
@@ -102,29 +102,33 @@ describe('checkAndSchedulePendingCompact (#617 AC3)', () => {
   });
 
   it('AC3: at threshold (80/80) → returns true, sets flag, posts announce', async () => {
-    session.usage = makeUsage(80_000, 100_000);
+    session.usage = makeUsage(160_000, 200_000);
     const result = await run();
     expect(result).toBe(true);
     expect(session.autoCompactPending).toBe(true);
     expect(slackApi.postSystemMessage).toHaveBeenCalledWith(
       'C1',
-      expect.stringMatching(/Context usage 80% ≥ threshold 80% — next turn will auto \/compact/),
+      expect.stringMatching(/Context usage 160k tokens ≥ 160k .*next turn will auto \/compact/),
       { threadTs: 'T1' },
     );
     expect(session.lastKnownUsagePct).toBe(80);
   });
 
   it('AC3: above threshold (95/80) → triggers with actual pct in message', async () => {
-    session.usage = makeUsage(95_000, 100_000);
+    session.usage = makeUsage(190_000, 200_000);
     const result = await run();
     expect(result).toBe(true);
-    expect(slackApi.postSystemMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Context usage 95%'), {
-      threadTs: 'T1',
-    });
+    expect(slackApi.postSystemMessage).toHaveBeenCalledWith(
+      'C1',
+      expect.stringContaining('Context usage 190k tokens'),
+      {
+        threadTs: 'T1',
+      },
+    );
   });
 
   it('AC3: idempotent — autoCompactPending already true → no-op, no duplicate post', async () => {
-    session.usage = makeUsage(85_000, 100_000);
+    session.usage = makeUsage(170_000, 200_000);
     session.autoCompactPending = true;
     const result = await run();
     expect(result).toBe(false);
@@ -132,7 +136,7 @@ describe('checkAndSchedulePendingCompact (#617 AC3)', () => {
   });
 
   it('AC3: reset after compaction → can fire again', async () => {
-    session.usage = makeUsage(85_000, 100_000);
+    session.usage = makeUsage(170_000, 200_000);
     // 1st run: fires
     expect(await run()).toBe(true);
     expect(session.autoCompactPending).toBe(true);
@@ -147,11 +151,11 @@ describe('checkAndSchedulePendingCompact (#617 AC3)', () => {
 
   it('AC3: respects per-user threshold override (60) — fires at 65%', async () => {
     userSettings.getUserCompactThreshold.mockReturnValue(60);
-    session.usage = makeUsage(65_000, 100_000);
+    session.usage = makeUsage(130_000, 200_000);
     const result = await run();
     expect(result).toBe(true);
     expect(userSettings.getUserCompactThreshold).toHaveBeenCalledWith('U1');
-    expect(slackApi.postSystemMessage).toHaveBeenCalledWith('C1', expect.stringContaining('≥ threshold 60%'), {
+    expect(slackApi.postSystemMessage).toHaveBeenCalledWith('C1', expect.stringContaining('≥ 120k'), {
       threadTs: 'T1',
     });
   });
@@ -173,7 +177,7 @@ describe('checkAndSchedulePendingCompact (#617 AC3)', () => {
       updateMessage: vi.fn().mockResolvedValue(undefined),
     };
 
-    session.usage = makeUsage(25_000, 100_000); // post-compact context = 25%
+    session.usage = makeUsage(50_000, 200_000); // post-compact context = 25%
     session.preCompactUsagePct = 80;
     session.lastKnownUsagePct = null;
     session.compactCompletionMessageTs = '1700000000.000100';
@@ -205,7 +209,7 @@ describe('checkAndSchedulePendingCompact (#617 AC3)', () => {
       postSystemMessage: vi.fn().mockResolvedValue(undefined),
       updateMessage: vi.fn().mockResolvedValue(undefined),
     };
-    session.usage = makeUsage(50_000, 100_000);
+    session.usage = makeUsage(100_000, 200_000);
     session.compactCompletionMessageTs = null;
 
     await checkAndSchedulePendingCompact({
@@ -226,7 +230,7 @@ describe('checkAndSchedulePendingCompact (#617 AC3)', () => {
     // because session.usage hadn't refreshed (large cache_read on the first
     // post-compact turn). The completion path sets skipThresholdCheckOnce so
     // that single check returns false. Subsequent turns are not affected.
-    session.usage = makeUsage(95_000, 100_000); // would normally fire
+    session.usage = makeUsage(190_000, 200_000); // would normally fire
     session.skipThresholdCheckOnce = true;
 
     const result1 = await run();
@@ -245,7 +249,7 @@ describe('checkAndSchedulePendingCompact (#617 AC3)', () => {
   });
 
   it('AC3: slackPost failure does NOT revert autoCompactPending — next turn still compacts', async () => {
-    session.usage = makeUsage(90_000, 100_000);
+    session.usage = makeUsage(180_000, 200_000);
     slackApi.postSystemMessage.mockRejectedValueOnce(new Error('slack 503'));
     const logger = { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() };
 
@@ -310,7 +314,7 @@ describe('checkAndSchedulePendingCompact — gpt-5.5 token trigger', () => {
     expect(session.autoCompactPending).toBe(true);
     expect(slackApi.postSystemMessage).toHaveBeenCalledWith(
       'C1',
-      expect.stringMatching(/250k tokens ≥ 250k .*next turn will auto \/compact/),
+      expect.stringMatching(/250k tokens ≥ 243k .*next turn will auto \/compact/),
       { threadTs: 'T1' },
     );
   });
@@ -328,7 +332,7 @@ describe('checkAndSchedulePendingCompact — gpt-5.5 token trigger', () => {
   });
 
   it('claude models keep the percent-threshold path untouched', async () => {
-    session = makeSession({ model: 'claude-opus-4-7', usage: makeUsage(80_000, 100_000) });
+    session = makeSession({ model: 'claude-opus-4-7', usage: makeUsage(160_000, 200_000) });
     const result = await run();
     expect(result).toBe(true);
     expect(userSettings.getUserCompactThreshold).toHaveBeenCalled();

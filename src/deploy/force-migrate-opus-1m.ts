@@ -1,47 +1,55 @@
 /**
- * One-shot force-migration of every persisted `defaultModel` in
- * `user-settings.json` to the current default target (gpt-5.6 since
- * 2026-07-10; opus[1m] before).
+ * One-shot migration of persisted `defaultModel` values in
+ * `user-settings.json`. This is the SINGLE authority for rewriting a user
+ * default — `UserSettingsStore.loadSettings` deliberately does not repeat it,
+ * because a second, every-boot rewrite would overrule a user who deliberately
+ * picked an older generation after the one-shot had already run.
  *
- * Why this exists. Bumping the in-code `DEFAULT_MODEL` only affects users
- * whose stored `defaultModel` is missing or coerced-away. Existing users on
- * other valid models (e.g. `claude-opus-4-7`, `claude-opus-4-7[1m]`,
- * `claude-sonnet-4-6`) would stay on those models indefinitely. The user
- * instruction was explicit: every user should land on `opus[1m]` once,
- * with the option to opt back manually via the `/model` command afterward.
+ * 2026-08-26 — the ALL-USER rewrite is retired. Until now this module forced
+ * every user onto one target (`gpt-5.6-sol` since 2026-07-10, `opus[1m]`
+ * before). That is not what the current instruction asks for and it is
+ * actively destructive: on any host whose marker is missing, corrupt, or
+ * written for an older target, it silently discarded every user's own model
+ * choice. What remains is the narrow migration that was actually requested:
  *
- * Why not piggyback on `normalizeMainTargetData`. `normalizeMainTargetData`
- * is `coerceModel` — it preserves valid stored values and only nudges
- * unknown/missing ones to DEFAULT_MODEL. That's the right behaviour for the
- * deploy-time bootstrap (which itself is gated by `.main-bootstrap.json`),
- * but it does NOT touch an in-place deployment. This module is the missing
- * leg: a runtime, idempotent, one-shot rewrite gated by a dedicated marker.
+ *   - opus-family defaults (`claude-opus-*`, bare or `[1m]`, including a bare
+ *     `claude-opus-5`) converge on `claude-opus-5[1m]`;
+ *   - every other user is left byte-identical;
+ *   - `sessions.json` is never opened — active sessions keep their model.
  *
- * Why a separate marker. The deploy bootstrap marker
- * (`.main-bootstrap.json`) lives in the target dir. The data dir lives in
- * a separate, persistent location. Re-using the deploy marker would either
- * pin migration to fresh installs only or require coupling unrelated
- * lifecycles. The dedicated `.opus-1m-migration.json` marker also makes a
- * future-PR "bump the migration target to opus-4-9[1m]" trivial:
- * delete-and-rerun, or invert the predicate to compare against the marker's
- * `target` field.
+ * The transform is not re-implemented here: it is
+ * `user-settings-store.migrateOpusDefaultModel`, so the two places that know
+ * "what is an opus default worth migrating" cannot drift.
+ *
+ * Why this exists at all. Bumping the in-code `DEFAULT_MODEL` only affects
+ * users whose stored `defaultModel` is missing or coerced-away, and
+ * `normalizeMainTargetData` (the deploy bootstrap) is `coerceModel` — it
+ * preserves valid stored values and never runs on an in-place deployment.
+ * This module is the missing leg: a runtime, idempotent, one-shot rewrite
+ * gated by a dedicated marker.
+ *
+ * Why a separate marker. The deploy bootstrap marker (`.main-bootstrap.json`)
+ * lives in the target dir; the data dir is a separate, persistent location.
+ * The dedicated `.opus-1m-migration.json` marker is TARGET-AWARE, which is
+ * what makes this retirement safe on a live host: the deployed marker records
+ * the old `gpt-5.6-sol` target, so the first boot after this change re-runs
+ * once for the new selective target and then skips forever.
  */
+
 import fs from 'node:fs';
 import path from 'node:path';
+import { atomicWriteJson } from '@soma/common/atomic-write';
 
-import type { ModelId } from '../user-settings-store';
+import { type ModelId, migrateOpusDefaultModel, OPUS_DEFAULT_MIGRATION_TARGET } from '../user-settings-store';
 
 /**
- * Target model id every user lands on after this migration runs.
- * 2026-07-10: bumped opus[1m] → gpt-5.6 → gpt-5.6-sol (operator decision —
- * there is no bare gpt-5.6 model; the sol flagship is the real id). The
- * marker short-circuit is TARGET-AWARE: hosts that migrated to an older
- * target re-run exactly once for the new target.
+ * Target opus-family defaults land on, and the value recorded in the marker.
+ *
+ * Re-exported from the store rather than re-declared: the transform below is
+ * `migrateOpusDefaultModel`, so a second literal here could only ever be a way
+ * for the marker to disagree with what was actually written.
  */
-export const FORCE_DEFAULT_TARGET: ModelId = 'gpt-5.6-sol';
-
-/** Historical first-generation target (kept for marker back-compat tests). */
-export const OPUS_1M_TARGET: ModelId = 'claude-opus-4-8[1m]';
+export const OPUS_MIGRATION_TARGET: ModelId = OPUS_DEFAULT_MIGRATION_TARGET;
 
 /** Dedicated marker file name (sibling of user-settings.json in DATA_DIR). */
 export const OPUS_1M_MIGRATION_MARKER = '.opus-1m-migration.json';
@@ -53,9 +61,9 @@ export interface ForceMigrateOpus1mParams {
    */
   dataDir: string;
   /**
-   * Override the marker target. Defaults to {@link OPUS_1M_TARGET}; kept as
-   * a parameter so a future re-run with a different target can be wired
-   * without changing this module's surface.
+   * Override the marker target. Defaults to {@link OPUS_MIGRATION_TARGET};
+   * kept as a parameter so a future re-run with a different target can be
+   * wired without changing this module's surface.
    */
   target?: ModelId;
   /** Injected clock for deterministic marker timestamps in tests. */
@@ -81,17 +89,18 @@ interface OpusOneMMarker {
 }
 
 export function forceMigrateOpus1m(params: ForceMigrateOpus1mParams): ForceMigrateOpus1mResult {
-  const target = params.target ?? FORCE_DEFAULT_TARGET;
+  const target = params.target ?? OPUS_MIGRATION_TARGET;
   const now = params.now ?? (() => new Date());
   const settingsFile = path.join(params.dataDir, 'user-settings.json');
   const markerFile = path.join(params.dataDir, OPUS_1M_MIGRATION_MARKER);
 
-  // Target-aware short-circuit (the doc-comment's "invert the predicate"
-  // option): skip only when the existing marker already records THIS target.
-  // A marker for an older target (e.g. the 2026-06 opus[1m] run) re-runs
+  // Target-aware short-circuit: skip only when the existing marker already
+  // records THIS target. A marker for an older target — the retired
+  // `gpt-5.6-sol` all-user run, or the 2026-06 `opus[1m]` one — re-runs
   // exactly once and is then overwritten with the new target. An unreadable
-  // marker re-runs too — the migration is a plain idempotent rewrite, so a
-  // spurious re-run is harmless while a wrongly-skipped one strands users.
+  // marker re-runs too: the migration is a convergent, opus-only rewrite, so
+  // a spurious re-run is bounded and harmless, while a wrongly-skipped one
+  // strands users on a dead generation.
   if (fs.existsSync(markerFile)) {
     try {
       const existing = JSON.parse(fs.readFileSync(markerFile, 'utf8')) as Partial<OpusOneMMarker>;
@@ -111,14 +120,26 @@ export function forceMigrateOpus1m(params: ForceMigrateOpus1mParams): ForceMigra
 
     for (const userSettings of Object.values(settings)) {
       total += 1;
-      if (userSettings.defaultModel !== target) {
-        userSettings.defaultModel = target;
+      const current = userSettings.defaultModel;
+      if (typeof current !== 'string') continue;
+      // Selective: `migrateOpusDefaultModel` returns non-opus values
+      // byte-identical, so this comparison is what keeps every other user out
+      // of the rewrite entirely — including out of the `migrated` count.
+      const next = migrateOpusDefaultModel(current);
+      if (next !== current) {
+        userSettings.defaultModel = next;
         migrated += 1;
       }
     }
 
+    // Only when something actually changed: a no-op boot must leave the file
+    // (and its bytes) alone. `atomicWriteJson` is the repo-wide contract for
+    // JSON state — tmp file + fsync + rename, so a crash mid-write cannot
+    // truncate every user's settings. It sorts keys, so the FIRST migrating
+    // boot also normalises key order; subsequent loads round-trip that order
+    // unchanged, so it is a one-time diff, not per-boot churn.
     if (migrated > 0) {
-      fs.writeFileSync(settingsFile, `${JSON.stringify(settings, null, 2)}\n`, 'utf8');
+      atomicWriteJson(settingsFile, settings, { backup: true });
     }
   }
 
@@ -132,7 +153,7 @@ export function forceMigrateOpus1m(params: ForceMigrateOpus1mParams): ForceMigra
     migrated,
     total,
   };
-  fs.writeFileSync(markerFile, `${JSON.stringify(marker, null, 2)}\n`, 'utf8');
+  atomicWriteJson(markerFile, marker);
 
   return { status: 'applied', markerFile, migrated, total };
 }
