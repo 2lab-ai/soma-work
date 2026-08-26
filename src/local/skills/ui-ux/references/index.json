@@ -31,6 +31,16 @@
       "accent": "#D60001",
       "default": false,
       "captured": "2026-06-30"
+    },
+    {
+      "name": "np1-proposal",
+      "title": "np1 Proposal — decision-first executive brief",
+      "source": "file:///Users/zhugehyuk/2lab.ai/soul/np1/data/briefings/s26-ultra-decision.html",
+      "path": "references/np1-proposal/design.md",
+      "tags": ["proposal", "decision-brief", "report", "navy", "semantic-color", "data-table"],
+      "accent": "#2563EB",
+      "default": false,
+      "captured": "2026-08-26"
     }
   ]
 }
