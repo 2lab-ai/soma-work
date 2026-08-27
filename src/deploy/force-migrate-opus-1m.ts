@@ -60,12 +60,6 @@ export interface ForceMigrateOpus1mParams {
    * written. Caller-supplied so the migration is testable without env vars.
    */
   dataDir: string;
-  /**
-   * Override the marker target. Defaults to {@link OPUS_MIGRATION_TARGET};
-   * kept as a parameter so a future re-run with a different target can be
-   * wired without changing this module's surface.
-   */
-  target?: ModelId;
   /** Injected clock for deterministic marker timestamps in tests. */
   now?: () => Date;
 }
@@ -89,7 +83,14 @@ interface OpusOneMMarker {
 }
 
 export function forceMigrateOpus1m(params: ForceMigrateOpus1mParams): ForceMigrateOpus1mResult {
-  const target = params.target ?? OPUS_MIGRATION_TARGET;
+  // ONE target authority: the transform below (`migrateOpusDefaultModel`)
+  // always rewrites onto `OPUS_DEFAULT_MIGRATION_TARGET` and cannot be
+  // parameterized, so this constant is the only value the marker may ever
+  // record — a caller-supplied override previously let the marker disagree
+  // with what was actually written to disk (marker="X", data=canonical),
+  // after which a future call with that same override would skip forever,
+  // believing the wrong target had already been applied.
+  const target = OPUS_MIGRATION_TARGET;
   const now = params.now ?? (() => new Date());
   const settingsFile = path.join(params.dataDir, 'user-settings.json');
   const markerFile = path.join(params.dataDir, OPUS_1M_MIGRATION_MARKER);
