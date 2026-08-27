@@ -111,6 +111,26 @@ describe('CompactThresholdHandler (#617 AC1, AC7)', () => {
       expect(getSession.mock.results[0].value.autoCompactTokens).toBe(950_000);
       expect(clearUserCompactThreshold).toHaveBeenCalledWith('U1');
     });
+
+    it('ignores a stale cached session.usage.contextWindow — derives the denominator from the current model profile (post-merge review finding)', async () => {
+      // model-handler's `model set` re-anchors `session.model` but not
+      // `session.usage` (that field is only refreshed on the next turn's SDK
+      // reply). If this handler preferred the stale cached usage over the
+      // model's real profile, a switch from a 200k model to a 1M `[1m]` model
+      // would silently write an 8x-too-small token override.
+      getSession.mockReturnValue({
+        model: 'claude-opus-5[1m]',
+        usage: { contextWindow: 200_000 },
+        autoCompactTokens: undefined,
+      });
+      const ctx = makeCtx('/compact-threshold 80');
+      await handler.execute(ctx);
+
+      // 80% of the real claude-opus-5[1m] window (1,000,000), NOT 80% of the
+      // stale cached usage.contextWindow (200,000 → would be 160,000).
+      expect(getSession.mock.results[0].value.autoCompactTokens).toBe(800_000);
+      expect(clearUserCompactThreshold).toHaveBeenCalledWith('U1');
+    });
   });
 
   describe('execute — invalid argument (#617 AC1)', () => {
