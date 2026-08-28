@@ -1046,8 +1046,6 @@ export class SessionUiManager {
     existingMessageTs?: string,
   ): Promise<string | undefined> {
     const sessionKey = this.claudeHandler.getSessionKey(session.channelId, session.threadTs);
-    const threadTs = session.threadTs;
-    const channel = session.channelId;
 
     // 12h idle check (when more than 10 minutes remain = not yet at final warning stage)
     if (timeRemaining > 60 * 60 * 1000) {
