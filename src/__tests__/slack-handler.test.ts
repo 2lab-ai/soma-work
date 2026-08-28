@@ -627,6 +627,58 @@ describe('SlackHandler', () => {
     resetAdminUsersCache();
   });
 
+  it('ends the session anchored to a deleted message, even when it has no replies yet', async () => {
+    // isThreadRoot() only recognises a root once it HAS replies, so a bot thread
+    // card that nobody has answered yet skips the confirmation and is deleted
+    // outright. Its session used to survive with a threadTs pointing at nothing,
+    // and Slack drops a dead thread_ts and publishes to the channel instead — so
+    // that session's later expiry/sleep notices went out as public channel posts.
+    // Registry lookup, not message shape, decides whether a session dies here.
+    const { resetAdminUsersCache } = await import('../admin-utils');
+    process.env.ADMIN_USERS = 'U_ADMIN';
+    resetAdminUsersCache();
+
+    const app = { client: {}, assistant: vi.fn() } as any;
+    const handler = new SlackHandler(app as any, {} as any, {} as any);
+    const handlerAny = handler as any;
+
+    const mockSlackApi = {
+      // reply_count absent → isThreadRoot() is false → no confirmation prompt.
+      getMessage: vi.fn().mockResolvedValue({ ts: '111222.000000', user: 'B999' }),
+      getThreadMessage: vi.fn(),
+      getBotUserId: vi.fn().mockResolvedValue('B999'),
+      deleteMessage: vi.fn().mockResolvedValue(undefined),
+      addReaction: vi.fn().mockResolvedValue(undefined),
+      removeReaction: vi.fn().mockResolvedValue(undefined),
+    };
+    const mockClaudeHandler = {
+      getSessionKey: vi.fn((ch: string, ts?: string) => `${ch}:${ts ?? ''}`),
+      terminateSession: vi.fn().mockReturnValue(true),
+    };
+
+    handlerAny.slackApi = mockSlackApi;
+    handlerAny.claudeHandler = mockClaudeHandler;
+    handlerAny.inputProcessor = { processFiles: vi.fn(), routeCommand: vi.fn() };
+
+    const say = vi.fn().mockResolvedValue({ ts: 'msg123' });
+    await handler.handleMessage(
+      {
+        user: 'U_ADMIN',
+        channel: 'D123',
+        ts: '555.666',
+        text: 'https://workspace.slack.com/archives/C999/p111222000000',
+      } as any,
+      say,
+    );
+
+    expect(mockClaudeHandler.getSessionKey).toHaveBeenCalledWith('C999', '111222.000000');
+    expect(mockClaudeHandler.terminateSession).toHaveBeenCalledWith('C999:111222.000000');
+    expect(mockSlackApi.deleteMessage).toHaveBeenCalledWith('C999', '111222.000000');
+
+    delete process.env.ADMIN_USERS;
+    resetAdminUsersCache();
+  });
+
   it('admin gets a Yes/No confirmation when the link is a channel thread ROOT', async () => {
     const { resetAdminUsersCache } = await import('../admin-utils');
     process.env.ADMIN_USERS = 'U_ADMIN';

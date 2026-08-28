@@ -1682,18 +1682,24 @@ export class SessionRegistry {
         // Transition to sleep instead of deleting
         session.state = 'SLEEPING';
         session.sleepStartedAt = new Date();
-        session.warningMessageTs = undefined;
-        session.lastWarningSentAt = undefined;
         this.cleanupSourceWorkingDirs(session);
         slept++;
 
         if (this.expiryCallbacks) {
           try {
+            // `warningMessageTs` is still set here on purpose. onSleep edits that
+            // existing "만료 예정" warning into the sleep notice instead of posting
+            // a second message; clearing the field first made that branch
+            // unreachable and left the stale warning sitting above the new one.
             await this.expiryCallbacks.onSleep(session);
           } catch (error) {
             this.logger.error('Failed to send session sleep message', error);
           }
         }
+        // Cleared only after onSleep has had its chance to use it — a ts from this
+        // cycle must not be carried into the next warning cycle.
+        session.warningMessageTs = undefined;
+        session.lastWarningSentAt = undefined;
         // Auto-update memory on session end: consolidate this owner's episodic
         // observations into durable L1 memory ("dreaming"). Fire-and-forget.
         this.fireSessionConsolidate(session.ownerId);

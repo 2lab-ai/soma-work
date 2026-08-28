@@ -276,6 +276,45 @@ export class SlackApiHelper {
   }
 
   /**
+   * Report whether `threadTs` is still usable as a thread anchor.
+   *
+   * `chat.postMessage` does NOT validate `thread_ts`: given the ts of a message
+   * that no longer exists it returns `ok: true` and posts the message as a plain
+   * top-level channel message (verified against the live API on 2026-08-28 —
+   * `message.thread_ts` comes back `null`). So an anchor that has died silently
+   * turns every "thread reply" into a public channel post.
+   *
+   * `conversations.replies` is the matching predicate. Measured on the same run:
+   *
+   * | root state                      | conversations.replies | postMessage threads? |
+   * |---------------------------------|-----------------------|----------------------|
+   * | alive                           | ok                    | yes                  |
+   * | deleted, replies survived       | ok (tombstone parent) | yes                  |
+   * | deleted, no replies left        | `thread_not_found`    | NO — lands at root   |
+   *
+   * A parent deleted while replies remain leaves a `subtype: 'tombstone'`
+   * placeholder that keeps threading intact, so `thread_not_found` maps exactly
+   * onto the leaking case and nothing else.
+   *
+   * Three-valued on purpose: a transient Slack failure is `unknown`, never
+   * `missing`. Callers may suppress output on `unknown`, but must not treat it
+   * as proof that the thread is gone.
+   */
+  async getThreadRootState(channel: string, threadTs: string): Promise<'exists' | 'missing' | 'unknown'> {
+    try {
+      await this.enqueue(() => this.app.client.conversations.replies({ channel, ts: threadTs, limit: 1 }));
+      return 'exists';
+    } catch (error) {
+      const platformErrorCode = (error as any)?.data?.error;
+      if (platformErrorCode === 'thread_not_found' || platformErrorCode === 'message_not_found') {
+        return 'missing';
+      }
+      this.logger.warn('Could not determine thread root state', { channel, threadTs, error });
+      return 'unknown';
+    }
+  }
+
+  /**
    * Fetch a single message that lives inside a thread (a reply, or the root)
    * by paginating conversations.replies. Thread replies are NOT returned by
    * conversations.history, so getMessage() cannot find them — this method is
@@ -377,7 +416,7 @@ export class SlackApiHelper {
     channel: string,
     text: string,
     options?: MessageOptions,
-  ): Promise<{ ts?: string; channel?: string }> {
+  ): Promise<{ ts?: string; channel?: string; threadTs?: string }> {
     const payload: any = {
       channel,
       text,
@@ -395,7 +434,11 @@ export class SlackApiHelper {
 
     try {
       const result = await this.enqueue(() => this.app.client.chat.postMessage(payload));
-      return { ts: result.ts, channel: result.channel };
+      // `threadTs` is what Slack ACTUALLY threaded the message under, which is not
+      // always what we asked for: a dead `thread_ts` is silently dropped and the
+      // message becomes a top-level channel post. Surfacing it lets callers detect
+      // that and undo it. See getThreadRootState() for the measured behaviour.
+      return { ts: result.ts, channel: result.channel, threadTs: (result.message as any)?.thread_ts };
     } catch (error) {
       // 2026-07-09 incident: an over-limit goal-status section (3000-char cap)
       // made chat.postMessage fail with `invalid_blocks`, the throw crashed
@@ -409,7 +452,7 @@ export class SlackApiHelper {
         const fallback = { ...payload };
         fallback.blocks = undefined;
         const result = await this.enqueue(() => this.app.client.chat.postMessage(fallback));
-        return { ts: result.ts, channel: result.channel };
+        return { ts: result.ts, channel: result.channel, threadTs: (result.message as any)?.thread_ts };
       }
       this.logger.error('Failed to post message', { channel, error });
       throw error;
