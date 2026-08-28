@@ -17,7 +17,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { selectCurrentContextTokens } from '../session-usage-math';
+import { applyPostCompactOccupancy, selectCurrentContextTokens } from '../session-usage-math';
 
 describe('selectCurrentContextTokens', () => {
   const aggregates = {
@@ -87,5 +87,60 @@ describe('selectCurrentContextTokens', () => {
 
     expect(selected.source).toBe('per-turn');
     expect(selected.outputTokens).toBe(700);
+  });
+});
+
+/**
+ * Issue #196 — `compact_boundary.post_tokens` is the only authoritative
+ * statement of post-compaction window occupancy. It must be adoptable into
+ * the same `current*` counters every context surface reads, and it must never
+ * be invented when the SDK stays silent.
+ *
+ * ssot-task: T2.1
+ */
+describe('applyPostCompactOccupancy', () => {
+  const freshOccupancy = () => ({
+    currentInputTokens: 640_000,
+    currentOutputTokens: 5_000,
+    currentCacheReadTokens: 25_000,
+    currentCacheCreateTokens: 4_800,
+    lastUpdated: 0,
+  });
+
+  it('replaces the whole occupancy with post_tokens', () => {
+    const usage = freshOccupancy();
+
+    expect(applyPostCompactOccupancy(usage, 30_000)).toBe(true);
+
+    const occupied =
+      usage.currentInputTokens +
+      usage.currentOutputTokens +
+      usage.currentCacheReadTokens +
+      usage.currentCacheCreateTokens;
+    expect(occupied).toBe(30_000);
+    // Occupancy encoding: post_tokens carries no per-bucket breakdown, so the
+    // other three are cleared rather than left holding pre-compact residue.
+    expect(usage.currentCacheReadTokens).toBe(0);
+    expect(usage.lastUpdated).toBeGreaterThan(0);
+  });
+
+  it('accepts a fully compacted-away window (0 tokens)', () => {
+    const usage = freshOccupancy();
+    expect(applyPostCompactOccupancy(usage, 0)).toBe(true);
+    expect(usage.currentInputTokens).toBe(0);
+  });
+
+  it.each([
+    ['undefined', undefined],
+    ['null', null],
+    ['a negative count', -1],
+    ['NaN', Number.NaN],
+    ['a string', '30000'],
+  ])('refuses to invent a number from %s', (_label, input) => {
+    const usage = freshOccupancy();
+    expect(applyPostCompactOccupancy(usage, input)).toBe(false);
+    // Untouched — the pre-existing accounting stands rather than a guess.
+    expect(usage.currentInputTokens).toBe(640_000);
+    expect(usage.lastUpdated).toBe(0);
   });
 });

@@ -158,7 +158,7 @@ describe('ThreadHeaderBuilder × ui.threadheader config', () => {
     const text = allTexts(payload.blocks || []);
     // 15% used of 8 segments → 1 filled, 7 empty
     expect(text).toContain('█·······');
-    expect(text).toContain('150k/1M (85%)');
+    expect(text).toContain('150k/1M (15% used)');
     expect(text).not.toContain('▓');
   });
 
@@ -265,7 +265,7 @@ describe('ThreadHeaderBuilder × ui.threadheader config', () => {
             { type: 'mrkdwn', text: '<@U123>' },
             { type: 'mrkdwn', text: '`z`' },
             { type: 'mrkdwn', text: '`opus-4.6`' },
-            { type: 'mrkdwn', text: '▓░░░░ 150k/1M (85%)' },
+            { type: 'mrkdwn', text: '▓░░░░ 150k/1M (15% used)' },
           ],
         },
         {
@@ -297,7 +297,7 @@ describe('ThreadHeaderBuilder × ui.threadheader config', () => {
           elements: [
             { type: 'mrkdwn', text: '`z`' },
             { type: 'mrkdwn', text: '`opus-4.6`' },
-            { type: 'mrkdwn', text: '▓░░░░ 150k/1M (85%)' },
+            { type: 'mrkdwn', text: '▓░░░░ 150k/1M (15% used)' },
             { type: 'mrkdwn', text: '<https://linear.app/x/issue/SOMA-1|SOMA-1>' },
             { type: 'mrkdwn', text: '<https://github.com/org/repo/pull/10|PR #10>' },
             { type: 'mrkdwn', text: '_종료됨_' },
@@ -317,7 +317,7 @@ describe('ThreadHeaderBuilder × ui.threadheader config', () => {
           elements: [
             { type: 'mrkdwn', text: 'Fix login bug' },
             { type: 'mrkdwn', text: '`opus-4.6`' },
-            { type: 'mrkdwn', text: '▓░░░░ 150k/1M (85%)' },
+            { type: 'mrkdwn', text: '▓░░░░ 150k/1M (15% used)' },
             { type: 'mrkdwn', text: '<https://linear.app/x/issue/SOMA-1|SOMA-1>' },
             { type: 'mrkdwn', text: '<https://github.com/org/repo/pull/10|PR #10>' },
             { type: 'mrkdwn', text: '_종료됨_' },
@@ -330,12 +330,12 @@ describe('ThreadHeaderBuilder × ui.threadheader config', () => {
 
 describe('ThreadHeaderBuilder.formatContextBar bar-style overload', () => {
   it('keeps the default 5-segment ▓░ style when called with usage only', () => {
-    expect(ThreadHeaderBuilder.formatContextBar(makeUsage())).toBe('▓░░░░ 150k/1M (85%)');
+    expect(ThreadHeaderBuilder.formatContextBar(makeUsage())).toBe('▓░░░░ 150k/1M (15% used)');
   });
 
   it('accepts a custom bar style', () => {
     expect(ThreadHeaderBuilder.formatContextBar(makeUsage(), { width: 8, filledChar: '█', emptyChar: '·' })).toBe(
-      '█······· 150k/1M (85%)',
+      '█······· 150k/1M (15% used)',
     );
   });
 });
