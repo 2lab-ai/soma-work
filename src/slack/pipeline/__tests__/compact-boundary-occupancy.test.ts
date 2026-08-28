@@ -59,8 +59,6 @@ vi.mock('../../../user-settings-store', () => ({
   coerceToAvailableModel: (raw: string) => raw,
 }));
 
-
-
 /** Occupancy the context surfaces actually render. */
 function occupancyOf(session: any): number {
   const u = session.usage;
