@@ -737,6 +737,78 @@ export class SessionUiManager {
   }
 
   /**
+   * Post a session lifecycle notice into that session's own thread — or post
+   * nothing at all.
+   *
+   * The sweeper fires these minutes-to-days after the session last spoke, so by
+   * the time it runs the thread may be gone: an admin full-thread wipe, an admin
+   * single-message delete that happened to hit the root, or a human deleting the
+   * bot's thread card in Slack. `session.threadTs` keeps pointing at it either
+   * way, and `chat.postMessage` does not object — it drops the dead `thread_ts`
+   * and publishes the notice to the whole channel. That is the bug this guards.
+   *
+   * Two gates, because one is not enough:
+   *  - Before posting, ask whether the anchor is still real. This is the gate
+   *    that does the work, and it is the only one that never shows the leak.
+   *  - After posting, believe Slack over ourselves. The anchor can die inside the
+   *    gap between the check and the post; when that happens Slack reports the
+   *    message as unthreaded and we take it straight back down. Brief, but far
+   *    better than a permanent public post.
+   *
+   * Returns the ts of the surviving thread reply, or undefined when nothing was
+   * (or could safely be) posted.
+   */
+  private async postSessionLifecycleMessage(session: ConversationSession, text: string): Promise<string | undefined> {
+    const { channelId, threadTs } = session;
+
+    if (!threadTs) {
+      // No anchor was ever recorded, so there is no thread to speak into and a
+      // post would go straight to the channel. Say nothing.
+      this.logger.debug('Skipping session lifecycle notice: session has no thread anchor', { channelId });
+      return undefined;
+    }
+
+    const rootState = await this.slackApi.getThreadRootState(channelId, threadTs);
+    if (rootState !== 'exists') {
+      // 'missing'  → the thread is gone; the notice has no home and nobody to reach.
+      // 'unknown'  → Slack could not tell us. Staying quiet costs one skipped
+      //              notice; guessing wrong costs a public channel post. Never
+      //              mutate session state off an inconclusive probe.
+      this.logger.info('Skipping session lifecycle notice: thread root not usable', {
+        channelId,
+        threadTs,
+        rootState,
+      });
+      return undefined;
+    }
+
+    const result = await this.slackApi.postMessage(channelId, text, { threadTs });
+
+    if (result.ts && result.threadTs !== threadTs) {
+      // Slack accepted the call but did not thread it — the anchor died during
+      // the window above. What we just created is a top-level channel message.
+      this.logger.warn('Session lifecycle notice landed at channel root — reverting', {
+        channelId,
+        requestedThreadTs: threadTs,
+        actualThreadTs: result.threadTs ?? null,
+        postedTs: result.ts,
+      });
+      try {
+        await this.slackApi.deleteMessage(channelId, result.ts);
+      } catch (error) {
+        this.logger.error('Failed to revert channel-root session lifecycle notice', {
+          channelId,
+          postedTs: result.ts,
+          error,
+        });
+      }
+      return undefined;
+    }
+
+    return result.ts;
+  }
+
+  /**
    * 세션 Sleep 전환 처리
    */
   async handleSessionSleep(session: ConversationSession): Promise<void> {
@@ -750,7 +822,7 @@ export class SessionUiManager {
       if (session.warningMessageTs) {
         await this.slackApi.updateMessage(session.channelId, session.warningMessageTs, sleepText);
       } else {
-        await this.slackApi.postMessage(session.channelId, sleepText, { threadTs: session.threadTs });
+        await this.postSessionLifecycleMessage(session, sleepText);
       }
 
       this.logger.info('Session transitioned to sleep', {
@@ -772,7 +844,6 @@ export class SessionUiManager {
     existingMessageTs?: string,
   ): Promise<string | undefined> {
     const warningText = `⚠️ *세션 만료 예정*\n\n이 세션은 *${MessageFormatter.formatTimeRemaining(timeRemaining)}* 후에 만료됩니다.\n세션을 유지하려면 메시지를 보내주세요.`;
-    const threadTs = session.threadTs;
     const channel = session.channelId;
 
     try {
@@ -780,8 +851,7 @@ export class SessionUiManager {
         await this.slackApi.updateMessage(channel, existingMessageTs, warningText);
         return existingMessageTs;
       } else {
-        const result = await this.slackApi.postMessage(channel, warningText, { threadTs });
-        return result.ts;
+        return await this.postSessionLifecycleMessage(session, warningText);
       }
     } catch (error) {
       this.logger.error('Failed to send/update session warning message', error);
@@ -803,7 +873,7 @@ export class SessionUiManager {
       if (session.warningMessageTs) {
         await this.slackApi.updateMessage(session.channelId, session.warningMessageTs, expiryText);
       } else {
-        await this.slackApi.postMessage(session.channelId, expiryText, { threadTs: session.threadTs });
+        await this.postSessionLifecycleMessage(session, expiryText);
       }
 
       this.logger.info('Session expired', {

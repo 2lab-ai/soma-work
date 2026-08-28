@@ -795,6 +795,30 @@ export class ActionHandlers {
     }
   }
 
+  /**
+   * End the session anchored to a thread whose root is about to be (or has just
+   * been) deleted.
+   *
+   * Keyed on channel AND thread together: a thread ts is only unique within its
+   * channel, so terminating on the ts alone could reach into another channel's
+   * session. Best-effort by design — no session for this thread is the normal
+   * case, and a failure here must never abort the deletion the admin asked for.
+   */
+  private terminateSessionForThread(channel: string, threadTs: string): void {
+    try {
+      const claudeHandler = this.ctx.claudeHandler;
+      const sessionKey = claudeHandler?.getSessionKey?.(channel, threadTs);
+      if (!sessionKey) {
+        return;
+      }
+      if (claudeHandler?.terminateSession?.(sessionKey)) {
+        this.logger.info('Terminated session bound to a deleted thread root', { channel, threadTs, sessionKey });
+      }
+    } catch (error) {
+      this.logger.warn('Failed to terminate session for deleted thread root', { channel, threadTs, error });
+    }
+  }
+
   private async handleDmDeleteThreadConfirm(body: any, respond: RespondFn): Promise<void> {
     const rawValue = body.actions?.[0]?.value || '{}';
     const value = this.parseDmDeleteThreadValue(rawValue);
@@ -816,6 +840,20 @@ export class ActionHandlers {
     }
 
     try {
+      // Kill the session before touching a single message.
+      //
+      // A session anchors itself to this thread by ts. Once the root is gone that
+      // anchor is dangling, and Slack does not reject a post against a dead
+      // thread_ts — it quietly drops the threading and publishes to the whole
+      // channel. A session left alive here keeps its sweeper timers, so its
+      // expiry/sleep notices surface as top-level channel messages hours later.
+      //
+      // Ordering matters as much as the call: terminate FIRST so an in-flight
+      // turn cannot keep writing into a thread that is being torn down.
+      // terminateSession archives and cleans up without posting anything, which
+      // is what we need — there is no thread left to say goodbye in.
+      this.terminateSessionForThread(value.targetChannel, value.threadTs);
+
       // Replace the confirm prompt right away so the admin sees it's in progress.
       // (response_url has a 5-call/30min limit, so live progress is rendered via
       // chat.update on a separately posted status message instead.)
