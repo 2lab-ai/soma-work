@@ -416,7 +416,7 @@ export class SlackApiHelper {
     channel: string,
     text: string,
     options?: MessageOptions,
-  ): Promise<{ ts?: string; channel?: string; threadTs?: string }> {
+  ): Promise<{ ts?: string; channel?: string; threadTs?: string; echoedMessage?: boolean }> {
     const payload: any = {
       channel,
       text,
@@ -438,7 +438,12 @@ export class SlackApiHelper {
       // always what we asked for: a dead `thread_ts` is silently dropped and the
       // message becomes a top-level channel post. Surfacing it lets callers detect
       // that and undo it. See getThreadRootState() for the measured behaviour.
-      return { ts: result.ts, channel: result.channel, threadTs: (result.message as any)?.thread_ts };
+      return {
+        ts: result.ts,
+        channel: result.channel,
+        threadTs: (result.message as any)?.thread_ts,
+        echoedMessage: !!result.message,
+      };
     } catch (error) {
       // 2026-07-09 incident: an over-limit goal-status section (3000-char cap)
       // made chat.postMessage fail with `invalid_blocks`, the throw crashed
@@ -452,7 +457,12 @@ export class SlackApiHelper {
         const fallback = { ...payload };
         fallback.blocks = undefined;
         const result = await this.enqueue(() => this.app.client.chat.postMessage(fallback));
-        return { ts: result.ts, channel: result.channel, threadTs: (result.message as any)?.thread_ts };
+        return {
+          ts: result.ts,
+          channel: result.channel,
+          threadTs: (result.message as any)?.thread_ts,
+          echoedMessage: !!result.message,
+        };
       }
       this.logger.error('Failed to post message', { channel, error });
       throw error;

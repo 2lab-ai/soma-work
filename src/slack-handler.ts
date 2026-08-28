@@ -1404,17 +1404,20 @@ export class SlackHandler {
       }
 
       try {
-        // Deleting this message may be deleting a live session's thread anchor.
+        await this.slackApi.deleteMessage(target.channelId, target.messageTs);
+
+        // That message may have been a live session's thread anchor.
         // `isThreadRoot()` above only recognises roots that already have replies,
-        // so a freshly posted bot thread card falls through to here and gets
+        // so a freshly posted bot thread card falls through to here and is
         // deleted outright. The session would survive with a threadTs pointing at
         // nothing — and Slack silently reroutes posts against a dead thread_ts to
         // the channel, so its later expiry/sleep notices would go out publicly.
         // Match on channel + ts against the registry rather than guessing from
-        // message shape, and let the session die with its thread.
+        // message shape, and let the session die with its thread. Runs only after
+        // the delete actually succeeded, so a failed delete never orphans a
+        // session whose thread is still standing.
         this.terminateSessionAnchoredTo(target.channelId, target.messageTs);
 
-        await this.slackApi.deleteMessage(target.channelId, target.messageTs);
         await this.slackApi.addReaction(event.channel, event.ts, 'white_check_mark');
         this.logger.info('Admin deleted bot message via DM', {
           adminId: event.user,
