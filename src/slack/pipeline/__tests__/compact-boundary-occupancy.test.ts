@@ -273,6 +273,43 @@ describe("the turn's own usage sample cannot undo the boundary (T2.2)", () => {
     expect(occupancyOf(session)).not.toBe(PRE_COMPACT_TOTAL);
   });
 
+  it("a shield left by another turn does not swallow this turn's usage sample", async () => {
+    // Same-session turns overlap: a supersede aborts the previous turn's
+    // controller and installs its own without awaiting the old executor's
+    // `finally`. If the shield were a session-wide boolean, the aborted turn's
+    // leftover flag would suppress this turn's legitimate reading and freeze
+    // the context display for an extra turn — the failure this fix must not
+    // introduce. Keying the shield by turnId is what prevents it.
+    async function* plainTurn() {
+      yield { type: 'result', subtype: 'success', total_cost_usd: 0, usage: PRE_COMPACT_AGGREGATE };
+    }
+
+    const deps = createDeps(plainTurn);
+    const executor = new StreamExecutor(deps);
+    const session = makeSession();
+    session.postCompactOccupancyTurnId = 'C1:t1:some-other-turn';
+
+    await executor.execute({
+      session,
+      sessionKey: 'C1:t1',
+      userName: 'testuser',
+      workingDirectory: '/tmp/test',
+      abortController: new AbortController(),
+      processedFiles: [],
+      text: 'hello',
+      channel: 'C1',
+      threadTs: 't1',
+      user: 'U_TEST',
+      say: vi.fn().mockResolvedValue({ ts: 'msg_ts' }),
+      isUserInput: true,
+    } as never);
+
+    expect(occupancyOf(session)).toBe(PRE_COMPACT_TOTAL);
+    // Compare-and-clear: this turn never owned that shield, so it must leave
+    // it alone rather than strip a live turn's protection.
+    expect(session.postCompactOccupancyTurnId).toBe('C1:t1:some-other-turn');
+  });
+
   it('releases the guard at turn end so the next turn tracks context again', async () => {
     async function* stream() {
       yield {
@@ -287,7 +324,7 @@ describe("the turn's own usage sample cannot undo the boundary (T2.2)", () => {
 
     // A guard that leaked past the turn would freeze the context display for
     // the rest of the session — strictly worse than the bug it fixes.
-    expect(session.postCompactOccupancyApplied).toBeFalsy();
+    expect(session.postCompactOccupancyTurnId).toBeUndefined();
   });
 });
 
@@ -308,6 +345,6 @@ describe('no post_tokens → unchanged behaviour (T2.1)', () => {
     // pre-existing (imperfect) accounting stands.
     expect(occupancyOf(session)).toBe(PRE_COMPACT_TOTAL);
     expect(occupancyOf(session)).not.toBe(500_000);
-    expect(session.postCompactOccupancyApplied).toBeFalsy();
+    expect(session.postCompactOccupancyTurnId).toBeUndefined();
   });
 });
