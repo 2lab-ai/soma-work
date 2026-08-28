@@ -387,14 +387,14 @@ describe('ActionHandlers', () => {
       resetAdminUsersCache();
     });
 
-    it('terminates the session bound to the wiped thread before deleting it', async () => {
+    it('terminates the session bound to the wiped thread, once the thread is gone', async () => {
       // Root cause of the channel-root leak: this handler deleted every bot reply
       // and then the thread root, but left the session alive in the registry. Its
       // threadTs then pointed at a message that no longer exists, and Slack
       // silently re-routes posts against a dead thread_ts to the channel root —
       // so the 5-minute sweeper published warning/sleep/expiry notices publicly.
-      // The session must die with its thread, and it must die BEFORE the delete
-      // so an in-flight turn cannot post into a thread that is being destroyed.
+      // The session has to die with its thread, and it goes LAST: termination is
+      // irreversible while every delete above it can fail.
       const { resetAdminUsersCache } = await import('../../admin-utils');
       process.env.ADMIN_USERS = 'U_ADMIN';
       resetAdminUsersCache();
