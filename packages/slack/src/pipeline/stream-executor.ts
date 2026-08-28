@@ -1533,7 +1533,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           }
         },
         onUsageUpdate: async (usage: UsageData) => {
-          this.updateSessionUsage(session, usage);
+          this.updateSessionUsage(session, usage, turnId);
 
           // Update context window emoji
           if (session.usage && isOutputEnabled(OutputFlag.CONTEXT_EMOJI)) {
@@ -1658,13 +1658,23 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             // read. Storing it only in the display fields above left every one
             // of those surfaces reporting the pre-compact number.
             if (applyPostCompactOccupancy(this.ensureSessionUsage(session), m.post_tokens)) {
-              // Shield the reset for the rest of this turn. `StreamProcessor`
+              // Shield the reset for the rest of THIS turn. `StreamProcessor`
               // delivers exactly ONE usage sample per turn, after the stream
               // loop (stream-processor.ts:765) — on a /compact turn that sample
               // measures the summarization request, which read the entire
               // pre-compact transcript. Unshielded it lands moments later and
               // restores the very number we just corrected.
-              session.postCompactOccupancyApplied = true;
+              //
+              // Keyed by `turnId`, never a bare boolean: same-session turns DO
+              // overlap. A supersede aborts the previous turn's controller and
+              // installs its own without awaiting the old executor's `finally`
+              // (session-initializer `handleConcurrency`), so both stacks live
+              // on the event loop at once. A session-wide flag would then let
+              // the aborted turn's shield swallow the successor's legitimate
+              // sample — freezing the context display for a whole extra turn —
+              // or let the aborted turn's cleanup erase a shield the successor
+              // had just established.
+              session.postCompactOccupancyTurnId = turnId;
               this.logger.info('Adopted post-compact occupancy from compact_boundary', {
                 sessionKey,
                 postTokens: m.post_tokens,
@@ -2601,10 +2611,17 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       session.compactTurnActive = false;
       // Issue #196 — release the post-compact occupancy shield. It is scoped to
       // the turn that saw the boundary; the next turn's usage sample is a
-      // genuine post-compact reading and must be adopted. Cleared here (every
-      // exit path: success, error, abort) so a crashed compact turn can never
-      // freeze the context display for the rest of the session.
-      session.postCompactOccupancyApplied = false;
+      // genuine post-compact reading and must be adopted. Cleared on every exit
+      // path (success, error, abort) so a crashed compact turn can never freeze
+      // the context display for the rest of the session.
+      //
+      // Compare-and-clear: only the turn that OWNS the shield may drop it. An
+      // aborted turn's `finally` can run after a superseding turn has already
+      // set its own shield, and an unconditional clear there would strip the
+      // live turn's protection.
+      if (session.postCompactOccupancyTurnId === turnId) {
+        session.postCompactOccupancyTurnId = undefined;
+      }
       if (wasCompactTurn) {
         promotePendingToDispatchQueue(session as CompactStateSession);
       }
@@ -4277,7 +4294,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     return session.usage;
   }
 
-  private updateSessionUsage(session: ConversationSession, usage: UsageData): void {
+  private updateSessionUsage(session: ConversationSession, usage: UsageData, turnId?: string): void {
     this.ensureSessionUsage(session);
 
     // Update model name on session (useful for display)
@@ -4323,8 +4340,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // authoritative occupancy we keep it and let the NEXT turn resume normal
     // tracking. Billing totals below are unaffected — those tokens were spent.
     const current = selectCurrentContextTokens(usage);
-    if (session.postCompactOccupancyApplied === true) {
-      this.logger.debug('Keeping post-compact occupancy — ignoring this turn`s pre-boundary usage sample', {
+    // Only the shield THIS turn established suppresses THIS turn's sample. A
+    // shield left by a different (e.g. superseded) turn must not swallow our
+    // legitimate reading — that would freeze the display for an extra turn.
+    if (turnId !== undefined && session.postCompactOccupancyTurnId === turnId) {
+      this.logger.debug("Keeping post-compact occupancy — ignoring this turn's pre-boundary usage sample", {
         conversationId: session.conversationId,
         ignoredSource: current.source,
         keptOccupancy: session.usage.currentInputTokens,
