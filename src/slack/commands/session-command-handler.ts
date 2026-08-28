@@ -11,6 +11,7 @@ import {
 } from '../../user-settings-store';
 import { formatBytes as formatBytesUtil, getDirSizeBytes } from '../../utils/dir-size';
 import { CommandParser } from '../command-parser';
+import { ContextWindowManager } from '../context-window-manager';
 import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
 
 /**
@@ -138,12 +139,17 @@ export class SessionCommandHandler implements CommandHandler {
       lines.push(`*Conversation:* \`${session.conversationId}\``);
     }
 
-    // Context usage
+    // Context usage. Two corrections, both issue #196: this used to sum only
+    // input+output — cache-read and cache-creation tokens occupy the window
+    // too, so a cache-heavy session under-reported badly — and it printed the
+    // remaining share while `/context` and the turn footer printed the
+    // consumed one. `computeUsedTokens` is the shared formula; `used` is the
+    // shared reading.
     if (session.usage) {
       const u = session.usage;
-      const current = u.currentInputTokens + u.currentOutputTokens;
-      const pct = u.contextWindow > 0 ? (((u.contextWindow - current) / u.contextWindow) * 100).toFixed(0) : '?';
-      lines.push(`*Context:* ${formatTokens(current)} / ${formatTokens(u.contextWindow)} (${pct}% available)`);
+      const current = ContextWindowManager.computeUsedTokens(u);
+      const pct = u.contextWindow > 0 ? (100 - ContextWindowManager.computeRemainingPercent(u)).toFixed(0) : '?';
+      lines.push(`*Context:* ${formatTokens(current)} / ${formatTokens(u.contextWindow)} (${pct}% used)`);
       if (u.totalCostUsd > 0) {
         lines.push(`*Cost:* $${u.totalCostUsd.toFixed(4)}`);
       }

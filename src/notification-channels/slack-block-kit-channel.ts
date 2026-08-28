@@ -444,9 +444,15 @@ export class SlackBlockKitChannel implements NotificationChannel {
   }
 
   /**
-   * `contextwindow` — default: `Ctx ▓▓▓▓░ 160.3k/1M (84.0%) -5.6`;
-   * format 'percent': `Ctx 84.0%` (label/decimals from config; the minimal
-   * preset has no label → `84.0%`).
+   * `contextwindow` — default: `Ctx ▓░░░░ 160.3k/1M (16.0% used) -5.6`;
+   * format 'percent': `Ctx 16.0% used` (label/decimals from config; the
+   * minimal preset has no label → `16.0% used`).
+   *
+   * `contextUsagePercent` has always been the CONSUMED share
+   * (`StreamExecutor.getCurrentContextUsagePercent`). It printed bare, in the
+   * same shape the `/context` card used for the REMAINING share, so the two
+   * surfaces contradicted each other about one session (issue #196). Saying
+   * `used` costs five characters and removes the ambiguity.
    */
   private renderContextWindow(field: SurfaceFieldConfig, event: TurnCompletionEvent): string {
     if (typeof event.contextUsagePercent !== 'number') return '';
@@ -454,7 +460,7 @@ export class SlackBlockKitChannel implements NotificationChannel {
     const decimals = field.decimals ?? 1;
 
     if (field.format === 'percent') {
-      return `${labelPrefix}${event.contextUsagePercent.toFixed(decimals)}%`;
+      return `${labelPrefix}${event.contextUsagePercent.toFixed(decimals)}% used`;
     }
 
     const bar = this.renderBar(
@@ -469,7 +475,7 @@ export class SlackBlockKitChannel implements NotificationChannel {
         : '';
     const deltaStr = this.formatSignedDelta(event.contextUsageDelta, decimals);
     const deltaSuffix = deltaStr ? ` ${deltaStr}` : '';
-    return `${labelPrefix}${bar} ${tokensStr}(${event.contextUsagePercent.toFixed(decimals)}%)${deltaSuffix}`;
+    return `${labelPrefix}${bar} ${tokensStr}(${event.contextUsagePercent.toFixed(decimals)}% used)${deltaSuffix}`;
   }
 
   /**

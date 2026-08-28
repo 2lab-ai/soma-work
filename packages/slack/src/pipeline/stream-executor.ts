@@ -30,7 +30,7 @@ import {
   formatGoalObjectiveForSlack,
   type GoalQueueSession,
 } from '../session-goal';
-import { accumulateModelTotals, selectCurrentContextTokens } from '../session-usage-math';
+import { accumulateModelTotals, applyPostCompactOccupancy, selectCurrentContextTokens } from '../session-usage-math';
 import type { SlackApiHelper } from '../slack-api-helper';
 import type { StatusReporter } from '../status-reporter';
 import {
@@ -1533,7 +1533,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           }
         },
         onUsageUpdate: async (usage: UsageData) => {
-          this.updateSessionUsage(session, usage);
+          this.updateSessionUsage(session, usage, turnId);
 
           // Update context window emoji
           if (session.usage && isOutputEnabled(OutputFlag.CONTEXT_EMOJI)) {
@@ -1649,6 +1649,37 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
                   Math.min(100, Math.round((m.post_tokens / contextWindow) * 100)),
                 );
               }
+            }
+
+            // Issue #196 — `post_tokens` is the only authoritative statement of
+            // how full the window is after compaction, so it must reach
+            // `session.usage`: that is what `/context`, the thread header, the
+            // turn footer, the context emoji AND the auto-compact threshold all
+            // read. Storing it only in the display fields above left every one
+            // of those surfaces reporting the pre-compact number.
+            if (applyPostCompactOccupancy(this.ensureSessionUsage(session), m.post_tokens)) {
+              // Shield the reset for the rest of THIS turn. `StreamProcessor`
+              // delivers exactly ONE usage sample per turn, after the stream
+              // loop (stream-processor.ts:765) — on a /compact turn that sample
+              // measures the summarization request, which read the entire
+              // pre-compact transcript. Unshielded it lands moments later and
+              // restores the very number we just corrected.
+              //
+              // Keyed by `turnId`, never a bare boolean: same-session turns DO
+              // overlap. A supersede aborts the previous turn's controller and
+              // installs its own without awaiting the old executor's `finally`
+              // (session-initializer `handleConcurrency`), so both stacks live
+              // on the event loop at once. A session-wide flag would then let
+              // the aborted turn's shield swallow the successor's legitimate
+              // sample — freezing the context display for a whole extra turn —
+              // or let the aborted turn's cleanup erase a shield the successor
+              // had just established.
+              session.postCompactOccupancyTurnId = turnId;
+              this.logger.info('Adopted post-compact occupancy from compact_boundary', {
+                sessionKey,
+                postTokens: m.post_tokens,
+                contextWindow: session.usage?.contextWindow,
+              });
             }
           }
 
@@ -2578,6 +2609,19 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // overwritten by the next auto-compact interception.
       const wasCompactTurn = session.compactTurnActive === true;
       session.compactTurnActive = false;
+      // Issue #196 — release the post-compact occupancy shield. It is scoped to
+      // the turn that saw the boundary; the next turn's usage sample is a
+      // genuine post-compact reading and must be adopted. Cleared on every exit
+      // path (success, error, abort) so a crashed compact turn can never freeze
+      // the context display for the rest of the session.
+      //
+      // Compare-and-clear: only the turn that OWNS the shield may drop it. An
+      // aborted turn's `finally` can run after a superseding turn has already
+      // set its own shield, and an unconditional clear there would strip the
+      // live turn's protection.
+      if (session.postCompactOccupancyTurnId === turnId) {
+        session.postCompactOccupancyTurnId = undefined;
+      }
       if (wasCompactTurn) {
         promotePendingToDispatchQueue(session as CompactStateSession);
       }
@@ -4222,7 +4266,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
    * hardcoded 200k default. This correctly handles Opus 4.6 (1M),
    * Sonnet 4.6 (1M), and any future model sizes.
    */
-  private updateSessionUsage(session: ConversationSession, usage: UsageData): void {
+  /**
+   * Lazily create `session.usage` and return it. Two callers need the same
+   * zero-state: the per-turn usage update, and the compact boundary — a
+   * session can be compacted before any turn-end usage sample has landed, and
+   * that boundary still carries an authoritative occupancy figure worth
+   * keeping.
+   */
+  private ensureSessionUsage(session: ConversationSession): NonNullable<ConversationSession['usage']> {
     if (!session.usage) {
       session.usage = {
         // Current context (overwritten each request)
@@ -4230,7 +4281,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         currentOutputTokens: 0,
         currentCacheReadTokens: 0,
         currentCacheCreateTokens: 0,
-        contextWindow: FALLBACK_CONTEXT_WINDOW,
+        contextWindow: resolveContextWindow(session.model) || FALLBACK_CONTEXT_WINDOW,
         // Cumulative totals
         totalInputTokens: 0,
         totalOutputTokens: 0,
@@ -4240,6 +4291,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         lastUpdated: Date.now(),
       };
     }
+    return session.usage;
+  }
+
+  private updateSessionUsage(session: ConversationSession, usage: UsageData, turnId?: string): void {
+    this.ensureSessionUsage(session);
 
     // Update model name on session (useful for display)
     if (usage.modelName && !session.model) {
@@ -4273,11 +4329,32 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // ALL-ZERO per-turn values (llmux/codex assistant messages) are treated as
     // missing — `selectCurrentContextTokens` falls back to the aggregate so the
     // context display and auto-compact triggers never see an empty window.
+    //
+    // Issue #196 — EXCEPT right after a compact boundary. This callback fires
+    // once per turn, after the stream loop, so on a compacted turn the sample
+    // in hand always predates the boundary: the aggregate sums the
+    // summarization request's read of the full pre-compact transcript, and
+    // even the merged per-turn figure comes from the last assistant message,
+    // which may itself be pre-boundary. Neither can be told apart from a
+    // genuine post-compact reading, so once `post_tokens` has given us the
+    // authoritative occupancy we keep it and let the NEXT turn resume normal
+    // tracking. Billing totals below are unaffected — those tokens were spent.
     const current = selectCurrentContextTokens(usage);
-    session.usage.currentInputTokens = current.inputTokens;
-    session.usage.currentOutputTokens = current.outputTokens;
-    session.usage.currentCacheReadTokens = current.cacheReadTokens;
-    session.usage.currentCacheCreateTokens = current.cacheCreateTokens;
+    // Only the shield THIS turn established suppresses THIS turn's sample. A
+    // shield left by a different (e.g. superseded) turn must not swallow our
+    // legitimate reading — that would freeze the display for an extra turn.
+    if (turnId !== undefined && session.postCompactOccupancyTurnId === turnId) {
+      this.logger.debug("Keeping post-compact occupancy — ignoring this turn's pre-boundary usage sample", {
+        conversationId: session.conversationId,
+        ignoredSource: current.source,
+        keptOccupancy: session.usage.currentInputTokens,
+      });
+    } else {
+      session.usage.currentInputTokens = current.inputTokens;
+      session.usage.currentOutputTokens = current.outputTokens;
+      session.usage.currentCacheReadTokens = current.cacheReadTokens;
+      session.usage.currentCacheCreateTokens = current.cacheCreateTokens;
+    }
 
     // Accumulate totals (billing-oriented: use aggregate values, not per-turn)
     session.usage.totalInputTokens += usage.inputTokens;
