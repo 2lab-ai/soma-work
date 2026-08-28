@@ -387,6 +387,112 @@ describe('ActionHandlers', () => {
       resetAdminUsersCache();
     });
 
+    it('terminates the session bound to the wiped thread, once the thread is gone', async () => {
+      // Root cause of the channel-root leak: this handler deleted every bot reply
+      // and then the thread root, but left the session alive in the registry. Its
+      // threadTs then pointed at a message that no longer exists, and Slack
+      // silently re-routes posts against a dead thread_ts to the channel root —
+      // so the 5-minute sweeper published warning/sleep/expiry notices publicly.
+      // The session has to die with its thread, and it goes LAST: termination is
+      // irreversible while every delete above it can fail.
+      const { resetAdminUsersCache } = await import('../../admin-utils');
+      process.env.ADMIN_USERS = 'U_ADMIN';
+      resetAdminUsersCache();
+
+      const order: string[] = [];
+      const threadSlackApi = {
+        ...createMockSlackApi(),
+        postMessage: vi.fn().mockResolvedValue({ ts: 'STATUS.1', channel: 'D123' }),
+        deleteThreadBotMessages: vi.fn(async () => {
+          order.push('deleteReplies');
+          return { total: 0, deleted: 0 };
+        }),
+        deleteMessage: vi.fn(async () => {
+          order.push('deleteRoot');
+        }),
+        addReaction: vi.fn().mockResolvedValue(true),
+      };
+      const threadClaudeHandler = {
+        ...createMockClaudeHandler(),
+        terminateSession: vi.fn(() => {
+          order.push('terminateSession');
+          return true;
+        }),
+      };
+      const threadHandlers = new ActionHandlers({
+        ...ctx,
+        slackApi: threadSlackApi as unknown as SlackApiHelper,
+        claudeHandler: threadClaudeHandler as unknown as ClaudeHandler,
+      });
+
+      const mockApp = { action: vi.fn(), view: vi.fn() };
+      threadHandlers.registerHandlers(mockApp as any);
+      const confirmCall = mockApp.action.mock.calls.find((c) => c[0] === 'dm_delete_thread_confirm');
+
+      await confirmCall![1]({
+        ack: vi.fn(),
+        body: { actions: [{ value: JSON.stringify(threadValue) }], user: { id: 'U_ADMIN' } },
+        respond: vi.fn(),
+      });
+
+      // Keyed on channel + thread together — never on the thread ts alone, which
+      // is not unique across channels in a multi-tenant workspace.
+      expect(threadClaudeHandler.getSessionKey).toHaveBeenCalledWith('C999', '111222.000000');
+      expect(threadClaudeHandler.terminateSession).toHaveBeenCalledWith('C999:111222.000000');
+      // Termination is irreversible while every delete above can fail, so it goes
+      // last: the session and its thread only ever disappear together.
+      expect(order).toEqual(['deleteReplies', 'deleteRoot', 'terminateSession']);
+
+      delete process.env.ADMIN_USERS;
+      resetAdminUsersCache();
+    });
+
+    it('keeps the session when the thread root could not be deleted', async () => {
+      // terminateSession archives the session, wipes its working directories and
+      // drops it from the registry — none of which can be undone. Every delete
+      // before it can fail. If termination ran first, a failed root delete would
+      // leave the user with no session AND an intact thread. The two states have
+      // to move together.
+      const { resetAdminUsersCache } = await import('../../admin-utils');
+      process.env.ADMIN_USERS = 'U_ADMIN';
+      resetAdminUsersCache();
+
+      const threadSlackApi = {
+        ...createMockSlackApi(),
+        postMessage: vi.fn().mockResolvedValue({ ts: 'STATUS.1', channel: 'D123' }),
+        deleteThreadBotMessages: vi.fn().mockResolvedValue({ total: 0, deleted: 0 }),
+        deleteMessage: vi.fn().mockRejectedValue(new Error('cant_delete_message')),
+        addReaction: vi.fn().mockResolvedValue(true),
+      };
+      const threadClaudeHandler = {
+        ...createMockClaudeHandler(),
+        terminateSession: vi.fn().mockReturnValue(true),
+      };
+      const threadHandlers = new ActionHandlers({
+        ...ctx,
+        slackApi: threadSlackApi as unknown as SlackApiHelper,
+        claudeHandler: threadClaudeHandler as unknown as ClaudeHandler,
+      });
+
+      const mockApp = { action: vi.fn(), view: vi.fn() };
+      threadHandlers.registerHandlers(mockApp as any);
+      const confirmCall = mockApp.action.mock.calls.find((c) => c[0] === 'dm_delete_thread_confirm');
+
+      const mockRespond = vi.fn();
+      await confirmCall![1]({
+        ack: vi.fn(),
+        body: { actions: [{ value: JSON.stringify(threadValue) }], user: { id: 'U_ADMIN' } },
+        respond: mockRespond,
+      });
+
+      expect(threadClaudeHandler.terminateSession).not.toHaveBeenCalled();
+      // The admin is told it failed rather than being left to guess.
+      expect(threadSlackApi.addReaction).toHaveBeenCalledWith('D123', '555.666', 'x');
+
+      delete process.env.ADMIN_USERS;
+      resetAdminUsersCache();
+    });
+
     it('confirm by a non-admin is rejected and deletes nothing', async () => {
       const { resetAdminUsersCache } = await import('../../admin-utils');
       process.env.ADMIN_USERS = 'U_ADMIN';
