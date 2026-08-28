@@ -650,6 +650,14 @@ export interface ConversationSession {
   // carries inflated cache-read tokens that re-trip the threshold even
   // though the SDK has actually shrunk the conversation.
   skipThresholdCheckOnce?: boolean;
+  // Issue #196 — turn-scoped shield for the occupancy adopted from
+  // `compact_boundary.post_tokens`. `StreamProcessor` delivers one usage
+  // sample per turn, after the stream loop, so on a compacted turn that
+  // sample always predates the boundary and would restore the pre-compact
+  // number. Set when `applyPostCompactOccupancy` succeeds; cleared in the
+  // stream-executor's `finally` on every exit path so the NEXT turn resumes
+  // normal context tracking.
+  postCompactOccupancyApplied?: boolean;
   // Slack ts of the just-posted "Compaction completed" message — set ONLY
   // when the message rendered with `now ~?%` because no SDK-authoritative
   // post-compact tokens were available at PostCompact time. The next
