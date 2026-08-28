@@ -877,23 +877,6 @@ export class ActionHandlers {
         }
       };
 
-      // Kill the session here: after the progress UI has been set up, and
-      // immediately before the first message is destroyed.
-      //
-      // A session anchors itself to this thread by ts. Once the root is gone that
-      // anchor dangles, and Slack does not reject a post against a dead
-      // thread_ts — it quietly drops the threading and publishes to the whole
-      // channel. A session left alive keeps its sweeper timers, so its
-      // expiry/sleep notices resurface as top-level channel messages hours later.
-      //
-      // It has to precede the deletion so an in-flight turn cannot keep writing
-      // into a thread that is being torn down — but not so early that a failure
-      // in the progress UI above could destroy the session while every message
-      // survives. This is the one point where both hold.
-      // terminateSession archives and cleans up without posting: there is no
-      // thread left to say goodbye in.
-      this.terminateSessionForThread(value.targetChannel, value.threadTs);
-
       // Delete bot-authored replies first (with throttled progress), then the root.
       const result = await this.ctx.slackApi.deleteThreadBotMessages?.(value.targetChannel, value.threadTs, {
         onProgress: async ({ deleted, total }) => {
@@ -909,6 +892,28 @@ export class ActionHandlers {
       });
 
       await this.ctx.slackApi.deleteMessage(value.targetChannel, value.threadTs);
+
+      // The thread is gone; now the session that was anchored to it must go too.
+      //
+      // A session holds its thread by ts. Once the root is deleted that anchor
+      // dangles, and Slack does not reject a post against a dead thread_ts — it
+      // quietly drops the threading and publishes to the whole channel. A session
+      // left alive keeps its sweeper timers, so its expiry/sleep notices resurface
+      // as top-level channel messages hours later.
+      //
+      // Ordering is the point: terminateSession is irreversible (it archives,
+      // cleans up working directories and drops the registry entry), while every
+      // delete above can fail. Running it first would let a failed delete leave
+      // the session destroyed and the thread still standing — the user loses the
+      // session AND keeps the mess. Running it here means the two states only ever
+      // move together. Same rule as the single-message delete path.
+      //
+      // If this itself fails it is logged and swallowed, and the session is left
+      // dangling — which is precisely the case the post-time thread-root gate in
+      // SessionUiManager exists to absorb. Two layers, so neither has to be
+      // perfect.
+      this.terminateSessionForThread(value.targetChannel, value.threadTs);
+
       await this.ctx.slackApi.addReaction?.(value.linkChannel, value.linkTs, 'white_check_mark');
 
       const total = result?.total ?? 0;
