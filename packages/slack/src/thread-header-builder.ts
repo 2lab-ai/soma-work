@@ -428,8 +428,15 @@ export class ThreadHeaderBuilder {
 
   /**
    * Format context window usage as a compact bar.
-   * Returns "▓░░░░ 156k/1M (85%)" or undefined if no usage data.
+   * Returns "▓░░░░ 150k/1M (15% used)" or undefined if no usage data.
    * Bar styling (segment count / chars) is configurable; defaults to 5/▓/░.
+   *
+   * The percentage reports what is USED, agreeing with both the `150k/1M` pair
+   * beside it and the fill of the bar. It used to report what was LEFT while
+   * the bar filled by what was used, so a nearly-full window printed a
+   * reassuring high number — and the turn-completion footer printed the
+   * complement in an identical-looking string (issue #196). The `used` suffix
+   * is not decoration: it is what makes the number unambiguous at a glance.
    */
   static formatContextBar(usage?: SessionUsage, barStyle?: SurfaceBarStyle): string | undefined {
     if (!usage || usage.contextWindow <= 0) return undefined;
@@ -443,14 +450,13 @@ export class ThreadHeaderBuilder {
 
     const used = ContextWindowManager.computeUsedTokens(usage);
     const total = usage.contextWindow;
-    const remainingPercent = Math.max(0, Math.min(100, ((total - used) / total) * 100));
-    const usedPercent = 100 - remainingPercent;
+    const usedPercent = 100 - Math.max(0, Math.min(100, ((total - used) / total) * 100));
 
     const filledSegments = Math.min(width, Math.max(0, Math.round((usedPercent / 100) * width)));
     const bar = filledChar.repeat(filledSegments) + emptyChar.repeat(width - filledSegments);
 
-    const pct = Number.isInteger(remainingPercent) ? `${remainingPercent}` : remainingPercent.toFixed(1);
-    return `${bar} ${ThreadHeaderBuilder.formatTokenCount(used)}/${ThreadHeaderBuilder.formatTokenCount(total)} (${pct}%)`;
+    const pct = Number.isInteger(usedPercent) ? `${usedPercent}` : usedPercent.toFixed(1);
+    return `${bar} ${ThreadHeaderBuilder.formatTokenCount(used)}/${ThreadHeaderBuilder.formatTokenCount(total)} (${pct}% used)`;
   }
 
   /**
