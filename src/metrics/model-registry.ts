@@ -19,7 +19,11 @@ export {
   GPT_5_6_AUTO_COMPACT_TOKENS,
   GPT_5_6_CONTEXT_WINDOW,
   GPT_5_6_SDK_BLOCKING_LIMIT,
+  GPT_6_AUTO_COMPACT_TOKENS,
+  GPT_6_CONTEXT_WINDOW,
+  GPT_6_SDK_BLOCKING_LIMIT,
   hasOneMSuffix,
+  isGpt6Model,
   isGpt55Model,
   isGpt56Model,
   isNativeOneMModel,
@@ -107,6 +111,26 @@ const MODEL_REGISTRY: [pattern: string, spec: ModelSpec][] = [
         cache1hrWritePerMTok: 10,
       },
       contextWindow: 1_000_000,
+      maxOutput: 128_000,
+    },
+  ],
+  // OpenAI gpt-6-astra — the gpt-6 generation (2026-09-03 release; $10 in /
+  // $50 out / $1 cache-read per MTok, 2026-09 launch standard-tier rates; no
+  // cache-creation charge on codex, same as every other gpt row). 272k
+  // window — the openai/codex model catalog value (context_window 272000),
+  // the same class as gpt-5.5's 272k input cap, NOT gpt-5.6's 372k. Context
+  // numbers are policy and live in model-profile.ts; this row is pricing.
+  [
+    'gpt-6-astra',
+    {
+      pricing: {
+        inputPerMTok: 10,
+        outputPerMTok: 50,
+        cacheReadPerMTok: 1,
+        cache5minWritePerMTok: 0,
+        cache1hrWritePerMTok: 0,
+      },
+      contextWindow: 272_000,
       maxOutput: 128_000,
     },
   ],
