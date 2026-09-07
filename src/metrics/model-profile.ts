@@ -18,7 +18,8 @@
  *   2. the `[1m]` opt-in suffix — 1M window; the BASE id decides which family
  *      auto-compact trigger applies;
  *   3. native-1M ids (fable-5) → 1M;
- *   4. the gpt-5.6 / gpt-5.5 families (llmux codex backend);
+ *   4. the gpt-6 / gpt-5.6 / gpt-5.5 families (llmux codex backend),
+ *      newest generation first;
  *   5. the llmux model-catalog overlay, NON-claude groups only;
  *   6. the 200k fallback.
  *
@@ -90,9 +91,14 @@ export function sdkBlockingLimitFor(contextWindow: number): number {
  * compact turn resends the full history plus the summary prompt, so a trigger
  * flush with the limit would be refused before `/compact` ever ran.
  *
- * 9,000 is the tightest gap in the canonical table (gpt-5.6-sol: 349,000
- * limit − 340,000 trigger), so it is the largest headroom under which every
- * declared default is still valid. The invariant is pinned by test.
+ * 9,000 is the tightest gap in the canonical table — gpt-5.6-sol (349,000
+ * limit − 340,000 trigger) and gpt-6-astra (249,000 − 240,000) both sit
+ * exactly on it — so it is the largest headroom under which every declared
+ * default is still valid. The invariant is pinned by test. It is also why
+ * gpt-6-astra's trigger is 240,000 and not the 245,000 a "≈90% of the
+ * window" reading would give: 245,000 would be silently clamped to 240,000
+ * by `safeMaxAutoCompactTokens` (session/autocompact-policy.ts), so the
+ * declared constant would not be the number the session actually uses.
  */
 export const DEFAULT_COMPACT_HEADROOM = 9_000;
 
@@ -222,6 +228,45 @@ export const GPT_5_6_AUTO_COMPACT_TOKENS = 340_000;
  */
 export const GPT_5_6_SDK_BLOCKING_LIMIT = sdkBlockingLimitFor(GPT_5_6_CONTEXT_WINDOW);
 
+/**
+ * gpt-6 — OpenAI's 2026-09-03 release, served through llmux's codex backend
+ * group like the gpt-5.x ids: llmux forwards `gpt-6-astra` verbatim and
+ * resolves the `astra` / `gpt-6` aliases to it (backend probe 2026-09-07).
+ * `gpt-6-astra` is the only shipped tier — there is no gpt-6-sol/terra/luna.
+ *
+ * The lookahead pins the pattern to the generation boundary: it matches
+ * `gpt-6`, `gpt-6-astra` and `gpt-6-astra[1m]`, but NOT `gpt-60` or
+ * `gpt-6.5` (a future generation must get its own block), and never
+ * `gpt-5.6`.
+ */
+const GPT_6_RE = /gpt-6(?=-|\[|$)/i;
+
+/** Returns true when `model` is a gpt-6 family id (case-insensitive). */
+export function isGpt6Model(model: string): boolean {
+  return GPT_6_RE.test(model);
+}
+
+/**
+ * gpt-6 context window: 272k — the openai/codex model catalog value
+ * (context_window 272000), the same class as gpt-5.5's 272k input cap and
+ * NOT gpt-5.6's 372k. Do NOT raise this without re-checking the catalog.
+ */
+export const GPT_6_CONTEXT_WINDOW = 272_000;
+
+/**
+ * `CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE` value for gpt-6: 249,000.
+ */
+export const GPT_6_SDK_BLOCKING_LIMIT = sdkBlockingLimitFor(GPT_6_CONTEXT_WINDOW);
+
+/**
+ * Harness-side auto-compact trigger for gpt-6: 240,000 — the largest value
+ * this profile can actually compact at, i.e. exactly
+ * `GPT_6_SDK_BLOCKING_LIMIT − DEFAULT_COMPACT_HEADROOM`. Derived, not
+ * hand-picked: anything larger is clamped away by `safeMaxAutoCompactTokens`
+ * and would make the constant a lie.
+ */
+export const GPT_6_AUTO_COMPACT_TOKENS = GPT_6_SDK_BLOCKING_LIMIT - DEFAULT_COMPACT_HEADROOM;
+
 /* ------------------------------------------------------------------ *
  * Canonical policy overlay
  * ------------------------------------------------------------------ */
@@ -287,6 +332,19 @@ const POLICY_PROFILES: readonly ModelProfile[] = [
     contextWindow: GPT_5_6_CONTEXT_WINDOW,
     sdkBlockingLimit: GPT_5_6_SDK_BLOCKING_LIMIT,
     autoCompactTokens: GPT_5_6_AUTO_COMPACT_TOKENS,
+    compactHeadroom: DEFAULT_COMPACT_HEADROOM,
+  },
+  {
+    // gpt-6-astra (2026-09-03 release, wired 2026-09-07). Declared here — not
+    // left to the family branch alone — so the canonical headroom invariant
+    // test covers it: its 240,000 trigger sits exactly DEFAULT_COMPACT_HEADROOM
+    // below the 249,000 limit. There is no `gpt-6-astra[1m]` row: llmux has not
+    // been shown to accept the suffix on a gpt-6 id, and inventing one would
+    // advertise a window nobody probed.
+    modelId: 'gpt-6-astra',
+    contextWindow: GPT_6_CONTEXT_WINDOW,
+    sdkBlockingLimit: GPT_6_SDK_BLOCKING_LIMIT,
+    autoCompactTokens: GPT_6_AUTO_COMPACT_TOKENS,
     compactHeadroom: DEFAULT_COMPACT_HEADROOM,
   },
   {
@@ -389,6 +447,7 @@ function catalogWindowFor(modelId: string): number | undefined {
 
 /** Family-level auto-compact default for an id outside the policy overlay. */
 function familyAutoCompactTokens(modelId: string): number | undefined {
+  if (isGpt6Model(modelId)) return GPT_6_AUTO_COMPACT_TOKENS;
   if (isGpt56Model(modelId)) return GPT_5_6_AUTO_COMPACT_TOKENS;
   if (isGpt55Model(modelId)) return GPT_5_5_AUTO_COMPACT_TOKENS;
   return undefined;
@@ -426,6 +485,7 @@ export function resolveModelProfile(modelId?: string): ModelProfile {
   }
 
   if (isNativeOneMModel(id)) return derived(1_000_000);
+  if (isGpt6Model(id)) return derived(GPT_6_CONTEXT_WINDOW, GPT_6_AUTO_COMPACT_TOKENS);
   if (isGpt56Model(id)) return derived(GPT_5_6_CONTEXT_WINDOW, GPT_5_6_AUTO_COMPACT_TOKENS);
   if (isGpt55Model(id)) return derived(GPT_5_5_CONTEXT_WINDOW, GPT_5_5_AUTO_COMPACT_TOKENS);
 
