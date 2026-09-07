@@ -57,14 +57,16 @@ describe('Slack display-name identity (cross-user skill resolution)', () => {
 // tests assert the **exact** expected arrays/records, not just the length,
 // so any future silent removal is caught immediately.
 describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', () => {
-  it('AVAILABLE_MODELS is exactly 20 entries in the expected order', () => {
+  it('AVAILABLE_MODELS is exactly 21 entries in the expected order', () => {
     // Fable 5 (2026-06-09) leads as the flagship; Opus 5 (2026-08-26) heads the
     // opus tier so substring matchers see it before 4.8/4.7. The `[1m]` block
     // now carries the literal `claude-fable-5[1m]` and `gpt-5.6-sol[1m]` — the
     // suffix is what makes Claude Code's own accounting use a 1M denominator,
     // which the 750k/600k auto-compact defaults depend on. `grok-4.6` is
     // declared statically so a cold start with no llmux catalog snapshot can
-    // still select it. Historical entries MUST survive every bump.
+    // still select it. `gpt-6-astra` (2026-09-07) is appended after the
+    // gpt-5.6 tiers — selectable, but NOT the default. Historical entries
+    // MUST survive every bump.
     expect([...AVAILABLE_MODELS]).toEqual([
       'claude-fable-5',
       'claude-opus-5',
@@ -85,6 +87,7 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
       'gpt-5.6-sol[1m]',
       'gpt-5.6-terra',
       'gpt-5.6-luna',
+      'gpt-6-astra',
       'grok-4.6',
     ]);
   });
@@ -100,7 +103,7 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
     expect(AVAILABLE_MODELS as readonly string[]).toContain('claude-fable-5');
   });
 
-  it('MODEL_ALIASES has exactly the 28 expected key→value mappings', () => {
+  it('MODEL_ALIASES has exactly the 31 expected key→value mappings', () => {
     // `fable` / `fable[1m]` → the literal 1M id. `opus` / `opus[1m]` follow
     // "latest opus" semantics → Opus 5, and both land on the `[1m]` variant
     // because that is the id whose client-side denominator is 1M. Version-
@@ -129,6 +132,11 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
       'sol[1m]': 'gpt-5.6-sol[1m]',
       terra: 'gpt-5.6-terra',
       luna: 'gpt-5.6-luna',
+      // gpt-6 (2026-09-07): selectable aliases only — `gpt` above still
+      // points at gpt-5.6-sol, so the default is unchanged.
+      astra: 'gpt-6-astra',
+      'gpt-6': 'gpt-6-astra',
+      gpt6: 'gpt-6-astra',
       'opus[1m]': 'claude-opus-5[1m]',
       'opus-5[1m]': 'claude-opus-5[1m]',
       'opus-4.8[1m]': 'claude-opus-4-8[1m]',

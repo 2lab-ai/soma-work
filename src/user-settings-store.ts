@@ -24,7 +24,7 @@ const invalidator = createPromptInvalidator(logger, 'Settings');
 export const setSettingsPromptInvalidationHook = invalidator.setHook;
 const fireSettingsInvalidate = invalidator.fire;
 
-// Available models — the 20-entry user-facing allow-list.
+// Available models — the 21-entry user-facing allow-list.
 //
 // Contract:
 //   - The 9 bare claude entries are the historical lineup and MUST NOT be
@@ -50,6 +50,18 @@ const fireSettingsInvalidate = invalidator.fire;
 //     efforts low..xhigh plus max/ultra (llmux forwards output_config
 //     effort per request). llmux ≥ preview-2026-07-10-0206 forwards the
 //     tier slugs verbatim.
+//   - `gpt-6-astra` (added 2026-09-07) is OpenAI's 2026-09-03 release and
+//     rides the same llmux codex passthrough as the gpt-5.x ids (llmux
+//     forwards the slug verbatim; the codex backend accepted it on a
+//     2026-09-07 probe). 272k context window (openai/codex catalog value —
+//     the same class as gpt-5.5's 272k input cap, NOT gpt-5.6's 372k);
+//     efforts low/medium/high/xhigh/max/ultra, catalog default effort low.
+//     It is the only shipped gpt-6 tier (no sol/terra/luna) and is a
+//     declared row in metrics/model-profile.ts: 249k blocking limit, 240k
+//     auto-compact (= limit − DEFAULT_COMPACT_HEADROOM). There is no
+//     `gpt-6-astra[1m]` — the suffix has not been probed against llmux for
+//     this id. User-SELECTABLE only: the default stays `gpt-5.6-sol` (the
+//     `gpt` alias is intentionally NOT bumped).
 //   - `grok-4.6` (added 2026-08-26) is DECLARED here rather than left to the
 //     llmux catalog overlay: a cold start with no catalog snapshot must still
 //     be able to select the model whose 450k auto-compact default is declared
@@ -98,6 +110,7 @@ export const AVAILABLE_MODELS = [
   'gpt-5.6-sol[1m]',
   'gpt-5.6-terra',
   'gpt-5.6-luna',
+  'gpt-6-astra',
   'grok-4.6',
 ] as const;
 
@@ -168,6 +181,13 @@ export const MODEL_ALIASES: Record<string, ModelId> = {
   'sol[1m]': 'gpt-5.6-sol[1m]',
   terra: 'gpt-5.6-terra',
   luna: 'gpt-5.6-luna',
+  // gpt-6 (2026-09-03 release, wired 2026-09-07). Selectable, NOT the
+  // default — `gpt` above still points at gpt-5.6-sol. `gpt-6` is the bare
+  // generation spelling and `astra` the tier shorthand; both resolve to the
+  // single shipped tier id. No `astra[1m]` row: that id has not been probed.
+  astra: 'gpt-6-astra',
+  'gpt-6': 'gpt-6-astra',
+  gpt6: 'gpt-6-astra',
   // 1M-context opt-in variants.
   'opus[1m]': 'claude-opus-5[1m]',
   'opus-5[1m]': 'claude-opus-5[1m]',
@@ -1303,6 +1323,10 @@ export class UserSettingsStore {
       case 'gpt-5.6-luna':
         // Budget tier — same 372k catalog window.
         return 'GPT-5.6 Luna (372k)';
+      case 'gpt-6-astra':
+        // gpt-6 generation (llmux codex backend); 272k catalog window,
+        // 240k auto-compact (model-profile.ts).
+        return 'GPT-6 Astra (272k)';
       default:
         // llmux model-catalog overlay — catalog models carry their llmux
         // display name (e.g. `grok-4.5` → "Grok 4.5"); anything else echoes
