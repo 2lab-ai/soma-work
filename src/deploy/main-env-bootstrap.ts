@@ -35,6 +35,7 @@ const VALID_MODELS = new Set([
   'gpt-5.6-sol[1m]',
   'gpt-5.6-terra',
   'gpt-5.6-luna',
+  'gpt-6-astra',
   'grok-4.6',
 ]);
 
