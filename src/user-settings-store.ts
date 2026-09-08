@@ -24,7 +24,7 @@ const invalidator = createPromptInvalidator(logger, 'Settings');
 export const setSettingsPromptInvalidationHook = invalidator.setHook;
 const fireSettingsInvalidate = invalidator.fire;
 
-// Available models — the 21-entry user-facing allow-list.
+// Available models — the 22-entry user-facing allow-list.
 //
 // Contract:
 //   - The 9 bare claude entries are the historical lineup and MUST NOT be
@@ -58,10 +58,19 @@ const fireSettingsInvalidate = invalidator.fire;
 //     efforts low/medium/high/xhigh/max/ultra, catalog default effort low.
 //     It is the only shipped gpt-6 tier (no sol/terra/luna) and is a
 //     declared row in metrics/model-profile.ts: 249k blocking limit, 240k
-//     auto-compact (= limit − DEFAULT_COMPACT_HEADROOM). There is no
-//     `gpt-6-astra[1m]` — the suffix has not been probed against llmux for
-//     this id. User-SELECTABLE only: the default stays `gpt-5.6-sol` (the
-//     `gpt` alias is intentionally NOT bumped).
+//     auto-compact (= limit − DEFAULT_COMPACT_HEADROOM). The `[1m]` opt-in
+//     variant ships alongside the bare id (same wire contract as
+//     `gpt-5.6-sol[1m]` — soma-work/SDK sends the `[1m]`-annotated id to
+//     llmux, and llmux's codex provider strips the trailing `[1m]` before
+//     forwarding to the upstream codex backend as the bare slug, per
+//     llmux src/provider/codex.rs CLIENT_CONTEXT_SUFFIX; SDK-side window
+//     becomes 1M / blocking limit 977k, with the gpt-6 family's 240k
+//     auto-compact trigger preserved through the model-profile suffix
+//     rule — no separate POLICY_PROFILES row). Both spellings are
+//     user-SELECTABLE; the default stays `gpt-5.6-sol` (the `gpt` alias
+//     is intentionally NOT bumped), and the `astra`/`gpt-6`/`gpt6`
+//     shorthand aliases point at the `[1m]` variant so a user typing the
+//     shorthand does not silently get a fifth of the window they meant.
 //   - `grok-4.6` (added 2026-08-26) is DECLARED here rather than left to the
 //     llmux catalog overlay: a cold start with no catalog snapshot must still
 //     be able to select the model whose 450k auto-compact default is declared
@@ -111,6 +120,7 @@ export const AVAILABLE_MODELS = [
   'gpt-5.6-terra',
   'gpt-5.6-luna',
   'gpt-6-astra',
+  'gpt-6-astra[1m]',
   'grok-4.6',
 ] as const;
 
@@ -183,11 +193,19 @@ export const MODEL_ALIASES: Record<string, ModelId> = {
   luna: 'gpt-5.6-luna',
   // gpt-6 (2026-09-03 release, wired 2026-09-07). Selectable, NOT the
   // default — `gpt` above still points at gpt-5.6-sol. `gpt-6` is the bare
-  // generation spelling and `astra` the tier shorthand; both resolve to the
-  // single shipped tier id. No `astra[1m]` row: that id has not been probed.
-  astra: 'gpt-6-astra',
-  'gpt-6': 'gpt-6-astra',
-  gpt6: 'gpt-6-astra',
+  // generation spelling and `astra` the tier shorthand; both point at the
+  // `[1m]` opt-in id — the shorthand a user types must land on the spelling
+  // whose SDK-side window is actually 1M (same rule as `opus` / `fable`).
+  // The bare `gpt-6-astra` (272k) stays selectable by its literal spelling.
+  // `astra[1m]` is included for the same reason `sol[1m]` is: the tier-
+  // shorthand + explicit `[1m]` spelling is real muscle-memory input and the
+  // llmux catalog only advertises the bare `astra` alias, so without this
+  // row `astra[1m]` would resolve to `null` at the store even though its
+  // resolved id is a valid allow-list member.
+  astra: 'gpt-6-astra[1m]',
+  'astra[1m]': 'gpt-6-astra[1m]',
+  'gpt-6': 'gpt-6-astra[1m]',
+  gpt6: 'gpt-6-astra[1m]',
   // 1M-context opt-in variants.
   'opus[1m]': 'claude-opus-5[1m]',
   'opus-5[1m]': 'claude-opus-5[1m]',
@@ -1327,6 +1345,12 @@ export class UserSettingsStore {
         // gpt-6 generation (llmux codex backend); 272k catalog window,
         // 240k auto-compact (model-profile.ts).
         return 'GPT-6 Astra (272k)';
+      case 'gpt-6-astra[1m]':
+        // 1M opt-in of the gpt-6 flagship — SDK-side window 1M / blocking
+        // limit 977k, harness auto-compact stays at the gpt-6 family's 240k
+        // (derived via the [1m] suffix rule in model-profile.ts, no
+        // canonical POLICY_PROFILES row).
+        return 'GPT-6 Astra (1M)';
       default:
         // llmux model-catalog overlay — catalog models carry their llmux
         // display name (e.g. `grok-4.5` → "Grok 4.5"); anything else echoes

@@ -105,6 +105,26 @@ describe('buildStreamOptions — catalog window workaround (grok-4.5)', () => {
     expect(options.env?.DISABLE_AUTO_COMPACT).toBe('1');
   });
 
+  it('gpt-6-astra[1m] session gets the 1M SDK blocking policy (977000)', async () => {
+    // Contract mirrors gpt-5.6-sol[1m]: the [1m] session must receive
+    // sdkBlockingLimit=977_000 (window 1_000_000 − 20k output reserve − 3k
+    // safety), NOT the bare family's 249,000. This is the exact class of bug
+    // the model-profile module exists to prevent — a session's window and its
+    // SDK blocking limit disagreeing across the [1m] boundary.
+    const session = { model: 'gpt-6-astra[1m]', systemPrompt: 'x', sessionId: 's3c' } as ConversationSession;
+    const { options } = await buildStreamOptions({ queryEnv: {}, session }, makeDeps());
+    expect(options.env?.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE).toBe('977000');
+    // The harness owns compaction; SDK-native autocompact stays off.
+    expect(options.env?.DISABLE_AUTO_COMPACT).toBe('1');
+    expect(options.env?.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBeUndefined();
+    // Model id is passed to the SDK with the `[1m]` suffix intact — soma-work
+    // does not strip it here. Downstream, llmux's codex provider strips the
+    // trailing `[1m]` before forwarding to the upstream codex backend (llmux
+    // src/provider/codex.rs CLIENT_CONTEXT_SUFFIX); the suffix's job on this
+    // side of the wire is purely to select the 1M profile.
+    expect(options.model).toBe('gpt-6-astra[1m]');
+  });
+
   it('grok-4.6 uses the policy overlay blocking limit (477000) with an empty catalog', async () => {
     // grok-4.6 is a canonical policy id — its window is declared, not fetched,
     // so a cold start with no catalog snapshot must not fall back to 200k. The
