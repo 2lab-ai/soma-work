@@ -238,6 +238,8 @@ source of truth for any model not listed here:
 | `claude-opus-5` (bare, no `[1m]`) | 200,000 | none — falls back to the legacy per-user percentage below |
 | `gpt-5.6-sol[1m]` (alias `sol[1m]`) | 1,000,000 | 600,000 |
 | `gpt-5.6-sol` (bare) | 372,000 | 340,000 |
+| `gpt-6-astra[1m]` (aliases `astra`, `astra[1m]`, `gpt-6`, `gpt6`) | 1,000,000 | 240,000 |
+| `gpt-6-astra` (bare literal only) | 272,000 | 240,000 |
 | `grok-4.6` | 500,000 | 450,000 |
 
 `grok-4.6[1m]` is not a real model — grok has no 1M variant, and llmux forwards
