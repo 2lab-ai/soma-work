@@ -132,7 +132,7 @@ describe('SlackBlockKitChannel — parity with pre-config hardcoded rendering', 
     expect(getBlocks(api)).toEqual([
       section(`🟢 *작업 완료* — PR #77 리뷰${THREAD_LINK}`),
       context(`\`default\` | \`opus-4.6 | high\` | ${CLOCK}`),
-      context('Ctx ▓▓▓▓░ 160.3k/1M (84.0%) -5.6 | Dur 17:28 | 5h ▓▓▓░░░ 42% +20 | 7d ▓▓▓▓░░░░ 55% +2'),
+      context('Ctx ▓▓▓▓░ 160.3k/1M (84.0% used) -5.6 | Dur 17:28 | 5h ▓▓▓░░░ 42% +20 | 7d ▓▓▓▓░░░░ 55% +2'),
       context(
         ':wrench: Bash×59: 767.4s | WebFetch×7: 118.2s | send_file:send_document×3: 44.4s | WebSearch×2: 42.5s | Task×2: 17.2s | +4 more',
       ),
@@ -146,7 +146,7 @@ describe('SlackBlockKitChannel — parity with pre-config hardcoded rendering', 
 
     expect(getBlocks(api)).toEqual([
       section(`🟢 *작업 완료* — PR #77 리뷰${THREAD_LINK}`),
-      context('`opus-4.6 | high` · Ctx 84.0% · 17:28 · 🔧 6 tools×77'),
+      context('`opus-4.6 | high` · Ctx 84.0% used · 17:28 · 🔧 6 tools×77'),
     ]);
   });
 
@@ -155,7 +155,7 @@ describe('SlackBlockKitChannel — parity with pre-config hardcoded rendering', 
     const api = createMockSlackApi();
     await new SlackBlockKitChannel(api).send(makeRichCompleteEvent());
 
-    expect(getBlocks(api)).toEqual([context('🟢 작업 완료 · opus-4.6 | high · 84.0% · 17:28')]);
+    expect(getBlocks(api)).toEqual([context('🟢 작업 완료 · opus-4.6 | high · 84.0% used · 17:28')]);
   });
 
   it('default theme × Exception: header suffix, fenced body, ident and usage rows', async () => {
@@ -257,7 +257,7 @@ describe('SlackBlockKitChannel — ui.turnend config overrides', () => {
     const blocks = getBlocks(api);
     expect(blocks).toHaveLength(1);
     // 84% of a 10-segment bar → 8 filled, 2 empty.
-    expect(blocks[0].elements[0].text).toContain('Ctx ▓▓▓▓▓▓▓▓░░ 160.3k/1M (84.0%) -5.6');
+    expect(blocks[0].elements[0].text).toContain('Ctx ▓▓▓▓▓▓▓▓░░ 160.3k/1M (84.0% used) -5.6');
   });
 
   it('reordered lines are reflected in block order', async () => {
@@ -352,7 +352,7 @@ describe('SlackBlockKitChannel — hostile config safety (clamps + fallback)', (
     const blocks = getBlocks(api);
     expect(blocks).toHaveLength(1);
     // Clamped to 10 decimals — renders instead of throwing.
-    expect(blocks[0].elements[0].text).toContain('(84.0000000000%)');
+    expect(blocks[0].elements[0].text).toContain('(84.0000000000% used)');
   });
 
   it('bar.width: 10000 is clamped to 40 segments (no repeat() throw, no flooded line)', async () => {

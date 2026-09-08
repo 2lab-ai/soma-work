@@ -21,8 +21,10 @@ const createMockSlackApi = () => ({
   getUserName: vi.fn().mockResolvedValue('Test User'),
   getChannelName: vi.fn().mockResolvedValue('#general'),
   getPermalink: vi.fn().mockResolvedValue('https://slack.com/archives/C123/p123'),
-  postMessage: vi.fn().mockResolvedValue({ ts: '123.456', channel: 'C123' }),
+  postMessage: vi.fn().mockResolvedValue({ ts: '123.456', channel: 'C123', threadTs: '111.222', echoedMessage: true }),
   updateMessage: vi.fn().mockResolvedValue(undefined),
+  deleteMessage: vi.fn().mockResolvedValue(undefined),
+  getThreadRootState: vi.fn().mockResolvedValue('exists'),
 });
 
 // Mock ClaudeHandler
@@ -643,6 +645,135 @@ describe('SessionUiManager', () => {
         expect.stringContaining('세션이 종료되었습니다'),
         { threadTs: session.threadTs },
       );
+    });
+  });
+
+  // Regression: session lifecycle notifications leaked to the CHANNEL ROOT.
+  //
+  // Verified empirically against the Slack Web API (2026-08-28): chat.postMessage
+  // with a thread_ts whose parent was deleted AND left no surviving replies
+  // returns ok:true with message.thread_ts === null — the message silently lands
+  // as a top-level channel message. A parent deleted while replies survive leaves
+  // a `tombstone` that keeps threading intact, so only the zero-reply case leaks.
+  //
+  // The admin full-thread wipe (ActionHandlers.handleDmDeleteThreadConfirm) deletes
+  // every bot reply first and then the root, which produces exactly the leaking
+  // shape, and it never terminated the session — so the 5-minute sweeper kept
+  // posting warning/sleep/expiry notices against a dead anchor.
+  describe('dangling thread root (channel-root leak)', () => {
+    it('handleSessionSleep does not post when the thread root is gone', async () => {
+      mockSlackApi.getThreadRootState.mockResolvedValue('missing');
+      const session = createMockSession({ warningMessageTs: undefined });
+
+      await manager.handleSessionSleep(session);
+
+      expect(mockSlackApi.postMessage).not.toHaveBeenCalled();
+    });
+
+    it('handleSessionExpiry does not post when the thread root is gone', async () => {
+      mockSlackApi.getThreadRootState.mockResolvedValue('missing');
+      const session = createMockSession({ warningMessageTs: undefined });
+
+      await manager.handleSessionExpiry(session);
+
+      expect(mockSlackApi.postMessage).not.toHaveBeenCalled();
+    });
+
+    it('handleSessionWarning does not post when the thread root is gone', async () => {
+      mockSlackApi.getThreadRootState.mockResolvedValue('missing');
+      const session = createMockSession();
+
+      const result = await manager.handleSessionWarning(session, 30 * 60 * 1000);
+
+      expect(mockSlackApi.postMessage).not.toHaveBeenCalled();
+      expect(result).toBeUndefined();
+    });
+
+    it('stays silent — and changes nothing — when the root state cannot be determined', async () => {
+      // A Slack outage must not be read as "thread deleted". Fail quiet: skip the
+      // post, but never mutate or terminate the session off an inconclusive probe.
+      mockSlackApi.getThreadRootState.mockResolvedValue('unknown');
+      const session = createMockSession({ warningMessageTs: undefined });
+
+      await manager.handleSessionSleep(session);
+
+      expect(mockSlackApi.postMessage).not.toHaveBeenCalled();
+      expect(mockClaudeHandler.terminateSession).not.toHaveBeenCalled();
+    });
+
+    it('reverts a notification that Slack silently posted to the channel root', async () => {
+      // TOCTOU backstop: the root can die between the probe and the post. Slack
+      // reports the truth in message.thread_ts — if it came back unthreaded, the
+      // message is a channel-root leak and must be removed again.
+      mockSlackApi.getThreadRootState.mockResolvedValue('exists');
+      mockSlackApi.postMessage.mockResolvedValue({
+        ts: 'LEAKED.1',
+        channel: 'C123',
+        threadTs: undefined,
+        echoedMessage: true,
+      });
+      const session = createMockSession({ warningMessageTs: undefined });
+
+      await manager.handleSessionSleep(session);
+
+      expect(mockSlackApi.deleteMessage).toHaveBeenCalledWith('C123', 'LEAKED.1');
+    });
+
+    it('handleIdleCheck does not post when the thread root is gone', async () => {
+      // The 12h idle check is the FIRST notice every session gets — WARNING_INTERVALS
+      // opens at 12h and the router sends anything above 1h down this path. It also
+      // feeds session.warningMessageTs, so a leak here propagates: the ts of a
+      // channel-root idle card becomes the message the sleep notice later edits.
+      mockSlackApi.getThreadRootState.mockResolvedValue('missing');
+      const session = createMockSession();
+
+      const result = await manager.handleIdleCheck(session, 12 * 60 * 60 * 1000);
+
+      expect(mockSlackApi.postMessage).not.toHaveBeenCalled();
+      expect(result).toBeUndefined();
+    });
+
+    it('does not edit an existing lifecycle message once the thread root is gone', async () => {
+      // chat.update cannot create a channel-root message, but it can rewrite one.
+      // An ungated idle-check post that landed in the channel becomes
+      // warningMessageTs; editing it would carry that public message forward
+      // under new text instead of ending the leak.
+      mockSlackApi.getThreadRootState.mockResolvedValue('missing');
+      const session = createMockSession({ warningMessageTs: 'LEAKED.WARNING' });
+
+      await manager.handleSessionSleep(session);
+
+      expect(mockSlackApi.updateMessage).not.toHaveBeenCalled();
+      expect(mockSlackApi.postMessage).not.toHaveBeenCalled();
+    });
+
+    it('does not delete a posted notice when Slack echoes no message back', async () => {
+      // Absence of message.thread_ts is not evidence of a leak when Slack sent no
+      // message object at all. Deleting on that guess would remove a perfectly
+      // good threaded notice.
+      mockSlackApi.getThreadRootState.mockResolvedValue('exists');
+      mockSlackApi.postMessage.mockResolvedValue({ ts: 'FINE.1', channel: 'C123' });
+      const session = createMockSession({ warningMessageTs: undefined });
+
+      await manager.handleSessionSleep(session);
+
+      expect(mockSlackApi.deleteMessage).not.toHaveBeenCalled();
+    });
+
+    it('still posts normally when the root is a tombstone that keeps the thread alive', async () => {
+      // Deleting a parent that still has replies leaves a tombstone; Slack keeps
+      // threading onto it. That is NOT the leak — do not suppress it.
+      mockSlackApi.getThreadRootState.mockResolvedValue('exists');
+      const session = createMockSession({ warningMessageTs: undefined });
+
+      await manager.handleSessionSleep(session);
+
+      expect(mockSlackApi.postMessage).toHaveBeenCalledWith(
+        session.channelId,
+        expect.stringContaining('Sleep 모드로 전환'),
+        { threadTs: session.threadTs },
+      );
+      expect(mockSlackApi.deleteMessage).not.toHaveBeenCalled();
     });
   });
 

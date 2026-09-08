@@ -92,6 +92,19 @@ describe('buildStreamOptions — catalog window workaround (grok-4.5)', () => {
     expect(options.env?.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE).toBe('349000');
   });
 
+  it('keeps gpt-6-astra on its policy blocking limit (249000) despite a bigger catalog window', async () => {
+    modelCatalog.__testSeed([
+      GROK,
+      { id: 'gpt-6-astra', aliases: ['astra'], name: 'GPT-6-Astra', efforts: [], max_context: 400_000, group: 'codex' },
+    ]);
+    const session = { model: 'gpt-6-astra', systemPrompt: 'x', sessionId: 's3a' } as ConversationSession;
+    const { options } = await buildStreamOptions({ queryEnv: {}, session }, makeDeps());
+    expect(options.env?.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE).toBe('249000');
+    // The 240k trigger is a harness number and must never reach the SDK env.
+    expect(options.env?.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBeUndefined();
+    expect(options.env?.DISABLE_AUTO_COMPACT).toBe('1');
+  });
+
   it('grok-4.6 uses the policy overlay blocking limit (477000) with an empty catalog', async () => {
     // grok-4.6 is a canonical policy id — its window is declared, not fetched,
     // so a cold start with no catalog snapshot must not fall back to 200k. The

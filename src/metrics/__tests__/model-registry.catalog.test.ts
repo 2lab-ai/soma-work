@@ -59,6 +59,14 @@ describe('resolveContextWindow — catalog overlay', () => {
     expect(resolveContextWindow('gpt-5.5')).toBe(275_000);
   });
 
+  it('keeps gpt-6-astra on its hardcoded 272k window despite a bigger catalog entry', () => {
+    modelCatalog.__testSeed([
+      GROK,
+      { id: 'gpt-6-astra', aliases: ['astra'], name: 'GPT-6-Astra', efforts: [], max_context: 400_000, group: 'codex' },
+    ]);
+    expect(resolveContextWindow('gpt-6-astra')).toBe(272_000);
+  });
+
   it('ignores null / non-positive catalog windows', () => {
     modelCatalog.__testSeed([{ ...GROK, max_context: null }]);
     expect(resolveContextWindow('grok-4.5')).toBe(200_000);

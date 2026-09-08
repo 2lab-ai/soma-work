@@ -68,6 +68,38 @@ export function selectCurrentContextTokens(usage: CurrentContextTokensInput): Cu
   };
 }
 
+/** The four live context-occupancy counters, as a mutable structural slice. */
+export interface MutableContextOccupancy {
+  currentInputTokens: number;
+  currentOutputTokens: number;
+  currentCacheReadTokens: number;
+  currentCacheCreateTokens: number;
+  lastUpdated?: number;
+}
+
+/**
+ * Adopt the SDK's `compact_boundary.post_tokens` as the live context
+ * occupancy. Returns `false` (and mutates nothing) when the SDK did not
+ * supply a usable count — we never invent a number.
+ *
+ * The whole total lands in `currentInputTokens` with the other three zeroed.
+ * That is an OCCUPANCY ENCODING, not token-category attribution: `post_tokens`
+ * is a single "how full is the window" figure with no input/cache/output
+ * breakdown, and every consumer of `current*` sums all four
+ * (`ContextWindowManager.computeUsedTokens`). Billing lives on `total*` and is
+ * deliberately untouched here — the compaction request really did spend those
+ * tokens.
+ */
+export function applyPostCompactOccupancy(usage: MutableContextOccupancy, postTokens: unknown): boolean {
+  if (typeof postTokens !== 'number' || !Number.isFinite(postTokens) || postTokens < 0) return false;
+  usage.currentInputTokens = Math.round(postTokens);
+  usage.currentOutputTokens = 0;
+  usage.currentCacheReadTokens = 0;
+  usage.currentCacheCreateTokens = 0;
+  usage.lastUpdated = Date.now();
+  return true;
+}
+
 /** Per-model cumulative totals bucket stored on `SessionUsage.modelTotals`. */
 export interface SessionModelTotals {
   inputTokens: number;

@@ -278,7 +278,7 @@ describe('SlackApiHelper', () => {
       });
 
       const result = await helper.postMessage('C123', 'Hello');
-      expect(result).toEqual({ ts: '123.456', channel: 'C123' });
+      expect(result).toEqual({ ts: '123.456', channel: 'C123', threadTs: undefined, echoedMessage: false });
     });
 
     it('should include options when provided', async () => {
@@ -351,7 +351,7 @@ describe('SlackApiHelper', () => {
         blocks: [{ type: 'section', text: { type: 'mrkdwn', text: 'x'.repeat(4000) } }],
       });
 
-      expect(result).toEqual({ ts: '123.456', channel: 'C123' });
+      expect(result).toEqual({ ts: '123.456', channel: 'C123', threadTs: undefined, echoedMessage: false });
       expect(mockApp.client.chat.postMessage).toHaveBeenCalledTimes(2);
       const retryPayload = mockApp.client.chat.postMessage.mock.calls[1][0];
       expect(retryPayload.blocks).toBeUndefined();
@@ -536,7 +536,7 @@ describe('SlackApiHelper', () => {
 
       // p3 should resolve normally
       const result3 = await p3;
-      expect(result3).toEqual({ ts: '2', channel: 'C2' });
+      expect(result3).toEqual({ ts: '2', channel: 'C2', threadTs: undefined, echoedMessage: false });
     });
 
     it('should report queue status correctly', () => {
