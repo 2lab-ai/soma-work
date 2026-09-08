@@ -338,9 +338,11 @@ const POLICY_PROFILES: readonly ModelProfile[] = [
     // gpt-6-astra (2026-09-03 release, wired 2026-09-07). Declared here — not
     // left to the family branch alone — so the canonical headroom invariant
     // test covers it: its 240,000 trigger sits exactly DEFAULT_COMPACT_HEADROOM
-    // below the 249,000 limit. There is no `gpt-6-astra[1m]` row: llmux has not
-    // been shown to accept the suffix on a gpt-6 id, and inventing one would
-    // advertise a window nobody probed.
+    // below the 249,000 limit. The `[1m]` variant is intentionally NOT a
+    // canonical row: the [1m] suffix rule in `resolveModelProfile` derives a
+    // 1M window / 977k blocking limit and inherits this family's 240k
+    // auto-compact trigger — same shape as claude `[1m]` variants — so a
+    // redundant literal row would only invite drift between the two branches.
     modelId: 'gpt-6-astra',
     contextWindow: GPT_6_CONTEXT_WINDOW,
     sdkBlockingLimit: GPT_6_SDK_BLOCKING_LIMIT,
