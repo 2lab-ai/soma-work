@@ -57,16 +57,16 @@ describe('Slack display-name identity (cross-user skill resolution)', () => {
 // tests assert the **exact** expected arrays/records, not just the length,
 // so any future silent removal is caught immediately.
 describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', () => {
-  it('AVAILABLE_MODELS is exactly 21 entries in the expected order', () => {
+  it('AVAILABLE_MODELS is exactly 22 entries in the expected order', () => {
     // Fable 5 (2026-06-09) leads as the flagship; Opus 5 (2026-08-26) heads the
     // opus tier so substring matchers see it before 4.8/4.7. The `[1m]` block
     // now carries the literal `claude-fable-5[1m]` and `gpt-5.6-sol[1m]` — the
     // suffix is what makes Claude Code's own accounting use a 1M denominator,
     // which the 750k/600k auto-compact defaults depend on. `grok-4.6` is
     // declared statically so a cold start with no llmux catalog snapshot can
-    // still select it. `gpt-6-astra` (2026-09-07) is appended after the
-    // gpt-5.6 tiers — selectable, but NOT the default. Historical entries
-    // MUST survive every bump.
+    // still select it. `gpt-6-astra` and its `[1m]` opt-in variant (2026-09-07)
+    // are appended after the gpt-5.6 tiers — selectable, but NOT the default.
+    // Historical entries MUST survive every bump.
     expect([...AVAILABLE_MODELS]).toEqual([
       'claude-fable-5',
       'claude-opus-5',
@@ -88,6 +88,7 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
       'gpt-5.6-terra',
       'gpt-5.6-luna',
       'gpt-6-astra',
+      'gpt-6-astra[1m]',
       'grok-4.6',
     ]);
   });
@@ -103,7 +104,7 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
     expect(AVAILABLE_MODELS as readonly string[]).toContain('claude-fable-5');
   });
 
-  it('MODEL_ALIASES has exactly the 31 expected key→value mappings', () => {
+  it('MODEL_ALIASES has exactly the 32 expected key→value mappings', () => {
     // `fable` / `fable[1m]` → the literal 1M id. `opus` / `opus[1m]` follow
     // "latest opus" semantics → Opus 5, and both land on the `[1m]` variant
     // because that is the id whose client-side denominator is 1M. Version-
@@ -133,10 +134,17 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
       terra: 'gpt-5.6-terra',
       luna: 'gpt-5.6-luna',
       // gpt-6 (2026-09-07): selectable aliases only — `gpt` above still
-      // points at gpt-5.6-sol, so the default is unchanged.
-      astra: 'gpt-6-astra',
-      'gpt-6': 'gpt-6-astra',
-      gpt6: 'gpt-6-astra',
+      // points at gpt-5.6-sol, so the default is unchanged. Shorthand
+      // aliases resolve to the `[1m]` opt-in id (same rule as `opus` /
+      // `fable`) so a user typing `astra` doesn't silently get a fifth of
+      // the window they meant; the bare 272k id stays selectable via its
+      // literal spelling. `astra[1m]` mirrors the `sol[1m]` precedent — the
+      // tier shorthand + explicit `[1m]` spelling is real muscle-memory
+      // input and the llmux catalog only advertises the bare `astra`.
+      astra: 'gpt-6-astra[1m]',
+      'astra[1m]': 'gpt-6-astra[1m]',
+      'gpt-6': 'gpt-6-astra[1m]',
+      gpt6: 'gpt-6-astra[1m]',
       'opus[1m]': 'claude-opus-5[1m]',
       'opus-5[1m]': 'claude-opus-5[1m]',
       'opus-4.8[1m]': 'claude-opus-4-8[1m]',
