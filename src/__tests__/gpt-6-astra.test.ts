@@ -67,11 +67,16 @@ describe('gpt-6-astra — release wiring', () => {
     expect(models).not.toContain('gpt-6-luna');
   });
 
-  it('offers no `[1m]` variant — the suffix was never probed on a gpt-6 id', () => {
-    // gpt-5.6-sol ships `gpt-5.6-sol[1m]` because llmux was shown to accept it
-    // upstream. No such evidence exists for gpt-6, so neither the allow-list
-    // nor the policy table may advertise a 1M window for it.
-    expect(AVAILABLE_MODELS as readonly string[]).not.toContain('gpt-6-astra[1m]');
+  it('ships the `[1m]` variant alongside the bare id (user-selectable 1M opt-in)', () => {
+    // The 1M opt-in is user-selectable — the [1m] SDK-side unlock path is the
+    // same as gpt-5.6-sol[1m]: soma-work/SDK sends the `[1m]`-annotated id to
+    // llmux, and llmux's codex provider strips the trailing `[1m]` before
+    // forwarding upstream as the bare slug (llmux src/provider/codex.rs
+    // CLIENT_CONTEXT_SUFFIX). The 1M numbers are derived by model-profile.ts
+    // via the suffix rule, not a canonical POLICY_PROFILES row.
+    expect(AVAILABLE_MODELS as readonly string[]).toContain('gpt-6-astra[1m]');
+    // No new canonical row — model-profile.ts derives the 1M numbers from the
+    // [1m] suffix rule + the family branch.
     expect(CANONICAL_MODEL_IDS).not.toContain('gpt-6-astra[1m]');
   });
 
@@ -80,38 +85,67 @@ describe('gpt-6-astra — release wiring', () => {
     expect(MODEL_ALIASES.gpt).toBe('gpt-5.6-sol');
   });
 
-  it('resolves the astra / gpt-6 / gpt6 aliases to gpt-6-astra', () => {
-    expect(MODEL_ALIASES.astra).toBe('gpt-6-astra');
-    expect(MODEL_ALIASES['gpt-6']).toBe('gpt-6-astra');
-    expect(MODEL_ALIASES.gpt6).toBe('gpt-6-astra');
+  it('astra / gpt-6 / gpt6 aliases point at the [1m] id (the 1M-opt-in default)', () => {
+    // A user typing `astra` / `gpt-6` / `gpt6` gets the 1M window — the bare
+    // 272k id is still selectable via its literal spelling, but shorthand must
+    // NOT silently hand a fifth of the window the user expects.
+    expect(MODEL_ALIASES.astra).toBe('gpt-6-astra[1m]');
+    expect(MODEL_ALIASES['gpt-6']).toBe('gpt-6-astra[1m]');
+    expect(MODEL_ALIASES.gpt6).toBe('gpt-6-astra[1m]');
     // The older generations must NOT be silently upgraded.
     expect(MODEL_ALIASES['gpt5.6']).toBe('gpt-5.6-sol');
     expect(MODEL_ALIASES['gpt5.5']).toBe('gpt-5.5');
     expect(MODEL_ALIASES.sol).toBe('gpt-5.6-sol');
   });
 
-  it('resolveModelInput accepts the canonical id and the aliases', () => {
+  it('resolveModelInput resolves the aliases to the [1m] variant, canonical stays bare', () => {
     const store = makeStore();
+    // Literal canonical id — the caller explicitly asked for the 272k profile.
     expect(store.resolveModelInput('gpt-6-astra')).toBe('gpt-6-astra');
-    expect(store.resolveModelInput('astra')).toBe('gpt-6-astra');
-    expect(store.resolveModelInput('  GPT-6 ')).toBe('gpt-6-astra');
-    expect(store.resolveModelInput('gpt6')).toBe('gpt-6-astra');
+    // Shorthand — the 1M-opt-in variant.
+    expect(store.resolveModelInput('astra')).toBe('gpt-6-astra[1m]');
+    expect(store.resolveModelInput('  GPT-6 ')).toBe('gpt-6-astra[1m]');
+    expect(store.resolveModelInput('gpt6')).toBe('gpt-6-astra[1m]');
+    // Literal [1m] spelling round-trips as itself (allow-list membership).
+    expect(store.resolveModelInput('gpt-6-astra[1m]')).toBe('gpt-6-astra[1m]');
     // `gpt` still means the default generation.
     expect(store.resolveModelInput('gpt')).toBe('gpt-5.6-sol');
   });
 
-  it('coerce round-trips gpt-6-astra and still falls back to sol otherwise', () => {
+  it('astra[1m] shorthand resolves to gpt-6-astra[1m] (matches sol[1m] rule)', () => {
+    // Regression: the tier-shorthand + `[1m]` spelling must resolve — the same
+    // rule as `sol[1m]` → `gpt-5.6-sol[1m]` and `opus[1m]` → `claude-opus-5[1m]`.
+    // Without an explicit `astra[1m]` alias entry, resolution falls through the
+    // canonical policy (no row), AVAILABLE_MODELS (no match), MODEL_ALIASES (no
+    // match), and the llmux catalog overlay (which advertises `astra` but not
+    // `astra[1m]`), leaving a user-visible "unknown model" for a spelling that
+    // is otherwise valid muscle-memory input.
+    const store = makeStore();
+    expect(store.resolveModelInput('astra[1m]')).toBe('gpt-6-astra[1m]');
+    // Case/whitespace symmetry, mirroring the other alias assertions above.
+    expect(store.resolveModelInput('  ASTRA[1M] ')).toBe('gpt-6-astra[1m]');
+    // Also present in the exported alias table itself, so downstream consumers
+    // that read MODEL_ALIASES directly see the mapping.
+    expect(MODEL_ALIASES['astra[1m]']).toBe('gpt-6-astra[1m]');
+  });
+
+  it('coerce round-trips gpt-6-astra AND gpt-6-astra[1m]; nonsense falls back to sol', () => {
+    // Both literal ids are in the allow-list, so both round-trip byte-identical.
     expect(coerceToAvailableModel('gpt-6-astra')).toBe('gpt-6-astra');
     expect(coerceToAvailableModel('GPT-6-ASTRA')).toBe('gpt-6-astra');
-    // The bare generation spelling is not in the allow-list — coerce lands on
-    // DEFAULT_MODEL (which is deliberately NOT gpt-6).
+    expect(coerceToAvailableModel('gpt-6-astra[1m]')).toBe('gpt-6-astra[1m]');
+    expect(coerceToAvailableModel('GPT-6-ASTRA[1M]')).toBe('gpt-6-astra[1m]');
+    // The bare generation spelling is not in the allow-list — coerce (which
+    // does NOT consult MODEL_ALIASES) still lands on DEFAULT_MODEL.
     expect(coerceToAvailableModel('gpt-6')).toBe('gpt-5.6-sol');
     expect(coerceToAvailableModel('some-nonsense-model')).toBe('gpt-5.6-sol');
   });
 
-  it('renders the curated display label', () => {
+  it('renders the curated display labels for both variants', () => {
     const store = makeStore();
     expect(store.getModelDisplayName('gpt-6-astra')).toBe('GPT-6 Astra (272k)');
+    // The 1M spelling gets its own label, mirroring gpt-5.6-sol[1m] → "(1M)".
+    expect(store.getModelDisplayName('gpt-6-astra[1m]')).toBe('GPT-6 Astra (1M)');
   });
 });
 
@@ -153,6 +187,24 @@ describe('gpt-6-astra — canonical profile (272k / 249k / 240k)', () => {
     expect(resolveContextWindow('gpt-5.5')).toBe(275_000);
     expect(resolveAutoCompactTokens('gpt-5.5')).toBe(250_000);
     expect(resolveContextWindow('claude-fable-5')).toBe(1_000_000);
+  });
+
+  it('gpt-6-astra[1m] derives a 1M profile via the suffix rule (no canonical row needed)', () => {
+    // Mirrors the gpt-5.6-sol[1m] contract: model-profile.ts already answers
+    // contextWindow=1_000_000 / sdkBlockingLimit=977_000 for any [1m] id, and
+    // family lookup on the stripped base yields the gpt-6 auto-compact trigger.
+    const p = resolveModelProfile('gpt-6-astra[1m]');
+    expect(p.contextWindow).toBe(1_000_000);
+    expect(p.sdkBlockingLimit).toBe(977_000);
+    // Family auto-compact trigger is preserved through the strip → family
+    // branch: GPT_6_AUTO_COMPACT_TOKENS (240,000). It must NOT jump to the
+    // 750k / 600k literals attached to opus[1m] / sol[1m].
+    expect(p.autoCompactTokens).toBe(GPT_6_AUTO_COMPACT_TOKENS);
+  });
+
+  it('registry delegates agree on the [1m] window / trigger', () => {
+    expect(resolveContextWindow('gpt-6-astra[1m]')).toBe(1_000_000);
+    expect(resolveAutoCompactTokens('gpt-6-astra[1m]')).toBe(GPT_6_AUTO_COMPACT_TOKENS);
   });
 
   it('isGpt6Model matches the generation boundary only', () => {
