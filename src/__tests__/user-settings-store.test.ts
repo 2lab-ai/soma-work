@@ -57,8 +57,10 @@ describe('Slack display-name identity (cross-user skill resolution)', () => {
 // tests assert the **exact** expected arrays/records, not just the length,
 // so any future silent removal is caught immediately.
 describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', () => {
-  it('AVAILABLE_MODELS is exactly 22 entries in the expected order', () => {
-    // Fable 5 (2026-06-09) leads as the flagship; Opus 5 (2026-08-26) heads the
+  it('AVAILABLE_MODELS is exactly 24 entries in the expected order', () => {
+    // Fable 5.1 (2026-09-10) leads as the flagship, one slot above the Fable 5
+    // it rolled from — newest generation first, the same way 4.8 sits above
+    // 4.7 — and its `[1m]` twin heads the `[1m]` block for the same reason; Opus 5 (2026-08-26) heads the
     // opus tier so substring matchers see it before 4.8/4.7. The `[1m]` block
     // now carries the literal `claude-fable-5[1m]` and `gpt-5.6-sol[1m]` — the
     // suffix is what makes Claude Code's own accounting use a 1M denominator,
@@ -68,6 +70,7 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
     // are appended after the gpt-5.6 tiers — selectable, but NOT the default.
     // Historical entries MUST survive every bump.
     expect([...AVAILABLE_MODELS]).toEqual([
+      'claude-fable-5-1',
       'claude-fable-5',
       'claude-opus-5',
       'claude-opus-4-8',
@@ -77,6 +80,7 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
       'claude-sonnet-4-5-20250929',
       'claude-opus-4-5-20251101',
       'claude-haiku-4-5-20251001',
+      'claude-fable-5-1[1m]',
       'claude-fable-5[1m]',
       'claude-opus-5[1m]',
       'claude-opus-4-8[1m]',
@@ -93,7 +97,7 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
     ]);
   });
 
-  it('AVAILABLE_MODELS carries the literal claude-fable-5[1m] variant', () => {
+  it('AVAILABLE_MODELS carries the literal fable `[1m]` variants (5.1 and 5)', () => {
     // Superseded 2026-08-26: the old guard FORBADE this id, on the theory that
     // the SDK `[1m]` path would inject the opus beta header for a native-1M
     // model. The live llmux probe disproved it — literal `claude-fable-5[1m]`
@@ -102,17 +106,26 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
     // spellings stay selectable; the aliases point at the literal one.
     expect(AVAILABLE_MODELS as readonly string[]).toContain('claude-fable-5[1m]');
     expect(AVAILABLE_MODELS as readonly string[]).toContain('claude-fable-5');
+    // Fable 5.1 (2026-09-10) ships the same pair of spellings.
+    expect(AVAILABLE_MODELS as readonly string[]).toContain('claude-fable-5-1[1m]');
+    expect(AVAILABLE_MODELS as readonly string[]).toContain('claude-fable-5-1');
   });
 
-  it('MODEL_ALIASES has exactly the 32 expected key→value mappings', () => {
-    // `fable` / `fable[1m]` → the literal 1M id. `opus` / `opus[1m]` follow
+  it('MODEL_ALIASES has exactly the 36 expected key→value mappings', () => {
+    // `fable` / `fable[1m]` → the literal 1M id of the LATEST fable generation
+    // (5.1 since 2026-09-10); `fable-5` / `fable-5[1m]` stay generation-pinned
+    // to Fable 5, the same way `opus-4.8` does. `opus` / `opus[1m]` follow
     // "latest opus" semantics → Opus 5, and both land on the `[1m]` variant
     // because that is the id whose client-side denominator is 1M. Version-
     // pinned aliases (`opus-4.8`, `opus-4.7`, ...) remain pinned.
     expect(MODEL_ALIASES).toEqual({
-      fable: 'claude-fable-5[1m]',
+      fable: 'claude-fable-5-1[1m]',
+      'fable-5-1': 'claude-fable-5-1[1m]',
+      'fable-5.1': 'claude-fable-5-1[1m]',
+      'fable[1m]': 'claude-fable-5-1[1m]',
+      'fable-5-1[1m]': 'claude-fable-5-1[1m]',
+      'fable-5.1[1m]': 'claude-fable-5-1[1m]',
       'fable-5': 'claude-fable-5[1m]',
-      'fable[1m]': 'claude-fable-5[1m]',
       'fable-5[1m]': 'claude-fable-5[1m]',
       sonnet: 'claude-sonnet-4-6',
       'sonnet-4.6': 'claude-sonnet-4-6',
@@ -550,8 +563,9 @@ describe('model input resolution — accepted / rejected / unknown', () => {
 
   it('accepts the requested aliases and canonical ids', () => {
     const store = makeStore();
-    expect(store.resolveModelInput('fable')).toBe('claude-fable-5[1m]');
-    expect(store.resolveModelInput('fable[1m]')).toBe('claude-fable-5[1m]');
+    expect(store.resolveModelInput('fable')).toBe('claude-fable-5-1[1m]');
+    expect(store.resolveModelInput('fable[1m]')).toBe('claude-fable-5-1[1m]');
+    expect(store.resolveModelInput('fable-5')).toBe('claude-fable-5[1m]');
     expect(store.resolveModelInput('opus')).toBe('claude-opus-5[1m]');
     expect(store.resolveModelInput('opus[1m]')).toBe('claude-opus-5[1m]');
     expect(store.resolveModelInput('opus-5')).toBe('claude-opus-5');

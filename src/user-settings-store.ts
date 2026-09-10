@@ -24,12 +24,13 @@ const invalidator = createPromptInvalidator(logger, 'Settings');
 export const setSettingsPromptInvalidationHook = invalidator.setHook;
 const fireSettingsInvalidate = invalidator.fire;
 
-// Available models — the 22-entry user-facing allow-list.
+// Available models — the 24-entry user-facing allow-list.
 //
 // Contract:
-//   - The 9 bare claude entries are the historical lineup and MUST NOT be
-//     removed. (Opus 5 added 2026-08-26; Fable 5 added 2026-06-09; 4.8 added
-//     2026-05-28; 4.7/4.6 retained as user-selectable.)
+//   - The 10 bare claude entries are the historical lineup and MUST NOT be
+//     removed. (Fable 5.1 added 2026-09-10; Opus 5 added 2026-08-26; Fable 5
+//     added 2026-06-09; 4.8 added 2026-05-28; 4.7/4.6 retained as
+//     user-selectable.)
 //   - `gpt-5.5` (added 2026-07-06) is served through llmux's codex backend
 //     group — llmux routes `gpt-` prefixed ids to codex accounts, so the SDK
 //     subprocess dispatches it exactly like a claude id (requires llmux auth
@@ -75,7 +76,7 @@ const fireSettingsInvalidate = invalidator.fire;
 //     llmux catalog overlay: a cold start with no catalog snapshot must still
 //     be able to select the model whose 450k auto-compact default is declared
 //     policy in metrics/model-profile.ts.
-//   - The 6 `[1m]` entries are additive and share one convention: the Claude
+//   - The `[1m]` entries are additive and share one convention: the Claude
 //     Agent SDK (≥ 0.2.111) detects the suffix, strips it before the API call,
 //     and injects the `context-1m-2025-08-07` beta header; llmux does the
 //     equivalent for the codex `gpt-5.6-sol[1m]` id.
@@ -96,10 +97,22 @@ const fireSettingsInvalidate = invalidator.fire;
 //     Both spellings stay selectable; the `fable` aliases point at the
 //     suffixed one.
 //
+//     2026-09-10 — Claude Fable 5.1 (`claude-fable-5-1`, Anthropic GA) joined
+//     the lineup on operator instruction ("모델 선택시 fable -> fable-5-1[1m] 이
+//     선택되야함"), so the bare `fable` shorthand now rolls to the 5.1
+//     generation. Both 2026-08-26 facts carry over verbatim to it: the
+//     declared 750k auto-compact default is a POLICY_PROFILES row keyed on the
+//     exact id `claude-fable-5-1[1m]` (the bare id takes the derived native-1M
+//     branch, which carries no `autoCompactTokens`), and llmux serves the
+//     suffixed id with a 1M client contextWindow. Pricing is the same Fable
+//     tier as 5 (metrics/model-registry.ts matches on the `fable-5`
+//     substring). The generation-pinned `fable-5` aliases stay on Fable 5.
+//
 // Issue #656 regression guard: any shrinking of this list (as attempted in
 // abandoned PR #652) silently deletes user-selectable models. Tests assert
 // exact array equality — NOT just length — to catch that class of mistake.
 export const AVAILABLE_MODELS = [
+  'claude-fable-5-1',
   'claude-fable-5',
   'claude-opus-5',
   'claude-opus-4-8',
@@ -109,6 +122,7 @@ export const AVAILABLE_MODELS = [
   'claude-sonnet-4-5-20250929',
   'claude-opus-4-5-20251101',
   'claude-haiku-4-5-20251001',
+  'claude-fable-5-1[1m]',
   'claude-fable-5[1m]',
   'claude-opus-5[1m]',
   'claude-opus-4-8[1m]',
@@ -147,12 +161,24 @@ export type ModelInputResolution =
 //   - Version-pinned aliases (`opus-4.8`, `opus-4.7`, ...) remain stable so
 //     users who explicitly chose a generation don't get silently upgraded.
 export const MODEL_ALIASES: Record<string, ModelId> = {
-  // Every `fable` spelling → the LITERAL `[1m]` id. Bare `claude-fable-5` is
-  // still selectable by its full id, but the shorthand a user types must land
-  // on the spelling whose SDK-side window is actually 1M (see AVAILABLE_MODELS).
-  fable: 'claude-fable-5[1m]',
+  // Every `fable` spelling → a LITERAL `[1m]` id. The bare ids stay selectable
+  // by their full spelling, but the shorthand a user types must land on the
+  // spelling whose SDK-side window is actually 1M (see AVAILABLE_MODELS).
+  //
+  // "Latest fable" contract, mirroring the opus one below: bare `fable` /
+  // `fable[1m]` follow the current latest fable generation — 5.1 since
+  // 2026-09-10 — and are the single update point for the next roll. The
+  // generation-pinned `fable-5` / `fable-5[1m]` keep pointing at Fable 5 so a
+  // user who explicitly chose that generation is not silently upgraded (same
+  // contract as `opus-4.8`). Both `-5-1` (id spelling) and `-5.1` (how the
+  // release is written) are accepted.
+  fable: 'claude-fable-5-1[1m]',
+  'fable-5-1': 'claude-fable-5-1[1m]',
+  'fable-5.1': 'claude-fable-5-1[1m]',
+  'fable[1m]': 'claude-fable-5-1[1m]',
+  'fable-5-1[1m]': 'claude-fable-5-1[1m]',
+  'fable-5.1[1m]': 'claude-fable-5-1[1m]',
   'fable-5': 'claude-fable-5[1m]',
-  'fable[1m]': 'claude-fable-5[1m]',
   'fable-5[1m]': 'claude-fable-5[1m]',
   sonnet: 'claude-sonnet-4-6',
   'sonnet-4.6': 'claude-sonnet-4-6',
@@ -1289,10 +1315,14 @@ export class UserSettingsStore {
    */
   getModelDisplayName(model: string): string {
     switch (model) {
-      case 'claude-fable-5':
+      case 'claude-fable-5-1':
         // Plain label: "(1M)" is reserved for the spelling that actually
-        // carries the 1M profile + 750k default (`claude-fable-5[1m]`), so the
-        // two entries in the picker are distinguishable at a glance.
+        // carries the 1M profile + 750k default (`claude-fable-5-1[1m]`), so
+        // the two entries in the picker are distinguishable at a glance.
+        return 'Fable 5.1';
+      case 'claude-fable-5-1[1m]':
+        return 'Fable 5.1 (1M)';
+      case 'claude-fable-5':
         return 'Fable 5';
       case 'claude-fable-5[1m]':
         return 'Fable 5 (1M)';
