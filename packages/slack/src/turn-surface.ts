@@ -1,5 +1,6 @@
 import { Logger } from '@soma/common/logger';
 import type { AssistantStatusManager } from './assistant-status-manager';
+import { runWithTimeout } from './pipeline/stream-executor-cleanup-helpers';
 import type { SlackApiHelper } from './slack-api-helper';
 import { TaskListBlockBuilder, type Todo } from './task-list-block-builder';
 import type { TurnCompletionEvent } from './turn-notifier';
@@ -73,8 +74,8 @@ export interface TurnContext {
    * caller via `bumpEpoch(channel, threadTs)`. When present, TurnSurface's
    * end()/fail() pass it as `expectedEpoch` to `clearStatus` so a stale
    * close from a superseded turn cannot wipe the spinner set by the
-   * newer turn on the same (channel, threadTs). Optional so existing
-   * callers/tests that don't drive native status writes are unchanged.
+   * newer turn on the same (channel, threadTs). begin() allocates an epoch
+   * for legacy callers that omit it, and scopes the initial setter too.
    */
   readonly statusEpoch?: number;
   /**
@@ -179,8 +180,15 @@ interface TurnState {
  * rollout plan wants these distinguishable in logs — a bare `catch {}` erases
  * the very signal operators need.
  */
-function describeSlackError(error: unknown): { code?: string; message: string } {
-  const err = error as { data?: { error?: string }; code?: string; message?: string };
+function describeSlackError(error: unknown): {
+  code?: string;
+  message: string;
+} {
+  const err = error as {
+    data?: { error?: string };
+    code?: string;
+    message?: string;
+  };
   const code = err?.data?.error ?? err?.code;
   const message = err?.message ?? String(error);
   return code ? { code, message } : { message };
@@ -242,14 +250,31 @@ export class TurnSurface {
     // caller, but we defend so a stray call can't open a second Slack stream
     // and orphan the first handle.
     if (this.turns.has(ctx.turnId)) {
-      this.logger.warn('begin() called twice for same turnId — ignored', { turnId: ctx.turnId });
+      this.logger.warn('begin() called twice for same turnId — ignored', {
+        turnId: ctx.turnId,
+      });
       return;
     }
 
-    // Supersede prior in-flight turn on the same session. Runs to completion
-    // before the new stream opens so the user sees a clean close rather than
-    // a dangling "typing" indicator.
     const previousTurnId = this.activeTurn.get(ctx.sessionKey);
+    const mgr = this.deps.assistantStatusManager;
+    if (mgr && ctx.threadTs && ctx.statusEpoch === undefined) {
+      ctx = { ...ctx, statusEpoch: mgr.bumpEpoch(ctx.channelId, ctx.threadTs) };
+    }
+
+    // Register before any wait so end(), supersede, and duplicate begin() can
+    // find this turn even while the previous turn's cleanup is still pending.
+    const state: TurnState = {
+      ctx,
+      startedAt: Date.now(),
+      appendedChunks: 0,
+      closing: false,
+      formTsList: [],
+    };
+    this.turns.set(ctx.turnId, state);
+    this.activeTurn.set(ctx.sessionKey, ctx.turnId);
+
+    // Close the previous stream before opening this one.
     if (previousTurnId && previousTurnId !== ctx.turnId) {
       try {
         await this.fail(previousTurnId, new Error('superseded'));
@@ -262,16 +287,33 @@ export class TurnSurface {
       }
     }
 
-    // Register state before the Slack call so a concurrent supersede on
-    // failure still finds a TurnState to clean up.
-    this.turns.set(ctx.turnId, {
-      ctx,
-      startedAt: Date.now(),
-      appendedChunks: 0,
-      closing: false,
-      formTsList: [],
-    });
-    this.activeTurn.set(ctx.sessionKey, ctx.turnId);
+    // Cleanup may have outlived this turn. Never start a finished or superseded
+    // turn, nor mistake a replacement state for this begin()'s registration.
+    if (this.turns.get(ctx.turnId) !== state || state.closing || this.activeTurn.get(ctx.sessionKey) !== ctx.turnId) {
+      return;
+    }
+
+    // Start native status before stream startup, without letting a hung status
+    // API delay B1. The epoch also rejects late work after this turn closes.
+    if (mgr && ctx.threadTs) {
+      try {
+        void mgr
+          .setStatus(ctx.channelId, ctx.threadTs, 'is thinking...', {
+            expectedEpoch: ctx.statusEpoch,
+          })
+          .catch((err) => {
+            this.logger.warn('B4 native spinner setStatus failed in begin()', {
+              turnId: ctx.turnId,
+              error: (err as Error).message,
+            });
+          });
+      } catch (err) {
+        this.logger.warn('B4 native spinner setStatus failed in begin()', {
+          turnId: ctx.turnId,
+          error: (err as Error).message,
+        });
+      }
+    }
 
     try {
       const client = this.deps.slackApi.getClient();
@@ -314,9 +356,14 @@ export class TurnSurface {
       }
       if (result?.ts) {
         state.streamTs = result.ts;
-        this.logger.debug('B1 stream opened', { turnId: ctx.turnId, streamTs: result.ts });
+        this.logger.debug('B1 stream opened', {
+          turnId: ctx.turnId,
+          streamTs: result.ts,
+        });
       } else {
-        this.logger.warn('chat.startStream returned no ts', { turnId: ctx.turnId });
+        this.logger.warn('chat.startStream returned no ts', {
+          turnId: ctx.turnId,
+        });
       }
     } catch (err) {
       // Keep the TurnState so later `end()`/`fail()` calls are idempotent.
@@ -325,26 +372,6 @@ export class TurnSurface {
         turnId: ctx.turnId,
         error: (err as Error).message,
       });
-    }
-
-    // #689 P4 Part 2/2 — B4 native spinner start. Only fires at effective
-    // PHASE>=4 (raw>=4 AND assistantStatusManager.isEnabled()). Runtime
-    // scope failure flips `enabled=false` → effective clamp to 3 on the
-    // next turn, falling back to ThreadSurface chip.
-    const mgr = this.deps.assistantStatusManager;
-    if (mgr && ctx.threadTs) {
-      // Fail-open matching `chat.startStream` above: the B1 stream + turn
-      // lifecycle must survive a sidebar-spinner throw. The manager handles
-      // expected permanent/transient codes internally, so this try/catch
-      // only shields against unexpected throws.
-      try {
-        await mgr.setStatus(ctx.channelId, ctx.threadTs, 'is thinking...');
-      } catch (err) {
-        this.logger.warn('B4 native spinner setStatus failed in begin()', {
-          turnId: ctx.turnId,
-          error: (err as Error).message,
-        });
-      }
     }
   }
 
@@ -478,7 +505,9 @@ export class TurnSurface {
   private async renderTasksNow(turnId: string, todos: Todo[], final = false): Promise<void> {
     const state = this.turns.get(turnId);
     if (!state) return;
-    const { text, blocks } = TaskListBlockBuilder.buildPlanTasks(todos, { final });
+    const { text, blocks } = TaskListBlockBuilder.buildPlanTasks(todos, {
+      final,
+    });
     if (blocks.length === 0) return;
 
     const client = this.deps.slackApi.getClient();
@@ -494,7 +523,10 @@ export class TurnSurface {
         const result: { ts?: string } = await (client.chat as any).postMessage(postArgs);
         if (result?.ts) {
           state.planTs = result.ts;
-          this.logger.debug('B2 plan message posted', { turnId, planTs: result.ts });
+          this.logger.debug('B2 plan message posted', {
+            turnId,
+            planTs: result.ts,
+          });
         } else {
           this.logger.warn('chat.postMessage returned no ts', { turnId });
         }
@@ -509,7 +541,10 @@ export class TurnSurface {
         // rotation in dev). Mirrors StreamProcessor's sayWithBlockKit fallback
         // for the streaming surface.
         try {
-          const fallbackArgs: Record<string, unknown> = { channel: state.ctx.channelId, text };
+          const fallbackArgs: Record<string, unknown> = {
+            channel: state.ctx.channelId,
+            text,
+          };
           if (state.ctx.threadTs) fallbackArgs.thread_ts = state.ctx.threadTs;
           const fb: { ts?: string } = await (client.chat as any).postMessage(fallbackArgs);
           if (fb?.ts) state.planTs = fb.ts;
@@ -530,7 +565,10 @@ export class TurnSurface {
         text,
         blocks,
       });
-      this.logger.debug('B2 plan message updated', { turnId, planTs: state.planTs });
+      this.logger.debug('B2 plan message updated', {
+        turnId,
+        planTs: state.planTs,
+      });
     } catch (err) {
       this.logger.warn('chat.update for plan block failed', {
         turnId,
@@ -541,7 +579,11 @@ export class TurnSurface {
       // Block Kit rejection, update the existing message with text only so the
       // plan content is not lost.
       try {
-        await (client.chat as any).update({ channel: state.ctx.channelId, ts: state.planTs, text });
+        await (client.chat as any).update({
+          channel: state.ctx.channelId,
+          ts: state.planTs,
+          text,
+        });
       } catch (fallbackErr) {
         this.logger.warn('chat.update plan-block plain-text fallback also failed', {
           turnId,
@@ -678,7 +720,10 @@ export class TurnSurface {
       tsList.map(async (ts) => {
         try {
           await this.deps.slackApi.updateMessage(channelId, ts, completedText, completedBlocks, []);
-          this.logger.debug('B3 multi-choice chunk resolved', { channelId, ts });
+          this.logger.debug('B3 multi-choice chunk resolved', {
+            channelId,
+            ts,
+          });
         } catch (err) {
           const described = describeSlackError(err);
           if (described.code === 'message_not_found') return;
@@ -710,18 +755,7 @@ export class TurnSurface {
     // deliberately does not short-circuit on `closing` so the final plan
     // state can be landed on Slack before cleanup.
     state.closing = true;
-
-    // Drain any pending B2 render so the final plan state lands on Slack
-    // before we drop the TurnState. Debouncer's internal catch handles fn
-    // errors — no need to wrap here.
-    await this.renderDebouncer.flush(turnId);
-
-    // Demote any lingering `in_progress` task_cards to `pending` BEFORE we
-    // drop the TurnState. Slack natively renders `task_card.status='in_progress'`
-    // with a loading indicator; without this step, an LLM that ends a turn
-    // without marking its todo as completed leaves a persistent "still
-    // working" spinner on the planTs message (the user-reported hang state).
-    await this.finalizePlanIfNeeded(turnId, state);
+    const clearingStatus = this.clearNativeStatus(state);
 
     // Turn-end surface guarantee §C-2: track whether the snapshot landed
     // so we can return it to the caller after `finally` runs cleanup.
@@ -731,8 +765,11 @@ export class TurnSurface {
     let snapshotResolved = true;
 
     try {
-      if (state.streamTs) {
-        await this.closeStream(state, 'end', reason);
+      try {
+        await this.renderDebouncer.flush(turnId);
+        await this.finalizePlanIfNeeded(turnId, state);
+      } finally {
+        if (state.streamTs) await this.closeStream(state, 'end', reason);
       }
     } catch (closeErr) {
       // Codex review [2b]: pre-fix this throw skipped the `return { snapshotResolved }`
@@ -746,123 +783,100 @@ export class TurnSurface {
         error: (closeErr as Error)?.message ?? String(closeErr),
       });
     } finally {
-      // #689 P4 Part 2/2 — B4 native spinner clear. Wrapped: although
-      // `clearStatus` swallows its own Slack errors, but the epoch/
-      // `clearInterval` path can still throw. A throw here
-      // must NEVER skip `cleanupTurn` — orphaning `this.turns` would make
-      // the next turn hit the `begin()` called-twice guard and drop silently.
-      // #688 — pass `statusEpoch` so a stale close from a superseded turn
-      // cannot wipe a spinner set by the newer turn on the same thread.
       try {
-        const mgr = this.deps.assistantStatusManager;
-        if (mgr && state.ctx.threadTs) {
-          const opts = state.ctx.statusEpoch !== undefined ? { expectedEpoch: state.ctx.statusEpoch } : undefined;
-          await mgr.clearStatus(state.ctx.channelId, state.ctx.threadTs, opts);
-        }
-      } catch (err) {
-        this.logger.warn('B4 native spinner clear in end() threw — cleanup continues', {
-          turnId,
-          error: (err as Error)?.message ?? String(err),
-        });
-      }
+        await clearingStatus;
 
-      // B5 completion marker — success path only. The accessor returns a
-      // Promise (`snapshotPromise` owned by stream-executor), so we MUST
-      // await it or we'd silently drop B5. A 3s timeout caps the wait so a
-      // stuck enrichment can never hang `end()` indefinitely; the snapshot
-      // Promise itself is resolved with `undefined` on stream-executor's
-      // `.catch` rail, and the explicit timeout is a defence-in-depth net.
-      //
-      // Ordering: after B4 clearStatus (which was already awaited above).
-      // The `send(evt)` call is detached (void + `.catch`) so Slack RTT
-      // doesn't extend `end()`'s hot path — only the snapshot wait is
-      // synchronous with close.
-      const capActive =
-        typeof this.deps.isCompletionMarkerActive === 'function' ? this.deps.isCompletionMarkerActive() : false;
+        // B5 completion marker — success path only. The accessor returns a
+        // Promise (`snapshotPromise` owned by stream-executor), so we MUST
+        // await it or we'd silently drop B5. A 3s timeout caps the wait so a
+        // stuck enrichment can never hang `end()` indefinitely; the snapshot
+        // Promise itself is resolved with `undefined` on stream-executor's
+        // `.catch` rail, and the explicit timeout is a defence-in-depth net.
+        //
+        // After the bounded native-status wait; the Slack clear may still be pending.
+        // The `send(evt)` call is detached (void + `.catch`) so Slack RTT
+        // doesn't extend `end()`'s hot path — only the snapshot wait is
+        // synchronous with close.
+        const capActive =
+          typeof this.deps.isCompletionMarkerActive === 'function' ? this.deps.isCompletionMarkerActive() : false;
 
-      // Turn-end surface guarantee §C-2: the outer `snapshotResolved` flag
-      // (declared before the try block) stays `true` when `reason !==
-      // 'completed'` OR B5 is inactive — no snapshot is expected so the
-      // caller MUST NOT post a fallback. When B5 IS expected but the race
-      // hits the timeout (or the builder throws), the block below flips
-      // it to `false` and lets StreamExecutor decide whether to fall back
-      // through `turnNotifier.notify`.
-      if (reason === 'completed' && capActive && state.ctx.buildCompletionEvent && this.deps.slackBlockKitChannel) {
-        let evt: TurnCompletionEvent | undefined;
-        let timeoutId: ReturnType<typeof setTimeout> | undefined;
-        // True once a B5-specific warn has fired so the `else` fallback
-        // below doesn't emit a second warn for the same event (avoids
-        // double-logging the sync-throw path).
-        let warnEmitted = false;
-        const TIMEOUT_MS = 3000;
-        try {
-          const builderPromise = Promise.resolve(state.ctx.buildCompletionEvent());
-          const timeoutPromise = new Promise<undefined>((resolve) => {
-            timeoutId = setTimeout(() => resolve(undefined), TIMEOUT_MS);
-          });
-          // Log-and-swallow a late rejection from the builder (codex P2 —
-          // late-rejection hygiene): Promise.race settles on whichever side
-          // lands first; the loser's eventual rejection would surface as an
-          // unhandled rejection if we didn't attach a catch. We log a
-          // breadcrumb rather than silently swallowing — if enrichment is
-          // chronically failing but mostly winning the race, operators still
-          // see the signal instead of the B5 silently posting fine today
-          // until the timing shifts tomorrow.
-          builderPromise.catch((err) => {
-            this.logger.warn('B5 builder late-rejection after race settled', {
+        // Turn-end surface guarantee §C-2: the outer `snapshotResolved` flag
+        // (declared before the try block) stays `true` when `reason !==
+        // 'completed'` OR B5 is inactive — no snapshot is expected so the
+        // caller MUST NOT post a fallback. When B5 IS expected but the race
+        // hits the timeout (or the builder throws), the block below flips
+        // it to `false` and lets StreamExecutor decide whether to fall back
+        // through `turnNotifier.notify`.
+        if (reason === 'completed' && capActive && state.ctx.buildCompletionEvent && this.deps.slackBlockKitChannel) {
+          let evt: TurnCompletionEvent | undefined;
+          let timeoutId: ReturnType<typeof setTimeout> | undefined;
+          // True once a B5-specific warn has fired so the `else` fallback
+          // below doesn't emit a second warn for the same event (avoids
+          // double-logging the sync-throw path).
+          let warnEmitted = false;
+          const TIMEOUT_MS = 3000;
+          try {
+            const builderPromise = Promise.resolve(state.ctx.buildCompletionEvent());
+            const timeoutPromise = new Promise<undefined>((resolve) => {
+              timeoutId = setTimeout(() => resolve(undefined), TIMEOUT_MS);
+            });
+            // Log builder rejection even if the snapshot timeout wins.
+            builderPromise.catch((err) => {
+              this.logger.warn('B5 builder late-rejection after race settled', {
+                turnId,
+                error: (err as Error)?.message ?? String(err),
+              });
+            });
+            evt = await Promise.race<TurnCompletionEvent | undefined>([builderPromise, timeoutPromise]);
+          } catch (err) {
+            this.logger.warn('B5 buildCompletionEvent threw synchronously', {
               turnId,
               error: (err as Error)?.message ?? String(err),
             });
-          });
-          evt = await Promise.race<TurnCompletionEvent | undefined>([builderPromise, timeoutPromise]);
-        } catch (err) {
-          this.logger.warn('B5 buildCompletionEvent threw synchronously', {
-            turnId,
-            error: (err as Error)?.message ?? String(err),
-          });
-          evt = undefined;
-          warnEmitted = true;
-        } finally {
-          if (timeoutId) clearTimeout(timeoutId);
-        }
+            evt = undefined;
+            warnEmitted = true;
+          } finally {
+            if (timeoutId) clearTimeout(timeoutId);
+          }
 
-        // Codex review [6c]: explicit `!== undefined` so a future
-        // falsy-but-valid event shape doesn't get collapsed into the
-        // "snapshot unavailable" branch.
-        if (evt !== undefined) {
-          // send() fire-and-forget with structured-error logging. Operators
-          // triaging B5 drops need the Slack error code (`rate_limited`,
-          // `channel_not_found`, `streaming_mode_mismatch`, etc.) plus the
-          // channel/thread IDs — bare `err.message` alone collapses distinct
-          // failure modes into the same log line.
-          void this.deps.slackBlockKitChannel.send(evt).catch((err) => {
-            this.logger.warn('B5 send failed', {
-              turnId,
-              channelId: state.ctx.channelId,
-              threadTs: state.ctx.threadTs,
-              error: describeSlackError(err),
+          // Codex review [6c]: explicit `!== undefined` so a future
+          // falsy-but-valid event shape doesn't get collapsed into the
+          // "snapshot unavailable" branch.
+          if (evt !== undefined) {
+            // send() fire-and-forget with structured-error logging. Operators
+            // triaging B5 drops need the Slack error code (`rate_limited`,
+            // `channel_not_found`, `streaming_mode_mismatch`, etc.) plus the
+            // channel/thread IDs — bare `err.message` alone collapses distinct
+            // failure modes into the same log line.
+            void this.deps.slackBlockKitChannel.send(evt).catch((err) => {
+              this.logger.warn('B5 send failed', {
+                turnId,
+                channelId: state.ctx.channelId,
+                threadTs: state.ctx.threadTs,
+                error: describeSlackError(err),
+              });
             });
-          });
-        } else {
-          // §C-2: the snapshot did not land. Mark unresolved so the caller
-          // can post a fallback `turnNotifier.notify()` — without this
-          // signal the turn would end with NO terminal card on any channel.
-          snapshotResolved = false;
+          } else {
+            // §C-2: the snapshot did not land. Mark unresolved so the caller
+            // can post a fallback `turnNotifier.notify()` — without this
+            // signal the turn would end with NO terminal card on any channel.
+            snapshotResolved = false;
 
-          if (!warnEmitted) {
-            // Distinguish timeout / undefined-snapshot from the explicit
-            // `reason !== 'completed'` skip — operators need this signal to
-            // diagnose enrichment regressions (issue #720's symptom was
-            // silent B5 drop with no log breadcrumb). Skipped when the
-            // sync-throw catch already logged, so one event → one warn.
-            this.logger.warn('B5 snapshot unavailable — completion marker not emitted', {
-              turnId,
-            });
+            if (!warnEmitted) {
+              // Distinguish timeout / undefined-snapshot from the explicit
+              // `reason !== 'completed'` skip — operators need this signal to
+              // diagnose enrichment regressions (issue #720's symptom was
+              // silent B5 drop with no log breadcrumb). Skipped when the
+              // sync-throw catch already logged, so one event → one warn.
+              this.logger.warn('B5 snapshot unavailable — completion marker not emitted', {
+                turnId,
+              });
+            }
           }
         }
+      } finally {
+        this.cleanupTurn(turnId, state);
       }
-
-      this.cleanupTurn(turnId, state);
     }
 
     return { snapshotResolved };
@@ -885,36 +899,43 @@ export class TurnSurface {
     // debouncer so the final plan state lands on Slack before we drop the
     // TurnState. Supersede (begin()→fail(A)) drives this path most often.
     state.closing = true;
-    await this.renderDebouncer.flush(turnId);
-
-    this.logger.debug('turn fail()', { turnId, error: error.message });
-
-    // Same finalize step as end() — kills the persistent `in_progress`
-    // spinner on the planTs message. Critical for supersede: when a new
-    // turn replaces an in-flight one, the prior turn's plan must stop
-    // looking like it's still working before the user's eyes.
-    await this.finalizePlanIfNeeded(turnId, state);
+    const clearingStatus = this.clearNativeStatus(state);
 
     try {
-      if (state.streamTs) {
-        await this.closeStream(state, 'fail', 'aborted');
+      try {
+        await this.renderDebouncer.flush(turnId);
+        this.logger.debug('turn fail()', { turnId, error: error.message });
+        await this.finalizePlanIfNeeded(turnId, state);
+      } finally {
+        if (state.streamTs) await this.closeStream(state, 'fail', 'aborted');
       }
     } finally {
-      // #689 P4 Part 2/2 + #688 — same B4 clear + epoch guard as end().
-      // Wrapped for the same reason: a throw must never skip `cleanupTurn`.
       try {
-        const mgr = this.deps.assistantStatusManager;
-        if (mgr && state.ctx.threadTs) {
-          const opts = state.ctx.statusEpoch !== undefined ? { expectedEpoch: state.ctx.statusEpoch } : undefined;
-          await mgr.clearStatus(state.ctx.channelId, state.ctx.threadTs, opts);
-        }
-      } catch (err) {
-        this.logger.warn('B4 native spinner clear in fail() threw — cleanup continues', {
-          turnId,
-          error: (err as Error)?.message ?? String(err),
+        await clearingStatus;
+      } finally {
+        this.cleanupTurn(turnId, state);
+      }
+    }
+  }
+
+  /** Invalidate synchronously; absorb rejection immediately while stream cleanup proceeds. */
+  private async clearNativeStatus(state: TurnState): Promise<void> {
+    try {
+      const mgr = this.deps.assistantStatusManager;
+      const { channelId, threadTs, statusEpoch } = state.ctx;
+      if (mgr && threadTs) {
+        // Only bound this waiter: the queued clear and manager writer lane must
+        // survive a timeout so a late initial set is still followed by clear.
+        await runWithTimeout(() => mgr.clearStatus(channelId, threadTs, { expectedEpoch: statusEpoch }), 5_000, {
+          what: `B4 native spinner clear for ${state.ctx.turnId}`,
+          logger: this.logger,
         });
       }
-      this.cleanupTurn(turnId, state);
+    } catch (err) {
+      this.logger.warn('B4 native spinner clear threw — cleanup continues', {
+        turnId: state.ctx.turnId,
+        error: (err as Error)?.message ?? String(err),
+      });
     }
   }
 

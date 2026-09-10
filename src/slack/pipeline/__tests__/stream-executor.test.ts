@@ -4517,6 +4517,19 @@ describe('stream-executor — epoch guard wiring (issue #688)', () => {
     );
   });
 
+  it('[T2] closes the turn when initial runtime status setup rejects', async () => {
+    const deps = createDeps(() => toolFlowStream('Read'));
+    deps.threadPanel.setStatus.mockRejectedValueOnce(new Error('initial status failed'));
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+    await executor.execute(createParams(say)).catch(() => undefined);
+
+    const turnId = deps.threadPanel.beginTurn.mock.calls[0][0].turnId;
+    expect(deps.threadPanel.endTurn).toHaveBeenCalledWith(turnId, 'completed');
+    expect(deps.requestCoordinator.removeController).toHaveBeenCalled();
+  });
+
   it('does not write legacy native assistant status directly', async () => {
     const deps = createDeps(() => toolFlowStream('Read'));
     const executor = new StreamExecutor(deps);
