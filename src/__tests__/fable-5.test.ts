@@ -1,6 +1,11 @@
 /**
  * Locks the Claude Fable 5 (2026-06-09) release wiring.
  *
+ * 2026-09-10 scope narrowing. Fable 5.1 shipped and the bare `fable` shorthand
+ * rolled to it (fable-5-1.test.ts owns that contract). What this file still
+ * owns is the Fable 5 generation itself: it stays selectable, and the
+ * version-pinned `fable-5` / `fable-5[1m]` aliases keep resolving here.
+ *
  * 2026-08-26 correction. Fable 5 does serve 1M upstream on the bare id, and
  * `resolveContextWindow('claude-fable-5')` still says so. The auto-compact
  * trigger itself is a HARNESS number read from the model profile — the client
@@ -39,20 +44,19 @@ describe('fable-5 — release wiring', () => {
     expect(AVAILABLE_MODELS as readonly string[]).toContain('claude-fable-5[1m]');
   });
 
-  it('resolves the `fable` / `fable-5` aliases to the literal claude-fable-5[1m]', () => {
-    expect(MODEL_ALIASES.fable).toBe('claude-fable-5[1m]');
+  it('resolves the generation-pinned `fable-5` aliases to the literal claude-fable-5[1m]', () => {
+    // 2026-09-10: bare `fable` rolled to the 5.1 generation (see
+    // fable-5-1.test.ts). The version-pinned spellings must NOT follow it —
+    // same contract as `opus-4.8`.
     expect(MODEL_ALIASES['fable-5']).toBe('claude-fable-5[1m]');
-  });
-
-  it('exposes explicit `fable[1m]` aliases pointing at the same literal id', () => {
-    expect(MODEL_ALIASES['fable[1m]']).toBe('claude-fable-5[1m]');
     expect(MODEL_ALIASES['fable-5[1m]']).toBe('claude-fable-5[1m]');
+    expect(MODEL_ALIASES.fable).not.toBe('claude-fable-5[1m]');
   });
 
   it('the literal [1m] id round-trips through resolve + coerce (never downgraded)', () => {
     const store = makeStore();
     expect(store.resolveModelInput('claude-fable-5[1m]')).toBe('claude-fable-5[1m]');
-    expect(store.resolveModelInput('fable')).toBe('claude-fable-5[1m]');
+    expect(store.resolveModelInput('fable-5')).toBe('claude-fable-5[1m]');
     expect(coerceToAvailableModel('claude-fable-5[1m]')).toBe('claude-fable-5[1m]');
     expect(coerceToAvailableModel('claude-fable-5[1M]')).toBe('claude-fable-5[1m]');
   });

@@ -137,8 +137,10 @@ export function stripOneMSuffix(model: string): string {
  *
  * Fable 5 ships 1M as its native, generally-available context (Anthropic docs,
  * 2026-06-09), unlike opus where 1M is a beta opt-in gated behind the `[1m]`
- * suffix + beta header. So `claude-fable-5` must resolve to 1M directly; it has
- * no `[1m]` variant and must NOT go through the suffix/beta-header path.
+ * suffix + beta header. So `claude-fable-5` must resolve to 1M directly rather
+ * than through the suffix/beta-header path. The pattern is a substring, so it
+ * also covers the 5.1 generation (`claude-fable-5-1`, 2026-09-10) — every
+ * fable-5 id serves 1M bare.
  */
 const NATIVE_ONE_M_RE = /fable-5/i;
 
@@ -298,6 +300,18 @@ function freezeProfile(profile: ModelProfile): ModelProfile {
  * caller.
  */
 const POLICY_PROFILES: readonly ModelProfile[] = [
+  {
+    // Fable 5.1 (2026-09-10) — same policy as the 5 row below, and declared
+    // for the same reason: the 750k default is reachable only on the exact
+    // `[1m]` id (the bare id takes the derived native-1M branch, which carries
+    // no `autoCompactTokens`). 750k ≤ 977k − 23k, so the headroom invariant
+    // holds.
+    modelId: 'claude-fable-5-1[1m]',
+    contextWindow: 1_000_000,
+    sdkBlockingLimit: ONE_M_SDK_BLOCKING_LIMIT,
+    autoCompactTokens: 750_000,
+    compactHeadroom: DEFAULT_COMPACT_HEADROOM,
+  },
   {
     modelId: 'claude-fable-5[1m]',
     contextWindow: 1_000_000,

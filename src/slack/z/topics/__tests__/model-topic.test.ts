@@ -113,8 +113,14 @@ describe('model-topic.applyModel', () => {
     expect(r.description).toContain('claude-opus-5[1m]');
   });
 
-  it('resolves `fable` to the literal claude-fable-5[1m]', async () => {
+  it('resolves `fable` to the literal claude-fable-5-1[1m] (latest fable generation)', async () => {
     const r = await applyModel({ userId: 'U1', value: 'fable' });
+    expect(r.ok).toBe(true);
+    expect(r.description).toContain('claude-fable-5-1[1m]');
+  });
+
+  it('resolves the generation-pinned `fable-5` to the literal claude-fable-5[1m]', async () => {
+    const r = await applyModel({ userId: 'U1', value: 'fable-5' });
     expect(r.ok).toBe(true);
     expect(r.description).toContain('claude-fable-5[1m]');
   });
