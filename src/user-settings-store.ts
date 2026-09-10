@@ -64,9 +64,8 @@ const fireSettingsInvalidate = invalidator.fire;
 //     llmux, and llmux's codex provider strips the trailing `[1m]` before
 //     forwarding to the upstream codex backend as the bare slug, per
 //     llmux src/provider/codex.rs CLIENT_CONTEXT_SUFFIX; SDK-side window
-//     becomes 1M / blocking limit 977k, with the gpt-6 family's 240k
-//     auto-compact trigger preserved through the model-profile suffix
-//     rule — no separate POLICY_PROFILES row). Both spellings are
+//     becomes 1M / blocking limit 977k, with the shared GPT `[1m]` 600k
+//     auto-compact default — no separate POLICY_PROFILES row). Both spellings are
 //     user-SELECTABLE; the default stays `gpt-5.6-sol` (the `gpt` alias
 //     is intentionally NOT bumped), and the `astra`/`gpt-6`/`gpt6`
 //     shorthand aliases point at the `[1m]` variant so a user typing the
@@ -1346,10 +1345,7 @@ export class UserSettingsStore {
         // 240k auto-compact (model-profile.ts).
         return 'GPT-6 Astra (272k)';
       case 'gpt-6-astra[1m]':
-        // 1M opt-in of the gpt-6 flagship — SDK-side window 1M / blocking
-        // limit 977k, harness auto-compact stays at the gpt-6 family's 240k
-        // (derived via the [1m] suffix rule in model-profile.ts, no
-        // canonical POLICY_PROFILES row).
+        // Shared GPT [1m] policy: 1M window, 977k SDK block, 600k auto-compact.
         return 'GPT-6 Astra (1M)';
       default:
         // llmux model-catalog overlay — catalog models carry their llmux

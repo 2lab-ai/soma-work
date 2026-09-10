@@ -190,21 +190,16 @@ describe('gpt-6-astra — canonical profile (272k / 249k / 240k)', () => {
   });
 
   it('gpt-6-astra[1m] derives a 1M profile via the suffix rule (no canonical row needed)', () => {
-    // Mirrors the gpt-5.6-sol[1m] contract: model-profile.ts already answers
-    // contextWindow=1_000_000 / sdkBlockingLimit=977_000 for any [1m] id, and
-    // family lookup on the stripped base yields the gpt-6 auto-compact trigger.
+    // Every GPT [1m] variant shares Sol's window, blocking limit and trigger.
     const p = resolveModelProfile('gpt-6-astra[1m]');
     expect(p.contextWindow).toBe(1_000_000);
     expect(p.sdkBlockingLimit).toBe(977_000);
-    // Family auto-compact trigger is preserved through the strip → family
-    // branch: GPT_6_AUTO_COMPACT_TOKENS (240,000). It must NOT jump to the
-    // 750k / 600k literals attached to opus[1m] / sol[1m].
-    expect(p.autoCompactTokens).toBe(GPT_6_AUTO_COMPACT_TOKENS);
+    expect(p.autoCompactTokens).toBe(600_000);
   });
 
   it('registry delegates agree on the [1m] window / trigger', () => {
     expect(resolveContextWindow('gpt-6-astra[1m]')).toBe(1_000_000);
-    expect(resolveAutoCompactTokens('gpt-6-astra[1m]')).toBe(GPT_6_AUTO_COMPACT_TOKENS);
+    expect(resolveAutoCompactTokens('gpt-6-astra[1m]')).toBe(600_000);
   });
 
   it('isGpt6Model matches the generation boundary only', () => {
