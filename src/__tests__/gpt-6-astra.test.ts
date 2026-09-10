@@ -76,7 +76,7 @@ describe('gpt-6-astra — release wiring', () => {
     // via the suffix rule, not a canonical POLICY_PROFILES row.
     expect(AVAILABLE_MODELS as readonly string[]).toContain('gpt-6-astra[1m]');
     // No new canonical row — model-profile.ts derives the 1M numbers from the
-    // [1m] suffix rule + the family branch.
+    // [1m] suffix rule's shared GPT 1M policy.
     expect(CANONICAL_MODEL_IDS).not.toContain('gpt-6-astra[1m]');
   });
 

@@ -15,8 +15,8 @@
  * Resolution order (first match wins):
  *   1. exact canonical id in {@link POLICY_PROFILES} — declared policy, not a
  *      formula, so the requested thresholds are literals;
- *   2. the `[1m]` opt-in suffix — 1M window; the BASE id decides which family
- *      auto-compact trigger applies;
+ *   2. the `[1m]` opt-in suffix — 1M window; `gpt-` bases use the shared 600k
+ *      auto-compact default, while other bases inherit their family trigger;
  *   3. native-1M ids (fable-5) → 1M;
  *   4. the gpt-6 / gpt-5.6 / gpt-5.5 families (llmux codex backend),
  *      newest generation first;

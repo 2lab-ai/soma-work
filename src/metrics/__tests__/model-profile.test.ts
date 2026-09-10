@@ -112,7 +112,7 @@ describe('resolveModelProfile — shared GPT 1M policy', () => {
     'gpt-5.5[1m]',
     'gpt-99-future[1m]',
     '  GPT-99-FUTURE[1M] ',
-  ])('%s uses the Sol 1M policy without a per-model row', (id) => {
+  ])('%s uses the shared GPT 1M policy', (id) => {
     expect(resolveModelProfile(id)).toMatchObject({
       contextWindow: 1_000_000,
       sdkBlockingLimit: 977_000,
