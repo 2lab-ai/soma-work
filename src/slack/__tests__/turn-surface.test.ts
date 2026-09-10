@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { AssistantStatusManager } from '../assistant-status-manager';
 import { type TurnAddress, TurnSurface } from '../turn-surface';
 
 /**
@@ -54,7 +55,12 @@ describe('TurnSurface', () => {
       const client = makeClient();
       const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
 
-      const ctx = { channelId: 'C1', threadTs: 't1.0', sessionKey: 'C1:t1.0', turnId: 'C1:t1.0:1000' };
+      const ctx = {
+        channelId: 'C1',
+        threadTs: 't1.0',
+        sessionKey: 'C1:t1.0',
+        turnId: 'C1:t1.0:1000',
+      };
       await surface.begin(ctx);
       await surface.appendText(ctx.turnId, 'hello ');
       await surface.appendText(ctx.turnId, 'world');
@@ -132,7 +138,11 @@ describe('TurnSurface', () => {
       const client = makeClient();
       const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
 
-      const ctx = { channelId: 'D1', sessionKey: 'D1:root', turnId: 'D1:root:1000' };
+      const ctx = {
+        channelId: 'D1',
+        sessionKey: 'D1:root',
+        turnId: 'D1:root:1000',
+      };
       await surface.begin(ctx);
       await surface.end(ctx.turnId, 'completed');
 
@@ -149,7 +159,12 @@ describe('TurnSurface', () => {
       });
       const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
 
-      const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:1' };
+      const ctx = {
+        channelId: 'C1',
+        threadTs: 't1',
+        sessionKey: 'C1:t1',
+        turnId: 'C1:t1:1',
+      };
       await surface.begin(ctx);
       await surface.appendText(ctx.turnId, 'should drop');
 
@@ -166,7 +181,12 @@ describe('TurnSurface', () => {
       const client = makeClient();
       const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
 
-      const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:1' };
+      const ctx = {
+        channelId: 'C1',
+        threadTs: 't1',
+        sessionKey: 'C1:t1',
+        turnId: 'C1:t1:1',
+      };
       await surface.begin(ctx);
       await surface.appendText(ctx.turnId, '');
       await surface.end(ctx.turnId, 'completed');
@@ -179,7 +199,12 @@ describe('TurnSurface', () => {
       const client = makeClient();
       const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
 
-      const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:1' };
+      const ctx = {
+        channelId: 'C1',
+        threadTs: 't1',
+        sessionKey: 'C1:t1',
+        turnId: 'C1:t1:1',
+      };
       await surface.begin(ctx);
       // Whitespace-only chunks would otherwise be billed as chunks and
       // render as empty blobs — match handleTextMessage's `!text.trim()`
@@ -203,7 +228,12 @@ describe('TurnSurface', () => {
       });
       const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
 
-      const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:1' };
+      const ctx = {
+        channelId: 'C1',
+        threadTs: 't1',
+        sessionKey: 'C1:t1',
+        turnId: 'C1:t1:1',
+      };
       await surface.begin(ctx);
       const endPromise = surface.end(ctx.turnId, 'completed');
       // end() has set closing=true and is awaiting stopStream — racing append
@@ -218,7 +248,12 @@ describe('TurnSurface', () => {
       const client = makeClient();
       const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
 
-      const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:1' };
+      const ctx = {
+        channelId: 'C1',
+        threadTs: 't1',
+        sessionKey: 'C1:t1',
+        turnId: 'C1:t1:1',
+      };
       await surface.begin(ctx);
       await surface.end(ctx.turnId, 'completed');
       await surface.end(ctx.turnId, 'completed'); // should silently no-op
@@ -238,7 +273,12 @@ describe('TurnSurface', () => {
       const client = makeClient();
       const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
 
-      const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:1' };
+      const ctx = {
+        channelId: 'C1',
+        threadTs: 't1',
+        sessionKey: 'C1:t1',
+        turnId: 'C1:t1:1',
+      };
       await surface.begin(ctx);
       await surface.appendText(ctx.turnId, 'partial');
       await surface.fail(ctx.turnId, new Error('boom'));
@@ -270,7 +310,12 @@ describe('TurnSurface', () => {
       const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
       (surface as any).logger.warn = warnSpy;
 
-      const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:1' };
+      const ctx = {
+        channelId: 'C1',
+        threadTs: 't1',
+        sessionKey: 'C1:t1',
+        turnId: 'C1:t1:1',
+      };
       await surface.begin(ctx);
       await expect(surface.fail(ctx.turnId, new Error('upstream'))).resolves.toBeUndefined();
 
@@ -305,7 +350,12 @@ describe('TurnSurface', () => {
       const client = makeClient();
       const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
 
-      const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:1' };
+      const ctx = {
+        channelId: 'C1',
+        threadTs: 't1',
+        sessionKey: 'C1:t1',
+        turnId: 'C1:t1:1',
+      };
       await surface.begin(ctx);
       await surface.fail(ctx.turnId, new Error('first'));
       await surface.fail(ctx.turnId, new Error('second'));
@@ -328,8 +378,18 @@ describe('TurnSurface', () => {
       const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
 
       const sessionKey = 'C1:t1';
-      const ctxA = { channelId: 'C1', threadTs: 't1', sessionKey, turnId: 'C1:t1:A' };
-      const ctxB = { channelId: 'C1', threadTs: 't1', sessionKey, turnId: 'C1:t1:B' };
+      const ctxA = {
+        channelId: 'C1',
+        threadTs: 't1',
+        sessionKey,
+        turnId: 'C1:t1:A',
+      };
+      const ctxB = {
+        channelId: 'C1',
+        threadTs: 't1',
+        sessionKey,
+        turnId: 'C1:t1:B',
+      };
 
       await surface.begin(ctxA);
       await surface.begin(ctxB);
@@ -361,7 +421,12 @@ describe('TurnSurface', () => {
       const client = makeClient({ startStream });
       const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
 
-      const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:1' };
+      const ctx = {
+        channelId: 'C1',
+        threadTs: 't1',
+        sessionKey: 'C1:t1',
+        turnId: 'C1:t1:1',
+      };
       await surface.begin(ctx);
       await surface.begin(ctx); // duplicate begin() — short-circuits without a second startStream
 
@@ -389,8 +454,18 @@ describe('TurnSurface', () => {
       const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
 
       const sessionKey = 'C1:t1';
-      const ctxA = { channelId: 'C1', threadTs: 't1', sessionKey, turnId: 'C1:t1:A' };
-      const ctxB = { channelId: 'C1', threadTs: 't1', sessionKey, turnId: 'C1:t1:B' };
+      const ctxA = {
+        channelId: 'C1',
+        threadTs: 't1',
+        sessionKey,
+        turnId: 'C1:t1:A',
+      };
+      const ctxB = {
+        channelId: 'C1',
+        threadTs: 't1',
+        sessionKey,
+        turnId: 'C1:t1:B',
+      };
 
       // Kick off A; don't await — it's still pending on startStream.
       const aPromise = surface.begin(ctxA);
@@ -426,7 +501,12 @@ describe('TurnSurface', () => {
       const client = makeClient();
       const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
 
-      const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:1' };
+      const ctx = {
+        channelId: 'C1',
+        threadTs: 't1',
+        sessionKey: 'C1:t1',
+        turnId: 'C1:t1:1',
+      };
       await surface.begin(ctx);
       await expect(surface.appendText(ctx.turnId, 'ok')).resolves.toBe(true);
       await surface.end(ctx.turnId, 'completed');
@@ -438,7 +518,12 @@ describe('TurnSurface', () => {
       });
       const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
 
-      const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:1' };
+      const ctx = {
+        channelId: 'C1',
+        threadTs: 't1',
+        sessionKey: 'C1:t1',
+        turnId: 'C1:t1:1',
+      };
       await surface.begin(ctx); // swallows the error, no streamTs recorded
 
       // appendText detects the missing streamTs and surfaces false so the
@@ -453,7 +538,12 @@ describe('TurnSurface', () => {
       });
       const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
 
-      const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:1' };
+      const ctx = {
+        channelId: 'C1',
+        threadTs: 't1',
+        sessionKey: 'C1:t1',
+        turnId: 'C1:t1:1',
+      };
       await surface.begin(ctx);
       await expect(surface.appendText(ctx.turnId, 'reply')).resolves.toBe(false);
       await surface.end(ctx.turnId, 'completed');
@@ -467,8 +557,18 @@ describe('TurnSurface', () => {
   describe('renderTasks (PHASE>=2)', () => {
     const todos = [
       { id: '1', content: 'done task', status: 'completed', priority: 'high' },
-      { id: '2', content: 'running task', status: 'in_progress', priority: 'high' },
-      { id: '3', content: 'waiting task', status: 'pending', priority: 'medium' },
+      {
+        id: '2',
+        content: 'running task',
+        status: 'in_progress',
+        priority: 'high',
+      },
+      {
+        id: '3',
+        content: 'waiting task',
+        status: 'pending',
+        priority: 'medium',
+      },
     ];
 
     beforeEach(() => {
@@ -485,7 +585,12 @@ describe('TurnSurface', () => {
       });
       const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
 
-      const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:1' };
+      const ctx = {
+        channelId: 'C1',
+        threadTs: 't1',
+        sessionKey: 'C1:t1',
+        turnId: 'C1:t1:1',
+      };
       await surface.begin(ctx);
       await expect(surface.renderTasks(ctx.turnId, todos as any)).resolves.toBe(true);
       // Drain the 500ms debounce window.
@@ -510,7 +615,12 @@ describe('TurnSurface', () => {
       });
       const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
 
-      const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:1' };
+      const ctx = {
+        channelId: 'C1',
+        threadTs: 't1',
+        sessionKey: 'C1:t1',
+        turnId: 'C1:t1:1',
+      };
       await surface.begin(ctx);
 
       await surface.renderTasks(ctx.turnId, todos as any);
@@ -537,7 +647,12 @@ describe('TurnSurface', () => {
       });
       const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
 
-      const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:1' };
+      const ctx = {
+        channelId: 'C1',
+        threadTs: 't1',
+        sessionKey: 'C1:t1',
+        turnId: 'C1:t1:1',
+      };
       await surface.begin(ctx);
 
       // First render: postMessage — drain debounce so planTs is committed
@@ -591,7 +706,12 @@ describe('TurnSurface', () => {
       const client = makeClient();
       const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
 
-      const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:1' };
+      const ctx = {
+        channelId: 'C1',
+        threadTs: 't1',
+        sessionKey: 'C1:t1',
+        turnId: 'C1:t1:1',
+      };
       await surface.begin(ctx);
       await expect(surface.renderTasks(ctx.turnId, [])).resolves.toBe(false);
       await vi.advanceTimersByTimeAsync(500);
@@ -617,8 +737,18 @@ describe('TurnSurface', () => {
       const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
 
       const sessionKey = 'C1:t1';
-      const ctxA = { channelId: 'C1', threadTs: 't1', sessionKey, turnId: 'C1:t1:A' };
-      const ctxB = { channelId: 'C1', threadTs: 't1', sessionKey, turnId: 'C1:t1:B' };
+      const ctxA = {
+        channelId: 'C1',
+        threadTs: 't1',
+        sessionKey,
+        turnId: 'C1:t1:A',
+      };
+      const ctxB = {
+        channelId: 'C1',
+        threadTs: 't1',
+        sessionKey,
+        turnId: 'C1:t1:B',
+      };
 
       await surface.begin(ctxA);
       await surface.renderTasks(ctxA.turnId, todos as any);
@@ -650,7 +780,11 @@ describe('TurnSurface', () => {
       const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
 
       const turnId = 'ad-hoc-end-test';
-      await surface.renderTasks(turnId, todos as any, { channelId: 'C', threadTs: 't', sessionKey: 'C:t' });
+      await surface.renderTasks(turnId, todos as any, {
+        channelId: 'C',
+        threadTs: 't',
+        sessionKey: 'C:t',
+      });
       await vi.advanceTimersByTimeAsync(500);
       await surface.end(turnId, 'completed');
       expect(client.chat.stopStream).not.toHaveBeenCalled();
@@ -677,7 +811,12 @@ describe('TurnSurface', () => {
         });
         const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
 
-        const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:fin' };
+        const ctx = {
+          channelId: 'C1',
+          threadTs: 't1',
+          sessionKey: 'C1:t1',
+          turnId: 'C1:t1:fin',
+        };
         await surface.begin(ctx);
 
         // Initial render — postMessage commits planTs.
@@ -715,7 +854,12 @@ describe('TurnSurface', () => {
         });
         const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
 
-        const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:alldone' };
+        const ctx = {
+          channelId: 'C1',
+          threadTs: 't1',
+          sessionKey: 'C1:t1',
+          turnId: 'C1:t1:alldone',
+        };
         await surface.begin(ctx);
         await surface.renderTasks(ctx.turnId, allDoneTodos as any);
         await vi.advanceTimersByTimeAsync(500);
@@ -735,7 +879,12 @@ describe('TurnSurface', () => {
         });
         const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
 
-        const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:fail' };
+        const ctx = {
+          channelId: 'C1',
+          threadTs: 't1',
+          sessionKey: 'C1:t1',
+          turnId: 'C1:t1:fail',
+        };
         await surface.begin(ctx);
         await surface.renderTasks(ctx.turnId, todos as any);
         await vi.advanceTimersByTimeAsync(500);
@@ -753,7 +902,12 @@ describe('TurnSurface', () => {
         const client = makeClient();
         const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
 
-        const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:bare' };
+        const ctx = {
+          channelId: 'C1',
+          threadTs: 't1',
+          sessionKey: 'C1:t1',
+          turnId: 'C1:t1:bare',
+        };
         await surface.begin(ctx);
         // No renderTasks call — no plan message exists.
         await surface.end(ctx.turnId, 'completed');
@@ -772,8 +926,18 @@ describe('TurnSurface', () => {
         const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
 
         const sessionKey = 'C1:t1';
-        const ctxA = { channelId: 'C1', threadTs: 't1', sessionKey, turnId: 'C1:t1:A2' };
-        const ctxB = { channelId: 'C1', threadTs: 't1', sessionKey, turnId: 'C1:t1:B2' };
+        const ctxA = {
+          channelId: 'C1',
+          threadTs: 't1',
+          sessionKey,
+          turnId: 'C1:t1:A2',
+        };
+        const ctxB = {
+          channelId: 'C1',
+          threadTs: 't1',
+          sessionKey,
+          turnId: 'C1:t1:B2',
+        };
 
         await surface.begin(ctxA);
         await surface.renderTasks(ctxA.turnId, todos as any);
@@ -815,7 +979,11 @@ describe('TurnSurface', () => {
       const { surface, client } = makeSurfaceWithApi({
         postMessage: vi.fn().mockResolvedValue({ ts: 'msg-1' }),
       });
-      const addr: TurnAddress = { channelId: 'C1', threadTs: 'thr-1', sessionKey: 'C1:thr-1' };
+      const addr: TurnAddress = {
+        channelId: 'C1',
+        threadTs: 'thr-1',
+        sessionKey: 'C1:thr-1',
+      };
       const ts = await surface.askUser('turn-1', { blocks: [{ type: 'section' }] }, 'Q?', addr);
       expect(ts).toBe('msg-1');
       expect(client.chat.postMessage).toHaveBeenCalledWith(
@@ -832,8 +1000,17 @@ describe('TurnSurface', () => {
       const { surface } = makeSurfaceWithApi({
         postMessage: vi.fn().mockResolvedValue({ ts: 'msg-stamped' }),
       });
-      await surface.begin({ channelId: 'C', threadTs: 'thr', sessionKey: 'C:thr', turnId: 'turn-1' });
-      const addr: TurnAddress = { channelId: 'C', threadTs: 'thr', sessionKey: 'C:thr' };
+      await surface.begin({
+        channelId: 'C',
+        threadTs: 'thr',
+        sessionKey: 'C:thr',
+        turnId: 'turn-1',
+      });
+      const addr: TurnAddress = {
+        channelId: 'C',
+        threadTs: 'thr',
+        sessionKey: 'C:thr',
+      };
       await surface.askUser('turn-1', { blocks: [] }, 'Q?', addr);
       expect(surface._getChoiceTs('turn-1')).toBe('msg-stamped');
       await surface.end('turn-1', 'completed');
@@ -871,8 +1048,17 @@ describe('TurnSurface', () => {
       const { surface, client } = makeSurfaceWithApi({
         postMessage: vi.fn().mockResolvedValueOnce({ ts: 'msg-1' }).mockResolvedValueOnce({ ts: 'msg-2' }),
       });
-      await surface.begin({ channelId: 'C', threadTs: 'thr', sessionKey: 'C:thr', turnId: 'turn-1' });
-      const addr: TurnAddress = { channelId: 'C', threadTs: 'thr', sessionKey: 'C:thr' };
+      await surface.begin({
+        channelId: 'C',
+        threadTs: 'thr',
+        sessionKey: 'C:thr',
+        turnId: 'turn-1',
+      });
+      const addr: TurnAddress = {
+        channelId: 'C',
+        threadTs: 'thr',
+        sessionKey: 'C:thr',
+      };
       const ts1 = await surface.askUserForm('turn-1', { blocks: [] }, 'Q1', addr);
       const ts2 = await surface.askUserForm('turn-1', { blocks: [] }, 'Q2', addr);
       expect(ts1).toBe('msg-1');
@@ -897,7 +1083,10 @@ describe('TurnSurface', () => {
 
     it('resolveChoice swallows message_not_found (idempotent)', async () => {
       const { surface, slackApi } = makeSurfaceWithApi();
-      slackApi.updateMessage = vi.fn().mockRejectedValue({ data: { error: 'message_not_found' }, message: 'gone' });
+      slackApi.updateMessage = vi.fn().mockRejectedValue({
+        data: { error: 'message_not_found' },
+        message: 'gone',
+      });
       await expect(surface.resolveChoice('C', 'gone-ts', 'x', [])).resolves.toBeUndefined();
     });
 
@@ -935,11 +1124,352 @@ describe('TurnSurface', () => {
         postMessage: vi.fn().mockResolvedValue({ ts: 'msg-1' }),
       });
       slackApi.updateMessage = vi.fn();
-      await surface.begin({ channelId: 'C', threadTs: 'thr', sessionKey: 'C:thr', turnId: 'turn-1' });
-      const addr: TurnAddress = { channelId: 'C', threadTs: 'thr', sessionKey: 'C:thr' };
+      await surface.begin({
+        channelId: 'C',
+        threadTs: 'thr',
+        sessionKey: 'C:thr',
+        turnId: 'turn-1',
+      });
+      const addr: TurnAddress = {
+        channelId: 'C',
+        threadTs: 'thr',
+        sessionKey: 'C:thr',
+      };
       await surface.askUser('turn-1', { blocks: [] }, 'Q', addr);
       await surface.end('turn-1', 'completed');
       expect(slackApi.updateMessage).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('native status during pending stream startup', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    });
+
+    function makeStatusSurface(client: MockClient) {
+      let remoteStatus = '';
+      const setAssistantStatus = vi.fn(async (_channelId: string, _threadTs: string, status: string) => {
+        await Promise.resolve();
+        remoteStatus = status;
+      });
+      const slackApi = Object.assign(makeSlackApi(client), {
+        setAssistantStatus,
+        setAssistantTitle: vi.fn().mockResolvedValue(undefined),
+      });
+      const manager = new AssistantStatusManager(slackApi);
+      const surface = new TurnSurface({
+        slackApi,
+        assistantStatusManager: manager,
+      });
+      return {
+        surface,
+        manager,
+        setAssistantStatus,
+        getRemoteStatus: () => remoteStatus,
+      };
+    }
+
+    it.each([
+      ['stopStream', 'end'],
+      ['flush', 'end'],
+      ['stopStream', 'supersede'],
+      ['flush', 'supersede'],
+      ['stopStream', 'duplicate'],
+      ['flush', 'duplicate'],
+    ] as const)('[prereg] pending A %s allows B %s without late startup', async (step, action) => {
+      let releaseA: () => void = () => {};
+      const pendingA = new Promise<void>((resolve) => {
+        releaseA = resolve;
+      });
+      const client = makeClient();
+      const { surface, manager, setAssistantStatus } = makeStatusSurface(client);
+      const ctx = { channelId: 'C', threadTs: 'thr', sessionKey: 'C:thr', turnId: 'A' };
+      await surface.begin(ctx);
+      await vi.advanceTimersByTimeAsync(0);
+      if (step === 'stopStream') client.chat.stopStream.mockReturnValueOnce(pendingA);
+      else vi.spyOn((surface as any).renderDebouncer, 'flush').mockReturnValueOnce(pendingA);
+      const setStatus = vi.spyOn(manager, 'setStatus');
+      const bumpEpoch = vi.spyOn(manager, 'bumpEpoch');
+      client.chat.startStream.mockClear();
+      setAssistantStatus.mockClear();
+
+      let beganB = false;
+      const beginningB = surface.begin({ ...ctx, turnId: 'B' }).then(() => {
+        beganB = true;
+      });
+      try {
+        // Registration and the legacy epoch belong to B before any cleanup wait.
+        expect.soft(surface._getActiveTurnId(ctx.sessionKey)).toBe('B');
+        expect.soft(surface._getTurnStateSnapshot('B')).toMatchObject({ closing: false });
+        expect.soft(bumpEpoch).toHaveBeenCalledTimes(1);
+        await vi.advanceTimersByTimeAsync(5_001);
+        expect(beganB).toBe(false);
+        expect(setStatus).not.toHaveBeenCalled();
+        expect(client.chat.startStream).not.toHaveBeenCalled();
+
+        if (action === 'end') await surface.end('B', 'completed');
+        else if (action === 'supersede') await surface.begin({ ...ctx, turnId: 'C' });
+        else await surface.begin({ ...ctx, turnId: 'B' });
+
+        if (action === 'duplicate') {
+          expect.soft(setStatus).not.toHaveBeenCalled();
+          expect.soft(client.chat.startStream).not.toHaveBeenCalled();
+          expect.soft(bumpEpoch).toHaveBeenCalledTimes(1);
+        } else {
+          expect.soft(surface._getTurnStateSnapshot('B')).toBeUndefined();
+        }
+
+        releaseA();
+        await beginningB;
+        await vi.advanceTimersByTimeAsync(0);
+        const expectedStarts = action === 'end' ? 0 : 1;
+        expect.soft(setStatus).toHaveBeenCalledTimes(expectedStarts);
+        expect.soft(client.chat.startStream).toHaveBeenCalledTimes(expectedStarts);
+        expect.soft(setAssistantStatus.mock.calls.filter(([, , text]) => text !== '')).toHaveLength(expectedStarts);
+        expect.soft(surface._getTurnStateSnapshot('A')).toBeUndefined();
+        if (action === 'duplicate') {
+          expect.soft(surface._getActiveTurnId(ctx.sessionKey)).toBe('B');
+          expect.soft(surface._getTurnStateSnapshot('B')).toMatchObject({ streamTs: 'stream-ts-1', closing: false });
+        } else {
+          expect.soft(surface._getTurnStateSnapshot('B')).toBeUndefined();
+          expect.soft(surface._getActiveTurnId(ctx.sessionKey)).toBe(action === 'supersede' ? 'C' : undefined);
+        }
+      } finally {
+        releaseA();
+        await beginningB;
+        await surface.end('B', 'completed');
+        await surface.end('C', 'completed');
+        setStatus.mockRestore();
+        bumpEpoch.mockRestore();
+      }
+      expect(surface._hasActiveTurn(ctx.sessionKey)).toBe(false);
+    });
+
+    it.each([
+      'end',
+      'fail',
+    ] as const)('[review] %s times out waiting for a hung set but preserves eventual remote clear', async (method) => {
+      let releaseSet: () => void = () => {};
+      const pending = new Promise<void>((resolve) => {
+        releaseSet = resolve;
+      });
+      let remoteStatus = '';
+      const setAssistantStatus = vi.fn(async (_channel: string, _thread: string, text: string) => {
+        if (text !== '') await pending;
+        remoteStatus = text;
+      });
+      const client = makeClient();
+      const slackApi = Object.assign(makeSlackApi(client), {
+        setAssistantStatus,
+        setAssistantTitle: vi.fn(),
+      });
+      const manager = new AssistantStatusManager(slackApi);
+      const send = vi.fn().mockResolvedValue(undefined);
+      const surface = new TurnSurface({
+        slackApi,
+        assistantStatusManager: manager,
+        slackBlockKitChannel: { send },
+        isCompletionMarkerActive: () => true,
+      });
+      const warn = vi.spyOn((surface as any).logger, 'warn');
+      const event = {
+        category: 'WorkflowComplete' as const,
+        userId: 'U',
+        channel: 'C',
+        threadTs: 'thr',
+        durationMs: 1,
+      };
+      const ctx = {
+        channelId: 'C',
+        threadTs: 'thr',
+        sessionKey: 'C:thr',
+        turnId: 'hung-close',
+        buildCompletionEvent: async () => event,
+      };
+      await surface.begin(ctx);
+      let closed = false;
+      const closing = (
+        method === 'end' ? surface.end(ctx.turnId, 'completed') : surface.fail(ctx.turnId, new Error('failed'))
+      ).then(() => {
+        closed = true;
+      });
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(closed).toBe(false);
+      expect(setAssistantStatus).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect.soft(closed).toBe(true);
+      expect.soft(surface._getTurnStateSnapshot(ctx.turnId)).toBeUndefined();
+      expect.soft(surface._hasActiveTurn(ctx.sessionKey)).toBe(false);
+      expect
+        .soft(warn)
+        .toHaveBeenCalledWith(expect.stringMatching(/B4.*(timeout|timed out|finish in time)/), expect.any(Object));
+      expect.soft(send).toHaveBeenCalledTimes(method === 'end' ? 1 : 0);
+      // Timeout only releases the surface waiter, never the manager writer lane.
+      await vi.advanceTimersByTimeAsync(40_000);
+      expect(setAssistantStatus).toHaveBeenCalledTimes(1);
+      releaseSet();
+      await vi.advanceTimersByTimeAsync(0);
+      await closing;
+      expect(remoteStatus).toBe('');
+      expect(setAssistantStatus.mock.calls.map(([, , text]) => text)).toEqual(['is thinking...', '']);
+      await vi.advanceTimersByTimeAsync(40_000);
+      expect(setAssistantStatus).toHaveBeenCalledTimes(2);
+    });
+
+    it('[T1] a hung native status request does not delay stream startup or begin completion', async () => {
+      const client = makeClient();
+      const { surface, setAssistantStatus } = makeStatusSurface(client);
+      let releaseStatus: () => void = () => {};
+      setAssistantStatus.mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            releaseStatus = resolve;
+          }),
+      );
+      const ctx = {
+        channelId: 'C',
+        threadTs: 'thr',
+        sessionKey: 'C:thr',
+        turnId: 'hung-status',
+      };
+      let began = false;
+      const beginning = surface.begin(ctx).then(() => {
+        began = true;
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect.soft(client.chat.startStream).toHaveBeenCalledTimes(1);
+      expect.soft(began).toBe(true);
+      releaseStatus();
+      await beginning;
+      await surface.end(ctx.turnId, 'completed');
+    });
+
+    it.each(['end', 'fail'] as const)('[T2] %s clears immediately while stopStream is pending', async (method) => {
+      let releaseStop: () => void = () => {};
+      const stopPromise = new Promise<void>((resolve) => {
+        releaseStop = resolve;
+      });
+      const client = makeClient({
+        stopStream: vi.fn().mockReturnValue(stopPromise),
+      });
+      const { surface, manager, getRemoteStatus, setAssistantStatus } = makeStatusSurface(client);
+      const ctx = {
+        channelId: 'C',
+        threadTs: 'thr',
+        sessionKey: 'C:thr',
+        turnId: 'pending-stop',
+        statusEpoch: manager.bumpEpoch('C', 'thr'),
+      };
+      await surface.begin(ctx);
+      const closing =
+        method === 'end' ? surface.end(ctx.turnId, 'completed') : surface.fail(ctx.turnId, new Error('failure'));
+      await manager.setStatus('C', 'thr', 'late work', {
+        expectedEpoch: ctx.statusEpoch,
+      });
+      await vi.advanceTimersByTimeAsync(40_000);
+      expect.soft(getRemoteStatus()).toBe('');
+      expect.soft(setAssistantStatus.mock.calls.map(([, , status]) => status)).toEqual(['is thinking...', '']);
+      releaseStop();
+      await closing;
+      expect(surface._getTurnStateSnapshot(ctx.turnId)).toBeUndefined();
+    });
+
+    it.each([
+      ['end', 'flush'],
+      ['fail', 'flush'],
+      ['end', 'finalize'],
+      ['fail', 'finalize'],
+    ] as const)('[T2] %s cleans up even when pending %s rejects', async (method, step) => {
+      const { surface, getRemoteStatus } = makeStatusSurface(makeClient());
+      const ctx = {
+        channelId: 'C',
+        threadTs: 'thr',
+        sessionKey: 'C:thr',
+        turnId: 'flush-failure',
+      };
+      await surface.begin(ctx);
+      let rejectFlush: (error: Error) => void = () => {};
+      const flushing = new Promise<void>((_resolve, reject) => {
+        rejectFlush = reject;
+      });
+      if (step === 'flush') vi.spyOn((surface as any).renderDebouncer, 'flush').mockReturnValue(flushing);
+      else vi.spyOn(surface as any, 'finalizePlanIfNeeded').mockReturnValue(flushing);
+      const closing = (
+        method === 'end' ? surface.end(ctx.turnId, 'completed') : surface.fail(ctx.turnId, new Error('failure'))
+      ).catch(() => undefined);
+      await vi.advanceTimersByTimeAsync(0);
+      expect.soft(getRemoteStatus()).toBe('');
+      rejectFlush(new Error('flush failed'));
+      await closing;
+      expect(surface._getTurnStateSnapshot(ctx.turnId)).toBeUndefined();
+      expect(surface._hasActiveTurn(ctx.sessionKey)).toBe(false);
+    });
+
+    it('[T1] native status starts while startStream is still pending', async () => {
+      let releaseStart: (value: { ts: string }) => void = () => {};
+      const startPromise = new Promise<{ ts: string }>((resolve) => {
+        releaseStart = resolve;
+      });
+      const client = makeClient({
+        startStream: vi.fn().mockReturnValue(startPromise),
+      });
+      const { surface, setAssistantStatus, getRemoteStatus } = makeStatusSurface(client);
+      const ctx = {
+        channelId: 'C',
+        threadTs: 'thr',
+        sessionKey: 'C:thr',
+        turnId: 'pending-start',
+      };
+      const beginning = surface.begin(ctx);
+
+      try {
+        await vi.advanceTimersByTimeAsync(0);
+        expect(client.chat.startStream).toHaveBeenCalledTimes(1);
+        expect.soft(getRemoteStatus()).toBe('is thinking...');
+        expect.soft(setAssistantStatus).toHaveBeenCalledWith('C', 'thr', 'is thinking...');
+      } finally {
+        releaseStart({ ts: 'stream-ts-1' });
+        await beginning;
+        await surface.end(ctx.turnId, 'completed');
+      }
+    });
+
+    it('[T1] late rejected startStream after end cannot resurrect native status', async () => {
+      let rejectStart: (error: Error) => void = () => {};
+      const startPromise = new Promise<{ ts: string }>((_resolve, reject) => {
+        rejectStart = reject;
+      });
+      const client = makeClient({
+        startStream: vi.fn().mockReturnValue(startPromise),
+      });
+      const { surface, setAssistantStatus, getRemoteStatus } = makeStatusSurface(client);
+      const ctx = {
+        channelId: 'C',
+        threadTs: 'thr',
+        sessionKey: 'C:thr',
+        turnId: 'rejected-start',
+      };
+      const beginning = surface.begin(ctx);
+      await vi.advanceTimersByTimeAsync(0);
+      await surface.end(ctx.turnId, 'completed');
+      expect(surface._getTurnStateSnapshot(ctx.turnId)).toBeUndefined();
+      expect(surface._hasActiveTurn(ctx.sessionKey)).toBe(false);
+      expect(getRemoteStatus()).toBe('');
+      const callsAfterEnd = setAssistantStatus.mock.calls.length;
+
+      rejectStart(new Error('late startStream failure'));
+      await beginning;
+      expect.soft(getRemoteStatus()).toBe('');
+      expect.soft(setAssistantStatus).toHaveBeenCalledTimes(callsAfterEnd);
+
+      await vi.advanceTimersByTimeAsync(40_000);
+      expect.soft(getRemoteStatus()).toBe('');
+      expect(setAssistantStatus).toHaveBeenCalledTimes(callsAfterEnd);
     });
   });
 
@@ -947,6 +1477,7 @@ describe('TurnSurface', () => {
   describe('B4 native-status wiring', () => {
     const makeMgr = (enabled: boolean) => ({
       isEnabled: vi.fn().mockReturnValue(enabled),
+      bumpEpoch: vi.fn().mockReturnValue(1),
       setStatus: vi.fn().mockResolvedValue(undefined),
       clearStatus: vi.fn().mockResolvedValue(undefined),
     });
@@ -958,9 +1489,17 @@ describe('TurnSurface', () => {
         slackApi: makeSlackApi(client),
         assistantStatusManager: mgr as any,
       });
-      await surface.begin({ channelId: 'C', threadTs: 'thr', sessionKey: 'C:thr', turnId: 't-b4' });
+      await surface.begin({
+        channelId: 'C',
+        threadTs: 'thr',
+        sessionKey: 'C:thr',
+        turnId: 't-b4',
+      });
       expect(mgr.setStatus).toHaveBeenCalledTimes(1);
-      expect(mgr.setStatus).toHaveBeenCalledWith('C', 'thr', 'is thinking...');
+      expect(mgr.bumpEpoch).toHaveBeenCalledWith('C', 'thr');
+      expect(mgr.setStatus).toHaveBeenCalledWith('C', 'thr', 'is thinking...', {
+        expectedEpoch: 1,
+      });
     });
 
     it('end calls clearStatus once', async () => {
@@ -970,13 +1509,18 @@ describe('TurnSurface', () => {
         slackApi: makeSlackApi(client),
         assistantStatusManager: mgr as any,
       });
-      await surface.begin({ channelId: 'C', threadTs: 'thr', sessionKey: 'C:thr', turnId: 't-b4-e' });
+      await surface.begin({
+        channelId: 'C',
+        threadTs: 'thr',
+        sessionKey: 'C:thr',
+        turnId: 't-b4-e',
+      });
       await surface.end('t-b4-e', 'completed');
       expect(mgr.clearStatus).toHaveBeenCalledTimes(1);
-      // Issue #688 — third arg is the optional expectedEpoch options bag.
-      // When TurnContext omits `statusEpoch` (this test does) end()/fail()
-      // pass `undefined`, which `clearStatus` treats as "no epoch guard".
-      expect(mgr.clearStatus).toHaveBeenCalledWith('C', 'thr', undefined);
+      // Legacy callers receive a turn epoch at begin, shared by set and clear.
+      expect(mgr.clearStatus).toHaveBeenCalledWith('C', 'thr', {
+        expectedEpoch: 1,
+      });
     });
 
     // Issue #688 — when TurnContext threads a `statusEpoch`, end()/fail()
@@ -998,7 +1542,9 @@ describe('TurnSurface', () => {
       });
       await surface.end('t-b4-epoch', 'completed');
       expect(mgr.clearStatus).toHaveBeenCalledTimes(1);
-      expect(mgr.clearStatus).toHaveBeenCalledWith('C', 'thr', { expectedEpoch: 7 });
+      expect(mgr.clearStatus).toHaveBeenCalledWith('C', 'thr', {
+        expectedEpoch: 7,
+      });
     });
 
     it('statusEpoch: fail forwards expectedEpoch to clearStatus', async () => {
@@ -1017,7 +1563,9 @@ describe('TurnSurface', () => {
       });
       await surface.fail('t-b4-epoch-f', new Error('boom'));
       expect(mgr.clearStatus).toHaveBeenCalledTimes(1);
-      expect(mgr.clearStatus).toHaveBeenCalledWith('C', 'thr', { expectedEpoch: 11 });
+      expect(mgr.clearStatus).toHaveBeenCalledWith('C', 'thr', {
+        expectedEpoch: 11,
+      });
     });
 
     it('fail calls clearStatus (idempotent — fail twice → 1 call total)', async () => {
@@ -1027,7 +1575,12 @@ describe('TurnSurface', () => {
         slackApi: makeSlackApi(client),
         assistantStatusManager: mgr as any,
       });
-      await surface.begin({ channelId: 'C', threadTs: 'thr', sessionKey: 'C:thr', turnId: 't-b4-f' });
+      await surface.begin({
+        channelId: 'C',
+        threadTs: 'thr',
+        sessionKey: 'C:thr',
+        turnId: 't-b4-f',
+      });
       await surface.fail('t-b4-f', new Error('boom'));
       await surface.fail('t-b4-f', new Error('boom again'));
       expect(mgr.clearStatus).toHaveBeenCalledTimes(1);
@@ -1047,7 +1600,10 @@ describe('TurnSurface', () => {
       } as any;
       const { AssistantStatusManager } = await import('../assistant-status-manager');
       const mgr = new AssistantStatusManager(slackApi);
-      const surface = new TurnSurface({ slackApi, assistantStatusManager: mgr });
+      const surface = new TurnSurface({
+        slackApi,
+        assistantStatusManager: mgr,
+      });
       let epochB = 0;
       try {
         // Turn A opens at epoch 1
@@ -1254,7 +1810,9 @@ describe('TurnSurface', () => {
 
     it('send throwing does not prevent cleanupTurn (state removed, activeTurn cleared)', async () => {
       const client = makeClient();
-      const channel = { send: vi.fn().mockRejectedValue(new Error('slack down')) };
+      const channel = {
+        send: vi.fn().mockRejectedValue(new Error('slack down')),
+      };
       const surface = new TurnSurface({
         slackApi: makeSlackApi(client),
         slackBlockKitChannel: channel as any,
