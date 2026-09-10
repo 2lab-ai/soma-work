@@ -53,6 +53,7 @@ interface TableRow {
 
 /** The requested policy table, verbatim from the plan's global constraints. */
 const POLICY_TABLE: TableRow[] = [
+  { modelId: 'claude-fable-5-1[1m]', contextWindow: 1_000_000, sdkBlockingLimit: 977_000, autoCompactTokens: 750_000 },
   { modelId: 'claude-fable-5[1m]', contextWindow: 1_000_000, sdkBlockingLimit: 977_000, autoCompactTokens: 750_000 },
   { modelId: 'claude-opus-5[1m]', contextWindow: 1_000_000, sdkBlockingLimit: 977_000, autoCompactTokens: 750_000 },
   { modelId: 'claude-opus-5', contextWindow: 200_000, sdkBlockingLimit: 177_000, autoCompactTokens: undefined },
@@ -140,6 +141,8 @@ describe('resolveModelProfile — sdkBlockingLimit is a window fact, not a class
     const limits: [model: string, limit: number][] = [
       ['claude-fable-5', 977_000],
       ['claude-fable-5[1m]', 977_000],
+      ['claude-fable-5-1', 977_000],
+      ['claude-fable-5-1[1m]', 977_000],
       ['claude-opus-5', 177_000],
       ['claude-opus-5[1m]', 977_000],
       ['gpt-5.6-sol', 349_000],

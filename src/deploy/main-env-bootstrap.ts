@@ -16,6 +16,7 @@ const DEFAULT_MODEL = 'gpt-5.6-sol';
 // settings store). Drift is guarded by an exact-set equality test in
 // main-env-bootstrap.test.ts — that test imports AVAILABLE_MODELS directly.
 const VALID_MODELS = new Set([
+  'claude-fable-5-1',
   'claude-fable-5',
   'claude-opus-5',
   'claude-opus-4-8',
@@ -25,6 +26,7 @@ const VALID_MODELS = new Set([
   'claude-sonnet-4-5-20250929',
   'claude-opus-4-5-20251101',
   'claude-haiku-4-5-20251001',
+  'claude-fable-5-1[1m]',
   'claude-fable-5[1m]',
   'claude-opus-5[1m]',
   'claude-opus-4-8[1m]',
