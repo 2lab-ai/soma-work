@@ -82,6 +82,26 @@ Slack Event (Socket Mode)
       Slack · DM · Telegram · Webhook 출력 라우팅
 ```
 
+## Native assistant status
+
+`packages/slack/src/assistant-status-manager.ts` owns native Slack status writes.
+Each `(channelId, threadTs)` has a turn epoch, desired status, heartbeat and serialized
+writer in process memory. Set, heartbeat and clear share that writer; a completed
+network request cannot restore an older desired status. Epoch-scoped setters reject
+closed or superseded turns, and epoch-scoped stale clears are rejected.
+Transient terminal clears get at most three attempts. Cleanup bounds the caller's
+wait, not the network request: an ordered clear remains queued after timeout, but
+remote removal is not guaranteed when requests hang or all retries fail.
+
+`SlackHandler` starts a setup-owned status after command and working-directory
+validation for real user input when the source thread has no active request.
+Cleanup invalidates the captured source epoch and requests a clear on initialization
+failure, halt or migration; it cannot clear the newer execution epoch on the same thread.
+`TurnSurface.begin()` starts execution status independently of `chat.startStream`.
+`end()` and `fail()` invalidate it before waiting for stream or plan cleanup.
+`StreamExecutor.execute()` keeps surface initialization and initial runtime-status
+updates inside its terminal-cleanup boundary, including setup failures.
+
 ## Major Subsystems
 
 ### Multi-Agent (`src/agent-manager.ts`, `src/agent-instance.ts`, `src/agent-runtime/`, `src/agent-session/`)

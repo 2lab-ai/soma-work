@@ -1,6 +1,7 @@
 import { Logger } from '@soma/common/logger';
 
 const HEARTBEAT_INTERVAL_MS = 20_000;
+const CLEAR_MAX_ATTEMPTS = 3;
 
 const TOOL_STATUS_MAP: Record<string, string> = {
   Read: 'is reading files...',
@@ -38,6 +39,7 @@ interface LastStatusEntry {
   channelId: string;
   threadTs: string;
   descriptor: StatusDescriptor;
+  epoch: number;
 }
 
 function readErrorData(error: unknown): { error?: unknown } | undefined {
@@ -63,6 +65,9 @@ export class AssistantStatusManager {
   private heartbeats = new Map<string, NodeJS.Timeout>();
   private lastStatus = new Map<string, LastStatusEntry>();
   private epochCounter = new Map<string, number>();
+  private closedEpochs = new Set<string>();
+  private writers = new Map<string, Promise<void>>();
+  private clearRetries = new Map<string, NodeJS.Timeout>();
   private bgBashCounter = new Map<string, number>();
   private transientFailuresSinceLastSuccess = new Map<string, number>();
   /** Threads whose title has already been set — keeps setTitle once-per-thread. */
@@ -70,31 +75,30 @@ export class AssistantStatusManager {
 
   constructor(private slackApi: AssistantStatusSlackApi) {}
 
-  async setStatus(channelId: string, threadTs: string, status: StatusDescriptor): Promise<void> {
-    if (typeof status === 'string' && status === '') {
-      await this.clearStatus(channelId, threadTs);
+  async setStatus(
+    channelId: string,
+    threadTs: string,
+    status: StatusDescriptor,
+    options?: { expectedEpoch?: number },
+  ): Promise<void> {
+    const key = `${channelId}:${threadTs}`;
+    const epoch = this.epochCounter.get(key) ?? 0;
+    if (options?.expectedEpoch !== undefined && (options.expectedEpoch !== epoch || this.closedEpochs.has(key))) return;
+
+    if (status === '') {
+      if (options) await this.clearStatus(channelId, threadTs, options);
+      else await this.clearStatus(channelId, threadTs);
       return;
     }
-
     if (!this.enabled) return;
 
-    const descriptor: StatusDescriptor = status;
-    const text = typeof descriptor === 'function' ? descriptor() : descriptor;
-    const key = `${channelId}:${threadTs}`;
-
-    try {
-      await this.slackApi.setAssistantStatus(channelId, threadTs, text);
-      this.recordSetStatusSuccess(key);
-    } catch (error) {
-      if (this.markDisabledIfScopeMissing(error)) {
-        await this.bestEffortClearSlack(channelId, threadTs);
-        return;
-      }
-      this.recordTransientFailure(key, error);
-    }
-
-    this.lastStatus.set(key, { channelId, threadTs, descriptor });
+    // Publish intent before any network await. A completed write never owns
+    // desired state, so it cannot resurrect a cleared or superseded turn.
+    this.cancelClearRetry(key);
+    const entry = { channelId, threadTs, descriptor: status, epoch };
+    this.lastStatus.set(key, entry);
     this.ensureHeartbeat(key);
+    await this.writeStatus(key, entry);
   }
 
   async clearStatus(channelId: string, threadTs: string, options?: { expectedEpoch?: number }): Promise<void> {
@@ -113,24 +117,25 @@ export class AssistantStatusManager {
       }
     }
 
-    const timer = this.heartbeats.get(key);
-    if (timer) {
-      clearInterval(timer);
-      this.heartbeats.delete(key);
-    }
-    this.lastStatus.delete(key);
-
-    if (!this.enabled) return;
-    try {
-      await this.slackApi.setAssistantStatus(channelId, threadTs, '');
-      this.recordSetStatusSuccess(key);
-    } catch (error) {
-      await this.disableAndBestEffortClear(channelId, threadTs, error, key);
-    }
+    this.cancelHeartbeat(key);
+    this.cancelClearRetry(key);
+    this.closedEpochs.add(key);
+    const entry = {
+      channelId,
+      threadTs,
+      descriptor: '',
+      epoch: this.epochCounter.get(key) ?? 0,
+    };
+    this.lastStatus.set(key, entry);
+    await this.writeStatus(key, entry);
   }
 
   bumpEpoch(channelId: string, threadTs: string): number {
     const key = `${channelId}:${threadTs}`;
+    this.cancelHeartbeat(key);
+    this.cancelClearRetry(key);
+    this.lastStatus.delete(key);
+    this.closedEpochs.delete(key);
     const next = (this.epochCounter.get(key) ?? 0) + 1;
     this.epochCounter.set(key, next);
     return next;
@@ -215,35 +220,79 @@ export class AssistantStatusManager {
 
   private async heartbeatTick(key: string): Promise<void> {
     const entry = this.lastStatus.get(key);
-    if (!entry) {
-      const timer = this.heartbeats.get(key);
-      if (timer) clearInterval(timer);
-      this.heartbeats.delete(key);
+    if (!entry || entry.descriptor === '') {
+      this.cancelHeartbeat(key);
       return;
     }
-
-    try {
-      const text = typeof entry.descriptor === 'function' ? entry.descriptor() : entry.descriptor;
-      await this.slackApi.setAssistantStatus(entry.channelId, entry.threadTs, text);
-      this.recordSetStatusSuccess(key);
-    } catch (error) {
-      const { channelId, threadTs } = entry;
-      await this.disableAndBestEffortClear(channelId, threadTs, error, key);
-    }
+    // A pending writer already owns the refresh; never queue elapsed ticks.
+    if (this.writers.has(key)) return;
+    await this.writeStatus(key, entry);
   }
 
-  private async disableAndBestEffortClear(
-    channelId: string,
-    threadTs: string,
-    error: unknown,
-    key?: string,
-  ): Promise<void> {
-    const disabled = this.markDisabledIfScopeMissing(error);
-    if (!disabled) {
-      this.recordTransientFailure(key ?? `${channelId}:${threadTs}`, error);
+  /** All status writes, including heartbeat retries and clears, share one lane per thread. */
+  private writeStatus(key: string, entry: LastStatusEntry, attempt = 1): Promise<void> {
+    const send = async () => {
+      if (!this.enabled || this.lastStatus.get(key) !== entry || (this.epochCounter.get(key) ?? 0) !== entry.epoch)
+        return;
+      try {
+        const text = typeof entry.descriptor === 'function' ? entry.descriptor() : entry.descriptor;
+        await this.slackApi.setAssistantStatus(entry.channelId, entry.threadTs, text);
+        this.recordSetStatusSuccess(key);
+      } catch (error) {
+        // The best-effort auth clear runs inside this same serialized lane.
+        if (this.markDisabledIfScopeMissing(error)) {
+          await this.bestEffortClearSlack(entry.channelId, entry.threadTs);
+        } else if (entry.descriptor === '') {
+          this.scheduleClearRetry(key, entry, attempt, error);
+        } else {
+          this.recordTransientFailure(key, error);
+        }
+      }
+    };
+    const previous = this.writers.get(key);
+    const writing = previous ? previous.then(send, send) : send();
+    const settled = writing.finally(() => {
+      if (this.writers.get(key) === settled) this.writers.delete(key);
+    });
+    this.writers.set(key, settled);
+    return settled;
+  }
+
+  private cancelHeartbeat(key: string): void {
+    const timer = this.heartbeats.get(key);
+    if (timer) clearInterval(timer);
+    this.heartbeats.delete(key);
+  }
+
+  private cancelClearRetry(key: string): void {
+    const timer = this.clearRetries.get(key);
+    if (timer) clearTimeout(timer);
+    this.clearRetries.delete(key);
+  }
+
+  private scheduleClearRetry(key: string, entry: LastStatusEntry, attempt: number, error: unknown): void {
+    if (!this.enabled || this.lastStatus.get(key) !== entry || (this.epochCounter.get(key) ?? 0) !== entry.epoch)
+      return;
+    if (attempt >= CLEAR_MAX_ATTEMPTS) {
+      this.logger.warn('assistant.threads.setStatus clear retries exhausted', {
+        key,
+        attempts: attempt,
+        error: readErrorLabel(error),
+      });
       return;
     }
-    await this.bestEffortClearSlack(channelId, threadTs);
+    this.logger.debug('assistant.threads.setStatus transient clear failure — scheduling retry', {
+      key,
+      attempt,
+      error: readErrorLabel(error),
+    });
+    // Do not await a retry inside the writer that it must follow.
+    const timer = setTimeout(() => {
+      if (this.clearRetries.get(key) !== timer) return;
+      this.clearRetries.delete(key);
+      void this.writeStatus(key, entry, attempt + 1);
+    }, attempt * 1_000);
+    this.clearRetries.set(key, timer);
   }
 
   private recordSetStatusSuccess(key: string): void {
@@ -291,6 +340,7 @@ export class AssistantStatusManager {
       clearInterval(timer);
     }
     this.heartbeats.clear();
+    for (const key of this.clearRetries.keys()) this.cancelClearRetry(key);
     this.lastStatus.clear();
     this.transientFailuresSinceLastSuccess.clear();
   }
