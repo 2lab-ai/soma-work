@@ -299,6 +299,13 @@ function freezeProfile(profile: ModelProfile): ModelProfile {
  */
 const POLICY_PROFILES: readonly ModelProfile[] = [
   {
+    modelId: 'claude-fable-5-1[1m]',
+    contextWindow: 1_000_000,
+    sdkBlockingLimit: ONE_M_SDK_BLOCKING_LIMIT,
+    autoCompactTokens: 750_000,
+    compactHeadroom: DEFAULT_COMPACT_HEADROOM,
+  },
+  {
     modelId: 'claude-fable-5[1m]',
     contextWindow: 1_000_000,
     sdkBlockingLimit: ONE_M_SDK_BLOCKING_LIMIT,

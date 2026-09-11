@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { App } from '@slack/bolt';
+import { runWithTimeout } from '@soma/slack/pipeline/stream-executor-cleanup-helpers';
 import { HandoffAbortError, isZHandoffWorkflow } from 'somalib/model-commands/handoff-parser';
 import { getAdminUsers, isAdminUser } from './admin-utils';
 import type { ContinuationHandler, TurnRunnerSurface } from './agent-session';
@@ -600,11 +601,52 @@ export class SlackHandler {
     let activeThreadTs: string = originalThreadTs;
     let agentSession: V1QueryAdapter | undefined;
 
+    // Setup owns only the original source thread's epoch. Execution acquires
+    // its own epoch, so this cleanup cannot clear a newer turn or a migrated target.
+    let setupStatusEpoch: number | undefined;
+    const clearSetupStatus = async () => {
+      if (setupStatusEpoch === undefined) return;
+      const expectedEpoch = setupStatusEpoch;
+      setupStatusEpoch = undefined;
+      try {
+        // Bound the wait, not the queued clear: a pending initial write must
+        // not block migration or exit, but its eventual clear must stay attached.
+        await runWithTimeout(
+          () => this.assistantStatusManager.clearStatus(channel, originalThreadTs, { expectedEpoch }),
+          3000,
+          { what: `setup assistant status clear for source ${channel}:${originalThreadTs}`, logger: this.logger },
+        );
+      } catch (error) {
+        this.logger.warn('Failed to clear setup assistant status', {
+          channelId: channel,
+          threadTs: originalThreadTs,
+          error: (error as Error)?.message ?? String(error),
+        });
+      }
+    };
+
     // Step 4: Initialize session (pass effectiveText for proper dispatch after command parsing)
     // NOTE: initialize() is now INSIDE the outer try (widened for #698 so
     // DispatchAbortError thrown from Sites B/D in session-initializer reaches
     // the outer catch arm below).
     try {
+      // Queued/non-owner input must not steal an active turn's status. Synthetic
+      // turns keep their existing execution-owned status lifecycle.
+      const sourceSessionKey = `${channel}:${originalThreadTs}`;
+      if (!event.synthetic && !this.requestCoordinator.isRequestActive(sourceSessionKey)) {
+        setupStatusEpoch = this.assistantStatusManager.bumpEpoch(channel, originalThreadTs);
+        void this.assistantStatusManager
+          .setStatus(channel, originalThreadTs, 'is thinking...', {
+            expectedEpoch: setupStatusEpoch,
+          })
+          .catch((error) => {
+            this.logger.warn('Failed to set setup assistant status', {
+              channelId: channel,
+              threadTs: originalThreadTs,
+              error: (error as Error)?.message ?? String(error),
+            });
+          });
+      }
       const sessionResult = await this.sessionInitializer.initialize(
         event,
         cwdResult.workingDirectory!,
@@ -643,6 +685,9 @@ export class SlackHandler {
 
       activeChannel = sessionResult.session.channelId || channel;
       activeThreadTs = sessionResult.session.threadRootTs || sessionResult.session.threadTs || originalThreadTs;
+      if (activeChannel !== channel || activeThreadTs !== originalThreadTs) {
+        await clearSetupStatus();
+      }
 
       // Inline `%model` — applied right after session init and BEFORE the
       // goal/autogoal blocks below, so this very turn (including a goal
@@ -1093,6 +1138,8 @@ export class SlackHandler {
         return; // Retry scheduled — don't re-throw
       }
       throw error; // Non-recoverable error — propagate
+    } finally {
+      await clearSetupStatus();
     }
   }
 

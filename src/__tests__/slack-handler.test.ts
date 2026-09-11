@@ -3,6 +3,245 @@ import { describe, expect, it, vi } from 'vitest';
 import { SlackHandler } from '../slack-handler';
 
 describe('SlackHandler', () => {
+  describe('accepted instruction setup status', () => {
+    function fixture() {
+      const handler = new SlackHandler({ client: {}, assistant: vi.fn() } as any, {} as any, {} as any);
+      const internals = handler as any;
+      const status = {
+        bumpEpoch: vi.fn().mockReturnValue(7),
+        setStatus: vi.fn().mockResolvedValue(undefined),
+        clearStatus: vi.fn().mockResolvedValue(undefined),
+      };
+      const sessionResult = {
+        session: { ownerId: 'U123', channelId: 'C123', threadTs: '111.222', sessionId: 'existing' },
+        sessionKey: 'C123:111.222',
+        isNewSession: false,
+        userName: 'Test User',
+        workingDirectory: '/tmp',
+        abortController: new AbortController(),
+        halted: false,
+      };
+      internals.assistantStatusManager = status;
+      internals.requestCoordinator = { isRequestActive: vi.fn().mockReturnValue(false) };
+      internals.logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+      internals.slackApi = {
+        addReaction: vi.fn().mockResolvedValue(undefined),
+        removeReaction: vi.fn().mockResolvedValue(undefined),
+      };
+      internals.inputProcessor = {
+        processFiles: vi.fn().mockResolvedValue({ files: [], shouldContinue: true }),
+        routeCommand: vi.fn().mockResolvedValue({ handled: false }),
+      };
+      internals.sessionInitializer = {
+        validateWorkingDirectory: vi.fn().mockResolvedValue({ valid: true, workingDirectory: '/tmp' }),
+        initialize: vi.fn().mockResolvedValue(sessionResult),
+      };
+      internals.threadPanel = { create: vi.fn().mockResolvedValue(undefined) };
+      internals.streamExecutor = { execute: vi.fn().mockResolvedValue({ success: true, messageCount: 1 }) };
+      const event = { user: 'U123', channel: 'C123', ts: '333.444', thread_ts: '111.222', text: 'hello' };
+      const say = vi.fn().mockResolvedValue({ ts: 'msg' });
+      return { handler, internals, status, sessionResult, event, say };
+    }
+
+    it('sets source status before pending initialization without awaiting the status write', async () => {
+      const { handler, internals, status, event, say } = fixture();
+      let finishInitialize!: (result: any) => void;
+      internals.sessionInitializer.initialize.mockReturnValue(
+        new Promise((resolve) => {
+          finishInitialize = resolve;
+        }),
+      );
+      status.setStatus.mockReturnValue(new Promise(() => {}));
+      const handling = handler.handleMessage(event as any, say);
+      try {
+        await vi.waitFor(() => expect(internals.sessionInitializer.initialize).toHaveBeenCalledOnce());
+        expect(internals.requestCoordinator.isRequestActive).toHaveBeenCalledWith('C123:111.222');
+        expect(status.bumpEpoch).toHaveBeenCalledWith('C123', '111.222');
+        expect(status.setStatus).toHaveBeenCalledWith('C123', '111.222', 'is thinking...', { expectedEpoch: 7 });
+        expect(status.setStatus.mock.invocationCallOrder[0]).toBeLessThan(
+          internals.sessionInitializer.initialize.mock.invocationCallOrder[0],
+        );
+        expect(status.clearStatus).not.toHaveBeenCalled();
+      } finally {
+        finishInitialize({ halted: true });
+        await handling;
+      }
+    });
+
+    it('clears the captured source epoch when initialization rejects', async () => {
+      const { handler, internals, status, event, say } = fixture();
+      const failure = new Error('initialization failed');
+      internals.sessionInitializer.initialize.mockRejectedValue(failure);
+      await expect(handler.handleMessage(event as any, say)).rejects.toBe(failure);
+      expect(status.clearStatus).toHaveBeenCalledExactlyOnceWith('C123', '111.222', { expectedEpoch: 7 });
+      expect(internals.streamExecutor.execute).not.toHaveBeenCalled();
+    });
+
+    it('clears the captured source epoch when initialization halts', async () => {
+      const { handler, internals, status, event, say } = fixture();
+      internals.sessionInitializer.initialize.mockResolvedValue({ halted: true });
+      await handler.handleMessage(event as any, say);
+      expect(status.clearStatus).toHaveBeenCalledExactlyOnceWith('C123', '111.222', { expectedEpoch: 7 });
+      expect(internals.streamExecutor.execute).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['C123', '222.333'],
+      ['C456', '111.222'],
+    ])('clears only the source before slow setup and execution on migrated %s/%s', async (channelId, threadRootTs) => {
+      const { handler, internals, status, sessionResult, event, say } = fixture();
+      sessionResult.session = { ...sessionResult.session, channelId, threadRootTs } as any;
+      sessionResult.sessionKey = `${channelId}:${threadRootTs}`;
+      internals.threadPanel.create.mockImplementation(async () => {
+        expect(status.clearStatus).toHaveBeenCalledWith('C123', '111.222', { expectedEpoch: 7 });
+      });
+      await handler.handleMessage(event as any, say);
+      expect(internals.streamExecutor.execute).toHaveBeenCalledWith(
+        expect.objectContaining({
+          channel: channelId,
+          threadTs: threadRootTs,
+        }),
+      );
+      expect(
+        status.clearStatus.mock.calls.every(
+          ([channel, thread, options]) => channel === 'C123' && thread === '111.222' && options?.expectedEpoch === 7,
+        ),
+      ).toBe(true);
+      expect(status.bumpEpoch).toHaveBeenCalledExactlyOnceWith('C123', '111.222');
+    });
+
+    it.each([
+      'migration',
+      'halt',
+      'initialization error',
+    ] as const)('bounds a hung setup clear to 3000ms on %s and observes a late rejection', async (outcome) => {
+      const { handler, internals, status, sessionResult, event, say } = fixture();
+      const initializationError = new Error('initialization failed');
+      if (outcome === 'migration') {
+        sessionResult.session = { ...sessionResult.session, channelId: 'C456', threadRootTs: '222.333' } as any;
+        sessionResult.sessionKey = 'C456:222.333';
+      } else if (outcome === 'halt') {
+        internals.sessionInitializer.initialize.mockResolvedValue({ halted: true });
+      } else {
+        internals.sessionInitializer.initialize.mockRejectedValue(initializationError);
+      }
+
+      let finishSet!: () => void;
+      let rejectClear!: (error: Error) => void;
+      status.setStatus.mockReturnValue(
+        new Promise<void>((resolve) => {
+          finishSet = resolve;
+        }),
+      );
+      status.clearStatus.mockReturnValue(
+        new Promise<void>((_resolve, reject) => {
+          rejectClear = reject;
+        }),
+      );
+      const unhandledRejection = vi.fn();
+      process.on('unhandledRejection', unhandledRejection);
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      let settled = false;
+      let handlingError: unknown;
+      const handling = handler.handleMessage(event as any, say).then(
+        () => {
+          settled = true;
+        },
+        (error) => {
+          settled = true;
+          handlingError = error;
+        },
+      );
+      const lateError = new Error('late setup clear failure');
+      try {
+        await vi.advanceTimersByTimeAsync(0);
+        expect(internals.sessionInitializer.initialize).toHaveBeenCalledOnce();
+        expect(status.setStatus).toHaveBeenCalledWith('C123', '111.222', 'is thinking...', { expectedEpoch: 7 });
+        expect(status.clearStatus).toHaveBeenCalledExactlyOnceWith('C123', '111.222', { expectedEpoch: 7 });
+        await vi.advanceTimersByTimeAsync(2999);
+        expect(settled).toBe(false);
+        expect(internals.streamExecutor.execute).not.toHaveBeenCalled();
+
+        await vi.advanceTimersByTimeAsync(1);
+        expect(settled).toBe(true);
+        expect(handlingError).toBe(outcome === 'initialization error' ? initializationError : undefined);
+        if (outcome === 'migration') {
+          expect(internals.streamExecutor.execute).toHaveBeenCalledExactlyOnceWith(
+            expect.objectContaining({ channel: 'C456', threadTs: '222.333' }),
+          );
+        } else {
+          expect(internals.streamExecutor.execute).not.toHaveBeenCalled();
+        }
+        expect(internals.logger.warn).toHaveBeenCalledWith(
+          expect.stringMatching(/setup.*C123.*111\.222.*did not finish in time/),
+          { timeoutMs: 3000 },
+        );
+        expect(status.clearStatus).toHaveBeenCalledOnce();
+
+        finishSet();
+        rejectClear(lateError);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(unhandledRejection).not.toHaveBeenCalled();
+      } finally {
+        finishSet();
+        rejectClear(lateError);
+        await handling;
+        process.off('unhandledRejection', unhandledRejection);
+        vi.useRealTimers();
+      }
+    });
+
+    it('retains the setup epoch for final cleanup after execution acquires a newer epoch', async () => {
+      const { handler, internals, status, event, say } = fixture();
+      internals.streamExecutor.execute.mockImplementation(async () => {
+        expect(status.clearStatus).not.toHaveBeenCalled();
+        status.bumpEpoch.mockReturnValue(8);
+        status.bumpEpoch('C123', '111.222');
+        return { success: true, messageCount: 1 };
+      });
+      await handler.handleMessage(event as any, say);
+      expect(status.clearStatus).toHaveBeenCalledExactlyOnceWith('C123', '111.222', { expectedEpoch: 7 });
+    });
+
+    it('does not bump, set, or clear status for an existing active request', async () => {
+      const { handler, internals, status, event, say } = fixture();
+      internals.requestCoordinator.isRequestActive.mockReturnValue(true);
+      await handler.handleMessage(event as any, say);
+      expect(internals.sessionInitializer.initialize).toHaveBeenCalledOnce();
+      expect(status.bumpEpoch).not.toHaveBeenCalled();
+      expect(status.setStatus).not.toHaveBeenCalled();
+      expect(status.clearStatus).not.toHaveBeenCalled();
+    });
+
+    it('leaves synthetic turn status to execution', async () => {
+      const { handler, internals, status, event, say } = fixture();
+      await handler.handleMessage({ ...event, synthetic: true } as any, say);
+      expect(internals.streamExecutor.execute).toHaveBeenCalledOnce();
+      expect(status.bumpEpoch).not.toHaveBeenCalled();
+      expect(status.setStatus).not.toHaveBeenCalled();
+      expect(status.clearStatus).not.toHaveBeenCalled();
+    });
+
+    it('logs unexpected status failures without blocking initialization or masking its error', async () => {
+      const { handler, internals, status, event, say } = fixture();
+      const failure = new Error('initialization failed');
+      status.setStatus.mockRejectedValue(new Error('status write failed'));
+      status.clearStatus.mockRejectedValue(new Error('status clear failed'));
+      internals.sessionInitializer.initialize.mockRejectedValue(failure);
+      await expect(handler.handleMessage(event as any, say)).rejects.toBe(failure);
+      expect(status.setStatus).toHaveBeenCalledOnce();
+      expect(status.clearStatus).toHaveBeenCalledOnce();
+      expect(internals.logger.warn).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ error: 'status write failed' }),
+      );
+      expect(internals.logger.warn).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ error: 'status clear failed' }),
+      );
+    });
+  });
+
   it('creates thread panel after session initialization', async () => {
     const app = { client: {}, assistant: vi.fn() } as any;
     const claudeHandler = {};
