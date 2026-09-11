@@ -6484,7 +6484,7 @@ describe('compaction failure delivered as content (transcript repair + unwedge)'
 
   it('redacts credentials and neutralizes Slack markup in compact error details', async () => {
     const detail =
-      'Error: Error during compaction: policy refusal xoxb-sensitive-token ghp_sensitive123 <@U_TEST> ``` token=private-value {"password":"json-private","api_key":"json-key"}';
+      'Error: Error during compaction: policy refusal xoxb-sensitive-token ghp_sensitive123 <@U_TEST> ``` token=private-value {"password":"json-private","api_key":"json-key"} {\'password\': \'python-private\', \'api_key\': \'python-key\'}';
     const deps = createRepairDeps(detail);
     const executor = new StreamExecutor(deps);
     const log = vi.spyOn((executor as any).logger, 'error');
@@ -6496,10 +6496,32 @@ describe('compaction failure delivered as content (transcript repair + unwedge)'
     expect(text).toContain('policy refusal');
     expect(text).not.toContain('<@U_TEST>');
     expect(text).not.toContain('```');
-    for (const secret of ['xoxb-sensitive-token', 'ghp_sensitive123', 'private-value', 'json-private', 'json-key']) {
+    for (const secret of [
+      'xoxb-sensitive-token',
+      'ghp_sensitive123',
+      'private-value',
+      'json-private',
+      'json-key',
+      'python-private',
+      'python-key',
+    ]) {
       expect(text).not.toContain(secret);
       expect(JSON.stringify(log.mock.calls)).not.toContain(secret);
     }
+  });
+
+  it('does not suppress a long compact-error explanation on an ordinary work turn', async () => {
+    const detail = `Error during compaction: ${'explanation '.repeat(160)}`;
+    const deps = createRepairDeps(detail);
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    const session = { ...fallbackCompactSession(), fallbackCompactActive: false };
+
+    const result = await executor.execute(executeParams(session, say, 'Explain the error'));
+
+    expect(result.success).toBe(true);
+    expect(say).toHaveBeenCalled();
+    expect(say.mock.calls.some((args) => String(args[0].text).includes('explanation'))).toBe(true);
   });
 
   it('bounds Slack compact details with explicit truncation while retaining sanitized log detail', async () => {

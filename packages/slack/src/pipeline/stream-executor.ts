@@ -1297,6 +1297,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         // evidence quote against the ACTUAL current user message and refuses
         // on synthetic/continuation turns (fail closed when text is absent).
         currentUserText: text,
+        isCompactTurn: (isSlashCommand && trimmedText.startsWith('/compact')) || Boolean(session.fallbackCompactActive),
         isUserInputTurn: params.isUserInput === true,
         get logVerbosity() {
           return session.logVerbosity ?? LOG_DETAIL;
@@ -3869,7 +3870,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // log path masks them the same way (W3-B consolidation).
     const nonAnthropicSanitized = raw
       .replace(
-        /("(?:authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password|credential)"\s*:\s*)"(?:\\.|[^"\\])*"/gi,
+        /(["'](?:authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password|credential)["']\s*:\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/gi,
         '$1"[REDACTED]"',
       )
       .replace(/[\x1B\x9B](?:\[[0-9;]*[a-zA-Z]|\].*?(?:\x07|\x1B\\)|\([A-Z])/g, '') // strip ANSI
