@@ -85,8 +85,15 @@ Slack Event (Socket Mode)
 ## Native assistant status
 
 `packages/slack/src/assistant-status-manager.ts` owns native Slack status writes.
-Each `(channelId, threadTs)` has a turn epoch, desired status, heartbeat and serialized
-writer in process memory. Set, heartbeat and clear share that writer; a completed
+`SlackApiHelper.setAssistantStatus` sends them through
+`WebClient.apiCall('agents.sessions.setStatus')`: nonempty status strings map to
+`processing`, and the empty string maps to `active`. These strings express loading
+intent, not custom lifecycle display text. Clearing legacy
+`assistant.threads.setStatus` loading text does not clear the new agent-session
+lifecycle. `active` means ready for the next input, not a closed session.
+
+The epoch and writer guards are unchanged. Each `(channelId, threadTs)` has a turn
+epoch, desired status, heartbeat and serialized writer in process memory. Set, heartbeat and clear share that writer; a completed
 network request cannot restore an older desired status. Epoch-scoped setters reject
 closed or superseded turns, and epoch-scoped stale clears are rejected.
 Transient terminal clears get at most three attempts. Cleanup bounds the caller's
@@ -98,7 +105,12 @@ validation for real user input when the source thread has no active request.
 Cleanup invalidates the captured source epoch and requests a clear on initialization
 failure, halt or migration; it cannot clear the newer execution epoch on the same thread.
 `TurnSurface.begin()` starts execution status independently of `chat.startStream`.
-`end()` and `fail()` invalidate it before waiting for stream or plan cleanup.
+Live Slack QA showed that opening a stream resets the lifecycle to `active`.
+After successful startup returns a stream timestamp, `TurnSurface` restores
+`processing` with the captured `expectedEpoch`, only while the turn remains current
+and is not closing. Closed or superseded callbacks cannot re-enable processing.
+`end()` and `fail()` invalidate the epoch and request `active` before waiting for
+stream or plan cleanup.
 `StreamExecutor.execute()` keeps surface initialization and initial runtime-status
 updates inside its terminal-cleanup boundary, including setup failures.
 

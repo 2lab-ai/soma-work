@@ -1228,9 +1228,10 @@ describe('TurnSurface', () => {
         await beginningB;
         await vi.advanceTimersByTimeAsync(0);
         const expectedStarts = action === 'end' ? 0 : 1;
-        expect.soft(setStatus).toHaveBeenCalledTimes(expectedStarts);
+        // One live start gets initial status and the post-stream lifecycle refresh.
+        expect.soft(setStatus).toHaveBeenCalledTimes(expectedStarts * 2);
         expect.soft(client.chat.startStream).toHaveBeenCalledTimes(expectedStarts);
-        expect.soft(setAssistantStatus.mock.calls.filter(([, , text]) => text !== '')).toHaveLength(expectedStarts);
+        expect.soft(setAssistantStatus.mock.calls.filter(([, , text]) => text !== '')).toHaveLength(expectedStarts * 2);
         expect.soft(surface._getTurnStateSnapshot('A')).toBeUndefined();
         if (action === 'duplicate') {
           expect.soft(surface._getActiveTurnId(ctx.sessionKey)).toBe('B');
@@ -1482,7 +1483,7 @@ describe('TurnSurface', () => {
       clearStatus: vi.fn().mockResolvedValue(undefined),
     });
 
-    it('begin calls setStatus("is thinking...") once', async () => {
+    it('begin sets status before startup and refreshes it after stream creation', async () => {
       const client = makeClient();
       const mgr = makeMgr(true);
       const surface = new TurnSurface({
@@ -1495,7 +1496,7 @@ describe('TurnSurface', () => {
         sessionKey: 'C:thr',
         turnId: 't-b4',
       });
-      expect(mgr.setStatus).toHaveBeenCalledTimes(1);
+      expect(mgr.setStatus).toHaveBeenCalledTimes(2);
       expect(mgr.bumpEpoch).toHaveBeenCalledWith('C', 'thr');
       expect(mgr.setStatus).toHaveBeenCalledWith('C', 'thr', 'is thinking...', {
         expectedEpoch: 1,
