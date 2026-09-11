@@ -89,6 +89,12 @@ describe('buildStreamOptions — option parity (epic #1023 P1)', () => {
     expect(options.plugins).toEqual([{ type: 'local', path: '/plugins/demo' }]);
   });
 
+  it('preserves TodoWrite snapshots and first-turn MCP readiness on SDK 0.3', async () => {
+    const { options } = await buildStreamOptions({ queryEnv: {} }, makeDeps());
+    expect(options.env?.CLAUDE_CODE_ENABLE_TASKS).toBe('false');
+    expect(options.env?.MCP_CONNECTION_NONBLOCKING).toBe('0');
+  });
+
   it('MCP set: copies permissionMode / servers / allowed / disallowed / promptTool / skipPerms', async () => {
     const deps = makeDeps();
     const { options } = await buildStreamOptions({ queryEnv: {}, slackContext: makeSlackContext() }, deps);
