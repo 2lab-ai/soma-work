@@ -687,14 +687,15 @@ export class SlackApiHelper {
   }
 
   /**
-   * Assistant thread status 설정 (네이티브 스피너)
+   * Map turn-owned loading intent to Slack's agent session lifecycle.
+   * Empty legacy loading text does not clear an agent session's processing state.
    */
   async setAssistantStatus(channelId: string, threadTs: string, status: string): Promise<void> {
     await this.enqueue(() =>
-      this.app.client.assistant.threads.setStatus({
+      this.app.client.apiCall('agents.sessions.setStatus', {
         channel_id: channelId,
         thread_ts: threadTs,
-        status,
+        status: status === '' ? 'active' : 'processing',
       }),
     );
   }
