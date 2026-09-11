@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { AssistantStatusManager } from '../assistant-status-manager';
 import { SlackApiHelper } from '../slack-api-helper';
+import { TurnSurface } from '../turn-surface';
 
 // Mock the App
 const createMockApp = () => ({
@@ -39,6 +41,176 @@ describe('SlackApiHelper', () => {
   beforeEach(() => {
     mockApp = createMockApp();
     helper = new SlackApiHelper(mockApp as any);
+  });
+
+  describe('agent session lifecycle status', () => {
+    it.each([
+      ['is thinking...', 'processing'],
+      ['', 'active'],
+    ])('maps %j to lifecycle %s instead of the legacy loading text', async (text, status) => {
+      const apiCall = vi.fn().mockResolvedValue({ ok: true });
+      const legacySet = vi.fn().mockResolvedValue({ ok: true });
+      const api = new SlackApiHelper({
+        client: { apiCall, assistant: { threads: { setStatus: legacySet } } },
+      } as any);
+
+      await api.setAssistantStatus('C123', '123.456', text);
+
+      expect(apiCall).toHaveBeenCalledWith('agents.sessions.setStatus', {
+        channel_id: 'C123',
+        thread_ts: '123.456',
+        status,
+      });
+      expect(legacySet).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      'completed',
+      'aborted',
+      'failed',
+    ] as const)('real turn surface leaves processing on %s and rejects late closed-turn work', async (reason) => {
+      vi.useFakeTimers();
+      let remoteStatus = 'active';
+      const apiCall = vi.fn(async (_method: string, args: { status: string }) => {
+        remoteStatus = args.status;
+        return { ok: true };
+      });
+      const api = new SlackApiHelper(
+        {
+          client: {
+            apiCall,
+            assistant: { threads: { setStatus: vi.fn().mockResolvedValue({ ok: true }) } },
+            chat: {
+              startStream: vi.fn(async () => {
+                // Slack stream creation can reset the agent lifecycle to active.
+                remoteStatus = 'active';
+                return { ts: 'stream' };
+              }),
+              stopStream: vi.fn().mockResolvedValue({ ok: true }),
+            },
+          },
+        } as any,
+        { minInterval: 0, bucketSize: 100 },
+      );
+      const manager = new AssistantStatusManager(api);
+      const surface = new TurnSurface({ slackApi: api, assistantStatusManager: manager });
+      const ctx = { channelId: 'C123', threadTs: '123.456', sessionKey: 'C123:123.456', turnId: 'A' };
+      try {
+        await vi.advanceTimersByTimeAsync(40_000);
+        expect(apiCall).not.toHaveBeenCalled();
+        const epoch = manager.bumpEpoch(ctx.channelId, ctx.threadTs);
+        await surface.begin({ ...ctx, statusEpoch: epoch });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(remoteStatus).toBe('processing');
+        expect(apiCall).toHaveBeenLastCalledWith('agents.sessions.setStatus', {
+          channel_id: ctx.channelId,
+          thread_ts: ctx.threadTs,
+          status: 'processing',
+        });
+        if (reason === 'failed') await surface.fail('A', new Error('test failure'));
+        else await surface.end('A', reason);
+        expect(remoteStatus).toBe('active');
+        expect(apiCall).toHaveBeenLastCalledWith('agents.sessions.setStatus', {
+          channel_id: ctx.channelId,
+          thread_ts: ctx.threadTs,
+          status: 'active',
+        });
+        const count = apiCall.mock.calls.length;
+        await manager.setStatus(ctx.channelId, ctx.threadTs, 'late tool', { expectedEpoch: epoch });
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(remoteStatus).toBe('active');
+        expect(apiCall).toHaveBeenCalledTimes(count);
+
+        const next = manager.bumpEpoch(ctx.channelId, ctx.threadTs);
+        await surface.begin({ ...ctx, turnId: 'B', statusEpoch: next });
+        await vi.advanceTimersByTimeAsync(0);
+        await manager.clearStatus(ctx.channelId, ctx.threadTs, { expectedEpoch: epoch });
+        expect(remoteStatus).toBe('processing');
+        await surface.end('B', 'completed');
+        expect(remoteStatus).toBe('active');
+      } finally {
+        await surface.end('A', 'completed');
+        await surface.end('B', 'completed');
+        vi.clearAllTimers();
+        vi.useRealTimers();
+      }
+    });
+
+    it('does not send an old turn clear when a newer turn supersedes it', async () => {
+      vi.useFakeTimers();
+      const apiCall = vi.fn().mockResolvedValue({ ok: true });
+      const legacySet = vi.fn().mockResolvedValue({ ok: true });
+      const chat = {
+        startStream: vi.fn().mockResolvedValueOnce({ ts: 'stream-A' }).mockResolvedValueOnce({ ts: 'stream-B' }),
+        stopStream: vi.fn().mockResolvedValue({ ok: true }),
+      };
+      const api = new SlackApiHelper(
+        { client: { apiCall, chat, assistant: { threads: { setStatus: legacySet } } } } as any,
+        { minInterval: 0, bucketSize: 100 },
+      );
+      const manager = new AssistantStatusManager(api);
+      const surface = new TurnSurface({ slackApi: api, assistantStatusManager: manager });
+      const ctx = { channelId: 'C123', threadTs: '123.456', sessionKey: 'C123:123.456' };
+      const processingCall = [
+        'agents.sessions.setStatus',
+        {
+          channel_id: ctx.channelId,
+          thread_ts: ctx.threadTs,
+          status: 'processing',
+        },
+      ];
+      try {
+        const oldEpoch = manager.bumpEpoch(ctx.channelId, ctx.threadTs);
+        await surface.begin({ ...ctx, turnId: 'A', statusEpoch: oldEpoch });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(apiCall).toHaveBeenLastCalledWith(...processingCall);
+        const beforeSupersede = apiCall.mock.calls.length;
+
+        const newEpoch = manager.bumpEpoch(ctx.channelId, ctx.threadTs);
+        // begin(B) calls the real fail(A), including A's epoch-scoped clear.
+        await surface.begin({ ...ctx, turnId: 'B', statusEpoch: newEpoch });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(chat.stopStream).toHaveBeenCalledWith({ channel: ctx.channelId, ts: 'stream-A', chunks: [] });
+        const supersedeCalls = apiCall.mock.calls.slice(beforeSupersede);
+        expect(supersedeCalls.length).toBeGreaterThan(0);
+        for (const call of supersedeCalls) expect(call).toEqual(processingCall);
+
+        const beforeStaleWork = apiCall.mock.calls.length;
+        await manager.clearStatus(ctx.channelId, ctx.threadTs, { expectedEpoch: oldEpoch });
+        await manager.setStatus(ctx.channelId, ctx.threadTs, 'late old tool', { expectedEpoch: oldEpoch });
+        expect(apiCall).toHaveBeenCalledTimes(beforeStaleWork);
+        // A stale clear must not cancel B's heartbeat either.
+        await vi.advanceTimersByTimeAsync(20_000);
+        expect(apiCall).toHaveBeenCalledTimes(beforeStaleWork + 1);
+        expect(apiCall).toHaveBeenLastCalledWith(...processingCall);
+
+        await surface.end('B', 'completed');
+        expect(apiCall).toHaveBeenLastCalledWith('agents.sessions.setStatus', {
+          channel_id: ctx.channelId,
+          thread_ts: ctx.threadTs,
+          status: 'active',
+        });
+        expect(chat.stopStream).toHaveBeenLastCalledWith({ channel: ctx.channelId, ts: 'stream-B', chunks: [] });
+        expect(legacySet).not.toHaveBeenCalled();
+      } finally {
+        try {
+          await surface.end('A', 'completed');
+          await surface.end('B', 'completed');
+          await manager.clearStatus(ctx.channelId, ctx.threadTs);
+        } finally {
+          vi.clearAllTimers();
+          vi.useRealTimers();
+        }
+      }
+    });
+
+    it('propagates lifecycle clear failure so the owning manager can retry', async () => {
+      const error = new Error('Slack unavailable');
+      const api = new SlackApiHelper({
+        client: { apiCall: vi.fn().mockRejectedValue(error) },
+      } as any);
+      await expect(api.setAssistantStatus('C123', '123.456', '')).rejects.toBe(error);
+    });
   });
 
   describe('getUserName', () => {
