@@ -57,7 +57,7 @@ describe('Slack display-name identity (cross-user skill resolution)', () => {
 // tests assert the **exact** expected arrays/records, not just the length,
 // so any future silent removal is caught immediately.
 describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', () => {
-  it('AVAILABLE_MODELS is exactly 22 entries in the expected order', () => {
+  it('AVAILABLE_MODELS preserves every historical entry in the expected order', () => {
     // Fable 5 (2026-06-09) leads as the flagship; Opus 5 (2026-08-26) heads the
     // opus tier so substring matchers see it before 4.8/4.7. The `[1m]` block
     // now carries the literal `claude-fable-5[1m]` and `gpt-5.6-sol[1m]` — the
@@ -68,6 +68,7 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
     // are appended after the gpt-5.6 tiers — selectable, but NOT the default.
     // Historical entries MUST survive every bump.
     expect([...AVAILABLE_MODELS]).toEqual([
+      'claude-fable-5-1',
       'claude-fable-5',
       'claude-opus-5',
       'claude-opus-4-8',
@@ -77,6 +78,7 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
       'claude-sonnet-4-5-20250929',
       'claude-opus-4-5-20251101',
       'claude-haiku-4-5-20251001',
+      'claude-fable-5-1[1m]',
       'claude-fable-5[1m]',
       'claude-opus-5[1m]',
       'claude-opus-4-8[1m]',
@@ -110,9 +112,11 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
     // because that is the id whose client-side denominator is 1M. Version-
     // pinned aliases (`opus-4.8`, `opus-4.7`, ...) remain pinned.
     expect(MODEL_ALIASES).toEqual({
-      fable: 'claude-fable-5[1m]',
+      fable: 'claude-fable-5-1[1m]',
+      'fable-5-1': 'claude-fable-5-1[1m]',
+      'fable-5-1[1m]': 'claude-fable-5-1[1m]',
       'fable-5': 'claude-fable-5[1m]',
-      'fable[1m]': 'claude-fable-5[1m]',
+      'fable[1m]': 'claude-fable-5-1[1m]',
       'fable-5[1m]': 'claude-fable-5[1m]',
       sonnet: 'claude-sonnet-4-6',
       'sonnet-4.6': 'claude-sonnet-4-6',
@@ -550,8 +554,8 @@ describe('model input resolution — accepted / rejected / unknown', () => {
 
   it('accepts the requested aliases and canonical ids', () => {
     const store = makeStore();
-    expect(store.resolveModelInput('fable')).toBe('claude-fable-5[1m]');
-    expect(store.resolveModelInput('fable[1m]')).toBe('claude-fable-5[1m]');
+    expect(store.resolveModelInput('fable')).toBe('claude-fable-5-1[1m]');
+    expect(store.resolveModelInput('fable[1m]')).toBe('claude-fable-5-1[1m]');
     expect(store.resolveModelInput('opus')).toBe('claude-opus-5[1m]');
     expect(store.resolveModelInput('opus[1m]')).toBe('claude-opus-5[1m]');
     expect(store.resolveModelInput('opus-5')).toBe('claude-opus-5');

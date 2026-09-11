@@ -233,7 +233,8 @@ source of truth for any model not listed here:
 
 | Model | Context window | Auto-compact default |
 |---|---|---|
-| `claude-fable-5[1m]` (alias `fable`) | 1,000,000 | 750,000 |
+| `claude-fable-5-1[1m]` (aliases `fable`, `fable[1m]`, `fable-5-1`) | 1,000,000 | 750,000 |
+| `claude-fable-5[1m]` (version-pinned alias `fable-5`) | 1,000,000 | 750,000 |
 | `claude-opus-5[1m]` (alias `opus`) | 1,000,000 | 750,000 |
 | `claude-opus-5` (bare, no `[1m]`) | 200,000 | none — falls back to the legacy per-user percentage below |
 | `gpt-5.6-sol[1m]` (alias `sol[1m]`) | 1,000,000 | 600,000 |
