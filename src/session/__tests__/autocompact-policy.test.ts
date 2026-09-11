@@ -117,6 +117,25 @@ describe('validateAutoCompactTokensForModel', () => {
 });
 
 describe('resolveEffectiveAutoCompact', () => {
+  it.each([
+    'gpt-6-astra[1m]',
+    'gpt-99-future[1m]',
+  ])('%s uses 600k by default but preserves a session override', (model) => {
+    const session = makeSession(model);
+    expect(resolveEffectiveAutoCompact(session, 'U1', makeStore(80))).toEqual({
+      tokens: 600_000,
+      source: 'model',
+      contextWindow: 1_000_000,
+    });
+    session.autoCompactTokens = 800_000;
+    expect(resolveEffectiveAutoCompact(session, 'U1', makeStore(80))).toEqual({
+      tokens: 800_000,
+      source: 'session',
+      contextWindow: 1_000_000,
+    });
+    session.autoCompactTokens = null;
+    expect(resolveEffectiveAutoCompact(session, 'U1', makeStore(80)).tokens).toBe(600_000);
+  });
   it('prefers the session override over the model default', () => {
     const session = makeSession('claude-opus-5[1m]', 400_000);
     expect(resolveEffectiveAutoCompact(session, 'U1', makeStore(80))).toEqual({
