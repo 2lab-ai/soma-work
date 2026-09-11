@@ -100,6 +100,7 @@ const fireSettingsInvalidate = invalidator.fire;
 // abandoned PR #652) silently deletes user-selectable models. Tests assert
 // exact array equality — NOT just length — to catch that class of mistake.
 export const AVAILABLE_MODELS = [
+  'claude-fable-5-1',
   'claude-fable-5',
   'claude-opus-5',
   'claude-opus-4-8',
@@ -109,6 +110,7 @@ export const AVAILABLE_MODELS = [
   'claude-sonnet-4-5-20250929',
   'claude-opus-4-5-20251101',
   'claude-haiku-4-5-20251001',
+  'claude-fable-5-1[1m]',
   'claude-fable-5[1m]',
   'claude-opus-5[1m]',
   'claude-opus-4-8[1m]',
@@ -147,12 +149,13 @@ export type ModelInputResolution =
 //   - Version-pinned aliases (`opus-4.8`, `opus-4.7`, ...) remain stable so
 //     users who explicitly chose a generation don't get silently upgraded.
 export const MODEL_ALIASES: Record<string, ModelId> = {
-  // Every `fable` spelling → the LITERAL `[1m]` id. Bare `claude-fable-5` is
-  // still selectable by its full id, but the shorthand a user types must land
-  // on the spelling whose SDK-side window is actually 1M (see AVAILABLE_MODELS).
-  fable: 'claude-fable-5[1m]',
+  // Unversioned Fable aliases follow 5.1 and retain the literal 1M profile.
+  // Version-pinned aliases remain stable; bare full ids stay selectable.
+  fable: 'claude-fable-5-1[1m]',
+  'fable-5-1': 'claude-fable-5-1[1m]',
+  'fable-5-1[1m]': 'claude-fable-5-1[1m]',
   'fable-5': 'claude-fable-5[1m]',
-  'fable[1m]': 'claude-fable-5[1m]',
+  'fable[1m]': 'claude-fable-5-1[1m]',
   'fable-5[1m]': 'claude-fable-5[1m]',
   sonnet: 'claude-sonnet-4-6',
   'sonnet-4.6': 'claude-sonnet-4-6',
@@ -1289,6 +1292,10 @@ export class UserSettingsStore {
    */
   getModelDisplayName(model: string): string {
     switch (model) {
+      case 'claude-fable-5-1':
+        return 'Fable 5.1';
+      case 'claude-fable-5-1[1m]':
+        return 'Fable 5.1 (1M)';
       case 'claude-fable-5':
         // Plain label: "(1M)" is reserved for the spelling that actually
         // carries the 1M profile + 750k default (`claude-fable-5[1m]`), so the
