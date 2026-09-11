@@ -10,6 +10,8 @@
 
 **Spec:** `docs/superpowers/specs/2026-08-23-somawork-setup-onboarding-design.md` and `docs/superpowers/specs/2026-08-23-somawork-setup-onboarding-verification.md`
 
+> **Status (2026-09-11):** see [`docs/misc/handoffs/2026-09-11-setup-onboarding-status.md`](../../misc/handoffs/2026-09-11-setup-onboarding-status.md) for what has actually shipped vs. what is still unproven. Workstream A/B code is merged; Workstream C (clean-machine live receipt) has no success evidence yet.
+
 ## Global Constraints
 
 - macOS ARM64 is the complete v1 platform; do not claim Linux support.
@@ -24,9 +26,9 @@
 
 ## Execution order
 
-- [ ] **Workstream A — controller/setup core:** execute [`2026-08-23-somawork-setup-core-plan.md`](2026-08-23-somawork-setup-core-plan.md). Exit: controller commands, resumable setup, Slack/llmux adapters, doctor/service tests green; no distribution assumption.
-- [ ] **Workstream B — public packaging:** execute [`2026-08-23-somawork-packaging-plan.md`](2026-08-23-somawork-packaging-plan.md). Exit: public immutable preview assets, three tap formulae, two xbrew recipes, fresh-prefix coexistence receipt.
-- [ ] **Workstream C — clean-machine receipt:** execute [`2026-08-23-somawork-clean-machine-plan.md`](2026-08-23-somawork-clean-machine-plan.md). Exit: fresh user E2E with new OAuth, actual Slack response, HTML receipt, preview fleet deployment.
+- [ ] **Workstream A — controller/setup core:** execute [`2026-08-23-somawork-setup-core-plan.md`](2026-08-23-somawork-setup-core-plan.md). Exit: controller commands, resumable setup, Slack/llmux adapters, doctor/service tests green; no distribution assumption. *(2026-09-11: soma-work PR #193, "fix(setup): propagate the active llmux endpoint", merged as a setup-endpoint follow-up fix — not the sole/original core implementation; full exit receipt not independently confirmed in this pass — box left unchecked, see status handoff above.)*
+- [ ] **Workstream B — public packaging:** execute [`2026-08-23-somawork-packaging-plan.md`](2026-08-23-somawork-packaging-plan.md). Exit: public immutable preview assets, three tap formulae, two xbrew recipes, fresh-prefix coexistence receipt. *(2026-09-11: homebrew-tap PR #5 ("feat: package Slack CLI for somawork setup") and xbrew PR #3 ("fix: bootstrap Homebrew for brew-backed recipes") merged; fresh-prefix coexistence receipt not independently confirmed in this pass — box left unchecked, see status handoff above.)*
+- [ ] **Workstream C — clean-machine receipt:** execute [`2026-08-23-somawork-clean-machine-plan.md`](2026-08-23-somawork-clean-machine-plan.md). Exit: fresh user E2E with new OAuth, actual Slack response, HTML receipt, preview fleet deployment. *(2026-09-11: historical install and incomplete OAuth attempts, no success evidence — see status handoff above.)*
 
 ## Cross-workstream handoff contract
 
