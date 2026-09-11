@@ -932,10 +932,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       threadTs: threadTs || undefined,
       sessionKey,
       turnId,
-      // Issue #688 — thread the per-turn epoch through TurnContext so
-      // TurnSurface.end()/fail() can pass it as `expectedEpoch` to
-      // clearStatus, mirroring the caller-owns-epoch pattern used by the
-      // explicit clearStatus calls below (e.g. lines ~1035, 1116, 1349).
+      // Both status writes and terminal clears are scoped to this execution.
       statusEpoch: epoch,
       // `chat.startStream` rejects channel/thread streams without BOTH
       // recipient_user_id and recipient_team_id (`missing_recipient_team_id`).
@@ -952,12 +949,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // surface setup, not a hard precondition; the rest of the turn can
     // still run and emit a terminal card via the normal rails.
     // Trace: docs/current/plans/turn-end-surface-guarantee/exhaustive-paths.md §C-3.
-    if (this.deps.threadPanel) {
-      await runWithTimeout(() => this.deps.threadPanel!.beginTurn(turnContext), 5_000, {
-        what: 'threadPanel.beginTurn',
-        logger: this.logger,
-      });
-    }
+    // Surface setup runs inside the execution try below so a setup failure
+    // still reaches the turn's terminal cleanup.
 
     // Dashboard v2.1 — turn timer: mark active-leg start and broadcast so
     // the live 1s tick picks up the new leg without waiting for any other
@@ -991,14 +984,6 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // Track latest response message ts for shortcut link
     let latestResponseTs: string | undefined;
 
-    // Transition to working state
-    this.deps.claudeHandler.setActivityState(channel, threadTs, 'working');
-    await this.updateRuntimeStatus(session, sessionKey, {
-      agentPhase: '생각 중',
-      activeTool: undefined,
-      waitingForChoice: false,
-    });
-
     // Idle-timeout is enforced inside `StreamProcessor.process` via a
     // `Promise.race` around each `iterator.next()`; on expiry the
     // processor invokes `onIdleTimeout` (wired below to abort the LOCAL
@@ -1022,6 +1007,19 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     const idleTimeoutMs = readIdleTimeoutMs();
 
     try {
+      if (this.deps.threadPanel) {
+        await runWithTimeout(() => this.deps.threadPanel!.beginTurn(turnContext), 5_000, {
+          what: 'threadPanel.beginTurn',
+          logger: this.logger,
+        });
+      }
+      this.deps.claudeHandler.setActivityState(channel, threadTs, 'working');
+      await this.updateRuntimeStatus(session, sessionKey, {
+        agentPhase: '생각 중',
+        activeTool: undefined,
+        waitingForChoice: false,
+      });
+
       // #617 followup: Claude Agent SDK only recognizes local slash commands
       // (/compact, /clear, /model, etc.) when the prompt STARTS with the /cmd
       // token. preparePrompt wraps the text with <speaker>…</speaker> and a
