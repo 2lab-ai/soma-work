@@ -500,14 +500,13 @@ function textIndicatesPromptTooLong(text: unknown): boolean {
  * `system/local_command` stderr line + assistant text
  * (`Error: Error during compaction: …`) and seals the turn with
  * `stopReason=end_turn, isError=false` (field incident 2026-07-07, session
- * ccee16e0). Narrow shape: short error-like text that STARTS with the SDK's
- * stderr prefix — prose that merely quotes the phrase runs longer and starts
- * differently.
+ * ccee16e0). Match the leading SDK stderr prefix only; callers additionally
+ * require a compact turn. Long provider diagnostics must still be failures.
  */
 function textIndicatesCompactionFailure(text: unknown): boolean {
   if (typeof text !== 'string') return false;
   const t = text.trim().toLowerCase();
-  if (t.length === 0 || t.length > 1500) return false;
+  if (t.length === 0) return false;
   return t.startsWith('error: error during compaction') || t.startsWith('error during compaction');
 }
 
@@ -1857,7 +1856,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           }
         }
 
-        const failErr = new Error(`Compaction failed (surfaced as turn content): ${collected.slice(0, 300)}`);
+        const failErr = new Error(
+          `Compaction failed (surfaced as turn content): ${this.sanitizeSdkDetails(collected)}`,
+        );
         (failErr as any).compactTerminalFailure = true;
         (failErr as any).compactFailureIsEmptyBlock400 = emptyBlock400;
         throw failErr;
@@ -2791,12 +2792,13 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         sessionResetNote = ' 대화 기록이 복구 불가능하게 손상되어 세션을 초기화했습니다.';
       }
 
+      const reason = this.sanitizeSdkDetails(String(error.message ?? error));
       this.logger.error('Fallback compact failed terminally — session unwedged', {
         sessionKey,
         emptyBlock400,
         restoredModel,
         sessionCleared: emptyBlock400,
-        reason: String((error as any).message ?? '').slice(0, 300),
+        reason,
       });
 
       await this.updateRuntimeStatus(session, sessionKey, {
@@ -2807,7 +2809,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       await this.deps.reactionManager.updateReaction(sessionKey, this.deps.statusReporter.getStatusEmoji('error'));
 
       const restoreNote = hadFallback && restoredModel ? ` 모델을 \`${restoredModel}\`로 복원했습니다.` : '';
-      const condensed = `🔴 자동 컴팩트 실패 — 대화 요약 중 오류가 발생했습니다.${restoreNote}${sessionResetNote} 다음 메시지부터 정상 동작합니다.`;
+      const escapedReason = reason
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/\x60/g, 'ˋ');
+      const detail =
+        escapedReason.length > 2500 ? `${escapedReason.slice(0, 2500)}… (이하 생략 — 상세 로그 확인)` : escapedReason;
+      const condensed = `🔴 컴팩트 실패 — 대화 요약 중 오류가 발생했습니다.${restoreNote}${sessionResetNote}\n원인: ${detail}`;
       await runWithTimeout(() => say({ text: condensed, thread_ts: threadTs }), DEFAULT_CLEANUP_TIMEOUT_MS, {
         what: 'handleError say(compactTerminalFailure)',
         logger: this.logger,
@@ -3841,28 +3850,35 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
    * Factored out of `formatErrorForUser` (Issue #661) so both the normal
    * formatter branches and the new 1M-fallback branch share the exact same
    * redaction/truncation logic — avoids drift if the sanitizer changes.
-   * Trace: Issue #122 original sanitization rules are preserved byte-for-byte.
+   * The shared sanitizer also handles quoted JSON credentials in diagnostics.
    */
   private appendSdkDetails(lines: string[], error: any): void {
     if (!error?.stderrContent) return;
-    const raw = String(error.stderrContent);
+    const sanitized = this.sanitizeSdkDetails(String(error.stderrContent));
+    // Take last SDK_DETAILS_MAX_CHARS chars to keep message manageable
+    const max = StreamExecutor.SDK_DETAILS_MAX_CHARS;
+    const truncated = sanitized.length > max ? `…${sanitized.slice(-max)}` : sanitized;
+    lines.push(`> *SDK Details:*`);
+    lines.push(`> \`\`\`${truncated.trim()}\`\`\``);
+  }
+
+  private sanitizeSdkDetails(raw: string): string {
     // Strip ANSI escape codes and mask non-Anthropic credentials locally;
     // Anthropic tokens (sk-ant-{oat01,ort01,api03,admin01}-...) are handled
     // by the shared `redactAnthropicSecrets` helper from logger.ts so every
     // log path masks them the same way (W3-B consolidation).
     const nonAnthropicSanitized = raw
+      .replace(
+        /("(?:authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password|credential)"\s*:\s*)"(?:\\.|[^"\\])*"/gi,
+        '$1"[REDACTED]"',
+      )
       .replace(/[\x1B\x9B](?:\[[0-9;]*[a-zA-Z]|\].*?(?:\x07|\x1B\\)|\([A-Z])/g, '') // strip ANSI
       .replace(/(?:authorization|bearer)[=:\s]+\S+(?:\s+\S+)?/gi, '[REDACTED]') // auth headers ("Bearer <token>")
       .replace(/(?:oauth|token|key|secret|password|credential)[=:\s]+\S+/gi, '[REDACTED]')
       .replace(/\bxox[bpras]-[a-zA-Z0-9-]+/g, '[REDACTED]') // Slack tokens
       .replace(/\bgh[pus]_[a-zA-Z0-9]+/g, '[REDACTED]') // GitHub PATs
       .replace(/\bgithub_pat_[a-zA-Z0-9_]+/g, '[REDACTED]'); // GitHub fine-grained PATs
-    const sanitized = redactAnthropicSecrets(nonAnthropicSanitized) as string;
-    // Take last SDK_DETAILS_MAX_CHARS chars to keep message manageable
-    const max = StreamExecutor.SDK_DETAILS_MAX_CHARS;
-    const truncated = sanitized.length > max ? `…${sanitized.slice(-max)}` : sanitized;
-    lines.push(`> *SDK Details:*`);
-    lines.push(`> \`\`\`${truncated.trim()}\`\`\``);
+    return redactAnthropicSecrets(nonAnthropicSanitized) as string;
   }
 
   /**

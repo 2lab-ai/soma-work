@@ -130,14 +130,14 @@ function textIndicatesPromptTooLong(text: unknown): boolean {
  *     for a FAILED `/compact`, sealed as a successful turn.
  *   - `API Error: 400 … text content blocks must be non-empty` — Anthropic
  *     validation rejecting a transcript poisoned with empty text blocks.
- * Matchers are shape-anchored (prefix / both transport markers) and
- * length-bounded so prose that merely discusses these errors is not eaten.
+ * The compact stderr prefix is matched at any length; validation errors keep
+ * a length bound so prose that merely discusses them is not eaten.
  */
 function textIndicatesCompactionErrorLeak(text: unknown): boolean {
   if (typeof text !== 'string') return false;
   const t = text.trim().toLowerCase();
-  if (t.length === 0 || t.length > 1500) return false;
   if (t.startsWith('error: error during compaction') || t.startsWith('error during compaction')) return true;
+  if (t.length === 0 || t.length > 1500) return false;
   return t.includes('api error: 400') && t.includes('text content blocks must be non-empty');
 }
 

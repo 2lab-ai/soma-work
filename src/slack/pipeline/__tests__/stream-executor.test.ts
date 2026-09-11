@@ -6456,9 +6456,68 @@ describe('compaction failure delivered as content (transcript repair + unwedge)'
     expect(deps.turnNotifier.notify).not.toHaveBeenCalled();
     expect(say).toHaveBeenCalledTimes(1);
     const text = say.mock.calls[0][0].text as string;
-    expect(text).toContain('자동 컴팩트 실패');
+    expect(text).toContain('컴팩트 실패');
     expect(text).toContain('gpt-5.5');
-    expect(text).not.toContain('Error during compaction');
+    expect(text).toContain('Error during compaction');
+  });
+
+  it('preserves provider compact refusal details beyond 300 characters in Slack and logs', async () => {
+    const detail = `Error: Error during compaction: ${'provider context '.repeat(25)}Usage Policy: request blocked`;
+    const deps = createRepairDeps(detail);
+    const executor = new StreamExecutor(deps);
+    const log = vi.spyOn((executor as any).logger, 'error');
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    const session = fallbackCompactSession();
+
+    await executor.execute(executeParams(session, say, '/compact'));
+
+    expect(say).toHaveBeenCalledTimes(1);
+    expect(say.mock.calls[0][0].text).toContain('Usage Policy: request blocked');
+    expect(say.mock.calls[0][0].text).not.toContain('다음 메시지부터 정상 동작');
+    expect(log).toHaveBeenCalledWith(
+      'Fallback compact failed terminally — session unwedged',
+      expect.objectContaining({ reason: expect.stringContaining('Usage Policy: request blocked') }),
+    );
+    expect(session.model).toBe('gpt-5.5');
+    expect(deps.claudeHandler.clearSessionId).not.toHaveBeenCalled();
+  });
+
+  it('redacts credentials and neutralizes Slack markup in compact error details', async () => {
+    const detail =
+      'Error: Error during compaction: policy refusal xoxb-sensitive-token ghp_sensitive123 <@U_TEST> ``` token=private-value {"password":"json-private","api_key":"json-key"}';
+    const deps = createRepairDeps(detail);
+    const executor = new StreamExecutor(deps);
+    const log = vi.spyOn((executor as any).logger, 'error');
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+    await executor.execute(executeParams(fallbackCompactSession(), say, '/compact'));
+
+    const text = say.mock.calls[0][0].text as string;
+    expect(text).toContain('policy refusal');
+    expect(text).not.toContain('<@U_TEST>');
+    expect(text).not.toContain('```');
+    for (const secret of ['xoxb-sensitive-token', 'ghp_sensitive123', 'private-value', 'json-private', 'json-key']) {
+      expect(text).not.toContain(secret);
+      expect(JSON.stringify(log.mock.calls)).not.toContain(secret);
+    }
+  });
+
+  it('bounds Slack compact details with explicit truncation while retaining sanitized log detail', async () => {
+    const detail = `Error: Error during compaction: ${'<'.repeat(4000)}PROVIDER_END`;
+    const deps = createRepairDeps(detail);
+    const executor = new StreamExecutor(deps);
+    const log = vi.spyOn((executor as any).logger, 'error');
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+    await executor.execute(executeParams(fallbackCompactSession(), say, '/compact'));
+
+    const text = say.mock.calls[0][0].text as string;
+    expect(text.length).toBeLessThan(3000);
+    expect(text).toContain('상세 로그');
+    expect(log).toHaveBeenCalledWith(
+      'Fallback compact failed terminally — session unwedged',
+      expect.objectContaining({ reason: expect.stringContaining('PROVIDER_END') }),
+    );
   });
 
   it('fails terminally on a non-400 compaction error WITHOUT clearing the session', async () => {
@@ -6477,7 +6536,7 @@ describe('compaction failure delivered as content (transcript repair + unwedge)'
     // History is intact — a rate-limited compact must NOT cost the session.
     expect(deps.claudeHandler.clearSessionId).not.toHaveBeenCalled();
     expect(say).toHaveBeenCalledTimes(1);
-    expect(say.mock.calls[0][0].text).toContain('자동 컴팩트 실패');
+    expect(say.mock.calls[0][0].text).toContain('컴팩트 실패');
   });
 
   // Codex review (PR #1206): guard ORDER regression. A compaction failure
@@ -6500,7 +6559,7 @@ describe('compaction failure delivered as content (transcript repair + unwedge)'
     // Not an empty-block 400 → the session history survives.
     expect(deps.claudeHandler.clearSessionId).not.toHaveBeenCalled();
     expect(say).toHaveBeenCalledTimes(1);
-    expect(say.mock.calls[0][0].text).toContain('자동 컴팩트 실패');
+    expect(say.mock.calls[0][0].text).toContain('컴팩트 실패');
   });
 
   it('routes a usage-limit-phrased compaction failure to the terminal compact rail, not the rotation path', async () => {
@@ -6516,7 +6575,7 @@ describe('compaction failure delivered as content (transcript repair + unwedge)'
     expect(session.fallbackCompactActive).toBe(false);
     expect(deps.claudeHandler.clearSessionId).not.toHaveBeenCalled();
     expect(say).toHaveBeenCalledTimes(1);
-    expect(say.mock.calls[0][0].text).toContain('자동 컴팩트 실패');
+    expect(say.mock.calls[0][0].text).toContain('컴팩트 실패');
   });
 
   it('does NOT set the re-arm cooldown when a MANUAL /compact fails (no armed fallback)', async () => {
@@ -6539,7 +6598,7 @@ describe('compaction failure delivered as content (transcript repair + unwedge)'
     // A failed manual compact must not block a later EMERGENCY fallback.
     expect(session.fallbackCompactFailedAtMs).toBeUndefined();
     expect(say).toHaveBeenCalledTimes(1);
-    expect(say.mock.calls[0][0].text).toContain('자동 컴팩트 실패');
+    expect(say.mock.calls[0][0].text).toContain('컴팩트 실패');
   });
 
   it('repairs the transcript PROACTIVELY when arming the fallback compact (prompt-too-long path)', async () => {
