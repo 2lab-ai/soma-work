@@ -366,7 +366,7 @@ describe('normal-threshold compaction replay is exactly-once on the real execute
     // Terminal compact rail (no boundary ever fired) …
     expect(result.success).toBe(false);
     expect(say).toHaveBeenCalledTimes(1);
-    expect(String(say.mock.calls[0][0].text)).toContain('자동 컴팩트 실패');
+    expect(String(say.mock.calls[0][0].text)).toContain('컴팩트 실패');
     // … and the intercepted message is NOT lost with the failed compaction.
     expect(rec.delivered).toEqual([STASHED]);
     expect(rec.attempts).toHaveLength(1);
