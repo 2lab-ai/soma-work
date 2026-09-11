@@ -116,6 +116,11 @@ export async function buildStreamOptions(
   const { queryEnv, session, abortController, workingDirectory, slackContext } = input;
   const { logger } = deps;
 
+  // The Slack adapter consumes TodoWrite snapshots, not SDK 0.3 task deltas.
+  queryEnv.CLAUDE_CODE_ENABLE_TASKS = 'false';
+  // Preserve first-turn tool/approval availability across the SDK 0.3 migration.
+  queryEnv.MCP_CONNECTION_NONBLOCKING = '0';
+
   const options: Options = {
     // Load settings from filesystem for backward compatibility (Agent SDK v0.1.0 breaking change)
     settingSources: ['project'],

@@ -9,7 +9,7 @@
   <a href="https://github.com/2lab-ai/soma-work/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License" /></a>
   <img src="https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white" alt="TypeScript" />
   <img src="https://img.shields.io/badge/Node.js-22+-339933?logo=node.js&logoColor=white" alt="Node.js" />
-  <img src="https://img.shields.io/badge/Claude_Code_SDK-0.2-7C3AED?logo=anthropic&logoColor=white" alt="Claude Code SDK" />
+  <img src="https://img.shields.io/badge/Claude_Code_SDK-0.3-7C3AED?logo=anthropic&logoColor=white" alt="Claude Code SDK" />
 </p>
 
 <p align="center">
@@ -462,6 +462,8 @@ cp config.example.json config.json
 ```
 
 #### 5. Inject env vars into the Claude Agent SDK (optional)
+
+The SDK is pinned to `0.3.251` (native Claude Code `2.1.251`) for Fable 5.1 support. Streaming turns force `CLAUDE_CODE_ENABLE_TASKS=false` and `MCP_CONNECTION_NONBLOCKING=0` to preserve the Slack TodoWrite snapshot adapter and first-turn MCP initialization. These compatibility settings are owned by the stream-options builder; they are not operator overrides.
 
 Sometimes you need to set env vars on the SDK subprocess only (not on the
 host process), for example to disable a built-in MCP server bundled with the
