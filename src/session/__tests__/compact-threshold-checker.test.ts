@@ -270,6 +270,41 @@ describe('checkAndSchedulePendingCompact (#617 AC3)', () => {
   });
 });
 
+describe('checkAndSchedulePendingCompact — GPT 1M policy', () => {
+  it.each([
+    'gpt-6-astra[1m]',
+    'gpt-5.6-sol[1m]',
+    'gpt-99-future[1m]',
+  ])('%s waits until 600k, then schedules compaction', async (model) => {
+    const session = makeSession({ model, usage: makeUsage(240_000, 1_000_000) });
+    const slackApi = { postSystemMessage: vi.fn().mockResolvedValue(undefined) };
+    const userSettings = { getUserCompactThreshold: vi.fn().mockReturnValue(80) };
+    const run = () =>
+      checkAndSchedulePendingCompact({
+        session,
+        userId: 'U1',
+        channel: 'C1',
+        threadTs: 'T1',
+        userSettings: userSettings as unknown as UserSettingsStore,
+        slackApi: slackApi as unknown as SlackApiHelper,
+      });
+
+    expect(await run()).toBe(false);
+    session.usage = makeUsage(599_999, 1_000_000);
+    expect(await run()).toBe(false);
+    expect(slackApi.postSystemMessage).not.toHaveBeenCalled();
+    session.usage = makeUsage(600_000, 1_000_000);
+    expect(await run()).toBe(true);
+    expect(session.autoCompactPending).toBe(true);
+    expect(slackApi.postSystemMessage).toHaveBeenCalledWith(
+      'C1',
+      expect.stringContaining('600k tokens ≥ 600k (model)'),
+      { threadTs: 'T1' },
+    );
+    expect(userSettings.getUserCompactThreshold).not.toHaveBeenCalled();
+  });
+});
+
 /**
  * gpt-5.5 — fixed token-count auto-compact trigger (250k of the 275k
  * window). Replaces the per-user percent threshold for that model.

@@ -103,6 +103,42 @@ describe('resolveModelProfile — canonical policy table', () => {
   });
 });
 
+describe('resolveModelProfile — shared GPT 1M policy', () => {
+  it.each([
+    'gpt-6-astra[1m]',
+    'gpt-5.6-sol[1m]',
+    'gpt-5.6-terra[1m]',
+    'gpt-5.6-luna[1m]',
+    'gpt-5.5[1m]',
+    'gpt-99-future[1m]',
+    '  GPT-99-FUTURE[1M] ',
+  ])('%s uses the shared GPT 1M policy', (id) => {
+    expect(resolveModelProfile(id)).toMatchObject({
+      contextWindow: 1_000_000,
+      sdkBlockingLimit: 977_000,
+      autoCompactTokens: 600_000,
+    });
+  });
+
+  it.each([
+    'claude-opus-4-7[1m]',
+    'vendor-gpt-99[1m]',
+    'gptish-99[1m]',
+  ])('%s does not acquire the GPT default', (id) => {
+    expect(resolveModelProfile(id).autoCompactTokens).toBeUndefined();
+  });
+
+  it('does not promote bare GPT models to 1M', () => {
+    expect(resolveModelProfile('gpt-6-astra')).toMatchObject({
+      contextWindow: 272_000,
+      sdkBlockingLimit: 249_000,
+      autoCompactTokens: 240_000,
+    });
+    expect(resolveModelProfile('gpt-99-future')).toMatchObject({ contextWindow: 200_000 });
+    expect(resolveModelProfile('gpt-99-future').autoCompactTokens).toBeUndefined();
+  });
+});
+
 describe('resolveModelProfile — compact headroom safety invariant', () => {
   it('every canonical default satisfies tokens ≤ blockingLimit − compactHeadroom', () => {
     for (const id of CANONICAL_MODEL_IDS) {
