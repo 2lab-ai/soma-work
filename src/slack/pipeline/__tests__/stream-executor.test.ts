@@ -6510,6 +6510,35 @@ describe('compaction failure delivered as content (transcript repair + unwedge)'
     }
   });
 
+  it.each([
+    'private_key',
+    'privateKey',
+    'aws_secret_access_key',
+    'client_secret',
+    'session_token',
+  ])('redacts compound credential field %s in provider diagnostics', async (field) => {
+    const detail = `Error: Error during compaction: policy refusal ${JSON.stringify({ [field]: 'compound-sensitive-value' })}`;
+    const executor = new StreamExecutor(createRepairDeps(detail));
+    const log = vi.spyOn((executor as any).logger, 'error');
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    await executor.execute(executeParams(fallbackCompactSession(), say, '/compact'));
+    expect(say.mock.calls[0][0].text).toContain('policy refusal');
+    expect(say.mock.calls[0][0].text).not.toContain('compound-sensitive-value');
+    expect(JSON.stringify(log.mock.calls)).not.toContain('compound-sensitive-value');
+  });
+
+  it('redacts unlabelled multiline PEM private keys from provider diagnostics', async () => {
+    const detail =
+      'Error: Error during compaction: policy refusal\n-----BEGIN RSA PRIVATE KEY-----\nprivate-key-material\n-----END RSA PRIVATE KEY-----';
+    const executor = new StreamExecutor(createRepairDeps(detail));
+    const log = vi.spyOn((executor as any).logger, 'error');
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    await executor.execute(executeParams(fallbackCompactSession(), say, '/compact'));
+    expect(say.mock.calls[0][0].text).toContain('policy refusal');
+    expect(say.mock.calls[0][0].text).not.toContain('private-key-material');
+    expect(JSON.stringify(log.mock.calls)).not.toContain('private-key-material');
+  });
+
   it('does not suppress a long compact-error explanation on an ordinary work turn', async () => {
     const detail = `Error during compaction: ${'explanation '.repeat(160)}`;
     const deps = createRepairDeps(detail);
