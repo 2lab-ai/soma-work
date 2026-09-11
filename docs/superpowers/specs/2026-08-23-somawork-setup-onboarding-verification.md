@@ -3,6 +3,13 @@
 **Date:** 2026-08-23
 **Design:** [somawork setup onboarding](2026-08-23-somawork-setup-onboarding-design.md)
 
+> **Status (2026-09-11):** this spec still defines the target acceptance bar; the matrix below is
+> unchanged. §9.4 (live clean-machine receipt) has not been met — a historical install and
+> incomplete OAuth attempts exist, with primary logs from that attempt not currently recovered,
+> and no OAuth/Slack/service success. See
+> [`docs/misc/handoffs/2026-09-11-setup-onboarding-status.md`](../../misc/handoffs/2026-09-11-setup-onboarding-status.md)
+> for what is and is not proven, and the resume sequence.
+
 ## 1. Testing and receipts
 
 ### 9.1 Unit/contract tests

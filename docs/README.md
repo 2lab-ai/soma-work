@@ -65,3 +65,4 @@
 
 ### Active onboarding design
 - [somawork setup onboarding](superpowers/specs/2026-08-23-somawork-setup-onboarding-design.md) — brew/xbrew install → terminal setup wizard → Slack + local llmux Claude/Codex → service receipt.
+- [2026-09-11 status](misc/handoffs/2026-09-11-setup-onboarding-status.md) — packaging code merged; clean-machine live acceptance still incomplete, read before claiming this feature is done.
