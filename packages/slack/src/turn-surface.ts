@@ -356,6 +356,18 @@ export class TurnSurface {
       }
       if (result?.ts) {
         state.streamTs = result.ts;
+        // Opening a Slack stream can reset the agent lifecycle to active.
+        // Restore only this live turn; the epoch rejects a late closed owner.
+        if (mgr && ctx.threadTs && !state.closing && this.activeTurn.get(ctx.sessionKey) === ctx.turnId) {
+          void mgr
+            .setStatus(ctx.channelId, ctx.threadTs, 'is thinking...', { expectedEpoch: ctx.statusEpoch })
+            .catch((err) => {
+              this.logger.warn('Native lifecycle refresh after stream startup failed', {
+                turnId: ctx.turnId,
+                error: (err as Error).message,
+              });
+            });
+        }
         this.logger.debug('B1 stream opened', {
           turnId: ctx.turnId,
           streamTs: result.ts,
