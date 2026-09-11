@@ -15,8 +15,8 @@
  * Resolution order (first match wins):
  *   1. exact canonical id in {@link POLICY_PROFILES} — declared policy, not a
  *      formula, so the requested thresholds are literals;
- *   2. the `[1m]` opt-in suffix — 1M window; the BASE id decides which family
- *      auto-compact trigger applies;
+ *   2. the `[1m]` opt-in suffix — 1M window; `gpt-` bases use the shared 600k
+ *      auto-compact default, while other bases inherit their family trigger;
  *   3. native-1M ids (fable-5) → 1M;
  *   4. the gpt-6 / gpt-5.6 / gpt-5.5 families (llmux codex backend),
  *      newest generation first;
@@ -107,6 +107,9 @@ export const DEFAULT_COMPACT_HEADROOM = 9_000;
  * formula on a true 1,000,000-token window.
  */
 export const ONE_M_SDK_BLOCKING_LIMIT = sdkBlockingLimitFor(1_000_000);
+
+/** Shared auto-compact default for every GPT `[1m]` variant, including future models. */
+const GPT_ONE_M_AUTO_COMPACT_TOKENS = 600_000;
 
 /* ------------------------------------------------------------------ *
  * `[1m]` suffix — the 1M-context opt-in
@@ -331,7 +334,7 @@ const POLICY_PROFILES: readonly ModelProfile[] = [
     modelId: 'gpt-5.6-sol[1m]',
     contextWindow: 1_000_000,
     sdkBlockingLimit: ONE_M_SDK_BLOCKING_LIMIT,
-    autoCompactTokens: 600_000,
+    autoCompactTokens: GPT_ONE_M_AUTO_COMPACT_TOKENS,
     compactHeadroom: DEFAULT_COMPACT_HEADROOM,
   },
   {
@@ -342,14 +345,8 @@ const POLICY_PROFILES: readonly ModelProfile[] = [
     compactHeadroom: DEFAULT_COMPACT_HEADROOM,
   },
   {
-    // gpt-6-astra (2026-09-03 release, wired 2026-09-07). Declared here — not
-    // left to the family branch alone — so the canonical headroom invariant
-    // test covers it: its 240,000 trigger sits exactly DEFAULT_COMPACT_HEADROOM
-    // below the 249,000 limit. The `[1m]` variant is intentionally NOT a
-    // canonical row: the [1m] suffix rule in `resolveModelProfile` derives a
-    // 1M window / 977k blocking limit and inherits this family's 240k
-    // auto-compact trigger — same shape as claude `[1m]` variants — so a
-    // redundant literal row would only invite drift between the two branches.
+    // Bare Astra keeps its 272k window and 240k auto-compact trigger.
+    // The `[1m]` variant uses the shared GPT 1M policy in the suffix branch.
     modelId: 'gpt-6-astra',
     contextWindow: GPT_6_CONTEXT_WINDOW,
     sdkBlockingLimit: GPT_6_SDK_BLOCKING_LIMIT,
@@ -490,7 +487,8 @@ export function resolveModelProfile(modelId?: string): ModelProfile {
   // `[1m]` opt-in: the window is 1M, so the blocking limit is the 1M one —
   // inheriting the BARE family's smaller limit is the bug this module kills.
   if (hasOneMSuffix(id)) {
-    return derived(1_000_000, familyAutoCompactTokens(stripOneMSuffix(id)));
+    const base = stripOneMSuffix(id);
+    return derived(1_000_000, base.startsWith('gpt-') ? GPT_ONE_M_AUTO_COMPACT_TOKENS : familyAutoCompactTokens(base));
   }
 
   if (isNativeOneMModel(id)) return derived(1_000_000);
