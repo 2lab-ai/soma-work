@@ -210,6 +210,8 @@ Grammar: `/z <topic> [verb] [args...]`. See `docs/current/spec/01-slack-integrat
 
 ### Auto-compact thresholds (`autocompact` / `compact-threshold`)
 
+If the provider rejects a compact request, the failure notice includes the provider's error details with credentials redacted. Slack details are length-limited with an explicit truncation note; server logs retain the full redacted reason. A failure notice does not mean compaction succeeded.
+
 `autocompact` is a message command (the message may also start with `/`, as in
 `/autocompact`; it is not a separately registered Slack slash command). It sets
 how many used tokens a session may reach before soma-work schedules `/compact`.
@@ -239,9 +241,15 @@ source of truth for any model not listed here:
 | `claude-opus-5` (bare, no `[1m]`) | 200,000 | none — falls back to the legacy per-user percentage below |
 | `gpt-5.6-sol[1m]` (alias `sol[1m]`) | 1,000,000 | 600,000 |
 | `gpt-5.6-sol` (bare) | 372,000 | 340,000 |
-| `gpt-6-astra[1m]` (aliases `astra`, `astra[1m]`, `gpt-6`, `gpt6`) | 1,000,000 | 240,000 |
+| `gpt-6-astra[1m]` (aliases `astra`, `astra[1m]`, `gpt-6`, `gpt6`) | 1,000,000 | 600,000 |
 | `gpt-6-astra` (bare literal only) | 272,000 | 240,000 |
 | `grok-4.6` | 500,000 | 450,000 |
+
+Every `gpt-…[1m]` profile, including future supported models, automatically uses
+Sol's 1M window, 977,000 SDK blocking limit and 600,000 auto-compact default.
+No per-model threshold registration is needed. This policy does not create
+unsupported model variants or change explicitly selected bare model IDs.
+Session overrides still take precedence.
 
 `grok-4.6[1m]` is not a real model — grok has no 1M variant, and llmux forwards
 grok ids verbatim upstream — so it is rejected everywhere a model id is
