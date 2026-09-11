@@ -210,6 +210,8 @@ Grammar: `/z <topic> [verb] [args...]`. See `docs/current/spec/01-slack-integrat
 
 ### Auto-compact thresholds (`autocompact` / `compact-threshold`)
 
+If the provider rejects a compact request, the failure notice includes the provider's error details with credentials redacted. Slack details are length-limited with an explicit truncation note; server logs retain the full redacted reason. A failure notice does not mean compaction succeeded.
+
 `autocompact` is a message command (the message may also start with `/`, as in
 `/autocompact`; it is not a separately registered Slack slash command). It sets
 how many used tokens a session may reach before soma-work schedules `/compact`.
