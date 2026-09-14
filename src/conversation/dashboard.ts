@@ -4694,7 +4694,7 @@ function connectWs() {
 // ── Token stats from session cache ──
 function updateTokenStats() {
   // #814 — group token usage by environment.instanceName so the topbar
-  // tooltip can break down "oudwood-dev: 12K | mac-mini-dev: 8K | Total: 20K".
+  // tooltip can break down "instance-a: 12K | instance-b: 8K | Total: 20K".
   // Fallback bucket ('') is used for cards whose environment is missing
   // (legacy WS payloads, tests). When all cards share one env we suppress
   // the tooltip entirely — see _envCount() check below.

@@ -17,12 +17,13 @@
  */
 
 import type { Logger } from '../logger';
-import { resolveAutoCompactTokens, resolveContextWindow } from '../metrics/model-registry';
+import { resolveContextWindow } from '../metrics/model-registry';
 import { ContextWindowManager } from '../slack/context-window-manager';
 import { updateDeferredCompactCompletionIfPending } from '../slack/hooks/compact-hooks';
 import type { SlackApiHelper } from '../slack/slack-api-helper';
 import type { ConversationSession } from '../types';
 import type { UserSettingsStore } from '../user-settings-store';
+import { resolveEffectiveAutoCompact } from './autocompact-policy';
 
 /**
  * Integer context-usage percent for a session. Uses the shared
@@ -94,22 +95,19 @@ export async function checkAndSchedulePendingCompact(args: CheckAndSchedulePendi
     return false;
   }
 
-  // Token-count trigger override (e.g. gpt-5.5: fixed 250k of a 275k window).
-  // When the model defines an absolute compaction point, it replaces the
-  // per-user percent threshold — the model spec knows its own limits better
-  // than a generic percentage does.
-  // (`session.usage` is non-null here — `pct !== undefined` proved it above.)
-  const compactAtTokens = resolveAutoCompactTokens(session.model);
-  let announcement: string;
-  if (compactAtTokens !== undefined && session.usage) {
-    const usedTokens = ContextWindowManager.computeUsedTokens(session.usage);
-    if (usedTokens < compactAtTokens) return false;
-    announcement = `🗜️ Context usage ${Math.round(usedTokens / 1000)}k tokens ≥ ${Math.round(compactAtTokens / 1000)}k (model auto-compact point) — next turn will auto /compact`;
-  } else {
-    const threshold = userSettings.getUserCompactThreshold(userId);
-    if (pct < threshold) return false;
-    announcement = `🗜️ Context usage ${pct}% ≥ threshold ${threshold}% — next turn will auto /compact`;
-  }
+  // One token policy path: explicit session override, then model default, then
+  // the capped legacy percentage compatibility read.
+  const effective = resolveEffectiveAutoCompact(session, userId, userSettings);
+  const usedTokens = ContextWindowManager.computeUsedTokens(session.usage!);
+  logger?.info('auto-compact threshold decision', {
+    thresholdSource: effective.source,
+    usedTokens,
+    thresholdTokens: effective.tokens,
+    model: session.model,
+    contextWindow: effective.contextWindow,
+  });
+  if (usedTokens < effective.tokens) return false;
+  const announcement = `🗜️ Context usage ${Math.round(usedTokens / 1000)}k tokens ≥ ${Math.round(effective.tokens / 1000)}k (${effective.source}) — next turn will auto /compact`;
 
   session.autoCompactPending = true;
 

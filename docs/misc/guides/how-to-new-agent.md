@@ -1,329 +1,136 @@
-# How to Add a New Sub-Agent
+# Sub-Agents — status and architecture note
 
-> Guide for adding independent Slack Bot sub-agents to soma-work.
-
----
-
-## Overview
-
-soma-work supports a **multi-agent architecture** where each sub-agent is an independent Slack App running within the same process. Each agent has its own:
-
-- Slack Bot Token / App Token (separate Slack App)
-- System prompt and persona
-- Isolated `SessionRegistry` (no session cross-contamination)
-
-The main bot (@soma) can delegate work to sub-agents via `agent_chat` / `agent_reply` MCP tools, and users can also @mention sub-agents directly.
-
-> **Status**: Agents connect via Socket Mode and receive events. Full ClaudeHandler wiring for @mention/DM responses and `agent_chat` query integration is in progress (Phase 2). The infrastructure (AgentManager, AgentInstance, Agent MCP Server) is complete and tested.
-
-```
-User → @soma-jangbi "review this PR"
-       → jangbi's own Slack App → jangbi's ClaudeHandler → Response
-
-User → @soma "ask jangbi to review"
-       → agent_chat("jangbi", prompt) → jangbi query → result back to soma
-```
+> **This is a status and architecture note, not setup instructions.**
+> There is **no supported end-to-end path for provisioning an additional sub-agent
+> today.** This page explains what exists in the code, what was removed and why, and
+> what a supported path would have to provide before it can be written.
 
 ---
 
-## Prerequisites
+## 1. Where things stand
 
-- soma-work codebase cloned and running
-- Slack workspace admin access (to create new Slack Apps)
-- Configuration Token for automated provisioning (optional but recommended)
+| Question | Answer |
+|---|---|
+| Can I onboard the **main** profile? | Yes — `somawork setup`. See the packaged-onboarding section of [README.md](../../../README.md), including its status box (the formula is not published yet). |
+| Does `somawork setup` create additional sub-agent Slack apps? | **No.** It creates and installs exactly **one** Slack app: the profile's primary app. There is no `somawork agent add` and no additional-app provisioning command. |
+| Is there a script that provisions a sub-agent? | **No.** See §2. |
+| Can I run sub-agents at all? | Only on an **existing source-development deployment**, by hand, accepting that the credential handling is unsolved (§4). |
 
----
+## 2. The removed provisioning paths — do not run these
 
-## Method 1: Automated Provisioning (Recommended)
+Two scripts used to appear here as "Method 1" and "Method 2". Neither is a supported
+provisioning path, and **neither should be run to mint, copy, or store credentials**.
 
-The `provision-agent.ts` script automates Slack App creation, OAuth install, and config update.
+- **`scripts/provision-agent.ts`** is a hard deprecation wrapper. It provisions nothing and
+  exits nonzero. Its implementation was deleted rather than ported because every step of it
+  was a credential path the current design forbids: a long-lived Slack **configuration
+  token** kept in a local `config.json`, a local HTTP server used as an **OAuth callback** to
+  read a bot token out of a redirect, a terminal **prompt asking the operator to paste an
+  app-level token**, and token writes into that same config file. The reasoning is recorded
+  in the file's own header.
+- **`scripts/create-agent.sh`** still exists and still runs, but it is the same shape of
+  path: it prints a Slack app URL, then reads a bot token, an app-level token and a signing
+  secret from the terminal and writes them into `config.json`. It is **not** a supported
+  provisioning path and is not part of the packaged runtime — the runtime bundle ships
+  neither script.
 
-### Step 1: Run the provisioner
+The design that replaced them states the rule these violate: no credential may enter argv, a
+URL, stdout/stderr, a state file, or mutable package state. On the supported path, Slack app
+creation and installation are owned by the Slack CLI, and the runtime tokens travel
+child env → local Unix socket → a `0600 secrets.env` without ever being a value a wizard
+holds or prints.
 
-```bash
-npx tsx scripts/provision-agent.ts <agent-name> [description]
-```
+Historical detail lives in the design document, not here:
+[`docs/superpowers/specs/2026-08-23-somawork-setup-onboarding-design.md`](../../superpowers/specs/2026-08-23-somawork-setup-onboarding-design.md).
 
-Example:
-```bash
-npx tsx scripts/provision-agent.ts jangbi "코드 리뷰 전문 에이전트"
-```
+## 3. What the runtime actually does with sub-agents
 
-### What it does automatically:
+This part is current code, and it is why the config schema below exists.
 
-1. Validates your Configuration Token (stored in `config.json` under `configurationToken`)
-2. Creates a Slack App via `apps.manifest.create` API
-3. Opens OAuth flow in browser → captures Bot Token (`xoxb-`)
-4. Prompts you to create App-Level Token (`xapp-`) manually (Slack API limitation)
-5. Updates `config.json` with the agent entry
-6. Creates `src/prompt/<agent-name>/default.prompt`
-
-### One-time setup for Configuration Token
-
-1. Go to [api.slack.com/apps](https://api.slack.com/apps)
-2. Scroll to **"Your App Configuration Tokens"**
-3. Click **"Generate Token"** → select your workspace
-4. Add to `config.json`:
-
-```json
-{
-  "configurationToken": {
-    "accessToken": "xoxe.xoxp-...",
-    "refreshToken": "xoxe-..."
-  }
-}
-```
-
----
-
-## Method 2: Semi-Automated (Shell Script)
-
-```bash
-./scripts/create-agent.sh <agent-name> [description]
-```
-
-Example:
-```bash
-./scripts/create-agent.sh gwanu "배포 및 인프라 전문 에이전트"
-```
-
-This generates a Slack App manifest, opens the creation URL, and prompts you to paste tokens.
-
----
-
-## Method 3: Manual Setup
-
-### Step 1: Create Slack App
-
-1. Go to [api.slack.com/apps](https://api.slack.com/apps) → **Create New App** → **From an app manifest**
-2. Use this manifest (replace `<agent-name>` and `<description>`):
-
-```json
-{
-  "display_information": {
-    "name": "soma-<agent-name>",
-    "description": "<description>",
-    "background_color": "#4A154B"
-  },
-  "features": {
-    "app_home": {
-      "home_tab_enabled": false,
-      "messages_tab_enabled": true,
-      "messages_tab_read_only_enabled": false
-    },
-    "bot_user": {
-      "display_name": "soma-<agent-name>",
-      "always_online": true
-    }
-  },
-  "oauth_config": {
-    "scopes": {
-      "bot": [
-        "app_mentions:read",
-        "channels:history",
-        "groups:history",
-        "channels:read",
-        "chat:write",
-        "chat:write.public",
-        "files:read",
-        "files:write",
-        "groups:read",
-        "im:history",
-        "im:read",
-        "im:write",
-        "users:read",
-        "reactions:read",
-        "reactions:write"
-      ]
-    }
-  },
-  "settings": {
-    "event_subscriptions": {
-      "bot_events": ["app_mention", "message.im"]
-    },
-    "interactivity": { "is_enabled": true },
-    "org_deploy_enabled": false,
-    "socket_mode_enabled": true,
-    "token_rotation_enabled": false
-  }
-}
-```
-
-3. After creation, collect three credentials:
-   - **Bot Token** (`xoxb-...`): OAuth & Permissions → Bot User OAuth Token
-   - **App Token** (`xapp-...`): Basic Information → App-Level Tokens → Generate with `connections:write` scope
-   - **Signing Secret**: Basic Information → App Credentials
-
-### Step 2: Add to `config.json`
-
-> **Note**: On non-`main` branches, the app reads `config.dev.json` instead of `config.json` (unless `SOMA_CONFIG_DIR` is set). Make sure you edit the correct file for your environment.
-
-Add an entry under the `agents` key:
-
-```json
-{
-  "agents": {
-    "<agent-name>": {
-      "slackBotToken": "xoxb-...",
-      "slackAppToken": "xapp-...",
-      "signingSecret": "...",
-      "promptDir": "src/prompt/<agent-name>",
-      "persona": "default",
-      "description": "<description>",
-      "model": "claude-sonnet-4-20250514"
-    }
-  }
-}
-```
-
-**Required fields:**
-
-| Field | Format | Description |
-|-------|--------|-------------|
-| `slackBotToken` | `xoxb-...` | Bot User OAuth Token |
-| `slackAppToken` | `xapp-...` | App-Level Token (Socket Mode) |
-| `signingSecret` | 20+ chars | Slack signing secret |
-
-**Optional fields:**
-
-| Field | Default | Description |
-|-------|---------|-------------|
-| `promptDir` | `src/prompt/<agent-name>` | Path to prompt directory |
-| `persona` | `default` | Persona file name *(planned — not yet applied at runtime)* |
-| `description` | — | Human-readable description |
-| `model` | inherited from main | Claude model override |
-
-### Step 3: Create Prompt Directory
-
-```bash
-mkdir -p src/prompt/<agent-name>
-```
-
-Create `src/prompt/<agent-name>/default.prompt`:
-
-```markdown
-# <Agent Name> — Sub-Agent System Prompt
-
-<description of the agent's role, personality, expertise>
-
-## Expertise
-- Area 1
-- Area 2
-
-## Principles
-1. ...
-2. ...
-
-## Communication Style
-- ...
-
-{{include:../common.prompt}}
-```
-
-**Key points:**
-- `{{include:../common.prompt}}` inherits shared prompt content from the main bot
-- If `default.prompt` is missing, the agent falls back to the main bot's `src/prompt/default.prompt`
-- Agent-specific includes are resolved from the agent's directory first, then the main `src/prompt/` directory
-
-### Step 4: Restart soma-work
-
-```bash
-# Development
-npm run dev
-
-# Production
-npm run build && npm run prod
-
-# macOS LaunchAgent
-./scripts/service.sh restart
-```
-
-### Step 5: Test
-
-- Direct mention: `@soma-<agent-name> 안녕!`
-- DM: Open a DM with the agent bot
-- Via main bot: `@soma "ask <agent-name> to review this"`
-
----
-
-## How It Works Internally
-
-### Startup Flow
+Each configured sub-agent is an independent Slack app **running inside the same process** as
+the main bot, with its own Bolt `App`, its own Socket Mode connection, its own
+`SessionRegistry`, and its own prompt directory.
 
 ```
 index.ts
-  → loadUnifiedConfig() reads config.json
-  → parseAgentsConfig() validates agent entries
-  → new AgentManager(agentConfigs, mcpManager)
-  → agentManager.startAll()
-      → for each agent: new AgentInstance(name, config, mcpManager)
-      → instance.start() creates Slack Bolt App + Socket Mode connection
-      → failure isolated: one agent failing doesn't block others
+  → config load
+  → agent entries parsed and validated (src/config-loader.ts)
+  → AgentManager(agentConfigs, mcpManager).startAll()
+      → per agent: AgentInstance → Bolt App + Socket Mode connection
+      → failure is isolated: an invalid or failing agent is skipped, siblings keep running
 ```
 
-### Config Validation (`unified-config-loader.ts`)
+**Validation is skip-on-warn, not fatal** (`src/config-loader.ts`). An entry is skipped, with
+a warning naming the field, when `slackBotToken` or `slackAppToken` is missing, mistyped, or
+carries the wrong prefix; or when a `signingSecret` is *declared* but shorter than the
+minimum. Omitting `signingSecret` entirely is valid — every agent runs Socket Mode, so no
+request signature is ever exchanged.
 
-Invalid agents are **skipped with a warning**, not fatal:
-- Missing/invalid `slackBotToken` (must start with `xoxb-`)
-- Missing/invalid `slackAppToken` (must start with `xapp-`)
-- Missing/invalid `signingSecret` (min 20 chars)
+**Prompt resolution** (`src/prompt-builder.ts`) tries the agent's own directory first and
+falls back to the main bot's, for both the entry prompt and every `{{include:…}}`.
 
-### AgentManager Lifecycle
+**Delegation** is via the `agent` MCP server ([`packages/mcp-servers/agent/`](../../../packages/mcp-servers/agent/)),
+which exposes `chat` and `chat-reply` (surfaced to the model as `mcp__agent__chat` /
+`mcp__agent__chat-reply`). It receives agent metadata through the `SOMA_AGENT_CONFIGS`
+environment variable, with credentials stripped out first (`src/mcp-config-builder.ts`).
 
-- `startAll()`: Starts all configured agents. Failed agents are removed from the registry (error isolation).
-- `stopAll()`: Gracefully stops all running agents. Failures don't block others.
-- `getAgent(name)`: Lookup for MCP server routing.
+> **Integration is partial.** Sub-agent apps connect and receive events, but @mention/DM
+> handling and the Claude SDK query behind `agent_chat` are still placeholders — see the
+> TODOs in `src/agent-instance.ts` and `packages/mcp-servers/agent/agent-mcp-server.ts`.
+> README.md's Multi-Agent Architecture section states the same limitation.
 
-### Prompt Resolution (`prompt-builder.ts`)
+### Config schema (conceptual)
 
-```
-PromptBuilder({ agentName: 'jangbi' })
-  1. Try: src/prompt/jangbi/default.prompt  ← agent-specific
-  2. Fallback: src/prompt/default.prompt     ← main bot prompt
+Agent entries live under the `agents` key of the runtime config (`config.json`, or
+`config.dev.json` on non-`main` branches unless `SOMA_CONFIG_DIR` is set). The fields the
+loader reads, from `AgentConfig` in `src/types.ts` — that type is the source of truth, this
+table is a description of it:
 
-Include resolution:
-  {{include:file.prompt}}
-  1. Try: src/prompt/jangbi/file.prompt      ← agent dir first
-  2. Fallback: src/prompt/file.prompt         ← main dir
-```
+| Field | Required | Notes |
+|---|---|---|
+| `slackBotToken` | yes | Bot user token. **A credential.** |
+| `slackAppToken` | yes | App-level token for Socket Mode. **A credential.** |
+| `signingSecret` | no | HTTP signature verification only; omit it under Socket Mode. **A credential when present.** |
+| `promptDir` | no | Defaults to `src/prompt/<agentName>` |
+| `persona` | no | Persona file name |
+| `description` | no | Human-readable description |
+| `model` | no | Inherits the main bot's model when absent — do not copy a model id out of a document; check the model catalog |
 
-### MCP Integration (`mcp-config-builder.ts`)
+No example values are given for the three credential fields on purpose. **Do not paste
+credential literals into a config file from a document**, and do not treat this table as a
+recipe: filling it in by hand is the unsupported path described in §4.
 
-When agents are configured, the `agent` MCP server is automatically registered. This provides two tools to the main bot:
+Two agent prompt directories exist in the tree today (`src/prompt/jangbi`,
+`src/prompt/gwanu`); the directory listing is the source of truth, not this sentence.
 
-- `mcp__agent__chat` — Start a new conversation with a named sub-agent
-- `mcp__agent__chat-reply` — Continue an existing agent conversation
+## 4. Why additional-agent provisioning is unsupported, and what would unblock it
 
-Agent configs (minus sensitive tokens) are passed to the MCP server via `SOMA_AGENT_CONFIGS` env var.
+Adding a sub-agent needs two long-lived Slack credentials per agent. Everything the current
+design solved for the primary app — minting them without a human seeing them, and storing
+them in a mode-`0600` file outside any package or repository tree — has **no equivalent for
+the second, third, or Nth app**. The only ways to do it today all end with an operator
+holding raw tokens and pasting them into a plaintext config file.
 
----
+So the honest state is: **unsupported, pending a secrets-store-backed design.** What such a
+design has to provide, at minimum:
 
-## Naming Conventions
+1. per-agent app creation through the Slack CLI, the way the primary app is created;
+2. capture of each agent's runtime tokens over the same non-printing channel used for the
+   primary app;
+3. per-agent secret storage in the profile's secret store rather than a config file, with the
+   config carrying only non-secret references;
+4. a controller command that is resumable and revalidating, like `somawork setup`.
 
-| Item | Convention | Example |
-|------|-----------|---------|
-| Agent name | lowercase, alphanumeric, hyphens | `jangbi`, `gwanu`, `code-review` |
-| Slack App display name | `soma-<agent-name>` | `soma-jangbi` |
-| Config key | matches agent name | `agents.jangbi` |
-| Prompt directory | `src/prompt/<agent-name>/` | `src/prompt/jangbi/` |
+Until that exists, an operator running sub-agents on a source-development checkout is
+accepting plaintext credentials in a local config file, and should treat that file
+accordingly: it is not committed (it is git-ignored), it is not synced, and it is not shared.
 
----
+## 5. Troubleshooting an already-configured agent
 
-## Existing Agents
-
-| Agent | Description | Specialty |
-|-------|-------------|-----------|
-| `jangbi` (장비) | Code review specialist | Bug detection, security, performance, refactoring |
-| `gwanu` (관우) | DevOps & infrastructure | CI/CD, deployment, monitoring, incident response |
-
----
-
-## Troubleshooting
-
-| Problem | Solution |
-|---------|----------|
-| Agent not responding | Check `slackBotToken`/`slackAppToken` validity. Verify Socket Mode is enabled on the Slack App. |
-| "Skipping agent" in logs | Config validation failed. Check token formats and signing secret length. |
-| Agent using main bot's prompt | Agent-specific `default.prompt` not found. Verify `promptDir` path. |
-| Duplicate Socket Mode connections | Multiple soma-work instances running. Check PID lock. |
-| `agent_chat` returns "Unknown agent" | Agent name doesn't match `config.json` key. Names are case-sensitive. |
+| Problem | Where to look |
+|---|---|
+| Agent not responding | Token validity; Socket Mode enabled on that Slack app |
+| "Skipping agent" in logs | The warning names the failing field — see the validation rules in §3 |
+| Agent uses the main bot's prompt | Its own `default.prompt` was not found under `promptDir` |
+| Duplicate Socket Mode connections | More than one instance running with the same tokens; check the PID lock |
+| `agent_chat` → "Unknown agent" | The name must match the config key exactly (case-sensitive) |

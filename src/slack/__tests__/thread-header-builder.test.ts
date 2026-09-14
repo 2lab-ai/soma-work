@@ -225,7 +225,7 @@ describe('ThreadHeaderBuilder.formatContextBar', () => {
     const bar = ThreadHeaderBuilder.formatContextBar(usage);
     expect(bar).toBeDefined();
     // 15% used → 1 filled of 5
-    expect(bar).toBe('▓░░░░ 150k/1M (85%)');
+    expect(bar).toBe('▓░░░░ 150k/1M (15% used)');
   });
 
   it('shows full bar for 100% used', () => {
@@ -244,6 +244,6 @@ describe('ThreadHeaderBuilder.formatContextBar', () => {
     };
 
     const bar = ThreadHeaderBuilder.formatContextBar(usage);
-    expect(bar).toBe('▓▓▓▓▓ 1M/1M (0%)');
+    expect(bar).toBe('▓▓▓▓▓ 1M/1M (100% used)');
   });
 });

@@ -1353,4 +1353,28 @@ describe('MEMORY command — validator allow-list (regression: listed-but-uninvo
     if (result.ok) throw new Error('unreachable');
     expect(result.error.code).toBe('INVALID_COMMAND');
   });
+
+  // The validator rebuilds params from an explicit allow-list, so a key it does
+  // not know is dropped silently and the handler sees an empty locator. `id`
+  // (and its `path` alias) is the form the prompt index advertises, so it has
+  // to survive the rebuild.
+  it('carries `id` through to the handler params', () => {
+    const result = validateModelCommandRunArgs({
+      commandId: 'MEMORY',
+      params: { op: 'page_get', id: 'agent/build-system' },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    expect((result.request.params as { id?: string }).id).toBe('agent/build-system');
+  });
+
+  it('normalizes the `path` alias into `id`', () => {
+    const result = validateModelCommandRunArgs({
+      commandId: 'MEMORY',
+      params: { op: 'page_get', path: 'project/soma-work/1234' },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    expect((result.request.params as { id?: string }).id).toBe('project/soma-work/1234');
+  });
 });

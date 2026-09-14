@@ -30,7 +30,6 @@ describe('deploy config expectations', () => {
     const promptSetup = read('scripts/setup/05-system-prompt.sh');
     const deployDirs = read('scripts/setup/07-deploy-dirs.sh');
     const environments = read('scripts/setup/09-github-environments.sh');
-    const newDeploySetup = read('scripts/new-deploy-setup.sh');
     const deployDoc = read('docs/runbook/add-new-deploy.md');
     const prFixWorkflow = read('src/prompt/workflows/pr-fix-and-update.prompt');
     const versionBump = read('scripts/version-bump.sh');
@@ -40,7 +39,9 @@ describe('deploy config expectations', () => {
     expect(deployDirs).toContain('(branch: main)');
     expect(environments).toContain('--field name="deploy/prod"');
     expect(environments).toContain('--field name="main"');
-    expect(newDeploySetup).toContain('PR target: main');
+    // `scripts/new-deploy-setup.sh` no longer carries deploy topology: it is a
+    // deprecation shim into `somawork setup`, whose contract lives in
+    // `scripts/__tests__/legacy-setup-shims.test.ts`.
     expect(deployDoc).toContain('main 브랜치가 macmini와 oudwood-512의 `/opt/soma-work/dev`로 배포');
     expect(deployDoc).toContain('deploy/prod 브랜치는 macmini의 `/opt/soma-work/main`으로 배포');
     expect(prFixWorkflow).toContain('git rebase origin/main');

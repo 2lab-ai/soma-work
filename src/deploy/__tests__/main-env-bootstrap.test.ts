@@ -367,6 +367,15 @@ describe('main-env-bootstrap', () => {
       expect(__TEST_ONLY_VALID_MODELS.has('claude-opus-4-6[1m]')).toBe(true);
     });
 
+    it('includes the 2026-08-26 additions so a fresh deploy cannot normalize them away', () => {
+      // A model that survives `resolveModelInput` but is missing from the
+      // bootstrap's duplicated set gets silently coerced to DEFAULT_MODEL the
+      // first time a deploy normalizes the data dir.
+      for (const model of ['claude-opus-5', 'claude-opus-5[1m]', 'claude-fable-5[1m]', 'gpt-5.6-sol[1m]', 'grok-4.6']) {
+        expect(__TEST_ONLY_VALID_MODELS.has(model)).toBe(true);
+      }
+    });
+
     it('includes all pre-existing models (no silent drops)', () => {
       for (const model of [
         'claude-opus-4-7',
@@ -454,14 +463,53 @@ describe('main-env-bootstrap', () => {
       expect(__TEST_ONLY_coerceModel('grok-4.5', dataDir)).toBe('grok-4.5');
     });
 
-    it('excludes native-1M [1m] snapshot ids from preservation (fable beta-header contract)', () => {
+    it('rejects fake grok [1m] ids even when the catalog snapshot advertises them', () => {
+      const dataDir = makeTempDir('bootstrap-catalog-');
+      writeJson(path.join(dataDir, 'model-catalog.json'), {
+        fetchedAt: 1,
+        models: [{ id: 'grok-4.6[1m]' }, { id: 'claude-fable-5[1m]' }],
+      });
+      expect(__TEST_ONLY_coerceModel('grok-4.6[1m]', dataDir)).toBe('gpt-5.6-sol');
+      expect(__TEST_ONLY_coerceModel('claude-fable-5[1m]', dataDir)).toBe('claude-fable-5[1m]');
+    });
+
+    it('preserves the literal fable [1m] id (the 2026-08-26 filter removal)', () => {
+      // The import-lean duplicate of `isCatalogIdSelectable` used to drop
+      // `claude-fable-5[1m]` here, so a deploy-time normalize downgraded any
+      // user or session on that id to DEFAULT_MODEL. Both the static entry and
+      // the catalog snapshot path must now keep it.
       const dataDir = makeTempDir('bootstrap-catalog-');
       writeJson(path.join(dataDir, 'model-catalog.json'), {
         fetchedAt: 1,
         models: [{ id: 'claude-fable-5[1m]' }, ...GROK_SNAPSHOT.models],
       });
-      expect(__TEST_ONLY_coerceModel('claude-fable-5[1m]', dataDir)).toBe('gpt-5.6-sol');
+      expect(__TEST_ONLY_coerceModel('claude-fable-5[1m]', dataDir)).toBe('claude-fable-5[1m]');
+      expect(__TEST_ONLY_coerceModel('claude-fable-5[1m]')).toBe('claude-fable-5[1m]');
       expect(__TEST_ONLY_coerceModel('grok-4.5', dataDir)).toBe('grok-4.5');
+    });
+
+    it('normalizeMainTargetData preserves the new [1m] ids on user settings AND sessions', async () => {
+      const targetDir = makeTempDir('bootstrap-1m-target-');
+      const dataDir = path.join(targetDir, 'data');
+      writeJson(path.join(dataDir, 'user-settings.json'), {
+        U1: { userId: 'U1', defaultModel: 'claude-fable-5[1m]', accepted: true },
+        U2: { userId: 'U2', defaultModel: 'claude-opus-5[1m]', accepted: true },
+        U3: { userId: 'U3', defaultModel: 'gpt-5.6-sol[1m]', accepted: true },
+        U4: { userId: 'U4', defaultModel: 'grok-4.6', accepted: true },
+      });
+      writeJson(path.join(dataDir, 'sessions.json'), [
+        { sessionKey: 'C1:1.1', userId: 'U1', model: 'claude-fable-5[1m]' },
+      ]);
+
+      await normalizeMainTargetData(targetDir);
+
+      const settings = JSON.parse(fs.readFileSync(path.join(dataDir, 'user-settings.json'), 'utf8'));
+      expect(settings.U1.defaultModel).toBe('claude-fable-5[1m]');
+      expect(settings.U2.defaultModel).toBe('claude-opus-5[1m]');
+      expect(settings.U3.defaultModel).toBe('gpt-5.6-sol[1m]');
+      expect(settings.U4.defaultModel).toBe('grok-4.6');
+      const sessions = JSON.parse(fs.readFileSync(path.join(dataDir, 'sessions.json'), 'utf8'));
+      expect(sessions[0].model).toBe('claude-fable-5[1m]');
     });
 
     it('normalizeMainTargetData preserves grok-4.5 settings when the data dir has the snapshot', async () => {

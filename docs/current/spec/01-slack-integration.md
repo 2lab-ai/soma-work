@@ -39,9 +39,13 @@ Slack Handler는 모든 Slack 이벤트를 수신하고 처리하는 핵심 컴�
 ### 2.3 Socket Mode
 
 ```typescript
+// Socket Mode는 signingSecret을 요구하지 않는다 — 서명 검증은 Slack이 HTTP로
+// 보내는 요청의 X-Slack-Signature 헤더를 확인하는 절차인데, Socket Mode는
+// appToken으로 인증된 아웃바운드 wss라 서명 자체를 주고받지 않는다.
+// 설정된 값이 있으면 그대로 넘기고, 없으면 키를 아예 넣지 않는다.
 const app = new App({
   token: config.slack.botToken,       // xoxb-...
-  signingSecret: config.slack.signingSecret,
+  ...signingSecretOption(config.slack.signingSecret),
   socketMode: true,
   appToken: config.slack.appToken,    // xapp-...
 });

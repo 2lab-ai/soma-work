@@ -131,6 +131,14 @@ async function canUseToolDecision(
     signal: new AbortController().signal,
     suggestions: undefined,
   } as never);
+  // Agent SDK 0.3.251 widened the return to `PermissionResult | null`
+  // (`sdk.d.ts:269`), where null means "no opinion, defer to the SDK's own
+  // permission logic". That is not a decision this backstop may return: an
+  // unattended attempt has nobody to prompt, so a null here is the same
+  // failure as an `ask`. Fail the test rather than reading through it.
+  if (result === null) {
+    throw new Error(`canUseTool returned null (deferred to the SDK) for ${toolName}`);
+  }
   return result.behavior;
 }
 

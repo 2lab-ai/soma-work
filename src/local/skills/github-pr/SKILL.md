@@ -38,11 +38,16 @@ Call these MCP tools in parallel:
 Use the bundled extraction script for large responses:
 
 ```bash
-npx tsx local/skills/github-pr/scripts/extract-pr-data.ts pr /path/to/pr.json
-npx tsx local/skills/github-pr/scripts/extract-pr-data.ts comments /path/to/comments.json
-npx tsx local/skills/github-pr/scripts/extract-pr-data.ts reviews /path/to/reviews.json
-npx tsx local/skills/github-pr/scripts/extract-pr-data.ts files /path/to/files.json
+node local/skills/github-pr/scripts/extract-pr-data.js pr /path/to/pr.json
+node local/skills/github-pr/scripts/extract-pr-data.js comments /path/to/comments.json
+node local/skills/github-pr/scripts/extract-pr-data.js reviews /path/to/reviews.json
+node local/skills/github-pr/scripts/extract-pr-data.js files /path/to/files.json
 ```
+
+Paths are relative to the runtime root. The compiled `.js` is what ships: the
+bundle prunes TypeScript sources, and `tsx` is a devDependency the target never
+installs (`npm ci --omit=dev`), so `npx tsx …/extract-pr-data.ts` fails twice
+over on an installed runtime.
 
 For inline processing, keep only essential fields:
 

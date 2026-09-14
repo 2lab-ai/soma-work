@@ -37,6 +37,13 @@ describe('SlackHandler — inline %model / %nogoal directives', () => {
     vi.spyOn(userSettingsStore, 'resolveModelInput').mockImplementation((input: string) =>
       input === 'fable' ? ('claude-fable-5' as any) : undefined,
     );
+    // The inline `%model` path resolves through the DETAILED resolver, so the
+    // stub has to live there too — otherwise the real alias table leaks in and
+    // this test starts asserting alias values instead of directive ordering
+    // (which is what it is actually for).
+    vi.spyOn(userSettingsStore, 'resolveModelInputDetailedWithRefresh').mockImplementation(async (input: string) =>
+      input === 'fable' ? { status: 'accepted', modelId: 'claude-fable-5' } : { status: 'unknown' },
+    );
     vi.spyOn(userSettingsStore, 'getModelDisplayName').mockReturnValue('Fable' as any);
 
     const app = { client: {}, assistant: vi.fn() } as any;

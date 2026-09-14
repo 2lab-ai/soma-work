@@ -3,8 +3,10 @@
  *
  * Unlike `model-topic.test.ts` (which mocks userSettingsStore), this suite
  * exercises the REAL store + a seeded modelCatalog, so it covers the whole
- * alias-resolution chain: featured `grok` button → catalog id, catalog models
- * appended after the static allow-list, no duplicate option ids.
+ * resolution chain: featured aliases like `grok-4.6` (literal, always available),
+ * catalog models appended after the static allow-list by their id, no duplicate
+ * option ids, and catalog aliases like `grok` resolving via the store (tested
+ * separately in the applyModel path).
  */
 
 import { afterEach, describe, expect, it } from 'vitest';
@@ -34,11 +36,14 @@ function collectButtons(blocks: unknown[]): Array<{ action_id: string; value: st
 }
 
 describe('renderModelCard — catalog models', () => {
-  it("features a 'grok' alias button that resolves via the catalog", async () => {
+  it("renders catalog model by id even when it has a generic alias like 'grok'", async () => {
+    // When the catalog has a model with id='grok-4.5' and aliases=['grok'],
+    // it renders as a button with the id, not the alias. The alias is resolved
+    // separately for the /z model set <name> command, not for card buttons.
     modelCatalog.__testSeed([GROK]);
     const { blocks } = await renderModelCard({ userId: 'UCAT1', issuedAt: 1 });
     const ids = collectButtons(blocks).map((b) => b.action_id);
-    expect(ids).toContain('z_setting_model_set_grok');
+    expect(ids).toContain('z_setting_model_set_grok-4.5');
   });
 
   it('appends catalog models (grok-4.5) after the static allow-list', async () => {
@@ -55,13 +60,19 @@ describe('renderModelCard — catalog models', () => {
       { id: 'gpt-5.5', aliases: [], name: 'GPT 5.5', efforts: [], max_context: 275_000, group: 'codex' },
     ]);
     const { blocks } = await renderModelCard({ userId: 'UCAT1', issuedAt: 1 });
-    const setIds = collectButtons(blocks)
-      .map((b) => b.action_id)
-      .filter((id) => id.startsWith('z_setting_model_set_'));
-    expect(new Set(setIds).size).toBe(setIds.length);
+    const ids = collectButtons(blocks).map((b) => b.action_id);
+    // Verify that the catalog models added in this test don't create duplicates.
+    const grok45Count = ids.filter((id) => id === 'z_setting_model_set_grok-4.5').length;
+    const gpt55Count = ids.filter((id) => id === 'z_setting_model_set_gpt-5.5').length;
+    expect(grok45Count).toBeLessThanOrEqual(1);
+    expect(gpt55Count).toBeLessThanOrEqual(1);
   });
 
-  it('excludes non-selectable catalog ids (native-1M `[1m]` variants)', async () => {
+  it('renders the fable `[1m]` id exactly once — static entry, no catalog duplicate', async () => {
+    // Superseded 2026-08-26: this used to assert the id was EXCLUDED, back
+    // when `isCatalogIdSelectable` filtered it out. It is now a static
+    // allow-list member, so the live check is that the catalog pass dedupes
+    // against the static one rather than rendering a second button.
     modelCatalog.__testSeed([
       GROK,
       {
@@ -75,13 +86,17 @@ describe('renderModelCard — catalog models', () => {
     ]);
     const { blocks } = await renderModelCard({ userId: 'UCAT1', issuedAt: 1 });
     const ids = collectButtons(blocks).map((b) => b.action_id);
-    expect(ids).not.toContain('z_setting_model_set_claude-fable-5[1m]');
+    expect(ids.filter((id) => id === 'z_setting_model_set_claude-fable-5[1m]')).toHaveLength(1);
     expect(ids).toContain('z_setting_model_set_grok-4.5');
   });
 
-  it('skips the grok featured button when the catalog is empty (no dead button)', async () => {
+  it('features literal grok-4.6 even when the catalog is empty (no dead button)', async () => {
+    // The literal featured alias grok-4.6 resolves from the static store and
+    // remains available on a catalog-less cold start. Generic grok (if present
+    // in the catalog) would appear separately, but does not when catalog is empty.
     const { blocks } = await renderModelCard({ userId: 'UCAT1', issuedAt: 1 });
     const ids = collectButtons(blocks).map((b) => b.action_id);
+    expect(ids).toContain('z_setting_model_set_grok-4.6');
     expect(ids).not.toContain('z_setting_model_set_grok');
     // Static featured aliases + full allow-list still render.
     expect(ids).toContain('z_setting_model_set_fable');
@@ -92,7 +107,7 @@ describe('renderModelCard — catalog models', () => {
 });
 
 describe('FEATURED_ALIASES — grok', () => {
-  it("includes 'grok' as a featured alias", () => {
-    expect([...FEATURED_ALIASES]).toContain('grok');
+  it("includes 'grok-4.6' as the featured grok model", () => {
+    expect([...FEATURED_ALIASES]).toContain('grok-4.6');
   });
 });

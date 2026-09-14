@@ -11,11 +11,45 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Read-only, at the top level so it applies to every job present and future.
+# Nothing here publishes: the gate installs, builds, lints, type-checks, tests
+# and builds again. A token that could write is a token a compromised
+# dependency's install script — running on a persistent host we own — could use,
+# so the default token is narrowed to the one scope `actions/checkout` needs.
+# The workflows that DO publish (`deploy.yml`, `release-preview.yml`) declare
+# `contents: write` themselves; the difference between them and this file should
+# be visible in the file, not inferred from the org default.
+permissions:
+  contents: read
+
 jobs:
   quality-gates:
     # self-hosted: org has no hosted-runner budget (billing-blocked since legacy).
-    # CAUTION if this repo ever goes public: self-hosted + pull_request trigger
-    # lets fork PRs run code on the runner host — retarget PRs to hosted first.
+    #
+    # This repository is public, and `pull_request` fires for fork PRs too. Every
+    # step below executes repository code — `npm ci` runs install scripts, the
+    # build and test steps run the checked-out sources — so without a guard a
+    # fork PR would run attacker-authored code on a persistent machine we own,
+    # with its caches, its `~/.npm`, and whatever else lives on that host.
+    #
+    # The guard is job-level on purpose: it is evaluated before the job is
+    # dispatched to a runner, so a fork PR never reaches `actions/checkout` and
+    # the untrusted head commit is never fetched onto the host. An allow-list is
+    # used rather than `!= 'pull_request'` so that adding a trigger later fails
+    # closed (skipped) instead of silently granting the runner to a new event.
+    #
+    # `pull_request_target` is deliberately NOT used to work around this: it
+    # would run with the base repository's secrets and write token, which is the
+    # more dangerous half of the same problem. Fork PRs simply do not get this
+    # gate; they need a maintainer to run it from a same-repo branch.
+    #
+    # Kept flat (no continuation line is indented further than the first): a
+    # more-indented line in a folded scalar is preserved verbatim, which would
+    # put a literal newline inside the expression GitHub has to parse.
+    if: >-
+      github.event_name == 'push' ||
+      (github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: [self-hosted, fable-m5max]
     timeout-minutes: 15
 
@@ -46,8 +80,25 @@ jobs:
       - name: Type Check
         run: npx tsc --noEmit
 
+      # NOT `npm test`. That script is a plain `vitest run`: threaded workers
+      # sharing a process, and a 5s default timeout. Suites in this repository
+      # swap process globals (stdout/stderr sinks, env) and restore them in
+      # teardown, so under that configuration a slow teardown does not just fail
+      # its own test — it leaks the swap into the next one. PR #191's run
+      # 32935347648 is the worked example: install, workspace build, Biome and
+      # tsc all passed, then two `src/cli/__tests__/index.test.ts` status-json
+      # tests failed — the sink-restoring test hit the 5s timeout, and the test
+      # after it parsed concatenated JSON out of sinks the timed-out test never
+      # restored. The same file passes 114/114 under the release args, so the
+      # red was a property of the runner configuration, not of the diff.
+      #
+      # `test:release` is the same vitest run with forked, isolated workers and
+      # a realistic timeout — the identical deterministic gate the release path
+      # uses (`.github/workflows/release-preview.yml`). Using it here means what
+      # gates a merge is exactly what gates a release, and a red here is a claim
+      # about the code rather than about worker scheduling.
       - name: Test
-        run: npm test
+        run: npm run test:release
 
       - name: Build
         run: npm run build

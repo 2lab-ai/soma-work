@@ -729,6 +729,18 @@ export class CommandParser {
     return { rawArg: match[1] };
   }
 
+  /** Check if text is the session-scoped token autocompact command. */
+  static isAutoCompactCommand(text: string): boolean {
+    return /^\/?autocompact(?:\s+\S+)?$/i.test(text.trim());
+  }
+
+  /** Parse `/autocompact [tokens|reset]`. */
+  static parseAutoCompactCommand(text: string): { rawArg?: string } {
+    const match = text.trim().match(/^\/?autocompact(?:\s+(\S+))?$/i);
+    if (!match) return {};
+    return { rawArg: match[1] };
+  }
+
   /**
    * Check if text is a /new command
    */
@@ -1273,6 +1285,7 @@ export class CommandParser {
     'context',
     'renew',
     'compact',
+    'autocompact',
     'goal',
     'close',
     'link',
@@ -1408,6 +1421,9 @@ export class CommandParser {
       '• `context` or `/context` - Show current session token usage and cost',
       '• `renew` or `/renew` - Save context, reset session, and reload (for long sessions)',
       '• `compact` or `/compact` - Force context compaction (for testing compression)',
+      '• `autocompact` - Show the current session token threshold',
+      '• `autocompact <tokens>` - Set a session threshold (100k–1M; e.g. 800k)',
+      '• `autocompact reset` - Return to the model/default threshold',
       '• `goal` or `/goal` - Set or view the active session goal',
       '• `goal <objective>` - Set/replace the active goal and continue working',
       '• `goal pause|resume|done|clear` - Manage the active goal state',

@@ -280,10 +280,13 @@ describe('claude.autoFallbackCompactModel (auto fallback compact)', () => {
     }
   });
 
-  it('opus[1m] alias resolves to a 1M-window model id (claude-opus-4-8[1m])', async () => {
+  it('opus[1m] alias resolves to a 1M-window model id (claude-opus-5[1m])', async () => {
+    // The floating alias rolled forward to Opus 5 on 2026-08-26. What this
+    // test actually guards is unchanged: whatever `opus[1m]` points at must
+    // have a 1M window, because the auto-fallback-compact path assumes it.
     const { MODEL_ALIASES } = await import('../user-settings-store');
     const resolved = MODEL_ALIASES['opus[1m]'];
-    expect(resolved).toBe('claude-opus-4-8[1m]');
+    expect(resolved).toBe('claude-opus-5[1m]');
     const { resolveContextWindow } = await import('../metrics/model-registry');
     expect(resolveContextWindow(resolved)).toBe(1_000_000);
   });

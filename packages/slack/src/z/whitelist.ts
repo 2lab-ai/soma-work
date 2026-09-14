@@ -133,6 +133,12 @@ export function isDmAllowedForNonAdmin(text: string): boolean {
   if (/^theme(?:\s+(?:set\s+)?\S+|\s*=\s*\S+)?$/.test(lower)) return true;
   // `%` is primary, `$` is deprecated (SessionCommandHandler still accepts both).
   if (/^[%$](?:model|verbosity|effort|thinking_summary|thinking)?(?:\s+\S+)?$/.test(lower)) return true;
+  // autocompact [tokens|reset] — session-scoped threshold config, not a
+  // prompt. Grammar mirrors CommandParser.isAutoCompactCommand exactly
+  // (bare status / set tokens / reset); with no active session the handler
+  // replies "No active session" instead of opening one, so it's as safe as
+  // theme/model for a non-admin DM.
+  if (/^\/?autocompact(?:\s+\S+)?$/.test(lower)) return true;
 
   return false;
 }

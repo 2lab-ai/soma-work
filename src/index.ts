@@ -11,7 +11,7 @@ import {
 import { hierarchicalMemoryStore, setHierarchicalMemoryPromptInvalidationHook } from './hierarchical-memory';
 import { consolidateUserMemory } from './memory-auto-capture';
 import * as userMemoryStore from './user-memory-store';
-import { setSettingsPromptInvalidationHook } from './user-settings-store';
+import { setSettingsPromptInvalidationHook, userSettingsStore } from './user-settings-store';
 import { gatedManageSkillCopy } from './user-skill-copy-gate';
 import {
   createUserSkill,
@@ -94,10 +94,12 @@ import { acquirePidLock, releasePidLock } from './pid-lock';
 import { BUNDLED_PLUGINS } from './plugin/bundled';
 import { PluginManager } from './plugin/plugin-manager';
 import { getVersionInfo, notifyRelease } from './release-notifier';
+import { clearDaemonReady, clearStaleDaemonReady, publishDaemonReadiness } from './service-readiness';
 import { GoalLoopController } from './slack/goal-loop-controller';
 import { setGoalLoopResumeHandler } from './slack/goal-loop-resume';
 import { setUiSurfacesConfig } from './slack/surface-config';
 import { SlackHandler } from './slack-handler';
+import { signingSecretOption } from './slack-signing-secret';
 import { type SocketWatchdogUnhealthyReason, startSlackSocketWatchdog } from './slack-socket-watchdog';
 import { notifyStartup } from './startup-notifier';
 import { getTokenManager } from './token-manager';
@@ -125,6 +127,14 @@ async function start() {
     }
     timing('PID lock acquired');
 
+    // Only now. A readiness marker that outlived its daemon would have the
+    // service manager read a previous run's "I am connected" and call this boot
+    // green before it has done anything — but clearing it BEFORE the lock would
+    // be worse: a second startup that is about to lose the lock race would
+    // erase the RUNNING daemon's valid marker on its way out. Holding the lock
+    // is what makes a non-matching marker provably stale.
+    clearStaleDaemonReady(DATA_DIR);
+
     // #1003 — release the PID lock on EVERY exit path, not just SIGINT/SIGTERM.
     // The socket-watchdog trip (`process.exit(1)`), the preflight-failure exit,
     // and the uncaughtException/unhandledRejection crash handlers all bypass
@@ -136,6 +146,10 @@ async function start() {
     // the lock file still holds THIS pid (safe no-op otherwise).
     process.on('exit', () => {
       getClaudeChildProcessRegistry().killAllSync('SIGKILL');
+      // Same reasoning as the lock, and the same exit-path coverage: readiness
+      // is a claim about a LIVE socket, so it must not survive the process that
+      // made it. Synchronous and self-silencing, like `releasePidLock`.
+      clearDaemonReady(DATA_DIR);
       releasePidLock(DATA_DIR);
     });
 
@@ -147,17 +161,27 @@ async function start() {
     await tokenManager.init({ startReaper: true });
     timing('TokenManager initialized');
 
-    // One-shot force-migration: every existing user.defaultModel that isn't
-    // already the current default target (gpt-5.6 since 2026-07-10) is
-    // rewritten to it. Gated by a TARGET-AWARE marker in DATA_DIR: hosts that
-    // ran the older opus[1m] migration re-run exactly once for the new
-    // target, then skip. MUST run before UserSettingsStore.load (further
-    // down) so the store sees the migrated file.
-    const defaultModelMigration = forceMigrateOpus1m({ dataDir: DATA_DIR });
+    // One-shot OPUS-FAMILY migration: user defaults on any `claude-opus-*`
+    // generation (bare or `[1m]`) are rewritten to `claude-opus-5[1m]`. Every
+    // other user is left untouched — the all-user rewrite this used to
+    // perform was retired on 2026-08-26. Gated by a TARGET-AWARE marker in
+    // DATA_DIR, so a host carrying the retired `gpt-5.6-sol` marker re-runs
+    // exactly once for the new target and then skips.
+    const opusDefaultMigration = forceMigrateOpus1m({ dataDir: DATA_DIR });
     logger.info(
-      `default-model migration: ${defaultModelMigration.status} (migrated=${defaultModelMigration.migrated}/${defaultModelMigration.total}, marker=${defaultModelMigration.markerFile})`,
+      `opus default-model migration: ${opusDefaultMigration.status} (migrated=${opusDefaultMigration.migrated}/${opusDefaultMigration.total}, marker=${opusDefaultMigration.markerFile})`,
     );
-    timing('default-model migration evaluated');
+    // The settings singleton loaded during MODULE IMPORT (see the static
+    // import above), i.e. before this migration ran, so it is holding the
+    // pre-migration defaults. Re-read the file the migration just wrote —
+    // otherwise this very process serves stale defaults until the next boot.
+    // Only when something was actually written: a `skipped` (or applied-but-
+    // zero) run leaves the file untouched, so a reload would be pure I/O.
+    if (opusDefaultMigration.status === 'applied' && opusDefaultMigration.migrated > 0) {
+      userSettingsStore.reloadSettings();
+      logger.info(`reloaded user settings after opus migration (migrated=${opusDefaultMigration.migrated})`);
+    }
+    timing('opus default-model migration evaluated');
 
     // llmux-dependent boot steps (codex pin sync + model-catalog fetch) run
     // AFTER initAuthRuntimeDefault below — gating them on the static
@@ -214,9 +238,13 @@ async function start() {
       pingPongLoggingEnabled: true,
       logLevel: slackLogLevel,
     });
+    // `signingSecret` is spread in only when configured: Socket Mode verifies
+    // no request signature (that is an HTTP-receiver concern). Bolt would
+    // accept an explicit `undefined` identically — the spread keeps the option
+    // object canonical so nothing downstream reads a declared-but-empty key.
     const app = new App({
       token: config.slack.botToken,
-      signingSecret: config.slack.signingSecret,
+      ...signingSecretOption(config.slack.signingSecret),
       receiver: slackReceiver,
       logLevel: slackLogLevel,
     });
@@ -844,6 +872,19 @@ async function start() {
     await app.start();
     timing('Slack socket connected');
 
+    // The socket is up: publish readiness for THIS instance. This is the only
+    // call site, and it is deliberately on the far side of `app.start()` —
+    // everything before this line is a process that exists, not a service that
+    // works, and the PID lock already covers the former.
+    //
+    // `publishDaemonReadiness` cannot throw: a marker write that fails (a
+    // symlinked `~/.local/share`, EROFS, ENOSPC) must not reach the outer
+    // `catch`, whose handler is `process.exit(1)` — under the plist's
+    // `KeepAlive` that would crashloop a bot that HAS connected. It also
+    // publishes nothing for a source-tree run, where `DATA_DIR` is a directory
+    // inside the operator's checkout.
+    publishDaemonReadiness({ dataDir: DATA_DIR, warn: (message) => logger.warn(message) });
+
     // Wire AFTER app.start() so boot-time reconnects don't count against
     // the storm threshold. exit(1) → supervisor (launchd/systemd) recycles.
     startSlackSocketWatchdog({
@@ -1187,11 +1228,13 @@ async function start() {
         await getClaudeChildProcessRegistry().drain();
       } catch (error) {
         logger.error('Claude child cleanup failed during shutdown:', error);
+        clearDaemonReady(DATA_DIR);
         releasePidLock(DATA_DIR);
         process.exit(1);
       }
 
       // Release PID lock last — after all connections and children are torn down
+      clearDaemonReady(DATA_DIR);
       releasePidLock(DATA_DIR);
 
       process.exit(0);

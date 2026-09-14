@@ -1,4 +1,4 @@
-#!/usr/bin/env npx tsx
+#!/usr/bin/env node
 /**
  * Extract PR Data Script
  *
@@ -15,11 +15,17 @@
  * - Reviews (get_pull_request_reviews)
  * - Files (get_pull_request_files)
  *
- * Usage (from skill directory or with full path):
- *   npx tsx extract-pr-data.ts <type> <input_file> [output_file]
- *   npx tsx extract-pr-data.ts comments ./data/pr-comments.json
- *   npx tsx extract-pr-data.ts files ./data/pr-files.json ./data/pr-files-compact.json
- *   cat mcp-result.json | npx tsx extract-pr-data.ts comments -
+ * Usage (paths relative to the runtime root):
+ *   node local/skills/github-pr/scripts/extract-pr-data.js <type> <input_file> [output_file]
+ *   node local/skills/github-pr/scripts/extract-pr-data.js comments ./data/pr-comments.json
+ *   node local/skills/github-pr/scripts/extract-pr-data.js files ./data/pr-files.json ./data/pr-files-compact.json
+ *   cat mcp-result.json | node local/skills/github-pr/scripts/extract-pr-data.js comments -
+ *
+ * The compiled `.js` is what ships, so every usage string in this file names it.
+ * The bundle prunes TypeScript sources, and the dev-only TypeScript runner is
+ * not installed on a target (`npm ci --omit=dev`) — so the banner this file used
+ * to print named a runner and a file that are both absent on every machine that
+ * read it.
  */
 
 import * as fs from 'node:fs';
@@ -482,7 +488,7 @@ function printUsage(): void {
 Extract PR Data - Reduce GitHub MCP result tokens
 
 Usage:
-  npx tsx extract-pr-data.ts <type> <input> [output]
+  node local/skills/github-pr/scripts/extract-pr-data.js <type> <input> [output]
 
 Types:
   pr        - Pull request info
@@ -495,9 +501,9 @@ Arguments:
   output    - Output file path (optional, defaults to stdout)
 
 Examples:
-  npx tsx extract-pr-data.ts comments ./data/pr-comments.json
-  npx tsx extract-pr-data.ts files ./data/pr-files.json ./compact-files.json
-  cat mcp-result.json | npx tsx extract-pr-data.ts comments -
+  node local/skills/github-pr/scripts/extract-pr-data.js comments ./data/pr-comments.json
+  node local/skills/github-pr/scripts/extract-pr-data.js files ./data/pr-files.json ./compact-files.json
+  cat mcp-result.json | node local/skills/github-pr/scripts/extract-pr-data.js comments -
 
 Token Savings:
   Actual savings are calculated dynamically and reported for each run.
@@ -530,7 +536,7 @@ async function main(): Promise<void> {
 
   // Quick check to verify script path is correct
   if (args[0] === '--check') {
-    console.log('OK: extract-pr-data.ts is reachable');
+    console.log('OK: extract-pr-data.js is reachable');
     console.log(`Path: ${process.argv[1]}`);
     process.exit(0);
   }
