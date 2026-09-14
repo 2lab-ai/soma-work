@@ -1,0 +1,1027 @@
+{
+ "skill:UIAskUserQuestion": {
+  "kind": "skill",
+  "files": 8,
+  "skills": [
+   "decision-gate",
+   "es",
+   "z",
+   "zcheck",
+   "zexplore",
+   "ztrace",
+   "zwork"
+  ],
+  "agents": [],
+  "mcp": [
+   "model-command__run"
+  ],
+  "ext": [],
+  "soma": []
+ },
+ "skill:animation-vocabulary": {
+  "kind": "skill",
+  "files": 4,
+  "skills": [
+   "motion-design"
+  ],
+  "agents": [],
+  "mcp": [],
+  "ext": [],
+  "soma": []
+ },
+ "skill:apple-design": {
+  "kind": "skill",
+  "files": 4,
+  "skills": [
+   "review-motion"
+  ],
+  "agents": [],
+  "mcp": [],
+  "ext": [],
+  "soma": []
+ },
+ "skill:architecture-diagram": {
+  "kind": "skill",
+  "files": 6,
+  "skills": [],
+  "agents": [],
+  "mcp": [
+   "slack-mcp__send_file",
+   "slack-mcp__send_media"
+  ],
+  "ext": [
+   "curl-net",
+   "playwright",
+   "python3"
+  ],
+  "soma": [
+   "slack-mcp-tools",
+   "slack-session-dir"
+  ]
+ },
+ "skill:autoz": {
+  "kind": "skill",
+  "files": 2,
+  "skills": [
+   "UIAskUserQuestion",
+   "apple-design",
+   "decision-gate",
+   "design",
+   "es",
+   "explore-unknowns",
+   "github-pr",
+   "html",
+   "lottie",
+   "motion-design",
+   "simplify",
+   "structurize",
+   "trinity",
+   "ui-ux",
+   "using-epic-tasks",
+   "using-ha-thinking",
+   "using-ssot",
+   "using-z",
+   "z",
+   "zcheck",
+   "zreflect",
+   "ztrace",
+   "zwork"
+  ],
+  "agents": [
+   "codex-fallback",
+   "explore",
+   "reviewer"
+  ],
+  "mcp": [
+   "llm__chat"
+  ],
+  "ext": [
+   "curl-net",
+   "gh-cli",
+   "llmux"
+  ],
+  "soma": []
+ },
+ "skill:block-kit-preview": {
+  "kind": "skill",
+  "files": 1,
+  "skills": [],
+  "agents": [],
+  "mcp": [],
+  "ext": [
+   "node",
+   "playwright"
+  ],
+  "soma": [
+   "block-kit"
+  ]
+ },
+ "skill:calldiff": {
+  "kind": "skill",
+  "files": 2,
+  "skills": [
+   "using-epic-tasks",
+   "zwork"
+  ],
+  "agents": [
+   "reviewer"
+  ],
+  "mcp": [],
+  "ext": [
+   "gh-cli"
+  ],
+  "soma": []
+ },
+ "skill:cron": {
+  "kind": "skill",
+  "files": 1,
+  "skills": [
+   "UIAskUserQuestion"
+  ],
+  "agents": [],
+  "mcp": [
+   "cron__cron_delete",
+   "cron__cron_list",
+   "cron__cron_update",
+   "model-command__run"
+  ],
+  "ext": [],
+  "soma": [
+   "soma-service"
+  ]
+ },
+ "skill:decision-gate": {
+  "kind": "skill",
+  "files": 1,
+  "skills": [
+   "using-ssot",
+   "zwork"
+  ],
+  "agents": [],
+  "mcp": [],
+  "ext": [],
+  "soma": []
+ },
+ "skill:design": {
+  "kind": "skill",
+  "files": 8,
+  "skills": [
+   "html"
+  ],
+  "agents": [],
+  "mcp": [],
+  "ext": [
+   "node",
+   "playwright",
+   "shadcn-mcp"
+  ],
+  "soma": []
+ },
+ "skill:diagram": {
+  "kind": "skill",
+  "files": 1,
+  "skills": [
+   "architecture-diagram"
+  ],
+  "agents": [],
+  "mcp": [
+   "slack-mcp__send_file",
+   "slack-mcp__send_media"
+  ],
+  "ext": [
+   "python3"
+  ],
+  "soma": [
+   "slack-mcp-tools"
+  ]
+ },
+ "skill:es": {
+  "kind": "skill",
+  "files": 6,
+  "skills": [
+   "using-ssot",
+   "zcheck",
+   "ztrace",
+   "zwork"
+  ],
+  "agents": [],
+  "mcp": [],
+  "ext": [
+   "gh-cli"
+  ],
+  "soma": []
+ },
+ "skill:example": {
+  "kind": "skill",
+  "files": 1,
+  "skills": [],
+  "agents": [],
+  "mcp": [],
+  "ext": [],
+  "soma": []
+ },
+ "skill:explore-unknowns": {
+  "kind": "skill",
+  "files": 9,
+  "skills": [
+   "autoz",
+   "trinity"
+  ],
+  "agents": [
+   "codex-fallback",
+   "explore",
+   "reviewer"
+  ],
+  "mcp": [
+   "llm__chat"
+  ],
+  "ext": [],
+  "soma": []
+ },
+ "skill:github-pr": {
+  "kind": "skill",
+  "files": 2,
+  "skills": [],
+  "agents": [],
+  "mcp": [
+   "github__get_pull_request",
+   "github__get_pull_request_comments",
+   "github__get_pull_request_files",
+   "github__get_pull_request_reviews"
+  ],
+  "ext": [
+   "gh-cli",
+   "node"
+  ],
+  "soma": []
+ },
+ "skill:html": {
+  "kind": "skill",
+  "files": 17,
+  "skills": [
+   "apple-design",
+   "design",
+   "lottie",
+   "motion-design",
+   "ui-ux"
+  ],
+  "agents": [],
+  "mcp": [
+   "slack-mcp__send_file",
+   "slack-mcp__send_media"
+  ],
+  "ext": [
+   "curl-net",
+   "node",
+   "playwright",
+   "python3",
+   "tailwind-cdn"
+  ],
+  "soma": [
+   "slack-mcp-tools",
+   "slack-session-dir",
+   "soma-service"
+  ]
+ },
+ "skill:learn": {
+  "kind": "skill",
+  "files": 1,
+  "skills": [],
+  "agents": [],
+  "mcp": [],
+  "ext": [],
+  "soma": []
+ },
+ "skill:llm-dispatch": {
+  "kind": "skill",
+  "files": 1,
+  "skills": [
+   "trinity",
+   "zdeepresearch"
+  ],
+  "agents": [
+   "codex-fallback"
+  ],
+  "mcp": [
+   "llm__chat"
+  ],
+  "ext": [
+   "codex-cli"
+  ],
+  "soma": []
+ },
+ "skill:lottie": {
+  "kind": "skill",
+  "files": 4,
+  "skills": [
+   "design",
+   "html"
+  ],
+  "agents": [],
+  "mcp": [],
+  "ext": [
+   "node",
+   "playwright"
+  ],
+  "soma": []
+ },
+ "skill:motion-design": {
+  "kind": "skill",
+  "files": 6,
+  "skills": [
+   "animation-vocabulary",
+   "design",
+   "review-motion"
+  ],
+  "agents": [
+   "reviewer"
+  ],
+  "mcp": [],
+  "ext": [],
+  "soma": []
+ },
+ "skill:release-notes": {
+  "kind": "skill",
+  "files": 1,
+  "skills": [],
+  "agents": [],
+  "mcp": [],
+  "ext": [],
+  "soma": []
+ },
+ "skill:review-motion": {
+  "kind": "skill",
+  "files": 4,
+  "skills": [
+   "animation-vocabulary",
+   "design",
+   "motion-design"
+  ],
+  "agents": [
+   "reviewer"
+  ],
+  "mcp": [],
+  "ext": [],
+  "soma": []
+ },
+ "skill:setup-ai-docs": {
+  "kind": "skill",
+  "files": 1,
+  "skills": [],
+  "agents": [],
+  "mcp": [],
+  "ext": [
+   "llmux"
+  ],
+  "soma": []
+ },
+ "skill:setup-ai-workflow": {
+  "kind": "skill",
+  "files": 1,
+  "skills": [],
+  "agents": [],
+  "mcp": [],
+  "ext": [
+   "gh-cli",
+   "llmux"
+  ],
+  "soma": []
+ },
+ "skill:simplify": {
+  "kind": "skill",
+  "files": 1,
+  "skills": [],
+  "agents": [],
+  "mcp": [],
+  "ext": [],
+  "soma": []
+ },
+ "skill:structurize": {
+  "kind": "skill",
+  "files": 3,
+  "skills": [],
+  "agents": [],
+  "mcp": [],
+  "ext": [],
+  "soma": []
+ },
+ "skill:trinity": {
+  "kind": "skill",
+  "files": 1,
+  "skills": [
+   "autoz",
+   "explore-unknowns",
+   "llm-dispatch",
+   "z",
+   "zexplore",
+   "zreflect",
+   "zwork"
+  ],
+  "agents": [
+   "codex-fallback",
+   "gpt56-elon",
+   "gpt56-zhuge",
+   "grok45-elon",
+   "strategist"
+  ],
+  "mcp": [
+   "llm__chat"
+  ],
+  "ext": [
+   "llmux"
+  ],
+  "soma": []
+ },
+ "skill:ui-ux": {
+  "kind": "skill",
+  "files": 10,
+  "skills": [
+   "ui-ux-reference"
+  ],
+  "agents": [],
+  "mcp": [],
+  "ext": [
+   "python3",
+   "shadcn-mcp"
+  ],
+  "soma": []
+ },
+ "skill:ui-ux-reference": {
+  "kind": "skill",
+  "files": 1,
+  "skills": [
+   "UIAskUserQuestion",
+   "ui-ux"
+  ],
+  "agents": [],
+  "mcp": [],
+  "ext": [
+   "python3"
+  ],
+  "soma": []
+ },
+ "skill:using-eli5": {
+  "kind": "skill",
+  "files": 2,
+  "skills": [],
+  "agents": [],
+  "mcp": [],
+  "ext": [],
+  "soma": []
+ },
+ "skill:using-epic-tasks": {
+  "kind": "skill",
+  "files": 4,
+  "skills": [
+   "calldiff",
+   "decision-gate",
+   "z"
+  ],
+  "agents": [],
+  "mcp": [],
+  "ext": [
+   "curl-net",
+   "gh-cli"
+  ],
+  "soma": []
+ },
+ "skill:using-govuk": {
+  "kind": "skill",
+  "files": 1,
+  "skills": [],
+  "agents": [],
+  "mcp": [],
+  "ext": [],
+  "soma": []
+ },
+ "skill:using-ha-thinking": {
+  "kind": "skill",
+  "files": 1,
+  "skills": [],
+  "agents": [],
+  "mcp": [],
+  "ext": [],
+  "soma": []
+ },
+ "skill:using-ssot": {
+  "kind": "skill",
+  "files": 1,
+  "skills": [
+   "autoz",
+   "decision-gate",
+   "es",
+   "using-epic-tasks",
+   "using-z",
+   "z",
+   "zcheck",
+   "zfix",
+   "zreflect",
+   "ztrace",
+   "zwork"
+  ],
+  "agents": [],
+  "mcp": [],
+  "ext": [],
+  "soma": []
+ },
+ "skill:using-user-skills": {
+  "kind": "skill",
+  "files": 1,
+  "skills": [],
+  "agents": [],
+  "mcp": [
+   "model-command__run"
+  ],
+  "ext": [],
+  "soma": []
+ },
+ "skill:using-z": {
+  "kind": "skill",
+  "files": 1,
+  "skills": [
+   "autoz",
+   "using-ssot",
+   "zwork"
+  ],
+  "agents": [],
+  "mcp": [
+   "model-command__run"
+  ],
+  "ext": [],
+  "soma": []
+ },
+ "skill:z": {
+  "kind": "skill",
+  "files": 3,
+  "skills": [
+   "UIAskUserQuestion",
+   "autoz",
+   "es",
+   "trinity",
+   "using-epic-tasks",
+   "using-ssot",
+   "using-z",
+   "zcheck",
+   "zreflect",
+   "ztrace",
+   "zwork"
+  ],
+  "agents": [
+   "codex-fallback",
+   "explore",
+   "librarian"
+  ],
+  "mcp": [
+   "model-command__run"
+  ],
+  "ext": [],
+  "soma": []
+ },
+ "skill:zcheck": {
+  "kind": "skill",
+  "files": 1,
+  "skills": [
+   "UIAskUserQuestion",
+   "es",
+   "github-pr",
+   "simplify",
+   "using-ssot",
+   "using-z",
+   "z",
+   "ztrace"
+  ],
+  "agents": [],
+  "mcp": [],
+  "ext": [
+   "gh-cli"
+  ],
+  "soma": []
+ },
+ "skill:zdeepresearch": {
+  "kind": "skill",
+  "files": 1,
+  "skills": [
+   "llm-dispatch",
+   "trinity",
+   "zexplore"
+  ],
+  "agents": [],
+  "mcp": [
+   "llm__chat"
+  ],
+  "ext": [],
+  "soma": []
+ },
+ "skill:zexplore": {
+  "kind": "skill",
+  "files": 1,
+  "skills": [
+   "UIAskUserQuestion",
+   "trinity",
+   "z",
+   "zcheck",
+   "zdeepresearch",
+   "zfix",
+   "zwork"
+  ],
+  "agents": [
+   "codex-fallback",
+   "orchestrator"
+  ],
+  "mcp": [
+   "llm__chat"
+  ],
+  "ext": [],
+  "soma": []
+ },
+ "skill:zfix": {
+  "kind": "skill",
+  "files": 1,
+  "skills": [
+   "using-ssot",
+   "z",
+   "zcheck",
+   "ztrace",
+   "zwork"
+  ],
+  "agents": [],
+  "mcp": [],
+  "ext": [],
+  "soma": []
+ },
+ "skill:zkorean": {
+  "kind": "skill",
+  "files": 2,
+  "skills": [],
+  "agents": [],
+  "mcp": [
+   "model-command__run"
+  ],
+  "ext": [],
+  "soma": []
+ },
+ "skill:zreflect": {
+  "kind": "skill",
+  "files": 1,
+  "skills": [
+   "trinity",
+   "using-ssot"
+  ],
+  "agents": [
+   "codex-fallback"
+  ],
+  "mcp": [],
+  "ext": [],
+  "soma": []
+ },
+ "skill:zthink": {
+  "kind": "skill",
+  "files": 1,
+  "skills": [
+   "UIAskUserQuestion",
+   "z",
+   "zcheck",
+   "zexplore",
+   "zfix",
+   "zreflect",
+   "zwork"
+  ],
+  "agents": [],
+  "mcp": [],
+  "ext": [],
+  "soma": []
+ },
+ "skill:ztrace": {
+  "kind": "skill",
+  "files": 1,
+  "skills": [
+   "UIAskUserQuestion",
+   "autoz"
+  ],
+  "agents": [],
+  "mcp": [],
+  "ext": [],
+  "soma": []
+ },
+ "skill:zwork": {
+  "kind": "skill",
+  "files": 1,
+  "skills": [
+   "calldiff",
+   "decision-gate",
+   "trinity",
+   "using-ssot",
+   "using-z",
+   "z",
+   "zcheck"
+  ],
+  "agents": [
+   "codex-fallback",
+   "reviewer"
+  ],
+  "mcp": [
+   "github__create_pull_request"
+  ],
+  "ext": [
+   "gh-cli"
+  ],
+  "soma": []
+ },
+ "agent:code-reviewer": {
+  "kind": "agent",
+  "files": 1,
+  "skills": [],
+  "agents": [
+   "reviewer"
+  ],
+  "mcp": [],
+  "ext": [],
+  "soma": []
+ },
+ "agent:codex-fallback": {
+  "kind": "agent",
+  "files": 1,
+  "skills": [
+   "trinity"
+  ],
+  "agents": [],
+  "mcp": [
+   "llm__chat"
+  ],
+  "ext": [],
+  "soma": []
+ },
+ "agent:comment-analyzer": {
+  "kind": "agent",
+  "files": 1,
+  "skills": [],
+  "agents": [],
+  "mcp": [],
+  "ext": [],
+  "soma": []
+ },
+ "agent:explore": {
+  "kind": "agent",
+  "files": 1,
+  "skills": [
+   "trinity"
+  ],
+  "agents": [],
+  "mcp": [
+   "llm__chat"
+  ],
+  "ext": [],
+  "soma": []
+ },
+ "agent:gpt56-elon": {
+  "kind": "agent",
+  "files": 1,
+  "skills": [],
+  "agents": [],
+  "mcp": [],
+  "ext": [
+   "llmux"
+  ],
+  "soma": []
+ },
+ "agent:gpt56-zhuge": {
+  "kind": "agent",
+  "files": 1,
+  "skills": [],
+  "agents": [],
+  "mcp": [],
+  "ext": [
+   "llmux"
+  ],
+  "soma": []
+ },
+ "agent:grok45-elon": {
+  "kind": "agent",
+  "files": 1,
+  "skills": [],
+  "agents": [],
+  "mcp": [],
+  "ext": [
+   "llmux"
+  ],
+  "soma": []
+ },
+ "agent:librarian": {
+  "kind": "agent",
+  "files": 1,
+  "skills": [],
+  "agents": [],
+  "mcp": [
+   "plugin_context7_context7__query-docs",
+   "plugin_context7_context7__resolve-library-id"
+  ],
+  "ext": [],
+  "soma": []
+ },
+ "agent:oracle": {
+  "kind": "agent",
+  "files": 1,
+  "skills": [
+   "trinity"
+  ],
+  "agents": [
+   "codex-fallback"
+  ],
+  "mcp": [
+   "llm__chat"
+  ],
+  "ext": [],
+  "soma": []
+ },
+ "agent:orchestrator": {
+  "kind": "agent",
+  "files": 1,
+  "skills": [
+   "llm-dispatch"
+  ],
+  "agents": [],
+  "mcp": [
+   "llm__chat",
+   "plugin_ohmyclaude_claude-as-mcp__chat",
+   "plugin_ohmyclaude_claude-as-mcp__chat-reply"
+  ],
+  "ext": [],
+  "soma": []
+ },
+ "agent:pr-test-analyzer": {
+  "kind": "agent",
+  "files": 1,
+  "skills": [],
+  "agents": [],
+  "mcp": [],
+  "ext": [],
+  "soma": []
+ },
+ "agent:reviewer": {
+  "kind": "agent",
+  "files": 1,
+  "skills": [],
+  "agents": [],
+  "mcp": [],
+  "ext": [],
+  "soma": []
+ },
+ "agent:silent-failure-hunter": {
+  "kind": "agent",
+  "files": 1,
+  "skills": [],
+  "agents": [],
+  "mcp": [],
+  "ext": [],
+  "soma": []
+ },
+ "agent:strategist": {
+  "kind": "agent",
+  "files": 1,
+  "skills": [],
+  "agents": [],
+  "mcp": [],
+  "ext": [],
+  "soma": []
+ },
+ "agent:type-design-analyzer": {
+  "kind": "agent",
+  "files": 1,
+  "skills": [],
+  "agents": [],
+  "mcp": [],
+  "ext": [],
+  "soma": []
+ },
+ "agent:zkorean": {
+  "kind": "agent",
+  "files": 1,
+  "skills": [],
+  "agents": [],
+  "mcp": [],
+  "ext": [],
+  "soma": []
+ },
+ "command:explore": {
+  "kind": "command",
+  "files": 1,
+  "skills": [],
+  "agents": [],
+  "mcp": [
+   "llm__chat"
+  ],
+  "ext": [],
+  "soma": []
+ },
+ "command:librarian": {
+  "kind": "command",
+  "files": 1,
+  "skills": [],
+  "agents": [],
+  "mcp": [
+   "plugin_context7_context7__query-docs",
+   "plugin_context7_context7__resolve-library-id"
+  ],
+  "ext": [],
+  "soma": []
+ },
+ "command:oracle": {
+  "kind": "command",
+  "files": 1,
+  "skills": [],
+  "agents": [],
+  "mcp": [
+   "llm__chat"
+  ],
+  "ext": [],
+  "soma": []
+ },
+ "command:oracle-reviewer": {
+  "kind": "command",
+  "files": 1,
+  "skills": [
+   "trinity"
+  ],
+  "agents": [
+   "codex-fallback",
+   "oracle",
+   "reviewer"
+  ],
+  "mcp": [
+   "llm__chat"
+  ],
+  "ext": [],
+  "soma": []
+ },
+ "command:orchestrator": {
+  "kind": "command",
+  "files": 1,
+  "skills": [],
+  "agents": [],
+  "mcp": [
+   "llm__chat",
+   "plugin_ohmyclaude_claude-as-mcp__chat",
+   "plugin_ohmyclaude_claude-as-mcp__chat-reply"
+  ],
+  "ext": [],
+  "soma": []
+ },
+ "command:review-pr": {
+  "kind": "command",
+  "files": 1,
+  "skills": [
+   "simplify"
+  ],
+  "agents": [
+   "code-reviewer",
+   "reviewer"
+  ],
+  "mcp": [],
+  "ext": [
+   "gh-cli"
+  ],
+  "soma": []
+ },
+ "hook:call-tracker.sh": {
+  "kind": "hook",
+  "files": 1,
+  "skills": [],
+  "agents": [],
+  "mcp": [],
+  "ext": [],
+  "soma": []
+ },
+ "hook:hook-proxy.sh": {
+  "kind": "hook",
+  "files": 1,
+  "skills": [],
+  "agents": [],
+  "mcp": [],
+  "ext": [
+   "curl-net"
+  ],
+  "soma": [
+   "soma-service"
+  ]
+ },
+ "hook:hooks.json": {
+  "kind": "hook",
+  "files": 1,
+  "skills": [],
+  "agents": [],
+  "mcp": [],
+  "ext": [],
+  "soma": [
+   "soma-service"
+  ]
+ },
+ "hook:stop-hook.sh": {
+  "kind": "hook",
+  "files": 1,
+  "skills": [],
+  "agents": [],
+  "mcp": [],
+  "ext": [],
+  "soma": []
+ }
+}

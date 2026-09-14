@@ -1,0 +1,78 @@
+# closure verdict — soma-work origin/main c0a3bac — 2026-09-14
+# units=72 core=19 local=53
+
+## CORE
+  skill:example  deps=[] agents=[] ext=[]
+  skill:learn  deps=[] agents=[] ext=[]
+  skill:release-notes  deps=[] agents=[] ext=[]
+  skill:simplify  deps=[] agents=[] ext=[]
+  skill:structurize  deps=[] agents=[] ext=[]
+  skill:using-eli5  deps=[] agents=[] ext=[]
+  skill:using-govuk  deps=[] agents=[] ext=[]
+  skill:using-ha-thinking  deps=[] agents=[] ext=[]
+  agent:code-reviewer  deps=[] agents=['reviewer'] ext=[]
+  agent:comment-analyzer  deps=[] agents=[] ext=[]
+  agent:pr-test-analyzer  deps=[] agents=[] ext=[]
+  agent:reviewer  deps=[] agents=[] ext=[]
+  agent:silent-failure-hunter  deps=[] agents=[] ext=[]
+  agent:strategist  deps=[] agents=[] ext=[]
+  agent:type-design-analyzer  deps=[] agents=[] ext=[]
+  agent:zkorean  deps=[] agents=[] ext=[]
+  command:review-pr  deps=['simplify'] agents=['code-reviewer', 'reviewer'] ext=['gh-cli']
+  hook:call-tracker.sh  deps=[] agents=[] ext=[]
+  hook:stop-hook.sh  deps=[] agents=[] ext=[]
+
+## LOCAL
+  agent:codex-fallback  <= direct: MCP:llm__chat
+  agent:explore  <= direct: MCP:llm__chat
+  agent:gpt56-elon  <= direct: EXT:llmux
+  agent:gpt56-zhuge  <= direct: EXT:llmux
+  agent:grok45-elon  <= direct: EXT:llmux
+  agent:librarian  <= direct: MCP:plugin_context7_context7__query-docs,plugin_context7_context7__resolve-library-id
+  agent:oracle  <= direct: MCP:llm__chat
+  agent:orchestrator  <= direct: MCP:llm__chat,plugin_ohmyclaude_claude-as-mcp__chat,plugin_ohmyclaude_claude-as-mcp__chat-reply
+  command:explore  <= direct: MCP:llm__chat
+  command:librarian  <= direct: MCP:plugin_context7_context7__query-docs,plugin_context7_context7__resolve-library-id
+  command:oracle  <= direct: MCP:llm__chat
+  command:oracle-reviewer  <= direct: MCP:llm__chat
+  command:orchestrator  <= direct: MCP:llm__chat,plugin_ohmyclaude_claude-as-mcp__chat,plugin_ohmyclaude_claude-as-mcp__chat-reply
+  hook:hook-proxy.sh  <= direct: SOMA:soma-service
+  hook:hooks.json  <= direct: SOMA:soma-service
+  skill:UIAskUserQuestion  <= direct: MCP:model-command__run
+  skill:animation-vocabulary  <= propagated: →motion-design
+  skill:apple-design  <= propagated: →review-motion
+  skill:architecture-diagram  <= direct: SOMA:slack-mcp-tools,slack-session-dir · MCP:slack-mcp__send_file,slack-mcp__send_media
+  skill:autoz  <= direct: MCP:llm__chat · EXT:llmux
+  skill:block-kit-preview  <= direct: SOMA:block-kit
+  skill:calldiff  <= propagated: →zwork
+  skill:cron  <= direct: SOMA:soma-service · MCP:cron__cron_delete,cron__cron_list,cron__cron_update,model-command__run
+  skill:decision-gate  <= propagated: →zwork
+  skill:design  <= direct: EXT:shadcn-mcp
+  skill:diagram  <= direct: SOMA:slack-mcp-tools · MCP:slack-mcp__send_file,slack-mcp__send_media
+  skill:es  <= propagated: →zwork
+  skill:explore-unknowns  <= direct: MCP:llm__chat
+  skill:github-pr  <= direct: MCP:github__get_pull_request,github__get_pull_request_comments,github__get_pull_request_files,github__get_pull_request_reviews
+  skill:html  <= direct: SOMA:slack-mcp-tools,slack-session-dir,soma-service · MCP:slack-mcp__send_file,slack-mcp__send_media
+  skill:llm-dispatch  <= direct: MCP:llm__chat · EXT:codex-cli
+  skill:lottie  <= propagated: →design
+  skill:motion-design  <= propagated: →design
+  skill:review-motion  <= propagated: →design
+  skill:setup-ai-docs  <= direct: EXT:llmux
+  skill:setup-ai-workflow  <= direct: EXT:llmux
+  skill:trinity  <= direct: MCP:llm__chat · EXT:llmux
+  skill:ui-ux  <= direct: EXT:shadcn-mcp
+  skill:ui-ux-reference  <= propagated: →UIAskUserQuestion
+  skill:using-epic-tasks  <= propagated: →calldiff
+  skill:using-ssot  <= propagated: →autoz
+  skill:using-user-skills  <= direct: MCP:model-command__run
+  skill:using-z  <= direct: MCP:model-command__run
+  skill:z  <= direct: MCP:model-command__run
+  skill:zcheck  <= propagated: →UIAskUserQuestion
+  skill:zdeepresearch  <= direct: MCP:llm__chat
+  skill:zexplore  <= direct: MCP:llm__chat
+  skill:zfix  <= propagated: →using-ssot
+  skill:zkorean  <= direct: MCP:model-command__run
+  skill:zreflect  <= propagated: →trinity
+  skill:zthink  <= propagated: →UIAskUserQuestion
+  skill:ztrace  <= propagated: →UIAskUserQuestion
+  skill:zwork  <= direct: MCP:github__create_pull_request
