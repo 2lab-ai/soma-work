@@ -35,6 +35,7 @@
     "./formatters": "./dist/formatters/index.js",
     "./formatters/directory-formatter": "./dist/formatters/directory-formatter.js",
     "./formatters/markdown-to-blocks": "./dist/formatters/markdown-to-blocks.js",
+    "./incident-contract": "./dist/incident-contract.js",
     "./handoff-budget": "./dist/handoff-budget.js",
     "./instruction-confirm-blocks": "./dist/instruction-confirm-blocks.js",
     "./message-formatter": "./dist/message-formatter.js",
@@ -178,6 +179,9 @@
       ],
       "formatters/markdown-to-blocks": [
         "dist/formatters/markdown-to-blocks.d.ts"
+      ],
+      "incident-contract": [
+        "dist/incident-contract.d.ts"
       ],
       "handoff-budget": [
         "dist/handoff-budget.d.ts"
