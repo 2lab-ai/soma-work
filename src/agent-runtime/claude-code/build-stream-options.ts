@@ -34,6 +34,8 @@ import {
   resolveShowSummary,
 } from '../../claude-handler';
 import { CONFIG_FILE } from '../../env-paths';
+import type { IncidentEvidence, IncidentEvidenceConfig } from '../../incident/evidence';
+import { assertIncidentRequest, buildIncidentSdkOptions, type IncidentRequestLike } from '../../incident/sdk-options';
 import type { McpConfig, SlackContext } from '../../mcp-config-builder';
 import { getPermissionGatedServers, loadMcpToolPermissions } from '../../mcp-tool-permission-config';
 import {
@@ -92,6 +94,21 @@ export interface BuildStreamOptionsDeps {
    * the old "dangerous → ask the human" behaviour.
    */
   safetyClassifier?: SafetyClassifier;
+  /**
+   * Operator config for the incident evidence collector (`rules/config.md` owns
+   * the getter's name; this dep only needs the value). Consulted **only** on the
+   * incident path. Absent there is fatal, not a fallback — see
+   * `buildIncidentSdkOptions`.
+   */
+  getIncidentEvidenceConfig?: () => IncidentEvidenceConfig | null | undefined;
+  /**
+   * Host-side registry of what an incident attempt actually collected (the
+   * collector's records, never a model-produced string), so the later result
+   * validator can check the final message's citations against real observations
+   * instead of trusting the model's prose. The request is passed alongside so
+   * the registry can key by attempt without re-deriving it.
+   */
+  onIncidentEvidence?: (request: IncidentRequestLike, evidence: IncidentEvidence) => void;
 }
 
 export interface BuildStreamOptionsInput {
@@ -122,6 +139,26 @@ export async function buildStreamOptions(
 ): Promise<BuildStreamOptionsResult> {
   const { queryEnv, session, abortController, workingDirectory, slackContext } = input;
   const { logger } = deps;
+
+  // Incident receiver sessions take a separate, minimal option surface and the
+  // ordinary assembly below never runs — no MCP servers, no plugins, no
+  // persona/skills/channel prompt, no sandboxed shell. Returning early (rather
+  // than narrowing the ordinary options afterwards) is the point: a capability
+  // added below can never leak into an incident attempt by omission.
+  const incidentRequest = readIncidentRequest(session);
+  if (incidentRequest) {
+    const incidentModel =
+      session?.model ?? (slackContext?.user ? userSettingsStore.getUserDefaultModel(slackContext.user) : undefined);
+    const incidentOptions = buildIncidentSdkOptions(
+      { request: incidentRequest, queryEnv, model: incidentModel, abortController },
+      {
+        logger,
+        getIncidentEvidenceConfig: deps.getIncidentEvidenceConfig,
+        onEvidence: deps.onIncidentEvidence,
+      },
+    );
+    return attachStderrCapture(incidentOptions, logger);
+  }
 
   const options: Options = {
     // Load settings from filesystem for backward compatibility (Agent SDK v0.1.0 breaking change)
@@ -536,10 +573,21 @@ export async function buildStreamOptions(
     options.abortController = abortController;
   }
 
-  // Capture Claude process stderr for debugging exit code 1 etc. Buffer
-  // every chunk in `stderrBuffer` so rate-limit messages can be extracted
-  // on the error path — `handleClaudeStderrChunk` is logging-policy only
-  // and does NOT participate in buffering.
+  return attachStderrCapture(options, logger);
+}
+
+/**
+ * Capture Claude process stderr for debugging exit code 1 etc. Buffer every
+ * chunk in `stderrBuffer` so rate-limit messages can be extracted on the error
+ * path — `handleClaudeStderrChunk` is logging-policy only (it applies the
+ * redaction/verbosity rules) and does NOT participate in buffering.
+ *
+ * Shared by both paths: an incident attempt spawns the same child process, so it
+ * needs the same tracked spawner (abort must kill its children) and the same
+ * stderr policy. Nothing here touches evidence or the auth env — the buffer
+ * carries the child's stderr only.
+ */
+function attachStderrCapture(options: Options, logger: BuildStreamOptionsDeps['logger']): BuildStreamOptionsResult {
   let stderrBuffer = '';
   options.stderr = (data: string) => {
     stderrBuffer += data;
@@ -551,4 +599,23 @@ export async function buildStreamOptions(
     options,
     getStderrBuffer: () => stderrBuffer,
   };
+}
+
+/**
+ * Read the incident request off the session, structurally (the ingress unit owns
+ * `types.ts`).
+ *
+ * **Absent is the only answer that means "ordinary session".** Anything present
+ * must be a complete v1 request or the build throws: `session-registry.ts:2075`
+ * restores `incidentRequest` verbatim for any non-null object — "any present
+ * value keeps the session restricted (fail closed)" — so a truncated write or a
+ * hand-edited sessions file really can present `{}` here. Answering "not an
+ * incident" for that value would assemble the ORDINARY options (project
+ * settings, plugins, skills, every MCP server, Bash) for a thread the handler
+ * still treats as incident-owned and nobody is watching.
+ */
+function readIncidentRequest(session: ConversationSession | undefined): IncidentRequestLike | undefined {
+  const candidate = (session as { incidentRequest?: unknown } | undefined)?.incidentRequest;
+  if (candidate === undefined) return undefined;
+  return assertIncidentRequest(candidate);
 }

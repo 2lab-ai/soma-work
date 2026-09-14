@@ -318,6 +318,27 @@ export interface SessionGoal {
   lastEvalSummaryHash?: string;
 }
 
+/**
+ * The verified Eagle incident request that owns a session.
+ *
+ * Structural mirror of `IncidentRequest` in
+ * `packages/slack/src/incident-contract.ts` (the SSOT — that module is the
+ * only place a request is ever parsed or validated). It is re-declared here
+ * because root `src/` resolves `@soma/slack/*` through the workspace symlink
+ * to the package's compiled `dist/`, which is not guaranteed to exist when
+ * this file is typechecked.
+ */
+export interface SessionIncidentRequest {
+  readonly version: 1;
+  readonly incident_id: string;
+  readonly lifecycle_id: string;
+  readonly attempt_id: string;
+  readonly channel_id: string;
+  readonly parent_ts: string;
+  readonly env: string;
+  readonly summary: string;
+}
+
 export interface ConversationSession {
   ownerId: string; // User who started the session
   ownerName?: string; // Display name of owner
@@ -453,6 +474,22 @@ export interface ConversationSession {
   isOnboarding?: boolean;
   // Session-unique base working directory (auto-created on new session, cleaned up on end)
   sessionWorkingDir?: string;
+  /**
+   * Set once by `SessionInitializer` from a verified incident turn; makes this
+   * session incident-owned (restricted runtime, ordinary traffic refused in
+   * the thread). Persisted so a restart cannot launder the restriction away,
+   * and deliberately NOT cleared by `resetSessionContext` for the same reason.
+   */
+  incidentRequest?: SessionIncidentRequest;
+  /**
+   * `attempt_id` of the incident attempt whose run the HOST observed finish
+   * (completion path only — never the model, message text, or a command).
+   * The ingress requires it to equal the currently owning attempt before it
+   * admits a retry on the same incident parent, and clears it during the
+   * handover. Persisted so a restart mid-incident keeps the distinction
+   * between "still running" and "finished, retryable".
+   */
+  incidentAttemptFinishedId?: string;
   // Source working directories created during PR review/fix (tracked for cleanup on session end)
   sourceWorkingDirs?: string[];
   // Compaction-Aware Context Preservation (#196):

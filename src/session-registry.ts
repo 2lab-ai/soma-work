@@ -26,6 +26,7 @@ import type {
   ConversationSession,
   HandoffContext,
   SessionGoal,
+  SessionIncidentRequest,
   SessionInstruction,
   SessionLink,
   SessionLinkHistory,
@@ -77,6 +78,16 @@ const ACTIVE_KEY_BY_RESOURCE: Record<SessionResourceType, keyof SessionLinks> = 
  * Serialized session for file persistence
  */
 interface SerializedSession {
+  /**
+   * Incident ownership survives restarts: dropping it would silently promote a
+   * restricted session back to an ordinary one.
+   */
+  incidentRequest?: SessionIncidentRequest;
+  /**
+   * Host-written completion marker for the owning attempt — the only evidence
+   * that admits a retry, so it must survive a restart with the request.
+   */
+  incidentAttemptFinishedId?: string;
   key: string;
   ownerId: string;
   ownerName?: string;
@@ -1386,6 +1397,11 @@ export class SessionRegistry {
     session.state = 'INITIALIZING';
     session.workflow = undefined;
 
+    // NOTE: `session.incidentRequest` is deliberately NOT cleared here. A
+    // reset makes a fresh logical conversation, not a fresh privilege level —
+    // if `/new` dropped the marker, the cheapest way to turn a restricted
+    // incident session into an unrestricted coding session would be to reset it.
+
     // Clear stale handoff metadata. The AD-12 filter (#695) persists sessions
     // that still have handoffContext; leaving it here after a reset would keep
     // a stale metadata blob on disk forever when the reset is not immediately
@@ -1785,7 +1801,11 @@ export class SessionRegistry {
           session.handoffContext ||
           session.goal ||
           session.goalQueue?.length ||
-          session.goalHistory?.length
+          session.goalHistory?.length ||
+          // An incident session is persisted from the moment it is marked,
+          // even before the SDK assigns a sessionId — otherwise a crash in
+          // that window would bring the thread back unrestricted.
+          session.incidentRequest
         ) {
           this.ensureSessionLinkState(session);
           sessionsArray.push({
@@ -1870,6 +1890,10 @@ export class SessionRegistry {
             handoffContext: session.handoffContext,
             // Host-enforced auto-handoff budget (issue #697)
             autoHandoffBudget: session.autoHandoffBudget,
+            // Verified Eagle incident request that owns this session, plus the
+            // host completion marker that decides whether a retry is admissible
+            incidentRequest: session.incidentRequest,
+            incidentAttemptFinishedId: session.incidentAttemptFinishedId,
           });
         }
       }
@@ -2047,6 +2071,16 @@ export class SessionRegistry {
               : undefined,
           // Conversation record ID
           conversationId: serialized.conversationId,
+          // Incident ownership is restored verbatim and never repaired: any
+          // present value keeps the session restricted (fail closed).
+          incidentRequest:
+            typeof serialized.incidentRequest === 'object' && serialized.incidentRequest !== null
+              ? serialized.incidentRequest
+              : undefined,
+          // Restored only as a string; anything else reads as "not finished",
+          // which denies the retry rather than admitting one on bad state.
+          incidentAttemptFinishedId:
+            typeof serialized.incidentAttemptFinishedId === 'string' ? serialized.incidentAttemptFinishedId : undefined,
           // Merge code change stats
           mergeStats: serialized.mergeStats,
           // User SSOT instructions (restored from disk).

@@ -62,7 +62,7 @@ import { DmZRespond } from './slack/z/respond';
 import { isDmAllowedForNonAdmin } from './slack/z/whitelist';
 import { TodoManager } from './todo-manager';
 import { TurnNotifier } from './turn-notifier';
-import type { ConversationSession, SessionGoal } from './types';
+import type { ConversationSession, SessionGoal, SessionIncidentRequest } from './types';
 import { userSettingsStore } from './user-settings-store';
 import { WorkingDirectoryManager } from './working-directory-manager';
 
@@ -372,6 +372,27 @@ export class SlackHandler {
     const { channel, thread_ts, ts } = event;
     const originalThreadTs = thread_ts || ts;
 
+    // Eagle incident turns. `incidentTurn` is set ONLY by the ingress
+    // (`@soma/slack/event-router`) after the contract verified the sender, so
+    // its presence means "this turn IS the verified request".
+    //
+    // The cast is deliberate: root `src/` typechecks `MessageEvent` against the
+    // workspace package's compiled `dist/`, which may predate the field.
+    const incidentTurn = (event.routeContext as { incidentRequest?: SessionIncidentRequest } | undefined)
+      ?.incidentRequest;
+    const incidentOwnedThread = this.claudeHandler.getSession?.(channel, originalThreadTs)?.incidentRequest;
+    if (incidentOwnedThread && !incidentTurn && !event.synthetic) {
+      // An incident thread is a bot-to-bot surface: ordinary follow-ups are
+      // dropped rather than executed, so an incident session can never be
+      // steered into arbitrary work. Users act through the Eagle-eye API.
+      this.logger.info('Ignoring non-incident message in an incident-owned thread', {
+        channel,
+        threadTs: originalThreadTs,
+        user: event.user,
+      });
+      return;
+    }
+
     if (channel.startsWith('D')) {
       const handledCleanupRequest = await this.handleDmCleanupRequest(event, say);
       if (handledCleanupRequest) {
@@ -460,7 +481,10 @@ export class SlackHandler {
     // (no remainder) keeps its existing SessionCommandHandler routing.
     let inlineModel: string | undefined;
     let inlineNoGoal = false;
-    if (!event.synthetic) {
+    // An incident turn's text is host-built; the only payload-derived part is
+    // quoted summary data. Parsing directives out of it would hand the alert
+    // producer a model/permission knob, so the parser never runs on it.
+    if (!event.synthetic && !incidentTurn) {
       const directives = CommandParser.parseInlineSessionDirectives(event.text || '');
       if (directives) {
         if (directives.remainder === '') {
@@ -738,6 +762,9 @@ export class SlackHandler {
         !inlineNoGoal &&
         (!continueWithPrompt || (freshContextStart && !!deferredSkillFire)) &&
         !event.synthetic &&
+        // An incident report is not the requesting bot's long-running goal:
+        // promoting it would keep the restricted session running on its own.
+        !incidentTurn &&
         effectiveText.trim() !== '' &&
         userSettingsStore.getUserAutoGoalEnabled(event.user)
       ) {
@@ -771,7 +798,10 @@ export class SlackHandler {
       // requested order: autogoal → autoskill → forced `$skill`. Appends the
       // `<invoked_skills>` block to THIS turn's dispatch prompt so the model
       // actually executes the skills. Skips synthetic continuation turns.
-      if (freshContextStart && !event.synthetic) {
+      // Never on an incident turn: the sender is a monitoring bot, and firing
+      // its registered skills would execute user-authored instructions inside
+      // a session that is supposed to only produce an incident report.
+      if (freshContextStart && !event.synthetic && !incidentTurn) {
         try {
           const fire = buildAutoskillFire(event.user, `<@${event.user}>`);
           if (fire) {
