@@ -33,7 +33,7 @@ import {
   isOneMContextUnavailableSignal,
   ONE_M_CONTEXT_UNAVAILABLE_CODE,
 } from './metrics/model-registry';
-import { BUNDLED_PLUGINS_DIR } from './plugin/bundled';
+import { BUNDLED_PLUGINS_DIR, CORE_PLUGIN_DIR } from './plugin/bundled';
 import type { SdkPluginPath } from './plugin/types';
 import type {
   ActivityState,
@@ -46,10 +46,12 @@ import type {
   WorkflowType,
 } from './types';
 
-// Bundled local plugins directory (the first-party `zworkflow` plugin = src/local).
-// Used as a fallback when no PluginManager is configured, and as the canonical
-// path the bundled `zworkflow@soma-work` default resolves to (see plugin/bundled.ts).
+// Bundled first-party plugin directories (`local` = plugin/local, `core` =
+// plugin/core). Used as a fallback when no PluginManager is configured, and as
+// the canonical paths the bundled `local@soma-work` / `core@soma-work` defaults
+// resolve to (see plugin/bundled.ts).
 const LOCAL_PLUGINS_DIR = BUNDLED_PLUGINS_DIR;
+const CORE_PLUGINS_DIR = CORE_PLUGIN_DIR;
 
 import {
   boundRateLimitDelayMs,
@@ -335,11 +337,11 @@ export class ClaudeHandler {
   private getEffectivePluginPaths(): SdkPluginPath[] {
     const pm = this.mcpManager.getPluginManager();
     const paths = pm?.getPluginPaths() ?? [];
-    // Guarantee the bundled local plugin (zworkflow) is present. When the
-    // PluginManager already resolved it (its bundled path == LOCAL_PLUGINS_DIR),
-    // the de-dup below keeps it single; otherwise we prepend it.
-    const hasLocal = paths.some((p) => p.path === LOCAL_PLUGINS_DIR);
-    const merged = hasLocal ? [...paths] : [{ type: 'local' as const, path: LOCAL_PLUGINS_DIR }, ...paths];
+    // Guarantee BOTH bundled plugins (`local` and `core`) are present. When the
+    // PluginManager already resolved one (its bundled path == the dir below),
+    // the de-dup keeps it single; otherwise we prepend the missing ones.
+    const missing = [LOCAL_PLUGINS_DIR, CORE_PLUGINS_DIR].filter((dir) => !paths.some((p) => p.path === dir));
+    const merged = [...missing.map((dir) => ({ type: 'local' as const, path: dir })), ...paths];
     // De-dup by path so the same plugin directory never loads twice (which would
     // register duplicate skill names and break the session).
     const seen = new Set<string>();

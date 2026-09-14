@@ -18,7 +18,7 @@ soma-work/
   src/plugin/bundled.ts               BUNDLED_PLUGINS = { local: <root>/plugin/local,
                                                           core:  <root>/plugin/core }
   src/plugin/defaults.ts              DEFAULT_PLUGINS += local@soma-work, core@soma-work
-  package.json  build                 cp -r plugin dist/plugin-bundle   (name TBD, see §Bundle path)
+  package.json  build                 cp -r plugin/local dist/local && cp -r plugin/core dist/core
 ```
 
 Skill namespaces follow plugin names: `local:<skill>` and `core:<skill>`. Install references are
@@ -48,12 +48,13 @@ WU-3 so membership cannot drift back to prose.
 ## Bundle path
 
 Today `bundled.ts` computes `path.join(__dirname, '..', 'local')`, which only works because
-`src/local` sits beside `src/plugin` and the build copies it to `dist/local`. Moving to
-`plugin/` at repo root breaks that arithmetic in both modes. Decision for WU-1: compute
-`<root>` once (`path.resolve(__dirname, '..', '..')` in source and dist alike, since both are
-one level below the root of their tree) and copy `plugin/` to `dist/plugin-bundle/` — the
-name `dist/plugin` is taken by the compiled `src/plugin/*.ts`. The contract test asserts both
-modes.
+`src/local` sits beside `src/plugin` and the build copies it to `dist/local`. Decision (2026-09-14,
+WU-1): keep the **dist layout unchanged** — build copies `plugin/local` → `dist/local` and
+`plugin/core` → `dist/core` — so every `dist/local/skills` consumer (skill-locator,
+skill-force-handler, smoke/packaging scripts) keeps its path. `bundled.ts` resolves each name as
+`dist/<name>` when that exists (bundle mode) and `<root>/plugin/<name>` otherwise (source mode);
+the contract test asserts both. The earlier `dist/plugin-bundle` idea is dropped: it would have
+touched ~10 more runtime files for no benefit.
 
 ## Cross-plugin references
 

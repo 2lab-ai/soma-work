@@ -883,46 +883,56 @@ function inventoryProblems(root) {
  */
 const SKILL_DEV_RUNNERS = /^(?:npx\s+)?(?:tsx|ts-node)$/;
 
+/**
+ * The bundled plugin roots, each staged from its `plugin/<name>` source tree to
+ * `dist/<name>`. Both ship skills, so both are walked here — a check scoped to
+ * `local` alone would have let every `core` skill into the bundle unexamined.
+ */
+const PLUGIN_ROOTS = ['local', 'core'];
+
 /** `<interpreter> <runtime-root-relative path>` inside a staged SKILL.md. */
-const SKILL_COMMAND_RE = /\b((?:npx\s+)?[A-Za-z0-9_.@/-]+)\s+(local\/[^\s"'`)]+)/g;
+const SKILL_COMMAND_RE = /\b((?:npx\s+)?[A-Za-z0-9_.@/-]+)\s+((?:local|core)\/[^\s"'`)]+)/g;
 
 /**
  * Every command a staged skill tells the operator to run must exist in the
  * bundle and be runnable without devDependencies.
  *
- * Scoped to `local/…` targets on purpose: those are runtime-root-relative paths
- * into the bundle, and they are the only ones this tree can answer for.
- * `$CLAUDE_PLUGIN_ROOT/...`, `npx <published-package>` and absolute paths are
- * somebody else's closure.
+ * Scoped to `local/…` and `core/…` targets on purpose: those are
+ * runtime-root-relative paths into the bundle, and they are the only ones this
+ * tree can answer for. `$CLAUDE_PLUGIN_ROOT/...`, `npx <published-package>` and
+ * absolute paths are somebody else's closure.
  */
 function skillClosureProblems(root) {
   const problems = [];
-  const skillsRoot = path.join(root, 'dist', 'local', 'skills');
-  if (!fs.existsSync(skillsRoot)) return problems;
 
-  walk(skillsRoot, (rel, entry) => {
-    if (entry.isDirectory() || entry.name !== 'SKILL.md') return;
-    const skillRel = `dist/local/skills/${rel}`;
-    let text;
-    try {
-      text = fs.readFileSync(path.join(skillsRoot, rel), 'utf8');
-    } catch {
-      problems.push(`staged skill could not be read: ${skillRel}`);
-      return;
-    }
-    for (const match of text.matchAll(SKILL_COMMAND_RE)) {
-      const runner = match[1].replace(/\s+/g, ' ');
-      const target = match[2];
-      if (SKILL_DEV_RUNNERS.test(runner)) {
-        problems.push(`staged skill invokes a devDependency runner: ${skillRel} -> ${runner} ${target}`);
-        continue;
+  for (const plugin of PLUGIN_ROOTS) {
+    const skillsRoot = path.join(root, 'dist', plugin, 'skills');
+    if (!fs.existsSync(skillsRoot)) continue;
+
+    walk(skillsRoot, (rel, entry) => {
+      if (entry.isDirectory() || entry.name !== 'SKILL.md') return;
+      const skillRel = `dist/${plugin}/skills/${rel}`;
+      let text;
+      try {
+        text = fs.readFileSync(path.join(skillsRoot, rel), 'utf8');
+      } catch {
+        problems.push(`staged skill could not be read: ${skillRel}`);
+        return;
       }
-      const resolved = lstatOrNull(path.join(root, 'dist', target));
-      if (resolved === null || !resolved.isFile()) {
-        problems.push(`staged skill references a missing command target: ${skillRel} -> ${target}`);
+      for (const match of text.matchAll(SKILL_COMMAND_RE)) {
+        const runner = match[1].replace(/\s+/g, ' ');
+        const target = match[2];
+        if (SKILL_DEV_RUNNERS.test(runner)) {
+          problems.push(`staged skill invokes a devDependency runner: ${skillRel} -> ${runner} ${target}`);
+          continue;
+        }
+        const resolved = lstatOrNull(path.join(root, 'dist', target));
+        if (resolved === null || !resolved.isFile()) {
+          problems.push(`staged skill references a missing command target: ${skillRel} -> ${target}`);
+        }
       }
-    }
-  });
+    });
+  }
 
   return problems;
 }

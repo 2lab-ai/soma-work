@@ -173,7 +173,7 @@ describe('buildQueryEnv', () => {
   });
 
   // ===== HOOKS_PROXY_ENABLED opt-in =====
-  // The zworkflow plugin defaults to the self-contained shell guard so external
+  // The local plugin defaults to the self-contained shell guard so external
   // installs work without a service. soma-work owns the Fastify hook service, so
   // it opts spawned agents INTO the HTTP proxy by setting HOOKS_PROXY_ENABLED.
 

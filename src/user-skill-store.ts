@@ -3,7 +3,7 @@
  *
  * Mirrors user-memory-store.ts pattern for per-user skill management.
  * Skills are stored at DATA_DIR/{userId}/skills/{name}/SKILL.md
- * Format: YAML frontmatter + markdown body (same as src/local/skills/).
+ * Format: YAML frontmatter + markdown body (same as plugin/local/skills/).
  *
  * Inspired by hermes-agent skill_manager_tool.py — but multi-tenant (per-user isolation).
  *

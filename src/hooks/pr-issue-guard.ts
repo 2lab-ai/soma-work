@@ -3,7 +3,7 @@
  *
  * Pure function called by the in-process SDK PreToolUse hook in
  * `src/claude-handler.ts`. Enforces the issue-link precondition documented in
- * `src/local/skills/using-z/SKILL.md` §Session Handoff Protocol on PR-creation
+ * `plugin/local/skills/using-z/SKILL.md` §Session Handoff Protocol on PR-creation
  * tool calls (`Bash gh pr create` and `mcp__github__create_pull_request`)
  * for sessions started via z handoff.
  *

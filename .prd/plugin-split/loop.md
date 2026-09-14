@@ -1,6 +1,6 @@
 # plugin-split — loop
 
-Driver for the converge rounds. Round 0 = this document; no code has moved.
+Driver for the converge rounds. Round 0 = spec fixed (2026-09-14 morning). Round 1 = WU-1..3 implemented on this branch (2026-09-14, PR-only per user; merge is the user's review gate).
 
 ## Build facts (measured 2026-09-14, worktree `.worktrees/prd-plugin-split` @ `c0a3bac`)
 
@@ -34,17 +34,17 @@ WU-1 + WU-2 + WU-3 are one atomic PR: the marketplace tracks `main`, and a `main
 - Round 2: WU-4 tranches, each independently accepted or closed as permanent `local`.
 - Round 3: WU-5, WU-6.
 
-## Gap matrix (round 0)
+## Gap matrix (round 1 — after WU-1..3, before merge)
 
 | acceptance (01-spec §Acceptance) | state | evidence |
 |---|---|---|
-| 1 layout | open | `src/local` present, `plugin/` absent |
-| 2 core closure clean | open | verdict exists, `plugin/core` does not |
-| 3 contract tests | open | 6 tests pin old layout |
-| 4 build copies | open | `cp -r src/local dist/` in `package.json:13` |
+| 1 layout | closed on branch | `plugin/local` (38 skills · 9 agents · 6 commands · 4 hooks), `plugin/core` (8 skills · 7 agents · prompts/reviewer-persona.md); `src/local` gone |
+| 2 core closure clean | closed on branch | `src/__tests__/core-plugin-closure.test.ts` 19 tests green; census on `plugin/core`: 0 direct disqualifications |
+| 3 contract tests | closed on branch | `plugin-split.test.ts` (renamed) + 6 repointed; full vitest 0 failed / 9916 passed (baseline 9895; +21 = plugin/** colocated tests re-included via vitest.config.ts) |
+| 4 build copies | closed on branch | `npm run build` → `dist/local` + `dist/core`; `require('./dist/plugin/bundled.js').BUNDLED_PLUGINS` = {local: …/dist/local, core: …/dist/core} |
 | 5 bot loads both | open | — |
-| 6 no `zworkflow:` refs | open | zbrain: ≥6 skills, 3 memory files; soma-work: 3 src files |
-| 7 defaults list | open | `defaults.ts:29-31` |
+| 6 no `zworkflow:` refs | soma-work closed on branch (`grep -rn zworkflow: src plugin` = 0); zbrain open (WU-6) | zbrain: ≥6 skills, 3 memory files |
+| 7 defaults list | closed on branch | `DEFAULT_PLUGINS` = superpowers, stv, local@soma-work, core@soma-work |
 
 ## User decisions carried (defaults apply unless vetoed)
 
@@ -56,4 +56,19 @@ WU-1 + WU-2 + WU-3 are one atomic PR: the marketplace tracks `main`, and a `main
 
 ## Verify log
 
-(empty — round 0)
+### Round 1 — 2026-09-14 (branch `prd/plugin-split`, PR-only)
+
+Corrections discovered while implementing (both recorded in `03-migration-verdict.md`):
+- `commands/review-pr` stays local — `oracle-reviewer` (llm__chat) is an always-applicable reviewer; census had no command→command edges.
+- `agents/zkorean` stays local — the agent reads the local skill's `references/rules.md`; entangled pair.
+- `prompts/reviewer-persona.md` moves with `agents/reviewer` (sole user) — caught by the closure test's path-resolution rule.
+
+Coverage holes opened by the move and closed in the same PR: `vitest.config.ts` include and `biome.json` includes (+`npm run check`) now cover `plugin/**` — 15 colocated test files had gone silently dead.
+
+Gates (run by the dispatcher, not taken from agent reports):
+- `npx tsc --noEmit` OK · `npx biome check src/ somalib/ scripts/ packages/ plugin/` 0 errors (1046 files)
+- `npx vitest run` 0 failed / 9916 passed
+- `npm run build` OK; `dist/local`, `dist/core` present; bundled resolver returns both in bundle mode
+- `plugin-dep-census.py plugin/core`: 0 direct disqualifications; closure test green
+
+Not done in this round (by design): bot-side smoke (acceptance 5) — needs a deployed bot; zbrain namespace migration (WU-6); stv (WU-5, user: do not touch); release (WU-7).

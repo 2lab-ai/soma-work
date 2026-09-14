@@ -71,7 +71,7 @@ describe('saveConfig', () => {
       plugin: {
         marketplace: [{ name: 'official', repo: 'anthropics/plugins', ref: 'v1.0.0' }],
         plugins: ['omc@official'],
-        localOverrides: ['./src/local'],
+        localOverrides: ['./plugin/local'],
       } as any,
     };
 

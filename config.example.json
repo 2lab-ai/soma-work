@@ -46,7 +46,8 @@
       }
     ],
     "plugins": [
-      "zworkflow@soma-work"
+      "local@soma-work",
+      "core@soma-work"
     ],
     "localOverrides": []
   },

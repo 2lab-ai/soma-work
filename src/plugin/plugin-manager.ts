@@ -60,8 +60,8 @@ export class PluginManager {
 
   /**
    * @param bundledPlugins Map of plugin name → absolute local path for first-party
-   *   plugins shipped inside the bundle (e.g. `{ zworkflow: dist/local }`). Any
-   *   plugin ref whose name is a key here resolves to that path with no fetch.
+   *   plugins shipped inside the bundle (e.g. `{ local: dist/local, core: dist/core }`).
+   *   Any plugin ref whose name is a key here resolves to that path with no fetch.
    */
   constructor(
     pluginConfig: PluginConfig,
@@ -709,9 +709,10 @@ export class PluginManager {
    * Resolve a first-party bundled plugin to its local path without any
    * marketplace fetch.
    *
-   * Bundled plugins (e.g. `zworkflow` = src/local) ship inside the soma-work
-   * bundle and are listed in DEFAULT_PLUGINS for symmetry/discoverability, but
-   * must never trigger a network download. Returns null for non-bundled refs.
+   * Bundled plugins (`local` = plugin/local, `core` = plugin/core) ship inside
+   * the soma-work bundle and are listed in DEFAULT_PLUGINS for
+   * symmetry/discoverability, but must never trigger a network download.
+   * Returns null for non-bundled refs.
    */
   private resolveBundled(ref: PluginRef): ResolvedPlugin | null {
     const bundledPath = this.bundledPlugins[ref.pluginName];

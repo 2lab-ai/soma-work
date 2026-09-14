@@ -39,5 +39,5 @@ at the top of this prompt and parsed its typed metadata into
   at phase5 end — but that is the only outgoing handoff this session can
   produce (hop budget = 1, enforced by #697 once implemented).
 
-See `src/local/skills/using-z/SKILL.md` §Session Handoff Protocol for the full
+See `plugin/local/skills/using-z/SKILL.md` §Session Handoff Protocol for the full
 contract and §Sentinel Grammar rule 4 for required block fields.

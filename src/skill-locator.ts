@@ -12,9 +12,10 @@
  *
  *   1. user        → DATA_DIR/{userId}/skills/{name}/SKILL.md (only if userId)
  *   2. local       → LOCAL_SKILLS_DIR/{name}/SKILL.md
- *   3. stv         → PLUGINS_DIR/stv/skills/{name}/SKILL.md
- *   4. superpowers → PLUGINS_DIR/superpowers/skills/{name}/SKILL.md
- *   5. other plugins under PLUGINS_DIR (first match wins, alphabetical)
+ *   3. core        → CORE_SKILLS_DIR/{name}/SKILL.md
+ *   4. stv         → PLUGINS_DIR/stv/skills/{name}/SKILL.md
+ *   5. superpowers → PLUGINS_DIR/superpowers/skills/{name}/SKILL.md
+ *   6. other plugins under PLUGINS_DIR (first match wins, alphabetical)
  *
  * Used by:
  *   - prompt-builder.applyAutoskills (resolveAutoskillContent)
@@ -26,21 +27,23 @@ import * as path from 'node:path';
 import { DATA_DIR, PLUGINS_DIR } from './env-paths';
 import { Logger } from './logger';
 import { isSafePathSegment } from './path-utils';
+import { BUNDLED_PLUGINS_DIR, CORE_PLUGIN_DIR } from './plugin/bundled';
 
 const logger = new Logger('SkillLocator');
 
 /**
- * LOCAL_SKILLS_DIR resolves to dist/local/skills at runtime. This module
- * compiles to dist/skill-locator.js, so __dirname = dist root → local/skills.
- * (The build step copies src/local → dist/local; see package.json `build`.)
+ * Skill dirs of the two bundled first-party plugins. Derived from the bundled
+ * plugin dirs (see ./plugin/bundled) so they stay correct in BOTH run modes:
+ * dist/{local,core}/skills at runtime, plugin/{local,core}/skills from source.
  */
-const LOCAL_SKILLS_DIR = path.join(__dirname, 'local', 'skills');
+const LOCAL_SKILLS_DIR = path.join(BUNDLED_PLUGINS_DIR, 'skills');
+const CORE_SKILLS_DIR = path.join(CORE_PLUGIN_DIR, 'skills');
 
 /** Priority plugin slots, probed before the generic PLUGINS_DIR scan. */
 const PRIORITY_PLUGINS = ['stv', 'superpowers'] as const;
 
 /** Source namespace of a located skill. `plugin:<name>` for non-priority plugins. */
-export type SkillSource = 'user' | 'local' | 'stv' | 'superpowers' | string;
+export type SkillSource = 'user' | 'local' | 'core' | 'stv' | 'superpowers' | string;
 
 export interface AvailableSkill {
   /** Skill name (directory / invocation name). */
@@ -68,7 +71,7 @@ function userSkillsDir(userId: string): string {
  * Resolve a bare skill name to its SKILL.md content using the shared fallback
  * chain. Returns null when no namespace owns the name (caller logs/skips).
  * Pure read-only filesystem probing — no permission gate (autoskills only ever
- * reference the OWNER's own user namespace + shared local/plugin skills).
+ * reference the OWNER's own user namespace + shared local/core/plugin skills).
  */
 export function resolveAutoskillContent(name: string, userId?: string): ResolvedAutoskill | null {
   if (!isSafePathSegment(name)) return null;
@@ -79,6 +82,7 @@ export function resolveAutoskillContent(name: string, userId?: string): Resolved
     candidates.push({ key: `user:${name}`, file: skillMdPath(userSkillsDir(userId), name) });
   }
   candidates.push({ key: `local:${name}`, file: skillMdPath(LOCAL_SKILLS_DIR, name) });
+  candidates.push({ key: `core:${name}`, file: skillMdPath(CORE_SKILLS_DIR, name) });
   for (const plugin of PRIORITY_PLUGINS) {
     candidates.push({ key: `${plugin}:${name}`, file: skillMdPath(path.join(PLUGINS_DIR, plugin, 'skills'), name) });
   }
@@ -93,7 +97,7 @@ export function resolveAutoskillContent(name: string, userId?: string): Resolved
     }
   }
 
-  // 5. Scan remaining plugins (alphabetical), excluding the priority slots.
+  // 6. Scan remaining plugins (alphabetical), excluding the priority slots.
   for (const plugin of scanPluginNames()) {
     if ((PRIORITY_PLUGINS as readonly string[]).includes(plugin)) continue;
     const file = skillMdPath(path.join(PLUGINS_DIR, plugin, 'skills'), name);
@@ -117,7 +121,7 @@ export function autoskillExists(name: string, userId?: string): boolean {
 /**
  * List every skill the given user could register as an autoskill. Each name
  * appears once, attributed to the HIGHEST-priority namespace that owns it
- * (user > local > stv > superpowers > other plugins). Sorted by name.
+ * (user > local > core > stv > superpowers > other plugins). Sorted by name.
  */
 export function listAvailableSkills(userId?: string): AvailableSkill[] {
   const byName = new Map<string, SkillSource>();
@@ -133,11 +137,13 @@ export function listAvailableSkills(userId?: string): AvailableSkill[] {
   }
   // 2. local
   for (const name of listSkillDirsWithMd(LOCAL_SKILLS_DIR)) add(name, 'local');
-  // 3-4. priority plugins
+  // 3. core
+  for (const name of listSkillDirsWithMd(CORE_SKILLS_DIR)) add(name, 'core');
+  // 4-5. priority plugins
   for (const plugin of PRIORITY_PLUGINS) {
     for (const name of listSkillDirsWithMd(path.join(PLUGINS_DIR, plugin, 'skills'))) add(name, plugin);
   }
-  // 5. remaining plugins (alphabetical)
+  // 6. remaining plugins (alphabetical)
   for (const plugin of scanPluginNames()) {
     if ((PRIORITY_PLUGINS as readonly string[]).includes(plugin)) continue;
     for (const name of listSkillDirsWithMd(path.join(PLUGINS_DIR, plugin, 'skills'))) add(name, plugin);

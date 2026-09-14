@@ -11,24 +11,26 @@ import type { MarketplaceEntry } from './types';
 export const DEFAULT_MARKETPLACES: MarketplaceEntry[] = [
   { name: 'claude-plugins-official', repo: 'anthropics/claude-plugins-official', ref: 'main' },
   { name: 'oh-my-claude', repo: '2lab-ai/oh-my-claude', ref: 'main' },
-  // soma-work hosts the first-party `zworkflow` plugin (= src/local). Registered
-  // as a default marketplace so `/plugin install zworkflow@soma-work` resolves and
-  // so a remote fetch can serve as a fallback if the bundled copy is ever missing.
+  // soma-work hosts the first-party `local` (= plugin/local) and `core`
+  // (= plugin/core) plugins. Registered as a default marketplace so
+  // `/plugin install local@soma-work` resolves and so a remote fetch can serve
+  // as a fallback if the bundled copy is ever missing.
   { name: 'soma-work', repo: '2lab-ai/soma-work', ref: 'main' },
 ];
 
 /**
  * Default plugin refs — always loaded, cannot be removed.
  *
- * `zworkflow@soma-work` is a first-party BUNDLED plugin: it is listed here for
- * symmetry with `stv@oh-my-claude` (both are runtime-required defaults), but at
- * resolution time PluginManager short-circuits it to the bundled local dir
- * (see ./bundled) instead of fetching it from the network.
+ * `local@soma-work` and `core@soma-work` are first-party BUNDLED plugins: they
+ * are listed here for symmetry with `stv@oh-my-claude` (all are runtime-required
+ * defaults), but at resolution time PluginManager short-circuits them to their
+ * bundled dirs (see ./bundled) instead of fetching them from the network.
  */
 export const DEFAULT_PLUGINS: string[] = [
   'superpowers@claude-plugins-official',
   'stv@oh-my-claude',
-  'zworkflow@soma-work',
+  'local@soma-work',
+  'core@soma-work',
 ];
 
 /** Check if a plugin ref is a default (protected from removal). */

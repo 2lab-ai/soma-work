@@ -13,14 +13,14 @@ const repoRoot = path.resolve(__dirname, '..', '..');
  * "Detected 5 or more tool calls without TodoWrite/TaskCreate/TaskUpdate".
  * In practice it fired mid-task on read-only exploration and turned a working
  * session into a deadlock, so it was removed from both implementations (the
- * standalone shell guard shipped in the zworkflow plugin and the Fastify hook
+ * standalone shell guard shipped in the local plugin and the Fastify hook
  * service). This test keeps it from being reintroduced.
  */
 describe('todo-guard is fully removed', () => {
   const removedFiles = [
-    'src/local/hooks/todo-guard.sh',
-    'src/local/hooks/todo-guard.test.sh',
-    'src/local/hooks/todo-guard-cleanup.sh',
+    'plugin/local/hooks/todo-guard.sh',
+    'plugin/local/hooks/todo-guard.test.sh',
+    'plugin/local/hooks/todo-guard-cleanup.sh',
     'src/hooks/todo-guard.ts',
     'src/hooks/__tests__/todo-guard.test.ts',
   ];
@@ -30,7 +30,7 @@ describe('todo-guard is fully removed', () => {
   });
 
   it('leaves no todo-guard reference in the hook sources', () => {
-    const dirs = ['src/hooks', 'src/local/hooks'];
+    const dirs = ['src/hooks', 'plugin/local/hooks'];
     const offenders: string[] = [];
 
     for (const dir of dirs) {
@@ -57,7 +57,7 @@ describe('todo-guard is fully removed', () => {
   });
 
   it('lets an unlimited run of task-less tool calls through hook-proxy.sh', () => {
-    const proxy = path.join(repoRoot, 'src/local/hooks/hook-proxy.sh');
+    const proxy = path.join(repoRoot, 'plugin/local/hooks/hook-proxy.sh');
     const input = JSON.stringify({
       session_id: 'no-todo-guard-session',
       tool_name: 'Read',

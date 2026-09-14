@@ -1,0 +1,8 @@
+{
+  "name": "core",
+  "version": "2.0.0",
+  "description": "soma-work core plugin: skills and agents that run standalone in any Claude Code session — no MCP server, no soma-work service, no LLM proxy. Membership is machine-judged by the dependency-closure test (src/__tests__/core-plugin-closure.test.ts).",
+  "author": {
+    "name": "2lab-ai"
+  }
+}

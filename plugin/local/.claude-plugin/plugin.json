@@ -1,0 +1,8 @@
+{
+  "name": "local",
+  "version": "2.0.0",
+  "description": "soma-work local plugin: the bot-bound half of the former zworkflow plugin — z / zcheck / ztrace / autoz / zwork / trinity pipeline, hook-proxy hooks, Slack delivery skills and everything that needs soma-work MCP servers or the LLM proxy. Bundled default; only meaningful inside the soma-work bot.",
+  "author": {
+    "name": "2lab-ai"
+  }
+}

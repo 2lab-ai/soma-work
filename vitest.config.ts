@@ -9,6 +9,7 @@ export default defineConfig({
       'somalib/**/*.test.ts',
       'packages/**/*.test.ts',
       'scripts/**/*.test.ts',
+      'plugin/**/*.test.ts',
     ],
     exclude: [
       '**/node_modules/**',

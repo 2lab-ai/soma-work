@@ -8,7 +8,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { describe, expect, it } from 'vitest';
 
-const SKILL_PATH = path.join(__dirname, '..', 'local', 'skills', 'cron', 'SKILL.md');
+const SKILL_PATH = path.join(__dirname, '..', '..', 'plugin', 'local', 'skills', 'cron', 'SKILL.md');
 
 describe('local cron skill', () => {
   it('exists', () => {

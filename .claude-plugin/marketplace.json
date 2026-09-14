@@ -6,13 +6,18 @@
   },
   "metadata": {
     "description": "soma-work default workflow plugins",
-    "version": "1.0.0"
+    "version": "2.0.0"
   },
   "plugins": [
     {
-      "name": "zworkflow",
-      "source": "./src/local",
-      "description": "Z-workflow: SSOT-driven development pipeline (z / zcheck / ztrace / autoz) plus agents, commands, hooks, prompts, and skills. A soma-work default plugin."
+      "name": "local",
+      "source": "./plugin/local",
+      "description": "soma-work local plugin — the bot-bound half of the former zworkflow plugin (z pipeline, hook-proxy, Slack delivery, LLM-proxy agents). Bundled default of the soma-work bot; needs the bot's MCP servers."
+    },
+    {
+      "name": "core",
+      "source": "./plugin/core",
+      "description": "soma-work core plugin — standalone skills and agents (no MCP, no soma-work service, no LLM proxy). Membership enforced by the dependency-closure test. Bundled default of the soma-work bot and installable anywhere."
     }
   ]
 }

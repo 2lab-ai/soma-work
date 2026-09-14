@@ -8,10 +8,11 @@ const repoRoot = path.resolve(__dirname, '..', '..');
  * Single-source-of-truth guard for plugin content.
  *
  * The deployed plugin content (skills / agents / hooks / prompts / personas) is
- * built exclusively from `src/{local,prompt,persona}` — the root `build` script
- * does `cp -r src/local dist/` (and the same for prompt/persona), and
- * `.claude-plugin/marketplace.json` ships the `zworkflow` plugin from
- * `./src/local`. The earlier packages-SRP refactor left a drifted, hand-mirrored
+ * built exclusively from `plugin/{local,core}` + `src/{prompt,persona}` — the
+ * root `build` script does `cp -r plugin/local dist/local && cp -r plugin/core
+ * dist/core` (and the same idea for prompt/persona), and
+ * `.claude-plugin/marketplace.json` ships the `local`/`core` plugins from
+ * `./plugin/local` and `./plugin/core`. The earlier packages-SRP refactor left a drifted, hand-mirrored
  * copy under `packages/extensions/assets/*` that nothing reads at runtime, which
  * forced PRs (e.g. #1103) to edit the same content twice. This test prevents that
  * duplicate tree (and the dead `@soma/extensions` package) from being
@@ -33,8 +34,8 @@ describe('plugin content has a single source of truth', () => {
     ).toBe(false);
   });
 
-  it('keeps executable bits on src/local plugin hooks', () => {
-    const hooksDir = path.join(repoRoot, 'src/local/hooks');
+  it('keeps executable bits on plugin/local hooks', () => {
+    const hooksDir = path.join(repoRoot, 'plugin/local/hooks');
     const hookFiles = fs
       .readdirSync(hooksDir, { withFileTypes: true })
       .filter((entry) => entry.isFile() && entry.name.endsWith('.sh'))

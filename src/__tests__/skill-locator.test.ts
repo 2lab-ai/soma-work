@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-// Fixed roots so path assertions are deterministic. LOCAL_SKILLS_DIR is derived
-// from the module's __dirname at import time, so it is matched by the
-// `local/skills` substring rather than an exact absolute path.
+// Fixed roots so path assertions are deterministic. LOCAL_SKILLS_DIR and
+// CORE_SKILLS_DIR are derived from the bundled plugin dirs at import time, so
+// they are matched by `local`/`core` + `skills` substrings rather than exact
+// absolute paths.
 vi.mock('../env-paths', () => ({
   DATA_DIR: '/data',
   PLUGINS_DIR: '/plugins',
@@ -22,6 +23,7 @@ function dirent(name: string, isDir = true): any {
 }
 
 const LOCAL = (p: string) => p.includes('local') && p.includes('skills') && !p.includes('/data/');
+const CORE = (p: string) => p.includes('core') && p.includes('skills') && !p.includes('/data/');
 
 describe('resolveAutoskillContent — fallback order', () => {
   beforeEach(() => vi.clearAllMocks());
@@ -39,6 +41,13 @@ describe('resolveAutoskillContent — fallback order', () => {
     vi.mocked(fs.readFileSync).mockReturnValue('LOCAL BODY' as any);
     const r = resolveAutoskillContent('using-ssot', 'U1');
     expect(r).toEqual({ key: 'local:using-ssot', content: 'LOCAL BODY' });
+  });
+
+  it('falls back to core when neither user nor local owns the name', () => {
+    vi.mocked(fs.existsSync).mockImplementation((p: any) => CORE(String(p)) && String(p).includes('structurize'));
+    vi.mocked(fs.readFileSync).mockReturnValue('CORE BODY' as any);
+    const r = resolveAutoskillContent('structurize', 'U1');
+    expect(r).toEqual({ key: 'core:structurize', content: 'CORE BODY' });
   });
 
   it('falls back to a priority plugin (stv)', () => {
@@ -63,11 +72,12 @@ describe('resolveAutoskillContent — fallback order', () => {
 describe('listAvailableSkills', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('aggregates user + local skills, dedups by name (user wins), sorted', () => {
+  it('aggregates user + local + core skills, dedups by name (user wins), sorted', () => {
     vi.mocked(fs.readdirSync).mockImplementation((dir: any) => {
       const d = String(dir);
       if (d.includes('/data/U1/skills')) return [dirent('shared'), dirent('my-skill')] as any;
       if (LOCAL(d)) return [dirent('shared'), dirent('using-ssot')] as any;
+      if (CORE(d)) return [dirent('structurize')] as any;
       if (d === '/plugins') return [] as any;
       return [] as any;
     });
@@ -76,11 +86,12 @@ describe('listAvailableSkills', () => {
 
     const list = listAvailableSkills('U1');
     const names = list.map((s) => s.name);
-    expect(names).toEqual(['my-skill', 'shared', 'using-ssot']); // sorted, deduped
+    expect(names).toEqual(['my-skill', 'shared', 'structurize', 'using-ssot']); // sorted, deduped
 
     const sources = Object.fromEntries(list.map((s) => [s.name, s.source]));
     expect(sources['my-skill']).toBe('user');
     expect(sources.shared).toBe('user'); // user wins the dedup
     expect(sources['using-ssot']).toBe('local');
+    expect(sources.structurize).toBe('core');
   });
 });

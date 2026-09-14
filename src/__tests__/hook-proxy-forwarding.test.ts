@@ -10,7 +10,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 // answered — curl would time out and every forwarding assertion would fail.
 const execFileAsync = promisify(execFile);
 
-const proxy = path.resolve(__dirname, '..', 'local', 'hooks', 'hook-proxy.sh');
+const proxy = path.resolve(__dirname, '..', '..', 'plugin', 'local', 'hooks', 'hook-proxy.sh');
 
 /**
  * hook-proxy.sh in PROXY mode (`HOOKS_PROXY_ENABLED=true`) — the path soma-work

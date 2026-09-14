@@ -118,13 +118,13 @@ describe('validatePluginConfig', () => {
     const raw = {
       marketplace: [{ name: 'soma-work', repo: '2lab-ai/soma-work', ref: 'main' }],
       plugins: ['omc@soma-work'],
-      localOverrides: ['./src/local'],
+      localOverrides: ['./plugin/local'],
     };
 
     const result = validatePluginConfig(raw);
     expect(result.marketplace).toHaveLength(1);
     expect(result.plugins).toEqual(['omc@soma-work']);
-    expect(result.localOverrides).toEqual(['./src/local']);
+    expect(result.localOverrides).toEqual(['./plugin/local']);
   });
 
   it('filters invalid marketplace entries', () => {
@@ -151,10 +151,10 @@ describe('validatePluginConfig', () => {
 
   it('filters empty localOverrides entries', () => {
     const raw = {
-      localOverrides: ['./src/local', '', 42, './other'],
+      localOverrides: ['./plugin/local', '', 42, './other'],
     };
 
     const result = validatePluginConfig(raw);
-    expect(result.localOverrides).toEqual(['./src/local', './other']);
+    expect(result.localOverrides).toEqual(['./plugin/local', './other']);
   });
 });

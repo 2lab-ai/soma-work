@@ -1,5 +1,5 @@
 import { isAdminUser } from '../../admin-utils';
-import { BUNDLED_PLUGINS_DIR } from '../../plugin/bundled';
+import { BUNDLED_PLUGINS_DIR, CORE_PLUGIN_DIR } from '../../plugin/bundled';
 import { isDefaultPlugin } from '../../plugin/defaults';
 import type { BackupEntry, CacheMeta, FetchFailureCode, PluginUpdateDetail } from '../../plugin/types';
 import { CommandParser } from '../command-parser';
@@ -50,12 +50,12 @@ function capBlocks(blocks: any[]): any[] {
 /**
  * Handles `plugins` slash commands: list / add / remove.
  *
- * The built-in `local` plugin (src/local/) is always present: it ships as
- * the bundled `zworkflow` default (see plugin/bundled.ts) and is also
- * injected directly via claude-handler.ts. Both point at the same bundled
- * directory, so the list shows a single locked "local (built-in)" entry and
- * the bundled default is de-duplicated out of the resolved-defaults loop.
- * It cannot be removed.
+ * The built-in `local` (plugin/local/) and `core` (plugin/core/) plugins are
+ * always present: they ship as the bundled `local@soma-work` / `core@soma-work`
+ * defaults (see plugin/bundled.ts) and are also injected directly via
+ * claude-handler.ts. Both routes point at the same bundled directories, so the
+ * list shows one locked "(built-in)" entry each and the bundled defaults are
+ * de-duplicated out of the resolved-defaults loop. They cannot be removed.
  */
 export class PluginsHandler implements CommandHandler {
   constructor(private readonly deps: CommandDependencies) {}
@@ -104,14 +104,17 @@ export class PluginsHandler implements CommandHandler {
       '\ud83d\udd0c *Installed Plugins*',
       '',
       '\ud83d\udd12 *local* (built-in) \u2014 Always loaded',
+      '\ud83d\udd12 *core* (built-in) \u2014 Always loaded',
     ];
 
-    // Show default plugins as locked. Skip any whose localPath is the bundled
-    // directory — that is the built-in `local` plugin already shown above
-    // (it ships as the bundled `zworkflow` default), so we avoid listing the
-    // same physical directory twice.
+    // Show default plugins as locked. Skip any whose localPath is one of the
+    // bundled directories — those are the built-in `local`/`core` plugins
+    // already shown above (they ship as the bundled `local@soma-work` /
+    // `core@soma-work` defaults), so we avoid listing the same physical
+    // directory twice.
     for (const r of resolved) {
-      if (r.source === 'default' && r.localPath !== BUNDLED_PLUGINS_DIR) {
+      const isBundled = r.localPath === BUNDLED_PLUGINS_DIR || r.localPath === CORE_PLUGIN_DIR;
+      if (r.source === 'default' && !isBundled) {
         lines.push(`\ud83d\udd12 *${r.name}* (default) \u2014 Always loaded`);
       }
     }

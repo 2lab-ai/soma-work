@@ -13,7 +13,7 @@
         "scripts/**/*.{ts,js}"
       ],
       "ignore": [
-        "src/local/**",
+        "plugin/**",
         "src/prompt/**/*.prompt",
         "src/prompt/**/*.md",
         "src/persona/**"

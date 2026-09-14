@@ -288,12 +288,12 @@ Forces the bot to read a skill's `SKILL.md` and follow it. Emits a red RPG banne
 
 | Syntax | Resolves to |
 |--------|-------------|
-| `$<skill>` | `src/local/skills/<skill>/SKILL.md` (bare shorthand for local skills) |
+| `$<skill>` | `plugin/local/skills/<skill>/SKILL.md` or `plugin/core/skills/<skill>/SKILL.md` (bare shorthand; local is probed before core) |
 | `$local:<skill>` | Same as above, explicit form |
 | `$user:<skill>` | `DATA_DIR/{userId}/skills/<skill>/SKILL.md` (per-user skills) |
 | `$<plugin>:<skill>` | `plugins/<plugin>/skills/<skill>/SKILL.md` |
 
-Representative examples: `$z`, `$zcheck`, `$stv:new-task`. For the current inventory see [`src/local/skills/`](./src/local/skills/) (hardcoded lists drift — always check the directory).
+Representative examples: `$z`, `$zcheck`, `$stv:new-task`. For the current inventory see [`plugin/local/skills/`](./plugin/local/skills/) and [`plugin/core/skills/`](./plugin/core/skills/) (hardcoded lists drift — always check the directory).
 
 Nested `$plugin:skill` references inside skill content are resolved recursively (max depth 10).
 

@@ -6,7 +6,14 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["src/**/*.ts", "scripts/**/*.ts", "packages/**/*.ts", "!packages/**/dist/**", "!packages/**/node_modules/**"]
+    "includes": [
+      "src/**/*.ts",
+      "plugin/**/*.ts",
+      "scripts/**/*.ts",
+      "packages/**/*.ts",
+      "!packages/**/dist/**",
+      "!packages/**/node_modules/**"
+    ]
   },
   "formatter": {
     "enabled": true,

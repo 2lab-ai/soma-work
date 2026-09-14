@@ -4,16 +4,17 @@ Status: **planned** — verdict computed 2026-09-14 on `origin/main` `c0a3bac`
 (`research/dep-census-2026-09-14.json`, `research/closure-verdict-2026-09-14.txt`). Re-run before
 every move; the verdict, not this table, is authoritative.
 
-Population: 72 units = skills 46 · agents 16 · commands 6 · hooks 4.
+Population: 72 units = skills 46 · agents 16 · commands 6 · hooks 4. Result after the 2026-09-14 corrections (review-pr, zkorean): core 15 (skills 8 · agents 7), local 55, hooks T0 2. Both corrections were caught by reading/closure-testing, not by the census alone — which is why the closure test ships in the same PR.
 
-## core — 17 units move in WU-2
+## core — 15 units move in WU-2
 
 | kind | unit | closure |
 |---|---|---|
 | skill | example, learn, release-notes, simplify, structurize, using-eli5, using-govuk, using-ha-thinking | no edges |
-| agent | reviewer, comment-analyzer, pr-test-analyzer, silent-failure-hunter, strategist, type-design-analyzer, zkorean | no edges |
+| agent | reviewer, comment-analyzer, pr-test-analyzer, silent-failure-hunter, strategist, type-design-analyzer | no edges (reviewer's `prompts/reviewer-persona.md` moves with it — sole user) |
+| ~~agent~~ | ~~zkorean~~ | **stays local** — 2026-09-14 closure test: the agent reads `skills/zkorean/references/rules.md`, a local skill's file (two-way entanglement). Rule: entangled ⇒ local. |
 | agent | code-reviewer | → reviewer (core) |
-| command | review-pr | → simplify, code-reviewer, reviewer (all core) + `gh` |
+| ~~command~~ | ~~review-pr~~ | **stays local** — 2026-09-14 correction: the census extracts skill/agent edges only; reading `commands/review-pr.md:38,46` shows `oracle-reviewer` (a local command, `mcp__llm__chat`/codex) as an *always applicable* reviewer. Command→command edges are added to the closure test (WU-3) so this cannot recur. |
 
 `stop-hook.sh` and `call-tracker.sh` pass the census but are excluded: their wiring is the soma
 `hooks.json`. They are T0 below, not part of WU-2.

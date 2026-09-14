@@ -1630,10 +1630,10 @@ describe('sanitize contract across the repository', () => {
 
 describe('shipped skill references', () => {
   const examples = [
-    'src/local/skills/es/reference/executive-summary-example.md',
-    'src/local/skills/z/reference/executive-summary-example.md',
-    'src/local/skills/es/reference/executive-summary-template.md',
-    'src/local/skills/z/reference/executive-summary-template.md',
+    'plugin/local/skills/es/reference/executive-summary-example.md',
+    'plugin/local/skills/z/reference/executive-summary-example.md',
+    'plugin/local/skills/es/reference/executive-summary-template.md',
+    'plugin/local/skills/z/reference/executive-summary-template.md',
   ];
 
   it('are synthetic, not a real report from somebody else\u2019s codebase', () => {
@@ -1669,7 +1669,7 @@ describe('shipped skill references', () => {
 
 describe('shipped extract-pr-data invocation', () => {
   it('names the compiled script and an interpreter an installed runtime has', () => {
-    const source = read('src/local/skills/github-pr/scripts/extract-pr-data.ts');
+    const source = read('plugin/local/skills/github-pr/scripts/extract-pr-data.ts');
     expect(source.startsWith('#!/usr/bin/env node\n')).toBe(true);
     expect(source).toContain('node local/skills/github-pr/scripts/extract-pr-data.js <type> <input> [output]');
     // `tsx` is a devDependency and the `.ts` is pruned from the bundle, so the

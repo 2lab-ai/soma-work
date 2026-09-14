@@ -3,14 +3,15 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const repoRoot = path.resolve(__dirname, '..', '..');
-const srcLocal = path.join(repoRoot, 'src', 'local');
+/** Both first-party plugin roots — the split moved half the assets to `core`. */
+const pluginRoots = [path.join(repoRoot, 'plugin', 'local'), path.join(repoRoot, 'plugin', 'core')];
 const srcPrompt = path.join(repoRoot, 'src', 'prompt');
 
 /**
- * Reference-integrity lint for the `zworkflow` plugin.
+ * Reference-integrity lint for the first-party `local` + `core` plugins.
  *
  * Every `local:<name>` reference in prompts and skill docs must resolve to a
- * real skill / command / agent shipped by the plugin. This test walks the
+ * real skill / command / agent shipped by either plugin. This test walks the
  * documented reference surface and asserts that:
  *
  *  1. Every `local:<name>` reference resolves to a known skill directory,
@@ -24,20 +25,22 @@ const srcPrompt = path.join(repoRoot, 'src', 'prompt');
  */
 
 function listSkillNames(): Set<string> {
-  const skillsDir = path.join(srcLocal, 'skills');
   const names = new Set<string>();
-  if (!fs.existsSync(skillsDir)) return names;
-  for (const entry of fs.readdirSync(skillsDir, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue;
-    names.add(entry.name);
-    const skillMd = path.join(skillsDir, entry.name, 'SKILL.md');
-    if (fs.existsSync(skillMd)) {
-      const head = fs.readFileSync(skillMd, 'utf8').split(/\r?\n/).slice(0, 30);
-      for (const line of head) {
-        const m = line.match(/^\s*name:\s*['"]?([A-Za-z0-9_-]+)['"]?\s*$/);
-        if (m) {
-          names.add(m[1]);
-          break;
+  for (const root of pluginRoots) {
+    const skillsDir = path.join(root, 'skills');
+    if (!fs.existsSync(skillsDir)) continue;
+    for (const entry of fs.readdirSync(skillsDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      names.add(entry.name);
+      const skillMd = path.join(skillsDir, entry.name, 'SKILL.md');
+      if (fs.existsSync(skillMd)) {
+        const head = fs.readFileSync(skillMd, 'utf8').split(/\r?\n/).slice(0, 30);
+        for (const line of head) {
+          const m = line.match(/^\s*name:\s*['"]?([A-Za-z0-9_-]+)['"]?\s*$/);
+          if (m) {
+            names.add(m[1]);
+            break;
+          }
         }
       }
     }
@@ -81,17 +84,19 @@ function walkFiles(root: string, predicate: (p: string) => boolean): string[] {
 function collectScanTargets(): string[] {
   const files: string[] = [];
   files.push(...walkFiles(srcPrompt, (p) => p.endsWith('.prompt') || p.endsWith('.md')));
-  files.push(...walkFiles(path.join(srcLocal, 'skills'), (p) => path.basename(p) === 'SKILL.md'));
-  files.push(...walkFiles(path.join(srcLocal, 'commands'), (p) => p.endsWith('.md')));
-  files.push(...walkFiles(path.join(srcLocal, 'agents'), (p) => p.endsWith('.md')));
+  for (const root of pluginRoots) {
+    files.push(...walkFiles(path.join(root, 'skills'), (p) => path.basename(p) === 'SKILL.md'));
+    files.push(...walkFiles(path.join(root, 'commands'), (p) => p.endsWith('.md')));
+    files.push(...walkFiles(path.join(root, 'agents'), (p) => p.endsWith('.md')));
+  }
   return files;
 }
 
 describe('local: skill references resolve to real assets', () => {
   const validNames = new Set<string>([
     ...listSkillNames(),
-    ...listMarkdownBasenames(path.join(srcLocal, 'commands')),
-    ...listMarkdownBasenames(path.join(srcLocal, 'agents')),
+    ...pluginRoots.flatMap((root) => [...listMarkdownBasenames(path.join(root, 'commands'))]),
+    ...pluginRoots.flatMap((root) => [...listMarkdownBasenames(path.join(root, 'agents'))]),
   ]);
 
   const targets = collectScanTargets();
@@ -118,7 +123,7 @@ describe('local: skill references resolve to real assets', () => {
   });
 
   it('does not reference known-dead asset names', () => {
-    // These assets never existed in src/local; references to them have been a
+    // These assets never existed in either plugin root; references to them have been a
     // recurring source of broken runtime invocations (see PR #1191/#1192).
     // `superpowers:subagent-driven-development` is a real upstream skill — only
     // the bare (un-namespaced) form is dead.

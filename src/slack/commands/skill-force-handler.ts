@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import { DATA_DIR, PLUGINS_DIR } from '../../env-paths';
 import { Logger } from '../../logger';
 import { isSafePathSegment } from '../../path-utils';
+import { BUNDLED_PLUGINS_DIR, CORE_PLUGIN_DIR } from '../../plugin/bundled';
 import { createPermissionRequest } from '../../skill-permission-request-store';
 import { extractCopiedFrom } from '../../user-skill-frontmatter';
 import { consumeOneTimeGrant, hasOneTimeGrant, isSkillUseAllowed } from '../../user-skill-grants-store';
@@ -12,17 +13,19 @@ import type { CommandContext, CommandHandler, CommandResult } from './types';
 import { resolveUserIdentifier, type UserResolver } from './user-identity-resolver';
 
 /**
- * LOCAL_SKILLS_DIR: resolves to dist/local/skills at runtime.
- * __dirname at runtime = dist/slack/commands/ → ../../local/skills
+ * Skill dirs of the two bundled first-party plugins. Derived from the bundled
+ * plugin dirs (see plugin/bundled) so they stay correct in BOTH run modes:
+ * dist/{local,core}/skills at runtime, plugin/{local,core}/skills from source.
  */
-const LOCAL_SKILLS_DIR = path.resolve(__dirname, '..', '..', 'local', 'skills');
+const LOCAL_SKILLS_DIR = path.join(BUNDLED_PLUGINS_DIR, 'skills');
+const CORE_SKILLS_DIR = path.join(CORE_PLUGIN_DIR, 'skills');
 
 /** Max recursion depth to prevent infinite loops in skill references. */
 const MAX_DEPTH = 10;
 
 /**
  * Regex to find $plugin:skillname patterns in text.
- * Matches: $local:z, $stv:new-task, $superpowers:brainstorming, etc.
+ * Matches: $local:z, $core:structurize, $stv:new-task, $superpowers:brainstorming, etc.
  */
 const SKILL_REF_PATTERN = /\$([\w-]+):([\w-]+)/g;
 
@@ -69,7 +72,7 @@ const MENTION_TOKEN = /^<@([A-Z0-9]+)(?:\|[^>]*)?>$/;
  * parsing `$X:skill` (codex design verdict D1). A coworker whose display name
  * collides with one of these must invoke via uid or mention markup.
  */
-const RESERVED_NAMESPACES: ReadonlySet<string> = new Set(['user', 'local', 'stv', 'superpowers']);
+const RESERVED_NAMESPACES: ReadonlySet<string> = new Set(['user', 'local', 'core', 'stv', 'superpowers']);
 
 /**
  * Fallback order for bare `$skill` resolution. Probed sequentially; the first
@@ -77,20 +80,21 @@ const RESERVED_NAMESPACES: ReadonlySet<string> = new Set(['user', 'local', 'stv'
  *
  * - `user`        — `DATA_DIR/{userId}/skills/{name}/SKILL.md` (only when userId present)
  * - `local`       — `LOCAL_SKILLS_DIR/{name}/SKILL.md`
+ * - `core`        — `CORE_SKILLS_DIR/{name}/SKILL.md`
  * - `stv`         — `PLUGINS_DIR/stv/skills/{name}/SKILL.md`
  * - `superpowers` — `PLUGINS_DIR/superpowers/skills/{name}/SKILL.md`
  *
- * If all four miss, a final pass scans every other plugin directory under
+ * If all five miss, a final pass scans every other plugin directory under
  * `PLUGINS_DIR` for an exact-name match (see {@link SkillForceHandler.scanRemainingPlugins}).
  */
-type FallbackNamespace = 'user' | 'local' | 'stv' | 'superpowers';
-const BARE_FALLBACK_NAMESPACES: ReadonlyArray<FallbackNamespace> = ['user', 'local', 'stv', 'superpowers'];
+type FallbackNamespace = 'user' | 'local' | 'core' | 'stv' | 'superpowers';
+const BARE_FALLBACK_NAMESPACES: ReadonlyArray<FallbackNamespace> = ['user', 'local', 'core', 'stv', 'superpowers'];
 
 /**
  * Plugin slots inside {@link BARE_FALLBACK_NAMESPACES} (i.e. excluding the
- * `user`/`local` namespaces that don't live under `PLUGINS_DIR`). Used by
+ * `user`/`local`/`core` namespaces that don't live under `PLUGINS_DIR`). Used by
  * {@link SkillForceHandler.scanRemainingPlugins} to skip plugins already
- * probed in steps 3–4. Derived from the priority list so adding a new plugin
+ * probed in steps 4–5. Derived from the priority list so adding a new plugin
  * slot only requires editing one place.
  */
 const PRIORITY_PLUGIN_SLOTS: ReadonlyArray<string> = BARE_FALLBACK_NAMESPACES.filter(
@@ -208,12 +212,13 @@ type BareResolution =
  * Resolution order for bare $skill:
  *   1. user        → DATA_DIR/{userId}/skills/{skill}/SKILL.md (only if userId present)
  *   2. local       → LOCAL_SKILLS_DIR/{skill}/SKILL.md
- *   3. stv         → PLUGINS_DIR/stv/skills/{skill}/SKILL.md
- *   4. superpowers → PLUGINS_DIR/superpowers/skills/{skill}/SKILL.md
- *   5. PLUGINS_DIR full scan, exact name match. Multiple hits → ambiguous error.
+ *   3. core        → CORE_SKILLS_DIR/{skill}/SKILL.md
+ *   4. stv         → PLUGINS_DIR/stv/skills/{skill}/SKILL.md
+ *   5. superpowers → PLUGINS_DIR/superpowers/skills/{skill}/SKILL.md
+ *   6. PLUGINS_DIR full scan, exact name match. Multiple hits → ambiguous error.
  *
  * Examples:
- *   $z               → first slot of user/local/stv/superpowers/other-plugins owning "z"
+ *   $z               → first slot of user/local/core/stv/superpowers/other-plugins owning "z"
  *   $local:z         → reads local/skills/z/SKILL.md (qualified, no fallback)
  *   $user:my-deploy  → reads DATA_DIR/{userId}/skills/my-deploy/SKILL.md
  *   $stv:new-task    → reads plugins/stv/skills/new-task/SKILL.md
@@ -529,7 +534,7 @@ export class SkillForceHandler implements CommandHandler {
       return { kind: 'not_found', name };
     }
 
-    // 1–4: priority slots (user → local → stv → superpowers)
+    // 1–5: priority slots (user → local → core → stv → superpowers)
     for (const ns of BARE_FALLBACK_NAMESPACES) {
       if (ns === 'user' && (!userId || !isSafePathSegment(userId))) {
         continue;
@@ -540,7 +545,7 @@ export class SkillForceHandler implements CommandHandler {
       }
     }
 
-    // 5: scan remaining plugins under PLUGINS_DIR for an exact-name match.
+    // 6: scan remaining plugins under PLUGINS_DIR for an exact-name match.
     // Excludes the priority plugin slots (already probed) and any plugin
     // directory that fails the safe-segment check.
     const matches = this.scanRemainingPlugins(name);
@@ -562,7 +567,7 @@ export class SkillForceHandler implements CommandHandler {
   /**
    * List plugin directories under {@link PLUGINS_DIR} that own a skill named
    * `name`, excluding {@link PRIORITY_PLUGIN_SLOTS} (already probed in steps
-   * 3–4) and any plugin directory that fails the safe-segment check.
+   * 4–5) and any plugin directory that fails the safe-segment check.
    *
    * Skill paths are constructed via {@link SkillForceHandler.resolveSkillPath}
    * so the on-disk layout convention (`{plugin}/skills/{name}/SKILL.md`)
@@ -609,6 +614,7 @@ export class SkillForceHandler implements CommandHandler {
    * Resolve the filesystem path for a skill based on its plugin.
    *
    * - `local` → `LOCAL_SKILLS_DIR/{skill}/SKILL.md`
+   * - `core`  → `CORE_SKILLS_DIR/{skill}/SKILL.md`
    * - `user`  → `DATA_DIR/{userId}/skills/{skill}/SKILL.md` (requires safe userId+skill)
    * - others  → `{PLUGINS_DIR}/{plugin}/skills/{skill}/SKILL.md`
    *
@@ -623,6 +629,9 @@ export class SkillForceHandler implements CommandHandler {
   private resolveSkillPath(ref: SkillRef, userId?: string): string {
     if (ref.plugin === 'local') {
       return path.join(LOCAL_SKILLS_DIR, ref.skill, 'SKILL.md');
+    }
+    if (ref.plugin === 'core') {
+      return path.join(CORE_SKILLS_DIR, ref.skill, 'SKILL.md');
     }
     // Cross-user ref (S3): the explicit owner uid on the ref overrides the
     // threaded owner-context userId. Lives in the owner's skills dir.
@@ -639,7 +648,7 @@ export class SkillForceHandler implements CommandHandler {
   }
 
   /**
-   * True when `plugin` is a reserved namespace (`user`/`local`/`stv`/
+   * True when `plugin` is a reserved namespace (`user`/`local`/`core`/`stv`/
    * `superpowers`) or an existing plugin directory under {@link PLUGINS_DIR}.
    * Such prefixes always win over a same-named Slack user (codex verdict D1),
    * so a coworker whose display name collides must use a uid / mention.

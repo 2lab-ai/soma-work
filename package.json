@@ -10,11 +10,11 @@
   "scripts": {
     "start": "tsx src/index.ts",
     "dev": "tsx watch src/index.ts",
-    "build": "npm run check && npm run build:somalib && npm run build:packages && tsc && cp -r src/prompt dist/ && cp -r src/persona dist/ && cp -r src/local dist/ && mkdir -p dist/metrics/usage-render && cp -r src/metrics/usage-render/assets dist/metrics/usage-render/ && chmod +x dist/cli/index.js",
+    "build": "npm run check && npm run build:somalib && npm run build:packages && tsc && cp -r src/prompt dist/ && cp -r src/persona dist/ && cp -r plugin/local dist/local && cp -r plugin/core dist/core && mkdir -p dist/metrics/usage-render && cp -r src/metrics/usage-render/assets dist/metrics/usage-render/ && chmod +x dist/cli/index.js",
     "build:somalib": "tsc -p somalib/tsconfig.json",
     "build:packages": "npm run build --workspaces --if-present",
     "prod": "node dist/index.js",
-    "check": "biome check src/ somalib/ scripts/ packages/",
+    "check": "biome check src/ somalib/ scripts/ packages/ plugin/",
     "lint": "tsc --noEmit && biome check src/ somalib/ scripts/ packages/",
     "format": "biome check --write src/ somalib/ scripts/ packages/",
     "format:check": "biome format src/ somalib/ scripts/ packages/",
