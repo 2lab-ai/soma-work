@@ -10,6 +10,12 @@
 
 **Spec:** `docs/superpowers/specs/2026-08-23-somawork-setup-onboarding-verification.md`
 
+> **Status (2026-09-11):** no task in this plan has full success evidence. See
+> [`docs/misc/handoffs/2026-09-11-setup-onboarding-status.md`](../../misc/handoffs/2026-09-11-setup-onboarding-status.md)
+> for exactly what the closest historical attempt did and did not prove, and for the resume
+> sequence. Checkbox annotations below mark only the granular items with historical proof;
+> clean-boundary, Keychain-isolation, no-GH-token, and all of Tasks 2-5 remain unchecked.
+
 ## Global Constraints
 
 - Do not reuse `~/.config/llmux.json`, `~/.codex/auth.json`, `~/.slack/credentials.json`, or soma-work `.env` from another user.
@@ -21,10 +27,10 @@
 
 ### Task 1: Provision clean-user verification boundary
 
-- [ ] Use a dedicated macOS ARM64 user account or equivalent isolated HOME+Keychain session with no prior tool state; prove absence with path checks.
-- [ ] Install xbrew from its public installer and `xbrew install somawork-preview` from published artifacts.
-- [ ] Capture package versions, release manifest/source SHA, brew receipts, and runtime tree.
-- [ ] Verify no source checkout, GH token, or existing user config was consulted.
+- [ ] Use a dedicated macOS ARM64 user account or equivalent isolated HOME+Keychain session with no prior tool state; prove absence with path checks. *(2026-09-11: clean-HOME path checks were observed on 2026-08-26 — valid partial evidence. Separate-user/Keychain isolation and brew-free/fresh-prefix state were not proven — see status handoff.)*
+- [x] Install xbrew from its public installer and `xbrew install somawork-preview` from published artifacts. *(2026-09-11: done historically on 2026-08-26 via public preview build `preview-2026-08-26-1920-629b1c009b49`; not a clean-boundary run — see status handoff.)*
+- [ ] Capture package versions, release manifest/source SHA, brew receipts, and runtime tree. *(2026-09-11: versions/source/terminal receipts were captured historically — llmux 0.2.20, slack-cli 4.6.0, formula 1.0.0.32971112778, package 1.0.0, source e96cd74f5b05121662237cd445ce34ac03ddab1d; the full retained evidence bundle (brew receipts, runtime tree) is pending recovery — see status handoff.)*
+- [ ] Verify no source checkout, GH token, or existing user config was consulted. *(2026-09-11: not established by retained evidence; shared-prefix mutations (Node upgrade, overwritten `llmux` executable) are documented separately and do not by themselves prove or disprove GH-token/config use — see status handoff.)*
 
 ### Task 2: Execute real onboarding
 
@@ -50,7 +56,7 @@
 ### Task 5: Preview rollout
 
 - [ ] Merge/push only after gates, review, CI, published-package install, and clean-user live receipt are green.
-- [ ] Trigger preview release→tap bump→`xbrew upgrade somawork-preview` on configured preview targets; do not touch production profile.
+- [ ] Trigger preview release→tap bump→`xbrew update somawork-preview` (interactive; xbrew has no `upgrade` subcommand — verified against commit-pinned source [`src/main.rs#L52-L53,L73`](https://github.com/2lab-ai/xbrew/blob/629b1c009b493570ccc81730a8401ebe757aa99a/src/main.rs#L52-L53)) or a direct `brew upgrade` on the formula, on configured preview targets; do not touch production profile.
 - [ ] On each live preview target, verify installed source SHA/version, service PID/restart count, llmux connectivity, Slack Socket Mode, and one actual message response.
 - [ ] If any target fails, rollback that target to the previous formula version and keep the rest unchanged.
 - [ ] Report preview artifact/version, target matrix, receipts, and remaining production gate.

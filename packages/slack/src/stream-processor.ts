@@ -83,6 +83,8 @@ export interface StreamContext {
    * user message. Absent on turns with no prompt text — SET_GOAL fails closed.
    */
   currentUserText?: string;
+  /** Allows long compact diagnostics to be withheld for terminal error formatting. */
+  isCompactTurn?: boolean;
   /**
    * Issue #1082 T2: true ONLY when this turn originates from a real user
    * message (`params.isUserInput === true`); synthetic turns (auto-resume,
@@ -130,14 +132,15 @@ function textIndicatesPromptTooLong(text: unknown): boolean {
  *     for a FAILED `/compact`, sealed as a successful turn.
  *   - `API Error: 400 … text content blocks must be non-empty` — Anthropic
  *     validation rejecting a transcript poisoned with empty text blocks.
- * Matchers are shape-anchored (prefix / both transport markers) and
- * length-bounded so prose that merely discusses these errors is not eaten.
+ * Compact turns allow long stderr diagnostics; ordinary turns retain the
+ * length bound so prose that merely discusses these errors is not eaten.
  */
-function textIndicatesCompactionErrorLeak(text: unknown): boolean {
+function textIndicatesCompactionErrorLeak(text: unknown, isCompactTurn = false): boolean {
   if (typeof text !== 'string') return false;
   const t = text.trim().toLowerCase();
-  if (t.length === 0 || t.length > 1500) return false;
+  if (!isCompactTurn && t.length > 1500) return false;
   if (t.startsWith('error: error during compaction') || t.startsWith('error during compaction')) return true;
+  if (t.length === 0 || t.length > 1500) return false;
   return t.includes('api error: 400') && t.includes('text content blocks must be non-empty');
 }
 
@@ -1120,7 +1123,7 @@ export class AgentStreamProcessor {
     // (field incident 2026-07-07): the raw transport error must not stream to
     // Slack — stream-executor routes collectedText into the transcript-repair
     // / terminal-failure rails, which surface one condensed notice instead.
-    if (textIndicatesCompactionErrorLeak(textContent)) {
+    if (textIndicatesCompactionErrorLeak(textContent, context.isCompactTurn)) {
       return;
     }
 

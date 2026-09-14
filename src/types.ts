@@ -669,6 +669,16 @@ export interface ConversationSession {
   compactTickInterval?: ReturnType<typeof setInterval>;
   // Threshold-checker → input-processor signal that next /compact-threshold-violating user turn must be compacted.
   autoCompactPending?: boolean;
+  /**
+   * Session-scoped auto-compact threshold in TOKENS, set by `/autocompact
+   * <tokens>` and cleared by `/autocompact reset`. Wins over the model's
+   * declared default and over the legacy per-user percent (see
+   * `session/autocompact-policy.ts`). Persisted. Deliberately kept verbatim
+   * across model switches — the resolver clamps it for the CURRENT model
+   * instead of rewriting it, so switching back restores the user's number.
+   * `null` / `undefined` = no override.
+   */
+  autoCompactTokens?: number | null;
   // One-shot suppression for `checkAndSchedulePendingCompact`. Set to `true`
   // by `postCompactCompleteIfNeeded` when a compact cycle seals; cleared by
   // the very next threshold check. Prevents the "Compaction completed →
@@ -677,6 +687,19 @@ export interface ConversationSession {
   // carries inflated cache-read tokens that re-trip the threshold even
   // though the SDK has actually shrunk the conversation.
   skipThresholdCheckOnce?: boolean;
+  // Issue #196 — turn-scoped shield for the occupancy adopted from
+  // `compact_boundary.post_tokens`. `StreamProcessor` delivers one usage
+  // sample per turn, after the stream loop, so on a compacted turn that
+  // sample always predates the boundary and would restore the pre-compact
+  // number. Holds the `turnId` that established the shield; cleared by that
+  // same turn's `finally` (compare-and-clear) so the NEXT turn resumes normal
+  // context tracking.
+  //
+  // A `turnId` rather than a boolean because same-session turns overlap: a
+  // supersede aborts the previous turn's controller without awaiting its
+  // `finally`, so an aborted turn must neither suppress the successor's usage
+  // sample nor strip the shield the successor just installed.
+  postCompactOccupancyTurnId?: string;
   // Slack ts of the just-posted "Compaction completed" message — set ONLY
   // when the message rendered with `now ~?%` because no SDK-authoritative
   // post-compact tokens were available at PostCompact time. The next
@@ -723,6 +746,8 @@ export interface ConversationSession {
     ctx: { channel: string; threadTs: string; user: string; ts: string };
     text: string;
   }> | null;
+  // Runtime-only exact-once guard while the queue is handed back to EventRouter.
+  compactDispatchInFlight?: boolean;
   // Runtime-only: true while a dedicated `/compact` SDK turn is executing.
   // Set at query start (local slash command bypass), cleared in the
   // stream-executor `finally`. Covers the post-PostCompact/pre-result window
@@ -783,7 +808,13 @@ export interface ConversationSession {
 export interface AgentConfig {
   slackBotToken: string;
   slackAppToken: string;
-  signingSecret: string;
+  /**
+   * OPTIONAL. Verifies the `X-Slack-Signature` header on HTTP delivery only.
+   * Every agent runs Socket Mode (outbound wss keyed by `slackAppToken`), so
+   * no request signature is exchanged and this may be omitted entirely. When
+   * declared it must be at least `SIGNING_SECRET_MIN_LENGTH` chars.
+   */
+  signingSecret?: string;
   promptDir?: string; // default: src/prompt/{agentName}
   persona?: string; // default: 'default'
   description?: string;
