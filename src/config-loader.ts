@@ -10,6 +10,7 @@
  * under `mcpServers` in `config.json`.
  */
 
+import { atomicWriteFile } from '@soma/common/atomic-write';
 import * as fs from 'fs';
 import type { A2tConfig } from './a2t/types';
 import { RESERVED_LEASE_KEYS } from './auth/query-env-builder';
@@ -19,6 +20,7 @@ import type { McpServerConfig } from './mcp/config-loader';
 import { validatePluginConfig } from './plugin/config-parser';
 import type { PluginConfig } from './plugin/types';
 import { DEFAULT_UI_SURFACES } from './slack/surface-config';
+import { normalizeSigningSecret, SIGNING_SECRET_MIN_LENGTH } from './slack-signing-secret';
 import type { AgentConfig } from './types';
 
 const logger = new Logger('ConfigLoader');
@@ -47,6 +49,73 @@ let warnedLegacyLlmChat = false;
  * log would otherwise repeat.
  */
 let seededUiDefaults = false;
+
+/**
+ * Mode for every write of `config.json` in this module and in
+ * {@link saveConfig}.
+ *
+ * All writers must agree. `somawork doctor` requires the profile's config to be
+ * owner-only, and a single writer left at the umask default would hand the
+ * operator an intermittent permission failure whose cause (a plugin save, a
+ * `ui` seed) is invisible from the report.
+ */
+const CONFIG_FILE_MODE = 0o600;
+
+/**
+ * Mode for a config parent directory this module has to create. Never applied
+ * to a directory that already exists — see {@link writeConfigFileAtomically}.
+ */
+const CONFIG_DIR_MODE = 0o700;
+
+/**
+ * Internal sentinel used to skip the `ui` seed under `readOnly` while reusing
+ * that site's existing failure path, so the seed keeps exactly one exit. (The
+ * legacy `llmChat` strip is skipped by an `if` guard instead, because its warn
+ * has to be suppressed too.)
+ */
+class ReadOnlyConfigLoad extends Error {}
+
+/**
+ * The single writer for `config.json`. Every mutation of that file in this
+ * module and in {@link saveConfig} goes through it.
+ *
+ * Delegates to the repository's hardened helper rather than re-implementing
+ * temp-and-rename, which buys three things a bare `writeFileSync` + `rename`
+ * did not have:
+ *
+ * - a **unique** temp name per call, so a stale `config.json.tmp` left by a
+ *   crashed save (0644, from before this hardening) can never be reused and
+ *   renamed over the live file;
+ * - `O_CREAT|O_EXCL|O_WRONLY|O_NOFOLLOW` plus an `fchmod` on the descriptor —
+ *   `writeFileSync`'s `mode` is umask-masked and is ignored outright when the
+ *   target already exists, so passing it was not the guarantee it looked like;
+ * - `fsync` before the rename.
+ *
+ * `tightenExistingDir: false` opts out of the helper's tightening of a
+ * PRE-EXISTING parent. That behaviour is right for a profile directory and
+ * wrong here: `config.json` also lives at a repository root in the dev flow,
+ * and silently chmod'ing the checkout from 0755 to 0700 is not a side effect a
+ * config save may have.
+ *
+ * `dirMode` stays 0700 and is a separate decision — it is the mode a parent
+ * this call has to CREATE gets, which happens on the `saveConfig` path when the
+ * config directory does not exist yet. Spelling the opt-out as a permissive
+ * `dirMode` conflated the two and landed such a directory at 0o7777
+ * (world-writable, setuid/setgid/sticky) — strictly worse than the 0644 file
+ * mode this writer exists to prevent, since `config.json`'s `mcpServers`
+ * entries are command lines the runtime executes.
+ *
+ * `atomicWriteJson` is deliberately NOT used: it sorts object keys deeply,
+ * which would reorder an operator's `config.json` on every seed/strip/save and
+ * break `saveConfig`'s documented "2-space indent, insertion order" contract.
+ */
+function writeConfigFileAtomically(configFile: string, content: string): void {
+  atomicWriteFile(configFile, content, {
+    mode: CONFIG_FILE_MODE,
+    dirMode: CONFIG_DIR_MODE,
+    tightenExistingDir: false,
+  });
+}
 
 export interface Config {
   mcpServers?: Record<string, McpServerConfig>;
@@ -182,8 +251,12 @@ type Result<T, E> = { ok: true; value: T } | { ok: false; error: E };
 /**
  * Required tokens an agent must declare (string-typed).
  * Listed explicitly to keep `extractRequiredString` callers type-safe.
+ *
+ * `signingSecret` is NOT here: it verifies the `X-Slack-Signature` header on
+ * HTTP delivery, and every agent runs Socket Mode (outbound wss keyed by
+ * `slackAppToken`). It is handled by `extractOptionalSigningSecret` instead.
  */
-type RequiredAgentStringKey = 'slackBotToken' | 'slackAppToken' | 'signingSecret';
+type RequiredAgentStringKey = 'slackBotToken' | 'slackAppToken';
 
 /**
  * Pull a required string field off a raw agent entry, optionally enforcing
@@ -221,6 +294,35 @@ function extractRequiredString(
 }
 
 /**
+ * Read the OPTIONAL per-agent `signingSecret`.
+ *
+ * Absent (`undefined` / `null` / key omitted) is valid — Socket Mode never
+ * verifies a request signature, so an agent without a secret still loads. A
+ * value that IS declared must be plausible, so a wrong type, a blank string,
+ * or fewer than `SIGNING_SECRET_MIN_LENGTH` characters skips the agent.
+ *
+ * The warning text intentionally matches `extractRequiredString`'s wording so
+ * operator-facing diagnostics stay uniform; it reports the key and the
+ * minimum, never the declared value.
+ */
+function extractOptionalSigningSecret(
+  name: string,
+  agent: Record<string, unknown>,
+): Result<string | undefined, string> {
+  const value = agent.signingSecret;
+  if (value === undefined || value === null) return { ok: true, value: undefined };
+
+  const normalized = typeof value === 'string' ? normalizeSigningSecret(value) : undefined;
+  if (normalized === undefined || normalized.length < SIGNING_SECRET_MIN_LENGTH) {
+    return {
+      ok: false,
+      error: `Skipping agent '${name}': missing or invalid signingSecret (min ${SIGNING_SECRET_MIN_LENGTH} chars)`,
+    };
+  }
+  return { ok: true, value: normalized };
+}
+
+/**
  * Read an optional string field, returning `fallback` when the field is
  * absent, non-string, OR empty. Used for `promptDir` / `persona`: an empty
  * value here would silently overwrite the documented default, so we treat
@@ -248,7 +350,9 @@ function optionalString(agent: Record<string, unknown>, key: string): string | u
  * Validate one raw agent entry and assemble the typed `AgentConfig`.
  * Validation order is fixed (slackBotToken → slackAppToken → signingSecret)
  * because the first-failing rule decides the warning text — reordering
- * would silently change diagnostics seen by operators.
+ * would silently change diagnostics seen by operators. `signingSecret` is
+ * optional (Socket Mode needs no request-signature verification) but is still
+ * validated last when declared, so the order above is unchanged.
  *
  * Optional fields fall back to defaults documented on `AgentConfig`:
  *   - promptDir → `src/prompt/${name}`     (empty string ⇒ fallback)
@@ -266,7 +370,7 @@ function validateAgentConfig(name: string, raw: unknown): Result<AgentConfig, st
   if (!bot.ok) return bot;
   const app = extractRequiredString(name, agent, 'slackAppToken', { prefix: 'xapp-' });
   if (!app.ok) return app;
-  const signing = extractRequiredString(name, agent, 'signingSecret', { minLength: 20 });
+  const signing = extractOptionalSigningSecret(name, agent);
   if (!signing.ok) return signing;
 
   return {
@@ -274,7 +378,10 @@ function validateAgentConfig(name: string, raw: unknown): Result<AgentConfig, st
     value: {
       slackBotToken: bot.value,
       slackAppToken: app.value,
-      signingSecret: signing.value,
+      // Omit the key entirely when undeclared — `AgentConfig.signingSecret` is
+      // optional, and a config object that never carries a declared-but-empty
+      // secret stays unambiguous when serialized, diffed, or logged.
+      ...(signing.value !== undefined ? { signingSecret: signing.value } : {}),
       promptDir: optionalStringWithFallback(agent, 'promptDir', `src/prompt/${name}`),
       persona: optionalStringWithFallback(agent, 'persona', 'default'),
       description: optionalString(agent, 'description'),
@@ -321,22 +428,114 @@ export function parseAgentsConfig(raw: any): Record<string, AgentConfig> {
  * continues so a broken config doesn't bring the whole service down before
  * the operator can see the warning.
  */
-export function loadConfig(configFile: string): Config {
+/**
+ * Additive options for {@link loadConfig}.
+ *
+ * Both fields exist for one caller shape: an inspector that loads *another*
+ * profile's `config.json` and must neither mutate `process.env` nor re-derive
+ * the placeholder grammar to find out what did not resolve.
+ */
+export interface LoadConfigOptions {
+  /**
+   * Environment used to resolve `${VAR}` placeholders. When present, the
+   * `.env` auto-discovery step is skipped (see the body) so this load has no
+   * ambient side effect at all. Defaults to `process.env`.
+   */
+  env?: NodeJS.ProcessEnv;
+  /**
+   * Receives the names of bare `${VAR}` placeholders that had no value. The
+   * existing warn-once logging still happens; this is the programmatic view
+   * the same pass already computes.
+   */
+  onMissingPlaceholders?: (missing: string[]) => void;
+  /**
+   * Inspect without mutating. Suppresses the two on-disk rewrites this
+   * function otherwise performs (the `ui` seed and the legacy `llmChat`
+   * strip) and the operator-facing success/miss logs.
+   *
+   * Defaults to `true` whenever `env` is supplied: a caller that brings its
+   * own environment is by definition inspecting some *other* process's
+   * config, and seeding or stripping a profile you were only asked to
+   * diagnose is a mutation the caller never requested.
+   */
+  readOnly?: boolean;
+  /**
+   * Invoked when the load fails.
+   *
+   * Without it a failure is swallowed into `{}` — correct for the runtime
+   * (boot with defaults beats crash-looping) and a false green for an
+   * inspector, which cannot otherwise distinguish "config is empty" from
+   * "config threw". Notably `${VAR:?}` throws inside `substituteEnvVars`
+   * *before* {@link LoadConfigOptions.onMissingPlaceholders} can fire, so
+   * the missing list is not a sufficient failure signal on its own.
+   */
+  onError?: (error: unknown) => void;
+}
+
+/** Outcome of {@link inspectConfig}. */
+export interface ConfigInspection {
+  /** False when the file is absent or the load threw for any reason. */
+  loaded: boolean;
+  /** Bare `${VAR}` placeholders that did not resolve. */
+  missing: string[];
+  /** The parsed config, or `null` when `loaded` is false. */
+  config: Config | null;
+}
+
+/**
+ * Load `configFile` for inspection: no disk mutation, no ambient `process.env`
+ * mutation, no operator logs, and failures reported instead of swallowed.
+ *
+ * This is the shape a gate needs. `loadConfig` deliberately degrades to `{}` so
+ * the runtime boots; a checker that reuses it without this wrapper reports
+ * "config parses and resolves" for a config the runtime just failed to load.
+ */
+export function inspectConfig(configFile: string, opts: { env?: NodeJS.ProcessEnv } = {}): ConfigInspection {
+  let missing: string[] = [];
+  let failed = false;
+  const config = loadConfig(configFile, {
+    env: opts.env,
+    readOnly: true,
+    onMissingPlaceholders: (names) => {
+      missing = names;
+    },
+    onError: () => {
+      failed = true;
+    },
+  });
+  return failed ? { loaded: false, missing, config: null } : { loaded: true, missing, config };
+}
+
+export function loadConfig(configFile: string, opts: LoadConfigOptions = {}): Config {
+  // An explicit flag wins; otherwise supplying `env` implies inspection.
+  const readOnly = opts.readOnly ?? opts.env !== undefined;
   if (fs.existsSync(configFile)) {
     try {
       // .env discovery (per-call, deduped per-process):
       //   cwd → dirname(configFile) → parent of dirname(configFile)
       // dotenv default behavior is "first writer wins" so this priority
       // order matches the docs/operator mental model.
-      loadDotenvForConfig(configFile);
+      //
+      // Skipped for BOTH inspection signals, not just `env`. `dotenv.config()`
+      // writes the discovered file's variables into the ambient `process.env`,
+      // which is the exact global mutation an out-of-process inspector
+      // (`somawork doctor`) must not perform on a profile it is only reading —
+      // and `readOnly` is that promise regardless of whether the caller also
+      // brought an env map. Keying this on `env` alone left
+      // `inspectConfig(file)` and `loadConfig(file, {readOnly:true})` silently
+      // mutating `process.env` while their contract said otherwise.
+      if (opts.env === undefined && !readOnly) {
+        loadDotenvForConfig(configFile);
+      }
 
       const rawParsed = JSON.parse(fs.readFileSync(configFile, 'utf-8'));
       // Substitute `${VAR}` placeholders in every string leaf BEFORE the
       // structural validators run — so a placeholder for `slackBotToken`
       // (which must start with `xoxb-`) is checked against the resolved
       // value, not the literal `${SLACK_BOT_TOKEN}` text.
-      const { value: raw, missing } = substituteEnvVars(rawParsed);
-      warnMissingPlaceholders(missing, configFile);
+      const { value: raw, missing } = substituteEnvVars(rawParsed, { env: opts.env });
+      opts.onMissingPlaceholders?.(missing);
+      if (!readOnly) warnMissingPlaceholders(missing, configFile);
       const result: Config = {};
 
       if (raw.mcpServers && typeof raw.mcpServers === 'object') {
@@ -407,23 +606,26 @@ export function loadConfig(configFile: string): Config {
         // even when this process's own seed write loses the race or fails.
         (rawParsed as Record<string, unknown>).ui = DEFAULT_UI_SURFACES;
         result.ui = JSON.parse(JSON.stringify(DEFAULT_UI_SURFACES)) as Record<string, unknown>;
+        // The in-memory seed above still applies under `readOnly` — the caller
+        // asked what the runtime would see. Only the disk write is skipped.
         try {
-          // Unique tmp name per process — two concurrently-booting processes
-          // must not write/rename the same tmp path (ENOENT for the loser).
-          const tmpFile = `${configFile}.tmp.ui-defaults-seed.${process.pid}`;
-          fs.writeFileSync(tmpFile, `${JSON.stringify(rawParsed, null, 2)}\n`, 'utf-8');
-          fs.renameSync(tmpFile, configFile);
+          if (readOnly) throw new ReadOnlyConfigLoad();
+          writeConfigFileAtomically(configFile, `${JSON.stringify(rawParsed, null, 2)}\n`);
           if (!seededUiDefaults) {
             seededUiDefaults = true;
             logger.info('Seeded default `ui` surface settings into config.json', { path: configFile });
           }
         } catch (seedError) {
-          // Seed failed (disk full, permissions) — not fatal: built-in
-          // defaults still apply at runtime via surface-config fallback.
-          logger.warn('Failed to seed default `ui` settings into config.json', {
-            path: configFile,
-            error: (seedError as Error).message,
-          });
+          // Not seeding under `readOnly` is the requested behaviour, not a
+          // failure. Everything else is: seed failed (disk full, permissions)
+          // — non-fatal, since the built-in defaults still apply at runtime
+          // via the surface-config fallback.
+          if (!(seedError instanceof ReadOnlyConfigLoad)) {
+            logger.warn('Failed to seed default `ui` settings into config.json', {
+              path: configFile,
+              error: (seedError as Error).message,
+            });
+          }
         }
       }
 
@@ -451,7 +653,11 @@ export function loadConfig(configFile: string): Config {
       // breaks future env-driven rotation. By rewriting `rawParsed` we
       // preserve every `${VAR}` placeholder verbatim and keep all unknown
       // future top-level keys.
-      if (raw.llmChat !== undefined && !warnedLegacyLlmChat) {
+      // `readOnly` skips the whole block, warn included: the message promises
+      // "Stripping from config.json now", which an inspector does not do, and
+      // firing it here would additionally burn the process-scoped warn-once
+      // flag so a later real load in this process stays silent about it.
+      if (raw.llmChat !== undefined && !warnedLegacyLlmChat && !readOnly) {
         warnedLegacyLlmChat = true;
         logger.warn(
           'Ignoring legacy `llmChat` config key — subsystem removed in PR #639. ' +
@@ -464,18 +670,14 @@ export function loadConfig(configFile: string): Config {
           // remain placeholders in the on-disk rewrite.
           const cleaned: Record<string, unknown> = { ...(rawParsed as Record<string, unknown>) };
           delete cleaned.llmChat;
-          // Atomic write via tmp + rename — same pattern as `saveConfig` to
-          // avoid corruption on concurrent process startups. If two processes
-          // race here they each write identical content; the last rename
-          // wins and the result is idempotent.
-          const tmpFile = `${configFile}.tmp.legacy-llmchat-strip`;
-          fs.writeFileSync(tmpFile, `${JSON.stringify(cleaned, null, 2)}\n`, 'utf-8');
-          fs.renameSync(tmpFile, configFile);
+          // If two processes race here they each write identical content; the
+          // last rename wins and the result is idempotent.
+          writeConfigFileAtomically(configFile, `${JSON.stringify(cleaned, null, 2)}\n`);
           logger.info('Stripped legacy `llmChat` key from config.json', { path: configFile });
         } catch (writeError) {
-          // Strip failed (disk full, permissions, etc.) — don't fail load.
-          // The warn already informed operators; the next plugin-manager
-          // save still drops the key via the existing path.
+          // Strip failed (disk full, permissions) — don't fail the load. The
+          // warn already informed operators and the next plugin-manager save
+          // still drops the key via the existing path.
           logger.warn('Failed to strip legacy `llmChat` key from config.json', {
             path: configFile,
             error: (writeError as Error).message,
@@ -483,28 +685,36 @@ export function loadConfig(configFile: string): Config {
         }
       }
 
-      logger.info('Loaded config', {
-        path: configFile,
-        mcpServers: result.mcpServers ? Object.keys(result.mcpServers).length : 0,
-        hasPluginConfig: !!result.plugin,
-        agents: result.agents ? Object.keys(result.agents).length : 0,
-        hasA2t: !!result.a2t,
-        hasUi: !!result.ui,
-        // keys-only — never log the values
-        claudeEnvKeys: result['claude.env'] ? Object.keys(result['claude.env']) : [],
-      });
+      if (!readOnly) {
+        logger.info('Loaded config', {
+          path: configFile,
+          mcpServers: result.mcpServers ? Object.keys(result.mcpServers).length : 0,
+          hasPluginConfig: !!result.plugin,
+          agents: result.agents ? Object.keys(result.agents).length : 0,
+          hasA2t: !!result.a2t,
+          hasUi: !!result.ui,
+          // keys-only — never log the values
+          claudeEnvKeys: result['claude.env'] ? Object.keys(result['claude.env']) : [],
+        });
+      }
 
       return result;
     } catch (error) {
-      logger.error('Failed to parse config', {
-        path: configFile,
-        error: (error as Error).message,
-      });
+      if (!readOnly) {
+        logger.error('Failed to parse config', {
+          path: configFile,
+          error: (error as Error).message,
+        });
+      }
+      // Reported, then still degraded to `{}`: the runtime's boot-with-defaults
+      // behaviour is unchanged for every caller that does not pass `onError`.
+      opts.onError?.(error);
       return {};
     }
   }
 
-  logger.warn('config.json not found', { path: configFile });
+  if (!readOnly) logger.warn('config.json not found', { path: configFile });
+  opts.onError?.(new Error('config.json not found'));
   return {};
 }
 
@@ -518,9 +728,6 @@ export function loadConfig(configFile: string): Config {
  * @param config      The Config to persist
  */
 export function saveConfig(configFile: string, config: Config): void {
-  const tmpFile = configFile + '.tmp';
-  const content = JSON.stringify(config, null, 2) + '\n';
-  fs.writeFileSync(tmpFile, content, 'utf-8');
-  fs.renameSync(tmpFile, configFile);
+  writeConfigFileAtomically(configFile, JSON.stringify(config, null, 2) + '\n');
   logger.info('Saved config', { path: configFile });
 }

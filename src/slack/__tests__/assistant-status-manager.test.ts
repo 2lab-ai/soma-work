@@ -29,7 +29,9 @@ describe('AssistantStatusManager', () => {
     // and NOT a disable trigger anymore — see separate non-clamp test below.
     it('should auto-disable on permanent failure and best-effort clear', async () => {
       mockSlackApi.setAssistantStatus.mockRejectedValueOnce(
-        Object.assign(new Error('missing_scope'), { data: { error: 'missing_scope' } }),
+        Object.assign(new Error('missing_scope'), {
+          data: { error: 'missing_scope' },
+        }),
       );
 
       await manager.setStatus('C123', '123.456', 'is thinking...');
@@ -51,7 +53,9 @@ describe('AssistantStatusManager', () => {
     // process-wide, same as scope/auth failures.
     it('should auto-disable on token_revoked (permanent token-lifecycle)', async () => {
       mockSlackApi.setAssistantStatus.mockRejectedValueOnce(
-        Object.assign(new Error('token_revoked'), { data: { error: 'token_revoked' } }),
+        Object.assign(new Error('token_revoked'), {
+          data: { error: 'token_revoked' },
+        }),
       );
 
       await manager.setStatus('C123', '123.456', 'is thinking...');
@@ -60,7 +64,9 @@ describe('AssistantStatusManager', () => {
 
     it('should auto-disable on token_expired (permanent token-lifecycle)', async () => {
       mockSlackApi.setAssistantStatus.mockRejectedValueOnce(
-        Object.assign(new Error('token_expired'), { data: { error: 'token_expired' } }),
+        Object.assign(new Error('token_expired'), {
+          data: { error: 'token_expired' },
+        }),
       );
 
       await manager.setStatus('C123', '123.456', 'is thinking...');
@@ -69,7 +75,9 @@ describe('AssistantStatusManager', () => {
 
     it('should auto-disable on account_inactive (permanent token-lifecycle)', async () => {
       mockSlackApi.setAssistantStatus.mockRejectedValueOnce(
-        Object.assign(new Error('account_inactive'), { data: { error: 'account_inactive' } }),
+        Object.assign(new Error('account_inactive'), {
+          data: { error: 'account_inactive' },
+        }),
       );
 
       await manager.setStatus('C123', '123.456', 'is thinking...');
@@ -79,7 +87,9 @@ describe('AssistantStatusManager', () => {
     // #689 P4 Part 2 — per-thread `not_allowed` MUST NOT disable.
     it('should NOT disable on per-thread not_allowed (mixed-traffic protection)', async () => {
       mockSlackApi.setAssistantStatus.mockRejectedValueOnce(
-        Object.assign(new Error('not_allowed'), { data: { error: 'not_allowed' } }),
+        Object.assign(new Error('not_allowed'), {
+          data: { error: 'not_allowed' },
+        }),
       );
 
       await manager.setStatus('C123', '123.456', 'is thinking...');
@@ -93,7 +103,9 @@ describe('AssistantStatusManager', () => {
     // #689 P4 Part 2 — transient (ratelimited/network) MUST NOT disable.
     it('should NOT disable on transient ratelimited failure', async () => {
       mockSlackApi.setAssistantStatus.mockRejectedValueOnce(
-        Object.assign(new Error('ratelimited'), { data: { error: 'ratelimited' } }),
+        Object.assign(new Error('ratelimited'), {
+          data: { error: 'ratelimited' },
+        }),
       );
 
       await manager.setStatus('C123', '123.456', 'is thinking...');
@@ -145,7 +157,9 @@ describe('AssistantStatusManager', () => {
     it('should not call when disabled', async () => {
       // Force disable by triggering error
       mockSlackApi.setAssistantStatus.mockRejectedValueOnce(
-        Object.assign(new Error('missing_scope'), { data: { error: 'missing_scope' } }),
+        Object.assign(new Error('missing_scope'), {
+          data: { error: 'missing_scope' },
+        }),
       );
       await manager.setStatus('C123', '123.456', 'test');
 
@@ -250,7 +264,9 @@ describe('AssistantStatusManager', () => {
 
     it('should not call when disabled', async () => {
       mockSlackApi.setAssistantStatus.mockRejectedValueOnce(
-        Object.assign(new Error('missing_scope'), { data: { error: 'missing_scope' } }),
+        Object.assign(new Error('missing_scope'), {
+          data: { error: 'missing_scope' },
+        }),
       );
       await manager.setStatus('C123', '123.456', 'test');
 
@@ -351,6 +367,232 @@ describe('AssistantStatusManager — descriptor resolver on heartbeat', () => {
   });
 });
 
+describe('AssistantStatusManager — in-flight status races', () => {
+  let mockSlackApi: ReturnType<typeof createMockSlackApi>;
+  let manager: AssistantStatusManager;
+  let remoteStatus: string;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    remoteStatus = '';
+    mockSlackApi = createMockSlackApi();
+    mockSlackApi.setAssistantStatus.mockImplementation(
+      async (_channelId: string, _threadTs: string, status: string) => {
+        await Promise.resolve();
+        remoteStatus = status;
+      },
+    );
+    manager = new AssistantStatusManager(mockSlackApi as unknown as SlackApiHelper);
+  });
+
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
+  function deferNextStatus() {
+    let release: () => void = () => {};
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    mockSlackApi.setAssistantStatus.mockImplementationOnce(
+      async (_channelId: string, _threadTs: string, status: string) => {
+        await pending;
+        // Slack applies this write on completion, NOT when the mock is called.
+        remoteStatus = status;
+      },
+    );
+    return release;
+  }
+
+  it('[review] pending writes skip heartbeat ticks without a burst after release', async () => {
+    const releaseSet = deferNextStatus();
+    const setting = manager.setStatus('C', 't', 'working');
+    await vi.advanceTimersByTimeAsync(100_000);
+    expect(mockSlackApi.setAssistantStatus).toHaveBeenCalledTimes(1);
+    releaseSet();
+    await setting;
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mockSlackApi.setAssistantStatus).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(mockSlackApi.setAssistantStatus).toHaveBeenCalledTimes(2);
+    await manager.clearStatus('C', 't');
+  });
+
+  it('[review] transient terminal clear retries after 1s and clears remote status', async () => {
+    await manager.setStatus('C', 't', 'working');
+    const debug = vi.spyOn((manager as any).logger, 'debug');
+    mockSlackApi.setAssistantStatus.mockRejectedValueOnce(new Error('network timeout'));
+    await manager.clearStatus('C', 't');
+    expect(remoteStatus).toBe('working');
+    expect(debug.mock.calls.some(([message]) => String(message).includes('heartbeat retry'))).toBe(false);
+    await vi.advanceTimersByTimeAsync(999);
+    expect(mockSlackApi.setAssistantStatus).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(remoteStatus).toBe('');
+    expect(mockSlackApi.setAssistantStatus).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(mockSlackApi.setAssistantStatus).toHaveBeenCalledTimes(3);
+  });
+
+  it.each(['set', 'bump', 'disable'] as const)('[review] %s cancels a delayed clear retry', async (action) => {
+    await manager.setStatus('C', 't', 'working');
+    mockSlackApi.setAssistantStatus.mockRejectedValueOnce(new Error('network timeout'));
+    await manager.clearStatus('C', 't');
+    expect(vi.getTimerCount()).toBe(1);
+    if (action === 'set') await manager.setStatus('C', 't', 'next turn');
+    else if (action === 'bump') manager.bumpEpoch('C', 't');
+    else manager.markDisabledIfScopeMissing({ code: 'missing_scope' });
+    const calls = mockSlackApi.setAssistantStatus.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(mockSlackApi.setAssistantStatus).toHaveBeenCalledTimes(calls);
+    expect(remoteStatus).toBe(action === 'set' ? 'next turn' : 'working');
+  });
+
+  it('[review] clear retry exhaustion warns once after exactly three attempts', async () => {
+    await manager.setStatus('C', 't', 'working');
+    const warn = vi.spyOn((manager as any).logger, 'warn');
+    mockSlackApi.setAssistantStatus.mockRejectedValue(new Error('network timeout'));
+    await manager.clearStatus('C', 't');
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect.soft(mockSlackApi.setAssistantStatus).toHaveBeenCalledTimes(3);
+    expect(warn).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1_999);
+    expect.soft(mockSlackApi.setAssistantStatus).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(1);
+    expect.soft(mockSlackApi.setAssistantStatus).toHaveBeenCalledTimes(4);
+    expect
+      .soft(warn)
+      .toHaveBeenCalledWith(
+        expect.stringContaining('clear retries exhausted'),
+        expect.objectContaining({ key: 'C:t', attempts: 3 }),
+      );
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(mockSlackApi.setAssistantStatus).toHaveBeenCalledTimes(4);
+    expect(manager.isEnabled()).toBe(true);
+    expect(remoteStatus).toBe('working');
+  });
+
+  it('[T2] scoped late setters are rejected after clear and after the next epoch', async () => {
+    const epoch = manager.bumpEpoch('C', 't');
+    await manager.setStatus('C', 't', 'old turn', { expectedEpoch: epoch });
+    const releaseClear = deferNextStatus();
+    const clearing = manager.clearStatus('C', 't', { expectedEpoch: epoch });
+    await manager.setStatus('C', 't', 'late closed turn', {
+      expectedEpoch: epoch,
+    });
+    releaseClear();
+    await clearing;
+    expect(remoteStatus).toBe('');
+
+    const nextEpoch = manager.bumpEpoch('C', 't');
+    await manager.setStatus('C', 't', 'current turn', {
+      expectedEpoch: nextEpoch,
+    });
+    await manager.setStatus('C', 't', 'late old turn', {
+      expectedEpoch: epoch,
+    });
+    await manager.setStatus('C', 't', '', { expectedEpoch: epoch });
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(remoteStatus).toBe('current turn');
+    expect(mockSlackApi.setAssistantStatus.mock.calls.map(([, , text]) => text)).toEqual([
+      'old turn',
+      '',
+      'current turn',
+      'current turn',
+    ]);
+  });
+
+  it('[T2] a blocked thread does not block another thread', async () => {
+    const releaseSet = deferNextStatus();
+    const setting = manager.setStatus('C', 'blocked', 'waiting');
+    await manager.setStatus('C', 'independent', 'working');
+    expect(mockSlackApi.setAssistantStatus).toHaveBeenCalledWith('C', 'independent', 'working');
+    await manager.clearStatus('C', 'independent');
+    expect(mockSlackApi.setAssistantStatus).toHaveBeenLastCalledWith('C', 'independent', '');
+    releaseSet();
+    await setting;
+    await manager.clearStatus('C', 'blocked');
+  });
+
+  it('[T2] bumpEpoch cancels prior heartbeat before the next setter', async () => {
+    manager.bumpEpoch('C', 't');
+    await manager.setStatus('C', 't', 'old turn');
+    manager.bumpEpoch('C', 't');
+    await vi.advanceTimersByTimeAsync(40_000);
+    expect(mockSlackApi.setAssistantStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it('[T2] queued writes validate desired identity before sending', async () => {
+    const releaseSet = deferNextStatus();
+    const setting = manager.setStatus('C', 't', 'in flight');
+    const obsolete = manager.setStatus('C', 't', 'obsolete');
+    const clearing = manager.clearStatus('C', 't');
+    releaseSet();
+    await Promise.all([setting, obsolete, clearing]);
+    expect(mockSlackApi.setAssistantStatus.mock.calls.map(([, , text]) => text)).toEqual(['in flight', '']);
+    expect(remoteStatus).toBe('');
+  });
+
+  it('[T2] pending set then clear leaves remote status empty without resurrecting a heartbeat', async () => {
+    const releaseSet = deferNextStatus();
+    const setting = manager.setStatus('C', 't', 'is thinking...');
+    const clearing = manager.clearStatus('C', 't');
+    // Let an uncoordinated clear overtake the blocked set. Do not await clear
+    // here: an implementation that serializes writes must also be able to pass.
+    await vi.advanceTimersByTimeAsync(0);
+
+    releaseSet();
+    await Promise.all([setting, clearing]);
+    expect.soft(remoteStatus).toBe('');
+
+    const callsAfterSettling = mockSlackApi.setAssistantStatus.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(40_000);
+    expect.soft(remoteStatus).toBe('');
+    expect(mockSlackApi.setAssistantStatus).toHaveBeenCalledTimes(callsAfterSettling);
+  });
+
+  it('[T2] pending heartbeat then clear leaves remote status empty without further heartbeats', async () => {
+    await manager.setStatus('C', 't', 'is thinking...');
+    const releaseHeartbeat = deferNextStatus();
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(mockSlackApi.setAssistantStatus).toHaveBeenCalledTimes(2);
+
+    const clearing = manager.clearStatus('C', 't');
+    await vi.advanceTimersByTimeAsync(0);
+    releaseHeartbeat();
+    await clearing;
+    await vi.advanceTimersByTimeAsync(0);
+    expect.soft(remoteStatus).toBe('');
+
+    const callsAfterSettling = mockSlackApi.setAssistantStatus.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(40_000);
+    expect.soft(remoteStatus).toBe('');
+    expect(mockSlackApi.setAssistantStatus).toHaveBeenCalledTimes(callsAfterSettling);
+  });
+
+  it('[T2] old pending set cannot restore its descriptor after a newer current set', async () => {
+    const releaseOldSet = deferNextStatus();
+    const oldDescriptor = vi.fn(() => 'old turn');
+    const currentDescriptor = vi.fn(() => 'current turn');
+    manager.bumpEpoch('C', 't');
+    const oldSetting = manager.setStatus('C', 't', oldDescriptor);
+    manager.bumpEpoch('C', 't');
+    const currentSetting = manager.setStatus('C', 't', currentDescriptor);
+    await vi.advanceTimersByTimeAsync(0);
+
+    releaseOldSet();
+    await Promise.all([oldSetting, currentSetting]);
+    expect.soft(remoteStatus).toBe('current turn');
+
+    await vi.advanceTimersByTimeAsync(40_000);
+    expect.soft(remoteStatus).toBe('current turn');
+    expect.soft(oldDescriptor).toHaveBeenCalledTimes(1);
+    expect(currentDescriptor.mock.calls.length).toBeGreaterThanOrEqual(3);
+  });
+});
+
 // #689 P4 Part 2/2 — markDisabledIfScopeMissing public API. Only permanent
 // scope/auth codes flip `enabled=false`. `not_allowed` is per-thread and
 // transient codes (ratelimited / internal_error / network) are non-fatal —
@@ -374,7 +616,9 @@ describe('markDisabledIfScopeMissing (#689)', () => {
     await manager.setStatus('C123', '123.456', 'is thinking...');
     expect(manager.isEnabled()).toBe(true);
 
-    const err = Object.assign(new Error('missing_scope'), { data: { error: 'missing_scope' } });
+    const err = Object.assign(new Error('missing_scope'), {
+      data: { error: 'missing_scope' },
+    });
     const result = manager.markDisabledIfScopeMissing(err);
 
     expect(result).toBe(true);
@@ -387,19 +631,25 @@ describe('markDisabledIfScopeMissing (#689)', () => {
   });
 
   it('not_allowed_token_type → enabled=false + returns true', () => {
-    const err = Object.assign(new Error('scope'), { data: { error: 'not_allowed_token_type' } });
+    const err = Object.assign(new Error('scope'), {
+      data: { error: 'not_allowed_token_type' },
+    });
     expect(manager.markDisabledIfScopeMissing(err)).toBe(true);
     expect(manager.isEnabled()).toBe(false);
   });
 
   it('invalid_auth → enabled=false + returns true', () => {
-    const err = Object.assign(new Error('auth'), { data: { error: 'invalid_auth' } });
+    const err = Object.assign(new Error('auth'), {
+      data: { error: 'invalid_auth' },
+    });
     expect(manager.markDisabledIfScopeMissing(err)).toBe(true);
     expect(manager.isEnabled()).toBe(false);
   });
 
   it('not_allowed (per-thread) → enabled unchanged + returns false', () => {
-    const err = Object.assign(new Error('not allowed'), { data: { error: 'not_allowed' } });
+    const err = Object.assign(new Error('not allowed'), {
+      data: { error: 'not_allowed' },
+    });
     expect(manager.markDisabledIfScopeMissing(err)).toBe(false);
     expect(manager.isEnabled()).toBe(true);
   });
@@ -417,7 +667,9 @@ describe('markDisabledIfScopeMissing (#689)', () => {
   });
 
   it('already disabled → returns true without double clearAllHeartbeats', () => {
-    const err = Object.assign(new Error('scope'), { data: { error: 'missing_scope' } });
+    const err = Object.assign(new Error('scope'), {
+      data: { error: 'missing_scope' },
+    });
     expect(manager.markDisabledIfScopeMissing(err)).toBe(true);
     expect(manager.isEnabled()).toBe(false);
 

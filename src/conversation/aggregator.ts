@@ -1,7 +1,7 @@
 /**
  * Cross-instance dashboard aggregator (#814).
  *
- * On a multi-instance host (e.g. `oudwood-dev:33000` + `mac-mini-dev:33001`)
+ * On a multi-instance host (e.g. `instance-a:33000` + `instance-b:33001`)
  * a user may open the dashboard on either port and expect to see *all*
  * sessions on the host. This module is the glue between heartbeat
  * discovery (`instance-registry`) and the `/api/dashboard/sessions`

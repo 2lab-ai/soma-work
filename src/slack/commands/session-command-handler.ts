@@ -11,6 +11,7 @@ import {
 } from '../../user-settings-store';
 import { formatBytes as formatBytesUtil, getDirSizeBytes } from '../../utils/dir-size';
 import { CommandParser } from '../command-parser';
+import { ContextWindowManager } from '../context-window-manager';
 import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
 
 /**
@@ -138,12 +139,17 @@ export class SessionCommandHandler implements CommandHandler {
       lines.push(`*Conversation:* \`${session.conversationId}\``);
     }
 
-    // Context usage
+    // Context usage. Two corrections, both issue #196: this used to sum only
+    // input+output — cache-read and cache-creation tokens occupy the window
+    // too, so a cache-heavy session under-reported badly — and it printed the
+    // remaining share while `/context` and the turn footer printed the
+    // consumed one. `computeUsedTokens` is the shared formula; `used` is the
+    // shared reading.
     if (session.usage) {
       const u = session.usage;
-      const current = u.currentInputTokens + u.currentOutputTokens;
-      const pct = u.contextWindow > 0 ? (((u.contextWindow - current) / u.contextWindow) * 100).toFixed(0) : '?';
-      lines.push(`*Context:* ${formatTokens(current)} / ${formatTokens(u.contextWindow)} (${pct}% available)`);
+      const current = ContextWindowManager.computeUsedTokens(u);
+      const pct = u.contextWindow > 0 ? (100 - ContextWindowManager.computeRemainingPercent(u)).toFixed(0) : '?';
+      lines.push(`*Context:* ${formatTokens(current)} / ${formatTokens(u.contextWindow)} (${pct}% used)`);
       if (u.totalCostUsd > 0) {
         lines.push(`*Cost:* $${u.totalCostUsd.toFixed(4)}`);
       }
@@ -228,9 +234,21 @@ export class SessionCommandHandler implements CommandHandler {
   private async setSessionModel(ctx: CommandContext, session: any, input: string): Promise<CommandResult> {
     const { say, threadTs } = ctx;
     // Cache miss → forced llmux catalog re-fetch + one retry before erroring.
-    const resolved = await userSettingsStore.resolveModelInputWithRefresh(input);
+    // A REFUSED id (e.g. the fake `grok-4.6[1m]`) skips the refresh entirely.
+    const resolution = await userSettingsStore.resolveModelInputDetailedWithRefresh(input);
 
-    if (!resolved) {
+    if (resolution.status === 'rejected') {
+      // Distinct from the typo path below on purpose: the alias dump would
+      // read as "you misspelled it" and bury the fact that this id would be
+      // forwarded verbatim to a provider that does not have it.
+      await say({
+        text: `❌ ${resolution.rejectedReason}\n*Use* \`${resolution.suggestedModel}\` instead.`,
+        thread_ts: threadTs,
+      });
+      return { handled: true };
+    }
+
+    if (resolution.status === 'unknown') {
       const aliases = Object.keys(MODEL_ALIASES)
         .map((a) => `\`${a}\``)
         .join(', ');
@@ -241,6 +259,7 @@ export class SessionCommandHandler implements CommandHandler {
       return { handled: true };
     }
 
+    const resolved = resolution.modelId;
     session.model = resolved;
     // Re-anchor the context window to the NEW model immediately. Without this
     // the session keeps the previous model's window (e.g. 1M from opus[1m])

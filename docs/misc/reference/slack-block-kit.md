@@ -119,7 +119,7 @@ Scope: Slack Block Kit UI + Messaging/Interactivity + AI app workflows + Agentfo
 
 1. `assistant_thread_started` 수신 후 thread context 저장
 2. context 기반 기능 전 `conversations.info` 접근 가능성 확인
-3. 작업 시간이 길면 `assistant.threads.setStatus` 먼저 설정
+3. 작업 중에는 `AssistantStatusManager`를 통해 `agents.sessions.setStatus`를 `processing`으로 설정
 4. `assistant.threads.setSuggestedPrompts`(최대 4개) 설정
 5. 필요 시 `assistant.threads.setTitle` 설정
 6. `assistant_thread_context_changed` 수신 시 context 갱신
@@ -131,7 +131,19 @@ Scope: Slack Block Kit UI + Messaging/Interactivity + AI app workflows + Agentfo
 2. `thread_ts`를 conversation key로 사용
 3. 필요 시 `conversations.replies`로 thread history 조회
 4. 출력 포맷 정책(mrkdwn/길이/링크)을 고정
-5. status on/off 경로를 실패 포함 전체 플로우에 강제
+5. 실패를 포함한 전체 플로우에서 작업 중 `processing`, 종료 시 `active` 전환을 요청
+
+현재 soma-work의 `SlackApiHelper.setAssistantStatus`는
+`WebClient.apiCall('agents.sessions.setStatus')`를 호출한다. 비어 있지 않은 status
+문자열은 `processing`, 빈 문자열은 `active`로 매핑한다. 문자열은 로딩 의도를
+전달하며, 사용자 지정 lifecycle 표시 문구로 전송되지 않는다.
+레거시 `assistant.threads.setStatus`의 로딩 문자열을 비워도 새 agent-session
+lifecycle의 `processing`은 해제되지 않는다. `active`는 다음 입력을 받을 준비가
+됐다는 뜻이지 세션이 닫혔다는 뜻이 아니다.
+
+`AssistantStatusManager`의 epoch 및 직렬 writer 가드는 그대로 유지한다.
+닫히거나 새 턴으로 대체된 epoch의 setter와 오래된 clear는 거부한다.
+정리·재시도 보장은 [Native assistant status](architecture.md#native-assistant-status) 참고.
 
 ### 2.4 응답 전송 기본 정책
 
@@ -149,7 +161,14 @@ Scope: Slack Block Kit UI + Messaging/Interactivity + AI app workflows + Agentfo
 실무 체크:
 1. stream timeout/abort 필수
 2. 실패 시 일반 `chat.postMessage` fallback
-3. 종료 시 status clear
+3. 턴 종료 시 epoch를 무효화하고 lifecycle을 `active`로 전환 요청
+
+실제 Slack QA에서 `chat.startStream`이 lifecycle을 `active`로 되돌리는 것을
+확인했다. `TurnSurface`는 실행 상태를 stream 시작과 독립적으로 설정하고,
+시작 성공 응답에 stream timestamp가 있으면 캡처한 `expectedEpoch`로
+`processing`을 복원한다. 현재 턴이며 closing 상태가 아닐 때만 복원을 요청한다.
+epoch 가드도 적용되므로 닫히거나 대체된 턴의 늦은 콜백은 processing을 다시
+활성화할 수 없다.
 
 ### 2.6 피드백 UX 워크플로우
 

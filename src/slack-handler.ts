@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { App } from '@slack/bolt';
+import { runWithTimeout } from '@soma/slack/pipeline/stream-executor-cleanup-helpers';
 import { HandoffAbortError, isZHandoffWorkflow } from 'somalib/model-commands/handoff-parser';
 import { getAdminUsers, isAdminUser } from './admin-utils';
 import type { ContinuationHandler, TurnRunnerSurface } from './agent-session';
@@ -624,11 +625,52 @@ export class SlackHandler {
     let activeThreadTs: string = originalThreadTs;
     let agentSession: V1QueryAdapter | undefined;
 
+    // Setup owns only the original source thread's epoch. Execution acquires
+    // its own epoch, so this cleanup cannot clear a newer turn or a migrated target.
+    let setupStatusEpoch: number | undefined;
+    const clearSetupStatus = async () => {
+      if (setupStatusEpoch === undefined) return;
+      const expectedEpoch = setupStatusEpoch;
+      setupStatusEpoch = undefined;
+      try {
+        // Bound the wait, not the queued clear: a pending initial write must
+        // not block migration or exit, but its eventual clear must stay attached.
+        await runWithTimeout(
+          () => this.assistantStatusManager.clearStatus(channel, originalThreadTs, { expectedEpoch }),
+          3000,
+          { what: `setup assistant status clear for source ${channel}:${originalThreadTs}`, logger: this.logger },
+        );
+      } catch (error) {
+        this.logger.warn('Failed to clear setup assistant status', {
+          channelId: channel,
+          threadTs: originalThreadTs,
+          error: (error as Error)?.message ?? String(error),
+        });
+      }
+    };
+
     // Step 4: Initialize session (pass effectiveText for proper dispatch after command parsing)
     // NOTE: initialize() is now INSIDE the outer try (widened for #698 so
     // DispatchAbortError thrown from Sites B/D in session-initializer reaches
     // the outer catch arm below).
     try {
+      // Queued/non-owner input must not steal an active turn's status. Synthetic
+      // turns keep their existing execution-owned status lifecycle.
+      const sourceSessionKey = `${channel}:${originalThreadTs}`;
+      if (!event.synthetic && !this.requestCoordinator.isRequestActive(sourceSessionKey)) {
+        setupStatusEpoch = this.assistantStatusManager.bumpEpoch(channel, originalThreadTs);
+        void this.assistantStatusManager
+          .setStatus(channel, originalThreadTs, 'is thinking...', {
+            expectedEpoch: setupStatusEpoch,
+          })
+          .catch((error) => {
+            this.logger.warn('Failed to set setup assistant status', {
+              channelId: channel,
+              threadTs: originalThreadTs,
+              error: (error as Error)?.message ?? String(error),
+            });
+          });
+      }
       const sessionResult = await this.sessionInitializer.initialize(
         event,
         cwdResult.workingDirectory!,
@@ -667,6 +709,9 @@ export class SlackHandler {
 
       activeChannel = sessionResult.session.channelId || channel;
       activeThreadTs = sessionResult.session.threadRootTs || sessionResult.session.threadTs || originalThreadTs;
+      if (activeChannel !== channel || activeThreadTs !== originalThreadTs) {
+        await clearSetupStatus();
+      }
 
       // Inline `%model` — applied right after session init and BEFORE the
       // goal/autogoal blocks below, so this very turn (including a goal
@@ -1123,6 +1168,8 @@ export class SlackHandler {
         return; // Retry scheduled — don't re-throw
       }
       throw error; // Non-recoverable error — propagate
+    } finally {
+      await clearSetupStatus();
     }
   }
 
@@ -1435,6 +1482,19 @@ export class SlackHandler {
 
       try {
         await this.slackApi.deleteMessage(target.channelId, target.messageTs);
+
+        // That message may have been a live session's thread anchor.
+        // `isThreadRoot()` above only recognises roots that already have replies,
+        // so a freshly posted bot thread card falls through to here and is
+        // deleted outright. The session would survive with a threadTs pointing at
+        // nothing — and Slack silently reroutes posts against a dead thread_ts to
+        // the channel, so its later expiry/sleep notices would go out publicly.
+        // Match on channel + ts against the registry rather than guessing from
+        // message shape, and let the session die with its thread. Runs only after
+        // the delete actually succeeded, so a failed delete never orphans a
+        // session whose thread is still standing.
+        this.terminateSessionAnchoredTo(target.channelId, target.messageTs);
+
         await this.slackApi.addReaction(event.channel, event.ts, 'white_check_mark');
         this.logger.info('Admin deleted bot message via DM', {
           adminId: event.user,
@@ -1463,6 +1523,27 @@ export class SlackHandler {
   private isThreadRoot(message: any): boolean {
     const replyCount = typeof message?.reply_count === 'number' ? message.reply_count : 0;
     return replyCount > 0;
+  }
+
+  /**
+   * End the session anchored to `(channel, ts)`, if one is.
+   *
+   * The lookup is the check: a session key is built from channel + thread ts, so
+   * it only resolves when this exact message IS some session's thread anchor.
+   * Any other message resolves to a key nothing is stored under and this is a
+   * no-op. Deliberately keyed on both values — a thread ts is unique only within
+   * its own channel. Never throws; deleting the message is the admin's actual
+   * request and must not fail because of bookkeeping.
+   */
+  private terminateSessionAnchoredTo(channel: string, ts: string): void {
+    try {
+      const sessionKey = this.claudeHandler.getSessionKey(channel, ts);
+      if (this.claudeHandler.terminateSession(sessionKey)) {
+        this.logger.info('Terminated session whose thread root was deleted', { channel, ts, sessionKey });
+      }
+    } catch (error) {
+      this.logger.warn('Failed to terminate session for deleted thread root', { channel, ts, error });
+    }
   }
 
   /**

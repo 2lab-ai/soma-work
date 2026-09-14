@@ -191,6 +191,13 @@ interface SerializedSession {
    * from pre-#697 disk state is handled defensively by `checkAndConsumeBudget`.
    */
   autoHandoffBudget?: number;
+  /**
+   * Session-scoped `/autocompact` token override. Persisted VERBATIM: the
+   * safe-max clamp is a read-time decision of `resolveEffectiveAutoCompact`,
+   * so a threshold that is temporarily too large for the current model still
+   * round-trips unchanged.
+   */
+  autoCompactTokens?: number | null;
 }
 
 /**
@@ -1691,18 +1698,24 @@ export class SessionRegistry {
         // Transition to sleep instead of deleting
         session.state = 'SLEEPING';
         session.sleepStartedAt = new Date();
-        session.warningMessageTs = undefined;
-        session.lastWarningSentAt = undefined;
         this.cleanupSourceWorkingDirs(session);
         slept++;
 
         if (this.expiryCallbacks) {
           try {
+            // `warningMessageTs` is still set here on purpose. onSleep edits that
+            // existing "만료 예정" warning into the sleep notice instead of posting
+            // a second message; clearing the field first made that branch
+            // unreachable and left the stale warning sitting above the new one.
             await this.expiryCallbacks.onSleep(session);
           } catch (error) {
             this.logger.error('Failed to send session sleep message', error);
           }
         }
+        // Cleared only after onSleep has had its chance to use it — a ts from this
+        // cycle must not be carried into the next warning cycle.
+        session.warningMessageTs = undefined;
+        session.lastWarningSentAt = undefined;
         // Auto-update memory on session end: consolidate this owner's episodic
         // observations into durable L1 memory ("dreaming"). Fire-and-forget.
         this.fireSessionConsolidate(session.ownerId);
@@ -1796,6 +1809,10 @@ export class SessionRegistry {
         // sessionId) and the first model turn after a forced handoff entrypoint,
         // where the typed metadata must survive a crash/restart so downstream
         // guards (#696/#697/#698) can consume it.
+        // The `autoCompactTokens` branch is the same shape of exception as
+        // `goal`: the user set it EXPLICITLY, possibly before the first SDK
+        // turn produced a sessionId, so dropping it here would silently
+        // discard a direct instruction.
         if (
           session.sessionId ||
           session.handoffContext ||
@@ -1805,7 +1822,8 @@ export class SessionRegistry {
           // An incident session is persisted from the moment it is marked,
           // even before the SDK assigns a sessionId — otherwise a crash in
           // that window would bring the thread back unrestricted.
-          session.incidentRequest
+          session.incidentRequest ||
+          session.autoCompactTokens != null
         ) {
           this.ensureSessionLinkState(session);
           sessionsArray.push({
@@ -1894,6 +1912,8 @@ export class SessionRegistry {
             // host completion marker that decides whether a retry is admissible
             incidentRequest: session.incidentRequest,
             incidentAttemptFinishedId: session.incidentAttemptFinishedId,
+            // Session-scoped `/autocompact` token override (persisted verbatim).
+            autoCompactTokens: session.autoCompactTokens,
           });
         }
       }
@@ -2116,6 +2136,10 @@ export class SessionRegistry {
           // backfill is deferred to `checkAndConsumeBudget` so pre-#697 disk
           // state loads as `undefined` and is handled by the guard.
           autoHandoffBudget: serialized.autoHandoffBudget,
+          // Session-scoped `/autocompact` override — restored verbatim. Unlike
+          // the pending/compaction state below this is USER intent, not
+          // in-flight machinery, so it survives the restart.
+          autoCompactTokens: serialized.autoCompactTokens ?? null,
           // Compaction Tracking (#617): runtime-only dedupe state — always reset on reload.
           // Pending state (autoCompactPending / pendingUserText / pendingEventContext) is
           // intentionally NOT rehydrated because the original event context cannot be

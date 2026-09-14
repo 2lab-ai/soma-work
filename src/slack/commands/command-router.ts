@@ -3,6 +3,7 @@ import type { ClaudeHandler } from '../../claude-handler';
 import { getReportDeps } from '../../metrics';
 import { AdminHandler } from './admin-handler';
 import { AuthHandler } from './auth-handler';
+import { AutoCompactHandler } from './autocompact-handler';
 import { AutoskillHandler } from './autoskill-handler';
 import { BypassHandler } from './bypass-handler';
 import { CctHandler } from './cct-handler';
@@ -121,6 +122,7 @@ setCommandRouterProviders({
         new OnboardingHandler(deps as any),
         new ContextHandler(deps as any),
         new RenewHandler(deps as any),
+        new AutoCompactHandler(deps as any),
         new CompactThresholdHandler(deps as any),
         new CompactHandler(deps as any),
         goalHandler,

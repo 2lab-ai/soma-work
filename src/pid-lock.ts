@@ -15,8 +15,21 @@
 import { closeSync, constants, existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { Logger } from './logger';
+import {
+  currentDaemonInstance,
+  formatPidLockContent,
+  PID_LOCK_FILENAME,
+  parsePidLockContent,
+  sameDaemonInstance,
+} from './service-readiness';
 
-const LOCK_FILENAME = 'soma-work.pid';
+/**
+ * Re-exported so the lock's filename has exactly one owner
+ * (`src/service-readiness.ts`) shared by the daemon, the controller, and their
+ * tests. A private literal here is how the service manager and the daemon end
+ * up disagreeing about which file is the lock after a rename.
+ */
+export const LOCK_FILENAME = PID_LOCK_FILENAME;
 const logger = new Logger('PidLock');
 
 /**
@@ -34,13 +47,18 @@ function isProcessAlive(pid: number): boolean {
 }
 
 /**
- * Build lock file content: "PID:startTime" format.
- * startTime is process uptime anchor to mitigate PID reuse false positives.
+ * Build lock file content: `<pid>:<processStartMs>`.
+ *
+ * The second field is the process's START time (`now - uptime`), not the moment
+ * the lock was written. Both values differ across runs, so either would catch a
+ * *restarted* daemon — but only the start time is comparable to something an
+ * outside observer can obtain about a candidate process (its own start, or the
+ * machine's boot time). The service manager relies on that comparison before it
+ * sends SIGTERM to a PID a stale lock names, so "when we happened to write" is
+ * not good enough.
  */
 function buildLockContent(): string {
-  // Use process.pid + Date.now() as a simple identity tuple.
-  // On PID reuse, the start time will differ.
-  return `${process.pid}:${Date.now()}`;
+  return formatPidLockContent(currentDaemonInstance());
 }
 
 /**
@@ -134,8 +152,22 @@ export function acquirePidLock(dataDir: string): boolean {
   }
 
   if (parsed.pid === process.pid) {
-    // Re-entrant call from same process — already ours
-    return true;
+    // Same PID number — but is it the same RUN? A stale lock left by a crashed
+    // daemon can name a PID the OS later hands to this one. Treating that as
+    // re-entrancy leaves the OLD instance in the lock while the readiness
+    // marker publishes the NEW one, and the controller's gate compares the two
+    // exactly: a perfectly healthy daemon would never be seen as ready.
+    const recorded = parsePidLockContent(existingContent);
+    if (sameDaemonInstance(recorded, currentDaemonInstance())) {
+      return true; // genuinely re-entrant
+    }
+    // Stale-by-identity: replace it with ours, atomically, before returning.
+    try {
+      unlinkSync(lockPath);
+    } catch {
+      /* already gone */
+    }
+    return tryAtomicCreate(lockPath, content);
   }
 
   if (isProcessAlive(parsed.pid)) {

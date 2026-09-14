@@ -76,6 +76,78 @@ resolve_tool_paths() {
     done
 }
 
+# --- Transitional delegation to the somawork controller ---
+#
+# Two owners of one machine's LaunchAgents is the failure this avoids. Once a
+# profile is INSTALLED (Homebrew payload: this script ships beside no source
+# tree), the TypeScript service manager owns the plist, the labels, and the
+# profile paths — `ai.2lab.somawork.{preview,production}` under
+# ~/.config/somawork + ~/.local/{share,state}/somawork. The `/opt`-centric
+# generator below would write a second, conflicting plist for the same machine.
+#
+# So: an installed layout hands the five public service actions to the
+# controller exactly once, and everything else keeps the source-tree
+# implementation verbatim (that is what `./scripts/service.sh dev start` from
+# the repo still does, and what Tasks 10/11 validate before this file is
+# retired). Commands outside that surface (logs, check-env, reinstall, …) stay
+# here until the controller grows equivalents.
+#
+# ## Why the test is a positive marker, not "has no src/"
+#
+# The discriminator used to be `package.json && !src/` — "not a source
+# checkout, therefore installed". That is false for the tree this script is
+# most often run from: `scripts/deploy/stage-bundle.sh` stages `package.json`
+# and never stages `src/`, so **the fleet deploy bundle looked installed**. On
+# any host where `somawork` was also on PATH — the self-hosted runner that runs
+# both the fleet deploy and the release workflow being the obvious one — the
+# fleet's own `stop`, `status` and `install` would `exec` the controller and
+# operate on the Homebrew profile instead: stopping the wrong daemon before an
+# rsync, and verifying a deploy against a service that was never deployed to.
+#
+# `.somawork-package.json` is the release marker. It is written into the payload
+# only by `scripts/release/package-somawork.sh`, declared as the runtime layout
+# marker in `scripts/release/render-manifest.ts`, and asserted on every archive
+# by `scripts/smoke/package-archives.js`. `stage-bundle.sh` does not produce it.
+# So it says exactly the thing the branch needs to know — "this tree came out of
+# a release archive" — instead of inferring it from an absence that two very
+# different layouts share.
+is_packaged_runtime() {
+    [[ -f "$REPO_ROOT/.somawork-package.json" ]]
+}
+
+# dev → preview, main → production. Non-zero for anything else.
+profile_for_env() {
+    case "$1" in
+        dev)  echo "preview" ;;
+        main) echo "production" ;;
+        *)    return 1 ;;
+    esac
+}
+
+maybe_delegate_to_controller() {
+    # `exec` below makes re-entry impossible, but the guard keeps a future
+    # non-exec caller from looping if the controller ever shells back out.
+    [[ -n "${SOMAWORK_SERVICE_SH_DELEGATED:-}" ]] && return 0
+    # Escape hatch for exercising the source-tree path from an installed layout.
+    [[ -n "${SOMAWORK_SERVICE_SH_NO_DELEGATE:-}" ]] && return 0
+    is_packaged_runtime || return 0
+
+    local profile
+    profile="$(profile_for_env "$ENV_ARG")" || return 0
+
+    case "$COMMAND" in
+        install|start|stop|restart|status) ;;
+        *) return 0 ;;
+    esac
+
+    local controller
+    controller="$(command -v somawork 2>/dev/null)" || return 0
+    [[ -n "$controller" ]] || return 0
+
+    export SOMAWORK_SERVICE_SH_DELEGATED=1
+    exec "$controller" service "$COMMAND" --profile "$profile"
+}
+
 # Parse arguments: [env] <command> [args...]
 ENV_ARG=""
 COMMAND=""
@@ -87,6 +159,9 @@ COMMAND="${1:-}"
 shift 2>/dev/null || true
 
 resolve_env "$ENV_ARG"
+
+# Installed profiles belong to the controller; a source checkout does not.
+maybe_delegate_to_controller
 
 # --- Colors ---
 RED='\033[0;31m'
@@ -160,7 +235,7 @@ is_alive() {
 # service comes up regardless of which session ran the deploy. `load` is made
 # tolerant (|| true) because against an already-registered label it is a no-op
 # error — kickstart still does the right thing, and is_alive remains the gate.
-# Real incident: deploy run 27553669625 (oudwood-dev), 2026-06-15.
+# Real incident: a dev-channel deploy run on 2026-06-15.
 load_and_kickstart() {
     launchctl load "$PLIST_PATH" 2>/dev/null || true
     launchctl kickstart -k "gui/$(id -u)/$SERVICE_NAME" 2>/dev/null || true
@@ -295,11 +370,12 @@ cmd_status() {
 # Why a new session is mandatory (not just nohup + disown): a CI deploy job
 # (GitHub Actions self-hosted runner) SIGKILLs its entire process GROUP when the
 # job completes. A bare `nohup ... & disown` stays in that group and is reaped
-# seconds after the deploy step finishes (observed on macmini: supervisor child
-# exits 137 ~4s after acquiring the PID lock, so the Verify step's status check
-# passes in a race window but the service is dead moments later). setsid makes
-# the supervisor a session leader in a brand-new session/process-group that the
-# job teardown cannot signal, so the freshly deployed code keeps running.
+# seconds after the deploy step finishes (observed on a self-hosted runner:
+# the supervisor child exits 137 ~4s after acquiring the PID lock, so the Verify
+# step's status check passes in a race window but the service is dead moments
+# later). setsid makes the supervisor a session leader in a brand-new
+# session/process-group that the job teardown cannot signal, so the freshly
+# deployed code keeps running.
 #
 # macOS has no setsid(1), so prefer the binary when present (Linux) and fall back
 # to perl's POSIX::setsid (always available on macOS). The spawned command

@@ -1,15 +1,15 @@
 #!/bin/bash
-# setup-wizard.sh — compatibility alias.
+# setup-wizard.sh — DEPRECATED compatibility shim.
 #
-# The macOS setup wizard lives in `setup-wizard-macos.sh`. This file used to be
-# a byte-for-byte copy; it now delegates so there is a single source of truth.
+# Onboarding is `somawork setup`: one resumable wizard that discovers the
+# installed runtime, brings llmux up, authorizes the Slack CLI, creates the
+# Slack app and captures its runtime credentials over a local Unix socket,
+# materializes the profile, runs the doctor gate, and installs the service.
 #
-# Usage (identical to the wizard):
-#   ./scripts/setup-wizard.sh           # Run all steps
-#   ./scripts/setup-wizard.sh 07        # Resume from step 07
-#   ./scripts/setup-wizard.sh --status  # Show completion status
-
+# Everything this file used to do is gone on purpose: the curl installers, the
+# credential prompts, the `/opt/soma-work` materialization, and the private
+# `.setup-wizard-state` file. None of them are reachable from here any more.
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-exec "${SCRIPT_DIR}/setup-wizard-macos.sh" "$@"
+echo "scripts/setup-wizard.sh is deprecated; running \`somawork setup\` instead." >&2
+exec somawork setup "$@"

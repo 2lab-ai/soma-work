@@ -1,4 +1,27 @@
 #!/bin/bash
+#
+# ============================== DEPRECATED ==============================
+# UNREACHABLE. Nothing invokes this file.
+#
+# The only caller was scripts/setup-wizard-macos.sh, which is now a shim that
+# `exec somawork setup`. Onboarding is `somawork setup`: it authorizes Slack
+# through the Slack CLI and captures the runtime tokens over a profile-scoped
+# Unix socket into a 0600 secrets.env — no terminal token prompt, no
+# repo-relative .env, no /opt materialization.
+#
+# This directory is excluded from the runtime bundle
+# (scripts/deploy/stage-bundle.sh; enforced by scripts/smoke/setup-package.js)
+# and is scheduled for DELETION once the clean-machine receipt for
+# `somawork setup` is green. Do not extend it, and do not wire a new caller.
+# ========================================================================
+
+# Mechanical enforcement of the banner above. The comment asserted
+# unreachability; this makes it true for both entry paths -- direct execution
+# and `source`. The credential-collecting bodies below are still live code, and
+# these files survive until the clean-machine receipt, so the invariant is
+# enforced rather than described.
+printf '%s\n' "$(basename "${BASH_SOURCE[0]:-$0}") is deprecated and unreachable; run \`somawork setup\`." >&2
+return 1 2>/dev/null || exit 1
 # Step 11: Service Install
 # Installs LaunchAgents for main/dev environments via scripts/service.sh.
 

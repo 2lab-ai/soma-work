@@ -19,6 +19,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { resolveModelProfile } from '../metrics/model-profile';
 import {
   GPT_5_6_AUTO_COMPACT_TOKENS,
   GPT_5_6_CONTEXT_WINDOW,
@@ -54,6 +55,19 @@ describe('gpt-5.6 family — release wiring', () => {
 
   it('gpt-5.6-sol IS the DEFAULT_MODEL (2026-07-10 operator decision)', () => {
     expect(DEFAULT_MODEL).toBe('gpt-5.6-sol');
+  });
+
+  it('lists the sol [1m] variant as a selectable id (600k auto-compact profile)', () => {
+    expect(AVAILABLE_MODELS as readonly string[]).toContain('gpt-5.6-sol[1m]');
+  });
+
+  it('resolves the `sol[1m]` alias and the literal [1m] id', () => {
+    const store = makeStore();
+    expect(MODEL_ALIASES['sol[1m]']).toBe('gpt-5.6-sol[1m]');
+    expect(store.resolveModelInput('sol[1m]')).toBe('gpt-5.6-sol[1m]');
+    expect(store.resolveModelInput('gpt-5.6-sol[1m]')).toBe('gpt-5.6-sol[1m]');
+    expect(coerceToAvailableModel('gpt-5.6-sol[1M]')).toBe('gpt-5.6-sol[1m]');
+    expect(store.getModelDisplayName('gpt-5.6-sol[1m]')).toBe('GPT-5.6 Sol (1M)');
   });
 
   it('resolves the gpt/tier aliases; legacy bare gpt-5.6 spelling maps to sol', () => {
@@ -125,6 +139,14 @@ describe('gpt-5.6 family — 372k window / 340k auto-compact (the key contract)'
     // Must sit ABOVE the 340k compact trigger — otherwise the SDK would
     // hard-block input before the harness ever schedules /compact.
     expect(GPT_5_6_SDK_BLOCKING_LIMIT).toBeGreaterThan(GPT_5_6_AUTO_COMPACT_TOKENS);
+  });
+
+  it('the `[1m]` variant is a DIFFERENT profile — 1M window, 977k limit, 600k trigger', () => {
+    // The family regex used to swallow `gpt-5.6-sol[1m]`, handing a 1M-window
+    // session the bare model's 349k blocking limit and 340k trigger.
+    expect(resolveContextWindow('gpt-5.6-sol[1m]')).toBe(1_000_000);
+    expect(resolveAutoCompactTokens('gpt-5.6-sol[1m]')).toBe(600_000);
+    expect(resolveModelProfile('gpt-5.6-sol[1m]').sdkBlockingLimit).toBe(977_000);
   });
 
   it('every tier matches isGpt56Model and NOT isGpt55Model / native-1M', () => {

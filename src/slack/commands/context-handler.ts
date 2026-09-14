@@ -42,6 +42,13 @@ export class ContextHandler implements CommandHandler {
     const currentContext = ContextWindowManager.computeUsedTokens(usage);
     const contextWindow = usage.contextWindow;
     const availablePercent = ContextWindowManager.computeRemainingPercent(usage);
+    // Displayed as USED, matching the `X / Y` pair above it, the bar's fill,
+    // and the turn-completion footer. This card used to print the remaining
+    // share in the same shape the footer used for the consumed share, so the
+    // two disagreed about the same session (issue #196). `availablePercent`
+    // stays as the input to the low-context warning below, where "how much is
+    // left" is the question actually being asked.
+    const usedPercent = 100 - availablePercent;
 
     // Context bar visualization
     const contextBar = ThreadHeaderBuilder.formatContextBar(usage) || '░░░░░';
@@ -56,7 +63,7 @@ export class ContextHandler implements CommandHandler {
     // Current context window usage with visual bar
     lines.push(`*Context Window:* ${contextBar}`);
     lines.push(
-      `  ${ThreadHeaderBuilder.formatTokenCount(currentContext)} / ${ThreadHeaderBuilder.formatTokenCount(contextWindow)} (${availablePercent.toFixed(0)}% available)`,
+      `  ${ThreadHeaderBuilder.formatTokenCount(currentContext)} / ${ThreadHeaderBuilder.formatTokenCount(contextWindow)} (${Number.isInteger(usedPercent) ? usedPercent : usedPercent.toFixed(1)}% used)`,
     );
 
     // Cache info

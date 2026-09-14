@@ -1,0 +1,451 @@
+# Preview release — the public packaging path.
+#
+# This is NOT the fleet deploy. `.github/workflows/deploy.yml` rsyncs a mutable
+# bundle onto machines we own and is triggered by pushing `deploy/dev` or
+# `deploy/prod`. This workflow builds *immutable public artifacts*, publishes
+# them under a tag that never moves, and tells the Homebrew tap where they are.
+# Mixing the two would put a public release lifecycle behind a branch push.
+#
+# ## It cannot fire by accident
+#
+# The only trigger is `workflow_dispatch`, and the dispatch must carry
+# `confirm: release-preview`. Merging this file publishes nothing; pushing to any
+# branch publishes nothing. That is deliberate: preview publication, the tap push
+# and the xbrew push are the first outward-facing mutations of this workstream.
+#
+# ## Once dispatched it runs to the end, and publication is a transaction
+#
+# Build, test, stage, the staged-tree smoke, packaging, the archive gate, the
+# release, then the tap dispatch — no second confirmation between them. A
+# half-published release (assets up, tap not told) is worse than either end
+# state, so the confirmation is at the front.
+#
+# The sequence is **recoverable**, not atomic — and the difference matters, so it
+# is stated rather than glossed:
+#
+#   1. the tap credential is required BEFORE anything is created, because
+#      "assets up, tap not told" was otherwise the default outcome;
+#   2. the tag must not already exist — an immutable tag cannot be reused, and
+#      this is also what makes step 7's `--cleanup-tag` safe;
+#   3. the release is created as a **draft** — invisible to consumers — and its
+#      id is read back, because every later ownership check compares against it;
+#   4. the manifest-named assets (exactly those, read out of the manifest) are
+#      uploaded to the draft;
+#   5. the draft's own bytes are re-downloaded, re-gated and digest-compared;
+#   6. only then is the draft published with `gh release edit --draft=false`;
+#   7. a failure BEFORE publication deletes the draft; a failure AFTER it — in
+#      practice the tap dispatch — rolls the published prerelease and its tag
+#      back, after proving by id, tag name, draft/prerelease state and target
+#      commit that it is deleting the release this run created.
+#
+# The tap cannot be dispatched before publication: the manifest URL it is handed
+# 404s for an anonymous fetch while the release is a draft. So a dispatch failure
+# genuinely can leave assets public for the seconds before the rollback runs, and
+# if the rollback itself fails the run ends red with the manual recovery command
+# in the log. That window is the honest cost of an automatic tap bump.
+#
+# ## Dispatch inputs never reach a shell body
+#
+# `${{ … }}` is substituted textually before the shell parses the line, so an
+# input containing a quote closes the quoting and the rest executes — on a
+# persistent self-hosted runner, with `contents: write`. Inputs therefore reach
+# steps through `env:` only and are referenced as quoted `"$VARS"`. There is
+# exactly one input — `confirm` — and it is compared for equality, never
+# interpolated: the release tag is generated from the package version and
+# `github.run_id`, both validated before the tag is composed and the composed tag
+# validated again before it touches a filename, a URL, or `gh`.
+#
+# ## What is deliberately absent
+#
+# - **No `license` in the manifest.** The repository is ISC and every archive
+#   ships the grant as a root `LICENSE` file, so the license is fixed repository
+#   metadata the artifacts carry themselves — not release-varying authority a
+#   schema-1 manifest has to publish. The archives also declare ISC in their own
+#   package manifests, and the tap pins ISC in its formula templates from the
+#   repository's legal facts, independently of any release. Every party already
+#   has the fact, so this workflow has none to hand along and states one nowhere.
+# - **No token on a command line.** `TAP_DISPATCH_TOKEN` reaches `gh` through the
+#   environment only; nothing interpolates it into an argument, where a failed
+#   command's echo or a `set -x` would put it in the run log.
+# - **No stable release.** Promoting a preview to stable stays a separate,
+#   user-gated decision.
+
+name: Release Preview
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "release-preview" to publish a preview release'
+        required: true
+        type: string
+
+concurrency:
+  group: release-preview
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: [self-hosted, fable-m5max]
+    timeout-minutes: 60
+
+    steps:
+      # This step validates one thing: that the confirmation is exactly
+      # `release-preview`. There is nothing else to validate — `confirm` is the
+      # only dispatch input, and it is compared for equality, never interpolated.
+      #
+      # No tag is accepted here, so no tag grammar belongs here. The tag is
+      # GENERATED in "Resolve release identity" below, from the package version
+      # and `github.run_id`, and exact-validated there against the
+      # channel-specific `somawork-preview-v<dotted numeric version>-<positive
+      # run id>` grammar before it reaches a filename, a URL or `gh`.
+      - name: Validate dispatch inputs
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [[ "$CONFIRM" != 'release-preview' ]]; then
+            echo "::error::Confirmation required. Dispatch with confirm='release-preview'."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      # NOT `npm test`. The full suite is measurably non-deterministic on this
+      # runner class (see the report's flakiness measurement: red in 3 of 3 runs
+      # with this workstream's own file excluded), and a release path that
+      # knowingly contains a false red is a release path nobody can dispatch.
+      # `test:release` is the same vitest run with isolated forked workers and a
+      # realistic timeout, which is what the two failure shapes needed.
+      - name: Test
+        run: npm run test:release
+
+      - name: Stage runtime bundle
+        run: bash scripts/deploy/stage-bundle.sh
+
+      - name: Smoke deploy bundle
+        run: npm run smoke:deploy-bundle
+
+      - name: Smoke staged runtime package
+        run: npm run smoke:setup-package
+
+      # The tag is GENERATED, never supplied. An operator-chosen tag was an
+      # override on the one identifier the whole release is keyed by — the tap
+      # bump, the asset URLs and the rollback's ownership check all quote it — and
+      # a caller-chosen value has no monotonicity: two dispatches could sort
+      # backwards, or collide. `github.run_id` is strictly increasing per
+      # repository, so the generated form orders releases by construction.
+      #
+      # Both inputs to the form are validated before it is composed, and the
+      # composed result is validated again — the version comes out of a file this
+      # workflow did not write.
+      - name: Resolve release identity
+        id: identity
+        env:
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          VERSION="$(node -p 'require("./package.json").version')"
+          # EXACTLY three components. The tap renders `<version>.<run id>` and
+          # relies on Homebrew's component-wise comparison being monotone; that
+          # holds within a fixed component count and breaks across a change of
+          # it. `1.0` + run 12345 renders `1.0.12345`, and a later `1.0.1` + run
+          # 12346 renders `1.0.1.12346`, which sorts BELOW it (12345 vs 1 at
+          # position 3). Pinning the count is the cheapest place to close that.
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::package.json version must be exactly three numeric components (x.y.z)."
+            exit 1
+          fi
+          if [[ ! "$RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::The run id must be a positive decimal integer with no leading zero."
+            exit 1
+          fi
+          TAG="somawork-preview-v${VERSION}-${RUN_ID}"
+          if [[ ! "$TAG" =~ ^somawork-preview-v[0-9]+\.[0-9]+\.[0-9]+-[1-9][0-9]*$ ]]; then
+            echo "::error::Recomposed tag does not match the preview tag grammar."
+            exit 1
+          fi
+          printf 'version=%s\n' "$VERSION" >> "$GITHUB_OUTPUT"
+          printf 'tag=%s\n' "$TAG" >> "$GITHUB_OUTPUT"
+          # The canonical asset base; `render-manifest.ts` owns this form and
+          # rejects a manifest whose base is anything else.
+          printf 'base_url=https://github.com/2lab-ai/soma-work/releases/download/%s\n' "$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Package release assets
+        env:
+          VERSION: ${{ steps.identity.outputs.version }}
+          TAG: ${{ steps.identity.outputs.tag }}
+          BASE_URL: ${{ steps.identity.outputs.base_url }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          bash scripts/release/package-somawork.sh \
+            --out-dir dist-release \
+            --version "$VERSION" \
+            --channel preview \
+            --tag "$TAG" \
+            --source-sha "$SOURCE_SHA" \
+            --release-base-url "$BASE_URL" \
+            --staged-runtime .deploy-bundle
+
+      - name: Gate release archives
+        run: node scripts/smoke/package-archives.js --manifest dist-release/somawork-manifest.json
+
+      # Before anything is created. A run that publishes assets and then finds it
+      # cannot tell the tap has produced exactly the half-state this workflow
+      # calls worse than either end state.
+      - name: Require the tap dispatch credential
+        env:
+          TAP_TOKEN: ${{ secrets.TAP_DISPATCH_TOKEN }}
+        run: |
+          if [[ -z "$TAP_TOKEN" ]]; then
+            echo "::error::TAP_DISPATCH_TOKEN is not configured. Refusing to create a release that could not be announced to the tap."
+            exit 1
+          fi
+
+      # An immutable tag must not already exist. This is a correctness rule on its
+      # own — a release "under a tag that never moves" cannot reuse one — and it
+      # is what makes the rollback below safe: `--cleanup-tag` may only delete a
+      # tag this run created.
+      - name: Create the draft release
+        id: draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.identity.outputs.tag }}
+          REPOSITORY: ${{ github.repository }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          if gh release view "$TAG" --repo "$REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::A release already exists for this tag. Release tags are immutable; refusing to reuse one."
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "::error::The tag already exists on the remote. Refusing to move it."
+            exit 1
+          fi
+          gh release create "$TAG" \
+            --draft \
+            --prerelease \
+            --title "$TAG" \
+            --notes "somawork preview packaging for $SOURCE_SHA" \
+            --target "$SOURCE_SHA" \
+            --repo "$REPOSITORY"
+          # IMMEDIATELY, before anything else can fail. `created` is what routes
+          # the cleanup steps, so any work between the create and this line is a
+          # window where a transient error — or a cancel — leaves a draft that no
+          # cleanup will ever look at.
+          printf 'created=true\n' >> "$GITHUB_OUTPUT"
+
+          # The identity every later ownership check compares against. Without it
+          # a rollback could delete a release somebody else recreated under this
+          # tag between the failure and the cleanup. If the read-back fails the
+          # step fails — and cleanup now runs, because `created` is already set;
+          # its own id/tag/target check is what decides whether to delete.
+          RELEASE_ID="$(gh release view "$TAG" --repo "$REPOSITORY" --json id --jq .id)"
+          if [[ -z "$RELEASE_ID" ]]; then
+            echo "::error::Could not read back the id of the release just created."
+            exit 1
+          fi
+          printf 'release_id=%s\n' "$RELEASE_ID" >> "$GITHUB_OUTPUT"
+
+      # Exactly the files the manifest names, plus the manifest. A glob would
+      # publish anything else that happened to be in the directory, ungated.
+      - name: Upload the manifest-named assets to the draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.identity.outputs.tag }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          node -e '
+            const manifest = require("./dist-release/somawork-manifest.json");
+            const safe = /^[A-Za-z0-9][A-Za-z0-9._-]*\.tar\.gz$/;
+            for (const asset of manifest.assets) {
+              if (!safe.test(asset.filename)) {
+                console.error(`refusing an asset filename the manifest should never contain`);
+                process.exit(1);
+              }
+              console.log(`dist-release/${asset.filename}`);
+            }
+          ' > upload-list.txt
+          echo 'dist-release/somawork-manifest.json' >> upload-list.txt
+          set --
+          while IFS= read -r FILE; do
+            if [[ ! -f "$FILE" ]]; then
+              echo "::error::The manifest names an asset that was not built."
+              exit 1
+            fi
+            set -- "$@" "$FILE"
+          done < upload-list.txt
+          gh release upload "$TAG" "$@" --repo "$REPOSITORY"
+
+      - name: Re-gate the draft's own published bytes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.identity.outputs.tag }}
+          REPOSITORY: ${{ github.repository }}
+          BASE_URL: ${{ steps.identity.outputs.base_url }}
+        run: |
+          rm -rf dist-release-verify && mkdir -p dist-release-verify
+          gh release download "$TAG" -D dist-release-verify --repo "$REPOSITORY"
+          # The same gate, against the bytes a consumer would actually get.
+          node scripts/smoke/package-archives.js --manifest dist-release-verify/somawork-manifest.json
+          LOCAL="$(shasum -a 256 dist-release/somawork-manifest.json | cut -d' ' -f1)"
+          PUBLISHED="$(shasum -a 256 dist-release-verify/somawork-manifest.json | cut -d' ' -f1)"
+          if [[ "$LOCAL" != "$PUBLISHED" ]]; then
+            echo "::error::The uploaded manifest does not match the one that was built."
+            exit 1
+          fi
+          printf 'manifest_sha256=%s\n' "$PUBLISHED" >> "$GITHUB_ENV"
+          printf 'manifest_url=%s/somawork-manifest.json\n' "$BASE_URL" >> "$GITHUB_ENV"
+
+      # Everything before this is reversible by deleting a draft nobody can
+      # fetch. From here on the assets are public, and the only way back is the
+      # rollback step at the bottom.
+      - name: Publish the draft
+        id: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.identity.outputs.tag }}
+          REPOSITORY: ${{ github.repository }}
+        run: gh release edit "$TAG" --draft=false --prerelease --repo "$REPOSITORY"
+
+      # The tap cannot be told about a draft: the manifest URL it is handed 404s
+      # for an anonymous fetch until the release is public. So the dispatch has to
+      # follow publication, and a dispatch failure is therefore the one case that
+      # can leave assets up with the tap untold. It does not stay that way — see
+      # the rollback step.
+      - name: Dispatch the Homebrew tap bump (repository_dispatch)
+        id: tap
+        env:
+          # Repository secret, never an argument. Its presence was already
+          # required, above, before anything was created.
+          GH_TOKEN: ${{ secrets.TAP_DISPATCH_TOKEN }}
+          TAG: ${{ steps.identity.outputs.tag }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          jq -n \
+            --arg package somawork-preview \
+            --arg tag "$TAG" \
+            --arg manifest_url "$manifest_url" \
+            --arg manifest_sha256 "$manifest_sha256" \
+            --arg source_repository "$REPOSITORY" \
+            '{event_type: "somawork-release", client_payload: {package: $package, tag: $tag, manifest_url: $manifest_url, manifest_sha256: $manifest_sha256, source_repository: $source_repository}}' \
+            > dispatch.json
+          gh api --method POST \
+            -H 'Accept: application/vnd.github+json' \
+            /repos/2lab-ai/homebrew-tap/dispatches \
+            --input dispatch.json
+
+      # Failure or CANCELLATION before publication: the release is still a draft,
+      # so deleting it returns the world to where it started. Disjoint from the
+      # rollback below by construction — exactly one of the two can run.
+      #
+      # `cancelled()` matters as much as `failure()` here. This job is not short —
+      # two `npm ci`s, a serial ~200 s suite, two 62 MB tars, two full archive
+      # gates, a ~124 MB upload and re-download — so a user cancel or a
+      # `timeout-minutes` expiry is a realistic way to land between steps. On
+      # `failure()` alone neither cleanup ran, and a cancel taken between
+      # publication and the tap dispatch left exactly the end state this file says
+      # it will not leave behind.
+      - name: Delete this run's draft if publication did not complete
+        if: (failure() || cancelled()) && steps.draft.outputs.created == 'true' && steps.publish.outcome != 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.identity.outputs.tag }}
+          REPOSITORY: ${{ github.repository }}
+          SOURCE_SHA: ${{ github.sha }}
+          RELEASE_ID: ${{ steps.draft.outputs.release_id }}
+        run: |
+          # The same ownership care as the published rollback: `--cleanup-tag`
+          # deletes a git ref, and "a draft happens to exist under this tag" is
+          # not proof that this run created it. Where that proof is unavailable —
+          # no recorded id — this step refuses and says why, rather than deleting
+          # on a weaker test.
+          STATE="$(gh release view "$TAG" --repo "$REPOSITORY" \
+            --json id,isDraft,tagName,targetCommitish \
+            --jq '[.id, .isDraft, .tagName, .targetCommitish] | @tsv' 2>/dev/null || true)"
+          if [[ -z "$STATE" ]]; then
+            echo "::notice::No release found for this tag; nothing to clean up."
+            exit 0
+          fi
+          IFS=$'\t' read -r FOUND_ID IS_DRAFT TAG_NAME TARGET <<< "$STATE"
+          # No id was ever recorded — the create succeeded but the read-back that
+          # follows it did not. This is a DIFFERENT situation from an ownership
+          # mismatch and has to say so: with nothing to compare against, this step
+          # cannot prove the draft under this tag is the one it created, so it
+          # refuses. Falling through to the generic comparison below would blame
+          # "not the one this run created", which is not what happened and would
+          # send the operator looking for a competing run that does not exist.
+          if [[ -z "$RELEASE_ID" ]]; then
+            echo "::warning::Not deleting: this run's release id was never recorded (the id read-back that follows creating the draft did not complete), so ownership cannot be proved. A draft may remain under the tag ${TAG} and require manual cleanup: gh release view ${TAG} --repo ${REPOSITORY}"
+            exit 0
+          fi
+          if [[ "$FOUND_ID" != "$RELEASE_ID" || "$TAG_NAME" != "$TAG" || "$TARGET" != "$SOURCE_SHA" ]]; then
+            echo "::warning::Not deleting: the release under this tag is not the one this run created."
+            exit 0
+          fi
+          if [[ "$IS_DRAFT" != 'true' ]]; then
+            echo "::warning::Not deleting: the release for this tag is no longer a draft."
+            exit 0
+          fi
+          gh release delete "$TAG" --yes --cleanup-tag --repo "$REPOSITORY"
+          echo "::notice::Deleted the unpublished draft for this run."
+
+      # Failure AFTER publication — in practice, the tap dispatch. The user's
+      # contract is that a preview release and its tap bump arrive together, so
+      # "published but unannounced" is not an end state this workflow may leave
+      # behind. It rolls the release and its tag back, and only after proving the
+      # thing it is about to delete is the one this run created:
+      #
+      #   * the release id read back at creation still matches,
+      #   * the tag name matches,
+      #   * it is a prerelease, not a draft, targeting this run's commit.
+      #
+      # If ANY check disagrees the step refuses and prints the manual recovery
+      # command instead of guessing. That is the honest boundary: this sequence is
+      # recoverable, not atomic — a rollback that itself fails leaves a published
+      # release, and the run says so loudly rather than exiting green.
+      #
+      # Cancellation routes here too. The one case neither cleanup can cover is a
+      # hard runner loss — the machine going away mid-job — because GitHub cannot
+      # run a step on a runner that is gone. That leaves a published release with
+      # the tap untold and no automatic recovery; the manual command is the same
+      # one this step prints.
+      - name: Roll back this run's release if the tap was not told
+        if: (failure() || cancelled()) && steps.publish.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.identity.outputs.tag }}
+          REPOSITORY: ${{ github.repository }}
+          SOURCE_SHA: ${{ github.sha }}
+          RELEASE_ID: ${{ steps.draft.outputs.release_id }}
+        run: |
+          STATE="$(gh release view "$TAG" --repo "$REPOSITORY" \
+            --json id,isDraft,isPrerelease,tagName,targetCommitish \
+            --jq '[.id, .isDraft, .isPrerelease, .tagName, .targetCommitish] | @tsv' 2>/dev/null || true)"
+          if [[ -z "$STATE" ]]; then
+            echo "::warning::No release found for this tag; nothing to roll back."
+            exit 1
+          fi
+          IFS=$'\t' read -r FOUND_ID IS_DRAFT IS_PRERELEASE TAG_NAME TARGET <<< "$STATE"
+          if [[ "$FOUND_ID" != "$RELEASE_ID" || "$TAG_NAME" != "$TAG" || "$IS_DRAFT" != 'false' || "$IS_PRERELEASE" != 'true' || "$TARGET" != "$SOURCE_SHA" ]]; then
+            echo "::error::Refusing to roll back: the release under this tag is not the one this run published. Delete it by hand after checking: gh release view $TAG --repo $REPOSITORY"
+            exit 1
+          fi
+          gh release delete "$TAG" --yes --cleanup-tag --repo "$REPOSITORY"
+          echo "::error::The tap dispatch failed, so this run's prerelease and tag were rolled back. Nothing is left published; re-dispatch once the tap credential or the tap repository is reachable."
+          exit 1

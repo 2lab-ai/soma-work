@@ -30,7 +30,7 @@ import {
   formatGoalObjectiveForSlack,
   type GoalQueueSession,
 } from '../session-goal';
-import { accumulateModelTotals, selectCurrentContextTokens } from '../session-usage-math';
+import { accumulateModelTotals, applyPostCompactOccupancy, selectCurrentContextTokens } from '../session-usage-math';
 import type { SlackApiHelper } from '../slack-api-helper';
 import type { StatusReporter } from '../status-reporter';
 import {
@@ -500,14 +500,13 @@ function textIndicatesPromptTooLong(text: unknown): boolean {
  * `system/local_command` stderr line + assistant text
  * (`Error: Error during compaction: …`) and seals the turn with
  * `stopReason=end_turn, isError=false` (field incident 2026-07-07, session
- * ccee16e0). Narrow shape: short error-like text that STARTS with the SDK's
- * stderr prefix — prose that merely quotes the phrase runs longer and starts
- * differently.
+ * ccee16e0). Match the leading SDK stderr prefix only; callers additionally
+ * require a compact turn. Long provider diagnostics must still be failures.
  */
 function textIndicatesCompactionFailure(text: unknown): boolean {
   if (typeof text !== 'string') return false;
   const t = text.trim().toLowerCase();
-  if (t.length === 0 || t.length > 1500) return false;
+  if (t.length === 0) return false;
   return t.startsWith('error: error during compaction') || t.startsWith('error during compaction');
 }
 
@@ -932,10 +931,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       threadTs: threadTs || undefined,
       sessionKey,
       turnId,
-      // Issue #688 — thread the per-turn epoch through TurnContext so
-      // TurnSurface.end()/fail() can pass it as `expectedEpoch` to
-      // clearStatus, mirroring the caller-owns-epoch pattern used by the
-      // explicit clearStatus calls below (e.g. lines ~1035, 1116, 1349).
+      // Both status writes and terminal clears are scoped to this execution.
       statusEpoch: epoch,
       // `chat.startStream` rejects channel/thread streams without BOTH
       // recipient_user_id and recipient_team_id (`missing_recipient_team_id`).
@@ -952,12 +948,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // surface setup, not a hard precondition; the rest of the turn can
     // still run and emit a terminal card via the normal rails.
     // Trace: docs/current/plans/turn-end-surface-guarantee/exhaustive-paths.md §C-3.
-    if (this.deps.threadPanel) {
-      await runWithTimeout(() => this.deps.threadPanel!.beginTurn(turnContext), 5_000, {
-        what: 'threadPanel.beginTurn',
-        logger: this.logger,
-      });
-    }
+    // Surface setup runs inside the execution try below so a setup failure
+    // still reaches the turn's terminal cleanup.
 
     // Dashboard v2.1 — turn timer: mark active-leg start and broadcast so
     // the live 1s tick picks up the new leg without waiting for any other
@@ -991,14 +983,6 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // Track latest response message ts for shortcut link
     let latestResponseTs: string | undefined;
 
-    // Transition to working state
-    this.deps.claudeHandler.setActivityState(channel, threadTs, 'working');
-    await this.updateRuntimeStatus(session, sessionKey, {
-      agentPhase: '생각 중',
-      activeTool: undefined,
-      waitingForChoice: false,
-    });
-
     // Idle-timeout is enforced inside `StreamProcessor.process` via a
     // `Promise.race` around each `iterator.next()`; on expiry the
     // processor invokes `onIdleTimeout` (wired below to abort the LOCAL
@@ -1022,6 +1006,19 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     const idleTimeoutMs = readIdleTimeoutMs();
 
     try {
+      if (this.deps.threadPanel) {
+        await runWithTimeout(() => this.deps.threadPanel!.beginTurn(turnContext), 5_000, {
+          what: 'threadPanel.beginTurn',
+          logger: this.logger,
+        });
+      }
+      this.deps.claudeHandler.setActivityState(channel, threadTs, 'working');
+      await this.updateRuntimeStatus(session, sessionKey, {
+        agentPhase: '생각 중',
+        activeTool: undefined,
+        waitingForChoice: false,
+      });
+
       // #617 followup: Claude Agent SDK only recognizes local slash commands
       // (/compact, /clear, /model, etc.) when the prompt STARTS with the /cmd
       // token. preparePrompt wraps the text with <speaker>…</speaker> and a
@@ -1300,6 +1297,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         // evidence quote against the ACTUAL current user message and refuses
         // on synthetic/continuation turns (fail closed when text is absent).
         currentUserText: text,
+        isCompactTurn: (isSlashCommand && trimmedText.startsWith('/compact')) || Boolean(session.fallbackCompactActive),
         isUserInputTurn: params.isUserInput === true,
         get logVerbosity() {
           return session.logVerbosity ?? LOG_DETAIL;
@@ -1533,7 +1531,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           }
         },
         onUsageUpdate: async (usage: UsageData) => {
-          this.updateSessionUsage(session, usage);
+          this.updateSessionUsage(session, usage, turnId);
 
           // Update context window emoji
           if (session.usage && isOutputEnabled(OutputFlag.CONTEXT_EMOJI)) {
@@ -1649,6 +1647,37 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
                   Math.min(100, Math.round((m.post_tokens / contextWindow) * 100)),
                 );
               }
+            }
+
+            // Issue #196 — `post_tokens` is the only authoritative statement of
+            // how full the window is after compaction, so it must reach
+            // `session.usage`: that is what `/context`, the thread header, the
+            // turn footer, the context emoji AND the auto-compact threshold all
+            // read. Storing it only in the display fields above left every one
+            // of those surfaces reporting the pre-compact number.
+            if (applyPostCompactOccupancy(this.ensureSessionUsage(session), m.post_tokens)) {
+              // Shield the reset for the rest of THIS turn. `StreamProcessor`
+              // delivers exactly ONE usage sample per turn, after the stream
+              // loop (stream-processor.ts:765) — on a /compact turn that sample
+              // measures the summarization request, which read the entire
+              // pre-compact transcript. Unshielded it lands moments later and
+              // restores the very number we just corrected.
+              //
+              // Keyed by `turnId`, never a bare boolean: same-session turns DO
+              // overlap. A supersede aborts the previous turn's controller and
+              // installs its own without awaiting the old executor's `finally`
+              // (session-initializer `handleConcurrency`), so both stacks live
+              // on the event loop at once. A session-wide flag would then let
+              // the aborted turn's shield swallow the successor's legitimate
+              // sample — freezing the context display for a whole extra turn —
+              // or let the aborted turn's cleanup erase a shield the successor
+              // had just established.
+              session.postCompactOccupancyTurnId = turnId;
+              this.logger.info('Adopted post-compact occupancy from compact_boundary', {
+                sessionKey,
+                postTokens: m.post_tokens,
+                contextWindow: session.usage?.contextWindow,
+              });
             }
           }
 
@@ -1828,7 +1857,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           }
         }
 
-        const failErr = new Error(`Compaction failed (surfaced as turn content): ${collected.slice(0, 300)}`);
+        const failErr = new Error(
+          `Compaction failed (surfaced as turn content): ${this.sanitizeSdkDetails(collected)}`,
+        );
         (failErr as any).compactTerminalFailure = true;
         (failErr as any).compactFailureIsEmptyBlock400 = emptyBlock400;
         throw failErr;
@@ -1890,7 +1921,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
 
       // Prompt-too-long-as-content guard (auto fallback compact, field bug).
       //
-      // Observed on dev (2026-07-06T05:42Z, oudwood-512): a 275k-window model
+      // Observed on dev (2026-07-06T05:42Z): a 275k-window model
       // overflow came back as an ordinary assistant text turn whose ENTIRE
       // content was "Prompt is too long", with a SUCCESSFUL result event
       // (stopReason=stop_sequence, isError=false, duration 6ms) — the SDK
@@ -2578,6 +2609,19 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // overwritten by the next auto-compact interception.
       const wasCompactTurn = session.compactTurnActive === true;
       session.compactTurnActive = false;
+      // Issue #196 — release the post-compact occupancy shield. It is scoped to
+      // the turn that saw the boundary; the next turn's usage sample is a
+      // genuine post-compact reading and must be adopted. Cleared on every exit
+      // path (success, error, abort) so a crashed compact turn can never freeze
+      // the context display for the rest of the session.
+      //
+      // Compare-and-clear: only the turn that OWNS the shield may drop it. An
+      // aborted turn's `finally` can run after a superseding turn has already
+      // set its own shield, and an unconditional clear there would strip the
+      // live turn's protection.
+      if (session.postCompactOccupancyTurnId === turnId) {
+        session.postCompactOccupancyTurnId = undefined;
+      }
       if (wasCompactTurn) {
         promotePendingToDispatchQueue(session as CompactStateSession);
       }
@@ -2596,29 +2640,41 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             sessionKey,
             queued: queue.length,
           });
+        } else if (session.compactDispatchInFlight) {
+          // Re-entrant turn: outer drain owns the queue; this finally is nested
+          // inside the in-flight dispatch chain. Leave the queue parked.
+          this.logger.debug('Deferred post-compact dispatch left parked — drain already in flight', {
+            sessionKey,
+            queued: queue.length,
+          });
         } else if (this.deps.dispatchPendingUserMessage) {
-          session.compactPendingDispatches = null;
+          session.compactDispatchInFlight = true;
           this.logger.info('Dispatching deferred post-compact user message(s)', {
             sessionKey,
             count: queue.length,
             textPreview: String(queue[0].text).substring(0, 80),
           });
           const dispatch = this.deps.dispatchPendingUserMessage;
-          // Sequential fire-and-forget chain: each payload keeps its own
-          // author context (codex review F4 — never replay U2's text under
-          // U1's identity), replayed in arrival order.
-          void (async () => {
-            for (const payload of queue) {
-              try {
-                await dispatch(payload.ctx, payload.text, { compactRedispatch: true });
-              } catch (err) {
-                this.logger.warn('Deferred post-compact re-dispatch failed', {
-                  sessionKey,
-                  error: (err as Error)?.message ?? String(err),
-                });
-              }
+          // Await the handoff chain so queue ownership stays exact: remove an
+          // item only after a successful dispatch. A rejection leaves that item
+          // and every later item parked for the next turn; the in-flight guard
+          // prevents a racing finally block from double-dispatching it.
+          try {
+            while (queue.length > 0) {
+              const payload = queue[0];
+              await dispatch(payload.ctx, payload.text, { compactRedispatch: true });
+              queue.shift();
             }
-          })();
+            session.compactPendingDispatches = null;
+          } catch (err) {
+            this.logger.warn('Deferred post-compact re-dispatch failed — payload retained', {
+              sessionKey,
+              queued: queue.length,
+              error: (err as Error)?.message ?? String(err),
+            });
+          } finally {
+            session.compactDispatchInFlight = false;
+          }
         } else {
           this.logger.warn('Deferred post-compact dispatch dropped — no dispatchPendingUserMessage dep wired', {
             sessionKey,
@@ -2737,12 +2793,13 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         sessionResetNote = ' 대화 기록이 복구 불가능하게 손상되어 세션을 초기화했습니다.';
       }
 
+      const reason = this.sanitizeSdkDetails(String(error.message ?? error));
       this.logger.error('Fallback compact failed terminally — session unwedged', {
         sessionKey,
         emptyBlock400,
         restoredModel,
         sessionCleared: emptyBlock400,
-        reason: String((error as any).message ?? '').slice(0, 300),
+        reason,
       });
 
       await this.updateRuntimeStatus(session, sessionKey, {
@@ -2753,7 +2810,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       await this.deps.reactionManager.updateReaction(sessionKey, this.deps.statusReporter.getStatusEmoji('error'));
 
       const restoreNote = hadFallback && restoredModel ? ` 모델을 \`${restoredModel}\`로 복원했습니다.` : '';
-      const condensed = `🔴 자동 컴팩트 실패 — 대화 요약 중 오류가 발생했습니다.${restoreNote}${sessionResetNote} 다음 메시지부터 정상 동작합니다.`;
+      const escapedReason = reason
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/\x60/g, 'ˋ');
+      const detail =
+        escapedReason.length > 2500 ? `${escapedReason.slice(0, 2500)}… (이하 생략 — 상세 로그 확인)` : escapedReason;
+      const condensed = `🔴 컴팩트 실패 — 대화 요약 중 오류가 발생했습니다.${restoreNote}${sessionResetNote}\n원인: ${detail}`;
       await runWithTimeout(() => say({ text: condensed, thread_ts: threadTs }), DEFAULT_CLEANUP_TIMEOUT_MS, {
         what: 'handleError say(compactTerminalFailure)',
         logger: this.logger,
@@ -3787,28 +3851,39 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
    * Factored out of `formatErrorForUser` (Issue #661) so both the normal
    * formatter branches and the new 1M-fallback branch share the exact same
    * redaction/truncation logic — avoids drift if the sanitizer changes.
-   * Trace: Issue #122 original sanitization rules are preserved byte-for-byte.
+   * The shared sanitizer also handles quoted JSON credentials in diagnostics.
    */
   private appendSdkDetails(lines: string[], error: any): void {
     if (!error?.stderrContent) return;
-    const raw = String(error.stderrContent);
+    const sanitized = this.sanitizeSdkDetails(String(error.stderrContent));
+    // Take last SDK_DETAILS_MAX_CHARS chars to keep message manageable
+    const max = StreamExecutor.SDK_DETAILS_MAX_CHARS;
+    const truncated = sanitized.length > max ? `…${sanitized.slice(-max)}` : sanitized;
+    lines.push(`> *SDK Details:*`);
+    lines.push(`> \`\`\`${truncated.trim()}\`\`\``);
+  }
+
+  private sanitizeSdkDetails(raw: string): string {
     // Strip ANSI escape codes and mask non-Anthropic credentials locally;
     // Anthropic tokens (sk-ant-{oat01,ort01,api03,admin01}-...) are handled
     // by the shared `redactAnthropicSecrets` helper from logger.ts so every
     // log path masks them the same way (W3-B consolidation).
     const nonAnthropicSanitized = raw
+      .replace(
+        /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z0-9]+ )*PRIVATE KEY-----/g,
+        '[REDACTED]',
+      )
+      .replace(
+        /(["'](?:authorization|[a-z0-9_-]*(?:key|token|secret|password|credential)s?)["']\s*:\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/gi,
+        '$1"[REDACTED]"',
+      )
       .replace(/[\x1B\x9B](?:\[[0-9;]*[a-zA-Z]|\].*?(?:\x07|\x1B\\)|\([A-Z])/g, '') // strip ANSI
       .replace(/(?:authorization|bearer)[=:\s]+\S+(?:\s+\S+)?/gi, '[REDACTED]') // auth headers ("Bearer <token>")
       .replace(/(?:oauth|token|key|secret|password|credential)[=:\s]+\S+/gi, '[REDACTED]')
       .replace(/\bxox[bpras]-[a-zA-Z0-9-]+/g, '[REDACTED]') // Slack tokens
       .replace(/\bgh[pus]_[a-zA-Z0-9]+/g, '[REDACTED]') // GitHub PATs
       .replace(/\bgithub_pat_[a-zA-Z0-9_]+/g, '[REDACTED]'); // GitHub fine-grained PATs
-    const sanitized = redactAnthropicSecrets(nonAnthropicSanitized) as string;
-    // Take last SDK_DETAILS_MAX_CHARS chars to keep message manageable
-    const max = StreamExecutor.SDK_DETAILS_MAX_CHARS;
-    const truncated = sanitized.length > max ? `…${sanitized.slice(-max)}` : sanitized;
-    lines.push(`> *SDK Details:*`);
-    lines.push(`> \`\`\`${truncated.trim()}\`\`\``);
+    return redactAnthropicSecrets(nonAnthropicSanitized) as string;
   }
 
   /**
@@ -4210,7 +4285,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
    * hardcoded 200k default. This correctly handles Opus 4.6 (1M),
    * Sonnet 4.6 (1M), and any future model sizes.
    */
-  private updateSessionUsage(session: ConversationSession, usage: UsageData): void {
+  /**
+   * Lazily create `session.usage` and return it. Two callers need the same
+   * zero-state: the per-turn usage update, and the compact boundary — a
+   * session can be compacted before any turn-end usage sample has landed, and
+   * that boundary still carries an authoritative occupancy figure worth
+   * keeping.
+   */
+  private ensureSessionUsage(session: ConversationSession): NonNullable<ConversationSession['usage']> {
     if (!session.usage) {
       session.usage = {
         // Current context (overwritten each request)
@@ -4218,7 +4300,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         currentOutputTokens: 0,
         currentCacheReadTokens: 0,
         currentCacheCreateTokens: 0,
-        contextWindow: FALLBACK_CONTEXT_WINDOW,
+        contextWindow: resolveContextWindow(session.model) || FALLBACK_CONTEXT_WINDOW,
         // Cumulative totals
         totalInputTokens: 0,
         totalOutputTokens: 0,
@@ -4228,6 +4310,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         lastUpdated: Date.now(),
       };
     }
+    return session.usage;
+  }
+
+  private updateSessionUsage(session: ConversationSession, usage: UsageData, turnId?: string): void {
+    this.ensureSessionUsage(session);
 
     // Update model name on session (useful for display)
     if (usage.modelName && !session.model) {
@@ -4261,11 +4348,32 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // ALL-ZERO per-turn values (llmux/codex assistant messages) are treated as
     // missing — `selectCurrentContextTokens` falls back to the aggregate so the
     // context display and auto-compact triggers never see an empty window.
+    //
+    // Issue #196 — EXCEPT right after a compact boundary. This callback fires
+    // once per turn, after the stream loop, so on a compacted turn the sample
+    // in hand always predates the boundary: the aggregate sums the
+    // summarization request's read of the full pre-compact transcript, and
+    // even the merged per-turn figure comes from the last assistant message,
+    // which may itself be pre-boundary. Neither can be told apart from a
+    // genuine post-compact reading, so once `post_tokens` has given us the
+    // authoritative occupancy we keep it and let the NEXT turn resume normal
+    // tracking. Billing totals below are unaffected — those tokens were spent.
     const current = selectCurrentContextTokens(usage);
-    session.usage.currentInputTokens = current.inputTokens;
-    session.usage.currentOutputTokens = current.outputTokens;
-    session.usage.currentCacheReadTokens = current.cacheReadTokens;
-    session.usage.currentCacheCreateTokens = current.cacheCreateTokens;
+    // Only the shield THIS turn established suppresses THIS turn's sample. A
+    // shield left by a different (e.g. superseded) turn must not swallow our
+    // legitimate reading — that would freeze the display for an extra turn.
+    if (turnId !== undefined && session.postCompactOccupancyTurnId === turnId) {
+      this.logger.debug("Keeping post-compact occupancy — ignoring this turn's pre-boundary usage sample", {
+        conversationId: session.conversationId,
+        ignoredSource: current.source,
+        keptOccupancy: session.usage.currentInputTokens,
+      });
+    } else {
+      session.usage.currentInputTokens = current.inputTokens;
+      session.usage.currentOutputTokens = current.outputTokens;
+      session.usage.currentCacheReadTokens = current.cacheReadTokens;
+      session.usage.currentCacheCreateTokens = current.cacheCreateTokens;
+    }
 
     // Accumulate totals (billing-oriented: use aggregate values, not per-turn)
     session.usage.totalInputTokens += usage.inputTokens;

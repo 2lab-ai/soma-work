@@ -1,3 +1,9 @@
 
 # Use bd merge for beads JSONL files
 .beads/issues.jsonl merge=beads
+
+# TypeScript sources are text, always. A stray control byte in a string literal
+# once turned a 700-line test file into "Binary files ... differ" and shipped it
+# to review with no diff at all; this makes that failure mode impossible to
+# repeat regardless of what a future literal contains.
+*.ts diff

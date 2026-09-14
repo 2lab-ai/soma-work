@@ -67,12 +67,26 @@ Structured user-choice UI (`ASK_USER_QUESTION`). `askUser()`
 Spec: `docs/current/spec/12-ui-ask-user-question.md`.
 
 ### B4 — Native status spinner
-The Slack assistant status line. `begin()` calls
-`mgr.setStatus(channelId, threadTs, 'is thinking…')` (`turn-surface.ts:341`);
-`end()/fail()` clear it (`:760`, `:909`). Backed by `AssistantStatusManager`
-(`assistant-status-manager.ts`) with a `TOOL_STATUS_MAP` ("is reading files…",
-"is running commands…"), a 20s heartbeat, epoch guards against stale clears, and
-auto-disable on permanent scope errors. A second, older progress channel —
+The Slack agent-session lifecycle. `begin()` sets turn-owned loading intent through
+`AssistantStatusManager`. `SlackApiHelper.setAssistantStatus` maps nonempty strings
+to `processing` and the empty string to `active`, using
+`WebClient.apiCall('agents.sessions.setStatus')`. `active` means ready for the next
+input, not a closed session. Clearing the legacy `assistant.threads.setStatus`
+loading string does not clear this lifecycle.
+
+Execution status starts independently of `chat.startStream`. Live Slack QA showed
+that opening a stream resets the lifecycle to `active`. After startup succeeds
+with a stream timestamp, `TurnSurface` restores `processing` using the captured
+`expectedEpoch`, only if the turn is still current and not closing. Closed or
+superseded callbacks cannot re-enable processing. `end()/fail()` invalidate the
+epoch and request `active` before waiting for stream or plan cleanup.
+
+`AssistantStatusManager` retains its `TOOL_STATUS_MAP`, heartbeat, serialized writer,
+epoch guards and auto-disable on permanent scope errors. Tool-status strings now
+express loading intent rather than custom lifecycle display text. The existing
+guards reject closed or superseded setters and stale clears. See
+[Native assistant status](../../misc/reference/architecture.md#native-assistant-status)
+for writer and cleanup guarantees. A second, older progress channel —
 `ReactionManager` emoji reactions (`reaction-manager.ts`: hourglass / check /
 crescent_moon) — runs in parallel.
 
@@ -95,7 +109,7 @@ posts a `turnNotifier.notify()` fallback (`turn-surface.ts:850`).
 | Feature | Status | Evidence |
 |---|---|---|
 | `chat.startStream/appendStream/stopStream` | ✅ used (B1) | `turn-surface.ts:297/387/943` |
-| `assistant.threads.setStatus` | ✅ used (B4) | `slack-api-helper.ts:548` |
+| `agents.sessions.setStatus` | used (B4) via `WebClient.apiCall` | `packages/slack/src/slack-api-helper.ts` — `setAssistantStatus` |
 | `assistant.threads.setTitle` | ✅ used (rare) | `assistant-status-manager.ts:162` |
 | `assistant.threads.setSuggestedPrompts` | ⚠️ placeholders only | `assistant-container.ts:54` |
 | `context_actions` block | ❌ unused | reference doc only |
