@@ -84,6 +84,36 @@ export interface BuildPlanTasksOptions {
   final?: boolean;
 }
 
+/**
+ * One task row after effective-status computation + optional terminal-state
+ * demotion. Shared by the B2 plan-block path (`buildPlanTasks`) and the
+ * native streaming-chunk path (`buildTaskChunks`) so the two surfaces can
+ * never drift on status semantics — the demotion honesty rule in particular
+ * (`in_progress` → `pending`, never → `complete`).
+ */
+interface TaskRow {
+  /** Stable task identity. Falls back to a 1-based positional id. */
+  id: string;
+  /** Raw, unmodified todo content (callers truncate/escape per surface). */
+  content: string;
+  effective: EffectiveStatus;
+}
+
+/**
+ * Compute the rendered rows for a todos snapshot. Pure — the input array and
+ * its Todo objects are never mutated (the `final` demotion is applied to the
+ * derived row, not to the source todo).
+ */
+function buildTaskRows(todos: Todo[], finalize: boolean): TaskRow[] {
+  return todos.map((todo, i) => {
+    const rawEffective = computeEffectiveStatus(todo, todos);
+    // Terminal-state demotion: `in_progress` → `pending`. We never promote
+    // to `completed` — unfinished work must stay visibly unfinished.
+    const effective: EffectiveStatus = finalize && rawEffective === 'in_progress' ? 'pending' : rawEffective;
+    return { id: todo.id || `todo-${i + 1}`, content: todo.content, effective };
+  });
+}
+
 /** Icon prefix for the top-level plain-text fallback view. */
 const STATUS_ICON: Record<EffectiveStatus, string> = {
   completed: '✅',
@@ -100,6 +130,39 @@ function toTaskCardStatus(effective: EffectiveStatus): 'complete' | 'in_progress
   if (effective === 'completed') return 'complete';
   if (effective === 'in_progress') return 'in_progress';
   return 'pending';
+}
+
+/**
+ * A `task_update` streaming chunk (Slack `chat.appendStream` chunks mode).
+ * Mirrors `@slack/types` `TaskUpdateChunk`, narrowed to the fields this
+ * surface actually emits — `details`/`output`/`sources` are out of scope for
+ * U10a (todo snapshots carry no per-task output).
+ */
+export interface TaskUpdateChunk {
+  type: 'task_update';
+  id: string;
+  title: string;
+  status: 'pending' | 'in_progress' | 'complete' | 'error';
+}
+
+/**
+ * THE task title as shown to the user — shared by the `task_card` title on
+ * the B2 plan block and the `task_update.title` chunk on the native stream,
+ * so the same todo can never appear under two different names depending on
+ * which surface happened to render it.
+ *
+ * Capped for display only: the Slack streaming reference publishes no
+ * per-chunk title limit, so we reuse the display cap the mrkdwn task lines
+ * already use rather than inventing a number. The caller's todo snapshot
+ * keeps the full raw content — this returns a projection, it never mutates.
+ *
+ * No mrkdwn escaping: both title fields are plain text, so escaping would
+ * corrupt the rendered characters. (The mrkdwn *fallback lines* are escaped
+ * separately, where it is actually required.)
+ */
+function buildTaskDisplayTitle(text: string): string {
+  if (text.length <= MAX_TASK_CONTENT_LENGTH) return text;
+  return text.slice(0, MAX_TASK_CONTENT_LENGTH - 1) + '…';
 }
 
 /**
@@ -146,38 +209,33 @@ export class TaskListBlockBuilder {
       return { text: '', blocks: [] };
     }
 
-    const finalize = options?.final === true;
+    const rows = buildTaskRows(todos, options?.final === true);
 
     // ── 1. Top-level text (plain, unescaped — Slack renders verbatim) ──
     const textLines: string[] = [];
     const taskCards: Record<string, unknown>[] = [];
     const fallbackLines: string[] = [];
 
-    for (let i = 0; i < todos.length; i++) {
-      const todo = todos[i];
-      const rawEffective = computeEffectiveStatus(todo, todos);
-      // Terminal-state demotion: `in_progress` → `pending`. We never promote
-      // to `completed` — unfinished work must stay visibly unfinished. The
-      // demotion is purely UI-side; the underlying todo array is not mutated.
-      const effective: EffectiveStatus = finalize && rawEffective === 'in_progress' ? 'pending' : rawEffective;
-      const icon = STATUS_ICON[effective];
-      const num = i + 1;
+    for (const row of rows) {
+      const icon = STATUS_ICON[row.effective];
 
       // Top-level text line — uses raw content so push notifications read
       // naturally. Slack treats this field as plain text, so mrkdwn-escaping
       // is not required here.
-      textLines.push(`${icon} ${todo.content}`);
+      textLines.push(`${icon} ${row.content}`);
 
-      // task_card — title is plain text per Slack schema.
+      // task_card — title is plain text per Slack schema, and goes through
+      // the SAME display-title builder as the native task_update chunk so
+      // the two surfaces cannot show different names for one todo.
       taskCards.push({
         type: 'task_card',
-        task_id: todo.id || `todo-${num}`,
-        title: todo.content,
-        status: toTaskCardStatus(effective),
+        task_id: row.id,
+        title: buildTaskDisplayTitle(row.content),
+        status: toTaskCardStatus(row.effective),
       });
 
       // Fallback mrkdwn line — escaped against injection.
-      fallbackLines.push(`${icon} ${escapeMrkdwn(todo.content)}`);
+      fallbackLines.push(`${icon} ${escapeMrkdwn(row.content)}`);
     }
 
     const planBlock: Record<string, unknown> = {
@@ -203,6 +261,43 @@ export class TaskListBlockBuilder {
     return {
       text: textLines.join('\n'),
       blocks: [planBlock, sectionFallback],
+    };
+  }
+
+  /**
+   * U10a entry point — build the native streaming chunks that render the task
+   * list *inside* the B1 stream message (`chat.startStream` with
+   * `task_display_mode: 'plan'`), instead of as a separate B2 plan message.
+   *
+   * Returns `{ title, tasks }`:
+   *   - `title`: the `plan_update` chunk title (same `Tasks (N)` wording the
+   *     B2 plan block uses, so the two surfaces read identically).
+   *   - `tasks`: one `task_update` chunk per todo. `id` is the Slack chunk
+   *     identity — re-sending the same `id` with a new `status` updates the
+   *     existing row in place rather than appending a new one, which is what
+   *     makes repeated renders idempotent on the wire.
+   *
+   * Status mapping and the `final` demotion are shared with `buildPlanTasks`
+   * via `buildTaskRows`, so the native surface and the plan-block fallback
+   * can never disagree about what "done" means.
+   *
+   * Empty / undefined input returns `{ title: '', tasks: [] }` so callers can
+   * short-circuit without a special-case branch.
+   */
+  static buildTaskChunks(todos: Todo[], final = false): { title: string; tasks: TaskUpdateChunk[] } {
+    if (!todos || todos.length === 0) {
+      return { title: '', tasks: [] };
+    }
+
+    const rows = buildTaskRows(todos, final === true);
+    return {
+      title: `Tasks (${todos.length})`,
+      tasks: rows.map((row) => ({
+        type: 'task_update' as const,
+        id: row.id,
+        title: buildTaskDisplayTitle(row.content),
+        status: toTaskCardStatus(row.effective),
+      })),
     };
   }
 

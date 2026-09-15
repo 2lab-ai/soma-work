@@ -19,6 +19,16 @@ import { Logger } from '@soma/common/logger';
  *                     configured stall window before aborting. The user
  *                     was waiting on a dead turn — surface a terminal
  *                     card so the thread doesn't read as half-finished.
+ *   `user-interrupted` — the user EXPLICITLY interrupted the running turn to
+ *                     run something else now (`Send now` on a queued
+ *                     follow-up, U6). Distinct from `user-stop` (stop and
+ *                     stay stopped) and from `supersede` (a new message
+ *                     passively displaced the turn): the interrupt is an
+ *                     authorized, deliberate action whose partial output
+ *                     must be PRESERVED and labelled literally, never
+ *                     downgraded to an error or a stall. Stay quiet — the
+ *                     user pressed the button. Trace:
+ *                     `.prd/slack-agent-ui/ssot.md` §3.3, A11.
  *   `ghost-session`  — `StreamCallbacks.onToolUse` / `onToolResult` observed
  *                     `session.terminated === true` mid-stream and aborted
  *                     the local controller. Distinct from the explicit
@@ -39,7 +49,42 @@ export type RequestAbortReason =
   | 'session-close'
   | 'shutdown'
   | 'stall-timeout'
+  | 'user-interrupted'
   | 'ghost-session';
+
+/**
+ * The abort reasons that mean "this session is being STOPPED", as opposed to
+ * "this turn is being replaced". Only these notify {@link RequestCoordinatorDeps.beforeAbort}.
+ *
+ * `user-interrupted` (`Send now`) and `supersede` (mid-turn steering) are
+ * deliberately absent: both abort the current turn so the NEXT one can run
+ * immediately. Freezing the follow-up queue there would strand the very items
+ * the user is trying to advance (U8 / ssot.md §3.3).
+ */
+const STOP_CLASS_ABORT_REASONS: ReadonlySet<RequestAbortReason> = new Set(['user-stop', 'session-close', 'shutdown']);
+
+export interface RequestCoordinatorDeps {
+  /**
+   * Called SYNCHRONOUSLY, BEFORE the abort, whenever a session is stopped with
+   * a {@link STOP_CLASS_ABORT_REASONS} reason — including when there is no
+   * in-flight controller (a "stop" on an idle session is exactly when the
+   * follow-up queue must freeze).
+   *
+   * Contract:
+   *   - Ordering is load-bearing. The observer records DURABLE state (queue
+   *     freeze). If the abort landed first and the write then failed, the
+   *     queue would keep draining into a session the user just stopped, with
+   *     no signal that anything went wrong.
+   *   - THROWING IS FAIL-CLOSED, NOT ADVISORY. A throw propagates to the
+   *     caller and the coordinator performs no abort and no state mutation
+   *     for that session: nothing is aborted, the controller stays registered,
+   *     the activity clock is untouched. A stop that could not be recorded is
+   *     a stop that did not happen.
+   *   - Must be synchronous. A promise would let the abort race the write,
+   *     which is the ordering this seam exists to prevent.
+   */
+  beforeAbort?: (sessionKey: string, reason: RequestAbortReason) => void;
+}
 
 /**
  * Manages request concurrency for sessions.
@@ -48,9 +93,12 @@ export type RequestAbortReason =
  * - Track active AbortControllers per session
  * - Enforce one active request per session
  * - Handle request cancellation on owner interrupt
+ * - Give a host observer the chance to record a stop BEFORE it happens
+ *   ({@link RequestCoordinatorDeps.beforeAbort})
  */
 export class RequestCoordinator {
   private logger = new Logger('RequestCoordinator');
+  private readonly deps: RequestCoordinatorDeps;
   private activeControllers: Map<string, AbortController> = new Map();
   /**
    * Last "sign of life" timestamp (ms since epoch) for each active session.
@@ -66,6 +114,11 @@ export class RequestCoordinator {
    * into a brand-new turn that starts on the same sessionKey.
    */
   private lastActivityAt: Map<string, number> = new Map();
+
+  /** `deps` is optional — every pre-U8 caller constructs with no arguments. */
+  constructor(deps: RequestCoordinatorDeps = {}) {
+    this.deps = deps;
+  }
 
   /**
    * Get the active AbortController for a session
@@ -146,9 +199,18 @@ export class RequestCoordinator {
    * Defaults to `'user-stop'` to preserve the historical "explicit cancel"
    * semantics of the unparameterized call.
    *
+   * For stop-class reasons the host observer runs FIRST and may refuse (by
+   * throwing), in which case this method throws and nothing is aborted — see
+   * {@link RequestCoordinatorDeps.beforeAbort}.
+   *
    * @returns true if a request was aborted, false if no active request
    */
   abortSession(sessionKey: string, reason: RequestAbortReason = 'user-stop'): boolean {
+    // Before the lookup, so an idle session (no controller) still freezes, and
+    // before any mutation, so a refusal leaves the coordinator exactly as it
+    // was. Deliberately NOT wrapped in try/catch: the throw is the signal.
+    this.notifyBeforeAbort(sessionKey, reason);
+
     const controller = this.activeControllers.get(sessionKey);
     if (controller) {
       controller.abort(reason);
@@ -186,13 +248,51 @@ export class RequestCoordinator {
    *
    * Tags every abort with `'shutdown'` so the notification gate stays
    * quiet — a process-wide shutdown is not user-relevant feedback.
+   *
+   * Per-session fail-closed: each session is observed before its own abort, so
+   * one refusing observer does not block the rest of the shutdown. A refused
+   * session keeps its controller registered and un-aborted (its queue never
+   * froze), and the first refusal is rethrown after the sweep so the failure
+   * is not swallowed.
    */
   clearAll(): void {
-    for (const [sessionKey, controller] of this.activeControllers) {
+    let firstRefusal: unknown;
+    let refusalSeen = false;
+
+    for (const [sessionKey, controller] of [...this.activeControllers]) {
+      try {
+        this.notifyBeforeAbort(sessionKey, 'shutdown');
+      } catch (err) {
+        if (!refusalSeen) {
+          firstRefusal = err;
+          refusalSeen = true;
+        }
+        this.logger.warn('beforeAbort refused a shutdown — session left active', {
+          sessionKey,
+          error: (err as Error)?.message ?? String(err),
+        });
+        // Leave this session's controller and activity entry in place.
+        continue;
+      }
       controller.abort('shutdown' satisfies RequestAbortReason);
+      this.activeControllers.delete(sessionKey);
+      this.lastActivityAt.delete(sessionKey);
       this.logger.debug('Cleared controller on shutdown', { sessionKey });
     }
-    this.activeControllers.clear();
-    this.lastActivityAt.clear();
+
+    if (refusalSeen) {
+      throw firstRefusal;
+    }
+  }
+
+  /**
+   * Run the host observer for stop-class reasons. Throws propagate on purpose
+   * ({@link RequestCoordinatorDeps.beforeAbort}); non-stop reasons and a
+   * missing observer are no-ops.
+   */
+  private notifyBeforeAbort(sessionKey: string, reason: RequestAbortReason): void {
+    if (!this.deps.beforeAbort) return;
+    if (!STOP_CLASS_ABORT_REASONS.has(reason)) return;
+    this.deps.beforeAbort(sessionKey, reason);
   }
 }
