@@ -14,7 +14,8 @@ export type MetricsEventType =
   | 'pr_merged'
   | 'merge_lines_added'
   | 'turn_used'
-  | 'token_usage';
+  | 'token_usage'
+  | 'followup_queue';
 
 export interface MetricsEvent {
   id: string;
@@ -219,6 +220,49 @@ export interface TokenUsageAggregation {
   totalCostUsd: number;
   /** Per-model aggregated usage */
   byModel: Record<string, ModelTokenUsage>;
+}
+
+// ── Followup Queue Observability (U13a) ─────────────────────────
+//
+// Observations only — this is telemetry about the followup queue, never a
+// control surface. Nothing here may carry raw message text, file paths, cwd,
+// or credentials; the original-author identity is supplied by the host as the
+// event's userId/userName, not smuggled through metadata.
+
+/** Lifecycle point of a followup item (or a periodic queue snapshot). */
+export type FollowupQueueOperation =
+  | 'enqueue'
+  | 'claim'
+  | 'dispatch'
+  | 'resolve'
+  | 'fail'
+  | 'uncertain'
+  | 'reject'
+  | 'snapshot';
+
+/**
+ * Metadata for `followup_queue` events. Stored in MetricsEvent.metadata —
+ * no top-level MetricsEvent schema extension.
+ *
+ * Only these fields are persisted: the emitter whitelists them, so extra
+ * properties on a loosely-typed caller object are dropped rather than logged.
+ */
+export interface FollowupQueueMetric {
+  operation: FollowupQueueOperation;
+  /** Queue depth observed at the time of the operation. */
+  depth: number;
+  /** Number of items currently in the 'uncertain' state. */
+  uncertainCount: number;
+  /** Opaque queue item identifier (not message text). */
+  itemId?: string;
+  /** Short classifier code for reject/fail (e.g. 'not_original_author') — never user text. */
+  reason?: string;
+  /** Time from enqueue to dispatch, ms. */
+  drainLatencyMs?: number;
+  /** Time from interrupt request to observed stop, ms. */
+  interruptLatencyMs?: number;
+  /** Unix ms of last observed queue progress. */
+  lastProgressAt?: number;
 }
 
 /** Per-user token/cost ranking entry */

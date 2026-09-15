@@ -1156,7 +1156,44 @@ async function start() {
       // Stop accepting work and abort every active Agent SDK query before
       // notifying/saving sessions. The SDK child registry below then owns the
       // bounded TERM→KILL drain before process.exit.
-      slackHandler.getRequestCoordinator().clearAll();
+      //
+      // U8: `clearAll()` is fail-closed — it asks the host to record the stop
+      // (durable follow-up-queue freeze) BEFORE aborting, and throws when that
+      // write refuses, leaving that session's query LIVE and its controller
+      // registered. Two outcomes, and the second one must NOT fall through:
+      // continuing would reach the child drain / crash-handler `killAllSync`
+      // and SIGKILL a query the queue still believes is running — the exact
+      // silent damage the freeze seam exists to prevent. So a refusal stops
+      // the attempt here, before anything is torn down, and re-arms the guard
+      // so a later SIGTERM can retry once the queue store recovers. Staying up
+      // and saying why beats a half-shutdown that kills live work.
+      try {
+        // Idle sessions — queued items, nobody running — have no controller,
+        // so `clearAll()` never visits them and their `beforeAbort` observer
+        // never fires. `prepareFollowupShutdown()` walks those through the same
+        // single freeze owner and closes admission so nothing new is parked
+        // into a queue we are freezing. It throws on a store failure, which is
+        // why it belongs INSIDE this try, immediately before the sweep.
+        slackHandler.prepareFollowupShutdown();
+        slackHandler.getRequestCoordinator().clearAll();
+      } catch (error) {
+        // `prepare` may have SUCCEEDED and `clearAll` refused afterwards, in
+        // which case admission is still closed. Re-open it before re-arming
+        // the shutdown guard: a bot that stays up but silently refuses every
+        // message is a worse outage than the shutdown we just declined.
+        slackHandler.cancelFollowupShutdownPreparation();
+        // Wording matters operationally: `clearAll()` aborts session-by-session,
+        // so a refusal partway through leaves a MIX — earlier sessions already
+        // stopped, the refused one (and any after it) still live. Claiming
+        // "nothing was torn down" would send the operator looking for work that
+        // is already gone.
+        logger.error(
+          'Shutdown stopped: follow-up queue freeze refused. Sessions whose freeze refused are still live; queries aborted before the refusal have already stopped. No subsequent teardown ran — retry the shutdown signal after the queue store recovers.',
+          error,
+        );
+        isShuttingDown = false;
+        return;
+      }
 
       try {
         stopReportScheduler();
