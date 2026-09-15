@@ -217,3 +217,14 @@ main이 41커밋 앞서 PR #218이 CONFLICTING → `origin/main` 병합(코드 �
 |---|---|---|
 | `npm run build` · `npx tsc --noEmit` · `smoke:mcp-bins` · `smoke:assets` | `merged2-build.log`, `merged2-tsc.log` | 모두 exit 0 |
 | `npm test -- --maxWorkers=2` | `merged2-tests-bounded.log` | **523 passed / 1 skipped (524 files)**, **10479 passed / 5 skipped (10484 tests)**, exit 0 |
+
+### R13 — PR #218 · CI 상태 (2026-09-15 15:16) — 두 게이트 모두 이 PR 밖의 원인으로 red
+
+PR: https://github.com/2lab-ai/soma-work/pull/218 (head = main 위에 재구성한 유닛 커밋 6개; 트리 해시는 R12 리시트 트리와 동일, 브랜치 히스토리는 3개 금지어 스코프 스캔 objects=0).
+
+| 체크 | 결과 | 근거 | 처리 |
+|---|---|---|---|
+| Sanitize Gate (`scripts/sanitize-scan.sh`, 전체 히스토리) | FAILURE `objects=22` | 재구성 전 `objects=59`, 재구성 후 `22`. **09-14 `prd/plugin-split` PR 런도 `objects=22`**(이 브랜치 존재 전). 러너 클론(`fable-m5max`, fetch-depth 0 = 전 브랜치)에서 알려진 3패턴 스캔은 전 ref objects=0 → 비밀 패턴 세트가 3개보다 넓고, 22건은 `origin/prd/plugin-split`가 main 대비 추가한 118 object 안에 있다(토큰 형태 문자열 등 후보 다수). 이 PR의 object는 카운트를 늘리지 않는다 | **BLOCKED-BY-USER**: 타 브랜치(`prd/plugin-split`) 정리/재작성 또는 비밀 패턴 확인이 필요. 타인 브랜치 삭제·재작성은 이 세션 권한 밖 |
+| CI quality-gates | CANCELLED ×2 (15분 timeout) | `actions/setup-node@v4` `cache: npm` 복원이 2,284MB 캐시를 ~1MB/s로 내려받다 timeout(로그 `Received 4194304 of 2395578206`). 09-14 동일 캐시는 7.5분에 완료. 시계 drift 아님(`sntp` +48ms). 3회째 자동 재시도 금지 규칙으로 중단 | **BLOCKED-EXTERNAL**: GitHub cache 서비스 속도. 선택지 ① ci.yml에서 self-hosted `cache` 비활성(워크플로 변경 → 유저 게이트) ② 해당 캐시 항목 삭제(post 단계 2.2GB 재업로드 위험) ③ 속도 회복 후 `gh run rerun` |
+
+머지는 CI green이 리시트 조건이라 **보류**(브랜치 보호 없음이라 기술적으로는 가능하나 §4 리시트 위반). 로컬 리시트는 R12 그대로 유효.

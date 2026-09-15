@@ -125,5 +125,5 @@ R1(문서 정합 복구) · R2(targeted 리시트) · R3(유저 "워크플로 �
   `turn-surface.ts` TS2322 1건이 타 워커 red로 남아 있다고 보고했다 — 최종 트리 tsc는 아직 green이 아니다.
 - 미구현: A32 통합 스트림(위 유저 결정대로), `message_not_found`에 대한 sent 인텐트 확정-삭제 API(A24b 워커 보고),
   A34 잔여 거절 경로·집계, adapter cancel/dispose의 coordinator 우회.
-- 다음 순서: 최종 트리에서 build·tsc·test 재실행 → 유닛별 커밋 → 외부 리뷰 → CI → 머지. 배포·Chrome은 §배포 안전과
-  verification.md §4의 차단 상태 그대로.
+- (2026-09-15 15:16 갱신) 구현·외부 리뷰(trinity 만장일치)·로컬 게이트·커밋·PR #218까지 완료. 남은 것: CI green(setup-node
+  캐시 timeout, verification.md R13) → 머지 → 프리뷰 배포(유저 보류) → Chrome 실측. Sanitize Gate는 타 브랜치 오염으로 red(R13).
