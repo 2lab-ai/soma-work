@@ -322,8 +322,102 @@ export class CommandRouter {
       : { handled: false };
   }
 
-  isCommand(text: string): boolean {
-    if (!text) return false;
-    return this.handlers.some((handler) => handler.canHandle(text));
+  /**
+   * Would {@link route} CONSUME this text instead of letting it reach the model?
+   *
+   * Pure classification: no handler is executed, nothing is said, no session is
+   * touched. The follow-up ingress (`.prd/slack-agent-ui/ssot.md` §3.1) asks
+   * this while a turn is running to tell a *control* (which must keep working
+   * live) from an *instruction* (which must be queued verbatim). It reuses the
+   * SAME handler instances and the same `canHandle` predicates as `route`, so
+   * there is no second command registry to drift.
+   *
+   * `user` matters: several handlers are admin-gated inside `canHandle`
+   * (`AdminHandler`, `PromptHandler`, …). Omitting it would classify an
+   * admin-only command as a plain instruction for everyone.
+   *
+   * Three deliberate distinctions:
+   *
+   *  1. `%model <v> <instruction>` / `%nogoal <instruction>` — a directive with
+   *     a remainder is the user's TURN carrying a session directive (see
+   *     `slack-handler.ts:454-501`, which strips the directive and dispatches
+   *     the remainder). It must be queued RAW, so it is not a command here.
+   *     A directive with no remainder (bare `%model x`, bare `%nogoal`, bare
+   *     `%`) stays a control.
+   *  2. `/z …` is normalized exactly as `route` does (`:149-163`) before the
+   *     handler probe, so `/z new`-style invocations classify like their legacy
+   *     form. Bare `/z` prints help — a control.
+   *  3. `isPotentialCommand` mirrors `:308-316`: that text is answered and
+   *     consumed by the router, so queueing it would park a message the router
+   *     will never dispatch.
+   */
+  isCommand(text: string, user?: string): boolean {
+    return this.classifyText(text, user) !== 'instruction';
   }
+
+  /**
+   * Ingress classification for the follow-up queue. Three kinds, because two
+   * are not enough:
+   *
+   *  - `instruction` — the user's turn. Queue it verbatim while a turn runs.
+   *  - `control` — answered immediately and consumed; it never starts a model
+   *    turn (`help`, `cwd`, `%model x`, `sessions`, a `/z` card). Safe to run
+   *    live: it cannot supersede the running request.
+   *  - `control-with-dispatch` — a command that ALSO starts a turn
+   *    (`new <prompt>`, `goal <objective>`, a forced `$skill`, `onboarding` /
+   *    `renew` / `compact`). Running it live while a turn is in flight would
+   *    supersede that turn through the session initializer
+   *    (`session-initializer.ts:1368-1401`), which is exactly what the queue
+   *    exists to prevent — so the host queues it and lets it re-route at the
+   *    next safe boundary with its text intact.
+   *
+   * The `control-with-dispatch` set is a declared list, not a probe: the only
+   * way to know for certain whether a handler returns `continueWithPrompt` is
+   * to EXECUTE it, and executing is precisely what a classifier must not do.
+   * A command missing from the list degrades to today's behavior (it runs
+   * live), never to a lost message.
+   */
+  classifyText(text: string, user?: string): 'instruction' | 'control' | 'control-with-dispatch' {
+    const trimmed = (text ?? '').trim();
+    if (!trimmed) return 'instruction';
+
+    // `%model <v> <instruction>` / `%nogoal <instruction>`: the remainder is
+    // the user's turn (`slack-handler.ts:454-501` strips the directive and
+    // dispatches it), so the whole message must be queued RAW. A directive with
+    // no remainder is a plain control.
+    const directives = CommandParser.parseInlineSessionDirectives(trimmed);
+    if (directives) {
+      // A directive with NO remainder is answered and consumed by the handler
+      // (`slack-handler.ts:466-475` posts the usage hint and stops), so it is a
+      // control even when no handler's `canHandle` claims the text.
+      return directives.remainder === '' ? 'control' : 'instruction';
+    }
+
+    const zPrefixRemainder = stripZPrefix(trimmed);
+    if (zPrefixRemainder !== null && !zPrefixRemainder) return 'control'; // bare `/z` → help card
+    const routedText = zPrefixRemainder !== null ? translateToLegacy(zPrefixRemainder) : trimmed;
+    if (!routedText) return 'instruction';
+
+    if (CommandParser.isNewCommand(routedText)) {
+      // `new` alone resets and answers; `new <prompt>` resets AND dispatches.
+      return CommandParser.parseNewCommand(routedText).prompt ? 'control-with-dispatch' : 'control';
+    }
+    if (CommandParser.isGoalCommand(routedText)) {
+      // Only the SET form continues into a turn (`slack-handler.ts:686-724`);
+      // `goal status|pause|resume|done|clear` answer and stop.
+      return CommandParser.parseGoalCommand(routedText).action === 'set' ? 'control-with-dispatch' : 'control';
+    }
+    if (this.skillForceHandler.canHandle(routedText, user)) return 'control-with-dispatch';
+    if (CommandRouter.DISPATCHING_COMMAND_ROOTS.test(routedText)) return 'control-with-dispatch';
+
+    if (this.handlers.some((handler) => handler.canHandle(routedText, user))) return 'control';
+    return CommandParser.isPotentialCommand(routedText).isPotential ? 'control' : 'instruction';
+  }
+
+  /**
+   * Commands that hand a prompt to the model after doing their own work
+   * (host-built continuations). Kept next to {@link classifyText} so the list
+   * and its rationale cannot drift apart.
+   */
+  private static readonly DISPATCHING_COMMAND_ROOTS = /^\/?(?:onboarding|renew|compact)\b/i;
 }

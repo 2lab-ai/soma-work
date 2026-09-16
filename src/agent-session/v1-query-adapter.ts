@@ -40,22 +40,51 @@ export interface V1QueryAdapterConfig {
   executeParams: Record<string, any>;
   /** Slack-facing lifecycle 관리자 (optional) */
   turnRunner?: TurnRunner;
+  /**
+   * Follow-up yield seam (U4a, optional DI).
+   *
+   * `startWithContinuation`이 정착한(settled) 턴마다 continuation 판정·reset보다
+   * 먼저 물어본다. `true`면 루프를 끝내고 마지막 결과를 반환 — 호스트가 큐의
+   * follow-up을 새 dispatch로 돌린다 (adapter에 텍스트를 주입하지 않는다).
+   *
+   * settled = `executor.execute()` + `runner.finish()` 두 await 완료. 슬롯 부재는
+   * 경계가 아니다: RequestCoordinator 슬롯은 `stream-executor.ts` cleanup 초반
+   * (`removeController`, line 3702)에 비워지지만 async tool cleanup은 line 3726에서야
+   * await된다.
+   *
+   * 호출하지 않는 경우 (yield 자체가 안전하지 않음): 실패 턴(`success === false`,
+   * `handled === true` 포함 — fallback 결과의 `endTurn.reason === 'end_turn'`은
+   * 건강함의 증거가 아니다) · `hasPendingChoice` · 이미 abort된 controller ·
+   * `endTurn.reason`이 `end_turn`/`stop_sequence`가 아닌 경우(`tool_use`·
+   * `max_tokens`는 기존 continuation 의미론 소유, 중단 안전성 미증명).
+   */
+  shouldYieldToFollowup?(result: AgentTurnResult): Promise<boolean> | boolean;
 }
 
 export class V1QueryAdapter implements IAgentSession {
   private readonly executor: StreamExecutorLike;
   private readonly baseParams: Record<string, any>;
   private readonly runner?: TurnRunner;
+  private readonly shouldYieldToFollowup?: (result: AgentTurnResult) => Promise<boolean> | boolean;
   private turnCount = 0;
   private _started = false;
   private _abortController: AbortController;
   private _lastResult?: ReturnType<typeof mapToExecuteResult>;
   private _lastRetryAfterMs?: number;
+  /**
+   * 마지막으로 정착한 턴의 `execute()` 성공 여부 — 로컬 실행 결과이지 결과 타입의
+   * 일부가 아니다 (AgentTurnResult는 이 파일 소유가 아니므로 필드를 늘리지 않는다).
+   * 실패 턴(`success === false`, `handled === true` 포함)은 turnCollector가 없으면
+   * `endTurn.reason: 'end_turn'` fallback으로 포장되기 때문에, 결과만 봐서는
+   * 건강한 턴과 구분되지 않는다. yield 게이트는 이 플래그로 구분한다.
+   */
+  private _lastTurnSucceeded = false;
 
   constructor(config: V1QueryAdapterConfig) {
     this.executor = config.streamExecutor;
     this.baseParams = config.executeParams;
     this.runner = config.turnRunner;
+    this.shouldYieldToFollowup = config.shouldYieldToFollowup;
     this._abortController = (config.executeParams as any).abortController ?? new AbortController();
   }
 
@@ -111,6 +140,19 @@ export class V1QueryAdapter implements IAgentSession {
   }
 
   /**
+   * 마지막으로 정착한 턴의 execute() 성공 여부 (U4a).
+   *
+   * 호스트 dispatcher가 "정상 완료"와 "handled된 실패"를 구분하는 신호다.
+   * `getLastExecuteResult()`로는 구분할 수 없다 — `mapToExecuteResult`는
+   * `success: true`를 고정으로 넣고(`map-to-execute-result.ts:28`),
+   * 실패 fallback 결과의 `endTurn.reason`도 `'end_turn'`이다.
+   * 턴 실행 전에는 false.
+   */
+  getLastTurnSucceeded(): boolean {
+    return this._lastTurnSucceeded;
+  }
+
+  /**
    * start + continuation 루프 (Issue #87, Phase 3c)
    *
    * handleMessage의 while(true) 루프를 adapter 내부로 이동.
@@ -130,6 +172,14 @@ export class V1QueryAdapter implements IAgentSession {
 
     // Continuation loop
     while (true) {
+      // Follow-up yield seam (U4a): `lastResult`는 executeTurn이 execute()와
+      // runner.finish()를 모두 await한 뒤에만 여기 도달한다 — 즉 이 지점은
+      // 진행 중인 턴이 없는 유일한 안전 지점이다. continuation 판정/reset보다
+      // 먼저 물어보므로, yield는 *다음* 턴을 취소할 뿐 실행 중인 턴을 자르지 않는다.
+      if (await this.shouldYieldAfterSettledTurn(lastResult)) {
+        return lastResult;
+      }
+
       const decision = handler.shouldContinue(lastResult);
       if (!decision.continue || !decision.prompt) break;
 
@@ -156,6 +206,38 @@ export class V1QueryAdapter implements IAgentSession {
     }
 
     return lastResult;
+  }
+
+  /**
+   * 정착한 턴 하나에 대해 follow-up yield 여부를 판정한다 (U4a).
+   *
+   * 콜백이 없으면 항상 false — 루프 판정은 기존과 동일하다 (await 한 번이
+   * 추가되므로 마이크로태스크 틱은 늘어난다). 안전 조건(성공·pending choice
+   * 없음·abort 아님·종료 사유)이 모두 참일 때만 콜백을 호출하고, 콜백이
+   * 명시적으로 `true`를 줄 때만 yield한다.
+   */
+  private async shouldYieldAfterSettledTurn(result: AgentTurnResult): Promise<boolean> {
+    const gate = this.shouldYieldToFollowup;
+    if (!gate) return false;
+
+    // 실패 턴은 yield 대상이 아니다 — handled=true(Exception 카드 노출 완료)라도
+    // 마찬가지다. 실패 경로의 fallback 결과는 endTurn.reason이 'end_turn'이라
+    // 결과 모양만으로는 건강해 보인다.
+    if (!this._lastTurnSucceeded) return false;
+
+    // 유저 선택 대기 중이면 세션은 유저 소유 — follow-up이 가로챌 수 없다.
+    if (result.hasPendingChoice) return false;
+
+    // cancel()/dispose()/stall abort 이후에는 새 dispatch를 띄우지 않는다.
+    const controller: AbortController | undefined = (this.baseParams as any).abortController ?? this._abortController;
+    if (controller?.signal?.aborted) return false;
+
+    // tool_use·max_tokens는 "작업이 남은" 종료 — 기존 continuation 의미론이
+    // 소유한다. 중단 안전성이 증명되기 전까지 seam은 관여하지 않는다.
+    const reason = result.endTurn?.reason;
+    if (reason !== 'end_turn' && reason !== 'stop_sequence') return false;
+
+    return (await gate(result)) === true;
   }
 
   /** 내부 baseParams 업데이트 (session refresh 등) */
@@ -221,6 +303,10 @@ export class V1QueryAdapter implements IAgentSession {
         return await this.continue('/compact');
       }
 
+      // U4a: 이 턴의 실행 결과를 기록한다. fallbackCompact 재진입 뒤에 두어야
+      // 재진입 턴(실제로 반환되는 턴)의 결과가 플래그를 소유한다.
+      this._lastTurnSucceeded = executeResult.success === true;
+
       if (!executeResult.success && !executeResult.turnCollector) {
         this._lastRetryAfterMs = (executeResult as any).retryAfterMs;
         if (!executeResult.handled) {
@@ -254,6 +340,8 @@ export class V1QueryAdapter implements IAgentSession {
 
       return turnResult;
     } catch (error) {
+      // U4a: 던지는 턴은 정착한 턴이 아니다 — yield 게이트가 닫히도록 기록.
+      this._lastTurnSucceeded = false;
       // TurnRunner lifecycle: fail
       await this.runner?.fail(error instanceof Error ? error : new Error(String(error)));
       throw error;

@@ -24,6 +24,9 @@ import {
   OutputFlag,
   verboseTag,
 } from './output-flags';
+// Type-only: the interrupt-flush guard compares `AbortSignal.reason` against
+// the producer-side reason union (no runtime import, no cycle).
+import type { RequestAbortReason } from './request-coordinator';
 import type { SessionLinks } from './thread-header-builder';
 import type { EndTurnInfo } from './thread-surface';
 import { ToolFormatter } from './tool-formatter';
@@ -270,6 +273,52 @@ export interface FinalResponseFooterParams {
 /**
  * Stream processor callbacks
  */
+/**
+ * The event kinds that count as REAL progress for {@link StreamCallbacks.onProgress}.
+ * Deliberately a closed union rather than "every AgentStreamEvent type": adding
+ * a new bookkeeping frame must not silently start advancing the header's
+ * progress clock.
+ */
+export type ProgressSignalType =
+  | 'thought_delta'
+  | 'assistant_delta'
+  | 'tool_call'
+  | 'tool_result'
+  | 'plan_update'
+  | 'agent_task_lifecycle';
+
+/**
+ * Classify one stream event as progress (→ its {@link ProgressSignalType}) or
+ * as a non-progress frame (→ `undefined`).
+ *
+ * Pure + exported so the rule is testable without driving a whole stream:
+ *   - `assistant_delta` counts only when it carries non-whitespace text. The
+ *     SDK emits empty text blocks around tool use; an empty delta moved
+ *     nothing.
+ *   - `thought_delta` counts even though the user may have thinking hidden —
+ *     the MODEL moved, which is what liveness asks about.
+ *   - `usage` / `status` / `compact_boundary` / `result` / `session_start` are
+ *     bookkeeping or terminal frames: heartbeat, not progress.
+ */
+export function classifyProgressSignal(event: AgentStreamEvent): ProgressSignalType | undefined {
+  switch (event.type) {
+    case 'thought_delta':
+      return 'thought_delta';
+    case 'assistant_delta':
+      return typeof event.text === 'string' && event.text.trim().length > 0 ? 'assistant_delta' : undefined;
+    case 'tool_call':
+      return 'tool_call';
+    case 'tool_result':
+      return 'tool_result';
+    case 'plan_update':
+      return 'plan_update';
+    case 'agent_task_lifecycle':
+      return 'agent_task_lifecycle';
+    default:
+      return undefined;
+  }
+}
+
 export interface StreamCallbacks {
   onToolUse?: (toolUses: ToolUseEvent[], context: StreamContext) => Promise<void>;
   onToolResult?: (toolResults: ToolResultEvent[], context: StreamContext) => Promise<void>;
@@ -314,8 +363,24 @@ export interface StreamCallbacks {
    * Called for every SDK message the dispatcher forwards — a "sign of life"
    * signal for stall-detection heuristics. Must be cheap; throws are
    * swallowed by the caller so a callback bug cannot abort the stream loop.
+   *
+   * HEARTBEAT ONLY. "The transport is alive" is not "the work moved" — a
+   * session can emit usage/status frames forever while producing nothing.
+   * Consumers that want the latter must use {@link onProgress} (U9).
    */
   onSdkActivity?: () => void;
+  /**
+   * U9 — called only when the stream carried REAL work: model output
+   * (thinking / non-empty assistant text), a tool call, a tool result, or a
+   * plan / background-task lifecycle update. Bookkeeping frames (usage,
+   * status, compact_boundary, the terminal result) deliberately do NOT fire
+   * it: the header's "마지막 활동" must never be advanced by a frame that
+   * moved nothing the user can see.
+   *
+   * Same contract as {@link onSdkActivity}: must be cheap, and throws are
+   * swallowed by the caller.
+   */
+  onProgress?: (progress: { at: number; type: ProgressSignalType }) => void;
   /**
    * Called when the SDK iterator's `.next()` has not resolved within
    * {@link StreamProcessorOptions.idleTimeoutMs}. Wired by the stream
@@ -413,6 +478,35 @@ export interface StreamResult {
     errors: string[];
     numTurns?: number;
   };
+  /**
+   * A11 — set ONLY when an explicit interrupt left partial answer text that
+   * Slack refused twice (see {@link InterruptFlushOutcome}). The caller owns
+   * the user-facing consequence: the text the user asked to keep is gone, and
+   * a turn that ends with a silent hole looks like the model simply stopped.
+   */
+  interruptFlushFailed?: InterruptFlushFailure;
+}
+
+/**
+ * A11 — what an undelivered interrupt rescue costs, in the two facts an
+ * operator (and the degraded header) needs: how much text was lost and why
+ * Slack refused it. `code` is absent when the stream merely returned `false`
+ * (no Slack error to quote).
+ */
+export interface InterruptFlushFailure {
+  length: number;
+  code?: string;
+}
+
+/**
+ * A11 — outcome of the interrupted-text rescue. A bare boolean conflated
+ * "nothing to rescue" with "the user's answer was destroyed"; `failure` is
+ * present only for the second, so the caller can degrade the surface instead
+ * of ending the turn with a silent hole.
+ */
+export interface InterruptFlushOutcome {
+  delivered: boolean;
+  failure?: InterruptFlushFailure;
 }
 
 export type { EndTurnInfo };
@@ -623,7 +717,13 @@ export class AgentStreamProcessor {
     try {
       while (true) {
         if (abortSignal.aborted) {
-          return { success: true, messageCount: currentMessages.length, aborted: true };
+          const rescue = await this.flushTextOnExplicitInterrupt(textBuf, context, abortSignal);
+          return {
+            success: true,
+            messageCount: currentMessages.length,
+            aborted: true,
+            ...(rescue.failure ? { interruptFlushFailed: rescue.failure } : {}),
+          };
         }
 
         const step = await this.raceNextStep(iterator, abortSignal);
@@ -634,7 +734,13 @@ export class AgentStreamProcessor {
           // any sockets it holds, in case the SDK didn't honor the abort
           // signal on its own. Throws are harmless here.
           await this.tryReturnIterator(iterator, 'abort');
-          return { success: true, messageCount: currentMessages.length, aborted: true };
+          const rescue = await this.flushTextOnExplicitInterrupt(textBuf, context, abortSignal);
+          return {
+            success: true,
+            messageCount: currentMessages.length,
+            aborted: true,
+            ...(rescue.failure ? { interruptFlushFailed: rescue.failure } : {}),
+          };
         }
         if (step.kind === 'idleTimeout') {
           // Notify the executor so it can tag the local controller with
@@ -667,6 +773,23 @@ export class AgentStreamProcessor {
             this.logger.debug('onSdkActivity callback threw — ignored', {
               error: (err as Error)?.message ?? String(err),
             });
+          }
+        }
+
+        // U9: the narrower "work actually moved" signal. Fires right after the
+        // heartbeat and before the per-type handlers, so the timestamp is when
+        // the agent emitted the event — not when a slow renderer returned.
+        // Swallow throws for the same reason as the heartbeat.
+        if (this.callbacks.onProgress) {
+          const progressType = classifyProgressSignal(event);
+          if (progressType) {
+            try {
+              this.callbacks.onProgress({ at: Date.now(), type: progressType });
+            } catch (err) {
+              this.logger.debug('onProgress callback threw — ignored', {
+                error: (err as Error)?.message ?? String(err),
+              });
+            }
           }
         }
 
@@ -1581,6 +1704,123 @@ export class AgentStreamProcessor {
       // Final result — convert to Block Kit
       await this.sayWithBlockKit(combinedResult, context);
     }
+  }
+
+  /**
+   * A11 — rescue the assistant text still sitting in the render-group buffer
+   * when an EXPLICIT user interrupt (`Send now`, `RequestAbortReason
+   * 'user-interrupted'`) ends the turn.
+   *
+   * Without this, text that arrived after the last group boundary is dropped:
+   * both abort exits return from inside the loop, skipping the post-loop
+   * `flushAll()`. The user asked to be interrupted, not to lose what the model
+   * already wrote.
+   *
+   * Deliberate limits:
+   *   - TEXT ONLY. Buffered `tool_call`s are NOT flushed — rendering a tool
+   *     call implies it ran, and the interrupt is precisely what stopped it.
+   *     Tool results/thinking stay buffered for the same "no side effects on
+   *     the way out" reason.
+   *   - OWN TURN STREAM ONLY. Appends to this turn's open B1 stream; when the
+   *     stream is gone/unusable it is dropped, never re-posted as a NEW
+   *     message — a fresh block landing after the interrupt would attach the
+   *     dying turn's output to the turn the user just started.
+   *   - No directive dispatch. `extractAndDispatchDirectives` has side effects
+   *     (session links, channel posts); an interrupted turn must not fire them.
+   *   - The transport-error leak guards still apply, so a partial
+   *     "Prompt is too long" / compaction-failure frame is not shown raw.
+   *
+   * Any other abort reason (`user-stop`, `supersede`, `stall-timeout`, …)
+   * keeps the historical drop behaviour — untouched.
+   *
+   * `delivered` is `true` only when rescued text actually landed on the stream.
+   * `failure` is set only in the one case this method exists to prevent — text
+   * existed and Slack would not take it — and is what the caller turns into a
+   * user-visible degradation ("nothing to rescue" carries no `failure`).
+   *
+   * Two ordering rules make the loss real rather than notional:
+   *   - the buffer is cleared ONLY after Slack accepted the append. Clearing
+   *     first and then failing destroys the only copy of the text.
+   *   - a rejected/refused append is RETRIED once. A `Send now` interrupt lands
+   *     on a stream that is being torn down, so the first write is the one most
+   *     likely to hit a transient refusal.
+   *
+   * A LOST rescue logs at warn (with the Slack error code and the dropped
+   * length) rather than debug — the answer the user asked to keep is gone, and
+   * nothing else in the abort path reports it.
+   */
+  private async flushTextOnExplicitInterrupt(
+    textBuf: string[],
+    context: StreamContext,
+    abortSignal: AbortSignal,
+  ): Promise<InterruptFlushOutcome> {
+    if (textBuf.length === 0) return { delivered: false };
+    const interrupted: RequestAbortReason = 'user-interrupted';
+    if (abortSignal.reason !== interrupted) return { delivered: false };
+
+    const pending = textBuf.join('');
+    // Everything below this line is a DELIBERATE drop (nothing to rescue, or
+    // content that must not be shown), so the buffer is consumed as before.
+    // Only the Slack write defers the clear.
+    if (!pending.trim()) {
+      textBuf.length = 0;
+      return { delivered: false };
+    }
+    if (textIndicatesPromptTooLong(pending) || textIndicatesCompactionErrorLeak(pending)) {
+      textBuf.length = 0;
+      return { delivered: false };
+    }
+
+    if (!context.turnId || !context.threadPanel?.isTurnSurfaceActive()) {
+      // Not a failure: by contract the rescue never opens a NEW message, so a
+      // turn whose stream is already gone has nowhere to write. Stays debug.
+      textBuf.length = 0;
+      this.logger.debug('interrupt flush: no open turn stream — partial text dropped', {
+        sessionKey: context.sessionKey,
+        length: pending.length,
+      });
+      return { delivered: false };
+    }
+
+    // Attempt + one retry. `code` carries the LAST Slack reason so the operator
+    // sees why the final attempt failed, not why the first one did.
+    let code: string | undefined;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const delivered = await context.threadPanel.appendText(context.turnId, pending);
+        if (delivered) {
+          textBuf.length = 0;
+          return { delivered: true };
+        }
+        code = undefined;
+        this.logger.warn('interrupt flush: stream rejected the partial text — rescue lost', {
+          sessionKey: context.sessionKey,
+          turnId: context.turnId,
+          length: pending.length,
+          attempt,
+        });
+      } catch (err) {
+        // Best-effort: the turn is already ending. A failed rescue must not
+        // replace the abort path's outcome with a throw — but it must be visible.
+        const slackErr = err as { data?: { error?: string }; code?: string };
+        code = slackErr?.data?.error ?? slackErr?.code;
+        this.logger.warn('interrupt flush threw — rescue lost', {
+          sessionKey: context.sessionKey,
+          turnId: context.turnId,
+          length: pending.length,
+          attempt,
+          ...(code ? { code } : {}),
+          error: (err as Error)?.message ?? String(err),
+        });
+      }
+    }
+
+    // Both attempts failed: KEEP the buffer (the text was never handed over)
+    // and hand the loss up so the turn can say so on the surface.
+    return {
+      delivered: false,
+      failure: { length: pending.length, ...(code ? { code } : {}) },
+    };
   }
 
   /**

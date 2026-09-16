@@ -2,7 +2,8 @@ import { Logger } from '@soma/common/logger';
 import type { AssistantStatusManager } from './assistant-status-manager';
 import { runWithTimeout } from './pipeline/stream-executor-cleanup-helpers';
 import type { SlackApiHelper } from './slack-api-helper';
-import { TaskListBlockBuilder, type Todo } from './task-list-block-builder';
+import { TaskListBlockBuilder, type TaskUpdateChunk, type Todo } from './task-list-block-builder';
+import { buildFeedbackContextActions } from './turn-feedback-block-builder';
 import type { TurnCompletionEvent } from './turn-notifier';
 import { TurnRenderDebouncer } from './turn-render-debouncer';
 
@@ -11,9 +12,18 @@ import { TurnRenderDebouncer } from './turn-render-debouncer';
  *
  * Owns the per-turn Slack stream and auxiliary turn-surface blocks.
  *
- *   begin()      → chat.startStream (opens B1 stream message)
+ *   begin()      → chat.startStream (opens B1 stream message, plan display)
  *   appendText() → chat.appendStream with a markdown_text chunk
+ *   renderTasks()→ chat.appendStream with plan_update/task_update chunks
  *   end()/fail() → chat.stopStream (chunks-mode symmetry)
+ *
+ * **Unified progress surface (U10a)**:
+ *   The stream is opened with `task_display_mode: 'plan'`, so the task list
+ *   renders INSIDE the B1 message as native chunks. The separate B2 plan
+ *   message (`chat.postMessage` + `chat.update`) survives only as a fallback
+ *   for turns with no stream (ad-hoc renderTasks before begin()) or when
+ *   Slack explicitly rejects the chunk payload. All writes against `streamTs`
+ *   are serialized per turn so text, tasks and the close cannot reorder.
  *
  * **Chunks-mode invariant**:
  *   Once `chat.appendStream` is called with `chunks: [...]`, the stream is
@@ -108,7 +118,23 @@ export type TurnAddress = Omit<TurnContext, 'turnId'>;
  * 'superseded' is an Error message — not a TurnEndReason value. Later phases
  * will widen this union if they wire additional reasons.
  */
-export type TurnEndReason = 'completed' | 'aborted';
+export type TurnEndReason = 'completed' | 'aborted' | 'user-interrupted';
+
+/**
+ * A11 — the literal marker appended to a turn's own stream when the user
+ * explicitly interrupts it. Deliberately a bare token with no error
+ * decoration: an interruption is a user decision, not a failure, and
+ * dressing it as an error trains users to read normal stops as breakage.
+ */
+const USER_INTERRUPTED_MARKER = 'user-interrupted';
+
+/**
+ * A11 — physical marker writes allowed per turn: the first attempt plus the
+ * single retry the contract owes a lost write. Two is the whole budget because
+ * the only window that matters closes with `stopStream`; more attempts would
+ * buy nothing but duplicate markers on a stream the user already stopped.
+ */
+const MAX_USER_INTERRUPTED_ATTEMPTS = 2;
 
 /**
  * Result of {@link TurnSurface.end}.
@@ -129,6 +155,14 @@ export type TurnEndReason = 'completed' | 'aborted';
 export interface TurnEndResult {
   /** True when no B5 fallback is needed (snapshot landed, or B5 wasn't expected). */
   snapshotResolved: boolean;
+}
+
+/** Outcome of the 3s completion-snapshot race (see `resolveCompletionSnapshot`). */
+interface CompletionSnapshot {
+  /** The enriched event, or undefined when the race timed out / the builder threw. */
+  evt: TurnCompletionEvent | undefined;
+  /** True when a warn was already logged for this snapshot (no double-logging). */
+  warnEmitted: boolean;
 }
 
 interface TurnState {
@@ -172,7 +206,107 @@ interface TurnState {
   appendedChunks: number;
   /** True once `end()` or `fail()` has been entered for this turn. */
   closing: boolean;
+  /**
+   * U10a — set once Slack has EXPLICITLY rejected a native task/plan chunk
+   * payload on this stream (`invalid_blocks`, unknown chunk type, …). From
+   * then on `renderTasksNow` takes the legacy B2 plan-message path for the
+   * rest of the turn. Deliberately sticky: re-probing a surface Slack already
+   * refused would burn a Slack call per render and re-lose the same tasks.
+   *
+   * NOT set for ambiguous transport failures (no Slack error code) — those
+   * may have been applied server-side, so falling back would risk showing the
+   * same task list twice.
+   */
+  nativeTasksUnsupported: boolean;
+  /**
+   * U10a — serialized payload of the last native task chunk batch accepted by
+   * Slack. Identical snapshots are skipped so a repeated TodoWrite tick
+   * doesn't spend a Slack write (and, on the plan surface, cannot produce a
+   * second visible task list).
+   */
+  lastTaskChunkSignature?: string;
+  /**
+   * U10a — per-turn serialization chain for every write against `streamTs`
+   * (text append, task chunks, stopStream). Slack applies stream writes in
+   * arrival order, so a task chunk racing a text append could otherwise land
+   * after the stream was already stopped. Scoped to the turn on purpose —
+   * a global mutex would serialize unrelated sessions behind one slow
+   * channel.
+   *
+   * Invariant: this Promise NEVER rejects (each link swallows), so chaining
+   * onto it can't produce an unhandled rejection.
+   */
+  writeChain: Promise<void>;
+  /**
+   * A11 — the LAST user-interruption marker write on this turn, kept as the
+   * in-flight promise rather than a boolean. The two entry points (a forwarded
+   * ThreadPanel click and `end(turnId, 'user-interrupted')`) routinely overlap,
+   * and a boolean fence only tells a late caller "someone started a write" —
+   * not whether it landed. The late caller would then walk on to `stopStream`
+   * while the first write was still open, and a failure there left the
+   * transcript with ZERO markers on a stream that is already closed.
+   *
+   * Resolves `true` when that attempt delivered the marker, `false` when it was
+   * lost. NEVER rejects (the writer swallows), so joining it is safe.
+   *
+   * Invariant: the slot is claimed by CAS — a caller that wakes on a `false`
+   * resolve only creates the retry if the slot STILL holds the promise it
+   * awaited, otherwise it joins the retry someone else already published. With
+   * {@link userInterruptedAttempts} capping the turn at
+   * {@link MAX_USER_INTERRUPTED_ATTEMPTS} physical writes, callers cannot
+   * compound: N waiters on one failed write produce ONE retry, not N.
+   */
+  userInterruptedWrite?: Promise<boolean>;
+  /**
+   * A11 — physical marker writes already spent on this turn (append or plain
+   * post, landed or lost). Per TURN, not per call: the retry budget exists so
+   * a burst of interrupt clicks on a flaky Slack cannot turn into a burst of
+   * markers, and a per-call budget is exactly what lets N callers each spend
+   * "their one retry".
+   */
+  userInterruptedAttempts: number;
 }
+
+/**
+ * Slack *platform* error codes (`response.error`) that still mean "we could
+ * not tell whether the write landed" — overload/throttle rather than "we
+ * looked at your payload and refused it". Only a refusal may trigger the B2
+ * plan fallback: re-rendering a possibly-applied write on a *different*
+ * surface is how users end up with two copies of the same task list.
+ */
+const AMBIGUOUS_SLACK_PLATFORM_CODES = new Set([
+  'ratelimited',
+  'rate_limited',
+  'service_unavailable',
+  'internal_error',
+  'fatal_error',
+  'request_timeout',
+]);
+
+/**
+ * Extract the Slack **platform** error code — `err.data.error`, the field a
+ * 200-OK Slack response body sets when the API inspected the request and
+ * rejected it (`WebAPIPlatformError` in `@slack/web-api`).
+ *
+ * Deliberately does NOT fall back to `err.code`: the SDK stamps `code` on
+ * pure transport failures too (`slack_webapi_request_error`,
+ * `slack_webapi_http_error`, `slack_webapi_rate_limited_error`), and those
+ * carry no `data` at all. Reading `code` as a rejection would classify a
+ * socket hang-up — where the write may already have been applied — as "Slack
+ * refused it" and post a duplicate task surface. `describeSlackError` keeps
+ * the wider `code` view; it is for LOGS, not for control flow.
+ */
+function slackPlatformErrorCode(error: unknown): string | undefined {
+  const code = (error as { data?: { error?: unknown } })?.data?.error;
+  return typeof code === 'string' && code.length > 0 ? code : undefined;
+}
+
+/**
+ * How many recently-closed turnIds to remember so a late `renderTasks` for an
+ * already-finished turn cannot resurrect it as a fresh ad-hoc surface. Bounded
+ * FIFO — this is a guard, not a ledger.
+ */
+const CLOSED_TURN_MEMORY = 128;
 
 /**
  * Extract Slack error code (`streaming_mode_mismatch`, `channel_not_found`,
@@ -203,8 +337,24 @@ export interface TurnSurfaceDeps {
    * spinner writes even if PHASE=4 — ThreadSurface chip owns the UX).
    */
   assistantStatusManager?: AssistantStatusManager;
-  /** P5 B5 marker sink. Undefined → emit path no-ops (tests / PHASE<5). */
-  slackBlockKitChannel?: { send(event: TurnCompletionEvent): Promise<void> };
+  /**
+   * P5 B5 marker sink. Undefined → emit path no-ops (tests / PHASE<5).
+   *
+   * A32 — `buildCompletionBlocks` / `protectMessageTs` are OPTIONAL so older
+   * test doubles (bare `{ send }`) keep the legacy detached-card behaviour. A
+   * channel that exposes `buildCompletionBlocks` opts the turn into the
+   * consolidated close: the result blocks are appended to the streamed answer
+   * by `chat.stopStream` and no second message is posted.
+   */
+  slackBlockKitChannel?: {
+    send(event: TurnCompletionEvent): Promise<void>;
+    buildCompletionBlocks?(event: TurnCompletionEvent): {
+      blocks: any[];
+      fallbackText: string;
+      withFeedback: boolean;
+    };
+    protectMessageTs?(event: TurnCompletionEvent, messageTs: string): void;
+  };
   /**
    * P5 capability gate. Passed as a closure (not a ThreadPanel ref) to break
    * the circular import ThreadPanel → TurnSurface → ThreadPanel.
@@ -228,11 +378,62 @@ export class TurnSurface {
   /** 500ms trailing-edge debouncer per turnId (coalesces rapid renderTasks). */
   private renderDebouncer = new TurnRenderDebouncer<string>(500);
 
+  /**
+   * Bounded FIFO of turnIds that already ran end()/fail(). A late
+   * `renderTasks` for one of these must NOT spin up a fresh ad-hoc surface —
+   * that would post an orphan task list nobody ever finalizes.
+   */
+  private closedTurns = new Set<string>();
+
   constructor(private deps: TurnSurfaceDeps) {}
 
   // -------------------------------------------------------------------------
   // Internal helpers
   // -------------------------------------------------------------------------
+
+  /** Fresh TurnState with every field initialised (one place, two callers). */
+  private newTurnState(ctx: TurnContext): TurnState {
+    return {
+      ctx,
+      startedAt: Date.now(),
+      appendedChunks: 0,
+      closing: false,
+      formTsList: [],
+      nativeTasksUnsupported: false,
+      writeChain: Promise.resolve(),
+      userInterruptedAttempts: 0,
+    };
+  }
+
+  /**
+   * Serialize one write against this turn's `streamTs`. Slack applies stream
+   * writes in arrival order, so text appends, native task chunks and the
+   * final `stopStream` must not be allowed to reorder — a task chunk landing
+   * after the stop is rejected outright, and a text chunk overtaking a task
+   * chunk renders the progress list out of order.
+   *
+   * Per-turn (not global): unrelated sessions stay parallel.
+   */
+  private enqueueStreamWrite<T>(state: TurnState, write: () => Promise<T>): Promise<T> {
+    const next = state.writeChain.then(() => write());
+    // Keep the chain non-rejecting: the caller owns this call's error, and a
+    // rejected chain link would break every subsequent write on the turn.
+    state.writeChain = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    return next;
+  }
+
+  /** Record a finished turnId (bounded FIFO — see {@link closedTurns}). */
+  private rememberClosedTurn(turnId: string): void {
+    this.closedTurns.add(turnId);
+    while (this.closedTurns.size > CLOSED_TURN_MEMORY) {
+      const oldest = this.closedTurns.values().next().value;
+      if (oldest === undefined) break;
+      this.closedTurns.delete(oldest);
+    }
+  }
 
   // -------------------------------------------------------------------------
   // Public API (plan v2 §3.2)
@@ -264,15 +465,12 @@ export class TurnSurface {
 
     // Register before any wait so end(), supersede, and duplicate begin() can
     // find this turn even while the previous turn's cleanup is still pending.
-    const state: TurnState = {
-      ctx,
-      startedAt: Date.now(),
-      appendedChunks: 0,
-      closing: false,
-      formTsList: [],
-    };
+    const state: TurnState = this.newTurnState(ctx);
     this.turns.set(ctx.turnId, state);
     this.activeTurn.set(ctx.sessionKey, ctx.turnId);
+    // A turnId is unique per turn, but drop any closed-turn tombstone
+    // defensively so a re-used id can still render tasks.
+    this.closedTurns.delete(ctx.turnId);
 
     // Close the previous stream before opening this one.
     if (previousTurnId && previousTurnId !== ctx.turnId) {
@@ -328,7 +526,15 @@ export class TurnSurface {
       // only attach them when BOTH are present — passing one alone is
       // worse than passing neither (the API treats partial fields as a
       // shape mismatch rather than falling back to assistant-thread mode).
-      const startArgs: Record<string, unknown> = { channel: ctx.channelId };
+      //
+      // U10a: `task_display_mode: 'plan'` opts this stream into Slack's
+      // native plan rendering, so `task_update` / `plan_update` chunks appear
+      // as a task list INSIDE this message. Slack's default is `'timeline'`;
+      // without this field the same chunks render as a running timeline and
+      // the plan card never appears. Set unconditionally — it is inert for
+      // streams that never send task chunks, and no extra OAuth scope beyond
+      // `chat:write` is required.
+      const startArgs: Record<string, unknown> = { channel: ctx.channelId, task_display_mode: 'plan' };
       if (ctx.threadTs) {
         startArgs.thread_ts = ctx.threadTs;
       }
@@ -423,11 +629,16 @@ export class TurnSurface {
 
     try {
       const client = this.deps.slackApi.getClient();
-      await client.chat.appendStream({
-        channel: state.ctx.channelId,
-        ts: state.streamTs,
-        chunks: [{ type: 'markdown_text', text }],
-      });
+      const streamTs = state.streamTs;
+      // Serialized with native task chunks + stopStream so the visible order
+      // matches the emit order (U10a).
+      await this.enqueueStreamWrite(state, () =>
+        client.chat.appendStream({
+          channel: state.ctx.channelId,
+          ts: streamTs,
+          chunks: [{ type: 'markdown_text', text }],
+        }),
+      );
       state.appendedChunks += 1;
       return true;
     } catch (err) {
@@ -437,6 +648,35 @@ export class TurnSurface {
       });
       return false;
     }
+  }
+
+  /**
+   * A11 — stamp an explicit user-interruption marker on THIS turn's surface.
+   *
+   * Contract:
+   *   - writes to the turn's OWN stream (`turnId` lookup, never the
+   *     session's current turn). A marker for an old turn must never be
+   *     appended to the stream of the turn that replaced it.
+   *   - sticky + idempotent: repeated calls, and a later
+   *     `end(turnId, 'user-interrupted')`, produce exactly one marker.
+   *   - no error decoration — the literal token only.
+   *   - when the turn has no stream (startStream failed, or the state was
+   *     created ad hoc), falls back to a plain `chat.postMessage` in that
+   *     same turn's channel/thread so the interruption is still visible where
+   *     it happened.
+   *
+   * Returns `true` when a marker was delivered, `false` when nothing was
+   * written (unknown/already-closed turn, already marked, or Slack failed).
+   */
+  async markUserInterrupted(turnId: string): Promise<boolean> {
+    const state = this.turns.get(turnId);
+    if (!state) {
+      // The turn is gone: its stream handle is closed and we deliberately do
+      // NOT redirect the marker onto whatever turn is active now.
+      this.logger.debug('markUserInterrupted: unknown or already-closed turn — no marker written', { turnId });
+      return false;
+    }
+    return this.writeUserInterruptedMarker(turnId, state);
   }
 
   /**
@@ -462,19 +702,22 @@ export class TurnSurface {
 
     let state = this.turns.get(turnId);
     if (!state) {
+      if (this.closedTurns.has(turnId)) {
+        // U10a — a task update that arrives after its turn closed must die
+        // here. Recreating an ad-hoc state would post a NEW task surface for
+        // a turn whose stream is already stopped (and, worse, one that no
+        // end()/fail() will ever finalize). It must also never be redirected
+        // onto the session's newer turn — that would rewrite the live answer.
+        this.logger.debug('renderTasks after turn close — dropped', { turnId });
+        return false;
+      }
       if (!ctx) {
         // Ad-hoc renderTasks call with no prior begin() and no context — we
         // cannot address a Slack channel, so fall through to the legacy path.
         this.logger.warn('renderTasks called without ctx and no existing turn', { turnId });
         return false;
       }
-      state = {
-        ctx: { ...ctx, turnId },
-        startedAt: Date.now(),
-        appendedChunks: 0,
-        closing: false,
-        formTsList: [],
-      };
+      state = this.newTurnState({ ...ctx, turnId });
       this.turns.set(turnId, state);
     }
 
@@ -514,9 +757,25 @@ export class TurnSurface {
    * demotes any `in_progress` task_cards to `pending` so the persistent
    * `planTs` message stops showing a Slack-native loading indicator.
    */
-  private async renderTasksNow(turnId: string, todos: Todo[], final = false): Promise<void> {
+  private async renderTasksNow(
+    turnId: string,
+    todos: Todo[],
+    final = false,
+    allowNewPlanMessage = true,
+  ): Promise<void> {
     const state = this.turns.get(turnId);
     if (!state) return;
+
+    // U10a native-first: when this turn owns an open stream, the task list
+    // belongs INSIDE it as `plan_update` / `task_update` chunks. Only an
+    // explicit Slack rejection (or a turn with no stream at all, e.g. the
+    // ad-hoc renderTasks-before-begin path) falls through to the separate B2
+    // plan message below.
+    if (state.streamTs && !state.nativeTasksUnsupported) {
+      const handled = await this.sendTaskChunks(turnId, state, todos, final);
+      if (handled) return;
+    }
+
     const { text, blocks } = TaskListBlockBuilder.buildPlanTasks(todos, {
       final,
     });
@@ -525,6 +784,22 @@ export class TurnSurface {
     const client = this.deps.slackApi.getClient();
 
     if (!state.planTs) {
+      if (!allowNewPlanMessage) {
+        // Close-path finalize only. The turn is ending, so a brand-new plan
+        // message here would be a *second* task surface posted after the
+        // answer — appearing for the first time at the moment the turn dies,
+        // duplicating whatever the native chunks already rendered. Leave the
+        // native task list as it stands (possibly with a live-looking row)
+        // and say so in the log; a stale row is recoverable, a phantom
+        // "here is your plan" card posted at close is not, and inventing a
+        // completed-looking one would be a false completion.
+        this.logger.warn('final task demotion could not be delivered — no new plan message posted at close', {
+          turnId,
+          streamTs: state.streamTs,
+          nativeTasksUnsupported: state.nativeTasksUnsupported,
+        });
+        return;
+      }
       try {
         const postArgs: Record<string, unknown> = {
           channel: state.ctx.channelId,
@@ -776,12 +1051,68 @@ export class TurnSurface {
     // (which would swallow any throw from the try block).
     let snapshotResolved = true;
 
+    // B5 capability gate (read once — the closure is caller-owned and the
+    // consolidated close below must agree with the `finally` emit path).
+    const capActive =
+      typeof this.deps.isCompletionMarkerActive === 'function' ? this.deps.isCompletionMarkerActive() : false;
+    const channel = this.deps.slackBlockKitChannel;
+    const b5Expected = reason === 'completed' && capActive && !!state.ctx.buildCompletionEvent && !!channel;
+
+    // A32 — consolidate the completion card onto the streamed answer. Only
+    // when the channel exposes the pure block builder (older doubles / PHASE<5
+    // paths fall through to the legacy detached send below), and only with a
+    // live stream to append to.
+    const consolidate = b5Expected && typeof channel?.buildCompletionBlocks === 'function' && !!state.streamTs;
+
+    // The snapshot MUST be resolved BEFORE `stopStream` on the consolidated
+    // path: Slack appends the blocks as part of the close, so there is no
+    // second chance to attach them afterwards. Same 3s budget as the legacy
+    // `finally` emit — the wait simply moves ahead of the close.
+    let snapshot: CompletionSnapshot | undefined;
+
+    // True once the completion card has landed (appended to the stream), so
+    // the `finally` block must NOT post a second, detached one.
+    let completionEmitted = false;
+
     try {
+      // Inner try/finally: everything that must happen while the stream is
+      // still OPEN runs here, and the close runs in the `finally` so a throw
+      // in the pre-close work can never leave the stream hanging.
       try {
+        // Drain any pending B2 render so the final plan state lands on Slack
+        // before we drop the TurnState. Debouncer's internal catch handles fn
+        // errors — no need to wrap here.
         await this.renderDebouncer.flush(turnId);
-        await this.finalizePlanIfNeeded(turnId, state);
+
+        // Demote any lingering in-progress task to `pending` BEFORE we drop the
+        // TurnState (and, for the native surface, before `stopStream`). Slack
+        // renders an in-progress task with a loading indicator; without this
+        // step, an LLM that ends a turn without marking its todo as completed
+        // leaves a persistent "still working" spinner (the user-reported hang
+        // state) on a message that outlives the turn.
+        await this.finalizeTasksIfNeeded(turnId, state);
+
+        // A11 — explicit "the user stopped me" marker on THIS turn's own stream,
+        // written after the task finalize and before the stream is stopped. Only
+        // for the explicit interruption reason: generic aborts and supersede
+        // must not stamp the transcript (see markUserInterrupted).
+        //
+        // Awaited, not fire-and-forget: a concurrent click may already own the
+        // write, and this is the LAST point at which a lost marker can be retried
+        // — once `stopStream` runs the stream is closed for good.
+        if (reason === 'user-interrupted') {
+          await this.writeUserInterruptedMarker(turnId, state);
+        }
+
+        if (consolidate) snapshot = await this.resolveCompletionSnapshot(turnId, state);
       } finally {
-        if (state.streamTs) await this.closeStream(state, 'end', reason);
+        if (state.streamTs) {
+          if (consolidate && snapshot?.evt !== undefined) {
+            completionEmitted = await this.closeStreamWithCompletion(state, reason, snapshot.evt);
+          } else {
+            await this.closeStream(state, 'end', reason);
+          }
+        }
       }
     } catch (closeErr) {
       // Codex review [2b]: pre-fix this throw skipped the `return { snapshotResolved }`
@@ -805,13 +1136,11 @@ export class TurnSurface {
         // Promise itself is resolved with `undefined` on stream-executor's
         // `.catch` rail, and the explicit timeout is a defence-in-depth net.
         //
-        // After the bounded native-status wait; the Slack clear may still be pending.
-        // The `send(evt)` call is detached (void + `.catch`) so Slack RTT
-        // doesn't extend `end()`'s hot path — only the snapshot wait is
+        // After the bounded native-status wait; the Slack clear may still be
+        // pending. The `send(evt)` call is detached (void + `.catch`) so Slack
+        // RTT doesn't extend `end()`'s hot path — only the snapshot wait is
         // synchronous with close.
-        const capActive =
-          typeof this.deps.isCompletionMarkerActive === 'function' ? this.deps.isCompletionMarkerActive() : false;
-
+        //
         // Turn-end surface guarantee §C-2: the outer `snapshotResolved` flag
         // (declared before the try block) stays `true` when `reason !==
         // 'completed'` OR B5 is inactive — no snapshot is expected so the
@@ -819,37 +1148,11 @@ export class TurnSurface {
         // hits the timeout (or the builder throws), the block below flips
         // it to `false` and lets StreamExecutor decide whether to fall back
         // through `turnNotifier.notify`.
-        if (reason === 'completed' && capActive && state.ctx.buildCompletionEvent && this.deps.slackBlockKitChannel) {
-          let evt: TurnCompletionEvent | undefined;
-          let timeoutId: ReturnType<typeof setTimeout> | undefined;
-          // True once a B5-specific warn has fired so the `else` fallback
-          // below doesn't emit a second warn for the same event (avoids
-          // double-logging the sync-throw path).
-          let warnEmitted = false;
-          const TIMEOUT_MS = 3000;
-          try {
-            const builderPromise = Promise.resolve(state.ctx.buildCompletionEvent());
-            const timeoutPromise = new Promise<undefined>((resolve) => {
-              timeoutId = setTimeout(() => resolve(undefined), TIMEOUT_MS);
-            });
-            // Log builder rejection even if the snapshot timeout wins.
-            builderPromise.catch((err) => {
-              this.logger.warn('B5 builder late-rejection after race settled', {
-                turnId,
-                error: (err as Error)?.message ?? String(err),
-              });
-            });
-            evt = await Promise.race<TurnCompletionEvent | undefined>([builderPromise, timeoutPromise]);
-          } catch (err) {
-            this.logger.warn('B5 buildCompletionEvent threw synchronously', {
-              turnId,
-              error: (err as Error)?.message ?? String(err),
-            });
-            evt = undefined;
-            warnEmitted = true;
-          } finally {
-            if (timeoutId) clearTimeout(timeoutId);
-          }
+        if (b5Expected && channel && !completionEmitted) {
+          // A32 — the consolidated path already raced the snapshot BEFORE the
+          // close; re-racing it here would double the wait (and, on a builder
+          // that only resolves once, lose the event).
+          const { evt, warnEmitted } = snapshot ?? (await this.resolveCompletionSnapshot(turnId, state));
 
           // Codex review [6c]: explicit `!== undefined` so a future
           // falsy-but-valid event shape doesn't get collapsed into the
@@ -860,7 +1163,7 @@ export class TurnSurface {
             // `channel_not_found`, `streaming_mode_mismatch`, etc.) plus the
             // channel/thread IDs — bare `err.message` alone collapses distinct
             // failure modes into the same log line.
-            void this.deps.slackBlockKitChannel.send(evt).catch((err) => {
+            void channel.send(evt).catch((err) => {
               this.logger.warn('B5 send failed', {
                 turnId,
                 channelId: state.ctx.channelId,
@@ -917,7 +1220,13 @@ export class TurnSurface {
       try {
         await this.renderDebouncer.flush(turnId);
         this.logger.debug('turn fail()', { turnId, error: error.message });
-        await this.finalizePlanIfNeeded(turnId, state);
+        // Same finalize step as end() — kills the persistent in-progress
+        // spinner on whichever task surface the turn used. Critical for
+        // supersede: when a new turn replaces an in-flight one, the prior turn's
+        // plan must stop looking like it's still working before the user's eyes.
+        // NOTE: no interruption marker here — fail()/supersede is not a user
+        // interruption (A11); only `end(turnId, 'user-interrupted')` stamps one.
+        await this.finalizeTasksIfNeeded(turnId, state);
       } finally {
         if (state.streamTs) await this.closeStream(state, 'fail', 'aborted');
       }
@@ -970,6 +1279,7 @@ export class TurnSurface {
   private async stopStreamRaw(
     channelId: string,
     streamTs: string,
+    blocks?: any[],
   ): Promise<{ ok: true } | { ok: false; error: unknown }> {
     try {
       const client = this.deps.slackApi.getClient();
@@ -977,10 +1287,373 @@ export class TurnSurface {
         channel: channelId,
         ts: streamTs,
         chunks: [],
+        // A32 — `chat.stopStream.blocks` are APPENDED to the end of the
+        // streamed message (SDK: ChatStopStreamArguments), so the answer the
+        // user already read is never rewritten or deleted.
+        ...(blocks ? { blocks } : {}),
       });
       return { ok: true };
     } catch (error) {
       return { ok: false, error };
+    }
+  }
+
+  /**
+   * A32 — close the stream with the completion card appended in the same call.
+   *
+   * Returns true when the card landed (so `end()` must NOT post a second,
+   * detached one). On a Slack *refusal* of the appended blocks
+   * (`invalid_blocks` / `streaming_mode_mismatch`) the stream is still closed
+   * plainly and `false` is returned so the legacy detached card is posted —
+   * the terminal card is never lost to a block-shape regression. Ambiguous
+   * transport failures return true: the close may have been applied
+   * server-side, and posting a duplicate card is the worse outcome. That rail
+   * protects the stream ts as well, because "may have been applied" includes
+   * "the answer message now carries the card" and an unprotected ts is a
+   * deletion candidate for the completion tracker.
+   */
+  private async closeStreamWithCompletion(
+    state: TurnState,
+    reason: TurnEndReason,
+    evt: TurnCompletionEvent,
+  ): Promise<boolean> {
+    const streamTs = state.streamTs;
+    const channel = this.deps.slackBlockKitChannel;
+    if (!streamTs || !channel?.buildCompletionBlocks) return false;
+
+    let blocks: any[];
+    try {
+      const built = channel.buildCompletionBlocks(evt);
+      blocks = built.withFeedback
+        ? [
+            ...built.blocks,
+            // No dismiss affordance: the host message IS the user's answer
+            // ("답변 보존 방식"), and the marker block_id tells the click
+            // handler to ack ephemerally instead of `chat.update`-ing it.
+            buildFeedbackContextActions(evt.turnId ?? state.ctx.turnId, evt.userId, {
+              includeDismiss: false,
+              streamHosted: true,
+            }),
+          ]
+        : built.blocks;
+    } catch (err) {
+      this.logger.warn('A32 buildCompletionBlocks threw — falling back to the detached card', {
+        turnId: state.ctx.turnId,
+        error: (err as Error)?.message ?? String(err),
+      });
+      await this.closeStream(state, 'end', reason);
+      return false;
+    }
+
+    const result = await this.enqueueStreamWrite(state, () =>
+      this.stopStreamRaw(state.ctx.channelId, streamTs, blocks),
+    );
+
+    if (result.ok) {
+      // The stream message now carries the completion card — it must never be
+      // swept by the completion-message deletion pass.
+      channel.protectMessageTs?.(evt, streamTs);
+      this.logger.debug('A32 stream closed with consolidated completion blocks', {
+        turnId: state.ctx.turnId,
+        streamTs,
+        reason,
+        blocks: blocks.length,
+        appendedChunks: state.appendedChunks,
+        elapsedMs: Date.now() - state.startedAt,
+      });
+      return true;
+    }
+
+    const code = slackPlatformErrorCode(result.error);
+    const refused = code === 'invalid_blocks' || code === 'streaming_mode_mismatch';
+    this.logger.warn('A32 consolidated stopStream failed', {
+      turnId: state.ctx.turnId,
+      channelId: state.ctx.channelId,
+      streamTs,
+      reason,
+      refused,
+      error: describeSlackError(result.error),
+    });
+
+    if (!refused) {
+      // Ambiguous (rate limit / transport): the close may have landed. Do not
+      // retry the close and do not post a duplicate card.
+      //
+      // Protect the ts on this rail too. We are returning `true` — "the card
+      // is on the streamed message, suppress the detached one" — so if the
+      // close DID apply server-side, leaving the ts unprotected hands the
+      // user's answer to the completion tracker's deleteAll sweep ("답변
+      // 보존"). Protecting a ts whose close never applied costs nothing: the
+      // tracker only ever skips deleting it.
+      channel.protectMessageTs?.(evt, streamTs);
+      return true;
+    }
+
+    // Refused: close the stream without the blocks, then let the caller post
+    // the legacy detached completion card.
+    await this.closeStream(state, 'end', reason);
+    return false;
+  }
+
+  /**
+   * Race the caller's completion snapshot against a 3s budget.
+   *
+   * The accessor returns a Promise (`snapshotPromise` owned by
+   * stream-executor), so we MUST await it or we'd silently drop B5 (#720). The
+   * timeout caps the wait so a stuck enrichment can never hang `end()`; the
+   * snapshot Promise itself resolves `undefined` on stream-executor's `.catch`
+   * rail, and the explicit timeout is a defence-in-depth net.
+   */
+  private async resolveCompletionSnapshot(turnId: string, state: TurnState): Promise<CompletionSnapshot> {
+    const build = state.ctx.buildCompletionEvent;
+    if (!build) return { evt: undefined, warnEmitted: false };
+
+    let evt: TurnCompletionEvent | undefined;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    // True once a B5-specific warn has fired so the caller's fallback branch
+    // doesn't emit a second warn for the same event (avoids double-logging
+    // the sync-throw path).
+    let warnEmitted = false;
+    const TIMEOUT_MS = 3000;
+    try {
+      const builderPromise = Promise.resolve(build());
+      const timeoutPromise = new Promise<undefined>((resolve) => {
+        timeoutId = setTimeout(() => resolve(undefined), TIMEOUT_MS);
+      });
+      // Log-and-swallow a late rejection from the builder (codex P2 —
+      // late-rejection hygiene): Promise.race settles on whichever side
+      // lands first; the loser's eventual rejection would surface as an
+      // unhandled rejection if we didn't attach a catch. We log a
+      // breadcrumb rather than silently swallowing — if enrichment is
+      // chronically failing but mostly winning the race, operators still
+      // see the signal instead of the B5 silently posting fine today
+      // until the timing shifts tomorrow.
+      builderPromise.catch((err) => {
+        this.logger.warn('B5 builder late-rejection after race settled', {
+          turnId,
+          error: (err as Error)?.message ?? String(err),
+        });
+      });
+      evt = await Promise.race<TurnCompletionEvent | undefined>([builderPromise, timeoutPromise]);
+    } catch (err) {
+      this.logger.warn('B5 buildCompletionEvent threw synchronously', {
+        turnId,
+        error: (err as Error)?.message ?? String(err),
+      });
+      evt = undefined;
+      warnEmitted = true;
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId);
+    }
+
+    return { evt, warnEmitted };
+  }
+
+  /**
+   * A11 — single writer for the user-interruption marker. See
+   * {@link markUserInterrupted} for the contract; this private form is also
+   * called from `end()` when the reason is `'user-interrupted'`, which is why
+   * the fence has to be the WRITE ITSELF (the two entry points routinely race:
+   * ThreadPanel forwards the click while the executor tears the turn down).
+   *
+   * Every caller joins {@link TurnState.userInterruptedWrite} — the same
+   * promise — instead of reading a boolean:
+   *   - it resolved `true` → the marker is on the transcript; report "not
+   *     written by this call" (`false`) and let the caller move on.
+   *   - it resolved `false` → the predecessor LOST the marker, so ONE caller
+   *     makes the one retry the contract owes. For `end('user-interrupted')`
+   *     that retry runs before `stopStream`, which is the only window where a
+   *     marker can still land.
+   *
+   * A boolean fence could not express the middle state ("a write is open, but
+   * we don't know yet"): the loser reported success, closed the stream, and a
+   * failure on the winner left ZERO markers with nowhere left to write.
+   *
+   * "ONE caller" is enforced by CAS, not by counting calls. A `false` resolve
+   * wakes EVERY parked caller at once, so two clicks plus the teardown would
+   * each create "their" retry and overwrite the slot behind each other — three
+   * physical markers on one interruption. After the await we therefore re-read
+   * the slot: if it no longer holds the promise we awaited, someone already
+   * published the retry and we join THAT instead. The per-turn attempt counter
+   * ({@link MAX_USER_INTERRUPTED_ATTEMPTS}) is the second half of the fence —
+   * it bounds the turn, not the call, so callers cannot compound.
+   */
+  private async writeUserInterruptedMarker(turnId: string, state: TurnState): Promise<boolean> {
+    // Loop rather than recurse: each pass either joins the write currently in
+    // the slot or claims the slot for the single retry.
+    for (;;) {
+      const pending = state.userInterruptedWrite;
+      if (pending) {
+        if (await pending) {
+          this.logger.debug('user-interrupted marker already written — skipped', { turnId });
+          return false;
+        }
+        // Lost marker. Only the caller that still sees the failed promise in
+        // the slot owns the retry; anyone else re-joins whatever replaced it.
+        if (state.userInterruptedWrite !== pending) continue;
+      }
+
+      if (state.userInterruptedAttempts >= MAX_USER_INTERRUPTED_ATTEMPTS) {
+        // Budget spent on this turn. Report the loss rather than appending a
+        // third marker to a stream that is about to close anyway.
+        this.logger.warn('user-interrupted marker retry budget spent — marker lost', {
+          turnId,
+          attempts: state.userInterruptedAttempts,
+        });
+        return false;
+      }
+
+      // Claim + publish synchronously (no await between the CAS check above
+      // and these two lines), so a concurrent waiter can never observe the
+      // stale slot and start a second attempt.
+      state.userInterruptedAttempts += 1;
+      const attempt = this.attemptUserInterruptedMarker(turnId, state);
+      state.userInterruptedWrite = attempt;
+      return attempt;
+    }
+  }
+
+  /**
+   * One physical marker write — stream append when the turn has a stream, plain
+   * post in the turn's OWN channel/thread otherwise. Never throws: the result
+   * is the boolean that {@link writeUserInterruptedMarker} publishes as the
+   * shared in-flight promise, and a rejection there would surface as an
+   * unhandled rejection in every joining caller.
+   */
+  private async attemptUserInterruptedMarker(turnId: string, state: TurnState): Promise<boolean> {
+    const client = this.deps.slackApi.getClient();
+    const streamTs = state.streamTs;
+
+    if (streamTs) {
+      try {
+        // Queued on the turn's write chain: lands after the last text/task
+        // chunk and before `stopStream`, never after the stream is closed.
+        await this.enqueueStreamWrite(state, () =>
+          client.chat.appendStream({
+            channel: state.ctx.channelId,
+            ts: streamTs,
+            chunks: [{ type: 'markdown_text', text: USER_INTERRUPTED_MARKER }],
+          }),
+        );
+        state.appendedChunks += 1;
+        this.logger.debug('user-interrupted marker appended to own stream', { turnId, streamTs });
+        return true;
+      } catch (err) {
+        // Nothing was written. Resolving `false` is what lets the next caller
+        // (usually the imminent `end('user-interrupted')`) retry instead of
+        // trusting a fence that no longer corresponds to a marker.
+        this.logger.warn('user-interrupted marker append failed', {
+          turnId,
+          streamTs,
+          retryable: true,
+          error: describeSlackError(err),
+        });
+        return false;
+      }
+    }
+
+    // No stream for this turn — post a plain message into the turn's OWN
+    // channel/thread rather than silently dropping the signal.
+    try {
+      const postArgs: Record<string, unknown> = {
+        channel: state.ctx.channelId,
+        text: USER_INTERRUPTED_MARKER,
+      };
+      if (state.ctx.threadTs) postArgs.thread_ts = state.ctx.threadTs;
+      await (client.chat as any).postMessage(postArgs);
+      this.logger.debug('user-interrupted marker posted as plain text (no stream)', { turnId });
+      return true;
+    } catch (err) {
+      // Same policy as the stream path — a dropped post is a retryable loss,
+      // not a marker that was already written.
+      this.logger.warn('user-interrupted marker plain-text fallback failed', {
+        turnId,
+        retryable: true,
+        error: describeSlackError(err),
+      });
+      return false;
+    }
+  }
+
+  /**
+   * U10a — push the task snapshot onto this turn's own stream as native
+   * `plan_update` + `task_update` chunks (`chat.appendStream`, chunks mode).
+   *
+   * Returns `true` when the render is considered handled and the caller must
+   * NOT post a B2 plan message; `false` only when Slack explicitly refused
+   * the chunk payload, which permanently flips this turn to the legacy plan
+   * surface (`state.nativeTasksUnsupported`).
+   *
+   * Failure policy — the two error classes are deliberately NOT symmetric:
+   *   - explicit Slack rejection (a Slack error code that isn't transport
+   *     noise): the write definitely did not land, so re-rendering the same
+   *     tasks as a B2 message cannot duplicate anything. Fall back, keep the
+   *     tasks visible, and warn. The text stream is untouched.
+   *   - ambiguous failure (raw network throw, rate limit, 5xx): Slack may
+   *     have applied the chunks. Posting a B2 message now would show the
+   *     same task list twice, so we log and return handled. The next render
+   *     re-sends the same chunk ids, which Slack merges in place.
+   */
+  private async sendTaskChunks(turnId: string, state: TurnState, todos: Todo[], final: boolean): Promise<boolean> {
+    const streamTs = state.streamTs;
+    if (!streamTs) return false;
+
+    const { title, tasks } = TaskListBlockBuilder.buildTaskChunks(todos, final);
+    if (tasks.length === 0) return true;
+
+    // `plan_update` first so the plan title is set before its rows arrive.
+    const chunks: ({ type: 'plan_update'; title: string } | TaskUpdateChunk)[] = [
+      { type: 'plan_update', title },
+      ...tasks,
+    ];
+
+    // Identical snapshot → skip the write entirely. The debouncer already
+    // coalesces bursts; this covers the repeat-TodoWrite case where the
+    // snapshot is unchanged across debounce windows.
+    const signature = JSON.stringify(chunks);
+    if (signature === state.lastTaskChunkSignature) {
+      this.logger.debug('native task chunks unchanged — write skipped', { turnId });
+      return true;
+    }
+
+    try {
+      const client = this.deps.slackApi.getClient();
+      await this.enqueueStreamWrite(state, () =>
+        (client.chat as any).appendStream({
+          channel: state.ctx.channelId,
+          ts: streamTs,
+          chunks,
+        }),
+      );
+      state.lastTaskChunkSignature = signature;
+      state.appendedChunks += 1;
+      this.logger.debug('native task chunks appended', { turnId, streamTs, taskCount: tasks.length, final });
+      return true;
+    } catch (err) {
+      const described = describeSlackError(err);
+      // Classify from the platform body ONLY (see slackPlatformErrorCode):
+      // an SDK transport error has `code` but no `data.error`, and must stay
+      // ambiguous or we duplicate the task list on every network blip.
+      const platformCode = slackPlatformErrorCode(err);
+      const explicitRejection = !!platformCode && !AMBIGUOUS_SLACK_PLATFORM_CODES.has(platformCode);
+      if (explicitRejection) {
+        state.nativeTasksUnsupported = true;
+        this.logger.warn('native task chunks rejected — falling back to B2 plan message for this turn', {
+          turnId,
+          streamTs,
+          error: described,
+        });
+        return false;
+      }
+      // Ambiguous: do NOT post a second surface for a write that may have
+      // landed. `lastTaskChunkSignature` is intentionally left unchanged so
+      // the next render retries the same chunk ids on the same stream.
+      this.logger.warn('native task chunk append failed (ambiguous) — no fallback post, will retry next render', {
+        turnId,
+        streamTs,
+        error: described,
+      });
+      return true;
     }
   }
 
@@ -1000,33 +1673,42 @@ export class TurnSurface {
   }
 
   /**
-   * Demote any lingering `in_progress` task_cards on the B2 plan message to
-   * `pending`. Called from `end()`/`fail()` AFTER the debouncer flush (so
-   * `latestTodos` is authoritative) but BEFORE `closeStream` / cleanup (so a
-   * throw cannot skip the demotion).
+   * Demote any lingering `in_progress` task to `pending` on whichever task
+   * surface this turn actually used — the native in-stream chunks (U10a) or
+   * the legacy B2 plan message. Called from `end()`/`fail()` AFTER the
+   * debouncer flush (so `latestTodos` is authoritative) but BEFORE
+   * `closeStream` / cleanup (so the demotion cannot land after the stream is
+   * stopped, and so a throw cannot skip it).
    *
    * Short-circuits when there's nothing to fix:
-   *   - no `planTs` → no message to update (also ensures the delegated
-   *     `renderTasksNow` stays on the `chat.update` branch and never falls
-   *     back to a stray `chat.postMessage` from this close-path call site)
+   *   - no writable task surface → nothing to update. For the plan path that
+   *     means no `planTs`; for the native path it means an open stream still
+   *     in native mode. The delegated call additionally passes
+   *     `allowNewPlanMessage: false`, so even a *failing* native write on
+   *     this path can never create a brand-new plan message at close time.
    *   - no `latestTodos` → state never captured a snapshot
    *   - no `in_progress` todos → live render already showed a terminal
    *     state; an extra Slack call would just burn rate budget without
    *     changing the visible message
    *
-   * The actual `chat.update` is delegated to `renderTasksNow(..., true)` so
-   * blocks/text/error-logging stay in one place. `renderTasksNow` swallows
-   * Slack errors at `warn`, matching the existing fail-open contract for
-   * the close path.
+   * The actual write is delegated to `renderTasksNow(..., true)` so payload
+   * building and error logging stay in one place. `renderTasksNow` swallows
+   * Slack errors at `warn`, matching the existing fail-open contract for the
+   * close path.
    */
-  private async finalizePlanIfNeeded(turnId: string, state: TurnState): Promise<void> {
-    if (!state.planTs || !state.latestTodos || state.latestTodos.length === 0) return;
+  private async finalizeTasksIfNeeded(turnId: string, state: TurnState): Promise<void> {
+    const nativeSurfaceOpen = !!state.streamTs && !state.nativeTasksUnsupported;
+    if (!nativeSurfaceOpen && !state.planTs) return;
+    if (!state.latestTodos || state.latestTodos.length === 0) return;
     // `in_progress` is the only status Slack renders with a spinner — pending,
     // blocked (rendered as pending), completed and error are all static. So
     // we only pay a chat.update when there's actually a stuck spinner to kill.
     if (!state.latestTodos.some((t) => t.status === 'in_progress')) return;
 
-    await this.renderTasksNow(turnId, state.latestTodos, true);
+    // `allowNewPlanMessage: false` — if the native final append is refused
+    // here, we must NOT invent a plan message on the way out (see the guard
+    // in renderTasksNow). Updating an EXISTING planTs is still fine.
+    await this.renderTasksNow(turnId, state.latestTodos, true, false);
   }
 
   /**
@@ -1036,7 +1718,10 @@ export class TurnSurface {
    */
   private async closeStream(state: TurnState, origin: 'end' | 'fail', reason: TurnEndReason): Promise<void> {
     if (!state.streamTs) return;
-    const result = await this.stopStreamRaw(state.ctx.channelId, state.streamTs);
+    const streamTs = state.streamTs;
+    // Queued behind every pending text/task write on this turn so the stop
+    // can never overtake a chunk that is still in flight (U10a).
+    const result = await this.enqueueStreamWrite(state, () => this.stopStreamRaw(state.ctx.channelId, streamTs));
     if (result.ok) {
       this.logger.debug('B1 stream closed', {
         turnId: state.ctx.turnId,
@@ -1069,6 +1754,9 @@ export class TurnSurface {
    */
   private cleanupTurn(turnId: string, state: TurnState): void {
     this.turns.delete(turnId);
+    // Tombstone so a late renderTasks can't resurrect this turn as a fresh
+    // ad-hoc surface (U10a).
+    this.rememberClosedTurn(turnId);
     if (this.activeTurn.get(state.ctx.sessionKey) === turnId) {
       this.activeTurn.delete(state.ctx.sessionKey);
     }

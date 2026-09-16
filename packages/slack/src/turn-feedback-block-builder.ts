@@ -12,9 +12,20 @@
 export const TURN_FEEDBACK_ACTION_ID = 'turn_feedback_v1';
 export const TURN_DISMISS_ACTION_ID = 'turn_dismiss_v1';
 
+/**
+ * A32 — `block_id` prefix marking a feedback row that is hosted ON the streamed
+ * answer message (appended by `chat.stopStream`) rather than on its own
+ * completion card. The click handler keys the ack strategy off this marker: a
+ * `chat.update` against the stream host would overwrite the user's answer, so
+ * a marked row acks with an ephemeral `respond()` instead.
+ */
+export const TURN_FEEDBACK_BLOCK_ID_PREFIX = 'turn_feedback_v1:';
+
 /** Slack limits (docs.slack.dev): button text ≤75, value ≤2000, ≤5 context_actions elements. */
 const MAX_BUTTON_TEXT = 75;
 const MAX_BUTTON_VALUE = 2000;
+/** Slack limit (docs.slack.dev): `block_id` ≤255 chars. */
+const MAX_BLOCK_ID = 255;
 
 export type FeedbackSentiment = 'positive' | 'negative';
 
@@ -95,15 +106,48 @@ function dismissIconButton(turnId: string, ownerUserId: string): Record<string, 
   };
 }
 
+/** `block_id` for a stream-hosted feedback row. Clamped to Slack's 255 chars. */
+export function buildFeedbackBlockId(turnId: string): string {
+  const raw = `${TURN_FEEDBACK_BLOCK_ID_PREFIX}${turnId}`;
+  return raw.length > MAX_BLOCK_ID ? raw.slice(0, MAX_BLOCK_ID) : raw;
+}
+
+/** True when a `block_id` marks a feedback row hosted on a streamed message. */
+export function isStreamHostedFeedbackBlockId(blockId: unknown): boolean {
+  return typeof blockId === 'string' && blockId.startsWith(TURN_FEEDBACK_BLOCK_ID_PREFIX);
+}
+
+export interface FeedbackContextActionsOptions {
+  /**
+   * Include the 🗑 dismiss `icon_button`. Default true (own completion card).
+   * MUST be false on the consolidated surface: the host message IS the user's
+   * answer, and "답변 보존 방식" forbids an affordance that deletes it.
+   */
+  includeDismiss?: boolean;
+  /**
+   * Stamp {@link buildFeedbackBlockId} so the click handler can tell this row
+   * lives on the streamed answer (ack via ephemeral respond, never
+   * `chat.update`). Default false — legacy cards stay byte-identical.
+   */
+  streamHosted?: boolean;
+}
+
 /**
  * Build the `context_actions` block for a completed turn: a 👍/👎
- * `feedback_buttons` element plus a 🗑 `icon_button` (owner-only) that dismisses
- * the card. `turnId` is encoded into each element value so the handlers can act
- * without a side lookup. Two elements — well within the 5-element cap.
+ * `feedback_buttons` element plus (by default) a 🗑 `icon_button` (owner-only)
+ * that dismisses the card. `turnId` is encoded into each element value so the
+ * handlers can act without a side lookup. ≤2 elements — well within the
+ * 5-element cap.
  */
-export function buildFeedbackContextActions(turnId: string, ownerUserId: string): Record<string, unknown> {
+export function buildFeedbackContextActions(
+  turnId: string,
+  ownerUserId: string,
+  options: FeedbackContextActionsOptions = {},
+): Record<string, unknown> {
+  const { includeDismiss = true, streamHosted = false } = options;
   return {
     type: 'context_actions',
+    ...(streamHosted ? { block_id: buildFeedbackBlockId(turnId) } : {}),
     elements: [
       {
         type: 'feedback_buttons',
@@ -119,7 +163,7 @@ export function buildFeedbackContextActions(turnId: string, ownerUserId: string)
           accessibility_label: 'Mark this response as not helpful',
         },
       },
-      dismissIconButton(turnId, ownerUserId),
+      ...(includeDismiss ? [dismissIconButton(turnId, ownerUserId)] : []),
     ],
   };
 }
