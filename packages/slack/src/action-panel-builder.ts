@@ -43,6 +43,36 @@ export interface ActionPanelBuildParams {
   logVerbosity?: number;
   prStatus?: PRStatusInfo;
   prUrl?: string;
+  /**
+   * U9 — the step the agent is on, in its own words ("코드 수정 중"), as opposed
+   * to the coarse `activityState` badge. Rendered next to the badge; a running
+   * tool ({@link ActionPanelBuildParams.activeTool}) and an approval wait
+   * outrank it (A19).
+   */
+  agentPhase?: string;
+  /** U9 — the tool currently executing. Its own phase, distinct from `agentPhase`. */
+  activeTool?: string;
+  /**
+   * U9 — when the work LAST ACTUALLY MOVED (a tool returned, a file was
+   * written, output was produced). Supplied only by a caller that witnessed a
+   * real progress event. Never derived from a heartbeat, a lifecycle
+   * transition or a render: when it is absent the header states
+   * `실제 활동 기록 없음` instead of printing a fabricated age (A19).
+   */
+  lastProgressAt?: number;
+  /**
+   * U9 — when the process last proved it was alive (heartbeat / stream signal).
+   * Liveness is NOT progress: it renders as a separate statement, and only when
+   * it says something the progress age does not (fresh signal + stale progress
+   * = "alive but stuck").
+   */
+  lastSignalAt?: number;
+  /**
+   * Injected clock for the age calculations. Defaults to `Date.now()`; tests
+   * pass a fixed value so the rendered strings are exact instead of flaky. The
+   * builder stays pure.
+   */
+  now?: number;
 }
 
 export interface ActionPanelPayload {
@@ -77,6 +107,13 @@ const ACTION_DEFS: Record<PanelActionKey, PanelActionDef> = {
 };
 
 const DEFAULT_ACTIONS: PanelActionKey[] = [];
+
+/**
+ * U9 — how far the liveness signal must outrun the last real progress before
+ * the header states it separately. Below this the two agree and a second line
+ * would only be noise.
+ */
+const LIVENESS_DIVERGENCE_MS = 60_000;
 
 const WORKFLOW_ACTIONS: Record<WorkflowType, PanelActionKey[]> = {
   onboarding: [],
@@ -181,6 +218,11 @@ export class ActionPanelBuilder {
         hasActiveRequest: params.hasActiveRequest,
         prStatus: params.prStatus,
         contextRemainingPercent: params.contextRemainingPercent,
+        agentPhase: params.agentPhase,
+        activeTool: params.activeTool,
+        lastProgressAt: params.lastProgressAt,
+        lastSignalAt: params.lastSignalAt,
+        now: params.now,
       }),
     );
 
@@ -253,9 +295,15 @@ export class ActionPanelBuilder {
     hasActiveRequest?: boolean;
     prStatus?: PRStatusInfo;
     contextRemainingPercent?: number;
+    agentPhase?: string;
+    activeTool?: string;
+    lastProgressAt?: number;
+    lastSignalAt?: number;
+    now?: number;
   }): any[] {
     const badge = ActionPanelBuilder.statusBadge(params.status);
-    const statusText = badge;
+    const progressLine = ActionPanelBuilder.buildProgressLine(params);
+    const statusText = progressLine ? `${badge}\n${progressLine}` : badge;
 
     // PR chip for right column
     const prChip = params.prStatus ? ActionPanelBuilder.prStatusChip(params.prStatus) : '';
@@ -280,6 +328,92 @@ export class ActionPanelBuilder {
         text: { type: 'mrkdwn', text: statusText },
       },
     ];
+  }
+
+  /**
+   * U9 — `단계 · 마지막 활동 N초 전 [· 응답 신호 N초 전]`.
+   *
+   * Three independent facts, never collapsed (A19):
+   *   - the STEP, chosen by priority: approval wait > running tool > agentPhase;
+   *   - the age of the last REAL progress event, or `실제 활동 기록 없음` when the
+   *     caller never witnessed one — no time is ever invented;
+   *   - LIVENESS, and only when it disagrees with progress (a fresh heartbeat
+   *     against a stale progress = alive but stuck).
+   *
+   * Nothing here predicts: no ETA, no remaining time, no percentage.
+   * Returns `null` when there is nothing to say (e.g. an idle session that has
+   * never reported a phase).
+   */
+  private static buildProgressLine(params: {
+    status: string;
+    waitingForChoice?: boolean;
+    activityState?: ActivityState;
+    hasActiveRequest?: boolean;
+    agentPhase?: string;
+    activeTool?: string;
+    lastProgressAt?: number;
+    lastSignalAt?: number;
+    now?: number;
+  }): string | null {
+    const phase = ActionPanelBuilder.resolvePhase(params);
+    const isLive =
+      params.waitingForChoice === true ||
+      params.activityState === 'working' ||
+      params.activityState === 'waiting' ||
+      params.hasActiveRequest === true;
+
+    // A dormant session with nothing reported has no story to tell; the badge
+    // alone is honest.
+    if (!phase && !isLive) return null;
+
+    const now = params.now ?? Date.now();
+    const parts: string[] = [];
+    if (phase) parts.push(phase);
+
+    parts.push(
+      params.lastProgressAt === undefined
+        ? '실제 활동 기록 없음'
+        : `마지막 활동 ${ActionPanelBuilder.formatAge(now - params.lastProgressAt)} 전`,
+    );
+
+    // Liveness earns its own words whenever it adds information:
+    //   - progress KNOWN: only once the signal has outrun it (alive but stuck);
+    //   - progress UNKNOWN: always — "is it even alive?" is then the only
+    //     question left, and suppressing the one real timestamp we do have
+    //     would leave the user with nothing (review round 1).
+    const livenessAdds =
+      params.lastSignalAt !== undefined &&
+      (params.lastProgressAt === undefined || params.lastSignalAt - params.lastProgressAt >= LIVENESS_DIVERGENCE_MS);
+    if (livenessAdds) {
+      parts.push(`응답 신호 ${ActionPanelBuilder.formatAge(now - (params.lastSignalAt as number))} 전`);
+    }
+
+    return parts.join(' · ');
+  }
+
+  /** Approval wait > running tool > declared phase. The thing the user must act on wins. */
+  private static resolvePhase(params: {
+    waitingForChoice?: boolean;
+    agentPhase?: string;
+    activeTool?: string;
+  }): string | null {
+    if (params.waitingForChoice) return null; // the badge already says 입력 대기
+    if (params.activeTool) return `🔧 ${params.activeTool}`;
+    return params.agentPhase || null;
+  }
+
+  /**
+   * Coarse, non-negative age. A stamp from the future (clock skew between the
+   * reporting worker and the renderer) reads as `0초`, never as a negative age.
+   */
+  private static formatAge(ms: number): string {
+    const seconds = Math.max(0, Math.floor(ms / 1000));
+    if (seconds < 60) return `${seconds}초`;
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}분`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours}시간`;
+    return `${Math.floor(hours / 24)}일`;
   }
 
   /**
