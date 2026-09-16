@@ -6,6 +6,18 @@ message in evidence proves direct model selection). No llm MCP, no other agents.
 Date: 2026-09-16 (round 1 full + bounded rounds 2-3). Read-only review; no edits
 made to source.
 
+## Final autonomous gate — 2026-09-16
+
+Reviewed source commit: `0f174a8c572f16eb9b1d0b38648719b74e45b7af` (base `94d44e3`).
+
+- Primary panel: not certified. The synthesis slot reported running the inherited `gpt-6-astra[1m]`, not the required Anthropic engine. Its useful findings are retained below, but these responses are not claimed as three-engine unanimity.
+- Fallback1: not invoked because llm MCP is prohibited for this user. No blocked permission was routed through another session.
+- `trinity-fallback2 (opus)`: independent review APPROVE, MUST-FIX none. It verified the final reset validation, non-force readonly legacy Refresh and CCT origin-codec authorization. The reviewer made no source edits and spawned no agents.
+- Earlier panel findings: invalid absolute resets incorrectly permitted relative fallback (RED6 → GREEN10); readonly legacy Refresh failed to fetch usage (RED4 → GREEN7). Both were corrected and independently re-reviewed APPROVE before the Opus gate.
+- The full release test run on the reviewed source passed 10,583 tests with 5 skipped; typecheck and build exited 0. The documentation-only base correction did not change that source.
+
+This review approves the code, not a bypass of failing CI. The repository-wide Sanitize Gate still blocks shipment; [verification.md](verification.md) records its separate provenance.
+
 ## Scope reviewed
 
 Working diff in `soma-work_20260916_auth` branch `feat/auth-capacity-overview`:
