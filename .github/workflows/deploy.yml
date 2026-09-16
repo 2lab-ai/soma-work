@@ -47,7 +47,8 @@ jobs:
       # per line in the form  {runner-name}:{target-dir} :
       #   PREVIEW_DEPLOY_TARGETS    — preview channel  (deploy/dev, main dispatch)
       #   PRODUCTION_DEPLOY_TARGETS — production channel (deploy/prod)
-      # Entries get neutral job names (t1, t2, ...) so run logs stay topology-free.
+      # Entries get neutral job names (t1, t2, ...) so the run list and job graph
+      # stay topology-free (step logs do print the resolved entries).
       #
       # A manual run may narrow the set with the `targets` input (comma-separated
       # runner labels). The variable stays the single source of truth: the input
