@@ -33,6 +33,215 @@ interface UpdateMessageOptions {
   unfurlMedia?: boolean;
 }
 
+/** Max length of a DERIVED fallback. Caller-supplied text is never truncated. */
+const DERIVED_FALLBACK_MAX_LENGTH = 300;
+
+/** Payload shape the rendered-empty guard inspects (post + update share it). */
+export interface RenderedMessagePayload {
+  text?: string;
+  blocks?: unknown[];
+  attachments?: unknown[];
+}
+
+/** Read-only view of the few named fields the guard is allowed to look at. */
+type RenderedNode = Record<string, unknown>;
+
+/** Collapse whitespace; `undefined` when the value is missing or whitespace-only. */
+function meaningful(value: unknown): string | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  const collapsed = value.replace(/\s+/g, ' ').trim();
+  return collapsed.length > 0 ? collapsed : undefined;
+}
+
+/** `undefined` for anything that is not a plain object node. */
+function asNode(value: unknown): RenderedNode | undefined {
+  return value && typeof value === 'object' ? (value as RenderedNode) : undefined;
+}
+
+/** Text of a Slack text object (`{type:'mrkdwn'|'plain_text', text}`) at a known position. */
+function textObject(value: unknown): string | undefined {
+  return meaningful(asNode(value)?.text);
+}
+
+/**
+ * Text carried by `rich_text` children. Only `text` fields authored for display
+ * are read — `url`/`user_id`/`channel_id` and friends are never echoed.
+ */
+function richTextContent(elements: unknown): string | undefined {
+  if (!Array.isArray(elements)) {
+    return undefined;
+  }
+  for (const element of elements) {
+    const node = asNode(element);
+    if (!node) {
+      continue;
+    }
+    const own = meaningful(node.text);
+    if (own) {
+      return own;
+    }
+    const nested = richTextContent(node.elements);
+    if (nested) {
+      return nested;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * First human-meaningful string in a block list, in document order.
+ *
+ * Deliberately narrow: only the block types that actually carry prose are
+ * recognized. `divider`/`actions`/`input` carry no message content (a button
+ * label is a control, not the message), and no arbitrary metadata
+ * (`url`, `image_url`, `value`, `block_id`, …) is traversed or echoed.
+ */
+function blocksContent(blocks: unknown): string | undefined {
+  if (!Array.isArray(blocks)) {
+    return undefined;
+  }
+  for (const block of blocks) {
+    const node = asNode(block);
+    if (!node) {
+      continue;
+    }
+    switch (typeof node.type === 'string' ? node.type : '') {
+      case 'section': {
+        const body = textObject(node.text);
+        if (body) {
+          return body;
+        }
+        if (Array.isArray(node.fields)) {
+          for (const field of node.fields) {
+            const fieldText = textObject(field);
+            if (fieldText) {
+              return fieldText;
+            }
+          }
+        }
+        break;
+      }
+      case 'header': {
+        const header = textObject(node.text);
+        if (header) {
+          return header;
+        }
+        break;
+      }
+      case 'context': {
+        if (Array.isArray(node.elements)) {
+          for (const element of node.elements) {
+            // context elements are text objects or image elements (alt_text).
+            const elementText = textObject(element) || meaningful(asNode(element)?.alt_text);
+            if (elementText) {
+              return elementText;
+            }
+          }
+        }
+        break;
+      }
+      case 'markdown': {
+        const markdown = meaningful(node.text);
+        if (markdown) {
+          return markdown;
+        }
+        break;
+      }
+      case 'image': {
+        const alt = meaningful(node.alt_text) || textObject(node.title);
+        if (alt) {
+          return alt;
+        }
+        break;
+      }
+      case 'rich_text': {
+        const rich = richTextContent(node.elements);
+        if (rich) {
+          return rich;
+        }
+        break;
+      }
+      default:
+        break;
+    }
+  }
+  return undefined;
+}
+
+/** First human-meaningful string in an attachment list, in document order. */
+function attachmentsContent(attachments: unknown): string | undefined {
+  if (!Array.isArray(attachments)) {
+    return undefined;
+  }
+  for (const attachment of attachments) {
+    const node = asNode(attachment);
+    if (!node) {
+      continue;
+    }
+    // `fallback` is Slack's own accessibility string — prefer it when present.
+    const direct =
+      meaningful(node.fallback) || meaningful(node.text) || meaningful(node.title) || meaningful(node.pretext);
+    if (direct) {
+      return direct;
+    }
+    if (Array.isArray(node.fields)) {
+      for (const field of node.fields) {
+        const fieldNode = asNode(field);
+        const fieldText = meaningful(fieldNode?.title) || meaningful(fieldNode?.value);
+        if (fieldText) {
+          return fieldText;
+        }
+      }
+    }
+    const nested = blocksContent(node.blocks);
+    if (nested) {
+      return nested;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Central rendered-empty guard (U11 / A23) — the ONE place that decides what
+ * top-level `text` a Slack message carries.
+ *
+ * - Non-blank caller text is returned unchanged, byte for byte.
+ * - Blank text + meaningful blocks/attachments derives an accessibility
+ *   fallback from the first prose the message actually renders (section /
+ *   header / context / markdown / image alt_text / rich_text text, attachment
+ *   fallback / text / title / pretext / fields / nested blocks), collapsed to a
+ *   single line and capped at {@link DERIVED_FALLBACK_MAX_LENGTH}. Attachment-only
+ *   messages are ALLOWED — `docs/misc/reference/slack-block-kit.md:83` only
+ *   requires that a top-level `text` fallback exist.
+ * - A payload with nothing meaningful to render (no text, empty blocks, or only
+ *   controls such as `divider`/`actions`) is rejected here, before the API call,
+ *   with an explicit Error. Nothing is silently dropped: the original blocks and
+ *   attachments are never rewritten or sanitized, only read.
+ *
+ * An update whose text is blank AND whose blocks/attachments render nothing is
+ * rejected too — clearing a message is done by `deleteMessage` or by updating to
+ * an explicit marker text (e.g. `actions/click-classifier.ts` STALE_CLICK_TEXT),
+ * never by pushing a message the reader sees as empty.
+ */
+export function resolveRenderedMessageText(payload: RenderedMessagePayload, apiMethod: string): string {
+  if (typeof payload.text === 'string' && payload.text.trim().length > 0) {
+    return payload.text;
+  }
+
+  const derived = blocksContent(payload.blocks) || attachmentsContent(payload.attachments);
+  if (derived) {
+    return derived.length > DERIVED_FALLBACK_MAX_LENGTH
+      ? `${derived.slice(0, DERIVED_FALLBACK_MAX_LENGTH - 1)}…`
+      : derived;
+  }
+
+  throw new Error(
+    `${apiMethod}: refusing to send a rendered-empty message — text is blank and blocks/attachments carry no meaningful content`,
+  );
+}
+
 const DEFAULT_RATE_LIMIT: RateLimitConfig = {
   bucketSize: 10, // 최대 10개 버스트
   refillRate: 3, // 초당 3개 리필
@@ -417,9 +626,14 @@ export class SlackApiHelper {
     text: string,
     options?: MessageOptions,
   ): Promise<{ ts?: string; channel?: string; threadTs?: string; echoedMessage?: boolean }> {
+    // Central rendered-empty guard (U11/A23) — runs BEFORE the API call so an
+    // empty message is rejected, not posted. Attachment-only stays allowed.
     const payload: any = {
       channel,
-      text,
+      text: resolveRenderedMessageText(
+        { text, blocks: options?.blocks, attachments: options?.attachments },
+        'chat.postMessage',
+      ),
       thread_ts: options?.threadTs,
       blocks: options?.blocks,
       attachments: options?.attachments,
@@ -480,11 +694,15 @@ export class SlackApiHelper {
     attachments?: any[],
     options?: UpdateMessageOptions,
   ): Promise<void> {
+    // Same central guard as postMessage, resolved outside the try so a
+    // rendered-empty rejection is not mislabeled as a Slack API failure.
+    const resolvedText = resolveRenderedMessageText({ text, blocks, attachments }, 'chat.update');
+
     try {
       const payload: any = {
         channel,
         ts,
-        text,
+        text: resolvedText,
         blocks,
         attachments,
       };

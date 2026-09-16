@@ -1,0 +1,1212 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+// No autoskills — keeps the dispatch text free of <invoked_skills> noise.
+vi.mock('../slack/autoskill-fire', () => ({
+  buildAutoskillFire: vi.fn(() => null),
+}));
+
+import type { FollowupQueueSnapshot } from '@soma/slack/followup-queue';
+import { getMetricsEmitter } from '../metrics/event-emitter';
+import { SlackHandler } from '../slack-handler';
+import { userSettingsStore } from '../user-settings-store';
+
+/**
+ * Follow-up queue — host integration (`.prd/slack-agent-ui` U3/U4/U5).
+ *
+ * These tests drive the REAL `FollowupQueue` + `FollowupDispatcher` through the
+ * real `SlackHandler` ingress. Only the leaves are faked: the Slack API, the
+ * file/command pipeline, the session initializer and the agent session. What is
+ * under test is the wiring the SSOT is about — when a message is parked, what is
+ * parked, when it runs, and what must NOT happen in between.
+ */
+
+const SESSION_KEY = 'C123:111.222';
+const CHANNEL = 'C123';
+const THREAD_TS = '111.222';
+
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+
+const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+function message(overrides: Record<string, any> = {}): any {
+  return {
+    user: 'U_OWNER',
+    channel: CHANNEL,
+    team: 'T1',
+    ts: '222.333',
+    thread_ts: THREAD_TS,
+    text: '첫 지시',
+    ...overrides,
+  };
+}
+
+describe('SlackHandler — follow-up queue host', () => {
+  let handler: SlackHandler;
+  let handlerAny: any;
+  let registrySession: any;
+  let claudeHandler: any;
+  let saved: FollowupQueueSnapshot[];
+  let saveError: Error | undefined;
+  let postSystemMessage: ReturnType<typeof vi.fn>;
+  let addReaction: ReturnType<typeof vi.fn>;
+  let processFiles: ReturnType<typeof vi.fn>;
+  let routeCommand: ReturnType<typeof vi.fn>;
+  let initialize: ReturnType<typeof vi.fn>;
+  let startWithContinuation: ReturnType<typeof vi.fn>;
+  let createAgentSession: ReturnType<typeof vi.fn>;
+  let abortSession: ReturnType<typeof vi.fn>;
+  let lastTurnSucceeded: boolean;
+  let emitFollowupQueue: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    saved = [];
+    saveError = undefined;
+    lastTurnSucceeded = true;
+
+    emitFollowupQueue = vi.spyOn(getMetricsEmitter(), 'emitFollowupQueue').mockResolvedValue(undefined);
+
+    vi.spyOn(userSettingsStore, 'getUserAutoGoalEnabled').mockReturnValue(false);
+    vi.spyOn(userSettingsStore, 'getUserGoalMaxContinuations').mockReturnValue(10);
+    vi.spyOn(userSettingsStore, 'isUserAccepted').mockReturnValue(true);
+
+    registrySession = {
+      ownerId: 'U_OWNER',
+      channelId: CHANNEL,
+      threadTs: THREAD_TS,
+      threadRootTs: THREAD_TS,
+      sessionId: 'sess-1',
+    };
+    claudeHandler = {
+      getSessionKey: vi.fn().mockReturnValue(SESSION_KEY),
+      getSession: vi.fn().mockReturnValue(registrySession),
+      getSessionByKey: vi.fn().mockReturnValue(registrySession),
+      saveSessions: vi.fn(),
+      canInterrupt: vi.fn().mockReturnValue(true),
+      setActivityStateByKey: vi.fn(),
+    };
+
+    const store = {
+      load: () => undefined,
+      save: (snapshot: FollowupQueueSnapshot) => {
+        if (saveError) throw saveError;
+        saved.push(JSON.parse(JSON.stringify(snapshot)));
+      },
+      recoveryWarning: undefined,
+    };
+
+    const app = { client: {}, assistant: vi.fn() } as any;
+    handler = new SlackHandler(app, claudeHandler as any, {} as any, { followupQueueStore: store });
+    handlerAny = handler as any;
+
+    addReaction = vi.fn().mockResolvedValue(undefined);
+    postSystemMessage = vi.fn().mockResolvedValue({ ts: 'm' });
+    handlerAny.slackApi = {
+      addReaction,
+      removeReaction: vi.fn().mockResolvedValue(undefined),
+      postMessage: vi.fn().mockResolvedValue({ ts: 'm' }),
+      postSystemMessage,
+    };
+
+    // Setup assistant status (main `0987345`) fires on every non-synthetic
+    // message and is awaited once the session migrates threads. Stubbed here
+    // exactly as `slack-handler.test.ts` does: the real manager drives the
+    // rate-limited Slack queue against a bare `{ client: {} }` app, adding
+    // second-scale waits to queue tests that say nothing about status.
+    handlerAny.assistantStatusManager = {
+      bumpEpoch: vi.fn().mockReturnValue(1),
+      setStatus: vi.fn().mockResolvedValue(undefined),
+      clearStatus: vi.fn().mockResolvedValue(undefined),
+    };
+
+    // The REAL coordinator, only observed. Replacing it would hide the seam
+    // under test: the queue freeze is wired through its `beforeAbort` dep, so a
+    // fake would prove nothing about what a real stop does.
+    abortSession = vi.spyOn(handlerAny.requestCoordinator, 'abortSession') as any;
+
+    processFiles = vi.fn().mockResolvedValue({ files: [], shouldContinue: true });
+    routeCommand = vi.fn().mockResolvedValue({ handled: false });
+    handlerAny.inputProcessor = { processFiles, routeCommand };
+
+    handlerAny.messageValidator = {
+      validateWorkingDirectory: vi.fn().mockReturnValue({ valid: true, workingDirectory: '/tmp/work' }),
+    };
+
+    initialize = vi.fn().mockImplementation(async () => ({
+      session: registrySession,
+      sessionKey: SESSION_KEY,
+      isNewSession: false,
+      userName: 'Owner',
+      workingDirectory: '/tmp/work',
+      abortController: new AbortController(),
+      halted: false,
+    }));
+    handlerAny.sessionInitializer = {
+      validateWorkingDirectory: vi.fn().mockResolvedValue({ valid: true, workingDirectory: '/tmp/work' }),
+      initialize,
+    };
+
+    handlerAny.threadPanel = {
+      create: vi.fn().mockResolvedValue(undefined),
+      updatePanel: vi.fn().mockResolvedValue(undefined),
+      clearChoice: vi.fn().mockResolvedValue(undefined),
+    };
+
+    startWithContinuation = vi.fn().mockResolvedValue({ hasPendingChoice: false });
+    createAgentSession = vi.fn().mockImplementation(() => ({
+      startWithContinuation,
+      getLastTurnSucceeded: () => lastTurnSucceeded,
+      getRetryAfterMs: () => undefined,
+    }));
+    handlerAny.createAgentSession = createAgentSession;
+  });
+
+  const say = () => vi.fn().mockResolvedValue({ ts: 'msg' });
+
+  /** Start a turn and leave it running. Resolve the returned gate to settle it. */
+  async function startBusyTurn(): Promise<{ settle: () => Promise<void>; first: Promise<void> }> {
+    const gate = deferred<any>();
+    startWithContinuation.mockImplementationOnce(() => gate.promise);
+    const first = handler.handleMessage(message(), say());
+    await tick();
+    return {
+      first,
+      settle: async () => {
+        gate.resolve({ hasPendingChoice: false });
+        await first;
+      },
+    };
+  }
+
+  const items = () => handlerAny.getFollowupQueue().list(SESSION_KEY);
+
+  it('parks an active-session follow-up BEFORE any transform, download or abort', async () => {
+    const { settle } = await startBusyTurn();
+
+    await handler.handleMessage(
+      message({
+        user: 'U_OTHER',
+        ts: '333.444',
+        text: '%model fable 이것도 봐줘',
+        files: [
+          {
+            id: 'F1',
+            name: 'log.txt',
+            mimetype: 'text/plain',
+            filetype: 'text',
+            url_private: 'https://x/1',
+            url_private_download: 'https://x/1d',
+            size: 12,
+          },
+        ],
+      }),
+      say(),
+    );
+
+    const queued = items();
+    expect(queued).toHaveLength(1);
+    // RAW text: the `%model` directive is NOT stripped at enqueue (ssot §3.1).
+    expect(queued[0].message.text).toBe('%model fable 이것도 봐줘');
+    expect(queued[0].message.user).toBe('U_OTHER');
+    expect(queued[0].message.files).toHaveLength(1);
+    expect(queued[0].state).toBe('queued');
+
+    // The running turn was neither aborted nor superseded, and the follow-up
+    // never touched the file/command pipeline.
+    expect(abortSession).not.toHaveBeenCalled();
+    expect(processFiles).toHaveBeenCalledTimes(1); // the first message only
+    expect(routeCommand).toHaveBeenCalledTimes(1);
+    expect(startWithContinuation).toHaveBeenCalledTimes(1);
+
+    // Durable first, receipt second — the snapshot exists before the UI claim.
+    expect(saved[saved.length - 1].sessions[0].items).toHaveLength(1);
+    const receipt = postSystemMessage.mock.calls.find((call: any[]) => String(call[1]).includes('Queue'));
+    expect(receipt, 'a visible receipt is posted after the durable write').toBeDefined();
+
+    await settle();
+  });
+
+  it('dispatches an idle message immediately and queues nothing', async () => {
+    await handler.handleMessage(message(), say());
+
+    expect(startWithContinuation).toHaveBeenCalledTimes(1);
+    expect(items()).toHaveLength(0);
+  });
+
+  it('claims the next user message at the safe boundary, preserving author and files', async () => {
+    const { settle } = await startBusyTurn();
+
+    await handler.handleMessage(
+      message({
+        user: 'U_OTHER',
+        ts: '333.444',
+        text: '이것도 봐줘',
+        files: [
+          {
+            id: 'F1',
+            name: 'log.txt',
+            mimetype: 'text/plain',
+            filetype: 'text',
+            url_private: 'https://x/1',
+            url_private_download: 'https://x/1d',
+            size: 12,
+          },
+        ],
+      }),
+      say(),
+    );
+    expect(items()).toHaveLength(1);
+
+    await settle();
+
+    // The drained item ran as a fresh USER dispatch by its ORIGINAL author.
+    expect(startWithContinuation).toHaveBeenCalledTimes(2);
+    const drainedContext = createAgentSession.mock.calls[1][2];
+    expect(drainedContext.user).toBe('U_OTHER');
+    expect(drainedContext.synthetic).toBeFalsy();
+    expect(processFiles.mock.calls[1][0].files).toHaveLength(1);
+    expect(items()[0].state).toBe('resolved');
+  });
+
+  it('fences two near-simultaneous messages — one dispatches, the other queues', async () => {
+    const gate = deferred<any>();
+    startWithContinuation.mockImplementationOnce(() => gate.promise);
+
+    const first = handler.handleMessage(message({ ts: '222.333', text: '하나' }), say());
+    const second = handler.handleMessage(message({ ts: '222.444', text: '둘' }), say());
+    await tick();
+
+    expect(startWithContinuation).toHaveBeenCalledTimes(1);
+    await second;
+    expect(items()).toHaveLength(1);
+    expect(items()[0].message.text).toBe('둘');
+
+    gate.resolve({ hasPendingChoice: false });
+    await first;
+  });
+
+  it('reports a durable failure and posts NO receipt', async () => {
+    const { settle } = await startBusyTurn();
+    saveError = new Error('disk full');
+
+    await handler.handleMessage(message({ ts: '333.444', text: '저장 못 하는 지시' }), say());
+
+    expect(items()).toHaveLength(0);
+    const failure = postSystemMessage.mock.calls.find((call: any[]) => String(call[1]).includes('disk full'));
+    expect(failure, 'the failure is explicit').toBeDefined();
+    const receipt = postSystemMessage.mock.calls.find((call: any[]) => String(call[1]).includes('Queue에 넣었습니다'));
+    expect(receipt, 'no receipt for a message that was not stored').toBeUndefined();
+
+    saveError = undefined;
+    await settle();
+  });
+
+  it('does not drain while the turn ended waiting for a user choice', async () => {
+    const gate = deferred<any>();
+    startWithContinuation.mockImplementationOnce(() => gate.promise);
+    const first = handler.handleMessage(message(), say());
+    await tick();
+
+    await handler.handleMessage(message({ ts: '333.444', text: '다음 지시' }), say());
+    gate.resolve({ hasPendingChoice: true });
+    await first;
+
+    expect(startWithContinuation).toHaveBeenCalledTimes(1);
+    expect(items()[0].state).toBe('queued');
+  });
+
+  it('keeps paused items paused when a fresh idle message arrives', async () => {
+    const { settle } = await startBusyTurn();
+    await handler.handleMessage(message({ ts: '333.444', text: '나중 지시' }), say());
+    await settle();
+    // The drain already ran it; park a second one and freeze via explicit stop.
+    const { settle: settle2 } = await startBusyTurn();
+    await handler.handleMessage(message({ ts: '444.555', text: '또 다른 지시' }), say());
+    await handler.handleMessage(message({ ts: '444.666', text: '!' }), say());
+    await settle2();
+
+    const paused = items().find((item: any) => item.message.text === '또 다른 지시');
+    expect(paused.state).toBe('paused');
+
+    const dispatchCount = startWithContinuation.mock.calls.length;
+    await handler.handleMessage(message({ ts: '555.666', text: '새 지시' }), say());
+
+    // The new message runs; the paused one stays paused (no auto-resume, A27).
+    expect(startWithContinuation.mock.calls.length).toBe(dispatchCount + 1);
+    expect(items().find((item: any) => item.message.text === '또 다른 지시').state).toBe('paused');
+  });
+
+  it('holds the autogoal driver while follow-up work is pending, then releases it once', async () => {
+    const goalDriver = vi.fn();
+    handler.setGoalTurnSettledHandler(goalDriver);
+    registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
+
+    const { settle } = await startBusyTurn();
+    await handler.handleMessage(message({ ts: '333.444', text: '사람 후속 지시' }), say());
+
+    // The turn ends: the goal hook fires while an item is queued.
+    handlerAny.handleAssistantTurnCompleteForGoal(registrySession, SESSION_KEY, ['turn text']);
+    expect(goalDriver).not.toHaveBeenCalled();
+    // The evidence is still stashed — only the driver is held back.
+    expect(registrySession.goalLastTurnText).toBe('turn text');
+
+    await settle();
+
+    expect(goalDriver).toHaveBeenCalledTimes(1);
+    expect(goalDriver).toHaveBeenCalledWith(SESSION_KEY);
+  });
+
+  it('runs an immediate control live while busy, but queues a command that would dispatch', async () => {
+    const { settle } = await startBusyTurn();
+
+    await handler.handleMessage(message({ ts: '333.444', text: 'help' }), say());
+    expect(items()).toHaveLength(0);
+    expect(routeCommand).toHaveBeenCalledTimes(2); // the control was routed live
+
+    await handler.handleMessage(message({ ts: '333.555', text: 'new 테스트 하나 써줘' }), say());
+    expect(items()).toHaveLength(1);
+    expect(items()[0].message.text).toBe('new 테스트 하나 써줘');
+    // A command carrying a prompt must NOT supersede the running turn.
+    expect(abortSession).not.toHaveBeenCalled();
+
+    await settle();
+  });
+
+  it('never queues a synthetic turn that arrives while a dispatch is live', async () => {
+    const { settle } = await startBusyTurn();
+
+    await handler.handleMessage(message({ ts: '333.444', text: 'goal 계속', synthetic: true }), say());
+
+    expect(items()).toHaveLength(0);
+    expect(startWithContinuation).toHaveBeenCalledTimes(1);
+    await settle();
+  });
+
+  it('fences a reply in the migrated work thread against the turn that created it', async () => {
+    // A first mention migrates into a bot work thread: the dispatch slot was
+    // opened under the SOURCE key, but the session now lives under the work
+    // thread key (`session-initializer.ts:1238-1239` terminates the source).
+    const WORK_KEY = 'C123:999.000';
+    claudeHandler.getSessionKey.mockImplementation(
+      (channel: string, threadTs?: string) => `${channel}:${threadTs ?? ''}`,
+    );
+    const workSession = { ...registrySession, threadTs: '999.000', threadRootTs: '999.000' };
+    claudeHandler.getSessionByKey.mockImplementation((key: string) =>
+      key === WORK_KEY ? workSession : registrySession,
+    );
+    initialize.mockImplementation(async () => ({
+      session: workSession,
+      sessionKey: WORK_KEY,
+      isNewSession: true,
+      userName: 'Owner',
+      workingDirectory: '/tmp/work',
+      abortController: new AbortController(),
+      halted: false,
+    }));
+
+    const gate = deferred<any>();
+    startWithContinuation.mockImplementationOnce(() => gate.promise);
+    // Ingress key = source thread `C123:111.222`.
+    const first = handler.handleMessage(message({ ts: '222.333', text: '첫 지시' }), say());
+    await tick();
+
+    // The reply arrives in the WORK thread — a different session key.
+    await handler.handleMessage(message({ ts: '333.444', thread_ts: '999.000', text: '작업 스레드 후속' }), say());
+
+    // It must be parked on the live turn, not dispatched on top of it.
+    expect(startWithContinuation).toHaveBeenCalledTimes(1);
+    const workItems = handlerAny.getFollowupQueue().list(WORK_KEY);
+    expect(workItems).toHaveLength(1);
+    expect(workItems[0].message.text).toBe('작업 스레드 후속');
+
+    gate.resolve({ hasPendingChoice: false });
+    await first;
+
+    // Drained on the canonical (work-thread) session, which is the one that
+    // still exists after the migration.
+    expect(startWithContinuation).toHaveBeenCalledTimes(2);
+    expect(handlerAny.getFollowupQueue().list(WORK_KEY)[0].state).toBe('resolved');
+  });
+
+  describe('explicit steer `!{prompt}` (U6)', () => {
+    it('never overlaps the running turn: the new dispatch waits for the teardown', async () => {
+      const { settle } = await startBusyTurn();
+
+      const steering = handler.handleMessage(message({ ts: '333.444', text: '!대신 이걸 해줘' }), say());
+      await tick();
+
+      // The interrupt was SIGNALLED, but the replacement turn must not start
+      // until the interrupted run's own teardown has settled
+      // (`followup-dispatcher.ts:474` awaits `victim.settled`).
+      expect(abortSession).toHaveBeenCalledWith(SESSION_KEY, 'user-interrupted');
+      expect(startWithContinuation).toHaveBeenCalledTimes(1);
+
+      await settle();
+      await steering;
+
+      expect(startWithContinuation).toHaveBeenCalledTimes(2);
+      // The stored item carries the PARSED prompt, so the replacement turn
+      // cannot re-enter the abort branch and steer itself recursively.
+      const steered = items().find((item: any) => item.message.text === '대신 이걸 해줘');
+      expect(steered, 'the steer prompt is stored without its `!`').toBeDefined();
+      expect(steered.state).toBe('resolved');
+      expect(abortSession).toHaveBeenCalledTimes(1);
+      expect(processFiles.mock.calls[1][0].text).toBe('대신 이걸 해줘');
+    });
+
+    it('keeps an already-queued peer in FIFO and runs it after the steer', async () => {
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.111', text: '먼저 들어온 지시' }), say());
+
+      const steering = handler.handleMessage(message({ ts: '333.444', text: '!급한 거 먼저' }), say());
+      await tick();
+      // The peer is untouched by the steer — not cancelled, not reordered away.
+      expect(items().find((item: any) => item.message.text === '먼저 들어온 지시').state).toBe('queued');
+
+      await settle();
+      await steering;
+
+      const order = startWithContinuation.mock.calls.length;
+      expect(order).toBe(3); // first turn → steer → peer
+      expect(items().find((item: any) => item.message.text === '먼저 들어온 지시').state).toBe('resolved');
+    });
+
+    it('refuses an unauthorized steer WITHOUT aborting, and keeps the item', async () => {
+      claudeHandler.canInterrupt.mockReturnValue(false);
+      const { settle } = await startBusyTurn();
+
+      await handler.handleMessage(message({ user: 'U_STRANGER', ts: '333.444', text: '!내가 가로챌래' }), say());
+
+      // The live turn is untouched — a denial is not an abort.
+      expect(abortSession).not.toHaveBeenCalled();
+      expect(startWithContinuation).toHaveBeenCalledTimes(1);
+      // The instruction is retained, visibly rejected, and still drainable.
+      const retained = items().find((item: any) => item.message.text === '내가 가로챌래');
+      expect(retained.state).toBe('queued');
+      expect(
+        postSystemMessage.mock.calls.some((call: any[]) => String(call[1]).includes('큐에 그대로')),
+        'the rejection says the item was kept',
+      ).toBe(true);
+
+      await settle();
+    });
+
+    it('lets only ONE of two simultaneous steers win, keeping the loser queued', async () => {
+      const { settle } = await startBusyTurn();
+
+      const a = handler.handleMessage(message({ ts: '333.444', text: '!첫 번째 조종' }), say());
+      const b = handler.handleMessage(message({ ts: '333.555', text: '!두 번째 조종' }), say());
+      await tick();
+
+      // Single winner: one reservation, one interrupt.
+      expect(abortSession).toHaveBeenCalledTimes(1);
+
+      await settle();
+      await Promise.all([a, b]);
+
+      // The loser was never consumed — it drained afterwards instead.
+      const second = items().find((item: any) => item.message.text === '두 번째 조종');
+      expect(second).toBeDefined();
+      expect(['resolved', 'queued']).toContain(second.state);
+      expect(items().find((item: any) => item.message.text === '첫 번째 조종').state).toBe('resolved');
+    });
+
+    it('refreshes the surface only AFTER `sendNow`, never between enqueue and the cut', async () => {
+      const { settle } = await startBusyTurn();
+
+      // Order is the contract. A refresh between the enqueue and `sendNow` is an
+      // await the settling turn's drain can claim the fresh item in; `sendNow`
+      // then returns a stale rejection and the user is told "중단 못했다, 큐에
+      // 남아있다" about an item that is already running.
+      const order: string[] = [];
+      const dispatcher = handlerAny.followupDispatcher;
+      const realSendNow = dispatcher.sendNow.bind(dispatcher);
+      vi.spyOn(dispatcher, 'sendNow').mockImplementation((...args: any[]) => {
+        order.push('sendNow');
+        return realSendNow(...args);
+      });
+      const realRefresh = handlerAny.refreshFollowupSurface.bind(handler);
+      vi.spyOn(handlerAny, 'refreshFollowupSurface').mockImplementation((...args: any[]) => {
+        order.push('refresh');
+        return realRefresh(...args);
+      });
+
+      const steering = handler.handleMessage(message({ ts: '333.444', text: '!지금 이걸' }), say());
+      await tick();
+      await settle();
+      await steering;
+
+      expect(order[0], 'the cut is transacted before any surface write').toBe('sendNow');
+    });
+
+    it('still treats a bare `!` as an immediate stop', async () => {
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.111', text: '남겨둘 지시' }), say());
+
+      await handler.handleMessage(message({ ts: '333.444', text: '!' }), say());
+
+      // Bare `!` runs live, aborts with the existing reason, and freezes the
+      // queue — it never becomes a queued item.
+      expect(abortSession).toHaveBeenCalledWith(SESSION_KEY);
+      expect(items()).toHaveLength(1);
+      expect(items()[0].state).toBe('paused');
+      await settle();
+    });
+  });
+
+  describe('central stop wiring (U8)', () => {
+    const coordinator = () => handlerAny.requestCoordinator;
+
+    it('freezes queued items into `paused` on a stop of an IDLE session', async () => {
+      // The turn ends waiting for a user choice, so the drain stays shut and the
+      // item is still queued while the session sits idle — exactly the state a
+      // "stop" button press finds, with no controller to abort.
+      const gate = deferred<any>();
+      startWithContinuation.mockImplementationOnce(() => gate.promise);
+      const first = handler.handleMessage(message(), say());
+      await tick();
+      await handler.handleMessage(message({ ts: '444.555', text: '대기 중인 지시' }), say());
+      gate.resolve({ hasPendingChoice: true });
+      await first;
+      expect(items()[0].state).toBe('queued');
+
+      const aborted = coordinator().abortSession(SESSION_KEY, 'user-stop');
+      expect(aborted, 'no controller: the abort itself is a no-op').toBe(false);
+
+      // …but the stop was still observed.
+      expect(items()[0].state).toBe('paused');
+      expect(handlerAny.getFollowupQueue().freezeReason(SESSION_KEY)).toBeTruthy();
+    });
+
+    it('marks a dispatched item `uncertain`, not paused, when the stop lands mid-run', async () => {
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: '실행될 지시' }), say());
+
+      // Let the drain start the queued item, then stop while it runs.
+      const drainGate = deferred<any>();
+      startWithContinuation.mockImplementationOnce(() => drainGate.promise);
+      const finished = settle();
+      await tick();
+      expect(items()[0].state).toBe('dispatched');
+
+      coordinator().abortSession(SESSION_KEY, 'session-close');
+      // A running item's outcome is unknown — calling it `paused` would be a lie.
+      expect(items()[0].state).toBe('uncertain');
+
+      drainGate.resolve({ hasPendingChoice: false });
+      await finished;
+    });
+
+    it('does NOT freeze on a `Send now` interrupt', async () => {
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.111', text: '뒤에 기다리는 지시' }), say());
+
+      const steering = handler.handleMessage(message({ ts: '333.444', text: '!지금 이걸' }), say());
+      await tick();
+      // `user-interrupted` is not a stop: the queue must stay live or the very
+      // items the user is advancing would be stranded.
+      expect(handlerAny.getFollowupQueue().freezeReason(SESSION_KEY)).toBeUndefined();
+
+      await settle();
+      await steering;
+      expect(items().every((item: any) => item.state !== 'paused')).toBe(true);
+    });
+
+    it('refuses the abort when the freeze cannot be persisted', async () => {
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: '저장 실패 시 지시' }), say());
+
+      const controller = new AbortController();
+      coordinator().setController(SESSION_KEY, controller);
+      saveError = new Error('disk full');
+
+      expect(() => coordinator().abortSession(SESSION_KEY, 'user-stop')).toThrow(/disk full/);
+      // A stop that could not be recorded is a stop that did not happen.
+      expect(controller.signal.aborted).toBe(false);
+      expect(items()[0].state).toBe('queued');
+
+      saveError = undefined;
+      coordinator().removeController(SESSION_KEY, controller);
+      await settle();
+    });
+
+    it('tells the user when a bare `!` stop was refused, and does not claim it stopped', async () => {
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: '남는 지시' }), say());
+      saveError = new Error('disk full');
+
+      await handler.handleMessage(message({ ts: '333.555', text: '!' }), say());
+
+      expect(
+        postSystemMessage.mock.calls.some((call: any[]) => String(call[1]).includes('중단하지 못했습니다')),
+        'the refused stop is explicit',
+      ).toBe(true);
+      expect(addReaction.mock.calls.some((call: any[]) => call[2] === 'octagonal_sign')).toBe(false);
+      expect(items()[0].state).toBe('queued');
+
+      saveError = undefined;
+      await settle();
+    });
+  });
+
+  describe('queue observability (U13b)', () => {
+    /** All emitted metrics, flattened to `[sessionKey, userId, userName, metric]`. */
+    const emitted = () => emitFollowupQueue.mock.calls.map((call: any[]) => call[3]);
+    const opsFor = (operation: string) => emitted().filter((metric: any) => metric.operation === operation);
+
+    it('emits `enqueue` with the ORIGINAL author and no user content', async () => {
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(
+        message({ user: 'U_OTHER', ts: '333.444', text: '비밀 프로젝트 문서를 고쳐줘' }),
+        say(),
+      );
+
+      const enqueues = opsFor('enqueue');
+      expect(enqueues).toHaveLength(1);
+      expect(enqueues[0].depth).toBe(1);
+      expect(enqueues[0].uncertainCount).toBe(0);
+      expect(enqueues[0].itemId).toBe(items()[0].id);
+
+      // Identity travels as the event's author, not inside the metadata.
+      const call = emitFollowupQueue.mock.calls.find((c: any[]) => c[3].operation === 'enqueue') as any[];
+      expect(call[0]).toBe(SESSION_KEY);
+      expect(call[1]).toBe('U_OTHER');
+
+      // No message text / cwd anywhere in what we hand the emitter.
+      const serialized = JSON.stringify(emitFollowupQueue.mock.calls);
+      expect(serialized).not.toContain('비밀 프로젝트');
+      expect(serialized).not.toContain('/tmp/work');
+
+      await settle();
+    });
+
+    it('emits nothing for an enqueue whose durable write failed — only a coded reject', async () => {
+      const { settle } = await startBusyTurn();
+      saveError = new Error('disk full');
+
+      await handler.handleMessage(message({ ts: '333.444', text: '저장 실패' }), say());
+
+      expect(opsFor('enqueue')).toHaveLength(0);
+      const rejects = opsFor('reject');
+      expect(rejects).toHaveLength(1);
+      expect(rejects[0].reason).toBe('persist_failed');
+      // Stable code only — never the raw error text.
+      expect(JSON.stringify(emitFollowupQueue.mock.calls)).not.toContain('disk full');
+
+      saveError = undefined;
+      await settle();
+    });
+
+    it('emits a coded reject when the queue is over capacity', async () => {
+      process.env.SOMA_FOLLOWUP_QUEUE_CAPACITY = '1';
+      const scoped = new SlackHandler({ client: {}, assistant: vi.fn() } as any, claudeHandler as any, {} as any, {
+        followupQueueStore: { load: () => undefined, save: () => undefined, recoveryWarning: undefined },
+      });
+      process.env.SOMA_FOLLOWUP_QUEUE_CAPACITY = undefined as any;
+      delete process.env.SOMA_FOLLOWUP_QUEUE_CAPACITY;
+      const scopedAny = scoped as any;
+      scopedAny.slackApi = handlerAny.slackApi;
+      scopedAny.inputProcessor = handlerAny.inputProcessor;
+      scopedAny.messageValidator = handlerAny.messageValidator;
+      scopedAny.sessionInitializer = handlerAny.sessionInitializer;
+      scopedAny.threadPanel = handlerAny.threadPanel;
+      scopedAny.createAgentSession = createAgentSession;
+
+      const gate = deferred<any>();
+      startWithContinuation.mockImplementationOnce(() => gate.promise);
+      const first = scoped.handleMessage(message(), say());
+      await tick();
+      await scoped.handleMessage(message({ ts: '333.111', text: '첫 대기' }), say());
+      await scoped.handleMessage(message({ ts: '333.222', text: '넘치는 대기' }), say());
+
+      const rejects = opsFor('reject');
+      expect(rejects.some((metric: any) => metric.reason === 'capacity')).toBe(true);
+
+      gate.resolve({ hasPendingChoice: false });
+      await first;
+    });
+
+    it('reports claim, dispatch and resolve as distinct committed transitions', async () => {
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: '드레인될 지시' }), say());
+      await settle();
+
+      const sequence = emitted()
+        .map((metric: any) => metric.operation)
+        .filter((op: string) => ['enqueue', 'claim', 'dispatch', 'resolve'].includes(op));
+      expect(sequence).toEqual(['enqueue', 'claim', 'dispatch', 'resolve']);
+
+      // A drain latency is measured from the previous turn settling to the
+      // item actually being dispatched — never inferred from `enqueuedAt`.
+      const dispatched = opsFor('dispatch')[0];
+      expect(typeof dispatched.drainLatencyMs).toBe('number');
+      expect(dispatched.drainLatencyMs).toBeGreaterThanOrEqual(0);
+      expect(dispatched.interruptLatencyMs).toBeUndefined();
+    });
+
+    it('does not count a `Send now` reservation as a dispatch, and times the interrupt', async () => {
+      const { settle } = await startBusyTurn();
+      const steering = handler.handleMessage(message({ ts: '333.444', text: '!즉시 이걸' }), say());
+      await tick();
+
+      // Reserved, not dispatched: the replacement turn has not started yet.
+      expect(opsFor('dispatch')).toHaveLength(0);
+
+      await settle();
+      await steering;
+
+      const dispatches = opsFor('dispatch');
+      expect(dispatches).toHaveLength(1);
+      expect(typeof dispatches[0].interruptLatencyMs).toBe('number');
+      expect(dispatches[0].interruptLatencyMs).toBeGreaterThanOrEqual(0);
+    });
+
+    it('emits a coded reject when a steer is not authorized', async () => {
+      claudeHandler.canInterrupt.mockReturnValue(false);
+      const { settle } = await startBusyTurn();
+
+      await handler.handleMessage(message({ user: 'U_STRANGER', ts: '333.444', text: '!가로채기' }), say());
+
+      const rejects = opsFor('reject');
+      expect(rejects.some((metric: any) => metric.reason === 'interrupt_denied')).toBe(true);
+      expect(JSON.stringify(emitFollowupQueue.mock.calls)).not.toContain('가로채기');
+      await settle();
+    });
+  });
+
+  describe('shutdown preparation (U8 idle gap)', () => {
+    /** Leaves one item queued with the session idle (turn ended on a pending choice). */
+    async function parkOneAndGoIdle(text = '남겨진 지시'): Promise<void> {
+      const gate = deferred<any>();
+      startWithContinuation.mockImplementationOnce(() => gate.promise);
+      const first = handler.handleMessage(message(), say());
+      await tick();
+      await handler.handleMessage(message({ ts: '444.555', text }), say());
+      gate.resolve({ hasPendingChoice: true });
+      await first;
+    }
+
+    it('freezes an IDLE session that `clearAll` would never visit', async () => {
+      await parkOneAndGoIdle();
+      expect(items()[0].state).toBe('queued');
+
+      handler.prepareFollowupShutdown();
+
+      // Routed through the coordinator, so the single freeze owner does the work.
+      expect(abortSession).toHaveBeenCalledWith(SESSION_KEY, 'shutdown');
+      expect(items()[0].state).toBe('paused');
+      expect(handlerAny.getFollowupQueue().freezeReason(SESSION_KEY)).toBeTruthy();
+    });
+
+    it('preserves uncertainty for an item that was actually running', async () => {
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: '실행 중 지시' }), say());
+      const drainGate = deferred<any>();
+      startWithContinuation.mockImplementationOnce(() => drainGate.promise);
+      const finished = settle();
+      await tick();
+      expect(items()[0].state).toBe('dispatched');
+
+      handler.prepareFollowupShutdown();
+
+      // A running item's side effects are unknown — `paused` would be a lie.
+      expect(items()[0].state).toBe('uncertain');
+
+      drainGate.resolve({ hasPendingChoice: false });
+      await finished;
+    });
+
+    it('stops DISPATCHING new work once preparation succeeded, but still parks it', async () => {
+      await parkOneAndGoIdle();
+      handler.prepareFollowupShutdown();
+      const before = startWithContinuation.mock.calls.length;
+      const queuedBefore = items().length;
+
+      await handler.handleMessage(message({ ts: '555.666', text: '셧다운 중 도착' }), say());
+
+      // No turn starts — but the instruction is kept, not dropped.
+      expect(startWithContinuation.mock.calls.length).toBe(before);
+      expect(items()).toHaveLength(queuedBefore + 1);
+      expect(items().at(-1).message.ts).toBe('555.666');
+    });
+
+    it('fails loud and keeps accepting work when the freeze cannot be persisted', async () => {
+      await parkOneAndGoIdle();
+      saveError = new Error('disk full');
+
+      expect(() => handler.prepareFollowupShutdown()).toThrow(/disk full/);
+      // Nothing was recorded, so nothing may be reported as stopped.
+      expect(items()[0].state).toBe('queued');
+
+      // …and the bot is not stranded: admission is restored.
+      saveError = undefined;
+      const before = startWithContinuation.mock.calls.length;
+      await handler.handleMessage(message({ ts: '555.777', text: '준비 실패 후 도착' }), say());
+      expect(startWithContinuation.mock.calls.length).toBe(before + 1);
+    });
+
+    it('restores admission when the shutdown is cancelled after a successful prepare', async () => {
+      await parkOneAndGoIdle();
+      handler.prepareFollowupShutdown();
+      const before = startWithContinuation.mock.calls.length;
+
+      // `clearAll` (or anything else in the shutdown chain) refused, so the
+      // process stays up — the host must accept work again.
+      handler.cancelFollowupShutdownPreparation();
+
+      await handler.handleMessage(message({ ts: '666.777', text: '셧다운 취소 후 도착' }), say());
+      expect(startWithContinuation.mock.calls.length).toBe(before + 1);
+      // The recorded freeze is NOT undone: cancelling a shutdown does not
+      // resume a queue the user never resumed (A27).
+      expect(handlerAny.getFollowupQueue().freezeReason(SESSION_KEY)).toBeTruthy();
+      expect(items().some((item: any) => item.state === 'paused')).toBe(true);
+    });
+
+    it('denies button-driven work during preparation without touching the frozen queue', async () => {
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: '버튼으로 올릴 지시' }), say());
+      const item = items()[0];
+      handler.prepareFollowupShutdown();
+      const frozenReason = handlerAny.getFollowupQueue().freezeReason(SESSION_KEY);
+      const statesBefore = items().map((entry: any) => `${entry.id}:${entry.state}`);
+
+      // `Send now` is refused BEFORE it can reserve or abort anything.
+      const sendNow = await handlerAny
+        .getFollowupDispatcher()
+        .sendNow(SESSION_KEY, item.id, item.epoch, 'U_OWNER', handlerAny.getFollowupQueue().getTurnEpoch(SESSION_KEY));
+      expect(sendNow.status).toBe('rejected');
+      expect(sendNow.reason).toBe('interrupt-denied');
+      expect(String(sendNow.detail)).toMatch(/shutdown/i);
+
+      // Resume / Retry share the host's interrupt policy — also denied.
+      expect(handlerAny.authorizeFollowupInterrupt(SESSION_KEY, 'U_OWNER').allowed).toBe(false);
+
+      // No auto-drain either.
+      await handlerAny.runFollowupDrainLoop(SESSION_KEY);
+
+      expect(abortSession.mock.calls.filter((call: any[]) => call[1] === 'user-interrupted')).toHaveLength(0);
+      expect(items().map((entry: any) => `${entry.id}:${entry.state}`)).toEqual(statesBefore);
+      expect(handlerAny.getFollowupQueue().freezeReason(SESSION_KEY)).toBe(frozenReason);
+
+      // Cancelling restores admission; queue state is untouched by the restore.
+      handler.cancelFollowupShutdownPreparation();
+      expect(handlerAny.authorizeFollowupInterrupt(SESSION_KEY, 'U_OWNER').allowed).toBe(true);
+      expect(items().map((entry: any) => `${entry.id}:${entry.state}`)).toEqual(statesBefore);
+
+      await settle();
+    });
+
+    it('never reuses the `Send now` reason for shutdown', async () => {
+      await parkOneAndGoIdle();
+      handler.prepareFollowupShutdown();
+      expect(abortSession.mock.calls.every((call: any[]) => call[1] !== 'user-interrupted')).toBe(true);
+    });
+  });
+
+  describe('startup reconcile ordering (A16)', () => {
+    /** One `queued` item for `SESSION_KEY`, exactly as U2 would have written it. */
+    function snapshotWithQueuedItem(): FollowupQueueSnapshot {
+      return {
+        version: 1,
+        sessions: [
+          {
+            sessionKey: SESSION_KEY,
+            nextSeq: 2,
+            turnEpoch: 3,
+            items: [
+              {
+                id: `${SESSION_KEY}#1`,
+                sessionKey: SESSION_KEY,
+                seq: 1,
+                epoch: 1,
+                state: 'queued',
+                eventKey: `${CHANNEL}:333.444`,
+                message: message({ ts: '333.444', text: '재시작 전에 남은 지시' }),
+                context: { workingDirectory: '/tmp/work' },
+                enqueuedAt: 1,
+                updatedAt: 1,
+              },
+            ],
+          },
+        ],
+      };
+    }
+
+    /**
+     * Boot a handler over a restored snapshot with an EMPTY registry, the way
+     * `index.ts` really does it (`index.ts:487` constructs, `:510` loads).
+     * `live` is the registry view; `loadSessions` fills it, or does not.
+     */
+    function boot(fill: boolean): { handler: SlackHandler; live: Map<string, any> } {
+      const live = new Map<string, any>();
+      const registryHandler = {
+        ...claudeHandler,
+        getAllSessions: vi.fn(() => live),
+        loadSessions: vi.fn(() => {
+          if (fill) live.set(SESSION_KEY, registrySession);
+          return live.size;
+        }),
+      };
+      const booted = new SlackHandler({ client: {}, assistant: vi.fn() } as any, registryHandler as any, {} as any, {
+        followupQueueStore: {
+          load: () => snapshotWithQueuedItem(),
+          save: () => undefined,
+          recoveryWarning: undefined,
+        },
+      });
+      return { handler: booted, live };
+    }
+
+    const stateOf = (h: SlackHandler) => (h as any).getFollowupQueue().list(SESSION_KEY)[0].state;
+
+    it('does not cancel restored items at construction time, when the registry is still empty', () => {
+      const { handler: booted } = boot(false);
+
+      // `recover()` turned the queued item into `paused`; the registry Map is
+      // empty because `loadSavedSessions()` has not run yet. Treating that as
+      // "the session is gone" would cancel the whole queue on every restart.
+      expect(stateOf(booted)).toBe('paused');
+    });
+
+    it('cancels an orphan only after the registry has actually loaded', () => {
+      const { handler: booted } = boot(false);
+      booted.loadSavedSessions();
+
+      expect(stateOf(booted)).toBe('cancelled');
+    });
+
+    it('leaves items untouched when the session came back with the registry, and is idempotent', () => {
+      const { handler: booted } = boot(true);
+      booted.loadSavedSessions();
+      booted.loadSavedSessions();
+
+      expect(stateOf(booted)).toBe('paused');
+    });
+
+    /** The fakes `beforeEach` wires onto the shared handler, onto a booted one. */
+    function wire(booted: SlackHandler): void {
+      const bootedAny = booted as any;
+      bootedAny.slackApi = handlerAny.slackApi;
+      bootedAny.inputProcessor = handlerAny.inputProcessor;
+      bootedAny.messageValidator = handlerAny.messageValidator;
+      bootedAny.sessionInitializer = handlerAny.sessionInitializer;
+      bootedAny.threadPanel = handlerAny.threadPanel;
+      bootedAny.createAgentSession = createAgentSession;
+    }
+
+    const reconcileWarns = (warn: ReturnType<typeof vi.spyOn>) =>
+      warn.mock.calls.filter((call: any[]) => /reconcile/i.test(String(call[0])));
+
+    it('stays silent on the real boot order — construct, await, then loadSavedSessions', async () => {
+      const { handler: booted } = boot(true);
+      const warn = vi.spyOn((booted as any).logger, 'warn');
+
+      // `index.ts:487` constructs, then AWAITS `getAuthContext()` (network)
+      // before `:510` loads. Any timer-based watchdog fires inside that gap, so
+      // every real restart with pending items would warn falsely.
+      await tick();
+      booted.loadSavedSessions();
+      await tick();
+
+      expect(reconcileWarns(warn)).toHaveLength(0);
+    });
+
+    it('warns exactly once when work is admitted before the registry loaded', async () => {
+      const { handler: booted } = boot(false);
+      wire(booted);
+      const warn = vi.spyOn((booted as any).logger, 'warn');
+
+      // Admission, not the clock, is what makes an un-reconciled queue harmful:
+      // restored orphans look drainable to the first message that arrives.
+      await booted.handleMessage(message({ ts: '333.444', text: '재시작 직후 도착' }), say());
+      await booted.handleMessage(message({ ts: '333.555', text: '그 다음 도착' }), say());
+      await tick();
+
+      expect(reconcileWarns(warn)).toHaveLength(1);
+    });
+  });
+
+  describe('messages arriving during shutdown preparation', () => {
+    /** Items as the STORE saw them — memory is not evidence of a durable park. */
+    const persisted = () =>
+      saved[saved.length - 1]?.sessions.find((session: any) => session.sessionKey === SESSION_KEY)?.items ?? [];
+
+    it('parks the instruction DURABLY first, then tells the user how to get it back', async () => {
+      handler.prepareFollowupShutdown();
+      const before = startWithContinuation.mock.calls.length;
+
+      await handler.handleMessage(message({ ts: '555.888', text: '셧다운 중 도착' }), say());
+
+      // Both Slack writes are best-effort and can vanish with the process; the
+      // durable record is the only thing that survives the restart.
+      expect(persisted().map((item: any) => [item.message.ts, item.state])).toContainEqual(['555.888', 'queued']);
+      expect(
+        postSystemMessage.mock.calls.some((call: any[]) => String(call[1]).includes('재시작 준비 중')),
+        'the notice says why it did not run and how to resume it',
+      ).toBe(true);
+      expect(
+        postSystemMessage.mock.calls.some((call: any[]) => String(call[1]).includes('Resume')),
+        'a restart maps queued → paused, so only an explicit Resume releases it',
+      ).toBe(true);
+      // Parked, never run: no turn starts while the process is stopping.
+      expect(startWithContinuation.mock.calls.length).toBe(before);
+    });
+
+    it('names the store failure AND both Slack outcomes when nothing could be parked', async () => {
+      handler.prepareFollowupShutdown();
+      const logError = vi.spyOn(handlerAny.logger, 'error');
+      saveError = new Error('disk full');
+      addReaction.mockRejectedValueOnce(new Error('reaction refused'));
+      postSystemMessage.mockRejectedValueOnce(new Error('post refused'));
+
+      await handler.handleMessage(message({ ts: '555.999', text: '저장도 안 되는 지시' }), say());
+
+      // Nothing durable, and both best-effort writes failed too — the only
+      // trace left is the log, so it has to carry all three facts.
+      expect(items()).toHaveLength(0);
+      const logged = JSON.stringify(logError.mock.calls);
+      expect(logged).toContain('disk full');
+      expect(logged).toContain('reaction refused');
+      expect(logged).toContain('post refused');
+      // …and the writes were attempted even though the park failed.
+      expect(addReaction).toHaveBeenCalledWith(CHANNEL, '555.999', expect.any(String));
+      expect(postSystemMessage).toHaveBeenCalled();
+    });
+  });
+
+  describe('dispatch-time working-directory re-authorization (A30/A13)', () => {
+    it('dispatches a queued item in the directory it was captured with', async () => {
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: '같은 디렉토리 지시' }), say());
+      expect(items()[0].context.workingDirectory).toBe('/tmp/work');
+
+      await settle();
+
+      expect(startWithContinuation).toHaveBeenCalledTimes(2);
+      expect(initialize.mock.calls[1][1]).toBe('/tmp/work');
+      expect(items()[0].state).toBe('resolved');
+    });
+
+    it('refuses the dispatch when the author moved since enqueue, keeping the item queued', async () => {
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: '다른 디렉토리 지시' }), say());
+      expect(items()[0].context.workingDirectory).toBe('/tmp/work');
+
+      // The author changed their working directory while the turn was running.
+      handlerAny.messageValidator.validateWorkingDirectory.mockReturnValue({
+        valid: true,
+        workingDirectory: '/tmp/elsewhere',
+      });
+      handlerAny.sessionInitializer.validateWorkingDirectory.mockResolvedValue({
+        valid: true,
+        workingDirectory: '/tmp/elsewhere',
+      });
+
+      await settle();
+
+      // The stored item must not silently run in a directory nobody authorized.
+      expect(startWithContinuation).toHaveBeenCalledTimes(1);
+      expect(items()[0].state).toBe('queued');
+      expect(String(items()[0].stateReason)).toContain('작업 디렉토리가 변경');
+    });
+
+    it('refuses to run when the directory changes BETWEEN authorization and dispatch', async () => {
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: 'TOCTOU 지시' }), say());
+
+      // The gate (`authorizeFollowupDispatch`, sync) still sees the captured
+      // directory; the pipeline's own async re-validation, one await later,
+      // sees a different one. Running the newest answer would execute a
+      // directory nobody authorized.
+      handlerAny.sessionInitializer.validateWorkingDirectory.mockResolvedValue({
+        valid: true,
+        workingDirectory: '/tmp/elsewhere',
+      });
+
+      await settle();
+
+      expect(startWithContinuation).toHaveBeenCalledTimes(1);
+      // Already `dispatched` when the mismatch is found, so the honest landing
+      // is `failed` + Retry — not a rollback to `queued` from inside the run.
+      expect(items()[0].state).toBe('failed');
+      expect(String(items()[0].stateReason)).toBe(
+        '작업 디렉토리가 변경되어 실행하지 않았습니다 (다시 시도하려면 Retry)',
+      );
+    });
+  });
+
+  it('steers through the slot key when the running turn migrated to a bot work thread', async () => {
+    const WORK_KEY = 'C123:999.000';
+    claudeHandler.getSessionKey.mockImplementation(
+      (channel: string, threadTs?: string) => `${channel}:${threadTs ?? ''}`,
+    );
+    const workSession = { ...registrySession, threadTs: '999.000', threadRootTs: '999.000' };
+    claudeHandler.getSessionByKey.mockImplementation((key: string) =>
+      key === WORK_KEY ? workSession : registrySession,
+    );
+    initialize.mockImplementation(async () => ({
+      session: workSession,
+      sessionKey: WORK_KEY,
+      isNewSession: true,
+      userName: 'Owner',
+      workingDirectory: '/tmp/work',
+      abortController: new AbortController(),
+      halted: false,
+    }));
+
+    const gate = deferred<any>();
+    startWithContinuation.mockImplementationOnce(() => gate.promise);
+    // The slot was opened under the SOURCE key; the session lives under the work key.
+    const first = handler.handleMessage(message({ ts: '222.333', text: '첫 지시' }), say());
+    await tick();
+
+    // `!{prompt}` arrives in the WORK thread — busy only via the slot key.
+    const steering = handler.handleMessage(
+      message({ ts: '333.444', thread_ts: '999.000', text: '!대신 이걸 해줘' }),
+      say(),
+    );
+    await tick();
+
+    // It must cut the running turn instead of falling through to a plain enqueue.
+    expect(abortSession).toHaveBeenCalledWith(WORK_KEY, 'user-interrupted');
+    expect(startWithContinuation).toHaveBeenCalledTimes(1);
+
+    gate.resolve({ hasPendingChoice: false });
+    await first;
+    await steering;
+
+    // Exactly one replacement dispatch, run through the slot-owning key.
+    expect(startWithContinuation).toHaveBeenCalledTimes(2);
+    expect(abortSession.mock.calls.filter((call: any[]) => call[1] === 'user-interrupted')).toHaveLength(1);
+    const steered = handlerAny.getFollowupQueue().list(SESSION_KEY);
+    expect(steered).toHaveLength(1);
+    expect(steered[0].message.text).toBe('대신 이걸 해줘');
+    expect(steered[0].state).toBe('resolved');
+  });
+
+  it('rejects a non-admin DM before anything is accepted into the queue', async () => {
+    claudeHandler.getSessionKey.mockReturnValue('D999:111.222');
+    const { settle } = await startBusyTurn();
+    handlerAny.sendDmNonAdminRejection = vi.fn().mockResolvedValue(undefined);
+
+    await handler.handleMessage(
+      message({ channel: 'D999', user: 'U_STRANGER', ts: '333.444', text: '뭐 좀 해줘' }),
+      say(),
+    );
+
+    expect(handlerAny.getFollowupQueue().list('D999:111.222')).toHaveLength(0);
+    expect(handlerAny.sendDmNonAdminRejection).toHaveBeenCalled();
+    await settle();
+  });
+});

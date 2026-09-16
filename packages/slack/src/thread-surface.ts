@@ -3,8 +3,17 @@ import { ActionPanelBuilder, type ActivityState, type PRStatusInfo, type Workflo
 import type { AssistantStatusManager } from './assistant-status-manager';
 import type { CompletionMessageTracker } from './completion-message-tracker';
 import { ContextWindowManager, type SessionUsage } from './context-window-manager';
+import type { FollowupItemState } from './followup-queue';
+import { buildFollowupQueueBlocks, FOLLOWUP_QUEUE_TITLE, type FollowupQueueView } from './followup-queue-blocks';
+import { escapeSlackMrkdwn } from './mrkdwn-escape';
 import type { RequestCoordinator } from './request-coordinator';
 import type { SlackApiHelper } from './slack-api-helper';
+import {
+  type BeginPostOutcome,
+  type DeliveryIntentRecord,
+  type SurfaceAddress,
+  threadPanelSurfaceKey,
+} from './surface-outbox-store';
 import type { SessionTheme, Todo, TodoStatusReader } from './task-list-block-builder';
 import { type SessionLinkHistory, type SessionLinks, ThreadHeaderBuilder } from './thread-header-builder';
 import type { SlackMessagePayload } from './user-choice-handler';
@@ -22,7 +31,21 @@ export interface ActionPanelState {
   agentPhase?: string;
   activeTool?: string;
   waitingForChoice?: boolean;
+  /**
+   * Lifecycle/heartbeat stamp — written on EVERY setStatus call. It proves the
+   * surface was touched, NOT that the work moved, so U9 never renders it as a
+   * progress time.
+   */
   statusUpdatedAt?: number;
+  /**
+   * U9 — when the work last ACTUALLY moved. Written only when a caller passes
+   * it explicitly, i.e. when something witnessed a real progress event
+   * (StreamProcessor / follow-up worker). Absent → the header says
+   * `실제 활동 기록 없음`; it is never back-filled with `Date.now()` (A19).
+   */
+  lastProgressAt?: number;
+  /** U9 — last proof of life (heartbeat/stream signal). Liveness, not progress. */
+  lastSignalAt?: number;
   choiceBlocks?: any[];
   choiceMessageTs?: string;
   choiceMessageLink?: string;
@@ -124,6 +147,87 @@ export interface ThreadSurfaceDeps {
    * suppressed (legacy behaviour).
    */
   assistantStatusManager?: AssistantStatusManager;
+  /**
+   * U3/U9 — read-only window onto the follow-up queue for `sessionKey`
+   * (`.prd/slack-agent-ui/loop.md:47`). Injected, never a singleton
+   * (`ssot.md` §3.5): the queue service is owned by the host and handed in at
+   * `ThreadPanel` construction.
+   *
+   * MUST be synchronous, cheap and side-effect free — it is called on the
+   * render path (once per render). The surface treats the result as immutable
+   * and stores NO copy of it: the queue stays the single source of truth, and
+   * the only queue-derived state the surface owns is the current page number.
+   *
+   * Return `undefined` when this session has no queue. An empty, unfrozen
+   * queue renders nothing.
+   */
+  getFollowupView?: (sessionKey: string) => FollowupQueueView | undefined;
+  /**
+   * U3/U9 degraded read. When the queue snapshot could not be loaded, return a
+   * short human reason; the surface then renders a visible `Queue` +
+   * unavailable line instead of a silently empty queue (`rules/config.md:11`
+   * "조용한 빈 큐 금지"). Combined with a present `getFollowupView`, the reason
+   * is shown as a degradation note under the rendered queue.
+   */
+  getFollowupError?: (sessionKey: string) => string | undefined;
+  /**
+   * A24b — durable delivery-intent port for the combined panel. Structurally
+   * satisfied by `SurfaceOutboxStore` (already `load()`ed by the host; this
+   * surface never loads it, because a load failure must fail closed at the
+   * owner, not be papered over mid-render).
+   *
+   * Absent → legacy behaviour: post straight to Slack and keep the `ts` in
+   * memory only. Present → the intent is committed to disk BEFORE the post, so
+   * a crash in the ack window leaves `pending` ("unknown"), never "not posted".
+   */
+  surfaceOutbox?: ThreadSurfaceOutbox;
+  /**
+   * Optional session persistence sink, mirrored from `ThreadPanelDeps` so
+   * `ThreadPanel` wires it through by passing its own deps object. Called only
+   * AFTER a delivery `ts` is confirmed, so the broadcast can never advertise a
+   * message id the surface cannot prove.
+   */
+  sessionRegistry?: { persistAndBroadcast(sessionKey: string): void };
+}
+
+/**
+ * The slice of `SurfaceOutboxStore` the render path uses. Declared structurally
+ * so the real store satisfies it with no adapter, and so tests can supply a
+ * delegating double for a failure this surface must survive.
+ */
+export interface ThreadSurfaceOutbox {
+  get(surfaceKey: string): DeliveryIntentRecord | undefined;
+  beginPost(address: SurfaceAddress): BeginPostOutcome;
+  markSent(surfaceKey: string, intentId: string, messageTs: string): DeliveryIntentRecord;
+  markRejected(surfaceKey: string, intentId: string, code: string): DeliveryIntentRecord;
+  markDeleted(surfaceKey: string, intentId: string, observedMessageTs: string): DeliveryIntentRecord;
+  readonly recoveryWarning?: string;
+}
+
+/**
+ * Optional per-write guard shared by the surface's write entry points.
+ *
+ * `expectedTurnEpoch` is the caller's copy of the SESSION turn-generation
+ * counter owned by the follow-up queue (`ssot.md` §3.3, A12/A28). When
+ * supplied, the write is applied ONLY if it still matches the queue's current
+ * `turnEpoch`; a late write from a turn that has already been superseded is
+ * dropped instead of overwriting the new turn's surface.
+ *
+ * Omitting the field preserves the legacy behaviour exactly — every existing
+ * caller is unaffected, including hosts that wire no queue at all.
+ *
+ * When the field IS supplied and the queue's current `turnEpoch` cannot be read
+ * (no view, unreadable store, view without the counter), the write is REJECTED
+ * (fail-closed). The claim "I belong to generation N" is unverifiable, and
+ * honouring an unverifiable claim is what lets a superseded turn repaint the
+ * live turn's surface — the precise failure A28 exists to stop. In production
+ * the two always travel together: the only producer of `expectedTurnEpoch` is a
+ * dispatch whose `FollowupQueue.beginTurn` created the session snapshot the
+ * epoch is read back from (`followup-dispatcher.ts` → `queue.beginTurn`), so an
+ * unreadable epoch means the store is degraded, not that the host is young.
+ */
+export interface ThreadSurfaceWriteOptions {
+  expectedTurnEpoch?: number;
 }
 
 interface PRCacheEntry {
@@ -147,6 +251,66 @@ const RENDER_DEBOUNCE_MS = Number(process.env.SLACK_RENDER_DEBOUNCE_MS) || 3000;
 /** PR status cache TTL (ms). */
 const PR_CACHE_TTL_MS = 60_000;
 
+/**
+ * Slack's hard per-message block cap
+ * (docs.slack.dev/reference/block-kit/blocks — 50 blocks for `chat.update`).
+ * The combined surface must fit header + status + Queue + controls inside it.
+ */
+const MAX_MESSAGE_BLOCKS = 50;
+
+/**
+ * Queue page size INSIDE the combined message. The standalone queue surface
+ * defaults to 10 (`followup-queue-blocks.ts:73`); here the header, the status
+ * panel and the action rows share the same 50-block budget, so the embed is
+ * capped tighter. Pagination keeps every backlog item reachable.
+ */
+const FOLLOWUP_EMBED_PAGE_SIZE = 5;
+
+/** Non-item queue blocks: title + summary + (freeze) + (nav), plus a degradation note. */
+const FOLLOWUP_FIXED_BLOCKS = 4;
+
+/**
+ * A24b — Slack `data.error` codes that PROVE no message was created, and are
+ * therefore the only ones allowed to release a delivery intent for a retry.
+ *
+ * Deliberately a tiny allow-list of explicit API codes. Anything absent —
+ * `ratelimited`, a 5xx, a socket timeout, an unrecognised string — leaves the
+ * intent `pending`, i.e. "unknown outcome", because the alternative failure
+ * mode is a duplicate card that nothing can clean up. Transport-level fields
+ * (`err.code` = ETIMEDOUT/ECONNRESET) are never consulted: they describe the
+ * connection, not what Slack did with the request.
+ */
+const DEFINITIVE_POST_REJECTIONS: ReadonlySet<string> = new Set([
+  'channel_not_found',
+  'not_in_channel',
+  'invalid_auth',
+  'invalid_blocks',
+  'invalid_arguments',
+]);
+
+/** Stable display order for the fallback-text state breakdown. */
+const FOLLOWUP_STATE_ORDER: readonly FollowupItemState[] = [
+  'queued',
+  'reserved',
+  'claimed',
+  'dispatched',
+  'paused',
+  'uncertain',
+  'failed',
+  'resolved',
+  'cancelled',
+];
+
+/**
+ * What the render path resolved about the follow-up queue. `view` absent +
+ * `error` present = degraded read; both absent = the caller returns `null`
+ * (no queue configured for this session).
+ */
+interface ResolvedFollowup {
+  view?: FollowupQueueView;
+  error?: string;
+}
+
 // ---------------------------------------------------------------------------
 // Per-session render state (debounce, coalescing, PR cache)
 // ---------------------------------------------------------------------------
@@ -160,6 +324,26 @@ interface SessionRenderState {
   prCache: PRCacheEntry | null;
   // Dashboard v2.1 chunk I — leading+trailing debounce bookkeeping.
   lastEditMs: number;
+  /**
+   * U3/U9 — the ONLY queue-derived state the surface owns: which page of the
+   * follow-up queue this session is currently looking at (1-based). Items,
+   * states, freeze and epoch are never copied here; they are read from the
+   * injected queue view on every render.
+   */
+  followupPage: number;
+  /**
+   * A24b — whether the "delivery held, not retrying" warning reaction has
+   * already been placed for this session. The condition is sticky by nature
+   * (a pending intent stays pending until something resolves it), so the
+   * reaction is placed at most once instead of on every render.
+   */
+  outboxWarned: boolean;
+  /**
+   * Whether the "turn epoch unverifiable" rejection has already been reported
+   * for this session. A degraded queue store rejects EVERY epoch-stamped write
+   * of the turn, so this is warned once per session and debug-logged after.
+   */
+  epochUnverifiableWarned: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -201,6 +385,9 @@ export class ThreadSurface {
         pendingOverrides: null,
         prCache: null,
         lastEditMs: 0,
+        followupPage: 1,
+        outboxWarned: false,
+        epochUnverifiableWarned: false,
       };
       this.sessions.set(sessionKey, state);
     }
@@ -256,6 +443,16 @@ export class ThreadSurface {
   /**
    * Update session status and request render.
    * Replaces ThreadPanel.setStatus().
+   *
+   * `options.expectedTurnEpoch` (A28) — when supplied and stale, the call is a
+   * no-op: neither the session state nor the Slack message is touched, so a
+   * dying turn cannot repaint the new turn's status line.
+   *
+   * `patch.lastProgressAt` / `patch.lastSignalAt` (U9) are OPTIONAL and
+   * sticky: they are written only when present. This method is called on every
+   * lifecycle transition, so treating its invocation as progress would make
+   * `마지막 활동` a lie about a heartbeat. Only a caller that witnessed real
+   * work supplies the timestamp.
    */
   async setStatus(
     session: ConversationSession,
@@ -264,8 +461,15 @@ export class ThreadSurface {
       agentPhase?: string;
       activeTool?: string;
       waitingForChoice?: boolean;
+      lastProgressAt?: number;
+      lastSignalAt?: number;
     },
+    options?: ThreadSurfaceWriteOptions,
   ): Promise<void> {
+    // Epoch check BEFORE any mutation — a rejected late write must leave the
+    // live turn's state exactly as it found it.
+    if (this.isStaleWrite(sessionKey, options)) return;
+
     if (!session.actionPanel) {
       session.actionPanel = {
         channelId: session.channelId,
@@ -278,7 +482,16 @@ export class ThreadSurface {
     if (typeof patch.waitingForChoice === 'boolean') {
       session.actionPanel.waitingForChoice = patch.waitingForChoice;
     }
+    // Heartbeat: this call happened. NOT a claim that the work moved.
     session.actionPanel.statusUpdatedAt = Date.now();
+    // U9 — real progress / liveness are written ONLY when the caller supplies
+    // them, and are never cleared by a later generic lifecycle call.
+    if (patch.lastProgressAt !== undefined) {
+      session.actionPanel.lastProgressAt = patch.lastProgressAt;
+    }
+    if (patch.lastSignalAt !== undefined) {
+      session.actionPanel.lastSignalAt = patch.lastSignalAt;
+    }
 
     try {
       await this.renderViaFlush(session, sessionKey, false);
@@ -293,12 +506,20 @@ export class ThreadSurface {
   /**
    * Finalize agent phase based on endTurn info (Issue #42 S4).
    * Called after stream completes, replaces ad-hoc phase logic in StreamExecutor.
+   *
+   * `options.expectedTurnEpoch` (A28) matters MOST here: this is the last write
+   * a finishing turn makes, and it lands after teardown — precisely the window
+   * in which a `Send now` has already promoted a queued item and started a new
+   * turn. Ungated, the dying turn's "사용자 액션 대기" would overwrite the new
+   * turn's live status. The gate is forwarded to {@link setStatus}, which drops
+   * the whole call (state + Slack) when the epoch no longer matches.
    */
   async finalizeOnEndTurn(
     session: ConversationSession,
     sessionKey: string,
     endTurnInfo: EndTurnInfo,
     hasPendingChoice: boolean,
+    options?: ThreadSurfaceWriteOptions,
   ): Promise<void> {
     let agentPhase: string;
     if (hasPendingChoice) {
@@ -309,11 +530,16 @@ export class ThreadSurface {
       agentPhase = '사용자 액션 대기';
     }
 
-    await this.setStatus(session, sessionKey, {
-      agentPhase,
-      activeTool: undefined,
-      waitingForChoice: hasPendingChoice,
-    });
+    await this.setStatus(
+      session,
+      sessionKey,
+      {
+        agentPhase,
+        activeTool: undefined,
+        waitingForChoice: hasPendingChoice,
+      },
+      options,
+    );
   }
 
   /**
@@ -413,8 +639,16 @@ export class ThreadSurface {
 
   /**
    * Generic re-render (e.g. after usage update).
+   *
+   * `options.expectedTurnEpoch` (A28) — same gate as {@link setStatus}.
    */
-  async updatePanel(session: ConversationSession, sessionKey: string): Promise<void> {
+  async updatePanel(
+    session: ConversationSession,
+    sessionKey: string,
+    options?: ThreadSurfaceWriteOptions,
+  ): Promise<void> {
+    if (this.isStaleWrite(sessionKey, options)) return;
+
     if (!session.actionPanel) {
       await this.initialize(session, sessionKey);
       return;
@@ -427,6 +661,48 @@ export class ThreadSurface {
       }
     }
     await this.renderViaFlush(session, sessionKey, false);
+  }
+
+  /**
+   * U3/U9 — re-render because the follow-up queue changed (enqueue, state
+   * transition, freeze, drain). Forced: a queue change must always land, even
+   * when the rest of the surface is byte-identical.
+   *
+   * `page` is optional; when given it becomes the session's current page
+   * (validated + clamped like {@link setFollowupPage}).
+   */
+  async updateFollowup(session: ConversationSession, sessionKey: string, page?: number): Promise<void> {
+    if (page !== undefined) {
+      this.getState(sessionKey).followupPage = this.clampFollowupPage(sessionKey, page);
+    }
+    if (!session.actionPanel) {
+      await this.initialize(session, sessionKey);
+      return;
+    }
+    await this.renderViaFlush(session, sessionKey, true);
+  }
+
+  /**
+   * U3/U9 — move the embedded queue to `page` (1-based) and re-render.
+   *
+   * Input is validated and clamped, never trusted: a non-integer, a 0/negative
+   * page or a page past the end collapses to the nearest real page rather than
+   * rendering an empty queue. Returns the page actually applied.
+   *
+   * The session is looked up through the injected claude handler, so a Slack
+   * pagination click (which carries only `sessionKey` + `page`) renders the
+   * LATEST known session rather than a snapshot captured at button-mint time.
+   * No session known → the page is still recorded for the next render.
+   */
+  async setFollowupPage(sessionKey: string, page: number): Promise<number> {
+    const applied = this.clampFollowupPage(sessionKey, page);
+    this.getState(sessionKey).followupPage = applied;
+
+    const session = this.getLiveSession(sessionKey);
+    if (session?.actionPanel) {
+      await this.renderViaFlush(session, sessionKey, true);
+    }
+    return applied;
   }
 
   /**
@@ -594,8 +870,9 @@ export class ThreadSurface {
     force: boolean,
     overrides?: { closed?: boolean },
   ): Promise<void> {
-    const panelState = session.actionPanel || {};
-    const channelId = panelState.channelId || session.channelId;
+    let current = session;
+    let panelState = current.actionPanel || {};
+    const channelId = panelState.channelId || current.channelId;
 
     if (!channelId) {
       this.logger.debug('Skipping surface render (no channel)', { sessionKey });
@@ -605,11 +882,23 @@ export class ThreadSurface {
     // Ensure choice permalink is resolved before building blocks
     if (panelState.waitingForChoice && !panelState.choiceMessageLink && panelState.choiceMessageTs) {
       await this.ensureChoiceMessageLink(panelState as NonNullable<ConversationSession['actionPanel']>, channelId);
+      // A28 — the session may have advanced while we awaited the permalink.
+      // Re-acquire the live record so this render paints the CURRENT state
+      // instead of writing back the state we captured before the await.
+      const latest = this.getLiveSession(sessionKey);
+      if (latest) {
+        current = latest;
+        panelState = current.actionPanel || panelState;
+      }
     }
 
+    // Resolve the follow-up queue ONCE per render so the blocks and the
+    // accessible fallback text can never disagree about what is in the queue.
+    const followup = this.resolveFollowup(sessionKey);
+
     // Build combined blocks
-    const blocks = this.buildCombinedBlocks(session, sessionKey, overrides);
-    const text = this.buildFallbackText(session, overrides);
+    const blocks = this.buildCombinedBlocks(current, sessionKey, overrides, followup);
+    const text = this.buildFallbackText(current, overrides, followup);
     const renderKey = JSON.stringify(blocks);
 
     // Skip if nothing changed (unless forced)
@@ -628,37 +917,80 @@ export class ThreadSurface {
         });
         rendered = true;
       } catch (error: any) {
-        const isMessageNotFound =
-          error?.data?.error === 'message_not_found' || error?.message?.includes('message_not_found');
+        // Two different questions, two different tests. The loose one decides
+        // whether to drop the in-memory ts (legacy behaviour, unchanged); only
+        // the STRICT one — an explicit `data.error` code from the API — is
+        // allowed to rewrite the durable record, because that record is the
+        // thing standing between a 404 and a duplicate card.
+        const isDefinitelyGone = ThreadSurface.isMessageNotFound(error);
+        const isMessageNotFound = isDefinitelyGone || error?.message?.includes('message_not_found');
         this.logger.warn('Failed to update surface message', {
           sessionKey,
           isMessageNotFound,
           error: error?.message || error,
         });
-        // For bot-initiated with transient errors (network, rate-limit):
-        // keep messageTs so we retry the *update* on next render, not create a duplicate.
-        if (session.threadModel === 'bot-initiated' && !isMessageNotFound) {
+        // A transient failure (network, rate-limit, timeout) says NOTHING about
+        // whether the message still exists — only `message_not_found` does.
+        // Dropping messageTs here posts a SECOND surface message into the
+        // thread and permanently splits the single-writer invariant, so we keep
+        // the reference and retry the *update* on the next render. This holds
+        // for every thread model: the previous bot-initiated-only guard let the
+        // duplicate through on user-initiated threads.
+        if (!isMessageNotFound) {
           return;
         }
-        // 404 or user-initiated: clear stale reference and fall through to create new
+        // 404 only: the message is really gone — clear the stale reference and
+        // fall through to create a new one.
+        const deadTs = panelState.messageTs;
         panelState.messageTs = undefined;
+        if (isDefinitelyGone && deadTs) {
+          this.recordDeletedPanel(sessionKey, deadTs);
+        }
       }
     }
 
     // Create new message if needed (any model — including bot-initiated after message_not_found)
     if (!panelState.messageTs) {
-      try {
-        const threadTs = session.threadRootTs || session.threadTs;
-        const result = await this.deps.slackApi.postMessage(channelId, text, {
+      const threadTs = current.threadRootTs || current.threadTs;
+      if (!this.deps.surfaceOutbox) {
+        // Legacy path — unchanged for hosts that have not wired the outbox.
+        try {
+          const result = await this.deps.slackApi.postMessage(channelId, text, {
+            blocks,
+            threadTs,
+            unfurlLinks: false,
+            unfurlMedia: false,
+          });
+          panelState.messageTs = result?.ts;
+          rendered = true;
+        } catch (error) {
+          this.logger.warn('Failed to post surface message', { sessionKey, error });
+        }
+      } else {
+        const delivered = await this.deliverViaOutbox(
+          this.deps.surfaceOutbox,
+          { sessionKey, channelId, threadTs },
+          text,
           blocks,
-          threadTs,
-          unfurlLinks: false,
-          unfurlMedia: false,
-        });
-        panelState.messageTs = result?.ts;
-        rendered = true;
-      } catch (error) {
-        this.logger.warn('Failed to post surface message', { sessionKey, error });
+        );
+        if (!delivered) return;
+        if (delivered.adopt === 'update') {
+          // A prior generation already posted this card: update it in place.
+          panelState.messageTs = delivered.messageTs;
+          try {
+            await this.deps.slackApi.updateMessage(channelId, delivered.messageTs, text, blocks, undefined, {
+              unfurlLinks: false,
+              unfurlMedia: false,
+            });
+            rendered = true;
+          } catch (error) {
+            this.logger.warn('Failed to update adopted surface message', { sessionKey, error });
+            return;
+          }
+        } else {
+          panelState.messageTs = delivered.messageTs;
+          rendered = true;
+        }
       }
     }
 
@@ -668,8 +1000,231 @@ export class ThreadSurface {
     panelState.renderKey = renderKey;
     panelState.lastRenderedAt = Date.now();
     panelState.channelId = channelId;
-    panelState.userId = panelState.userId || session.ownerId;
-    session.actionPanel = panelState;
+    panelState.userId = panelState.userId || current.ownerId;
+    current.actionPanel = panelState;
+
+    // A24b — publish only once the ts is confirmed and in session memory, so a
+    // broadcast never advertises a message id the durable record disagrees with.
+    if (this.deps.surfaceOutbox && this.deps.sessionRegistry) {
+      try {
+        this.deps.sessionRegistry.persistAndBroadcast(sessionKey);
+      } catch (error) {
+        this.logger.warn('Failed to persist session after surface delivery', { sessionKey, error });
+      }
+    }
+  }
+
+  // =========================================================================
+  // A24b — durable delivery
+  // =========================================================================
+
+  /**
+   * Post the panel under a durable delivery intent.
+   *
+   * Ordering is the whole point: the intent is committed to disk BEFORE the
+   * Slack call, and the ack is committed BEFORE the `ts` is published to
+   * session memory. Every abrupt stop therefore lands on a record that means
+   * "unknown", and an unknown outcome never authorises a second post.
+   *
+   * Returns `null` when the caller must not render — the surface is held, and
+   * the reason has been warned about. `adopt:'update'` means a previous
+   * generation already delivered the card and the caller should edit it.
+   */
+  private async deliverViaOutbox(
+    outbox: ThreadSurfaceOutbox,
+    address: SurfaceAddress,
+    text: string,
+    blocks: any[],
+  ): Promise<{ messageTs: string; adopt: 'post' | 'update' } | null> {
+    const { sessionKey, channelId, threadTs } = address;
+
+    let outcome: BeginPostOutcome;
+    try {
+      // MUST complete before any network call: a crash between here and the
+      // post has to leave a durable `pending` record behind.
+      outcome = outbox.beginPost(address);
+    } catch (error) {
+      // Store unusable (never loaded, or the commit failed). Fail closed.
+      this.logger.warn('Surface delivery blocked: outbox unavailable', {
+        sessionKey,
+        error: (error as Error)?.message ?? String(error),
+      });
+      await this.warnHeldDelivery(address);
+      return null;
+    }
+
+    if (outcome.status === 'blocked' || outcome.status === 'pending') {
+      this.logger.warn('Surface delivery held', {
+        sessionKey,
+        status: outcome.status,
+        reason: outcome.status === 'blocked' ? outcome.reason : `intent ${outcome.record.intentId} unresolved`,
+      });
+      await this.warnHeldDelivery(address);
+      return null;
+    }
+
+    if (outcome.status === 'sent') {
+      const record = outcome.record;
+      // A `ts` is only meaningful together with its channel/thread. If the
+      // stored address is not the one being rendered, the surface moved (or the
+      // caller is wrong) and this store cannot say which — updating anyway
+      // would 404 or edit an unrelated message, so hold instead.
+      if (record.channelId !== channelId || record.threadTs !== threadTs) {
+        this.logger.warn('Surface delivery held: stored address differs', {
+          sessionKey,
+          stored: { channelId: record.channelId, threadTs: record.threadTs },
+          current: { channelId, threadTs },
+        });
+        await this.warnHeldDelivery(address);
+        return null;
+      }
+      if (!record.messageTs) {
+        this.logger.warn('Surface delivery held: sent record carries no ts', { sessionKey });
+        await this.warnHeldDelivery(address);
+        return null;
+      }
+      return { messageTs: record.messageTs, adopt: 'update' };
+    }
+
+    // status === 'begin' — this call owns the one permitted post.
+    const record = outcome.record;
+    let ts: string | undefined;
+    try {
+      const result = await this.deps.slackApi.postMessage(channelId, text, {
+        blocks,
+        threadTs,
+        unfurlLinks: false,
+        unfurlMedia: false,
+      });
+      ts = result?.ts;
+    } catch (error) {
+      const code = ThreadSurface.definitiveRejectionCode(error);
+      if (code) {
+        // Proof that no message exists → release the surface for a fresh intent.
+        try {
+          outbox.markRejected(record.surfaceKey, record.intentId, code);
+        } catch (markError) {
+          this.logger.warn('Failed to record surface delivery rejection', { sessionKey, error: markError });
+        }
+        this.logger.warn('Surface delivery rejected', { sessionKey, code });
+        return null;
+      }
+      // Ambiguous: the card may exist. Leave the intent pending forever rather
+      // than risk a duplicate; a human resolves it.
+      this.logger.warn('Surface delivery outcome unknown — intent left pending', {
+        sessionKey,
+        error: (error as Error)?.message ?? String(error),
+      });
+      return null;
+    }
+
+    if (typeof ts !== 'string' || ts.length === 0) {
+      // Slack returned without an id we can address: same ambiguity as a throw.
+      this.logger.warn('Surface delivery returned no ts — intent left pending', { sessionKey });
+      return null;
+    }
+
+    try {
+      // Ack BEFORE the ts is published to memory/session state.
+      outbox.markSent(record.surfaceKey, record.intentId, ts);
+    } catch (error) {
+      // The card IS posted but we could not record it. Publishing the ts now
+      // would leave memory claiming a delivery the durable record calls
+      // pending; on the next restart that disagreement is unresolvable. Hold.
+      this.logger.warn('Surface delivery ack failed to persist — intent left pending', {
+        sessionKey,
+        error: (error as Error)?.message ?? String(error),
+      });
+      return null;
+    }
+
+    return { messageTs: ts, adopt: 'post' };
+  }
+
+  /**
+   * A24c — tell the outbox that the card it calls delivered is GONE, so the
+   * fall-through post can mint a fresh intent instead of being handed the dead
+   * `ts` straight back (which is a loop on a message that no longer exists).
+   *
+   * Narrow by construction: it acts only on a `sent` record for THIS surface
+   * whose `messageTs` is the one that just 404'd. No outbox, no record, a
+   * pending/rejected record, or a different ts — all left untouched, because the
+   * 404 is then evidence about a message this record does not describe, and
+   * clearing it would throw away the address of a card still in the thread.
+   *
+   * Best-effort on failure: if the transition cannot be persisted the record
+   * stays `sent`, `beginPost` re-serves the dead ts, and the render ends by
+   * holding the panel — never by posting a card nothing durable accounts for.
+   */
+  private recordDeletedPanel(sessionKey: string, deadTs: string): void {
+    const outbox = this.deps.surfaceOutbox;
+    if (!outbox) return;
+
+    const surfaceKey = threadPanelSurfaceKey(sessionKey);
+    let record: DeliveryIntentRecord | undefined;
+    try {
+      record = outbox.get(surfaceKey);
+    } catch (error) {
+      this.logger.warn('Could not read the outbox after a vanished surface message', {
+        sessionKey,
+        error: (error as Error)?.message ?? String(error),
+      });
+      return;
+    }
+
+    if (record?.state !== 'sent' || record.messageTs !== deadTs) return;
+
+    try {
+      outbox.markDeleted(surfaceKey, record.intentId, deadTs);
+      this.logger.warn('Surface message was deleted — intent released for a fresh post', { sessionKey, deadTs });
+    } catch (error) {
+      this.logger.warn('Failed to record the vanished surface message — intent left sent', {
+        sessionKey,
+        deadTs,
+        error: (error as Error)?.message ?? String(error),
+      });
+    }
+  }
+
+  /**
+   * Tell the thread, once, that the panel is held. A reaction on the thread
+   * root is used rather than a message: the held state exists precisely because
+   * we must not create messages we cannot account for.
+   */
+  private async warnHeldDelivery(address: SurfaceAddress): Promise<void> {
+    const state = this.getState(address.sessionKey);
+    if (state.outboxWarned) return;
+    const anchor = address.threadTs;
+    if (!anchor) return;
+    state.outboxWarned = true;
+    try {
+      await this.deps.slackApi.addReaction(address.channelId, anchor, 'warning');
+    } catch (error) {
+      this.logger.debug('Failed to add held-delivery reaction', { sessionKey: address.sessionKey, error });
+    }
+  }
+
+  /**
+   * The Slack error code when it PROVES nothing was created, else `undefined`.
+   * Reads `data.error` only — never `err.code`, never substring matching on a
+   * message — because only an explicit API code is evidence about Slack's side.
+   */
+  private static definitiveRejectionCode(error: unknown): string | undefined {
+    const code = (error as { data?: { error?: unknown } } | undefined)?.data?.error;
+    if (typeof code !== 'string') return undefined;
+    return DEFINITIVE_POST_REJECTIONS.has(code) ? code : undefined;
+  }
+
+  /**
+   * Slack said, explicitly, that the message does not exist. Same evidence rule
+   * as {@link definitiveRejectionCode}: `data.error` and an exact match only —
+   * never `err.code` (that describes the socket) and never a substring of a
+   * message (any error text mentioning the code would qualify). This is the
+   * gate on rewriting the durable record, so a loose test here is how a live
+   * card loses its address.
+   */
+  private static isMessageNotFound(error: unknown): boolean {
+    return (error as { data?: { error?: unknown } } | undefined)?.data?.error === 'message_not_found';
   }
 
   // =========================================================================
@@ -678,22 +1233,35 @@ export class ThreadSurface {
 
   /**
    * Build the combined header + panel blocks.
+   *
+   * Layout with the U3/U9 embed:
+   *   header · status/metrics · **Queue** · divider · action rows · summary
+   *
+   * The Queue goes AFTER the header and BEFORE the existing action rows so the
+   * controls stay anchored at the bottom of the message where users already
+   * look for them, and it is a distinct surface from the autogoal `Goals`
+   * queue (`ssot.md` §3.6 — the two are never merged).
+   *
+   * `followup` is the once-per-render resolution from {@link doRender}; pass
+   * `undefined` to have it resolved here (used by direct unit calls).
    */
   private buildCombinedBlocks(
     session: ConversationSession,
     sessionKey: string,
     overrides?: { closed?: boolean },
+    followup?: ResolvedFollowup | null,
   ): any[] {
     const isClosed = overrides?.closed || !session.isActive || session.terminated === true;
     const hasActiveRequest = this.deps.requestCoordinator.isRequestActive(sessionKey);
     const panelState = session.actionPanel || {};
     const choiceMessageLink = panelState.choiceMessageLink;
+    const resolvedFollowup = followup === undefined ? this.resolveFollowup(sessionKey) : followup;
 
     // Read PR status from per-session cache (never fetch in render path)
     const prStatusInfo = this.getState(sessionKey).prCache;
 
     if (isClosed) {
-      return this.buildClosedBlocks(session, sessionKey);
+      return this.buildClosedBlocks(session, sessionKey, resolvedFollowup);
     }
 
     const blocks: any[] = [];
@@ -715,27 +1283,63 @@ export class ThreadSurface {
       contextRemainingPercent: this.getContextRemainingPercent(session),
       hasActiveRequest,
       statusUpdatedAt: panelState.statusUpdatedAt,
+      // U9 — step + real progress + liveness, each from its own source.
+      agentPhase: panelState.agentPhase,
+      activeTool: panelState.activeTool,
+      lastProgressAt: panelState.lastProgressAt,
+      lastSignalAt: panelState.lastSignalAt,
       logVerbosity: session.logVerbosity,
       prStatus: prStatusInfo?.prStatus,
       prUrl: prStatusInfo?.prUrl,
     });
 
-    // ActionPanelBuilder.build() returns full blocks — use them after header
-    blocks.push(...panelPayload.blocks);
+    // ActionPanelBuilder.build() returns full blocks: status/metrics first and
+    // the action rows (plus their divider) last. Split there so the Queue can
+    // sit between them.
+    const panelBlocks = panelPayload.blocks;
+    const splitAt = ThreadSurface.actionRowsIndex(panelBlocks);
+    blocks.push(...panelBlocks.slice(0, splitAt));
+    const actionRows = panelBlocks.slice(splitAt);
 
-    // ── 3. Summary section ──
+    // ── 3. Follow-up Queue (U3/U9) ──
+    blocks.push(
+      ...this.buildFollowupBlocks(sessionKey, MAX_MESSAGE_BLOCKS - blocks.length - actionRows.length, resolvedFollowup),
+    );
+
+    // ── 4. Action rows ──
+    blocks.push(...actionRows);
+
+    // ── 5. Summary section ──
     const summaryBlocks =
       session.actionPanel?.summaryBlocks && Array.isArray(session.actionPanel.summaryBlocks)
         ? session.actionPanel.summaryBlocks
         : [];
 
-    // Append executive summary blocks if present
+    // Append executive summary blocks if present, but only as far as the
+    // 50-block budget allows. The summary is the optional part of the surface;
+    // the header, the Queue and the controls are not, so overflow trims HERE
+    // and never silently drops a button.
     // Trace: docs/archive/features/turn-summary-lifecycle/trace.md, S3
     if (summaryBlocks.length > 0) {
-      blocks.push(...summaryBlocks);
+      blocks.push(...summaryBlocks.slice(0, Math.max(0, MAX_MESSAGE_BLOCKS - blocks.length)));
     }
 
     return blocks;
+  }
+
+  /**
+   * Index of the trailing action rows inside an ActionPanelBuilder payload —
+   * i.e. where the Queue is inserted. Walks back over the contiguous run of
+   * `actions` blocks and includes the divider that introduces them, so the
+   * Queue lands above the separator rather than between it and the buttons.
+   * A payload with no trailing actions (the closed panel) returns its length,
+   * which appends the Queue at the end.
+   */
+  private static actionRowsIndex(blocks: any[]): number {
+    let index = blocks.length;
+    while (index > 0 && blocks[index - 1]?.type === 'actions') index--;
+    if (index > 0 && index < blocks.length && blocks[index - 1]?.type === 'divider') index--;
+    return index;
   }
 
   /**
@@ -748,9 +1352,17 @@ export class ThreadSurface {
   }
 
   /**
-   * Closed state: header + closed panel.
+   * Closed state: header + closed panel + Queue.
+   *
+   * The Queue stays on the closed surface on purpose: closing a session
+   * freezes and cancels queue items (`ssot.md` §3.5 / A18), and that outcome
+   * has to remain visible as history instead of disappearing with the panel.
    */
-  private buildClosedBlocks(session: ConversationSession, sessionKey: string): any[] {
+  private buildClosedBlocks(
+    session: ConversationSession,
+    sessionKey: string,
+    followup?: ResolvedFollowup | null,
+  ): any[] {
     const prStatusInfo = this.getState(sessionKey).prCache;
     const blocks: any[] = [];
 
@@ -772,15 +1384,241 @@ export class ThreadSurface {
     });
     blocks.push(...panelPayload.blocks);
 
+    const resolvedFollowup = followup === undefined ? this.resolveFollowup(sessionKey) : followup;
+    blocks.push(...this.buildFollowupBlocks(sessionKey, MAX_MESSAGE_BLOCKS - blocks.length, resolvedFollowup));
+
     return blocks;
   }
 
-  private buildFallbackText(session: ConversationSession, overrides?: { closed?: boolean }): string {
+  /**
+   * Accessible fallback for clients that cannot render blocks (A22/A23).
+   *
+   * Carries the queue's COUNTS, STATES and freeze reason — never the queued
+   * message bodies. Slack parses this string as mrkdwn, so the one
+   * operator-supplied fragment in it (the freeze reason) is entity-escaped: an
+   * unescaped `<!channel>` in a reason would become a real broadcast ping.
+   *
+   * `followup` is the once-per-render resolution from {@link doRender};
+   * omitting it yields the legacy owner/title-only text.
+   */
+  private buildFallbackText(
+    session: ConversationSession,
+    overrides?: { closed?: boolean },
+    followup?: ResolvedFollowup | null,
+  ): string {
     const title = session.title || 'Session';
     const owner = session.ownerName || session.ownerId || '';
     const isClosed = overrides?.closed || !session.isActive || session.terminated === true;
     const closed = isClosed ? ' [종료됨]' : '';
-    return `${owner} — ${title}${closed}`;
+    const base = `${owner} — ${title}${closed}`;
+
+    const queue = followup ? ThreadSurface.followupFallbackText(followup) : undefined;
+    return queue ? `${base} · ${queue}` : base;
+  }
+
+  // =========================================================================
+  // Follow-up queue (U3/U9)
+  // =========================================================================
+
+  /**
+   * Read the injected queue view for this session, tolerating a provider that
+   * throws: a broken queue store must degrade the Queue section, not take the
+   * whole surface render down with it.
+   *
+   * RAW read: applies no display filtering, so callers that need a CONTROL
+   * fact (the turn epoch, the page count) see the queue even when it has
+   * nothing to draw. Returns `null` only when no provider is wired at all.
+   */
+  private readFollowup(sessionKey: string): ResolvedFollowup | null {
+    const { getFollowupView, getFollowupError } = this.deps;
+    if (!getFollowupView && !getFollowupError) return null;
+
+    let view: FollowupQueueView | undefined;
+    let error: string | undefined;
+
+    try {
+      view = getFollowupView?.(sessionKey);
+    } catch (err) {
+      error = (err as Error)?.message ?? String(err);
+      this.logger.warn('Follow-up queue view read failed', { sessionKey, error });
+    }
+
+    if (!error) {
+      try {
+        error = getFollowupError?.(sessionKey);
+      } catch (err) {
+        error = (err as Error)?.message ?? String(err);
+      }
+    }
+
+    if (!view && !error) return null;
+    return { view, error };
+  }
+
+  /**
+   * The queue as the RENDER path sees it: {@link readFollowup} plus one
+   * display rule — an empty, unfrozen queue is the normal case for most
+   * sessions, so it renders nothing instead of a permanent "0 item(s)" row.
+   *
+   * This filtering is display-only and MUST NOT be used for control decisions.
+   * Review round 1 caught exactly that: reading the turn epoch through here
+   * made the A28 guard inert for every ordinary turn with an empty queue,
+   * because "nothing to draw" was indistinguishable from "no epoch known".
+   */
+  private resolveFollowup(sessionKey: string): ResolvedFollowup | null {
+    const resolved = this.readFollowup(sessionKey);
+    if (!resolved) return null;
+    const { view, error } = resolved;
+    if (view && view.items.length === 0 && !view.freeze && !error) return null;
+    return resolved;
+  }
+
+  /**
+   * Queue blocks for the combined message, inside `budget` blocks.
+   *
+   * The page size shrinks with the budget (and pagination grows to match), so
+   * the embed can never push the message past Slack's 50-block cap no matter
+   * how long the backlog or how tall the rest of the surface is.
+   */
+  private buildFollowupBlocks(sessionKey: string, budget: number, followup?: ResolvedFollowup | null): any[] {
+    if (!followup || budget < 2) return [];
+    const { view, error } = followup;
+
+    // Degraded read: say so, visibly, instead of showing an empty queue.
+    if (!view) {
+      return [
+        { type: 'section', text: { type: 'plain_text', text: FOLLOWUP_QUEUE_TITLE } },
+        { type: 'context', elements: [{ type: 'plain_text', text: `unavailable · ${error}` }] },
+      ];
+    }
+
+    const reserve = error ? FOLLOWUP_FIXED_BLOCKS + 1 : FOLLOWUP_FIXED_BLOCKS;
+    const pageSize = Math.min(FOLLOWUP_EMBED_PAGE_SIZE, Math.floor((budget - reserve) / 2));
+
+    // Not even one item fits: keep the counts (they are the actionable signal)
+    // and drop the item rows.
+    if (pageSize < 1) {
+      return [
+        { type: 'section', text: { type: 'plain_text', text: FOLLOWUP_QUEUE_TITLE } },
+        {
+          type: 'context',
+          elements: [{ type: 'plain_text', text: ThreadSurface.followupCountsText(view) }],
+        },
+      ];
+    }
+
+    const { blocks } = buildFollowupQueueBlocks(view, {
+      page: this.getState(sessionKey).followupPage,
+      pageSize,
+    });
+    const out = [...blocks];
+    if (error) {
+      out.push({ type: 'context', elements: [{ type: 'plain_text', text: `degraded · ${error}` }] });
+    }
+    return out;
+  }
+
+  /** `2 item(s) · queued 1 · paused 1` — counts and states only, never message bodies. */
+  private static followupCountsText(view: FollowupQueueView): string {
+    const counts = new Map<FollowupItemState, number>();
+    for (const item of view.items) counts.set(item.state, (counts.get(item.state) ?? 0) + 1);
+    const breakdown = FOLLOWUP_STATE_ORDER.filter((state) => counts.has(state))
+      .map((state) => `${state} ${counts.get(state)}`)
+      .join(' · ');
+    const parts = [`${view.items.length} item(s)`];
+    if (breakdown) parts.push(breakdown);
+    return parts.join(' · ');
+  }
+
+  /** Queue half of the accessible fallback text. Freeze reason is mrkdwn-escaped. */
+  private static followupFallbackText(followup: ResolvedFollowup): string {
+    const { view, error } = followup;
+    if (!view) return `${FOLLOWUP_QUEUE_TITLE} unavailable · ${escapeSlackMrkdwn(error ?? 'unknown')}`;
+
+    const parts = [`${FOLLOWUP_QUEUE_TITLE} ${ThreadSurface.followupCountsText(view)}`];
+    if (view.freeze) parts.push(`frozen · ${escapeSlackMrkdwn(view.freeze.reason)}`);
+    if (error) parts.push(`degraded · ${escapeSlackMrkdwn(error)}`);
+    return parts.join(' · ');
+  }
+
+  /**
+   * Clamp a requested page into `[1, pageCount]` using the queue's own item
+   * count. Non-integers and non-finite input collapse to page 1. The renderer
+   * clamps again against the budget-derived page size, so this never renders
+   * an empty page even if the two disagree.
+   */
+  private clampFollowupPage(sessionKey: string, requested: number): number {
+    if (!Number.isFinite(requested)) return 1;
+    const page = Math.max(1, Math.floor(requested));
+    const view = this.readFollowup(sessionKey)?.view;
+    if (!view) return page;
+    const pageCount = Math.max(1, Math.ceil(view.items.length / FOLLOWUP_EMBED_PAGE_SIZE));
+    return Math.min(page, pageCount);
+  }
+
+  /**
+   * A28 write gate — `true` when the caller's turn epoch no longer matches the
+   * queue's, or cannot be verified at all (see {@link ThreadSurfaceWriteOptions}).
+   *
+   * An UNVERIFIABLE epoch is treated as stale, not as a pass. A write that
+   * carries `expectedTurnEpoch` is asserting "I belong to generation N"; if the
+   * store is degraded and the live generation is unreadable, honouring that
+   * assertion lets a superseded turn repaint the live turn's surface exactly
+   * when the queue is least trustworthy. Writes that carry NO epoch
+   * (`expectedTurnEpoch === undefined`) assert nothing and are unaffected —
+   * that is the legacy/no-queue path, and it keeps the surface rendering when
+   * no queue is wired at all.
+   */
+  private isStaleWrite(sessionKey: string, options?: ThreadSurfaceWriteOptions): boolean {
+    const expected = options?.expectedTurnEpoch;
+    if (expected === undefined) return false;
+
+    // RAW read on purpose — an empty queue still has a live turn epoch.
+    // An ABSENT counter is unverifiable, NOT "epoch 0" (coercing it would make
+    // every `expected > 0` look like a genuine generation mismatch and log as
+    // one). A genuine 0 still compares.
+    const current = this.readFollowup(sessionKey)?.view?.turnEpoch;
+    if (current === undefined) {
+      this.warnEpochUnverifiableOnce(sessionKey, expected);
+      return true;
+    }
+    if (current === expected) return false;
+
+    this.logger.debug('Rejected stale surface write', { sessionKey, expected, current });
+    return true;
+  }
+
+  /**
+   * One warn per session for an unverifiable turn epoch. A degraded store
+   * rejects EVERY write of the turn, so a warn per write is a log flood that
+   * buries the one line an operator needs.
+   */
+  private warnEpochUnverifiableOnce(sessionKey: string, expected: number): void {
+    const state = this.getState(sessionKey);
+    if (state.epochUnverifiableWarned) {
+      this.logger.debug('Rejected surface write — turn epoch still unverifiable', { sessionKey, expected });
+      return;
+    }
+    state.epochUnverifiableWarned = true;
+    this.logger.warn('Rejected surface write — turn epoch unverifiable (queue view unreadable)', {
+      sessionKey,
+      expected,
+    });
+  }
+
+  /**
+   * The session as the handler knows it RIGHT NOW. Used after awaits and by
+   * click handlers that only carry a sessionKey. Tolerates deps built without
+   * `getSessionByKey` (legacy test harnesses).
+   */
+  private getLiveSession(sessionKey: string): ConversationSession | undefined {
+    const handler = this.deps.claudeHandler;
+    if (typeof handler?.getSessionByKey !== 'function') return undefined;
+    try {
+      return handler.getSessionByKey(sessionKey);
+    } catch {
+      return undefined;
+    }
   }
 
   // =========================================================================

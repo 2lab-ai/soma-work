@@ -1,0 +1,1049 @@
+import { describe, expect, it, vi } from 'vitest';
+import {
+  type DispatchAuthContext,
+  type DispatcherNotice,
+  type DispatchOutcome,
+  type DispatchRequest,
+  FollowupDispatcher,
+  type FollowupDispatcherDeps,
+  type FollowupQueuePort,
+  type InterruptAuthContext,
+  type SendNowResult,
+} from '../followup-dispatcher';
+import { type FollowupItem, FollowupQueue } from '../followup-queue';
+import type { MessageEvent } from '../pipeline/types';
+
+const SESSION = 'C1:1700.000000';
+const AUTHOR = 'U-AUTHOR';
+const CLICKER = 'U-CLICKER';
+
+function event(over: Partial<MessageEvent> = {}): MessageEvent {
+  return { user: AUTHOR, channel: 'C1', ts: '1700.000100', text: '진행중인거 알려줘?', ...over };
+}
+
+/** Flush every pending microtask — the authorization/interrupt hooks are async. */
+function tick(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+function deferred<T = void>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+
+function enqueue(queue: FollowupQueue, message: MessageEvent): FollowupItem {
+  const result = queue.enqueue(SESSION, message);
+  if (result.status !== 'queued') throw new Error(`enqueue failed: ${result.status}`);
+  return result.item;
+}
+
+/**
+ * Explicit port over the real `FollowupQueue` — every method delegates, so
+ * these tests run against the real FIFO/CAS/turn-generation state machine
+ * rather than a mock of it. `extras` exists only so a test can inject a
+ * failing store on one specific operation.
+ */
+function portOf(queue: FollowupQueue, extras: Partial<FollowupQueuePort> = {}): FollowupQueuePort {
+  return {
+    claimNext: (s) => queue.claimNext(s),
+    reserve: (s, i, e, t) => queue.reserve(s, i, e, t),
+    promote: (s, i, e) => queue.promote(s, i, e),
+    markDispatched: (s, i, e) => queue.markDispatched(s, i, e),
+    settle: (s, i, e, o, r) => queue.settle(s, i, e, o, r),
+    rollback: (s, i, e, r) => queue.rollback(s, i, e, r),
+    get: (s, i) => queue.get(s, i),
+    list: (s) => queue.list(s),
+    freezeReason: (s) => queue.freezeReason(s),
+    beginTurn: (s) => queue.beginTurn(s),
+    getTurnEpoch: (s) => queue.getTurnEpoch(s),
+    markInterrupted: (s, i, e, r) => queue.markInterrupted(s, i, e, r),
+    ...extras,
+  };
+}
+
+interface PendingRun {
+  request: DispatchRequest;
+  settle: (outcome: DispatchOutcome) => void;
+}
+
+/**
+ * Click a rendered `Send now` control the way the host does: with the payload
+ * the dispatcher handed out at render time (item CAS epoch + turn epoch).
+ */
+function click(h: { dispatcher: FollowupDispatcher }, itemId: string, clicker = CLICKER): Promise<SendNowResult> {
+  const payload = h.dispatcher.controlPayload(SESSION, itemId);
+  if (!payload) throw new Error(`no control payload for ${itemId}`);
+  return h.dispatcher.sendNow(SESSION, payload.itemId, payload.itemEpoch, clicker, payload.turnEpoch);
+}
+
+function harness(overrides: Partial<FollowupDispatcherDeps> = {}) {
+  const queue = new FollowupQueue();
+  // Spy that still performs the real `dispatched → uncertain` transition.
+  const markInterrupted = vi.fn((sessionKey: string, itemId: string, expectedEpoch: number, reason: string) =>
+    queue.markInterrupted(sessionKey, itemId, expectedEpoch, reason),
+  );
+  const port = portOf(queue, { markInterrupted });
+  const pending: PendingRun[] = [];
+  const notices: DispatcherNotice[] = [];
+  const order: string[] = [];
+
+  // A real dispatch resolves only after the whole run is torn down. The test
+  // holds that promise so "the abort was signalled" and "the run is finished"
+  // stay two distinct instants (`stream-executor.ts:3702` removes the
+  // controller BEFORE the cleanup awaits at `:3726` — an absent coordinator
+  // slot is not a finished run).
+  const dispatch = vi.fn(
+    (request: DispatchRequest) =>
+      new Promise<DispatchOutcome>((resolve) => {
+        order.push('dispatch');
+        pending.push({ request, settle: resolve });
+      }),
+  );
+  const interrupt = vi.fn(async () => {
+    order.push('interrupt');
+  });
+  const invalidateSurface = vi.fn(() => {
+    order.push('invalidate');
+  });
+  const authorizeInterrupt = vi.fn(async (_context: InterruptAuthContext) => ({ allowed: true }) as const);
+  const authorizeDispatch = vi.fn(async (_context: DispatchAuthContext) => ({ allowed: true }) as const);
+
+  const deps: FollowupDispatcherDeps = {
+    queue: port,
+    dispatch,
+    interrupt,
+    invalidateSurface,
+    authorizeInterrupt,
+    authorizeDispatch,
+    notify: (notice) => notices.push(notice),
+    ...overrides,
+  };
+  const dispatcher = new FollowupDispatcher(deps);
+
+  // Expose the hooks that were actually INJECTED, not the defaults: otherwise
+  // a test that overrides one asserts against an object nobody ever calls.
+  return {
+    queue,
+    dispatcher,
+    dispatch: deps.dispatch as typeof dispatch,
+    interrupt: deps.interrupt as typeof interrupt,
+    invalidateSurface: deps.invalidateSurface as typeof invalidateSurface,
+    authorizeInterrupt: deps.authorizeInterrupt as typeof authorizeInterrupt,
+    authorizeDispatch: deps.authorizeDispatch as typeof authorizeDispatch,
+    markInterrupted,
+    pending,
+    notices,
+    order,
+  };
+}
+
+describe('FollowupDispatcher busy fence', () => {
+  it('reserves the session synchronously — before the dispatch promise settles', () => {
+    const h = harness();
+
+    const start = h.dispatcher.runInitial(SESSION, event({ ts: '1.0', text: 'first' }));
+
+    expect(start.status).toBe('dispatched');
+    expect(h.dispatcher.isBusy(SESSION)).toBe(true);
+    expect(h.dispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a second idle input while the first run is still in flight', () => {
+    const h = harness();
+    h.dispatcher.runInitial(SESSION, event({ ts: '1.0' }));
+
+    const second = h.dispatcher.runInitial(SESSION, event({ ts: '1.1' }));
+
+    expect(second.status).toBe('busy');
+    expect(h.dispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('stays busy through teardown and only clears once the run promise settles', async () => {
+    const h = harness();
+    const start = h.dispatcher.runInitial(SESSION, event({ ts: '1.0' }));
+    if (start.status !== 'dispatched') throw new Error('expected dispatch');
+
+    h.pending[0].settle({ result: 'safe' });
+    expect(h.dispatcher.isBusy(SESSION)).toBe(true); // promise resolved, continuation not run yet
+    const report = await start.run.settled;
+
+    expect(report.outcome).toEqual({ result: 'safe' });
+    expect(report.canDrain).toBe(true);
+    expect(h.dispatcher.isBusy(SESSION)).toBe(false);
+  });
+
+  it('treats a rejected dispatch promise as a confirmed error, not a success', async () => {
+    const h = harness({ dispatch: vi.fn(() => Promise.reject(new Error('executor blew up'))) });
+    const start = h.dispatcher.runInitial(SESSION, event({ ts: '1.0' }));
+    if (start.status !== 'dispatched') throw new Error('expected dispatch');
+
+    const report = await start.run.settled;
+
+    expect(report.outcome).toEqual({ result: 'error', reason: 'executor blew up' });
+    expect(report.canDrain).toBe(false);
+  });
+});
+
+describe('FollowupDispatcher turn generation', () => {
+  it('takes the turn epoch from the queue and bumps it exactly once per dispatch', () => {
+    const queue = new FollowupQueue();
+    let turnEpoch = 7;
+    const beginTurn = vi.fn(() => ++turnEpoch);
+    const getTurnEpoch = vi.fn(() => turnEpoch);
+    const h = harness({ queue: portOf(queue, { beginTurn, getTurnEpoch }) });
+
+    const start = h.dispatcher.runInitial(SESSION, event({ ts: '1.0' }));
+    if (start.status !== 'dispatched') throw new Error('expected dispatch');
+
+    expect(beginTurn).toHaveBeenCalledTimes(1);
+    expect(beginTurn).toHaveBeenCalledWith(SESSION);
+    expect(start.run.turnEpoch).toBe(8);
+    expect((h.dispatch.mock.calls[0][0] as DispatchRequest).turnEpoch).toBe(8);
+    expect(h.dispatcher.snapshot(SESSION).turnEpoch).toBe(8);
+  });
+
+  it('hands the host a control payload carrying both the item CAS epoch and the turn epoch', () => {
+    const queue = new FollowupQueue();
+    let turnEpoch = 3;
+    const h = harness({ queue: portOf(queue, { beginTurn: () => ++turnEpoch, getTurnEpoch: () => turnEpoch }) });
+    const item = enqueue(queue, event({ ts: '1.1' }));
+
+    expect(h.dispatcher.controlPayload(SESSION, item.id)).toEqual({
+      sessionKey: SESSION,
+      itemId: item.id,
+      itemEpoch: item.epoch,
+      turnEpoch: 3,
+    });
+    expect(h.dispatcher.controlPayload(SESSION, 'nope')).toBeUndefined();
+  });
+
+  it('rejects a click rendered under an older turn before touching the item', async () => {
+    const queue = new FollowupQueue();
+    let turnEpoch = 3;
+    const h = harness({ queue: portOf(queue, { beginTurn: () => ++turnEpoch, getTurnEpoch: () => turnEpoch }) });
+    h.dispatcher.runInitial(SESSION, event({ ts: '1.0' })); // turnEpoch 3 → 4
+    const item = enqueue(queue, event({ ts: '1.1' }));
+
+    const result = await h.dispatcher.sendNow(SESSION, item.id, item.epoch, CLICKER, 3);
+
+    expect(result).toEqual({ status: 'rejected', reason: 'stale-turn-epoch', detail: expect.any(String) });
+    expect(h.authorizeInterrupt).not.toHaveBeenCalled();
+    expect(h.interrupt).not.toHaveBeenCalled();
+    expect(queue.get(SESSION, item.id)?.epoch).toBe(item.epoch);
+  });
+});
+
+describe('FollowupDispatcher auto drain', () => {
+  it('claims one item synchronously so a message arriving in the same tick sees busy', async () => {
+    const h = harness();
+    const item = enqueue(h.queue, event({ ts: '1.1' }));
+
+    const draining = h.dispatcher.drainNext(SESSION);
+
+    expect(h.dispatcher.isBusy(SESSION)).toBe(true);
+    expect(h.queue.get(SESSION, item.id)?.state).toBe('claimed');
+    expect(h.dispatcher.runInitial(SESSION, event({ ts: '1.2' })).status).toBe('busy');
+
+    const result = await draining;
+    expect(result.status).toBe('dispatched');
+    expect(h.queue.get(SESSION, item.id)?.state).toBe('dispatched');
+  });
+
+  it('dispatches the original author/text/files and never mutates the stored item', async () => {
+    const h = harness();
+    const files = [
+      {
+        id: 'F1',
+        name: 'a.png',
+        mimetype: 'image/png',
+        filetype: 'png',
+        url_private: 'u',
+        url_private_download: 'd',
+        size: 1,
+      },
+    ];
+    const item = enqueue(h.queue, event({ ts: '1.1', user: AUTHOR, text: '원문', files }));
+
+    await h.dispatcher.drainNext(SESSION);
+
+    const request = h.dispatch.mock.calls[0][0] as DispatchRequest;
+    expect(request.message.user).toBe(AUTHOR);
+    expect(request.message.text).toBe('원문');
+    expect(request.message.files).toEqual(files);
+    expect(request.item?.id).toBe(item.id);
+    expect(request.kind).toBe('drain');
+
+    // The runner gets a clone: scribbling on it cannot reach queue state.
+    request.message.text = 'mutated';
+    request.message.files?.splice(0, 1);
+    expect(h.queue.get(SESSION, item.id)?.message.text).toBe('원문');
+    expect(h.queue.get(SESSION, item.id)?.message.files).toEqual(files);
+  });
+
+  it('rolls a dispatch-time denial back to the same seq as queued, with no dispatch', async () => {
+    const h = harness({
+      authorizeDispatch: vi.fn(async () => ({ allowed: false, reason: 'no exec permission' }) as const),
+    });
+    const item = enqueue(h.queue, event({ ts: '1.1' }));
+
+    const result = await h.dispatcher.drainNext(SESSION);
+
+    expect(result).toEqual({ status: 'denied', itemId: item.id, detail: 'no exec permission' });
+    expect(h.dispatch).not.toHaveBeenCalled();
+    const stored = h.queue.get(SESSION, item.id);
+    expect(stored?.state).toBe('queued');
+    expect(stored?.seq).toBe(item.seq);
+    expect(stored?.stateReason).toBe('no exec permission');
+    expect(h.dispatcher.isBusy(SESSION)).toBe(false);
+  });
+
+  it('stops draining after a denial instead of spinning, until an explicit trigger clears it', async () => {
+    const allow = { allowed: true } as const;
+    const deny = { allowed: false, reason: 'no exec permission' } as const;
+    const authorizeDispatch = vi.fn(async () => deny as typeof allow | typeof deny);
+    const h = harness({ authorizeDispatch });
+    enqueue(h.queue, event({ ts: '1.1' }));
+
+    await h.dispatcher.drainNext(SESSION);
+    const second = await h.dispatcher.drainNext(SESSION);
+
+    expect(second).toEqual({ status: 'idle', reason: 'halted', detail: 'no exec permission' });
+    expect(h.dispatcher.shouldYield(SESSION)).toBe(false);
+    expect(authorizeDispatch).toHaveBeenCalledTimes(1); // no automatic retry
+
+    authorizeDispatch.mockResolvedValue(allow);
+    h.dispatcher.clearDrainHalt(SESSION, 'permission-change');
+    const third = await h.dispatcher.drainNext(SESSION);
+
+    expect(third.status).toBe('dispatched');
+    expect(h.dispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('yields to a queued follow-up before autogoal, and stops yielding when the queue is empty', async () => {
+    const h = harness();
+    const item = enqueue(h.queue, event({ ts: '1.1' }));
+
+    expect(h.dispatcher.shouldYield(SESSION)).toBe(true);
+
+    const drained = await h.dispatcher.drainNext(SESSION);
+    if (drained.status !== 'dispatched') throw new Error('expected dispatch');
+    expect(h.dispatcher.shouldYield(SESSION)).toBe(false);
+
+    h.pending[0].settle({ result: 'safe' });
+    await drained.run.settled;
+
+    expect(h.queue.get(SESSION, item.id)?.state).toBe('resolved');
+    expect(h.dispatcher.shouldYield(SESSION)).toBe(false);
+  });
+
+  it('does not drain after a failed turn or a pending choice — only an explicit signal reopens it', async () => {
+    const h = harness();
+    enqueue(h.queue, event({ ts: '1.1' }));
+    const start = h.dispatcher.runInitial(SESSION, event({ ts: '1.0' }));
+    if (start.status !== 'dispatched') throw new Error('expected dispatch');
+
+    h.pending[0].settle({ result: 'blocked', reason: 'security ASK pending' });
+    const report = await start.run.settled;
+
+    expect(report.canDrain).toBe(false);
+    expect(h.dispatcher.shouldYield(SESSION)).toBe(false);
+    expect(await h.dispatcher.drainNext(SESSION)).toEqual({
+      status: 'idle',
+      reason: 'halted',
+      detail: 'security ASK pending',
+    });
+    expect(h.dispatcher.drainHalt(SESSION)?.reason).toBe('blocked');
+  });
+
+  it('refuses to drain a frozen session and never unfreezes it on its own', async () => {
+    const h = harness();
+    const item = enqueue(h.queue, event({ ts: '1.1' }));
+    h.queue.freeze(SESSION, 'user stop');
+
+    const result = await h.dispatcher.drainNext(SESSION);
+
+    expect(result).toEqual({ status: 'idle', reason: 'frozen', detail: 'user stop' });
+    expect(h.dispatcher.shouldYield(SESSION)).toBe(false);
+    expect(h.queue.get(SESSION, item.id)?.state).toBe('paused');
+    expect(h.queue.freezeReason(SESSION)).toBe('user stop');
+
+    // A26: a fresh idle message still dispatches, and the paused item stays paused.
+    expect(h.dispatcher.runInitial(SESSION, event({ ts: '1.2' })).status).toBe('dispatched');
+    expect(h.queue.get(SESSION, item.id)?.state).toBe('paused');
+    expect(h.queue.freezeReason(SESSION)).toBe('user stop');
+  });
+});
+
+describe('FollowupDispatcher send now', () => {
+  it('waits for the interrupted run to fully settle before the fresh dispatch', async () => {
+    const h = harness();
+    h.dispatcher.runInitial(SESSION, event({ ts: '1.0', text: 'long turn' }));
+    const item = enqueue(h.queue, event({ ts: '1.1' }));
+
+    const sending = click(h, item.id);
+    await tick();
+
+    // Abort signalled, teardown NOT done: no fresh dispatch may exist yet.
+    expect(h.interrupt).toHaveBeenCalledTimes(1);
+    expect(h.dispatch).toHaveBeenCalledTimes(1);
+    expect(h.queue.get(SESSION, item.id)?.state).toBe('reserved');
+    expect(h.dispatcher.isBusy(SESSION)).toBe(true);
+
+    h.pending[0].settle({ result: 'interrupted', reason: 'send-now' });
+    const result = await sending;
+
+    expect(result.status).toBe('dispatched');
+    expect(h.dispatch).toHaveBeenCalledTimes(2);
+    expect(h.queue.get(SESSION, item.id)?.state).toBe('dispatched');
+    // Ownership guard: the old run's completion must not clear the new live run.
+    expect(h.dispatcher.isBusy(SESSION)).toBe(true);
+  });
+
+  it('fences the surface epoch after the abort lands, before the successor dispatch', async () => {
+    const h = harness();
+    const start = h.dispatcher.runInitial(SESSION, event({ ts: '1.0' }));
+    if (start.status !== 'dispatched') throw new Error('expected dispatch');
+    const item = enqueue(h.queue, event({ ts: '1.1' }));
+
+    const sending = click(h, item.id);
+    await tick();
+    h.pending[0].settle({ result: 'interrupted' });
+    const result = await sending;
+    if (result.status !== 'dispatched') throw new Error('expected dispatch');
+
+    // Ordering ruling (round 2): the fence follows the delivered abort — until
+    // then the dying turn is still the current one and must keep its surface.
+    expect(h.order).toEqual(['dispatch', 'interrupt', 'invalidate', 'dispatch']);
+    expect(h.invalidateSurface).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionKey: SESSION, supersededTurnEpoch: start.run.turnEpoch }),
+    );
+    expect(result.run.turnEpoch).toBeGreaterThan(start.run.turnEpoch);
+  });
+
+  it('lets exactly one of two clicks abort the live run', async () => {
+    const h = harness();
+    h.dispatcher.runInitial(SESSION, event({ ts: '1.0' }));
+    const item = enqueue(h.queue, event({ ts: '1.1' }));
+
+    // Both clicks carry the same rendered payload — a real double click.
+    const first = click(h, item.id);
+    const second = click(h, item.id);
+    await tick();
+
+    expect(h.interrupt).toHaveBeenCalledTimes(1);
+    // The loser is fenced out by the item's own CAS token: the winner reserved
+    // it, so its epoch moved. (The turn generation cannot be the fence here —
+    // it is not advanced until the abort is actually delivered.)
+    expect(await second).toEqual({ status: 'rejected', reason: 'stale-epoch', detail: expect.any(String) });
+
+    h.pending[0].settle({ result: 'interrupted' });
+    expect((await first).status).toBe('dispatched');
+    expect(h.dispatch).toHaveBeenCalledTimes(2);
+  });
+
+  it('gives the auto drain and a concurrent send now a single winner', async () => {
+    const h = harness();
+    const first = enqueue(h.queue, event({ ts: '1.1' }));
+    const second = enqueue(h.queue, event({ ts: '1.2' }));
+
+    const sending = click(h, second.id);
+    const draining = h.dispatcher.drainNext(SESSION);
+    const [sendResult, drainResult] = await Promise.all([sending, draining]);
+
+    expect(drainResult.status).toBe('dispatched');
+    // The drain opened a new generation, so the click's control is now stale.
+    expect(sendResult).toEqual({ status: 'rejected', reason: 'stale-turn-epoch', detail: expect.any(String) });
+    expect(h.dispatch).toHaveBeenCalledTimes(1);
+    expect(h.interrupt).not.toHaveBeenCalled();
+    expect(h.queue.get(SESSION, first.id)?.state).toBe('dispatched');
+    expect(h.queue.get(SESSION, second.id)?.state).toBe('queued'); // FIFO position kept
+    expect(h.queue.get(SESSION, second.id)?.seq).toBe(second.seq);
+  });
+
+  it('loses the reservation to a dispatch the queue is already setting up', async () => {
+    const h = harness();
+    const first = enqueue(h.queue, event({ ts: '1.1' }));
+    const second = enqueue(h.queue, event({ ts: '1.2' }));
+    // Somebody else (not this dispatcher, so no new generation) already holds a
+    // claim: the queue itself is the arbiter that rejects the reservation.
+    expect(h.queue.claimNext(SESSION).ok).toBe(true);
+
+    const result = await click(h, second.id);
+
+    expect(result).toEqual({ status: 'rejected', reason: 'reserve-lost', detail: expect.stringContaining('busy') });
+    expect(h.interrupt).not.toHaveBeenCalled();
+    expect(h.dispatch).not.toHaveBeenCalled();
+    expect(h.queue.get(SESSION, first.id)?.state).toBe('claimed');
+    expect(h.queue.get(SESSION, second.id)?.state).toBe('queued');
+    expect(h.queue.get(SESSION, second.id)?.seq).toBe(second.seq);
+  });
+
+  it('leaves the item untouched when canInterrupt denies the click', async () => {
+    const h = harness({
+      authorizeInterrupt: vi.fn(async () => ({ allowed: false, reason: 'canInterrupt=false' }) as const),
+    });
+    h.dispatcher.runInitial(SESSION, event({ ts: '1.0' }));
+    const item = enqueue(h.queue, event({ ts: '1.1' }));
+
+    const result = await click(h, item.id);
+
+    expect(result).toEqual({ status: 'rejected', reason: 'interrupt-denied', detail: 'canInterrupt=false' });
+    expect(h.interrupt).not.toHaveBeenCalled();
+    const stored = h.queue.get(SESSION, item.id);
+    expect(stored?.state).toBe('queued');
+    expect(stored?.epoch).toBe(item.epoch); // not even a reserve/rollback round trip
+    expect(stored?.stateReason).toBeUndefined();
+    expect(h.dispatch).toHaveBeenCalledTimes(1); // only the original run
+  });
+
+  it('rolls the reservation back and dispatches nothing when the author may not execute', async () => {
+    const h = harness({
+      authorizeDispatch: vi.fn(async () => ({ allowed: false, reason: 'author lacks permission' }) as const),
+    });
+    h.dispatcher.runInitial(SESSION, event({ ts: '1.0' }));
+    const item = enqueue(h.queue, event({ ts: '1.1' }));
+
+    const sending = click(h, item.id);
+    await tick();
+    h.pending[0].settle({ result: 'interrupted' });
+    const result = await sending;
+
+    expect(result).toEqual({ status: 'rejected', reason: 'dispatch-denied', detail: 'author lacks permission' });
+    expect(h.dispatch).toHaveBeenCalledTimes(1);
+    const stored = h.queue.get(SESSION, item.id);
+    expect(stored?.state).toBe('queued');
+    expect(stored?.seq).toBe(item.seq);
+    expect(stored?.stateReason).toBe('author lacks permission');
+    expect(h.dispatcher.isBusy(SESSION)).toBe(false);
+  });
+
+  it('keeps the clicker out of the dispatched payload', async () => {
+    const h = harness();
+    h.dispatcher.runInitial(SESSION, event({ ts: '1.0' }));
+    const item = enqueue(h.queue, event({ ts: '1.1', user: AUTHOR, text: '원문' }));
+
+    const sending = click(h, item.id);
+    await tick();
+    h.pending[0].settle({ result: 'interrupted' });
+    await sending;
+
+    const request = h.dispatch.mock.calls[1][0] as DispatchRequest;
+    expect(request.message.user).toBe(AUTHOR);
+    expect(request.message.text).toBe('원문');
+    expect(request.requestedBy).toBe(CLICKER);
+    expect(request.kind).toBe('send-now');
+    expect(h.authorizeDispatch).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionKey: SESSION, requestedBy: CLICKER }),
+    );
+    expect(h.authorizeDispatch.mock.calls[0][0].item.message.user).toBe(AUTHOR);
+  });
+
+  it('abandons the send when the reservation is taken away during teardown', async () => {
+    const h = harness();
+    h.dispatcher.runInitial(SESSION, event({ ts: '1.0' }));
+    const item = enqueue(h.queue, event({ ts: '1.1' }));
+
+    const sending = click(h, item.id);
+    await tick();
+    h.queue.freeze(SESSION, 'user stop'); // reserved → paused while we wait for teardown
+    h.pending[0].settle({ result: 'interrupted' });
+    const result = await sending;
+
+    expect(result).toEqual({ status: 'rejected', reason: 'reservation-lost', detail: expect.any(String) });
+    expect(h.dispatch).toHaveBeenCalledTimes(1);
+    expect(h.queue.get(SESSION, item.id)?.state).toBe('paused');
+    expect(h.dispatcher.isBusy(SESSION)).toBe(false);
+  });
+});
+
+describe('FollowupDispatcher interrupted item disposition', () => {
+  it('records a cut-short item through markInterrupted — never as failed', async () => {
+    const h = harness();
+    const running = enqueue(h.queue, event({ ts: '1.1' }));
+    const drained = await h.dispatcher.drainNext(SESSION);
+    if (drained.status !== 'dispatched') throw new Error('expected dispatch');
+    const jumper = enqueue(h.queue, event({ ts: '1.2' }));
+
+    const sending = click(h, jumper.id);
+    await tick();
+    h.pending[0].settle({ result: 'interrupted', reason: 'send-now' });
+    await sending;
+    const report = await drained.run.settled;
+
+    expect(h.markInterrupted).toHaveBeenCalledWith(SESSION, running.id, expect.any(Number), 'send-now');
+    expect(report.itemDisposition).toBe('uncertain');
+    expect(h.queue.get(SESSION, running.id)?.state).not.toBe('failed');
+    expect(h.notices).toContainEqual(
+      expect.objectContaining({ type: 'item-uncertain', itemId: running.id, recorded: true }),
+    );
+  });
+
+  it('reports the fact when the queue refuses the transition — still never failed', async () => {
+    const queue = new FollowupQueue();
+    const markInterrupted = vi.fn(() => ({ ok: false, reason: 'invalid-state' }) as const);
+    const h = harness({ queue: portOf(queue, { markInterrupted }) });
+    const running = enqueue(queue, event({ ts: '1.1' }));
+    const drained = await h.dispatcher.drainNext(SESSION);
+    if (drained.status !== 'dispatched') throw new Error('expected dispatch');
+    const jumper = enqueue(queue, event({ ts: '1.2' }));
+
+    const sending = click(h, jumper.id);
+    await tick();
+    h.pending[0].settle({ result: 'interrupted', reason: 'send-now' });
+    await sending;
+    const report = await drained.run.settled;
+
+    expect(report.itemDisposition).toBe('uncertain-unrecorded');
+    expect(queue.get(SESSION, running.id)?.state).not.toBe('failed');
+    expect(h.notices).toContainEqual(
+      expect.objectContaining({ type: 'item-uncertain', itemId: running.id, recorded: false }),
+    );
+  });
+
+  it('settles a confirmed failure as failed and halts the drain', async () => {
+    const h = harness();
+    const item = enqueue(h.queue, event({ ts: '1.1' }));
+    const drained = await h.dispatcher.drainNext(SESSION);
+    if (drained.status !== 'dispatched') throw new Error('expected dispatch');
+
+    h.pending[0].settle({ result: 'error', reason: 'model 500' });
+    const report = await drained.run.settled;
+
+    expect(report.itemDisposition).toBe('failed');
+    const stored = h.queue.get(SESSION, item.id);
+    expect(stored?.state).toBe('failed');
+    expect(stored?.stateReason).toBe('model 500');
+    expect(h.dispatcher.drainHalt(SESSION)).toEqual({ reason: 'error', detail: 'model 500' });
+  });
+});
+
+describe('FollowupDispatcher failure injection', () => {
+  it('still settles the run when the queue throws while recording the outcome', async () => {
+    const queue = new FollowupQueue();
+    const h = harness({
+      queue: portOf(queue, {
+        settle: () => {
+          throw new Error('store unavailable');
+        },
+      }),
+    });
+    enqueue(queue, event({ ts: '1.1' }));
+    const drained = await h.dispatcher.drainNext(SESSION);
+    if (drained.status !== 'dispatched') throw new Error('expected dispatch');
+
+    h.pending[0].settle({ result: 'safe' });
+    const report = await drained.run.settled; // must resolve — a strand would time out
+
+    expect(report.itemDisposition).toBe('none');
+    expect(h.dispatcher.isBusy(SESSION)).toBe(false);
+    expect(h.dispatcher.drainHalt(SESSION)?.reason).toBe('error');
+    expect(h.dispatcher.drainHalt(SESSION)?.detail).toContain('store unavailable');
+  });
+
+  it('keeps dispatching when the notify observer throws', async () => {
+    const h = harness({
+      notify: () => {
+        throw new Error('observer boom');
+      },
+    });
+
+    const start = h.dispatcher.runInitial(SESSION, event({ ts: '1.0' }));
+    if (start.status !== 'dispatched') throw new Error('expected dispatch');
+    h.pending[0].settle({ result: 'safe' });
+    const report = await start.run.settled;
+
+    expect(report.canDrain).toBe(true);
+    expect(h.dispatcher.isBusy(SESSION)).toBe(false);
+  });
+
+  it('completes the send when the surface fence throws, and reports the observer failure', async () => {
+    const h = harness({
+      invalidateSurface: () => {
+        throw new Error('fence boom');
+      },
+    });
+    h.dispatcher.runInitial(SESSION, event({ ts: '1.0' }));
+    const item = enqueue(h.queue, event({ ts: '1.1' }));
+
+    const sending = click(h, item.id);
+    await tick();
+    h.pending[0].settle({ result: 'interrupted' });
+    const result = await sending;
+
+    expect(result.status).toBe('dispatched');
+    expect(h.interrupt).toHaveBeenCalledTimes(1);
+    expect(h.notices).toContainEqual(expect.objectContaining({ type: 'observer-failed', hook: 'invalidate-surface' }));
+  });
+
+  it('rejects promptly when the interrupt throws, without waiting on the un-aborted victim', async () => {
+    const h = harness({
+      interrupt: vi.fn(async () => {
+        throw new Error('executor gone');
+      }),
+    });
+    const start = h.dispatcher.runInitial(SESSION, event({ ts: '1.0' }));
+    if (start.status !== 'dispatched') throw new Error('expected dispatch');
+    const item = enqueue(h.queue, event({ ts: '1.1' }));
+
+    // The victim was never aborted, so its promise is NEVER settled below.
+    const result = await click(h, item.id);
+
+    expect(result).toEqual({
+      status: 'rejected',
+      reason: 'interrupt-failed',
+      detail: expect.stringContaining('executor gone'),
+    });
+    const stored = h.queue.get(SESSION, item.id);
+    expect(stored?.state).toBe('queued');
+    expect(stored?.seq).toBe(item.seq);
+    expect(h.dispatch).toHaveBeenCalledTimes(1);
+
+    // The still-running victim must own the session again — a rejection may not
+    // open an overlap window for a brand-new dispatch.
+    expect(h.dispatcher.isBusy(SESSION)).toBe(true);
+    expect(h.dispatcher.snapshot(SESSION).kind).toBe('initial');
+    expect(h.dispatcher.runInitial(SESSION, event({ ts: '1.2' })).status).toBe('busy');
+    expect(await h.dispatcher.drainNext(SESSION)).toEqual({
+      status: 'idle',
+      reason: 'busy',
+      detail: expect.any(String),
+    });
+
+    // RULING (round 2): a failed interrupt must not cost the live run its
+    // render authority. No abort was delivered and no successor exists, so the
+    // generation is NEVER advanced (not advanced-then-decremented) and the
+    // surface is never fenced — the still-running turn keeps writing its header.
+    expect(h.dispatcher.snapshot(SESSION).turnEpoch).toBe(start.run.turnEpoch);
+    expect(h.invalidateSurface).not.toHaveBeenCalled();
+    expect(h.dispatcher.controlPayload(SESSION, item.id)?.turnEpoch).toBe(start.run.turnEpoch);
+    // The rollback succeeded, so the lane is still healthy — no halt, no notice.
+    expect(h.dispatcher.drainHalt(SESSION)).toBeUndefined();
+    expect(h.notices).not.toContainEqual(expect.objectContaining({ type: 'drain-halted' }));
+  });
+
+  it('halts the lane when a failed interrupt cannot be rolled back either', async () => {
+    const queue = new FollowupQueue();
+    const h = harness({
+      queue: portOf(queue, {
+        rollback: () => {
+          throw new Error('rollback store down');
+        },
+      }),
+      interrupt: vi.fn(async () => {
+        throw new Error('executor gone');
+      }),
+    });
+    const start = h.dispatcher.runInitial(SESSION, event({ ts: '1.0' }));
+    if (start.status !== 'dispatched') throw new Error('expected dispatch');
+    const item = enqueue(queue, event({ ts: '1.1' }));
+
+    const result = await click(h, item.id);
+
+    expect(result).toEqual({
+      status: 'rejected',
+      reason: 'interrupt-failed',
+      detail: expect.stringContaining('executor gone'),
+    });
+    // A `reserved` orphan refuses every later claim and reservation while this
+    // service reports itself idle — the same silent stall as the other three
+    // rollback-failure sites, so it halts just as loudly.
+    expect(queue.get(SESSION, item.id)?.state).toBe('reserved');
+    expect(h.dispatcher.drainHalt(SESSION)?.reason).toBe('error');
+    expect(h.dispatcher.drainHalt(SESSION)?.detail).toContain('executor gone');
+    expect(h.dispatcher.drainHalt(SESSION)?.detail).toContain('rollback store down');
+    expect(h.notices).toContainEqual(expect.objectContaining({ type: 'drain-halted', reason: 'error' }));
+  });
+
+  it('advances the generation only after the abort is delivered, and before the successor', async () => {
+    const abort = deferred();
+    const h = harness({ interrupt: vi.fn(() => abort.promise) });
+    const start = h.dispatcher.runInitial(SESSION, event({ ts: '1.0' }));
+    if (start.status !== 'dispatched') throw new Error('expected dispatch');
+    const item = enqueue(h.queue, event({ ts: '1.1' }));
+
+    const sending = click(h, item.id);
+    await tick();
+
+    // Interrupt in flight: the victim is still the current turn (A28 — there is
+    // no successor yet), but the session is already locked to this send.
+    expect(h.interrupt).toHaveBeenCalledTimes(1);
+    expect(h.dispatcher.snapshot(SESSION).turnEpoch).toBe(start.run.turnEpoch);
+    expect(h.invalidateSurface).not.toHaveBeenCalled();
+    expect(h.queue.get(SESSION, item.id)?.state).toBe('reserved');
+    expect(h.dispatcher.runInitial(SESSION, event({ ts: '1.2' })).status).toBe('busy');
+    expect((await click(h, item.id)).status).toBe('rejected'); // double click fenced
+    expect(h.interrupt).toHaveBeenCalledTimes(1);
+
+    abort.resolve();
+    await tick();
+
+    // Abort delivered → supersede now: generation advanced and surface fenced,
+    // still before the successor dispatch (the victim has not torn down yet).
+    expect(h.dispatcher.snapshot(SESSION).turnEpoch).toBeGreaterThan(start.run.turnEpoch);
+    expect(h.invalidateSurface).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionKey: SESSION, supersededTurnEpoch: start.run.turnEpoch }),
+    );
+    expect(h.dispatch).toHaveBeenCalledTimes(1);
+
+    h.pending[0].settle({ result: 'interrupted' });
+    const result = await sending;
+    if (result.status !== 'dispatched') throw new Error('expected dispatch');
+    expect(h.dispatch).toHaveBeenCalledTimes(2);
+    expect(result.run.turnEpoch).toBeGreaterThan(start.run.turnEpoch);
+  });
+
+  it('settles a blocked drained item as uncertain so the lane is not wedged', async () => {
+    const h = harness();
+    const parked = enqueue(h.queue, event({ ts: '1.1' }));
+    const next = enqueue(h.queue, event({ ts: '1.2' }));
+    const drained = await h.dispatcher.drainNext(SESSION);
+    if (drained.status !== 'dispatched') throw new Error('expected dispatch');
+
+    h.pending[0].settle({ result: 'blocked', reason: 'security ASK pending' });
+    const report = await drained.run.settled;
+
+    // Potentially executed, outcome unknown: uncertain, never resolved/failed.
+    expect(report.itemDisposition).toBe('uncertain');
+    const stored = h.queue.get(SESSION, parked.id);
+    expect(stored?.state).toBe('uncertain');
+    expect(stored?.stateReason).toBe('security ASK pending');
+    expect(h.dispatcher.isBusy(SESSION)).toBe(false);
+    expect(h.dispatcher.drainHalt(SESSION)?.reason).toBe('blocked');
+
+    // After the user answers, the lane moves again — and the parked item is
+    // NOT replayed; only the next queued item goes.
+    h.dispatcher.clearDrainHalt(SESSION, 'user-action');
+    const resumed = await h.dispatcher.drainNext(SESSION);
+
+    expect(resumed.status).toBe('dispatched');
+    expect(h.dispatch).toHaveBeenCalledTimes(2);
+    expect((h.dispatch.mock.calls[1][0] as DispatchRequest).item?.id).toBe(next.id);
+    expect(h.queue.get(SESSION, parked.id)?.state).toBe('uncertain');
+  });
+
+  it('maps the queue own stale-turn refusal onto the same rejection vocabulary', async () => {
+    const queue = new FollowupQueue();
+    // A host reading the generation from anywhere but the queue: this service's
+    // pre-check passes and the QUEUE is the one that catches the stale control.
+    const h = harness({ queue: portOf(queue, { getTurnEpoch: () => 99 }) });
+    const item = enqueue(queue, event({ ts: '1.1' }));
+
+    const result = await h.dispatcher.sendNow(SESSION, item.id, item.epoch, CLICKER, 99);
+
+    expect(result).toEqual({
+      status: 'rejected',
+      reason: 'stale-turn-epoch',
+      detail: 'queue refused: stale-turn',
+    });
+    expect(h.dispatch).not.toHaveBeenCalled();
+    expect(h.dispatcher.isBusy(SESSION)).toBe(false);
+    expect(queue.get(SESSION, item.id)?.state).toBe('queued');
+  });
+
+  it('rolls the claim back and halts when the queue refuses a turn generation', async () => {
+    const queue = new FollowupQueue();
+    const h = harness({
+      queue: portOf(queue, {
+        beginTurn: () => {
+          throw new Error('generation store down');
+        },
+        getTurnEpoch: () => 0,
+      }),
+    });
+    const item = enqueue(queue, event({ ts: '1.1' }));
+
+    const result = await h.dispatcher.drainNext(SESSION);
+
+    expect(result).toEqual({
+      status: 'aborted',
+      itemId: item.id,
+      detail: expect.stringContaining('turn generation unavailable'),
+    });
+    expect(h.dispatch).not.toHaveBeenCalled();
+    expect(h.dispatcher.isBusy(SESSION)).toBe(false);
+    expect(h.dispatcher.drainHalt(SESSION)?.reason).toBe('error');
+    const stored = queue.get(SESSION, item.id);
+    expect(stored?.state).toBe('queued');
+    expect(stored?.seq).toBe(item.seq);
+  });
+
+  it('fails honestly when the generation is refused after the abort was delivered', async () => {
+    const queue = new FollowupQueue();
+    let generations = 0;
+    const h = harness({
+      // The first dispatch gets its generation from the real queue; the store
+      // goes down before the `Send now` can take the next one.
+      queue: portOf(queue, {
+        beginTurn: (sessionKey) => {
+          generations += 1;
+          if (generations > 1) throw new Error('generation store down');
+          return queue.beginTurn(sessionKey);
+        },
+      }),
+    });
+    const start = h.dispatcher.runInitial(SESSION, event({ ts: '1.0' }));
+    if (start.status !== 'dispatched') throw new Error('expected dispatch');
+    const item = enqueue(queue, event({ ts: '1.1' }));
+
+    const result = await click(h, item.id);
+
+    expect(result).toEqual({
+      status: 'rejected',
+      reason: 'dispatch-unavailable',
+      detail: expect.stringContaining('turn generation unavailable'),
+    });
+    // The abort WAS delivered — the old turn is dying but no successor can open.
+    expect(h.interrupt).toHaveBeenCalledTimes(1);
+    expect(h.invalidateSurface).not.toHaveBeenCalled();
+    expect(h.dispatch).toHaveBeenCalledTimes(1);
+    const stored = queue.get(SESSION, item.id);
+    expect(stored?.state).toBe('queued');
+    expect(stored?.seq).toBe(item.seq);
+
+    // The aborted run stays tracked until it settles: no overlap window.
+    expect(h.dispatcher.isBusy(SESSION)).toBe(true);
+    expect(h.dispatcher.snapshot(SESSION).kind).toBe('initial');
+    h.pending[0].settle({ result: 'interrupted' });
+    await start.run.settled;
+    expect(h.dispatcher.isBusy(SESSION)).toBe(false);
+    expect(h.dispatch).toHaveBeenCalledTimes(1); // nothing replayed
+  });
+
+  it('rolls the reservation back to queued when the queue refuses the promotion', async () => {
+    const queue = new FollowupQueue();
+    const h = harness({
+      queue: portOf(queue, {
+        promote: () => {
+          throw new Error('promote store down');
+        },
+      }),
+    });
+    const item = enqueue(queue, event({ ts: '1.1' }));
+
+    const result = await click(h, item.id);
+
+    expect(result.status).toBe('rejected');
+    expect(h.dispatch).not.toHaveBeenCalled();
+    // An item abandoned as `reserved` answers `busy` to every later claim while
+    // this service reports itself idle — the queue and the lane would disagree
+    // forever with nothing said out loud.
+    const stored = queue.get(SESSION, item.id);
+    expect(stored?.state).toBe('queued');
+    expect(stored?.seq).toBe(item.seq);
+    expect(h.dispatcher.isBusy(SESSION)).toBe(false);
+    expect((await h.dispatcher.drainNext(SESSION)).status).toBe('dispatched');
+  });
+
+  it('halts the lane when a refused promotion cannot be rolled back either', async () => {
+    const queue = new FollowupQueue();
+    const h = harness({
+      queue: portOf(queue, {
+        promote: () => {
+          throw new Error('promote store down');
+        },
+        rollback: () => {
+          throw new Error('rollback store down');
+        },
+      }),
+    });
+    const item = enqueue(queue, event({ ts: '1.1' }));
+
+    const result = await click(h, item.id);
+
+    expect(result.status).toBe('rejected');
+    expect(h.dispatch).not.toHaveBeenCalled();
+    // The orphan survives — but it is announced, never silent.
+    expect(queue.get(SESSION, item.id)?.state).toBe('reserved');
+    expect(h.dispatcher.drainHalt(SESSION)?.reason).toBe('error');
+    expect(h.dispatcher.drainHalt(SESSION)?.detail).toContain('rollback store down');
+    expect(h.notices).toContainEqual(expect.objectContaining({ type: 'drain-halted', reason: 'error' }));
+  });
+
+  it('halts the drain when a refused markDispatched cannot be rolled back either', async () => {
+    const queue = new FollowupQueue();
+    const h = harness({
+      queue: portOf(queue, {
+        markDispatched: () => {
+          throw new Error('dispatch store down');
+        },
+        rollback: () => {
+          throw new Error('rollback store down');
+        },
+      }),
+    });
+    const item = enqueue(queue, event({ ts: '1.1' }));
+
+    const result = await h.dispatcher.drainNext(SESSION);
+
+    expect(result).toEqual({
+      status: 'aborted',
+      itemId: item.id,
+      detail: expect.stringContaining('dispatch store down'),
+    });
+    expect(h.dispatch).not.toHaveBeenCalled();
+    // An orphan `claimed` item blocks every later drain (`followup-queue.ts:350`),
+    // so the lane must stop loudly instead of looking idle.
+    expect(queue.get(SESSION, item.id)?.state).toBe('claimed');
+    expect(h.dispatcher.drainHalt(SESSION)?.reason).toBe('error');
+    expect(h.dispatcher.drainHalt(SESSION)?.detail).toContain('rollback store down');
+    expect(h.notices).toContainEqual(expect.objectContaining({ type: 'drain-halted', reason: 'error' }));
+  });
+
+  it('halts the lane when a send-now markDispatched and its rollback both fail', async () => {
+    const queue = new FollowupQueue();
+    const h = harness({
+      queue: portOf(queue, {
+        markDispatched: () => {
+          throw new Error('dispatch store down');
+        },
+        rollback: () => {
+          throw new Error('rollback store down');
+        },
+      }),
+    });
+    const item = enqueue(queue, event({ ts: '1.1' }));
+
+    const result = await click(h, item.id);
+
+    expect(result.status).toBe('rejected');
+    expect(h.dispatch).not.toHaveBeenCalled();
+    expect(queue.get(SESSION, item.id)?.state).toBe('claimed');
+    expect(h.dispatcher.drainHalt(SESSION)?.reason).toBe('error');
+    expect(h.dispatcher.drainHalt(SESSION)?.detail).toContain('rollback store down');
+    expect(h.notices).toContainEqual(expect.objectContaining({ type: 'drain-halted', reason: 'error' }));
+  });
+
+  it('rejects a click whose live run was replaced while authorization was pending', async () => {
+    const queue = new FollowupQueue();
+    let turnEpoch = 0;
+    const port = portOf(queue, {
+      beginTurn: () => {
+        turnEpoch += 1;
+        return turnEpoch;
+      },
+      getTurnEpoch: () => turnEpoch,
+    });
+    let supersedeDuringAuth = false;
+    const h = harness({
+      queue: port,
+      authorizeInterrupt: vi.fn(async () => {
+        // A new turn takes the session while the permission check is pending.
+        if (supersedeDuringAuth) port.beginTurn(SESSION);
+        return { allowed: true } as const;
+      }),
+    });
+    h.dispatcher.runInitial(SESSION, event({ ts: '1.0' }));
+    const item = enqueue(queue, event({ ts: '1.1' }));
+    supersedeDuringAuth = true;
+
+    const result = await click(h, item.id);
+
+    expect(result).toEqual({ status: 'rejected', reason: 'stale-turn-epoch', detail: expect.any(String) });
+    expect(h.interrupt).not.toHaveBeenCalled();
+    expect(queue.get(SESSION, item.id)?.state).toBe('queued');
+    expect(queue.get(SESSION, item.id)?.epoch).toBe(item.epoch);
+  });
+});
