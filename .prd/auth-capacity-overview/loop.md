@@ -37,6 +37,7 @@ Run tests without inherited bot credentials/config. The evidence harness uses `e
 - R2 [BUNDLE]: review found composed legacy cards exceeding 50 blocks. Slot pagination fixes the envelope while keeping every account reachable.
 - R3 [BUNDLE]: embedded mutations rebuilt the bare legacy card, losing navigation and the bound. Origin/page retention fixed; independent review APPROVE after the bounded recheck. Final regression sweep: 63 files / 879 tests passed.
 - R4 [RULES]: recovered using-dotprd; promoted numbered spec/architecture and recorded delivery gates. Earlier unavailable-skill claim superseded by direct-source recovery.
+- R5 [BUNDLE]: resumed after service restart; actual signed Bolt HTTP subsystem journey passed 9 steps with synthetic loopback upstreams. Closed settings/removal modal test gaps with 8 additional cases. Full release gate now passes 10,591 tests, 5 skipped, with typecheck and build clean. No production source change; shared Sanitize remains blocked, not bypassed.
 
 Open gap matrix:
 

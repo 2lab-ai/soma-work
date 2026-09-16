@@ -46,7 +46,8 @@ vi.mock('../../../auth/llmux-client', () => {
 });
 
 import { resetAdminUsersCache } from '../../../admin-utils';
-import { addLlmuxAccount, switchLlmuxAccount } from '../../../auth/llmux-client';
+import { setLlmuxSettings } from '../../../auth/auth-runtime';
+import { addLlmuxAccount, isLlmuxUp, removeLlmuxAccount, switchLlmuxAccount } from '../../../auth/llmux-client';
 import { applyAuthMode, renderAuthCard } from '../../z/topics/auth-topic';
 import { registerAuthActions } from '../actions';
 import { AUTH_ACTION_IDS, AUTH_BLOCK_IDS, AUTH_VIEW_IDS } from '../views';
@@ -105,6 +106,97 @@ function makeCtx(userId: string, value?: string) {
   };
 }
 
+describe('settings and remove submissions — T3 authority and feedback boundaries', () => {
+  const surface = { channel: 'C1', ts: 'ts1' };
+  function body(userId: string, baseUrl = 'http://127.0.0.1:9999', name?: string) {
+    return {
+      user: { id: userId },
+      view: {
+        private_metadata: JSON.stringify({ ...surface, name }),
+        state: {
+          values: {
+            [AUTH_BLOCK_IDS.settings_base_url]: { value: { value: baseUrl } },
+            [AUTH_BLOCK_IDS.settings_api_key]: { value: { value: 'synthetic-new-key' } },
+          },
+        },
+      },
+    };
+  }
+  async function submit(id: string, payload: Record<string, unknown>) {
+    const { app, viewHandlers } = makeApp();
+    registerAuthActions(app);
+    const ack = vi.fn(async (_response?: unknown) => undefined);
+    const client = makeClient();
+    const handler = viewHandlers.get(id);
+    expect(handler).toBeDefined();
+    await handler?.({ ack, client, body: payload });
+    return { ack, client };
+  }
+
+  it.each([
+    AUTH_VIEW_IDS.settings,
+    AUTH_VIEW_IDS.remove,
+  ])('rejects non-admin replay of %s without effects', async (id) => {
+    const { ack, client } = await submit(id, body('U_PLAIN', undefined, 'ai1'));
+    expect(ack).toHaveBeenCalledOnce();
+    expect(isLlmuxUp).not.toHaveBeenCalled();
+    expect(setLlmuxSettings).not.toHaveBeenCalled();
+    expect(removeLlmuxAccount).not.toHaveBeenCalled();
+    expect(renderAuthCard).not.toHaveBeenCalled();
+    expect(client.chat.update).not.toHaveBeenCalled();
+  });
+
+  it('invalid settings URL returns modal errors without probing or saving', async () => {
+    const { ack, client } = await submit(AUTH_VIEW_IDS.settings, body('U_ADMIN', 'file:///private'));
+    expect(ack).toHaveBeenCalledWith({
+      response_action: 'errors',
+      errors: {
+        [AUTH_BLOCK_IDS.settings_base_url]: 'Base URL must start with http:// or https://',
+      },
+    });
+    expect(isLlmuxUp).not.toHaveBeenCalled();
+    expect(setLlmuxSettings).not.toHaveBeenCalled();
+    expect(client.chat.update).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    true,
+    false,
+  ])('valid settings persist after probe and show reachable=%s without exposing the key', async (reachable) => {
+    vi.mocked(isLlmuxUp).mockResolvedValueOnce(reachable);
+    const { ack, client } = await submit(AUTH_VIEW_IDS.settings, body('U_ADMIN'));
+    expect(ack).toHaveBeenCalledOnce();
+    expect(isLlmuxUp).toHaveBeenCalledWith('http://127.0.0.1:9999');
+    expect(setLlmuxSettings).toHaveBeenCalledWith({ baseUrl: 'http://127.0.0.1:9999', apiKey: 'synthetic-new-key' });
+    expect(ack.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(isLlmuxUp).mock.invocationCallOrder[0]);
+    expect(vi.mocked(isLlmuxUp).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(setLlmuxSettings).mock.invocationCallOrder[0],
+    );
+    expect(renderAuthCard).toHaveBeenCalledWith(expect.objectContaining({ userId: 'U_ADMIN', viewerMode: 'admin' }));
+    expect(client.chat.update).toHaveBeenCalledWith(expect.objectContaining(surface));
+    const rendered = JSON.stringify(client.chat.update.mock.calls);
+    expect(rendered).toContain(reachable ? 'reachable' : 'not answering yet');
+    expect(rendered).not.toContain('synthetic-new-key');
+  });
+
+  it('remove without an account name acks but performs no deletion', async () => {
+    const { ack, client } = await submit(AUTH_VIEW_IDS.remove, body('U_ADMIN'));
+    expect(ack).toHaveBeenCalledOnce();
+    expect(removeLlmuxAccount).not.toHaveBeenCalled();
+    expect(client.chat.update).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])('remove outcome failure=%s retains admin view and original surface', async (failure) => {
+    if (failure) vi.mocked(removeLlmuxAccount).mockRejectedValueOnce(new Error('fixture refused'));
+    const { ack, client } = await submit(AUTH_VIEW_IDS.remove, body('U_ADMIN', undefined, 'ai1'));
+    expect(removeLlmuxAccount).toHaveBeenCalledWith('ai1');
+    expect(ack.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(removeLlmuxAccount).mock.invocationCallOrder[0]);
+    expect(renderAuthCard).toHaveBeenCalledWith(expect.objectContaining({ userId: 'U_ADMIN', viewerMode: 'admin' }));
+    expect(client.chat.update).toHaveBeenCalledWith(expect.objectContaining(surface));
+    expect(JSON.stringify(client.chat.update.mock.calls)).toContain(failure ? 'Remove failed' : 'removed');
+  });
+});
+
 const navValue = (viewerMode: 'admin' | 'readonly', page: number) => JSON.stringify({ viewerMode, page });
 
 const PREV_ADMIN_USERS = process.env.ADMIN_USERS;
@@ -116,6 +208,9 @@ beforeEach(() => {
   vi.mocked(applyAuthMode).mockClear();
   vi.mocked(switchLlmuxAccount).mockClear();
   vi.mocked(addLlmuxAccount).mockClear();
+  vi.mocked(isLlmuxUp).mockClear();
+  vi.mocked(removeLlmuxAccount).mockClear();
+  vi.mocked(setLlmuxSettings).mockClear();
 });
 
 afterEach(() => {

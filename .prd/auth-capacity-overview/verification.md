@@ -61,6 +61,15 @@ Actual `buildAuthCardBlocks` output generated readonly and admin JSON/PNG previe
 - Final autonomous review: `trinity-fallback2 (opus)` APPROVE with no blocking findings. See [review](review.md). No primary three-engine consensus is claimed.
 - [Real Slack schema preview](https://slack.com/archives/C0AKY7W2UGZ/p1789556768976519): `chat.postMessage` returned `ok:true` for 14 blocks from the actual readonly builder with synthetic accounts; requested thread was confirmed in the response. Operational buttons were deliberately omitted. This proves acceptance of the capacity sections, not deployed command routing, button behavior or observed client pixels.
 
+## Restart validation — 2026-09-16
+
+- Recovered the same working tree and PR #220 after the service restart. Latest published `4568ece` also passed [CI quality-gates](https://github.com/2lab-ai/soma-work/actions/runs/35088921534); its Sanitize Gate still reports the same single historical object.
+- Added 8 regression cases in `src/slack/auth/__tests__/actions.test.ts`: forged non-admin settings/removal submissions, invalid URL, reachable/unreachable settings persistence, missing removal name, and successful/failed removal feedback. The suite passes 34 tests. These strengthen coverage of existing behavior; no production source changed in this round.
+- Reran `npm run test:release`: 531 files passed, 1 skipped; 10,591 tests passed, 5 skipped; 179.08 seconds (`restart-full-release.log`). `npx tsc --noEmit` and `npm run build` exit 0 (`restart-typecheck.log`, `restart-build.log`).
+- Launched a real Bolt HTTP receiver on an ephemeral loopback port and sent signed Events API and block-action requests. Production compiled `AuthHandler`, `registerAuthActions`, renderers and llmux client ran without module mocks. Only llmux and the Slack Web API were synthetic loopback fixtures. Nine steps passed: admin initial overview, opt-in, page two, changed HTTP usage snapshot, settings modal, account switch, return to overview, ordinary overview and forged admin-mode demotion. Maximum observed response: 31 blocks. Receipt: `auth-http-journey.receipt.json` with source `4568ece`.
+- The HTTP journey is a subsystem integration receipt, not a full host boot or deployed Slack interaction. The real Slack SDK receiver and outbound HTTP were exercised; the production daemon, user accounts and real secrets were not touched. The fixture message listener intentionally invokes the existing AuthHandler; it does not prove the full CommandRouter registration.
+- `npx calldiff@0.5.0 diff` reports `No callstack changes between HEAD and working tree.` The change in this round is tests and verification documents only. Root README and architecture claims remain unchanged and were checked for impact.
+
 ## Shared sanitize failure provenance
 
 [Sanitize run](https://github.com/2lab-ai/soma-work/actions/runs/35087367747) failed `objects=1 paths=0 refs=0`; current main's run has the same result. A read-only scan of 15,997 reachable objects in the reused runner checkout located the sole matching historical ledger blob `c0c4b8a3ced503ab1c503c2d95186655bcce1821`.
