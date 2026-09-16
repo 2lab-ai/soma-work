@@ -54,9 +54,24 @@ Upstream llmux `8be574b18290d3bcb1b80ea644aa481e95aa2da6` was inspected directly
 
 Actual `buildAuthCardBlocks` output generated readonly and admin JSON/PNG previews with synthetic data. The parent inspected the images and corrected Grok wording and timestamp localization. These are CSS approximations, not live Slack screenshots. The pre-implementation HTML analysis is also explicitly labelled as pre-implementation.
 
+## PR and Slack API observations — 2026-09-16
+
+- [PR #220](https://github.com/2lab-ai/soma-work/pull/220), source commit `0f174a8`: open, not merged.
+- [CI quality gate](https://github.com/2lab-ai/soma-work/actions/runs/35087367768): SUCCESS, including install, workspace build, lint, typecheck, complete release tests and production build.
+- Final autonomous review: `trinity-fallback2 (opus)` APPROVE with no blocking findings. See [review](review.md). No primary three-engine consensus is claimed.
+- [Real Slack schema preview](https://slack.com/archives/C0AKY7W2UGZ/p1789556768976519): `chat.postMessage` returned `ok:true` for 14 blocks from the actual readonly builder with synthetic accounts; requested thread was confirmed in the response. Operational buttons were deliberately omitted. This proves acceptance of the capacity sections, not deployed command routing, button behavior or observed client pixels.
+
+## Shared sanitize failure provenance
+
+[Sanitize run](https://github.com/2lab-ai/soma-work/actions/runs/35087367747) failed `objects=1 paths=0 refs=0`; current main's run has the same result. A read-only scan of 15,997 reachable objects in the reused runner checkout located the sole matching historical ledger blob `c0c4b8a3ced503ab1c503c2d95186655bcce1821`.
+
+The old blob remains reachable from the unrelated deployment-selection branch and cached PR merge refs (`origin/feat/deploy-target-select`, `pull/218/merge`, `pull/219/merge`). It is not reachable from current main or the auth feature branch. The forbidden literal was neither printed nor copied into these artifacts.
+
+[Evidence on PR #219](https://github.com/2lab-ai/soma-work/pull/219#issuecomment-5696405694) and [PR #220](https://github.com/2lab-ai/soma-work/pull/220#issuecomment-5696405900) identifies an owner-controlled rebase and stale-ref cleanup, rather than a source change to auth. No unrelated remote branch or runner ref was modified. No failing gate was bypassed.
+
 ## Still required for shipment
 
-- Commit/PR CI and final autonomous review gate
+- Shared sanitize gate recovery, then current-SHA green check
 - Merge and permitted preview deployment
 - Post-deploy Slack receipt for overview and administrator interaction
 - Final requirement-to-evidence proof and report

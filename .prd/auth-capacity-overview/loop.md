@@ -15,7 +15,7 @@ Branch: `feat/auth-capacity-overview`. The dedicated clone `soma-work_20260916_a
 
 - WU1 / T1–T2: parent owns `auth/capacity.ts`, `auth/builder.ts`, status DTO and capacity tests. Grouped totals and reset planning implemented.
 - WU2 / T3: implementation agent owns auth actions, ids, topic renderer and their tests. Default overview and explicit admin mode implemented.
-- WU3 / T3: same implementation agent owns legacy embedding, CCT mutation origin/page metadata and associated tests. Pagination fixed; mutation continuity under correction.
+- WU3 / T3: implementation agent owns legacy embedding, CCT mutation origin/page metadata and associated tests. Pagination and mutation continuity verified; readonly Refresh regression also corrected.
 - WU4 / T1–T4: parent owns numbered PRD, SSOT and final evidence; documentation agent updated both READMEs and architecture reference.
 - Review: independent Fable reviewer; not represented as a trinity or dual-engine consensus.
 
@@ -42,9 +42,9 @@ Open gap matrix:
 
 - G1: legacy mutation continuity — closed by RED/GREEN tests and review round 3
 - G2: final frozen lint/typecheck/build/full-release receipts — closed; 531 files, 10,583 tests passed (5 skipped), including invalid-reset and legacy-refresh fixes
-- G3: independent review verified G1; final autonomous review and trace refresh pending
-- G4: PR/CI/merge and permitted preview deployment receipts — not yet present
-- G5: deployed Slack observation — not replaced by mocks or CSS screenshots
+- G3: closed — final Opus fallback2 APPROVE; scenario trace refreshed with both final review corrections
+- G4: PR #220 open; quality-gates SUCCESS; sanitize fails on an old ledger blob retained by unrelated branch/cached PR refs. Provenance posted on both PRs; merge and preview deployment have not occurred
+- G5: real Slack API accepted synthetic capacity sections (buttons omitted); deployed command/button behavior and client pixels remain unverified
 
 ## Unknowns map
 
