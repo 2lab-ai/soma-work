@@ -74,8 +74,11 @@ jobs:
                    github_env: $ge,
                    deploy_env: $de})
             | {include: .}' <<< "$RAW")
-          if [[ -n "${SELECT// /}" ]]; then
-            selected=$(jq -R -c 'split(",") | map(gsub("^\\s+|\\s+$";"")) | map(select(length > 0)) | unique' <<< "$SELECT")
+          # Normalize once: drop ALL whitespace (spaces, tabs, newlines) so the
+          # emptiness check and the split see the same string.
+          SELECT_NORM="$(tr -d '[:space:]' <<< "$SELECT")"
+          if [[ -n "$SELECT_NORM" ]]; then
+            selected=$(jq -R -c 'split(",") | map(select(length > 0)) | unique' <<< "$SELECT_NORM")
             unknown=$(jq -c --argjson sel "$selected" '[.include[].runner_label] as $known | $sel | map(select(. as $s | ($known | index($s)) == null))' <<< "$matrix")
             if [[ "$(jq 'length' <<< "$unknown")" -ne 0 ]]; then
               echo "::error::Requested targets are not configured for this channel: $(jq -r 'join(",")' <<< "$unknown")"
