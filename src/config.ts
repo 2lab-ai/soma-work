@@ -1,4 +1,5 @@
 import { WebClient } from '@slack/web-api';
+import { resolveIncidentEvidenceOrigin } from './incident/evidence';
 import { Logger } from './logger';
 import { normalizeSigningSecret, SIGNING_SECRET_MIN_LENGTH } from './slack-signing-secret';
 
@@ -135,6 +136,114 @@ export function parseAuthMode(raw: string | undefined): AuthMode {
  * co-located llmux config file for a real admin credential.
  */
 export const LLMUX_PLACEHOLDER_API_KEY = 'llmux-local';
+
+/**
+ * Server-side trust anchor for the Eagle incident receiver.
+ *
+ * Structural mirror of `IncidentRequest`'s companion type
+ * `TrustedIncidentSource` in `packages/slack/src/incident-contract.ts` (the
+ * SSOT). It is re-declared here rather than imported because root `src/`
+ * resolves `@soma/slack/*` through the repo-root workspace symlink to the
+ * package's COMPILED `dist/`, which is not guaranteed to exist when this file
+ * is typechecked. Assignability is structural, so the adapter can hand this
+ * value straight to the contract.
+ */
+export interface IncidentTrustedSource {
+  readonly teamId: string;
+  readonly appId: string;
+  readonly botUserId: string;
+  readonly botId: string;
+  readonly channelIds: readonly string[];
+}
+
+/**
+ * Evidence API the incident runtime may read from. Absent ⇒ no evidence
+ * access. `baseUrl` is the ORIGIN returned by `resolveIncidentEvidenceOrigin`,
+ * never the operator's raw string.
+ */
+export interface IncidentEvidenceConfig {
+  readonly baseUrl: string;
+}
+
+const SLACK_CHANNEL_ID_PATTERN = /^[CGD][A-Z0-9]{1,20}$/;
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+/**
+ * Typed getter for `SOMA_INCIDENT_TRUSTED_SOURCE` (JSON object).
+ *
+ * Unset, unparseable, or incomplete ⇒ `null` (receiver disabled). Every id is
+ * required and every channel must be an explicit Slack channel id: a partially
+ * filled or wildcard config would widen who can drive the receiver, so it is
+ * rejected outright instead of being repaired with defaults.
+ *
+ * Read at call time (not at module load) so an operator config change takes
+ * effect on restart of the reader, and so tests can drive it.
+ */
+export function getIncidentTrustedSource(): IncidentTrustedSource | null {
+  const raw = process.env.SOMA_INCIDENT_TRUSTED_SOURCE;
+  if (raw === undefined || raw.trim() === '') return null;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    logger.warn('SOMA_INCIDENT_TRUSTED_SOURCE is not valid JSON — incident receiver stays disabled');
+    return null;
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    logger.warn('SOMA_INCIDENT_TRUSTED_SOURCE must be a JSON object — incident receiver stays disabled');
+    return null;
+  }
+
+  const candidate = parsed as Record<string, unknown>;
+  const { teamId, appId, botUserId, botId, channelIds } = candidate;
+  if (![teamId, appId, botUserId, botId].every(isNonEmptyString)) {
+    logger.warn('SOMA_INCIDENT_TRUSTED_SOURCE needs teamId/appId/botUserId/botId — incident receiver stays disabled');
+    return null;
+  }
+  if (!Array.isArray(channelIds) || channelIds.length === 0) {
+    logger.warn('SOMA_INCIDENT_TRUSTED_SOURCE needs a non-empty channelIds list — incident receiver stays disabled');
+    return null;
+  }
+  if (!channelIds.every((id) => typeof id === 'string' && SLACK_CHANNEL_ID_PATTERN.test(id))) {
+    logger.warn('SOMA_INCIDENT_TRUSTED_SOURCE channelIds must be exact Slack channel ids — receiver stays disabled');
+    return null;
+  }
+
+  return {
+    teamId: teamId as string,
+    appId: appId as string,
+    botUserId: botUserId as string,
+    botId: botId as string,
+    channelIds: [...(channelIds as string[])],
+  };
+}
+
+/**
+ * Typed getter for `SOMA_INCIDENT_EVIDENCE_BASE_URL`. Unset ⇒ `null`.
+ *
+ * The env read lives here (config is the only place that touches
+ * `process.env`); the *rule* — https, or http on loopback, origin only, no
+ * credentials/query/fragment — belongs to the evidence domain and is applied
+ * by `resolveIncidentEvidenceOrigin`. A rejected value disables evidence
+ * access rather than degrading to the raw string.
+ */
+export function getIncidentEvidenceConfig(): IncidentEvidenceConfig | null {
+  const raw = process.env.SOMA_INCIDENT_EVIDENCE_BASE_URL;
+  if (raw === undefined || raw.trim() === '') return null;
+
+  try {
+    return { baseUrl: resolveIncidentEvidenceOrigin(raw.trim()) };
+  } catch (err) {
+    logger.warn(
+      `SOMA_INCIDENT_EVIDENCE_BASE_URL rejected (${(err as Error)?.message ?? String(err)}) — incident evidence stays disabled`,
+    );
+    return null;
+  }
+}
 
 export const config = {
   slack: {

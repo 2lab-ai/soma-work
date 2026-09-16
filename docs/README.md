@@ -40,6 +40,7 @@
 운영자가 절차대로 실행하는 배포, 롤백, 장애 대응 문서.
 
 - [runbook/](./runbook/) — deployment, rollback, operational fix procedures
+- [Eagle-eye incident receiver](./runbook/eagle-incident-receiver.md) — config env, 기본 비활성 게이트, read-only 시도 표면, rollout/rollback
 
 ## 6. Misc
 
