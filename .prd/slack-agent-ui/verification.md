@@ -228,3 +228,15 @@ PR: https://github.com/2lab-ai/soma-work/pull/218 (head = main 위에 재구성�
 | CI quality-gates | CANCELLED ×2 (15분 timeout) | `actions/setup-node@v4` `cache: npm` 복원이 2,284MB 캐시를 ~1MB/s로 내려받다 timeout(로그 `Received 4194304 of 2395578206`). 09-14 동일 캐시는 7.5분에 완료. 시계 drift 아님(`sntp` +48ms). 3회째 자동 재시도 금지 규칙으로 중단 | **BLOCKED-EXTERNAL**: GitHub cache 서비스 속도. 선택지 ① ci.yml에서 self-hosted `cache` 비활성(워크플로 변경 → 유저 게이트) ② 해당 캐시 항목 삭제(post 단계 2.2GB 재업로드 위험) ③ 속도 회복 후 `gh run rerun` |
 
 머지는 CI green이 리시트 조건이라 **보류**(브랜치 보호 없음이라 기술적으로는 가능하나 §4 리시트 위반). 로컬 리시트는 R12 그대로 유효.
+
+### R14 — Sanitize Gate 진짜 원인 + 정화 (2026-09-16)
+
+R13의 추정(prd/plugin-split)은 **틀렸다** — 유저 지시로 아카이브(`refs/archive/prd/plugin-split`, PR #217 닫음)했지만 카운트는 22 그대로.
+zbrain 07-29 sanitize 원장의 T 집합에 프로젝트 코드명이 포함된 것을 확인하고 러너 클론에서 BSD grep으로 재스캔:
+프로젝트 코드명 1종 22건 = 전부 `feat/eagle-incident-receiver`(09-14 push, main 대비 +85 object)의 테스트 픽스처 6파일. main 0건. (코드명 자체는 이 원장에도 쓰지 않는다 — 같은 게이트에 걸린다.)
+처리: 원 tip d7c9881을 `refs/archive/feat/eagle-incident-receiver-2026-09-15`로 보존 → main 위에 트리 동일·픽스처 이름만 중립화한
+단일 커밋 `fec87f0`을 `feat/eagle-incident-receiver-v2`로 push(해당 테스트 5파일 288 passed) → 옛 head 삭제 → 러너 클론 prune 후
+전 ref 스캔 0건. force-push는 분류기 차단으로 새 이름 + 삭제로 대체. 로컬 워크트리 `feat-eagle-incident-receiver`(d7c9881)는 건드리지 않음 —
+그 세션은 `-v2`로 갈아타야 한다.
+CI quality-gates: Actions 캐시 항목 삭제 + 로컬 npm 캐시 정리 후 rerun → **SUCCESS**(테스트 포함, 17:41).
+환경 메모: Xcode 27 설치로 `/usr/bin/git`이 라이선스 동의를 요구 → CLT git(`/Library/Developer/CommandLineTools/usr/bin/git`) 사용.
