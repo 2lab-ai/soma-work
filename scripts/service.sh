@@ -661,15 +661,25 @@ scan_project_pids() {
 
     local err_file lsof_out lsof_status=0
     err_file="$(mktemp "${TMPDIR:-/tmp}/soma-stop-lsof.XXXXXX")" || err_file=""
-    if [[ -n "$err_file" ]]; then
-        lsof_out="$(lsof -a -d cwd -c node -Fpn 2>"$err_file")" || lsof_status=$?
-    else
-        lsof_out="$(lsof -a -d cwd -c node -Fpn 2>/dev/null)" || lsof_status=$?
+    if [[ -z "$err_file" ]]; then
+        # Without a place to capture stderr the scan cannot tell a clean host
+        # from a failed probe — refuse to answer rather than fail open.
+        print_warning "cannot create a temp file for the lsof scan — scan unavailable" >&2
+        mark_scan_unavailable
+        return 0
     fi
+    lsof_out="$(lsof -a -d cwd -c node -Fpn 2>"$err_file")" || lsof_status=$?
 
     # Exit 1 with nothing on stderr is lsof's ordinary "no file matched" — a
     # clean host. Any non-zero exit that ALSO wrote a diagnostic (missing
     # permissions, a broken install) means the question went unanswered.
+    # macOS lsof also prints "lsof: WARNING: can't stat() ..." for unstat-able
+    # volumes while still answering the question — drop those lines before
+    # deciding whether stderr carries a real failure.
+    if [[ -n "$err_file" && -s "$err_file" ]]; then
+        grep -v '^lsof: WARNING:' "$err_file" > "$err_file.filtered" 2>/dev/null || true
+        mv -f "$err_file.filtered" "$err_file" 2>/dev/null || true
+    fi
     if [[ "$lsof_status" -ne 0 && -n "$err_file" && -s "$err_file" ]]; then
         print_warning "lsof failed (exit $lsof_status): $(tr '\n' ' ' < "$err_file" | cut -c1-200)" >&2
         mark_scan_unavailable
@@ -731,10 +741,11 @@ cmd_stop() {
 
     # Marker the (subshell) scan writes into when it could not answer.
     local scan_flag_dir scan_unavailable=0
-    scan_flag_dir="$(mktemp -d "${TMPDIR:-/tmp}/soma-stop.XXXXXX")" || scan_flag_dir=""
-    if [[ -n "$scan_flag_dir" ]]; then
-        SCAN_UNAVAILABLE_FLAG="$scan_flag_dir/scan-unavailable"
-    fi
+    scan_flag_dir="$(mktemp -d "${TMPDIR:-/tmp}/soma-stop.XXXXXX")" || {
+        print_error "cannot create the scan marker dir under ${TMPDIR:-/tmp} — refusing to report a clean stop"
+        return 1
+    }
+    SCAN_UNAVAILABLE_FLAG="$scan_flag_dir/scan-unavailable"
 
     # Capture the launchd-reported PID BEFORE unloading: if the unload fails we
     # still know which process launchd was supervising.

@@ -144,7 +144,7 @@ jobs:
     name: Deploy ${{ matrix.name }}
     needs: prepare
     runs-on: [self-hosted, "${{ matrix.runner_label }}"]
-    timeout-minutes: 10
+    timeout-minutes: 15
     environment: ${{ matrix.github_env }}
     strategy:
       fail-fast: false
