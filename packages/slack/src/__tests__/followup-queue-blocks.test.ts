@@ -1209,7 +1209,121 @@ describe('buildFollowupItemMessage — one queued message, one thread message (A
 
   it('numbers the line with the item seq unless the caller supplies its own index', () => {
     expect(sectionTexts(buildFollowupItemMessage(item({ seq: 12 }), 0).blocks)[0].startsWith('12. ')).toBe(true);
-    expect(sectionTexts(buildFollowupItemMessage(item({ seq: 12 }), 0, 1).blocks)[0].startsWith('1. ')).toBe(true);
+    expect(sectionTexts(buildFollowupItemMessage(item({ seq: 12 }), 0, { index: 1 }).blocks)[0].startsWith('1. ')).toBe(
+      true,
+    );
+  });
+
+  /**
+   * The controls are picked from the STATE, exactly as the panel's
+   * `accessoryFor` picks them — a `paused` row offering `Send now` is a control
+   * whose only possible answer is `frozen`, and a `failed` row offering it is a
+   * control the dispatcher refuses outright. `Cancel` is on every row because
+   * dropping the user's message is legal from all four of them.
+   */
+  describe('controls follow the item state (M4)', () => {
+    function ids(state: FollowupItemState): string[] {
+      const { blocks } = buildFollowupItemMessage(item({ seq: 1, state }), 4);
+      return collectButtons(blocks).map((button) => String(button.action_id));
+    }
+
+    it('offers Send now + Cancel on a queued row', () => {
+      expect(ids('queued')).toEqual([FOLLOWUP_SEND_NOW_ACTION_ID, FOLLOWUP_CANCEL_ACTION_ID]);
+    });
+
+    it('offers Send now + Cancel on a steered row — it is the same waiting message', () => {
+      expect(ids('steered')).toEqual([FOLLOWUP_SEND_NOW_ACTION_ID, FOLLOWUP_CANCEL_ACTION_ID]);
+    });
+
+    it('offers Resume + Cancel on a paused row', () => {
+      expect(ids('paused')).toEqual([FOLLOWUP_RESUME_ACTION_ID, FOLLOWUP_CANCEL_ACTION_ID]);
+    });
+
+    it('offers Retry + Cancel on a failed row, with no confirm dialog', () => {
+      const { blocks } = buildFollowupItemMessage(item({ seq: 1, state: 'failed' }), 4);
+      const [retry, cancel] = collectButtons(blocks);
+      expect(retry.action_id).toBe(FOLLOWUP_RETRY_ACTION_ID);
+      expect(cancel.action_id).toBe(FOLLOWUP_CANCEL_ACTION_ID);
+      // `failed` never ran to completion, so re-running it repeats nothing.
+      expect(retry.confirm).toBeUndefined();
+    });
+
+    it('confirm-gates the Retry of an uncertain row and says the caution on the line (R6)', () => {
+      // The item may already have produced side effects, so the click that
+      // re-runs it is a decision — and the button message has room for the
+      // dialog the compact overflow menu could not attach to one option only.
+      const { blocks } = buildFollowupItemMessage(item({ seq: 1, state: 'uncertain' }), 4);
+
+      const [retry, cancel] = collectButtons(blocks);
+      expect(retry.action_id).toBe(FOLLOWUP_RETRY_ACTION_ID);
+      expect(cancel.action_id).toBe(FOLLOWUP_CANCEL_ACTION_ID);
+      expect((retry.confirm as Record<string, unknown>).style).toBe('danger');
+      expect(cancel.confirm).toBeUndefined();
+      expect(sectionTexts(blocks)[0]).toContain('재실행 전 확인');
+    });
+
+    it('stamps the turn epoch on Send now only — never on Resume, Retry or Cancel', () => {
+      for (const state of ['paused', 'failed', 'uncertain'] as const) {
+        const { blocks } = buildFollowupItemMessage(item({ seq: 1, state }), 5);
+        for (const button of collectButtons(blocks)) {
+          expect(parseFollowupItemActionValue(button.value as string)?.turnEpoch).toBeUndefined();
+        }
+      }
+      const queued = buildFollowupItemMessage(item({ seq: 1 }), 5);
+      expect(parseFollowupItemActionValue(collectButtons(queued.blocks)[0].value as string)?.turnEpoch).toBe(5);
+    });
+
+    it('leaves a terminal row without controls — there is no operation left', () => {
+      for (const state of ['resolved', 'cancelled'] as const) {
+        const { blocks } = buildFollowupItemMessage(item({ seq: 1, state }), 4);
+        expect(collectButtons(blocks)).toHaveLength(0);
+        // …and it does not claim a control was LOST, which is a different fact.
+        expect(sectionTexts(blocks)[0]).not.toContain('action unavailable');
+      }
+    });
+  });
+
+  /**
+   * A restart freeze used to be readable only on the panel's freeze line, and
+   * the panel no longer renders the queue (A39) — so the sentence that tells the
+   * user why a restored row is not running by itself had no surface left. It
+   * rides the parked row's own message now.
+   */
+  describe('freeze notice on a parked row (M4)', () => {
+    const freeze = { reason: FOLLOWUP_RESTART_FREEZE_REASON, at: 1_700_000_000_000 };
+
+    it('prefixes the restart notice on a row the freeze parked, in blocks and fallback', () => {
+      const { blocks, text } = buildFollowupItemMessage(item({ seq: 1, state: 'paused' }), 0, { freeze });
+
+      expect(contextTexts(blocks)[0]).toBe(FOLLOWUP_RESTART_FREEZE_NOTICE);
+      // Before the item line, so the notice is read first.
+      expect((blocks[0] as Record<string, unknown>).type).toBe('context');
+      expect((blocks[1] as Record<string, unknown>).type).toBe('section');
+      expect(text.startsWith(FOLLOWUP_RESTART_FREEZE_NOTICE)).toBe(true);
+    });
+
+    it('carries the generic freeze sentence for any other reason', () => {
+      const { blocks } = buildFollowupItemMessage(item({ seq: 1, state: 'uncertain' }), 0, {
+        freeze: { reason: '중지됨', at: 1 },
+      });
+
+      expect(contextTexts(blocks)[0]).toBe(followupFreezeBannerText('중지됨'));
+    });
+
+    it('says nothing on a row the freeze did not park — it drains normally (A29)', () => {
+      // The live bug: a `queued` message that arrived AFTER the freeze read as
+      // "this queue is stopped" because the notice was session-scoped.
+      for (const state of ['queued', 'steered'] as const) {
+        const { blocks, text } = buildFollowupItemMessage(item({ seq: 1, state }), 0, { freeze });
+        expect(contextTexts(blocks)).toEqual([]);
+        expect(text).not.toContain(FOLLOWUP_RESTART_FREEZE_NOTICE);
+      }
+    });
+
+    it('says nothing when the session is not frozen at all', () => {
+      const { blocks } = buildFollowupItemMessage(item({ seq: 1, state: 'paused' }), 0);
+      expect(contextTexts(blocks)).toEqual([]);
+    });
   });
 
   it('mints no mention from the message, in the blocks OR in the fallback text', () => {

@@ -976,6 +976,168 @@ describe('onItemProcessed', () => {
     expect(lastEphemeral(h.responses)).toContain('취소했습니다');
     expect(h.deps.reportError).toHaveBeenCalled();
   });
+
+  /**
+   * `Send now` is the OTHER way an item leaves the pending set from a click, and
+   * it was the one path that never said so: the follow-through awaited the run
+   * and then only refreshed a panel that no longer renders the queue, leaving
+   * the item's message on screen offering `Send now` for a message that already
+   * ran. Announced once the run has SETTLED — the host is the one that decides
+   * whether the item really moved (`deleteFollowupItemMessagesIfProcessed`), so
+   * this hook reports the boundary, not a verdict.
+   */
+  function dispatchedRun(over: Record<string, unknown> = {}): SendNowResult {
+    return {
+      status: 'dispatched',
+      run: {
+        runId: 1,
+        turnEpoch: 1,
+        itemId: `${SESSION_KEY}#1`,
+        settled: Promise.resolve({
+          sessionKey: SESSION_KEY,
+          runId: 1,
+          turnEpoch: 1,
+          kind: 'send-now',
+          itemId: `${SESSION_KEY}#1`,
+          outcome: { result: 'safe' },
+          itemDisposition: 'resolved',
+          canDrain: true,
+          ...over,
+        }),
+      },
+    } as SendNowResult;
+  }
+
+  it('reports a settled `Send now` so the host can delete the item message', async () => {
+    const onItemProcessed = vi.fn();
+    const h = harness({ onItemProcessed });
+    h.dispatcher.sendNow.mockResolvedValue(dispatchedRun());
+
+    await h.click(FOLLOWUP_SEND_NOW_ACTION_ID, clickBody(itemValue({ turnEpoch: 0 })));
+    await tick(5);
+
+    expect(onItemProcessed).toHaveBeenCalledWith(SESSION_KEY, `${SESSION_KEY}#1`);
+    expect(onItemProcessed).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports it after the run settled, never at click time', async () => {
+    const onItemProcessed = vi.fn();
+    const h = harness({ onItemProcessed });
+    let settle!: (value: unknown) => void;
+    const settled = new Promise((resolve) => {
+      settle = resolve;
+    });
+    h.dispatcher.sendNow.mockResolvedValue({
+      status: 'dispatched',
+      run: { runId: 1, turnEpoch: 1, itemId: `${SESSION_KEY}#1`, settled },
+    } as SendNowResult);
+
+    await h.click(FOLLOWUP_SEND_NOW_ACTION_ID, clickBody(itemValue({ turnEpoch: 0 })));
+    await tick(3);
+    // The turn is still running: nothing has been processed yet, so the item's
+    // controls must still be on screen.
+    expect(onItemProcessed).not.toHaveBeenCalled();
+
+    settle({ sessionKey: SESSION_KEY, runId: 1, turnEpoch: 1, kind: 'send-now', canDrain: false });
+    await tick(5);
+    expect(onItemProcessed).toHaveBeenCalledWith(SESSION_KEY, `${SESSION_KEY}#1`);
+  });
+
+  it('reports it even when the turn did not end safely — the host decides, not the outcome', async () => {
+    // A blocked turn may have left the item back in `queued`; the host re-reads
+    // the queue and keeps the message. Withholding the signal here would instead
+    // keep a stale message for every item whose turn ended unhealthy but whose
+    // row DID move (`failed`).
+    const onItemProcessed = vi.fn();
+    const h = harness({ onItemProcessed });
+    h.dispatcher.sendNow.mockResolvedValue(
+      dispatchedRun({ outcome: { result: 'blocked', reason: 'permission' }, itemDisposition: 'none', canDrain: false }),
+    );
+
+    await h.click(FOLLOWUP_SEND_NOW_ACTION_ID, clickBody(itemValue({ turnEpoch: 0 })));
+    await tick(5);
+
+    expect(onItemProcessed).toHaveBeenCalledWith(SESSION_KEY, `${SESSION_KEY}#1`);
+  });
+
+  it('stays silent when the dispatcher rejected the `Send now`', async () => {
+    const onItemProcessed = vi.fn();
+    const h = harness({ onItemProcessed });
+    h.dispatcher.sendNow.mockResolvedValue({ status: 'rejected', reason: 'stale-turn-epoch', detail: 'x' });
+
+    await h.click(FOLLOWUP_SEND_NOW_ACTION_ID, clickBody(itemValue({ turnEpoch: 0 })));
+    await tick(5);
+
+    expect(onItemProcessed).not.toHaveBeenCalled();
+  });
+});
+
+/*
+ * S2 — an item that changes state WITHOUT leaving the pending set keeps its
+ * message, so the message has to be re-rendered: a `paused` row released by
+ * Resume otherwise still reads `paused` and still offers a Resume that now does
+ * nothing. This module owns no Slack client, so it tells the host, exactly like
+ * {@link onItemProcessed}.
+ */
+describe('refreshItemMessage', () => {
+  it('asks the host to re-render the item message after a Resume', async () => {
+    const refreshItemMessage = vi.fn();
+    const h = harness({ refreshItemMessage });
+    h.queue.get.mockReturnValue(queuedItem({ state: 'paused' }));
+
+    await h.click(FOLLOWUP_RESUME_ACTION_ID, clickBody(itemValue()));
+    await tick();
+
+    expect(refreshItemMessage).toHaveBeenCalledWith(SESSION_KEY, `${SESSION_KEY}#1`);
+  });
+
+  it('asks the host to re-render the item message after a Retry', async () => {
+    const refreshItemMessage = vi.fn();
+    const h = harness({ refreshItemMessage });
+    h.queue.get.mockReturnValue(queuedItem({ state: 'failed' }));
+
+    await h.click(FOLLOWUP_RETRY_ACTION_ID, clickBody(itemValue()));
+    await tick();
+
+    expect(refreshItemMessage).toHaveBeenCalledWith(SESSION_KEY, `${SESSION_KEY}#1`);
+  });
+
+  it('re-renders even when the queue refused the retry — the row did not move', async () => {
+    const refreshItemMessage = vi.fn();
+    const h = harness({ refreshItemMessage });
+    h.queue.get.mockReturnValue(queuedItem({ state: 'failed' }));
+    h.queue.retry.mockReturnValue({ ok: false, reason: 'capacity' } as never);
+
+    await h.click(FOLLOWUP_RETRY_ACTION_ID, clickBody(itemValue()));
+    await tick();
+
+    expect(refreshItemMessage).toHaveBeenCalledWith(SESSION_KEY, `${SESSION_KEY}#1`);
+    expectRefusal(h.responses);
+  });
+
+  it('reports a throwing re-render instead of inverting the act the user completed', async () => {
+    const refreshItemMessage = vi.fn(() => {
+      throw new Error('update exploded');
+    });
+    const h = harness({ refreshItemMessage });
+    h.queue.get.mockReturnValue(queuedItem({ state: 'paused' }));
+
+    await h.click(FOLLOWUP_RESUME_ACTION_ID, clickBody(itemValue()));
+    await tick();
+
+    expect(h.deps.reportError).toHaveBeenCalled();
+    expect(h.deps.runDrain).toHaveBeenCalledWith(SESSION_KEY);
+  });
+
+  it('is optional — a host that wires none still resumes', async () => {
+    const h = harness({ refreshItemMessage: undefined });
+    h.queue.get.mockReturnValue(queuedItem({ state: 'paused' }));
+
+    await h.click(FOLLOWUP_RESUME_ACTION_ID, clickBody(itemValue()));
+    await tick();
+
+    expect(h.queue.resume).toHaveBeenCalledWith(SESSION_KEY);
+  });
 });
 
 /*

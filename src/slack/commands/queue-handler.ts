@@ -3,7 +3,6 @@ import {
   buildFollowupItemMessage,
   FOLLOWUP_PENDING_STATES,
   FOLLOWUP_QUEUE_DEFAULT_PAGE_SIZE,
-  FOLLOWUP_QUEUE_TITLE,
   type FollowupQueueView,
 } from '@soma/slack/followup-queue-blocks';
 import type { CommandContext, CommandHandler, CommandResult } from './types';
@@ -31,16 +30,18 @@ import type { CommandContext, CommandHandler, CommandResult } from './types';
  *    (`command-router.ts:413`, via this handler's `canHandle`) is what lets it
  *    run live while a turn is in flight — which is the only time the queue has
  *    anything in it.
- *  - it posts ONE message. Ten items is a full page
- *    ({@link FOLLOWUP_QUEUE_DEFAULT_PAGE_SIZE}, = 21 blocks of Slack's 50) and a
- *    longer backlog is summarised by its tail count rather than paged: this
- *    command is a status read, and the controls for an item past the tenth are
- *    still on that item's own message.
+ *  - it posts ONE MESSAGE PER ROW, not one message carrying every row. A41
+ *    deletes the messages of ONE item, and a shared message cannot be deleted
+ *    for one item without taking the other nine rows' controls with it — the
+ *    first item to be processed would silently disarm the rest of the listing.
+ *    Ten rows is the page ({@link FOLLOWUP_QUEUE_DEFAULT_PAGE_SIZE}); a longer
+ *    backlog gets a final `…외 N건` line instead of more messages, and the
+ *    controls for an item past the tenth are still on that item's own message.
  *  - every posted row is REGISTERED with the host
- *    ({@link QueueHandlerDeps.rememberFollowupItemMessage}), so A41 deletes this
- *    listing's buttons when the item is processed, exactly as it deletes the
- *    item's own message. A listing that outlived its items would be a second
- *    surface of stale buttons — the thing A41 exists to prevent.
+ *    ({@link QueueHandlerDeps.rememberFollowupItemMessage}) under its OWN ts, so
+ *    A41 deletes this listing's buttons when that item is processed, exactly as
+ *    it deletes the item's own message. A listing that outlived its items would
+ *    be a second surface of stale buttons — the thing A41 exists to prevent.
  */
 export class QueueHandler implements CommandHandler {
   /**
@@ -69,30 +70,33 @@ export class QueueHandler implements CommandHandler {
     const view = this.viewOf(ctx);
     const turnEpoch = view?.turnEpoch ?? 0;
     const shown = items.slice(0, FOLLOWUP_QUEUE_DEFAULT_PAGE_SIZE);
-    const blocks: unknown[] = [];
-    shown.forEach((item, index) => {
-      // 1-based LIST position, not the item's `seq`: the user is reading a list
-      // of what is still waiting, and a gap in it ("1, 4, 7") would look like
-      // rows this command decided not to show.
-      blocks.push(...buildFollowupItemMessage(item, turnEpoch, index + 1).blocks);
-    });
-    const hidden = items.length - shown.length;
-    if (hidden > 0) {
-      blocks.push({ type: 'context', elements: [{ type: 'plain_text', text: `…외 ${hidden}건` }] });
-    }
 
-    // Counts only, like the panel's fallback: the rows themselves carry the
-    // (escaped) message text, and a notification line does not need to repeat
-    // ten of them.
-    const text = `${FOLLOWUP_QUEUE_TITLE} — 대기 ${items.length}건`;
-    const posted = await this.post(ctx, text, blocks);
-    // Where the listing landed, per item — see the class note on A41.
-    for (const item of shown) {
+    // Sequential, not `Promise.all`: the rows are posted in queue order and a
+    // parallel burst would interleave them in the thread.
+    for (const [index, item] of shown.entries()) {
+      const rendered = buildFollowupItemMessage(item, turnEpoch, {
+        // 1-based LIST position, not the item's `seq`: the user is reading a
+        // list of what is still waiting, and a gap in it ("1, 4, 7") would look
+        // like rows this command decided not to show.
+        index: index + 1,
+        // The same freeze the item's own message carries: a parked row says why
+        // it is not running, and a row that arrived after the freeze says
+        // nothing (the builder scopes it per item, A29).
+        freeze: view?.freeze,
+      });
+      const posted = await this.post(ctx, rendered.text, rendered.blocks);
+      // Where THIS row landed — see the class note on A41.
       this.deps.rememberFollowupItemMessage?.(item.id, {
         channel: posted?.channel ?? ctx.channel,
         ts: posted?.ts,
       });
     }
+
+    const hidden = items.length - shown.length;
+    // Its own message, and deliberately without controls or a registration: it
+    // stands for items this listing did not render, so there is nothing on it
+    // for A41 to delete and nothing to click.
+    if (hidden > 0) await this.post(ctx, `…외 ${hidden}건`, undefined);
     return { handled: true };
   }
 

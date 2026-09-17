@@ -1577,8 +1577,8 @@ export class ThreadSurface {
 
     // Append executive summary blocks if present, but only as far as the
     // 50-block budget allows. The summary is the optional part of the surface;
-    // the header, the Queue and the controls are not, so overflow trims HERE
-    // and never silently drops a button.
+    // the header and the controls are not, so overflow trims HERE and never
+    // silently drops a button.
     // Trace: docs/archive/features/turn-summary-lifecycle/trace.md, S3
     if (summaryBlocks.length > 0) {
       blocks.push(...summaryBlocks.slice(0, Math.max(0, MAX_MESSAGE_BLOCKS - blocks.length)));
@@ -1588,12 +1588,14 @@ export class ThreadSurface {
   }
 
   /**
-   * Index of the trailing action rows inside an ActionPanelBuilder payload —
-   * i.e. where the Queue is inserted. Walks back over the contiguous run of
-   * `actions` blocks and includes the divider that introduces them, so the
-   * Queue lands above the separator rather than between it and the buttons.
-   * A payload with no trailing actions (the closed panel) returns its length,
-   * which appends the Queue at the end.
+   * Index of the trailing action rows inside an ActionPanelBuilder payload.
+   * Walks back over the contiguous run of `actions` blocks and includes the
+   * divider that introduces them; a payload with no trailing actions (the
+   * closed panel) returns its length.
+   *
+   * This used to be the Queue's insertion point. Nothing is inserted there any
+   * more (A39) — the split survives because it is what keeps the status half
+   * and the action rows in that order.
    */
   private static actionRowsIndex(blocks: any[]): number {
     let index = blocks.length;
@@ -1614,10 +1616,18 @@ export class ThreadSurface {
   /**
    * Closed state: header + closed panel.
    *
-   * No Queue here either (A39). Closing a session freezes and cancels queue
-   * items (`ssot.md` §3.5 / A18); what the user sees of that outcome is the
-   * per-item messages in the thread — a cancelled item's message is deleted
-   * (A41), which is the same fact stated where the item was posted.
+   * No Queue here either (A39).
+   *
+   * This method RENDERS a closed panel; it is not itself a queue transition and
+   * it does not stand for one. What actually happens to the items is decided
+   * elsewhere, and the two cases differ:
+   *   - a session DELETION (the registry's pre-delete seam,
+   *     `slack-handler.ts` `registerFollowupSessionDeletion`) cancels every
+   *     still-pending item and deletes that item's in-thread message (A41), so
+   *     the thread is left with no controls pointing at a session that is gone;
+   *   - a STOP freezes instead of cancelling (`ssot.md` §3.5 / A18): the parked
+   *     rows keep their messages, which is where their Resume/Retry and the
+   *     freeze notice now live, because this panel no longer carries them.
    */
   private buildClosedBlocks(session: ConversationSession, sessionKey: string): any[] {
     const prStatusInfo = this.getState(sessionKey).prCache;

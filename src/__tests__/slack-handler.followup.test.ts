@@ -2809,6 +2809,30 @@ describe('SlackHandler — follow-up queue host', () => {
     });
 
     /**
+     * A SECOND handler on a different app double, sharing this test's fakes.
+     *
+     * Needed because two seams are wired in the CONSTRUCTOR and only when the
+     * collaborator that carries them exists: the button listeners (`app.action`)
+     * and the session-deletion hook (`claudeHandler.getSessionRegistry`). The
+     * `beforeEach` handler deliberately has neither, so a test that needs one
+     * builds its own instead of weakening the default double.
+     */
+    function spawnHandler(app: any): { spawned: SlackHandler; spawnedAny: any } {
+      const spawned = new SlackHandler(app, claudeHandler as any, {} as any, {
+        followupQueueStore: { load: () => undefined, save: () => undefined, recoveryWarning: undefined },
+      });
+      const spawnedAny = spawned as any;
+      spawnedAny.slackApi = handlerAny.slackApi;
+      spawnedAny.assistantStatusManager = handlerAny.assistantStatusManager;
+      spawnedAny.inputProcessor = handlerAny.inputProcessor;
+      spawnedAny.messageValidator = handlerAny.messageValidator;
+      spawnedAny.sessionInitializer = handlerAny.sessionInitializer;
+      spawnedAny.threadPanel = handlerAny.threadPanel;
+      spawnedAny.createAgentSession = createAgentSession;
+      return { spawned, spawnedAny };
+    }
+
+    /**
      * End to end through the REAL button wiring: the click lands on the module's
      * registered listener, which runs the host's `onItemProcessed`. Only an app
      * that has `app.action` registers them, so this test builds one.
@@ -2820,17 +2844,7 @@ describe('SlackHandler — follow-up queue host', () => {
         assistant: vi.fn(),
         action: (id: string, listener: any) => listeners.set(id, listener),
       } as any;
-      const clickable = new SlackHandler(app, claudeHandler as any, {} as any, {
-        followupQueueStore: { load: () => undefined, save: () => undefined, recoveryWarning: undefined },
-      });
-      const clickableAny = clickable as any;
-      clickableAny.slackApi = handlerAny.slackApi;
-      clickableAny.assistantStatusManager = handlerAny.assistantStatusManager;
-      clickableAny.inputProcessor = handlerAny.inputProcessor;
-      clickableAny.messageValidator = handlerAny.messageValidator;
-      clickableAny.sessionInitializer = handlerAny.sessionInitializer;
-      clickableAny.threadPanel = handlerAny.threadPanel;
-      clickableAny.createAgentSession = createAgentSession;
+      const { spawned: clickable, spawnedAny: clickableAny } = spawnHandler(app);
       claudeHandler.steerTurn = vi.fn().mockReturnValue(false);
       postSystemMessage.mockResolvedValue({ ts: 'item-ts-5', channel: CHANNEL });
 
@@ -2868,6 +2882,135 @@ describe('SlackHandler — follow-up queue host', () => {
 
       gate.resolve({ hasPendingChoice: false });
       await first;
+    });
+
+    /**
+     * M2 — a session deletion cancels every pending item (`ssot.md:157-158`),
+     * and until now their in-thread messages stayed: a `Send now` on a message
+     * whose session no longer exists, in a thread that is otherwise finished.
+     * The pending list is captured BEFORE the cancel, because afterwards every
+     * row reads `cancelled` and nothing says which ones this act moved.
+     */
+    it('deletes the item messages of the items a session deletion cancels', async () => {
+      let beforeDelete: ((key: string, session: any, reason: string) => void) | undefined;
+      claudeHandler.getSessionRegistry = () => ({
+        setBeforeSessionDelete: (cb: any) => {
+          beforeDelete = cb;
+        },
+      });
+      const { spawned, spawnedAny } = spawnHandler({ client: {}, assistant: vi.fn() } as any);
+      claudeHandler.steerTurn = vi.fn().mockReturnValue(false);
+      postSystemMessage.mockResolvedValue({ ts: 'item-ts-6', channel: CHANNEL });
+
+      const gate = deferred<any>();
+      startWithContinuation.mockImplementationOnce(() => gate.promise);
+      const first = spawned.handleMessage(message({ ts: '222.333', text: '첫 지시' }), say());
+      await tick();
+      await spawned.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
+      expect(spawnedAny.getFollowupQueue().list(SESSION_KEY)[0].state).toBe('queued');
+
+      expect(beforeDelete, 'the registry seam was wired').toBeDefined();
+      beforeDelete?.(SESSION_KEY, registrySession, 'expired');
+      await tick();
+      await tick();
+
+      expect(spawnedAny.getFollowupQueue().list(SESSION_KEY)[0].state).toBe('cancelled');
+      expect(deleteMessage).toHaveBeenCalledWith(CHANNEL, 'item-ts-6');
+
+      gate.resolve({ hasPendingChoice: false });
+      await first;
+    });
+
+    /**
+     * M3 — the settlement can win the race against the POST of the very message
+     * it would delete. `deleteFollowupItemMessages` then finds nothing, the ts
+     * is registered a tick later, and that message keeps its buttons forever.
+     * The registration itself re-reads the item and deletes on the spot.
+     */
+    it('deletes an item message that finished posting after the item settled', async () => {
+      const steerTurn = vi.fn().mockReturnValue(true);
+      claudeHandler.steerTurn = steerTurn;
+      const postGate = deferred<any>();
+      postSystemMessage.mockImplementation(async (_channel: string, text: string) =>
+        String(text).startsWith('Queue') ? postGate.promise : { ts: 'other-ts', channel: CHANNEL },
+      );
+      const { settle } = await startBusyTurn();
+
+      const parked = handler.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
+      await tick();
+      const itemId = items()[0].id;
+      // The model consumes it while its receipt is still being posted.
+      await handlerAny.streamExecutor.deps.onSteerLifecycle({
+        sessionKey: SESSION_KEY,
+        uuid: steerTurn.mock.calls[0][1].uuid,
+        phase: 'completed',
+      });
+      expect(items()[0].state).toBe('resolved');
+      expect(deleteMessage).not.toHaveBeenCalled();
+
+      postGate.resolve({ ts: 'late-ts', channel: CHANNEL });
+      await parked;
+      await tick();
+
+      expect(deleteMessage).toHaveBeenCalledWith(CHANNEL, 'late-ts');
+      // …and nothing is left behind pointing at a message that is gone.
+      expect(handlerAny.followupItemMessages?.get(itemId)).toBeUndefined();
+      await settle();
+    });
+
+    /**
+     * S2 — an item that changes state without leaving the queue keeps its
+     * message, so the message must be re-rendered. A `steered` row returned to
+     * `queued` otherwise keeps reading 전달됨 for a message the model never saw.
+     */
+    it('updates the item message when the item changes state inside the queue', async () => {
+      const steerTurn = vi.fn().mockReturnValue(true);
+      claudeHandler.steerTurn = steerTurn;
+      postSystemMessage.mockResolvedValue({ ts: 'item-ts-7', channel: CHANNEL });
+      const updateMessage = vi.fn().mockResolvedValue(undefined);
+      handlerAny.slackApi.updateMessage = updateMessage;
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
+      expect(items()[0].state).toBe('steered');
+
+      await handlerAny.streamExecutor.deps.onSteerLifecycle({
+        sessionKey: SESSION_KEY,
+        uuid: steerTurn.mock.calls[0][1].uuid,
+        phase: 'discarded',
+      });
+      await tick();
+
+      expect(items()[0].state).toBe('queued');
+      expect(deleteMessage).not.toHaveBeenCalled();
+      expect(updateMessage).toHaveBeenCalled();
+      const [channel, ts, text, blocks] = updateMessage.mock.calls[updateMessage.mock.calls.length - 1];
+      expect(channel).toBe(CHANNEL);
+      expect(ts).toBe('item-ts-7');
+      expect(String(text)).not.toContain(FOLLOWUP_STEERED_LABEL);
+      expect(JSON.stringify(blocks)).toContain(FOLLOWUP_SEND_NOW_ACTION_ID);
+      await settle();
+    });
+
+    it('survives a host whose Slack client cannot update messages', async () => {
+      // The default double has no `updateMessage` — a refresh that assumed one
+      // would turn every state change into a thrown bookkeeping error.
+      const steerTurn = vi.fn().mockReturnValue(true);
+      claudeHandler.steerTurn = steerTurn;
+      postSystemMessage.mockResolvedValue({ ts: 'item-ts-8', channel: CHANNEL });
+      expect(handlerAny.slackApi.updateMessage).toBeUndefined();
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
+
+      await expect(
+        handlerAny.streamExecutor.deps.onSteerLifecycle({
+          sessionKey: SESSION_KEY,
+          uuid: steerTurn.mock.calls[0][1].uuid,
+          phase: 'discarded',
+        }),
+      ).resolves.toBeUndefined();
+
+      expect(items()[0].state).toBe('queued');
+      await settle();
     });
   });
 });
