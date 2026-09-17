@@ -157,7 +157,7 @@ function validateItem(
   value: unknown,
   sessionKey: string,
   where: string,
-): { id: string; seq: number; eventKey: string; state: FollowupItemState } {
+): { id: string; seq: number; eventKey: string; state: FollowupItemState; steerUuid?: string } {
   const item = record(value, where);
   const id = text(item.id, `${where}.id`);
   const seq = integer(item.seq, `${where}.seq`, 1);
@@ -181,12 +181,20 @@ function validateItem(
   timestamp(item.enqueuedAt, `${where}.enqueuedAt`);
   timestamp(item.updatedAt, `${where}.updatedAt`);
   optionalText(item.stateReason, `${where}.stateReason`);
-  // The SDK handle a `steered` item was pushed under. Only its type is checked:
-  // whether it is still meaningful is a question about a process that no longer
-  // exists, and `FollowupQueue.recover()` — not the loader — decides that (A21).
+  // The SDK handle a `steered` item was pushed under. Whether it is still
+  // MEANINGFUL is a question about a process that no longer exists, and
+  // `FollowupQueue.recover()` — not the loader — decides that (A21). What is
+  // checked here is the structural invariant the queue itself maintains: the
+  // uuid is the ONLY identity a settlement receipt carries (06 §6.6), so an
+  // empty one names nothing and a `steered` row without one can never be
+  // resolved, unsteered or cancelled — it would sit in the panel forever,
+  // invisible to the drain, which is the vanished-message failure A1/A16 forbid.
   optionalText(item.steerUuid, `${where}.steerUuid`);
+  const steerUuid = item.steerUuid as string | undefined;
+  if (steerUuid !== undefined && steerUuid.length === 0) fail(`${where}.steerUuid`, 'is empty');
+  if (state === 'steered' && !steerUuid) fail(`${where}.steerUuid`, 'is missing on a steered item');
 
-  return { id, seq, eventKey, state };
+  return { id, seq, eventKey, state, steerUuid };
 }
 
 function validateSession(value: unknown, where: string): string {
@@ -212,6 +220,7 @@ function validateSession(value: unknown, where: string): string {
   const ids = new Set<string>();
   const seqs = new Set<number>();
   const eventKeys = new Set<string>();
+  const steerUuids = new Set<string>();
   let maxSeq = 0;
   let pendingDispatch = 0;
   let dispatched = 0;
@@ -223,6 +232,16 @@ function validateSession(value: unknown, where: string): string {
     // Two rows for one Slack event means the dedup key (A3) was already broken
     // on disk — running both is exactly the double-answer this queue prevents.
     if (eventKeys.has(item.eventKey)) fail(`${where}.items[${index}].eventKey`, `is a duplicate (${item.eventKey})`);
+    // Same rule, same reason as the eventKey one: the uuid is how a settlement
+    // is addressed (`mutateBySteerUuid`), so two rows sharing one would make a
+    // single receipt settle whichever the scan hit first — silently the wrong
+    // person's message.
+    if (item.steerUuid !== undefined) {
+      if (steerUuids.has(item.steerUuid)) {
+        fail(`${where}.items[${index}].steerUuid`, `is a duplicate (${item.steerUuid})`);
+      }
+      steerUuids.add(item.steerUuid);
+    }
     ids.add(item.id);
     seqs.add(item.seq);
     eventKeys.add(item.eventKey);

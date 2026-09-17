@@ -210,6 +210,42 @@ describe('FollowupQueueStore', () => {
       );
     });
 
+    // The uuid is the ONLY identity an SDK settlement carries (06 §6.6). These
+    // three shapes each break that addressing in a way the panel cannot show:
+    // the row would sit `steered` forever, invisible to the drain.
+    it('rejects an empty steerUuid — it names nothing a receipt could match', () => {
+      expect(() => parseFollowupQueueSnapshot(snapshot([item({ steerUuid: '' })]))).toThrow(
+        'items[0].steerUuid is empty',
+      );
+    });
+
+    it('rejects a steered item with no steerUuid — nothing could ever settle it', () => {
+      expect(() => parseFollowupQueueSnapshot(snapshot([item({ state: 'steered' })]))).toThrow(
+        'items[0].steerUuid is missing on a steered item',
+      );
+    });
+
+    it('rejects two rows sharing one steerUuid — a receipt would settle the wrong message', () => {
+      expect(() =>
+        parseFollowupQueueSnapshot(
+          snapshot([
+            item({ seq: 1, message: message({ ts: '1.1' }), state: 'steered', steerUuid: 'uuid-1' }),
+            item({ seq: 2, message: message({ ts: '1.2' }), state: 'steered', steerUuid: 'uuid-1' }),
+          ]),
+        ),
+      ).toThrow('items[1].steerUuid is a duplicate (uuid-1)');
+    });
+
+    it('still loads a steered row whose uuid is well formed', () => {
+      const original = snapshot([
+        item({ seq: 1, message: message({ ts: '1.1' }), state: 'steered', epoch: 1, steerUuid: 'uuid-1' }),
+      ]);
+
+      store().save(original);
+
+      expect(store().load()).toEqual(original);
+    });
+
     it('accepts a dispatched item alongside a Send-now reservation (A12)', () => {
       const original = snapshot([
         item({ seq: 1, message: message({ ts: '1.1' }), state: 'dispatched', epoch: 2 }),
