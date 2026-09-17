@@ -104,6 +104,11 @@ Status: **in-progress** (2026-09-17, D1–D3 유저 확정) · 기준 커밋 mai
 3. **StreamProcessor**가 `user_message_uuids`/`command_lifecycle`를 관측해 `consumed` 전이를 호스트에 통지.
 4. **Send now**는 `interrupt()` → `still_queued` 처리 → 기존 `sendNow` 트랜잭션(예약·세대·대기)을 그대로 탄다. AbortController는 폴백.
 5. 큐 항목 편집은 `message_changed`를 EventRouter에서 큐로 라우팅.
+6. **소비(consumed) 확정 규칙 — SDK 0.3.251 실측 기반(WU1, 2026-09-17)**: 설치본에는 `user_message_uuids`(복수)·`command_lifecycle` 프레임이 **없다**(`sdk.mjs` 0건; d.ts에는 산문으로만 등장). `user_message_uuid`(단수)는 턴의 첫 응답 프레임에만 찍힌다. 따라서 mid-turn 소비를 프레임으로 관측할 수 없고, 다음 규칙으로 확정한다:
+   - 턴 `result` 프레임에서 `queued_turn_count`(0.3.243+, 설치본에 있음)를 읽는다. 0이면 그 턴에 push된 `steered` 항목은 전부 **consumed**.
+   - 0보다 크면 `interrupt({cancel_queued:true})`를 보내 영수증의 `still_queued`/`cancelled` uuid = **미소비** → `queued`로 되돌리고(unsteer) 채널을 닫는다. 나머지 `steered`는 consumed. CLI가 남은 큐를 자체 실행하지 않도록 취소하는 것이 목적(이중 실행 방지). 되돌아간 항목은 기존 드레인이 새 턴으로 실행한다.
+   - 위 규칙은 R1 실측 항목(S1/S3)으로 검증한다: result 이후 interrupt가 무해한지, 취소가 실제로 실행을 막는지. 실측이 다르면 이 절을 갱신한다.
+   - 어댑터 세션 키: 스티어링 컨트롤은 Slack 세션 키(`executeParams.sessionKey`)로 찾는다. `channel:threadTs` 파생 키는 폴백일 뿐이며 호스트 배선(WU4)이 반드시 실제 세션 키를 넘긴다.
 
 ## 7. 유저 결정 (2026-09-17 확정, 원문: "D1. 자동 스티어링 ㅇㅋ / D2. 첨부도 스티어링 ㅇㅋ / D3. ㅇㅋ")
 - D1. 자동 스티어링 기본 **ON**. 제외는 §3.2의 컨트롤·합성 메시지뿐.
