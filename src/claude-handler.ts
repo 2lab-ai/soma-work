@@ -7,6 +7,7 @@ import {
   type HookInput,
   type HookJSONOutput,
   type Options,
+  type Query,
   query,
   type SDKMessage,
 } from '@anthropic-ai/claude-agent-sdk';
@@ -16,6 +17,14 @@ import { type AgentRunOptions, type AgentStreamEvent, runAgentStream, runOneShot
 import { buildStreamOptions } from './agent-runtime/claude-code/build-stream-options';
 import type { SafetyClassifier } from './agent-runtime/policy/safety-classifier';
 import { buildSafetyClassifier } from './agent-runtime/policy/safety-classifier-factory';
+import {
+  buildInitialUserMessage,
+  buildSteerUserMessage,
+  type SteerInput,
+  type SteerInterruptReceipt,
+  TurnInputChannel,
+  type TurnSteeringPort,
+} from './agent-runtime/turn-input-channel';
 import { ensureTenantKey } from './auth/llmux-tenant-keys';
 import { buildQueryEnv } from './auth/query-env-builder';
 import { Logger } from './logger';
@@ -297,9 +306,34 @@ export type CompactHookBuilder = (args: { session: ConversationSession; channel:
   SessionStart: (input: HookInput) => Promise<HookJSONOutput>;
 };
 
-export class ClaudeHandler {
+/**
+ * Registry key for the steering controls of a running turn.
+ *
+ * Derived from the Slack thread when the caller passes no explicit key, so a
+ * host that already identifies threads as `channel:threadTs` needs no new
+ * plumbing to steer. Returns `undefined` when there is no thread context —
+ * such a turn is simply not steerable (no surface to steer it from).
+ */
+export function steerSessionKey(slackContext?: SlackContext): string | undefined {
+  if (!slackContext?.channel) return undefined;
+  return `${slackContext.channel}:${slackContext.threadTs ?? ''}`;
+}
+
+export class ClaudeHandler implements TurnSteeringPort {
   private logger = new Logger('ClaudeHandler');
   private mcpManager: McpManager;
+
+  /**
+   * Steering handles of the turns currently in flight, keyed by session.
+   *
+   * One entry per running `query()`: the `Query` handle carries the control
+   * requests (interrupt / cancel_async_message), the channel carries mid-turn
+   * user input. Entries are created when the turn's `query()` is built and
+   * removed when its generator settles — so a `false`/`undefined` answer from
+   * the steering methods means exactly "no turn is running for this session",
+   * which is the distinction the host needs to decide queue vs. inject.
+   */
+  private activeQueries = new Map<string, { query: Query; channel: TurnInputChannel }>();
 
   // Extracted components
   private sessionRegistry: SessionRegistry;
@@ -900,12 +934,32 @@ export class ClaudeHandler {
 
   // ===== Core Query Logic =====
 
+  /**
+   * Run one turn in STREAMING INPUT mode.
+   *
+   * The prompt is a {@link TurnInputChannel}, not a string: that is what makes
+   * the turn steerable (a user message pushed mid-turn is delivered by the CLI
+   * at the next tool-call boundary, inside this same turn) and what makes the
+   * SDK's control requests available at all — `interrupt()` and
+   * `cancel_async_message` are "only supported when streaming input/output is
+   * used" (sdk.d.ts:2522-2536).
+   *
+   * "One turn per `query()`" is unchanged: the channel is closed on the turn's
+   * `result` frame, which ends the input stream and lets the CLI child exit.
+   * `options.abortController` stays the hard-kill fallback — `interruptTurn`
+   * deliberately does not touch it.
+   *
+   * @param sessionKey Registry key for the steering controls. Defaults to the
+   *   Slack thread key; a turn with neither is run exactly as before, just not
+   *   steerable.
+   */
   async *streamQuery(
     prompt: string,
     session?: ConversationSession,
     abortController?: AbortController,
     workingDirectory?: string,
     slackContext?: SlackContext,
+    sessionKey?: string,
   ): AsyncGenerator<SDKMessage, void, unknown> {
     // Acquire a lease on the active CCT slot. Held for the lifetime of the
     // Claude CLI streaming call, released in the outer finally below.
@@ -965,8 +1019,15 @@ export class ClaudeHandler {
 
       this.logger.debug('Claude query options', options);
 
+      const channel = new TurnInputChannel(buildInitialUserMessage(prompt));
+      const activeQuery = query({ prompt: channel, options });
+      const steerKey = sessionKey ?? steerSessionKey(slackContext);
+      if (steerKey) {
+        this.activeQueries.set(steerKey, { query: activeQuery, channel });
+      }
+
       try {
-        for await (const message of query({ prompt, options })) {
+        for await (const message of activeQuery) {
           // Issue #661 — convert SDK's "1M context unavailable" assistant
           // message into a throw so the existing error path can auto-fallback.
           // No-op unless options.model ends with `[1m]` AND the message
@@ -984,6 +1045,14 @@ export class ClaudeHandler {
               });
             }
           }
+
+          // The turn is over: close the input stream so the CLI child exits.
+          // Closed BEFORE the yield so a consumer that stops iterating here
+          // (the processor's bounded iterator-return after `result`) still
+          // leaves no process waiting on stdin.
+          if (message.type === 'result') {
+            channel.close();
+          }
           yield message;
         }
       } catch (error) {
@@ -995,6 +1064,15 @@ export class ClaudeHandler {
         }
         this.logger.error('Error in Claude query', error);
         throw error;
+      } finally {
+        // Covers the normal end, the throw above, and consumer abandonment
+        // (generator `return()` runs this). Steering must answer "no" the
+        // instant the turn stops, and an unclosed channel would strand the
+        // child on an error/abort path.
+        channel.close();
+        if (steerKey && this.activeQueries.get(steerKey)?.query === activeQuery) {
+          this.activeQueries.delete(steerKey);
+        }
       }
     } finally {
       if (heartbeatTimer) clearInterval(heartbeatTimer);
@@ -1017,10 +1095,70 @@ export class ClaudeHandler {
     abortController?: AbortController,
     workingDirectory?: string,
     slackContext?: SlackContext,
+    sessionKey?: string,
   ): AsyncIterable<AgentStreamEvent> {
-    return runAgentStream(this.streamQuery(prompt, session, abortController, workingDirectory, slackContext), {
-      calculateTokenCost,
-    });
+    return runAgentStream(
+      this.streamQuery(prompt, session, abortController, workingDirectory, slackContext, sessionKey),
+      { calculateTokenCost },
+    );
+  }
+
+  /**
+   * Inject a user message into the turn currently running for `sessionKey`.
+   *
+   * Returns `false` when no turn is in flight — the caller must then queue the
+   * message for the next dispatch instead of assuming it landed. Delivery is
+   * at the CLI's next tool-call boundary, still inside the running turn; the
+   * `uuid` comes back stamped on that turn's reply and result frames (see the
+   * `steer_lifecycle` events), which is how the host closes the loop.
+   */
+  steerTurn(sessionKey: string, input: SteerInput): boolean {
+    const entry = this.activeQueries.get(sessionKey);
+    if (!entry) return false;
+    return entry.channel.push(buildSteerUserMessage(input));
+  }
+
+  /**
+   * Interrupt the running turn and return the SDK's interrupt receipt.
+   *
+   * Deliberately does NOT abort the turn's `AbortController`: abort kills the
+   * child process, losing the receipt and the session, whereas an interrupt
+   * stops the current work and leaves the session able to report which queued
+   * sends survived. The AbortController stays the hard-kill fallback for the
+   * stop/cancel paths that own it.
+   *
+   * Resolves `undefined` when no turn is running, or when the CLI predates the
+   * `interrupt_receipt_v1` capability (it then answers with no receipt —
+   * sdk.d.ts:2528-2536). `undefined` therefore means "no receipt", never
+   * "nothing queued".
+   */
+  async interruptTurn(sessionKey: string): Promise<SteerInterruptReceipt | undefined> {
+    const entry = this.activeQueries.get(sessionKey);
+    if (!entry) return undefined;
+    const receipt = await entry.query.interrupt();
+    if (!receipt) return undefined;
+    return {
+      stillQueued: Array.isArray(receipt.still_queued) ? receipt.still_queued : [],
+      cancelled: Array.isArray(receipt.cancelled) ? receipt.cancelled : [],
+    };
+  }
+
+  /**
+   * Withdraw a steered message that has not run yet.
+   *
+   * `cancelAsyncMessage` ships in `sdk.mjs` but is absent from the 0.3.251
+   * `Query` type, so it is reached structurally and a runtime without it
+   * answers `false` (= "not cancelled") rather than throwing. `false` is also
+   * the SDK's own answer once the message left the queue — a dequeued send
+   * runs regardless.
+   */
+  async cancelSteeredMessage(sessionKey: string, uuid: string): Promise<boolean> {
+    const entry = this.activeQueries.get(sessionKey);
+    if (!entry) return false;
+    const cancel = (entry.query as unknown as { cancelAsyncMessage?: (uuid: string) => Promise<boolean> })
+      .cancelAsyncMessage;
+    if (typeof cancel !== 'function') return false;
+    return (await cancel.call(entry.query, uuid)) === true;
   }
 
   /**
