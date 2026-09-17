@@ -23,6 +23,9 @@ import type { MessageEvent } from './pipeline/types';
 /** Default per-session cap on pending (non-terminal) items. Overflow is rejected visibly (A15). */
 export const FOLLOWUP_QUEUE_DEFAULT_CAPACITY = 100;
 
+/** Stored as the `stateReason` of an item the user cancelled from the Queue panel. */
+export const FOLLOWUP_CANCEL_DEFAULT_REASON = '사용자가 취소했습니다';
+
 export type FollowupItemState =
   | 'queued'
   | 'reserved'
@@ -146,6 +149,14 @@ export interface FollowupQueueOptions {
  * non-terminal exit.
  */
 const TERMINAL_STATES: readonly FollowupItemState[] = ['resolved', 'failed', 'cancelled'];
+/**
+ * States a single-item Cancel may leave. `failed`/`uncertain` are included on
+ * purpose — closing a known-bad item is the alternative to `retry` — while the
+ * in-flight trio (`reserved`/`claimed`/`dispatched`) is deliberately absent:
+ * aborting a running turn is the executor's job, not the queue's (§3.3).
+ * `resolved`/`cancelled` are absent too, so history is never rewritten.
+ */
+const CANCELLABLE_STATES: readonly FollowupItemState[] = ['queued', 'paused', 'failed', 'uncertain'];
 /** A dispatch is being set up — blocks a competing `Send now` reservation. */
 const PENDING_DISPATCH_STATES: readonly FollowupItemState[] = ['reserved', 'claimed'];
 /** Anything the executor may still be running — blocks a drain claim. */
@@ -514,6 +525,28 @@ export class FollowupQueue {
    */
   recover(reason: string): void {
     this.freezeSessions(reason, () => true, RESTART_TRANSITIONS);
+  }
+
+  /**
+   * Per-item Cancel from the Queue panel. The item becomes `cancelled` — a
+   * terminal state that stays visible as history (A18) and gives its capacity
+   * slot back exactly like a confirmed `failed` does.
+   *
+   * NOT allowed on `reserved`/`claimed`/`dispatched`: a turn that is already
+   * being set up or running is torn down through the dispatch path
+   * (`rollback`/`markInterrupted`), never by a queue write behind its back
+   * (`ssot.md:109-111`). The panel still SHOWS Cancel there so the refusal is
+   * an explicit `invalid-state` answer instead of a missing control.
+   *
+   * A freeze does not block this: `paused` items only exist while the session
+   * is frozen, so gating on the freeze would make them uncancellable.
+   */
+  cancelItem(sessionKey: string, itemId: string, expectedEpoch: number, reason?: string): FollowupOpResult {
+    return this.mutate(sessionKey, itemId, expectedEpoch, (item) => {
+      if (!CANCELLABLE_STATES.includes(item.state)) return 'invalid-state';
+      this.enter(item, 'cancelled', reason ?? FOLLOWUP_CANCEL_DEFAULT_REASON);
+      return undefined;
+    });
   }
 
   /** Session deletion: cancel visibly, keep the history (A18). */
