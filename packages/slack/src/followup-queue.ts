@@ -534,6 +534,32 @@ export class FollowupQueue {
     });
   }
 
+  /**
+   * Edit = the user edited their own Slack message (06 §3.4/D3): the stored
+   * text is replaced in place, nothing else is. There is no edit UI — the Slack
+   * edit IS the edit — so this is the one write that changes `message` after
+   * the enqueue, and it changes ONLY `text`: author, files, `eventKey` and
+   * `seq` stay the original event's (A30), so the item keeps its FIFO position
+   * and its dedup identity.
+   *
+   * `queued` only. A `steered` item is already sitting in the SDK's input queue
+   * under a uuid, so rewriting our row would leave the model reading the OLD
+   * text while the panel shows the new one; everything in flight or terminal is
+   * refused for the same reason (`invalid-state`), and the caller says so
+   * instead of silently editing nothing.
+   *
+   * The epoch still bumps even though the STATE is unchanged: a control
+   * rendered against the previous text must not act on the new one (A12/A28).
+   */
+  editQueued(sessionKey: string, itemId: string, expectedEpoch: number, text: string): FollowupOpResult {
+    return this.mutate(sessionKey, itemId, expectedEpoch, (item) => {
+      if (item.state !== 'queued') return 'invalid-state';
+      item.message = { ...item.message, text };
+      this.enter(item, 'queued', '편집됨');
+      return undefined;
+    });
+  }
+
   // ------------------------------------------------------------- auto-steering
   //
   // `steered` = "pushed into the RUNNING turn's SDK input channel; the model has
