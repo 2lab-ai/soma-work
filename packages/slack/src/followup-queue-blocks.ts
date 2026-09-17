@@ -49,8 +49,11 @@ import { escapeSlackMrkdwn } from './mrkdwn-escape';
  * run through `escapeSlackMrkdwn` FIRST — `&`/`<`/`>` become entities, which is
  * exactly what stops `<!channel>`/`<@U…>` mentions and `<url|label>` links from
  * being minted by a queued message. `verbatim: true` additionally disables
- * Slack's auto-linkification. Emphasis characters (`*_~`) survive and can only
- * garble the item's own line — they cannot address anybody. The fallback `text`
+ * Slack's auto-linkification. Emphasis characters (`*_~`) address nobody either,
+ * but an italic run inside a compact preview reads as a state label, so the
+ * preview maps them to look-alikes ({@link COMPACT_EMPHASIS_LOOKALIKES}). What
+ * that pair of measures guarantees on a compact row: the true state is always
+ * last, and emphasis characters in the preview are neutralised. The fallback `text`
  * (which Slack DOES parse) carries counts only, never message content. Button and
  * menu-option `value`s carry queue coordinates only — a button spells them out
  * (`{sessionKey,itemId,epoch}` + `turnEpoch` on `Send now`), a menu option uses
@@ -78,8 +81,8 @@ export const FOLLOWUP_CANCEL_LABEL = 'Cancel';
  * `steered` is a queue-internal word for a fact the user has no other way to
  * read: the message has left our queue into the RUNNING turn's SDK input channel,
  * and the model picks it up at its next tool-call boundary — nothing is stuck
- * and nothing was interrupted. The row disappears when the SDK's consumption
- * receipt turns it into `resolved · consumed` (history only).
+ * and nothing was interrupted. The row leaves the live set and stays as history
+ * when the SDK's consumption receipt turns it into `resolved · consumed`.
  */
 export const FOLLOWUP_STEERED_LABEL = '전달됨 · 모델이 다음 툴 호출에서 읽음';
 /** The same state in a counts line, where every state gets exactly one word. */
@@ -162,6 +165,22 @@ const MAX_OPTION_TEXT = 75;
 const MAX_MENU_OPTIONS = 5;
 /** Display-only clamp. The stored item is never modified — counts stay authoritative. */
 const PREVIEW_MAX_CHARS = 280;
+/**
+ * Mrkdwn emphasis characters, and the look-alike code points the COMPACT
+ * preview replaces them with.
+ *
+ * `escapeSlackMrkdwn` deliberately leaves `*_~` alone — they cannot address
+ * anybody — but the compact row renders the real state as `_italic_`, so an
+ * italic run inside the message text reads as one more state label sitting
+ * before the real one (`작업 · _전달됨 · 모델이 다음 툴 호출에서 읽음_`). Each
+ * replacement is a single code point, so the truncation budget is unchanged and
+ * the word itself stays readable — only its markers change.
+ */
+const COMPACT_EMPHASIS_LOOKALIKES: Readonly<Record<string, string>> = {
+  '*': '∗', // U+2217 ASTERISK OPERATOR
+  _: 'ˍ', // U+02CD MODIFIER LETTER LOW MACRON
+  '~': '∼', // U+223C TILDE OPERATOR
+};
 /** Compact is one line per item: the preview has to stay inside one rendered row. */
 const COMPACT_PREVIEW_MAX_CHARS = 80;
 const COMPACT_REASON_MAX_CHARS = 40;
@@ -251,7 +270,7 @@ const RESUMABLE_STATES: readonly FollowupItemState[] = ['queued', 'paused', 'fai
  * the same queue. `steered` sits right after `queued`: it is the same message
  * one step further along the same path, not a separate outcome.
  */
-export const FOLLOWUP_STATE_DISPLAY_ORDER: readonly FollowupItemState[] = [
+export const FOLLOWUP_STATE_DISPLAY_ORDER = [
   'queued',
   'steered',
   'reserved',
@@ -262,7 +281,25 @@ export const FOLLOWUP_STATE_DISPLAY_ORDER: readonly FollowupItemState[] = [
   'failed',
   'resolved',
   'cancelled',
-];
+] as const satisfies readonly FollowupItemState[];
+
+/**
+ * Compile-time proof the order above lists EVERY state.
+ *
+ * The breakdown is a `.filter()` over that order ({@link stateBreakdown}), so a
+ * state missing from it is dropped from the counts with no error anywhere: the
+ * items still render, the summary just under-reports them. Typing the constant
+ * as `readonly FollowupItemState[]` could not catch that — only `as const` keeps
+ * the element literals, which makes this `Exclude` non-empty (and this line a
+ * compile error) the moment a new state is added to `FollowupItemState` without
+ * being given a place in the order.
+ */
+const _FOLLOWUP_STATE_DISPLAY_ORDER_IS_EXHAUSTIVE: Exclude<
+  FollowupItemState,
+  (typeof FOLLOWUP_STATE_DISPLAY_ORDER)[number]
+> extends never
+  ? true
+  : never = true;
 
 /**
  * What one state reads as on an item line. Every state is its own enum name —
@@ -608,15 +645,29 @@ function compactStateLabel(item: FollowupItem): string {
 }
 
 /**
+ * Replace the mrkdwn emphasis characters of a compact preview with the
+ * look-alikes above. Applied AFTER truncation and escaping, both of which it
+ * leaves intact: it is a 1:1 code-point map that neither produces nor consumes
+ * `&`/`<`/`>`, so the entity encoding stays exactly as `escapeSlackMrkdwn` left
+ * it and the truncation budget is unaffected.
+ */
+function neutraliseCompactEmphasis(text: string): string {
+  return text.replace(/[*_~]/g, (char) => COMPACT_EMPHASIS_LOOKALIKES[char] ?? char);
+}
+
+/**
  * `3. 진행중인거 알려줘? · _queued_` — the whole item on one row.
  *
  * Both untrusted parts (message, state reason) are escaped before they touch
  * the mrkdwn string; `verbatim` then stops Slack from auto-linking whatever
- * survived. The state label sits OUTSIDE the escaped message, so a message
- * cannot spoof a state it is not in.
+ * survived. The state label sits OUTSIDE the escaped message, and the preview's
+ * own emphasis characters are neutralised, so the italic run that the eye reads
+ * as the state is always the real one, always last on the row.
  */
 function compactItemBlock(item: FollowupItem, frozen: boolean, turnEpoch: number): Record<string, unknown> {
-  const preview = escapeSlackMrkdwn(previewOf(item, { maxChars: COMPACT_PREVIEW_MAX_CHARS, attachmentBadge: true }));
+  const preview = neutraliseCompactEmphasis(
+    escapeSlackMrkdwn(previewOf(item, { maxChars: COMPACT_PREVIEW_MAX_CHARS, attachmentBadge: true })),
+  );
   const label = escapeSlackMrkdwn(compactStateLabel(item));
   const { menu, dropped } = itemMenu(item, frozen, turnEpoch);
   // A control we could not encode is GONE from the row, and a row that silently
