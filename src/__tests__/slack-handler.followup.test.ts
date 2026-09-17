@@ -1195,6 +1195,52 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(queueOf(booted).list(SESSION_KEY)[0].state).toBe('paused');
     });
 
+    /**
+     * Same notice, one word more: the row is not just parked, it is parked from
+     * BEFORE the process came back. That is the only thing a restart adds, and
+     * it is read off the freeze reason rather than assumed from `paused`.
+     */
+    it('names the restart in the edit notice of a row it restored', async () => {
+      const booted = bootWith([restored()]);
+      expect(queueOf(booted).freezeReason(SESSION_KEY)).toBe('process restart');
+
+      await (booted as any).handleQueuedMessageEdit({
+        channel: CHANNEL,
+        ts: RESTORED_TS,
+        threadTs: THREAD_TS,
+        user: 'U_OWNER',
+        text: '역시 로그만 보여줘',
+      });
+
+      expect(receipts().filter((text) => text.includes('✏️'))).toEqual([
+        '✏️ 재시작 전 보류된 항목이라 편집이 반영되지 않습니다 — 패널의 Resume으로 실행하거나 새 메시지로 보내주세요.',
+      ]);
+    });
+
+    /**
+     * §3.6 holds the autogoal driver behind OUTSTANDING user work. A parked row
+     * is not outstanding work — it is waiting for a decision that may never
+     * come, so gating the driver on the freeze alone stops autogoal in that
+     * thread forever.
+     */
+    it('does not hold the autogoal driver on a freeze whose rows are all parked', () => {
+      const booted = bootWith([restored()]);
+      expect(queueOf(booted).freezeReason(SESSION_KEY)).toBe('process restart');
+
+      expect((booted as any).shouldDeferGoalDriver(SESSION_KEY)).toBe(false);
+    });
+
+    it('still holds the autogoal driver while a post-restart message is queued', async () => {
+      claudeHandler.steerTurn = vi.fn().mockReturnValue(false);
+      const booted = bootWith([restored()]);
+      const settle = await startBusyTurnOn(booted);
+      await booted.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
+
+      expect((booted as any).shouldDeferGoalDriver(SESSION_KEY)).toBe(true);
+
+      await settle();
+    });
+
     it('never tells a live message that the queue is stopped, even when it could not be steered', async () => {
       claudeHandler.steerTurn = vi.fn().mockReturnValue(false); // the channel refused the push
       const booted = bootWith([restored()]);
@@ -2471,12 +2517,18 @@ describe('SlackHandler — follow-up queue host', () => {
       await settle();
     });
 
+    /** Every `✏️` notice the run produced, in order. */
+    const editNotices = () =>
+      postSystemMessage.mock.calls.map((call: any[]) => String(call[1])).filter((t) => t.includes('✏️'));
+
     /**
      * A `paused`/`uncertain` item was never handed to anyone — "이미 전달·실행된"
      * would be a lie about a message that is sitting still, and it hides the one
-     * action that actually helps (Resume).
+     * action that actually helps. WHICH action that is depends on the state, so
+     * the notice is derived from the row, not from the fact of a freeze: Resume
+     * releases a `paused` row, and only Retry moves an `uncertain` one.
      */
-    it('tells a paused item the queue is stopped, not that the message was delivered', async () => {
+    it('points a paused item at Resume, without claiming the message was delivered', async () => {
       const { settle } = await startBusyTurn();
       await handler.handleMessage(message({ ts: '333.444', text: '배포 상태 알려줘' }), say());
       await handler.handleMessage(message({ ts: '333.555', text: '!' }), say());
@@ -2485,11 +2537,27 @@ describe('SlackHandler — follow-up queue host', () => {
 
       await handlerAny.handleQueuedMessageEdit(edit());
 
-      const notice = postSystemMessage.mock.calls.map((call: any[]) => String(call[1])).filter((t) => t.includes('✏️'));
-      expect(notice).toHaveLength(1);
-      expect(notice[0]).toBe(
-        '✏️ 재시작 전 항목이라 편집이 반영되지 않습니다 — 새 메시지로 다시 보내거나 ⋯ 메뉴의 Retry로 실행하세요.',
-      );
+      expect(editNotices()).toEqual([
+        '✏️ 보류된 항목이라 편집이 반영되지 않습니다 — 패널의 Resume으로 실행하거나 새 메시지로 보내주세요.',
+      ]);
+    });
+
+    it('points an uncertain item at Retry instead of Resume', async () => {
+      // A stop maps a steered row to `uncertain` (`followup-queue.ts:246`):
+      // nobody witnessed whether the model read it, and `resume` never touches it.
+      claudeHandler.steerTurn = vi.fn().mockReturnValue(true);
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: '배포 상태 알려줘' }), say());
+      expect(items()[0].state).toBe('steered');
+      await handler.handleMessage(message({ ts: '333.555', text: '!' }), say());
+      await settle();
+      expect(items()[0].state).toBe('uncertain');
+
+      await handlerAny.handleQueuedMessageEdit(edit());
+
+      expect(editNotices()).toEqual([
+        '✏️ 실행 여부가 불확실한 항목이라 편집이 반영되지 않습니다 — 패널의 Retry로 실행하거나 새 메시지로 보내주세요.',
+      ]);
     });
 
     /**

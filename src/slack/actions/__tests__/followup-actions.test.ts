@@ -492,17 +492,21 @@ describe('resume', () => {
  * ------------------------------------------------------------------ */
 
 describe('retry', () => {
-  it('denies a retry on a frozen session — Resume is the only release', async () => {
+  /**
+   * The queue is the decider on a freeze, not this handler: it refuses a retry
+   * only for the rows a retry cannot help, and this module's job is to surface
+   * that answer instead of pre-empting it with a session-level refusal of its
+   * own (which made the panel's Retry a dead end on exactly the parked rows).
+   */
+  it('surfaces a queue-level frozen refusal instead of claiming the item ran', async () => {
     const h = harness();
-    h.queue.freezeReason.mockReturnValue('stop');
-    h.queue.get.mockReturnValue(queuedItem({ state: 'failed' }));
+    h.queue.get.mockReturnValue(queuedItem({ state: 'uncertain' }));
+    h.queue.retry.mockReturnValue({ ok: false, reason: 'frozen' } as never);
     await h.click(FOLLOWUP_RETRY_ACTION_ID, clickBody(itemValue()));
     await tick();
-    expect(h.queue.retry).not.toHaveBeenCalled();
-    expect(h.queue.resume).not.toHaveBeenCalled();
     expect(h.dispatcher.clearDrainHalt).not.toHaveBeenCalled();
-    const text = expectRefusal(h.responses);
-    expect(text.toLowerCase()).toContain('resume');
+    expect(h.deps.runDrain).not.toHaveBeenCalled();
+    expectRefusal(h.responses);
   });
 
   it('denies a retry the interrupt policy rejects', async () => {
@@ -1300,6 +1304,39 @@ describe('against the real queue and dispatcher', () => {
     await tick(4);
 
     expect(h.queue.get(SESSION_KEY, settled.item.id)?.state).toBe('queued');
+    expect(h.runDrain).toHaveBeenCalledWith(SESSION_KEY);
+  });
+
+  /**
+   * The row a restart parked is exactly the row Retry exists for, and the click
+   * IS the explicit decision (A16/A17). Demanding a Resume first left the panel
+   * offering a control that could only answer "frozen" — and Resume does not
+   * move an `uncertain` item at all.
+   */
+  it('retry on the real queue runs an uncertain item the freeze parked, and lifts the freeze', async () => {
+    const h = realHarness();
+    const enqueued = h.queue.enqueue(SESSION_KEY, {
+      user: AUTHOR,
+      channel: CHANNEL,
+      ts: '1700.000100',
+      text: '재시작 전에 남은 지시',
+    });
+    if (enqueued.status !== 'queued') throw new Error(`enqueue failed: ${enqueued.status}`);
+    const claimed = h.queue.claimNext(SESSION_KEY);
+    if (!claimed.ok) throw new Error('claim failed');
+    const dispatched = h.queue.markDispatched(SESSION_KEY, claimed.item.id, claimed.item.epoch);
+    if (!dispatched.ok) throw new Error('markDispatched failed');
+    h.queue.freeze(SESSION_KEY, 'process restart'); // dispatched → uncertain
+    const parked = h.queue.get(SESSION_KEY, dispatched.item.id);
+    if (!parked) throw new Error('parked item missing');
+    expect(parked.state).toBe('uncertain');
+
+    await h.click(FOLLOWUP_RETRY_ACTION_ID, clickBody(itemValue({ itemId: parked.id, epoch: parked.epoch })));
+    await tick(4);
+
+    expect(h.queue.get(SESSION_KEY, parked.id)?.state).toBe('queued');
+    // It was the last parked row, so the banner it lived under goes with it.
+    expect(h.queue.freezeReason(SESSION_KEY)).toBeUndefined();
     expect(h.runDrain).toHaveBeenCalledWith(SESSION_KEY);
   });
 
