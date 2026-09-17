@@ -7,6 +7,7 @@
  * Option C 마이그레이션 2단계: IAgentSession + V1QueryAdapter
  */
 
+import type { SteerInput, SteerInterruptReceipt, TurnSteeringPort } from '../agent-runtime/turn-input-channel.js';
 import type { IAgentSession } from './agent-session.js';
 import type { AgentTurnResult, ContinuationHandler } from './agent-session-types.js';
 import { mapToExecuteResult } from './map-to-execute-result.js';
@@ -59,6 +60,16 @@ export interface V1QueryAdapterConfig {
    * `max_tokens`는 기존 continuation 의미론 소유, 중단 안전성 미증명).
    */
   shouldYieldToFollowup?(result: AgentTurnResult): Promise<boolean> | boolean;
+  /**
+   * User-steering controls (WU1, optional DI).
+   *
+   * The port — in practice `ClaudeHandler` — owns the running `query()` handle
+   * and its input channel. It is injected rather than imported so the adapter
+   * keeps depending only on the capability, never on the handler or the SDK.
+   * Absent = this session cannot be steered, and the pass-throughs below say so
+   * instead of pretending.
+   */
+  steering?: TurnSteeringPort;
 }
 
 export class V1QueryAdapter implements IAgentSession {
@@ -66,6 +77,7 @@ export class V1QueryAdapter implements IAgentSession {
   private readonly baseParams: Record<string, any>;
   private readonly runner?: TurnRunner;
   private readonly shouldYieldToFollowup?: (result: AgentTurnResult) => Promise<boolean> | boolean;
+  private readonly steering?: TurnSteeringPort;
   private turnCount = 0;
   private _started = false;
   private _abortController: AbortController;
@@ -85,7 +97,57 @@ export class V1QueryAdapter implements IAgentSession {
     this.baseParams = config.executeParams;
     this.runner = config.turnRunner;
     this.shouldYieldToFollowup = config.shouldYieldToFollowup;
+    this.steering = config.steering;
     this._abortController = (config.executeParams as any).abortController ?? new AbortController();
+  }
+
+  // ===== User steering (WU1) =====
+  //
+  // Thin pass-throughs, on purpose: the host already holds the adapter for a
+  // thread, so steering rides the same handle as `cancel()`/`dispose()` instead
+  // of making callers reach into ClaudeHandler. The session key is read from
+  // `baseParams` (`sessionKey`), the same value the executor dispatches with —
+  // so adapter and handler agree on which turn is being steered.
+
+  /**
+   * Inject a user message into the turn this session is currently running.
+   * `false` = nothing is running (or no steering port) — the caller queues it.
+   */
+  steer(input: SteerInput): boolean {
+    const key = this.steeringKey();
+    if (!this.steering || !key) return false;
+    return this.steering.steerTurn(key, input);
+  }
+
+  /**
+   * Interrupt the running turn, returning the SDK receipt.
+   *
+   * Distinct from {@link cancel}: interrupt stops the current work and keeps
+   * the session/child alive (so the receipt can say which queued sends
+   * survived), while `cancel()` aborts the controller and kills the child.
+   */
+  async interrupt(): Promise<SteerInterruptReceipt | undefined> {
+    const key = this.steeringKey();
+    if (!this.steering || !key) return undefined;
+    return this.steering.interruptTurn(key);
+  }
+
+  /**
+   * Withdraw a steered message that has not run yet.
+   *
+   * `true` means WITHDRAWN and nothing else: the port's other two answers
+   * ("already dequeued", "never reached an SDK") both leave a message this
+   * adapter did not take back.
+   */
+  async cancelSteered(uuid: string): Promise<boolean> {
+    const key = this.steeringKey();
+    if (!this.steering || !key) return false;
+    return (await this.steering.cancelSteeredMessage(key, uuid)) === 'withdrawn';
+  }
+
+  private steeringKey(): string | undefined {
+    const key = (this.baseParams as any).sessionKey;
+    return typeof key === 'string' && key.length > 0 ? key : undefined;
   }
 
   async start(prompt: string): Promise<AgentTurnResult> {

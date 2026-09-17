@@ -9,6 +9,7 @@ import {
 import type { ActionHandlers } from '../actions';
 import { buildMarkerBlocks, SUPERSEDED_TEXT } from '../actions/click-classifier';
 import type { PendingInstructionConfirmStore } from '../actions/pending-instruction-confirm-store';
+import type { AgentStreamEventOf } from '../agent-stream-types';
 import type { AssistantStatusManager } from '../assistant-status-manager';
 import { type CompactStateSession, promotePendingToDispatchQueue } from '../compact-state';
 import type { CompletionMessageTracker } from '../completion-message-tracker';
@@ -346,6 +347,22 @@ interface StreamExecutorDeps {
    * and passed to both `StreamExecutor` here and `ActionHandlers`.
    */
   pendingInstructionConfirmStore?: PendingInstructionConfirmStore;
+  /**
+   * User-steering lifecycle sink. Fires once per `steer_lifecycle` frame the
+   * running turn emits, stamped with the SAME `sessionKey` the host queued the
+   * follow-up under and the same key `streamAgentEvents` receives as its 6th
+   * argument — that triple (key, uuid, phase) is the join the host needs to
+   * answer "did my queued message land in this turn?".
+   *
+   * Optional: hosts that do not run the follow-up queue omit it. Must be cheap
+   * and must not throw — the processor swallows throws so a registry bug
+   * cannot kill the user's turn.
+   */
+  onSteerLifecycle?: (args: {
+    sessionKey: string;
+    uuid: string;
+    phase: AgentStreamEventOf<'steer_lifecycle'>['phase'];
+  }) => void | Promise<void>;
 }
 
 interface StreamExecuteParams {
@@ -1537,6 +1554,17 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           // the model polling TaskOutput/BashOutput).
           this.deps.toolEventProcessor.handleAgentTaskLifecycle(event, ctx.sessionKey);
         },
+        onSteerLifecycle: async (event, ctx) => {
+          // Forward the backend's answer ("this turn consumed uuid X") to the
+          // host queue, keyed by the session the follow-up was queued under.
+          // `ctx.sessionKey` is the same value passed to `streamAgentEvents`
+          // below, so both ends of the join use one string.
+          await this.deps.onSteerLifecycle?.({
+            sessionKey: ctx.sessionKey,
+            uuid: event.uuid,
+            phase: event.phase,
+          });
+        },
         onTodoUpdate: async (input, ctx) => {
           // Task list is part of thread header — always update regardless of verbosity.
           // The TODO_UPDATE flag only gates the legacy standalone message inside handleTodoUpdate.
@@ -1886,6 +1914,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           abortController,
           workingDirectory,
           slackContext,
+          // 6th arg: the steering registry key. The handler stamps the uuids it
+          // mints for messages pushed into THIS turn under this key, so the
+          // `steer_lifecycle` frames it emits join back to the host's queue for
+          // the same session.
+          sessionKey,
         ),
         streamContext,
         abortController.signal,

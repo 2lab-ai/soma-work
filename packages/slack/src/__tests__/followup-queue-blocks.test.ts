@@ -13,8 +13,12 @@ import {
   FOLLOWUP_RETRY_ACTION_ID,
   FOLLOWUP_SEND_NOW_ACTION_ID,
   FOLLOWUP_SEND_NOW_LABEL,
+  FOLLOWUP_STATE_DISPLAY_ORDER,
+  FOLLOWUP_STEERED_COUNT_LABEL,
+  FOLLOWUP_STEERED_LABEL,
   type FollowupQueueBlocksOptions,
   type FollowupQueueView,
+  followupStateCountLabel,
   parseFollowupItemActionValue,
   parseFollowupMenuValue,
   parseFollowupPageActionValue,
@@ -22,6 +26,25 @@ import {
 import type { MessageEvent } from '../pipeline/types';
 
 const SESSION = 'C1:1700.000000';
+
+/**
+ * Every `FollowupItemState` (`followup-queue.ts:29-39`), spelled out here so the
+ * display order is compared against an INDEPENDENT list rather than against
+ * itself. The header counts are a `.filter()` over the display order, so a state
+ * missing from that order is uncounted with no error anywhere.
+ */
+const ALL_FOLLOWUP_STATES = [
+  'queued',
+  'steered',
+  'reserved',
+  'claimed',
+  'dispatched',
+  'resolved',
+  'failed',
+  'uncertain',
+  'paused',
+  'cancelled',
+] as const satisfies readonly FollowupItemState[];
 
 /**
  * The pre-compact layout (one section + one context line per item). It is no
@@ -188,9 +211,7 @@ describe('buildFollowupQueueBlocks legacy layout (compact:false) — purity and 
   });
 
   it('never emits the unsupported `disabled` button field (invalid_blocks guard)', () => {
-    const items: FollowupItem[] = (
-      ['queued', 'reserved', 'claimed', 'dispatched', 'resolved', 'failed', 'uncertain', 'paused', 'cancelled'] as const
-    ).map((state, index) => item({ seq: index + 1, state }));
+    const items: FollowupItem[] = ALL_FOLLOWUP_STATES.map((state, index) => item({ seq: index + 1, state }));
 
     const { blocks } = buildLegacyQueueBlocks({ sessionKey: SESSION, items });
 
@@ -415,6 +436,31 @@ describe('buildFollowupQueueBlocks legacy layout (compact:false) — pagination 
   });
 });
 
+/**
+ * The header breakdown renders `FOLLOWUP_STATE_DISPLAY_ORDER.filter(...)`, so a
+ * state that is not in the order is dropped from the counts silently — the item
+ * is still listed, but the summary under-reports the queue. The compile-time
+ * side of this is the exhaustiveness assertion next to the constant; this is the
+ * runtime side, comparing against an independently written list of the states.
+ */
+describe('FOLLOWUP_STATE_DISPLAY_ORDER — no state can fall out of the counts', () => {
+  it('is set-equal to the full state list, each state exactly once', () => {
+    expect([...FOLLOWUP_STATE_DISPLAY_ORDER].sort()).toEqual([...ALL_FOLLOWUP_STATES].sort());
+    expect(new Set(FOLLOWUP_STATE_DISPLAY_ORDER).size).toBe(FOLLOWUP_STATE_DISPLAY_ORDER.length);
+  });
+
+  it('counts one item of every state in the legacy breakdown', () => {
+    const items: FollowupItem[] = ALL_FOLLOWUP_STATES.map((state, index) => item({ seq: index + 1, state }));
+
+    const { blocks } = buildLegacyQueueBlocks({ sessionKey: SESSION, items });
+
+    const summary = contextTexts(blocks)[0];
+    for (const state of ALL_FOLLOWUP_STATES) {
+      expect(summary).toContain(`${followupStateCountLabel(state)} 1`);
+    }
+  });
+});
+
 /** Every overflow menu in the payload, in block order. */
 function collectMenus(blocks: unknown[]): Array<Record<string, unknown>> {
   return (blocks as Array<Record<string, unknown>>)
@@ -500,6 +546,7 @@ describe('buildFollowupQueueBlocks — compact layout is the default (2026-09-17
 describe('buildFollowupQueueBlocks — compact overflow menu', () => {
   const MENUS: ReadonlyArray<[FollowupItemState, string[]]> = [
     ['queued', ['send_now', 'cancel']],
+    ['steered', ['send_now', 'cancel']],
     ['paused', ['resume', 'send_now', 'cancel']],
     ['failed', ['retry', 'cancel']],
     ['uncertain', ['retry', 'cancel']],
@@ -682,9 +729,7 @@ describe('buildFollowupQueueBlocks — compact overflow menu', () => {
   });
 
   it('stays inside the Slack option limits (text ≤75, value ≤150, ≤5 options)', () => {
-    const items: FollowupItem[] = (
-      ['queued', 'reserved', 'claimed', 'dispatched', 'resolved', 'failed', 'uncertain', 'paused', 'cancelled'] as const
-    ).map((state, index) => item({ seq: index + 1, state }));
+    const items: FollowupItem[] = ALL_FOLLOWUP_STATES.map((state, index) => item({ seq: index + 1, state }));
 
     const { blocks } = buildFollowupQueueBlocks({ sessionKey: SESSION, items });
 
@@ -699,6 +744,112 @@ describe('buildFollowupQueueBlocks — compact overflow menu', () => {
       }
     }
     expect(JSON.stringify(blocks)).not.toContain('"disabled"');
+  });
+});
+
+/**
+ * `steered` = the message was pushed into the RUNNING turn's SDK input channel
+ * and the model reads it at its next tool-call boundary (06 §3.1/§3.2). It is a
+ * live queue row, not history: it keeps controls until the SDK's consumption
+ * receipt turns it into `resolved · consumed`, which is when it leaves.
+ */
+describe('buildFollowupQueueBlocks — a steered item (06 §3.5)', () => {
+  it('says 전달됨 instead of the internal state word, in both layouts', () => {
+    // The queue stamps `steered` as BOTH the state and its reason
+    // (`followup-queue.ts:587`), which is the shape the panel has to survive.
+    const steered = item({ seq: 1, state: 'steered', stateReason: 'steered', steerUuid: 'uuid-1' });
+
+    const compact = buildFollowupQueueBlocks({ sessionKey: SESSION, items: [steered] });
+    const legacy = buildLegacyQueueBlocks({ sessionKey: SESSION, items: [steered] });
+
+    expect(FOLLOWUP_STEERED_LABEL).toBe('전달됨 · 모델이 다음 툴 호출에서 읽음');
+    expect(sectionTexts(compact.blocks)[0]).toBe(`1. 진행중인거 알려줘? · _${FOLLOWUP_STEERED_LABEL}_`);
+    // Repeating the enum name after the label says nothing the label has not said.
+    expect(sectionTexts(compact.blocks)[0]).not.toContain('steered');
+    expect(contextTexts(legacy.blocks).some((line) => line.startsWith(FOLLOWUP_STEERED_LABEL))).toBe(true);
+    expect(contextTexts(legacy.blocks).some((line) => line.includes('· steered'))).toBe(false);
+  });
+
+  it('offers Send now and Cancel, and gates only Send now on the turn generation (06 §3.3/§3.4)', () => {
+    const { blocks } = buildFollowupQueueBlocks({
+      sessionKey: SESSION,
+      items: [item({ state: 'steered' })],
+      turnEpoch: 5,
+    });
+
+    const [menu] = collectMenus(blocks);
+    expect(menuOps(menu)).toEqual(['send_now', 'cancel']);
+    expect(menuLabels(menu)).toEqual([FOLLOWUP_SEND_NOW_LABEL, FOLLOWUP_CANCEL_LABEL]);
+    // `Send now` on a steered item still targets the LIVE turn (the dispatcher
+    // unsteers it, then interrupts), so it keeps the turn-generation gate;
+    // `Cancel` goes to the SDK by uuid and is not gated on it.
+    const [sendNow, cancel] = menuOptions(menu);
+    expect(parseFollowupMenuValue(sendNow.value as string)?.turnEpoch).toBe(5);
+    expect(parseFollowupMenuValue(cancel.value as string)?.turnEpoch).toBeUndefined();
+  });
+
+  it('keeps Send now reachable in the legacy layout too', () => {
+    const { blocks } = buildLegacyQueueBlocks({
+      sessionKey: SESSION,
+      items: [item({ state: 'steered' })],
+      turnEpoch: 5,
+    });
+
+    const buttons = collectButtons(blocks);
+    expect(buttons).toHaveLength(1);
+    expect(buttons[0].action_id).toBe(FOLLOWUP_SEND_NOW_ACTION_ID);
+    expect(parseFollowupItemActionValue(buttons[0].value as string)?.turnEpoch).toBe(5);
+    expect(contextTexts(blocks).some((line) => line.includes('action unavailable'))).toBe(false);
+  });
+
+  it('offers only Cancel under a freeze — a frozen session has no turn to steer into', () => {
+    // A freeze rewrites `steered → paused` (`followup-queue.ts:202/221`), so this
+    // row should not exist; the default branch still has to be safe if it does.
+    const { blocks } = buildFollowupQueueBlocks({
+      sessionKey: SESSION,
+      items: [item({ state: 'steered' })],
+      freeze: { reason: 'stop requested', at: 1_700_000_000_000 },
+    });
+
+    expect(menuOps(collectMenus(blocks)[0])).toEqual(['cancel']);
+  });
+
+  it('keeps the steered Send now option inside the option budget with a REAL session key', () => {
+    const sessionKey = 'work:C08ABCDEFGH:1726500000.123456';
+    const target = item({ sessionKey, seq: 9999, id: `${sessionKey}#9999`, epoch: 99, state: 'steered' });
+
+    const { blocks } = buildFollowupQueueBlocks({ sessionKey, items: [target], turnEpoch: 9999 });
+
+    const [sendNow] = menuOptions(collectMenus(blocks)[0]);
+    expect((sendNow.value as string).length).toBeLessThanOrEqual(110);
+    expect(parseFollowupMenuValue(sendNow.value as string)?.op).toBe('send_now');
+    expect(sectionTexts(blocks)[0]).not.toContain('action unavailable');
+  });
+
+  it('leaves a consumed item as history with no control once the model has read it', () => {
+    const { blocks } = buildFollowupQueueBlocks({
+      sessionKey: SESSION,
+      items: [item({ seq: 1, state: 'steered' }), item({ seq: 2, state: 'resolved', stateReason: 'consumed' })],
+    });
+
+    // Only the steered row is still actionable; the consumed one is history.
+    expect(collectMenus(blocks)).toHaveLength(1);
+    const [steeredLine, consumedLine] = sectionTexts(blocks);
+    expect(steeredLine).toContain(FOLLOWUP_STEERED_LABEL);
+    expect(consumedLine).toContain('_resolved · consumed_');
+    expect(consumedLine).not.toContain(FOLLOWUP_STEERED_LABEL);
+  });
+
+  it('counts steered as 전달, right after queued, in the legacy breakdown', () => {
+    const { blocks } = buildLegacyQueueBlocks({
+      sessionKey: SESSION,
+      items: [item({ seq: 1, state: 'queued' }), item({ seq: 2, state: 'steered' }), item({ seq: 3, state: 'paused' })],
+    });
+
+    const summary = contextTexts(blocks)[0];
+    expect(FOLLOWUP_STEERED_COUNT_LABEL).toBe('전달');
+    expect(summary).toContain(`queued 1 · ${FOLLOWUP_STEERED_COUNT_LABEL} 1 · paused 1`);
+    expect(summary).not.toContain('steered 1');
   });
 });
 
@@ -717,6 +868,47 @@ describe('buildFollowupQueueBlocks — compact text safety and paging', () => {
     expect(JSON.stringify(blocks)).not.toContain('<@U0DEADBEEF>');
     expect(JSON.stringify(blocks)).not.toContain('<https://evil.example|click>');
     expect(text).not.toContain('<!channel>');
+  });
+
+  it('renders a preview containing _queued_ without italics markers, with the real state last', () => {
+    // The compact row italicises the REAL state, so an italic run inside the
+    // message reads as one more state label sitting BEFORE it.
+    const { blocks } = buildFollowupQueueBlocks({
+      sessionKey: SESSION,
+      items: [item({ state: 'failed', message: event({ text: '이거 봐줘 _queued_' }) })],
+    });
+
+    const line = sectionTexts(blocks)[0];
+    expect(line).not.toContain('_queued_');
+    expect(line.match(/_/g)).toHaveLength(2); // the real label's pair, and nothing else
+    expect(line.endsWith('_failed_')).toBe(true);
+    expect(line).toContain('queued'); // the word stays readable — only its markers change
+  });
+
+  it('neutralises a spoofed 전달됨 state label in the message text', () => {
+    const spoof = `작업 · _${FOLLOWUP_STEERED_LABEL}_`;
+    const { blocks } = buildFollowupQueueBlocks({
+      sessionKey: SESSION,
+      items: [item({ state: 'queued', message: event({ text: spoof }) })],
+    });
+
+    const line = sectionTexts(blocks)[0];
+    expect(line).not.toContain(`_${FOLLOWUP_STEERED_LABEL}_`);
+    expect(line.match(/_/g)).toHaveLength(2);
+    expect(line.endsWith('_queued_')).toBe(true);
+  });
+
+  it('neutralises * and ~ in the preview too, so no emphasis run starts in user text', () => {
+    const { blocks } = buildFollowupQueueBlocks({
+      sessionKey: SESSION,
+      items: [item({ message: event({ text: '*bold* ~strike~' }) })],
+    });
+
+    const line = sectionTexts(blocks)[0];
+    expect(line).not.toContain('*');
+    expect(line).not.toContain('~');
+    expect(line).toContain('bold');
+    expect(line).toContain('strike');
   });
 
   it('truncates a long unicode preview to one short line without splitting surrogate pairs', () => {

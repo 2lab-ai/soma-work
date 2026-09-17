@@ -355,6 +355,33 @@ describe('ThreadSurface — U3/U9 Queue inside the combined header surface', () 
     expect(text).toContain('&lt;!channel&gt;');
   });
 
+  it('counts a steered item as 전달, right after queued, and spells it out on the panel (06 §3.5)', async () => {
+    const session = makeSession();
+    const slackApi = makeSlackApi();
+    const surface = new ThreadSurface(
+      makeDeps(session, slackApi, {
+        getFollowupView: () =>
+          view({
+            items: [
+              item({ seq: 1 }),
+              item({ seq: 2, state: 'steered', stateReason: 'steered' }),
+              item({ seq: 3, state: 'paused' }),
+            ],
+          }),
+      }),
+    );
+
+    await surface.updatePanel(session, KEY);
+
+    // The fallback line is counts only — one word per state, the display order
+    // putting `전달` where the item actually sits in the queue's life.
+    expect(slackApi.updates[0].text).toContain('3 item(s) · queued 1 · 전달 1 · paused 1');
+    expect(slackApi.updates[0].text).not.toContain('steered 1');
+    // The panel itself carries the full sentence the user reads.
+    const labels = textObjects(slackApi.updates[0].blocks).map((t) => t.text);
+    expect(labels.some((t) => t.includes('전달됨 · 모델이 다음 툴 호출에서 읽음'))).toBe(true);
+  });
+
   it('degrades visibly when the queue cannot be read instead of showing an empty queue', async () => {
     const session = makeSession();
     const slackApi = makeSlackApi();

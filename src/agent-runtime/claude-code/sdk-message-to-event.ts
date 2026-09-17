@@ -35,6 +35,7 @@
  */
 
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import { readUuidList, STEER_SETTLEMENT_SUBTYPE } from '../steer-settlement';
 import type { AgentContent, AgentStopReason, AgentStreamEvent, AgentUsage } from '../stream-types';
 
 /**
@@ -82,6 +83,76 @@ function normalizeToolResultContent(content: unknown): AgentContent[] {
   return [{ type: 'json', value: content }];
 }
 
+/** Phases a `command_lifecycle` frame may report that this seam models 1:1. */
+const KNOWN_STEER_PHASES = new Set(['started', 'completed', 'cancelled', 'discarded']);
+
+/**
+ * Extract the user-send uuid(s) a frame is stamped with (user steering).
+ *
+ * The SDK stamps the triggering send's client uuid on the turn's FIRST reply
+ * frame (`user_message_uuid`, sdk.d.ts:4611 / :4656). The plural
+ * `user_message_uuids` is accepted for producers that coalesce several queued
+ * sends into one turn — the singular is all SDK 0.3.251 declares, so the plural
+ * is read structurally.
+ */
+function readSteerUuids(m: Record<string, unknown>): string[] {
+  const single = m.user_message_uuid;
+  if (typeof single === 'string' && single.length > 0) return [single];
+  const many = m.user_message_uuids;
+  if (Array.isArray(many)) return many.filter((u): u is string => typeof u === 'string' && u.length > 0);
+  return [];
+}
+
+/**
+ * Build the `started` events for a frame stamped with send uuid(s).
+ *
+ * `started` is the ONLY phase read off a stamp. The terminal phases come from
+ * the host-computed `steer_settlement` frame below: the result's
+ * `user_message_uuid` names the send that STARTED the turn, so echoing it as
+ * `completed` settled the wrong item and left every actually-steered send
+ * hanging (SDK 0.3.251 reports no per-frame consumption signal at all).
+ */
+function steerStartedEventsFor(m: Record<string, unknown>): AgentStreamEvent[] {
+  return readSteerUuids(m).map((uuid) => ({ type: 'steer_lifecycle', uuid, phase: 'started' }) as AgentStreamEvent);
+}
+
+/**
+ * Map the host's synthetic settlement frame (spec §6 item 6).
+ *
+ * `ClaudeHandler.streamQuery` computes it at the turn's `result` from
+ * `queued_turn_count` + the interrupt receipt and injects it just before that
+ * result, so this mapper stays a pure function of the frame stream: `consumed`
+ * uuids settle as `completed`, `discarded` ones as `discarded`.
+ */
+function mapSteerSettlement(m: Record<string, unknown>): AgentStreamEvent[] {
+  const events: AgentStreamEvent[] = readUuidList(m.consumed).map(
+    (uuid) => ({ type: 'steer_lifecycle', uuid, phase: 'completed' }) as AgentStreamEvent,
+  );
+  for (const uuid of readUuidList(m.discarded)) {
+    events.push({ type: 'steer_lifecycle', uuid, phase: 'discarded' });
+  }
+  return events;
+}
+
+/**
+ * Map a `command_lifecycle`-shaped system frame (user steering).
+ *
+ * Duck-typed on purpose: SDK 0.3.251 describes these frames in prose
+ * (sdk.d.ts:3932/3942) but declares no type for them, so matching a declared
+ * shape is impossible. The frame's OWN `uuid` is deliberately NOT used as the
+ * send id — that field identifies the frame, not the message whose lifecycle it
+ * reports; reading it would fabricate transitions for uuids the host never sent.
+ */
+function mapCommandLifecycle(m: Record<string, unknown>): AgentStreamEvent[] {
+  const uuid = [m.message_uuid, m.command_uuid, m.user_message_uuid].find(
+    (v): v is string => typeof v === 'string' && v.length > 0,
+  );
+  if (!uuid) return [];
+  const raw = typeof m.phase === 'string' ? m.phase : typeof m.status === 'string' ? m.status : '';
+  const phase = KNOWN_STEER_PHASES.has(raw) ? (raw as 'started' | 'completed' | 'cancelled' | 'discarded') : 'observed';
+  return [{ type: 'steer_lifecycle', uuid, phase }];
+}
+
 export function createSdkMessageMapper(deps: SdkMessageMapperDeps): SdkMessageMapper {
   // Carried across messages so the direct-usage fallback prices the correct
   // model tier (mirrors `_lastAssistantModelName`, stream-processor.ts:765/1389).
@@ -89,6 +160,10 @@ export function createSdkMessageMapper(deps: SdkMessageMapperDeps): SdkMessageMa
 
   function mapAssistant(message: Extract<SDKMessage, { type: 'assistant' }>): AgentStreamEvent[] {
     const events: AgentStreamEvent[] = [];
+    // Steering ack: the turn's FIRST reply frame carries the triggering send's
+    // uuid. Emitted before the content so a queued item flips to `started`
+    // before any of that turn's text renders.
+    events.push(...steerStartedEventsFor(message as unknown as Record<string, unknown>));
     const inner = message.message as unknown as {
       usage?: Record<string, number>;
       model?: unknown;
@@ -284,6 +359,10 @@ export function createSdkMessageMapper(deps: SdkMessageMapperDeps): SdkMessageMa
   function mapResult(message: Extract<SDKMessage, { type: 'result' }>): AgentStreamEvent[] {
     const m = message as unknown as Record<string, unknown>;
     const events: AgentStreamEvent[] = [];
+    // No steer event here: the result's `user_message_uuid` echoes the send that
+    // STARTED the turn, not the ones folded into it, so it cannot settle a
+    // steered item. Settlement arrives on the preceding `steer_settlement`
+    // frame the handler injects (spec §6 item 6).
 
     const usage = extractUsage(m);
     if (usage) {
@@ -329,6 +408,14 @@ export function createSdkMessageMapper(deps: SdkMessageMapperDeps): SdkMessageMa
   function mapSystem(message: Extract<SDKMessage, { type: 'system' }>): AgentStreamEvent[] {
     const m = message as unknown as Record<string, unknown>;
     const subtype = typeof m.subtype === 'string' ? m.subtype : undefined;
+
+    if (subtype === STEER_SETTLEMENT_SUBTYPE) {
+      return mapSteerSettlement(m);
+    }
+
+    if (subtype === 'command_lifecycle') {
+      return mapCommandLifecycle(m);
+    }
 
     if (subtype === 'compact_boundary') {
       const metadata = (m.compact_metadata ?? {}) as Record<string, unknown>;
@@ -454,7 +541,13 @@ export function createSdkMessageMapper(deps: SdkMessageMapperDeps): SdkMessageMa
         case 'system':
           return mapSystem(message as Extract<SDKMessage, { type: 'system' }>);
         default:
-          return [];
+          // `stream_event` frames carry no neutral content (partial-message
+          // rendering is not on this seam), but with `includePartialMessages`
+          // the steering stamp rides the turn's first non-ping stream event
+          // instead of the first assistant message (sdk.d.ts:4656). Reading it
+          // here keeps the `started` transition alive if that option is ever
+          // enabled; every other frame type still maps to nothing.
+          return steerStartedEventsFor(message as unknown as Record<string, unknown>);
       }
     },
   };

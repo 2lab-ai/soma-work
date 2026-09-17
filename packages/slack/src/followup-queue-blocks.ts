@@ -49,8 +49,11 @@ import { escapeSlackMrkdwn } from './mrkdwn-escape';
  * run through `escapeSlackMrkdwn` FIRST — `&`/`<`/`>` become entities, which is
  * exactly what stops `<!channel>`/`<@U…>` mentions and `<url|label>` links from
  * being minted by a queued message. `verbatim: true` additionally disables
- * Slack's auto-linkification. Emphasis characters (`*_~`) survive and can only
- * garble the item's own line — they cannot address anybody. The fallback `text`
+ * Slack's auto-linkification. Emphasis characters (`*_~`) address nobody either,
+ * but an italic run inside a compact preview reads as a state label, so the
+ * preview maps them to look-alikes ({@link COMPACT_EMPHASIS_LOOKALIKES}). What
+ * that pair of measures guarantees on a compact row: the true state is always
+ * last, and emphasis characters in the preview are neutralised. The fallback `text`
  * (which Slack DOES parse) carries counts only, never message content. Button and
  * menu-option `value`s carry queue coordinates only — a button spells them out
  * (`{sessionKey,itemId,epoch}` + `turnEpoch` on `Send now`), a menu option uses
@@ -71,6 +74,19 @@ export const FOLLOWUP_SEND_NOW_LABEL = 'Send now';
 export const FOLLOWUP_RESUME_LABEL = 'Resume';
 export const FOLLOWUP_RETRY_LABEL = 'Retry';
 export const FOLLOWUP_CANCEL_LABEL = 'Cancel';
+
+/**
+ * What a `steered` item says on its line (06 §3.5, user wording).
+ *
+ * `steered` is a queue-internal word for a fact the user has no other way to
+ * read: the message has left our queue into the RUNNING turn's SDK input channel,
+ * and the model picks it up at its next tool-call boundary — nothing is stuck
+ * and nothing was interrupted. The row leaves the live set and stays as history
+ * when the SDK's consumption receipt turns it into `resolved · consumed`.
+ */
+export const FOLLOWUP_STEERED_LABEL = '전달됨 · 모델이 다음 툴 호출에서 읽음';
+/** The same state in a counts line, where every state gets exactly one word. */
+export const FOLLOWUP_STEERED_COUNT_LABEL = '전달';
 
 /** Stable action ids for host wiring. Versioned; no existing prefix collides. */
 export const FOLLOWUP_SEND_NOW_ACTION_ID = 'followup_send_now_v1';
@@ -149,6 +165,22 @@ const MAX_OPTION_TEXT = 75;
 const MAX_MENU_OPTIONS = 5;
 /** Display-only clamp. The stored item is never modified — counts stay authoritative. */
 const PREVIEW_MAX_CHARS = 280;
+/**
+ * Mrkdwn emphasis characters, and the look-alike code points the COMPACT
+ * preview replaces them with.
+ *
+ * `escapeSlackMrkdwn` deliberately leaves `*_~` alone — they cannot address
+ * anybody — but the compact row renders the real state as `_italic_`, so an
+ * italic run inside the message text reads as one more state label sitting
+ * before the real one (`작업 · _전달됨 · 모델이 다음 툴 호출에서 읽음_`). Each
+ * replacement is a single code point, so the truncation budget is unchanged and
+ * the word itself stays readable — only its markers change.
+ */
+const COMPACT_EMPHASIS_LOOKALIKES: Readonly<Record<string, string>> = {
+  '*': '∗', // U+2217 ASTERISK OPERATOR
+  _: 'ˍ', // U+02CD MODIFIER LETTER LOW MACRON
+  '~': '∼', // U+223C TILDE OPERATOR
+};
 /** Compact is one line per item: the preview has to stay inside one rendered row. */
 const COMPACT_PREVIEW_MAX_CHARS = 80;
 const COMPACT_REASON_MAX_CHARS = 40;
@@ -230,6 +262,58 @@ export interface FollowupItemMenuValue extends FollowupItemActionValue {
 
 /** States an explicit resume can act on while the session is frozen. */
 const RESUMABLE_STATES: readonly FollowupItemState[] = ['queued', 'paused', 'failed', 'uncertain'];
+
+/**
+ * Stable display order for a per-state counts breakdown, shared by this
+ * builder's legacy header and the combined panel's fallback text
+ * (`thread-surface.ts`) so the two cannot drift into two different orders for
+ * the same queue. `steered` sits right after `queued`: it is the same message
+ * one step further along the same path, not a separate outcome.
+ */
+export const FOLLOWUP_STATE_DISPLAY_ORDER = [
+  'queued',
+  'steered',
+  'reserved',
+  'claimed',
+  'dispatched',
+  'paused',
+  'uncertain',
+  'failed',
+  'resolved',
+  'cancelled',
+] as const satisfies readonly FollowupItemState[];
+
+/**
+ * Compile-time proof the order above lists EVERY state.
+ *
+ * The breakdown is a `.filter()` over that order ({@link stateBreakdown}), so a
+ * state missing from it is dropped from the counts with no error anywhere: the
+ * items still render, the summary just under-reports them. Typing the constant
+ * as `readonly FollowupItemState[]` could not catch that — only `as const` keeps
+ * the element literals, which makes this `Exclude` non-empty (and this line a
+ * compile error) the moment a new state is added to `FollowupItemState` without
+ * being given a place in the order.
+ */
+const _FOLLOWUP_STATE_DISPLAY_ORDER_IS_EXHAUSTIVE: Exclude<
+  FollowupItemState,
+  (typeof FOLLOWUP_STATE_DISPLAY_ORDER)[number]
+> extends never
+  ? true
+  : never = true;
+
+/**
+ * What one state reads as on an item line. Every state is its own enum name —
+ * they are already the words the runbooks use — except `steered`, which names
+ * an SDK-side fact no user can be expected to decode ({@link FOLLOWUP_STEERED_LABEL}).
+ */
+export function followupStateLabel(state: FollowupItemState): string {
+  return state === 'steered' ? FOLLOWUP_STEERED_LABEL : state;
+}
+
+/** Same mapping for a counts line, where a whole sentence would not fit. */
+export function followupStateCountLabel(state: FollowupItemState): string {
+  return state === 'steered' ? FOLLOWUP_STEERED_COUNT_LABEL : state;
+}
 
 /**
  * Sole encoder of an item-scoped BUTTON payload (the legacy layout). Buttons
@@ -378,10 +462,23 @@ function previewOf(item: FollowupItem, options: { maxChars?: number; attachmentB
   return '(empty message)';
 }
 
+/**
+ * The item's `stateReason`, unless it only repeats the state.
+ *
+ * `steer` stamps `steered` as both the state and its reason
+ * (`followup-queue.ts:587`), so rendering both would append the enum name the
+ * label was written to replace — `전달됨 … · steered`.
+ */
+function stateReasonOf(item: FollowupItem): string | undefined {
+  const reason = item.stateReason;
+  return reason && reason !== item.state ? reason : undefined;
+}
+
 /** `state · reason · N file(s)` — state and reason live outside the message block so text cannot spoof them. */
 function stateLine(item: FollowupItem, extra?: string): string {
-  const parts: string[] = [item.state];
-  if (item.stateReason) parts.push(item.stateReason);
+  const parts: string[] = [followupStateLabel(item.state)];
+  const reason = stateReasonOf(item);
+  if (reason) parts.push(reason);
   const fileCount = item.message.files?.length ?? 0;
   if (fileCount > 0 && (item.message.text ?? '').trim()) parts.push(`${fileCount} file(s)`);
   if (extra) parts.push(extra);
@@ -440,6 +537,11 @@ function accessoryFor(item: FollowupItem, frozen: boolean, turnEpoch: number): R
   }
   switch (item.state) {
     case 'queued':
+    // A steered message is still the user's queued message: `Send now` means
+    // "stop waiting for the tool-call boundary and run it now", which the
+    // dispatcher does by unsteering it first (06 §3.3). The legacy layout has
+    // no Cancel button for any state, so this is the one control it can offer.
+    case 'steered':
       return itemButton(item, FOLLOWUP_SEND_NOW_ACTION_ID, FOLLOWUP_SEND_NOW_LABEL, { style: 'primary', turnEpoch });
     case 'paused':
       return itemButton(item, FOLLOWUP_RESUME_ACTION_ID, FOLLOWUP_RESUME_LABEL);
@@ -478,6 +580,12 @@ function menuOpsFor(
   if (frozen) return RESUMABLE_STATES.includes(item.state) ? [resume, cancel] : [cancel];
   switch (item.state) {
     case 'queued':
+    // Same two operations as `queued`, both taking a different road (06 §3.3/
+    // §3.4): `Send now` unsteers the item and interrupts the turn, `Cancel`
+    // asks the SDK to drop its copy (`cancel_async_message`) and is refused
+    // with "이미 전달됨" when the model already dequeued it. Neither is a
+    // no-op, so neither is withheld.
+    case 'steered':
       return [sendNow, cancel];
     case 'paused':
       return [resume, sendNow, cancel];
@@ -530,9 +638,21 @@ function itemMenu(
  * layout has nowhere else to put it (see {@link itemMenu}).
  */
 function compactStateLabel(item: FollowupItem): string {
-  const state = item.state === 'uncertain' ? `${item.state} — ${COMPACT_UNCERTAIN_CAUTION}` : item.state;
-  const reason = item.stateReason?.replace(/\s+/g, ' ').trim();
+  const label = followupStateLabel(item.state);
+  const state = item.state === 'uncertain' ? `${label} — ${COMPACT_UNCERTAIN_CAUTION}` : label;
+  const reason = stateReasonOf(item)?.replace(/\s+/g, ' ').trim();
   return reason ? `${state} · ${truncate(reason, COMPACT_REASON_MAX_CHARS)}` : state;
+}
+
+/**
+ * Replace the mrkdwn emphasis characters of a compact preview with the
+ * look-alikes above. Applied AFTER truncation and escaping, both of which it
+ * leaves intact: it is a 1:1 code-point map that neither produces nor consumes
+ * `&`/`<`/`>`, so the entity encoding stays exactly as `escapeSlackMrkdwn` left
+ * it and the truncation budget is unaffected.
+ */
+function neutraliseCompactEmphasis(text: string): string {
+  return text.replace(/[*_~]/g, (char) => COMPACT_EMPHASIS_LOOKALIKES[char] ?? char);
 }
 
 /**
@@ -540,11 +660,14 @@ function compactStateLabel(item: FollowupItem): string {
  *
  * Both untrusted parts (message, state reason) are escaped before they touch
  * the mrkdwn string; `verbatim` then stops Slack from auto-linking whatever
- * survived. The state label sits OUTSIDE the escaped message, so a message
- * cannot spoof a state it is not in.
+ * survived. The state label sits OUTSIDE the escaped message, and the preview's
+ * own emphasis characters are neutralised, so the italic run that the eye reads
+ * as the state is always the real one, always last on the row.
  */
 function compactItemBlock(item: FollowupItem, frozen: boolean, turnEpoch: number): Record<string, unknown> {
-  const preview = escapeSlackMrkdwn(previewOf(item, { maxChars: COMPACT_PREVIEW_MAX_CHARS, attachmentBadge: true }));
+  const preview = neutraliseCompactEmphasis(
+    escapeSlackMrkdwn(previewOf(item, { maxChars: COMPACT_PREVIEW_MAX_CHARS, attachmentBadge: true })),
+  );
   const label = escapeSlackMrkdwn(compactStateLabel(item));
   const { menu, dropped } = itemMenu(item, frozen, turnEpoch);
   // A control we could not encode is GONE from the row, and a row that silently
@@ -573,24 +696,12 @@ function clampPage(requested: number | undefined, pageCount: number): number {
   return Math.min(page, pageCount);
 }
 
-/** `queued 90 · paused 10` in a stable, state-enum order. */
+/** `queued 90 · 전달 1 · paused 10` in the shared display order. */
 function stateBreakdown(items: readonly FollowupItem[]): string {
-  const order: readonly FollowupItemState[] = [
-    'queued',
-    'reserved',
-    'claimed',
-    'dispatched',
-    'paused',
-    'uncertain',
-    'failed',
-    'resolved',
-    'cancelled',
-  ];
   const counts = new Map<FollowupItemState, number>();
   for (const item of items) counts.set(item.state, (counts.get(item.state) ?? 0) + 1);
-  return order
-    .filter((state) => counts.has(state))
-    .map((state) => `${state} ${counts.get(state)}`)
+  return FOLLOWUP_STATE_DISPLAY_ORDER.filter((state) => counts.has(state))
+    .map((state) => `${followupStateCountLabel(state)} ${counts.get(state)}`)
     .join(' · ');
 }
 
@@ -681,5 +792,11 @@ export function buildFollowupQueueBlocks(
 /** True when the item's state would normally carry a control (used to explain a dropped one). */
 function isActionable(item: FollowupItem, frozen: boolean): boolean {
   if (frozen) return RESUMABLE_STATES.includes(item.state);
-  return item.state === 'queued' || item.state === 'paused' || item.state === 'failed' || item.state === 'uncertain';
+  return (
+    item.state === 'queued' ||
+    item.state === 'steered' ||
+    item.state === 'paused' ||
+    item.state === 'failed' ||
+    item.state === 'uncertain'
+  );
 }

@@ -1,4 +1,11 @@
-import type { FollowupContext, FollowupItem, FollowupOpFailure, FollowupOpResult } from './followup-queue';
+import { randomUUID } from 'node:crypto';
+import {
+  FOLLOWUP_PENDING_DISPATCH_STATES,
+  type FollowupContext,
+  type FollowupItem,
+  type FollowupOpFailure,
+  type FollowupOpResult,
+} from './followup-queue';
 import type { MessageEvent } from './pipeline/types';
 
 /**
@@ -152,6 +159,12 @@ export type DispatcherNotice =
   | { type: 'drain-resumed'; sessionKey: string; trigger: DrainHaltTrigger }
   | { type: 'item-denied'; sessionKey: string; itemId: string; stage: 'interrupt' | 'dispatch'; detail: string }
   | { type: 'item-uncertain'; sessionKey: string; itemId: string; recorded: boolean; detail: string }
+  /** Pushed into the live turn's input channel under `uuid` — the model has not necessarily read it. */
+  | { type: 'item-steered'; sessionKey: string; itemId: string; uuid: string }
+  /** The SDK's receipt says the model took it: the item is now terminal history. */
+  | { type: 'item-consumed'; sessionKey: string; itemId: string; uuid: string }
+  /** Back to `queued`: the push was refused, the turn ended unread, or `Send now` took it. */
+  | { type: 'item-unsteered'; sessionKey: string; itemId: string; reason: string }
   /** An injected observer threw. Reported, never fatal — observers do not govern execution. */
   | { type: 'observer-failed'; sessionKey: string; hook: 'invalidate-surface'; detail: string };
 
@@ -186,6 +199,33 @@ export type SendNowResult =
   | { status: 'rejected'; reason: SendNowRejection; detail: string };
 
 /**
+ * Why an auto-steer did not happen (06 §3.2).
+ *
+ * `not-busy` is the one that is not a failure: with no live turn there is no
+ * input channel to push into, so the item stays `queued` and the ordinary drain
+ * takes it at the next boundary. `push-refused` means the channel itself said
+ * no (closed between our check and the push) and the item was put back.
+ *
+ * `busy` is its mirror image: there IS a live slot, but a `Send now` already
+ * owns the session (an item is `reserved`/`claimed`), so the turn we would push
+ * into is the one about to be killed. Like `not-busy` the item simply stays
+ * `queued`; unlike it, the host should not read it as "no turn was running".
+ */
+export type SteerRejection =
+  | 'not-busy'
+  | 'busy'
+  | 'stale-epoch'
+  | 'frozen'
+  | 'invalid-state'
+  | 'not-found'
+  | 'push-refused'
+  | 'dispatch-unavailable';
+
+export type SteerResult =
+  | { status: 'steered'; uuid: string }
+  | { status: 'rejected'; reason: SteerRejection; detail?: string };
+
+/**
  * The slice of `FollowupQueue` this service uses. Declared structurally so the
  * dispatcher depends on the operations, not on the class — and so a caller
  * cannot reach a queue method this coordination does not account for.
@@ -216,6 +256,14 @@ export interface FollowupQueuePort {
   getTurnEpoch(sessionKey: string): number;
   /** `dispatched → uncertain` WITHOUT freezing the session (the `Send now` cut). */
   markInterrupted(sessionKey: string, itemId: string, expectedEpoch: number, reason: string): FollowupOpResult;
+  /** `queued → steered` under `uuid`, persisted BEFORE the push (06 §3.2). */
+  steer(sessionKey: string, itemId: string, expectedEpoch: number, uuid: string): FollowupOpResult;
+  /** `steered → resolved` on the SDK's consumption receipt. Addressed by uuid — the SDK knows no item id. */
+  markConsumed(sessionKey: string, uuid: string): FollowupOpResult;
+  /** `steered → queued` at the same seq. The returned item carries the NEW epoch a reserve must use. */
+  unsteer(sessionKey: string, uuid: string, reason: string): FollowupOpResult;
+  /** End-of-turn sweep: every `steered` item of the session back to `queued`, returned. */
+  unsteerAll(sessionKey: string, reason: string): FollowupItem[];
 }
 
 export interface FollowupDispatcherDeps {
@@ -419,6 +467,135 @@ export class FollowupDispatcher {
   }
 
   /**
+   * Auto-steering (06 §3.2): hand a queued item to the turn that is ALREADY
+   * running, without cutting it. Nothing is dispatched, no slot is taken and no
+   * turn generation opens — the message joins the live turn's SDK input queue
+   * and the model reads it at the next tool-call boundary.
+   *
+   * Only while `isBusy`: with no live slot there is no channel to push into, so
+   * the answer is `not-busy` and the host drains normally (a steer into a dead
+   * channel would strand the item in `steered` with no receipt ever coming).
+   *
+   * And only while NOTHING is setting up a dispatch (`reserved`/`claimed`,
+   * review round 3): during a `Send now` the slot is already held by the
+   * replacement run BEFORE the interrupt lands, so a steer in that window
+   * pushes into a turn that is about to be killed — the settlement frame of a
+   * turn that dies never names it, and the row is stranded `steered`, which no
+   * drain can take. `busy` says so explicitly instead of letting `isBusy` stand
+   * in for "a turn that will still be alive in a moment".
+   *
+   * Fully synchronous, like the rest of the fence — the queue write and the push
+   * happen with no await between them, so nothing can settle the turn in the
+   * middle and leave the item pushed into a channel that is closing.
+   *
+   * Order is durable-first: `queued → steered` is committed BEFORE the push, so
+   * a crash between the two leaves a row that says "may have been delivered"
+   * rather than a silent delivery. `push` returning false (or throwing) is the
+   * only case that walks it back, and it walks it back all the way to `queued`
+   * at the same seq — never to a state that hides the item from the drain.
+   */
+  steer(sessionKey: string, itemId: string, expectedEpoch: number, push: (uuid: string) => boolean): SteerResult {
+    if (!this.slots.has(sessionKey)) {
+      return { status: 'rejected', reason: 'not-busy', detail: 'no live turn to steer into' };
+    }
+    let pending: FollowupItem[];
+    try {
+      pending = this.deps.queue.list(sessionKey);
+    } catch (error) {
+      // Unreadable queue state cannot clear the fence: fail closed rather than
+      // push into a turn we cannot prove is staying alive.
+      return { status: 'rejected', reason: 'dispatch-unavailable', detail: `queue threw: ${errorText(error)}` };
+    }
+    const setup = pending.find((item) => FOLLOWUP_PENDING_DISPATCH_STATES.includes(item.state));
+    if (setup) {
+      return {
+        status: 'rejected',
+        reason: 'busy',
+        detail: `a dispatch is being set up for ${setup.id} (${setup.state}) — the live turn is about to be replaced`,
+      };
+    }
+
+    const uuid = randomUUID();
+    const steered = this.attempt(() => this.deps.queue.steer(sessionKey, itemId, expectedEpoch, uuid));
+    if (!steered.ok) {
+      const reason = steered.reason ? this.steerRejection(steered.reason) : 'dispatch-unavailable';
+      return { status: 'rejected', reason, detail: steered.detail };
+    }
+
+    let refusal: string | undefined;
+    try {
+      if (!push(uuid)) refusal = 'the input channel refused the message';
+    } catch (error) {
+      // A throwing channel is a refusal, not a delivery: fail closed, exactly
+      // like the authorization hooks.
+      refusal = `push threw: ${errorText(error)}`;
+    }
+    if (refusal) {
+      // The row records WHY it came back — the channel's own words. A fixed
+      // string here ('no live turn to steer') told the panel a story the code
+      // had just disproved: the turn was live, the push was not taken.
+      const rolled = this.attempt(() => this.deps.queue.unsteer(sessionKey, uuid, refusal));
+      if (rolled.ok) {
+        this.safeNotify({ type: 'item-unsteered', sessionKey, itemId, reason: refusal });
+      }
+      const detail = rolled.ok ? refusal : `${refusal}; unsteer failed: ${rolled.detail}`;
+      return { status: 'rejected', reason: 'push-refused', detail };
+    }
+
+    this.safeNotify({ type: 'item-steered', sessionKey, itemId, uuid });
+    return { status: 'steered', uuid };
+  }
+
+  /**
+   * The SDK's consumption receipt arrived: `steered → resolved` (terminal
+   * history). Pass-through by design — the host owns the frame observation and
+   * this service owns nobody's opinion about what a frame means.
+   *
+   * Unlike the dispatch paths this does NOT swallow a throwing store: it holds
+   * no slot and strands no run, and the host calling it from an event handler
+   * is the only party that can decide what an unrecordable settlement means.
+   */
+  markConsumed(sessionKey: string, uuid: string): FollowupOpResult {
+    const result = this.deps.queue.markConsumed(sessionKey, uuid);
+    if (result.ok) {
+      this.safeNotify({ type: 'item-consumed', sessionKey, itemId: result.item.id, uuid });
+    }
+    return result;
+  }
+
+  /**
+   * The turn ended with the message still unread (`still_queued`, 06 §6.6), so
+   * the item goes back to `queued` at its original seq and the ordinary drain
+   * owns it again. Same pass-through discipline as `markConsumed`.
+   */
+  unsteer(sessionKey: string, uuid: string, reason: string): FollowupOpResult {
+    const result = this.deps.queue.unsteer(sessionKey, uuid, reason);
+    if (result.ok) {
+      this.safeNotify({ type: 'item-unsteered', sessionKey, itemId: result.item.id, reason });
+    }
+    return result;
+  }
+
+  /**
+   * End-of-turn sweep (06 §6.6): everything still `steered` goes back to
+   * `queued`, one notice per item. The host calls this when the turn it steered
+   * into is over — a settlement frame that never names an item (killed turn,
+   * dropped frame) would otherwise leave it `steered`, and no drain can take a
+   * `steered` row, so the message would sit in the panel forever.
+   *
+   * Idempotent by construction: a second call finds nothing steered and returns
+   * an empty list, so calling it after a full set of receipts changes nothing.
+   * Pass-through like `markConsumed` — a throwing store is the host's to handle.
+   */
+  unsteerAll(sessionKey: string, reason: string): FollowupItem[] {
+    const moved = this.deps.queue.unsteerAll(sessionKey, reason);
+    for (const item of moved) {
+      this.safeNotify({ type: 'item-unsteered', sessionKey, itemId: item.id, reason });
+    }
+    return moved;
+  }
+
+  /**
    * `Send now` (§3.3, 05 §4). Order is load-bearing:
    *   turn-epoch fence → canInterrupt → fence re-check → RESERVE + take the
    *   slot (single winner, synchronous, before any abort) → interrupt →
@@ -440,7 +617,13 @@ export class FollowupDispatcher {
    *
    * A denial BEFORE the reservation does not touch the item at all: it was
    * never taken out of the queue, so there is nothing to roll back and the
-   * clicker's identity is never written anywhere (A30).
+   * clicker's identity is never written anywhere (A30). The one exception is a
+   * `steered` item, which must leave `steered` before it can be reserved at all
+   * — see `unsteerForSendNow`, which fences that transition with the caller's
+   * `expectedEpoch`. That unsteer is speculative: if the reserve or the
+   * interrupt then fails, the item goes back to `steered` under the SAME uuid
+   * (`restoreSteer`), because the SDK is still holding the copy and a `queued`
+   * row it also holds is delivered twice.
    *
    * No mutex is held across any await. Mutual exclusion is the queue
    * reservation plus this session's dispatch slot, neither of which the
@@ -475,10 +658,31 @@ export class FollowupDispatcher {
     const staleAfter = this.staleTurn(sessionKey, expectedTurnEpoch);
     if (staleAfter) return { status: 'rejected', reason: 'stale-turn-epoch', detail: staleAfter };
 
-    const reserved = this.attempt(() => this.deps.queue.reserve(sessionKey, itemId, expectedEpoch, expectedTurnEpoch));
+    // A steered item is still the user's queued message — `Send now` on it means
+    // "stop waiting for the model to get around to it". The queue only reserves
+    // `queued`, so take it out of `steered` first. The CAS is done HERE, against
+    // the steered epoch the control was rendered with, because `unsteer` is
+    // addressed by uuid and carries no epoch fence of its own; `reserve` then
+    // runs against the NEW epoch that transition produced. Still no await
+    // between the check, the unsteer and the reserve, so nothing can slip in.
+    const prepared = this.unsteerForSendNow(sessionKey, itemId, expectedEpoch);
+    if (!prepared.ok) return prepared.rejection;
+    // Kept for every failure path below: while this is set, the SDK is holding a
+    // copy of the message that only this uuid can settle (`restoreSteer`).
+    const steerUuid = prepared.steerUuid;
+
+    const reserved = this.attempt(() => this.deps.queue.reserve(sessionKey, itemId, prepared.epoch, expectedTurnEpoch));
     if (!reserved.ok) {
+      // Nothing was interrupted and nothing was dispatched, so the pushed copy
+      // is still in the live turn's channel — the row must name it again or the
+      // drain will send the same message a second time.
+      const stranded = this.restoreSteer(sessionKey, itemId, steerUuid);
       const reason = reserved.reason ? this.reserveRejection(reserved.reason) : 'dispatch-unavailable';
-      return { status: 'rejected', reason, detail: reserved.detail };
+      return {
+        status: 'rejected',
+        reason,
+        detail: stranded ? `${reserved.detail}; ${stranded}` : reserved.detail,
+      };
     }
     const victim = this.slots.get(sessionKey);
     // Reserve the replacement slot now (serialisation), but do NOT open a
@@ -504,7 +708,14 @@ export class FollowupDispatcher {
         if (orphan) {
           this.haltDrain(sessionKey, 'error', `interrupt failed: ${interruptFailure}; rollback failed: ${orphan}`);
         }
-        return this.abandon(run, `interrupt failed: ${interruptFailure}`, (detail) => ({
+        // The abort never landed, so the turn — and the copy we pushed into it —
+        // are both still alive. The row is `queued` again, which is exactly the
+        // shape a drain takes: re-attach the uuid or it runs twice.
+        const stranded = this.restoreSteer(sessionKey, itemId, steerUuid);
+        const failure = stranded
+          ? `interrupt failed: ${interruptFailure}; ${stranded}`
+          : `interrupt failed: ${interruptFailure}`;
+        return this.abandon(run, failure, (detail) => ({
           status: 'rejected',
           reason: 'interrupt-failed',
           detail,
@@ -603,6 +814,106 @@ export class FollowupDispatcher {
   }
 
   // ---------------------------------------------------------------- internals
+
+  /**
+   * `Send now` pre-step: if the item is `steered`, pull it back to `queued` and
+   * return the epoch `reserve` must use, together with the uuid it was steered
+   * under. Returns the caller's own `expectedEpoch` untouched for every other
+   * state, so all existing rejection paths (`stale-epoch`, `frozen`,
+   * `invalid-state`, …) keep being decided by `reserve` exactly as before.
+   *
+   * The uuid is HANDED BACK, not discarded, because this unsteer is speculative:
+   * it happens before the reserve and before the interrupt, and either of them
+   * can still fail. Until the abort is delivered the SDK keeps the copy we
+   * pushed, so every failure path after this point owes the row that handle back
+   * (`restoreSteer`) — a `queued` row the SDK is still holding is the one shape
+   * that makes the drain deliver the same message twice.
+   *
+   * Known residual (06 §3.3 assigns it to the host, not here): once the abort
+   * DOES land, cancelling that copy (`cancel_queued` / `still_queued`) is part
+   * of the interrupt — this service neither observes nor performs it.
+   */
+  private unsteerForSendNow(
+    sessionKey: string,
+    itemId: string,
+    expectedEpoch: number,
+  ): { ok: true; epoch: number; steerUuid?: string } | { ok: false; rejection: SendNowResult } {
+    let current: FollowupItem | undefined;
+    try {
+      current = this.deps.queue.get(sessionKey, itemId);
+    } catch {
+      // Unreadable state: let `reserve` be the single decider, as before.
+      return { ok: true, epoch: expectedEpoch };
+    }
+    if (current?.state !== 'steered') return { ok: true, epoch: expectedEpoch };
+
+    // The control was rendered against the steered row, so THAT epoch is the
+    // fence. Without this check the unsteer below would happily bump an item a
+    // concurrent steer/consume already moved on.
+    if (current.epoch !== expectedEpoch) {
+      return {
+        ok: false,
+        rejection: {
+          status: 'rejected',
+          reason: 'stale-epoch',
+          detail: `control rendered at item epoch ${expectedEpoch}, item is at ${current.epoch}`,
+        },
+      };
+    }
+    const steerUuid = current.steerUuid;
+    if (!steerUuid) {
+      // A steered row with no uuid cannot be settled by anything; refuse rather
+      // than invent a transition for a row the queue could not have written.
+      return {
+        ok: false,
+        rejection: { status: 'rejected', reason: 'invalid-state', detail: 'steered item carries no steer uuid' },
+      };
+    }
+
+    const unsteered = this.attempt(() => this.deps.queue.unsteer(sessionKey, steerUuid, 'send now'));
+    if (!unsteered.ok) {
+      const reason = unsteered.reason ? this.reserveRejection(unsteered.reason) : 'dispatch-unavailable';
+      return { ok: false, rejection: { status: 'rejected', reason, detail: unsteered.detail } };
+    }
+    this.safeNotify({ type: 'item-unsteered', sessionKey, itemId, reason: 'send now' });
+    return { ok: true, epoch: unsteered.item.epoch, steerUuid };
+  }
+
+  /**
+   * Undo of `unsteerForSendNow`: put the uuid back on a row that is `queued`
+   * again while the SDK still holds the copy it names.
+   *
+   * Only a `queued` row is restored, and that is the whole point — `steered` is
+   * invisible to the drain, so a row in any other state cannot be double-sent
+   * and needs nothing from us. `queue.steer` takes an arbitrary uuid, so the
+   * ORIGINAL handle goes back: a fresh one would leave the SDK's eventual
+   * receipt naming nothing.
+   *
+   * A restore that itself fails halts the drain, like every other silent
+   * disagreement between this service and the queue: the alternative is a lane
+   * that keeps draining an item the SDK is also about to run.
+   */
+  private restoreSteer(sessionKey: string, itemId: string, steerUuid: string | undefined): string | undefined {
+    if (!steerUuid) return undefined;
+    let item: FollowupItem | undefined;
+    try {
+      item = this.deps.queue.get(sessionKey, itemId);
+    } catch (error) {
+      const detail = `re-steer failed: queue threw: ${errorText(error)}`;
+      this.haltDrain(sessionKey, 'error', detail);
+      return detail;
+    }
+    if (!item || item.state !== 'queued') return undefined;
+    const epoch = item.epoch;
+    const restored = this.attempt(() => this.deps.queue.steer(sessionKey, itemId, epoch, steerUuid));
+    if (restored.ok) {
+      this.safeNotify({ type: 'item-steered', sessionKey, itemId, uuid: steerUuid });
+      return undefined;
+    }
+    const detail = `re-steer failed: ${restored.detail}`;
+    this.haltDrain(sessionKey, 'error', detail);
+    return detail;
+  }
 
   /**
    * Take the session's dispatch slot — SYNCHRONOUSLY, before any await, so a
@@ -933,6 +1244,30 @@ export class FollowupDispatcher {
         return 'not-found';
       case 'frozen':
         return 'frozen';
+      default:
+        return 'invalid-state';
+    }
+  }
+
+  /**
+   * Queue vocabulary → steer vocabulary. `stale-turn` cannot come out of `steer`
+   * (it takes no turn fence), so anything unexpected collapses to
+   * `invalid-state` rather than being reported as a condition this path can
+   * actually produce. `busy` is kept verbatim: this service raises exactly that
+   * condition itself, so mapping the queue's own `busy` to something else would
+   * make one fact answer under two names.
+   */
+  private steerRejection(reason: FollowupOpFailure): SteerRejection {
+    switch (reason) {
+      case 'stale-epoch':
+        return 'stale-epoch';
+      case 'busy':
+        return 'busy';
+      case 'frozen':
+        return 'frozen';
+      case 'not-found':
+      case 'empty':
+        return 'not-found';
       default:
         return 'invalid-state';
     }

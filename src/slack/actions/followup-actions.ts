@@ -127,9 +127,34 @@ export interface FollowupActionSession {
   };
 }
 
+/**
+ * What a cancel of a `steered` item could do (06 §3.4). Four outcomes, four
+ * different truths: the SDK withdrew the message, the SDK had already handed it
+ * to the model, the SDK could not be asked at all — so the item went back to the
+ * queue and the control still works — or the cancel could not be carried out.
+ * They are never collapsed: "이미 전달됨" is not a failure, "실패" is not a
+ * cancellation, and neither of them is "we do not know".
+ */
+export type CancelSteeredOutcome = 'cancelled' | 'already-delivered' | 'returned-to-queue' | 'failed';
+
 export interface FollowupActionsDeps {
   queue: FollowupActionsQueuePort;
   dispatcher: FollowupActionsDispatcherPort;
+  /**
+   * Cancel a STEERED item through the SDK, then record it. Required, not
+   * optional: without it a steered cancel would silently fall back to
+   * `queue.cancelItem`, which answers `invalid-state` — the user would read
+   * "cannot cancel" for the one state that actually has a cancel path.
+   *
+   * The host implements it as `cancel_async_message(uuid)` first, queue write
+   * second; this module never touches the SDK itself.
+   */
+  cancelSteered(
+    sessionKey: string,
+    itemId: string,
+    expectedEpoch: number,
+    steerUuid: string,
+  ): Promise<CancelSteeredOutcome>;
   /** Server-side session lookup. `undefined` = the click is refused outright. */
   getSessionByKey(sessionKey: string): FollowupActionSession | undefined;
   /**
@@ -142,6 +167,41 @@ export interface FollowupActionsDeps {
   refresh(sessionKey: string, page?: number): void | Promise<void>;
   /** The HOST's drain loop. This module never re-enters the dispatcher itself. */
   runDrain(sessionKey: string): void | Promise<void>;
+  /**
+   * The host's end-of-turn sweep of rows still sitting in `steered` — the one
+   * state whose exit depends on a receipt no one can produce once the turn is
+   * over (`slack-handler.ts sweepSteerBucketsIfIdle`).
+   *
+   * Needed here because `runDrain` is gated on `canDrain` and the sweep must
+   * NOT be. `canDrain` is false for exactly the turns that strand rows: an
+   * interrupted turn that ended aborted, blocked, errored or parked on a
+   * question got no settlement frame for anything pushed into it, and the drain
+   * — the only other caller that sweeps — is the branch that just did not run.
+   * Those rows would then be invisible to every later drain (`claimNext` takes
+   * `queued` only) until some unrelated message happened to start a turn.
+   *
+   * Optional and best effort, like `onItemLeftSteer`: a host that does not
+   * track steers wires nothing, and a throwing sweep is bookkeeping this module
+   * reports — never a delivered message turned into a failed click.
+   */
+  sweepSteered?(sessionKey: string): void | Promise<void>;
+  /**
+   * `Send now` may have pulled the item out of `steered` (the dispatcher does it
+   * inside its own transaction, `followup-dispatcher.ts:831-864`), and that is
+   * the ONE exit from `steered` the host never sees a uuid for: no settlement
+   * frame, no cancel hook. Told here so the host can release whatever it was
+   * holding for that item's steer — temp files above all.
+   *
+   * Announced after the transaction, unconditionally — and it says "MAY have
+   * left", nothing stronger. The dispatcher's unsteer is speculative: a refused
+   * reserve or a failed interrupt puts the row back under the SAME uuid
+   * (`followup-dispatcher.ts:896`), because the SDK is still holding the pushed
+   * copy. So the host must re-read the item and release nothing while it is
+   * `steered` under the uuid it was tracking; this module deliberately does not
+   * make that call for it. Optional and best effort — a throwing hook must not
+   * turn a delivered message into a failed click.
+   */
+  onItemLeftSteer?(sessionKey: string, itemId: string): void;
   /** Optional logger seam; falls back to this module's `Logger`. */
   reportError?(label: string, error: unknown): void;
 }
@@ -270,6 +330,14 @@ async function handleSendNow(
     // working directory all come from the stored item (A30).
     result = await deps.dispatcher.sendNow(value.sessionKey, value.itemId, value.epoch, click.clicker, value.turnEpoch);
   } finally {
+    // Whatever the dispatcher decided, the item is no longer `steered` in the
+    // shape the host remembered it — report it before the refresh so a repaint
+    // failure cannot swallow the release.
+    try {
+      deps.onItemLeftSteer?.(value.sessionKey, value.itemId);
+    } catch (error) {
+      report(deps, 'Send now steer release', error);
+    }
     // The item moved (reserved/dispatched) or it did not — either way the
     // surface is now out of date.
     await safeRefresh(deps, value.sessionKey);
@@ -290,10 +358,15 @@ async function handleSendNow(
     respond,
     async () => {
       try {
-        const report = await run.settled;
+        // The sweep rides the turn's END, not its verdict: whatever this turn
+        // did, no settlement frame can arrive for it any more. It therefore
+        // runs in the `finally` of the settle — before, and independently of,
+        // the `canDrain` gate below — because the drain claims `queued` rows
+        // and a row the sweep has not returned yet is invisible to it.
+        const settled = await run.settled.finally(() => sweepSteered(deps, sessionKey));
         // Only a `safe` outcome opens the next boundary — a blocked/failed turn
         // must not be followed by an automatic drain (A16).
-        if (report.canDrain) await deps.runDrain(sessionKey);
+        if (settled.canDrain) await deps.runDrain(sessionKey);
       } finally {
         await safeRefresh(deps, sessionKey);
       }
@@ -302,6 +375,14 @@ async function handleSendNow(
       `Send now follow-through could not finish (${errorText(error)}). Your message was already sent — check the queue state; nothing further was dispatched automatically.`,
   );
 }
+
+/**
+ * Resume released the SESSION, but `queue.resume` only moves `paused` items
+ * back to `queued` — an `uncertain` one is left exactly where it was (A17/R6).
+ * Saying nothing would let the click read as "it will run now", which is the
+ * A29 conflation: two different acts under one silence.
+ */
+const RESUME_UNCERTAIN_TEXT = '세션은 재개했지만 이 항목은 실행 여부 확인이 필요합니다 — Retry로 다시 실행하세요.';
 
 /**
  * Resume (A17/A29). A freeze is released only by an explicit user act, and only
@@ -357,6 +438,9 @@ async function handleResume(
     return;
   }
 
+  // Read BEFORE the resume: the clicked item's state is what the answer below
+  // is about, and a successful resume rewrites `paused` out from under us.
+  const clickedState = item.item.state;
   try {
     deps.queue.resume(value.sessionKey);
     deps.dispatcher.clearDrainHalt(value.sessionKey, 'resume');
@@ -366,6 +450,11 @@ async function handleResume(
   } finally {
     await safeRefresh(deps, value.sessionKey);
   }
+
+  // The session is running again, but THIS item is not — `resume` never touches
+  // `uncertain`, and only an explicit Retry may re-run a message whose effect is
+  // unknown (§3.5/R6).
+  if (clickedState === 'uncertain') await reply(respond, RESUME_UNCERTAIN_TEXT);
 }
 
 /**
@@ -503,6 +592,17 @@ const CANCEL_DENIED_TEXT = '취소가 거부되었습니다: 이 세션을 조�
 const CANCEL_OK_TEXT = '취소했습니다 — 항목은 기록으로 남습니다.';
 const CANCEL_RUNNING_TEXT = '실행 중인 항목은 취소할 수 없습니다 — 패널의 중지 버튼을 쓰세요.';
 const CANCEL_STALE_TEXT = '이미 바뀐 항목입니다 — 패널을 새로고침했습니다.';
+/** The SDK confirmed the withdrawal: the model never saw the message. */
+const CANCEL_STEERED_OK_TEXT = '취소했습니다 — 모델에 전달되기 전에 회수했습니다.';
+/** The SDK had already dequeued it, so the message is part of the running turn. */
+const CANCEL_STEERED_DELIVERED_TEXT = '취소하지 못했습니다 — 이미 모델에 전달되어 실행 중입니다.';
+/**
+ * The SDK could not be asked, so delivery is unknown. The item is back in the
+ * queue, which is both the honest state and a working control: the next click
+ * cancels an ordinary `queued` row.
+ */
+const CANCEL_STEERED_RETURNED_TEXT =
+  '취소하지 못했습니다 — 전달 여부를 확인할 수 없어 큐로 되돌렸습니다. 다시 Cancel 할 수 있습니다.';
 
 /**
  * Cancel (menu-only). Authorization is the SAME interrupt policy Resume and
@@ -554,6 +654,13 @@ async function handleCancel(
   // refusal text depends on where the item WAS.
   const previousState = item.state;
   try {
+    // A steered message lives in the SDK's input queue, not only in ours — the
+    // host has to ask the SDK first, so this is a different door, not a
+    // different reason code on the same one.
+    if (previousState === 'steered') {
+      await cancelSteeredItem(deps, respond, value, item.steerUuid);
+      return;
+    }
     const result = deps.queue.cancelItem(
       value.sessionKey,
       value.itemId,
@@ -577,6 +684,44 @@ async function handleCancel(
     // Success or refusal, the surface is now behind the queue.
     await safeRefresh(deps, value.sessionKey);
   }
+}
+
+/**
+ * Cancel of a `steered` item: the SDK decides, this only reports what it said.
+ *
+ * Each outcome gets its own sentence, because they are four different facts
+ * for the user (A29): withdrawn before the model read it, already in the
+ * model's hands, returned to the queue with delivery unknown, or not carried
+ * out at all. A throw is left to the detached catch — it must not be turned
+ * into "cancelled".
+ */
+async function cancelSteeredItem(
+  deps: FollowupActionsDeps,
+  respond: FollowupRespond,
+  value: FollowupItemActionValue,
+  steerUuid: string | undefined,
+): Promise<void> {
+  if (!steerUuid) {
+    // Nothing can name the SDK's copy, so nothing may claim to have cancelled
+    // it — the same refusal a queue `invalid-state` would produce.
+    await refuse(respond, cancelRefusal('invalid-state', 'steered'));
+    return;
+  }
+
+  const outcome = await deps.cancelSteered(value.sessionKey, value.itemId, value.epoch, steerUuid);
+  if (outcome === 'cancelled') {
+    await reply(respond, CANCEL_STEERED_OK_TEXT);
+    return;
+  }
+  if (outcome === 'already-delivered') {
+    await reply(respond, CANCEL_STEERED_DELIVERED_TEXT);
+    return;
+  }
+  if (outcome === 'returned-to-queue') {
+    await reply(respond, CANCEL_STEERED_RETURNED_TEXT);
+    return;
+  }
+  await refuse(respond, cancelRefusal(outcome, 'steered'));
 }
 
 /**
@@ -781,6 +926,19 @@ function detach(
       report(deps, `${label} reply`, replyError),
     );
   });
+}
+
+/**
+ * The host's steered-row sweep, best effort. It runs in a `finally`, so a throw
+ * here would REPLACE the settlement's own outcome — including its rejection —
+ * with a bookkeeping failure. Caught and reported instead.
+ */
+async function sweepSteered(deps: FollowupActionsDeps, sessionKey: string): Promise<void> {
+  try {
+    await deps.sweepSteered?.(sessionKey);
+  } catch (error) {
+    report(deps, 'Send now steered sweep', error);
+  }
 }
 
 /** The surface redraw is best-effort: failing to repaint must not undo the act. */
