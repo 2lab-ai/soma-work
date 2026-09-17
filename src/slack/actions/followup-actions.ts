@@ -47,8 +47,9 @@ import { Logger } from '../../logger';
  *
  * 3. **A refusal says "rejected" and "retained", never something
  *    success-shaped** (A13/A29). A denied item keeps its place in the queue; a
- *    frozen session stays frozen until an explicit Resume. The two are never
- *    collapsed into one sentence.
+ *    parked (paused/uncertain) row stays parked until an explicit Resume/Retry
+ *    (the session's freeze clears by itself once no parked row remains). The
+ *    two are never collapsed into one sentence.
  *
  * Out of scope on purpose: rendering (U3 owns the blocks), the drain loop (the
  * host owns `runDrain`), and freeze/resume policy beyond calling the queue.
@@ -554,7 +555,7 @@ function retryRefusal(reason: string, state: FollowupItemState): string {
         ? 'Retry rejected (capacity): the queue refused the requeue even though this item already holds a pending slot. It stays in the queue, untouched.'
         : `Retry rejected (capacity): the queue is full, and a ${state} item has to re-enter the pending budget to run again. It stays in the queue as ${state} — clear or cancel something first.`;
     case 'frozen':
-      return 'Retry rejected (frozen): the session was frozen in the meantime. Resume the queue first — the item stays where it is.';
+      return 'Retry rejected (frozen): the queue refused this retry. The item stays where it is — refresh the panel and use the control it offers (Resume for 보류, Retry for 불확실).';
     case 'stale-epoch':
       return 'Retry rejected (stale-epoch): the item changed while the click was in flight. It stays in the queue — refresh and look again.';
     case 'invalid-state':
