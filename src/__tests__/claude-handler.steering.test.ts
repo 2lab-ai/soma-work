@@ -46,6 +46,7 @@ vi.mock('../agent-runtime/claude-code/build-stream-options', () => ({
 }));
 
 import { ClaudeHandler } from '../claude-handler';
+import { Logger } from '../logger';
 import type { McpManager } from '../mcp-manager';
 
 const SESSION_KEY = 'C123:1700000000.1';
@@ -108,8 +109,78 @@ function installFakeQuery(): void {
   });
 }
 
+/**
+ * Install a fake `query()` for the settlement path: it replies, parks on the
+ * gate (the test steers here), then emits a `result` carrying the given
+ * `queued_turn_count`. `interrupt` is whatever the case needs.
+ */
+function installSettlementQuery(opts: { queuedTurnCount?: number; interrupt: ReturnType<typeof vi.fn> }): void {
+  queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<unknown> }) => {
+    const received: unknown[] = [];
+    let openGate: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      openGate = resolve;
+    });
+    const inputs = (prompt as AsyncIterable<unknown>)[Symbol.asyncIterator]();
+
+    const gen = (async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 'sess-1', model: 'claude-test', tools: [] };
+      received.push((await inputs.next()).value);
+      yield { type: 'assistant', message: { model: 'claude-test', content: [{ type: 'text', text: 'ack' }] } };
+      await gate;
+      yield {
+        type: 'result',
+        subtype: 'success',
+        result: 'done',
+        duration_ms: 1,
+        is_error: false,
+        num_turns: 1,
+        stop_reason: 'end_turn',
+        queued_turn_count: opts.queuedTurnCount,
+        session_id: 'sess-1',
+        uuid: 'result-frame-uuid',
+      };
+    })();
+
+    fake = {
+      received,
+      interrupt: opts.interrupt,
+      cancelAsyncMessage: vi.fn(async () => true),
+      releaseSteerGate: () => openGate(),
+      inputEnded: false,
+    };
+    return Object.assign(gen, {
+      interrupt: fake.interrupt,
+      cancelAsyncMessage: fake.cancelAsyncMessage,
+    });
+  });
+}
+
 function newHandler(): ClaudeHandler {
   return new ClaudeHandler({ getPluginManager: () => null } as unknown as McpManager);
+}
+
+/** Drive a turn to its result, steering `uuids` in while it runs. */
+async function runSteeredTurn(uuids: string[]): Promise<unknown[]> {
+  const handler = newHandler();
+  const it = handler
+    .streamQuery('hello there', undefined, undefined, undefined, undefined, SESSION_KEY)
+    [Symbol.asyncIterator]();
+
+  const frames: unknown[] = [];
+  frames.push((await it.next()).value); // init
+  frames.push((await it.next()).value); // assistant
+  for (const uuid of uuids) {
+    expect(handler.steerTurn(SESSION_KEY, { uuid, text: `steer ${uuid}` })).toBe(true);
+  }
+  fake.releaseSteerGate();
+
+  for (;;) {
+    const next = await it.next();
+    if (next.done) break;
+    frames.push(next.value);
+  }
+  return frames;
 }
 
 describe('ClaudeHandler streaming-input turn (user-steering WU1)', () => {
@@ -159,6 +230,10 @@ describe('ClaudeHandler streaming-input turn (user-steering WU1)', () => {
     ).toBe(true);
     fake.releaseSteerGate();
 
+    // A turn with pushed sends settles them first: one synthetic frame, then
+    // the result (see the settlement suite below).
+    const settlement = await it.next();
+    expect((settlement.value as { subtype: string }).subtype).toBe('steer_settlement');
     const result = await it.next();
     expect((result.value as { type: string }).type).toBe('result');
     expect(fake.received[1]).toMatchObject({
@@ -187,6 +262,7 @@ describe('ClaudeHandler streaming-input turn (user-steering WU1)', () => {
     await it.next();
     handler.steerTurn(SESSION_KEY, { uuid: 'u-1', text: 'more' });
     fake.releaseSteerGate();
+    await it.next(); // steer_settlement
     await it.next(); // result
     expect((await it.next()).done).toBe(true);
 
@@ -266,9 +342,200 @@ describe('ClaudeHandler streaming-input turn (user-steering WU1)', () => {
       events.push(e);
     }
 
+    // Only `started`: nothing was pushed into this turn, so there is no
+    // settlement frame — and the result's echoed uuid no longer fabricates a
+    // `completed` (it names the send that started the turn, not a steered one).
     expect(events.filter((e) => e.type === 'steer_lifecycle')).toEqual([
       { type: 'steer_lifecycle', uuid: 'u-steer-1', phase: 'started' },
-      { type: 'steer_lifecycle', uuid: 'u-steer-1', phase: 'completed' },
+    ]);
+  });
+});
+
+/**
+ * Settlement of steered sends (spec §6 item 6).
+ *
+ * SDK 0.3.251 reports no per-frame consumption signal for a mid-turn send, so
+ * "did the turn actually eat it?" is decided at the `result` frame:
+ * `queued_turn_count` (sdk.d.ts:4795/4849) counts pushed sends the CLI has NOT
+ * folded into this turn. >0 → interrupt and read the receipt; the survivors
+ * (`still_queued` ∪ `cancelled`) are the unconsumed ones. The handler publishes
+ * the verdict as ONE synthetic `system/steer_settlement` frame emitted just
+ * before the result, so the mapper stays a pure function of the stream.
+ */
+describe('ClaudeHandler steer settlement (spec §6 item 6)', () => {
+  beforeEach(() => {
+    queryMock.mockReset();
+    releaseMock.mockClear();
+  });
+
+  it('interrupts on queued_turn_count > 0 and settles survivors as discarded', async () => {
+    const interrupt = vi.fn(async () => ({ still_queued: ['u2'], cancelled: [] }));
+    installSettlementQuery({ queuedTurnCount: 2, interrupt });
+
+    const frames = await runSteeredTurn(['u1', 'u2']);
+
+    expect(interrupt).toHaveBeenCalledTimes(1);
+    expect(frames).toHaveLength(4); // init, assistant, settlement, result
+    expect(frames[2]).toMatchObject({
+      type: 'system',
+      subtype: 'steer_settlement',
+      consumed: ['u1'],
+      discarded: ['u2'],
+      session_id: 'sess-1',
+      uuid: 'result-frame-uuid',
+    });
+    expect(frames[3]).toMatchObject({ type: 'result', subtype: 'success' });
+  });
+
+  it('counts cancelled uuids as unconsumed too', async () => {
+    const interrupt = vi.fn(async () => ({ still_queued: [], cancelled: ['u1'] }));
+    installSettlementQuery({ queuedTurnCount: 1, interrupt });
+
+    const frames = await runSteeredTurn(['u1', 'u2']);
+
+    expect(frames[2]).toMatchObject({ consumed: ['u2'], discarded: ['u1'] });
+  });
+
+  it('cancels every survivor the interrupt did not already cancel, and still discards all of them', async () => {
+    // `interrupt()` takes no `cancel_queued` argument in 0.3.251
+    // (sdk.d.ts:2536), so survivors listed under `still_queued` WILL run as
+    // extra turns unless withdrawn one by one. Withdrawal is best-effort: the
+    // verdict stays `discarded` either way, because the host requeues a
+    // discarded item while a failed cancel only risks a double-run bounded by
+    // the process teardown after `result`.
+    const interrupt = vi.fn(async () => ({ still_queued: ['u1', 'u2'], cancelled: ['u2'] }));
+    installSettlementQuery({ queuedTurnCount: 2, interrupt });
+
+    const frames = await runSteeredTurn(['u1', 'u2']);
+
+    expect(fake.cancelAsyncMessage).toHaveBeenCalledTimes(1);
+    expect(fake.cancelAsyncMessage).toHaveBeenCalledWith('u1');
+    expect(frames[2]).toMatchObject({ consumed: [], discarded: ['u1', 'u2'] });
+  });
+
+  it('keeps a survivor discarded when its cancel attempt throws', async () => {
+    const interrupt = vi.fn(async () => ({ still_queued: ['u1'], cancelled: [] }));
+    installSettlementQuery({ queuedTurnCount: 1, interrupt });
+
+    const handler = newHandler();
+    const it = handler
+      .streamQuery('hello there', undefined, undefined, undefined, undefined, SESSION_KEY)
+      [Symbol.asyncIterator]();
+    await it.next();
+    await it.next();
+    fake.cancelAsyncMessage.mockImplementation(async () => {
+      throw new Error('control request failed');
+    });
+    handler.steerTurn(SESSION_KEY, { uuid: 'u1', text: 'a' });
+    handler.steerTurn(SESSION_KEY, { uuid: 'u2', text: 'b' });
+    fake.releaseSteerGate();
+    const settlement = await it.next();
+
+    expect(fake.cancelAsyncMessage).toHaveBeenCalledWith('u1');
+    expect(settlement.value).toMatchObject({ consumed: ['u2'], discarded: ['u1'] });
+    await it.next();
+  });
+
+  it('settles every pushed send as consumed without interrupting when queued_turn_count is 0', async () => {
+    const interrupt = vi.fn(async () => ({ still_queued: [], cancelled: [] }));
+    installSettlementQuery({ queuedTurnCount: 0, interrupt });
+
+    const frames = await runSteeredTurn(['u1', 'u2']);
+
+    expect(interrupt).not.toHaveBeenCalled();
+    expect(frames[2]).toMatchObject({ consumed: ['u1', 'u2'], discarded: [] });
+  });
+
+  it('treats an absent queued_turn_count as "nothing left queued"', async () => {
+    const interrupt = vi.fn(async () => ({ still_queued: [], cancelled: [] }));
+    installSettlementQuery({ queuedTurnCount: undefined, interrupt });
+
+    const frames = await runSteeredTurn(['u1']);
+
+    expect(interrupt).not.toHaveBeenCalled();
+    expect(frames[2]).toMatchObject({ consumed: ['u1'], discarded: [] });
+  });
+
+  it('discards everything when interrupt() throws (no receipt = no proof of consumption)', async () => {
+    const interrupt = vi.fn(async () => {
+      throw new Error('control request failed');
+    });
+    installSettlementQuery({ queuedTurnCount: 1, interrupt });
+
+    const frames = await runSteeredTurn(['u1', 'u2']);
+
+    expect(frames[2]).toMatchObject({ consumed: [], discarded: ['u1', 'u2'] });
+  });
+
+  it('discards everything when the CLI answers the interrupt with no receipt', async () => {
+    const interrupt = vi.fn(async () => undefined);
+    installSettlementQuery({ queuedTurnCount: 1, interrupt });
+
+    const frames = await runSteeredTurn(['u1', 'u2']);
+
+    expect(interrupt).toHaveBeenCalledTimes(1);
+    expect(frames[2]).toMatchObject({ consumed: [], discarded: ['u1', 'u2'] });
+  });
+
+  it('emits no settlement frame for a turn with nothing pushed', async () => {
+    const interrupt = vi.fn(async () => ({ still_queued: [], cancelled: [] }));
+    installSettlementQuery({ queuedTurnCount: 3, interrupt });
+
+    const frames = await runSteeredTurn([]);
+
+    expect(interrupt).not.toHaveBeenCalled();
+    expect(frames.map((f) => (f as { type: string }).type)).toEqual(['system', 'assistant', 'result']);
+  });
+
+  it('warns instead of settling when the consumer abandons the turn before its result', async () => {
+    // No result frame ever arrives, so no settlement frame can be yielded —
+    // the pushed sends are orphaned and the host has to reconcile them.
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    try {
+      installSettlementQuery({ queuedTurnCount: 0, interrupt: vi.fn() });
+      const handler = newHandler();
+      const it = handler
+        .streamQuery('hello there', undefined, undefined, undefined, undefined, SESSION_KEY)
+        [Symbol.asyncIterator]();
+
+      await it.next();
+      await it.next();
+      handler.steerTurn(SESSION_KEY, { uuid: 'u1', text: 'a' });
+      await it.return?.(undefined);
+
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('unsettled'),
+        expect.objectContaining({ count: 1, sessionKey: SESSION_KEY }),
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('surfaces settlement through the neutral stream as completed/discarded events', async () => {
+    const interrupt = vi.fn(async () => ({ still_queued: ['u2'], cancelled: [] }));
+    installSettlementQuery({ queuedTurnCount: 1, interrupt });
+
+    const handler = newHandler();
+    const events = [];
+    const stream = handler
+      .streamAgentEvents('hello', undefined, undefined, undefined, undefined, SESSION_KEY)
+      [Symbol.asyncIterator]();
+
+    events.push((await stream.next()).value); // session_start
+    events.push((await stream.next()).value); // assistant_delta
+    handler.steerTurn(SESSION_KEY, { uuid: 'u1', text: 'a' });
+    handler.steerTurn(SESSION_KEY, { uuid: 'u2', text: 'b' });
+    fake.releaseSteerGate();
+    for (;;) {
+      const next = await stream.next();
+      if (next.done) break;
+      events.push(next.value);
+    }
+
+    expect(events.filter((e) => (e as { type: string }).type === 'steer_lifecycle')).toEqual([
+      { type: 'steer_lifecycle', uuid: 'u1', phase: 'completed' },
+      { type: 'steer_lifecycle', uuid: 'u2', phase: 'discarded' },
     ]);
   });
 });

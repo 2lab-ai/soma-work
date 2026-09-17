@@ -3,10 +3,15 @@
  *
  * A steered (mid-turn injected) user message is bound to the turn it triggers
  * by the SDK's `user_message_uuid` stamp — carried on the turn's FIRST reply
- * frame (sdk.d.ts:4611 assistant / sdk.d.ts:4656 partial) and echoed on the
- * `result` (sdk.d.ts:4800 success / :4822 error). This maps those stamps onto
- * a neutral event so the stream processor can move a queued item through
- * started → completed without importing the SDK.
+ * frame (sdk.d.ts:4611 assistant / sdk.d.ts:4656 partial). That stamp maps to
+ * the `started` transition.
+ *
+ * The terminal transition does NOT come from a stamp: the installed CLI
+ * (0.3.251) never reports mid-turn consumption per frame, and the `result`'s
+ * `user_message_uuid` only echoes the send that STARTED the turn. Settlement is
+ * therefore computed by the host from the result's `queued_turn_count` + the
+ * interrupt receipt and handed to this mapper as a synthetic
+ * `system/steer_settlement` frame (`claude-handler.ts` streamQuery).
  *
  * `command_lifecycle` is duck-typed on purpose: SDK 0.3.251 documents the frame
  * in prose (sdk.d.ts:3932) but declares NO type for it, so we match structurally
@@ -44,7 +49,11 @@ describe('steer_lifecycle mapping (user-steering WU1)', () => {
     expect(steerEvents(events)).toEqual([]);
   });
 
-  it('emits completed for a result frame stamped with user_message_uuid', () => {
+  it('emits NO steer event for a result frame, even when stamped with user_message_uuid', () => {
+    // The result's `user_message_uuid` names the send that STARTED the turn, not
+    // the sends folded into it mid-turn — echoing it as `completed` settled the
+    // wrong item (and settled nothing for the others). The host-computed
+    // `steer_settlement` frame is now the single source of `completed`.
     const events = mapper().map({
       type: 'result',
       subtype: 'success',
@@ -53,11 +62,11 @@ describe('steer_lifecycle mapping (user-steering WU1)', () => {
       duration_ms: 5,
     } as never);
 
-    expect(steerEvents(events)).toEqual([{ type: 'steer_lifecycle', uuid: 'u-2', phase: 'completed' }]);
+    expect(steerEvents(events)).toEqual([]);
     expect(events.some((e) => e.type === 'result')).toBe(true);
   });
 
-  it('emits one completed per uuid when the frame carries the plural user_message_uuids', () => {
+  it('emits NO steer event for a result frame carrying the plural user_message_uuids', () => {
     const events = mapper().map({
       type: 'result',
       subtype: 'success',
@@ -65,10 +74,50 @@ describe('steer_lifecycle mapping (user-steering WU1)', () => {
       user_message_uuids: ['u-3', 'u-4'],
     } as never);
 
-    expect(steerEvents(events)).toEqual([
-      { type: 'steer_lifecycle', uuid: 'u-3', phase: 'completed' },
-      { type: 'steer_lifecycle', uuid: 'u-4', phase: 'completed' },
+    expect(steerEvents(events)).toEqual([]);
+  });
+
+  it('maps a steer_settlement frame to completed-then-discarded, in list order', () => {
+    const events = mapper().map({
+      type: 'system',
+      subtype: 'steer_settlement',
+      consumed: ['u-a', 'u-b'],
+      discarded: ['u-c'],
+      session_id: 'sess-1',
+      uuid: 'frame-uuid',
+    } as never);
+
+    expect(events).toEqual([
+      { type: 'steer_lifecycle', uuid: 'u-a', phase: 'completed' },
+      { type: 'steer_lifecycle', uuid: 'u-b', phase: 'completed' },
+      { type: 'steer_lifecycle', uuid: 'u-c', phase: 'discarded' },
     ]);
+  });
+
+  it('maps a steer_settlement frame with empty lists to nothing', () => {
+    const events = mapper().map({
+      type: 'system',
+      subtype: 'steer_settlement',
+      consumed: [],
+      discarded: [],
+      session_id: 'sess-1',
+      uuid: 'frame-uuid',
+    } as never);
+
+    expect(events).toEqual([]);
+  });
+
+  it('ignores non-string entries in a steer_settlement frame', () => {
+    const events = mapper().map({
+      type: 'system',
+      subtype: 'steer_settlement',
+      consumed: ['u-a', 42, ''],
+      discarded: null,
+      session_id: 'sess-1',
+      uuid: 'frame-uuid',
+    } as never);
+
+    expect(events).toEqual([{ type: 'steer_lifecycle', uuid: 'u-a', phase: 'completed' }]);
   });
 
   it('maps a command_lifecycle system frame to its declared phase', () => {
