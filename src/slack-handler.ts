@@ -15,8 +15,9 @@ import {
   type FollowupOpResult,
   FollowupQueue,
   type FollowupQueueSnapshot,
+  FREEZE_PARKED_STATES,
 } from '@soma/slack/followup-queue';
-import type { FollowupQueueView } from '@soma/slack/followup-queue-blocks';
+import { FOLLOWUP_RESTART_FREEZE_REASON, type FollowupQueueView } from '@soma/slack/followup-queue-blocks';
 import { FollowupQueueStore } from '@soma/slack/followup-queue-store';
 import { runWithTimeout } from '@soma/slack/pipeline/stream-executor-cleanup-helpers';
 import { HandoffAbortError, isZHandoffWorkflow } from 'somalib/model-commands/handoff-parser';
@@ -2570,27 +2571,27 @@ export class SlackHandler {
     }
 
     await this.slackApi.addReaction(event.channel, event.ts, 'inbox_tray');
-    // The receipt must describe the state the item is actually in. A frozen
-    // session (explicit stop / restart) does NOT auto-drain, so promising
-    // "runs when the current turn ends" would be a false receipt: only an
-    // explicit Resume releases it (A29 — a denial and a pause never share a
-    // sentence, and neither does a queued item in a frozen session).
-    const frozen = queue.freezeReason(sessionKey);
+    // A freeze is deliberately NOT consulted here (2026-09-17 live report). It
+    // parks the items the session already held — restored rows after a restart,
+    // stopped rows after a stop — and this message is neither: it has not run,
+    // and the turn it would join is alive right now. The queue enforces that
+    // scope per item (`followup-queue.ts`, `FREEZE_PARKED_STATES`), so a frozen
+    // session steers and drains this message exactly like an unfrozen one, and
+    // the freeze stays visible where it belongs: on the panel, next to the
+    // paused rows and their Resume.
+    //
+    // A drain HALT still blocks the steer: a halt says the lane itself is
+    // broken (a denial, a store error), which is about the next dispatch, not
+    // about which items it holds.
     const halted = this.followupDispatcher?.drainHalt(sessionKey);
     // D1: the default is to hand the message to the turn that is already
-    // running instead of making the user wait for it. Not while frozen or
-    // halted — there the item is explicitly parked, and steering it would run
-    // the very instruction the pause exists to hold back.
-    const steered = frozen || halted ? 'queued' : await this.trySteerFollowup(sessionKey, event, result.item);
+    // running instead of making the user wait for it.
+    const steered = halted ? 'queued' : await this.trySteerFollowup(sessionKey, event, result.item);
     // Counted AFTER the steer: a steered message is no longer waiting on the
     // queue, it is waiting on the model.
     const position = queue.list(sessionKey).filter((item) => item.state === 'queued').length;
     let text: string;
-    if (frozen) {
-      text =
-        `📥 Queue에 보관했습니다 (대기 ${position}건). ⏸️ 큐가 멈춰 있어 자동으로 실행되지 않습니다 — ${frozen}\n` +
-        '_스레드 맨 아래 패널의 ⋯ 메뉴에서 Resume을 눌러야 다시 실행됩니다._';
-    } else if (halted) {
+    if (halted) {
       text =
         `📥 Queue에 보관했습니다 (대기 ${position}건). ⏸️ 자동 실행이 중단된 상태입니다 — ${halted.detail}\n` +
         '_원인을 해소하고 다시 시작해야 실행됩니다._';
@@ -2996,18 +2997,37 @@ export class SlackHandler {
     const noticed = (this.followupEditNoticed ??= new Set());
     if (noticed.has(item.id)) return;
     noticed.add(item.id);
-    // A parked item was handed to NOBODY — "이미 전달·실행된" would describe a
-    // message that is sitting still, and it hides the one act that helps. The
-    // handed-over wording is kept for the states that really were handed over
-    // (`steered`/`reserved`/`claimed`/`dispatched`).
-    const parked = item.state === 'paused' || item.state === 'uncertain';
-    await this.slackApi.postSystemMessage(
-      edit.channel,
-      parked
-        ? '✏️ 큐가 멈춰 있어 편집이 반영되지 않습니다 — Resume 후 다시 보내주세요.'
-        : '✏️ 이미 전달·실행된 메시지라 편집이 큐에 반영되지 않습니다.',
-      { threadTs: edit.threadTs },
-    );
+    await this.slackApi.postSystemMessage(edit.channel, this.followupEditNoticeFor(sessionKey, item), {
+      threadTs: edit.threadTs,
+    });
+  }
+
+  /**
+   * What an edit that could NOT be applied says, derived from the row itself.
+   *
+   * A parked item was handed to NOBODY — "이미 전달·실행된" would describe a
+   * message that is sitting still, and it hides the one act that helps. WHICH
+   * act that is depends on the state, not on the freeze: `resume` moves a
+   * `paused` row and never touches an `uncertain` one, whose only door is Retry
+   * (`followup-queue.ts` `resume`/`retry`). Naming the wrong control is the same
+   * dead end the panel had. The handed-over wording is kept for the states that
+   * really were handed over (`steered`/`reserved`/`claimed`/`dispatched`).
+   *
+   * `재시작 전` is added only when the freeze actually is a restart: after a
+   * stop the row was parked seconds ago in the same session, and "재시작 전" would
+   * be a plain falsehood about when it arrived.
+   */
+  private followupEditNoticeFor(sessionKey: string, item: FollowupItem): string {
+    if (!FREEZE_PARKED_STATES.includes(item.state)) {
+      return '✏️ 이미 전달·실행된 메시지라 편집이 큐에 반영되지 않습니다.';
+    }
+    // Per-item evidence, not the session: the restart freeze stamps its reason
+    // into the row it parked, while a row parked later (e.g. interrupted after
+    // the restart) carries the interrupt detail instead.
+    const restored = item.stateReason?.startsWith(FOLLOWUP_RESTART_FREEZE_REASON) ? '재시작 전 ' : '';
+    return item.state === 'paused'
+      ? `✏️ ${restored}보류된 항목이라 편집이 반영되지 않습니다 — 패널의 Resume으로 실행하거나 새 메시지로 보내주세요.`
+      : `✏️ ${restored}실행 여부가 불확실한 항목이라 편집이 반영되지 않습니다 — 패널의 Retry로 실행하거나 새 메시지로 보내주세요.`;
   }
 
   /**
@@ -3401,12 +3421,21 @@ export class SlackHandler {
     return last;
   }
 
-  /** Hold the autogoal driver while any follow-up work or stop-state is outstanding (§3.6). */
+  /**
+   * Hold the autogoal driver while any follow-up work or stop-state is
+   * outstanding (§3.6).
+   *
+   * A freeze is deliberately NOT a reason on its own. It holds back only the
+   * rows it parked (`FREEZE_PARKED_STATES`), and those are waiting for a user
+   * decision that may never come — gating the driver on the freeze meant one
+   * restored `paused` row stopped autogoal in that thread until somebody
+   * clicked Resume. What still defers is outstanding work: a halted drain, or an
+   * item that is queued/steered/reserved/claimed right now.
+   */
   private shouldDeferGoalDriver(sessionKey: string): boolean {
     const queue = this.followupQueue;
     const dispatcher = this.followupDispatcher;
     if (!queue || !dispatcher) return false;
-    if (queue.freezeReason(sessionKey)) return true;
     if (dispatcher.drainHalt(sessionKey)) return true;
     return queue.list(sessionKey).some(
       (item) =>

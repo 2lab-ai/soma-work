@@ -379,6 +379,23 @@ describe('FollowupDispatcher auto drain', () => {
     expect(h.queue.get(SESSION, item.id)?.state).toBe('paused');
     expect(h.queue.freezeReason(SESSION)).toBe('user stop');
   });
+
+  it('drains a message that arrived AFTER the freeze, while the parked ones wait for Resume', async () => {
+    const h = harness();
+    const parked = enqueue(h.queue, event({ ts: '1.1' }));
+    h.queue.freeze(SESSION, 'user stop');
+    const fresh = enqueue(h.queue, event({ ts: '1.2' }));
+
+    // The freeze holds back what it parked. This message was never at risk of
+    // being replayed — it has not run at all yet.
+    expect(h.dispatcher.shouldYield(SESSION)).toBe(true);
+    const drained = await h.dispatcher.drainNext(SESSION);
+
+    if (drained.status !== 'dispatched') throw new Error(`expected dispatch, got ${drained.status}`);
+    expect(drained.run.itemId).toBe(fresh.id);
+    expect(h.queue.get(SESSION, parked.id)?.state).toBe('paused');
+    expect(h.queue.freezeReason(SESSION)).toBe('user stop'); // nothing unfroze itself
+  });
 });
 
 describe('FollowupDispatcher send now', () => {
@@ -1290,7 +1307,7 @@ describe('FollowupDispatcher auto-steering (06 §3.2)', () => {
     expect(h.notices.filter((notice) => notice.type === 'item-unsteered')).toHaveLength(2);
   });
 
-  it('refuses to steer into a frozen session', () => {
+  it('refuses to steer an item the freeze parked', () => {
     const h = harness();
     h.dispatcher.runInitial(SESSION, event({ ts: '1.0' }));
     const item = enqueue(h.queue, event({ ts: '1.1' }));
@@ -1303,6 +1320,22 @@ describe('FollowupDispatcher auto-steering (06 §3.2)', () => {
 
     expect(result).toEqual({ status: 'rejected', reason: 'frozen', detail: expect.stringContaining('frozen') });
     expect(push).not.toHaveBeenCalled();
+  });
+
+  it('steers a message that arrived after the freeze into the still-live turn', () => {
+    const h = harness();
+    h.dispatcher.runInitial(SESSION, event({ ts: '1.0' }));
+    const parked = enqueue(h.queue, event({ ts: '1.1' }));
+    h.queue.freeze(SESSION, 'process restart');
+    const fresh = enqueue(h.queue, event({ ts: '1.2' }));
+    const push = vi.fn(() => true);
+
+    const result = h.dispatcher.steer(SESSION, fresh.id, fresh.epoch, push);
+
+    expect(result.status).toBe('steered');
+    expect(push).toHaveBeenCalledTimes(1);
+    expect(h.queue.get(SESSION, fresh.id)?.state).toBe('steered');
+    expect(h.queue.get(SESSION, parked.id)?.state).toBe('paused');
   });
 
   it('rejects a second push of the same item by its stale item epoch', () => {
