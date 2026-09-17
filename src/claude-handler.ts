@@ -1082,7 +1082,13 @@ export class ClaudeHandler implements TurnSteeringPort {
 
           // Update session ID on init
           if (message.type === 'system' && message.subtype === 'init') {
-            capabilities = readUuidList((message as unknown as Record<string, unknown>).capabilities);
+            // Only a frame that actually carries the (optional) list updates it:
+            // an init re-emitted without `capabilities` announces nothing, and
+            // letting its empty read win would demote a CLI that already
+            // advertised `interrupt_cancel_queued_v1` back to the per-uuid
+            // withdrawal loop for the rest of the turn.
+            const advertised = readUuidList((message as unknown as Record<string, unknown>).capabilities);
+            if (advertised.length > 0) capabilities = advertised;
             if (session) {
               session.sessionId = message.session_id;
               this.logger.info('Session initialized', {
@@ -1159,15 +1165,19 @@ export class ClaudeHandler implements TurnSteeringPort {
    * signal — no `user_message_uuids`, no `command_lifecycle`, and the singular
    * `user_message_uuid` only marks the send that STARTED the turn. The one
    * measurable fact is `queued_turn_count` on the `result` (sdk.d.ts:4795/4849)
-   * = pushed sends the CLI has NOT folded into this turn. So:
-   *   • `0` / absent, on a HEALTHY result → nothing is left over: every pushed
-   *     send was consumed. "Healthy" is load-bearing: 0 also means "the session
-   *     is ending and discarded the backlog" and absent also means "fatal
-   *     startup result" (sdk.d.ts:4793/4847), so consumption is claimed only on
+   * = pushed sends the CLI has NOT folded into this turn. So, IN THIS ORDER:
+   *   • NOT a healthy result → discard everything, whatever the count says. The
+   *     health gate comes first because no reading of the count survives a bad
+   *     turn: 0 also means "the session is ending and discarded the backlog",
+   *     absent also means "fatal startup result" (sdk.d.ts:4793/4847), and
+   *     `> 0` on an errored result would make the subtraction below mint
+   *     `consumed` uuids for a turn that produced nothing. Healthy =
    *     `subtype:'success'` + `is_error !== true` + no non-`completed`
-   *     `terminal_reason`. Anything else discards.
-   *   • `> 0` → interrupt and read the receipt (see
+   *     `terminal_reason`.
+   *   • healthy + `> 0` → interrupt and read the receipt (see
    *     {@link resolveUnconsumedSends}).
+   *   • healthy + `0` / absent → nothing is left over: every pushed send was
+   *     consumed.
    *   • no receipt (throw, or a CLI predating `interrupt_receipt_v1`) → there
    *     is no proof any of them ran, so ALL are discarded. The host requeues a
    *     discarded item; claiming a false `completed` would silently drop a
@@ -1207,21 +1217,27 @@ export class ClaudeHandler implements TurnSteeringPort {
     const queuedTurnCount = typeof raw.queued_turn_count === 'number' ? raw.queued_turn_count : undefined;
 
     let discarded: string[];
-    if (queuedTurnCount !== undefined && queuedTurnCount > 0) {
-      discarded = await this.boundSettlement(
-        () => this.resolveUnconsumedSends(activeQuery, pushedUuids, queuedTurnCount, capabilities),
-        pushedUuids,
-      );
-    } else if (isHealthyTurnResult(raw)) {
-      discarded = [];
-    } else {
+    if (!isHealthyTurnResult(raw)) {
+      // FIRST, ahead of the count: an errored/terminated result can carry
+      // `queued_turn_count > 0` too, and the subtraction below would then read
+      // "backlog minus survivors" as consumption on a turn that produced
+      // nothing. The receipt is no evidence here either — the interrupt would
+      // target a CLI already tearing down — so the round-trip is skipped.
       this.logger.warn('Steer settlement: result is not healthy, discarding every pushed send', {
         subtype: raw.subtype,
         isError: raw.is_error,
         terminalReason: raw.terminal_reason,
+        queuedTurnCount,
         pushed: pushedUuids.length,
       });
       discarded = [...pushedUuids];
+    } else if (queuedTurnCount !== undefined && queuedTurnCount > 0) {
+      discarded = await this.boundSettlement(
+        () => this.resolveUnconsumedSends(activeQuery, pushedUuids, queuedTurnCount, capabilities),
+        pushedUuids,
+      );
+    } else {
+      discarded = [];
     }
 
     // Backstop for a uuid recorded after the snapshot. The seal above makes
