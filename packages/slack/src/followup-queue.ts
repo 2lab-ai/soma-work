@@ -546,9 +546,11 @@ export class FollowupQueue {
     outcome: 'resolved' | 'failed',
     reason?: string,
   ): FollowupOpResult {
-    return this.mutate(sessionKey, itemId, expectedEpoch, (item) => {
+    return this.mutate(sessionKey, itemId, expectedEpoch, (item, session) => {
       if (item.state !== 'dispatched' && item.state !== 'uncertain') return 'invalid-state';
       this.enter(item, outcome, reason);
+      // A confirmed `uncertain` row is the fourth way out of a parked state.
+      this.settleFreeze(session);
       return undefined;
     });
   }

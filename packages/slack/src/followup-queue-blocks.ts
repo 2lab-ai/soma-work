@@ -229,7 +229,7 @@ export const FOLLOWUP_RESTART_FREEZE_NOTICE =
  */
 export function followupFreezeBannerText(reason: string): string {
   if (reason.trim() === FOLLOWUP_RESTART_FREEZE_REASON) return FOLLOWUP_RESTART_FREEZE_NOTICE;
-  return `frozen · ${reason} · explicit Resume required`;
+  return `보류된 항목이 있습니다 (${reason}) — 보류 항목은 Resume/Retry로 실행하고, 새 메시지는 정상 실행됩니다.`;
 }
 
 /**

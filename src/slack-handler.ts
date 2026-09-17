@@ -3021,8 +3021,10 @@ export class SlackHandler {
     if (!FREEZE_PARKED_STATES.includes(item.state)) {
       return '✏️ 이미 전달·실행된 메시지라 편집이 큐에 반영되지 않습니다.';
     }
-    const restored =
-      this.followupQueue?.freezeReason(sessionKey) === FOLLOWUP_RESTART_FREEZE_REASON ? '재시작 전 ' : '';
+    // Per-item evidence, not the session: the restart freeze stamps its reason
+    // into the row it parked, while a row parked later (e.g. interrupted after
+    // the restart) carries the interrupt detail instead.
+    const restored = item.stateReason?.startsWith(FOLLOWUP_RESTART_FREEZE_REASON) ? '재시작 전 ' : '';
     return item.state === 'paused'
       ? `✏️ ${restored}보류된 항목이라 편집이 반영되지 않습니다 — 패널의 Resume으로 실행하거나 새 메시지로 보내주세요.`
       : `✏️ ${restored}실행 여부가 불확실한 항목이라 편집이 반영되지 않습니다 — 패널의 Retry로 실행하거나 새 메시지로 보내주세요.`;
