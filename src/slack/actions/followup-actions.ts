@@ -2,6 +2,7 @@ import type { App } from '@slack/bolt';
 import type { SendNowResult } from '@soma/slack/followup-dispatcher';
 import type { FollowupItem, FollowupItemState, FollowupOpResult } from '@soma/slack/followup-queue';
 import {
+  FOLLOWUP_ITEM_MENU_ACTION_ID,
   FOLLOWUP_PAGE_NEXT_ACTION_ID,
   FOLLOWUP_PAGE_PREV_ACTION_ID,
   FOLLOWUP_RESUME_ACTION_ID,
@@ -9,6 +10,7 @@ import {
   FOLLOWUP_SEND_NOW_ACTION_ID,
   type FollowupItemActionValue,
   parseFollowupItemActionValue,
+  parseFollowupMenuValue,
   parseFollowupPageActionValue,
 } from '@soma/slack/followup-queue-blocks';
 import { Logger } from '../../logger';
@@ -50,6 +52,13 @@ import { Logger } from '../../logger';
  *
  * Out of scope on purpose: rendering (U3 owns the blocks), the drain loop (the
  * host owns `runDrain`), and freeze/resume policy beyond calling the queue.
+ *
+ * The per-item controls now arrive through ONE overflow menu
+ * (`FOLLOWUP_ITEM_MENU_ACTION_ID`) whose selected option carries an extra `op`
+ * alongside the same coordinates. The menu is a TRANSPORT, not a second policy:
+ * `send_now`/`retry`/`resume` are routed into the very handlers the buttons use
+ * (same verification, same authorization, same drain rules), and `cancel` is the
+ * only op with no button equivalent.
  */
 
 const logger = new Logger('FollowupActions');
@@ -68,6 +77,14 @@ export interface FollowupActionsQueuePort {
   /** The only exit from `paused` (A17). Clears the session freeze too. */
   resume(sessionKey: string): void;
   retry(sessionKey: string, itemId: string, expectedEpoch: number): FollowupOpResult;
+  /**
+   * Explicit, user-initiated cancellation of ONE item. Allowed from the states
+   * where nothing is running (`queued`/`paused`/`failed`/`uncertain`); anything
+   * in flight is `invalid-state`, because stopping a RUNNING turn is the stop
+   * control's job and not a queue edit. `reason` is recorded on the item so the
+   * panel can say who cancelled it.
+   */
+  cancelItem(sessionKey: string, itemId: string, expectedEpoch: number, reason?: string): FollowupOpResult;
   freezeReason(sessionKey: string): string | undefined;
 }
 
@@ -152,6 +169,12 @@ export function registerFollowupActions(app: App, deps: FollowupActionsDeps): vo
     detach(deps, 'Retry', reply, () => handleRetry(deps, body, reply));
   });
 
+  app.action(FOLLOWUP_ITEM_MENU_ACTION_ID, async ({ ack, body, respond }) => {
+    await ack();
+    const reply = respond as unknown as FollowupRespond;
+    detach(deps, 'Queue menu', reply, () => handleMenu(deps, body, reply));
+  });
+
   for (const actionId of [FOLLOWUP_PAGE_PREV_ACTION_ID, FOLLOWUP_PAGE_NEXT_ACTION_ID]) {
     app.action(actionId, async ({ ack, body, respond }) => {
       await ack();
@@ -166,6 +189,43 @@ export function registerFollowupActions(app: App, deps: FollowupActionsDeps): vo
  * ------------------------------------------------------------------ */
 
 /**
+ * The overflow menu router. It decides NOTHING except which existing handler
+ * the click belongs to: routing `send_now`/`retry`/`resume` anywhere but into
+ * the button handlers would fork the policy (the turn-epoch fence, the
+ * pendingApproval gate, the freeze check) into a second, quietly divergent copy.
+ *
+ * An `op` this build does not implement is refused rather than defaulted — a
+ * menu rendered by a newer process must not be reinterpreted as something this
+ * one happens to support.
+ */
+async function handleMenu(deps: FollowupActionsDeps, body: unknown, respond: FollowupRespond): Promise<void> {
+  const value = parseFollowupMenuValue(readMenuValue(body));
+  if (!value) {
+    await refuse(respond, 'Queue menu ignored: the menu payload could not be read. Refresh the queue and try again.');
+    return;
+  }
+  // Widened to `string` on purpose: the switch must keep a reachable default
+  // even when the parser's union covers today's ops exactly.
+  const op: string = value.op;
+  switch (op) {
+    case 'send_now':
+      await handleSendNow(deps, body, respond, value);
+      return;
+    case 'resume':
+      await handleResume(deps, body, respond, value);
+      return;
+    case 'retry':
+      await handleRetry(deps, body, respond, value);
+      return;
+    case 'cancel':
+      await handleCancel(deps, body, respond, value);
+      return;
+    default:
+      await refuse(respond, `Queue menu ignored: unsupported operation (${op}). Refresh the queue and try again.`);
+  }
+}
+
+/**
  * `Send now` (§3.3). The dispatcher owns the transaction; this handler owns the
  * trust boundary in front of it and the follow-through behind it.
  *
@@ -175,8 +235,13 @@ export function registerFollowupActions(app: App, deps: FollowupActionsDeps): vo
  * the queue's persisted counter — the check below only rejects a payload that
  * could not be compared at all.
  */
-async function handleSendNow(deps: FollowupActionsDeps, body: unknown, respond: FollowupRespond): Promise<void> {
-  const value = parseFollowupItemActionValue(readActionValue(body));
+async function handleSendNow(
+  deps: FollowupActionsDeps,
+  body: unknown,
+  respond: FollowupRespond,
+  preparsed?: FollowupItemActionValue,
+): Promise<void> {
+  const value = preparsed ?? parseFollowupItemActionValue(readActionValue(body));
   if (!value) {
     await refuse(respond, 'Send now ignored: the button payload could not be read. Refresh the queue and try again.');
     return;
@@ -247,8 +312,13 @@ async function handleSendNow(deps: FollowupActionsDeps, body: unknown, respond: 
  * question. Nothing here retries or replays — `queue.resume` only moves `paused`
  * items back to `queued`, and the drain is the host's.
  */
-async function handleResume(deps: FollowupActionsDeps, body: unknown, respond: FollowupRespond): Promise<void> {
-  const value = parseFollowupItemActionValue(readActionValue(body));
+async function handleResume(
+  deps: FollowupActionsDeps,
+  body: unknown,
+  respond: FollowupRespond,
+  preparsed?: FollowupItemActionValue,
+): Promise<void> {
+  const value = preparsed ?? parseFollowupItemActionValue(readActionValue(body));
   if (!value) {
     await refuse(respond, 'Resume ignored: the button payload could not be read. Refresh the queue and try again.');
     return;
@@ -309,8 +379,13 @@ async function handleResume(deps: FollowupActionsDeps, body: unknown, respond: F
  * item inside a frozen session renders exactly like a drainable one and can
  * never drain, which is the conflation A29 forbids.
  */
-async function handleRetry(deps: FollowupActionsDeps, body: unknown, respond: FollowupRespond): Promise<void> {
-  const value = parseFollowupItemActionValue(readActionValue(body));
+async function handleRetry(
+  deps: FollowupActionsDeps,
+  body: unknown,
+  respond: FollowupRespond,
+  preparsed?: FollowupItemActionValue,
+): Promise<void> {
+  const value = preparsed ?? parseFollowupItemActionValue(readActionValue(body));
   if (!value) {
     await refuse(respond, 'Retry ignored: the button payload could not be read. Refresh the queue and try again.');
     return;
@@ -406,6 +481,104 @@ function retryRefusal(reason: string, state: FollowupItemState): string {
     default:
       return `Retry rejected (${reason}): the item stays in the queue, untouched.`;
   }
+}
+
+/**
+ * The states a cancel cannot touch because something may still be RUNNING.
+ * Mirrors the queue's own in-flight set (`followup-queue.ts:152`); kept here as
+ * a message-selection detail only — the queue remains the decider.
+ */
+const IN_FLIGHT_STATES: readonly FollowupItemState[] = ['reserved', 'claimed', 'dispatched'];
+
+/**
+ * Cancel replies speak the panel's language (the queue surface and the enqueue
+ * receipt are Korean), so the user reads one voice on one message.
+ */
+const CANCEL_DENIED_TEXT = '취소가 거부되었습니다: 이 세션을 조작할 권한이 없습니다 — 항목은 큐에 그대로 있습니다.';
+const CANCEL_RUNNING_TEXT = '실행 중인 항목은 취소할 수 없습니다 — 패널의 중지 버튼을 쓰세요.';
+const CANCEL_STALE_TEXT = '이미 바뀐 항목입니다 — 패널을 새로고침했습니다.';
+
+/**
+ * Cancel (menu-only). Authorization is the SAME interrupt policy Resume and
+ * Retry use — cancelling someone else's queued instruction is steering the
+ * session just as much as running it early.
+ *
+ * Three things it deliberately does NOT do:
+ *   - it never kicks the drain: removing an item opens no boundary, and a
+ *     cancel must not become an implicit "run the next one now";
+ *   - it never stops a live turn. `reserved`/`claimed`/`dispatched` are refused
+ *     by the queue and answered by pointing at the stop control, because a
+ *     queue edit that silently stopped execution would be the A29 conflation
+ *     (one sentence for two different acts);
+ *   - it never falls back to "cancel whatever is there now" — a lost race is
+ *     answered with a repaint so the user decides against the CURRENT state.
+ */
+async function handleCancel(
+  deps: FollowupActionsDeps,
+  body: unknown,
+  respond: FollowupRespond,
+  value: FollowupItemActionValue,
+): Promise<void> {
+  const click = verifyClick(deps, body, value.sessionKey);
+  if (!click.ok) {
+    await refuse(respond, `Cancel rejected: ${click.detail}.`);
+    return;
+  }
+
+  const allowed = await deps.canInterrupt(value.sessionKey, click.clicker);
+  if (!allowed) {
+    await refuse(respond, CANCEL_DENIED_TEXT);
+    return;
+  }
+
+  const item = deps.queue.get(value.sessionKey, value.itemId);
+  if (item && item.sessionKey !== value.sessionKey) {
+    await refuse(respond, 'Cancel rejected: that item belongs to another session.');
+    return;
+  }
+  // Gone, or moved on since the menu was rendered: repaint FIRST so the
+  // ephemeral and the panel the user is looking at agree.
+  if (!item || item.epoch !== value.epoch) {
+    await safeRefresh(deps, value.sessionKey);
+    await refuse(respond, CANCEL_STALE_TEXT);
+    return;
+  }
+
+  // Captured before the call: a successful cancel rewrites the state, and the
+  // refusal text depends on where the item WAS.
+  const previousState = item.state;
+  try {
+    const result = deps.queue.cancelItem(
+      value.sessionKey,
+      value.itemId,
+      value.epoch,
+      `<@${click.clicker}> 님이 취소했습니다`,
+    );
+    if (result.ok) return;
+    if (result.reason === 'stale-epoch' || result.reason === 'not-found') {
+      await refuse(respond, CANCEL_STALE_TEXT);
+      return;
+    }
+    if (result.reason === 'invalid-state' && IN_FLIGHT_STATES.includes(previousState)) {
+      await refuse(respond, CANCEL_RUNNING_TEXT);
+      return;
+    }
+    await refuse(respond, cancelRefusal(result.reason, previousState));
+  } finally {
+    // Success or refusal, the surface is now behind the queue.
+    await safeRefresh(deps, value.sessionKey);
+  }
+}
+
+/**
+ * Same shape as `retryRefusal`: never silent, never success-shaped, and the
+ * item is always described as RETAINED. A terminal item (`resolved`/`failed`/
+ * `cancelled`) lands here rather than in the "still running" branch — telling
+ * that user to press stop would be a lie about what the item is doing.
+ */
+function cancelRefusal(reason: string, state: FollowupItemState): string {
+  if (reason === 'invalid-state') return `취소할 수 없는 상태입니다 (${state}) — 항목은 그대로 둡니다.`;
+  return `취소가 거부되었습니다 (${reason}) — 항목은 큐에 그대로 있습니다.`;
 }
 
 /**
@@ -510,6 +683,17 @@ function pendingApproval(session: FollowupActionSession): string | undefined {
 function readActionValue(body: unknown): string | undefined {
   const actions = (body as { actions?: Array<{ value?: unknown }> })?.actions;
   const value = actions?.[0]?.value;
+  return typeof value === 'string' ? value : undefined;
+}
+
+/**
+ * An overflow menu reports its payload ONLY in `selected_option.value` — there
+ * is no top-level `value` on that action. Reading one is therefore not a
+ * fallback but a guess, and this module does not guess.
+ */
+function readMenuValue(body: unknown): string | undefined {
+  const actions = (body as { actions?: Array<{ selected_option?: { value?: unknown } }> })?.actions;
+  const value = actions?.[0]?.selected_option?.value;
   return typeof value === 'string' ? value : undefined;
 }
 
