@@ -218,6 +218,26 @@ export interface FollowupActionsDeps {
    * failed click.
    */
   onItemProcessed?(sessionKey: string, itemId: string): void;
+  /**
+   * The item CHANGED but did not leave the pending set — re-render whatever the
+   * host posted for it (S2).
+   *
+   * The counterpart of {@link onItemProcessed}: that one says the message can
+   * go, this one says the message is now WRONG. A `paused` row released by
+   * Resume still reads `paused` and still offers a Resume that does nothing; a
+   * `failed` row requeued by Retry still offers Retry. The panel used to absorb
+   * this (one surface, repainted by {@link refresh}), and the panel no longer
+   * renders the queue (A39).
+   *
+   * Announced on the CLICK's way out, whatever the queue answered — a refused
+   * retry is exactly the case where the surface and the item disagree. The host
+   * re-reads the item, so this hook never claims a state.
+   *
+   * Optional and best effort, like {@link onItemProcessed}: a throwing hook is
+   * bookkeeping this module reports, never a completed act turned into a failed
+   * click.
+   */
+  refreshItemMessage?(sessionKey: string, itemId: string): void | Promise<void>;
   /** Optional logger seam; falls back to this module's `Logger`. */
   reportError?(label: string, error: unknown): void;
 }
@@ -389,6 +409,13 @@ async function handleSendNow(
         // the `canDrain` gate below — because the drain claims `queued` rows
         // and a row the sweep has not returned yet is invisible to it.
         const settled = await run.settled.finally(() => sweepSteered(deps, sessionKey));
+        // A41 — the run this click started is over, so the item landed
+        // somewhere terminal or it did not move at all. Announced regardless of
+        // the verdict: the host re-reads the queue and deletes the message only
+        // if the row really left the pending set, and gating it on `canDrain`
+        // here would keep a stale `Send now` on every item whose turn ended
+        // unhealthy after the row had already gone `failed`.
+        announceProcessed(deps, sessionKey, value.itemId);
         // Only a `safe` outcome opens the next boundary — a blocked/failed turn
         // must not be followed by an automatic drain (A16).
         if (settled.canDrain) await deps.runDrain(sessionKey);
@@ -474,6 +501,9 @@ async function handleResume(
     if (!deps.dispatcher.isBusy(value.sessionKey)) await deps.runDrain(value.sessionKey);
   } finally {
     await safeRefresh(deps, value.sessionKey);
+    // The clicked row is still in the queue (resume moves `paused` to `queued`
+    // and leaves `uncertain` alone), so its message has to say the new state.
+    await refreshItemMessage(deps, value.sessionKey, value.itemId);
   }
 
   // The session is running again, but THIS item is not — `resume` never touches
@@ -559,6 +589,11 @@ async function handleRetry(
     await deps.runDrain(value.sessionKey);
   } finally {
     await safeRefresh(deps, value.sessionKey);
+    // Whatever the queue answered, the row's message is now behind the item:
+    // a successful retry made it `queued`, a refused one left it where the
+    // refusal says it is. The host re-reads; a row the drain already resolved
+    // has no message left to update.
+    await refreshItemMessage(deps, value.sessionKey, value.itemId);
   }
 }
 
@@ -985,6 +1020,19 @@ function announceProcessed(deps: FollowupActionsDeps, sessionKey: string, itemId
     deps.onItemProcessed?.(sessionKey, itemId);
   } catch (error) {
     report(deps, 'queue item processed hook', error);
+  }
+}
+
+/**
+ * Ask the host to re-render one item's message (S2), best effort. It runs in a
+ * `finally`, so a throw here would REPLACE the outcome of the act the user
+ * completed with a bookkeeping failure.
+ */
+async function refreshItemMessage(deps: FollowupActionsDeps, sessionKey: string, itemId: string): Promise<void> {
+  try {
+    await deps.refreshItemMessage?.(sessionKey, itemId);
+  } catch (error) {
+    report(deps, 'queue item message refresh', error);
   }
 }
 
