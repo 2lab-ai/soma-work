@@ -72,6 +72,19 @@ export const FOLLOWUP_RESUME_LABEL = 'Resume';
 export const FOLLOWUP_RETRY_LABEL = 'Retry';
 export const FOLLOWUP_CANCEL_LABEL = 'Cancel';
 
+/**
+ * What a `steered` item says on its line (06 §3.5, user wording).
+ *
+ * `steered` is a queue-internal word for a fact the user has no other way to
+ * read: the message has left our queue into the RUNNING turn's SDK input channel,
+ * and the model picks it up at its next tool-call boundary — nothing is stuck
+ * and nothing was interrupted. The row disappears when the SDK's consumption
+ * receipt turns it into `resolved · consumed` (history only).
+ */
+export const FOLLOWUP_STEERED_LABEL = '전달됨 · 모델이 다음 툴 호출에서 읽음';
+/** The same state in a counts line, where every state gets exactly one word. */
+export const FOLLOWUP_STEERED_COUNT_LABEL = '전달';
+
 /** Stable action ids for host wiring. Versioned; no existing prefix collides. */
 export const FOLLOWUP_SEND_NOW_ACTION_ID = 'followup_send_now_v1';
 export const FOLLOWUP_RESUME_ACTION_ID = 'followup_resume_v1';
@@ -232,6 +245,40 @@ export interface FollowupItemMenuValue extends FollowupItemActionValue {
 const RESUMABLE_STATES: readonly FollowupItemState[] = ['queued', 'paused', 'failed', 'uncertain'];
 
 /**
+ * Stable display order for a per-state counts breakdown, shared by this
+ * builder's legacy header and the combined panel's fallback text
+ * (`thread-surface.ts`) so the two cannot drift into two different orders for
+ * the same queue. `steered` sits right after `queued`: it is the same message
+ * one step further along the same path, not a separate outcome.
+ */
+export const FOLLOWUP_STATE_DISPLAY_ORDER: readonly FollowupItemState[] = [
+  'queued',
+  'steered',
+  'reserved',
+  'claimed',
+  'dispatched',
+  'paused',
+  'uncertain',
+  'failed',
+  'resolved',
+  'cancelled',
+];
+
+/**
+ * What one state reads as on an item line. Every state is its own enum name —
+ * they are already the words the runbooks use — except `steered`, which names
+ * an SDK-side fact no user can be expected to decode ({@link FOLLOWUP_STEERED_LABEL}).
+ */
+export function followupStateLabel(state: FollowupItemState): string {
+  return state === 'steered' ? FOLLOWUP_STEERED_LABEL : state;
+}
+
+/** Same mapping for a counts line, where a whole sentence would not fit. */
+export function followupStateCountLabel(state: FollowupItemState): string {
+  return state === 'steered' ? FOLLOWUP_STEERED_COUNT_LABEL : state;
+}
+
+/**
  * Sole encoder of an item-scoped BUTTON payload (the legacy layout). Buttons
  * have a 2000-char `value`, so the field names are spelled out.
  */
@@ -378,10 +425,23 @@ function previewOf(item: FollowupItem, options: { maxChars?: number; attachmentB
   return '(empty message)';
 }
 
+/**
+ * The item's `stateReason`, unless it only repeats the state.
+ *
+ * `steer` stamps `steered` as both the state and its reason
+ * (`followup-queue.ts:587`), so rendering both would append the enum name the
+ * label was written to replace — `전달됨 … · steered`.
+ */
+function stateReasonOf(item: FollowupItem): string | undefined {
+  const reason = item.stateReason;
+  return reason && reason !== item.state ? reason : undefined;
+}
+
 /** `state · reason · N file(s)` — state and reason live outside the message block so text cannot spoof them. */
 function stateLine(item: FollowupItem, extra?: string): string {
-  const parts: string[] = [item.state];
-  if (item.stateReason) parts.push(item.stateReason);
+  const parts: string[] = [followupStateLabel(item.state)];
+  const reason = stateReasonOf(item);
+  if (reason) parts.push(reason);
   const fileCount = item.message.files?.length ?? 0;
   if (fileCount > 0 && (item.message.text ?? '').trim()) parts.push(`${fileCount} file(s)`);
   if (extra) parts.push(extra);
@@ -440,6 +500,11 @@ function accessoryFor(item: FollowupItem, frozen: boolean, turnEpoch: number): R
   }
   switch (item.state) {
     case 'queued':
+    // A steered message is still the user's queued message: `Send now` means
+    // "stop waiting for the tool-call boundary and run it now", which the
+    // dispatcher does by unsteering it first (06 §3.3). The legacy layout has
+    // no Cancel button for any state, so this is the one control it can offer.
+    case 'steered':
       return itemButton(item, FOLLOWUP_SEND_NOW_ACTION_ID, FOLLOWUP_SEND_NOW_LABEL, { style: 'primary', turnEpoch });
     case 'paused':
       return itemButton(item, FOLLOWUP_RESUME_ACTION_ID, FOLLOWUP_RESUME_LABEL);
@@ -478,6 +543,12 @@ function menuOpsFor(
   if (frozen) return RESUMABLE_STATES.includes(item.state) ? [resume, cancel] : [cancel];
   switch (item.state) {
     case 'queued':
+    // Same two operations as `queued`, both taking a different road (06 §3.3/
+    // §3.4): `Send now` unsteers the item and interrupts the turn, `Cancel`
+    // asks the SDK to drop its copy (`cancel_async_message`) and is refused
+    // with "이미 전달됨" when the model already dequeued it. Neither is a
+    // no-op, so neither is withheld.
+    case 'steered':
       return [sendNow, cancel];
     case 'paused':
       return [resume, sendNow, cancel];
@@ -530,8 +601,9 @@ function itemMenu(
  * layout has nowhere else to put it (see {@link itemMenu}).
  */
 function compactStateLabel(item: FollowupItem): string {
-  const state = item.state === 'uncertain' ? `${item.state} — ${COMPACT_UNCERTAIN_CAUTION}` : item.state;
-  const reason = item.stateReason?.replace(/\s+/g, ' ').trim();
+  const label = followupStateLabel(item.state);
+  const state = item.state === 'uncertain' ? `${label} — ${COMPACT_UNCERTAIN_CAUTION}` : label;
+  const reason = stateReasonOf(item)?.replace(/\s+/g, ' ').trim();
   return reason ? `${state} · ${truncate(reason, COMPACT_REASON_MAX_CHARS)}` : state;
 }
 
@@ -573,24 +645,12 @@ function clampPage(requested: number | undefined, pageCount: number): number {
   return Math.min(page, pageCount);
 }
 
-/** `queued 90 · paused 10` in a stable, state-enum order. */
+/** `queued 90 · 전달 1 · paused 10` in the shared display order. */
 function stateBreakdown(items: readonly FollowupItem[]): string {
-  const order: readonly FollowupItemState[] = [
-    'queued',
-    'reserved',
-    'claimed',
-    'dispatched',
-    'paused',
-    'uncertain',
-    'failed',
-    'resolved',
-    'cancelled',
-  ];
   const counts = new Map<FollowupItemState, number>();
   for (const item of items) counts.set(item.state, (counts.get(item.state) ?? 0) + 1);
-  return order
-    .filter((state) => counts.has(state))
-    .map((state) => `${state} ${counts.get(state)}`)
+  return FOLLOWUP_STATE_DISPLAY_ORDER.filter((state) => counts.has(state))
+    .map((state) => `${followupStateCountLabel(state)} ${counts.get(state)}`)
     .join(' · ');
 }
 
@@ -681,5 +741,11 @@ export function buildFollowupQueueBlocks(
 /** True when the item's state would normally carry a control (used to explain a dropped one). */
 function isActionable(item: FollowupItem, frozen: boolean): boolean {
   if (frozen) return RESUMABLE_STATES.includes(item.state);
-  return item.state === 'queued' || item.state === 'paused' || item.state === 'failed' || item.state === 'uncertain';
+  return (
+    item.state === 'queued' ||
+    item.state === 'steered' ||
+    item.state === 'paused' ||
+    item.state === 'failed' ||
+    item.state === 'uncertain'
+  );
 }
