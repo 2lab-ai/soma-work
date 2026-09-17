@@ -28,6 +28,7 @@ export const FOLLOWUP_CANCEL_DEFAULT_REASON = '사용자가 취소했습니다';
 
 export type FollowupItemState =
   | 'queued'
+  | 'steered'
   | 'reserved'
   | 'claimed'
   | 'dispatched'
@@ -77,6 +78,16 @@ export interface FollowupItem {
    * never collapsed into one label.
    */
   stateReason?: string;
+  /**
+   * The `SDKUserMessage` uuid this item was pushed into the running turn's
+   * input channel under (`steered`), and the ONLY handle the settlement events
+   * carry back — the SDK never echoes a queue id (06 §6.6). Present exactly in
+   * `steered` and in the `resolved` row a `markConsumed` produced, where it
+   * stays as the receipt of which SDK message this item became; every other
+   * transition clears it, so a uuid never names an item that is not the one the
+   * SDK is holding (`enter`).
+   */
+  steerUuid?: string;
 }
 
 export interface FollowupSessionSnapshot {
@@ -157,9 +168,25 @@ const TERMINAL_STATES: readonly FollowupItemState[] = ['resolved', 'failed', 'ca
  * `resolved`/`cancelled` are absent too, so history is never rewritten.
  */
 const CANCELLABLE_STATES: readonly FollowupItemState[] = ['queued', 'paused', 'failed', 'uncertain'];
+/**
+ * `steered` is deliberately NOT in `CANCELLABLE_STATES`: the message is already
+ * sitting in the SDK's own input queue, so cancelling it here would only
+ * rewrite our row while the model still reads it (06 §3.4). The cancel path for
+ * a steered item is `cancelSteered`, which the host calls **after** the SDK
+ * confirmed `cancel_async_message`; a plain `cancelItem` keeps answering
+ * `invalid-state` so the refusal is explicit instead of a silent lie.
+ */
 /** A dispatch is being set up — blocks a competing `Send now` reservation. */
 const PENDING_DISPATCH_STATES: readonly FollowupItemState[] = ['reserved', 'claimed'];
-/** Anything the executor may still be running — blocks a drain claim. */
+/**
+ * Anything the executor may still be running — blocks a drain claim.
+ *
+ * `steered` is absent on purpose (06 §6.2): a steered item was handed to the
+ * turn that is ALREADY running, so it is not a dispatch of ours and it must not
+ * block one. Once that turn ends, a queued sibling is still drainable even
+ * while the steered item waits for its consumption receipt — treating it as
+ * in-flight would wedge the lane on an item no dispatch will ever settle.
+ */
 const IN_FLIGHT_STATES: readonly FollowupItemState[] = ['reserved', 'claimed', 'dispatched'];
 
 /** States rewritten when a session is frozen; anything absent is left untouched. */
@@ -172,6 +199,7 @@ type FreezeTransitions = Partial<Record<FollowupItemState, FollowupItemState>>;
  */
 const STOP_TRANSITIONS: FreezeTransitions = {
   queued: 'paused',
+  steered: 'paused',
   reserved: 'paused',
   claimed: 'paused',
   dispatched: 'uncertain',
@@ -181,9 +209,16 @@ const STOP_TRANSITIONS: FreezeTransitions = {
  * restart (`ssot.md:124`): nobody witnessed the crash, so `claimed` may already
  * have produced a query. `claimed` and `dispatched` both come back `uncertain`
  * — never blind-replayed.
+ *
+ * `steered` comes back `paused`, not `uncertain` (06 §4 S7): the SDK process
+ * that held the input channel died with the restart, so the message provably
+ * never reached a model that could still act on it — but it must not auto-run
+ * either, and the uuid it was pushed under is meaningless to the next process.
+ * A stop maps it the same way: the channel closes with the turn.
  */
 const RESTART_TRANSITIONS: FreezeTransitions = {
   queued: 'paused',
+  steered: 'paused',
   reserved: 'paused',
   claimed: 'uncertain',
   dispatched: 'uncertain',
@@ -352,6 +387,11 @@ export class FollowupQueue {
   /**
    * FIFO claim of one item, called by the drain at a safe turn boundary (U4).
    * Never called from inside this module — the domain does not start work.
+   *
+   * Only `queued` items are candidates: a `steered` item was already handed to
+   * the running turn, so claiming it here would deliver the same message twice
+   * (06 §3.2, "중복 전달 금지"). It does not block the claim of a queued sibling
+   * either — see `IN_FLIGHT_STATES`.
    */
   claimNext(sessionKey: string): FollowupOpResult {
     const next = cloneJson(this.state);
@@ -494,6 +534,89 @@ export class FollowupQueue {
     });
   }
 
+  // ------------------------------------------------------------- auto-steering
+  //
+  // `steered` = "pushed into the RUNNING turn's SDK input channel; the model has
+  // not necessarily read it yet" (06 §3.1). It is the one state this queue does
+  // not own the execution of: the message is in the SDK's queue, and the only
+  // handle that comes back is the uuid it was pushed under, so the three
+  // settlement doors below (`markConsumed`/`unsteer`/`cancelSteered`) exist to
+  // translate an SDK fact into a queue transition — never to guess one.
+
+  /**
+   * `queued → steered`: the caller is about to push this item into the live
+   * turn's input channel under `uuid`. Persisted BEFORE the push (the usual
+   * durable-first rule) so a push that lands while we crash is still explained
+   * by the stored row instead of vanishing.
+   *
+   * Refused while frozen — a frozen session has no live turn to steer into, and
+   * its items are waiting for an explicit resume (A17/A29). Refused unless the
+   * item is `queued`: re-steering a steered item is exactly the double delivery
+   * `uuid` dedup exists to stop.
+   */
+  steer(sessionKey: string, itemId: string, expectedEpoch: number, uuid: string): FollowupOpResult {
+    return this.mutate(sessionKey, itemId, expectedEpoch, (item, session) => {
+      if (session.freeze) return 'frozen';
+      if (item.state !== 'queued') return 'invalid-state';
+      this.enter(item, 'steered', 'steered');
+      item.steerUuid = uuid;
+      return undefined;
+    });
+  }
+
+  /**
+   * The SDK confirmed the model took the message (06 §6.6): `steered → resolved`
+   * with a `consumed` reason. Terminal, so the item stops occupying capacity and
+   * leaves the live queue — it is history, not a dispatch of ours, and no
+   * `settle` will ever follow it.
+   *
+   * Addressed by uuid, not by item id, because the uuid is the only identity the
+   * SDK's receipt carries. The uuid is KEPT on the resolved row, which is what
+   * makes a redelivered settlement event answer `invalid-state` (already
+   * consumed) instead of the misleading `not-found`.
+   */
+  markConsumed(sessionKey: string, uuid: string): FollowupOpResult {
+    return this.mutateBySteerUuid(sessionKey, uuid, (item) => {
+      if (item.state !== 'steered') return 'invalid-state';
+      this.enter(item, 'resolved', 'consumed');
+      item.steerUuid = uuid;
+      return undefined;
+    });
+  }
+
+  /**
+   * `steered → queued`: the push did not stick, or the turn ended with the
+   * message still sitting unread in the SDK queue (`still_queued`, 06 §3.2 S3).
+   * The item returns to its original seq — FIFO position is never lost — and the
+   * uuid is dropped, so the ordinary drain owns it again and no stale receipt
+   * can re-settle it.
+   */
+  unsteer(sessionKey: string, uuid: string, reason: string): FollowupOpResult {
+    return this.mutateBySteerUuid(sessionKey, uuid, (item) => {
+      if (item.state !== 'steered') return 'invalid-state';
+      this.enter(item, 'queued', reason);
+      return undefined;
+    });
+  }
+
+  /**
+   * Cancel of a steered item — allowed ONLY once the SDK confirmed
+   * `cancel_async_message(uuid)`, which is why it is a separate door from
+   * `cancelItem` (06 §3.4). This queue cannot dequeue the SDK's copy, so a
+   * cancel that is not backed by that confirmation would mark the item
+   * `cancelled` here while the model still reads it.
+   *
+   * Keyed by item id + `expectedEpoch` like every other panel operation: the
+   * caller is a user action holding a rendered control, not an SDK receipt.
+   */
+  cancelSteered(sessionKey: string, itemId: string, expectedEpoch: number, reason?: string): FollowupOpResult {
+    return this.mutate(sessionKey, itemId, expectedEpoch, (item) => {
+      if (item.state !== 'steered') return 'invalid-state';
+      this.enter(item, 'cancelled', reason ?? FOLLOWUP_CANCEL_DEFAULT_REASON);
+      return undefined;
+    });
+  }
+
   /**
    * stop / session end / ASK gate: freeze the session and settle each item into
    * a state instead of replaying it. A live process is observing this event, so
@@ -603,10 +726,44 @@ export class FollowupQueue {
     return { ok: true, item: cloneJson(item) };
   }
 
-  /** State change on a not-yet-committed item: new state, fresh epoch, reason. */
+  /**
+   * Same transaction as `mutate`, addressed by the uuid the item was steered
+   * under instead of by item id. There is no epoch CAS here on purpose: the
+   * caller is an SDK settlement receipt, not a rendered control, and the uuid is
+   * itself a single-use token minted for exactly one push. `not-found` covers
+   * both "no such session" and "no item carries that uuid" — including an item
+   * that already left `steered` through a freeze, which clears it.
+   */
+  private mutateBySteerUuid(
+    sessionKey: string,
+    uuid: string,
+    apply: (item: FollowupItem, session: FollowupSessionSnapshot) => FollowupOpFailure | undefined,
+  ): FollowupOpResult {
+    const next = cloneJson(this.state);
+    const session = this.findSession(next, sessionKey);
+    const item = session?.items.find((candidate) => candidate.steerUuid === uuid);
+    if (!session || !item) return { ok: false, reason: 'not-found' };
+
+    const failure = apply(item, session);
+    if (failure) return { ok: false, reason: failure };
+
+    this.commit(next);
+    return { ok: true, item: cloneJson(item) };
+  }
+
+  /**
+   * State change on a not-yet-committed item: new state, fresh epoch, reason.
+   *
+   * Clearing `steerUuid` is part of the transition, not of each call site: an
+   * item that is no longer `steered` must not stay addressable by the uuid the
+   * SDK holds, or a late receipt would settle a row that has since been paused,
+   * requeued or cancelled. The two transitions that legitimately keep the uuid
+   * (`steer`, `markConsumed`) re-set it right after calling this.
+   */
   private enter(item: FollowupItem, state: FollowupItemState, reason?: string): void {
     item.state = state;
     item.stateReason = reason;
+    item.steerUuid = undefined;
     item.epoch += 1;
     item.updatedAt = Date.now();
   }

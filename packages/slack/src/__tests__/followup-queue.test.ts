@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   FOLLOWUP_CANCEL_DEFAULT_REASON,
   FOLLOWUP_QUEUE_DEFAULT_CAPACITY,
+  type FollowupItem,
   FollowupQueue,
   type FollowupQueueSnapshot,
 } from '../followup-queue';
@@ -19,6 +20,15 @@ function snapshotWithOneItem(): FollowupQueueSnapshot {
   const source = new FollowupQueue();
   source.enqueue(SESSION, event({ ts: '1.1' }));
   return source.snapshot();
+}
+
+/** Push the oldest queued item into the (imaginary) live turn's input channel under `uuid`. */
+function steerFirst(queue: FollowupQueue, uuid = 'uuid-1'): FollowupItem {
+  const target = queue.list(SESSION).find((item) => item.state === 'queued');
+  if (!target) throw new Error('no queued item to steer');
+  const steered = queue.steer(SESSION, target.id, target.epoch, uuid);
+  if (!steered.ok) throw new Error(`steer failed: ${steered.reason}`);
+  return steered.item;
 }
 
 /** Drive one item all the way to `dispatched` so state-machine tests can start from mid-flight. */
@@ -960,5 +970,283 @@ describe('FollowupQueue cancelItem (per-item Cancel from the Queue panel)', () =
       ok: false,
       reason: 'invalid-state',
     });
+  });
+});
+
+describe('FollowupQueue auto-steering (06 §3.2)', () => {
+  it('moves a queued item to steered and records the SDK uuid it was pushed under', () => {
+    const queue = new FollowupQueue();
+    const first = queue.enqueue(SESSION, event({ ts: '1.1' }));
+    if (first.status !== 'queued') throw new Error('setup failed');
+
+    const steered = queue.steer(SESSION, first.item.id, first.item.epoch, 'uuid-abc');
+
+    expect(steered.ok && steered.item.state).toBe('steered');
+    expect(steered.ok && steered.item.steerUuid).toBe('uuid-abc');
+    expect(steered.ok && steered.item.stateReason).toBe('steered');
+    expect(steered.ok && steered.item.seq).toBe(1); // FIFO position is not spent
+    expect(steered.ok && steered.item.epoch).toBe(first.item.epoch + 1);
+  });
+
+  it('persists the steer BEFORE it is visible in memory, so a push can never precede its row', () => {
+    const seen: FollowupQueueSnapshot[] = [];
+    let failing = false;
+    const queue = new FollowupQueue({
+      save: (snapshot) => {
+        if (failing) throw new Error('disk full');
+        seen.push(snapshot);
+      },
+    });
+    const first = queue.enqueue(SESSION, event({ ts: '1.1' }));
+    const second = queue.enqueue(SESSION, event({ ts: '1.2' }));
+    if (first.status !== 'queued' || second.status !== 'queued') throw new Error('setup failed');
+
+    queue.steer(SESSION, first.item.id, first.item.epoch, 'uuid-1');
+    expect(seen[seen.length - 1].sessions[0].items[0].state).toBe('steered');
+
+    failing = true;
+    expect(() => queue.steer(SESSION, second.item.id, second.item.epoch, 'uuid-2')).toThrow('disk full');
+    expect(queue.get(SESSION, second.item.id)?.state).toBe('queued');
+    expect(queue.get(SESSION, second.item.id)?.steerUuid).toBeUndefined();
+  });
+
+  it('refuses to steer while the session is frozen — there is no live turn to steer into (A17/A29)', () => {
+    const queue = new FollowupQueue();
+    queue.enqueue(SESSION, event({ ts: '1.1' }));
+    queue.freeze(SESSION, 'stop pressed');
+    const paused = queue.list(SESSION)[0];
+
+    expect(queue.steer(SESSION, paused.id, paused.epoch, 'uuid-1')).toEqual({ ok: false, reason: 'frozen' });
+    expect(queue.get(SESSION, paused.id)?.epoch).toBe(paused.epoch); // untouched
+  });
+
+  it('rejects a steer carrying a stale item epoch (A12)', () => {
+    const queue = new FollowupQueue();
+    const first = queue.enqueue(SESSION, event({ ts: '1.1' }));
+    if (first.status !== 'queued') throw new Error('setup failed');
+    const staleEpoch = first.item.epoch;
+    queue.steer(SESSION, first.item.id, staleEpoch, 'uuid-1');
+    queue.unsteer(SESSION, 'uuid-1', 'turn ended unread');
+
+    expect(queue.steer(SESSION, first.item.id, staleEpoch, 'uuid-2')).toEqual({ ok: false, reason: 'stale-epoch' });
+  });
+
+  it('refuses to steer an item that is not queued, so one message is never pushed twice', () => {
+    const queue = new FollowupQueue();
+    queue.enqueue(SESSION, event({ ts: '1.1' }));
+    const steered = steerFirst(queue);
+
+    expect(queue.steer(SESSION, steered.id, steered.epoch, 'uuid-2')).toEqual({ ok: false, reason: 'invalid-state' });
+    expect(queue.get(SESSION, steered.id)?.steerUuid).toBe('uuid-1');
+  });
+
+  it('reports an unknown item instead of throwing', () => {
+    const queue = new FollowupQueue();
+
+    expect(queue.steer(SESSION, 'nope', 0, 'uuid-1')).toEqual({ ok: false, reason: 'not-found' });
+  });
+});
+
+describe('FollowupQueue steer settlement (consumed / unsteer)', () => {
+  it('resolves a steered item on the SDK consumption receipt, as history that frees its slot', () => {
+    const queue = new FollowupQueue({ capacity: 1 });
+    queue.enqueue(SESSION, event({ ts: '1.1' }));
+    const steered = steerFirst(queue, 'uuid-abc');
+    expect(queue.enqueue(SESSION, event({ ts: '1.2' })).status).toBe('capacity'); // steered still occupies it
+
+    const consumed = queue.markConsumed(SESSION, 'uuid-abc');
+
+    expect(consumed.ok && consumed.item.id).toBe(steered.id);
+    expect(consumed.ok && consumed.item.state).toBe('resolved');
+    expect(consumed.ok && consumed.item.stateReason).toBe('consumed');
+    expect(queue.list(SESSION)).toHaveLength(1); // history is kept
+    expect(queue.enqueue(SESSION, event({ ts: '1.2' })).status).toBe('queued');
+  });
+
+  it('reports not-found for a uuid no item carries', () => {
+    const queue = new FollowupQueue();
+    queue.enqueue(SESSION, event({ ts: '1.1' }));
+    steerFirst(queue, 'uuid-1');
+
+    expect(queue.markConsumed(SESSION, 'uuid-other')).toEqual({ ok: false, reason: 'not-found' });
+    expect(queue.markConsumed('C1:nope', 'uuid-1')).toEqual({ ok: false, reason: 'not-found' });
+  });
+
+  it('answers invalid-state — not not-found — when the same receipt is delivered twice', () => {
+    const queue = new FollowupQueue();
+    queue.enqueue(SESSION, event({ ts: '1.1' }));
+    steerFirst(queue, 'uuid-1');
+    const first = queue.markConsumed(SESSION, 'uuid-1');
+    if (!first.ok) throw new Error('markConsumed failed');
+
+    expect(queue.markConsumed(SESSION, 'uuid-1')).toEqual({ ok: false, reason: 'invalid-state' });
+    expect(queue.get(SESSION, first.item.id)?.epoch).toBe(first.item.epoch); // untouched, not re-settled
+  });
+
+  it('returns an unread item to queued at its original seq and drops the uuid (S3)', () => {
+    const queue = new FollowupQueue();
+    queue.enqueue(SESSION, event({ ts: '1.1' }));
+    queue.enqueue(SESSION, event({ ts: '1.2' }));
+    steerFirst(queue, 'uuid-1');
+
+    const unsteered = queue.unsteer(SESSION, 'uuid-1', '턴이 먼저 종료됨');
+
+    expect(unsteered.ok && unsteered.item.state).toBe('queued');
+    expect(unsteered.ok && unsteered.item.seq).toBe(1);
+    expect(unsteered.ok && unsteered.item.stateReason).toBe('턴이 먼저 종료됨');
+    expect(unsteered.ok && unsteered.item.steerUuid).toBeUndefined();
+    // FIFO order is intact: the returned item is still the next claim.
+    expect(queue.claimNext(SESSION).ok && queue.list(SESSION)[0].state).toBe('claimed');
+    expect(queue.list(SESSION)[1].state).toBe('queued');
+  });
+
+  it('cannot be settled twice by the same uuid once unsteered — the handle is gone', () => {
+    const queue = new FollowupQueue();
+    queue.enqueue(SESSION, event({ ts: '1.1' }));
+    steerFirst(queue, 'uuid-1');
+    queue.unsteer(SESSION, 'uuid-1', 'turn ended unread');
+
+    expect(queue.markConsumed(SESSION, 'uuid-1')).toEqual({ ok: false, reason: 'not-found' });
+    expect(queue.unsteer(SESSION, 'uuid-1', 'again')).toEqual({ ok: false, reason: 'not-found' });
+    expect(queue.list(SESSION)[0].state).toBe('queued');
+  });
+});
+
+describe('FollowupQueue steered items and the drain', () => {
+  it('never claims a steered item — the running turn already has it', () => {
+    const queue = new FollowupQueue();
+    queue.enqueue(SESSION, event({ ts: '1.1' }));
+    steerFirst(queue);
+
+    expect(queue.claimNext(SESSION)).toEqual({ ok: false, reason: 'empty' });
+  });
+
+  it('does not block the claim of a queued sibling (a steered item is not in flight)', () => {
+    const queue = new FollowupQueue();
+    queue.enqueue(SESSION, event({ ts: '1.1' }));
+    queue.enqueue(SESSION, event({ ts: '1.2' }));
+    steerFirst(queue);
+
+    const claimed = queue.claimNext(SESSION);
+
+    expect(claimed.ok && claimed.item.message.ts).toBe('1.2');
+    expect(queue.list(SESSION)[0].state).toBe('steered'); // untouched by the drain
+  });
+
+  it('keeps counting a steered item against capacity (it is not terminal)', () => {
+    const queue = new FollowupQueue({ capacity: 2 });
+    queue.enqueue(SESSION, event({ ts: '1.1' }));
+    queue.enqueue(SESSION, event({ ts: '1.2' }));
+    steerFirst(queue);
+
+    expect(queue.enqueue(SESSION, event({ ts: '1.3' }))).toEqual({ status: 'capacity', capacity: 2, pending: 2 });
+  });
+});
+
+describe('FollowupQueue steered items under freeze and restart', () => {
+  it('pauses a steered item on stop and clears the uuid — the channel died with the turn', () => {
+    const queue = new FollowupQueue();
+    queue.enqueue(SESSION, event({ ts: '1.1' }));
+    const steered = steerFirst(queue, 'uuid-1');
+
+    queue.freeze(SESSION, 'stop pressed');
+
+    const paused = queue.get(SESSION, steered.id);
+    expect(paused?.state).toBe('paused');
+    expect(paused?.stateReason).toBe('stop pressed');
+    expect(paused?.steerUuid).toBeUndefined();
+    // A receipt arriving after the stop names nothing — it cannot revive the row.
+    expect(queue.markConsumed(SESSION, 'uuid-1')).toEqual({ ok: false, reason: 'not-found' });
+  });
+
+  it('restores a steered item as paused after a restart, never as uncertain (S7/A16)', () => {
+    const source = new FollowupQueue();
+    source.enqueue(SESSION, event({ ts: '1.1' }));
+    source.enqueue(SESSION, event({ ts: '1.2' }));
+    steerFirst(source, 'uuid-1');
+    expect(source.list(SESSION)[0].state).toBe('steered');
+
+    const restarted = new FollowupQueue({ snapshot: source.snapshot() });
+    restarted.recover('process restart');
+
+    const byTs = Object.fromEntries(restarted.list(SESSION).map((item) => [item.message.ts, item.state]));
+    expect(byTs).toEqual({ '1.1': 'paused', '1.2': 'paused' });
+    expect(restarted.list(SESSION)[0].steerUuid).toBeUndefined();
+  });
+
+  it('brings an ex-steered paused item back to queued on resume, with no uuid attached', () => {
+    const queue = new FollowupQueue();
+    queue.enqueue(SESSION, event({ ts: '1.1' }));
+    steerFirst(queue, 'uuid-1');
+    queue.freeze(SESSION, 'stop pressed');
+
+    queue.resume(SESSION);
+
+    expect(queue.list(SESSION)[0].state).toBe('queued');
+    expect(queue.list(SESSION)[0].steerUuid).toBeUndefined();
+    expect(queue.claimNext(SESSION).ok).toBe(true);
+  });
+});
+
+describe('FollowupQueue cancelSteered (06 §3.4)', () => {
+  it('refuses a plain Cancel on a steered item — this queue cannot dequeue the SDK copy', () => {
+    const queue = new FollowupQueue();
+    queue.enqueue(SESSION, event({ ts: '1.1' }));
+    const steered = steerFirst(queue, 'uuid-1');
+
+    expect(queue.cancelItem(SESSION, steered.id, steered.epoch)).toEqual({ ok: false, reason: 'invalid-state' });
+
+    const unchanged = queue.get(SESSION, steered.id);
+    expect(unchanged?.state).toBe('steered');
+    expect(unchanged?.epoch).toBe(steered.epoch);
+    expect(unchanged?.steerUuid).toBe('uuid-1');
+  });
+
+  it('cancels a steered item once the SDK confirmed the dequeue, clearing the uuid', () => {
+    const queue = new FollowupQueue();
+    queue.enqueue(SESSION, event({ ts: '1.1' }));
+    const steered = steerFirst(queue, 'uuid-1');
+
+    const cancelled = queue.cancelSteered(SESSION, steered.id, steered.epoch, '사용자가 취소했습니다 (SDK 확인)');
+
+    expect(cancelled.ok && cancelled.item.state).toBe('cancelled');
+    expect(cancelled.ok && cancelled.item.stateReason).toBe('사용자가 취소했습니다 (SDK 확인)');
+    expect(cancelled.ok && cancelled.item.steerUuid).toBeUndefined();
+    expect(queue.list(SESSION)).toHaveLength(1); // history
+  });
+
+  it('falls back to the shared default reason and rejects a stale epoch', () => {
+    const queue = new FollowupQueue();
+    queue.enqueue(SESSION, event({ ts: '1.1' }));
+    const steered = steerFirst(queue, 'uuid-1');
+
+    expect(queue.cancelSteered(SESSION, steered.id, steered.epoch - 1)).toEqual({ ok: false, reason: 'stale-epoch' });
+    const cancelled = queue.cancelSteered(SESSION, steered.id, steered.epoch);
+    expect(cancelled.ok && cancelled.item.stateReason).toBe(FOLLOWUP_CANCEL_DEFAULT_REASON);
+  });
+
+  it('refuses any state other than steered, so it can never stand in for cancelItem', () => {
+    const queue = new FollowupQueue();
+    const first = queue.enqueue(SESSION, event({ ts: '1.1' }));
+    if (first.status !== 'queued') throw new Error('setup failed');
+
+    expect(queue.cancelSteered(SESSION, first.item.id, first.item.epoch)).toEqual({
+      ok: false,
+      reason: 'invalid-state',
+    });
+    expect(queue.get(SESSION, first.item.id)?.state).toBe('queued');
+  });
+
+  it('cancels a steered item along with the rest of a deleted session (A18)', () => {
+    const queue = new FollowupQueue();
+    queue.enqueue(SESSION, event({ ts: '1.1' }));
+    queue.enqueue(SESSION, event({ ts: '1.2' }));
+    steerFirst(queue, 'uuid-1');
+
+    queue.cancelSession(SESSION, 'session deleted');
+
+    expect(queue.list(SESSION).map((item) => item.state)).toEqual(['cancelled', 'cancelled']);
+    expect(queue.list(SESSION)[0].steerUuid).toBeUndefined();
+    expect(queue.markConsumed(SESSION, 'uuid-1')).toEqual({ ok: false, reason: 'not-found' });
   });
 });

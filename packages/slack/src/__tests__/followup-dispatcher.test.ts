@@ -60,6 +60,9 @@ function portOf(queue: FollowupQueue, extras: Partial<FollowupQueuePort> = {}): 
     beginTurn: (s) => queue.beginTurn(s),
     getTurnEpoch: (s) => queue.getTurnEpoch(s),
     markInterrupted: (s, i, e, r) => queue.markInterrupted(s, i, e, r),
+    steer: (s, i, e, u) => queue.steer(s, i, e, u),
+    markConsumed: (s, u) => queue.markConsumed(s, u),
+    unsteer: (s, u, r) => queue.unsteer(s, u, r),
     ...extras,
   };
 }
@@ -557,6 +560,53 @@ describe('FollowupDispatcher send now', () => {
     expect(h.queue.get(SESSION, item.id)?.state).toBe('paused');
     expect(h.dispatcher.isBusy(SESSION)).toBe(false);
   });
+
+  it('takes a steered item back out of the SDK channel and dispatches it as a fresh turn', async () => {
+    const h = harness();
+    h.dispatcher.runInitial(SESSION, event({ ts: '1.0', text: 'long turn' }));
+    const item = enqueue(h.queue, event({ ts: '1.1' }));
+    const steered = h.dispatcher.steer(SESSION, item.id, item.epoch, () => true);
+    if (steered.status !== 'steered') throw new Error(`steer failed: ${steered.reason}`);
+
+    const sending = click(h, item.id);
+    await tick();
+    // The steer is undone before the reservation, so the ordinary Send now
+    // transaction runs unchanged from here.
+    expect(h.queue.get(SESSION, item.id)?.state).toBe('reserved');
+
+    h.pending[0].settle({ result: 'interrupted', reason: 'send-now' });
+    const result = await sending;
+
+    expect(result.status).toBe('dispatched');
+    expect(h.dispatch).toHaveBeenCalledTimes(2);
+    const stored = h.queue.get(SESSION, item.id);
+    expect(stored?.state).toBe('dispatched');
+    expect(stored?.steerUuid).toBeUndefined();
+    expect(h.notices).toContainEqual({
+      type: 'item-unsteered',
+      sessionKey: SESSION,
+      itemId: item.id,
+      reason: 'send now',
+    });
+  });
+
+  it('rejects a click rendered before the steer and leaves the item steered', async () => {
+    const h = harness();
+    h.dispatcher.runInitial(SESSION, event({ ts: '1.0' }));
+    const item = enqueue(h.queue, event({ ts: '1.1' }));
+    const staleEpoch = item.epoch; // rendered while the item was still `queued`
+    const steered = h.dispatcher.steer(SESSION, item.id, item.epoch, () => true);
+    if (steered.status !== 'steered') throw new Error(`steer failed: ${steered.reason}`);
+
+    const result = await h.dispatcher.sendNow(SESSION, item.id, staleEpoch, CLICKER, h.queue.getTurnEpoch(SESSION));
+
+    expect(result).toEqual({ status: 'rejected', reason: 'stale-epoch', detail: expect.any(String) });
+    const stored = h.queue.get(SESSION, item.id);
+    expect(stored?.state).toBe('steered');
+    expect(stored?.steerUuid).toBe(steered.uuid);
+    expect(h.dispatch).toHaveBeenCalledTimes(1); // only the original run
+    expect(h.interrupt).not.toHaveBeenCalled();
+  });
 });
 
 describe('FollowupDispatcher interrupted item disposition', () => {
@@ -1045,5 +1095,205 @@ describe('FollowupDispatcher failure injection', () => {
     expect(h.interrupt).not.toHaveBeenCalled();
     expect(queue.get(SESSION, item.id)?.state).toBe('queued');
     expect(queue.get(SESSION, item.id)?.epoch).toBe(item.epoch);
+  });
+});
+
+describe('FollowupDispatcher auto-steering (06 §3.2)', () => {
+  it('pushes a queued item into the live turn without dispatching or superseding it', () => {
+    const h = harness();
+    const start = h.dispatcher.runInitial(SESSION, event({ ts: '1.0', text: 'long turn' }));
+    if (start.status !== 'dispatched') throw new Error('expected dispatch');
+    const item = enqueue(h.queue, event({ ts: '1.1' }));
+    const push = vi.fn(() => true);
+
+    const result = h.dispatcher.steer(SESSION, item.id, item.epoch, push);
+
+    if (result.status !== 'steered') throw new Error(`steer rejected: ${result.reason}`);
+    expect(push).toHaveBeenCalledWith(result.uuid);
+    expect(result.uuid).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-/);
+    const stored = h.queue.get(SESSION, item.id);
+    expect(stored?.state).toBe('steered');
+    expect(stored?.steerUuid).toBe(result.uuid);
+    // No new turn, no abort, no second slot: the running turn keeps everything.
+    expect(h.dispatch).toHaveBeenCalledTimes(1);
+    expect(h.interrupt).not.toHaveBeenCalled();
+    expect(h.dispatcher.snapshot(SESSION).turnEpoch).toBe(start.run.turnEpoch);
+    expect(h.notices).toContainEqual({ type: 'item-steered', sessionKey: SESSION, itemId: item.id, uuid: result.uuid });
+  });
+
+  it('refuses when nothing is running — the drain, not a steer, owns an idle session', () => {
+    const h = harness();
+    const item = enqueue(h.queue, event({ ts: '1.1' }));
+    const push = vi.fn(() => true);
+
+    const result = h.dispatcher.steer(SESSION, item.id, item.epoch, push);
+
+    expect(result).toEqual({ status: 'rejected', reason: 'not-busy', detail: expect.any(String) });
+    expect(push).not.toHaveBeenCalled();
+    const stored = h.queue.get(SESSION, item.id);
+    expect(stored?.state).toBe('queued');
+    expect(stored?.epoch).toBe(item.epoch); // untouched, not a round trip
+  });
+
+  it('puts the item back in the queue when the channel refuses the push', () => {
+    const h = harness();
+    h.dispatcher.runInitial(SESSION, event({ ts: '1.0' }));
+    const item = enqueue(h.queue, event({ ts: '1.1' }));
+
+    const result = h.dispatcher.steer(SESSION, item.id, item.epoch, () => false);
+
+    expect(result).toEqual({ status: 'rejected', reason: 'push-refused', detail: expect.any(String) });
+    const stored = h.queue.get(SESSION, item.id);
+    expect(stored?.state).toBe('queued');
+    expect(stored?.seq).toBe(item.seq); // same FIFO position
+    expect(stored?.steerUuid).toBeUndefined();
+    expect(stored?.stateReason).toBe('no live turn to steer');
+    expect(h.notices).toContainEqual({
+      type: 'item-unsteered',
+      sessionKey: SESSION,
+      itemId: item.id,
+      reason: 'no live turn to steer',
+    });
+    expect(h.notices).not.toContainEqual(expect.objectContaining({ type: 'item-steered' }));
+    // Still drainable at the next boundary — a refused push loses nothing.
+    expect(h.queue.claimNext(SESSION).ok).toBe(true);
+  });
+
+  it('treats a throwing channel as a refusal, never as a delivery', () => {
+    const h = harness();
+    h.dispatcher.runInitial(SESSION, event({ ts: '1.0' }));
+    const item = enqueue(h.queue, event({ ts: '1.1' }));
+
+    const result = h.dispatcher.steer(SESSION, item.id, item.epoch, () => {
+      throw new Error('channel closed');
+    });
+
+    expect(result).toEqual({
+      status: 'rejected',
+      reason: 'push-refused',
+      detail: expect.stringContaining('channel closed'),
+    });
+    expect(h.queue.get(SESSION, item.id)?.state).toBe('queued');
+  });
+
+  it('refuses to steer into a frozen session', () => {
+    const h = harness();
+    h.dispatcher.runInitial(SESSION, event({ ts: '1.0' }));
+    const item = enqueue(h.queue, event({ ts: '1.1' }));
+    h.queue.freeze(SESSION, 'stop pressed');
+    const paused = h.queue.get(SESSION, item.id);
+    if (!paused) throw new Error('setup failed');
+    const push = vi.fn(() => true);
+
+    const result = h.dispatcher.steer(SESSION, paused.id, paused.epoch, push);
+
+    expect(result).toEqual({ status: 'rejected', reason: 'frozen', detail: expect.stringContaining('frozen') });
+    expect(push).not.toHaveBeenCalled();
+  });
+
+  it('rejects a second push of the same item by its stale item epoch', () => {
+    const h = harness();
+    h.dispatcher.runInitial(SESSION, event({ ts: '1.0' }));
+    const item = enqueue(h.queue, event({ ts: '1.1' }));
+    const first = h.dispatcher.steer(SESSION, item.id, item.epoch, () => true);
+    if (first.status !== 'steered') throw new Error('expected steer');
+    const push = vi.fn(() => true);
+
+    const second = h.dispatcher.steer(SESSION, item.id, item.epoch, push);
+
+    expect(second).toEqual({ status: 'rejected', reason: 'stale-epoch', detail: expect.any(String) });
+    expect(push).not.toHaveBeenCalled();
+    expect(h.queue.get(SESSION, item.id)?.steerUuid).toBe(first.uuid);
+  });
+
+  it('reports an unknown item and a refusing store in the caller’s vocabulary', () => {
+    const h = harness();
+    h.dispatcher.runInitial(SESSION, event({ ts: '1.0' }));
+
+    expect(h.dispatcher.steer(SESSION, 'nope', 0, () => true)).toEqual({
+      status: 'rejected',
+      reason: 'not-found',
+      detail: expect.any(String),
+    });
+
+    const queue = new FollowupQueue();
+    const broken = harness({
+      queue: portOf(queue, {
+        steer: () => {
+          throw new Error('disk full');
+        },
+      }),
+    });
+    broken.dispatcher.runInitial(SESSION, event({ ts: '1.0' }));
+    const item = enqueue(queue, event({ ts: '1.1' }));
+
+    expect(broken.dispatcher.steer(SESSION, item.id, item.epoch, () => true)).toEqual({
+      status: 'rejected',
+      reason: 'dispatch-unavailable',
+      detail: expect.stringContaining('disk full'),
+    });
+  });
+
+  it('settles a steered item as consumed on the SDK receipt and reports it', () => {
+    const h = harness();
+    h.dispatcher.runInitial(SESSION, event({ ts: '1.0' }));
+    const item = enqueue(h.queue, event({ ts: '1.1' }));
+    const steered = h.dispatcher.steer(SESSION, item.id, item.epoch, () => true);
+    if (steered.status !== 'steered') throw new Error('expected steer');
+
+    const consumed = h.dispatcher.markConsumed(SESSION, steered.uuid);
+
+    expect(consumed.ok && consumed.item.state).toBe('resolved');
+    expect(consumed.ok && consumed.item.stateReason).toBe('consumed');
+    expect(h.notices).toContainEqual({
+      type: 'item-consumed',
+      sessionKey: SESSION,
+      itemId: item.id,
+      uuid: steered.uuid,
+    });
+    // A duplicate receipt reports the refusal and emits nothing.
+    const again = h.dispatcher.markConsumed(SESSION, steered.uuid);
+    expect(again).toEqual({ ok: false, reason: 'invalid-state' });
+    expect(h.notices.filter((notice) => notice.type === 'item-consumed')).toHaveLength(1);
+  });
+
+  it('returns an unread item to the queue when the turn ends without consuming it (S3)', () => {
+    const h = harness();
+    h.dispatcher.runInitial(SESSION, event({ ts: '1.0' }));
+    const item = enqueue(h.queue, event({ ts: '1.1' }));
+    const steered = h.dispatcher.steer(SESSION, item.id, item.epoch, () => true);
+    if (steered.status !== 'steered') throw new Error('expected steer');
+
+    const unsteered = h.dispatcher.unsteer(SESSION, steered.uuid, 'still_queued at turn end');
+
+    expect(unsteered.ok && unsteered.item.state).toBe('queued');
+    expect(unsteered.ok && unsteered.item.seq).toBe(item.seq);
+    expect(h.notices).toContainEqual({
+      type: 'item-unsteered',
+      sessionKey: SESSION,
+      itemId: item.id,
+      reason: 'still_queued at turn end',
+    });
+    expect(h.dispatcher.unsteer(SESSION, steered.uuid, 'again')).toEqual({ ok: false, reason: 'not-found' });
+  });
+
+  it('keeps the drain available beside a steered item and never drains the steered one', async () => {
+    const h = harness();
+    const start = h.dispatcher.runInitial(SESSION, event({ ts: '1.0' }));
+    if (start.status !== 'dispatched') throw new Error('expected dispatch');
+    const steeredItem = enqueue(h.queue, event({ ts: '1.1' }));
+    const sibling = enqueue(h.queue, event({ ts: '1.2' }));
+    const steered = h.dispatcher.steer(SESSION, steeredItem.id, steeredItem.epoch, () => true);
+    if (steered.status !== 'steered') throw new Error('expected steer');
+
+    // The turn that was being steered into ends; the drain opens the next one.
+    h.pending[0].settle({ result: 'safe' });
+    await start.run.settled;
+    const drained = await h.dispatcher.drainNext(SESSION);
+
+    expect(drained.status).toBe('dispatched');
+    expect(h.queue.get(SESSION, sibling.id)?.state).toBe('dispatched');
+    expect(h.queue.get(SESSION, steeredItem.id)?.state).toBe('steered');
+    expect(h.dispatcher.shouldYield(SESSION)).toBe(false); // no `queued` item is left
   });
 });
