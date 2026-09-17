@@ -60,7 +60,7 @@ import {
   ToolEventProcessor,
   ToolTracker,
 } from './slack';
-import { registerFollowupActions } from './slack/actions/followup-actions';
+import { type CancelSteeredOutcome, registerFollowupActions } from './slack/actions/followup-actions';
 import { createAssistantContainer } from './slack/assistant-container';
 import { buildAutoskillFire } from './slack/autoskill-fire';
 import { CommandParser } from './slack/command-parser';
@@ -238,6 +238,14 @@ export class SlackHandler {
    * boundary — so the cleanup hangs off the settlement, not off the enqueue.
    */
   private followupSteerFiles?: Map<string, ProcessedFile[]>;
+  /**
+   * The uuid each item was steered under, keyed by item id — the reverse of
+   * {@link followupSteerFiles}, and the only way back to those files from a path
+   * that knows the ITEM but never sees a uuid: the end-of-turn sweep (the row is
+   * already back to `queued` when it returns) and `Send now` (the dispatcher
+   * unsteers inside its own transaction, `followup-dispatcher.ts:831-864`).
+   */
+  private followupSteerUuids?: Map<string, string>;
   /**
    * Items whose "your edit did not reach the queue" notice was already said.
    * One per item: Slack redelivers `message_changed` and a user can keep
@@ -667,6 +675,16 @@ export class SlackHandler {
         // — the queue alone cannot dequeue the copy the model is about to read.
         cancelSteered: (sessionKey, itemId, expectedEpoch, uuid) =>
           this.cancelSteeredFollowup(sessionKey, itemId, expectedEpoch, uuid),
+        // `Send now` is the one exit from `steered` that produces no uuid for
+        // this host to hang a cleanup on — the dispatcher unsteers inside its own
+        // transaction. Told here, the downloaded files go with it.
+        onItemLeftSteer: (sessionKey, itemId) => {
+          const uuid = this.followupSteerUuids?.get(itemId);
+          this.forgetSteerBookkeeping(itemId);
+          if (!uuid) return;
+          void this.cleanupSteerFiles(this.takeSteerFiles(uuid));
+          this.logger.debug('Released steer artifacts after Send now', { sessionKey, itemId });
+        },
         getSessionByKey: (sessionKey) => this.claudeHandler?.getSessionByKey?.(sessionKey),
         // The SAME interrupt policy the dispatcher uses for `Send now`
         // (owner / current initiator) — one policy, two call sites.
@@ -2558,7 +2576,7 @@ export class SlackHandler {
     // running instead of making the user wait for it. Not while frozen or
     // halted — there the item is explicitly parked, and steering it would run
     // the very instruction the pause exists to hold back.
-    const steered = frozen || halted ? false : await this.trySteerFollowup(sessionKey, event, result.item, say);
+    const steered = frozen || halted ? 'queued' : await this.trySteerFollowup(sessionKey, event, result.item);
     // Counted AFTER the steer: a steered message is no longer waiting on the
     // queue, it is waiting on the model.
     const position = queue.list(sessionKey).filter((item) => item.state === 'queued').length;
@@ -2571,10 +2589,15 @@ export class SlackHandler {
       text =
         `📥 Queue에 보관했습니다 (대기 ${position}건). ⏸️ 자동 실행이 중단된 상태입니다 — ${halted.detail}\n` +
         '_원인을 해소하고 다시 시작해야 실행됩니다._';
-    } else if (steered) {
+    } else if (steered === 'steered') {
       text =
         `📥 Queue에 넣고 실행 중인 턴에 전달했습니다 (대기 ${position}건) — 모델이 다음 툴 호출 경계에서 읽습니다. ` +
         '취소·즉시 실행은 스레드 맨 아래 패널에서.';
+    } else if (steered === 'uncertain') {
+      // The push was refused AND the rollback could not be persisted, so the row
+      // is stuck `steered` and the panel is about to show something this receipt
+      // would contradict. Say what is actually known: nothing.
+      text = '⚠️ 전달 중 오류로 항목 상태를 확정하지 못했습니다 — 스레드 맨 아래 패널에서 확인하세요.';
     } else {
       // One line: the controls used to be described here, but they now live in
       // the panel pinned at the tail of the thread — the receipt only has to
@@ -2592,9 +2615,13 @@ export class SlackHandler {
    *
    * Runs AFTER the durable enqueue on purpose. Everything in here — the file
    * download, the prompt formatting, the push — is best effort: the item is
-   * already stored, so every failure below is answered with the ordinary
-   * "stored, N waiting" receipt and the ordinary drain. Returning `false` is
+   * already stored, so almost every failure below is answered with the ordinary
+   * "stored, N waiting" receipt and the ordinary drain. Returning `'queued'` is
    * therefore never a loss, only a slower delivery.
+   *
+   * `'uncertain'` is the one exception: the push was refused AND the rollback
+   * could not be persisted, so the row is stuck `steered` and this host does not
+   * know what the user's message will do. The receipt says exactly that.
    *
    * `not-busy` is the common rejection and not an error (no live turn to steer
    * into); `invalid-state` usually means a drain claimed the item between the
@@ -2604,14 +2631,29 @@ export class SlackHandler {
     sessionKey: string,
     event: MessageEvent,
     item: FollowupItem,
-    say: any,
-  ): Promise<boolean> {
+  ): Promise<'steered' | 'queued' | 'uncertain'> {
     const dispatcher = this.followupDispatcher;
-    if (!dispatcher) return false;
+    if (!dispatcher) return 'queued';
     // A handler whose ClaudeHandler has no steering seam (legacy unit doubles)
     // must keep its exact pre-steering behavior — including the queue epochs,
     // which a steer+rollback would bump.
-    if (typeof this.claudeHandler?.steerTurn !== 'function') return false;
+    if (typeof this.claudeHandler?.steerTurn !== 'function') return 'queued';
+    if (!this.isSteerableText(event)) return 'queued';
+
+    // Steering injects text into a turn someone else is running, so it takes the
+    // SAME authorization `Send now` takes (`:3082`). Denied, the message is an
+    // ordinary queued follow-up — never a refusal, because nothing was refused:
+    // the item is stored and will run at the next boundary.
+    const requestedBy = event.user;
+    const authorized = requestedBy ? this.authorizeFollowupInterrupt(sessionKey, requestedBy) : undefined;
+    if (!authorized?.allowed) {
+      this.logger.debug('Follow-up not steered — the author may not interrupt this session', {
+        sessionKey,
+        itemId: item.id,
+        reason: authorized?.reason ?? 'message has no author',
+      });
+      return 'queued';
+    }
 
     let files: ProcessedFile[] = [];
     try {
@@ -2620,11 +2662,20 @@ export class SlackHandler {
         // D2: attachments steer too. The files are downloaded here rather than
         // at dispatch, and the model reads them from the paths the prompt
         // carries (`file-handler.ts:289`) — no base64 travels through the SDK.
-        const processed = await this.inputProcessor.processFiles(event, say);
+        //
+        // The `say` is deliberately NOT Bolt's: `processFiles` announces
+        // "📎 Processing N file(s)" through it (`input-processor.ts:106-110`),
+        // and on this path that post is an untracked bot message landing under
+        // the queue panel. The receipt this enqueue posts already says the
+        // message (files included) was delivered.
+        const processed = await this.inputProcessor.processFiles(event, SlackHandler.SILENT_SAY);
         files = processed?.files ?? [];
-        text = await this.fileHandler.formatFilePrompt(files, text);
+        text = (await this.fileHandler.formatFilePrompt(files, text))?.trim() ?? '';
       }
-      if (!text) return false;
+      if (!text) {
+        await this.cleanupSteerFiles(files);
+        return 'queued';
+      }
 
       const steered = dispatcher.steer(sessionKey, item.id, item.epoch, (uuid) =>
         // The steering registry is keyed by the session that is really running,
@@ -2638,13 +2689,16 @@ export class SlackHandler {
           reason: steered.reason,
         });
         await this.cleanupSteerFiles(files);
-        return false;
+        // The rollback of a refused push did not commit: the row is still
+        // `steered` and no receipt may describe it as queued.
+        return steered.detail?.includes('unsteer failed') ? 'uncertain' : 'queued';
       }
       // Kept until the SDK settles this uuid: the model may open them later in
       // the same turn, so deleting them now would break the message we just
       // delivered.
       if (files.length > 0) (this.followupSteerFiles ??= new Map()).set(steered.uuid, files);
-      return true;
+      (this.followupSteerUuids ??= new Map()).set(item.id, steered.uuid);
+      return 'steered';
     } catch (error) {
       this.logger.warn('Follow-up steer failed — item stays queued', {
         sessionKey,
@@ -2652,8 +2706,34 @@ export class SlackHandler {
         error: (error as Error)?.message ?? String(error),
       });
       await this.cleanupSteerFiles(files);
-      return false;
+      return 'queued';
     }
+  }
+
+  /**
+   * May this message be handed to the model VERBATIM?
+   *
+   * Steering delivers the raw text into the running turn, so anything the
+   * dispatch path would have to interpret first must not take this route:
+   *
+   *  - `control-with-dispatch` (`new <prompt>`, `goal <objective>`, `$skill …`,
+   *    `onboarding`/`renew`/`compact`) only means what it says after
+   *    `processMessage` re-routes it (`command-router.ts:380-414`). Steered, the
+   *    model would read the literal command string as prose and the command
+   *    would never run.
+   *  - an inline `%` directive (`%model opus do X`) is stripped and APPLIED by
+   *    the dispatch path (`:1085`); steered, the directive would reach the model
+   *    as text and the session change would silently not happen.
+   *
+   * A file-only message (no text) steers: there is nothing to misread. A handler
+   * without a command router keeps its pre-steering behavior.
+   */
+  private isSteerableText(event: MessageEvent): boolean {
+    const text = (event.text ?? '').trim();
+    if (!text) return true;
+    if (CommandParser.parseInlineSessionDirectives(text)) return false;
+    const classification = this.commandRouter?.classifyText?.(text, event.user);
+    return classification === undefined || classification === 'instruction';
   }
 
   /**
@@ -2680,14 +2760,25 @@ export class SlackHandler {
     if (!dispatcher) return;
 
     try {
-      const settled =
+      const settle = (key: string) =>
         phase === 'completed'
-          ? dispatcher.markConsumed(sessionKey, uuid)
-          : dispatcher.unsteer(
-              sessionKey,
-              uuid,
-              phase === 'cancelled' ? '취소됨' : '모델이 읽기 전에 턴이 끝나 큐로 되돌림',
-            );
+          ? dispatcher.markConsumed(key, uuid)
+          : dispatcher.unsteer(key, uuid, phase === 'cancelled' ? '취소됨' : '모델이 읽기 전에 턴이 끝나 큐로 되돌림');
+
+      // The frame carries the SESSION key the executor ran under. Under a
+      // bot-thread migration the ROW lives under the SLOT key instead: a steer
+      // is only accepted by the key that owns the live slot
+      // (`followup-dispatcher.ts:497-500`), and that is the source key while the
+      // session is the work-thread one. The session key is tried first (every
+      // ordinary turn), and the slot key only when the queue says it holds no
+      // such row — so the fallback can never settle a different session's item.
+      let queueKey = sessionKey;
+      let settled = settle(queueKey);
+      const slotKey = this.followupMigration?.byCanonical.get(sessionKey);
+      if (!settled.ok && settled.reason === 'not-found' && slotKey !== undefined) {
+        queueKey = slotKey;
+        settled = settle(queueKey);
+      }
       if (!settled.ok) {
         // A receipt for an item this queue no longer holds (already settled,
         // frozen, restarted). Reported, never invented into a transition.
@@ -2697,9 +2788,17 @@ export class SlackHandler {
           phase,
           reason: settled.reason,
         });
+      } else {
+        this.forgetSteerBookkeeping(settled.item.id);
       }
       await this.cleanupSteerFiles(this.takeSteerFiles(uuid));
-      await this.refreshFollowupSurface(sessionKey);
+      // NOT awaited: the executor awaits this hook inside its stream loop, so a
+      // Slack round-trip here delays the answer the user is waiting for. The
+      // queue mutation above is the part that must be finished before the turn
+      // moves on; the repaint is not.
+      void this.refreshFollowupSurface(queueKey).catch((error) => {
+        this.logger.debug('Steer settlement repaint failed', { error: (error as Error)?.message ?? String(error) });
+      });
     } catch (error) {
       this.logger.warn('Steer settlement failed', {
         sessionKey,
@@ -2715,24 +2814,31 @@ export class SlackHandler {
    * about to read, so the order is load-bearing: ask the SDK FIRST, and only
    * write `cancelled` once it confirmed the withdrawal.
    *
-   * A `false` from the SDK is not a failure — it means the message already left
-   * the SDK's queue, i.e. the model has it. The honest row for that is
-   * `consumed` history, so the item is settled that way and the caller says
-   * "already delivered" instead of claiming a cancel that did not happen.
+   * Its three answers are three different obligations:
+   *
+   *  - `withdrawn` — the message will never run: record the cancel.
+   *  - `already-dequeued` — the model has it. The honest row is `consumed`
+   *    history, so the item is settled that way and the caller says "already
+   *    delivered" instead of claiming a cancel that did not happen.
+   *  - `unreachable` — the SDK was never asked (no live query, or a runtime
+   *    without the control), so delivery is UNKNOWN. Recording consumption would
+   *    resolve a message nobody delivered; leaving it `steered` would leave a row
+   *    no drain can take (`followup-queue.ts:651-666`). It goes back to `queued`,
+   *    which is both honest and clickable again.
    */
   private async cancelSteeredFollowup(
     sessionKey: string,
     itemId: string,
     expectedEpoch: number,
     uuid: string,
-  ): Promise<'cancelled' | 'already-delivered' | 'failed'> {
+  ): Promise<CancelSteeredOutcome> {
     const queue = this.followupQueue;
     const dispatcher = this.followupDispatcher;
     if (!queue || !dispatcher) return 'failed';
 
-    let withdrawn: boolean;
+    let verdict: Awaited<ReturnType<ClaudeHandler['cancelSteeredMessage']>>;
     try {
-      withdrawn = await this.claudeHandler.cancelSteeredMessage(this.canonicalFollowupKey(sessionKey), uuid);
+      verdict = await this.claudeHandler.cancelSteeredMessage(this.canonicalFollowupKey(sessionKey), uuid);
     } catch (error) {
       this.logger.warn('Steered cancel could not reach the SDK', {
         sessionKey,
@@ -2743,10 +2849,25 @@ export class SlackHandler {
     }
 
     try {
-      if (!withdrawn) {
+      if (verdict === 'already-dequeued') {
         dispatcher.markConsumed(sessionKey, uuid);
+        this.forgetSteerBookkeeping(itemId);
         await this.cleanupSteerFiles(this.takeSteerFiles(uuid));
         return 'already-delivered';
+      }
+      if (verdict === 'unreachable') {
+        const returned = dispatcher.unsteer(sessionKey, uuid, '전달 여부를 확인할 수 없어 큐로 되돌림');
+        if (!returned.ok) {
+          this.logger.info('Steered cancel could not return the item to the queue', {
+            sessionKey,
+            itemId,
+            reason: returned.reason,
+          });
+          return 'failed';
+        }
+        this.forgetSteerBookkeeping(itemId);
+        await this.cleanupSteerFiles(this.takeSteerFiles(uuid));
+        return 'returned-to-queue';
       }
       const cancelled = queue.cancelSteered(sessionKey, itemId, expectedEpoch, '사용자가 취소');
       if (!cancelled.ok) {
@@ -2755,6 +2876,7 @@ export class SlackHandler {
         this.logger.info('Steered cancel not recorded', { sessionKey, itemId, reason: cancelled.reason });
         return 'failed';
       }
+      this.forgetSteerBookkeeping(itemId);
       await this.cleanupSteerFiles(this.takeSteerFiles(uuid));
       return 'cancelled';
     } catch (error) {
@@ -2810,10 +2932,26 @@ export class SlackHandler {
     const noticed = (this.followupEditNoticed ??= new Set());
     if (noticed.has(item.id)) return;
     noticed.add(item.id);
-    await this.slackApi.postSystemMessage(edit.channel, '✏️ 이미 전달·실행된 메시지라 편집이 큐에 반영되지 않습니다.', {
-      threadTs: edit.threadTs,
-    });
+    // A parked item was handed to NOBODY — "이미 전달·실행된" would describe a
+    // message that is sitting still, and it hides the one act that helps. The
+    // handed-over wording is kept for the states that really were handed over
+    // (`steered`/`reserved`/`claimed`/`dispatched`).
+    const parked = item.state === 'paused' || item.state === 'uncertain';
+    await this.slackApi.postSystemMessage(
+      edit.channel,
+      parked
+        ? '✏️ 큐가 멈춰 있어 편집이 반영되지 않습니다 — Resume 후 다시 보내주세요.'
+        : '✏️ 이미 전달·실행된 메시지라 편집이 큐에 반영되지 않습니다.',
+      { threadTs: edit.threadTs },
+    );
   }
+
+  /**
+   * A `say` that writes nothing. The steer path reuses the file pipeline but not
+   * its Slack chatter: every post it would make lands below the queue panel and
+   * duplicates the receipt the enqueue already wrote.
+   */
+  private static readonly SILENT_SAY = (async () => ({})) as any;
 
   /** Forget the files a uuid owned, handing them to the caller to delete. */
   private takeSteerFiles(uuid: string): ProcessedFile[] {
@@ -3004,8 +3142,67 @@ export class SlackHandler {
    * the loop; none of them is retried here (A16).
    */
   private async drainFollowups(sessionKey: string, report: RunReport): Promise<void> {
+    // BEFORE the boundary check, not inside it: a turn that ends unhealthy is
+    // exactly the turn whose steered messages never got a settlement frame, and
+    // a `steered` row is invisible to every drain that follows.
+    await this.sweepSteeredFollowups(sessionKey);
     const last = report.canDrain ? await this.runFollowupDrainLoop(sessionKey) : undefined;
     this.releaseDeferredGoalDriver(sessionKey, last ?? report);
+  }
+
+  /**
+   * Turn over, nothing left in `steered` (06 §6.6).
+   *
+   * `steered` is the only state whose exit depends on a receipt this process
+   * does not produce. A killed CLI, a dropped frame or an interrupt that took
+   * the turn down with the message still in it all leave a row that no drain can
+   * claim (`claimNext` takes `queued` only) and no settlement can ever reach —
+   * the message would sit in the panel forever. After the turn is over no
+   * receipt can legitimately arrive, so everything still holding the state goes
+   * back in line at its original seq.
+   *
+   * The sweep claims nothing about delivery, which is why the reason says so.
+   * Idempotent: a session whose receipts all arrived sweeps nothing and writes
+   * nothing (`followup-queue.ts:673`).
+   */
+  private async sweepSteeredFollowups(sessionKey: string): Promise<void> {
+    const dispatcher = this.followupDispatcher;
+    if (!dispatcher) return;
+    try {
+      const swept = dispatcher.unsteerAll(sessionKey, '턴 종료 — 정산 없이 큐로 복귀');
+      if (swept.length === 0) return;
+      this.logger.info('Steered follow-ups returned to the queue at turn end', {
+        sessionKey,
+        count: swept.length,
+      });
+      for (const item of swept) {
+        // The row's own uuid is cleared by the transition, so the files are
+        // found through the item→uuid map instead.
+        const uuid = this.followupSteerUuids?.get(item.id);
+        if (uuid) await this.cleanupSteerFiles(this.takeSteerFiles(uuid));
+        this.forgetSteerBookkeeping(item.id);
+      }
+      await this.refreshFollowupSurface(sessionKey);
+    } catch (error) {
+      // Best effort: a sweep that cannot be recorded must not stop the drain
+      // that follows it — the items it would have moved stay visible in the
+      // panel with their real state.
+      this.logger.warn('Steered follow-up sweep failed', {
+        sessionKey,
+        error: (error as Error)?.message ?? String(error),
+      });
+    }
+  }
+
+  /**
+   * Drop everything this host remembered about an item's steer: the uuid it was
+   * pushed under, and the "your edit did not reach the queue" one-shot. Both are
+   * per-delivery facts — kept past the delivery they would leak, and the edit
+   * notice would stay silent for a message that got queued all over again.
+   */
+  private forgetSteerBookkeeping(itemId: string): void {
+    this.followupSteerUuids?.delete(itemId);
+    this.followupEditNoticed?.delete(itemId);
   }
 
   /**
@@ -3051,9 +3248,13 @@ export class SlackHandler {
     if (!queue || !dispatcher) return false;
     if (queue.freezeReason(sessionKey)) return true;
     if (dispatcher.drainHalt(sessionKey)) return true;
-    return queue
-      .list(sessionKey)
-      .some((item) => item.state === 'queued' || item.state === 'reserved' || item.state === 'claimed');
+    return queue.list(sessionKey).some(
+      (item) =>
+        // `steered` counts like `queued`: the message is outstanding user work
+        // the model has not answered yet, and an autogoal turn started on top
+        // of it is the same inversion §3.6 forbids.
+        item.state === 'queued' || item.state === 'steered' || item.state === 'reserved' || item.state === 'claimed',
+    );
   }
 
   /**

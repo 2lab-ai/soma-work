@@ -128,12 +128,14 @@ export interface FollowupActionSession {
 }
 
 /**
- * What a cancel of a `steered` item could do (06 §3.4). Three outcomes, three
+ * What a cancel of a `steered` item could do (06 §3.4). Four outcomes, four
  * different truths: the SDK withdrew the message, the SDK had already handed it
- * to the model, or the cancel could not be carried out at all. They are never
- * collapsed — "이미 전달됨" is not a failure and "실패" is not a cancellation.
+ * to the model, the SDK could not be asked at all — so the item went back to the
+ * queue and the control still works — or the cancel could not be carried out.
+ * They are never collapsed: "이미 전달됨" is not a failure, "실패" is not a
+ * cancellation, and neither of them is "we do not know".
  */
-export type CancelSteeredOutcome = 'cancelled' | 'already-delivered' | 'failed';
+export type CancelSteeredOutcome = 'cancelled' | 'already-delivered' | 'returned-to-queue' | 'failed';
 
 export interface FollowupActionsDeps {
   queue: FollowupActionsQueuePort;
@@ -165,6 +167,19 @@ export interface FollowupActionsDeps {
   refresh(sessionKey: string, page?: number): void | Promise<void>;
   /** The HOST's drain loop. This module never re-enters the dispatcher itself. */
   runDrain(sessionKey: string): void | Promise<void>;
+  /**
+   * `Send now` may have pulled the item out of `steered` (the dispatcher does it
+   * inside its own transaction, `followup-dispatcher.ts:831-864`), and that is
+   * the ONE exit from `steered` the host never sees a uuid for: no settlement
+   * frame, no cancel hook. Told here so the host can release whatever it was
+   * holding for that item's steer — temp files above all.
+   *
+   * Announced after the transaction, unconditionally: whether the item really
+   * was steered is the host's to decide, and a "may have" that costs a map
+   * lookup is cheaper than a leaked download. Optional and best effort — a
+   * throwing hook must not turn a delivered message into a failed click.
+   */
+  onItemLeftSteer?(sessionKey: string, itemId: string): void;
   /** Optional logger seam; falls back to this module's `Logger`. */
   reportError?(label: string, error: unknown): void;
 }
@@ -293,6 +308,14 @@ async function handleSendNow(
     // working directory all come from the stored item (A30).
     result = await deps.dispatcher.sendNow(value.sessionKey, value.itemId, value.epoch, click.clicker, value.turnEpoch);
   } finally {
+    // Whatever the dispatcher decided, the item is no longer `steered` in the
+    // shape the host remembered it — report it before the refresh so a repaint
+    // failure cannot swallow the release.
+    try {
+      deps.onItemLeftSteer?.(value.sessionKey, value.itemId);
+    } catch (error) {
+      report(deps, 'Send now steer release', error);
+    }
     // The item moved (reserved/dispatched) or it did not — either way the
     // surface is now out of date.
     await safeRefresh(deps, value.sessionKey);
@@ -530,6 +553,13 @@ const CANCEL_STALE_TEXT = '이미 바뀐 항목입니다 — 패널을 새로고
 const CANCEL_STEERED_OK_TEXT = '취소했습니다 — 모델에 전달되기 전에 회수했습니다.';
 /** The SDK had already dequeued it, so the message is part of the running turn. */
 const CANCEL_STEERED_DELIVERED_TEXT = '취소하지 못했습니다 — 이미 모델에 전달되어 실행 중입니다.';
+/**
+ * The SDK could not be asked, so delivery is unknown. The item is back in the
+ * queue, which is both the honest state and a working control: the next click
+ * cancels an ordinary `queued` row.
+ */
+const CANCEL_STEERED_RETURNED_TEXT =
+  '취소하지 못했습니다 — 전달 여부를 확인할 수 없어 큐로 되돌렸습니다. 다시 Cancel 할 수 있습니다.';
 
 /**
  * Cancel (menu-only). Authorization is the SAME interrupt policy Resume and
@@ -616,10 +646,11 @@ async function handleCancel(
 /**
  * Cancel of a `steered` item: the SDK decides, this only reports what it said.
  *
- * Each outcome gets its own sentence, because they are three different facts
+ * Each outcome gets its own sentence, because they are four different facts
  * for the user (A29): withdrawn before the model read it, already in the
- * model's hands, or not carried out at all. A throw is left to the detached
- * catch — it must not be turned into "cancelled".
+ * model's hands, returned to the queue with delivery unknown, or not carried
+ * out at all. A throw is left to the detached catch — it must not be turned
+ * into "cancelled".
  */
 async function cancelSteeredItem(
   deps: FollowupActionsDeps,
@@ -641,6 +672,10 @@ async function cancelSteeredItem(
   }
   if (outcome === 'already-delivered') {
     await reply(respond, CANCEL_STEERED_DELIVERED_TEXT);
+    return;
+  }
+  if (outcome === 'returned-to-queue') {
+    await reply(respond, CANCEL_STEERED_RETURNED_TEXT);
     return;
   }
   await refuse(respond, cancelRefusal(outcome, 'steered'));

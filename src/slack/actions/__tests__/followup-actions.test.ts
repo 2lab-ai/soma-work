@@ -851,6 +851,24 @@ describe('cancel — steered item', () => {
     expect(h.queue.cancelItem).not.toHaveBeenCalled();
   });
 
+  /**
+   * The SDK could not be asked at all, so the item went back to `queued`. That
+   * is neither a cancel nor a delivery: the user is told the truth AND that the
+   * control still works.
+   */
+  it('says the item went back to the queue when delivery could not be determined', async () => {
+    const h = harness({ cancelSteered: vi.fn(async () => 'returned-to-queue' as const) });
+    h.queue.get.mockReturnValue(steeredItem());
+
+    await h.click(MENU_ACTION_ID, menuBody(menuValue('cancel', { epoch: 1 })));
+    await tick();
+
+    expect(lastEphemeral(h.responses)).toBe(
+      '취소하지 못했습니다 — 전달 여부를 확인할 수 없어 큐로 되돌렸습니다. 다시 Cancel 할 수 있습니다.',
+    );
+    expect(h.queue.cancelItem).not.toHaveBeenCalled();
+  });
+
   it('falls back to the ordinary refusal wording when the cancel itself failed', async () => {
     const h = harness({ cancelSteered: vi.fn(async () => 'failed' as const) });
     h.queue.get.mockReturnValue(steeredItem());
@@ -888,6 +906,36 @@ describe('cancel — steered item', () => {
     expect(h.cancelSteered).not.toHaveBeenCalled();
     expect(h.queue.cancelItem).not.toHaveBeenCalled();
     expect(lastEphemeral(h.responses)).toContain('취소');
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * Steer artifacts — `Send now` is the one path that takes an item out of
+ * `steered` without the host ever seeing a uuid.
+ * ------------------------------------------------------------------ */
+
+describe('Send now — steer artifacts', () => {
+  it('tells the host the item may have left `steered`, so it can drop what it held', async () => {
+    const onItemLeftSteer = vi.fn();
+    const h = harness({ onItemLeftSteer });
+
+    await h.click(FOLLOWUP_SEND_NOW_ACTION_ID, clickBody(itemValue({ turnEpoch: 0 })));
+    await tick();
+
+    expect(onItemLeftSteer).toHaveBeenCalledWith(SESSION_KEY, `${SESSION_KEY}#1`);
+  });
+
+  it('never fails the click when the host hook throws', async () => {
+    const h = harness({
+      onItemLeftSteer: vi.fn(() => {
+        throw new Error('map gone');
+      }),
+    });
+
+    await h.click(FOLLOWUP_SEND_NOW_ACTION_ID, clickBody(itemValue({ turnEpoch: 0 })));
+    await tick();
+
+    expect(h.dispatcher.sendNow).toHaveBeenCalled();
   });
 });
 

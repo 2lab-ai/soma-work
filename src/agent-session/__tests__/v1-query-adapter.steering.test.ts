@@ -20,7 +20,7 @@ function createSteering() {
   return {
     steerTurn: vi.fn().mockReturnValue(true),
     interruptTurn: vi.fn().mockResolvedValue({ stillQueued: ['q-1'], cancelled: [] }),
-    cancelSteeredMessage: vi.fn().mockResolvedValue(true),
+    cancelSteeredMessage: vi.fn().mockResolvedValue('withdrawn' as const),
   };
 }
 
@@ -61,6 +61,19 @@ describe('V1QueryAdapter steering pass-throughs (user-steering WU1)', () => {
 
     await expect(adapter.cancelSteered('u-2')).resolves.toBe(true);
     expect(steering.cancelSteeredMessage).toHaveBeenCalledWith('C1-171.100', 'u-2');
+  });
+
+  /** Only a withdrawal is `true`: a message the model already has was not cancelled. */
+  it('cancelSteered() is false when the SDK had already dequeued the message', async () => {
+    const steering = createSteering();
+    steering.cancelSteeredMessage.mockResolvedValue('already-dequeued' as const);
+    const adapter = new V1QueryAdapter({
+      streamExecutor: createExecutor(),
+      executeParams: { sessionKey: 'C1-171.100', abortController: new AbortController() },
+      steering,
+    });
+
+    await expect(adapter.cancelSteered('u-2')).resolves.toBe(false);
   });
 
   it('degrades safely when no steering port is wired', async () => {

@@ -1393,6 +1393,175 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(items()[0].state).toBe('queued');
       await settle();
     });
+
+    /**
+     * Steering hands the RAW text to the model, so anything the dispatch path
+     * would have to interpret first must not be steered. A `control-with-dispatch`
+     * command (`new`/`goal`/`$skill`/`compact`) only means what it says after
+     * `processMessage` re-routes it (`command-router.ts:380-414`); steered, the
+     * model would read the literal string as an instruction and the command
+     * would never run.
+     */
+    for (const text of ['goal 릴리즈까지 끌고 가줘', 'new 테스트 하나 써줘', '$autoz 이거 해줘', 'compact']) {
+      it(`queues \`${text}\` instead of steering it — it has to re-route through dispatch`, async () => {
+        const steerTurn = withLiveTurn();
+        const { settle } = await startBusyTurn();
+
+        await handler.handleMessage(message({ ts: '333.444', text }), say());
+
+        expect(steerTurn).not.toHaveBeenCalled();
+        expect(items()).toHaveLength(1);
+        expect(items()[0].state).toBe('queued');
+        expect(receipts().join('\n')).toContain('📥 Queue에 넣었습니다');
+        await settle();
+      });
+    }
+
+    /**
+     * `%model opus 해줘` is a TURN carrying a session directive: the directive is
+     * stripped and applied by the dispatch path (`slack-handler.ts:1085`).
+     * Steered, the `%model opus` prefix would reach the model as prose and the
+     * model swap would silently not happen.
+     */
+    it('queues a message carrying an inline `%` directive instead of steering it', async () => {
+      const steerTurn = withLiveTurn();
+      const { settle } = await startBusyTurn();
+
+      await handler.handleMessage(message({ ts: '333.444', text: '%model opus 이것도 같이 봐줘' }), say());
+
+      expect(steerTurn).not.toHaveBeenCalled();
+      expect(items()[0].state).toBe('queued');
+      expect(items()[0].message.text).toBe('%model opus 이것도 같이 봐줘');
+      await settle();
+    });
+
+    /**
+     * Steering is an interrupt of someone else's running turn, so it takes the
+     * SAME authorization `Send now` takes (`slack-handler.ts:3082`). Without it
+     * any thread member could inject text into the owner's live turn — a right
+     * no button in this UI grants them.
+     */
+    it('does not steer a reply from someone who may not interrupt the session', async () => {
+      const steerTurn = withLiveTurn();
+      claudeHandler.canInterrupt.mockImplementation(
+        (_channel: string, _threadTs: string, user: string) => user === 'U_OWNER',
+      );
+      const { settle } = await startBusyTurn();
+
+      await handler.handleMessage(message({ user: 'U_STRANGER', ts: '333.444', text: '이것도 같이 봐줘' }), say());
+
+      expect(steerTurn).not.toHaveBeenCalled();
+      expect(items()).toHaveLength(1);
+      expect(items()[0].state).toBe('queued');
+      expect(receipts().join('\n')).toContain('📥 Queue에 넣었습니다');
+      await settle();
+    });
+
+    /**
+     * The push was refused AND the rollback could not be persisted, so the row
+     * is stuck `steered` — the one case where "큐에 넣었습니다" would be a lie
+     * about a state the panel is about to show differently.
+     */
+    it('says the state is undetermined when the rollback of a refused push failed', async () => {
+      withLiveTurn(false);
+      const { settle } = await startBusyTurn();
+      // enqueue commits, steer commits, the rollback's commit is the one that dies.
+      let writes = 0;
+      const store = handlerAny.followupStore;
+      const realSave = store.save;
+      store.save = (snapshot: FollowupQueueSnapshot) => {
+        writes += 1;
+        if (writes === 3) throw new Error('disk full');
+        realSave(snapshot);
+      };
+
+      await handler.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
+      store.save = realSave;
+
+      expect(items()[0].state).toBe('steered');
+      const text = receipts().join('\n');
+      expect(text).toContain('⚠️ 전달 중 오류로 항목 상태를 확정하지 못했습니다');
+      expect(text).not.toContain('📥 Queue에 넣었습니다');
+      await settle();
+    });
+
+    it('cleans up downloaded files when the formatted prompt turns out to be empty', async () => {
+      withLiveTurn();
+      const cleanupTempFiles = vi.fn().mockResolvedValue(undefined);
+      const processed = [{ name: 'log.txt', path: '/tmp/log.txt', isImage: false }];
+      processFiles.mockResolvedValue({ files: processed, shouldContinue: true });
+      handlerAny.fileHandler = { formatFilePrompt: vi.fn().mockResolvedValue('   '), cleanupTempFiles };
+      const { settle } = await startBusyTurn();
+
+      await handler.handleMessage(
+        message({
+          ts: '333.444',
+          text: '',
+          files: [
+            {
+              id: 'F1',
+              name: 'log.txt',
+              mimetype: 'text/plain',
+              filetype: 'text',
+              url_private: 'https://x/1',
+              url_private_download: 'https://x/1d',
+              size: 12,
+            },
+          ],
+        }),
+        say(),
+      );
+
+      expect(cleanupTempFiles).toHaveBeenCalledWith(processed);
+      expect(items()[0].state).toBe('queued');
+      await settle();
+    });
+
+    /**
+     * `processFiles` announces "📎 Processing N file(s)" through the raw Bolt
+     * `say` (`input-processor.ts:106-110`). On the steer path that post is an
+     * untracked bot message landing UNDER the queue panel, which the panel then
+     * has to chase. The download still happens; only the announcement is
+     * silenced — the receipt below it already says the message was delivered.
+     */
+    it('downloads the files without posting the untracked "Processing files" notice', async () => {
+      withLiveTurn();
+      const processed = [{ name: 'log.txt', path: '/tmp/log.txt', isImage: false }];
+      processFiles.mockImplementation(async (_event: any, sayFn: any) => {
+        await sayFn({ text: '📎 Processing 1 file(s): log.txt' });
+        return { files: processed, shouldContinue: true };
+      });
+      handlerAny.fileHandler = {
+        formatFilePrompt: vi.fn().mockResolvedValue('이 로그 봐줘\n\n/tmp/log.txt'),
+        cleanupTempFiles: vi.fn().mockResolvedValue(undefined),
+      };
+      const { settle } = await startBusyTurn();
+      const bolt = say();
+
+      await handler.handleMessage(
+        message({
+          ts: '333.444',
+          text: '이 로그 봐줘',
+          files: [
+            {
+              id: 'F1',
+              name: 'log.txt',
+              mimetype: 'text/plain',
+              filetype: 'text',
+              url_private: 'https://x/1',
+              url_private_download: 'https://x/1d',
+              size: 12,
+            },
+          ],
+        }),
+        bolt,
+      );
+
+      expect(processFiles).toHaveBeenCalled();
+      expect(bolt).not.toHaveBeenCalled();
+      expect(items()[0].state).toBe('steered');
+      await settle();
+    });
   });
 
   /* ---------------------------------------------------------------- *
@@ -1502,6 +1671,130 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(items()[0].state).toBe('steered');
       await settle();
     });
+
+    /**
+     * The frame carries the SESSION key the executor ran under; after a
+     * bot-thread migration the ROW lives under the slot key the push was made
+     * on (`dispatcher.steer` only accepts the key that owns the live slot,
+     * `followup-dispatcher.ts:497-500`). Settling the wrong bucket would leave
+     * the item `steered` forever and record nothing.
+     */
+    it('settles the bucket the item was enqueued in when the turn migrated to a work thread', async () => {
+      const WORK_KEY = 'C123:999.000';
+      claudeHandler.getSessionKey.mockImplementation(
+        (channel: string, threadTs?: string) => `${channel}:${threadTs ?? ''}`,
+      );
+      const workSession = { ...registrySession, threadTs: '999.000', threadRootTs: '999.000' };
+      claudeHandler.getSessionByKey.mockImplementation((key: string) =>
+        key === WORK_KEY ? workSession : registrySession,
+      );
+      initialize.mockImplementation(async () => ({
+        session: workSession,
+        sessionKey: WORK_KEY,
+        isNewSession: true,
+        userName: 'Owner',
+        workingDirectory: '/tmp/work',
+        abortController: new AbortController(),
+        halted: false,
+      }));
+      const steerTurn = vi.fn().mockReturnValue(true);
+      claudeHandler.steerTurn = steerTurn;
+
+      const gate = deferred<any>();
+      startWithContinuation.mockImplementationOnce(() => gate.promise);
+      // The slot was opened under the SOURCE key; the session runs under the work key.
+      const first = handler.handleMessage(message({ ts: '222.333', text: '첫 지시' }), say());
+      await tick();
+
+      // The reply arrives in the SOURCE thread — the key that owns the slot.
+      await handler.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
+      expect(items()[0].state).toBe('steered');
+      // The push was addressed to the session that is really running.
+      expect(steerTurn.mock.calls[0][0]).toBe(WORK_KEY);
+
+      // …so the receipt comes back stamped with THAT key.
+      await lifecycle()({ sessionKey: WORK_KEY, uuid: steerTurn.mock.calls[0][1].uuid, phase: 'completed' });
+
+      expect(items()[0].state).toBe('resolved');
+      expect(items()[0].stateReason).toBe('consumed');
+
+      gate.resolve({ hasPendingChoice: false });
+      await first;
+    });
+  });
+
+  /* ---------------------------------------------------------------- *
+   * Orphaned `steered` rows — a turn can end without ever naming the
+   * message it was given (killed CLI, dropped frame). No drain can take a
+   * `steered` row, so the sweep is what keeps it from sitting forever.
+   * ---------------------------------------------------------------- */
+
+  describe('end-of-turn sweep', () => {
+    it('returns a never-settled message to the queue and drains it', async () => {
+      claudeHandler.steerTurn = vi.fn().mockReturnValue(true);
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
+      expect(items()[0].state).toBe('steered');
+
+      // The turn ends and no `steer_lifecycle` frame ever names the message.
+      await settle();
+
+      // It ran as an ordinary drained item instead of being stranded.
+      expect(startWithContinuation).toHaveBeenCalledTimes(2);
+      expect(items()[0].state).toBe('resolved');
+    });
+
+    it('cleans up the steered temp files it swept back into the queue', async () => {
+      const cleanupTempFiles = vi.fn().mockResolvedValue(undefined);
+      const processed = [{ name: 'log.txt', path: '/tmp/log.txt', isImage: false }];
+      processFiles.mockResolvedValue({ files: processed, shouldContinue: true });
+      handlerAny.fileHandler = { formatFilePrompt: vi.fn().mockResolvedValue('t'), cleanupTempFiles };
+      claudeHandler.steerTurn = vi.fn().mockReturnValue(true);
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(
+        message({
+          ts: '333.444',
+          text: '이 로그 봐줘',
+          files: [
+            {
+              id: 'F1',
+              name: 'log.txt',
+              mimetype: 'text/plain',
+              filetype: 'text',
+              url_private: 'https://x/1',
+              url_private_download: 'https://x/1d',
+              size: 12,
+            },
+          ],
+        }),
+        say(),
+      );
+
+      await settle();
+
+      expect(cleanupTempFiles).toHaveBeenCalledWith(processed);
+    });
+
+    /**
+     * A steered item is outstanding follow-up work exactly like a queued one —
+     * the autogoal driver must not start a turn on top of it (§3.6).
+     */
+    it('holds the autogoal driver while a message is still steered', async () => {
+      claudeHandler.steerTurn = vi.fn().mockReturnValue(true);
+      const goalDriver = vi.fn();
+      handler.setGoalTurnSettledHandler(goalDriver);
+      registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
+
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: '사람 후속 지시' }), say());
+      expect(items()[0].state).toBe('steered');
+
+      handlerAny.handleAssistantTurnCompleteForGoal(registrySession, SESSION_KEY, ['turn text']);
+      expect(goalDriver).not.toHaveBeenCalled();
+
+      await settle();
+      expect(goalDriver).toHaveBeenCalledTimes(1);
+    });
   });
 
   /* ---------------------------------------------------------------- *
@@ -1520,7 +1813,7 @@ describe('SlackHandler — follow-up queue host', () => {
 
     it('cancels the item once the SDK confirmed the withdrawal', async () => {
       const { uuid, itemId, epoch, settle } = await steerOne();
-      claudeHandler.cancelSteeredMessage = vi.fn().mockResolvedValue(true);
+      claudeHandler.cancelSteeredMessage = vi.fn().mockResolvedValue('withdrawn');
 
       const outcome = await handlerAny.cancelSteeredFollowup(SESSION_KEY, itemId, epoch, uuid);
 
@@ -1532,7 +1825,7 @@ describe('SlackHandler — follow-up queue host', () => {
 
     it('reports an already-delivered message and records it as consumed', async () => {
       const { uuid, itemId, epoch, settle } = await steerOne();
-      claudeHandler.cancelSteeredMessage = vi.fn().mockResolvedValue(false);
+      claudeHandler.cancelSteeredMessage = vi.fn().mockResolvedValue('already-dequeued');
 
       const outcome = await handlerAny.cancelSteeredFollowup(SESSION_KEY, itemId, epoch, uuid);
 
@@ -1542,9 +1835,27 @@ describe('SlackHandler — follow-up queue host', () => {
       await settle();
     });
 
+    /**
+     * The SDK was never asked (no live query for the key, or a runtime without
+     * `cancelAsyncMessage`), so delivery is UNKNOWN. Recording consumption would
+     * resolve a message nobody delivered; leaving it `steered` would leave a row
+     * no drain can take. It goes back to `queued`, where the control works again.
+     */
+    it('returns the item to the queue when the SDK could not be asked', async () => {
+      const { uuid, itemId, epoch, settle } = await steerOne();
+      claudeHandler.cancelSteeredMessage = vi.fn().mockResolvedValue('unreachable');
+
+      const outcome = await handlerAny.cancelSteeredFollowup(SESSION_KEY, itemId, epoch, uuid);
+
+      expect(outcome).toBe('returned-to-queue');
+      expect(items()[0].state).toBe('queued');
+      expect(items()[0].stateReason).toBe('전달 여부를 확인할 수 없어 큐로 되돌림');
+      await settle();
+    });
+
     it('reports failure without touching the item when the queue write loses the CAS', async () => {
       const { uuid, itemId, settle } = await steerOne();
-      claudeHandler.cancelSteeredMessage = vi.fn().mockResolvedValue(true);
+      claudeHandler.cancelSteeredMessage = vi.fn().mockResolvedValue('withdrawn');
 
       const outcome = await handlerAny.cancelSteeredFollowup(SESSION_KEY, itemId, 99, uuid);
 
@@ -1602,6 +1913,48 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(notices).toHaveLength(1);
       // The stored text is the one the model was given, not the edit.
       expect(items()[0].message.text).toBe('배포 상태 알려줘');
+      await settle();
+    });
+
+    /**
+     * A `paused`/`uncertain` item was never handed to anyone — "이미 전달·실행된"
+     * would be a lie about a message that is sitting still, and it hides the one
+     * action that actually helps (Resume).
+     */
+    it('tells a paused item the queue is stopped, not that the message was delivered', async () => {
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: '배포 상태 알려줘' }), say());
+      await handler.handleMessage(message({ ts: '333.555', text: '!' }), say());
+      await settle();
+      expect(items()[0].state).toBe('paused');
+
+      await handlerAny.handleQueuedMessageEdit(edit());
+
+      const notice = postSystemMessage.mock.calls.map((call: any[]) => String(call[1])).filter((t) => t.includes('✏️'));
+      expect(notice).toHaveLength(1);
+      expect(notice[0]).toBe('✏️ 큐가 멈춰 있어 편집이 반영되지 않습니다 — Resume 후 다시 보내주세요.');
+    });
+
+    /**
+     * The "one notice per item" memory is not a leak: once the item is settled
+     * it can never take an edit again, so the entry is dropped with it.
+     */
+    it('forgets the edit notice once the item is settled', async () => {
+      const steerTurn = vi.fn().mockReturnValue(true);
+      claudeHandler.steerTurn = steerTurn;
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: '배포 상태 알려줘' }), say());
+      await handlerAny.handleQueuedMessageEdit(edit());
+      const itemId = items()[0].id;
+      expect(handlerAny.followupEditNoticed.has(itemId)).toBe(true);
+
+      await handlerAny.streamExecutor.deps.onSteerLifecycle({
+        sessionKey: SESSION_KEY,
+        uuid: steerTurn.mock.calls[0][1].uuid,
+        phase: 'completed',
+      });
+
+      expect(handlerAny.followupEditNoticed.has(itemId)).toBe(false);
       await settle();
     });
   });
