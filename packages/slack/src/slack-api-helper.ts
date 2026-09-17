@@ -19,6 +19,24 @@ export interface MessageOptions {
 }
 
 /**
+ * A bot message that landed INSIDE a thread.
+ *
+ * `threadTs` is where Slack actually put it, not necessarily where the caller
+ * asked for it (a dead `thread_ts` is silently dropped — see
+ * {@link SlackApiHelper.postMessage}). `kind` separates an ordinary
+ * `chat.postMessage` from a `chat.startStream` message, which is posted by
+ * `TurnSurface` through the raw client and therefore reports itself.
+ */
+export interface ThreadPostEvent {
+  channel: string;
+  threadTs: string;
+  ts: string;
+  kind: 'post' | 'stream';
+}
+
+export type ThreadPostListener = (event: ThreadPostEvent) => void;
+
+/**
  * Rate limiting 설정
  */
 interface RateLimitConfig {
@@ -271,6 +289,14 @@ export class SlackApiHelper {
   private processing = false;
   private rateLimit: RateLimitConfig;
 
+  /**
+   * The HOST's single thread-post hook. Set by whoever composes the app; kept
+   * separate from {@link addThreadPostListener} so a component that subscribes
+   * (the thread panel) can never clobber the host's assignment, and vice versa.
+   */
+  onThreadPost?: ThreadPostListener;
+  private threadPostListeners = new Set<ThreadPostListener>();
+
   constructor(
     private app: App,
     rateLimit?: Partial<RateLimitConfig>,
@@ -285,6 +311,45 @@ export class SlackApiHelper {
    */
   getClient() {
     return this.app.client;
+  }
+
+  /**
+   * Subscribe to thread posts. Returns the unsubscribe function.
+   *
+   * Exists because the thread panel has to learn that something was posted
+   * BELOW it (it can only stay at the tail by re-posting itself), and a
+   * per-sender notification would miss whichever sender is added next. Every
+   * message that goes through this helper reports itself here, once.
+   */
+  addThreadPostListener(listener: ThreadPostListener): () => void {
+    this.threadPostListeners.add(listener);
+    return () => {
+      this.threadPostListeners.delete(listener);
+    };
+  }
+
+  /**
+   * Announce a thread message. Public because `TurnSurface` posts its B1 stream
+   * through the raw client (`chat.startStream`), so the only component that can
+   * report that message is that one.
+   *
+   * A listener fault is swallowed: the post has already happened, and letting a
+   * UI subscriber's exception propagate would fail the send that succeeded.
+   */
+  notifyThreadPost(event: ThreadPostEvent): void {
+    if (!event.threadTs || !event.ts) {
+      return;
+    }
+    for (const listener of [this.onThreadPost, ...this.threadPostListeners]) {
+      if (!listener) {
+        continue;
+      }
+      try {
+        listener(event);
+      } catch (error) {
+        this.logger.warn('thread-post listener failed', { channel: event.channel, ts: event.ts, error });
+      }
+    }
   }
 
   /**
@@ -605,6 +670,9 @@ export class SlackApiHelper {
   /**
    * 시스템 메시지 전송 (⚡ zap 리액션으로 모델 응답과 구분)
    * 프로그램에서 직접 보내는 메시지에 사용
+   *
+   * Thread-post notification comes from the delegated {@link postMessage} —
+   * one message, one notification.
    */
   async postSystemMessage(
     channel: string,
@@ -648,16 +716,7 @@ export class SlackApiHelper {
 
     try {
       const result = await this.enqueue(() => this.app.client.chat.postMessage(payload));
-      // `threadTs` is what Slack ACTUALLY threaded the message under, which is not
-      // always what we asked for: a dead `thread_ts` is silently dropped and the
-      // message becomes a top-level channel post. Surfacing it lets callers detect
-      // that and undo it. See getThreadRootState() for the measured behaviour.
-      return {
-        ts: result.ts,
-        channel: result.channel,
-        threadTs: (result.message as any)?.thread_ts,
-        echoedMessage: !!result.message,
-      };
+      return this.completePost(channel, options?.threadTs, result);
     } catch (error) {
       // 2026-07-09 incident: an over-limit goal-status section (3000-char cap)
       // made chat.postMessage fail with `invalid_blocks`, the throw crashed
@@ -671,16 +730,40 @@ export class SlackApiHelper {
         const fallback = { ...payload };
         fallback.blocks = undefined;
         const result = await this.enqueue(() => this.app.client.chat.postMessage(fallback));
-        return {
-          ts: result.ts,
-          channel: result.channel,
-          threadTs: (result.message as any)?.thread_ts,
-          echoedMessage: !!result.message,
-        };
+        return this.completePost(channel, options?.threadTs, result);
       }
       this.logger.error('Failed to post message', { channel, error });
       throw error;
     }
+  }
+
+  /**
+   * Shape a `chat.postMessage` result and announce it if it landed in a thread.
+   *
+   * `threadTs` is what Slack ACTUALLY threaded the message under, which is not
+   * always what we asked for: a dead `thread_ts` is silently dropped and the
+   * message becomes a top-level channel post. Surfacing it lets callers detect
+   * that and undo it (see getThreadRootState() for the measured behaviour), and
+   * it is also the ONLY honest anchor for the notification — reporting the
+   * requested thread would tell the panel to re-anchor inside a thread that did
+   * not receive the message.
+   */
+  private completePost(
+    channel: string,
+    requestedThreadTs: string | undefined,
+    result: { ts?: string; channel?: string; message?: unknown },
+  ): { ts?: string; channel?: string; threadTs?: string; echoedMessage?: boolean } {
+    const threadTs = (result.message as any)?.thread_ts as string | undefined;
+    const anchor = result.message ? threadTs : requestedThreadTs;
+    if (anchor && result.ts) {
+      this.notifyThreadPost({ channel: result.channel ?? channel, threadTs: anchor, ts: result.ts, kind: 'post' });
+    }
+    return {
+      ts: result.ts,
+      channel: result.channel,
+      threadTs,
+      echoedMessage: !!result.message,
+    };
   }
 
   /**

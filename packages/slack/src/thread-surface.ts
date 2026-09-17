@@ -4,10 +4,15 @@ import type { AssistantStatusManager } from './assistant-status-manager';
 import type { CompletionMessageTracker } from './completion-message-tracker';
 import { ContextWindowManager, type SessionUsage } from './context-window-manager';
 import type { FollowupItemState } from './followup-queue';
-import { buildFollowupQueueBlocks, FOLLOWUP_QUEUE_TITLE, type FollowupQueueView } from './followup-queue-blocks';
+import {
+  buildFollowupQueueBlocks,
+  FOLLOWUP_QUEUE_TITLE,
+  type FollowupQueueView,
+  followupQueueCompactCapacity,
+} from './followup-queue-blocks';
 import { escapeSlackMrkdwn } from './mrkdwn-escape';
 import type { RequestCoordinator } from './request-coordinator';
-import type { SlackApiHelper } from './slack-api-helper';
+import type { SlackApiHelper, ThreadPostEvent } from './slack-api-helper';
 import {
   type BeginPostOutcome,
   type DeliveryIntentRecord,
@@ -252,6 +257,22 @@ const RENDER_DEBOUNCE_MS = Number(process.env.SLACK_RENDER_DEBOUNCE_MS) || 3000;
 const PR_CACHE_TTL_MS = 60_000;
 
 /**
+ * How long a burst of thread posts is collected before the panel re-anchors to
+ * the tail. A streamed answer arrives as several messages within a second, and
+ * one delete+post per message would be both wasteful and visibly flickery.
+ */
+const REANCHOR_DEBOUNCE_MS = Number(process.env.SLACK_PANEL_REANCHOR_DEBOUNCE_MS) || 700;
+
+/**
+ * Floor on the interval between two re-anchors of the same session. A re-anchor
+ * costs a `chat.delete` + a `chat.postMessage`, and a busy thread would
+ * otherwise spend its whole rate-limit budget moving one card around. A
+ * re-anchor that arrives inside the window is not dropped, it is deferred to
+ * the end of it — the panel still ends up last, just not immediately.
+ */
+const REANCHOR_MIN_INTERVAL_MS = Number(process.env.SLACK_PANEL_REANCHOR_MIN_INTERVAL_MS) || 3000;
+
+/**
  * Slack's hard per-message block cap
  * (docs.slack.dev/reference/block-kit/blocks — 50 blocks for `chat.update`).
  * The combined surface must fit header + status + Queue + controls inside it.
@@ -265,9 +286,6 @@ const MAX_MESSAGE_BLOCKS = 50;
  * capped tighter. Pagination keeps every backlog item reachable.
  */
 const FOLLOWUP_EMBED_PAGE_SIZE = 5;
-
-/** Non-item queue blocks: title + summary + (freeze) + (nav), plus a degradation note. */
-const FOLLOWUP_FIXED_BLOCKS = 4;
 
 /**
  * A24b — Slack `data.error` codes that PROVE no message was created, and are
@@ -344,6 +362,29 @@ interface SessionRenderState {
    * of the turn, so this is warned once per session and debug-logged after.
    */
   epochUnverifiableWarned: boolean;
+  /**
+   * Where the panel was last rendered. Written on every render, and the ONLY
+   * thing the thread-post listener matches on — a `ts` is meaningful only
+   * together with its channel and thread.
+   */
+  address: { channelId: string; threadTs?: string } | null;
+  /**
+   * The session this surface last rendered, so the listener can act even when
+   * the deps carry no `getSessionByKey` (legacy harnesses).
+   */
+  lastSession: ConversationSession | null;
+  /** Newest FOREIGN thread post seen since the last re-anchor. */
+  newestThreadPostTs: string | null;
+  /** Pending re-anchor. Present ⇒ the burst is already accounted for. */
+  reanchorTimer: ReturnType<typeof setTimeout> | null;
+  /** When the last re-anchor was attempted (rate-limit floor). */
+  lastReanchorAt: number;
+  /**
+   * True while THIS surface is posting its own panel. Its own message reaches
+   * the listener like any other thread post, and re-anchoring on it would make
+   * the panel delete and repost itself forever.
+   */
+  selfPosting: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -372,7 +413,12 @@ export class ThreadSurface {
   // Per-session render state keyed by sessionKey
   private sessions = new Map<string, SessionRenderState>();
 
-  constructor(private deps: ThreadSurfaceDeps) {}
+  /** Undo the thread-post subscription. No-op when none could be made. */
+  private readonly unsubscribeThreadPosts: () => void;
+
+  constructor(private deps: ThreadSurfaceDeps) {
+    this.unsubscribeThreadPosts = this.subscribeThreadPosts();
+  }
 
   private getState(sessionKey: string): SessionRenderState {
     let state = this.sessions.get(sessionKey);
@@ -388,6 +434,12 @@ export class ThreadSurface {
         followupPage: 1,
         outboxWarned: false,
         epochUnverifiableWarned: false,
+        address: null,
+        lastSession: null,
+        newestThreadPostTs: null,
+        reanchorTimer: null,
+        lastReanchorAt: 0,
+        selfPosting: false,
       };
       this.sessions.set(sessionKey, state);
     }
@@ -853,11 +905,175 @@ export class ThreadSurface {
       if (rs.pendingTimer) {
         clearTimeout(rs.pendingTimer);
       }
+      if (rs.reanchorTimer) {
+        clearTimeout(rs.reanchorTimer);
+      }
       rs.pendingSession = null;
+      rs.lastSession = null;
       rs.prCache = null;
     }
     this.sessions.delete(sessionKey);
     this.deps.completionMessageTracker?.clearProtection(sessionKey);
+  }
+
+  /**
+   * Drop the thread-post subscription and every pending timer. For a host that
+   * tears a `ThreadPanel` down while the process keeps running; a surface that
+   * lives for the process lifetime never needs it.
+   */
+  dispose(): void {
+    this.unsubscribeThreadPosts();
+    for (const sessionKey of [...this.sessions.keys()]) {
+      this.cleanup(sessionKey);
+    }
+  }
+
+  // =========================================================================
+  // Tail anchoring — the panel must be the LAST message in its thread
+  // =========================================================================
+
+  /**
+   * Listen for messages posted into the threads this surface renders into.
+   *
+   * Optional by construction: `ThreadSurfaceDeps.slackApi` is satisfied by
+   * plenty of hand-rolled doubles that expose only what they need, and a
+   * surface that cannot subscribe simply never re-anchors — it renders exactly
+   * as it did before.
+   */
+  private subscribeThreadPosts(): () => void {
+    const slackApi = this.deps.slackApi as Partial<SlackApiHelper> | undefined;
+    if (typeof slackApi?.addThreadPostListener !== 'function') {
+      return () => {};
+    }
+    return slackApi.addThreadPostListener((event) => this.handleThreadPost(event));
+  }
+
+  /**
+   * A message landed in a thread. Decide whether it pushed a panel up.
+   *
+   * Cheap and synchronous on purpose — it runs inside every bot post. The
+   * matching is on the panel's LAST RENDERED ADDRESS rather than on a parsed
+   * session key, so no assumption is made about how session keys are formed.
+   */
+  private handleThreadPost(event: ThreadPostEvent): void {
+    for (const [sessionKey, rs] of this.sessions) {
+      if (!rs.address || rs.address.channelId !== event.channel) continue;
+      if ((rs.address.threadTs ?? '') !== event.threadTs) continue;
+      // Our own card, reported by the very post that created it.
+      if (rs.selfPosting) continue;
+
+      const panelTs = this.panelMessageTs(sessionKey, rs);
+      if (!panelTs || panelTs === event.ts) continue;
+      if (!ThreadSurface.isNewerTs(event.ts, panelTs)) continue;
+
+      rs.newestThreadPostTs = event.ts;
+      this.scheduleReanchor(sessionKey);
+    }
+  }
+
+  /** The ts of the card this session's panel currently occupies, if any. */
+  private panelMessageTs(sessionKey: string, rs: SessionRenderState): string | undefined {
+    const session = this.getLiveSession(sessionKey) ?? rs.lastSession ?? undefined;
+    return session?.actionPanel?.messageTs;
+  }
+
+  /**
+   * Arm the (single) pending re-anchor for this session.
+   *
+   * The timer is NOT reset by later posts: a trailing-edge debounce on a thread
+   * that keeps talking would postpone the re-anchor indefinitely, which is the
+   * exact symptom being fixed. First post in a quiet period starts the clock,
+   * everything inside the window rides along.
+   */
+  private scheduleReanchor(sessionKey: string): void {
+    const rs = this.getState(sessionKey);
+    if (rs.reanchorTimer) return;
+
+    const sinceLast = Date.now() - rs.lastReanchorAt;
+    const wait = Math.max(REANCHOR_DEBOUNCE_MS, REANCHOR_MIN_INTERVAL_MS - sinceLast);
+    rs.reanchorTimer = setTimeout(() => {
+      rs.reanchorTimer = null;
+      void this.reanchorToTail(sessionKey).catch((error) =>
+        this.logger.debug('Panel re-anchor failed', { sessionKey, error: (error as Error)?.message ?? error }),
+      );
+    }, wait);
+  }
+
+  /**
+   * Move the panel to the bottom of its thread: delete the card, then post it
+   * again through the ordinary delivery path.
+   *
+   * Slack has no "move message", so re-anchoring is destructive by necessity
+   * and every refusal below is about not destroying the wrong thing:
+   *
+   *   - the panel IS the thread root (bot-initiated sessions) → deleting it
+   *     deletes the conversation. No layout preference justifies that;
+   *   - the session is closed → the closed card is history, not a control;
+   *   - the delete failed → the old card may still be live, and two panels
+   *     break the single-writer invariant permanently. A stale position is
+   *     recoverable; a duplicate is not.
+   *
+   * The repost is NOT a special path: `messageTs` is cleared and the normal
+   * render runs, so the A24 outbox sequence (`beginPost` → post → `markSent`)
+   * and the 50-block budget apply unchanged. A crash between the delete and the
+   * post therefore leaves a released record — the next render posts exactly one
+   * replacement — which is the same window `recordDeletedPanel` already covers
+   * for a card deleted by a human.
+   */
+  private async reanchorToTail(sessionKey: string): Promise<void> {
+    const rs = this.getState(sessionKey);
+    const target = rs.newestThreadPostTs;
+    rs.newestThreadPostTs = null;
+    if (!target) return;
+
+    const session = this.getLiveSession(sessionKey) ?? rs.lastSession ?? undefined;
+    const panelState = session?.actionPanel;
+    if (!session || !panelState) return;
+
+    const oldTs = panelState.messageTs;
+    // Nothing anchored yet: the next render posts at the tail by itself.
+    if (!oldTs) return;
+    // Already below the newest message we know of.
+    if (!ThreadSurface.isNewerTs(target, oldTs)) return;
+    if (oldTs === (session.threadRootTs || session.threadTs)) return;
+    if (!session.isActive || session.terminated === true) return;
+
+    const channelId = panelState.channelId || session.channelId;
+    if (!channelId) return;
+
+    rs.lastReanchorAt = Date.now();
+    try {
+      await this.deps.slackApi.deleteMessage(channelId, oldTs);
+    } catch (error) {
+      this.logger.warn('Panel re-anchor aborted — the old card could not be deleted', {
+        sessionKey,
+        oldTs,
+        error: (error as Error)?.message ?? String(error),
+      });
+      return;
+    }
+
+    // The deletion is ours, but the record cannot tell whose it was: same
+    // transition, same CAS (a record that is not `sent` on this exact ts is
+    // left alone and the delivery rules below decide what happens).
+    this.recordDeletedPanel(sessionKey, oldTs);
+    panelState.messageTs = undefined;
+    panelState.renderKey = undefined;
+
+    await this.renderViaFlush(session, sessionKey, true);
+  }
+
+  /**
+   * Is `candidate` a later Slack ts than `reference`?
+   *
+   * `false` for anything unparseable: re-anchoring deletes a message, and an
+   * unordered pair is not evidence that the panel was pushed up.
+   */
+  private static isNewerTs(candidate: string, reference: string): boolean {
+    const a = Number.parseFloat(candidate);
+    const b = Number.parseFloat(reference);
+    if (!Number.isFinite(a) || !Number.isFinite(b)) return false;
+    return a > b;
   }
 
   // =========================================================================
@@ -878,6 +1094,13 @@ export class ThreadSurface {
       this.logger.debug('Skipping surface render (no channel)', { sessionKey });
       return;
     }
+
+    // Where this panel lives, for the thread-post listener. Recorded before the
+    // message exists: the first post is itself a thread post, and the listener
+    // needs the address to recognise it as ours.
+    const renderState = this.getState(sessionKey);
+    renderState.address = { channelId, threadTs: current.threadRootTs || current.threadTs };
+    renderState.lastSession = current;
 
     // Ensure choice permalink is resolved before building blocks
     if (panelState.waitingForChoice && !panelState.choiceMessageLink && panelState.choiceMessageTs) {
@@ -955,12 +1178,7 @@ export class ThreadSurface {
       if (!this.deps.surfaceOutbox) {
         // Legacy path — unchanged for hosts that have not wired the outbox.
         try {
-          const result = await this.deps.slackApi.postMessage(channelId, text, {
-            blocks,
-            threadTs,
-            unfurlLinks: false,
-            unfurlMedia: false,
-          });
+          const result = await this.postOwnPanel(sessionKey, channelId, text, blocks, threadTs);
           panelState.messageTs = result?.ts;
           rendered = true;
         } catch (error) {
@@ -1090,12 +1308,7 @@ export class ThreadSurface {
     const record = outcome.record;
     let ts: string | undefined;
     try {
-      const result = await this.deps.slackApi.postMessage(channelId, text, {
-        blocks,
-        threadTs,
-        unfurlLinks: false,
-        unfurlMedia: false,
-      });
+      const result = await this.postOwnPanel(sessionKey, channelId, text, blocks, threadTs);
       ts = result?.ts;
     } catch (error) {
       const code = ThreadSurface.definitiveRejectionCode(error);
@@ -1139,6 +1352,35 @@ export class ThreadSurface {
     }
 
     return { messageTs: ts, adopt: 'post' };
+  }
+
+  /**
+   * Post the panel, flagged as OUR OWN thread message.
+   *
+   * The flag is set before the call and cleared after it, because the
+   * notification fires inside `postMessage` — strictly before the returned `ts`
+   * can be written to `panelState`, so a ts comparison alone would not yet
+   * recognise the card as ours and the panel would re-anchor onto itself.
+   */
+  private async postOwnPanel(
+    sessionKey: string,
+    channelId: string,
+    text: string,
+    blocks: any[],
+    threadTs: string | undefined,
+  ): Promise<{ ts?: string } | undefined> {
+    const rs = this.getState(sessionKey);
+    rs.selfPosting = true;
+    try {
+      return await this.deps.slackApi.postMessage(channelId, text, {
+        blocks,
+        threadTs,
+        unfurlLinks: false,
+        unfurlMedia: false,
+      });
+    } finally {
+      rs.selfPosting = false;
+    }
   }
 
   /**
@@ -1492,8 +1734,11 @@ export class ThreadSurface {
       ];
     }
 
-    const reserve = error ? FOLLOWUP_FIXED_BLOCKS + 1 : FOLLOWUP_FIXED_BLOCKS;
-    const pageSize = Math.min(FOLLOWUP_EMBED_PAGE_SIZE, Math.floor((budget - reserve) / 2));
+    // The embed renders the COMPACT layout (one block per item), so the item
+    // capacity comes from the builder itself — a local copy of the accounting
+    // is exactly what drifted: the pre-compact "two blocks per item" halved
+    // every page. The degradation note below is ours, so it is reserved here.
+    const pageSize = Math.min(FOLLOWUP_EMBED_PAGE_SIZE, followupQueueCompactCapacity(budget - (error ? 1 : 0)));
 
     // Not even one item fits: keep the counts (they are the actionable signal)
     // and drop the item rows.

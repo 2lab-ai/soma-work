@@ -267,6 +267,131 @@ describe('TurnSurface', () => {
   });
 
   // -------------------------------------------------------------------------
+  // Tail anchoring — the B1 stream is a thread message the panel must know about
+  // -------------------------------------------------------------------------
+
+  describe('thread-post notification', () => {
+    it('announces the opened stream so the thread panel can re-anchor below it', async () => {
+      const client = makeClient();
+      const notifyThreadPost = vi.fn();
+      const surface = new TurnSurface({
+        slackApi: { getClient: vi.fn().mockReturnValue(client), notifyThreadPost } as any,
+      });
+
+      const ctx = { channelId: 'C1', threadTs: 't1.0', sessionKey: 'C1:t1.0', turnId: 'C1:t1.0:1' };
+      await surface.begin(ctx);
+
+      expect(notifyThreadPost).toHaveBeenCalledTimes(1);
+      expect(notifyThreadPost).toHaveBeenCalledWith({
+        channel: 'C1',
+        threadTs: 't1.0',
+        ts: 'stream-ts-1',
+        kind: 'stream',
+      });
+
+      // The close APPENDS to that same message — nothing moved, nothing to say.
+      await surface.end(ctx.turnId, 'completed');
+      expect(notifyThreadPost).toHaveBeenCalledTimes(1);
+    });
+
+    it('says nothing when the stream never opened', async () => {
+      const client = makeClient({ startStream: vi.fn().mockResolvedValue({}) });
+      const notifyThreadPost = vi.fn();
+      const surface = new TurnSurface({
+        slackApi: { getClient: vi.fn().mockReturnValue(client), notifyThreadPost } as any,
+      });
+
+      await surface.begin({ channelId: 'C1', threadTs: 't1.0', sessionKey: 'C1:t1.0', turnId: 'C1:t1.0:1' });
+
+      expect(notifyThreadPost).not.toHaveBeenCalled();
+    });
+
+    // Every raw `chat.postMessage` in this file is a message the panel cannot
+    // see (it bypasses SlackApiHelper), so each one has to announce itself or
+    // the panel silently stops being the last message in the thread.
+    it('announces the B2 plan message posted outside the stream, and stays silent on its updates', async () => {
+      vi.useFakeTimers();
+      try {
+        const client = makeClient({ postMessage: vi.fn().mockResolvedValue({ ts: 'plan-ts-adhoc' }) });
+        const notifyThreadPost = vi.fn();
+        const surface = new TurnSurface({
+          slackApi: { getClient: vi.fn().mockReturnValue(client), notifyThreadPost } as any,
+        });
+        const address: TurnAddress = { channelId: 'C1', threadTs: 't1.0', sessionKey: 'C1:t1.0' };
+        const todos = [{ id: '1', content: 'first', status: 'pending', priority: 'high' }];
+
+        // No begin() → no stream → the plan goes out as its own message.
+        await surface.renderTasks('ad-hoc-turn', todos as any, address);
+        await vi.advanceTimersByTimeAsync(500);
+
+        expect(client.chat.postMessage).toHaveBeenCalledTimes(1);
+        expect(notifyThreadPost).toHaveBeenCalledTimes(1);
+        expect(notifyThreadPost).toHaveBeenCalledWith({
+          channel: 'C1',
+          threadTs: 't1.0',
+          ts: 'plan-ts-adhoc',
+          kind: 'post',
+        });
+
+        // A rerender UPDATES that message: nothing moved, nothing to announce.
+        await surface.renderTasks('ad-hoc-turn', [
+          ...todos,
+          { id: '2', content: 'second', status: 'pending', priority: 'high' },
+        ] as any);
+        await vi.advanceTimersByTimeAsync(500);
+        expect(client.chat.update).toHaveBeenCalled();
+        expect(notifyThreadPost).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('announces an askUser choice post', async () => {
+      const client = makeClient({ postMessage: vi.fn().mockResolvedValue({ ts: 'choice-ts' }) });
+      const notifyThreadPost = vi.fn();
+      const surface = new TurnSurface({
+        slackApi: { getClient: vi.fn().mockReturnValue(client), notifyThreadPost } as any,
+      });
+      const address: TurnAddress = { channelId: 'C1', threadTs: 't1.0', sessionKey: 'C1:t1.0' };
+
+      await surface.askUser('C1:t1.0:1', { blocks: [{ type: 'section' }] }, 'pick one', address);
+
+      expect(notifyThreadPost).toHaveBeenCalledTimes(1);
+      expect(notifyThreadPost).toHaveBeenCalledWith({
+        channel: 'C1',
+        threadTs: 't1.0',
+        ts: 'choice-ts',
+        kind: 'post',
+      });
+    });
+
+    it('says nothing for a DM-root post that has no thread anchor', async () => {
+      const client = makeClient({ postMessage: vi.fn().mockResolvedValue({ ts: 'dm-ts' }) });
+      const notifyThreadPost = vi.fn();
+      const surface = new TurnSurface({
+        slackApi: { getClient: vi.fn().mockReturnValue(client), notifyThreadPost } as any,
+      });
+
+      await surface.askUser('D1::1', { blocks: [{ type: 'section' }] }, 'pick one', {
+        channelId: 'D1',
+        sessionKey: 'D1:',
+      });
+
+      expect(notifyThreadPost).not.toHaveBeenCalled();
+    });
+
+    it('works against a helper that has no hook at all', async () => {
+      const client = makeClient();
+      const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
+
+      await expect(
+        surface.begin({ channelId: 'C1', threadTs: 't1.0', sessionKey: 'C1:t1.0', turnId: 'C1:t1.0:1' }),
+      ).resolves.toBeUndefined();
+      expect(client.chat.startStream).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // fail() path
   // -------------------------------------------------------------------------
 
