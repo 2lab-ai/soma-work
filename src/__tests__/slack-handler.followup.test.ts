@@ -6,6 +6,11 @@ vi.mock('../slack/autoskill-fire', () => ({
 }));
 
 import type { FollowupQueueSnapshot } from '@soma/slack/followup-queue';
+import {
+  FOLLOWUP_CANCEL_ACTION_ID,
+  FOLLOWUP_SEND_NOW_ACTION_ID,
+  FOLLOWUP_STEERED_LABEL,
+} from '@soma/slack/followup-queue-blocks';
 import { getMetricsEmitter } from '../metrics/event-emitter';
 import { SlackHandler } from '../slack-handler';
 import { userSettingsStore } from '../user-settings-store';
@@ -39,6 +44,19 @@ function deferred<T>(): Deferred<T> {
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
+/**
+ * What a QUEUED message's receipt reads as since A39: the item message's own
+ * fallback text — `Queue <seq>. <message> · <state>` — instead of the
+ * "📥 Queue에 넣었습니다 (대기 N건) … 패널에서" line that pointed at a panel
+ * section which no longer exists.
+ *
+ * Matched as a pattern, not as a literal, because the state can carry a reason
+ * (`queued · interrupt 권한 거부`) and the seq/message differ per test. Anchored
+ * on ` · queued` so it is exactly the QUEUED state: a `steered` row renders
+ * {@link FOLLOWUP_STEERED_LABEL} instead and must not satisfy it.
+ */
+const QUEUED_ITEM_RECEIPT = /^Queue \d+\.[^\n]* · queued\b/m;
+
 function message(overrides: Record<string, any> = {}): any {
   return {
     user: 'U_OWNER',
@@ -60,6 +78,7 @@ describe('SlackHandler — follow-up queue host', () => {
   let saveError: Error | undefined;
   let postSystemMessage: ReturnType<typeof vi.fn>;
   let addReaction: ReturnType<typeof vi.fn>;
+  let deleteMessage: ReturnType<typeof vi.fn>;
   let processFiles: ReturnType<typeof vi.fn>;
   let routeCommand: ReturnType<typeof vi.fn>;
   let initialize: ReturnType<typeof vi.fn>;
@@ -112,11 +131,13 @@ describe('SlackHandler — follow-up queue host', () => {
 
     addReaction = vi.fn().mockResolvedValue(undefined);
     postSystemMessage = vi.fn().mockResolvedValue({ ts: 'm' });
+    deleteMessage = vi.fn().mockResolvedValue(undefined);
     handlerAny.slackApi = {
       addReaction,
       removeReaction: vi.fn().mockResolvedValue(undefined),
       postMessage: vi.fn().mockResolvedValue({ ts: 'm' }),
       postSystemMessage,
+      deleteMessage,
     };
 
     // Setup assistant status (main `0987345`) fires on every non-synthetic
@@ -1152,7 +1173,7 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(queueOf(booted).freezeReason(SESSION_KEY)).toBeUndefined();
       expect(steerTurn).toHaveBeenCalledTimes(1);
       const text = receipts().join('\n');
-      expect(text).toContain('전달했습니다');
+      expect(text).toContain(FOLLOWUP_STEERED_LABEL);
       expect(text).not.toContain('큐가 멈춰');
       await settle();
     });
@@ -1172,7 +1193,7 @@ describe('SlackHandler — follow-up queue host', () => {
       // The restored row is the one the freeze is for: still parked, still
       // waiting for the user's Resume.
       expect(stored.find((item: any) => item.message.ts === RESTORED_TS).state).toBe('paused');
-      expect(receipts().join('\n')).toContain('전달했습니다');
+      expect(receipts().join('\n')).toContain(FOLLOWUP_STEERED_LABEL);
       await settle();
     });
 
@@ -1249,7 +1270,7 @@ describe('SlackHandler — follow-up queue host', () => {
       await booted.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
 
       const text = receipts().join('\n');
-      expect(text).toContain('📥 Queue에 넣었습니다');
+      expect(text).toMatch(QUEUED_ITEM_RECEIPT);
       expect(text).not.toContain('큐가 멈춰');
       // And it is drainable: the freeze holds the restored row, not this one.
       await settle();
@@ -1476,7 +1497,7 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(queued).toHaveLength(1);
       expect(queued[0].state).toBe('steered');
       expect(queued[0].steerUuid).toBeTruthy();
-      expect(receipts().join('\n')).toContain('전달했습니다');
+      expect(receipts().join('\n')).toContain(FOLLOWUP_STEERED_LABEL);
       await settle();
     });
 
@@ -1525,8 +1546,8 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(queued).toHaveLength(1);
       expect(queued[0].state).toBe('queued');
       const text = receipts().join('\n');
-      expect(text).toContain('📥 Queue에 넣었습니다');
-      expect(text).not.toContain('전달했습니다');
+      expect(text).toMatch(QUEUED_ITEM_RECEIPT);
+      expect(text).not.toContain(FOLLOWUP_STEERED_LABEL);
       await settle();
     });
 
@@ -1572,7 +1593,7 @@ describe('SlackHandler — follow-up queue host', () => {
       const queued = items();
       expect(queued).toHaveLength(1);
       expect(queued[0].state).toBe('queued');
-      expect(receipts().join('\n')).toContain('📥 Queue에 넣었습니다');
+      expect(receipts().join('\n')).toMatch(QUEUED_ITEM_RECEIPT);
       await settle();
     });
 
@@ -1592,7 +1613,7 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(steerTurn).toHaveBeenCalledTimes(1);
       expect(items()[0].state).toBe('steered');
       const text = receipts().join('\n');
-      expect(text).toContain('전달했습니다');
+      expect(text).toContain(FOLLOWUP_STEERED_LABEL);
       expect(text).not.toContain('큐가 멈춰');
       await settle();
     });
@@ -1615,7 +1636,7 @@ describe('SlackHandler — follow-up queue host', () => {
         expect(steerTurn).not.toHaveBeenCalled();
         expect(items()).toHaveLength(1);
         expect(items()[0].state).toBe('queued');
-        expect(receipts().join('\n')).toContain('📥 Queue에 넣었습니다');
+        expect(receipts().join('\n')).toMatch(QUEUED_ITEM_RECEIPT);
         await settle();
       });
     }
@@ -1694,7 +1715,7 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(steerTurn).not.toHaveBeenCalled();
       expect(items()).toHaveLength(1);
       expect(items()[0].state).toBe('queued');
-      expect(receipts().join('\n')).toContain('📥 Queue에 넣었습니다');
+      expect(receipts().join('\n')).toMatch(QUEUED_ITEM_RECEIPT);
       await settle();
     });
 
@@ -1734,7 +1755,7 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(steerTurn).not.toHaveBeenCalled();
       expect(items()).toHaveLength(1);
       expect(items()[0].state).toBe('queued');
-      expect(receipts().join('\n')).toContain('📥 Queue에 넣었습니다');
+      expect(receipts().join('\n')).toMatch(QUEUED_ITEM_RECEIPT);
       await settle();
     });
 
@@ -1762,7 +1783,7 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(items()[0].state).toBe('steered');
       const text = receipts().join('\n');
       expect(text).toContain('⚠️ 전달 중 오류로 항목 상태를 확정하지 못했습니다');
-      expect(text).not.toContain('📥 Queue에 넣었습니다');
+      expect(text).not.toMatch(QUEUED_ITEM_RECEIPT);
       await settle();
     });
 
@@ -2618,6 +2639,235 @@ describe('SlackHandler — follow-up queue host', () => {
       const before = postSystemMessage.mock.calls.length;
       await handlerAny.handleQueuedMessageEdit(edit({ text: '또 고침' }));
       expect(postSystemMessage.mock.calls.length).toBe(before);
+    });
+  });
+
+  /* ---------------------------------------------------------------- *
+   * A39/A41 — the receipt IS the queue item, and it dies with it.
+   * ---------------------------------------------------------------- */
+
+  describe('in-thread item messages', () => {
+    /** Every `postSystemMessage` call, as `(text, options)`. */
+    const posts = () =>
+      postSystemMessage.mock.calls.map((call: any[]) => ({ text: String(call[1]), options: call[2] ?? {} }));
+
+    /** The LAST post carrying queue item blocks. */
+    function itemPost(): { text: string; options: any } {
+      const post = posts()
+        .reverse()
+        .find((entry) => JSON.stringify(entry.options.blocks ?? []).includes(FOLLOWUP_SEND_NOW_ACTION_ID));
+      expect(post, 'an item message was posted').toBeDefined();
+      return post as { text: string; options: any };
+    }
+
+    function itemButtons(): Array<Record<string, any>> {
+      const found: Array<Record<string, any>> = [];
+      const walk = (node: unknown) => {
+        if (Array.isArray(node)) {
+          for (const child of node) walk(child);
+          return;
+        }
+        if (node && typeof node === 'object') {
+          const record = node as Record<string, any>;
+          if (record.type === 'button') found.push(record);
+          for (const value of Object.values(record)) walk(value);
+        }
+      };
+      walk(itemPost().options.blocks ?? []);
+      return found;
+    }
+
+    it('posts the queued message as its own item message, with both controls', async () => {
+      const { settle } = await startBusyTurn();
+      claudeHandler.steerTurn = vi.fn().mockReturnValue(false);
+
+      await handler.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
+
+      const post = itemPost();
+      expect(post.options.threadTs).toBe(THREAD_TS);
+      // The message itself, not a "N건 대기" count, is what the user reads.
+      expect(JSON.stringify(post.options.blocks)).toContain('이것도 같이 봐줘');
+      expect(itemButtons().map((button) => button.action_id)).toEqual([
+        FOLLOWUP_SEND_NOW_ACTION_ID,
+        FOLLOWUP_CANCEL_ACTION_ID,
+      ]);
+      // …and the old panel-pointing text receipt is gone.
+      expect(posts().map((entry) => entry.text)).not.toContain(
+        '📥 Queue에 넣었습니다 (대기 1건) — 실행·취소는 스레드 맨 아래 패널에서.',
+      );
+      await settle();
+    });
+
+    it('stamps the CURRENT item generation on the controls, after the steer moved it', async () => {
+      // The enqueue snapshot is one generation old by the time the receipt is
+      // posted (the steer bumps the item's epoch), and a button minted from the
+      // stale one is refused by `verifyItem` on the very first click.
+      claudeHandler.steerTurn = vi.fn().mockReturnValue(true);
+      const { settle } = await startBusyTurn();
+
+      await handler.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
+
+      const live = items()[0];
+      expect(live.state).toBe('steered');
+      const [sendNow, cancel] = itemButtons().map((button) => JSON.parse(String(button.value)));
+      expect(sendNow).toEqual({
+        sessionKey: SESSION_KEY,
+        itemId: live.id,
+        epoch: live.epoch,
+        turnEpoch: handlerAny.getFollowupView(SESSION_KEY).turnEpoch,
+      });
+      expect(cancel).toEqual({ sessionKey: SESSION_KEY, itemId: live.id, epoch: live.epoch });
+      // The state the user reads is the steered sentence, not the enum.
+      expect(JSON.stringify(itemPost().options.blocks)).toContain(FOLLOWUP_STEERED_LABEL);
+      await settle();
+    });
+
+    it('still says a halted drain will not run it, on the same item message', async () => {
+      const { settle } = await startBusyTurn();
+      vi.spyOn(handlerAny.followupDispatcher, 'drainHalt').mockReturnValue({
+        reason: 'error',
+        detail: '큐 저장 실패',
+      } as never);
+
+      await handler.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
+
+      const post = itemPost();
+      expect(JSON.stringify(post.options.blocks)).toContain('큐 저장 실패');
+      expect(itemButtons()).toHaveLength(2);
+      await settle();
+    });
+
+    it('deletes the item message when the model consumes the steered item (A41)', async () => {
+      const steerTurn = vi.fn().mockReturnValue(true);
+      claudeHandler.steerTurn = steerTurn;
+      postSystemMessage.mockResolvedValue({ ts: 'item-ts-1', channel: CHANNEL });
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
+
+      await handlerAny.streamExecutor.deps.onSteerLifecycle({
+        sessionKey: SESSION_KEY,
+        uuid: steerTurn.mock.calls[0][1].uuid,
+        phase: 'completed',
+      });
+
+      expect(items()[0].state).toBe('resolved');
+      expect(deleteMessage).toHaveBeenCalledWith(CHANNEL, 'item-ts-1');
+      await settle();
+    });
+
+    it('keeps the item message when the turn ends without consuming it', async () => {
+      // `discarded` returns the row to `queued` — it is pending again, so its
+      // controls must stay on screen.
+      const steerTurn = vi.fn().mockReturnValue(true);
+      claudeHandler.steerTurn = steerTurn;
+      postSystemMessage.mockResolvedValue({ ts: 'item-ts-2', channel: CHANNEL });
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
+
+      await handlerAny.streamExecutor.deps.onSteerLifecycle({
+        sessionKey: SESSION_KEY,
+        uuid: steerTurn.mock.calls[0][1].uuid,
+        phase: 'discarded',
+      });
+
+      expect(items()[0].state).toBe('queued');
+      expect(deleteMessage).not.toHaveBeenCalled();
+      await settle();
+    });
+
+    it('deletes the item message when the ordinary drain resolves the item', async () => {
+      claudeHandler.steerTurn = vi.fn().mockReturnValue(false);
+      postSystemMessage.mockResolvedValue({ ts: 'item-ts-3', channel: CHANNEL });
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
+      expect(items()[0].state).toBe('queued');
+
+      await settle();
+
+      expect(items()[0].state).toBe('resolved');
+      expect(deleteMessage).toHaveBeenCalledWith(CHANNEL, 'item-ts-3');
+    });
+
+    it('survives a delete Slack refuses — the item is settled either way', async () => {
+      const steerTurn = vi.fn().mockReturnValue(true);
+      claudeHandler.steerTurn = steerTurn;
+      postSystemMessage.mockResolvedValue({ ts: 'item-ts-4', channel: CHANNEL });
+      deleteMessage.mockRejectedValue(new Error('message_not_found'));
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
+
+      await expect(
+        handlerAny.streamExecutor.deps.onSteerLifecycle({
+          sessionKey: SESSION_KEY,
+          uuid: steerTurn.mock.calls[0][1].uuid,
+          phase: 'completed',
+        }),
+      ).resolves.toBeUndefined();
+
+      expect(items()[0].state).toBe('resolved');
+      await settle();
+    });
+
+    /**
+     * End to end through the REAL button wiring: the click lands on the module's
+     * registered listener, which runs the host's `onItemProcessed`. Only an app
+     * that has `app.action` registers them, so this test builds one.
+     */
+    it('deletes the item message when the Cancel button is clicked', async () => {
+      const listeners = new Map<string, any>();
+      const app = {
+        client: {},
+        assistant: vi.fn(),
+        action: (id: string, listener: any) => listeners.set(id, listener),
+      } as any;
+      const clickable = new SlackHandler(app, claudeHandler as any, {} as any, {
+        followupQueueStore: { load: () => undefined, save: () => undefined, recoveryWarning: undefined },
+      });
+      const clickableAny = clickable as any;
+      clickableAny.slackApi = handlerAny.slackApi;
+      clickableAny.assistantStatusManager = handlerAny.assistantStatusManager;
+      clickableAny.inputProcessor = handlerAny.inputProcessor;
+      clickableAny.messageValidator = handlerAny.messageValidator;
+      clickableAny.sessionInitializer = handlerAny.sessionInitializer;
+      clickableAny.threadPanel = handlerAny.threadPanel;
+      clickableAny.createAgentSession = createAgentSession;
+      claudeHandler.steerTurn = vi.fn().mockReturnValue(false);
+      postSystemMessage.mockResolvedValue({ ts: 'item-ts-5', channel: CHANNEL });
+
+      const gate = deferred<any>();
+      startWithContinuation.mockImplementationOnce(() => gate.promise);
+      const first = clickable.handleMessage(message({ ts: '222.333', text: '첫 지시' }), say());
+      await tick();
+      await clickable.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
+
+      const live = clickableAny.getFollowupQueue().list(SESSION_KEY)[0];
+      const ack = vi.fn().mockResolvedValue(undefined);
+      await listeners.get(FOLLOWUP_CANCEL_ACTION_ID)({
+        ack,
+        respond: vi.fn().mockResolvedValue(undefined),
+        body: {
+          type: 'block_actions',
+          user: { id: 'U_OWNER' },
+          channel: { id: CHANNEL },
+          container: { channel_id: CHANNEL, message_ts: 'item-ts-5', thread_ts: THREAD_TS },
+          message: { ts: 'item-ts-5', thread_ts: THREAD_TS },
+          actions: [
+            {
+              type: 'button',
+              action_id: FOLLOWUP_CANCEL_ACTION_ID,
+              value: JSON.stringify({ sessionKey: SESSION_KEY, itemId: live.id, epoch: live.epoch }),
+            },
+          ],
+        },
+      });
+      await tick();
+      await tick();
+
+      expect(clickableAny.getFollowupQueue().list(SESSION_KEY)[0].state).toBe('cancelled');
+      expect(deleteMessage).toHaveBeenCalledWith(CHANNEL, 'item-ts-5');
+
+      gate.resolve({ hasPendingChoice: false });
+      await first;
     });
   });
 });

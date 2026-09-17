@@ -2,6 +2,7 @@ import type { App } from '@slack/bolt';
 import type { SendNowResult } from '@soma/slack/followup-dispatcher';
 import type { FollowupItem, FollowupItemState, FollowupOpResult } from '@soma/slack/followup-queue';
 import {
+  FOLLOWUP_CANCEL_ACTION_ID,
   FOLLOWUP_ITEM_MENU_ACTION_ID,
   FOLLOWUP_PAGE_NEXT_ACTION_ID,
   FOLLOWUP_PAGE_PREV_ACTION_ID,
@@ -202,6 +203,21 @@ export interface FollowupActionsDeps {
    * turn a delivered message into a failed click.
    */
   onItemLeftSteer?(sessionKey: string, itemId: string): void;
+  /**
+   * The item is PROCESSED — it left the pending set for good and whatever the
+   * host posted for it (the in-thread item message, A39) can go (A41).
+   *
+   * Announced from the cancel path only, because that is the only transition
+   * this module owns: consumption and dispatch outcomes are the host's own
+   * settlement/drain hooks. It fires exactly on the outcomes where the item is
+   * really gone — a `returned-to-queue` steered cancel is NOT one of them, the
+   * row is clickable again and its message must stay.
+   *
+   * Optional and best effort, like {@link onItemLeftSteer}: a throwing hook is
+   * bookkeeping this module reports, never a completed cancel turned into a
+   * failed click.
+   */
+  onItemProcessed?(sessionKey: string, itemId: string): void;
   /** Optional logger seam; falls back to this module's `Logger`. */
   reportError?(label: string, error: unknown): void;
 }
@@ -233,6 +249,15 @@ export function registerFollowupActions(app: App, deps: FollowupActionsDeps): vo
     await ack();
     const reply = respond as unknown as FollowupRespond;
     detach(deps, 'Queue menu', reply, () => handleMenu(deps, body, reply));
+  });
+
+  // The in-thread item message's Cancel (A39). A second TRANSPORT into the same
+  // handler — the button payload is the ordinary item value, so nothing about
+  // the cancel policy is re-decided here.
+  app.action(FOLLOWUP_CANCEL_ACTION_ID, async ({ ack, body, respond }) => {
+    await ack();
+    const reply = respond as unknown as FollowupRespond;
+    detach(deps, 'Cancel', reply, () => handleCancel(deps, body, reply));
   });
 
   for (const actionId of [FOLLOWUP_PAGE_PREV_ACTION_ID, FOLLOWUP_PAGE_NEXT_ACTION_ID]) {
@@ -600,9 +625,13 @@ const CANCEL_STEERED_RETURNED_TEXT =
   '취소하지 못했습니다 — 전달 여부를 확인할 수 없어 큐로 되돌렸습니다. 다시 Cancel 할 수 있습니다.';
 
 /**
- * Cancel (menu-only). Authorization is the SAME interrupt policy Resume and
+ * Cancel. Authorization is the SAME interrupt policy Resume and
  * Retry use — cancelling someone else's queued instruction is steering the
  * session just as much as running it early.
+ *
+ * Two transports reach it: the panel-era overflow option (which pre-parses the
+ * value) and the item message's `Cancel` button (A39), whose ordinary item
+ * payload is parsed here. One policy either way.
  *
  * Three things it deliberately does NOT do:
  *   - it never kicks the drain: removing an item opens no boundary, and a
@@ -618,8 +647,13 @@ async function handleCancel(
   deps: FollowupActionsDeps,
   body: unknown,
   respond: FollowupRespond,
-  value: FollowupItemActionValue,
+  preparsed?: FollowupItemActionValue,
 ): Promise<void> {
+  const value = preparsed ?? parseFollowupItemActionValue(readActionValue(body));
+  if (!value) {
+    await refuse(respond, 'Cancel ignored: the button payload could not be read. Refresh the queue and try again.');
+    return;
+  }
   const click = verifyClick(deps, body, value.sessionKey);
   if (!click.ok) {
     await refuse(respond, `Cancel rejected: ${click.detail}.`);
@@ -663,6 +697,7 @@ async function handleCancel(
       `<@${click.clicker}> 님이 취소했습니다`,
     );
     if (result.ok) {
+      announceProcessed(deps, value.sessionKey, value.itemId);
       await reply(respond, CANCEL_OK_TEXT);
       return;
     }
@@ -705,10 +740,14 @@ async function cancelSteeredItem(
 
   const outcome = await deps.cancelSteered(value.sessionKey, value.itemId, value.epoch, steerUuid);
   if (outcome === 'cancelled') {
+    announceProcessed(deps, value.sessionKey, value.itemId);
     await reply(respond, CANCEL_STEERED_OK_TEXT);
     return;
   }
   if (outcome === 'already-delivered') {
+    // The model has it: the row is `resolved · consumed` history now, which is
+    // just as processed as a cancel — the controls must not outlive it either.
+    announceProcessed(deps, value.sessionKey, value.itemId);
     await reply(respond, CANCEL_STEERED_DELIVERED_TEXT);
     return;
   }
@@ -933,6 +972,19 @@ async function sweepSteered(deps: FollowupActionsDeps, sessionKey: string): Prom
     await deps.sweepSteered?.(sessionKey);
   } catch (error) {
     report(deps, 'Send now steered sweep', error);
+  }
+}
+
+/**
+ * Tell the host the item is done with (A41), best effort. Called on the cancel
+ * outcomes where the row really left the pending set; a throwing hook is
+ * reported, never allowed to invert the cancel the user just completed.
+ */
+function announceProcessed(deps: FollowupActionsDeps, sessionKey: string, itemId: string): void {
+  try {
+    deps.onItemProcessed?.(sessionKey, itemId);
+  } catch (error) {
+    report(deps, 'queue item processed hook', error);
   }
 }
 

@@ -69,8 +69,8 @@ function textOf(block: any): string {
   return JSON.stringify(block ?? {});
 }
 
-describe('ThreadSurface — the chrome above the Queue stays inside four blocks', () => {
-  it('renders at most four blocks before the Queue section', async () => {
+describe('ThreadSurface — the chrome above the controls stays inside four blocks', () => {
+  it('renders at most four blocks before the control rows', async () => {
     const session = makeSession();
     const updates: Array<{ blocks: any[] }> = [];
     const slackApi = {
@@ -93,9 +93,14 @@ describe('ThreadSurface — the chrome above the Queue stays inside four blocks'
     await new ThreadSurface(deps).updatePanel(session, KEY);
 
     const blocks = updates.at(-1)?.blocks ?? [];
-    const queueIndex = blocks.findIndex((block) => textOf(block).includes(FOLLOWUP_QUEUE_TITLE));
-    expect(queueIndex).toBeGreaterThan(0);
-    expect(queueIndex).toBeLessThanOrEqual(4);
+    // The queue itself is no longer on this surface (A39), so the ceiling is
+    // measured against what the user acts on here: the control rows.
+    expect(blocks.some((block) => textOf(block).includes(FOLLOWUP_QUEUE_TITLE))).toBe(false);
+    // The control area starts at its divider — the queue used to sit exactly
+    // here, so the chrome budget in front of it is unchanged: four blocks.
+    const controlsIndex = blocks.findIndex((block) => block?.type === 'divider' || block?.type === 'actions');
+    expect(controlsIndex).toBeGreaterThan(0);
+    expect(controlsIndex).toBeLessThanOrEqual(4);
 
     // …and the status area is still ONE of those blocks, carrying both lines.
     const status = blocks.find((block) => /🟢|🟡|⚪/.test(textOf(block)) && block.type === 'section');

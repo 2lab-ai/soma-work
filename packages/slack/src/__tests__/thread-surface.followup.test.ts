@@ -1,11 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { FollowupItem } from '../followup-queue';
 import {
+  FOLLOWUP_CANCEL_ACTION_ID,
+  FOLLOWUP_ITEM_MENU_ACTION_ID,
   FOLLOWUP_PAGE_NEXT_ACTION_ID,
   FOLLOWUP_PAGE_PREV_ACTION_ID,
   FOLLOWUP_QUEUE_TITLE,
   FOLLOWUP_SEND_NOW_ACTION_ID,
   FOLLOWUP_SEND_NOW_LABEL,
+  FOLLOWUP_STEERED_COUNT_LABEL,
   type FollowupItemMenuValue,
   type FollowupQueueView,
   parseFollowupMenuValue,
@@ -14,10 +17,10 @@ import type { MessageEvent } from '../pipeline/types';
 import { type ConversationSession, ThreadSurface, type ThreadSurfaceDeps } from '../thread-surface';
 
 /**
- * U3/U9 — the follow-up `Queue` rendered inside the EXISTING combined header
- * surface (`.prd/slack-agent-ui/loop.md:47`), plus the surface-level guards the
- * same change depends on: turn-epoch gated writes (A12/A28) and the duplicate
- * surface-message bug on a transient `chat.update` failure.
+ * U9 — the surface-level guards the follow-up queue depends on: turn-epoch gated
+ * writes (A12/A28) and the duplicate surface-message bug on a transient
+ * `chat.update` failure — plus the A39 contract that the queue itself is NOT on
+ * this surface any more (it is one message per item, in the thread).
  *
  * These tests drive the real `ThreadSurface` against a fake Slack API that
  * records the exact `chat.update` / `chat.postMessage` payloads, so every
@@ -197,116 +200,128 @@ function sendNowValue(blocks: unknown[]): Partial<FollowupItemMenuValue> | undef
   return menuOptions(blocks).find((option) => option.value.op === 'send_now')?.value;
 }
 
-describe('ThreadSurface — U3/U9 Queue inside the combined header surface', () => {
-  it('renders Queue in the SAME combined message, after the header and before the action rows', async () => {
+/**
+ * A39 — the Queue left the panel.
+ *
+ * The user reads a queued item where they typed it (one bot message per queued
+ * message, `slack-handler.ts` `enqueueFollowup`), so the combined panel renders
+ * NO queue section and no queue-derived counts any more. What it must keep is
+ * everything else it ever did: the header, the control rows, and the queue READ
+ * it needs for the turn-epoch gate (next describe) — dropping the section is a
+ * rendering change, not the removal of the queue wiring.
+ */
+describe('ThreadSurface — the combined panel no longer renders the Queue (A39)', () => {
+  /** Every queue-owned action id the panel used to be able to emit. */
+  const QUEUE_ACTION_IDS = [
+    FOLLOWUP_SEND_NOW_ACTION_ID,
+    FOLLOWUP_CANCEL_ACTION_ID,
+    FOLLOWUP_ITEM_MENU_ACTION_ID,
+    FOLLOWUP_PAGE_PREV_ACTION_ID,
+    FOLLOWUP_PAGE_NEXT_ACTION_ID,
+  ];
+
+  function panelWith(followup: Partial<Pick<ThreadSurfaceDeps, 'getFollowupView' | 'getFollowupError'>>) {
     const session = makeSession();
     const slackApi = makeSlackApi();
-    const surface = new ThreadSurface(makeDeps(session, slackApi, { getFollowupView: () => view({ turnEpoch: 4 }) }));
+    const surface = new ThreadSurface(makeDeps(session, slackApi, followup));
+    return { session, slackApi, surface };
+  }
+
+  function expectNoQueue(captured: Captured): void {
+    const payload = JSON.stringify(captured.blocks ?? []);
+    expect(payload).not.toContain(FOLLOWUP_QUEUE_TITLE);
+    expect(payload).not.toContain(FOLLOWUP_SEND_NOW_LABEL);
+    for (const actionId of QUEUE_ACTION_IDS) expect(payload).not.toContain(actionId);
+    expect(actionIds(captured.blocks)).not.toContain(FOLLOWUP_SEND_NOW_ACTION_ID);
+    expect(menuOptions(captured.blocks)).toHaveLength(0);
+    expect(sendNowValue(captured.blocks)).toBeUndefined();
+  }
+
+  it('renders the panel without a Queue section even when the queue is full of live items', async () => {
+    const items = [
+      item({ seq: 1 }),
+      item({ seq: 2, state: 'steered', stateReason: 'steered' }),
+      item({ seq: 3, state: 'paused' }),
+    ];
+    const { session, slackApi, surface } = panelWith({ getFollowupView: () => view({ items, turnEpoch: 4 }) });
 
     await surface.updatePanel(session, KEY);
 
-    // One combined message — no second message for the queue.
     expect(slackApi.updates).toHaveLength(1);
     expect(slackApi.posts).toHaveLength(0);
-
-    const blocks = slackApi.updates[0].blocks;
-    const titleAt = queueTitleIndex(blocks);
-    expect(titleAt).toBeGreaterThan(0); // after the header, never first
-
-    // Header still present in the same payload.
-    expect(textObjects(blocks).some((t) => t.text.includes('queue demo'))).toBe(true);
-
-    // Queue sits before the existing action rows (close/control buttons).
-    const firstActionsAt = blocks.findIndex((b: any) => b?.type === 'actions' && b?.block_id);
-    expect(firstActionsAt).toBeGreaterThan(titleAt);
+    expectNoQueue(slackApi.updates[0]);
+    // Not a queued message's text either — the item message carries it now.
+    expect(textObjects(slackApi.updates[0].blocks).some((t) => t.text.includes('message 1'))).toBe(false);
+    // The panel itself is untouched: header + control rows still render.
+    expect(textObjects(slackApi.updates[0].blocks).some((t) => t.text.includes('queue demo'))).toBe(true);
+    expect(
+      slackApi.updates[0].blocks.some((b: any) => b?.type === 'actions' && b?.block_id === 'control_actions'),
+    ).toBe(true);
   });
 
-  it('offers `Send now` carrying the session turn epoch, and never mints a mention from the raw message', async () => {
-    const session = makeSession();
-    const slackApi = makeSlackApi();
-    const raw = 'ping <!channel> now';
-    const surface = new ThreadSurface(
-      makeDeps(session, slackApi, {
-        getFollowupView: () => view({ items: [item({ message: event({ text: raw }) })], turnEpoch: 9 }),
-      }),
-    );
-
-    await surface.updatePanel(session, KEY);
-    const blocks = slackApi.updates[0].blocks;
-
-    // The control is `Send now` whichever widget the queue builder currently
-    // uses for it (button, or an option of the compact overflow menu) — what
-    // the surface must not lose is the turn epoch it carries.
-    expect(sendNowValue(blocks)?.turnEpoch).toBe(9);
-    const labels = textObjects(blocks).map((t) => t.text);
-    expect(labels).toContain(FOLLOWUP_SEND_NOW_LABEL);
-
-    // The original content reaches the user, and can never address anybody:
-    // `plain_text` is inert; an mrkdwn rendering must arrive escaped.
-    const carrying = textObjects(blocks).filter((t) => t.text.includes('ping'));
-    expect(carrying.length).toBeGreaterThan(0);
-    expect(carrying.every((t) => t.type === 'plain_text' || !t.text.includes(raw))).toBe(true);
-    expect(labels.some((text) => text.includes('<!channel>') && !text.includes('&lt;!channel&gt;'))).toBe(false);
-  });
-
-  it('keeps the Queue in the closed render so cancelled / paused history stays visible', async () => {
-    const session = makeSession();
-    const slackApi = makeSlackApi();
-    const surface = new ThreadSurface(
-      makeDeps(session, slackApi, {
-        getFollowupView: () =>
-          view({
-            items: [item({ seq: 1, state: 'cancelled' }), item({ seq: 2, state: 'paused' })],
-            freeze: { reason: 'session ended', at: 1 },
-          }),
-      }),
-    );
+  it('keeps the queue out of the closed render too', async () => {
+    const { session, slackApi, surface } = panelWith({
+      getFollowupView: () =>
+        view({
+          items: [item({ seq: 1, state: 'cancelled' }), item({ seq: 2, state: 'paused' })],
+          freeze: { reason: 'session ended', at: 1 },
+        }),
+    });
 
     await surface.close(session, KEY);
 
-    const blocks = slackApi.updates.at(-1)?.blocks ?? [];
-    expect(queueTitleIndex(blocks)).toBeGreaterThan(0);
-    const texts = textObjects(blocks).map((t) => t.text);
-    expect(texts.some((t) => t.includes('cancelled'))).toBe(true);
-    expect(texts.some((t) => t.includes('paused'))).toBe(true);
+    const closed = slackApi.updates.at(-1);
+    expect(closed).toBeDefined();
+    expectNoQueue(closed as Captured);
   });
 
-  it('pages the backlog so every item is reachable via setFollowupPage', async () => {
-    const session = makeSession();
-    const slackApi = makeSlackApi();
-    const items = Array.from({ length: 12 }, (_, i) => item({ seq: i + 1 }));
-    const surface = new ThreadSurface(makeDeps(session, slackApi, { getFollowupView: () => view({ items }) }));
+  it('drops the queued/전달 breakdown from the accessible fallback text', async () => {
+    const { session, slackApi, surface } = panelWith({
+      getFollowupView: () =>
+        view({
+          items: [item({ seq: 1 }), item({ seq: 2, state: 'steered', stateReason: 'steered' })],
+          freeze: { reason: 'stopped by <!channel>', at: 1 },
+        }),
+    });
 
     await surface.updatePanel(session, KEY);
-    const page1 = textObjects(slackApi.updates[0].blocks).map((t) => t.text);
-    expect(page1.some((t) => t.includes('message 1'))).toBe(true);
-    expect(page1.some((t) => t.includes('message 6'))).toBe(false);
-    expect(actionIds(slackApi.updates[0].blocks)).toContain(FOLLOWUP_PAGE_NEXT_ACTION_ID);
+    const text = slackApi.updates[0].text;
 
-    const applied = await surface.setFollowupPage(KEY, 2);
-    expect(applied).toBe(2);
-
-    const page2Blocks = slackApi.updates.at(-1)?.blocks ?? [];
-    const page2 = textObjects(page2Blocks).map((t) => t.text);
-    expect(page2.some((t) => t.includes('message 6'))).toBe(true);
-    expect(page2.some((t) => t.includes('message 1.'))).toBe(false);
-    expect(actionIds(page2Blocks)).toContain(FOLLOWUP_PAGE_PREV_ACTION_ID);
+    // The owner/title line is the whole fallback again.
+    expect(text).toContain('zhuge');
+    expect(text).toContain('queue demo');
+    expect(text).not.toContain(FOLLOWUP_QUEUE_TITLE);
+    expect(text).not.toContain('2 item(s)');
+    expect(text).not.toContain('queued 1');
+    expect(text).not.toContain(FOLLOWUP_STEERED_COUNT_LABEL);
+    expect(text).not.toContain('stopped by');
   });
 
-  it('clamps an out-of-range page instead of rendering an empty queue', async () => {
-    const session = makeSession();
-    const slackApi = makeSlackApi();
-    const items = Array.from({ length: 7 }, (_, i) => item({ seq: i + 1 }));
-    const surface = new ThreadSurface(makeDeps(session, slackApi, { getFollowupView: () => view({ items }) }));
+  it('says nothing about a degraded queue on the panel — there is no queue on it to degrade', async () => {
+    const { session, slackApi, surface } = panelWith({
+      getFollowupView: () => undefined,
+      getFollowupError: () => 'snapshot load failed',
+    });
 
-    expect(await surface.setFollowupPage(KEY, 0)).toBe(1);
-    expect(await surface.setFollowupPage(KEY, 99)).toBe(2);
+    await surface.updatePanel(session, KEY);
 
-    const texts = textObjects(slackApi.updates.at(-1)?.blocks ?? []).map((t) => t.text);
-    expect(texts.some((t) => t.includes('message 6'))).toBe(true);
+    expect(JSON.stringify(slackApi.updates[0].blocks)).not.toContain('snapshot load failed');
+    expect(slackApi.updates[0].text).not.toContain('snapshot load failed');
   });
 
-  it('stays within Slack’s 50-block cap by trimming the optional summary, never the controls', async () => {
+  it('still renders the panel when the queue provider itself raises', async () => {
+    const { session, slackApi, surface } = panelWith({
+      getFollowupView: () => {
+        throw new Error('store exploded');
+      },
+    });
+
+    await expect(surface.updatePanel(session, KEY)).resolves.toBeUndefined();
+    expect(JSON.stringify(slackApi.updates[0].blocks)).not.toContain('store exploded');
+    expect(textObjects(slackApi.updates[0].blocks).some((t) => t.text.includes('queue demo'))).toBe(true);
+  });
+
+  it('stays within Slack’s 50-block cap with the summary the queue used to compete with', async () => {
     const session = makeSession();
     session.actionPanel!.summaryBlocks = Array.from({ length: 40 }, (_, i) => ({
       type: 'section',
@@ -320,155 +335,7 @@ describe('ThreadSurface — U3/U9 Queue inside the combined header surface', () 
     const blocks = slackApi.updates[0].blocks;
 
     expect(blocks.length).toBeLessThanOrEqual(MAX_BLOCKS);
-    // Core controls survive the trim.
-    expect(sendNowValue(blocks)).toBeDefined();
     expect(blocks.some((b: any) => b?.type === 'actions' && b?.block_id === 'control_actions')).toBe(true);
-    // Optional summary is what gave way.
-    const summaryCount = textObjects(blocks).filter((t) => t.text.startsWith('summary ')).length;
-    expect(summaryCount).toBeLessThan(40);
-  });
-
-  it('extends the accessible fallback text with queue counts, states and a sanitized freeze reason', async () => {
-    const session = makeSession();
-    const slackApi = makeSlackApi();
-    const surface = new ThreadSurface(
-      makeDeps(session, slackApi, {
-        getFollowupView: () =>
-          view({
-            items: [item({ seq: 1 }), item({ seq: 2, state: 'paused' })],
-            freeze: { reason: 'stopped by <!channel>', at: 1 },
-          }),
-      }),
-    );
-
-    await surface.updatePanel(session, KEY);
-    const text = slackApi.updates[0].text;
-
-    expect(text).toContain('zhuge');
-    expect(text).toContain('queue demo');
-    expect(text).toContain(FOLLOWUP_QUEUE_TITLE);
-    expect(text).toContain('2 item(s)');
-    expect(text).toContain('queued 1');
-    expect(text).toContain('paused 1');
-    // Untrusted reason must not be able to smuggle a broadcast mention.
-    expect(text).not.toContain('<!channel>');
-    expect(text).toContain('&lt;!channel&gt;');
-  });
-
-  it('counts a steered item as 전달, right after queued, and spells it out on the panel (06 §3.5)', async () => {
-    const session = makeSession();
-    const slackApi = makeSlackApi();
-    const surface = new ThreadSurface(
-      makeDeps(session, slackApi, {
-        getFollowupView: () =>
-          view({
-            items: [
-              item({ seq: 1 }),
-              item({ seq: 2, state: 'steered', stateReason: 'steered' }),
-              item({ seq: 3, state: 'paused' }),
-            ],
-          }),
-      }),
-    );
-
-    await surface.updatePanel(session, KEY);
-
-    // The fallback line is counts only — one word per state, the display order
-    // putting `전달` where the item actually sits in the queue's life.
-    expect(slackApi.updates[0].text).toContain('3 item(s) · queued 1 · 전달 1 · paused 1');
-    expect(slackApi.updates[0].text).not.toContain('steered 1');
-    // The panel itself carries the full sentence the user reads.
-    const labels = textObjects(slackApi.updates[0].blocks).map((t) => t.text);
-    expect(labels.some((t) => t.includes('전달됨 · 모델이 다음 툴 호출에서 읽음'))).toBe(true);
-  });
-
-  it('degrades visibly when the queue cannot be read instead of showing an empty queue', async () => {
-    const session = makeSession();
-    const slackApi = makeSlackApi();
-    const surface = new ThreadSurface(
-      makeDeps(session, slackApi, {
-        getFollowupView: () => undefined,
-        getFollowupError: () => 'snapshot load failed',
-      }),
-    );
-
-    await surface.updatePanel(session, KEY);
-    const blocks = slackApi.updates[0].blocks;
-
-    expect(queueTitleIndex(blocks)).toBeGreaterThan(0);
-    const texts = textObjects(blocks).map((t) => t.text);
-    expect(texts.some((t) => t.includes('snapshot load failed'))).toBe(true);
-    expect(slackApi.updates[0].text).toContain('snapshot load failed');
-  });
-
-  it('degrades instead of throwing when the queue provider itself raises', async () => {
-    const session = makeSession();
-    const slackApi = makeSlackApi();
-    const surface = new ThreadSurface(
-      makeDeps(session, slackApi, {
-        getFollowupView: () => {
-          throw new Error('store exploded');
-        },
-      }),
-    );
-
-    await expect(surface.updatePanel(session, KEY)).resolves.toBeUndefined();
-    const texts = textObjects(slackApi.updates[0].blocks).map((t) => t.text);
-    expect(texts.some((t) => t.includes('store exploded'))).toBe(true);
-  });
-});
-
-describe('ThreadSurface — the embedded Queue is budgeted in COMPACT blocks', () => {
-  /**
-   * White-box on purpose: the block budget is computed from the rest of the
-   * surface, and the interesting case is a TIGHT budget (a tall status panel),
-   * which cannot be produced from the public render path without pinning the
-   * unrelated block counts of the header and the action panel.
-   */
-  function embed(
-    surface: ThreadSurface,
-    budget: number,
-    followup: { view?: FollowupQueueView; error?: string },
-  ): unknown[] {
-    return (
-      surface as unknown as {
-        buildFollowupBlocks(key: string, budget: number, followup: unknown): unknown[];
-      }
-    ).buildFollowupBlocks(KEY, budget, followup);
-  }
-
-  const backlog = Array.from({ length: 12 }, (_, i) => item({ seq: i + 1 }));
-
-  function surfaceFor(items = backlog) {
-    return new ThreadSurface(makeDeps(makeSession(), makeSlackApi(), { getFollowupView: () => view({ items }) }));
-  }
-
-  // The compact layout spends ONE block per item (plus a header context and, at
-  // most, a freeze line and a nav row). Budgeting it at two blocks per item
-  // halved the page for no reason.
-  it('fills the page at one block per item, so 8 blocks carry a full page', () => {
-    const blocks = embed(surfaceFor(), 8, { view: view({ items: backlog }) });
-
-    const rows = blocks.filter((b) => JSON.stringify(b ?? {}).includes('message '));
-    expect(rows).toHaveLength(5); // the embed's hard cap, now actually reachable
-    expect(blocks.length).toBeLessThanOrEqual(8);
-  });
-
-  it('never spends more blocks than the budget it was handed', () => {
-    for (const budget of [2, 3, 4, 5, 6, 7, 10, 20, 45]) {
-      const blocks = embed(surfaceFor(), budget, { view: view({ items: backlog }) });
-      expect(blocks.length).toBeLessThanOrEqual(budget);
-    }
-  });
-
-  it('keeps the freeze line and the degradation note inside the same budget', () => {
-    const frozen = view({ items: backlog, freeze: { reason: 'stop requested', at: 1 } });
-    const blocks = embed(surfaceFor(), 6, { view: frozen, error: 'partial read' });
-
-    expect(blocks.length).toBeLessThanOrEqual(6);
-    const rendered = textObjects(blocks).map((t) => t.text);
-    expect(rendered.some((t) => t.includes('stop requested'))).toBe(true);
-    expect(rendered.some((t) => t.includes('partial read'))).toBe(true);
   });
 });
 

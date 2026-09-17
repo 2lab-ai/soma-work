@@ -17,7 +17,12 @@ import {
   type FollowupQueueSnapshot,
   FREEZE_PARKED_STATES,
 } from '@soma/slack/followup-queue';
-import { FOLLOWUP_RESTART_FREEZE_REASON, type FollowupQueueView } from '@soma/slack/followup-queue-blocks';
+import {
+  buildFollowupItemMessage,
+  FOLLOWUP_PENDING_STATES,
+  FOLLOWUP_RESTART_FREEZE_REASON,
+  type FollowupQueueView,
+} from '@soma/slack/followup-queue-blocks';
 import { FollowupQueueStore } from '@soma/slack/followup-queue-store';
 import { runWithTimeout } from '@soma/slack/pipeline/stream-executor-cleanup-helpers';
 import { HandoffAbortError, isZHandoffWorkflow } from 'somalib/model-commands/handoff-parser';
@@ -255,6 +260,12 @@ export class SlackHandler {
    */
   private followupEditNoticed?: Set<string>;
   /**
+   * Where each item's in-thread message(s) were posted (A39/A41), keyed by item
+   * id. In memory only — see {@link rememberFollowupItemMessage} for why losing
+   * it on a restart is the accepted cost.
+   */
+  private followupItemMessages?: Map<string, Array<{ channel: string; ts: string }>>;
+  /**
    * Live bot-thread migrations. A first mention opens its dispatch slot under
    * the SOURCE thread key, and the pipeline then moves the session into a new
    * work thread and terminates the source session
@@ -379,6 +390,14 @@ export class SlackHandler {
       contextWindowManager: this.contextWindowManager,
       // #617: /compact-threshold handler reads/writes compactThreshold.
       userSettingsStore,
+      // `queue`/`큐` (A40) reads the SAME live view the surface renders, and
+      // registers what it posted so A41 deletes its buttons with the item
+      // (`queue-handler.ts`). Spread like the panel's wiring above — the deps
+      // interface is `[key: string]: any`, and the handler declares the subset
+      // it reads.
+      ...followupSurfaceDeps,
+      rememberFollowupItemMessage: (itemId: string, ref: { channel: string; ts?: string }) =>
+        this.rememberFollowupItemMessage(itemId, ref),
     };
     this.commandRouter = new CommandRouter(commandDeps);
 
@@ -696,6 +715,12 @@ export class SlackHandler {
         // Idle-guarded like every other non-boundary sweep: the follow-through
         // runs detached, so another turn may already hold the slot.
         sweepSteered: (sessionKey) => this.sweepSteerBucketsIfIdle(sessionKey),
+        // A41 — the click settled the item, so the message carrying its buttons
+        // must go. Detached on purpose: the deletion is best effort and must not
+        // sit in front of the ephemeral the user is waiting for.
+        onItemProcessed: (_sessionKey, itemId) => {
+          void this.deleteFollowupItemMessages(itemId);
+        },
         reportError: (label, error) => {
           this.logger.error('Follow-up action failed', { label, error: (error as Error)?.message ?? String(error) });
         },
@@ -2587,31 +2612,117 @@ export class SlackHandler {
     // D1: the default is to hand the message to the turn that is already
     // running instead of making the user wait for it.
     const steered = halted ? 'queued' : await this.trySteerFollowup(sessionKey, event, result.item);
-    // Counted AFTER the steer: a steered message is no longer waiting on the
-    // queue, it is waiting on the model.
-    const position = queue.list(sessionKey).filter((item) => item.state === 'queued').length;
-    let text: string;
-    if (halted) {
-      text =
-        `📥 Queue에 보관했습니다 (대기 ${position}건). ⏸️ 자동 실행이 중단된 상태입니다 — ${halted.detail}\n` +
-        '_원인을 해소하고 다시 시작해야 실행됩니다._';
-    } else if (steered === 'steered') {
-      text =
-        `📥 Queue에 넣고 실행 중인 턴에 전달했습니다 (대기 ${position}건) — 모델이 다음 툴 호출 경계에서 읽습니다. ` +
-        '취소·즉시 실행은 스레드 맨 아래 패널에서.';
-    } else if (steered === 'uncertain') {
-      // The push was refused AND the rollback could not be persisted, so the row
-      // is stuck `steered` and the panel is about to show something this receipt
-      // would contradict. Say what is actually known: nothing.
-      text = '⚠️ 전달 중 오류로 항목 상태를 확정하지 못했습니다 — 스레드 맨 아래 패널에서 확인하세요.';
-    } else {
-      // One line: the controls used to be described here, but they now live in
-      // the panel pinned at the tail of the thread — the receipt only has to
-      // say "stored, N waiting" and point at where the buttons actually are.
-      text = `📥 Queue에 넣었습니다 (대기 ${position}건) — 실행·취소는 스레드 맨 아래 패널에서.`;
-    }
-    await this.slackApi.postSystemMessage(event.channel, text, { threadTs });
+
+    // A39 — the receipt IS the queue item: one message, right under the message
+    // it parked, carrying the item's state and its two controls. It replaces the
+    // "대기 N건 — 패널에서" text receipt, which pointed at a Queue section that
+    // no longer exists (`thread-surface.ts`).
+    //
+    // Re-read before rendering: `result.item` is the enqueue-time snapshot and
+    // the steer above bumped the item's generation, so a button minted from it
+    // would be refused by `verifyItem` on the very first click.
+    const current = queue.get(sessionKey, result.item.id) ?? result.item;
+    const rendered = buildFollowupItemMessage(current, this.getFollowupView(sessionKey)?.turnEpoch ?? 0);
+    // The one fact the item line cannot carry, because it is about the LANE and
+    // not about this item: nothing will drain while the halt stands.
+    const notice = halted
+      ? `⏸️ 자동 실행이 중단된 상태입니다 — ${halted.detail} · 원인을 해소하고 다시 시작해야 실행됩니다.`
+      : steered === 'uncertain'
+        ? // The push was refused AND the rollback could not be persisted, so the
+          // row is stuck `steered` and this host does not know what it will do.
+          '⚠️ 전달 중 오류로 항목 상태를 확정하지 못했습니다 — 상태를 확인해주세요.'
+        : undefined;
+    const blocks = notice
+      ? [...rendered.blocks, { type: 'context', elements: [{ type: 'plain_text', text: notice }] }]
+      : rendered.blocks;
+    const posted = await this.slackApi.postSystemMessage(
+      event.channel,
+      notice ? `${notice}\n${rendered.text}` : rendered.text,
+      {
+        threadTs,
+        blocks,
+      },
+    );
+    this.rememberFollowupItemMessage(current.id, {
+      channel: posted?.channel ?? event.channel,
+      ts: posted?.ts,
+    });
     await this.refreshFollowupSurface(sessionKey);
+  }
+
+  /**
+   * Remember WHERE an item's message was posted, so A41 can delete it once the
+   * item is processed.
+   *
+   * In memory only, and deliberately: the map is a convenience for the live
+   * process, never a record anything depends on. A restart loses it, which costs
+   * one stale message pair of buttons — the `queue` command re-posts the items
+   * that are still pending, and the stale buttons refuse themselves (their
+   * generation no longer matches). Persisting it would buy a cleanup nobody is
+   * waiting for at the price of another durable file to reconcile.
+   *
+   * A list per item, not one entry: `queue` re-posts a pending item, so the same
+   * item legitimately has several messages, and processing it must clear all of
+   * them (A41 says "message(s)").
+   */
+  private rememberFollowupItemMessage(itemId: string, ref: { channel: string; ts?: string }): void {
+    // No `ts` = Slack did not tell us where it landed; there is nothing to
+    // delete later and a half-entry would only look like one.
+    if (!ref.ts) return;
+    const map = (this.followupItemMessages ??= new Map<string, Array<{ channel: string; ts: string }>>());
+    const refs = map.get(itemId) ?? [];
+    if (refs.some((known) => known.channel === ref.channel && known.ts === ref.ts)) return;
+    refs.push({ channel: ref.channel, ts: ref.ts });
+    map.set(itemId, refs);
+  }
+
+  /**
+   * A41 — the item is processed, so every message that offered controls for it
+   * is deleted. Best effort: a refused `chat.delete` (the message was already
+   * removed, the token cannot delete it) is logged and nothing else — the item
+   * is settled either way, and a bookkeeping failure must not become the user's
+   * answer. Never throws.
+   */
+  private async deleteFollowupItemMessages(itemId: string): Promise<void> {
+    const refs = this.followupItemMessages?.get(itemId);
+    if (!refs || refs.length === 0) return;
+    // Dropped FIRST: a second call (the same item settled through two paths)
+    // must not delete twice, and a failed delete is not worth retrying blindly.
+    this.followupItemMessages?.delete(itemId);
+    for (const ref of refs) {
+      try {
+        await this.slackApi.deleteMessage(ref.channel, ref.ts);
+      } catch (error) {
+        this.logger.warn('Queue item message could not be deleted', {
+          itemId,
+          error: (error as Error)?.message ?? String(error),
+        });
+      }
+    }
+  }
+
+  /**
+   * Delete an item's messages ONLY if the item really left the pending set.
+   *
+   * Used by the paths that settle an item without knowing which way it went (the
+   * drain), so the queue — not the caller's expectation — decides. An item this
+   * process cannot find in either bucket is left alone: "not in the bucket I
+   * asked" is not evidence that it was processed.
+   */
+  private async deleteFollowupItemMessagesIfProcessed(sessionKey: string, itemId: string): Promise<void> {
+    const queue = this.followupQueue;
+    if (!queue) return;
+    const item = queue.get(sessionKey, itemId) ?? this.itemUnderCounterpartKey(sessionKey, itemId);
+    if (!item) return;
+    if ((FOLLOWUP_PENDING_STATES as readonly string[]).includes(item.state)) return;
+    if (item.state === 'reserved' || item.state === 'claimed' || item.state === 'dispatched') return;
+    await this.deleteFollowupItemMessages(itemId);
+  }
+
+  /** The same item id in the other bucket of a bound migration, if there is one. */
+  private itemUnderCounterpartKey(sessionKey: string, itemId: string): FollowupItem | undefined {
+    const other = this.migrationCounterpart(sessionKey);
+    return other === undefined ? undefined : this.followupQueue?.get(other, itemId);
   }
 
   /**
@@ -2816,6 +2927,10 @@ export class SlackHandler {
         });
       } else {
         this.forgetSteerBookkeeping(settled.item.id);
+        // A41 — `completed` is the consumption receipt: the row is `resolved`
+        // and its controls are meaningless now. The other phases unsteer the
+        // item back to `queued`, where it is pending again and keeps them.
+        if (phase === 'completed') void this.deleteFollowupItemMessages(settled.item.id);
       }
       await this.cleanupSteerFiles(this.takeSteerFiles(uuid));
       // NOT awaited: the executor awaits this hook inside its stream loop, so a
@@ -3405,7 +3520,13 @@ export class SlackHandler {
       // Keeping the one-shot past it leaks an entry per item that ever took a
       // notice, and silences the notice the NEXT state of that message deserves
       // (a swept-and-requeued item, a `uncertain` row the user edits again).
-      if (drainedItemId) this.forgetSteerBookkeeping(drainedItemId);
+      if (drainedItemId) {
+        this.forgetSteerBookkeeping(drainedItemId);
+        // A41 — the run is over, so the item landed somewhere terminal
+        // (`resolved`/`failed`) or it did not move at all. The queue decides
+        // which, and only a terminal row loses its message.
+        await this.deleteFollowupItemMessagesIfProcessed(sessionKey, drainedItemId);
+      }
       // The turn this loop just ran could itself have been steered into, and
       // nothing else will sweep it: `drainFollowups` swept BEFORE the loop, and
       // the `Send now` follow-through enters here with no boundary in front of
