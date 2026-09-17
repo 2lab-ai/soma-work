@@ -209,7 +209,9 @@ export class ActionPanelBuilder {
 
     const blocks: any[] = [];
 
-    // 1. Status blocks (hero section + fields section)
+    // 1. Status block — badge + step/progress on line 1, turn timers on line 2.
+    //    One block, not two: the pair used to be a section plus a context block
+    //    with a full-width gap between them (2026-09-17 panel-height feedback).
     blocks.push(
       ...ActionPanelBuilder.buildStatusBlocks({
         status,
@@ -223,24 +225,21 @@ export class ActionPanelBuilder {
         lastProgressAt: params.lastProgressAt,
         lastSignalAt: params.lastSignalAt,
         now: params.now,
+        metricsLine: ActionPanelBuilder.buildMetricsLine({
+          turnSummary: params.turnSummary,
+          latestResponseLink: params.latestResponseLink,
+          logVerbosity: params.logVerbosity,
+        }),
       }),
     );
 
-    // 2. Metrics context (small text: time + tools + link + verbosity)
-    const metricsCtx = ActionPanelBuilder.buildMetricsContext({
-      turnSummary: params.turnSummary,
-      latestResponseLink: params.latestResponseLink,
-      logVerbosity: params.logVerbosity,
-    });
-    if (metricsCtx) blocks.push(metricsCtx);
-
-    // 3. Choice slot (when waiting for user input) — show link to standalone choice message
+    // 2. Choice slot (when waiting for user input) — show link to standalone choice message
     if (isQuestionPending) {
       blocks.push({ type: 'divider' });
       blocks.push(ActionPanelBuilder.buildChoiceLinkSection(params.choiceMessageLink));
     }
 
-    // 4. Divider + action rows (with close button merged)
+    // 3. Divider + action rows (with close button merged)
     blocks.push({ type: 'divider' });
     blocks.push(...actionRows);
 
@@ -285,8 +284,16 @@ export class ActionPanelBuilder {
   }
 
   /**
-   * Status blocks: single section with 2-column fields layout.
-   * Left: status badge + agent subtitle    Right: PR label + chip
+   * Status block: ONE section, at most two lines.
+   *
+   *   line 1  `🟢 *작업 중* · 결과 반영 중 · 마지막 활동 0초 전`
+   *   line 2  `⏱ 4:02 · 🛠 17 · 🔇 minimal`   (omitted when there is nothing)
+   *
+   * Merging the badge and the step onto one line, and folding the former
+   * metrics context block in as line 2, is layout only — every U9 fact
+   * (`buildProgressLine`) and every metric still renders, and neither is
+   * derived from the other. With a PR present the two lines share the LEFT
+   * column of a 2-column fields layout; the PR chip keeps the right one.
    */
   private static buildStatusBlocks(params: {
     status: string;
@@ -300,10 +307,12 @@ export class ActionPanelBuilder {
     lastProgressAt?: number;
     lastSignalAt?: number;
     now?: number;
+    metricsLine?: string;
   }): any[] {
     const badge = ActionPanelBuilder.statusBadge(params.status);
     const progressLine = ActionPanelBuilder.buildProgressLine(params);
-    const statusText = progressLine ? `${badge}\n${progressLine}` : badge;
+    const headline = progressLine ? `${badge} · ${progressLine}` : badge;
+    const statusText = params.metricsLine ? `${headline}\n${params.metricsLine}` : headline;
 
     // PR chip for right column
     const prChip = params.prStatus ? ActionPanelBuilder.prStatusChip(params.prStatus) : '';
@@ -417,33 +426,30 @@ export class ActionPanelBuilder {
   }
 
   /**
-   * Metrics context: time + tools + link + verbosity → context block (small text, separate elements)
+   * Metrics line: time + tools + link + verbosity on ONE row, `undefined` when
+   * there is nothing to say. Used to be a context block of separate elements;
+   * it is now line 2 of the status section ({@link buildStatusBlocks}).
    */
-  private static buildMetricsContext(params: {
+  private static buildMetricsLine(params: {
     turnSummary?: string;
     latestResponseLink?: string;
     logVerbosity?: number;
-  }): any | null {
-    const elements: any[] = [];
+  }): string | undefined {
+    const parts: string[] = [];
 
     if (params.turnSummary) {
-      elements.push({ type: 'mrkdwn', text: params.turnSummary });
+      parts.push(params.turnSummary);
     }
 
     if (params.latestResponseLink) {
-      elements.push({ type: 'mrkdwn', text: `<${params.latestResponseLink}|💬 최신 응답>` });
+      parts.push(`<${params.latestResponseLink}|💬 최신 응답>`);
     }
 
     if (params.logVerbosity !== undefined) {
-      elements.push({ type: 'mrkdwn', text: ActionPanelBuilder.verbosityLabel(params.logVerbosity) });
+      parts.push(ActionPanelBuilder.verbosityLabel(params.logVerbosity));
     }
 
-    if (elements.length === 0) return null;
-
-    return {
-      type: 'context',
-      elements,
-    };
+    return parts.length > 0 ? parts.join(' · ') : undefined;
   }
 
   private static verbosityLabel(mask: number): string {

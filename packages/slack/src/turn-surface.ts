@@ -425,6 +425,33 @@ export class TurnSurface {
     return next;
   }
 
+  /**
+   * Tell the helper that this turn put a message into the thread, so the
+   * combined panel can re-anchor below it.
+   *
+   * Every write in this file goes out through the RAW client, so `SlackApiHelper`
+   * never sees it and this is the only place that can announce it. Call it after
+   * a successful `chat.postMessage` (`kind: 'post'`) or stream open
+   * (`kind: 'stream'`) — never after an update, which moves nothing.
+   *
+   * Guarded on the method's presence: `TurnSurfaceDeps.slackApi` is satisfied
+   * by doubles that expose `getClient()` alone, and a missing hook must degrade
+   * to "no tail anchoring", never to a crashed turn.
+   */
+  private notifyThreadPost(address: TurnAddress, ts: string, kind: 'post' | 'stream', turnId?: string): void {
+    if (!address.threadTs) return;
+    const slackApi = this.deps.slackApi as Partial<SlackApiHelper> | undefined;
+    if (typeof slackApi?.notifyThreadPost !== 'function') return;
+    try {
+      slackApi.notifyThreadPost({ channel: address.channelId, threadTs: address.threadTs, ts, kind });
+    } catch (err) {
+      this.logger.debug('thread-post notification failed', {
+        turnId,
+        error: (err as Error).message,
+      });
+    }
+  }
+
   /** Record a finished turnId (bounded FIFO — see {@link closedTurns}). */
   private rememberClosedTurn(turnId: string): void {
     this.closedTurns.add(turnId);
@@ -562,6 +589,13 @@ export class TurnSurface {
       }
       if (result?.ts) {
         state.streamTs = result.ts;
+        // A B1 stream is a real message in the thread, posted through the raw
+        // client, so `SlackApiHelper` never sees it and cannot announce it. The
+        // thread panel has to know: this message sits BELOW it until the panel
+        // re-anchors. (`stopStream`, including the A32 consolidated close with
+        // blocks, is deliberately NOT announced — it appends to THIS message,
+        // which is already in its final position, so nothing moved.)
+        this.notifyThreadPost(ctx, result.ts, 'stream', ctx.turnId);
         // Opening a Slack stream can reset the agent lifecycle to active.
         // Restore only this live turn; the epoch rejects a late closed owner.
         if (mgr && ctx.threadTs && !state.closing && this.activeTurn.get(ctx.sessionKey) === ctx.turnId) {
@@ -810,6 +844,7 @@ export class TurnSurface {
         const result: { ts?: string } = await (client.chat as any).postMessage(postArgs);
         if (result?.ts) {
           state.planTs = result.ts;
+          this.notifyThreadPost(state.ctx, result.ts, 'post', turnId);
           this.logger.debug('B2 plan message posted', {
             turnId,
             planTs: result.ts,
@@ -834,7 +869,10 @@ export class TurnSurface {
           };
           if (state.ctx.threadTs) fallbackArgs.thread_ts = state.ctx.threadTs;
           const fb: { ts?: string } = await (client.chat as any).postMessage(fallbackArgs);
-          if (fb?.ts) state.planTs = fb.ts;
+          if (fb?.ts) {
+            state.planTs = fb.ts;
+            this.notifyThreadPost(state.ctx, fb.ts, 'post', turnId);
+          }
         } catch (fallbackErr) {
           this.logger.warn('chat.postMessage plan-block plain-text fallback also failed', {
             turnId,
@@ -915,6 +953,7 @@ export class TurnSurface {
     }
     const state = this.turns.get(turnId);
     if (state) state.choiceTs = result.ts;
+    this.notifyThreadPost(address, result.ts, 'post', turnId);
     this.logger.debug('B3 single-choice message posted', {
       turnId,
       choiceTs: result.ts,
@@ -948,6 +987,7 @@ export class TurnSurface {
     }
     const state = this.turns.get(turnId);
     if (state) state.formTsList.push(result.ts);
+    this.notifyThreadPost(address, result.ts, 'post', turnId);
     this.logger.debug('B3 multi-choice chunk posted', {
       turnId,
       formTs: result.ts,
@@ -1560,7 +1600,8 @@ export class TurnSurface {
         text: USER_INTERRUPTED_MARKER,
       };
       if (state.ctx.threadTs) postArgs.thread_ts = state.ctx.threadTs;
-      await (client.chat as any).postMessage(postArgs);
+      const posted: { ts?: string } = await (client.chat as any).postMessage(postArgs);
+      if (posted?.ts) this.notifyThreadPost(state.ctx, posted.ts, 'post', turnId);
       this.logger.debug('user-interrupted marker posted as plain text (no stream)', { turnId });
       return true;
     } catch (err) {
