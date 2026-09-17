@@ -149,6 +149,9 @@ Queue
   - `claimed` / `dispatched` → `uncertain`으로 표시. **블라인드 재실행 금지**(부작용 발생 여부 불명, → §8 R6).
   - 확인된 `failed` → 명시적 retry만.
 - stop, 세션 종료 = 큐를 freeze + 사유를 화면에 표시. 유저의 **명시적 resume** 전까지 자동 dispatch 없음.
+  - **freeze의 범위는 항목 단위다**: stop/재시작으로 freeze된 세션에서 보류된(`paused`/`uncertain`) 항목만
+    자동 dispatch가 막히고, 그 이후 도착한 새 메시지는 정상 실행·스티어링된다 (2026-09-17 정정).
+    보류 항목이 전부 빠져나가면(resume/retry/cancel) freeze 자체가 해제된다.
   이때 항목은 재생(replay)되지 않고 상태로 확정된다(= A31이 정본이고 A17은 이 분기를 가리킨다):
   - `reserved` 항목, 그리고 `claimed`이지만 **아직 시작되지 않은** 항목 → `paused`.
   - **실행 중이었다가 중단된**(`dispatched`) 항목 → `uncertain`. 결과가 확인된 경우에만 `resolved`/`failed`로 확정.
