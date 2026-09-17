@@ -495,6 +495,12 @@ const IN_FLIGHT_STATES: readonly FollowupItemState[] = ['reserved', 'claimed', '
  * receipt are Korean), so the user reads one voice on one message.
  */
 const CANCEL_DENIED_TEXT = '취소가 거부되었습니다: 이 세션을 조작할 권한이 없습니다 — 항목은 큐에 그대로 있습니다.';
+/**
+ * Success speaks too. The repaint alone is not a receipt: an overflow click
+ * gives no visual feedback, so a silent success is indistinguishable from a
+ * click that never arrived — and every refusal branch below already answers.
+ */
+const CANCEL_OK_TEXT = '취소했습니다 — 항목은 기록으로 남습니다.';
 const CANCEL_RUNNING_TEXT = '실행 중인 항목은 취소할 수 없습니다 — 패널의 중지 버튼을 쓰세요.';
 const CANCEL_STALE_TEXT = '이미 바뀐 항목입니다 — 패널을 새로고침했습니다.';
 
@@ -554,7 +560,10 @@ async function handleCancel(
       value.epoch,
       `<@${click.clicker}> 님이 취소했습니다`,
     );
-    if (result.ok) return;
+    if (result.ok) {
+      await reply(respond, CANCEL_OK_TEXT);
+      return;
+    }
     if (result.reason === 'stale-epoch' || result.reason === 'not-found') {
       await refuse(respond, CANCEL_STALE_TEXT);
       return;
@@ -735,8 +744,14 @@ function readThreadTs(body: unknown): string | undefined {
  * Plumbing
  * ------------------------------------------------------------------ */
 
-function refuse(respond: FollowupRespond, text: string): Promise<unknown> {
+/** One ephemeral, visible to the clicker only — the sole way this module talks back. */
+function reply(respond: FollowupRespond, text: string): Promise<unknown> {
   return respond({ ...EPHEMERAL, text });
+}
+
+/** {@link reply} under the name every rejection path reads better with. */
+function refuse(respond: FollowupRespond, text: string): Promise<unknown> {
+  return reply(respond, text);
 }
 
 /**

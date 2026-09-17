@@ -6,7 +6,9 @@ import {
   FOLLOWUP_QUEUE_TITLE,
   FOLLOWUP_SEND_NOW_ACTION_ID,
   FOLLOWUP_SEND_NOW_LABEL,
+  type FollowupItemMenuValue,
   type FollowupQueueView,
+  parseFollowupMenuValue,
 } from '../followup-queue-blocks';
 import type { MessageEvent } from '../pipeline/types';
 import { type ConversationSession, ThreadSurface, type ThreadSurfaceDeps } from '../thread-surface';
@@ -146,9 +148,16 @@ function actionIds(blocks: unknown[]): string[] {
   return buttons(blocks).map((b) => String(b.action_id));
 }
 
-/** Every overflow-menu option in the payload, with its decoded value. */
-function menuOptions(blocks: unknown[]): Array<{ actionId: string; value: Record<string, unknown> }> {
-  const found: Array<{ actionId: string; value: Record<string, unknown> }> = [];
+/**
+ * Every overflow-menu option in the payload, with its decoded value.
+ *
+ * Decoded through the queue builder's OWN parser: the option wire form is short
+ * -keyed to fit Slack's 150-char option `value`, and these surface tests must
+ * assert what the coordinates MEAN (which item, which turn epoch), not which
+ * letters the renderer currently spells them with.
+ */
+function menuOptions(blocks: unknown[]): Array<{ actionId: string; value: FollowupItemMenuValue }> {
+  const found: Array<{ actionId: string; value: FollowupItemMenuValue }> = [];
   const walk = (node: unknown) => {
     if (Array.isArray(node)) {
       for (const child of node) walk(child);
@@ -158,11 +167,9 @@ function menuOptions(blocks: unknown[]): Array<{ actionId: string; value: Record
       const record = node as Record<string, unknown>;
       if (record.type === 'overflow' && Array.isArray(record.options)) {
         for (const option of record.options as Array<Record<string, unknown>>) {
-          try {
-            found.push({ actionId: String(record.action_id), value: JSON.parse(String(option.value)) });
-          } catch {
-            /* an unparseable option is a queue-builder concern, not a surface one */
-          }
+          const value = parseFollowupMenuValue(String(option.value));
+          // An unparseable option is a queue-builder concern, not a surface one.
+          if (value) found.push({ actionId: String(record.action_id), value });
         }
       }
       for (const value of Object.values(record)) walk(value);
@@ -184,9 +191,9 @@ function queueTitleIndex(blocks: any[]): number {
 }
 
 /** The item-scoped `Send now` control, whichever widget currently carries it. */
-function sendNowValue(blocks: unknown[]): Record<string, unknown> | undefined {
+function sendNowValue(blocks: unknown[]): Partial<FollowupItemMenuValue> | undefined {
   const button = buttons(blocks).find((b) => b.action_id === FOLLOWUP_SEND_NOW_ACTION_ID);
-  if (button) return JSON.parse(String(button.value));
+  if (button) return JSON.parse(String(button.value)) as Partial<FollowupItemMenuValue>;
   return menuOptions(blocks).find((option) => option.value.op === 'send_now')?.value;
 }
 

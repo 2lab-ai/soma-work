@@ -5,6 +5,12 @@ Date: 2026-09-14 · Loop: [`loop.md`](loop.md) · SSOT: [`ssot.md`](ssot.md)
 로그는 모두 세션 scratchpad에 있다. **로컬 리시트 ≠ live acceptance** — 아래 green은 전부 로컬 실행이며,
 실제 Slack 화면에서의 수용(A19·A22·A32 등)은 별개로 미확인이다. GREEN은 명령 출력으로만 적는다.
 
+### R15 — outbox delivery intent는 프로덕션 배선이 아니다 (PR 읽는 사람이 먼저 알아야 할 것)
+
+Outbox delivery intents are optional and NOT wired in production (`src/slack-handler.ts` omits `surfaceOutbox`;
+`thread-panel.ts` makes it optional); the outbox crash-safety tests describe an opt-in path. Production runs the
+legacy branch which self-heals a missing card.
+
 ## 0. 최신 frozen 리시트 (2026-09-14 17:39)
 
 | 게이트 | 로그 | 결과 |

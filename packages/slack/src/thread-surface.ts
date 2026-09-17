@@ -297,6 +297,11 @@ const FOLLOWUP_EMBED_PAGE_SIZE = 5;
  * mode is a duplicate card that nothing can clean up. Transport-level fields
  * (`err.code` = ETIMEDOUT/ECONNRESET) are never consulted: they describe the
  * connection, not what Slack did with the request.
+ *
+ * `queue_overflow` is the one non-Slack code here and it is the strongest
+ * evidence of the set: the api helper drops the request from its OWN rate-limit
+ * queue before `execute()` runs (`slack-api-helper.ts:361-372`), so no HTTP
+ * request was ever made.
  */
 const DEFINITIVE_POST_REJECTIONS: ReadonlySet<string> = new Set([
   'channel_not_found',
@@ -304,6 +309,7 @@ const DEFINITIVE_POST_REJECTIONS: ReadonlySet<string> = new Set([
   'invalid_auth',
   'invalid_blocks',
   'invalid_arguments',
+  'queue_overflow',
 ]);
 
 /** Stable display order for the fallback-text state breakdown. */
@@ -1011,7 +1017,10 @@ export class ThreadSurface {
    *   - the session is closed → the closed card is history, not a control;
    *   - the delete failed → the old card may still be live, and two panels
    *     break the single-writer invariant permanently. A stale position is
-   *     recoverable; a duplicate is not.
+   *     recoverable; a duplicate is not;
+   *   - the outbox would not authorise the replacement post
+   *     ({@link outboxAuthorisesRepost}) → deleting first would leave the
+   *     session with no card and no permission to make one.
    *
    * The repost is NOT a special path: `messageTs` is cleared and the normal
    * render runs, so the A24 outbox sequence (`beginPost` → post → `markSent`)
@@ -1040,6 +1049,7 @@ export class ThreadSurface {
 
     const channelId = panelState.channelId || session.channelId;
     if (!channelId) return;
+    if (!this.outboxAuthorisesRepost(sessionKey, oldTs)) return;
 
     rs.lastReanchorAt = Date.now();
     try {
@@ -1061,6 +1071,46 @@ export class ThreadSurface {
     panelState.renderKey = undefined;
 
     await this.renderViaFlush(session, sessionKey, true);
+  }
+
+  /**
+   * May the panel at `oldTs` be destroyed and reposted through the outbox?
+   *
+   * Only when the durable record says `sent` on THIS exact ts. Any other state
+   * is a record that will not authorise the replacement: `beginPost` hands a
+   * `pending` record back as-is (it means "unknown outcome"), and the delete has
+   * no transition to release it — `markDeleted` demands a `sent` record on the
+   * observed ts. Re-anchoring on top of that leaves the session with no card and
+   * no permission to post one, i.e. a permanently invisible panel. A stale
+   * position is recoverable; a held surface is not.
+   *
+   * Always `true` when no outbox is wired (legacy hosts): the post path there
+   * needs no authorisation, and a missing card self-heals on the next render.
+   */
+  private outboxAuthorisesRepost(sessionKey: string, oldTs: string): boolean {
+    const outbox = this.deps.surfaceOutbox;
+    if (!outbox) return true;
+
+    let record: DeliveryIntentRecord | undefined;
+    try {
+      record = outbox.get(threadPanelSurfaceKey(sessionKey));
+    } catch (error) {
+      this.logger.debug('Panel re-anchor skipped — the outbox could not be read', {
+        sessionKey,
+        error: (error as Error)?.message ?? String(error),
+      });
+      return false;
+    }
+
+    if (record?.state === 'sent' && record.messageTs === oldTs) return true;
+
+    this.logger.debug('Panel re-anchor skipped — the delivery record would not authorise the repost', {
+      sessionKey,
+      oldTs,
+      state: record?.state ?? 'absent',
+      recordTs: record?.messageTs,
+    });
+    return false;
   }
 
   /**

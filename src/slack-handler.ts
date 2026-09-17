@@ -784,6 +784,25 @@ export class SlackHandler {
     }
 
     const sessionKey = this.resolveFollowupSessionKey(event);
+
+    // A36 — the thread panel stays at the tail by learning what landed below it.
+    // Bot writes report themselves inside the api helper; an INBOUND reply never
+    // touches it, so the ingress reports it instead. Best-effort and never
+    // awaited: this is a UI hint, and a listener fault must not touch the fence
+    // below. Synthetic turns are excluded — no message reached the thread.
+    if (event.thread_ts && event.ts && !event.synthetic) {
+      try {
+        this.slackApi.notifyThreadPost?.({
+          channel: event.channel,
+          threadTs: event.thread_ts,
+          ts: event.ts,
+          kind: 'user',
+        });
+      } catch (error) {
+        this.logger.debug('Thread-post notification failed', { error });
+      }
+    }
+
     const dispatcher = this.followupDispatcher;
 
     // No dispatcher / no session identity (legacy mocks, DM cleanup-only
@@ -2496,7 +2515,7 @@ export class SlackHandler {
     if (frozen) {
       text =
         `📥 Queue에 보관했습니다 (대기 ${position}건). ⏸️ 큐가 멈춰 있어 자동으로 실행되지 않습니다 — ${frozen}\n` +
-        '_`Resume`을 눌러야 다시 실행됩니다._';
+        '_스레드 맨 아래 패널의 ⋯ 메뉴에서 Resume을 눌러야 다시 실행됩니다._';
     } else if (halted) {
       text =
         `📥 Queue에 보관했습니다 (대기 ${position}건). ⏸️ 자동 실행이 중단된 상태입니다 — ${halted.detail}\n` +
