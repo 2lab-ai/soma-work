@@ -190,6 +190,41 @@ const COMPACT_UNCERTAIN_CAUTION = '재실행 전 확인';
 const ACTION_UNAVAILABLE = 'action unavailable';
 
 /**
+ * The freeze reason the restart path writes verbatim (`slack-handler.ts:623`
+ * → `followup-queue.ts:763`, which stores the caller's string as given).
+ * Exported so the mapping below is pinned against the producer's constant
+ * instead of a copy that can drift out of it.
+ */
+export const FOLLOWUP_RESTART_FREEZE_REASON = 'process restart';
+
+/**
+ * What the banner says under a restart freeze, in the user's words.
+ *
+ * A restart freeze parks ONLY the items the session already held
+ * (`followup-queue.ts:216` — `paused`/`uncertain`); a message sent afterwards is
+ * `queued` and dispatches normally. Printing the raw reason made the panel read
+ * as "this queue is stopped", the same misreading the 2026-09-17 live bug
+ * produced in chat ("큐가 멈춰 있어 자동으로 실행되지 않습니다"), so the sentence
+ * names its own scope (재시작 전 항목) and points at the control that runs them.
+ * `⋯` is the overflow menu the compact layout puts on every item row.
+ */
+export const FOLLOWUP_RESTART_FREEZE_NOTICE =
+  '재시작 전에 남아 있던 항목입니다 — 자동으로 다시 실행하지 않습니다. 필요하면 ⋯ 메뉴의 Retry/Resume으로 실행하세요.';
+
+/**
+ * The freeze line both layouts render.
+ *
+ * Only the restart reason is rewritten. Every other reason is a sentence the
+ * stop path (or a user) already chose, so it is passed through with the generic
+ * frame — guessing at a wording for a reason this module does not own would
+ * replace the operator's words with ours.
+ */
+export function followupFreezeBannerText(reason: string): string {
+  if (reason.trim() === FOLLOWUP_RESTART_FREEZE_REASON) return FOLLOWUP_RESTART_FREEZE_NOTICE;
+  return `frozen · ${reason} · explicit Resume required`;
+}
+
+/**
  * What the builder needs. `FollowupSessionSnapshot` satisfies this structurally,
  * so a caller can pass either a snapshot or a `(sessionKey, list, freeze)` view.
  */
@@ -745,7 +780,7 @@ export function buildFollowupQueueBlocks(
   }
 
   if (view.freeze) {
-    blocks.push(contextBlock(`frozen · ${view.freeze.reason} · explicit Resume required`));
+    blocks.push(contextBlock(followupFreezeBannerText(view.freeze.reason)));
   }
 
   for (const item of visible) {

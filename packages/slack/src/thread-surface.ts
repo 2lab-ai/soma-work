@@ -10,6 +10,7 @@ import {
   FOLLOWUP_STATE_DISPLAY_ORDER,
   type FollowupQueueView,
   followupQueueCompactCapacity,
+  followupFreezeBannerText,
   followupStateCountLabel,
 } from './followup-queue-blocks';
 import { escapeSlackMrkdwn } from './mrkdwn-escape';
@@ -1824,7 +1825,7 @@ export class ThreadSurface {
     if (!view) return `${FOLLOWUP_QUEUE_TITLE} unavailable · ${escapeSlackMrkdwn(error ?? 'unknown')}`;
 
     const parts = [`${FOLLOWUP_QUEUE_TITLE} ${ThreadSurface.followupCountsText(view)}`];
-    if (view.freeze) parts.push(`frozen · ${escapeSlackMrkdwn(view.freeze.reason)}`);
+    if (view.freeze) parts.push(escapeSlackMrkdwn(followupFreezeBannerText(view.freeze.reason)));
     if (error) parts.push(`degraded · ${escapeSlackMrkdwn(error)}`);
     return parts.join(' · ');
   }
