@@ -160,4 +160,9 @@ export type AgentStreamRunnerLike = (
   abortController?: AbortController,
   workingDirectory?: string,
   slackContext?: unknown,
+  // The steering registry key. Must be the SAME key the host queued the
+  // follow-ups under — the handler registers the running turn under it and
+  // stamps the `steer_lifecycle` events it emits with it, so a different
+  // format here silently makes every turn unsteerable.
+  sessionKey?: string,
 ) => AsyncIterable<AgentStreamEvent>;

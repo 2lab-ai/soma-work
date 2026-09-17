@@ -114,6 +114,37 @@ describe('TurnInputChannel (user-steering WU1)', () => {
     expect(channel.pushedUuids()).toEqual(['u-1']);
   });
 
+  it('seal() refuses further pushes without ending the iterator', async () => {
+    // The settlement of a turn snapshots `pushedUuids()` and then awaits the
+    // interrupt round-trip. A push accepted during that await would never be
+    // settled, so the host seals the channel FIRST. Sealing must not end the
+    // stream the way `close()` does: the CLI still has to drain what is queued
+    // (and stays alive until the settlement closes it).
+    const channel = new TurnInputChannel(userMessage('first'));
+    channel.push(steerMessage('second', 'u-1'));
+    channel.seal();
+
+    expect(channel.push(steerMessage('too late', 'u-2'))).toBe(false);
+    expect(channel.pushedUuids()).toEqual(['u-1']);
+    expect(channel.isClosed).toBe(false);
+
+    const iterator = channel[Symbol.asyncIterator]();
+    expect((await iterator.next()).value?.message.content).toBe('first');
+    expect((await iterator.next()).value?.message.content).toBe('second');
+    const parked = iterator.next();
+    channel.close();
+    expect((await parked).done).toBe(true);
+  });
+
+  it('seal() is idempotent and close() after seal still ends the stream', async () => {
+    const channel = new TurnInputChannel(userMessage('first'));
+    channel.seal();
+    channel.seal();
+    channel.close();
+    expect(channel.isClosed).toBe(true);
+    expect(await drain(channel)).toHaveLength(1);
+  });
+
   it('pushedUuids() hands back a copy (callers cannot mutate the record)', () => {
     const channel = new TurnInputChannel(userMessage('first'));
     channel.push(steerMessage('second', 'u-1'));
