@@ -113,6 +113,13 @@ export function buildSteerUserMessage(input: SteerInput): SteerUserMessage {
  */
 export class TurnInputChannel implements AsyncIterable<SteerUserMessage> {
   private readonly queue: SteerUserMessage[] = [];
+  /**
+   * Uuids of the messages pushed into this turn, in push order — the ledger the
+   * host settles against on the turn's `result` (spec §6 item 6). The initial
+   * message is never listed: it opened the turn rather than being steered into
+   * it, so it has no queue item to settle.
+   */
+  private readonly pushed: string[] = [];
   private closed = false;
   /** Resolver of the promise a parked consumer is waiting on, if any. */
   private wake?: () => void;
@@ -134,8 +141,20 @@ export class TurnInputChannel implements AsyncIterable<SteerUserMessage> {
   push(message: SteerUserMessage): boolean {
     if (this.closed) return false;
     this.queue.push(message);
+    const uuid = (message as { uuid?: unknown }).uuid;
+    if (typeof uuid === 'string' && uuid.length > 0) {
+      this.pushed.push(uuid);
+    }
     this.release();
     return true;
+  }
+
+  /**
+   * The uuids accepted by {@link push}, in order. A copy: the caller settles
+   * against this list (and may reorder/filter it) without editing the ledger.
+   */
+  pushedUuids(): string[] {
+    return [...this.pushed];
   }
 
   /**

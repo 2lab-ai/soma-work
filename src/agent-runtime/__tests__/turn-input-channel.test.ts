@@ -20,6 +20,10 @@ function userMessage(text: string): SteerUserMessage {
   };
 }
 
+function steerMessage(text: string, uuid: string): SteerUserMessage {
+  return { ...userMessage(text), uuid: uuid as SteerUserMessage['uuid'] };
+}
+
 async function drain(channel: TurnInputChannel): Promise<SteerUserMessage[]> {
   const out: SteerUserMessage[] = [];
   for await (const m of channel) out.push(m);
@@ -89,5 +93,31 @@ describe('TurnInputChannel (user-steering WU1)', () => {
     channel.close();
     channel.close();
     expect(await drain(channel)).toHaveLength(1);
+  });
+
+  it('records pushed steer uuids in push order, excluding the initial message', () => {
+    const channel = new TurnInputChannel(steerMessage('first', 'u-initial'));
+    expect(channel.pushedUuids()).toEqual([]);
+
+    channel.push(steerMessage('second', 'u-1'));
+    channel.push(userMessage('uuid-less'));
+    channel.push(steerMessage('third', 'u-2'));
+
+    expect(channel.pushedUuids()).toEqual(['u-1', 'u-2']);
+  });
+
+  it('does not record a uuid for a push refused after close()', () => {
+    const channel = new TurnInputChannel(userMessage('first'));
+    channel.push(steerMessage('second', 'u-1'));
+    channel.close();
+    expect(channel.push(steerMessage('too late', 'u-2'))).toBe(false);
+    expect(channel.pushedUuids()).toEqual(['u-1']);
+  });
+
+  it('pushedUuids() hands back a copy (callers cannot mutate the record)', () => {
+    const channel = new TurnInputChannel(userMessage('first'));
+    channel.push(steerMessage('second', 'u-1'));
+    channel.pushedUuids().push('forged');
+    expect(channel.pushedUuids()).toEqual(['u-1']);
   });
 });
