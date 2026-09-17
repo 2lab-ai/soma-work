@@ -7,8 +7,10 @@ import type { FollowupItemState } from './followup-queue';
 import {
   buildFollowupQueueBlocks,
   FOLLOWUP_QUEUE_TITLE,
+  FOLLOWUP_STATE_DISPLAY_ORDER,
   type FollowupQueueView,
   followupQueueCompactCapacity,
+  followupStateCountLabel,
 } from './followup-queue-blocks';
 import { escapeSlackMrkdwn } from './mrkdwn-escape';
 import type { RequestCoordinator } from './request-coordinator';
@@ -311,19 +313,6 @@ const DEFINITIVE_POST_REJECTIONS: ReadonlySet<string> = new Set([
   'invalid_arguments',
   'queue_overflow',
 ]);
-
-/** Stable display order for the fallback-text state breakdown. */
-const FOLLOWUP_STATE_ORDER: readonly FollowupItemState[] = [
-  'queued',
-  'reserved',
-  'claimed',
-  'dispatched',
-  'paused',
-  'uncertain',
-  'failed',
-  'resolved',
-  'cancelled',
-];
 
 /**
  * What the render path resolved about the follow-up queue. `view` absent +
@@ -1813,12 +1802,16 @@ export class ThreadSurface {
     return out;
   }
 
-  /** `2 item(s) · queued 1 · paused 1` — counts and states only, never message bodies. */
+  /**
+   * `3 item(s) · queued 1 · 전달 1 · paused 1` — counts and states only, never
+   * message bodies. Order and per-state wording come from the queue builder, so
+   * this accessible line and the rendered panel name the same state the same way.
+   */
   private static followupCountsText(view: FollowupQueueView): string {
     const counts = new Map<FollowupItemState, number>();
     for (const item of view.items) counts.set(item.state, (counts.get(item.state) ?? 0) + 1);
-    const breakdown = FOLLOWUP_STATE_ORDER.filter((state) => counts.has(state))
-      .map((state) => `${state} ${counts.get(state)}`)
+    const breakdown = FOLLOWUP_STATE_DISPLAY_ORDER.filter((state) => counts.has(state))
+      .map((state) => `${followupStateCountLabel(state)} ${counts.get(state)}`)
       .join(' · ');
     const parts = [`${view.items.length} item(s)`];
     if (breakdown) parts.push(breakdown);
