@@ -677,14 +677,9 @@ export class SlackHandler {
           this.cancelSteeredFollowup(sessionKey, itemId, expectedEpoch, uuid),
         // `Send now` is the one exit from `steered` that produces no uuid for
         // this host to hang a cleanup on — the dispatcher unsteers inside its own
-        // transaction. Told here, the downloaded files go with it.
-        onItemLeftSteer: (sessionKey, itemId) => {
-          const uuid = this.followupSteerUuids?.get(itemId);
-          this.forgetSteerBookkeeping(itemId);
-          if (!uuid) return;
-          void this.cleanupSteerFiles(this.takeSteerFiles(uuid));
-          this.logger.debug('Released steer artifacts after Send now', { sessionKey, itemId });
-        },
+        // transaction. The hook only says the item MAY have left; deciding that
+        // it really did is this host's job (`releaseSteerAfterSendNow`).
+        onItemLeftSteer: (sessionKey, itemId) => this.releaseSteerAfterSendNow(sessionKey, itemId),
         getSessionByKey: (sessionKey) => this.claudeHandler?.getSessionByKey?.(sessionKey),
         // The SAME interrupt policy the dispatcher uses for `Send now`
         // (owner / current initiator) — one policy, two call sites.
@@ -966,6 +961,7 @@ export class SlackHandler {
     // (work-thread) key, because that is the session that still exists — drain
     // there, not under the source key whose session the pipeline deleted.
     const drainKey = this.canonicalFollowupKey(sessionKey);
+    await this.sweepSteerBuckets(sessionKey, drainKey);
     this.releaseFollowupMigration(sessionKey);
     await this.drainFollowups(drainKey, report);
 
@@ -2285,8 +2281,10 @@ export class SlackHandler {
     const report = await result.run.settled;
     await this.refreshFollowupSurface(sessionKey);
     // Same rule as the initial dispatch (`handleMessage`): items parked during a
-    // migrating turn live under the CANONICAL key, so the drain happens there.
+    // migrating turn live under the CANONICAL key, so the drain happens there —
+    // and both buckets are swept while the mapping still exists.
     const drainKey = this.canonicalFollowupKey(sessionKey);
+    await this.sweepSteerBuckets(sessionKey, drainKey);
     this.releaseFollowupMigration(sessionKey);
     await this.drainFollowups(drainKey, report);
   }
@@ -3195,6 +3193,81 @@ export class SlackHandler {
   }
 
   /**
+   * `Send now` is over — release what this host held for that item's steer, but
+   * ONLY if the item really left `steered`.
+   *
+   * The dispatcher's unsteer is SPECULATIVE: it happens before the reserve and
+   * before the interrupt, and a refused reserve or a failed interrupt puts the
+   * row back under the SAME uuid (`followup-dispatcher.ts:896 restoreSteer`)
+   * precisely because the SDK is still holding the copy that was pushed. The
+   * hook is announced unconditionally, so this is where that case is told
+   * apart: deleting the temp files there would leave the live turn reading
+   * attachments that no longer exist, and dropping the item→uuid entry would
+   * leave the settlement frame with nothing to clean up.
+   */
+  private releaseSteerAfterSendNow(sessionKey: string, itemId: string): void {
+    const uuid = this.followupSteerUuids?.get(itemId);
+    if (uuid !== undefined) {
+      const item = this.followupQueue?.get(sessionKey, itemId);
+      if (item?.state === 'steered' && item.steerUuid === uuid) {
+        this.logger.debug('Steer artifacts kept — the item is steered again under the same uuid', {
+          sessionKey,
+          itemId,
+        });
+        return;
+      }
+    }
+    this.forgetSteerBookkeeping(itemId);
+    if (!uuid) return;
+    void this.cleanupSteerFiles(this.takeSteerFiles(uuid));
+    this.logger.debug('Released steer artifacts after Send now', { sessionKey, itemId });
+  }
+
+  /**
+   * Sweep BOTH buckets a turn can have left a `steered` row in, before the
+   * migration mapping that relates them is dropped.
+   *
+   * A steer made while a bot-thread migration is bound is recorded under the
+   * SLOT key — the row lives in the bucket the push was accepted in, which is
+   * why `settleSteeredFollowup` falls back to it. The drain, and the sweep
+   * inside `drainFollowups`, run under the CANONICAL key. So a turn that ended
+   * without a settlement frame left the slot-key row `steered` forever: no
+   * drain can claim it and no receipt can still arrive. The dispatch paths call
+   * it BEFORE `releaseFollowupMigration`, because afterwards the two keys can no
+   * longer be related; everyone else lets it find the counterpart itself.
+   * Idempotent, like every sweep: an already-clean bucket writes nothing and
+   * repaints nothing.
+   */
+  private async sweepSteerBuckets(sessionKey: string, counterpart?: string): Promise<void> {
+    const other = counterpart ?? this.migrationCounterpart(sessionKey);
+    await this.sweepSteeredFollowups(sessionKey);
+    if (other !== undefined && other !== sessionKey) await this.sweepSteeredFollowups(other);
+  }
+
+  /** The other key of a bound migration, from either end; `undefined` for an ordinary session. */
+  private migrationCounterpart(sessionKey: string): string | undefined {
+    const maps = this.followupMigration;
+    return maps?.bySlot.get(sessionKey) ?? maps?.byCanonical.get(sessionKey);
+  }
+
+  /**
+   * The sweep is a TURN-BOUNDARY act: it declares that no receipt can still
+   * arrive for anything left in `steered`. That is only true while no dispatch
+   * is in flight for the keys involved — a live turn (a `Send now` that took the
+   * slot, a run this loop did not start) may be holding pushed copies right now,
+   * and returning those rows to `queued` would have the drain deliver the same
+   * message a second time, the double delivery §3.2 forbids.
+   */
+  private async sweepSteerBucketsIfIdle(sessionKey: string): Promise<void> {
+    const dispatcher = this.followupDispatcher;
+    if (!dispatcher) return;
+    const other = this.migrationCounterpart(sessionKey);
+    if (dispatcher.isBusy(sessionKey)) return;
+    if (other !== undefined && dispatcher.isBusy(other)) return;
+    await this.sweepSteerBuckets(sessionKey, other);
+  }
+
+  /**
    * Drop everything this host remembered about an item's steer: the uuid it was
    * pushed under, and the "your edit did not reach the queue" one-shot. Both are
    * per-delivery facts — kept past the delivery they would leak, and the edit
@@ -3234,10 +3307,26 @@ export class SlackHandler {
         break;
       }
       if (drained.status !== 'dispatched') break;
+      const drainedItemId = drained.run.itemId;
       last = await drained.run.settled;
+      // The delivery this item's bookkeeping described is over — `recordItemOutcome`
+      // left it `resolved`, `failed` or `uncertain` (`followup-dispatcher.ts:1060`).
+      // Keeping the one-shot past it leaks an entry per item that ever took a
+      // notice, and silences the notice the NEXT state of that message deserves
+      // (a swept-and-requeued item, a `uncertain` row the user edits again).
+      if (drainedItemId) this.forgetSteerBookkeeping(drainedItemId);
+      // The turn this loop just ran could itself have been steered into, and
+      // nothing else will sweep it: `drainFollowups` swept BEFORE the loop, and
+      // the `Send now` follow-through enters here with no boundary in front of
+      // it at all. A row whose settlement frame never arrived would sit
+      // `steered` with no turn left to settle it.
+      await this.sweepSteerBucketsIfIdle(sessionKey);
       await this.refreshFollowupSurface(sessionKey);
       if (!last.canDrain) break;
     }
+    // Also on the way out: the loop can exit on a denial, a halt or a busy slot
+    // it never dispatched into, and those exits leave the same stranded rows.
+    await this.sweepSteerBucketsIfIdle(sessionKey);
     return last;
   }
 

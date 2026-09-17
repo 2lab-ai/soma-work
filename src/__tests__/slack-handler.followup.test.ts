@@ -1776,6 +1776,109 @@ describe('SlackHandler — follow-up queue host', () => {
     });
 
     /**
+     * Under a bot-thread migration the steered ROW lives under the SLOT key
+     * (the bucket the push was made in, `steer settlement` above), while the
+     * drain — and the sweep inside it — runs under the CANONICAL key. A turn
+     * that ends with no settlement frame therefore left that row `steered`
+     * forever: no drain can claim it (`claimNext` takes `queued` only) and no
+     * receipt can still arrive.
+     */
+    it('sweeps the slot-key bucket too when the turn migrated to a work thread', async () => {
+      const WORK_KEY = 'C123:999.000';
+      claudeHandler.getSessionKey.mockImplementation(
+        (channel: string, threadTs?: string) => `${channel}:${threadTs ?? ''}`,
+      );
+      const workSession = { ...registrySession, threadTs: '999.000', threadRootTs: '999.000' };
+      claudeHandler.getSessionByKey.mockImplementation((key: string) =>
+        key === WORK_KEY ? workSession : registrySession,
+      );
+      initialize.mockImplementation(async () => ({
+        session: workSession,
+        sessionKey: WORK_KEY,
+        isNewSession: true,
+        userName: 'Owner',
+        workingDirectory: '/tmp/work',
+        abortController: new AbortController(),
+        halted: false,
+      }));
+      claudeHandler.steerTurn = vi.fn().mockReturnValue(true);
+
+      const gate = deferred<any>();
+      startWithContinuation.mockImplementationOnce(() => gate.promise);
+      // The slot was opened under the SOURCE key; the session runs under the work key.
+      const first = handler.handleMessage(message({ ts: '222.333', text: '첫 지시' }), say());
+      await tick();
+
+      // The reply arrives in the SOURCE thread — the key that owns the slot.
+      await handler.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
+      expect(items()[0].state).toBe('steered');
+
+      // The turn ends and no `steer_lifecycle` frame ever names the message.
+      gate.resolve({ hasPendingChoice: false });
+      await first;
+
+      expect(items()[0].state).toBe('queued');
+    });
+
+    /**
+     * The sweep used to hang off `drainFollowups` alone, which runs BEFORE the
+     * drain loop. A turn the loop itself dispatched was therefore never swept:
+     * a message steered into it and never settled stayed `steered`, with no
+     * turn left that could ever settle it.
+     */
+    it('sweeps the turn the drain loop itself dispatched', async () => {
+      // The first follow-up is refused by the live turn (so the drain runs it
+      // later); the second one is taken by the turn the DRAIN dispatched.
+      claudeHandler.steerTurn = vi.fn().mockReturnValueOnce(false).mockReturnValue(true);
+      const live = deferred<any>();
+      const drainRun = deferred<any>();
+      startWithContinuation.mockImplementationOnce(() => live.promise).mockImplementationOnce(() => drainRun.promise);
+
+      const first = handler.handleMessage(message({ ts: '222.333', text: '첫 지시' }), say());
+      await tick();
+      await handler.handleMessage(message({ ts: '333.444', text: '이건 큐로' }), say());
+      expect(items()[0].state).toBe('queued');
+
+      // The first turn ends: the drain claims that item, and its run is held open.
+      live.resolve({ hasPendingChoice: false });
+      await tick();
+      expect(items()[0].state).toBe('dispatched');
+
+      // A reply steered into the DRAIN-dispatched turn.
+      await handler.handleMessage(message({ ts: '555.666', text: '이것도 같이 봐줘' }), say());
+      const steeredId = items()[1].id;
+      expect(items()[1].state).toBe('steered');
+
+      // That turn ends parked on a question: no settlement frame, and no
+      // further drain is allowed to follow it.
+      drainRun.resolve({ hasPendingChoice: true });
+      await first;
+
+      expect(items().find((item: any) => item.id === steeredId).state).toBe('queued');
+    });
+
+    /**
+     * The `Send now` button's follow-through enters this loop directly
+     * (`deps.runDrain`) with no `drainFollowups` boundary in front of it, so the
+     * loop itself has to clear a row the superseded turn stranded — otherwise
+     * nothing does until some later message happens to start a turn.
+     */
+    it('sweeps a stranded steered row when the drain loop is entered directly', async () => {
+      const queue = handlerAny.getFollowupQueue();
+      expect(queue.enqueue(SESSION_KEY, message({ ts: '333.444', text: '이것도 같이 봐줘' }), {}).status).toBe(
+        'queued',
+      );
+      const parked = queue.list(SESSION_KEY)[0];
+      // The shape a turn that died holding the pushed copy leaves behind.
+      expect(queue.steer(SESSION_KEY, parked.id, parked.epoch, 'uuid-stranded').ok).toBe(true);
+      expect(items()[0].state).toBe('steered');
+
+      await handlerAny.runFollowupDrainLoop(SESSION_KEY);
+
+      expect(items()[0].state).toBe('queued');
+    });
+
+    /**
      * A steered item is outstanding follow-up work exactly like a queued one —
      * the autogoal driver must not start a turn on top of it (§3.6).
      */
@@ -1794,6 +1897,113 @@ describe('SlackHandler — follow-up queue host', () => {
 
       await settle();
       expect(goalDriver).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  /* ---------------------------------------------------------------- *
+   * `Send now` steer release — the host hook the action module calls once
+   * the dispatcher's transaction is over.
+   * ---------------------------------------------------------------- */
+
+  describe('Send now steer release', () => {
+    /** Steer one message carrying a file, so the temp-file release is observable. */
+    async function steerWithFile(): Promise<{
+      uuid: string;
+      itemId: string;
+      epoch: number;
+      processed: unknown[];
+      cleanupTempFiles: ReturnType<typeof vi.fn>;
+      settle: () => Promise<void>;
+    }> {
+      const cleanupTempFiles = vi.fn().mockResolvedValue(undefined);
+      const processed = [{ name: 'log.txt', path: '/tmp/log.txt', isImage: false }];
+      processFiles.mockResolvedValue({ files: processed, shouldContinue: true });
+      handlerAny.fileHandler = { formatFilePrompt: vi.fn().mockResolvedValue('이 로그 봐줘'), cleanupTempFiles };
+      const steerTurn = vi.fn().mockReturnValue(true);
+      claudeHandler.steerTurn = steerTurn;
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(
+        message({
+          ts: '333.444',
+          text: '이 로그 봐줘',
+          files: [
+            {
+              id: 'F1',
+              name: 'log.txt',
+              mimetype: 'text/plain',
+              filetype: 'text',
+              url_private: 'https://x/1',
+              url_private_download: 'https://x/1d',
+              size: 12,
+            },
+          ],
+        }),
+        say(),
+      );
+      const [item] = items();
+      expect(item.state).toBe('steered');
+      return {
+        uuid: steerTurn.mock.calls[0][1].uuid,
+        itemId: item.id,
+        epoch: item.epoch,
+        processed,
+        cleanupTempFiles,
+        settle,
+      };
+    }
+
+    /**
+     * The dispatcher's unsteer is SPECULATIVE: when the reserve is refused or
+     * the interrupt fails it puts the row back under the SAME uuid
+     * (`followup-dispatcher.ts:896 restoreSteer`), because the SDK is still
+     * holding the copy it was pushed. Releasing the files there would delete
+     * attachments the live turn is about to read.
+     */
+    it('keeps the steer artifacts when the dispatcher put the item back under the same uuid', async () => {
+      const { uuid, itemId, epoch, processed, cleanupTempFiles, settle } = await steerWithFile();
+      // The real `Send now` transaction, failing on the interrupt hop.
+      abortSession.mockImplementation(() => {
+        throw new Error('abort seam gone');
+      });
+
+      const result = await handlerAny.followupDispatcher.sendNow(
+        SESSION_KEY,
+        itemId,
+        epoch,
+        'U_OWNER',
+        handlerAny.getFollowupQueue().getTurnEpoch(SESSION_KEY),
+      );
+
+      expect(result.status).toBe('rejected');
+      expect(result.reason).toBe('interrupt-failed');
+      expect(items()[0].state).toBe('steered');
+      expect(items()[0].steerUuid).toBe(uuid);
+
+      // The action module announces the hook in a `finally`, whatever happened.
+      handlerAny.releaseSteerAfterSendNow(SESSION_KEY, itemId);
+
+      expect(cleanupTempFiles).not.toHaveBeenCalled();
+      // The uuid bookkeeping is kept too: the settlement that eventually names
+      // this uuid still finds the files and the item.
+      await handlerAny.streamExecutor.deps.onSteerLifecycle({ sessionKey: SESSION_KEY, uuid, phase: 'completed' });
+      expect(cleanupTempFiles).toHaveBeenCalledWith(processed);
+      expect(items()[0].state).toBe('resolved');
+
+      await settle();
+    });
+
+    it('releases the steer artifacts once the item really left `steered`', async () => {
+      const { itemId, processed, cleanupTempFiles, settle } = await steerWithFile();
+      // What a successful `Send now` leaves behind: the row is out of `steered`
+      // and the SDK copy died with the interrupted turn.
+      const queue = handlerAny.getFollowupQueue();
+      expect(queue.unsteerAll(SESSION_KEY, 'send-now')).toHaveLength(1);
+
+      handlerAny.releaseSteerAfterSendNow(SESSION_KEY, itemId);
+      await tick();
+
+      expect(cleanupTempFiles).toHaveBeenCalledWith(processed);
+      await settle();
     });
   });
 
@@ -1956,6 +2166,43 @@ describe('SlackHandler — follow-up queue host', () => {
 
       expect(handlerAny.followupEditNoticed.has(itemId)).toBe(false);
       await settle();
+    });
+
+    /**
+     * Same rule on the path most items actually take: the ordinary drain. The
+     * one-shot describes ONE delivery, so it dies with that delivery — kept, it
+     * leaks for every item that ever took a notice, and the next state of the
+     * same message would be announced with a memory of the previous one.
+     */
+    it('forgets the edit notice once the item settles through the ordinary drain', async () => {
+      const live = deferred<any>();
+      const drainRun = deferred<any>();
+      startWithContinuation.mockImplementationOnce(() => live.promise).mockImplementationOnce(() => drainRun.promise);
+
+      const first = handler.handleMessage(message({ ts: '222.333', text: '첫 지시' }), say());
+      await tick();
+      await handler.handleMessage(message({ ts: '333.444', text: '배포 상태 알려줘' }), say());
+      expect(items()[0].state).toBe('queued');
+
+      // The turn ends: the drain claims and dispatches the item, and that run
+      // is held open — the item is handed over, so an edit gets the notice.
+      live.resolve({ hasPendingChoice: false });
+      await tick();
+      const itemId = items()[0].id;
+      expect(items()[0].state).toBe('dispatched');
+
+      await handlerAny.handleQueuedMessageEdit(edit());
+      expect(handlerAny.followupEditNoticed.has(itemId)).toBe(true);
+
+      drainRun.resolve({ hasPendingChoice: false });
+      await first;
+      expect(items()[0].state).toBe('resolved');
+      expect(handlerAny.followupEditNoticed.has(itemId)).toBe(false);
+
+      // And the terminal item stays silent about later edits.
+      const before = postSystemMessage.mock.calls.length;
+      await handlerAny.handleQueuedMessageEdit(edit({ text: '또 고침' }));
+      expect(postSystemMessage.mock.calls.length).toBe(before);
     });
   });
 });

@@ -457,6 +457,31 @@ describe('resume', () => {
     expect(h.deps.runDrain).not.toHaveBeenCalled();
     expect(h.deps.refresh).toHaveBeenCalledWith(SESSION_KEY);
   });
+
+  /**
+   * `queue.resume` only moves `paused` items back to `queued` — an `uncertain`
+   * item is untouched by it. Clicking Resume ON that item and then hearing
+   * nothing reads as "it will run now", which is the A29 conflation: the
+   * session was released, this item was not, and only Retry moves it.
+   */
+  it('tells an uncertain item that the session resumed but it did not', async () => {
+    const h = harness();
+    h.queue.get.mockReturnValue(queuedItem({ state: 'uncertain' }));
+    await h.click(FOLLOWUP_RESUME_ACTION_ID, clickBody(itemValue()));
+    await tick();
+    expect(h.queue.resume).toHaveBeenCalledWith(SESSION_KEY);
+    expect(lastEphemeral(h.responses)).toBe(
+      '세션은 재개했지만 이 항목은 실행 여부 확인이 필요합니다 — Retry로 다시 실행하세요.',
+    );
+  });
+
+  it('stays silent when the resumed item was merely paused', async () => {
+    const h = harness();
+    h.queue.get.mockReturnValue(queuedItem({ state: 'paused' }));
+    await h.click(FOLLOWUP_RESUME_ACTION_ID, clickBody(itemValue()));
+    await tick();
+    expect(h.responses).toHaveLength(0);
+  });
 });
 
 /* ------------------------------------------------------------------ *
