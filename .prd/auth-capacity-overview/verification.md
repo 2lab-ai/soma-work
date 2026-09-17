@@ -2,7 +2,7 @@
 
 Status: in-progress
 Date: 2026-09-16
-[Spec](../06-auth-capacity-spec.md) · [SSOT](ssot.md) · [Trace](trace.md) · [Review](review.md)
+[Spec](../07-auth-capacity-spec.md) · [SSOT](ssot.md) · [Trace](trace.md) · [Review](review.md)
 
 ## Observed local receipts
 
@@ -78,9 +78,15 @@ The old blob remains reachable from the unrelated deployment-selection branch an
 
 [Evidence on PR #219](https://github.com/2lab-ai/soma-work/pull/219#issuecomment-5696405694) and [PR #220](https://github.com/2lab-ai/soma-work/pull/220#issuecomment-5696405900) identifies an owner-controlled rebase and stale-ref cleanup, rather than a source change to auth. No unrelated remote branch or runner ref was modified. No failing gate was bypassed.
 
+## Rebase onto repaired main — 2026-09-17
+
+- The blocker was resolved outside this branch: PR #219 was closed by its owner and replaced by #221 (rebased on corrected main), then merged. Main's [Sanitize Gate](https://github.com/2lab-ai/soma-work/actions/runs/35178188771) is SUCCESS at `3b0ebd9`.
+- This branch was rebased onto that main (no conflicts; no main commit touches auth files). Because main gained `.prd/06-user-steering-spec.md`, the auth contract was renumbered `06→07` (spec) and `07→08` (architecture) with every reference updated; content unchanged.
+- Real-data validation at the pre-rebase head `1278992`: the actual source modules rendered a read-only live `/llmux/status` snapshot (17 accounts: Claude 12, Codex 4, Grok 1). Provider order held on every page, every account appeared exactly once across pages, 5h/7d aggregates matched an independent recomputation, ordinary and admin-initial content were identical, initial views had zero management elements (buttons and accessories), and 23 valid resets / 9 unknown windows rendered as expected. The real Slack API accepted and returned the [aliased overview](https://slack.com/archives/C0AKY7W2UGZ/p1789562813077299) (controls omitted). Receipts live in the session's `auth-evidence/live-capacity/` and on [PR #220](https://github.com/2lab-ai/soma-work/pull/220#issuecomment-5697734406).
+
 ## Still required for shipment
 
-- Shared sanitize gate recovery, then current-SHA green check
+- Current-SHA green check on the rebased head
 - Merge and permitted preview deployment
 - Post-deploy Slack receipt for overview and administrator interaction
 - Final requirement-to-evidence proof and report

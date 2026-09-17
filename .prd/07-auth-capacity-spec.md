@@ -1,7 +1,7 @@
 # Auth capacity overview
 
 Status: in-progress
-SSOT: [original instructions](auth-capacity-overview/ssot.md) · Architecture: [07-auth-capacity-architecture.md](07-auth-capacity-architecture.md) · Evidence: [verification](auth-capacity-overview/verification.md)
+SSOT: [original instructions](auth-capacity-overview/ssot.md) · Architecture: [08-auth-capacity-architecture.md](08-auth-capacity-architecture.md) · Evidence: [verification](auth-capacity-overview/verification.md)
 
 [BUNDLE] Source and synthetic Block Kit previews are verified locally. [LIVE] Deployed Slack interactions remain unverified. This changes soma-work's own UI; it does not reproduce an external product's branding or claim exhaustive live testing of provider dashboards.
 

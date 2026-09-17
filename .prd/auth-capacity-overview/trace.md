@@ -1,7 +1,7 @@
 # Auth capacity overview — ztrace (T1–T4)
 
 Method: ztrace (scenario-driven callstack trace, `/opt/soma-work/dev/dist/local/skills/ztrace/SKILL.md`)
-Scope: SSOT-TASK-TREE T1–T4 of [ssot.md](ssot.md), acceptance A1–A9 of [../06-auth-capacity-spec.md](../06-auth-capacity-spec.md) (lines 31–39; the workstream [spec.md](spec.md) is a pointer only)
+Scope: SSOT-TASK-TREE T1–T4 of [ssot.md](ssot.md), acceptance A1–A9 of [../07-auth-capacity-spec.md](../07-auth-capacity-spec.md) (lines 31–39; the workstream [spec.md](spec.md) is a pointer only)
 Traced: 2026-09-16, branch `feat/auth-capacity-overview`, working tree (uncommitted diff on top of `5ab199b`)
 Refreshed: 2026-09-16 (pass 2) after the legacy mutation-continuity source was finalized — adds the auth-origin codec / embedded-CCT paths to S3, current line refs, and the recovered T4 evidence. Read-only trace — no source was modified; this file is the only write.
 
@@ -364,7 +364,7 @@ T4 is a skill invocation, not a code path. Evidence verified in this trace pass 
 
 - Initial state (pass 1): no `using-dotprd` in `src/local/skills/` (30+ skills, none matching), `.claude/skills/` (only `update-docs`), the runtime skill registry exposed to this session, or GitHub code search — the Skill tool and MANAGE_SKILL both rejected it (ssot.md:46).
 - Recovery (2026-09-16, coordinator-verified and recorded in ssot.md:48): the original definition was found by direct repository-tree lookup in `2lab-ai/zbrain` at commit `2fef422eb63070bc01f1b629faa1734a3b4a83a9` — `.claude/skills/using-dotprd/SKILL.md` plus its referenced `rules/DEV.md` — fetched, read and applied. The source is cached in session evidence, NOT installed into the runtime registry (still absent locally at this trace pass; `.claude/skills/` unchanged).
-- Application on the artifact layout (verified on disk): the contract was promoted to the numbered documents `.prd/06-auth-capacity-spec.md` + `.prd/07-auth-capacity-architecture.md`; the workstream `spec.md` became a pointer; `loop.md` (work-unit ownership), `verification.md` (execution/verification receipts) and `review.md` now exist alongside `ssot.md` and this trace.
+- Application on the artifact layout (verified on disk): the contract was promoted to the numbered documents `.prd/07-auth-capacity-spec.md` + `.prd/08-auth-capacity-architecture.md`; the workstream `spec.md` became a pointer; `loop.md` (work-unit ownership), `verification.md` (execution/verification receipts) and `review.md` now exist alongside `ssot.md` and this trace.
 - Chronology is preserved, not rewritten: the earlier failed Skill invocation is still recorded as failed (ssot.md:48 "Do not claim that the earlier failed Skill invocation succeeded"); pass-1 work followed the manually derived `.prd` convention before the definition was found (ssot.md:50).
 - Conclusion: T4's blocker is lifted at the *definition* level and its instructions are applied at the *artifact* level; it was never executed as a runtime Skill invocation, and this trace does not certify the skill's semantics beyond the layout it prescribes.
 
@@ -480,7 +480,7 @@ Run receipt: 8 files / 102 tests, all passed (pass 2). Cross-references: TDD red
 
 ## Defects / gaps (flagged, not certified)
 
-- **G1 (doc integrity) — RESOLVED in pass 2**: `verification.md` now exists (with `loop.md` and `review.md`); the ssot Artifacts links resolve. The contract lives in `.prd/06-auth-capacity-spec.md` / `07-auth-capacity-architecture.md`; the workstream `spec.md` is a pointer by design.
+- **G1 (doc integrity) — RESOLVED in pass 2**: `verification.md` now exists (with `loop.md` and `review.md`); the ssot Artifacts links resolve. The contract lives in `.prd/07-auth-capacity-spec.md` / `08-auth-capacity-architecture.md`; the workstream `spec.md` is a pointer by design.
 - **G2 (minor accuracy, capacity.ts:148–155 + 111–115)**: scoped-window totals report coverage as `측정 m/subscriptions.length` — accounts that legitimately don't expose that scope count as unmeasured. Conservative direction (understates coverage), but '측정 1/2' can read as a data problem when it's scope-absence.
 - **G3 (minor accuracy, capacity.ts:70–71 + 101–108)**: `utilization > 1` (over-quota emission) → `remaining` undefined → the account lands in '미확인', not '차단', though it is certainly not usable. Availability count stays correct (never counted available); flagging for review whether over-utilization should classify as unavailable.
 - **G4 (UX decision, auth/actions.ts:109–114)**: non-admin clicks on llmux mutating routes are ack'd and swallowed with only a server-side warn log — no ephemeral notice. Deliberate (buttons don't exist on the readonly card; only forged/stale payloads arrive), but a stale pre-T3 admin card in channel history can present silently-dead buttons.
