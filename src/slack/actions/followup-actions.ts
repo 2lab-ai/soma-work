@@ -174,10 +174,14 @@ export interface FollowupActionsDeps {
    * frame, no cancel hook. Told here so the host can release whatever it was
    * holding for that item's steer — temp files above all.
    *
-   * Announced after the transaction, unconditionally: whether the item really
-   * was steered is the host's to decide, and a "may have" that costs a map
-   * lookup is cheaper than a leaked download. Optional and best effort — a
-   * throwing hook must not turn a delivered message into a failed click.
+   * Announced after the transaction, unconditionally — and it says "MAY have
+   * left", nothing stronger. The dispatcher's unsteer is speculative: a refused
+   * reserve or a failed interrupt puts the row back under the SAME uuid
+   * (`followup-dispatcher.ts:896`), because the SDK is still holding the pushed
+   * copy. So the host must re-read the item and release nothing while it is
+   * `steered` under the uuid it was tracking; this module deliberately does not
+   * make that call for it. Optional and best effort — a throwing hook must not
+   * turn a delivered message into a failed click.
    */
   onItemLeftSteer?(sessionKey: string, itemId: string): void;
   /** Optional logger seam; falls back to this module's `Logger`. */
@@ -350,6 +354,14 @@ async function handleSendNow(
 }
 
 /**
+ * Resume released the SESSION, but `queue.resume` only moves `paused` items
+ * back to `queued` — an `uncertain` one is left exactly where it was (A17/R6).
+ * Saying nothing would let the click read as "it will run now", which is the
+ * A29 conflation: two different acts under one silence.
+ */
+const RESUME_UNCERTAIN_TEXT = '세션은 재개했지만 이 항목은 실행 여부 확인이 필요합니다 — Retry로 다시 실행하세요.';
+
+/**
  * Resume (A17/A29). A freeze is released only by an explicit user act, and only
  * by someone the interrupt policy already trusts with this session.
  *
@@ -403,6 +415,9 @@ async function handleResume(
     return;
   }
 
+  // Read BEFORE the resume: the clicked item's state is what the answer below
+  // is about, and a successful resume rewrites `paused` out from under us.
+  const clickedState = item.item.state;
   try {
     deps.queue.resume(value.sessionKey);
     deps.dispatcher.clearDrainHalt(value.sessionKey, 'resume');
@@ -412,6 +427,11 @@ async function handleResume(
   } finally {
     await safeRefresh(deps, value.sessionKey);
   }
+
+  // The session is running again, but THIS item is not — `resume` never touches
+  // `uncertain`, and only an explicit Retry may re-run a message whose effect is
+  // unknown (§3.5/R6).
+  if (clickedState === 'uncertain') await reply(respond, RESUME_UNCERTAIN_TEXT);
 }
 
 /**
