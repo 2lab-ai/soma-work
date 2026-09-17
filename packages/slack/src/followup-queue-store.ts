@@ -7,7 +7,7 @@ import type { FollowupItemState, FollowupQueueSnapshot } from './followup-queue'
 /**
  * Durable store for the follow-up queue (U2 of `.prd/slack-agent-ui`).
  *
- * This is the only place the queue's 9 states touch the disk. It owns exactly
+ * This is the only place the queue's 10 states touch the disk. It owns exactly
  * two responsibilities and deliberately no more:
  *
  *  1. **Path** — `<DATA_DIR>/followup-queue.json`, with `DATA_DIR` taken from
@@ -46,6 +46,10 @@ export interface FollowupQueueStoreOptions {
 
 const ITEM_STATES: readonly FollowupItemState[] = [
   'queued',
+  // Auto-steering (06 §3.1): pushed into the running turn's SDK input channel.
+  // Several items may hold it at once — unlike `reserved`/`claimed` it is not a
+  // dispatch of ours, so there is no single-winner ceiling to enforce here.
+  'steered',
   'reserved',
   'claimed',
   'dispatched',
@@ -177,6 +181,10 @@ function validateItem(
   timestamp(item.enqueuedAt, `${where}.enqueuedAt`);
   timestamp(item.updatedAt, `${where}.updatedAt`);
   optionalText(item.stateReason, `${where}.stateReason`);
+  // The SDK handle a `steered` item was pushed under. Only its type is checked:
+  // whether it is still meaningful is a question about a process that no longer
+  // exists, and `FollowupQueue.recover()` — not the loader — decides that (A21).
+  optionalText(item.steerUuid, `${where}.steerUuid`);
 
   return { id, seq, eventKey, state };
 }
