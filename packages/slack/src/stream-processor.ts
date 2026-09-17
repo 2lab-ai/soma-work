@@ -357,6 +357,18 @@ export interface StreamCallbacks {
     event: AgentStreamEventOf<'agent_task_lifecycle'>,
     context: StreamContext,
   ) => void | Promise<void>;
+  /**
+   * Lifecycle of a user message injected into THIS running turn (user
+   * steering). The `uuid` is the host-minted send id that binds a queued Slack
+   * message to the turn that consumed it — the host's join key for "did my
+   * follow-up land?". Like {@link onAgentTaskLifecycle} this is pure
+   * bookkeeping: no Slack rendering, and the processor must not flush the
+   * render groups for it.
+   *
+   * Throws/rejections are swallowed (logged at debug): the steering registry
+   * lives in the host, and a bug there must not kill the user's turn.
+   */
+  onSteerLifecycle?: (event: AgentStreamEventOf<'steer_lifecycle'>, context: StreamContext) => void | Promise<void>;
   /** Called before sending the final assistant message to append footer text */
   buildFinalResponseFooter?: (params: FinalResponseFooterParams) => Promise<string | undefined> | string | undefined;
   /**
@@ -852,6 +864,27 @@ export class AgentStreamProcessor {
             // render groups (it produces no Slack output — just a tracker-state
             // update) so an interleaved task_progress can't fragment streaming.
             await this.callbacks.onAgentTaskLifecycle?.(event, context);
+            break;
+          case 'steer_lifecycle':
+            // Side-band steering signal (which queued user message this turn
+            // consumed). Same contract as `agent_task_lifecycle`: no render
+            // groups are flushed, because a frame that produces no Slack
+            // output must not be able to split the streaming text the user is
+            // reading. Unlike that case the callback is guarded — the host's
+            // steering registry is bookkeeping, so a throw there is swallowed
+            // like the other side-band hooks (onSdkActivity / onProgress)
+            // rather than aborting the turn.
+            if (this.callbacks.onSteerLifecycle) {
+              try {
+                await this.callbacks.onSteerLifecycle(event, context);
+              } catch (err) {
+                this.logger.debug('onSteerLifecycle callback threw — ignored', {
+                  uuid: event.uuid,
+                  phase: event.phase,
+                  error: (err as Error)?.message ?? String(err),
+                });
+              }
+            }
             break;
           case 'result': {
             await flushAll();
