@@ -134,6 +134,16 @@ export type AgentStreamEvent =
       status?: 'completed' | 'failed' | 'stopped';
       outputFile?: string;
       summary?: string;
+    }
+  // Lifecycle of a user message injected into a RUNNING turn (user steering).
+  // `uuid` is the host-minted send id the backend stamps back on the turn's
+  // first reply frame and on the turn result — the join key binding a queued
+  // Slack message to the turn that consumed it. `observed` carries the uuid
+  // without claiming a transition (a backend phase this seam does not model).
+  | {
+      type: 'steer_lifecycle';
+      uuid: string;
+      phase: 'started' | 'completed' | 'cancelled' | 'discarded' | 'observed';
     };
 
 export type AgentStreamEventOf<T extends AgentStreamEvent['type']> = Extract<AgentStreamEvent, { type: T }>;
