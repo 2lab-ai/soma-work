@@ -544,7 +544,9 @@ export class FollowupQueue {
   cancelItem(sessionKey: string, itemId: string, expectedEpoch: number, reason?: string): FollowupOpResult {
     return this.mutate(sessionKey, itemId, expectedEpoch, (item) => {
       if (!CANCELLABLE_STATES.includes(item.state)) return 'invalid-state';
-      this.enter(item, 'cancelled', reason ?? FOLLOWUP_CANCEL_DEFAULT_REASON);
+      // A blank reason is a MISSING reason: storing `''` would leave the panel's
+      // history line saying only `cancelled`, with no who and no why.
+      this.enter(item, 'cancelled', reason?.trim() || FOLLOWUP_CANCEL_DEFAULT_REASON);
       return undefined;
     });
   }

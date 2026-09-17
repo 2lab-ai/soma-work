@@ -25,13 +25,16 @@ export interface MessageOptions {
  * asked for it (a dead `thread_ts` is silently dropped — see
  * {@link SlackApiHelper.postMessage}). `kind` separates an ordinary
  * `chat.postMessage` from a `chat.startStream` message, which is posted by
- * `TurnSurface` through the raw client and therefore reports itself.
+ * `TurnSurface` through the raw client and therefore reports itself, and from
+ * `user` — an INBOUND human reply, which this helper never sends and which the
+ * message ingress therefore reports on its behalf (a user's own reply pushes
+ * the panel up exactly like a bot message does).
  */
 export interface ThreadPostEvent {
   channel: string;
   threadTs: string;
   ts: string;
-  kind: 'post' | 'stream';
+  kind: 'post' | 'stream' | 'user';
 }
 
 export type ThreadPostListener = (event: ThreadPostEvent) => void;
@@ -360,7 +363,14 @@ export class SlackApiHelper {
       // Drop oldest if queue exceeds maxQueueSize
       if (this.queue.length >= this.rateLimit.maxQueueSize) {
         const dropped = this.queue.shift()!;
-        dropped.reject(new Error('Queue overflow: dropped oldest request'));
+        // `data.error` is the evidence shape every caller already reads for
+        // "nothing was created" (see `DEFINITIVE_POST_REJECTIONS` in
+        // thread-surface.ts). A dropped item provably never ran `execute()`, so
+        // it deserves that shape — a bare Error is indistinguishable from a
+        // socket reset, which callers must treat as "the message may exist".
+        dropped.reject(
+          Object.assign(new Error('Queue overflow: dropped oldest request'), { data: { error: 'queue_overflow' } }),
+        );
         this.logger.warn('Queue overflow: dropped oldest request', {
           queueLength: this.queue.length,
           maxQueueSize: this.rateLimit.maxQueueSize,

@@ -3,6 +3,7 @@ import type { FollowupItem, FollowupItemState } from '../followup-queue';
 import {
   buildFollowupQueueBlocks,
   FOLLOWUP_CANCEL_LABEL,
+  FOLLOWUP_ITEM_ACTION_IDS,
   FOLLOWUP_ITEM_MENU_ACTION_ID,
   FOLLOWUP_PAGE_NEXT_ACTION_ID,
   FOLLOWUP_PAGE_PREV_ACTION_ID,
@@ -527,6 +528,13 @@ describe('buildFollowupQueueBlocks — compact overflow menu', () => {
     expect(sectionTexts(blocks)[0]).toContain(`_${state}_`); // still visible as history
   });
 
+  it('lists the compact menu among the item-scoped action ids a host registers in one pass', () => {
+    // The compact layout is the DEFAULT, so a host that registers only
+    // `FOLLOWUP_ITEM_ACTION_IDS` would wire up zero live item controls.
+    expect(FOLLOWUP_ITEM_ACTION_IDS).toContain(FOLLOWUP_ITEM_MENU_ACTION_ID);
+    expect(new Set(FOLLOWUP_ITEM_ACTION_IDS).size).toBe(FOLLOWUP_ITEM_ACTION_IDS.length);
+  });
+
   it('uses the canonical labels', () => {
     const { blocks } = buildFollowupQueueBlocks({ sessionKey: SESSION, items: [item({ state: 'paused' })] });
 
@@ -554,13 +562,9 @@ describe('buildFollowupQueueBlocks — compact overflow menu', () => {
     const { blocks } = buildFollowupQueueBlocks({ sessionKey: SESSION, items: [target], turnEpoch: 4 });
 
     const [sendNow, cancel] = menuOptions(collectMenus(blocks)[0]);
-    expect(Object.keys(JSON.parse(sendNow.value as string)).sort()).toEqual([
-      'epoch',
-      'itemId',
-      'op',
-      'sessionKey',
-      'turnEpoch',
-    ]);
+    // Short keys, and the item's `seq` instead of its id: the option budget is
+    // 150 chars and the id repeats the session key verbatim.
+    expect(Object.keys(JSON.parse(sendNow.value as string)).sort()).toEqual(['e', 'n', 'op', 's', 't']);
     expect(parseFollowupMenuValue(sendNow.value as string)).toEqual({
       op: 'send_now',
       sessionKey: SESSION,
@@ -586,13 +590,26 @@ describe('buildFollowupQueueBlocks — compact overflow menu', () => {
   it('rejects malformed or unknown-op menu values instead of guessing', () => {
     expect(parseFollowupMenuValue(undefined)).toBeUndefined();
     expect(parseFollowupMenuValue('not json')).toBeUndefined();
-    expect(parseFollowupMenuValue('{"sessionKey":"C1","itemId":"C1#1","epoch":1}')).toBeUndefined(); // no op
-    expect(parseFollowupMenuValue('{"op":"delete","sessionKey":"C1","itemId":"C1#1","epoch":1}')).toBeUndefined();
-    expect(parseFollowupMenuValue('{"op":"cancel","sessionKey":"C1","itemId":"C1#1"}')).toBeUndefined();
-    expect(
-      parseFollowupMenuValue('{"op":"cancel","sessionKey":"C1","itemId":"C1#1","epoch":1,"user":"U1"}'),
-    ).toBeUndefined();
-    expect(parseFollowupMenuValue('{"op":"cancel","sessionKey":"C1","itemId":"C1#1","epoch":"x"}')).toBeUndefined();
+    expect(parseFollowupMenuValue('{"s":"C1","n":1,"e":1}')).toBeUndefined(); // no op
+    expect(parseFollowupMenuValue('{"op":"delete","s":"C1","n":1,"e":1}')).toBeUndefined();
+    expect(parseFollowupMenuValue('{"op":"cancel","s":"C1","n":1}')).toBeUndefined(); // no epoch
+    expect(parseFollowupMenuValue('{"op":"cancel","s":"C1","e":1}')).toBeUndefined(); // no seq
+    expect(parseFollowupMenuValue('{"op":"cancel","s":"C1","n":1,"e":1,"u":"U1"}')).toBeUndefined();
+    expect(parseFollowupMenuValue('{"op":"cancel","s":"C1","n":1,"e":"x"}')).toBeUndefined();
+    expect(parseFollowupMenuValue('{"op":"cancel","s":"C1","n":"1","e":1}')).toBeUndefined();
+    expect(parseFollowupMenuValue('{"op":"cancel","s":"","n":1,"e":1}')).toBeUndefined();
+    expect(parseFollowupMenuValue('{"op":"cancel","s":"C1","n":1,"e":1,"t":null}')).toBeUndefined();
+    // The pre-2026-09-17 long-key encoding is not accepted either: a stale
+    // button is refused, never re-read under the new key names.
+    expect(parseFollowupMenuValue('{"op":"cancel","sessionKey":"C1","itemId":"C1#1","epoch":1}')).toBeUndefined();
+  });
+
+  it('reconstructs the item id from the session key and the seq', () => {
+    const { blocks } = buildFollowupQueueBlocks({ sessionKey: SESSION, items: [item({ seq: 42, epoch: 3 })] });
+
+    const [, cancel] = menuOptions(collectMenus(blocks)[0]);
+    expect(JSON.parse(cancel.value as string).n).toBe(42);
+    expect(parseFollowupMenuValue(cancel.value as string)?.itemId).toBe(`${SESSION}#42`);
   });
 
   // A menu-level confirm is the only kind Slack offers, and it fires for EVERY
@@ -624,6 +641,44 @@ describe('buildFollowupQueueBlocks — compact overflow menu', () => {
     });
 
     expect(sectionTexts(blocks)[0]).toContain('_uncertain — 재실행 전 확인 · 재시작 중 중단_');
+  });
+
+  it('keeps a REAL session key far inside the 150-char option budget', () => {
+    // The shapes the queue actually mints: `work:<channel>:<threadTs>`
+    // (`src/session-identity.ts:45`) and `<sessionKey>#<seq>`
+    // (`followup-queue.ts:315`). Spelled out in full, the pair alone was ~140 of
+    // the 150 available — one longer channel id away from a dropped control.
+    const sessionKey = 'work:C08ABCDEFGH:1726500000.123456';
+    const target = item({
+      sessionKey,
+      seq: 9999,
+      id: `${sessionKey}#9999`,
+      epoch: 99,
+    });
+
+    const { blocks } = buildFollowupQueueBlocks({ sessionKey, items: [target], turnEpoch: 9999 });
+
+    const [sendNow] = menuOptions(collectMenus(blocks)[0]);
+    expect((sendNow.value as string).length).toBeLessThanOrEqual(110);
+    expect(parseFollowupMenuValue(sendNow.value as string)).toEqual({
+      op: 'send_now',
+      sessionKey,
+      itemId: `${sessionKey}#9999`,
+      epoch: 99,
+      turnEpoch: 9999,
+    });
+  });
+
+  it('says so on the item line when an option is dropped for exceeding the option cap', () => {
+    // A key no real session has, to force the defensive drop deterministically.
+    const sessionKey = `work:${'X'.repeat(300)}`;
+    const target = item({ sessionKey, seq: 1, id: `${sessionKey}#1` });
+
+    const { blocks } = buildFollowupQueueBlocks({ sessionKey, items: [target] });
+
+    expect(collectMenus(blocks)).toHaveLength(0);
+    expect((blocks[1] as Record<string, unknown>).accessory).toBeUndefined();
+    expect(sectionTexts(blocks)[0]).toContain('action unavailable');
   });
 
   it('stays inside the Slack option limits (text ≤75, value ≤150, ≤5 options)', () => {
@@ -696,6 +751,31 @@ describe('buildFollowupQueueBlocks — compact text safety and paging', () => {
     });
 
     expect(sectionTexts(blocks)[0]).toContain('trace-capture.png');
+  });
+
+  it('keeps the attachment count visible when the message has both text and files', () => {
+    // Compact dropped the per-item context line that used to carry `N file(s)`,
+    // so a text+files item looked text-only. The badge restores that signal.
+    const file = (id: string, name: string) => ({
+      id,
+      name,
+      mimetype: 'image/png',
+      filetype: 'png',
+      url_private: 'https://files.slack.com/p',
+      url_private_download: 'https://files.slack.com/d',
+      size: 10,
+    });
+    const { blocks } = buildFollowupQueueBlocks({
+      sessionKey: SESSION,
+      items: [
+        item({ seq: 1, message: event({ text: '이 로그 봐줘', files: [file('F1', 'a.png'), file('F2', 'b.png')] }) }),
+        item({ seq: 2, message: event({ text: '파일 없음' }) }),
+      ],
+    });
+
+    const [withFiles, withoutFiles] = sectionTexts(blocks);
+    expect(withFiles).toContain('이 로그 봐줘 (📎2)');
+    expect(withoutFiles).not.toContain('📎');
   });
 
   it('adds one pagination actions block only when a second page exists, and reaches every item', () => {

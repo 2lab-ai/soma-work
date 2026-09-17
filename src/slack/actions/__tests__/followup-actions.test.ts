@@ -80,10 +80,14 @@ function itemValue(over: Partial<{ sessionKey: string; itemId: string; epoch: nu
 
 /**
  * The overflow menu that replaces the per-item button row (U3 rework). The id
- * and the `{op,...}` payload are the OTHER side of the contract — this file
+ * and the `{op,s,n,e,t}` payload are the OTHER side of the contract — this file
  * writes them by hand on purpose: a test that encoded the value with the
  * renderer's own helper could only prove the module agrees with itself, not
  * that it reads what Slack actually delivers.
+ *
+ * Short keys and `n` = the item's seq, not its id: an option `value` is capped
+ * at 150 chars and a real `work:<channel>:<threadTs>` key spelled out twice
+ * (once as the key, once inside the id) nearly exhausted it.
  */
 const MENU_ACTION_ID = 'followup_item_menu_v1';
 
@@ -91,7 +95,16 @@ function menuValue(
   op: string,
   over: Partial<{ sessionKey: string; itemId: string; epoch: number; turnEpoch: number }> = {},
 ): string {
-  return JSON.stringify({ op, sessionKey: SESSION_KEY, itemId: `${SESSION_KEY}#1`, epoch: 0, ...over });
+  const sessionKey = over.sessionKey ?? SESSION_KEY;
+  const itemId = over.itemId ?? `${sessionKey}#1`;
+  const payload: Record<string, unknown> = {
+    op,
+    s: sessionKey,
+    n: Number(itemId.slice(itemId.lastIndexOf('#') + 1)),
+    e: over.epoch ?? 0,
+  };
+  if (over.turnEpoch !== undefined) payload.t = over.turnEpoch;
+  return JSON.stringify(payload);
 }
 
 /** An overflow click carries its payload in `selected_option`, not in `value`. */
@@ -724,6 +737,19 @@ describe('cancel', () => {
     expect(h.deps.runDrain).not.toHaveBeenCalled();
     expect(h.dispatcher.clearDrainHalt).not.toHaveBeenCalled();
     expect(h.order.indexOf('cancelItem')).toBeLessThan(h.order.indexOf('refresh'));
+  });
+
+  it('confirms a successful cancel ephemerally instead of answering only with a repaint', async () => {
+    // The panel repaint is not a receipt: from an overflow menu the clicker
+    // cannot tell "cancelled" from "the click never arrived", and every refusal
+    // branch in this handler already speaks. Success must too.
+    const h = harness();
+    await h.click(MENU_ACTION_ID, menuBody(menuValue('cancel')));
+    await tick();
+    const text = lastEphemeral(h.responses);
+    expect(text).toContain('취소했습니다');
+    expect(text).toContain('기록으로 남습니다');
+    expect(h.deps.refresh).toHaveBeenCalledWith(SESSION_KEY);
   });
 
   it('denies a clicker the interrupt policy rejects and keeps the item', async () => {

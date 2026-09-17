@@ -136,7 +136,7 @@ SDK 업그레이드와 Agent Sessions / task·plan 블록은 **비목표가 아�
 | A33 | 승인 요청과 stop | 승인(approval)은 일반 액션과 **분리된 컨트롤 경로**로 렌더. stop은 항상 **명시적**이며 자동 abort로 대체되지 않음 |
 | A34 | 큐 관측 지표(§6) | 큐 depth, enqueue/claim/dispatch/resolve/fail 카운트, `uncertain` 잔량, drain latency, `Send now` interrupt latency, 거절 사유별 카운트(capacity/권한/stale epoch)가 노출된다. 마지막 **실제 진행** 타임스탬프는 헤더(A19)와 **같은 소스** |
 | A35 | Slack capability preflight(§4.3) | bolt/web-api 실제 설치 버전, Agent Sessions·task/plan 블록, `assistant_view` 호환을 **실측**한 뒤에만 채택. red면 legacy fallback으로 `Queue`/`Send now` 유지(A22). `agent_view`는 **인가되지 않았고 검증 대상에서도 제외** |
-| A36 | 패널 최하단 고정 (유저 2026-09-17 "스레드 안에 항상 최하단에") | 봇이 스레드에 새 메시지를 게시하면 결합 패널은 700ms 내 코얼레싱·세션당 ≥3s 간격으로 **삭제 후 재게시**되어 스레드 마지막 메시지가 된다. 패널 메시지는 항상 1개. 패널이 스레드 루트인 봇 발화 스레드는 재게시하지 않는다. 재게시는 A24 intent(markDeleted→beginPost→markSent) 경로 |
+| A36 | 패널 최하단 고정 (유저 2026-09-17 "스레드 안에 항상 최하단에") | 봇이 스레드에 새 메시지를 게시하면 결합 패널은 700ms 내 코얼레싱·세션당 ≥3s 간격으로 **삭제 후 재게시**되어 스레드 마지막 메시지가 된다. 패널 메시지는 항상 1개. 재게시는 A24 intent(markDeleted→beginPost→markSent) 경로. **한계 2가지(명시)**: ①봇 발화 스레드에서는 패널이 스레드 루트이므로 재게시하지 않는다 — 그 스레드의 패널은 최상단에 고정되며 최하단으로 이동하지 않는다. ②재게시에는 레이트 리밋이 걸린다(세션당 ≥3s, 700ms 코얼레싱) — 메시지가 몰아치는 동안 패널은 잠시 위로 밀린 채로 뒤처질 수 있고, 창이 지난 뒤 따라잡는다 |
 | A37 | 컴팩트 레이아웃 (유저 2026-09-17 "좀더 컴팩트하게") | 헤더+상태 ≤4블록. Queue는 context 1줄 + 항목당 section 1블록(`n. 원문 · 상태`) + 우측 overflow 메뉴(Send now / Cancel / Retry / Resume). 페이지 nav는 2페이지 이상일 때만 |
 | A38 | Cancel (유저 2026-09-17 "취소 할수 있어야함") | `queued/paused/failed/uncertain` → `cancelled`(이력 유지, 사유 기록). `reserved/claimed/dispatched`는 거부 + "중지 버튼" 안내. 권한 = Send now와 동일(작성자/현재 발화자). 취소는 드레인을 유발하지 않는다 |
 
