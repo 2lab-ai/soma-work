@@ -389,6 +389,12 @@ async function handleSendNow(
   }
 
   if (result.status === 'rejected') {
+    // S2 — the item did not move, but the MESSAGE the user clicked did: most of
+    // these refusals ARE a generation mismatch (a stale item epoch, a turn that
+    // has since ended), so re-offering the same button guarantees the identical
+    // refusal on the next click. The panel repaint in the `finally` above cannot
+    // fix it — the panel no longer renders the queue (A39).
+    await refreshItemMessage(deps, value.sessionKey, value.itemId);
     await refuse(respond, `Send now rejected (${result.reason}): ${result.detail}. The item stays in the queue.`);
     return;
   }
@@ -646,7 +652,14 @@ const CANCEL_DENIED_TEXT = '취소가 거부되었습니다: 이 세션을 조�
  */
 const CANCEL_OK_TEXT = '취소했습니다 — 항목은 기록으로 남습니다.';
 const CANCEL_RUNNING_TEXT = '실행 중인 항목은 취소할 수 없습니다 — 패널의 중지 버튼을 쓰세요.';
-const CANCEL_STALE_TEXT = '이미 바뀐 항목입니다 — 패널을 새로고침했습니다.';
+/**
+ * A lost race is answered by bringing the CLICKED message forward, not by
+ * pointing at a panel: the queue panel no longer renders the rows (A39), and the
+ * button that lost carries a generation the queue has moved past — so the reply
+ * has to say that the thing under the user's cursor is now current and worth a
+ * second click.
+ */
+const CANCEL_STALE_TEXT = '이미 바뀐 항목입니다 — 이 메시지의 버튼을 최신 상태로 갱신했습니다. 다시 눌러주세요.';
 /** The SDK confirmed the withdrawal: the model never saw the message. */
 const CANCEL_STEERED_OK_TEXT = '취소했습니다 — 모델에 전달되기 전에 회수했습니다.';
 /** The SDK had already dequeued it, so the message is part of the running turn. */
@@ -707,9 +720,13 @@ async function handleCancel(
     return;
   }
   // Gone, or moved on since the menu was rendered: repaint FIRST so the
-  // ephemeral and the panel the user is looking at agree.
+  // ephemeral and the surface the user is looking at agree. That surface is the
+  // item's own message (A39), so the row is re-rendered too — the button that
+  // just lost the race carries the old generation and would be refused again,
+  // and the reply below promises exactly that it was brought forward.
   if (!item || item.epoch !== value.epoch) {
     await safeRefresh(deps, value.sessionKey);
+    await refreshItemMessage(deps, value.sessionKey, value.itemId);
     await refuse(respond, CANCEL_STALE_TEXT);
     return;
   }

@@ -790,6 +790,12 @@ export class SlackHandler {
       // session reads `cancelled` and nothing says which ones this act moved.
       // Without it the thread keeps a `Send now` per parked message, pointing at
       // a session that no longer exists.
+      //
+      // A `failed` row is deliberately NOT in that list and keeps its message:
+      // the cancel does not move it either (`followup-queue.ts:826` skips the
+      // terminal states), it is still the user's own message, and its Retry is a
+      // control that answers in words — the handler re-reads the session and
+      // refuses a click whose session went away, which is not a dead end.
       this.deleteFollowupItemMessagesFor(pending);
       void this.renderFollowupFor(session, sessionKey).catch((error) => {
         this.logger.warn('Follow-up cancellation render failed', {
@@ -2807,6 +2813,17 @@ export class SlackHandler {
   }
 
   /**
+   * S2 for a LIST of items — the shape a session-wide transition that KEEPS its
+   * rows holds (the stop freeze). Each row is re-read from the queue by
+   * {@link refreshFollowupItemMessage}, so the captured snapshots are used for
+   * their ids only. Detached per item and never awaited: the one caller is
+   * inside a synchronous abort path that must not be delayed by a surface write.
+   */
+  private refreshFollowupItemMessagesFor(items: readonly FollowupItem[]): void {
+    for (const item of items) void this.refreshFollowupItemMessage(item.sessionKey, item.id);
+  }
+
+  /**
    * S2 — re-render every message this host posted for one item.
    *
    * The counterpart of {@link deleteFollowupItemMessages}: that one is for an
@@ -2881,14 +2898,20 @@ export class SlackHandler {
    * drain), so the queue — not the caller's expectation — decides. An item this
    * process cannot find in either bucket is left alone: "not in the bucket I
    * asked" is not evidence that it was processed.
+   *
+   * Answers WHETHER it deleted, because the same callers are the ones with no
+   * other information about the transition: a row that stayed (`failed`,
+   * `uncertain`) keeps a message that still has to be brought forward, and only
+   * this method knows which bucket the item was actually read from.
    */
-  private async deleteFollowupItemMessagesIfProcessed(sessionKey: string, itemId: string): Promise<void> {
+  private async deleteFollowupItemMessagesIfProcessed(sessionKey: string, itemId: string): Promise<boolean> {
     const queue = this.followupQueue;
-    if (!queue) return;
+    if (!queue) return false;
     const item = queue.get(sessionKey, itemId) ?? this.itemUnderCounterpartKey(sessionKey, itemId);
-    if (!item) return;
-    if (!SlackHandler.isProcessedFollowupState(item.state)) return;
+    if (!item) return false;
+    if (!SlackHandler.isProcessedFollowupState(item.state)) return false;
     await this.deleteFollowupItemMessages(itemId);
+    return true;
   }
 
   /** The same item id in the other bucket of a bound migration, if there is one. */
@@ -3305,6 +3328,11 @@ export class SlackHandler {
    * dead end the panel had. The handed-over wording is kept for the states that
    * really were handed over (`steered`/`reserved`/`claimed`/`dispatched`).
    *
+   * WHERE that control is has moved too: since A39 it sits on the item's own
+   * message in this thread, not on a panel section that no longer exists, so the
+   * notice points there — and at `queue` for a row whose message this process no
+   * longer knows about (an in-memory map a restart drops).
+   *
    * `재시작 전` is added only when the freeze actually is a restart: after a
    * stop the row was parked seconds ago in the same session, and "재시작 전" would
    * be a plain falsehood about when it arrived.
@@ -3318,8 +3346,8 @@ export class SlackHandler {
     // the restart) carries the interrupt detail instead.
     const restored = item.stateReason?.startsWith(FOLLOWUP_RESTART_FREEZE_REASON) ? '재시작 전 ' : '';
     return item.state === 'paused'
-      ? `✏️ ${restored}보류된 항목이라 편집이 반영되지 않습니다 — 패널의 Resume으로 실행하거나 새 메시지로 보내주세요.`
-      : `✏️ ${restored}실행 여부가 불확실한 항목이라 편집이 반영되지 않습니다 — 패널의 Retry로 실행하거나 새 메시지로 보내주세요.`;
+      ? `✏️ ${restored}보류된 항목이라 편집이 반영되지 않습니다 — 이 메시지 아래 항목 카드의 Resume으로 실행하거나, 수정한 내용은 새 메시지로 보내주세요 (\`queue\`로 목록 확인).`
+      : `✏️ ${restored}실행 여부가 불확실한 항목이라 편집이 반영되지 않습니다 — 이 메시지 아래 항목 카드의 Retry로 실행하거나, 수정한 내용은 새 메시지로 보내주세요 (\`queue\`로 목록 확인).`;
   }
 
   /**
@@ -3704,7 +3732,16 @@ export class SlackHandler {
         // A41 — the run is over, so the item landed somewhere terminal
         // (`resolved`/`failed`) or it did not move at all. The queue decides
         // which, and only a terminal row loses its message.
-        await this.deleteFollowupItemMessagesIfProcessed(sessionKey, drainedItemId);
+        const processed = await this.deleteFollowupItemMessagesIfProcessed(sessionKey, drainedItemId);
+        // S2 — a row that STAYED is a row the run went wrong on: `failed` (the
+        // dispatch errored) or `uncertain` (the turn was torn down mid-flight),
+        // both of which are still pending and therefore keep their message. That
+        // message was last rendered `queued`/`dispatched`, so it offers a
+        // `Send now` whose only possible answer is now a refusal; the one door
+        // out of either state is Retry, which only a re-render puts on the row.
+        // A row this process could not read at all lands here too, and the
+        // re-render is a no-op for it — it re-reads the queue itself.
+        if (!processed) await this.refreshFollowupItemMessage(sessionKey, drainedItemId);
       }
       // The turn this loop just ran could itself have been steered into, and
       // nothing else will sweep it: `drainFollowups` swept BEFORE the loop, and
@@ -3945,6 +3982,19 @@ export class SlackHandler {
 
     queue.freeze(sessionKey, `실행이 중단되었습니다 (${reason})`);
     this.logger.info('Follow-up queue frozen by session stop', { sessionKey, reason, items: pending.length });
+
+    // S2 — every row the freeze just parked reads a state and offers a control
+    // that are now wrong: a `paused` row still shows the `Send now` the freeze
+    // can only answer with `frozen`, and the freeze notice lives ON the row
+    // since A39 (the panel no longer renders the queue), so without this
+    // re-render it is written nowhere the user looks.
+    //
+    // Driven from the list captured BEFORE the freeze, like the session-wide
+    // cancel above: afterwards the queue no longer says which rows this act
+    // moved. Ahead of the session lookup below on purpose — a `session-close`
+    // stop can leave no session behind, and the rows it parked still have
+    // messages.
+    this.refreshFollowupItemMessagesFor(pending);
 
     // Detached: the caller is inside a synchronous abort path, and the surface
     // write must not delay or fail the stop. Uses the captured session because

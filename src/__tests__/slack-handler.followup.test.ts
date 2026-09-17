@@ -8,6 +8,8 @@ vi.mock('../slack/autoskill-fire', () => ({
 import type { FollowupQueueSnapshot } from '@soma/slack/followup-queue';
 import {
   FOLLOWUP_CANCEL_ACTION_ID,
+  FOLLOWUP_RESUME_ACTION_ID,
+  FOLLOWUP_RETRY_ACTION_ID,
   FOLLOWUP_SEND_NOW_ACTION_ID,
   FOLLOWUP_STEERED_LABEL,
 } from '@soma/slack/followup-queue-blocks';
@@ -1234,7 +1236,7 @@ describe('SlackHandler — follow-up queue host', () => {
       });
 
       expect(receipts().filter((text) => text.includes('✏️'))).toEqual([
-        '✏️ 재시작 전 보류된 항목이라 편집이 반영되지 않습니다 — 패널의 Resume으로 실행하거나 새 메시지로 보내주세요.',
+        '✏️ 재시작 전 보류된 항목이라 편집이 반영되지 않습니다 — 이 메시지 아래 항목 카드의 Resume으로 실행하거나, 수정한 내용은 새 메시지로 보내주세요 (`queue`로 목록 확인).',
       ]);
     });
 
@@ -2559,7 +2561,7 @@ describe('SlackHandler — follow-up queue host', () => {
       await handlerAny.handleQueuedMessageEdit(edit());
 
       expect(editNotices()).toEqual([
-        '✏️ 보류된 항목이라 편집이 반영되지 않습니다 — 패널의 Resume으로 실행하거나 새 메시지로 보내주세요.',
+        '✏️ 보류된 항목이라 편집이 반영되지 않습니다 — 이 메시지 아래 항목 카드의 Resume으로 실행하거나, 수정한 내용은 새 메시지로 보내주세요 (`queue`로 목록 확인).',
       ]);
     });
 
@@ -2577,7 +2579,7 @@ describe('SlackHandler — follow-up queue host', () => {
       await handlerAny.handleQueuedMessageEdit(edit());
 
       expect(editNotices()).toEqual([
-        '✏️ 실행 여부가 불확실한 항목이라 편집이 반영되지 않습니다 — 패널의 Retry로 실행하거나 새 메시지로 보내주세요.',
+        '✏️ 실행 여부가 불확실한 항목이라 편집이 반영되지 않습니다 — 이 메시지 아래 항목 카드의 Retry로 실행하거나, 수정한 내용은 새 메시지로 보내주세요 (`queue`로 목록 확인).',
       ]);
     });
 
@@ -2989,6 +2991,71 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(String(text)).not.toContain(FOLLOWUP_STEERED_LABEL);
       expect(JSON.stringify(blocks)).toContain(FOLLOWUP_SEND_NOW_ACTION_ID);
       await settle();
+    });
+
+    /**
+     * MF1 — a stop parks every pending row, and until now their messages were
+     * not touched: a `paused` row kept offering the `Send now` the freeze can
+     * only answer with `frozen`, and the freeze notice — which since A39 lives
+     * on the row, not on a panel — was never written anywhere the user looks.
+     */
+    it('re-renders every row a stop parked, with its own control and the freeze notice', async () => {
+      claudeHandler.steerTurn = vi.fn().mockReturnValue(false);
+      postSystemMessage.mockResolvedValue({ ts: 'item-ts-9', channel: CHANNEL });
+      const updateMessage = vi.fn().mockResolvedValue(undefined);
+      handlerAny.slackApi.updateMessage = updateMessage;
+
+      // The turn ends waiting for a user choice, so the drain stays shut and the
+      // item is still `queued` when the stop lands (`central stop wiring`).
+      const gate = deferred<any>();
+      startWithContinuation.mockImplementationOnce(() => gate.promise);
+      const first = handler.handleMessage(message(), say());
+      await tick();
+      await handler.handleMessage(message({ ts: '444.555', text: '대기 중인 지시' }), say());
+      gate.resolve({ hasPendingChoice: true });
+      await first;
+      expect(items()[0].state).toBe('queued');
+
+      handlerAny.requestCoordinator.abortSession(SESSION_KEY, 'user-stop');
+      await tick();
+
+      expect(items()[0].state).toBe('paused');
+      expect(deleteMessage).not.toHaveBeenCalled();
+      const updated = updateMessage.mock.calls.find((call: any[]) => call[1] === 'item-ts-9');
+      expect(updated, 'the parked row was re-rendered').toBeDefined();
+      const [, , text, blocks] = updated as any[];
+      expect(JSON.stringify(blocks)).toContain(FOLLOWUP_RESUME_ACTION_ID);
+      expect(JSON.stringify(blocks)).not.toContain(FOLLOWUP_SEND_NOW_ACTION_ID);
+      expect(String(text)).toContain('보류된 항목이 있습니다');
+      expect(String(text)).toContain('실행이 중단되었습니다');
+    });
+
+    /**
+     * MF2 — the drain settles the item it ran, and a `failed` one KEEPS its
+     * message (it is still the user's message, awaiting a Retry). The delete
+     * path correctly walks past it; nothing re-rendered it, so the row that was
+     * `dispatched` on screen kept a `Send now` the dispatcher now refuses.
+     */
+    it('re-renders a drained item the run left `failed` instead of deleting it', async () => {
+      claudeHandler.steerTurn = vi.fn().mockReturnValue(false);
+      postSystemMessage.mockResolvedValue({ ts: 'item-ts-10', channel: CHANNEL });
+      const updateMessage = vi.fn().mockResolvedValue(undefined);
+      handlerAny.slackApi.updateMessage = updateMessage;
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
+      expect(items()[0].state).toBe('queued');
+
+      // The drained dispatch throws, which `runFollowupDispatch` maps to an
+      // `error` outcome and the dispatcher settles as `failed`.
+      startWithContinuation.mockImplementationOnce(() => Promise.reject(new Error('CLI died')));
+      await settle();
+      await tick();
+
+      expect(items()[0].state).toBe('failed');
+      expect(deleteMessage).not.toHaveBeenCalled();
+      const updated = updateMessage.mock.calls.find((call: any[]) => call[1] === 'item-ts-10');
+      expect(updated, 'the failed row was re-rendered').toBeDefined();
+      expect(JSON.stringify((updated as any[])[3])).toContain(FOLLOWUP_RETRY_ACTION_ID);
     });
 
     it('survives a host whose Slack client cannot update messages', async () => {
