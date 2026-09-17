@@ -85,7 +85,6 @@ export interface FollowupActionsQueuePort {
    * panel can say who cancelled it.
    */
   cancelItem(sessionKey: string, itemId: string, expectedEpoch: number, reason?: string): FollowupOpResult;
-  freezeReason(sessionKey: string): string | undefined;
 }
 
 /** The dispatcher slice this module touches; `FollowupDispatcher` satisfies it. */
@@ -464,9 +463,13 @@ async function handleResume(
  * server that the dialog was accepted — the arrival of THIS action id is the
  * only evidence of an explicit, deliberate retry, and it is treated as such.
  *
- * A frozen session is refused instead of being silently un-frozen: a `queued`
- * item inside a frozen session renders exactly like a drainable one and can
- * never drain, which is the conflation A29 forbids.
+ * A freeze does NOT refuse it. The click lands on one parked row and says "run
+ * this one", which is the explicit decision the freeze was waiting for (A17);
+ * demanding a separate Resume first made the panel's own Retry a dead end on the
+ * two states that need it, and `queue.resume` does not even move an `uncertain`
+ * item. The queue stays the decider — a `frozen` answer from it is still
+ * surfaced as a refusal, and it lifts the freeze itself once the last parked row
+ * has left (`followup-queue.ts` `settleFreeze`).
  */
 async function handleRetry(
   deps: FollowupActionsDeps,
@@ -506,15 +509,6 @@ async function handleRetry(
   const blocking = pendingApproval(live);
   if (blocking) {
     await refuse(respond, `Retry rejected: ${blocking}. Answer it first — the item stays in the queue.`);
-    return;
-  }
-
-  const frozen = deps.queue.freezeReason(value.sessionKey);
-  if (frozen) {
-    await refuse(
-      respond,
-      `Retry rejected: the session is frozen (${frozen}). Resume the queue first — the item stays where it is.`,
-    );
     return;
   }
 

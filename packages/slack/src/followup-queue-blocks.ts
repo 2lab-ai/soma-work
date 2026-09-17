@@ -1,4 +1,4 @@
-import type { FollowupItem, FollowupItemState } from './followup-queue';
+import { type FollowupItem, type FollowupItemState, FREEZE_PARKED_STATES } from './followup-queue';
 import { escapeSlackMrkdwn } from './mrkdwn-escape';
 
 /**
@@ -15,8 +15,10 @@ import { escapeSlackMrkdwn } from './mrkdwn-escape';
  *   - §3.6 the existing autogoal `Goals` queue is a SEPARATE surface — this
  *     builder renders follow-up items only and never merges the two.
  *   - §3.4/§3.5 a denied dispatch stays `queued` + reason (still actionable);
- *     a freeze is `paused` and clears only through an explicit Resume. The two
- *     are never collapsed into one label (A29).
+ *     a freeze is `paused`/`uncertain` and leaves only through an explicit
+ *     Resume/Retry. The two are never collapsed into one label (A29), and the
+ *     freeze is scoped PER ITEM ({@link FREEZE_PARKED_STATES}): a row that
+ *     arrived after it renders like any other live message.
  *   - §3.5/R6 `failed` and `uncertain` never auto-retry. `uncertain` may have
  *     already produced side effects, so its Retry carries a confirm dialog in
  *     the legacy layout; the compact layout, whose single control is an
@@ -201,15 +203,21 @@ export const FOLLOWUP_RESTART_FREEZE_REASON = 'process restart';
  * What the banner says under a restart freeze, in the user's words.
  *
  * A restart freeze parks ONLY the items the session already held
- * (`followup-queue.ts:216` — `paused`/`uncertain`); a message sent afterwards is
- * `queued` and dispatches normally. Printing the raw reason made the panel read
- * as "this queue is stopped", the same misreading the 2026-09-17 live bug
- * produced in chat ("큐가 멈춰 있어 자동으로 실행되지 않습니다"), so the sentence
- * names its own scope (재시작 전 항목) and points at the control that runs them.
- * `⋯` is the overflow menu the compact layout puts on every item row.
+ * ({@link FREEZE_PARKED_STATES} — `paused`/`uncertain`); a message sent
+ * afterwards is `queued` and dispatches normally. Printing the raw reason made
+ * the panel read as "this queue is stopped", the same misreading the 2026-09-17
+ * live bug produced in chat ("큐가 멈춰 있어 자동으로 실행되지 않습니다"), so the
+ * sentence names its own scope (재시작 전 항목) and points at the control that
+ * runs them.
+ *
+ * The control is named per STATE rather than per layout: Resume releases a
+ * `paused` row and Retry is the only door out of an `uncertain` one, so the row
+ * itself tells the user which word applies. Naming the compact `⋯` menu instead
+ * was wrong in the legacy layout, where the same sentence sits over per-op
+ * buttons.
  */
 export const FOLLOWUP_RESTART_FREEZE_NOTICE =
-  '재시작 전에 남아 있던 항목입니다 — 자동으로 다시 실행하지 않습니다. 필요하면 ⋯ 메뉴의 Retry/Resume으로 실행하세요.';
+  '재시작 전에 남아 있던 항목입니다 — 자동으로 다시 실행하지 않습니다. 필요하면 해당 항목의 Resume(보류)/Retry(불확실)로 실행하세요.';
 
 /**
  * The freeze line both layouts render.
@@ -294,9 +302,6 @@ export const FOLLOWUP_ITEM_OPS: readonly FollowupItemOp[] = ['send_now', 'cancel
 export interface FollowupItemMenuValue extends FollowupItemActionValue {
   op: FollowupItemOp;
 }
-
-/** States an explicit resume can act on while the session is frozen. */
-const RESUMABLE_STATES: readonly FollowupItemState[] = ['queued', 'paused', 'failed', 'uncertain'];
 
 /**
  * Stable display order for a per-state counts breakdown, shared by this
@@ -564,12 +569,22 @@ function uncertainRetryConfirm(): Record<string, unknown> {
   };
 }
 
-/** The control a given item offers, if any. Frozen sessions only offer Resume. */
-function accessoryFor(item: FollowupItem, frozen: boolean, turnEpoch: number): Record<string, unknown> | null {
-  if (frozen) {
-    if (!RESUMABLE_STATES.includes(item.state)) return null;
-    return itemButton(item, FOLLOWUP_RESUME_ACTION_ID, FOLLOWUP_RESUME_LABEL);
-  }
+/**
+ * The control a given item offers, if any.
+ *
+ * Takes no freeze flag, and that is the point of the 2026-09-17 scoping fix: a
+ * freeze holds back exactly the rows it parked ({@link FREEZE_PARKED_STATES} —
+ * `paused`/`uncertain`), and the control each of those needs is the one its own
+ * state already names here (Resume out of `paused`, confirm-gated Retry out of
+ * `uncertain`, which `retry` now accepts while frozen). The session-level
+ * `Resume on everything` branch this replaces put Resume on a `queued` row that
+ * had arrived AFTER the freeze and drains normally — the live bug.
+ *
+ * The legacy layout emits no `Send now` on a parked state at all, so there is
+ * nothing here for a parked row to withhold; the compact menu, which does offer
+ * it on `paused`, is where the scope still matters ({@link menuOpsFor}).
+ */
+function accessoryFor(item: FollowupItem, turnEpoch: number): Record<string, unknown> | null {
   switch (item.state) {
     case 'queued':
     // A steered message is still the user's queued message: `Send now` means
@@ -602,7 +617,7 @@ function accessoryFor(item: FollowupItem, frozen: boolean, turnEpoch: number): R
  */
 function menuOpsFor(
   item: FollowupItem,
-  frozen: boolean,
+  parked: boolean,
   turnEpoch: number,
 ): Array<{ op: FollowupItemOp; label: string; turnEpoch?: number }> {
   const cancel = { op: 'cancel' as const, label: FOLLOWUP_CANCEL_LABEL };
@@ -610,9 +625,13 @@ function menuOpsFor(
   const resume = { op: 'resume' as const, label: FOLLOWUP_RESUME_LABEL };
   const retry = { op: 'retry' as const, label: FOLLOWUP_RETRY_LABEL };
   if (item.state === 'resolved' || item.state === 'cancelled') return [];
-  // A frozen session drains nothing, so `Send now` is withheld exactly as in the
-  // legacy layout (A29); the freeze is cleared by Resume, not by a dispatch.
-  if (frozen) return RESUMABLE_STATES.includes(item.state) ? [resume, cancel] : [cancel];
+  // A row the freeze PARKED is the one thing a freeze still scopes here: the
+  // queue refuses to reserve or steer it (`followup-queue.ts:477/646`), so
+  // `Send now` would be a control that can only answer `frozen`. What is left is
+  // the single door out of its own state — Resume for `paused`, Retry for
+  // `uncertain`, which `resume` never moves. A `queued`/`steered` row in the
+  // same session arrived AFTER the freeze and is untouched by this (A29).
+  if (parked) return [item.state === 'paused' ? resume : retry, cancel];
   switch (item.state) {
     case 'queued':
     // Same two operations as `queued`, both taking a different road (06 §3.3/
@@ -642,10 +661,10 @@ function menuOpsFor(
  */
 function itemMenu(
   item: FollowupItem,
-  frozen: boolean,
+  parked: boolean,
   turnEpoch: number,
 ): { menu: Record<string, unknown> | null; dropped: boolean } {
-  const encoded = menuOpsFor(item, frozen, turnEpoch).map((entry) => ({
+  const encoded = menuOpsFor(item, parked, turnEpoch).map((entry) => ({
     text: { type: 'plain_text', text: truncate(entry.label, MAX_OPTION_TEXT) },
     value: encodeFollowupMenuValue(
       { sessionKey: item.sessionKey, seq: item.seq, epoch: item.epoch, turnEpoch: entry.turnEpoch },
@@ -699,12 +718,12 @@ function neutraliseCompactEmphasis(text: string): string {
  * own emphasis characters are neutralised, so the italic run that the eye reads
  * as the state is always the real one, always last on the row.
  */
-function compactItemBlock(item: FollowupItem, frozen: boolean, turnEpoch: number): Record<string, unknown> {
+function compactItemBlock(item: FollowupItem, parked: boolean, turnEpoch: number): Record<string, unknown> {
   const preview = neutraliseCompactEmphasis(
     escapeSlackMrkdwn(previewOf(item, { maxChars: COMPACT_PREVIEW_MAX_CHARS, attachmentBadge: true })),
   );
   const label = escapeSlackMrkdwn(compactStateLabel(item));
-  const { menu, dropped } = itemMenu(item, frozen, turnEpoch);
+  const { menu, dropped } = itemMenu(item, parked, turnEpoch);
   // A control we could not encode is GONE from the row, and a row that silently
   // lost its only control is indistinguishable from an item that never had one.
   // Same wording the legacy layout uses on its context line.
@@ -784,18 +803,22 @@ export function buildFollowupQueueBlocks(
   }
 
   for (const item of visible) {
+    // Per ITEM, never per session: a freeze holds back the rows it parked, and
+    // a `queued` row in a frozen session is a message that arrived after it
+    // (`followup-queue.ts:221`).
+    const parked = frozen && FREEZE_PARKED_STATES.includes(item.state);
     if (compact) {
-      blocks.push(compactItemBlock(item, frozen, turnEpoch));
+      blocks.push(compactItemBlock(item, parked, turnEpoch));
       continue;
     }
-    const accessory = accessoryFor(item, frozen, turnEpoch);
+    const accessory = accessoryFor(item, turnEpoch);
     const section: Record<string, unknown> = {
       type: 'section',
       text: plainText(`${item.seq}. ${previewOf(item)}`),
     };
     if (accessory) section.accessory = accessory;
     blocks.push(section);
-    const dropped = accessory === null && isActionable(item, frozen);
+    const dropped = accessory === null && isActionable(item);
     blocks.push(contextBlock(stateLine(item, dropped ? ACTION_UNAVAILABLE : undefined)));
   }
 
@@ -824,9 +847,13 @@ export function buildFollowupQueueBlocks(
   };
 }
 
-/** True when the item's state would normally carry a control (used to explain a dropped one). */
-function isActionable(item: FollowupItem, frozen: boolean): boolean {
-  if (frozen) return RESUMABLE_STATES.includes(item.state);
+/**
+ * True when the item's state would normally carry a control (used to explain a
+ * dropped one). The session's freeze is not an input: {@link accessoryFor} picks
+ * the control from the state alone, so the states that carry one are the same
+ * whether or not the session is frozen.
+ */
+function isActionable(item: FollowupItem): boolean {
   return (
     item.state === 'queued' ||
     item.state === 'steered' ||

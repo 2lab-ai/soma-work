@@ -212,8 +212,13 @@ const IN_FLIGHT_STATES: readonly FollowupItemState[] = ['reserved', 'claimed', '
  * `Date.now()` has millisecond resolution, so a message enqueued in the same
  * millisecond as the freeze would be classified by a coin flip. The state IS
  * the record of what the freeze touched.
+ *
+ * Exported for the same reason as {@link FOLLOWUP_PENDING_DISPATCH_STATES}: the
+ * renderer has to scope a freeze exactly as the gates here do (a control the
+ * panel offers on a row the gates refuse is a button that can only fail), and a
+ * second hand-copied list is how the two sides drift apart.
  */
-const FREEZE_PARKED_STATES: readonly FollowupItemState[] = ['paused', 'uncertain'];
+export const FREEZE_PARKED_STATES: readonly FollowupItemState[] = ['paused', 'uncertain'];
 
 /**
  * A freeze target: the state to enter, and optionally a note appended to the
@@ -563,9 +568,15 @@ export class FollowupQueue {
 
   /**
    * Explicit requeue of a confirmed `failed` or an `uncertain` item. Never
-   * automatic (A16). Refused while the session is frozen: a `queued` item in a
-   * frozen session renders exactly like a drainable one but can never drain,
-   * which is the conflation A29 forbids. Resume first, then retry.
+   * automatic (A16).
+   *
+   * NOT refused while the session is frozen: a retry IS the explicit user
+   * decision the freeze is waiting for, aimed at one specific row (A17). The
+   * old session-level refusal ("resume first") made the panel's own Retry a
+   * dead end on exactly the rows that need it — and `resume` does not even move
+   * an `uncertain` item, so there was no other door. Nothing undrainable is
+   * created either: {@link settleFreeze} lifts the freeze once the last parked
+   * row has left, and until then `claimNext` still only sees `queued` rows.
    *
    * Retrying a TERMINAL item (`failed`) re-admits it into the pending set, so
    * it faces the same visible ceiling as a fresh message (§3.1) — otherwise
@@ -574,10 +585,10 @@ export class FollowupQueue {
    */
   retry(sessionKey: string, itemId: string, expectedEpoch: number): FollowupOpResult {
     return this.mutate(sessionKey, itemId, expectedEpoch, (item, session) => {
-      if (session.freeze) return 'frozen';
       if (item.state !== 'failed' && item.state !== 'uncertain') return 'invalid-state';
       if (TERMINAL_STATES.includes(item.state) && pendingCount(session) >= this.capacity) return 'capacity';
       this.enter(item, 'queued');
+      this.settleFreeze(session);
       return undefined;
     });
   }
@@ -783,11 +794,12 @@ export class FollowupQueue {
    * is frozen, so gating on the freeze would make them uncancellable.
    */
   cancelItem(sessionKey: string, itemId: string, expectedEpoch: number, reason?: string): FollowupOpResult {
-    return this.mutate(sessionKey, itemId, expectedEpoch, (item) => {
+    return this.mutate(sessionKey, itemId, expectedEpoch, (item, session) => {
       if (!CANCELLABLE_STATES.includes(item.state)) return 'invalid-state';
       // A blank reason is a MISSING reason: storing `''` would leave the panel's
       // history line saying only `cancelled`, with no who and no why.
       this.enter(item, 'cancelled', reason?.trim() || FOLLOWUP_CANCEL_DEFAULT_REASON);
+      this.settleFreeze(session);
       return undefined;
     });
   }
@@ -800,6 +812,7 @@ export class FollowupQueue {
     for (const item of session.items) {
       if (!TERMINAL_STATES.includes(item.state)) this.enter(item, 'cancelled', reason);
     }
+    this.settleFreeze(session);
     this.commit(next);
   }
 
@@ -814,6 +827,26 @@ export class FollowupQueue {
    */
   private parkedByFreeze(session: FollowupSessionSnapshot, item: FollowupItem): boolean {
     return session.freeze !== undefined && FREEZE_PARKED_STATES.includes(item.state);
+  }
+
+  /**
+   * Drop a freeze that has nothing left to hold.
+   *
+   * A freeze IS its parked rows ({@link parkedByFreeze}). Once the last one has
+   * left — resumed, retried, cancelled one by one or with the session — the
+   * session is frozen in name only, and that name is not harmless: the panel
+   * keeps showing a banner the user cannot clear, `claimNext` answers `frozen`
+   * instead of `empty`, and the host reads "this thread is stopped" off a queue
+   * that holds nothing but ordinary work.
+   *
+   * Called on the not-yet-committed session INSIDE the transaction that moved
+   * the last row, so the freeze and the row it was holding disappear in one
+   * durable write — never in two, with a crash in between.
+   */
+  private settleFreeze(session: FollowupSessionSnapshot): void {
+    if (!session.freeze) return;
+    if (session.items.some((item) => FREEZE_PARKED_STATES.includes(item.state))) return;
+    session.freeze = undefined;
   }
 
   private freezeSessions(

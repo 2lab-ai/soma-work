@@ -244,17 +244,39 @@ describe('buildFollowupQueueBlocks legacy layout (compact:false) — state seman
     expect((resume.text as Record<string, unknown>).text).toContain('Resume');
   });
 
-  it('requires an explicit Resume under a session freeze and withholds Send now', () => {
+  /**
+   * A freeze is scoped to the rows it PARKED (`FREEZE_PARKED_STATES`), so the
+   * control a row gets is decided by its own state. The `queued` row here can
+   * only be a message that arrived after the freeze — it drains normally
+   * (`claimNext`), and rendering Resume on it was the 2026-09-17 live bug.
+   */
+  it('scopes a freeze to the parked row and leaves Send now on the one that arrived after it', () => {
     const { blocks } = buildLegacyQueueBlocks({
       sessionKey: SESSION,
-      items: [item({ seq: 1, state: 'queued' }), item({ seq: 2, state: 'paused' })],
+      items: [item({ seq: 1, state: 'paused' }), item({ seq: 2, state: 'queued' })],
       freeze: { reason: 'stop requested', at: 1_700_000_000_000 },
+      turnEpoch: 4,
     });
 
     expect(contextTexts(blocks).some((line) => line.includes('stop requested'))).toBe(true);
     const buttons = collectButtons(blocks);
-    expect(buttons.every((button) => button.action_id !== FOLLOWUP_SEND_NOW_ACTION_ID)).toBe(true);
-    expect(buttons.some((button) => button.action_id === FOLLOWUP_RESUME_ACTION_ID)).toBe(true);
+    expect(buttons.map((button) => button.action_id)).toEqual([FOLLOWUP_RESUME_ACTION_ID, FOLLOWUP_SEND_NOW_ACTION_ID]);
+    expect(parseFollowupItemActionValue(buttons[1].value as string)?.turnEpoch).toBe(4);
+    expect(contextTexts(blocks).some((line) => line.includes('action unavailable'))).toBe(false);
+  });
+
+  it('keeps the confirm-gated Retry on an uncertain row a freeze parked', () => {
+    const { blocks } = buildLegacyQueueBlocks({
+      sessionKey: SESSION,
+      items: [item({ seq: 1, state: 'uncertain', stateReason: '재시작 중 중단' })],
+      freeze: { reason: FOLLOWUP_RESTART_FREEZE_REASON, at: 1_700_000_000_000 },
+    });
+
+    const buttons = collectButtons(blocks);
+    // Resume never moves an `uncertain` item (`followup-queue.ts:748`), so
+    // offering it there promised a release that could not happen.
+    expect(buttons.map((button) => button.action_id)).toEqual([FOLLOWUP_RETRY_ACTION_ID]);
+    expect(buttons[0].confirm).toBeDefined();
   });
 
   it('gives failed and uncertain items an explicit Retry control, confirm-gated for uncertain (R6)', () => {
@@ -593,17 +615,40 @@ describe('buildFollowupQueueBlocks — compact overflow menu', () => {
     expect(menuLabels(collectMenus(blocks)[0])).toEqual(['Resume', FOLLOWUP_SEND_NOW_LABEL, FOLLOWUP_CANCEL_LABEL]);
   });
 
-  it('withholds Send now under a session freeze while keeping Resume and Cancel', () => {
+  it('withholds Send now on the row a freeze parked, and only on that row', () => {
     const { blocks } = buildFollowupQueueBlocks({
       sessionKey: SESSION,
-      items: [item({ seq: 1, state: 'queued' }), item({ seq: 2, state: 'paused' })],
+      // The paused row is what the freeze holds; the queued one arrived after it.
+      items: [item({ seq: 1, state: 'paused' }), item({ seq: 2, state: 'queued' })],
       freeze: { reason: 'stop requested', at: 1_700_000_000_000 },
     });
 
     expect(contextTexts(blocks).some((line) => line.includes('stop requested'))).toBe(true);
-    for (const menu of collectMenus(blocks)) {
-      expect(menuOps(menu)).toEqual(['resume', 'cancel']);
-    }
+    const [parked, live] = collectMenus(blocks);
+    // `reserve`/`steer` refuse a parked row (`followup-queue.ts:477/646`), so
+    // `Send now` there would be a control that can only answer `frozen`.
+    expect(menuOps(parked)).toEqual(['resume', 'cancel']);
+    expect(menuOps(live)).toEqual(['send_now', 'cancel']);
+  });
+
+  it('offers a parked uncertain row Retry, never Resume', () => {
+    const { blocks } = buildFollowupQueueBlocks({
+      sessionKey: SESSION,
+      items: [item({ seq: 1, state: 'uncertain' })],
+      freeze: { reason: FOLLOWUP_RESTART_FREEZE_REASON, at: 1_700_000_000_000 },
+    });
+
+    expect(menuOps(collectMenus(blocks)[0])).toEqual(['retry', 'cancel']);
+  });
+
+  it('leaves a failed row its Retry under a freeze — a confirmed failure was never parked', () => {
+    const { blocks } = buildFollowupQueueBlocks({
+      sessionKey: SESSION,
+      items: [item({ seq: 1, state: 'failed', stateReason: 'tool crash' })],
+      freeze: { reason: 'stop requested', at: 1_700_000_000_000 },
+    });
+
+    expect(menuOps(collectMenus(blocks)[0])).toEqual(['retry', 'cancel']);
   });
 
   it('encodes the op beside the queue coordinates and nothing else (A30)', () => {
@@ -805,16 +850,17 @@ describe('buildFollowupQueueBlocks — a steered item (06 §3.5)', () => {
     expect(contextTexts(blocks).some((line) => line.includes('action unavailable'))).toBe(false);
   });
 
-  it('offers only Cancel under a freeze — a frozen session has no turn to steer into', () => {
-    // A freeze rewrites `steered → paused` (`followup-queue.ts:202/221`), so this
-    // row should not exist; the default branch still has to be safe if it does.
+  it('keeps both operations on a steered row inside a frozen session', () => {
+    // A freeze rewrites every `steered` row it finds (`followup-queue.ts:246/266`),
+    // so a `steered` row in a frozen session is a message that arrived AFTER it
+    // and was pushed into the turn that is running right now.
     const { blocks } = buildFollowupQueueBlocks({
       sessionKey: SESSION,
       items: [item({ state: 'steered' })],
       freeze: { reason: 'stop requested', at: 1_700_000_000_000 },
     });
 
-    expect(menuOps(collectMenus(blocks)[0])).toEqual(['cancel']);
+    expect(menuOps(collectMenus(blocks)[0])).toEqual(['send_now', 'cancel']);
   });
 
   it('keeps the steered Send now option inside the option budget with a REAL session key', () => {
@@ -1001,7 +1047,7 @@ describe('buildFollowupQueueBlocks — compact text safety and paging', () => {
 
 /**
  * A restart freeze holds back ONLY the items the session already held
- * (`followup-queue.ts:216` — `paused`/`uncertain`); a message sent after it runs
+ * (`followup-queue.ts:221` — `paused`/`uncertain`); a message sent after it runs
  * normally. The panel used to print the raw reason (`frozen · process restart ·
  * explicit Resume required`), which reads as "the queue is stopped", so a user
  * looking at a live thread could not tell that their next message was fine.
@@ -1024,8 +1070,13 @@ describe('buildFollowupQueueBlocks — the freeze banner scopes a restart to the
     const banner = contextTexts(restart(options)).find((line) => line.includes('재시작'));
 
     expect(banner).toBe(FOLLOWUP_RESTART_FREEZE_NOTICE);
-    expect(banner).toContain('⋯');
-    expect(banner).toContain('Retry/Resume');
+    // The control is named per STATE, because that is what decides it: Resume
+    // releases a `paused` row, Retry is the only door out of `uncertain`. The
+    // banner no longer points at the compact layout's `⋯` — the legacy layout
+    // renders the same sentence over per-op buttons.
+    expect(banner).toContain('Resume(보류)');
+    expect(banner).toContain('Retry(불확실)');
+    expect(banner).not.toContain('⋯');
   });
 
   it('never claims the queue is stopped for messages sent after the restart', () => {
@@ -1053,6 +1104,9 @@ describe('buildFollowupQueueBlocks — the freeze banner scopes a restart to the
     // `followup-queue.ts:763` stores the caller's string verbatim and
     // `slack-handler.ts:623` passes this exact one.
     expect(FOLLOWUP_RESTART_FREEZE_REASON).toBe('process restart');
+    expect(FOLLOWUP_RESTART_FREEZE_NOTICE).toBe(
+      '재시작 전에 남아 있던 항목입니다 — 자동으로 다시 실행하지 않습니다. 필요하면 해당 항목의 Resume(보류)/Retry(불확실)로 실행하세요.',
+    );
     expect(followupFreezeBannerText(FOLLOWUP_RESTART_FREEZE_REASON)).toBe(FOLLOWUP_RESTART_FREEZE_NOTICE);
     expect(followupFreezeBannerText('  process restart  ')).toBe(FOLLOWUP_RESTART_FREEZE_NOTICE);
     expect(followupFreezeBannerText('process restart (crash)')).toContain('process restart (crash)');
