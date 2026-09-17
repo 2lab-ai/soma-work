@@ -702,6 +702,27 @@ describe('FollowupQueue restart recovery', () => {
     expect(restarted.list(OTHER_SESSION)[0].state).toBe('paused');
   });
 
+  it('clears a stale freeze a previous restart left on a session with nothing parked', () => {
+    // Snapshots written by the pre-scope build carry `freeze` on history-only
+    // sessions. A freeze with no paused/uncertain row holds nothing back, so a
+    // recover must drop it instead of carrying the stale banner forward.
+    const source = new FollowupQueue();
+    source.enqueue(SESSION, event({ ts: '1.1' }));
+    const dispatched = dispatchFirst(source);
+    source.settle(SESSION, dispatched.id, dispatched.epoch, 'resolved');
+    const snapshot = source.snapshot();
+    const row = snapshot.sessions.find((session) => session.sessionKey === SESSION);
+    if (!row) throw new Error('session missing');
+    row.freeze = { reason: 'process restart', at: Date.now() - 1000 };
+
+    const restarted = new FollowupQueue({ snapshot });
+    restarted.recover('process restart');
+
+    expect(restarted.freezeReason(SESSION)).toBeUndefined();
+    expect(restarted.enqueue(SESSION, event({ ts: '1.2' })).status).toBe('queued');
+    expect(restarted.claimNext(SESSION).ok).toBe(true);
+  });
+
   it('leaves a session with no items at all unfrozen', () => {
     const source = new FollowupQueue();
     source.beginTurn(SESSION); // a turn generation creates the session row, with no items
