@@ -2,6 +2,7 @@ import type { App } from '@slack/bolt';
 import type { SendNowResult } from '@soma/slack/followup-dispatcher';
 import type { FollowupItem, FollowupItemState, FollowupOpResult } from '@soma/slack/followup-queue';
 import {
+  FOLLOWUP_CANCEL_ACTION_ID,
   FOLLOWUP_ITEM_MENU_ACTION_ID,
   FOLLOWUP_PAGE_NEXT_ACTION_ID,
   FOLLOWUP_PAGE_PREV_ACTION_ID,
@@ -202,6 +203,41 @@ export interface FollowupActionsDeps {
    * turn a delivered message into a failed click.
    */
   onItemLeftSteer?(sessionKey: string, itemId: string): void;
+  /**
+   * The item is PROCESSED — it left the pending set for good and whatever the
+   * host posted for it (the in-thread item message, A39) can go (A41).
+   *
+   * Announced from the cancel path only, because that is the only transition
+   * this module owns: consumption and dispatch outcomes are the host's own
+   * settlement/drain hooks. It fires exactly on the outcomes where the item is
+   * really gone — a `returned-to-queue` steered cancel is NOT one of them, the
+   * row is clickable again and its message must stay.
+   *
+   * Optional and best effort, like {@link onItemLeftSteer}: a throwing hook is
+   * bookkeeping this module reports, never a completed cancel turned into a
+   * failed click.
+   */
+  onItemProcessed?(sessionKey: string, itemId: string): void;
+  /**
+   * The item CHANGED but did not leave the pending set — re-render whatever the
+   * host posted for it (S2).
+   *
+   * The counterpart of {@link onItemProcessed}: that one says the message can
+   * go, this one says the message is now WRONG. A `paused` row released by
+   * Resume still reads `paused` and still offers a Resume that does nothing; a
+   * `failed` row requeued by Retry still offers Retry. The panel used to absorb
+   * this (one surface, repainted by {@link refresh}), and the panel no longer
+   * renders the queue (A39).
+   *
+   * Announced on the CLICK's way out, whatever the queue answered — a refused
+   * retry is exactly the case where the surface and the item disagree. The host
+   * re-reads the item, so this hook never claims a state.
+   *
+   * Optional and best effort, like {@link onItemProcessed}: a throwing hook is
+   * bookkeeping this module reports, never a completed act turned into a failed
+   * click.
+   */
+  refreshItemMessage?(sessionKey: string, itemId: string): void | Promise<void>;
   /** Optional logger seam; falls back to this module's `Logger`. */
   reportError?(label: string, error: unknown): void;
 }
@@ -233,6 +269,15 @@ export function registerFollowupActions(app: App, deps: FollowupActionsDeps): vo
     await ack();
     const reply = respond as unknown as FollowupRespond;
     detach(deps, 'Queue menu', reply, () => handleMenu(deps, body, reply));
+  });
+
+  // The in-thread item message's Cancel (A39). A second TRANSPORT into the same
+  // handler — the button payload is the ordinary item value, so nothing about
+  // the cancel policy is re-decided here.
+  app.action(FOLLOWUP_CANCEL_ACTION_ID, async ({ ack, body, respond }) => {
+    await ack();
+    const reply = respond as unknown as FollowupRespond;
+    detach(deps, 'Cancel', reply, () => handleCancel(deps, body, reply));
   });
 
   for (const actionId of [FOLLOWUP_PAGE_PREV_ACTION_ID, FOLLOWUP_PAGE_NEXT_ACTION_ID]) {
@@ -344,6 +389,12 @@ async function handleSendNow(
   }
 
   if (result.status === 'rejected') {
+    // S2 — the item did not move, but the MESSAGE the user clicked did: most of
+    // these refusals ARE a generation mismatch (a stale item epoch, a turn that
+    // has since ended), so re-offering the same button guarantees the identical
+    // refusal on the next click. The panel repaint in the `finally` above cannot
+    // fix it — the panel no longer renders the queue (A39).
+    await refreshItemMessage(deps, value.sessionKey, value.itemId);
     await refuse(respond, `Send now rejected (${result.reason}): ${result.detail}. The item stays in the queue.`);
     return;
   }
@@ -364,6 +415,13 @@ async function handleSendNow(
         // the `canDrain` gate below — because the drain claims `queued` rows
         // and a row the sweep has not returned yet is invisible to it.
         const settled = await run.settled.finally(() => sweepSteered(deps, sessionKey));
+        // A41 — the run this click started is over, so the item landed
+        // somewhere terminal or it did not move at all. Announced regardless of
+        // the verdict: the host re-reads the queue and deletes the message only
+        // if the row really left the pending set, and gating it on `canDrain`
+        // here would keep a stale `Send now` on every item whose turn ended
+        // unhealthy after the row had already gone `failed`.
+        announceProcessed(deps, sessionKey, value.itemId);
         // Only a `safe` outcome opens the next boundary — a blocked/failed turn
         // must not be followed by an automatic drain (A16).
         if (settled.canDrain) await deps.runDrain(sessionKey);
@@ -449,6 +507,9 @@ async function handleResume(
     if (!deps.dispatcher.isBusy(value.sessionKey)) await deps.runDrain(value.sessionKey);
   } finally {
     await safeRefresh(deps, value.sessionKey);
+    // The clicked row is still in the queue (resume moves `paused` to `queued`
+    // and leaves `uncertain` alone), so its message has to say the new state.
+    await refreshItemMessage(deps, value.sessionKey, value.itemId);
   }
 
   // The session is running again, but THIS item is not — `resume` never touches
@@ -534,6 +595,11 @@ async function handleRetry(
     await deps.runDrain(value.sessionKey);
   } finally {
     await safeRefresh(deps, value.sessionKey);
+    // Whatever the queue answered, the row's message is now behind the item:
+    // a successful retry made it `queued`, a refused one left it where the
+    // refusal says it is. The host re-reads; a row the drain already resolved
+    // has no message left to update.
+    await refreshItemMessage(deps, value.sessionKey, value.itemId);
   }
 }
 
@@ -586,7 +652,14 @@ const CANCEL_DENIED_TEXT = '취소가 거부되었습니다: 이 세션을 조�
  */
 const CANCEL_OK_TEXT = '취소했습니다 — 항목은 기록으로 남습니다.';
 const CANCEL_RUNNING_TEXT = '실행 중인 항목은 취소할 수 없습니다 — 패널의 중지 버튼을 쓰세요.';
-const CANCEL_STALE_TEXT = '이미 바뀐 항목입니다 — 패널을 새로고침했습니다.';
+/**
+ * A lost race is answered by bringing the CLICKED message forward, not by
+ * pointing at a panel: the queue panel no longer renders the rows (A39), and the
+ * button that lost carries a generation the queue has moved past — so the reply
+ * has to say that the thing under the user's cursor is now current and worth a
+ * second click.
+ */
+const CANCEL_STALE_TEXT = '이미 바뀐 항목입니다 — 이 메시지의 버튼을 최신 상태로 갱신했습니다. 다시 눌러주세요.';
 /** The SDK confirmed the withdrawal: the model never saw the message. */
 const CANCEL_STEERED_OK_TEXT = '취소했습니다 — 모델에 전달되기 전에 회수했습니다.';
 /** The SDK had already dequeued it, so the message is part of the running turn. */
@@ -600,9 +673,13 @@ const CANCEL_STEERED_RETURNED_TEXT =
   '취소하지 못했습니다 — 전달 여부를 확인할 수 없어 큐로 되돌렸습니다. 다시 Cancel 할 수 있습니다.';
 
 /**
- * Cancel (menu-only). Authorization is the SAME interrupt policy Resume and
+ * Cancel. Authorization is the SAME interrupt policy Resume and
  * Retry use — cancelling someone else's queued instruction is steering the
  * session just as much as running it early.
+ *
+ * Two transports reach it: the panel-era overflow option (which pre-parses the
+ * value) and the item message's `Cancel` button (A39), whose ordinary item
+ * payload is parsed here. One policy either way.
  *
  * Three things it deliberately does NOT do:
  *   - it never kicks the drain: removing an item opens no boundary, and a
@@ -618,8 +695,13 @@ async function handleCancel(
   deps: FollowupActionsDeps,
   body: unknown,
   respond: FollowupRespond,
-  value: FollowupItemActionValue,
+  preparsed?: FollowupItemActionValue,
 ): Promise<void> {
+  const value = preparsed ?? parseFollowupItemActionValue(readActionValue(body));
+  if (!value) {
+    await refuse(respond, 'Cancel ignored: the button payload could not be read. Refresh the queue and try again.');
+    return;
+  }
   const click = verifyClick(deps, body, value.sessionKey);
   if (!click.ok) {
     await refuse(respond, `Cancel rejected: ${click.detail}.`);
@@ -638,9 +720,13 @@ async function handleCancel(
     return;
   }
   // Gone, or moved on since the menu was rendered: repaint FIRST so the
-  // ephemeral and the panel the user is looking at agree.
+  // ephemeral and the surface the user is looking at agree. That surface is the
+  // item's own message (A39), so the row is re-rendered too — the button that
+  // just lost the race carries the old generation and would be refused again,
+  // and the reply below promises exactly that it was brought forward.
   if (!item || item.epoch !== value.epoch) {
     await safeRefresh(deps, value.sessionKey);
+    await refreshItemMessage(deps, value.sessionKey, value.itemId);
     await refuse(respond, CANCEL_STALE_TEXT);
     return;
   }
@@ -663,6 +749,7 @@ async function handleCancel(
       `<@${click.clicker}> 님이 취소했습니다`,
     );
     if (result.ok) {
+      announceProcessed(deps, value.sessionKey, value.itemId);
       await reply(respond, CANCEL_OK_TEXT);
       return;
     }
@@ -705,10 +792,14 @@ async function cancelSteeredItem(
 
   const outcome = await deps.cancelSteered(value.sessionKey, value.itemId, value.epoch, steerUuid);
   if (outcome === 'cancelled') {
+    announceProcessed(deps, value.sessionKey, value.itemId);
     await reply(respond, CANCEL_STEERED_OK_TEXT);
     return;
   }
   if (outcome === 'already-delivered') {
+    // The model has it: the row is `resolved · consumed` history now, which is
+    // just as processed as a cancel — the controls must not outlive it either.
+    announceProcessed(deps, value.sessionKey, value.itemId);
     await reply(respond, CANCEL_STEERED_DELIVERED_TEXT);
     return;
   }
@@ -933,6 +1024,32 @@ async function sweepSteered(deps: FollowupActionsDeps, sessionKey: string): Prom
     await deps.sweepSteered?.(sessionKey);
   } catch (error) {
     report(deps, 'Send now steered sweep', error);
+  }
+}
+
+/**
+ * Tell the host the item is done with (A41), best effort. Called on the cancel
+ * outcomes where the row really left the pending set; a throwing hook is
+ * reported, never allowed to invert the cancel the user just completed.
+ */
+function announceProcessed(deps: FollowupActionsDeps, sessionKey: string, itemId: string): void {
+  try {
+    deps.onItemProcessed?.(sessionKey, itemId);
+  } catch (error) {
+    report(deps, 'queue item processed hook', error);
+  }
+}
+
+/**
+ * Ask the host to re-render one item's message (S2), best effort. It runs in a
+ * `finally`, so a throw here would REPLACE the outcome of the act the user
+ * completed with a bookkeeping failure.
+ */
+async function refreshItemMessage(deps: FollowupActionsDeps, sessionKey: string, itemId: string): Promise<void> {
+  try {
+    await deps.refreshItemMessage?.(sessionKey, itemId);
+  } catch (error) {
+    report(deps, 'queue item message refresh', error);
   }
 }
 

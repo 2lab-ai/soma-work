@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import type { FollowupItem, FollowupItemState } from '../followup-queue';
 import {
+  buildFollowupItemMessage,
   buildFollowupQueueBlocks,
+  FOLLOWUP_CANCEL_ACTION_ID,
   FOLLOWUP_CANCEL_LABEL,
   FOLLOWUP_ITEM_ACTION_IDS,
   FOLLOWUP_ITEM_MENU_ACTION_ID,
   FOLLOWUP_PAGE_NEXT_ACTION_ID,
   FOLLOWUP_PAGE_PREV_ACTION_ID,
+  FOLLOWUP_PENDING_STATES,
   FOLLOWUP_QUEUE_DEFAULT_PAGE_SIZE,
   FOLLOWUP_QUEUE_TITLE,
   FOLLOWUP_RESTART_FREEZE_NOTICE,
@@ -1111,5 +1114,284 @@ describe('buildFollowupQueueBlocks — the freeze banner scopes a restart to the
     expect(followupFreezeBannerText('  process restart  ')).toBe(FOLLOWUP_RESTART_FREEZE_NOTICE);
     expect(followupFreezeBannerText('process restart (crash)')).toContain('process restart (crash)');
     expect(followupFreezeBannerText('사용자 중지')).toContain('사용자 중지');
+  });
+});
+
+/**
+ * A39 — the queue item as its OWN message in the thread.
+ *
+ * The panel embed is gone (the user reads the queue where they typed, not at the
+ * tail of the thread), so this builder renders ONE item: the same compact line
+ * the panel used, plus the two controls the user asked for by name (`Send now`,
+ * `Cancel`). Everything it must not do is inherited from the panel layout and
+ * re-pinned here, because this payload now reaches Slack on its own: the message
+ * text is escaped before it touches mrkdwn, the state label sits outside it, and
+ * the button values carry queue coordinates only (A30).
+ */
+describe('buildFollowupItemMessage — one queued message, one thread message (A39)', () => {
+  const REAL_KEY = 'work:C08ABCDEFGH:1726500000.123456';
+
+  function realItem(over: Partial<FollowupItem> = {}): FollowupItem {
+    const seq = over.seq ?? 9999;
+    return item({ sessionKey: REAL_KEY, seq, id: `${REAL_KEY}#${seq}`, epoch: 99, ...over });
+  }
+
+  it('renders exactly one section line and one actions row carrying both controls', () => {
+    const { blocks } = buildFollowupItemMessage(item({ seq: 3 }), 4);
+
+    expect(blocks).toHaveLength(2);
+    expect((blocks[0] as Record<string, unknown>).type).toBe('section');
+    expect((blocks[1] as Record<string, unknown>).type).toBe('actions');
+    expect(sectionTexts(blocks)[0]).toBe('3. 진행중인거 알려줘? · _queued_');
+    expect(collectButtons(blocks).map((button) => button.action_id)).toEqual([
+      FOLLOWUP_SEND_NOW_ACTION_ID,
+      FOLLOWUP_CANCEL_ACTION_ID,
+    ]);
+    expect(collectButtons(blocks).map((button) => (button.text as Record<string, unknown>).text)).toEqual([
+      FOLLOWUP_SEND_NOW_LABEL,
+      FOLLOWUP_CANCEL_LABEL,
+    ]);
+  });
+
+  it('stamps the turn epoch on `Send now` and withholds it from `Cancel`', () => {
+    // Same fence as the panel (A12/A28): steering targets the LIVE turn, so a
+    // `Send now` minted in an earlier generation must be refused. `Cancel` acts
+    // on an item that is not running, so it carries no turn generation at all.
+    const { blocks } = buildFollowupItemMessage(item({ seq: 2, epoch: 7 }), 5);
+
+    const [sendNow, cancel] = collectButtons(blocks);
+    expect(parseFollowupItemActionValue(sendNow.value as string)).toEqual({
+      sessionKey: SESSION,
+      itemId: `${SESSION}#2`,
+      epoch: 7,
+      turnEpoch: 5,
+    });
+    expect(parseFollowupItemActionValue(cancel.value as string)).toEqual({
+      sessionKey: SESSION,
+      itemId: `${SESSION}#2`,
+      epoch: 7,
+    });
+  });
+
+  it('keeps a REAL session key far inside the 150-char value budget', () => {
+    const { blocks } = buildFollowupItemMessage(realItem(), 9999);
+
+    for (const button of collectButtons(blocks)) {
+      expect((button.value as string).length).toBeLessThanOrEqual(150);
+    }
+    expect(parseFollowupItemActionValue(collectButtons(blocks)[0].value as string)).toEqual({
+      sessionKey: REAL_KEY,
+      itemId: `${REAL_KEY}#9999`,
+      epoch: 99,
+      turnEpoch: 9999,
+    });
+  });
+
+  it('clamps the preview to 80 characters on one line, keeping the state last', () => {
+    const long = `${'가'.repeat(200)}`;
+    const { blocks } = buildFollowupItemMessage(item({ seq: 1, message: event({ text: long }) }), 0);
+
+    const line = sectionTexts(blocks)[0];
+    expect(line.startsWith(`1. ${'가'.repeat(80)}…`)).toBe(true);
+    expect(line.endsWith('· _queued_')).toBe(true);
+    expect(line).not.toContain('\n');
+  });
+
+  it('says 전달됨 for a steered item instead of the internal state word', () => {
+    const steered = item({ seq: 1, state: 'steered', stateReason: 'steered', steerUuid: 'uuid-1' });
+
+    const { blocks, text } = buildFollowupItemMessage(steered, 1);
+
+    expect(sectionTexts(blocks)[0]).toBe(`1. 진행중인거 알려줘? · _${FOLLOWUP_STEERED_LABEL}_`);
+    expect(text).toContain(FOLLOWUP_STEERED_LABEL);
+    expect(sectionTexts(blocks)[0]).not.toContain('· steered');
+  });
+
+  it('numbers the line with the item seq unless the caller supplies its own index', () => {
+    expect(sectionTexts(buildFollowupItemMessage(item({ seq: 12 }), 0).blocks)[0].startsWith('12. ')).toBe(true);
+    expect(sectionTexts(buildFollowupItemMessage(item({ seq: 12 }), 0, { index: 1 }).blocks)[0].startsWith('1. ')).toBe(
+      true,
+    );
+  });
+
+  /**
+   * The controls are picked from the STATE, exactly as the panel's
+   * `accessoryFor` picks them — a `paused` row offering `Send now` is a control
+   * whose only possible answer is `frozen`, and a `failed` row offering it is a
+   * control the dispatcher refuses outright. `Cancel` is on every row because
+   * dropping the user's message is legal from all four of them.
+   */
+  describe('controls follow the item state (M4)', () => {
+    function ids(state: FollowupItemState): string[] {
+      const { blocks } = buildFollowupItemMessage(item({ seq: 1, state }), 4);
+      return collectButtons(blocks).map((button) => String(button.action_id));
+    }
+
+    it('offers Send now + Cancel on a queued row', () => {
+      expect(ids('queued')).toEqual([FOLLOWUP_SEND_NOW_ACTION_ID, FOLLOWUP_CANCEL_ACTION_ID]);
+    });
+
+    it('offers Send now + Cancel on a steered row — it is the same waiting message', () => {
+      expect(ids('steered')).toEqual([FOLLOWUP_SEND_NOW_ACTION_ID, FOLLOWUP_CANCEL_ACTION_ID]);
+    });
+
+    it('offers Resume + Cancel on a paused row', () => {
+      expect(ids('paused')).toEqual([FOLLOWUP_RESUME_ACTION_ID, FOLLOWUP_CANCEL_ACTION_ID]);
+    });
+
+    it('offers Retry + Cancel on a failed row, with no confirm dialog', () => {
+      const { blocks } = buildFollowupItemMessage(item({ seq: 1, state: 'failed' }), 4);
+      const [retry, cancel] = collectButtons(blocks);
+      expect(retry.action_id).toBe(FOLLOWUP_RETRY_ACTION_ID);
+      expect(cancel.action_id).toBe(FOLLOWUP_CANCEL_ACTION_ID);
+      // `failed` never ran to completion, so re-running it repeats nothing.
+      expect(retry.confirm).toBeUndefined();
+    });
+
+    it('confirm-gates the Retry of an uncertain row and says the caution on the line (R6)', () => {
+      // The item may already have produced side effects, so the click that
+      // re-runs it is a decision — and the button message has room for the
+      // dialog the compact overflow menu could not attach to one option only.
+      const { blocks } = buildFollowupItemMessage(item({ seq: 1, state: 'uncertain' }), 4);
+
+      const [retry, cancel] = collectButtons(blocks);
+      expect(retry.action_id).toBe(FOLLOWUP_RETRY_ACTION_ID);
+      expect(cancel.action_id).toBe(FOLLOWUP_CANCEL_ACTION_ID);
+      expect((retry.confirm as Record<string, unknown>).style).toBe('danger');
+      expect(cancel.confirm).toBeUndefined();
+      expect(sectionTexts(blocks)[0]).toContain('재실행 전 확인');
+    });
+
+    it('stamps the turn epoch on Send now only — never on Resume, Retry or Cancel', () => {
+      for (const state of ['paused', 'failed', 'uncertain'] as const) {
+        const { blocks } = buildFollowupItemMessage(item({ seq: 1, state }), 5);
+        for (const button of collectButtons(blocks)) {
+          expect(parseFollowupItemActionValue(button.value as string)?.turnEpoch).toBeUndefined();
+        }
+      }
+      const queued = buildFollowupItemMessage(item({ seq: 1 }), 5);
+      expect(parseFollowupItemActionValue(collectButtons(queued.blocks)[0].value as string)?.turnEpoch).toBe(5);
+    });
+
+    it('leaves a terminal row without controls — there is no operation left', () => {
+      for (const state of ['resolved', 'cancelled'] as const) {
+        const { blocks } = buildFollowupItemMessage(item({ seq: 1, state }), 4);
+        expect(collectButtons(blocks)).toHaveLength(0);
+        // …and it does not claim a control was LOST, which is a different fact.
+        expect(sectionTexts(blocks)[0]).not.toContain('action unavailable');
+      }
+    });
+  });
+
+  /**
+   * A restart freeze used to be readable only on the panel's freeze line, and
+   * the panel no longer renders the queue (A39) — so the sentence that tells the
+   * user why a restored row is not running by itself had no surface left. It
+   * rides the parked row's own message now.
+   */
+  describe('freeze notice on a parked row (M4)', () => {
+    const freeze = { reason: FOLLOWUP_RESTART_FREEZE_REASON, at: 1_700_000_000_000 };
+
+    it('prefixes the restart notice on a row the freeze parked, in blocks and fallback', () => {
+      const { blocks, text } = buildFollowupItemMessage(item({ seq: 1, state: 'paused' }), 0, { freeze });
+
+      expect(contextTexts(blocks)[0]).toBe(FOLLOWUP_RESTART_FREEZE_NOTICE);
+      // Before the item line, so the notice is read first.
+      expect((blocks[0] as Record<string, unknown>).type).toBe('context');
+      expect((blocks[1] as Record<string, unknown>).type).toBe('section');
+      expect(text.startsWith(FOLLOWUP_RESTART_FREEZE_NOTICE)).toBe(true);
+    });
+
+    it('carries the generic freeze sentence for any other reason', () => {
+      const { blocks } = buildFollowupItemMessage(item({ seq: 1, state: 'uncertain' }), 0, {
+        freeze: { reason: '중지됨', at: 1 },
+      });
+
+      expect(contextTexts(blocks)[0]).toBe(followupFreezeBannerText('중지됨'));
+    });
+
+    it('says nothing on a row the freeze did not park — it drains normally (A29)', () => {
+      // The live bug: a `queued` message that arrived AFTER the freeze read as
+      // "this queue is stopped" because the notice was session-scoped.
+      for (const state of ['queued', 'steered'] as const) {
+        const { blocks, text } = buildFollowupItemMessage(item({ seq: 1, state }), 0, { freeze });
+        expect(contextTexts(blocks)).toEqual([]);
+        expect(text).not.toContain(FOLLOWUP_RESTART_FREEZE_NOTICE);
+      }
+    });
+
+    it('says nothing when the session is not frozen at all', () => {
+      const { blocks } = buildFollowupItemMessage(item({ seq: 1, state: 'paused' }), 0);
+      expect(contextTexts(blocks)).toEqual([]);
+    });
+  });
+
+  it('mints no mention from the message, in the blocks OR in the fallback text', () => {
+    // The fallback `text` is parsed as mrkdwn by Slack, and unlike the panel's
+    // counts-only fallback this one carries the user's message — so it takes the
+    // same escaping the block line takes, not a weaker one.
+    const hostile = item({ seq: 1, message: event({ text: '<!channel> <@U999> *urgent*' }) });
+
+    const { blocks, text } = buildFollowupItemMessage(hostile, 0);
+
+    const line = sectionTexts(blocks)[0];
+    expect(line).not.toContain('<!channel>');
+    expect(line).not.toContain('<@U999>');
+    expect(line).toContain('&lt;!channel&gt;');
+    expect((blocks[0] as any).text.verbatim).toBe(true);
+    expect(text).not.toContain('<!channel>');
+    expect(text).not.toContain('<@U999>');
+    // The real state is the LAST italic run on the line: the message's own
+    // emphasis characters are neutralised so they cannot read as a state label.
+    expect(line).not.toContain('*urgent*');
+    expect(line.endsWith('· _queued_')).toBe(true);
+  });
+
+  it('names the attachments a text+files item carries', () => {
+    const withFiles = item({
+      seq: 1,
+      message: event({
+        text: '이 로그 봐줘',
+        files: [
+          {
+            id: 'F1',
+            name: 'log.txt',
+            mimetype: 'text/plain',
+            filetype: 'text',
+            url_private: 'https://x/1',
+            url_private_download: 'https://x/1d',
+            size: 12,
+          },
+        ],
+      }),
+    });
+
+    expect(sectionTexts(buildFollowupItemMessage(withFiles, 0).blocks)[0]).toContain('(📎1)');
+  });
+
+  it('drops a control it cannot encode and says the row lost it', () => {
+    // A key no real session has, to force the defensive drop deterministically.
+    const sessionKey = `work:${'X'.repeat(3000)}`;
+    const oversized = item({ sessionKey, seq: 1, id: `${sessionKey}#1` });
+
+    const { blocks } = buildFollowupItemMessage(oversized, 0);
+
+    expect(collectButtons(blocks)).toHaveLength(0);
+    expect(blocks).toHaveLength(1);
+    expect(sectionTexts(blocks)[0]).toContain('action unavailable');
+  });
+
+  it('registers the cancel button among the item-scoped action ids, once', () => {
+    // A host wires `FOLLOWUP_ITEM_ACTION_IDS` in one pass; a cancel button that
+    // is not in it renders on every item message with no listener behind it.
+    expect(FOLLOWUP_CANCEL_ACTION_ID).toBe('followup_cancel_v1');
+    expect(FOLLOWUP_ITEM_ACTION_IDS).toContain(FOLLOWUP_CANCEL_ACTION_ID);
+    expect(new Set(FOLLOWUP_ITEM_ACTION_IDS).size).toBe(FOLLOWUP_ITEM_ACTION_IDS.length);
+  });
+
+  it('names the states the `queue` command lists as pending (A40)', () => {
+    // The five states an item can still be acted on from. `resolved`/`cancelled`
+    // are history, and the in-flight trio is the running turn's business.
+    expect([...FOLLOWUP_PENDING_STATES].sort()).toEqual(['failed', 'paused', 'queued', 'steered', 'uncertain'].sort());
   });
 });

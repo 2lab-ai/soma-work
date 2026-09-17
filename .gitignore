@@ -1,5 +1,6 @@
 # Dependencies
 node_modules/
+node_modules
 # `.claude/*` (not `.claude/`) so the negations below work — a `dir/` exclude
 # stops git from descending into the dir, making `!dir/child` rules dead.
 .claude/*
