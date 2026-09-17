@@ -335,7 +335,10 @@ export class FollowupDispatcher {
    */
   shouldYield(sessionKey: string): boolean {
     if (this.halts.has(sessionKey)) return false;
-    if (this.deps.queue.freezeReason(sessionKey)) return false;
+    // A freeze is NOT asked about here: the rows it parked are `paused`/
+    // `uncertain` and this predicate already ignores them. A `queued` row in a
+    // frozen session is a message that arrived after the freeze — ordinary user
+    // work, and §3.6 puts user work before autogoal either way.
     return this.deps.queue.list(sessionKey).some((item) => item.state === 'queued');
   }
 
@@ -408,9 +411,11 @@ export class FollowupDispatcher {
     if (this.slots.has(sessionKey)) return { status: 'idle', reason: 'busy', detail: 'a dispatch is in flight' };
     const halt = this.halts.get(sessionKey);
     if (halt) return { status: 'idle', reason: 'halted', detail: halt.detail };
-    const frozen = this.deps.queue.freezeReason(sessionKey);
-    if (frozen) return { status: 'idle', reason: 'frozen', detail: frozen };
 
+    // No freeze short-circuit: the queue decides per ITEM. It answers `frozen`
+    // when the session is frozen and every row it holds is one the freeze
+    // parked, and hands back a message that arrived after the freeze exactly
+    // like any other queued item (`followup-queue.ts`, `FREEZE_PARKED_STATES`).
     const claimed = this.attempt(() => this.deps.queue.claimNext(sessionKey));
     if (!claimed.ok) {
       if (claimed.reason === undefined) {
@@ -420,7 +425,10 @@ export class FollowupDispatcher {
         return { status: 'idle', reason: 'halted', detail: claimed.detail };
       }
       const reason = claimed.reason === 'frozen' || claimed.reason === 'busy' ? claimed.reason : 'empty';
-      return { status: 'idle', reason, detail: claimed.detail };
+      // The freeze reason is what the caller shows the user; `queue refused:
+      // frozen` is our vocabulary, not theirs.
+      const detail = reason === 'frozen' ? this.frozenDetail(sessionKey, claimed.detail) : claimed.detail;
+      return { status: 'idle', reason, detail };
     }
     const item = claimed.item;
     const opened = this.openSlot(sessionKey, 'drain', item.id);
@@ -1154,6 +1162,15 @@ export class FollowupDispatcher {
   private abandon<T>(run: LiveRun, detail: string, shape: (detail: string) => T): T {
     this.closeSlot(run, this.report(run, { result: 'aborted', reason: detail }, 'none'));
     return shape(detail);
+  }
+
+  /** The stored freeze reason, or our own words when the store cannot say. */
+  private frozenDetail(sessionKey: string, fallback: string): string {
+    try {
+      return this.deps.queue.freezeReason(sessionKey) ?? fallback;
+    } catch {
+      return fallback;
+    }
   }
 
   private haltDrain(sessionKey: string, reason: DrainHaltReason, detail: string): void {

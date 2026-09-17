@@ -1067,6 +1067,154 @@ describe('SlackHandler — follow-up queue host', () => {
     });
   });
 
+  /**
+   * The restart freeze exists to stop RESTORED items from being replayed blind
+   * (A16/A21). It is not a lock on the thread: a message the user sends after
+   * the process came back has not run at all, so it steers into the live turn or
+   * starts its own, and the panel is the only place the freeze is visible.
+   *
+   * Live report (2026-09-17, right after the v0.2.1135 restart): a thread whose
+   * queue held nothing but resolved history answered every new message with
+   * `⏸️ 큐가 멈춰 있어 자동으로 실행되지 않습니다 — process restart`, and nothing
+   * ran until a Resume.
+   */
+  describe('restart freeze scope (live message vs restored items)', () => {
+    const RESTORED_TS = '222.100';
+
+    /** One restored row, exactly as U2 would have written it before the restart. */
+    function restored(over: Record<string, any> = {}): any {
+      return {
+        id: `${SESSION_KEY}#1`,
+        sessionKey: SESSION_KEY,
+        seq: 1,
+        epoch: 1,
+        state: 'queued',
+        eventKey: `${CHANNEL}:${RESTORED_TS}`,
+        message: message({ ts: RESTORED_TS, text: '재시작 전에 남은 지시' }),
+        context: { workingDirectory: '/tmp/work' },
+        enqueuedAt: 1,
+        updatedAt: 1,
+        ...over,
+      };
+    }
+
+    /** Boot a handler over a restored snapshot, with the session back in the registry. */
+    function bootWith(restoredItems: any[]): SlackHandler {
+      const snapshot: FollowupQueueSnapshot = {
+        version: 1,
+        sessions: [{ sessionKey: SESSION_KEY, nextSeq: restoredItems.length + 1, turnEpoch: 3, items: restoredItems }],
+      };
+      const registryHandler = {
+        ...claudeHandler,
+        getAllSessions: vi.fn(() => new Map([[SESSION_KEY, registrySession]])),
+        loadSessions: vi.fn(() => 1),
+      };
+      const booted = new SlackHandler({ client: {}, assistant: vi.fn() } as any, registryHandler as any, {} as any, {
+        followupQueueStore: { load: () => snapshot, save: () => undefined, recoveryWarning: undefined },
+      });
+      const bootedAny = booted as any;
+      bootedAny.slackApi = handlerAny.slackApi;
+      bootedAny.assistantStatusManager = handlerAny.assistantStatusManager;
+      bootedAny.inputProcessor = handlerAny.inputProcessor;
+      bootedAny.messageValidator = handlerAny.messageValidator;
+      bootedAny.sessionInitializer = handlerAny.sessionInitializer;
+      bootedAny.threadPanel = handlerAny.threadPanel;
+      bootedAny.createAgentSession = createAgentSession;
+      booted.loadSavedSessions();
+      return booted;
+    }
+
+    /** Start a turn on `booted` and leave it running. */
+    async function startBusyTurnOn(booted: SlackHandler): Promise<() => Promise<void>> {
+      const gate = deferred<any>();
+      startWithContinuation.mockImplementationOnce(() => gate.promise);
+      const first = booted.handleMessage(message({ ts: '111.900', text: '재시작 후 첫 지시' }), say());
+      await tick();
+      return async () => {
+        gate.resolve({ hasPendingChoice: false });
+        await first;
+      };
+    }
+
+    const queueOf = (booted: SlackHandler) => (booted as any).getFollowupQueue();
+    const receipts = () => postSystemMessage.mock.calls.map((call: any[]) => String(call[1]));
+
+    it('does not freeze a session whose restored queue is only history', async () => {
+      const steerTurn = vi.fn().mockReturnValue(true);
+      claudeHandler.steerTurn = steerTurn;
+      const booted = bootWith([restored({ state: 'resolved', stateReason: 'consumed' })]);
+      const settle = await startBusyTurnOn(booted);
+
+      await booted.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
+
+      // Nothing was at risk of a blind replay, so nothing was frozen — and the
+      // live message went into the running turn like any other follow-up.
+      expect(queueOf(booted).freezeReason(SESSION_KEY)).toBeUndefined();
+      expect(steerTurn).toHaveBeenCalledTimes(1);
+      const text = receipts().join('\n');
+      expect(text).toContain('전달했습니다');
+      expect(text).not.toContain('큐가 멈춰');
+      await settle();
+    });
+
+    it('steers a live message even while restored items keep the session frozen', async () => {
+      const steerTurn = vi.fn().mockReturnValue(true);
+      claudeHandler.steerTurn = steerTurn;
+      const booted = bootWith([restored()]);
+      expect(queueOf(booted).freezeReason(SESSION_KEY)).toBe('process restart');
+      const settle = await startBusyTurnOn(booted);
+
+      await booted.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
+
+      expect(steerTurn).toHaveBeenCalledTimes(1);
+      const stored = queueOf(booted).list(SESSION_KEY);
+      expect(stored.find((item: any) => item.message.ts === '333.444').state).toBe('steered');
+      // The restored row is the one the freeze is for: still parked, still
+      // waiting for the user's Resume.
+      expect(stored.find((item: any) => item.message.ts === RESTORED_TS).state).toBe('paused');
+      expect(receipts().join('\n')).toContain('전달했습니다');
+      await settle();
+    });
+
+    it('runs a live message immediately when the frozen session has no live turn', async () => {
+      const booted = bootWith([restored()]);
+      expect(queueOf(booted).freezeReason(SESSION_KEY)).toBe('process restart');
+      const before = startWithContinuation.mock.calls.length;
+
+      await booted.handleMessage(message({ ts: '333.444', text: '재시작 후 새 지시' }), say());
+
+      // It dispatched as an ordinary new turn — no queue row, no receipt, no
+      // Resume in the way.
+      expect(startWithContinuation.mock.calls.length).toBe(before + 1);
+      expect(receipts().join('\n')).not.toContain('📥');
+      expect(
+        queueOf(booted)
+          .list(SESSION_KEY)
+          .map((item: any) => item.message.ts),
+      ).toEqual([RESTORED_TS]);
+      expect(queueOf(booted).list(SESSION_KEY)[0].state).toBe('paused');
+    });
+
+    it('never tells a live message that the queue is stopped, even when it could not be steered', async () => {
+      claudeHandler.steerTurn = vi.fn().mockReturnValue(false); // the channel refused the push
+      const booted = bootWith([restored()]);
+      const settle = await startBusyTurnOn(booted);
+
+      await booted.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
+
+      const text = receipts().join('\n');
+      expect(text).toContain('📥 Queue에 넣었습니다');
+      expect(text).not.toContain('큐가 멈춰');
+      // And it is drainable: the freeze holds the restored row, not this one.
+      await settle();
+      expect(
+        queueOf(booted)
+          .list(SESSION_KEY)
+          .find((item: any) => item.message.ts === '333.444').state,
+      ).toBe('resolved');
+    });
+  });
+
   describe('messages arriving during shutdown preparation', () => {
     /** Items as the STORE saw them — memory is not evidence of a durable park. */
     const persisted = () =>
@@ -1382,15 +1530,24 @@ describe('SlackHandler — follow-up queue host', () => {
       await settle();
     });
 
-    it('does not steer into a frozen session', async () => {
+    /**
+     * A freeze parks the items that were already in the queue when it happened.
+     * The message the user sends AFTER it is not one of them — it has not run,
+     * it is going into a turn that is still alive, and telling the user it is
+     * held until a Resume is a false receipt (2026-09-17 live report).
+     */
+    it('steers a message that arrived AFTER the freeze into the live turn', async () => {
       const steerTurn = withLiveTurn();
       const { settle } = await startBusyTurn();
       handlerAny.getFollowupQueue().freeze(SESSION_KEY, '사용자가 중지했습니다');
 
       await handler.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
 
-      expect(steerTurn).not.toHaveBeenCalled();
-      expect(items()[0].state).toBe('queued');
+      expect(steerTurn).toHaveBeenCalledTimes(1);
+      expect(items()[0].state).toBe('steered');
+      const text = receipts().join('\n');
+      expect(text).toContain('전달했습니다');
+      expect(text).not.toContain('큐가 멈춰');
       await settle();
     });
 
@@ -2330,7 +2487,7 @@ describe('SlackHandler — follow-up queue host', () => {
 
       const notice = postSystemMessage.mock.calls.map((call: any[]) => String(call[1])).filter((t) => t.includes('✏️'));
       expect(notice).toHaveLength(1);
-      expect(notice[0]).toBe('✏️ 큐가 멈춰 있어 편집이 반영되지 않습니다 — Resume 후 다시 보내주세요.');
+      expect(notice[0]).toBe('✏️ 재시작 전 항목이라 편집이 반영되지 않습니다 — 새 메시지로 다시 보내거나 ⋯ 메뉴의 Retry로 실행하세요.');
     });
 
     /**

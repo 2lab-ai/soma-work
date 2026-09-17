@@ -197,6 +197,25 @@ export const FOLLOWUP_PENDING_DISPATCH_STATES: readonly FollowupItemState[] = ['
 const IN_FLIGHT_STATES: readonly FollowupItemState[] = ['reserved', 'claimed', 'dispatched'];
 
 /**
+ * The states a freeze PARKS — the rows it exists to hold back (`freezeSessions`
+ * writes exactly these, per `STOP_TRANSITIONS`/`RESTART_TRANSITIONS`).
+ *
+ * This is the SCOPE of a freeze, and it is a per-ITEM question, not a
+ * per-session one. Everything the session held when it froze left `queued`, so
+ * a `queued` row in a frozen session can only be a message that arrived AFTER
+ * the freeze: it never ran, nothing about it is uncertain, and the pause has
+ * nothing to protect it from. Holding those back was the 2026-09-17 live bug —
+ * a thread frozen by a restart answered every new message with
+ * "큐가 멈춰 있어 자동으로 실행되지 않습니다" and ran nothing until a Resume.
+ *
+ * Deliberately NOT a timestamp comparison (`enqueuedAt` vs `freeze.at`):
+ * `Date.now()` has millisecond resolution, so a message enqueued in the same
+ * millisecond as the freeze would be classified by a coin flip. The state IS
+ * the record of what the freeze touched.
+ */
+const FREEZE_PARKED_STATES: readonly FollowupItemState[] = ['paused', 'uncertain'];
+
+/**
  * A freeze target: the state to enter, and optionally a note appended to the
  * freeze reason. The note exists for the one mapping whose STATE understates
  * what is known (`steered` on restart) — the row itself has to carry the doubt,
@@ -415,16 +434,22 @@ export class FollowupQueue {
    * the running turn, so claiming it here would deliver the same message twice
    * (06 §3.2, "중복 전달 금지"). It does not block the claim of a queued sibling
    * either — see `IN_FLIGHT_STATES`.
+   *
+   * A freeze does not block the claim by itself, because it does not need to:
+   * every row it parked is `paused`/`uncertain` and therefore not a candidate
+   * (`FREEZE_PARKED_STATES`). What is left `queued` in a frozen session arrived
+   * after the freeze and is ordinary work. The `frozen` answer survives for the
+   * case it actually describes — a frozen session with nothing but parked rows —
+   * so the caller still says "waiting for Resume" instead of "empty".
    */
   claimNext(sessionKey: string): FollowupOpResult {
     const next = cloneJson(this.state);
     const session = this.findSession(next, sessionKey);
     if (!session) return { ok: false, reason: 'empty' };
-    if (session.freeze) return { ok: false, reason: 'frozen' };
     if (session.items.some((item) => IN_FLIGHT_STATES.includes(item.state))) return { ok: false, reason: 'busy' };
 
     const item = session.items.filter((candidate) => candidate.state === 'queued').sort((a, b) => a.seq - b.seq)[0];
-    if (!item) return { ok: false, reason: 'empty' };
+    if (!item) return { ok: false, reason: session.freeze ? 'frozen' : 'empty' };
 
     this.enter(item, 'claimed');
     this.commit(next);
@@ -444,7 +469,7 @@ export class FollowupQueue {
    */
   reserve(sessionKey: string, itemId: string, expectedEpoch: number, expectedTurnEpoch: number): FollowupOpResult {
     return this.mutate(sessionKey, itemId, expectedEpoch, (item, session) => {
-      if (session.freeze) return 'frozen';
+      if (this.parkedByFreeze(session, item)) return 'frozen';
       if (expectedTurnEpoch !== session.turnEpoch) return 'stale-turn';
       if (item.state !== 'queued') return 'invalid-state';
       if (session.items.some((other) => FOLLOWUP_PENDING_DISPATCH_STATES.includes(other.state))) return 'busy';
@@ -598,14 +623,16 @@ export class FollowupQueue {
    * durable-first rule) so a push that lands while we crash is still explained
    * by the stored row instead of vanishing.
    *
-   * Refused while frozen — a frozen session has no live turn to steer into, and
-   * its items are waiting for an explicit resume (A17/A29). Refused unless the
-   * item is `queued`: re-steering a steered item is exactly the double delivery
-   * `uuid` dedup exists to stop.
+   * Refused for an item the freeze PARKED — that one is waiting for an explicit
+   * resume (A17/A29). Not refused for a message that arrived after the freeze:
+   * the turn it is being pushed into is alive right now, and the pause was never
+   * about this message (`FREEZE_PARKED_STATES`). Refused unless the item is
+   * `queued`: re-steering a steered item is exactly the double delivery `uuid`
+   * dedup exists to stop.
    */
   steer(sessionKey: string, itemId: string, expectedEpoch: number, uuid: string): FollowupOpResult {
     return this.mutate(sessionKey, itemId, expectedEpoch, (item, session) => {
-      if (session.freeze) return 'frozen';
+      if (this.parkedByFreeze(session, item)) return 'frozen';
       if (item.state !== 'queued') return 'invalid-state';
       this.enter(item, 'steered', 'steered');
       item.steerUuid = uuid;
@@ -723,10 +750,22 @@ export class FollowupQueue {
    * nobody observed what the claim did, so `claimed` is not provably unstarted
    * and comes back `uncertain` together with `dispatched` (`ssot.md:124`, A16).
    * `queued`/`reserved` come back `paused`, a confirmed `failed` stays `failed`,
-   * and every session stays frozen until the user explicitly resumes (A16/A21).
+   * and a session that had work in flight stays frozen until the user explicitly
+   * resumes (A16/A21).
+   *
+   * Only sessions that still hold a NON-terminal item are frozen. A freeze is
+   * the thing that holds items back, so a session whose queue is nothing but
+   * history (or is empty) has nothing to hold: freezing it only makes the next
+   * message the user sends wait for a Resume they were never told to press —
+   * the 2026-09-17 live bug. Same rule the stop path already applies before it
+   * freezes (`slack-handler.ts:3614`).
    */
   recover(reason: string): void {
-    this.freezeSessions(reason, () => true, RESTART_TRANSITIONS);
+    this.freezeSessions(
+      reason,
+      (session) => session.items.some((item) => !TERMINAL_STATES.includes(item.state)),
+      RESTART_TRANSITIONS,
+    );
   }
 
   /**
@@ -762,6 +801,19 @@ export class FollowupQueue {
       if (!TERMINAL_STATES.includes(item.state)) this.enter(item, 'cancelled', reason);
     }
     this.commit(next);
+  }
+
+  /**
+   * Is this item one of the rows the session's freeze is holding back?
+   *
+   * The single definition of a freeze's SCOPE, asked by every gate that used to
+   * ask `if (session.freeze)`. A session-level answer conflated two different
+   * items: the restored/stopped row the user must decide about, and the message
+   * they sent afterwards into a session that is still running (A29 — a pause and
+   * a live message never share a sentence).
+   */
+  private parkedByFreeze(session: FollowupSessionSnapshot, item: FollowupItem): boolean {
+    return session.freeze !== undefined && FREEZE_PARKED_STATES.includes(item.state);
   }
 
   private freezeSessions(

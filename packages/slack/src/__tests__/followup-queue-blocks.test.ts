@@ -9,6 +9,8 @@ import {
   FOLLOWUP_PAGE_PREV_ACTION_ID,
   FOLLOWUP_QUEUE_DEFAULT_PAGE_SIZE,
   FOLLOWUP_QUEUE_TITLE,
+  FOLLOWUP_RESTART_FREEZE_NOTICE,
+  FOLLOWUP_RESTART_FREEZE_REASON,
   FOLLOWUP_RESUME_ACTION_ID,
   FOLLOWUP_RETRY_ACTION_ID,
   FOLLOWUP_SEND_NOW_ACTION_ID,
@@ -18,6 +20,7 @@ import {
   FOLLOWUP_STEERED_LABEL,
   type FollowupQueueBlocksOptions,
   type FollowupQueueView,
+  followupFreezeBannerText,
   followupStateCountLabel,
   parseFollowupItemActionValue,
   parseFollowupMenuValue,
@@ -993,5 +996,66 @@ describe('buildFollowupQueueBlocks — compact text safety and paging', () => {
     const nav = collectButtons(buildFollowupQueueBlocks({ sessionKey: SESSION, items: many }, { page: 2 }).blocks);
     expect(nav.map((button) => button.action_id)).toEqual([FOLLOWUP_PAGE_PREV_ACTION_ID, FOLLOWUP_PAGE_NEXT_ACTION_ID]);
     expect(parseFollowupPageActionValue(nav[0].value as string)).toEqual({ sessionKey: SESSION, page: 1 });
+  });
+});
+
+/**
+ * A restart freeze holds back ONLY the items the session already held
+ * (`followup-queue.ts:216` — `paused`/`uncertain`); a message sent after it runs
+ * normally. The panel used to print the raw reason (`frozen · process restart ·
+ * explicit Resume required`), which reads as "the queue is stopped", so a user
+ * looking at a live thread could not tell that their next message was fine.
+ */
+describe('buildFollowupQueueBlocks — the freeze banner scopes a restart to the parked items', () => {
+  const restart = (options: FollowupQueueBlocksOptions = {}) =>
+    buildFollowupQueueBlocks(
+      {
+        sessionKey: SESSION,
+        items: [item({ seq: 1, state: 'paused', stateReason: '재시작 복원' }), item({ seq: 2, state: 'queued' })],
+        freeze: { reason: FOLLOWUP_RESTART_FREEZE_REASON, at: 1_700_000_000_000 },
+      },
+      options,
+    ).blocks;
+
+  it.each([
+    ['compact', {} as FollowupQueueBlocksOptions],
+    ['legacy', { compact: false } as FollowupQueueBlocksOptions],
+  ])('says what a restart freeze actually holds back, in the %s layout', (_layout, options) => {
+    const banner = contextTexts(restart(options)).find((line) => line.includes('재시작'));
+
+    expect(banner).toBe(FOLLOWUP_RESTART_FREEZE_NOTICE);
+    expect(banner).toContain('⋯');
+    expect(banner).toContain('Retry/Resume');
+  });
+
+  it('never claims the queue is stopped for messages sent after the restart', () => {
+    const lines = contextTexts(restart()).join('\n');
+
+    expect(lines).not.toContain('큐가 멈춰');
+    expect(lines).not.toContain('자동으로 실행되지 않습니다');
+    // The raw reason is an internal token, not a sentence the user can act on.
+    expect(lines).not.toContain(FOLLOWUP_RESTART_FREEZE_REASON);
+  });
+
+  it('passes a non-restart freeze reason through unchanged', () => {
+    const { blocks } = buildFollowupQueueBlocks({
+      sessionKey: SESSION,
+      items: [item({ seq: 1, state: 'paused' })],
+      freeze: { reason: 'stop requested', at: 1_700_000_000_000 },
+    });
+
+    const lines = contextTexts(blocks);
+    expect(lines.some((line) => line.includes('stop requested'))).toBe(true);
+    expect(lines.every((line) => !line.includes(FOLLOWUP_RESTART_FREEZE_NOTICE))).toBe(true);
+  });
+
+  it('maps the reason the restart path actually writes, and only that one', () => {
+    // `followup-queue.ts:763` stores the caller's string verbatim and
+    // `slack-handler.ts:623` passes this exact one.
+    expect(FOLLOWUP_RESTART_FREEZE_REASON).toBe('process restart');
+    expect(followupFreezeBannerText(FOLLOWUP_RESTART_FREEZE_REASON)).toBe(FOLLOWUP_RESTART_FREEZE_NOTICE);
+    expect(followupFreezeBannerText('  process restart  ')).toBe(FOLLOWUP_RESTART_FREEZE_NOTICE);
+    expect(followupFreezeBannerText('process restart (crash)')).toContain('process restart (crash)');
+    expect(followupFreezeBannerText('사용자 중지')).toContain('사용자 중지');
   });
 });

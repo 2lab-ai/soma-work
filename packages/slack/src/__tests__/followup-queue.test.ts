@@ -681,6 +681,96 @@ describe('FollowupQueue restart recovery', () => {
     expect(restarted.claimNext(SESSION)).toEqual({ ok: false, reason: 'frozen' });
     expect(restarted.freezeReason(SESSION)).toBe('process restart');
   });
+
+  it('leaves a session whose queue is only history unfrozen — there is nothing to protect', () => {
+    const source = new FollowupQueue();
+    source.enqueue(SESSION, event({ ts: '1.1' }));
+    const dispatched = dispatchFirst(source);
+    source.settle(SESSION, dispatched.id, dispatched.epoch, 'resolved');
+    source.enqueue(OTHER_SESSION, event({ ts: '2.1' })); // still queued → must freeze
+
+    const restarted = new FollowupQueue({ snapshot: source.snapshot() });
+    restarted.recover('process restart');
+
+    // A freeze exists to hold items back. A session that has none holds nothing
+    // back — freezing it only makes the next message wait for a Resume the user
+    // has no reason to press.
+    expect(restarted.freezeReason(SESSION)).toBeUndefined();
+    expect(restarted.list(SESSION)[0].state).toBe('resolved');
+    expect(restarted.freezeReason(OTHER_SESSION)).toBe('process restart');
+    expect(restarted.list(OTHER_SESSION)[0].state).toBe('paused');
+  });
+
+  it('leaves a session with no items at all unfrozen', () => {
+    const source = new FollowupQueue();
+    source.beginTurn(SESSION); // a turn generation creates the session row, with no items
+
+    const restarted = new FollowupQueue({ snapshot: source.snapshot() });
+    restarted.recover('process restart');
+
+    expect(restarted.freezeReason(SESSION)).toBeUndefined();
+    expect(restarted.enqueue(SESSION, event({ ts: '1.1' })).status).toBe('queued');
+    expect(restarted.claimNext(SESSION).ok).toBe(true); // drains without a Resume
+  });
+});
+
+/**
+ * A freeze parks the items that were ALREADY in the session when it happened.
+ * A message the user sends AFTER that is not one of them: it was never at risk
+ * of being blind-replayed, and holding it back is the conflation A29 forbids
+ * (a live message and a restored one never share a sentence).
+ *
+ * The discriminator is the STATE, not a timestamp: the freeze rewrites every
+ * pre-freeze non-terminal row to `paused`/`uncertain`, so a `queued` row in a
+ * frozen session can only be one that arrived after it.
+ */
+describe('FollowupQueue freeze scope — items that arrive after the freeze', () => {
+  it('steers a message enqueued after the freeze into the live turn', () => {
+    const queue = new FollowupQueue();
+    queue.enqueue(SESSION, event({ ts: '1.1' }));
+    queue.freeze(SESSION, 'stop pressed');
+    const fresh = queue.enqueue(SESSION, event({ ts: '1.2' }));
+    if (fresh.status !== 'queued') throw new Error('setup failed');
+
+    const steered = queue.steer(SESSION, fresh.item.id, fresh.item.epoch, 'uuid-1');
+
+    expect(steered.ok && steered.item.state).toBe('steered');
+    expect(queue.list(SESSION)[0].state).toBe('paused'); // the parked row is untouched
+    expect(queue.freezeReason(SESSION)).toBe('stop pressed');
+  });
+
+  it('claims a message enqueued after the freeze and leaves the paused ones alone', () => {
+    const queue = new FollowupQueue();
+    queue.enqueue(SESSION, event({ ts: '1.1' }));
+    queue.freeze(SESSION, 'process restart');
+    queue.enqueue(SESSION, event({ ts: '1.2' }));
+
+    const claimed = queue.claimNext(SESSION);
+
+    expect(claimed.ok && claimed.item.message.ts).toBe('1.2');
+    expect(queue.list(SESSION)[0].state).toBe('paused');
+    expect(queue.freezeReason(SESSION)).toBe('process restart');
+  });
+
+  it('still answers `frozen` when the only items are the ones the freeze parked', () => {
+    const queue = new FollowupQueue();
+    queue.enqueue(SESSION, event({ ts: '1.1' }));
+    queue.freeze(SESSION, 'stop pressed');
+
+    expect(queue.claimNext(SESSION)).toEqual({ ok: false, reason: 'frozen' });
+  });
+
+  it('reserves a `Send now` on a message enqueued after the freeze', () => {
+    const queue = new FollowupQueue();
+    queue.enqueue(SESSION, event({ ts: '1.1' }));
+    queue.freeze(SESSION, 'stop pressed');
+    const fresh = queue.enqueue(SESSION, event({ ts: '1.2' }));
+    if (fresh.status !== 'queued') throw new Error('setup failed');
+
+    const reserved = queue.reserve(SESSION, fresh.item.id, fresh.item.epoch, queue.getTurnEpoch(SESSION));
+
+    expect(reserved.ok && reserved.item.state).toBe('reserved');
+  });
 });
 
 describe('FollowupQueue cancel and retry', () => {
@@ -1026,7 +1116,7 @@ describe('FollowupQueue auto-steering (06 §3.2)', () => {
     expect(queue.get(SESSION, second.item.id)?.steerUuid).toBeUndefined();
   });
 
-  it('refuses to steer while the session is frozen — there is no live turn to steer into (A17/A29)', () => {
+  it('refuses to steer an item the freeze parked — it waits for an explicit resume (A17/A29)', () => {
     const queue = new FollowupQueue();
     queue.enqueue(SESSION, event({ ts: '1.1' }));
     queue.freeze(SESSION, 'stop pressed');
