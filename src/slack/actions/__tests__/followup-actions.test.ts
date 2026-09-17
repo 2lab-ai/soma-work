@@ -1115,6 +1115,42 @@ describe('refreshItemMessage', () => {
     expectRefusal(h.responses);
   });
 
+  /**
+   * MF3 — a refusal is a state change of the MESSAGE even when it is none of
+   * the item: most of these rejections mean the button the user pressed was
+   * minted against a generation the queue has moved past, so re-offering the
+   * same stale button guarantees the identical refusal on the next click. The
+   * panel repaint cannot fix it — the panel no longer renders the queue.
+   */
+  it('brings the item message forward when the dispatcher refused the Send now', async () => {
+    const refreshItemMessage = vi.fn();
+    const h = harness({ refreshItemMessage });
+
+    // The harness `sendNow` answers `rejected` by default.
+    await h.click(FOLLOWUP_SEND_NOW_ACTION_ID, clickBody(itemValue({ turnEpoch: 0 })));
+    await tick();
+
+    expect(refreshItemMessage).toHaveBeenCalledWith(SESSION_KEY, `${SESSION_KEY}#1`);
+    expectRefusal(h.responses);
+  });
+
+  it('brings the item message forward when a stale cancel is refused', async () => {
+    const refreshItemMessage = vi.fn();
+    const h = harness({ refreshItemMessage });
+    h.queue.get.mockReturnValue(queuedItem({ epoch: 4 }));
+
+    await h.click(FOLLOWUP_CANCEL_ACTION_ID, clickBody(itemValue({ epoch: 0 })));
+    await tick();
+
+    expect(h.queue.cancelItem).not.toHaveBeenCalled();
+    expect(refreshItemMessage).toHaveBeenCalledWith(SESSION_KEY, `${SESSION_KEY}#1`);
+    // …and the reply points at the buttons that were just refreshed, not at a
+    // panel the user cannot see.
+    const text = lastEphemeral(h.responses);
+    expect(text).toContain('이 메시지의 버튼');
+    expect(text).toContain('다시 눌러주세요');
+  });
+
   it('reports a throwing re-render instead of inverting the act the user completed', async () => {
     const refreshItemMessage = vi.fn(() => {
       throw new Error('update exploded');
