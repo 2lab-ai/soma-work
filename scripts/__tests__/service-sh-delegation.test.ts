@@ -175,6 +175,11 @@ function run(
         // resolvable passes an empty binDir and must still get fake launchctl.
         PATH: `${binDir}:${host.binDir}:${tail}`,
         HOME: host.home,
+        // Without this flag service.sh ignores the three overrides below, and
+        // for this suite that would mean a real `main stop` against
+        // /opt/soma-work/main — the exact host contact this file exists to
+        // prevent.
+        SOMA_TEST_HARNESS: '1',
         SOMA_PROJECT_DIR_OVERRIDE: host.projectDir,
         SOMA_PID_FILE_OVERRIDE: host.pidFile,
         SOMA_PROCESS_SCAN_OVERRIDE: host.scan,

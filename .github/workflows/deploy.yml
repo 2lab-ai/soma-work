@@ -234,9 +234,14 @@ jobs:
           # scripts/version-bump.sh. This is the exact string the daemon prints
           # at startup (src/index.ts: "bot is running! [v<version> (<sha>)]"),
           # so the Verify step can demand THIS version's startup line.
+          # `node -p` prints the literal string "undefined" when the file parses
+          # but carries no `version` key, and that string would then be passed
+          # to verify-restart as if it were a version — a grep for
+          # "[vundefined (" that can never match, i.e. a deploy that fails for
+          # the wrong reason. Treat it exactly like the missing-file case.
           DEPLOY_VERSION="$(node -p "require('./dist/version.json').version" 2>/dev/null || true)"
-          if [[ -z "$DEPLOY_VERSION" ]]; then
-            echo "::error::dist/version.json missing from the deploy bundle — the restart cannot be verified."
+          if [[ -z "$DEPLOY_VERSION" || "$DEPLOY_VERSION" == "undefined" || "$DEPLOY_VERSION" == "null" ]]; then
+            echo "::error::dist/version.json missing or has no version field in the deploy bundle — the restart cannot be verified."
             exit 1
           fi
           echo "DEPLOY_VERSION=$DEPLOY_VERSION" >> "$GITHUB_ENV"
@@ -273,9 +278,14 @@ jobs:
           # Identity: that process started during THIS deploy and logged THIS
           # version's startup line. Without it the step is satisfied by any
           # leftover process — run 35184945142 passed on a 4h-old one.
+          # 180s: measured on fable-m5max 2026-09-17, the startup line landed
+          # 5–8s after the supervisor came up on warm starts but 88s and 129s
+          # on two cold ones. Passed explicitly so the budget this job depends
+          # on is visible here, not only in the script's default.
           bash scripts/service.sh "$ENV" verify-restart \
             --since "$DEPLOY_STARTED" \
-            --version "$DEPLOY_VERSION"
+            --version "$DEPLOY_VERSION" \
+            --timeout 180
 
   cleanup-bundle:
     name: Cleanup deploy bundle release

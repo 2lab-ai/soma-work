@@ -18,7 +18,9 @@
  * Strategy: fake `launchctl` (which PID is live) + fake `ps` (what start time
  * that PID reports) on PATH, and SOMA_PROJECT_DIR_OVERRIDE pointing logs/ at a
  * temp tree we write by hand. Failing cases pass `--timeout 0` (one poll, no
- * sleep) so the suite does not pay the production 60s socket-connect budget.
+ * sleep) so the suite does not pay the production 180s socket-connect budget.
+ * The overrides are honoured only under SOMA_TEST_HARNESS=1 (one case here
+ * pins that gate), so every run sets it explicitly.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -105,15 +107,22 @@ function writeLog(lines: string[]): string {
   return projectDir;
 }
 
-function runVerify(args: string[], extraPath: string, projectDir: string): RunResult {
+function runVerify(
+  args: string[],
+  extraPath: string,
+  projectDir: string,
+  opts: { withoutHarnessFlag?: boolean } = {},
+): RunResult {
   const homeStub = path.join(workDir, 'home');
   mkdirSync(path.join(homeStub, 'Library', 'LaunchAgents'), { recursive: true });
+  const harness = opts.withoutHarnessFlag ? {} : { SOMA_TEST_HARNESS: '1' };
   try {
     const stdout = execFileSync('bash', [SERVICE_SH, 'dev', 'verify-restart', ...args], {
       env: {
         ...process.env,
         PATH: `${extraPath}:${process.env.PATH ?? ''}`,
         HOME: homeStub,
+        ...harness,
         SOMA_PROJECT_DIR_OVERRIDE: projectDir,
         SOMA_PID_FILE_OVERRIDE: path.join(workDir, 'nonexistent.pid'),
       },
@@ -203,6 +212,57 @@ describe('scripts/service.sh verify-restart — the deploy must prove the restar
     const result = runVerify(['--since', String(since), '--version', `v${VERSION}`, '--timeout', '0'], bin, projectDir);
 
     expect(result.status).toBe(0);
+  });
+
+  it('waits 180s by default — measured cold starts on fable took 88–129s to log the line', () => {
+    // The old 60s default was shorter than a measured cold start, so a deploy
+    // that DID restart correctly would fail its own verification.
+    const since = Math.floor(Date.now() / 1000);
+    const bin = installFakes({ livePid: process.pid, lstart: lstartFor(since + 5) });
+    const projectDir = writeLog([startupLine(since + 9, VERSION)]);
+
+    // No --timeout: the banner prints the default before the first poll, and
+    // this fixture satisfies both conditions immediately so nothing is waited on.
+    const result = runVerify(['--since', String(since), '--version', VERSION], bin, projectDir);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toMatch(/timeout 180s/);
+  });
+
+  it('parses a `ps -o lstart=` day that is space-padded ("Sep  3")', () => {
+    // BSD ps pads single-digit days with a space, so the string carries a
+    // double space that the date parser must not choke on — otherwise every
+    // deploy on days 1–9 reports "could not read start time".
+    const epoch = Math.floor(new Date(2026, 8, 3, 1, 2, 3).getTime() / 1000);
+    const lstart = lstartFor(epoch);
+    expect(lstart).toContain('Sep  3'); // the fixture must really be padded
+    const bin = installFakes({ livePid: process.pid, lstart });
+    const projectDir = writeLog([startupLine(epoch + 1, VERSION)]);
+
+    const result = runVerify(['--since', String(epoch - 5), '--version', VERSION, '--timeout', '0'], bin, projectDir);
+
+    expect(result.stdout).not.toMatch(/could not read start time/);
+    expect(result.status).toBe(0);
+  });
+
+  it('ignores the test-only overrides unless SOMA_TEST_HARNESS=1 is set', () => {
+    // The overrides repoint PROJECT_DIR (and with it the process scan that
+    // `stop` kills from) at a temp tree. A stray export in an operator's shell
+    // must not silently redirect a production command at that tree; the flag is
+    // what makes the redirect deliberate.
+    const since = Math.floor(Date.now() / 1000);
+    const bin = installFakes({});
+    const projectDir = writeLog([startupLine(since + 9, VERSION)]);
+
+    const result = runVerify(['--since', String(since), '--version', VERSION, '--timeout', '0'], bin, projectDir, {
+      withoutHarnessFlag: true,
+    });
+
+    expect(result.status).not.toBe(0);
+    // The real env path, not the override: proof the override was ignored.
+    expect(result.stdout).toContain('/opt/soma-work/dev/logs/stdout.log');
+    expect(result.stdout).not.toContain(projectDir);
+    expect(result.stderr).toMatch(/SOMA_TEST_HARNESS/);
   });
 
   it('refuses to run without --since / --version instead of vacuously passing', () => {
