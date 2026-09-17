@@ -174,9 +174,16 @@ function harness(over: Partial<FollowupActionsDeps> = {}) {
     isBusy: vi.fn((_s: string) => false),
   };
 
+  /** The host's SDK-backed cancel for a steered item — the queue cannot dequeue the SDK copy. */
+  const cancelSteered = vi.fn(async (_s: string, _i: string, _e: number, _u: string) => {
+    order.push('cancelSteered');
+    return 'cancelled' as 'cancelled' | 'already-delivered' | 'failed';
+  });
+
   const deps: FollowupActionsDeps = {
     queue,
     dispatcher,
+    cancelSteered,
     getSessionByKey: vi.fn((_key: string) => session() as FollowupActionSession | undefined),
     canInterrupt: vi.fn(async (_s: string, _u: string) => {
       order.push('canInterrupt');
@@ -187,6 +194,9 @@ function harness(over: Partial<FollowupActionsDeps> = {}) {
     }),
     runDrain: vi.fn(async (_s: string) => {
       order.push('runDrain');
+    }),
+    sweepSteered: vi.fn(async (_s: string) => {
+      order.push('sweepSteered');
     }),
     reportError: vi.fn(),
     ...over,
@@ -204,7 +214,7 @@ function harness(over: Partial<FollowupActionsDeps> = {}) {
     expect(ack).toHaveBeenCalledTimes(1);
   }
 
-  return { app, routes, deps, queue, dispatcher, respond, responses, order, click };
+  return { app, routes, deps, queue, dispatcher, cancelSteered, respond, responses, order, click };
 }
 
 /** Every refusal must read as a refusal — and must never claim the item ran. */
@@ -449,6 +459,31 @@ describe('resume', () => {
     expect(h.queue.resume).toHaveBeenCalledTimes(1);
     expect(h.deps.runDrain).not.toHaveBeenCalled();
     expect(h.deps.refresh).toHaveBeenCalledWith(SESSION_KEY);
+  });
+
+  /**
+   * `queue.resume` only moves `paused` items back to `queued` — an `uncertain`
+   * item is untouched by it. Clicking Resume ON that item and then hearing
+   * nothing reads as "it will run now", which is the A29 conflation: the
+   * session was released, this item was not, and only Retry moves it.
+   */
+  it('tells an uncertain item that the session resumed but it did not', async () => {
+    const h = harness();
+    h.queue.get.mockReturnValue(queuedItem({ state: 'uncertain' }));
+    await h.click(FOLLOWUP_RESUME_ACTION_ID, clickBody(itemValue()));
+    await tick();
+    expect(h.queue.resume).toHaveBeenCalledWith(SESSION_KEY);
+    expect(lastEphemeral(h.responses)).toBe(
+      '세션은 재개했지만 이 항목은 실행 여부 확인이 필요합니다 — Retry로 다시 실행하세요.',
+    );
+  });
+
+  it('stays silent when the resumed item was merely paused', async () => {
+    const h = harness();
+    h.queue.get.mockReturnValue(queuedItem({ state: 'paused' }));
+    await h.click(FOLLOWUP_RESUME_ACTION_ID, clickBody(itemValue()));
+    await tick();
+    expect(h.responses).toHaveLength(0);
   });
 });
 
@@ -802,6 +837,136 @@ describe('cancel', () => {
   });
 });
 
+/*
+ * Cancel of a STEERED item (06 §3.4). The message is already sitting in the
+ * SDK's own input queue, so `cancelItem` would only rewrite our row while the
+ * model still reads it — the queue answers `invalid-state` there on purpose.
+ * The only honest cancel goes through the host, which asks the SDK first.
+ */
+describe('cancel — steered item', () => {
+  const steeredItem = () => queuedItem({ state: 'steered', epoch: 1, steerUuid: 'uuid-1' });
+
+  it('routes a steered item through deps.cancelSteered instead of queue.cancelItem', async () => {
+    const h = harness();
+    h.queue.get.mockReturnValue(steeredItem());
+
+    await h.click(MENU_ACTION_ID, menuBody(menuValue('cancel', { epoch: 1 })));
+    await tick();
+
+    expect(h.cancelSteered).toHaveBeenCalledWith(SESSION_KEY, `${SESSION_KEY}#1`, 1, 'uuid-1');
+    expect(h.queue.cancelItem).not.toHaveBeenCalled();
+    expect(h.deps.refresh).toHaveBeenCalledWith(SESSION_KEY);
+  });
+
+  it('tells the user it was withdrawn before the model saw it', async () => {
+    const h = harness();
+    h.queue.get.mockReturnValue(steeredItem());
+
+    await h.click(MENU_ACTION_ID, menuBody(menuValue('cancel', { epoch: 1 })));
+    await tick();
+
+    expect(lastEphemeral(h.responses)).toBe('취소했습니다 — 모델에 전달되기 전에 회수했습니다.');
+  });
+
+  it('says the message is already running when the SDK had dequeued it', async () => {
+    const h = harness({ cancelSteered: vi.fn(async () => 'already-delivered' as const) });
+    h.queue.get.mockReturnValue(steeredItem());
+
+    await h.click(MENU_ACTION_ID, menuBody(menuValue('cancel', { epoch: 1 })));
+    await tick();
+
+    expect(lastEphemeral(h.responses)).toBe('취소하지 못했습니다 — 이미 모델에 전달되어 실행 중입니다.');
+    expect(h.queue.cancelItem).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The SDK could not be asked at all, so the item went back to `queued`. That
+   * is neither a cancel nor a delivery: the user is told the truth AND that the
+   * control still works.
+   */
+  it('says the item went back to the queue when delivery could not be determined', async () => {
+    const h = harness({ cancelSteered: vi.fn(async () => 'returned-to-queue' as const) });
+    h.queue.get.mockReturnValue(steeredItem());
+
+    await h.click(MENU_ACTION_ID, menuBody(menuValue('cancel', { epoch: 1 })));
+    await tick();
+
+    expect(lastEphemeral(h.responses)).toBe(
+      '취소하지 못했습니다 — 전달 여부를 확인할 수 없어 큐로 되돌렸습니다. 다시 Cancel 할 수 있습니다.',
+    );
+    expect(h.queue.cancelItem).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the ordinary refusal wording when the cancel itself failed', async () => {
+    const h = harness({ cancelSteered: vi.fn(async () => 'failed' as const) });
+    h.queue.get.mockReturnValue(steeredItem());
+
+    await h.click(MENU_ACTION_ID, menuBody(menuValue('cancel', { epoch: 1 })));
+    await tick();
+
+    const text = lastEphemeral(h.responses);
+    expect(text).toContain('취소가 거부되었습니다');
+    expect(text).toContain('failed');
+  });
+
+  it('never claims a cancel when the host hook throws', async () => {
+    const h = harness({
+      cancelSteered: vi.fn(async () => {
+        throw new Error('sdk gone');
+      }),
+    });
+    h.queue.get.mockReturnValue(steeredItem());
+
+    await h.click(MENU_ACTION_ID, menuBody(menuValue('cancel', { epoch: 1 })));
+    await tick();
+
+    expect(h.queue.cancelItem).not.toHaveBeenCalled();
+    expect(lastEphemeral(h.responses)).toMatch(/취소|could not/);
+  });
+
+  it('refuses a steered row that carries no uuid — nothing can address the SDK copy', async () => {
+    const h = harness();
+    h.queue.get.mockReturnValue(queuedItem({ state: 'steered', epoch: 1, steerUuid: undefined }));
+
+    await h.click(MENU_ACTION_ID, menuBody(menuValue('cancel', { epoch: 1 })));
+    await tick();
+
+    expect(h.cancelSteered).not.toHaveBeenCalled();
+    expect(h.queue.cancelItem).not.toHaveBeenCalled();
+    expect(lastEphemeral(h.responses)).toContain('취소');
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * Steer artifacts — `Send now` is the one path that takes an item out of
+ * `steered` without the host ever seeing a uuid.
+ * ------------------------------------------------------------------ */
+
+describe('Send now — steer artifacts', () => {
+  it('tells the host the item may have left `steered`, so it can drop what it held', async () => {
+    const onItemLeftSteer = vi.fn();
+    const h = harness({ onItemLeftSteer });
+
+    await h.click(FOLLOWUP_SEND_NOW_ACTION_ID, clickBody(itemValue({ turnEpoch: 0 })));
+    await tick();
+
+    expect(onItemLeftSteer).toHaveBeenCalledWith(SESSION_KEY, `${SESSION_KEY}#1`);
+  });
+
+  it('never fails the click when the host hook throws', async () => {
+    const h = harness({
+      onItemLeftSteer: vi.fn(() => {
+        throw new Error('map gone');
+      }),
+    });
+
+    await h.click(FOLLOWUP_SEND_NOW_ACTION_ID, clickBody(itemValue({ turnEpoch: 0 })));
+    await tick();
+
+    expect(h.dispatcher.sendNow).toHaveBeenCalled();
+  });
+});
+
 /* ------------------------------------------------------------------ *
  * Detached failures
  * ------------------------------------------------------------------ */
@@ -877,6 +1042,103 @@ describe('detached failures', () => {
     expect(h.deps.refresh).toHaveBeenCalledWith(SESSION_KEY);
   });
 
+  /**
+   * The drain is gated on `canDrain`, and the sweep must NOT be: a turn that
+   * ended aborted / blocked / parked on a question is exactly the turn whose
+   * steered rows got no settlement frame, and `runDrain` — the only other thing
+   * on this path that sweeps — is the branch that just did not run. Without an
+   * unconditional sweep those rows sit `steered` until some later message
+   * happens to start a turn.
+   */
+  it('sweeps steered rows even when the interrupted turn did not end safely', async () => {
+    const h = harness();
+    h.dispatcher.sendNow.mockResolvedValue({
+      status: 'dispatched',
+      run: {
+        runId: 1,
+        turnEpoch: 1,
+        itemId: `${SESSION_KEY}#1`,
+        settled: Promise.resolve({
+          sessionKey: SESSION_KEY,
+          runId: 1,
+          turnEpoch: 1,
+          kind: 'send-now',
+          itemId: `${SESSION_KEY}#1`,
+          outcome: { result: 'blocked', reason: 'permission' },
+          itemDisposition: 'none',
+          canDrain: false,
+        }),
+      },
+    } as SendNowResult);
+    await h.click(FOLLOWUP_SEND_NOW_ACTION_ID, clickBody(itemValue({ turnEpoch: 0 })));
+    await tick(5);
+    expect(h.deps.sweepSteered).toHaveBeenCalledWith(SESSION_KEY);
+    expect(h.deps.runDrain).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Order is load-bearing the other way too: the drain claims `queued` rows, so
+   * a row the sweep has not returned yet is invisible to the loop that follows.
+   * Sweeping after the drain would delay it by a whole turn.
+   */
+  it('sweeps before the drain it gates on a safe outcome', async () => {
+    const h = harness();
+    h.dispatcher.sendNow.mockResolvedValue({
+      status: 'dispatched',
+      run: {
+        runId: 1,
+        turnEpoch: 1,
+        itemId: `${SESSION_KEY}#1`,
+        settled: Promise.resolve({
+          sessionKey: SESSION_KEY,
+          runId: 1,
+          turnEpoch: 1,
+          kind: 'send-now',
+          itemId: `${SESSION_KEY}#1`,
+          outcome: { result: 'safe' },
+          itemDisposition: 'resolved',
+          canDrain: true,
+        }),
+      },
+    } as SendNowResult);
+    await h.click(FOLLOWUP_SEND_NOW_ACTION_ID, clickBody(itemValue({ turnEpoch: 0 })));
+    await tick(5);
+    expect(h.order.indexOf('sweepSteered')).toBeGreaterThanOrEqual(0);
+    expect(h.order.indexOf('sweepSteered')).toBeLessThan(h.order.indexOf('runDrain'));
+  });
+
+  /**
+   * A host sweep that throws is a bookkeeping failure, not the user's answer:
+   * the message was already delivered, so it is reported and the follow-through
+   * carries on into the drain it would otherwise have skipped.
+   */
+  it('reports a throwing sweep without failing the follow-through', async () => {
+    const h = harness();
+    (h.deps.sweepSteered as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('sweep exploded'));
+    h.dispatcher.sendNow.mockResolvedValue({
+      status: 'dispatched',
+      run: {
+        runId: 1,
+        turnEpoch: 1,
+        itemId: `${SESSION_KEY}#1`,
+        settled: Promise.resolve({
+          sessionKey: SESSION_KEY,
+          runId: 1,
+          turnEpoch: 1,
+          kind: 'send-now',
+          itemId: `${SESSION_KEY}#1`,
+          outcome: { result: 'safe' },
+          itemDisposition: 'resolved',
+          canDrain: true,
+        }),
+      },
+    } as SendNowResult);
+    await h.click(FOLLOWUP_SEND_NOW_ACTION_ID, clickBody(itemValue({ turnEpoch: 0 })));
+    await tick(5);
+    expect(h.deps.reportError).toHaveBeenCalled();
+    expect(h.deps.runDrain).toHaveBeenCalledWith(SESSION_KEY);
+  });
+
   it('reports a dispatcher rejection as a retention, not a send', async () => {
     const h = harness();
     h.dispatcher.sendNow.mockResolvedValue({
@@ -923,6 +1185,7 @@ describe('against the real queue and dispatcher', () => {
     registerFollowupActions(app, {
       queue,
       dispatcher,
+      cancelSteered: async () => 'failed',
       getSessionByKey: () => session(),
       canInterrupt: () => true,
       refresh,
@@ -952,6 +1215,7 @@ describe('against the real queue and dispatcher', () => {
     const deps: FollowupActionsDeps = {
       queue,
       dispatcher,
+      cancelSteered: async () => 'failed',
       getSessionByKey: () => session(),
       canInterrupt: () => true,
       refresh: () => {},

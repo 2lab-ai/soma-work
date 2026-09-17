@@ -175,6 +175,77 @@ describe('FollowupQueueStore', () => {
       expect(store().load()).toEqual(original);
     });
 
+    it('round-trips a steered item with the SDK uuid it was pushed under (06 §3.1)', () => {
+      const original = snapshot([
+        item({
+          seq: 1,
+          message: message({ ts: '1.1' }),
+          state: 'steered',
+          epoch: 1,
+          stateReason: 'steered',
+          steerUuid: 'uuid-1',
+        }),
+        // Several items may be steered into the same turn — unlike a dispatch
+        // there is no single-winner ceiling on this state.
+        item({ seq: 2, message: message({ ts: '1.2' }), state: 'steered', epoch: 1, steerUuid: 'uuid-2' }),
+        // A consumed item keeps its uuid as the receipt of what it became.
+        item({
+          seq: 3,
+          message: message({ ts: '1.3' }),
+          state: 'resolved',
+          epoch: 2,
+          stateReason: 'consumed',
+          steerUuid: 'uuid-0',
+        }),
+      ]);
+
+      store().save(original);
+
+      expect(store().load()).toEqual(original);
+    });
+
+    it('rejects a steerUuid that is not a string rather than dropping it', () => {
+      expect(() => parseFollowupQueueSnapshot(snapshot([item({ steerUuid: 7 as never })]))).toThrow(
+        'items[0].steerUuid is not a string',
+      );
+    });
+
+    // The uuid is the ONLY identity an SDK settlement carries (06 §6.6). These
+    // three shapes each break that addressing in a way the panel cannot show:
+    // the row would sit `steered` forever, invisible to the drain.
+    it('rejects an empty steerUuid — it names nothing a receipt could match', () => {
+      expect(() => parseFollowupQueueSnapshot(snapshot([item({ steerUuid: '' })]))).toThrow(
+        'items[0].steerUuid is empty',
+      );
+    });
+
+    it('rejects a steered item with no steerUuid — nothing could ever settle it', () => {
+      expect(() => parseFollowupQueueSnapshot(snapshot([item({ state: 'steered' })]))).toThrow(
+        'items[0].steerUuid is missing on a steered item',
+      );
+    });
+
+    it('rejects two rows sharing one steerUuid — a receipt would settle the wrong message', () => {
+      expect(() =>
+        parseFollowupQueueSnapshot(
+          snapshot([
+            item({ seq: 1, message: message({ ts: '1.1' }), state: 'steered', steerUuid: 'uuid-1' }),
+            item({ seq: 2, message: message({ ts: '1.2' }), state: 'steered', steerUuid: 'uuid-1' }),
+          ]),
+        ),
+      ).toThrow('items[1].steerUuid is a duplicate (uuid-1)');
+    });
+
+    it('still loads a steered row whose uuid is well formed', () => {
+      const original = snapshot([
+        item({ seq: 1, message: message({ ts: '1.1' }), state: 'steered', epoch: 1, steerUuid: 'uuid-1' }),
+      ]);
+
+      store().save(original);
+
+      expect(store().load()).toEqual(original);
+    });
+
     it('accepts a dispatched item alongside a Send-now reservation (A12)', () => {
       const original = snapshot([
         item({ seq: 1, message: message({ ts: '1.1' }), state: 'dispatched', epoch: 2 }),
@@ -677,6 +748,26 @@ describe('FollowupQueueStore', () => {
       expect(afterRecovery?.sessions[0].items.map((entry) => entry.state)).toEqual(['uncertain', 'paused']);
       expect(afterRecovery?.sessions[0].freeze?.reason).toBe('process restart');
       expect(afterRecovery?.sessions[0].items[0].message.text).toBe('진행중인거 알려줘?');
+    });
+
+    it('persists a steer and brings it back paused, with the dead uuid dropped (S7)', () => {
+      const live = store();
+      const queue = queueOn(live);
+      queue.enqueue(SESSION, message({ ts: '1.1' }));
+      const target = queue.list(SESSION)[0];
+      const steered = queue.steer(SESSION, target.id, target.epoch, 'uuid-1');
+      if (!steered.ok) throw new Error(`steer failed: ${steered.reason}`);
+      // The push is only safe because the row is already on disk.
+      expect(live.load()?.sessions[0].items[0]).toMatchObject({ state: 'steered', steerUuid: 'uuid-1' });
+
+      const reopened = store();
+      const restarted = queueOn(reopened, reopened.load());
+      restarted.recover('process restart');
+
+      expect(restarted.list(SESSION)[0].state).toBe('paused');
+      expect(restarted.list(SESSION)[0].steerUuid).toBeUndefined();
+      // The uuid is gone from disk too: the process that could honour it is dead.
+      expect(store().load()?.sessions[0].items[0].steerUuid).toBeUndefined();
     });
 
     it('leaves queue memory unchanged when the durable sink throws', () => {

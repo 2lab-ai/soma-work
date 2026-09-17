@@ -7,6 +7,7 @@ import {
   type HookInput,
   type HookJSONOutput,
   type Options,
+  type Query,
   query,
   type SDKMessage,
 } from '@anthropic-ai/claude-agent-sdk';
@@ -16,6 +17,15 @@ import { type AgentRunOptions, type AgentStreamEvent, runAgentStream, runOneShot
 import { buildStreamOptions } from './agent-runtime/claude-code/build-stream-options';
 import type { SafetyClassifier } from './agent-runtime/policy/safety-classifier';
 import { buildSafetyClassifier } from './agent-runtime/policy/safety-classifier-factory';
+import { readUuidList, STEER_SETTLEMENT_SUBTYPE } from './agent-runtime/steer-settlement';
+import {
+  buildInitialUserMessage,
+  buildSteerUserMessage,
+  type SteerInput,
+  type SteerInterruptReceipt,
+  TurnInputChannel,
+  type TurnSteeringPort,
+} from './agent-runtime/turn-input-channel';
 import { ensureTenantKey } from './auth/llmux-tenant-keys';
 import { buildQueryEnv } from './auth/query-env-builder';
 import { Logger } from './logger';
@@ -297,9 +307,68 @@ export type CompactHookBuilder = (args: { session: ConversationSession; channel:
   SessionStart: (input: HookInput) => Promise<HookJSONOutput>;
 };
 
-export class ClaudeHandler {
+/**
+ * Upper bound on the whole steer settlement (interrupt + withdrawals).
+ *
+ * The settlement runs on the teardown path of every steered turn: the channel
+ * is not closed and the generator does not advance until it answers. A control
+ * request to a wedged CLI can never answer, so the awaits are raced against
+ * this bound and time out into the safe verdict (everything discarded = the
+ * host requeues). 2s is ~2 orders of magnitude above a healthy local control
+ * round-trip while staying inside a user's patience for the turn to end.
+ */
+export const STEER_SETTLEMENT_BOUND_MS = 2000;
+
+/**
+ * `system`/`init` capability announcing that `interrupt` honours
+ * `cancel_queued:true` (sdk.d.ts:5000).
+ *
+ * The CLI then sweeps every uuid-stamped survivor synchronously with the abort
+ * and lists them under `cancelled` (`still_queued` is left empty), which makes
+ * the per-uuid `cancelAsyncMessage` loop unnecessary — and closes the race in
+ * which a send is dequeued between the receipt and its withdrawal.
+ */
+const INTERRUPT_CANCEL_QUEUED_CAPABILITY = 'interrupt_cancel_queued_v1';
+
+/**
+ * The only `terminal_reason` compatible with "this turn ended normally".
+ *
+ * `queued_turn_count: 0` means the backlog is empty OR the session is ending
+ * and discarded it (sdk.d.ts:4793/4847). The two are indistinguishable from the
+ * count alone, so consumption is claimed only on an otherwise-clean result: any
+ * other reason (and any error subtype) discards instead, costing a re-run
+ * rather than a lost user message.
+ */
+const HEALTHY_TERMINAL_REASON = 'completed';
+
+/**
+ * Did this turn end well enough for "no backlog" to mean "the backlog ran"?
+ *
+ * Duck-typed on the raw frame: `terminal_reason` is declared on the success
+ * result (sdk.d.ts:4850) but absent on older producers, and the settlement must
+ * read whatever actually arrived rather than trust a declared shape.
+ */
+function isHealthyTurnResult(raw: Record<string, unknown>): boolean {
+  if (raw.subtype !== 'success' || raw.is_error === true) return false;
+  const terminalReason = raw.terminal_reason;
+  return terminalReason === undefined || terminalReason === HEALTHY_TERMINAL_REASON;
+}
+
+export class ClaudeHandler implements TurnSteeringPort {
   private logger = new Logger('ClaudeHandler');
   private mcpManager: McpManager;
+
+  /**
+   * Steering handles of the turns currently in flight, keyed by session.
+   *
+   * One entry per running `query()`: the `Query` handle carries the control
+   * requests (interrupt / cancel_async_message), the channel carries mid-turn
+   * user input. Entries are created when the turn's `query()` is built and
+   * removed when its generator settles — so a `false`/`undefined` answer from
+   * the steering methods means exactly "no turn is running for this session",
+   * which is the distinction the host needs to decide queue vs. inject.
+   */
+  private activeQueries = new Map<string, { query: Query; channel: TurnInputChannel }>();
 
   // Extracted components
   private sessionRegistry: SessionRegistry;
@@ -900,12 +969,34 @@ export class ClaudeHandler {
 
   // ===== Core Query Logic =====
 
+  /**
+   * Run one turn in STREAMING INPUT mode.
+   *
+   * The prompt is a {@link TurnInputChannel}, not a string: that is what makes
+   * the turn steerable (a user message pushed mid-turn is delivered by the CLI
+   * at the next tool-call boundary, inside this same turn) and what makes the
+   * SDK's control requests available at all — `interrupt()` and
+   * `cancel_async_message` are "only supported when streaming input/output is
+   * used" (sdk.d.ts:2522-2536).
+   *
+   * "One turn per `query()`" is unchanged: the channel is closed on the turn's
+   * `result` frame, which ends the input stream and lets the CLI child exit.
+   * `options.abortController` stays the hard-kill fallback — `interruptTurn`
+   * deliberately does not touch it.
+   *
+   * @param sessionKey Registry key for the steering controls — the host's own
+   *   session key (`work:<channel>:<thread>`, `src/session-identity.ts`), the
+   *   same key it queued the follow-ups under. There is no derived fallback: a
+   *   key the host cannot name is a key nobody can steer by, so a turn without
+   *   one runs exactly as before, just not steerable.
+   */
   async *streamQuery(
     prompt: string,
     session?: ConversationSession,
     abortController?: AbortController,
     workingDirectory?: string,
     slackContext?: SlackContext,
+    sessionKey?: string,
   ): AsyncGenerator<SDKMessage, void, unknown> {
     // Acquire a lease on the active CCT slot. Held for the lifetime of the
     // Claude CLI streaming call, released in the outer finally below.
@@ -965,8 +1056,24 @@ export class ClaudeHandler {
 
       this.logger.debug('Claude query options', options);
 
+      const channel = new TurnInputChannel(buildInitialUserMessage(prompt));
+      const activeQuery = query({ prompt: channel, options });
+      const steerKey = sessionKey;
+      if (steerKey) {
+        this.activeQueries.set(steerKey, { query: activeQuery, channel });
+      }
+
+      // Set once the turn's steered sends have been settled (the settlement
+      // frame was emitted). Guards the abandonment warning in the finally AND
+      // re-settlement: a streaming-input session can emit more than one
+      // `result`, and settling twice would interrupt an already-settled turn
+      // and re-publish a verdict for uuids the host has resolved.
+      let steerSettled = false;
+      // Protocol capabilities this CLI advertised on `system`/`init`
+      // (sdk.d.ts:5000). Read once, consumed by the settlement below.
+      let capabilities: string[] = [];
       try {
-        for await (const message of query({ prompt, options })) {
+        for await (const message of activeQuery) {
           // Issue #661 — convert SDK's "1M context unavailable" assistant
           // message into a throw so the existing error path can auto-fallback.
           // No-op unless options.model ends with `[1m]` AND the message
@@ -975,6 +1082,13 @@ export class ClaudeHandler {
 
           // Update session ID on init
           if (message.type === 'system' && message.subtype === 'init') {
+            // Only a frame that actually carries the (optional) list updates it:
+            // an init re-emitted without `capabilities` announces nothing, and
+            // letting its empty read win would demote a CLI that already
+            // advertised `interrupt_cancel_queued_v1` back to the per-uuid
+            // withdrawal loop for the rest of the turn.
+            const advertised = readUuidList((message as unknown as Record<string, unknown>).capabilities);
+            if (advertised.length > 0) capabilities = advertised;
             if (session) {
               session.sessionId = message.session_id;
               this.logger.info('Session initialized', {
@@ -983,6 +1097,23 @@ export class ClaudeHandler {
                 tools: message.tools?.length || 0,
               });
             }
+          }
+
+          // The turn is over: settle whatever was steered into it, then close
+          // the input stream so the CLI child exits. Closed BEFORE the yield so
+          // a consumer that stops iterating here (the processor's bounded
+          // iterator-return after `result`) still leaves no process waiting on
+          // stdin.
+          if (message.type === 'result') {
+            let settlement: SDKMessage | undefined;
+            if (!steerSettled) {
+              settlement = await this.settleSteeredSends(activeQuery, message, channel, capabilities);
+              if (settlement) steerSettled = true;
+            }
+            channel.close();
+            // Emitted BEFORE the result so a consumer that stops on `result`
+            // (the bounded iterator-return above) has already seen the verdict.
+            if (settlement) yield settlement;
           }
           yield message;
         }
@@ -995,10 +1126,283 @@ export class ClaudeHandler {
         }
         this.logger.error('Error in Claude query', error);
         throw error;
+      } finally {
+        // Covers the normal end, the throw above, and consumer abandonment
+        // (generator `return()` runs this). Steering must answer "no" the
+        // instant the turn stops, and an unclosed channel would strand the
+        // child on an error/abort path.
+        //
+        // A turn that dies before its `result` (error / abort / abandoned
+        // generator) cannot yield a settlement frame — nothing is iterating
+        // this generator any more. The host's queue keeps those items in
+        // `steered` until it reconciles them, so log the orphan count loudly
+        // rather than pretending they settled.
+        if (!steerSettled) {
+          const unsettled = channel.pushedUuids();
+          if (unsettled.length > 0) {
+            this.logger.warn('Steered sends left unsettled (turn ended without a result frame)', {
+              count: unsettled.length,
+              sessionKey: steerKey,
+            });
+          }
+        }
+        channel.close();
+        if (steerKey && this.activeQueries.get(steerKey)?.query === activeQuery) {
+          this.activeQueries.delete(steerKey);
+        }
       }
     } finally {
       if (heartbeatTimer) clearInterval(heartbeatTimer);
       if (lease) await lease.release();
+    }
+  }
+
+  /**
+   * Decide which of the turn's steered sends the CLI actually folded in, and
+   * pack the verdict into one synthetic frame (spec §6 item 6).
+   *
+   * WHY A HOST-COMPUTED VERDICT: SDK 0.3.251 emits no per-frame consumption
+   * signal — no `user_message_uuids`, no `command_lifecycle`, and the singular
+   * `user_message_uuid` only marks the send that STARTED the turn. The one
+   * measurable fact is `queued_turn_count` on the `result` (sdk.d.ts:4795/4849)
+   * = pushed sends the CLI has NOT folded into this turn. So, IN THIS ORDER:
+   *   • NOT a healthy result → discard everything, whatever the count says. The
+   *     health gate comes first because no reading of the count survives a bad
+   *     turn: 0 also means "the session is ending and discarded the backlog",
+   *     absent also means "fatal startup result" (sdk.d.ts:4793/4847), and
+   *     `> 0` on an errored result would make the subtraction below mint
+   *     `consumed` uuids for a turn that produced nothing. Healthy =
+   *     `subtype:'success'` + `is_error !== true` + no non-`completed`
+   *     `terminal_reason`.
+   *   • healthy + `> 0` → interrupt and read the receipt (see
+   *     {@link resolveUnconsumedSends}).
+   *   • healthy + `0` / absent → nothing is left over: every pushed send was
+   *     consumed.
+   *   • no receipt (throw, or a CLI predating `interrupt_receipt_v1`) → there
+   *     is no proof any of them ran, so ALL are discarded. The host requeues a
+   *     discarded item; claiming a false `completed` would silently drop a
+   *     user's message, which is the one failure this feature may not have.
+   *
+   * The verdict does NOT depend on whether a withdrawal succeeded: a survivor
+   * stays `discarded` even if its cancel failed. Same bias — never lose a user
+   * message. The cost of a failed cancel is a bounded double-run window (the
+   * CLI child is torn down right after this `result`), which R1 measures.
+   *
+   * BOUNDED: the whole settlement races {@link STEER_SETTLEMENT_BOUND_MS}. It
+   * runs on the turn's teardown path, so a control request that never answers
+   * would strand the generator, the channel and the Slack turn behind it; the
+   * timeout takes the safe verdict and lets teardown proceed.
+   *
+   * The frame is SDK-shaped (`session_id`/`uuid` copied off the result) so
+   * downstream shape checks on the raw stream keep passing. Resolves
+   * `undefined` when nothing was steered into this turn — there is then no
+   * verdict to publish.
+   */
+  private async settleSteeredSends(
+    activeQuery: Query,
+    result: SDKMessage,
+    channel: TurnInputChannel,
+    capabilities: string[],
+  ): Promise<SDKMessage | undefined> {
+    // Sealed BEFORE the snapshot: the settlement awaits a control round-trip,
+    // and a push accepted during that await would be missing from this snapshot
+    // and therefore settled by nobody. A sealed push answers `false`, which the
+    // host already handles as "not delivered — keep it queued". Sealing does not
+    // end the input stream; the caller's `close()` does that.
+    channel.seal();
+    const pushedUuids = channel.pushedUuids();
+    if (pushedUuids.length === 0) return undefined;
+
+    const raw = result as unknown as Record<string, unknown>;
+    const queuedTurnCount = typeof raw.queued_turn_count === 'number' ? raw.queued_turn_count : undefined;
+
+    let discarded: string[];
+    if (!isHealthyTurnResult(raw)) {
+      // FIRST, ahead of the count: an errored/terminated result can carry
+      // `queued_turn_count > 0` too, and the subtraction below would then read
+      // "backlog minus survivors" as consumption on a turn that produced
+      // nothing. The receipt is no evidence here either — the interrupt would
+      // target a CLI already tearing down — so the round-trip is skipped.
+      this.logger.warn('Steer settlement: result is not healthy, discarding every pushed send', {
+        subtype: raw.subtype,
+        isError: raw.is_error,
+        terminalReason: raw.terminal_reason,
+        queuedTurnCount,
+        pushed: pushedUuids.length,
+      });
+      discarded = [...pushedUuids];
+    } else if (queuedTurnCount !== undefined && queuedTurnCount > 0) {
+      discarded = await this.boundSettlement(
+        () => this.resolveUnconsumedSends(activeQuery, pushedUuids, queuedTurnCount, capabilities),
+        pushedUuids,
+      );
+    } else {
+      discarded = [];
+    }
+
+    // Backstop for a uuid recorded after the snapshot. The seal above makes
+    // that impossible today, but a lost send is unrecoverable while an extra
+    // `discarded` only re-runs it — so any late uuid is settled, never dropped.
+    const late = channel.pushedUuids().filter((uuid) => !pushedUuids.includes(uuid));
+    if (late.length > 0) {
+      this.logger.warn('Steer settlement: sends recorded after the settlement snapshot', { late });
+      discarded = [...discarded, ...late];
+    }
+
+    const discardedSet = new Set(discarded);
+    const consumed = [...pushedUuids, ...late].filter((uuid) => !discardedSet.has(uuid));
+    return {
+      type: 'system',
+      subtype: STEER_SETTLEMENT_SUBTYPE,
+      consumed,
+      discarded,
+      session_id: raw.session_id,
+      uuid: raw.uuid,
+    } as unknown as SDKMessage;
+  }
+
+  /**
+   * Run the settlement work under {@link STEER_SETTLEMENT_BOUND_MS}, falling
+   * back to "everything discarded" when it does not answer in time.
+   */
+  private async boundSettlement(work: () => Promise<string[]>, pushedUuids: string[]): Promise<string[]> {
+    const bailed = Symbol('steer-settlement-bailed');
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const bound = new Promise<symbol>((resolve) => {
+      timer = setTimeout(() => resolve(bailed), STEER_SETTLEMENT_BOUND_MS);
+      if (typeof timer.unref === 'function') timer.unref();
+    });
+    try {
+      // A settlement that loses the race is abandoned on purpose: nothing on
+      // the teardown path may keep waiting on a wedged CLI.
+      const outcome = await Promise.race<string[] | symbol>([
+        work().catch((error) => {
+          // Same safe verdict as a timeout, but reported for what it is.
+          this.logger.warn('Steer settlement: settlement failed, discarding every pushed send', {
+            error: (error as Error).message,
+            pushed: pushedUuids.length,
+          });
+          return [...pushedUuids];
+        }),
+        bound,
+      ]);
+      if (Array.isArray(outcome)) return outcome;
+      this.logger.warn('Steer settlement: timed out, discarding every pushed send', {
+        boundMs: STEER_SETTLEMENT_BOUND_MS,
+        pushed: pushedUuids.length,
+      });
+      return [...pushedUuids];
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Interrupt the finished turn and decide which pushed sends did NOT run.
+   *
+   * Two paths, chosen by what the CLI advertised on `system`/`init`:
+   *   • `interrupt_cancel_queued_v1` → one round-trip with
+   *     `{cancelQueued:true}`. The type of `interrupt` omits the argument in
+   *     0.3.251, but the runtime forwards it (`sdk.mjs`:
+   *     `...e?.cancelQueued===!0&&{cancel_queued:!0}`), and the CLI then sweeps
+   *     every uuid-stamped survivor synchronously with the abort and lists it
+   *     under `cancelled` (sdk.d.ts:3932/3946). No per-uuid loop — and no
+   *     window in which a survivor is dequeued between receipt and withdrawal.
+   *   • otherwise → plain `interrupt()`, then withdraw each `still_queued`
+   *     survivor individually with `cancelAsyncMessage` (best effort).
+   *
+   * `queued_turn_count` is the AUTHORITY on how many sends were left over. A
+   * plain interrupt issued after the result loses the drain race — a send
+   * already promoted to the imminent turn is not listed under `still_queued`
+   * (sdk.d.ts:3942) — so when the receipt accounts for fewer survivors than the
+   * count, the remainder is unaccounted, not proven consumed, and everything
+   * pushed is discarded.
+   */
+  private async resolveUnconsumedSends(
+    activeQuery: Query,
+    pushedUuids: string[],
+    queuedTurnCount: number,
+    capabilities: string[],
+  ): Promise<string[]> {
+    const canCancelQueued = capabilities.includes(INTERRUPT_CANCEL_QUEUED_CAPABILITY);
+    let receipt: { still_queued?: unknown; cancelled?: unknown } | undefined;
+    let interruptFailed = false;
+    try {
+      if (canCancelQueued) {
+        const interrupt = activeQuery.interrupt as unknown as (opts?: {
+          cancelQueued?: boolean;
+        }) => Promise<{ still_queued?: unknown; cancelled?: unknown } | undefined>;
+        receipt = await interrupt.call(activeQuery, { cancelQueued: true });
+      } else {
+        receipt = await activeQuery.interrupt();
+      }
+    } catch (error) {
+      interruptFailed = true;
+      this.logger.warn('Steer settlement: interrupt failed after result', {
+        error: (error as Error).message,
+        queuedTurnCount,
+        cancelQueued: canCancelQueued,
+        pushed: pushedUuids.length,
+      });
+    }
+
+    if (!receipt) {
+      if (!interruptFailed) {
+        this.logger.warn('Steer settlement: interrupt returned no receipt', {
+          queuedTurnCount,
+          pushed: pushedUuids.length,
+        });
+      }
+      return [...pushedUuids];
+    }
+
+    const alreadyCancelled = new Set(readUuidList(receipt.cancelled));
+    const survivors = new Set<string>([...readUuidList(receipt.still_queued), ...alreadyCancelled]);
+    const discarded = pushedUuids.filter((uuid) => survivors.has(uuid));
+    if (!canCancelQueued) {
+      // Withdraw what the interrupt left runnable, one uuid at a time.
+      for (const uuid of discarded) {
+        if (alreadyCancelled.has(uuid)) continue;
+        await this.withdrawSurvivingSend(activeQuery, uuid);
+      }
+    }
+
+    if (discarded.length < queuedTurnCount) {
+      this.logger.warn('Steer settlement: receipt accounts for fewer survivors than queued_turn_count', {
+        queuedTurnCount,
+        accounted: discarded.length,
+        pushed: pushedUuids.length,
+      });
+      return [...pushedUuids];
+    }
+    return discarded;
+  }
+
+  /**
+   * Best-effort withdrawal of one send that survived the turn's interrupt.
+   *
+   * Same structural reach as {@link cancelSteeredMessage} (`cancelAsyncMessage`
+   * ships in `sdk.mjs` but is absent from the 0.3.251 `Query` type). A `false`
+   * answer is normal — the send may already have left the queue — and a throw
+   * is not fatal here, so both are logged and swallowed: the caller has already
+   * decided this uuid is `discarded`.
+   */
+  private async withdrawSurvivingSend(activeQuery: Query, uuid: string): Promise<void> {
+    const cancel = (activeQuery as unknown as { cancelAsyncMessage?: (uuid: string) => Promise<boolean> })
+      .cancelAsyncMessage;
+    if (typeof cancel !== 'function') {
+      this.logger.info('Steer settlement: cancelAsyncMessage unavailable on this runtime', { uuid });
+      return;
+    }
+    try {
+      const cancelled = (await cancel.call(activeQuery, uuid)) === true;
+      this.logger.info('Steer settlement: withdrew surviving steered send', { uuid, cancelled });
+    } catch (error) {
+      this.logger.info('Steer settlement: withdrawing a surviving steered send failed', {
+        uuid,
+        cancelled: false,
+        error: (error as Error).message,
+      });
     }
   }
 
@@ -1017,10 +1421,81 @@ export class ClaudeHandler {
     abortController?: AbortController,
     workingDirectory?: string,
     slackContext?: SlackContext,
+    sessionKey?: string,
   ): AsyncIterable<AgentStreamEvent> {
-    return runAgentStream(this.streamQuery(prompt, session, abortController, workingDirectory, slackContext), {
-      calculateTokenCost,
-    });
+    return runAgentStream(
+      this.streamQuery(prompt, session, abortController, workingDirectory, slackContext, sessionKey),
+      { calculateTokenCost },
+    );
+  }
+
+  /**
+   * Inject a user message into the turn currently running for `sessionKey`.
+   *
+   * Returns `false` when no turn is in flight — the caller must then queue the
+   * message for the next dispatch instead of assuming it landed. Delivery is
+   * at the CLI's next tool-call boundary, still inside the running turn; the
+   * `uuid` comes back stamped on that turn's reply and result frames (see the
+   * `steer_lifecycle` events), which is how the host closes the loop.
+   */
+  steerTurn(sessionKey: string, input: SteerInput): boolean {
+    const entry = this.activeQueries.get(sessionKey);
+    if (!entry) return false;
+    return entry.channel.push(buildSteerUserMessage(input));
+  }
+
+  /**
+   * Interrupt the running turn and return the SDK's interrupt receipt.
+   *
+   * Deliberately does NOT abort the turn's `AbortController`: abort kills the
+   * child process, losing the receipt and the session, whereas an interrupt
+   * stops the current work and leaves the session able to report which queued
+   * sends survived. The AbortController stays the hard-kill fallback for the
+   * stop/cancel paths that own it.
+   *
+   * Resolves `undefined` when no turn is running, or when the CLI predates the
+   * `interrupt_receipt_v1` capability (it then answers with no receipt —
+   * sdk.d.ts:2528-2536). `undefined` therefore means "no receipt", never
+   * "nothing queued".
+   */
+  async interruptTurn(sessionKey: string): Promise<SteerInterruptReceipt | undefined> {
+    const entry = this.activeQueries.get(sessionKey);
+    if (!entry) return undefined;
+    const receipt = await entry.query.interrupt();
+    if (!receipt) return undefined;
+    return {
+      stillQueued: Array.isArray(receipt.still_queued) ? receipt.still_queued : [],
+      cancelled: Array.isArray(receipt.cancelled) ? receipt.cancelled : [],
+    };
+  }
+
+  /**
+   * Withdraw a steered message that has not run yet.
+   *
+   * Three outcomes, because a single `false` collapsed three different facts and
+   * the caller has a different obligation for each:
+   *
+   *  - `withdrawn` — the SDK took the message back; it will never run.
+   *  - `already-dequeued` — the SDK's own answer once the message left its
+   *    queue: the model has it, so the honest record is consumption, not a
+   *    cancel that did not happen.
+   *  - `unreachable` — the request never reached an SDK queue at all (no turn
+   *    is running for this key, or this runtime predates `cancelAsyncMessage`).
+   *    Nothing is known about the message, so nothing may be claimed about it.
+   *
+   * `cancelAsyncMessage` ships in `sdk.mjs` but is absent from the 0.3.251
+   * `Query` type, so it is reached structurally rather than by import.
+   */
+  async cancelSteeredMessage(
+    sessionKey: string,
+    uuid: string,
+  ): Promise<'withdrawn' | 'already-dequeued' | 'unreachable'> {
+    const entry = this.activeQueries.get(sessionKey);
+    if (!entry) return 'unreachable';
+    const cancel = (entry.query as unknown as { cancelAsyncMessage?: (uuid: string) => Promise<boolean> })
+      .cancelAsyncMessage;
+    if (typeof cancel !== 'function') return 'unreachable';
+    return (await cancel.call(entry.query, uuid)) === true ? 'withdrawn' : 'already-dequeued';
   }
 
   /**
