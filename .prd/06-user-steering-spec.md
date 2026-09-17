@@ -1,6 +1,6 @@
 # 06 — 유저 메시지 스티어링 + 스레드 출력 모델 (spec)
 
-Status: **planned** (2026-09-17) · 기준 커밋 main `5be9ad98` · 유저 원문 = [`steering/ssot.md`](steering/ssot.md)
+Status: **in-progress** (2026-09-17, D1–D3 유저 확정) · 기준 커밋 main `5be9ad98` · 유저 원문 = [`steering/ssot.md`](steering/ssot.md)
 근거 라벨: [CODE]=이 커밋의 file:line · [SDK]=`@anthropic-ai/claude-agent-sdk` 0.3.251 `sdk.d.ts` · [DOC]=공식 문서 · [LIVE]=2026-09-17 실측
 
 ## 0. 한 줄 정의
@@ -66,7 +66,7 @@ Status: **planned** (2026-09-17) · 기준 커밋 main `5be9ad98` · 유저 원�
 - 큐에 들어간 `queued` 항목은 **자동으로** 현재 턴의 SDK 입력 채널에 밀어 넣는다(`SDKUserMessage`, uuid 스탬프). SDK가 다음 툴 호출 경계에서 모델에 전달한다. 모델은 끊기지 않는다.
 - 전달 확인: 턴 프레임의 `user_message_uuids` 또는 `command_lifecycle started/completed`에 그 uuid가 보이면 `steered → consumed` → **큐에서 제거**(이력만 남김). 확인 전까지는 `steered`로 표시.
 - 턴이 끝났는데 `steered`인 항목이 남으면(모델이 읽기 전 종료) → `queued`로 되돌리고 기존 FIFO 드레인 규칙 적용. 중복 전달 금지: uuid 기준 1회.
-- 자동 스티어링 대상이 아닌 것: 컨트롤(`/`·`%` 명령, 승인 버튼 응답), 봇 합성 메시지, 첨부만 있는 메시지(R1 확정 전까지 큐 대기).
+- 자동 스티어링 대상이 아닌 것: 컨트롤(`/`·`%` 명령, 승인 버튼 응답), 봇 합성 메시지. 첨부가 있는 메시지는 D2에 따라 대상이다.
 
 ### 3.3 Send now (명시적 중단)
 - `Send now` / `!{prompt}` = 현재 동작을 **중지**하고 그 항목을 즉시 새 턴으로 실행. 부분 출력 보존·헤더 "사용자 요청으로 중단"은 지금 규칙 유지.
@@ -105,7 +105,7 @@ Status: **planned** (2026-09-17) · 기준 커밋 main `5be9ad98` · 유저 원�
 4. **Send now**는 `interrupt()` → `still_queued` 처리 → 기존 `sendNow` 트랜잭션(예약·세대·대기)을 그대로 탄다. AbortController는 폴백.
 5. 큐 항목 편집은 `message_changed`를 EventRouter에서 큐로 라우팅.
 
-## 7. 유저 결정 필요 (구현 전)
-- D1. 자동 스티어링 기본 ON(원문 2항) — 확인만. OFF로 두고 싶은 메시지 유형이 있는가?
-- D2. 첨부 파일이 있는 후속 메시지도 자동 스티어링할지(SDK는 이미지 첨부 지원; 파일 처리는 현재 파이프라인 의존) — 기본: R1은 텍스트만, 첨부는 큐 대기.
-- D3. Edit = Slack 메시지 편집으로 갈음(별도 UI 없음) — 확인.
+## 7. 유저 결정 (2026-09-17 확정, 원문: "D1. 자동 스티어링 ㅇㅋ / D2. 첨부도 스티어링 ㅇㅋ / D3. ㅇㅋ")
+- D1. 자동 스티어링 기본 **ON**. 제외는 §3.2의 컨트롤·합성 메시지뿐.
+- D2. **첨부가 있는 메시지도 자동 스티어링** — 이미지는 SDK 메시지 content 블록으로, 그 외 파일은 현재 파이프라인의 파일 처리(다운로드·경로 주입)를 거친 텍스트로 전달. 첨부 처리 실패 시 그 항목만 `queued` 유지 + 안내.
+- D3. Edit = Slack 메시지 편집(`message_changed`)으로 갈음, 별도 UI 없음.
