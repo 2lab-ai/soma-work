@@ -1,4 +1,5 @@
 import type { FollowupItem, FollowupItemState } from './followup-queue';
+import { escapeSlackMrkdwn } from './mrkdwn-escape';
 
 /**
  * Block Kit renderer for the follow-up message queue (U3 of `.prd/slack-agent-ui`).
@@ -17,7 +18,10 @@ import type { FollowupItem, FollowupItemState } from './followup-queue';
  *     a freeze is `paused` and clears only through an explicit Resume. The two
  *     are never collapsed into one label (A29).
  *   - §3.5/R6 `failed` and `uncertain` never auto-retry. `uncertain` may have
- *     already produced side effects, so its Retry carries a confirm dialog.
+ *     already produced side effects, so its Retry carries a confirm dialog in
+ *     the legacy layout; the compact layout, whose single control is an
+ *     overflow menu that cannot confirm one option only, states the caution on
+ *     the item line instead.
  *
  * Slack constraints honoured (docs/misc/reference/slack-block-kit.md §1.1–1.3,
  * https://docs.slack.dev/reference/block-kit/blocks/section-block.md,
@@ -33,13 +37,26 @@ import type { FollowupItem, FollowupItemState } from './followup-queue';
  *   - `block_id` is deliberately never set: Slack generates fresh ids and
  *     forbids reusing them across `chat.update`.
  *
- * Security: every rendered text object is `plain_text`. The queued message is
- * untrusted user input; rendering it as `mrkdwn` would let it inject
- * `<!channel>`/`<@U…>` mentions or fake links. The fallback `text` (which Slack
- * DOES parse) therefore carries counts only, never message content. Button
- * `value`s carry queue coordinates only — `{sessionKey,itemId,epoch}` plus
- * `turnEpoch` on `Send now` — and nothing else: no author, no token, no working
- * directory, no message text (A30).
+ * Layouts: `compact` (the DEFAULT since 2026-09-17) spends exactly ONE block per
+ * item — a `section` line carrying `seq · message · state`, with every operation
+ * folded into one `overflow` menu — because the live panel's section+context pair
+ * per item plus a 3-line meta header made the surface unreadably tall. The
+ * pre-compact layout stays reachable with `compact: false`; both render the same
+ * item set and neither hides an item.
+ *
+ * Security: the legacy layout emits `plain_text` only. The compact line has to be
+ * `mrkdwn` (it italicises the state), so the untrusted message and its reason are
+ * run through `escapeSlackMrkdwn` FIRST — `&`/`<`/`>` become entities, which is
+ * exactly what stops `<!channel>`/`<@U…>` mentions and `<url|label>` links from
+ * being minted by a queued message. `verbatim: true` additionally disables
+ * Slack's auto-linkification. Emphasis characters (`*_~`) survive and can only
+ * garble the item's own line — they cannot address anybody. The fallback `text`
+ * (which Slack DOES parse) carries counts only, never message content. Button and
+ * menu-option `value`s carry queue coordinates only — a button spells them out
+ * (`{sessionKey,itemId,epoch}` + `turnEpoch` on `Send now`), a menu option uses
+ * the short form the 150-char option cap forces (`{op,s,n,e,t}`, where `n` is the
+ * item's `seq` and the id is rebuilt from it) — and nothing else: no author, no
+ * token, no working directory, no message text (A30).
  *
  * Block union typing stays loose (`unknown[]`), matching the existing builders
  * in this repo (`src/slack/commands/usage-carousel-blocks.ts:13`); `@slack/types`
@@ -53,6 +70,7 @@ export const FOLLOWUP_QUEUE_TITLE = 'Queue';
 export const FOLLOWUP_SEND_NOW_LABEL = 'Send now';
 export const FOLLOWUP_RESUME_LABEL = 'Resume';
 export const FOLLOWUP_RETRY_LABEL = 'Retry';
+export const FOLLOWUP_CANCEL_LABEL = 'Cancel';
 
 /** Stable action ids for host wiring. Versioned; no existing prefix collides. */
 export const FOLLOWUP_SEND_NOW_ACTION_ID = 'followup_send_now_v1';
@@ -60,12 +78,26 @@ export const FOLLOWUP_RESUME_ACTION_ID = 'followup_resume_v1';
 export const FOLLOWUP_RETRY_ACTION_ID = 'followup_retry_v1';
 export const FOLLOWUP_PAGE_PREV_ACTION_ID = 'followup_page_prev_v1';
 export const FOLLOWUP_PAGE_NEXT_ACTION_ID = 'followup_page_next_v1';
+/**
+ * The compact layout's single per-item control. One `action_id` for every
+ * operation: the clicked option's `value` says WHICH one (`op`), so the host
+ * registers one handler instead of four. The per-op button ids above stay
+ * exported and stay live in the legacy layout.
+ */
+export const FOLLOWUP_ITEM_MENU_ACTION_ID = 'followup_item_menu_v1';
 
-/** All item-scoped action ids, for a host that registers them in one pass. */
+/**
+ * All item-scoped action ids, for a host that registers them in one pass —
+ * BOTH layouts. The compact menu id belongs here because compact is the
+ * default: a host that registered only the three per-op button ids would wire
+ * up every control the legacy layout can emit and none of the ones actually on
+ * screen.
+ */
 export const FOLLOWUP_ITEM_ACTION_IDS = [
   FOLLOWUP_SEND_NOW_ACTION_ID,
   FOLLOWUP_RESUME_ACTION_ID,
   FOLLOWUP_RETRY_ACTION_ID,
+  FOLLOWUP_ITEM_MENU_ACTION_ID,
 ] as const;
 
 /** Both pagination action ids. */
@@ -75,10 +107,55 @@ export const FOLLOWUP_QUEUE_DEFAULT_PAGE_SIZE = 10;
 /** ≤20 items → 2 + 1 + 40 + 1 = 44 blocks, inside Slack's 50-block message cap. */
 export const FOLLOWUP_QUEUE_MAX_PAGE_SIZE = 20;
 
+/** Compact spends exactly one block per item (the section line carrying its menu). */
+export const FOLLOWUP_QUEUE_COMPACT_BLOCKS_PER_ITEM = 1;
+/**
+ * Compact blocks that are NOT item rows, worst case: the one-line header, the
+ * freeze line, and the pagination row. Two of the three are conditional, so
+ * this is an upper bound — budgeting against it can only leave a block unused,
+ * never overflow the caller's allowance.
+ */
+export const FOLLOWUP_QUEUE_COMPACT_FIXED_BLOCKS = 3;
+
+/**
+ * How many items the COMPACT layout can render inside `budget` blocks.
+ *
+ * Exists so an embedding surface (the combined thread panel) budgets the queue
+ * with the layout's real accounting instead of a copy that drifts from it: the
+ * pre-compact layout spent two blocks per item, and a caller still assuming
+ * that halves the page for no reason. Result is clamped to
+ * {@link FOLLOWUP_QUEUE_MAX_PAGE_SIZE} and never negative.
+ */
+export function followupQueueCompactCapacity(budget: number): number {
+  if (!Number.isFinite(budget)) return 0;
+  const forItems = Math.floor(budget) - FOLLOWUP_QUEUE_COMPACT_FIXED_BLOCKS;
+  if (forItems < 1) return 0;
+  return Math.min(Math.floor(forItems / FOLLOWUP_QUEUE_COMPACT_BLOCKS_PER_ITEM), FOLLOWUP_QUEUE_MAX_PAGE_SIZE);
+}
+
 const MAX_BUTTON_VALUE = 2000;
 const MAX_SECTION_TEXT = 3000;
+/**
+ * An option object is NOT a button: `text` ≤75 and `value` ≤150
+ * (https://docs.slack.dev/reference/block-kit/composition-objects/option-object,
+ * verified 2026-09-17), and an overflow menu takes at most five of them
+ * (https://docs.slack.dev/reference/block-kit/block-elements/overflow-menu-element).
+ * A real session key is ~34 chars (`work:<channel>:<threadTs>`), so the long-key
+ * payload sat at ~140/150 — see {@link encodeFollowupMenuValue} for why the menu
+ * wire form is short-keyed. The short form lands near 85, which is headroom.
+ */
+const MAX_OPTION_VALUE = 150;
+const MAX_OPTION_TEXT = 75;
+const MAX_MENU_OPTIONS = 5;
 /** Display-only clamp. The stored item is never modified — counts stay authoritative. */
 const PREVIEW_MAX_CHARS = 280;
+/** Compact is one line per item: the preview has to stay inside one rendered row. */
+const COMPACT_PREVIEW_MAX_CHARS = 80;
+const COMPACT_REASON_MAX_CHARS = 40;
+/** R6 in one phrase — an uncertain item may already have run, so re-running is a decision. */
+const COMPACT_UNCERTAIN_CAUTION = '재실행 전 확인';
+/** Said on the item line, in BOTH layouts, whenever a control had to be dropped. */
+const ACTION_UNAVAILABLE = 'action unavailable';
 
 /**
  * What the builder needs. `FollowupSessionSnapshot` satisfies this structurally,
@@ -102,6 +179,12 @@ export interface FollowupQueueBlocksOptions {
   /** 1-based. Out-of-range / non-integer input is clamped, never rendered empty. */
   page?: number;
   pageSize?: number;
+  /**
+   * One block per item + a one-line header + one overflow menu per item.
+   * Defaults to TRUE. `false` restores the pre-2026-09-17 layout (a section and
+   * a context line per item, per-op buttons) — kept for callers that pin it.
+   */
+  compact?: boolean;
 }
 
 export interface FollowupQueueBlocksResult {
@@ -131,16 +214,60 @@ export interface FollowupPageActionValue {
   page: number;
 }
 
+/**
+ * Which queue operation a compact menu option stands for. The compact layout
+ * has one `action_id`, so this field — not the id — is what the host switches
+ * on. Closed set: an unknown `op` is rejected, never guessed at.
+ */
+export type FollowupItemOp = 'send_now' | 'cancel' | 'retry' | 'resume';
+
+export const FOLLOWUP_ITEM_OPS: readonly FollowupItemOp[] = ['send_now', 'cancel', 'retry', 'resume'];
+
+/** A compact menu option's payload: the item-button payload plus the chosen op. */
+export interface FollowupItemMenuValue extends FollowupItemActionValue {
+  op: FollowupItemOp;
+}
+
 /** States an explicit resume can act on while the session is frozen. */
 const RESUMABLE_STATES: readonly FollowupItemState[] = ['queued', 'paused', 'failed', 'uncertain'];
 
+/**
+ * Sole encoder of an item-scoped BUTTON payload (the legacy layout). Buttons
+ * have a 2000-char `value`, so the field names are spelled out.
+ */
 export function encodeFollowupItemActionValue(value: FollowupItemActionValue): string {
-  const payload: FollowupItemActionValue = {
-    sessionKey: value.sessionKey,
-    itemId: value.itemId,
-    epoch: value.epoch,
-  };
+  const payload: Record<string, unknown> = {};
+  payload.sessionKey = value.sessionKey;
+  payload.itemId = value.itemId;
+  payload.epoch = value.epoch;
   if (value.turnEpoch !== undefined) payload.turnEpoch = value.turnEpoch;
+  return JSON.stringify(payload);
+}
+
+/** What a compact menu option needs to name one item. `seq`, not the item id. */
+export interface FollowupItemMenuCoordinates {
+  sessionKey: string;
+  /** `FollowupItem.seq` — the id is `${sessionKey}#${seq}` (`followup-queue.ts:315`). */
+  seq: number;
+  epoch: number;
+  turnEpoch?: number;
+}
+
+/**
+ * Sole encoder of a compact MENU option payload (A30 — coordinates only).
+ *
+ * An option `value` is capped at 150 chars, an order of magnitude below a
+ * button's 2000, and a real session key is `work:<channel>:<threadTs>`
+ * (`src/session-identity.ts:45`) ≈ 34 chars. The long-key encoding spelled that
+ * key twice — once as `sessionKey`, once inside `itemId` — which put a
+ * `send_now` option at ~140/150: one longer channel id from being dropped by
+ * the cap check below. So the wire form is short-keyed and carries the item's
+ * `seq` instead of its id; {@link parseFollowupMenuValue} rebuilds the id. The
+ * key names are an internal wire detail — nothing outside this file reads them.
+ */
+export function encodeFollowupMenuValue(value: FollowupItemMenuCoordinates, op: FollowupItemOp): string {
+  const payload: Record<string, unknown> = { op, s: value.sessionKey, n: value.seq, e: value.epoch };
+  if (value.turnEpoch !== undefined) payload.t = value.turnEpoch;
   return JSON.stringify(payload);
 }
 
@@ -175,6 +302,33 @@ export function parseFollowupItemActionValue(value: string | undefined): Followu
   return { sessionKey, itemId, epoch, turnEpoch };
 }
 
+/**
+ * Parse a compact menu option `value` (`{op,s,n,e,t?}`, see
+ * {@link encodeFollowupMenuValue}). Returns `undefined` on anything unexpected
+ * — an unknown `op`, a missing coordinate, an extra field, a wrong type,
+ * including a stale button carrying the pre-2026-09-17 long-key form. The
+ * caller-visible shape is unchanged: `itemId` is rebuilt from `s` and `n`
+ * exactly as the queue mints it, so no handler has to know the wire names.
+ */
+export function parseFollowupMenuValue(value: string | undefined): FollowupItemMenuValue | undefined {
+  const parsed = parseObject(value);
+  if (!parsed) return undefined;
+  const { op, s, n, e, t } = parsed;
+  const keys = Object.keys(parsed).length;
+  if (keys !== 4 && keys !== 5) return undefined;
+  if (keys === 5 && t === undefined) return undefined;
+  if (typeof op !== 'string' || !FOLLOWUP_ITEM_OPS.includes(op as FollowupItemOp)) return undefined;
+  if (typeof s !== 'string' || !s) return undefined;
+  // `seq` is a queue-minted counter: a non-integer would rebuild an item id
+  // that cannot exist, and looking it up would 'not-found' instead of refusing.
+  if (typeof n !== 'number' || !Number.isInteger(n) || n < 0) return undefined;
+  if (typeof e !== 'number' || !Number.isFinite(e)) return undefined;
+  const base = { sessionKey: s, itemId: `${s}#${n}`, epoch: e };
+  if (t === undefined) return { op: op as FollowupItemOp, ...base };
+  if (typeof t !== 'number' || !Number.isFinite(t)) return undefined;
+  return { op: op as FollowupItemOp, ...base, turnEpoch: t };
+}
+
 /** Parse a pagination button `value`. Pages are 1-based integers. */
 export function parseFollowupPageActionValue(value: string | undefined): FollowupPageActionValue | null {
   const parsed = parseObject(value);
@@ -203,13 +357,24 @@ function contextBlock(text: string): Record<string, unknown> {
 /**
  * One-line, display-only rendering of the stored message. The item itself is
  * never touched — this only decides what fits on screen.
+ *
+ * `attachmentBadge` is the compact layout's substitute for the per-item context
+ * line it no longer renders: a text+files item used to say `N file(s)` there
+ * ({@link stateLine}) and without the badge it reads as text-only, hiding the
+ * fact that the queued turn carries uploads. The badge is appended AFTER the
+ * truncation so a long message cannot cut the count off.
  */
-function previewOf(item: FollowupItem): string {
+function previewOf(item: FollowupItem, options: { maxChars?: number; attachmentBadge?: boolean } = {}): string {
+  const maxChars = options.maxChars ?? PREVIEW_MAX_CHARS;
   const raw = item.message.text ?? '';
   const collapsed = raw.replace(/\s+/g, ' ').trim();
-  if (collapsed) return truncate(collapsed, PREVIEW_MAX_CHARS);
+  const fileCount = item.message.files?.length ?? 0;
+  if (collapsed) {
+    const text = truncate(collapsed, maxChars);
+    return options.attachmentBadge && fileCount > 0 ? `${text} (📎${fileCount})` : text;
+  }
   const names = (item.message.files ?? []).map((file) => file.name).filter(Boolean);
-  if (names.length > 0) return truncate(`[files] ${names.join(', ')}`, PREVIEW_MAX_CHARS);
+  if (names.length > 0) return truncate(`[files] ${names.join(', ')}`, maxChars);
   return '(empty message)';
 }
 
@@ -289,6 +454,111 @@ function accessoryFor(item: FollowupItem, frozen: boolean, turnEpoch: number): R
   }
 }
 
+/**
+ * The operations one item offers in compact mode, in menu order.
+ *
+ * `Cancel` is offered on an in-flight item (`reserved`/`claimed`/`dispatched`)
+ * even though `FollowupQueue.cancelItem` refuses it: the queue never aborts a
+ * running turn, and an explicit `invalid-state` receipt beats a control that
+ * silently is not there. Terminal history (`resolved`/`cancelled`) offers
+ * nothing — there is no operation left that could succeed.
+ */
+function menuOpsFor(
+  item: FollowupItem,
+  frozen: boolean,
+  turnEpoch: number,
+): Array<{ op: FollowupItemOp; label: string; turnEpoch?: number }> {
+  const cancel = { op: 'cancel' as const, label: FOLLOWUP_CANCEL_LABEL };
+  const sendNow = { op: 'send_now' as const, label: FOLLOWUP_SEND_NOW_LABEL, turnEpoch };
+  const resume = { op: 'resume' as const, label: FOLLOWUP_RESUME_LABEL };
+  const retry = { op: 'retry' as const, label: FOLLOWUP_RETRY_LABEL };
+  if (item.state === 'resolved' || item.state === 'cancelled') return [];
+  // A frozen session drains nothing, so `Send now` is withheld exactly as in the
+  // legacy layout (A29); the freeze is cleared by Resume, not by a dispatch.
+  if (frozen) return RESUMABLE_STATES.includes(item.state) ? [resume, cancel] : [cancel];
+  switch (item.state) {
+    case 'queued':
+      return [sendNow, cancel];
+    case 'paused':
+      return [resume, sendNow, cancel];
+    case 'failed':
+    case 'uncertain':
+      return [retry, cancel];
+    default:
+      return [cancel];
+  }
+}
+
+/**
+ * One overflow menu per item, plus whether any offered operation was DROPPED.
+ *
+ * `menu` is null when the item has no operation left (terminal history) and
+ * also when every offered one was dropped; `dropped` is what tells the two
+ * apart, so the caller can say "action unavailable" instead of rendering a line
+ * that silently lost its control.
+ */
+function itemMenu(
+  item: FollowupItem,
+  frozen: boolean,
+  turnEpoch: number,
+): { menu: Record<string, unknown> | null; dropped: boolean } {
+  const encoded = menuOpsFor(item, frozen, turnEpoch).map((entry) => ({
+    text: { type: 'plain_text', text: truncate(entry.label, MAX_OPTION_TEXT) },
+    value: encodeFollowupMenuValue(
+      { sessionKey: item.sessionKey, seq: item.seq, epoch: item.epoch, turnEpoch: entry.turnEpoch },
+      entry.op,
+    ),
+  }));
+  // Defensive: an option value past Slack's cap cannot be truncated (it would
+  // stop parsing), so the option is dropped rather than shipped unusable.
+  const options = encoded.filter((option) => option.value.length <= MAX_OPTION_VALUE).slice(0, MAX_MENU_OPTIONS);
+  const dropped = options.length < Math.min(encoded.length, MAX_MENU_OPTIONS);
+  if (options.length === 0) return { menu: null, dropped };
+  // Deliberately NO element-level `confirm`, not even for `uncertain`: Slack
+  // attaches an overflow's confirm to EVERY option, so the R6 dialog meant for
+  // Retry would also gate Cancel — the one operation an uncertain item can
+  // always take safely. The caution rides in the item line instead
+  // ({@link compactStateLabel}); the confirm-gated Retry survives in the legacy
+  // layout, where it hangs off the Retry button alone.
+  return { menu: { type: 'overflow', action_id: FOLLOWUP_ITEM_MENU_ACTION_ID, options }, dropped };
+}
+
+/**
+ * `queued · interrupt 권한 거부` — the state first, its reason clamped to one line.
+ *
+ * `uncertain` additionally carries the R6 caution inline, because the compact
+ * layout has nowhere else to put it (see {@link itemMenu}).
+ */
+function compactStateLabel(item: FollowupItem): string {
+  const state = item.state === 'uncertain' ? `${item.state} — ${COMPACT_UNCERTAIN_CAUTION}` : item.state;
+  const reason = item.stateReason?.replace(/\s+/g, ' ').trim();
+  return reason ? `${state} · ${truncate(reason, COMPACT_REASON_MAX_CHARS)}` : state;
+}
+
+/**
+ * `3. 진행중인거 알려줘? · _queued_` — the whole item on one row.
+ *
+ * Both untrusted parts (message, state reason) are escaped before they touch
+ * the mrkdwn string; `verbatim` then stops Slack from auto-linking whatever
+ * survived. The state label sits OUTSIDE the escaped message, so a message
+ * cannot spoof a state it is not in.
+ */
+function compactItemBlock(item: FollowupItem, frozen: boolean, turnEpoch: number): Record<string, unknown> {
+  const preview = escapeSlackMrkdwn(previewOf(item, { maxChars: COMPACT_PREVIEW_MAX_CHARS, attachmentBadge: true }));
+  const label = escapeSlackMrkdwn(compactStateLabel(item));
+  const { menu, dropped } = itemMenu(item, frozen, turnEpoch);
+  // A control we could not encode is GONE from the row, and a row that silently
+  // lost its only control is indistinguishable from an item that never had one.
+  // Same wording the legacy layout uses on its context line.
+  const line = `${item.seq}. ${preview} · _${label}_${dropped ? ` · _${ACTION_UNAVAILABLE}_` : ''}`;
+  const block: Record<string, unknown> = {
+    type: 'section',
+    text: { type: 'mrkdwn', text: truncate(line, MAX_SECTION_TEXT), verbatim: true },
+  };
+  if (menu) block.accessory = menu;
+  return block;
+}
+
 function clampPageSize(requested: number | undefined): number {
   if (requested === undefined || !Number.isFinite(requested)) return FOLLOWUP_QUEUE_DEFAULT_PAGE_SIZE;
   const size = Math.floor(requested);
@@ -347,19 +617,31 @@ export function buildFollowupQueueBlocks(
   const frozen = view.freeze !== undefined;
   const turnEpoch = view.turnEpoch ?? 0;
 
-  const summaryParts = [`${total} item(s)`, `page ${page}/${pageCount}`];
-  if (total > 0) summaryParts.push(`showing ${start + 1}–${start + visible.length}`, stateBreakdown(items));
+  const compact = options.compact ?? true;
+  const blocks: unknown[] = [];
 
-  const blocks: unknown[] = [
-    { type: 'section', text: plainText(FOLLOWUP_QUEUE_TITLE) },
-    contextBlock(summaryParts.join(' · ')),
-  ];
+  if (compact) {
+    // One header line: total + page position only. The per-state breakdown and
+    // the `showing a–b` range were three more rows for information the page
+    // itself already shows, so they are gone (2026-09-17 panel-height report).
+    const header = [FOLLOWUP_QUEUE_TITLE, `${total} item(s)`];
+    if (pageCount > 1) header.push(`page ${page}/${pageCount}`);
+    blocks.push(contextBlock(header.join(' · ')));
+  } else {
+    const summaryParts = [`${total} item(s)`, `page ${page}/${pageCount}`];
+    if (total > 0) summaryParts.push(`showing ${start + 1}–${start + visible.length}`, stateBreakdown(items));
+    blocks.push({ type: 'section', text: plainText(FOLLOWUP_QUEUE_TITLE) }, contextBlock(summaryParts.join(' · ')));
+  }
 
   if (view.freeze) {
     blocks.push(contextBlock(`frozen · ${view.freeze.reason} · explicit Resume required`));
   }
 
   for (const item of visible) {
+    if (compact) {
+      blocks.push(compactItemBlock(item, frozen, turnEpoch));
+      continue;
+    }
     const accessory = accessoryFor(item, frozen, turnEpoch);
     const section: Record<string, unknown> = {
       type: 'section',
@@ -368,7 +650,7 @@ export function buildFollowupQueueBlocks(
     if (accessory) section.accessory = accessory;
     blocks.push(section);
     const dropped = accessory === null && isActionable(item, frozen);
-    blocks.push(contextBlock(stateLine(item, dropped ? 'action unavailable' : undefined)));
+    blocks.push(contextBlock(stateLine(item, dropped ? ACTION_UNAVAILABLE : undefined)));
   }
 
   const nav: Array<Record<string, unknown>> = [];

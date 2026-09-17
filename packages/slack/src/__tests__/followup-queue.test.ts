@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import { FOLLOWUP_QUEUE_DEFAULT_CAPACITY, FollowupQueue, type FollowupQueueSnapshot } from '../followup-queue';
+import {
+  FOLLOWUP_CANCEL_DEFAULT_REASON,
+  FOLLOWUP_QUEUE_DEFAULT_CAPACITY,
+  FollowupQueue,
+  type FollowupQueueSnapshot,
+} from '../followup-queue';
 import type { MessageEvent } from '../pipeline/types';
 
 const SESSION = 'C1:1700.000000';
@@ -784,5 +789,192 @@ describe('FollowupQueue cancel and retry', () => {
     const queue = new FollowupQueue();
 
     expect(queue.reserve(SESSION, 'nope', 0, queue.getTurnEpoch(SESSION))).toEqual({ ok: false, reason: 'not-found' });
+  });
+});
+
+describe('FollowupQueue cancelItem (per-item Cancel from the Queue panel)', () => {
+  it('cancels a queued item with the default reason and keeps it as history', () => {
+    const queue = new FollowupQueue();
+    const first = queue.enqueue(SESSION, event({ ts: '1.1' }));
+    if (first.status !== 'queued') throw new Error('setup failed');
+
+    const cancelled = queue.cancelItem(SESSION, first.item.id, first.item.epoch);
+
+    expect(cancelled.ok && cancelled.item.state).toBe('cancelled');
+    expect(cancelled.ok && cancelled.item.stateReason).toBe(FOLLOWUP_CANCEL_DEFAULT_REASON);
+    expect(queue.list(SESSION)).toHaveLength(1); // history, not a deletion
+    expect(queue.list(SESSION)[0].seq).toBe(1);
+  });
+
+  it('falls back to the default reason when the caller supplies a blank one', () => {
+    const queue = new FollowupQueue();
+    const first = queue.enqueue(SESSION, event({ ts: '1.1' }));
+    if (first.status !== 'queued') throw new Error('setup failed');
+
+    // A blank reason is a MISSING reason: storing it would leave the panel's
+    // history line saying only `cancelled`, with nothing about who or why.
+    const cancelled = queue.cancelItem(SESSION, first.item.id, first.item.epoch, '   ');
+    const blank = queue.enqueue(SESSION, event({ ts: '1.2' }));
+    if (blank.status !== 'queued') throw new Error('setup failed');
+    const empty = queue.cancelItem(SESSION, blank.item.id, blank.item.epoch, '');
+
+    expect(cancelled.ok && cancelled.item.stateReason).toBe(FOLLOWUP_CANCEL_DEFAULT_REASON);
+    expect(empty.ok && empty.item.stateReason).toBe(FOLLOWUP_CANCEL_DEFAULT_REASON);
+  });
+
+  it('records an explicit reason when the caller supplies one', () => {
+    const queue = new FollowupQueue();
+    const first = queue.enqueue(SESSION, event({ ts: '1.1' }));
+    if (first.status !== 'queued') throw new Error('setup failed');
+
+    const cancelled = queue.cancelItem(SESSION, first.item.id, first.item.epoch, '중복 요청');
+
+    expect(cancelled.ok && cancelled.item.stateReason).toBe('중복 요청');
+  });
+
+  it('cancels a paused item while the session is frozen, without resuming anything else', () => {
+    const queue = new FollowupQueue();
+    queue.enqueue(SESSION, event({ ts: '1.1' }));
+    queue.enqueue(SESSION, event({ ts: '1.2' }));
+    queue.freeze(SESSION, 'stop pressed');
+    const paused = queue.list(SESSION)[0];
+
+    const cancelled = queue.cancelItem(SESSION, paused.id, paused.epoch);
+
+    expect(cancelled.ok && cancelled.item.state).toBe('cancelled');
+    expect(queue.list(SESSION)[1].state).toBe('paused'); // the freeze is untouched
+    expect(queue.freezeReason(SESSION)).toBe('stop pressed');
+  });
+
+  it('cancels a confirmed failed item, replacing its history reason', () => {
+    const queue = new FollowupQueue();
+    queue.enqueue(SESSION, event({ ts: '1.1' }));
+    const dispatched = dispatchFirst(queue);
+    const failed = queue.settle(SESSION, dispatched.id, dispatched.epoch, 'failed', 'tool crash');
+    if (!failed.ok) throw new Error('settle failed');
+
+    const cancelled = queue.cancelItem(SESSION, failed.item.id, failed.item.epoch, '재시도 안 함');
+
+    expect(cancelled.ok && cancelled.item.state).toBe('cancelled');
+    expect(cancelled.ok && cancelled.item.stateReason).toBe('재시도 안 함');
+  });
+
+  it('cancels an uncertain item so an unknown outcome can be closed without a replay', () => {
+    const source = new FollowupQueue();
+    source.enqueue(SESSION, event({ ts: '1.1' }));
+    dispatchFirst(source);
+    const queue = new FollowupQueue({ snapshot: source.snapshot() });
+    queue.recover('process restart');
+    const uncertain = queue.list(SESSION)[0];
+
+    const cancelled = queue.cancelItem(SESSION, uncertain.id, uncertain.epoch);
+
+    expect(cancelled.ok && cancelled.item.state).toBe('cancelled');
+  });
+
+  it.each([
+    'reserved',
+    'claimed',
+    'dispatched',
+  ] as const)('refuses to cancel an in-flight %s item — a running turn is never aborted from here', (state) => {
+    const queue = new FollowupQueue();
+    const first = queue.enqueue(SESSION, event({ ts: '1.1' }));
+    if (first.status !== 'queued') throw new Error('setup failed');
+    if (state === 'reserved') {
+      queue.reserve(SESSION, first.item.id, first.item.epoch, queue.getTurnEpoch(SESSION));
+    } else if (state === 'claimed') {
+      queue.claimNext(SESSION);
+    } else {
+      dispatchFirst(queue);
+    }
+    const inFlight = queue.list(SESSION)[0];
+    expect(inFlight.state).toBe(state);
+
+    expect(queue.cancelItem(SESSION, inFlight.id, inFlight.epoch)).toEqual({ ok: false, reason: 'invalid-state' });
+
+    const unchanged = queue.get(SESSION, inFlight.id);
+    expect(unchanged?.state).toBe(state);
+    expect(unchanged?.epoch).toBe(inFlight.epoch); // untouched, not silently bumped
+  });
+
+  it.each(['resolved', 'cancelled'] as const)('refuses to cancel an already terminal %s item', (state) => {
+    const queue = new FollowupQueue();
+    const first = queue.enqueue(SESSION, event({ ts: '1.1' }));
+    if (first.status !== 'queued') throw new Error('setup failed');
+    if (state === 'resolved') {
+      const dispatched = dispatchFirst(queue);
+      queue.settle(SESSION, dispatched.id, dispatched.epoch, 'resolved');
+    } else {
+      queue.cancelItem(SESSION, first.item.id, first.item.epoch);
+    }
+    const terminal = queue.list(SESSION)[0];
+    expect(terminal.state).toBe(state);
+
+    expect(queue.cancelItem(SESSION, terminal.id, terminal.epoch)).toEqual({ ok: false, reason: 'invalid-state' });
+    expect(queue.get(SESSION, terminal.id)?.stateReason).toBe(terminal.stateReason);
+  });
+
+  it('rejects a double-clicked Cancel carrying the stale epoch (A12)', () => {
+    const queue = new FollowupQueue();
+    const first = queue.enqueue(SESSION, event({ ts: '1.1' }));
+    if (first.status !== 'queued') throw new Error('setup failed');
+    const staleEpoch = first.item.epoch;
+    queue.cancelItem(SESSION, first.item.id, staleEpoch);
+
+    expect(queue.cancelItem(SESSION, first.item.id, staleEpoch)).toEqual({ ok: false, reason: 'stale-epoch' });
+  });
+
+  it('reports an unknown item instead of throwing', () => {
+    const queue = new FollowupQueue();
+
+    expect(queue.cancelItem(SESSION, 'nope', 0)).toEqual({ ok: false, reason: 'not-found' });
+  });
+
+  it('persists the cancellation before it is visible in memory', () => {
+    const seen: FollowupQueueSnapshot[] = [];
+    let failing = false;
+    const queue = new FollowupQueue({
+      save: (snapshot) => {
+        if (failing) throw new Error('disk full');
+        seen.push(snapshot);
+      },
+    });
+    const first = queue.enqueue(SESSION, event({ ts: '1.1' }));
+    const second = queue.enqueue(SESSION, event({ ts: '1.2' }));
+    if (first.status !== 'queued' || second.status !== 'queued') throw new Error('setup failed');
+
+    queue.cancelItem(SESSION, first.item.id, first.item.epoch);
+    expect(seen[seen.length - 1].sessions[0].items[0].state).toBe('cancelled');
+
+    failing = true;
+    expect(() => queue.cancelItem(SESSION, second.item.id, second.item.epoch)).toThrow('disk full');
+    expect(queue.get(SESSION, second.item.id)?.state).toBe('queued'); // committed memory never moved
+  });
+
+  it('frees a capacity slot, exactly like a confirmed failure does (ssot.md:157 terminal set)', () => {
+    const queue = new FollowupQueue({ capacity: 1 });
+    const first = queue.enqueue(SESSION, event({ ts: '1.1' }));
+    if (first.status !== 'queued') throw new Error('setup failed');
+    expect(queue.enqueue(SESSION, event({ ts: '1.2' })).status).toBe('capacity');
+
+    queue.cancelItem(SESSION, first.item.id, first.item.epoch);
+
+    expect(queue.enqueue(SESSION, event({ ts: '1.2' })).status).toBe('queued');
+  });
+
+  it('leaves a cancelled item out of session cancellation and of retry', () => {
+    const queue = new FollowupQueue();
+    const first = queue.enqueue(SESSION, event({ ts: '1.1' }));
+    if (first.status !== 'queued') throw new Error('setup failed');
+    const cancelled = queue.cancelItem(SESSION, first.item.id, first.item.epoch, '사용자 취소');
+    if (!cancelled.ok) throw new Error('cancelItem failed');
+
+    queue.cancelSession(SESSION, 'session deleted');
+
+    expect(queue.get(SESSION, first.item.id)?.stateReason).toBe('사용자 취소'); // own history survives
+    expect(queue.retry(SESSION, cancelled.item.id, cancelled.item.epoch)).toEqual({
+      ok: false,
+      reason: 'invalid-state',
+    });
   });
 });

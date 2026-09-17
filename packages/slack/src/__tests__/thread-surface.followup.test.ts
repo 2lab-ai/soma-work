@@ -6,7 +6,9 @@ import {
   FOLLOWUP_QUEUE_TITLE,
   FOLLOWUP_SEND_NOW_ACTION_ID,
   FOLLOWUP_SEND_NOW_LABEL,
+  type FollowupItemMenuValue,
   type FollowupQueueView,
+  parseFollowupMenuValue,
 } from '../followup-queue-blocks';
 import type { MessageEvent } from '../pipeline/types';
 import { type ConversationSession, ThreadSurface, type ThreadSurfaceDeps } from '../thread-surface';
@@ -146,8 +148,53 @@ function actionIds(blocks: unknown[]): string[] {
   return buttons(blocks).map((b) => String(b.action_id));
 }
 
+/**
+ * Every overflow-menu option in the payload, with its decoded value.
+ *
+ * Decoded through the queue builder's OWN parser: the option wire form is short
+ * -keyed to fit Slack's 150-char option `value`, and these surface tests must
+ * assert what the coordinates MEAN (which item, which turn epoch), not which
+ * letters the renderer currently spells them with.
+ */
+function menuOptions(blocks: unknown[]): Array<{ actionId: string; value: FollowupItemMenuValue }> {
+  const found: Array<{ actionId: string; value: FollowupItemMenuValue }> = [];
+  const walk = (node: unknown) => {
+    if (Array.isArray(node)) {
+      for (const child of node) walk(child);
+      return;
+    }
+    if (node && typeof node === 'object') {
+      const record = node as Record<string, unknown>;
+      if (record.type === 'overflow' && Array.isArray(record.options)) {
+        for (const option of record.options as Array<Record<string, unknown>>) {
+          const value = parseFollowupMenuValue(String(option.value));
+          // An unparseable option is a queue-builder concern, not a surface one.
+          if (value) found.push({ actionId: String(record.action_id), value });
+        }
+      }
+      for (const value of Object.values(record)) walk(value);
+    }
+  };
+  walk(blocks);
+  return found;
+}
+
+/**
+ * Where the embedded queue starts. Layout-agnostic on purpose: the queue
+ * builder owns whether its header is a section or a one-line context
+ * (`followup-queue-blocks.ts` compact layout), and these are SURFACE tests —
+ * they pin where the queue sits inside the combined message, not how the
+ * queue draws itself.
+ */
 function queueTitleIndex(blocks: any[]): number {
-  return blocks.findIndex((b) => b?.type === 'section' && b?.text?.text === FOLLOWUP_QUEUE_TITLE);
+  return blocks.findIndex((b) => JSON.stringify(b ?? {}).includes(FOLLOWUP_QUEUE_TITLE));
+}
+
+/** The item-scoped `Send now` control, whichever widget currently carries it. */
+function sendNowValue(blocks: unknown[]): Partial<FollowupItemMenuValue> | undefined {
+  const button = buttons(blocks).find((b) => b.action_id === FOLLOWUP_SEND_NOW_ACTION_ID);
+  if (button) return JSON.parse(String(button.value)) as Partial<FollowupItemMenuValue>;
+  return menuOptions(blocks).find((option) => option.value.op === 'send_now')?.value;
 }
 
 describe('ThreadSurface — U3/U9 Queue inside the combined header surface', () => {
@@ -174,7 +221,7 @@ describe('ThreadSurface — U3/U9 Queue inside the combined header surface', () 
     expect(firstActionsAt).toBeGreaterThan(titleAt);
   });
 
-  it('offers `Send now` carrying the session turn epoch, and shows the raw message as plain_text', async () => {
+  it('offers `Send now` carrying the session turn epoch, and never mints a mention from the raw message', async () => {
     const session = makeSession();
     const slackApi = makeSlackApi();
     const raw = 'ping <!channel> now';
@@ -187,15 +234,19 @@ describe('ThreadSurface — U3/U9 Queue inside the combined header surface', () 
     await surface.updatePanel(session, KEY);
     const blocks = slackApi.updates[0].blocks;
 
-    const sendNow = buttons(blocks).find((b) => b.action_id === FOLLOWUP_SEND_NOW_ACTION_ID);
-    expect(sendNow).toBeDefined();
-    expect((sendNow?.text as any).text).toBe(FOLLOWUP_SEND_NOW_LABEL);
-    expect(JSON.parse(String(sendNow?.value)).turnEpoch).toBe(9);
+    // The control is `Send now` whichever widget the queue builder currently
+    // uses for it (button, or an option of the compact overflow menu) — what
+    // the surface must not lose is the turn epoch it carries.
+    expect(sendNowValue(blocks)?.turnEpoch).toBe(9);
+    const labels = textObjects(blocks).map((t) => t.text);
+    expect(labels).toContain(FOLLOWUP_SEND_NOW_LABEL);
 
-    // Original content is preserved verbatim, and only ever as plain_text.
-    const carrying = textObjects(blocks).filter((t) => t.text.includes(raw));
+    // The original content reaches the user, and can never address anybody:
+    // `plain_text` is inert; an mrkdwn rendering must arrive escaped.
+    const carrying = textObjects(blocks).filter((t) => t.text.includes('ping'));
     expect(carrying.length).toBeGreaterThan(0);
-    expect(carrying.every((t) => t.type === 'plain_text')).toBe(true);
+    expect(carrying.every((t) => t.type === 'plain_text' || !t.text.includes(raw))).toBe(true);
+    expect(labels.some((text) => text.includes('<!channel>') && !text.includes('&lt;!channel&gt;'))).toBe(false);
   });
 
   it('keeps the Queue in the closed render so cancelled / paused history stays visible', async () => {
@@ -270,7 +321,7 @@ describe('ThreadSurface — U3/U9 Queue inside the combined header surface', () 
 
     expect(blocks.length).toBeLessThanOrEqual(MAX_BLOCKS);
     // Core controls survive the trim.
-    expect(actionIds(blocks)).toContain(FOLLOWUP_SEND_NOW_ACTION_ID);
+    expect(sendNowValue(blocks)).toBeDefined();
     expect(blocks.some((b: any) => b?.type === 'actions' && b?.block_id === 'control_actions')).toBe(true);
     // Optional summary is what gave way.
     const summaryCount = textObjects(blocks).filter((t) => t.text.startsWith('summary ')).length;
@@ -337,6 +388,60 @@ describe('ThreadSurface — U3/U9 Queue inside the combined header surface', () 
     await expect(surface.updatePanel(session, KEY)).resolves.toBeUndefined();
     const texts = textObjects(slackApi.updates[0].blocks).map((t) => t.text);
     expect(texts.some((t) => t.includes('store exploded'))).toBe(true);
+  });
+});
+
+describe('ThreadSurface — the embedded Queue is budgeted in COMPACT blocks', () => {
+  /**
+   * White-box on purpose: the block budget is computed from the rest of the
+   * surface, and the interesting case is a TIGHT budget (a tall status panel),
+   * which cannot be produced from the public render path without pinning the
+   * unrelated block counts of the header and the action panel.
+   */
+  function embed(
+    surface: ThreadSurface,
+    budget: number,
+    followup: { view?: FollowupQueueView; error?: string },
+  ): unknown[] {
+    return (
+      surface as unknown as {
+        buildFollowupBlocks(key: string, budget: number, followup: unknown): unknown[];
+      }
+    ).buildFollowupBlocks(KEY, budget, followup);
+  }
+
+  const backlog = Array.from({ length: 12 }, (_, i) => item({ seq: i + 1 }));
+
+  function surfaceFor(items = backlog) {
+    return new ThreadSurface(makeDeps(makeSession(), makeSlackApi(), { getFollowupView: () => view({ items }) }));
+  }
+
+  // The compact layout spends ONE block per item (plus a header context and, at
+  // most, a freeze line and a nav row). Budgeting it at two blocks per item
+  // halved the page for no reason.
+  it('fills the page at one block per item, so 8 blocks carry a full page', () => {
+    const blocks = embed(surfaceFor(), 8, { view: view({ items: backlog }) });
+
+    const rows = blocks.filter((b) => JSON.stringify(b ?? {}).includes('message '));
+    expect(rows).toHaveLength(5); // the embed's hard cap, now actually reachable
+    expect(blocks.length).toBeLessThanOrEqual(8);
+  });
+
+  it('never spends more blocks than the budget it was handed', () => {
+    for (const budget of [2, 3, 4, 5, 6, 7, 10, 20, 45]) {
+      const blocks = embed(surfaceFor(), budget, { view: view({ items: backlog }) });
+      expect(blocks.length).toBeLessThanOrEqual(budget);
+    }
+  });
+
+  it('keeps the freeze line and the degradation note inside the same budget', () => {
+    const frozen = view({ items: backlog, freeze: { reason: 'stop requested', at: 1 } });
+    const blocks = embed(surfaceFor(), 6, { view: frozen, error: 'partial read' });
+
+    expect(blocks.length).toBeLessThanOrEqual(6);
+    const rendered = textObjects(blocks).map((t) => t.text);
+    expect(rendered.some((t) => t.includes('stop requested'))).toBe(true);
+    expect(rendered.some((t) => t.includes('partial read'))).toBe(true);
   });
 });
 
