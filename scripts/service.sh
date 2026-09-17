@@ -17,6 +17,32 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # --- Environment resolution ---
 LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
 
+# The three SOMA_*_OVERRIDE variables below are a TEST harness, and each of them
+# redirects something destructive: PROJECT_DIR decides which tree `stop` hunts
+# live processes in, PID_FILE decides which pid the fallback kills, and the scan
+# override replaces process discovery outright. An operator shell that inherited
+# one of them (a sourced .env, an exported leftover from a test run) would then
+# quietly aim a production command at the wrong tree — so honouring them takes a
+# deliberate second signal, SOMA_TEST_HARNESS=1, and without it they are ignored
+# with one warning on stderr.
+#
+# Plain `echo` rather than print_warning: resolve_env runs before the print_*
+# helpers are defined.
+SOMA_TEST_OVERRIDES=0
+SOMA_TEST_OVERRIDES_WARNED=0
+resolve_test_overrides() {
+    if [[ "${SOMA_TEST_HARNESS:-}" == "1" ]]; then
+        SOMA_TEST_OVERRIDES=1
+        return 0
+    fi
+    SOMA_TEST_OVERRIDES=0
+    if [[ -n "${SOMA_PROJECT_DIR_OVERRIDE:-}${SOMA_PID_FILE_OVERRIDE:-}${SOMA_PROCESS_SCAN_OVERRIDE:-}" && "$SOMA_TEST_OVERRIDES_WARNED" != "1" ]]; then
+        SOMA_TEST_OVERRIDES_WARNED=1
+        echo "[WARNING] SOMA_PROJECT_DIR_OVERRIDE / SOMA_PID_FILE_OVERRIDE / SOMA_PROCESS_SCAN_OVERRIDE are test-only and were IGNORED (set SOMA_TEST_HARNESS=1 to honour them)" >&2
+    fi
+    return 0
+}
+
 resolve_env() {
     local env="$1"
     case "$env" in
@@ -34,6 +60,16 @@ resolve_env() {
             ;;
     esac
 
+    resolve_test_overrides
+
+    # SOMA_PROJECT_DIR_OVERRIDE exists only so the contract tests can point the
+    # whole project tree (logs/, data/, the process-cwd scan) at a hermetic temp
+    # directory instead of the real /opt tree. Same role as
+    # SOMA_PID_FILE_OVERRIDE below; never set in production.
+    if [[ "$SOMA_TEST_OVERRIDES" == "1" && -n "${SOMA_PROJECT_DIR_OVERRIDE:-}" ]]; then
+        PROJECT_DIR="$SOMA_PROJECT_DIR_OVERRIDE"
+    fi
+
     PLIST_PATH="$LAUNCH_AGENTS_DIR/$SERVICE_NAME.plist"
     LOGS_DIR="$PROJECT_DIR/logs"
     # PID lock file written by the app itself (dist/index.js) as "<pid>:<ts>".
@@ -41,7 +77,10 @@ resolve_env() {
     # (start_headless_fallback) on hosts with no GUI/Aqua login session.
     # SOMA_PID_FILE_OVERRIDE exists only so the contract tests can point the
     # pidfile probe at a hermetic temp path instead of the real /opt tree.
-    PID_FILE="${SOMA_PID_FILE_OVERRIDE:-$PROJECT_DIR/data/soma-work.pid}"
+    PID_FILE="$PROJECT_DIR/data/soma-work.pid"
+    if [[ "$SOMA_TEST_OVERRIDES" == "1" && -n "${SOMA_PID_FILE_OVERRIDE:-}" ]]; then
+        PID_FILE="$SOMA_PID_FILE_OVERRIDE"
+    fi
     NODE_PATH="$(dirname "$(which node 2>/dev/null || echo "$HOME/.nvm/versions/node/v25.2.1/bin/node")")"
     USER_HOME="$HOME"
 
@@ -236,9 +275,29 @@ is_alive() {
 # tolerant (|| true) because against an already-registered label it is a no-op
 # error — kickstart still does the right thing, and is_alive remains the gate.
 # Real incident: a dev-channel deploy run on 2026-06-15.
+#
+# Both calls used to end in `2>/dev/null || true`, which is how deploy run
+# 35184945142 (2026-09-17, work-m16) lost its only signal: kickstart failed,
+# nothing was printed, and the Verify step then read the PREVIOUS deploy's PID
+# out of `launchctl list` and called it green. Stderr is now surfaced and a
+# failed kickstart returns non-zero; callers (cmd_start / cmd_install /
+# cmd_reinstall) still fall through to start_headless_fallback, which is the
+# direct-spawn path for hosts with no GUI/Aqua seat, and only report success
+# when is_alive agrees.
 load_and_kickstart() {
-    launchctl load "$PLIST_PATH" 2>/dev/null || true
-    launchctl kickstart -k "gui/$(id -u)/$SERVICE_NAME" 2>/dev/null || true
+    local load_err kick_err
+    if ! load_err="$(launchctl load "$PLIST_PATH" 2>&1 >/dev/null)"; then
+        # Against an already-registered label this is an expected no-op error;
+        # print it instead of swallowing it so the CI log keeps the evidence.
+        print_warning "launchctl load $PLIST_PATH: ${load_err:-<no stderr>}"
+    fi
+
+    if ! kick_err="$(launchctl kickstart -k "gui/$(id -u)/$SERVICE_NAME" 2>&1 >/dev/null)"; then
+        print_warning "launchctl kickstart -k gui/$(id -u)/$SERVICE_NAME failed: ${kick_err:-<no stderr>}"
+        print_warning "Falling back to the headless direct-spawn path if the agent does not come up."
+        return 1
+    fi
+    return 0
 }
 
 generate_plist() {
@@ -460,8 +519,238 @@ cmd_start() {
     fi
 }
 
+# --- stop: the three things that can keep old code running ---------------
+#
+# Incident 2026-09-17, deploy run 35184945142, target work-m16. `service.sh main
+# stop` printed "Failed to stop service via LaunchAgent", the pidfile fallback
+# matched nothing, the deploy step swallowed the failure with `|| true`, and the
+# supervisor from the PREVIOUS deploy (pid 61554, started 4h earlier) kept
+# serving while the job went green. Two supervisor trees were alive on the host.
+#
+# So stop now attacks all three holders and REPORTS honestly:
+#   1. the launchd registration — in EVERY domain, not just the one the plist
+#      path happens to resolve to (`launchctl unload <plist>` in the runner's
+#      session removes at most one; KeepAlive respawns from the others);
+#   2. the app's own PID lock file (headless direct-spawn path);
+#   3. any live supervisor/daemon process whose cwd is $PROJECT_DIR, whatever
+#      started it (orphan from an earlier start, second domain, manual run).
+# Exit is non-zero when anything survives — deploy.yml no longer hides it.
+
+# Domains a LaunchAgent label can be registered in on macOS. `system` needs
+# root to boot out; we still probe it, because a registration we cannot remove
+# is exactly the thing the operator must be told about.
+launchd_domains() {
+    local uid
+    uid="$(id -u)"
+    printf '%s\n' "system" "gui/$uid" "user/$uid"
+}
+
+# "Held" means `launchctl print` SAW the job — exit 0 and nothing else.
+#
+# Measured 2026-09-17: as the runner user on fable-m5max, `launchctl print
+# system/<label>` exits 113 for BOTH a registered and a non-existent label —
+# a non-root process cannot see into the system domain at all. On macmini (admin
+# user) the same probe exits 0 for a registered label and 113 for a missing one,
+# and `gui/<uid>/<label>` exits 0 where registered, 125 where not. So 113/125
+# (and any other non-zero) can only be read as "not visible to me", never as
+# "held" — treating them as held would fail every deploy run by a non-root
+# runner.
+#
+# The residual: a system-domain registration that a non-root runner cannot see
+# is not caught here. Its PROCESS is caught by the cwd scan below — unless that
+# process is root-owned too, which a non-root `lsof` also cannot see. That last
+# case is left to verify-restart, which fails the deploy when the live PID is
+# older than the deploy or logs a different version.
+domain_holds_label() {
+    launchctl print "$1/$SERVICE_NAME" >/dev/null 2>&1
+}
+
+# How long a domain may take to drop the label after a bootout before stop calls
+# it stuck. A single 1s probe was shorter than the teardown a healthy host
+# performs: the supervisor holds a SIGTERM'd child for DEFAULT_SHUTDOWN_GRACE_MS
+# = 4s (src/run-with-rotating-logs.ts:631) before escalating, and `launchctl
+# bootout` on a job that is already terminating returns non-zero. Both signals
+# say "still here" while the correct thing is happening, so the old code failed
+# the deploy on exactly the hosts that were shutting down properly.
+STOP_BOOTOUT_WAIT_SECONDS=15
+
+# Boot the label out of every domain that still holds it.
+# Sets STOP_DOMAINS_HELD to the domains that refused.
+bootout_all_domains() {
+    STOP_DOMAINS_HELD=()
+    local domain err i still_held
+    while read -r domain; do
+        domain_holds_label "$domain" || continue
+        print_status "Label still registered in $domain — booting out"
+        if ! err="$(launchctl bootout "$domain/$SERVICE_NAME" 2>&1)"; then
+            # Not proof of failure: a job inside its shutdown grace answers
+            # "Operation now in progress". The poll below is the real verdict.
+            print_warning "launchctl bootout $domain/$SERVICE_NAME returned non-zero: ${err:-<no stderr>} — polling for the registration to drop"
+        fi
+        still_held=1
+        for ((i = 0; i < STOP_BOOTOUT_WAIT_SECONDS; i++)); do
+            if ! domain_holds_label "$domain"; then
+                still_held=0
+                break
+            fi
+            sleep 1
+        done
+        if [[ "$still_held" -eq 1 ]]; then
+            print_error "Domain still holds the label after ${STOP_BOOTOUT_WAIT_SECONDS}s: $domain/$SERVICE_NAME"
+            if [[ "$domain" == "system" ]]; then
+                print_error "  the system domain needs root: sudo launchctl bootout system/$SERVICE_NAME"
+            fi
+            STOP_DOMAINS_HELD+=("$domain/$SERVICE_NAME")
+        fi
+    done < <(launchd_domains)
+}
+
+# PIDs of live supervisor/daemon processes whose cwd is $PROJECT_DIR, regardless
+# of which launchd domain (or none) started them.
+#
+# `lsof -a -d cwd -c node -Fpn` is the macOS-portable way to read a process's
+# cwd (no /proc). The argv filter is load-bearing: without it a local
+# `service.sh stop` (PROJECT_DIR == the checkout) would target any node process
+# sitting in the repo — the test runner, an editor server. Only the two commands
+# the plist and the headless fallback actually launch are ever killed.
+#
+# SOMA_PROCESS_SCAN_OVERRIDE points the scan at a fake script (invoked with
+# $PROJECT_DIR as $1, printing one PID per line) so the contract tests can drive
+# stop without any real process discovery. Never set in production.
+# stdout of this function is a LIST OF PIDS — the caller reads it with
+# `done < <(scan_project_pids)`. Every diagnostic therefore goes to stderr;
+# a warning printed on stdout was silently eaten by the caller's numeric guard.
+#
+# The scan can also fail to produce an answer at all (no lsof, permission
+# denied). "No answer" is not "clean": it is the one state in which stop knows
+# least, so it records the failure through SCAN_UNAVAILABLE_FLAG (a marker file,
+# because this function runs in a process substitution — a subshell — where a
+# plain variable assignment could never reach cmd_stop) and cmd_stop refuses to
+# report a clean stop.
+SCAN_UNAVAILABLE_FLAG=""
+
+mark_scan_unavailable() {
+    if [[ -n "$SCAN_UNAVAILABLE_FLAG" ]]; then
+        printf '1\n' > "$SCAN_UNAVAILABLE_FLAG" 2>/dev/null
+    fi
+    return 0
+}
+
+scan_project_pids() {
+    if [[ "$SOMA_TEST_OVERRIDES" == "1" && -n "${SOMA_PROCESS_SCAN_OVERRIDE:-}" ]]; then
+        local scan_status=0
+        bash "$SOMA_PROCESS_SCAN_OVERRIDE" "$PROJECT_DIR" || scan_status=$?
+        if [[ "$scan_status" -ne 0 ]]; then
+            print_warning "process-scan override exited $scan_status — stray-process scan unavailable" >&2
+            mark_scan_unavailable
+        fi
+        return 0
+    fi
+
+    if ! command -v lsof >/dev/null 2>&1; then
+        print_warning "lsof not found — cannot scan for stray processes under $PROJECT_DIR" >&2
+        mark_scan_unavailable
+        return 0
+    fi
+
+    # lsof reports the RESOLVED cwd, so the raw $PROJECT_DIR string is not
+    # enough: /opt/soma-work/* and every macOS temp path are routinely reached
+    # through a symlink (/var → /private/var). Compare against both forms.
+    local project_dir_real=""
+    project_dir_real="$(cd "$PROJECT_DIR" 2>/dev/null && pwd -P)"
+
+    local err_file lsof_out lsof_status=0
+    err_file="$(mktemp "${TMPDIR:-/tmp}/soma-stop-lsof.XXXXXX")" || err_file=""
+    if [[ -z "$err_file" ]]; then
+        # Without a place to capture stderr the scan cannot tell a clean host
+        # from a failed probe — refuse to answer rather than fail open.
+        print_warning "cannot create a temp file for the lsof scan — scan unavailable" >&2
+        mark_scan_unavailable
+        return 0
+    fi
+    lsof_out="$(lsof -a -d cwd -c node -Fpn 2>"$err_file")" || lsof_status=$?
+
+    # Exit 1 with nothing on stderr is lsof's ordinary "no file matched" — a
+    # clean host. Any non-zero exit that ALSO wrote a diagnostic (missing
+    # permissions, a broken install) means the question went unanswered.
+    # macOS lsof also prints "lsof: WARNING: can't stat() ..." for unstat-able
+    # volumes while still answering the question — drop those lines before
+    # deciding whether stderr carries a real failure.
+    if [[ -n "$err_file" && -s "$err_file" ]]; then
+        grep -v '^lsof: WARNING:' "$err_file" > "$err_file.filtered" 2>/dev/null || true
+        mv -f "$err_file.filtered" "$err_file" 2>/dev/null || true
+    fi
+    if [[ "$lsof_status" -ne 0 && -n "$err_file" && -s "$err_file" ]]; then
+        print_warning "lsof failed (exit $lsof_status): $(tr '\n' ' ' < "$err_file" | cut -c1-200)" >&2
+        mark_scan_unavailable
+        rm -f "$err_file"
+        return 0
+    fi
+    [[ -n "$err_file" ]] && rm -f "$err_file"
+
+    local line pid="" argv cwd
+    while IFS= read -r line; do
+        case "$line" in
+            p*)
+                pid="${line#p}"
+                ;;
+            n*)
+                cwd="${line#n}"
+                if [[ "$cwd" != "$PROJECT_DIR" ]]; then
+                    [[ -n "$project_dir_real" && "$cwd" == "$project_dir_real" ]] || continue
+                fi
+                [[ "$pid" =~ ^[0-9]+$ ]] || continue
+                [[ "$pid" == "$$" || "$pid" == "$PPID" ]] && continue
+                # -ww: without it ps truncates at the terminal width and the
+                # argv markers below (which sit at the end of the supervisor's
+                # command line) disappear, so a real survivor reads as no match.
+                argv="$(ps -ww -p "$pid" -o command= 2>/dev/null)"
+                case "$argv" in
+                    *dist/run-with-rotating-logs.js*|*dist/index.js*) echo "$pid" ;;
+                esac
+                ;;
+        esac
+    done <<< "$lsof_out"
+}
+
+# SIGTERM, wait up to 5s, SIGKILL. Returns non-zero if the pid outlives both.
+terminate_pid() {
+    local pid="$1" i
+    kill -0 "$pid" 2>/dev/null || return 0
+
+    print_status "Sending SIGTERM to pid=$pid"
+    kill "$pid" 2>/dev/null
+    for i in 1 2 3 4 5; do
+        kill -0 "$pid" 2>/dev/null || { print_success "Process stopped (pid=$pid)"; return 0; }
+        sleep 1
+    done
+
+    print_warning "pid=$pid still alive, sending SIGKILL..."
+    kill -9 "$pid" 2>/dev/null
+    sleep 1
+    if kill -0 "$pid" 2>/dev/null; then
+        print_error "Failed to kill process (pid=$pid)"
+        return 1
+    fi
+    print_success "Process killed (pid=$pid)"
+    return 0
+}
+
 cmd_stop() {
     print_status "Stopping $SERVICE_NAME..."
+
+    # Marker the (subshell) scan writes into when it could not answer.
+    local scan_flag_dir scan_unavailable=0
+    scan_flag_dir="$(mktemp -d "${TMPDIR:-/tmp}/soma-stop.XXXXXX")" || {
+        print_error "cannot create the scan marker dir under ${TMPDIR:-/tmp} — refusing to report a clean stop"
+        return 1
+    }
+    SCAN_UNAVAILABLE_FLAG="$scan_flag_dir/scan-unavailable"
+
+    # Capture the launchd-reported PID BEFORE unloading: if the unload fails we
+    # still know which process launchd was supervising.
+    local launchd_pid
+    launchd_pid="$(launchctl list 2>/dev/null | grep "$SERVICE_NAME" | awk '{print $1}')"
 
     # `unload` operates on the launchd registration, not on liveness — so use
     # is_registered (alive-or-dead) here. Otherwise a STALE service couldn't
@@ -475,45 +764,247 @@ cmd_stop() {
         if ! is_registered; then
             print_success "Service stopped (LaunchAgent)"
         else
+            # NOT the end of the road any more: fall through to the domain
+            # bootout, the pidfile kill and the cwd process scan below.
             print_error "Failed to stop service via LaunchAgent"
         fi
     fi
 
+    # Every domain, not just whichever one the plist unload reached.
+    bootout_all_domains
+
+    local targets=() pid raw
+
+    if [[ "$launchd_pid" =~ ^[0-9]+$ ]]; then
+        targets+=("$launchd_pid")
+    fi
+
     # Fallback: kill any process tracked by PID lock file (Issue #152)
     # Catches processes started outside LaunchAgent (e.g., manual node execution)
-    local pid_file="$PROJECT_DIR/data/soma-work.pid"
-    if [[ -f "$pid_file" ]]; then
-        local pid raw
+    if [[ -f "$PID_FILE" ]]; then
         # The app writes the lock as "<pid>:<ts>"; strip the timestamp suffix.
         # Without this, kill -0 sees a non-numeric arg and the fallback never
         # actually terminates a process started outside launchd (e.g. the
         # headless direct-spawn), which would orphan it across deploys.
-        raw=$(cat "$pid_file" 2>/dev/null)
+        raw=$(cat "$PID_FILE" 2>/dev/null)
         pid="${raw%%:*}"
-        if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
-            print_status "Found running process via PID file (pid=$pid), sending SIGTERM..."
-            kill "$pid" 2>/dev/null
-            sleep 2
-            if kill -0 "$pid" 2>/dev/null; then
-                print_warning "Process still alive, sending SIGKILL..."
-                kill -9 "$pid" 2>/dev/null
-                sleep 1
-            fi
-            if kill -0 "$pid" 2>/dev/null; then
-                print_error "Failed to kill process (pid=$pid)"
-            else
-                print_success "Process killed (pid=$pid)"
-            fi
+        if [[ "$pid" =~ ^[0-9]+$ ]]; then
+            print_status "Found process via PID file (pid=$pid)"
+            targets+=("$pid")
         fi
-        rm -f "$pid_file"
     fi
+
+    # Anything still running out of the project dir, whatever started it.
+    while read -r pid; do
+        [[ "$pid" =~ ^[0-9]+$ ]] || continue
+        print_status "Found process with cwd=$PROJECT_DIR (pid=$pid)"
+        targets+=("$pid")
+    done < <(scan_project_pids)
+
+    local kill_failed=0
+    for pid in "${targets[@]+"${targets[@]}"}"; do
+        terminate_pid "$pid" || kill_failed=1
+    done
+
+    # Drop the lock only once nothing holds it, so a failed stop keeps the
+    # handle an operator (or the next stop) needs.
+    if [[ -f "$PID_FILE" ]]; then
+        raw=$(cat "$PID_FILE" 2>/dev/null)
+        pid="${raw%%:*}"
+        if [[ ! "$pid" =~ ^[0-9]+$ ]] || ! kill -0 "$pid" 2>/dev/null; then
+            rm -f "$PID_FILE"
+        fi
+    fi
+
+    # Re-scan: the authoritative "is anything still running out of this tree"
+    # answer. KeepAlive in a second domain shows up here as a NEW pid, which is
+    # precisely the failure the old code reported as success.
+    local survivors=()
+    for pid in "${targets[@]+"${targets[@]}"}"; do
+        kill -0 "$pid" 2>/dev/null && survivors+=("$pid")
+    done
+    while read -r pid; do
+        [[ "$pid" =~ ^[0-9]+$ ]] || continue
+        survivors+=("$pid")
+    done < <(scan_project_pids)
+
+    if [[ -n "$SCAN_UNAVAILABLE_FLAG" && -f "$SCAN_UNAVAILABLE_FLAG" ]]; then
+        scan_unavailable=1
+    fi
+    SCAN_UNAVAILABLE_FLAG=""
+    [[ -n "$scan_flag_dir" ]] && rm -rf "$scan_flag_dir"
+
+    if [[ ${#survivors[@]} -gt 0 || ${#STOP_DOMAINS_HELD[@]} -gt 0 || "$kill_failed" -eq 1 || "$scan_unavailable" -eq 1 ]]; then
+        print_error "stop did not reach a clean state:"
+        if [[ ${#survivors[@]} -gt 0 ]]; then
+            print_error "  still-live process(es) under $PROJECT_DIR: ${survivors[*]}"
+        fi
+        if [[ ${#STOP_DOMAINS_HELD[@]} -gt 0 ]]; then
+            print_error "  label still registered in: ${STOP_DOMAINS_HELD[*]}"
+        fi
+        if [[ "$scan_unavailable" -eq 1 ]]; then
+            print_error "  stray-process scan unavailable — refusing to report a clean stop"
+        fi
+        return 1
+    fi
+
+    print_success "Stopped: no live process under $PROJECT_DIR, no launchd domain holds $SERVICE_NAME"
+    return 0
 }
 
 cmd_restart() {
     print_status "Restarting $SERVICE_NAME..."
-    cmd_stop
+    # Starting on top of a stop that left something alive is how a host ends up
+    # with two supervisor trees (incident 2026-09-17, work-m16).
+    if ! cmd_stop; then
+        print_error "Refusing to start on top of a failed stop."
+        return 1
+    fi
     sleep 1
     cmd_start
+}
+
+# --- verify-restart: proof that THIS deploy's code is the one running -----
+#
+# `status` answers "a process is alive". After the 2026-09-17 incident that is
+# not enough: the alive process was the previous deploy's, 4 hours old, and CI
+# read it as success. verify-restart demands two independent pieces of evidence
+# that the restart actually happened with the version we just shipped:
+#   (a) the live PID's start time is at/after --since (the deploy's own clock
+#       reading, taken before the stop), and
+#   (b) logs/stdout.log carries this version's startup line
+#       "⚡️ Claude Code Slack bot is running! [v<version> (<sha>)]"
+#       (src/index.ts) with a log timestamp at/after --since.
+# Both are polled, because the line is only written after the Slack socket
+# connects, which takes tens of seconds.
+
+# Epoch seconds from `ps -o lstart=` ("Thu Sep 17 14:25:29 2026", local time).
+# BSD date first (macOS targets), GNU date second (Linux runners).
+#
+# `tr -s ' '` first: BSD ps space-pads single-digit days ("Wed Sep  3 …"), and a
+# strict "%a %b %d %T %Y" reader that stumbles on the double space would report
+# "could not read start time" for every deploy on days 1–9.
+lstart_to_epoch() {
+    local lstart="$1"
+    [[ -n "$lstart" ]] || return 1
+    lstart="$(printf '%s' "$lstart" | tr -s ' ')"
+    date -j -f "%a %b %d %T %Y" "$lstart" +%s 2>/dev/null && return 0
+    date -d "$lstart" +%s 2>/dev/null && return 0
+    return 1
+}
+
+# Epoch seconds from a log line's leading ISO timestamp, written by the shared
+# logger as "[2026-09-17T05:25:29.123Z] [INFO ] [Index] …" (UTC).
+log_line_epoch() {
+    local line="$1" ts
+    ts="${line#\[}"
+    ts="${ts%%]*}"
+    ts="${ts%%.*}"
+    ts="${ts%Z}"
+    [[ "$ts" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}$ ]] || return 1
+    date -j -u -f "%Y-%m-%dT%H:%M:%S" "$ts" +%s 2>/dev/null && return 0
+    date -u -d "$ts" +%s 2>/dev/null && return 0
+    return 1
+}
+
+cmd_verify_restart() {
+    # 180s, not 60: measured on fable-m5max 2026-09-17, the supervisor took 5–8s
+    # to log "bot is running" on a warm start but 88s and 129s on two cold
+    # starts. A 60s budget fails deploys that actually restarted correctly.
+    local since="" want_version="" timeout=180
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --since)   since="${2:-}";        shift 2 || return 2 ;;
+            --version) want_version="${2:-}"; shift 2 || return 2 ;;
+            --timeout) timeout="${2:-}";      shift 2 || return 2 ;;
+            *)
+                print_error "verify-restart: unknown argument '$1'"
+                return 2
+                ;;
+        esac
+    done
+
+    if [[ ! "$since" =~ ^[0-9]+$ ]]; then
+        print_error "verify-restart requires --since <epoch-seconds>"
+        return 2
+    fi
+    if [[ -z "$want_version" ]]; then
+        print_error "verify-restart requires --version <version> (e.g. 0.26.1 or v0.26.1)"
+        return 2
+    fi
+    if [[ ! "$timeout" =~ ^[0-9]+$ ]]; then
+        print_error "verify-restart: --timeout must be seconds"
+        return 2
+    fi
+
+    # Accept the tag form; the log prints "[v<version> (" from version.json.
+    want_version="${want_version#v}"
+    local log_file="$LOGS_DIR/stdout.log"
+    local pattern="bot is running! [v$want_version ("
+
+    print_status "Verifying restart of $SERVICE_NAME (version $want_version, since epoch $since, timeout ${timeout}s)"
+
+    local deadline=$(( $(date +%s) + timeout ))
+    local pid start_time start_epoch log_line log_epoch
+    local pid_reason="" log_reason=""
+
+    while :; do
+        local pid_ok=0 log_ok=0
+        pid_reason=""
+        log_reason=""
+        start_time=""
+        log_line=""
+
+        pid="$(get_pid)"
+        if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+            start_time="$(ps -p "$pid" -o lstart= 2>/dev/null)"
+            start_epoch="$(lstart_to_epoch "$start_time")" || start_epoch=""
+            if [[ ! "$start_epoch" =~ ^[0-9]+$ ]]; then
+                pid_reason="could not read start time of pid=$pid (ps lstart: '$start_time')"
+            elif [[ "$start_epoch" -ge "$since" ]]; then
+                pid_ok=1
+            else
+                pid_reason="pid=$pid started $start_time (epoch $start_epoch) — BEFORE --since $since, i.e. this is the OLD process"
+            fi
+        else
+            pid_reason="no live process (status reports STALE or STOPPED)"
+        fi
+
+        log_line="$(grep -F "$pattern" "$log_file" 2>/dev/null | tail -1)"
+        if [[ -z "$log_line" ]]; then
+            # No ellipsis/em-dash straight after a $var here: bash 3.2 (macOS)
+            # swallows "$pattern…" as one identifier and the text vanishes.
+            log_reason="no '$pattern' line in $log_file"
+        else
+            log_epoch="$(log_line_epoch "$log_line")" || log_epoch=""
+            if [[ ! "$log_epoch" =~ ^[0-9]+$ ]]; then
+                log_reason="could not read the timestamp of the matched line: $log_line"
+            elif [[ "$log_epoch" -ge "$since" ]]; then
+                log_ok=1
+            else
+                log_reason="the only matching startup line predates --since $since (epoch $log_epoch): $log_line"
+            fi
+        fi
+
+        if [[ "$pid_ok" -eq 1 && "$log_ok" -eq 1 ]]; then
+            print_success "Restart verified (PID: $pid, started $start_time)"
+            echo "  matched: $log_line"
+            return 0
+        fi
+
+        [[ "$(date +%s)" -ge "$deadline" ]] && break
+        sleep 2
+    done
+
+    print_error "Restart NOT verified (version $want_version, --since $since, waited ${timeout}s)"
+    [[ -n "$pid_reason" ]] && print_error "  process: $pid_reason"
+    [[ -n "$log_reason" ]] && print_error "  log: $log_reason"
+    echo ""
+    echo "Last 10 lines of $log_file:"
+    echo "---"
+    tail -10 "$log_file" 2>/dev/null || echo "  (no logs)"
+    return 1
 }
 
 warn_missing_tools() {
@@ -864,6 +1355,9 @@ case "$COMMAND" in
     restart)
         cmd_restart
         ;;
+    verify-restart)
+        cmd_verify_restart "$@"
+        ;;
     install)
         cmd_install
         ;;
@@ -896,8 +1390,10 @@ case "$COMMAND" in
         echo "  status       Show service status"
         echo "  status-all   Show all environments"
         echo "  start        Start the service"
-        echo "  stop         Stop the service"
+        echo "  stop         Stop the service (non-zero if anything survives)"
         echo "  restart      Restart (no rebuild)"
+        echo "  verify-restart --since <epoch-seconds> --version <ver> [--timeout <sec>]"
+        echo "               Prove the RUNNING process is this version and started after <epoch>"
         echo "  reinstall    Stop, rebuild, start (after code changes)"
         echo "  install      Install as LaunchAgent"
         echo "  uninstall    Remove LaunchAgent"
@@ -910,6 +1406,7 @@ case "$COMMAND" in
         echo "  ./scripts/service.sh main status          # Production status"
         echo "  ./scripts/service.sh dev setup            # Initialize dev config dir"
         echo "  ./scripts/service.sh main logs follow     # Stream production logs (rotation-safe)"
+        echo "  ./scripts/service.sh main verify-restart --since 1789622729 --version 0.26.1"
         echo "  ./scripts/service.sh main logs history ERROR  # Search live + rotated logs"
         echo "  ./scripts/service.sh status-all           # All environments"
         echo ""

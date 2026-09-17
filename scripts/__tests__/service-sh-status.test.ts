@@ -99,6 +99,10 @@ function runStatus(env: string, extraPath: string, pidFileOverride?: string): Ru
         ...process.env,
         PATH: `${extraPath}:${process.env.PATH ?? ''}`,
         HOME: homeStub,
+        // service.sh ignores the SOMA_*_OVERRIDE variables unless this flag is
+        // set, so a stray export in an operator's shell cannot redirect a
+        // production command at a test tree.
+        SOMA_TEST_HARNESS: '1',
         SOMA_PID_FILE_OVERRIDE: pidFile,
       },
       encoding: 'utf-8',
