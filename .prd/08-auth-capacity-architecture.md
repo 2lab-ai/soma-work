@@ -2,7 +2,7 @@
 
 Status: in-progress
 Date: 2026-09-16
-Contract: [06-auth-capacity-spec.md](06-auth-capacity-spec.md) · [Execution loop](auth-capacity-overview/loop.md)
+Contract: [07-auth-capacity-spec.md](07-auth-capacity-spec.md) · [Execution loop](auth-capacity-overview/loop.md)
 
 ## Boundaries
 

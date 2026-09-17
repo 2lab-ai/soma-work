@@ -3,7 +3,7 @@
 Status: in-progress
 Date: 2026-09-16
 
-[SSOT](ssot.md) · [Spec](../06-auth-capacity-spec.md) · [Architecture](../07-auth-capacity-architecture.md) · [Evidence](verification.md)
+[SSOT](ssot.md) · [Spec](../07-auth-capacity-spec.md) · [Architecture](../08-auth-capacity-architecture.md) · [Evidence](verification.md)
 
 ## Skill and working tree
 

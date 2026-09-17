@@ -255,7 +255,7 @@ Wiring: [`src/slack/z/topics/auth-topic.ts`](./src/slack/z/topics/auth-topic.ts)
 [`src/slack/auth/capacity.ts`](./src/slack/auth/capacity.ts) →
 [`src/slack/auth/builder.ts`](./src/slack/auth/builder.ts). Details and pinned
 upstream source verification:
-[`.prd/06-auth-capacity-spec.md`](./.prd/06-auth-capacity-spec.md).
+[`.prd/07-auth-capacity-spec.md`](./.prd/07-auth-capacity-spec.md).
 
 ### Auto-compact thresholds (`autocompact` / `compact-threshold`)
 
