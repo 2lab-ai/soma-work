@@ -13,10 +13,12 @@ import {
   FOLLOWUP_RETRY_ACTION_ID,
   FOLLOWUP_SEND_NOW_ACTION_ID,
   FOLLOWUP_SEND_NOW_LABEL,
+  FOLLOWUP_STATE_DISPLAY_ORDER,
   FOLLOWUP_STEERED_COUNT_LABEL,
   FOLLOWUP_STEERED_LABEL,
   type FollowupQueueBlocksOptions,
   type FollowupQueueView,
+  followupStateCountLabel,
   parseFollowupItemActionValue,
   parseFollowupMenuValue,
   parseFollowupPageActionValue,
@@ -24,6 +26,25 @@ import {
 import type { MessageEvent } from '../pipeline/types';
 
 const SESSION = 'C1:1700.000000';
+
+/**
+ * Every `FollowupItemState` (`followup-queue.ts:29-39`), spelled out here so the
+ * display order is compared against an INDEPENDENT list rather than against
+ * itself. The header counts are a `.filter()` over the display order, so a state
+ * missing from that order is uncounted with no error anywhere.
+ */
+const ALL_FOLLOWUP_STATES = [
+  'queued',
+  'steered',
+  'reserved',
+  'claimed',
+  'dispatched',
+  'resolved',
+  'failed',
+  'uncertain',
+  'paused',
+  'cancelled',
+] as const satisfies readonly FollowupItemState[];
 
 /**
  * The pre-compact layout (one section + one context line per item). It is no
@@ -190,20 +211,7 @@ describe('buildFollowupQueueBlocks legacy layout (compact:false) — purity and 
   });
 
   it('never emits the unsupported `disabled` button field (invalid_blocks guard)', () => {
-    const items: FollowupItem[] = (
-      [
-        'queued',
-        'steered',
-        'reserved',
-        'claimed',
-        'dispatched',
-        'resolved',
-        'failed',
-        'uncertain',
-        'paused',
-        'cancelled',
-      ] as const
-    ).map((state, index) => item({ seq: index + 1, state }));
+    const items: FollowupItem[] = ALL_FOLLOWUP_STATES.map((state, index) => item({ seq: index + 1, state }));
 
     const { blocks } = buildLegacyQueueBlocks({ sessionKey: SESSION, items });
 
@@ -425,6 +433,31 @@ describe('buildFollowupQueueBlocks legacy layout (compact:false) — pagination 
     expect(sectionTexts(blocks)[0]).toBe('Queue');
     expect(contextTexts(blocks)[0]).toContain('0');
     expect(text).toContain('0');
+  });
+});
+
+/**
+ * The header breakdown renders `FOLLOWUP_STATE_DISPLAY_ORDER.filter(...)`, so a
+ * state that is not in the order is dropped from the counts silently — the item
+ * is still listed, but the summary under-reports the queue. The compile-time
+ * side of this is the exhaustiveness assertion next to the constant; this is the
+ * runtime side, comparing against an independently written list of the states.
+ */
+describe('FOLLOWUP_STATE_DISPLAY_ORDER — no state can fall out of the counts', () => {
+  it('is set-equal to the full state list, each state exactly once', () => {
+    expect([...FOLLOWUP_STATE_DISPLAY_ORDER].sort()).toEqual([...ALL_FOLLOWUP_STATES].sort());
+    expect(new Set(FOLLOWUP_STATE_DISPLAY_ORDER).size).toBe(FOLLOWUP_STATE_DISPLAY_ORDER.length);
+  });
+
+  it('counts one item of every state in the legacy breakdown', () => {
+    const items: FollowupItem[] = ALL_FOLLOWUP_STATES.map((state, index) => item({ seq: index + 1, state }));
+
+    const { blocks } = buildLegacyQueueBlocks({ sessionKey: SESSION, items });
+
+    const summary = contextTexts(blocks)[0];
+    for (const state of ALL_FOLLOWUP_STATES) {
+      expect(summary).toContain(`${followupStateCountLabel(state)} 1`);
+    }
   });
 });
 
@@ -696,20 +729,7 @@ describe('buildFollowupQueueBlocks — compact overflow menu', () => {
   });
 
   it('stays inside the Slack option limits (text ≤75, value ≤150, ≤5 options)', () => {
-    const items: FollowupItem[] = (
-      [
-        'queued',
-        'steered',
-        'reserved',
-        'claimed',
-        'dispatched',
-        'resolved',
-        'failed',
-        'uncertain',
-        'paused',
-        'cancelled',
-      ] as const
-    ).map((state, index) => item({ seq: index + 1, state }));
+    const items: FollowupItem[] = ALL_FOLLOWUP_STATES.map((state, index) => item({ seq: index + 1, state }));
 
     const { blocks } = buildFollowupQueueBlocks({ sessionKey: SESSION, items });
 
@@ -848,6 +868,47 @@ describe('buildFollowupQueueBlocks — compact text safety and paging', () => {
     expect(JSON.stringify(blocks)).not.toContain('<@U0DEADBEEF>');
     expect(JSON.stringify(blocks)).not.toContain('<https://evil.example|click>');
     expect(text).not.toContain('<!channel>');
+  });
+
+  it('renders a preview containing _queued_ without italics markers, with the real state last', () => {
+    // The compact row italicises the REAL state, so an italic run inside the
+    // message reads as one more state label sitting BEFORE it.
+    const { blocks } = buildFollowupQueueBlocks({
+      sessionKey: SESSION,
+      items: [item({ state: 'failed', message: event({ text: '이거 봐줘 _queued_' }) })],
+    });
+
+    const line = sectionTexts(blocks)[0];
+    expect(line).not.toContain('_queued_');
+    expect(line.match(/_/g)).toHaveLength(2); // the real label's pair, and nothing else
+    expect(line.endsWith('_failed_')).toBe(true);
+    expect(line).toContain('queued'); // the word stays readable — only its markers change
+  });
+
+  it('neutralises a spoofed 전달됨 state label in the message text', () => {
+    const spoof = `작업 · _${FOLLOWUP_STEERED_LABEL}_`;
+    const { blocks } = buildFollowupQueueBlocks({
+      sessionKey: SESSION,
+      items: [item({ state: 'queued', message: event({ text: spoof }) })],
+    });
+
+    const line = sectionTexts(blocks)[0];
+    expect(line).not.toContain(`_${FOLLOWUP_STEERED_LABEL}_`);
+    expect(line.match(/_/g)).toHaveLength(2);
+    expect(line.endsWith('_queued_')).toBe(true);
+  });
+
+  it('neutralises * and ~ in the preview too, so no emphasis run starts in user text', () => {
+    const { blocks } = buildFollowupQueueBlocks({
+      sessionKey: SESSION,
+      items: [item({ message: event({ text: '*bold* ~strike~' }) })],
+    });
+
+    const line = sectionTexts(blocks)[0];
+    expect(line).not.toContain('*');
+    expect(line).not.toContain('~');
+    expect(line).toContain('bold');
+    expect(line).toContain('strike');
   });
 
   it('truncates a long unicode preview to one short line without splitting surrogate pairs', () => {
