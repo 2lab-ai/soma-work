@@ -9,6 +9,11 @@ on:
         description: 'Type "deploy" to confirm deployment'
         required: true
         type: string
+      targets:
+        description: 'Runner labels to deploy to (comma-separated). Empty = every configured target for the channel. Unknown labels fail the run.'
+        required: false
+        default: ''
+        type: string
 
 concurrency:
   group: deploy-${{ github.ref_name }}
@@ -42,13 +47,21 @@ jobs:
       # per line in the form  {runner-name}:{target-dir} :
       #   PREVIEW_DEPLOY_TARGETS    — preview channel  (deploy/dev, main dispatch)
       #   PRODUCTION_DEPLOY_TARGETS — production channel (deploy/prod)
-      # Entries get neutral job names (t1, t2, ...) so run logs stay topology-free.
+      # Entries get neutral job names (t1, t2, ...) so the run list and job graph
+      # stay topology-free (step logs do print the resolved entries).
+      #
+      # A manual run may narrow the set with the `targets` input (comma-separated
+      # runner labels). The variable stays the single source of truth: the input
+      # can only SELECT from it, never add to it, and a label that is not
+      # configured fails the run instead of being ignored — a typo must not turn
+      # into "deployed everywhere" or "deployed nowhere" silently.
       - name: Resolve deploy targets
         id: targets
         env:
           RAW: ${{ github.ref_name == 'deploy/prod' && vars.PRODUCTION_DEPLOY_TARGETS || vars.PREVIEW_DEPLOY_TARGETS }}
           GITHUB_ENV_NAME: ${{ github.ref_name == 'deploy/prod' && 'production' || 'development' }}
           DEPLOY_ENV_NAME: ${{ github.ref_name == 'deploy/prod' && 'main' || 'dev' }}
+          SELECT: ${{ github.event_name == 'workflow_dispatch' && inputs.targets || '' }}
         run: |
           matrix=$(jq -R -s -c --arg ge "$GITHUB_ENV_NAME" --arg de "$DEPLOY_ENV_NAME" '
             split("\n")
@@ -62,6 +75,19 @@ jobs:
                    github_env: $ge,
                    deploy_env: $de})
             | {include: .}' <<< "$RAW")
+          # Normalize once: drop ALL whitespace (spaces, tabs, newlines) so the
+          # emptiness check and the split see the same string.
+          SELECT_NORM="$(tr -d '[:space:]' <<< "$SELECT")"
+          if [[ -n "$SELECT_NORM" ]]; then
+            selected=$(jq -R -c 'split(",") | map(select(length > 0)) | unique' <<< "$SELECT_NORM")
+            unknown=$(jq -c --argjson sel "$selected" '[.include[].runner_label] as $known | $sel | map(select(. as $s | ($known | index($s)) == null))' <<< "$matrix")
+            if [[ "$(jq 'length' <<< "$unknown")" -ne 0 ]]; then
+              echo "::error::Requested targets are not configured for this channel: $(jq -r 'join(",")' <<< "$unknown")"
+              exit 1
+            fi
+            matrix=$(jq -c --argjson sel "$selected" '{include: [.include[] | select(.runner_label as $l | ($sel | index($l)) != null)]}' <<< "$matrix")
+            echo "targets narrowed by input to $(jq 'length' <<< "$selected") of the configured set"
+          fi
           count=$(jq '.include | length' <<< "$matrix")
           if [[ "$count" -eq 0 ]]; then
             echo "::error::No deploy targets configured for this channel (check repo Actions variables)."
