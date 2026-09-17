@@ -195,6 +195,9 @@ function harness(over: Partial<FollowupActionsDeps> = {}) {
     runDrain: vi.fn(async (_s: string) => {
       order.push('runDrain');
     }),
+    sweepSteered: vi.fn(async (_s: string) => {
+      order.push('sweepSteered');
+    }),
     reportError: vi.fn(),
     ...over,
   };
@@ -1037,6 +1040,103 @@ describe('detached failures', () => {
     await tick(5);
     expect(h.deps.runDrain).not.toHaveBeenCalled();
     expect(h.deps.refresh).toHaveBeenCalledWith(SESSION_KEY);
+  });
+
+  /**
+   * The drain is gated on `canDrain`, and the sweep must NOT be: a turn that
+   * ended aborted / blocked / parked on a question is exactly the turn whose
+   * steered rows got no settlement frame, and `runDrain` — the only other thing
+   * on this path that sweeps — is the branch that just did not run. Without an
+   * unconditional sweep those rows sit `steered` until some later message
+   * happens to start a turn.
+   */
+  it('sweeps steered rows even when the interrupted turn did not end safely', async () => {
+    const h = harness();
+    h.dispatcher.sendNow.mockResolvedValue({
+      status: 'dispatched',
+      run: {
+        runId: 1,
+        turnEpoch: 1,
+        itemId: `${SESSION_KEY}#1`,
+        settled: Promise.resolve({
+          sessionKey: SESSION_KEY,
+          runId: 1,
+          turnEpoch: 1,
+          kind: 'send-now',
+          itemId: `${SESSION_KEY}#1`,
+          outcome: { result: 'blocked', reason: 'permission' },
+          itemDisposition: 'none',
+          canDrain: false,
+        }),
+      },
+    } as SendNowResult);
+    await h.click(FOLLOWUP_SEND_NOW_ACTION_ID, clickBody(itemValue({ turnEpoch: 0 })));
+    await tick(5);
+    expect(h.deps.sweepSteered).toHaveBeenCalledWith(SESSION_KEY);
+    expect(h.deps.runDrain).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Order is load-bearing the other way too: the drain claims `queued` rows, so
+   * a row the sweep has not returned yet is invisible to the loop that follows.
+   * Sweeping after the drain would delay it by a whole turn.
+   */
+  it('sweeps before the drain it gates on a safe outcome', async () => {
+    const h = harness();
+    h.dispatcher.sendNow.mockResolvedValue({
+      status: 'dispatched',
+      run: {
+        runId: 1,
+        turnEpoch: 1,
+        itemId: `${SESSION_KEY}#1`,
+        settled: Promise.resolve({
+          sessionKey: SESSION_KEY,
+          runId: 1,
+          turnEpoch: 1,
+          kind: 'send-now',
+          itemId: `${SESSION_KEY}#1`,
+          outcome: { result: 'safe' },
+          itemDisposition: 'resolved',
+          canDrain: true,
+        }),
+      },
+    } as SendNowResult);
+    await h.click(FOLLOWUP_SEND_NOW_ACTION_ID, clickBody(itemValue({ turnEpoch: 0 })));
+    await tick(5);
+    expect(h.order.indexOf('sweepSteered')).toBeGreaterThanOrEqual(0);
+    expect(h.order.indexOf('sweepSteered')).toBeLessThan(h.order.indexOf('runDrain'));
+  });
+
+  /**
+   * A host sweep that throws is a bookkeeping failure, not the user's answer:
+   * the message was already delivered, so it is reported and the follow-through
+   * carries on into the drain it would otherwise have skipped.
+   */
+  it('reports a throwing sweep without failing the follow-through', async () => {
+    const h = harness();
+    (h.deps.sweepSteered as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('sweep exploded'));
+    h.dispatcher.sendNow.mockResolvedValue({
+      status: 'dispatched',
+      run: {
+        runId: 1,
+        turnEpoch: 1,
+        itemId: `${SESSION_KEY}#1`,
+        settled: Promise.resolve({
+          sessionKey: SESSION_KEY,
+          runId: 1,
+          turnEpoch: 1,
+          kind: 'send-now',
+          itemId: `${SESSION_KEY}#1`,
+          outcome: { result: 'safe' },
+          itemDisposition: 'resolved',
+          canDrain: true,
+        }),
+      },
+    } as SendNowResult);
+    await h.click(FOLLOWUP_SEND_NOW_ACTION_ID, clickBody(itemValue({ turnEpoch: 0 })));
+    await tick(5);
+    expect(h.deps.reportError).toHaveBeenCalled();
+    expect(h.deps.runDrain).toHaveBeenCalledWith(SESSION_KEY);
   });
 
   it('reports a dispatcher rejection as a retention, not a send', async () => {

@@ -12,6 +12,7 @@ import {
 import {
   type FollowupContext,
   type FollowupItem,
+  type FollowupOpResult,
   FollowupQueue,
   type FollowupQueueSnapshot,
 } from '@soma/slack/followup-queue';
@@ -688,6 +689,12 @@ export class SlackHandler {
         // The host owns the drain loop; the action module never re-enters the
         // dispatcher itself.
         runDrain: (sessionKey) => this.runFollowupDrainLoop(sessionKey).then(() => undefined),
+        // The drain is gated on a safe outcome; the sweep is not. A `Send now`
+        // whose turn ended aborted/blocked/parked left every row steered into
+        // it with no settlement frame and no drain behind it to clear them.
+        // Idle-guarded like every other non-boundary sweep: the follow-through
+        // runs detached, so another turn may already hold the slot.
+        sweepSteered: (sessionKey) => this.sweepSteerBucketsIfIdle(sessionKey),
         reportError: (label, error) => {
           this.logger.error('Follow-up action failed', { label, error: (error as Error)?.message ?? String(error) });
         },
@@ -2636,25 +2643,31 @@ export class SlackHandler {
     // must keep its exact pre-steering behavior — including the queue epochs,
     // which a steer+rollback would bump.
     if (typeof this.claudeHandler?.steerTurn !== 'function') return 'queued';
-    if (!this.isSteerableText(event)) return 'queued';
-
-    // Steering injects text into a turn someone else is running, so it takes the
-    // SAME authorization `Send now` takes (`:3082`). Denied, the message is an
-    // ordinary queued follow-up — never a refusal, because nothing was refused:
-    // the item is stored and will run at the next boundary.
-    const requestedBy = event.user;
-    const authorized = requestedBy ? this.authorizeFollowupInterrupt(sessionKey, requestedBy) : undefined;
-    if (!authorized?.allowed) {
-      this.logger.debug('Follow-up not steered — the author may not interrupt this session', {
-        sessionKey,
-        itemId: item.id,
-        reason: authorized?.reason ?? 'message has no author',
-      });
-      return 'queued';
-    }
 
     let files: ProcessedFile[] = [];
     try {
+      // INSIDE the try, both of them. The item is already durable at this
+      // point, so nothing after the enqueue may escape: a classifier or an
+      // authorization policy that throws here used to propagate out of
+      // `enqueueFollowup` past the receipt, leaving the message stored and the
+      // user told nothing at all.
+      if (!this.isSteerableText(event)) return 'queued';
+
+      // Steering injects text into a turn someone else is running, so it takes
+      // the SAME authorization `Send now` takes (`:3082`). Denied, the message
+      // is an ordinary queued follow-up — never a refusal, because nothing was
+      // refused: the item is stored and will run at the next boundary.
+      const requestedBy = event.user;
+      const authorized = requestedBy ? this.authorizeFollowupInterrupt(sessionKey, requestedBy) : undefined;
+      if (!authorized?.allowed) {
+        this.logger.debug('Follow-up not steered — the author may not interrupt this session', {
+          sessionKey,
+          itemId: item.id,
+          reason: authorized?.reason ?? 'message has no author',
+        });
+        return 'queued';
+      }
+
       let text = (event.text ?? '').trim();
       if (event.files?.length) {
         // D2: attachments steer too. The files are downloaded here rather than
@@ -2722,6 +2735,18 @@ export class SlackHandler {
    *  - an inline `%` directive (`%model opus do X`) is stripped and APPLIED by
    *    the dispatch path (`:1085`); steered, the directive would reach the model
    *    as text and the session change would silently not happen.
+   *  - a leading `!` is the explicit steer/abort marker, stripped by
+   *    `parseSteerPrompt` (`:2161`) before the dispatcher ever sees the text.
+   *    It reaches HERE only through the slot race (`:939`), and the push sends
+   *    the text unstripped — the model would read the `!` as prose.
+   *  - a `/z` prefix is stripped by the router before anything is dispatched
+   *    (`command-router.ts:396-399`), so the same applies: steered, `/z` would
+   *    arrive as the first word of the instruction.
+   *
+   * The two prefixes are checked here rather than left to `classifyText`,
+   * because the classifier answers `instruction` for both — correctly, since
+   * what they carry IS an instruction. What disqualifies them is not the
+   * classification but the fact that steering skips the stripping.
    *
    * A file-only message (no text) steers: there is nothing to misread. A handler
    * without a command router keeps its pre-steering behavior.
@@ -2729,6 +2754,8 @@ export class SlackHandler {
   private isSteerableText(event: MessageEvent): boolean {
     const text = (event.text ?? '').trim();
     if (!text) return true;
+    if (text.startsWith('!')) return false;
+    if (stripZPrefix(text) !== null) return false;
     if (CommandParser.parseInlineSessionDirectives(text)) return false;
     const classification = this.commandRouter?.classifyText?.(text, event.user);
     return classification === undefined || classification === 'instruction';
@@ -2808,6 +2835,21 @@ export class SlackHandler {
   }
 
   /**
+   * Run a uuid-addressed settlement against the bucket that really HOLDS the
+   * row. The session key is tried first (every ordinary turn); under a
+   * bot-thread migration the row lives under the SLOT key instead, because a
+   * steer is only accepted by the key that owns the live slot
+   * (`followup-dispatcher.ts:497-500`). The fallback fires only on
+   * `not-found` — so it can never settle a different session's item.
+   */
+  private settleUnderOwningKey(sessionKey: string, settle: (key: string) => FollowupOpResult): FollowupOpResult {
+    const result = settle(sessionKey);
+    if (result.ok || result.reason !== 'not-found') return result;
+    const slotKey = this.followupMigration?.byCanonical.get(sessionKey);
+    return slotKey === undefined ? result : settle(slotKey);
+  }
+
+  /**
    * Cancel of a `steered` item (06 §3.4). The SDK owns the copy the model is
    * about to read, so the order is load-bearing: ask the SDK FIRST, and only
    * write `cancelled` once it confirmed the withdrawal.
@@ -2848,13 +2890,37 @@ export class SlackHandler {
 
     try {
       if (verdict === 'already-dequeued') {
-        dispatcher.markConsumed(sessionKey, uuid);
+        // The write can lose exactly like the `withdrawn` one below (a
+        // settlement raced the click, a restarted queue), and its result is the
+        // only proof the delivery was recorded. Cleaning up on a failed write
+        // would delete the attachments of a row still sitting `steered` under a
+        // uuid whose settlement frame has not arrived, and drop the
+        // item→uuid entry that frame needs to find them.
+        //
+        // Same slot-key fallback `settleSteeredFollowup` uses: under a
+        // bot-thread migration the ROW lives in the bucket the push was
+        // accepted in, which is the SLOT key.
+        const consumed = this.settleUnderOwningKey(sessionKey, (key) => dispatcher.markConsumed(key, uuid));
+        if (!consumed.ok) {
+          this.logger.info('Steered cancel could not record the delivery', {
+            sessionKey,
+            itemId,
+            reason: consumed.reason,
+          });
+          return 'failed';
+        }
         this.forgetSteerBookkeeping(itemId);
         await this.cleanupSteerFiles(this.takeSteerFiles(uuid));
         return 'already-delivered';
       }
       if (verdict === 'unreachable') {
-        const returned = dispatcher.unsteer(sessionKey, uuid, '전달 여부를 확인할 수 없어 큐로 되돌림');
+        // Addressed by uuid like the `already-dequeued` write above, so it
+        // needs the same owning-key search: a migrated row sits under the SLOT
+        // key, and unsteering only the canonical bucket left it `steered`
+        // forever while the click reported failure.
+        const returned = this.settleUnderOwningKey(sessionKey, (key) =>
+          dispatcher.unsteer(key, uuid, '전달 여부를 확인할 수 없어 큐로 되돌림'),
+        );
         if (!returned.ok) {
           this.logger.info('Steered cancel could not return the item to the queue', {
             sessionKey,
@@ -3143,7 +3209,12 @@ export class SlackHandler {
     // BEFORE the boundary check, not inside it: a turn that ends unhealthy is
     // exactly the turn whose steered messages never got a settlement frame, and
     // a `steered` row is invisible to every drain that follows.
-    await this.sweepSteeredFollowups(sessionKey);
+    //
+    // Through the IDLE-GUARDED variant: this is a per-run epilogue, not the
+    // whole session's boundary. A `Send now` racing the settle can already hold
+    // the slot with pushed copies of its own, and sweeping those back to
+    // `queued` would have the drain below deliver them a second time (§3.2).
+    await this.sweepSteerBucketsIfIdle(sessionKey);
     const last = report.canDrain ? await this.runFollowupDrainLoop(sessionKey) : undefined;
     this.releaseDeferredGoalDriver(sessionKey, last ?? report);
   }
