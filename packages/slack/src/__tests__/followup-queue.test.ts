@@ -816,6 +816,22 @@ describe('FollowupQueue cancelItem (per-item Cancel from the Queue panel)', () =
     expect(queue.list(SESSION)[0].seq).toBe(1);
   });
 
+  it('falls back to the default reason when the caller supplies a blank one', () => {
+    const queue = new FollowupQueue();
+    const first = queue.enqueue(SESSION, event({ ts: '1.1' }));
+    if (first.status !== 'queued') throw new Error('setup failed');
+
+    // A blank reason is a MISSING reason: storing it would leave the panel's
+    // history line saying only `cancelled`, with nothing about who or why.
+    const cancelled = queue.cancelItem(SESSION, first.item.id, first.item.epoch, '   ');
+    const blank = queue.enqueue(SESSION, event({ ts: '1.2' }));
+    if (blank.status !== 'queued') throw new Error('setup failed');
+    const empty = queue.cancelItem(SESSION, blank.item.id, blank.item.epoch, '');
+
+    expect(cancelled.ok && cancelled.item.stateReason).toBe(FOLLOWUP_CANCEL_DEFAULT_REASON);
+    expect(empty.ok && empty.item.stateReason).toBe(FOLLOWUP_CANCEL_DEFAULT_REASON);
+  });
+
   it('records an explicit reason when the caller supplies one', () => {
     const queue = new FollowupQueue();
     const first = queue.enqueue(SESSION, event({ ts: '1.1' }));

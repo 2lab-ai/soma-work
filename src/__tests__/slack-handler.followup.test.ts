@@ -244,6 +244,36 @@ describe('SlackHandler — follow-up queue host', () => {
     expect(items()).toHaveLength(0);
   });
 
+  /**
+   * Tail anchoring (A36) — the panel can only stay at the bottom of its thread
+   * if it hears about EVERY message that lands below it. Bot writes report
+   * themselves through the api helper; an inbound human reply never touches it,
+   * so the panel sat above the user's own messages until the ingress reported
+   * them too. `kind: 'user'` keeps the source of the event honest.
+   */
+  it('reports an inbound thread reply to the panel so it can re-anchor', async () => {
+    const notifyThreadPost = vi.fn();
+    handlerAny.slackApi.notifyThreadPost = notifyThreadPost;
+
+    await handler.handleMessage(message({ ts: '333.444' }), say());
+
+    expect(notifyThreadPost).toHaveBeenCalledWith({
+      channel: CHANNEL,
+      threadTs: THREAD_TS,
+      ts: '333.444',
+      kind: 'user',
+    });
+  });
+
+  it('reports nothing for a synthetic turn — no message landed in the thread', async () => {
+    const notifyThreadPost = vi.fn();
+    handlerAny.slackApi.notifyThreadPost = notifyThreadPost;
+
+    await handler.handleMessage(message({ ts: '333.445', synthetic: true }), say());
+
+    expect(notifyThreadPost).not.toHaveBeenCalled();
+  });
+
   it('claims the next user message at the safe boundary, preserving author and files', async () => {
     const { settle } = await startBusyTurn();
 

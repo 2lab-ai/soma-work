@@ -222,6 +222,33 @@ describe('ThreadSurface — A24b durable delivery intent for the combined panel'
     expect(sent?.intentId).not.toBe(rejected?.intentId);
   });
 
+  /**
+   * A request the helper's own rate-limit queue dropped never reached
+   * `execute()` (`slack-api-helper.ts:361-368`), so it is proof that no card
+   * exists — the same class of evidence as `channel_not_found`, and the only
+   * reason it needs saying is that a held panel is invisible to the user.
+   */
+  it('treats a queue-overflow drop as definitive and posts again on the next render', async () => {
+    const session = makeSession();
+    const slackApi = makeSlackApi({
+      postMessage: vi.fn().mockRejectedValue(
+        Object.assign(new Error('Queue overflow: dropped oldest request'), {
+          data: { error: 'queue_overflow' },
+        }),
+      ),
+    });
+
+    await new ThreadSurface(makeDeps(session, slackApi, loadedStore())).updatePanel(session, KEY);
+    expect(loadedStore().get(SURFACE_KEY)).toMatchObject({ state: 'rejected', reason: 'queue_overflow' });
+
+    const retrySession = makeSession();
+    const slackApi2 = makeSlackApi();
+    await new ThreadSurface(makeDeps(retrySession, slackApi2, loadedStore())).updatePanel(retrySession, KEY);
+
+    expect(slackApi2.posts).toHaveLength(1);
+    expect(loadedStore().get(SURFACE_KEY)).toMatchObject({ state: 'sent', messageTs: 'posted-ts-1' });
+  });
+
   it('never treats a rate limit or an unknown failure as a rejection', async () => {
     const session = makeSession();
     const slackApi = makeSlackApi({

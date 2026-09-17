@@ -54,6 +54,32 @@ function loadedStore(): SurfaceOutboxStore {
   return store;
 }
 
+/**
+ * Put a record on disk in a state this surface cannot reach on its own, so the
+ * pre-flight can be asked the only question that matters: does the DURABLE
+ * record still authorise a repost of this exact card?
+ */
+function seedRecord(over: { state: 'pending' | 'sent' | 'rejected'; messageTs?: string; reason?: string }): void {
+  fs.writeFileSync(
+    storePath,
+    JSON.stringify({
+      version: 1,
+      records: [
+        {
+          surfaceKey: SURFACE_KEY,
+          sessionKey: KEY,
+          channelId: 'C1',
+          threadTs: THREAD_TS,
+          intentId: 'intent-seed',
+          createdAt: 1_700_000_000_000,
+          updatedAt: 1_700_000_000_000,
+          ...over,
+        },
+      ],
+    }),
+  );
+}
+
 function makeSession(over: Partial<ConversationSession> = {}): ConversationSession {
   return {
     sessionId: 'sess-1',
@@ -357,6 +383,105 @@ describe('ThreadSurface — the panel re-anchors to the tail of its thread', () 
     expect(slackApi.deletes).toEqual([{ channel: 'C1', ts: firstTs }]);
     expect(slackApi.posts).toHaveLength(2);
     expect(session.actionPanel?.messageTs).toBe(slackApi.posts[1].ts);
+  });
+
+  /**
+   * The re-anchor destroys the card FIRST and reposts through the ordinary
+   * outbox path. That is only safe while the durable record still authorises
+   * the repost: `beginPost` hands back a `pending` record as-is (it means
+   * "unknown outcome", never "not posted"), so a delete performed on top of a
+   * record that is not `sent`-on-this-ts ends with a surface that has no card
+   * and no permission to make one — held forever, which no layout preference
+   * can justify. Hence: the outbox is consulted BEFORE the delete.
+   */
+  describe('pre-flight — the outbox must still authorise the repost', () => {
+    function seededSurface(panelTs: string): { session: ConversationSession; slackApi: Record<string, any> } {
+      const session = makeSession({ actionPanel: { channelId: 'C1', messageTs: panelTs } });
+      const slackApi = makeSlackApi();
+      return { session, slackApi };
+    }
+
+    it('does not delete the card when the record is pending — the repost could not be authorised', async () => {
+      const panelTs = '1700.000100';
+      seedRecord({ state: 'pending' });
+      const { session, slackApi } = seededSurface(panelTs);
+      const surface = new ThreadSurface(makeDeps(session, slackApi, loadedStore()));
+      await surface.updatePanel(session, KEY);
+
+      foreignPost(slackApi, '1700.000500');
+      await settle();
+
+      expect(slackApi.deletes).toHaveLength(0);
+      expect(session.actionPanel?.messageTs).toBe(panelTs);
+    });
+
+    it('does not delete the card when the outbox has no record for the surface', async () => {
+      const panelTs = '1700.000100';
+      const { session, slackApi } = seededSurface(panelTs);
+      const surface = new ThreadSurface(makeDeps(session, slackApi, loadedStore()));
+      await surface.updatePanel(session, KEY);
+
+      foreignPost(slackApi, '1700.000500');
+      await settle();
+
+      expect(slackApi.deletes).toHaveLength(0);
+      expect(session.actionPanel?.messageTs).toBe(panelTs);
+    });
+
+    it('does not delete the card when the sent record names a DIFFERENT ts', async () => {
+      const panelTs = '1700.000100';
+      seedRecord({ state: 'sent', messageTs: '1700.000099' });
+      const { session, slackApi } = seededSurface(panelTs);
+      const surface = new ThreadSurface(makeDeps(session, slackApi, loadedStore()));
+      await surface.updatePanel(session, KEY);
+
+      foreignPost(slackApi, '1700.000500');
+      await settle();
+
+      expect(slackApi.deletes).toHaveLength(0);
+      expect(session.actionPanel?.messageTs).toBe(panelTs);
+    });
+
+    /**
+     * The pre-flight passes here (record `sent` on exactly this ts), so the
+     * delete happens — and the repost is dropped by the helper's own rate-limit
+     * queue. That rejection PROVES the request never reached Slack, so the
+     * intent must end `rejected` (releasing the surface) instead of `pending`,
+     * which would hold the panel with no card forever.
+     */
+    it('recovers when the repost is dropped by the rate-limit queue — the intent is rejected, not left pending', async () => {
+      const session = makeSession();
+      const slackApi = makeSlackApi();
+      const post = slackApi.postMessage;
+      let dropNext = false;
+      slackApi.postMessage = vi.fn(async (...args: any[]) => {
+        if (dropNext) {
+          dropNext = false;
+          throw Object.assign(new Error('Queue overflow: dropped oldest request'), {
+            data: { error: 'queue_overflow' },
+          });
+        }
+        return post(...args);
+      });
+
+      const surface = new ThreadSurface(makeDeps(session, slackApi, loadedStore()));
+      await surface.updatePanel(session, KEY);
+      const firstTs = session.actionPanel?.messageTs;
+
+      dropNext = true;
+      foreignPost(slackApi, '1700.000500');
+      await settle();
+
+      expect(slackApi.deletes).toEqual([{ channel: 'C1', ts: firstTs }]);
+      expect(slackApi.posts).toHaveLength(1); // the dropped repost created nothing
+      expect(loadedStore().get(SURFACE_KEY)).toMatchObject({ state: 'rejected', reason: 'queue_overflow' });
+
+      // …and the next render is allowed to mint a fresh intent and post again.
+      await surface.updatePanel(session, KEY);
+      expect(slackApi.posts).toHaveLength(2);
+      expect(session.actionPanel?.messageTs).toBe(slackApi.posts[1].ts);
+      expect(loadedStore().get(SURFACE_KEY)).toMatchObject({ state: 'sent', messageTs: slackApi.posts[1].ts });
+    });
   });
 
   it('ignores thread posts addressed to a different thread', async () => {
