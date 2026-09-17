@@ -549,7 +549,7 @@ launchd_domains() {
 #
 # Measured 2026-09-17: as the runner user on fable-m5max, `launchctl print
 # system/<label>` exits 113 for BOTH a registered and a non-existent label —
-# a non-root process cannot see into the system domain at all. On macmini (admin
+# a non-root process cannot see into the system domain at all. On work-m16 (admin
 # user) the same probe exits 0 for a registered label and 113 for a missing one,
 # and `gui/<uid>/<label>` exits 0 where registered, 125 where not. So 113/125
 # (and any other non-zero) can only be read as "not visible to me", never as
