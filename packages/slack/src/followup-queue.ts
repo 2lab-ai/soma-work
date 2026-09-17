@@ -779,6 +779,17 @@ export class FollowupQueue {
       (session) => session.items.some((item) => !TERMINAL_STATES.includes(item.state)),
       RESTART_TRANSITIONS,
     );
+    // A freeze that holds nothing back (written by an earlier build, or left
+    // behind once its rows were cancelled) must not survive the restart: it
+    // would only put a stale "재시작 전 항목" banner on a thread with no such item.
+    const next = cloneJson(this.state);
+    let changed = false;
+    for (const session of next.sessions) {
+      if (!session.freeze) continue;
+      this.settleFreeze(session);
+      if (!session.freeze) changed = true;
+    }
+    if (changed) this.commit(next);
   }
 
   /**
